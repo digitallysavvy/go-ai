@@ -928,7 +928,7 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 				_ = json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 			}
 
-			toolCalls = append(toolCalls, types.ToolCall{
+			pushOpenResponsesCall(&toolCalls, &result.Content, types.ToolCall{
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        args,
@@ -943,7 +943,7 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 			// Arguments (a synthetic {"input": ...} map used only internally).
 			hasToolCalls = true
 			rawArgs, _ := json.Marshal(item.Input) //nolint:errcheck
-			toolCalls = append(toolCalls, types.ToolCall{
+			pushOpenResponsesCall(&toolCalls, &result.Content, types.ToolCall{
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        map[string]interface{}{"input": item.Input},
@@ -1013,6 +1013,24 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 	result.RawFinishReason = finishReason
 
 	return result, nil
+}
+
+// pushOpenResponsesCall records a tool call and puts its tool-call part in
+// the content at the output item's position (TS doGenerate pushes every part
+// in output order; core would otherwise append the call after the text).
+func pushOpenResponsesCall(calls *[]types.ToolCall, content *[]types.ContentPart, tc types.ToolCall) {
+	*calls = append(*calls, tc)
+	var meta json.RawMessage
+	if len(tc.ProviderMetadata) > 0 {
+		meta, _ = json.Marshal(tc.ProviderMetadata)
+	}
+	*content = append(*content, types.ToolCallContent{
+		ToolCallID:       tc.ID,
+		ToolName:         tc.ToolName,
+		Input:            tc.RawArguments,
+		Arguments:        tc.Arguments,
+		ProviderMetadata: meta,
+	})
 }
 
 // convertOpenResponsesUsage converts Open Responses usage to AI SDK usage

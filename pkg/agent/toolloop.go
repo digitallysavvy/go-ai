@@ -265,6 +265,15 @@ func loopHeaders(headers map[string]string) map[string]string {
 	return version.WithUserAgentSuffix(agentHeaders(headers), version.UserAgent())
 }
 
+// loopStepHeaders is loopHeaders for a step's model call, unless the caller
+// asked for its headers to be sent as given (InternalOptions.HeadersAsGiven).
+func loopStepHeaders(internal *ai.InternalOptions, headers map[string]string) map[string]string {
+	if internal != nil && internal.HeadersAsGiven {
+		return headers
+	}
+	return loopHeaders(headers)
+}
+
 func hasAgentUserAgentSegment(headers map[string]string) bool {
 	for k, v := range headers {
 		if strings.EqualFold(k, "user-agent") {
@@ -1872,7 +1881,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		Seed:                  callConfig.Seed,
 		// The same tags Generate sends: the agent segment, then GenerateText's
 		// ai/<version> (TS ToolLoopAgent always runs through generateText).
-		Headers:         loopHeaders(callConfig.Headers),
+		Headers:         loopStepHeaders(callConfig.Internal, callConfig.Headers),
 		Reasoning:       callConfig.Reasoning,
 		SendReasoning:   callConfig.SendReasoning,
 		ProviderOptions: callConfig.ProviderOptions,

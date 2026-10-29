@@ -92,7 +92,9 @@ What `PrepareStep` returns carries over to the following steps, as in TypeScript
 starts from the previous step's model, instructions, messages, tool choice, active tools, runtime and
 tools contexts and generation settings, so an override stays in effect until a later step changes it
 (the sandbox is the only per-step value). The generation settings include `Headers` and `MaxRetries`,
-in `Stream` as in `Generate`. A `PrepareStep` `ActiveTools` narrows the call's active tools (the agent's or
+in `Stream` as in `Generate`. Model calls carry the `ai-sdk-agent/workflow` user-agent suffix until a
+`PrepareStep` returns different `Headers`: as in TypeScript, the hook's headers then replace the call's, suffix
+included. A `PrepareStep` `ActiveTools` narrows the call's active tools (the agent's or
 the call's `ActiveTools`, after `PrepareCall`); it cannot enable a tool outside them, as in TypeScript.
 
 Both option structs also accept the generation settings `Temperature`, `MaxTokens`, `TopP`, `TopK`,
@@ -103,7 +105,11 @@ A value set on the call replaces the agent's (`Headers` and `ProviderOptions` re
 cancellation), not only before it starts. A timeout (the agent's `Timeout`, or a context deadline) counts as an
 abort like a cancellation: `OnAbort` fires and `OnError` does not. In `Stream`, `OnEnd` fires for every run that was not
 aborted, as in TypeScript: after a failure (a model call or `PrepareStep` hook that fails) it follows `OnError`
-and carries the steps completed so far. `Generate` fires `OnEnd` only when the run succeeds.
+and carries the steps completed so far. When the run failed that way, its `Messages` are the input messages only
+(after `PrepareCall` and the approval resume, without the instructions), as TypeScript falls back to the prompt
+messages. A run that ended on an error in the model stream itself keeps the full conversation.
+`Generate` fires `OnEnd` only when the run succeeds. A run whose context is already cancelled fires `OnStart`, then
+`OnAbort`.
 
 ### Continuing the conversation
 

@@ -1457,13 +1457,16 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 		if callActive == nil {
 			callActive = pctx.activeTools
 		}
+		headersOverridden := false
 		if stepsInline && stepHook != nil {
 			opts = persist.apply(opts)
+			opts.Headers = maps.Clone(opts.Headers)
+			inHeaders := maps.Clone(opts.Headers)
 			mutated, err := stepHook(ctx, opts)
 			if err != nil {
 				return failStep(err)
 			}
-			persist.record(opts, mutated)
+			headersOverridden = persist.record(opts, mutated, inHeaders)
 			opts = mutated
 		}
 		if opts.Model != nil {
@@ -1479,7 +1482,7 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 		}
 		c.Temperature, c.MaxTokens, c.TopP, c.TopK = opts.Temperature, opts.MaxTokens, opts.TopP, opts.TopK
 		c.FrequencyPenalty, c.PresencePenalty, c.StopSequences, c.Seed = opts.FrequencyPenalty, opts.PresencePenalty, opts.StopSequences, opts.Seed
-		c.Headers, c.Reasoning, c.SendReasoning, c.ProviderOptions = version.WithUserAgentSuffix(opts.Headers, "ai-sdk-agent/workflow"), opts.Reasoning, opts.SendReasoning, opts.ProviderOptions
+		c.Headers, c.Reasoning, c.SendReasoning, c.ProviderOptions = workflowStepHeaders(opts.Headers, headersOverridden), opts.Reasoning, opts.SendReasoning, opts.ProviderOptions
 		c.RuntimeContext, c.ToolsContext, c.ExperimentalSandbox, c.CustomData = opts.RuntimeContext, opts.ToolsContext, opts.ExperimentalSandbox, opts.CustomData
 		c.StopWhen, c.ExperimentalDownload, c.MaxRetries, c.Timeout = withFinishReasonStop(opts.StopWhen), opts.ExperimentalDownload, opts.MaxRetries, opts.Timeout
 		if w.FilterActiveTools != nil {
@@ -1510,6 +1513,22 @@ type stepPersistence struct {
 	mu   sync.Mutex
 	set  bool
 	last LanguageModelCallOptions
+	// headersOverridden records that a PrepareStep hook replaced the headers
+	// (see record); it stays set for the rest of the run.
+	headersOverridden bool
+}
+
+// workflowStepHeaders returns the headers for a step's model call: the
+// call's headers tagged with the ai-sdk-agent/workflow user-agent suffix, or,
+// once a PrepareStep hook replaced them, the hook's headers as they are. TS
+// appends the suffix to the call's generation settings before the loop, and
+// mergePrepareStepGenerationSettings then replaces the headers with the
+// hook's, so the suffix is gone after an override.
+func workflowStepHeaders(headers map[string]string, overridden bool) map[string]string {
+	if overridden {
+		return headers
+	}
+	return version.WithUserAgentSuffix(headers, "ai-sdk-agent/workflow")
 }
 
 // apply overlays the previous hook result onto a later step's options.
@@ -1537,14 +1556,23 @@ func (p *stepPersistence) apply(opts LanguageModelCallOptions) LanguageModelCall
 
 // record keeps a hook result for later steps, with the instructions resolved
 // against the hook's input (a changed System replaces instruction messages).
-func (p *stepPersistence) record(in, out LanguageModelCallOptions) {
+// inHeaders is a copy of the headers the hook was given: a hook that returns
+// other headers replaced them (TS prepareStep `headers`, which drops the
+// user-agent suffix). It returns whether the headers were replaced in this or
+// an earlier step.
+func (p *stepPersistence) record(in, out LanguageModelCallOptions, inHeaders map[string]string) bool {
+	changed := !reflect.DeepEqual(inHeaders, out.Headers)
 	if p == nil {
-		return
+		return changed
 	}
 	out.System, out.InstructionMessages, _ = resolveInstructionChange(in.System, in.InstructionMessages, out.System, out.InstructionMessages)
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.set, p.last = true, out
-	p.mu.Unlock()
+	if changed {
+		p.headersOverridden = true
+	}
+	return p.headersOverridden
 }
 
 // stepCallSettings hands the headers and maxRetries a PrepareStep hook left
@@ -1615,6 +1643,8 @@ func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []type
 		}
 		inSystem, inInstructionMessages := o.System, o.InstructionMessages
 		opts = persist.apply(opts)
+		opts.Headers = maps.Clone(opts.Headers)
+		inHeaders := maps.Clone(opts.Headers)
 		mutated, err := hook(ctx, opts)
 		if err == nil && mutated.MaxRetries != nil && *mutated.MaxRetries < 0 {
 			// TS prepareRetries rejects the step's maxRetries.
@@ -1628,8 +1658,8 @@ func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []type
 			o.Model = &hookFailedModel{LanguageModel: base, err: err}
 			return o
 		}
-		persist.record(opts, mutated)
-		settings.put(version.WithUserAgentSuffix(mutated.Headers, "ai-sdk-agent/workflow"), mutated.MaxRetries)
+		overridden := persist.record(opts, mutated, inHeaders)
+		settings.put(workflowStepHeaders(mutated.Headers, overridden), mutated.MaxRetries)
 		if mutated.Model != nil {
 			o.Model = mutated.Model
 		}
@@ -1890,6 +1920,13 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		// conversation (the converted prompt the loop started from, then every
 		// step's response messages).
 		onEnd = func(ctx context.Context, e ai.OnFinishEvent) {
+			if e.Messages != nil {
+				// A run that failed by a thrown error: core already set
+				// TS's `prompt.messages` fallback (InternalOptions
+				// FailedEndMessages).
+				inner(ctx, e)
+				return
+			}
 			messages := append([]types.Message(nil), *endBase...)
 			from := 0
 			lastStep.Lock()
@@ -2046,13 +2083,21 @@ type earlyPrepare struct {
 }
 
 // internalOptions returns the core internal options for the run: the shared
-// workflow options plus, in the stream path, the PrepareStep call settings.
-func (e *earlyPrepare) internalOptions() *ai.InternalOptions {
+// workflow options plus, in the stream path, the PrepareStep call settings
+// and the end event messages of a run that fails by a thrown error: TS's
+// standardized prompt messages (`prompt.messages`, after the approval
+// resume), without the instructions and with a plain prompt as one user
+// message.
+func (e *earlyPrepare) internalOptions(messages []types.Message, prompt string) *ai.InternalOptions {
 	if e == nil || e.stepSettings == nil {
 		return workflowInternalOptions
 	}
 	internal := *workflowInternalOptions
 	internal.StepCallSettings = e.stepSettings.get
+	if len(messages) == 0 && prompt != "" {
+		messages = []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: prompt}}}}
+	}
+	internal.FailedEndMessages = append([]types.Message{}, messages...)
 	return &internal
 }
 
@@ -2287,9 +2332,13 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	// dispatches no telemetry. The resume's tool events therefore find no
 	// root, as in TS, where the integration has no call state yet and records
 	// no tool span. Both TS methods open the root as 'ai.workflowAgent.stream'.
+	cancelled := ctx != nil && ctx.Err() != nil
+	if cancelled {
+		fireWorkflowStartBeforeAbort(ctx, mergeStart(w.OnStart, opts.OnStart), model, opts.Messages, opts.Prompt, runtimeContext, toolsContext)
+	}
 	ctx = telemetrypkg.FireOnStart(ctx, workflowStartEvent(workflowRootOperation, callID, modelProvider, modelID, telemetrySettings, early, prepared, opts.Messages, opts.Prompt, runtimeContext, toolsContext))
 	onAbort := mergeAbort(w.OnAbort, opts.OnAbort)
-	if ctx != nil && ctx.Err() != nil {
+	if cancelled {
 		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID})
 		if onAbort != nil {
 			onAbort(ctx, nil)
@@ -2345,6 +2394,34 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		responseMessages = append(responseMessages, step.Response.Messages...)
 	}
 	return &WorkflowResult{AgentResult: result, ResponseMessages: responseMessages}, nil
+}
+
+// fireWorkflowStartBeforeAbort fires the user OnStart for a run whose context
+// was already cancelled before the loop. TS WorkflowAgent calls onStart (then
+// the telemetry start) before its abort check, so a pre-cancelled run still
+// reports its start, then onAbort. Normally core fires OnStart; this run never
+// reaches it. The event carries what TS's does: the model, the standardized
+// messages (a plain prompt is one user message) and the contexts.
+func fireWorkflowStartBeforeAbort(ctx context.Context, onStart StartCallback, model provider.LanguageModel, messages []types.Message, prompt string, runtimeContext interface{}, toolsContext map[string]interface{}) {
+	if onStart == nil {
+		return
+	}
+	if len(messages) == 0 && prompt != "" {
+		messages = []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: prompt}}}}
+	}
+	providerName, modelID := workflowModelInfo(model)
+	onStart(ctx, ai.OnStartEvent{
+		Provider: providerName,
+		// ModelProvider is the deprecated alias of Provider, set for
+		// callbacks still reading it.
+		ModelProvider:       providerName, //nolint:staticcheck
+		ModelID:             modelID,
+		Prompt:              prompt,
+		Messages:            messages,
+		ExperimentalContext: runtimeContext,
+		RuntimeContext:      runtimeContext,
+		ToolsContext:        toolsContext,
+	})
 }
 
 // stepResultFromFinishEvent converts a step-end event to the StepResult handed
@@ -2495,9 +2572,13 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	// as soon as the underlying stream is obtained: the streaming happens as
 	// the caller drains WorkflowStreamResult, under the child span the
 	// delegated ai.StreamText call creates for itself.
+	cancelled := ctx != nil && ctx.Err() != nil
+	if cancelled {
+		fireWorkflowStartBeforeAbort(ctx, mergeStart(w.OnStart, opts.OnStart), model, opts.Messages, opts.Prompt, runtimeContext, toolsContext)
+	}
 	ctx = telemetrypkg.FireOnStart(ctx, workflowStartEvent(workflowRootOperation, "", modelProvider, modelID, telemetrySettings, early, prepared, opts.Messages, opts.Prompt, runtimeContext, toolsContext))
 	onAbort := mergeAbort(w.OnAbort, opts.OnAbort)
-	if ctx != nil && ctx.Err() != nil {
+	if cancelled {
 		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings})
 		if onAbort != nil {
 			onAbort(ctx, nil)
@@ -2515,7 +2596,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		}
 	}
 	call := agent.AgentStreamOptions{
-		AgentGenerateOptions:  agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, InstructionMessages: instructionMessages, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: withFinishReasonStop(opts.StopWhen), Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: early.internalOptions()},
+		AgentGenerateOptions:  agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, InstructionMessages: instructionMessages, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: withFinishReasonStop(opts.StopWhen), Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: early.internalOptions(opts.Messages, opts.Prompt)},
 		OnChunk:               opts.OnChunk,
 		InitialStreamChunks:   prefixChunks,
 		ExperimentalTransform: opts.ExperimentalTransform,
@@ -2554,7 +2635,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 // TimeoutError as aborts, so onAbort fires and onError does not).
 // workflowInternalOptions makes the loop continue after a provider-executed
 // tool call with no result (TS WorkflowAgent warns and sends an empty result).
-var workflowInternalOptions = &ai.InternalOptions{ContinueOnMissingProviderResult: true, StopOnStreamError: true, EndOnError: true}
+var workflowInternalOptions = &ai.InternalOptions{ContinueOnMissingProviderResult: true, StopOnStreamError: true, EndOnError: true, HeadersAsGiven: true}
 
 func isWorkflowAbort(ctx context.Context, err error) bool {
 	if ctx != nil && ctx.Err() != nil {

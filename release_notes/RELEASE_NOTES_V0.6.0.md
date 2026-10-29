@@ -219,7 +219,15 @@ Each item has before/after code in the
   widening them in `Generate`, and `PrepareCall`/`PrepareStep` see the
   agent's `ActiveTools` when the call sets none.
   A failed (not aborted) `Stream` run now fires `OnEnd` after `OnError`,
-  with the steps completed so far, as TS stream mode does.
+  with the steps completed so far, as TS stream mode does. When the run
+  failed by a thrown error (a model call that failed to open, a failed
+  `PrepareStep`), its `Messages` are the input messages only, as TS falls
+  back to `prompt.messages`. A `PrepareStep` that returns different
+  `Headers` replaces the call's, dropping the `ai-sdk-agent/workflow`
+  user-agent suffix (TS). A run whose context is already cancelled fires
+  `OnStart` before `OnAbort`. `WorkflowRunMultiplexer` no longer treats an SSE
+  event named `done` as the end of a run and ends on a `{"type":"finish"}`
+  chunk, as TS `WorkflowChatTransport` does.
   **Migration:** a hook that overrides a value for one step must set it back
   on later steps.
 
@@ -505,6 +513,14 @@ These match TS and are unlikely to need code changes, but can change output.
   step (and call) whose only reasoning is a reasoning file, as TS counts
   reasoning-file parts (new `ReasoningFiles` on the step-end and finish
   events).
+- **A `StreamText` run that fails before its first model stream opens** (an
+  invalid prompt, a missing tool result, a failed approval resume, invalid
+  `PrepareStep` instructions or settings) now calls `OnError` and its full
+  stream carries `start` and an `error` chunk, as TS streamText reports these
+  through the same error part as a model call that fails to open. A later
+  step that cannot be prepared (its prompt conversion, `PrepareStep`
+  instructions or settings) now ends the full stream with an `error` chunk
+  too. `Err()` is unchanged.
 - **Telemetry: a canceled or timed-out `GenerateText` reports `OnError`, not
   `OnAbort`**, as TS `generateText` has no abort telemetry: the root and step
   spans carry the error status. The legacy `ToolLoopAgent` loop does the
@@ -642,6 +658,11 @@ These match TS and are unlikely to need code changes, but can change output.
   the stream, as TS `parseJsonEventStream` ignores event names. OpenAI
   Responses and Open Responses no longer retry the "returned no output" 500
   error (TS `isRetryable: false`) (review round 56).
+- **OpenAI Responses and Open Responses `DoGenerate` keep client tool calls
+  in output order in `Content`** (TS doGenerate): a function call that came
+  before a message is no longer moved after its text, so the next step's
+  assistant message replays the items in the order the model produced them
+  (review round 57).
 
 - **Provider IDs follow TS `config.provider`**: `groq.chat`, `mistral.embedding`,
   `openai.image` and so on (they were the bare provider name). Telemetry

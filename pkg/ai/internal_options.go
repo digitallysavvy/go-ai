@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -46,13 +47,33 @@ type InternalOptions struct {
 	// aborted. Plain StreamText fires no end event for a failed run, like TS
 	// streamText. Used by WorkflowAgent.
 	EndOnError bool
+
+	// FailedEndMessages, with EndOnError, are the Messages of the end event
+	// of a run that failed by a thrown error (a model call that failed to
+	// open, a failed PrepareStep, a tool failure): TS WorkflowAgent falls back
+	// to the standardized prompt messages (`finalMessages ?? prompt.messages`)
+	// when its loop throws. A run that ended on a stream's own error keeps the
+	// final conversation, as TS's iterator returns it. Used by WorkflowAgent.
+	FailedEndMessages []types.Message
+
+	// HeadersAsGiven makes the legacy agent loop (pkg/agent GenerateAgent)
+	// send each step's headers to the model as they are, without its
+	// ai-sdk-agent/tool-loop and ai/<version> user-agent tags. TS
+	// WorkflowAgent hands its step headers straight to doGenerate, so a
+	// PrepareStep that replaces them leaves no SDK tag at all. Used by
+	// WorkflowAgent.
+	HeadersAsGiven bool
 }
 
 // notifyFailedEnd fires the end event of a failed run when
 // InternalOptions.EndOnError asks for it (TS WorkflowAgent notifyEnd: the last
 // step's text and finish reason, 'other' without steps, and the steps' total
 // usage).
-func notifyFailedEnd(ctx context.Context, internal *InternalOptions, onEndEvent func(context.Context, OnFinishEvent), callID string, runtimeContext interface{}, toolsContext map[string]interface{}, initialResponseMessages []types.Message, steps []types.StepResult) {
+//
+// err is the failure. Unless it is a NoOutputGeneratedError (the model stream
+// ended without output, which TS's model call returns as the step's terminal
+// error instead of throwing), the event's Messages are FailedEndMessages.
+func notifyFailedEnd(ctx context.Context, internal *InternalOptions, onEndEvent func(context.Context, OnFinishEvent), callID string, runtimeContext interface{}, toolsContext map[string]interface{}, initialResponseMessages []types.Message, steps []types.StepResult, err error) {
 	if internal == nil || !internal.EndOnError || onEndEvent == nil {
 		return
 	}
@@ -74,6 +95,10 @@ func notifyFailedEnd(ctx context.Context, internal *InternalOptions, onEndEvent 
 		e.Text, e.FinishReason, e.RawFinishReason = last.Text, last.FinishReason, last.RawFinishReason
 	}
 	e.SetAggregatesFromSteps(steps, responseMessagesWithInitial(initialResponseMessages, steps))
+	var noOutput *NoOutputGeneratedError
+	if internal.FailedEndMessages != nil && !errors.As(err, &noOutput) {
+		e.Messages = append([]types.Message(nil), internal.FailedEndMessages...)
+	}
 	Notify(ctx, e, onEndEvent)
 }
 
