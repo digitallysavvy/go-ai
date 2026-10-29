@@ -50,7 +50,7 @@ func TestR60GenerateAgentToolApprovalDenialKeepsReasonUnset(t *testing.T) {
 	}
 
 	// GenerateText gives the same step content and messages.
-	gen, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{Model: &mockLanguageModel{responses: model.responses}, Prompt: "go", Tools: []types.Tool{tool}, ToolApproval: deny, StopWhen: []ai.StopCondition{ai.StepCountIs(3)}})
+	gen, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{Model: &mockLanguageModel{responses: model.responses}, Prompt: "go", Tools: []types.Tool{tool}, ToolApproval: deny, StopWhen: []ai.StopCondition{ai.IsStepCount(3)}})
 	if err != nil {
 		t.Fatal(err)
 	}
