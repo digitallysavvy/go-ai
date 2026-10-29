@@ -1756,7 +1756,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	var forwardThroughTransformChain func(startIdx int, chunks []provider.StreamChunk)
 	// errorPartEnd: the run ended with a failure that TS reports as an `error` part
 	// (a later step that fails to prepare or open, an incomplete model
-	// stream), which reaches the onError callback.
+	// stream, a tool context that fails its schema), which reaches the
+	// onError callback.
 	// Every other failure is thrown inside TS's stream (a model stream that
 	// fails, a file download, an approval or tool input callback, a tool
 	// output conversion): the outer stream reports it to onStepError and the
@@ -2892,9 +2893,15 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				break
 			}
 			// A tool context that fails its schema errors the stream (TS
-			// executeToolCall validates it outside its try).
+			// executeToolCall validates it outside its try). TS's
+			// executeToolsFromStream catches it as an `error` part, so it
+			// reaches OnError.
 			if failure := unwrapToolCallFailure(toolsErr); failure != nil {
 				r.err = failure
+				var tcf *toolCallFailureError
+				if errors.As(toolsErr, &tcf) && tcf.toolContext {
+					errorPartEnd = true
+				}
 				cancelStep()
 				break
 			}

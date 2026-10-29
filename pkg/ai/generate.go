@@ -2289,6 +2289,10 @@ type toolResultModelOutputError struct {
 // become tool errors.
 type toolCallFailureError struct {
 	err error
+	// toolContext marks a tool context that failed its schema. In StreamText
+	// TS's executeToolsFromStream catches that throw and enqueues an `error`
+	// part, so onError sees it (an approval failure stays a thrown error).
+	toolContext bool
 }
 
 func (e *toolCallFailureError) Error() string { return e.err.Error() }
@@ -2623,7 +2627,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				// TS executeToolCall validates the tool context outside its
 				// try: a failure fails the call instead of becoming a tool
 				// error.
-				return nil, &toolCallFailureError{err: err}
+				return nil, &toolCallFailureError{err: err, toolContext: true}
 			}
 
 			// Emit OnToolCallStartEvent before execution.
