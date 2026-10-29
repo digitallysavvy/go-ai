@@ -1755,6 +1755,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	// error parts go through it, as TS's abort and error parts pass through
 	// experimental_transform after the outer stream.
 	var forwardThroughTransformChain func(startIdx int, chunks []provider.StreamChunk)
+	// thrownStreamErr is a model stream failure that is not an error part
+	// (TS: the model stream throws). TS's outer stream reports it to
+	// onStepError and the telemetry onError and errors the stream; the
+	// onError callback, which sees error parts, is not called.
+	var thrownStreamErr error
 	abortFired := false
 	fireAbort := func(reason error) {
 		if abortFired {
@@ -2065,6 +2070,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				r.err = err
 				if isAbortErr(ctx, err) {
 					fireAbort(err)
+				} else {
+					thrownStreamErr = err
 				}
 				chunkDeadlineCancel()
 				break
@@ -3748,7 +3755,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// report it before the call error (aborts end with OnAbort).
 			r.notifyStepError(ctx, opts.OnStepError, r.err)
 		}
-		if opts.OnError != nil && !isAbortErr(ctx, r.err) {
+		if opts.OnError != nil && !isAbortErr(ctx, r.err) && (thrownStreamErr == nil || r.err != thrownStreamErr) {
 			safeInvoke(func() { opts.OnError(ctx, r.err) })
 		}
 		if !isAbortErr(ctx, r.err) {
