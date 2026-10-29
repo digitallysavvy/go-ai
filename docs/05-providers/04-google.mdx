@@ -805,9 +805,9 @@ if err != nil {
 }
 
 result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
-    Model:  geminiImageModel,
-    Prompt: "Abstract colorful art with geometric shapes and vibrant patterns",
-    Size:   "1920x1080", // 16:9 aspect ratio
+    Model:       geminiImageModel,
+    Prompt:      "Abstract colorful art with geometric shapes and vibrant patterns",
+    AspectRatio: "16:9", // Size is not supported (it returns a warning)
 })
 if err != nil {
     log.Fatal(err)
@@ -817,12 +817,11 @@ fmt.Printf("Image generated: %d bytes\n", len(result.Images[0].Data))
 os.WriteFile("gemini_output.png", result.Images[0].Data, 0644)
 ```
 
-**Supported Aspect Ratios:**
-- `1:1` - Square (1024x1024, 512x512)
-- `4:3` - Standard (1024x768)
-- `3:4` - Portrait (768x1024)
-- `16:9` - Widescreen (1920x1080, 1792x1024)
-- `9:16` - Vertical (1080x1920, 1024x1792)
+**Aspect ratio:** set `AspectRatio` (sent as `generationConfig.imageConfig.aspectRatio`):
+`1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, `21:9`, `1:8`,
+`8:1`, `1:4` or `4:1`. Gemini image models do not support `Size`: it is
+ignored and the result carries an `unsupported` warning, as in the TypeScript
+SDK.
 
 **Model Comparison:**
 

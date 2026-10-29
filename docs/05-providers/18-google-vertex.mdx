@@ -281,9 +281,9 @@ if err != nil {
 }
 
 result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
-    Model:  geminiModel,
-    Prompt: "A magical forest with glowing mushrooms and ethereal lighting",
-    Size:   "1024x1024", // Square 1:1 aspect ratio
+    Model:       geminiModel,
+    Prompt:      "A magical forest with glowing mushrooms and ethereal lighting",
+    AspectRatio: "1:1", // Size is not supported (it returns a warning)
 })
 if err != nil {
     log.Fatal(err)
@@ -292,12 +292,11 @@ if err != nil {
 os.WriteFile("vertex_gemini_image.png", result.Image.Data, 0644)
 ```
 
-**Supported Aspect Ratios:**
-- `1:1` - Square (1024x1024)
-- `4:3` - Standard (1024x768)
-- `3:4` - Portrait (768x1024)
-- `16:9` - Widescreen (1920x1080)
-- `9:16` - Vertical (1080x1920)
+**Aspect ratio:** set `AspectRatio` (sent as `generationConfig.imageConfig.aspectRatio`):
+`1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, `21:9`, `1:8`,
+`8:1`, `1:4` or `4:1`. Gemini image models do not support `Size`: it is
+ignored and the result carries an `unsupported` warning, as in the TypeScript
+SDK.
 
 **Model Comparison:**
 
