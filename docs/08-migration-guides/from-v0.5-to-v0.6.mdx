@@ -112,6 +112,27 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 
 ## Behavior changes that can need an edit
 
+- **Tool results the model returns stay in the assistant message.** As in
+  TS, every tool result or tool error a provider returns (web search, file
+  search, image generation, code execution and other provider-executed tools)
+  now has `ProviderExecuted` set, in `GenerateText`, `StreamText` and the
+  legacy `ToolLoopAgent` loop. The step's `Response.Messages` keep it in the
+  assistant message next to its call. v0.5 put a result whose provider left the flag
+  unset (OpenAI and xAI Responses hosted tools in `GenerateText`, a deferred
+  result with no call in the step) in a separate `tool` message. Code that
+  looks for these results in `RoleTool` messages, or reads
+  `ProviderExecuted == false` on them, must look in the assistant message.
+  Tool results your own tools return are unchanged:
+
+  ```go
+  // v0.6: provider tool results are assistant content
+  for _, part := range result.FinalStep.Response.Messages[0].Content {
+  	if r, ok := part.(types.ToolResultContent); ok && r.ProviderExecuted {
+  		_ = r.Result
+  	}
+  }
+  ```
+
 - **`WorkflowAgent` `PrepareStep` overrides carry over to later steps.** As
   TS's model-call iterator, the next step's hook gets the previous step's
   model, instructions, tool choice, active tools, contexts and generation

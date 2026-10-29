@@ -198,6 +198,19 @@ Each item has before/after code in the
 
 ### Behavior changes that can break callers
 
+- **Tool results the model returns stay in the assistant message**
+  (review round 58). As TS sets `providerExecuted: true` on every tool result
+  and tool error a model returns, `GenerateText`, `StreamText` and the legacy
+  `ToolLoopAgent` loop now set `ProviderExecuted` on them, so the step's
+  `Response.Messages` keep them in the assistant message next to their call.
+  v0.5.x put a result whose provider left the flag unset (OpenAI Responses
+  `web_search_call`, `image_generation_call` and `program_output`, and the
+  xAI Responses hosted tools in `GenerateText`; a deferred result with no
+  call in the step) in a separate `tool` message, which the next turn sent
+  back as a function output. Results that an adapter passes in
+  `InitialStreamChunks` (WorkflowAgent's resumed approvals) and results of
+  your own tools keep their flag. **Migration:** read provider tool results
+  from the assistant message, not from `RoleTool` messages.
 - **A caller cancellation is not a `*ai.TimeoutError`** (review round 56).
   With `Timeout.Total` or `Timeout.PerStep` set, a cancelled context came
   back as a step or total `*ai.TimeoutError` (also in v0.5.x); it now comes
@@ -227,7 +240,9 @@ Each item has before/after code in the
   user-agent suffix (TS). A run whose context is already cancelled fires
   `OnStart` before `OnAbort`. `WorkflowRunMultiplexer` no longer treats an SSE
   event named `done` as the end of a run and ends on a `{"type":"finish"}`
-  chunk, as TS `WorkflowChatTransport` does.
+  chunk, as TS `WorkflowChatTransport` does, and returns a failed POST's
+  error before it calls `OnChatSendMessage`, which now sees only successful
+  sends (review round 58).
   **Migration:** a hook that overrides a value for one step must set it back
   on later steps.
 
@@ -525,12 +540,8 @@ These match TS and are unlikely to need code changes, but can change output.
   the first stream, `OnAbort` and a `start` and an `abort` chunk (also when
   the first model call fails to open after a cancel, which used to emit no
   chunks); at a later step, an `abort` chunk; no `OnError` and no `error`
-  chunk either way.
-- **Tool results and tool errors a model returns are provider-executed**
-  (`ProviderExecuted` is set by core, as TS does for every model
-  tool-result), so they stay in the assistant response message next to their
-  call instead of a tool message, also when the provider left the flag unset
-  (xAI Responses) or the result has no call in the step (a deferred result).
+  chunk either way. Telemetry integrations get `OnError` and then `OnAbort`
+  for a run aborted before its first stream, as TS's pipeline catch.
 - **xAI Responses generate keeps tool calls in output order** in the content:
   a function call ahead of a message stays ahead of its text, and a
   provider-executed call (image generation, web/file search) comes before its
@@ -878,6 +889,17 @@ in v0.5.3.
   tool-call parts, a thought summary item without a string `text` is skipped,
   and an image tool-result file with text data is dropped with TS's warning
   (review round 57).
+- Google interactions pick a file part's block kind from the exact
+  top-level media type, as TS `getTopLevelMediaType`: `images/png` or
+  `applications/json` is dropped with the unsupported-media-type warning
+  instead of being sent as an image or document. Bedrock tools see the
+  reasoning budget after resolution, so a disabled `reasoningConfig` with
+  `budgetTokens` under a portable `Reasoning` level no longer sends Anthropic
+  tool fields and betas for an application inference profile. An Anthropic
+  stream whose first part is an unparsable or schema-invalid frame fails
+  `DoStream` with TS's plain "Expected a normalized Anthropic stream error"
+  (not a status-500 `*ProviderError`); it unwraps to the frame's
+  `*JSONParseError` or `*ValidationError` (review round 58).
 
 ### Workflow, MCP, code mode and harness
 
