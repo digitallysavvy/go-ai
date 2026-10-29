@@ -52,7 +52,8 @@ func validateDownloadURL(rawURL string) error {
 	if host == "localhost" || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".internal") {
 		return providererrors.NewSSRFError(
 			rawURL,
-			fmt.Sprintf("URL with hostname %q is not allowed", host),
+			// TS: `URL with hostname ${hostname} is not allowed` (no quotes).
+			fmt.Sprintf("URL with hostname %s is not allowed", host),
 			nil,
 		)
 	}
