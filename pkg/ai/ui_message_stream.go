@@ -2145,15 +2145,6 @@ func PipeUIMessageStreamToResponse(ctx context.Context, result *StreamTextResult
 	return PipeUIMessageStreamToResponseWithInit(ctx, result, w, nil, opts...)
 }
 
-// PipeUIMessageStreamToResponseWithInit supports optional SSE side-channel consumption.
-//
-// If writing to w fails (for example because the client disconnected), the
-// internal source stream is cancelled before returning so its background
-// producer goroutine and any upstream provider resources it holds are
-// released instead of leaking (blocked forever trying to send a chunk to a
-// reader that has stopped listening). Mirrors TS
-// write-to-server-response.ts's client-disconnect handling, which cancels
-// the ReadableStream's reader on a premature close (TS #21578).
 // writeUIMessageSSEChunk JSON-encodes and writes a single UI message chunk
 // as one SSE "data: ...\n\n" event, then flushes it.
 func writeUIMessageSSEChunk(bw *bufio.Writer, flush func() error, chunk UIMessageChunk) error {
@@ -2173,6 +2164,15 @@ func writeUIMessageSSEChunk(bw *bufio.Writer, flush func() error, chunk UIMessag
 	return flush()
 }
 
+// PipeUIMessageStreamToResponseWithInit supports optional SSE side-channel consumption.
+//
+// If writing to w fails (for example because the client disconnected), the
+// internal source stream is cancelled before returning so its background
+// producer goroutine and any upstream provider resources it holds are
+// released instead of leaking (blocked forever trying to send a chunk to a
+// reader that has stopped listening). Mirrors TS
+// write-to-server-response.ts's client-disconnect handling, which cancels
+// the ReadableStream's reader on a premature close (TS #21578).
 func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTextResult, w io.Writer, init *UIMessageStreamResponseInit, opts ...UIMessageStreamResultOptions) error {
 	if result == nil {
 		return fmt.Errorf("result is required")
