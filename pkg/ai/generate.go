@@ -179,12 +179,9 @@ func DoGenerateWithGatewayRetry(ctx context.Context, model provider.LanguageMode
 	return doGenerateWithGatewayRetry(ctx, model, opts, maxRetries)
 }
 
-func doStreamWithGatewayRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int) (provider.TextStream, error) {
-	return doStreamWithGatewayRetryEach(ctx, model, opts, maxRetries, nil)
-}
-
-// doStreamWithGatewayRetryEach is doStreamWithGatewayRetry with a hook that
-// runs before every attempt after the first. TS streamText retries
+// doStreamWithGatewayRetryEach calls model.DoStream with the call's retry
+// policy (maxRetries, default 2), running a hook before every attempt after
+// the first. TS streamText retries
 // streamLanguageModelCall as a whole (`retry(async () =>
 // streamLanguageModelCall(...))`), so each retried open is a new model call
 // with its own onLanguageModelCallStart (callback and telemetry) and call
