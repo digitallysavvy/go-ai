@@ -249,6 +249,14 @@ call its own ID. A constant ID would collide in an integration's call-state
 map when two runs share an integration concurrently, and would break
 correlating events with their run.
 
+## WorkflowRunMultiplexer run ID
+
+`workflow.WorkflowRunMultiplexer` is a Go-only type with no TS twin. Its
+`SendMessages` reads the `x-workflow-run-id` response header when the server
+sends one, but does not require it. `workflow.WorkflowChatTransport`, the
+twin of TS `WorkflowChatTransport`, fails without the header with the TS
+error `Workflow run ID not found in "x-workflow-run-id" response header`.
+
 ## Option validation timing
 
 - `StreamText` returns an invalid `Instructions` value (a non-system

@@ -1,25 +1,151 @@
 ---
 title: Migrating from v0.5.x to v0.6.0
-description: "Migration guide for upgrading Go AI SDK apps from v0.5.x to v0.6.0, covering the GenerateObject MaxRetries pointer, the evaluate-to-decide rename, and behavior changes that match the TypeScript AI SDK."
+description: "Migration guide for upgrading Go AI SDK apps from v0.5.x to v0.6.0: a quick-scan table of every breaking change, one entry per change with what to search for and what to do, and a checklist for coding agents."
 ---
 
 # Migrate Go AI SDK v0.5.x to v0.6.0
 
-v0.6.0 catches up with the TypeScript AI SDK `ai@7.0.153`. Most v0.5.x code
-compiles and runs unchanged. This page lists the changes that can need an
-edit.
+v0.6.0 catches up with the TypeScript AI SDK `ai@7.0.153`. Read this page if
+you upgrade an application from any v0.5.x release (v0.5.0 to v0.5.3).
 
-## Compile-time changes
+Most v0.5.x code compiles unchanged. A few struct fields changed type, and
+those fail at compile time. The other changes match TypeScript behavior:
+your code still compiles but can behave differently at run time, send
+different requests, or return different error text.
 
-### GenerateObject / StreamObject: MaxRetries is now a pointer
+How to use this page:
 
-**Impact:** compile error if you set `MaxRetries` as a plain int.
+1. Scan the [quick-scan table](#quick-scan-table). Each row gives a pattern
+   to search your code for.
+2. For each pattern you find, open its section and follow **What to do**.
+3. Rows without a match need no action.
 
-`GenerateObjectOptions.MaxRetries` and `StreamObjectOptions.MaxRetries`
-changed from `int` to `*int`, matching `GenerateTextOptions.MaxRetries` and
-the TS `maxRetries` option. nil uses the default of 2 retries. An explicit `0`
-now disables retries (before, `0` selected the default, so retries could not
-be turned off). A negative value returns `*errors.InvalidArgumentError`.
+Coding agents can follow the [checklist for coding agents](#for-coding-agents)
+step by step.
+
+Each entry uses the same template:
+
+- **What changed:** the v0.5 behavior, the v0.6 behavior, and the
+  TypeScript reason.
+- **Am I affected?** the identifiers, fields, callbacks or wire behavior to
+  search for.
+- **What to do:** a before/after snippet, or "No action unless you ...".
+- **Kind:** `compile error`, `silent behavior change`, `wire/protocol change`
+  or `error text only`.
+
+Entries marked "(v0.5.3)" also shipped in v0.5.3. If you are on v0.5.3
+already, you can skip them.
+
+## Quick-scan table {#quick-scan-table}
+
+| Search for (identifier / pattern) | Change | Kind | Action | Section |
+| --- | --- | --- | --- | --- |
+| `MaxRetries:` in `GenerateObjectOptions` / `StreamObjectOptions` | `MaxRetries` is `*int`; `0` disables retries | compile error | Pass `&n`; remove `MaxRetries: 0` | [Object MaxRetries](#object-maxretries-pointer) |
+| `RecordInputs:`, `RecordOutputs:` in `telemetry.Options` / `telemetry.Settings` | Fields are `*bool`; unset now records | compile error | Use `telemetry.Bool(...)`; set `false` to keep data out of spans | [Telemetry recording](#telemetry-record-pointers) |
+| `EvaluateEndEvent{`, `EvaluationModelCallEndEvent{`, `EvaluateOnEndEvent{` | Embedded field renamed to the Decide type | compile error | Use `DecideStartEvent:` and similar | [Evaluate event literals](#evaluate-event-literals) |
+| `acp.TextContentBlock{"` (unkeyed literal) | Type is an alias of `acp.ContentBlock` | compile error | Use keyed fields | [acp.TextContentBlock](#acp-text-content-block) |
+| `.Provider.EvaluationModel(` on `EvaluateOptions` / `DecideOptions` | `Provider` is `interface{}` | compile error | Type-assert, or pass the provider through | [Decide options provider](#decide-options-provider) |
+| `==` or map keys on provider `Config` / `Provider` values, `bytedance.Error`, `klingai.Error`, `responses.OutputTextDeltaEvent`, `workflow.WorkflowResult` | Structs gained map, slice or func fields | compile error | Compare fields instead | [Non-comparable structs](#non-comparable-structs) |
+| `.Text()` on a `StreamTextResult` with more than one step | Final step's text only | silent behavior change | Use `ReadAll()` or join `Steps` | [StreamText Text()](#streamtext-text-final-step) |
+| `OnFinish:` reading `Usage`, `ToolCalls`, `ToolResults` | Aggregated across steps | silent behavior change | Read `FinalStep` for the last step | [OnFinishEvent totals](#on-finish-aggregates) |
+| `.TotalTokens` | Input + output tokens | silent behavior change | Read `Usage.Raw` for the wire value | [TotalTokens](#total-tokens) |
+| `ReasoningText` | Parts joined with no separator (was a newline) | silent behavior change | Join reasoning parts with a newline yourself | [ReasoningText](#reasoning-text) |
+| `OnError:` in `StreamTextOptions` | Called for error parts only | silent behavior change | Handle fatal errors from `Err()` / `OnStepError` | [StreamText OnError](#streamtext-onerror) |
+| `PrepareStep:` returning `Model` in `StreamTextOptions` | Override applies to one step | silent behavior change | Return the model from every call | [StreamText PrepareStep model](#streamtext-preparestep-model) |
+| `OnLanguageModelCallStart:` in `StreamTextOptions` | Fires once per retry attempt | silent behavior change | Count steps with `OnStepStart` | [Model call start per attempt](#streamtext-call-start-per-attempt) |
+| `Request()`, `.Request.Body` on `StreamText` steps or `start-step` chunks | Body only with `Include.RequestBody` | silent behavior change | Set `Include: &ai.IncludeOptions{RequestBody: true}` | [StreamText request body](#streamtext-request-body) |
+| `"stream-start"`, `"response-metadata"` in `FullStream` consumers | Go-only markers left out | silent behavior change | Use `OnChunk` | [Full stream markers](#streamtext-full-stream-markers) |
+| `FinishReasonOther` used to detect truncation | Truncated streams are `interrupted` | silent behavior change | Check `types.FinishReasonInterrupted` | [Truncated streams](#truncated-streams-interrupted) |
+| `*ai.TimeoutError`, `errors.As(err, &te)` with `Timeout:` set | A caller cancel is `context.Canceled` | silent behavior change | Check `context.Canceled` first | [Caller cancellation](#caller-cancel-not-timeout) |
+| `Timeout.PerStep` together with `PrepareStep:` | Step timer starts before `PrepareStep` | silent behavior change | Size `PerStep` to include it | [Step timeout start](#step-timeout-before-preparestep) |
+| `MaxTokens:` set to `0` or a negative value | Rejected with `InvalidArgumentError` | silent behavior change | Leave nil or set at least 1 | [MaxTokens below 1](#max-tokens-min) |
+| `OnStartEvent.Messages` with `Prompt:` | Holds the prompt as one user message | silent behavior change | Read `OnStartEvent.Prompt` for the string | [Start event messages](#start-event-messages) |
+| `StopWhen:` conditions with side effects | Run only when the loop would continue | silent behavior change | Move side effects to `OnStepFinish` | [Stop conditions](#stop-conditions-only-when-continue) |
+| `"call-"` prefix checks on response, approval or UI message IDs | TS ID formats (`aitxt-`, `aiobj-`, 16 chars) | silent behavior change | Do not parse ID prefixes | [Generated IDs](#generated-id-formats) |
+| `<`, `>`, `&` in expected request or stream JSON | JSON is not HTML-escaped | wire/protocol change | Update golden files | [JSON escaping](#json-not-html-escaped) |
+| Custom SSE servers or test fixtures whose last event has no blank line | Unterminated final event dropped | wire/protocol change | End every event with a blank line | [SSE final event](#sse-final-event) |
+| `Prompt:` and `Messages:` both set, neither set, or `Messages: []types.Message{}` | `InvalidPromptError` | silent behavior change | Pass exactly one | [Prompt validation](#prompt-validation) |
+| `RoleSystem` messages in `GenerateObjectOptions.Messages` / `StreamObjectOptions.Messages` | Rejected unless `AllowSystemMessages` | silent behavior change | Use `Instructions` | [Object system messages](#object-system-messages) |
+| `*InvalidArgumentError` or "Invalid argument for parameter instructions" for `InstructionMessages` | Now `*InvalidPromptError` | silent behavior change | Match with `errors.As` | [Invalid instructions](#invalid-instructions) |
+| Assistant tool calls without a tool result in `Messages` | `*types.MissingToolResultsError` | silent behavior change | Send a result for each call | [Missing tool results](#missing-tool-results) |
+| JSON Schemas with `if`/`then`/`else`, `contains`, `dependencies`, `dependentSchemas` | Keywords enforced | silent behavior change | Fix inputs or schemas | [JSON Schema validator](#json-schema-validator) |
+| Tool `Execute` functions that share state | Tools in a step run concurrently | silent behavior change | Lock shared state, or `ToolCallConcurrency: 1` | [Concurrent tools](#tools-concurrent) |
+| `ToolChoice` unset with tools, vLLM or other OpenAI-compatible servers | Model gets `auto` | wire/protocol change | Enable auto tool choice on the server, or reset in middleware | [Unset ToolChoice](#tool-choice-auto) |
+| `ToolChoice: types.ToolChoice{Type: "none"}` | Tool calls fail the call | silent behavior change | Handle `*ai.ToolChoiceViolationError` | [ToolChoice none](#tool-choice-none) |
+| `OnEnd:` / `OnFinish:` treated as success after a tool choice violation | StreamText now ends with `finish` | silent behavior change | Check `Err()` | [Tool choice violation finish](#tool-choice-violation-finish) |
+| A local tool named like a provider tool (`web_search`, `code_execution`) | Provider-executed calls never run locally | silent behavior change | Rename the local tool | [Provider-executed calls](#provider-executed-not-local) |
+| `RoleTool` messages searched for provider tool results, `ProviderExecuted == false` | Provider results stay in the assistant message | silent behavior change | Read the assistant message | [Provider tool results](#provider-tool-results-assistant) |
+| `ToolResults` entries for pending approvals or denied calls | Bookkeeping entries removed | silent behavior change | Read approval parts in `Content` | [ToolResults entries](#tool-results-bookkeeping) |
+| `ContextSchema:`, `ToolApproval:` | Context and approval errors fail the call | silent behavior change | Fix config or handle `*ValidationError` | [Tool approval errors](#tool-errors-fail-call) |
+| `PrepareStep` returning `ActiveTools` or `ProviderOptions` | Honored; options deep-merged | silent behavior change | Return only what the step needs | [PrepareStep tools](#preparestep-active-tools) |
+| OpenAI `computer`, `local_shell`, `shell`, `apply_patch`; Anthropic `computer`, `text_editor`, `memory` tools | Client-executed | silent behavior change | Give them an `Execute` | [Client-executed tools](#client-executed-provider-tools) |
+| `.ToolCallID` used as an approval response ID (legacy `ToolLoopAgent`) | Approval IDs are generated | silent behavior change | Answer with `ApprovalID` | [Legacy approval IDs](#legacy-approval-ids) |
+| Loops over legacy `StepResult.ToolResults` / `AgentResult.ToolResults` | Provider results listed first | silent behavior change | Skip `ProviderExecuted` entries | [Legacy tool results](#legacy-tool-results-provider) |
+| `Request.Messages[0]` with `Include.RequestMessages` (legacy loop) | Instructions left out | silent behavior change | Read instructions from config | [Legacy request messages](#legacy-request-messages) |
+| Negative `MaxRetries` on `AgentConfig` or from `PrepareCall` | Rejected | silent behavior change | Use 0 to disable | [Legacy negative MaxRetries](#legacy-negative-maxretries) |
+| `errors.Is(err, context.Canceled)` for a legacy step timeout | Now `context.DeadlineExceeded` | silent behavior change | Check `DeadlineExceeded` | [Legacy step timeout error](#legacy-step-timeout-deadline) |
+| `Timeout.PerStep` on the legacy agent with slow tools | Step timeout covers tools | silent behavior change | Raise `PerStep` or use `Total` | [Legacy step timeout and tools](#legacy-step-timeout-tools) |
+| `ActiveTools: []string{}` on the legacy agent | No tools active | silent behavior change | Use nil for all tools | [Legacy empty ActiveTools](#legacy-empty-active-tools) |
+| "Unauthenticated request to AI Gateway" text, gateway auth errors from `GenerateAgent` | Wrapped TS error | error text only | Match `*GatewayAuthenticationError` | [Gateway auth error](#gateway-auth-error) |
+| `.ToolCallID` used as an approval response ID (`WorkflowAgent`) | IDs are `approval-` + call ID | silent behavior change | Answer with `ApprovalID` | [WorkflowAgent approval IDs](#workflow-approval-ids) |
+| `.Result` on `ResponseMessages[0]` after an approval resume | Use `Output` | silent behavior change | Read `Output` | [Resumed approval output](#workflow-resumed-output) |
+| `workflow.LanguageModelCallOptions` hooks that change a value for one step | Overrides carry over | silent behavior change | Reset the value on later steps | [WorkflowAgent PrepareStep](#workflow-preparestep-carryover) |
+| `OnEnd:` / `OnError:` on `WorkflowAgent.Stream` | Failed run fires `OnEnd` after `OnError` | silent behavior change | Check the outcome in `OnEnd` | [WorkflowAgent Stream failures](#workflow-stream-failed-onend) |
+| `WorkflowAgent.Stream` without `StopWhen` | No default step limit | silent behavior change | Set `StopWhen` | [WorkflowAgent Stream limit](#workflow-stream-no-step-limit) |
+| `ai.workflowAgent.generate` in queries or dashboards | Root span is `ai.workflowAgent.stream` | wire/protocol change | Update queries | [WorkflowAgent root span](#workflow-root-span) |
+| SSE event named `done`, `OnChatSendMessage:` on `WorkflowRunMultiplexer` | Ends on a `finish` chunk; sees successful sends only | wire/protocol change | Emit a `finish` chunk | [WorkflowRunMultiplexer](#workflow-multiplexer-finish) |
+| `CreateUIMessageStreamWithOptions`, `ToUIMessageStream` with `OnEnd` / `OnStepEnd` | Out-of-sequence chunk ends the stream | silent behavior change | Emit start chunks first; handle `*ai.UIMessageStreamError` | [UI stream sequence](#ui-out-of-sequence) |
+| `KeepAliveMs` | Zero, negative or too large is an error | silent behavior change | Leave nil to disable | [KeepAliveMs](#keep-alive-range) |
+| `Integrations: []telemetry.TelemetryIntegration{}` | Empty slice disables telemetry | silent behavior change | Leave nil for globals | [Empty Integrations](#empty-integrations) |
+| `"ai-sdk"`, `"go-ai"` tracer or instrumentation scope names, `telemetry.TracerName` | Tracers are `ai` and `gen_ai` | wire/protocol change | Update filters | [Tracer names](#tracer-names) |
+| `EnrichSpan:`, runtime context objects in spans | TS attribute rules | wire/protocol change | Read flattened keys | [Span attributes](#enrich-span-attributes) |
+| `experimental_onEvaluate`, `ai.evaluate`, `ai.evaluation.`, `gen_ai.operation.name=evaluate` | Renamed to decide | wire/protocol change | Update names | [Decide telemetry names](#decide-telemetry-names) |
+| Telemetry integration `OnAbort` for a cancelled `GenerateText` | Integrations get `OnError` | silent behavior change | Handle `OnError` | [GenerateText abort telemetry](#generate-cancel-telemetry) |
+| `strings.Contains(err.Error(), "failed at step"` and other prefixes | Errors returned as is | error text only | Use `errors.As` / `errors.Is` | [Unprefixed errors](#errors-unprefixed) |
+| Error text with `%q`-quoted names (tool callers, tool search, decide, ID generator) | TS quoting | error text only | Use `errors.As` | [Name quoting](#error-name-quoting) |
+| `ProviderError.Message` for an empty or non-JSON error body | HTTP status text | error text only | Read `StatusCode` / `ResponseBody` | [Non-JSON error bodies](#non-json-error-body) |
+| `.Provider()` compared with `"groq"`, `"openai"`; `ai.model.provider` | TS `config.provider` IDs (`groq.chat`) | silent behavior change | Compare prefixes | [Provider IDs](#provider-ids) |
+| Custom or proxy endpoints that return non-standard JSON | "Invalid JSON response" | silent behavior change | Return the provider's schema | [Response validation](#response-validation) |
+| `ProviderOptions:` with wrong value types or unknown values | `*InvalidArgumentError` | silent behavior change | Fix the options | [Provider options validation](#provider-options-validation) |
+| Index-based reads of Anthropic, Bedrock or Google `result.Content` | Response order | silent behavior change | Switch on the part type | [Content order](#result-content-order) |
+| `promptCacheOptions` in OpenAI Responses provider options | Validated | silent behavior change | Use documented values | [OpenAI promptCacheOptions](#openai-prompt-cache-options) |
+| OpenAI chat streams handling an `error` part before output | The call fails | silent behavior change | Handle the call error | [OpenAI chat stream errors](#openai-chat-stream-error) |
+| `OPENAI_API_KEY` only, with Baseten, Cerebras, DeepInfra, Fireworks, Together, Vercel, Vertex MaaS, Azure | No fallback | silent behavior change | Set the provider's own variable | [Wrapper API keys](#wrapper-api-keys) |
+| `*providererrors.DownloadError` from BFL, Luma or fal | `*providererrors.ProviderError` | silent behavior change | Match `ProviderError` | [Media download errors](#media-download-errors) |
+| Errors from `klingai` `VideoModel(` | Unknown IDs fail at `DoStart` | silent behavior change | Check the call error | [KlingAI VideoModel](#klingai-video-model) |
+| Perplexity embedding `dimensions` / `encodingFormat` | Validated | silent behavior change | Pass valid values | [Perplexity embeddings](#perplexity-embedding-options) |
+| MCP OAuth client information with a client secret and no `Issuer` | Rejected | silent behavior change | Set `Issuer` | [MCP OAuth issuer](#mcp-oauth-issuer) |
+| `mcp.MCPClientConfig` without `RequestTimeoutMS`, `TimeoutMS` on MCP transports | No default request timeout | silent behavior change | Set a timeout or use ctx | [MCP timeouts](#mcp-no-default-timeout) |
+| Code mode scripts that run longer than 10 s of CPU | `*codemode.CPUTimeoutError` | silent behavior change | Raise `CPUTimeoutMs` | [Code mode CPU limit](#codemode-cpu-limit) |
+| Many concurrent code mode runs | `*codemode.ConcurrencyError` | silent behavior change | `codemode.SetMaxWorkers(n)` | [Code mode workers](#codemode-max-workers) |
+| `github.com/tetratelabs/wazero` in your `go.mod` | v1.12.0 | silent behavior change | Move to v1.12.0 | [wazero](#wazero-version) |
+| Persisted ACP lifecycle state (Cursor, GitHub Copilot, Grok Build, fx) | Does not resume | silent behavior change | Start fresh sessions | [ACP state](#acp-state) |
+| `StopWhen` on a harness `Agent` / `AgentSession` | Failed suspension fails the turn | silent behavior change | Handle the turn error | [Harness suspension](#harness-stop-suspend) |
+| `ClientAppName`, `ClientAppVersion`, `User-Agent` checks for harness adapters | `ai-sdk-harness-<id>` | wire/protocol change | Update checks | [Harness client app](#harness-client-app) |
+| `harness.AgentSettings` without `Telemetry` | No telemetry | silent behavior change | Set `Telemetry` | [Harness telemetry](#harness-telemetry-unset) |
+| `harness.Agent.Generate(...).Usage`, Claude Code / Codex OAuth refresh | Turn total; refresh failure fails start | silent behavior change | Adjust usage reads; handle start errors | [Harness usage and OAuth](#harness-usage-oauth) |
+| `"terminal"` in fx tool lists or `inactiveTools` | Tool removed | silent behavior change | Remove it | [fx terminal tool](#fx-terminal-removed) |
+| `fx.Settings{Runtime:` | Opt-in libfx runtime | silent behavior change | No action unless you opt in | [fx libfx runtime](#fx-libfx-opt-in) |
+| OPA HTTP policies that rely on "no match means deny" | Missing `result` is not-applicable | silent behavior change | Add an explicit deny | [OPA result](#opa-undefined-result) |
+| Cohere `BaseURL` or `DefaultBaseURL` (v0.5.3) | v2 API | wire/protocol change | Check custom base URLs | [Cohere v2](#v053-cohere-v2) |
+| `MaxRetries` unset on non-Gateway providers (v0.5.3) | Every provider retries | silent behavior change | Set `MaxRetries: &zero` to disable | [Retries](#v053-retries) |
+| Reliance on the 60 s default HTTP client timeout (v0.5.3) | No whole-request timeout | silent behavior change | Bound calls with `ctx` | [HTTP client timeout](#v053-http-timeout) |
+| Calls to unknown tools ending the loop (v0.5.3) | Answered with a tool error | silent behavior change | No action unless you relied on the stop | [Unknown tools](#v053-unknown-tool) |
+
+## Compile-time changes {#compile-time-changes}
+
+### GenerateObject and StreamObject MaxRetries is a pointer {#object-maxretries-pointer}
+
+- **What changed:** `GenerateObjectOptions.MaxRetries` and
+  `StreamObjectOptions.MaxRetries` changed from `int` to `*int`, like
+  `GenerateTextOptions.MaxRetries` and TS `maxRetries`. nil uses the default
+  of 2 retries. An explicit `0` now disables retries; in v0.5, `0` selected
+  the default. A negative value returns `*errors.InvalidArgumentError`.
+- **Am I affected?** `MaxRetries:` in a `GenerateObjectOptions` or
+  `StreamObjectOptions` literal.
+- **What to do:** pass a pointer. Remove `MaxRetries: 0` if you meant the
+  default.
+- **Kind:** compile error
 
 **Before:**
 
@@ -44,26 +170,23 @@ result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
 })
 ```
 
-If you set `MaxRetries: 0` to get the default, remove the field instead.
+### Telemetry RecordInputs and RecordOutputs are pointers, and unset records {#telemetry-record-pointers}
 
-### Telemetry: RecordInputs and RecordOutputs are pointers, and unset now records
-
-**Impact:** compile error if you set `RecordInputs` or `RecordOutputs` as a
-plain bool. **Behavior change:** a `telemetry.Options` (or the deprecated
-`telemetry.Settings`) value that leaves them unset now records inputs and
-outputs.
-
-`telemetry.Options.RecordInputs` and `RecordOutputs` changed from `bool` to
-`*bool`, the same way `MaxRetries` did. nil means record, as an omitted
-`recordInputs` / `recordOutputs` does in TS; only an explicit `false` turns
-recording off. `DefaultSettings()`, `WithRecordInputs(bool)` and
-`WithRecordOutputs(bool)` keep their signatures and set the pointer. Read the
-effective value with `ShouldRecordInputs()` / `ShouldRecordOutputs()`.
-
-**Privacy:** in v0.5 a hand-built `telemetry.Options{}` recorded nothing. In
-v0.6 the same literal records prompts, messages, tool arguments, generated
-text, objects and tool results in your spans. If your spans must not contain
-prompts or outputs, set both fields to `false` explicitly.
+- **What changed:** `telemetry.Options.RecordInputs` and `RecordOutputs`
+  (also through the deprecated `telemetry.Settings`) changed from `bool` to
+  `*bool`. nil means record, as an omitted `recordInputs` / `recordOutputs`
+  does in TS. Only an explicit `false` turns recording off.
+  `DefaultSettings()`, `WithRecordInputs(bool)` and `WithRecordOutputs(bool)`
+  keep their signatures. `ShouldRecordInputs()` / `ShouldRecordOutputs()`
+  report the effective value.
+- **Am I affected?** `RecordInputs:` or `RecordOutputs:` in a literal (compile
+  error), or any hand-built `telemetry.Options{}` / `telemetry.Settings{}`
+  that leaves them unset (silent change). **Privacy:** in v0.5 such a literal
+  recorded nothing. In v0.6 it records prompts, messages, tool arguments,
+  generated text, objects and tool results in your spans.
+- **What to do:** wrap values in `telemetry.Bool(...)`. Set both fields to
+  `telemetry.Bool(false)` wherever spans must not contain prompts or outputs.
+- **Kind:** compile error
 
 **Before:**
 
@@ -85,41 +208,148 @@ tel := &telemetry.Options{
 }
 ```
 
-### Evaluate end-event struct literals use the Decide field names
+### Evaluate end-event struct literals use the Decide field names {#evaluate-event-literals}
 
-**Impact:** compile error only if you build these event structs yourself
-(for example in tests); the SDK normally creates them.
+- **What changed:** `experimental_evaluate` is now `experimental_decide`, as
+  in TS. The old type names are deprecated aliases, so their embedded field
+  is named after the new type. Reading promoted fields still compiles.
+- **Am I affected?** Struct literals of these types, usually in tests:
 
-`experimental_evaluate` is now `experimental_decide`, as in TS. The old type
-names stay as deprecated aliases, so their embedded field is now named after
-the new type. Reading promoted fields still compiles.
+  | Type | Embedded field to use in a struct literal |
+  | --- | --- |
+  | `telemetry.EvaluateEndEvent` | `DecideStartEvent` |
+  | `telemetry.EvaluationModelCallEndEvent` | `DecisionModelCallStartEvent` |
+  | `ai.EvaluateOnEndEvent` | `DecideOnStartEvent` |
 
-| Type | Embedded field to use in a struct literal |
-| --- | --- |
-| `telemetry.EvaluateEndEvent` | `DecideStartEvent` |
-| `telemetry.EvaluationModelCallEndEvent` | `DecisionModelCallStartEvent` |
-| `ai.EvaluateOnEndEvent` | `DecideOnStartEvent` |
+- **What to do:** rename the embedded field in the literal, or move to the
+  Decide types (see [Deprecated](#deprecated)).
+- **Kind:** compile error
 
-### Unkeyed acp.TextContentBlock literals
+```go
+end := telemetry.EvaluateEndEvent{DecideStartEvent: telemetry.DecideStartEvent{}}
+_ = end
+```
 
-`acp.TextContentBlock` is now an alias of `acp.ContentBlock`, which also carries
-image blocks (`Data`, `MimeType`). Unkeyed literals such as
-`acp.TextContentBlock{"text", "hello"}` no longer compile. Use keyed fields:
+### Unkeyed acp.TextContentBlock literals {#acp-text-content-block}
+
+- **What changed:** `acp.TextContentBlock` is now an alias of
+  `acp.ContentBlock` (TS #23587), which also carries image blocks (`Data`,
+  `MimeType`).
+- **Am I affected?** Unkeyed literals such as
+  `acp.TextContentBlock{"text", "hello"}`. Keyed literals and
+  `[]TextContentBlock` fields keep working.
+- **What to do:** use keyed fields.
+- **Kind:** compile error
 
 ```go
 block := acp.TextContentBlock{Type: "text", Text: "hello"}
 ```
 
-## Behavior changes that can need an edit
+### `DecideOptions.Provider` is `interface{}` {#decide-options-provider}
 
-- **`StreamText` `OnError` sees error parts only.** As in TS, `OnError` is
-  called for the `error` parts of the stream (a provider error chunk, a model
-  call that fails to open, an incomplete model stream, a tool choice
-  violation, a tool context that fails its schema). When the model stream
-  itself fails (`Next` returns an error), or a generated file download, a
-  tool input callback, an approval resolved inside the stream or a tool
-  output conversion fails, the run ends with that error without calling
-  `OnError`. Read it from `Err()` or `OnStepError`:
+- **What changed:** `ai.DecideOptions.Provider` (and the deprecated alias
+  `ai.EvaluateOptions.Provider`) changed from
+  `provider.EvaluationModelProvider` to `interface{}`. It accepts a
+  `provider.DecisionModelProvider` or a legacy
+  `provider.EvaluationModelProvider`.
+- **Am I affected?** Only code that reads `opts.Provider` and calls a method
+  on it, such as `opts.Provider.EvaluationModel(id)`. Assigning a provider to
+  the field still compiles.
+- **What to do:** type-assert before calling it:
+
+  ```go
+  if p, ok := opts.Provider.(provider.DecisionModelProvider); ok {
+  	_ = p // p.DecisionModel(id)
+  }
+  ```
+
+- **Kind:** compile error
+
+### Some structs are no longer comparable {#non-comparable-structs}
+
+- **What changed:** these structs gained map, slice or function fields (for
+  example `Config.Headers map[string]string`), so Go no longer lets you compare them with `==` or use
+  them as map keys: `Config` and `Provider` in `assemblyai`, `cartesia`,
+  `deepgram`, `elevenlabs`, `fishaudio`, `gladia`, `hume`, `moonshot`,
+  `replicate`, `revai` and `stability`; `cerebras.Config`;
+  `bytedance.Error`; `klingai.Error`; `openai/responses.OutputTextDeltaEvent`;
+  `workflow.WorkflowResult`.
+- **Am I affected?** `==`, `!=`, `switch` on, or map keys of these values.
+- **What to do:** compare the fields you care about, or use
+  `reflect.DeepEqual` in tests.
+- **Kind:** compile error
+
+## Core text and streaming {#core-text-and-streaming}
+
+### StreamTextResult.Text() is the final step's text {#streamtext-text-final-step}
+
+- **What changed:** `StreamTextResult.Text()` (and the end event and
+  telemetry text) returned the text of every step joined. It is now the
+  final step's text, as TS `result.text`. `ReadAll()` still returns every
+  step's text. The same applies to harness and external streams.
+- **Am I affected?** `.Text()` on a `StreamTextResult` of a multi-step run
+  (tools with `StopWhen`).
+- **What to do:** use the text that `ReadAll()` returns, or join
+  `Steps()` yourself:
+
+  ```go
+  all, err := res.ReadAll() // every step's text, as v0.5 Text()
+  if err != nil {
+  	log.Fatal(err)
+  }
+  _ = all
+  ```
+
+- **Kind:** silent behavior change
+
+### OnFinishEvent aggregates across steps {#on-finish-aggregates}
+
+- **What changed:** `OnFinishEvent` usage, tool calls and results, sources,
+  files and warnings are totals across all steps, and the event adds
+  `Content`, `FinalStep` and `ResponseMessages`. v0.5 reported the last
+  step.
+- **Am I affected?** `OnFinish:` callbacks that read `Usage`, `ToolCalls` or
+  `ToolResults` as the last step's values.
+- **What to do:** read `event.FinalStep` for the last step only.
+- **Kind:** silent behavior change
+
+### Usage.TotalTokens is input + output {#total-tokens}
+
+- **What changed:** `Usage.TotalTokens` is input tokens plus output tokens
+  for every provider, as TS computes it. v0.5 copied the provider's wire
+  `total_tokens`, which some providers compute differently.
+- **Am I affected?** Billing or metrics code that reads `.TotalTokens`.
+- **What to do:** no action unless you need the provider's own total. Read
+  it from the usage's raw provider data.
+- **Kind:** silent behavior change
+
+### ReasoningText joins parts with no separator {#reasoning-text}
+
+- **What changed:** `ReasoningText` joins reasoning parts with no separator,
+  as TS. v0.5 put a newline between them.
+- **Am I affected?** Code that splits `ReasoningText` on newlines or
+  compares it with a stored value.
+- **What to do:** join the step's reasoning parts with `"\n"` yourself if
+  you need the v0.5 text.
+- **Kind:** silent behavior change
+
+### StreamText OnError sees error parts only {#streamtext-onerror}
+
+- **What changed:** as in TS, `OnError` is called for the `error` parts of the
+  stream: a provider error chunk, a model call that fails to open, a failure
+  before the first stream, a later step that fails to prepare or open, an
+  incomplete model stream, a tool choice violation, a tool context that fails
+  its schema. When the model stream itself fails (`Next` returns an error),
+  or a URL-backed generated file download, a tool input callback
+  (`OnInputStart`, `OnInputDelta`, `OnInputAvailable`), an approval resolved
+  inside the stream or a tool output conversion (`ToModelOutput`) fails, the
+  run ends with that error without calling `OnError`. `Err()`, `ReadAll()`,
+  `OnStepError` and the telemetry `OnError` still report it. A run whose
+  context is cancelled before its first model stream emits `start` and an
+  `abort` chunk and calls `OnAbort`, not `OnError`.
+- **Am I affected?** `OnError:` in `StreamTextOptions` used as the only place
+  that sees fatal stream failures.
+- **What to do:** read fatal errors from `Err()` or `OnStepError`:
 
   ```go
   res, _ := ai.StreamText(ctx, opts)
@@ -128,35 +358,292 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   }
   ```
 
-- **`WorkflowAgent` approval IDs are `approval-<toolCallId>`.** As in TS,
-  `Generate` and `Stream` name the approval of tool call `X` `approval-X`
-  (v0.5 used the call ID in `Generate` and a random ID in `Stream`).
-  Approvals persisted by v0.5 still resume, since the response is matched
-  against the stored request's ID. Answer with the request's ID:
+- **Kind:** silent behavior change
+
+### A StreamText PrepareStep model applies to one step {#streamtext-preparestep-model}
+
+- **What changed:** as in TS (`prepareStepResult?.model ?? model`) and
+  `GenerateText`, each step starts from the call's `Model`, and `PrepareStep`
+  receives it in `PrepareStepOptions.Model`. In v0.5 a model that
+  `PrepareStep` returned stayed in effect for every following step, and later
+  `PrepareStep` calls received it as `Model`.
+- **Am I affected?** A `StreamText` `PrepareStep` that returns a `Model` only
+  on some steps.
+- **What to do:** to keep an override for later steps, return it from every
+  `PrepareStep` call.
+- **Kind:** silent behavior change
+
+### StreamText fires OnLanguageModelCallStart once per attempt {#streamtext-call-start-per-attempt}
+
+- **What changed:** as in TS, each retried attempt to open the model stream
+  (`MaxRetries`) is a new model call. `OnLanguageModelCallStart` fires again,
+  and the call's `ResponseTimeMs` runs from that attempt. A failed attempt
+  gets no `OnLanguageModelCallEnd`.
+- **Am I affected?** Code that pairs `OnLanguageModelCallStart` with
+  `OnLanguageModelCallEnd`, or counts steps with call starts.
+- **What to do:** key on the last start, or count steps with `OnStepStart`,
+  which fires once.
+- **Kind:** silent behavior change
+
+### StreamText keeps the request body only when asked {#streamtext-request-body}
+
+- **What changed:** as in TS (`include.requestBody` defaults to false), the
+  step request, the `start-step` chunk and `Request()` carry the provider's
+  request body only with `Include: &ai.IncludeOptions{RequestBody: true}`.
+  `GenerateText` already had this default. The `GenerateText` step-end
+  event's request and response bodies now follow `Include` too.
+- **Am I affected?** Code that reads `Request().Body`, a step's
+  `Request.Body`, or the bodies in a `GenerateText` step-end event.
+- **What to do:** set `Include`:
 
   ```go
-  response := types.ToolApprovalResponseContent{ApprovalID: request.ApprovalID, Approved: true}
-  _ = response // not request.ToolCallID
+  opts := ai.StreamTextOptions{Include: &ai.IncludeOptions{RequestBody: true, ResponseBody: true}}
+  _ = opts
   ```
 
-- **Legacy `ToolLoopAgent` approval IDs are generated.** The `Execute`,
-  `ExecuteWithMessages` and `GenerateAgent` loop names each approval with
-  the run's ID generator (`InternalOptions.GenerateID`, by default `aitxt-`
-  plus 24 characters), as TS `generateId()`. v0.5 used the tool call ID,
-  which some providers repeat across steps. Approvals persisted by v0.5
-  still resume. Answer an approval with the request's `ApprovalID`, not the
-  tool call ID, as in the `WorkflowAgent` example above.
+- **Kind:** silent behavior change
 
-- **An unset `ToolChoice` reaches the model as `auto`.** As TS
-  `prepareToolChoice`, `GenerateText`, `StreamText` and
-  `ExperimentalStartBatch` pass the model `ToolChoice{Type: "auto"}` when
+### The StreamText full stream drops the Go-only markers {#streamtext-full-stream-markers}
+
+- **What changed:** the `StreamText` full stream keeps `reasoning-start` /
+  `reasoning-end` by default and no longer carries the Go-only
+  `stream-start` and `response-metadata` chunks. `OnChunk` still receives
+  them.
+- **Am I affected?** Full-stream consumers that switch on
+  `"stream-start"` or `"response-metadata"`.
+- **What to do:** read those chunks in `OnChunk`.
+- **Kind:** silent behavior change
+
+### Truncated streams finish with interrupted {#truncated-streams-interrupted}
+
+- **What changed:** a provider stream that ends before its finish event
+  reports `types.FinishReasonInterrupted` instead of `FinishReasonOther`, as
+  TS. The step runs no tools and does not continue an agent loop.
+- **Am I affected?** Code that detects truncated streams by checking
+  `FinishReasonOther`.
+- **What to do:** check `types.FinishReasonInterrupted`.
+- **Kind:** silent behavior change
+
+### A caller cancellation is not a TimeoutError {#caller-cancel-not-timeout}
+
+- **What changed:** with `Timeout.Total` or `Timeout.PerStep` set,
+  cancelling the context passed to `GenerateText` or `StreamText` came back
+  wrapped in a `*ai.TimeoutError`. It now comes back as the cancellation
+  error (`context.Canceled`), as TS rejects with the abort reason. A total
+  deadline that fires during a step reports `Reason: total`, not `step`.
+- **Am I affected?** `errors.As(err, &timeoutErr)` used to detect a caller
+  cancel, or checks on `te.Reason == step` for a total deadline.
+- **What to do:** check for the cancellation before the timeout:
+
+  ```go
+  var te *ai.TimeoutError
+  switch {
+  case errors.Is(err, context.Canceled):
+  	// the caller cancelled (v0.5: a TimeoutError)
+  case errors.As(err, &te):
+  	// one of the SDK's own deadlines: te.Reason is total, step or chunk
+  }
+  ```
+
+- **Kind:** silent behavior change
+
+### The per-step timeout starts before PrepareStep {#step-timeout-before-preparestep}
+
+- **What changed:** `GenerateText` and `StreamText` start the
+  `Timeout.PerStep` timer at the top of each step, as TS, so time spent in
+  `PrepareStep` counts toward it.
+- **Am I affected?** A slow `PrepareStep` together with `Timeout.PerStep`.
+- **What to do:** size `PerStep` to include `PrepareStep`.
+- **Kind:** silent behavior change
+
+### MaxTokens below 1 is rejected {#max-tokens-min}
+
+- **What changed:** as TS `prepareLanguageModelCallOptions`, `GenerateText`,
+  `StreamText`, `GenerateObject`, `StreamObject`, batch text requests,
+  `PrepareStep` overrides and the legacy `ToolLoopAgent` fail with
+  `*errors.InvalidArgumentError` ("maxOutputTokens must be >= 1") when
+  `MaxTokens` is 0 or negative. v0.5 sent the value to the provider.
+- **Am I affected?** `MaxTokens:` pointing to 0 or a negative value.
+- **What to do:** leave `MaxTokens` nil for the provider default, or set at
+  least 1:
+
+  ```go
+  maxTokens := 1024
+  opts := ai.GenerateTextOptions{MaxTokens: &maxTokens}
+  _ = opts
+  ```
+
+- **Kind:** silent behavior change
+
+### Start events report a Prompt string as a user message {#start-event-messages}
+
+- **What changed:** as in TS (`initialPrompt.messages`), the
+  `OnStartEvent.Messages` of `GenerateText` and `StreamText` are the
+  standardized messages. With `Prompt: "hi"` they hold one user message with
+  the text "hi". In v0.5 they were empty for a `Prompt` call.
+- **Am I affected?** `OnStart:` callbacks that read `Messages` and expect it
+  empty for `Prompt` calls.
+- **What to do:** read `OnStartEvent.Prompt` for the original string.
+- **Kind:** silent behavior change
+
+### Stop conditions run only when the loop would continue {#stop-conditions-only-when-continue}
+
+- **What changed:** `StopWhen` conditions are evaluated only when the loop
+  would otherwise run another step (its tool calls were resolved), as TS. A
+  step that ends the loop on its own does not call them.
+- **Am I affected?** Stop conditions with side effects, such as counting or
+  logging every step.
+- **What to do:** move side effects to `OnStepFinish`.
+- **Kind:** silent behavior change
+
+### Generated IDs use the TS formats {#generated-id-formats}
+
+- **What changed:** response, approval and UI message IDs use the TS
+  defaults: `aitxt-` plus 24 characters for text calls and the agent loop,
+  `aiobj-` plus 24 for object calls, and 16 characters for
+  `CreateUIMessageStream` message IDs. v0.5 used `call-` plus 24 characters.
+  Approval IDs come from the call's ID generator
+  (`InternalOptions.GenerateID`). Telemetry call IDs keep the `call-` prefix.
+- **Am I affected?** Code or tests that check the `call-` prefix or the
+  length of these IDs.
+- **What to do:** treat IDs as opaque strings.
+- **Kind:** silent behavior change
+
+### JSON is not HTML-escaped {#json-not-html-escaped}
+
+- **What changed:** JSON written to requests, telemetry and UI streams keeps
+  `<`, `>` and `&` literal, as `JSON.stringify`. v0.5 wrote `<`,
+  `>` and `&`. Query strings use the `URLSearchParams` byte set
+  (`~` is encoded, `*` is not).
+- **Am I affected?** Golden files or request matchers that expect the escaped
+  form.
+- **What to do:** update the expected JSON.
+- **Kind:** wire/protocol change
+
+### The final SSE event needs its blank line {#sse-final-event}
+
+- **What changed:** SSE streams follow TS `eventsource-parser` 3.0.8: a final
+  event with no closing blank line, or a last line with no line terminator,
+  is dropped. v0.5 dispatched it. This applies to every SSE provider and the
+  AI Gateway video reader.
+- **Am I affected?** Custom servers, proxies or test fixtures that end an SSE
+  stream without a blank line after the last event.
+- **What to do:** end every event with a blank line (`\n\n`).
+- **Kind:** wire/protocol change
+
+## Prompts and validation {#prompts-and-validation}
+
+### Prompt validation matches TS {#prompt-validation}
+
+- **What changed:** `GenerateText`, `StreamText`, `GenerateObject`,
+  `StreamObject`, batch text requests and the agent calls return
+  `*errors.InvalidPromptError` when neither or both of `Prompt` and
+  `Messages` are set, or when `Messages` is an empty non-nil slice, as TS
+  `standardizePrompt`. v0.5 sent an empty prompt, or ignored `Prompt` when
+  `Messages` was set.
+- **Am I affected?** Calls that set both `Prompt:` and `Messages:`, neither,
+  or `Messages: []types.Message{}`.
+- **What to do:** pass exactly one of them.
+- **Kind:** silent behavior change
+
+### GenerateObject and StreamObject reject system messages in Messages {#object-system-messages}
+
+- **What changed:** as TS `allowSystemInMessages` (default false),
+  `GenerateObject` and `StreamObject` reject system-role messages in
+  `Messages` unless `AllowSystemMessages` (alias `AllowSystemInMessages`) is
+  set. `GenerateText` already did. The error is
+  `*prompt.UnsupportedSystemMessageError` with the TS text "System messages
+  are not allowed in the prompt or messages fields. Use the instructions
+  option instead."
+- **Am I affected?** `types.RoleSystem` messages in
+  `GenerateObjectOptions.Messages` or `StreamObjectOptions.Messages`.
+- **What to do:** put the system prompt in `Instructions` (or `System`), or
+  set `AllowSystemMessages: true` for trusted messages.
+- **Kind:** silent behavior change
+
+### Invalid instructions are an InvalidPromptError {#invalid-instructions}
+
+- **What changed:** as in TS, `InstructionMessages` that are not all system
+  messages fail `GenerateText`, `StreamText`, the legacy `ToolLoopAgent` loop
+  and batch text requests with `*providererrors.InvalidPromptError`
+  ("Invalid prompt: instructions must be a string, SystemModelMessage, or
+  array of SystemModelMessage"). In v0.5 the error was an
+  `*InvalidArgumentError` ("Invalid argument for parameter instructions:
+  ..."). It is now the `Cause`, so `errors.As` on either type matches. The
+  checks run in TS order: a missing prompt first, then invalid instructions,
+  then empty messages.
+- **Am I affected?** Code that compares this error's text.
+- **What to do:** compare error types, not text:
+
+  ```go
+  var promptErr *providererrors.InvalidPromptError
+  if errors.As(err, &promptErr) {
+  	// invalid prompt or instructions
+  }
+  ```
+
+- **Kind:** silent behavior change
+
+### Tool calls without results fail the prompt {#missing-tool-results}
+
+- **What changed:** a prompt with assistant tool calls that have no tool
+  result fails with `*types.MissingToolResultsError`, as TS
+  (provider-executed calls are exempt). A tool result that answers no tool
+  call fails with "Tool call `<id>` not found."
+- **Am I affected?** Conversation histories you trim or rebuild that can drop
+  tool results.
+- **What to do:** keep every tool call's result in `Messages`, or remove the
+  call too.
+- **Kind:** silent behavior change
+
+### The JSON Schema validator enforces more keywords {#json-schema-validator}
+
+- **What changed:** the JSON Schema validator enforces `if` / `then` /
+  `else`, `contains`, `dependencies` and `dependentSchemas`. Input that
+  passed because they were ignored now fails.
+- **Am I affected?** Tool or output schemas that use these keywords.
+- **What to do:** fix the schema or the producer of the input.
+- **Kind:** silent behavior change
+
+## Tools {#tools}
+
+### Tools in a step run concurrently {#tools-concurrent}
+
+- **What changed:** the tool calls of one step run concurrently by default,
+  as TS `Promise.all`, in `GenerateText`, `StreamText`, `ToolLoopAgent`
+  (including the legacy `Execute` / `GenerateAgent` loop), approval resumes
+  and `WorkflowAgent`. v0.5 ran them one after another. Results stay in call
+  order.
+- **Am I affected?** Tool `Execute` functions or tool callbacks that share
+  state without locking, or that depend on running in order.
+- **What to do:** guard shared state with a mutex, or run tools one at a
+  time:
+
+  ```go
+  one := 1
+  opts := ai.GenerateTextOptions{ToolCallConcurrency: &one} // v0.5 behavior
+  _ = opts
+  ```
+
+- **Kind:** silent behavior change
+
+### An unset ToolChoice reaches the model as auto {#tool-choice-auto}
+
+- **What changed:** as TS `prepareToolChoice`, `GenerateText`, `StreamText`
+  and `ExperimentalStartBatch` pass the model `ToolChoice{Type: "auto"}` when
   neither the call nor `PrepareStep` sets one. Requests with tools now carry
   the provider's explicit auto choice (`"tool_choice": "auto"` for OpenAI and
-  OpenAI-compatible servers, `{"type": "auto"}` for Anthropic, mode `AUTO`
-  for Google). Events still report the choice as given. An OpenAI-compatible
-  server that rejects an explicit auto choice (for example vLLM started
-  without `--enable-auto-tool-choice`) needs that support enabled, or a
-  middleware that restores the v0.5 request:
+  OpenAI-compatible servers, `{"type": "auto"}` for Anthropic,
+  `toolChoice.auto` for Bedrock, mode `AUTO` for Google). The Gateway always
+  sends `toolChoice`, and the OpenAI completion and Prodia models warn that
+  `toolChoice` is unsupported. Events still report the choice as given. Z.AI
+  no longer sends `tool_choice` without tools.
+- **Am I affected?** An OpenAI-compatible server that rejects an explicit
+  auto choice (for example vLLM started without
+  `--enable-auto-tool-choice`), or request matchers that expect no
+  `tool_choice`.
+- **What to do:** enable auto tool choice on the server, or wrap the model
+  with a middleware that restores the v0.5 request:
 
   ```go
   clearToolChoice := &middleware.LanguageModelMiddleware{
@@ -169,87 +656,67 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   model = middleware.WrapLanguageModel(model, []*middleware.LanguageModelMiddleware{clearToolChoice}, nil, nil)
   ```
 
-- **An out-of-range `KeepAliveMs` is an error.** A
-  `UIMessageStreamResponseInit.KeepAliveMs` that points to zero, a negative
-  duration or more than 2147483647ms now makes the UI message stream response
-  helpers return an error before writing anything, as TS
-  `createSseStreamWithKeepAlive` throws (v0.5 turned keep-alive off for zero
-  or negative values). A nil `KeepAliveMs` is unchanged. Leave it nil to turn
-  keep-alive off:
+- **Kind:** wire/protocol change
+
+### ToolChoice none is enforced {#tool-choice-none}
+
+- **What changed:** a tool call under tool choice `none` now fails
+  `GenerateText`, `StreamText` and the agents with
+  `*ai.ToolChoiceViolationError` ("Model response contained a tool call even
+  though tool choice was none."), as TS. v0.5 ran the tool. Any tool-choice
+  violation (none, required or a specific tool) ends the step with finish
+  reason `error`.
+- **Am I affected?** `ToolChoice: types.ToolChoice{Type: "none"}` with models
+  that call tools anyway.
+- **What to do:** handle the error:
 
   ```go
-  init := &ai.UIMessageStreamResponseInit{} // KeepAliveMs nil: no keep-alive
-  ```
-
-- **A `StreamText` `PrepareStep` model applies to one step.** As TS and
-  `GenerateText`, each step starts from the call's `Model`, and `PrepareStep`
-  receives it in `PrepareStepOptions.Model`. In v0.5 a model that
-  `PrepareStep` returned stayed in effect for every following step, and
-  later `PrepareStep` calls received it as `Model`. To keep an override for
-  the following steps, return it from every `PrepareStep` call.
-
-- **Invalid instructions are an `InvalidPromptError`.** As in TS,
-  `InstructionMessages` that are not all system messages fail the call with
-  `*providererrors.InvalidPromptError` ("Invalid prompt: instructions must
-  be a string, SystemModelMessage, or array of SystemModelMessage"). In v0.5
-  the error was an `*InvalidArgumentError` ("Invalid argument for parameter
-  instructions: ..."); it is now the `Cause`, so `errors.As` on either type
-  matches. Compare error types rather than text:
-
-  ```go
-  var promptErr *providererrors.InvalidPromptError
-  if errors.As(err, &promptErr) {
-  	// invalid prompt or instructions
+  if ai.IsToolChoiceViolationError(err) {
+  	// the model called a tool under tool choice none
   }
   ```
 
-- **Start events report a `Prompt` string as a user message.** As in TS,
-  `OnStartEvent.Messages` of `GenerateText` and `StreamText` are the
-  standardized messages: with `Prompt: "hi"` they hold one user message
-  with the text "hi". In v0.5 they were empty for a `Prompt` call. Read
-  `OnStartEvent.Prompt` if you need the original string.
+- **Kind:** silent behavior change
 
-- **The legacy loop returns the wrapped AI Gateway authentication error.**
-  `GenerateAgent`, `Execute` and `ExecuteWithMessages` return an
-  unauthenticated AI Gateway error with the message that says how to
-  authenticate, as `GenerateText` does. Match it with `errors.As` on
-  `*gatewayerrors.GatewayAuthenticationError`, not by its text.
+### A StreamText tool choice violation ends with finish {#tool-choice-violation-finish}
 
-- **Error messages quote names as TS does.** Messages that quote a tool,
-  model, question or separator name (`CreateIDGenerator`,
-  `ExperimentalToolCallers`, tool search, `ExperimentalStreamTranscribe`,
-  decision validation, `DecisionUnsupportedQuestionTypeError`) put the name
-  between plain double quotes instead of Go `%q` escaping. The text changes
-  only for a name with `"`, `\`, non-ASCII or control characters; match
-  these errors with `errors.As`, not by their text.
+- **What changed:** the `ToolChoiceViolationError` is an `error` chunk after
+  the model output (`OnError` once, as before). The run then ends with a
+  `finish` chunk (finish reason `error`), `OnFinish` and `OnEnd`, as TS.
+  `Err()` still returns the violation. v0.5 ended the run without `finish`,
+  `OnFinish` or `OnEnd`.
+- **Am I affected?** Code that treats a missing `OnEnd` as a failure.
+- **What to do:** check `Err()` instead.
+- **Kind:** silent behavior change
 
-- **`StreamText` fires `OnLanguageModelCallStart` once per attempt.** As
-  TS, each retried attempt to open the model stream (`MaxRetries`) is a new
-  model call: `OnLanguageModelCallStart` fires again and the call's
-  `ResponseTimeMs` runs from that attempt. A failed attempt gets no
-  `OnLanguageModelCallEnd`, so code that pairs starts with ends should key
-  on the last start, or count steps with `OnStepStart`, which fires once.
+### A provider-executed tool call is never run locally {#provider-executed-not-local}
 
-- **A `StreamText` tool choice violation now ends with `finish`.** The run
-  emits an `error` chunk, then `finish` (finish reason `error`), and calls
-  `OnFinish` and `OnEnd`; `Err()` still returns the
-  `ToolChoiceViolationError`. Code that treated a missing `OnEnd` as a failure
-  should check `Err()` instead.
+- **What changed:** in `GenerateText`, `StreamText` and the legacy
+  `ToolLoopAgent` loop, a call the provider marks `ProviderExecuted` no
+  longer runs a local tool of the same name, as TS runs only calls without
+  `providerExecuted`. v0.5 ran the local tool too and added a second result.
+- **Am I affected?** A local tool with the same name as a provider tool (web
+  search, code execution).
+- **What to do:** give the local tool a name the provider's tools do not
+  use.
+- **Kind:** silent behavior change
 
-- **Tool results the model returns stay in the assistant message.** As in
-  TS, every tool result or tool error a provider returns (web search, file
-  search, image generation, code execution and other provider-executed tools)
-  now has `ProviderExecuted` set, in `GenerateText`, `StreamText` and the
-  legacy `ToolLoopAgent` loop. The step's `Response.Messages` keep it in the
-  assistant message next to its call. v0.5 put a result whose provider left the flag
-  unset (OpenAI and xAI Responses hosted tools in `GenerateText`, a deferred
-  result with no call in the step) in a separate `tool` message. Code that
-  looks for these results in `RoleTool` messages, or reads
-  `ProviderExecuted == false` on them, must look in the assistant message.
-  Tool results your own tools return are unchanged:
+### Provider tool results stay in the assistant message {#provider-tool-results-assistant}
+
+- **What changed:** as in TS, every tool result or tool error a provider
+  returns now has `ProviderExecuted` set, in `GenerateText`, `StreamText` and
+  the legacy `ToolLoopAgent` loop. The step's `Response.Messages` keep it in
+  the assistant message next to its call. v0.5 put a result whose provider
+  left the flag unset (OpenAI Responses `web_search_call`,
+  `image_generation_call` and `program_output`, xAI Responses hosted tools in
+  `GenerateText`, a deferred result with no call in the step) in a separate
+  `tool` message, which the next turn sent back as a function output. Results
+  of your own tools are unchanged.
+- **Am I affected?** Code that looks for provider tool results in `RoleTool`
+  messages, or reads `ProviderExecuted == false` on them.
+- **What to do:** read them from the assistant message:
 
   ```go
-  // v0.6: provider tool results are assistant content
   for _, part := range result.FinalStep.Response.Messages[0].Content {
   	if r, ok := part.(types.ToolResultContent); ok && r.ProviderExecuted {
   		_ = r.Result
@@ -257,20 +724,96 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   }
   ```
 
-- **A provider-executed tool call is never run locally.** In `GenerateText`,
-  `StreamText` and the legacy `ToolLoopAgent` loop, a call the provider marks
-  `ProviderExecuted` no longer runs a local tool of the same name, as TS runs
-  only calls without `providerExecuted`. v0.5 ran the local tool too and added
-  a second result. Give a local tool a name the provider's tools do not use if
-  it must run.
+- **Kind:** silent behavior change
 
-- **Legacy `ToolLoopAgent` tool results list provider results.** As
-  `GenerateText` and TS `step.toolResults`, `GenerateAgent`/`Execute` step
-  `ToolResults` (and `AgentResult.ToolResults`, which `WorkflowAgent.Generate`
-  returns) hold the provider-executed results the model returned, before the
-  local ones. A provider-executed call also no longer adds a `null` result to
-  the step. Code that treated every entry as a local execution should skip
-  provider results:
+### ToolResults holds no bookkeeping entries {#tool-results-bookkeeping}
+
+- **What changed:** `ToolResults` no longer holds entries for calls awaiting
+  approval, auto-denied calls or provider-executed calls without a result.
+- **Am I affected?** Code that finds pending approvals or denials in
+  `ToolResults`.
+- **What to do:** read the approval parts (`ToolApprovalRequestContent`,
+  `ToolApprovalResponseContent`) in `Content`.
+- **Kind:** silent behavior change
+
+### Tool approval and tool-context errors fail the call {#tool-errors-fail-call}
+
+- **What changed:** a tool context that fails the tool's `ContextSchema`, an
+  approval function whose context fails it, an unknown approval status and an
+  unsupported `ToolApproval` value now end `GenerateText` with an error (and
+  error `StreamText`'s stream and the agents' runs), as in TS. v0.5 turned
+  them into tool-error results the model saw. `GenerateText` also resolves
+  every call's approval before running any tool. A tool's own `Execute` error
+  is still a tool error.
+- **Am I affected?** Tools with `ContextSchema:`, calls with `ToolApproval:`.
+- **What to do:** fix the tool context or approval configuration, or handle
+  the error:
+
+  ```go
+  // v0.5: the call succeeded; result.ToolResults[0].Error held the error
+  // v0.6: the call fails with it
+  var validationErr *providererrors.ValidationError
+  _ = errors.As(err, &validationErr) // validationErr.Context.Field == "tool context"
+  ```
+
+- **Kind:** silent behavior change
+
+### PrepareStep ActiveTools and ProviderOptions are applied {#preparestep-active-tools}
+
+- **What changed:** a `PrepareStep` `ActiveTools` is honored, and
+  `ToolLoopAgent` passes the full tool set so `PrepareStep` can widen it.
+  `PrepareStep` `ProviderOptions` are deep-merged onto the call's options.
+- **Am I affected?** `PrepareStep` functions that return `ActiveTools` or
+  `ProviderOptions` that had no effect in v0.5.
+- **What to do:** return only the tools and options the step needs.
+- **Kind:** silent behavior change
+
+### Some provider tools are client-executed {#client-executed-provider-tools}
+
+- **What changed:** OpenAI Responses computer, local shell, shell and
+  apply-patch tools, and Anthropic computer, text editor and memory tools, are
+  client-executed, as TS. Your tool's `Execute` runs them.
+- **Am I affected?** Code that uses these tools and expects the provider to
+  run them.
+- **What to do:** give each one an `Execute` that performs the action.
+- **Kind:** silent behavior change
+
+## Agents and approvals {#agents-and-approvals}
+
+### Legacy ToolLoopAgent
+
+These entries apply to the `Execute`, `ExecuteWithMessages` and
+`GenerateAgent` loop of `pkg/agent`.
+
+#### Legacy ToolLoopAgent approval IDs are generated {#legacy-approval-ids}
+
+- **What changed:** the loop names each approval request, and the response of
+  an automatic approval or denial, with the run's ID generator
+  (`InternalOptions.GenerateID`, by default `aitxt-` plus 24 characters), as
+  TS `generateId()`, and signs that ID. v0.5 used the tool call ID, which
+  some providers repeat across steps. A step response without an ID also
+  takes its ID from `InternalOptions.GenerateID`. Approvals persisted by v0.5
+  still resume. `WorkflowAgent` keeps `approval-` plus the call ID.
+- **Am I affected?** Code that answers an approval with the tool call ID.
+- **What to do:** answer with the request's `ApprovalID`:
+
+  ```go
+  response := types.ToolApprovalResponseContent{ApprovalID: request.ApprovalID, Approved: true}
+  _ = response // not request.ToolCallID
+  ```
+
+- **Kind:** silent behavior change
+
+#### Legacy ToolLoopAgent tool results list provider results {#legacy-tool-results-provider}
+
+- **What changed:** as `GenerateText` and TS `step.toolResults`,
+  `StepResult.ToolResults` (with `StaticToolResults` /
+  `DynamicToolResults`) and `AgentResult.ToolResults`, which
+  `WorkflowAgent.Generate` returns too, hold the provider-executed results the
+  model returned, before the local ones. A provider-executed call no longer
+  adds a `null` result to the step.
+- **Am I affected?** Code that treats every entry as a local execution.
+- **What to do:** skip provider results:
 
   ```go
   for _, r := range result.ToolResults {
@@ -281,19 +824,109 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   }
   ```
 
-- **Legacy `ToolLoopAgent` request messages leave out the instructions.**
-  With `Include.RequestMessages`, a step's `Request.Messages` is the step's
-  messages as TS `generateText` records them, without instruction messages
-  and before prompt conversion. Read the instructions from your own
-  configuration instead of `Request.Messages[0]`. `WorkflowAgent.Generate`
-  steps record the model prompt with its system message first, as TS
-  WorkflowAgent.
+- **Kind:** silent behavior change
 
-- **`WorkflowAgent` resumed approval results carry their model output.** The
-  tool message holding resumed approvals' results (the first of
-  `ResponseMessages`) has `ToolResultContent.Output` set (text for a string,
-  else JSON, or the tool's `ToModelOutput`) and no `Input`, as TS
-  WorkflowAgent. Read `Output` instead of `Result`:
+#### Legacy ToolLoopAgent request messages leave out the instructions {#legacy-request-messages}
+
+- **What changed:** with `Include.RequestMessages`, a step's
+  `Request.Messages` is the step's messages as TS `generateText` records
+  them: no instruction messages, before prompt conversion.
+  `WorkflowAgent.Generate` steps record the model prompt with its system
+  message first, as TS WorkflowAgent.
+- **Am I affected?** Code that reads the instructions from
+  `Request.Messages[0]`.
+- **What to do:** read the instructions from your own configuration.
+- **Kind:** silent behavior change
+
+#### The legacy ToolLoopAgent rejects a negative MaxRetries {#legacy-negative-maxretries}
+
+- **What changed:** a negative `MaxRetries` (on the agent or from
+  `PrepareCall`) fails the run with `*errors.InvalidArgumentError`
+  ("maxRetries must be >= 0") before the model call, as TS `prepareRetries`.
+  v0.5 silently made no retries.
+- **Am I affected?** A negative `MaxRetries` on `AgentConfig` or a
+  `PrepareCall` result.
+- **What to do:** use 0 to disable retries.
+- **Kind:** silent behavior change
+
+#### A legacy ToolLoopAgent step timeout is context.DeadlineExceeded {#legacy-step-timeout-deadline}
+
+- **What changed:** the per-step deadline (`Timeout.PerStep`, or a
+  `PrepareCall` `Timeout` override, which now applies as in TS) reaches the
+  model call as a deadline. A timed-out step fails with an error wrapping
+  `context.DeadlineExceeded`. v0.5 surfaced `context.Canceled`.
+- **Am I affected?** `errors.Is(err, context.Canceled)` used to detect a step
+  timeout.
+- **What to do:**
+
+  ```go
+  // v0.5
+  if errors.Is(err, context.Canceled) { /* step timed out */ }
+  // v0.6
+  if errors.Is(err, context.DeadlineExceeded) { /* step timed out */ }
+  ```
+
+- **Kind:** silent behavior change
+
+#### The legacy ToolLoopAgent step timeout covers tool execution {#legacy-step-timeout-tools}
+
+- **What changed:** in v0.5 the per-step deadline (`Timeout.PerStep`) ended
+  when the model call returned, so a tool could keep running past it. As in
+  TS, the step timeout now also bounds the step's tools. A tool that used to
+  finish after the step deadline is cancelled (its ctx is done), and the run
+  ends with `context.DeadlineExceeded` before the next step, even if the tool
+  ignored the cancellation.
+- **Am I affected?** `Timeout.PerStep` on the legacy agent with tools that
+  can run longer than the step.
+- **What to do:** size `Timeout.PerStep` for the model call plus its tools, or
+  use `Timeout.Total` or a timeout inside the tool.
+- **Kind:** silent behavior change
+
+#### An empty ActiveTools leaves no tools active in the legacy loop {#legacy-empty-active-tools}
+
+- **What changed:** an empty, non-nil `ActiveTools` leaves no tools active,
+  as TS `filterActiveTools` and `GenerateText`. v0.5 ignored it and sent every
+  tool. A tool call against the empty set is a `NoSuchToolError` that
+  `RepairToolCall` can repair.
+- **Am I affected?** `ActiveTools: []string{}` on the legacy agent, or a
+  filter that can return an empty slice.
+- **What to do:** use nil to keep all tools.
+- **Kind:** silent behavior change
+
+#### AI Gateway authentication errors are wrapped {#gateway-auth-error}
+
+- **What changed:** `GenerateAgent`, `Execute` and `ExecuteWithMessages`
+  return an unauthenticated AI Gateway error with the TS message that says how
+  to authenticate, as `GenerateText`, `StreamText`, `GenerateObject`,
+  `StreamObject` and the batch cancel/list calls do (TS `wrapGatewayError`).
+- **Am I affected?** Code that matches the gateway error text.
+- **What to do:** match with `errors.As` on
+  `*gatewayerrors.GatewayAuthenticationError`.
+- **Kind:** error text only
+
+### WorkflowAgent
+
+#### WorkflowAgent approval IDs are approval-toolCallId {#workflow-approval-ids}
+
+- **What changed:** as in TS, `Generate` and `Stream` name the approval of
+  tool call `X` `approval-X` and sign that ID. v0.5 used the call ID in
+  `Generate` and a random ID in `Stream`. Approvals persisted by v0.5 still
+  resume, since the response is matched against the stored request's ID.
+- **Am I affected?** Code that answers an approval with the tool call ID, or
+  builds the ID itself.
+- **What to do:** answer with the request's `ApprovalID`, as in the
+  [legacy example](#legacy-approval-ids).
+- **Kind:** silent behavior change
+
+#### Resumed approval results carry their model output {#workflow-resumed-output}
+
+- **What changed:** the tool message holding resumed approvals' results (the
+  first of `ResponseMessages`, and the next model call's prompt) has
+  `ToolResultContent.Output` set (text for a string, else JSON, or the tool's
+  `ToModelOutput`) and no `Input`, as TS WorkflowAgent's `modelResult`. It
+  held the raw `Result` and the input.
+- **Am I affected?** Code that reads `.Result` or `.Input` from those parts.
+- **What to do:** read `Output`:
 
   ```go
   if part, ok := resumed.ResponseMessages[0].Content[0].(types.ToolResultContent); ok && part.Output != nil {
@@ -301,12 +934,23 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   }
   ```
 
-- **`WorkflowAgent` `PrepareStep` overrides carry over to later steps.** As
-  TS's model-call iterator, the next step's hook gets the previous step's
-  model, instructions, tool choice, active tools, contexts and generation
-  settings, and a hook that returns them unchanged keeps them. v0.5 reset
-  them every step in `Generate` (and kept only the model and instructions in
-  `Stream`). A hook that changes a value for one step only must set it back:
+- **Kind:** silent behavior change
+
+#### WorkflowAgent PrepareStep overrides carry over to later steps {#workflow-preparestep-carryover}
+
+- **What changed:** as TS's model-call iterator, the next step's hook gets the
+  previous step's model, instructions, tool choice, active tools, runtime and
+  tools contexts and generation settings, and a hook that returns them
+  unchanged keeps them. v0.5 reset them every step in `Generate` and kept
+  only the model and instructions in `Stream`. Also: in `Stream`, a
+  `PrepareStep` `Headers` or `MaxRetries` now reaches the model call, and a
+  negative `MaxRetries` fails the step. A `PrepareStep` `ActiveTools` narrows
+  the call's active tools in `Generate`. A `PrepareStep` that returns
+  different `Headers` replaces the call's, dropping the
+  `ai-sdk-agent/workflow` user-agent suffix.
+- **Am I affected?** `PrepareStep` hooks that change a value for one step
+  only.
+- **What to do:** set the value back on later steps:
 
   ```go
   hook := func(_ context.Context, o workflow.LanguageModelCallOptions) (workflow.LanguageModelCallOptions, error) {
@@ -321,212 +965,120 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   _ = hook
   ```
 
-- **A caller cancellation is no longer a `*ai.TimeoutError`.** With
-  `Timeout.Total` or `Timeout.PerStep` set, cancelling the context passed to
-  `GenerateText` or `StreamText` used to come back wrapped in a
-  `*ai.TimeoutError`; it now comes back as the cancellation error
-  (`context.Canceled`), as TS rejects with the abort reason. A total deadline
-  that fires during a step reports `Reason: total`, not `step`. Check for the
-  cancellation before the timeout:
+- **Kind:** silent behavior change
+
+#### A failed WorkflowAgent Stream run fires OnEnd {#workflow-stream-failed-onend}
+
+- **What changed:** a failed (not aborted) `Stream` run fires `OnEnd` after
+  `OnError`, with the steps completed so far, as TS stream mode. When the run
+  failed by a thrown error (a model call that failed to open, a failed
+  `PrepareStep`), its `Messages` are the input messages only. A run whose
+  context is already cancelled fires `OnStart` before `OnAbort`. The `OnEnd`
+  messages follow a `PrepareStep` messages or instructions override.
+- **Am I affected?** `OnEnd:` on `WorkflowAgent.Stream` treated as success.
+- **What to do:** check for a failure in `OnError` (or the stream's error)
+  before you treat `OnEnd` as success.
+- **Kind:** silent behavior change
+
+#### WorkflowAgent.Stream has no default step limit {#workflow-stream-no-step-limit}
+
+- **What changed:** `NewWorkflowAgent` sets `IsStepCount(20)` only for
+  `Generate`. `Stream` is unbounded unless `StopWhen` is set, as TS defaults
+  only generate to 20 steps. v0.5 applied the 20-step default to both.
+- **Am I affected?** `WorkflowAgent.Stream` without `StopWhen` on the agent
+  or the call.
+- **What to do:** set `StopWhen`:
 
   ```go
-  var te *ai.TimeoutError
-  switch {
-  case errors.Is(err, context.Canceled):
-  	// the caller cancelled (v0.5: a TimeoutError)
-  case errors.As(err, &te):
-  	// one of the SDK's own deadlines: te.Reason is total, step or chunk
-  }
-  ```
-
-- **`MaxTokens` below 1 is rejected.** As TS
-  `prepareLanguageModelCallOptions`, `GenerateText`, `StreamText`,
-  `GenerateObject`, `StreamObject`, batch text requests, `PrepareStep`
-  overrides and the legacy `ToolLoopAgent` fail with
-  `*errors.InvalidArgumentError` ("maxOutputTokens must be >= 1") when
-  `MaxTokens` is 0 or negative. v0.5 sent the value to the provider. Leave
-  `MaxTokens` nil for the provider default:
-
-  ```go
-  // v0.5: MaxTokens: &zero was sent as max_tokens: 0
-  // v0.6: leave it nil, or set a value of at least 1
-  maxTokens := 1024
-  opts := ai.GenerateTextOptions{MaxTokens: &maxTokens}
+  opts := workflow.WorkflowStreamOptions{StopWhen: []ai.StopCondition{ai.IsStepCount(20)}}
   _ = opts
   ```
-- **The legacy `ToolLoopAgent` rejects a negative `MaxRetries`.** A negative
-  `MaxRetries` (on the agent or from `PrepareCall`) now fails the run with
-  `*errors.InvalidArgumentError` ("maxRetries must be >= 0") before the
-  model call, as TS `prepareRetries`. v0.5 silently made no retries. Use 0
-  to disable retries.
-- **Code mode has a default 10 s CPU limit.** `ExecutionPolicy.CPUTimeoutMs`
-  (default 10_000) stops guest JavaScript that runs longer than that in one
-  invocation with `*codemode.CPUTimeoutError`. Time in host tools does not
-  count. Raise `CPUTimeoutMs` (and `TimeoutMs`) for long-running scripts.
-- **Code mode caps concurrent scripts.** Like the TypeScript SDK, code mode
-  now runs at most floor(available memory / (`ExecutionPolicy.MemoryLimitBytes`
-  + 48 MiB)) sandbox invocations at once, at least 1 and at most 32. v0.5 had
-  no limit. A script started over the limit fails right away with
-  `*codemode.ConcurrencyError` ("Code mode maxWorkers limit reached (N).").
-  Raise the limit with `codemode.SetMaxWorkers(n)`, or pass 0 to keep v0.5's
-  unlimited behavior. `codemode.ResetMaxWorkers()` restores the default.
-- **wazero is v1.12.0.** It was v1.9.0. Code mode's sandbox behaves the
-  same: each invocation still gets its own QuickJS instance, memory and host
-  bindings. QuickJS is now compiled once per process into one shared wazero
-  runtime, so sandbox startup is faster than in v0.5 (about 2.4 ms instead of
-  4.3 ms per trivial run on an Apple M1). If you pin wazero yourself, move it
-  to v1.12.0.
-- **MCP OAuth rejects unbound pre-registered confidential credentials.** Client
-  information with a client secret (or a custom authenticator) but no
-  `Issuer` and no stored authorization
-  server information now fails `mcp.Auth` with an authorization-server mismatch
-  error. Set `Issuer` to the authorization server the secret was registered
-  with, or return it from `OAuthAuthorizationServerInformationStore`.
-  Dynamically registered clients keep working.
-- **OpenAI Responses `promptCacheOptions` is validated.** Only `mode`
-  (`implicit` or `explicit`), `ttl` (`30m` or `12h`) and `prewarm` are sent.
-  Invalid values such as `ttl: "24h"` fail before the request with
-  `InvalidArgumentError`, and unknown keys are dropped.
-- **`ToolChoice: none` is enforced.** A tool call under tool choice `none`
-  now fails the call with `*ai.ToolChoiceViolationError` (check it with
-  `ai.IsToolChoiceViolationError`) instead of running the tool. Any tool-choice
-  violation ends the step with finish reason `error`.
-- **`StreamText` keeps the request body only when asked.** As in TS
-  (`include.requestBody` defaults to false), the step request, the
-  `start-step` chunk and `Request()` no longer carry the provider's request
-  body unless `Include: &ai.IncludeOptions{RequestBody: true}` is set, the
-  same default `GenerateText` already had. The `GenerateText` step-end
-  event's request and response bodies follow `Include` the same way.
-- **Truncated streams finish with `interrupted`.** A provider stream that ends
-  before its finish event reports `types.FinishReasonInterrupted` instead of
-  `FinishReasonOther`, and the step runs no tools. Check for
-  `FinishReasonInterrupted` if you detect truncated streams by the finish
-  reason.
-- **Prompt validation matches TS.** `GenerateText`, `StreamText`,
-  `GenerateObject`, `StreamObject`, batch text requests and the agent calls
-  return
-  `*errors.InvalidPromptError` when neither or both of `Prompt` and
-  `Messages` are set, or when `Messages` is an empty non-nil slice. Pass
-  exactly one of them.
-- **GenerateObject / StreamObject reject system messages in `Messages`**
-  unless `AllowSystemMessages` is set, as `GenerateText` already did. Put the
-  system prompt in `Instructions` (or `System`).
-- **ACP lifecycle state persisted by v0.5.x does not resume.** As in TS, the
-  persisted identity is now `agentIdentity`, so old state fails validation
-  with "agentIdentity must be a string" (Cursor, GitHub Copilot, Grok Build
-  and fx adapters). Start fresh ACP sessions after upgrading.
-- **fx has an opt-in libfx runtime.** `fx.CreateFx()` without a `Runtime`
-  behaves as in v0.5.x: the sandbox `fx acp` adapter, the v0.5.x
-  `fx.BuiltinTools`, and v0.5.x lifecycle state. To move to the TS
-  `@ai-sdk/harness-fx` runtime, set `fx.Settings{Runtime: fx.RuntimeLibfx}`.
-  That runtime has other built-in tools (`fx.LibfxBuiltinTools`: `read`,
-  `write`, `edit`, `bash`, `grep`, `glob`, `ls`, `askUserQuestions`), so
-  update any `BuiltinToolFiltering` lists and tool-name checks. Its model
-  requests leave from the host process, not the sandbox. It authenticates
-  with AI Gateway or, as in TS, a codex or grok subscription found on the
-  host (`~/.fx`, `$CODEX_HOME` or the OS keyring, `$GROK_HOME`), and it
-  connects HTTP and SSE `MCPServers` from the host; command (stdio) MCP
-  servers are not supported on it. The first session downloads the pinned
-  `fx-core.wasm` (about 2.6 MB) into `os.UserCacheDir()/go-ai/fx/`; on a
-  host without network access, pre-seed that cache or set
-  `fx.WasmSource.Path`, then set `GO_AI_FX_OFFLINE=1`. Sessions do not move between
-  runtimes. A v0.5.x sandbox-ACP session resumed under `RuntimeLibfx`, or a
-  libfx session resumed under the default runtime, returns
-  `*fx.IncompatibleStateError`. Finish or drop open sessions before you
-  switch. As in TS, libfx state files are accepted for libfx 0.0.13 and
-  0.0.14; any other version, or a file that fails the schema, fails with
-  "Cannot resume fx: the saved state is invalid or incompatible." An open
-  turn suspended by a TS host cannot be continued by a Go host, or the
-  other way round, because each host computes its own settings signature.
-  Finished turns resume on either host.
-- **Wrapper providers no longer fall back to `OPENAI_API_KEY`.** Baseten,
-  Cerebras, DeepInfra, Fireworks, Together, Vercel, Vertex MaaS and the Azure
-  delegates read only their own API key environment variable, and Azure
-  DeepSeek no longer falls back to `DEEPSEEK_API_KEY`. A missing key fails
-  with `LoadAPIKeyError`. Set the provider's own variable (for example
-  `FIREWORKS_API_KEY`, `TOGETHER_API_KEY`, `CEREBRAS_API_KEY`) or pass
-  `APIKey`.
-- **Failed generated-media downloads in BFL, Luma and fal return
-  `*providererrors.ProviderError`.** As in TS, a non-2xx response when the
-  provider fetches the generated image or audio is a provider error whose
-  message is the HTTP status text, returned unwrapped. Match it with
-  `errors.As` on `*providererrors.ProviderError` and its `StatusCode` instead
-  of `*providererrors.DownloadError`.
-- **KlingAI `VideoModel()` accepts any model ID.** As in TS, an unknown or
-  empty ID is reported by `DoStart` (and so `GenerateVideo`) as
-  `*providererrors.NoSuchModelError`, not by `VideoModel()`. Check the error
-  from the call instead of only the one from `VideoModel()`.
-- **A failed harness stop-condition suspension fails the turn.** When a
-  `StopWhen` condition is met inside an `Agent` or `AgentSession` and the
-  adapter's `DoSuspendTurn` returns an error (including
-  `CapabilityUnsupportedError` from an adapter that cannot suspend), the turn
-  now fails with that error, as in TS. v0.5.x finished the turn instead, so
-  the error went unseen. If you use `StopWhen` with an adapter that cannot
-  suspend, handle the error from the turn, or leave out the stop condition.
-- **An OPA HTTP policy response without `result` is not-applicable, not
-  denied**, as in TS. OPA answers an undefined decision (no rule matched) with
-  `{}`; v0.5.x treated that as a deny. A tool call that no rule decides now
-  falls through to the other approval rules. Policies that relied on "no match
-  means deny" must return an explicit deny (for example a Rego `default`
-  rule).
-- **Telemetry span attributes from `EnrichSpan` and runtime context follow
-  TS.** An `EnrichSpan` value that is an object, a struct, `nil` or a
-  mixed-type array is now dropped; v0.5 wrote it as a JSON string attribute.
-  A `[]interface{}` of one primitive type becomes a typed slice attribute,
-  and Go's other integer and float kinds stay numbers. A runtime context
-  value that is an object (any string-keyed map, a struct or a pointer to
-  one) is flattened into `ai.settings.context.<path>` attributes instead of
-  one JSON string. If a dashboard or query reads those JSON strings, read the
-  flattened keys, or return primitives from `EnrichSpan`.
-- **Perplexity embedding provider options are validated.** As in TS, a
-  `dimensions` that is not a positive integer, or an `encodingFormat` other
-  than `base64_int8` or `base64_binary`, now fails `DoEmbed`/`DoEmbedMany`
-  with `*providererrors.InvalidArgumentError`. v0.5 truncated a fractional
-  `dimensions` and ignored or sent other values. Pass a positive integer and
-  a supported format.
-- **A legacy `ToolLoopAgent` step timeout is `context.DeadlineExceeded`.**
-  The per-step deadline (`Timeout.PerStep`, or a `PrepareCall` `Timeout`
-  override, which now applies as in TS) reaches the model call as a
-  deadline. A timed-out step fails with an error wrapping
-  `context.DeadlineExceeded`; v0.5 surfaced `context.Canceled`. Update
-  timeout checks:
 
-  ```go
-  // v0.5
-  if errors.Is(err, context.Canceled) { /* step timed out */ }
-  // v0.6
-  if errors.Is(err, context.DeadlineExceeded) { /* step timed out */ }
-  ```
-- **The legacy `ToolLoopAgent` step timeout now covers tool execution.**
-  In v0.5 the per-step deadline (`Timeout.PerStep`) ended when the model
-  call returned, so a tool could keep running past it. As in TS, the step
-  timeout now also bounds the step's tools: a tool that used to finish
-  after the step deadline is cancelled (its ctx is done), and the run ends
-  with `context.DeadlineExceeded` before the next step, even if the tool
-  ignored the cancellation. Size `Timeout.PerStep` for the model call plus
-  its tools, or use `Timeout.Total` or a timeout inside the tool instead.
-- **The `WorkflowAgent` root span is `ai.workflowAgent.stream` for
-  `Generate` too.** TS uses that operation ID for both methods; v0.5 named
-  the generate root `ai.workflowAgent.generate`. The root now opens after
-  the approved tools from the message history ran, so those resumed tool
-  calls get no tool span, as in TS. Update queries that match
+- **Kind:** silent behavior change
+
+#### The WorkflowAgent root span is ai.workflowAgent.stream for Generate too {#workflow-root-span}
+
+- **What changed:** TS uses that operation ID for both methods. v0.5 named the
+  generate root `ai.workflowAgent.generate`. The root now opens after the
+  approved tools from the message history ran, so those resumed tool calls get
+  no tool span, and an error before that point reports no telemetry.
+- **Am I affected?** Queries or dashboards that match
   `ai.workflowAgent.generate`.
-- **UI message streams fail on an out-of-sequence chunk.** When
-  `CreateUIMessageStreamWithOptions` or `ToUIMessageStream` has an `OnEnd` or
-  `OnStepEnd` callback, a chunk the message state cannot apply (a
-  `text-delta` without its `text-start`, a tool result for an unknown tool
-  call) now ends the stream: the error channel carries a
+- **What to do:** match `ai.workflowAgent.stream`.
+- **Kind:** wire/protocol change
+
+#### WorkflowRunMultiplexer ends on a finish chunk {#workflow-multiplexer-finish}
+
+- **What changed:** `WorkflowRunMultiplexer` no longer treats an SSE event
+  named `done` as the end of a run. It ends on a `{"type":"finish"}` chunk, as
+  TS `WorkflowChatTransport`. It returns a failed POST's error before it calls
+  `OnChatSendMessage`, which now sees only successful sends.
+- **Am I affected?** Servers that end a run with a `done` event and no
+  `finish` chunk, or `OnChatSendMessage` callbacks that expect failed sends.
+- **What to do:** end each run with a `finish` chunk; handle failed sends from
+  the returned error.
+- **Kind:** wire/protocol change
+
+## UI message streams {#ui-message-streams}
+
+### UI message streams fail on an out-of-sequence chunk {#ui-out-of-sequence}
+
+- **What changed:** when `CreateUIMessageStreamWithOptions` or
+  `ToUIMessageStream` has an `OnEnd` or `OnStepEnd` callback, a chunk the
+  message state cannot apply (a `text-delta` without its `text-start`, a tool
+  result for an unknown tool call) ends the stream, as TS
+  `processUIMessageStream`. The error channel carries a
   `*ai.UIMessageStreamError`, later chunks are not delivered, and `OnEnd`
   reports a failed outcome with that error. v0.5 passed the error to
   `OnError` and kept streaming. Without those callbacks the chunks are not
-  checked, and `OnError` is no longer called for them. Emit each part's start
-  chunk before its deltas, or check the error channel with
-  `errors.As(err, &uiErr)` where `uiErr` is a `*ai.UIMessageStreamError`.
-- **An empty `Telemetry.Integrations` slice turns telemetry off for the
-  call.** As in TS, a non-nil `Integrations` replaces the globally
-  registered integrations, so `[]telemetry.TelemetryIntegration{}` now means
-  none: no spans or events for that call. v0.5 fell back to the global
-  integrations for an empty slice. Leave the field nil to use the globals:
+  checked, and `OnError` is no longer called for them, nor twice for an error
+  chunk.
+- **Am I affected?** Custom chunk producers with `OnEnd` / `OnStepEnd`.
+- **What to do:** emit each part's start chunk before its deltas, and treat a
+  `*ai.UIMessageStreamError` on the error channel as the stream's failure:
+
+  ```go
+  var uiErr *ai.UIMessageStreamError
+  if errors.As(err, &uiErr) {
+  	// a chunk arrived out of sequence
+  }
+  ```
+
+- **Kind:** silent behavior change
+
+### An out-of-range KeepAliveMs is an error {#keep-alive-range}
+
+- **What changed:** a `UIMessageStreamResponseInit.KeepAliveMs` that points to
+  zero, a negative duration or more than 2147483647ms makes the
+  `Create*` / `Pipe*` UI message stream response helpers return
+  `keepAliveMs must be a positive finite timer duration no greater than
+  2147483647` before writing anything, as TS `createSseStreamWithKeepAlive`
+  throws. v0.5 turned keep-alive off for zero or negative values. A nil
+  `KeepAliveMs` is unchanged.
+- **Am I affected?** `KeepAliveMs` set to a pointer to 0 or a negative value
+  to turn keep-alive off.
+- **What to do:** leave it nil:
+
+  ```go
+  init := &ai.UIMessageStreamResponseInit{} // KeepAliveMs nil: no keep-alive
+  ```
+
+- **Kind:** silent behavior change
+
+## Telemetry and events {#telemetry-and-events}
+
+The [telemetry recording change](#telemetry-record-pointers) is listed under
+compile-time changes.
+
+### An empty Telemetry.Integrations turns telemetry off for the call {#empty-integrations}
+
+- **What changed:** as in TS (`integrations: []`), a non-nil `Integrations`
+  replaces the globally registered integrations, so an empty slice means none:
+  no spans or events for that call. v0.5 used the global integrations for an
+  empty slice. nil still uses them.
+- **Am I affected?** `Integrations: []telemetry.TelemetryIntegration{}`, or a
+  helper that can build an empty slice.
+- **What to do:** leave the field nil to use the global integrations:
 
   ```go
   // v0.5: an empty slice used the global integrations
@@ -535,12 +1087,20 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   tel = &telemetry.Options{}
   _ = tel
   ```
-- **Telemetry spans come from the `ai` and `gen_ai` tracers.** As in TS,
-  `LegacyOpenTelemetry` without a `Tracer` uses `otel.Tracer("ai")` and the
-  GenAI `OpenTelemetry` integration `otel.Tracer("gen_ai")`. v0.5 used
-  `"ai-sdk"` for root spans and `"go-ai"` for child spans. Every span of a
-  call now comes from the root's tracer, including a `Tracer` you pass.
-  Update filters on the instrumentation scope name:
+
+- **Kind:** silent behavior change
+
+### Telemetry spans come from the ai and gen_ai tracers {#tracer-names}
+
+- **What changed:** as in TS, `LegacyOpenTelemetry` (and `GetTracer`) without
+  a `Tracer` uses `otel.Tracer("ai")`, and the GenAI `OpenTelemetry`
+  integration uses `otel.Tracer("gen_ai")`. v0.5 used `"ai-sdk"` for root
+  spans and `"go-ai"` for child spans. Every span of a call now comes from the
+  root's tracer, including a `Tracer` you pass. `telemetry.TracerName` is
+  deprecated and unused.
+- **Am I affected?** Instrumentation-scope filters or sampler rules that match
+  `ai-sdk` or `go-ai`.
+- **What to do:** match the new names, or pass your own `Tracer`:
 
   ```go
   // v0.5: spans had the instrumentation scope "ai-sdk" or "go-ai"
@@ -548,16 +1108,579 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   legacyScope, genAIScope := telemetry.LegacyTracerName, telemetry.GenAITracerName
   _, _ = legacyScope, genAIScope
   ```
-- **Tool approval and tool-context errors fail the call.** A tool context
-  that fails the tool's `ContextSchema`, an approval function whose context
-  fails it, an unknown approval status and an unsupported `ToolApproval`
-  value now end `GenerateText` with an error (and error `StreamText`'s stream
-  and the agents' runs), as in TS. v0.5 turned them into tool-error results
-  the model saw. A tool's own `Execute` error is still a tool error:
+
+- **Kind:** wire/protocol change
+
+### EnrichSpan and runtime context attributes follow TS {#enrich-span-attributes}
+
+- **What changed:** an `EnrichSpan` value that is an object, a struct, `nil`
+  or a mixed-type array is now dropped (TS `sanitizeAttributes`). v0.5 wrote
+  it as a JSON string attribute. A `[]interface{}` of one primitive type
+  becomes a typed slice attribute, and Go's other integer and float kinds stay
+  numbers. A runtime context value that is an object (any string-keyed map, a
+  struct or a pointer to one) is flattened into
+  `ai.settings.context.<path>` attributes instead of one JSON string.
+- **Am I affected?** Dashboards or queries that read those JSON-string
+  attributes.
+- **What to do:** read the flattened keys, or return primitives from
+  `EnrichSpan`.
+- **Kind:** wire/protocol change
+
+### Evaluate telemetry and event names are decide names {#decide-telemetry-names}
+
+- **What changed:** with the evaluate-to-decide rename, span and attribute
+  names are `ai.decide*` and `ai.decision.*`, the GenAI operation is
+  `gen_ai.operation.name=decide`, and the diagnostic channel events are
+  `experimental_onDecideStart`, `experimental_onDecideEnd`,
+  `experimental_onDecisionModelCallStart` and
+  `experimental_onDecisionModelCallEnd`. The deprecated
+  `DiagnosticEventOnEvaluate*` constants now hold the decide values.
+- **Am I affected?** Queries, dashboards or diagnostic subscribers that match
+  the evaluate names.
+- **What to do:** match the decide names.
+- **Kind:** wire/protocol change
+
+### A cancelled GenerateText reports OnError to telemetry {#generate-cancel-telemetry}
+
+- **What changed:** a cancelled or timed-out `GenerateText` (and the legacy
+  `ToolLoopAgent` loop) reports `OnError`, not `OnAbort`, to telemetry
+  integrations, as TS `generateText` has no abort telemetry. The root and step
+  spans carry the error status. `GenerateTextOptions.OnAbortEvent` /
+  `OnAbort` still fire.
+- **Am I affected?** Custom telemetry integrations that count aborts in
+  `OnAbort` for `GenerateText`.
+- **What to do:** handle the cancellation in the integration's `OnError`.
+- **Kind:** silent behavior change
+
+## Errors {#errors}
+
+### Errors are returned without Go prefixes {#errors-unprefixed}
+
+- **What changed:** errors are returned as is, without Go-added prefixes such
+  as "... failed at step N:", "generation failed:", "output parsing failed:"
+  or "failed to start stream:". `InvalidArgumentError` text is now
+  `Invalid argument for parameter <field>: <message>`, and
+  `TypeValidationError` text is on one line.
+- **Am I affected?** `strings.Contains(err.Error(), ...)` checks or tests that
+  compare error text.
+- **What to do:** match with `errors.As` / `errors.Is`.
+- **Kind:** error text only
+
+### Error messages quote names as TS does {#error-name-quoting}
+
+- **What changed:** messages that quote a tool, model, question or separator
+  name (`CreateIDGenerator`, `ExperimentalToolCallers`, tool search,
+  `ExperimentalStreamTranscribe`, decision validation,
+  `DecisionUnsupportedQuestionTypeError`) put the name between plain double
+  quotes instead of Go `%q` escaping. The text changes only for a name with
+  `"`, `\`, non-ASCII or control characters.
+- **Am I affected?** Code that compares these messages.
+- **What to do:** match these errors with `errors.As`, not by their text.
+- **Kind:** error text only
+
+### Non-JSON error bodies use the HTTP status text {#non-json-error-body}
+
+- **What changed:** a non-2xx response with an empty or non-JSON body uses the
+  HTTP status text as `ProviderError.Message` (for example `Bad Gateway`).
+  The body stays in `ResponseBody`.
+- **Am I affected?** Code that reads the body from `Message`.
+- **What to do:** read `StatusCode` and `ResponseBody`.
+- **Kind:** error text only
+
+## Providers {#providers}
+
+### All providers
+
+#### Provider IDs follow TS config.provider {#provider-ids}
+
+- **What changed:** `Provider()` on models returns the TS `config.provider`
+  value: `groq.chat`, `mistral.embedding`, `openai.image` and so on. v0.5
+  returned the bare provider name. Telemetry `ai.model.provider` and
+  `SerializedModel.Provider` change accordingly. Provider option and metadata
+  keys do not change, and payloads serialized by earlier versions still
+  restore.
+- **Am I affected?** `model.Provider() == "groq"` and similar comparisons,
+  or dashboards grouped by `ai.model.provider`.
+- **What to do:** compare the prefix:
 
   ```go
-  // v0.5: the call succeeded; result.ToolResults[0].Error held the error
-  // v0.6: the call fails with it
-  var validationErr *providererrors.ValidationError
-  _ = errors.As(err, &validationErr) // validationErr.Context.Field == "tool context"
+  isGroq := strings.HasPrefix(model.Provider(), "groq")
+  _ = isGroq
   ```
+
+- **Kind:** silent behavior change
+
+#### Responses and stream chunks are validated {#response-validation}
+
+- **What changed:** about 25 more providers reject a 2xx body that does not
+  match the TS schema with "Invalid JSON response", and malformed stream
+  chunks become error parts. Some bodies accepted before now fail, such as
+  Cohere's legacy plain-array `embeddings`.
+- **Am I affected?** Custom base URLs, proxies or mock servers that return
+  non-standard JSON.
+- **What to do:** return the provider's documented response shape.
+- **Kind:** silent behavior change
+
+#### Invalid provider options fail the call {#provider-options-validation}
+
+- **What changed:** invalid provider options fail with
+  `*InvalidArgumentError` across chat, embedding, media and transcription
+  providers, as TS `parseProviderOptions`. A missing API key fails at request
+  time with `LoadAPIKeyError`, and unsupported model types return
+  `*NoSuchModelError` with the TS text.
+- **Am I affected?** `ProviderOptions:` with wrong value types or values the
+  provider does not accept.
+- **What to do:** fix the options; match these errors with `errors.As`.
+- **Kind:** silent behavior change
+
+#### Anthropic, Bedrock and Google content is in response order {#result-content-order}
+
+- **What changed:** `result.Content` from Anthropic, Bedrock and Google keeps
+  the order of the provider's response.
+- **Am I affected?** Code that reads `Content` by index.
+- **What to do:** switch on each part's type instead of its position.
+- **Kind:** silent behavior change
+
+### OpenAI
+
+#### OpenAI Responses promptCacheOptions is validated {#openai-prompt-cache-options}
+
+- **What changed:** only `mode` (`implicit` or `explicit`), `ttl` (`30m` or
+  `12h`) and `prewarm` are sent, as TS. Invalid values such as `ttl: "24h"`
+  fail before the request with `InvalidArgumentError`, and unknown keys are
+  dropped. Chat Completions is unchanged.
+- **Am I affected?** `promptCacheOptions` in OpenAI Responses provider
+  options.
+- **What to do:** use the documented values.
+- **Kind:** silent behavior change
+
+#### OpenAI chat streams fail the call on an error before output {#openai-chat-stream-error}
+
+- **What changed:** an error frame after the empty first assistant chunk or a
+  finish-only chunk now fails the call (retryable), as TS, instead of
+  streaming an error part. OpenAI-compatible chat models are unchanged.
+- **Am I affected?** Code that handles these failures as an `error` part.
+- **What to do:** handle the error from the call (or `Err()`).
+- **Kind:** silent behavior change
+
+### Wrapper providers
+
+#### Wrapper providers read only their own API key {#wrapper-api-keys}
+
+- **What changed:** Baseten, Cerebras, DeepInfra, Fireworks, Together,
+  Vercel, Vertex MaaS and the Azure delegates no longer fall back to
+  `OPENAI_API_KEY`, and Azure DeepSeek no longer falls back to
+  `DEEPSEEK_API_KEY`. A missing key fails with `LoadAPIKeyError`. v0.5.3
+  already did this for Baseten, Cerebras, DeepInfra, Vercel and Vertex MaaS.
+- **Am I affected?** Deployments that set only `OPENAI_API_KEY` (or
+  `DEEPSEEK_API_KEY`) for these providers.
+- **What to do:** set the provider's own variable (for example
+  `FIREWORKS_API_KEY`, `TOGETHER_API_KEY`, `CEREBRAS_API_KEY`) or pass
+  `APIKey`.
+- **Kind:** silent behavior change
+
+### BFL, Luma and fal
+
+#### Failed generated-media downloads return ProviderError {#media-download-errors}
+
+- **What changed:** as in TS, a non-2xx response when the provider fetches
+  the generated image or audio is a `*providererrors.ProviderError` whose
+  message is the HTTP status text, returned unwrapped. v0.5 returned a
+  wrapped `*providererrors.DownloadError`.
+- **Am I affected?** `errors.As(err, &downloadErr)` on BFL, Luma or fal
+  results.
+- **What to do:** match `*providererrors.ProviderError` and check
+  `StatusCode`:
+
+  ```go
+  var provErr *providererrors.ProviderError
+  if errors.As(err, &provErr) && provErr.StatusCode == 404 {
+  	// the generated file is gone
+  }
+  ```
+
+- **Kind:** silent behavior change
+
+### KlingAI
+
+#### KlingAI VideoModel() accepts any model ID {#klingai-video-model}
+
+- **What changed:** as in TS, an unknown or empty ID is reported by `DoStart`
+  (and so `GenerateVideo`) as `*providererrors.NoSuchModelError`, not by
+  `VideoModel()`.
+- **Am I affected?** Code that validates model IDs through the `VideoModel()`
+  error.
+- **What to do:** check the error from the call too.
+- **Kind:** silent behavior change
+
+### Perplexity
+
+#### Perplexity embedding provider options are validated {#perplexity-embedding-options}
+
+- **What changed:** as in TS, a `dimensions` that is not a positive integer,
+  or an `encodingFormat` other than `base64_int8` or `base64_binary`, fails
+  `DoEmbed` / `DoEmbedMany` with `*providererrors.InvalidArgumentError`. v0.5
+  truncated a fractional `dimensions` and ignored or sent other values.
+- **Am I affected?** Perplexity embedding provider options.
+- **What to do:** pass a positive integer and a supported format.
+- **Kind:** silent behavior change
+
+## MCP {#mcp}
+
+### MCP OAuth rejects unbound pre-registered confidential credentials {#mcp-oauth-issuer}
+
+- **What changed:** client information with a client secret (or a custom
+  authenticator) but no `Issuer` and no stored authorization server
+  information fails `mcp.Auth` with an authorization-server mismatch error
+  (TS #23579). v0.5 skipped the check. Dynamically registered clients keep
+  working.
+- **Am I affected?** Pre-registered confidential OAuth clients without
+  `Issuer`.
+- **What to do:** set `Issuer` to the authorization server the secret was
+  registered with, or return it from
+  `OAuthAuthorizationServerInformationStore`.
+- **Kind:** silent behavior change
+
+### MCP clients have no default request timeout {#mcp-no-default-timeout}
+
+- **What changed:** `MCPClientConfig.RequestTimeoutMS` and the transports'
+  `TimeoutMS` default to no timeout, as TS fetch; the caller's ctx governs.
+  v0.5 used 30 seconds. JSON-RPC request IDs start at 0,
+  `MCPClientError.Error()` is the bare message, and the HTTP and stdio
+  transports probe `server/discover` first.
+- **Am I affected?** MCP clients that relied on the 30 s default.
+- **What to do:** set the timeout, or bound calls with a context deadline:
+
+  ```go
+  cfg := mcp.MCPClientConfig{RequestTimeoutMS: 30000} // v0.5 default
+  _ = cfg
+  ```
+
+- **Kind:** silent behavior change
+
+## Code mode {#code-mode}
+
+### Code mode has a default 10 s CPU limit {#codemode-cpu-limit}
+
+- **What changed:** `ExecutionPolicy.CPUTimeoutMs` (default 10_000, TS
+  #23812) stops guest JavaScript that runs longer than that in one invocation
+  with `*codemode.CPUTimeoutError`. Time in host tools does not count. v0.5
+  allowed pure JS to run up to the 30 s `TimeoutMs`.
+- **Am I affected?** Long CPU-bound scripts.
+- **What to do:** raise `CPUTimeoutMs` (and `TimeoutMs`) for long-running
+  scripts.
+- **Kind:** silent behavior change
+
+### Code mode caps concurrent scripts {#codemode-max-workers}
+
+- **What changed:** like TS, code mode runs at most floor(available memory /
+  (`ExecutionPolicy.MemoryLimitBytes` + 48 MiB)) sandbox invocations at once,
+  at least 1 and at most 32. v0.5 had no limit. A script started over the
+  limit fails right away with `*codemode.ConcurrencyError` ("Code mode
+  maxWorkers limit reached (N).").
+- **Am I affected?** Servers that run many code mode scripts at once.
+- **What to do:** raise the limit, or pass 0 to keep v0.5's unlimited
+  behavior. `codemode.ResetMaxWorkers()` restores the default:
+
+  ```go
+  if err := codemode.SetMaxWorkers(64); err != nil {
+  	log.Fatal(err)
+  }
+  ```
+
+- **Kind:** silent behavior change
+
+### wazero is v1.12.0 {#wazero-version}
+
+- **What changed:** wazero moved from v1.9.0 to v1.12.0. Code mode's sandbox
+  behaves the same: each invocation still gets its own QuickJS instance,
+  memory and host bindings. QuickJS is now compiled once per process into one
+  shared wazero runtime, so sandbox startup is faster.
+- **Am I affected?** Modules that pin `github.com/tetratelabs/wazero`
+  themselves.
+- **What to do:** move your pin to v1.12.0.
+- **Kind:** silent behavior change
+
+## Harness, ACP and fx {#harness-acp-and-fx}
+
+### ACP lifecycle state persisted by v0.5.x does not resume {#acp-state}
+
+- **What changed:** as in TS (#23761), the persisted identity is
+  `agentIdentity`, and the identity, configuration fingerprint and
+  authentication digest are computed the TS way (including the client app
+  version, so TS also rejects state after a package upgrade). Old state fails
+  with "agentIdentity must be a string" or "ACP lifecycle state is
+  incompatible with the configured ...".
+- **Am I affected?** Saved ACP lifecycle state for the Cursor, GitHub Copilot,
+  Grok Build and fx adapters.
+- **What to do:** discard saved ACP lifecycle state and start fresh sessions
+  after upgrading.
+- **Kind:** silent behavior change
+
+### A failed harness stop-condition suspension fails the turn {#harness-stop-suspend}
+
+- **What changed:** when a `StopWhen` condition is met inside an `Agent` or
+  `AgentSession` and the adapter's `DoSuspendTurn` returns an error
+  (including `CapabilityUnsupportedError` from an adapter that cannot
+  suspend), the turn fails with that error, as in TS. v0.5 finished the turn
+  instead, so the error went unseen.
+- **Am I affected?** `StopWhen` with an adapter that cannot suspend.
+- **What to do:** handle the error from the turn, or leave out the stop
+  condition.
+- **Kind:** silent behavior change
+
+### Harness adapters identify as ai-sdk-harness-id {#harness-client-app}
+
+- **What changed:** harness adapters send `ai-sdk-harness-<id>/<version>` in
+  `User-Agent` and `x-client-app`. The exported constants changed with them,
+  for example `cursor.ClientAppName` is `ai-sdk-harness-cursor` (was
+  `ai-sdk/harness-cursor`) and `cursor.ClientAppVersion` is a release
+  version instead of `0.0.0-go`; the same holds for `fx`, `githubcopilot` and
+  `grokbuild`.
+- **Am I affected?** Server-side checks or tests that match the old values.
+- **What to do:** match the new values, or read the constants.
+- **Kind:** wire/protocol change
+
+### With AgentSettings.Telemetry unset, the harness agent fires no telemetry {#harness-telemetry-unset}
+
+- **What changed:** a harness agent without `AgentSettings.Telemetry` fires
+  no telemetry, even to globally registered integrations.
+- **Am I affected?** Harness agents that relied on global integrations.
+- **What to do:** set `AgentSettings.Telemetry`.
+- **Kind:** silent behavior change
+
+### Harness usage is the turn total, and a failed OAuth refresh fails start {#harness-usage-oauth}
+
+- **What changed:** `harness.Agent.Generate(...).Usage` is the turn total. For
+  Claude Code and Codex, a failed OAuth refresh fails start instead of being
+  treated as "no credential".
+- **Am I affected?** Code that reads `Usage` as the last step's, or that
+  expects start to fall back when a refresh fails.
+- **What to do:** read per-step usage from the steps; handle the start error.
+- **Kind:** silent behavior change
+
+### fx: the built-in terminal tool is removed {#fx-terminal-removed}
+
+- **What changed:** as in TS, fx has no built-in `terminal` tool.
+  `inactiveTools: ["terminal"]` now returns an error.
+- **Am I affected?** `"terminal"` in fx `BuiltinToolFiltering` lists or tool
+  name checks.
+- **What to do:** remove it from the lists.
+- **Kind:** silent behavior change
+
+### fx has an opt-in libfx runtime {#fx-libfx-opt-in}
+
+- **What changed:** `fx.CreateFx()` without a `Runtime` behaves as in v0.5.x:
+  the sandbox `fx acp` adapter, the v0.5.x `fx.BuiltinTools`, and v0.5.x
+  lifecycle state. `fx.Settings{Runtime: fx.RuntimeLibfx}` selects the TS
+  `@ai-sdk/harness-fx` runtime, which has other built-in tools
+  (`fx.LibfxBuiltinTools`: `read`, `write`, `edit`, `bash`, `grep`, `glob`,
+  `ls`, `askUserQuestions`). Its model requests leave from the host process.
+  It authenticates with AI Gateway or, as in TS, a codex or grok subscription
+  found on the host (`~/.fx`, `$CODEX_HOME` or the OS keyring, `$GROK_HOME`),
+  and connects HTTP and SSE `MCPServers` from the host; command (stdio) MCP
+  servers are not supported on it. The first session downloads the pinned
+  `fx-core.wasm` (about 2.6 MB) into `os.UserCacheDir()/go-ai/fx/`. On a host
+  without network access, pre-seed that cache or set `fx.WasmSource.Path`,
+  then set `GO_AI_FX_OFFLINE=1`.
+- **Am I affected?** Only if you set `Runtime: fx.RuntimeLibfx`. Sessions do
+  not move between runtimes: a v0.5.x sandbox-ACP session resumed under
+  `RuntimeLibfx`, or a libfx session resumed under the default runtime,
+  returns `*fx.IncompatibleStateError`. As in TS, libfx state files are
+  accepted for libfx 0.0.13 and 0.0.14; any other version, or a file that
+  fails the schema, fails with "Cannot resume fx: the saved state is invalid
+  or incompatible." An open turn suspended by a TS host cannot be continued by
+  a Go host, or the other way round.
+- **What to do:** no action unless you opt in. If you do, update
+  `BuiltinToolFiltering` lists and tool-name checks, and finish or drop open
+  sessions before you switch.
+- **Kind:** silent behavior change
+
+## Policy {#policy}
+
+### An OPA HTTP policy response without result is not-applicable {#opa-undefined-result}
+
+- **What changed:** OPA answers an undefined decision (no rule matched) with
+  `{}`. v0.5 treated that as a deny. As in TS, it is now not-applicable, and
+  the tool call falls through to the other approval rules.
+- **Am I affected?** OPA policies that rely on "no match means deny".
+- **What to do:** return an explicit deny, for example with a Rego `default`
+  rule.
+- **Kind:** silent behavior change
+
+## Already changed in v0.5.3 {#already-in-v053}
+
+These changes shipped in v0.5.3. They affect you only if you upgrade from
+v0.5.0, v0.5.1 or v0.5.2. The [wrapper API key change](#wrapper-api-keys)
+started in v0.5.3 too.
+
+### Cohere uses the v2 API (v0.5.3) {#v053-cohere-v2}
+
+- **What changed:** chat, embed and rerank use the v2 API under the base URL.
+  `cohere.DefaultBaseURL` is `https://api.cohere.com/v2` (was
+  `https://api.cohere.ai/v1`). A custom `BaseURL` without a version segment
+  gets `/v2` appended; one ending in `/v1` or `/v2` is used as is. Embed sends
+  `embedding_types: ["float"]`.
+- **Am I affected?** A custom Cohere `BaseURL`, or a proxy that only forwards
+  v1 paths.
+- **What to do:** make sure the endpoint serves the v2 API.
+- **Kind:** wire/protocol change
+
+### Every provider retries (v0.5.3) {#v053-retries}
+
+- **What changed:** `GenerateText`, `StreamText`, agents and `GenerateObject`
+  retried only AI Gateway models. They now retry every provider (default 2
+  retries), honor `ProviderError.Retryable` and retry connection failures.
+  408, 409, 429 and 5xx are retried; 400 and 401 are not.
+- **Am I affected?** Calls that must not be repeated, or your own retry loop
+  around SDK calls.
+- **What to do:** set `MaxRetries` to a pointer to 0 to disable SDK retries.
+- **Kind:** silent behavior change
+
+### The default HTTP client has no whole-request timeout (v0.5.3) {#v053-http-timeout}
+
+- **What changed:** the default client had a 60 s whole-request timeout, which
+  cut off long streams. It now has no whole-request timeout and a 5 minute
+  response header timeout.
+- **Am I affected?** Code that relied on the 60 s limit to bound calls.
+- **What to do:** bound each call with its context:
+
+  ```go
+  ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+  defer cancel()
+  _ = ctx
+  ```
+
+- **Kind:** silent behavior change
+
+### A call to an unknown tool does not stop the loop (v0.5.3) {#v053-unknown-tool}
+
+- **What changed:** a call to an unknown tool is answered with a tool error and
+  the `GenerateText` / `StreamText` loop continues. v0.5.2 stopped.
+- **Am I affected?** Code that relied on the run stopping.
+- **What to do:** no action unless you relied on the stop; use `StopWhen` or
+  `RepairToolCall` to control it.
+- **Kind:** silent behavior change
+
+## Deprecated (still compiles) {#deprecated}
+
+These identifiers are new deprecations in v0.6.0. They keep working; move to
+the replacement when convenient. `staticcheck` (SA1019) reports their use.
+
+| Deprecated | Replacement |
+| --- | --- |
+| `ai.ExperimentalEvaluate`, `ai.EvaluateOptions`, `ai.EvaluateResult`, `ai.EvaluateUsage`, `ai.EvaluateResponse`, `ai.EvaluateOnStartEvent`, `ai.EvaluateOnEndEvent` | `ai.ExperimentalDecide`, `ai.DecideOptions`, `ai.DecideResult`, `ai.DecideUsage`, `ai.DecideResponse`, `ai.DecideOnStartEvent`, `ai.DecideOnEndEvent` |
+| `ai.EvaluationLanguageModel`, `ai.EvaluationLanguageModelOptions`, `ai.NewEvaluationLanguageModel`, `(*ai.DecisionLanguageModel).DoEvaluate` | `ai.DecisionLanguageModel`, `ai.DecisionLanguageModelOptions`, `ai.NewDecisionLanguageModel`, `DoDecide` |
+| `provider.EvaluationQuestion`, `EvaluationAnswer`, `EvaluationRounding`, `EvaluationUsage`, `EvaluationResponseInfo`, `EvaluationCallOptions`, `EvaluationResult` | `provider.DecisionQuestion`, `DecisionAnswer`, `DecisionRounding`, `DecisionUsage`, `DecisionResponseInfo`, `DecisionCallOptions`, `DecisionResult` |
+| `provider.EvaluationModel`, `provider.EvaluationModelProvider`, `AdaptEvaluationModel`, `AsEvaluationModel`, `AdaptEvaluationModelProvider` | `provider.DecisionModel`, `provider.DecisionModelProvider` |
+| `provider.RegisterEvaluationModelDeserializer`, `DeserializeEvaluationModel`, `RegisteredEvaluationModelDeserializerKeys`, `SerializeEvaluationModel` | `RegisterDecisionModelDeserializer`, `DeserializeDecisionModel`, `RegisteredDecisionModelDeserializerKeys`, `SerializeDecisionModel` |
+| `providererrors.EvaluationUnsupportedQuestionTypeError`, `IsEvaluationUnsupportedQuestionTypeError` | `DecisionUnsupportedQuestionTypeError`, `IsDecisionUnsupportedQuestionTypeError` |
+| `EvaluationModel(modelID)` on the `anthropic`, `gateway`, `google`, `openai` and `typesafeai` providers; `DoEvaluate` on their decision models | `DecisionModel(modelID)`, `DoDecide` |
+| `gateway.EvaluationModel`, `gateway.NewEvaluationModel`, `typesafeai.EvaluationModel`, `typesafeai.NewEvaluationModel` | `DecisionModel`, `NewDecisionModel` |
+| `gateway.EvaluationFallbackCondition`, `EvaluationFallbackAtLeast`, `EvaluationFallbackMaxConditionDepth`, `EvaluationFallbackMaxConditionsPerList`, `EvaluationFallbackMaxQuestionLength` | `DecisionFallbackCondition`, `DecisionFallbackAtLeast`, `DecisionFallbackMaxConditionDepth`, `DecisionFallbackMaxConditionsPerList`, `DecisionFallbackMaxQuestionLength` |
+| `gateway.GatewayEvaluationModelID`, `GatewayEvaluationModelIDs`, `GatewayEvaluationModelLiquidD1`, `GatewayEvaluationModelTypesafeAiJev` | `GatewayDecisionModelID`, `GatewayDecisionModelIDs`, `GatewayDecisionModelLiquidD1`, `GatewayDecisionModelTypesafeAiJev` |
+| 26 `gateway.GatewayLanguageModel*` constants removed from the TS Gateway ID list (for example `GatewayLanguageModelAlibabaQwen3Max`) | Any current Gateway model ID; the old strings still work |
+| `registry.ResolveEvaluationModel`, `(*Registry).ResolveEvaluationModel`, custom provider `EvaluationModels` / `EvaluationModel` | `ResolveDecisionModel`, `DecisionModels` / `DecisionModel` |
+| `telemetry.EvaluateStartEvent`, `EvaluateEndEvent`, `EvaluationModelCallStartEvent`, `EvaluationModelCallEndEvent` | `DecideStartEvent`, `DecideEndEvent`, `DecisionModelCallStartEvent`, `DecisionModelCallEndEvent` |
+| `telemetry.FireOnEvaluate*` / `FireOnEvaluationModelCall*`, and `OnEvaluate*` / `OnEvaluationModelCall*` on `LegacyOpenTelemetry` and `OpenTelemetry` | `FireOnDecide*` / `FireOnDecisionModelCall*`, `OnDecide*` / `OnDecisionModelCall*` |
+| `telemetry.DiagnosticEventOnEvaluate*`, `DiagnosticEventOnEvaluationModelCall*` | `DiagnosticEventOnDecide*`, `DiagnosticEventOnDecisionModelCall*` |
+| `telemetry.OpenTelemetry.ExperimentalEvaluation` | `ExperimentalDecision` |
+| `telemetry.TracerName` (unused) | `telemetry.LegacyTracerName`, `telemetry.GenAITracerName`, or your own `Tracer` |
+| `acp.TextContentBlock` | `acp.ContentBlock` |
+| `harness` stream part `StepToolCallCount` (ignored by the host since TS #23260) | No replacement |
+| `openai/tool.WebSearchPreview`, `azure.WebSearchPreview` | `WebSearch` |
+| `gateway/tools.ParallelSearchModeOneShot`, `ParallelSearchModeAgentic`, the nested `MaxCharsTotal` option | `ParallelSearchModeBasic`, `ParallelSearchModeAdvanced`, `ParallelSearchConfig.MaxCharsTotal` |
+| `openai` transcription stream `StreamingDelay` | `StreamingDelayLevel` |
+
+## Known differences from TS {#known-differences}
+
+A few v0.6.0 behaviors differ from TypeScript on purpose. They are not
+bugs. [Known differences from the TypeScript AI SDK](./known-differences.mdx)
+lists all of them with the reasons. The ones you are most likely to notice
+after upgrading:
+
+- **`ToUIMessageStream` writes a masked `error` chunk** when its source stream
+  fails, and ends the UI stream cleanly (owner decision 2026-10-29, the v0.5.x
+  behavior). TS errors the stream instead. See
+  [UI message stream: source failure writes an error chunk](./known-differences.mdx).
+- **The Vertex Gemini image model accepts URL and `gs://` input images**
+  (owner ruling 2026-10-29). Current TS rejects them. Set `MediaType` for a
+  URL without an image extension. See
+  [Vertex Gemini image model: URL input images](./known-differences.mdx).
+- **A `StreamText` tool context failure fails the run** (owner decision
+  2026-10-28), as in `GenerateText` and the agents. TS streams an error part
+  and finishes. See
+  [StreamText tool context failure ends the run](./known-differences.mdx).
+- **`WorkflowRunMultiplexer` does not require the `x-workflow-run-id`
+  header.** It is a Go-only type with no TS twin. `WorkflowChatTransport`
+  fails without the header, as TS. See
+  [WorkflowRunMultiplexer run ID](./known-differences.mdx).
+- **`codemode.SetMaxWorkers(0)` means unlimited**, kept from v0.5.x; TS
+  rejects 0. See
+  [Code-mode: never-settling promises and in-flight limits](./known-differences.mdx).
+- **`StreamText` returns an invalid `Instructions` value synchronously**, and
+  `WorkflowAgent.Stream` rejects a `MaxTokens` below 1. See
+  [Option validation timing](./known-differences.mdx).
+- **Each `WorkflowAgent` call has its own root call ID**; TS uses the literal
+  `workflow-agent`. See [WorkflowAgent root call ID](./known-differences.mdx).
+
+## For coding agents {#for-coding-agents}
+
+Follow these steps in order. Do each step completely before you start the
+next one.
+
+1. Upgrade the module and tidy:
+
+   ```bash
+   go get github.com/digitallysavvy/go-ai@v0.6.0
+   go mod tidy
+   ```
+
+2. Build and vet. Fix every error with the matching entry under
+   [Compile-time changes](#compile-time-changes):
+
+   ```bash
+   go build ./... && go vet ./...
+   ```
+
+3. Search the code for each pattern in the
+   [quick-scan table](#quick-scan-table). This command covers most of
+   them; run it from the module root:
+
+   ```bash
+   grep -rnE --include='*.go' \
+     -e 'MaxRetries:|RecordInputs:|RecordOutputs:|Evaluate(OnEnd|End)Event\{|EvaluationModelCallEndEvent\{|TextContentBlock\{"' \
+     -e '\.Text\(\)|OnFinish:|TotalTokens|ReasoningText|OnError:|PrepareStep:|OnLanguageModelCallStart:|Request\(\)' \
+     -e 'stream-start|response-metadata|FinishReasonOther|TimeoutError|PerStep|MaxTokens:|OnStartEvent|StopWhen:|"call-"' \
+     -e 'AllowSystemMessages|InstructionMessages|ToolCallConcurrency|ToolChoice|ProviderExecuted|ToolResults|ContextSchema:|ToolApproval:' \
+     -e 'ToolCallID|ActiveTools:|Request\.Messages|DeadlineExceeded|context\.Canceled|ResponseMessages|LanguageModelCallOptions|WorkflowStreamOptions' \
+     -e 'workflowAgent\.generate|WorkflowRunMultiplexer|OnChatSendMessage|UIMessageStreamWithOptions|ToUIMessageStream|KeepAliveMs' \
+     -e 'Integrations:|"ai-sdk"|"go-ai"|TracerName|EnrichSpan|onEvaluate|ai\.evaluat|err\.Error\(\)|\.Provider\(\)' \
+     -e 'promptCacheOptions|OPENAI_API_KEY|DEEPSEEK_API_KEY|DownloadError|klingai|perplexity|Issuer|RequestTimeoutMS|TimeoutMS' \
+     -e 'codemode\.|wazero|acp\.|ClientAppName|AgentSettings|"terminal"|fx\.Settings|policy\.|cohere' .
+   ```
+
+4. For each match, open the entry the table links to. Apply **What to do**.
+   If the entry says "No action unless you ...", check the condition and
+   move on if it does not apply.
+5. Check what the grep cannot find: telemetry dashboards and queries
+   ([Telemetry and events](#telemetry-and-events)), persisted ACP or fx
+   state ([ACP state](#acp-state)), environment variables for wrapper
+   providers ([Wrapper API keys](#wrapper-api-keys)), OpenAI-compatible
+   servers that reject `tool_choice` ([Unset ToolChoice](#tool-choice-auto)),
+   and golden files with escaped JSON ([JSON escaping](#json-not-html-escaped)).
+6. Run the tests with the race detector, since tools now run concurrently:
+
+   ```bash
+   go test -race ./...
+   ```
+
+7. Fix failing tests by the entry that covers them. Do not change an
+   assertion to match new behavior unless an entry on this page describes
+   that behavior.
+
+## Related documentation
+
+- [Known differences from the TypeScript AI SDK](./known-differences.mdx)
+- [Migrating from v0.4.x to v0.5.0](./from-v0.4-to-v0.5.mdx)
+- [Migrating from the TypeScript AI SDK](./from-typescript-ai-sdk.mdx)

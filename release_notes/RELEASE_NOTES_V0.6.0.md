@@ -158,387 +158,157 @@ earlier, upgrade to either.
 
 ## Breaking changes, with migration
 
-Each item has before/after code in the
-[migration guide](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx).
+Every change that can need an edit is listed below, one line each, with a
+link to its entry in the
+[v0.5 to v0.6 migration guide](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx). Each guide entry says what
+changed, how to tell whether you are affected, what to do, and its kind:
+`compile error`, `silent behavior change`, `wire/protocol change` or
+`error text only`. The guide starts with a quick-scan table of patterns to
+search for and ends with a checklist for coding agents. Entries marked
+(v0.5.3) also shipped in v0.5.3.
 
 ### Compile-time changes
 
-- **`GenerateObjectOptions.MaxRetries` and `StreamObjectOptions.MaxRetries`
-  are `*int`**, like every other entry point and TS `maxRetries`. nil uses
-  the default of 2, an explicit `0` now disables retries (before, `0`
-  selected the default), and a negative value returns
-  `*errors.InvalidArgumentError`.
-  **Migration:** `MaxRetries: 5` becomes `retries := 5` and
-  `MaxRetries: &retries`. Remove a `MaxRetries: 0` that was meant as the
-  default.
-- **`telemetry.Options.RecordInputs` and `RecordOutputs` are `*bool`, and
-  unset now records** (TS `recordInputs`/`recordOutputs` default to true).
-  This also applies to the deprecated `telemetry.Settings`.
-  `DefaultSettings()`, `WithRecordInputs(bool)` and `WithRecordOutputs(bool)`
-  keep their signatures; `ShouldRecordInputs()`/`ShouldRecordOutputs()`
-  report the effective value.
-  **Privacy:** in v0.5.x a hand-built `telemetry.Options{}` recorded
-  nothing. In v0.6.0 the same literal records prompts, messages, tool
-  arguments, generated text, objects and tool results in your spans.
-  **Migration:** wrap literals in `telemetry.Bool(...)`, and set both fields
-  to `telemetry.Bool(false)` wherever spans must not contain prompts or
-  outputs.
-- **Evaluate end-event struct literals use the Decide field names.**
-  Experimental evaluate is now decide, as in TS. The old type names remain
-  as deprecated aliases, so their embedded field is named after the new
-  type: `telemetry.EvaluateEndEvent{DecideStartEvent: ...}`,
-  `telemetry.EvaluationModelCallEndEvent{DecisionModelCallStartEvent: ...}`,
-  `ai.EvaluateOnEndEvent{DecideOnStartEvent: ...}`. Reading promoted fields
-  still compiles. Wire and telemetry names also changed (`ai.decide*`,
-  `ai.decision.*`, `gen_ai.operation.name=decide`).
-- **Unkeyed `acp.TextContentBlock` literals no longer compile.** The type is
-  an alias of `acp.ContentBlock`, which adds `Data` and `MimeType` for image
-  blocks. Use keyed fields: `acp.TextContentBlock{Type: "text", Text: "x"}`.
+- **GenerateObject and StreamObject MaxRetries is a pointer** (compile error). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#object-maxretries-pointer)
+- **Telemetry RecordInputs and RecordOutputs are pointers, and unset records** (compile error). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-record-pointers)
+- **Evaluate end-event struct literals use the Decide field names** (compile error). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#evaluate-event-literals)
+- **Unkeyed acp.TextContentBlock literals** (compile error). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#acp-text-content-block)
+- **`DecideOptions.Provider` is `interface{}`** (compile error). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#decide-options-provider)
+- **Some structs are no longer comparable** (compile error). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#non-comparable-structs)
 
 ### Behavior changes that can break callers
 
-- **A provider-executed tool call is never run locally** (review round 61),
-  in `GenerateText`, `StreamText` and the legacy `ToolLoopAgent` loop. A call
-  the provider marks `ProviderExecuted` ran a local tool of the same name
-  when one was configured, adding a second, local result next to the
-  provider's. TS executes only the calls without `providerExecuted`.
-  **Migration:** give a local tool a name the provider's tools do not use if
-  it must run.
-- **Legacy `ToolLoopAgent` tool results list provider results** (review round
-  61). `StepResult.ToolResults` (with `StaticToolResults` /
-  `DynamicToolResults`) and `AgentResult.ToolResults`, which
-  `WorkflowAgent.Generate` returns too, hold the provider-executed results the
-  model returned, before the locally executed ones, as `GenerateText` and TS
-  `step.toolResults`. **Migration:** skip entries with `ProviderExecuted` set
-  where only local executions are expected.
-- **Legacy `ToolLoopAgent` request messages leave out the instructions**
-  (review round 61). With `Include.RequestMessages`,
-  `StepResult.Request.Messages` is the step's messages as TS `generateText`
-  records them: no instruction messages, before prompt conversion.
-  `WorkflowAgent.Generate` steps record the model prompt with its system
-  message first, as TS WorkflowAgent. **Migration:** read the instructions
-  from your own configuration, not from `Request.Messages[0]`.
-- **`WorkflowAgent` resumed approval results carry their model output**
-  (review round 61). The tool message holding the results of resumed
-  approvals (the first of `ResponseMessages`, and the next model call's
-  prompt) sets each `ToolResultContent.Output` (text for a string result,
-  else JSON, or the tool's `ToModelOutput`) and no `Input`, as TS
-  WorkflowAgent's `modelResult`. It held the raw `Result` and the input.
-  **Migration:** read `Output` instead of `Result`.
-- **`WorkflowAgent` approval IDs are `approval-<toolCallId>`** (review round
-  60), in `Generate` and `Stream`, as TS WorkflowAgent names them; the
-  signature covers that ID. `Generate` used the tool call ID and `Stream` a
-  random ID. Approvals persisted by v0.5.2 still resume: the response is
-  matched and verified against the stored request's ID. **Migration:**
-  answer an approval with the `ApprovalID` of its
-  `ToolApprovalRequestContent`, not the tool call ID.
-- **Legacy `ToolLoopAgent` approval IDs are generated** (review round 62).
-  The `Execute`, `ExecuteWithMessages` and `GenerateAgent` loop names each
-  approval request, and the response of an automatic approval or denial,
-  with the run's ID generator (`InternalOptions.GenerateID`, by default
-  `aitxt-` plus 24 characters), as TS ToolLoopAgent's `generateText` calls
-  `generateId()`; the signature covers that ID. v0.5.2 used the tool call
-  ID, which some providers repeat across steps. A step response without an
-  ID also takes its ID from `InternalOptions.GenerateID`. Approvals
-  persisted by v0.5.2 still resume: the response is matched and verified
-  against the stored request's ID. `WorkflowAgent` keeps
-  `approval-<toolCallId>`. **Migration:** answer an approval with the
-  request's `ApprovalID`, not the tool call ID.
-- **An unset `ToolChoice` reaches the model as `auto`** (review round 63).
-  `GenerateText`, `StreamText` and `ExperimentalStartBatch` pass the model
-  `ToolChoice{Type: "auto"}` when the call (or `PrepareStep`) sets none, as
-  TS `prepareToolChoice` does, so requests with tools now carry the
-  provider's auto tool choice (OpenAI-compatible `"tool_choice": "auto"`,
-  Anthropic `{"type": "auto"}`, Bedrock `toolChoice.auto`, Google `AUTO`), the
-  Gateway always sends `toolChoice`, and the OpenAI completion and Prodia
-  models warn that `toolChoice` is unsupported. Events keep the choice as
-  given, so `ToolLoopAgent.Generate` and `Stream` start and step start events
-  report an unset choice instead of `auto`, as TS ToolLoopAgent passes it
-  through. Z.AI no longer sends `tool_choice` without tools. **Migration:** an
-  OpenAI-compatible server that rejects `"tool_choice": "auto"` (for example
-  vLLM started without `--enable-auto-tool-choice`) needs that support
-  enabled, or wrap the model with a `middleware.LanguageModelMiddleware`
-  whose `TransformParams` resets `params.ToolChoice` to `types.ToolChoice{}`
-  (the v0.5 request).
-- **A `StreamText` `PrepareStep` model applies to its own step only**
-  (review round 64). Each later step starts from the call's `Model` again,
-  and its `PrepareStep` receives that model in `PrepareStepOptions.Model`, as
-  TS (`prepareStepResult?.model ?? model`) and `GenerateText` do. In v0.5.2
-  an override stayed in effect for every following step, and later
-  `PrepareStep` calls received it as `Model`. **Migration:** to keep an
-  override for later steps, return it from every `PrepareStep` call.
-- **Invalid instructions are an `InvalidPromptError`** (review round 65).
-  `InstructionMessages` that are not all system messages fail
-  `GenerateText`, `StreamText`, the legacy `ToolLoopAgent` loop and batch
-  text requests with `*providererrors.InvalidPromptError` ("Invalid prompt:
-  instructions must be a string, SystemModelMessage, or array of
-  SystemModelMessage"), as TS standardizePrompt throws. v0.5.2 returned an
-  `*InvalidArgumentError` ("Invalid argument for parameter instructions:
-  ..."); it is now the error's `Cause`, so `errors.As` still matches it. A
-  missing prompt is reported before invalid instructions, and invalid
-  instructions before empty messages, in TS order. **Migration:** code that
-  compares the error text should match the new text, or use `errors.As`.
-- **`StreamText` calls `OnError` only for error parts** (review round 59).
-  TS calls `onError` for the `error` parts of the stream; a failure it throws
-  inside the stream is reported to `onStepError` and the telemetry `onError`
-  and ends the stream with that error. `OnError` is no longer called when the
-  model stream itself fails (its `Next` returns an error; a provider `error`
-  chunk still reaches `OnError`), or when a URL-backed generated file
-  download, a tool input callback (`OnInputStart`, `OnInputDelta`,
-  `OnInputAvailable`), an approval resolved inside the stream or a tool
-  output conversion (`ToModelOutput`) fails. `Err()`, `ReadAll()`, the
-  stream's error, `OnStepError` and the telemetry `OnError` still report it.
-  These still reach `OnError`: a first model call that fails to open or any
-  failure before the first stream, a later step that fails to prepare or
-  open, an incomplete model stream, a stream retry whose model call fails to
-  open, and a tool context that fails its schema.
-  **Migration:** handle fatal stream failures through `Err()` or
-  `OnStepError`.
-- **A `StreamText` tool choice violation ends the run with `finish`**
-  (review round 59). The `ToolChoiceViolationError` is now an `error` chunk
-  after the model output (`OnError` once, as before), and the run ends with a
-  `finish` chunk (finish reason `error`), `OnFinish` and `OnEnd`, as TS.
-  `Err()` still returns the violation. v0.5.2 ended the run without `finish`,
-  `OnFinish` or `OnEnd`.
-- **Tool results the model returns stay in the assistant message**
-  (review round 58). As TS sets `providerExecuted: true` on every tool result
-  and tool error a model returns, `GenerateText`, `StreamText` and the legacy
-  `ToolLoopAgent` loop now set `ProviderExecuted` on them, so the step's
-  `Response.Messages` keep them in the assistant message next to their call.
-  v0.5.x put a result whose provider left the flag unset (OpenAI Responses
-  `web_search_call`, `image_generation_call` and `program_output`, and the
-  xAI Responses hosted tools in `GenerateText`; a deferred result with no
-  call in the step) in a separate `tool` message, which the next turn sent
-  back as a function output. Results that an adapter passes in
-  `InitialStreamChunks` (WorkflowAgent's resumed approvals) and results of
-  your own tools keep their flag. **Migration:** read provider tool results
-  from the assistant message, not from `RoleTool` messages.
-- **A caller cancellation is not a `*ai.TimeoutError`** (review round 56).
-  With `Timeout.Total` or `Timeout.PerStep` set, a cancelled context came
-  back as a step or total `*ai.TimeoutError` (also in v0.5.x); it now comes
-  back as the cancellation error, as TS rejects with the abort reason. A
-  total deadline that fires during a step reports `Reason: total` instead of
-  `step`. **Migration:** check `errors.Is(err, context.Canceled)` before
-  `errors.As(err, &timeoutErr)`.
-- **`WorkflowAgent` `PrepareStep` overrides carry over to later steps**, as
-  TS's model-call iterator (`currentModel`, `conversationPrompt`,
-  `currentGenerationSettings`): the next step's hook starts from the previous
-  step's model, instructions, tool choice, active tools, runtime and tools
-  contexts and generation settings. v0.5.x reset them each step in
-  `Generate` and kept only the model and instructions in `Stream`. The
-  `OnEnd` messages follow a `PrepareStep` messages or instructions override.
-  In `Stream`, a `PrepareStep` `Headers` or `MaxRetries` now reaches the
-  step's model call (it was ignored), and a negative `MaxRetries` fails the
-  step with `*errors.InvalidArgumentError`, as in `Generate`.
-  A `PrepareStep` `ActiveTools` narrows the call's active tools instead of
-  widening them in `Generate`, and `PrepareCall`/`PrepareStep` see the
-  agent's `ActiveTools` when the call sets none.
-  A failed (not aborted) `Stream` run now fires `OnEnd` after `OnError`,
-  with the steps completed so far, as TS stream mode does. When the run
-  failed by a thrown error (a model call that failed to open, a failed
-  `PrepareStep`), its `Messages` are the input messages only, as TS falls
-  back to `prompt.messages`. A `PrepareStep` that returns different
-  `Headers` replaces the call's, dropping the `ai-sdk-agent/workflow`
-  user-agent suffix (TS). A run whose context is already cancelled fires
-  `OnStart` before `OnAbort`. `WorkflowRunMultiplexer` no longer treats an SSE
-  event named `done` as the end of a run and ends on a `{"type":"finish"}`
-  chunk, as TS `WorkflowChatTransport` does, and returns a failed POST's
-  error before it calls `OnChatSendMessage`, which now sees only successful
-  sends (review round 58).
-  **Migration:** a hook that overrides a value for one step must set it back
-  on later steps.
+#### Core text and streaming
 
-- **`MaxTokens` below 1 is rejected** with `*errors.InvalidArgumentError`
-  ("maxOutputTokens must be >= 1") by `GenerateText`, `StreamText`,
-  `GenerateObject`, `StreamObject`, batch text requests, `PrepareStep`
-  overrides and the legacy `ToolLoopAgent`, as TS. v0.5.x sent it to the
-  provider.
-  **Migration:** leave `MaxTokens` nil, or set it to at least 1.
-- **The legacy `ToolLoopAgent` rejects a negative `MaxRetries`**
-  ("maxRetries must be >= 0") before the model call, as TS. v0.5.x
-  silently made no retries.
-  **Migration:** use 0 to disable retries.
-- **Prompt validation matches TS `standardizePrompt`.** `GenerateText`,
-  `StreamText`, `GenerateObject`, `StreamObject`, batch text requests and the
-  agent calls return `*errors.InvalidPromptError` when neither or both of
-  `Prompt` and `Messages` are set, or when `Messages` is an empty non-nil
-  slice. v0.5.x sent an empty prompt, or ignored `Prompt` when `Messages`
-  was set.
-  **Migration:** pass exactly one of them.
-- **`GenerateObject` and `StreamObject` reject system messages in
-  `Messages`** unless `AllowSystemMessages` (alias `AllowSystemInMessages`)
-  is set, as `GenerateText` already did. The error is
-  `*prompt.UnsupportedSystemMessageError` with the TS text, now shared by
-  all four entry points.
-  **Migration:** put the system prompt in the new `Instructions` field (or
-  `System`), or set `AllowSystemMessages: true` for trusted messages.
-- **ACP lifecycle state persisted by v0.5.x does not resume.** As in TS, the
-  persisted identity is now `agentIdentity`, and the identity, configuration
-  fingerprint and authentication digest are computed the TS way (including
-  the client app version, so TS too rejects state after a package upgrade).
-  Old state fails with "agentIdentity must be a string" or "ACP lifecycle
-  state is incompatible with the configured ...". Affects the Cursor, GitHub
-  Copilot, Grok Build and fx adapters.
-  **Migration:** discard saved ACP lifecycle state and start fresh sessions.
-- **KlingAI `VideoModel()` accepts any model ID.** As in TS, an unknown or
-  empty ID is reported by `DoStart` (and so `GenerateVideo`) as
-  `*providererrors.NoSuchModelError`, not by `VideoModel()`.
-  **Migration:** check the error from the call, not only from `VideoModel()`.
-- **Code mode caps concurrent scripts.** Without a `SetMaxWorkers` call, at
-  most floor(available memory / (`ExecutionPolicy.MemoryLimitBytes` +
-  48 MiB)) invocations run at once, at least 1 and at most 32. A script over
-  the limit fails at once with `*codemode.ConcurrencyError` ("Code mode
-  maxWorkers limit reached (N)."). v0.5.x had no limit.
-  **Migration:** raise the limit with `codemode.SetMaxWorkers(n)` (`0` keeps
-  the v0.5.x unlimited behavior) or retry on `*ConcurrencyError`.
-  `codemode.ResetMaxWorkers()` restores the default.
-- **Code mode has a default 10 s CPU limit.** `ExecutionPolicy.CPUTimeoutMs`
-  (default 10,000) bounds guest JavaScript time per invocation; time in host
-  tools does not count. Exceeding it fails with `*codemode.CPUTimeoutError`.
-  v0.5.x allowed pure JS to run up to the 30 s `TimeoutMs`.
-  **Migration:** raise `CPUTimeoutMs` (and `TimeoutMs`) for long scripts.
-- **OpenAI Responses `promptCacheOptions` is validated.** Only `mode`
-  (`implicit`/`explicit`), `ttl` (`30m`/`12h`) and `prewarm` are sent;
-  unknown keys are dropped, and invalid values such as `ttl: "24h"` fail
-  before the request with `InvalidArgumentError`.
-  **Migration:** use the documented values.
-- **Failed generated-media downloads in BFL, Luma and fal return
-  `*providererrors.ProviderError`**, unwrapped, with the HTTP status text as
-  the message, as TS. They were a wrapped `*DownloadError`.
-  **Migration:** match with `errors.As` on `*providererrors.ProviderError`
-  and check `StatusCode`.
-- **Wrapper providers read only their own API key.** Baseten, Cerebras,
-  DeepInfra, Fireworks, Together, Vercel, Vertex MaaS and the Azure
-  delegates no longer fall back to `OPENAI_API_KEY` (Azure DeepSeek no
-  longer falls back to `DEEPSEEK_API_KEY`). A missing key fails with
-  `LoadAPIKeyError`.
-  **Migration:** set the provider's own variable (for example
-  `FIREWORKS_API_KEY`, `TOGETHER_API_KEY`, `CEREBRAS_API_KEY`) or pass
-  `APIKey`.
-- **A failed harness stop-condition suspension fails the turn.** When a
-  `StopWhen` condition is met in an `Agent` or `AgentSession` and the
-  adapter's `DoSuspendTurn` returns an error (including
-  `CapabilityUnsupportedError`), the turn fails with that error, as in TS.
-  v0.5.x swallowed the error and finished the turn.
-  **Migration:** handle the turn error, or drop `StopWhen` for adapters that
-  cannot suspend.
-- **MCP OAuth rejects unbound pre-registered confidential credentials.**
-  Client information with a client secret (or custom authenticator) but no
-  `Issuer` and no stored authorization server information fails `mcp.Auth`.
-  **Migration:** set `Issuer` to the authorization server the secret was
-  registered with, or return it from
-  `OAuthAuthorizationServerInformationStore`.
-- **`ToolChoice: none` is enforced.** A tool call under `none` fails with
-  `*ai.ToolChoiceViolationError` (check with `ai.IsToolChoiceViolationError`)
-  instead of running the tool. Any tool-choice violation ends the step with
-  finish reason `error`.
-- **Truncated streams finish with `interrupted`.** A provider stream that
-  ends before its finish event reports `types.FinishReasonInterrupted`
-  instead of `FinishReasonOther`, and the step runs no tools.
-  **Migration:** check `FinishReasonInterrupted` if you detect truncation by
-  finish reason.
-- **`StreamText` keeps the provider request body only when asked.** As in
-  TS (`include.requestBody` defaults to false), the step request, the
-  `start-step` chunk and `Request()` carry the body only with
-  `Include: &ai.IncludeOptions{RequestBody: true}`, the default
-  `GenerateText` already had. The `GenerateText` step-end event's request
-  and response bodies follow `Include` the same way.
-  **Migration:** set `Include.RequestBody` (and `ResponseBody`) where you
-  read the bodies.
-- **An OPA HTTP policy response without `result` is not-applicable, not
-  denied**, as TS. A tool call that no rule decides falls through to the
-  other approval rules.
-  **Migration:** policies that relied on "no match means deny" must return an
-  explicit deny (for example a Rego `default` rule).
-- **`EnrichSpan` and runtime context span attributes follow TS.** An
-  `EnrichSpan` object, struct, `nil` or mixed-type array value is dropped
-  instead of written as a JSON string, and a runtime context object is
-  flattened into `ai.settings.context.<path>` attributes.
-  **Migration:** queries on the old JSON-string attributes must read the
-  flattened keys, or `EnrichSpan` must return primitives.
-- **Perplexity embedding provider options are validated like TS.** A
-  `dimensions` that is not a positive integer or an unknown `encodingFormat`
-  fails with `*providererrors.InvalidArgumentError`.
-  **Migration:** pass a positive integer and `base64_int8` or
-  `base64_binary`.
-- **A legacy `ToolLoopAgent` step timeout is `context.DeadlineExceeded`**,
-  not `context.Canceled`, and a `PrepareCall` `Timeout` override now applies
-  to the step, as in TS.
-  **Migration:** check `errors.Is(err, context.DeadlineExceeded)` for step
-  timeouts.
-- **The legacy `ToolLoopAgent` per-step timeout covers the step's tool
-  execution**, as the TS step timeout aborts the signal the tools get.
-  v0.5.x ended the step deadline when the model call returned, so a slow
-  tool could keep running past it. A tool that used to finish after the
-  step deadline is now cancelled: its ctx is done at the deadline, and a
-  step whose timeout expired while its tools ran ends the run with the
-  step deadline (`context.DeadlineExceeded`) before the next step, even
-  when the tool swallowed the cancellation.
-  **Migration:** size `Timeout.PerStep` for the model call plus its tools,
-  or bound the run with `Timeout.Total` or a timeout inside the tool.
-- **UI message streams fail on an out-of-sequence chunk**, as TS: while
-  `CreateUIMessageStreamWithOptions`/`ToUIMessageStream` build the message for
-  an `OnEnd`/`OnStepEnd` callback, a chunk with no matching part (a
-  `text-delta` without `text-start`, a tool result for an unknown call) stops
-  the stream with a `*UIMessageStreamError` on the error channel and as the
-  failed `OnEnd` outcome; it used to go to `OnError` and the stream went on.
-  Without those callbacks the chunks are not processed at all, so `OnError`
-  is no longer called for them, nor a second time for an error chunk.
-  **Migration:** emit each part's start chunk before its deltas, and treat a
-  `*UIMessageStreamError` on the error channel as the stream's failure.
-- **An empty, non-nil `Telemetry.Integrations` means no integrations for
-  that call** (owner decision 2026-10-28), as TS `integrations: []`. v0.5.x
-  treated an empty slice like nil and used the globally registered
-  integrations. nil still uses the global ones, and a non-empty list
-  replaces them.
-  **Migration:** to use the global integrations, leave `Integrations` nil
-  instead of setting an empty slice.
-- **Default telemetry tracer names match TS** (owner decision 2026-10-28).
-  Without a tracer of its own, `LegacyOpenTelemetry` (and `GetTracer`) uses
-  the global tracer named `"ai"` and the GenAI `OpenTelemetry` integration
-  the one named `"gen_ai"`, as TS `trace.getTracer('ai')` /
-  `trace.getTracer('gen_ai')`; v0.5.x used `"ai-sdk"`, and child spans
-  (steps, tool calls, embed, rerank, decide) used a separate `"go-ai"`
-  tracer. Child spans now use the root span's tracer, so a caller-supplied
-  `Tracer` names every span of the call. New constants `LegacyTracerName`
-  and `GenAITracerName`; `TracerName` is deprecated and unused.
-  **Migration:** update instrumentation-scope filters or sampler rules that
-  match `ai-sdk` or `go-ai`, or pass your own `Tracer`.
-- **Tool approval and tool-context errors fail the call** (owner decision
-  2026-10-28), as TS. When a tool approval cannot be resolved (an approval
-  function whose tool context fails its `ContextSchema`, an unknown status,
-  an unsupported `ToolApproval` value) or a tool context fails its
-  `ContextSchema` before execution, `GenerateText` returns the error,
-  `StreamText` errors the stream, and the agents and the legacy
-  `ToolLoopAgent` loop fail the run. v0.5.x sent these to the model as
-  tool-error results and continued. `GenerateText` also resolves every
-  call's approval before running any tool, as TS. Errors returned by a
-  tool's `Execute` still go to the model as tool errors.
-  **Migration:** fix the tool context or approval configuration, or handle
-  the returned `*errors.ValidationError` (field `tool context`).
-- **The `WorkflowAgent` root span is `ai.workflowAgent.stream` for
-  `Generate` too, and opens after the resumed history tools**, as TS, whose
-  `generate` and `stream` share one path. v0.5.x named the generate root
-  `ai.workflowAgent.generate`. The approved tools from the message history
-  now run before the root opens, so the root's messages are the cleaned
-  history and those resumed tool calls get no tool span (TS has no root for
-  them yet); an error before that point reports no telemetry.
-  **Migration:** update queries or dashboards that match
-  `ai.workflowAgent.generate`.
-- **An out-of-range `UIMessageStreamResponseInit.KeepAliveMs` is an error**
-  (review round 63). A pointer to a zero or negative duration used to turn
-  keep-alive off, and one above 2147483647ms enabled it with that interval
-  (a nil `KeepAliveMs` is unchanged: no keep-alive); the `Pipe*`/`Create*` UI
-  message stream response helpers now return `keepAliveMs must be a positive
-  finite timer duration no greater than 2147483647` before writing anything,
-  as TS `createSseStreamWithKeepAlive` throws. **Migration:** leave
-  `KeepAliveMs` nil to turn keep-alive off.
+- **StreamTextResult.Text() is the final step's text** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-text-final-step)
+- **OnFinishEvent aggregates across steps** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#on-finish-aggregates)
+- **Usage.TotalTokens is input + output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#total-tokens)
+- **ReasoningText joins parts with no separator** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#reasoning-text)
+- **StreamText OnError sees error parts only** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-onerror)
+- **A StreamText PrepareStep model applies to one step** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-preparestep-model)
+- **StreamText fires OnLanguageModelCallStart once per attempt** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-call-start-per-attempt)
+- **StreamText keeps the request body only when asked** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-request-body)
+- **The StreamText full stream drops the Go-only markers** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-full-stream-markers)
+- **Truncated streams finish with interrupted** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#truncated-streams-interrupted)
+- **A caller cancellation is not a TimeoutError** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#caller-cancel-not-timeout)
+- **The per-step timeout starts before PrepareStep** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#step-timeout-before-preparestep)
+- **MaxTokens below 1 is rejected** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#max-tokens-min)
+- **Start events report a Prompt string as a user message** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#start-event-messages)
+- **Stop conditions run only when the loop would continue** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stop-conditions-only-when-continue)
+- **Generated IDs use the TS formats** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#generated-id-formats)
+- **JSON is not HTML-escaped** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#json-not-html-escaped)
+- **The final SSE event needs its blank line** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#sse-final-event)
+
+#### Prompts and validation
+
+- **Prompt validation matches TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#prompt-validation)
+- **GenerateObject and StreamObject reject system messages in Messages** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#object-system-messages)
+- **Invalid instructions are an InvalidPromptError** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#invalid-instructions)
+- **Tool calls without results fail the prompt** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#missing-tool-results)
+- **The JSON Schema validator enforces more keywords** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#json-schema-validator)
+
+#### Tools
+
+- **Tools in a step run concurrently** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tools-concurrent)
+- **An unset ToolChoice reaches the model as auto** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-choice-auto)
+- **ToolChoice none is enforced** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-choice-none)
+- **A StreamText tool choice violation ends with finish** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-choice-violation-finish)
+- **A provider-executed tool call is never run locally** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provider-executed-not-local)
+- **Provider tool results stay in the assistant message** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provider-tool-results-assistant)
+- **ToolResults holds no bookkeeping entries** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-results-bookkeeping)
+- **Tool approval and tool-context errors fail the call** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-errors-fail-call)
+- **PrepareStep ActiveTools and ProviderOptions are applied** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#preparestep-active-tools)
+- **Some provider tools are client-executed** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#client-executed-provider-tools)
+
+#### Agents and approvals
+
+- **Legacy ToolLoopAgent approval IDs are generated** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-approval-ids)
+- **Legacy ToolLoopAgent tool results list provider results** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-tool-results-provider)
+- **Legacy ToolLoopAgent request messages leave out the instructions** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-request-messages)
+- **The legacy ToolLoopAgent rejects a negative MaxRetries** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-negative-maxretries)
+- **A legacy ToolLoopAgent step timeout is context.DeadlineExceeded** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-step-timeout-deadline)
+- **The legacy ToolLoopAgent step timeout covers tool execution** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-step-timeout-tools)
+- **An empty ActiveTools leaves no tools active in the legacy loop** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-empty-active-tools)
+- **AI Gateway authentication errors are wrapped** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gateway-auth-error)
+- **WorkflowAgent approval IDs are approval-toolCallId** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-approval-ids)
+- **Resumed approval results carry their model output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-resumed-output)
+- **WorkflowAgent PrepareStep overrides carry over to later steps** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-preparestep-carryover)
+- **A failed WorkflowAgent Stream run fires OnEnd** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-stream-failed-onend)
+- **WorkflowAgent.Stream has no default step limit** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-stream-no-step-limit)
+- **The WorkflowAgent root span is ai.workflowAgent.stream for Generate too** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-root-span)
+- **WorkflowRunMultiplexer ends on a finish chunk** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-multiplexer-finish)
+
+#### UI message streams
+
+- **UI message streams fail on an out-of-sequence chunk** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-out-of-sequence)
+- **An out-of-range KeepAliveMs is an error** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#keep-alive-range)
+
+#### Telemetry and events
+
+- **An empty Telemetry.Integrations turns telemetry off for the call** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#empty-integrations)
+- **Telemetry spans come from the ai and gen_ai tracers** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tracer-names)
+- **EnrichSpan and runtime context attributes follow TS** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#enrich-span-attributes)
+- **Evaluate telemetry and event names are decide names** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#decide-telemetry-names)
+- **A cancelled GenerateText reports OnError to telemetry** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#generate-cancel-telemetry)
+
+#### Errors
+
+- **Errors are returned without Go prefixes** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#errors-unprefixed)
+- **Error messages quote names as TS does** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#error-name-quoting)
+- **Non-JSON error bodies use the HTTP status text** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#non-json-error-body)
+
+#### Providers
+
+- **Provider IDs follow TS config.provider** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provider-ids)
+- **Responses and stream chunks are validated** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#response-validation)
+- **Invalid provider options fail the call** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provider-options-validation)
+- **Anthropic, Bedrock and Google content is in response order** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#result-content-order)
+- **OpenAI Responses promptCacheOptions is validated** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-prompt-cache-options)
+- **OpenAI chat streams fail the call on an error before output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-chat-stream-error)
+- **Wrapper providers read only their own API key** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#wrapper-api-keys)
+- **Failed generated-media downloads return ProviderError** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#media-download-errors)
+- **KlingAI VideoModel() accepts any model ID** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#klingai-video-model)
+- **Perplexity embedding provider options are validated** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#perplexity-embedding-options)
+
+#### MCP
+
+- **MCP OAuth rejects unbound pre-registered confidential credentials** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-oauth-issuer)
+- **MCP clients have no default request timeout** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-no-default-timeout)
+
+#### Code mode
+
+- **Code mode has a default 10 s CPU limit** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codemode-cpu-limit)
+- **Code mode caps concurrent scripts** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codemode-max-workers)
+- **wazero is v1.12.0** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#wazero-version)
+
+#### Harness, ACP and fx
+
+- **ACP lifecycle state persisted by v0.5.x does not resume** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#acp-state)
+- **A failed harness stop-condition suspension fails the turn** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#harness-stop-suspend)
+- **Harness adapters identify as ai-sdk-harness-id** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#harness-client-app)
+- **With AgentSettings.Telemetry unset, the harness agent fires no telemetry** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#harness-telemetry-unset)
+- **Harness usage is the turn total, and a failed OAuth refresh fails start** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#harness-usage-oauth)
+- **fx: the built-in terminal tool is removed** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#fx-terminal-removed)
+- **fx has an opt-in libfx runtime** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#fx-libfx-opt-in)
+
+#### Policy
+
+- **An OPA HTTP policy response without result is not-applicable** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#opa-undefined-result)
+
+#### Already changed in v0.5.3
+
+- **Cohere uses the v2 API (v0.5.3)** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#v053-cohere-v2)
+- **Every provider retries (v0.5.3)** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#v053-retries)
+- **The default HTTP client has no whole-request timeout (v0.5.3)** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#v053-http-timeout)
+- **A call to an unknown tool does not stop the loop (v0.5.3)** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#v053-unknown-tool)
 
 ---
 
 ## Behavior changes
 
-These match TS and are unlikely to need code changes, but can change output.
+These match TS and can change output. The ones that can need an edit are
+also listed, with a link to their migration entry, under
+[Breaking changes](#breaking-changes-with-migration).
 
 ### Core
 
