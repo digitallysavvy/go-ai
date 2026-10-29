@@ -1401,6 +1401,13 @@ func (a *ToolLoopAgent) prepareCallConfig(ctx context.Context, stepNum int, prom
 	if a.config.PrepareCall != nil {
 		callConfig = a.config.PrepareCall(ctx, callConfig)
 	}
+	if len(callConfig.InstructionMessages) > 0 {
+		// Instructions given as system messages replace the text
+		// instructions (TS instructions is one value), as GenerateText
+		// reports them: the start, step-start and model-call events carry
+		// the messages and no text instructions.
+		callConfig.System = ""
+	}
 	if callConfig.Model == nil {
 		callConfig.Model = a.config.Model
 	}

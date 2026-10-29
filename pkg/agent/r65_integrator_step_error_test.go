@@ -141,3 +141,46 @@ func TestR66LegacyLoopReturnsWrappedGatewayError(t *testing.T) {
 		}
 	}
 }
+
+// Instructions given as system messages replace the text instructions in the
+// legacy loop's events, as GenerateText reports them (TS instructions is a
+// single value): Instructions is empty next to InstructionMessages.
+func TestR66LegacyLoopInstructionMessagesReplaceSystemInEvents(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	record := func(label, instructions string, n int) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, label+"="+instructions)
+		if n != 1 {
+			got = append(got, label+" messages missing")
+		}
+	}
+	cfg := AgentConfig{
+		Model: &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		}},
+		System:              "text",
+		InstructionMessages: []types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "msg"}}}},
+		OnLanguageModelCallStart: func(_ context.Context, e ai.LanguageModelCallStartEvent) {
+			record("lm", e.Instructions, len(e.InstructionMessages))
+		},
+	}
+	_, err := NewToolLoopAgent(cfg).GenerateAgent(context.Background(), AgentGenerateOptions{
+		Prompt: "go",
+		OnStart: func(_ context.Context, e ai.OnStartEvent) {
+			record("start", e.Instructions, len(e.InstructionMessages))
+		},
+		OnStepStart: func(_ context.Context, e ai.OnStepStartEvent) {
+			record("step", e.Instructions, len(e.InstructionMessages))
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if want := "start=,step=,lm="; strings.Join(got, ",") != want {
+		t.Fatalf("events = %q, want %q", strings.Join(got, ","), want)
+	}
+}
