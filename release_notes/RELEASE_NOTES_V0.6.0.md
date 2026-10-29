@@ -472,6 +472,12 @@ These match TS and are unlikely to need code changes, but can change output.
   unset** (review round 60), as `GenerateText` and TS do, so the provider's
   default denial text reaches the model instead of "Tool call to X was denied
   by ToolApproval policy." (the Go-only `ToolApprover` keeps that text).
+- **A legacy `ToolLoopAgent` provider-executed call adds no null tool result**
+  (review round 61): a call to a configured provider tool (web search, code
+  execution) without an approval put a second `ToolResultContent` with a
+  JSON `null` output into the step content and the assistant response
+  message, next to the provider's own result. The step now holds only the
+  provider's result, as `GenerateText` and TS `convertLanguageModelContent`.
 - **`StreamText` terminal parts pass through `ExperimentalTransform`**
   (review round 59), as TS's outer-stream parts do: the `abort` chunk and the
   `error` chunks of an incomplete model stream, a step that fails to open or

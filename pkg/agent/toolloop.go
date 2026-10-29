@@ -2802,12 +2802,18 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 		if result.ApprovalStatus == types.ToolApprovalStatusApproved || result.ApprovalStatus == types.ToolApprovalStatusDenied {
 			parts = &withApproval
 		}
-		if result.ProviderExecuted && result.ApprovalStatus == "" {
+		hasApproval := result.ApprovalStatus == types.ToolApprovalStatusUserApproval ||
+			result.ApprovalStatus == types.ToolApprovalStatusApproved ||
+			result.ApprovalStatus == types.ToolApprovalStatusDenied
+		// A provider-executed call without an approval is the pending marker
+		// (its result, if any, is the provider's own content part), whatever
+		// its approval status ("" or not-applicable): it adds no content, as
+		// in GenerateText. Only the synthetic WorkflowAgent empty result
+		// (ContinueOnMissingProviderResult) carries an output.
+		if result.ProviderExecuted && !hasApproval && result.Result == nil && result.Error == nil && result.ModelOutput == nil {
 			continue
 		}
-		if result.ApprovalStatus == types.ToolApprovalStatusUserApproval ||
-			result.ApprovalStatus == types.ToolApprovalStatusApproved ||
-			result.ApprovalStatus == types.ToolApprovalStatusDenied {
+		if hasApproval {
 			toolCall := types.ToolCall{
 				ID:                  result.ToolCallID,
 				ToolName:            result.ToolName,
