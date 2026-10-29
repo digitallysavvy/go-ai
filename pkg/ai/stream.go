@@ -2343,7 +2343,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				// With tool choice none the call is rejected at the end of the
 				// model call, so no approval is requested for it.
 				if !withholdToolParts {
-					if pre, approvalChunks, approvalParts, handled := eagerApprovalChunks(stepCtx, refined, &parsed, stepExecutionTools, currentMessages, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, opts.ExperimentalToolApprovalSecret, remapGenerateID); handled {
+					if pre, approvalChunks, approvalParts, handled := eagerApprovalChunks(stepCtx, refined, &parsed, stepExecutionTools, currentMessages, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, opts.ExperimentalToolApprovalSecret, internalApprovalID(opts.Internal, remapGenerateID)); handled {
 						if pre.err != nil {
 							// TS resolveToolApproval throws inside the
 							// stream transform: the stream errors.
@@ -2869,6 +2869,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				experimentalSandbox: opts.ExperimentalSandbox,
 				toolExecutionMs:     toolExecutionMs,
 				generateID:          remapGenerateID,
+				approvalID:          internalApprovalID(opts.Internal, remapGenerateID),
 				executionBlocked:    !isToolExecutionAllowedFinishReason(r.finishReason),
 				preApprovals:        eagerApprovals,
 				onPreliminary: func(result types.ToolResult) {

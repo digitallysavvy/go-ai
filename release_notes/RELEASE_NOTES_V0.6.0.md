@@ -198,6 +198,11 @@ Each item has before/after code in the
 
 ### Behavior changes that can break callers
 
+- **`WorkflowAgent` approval IDs are `approval-<toolCallId>`** (review round
+  60), in `Generate` and `Stream`, as TS WorkflowAgent names them; the
+  signature covers that ID. `Generate` used the tool call ID and `Stream` a
+  random ID. **Migration:** answer an approval with the `ApprovalID` of its
+  `ToolApprovalRequestContent`, not the tool call ID.
 - **`StreamText` calls `OnError` only for error parts** (review round 59).
   TS calls `onError` for the `error` parts of the stream; a failure it throws
   inside the stream is reported to `onStepError` and the telemetry `onError`
@@ -454,6 +459,17 @@ These match TS and are unlikely to need code changes, but can change output.
 
 ### Core
 
+- **A provider tool-approval-request in a generate response takes its call**
+  (review round 60): in `GenerateText`, batch text results and the legacy
+  `ToolLoopAgent` loop, the `ToolApprovalRequestContent` an MCP provider
+  returns carries the parsed `ToolCall`, as in `StreamText` and TS
+  `convertLanguageModelContent`; one that names no call of the response fails
+  with `ToolCallNotFoundForApprovalError`. The legacy loop now pauses on such
+  a request (it read `ToolCall.ProviderExecuted`, which was empty).
+- **A legacy `ToolLoopAgent` `ToolApproval` denial without a reason leaves it
+  unset** (review round 60), as `GenerateText` and TS do, so the provider's
+  default denial text reaches the model instead of "Tool call to X was denied
+  by ToolApproval policy." (the Go-only `ToolApprover` keeps that text).
 - **`StreamText` terminal parts pass through `ExperimentalTransform`**
   (review round 59), as TS's outer-stream parts do: the `abort` chunk and the
   `error` chunks of an incomplete model stream, a step that fails to open or
@@ -962,6 +978,10 @@ in v0.5.3.
 
 ### Workflow, MCP, code mode and harness
 
+- `WorkflowChatTransport`: a reconnect stream that fails after its `finish`
+  chunk (a malformed frame or a read error) counts as a consecutive error, as
+  TS's catch does, so reaching `MaxConsecutiveErrors` still fails the
+  reconnect (review round 60).
 - `WorkflowChatTransport` and `WorkflowRunMultiplexer` return a missing
   `x-workflow-run-id` header or an `OnChatSendMessage` error at once instead
   of reading the rest of the run's stream first (TS throws). The multiplexer

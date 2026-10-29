@@ -925,6 +925,8 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 				return nil, err
 			}
 
+			assignAgentApprovalIDs(toolResults, callConfig.Internal)
+
 			// WorkflowAgent: a provider-executed call with no result gets an
 			// empty text result (TS resolveProviderToolResult) instead of the
 			// pending marker, so the loop continues with a text output.
@@ -2173,25 +2175,40 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			// throws and fails the run (no tool-error result).
 			return nil, approvalErr
 		}
+		approverDenied := false
 		if a.config.ToolApprovalRequired && a.config.ToolApprover != nil && approval.Status == types.ToolApprovalStatusNotApplicable {
 			if !a.config.ToolApprover(call) {
 				approval = types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied}
+				approverDenied = true
 			}
 		}
 		switch approval.Status {
 		case types.ToolApprovalStatusDenied:
+			// A ToolApproval denial without a reason leaves it unset, as
+			// GenerateText and TS do, so each provider converter applies its
+			// own default denial text. The Go-only ToolApprover names its
+			// policy.
+			policyText := fmt.Sprintf("Tool call to %s was denied by ToolApproval policy.", call.ToolName)
 			reason := approval.Reason
-			if reason == nil {
-				reason = strPtr(fmt.Sprintf("Tool call to %s was denied by ToolApproval policy.", call.ToolName))
+			if reason == nil && approverDenied {
+				reason = strPtr(policyText)
 			}
-			rejectionErr := fmt.Errorf("%s", *reason)
+			reasonText := ""
+			if reason != nil {
+				reasonText = *reason
+			}
+			errText := reasonText
+			if errText == "" {
+				errText = policyText
+			}
+			rejectionErr := errors.New(errText)
 			results = append(results, types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
 				Title:            call.Title,
 				Input:            call.Arguments,
 				Error:            rejectionErr,
-				Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: *reason},
+				Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: reasonText},
 				ApprovalStatus:   types.ToolApprovalStatusDenied,
 				ApprovalReason:   reason,
 				ProviderExecuted: providerExecuted,
@@ -2526,6 +2543,12 @@ func contentFromGenerateResult(result *types.GenerateResult, toolCalls []types.T
 					parts[i] = agentContentPartFromToolCall(call)
 				}
 			}
+		case types.ToolApprovalRequestContent:
+			parts[i] = agentApprovalRequestWithToolCall(p, toolCalls)
+		case *types.ToolApprovalRequestContent:
+			if p != nil {
+				parts[i] = agentApprovalRequestWithToolCall(*p, toolCalls)
+			}
 		}
 	}
 	for _, call := range toolCalls {
@@ -2536,6 +2559,19 @@ func contentFromGenerateResult(result *types.GenerateResult, toolCalls []types.T
 	}
 	parts = replaceAgentToolResultContentParts(parts, toolCalls)
 	return parts
+}
+
+// agentApprovalRequestWithToolCall gives a provider tool-approval-request part
+// (an MCP server asking for approval of its call) the parsed call it belongs
+// to, as TS convertLanguageModelContent does ({type, approvalId, toolCall}).
+func agentApprovalRequestWithToolCall(p types.ToolApprovalRequestContent, calls []types.ToolCall) types.ToolApprovalRequestContent {
+	if p.ToolCallID == "" {
+		p.ToolCallID = p.ToolCall.ID
+	}
+	if call, ok := agentToolCallByID(calls, p.ToolCallID); ok {
+		p.ToolCall = call
+	}
+	return p
 }
 
 // agentDeferredToolResultMetadata gives a deferred provider tool result (a
@@ -2715,6 +2751,42 @@ func agentContentHasText(parts []types.ContentPart) bool {
 	return false
 }
 
+// assignAgentApprovalIDs names the approvals of a step's tool calls with
+// InternalOptions.ApprovalID when it is set (TS WorkflowAgent:
+// `approval-<toolCallId>`). Otherwise an approval keeps the call's ID, as in
+// earlier releases.
+func assignAgentApprovalIDs(results []types.ToolResult, internal *ai.InternalOptions) {
+	if internal == nil || internal.ApprovalID == nil {
+		return
+	}
+	for i := range results {
+		switch results[i].ApprovalStatus {
+		case types.ToolApprovalStatusUserApproval, types.ToolApprovalStatusApproved, types.ToolApprovalStatusDenied:
+		default:
+			continue
+		}
+		id := internal.ApprovalID(results[i].ToolCallID)
+		results[i].ApprovalID = id
+		if request, ok := results[i].Result.(map[string]interface{}); ok && request["type"] == "tool-approval-request" {
+			copied := make(map[string]interface{}, len(request))
+			for k, v := range request {
+				copied[k] = v
+			}
+			copied["approvalId"] = id
+			results[i].Result = copied
+		}
+	}
+}
+
+// agentApprovalID is a result's approval ID: the assigned one, else the
+// call's ID.
+func agentApprovalID(result types.ToolResult) string {
+	if result.ApprovalID != "" {
+		return result.ApprovalID
+	}
+	return result.ToolCallID
+}
+
 // agentToolResultsToContentParts converts tool results to content parts. When
 // secret is non-nil, approval requests are signed so they can be verified on
 // resume. The parts are ordered as TS convertLanguageModelContent (and
@@ -2749,10 +2821,10 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 			}
 			signature := ""
 			if secret != nil {
-				signature, _ = ai.SignToolApproval(secret, result.ToolCallID, result.ToolCallID, result.ToolName, result.Input)
+				signature, _ = ai.SignToolApproval(secret, agentApprovalID(result), result.ToolCallID, result.ToolName, result.Input)
 			}
 			approvalRequest := types.ToolApprovalRequestContent{
-				ApprovalID:  result.ToolCallID,
+				ApprovalID:  agentApprovalID(result),
 				ToolCallID:  result.ToolCallID,
 				ToolCall:    toolCall,
 				Signature:   signature,
@@ -2773,7 +2845,7 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 				reason = *result.ApprovalReason
 			}
 			responses = append(responses, types.ToolApprovalResponseContent{
-				ApprovalID:       result.ToolCallID,
+				ApprovalID:       agentApprovalID(result),
 				ToolCallID:       result.ToolCallID,
 				ToolCall:         toolCall,
 				Approved:         result.ApprovalStatus == types.ToolApprovalStatusApproved,

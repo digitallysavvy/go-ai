@@ -1650,7 +1650,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// call's approval in the same pass, before any tool runs (TS
 		// generateText: per valid call with a known tool, OnInputStart, then
 		// OnInputAvailable, then resolveToolApproval; an error fails the call).
-		approvalIDs := toolCallEventCallbacks{generateID: generateID}
+		approvalIDs := toolCallEventCallbacks{generateID: generateID, approvalID: internalApprovalID(opts.Internal, generateID)}
 		preApprovals, err := notifyToolCallsAndResolveApprovals(stepCtx, genResult.ToolCalls, stepExecutionTools, stepMessages, runtimeContext, toolsContext, opts.ToolApproval, resolveApprovals, approvalIDs.newApprovalID)
 		if err != nil {
 			return nil, err
@@ -1678,6 +1678,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				experimentalSandbox: stepSandbox,
 				toolExecutionMs:     map[string]int64{},
 				generateID:          generateID,
+				approvalID:          approvalIDs.approvalID,
 				executionBlocked:    !isToolExecutionAllowedFinishReason(genResult.FinishReason),
 			}
 			toolCallbacks.preApprovals = preApprovals
@@ -2245,6 +2246,8 @@ type toolCallEventCallbacks struct {
 	// generateID creates approval IDs (TS generateId, InternalOptions.GenerateID
 	// here); nil uses a random ID.
 	generateID IDGenerator
+	// approvalID, when set, names each approval (InternalOptions.ApprovalID).
+	approvalID func(toolCallID string) string
 	// executionBlocked resolves approvals but skips local tool execution.
 	// Set when the step finished with a finish reason that does not allow
 	// automatic tool execution (TS isToolExecutionAllowedFinishReason).
@@ -2261,7 +2264,10 @@ type toolCallEventCallbacks struct {
 
 // newApprovalID returns an approval ID from the call's ID generator (TS
 // generateId()).
-func (c toolCallEventCallbacks) newApprovalID() string {
+func (c toolCallEventCallbacks) newApprovalID(toolCallID string) string {
+	if c.approvalID != nil {
+		return c.approvalID(toolCallID)
+	}
 	if c.generateID != nil {
 		return c.generateID()
 	}
@@ -2314,7 +2320,7 @@ func unwrapToolCallFailure(err error) error {
 // generateText does in its tool-call notification loop: an error in either
 // fails the call before any tool executes. Approval ids are generated in call
 // order, only for calls whose approval applies.
-func notifyToolCallsAndResolveApprovals(ctx context.Context, calls []types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}, toolApproval interface{}, resolveApprovals bool, newID func() string) (map[string]preResolvedApproval, error) {
+func notifyToolCallsAndResolveApprovals(ctx context.Context, calls []types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}, toolApproval interface{}, resolveApprovals bool, newID func(toolCallID string) string) (map[string]preResolvedApproval, error) {
 	if toolsCtx == nil {
 		toolsCtx = map[string]interface{}{}
 	}
@@ -2340,7 +2346,7 @@ func notifyToolCallsAndResolveApprovals(ctx context.Context, calls []types.ToolC
 		pre := preResolvedApproval{approval: approval}
 		switch approval.Status {
 		case types.ToolApprovalStatusUserApproval, types.ToolApprovalStatusApproved, types.ToolApprovalStatusDenied:
-			pre.id = newID()
+			pre.id = newID(call.ID)
 		}
 		out[call.ID] = pre
 	}
@@ -2542,7 +2548,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			if approval.Status == types.ToolApprovalStatusUserApproval ||
 				approval.Status == types.ToolApprovalStatusApproved ||
 				approval.Status == types.ToolApprovalStatusDenied {
-				approvalID = callbacks.newApprovalID()
+				approvalID = callbacks.newApprovalID(call.ID)
 			}
 		}
 		if approvalErr != nil {
