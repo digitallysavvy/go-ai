@@ -238,12 +238,12 @@ func internalGenerateCallID(internal *InternalOptions) IDGenerator {
 	return newCallID
 }
 
-// EmptyProviderResults answers the provider-executed calls of a step that got
+// emptyProviderResults answers the provider-executed calls of a step that got
 // no result in content with the empty text result TS WorkflowAgent sends
 // (warning for each). It is the building block of
-// InternalOptions.ContinueOnMissingProviderResult for loops outside this
-// package.
-func EmptyProviderResults(calls []types.ToolCall, tools []types.Tool, content []types.ContentPart, finishReason types.FinishReason, provider, model string) []types.ToolResult {
+// InternalOptions.ContinueOnMissingProviderResult for the legacy agent loop
+// (through pkg/internal/aibridge).
+func emptyProviderResults(calls []types.ToolCall, tools []types.Tool, content []types.ContentPart, finishReason types.FinishReason, provider, model string) []types.ToolResult {
 	if !providerResultFinishAllowed(finishReason) {
 		return nil
 	}
@@ -313,16 +313,10 @@ func workflowBlockedToolStep(internal *InternalOptions, reason types.FinishReaso
 	return true
 }
 
-// WorkflowBlockedToolStep is workflowBlockedToolStep for loops outside this
-// package (pkg/agent).
-func WorkflowBlockedToolStep(internal *InternalOptions, reason types.FinishReason, content []types.ContentPart) bool {
-	return workflowBlockedToolStep(internal, reason, content)
-}
-
-// WorkflowBlockedResponse returns the tool calls and content of a blocked
+// workflowBlockedResponse returns the tool calls and content of a blocked
 // workflow step as TS puts them in the assistant message: invalid local calls
 // and their tool-error parts are dropped.
-func WorkflowBlockedResponse(calls []types.ToolCall, content []types.ContentPart) ([]types.ToolCall, []types.ContentPart) {
+func workflowBlockedResponse(calls []types.ToolCall, content []types.ContentPart) ([]types.ToolCall, []types.ContentPart) {
 	outCalls := make([]types.ToolCall, 0, len(calls))
 	for _, c := range calls {
 		if c.Invalid && !c.ProviderExecuted {

@@ -1034,10 +1034,9 @@ func withDeferredToolResultMetadata(content []types.ContentPart, calls []types.T
 	return out, true
 }
 
-// ValidateToolResultParts runs the "Tool call <id> not found." check of TS
-// convertLanguageModelContent for callers outside this package (the legacy
-// agent loop). tools is the step's tool set.
-func ValidateToolResultParts(content []types.ContentPart, calls []types.ToolCall, tools []types.Tool) error {
+// validateToolResultPartsOf is validateToolResultParts for a step's tool set
+// (batch results and, through pkg/internal/aibridge, the legacy agent loop).
+func validateToolResultPartsOf(content []types.ContentPart, calls []types.ToolCall, tools []types.Tool) error {
 	return validateToolResultParts(content, calls, toolsByNameOf(tools))
 }
 

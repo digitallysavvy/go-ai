@@ -1785,7 +1785,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			// Build response messages for this (final) step.
 			finalCalls, finalContent := genResult.ToolCalls, stepResult.Content
 			if workflowBlocked {
-				finalCalls, finalContent = WorkflowBlockedResponse(finalCalls, finalContent)
+				finalCalls, finalContent = workflowBlockedResponse(finalCalls, finalContent)
 			}
 			finalMsgs := providerutils.ConvertToResponseMessages(
 				finalCalls,

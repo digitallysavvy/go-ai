@@ -259,12 +259,12 @@ func normalizePerToolApprovalValue(
 	}
 }
 
-// ValidateToolContext is TS resolveToolContext for one tool: the tool's entry in
+// validateToolContext is TS resolveToolContext for one tool: the tool's entry in
 // the tools context with its context schema's defaults applied, validated
 // against that schema. A tool without a context schema gets the value back
 // unchanged. A schema failure is a ValidationError carrying the field
 // "tool context" and the tool name.
-func ValidateToolContext(tool *types.Tool, toolName string, ctxValue interface{}) (interface{}, error) {
+func validateToolContext(tool *types.Tool, toolName string, ctxValue interface{}) (interface{}, error) {
 	if tool == nil || tool.ContextSchema == nil {
 		return ctxValue, nil
 	}
@@ -281,7 +281,7 @@ func ValidateToolContext(tool *types.Tool, toolName string, ctxValue interface{}
 }
 
 func validateToolContextFor(tool *types.Tool, toolName string, ctxValue interface{}) (interface{}, error) {
-	return ValidateToolContext(tool, toolName, ctxValue)
+	return validateToolContext(tool, toolName, ctxValue)
 }
 
 func mergeProviderMetadataMaps(primary, fallback map[string]interface{}) map[string]interface{} {

@@ -450,7 +450,7 @@ func parseBatchToolCalls(ctx context.Context, result *types.GenerateResult, tool
 			return nil, err
 		}
 	}
-	if err := ValidateToolResultParts(resolved, parsedCalls, tools); err != nil {
+	if err := validateToolResultPartsOf(resolved, parsedCalls, tools); err != nil {
 		return nil, err
 	}
 	resolved, _ = withDeferredToolResultMetadata(resolved, parsedCalls, toolsByNameOf(tools))

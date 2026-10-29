@@ -2522,7 +2522,7 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 				"type":       "tool-input-error",
 				"toolCallId": chunk.ToolCall.ID,
 				"toolName":   chunk.ToolCall.ToolName,
-				"input":      InvalidToolCallInput(*chunk.ToolCall),
+				"input":      invalidToolCallInput(*chunk.ToolCall),
 				"errorText":  opts.OnError(chunk.ToolCall.Error),
 			}
 			if chunk.ToolCall.ProviderExecuted || chunk.ToolCall.ProviderExecutedSet {
@@ -2860,10 +2860,10 @@ func streamChunkError(chunk *provider.StreamChunk) error {
 	return errors.New(chunk.Text)
 }
 
-// InvalidToolCallInput is the input of an invalid tool call as TS reports it
+// invalidToolCallInput is the input of an invalid tool call as TS reports it
 // in a tool-input-error chunk: the parsed value when the model's input text
 // parsed, the text itself otherwise (parseToolCall's catch block).
-func InvalidToolCallInput(call types.ToolCall) interface{} {
+func invalidToolCallInput(call types.ToolCall) interface{} {
 	if call.Arguments != nil {
 		return call.Arguments
 	}

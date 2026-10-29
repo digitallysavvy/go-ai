@@ -831,7 +831,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		// WorkflowAgent: a step that finished with a reason other than stop or
 		// tool-calls ends the run; its tool calls are neither executed nor
 		// answered (TS modelCallIterator shouldProcessTools).
-		workflowBlocked := ai.WorkflowBlockedToolStep(callConfig.Internal, stepResult.FinishReason, stepResult.Content)
+		workflowBlocked := aibridge.WorkflowBlockedToolStep(callConfig.Internal != nil && callConfig.Internal.ContinueOnMissingProviderResult, stepResult.FinishReason, stepResult.Content)
 		if workflowBlocked {
 			shouldContinue = false
 		}
@@ -941,7 +941,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			// empty text result (TS resolveProviderToolResult) instead of the
 			// pending marker, so the loop continues with a text output.
 			if callConfig.Internal != nil && callConfig.Internal.ContinueOnMissingProviderResult {
-				for _, synthetic := range ai.EmptyProviderResults(stepResult.ToolCalls, callConfig.Tools, stepResult.Content, stepResult.FinishReason, stepResult.Model.Provider, stepResult.Model.ModelID) {
+				for _, synthetic := range aibridge.EmptyProviderResults(stepResult.ToolCalls, callConfig.Tools, stepResult.Content, stepResult.FinishReason, stepResult.Model.Provider, stepResult.Model.ModelID) {
 					for i := range toolResults {
 						if toolResults[i].ToolCallID == synthetic.ToolCallID && toolResults[i].ProviderExecuted && toolResults[i].Result == nil && toolResults[i].Error == nil {
 							toolResults[i].Result = synthetic.Result
@@ -1018,7 +1018,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		stepResult.Performance.StepTimeMs = time.Since(stepStarted).Milliseconds()
 		responseCalls := stepResult.ToolCalls
 		if workflowBlocked {
-			responseCalls, responseContent = ai.WorkflowBlockedResponse(responseCalls, responseContent)
+			responseCalls, responseContent = aibridge.WorkflowBlockedResponse(responseCalls, responseContent)
 		}
 		responseMessages := providerutils.ConvertToResponseMessages(responseCalls, responseContent, stepToolResults)
 		stepResult.ResponseMessages = responseMessages
@@ -1995,7 +1995,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	toolCalls = enrichAgentToolCallMetadata(toolCalls, callConfig.Tools)
 	// URL-backed generated files are downloaded once, before anything observes
 	// the content (TS convertLanguageModelContent).
-	if resolvedContent, resolveErr := ai.ResolveContentFiles(stepCtx, genResult.Content); resolveErr != nil {
+	if resolvedContent, resolveErr := aibridge.ResolveContentFiles(stepCtx, genResult.Content); resolveErr != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, resolveErr
 	} else if len(resolvedContent) > 0 {
 		resolvedResult := *genResult
@@ -2004,7 +2004,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	}
 	// A tool-result part must answer a tool call of the same response (TS
 	// convertLanguageModelContent: "Tool call <id> not found.").
-	if err := ai.ValidateToolResultParts(genResult.Content, toolCalls, callConfig.Tools); err != nil {
+	if err := aibridge.ValidateToolResultParts(genResult.Content, toolCalls, callConfig.Tools); err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
 	if content, changed := agentDeferredToolResultMetadata(genResult.Content, toolCalls, callConfig.Tools); changed {
@@ -2072,7 +2072,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	stepTel.modelCallEnd(stepModel, genResult, modelCallContent, stepResponse, modelCallMs)
 	// An enforced tool choice (required, or a named tool) must produce a tool
 	// call, as in GenerateText (TS ToolChoiceViolationError).
-	if violation := ai.CheckToolChoiceViolation(genOpts.ToolChoice, genResult.ToolCalls, genResult.FinishReason, stepModel.Provider(), stepModel.ModelID(), contentFromGenerateResult(genResult, genResult.ToolCalls)); violation != nil {
+	if violation := aibridge.CheckToolChoiceViolation(genOpts.ToolChoice, genResult.ToolCalls, genResult.FinishReason, stepModel.Provider(), stepModel.ModelID(), contentFromGenerateResult(genResult, genResult.ToolCalls)); violation != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, violation
 	}
 	// The tools are notified of their calls (and the approvals resolved) by
@@ -2496,7 +2496,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 		return results, nil
 	}
 	results, err := a.runToolCalls(ctx, toolCalls, runCall)
-	ai.MarkDynamicToolResults(results, toolCalls)
+	aibridge.MarkDynamicToolResults(results, toolCalls)
 	return results, err
 }
 
@@ -3037,7 +3037,7 @@ func (a *ToolLoopAgent) notifyToolCallsAndResolveApprovals(ctx context.Context, 
 		if call.Invalid || findAgentTool(call.ToolName, tools) == nil {
 			continue
 		}
-		if err := ai.InvokeToolInputCallbacks(ctx, []types.ToolCall{call}, tools, messages, toolsContext); err != nil {
+		if err := aibridge.InvokeToolInputCallbacks(ctx, []types.ToolCall{call}, tools, messages, toolsContext); err != nil {
 			return nil, err, nil
 		}
 		if !resolve {
@@ -3068,7 +3068,7 @@ func findAgentTool(toolName string, tools []types.Tool) *types.Tool {
 }
 
 func validateAgentToolContext(tool *types.Tool, toolName string, ctxValue interface{}) (interface{}, error) {
-	return ai.ValidateToolContext(tool, toolName, ctxValue)
+	return aibridge.ValidateToolContext(tool, toolName, ctxValue)
 }
 
 func strPtr(s string) *string {
