@@ -647,6 +647,12 @@ func compactMessagesForInteraction(messages []types.Message, interactionID strin
 					matches = matches || partMatchesInteraction(p.ProviderOptions, p.ProviderMetadata, interactionID)
 				case types.FileContent:
 					matches = matches || partMatchesInteraction(p.ProviderOptions, p.ProviderMetadata, interactionID)
+				// TS checks every assistant part's providerOptions, so a
+				// tool-result or reasoning-file part links the turn too.
+				case types.ToolResultContent:
+					matches = matches || partMatchesInteraction(p.ProviderOptions, p.ProviderMetadata, interactionID)
+				case types.ReasoningFileContent:
+					matches = matches || partMatchesInteraction(p.ProviderOptions, p.ProviderMetadata, interactionID)
 				}
 			}
 			for _, call := range msg.ToolCalls {
