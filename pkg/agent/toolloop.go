@@ -2526,6 +2526,12 @@ func contentFromGenerateResult(result *types.GenerateResult, toolCalls []types.T
 					parts[i] = agentContentPartFromToolCall(call)
 				}
 			}
+		case types.ToolApprovalRequestContent:
+			parts[i] = agentApprovalRequestWithToolCall(p, toolCalls)
+		case *types.ToolApprovalRequestContent:
+			if p != nil {
+				parts[i] = agentApprovalRequestWithToolCall(*p, toolCalls)
+			}
 		}
 	}
 	for _, call := range toolCalls {
@@ -2536,6 +2542,19 @@ func contentFromGenerateResult(result *types.GenerateResult, toolCalls []types.T
 	}
 	parts = replaceAgentToolResultContentParts(parts, toolCalls)
 	return parts
+}
+
+// agentApprovalRequestWithToolCall gives a provider tool-approval-request part
+// (an MCP server asking for approval of its call) the parsed call it belongs
+// to, as TS convertLanguageModelContent does ({type, approvalId, toolCall}).
+func agentApprovalRequestWithToolCall(p types.ToolApprovalRequestContent, calls []types.ToolCall) types.ToolApprovalRequestContent {
+	if p.ToolCallID == "" {
+		p.ToolCallID = p.ToolCall.ID
+	}
+	if call, ok := agentToolCallByID(calls, p.ToolCallID); ok {
+		p.ToolCall = call
+	}
+	return p
 }
 
 // agentDeferredToolResultMetadata gives a deferred provider tool result (a

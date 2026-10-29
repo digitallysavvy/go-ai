@@ -193,6 +193,12 @@ func generateResultContentParts(result *types.GenerateResult) []types.ContentPar
 					parts[i] = contentPartFromToolCall(call)
 				}
 			}
+		case types.ToolApprovalRequestContent:
+			parts[i] = withApprovalRequestToolCall(p, result.ToolCalls)
+		case *types.ToolApprovalRequestContent:
+			if p != nil {
+				parts[i] = withApprovalRequestToolCall(*p, result.ToolCalls)
+			}
 		}
 	}
 	for _, call := range result.ToolCalls {
@@ -203,6 +209,18 @@ func generateResultContentParts(result *types.GenerateResult) []types.ContentPar
 	}
 	parts = replaceToolResultContentParts(parts, result.ToolCalls)
 	return parts
+}
+
+// withApprovalRequestToolCall gives a provider tool-approval-request part (an
+// MCP server asking for approval of its call) the parsed call it belongs to,
+// as TS convertLanguageModelContent does ({type, approvalId, toolCall}).
+// validateToolResultParts has already rejected a request without a call.
+func withApprovalRequestToolCall(p types.ToolApprovalRequestContent, calls []types.ToolCall) types.ToolApprovalRequestContent {
+	p = normalizeApprovalRequest(p)
+	if call, ok := toolCallByID(calls, p.ToolCallID); ok {
+		p.ToolCall = call
+	}
+	return p
 }
 
 func replaceToolCallContentParts(parts []types.ContentPart, calls []types.ToolCall) []types.ContentPart {
@@ -902,11 +920,29 @@ func textOfContent(parts []types.ContentPart) string {
 // validateToolResultParts mirrors TS convertLanguageModelContent: a
 // tool-result (or tool-error) part must answer a tool call of the same
 // response, unless it is the deferred result of a provider tool that supports
-// deferred results. Anything else throws "Tool call <id> not found.".
+// deferred results. Anything else throws "Tool call <id> not found.". A
+// tool-approval-request part without its call throws
+// ToolCallNotFoundForApprovalError.
 func validateToolResultParts(content []types.ContentPart, calls []types.ToolCall, tools map[string]*types.Tool) error {
 	for _, part := range content {
 		var id, name string
 		switch p := part.(type) {
+		case types.ToolApprovalRequestContent, *types.ToolApprovalRequestContent:
+			// A provider tool-approval-request must name a tool call of the
+			// same response (TS ToolCallNotFoundForApprovalError).
+			var request types.ToolApprovalRequestContent
+			if v, ok := p.(types.ToolApprovalRequestContent); ok {
+				request = v
+			} else if v := p.(*types.ToolApprovalRequestContent); v != nil {
+				request = *v
+			} else {
+				continue
+			}
+			request = normalizeApprovalRequest(request)
+			if _, ok := toolCallByID(calls, request.ToolCallID); !ok {
+				return &ToolCallNotFoundForApprovalError{ToolCallID: request.ToolCallID, ApprovalID: request.ApprovalID}
+			}
+			continue
 		case types.ToolResultContent:
 			id, name = p.ToolCallID, p.ToolName
 		case *types.ToolResultContent:
