@@ -250,14 +250,16 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
     (and `WorkflowAgent.Generate`, which runs this loop) resolve tool search
     and `ExperimentalToolCallers` from the tools and tool callers that the
     first `PrepareCall` returns, and parse `AgentResult.Output` with the
-    `Output` it returns. The output's `ParseCompleteOutput` gets the last
-    step's usage. In v0.5 the loop used the agent's configured tools, tool
+    `Output` it returns. Its `ToolCallConcurrency` is validated before the
+    run starts (an invalid value fails before `OnStart`, even when the model
+    calls no tool; an invalid configured value that `PrepareCall` replaces is
+    no error). The output's `ParseCompleteOutput` gets the last step's usage. In v0.5 the loop used the agent's configured tools, tool
     callers and output: a `ToolSearch` tool added by `PrepareCall` failed
     with "toolSearch must be bound by an AI SDK generation.", and the parse
     got the total usage. TS `ToolLoopAgent` passes the `prepareCall` result
     to `generateText`, which parses with `lastStep.usage`.
   - **Am I affected?** Search for `PrepareCall` functions that set `Tools`,
-    `ExperimentalToolCallers` or `Output`, and for `ParseCompleteOutput`
+    `ExperimentalToolCallers`, `ToolCallConcurrency` or `Output`, and for `ParseCompleteOutput`
     implementations that read `opts.Usage`.
   - **What to do:** no action unless your `PrepareCall` changes those fields
     and relied on the configured ones winning, or your output reads the

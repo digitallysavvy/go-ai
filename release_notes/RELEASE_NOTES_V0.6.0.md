@@ -212,7 +212,8 @@ Each item has before/after code in the
 - **The legacy `ToolLoopAgent` loop follows the `PrepareCall` tools, tool
   callers and output** (review round 67). `GenerateAgent`/`Execute` (and
   `WorkflowAgent.Generate`) resolve tool search and `ExperimentalToolCallers`
-  from the first `PrepareCall` result and parse the output with its `Output`;
+  from the first `PrepareCall` result, validate its `ToolCallConcurrency`
+  before the run starts, and parse the output with its `Output`;
   `ParseCompleteOutput` gets the last step's usage, as TS
   (`lastStep.usage`). v0.5 used the configured tools, tool callers and output
   (a `ToolSearch` added by `PrepareCall` stayed unbound) and the total usage.

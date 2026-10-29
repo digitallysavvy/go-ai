@@ -530,9 +530,6 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 	if a.config.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
-	if err := validateToolCallConcurrency(a.config.ToolCallConcurrency); err != nil {
-		return nil, err
-	}
 	// runLoop opens the telemetry root span (unless the caller already did)
 	// once the first step's PrepareCall has run, so the step, model-call and
 	// tool-call spans have a parent; see loop_telemetry.go.
@@ -584,6 +581,11 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 	// prepared configuration, and step 0 runs with it (PrepareCall is not
 	// called again for it).
 	firstCallConfig := a.prepareCallConfig(ctx, 0, "", messages, nil, types.Usage{}, nil)
+	// TS generateText validates the prepared call's toolCallConcurrency
+	// first, before anything starts.
+	if err := validateToolCallConcurrency(firstCallConfig.ToolCallConcurrency); err != nil {
+		return nil, err
+	}
 	var lt *loopTelemetry
 	ctx, lt = a.beginLoopTelemetry(ctx, firstCallConfig)
 	ctx = context.WithValue(ctx, loopTelemetryKey{}, lt)

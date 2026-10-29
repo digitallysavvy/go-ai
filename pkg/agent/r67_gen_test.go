@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
@@ -108,5 +109,40 @@ func TestR67LegacyLoopPreparedCallToolSearchAndOutput(t *testing.T) {
 		if len(stepStartTools[i]) != 2 {
 			t.Fatalf("step %d start event Tools = %v, want the call's tools", i, stepStartTools[i])
 		}
+	}
+}
+
+// TestR67LegacyLoopValidatesPreparedToolCallConcurrency: TS generateText
+// validates the prepareCall result's toolCallConcurrency before the run
+// starts, whether or not the model calls a tool, and an invalid configured
+// value that PrepareCall replaces is not an error.
+func TestR67LegacyLoopValidatesPreparedToolCallConcurrency(t *testing.T) {
+	zero, two := 0, 2
+	starts := 0
+	textModel := &functionalAgentLanguageModel{doGenerate: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+		return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+	}}
+	bad := NewToolLoopAgent(AgentConfig{
+		Model:   textModel,
+		OnStart: func(context.Context, ai.OnStartEvent) { starts++ },
+		PrepareCall: func(_ context.Context, c PrepareCallConfig) PrepareCallConfig {
+			c.ToolCallConcurrency = &zero
+			return c
+		},
+		OnStepStartEvent: func(context.Context, ai.OnStepStartEvent) { starts++ },
+	})
+	if _, err := bad.Execute(context.Background(), "hi"); err == nil || !strings.Contains(err.Error(), "toolCallConcurrency must be >= 1") {
+		t.Fatalf("err = %v, want the toolCallConcurrency error", err)
+	}
+	if starts != 0 {
+		t.Fatalf("%d start events fired, want none before the validation error", starts)
+	}
+	fixed := NewToolLoopAgent(AgentConfig{
+		Model:               textModel,
+		ToolCallConcurrency: &zero,
+		PrepareCall:         func(_ context.Context, c PrepareCallConfig) PrepareCallConfig { c.ToolCallConcurrency = &two; return c },
+	})
+	if _, err := fixed.Execute(context.Background(), "hi"); err != nil {
+		t.Fatalf("Execute with a PrepareCall-fixed concurrency: %v", err)
 	}
 }
