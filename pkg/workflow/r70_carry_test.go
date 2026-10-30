@@ -200,3 +200,83 @@ func TestR70WorkflowStreamPartialOutputNeedsSpec(t *testing.T) {
 		t.Errorf("text spec: PartialOutput() = %#v, core %#v, want the core partial", got, core)
 	}
 }
+
+// TS workflow-agent.test.ts allowSystemInMessages: "should reject system
+// messages in messages by default" (stream() rejects with InvalidPromptError
+// from standardizePrompt, before any callback or model call) and "should
+// allow system messages when allowSystemInMessages is true".
+func TestR70WorkflowRejectsSystemMessagesBeforeTheRun(t *testing.T) {
+	msgs := []types.Message{
+		{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "You are a helpful assistant."}}},
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "What is the weather?"}}},
+	}
+	const want = "Invalid prompt: System messages are not allowed in the prompt or messages fields. Use the instructions option instead."
+	for _, stream := range []bool{false, true} {
+		model := &r70SystemModel{}
+		var mu sync.Mutex
+		var events []string
+		note := func(name string) {
+			mu.Lock()
+			events = append(events, name)
+			mu.Unlock()
+		}
+		a, err := NewWorkflowAgent(WorkflowAgent{
+			Model:   model,
+			OnStart: func(context.Context, ai.OnStartEvent) { note("start") },
+			OnError: func(context.Context, error) { note("error") },
+			OnEnd:   func(context.Context, ai.OnFinishEvent) { note("end") },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stream {
+			_, err = a.StreamWithOptions(context.Background(), WorkflowStreamOptions{Messages: msgs})
+		} else {
+			_, err = a.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Messages: msgs})
+		}
+		r69WantInvalidPrompt(t, "system message", err, want)
+		mu.Lock()
+		if len(events) != 0 {
+			t.Fatalf("stream=%v: callbacks %v fired for a rejected prompt", stream, events)
+		}
+		mu.Unlock()
+		if got := model.lastSystem(); got != "<no call>" {
+			t.Fatalf("stream=%v: model called (%q)", stream, got)
+		}
+
+		for _, allow := range []struct{ agent, call bool }{{true, false}, {false, true}} {
+			a, err := NewWorkflowAgent(WorkflowAgent{Model: model, AllowSystemInMessages: allow.agent})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stream {
+				st, err := a.StreamWithOptions(context.Background(), WorkflowStreamOptions{Messages: msgs, AllowSystemInMessages: allow.call})
+				if err != nil {
+					t.Fatalf("allowed %+v: %v", allow, err)
+				}
+				_ = st.ConsumeStream()
+				err = st.Err()
+				if err != nil {
+					t.Fatalf("allowed %+v: %v", allow, err)
+				}
+			} else if _, err := a.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Messages: msgs, AllowSystemInMessages: allow.call}); err != nil {
+				t.Fatalf("allowed %+v: %v", allow, err)
+			}
+			if got := model.lastSystem(); got != "You are a helpful assistant." {
+				t.Fatalf("stream=%v allowed %+v: system = %q", stream, allow, got)
+			}
+		}
+	}
+}
+
+// TS standardizePrompt checks invalid instructions before empty messages.
+func TestR70WorkflowInstructionsCheckedBeforeEmptyMessages(t *testing.T) {
+	a, err := NewWorkflowAgent(WorkflowAgent{Model: &r70SystemModel{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = a.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Messages: []types.Message{}, Instructions: 42})
+	r69WantInvalidPrompt(t, "generate", err, r70InvalidInstructions)
+	_, err = a.StreamWithOptions(context.Background(), WorkflowStreamOptions{Messages: []types.Message{}, Instructions: 42})
+	r69WantInvalidPrompt(t, "stream", err, r70InvalidInstructions)
+}

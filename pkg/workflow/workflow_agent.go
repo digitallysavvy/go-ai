@@ -2254,11 +2254,40 @@ func validatePromptExclusive(prompt string, messages []types.Message) error {
 	return nil
 }
 
-// validatePromptPresent is TS standardizePrompt's check that the call, after
-// PrepareCall (which may supply the messages), has a prompt or non-empty
-// messages: an InvalidPromptError otherwise.
-func validatePromptPresent(prompt string, messages []types.Message) error {
-	return promptutils.ValidatePromptInput(prompt, messages)
+// standardizeWorkflowPrompt is TS standardizePrompt on the call after
+// PrepareCall (which may supply the messages), in its order: a missing
+// prompt, invalid instructions (see validateCallInstructions), empty
+// messages, then system-role messages without the allowSystemInMessages
+// opt-in. TS WorkflowAgent runs it before any callback, the root telemetry
+// or the approval resume, and stream() rejects with it.
+func (w *WorkflowAgent) standardizeWorkflowPrompt(prompt string, messages []types.Message, allowSystem bool, callSystem string, callInstructions interface{}, early *earlyPrepare) error {
+	if prompt == "" && messages == nil {
+		return promptutils.ValidatePromptInput(prompt, messages)
+	}
+	if err := w.validateCallInstructions(callSystem, callInstructions, early); err != nil {
+		return err
+	}
+	if err := promptutils.ValidatePromptInput(prompt, messages); err != nil {
+		return err
+	}
+	if !allowSystem {
+		for _, msg := range messages {
+			if msg.Role == types.RoleSystem {
+				return &promptutils.UnsupportedSystemMessageError{}
+			}
+		}
+	}
+	return nil
+}
+
+// workflowAllowSystem is the allowSystemInMessages setting the run's loop
+// uses: the PrepareCall result's when the hook ran (it starts from the
+// agent's or the call's), else the agent's or the call's.
+func workflowAllowSystem(prepared *LanguageModelCallOptions, agentAllow, callAllow bool) bool {
+	if prepared != nil {
+		return prepared.AllowSystemInMessages
+	}
+	return agentAllow || callAllow
 }
 
 // Generate runs the workflow agent and returns final result.
@@ -2355,12 +2384,8 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		return nil, err
 	}
 	// TS standardizePrompt runs after prepareCall, which may supply the
-	// messages, and after prepareToolCallConcurrency: a missing prompt, then
-	// invalid instructions.
-	if err := validatePromptPresent(opts.Prompt, opts.Messages); err != nil {
-		return nil, err
-	}
-	if err := w.validateCallInstructions(opts.System, opts.Instructions, early); err != nil {
+	// messages, and after prepareToolCallConcurrency.
+	if err := w.standardizeWorkflowPrompt(opts.Prompt, opts.Messages, workflowAllowSystem(prepared, w.AllowSystemInMessages, opts.AllowSystemInMessages), opts.System, opts.Instructions, early); err != nil {
 		return nil, err
 	}
 	callID := newWorkflowCallID()
@@ -2604,12 +2629,8 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		return nil, err
 	}
 	// TS standardizePrompt runs after prepareCall, which may supply the
-	// messages, and after prepareToolCallConcurrency: a missing prompt, then
-	// invalid instructions.
-	if err := validatePromptPresent(opts.Prompt, opts.Messages); err != nil {
-		return nil, err
-	}
-	if err := w.validateCallInstructions(opts.System, opts.Instructions, early); err != nil {
+	// messages, and after prepareToolCallConcurrency.
+	if err := w.standardizeWorkflowPrompt(opts.Prompt, opts.Messages, workflowAllowSystem(prepared, w.AllowSystemInMessages, opts.AllowSystemInMessages), opts.System, opts.Instructions, early); err != nil {
 		return nil, err
 	}
 	// Every root event carries the run's call ID (TS callId): each
