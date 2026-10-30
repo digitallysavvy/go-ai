@@ -137,6 +137,12 @@ func cloneSchemaValue(value interface{}) interface{} {
 
 func doGenerateWithRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries int) (*types.GenerateResult, error) {
 	result, err := doGenerateWithRetryRaw(ctx, model, opts, maxRetries)
+	if err == nil && result == nil {
+		// TS reads the model response right after doGenerate, so a model
+		// that resolves without a result fails the call instead of crashing
+		// it.
+		return nil, fmt.Errorf("language model %s/%s returned no result", model.Provider(), model.ModelID())
+	}
 	normalizeGenerateResultText(result)
 	return result, err
 }
@@ -161,6 +167,8 @@ func doGenerateWithRetryRaw(ctx context.Context, model provider.LanguageModel, o
 	return result, err
 }
 
+// doStreamWithRetry opens the model stream; StreamObject reports a nil
+// stream as "stream is nil" (v0.5.2 text).
 func doStreamWithRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries int) (provider.TextStream, error) {
 	if maxRetries <= 0 {
 		return model.DoStream(ctx, opts)
