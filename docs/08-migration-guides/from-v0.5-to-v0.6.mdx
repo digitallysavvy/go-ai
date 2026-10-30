@@ -1453,14 +1453,16 @@ compile-time changes.
     `NoSuchModelError`, for every model type. v0.5 returned the nil model with
     a nil error.
   - An unknown provider is still a `*registry.NoSuchProviderError`, and
-    `errors.As` with a `*providererrors.NoSuchModelError` target now also
-    matches it (TS `NoSuchProviderError` extends `NoSuchModelError`). Its
+    `errors.As` with a `*providererrors.NoSuchModelError` target and
+    `errors.Is` with `providererrors.ErrModelNotFound` now also match it (TS
+    `NoSuchProviderError` extends `NoSuchModelError`). Its
     `ModelID` is the provider ID, as TS `getProvider` sets it (v0.5: the model
     part of the ID). `Files` and `Skills` report `ModelType: "languageModel"`
     (v0.5: `"files"` / `"skills"`).
 - **Am I affected?** `errors.As(err, &nsp)` with `*registry.NoSuchProviderError`
   after `ResolveVideoModel` / `ResolveDecisionModel` / `ResolveEvaluationModel`;
-  `errors.As` checks for `*providererrors.NoSuchModelError` placed before a
+  `errors.As` checks for `*providererrors.NoSuchModelError` or
+  `errors.Is(err, providererrors.ErrModelNotFound)` placed before a
   `NoSuchProviderError` check; reads of `NoSuchProviderError.ModelID` or
   `.ModelType`; code that checks a resolved model for nil.
 - **What to do:** check for the provider error first, then the model error:
@@ -1931,6 +1933,12 @@ after upgrading:
 - **Go does not check a model's specification version**, and the `Decide`
   telemetry events carry a subset of the TS fields. See
   [Decide: model version check and telemetry fields](./known-differences.mdx).
+- **A `WorkflowAgent.Stream` run cancelled mid-stream ends its root span
+  with `OnAbort`**, and the root telemetry `OnError`/`OnEnd` run after the
+  user `OnError`/`OnEnd`. TS reports a thrown abort to the root `onError`,
+  leaves the root open for an abort its iterator returns, and interleaves the
+  user and telemetry callbacks. See
+  [WorkflowAgent Stream: root telemetry at run end](./known-differences.mdx).
 
 ## For coding agents {#for-coding-agents}
 

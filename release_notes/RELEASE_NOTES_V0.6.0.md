@@ -1197,6 +1197,11 @@ Notable ones:
 - Go does not check a model's specification version (TS throws
   `UnsupportedModelVersionError`), and the `Decide` telemetry events carry a
   subset of the TS fields (Go design, round 67).
+- A `WorkflowAgent.Stream` run cancelled mid-stream ends its
+  `ai.workflowAgent.stream` root with `OnAbort`; TS reports a thrown abort to
+  the root `onError` and leaves the root open for an abort its iterator
+  returns. Go fires the root telemetry `OnError`/`OnEnd` after the user
+  `OnError`/`OnEnd`; TS interleaves them (coordinator ruling, round 68).
 - UI tool parts cannot tell an unset `dynamic` from `dynamic: false` (Go
   `bool`), so Go writes `dynamic` only when true; TS can write
   `dynamic: false` for a tool missing from the tool set.

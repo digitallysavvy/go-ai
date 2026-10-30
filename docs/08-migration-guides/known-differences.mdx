@@ -318,6 +318,19 @@ prefix TS leaves out. Match these errors with `errors.As`, not by their text
   settings or full response. This matches the other Go telemetry events
   (coordinator ruling, round 67).
 
+## WorkflowAgent Stream: root telemetry at run end
+
+- A `WorkflowAgent.Stream` / `StreamWithOptions` run cancelled mid-stream
+  ends the `ai.workflowAgent.stream` root with the telemetry `OnAbort`, as
+  Go already does for a run cancelled before its stream opens. TS reports
+  an abort its loop throws to the root `onError`, and nothing for an abort
+  its iterator returns, which leaves the root span open. Go cannot tell the
+  two apart, and an `OnAbort` closes the span.
+- Go fires the user callbacks first and then the root telemetry: user
+  `OnError`, user `OnEnd`, root `OnError`, root `OnEnd`. TS interleaves them
+  (user `onError`, telemetry `onError`, user `onEnd`, telemetry `onEnd`). The
+  order within each channel matches TS (coordinator ruling, round 68).
+
 ## UI tool parts: `dynamic: false`
 
 Go UI tool parts and chunks cannot tell an unset `dynamic` from
