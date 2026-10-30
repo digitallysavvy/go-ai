@@ -1457,7 +1457,9 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 			r.abortBeforeStream(stepCtx, opts, preStreamCall{callID: callID, telemetryCtx: telemetryCtx, telemetrySettings: telemetrySettings}, err)
 		} else {
-			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
+			// TS notifyStepError gives onStepError and the telemetry
+			// onStepError the same wrapGatewayError(error).
+			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: wrapGatewayError(err)})
 			r.notifyStepError(ctx, opts.OnStepError, wrapGatewayError(err))
 			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		}
@@ -1790,6 +1792,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	// output conversion): the outer stream reports it to onStepError and the
 	// telemetry onError and errors the stream, without onError.
 	errorPartEnd := false
+	// stepErrorTelemetryFired: the open step's telemetry onStepError already
+	// ran (a later step that failed to open reports it at the failure site).
+	stepErrorTelemetryFired := false
 	abortFired := false
 	fireAbort := func(reason error) {
 		if abortFired {
@@ -3840,6 +3845,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				// catch); onError gets it wrapped.
 				forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: openErr, Text: openErr.Error()}})
 				telemetry.FireOnStepError(nextModelCallCtx, telemetry.TelemetryErrorEvent{Settings: r.telemetrySettings, CallID: r.cbCallID, Error: r.err})
+				stepErrorTelemetryFired = true
 			}
 			nextStepCancel()
 			break
@@ -3908,8 +3914,19 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			fireAbort(r.err)
 		} else {
 			// A step that started without producing a result has failed;
-			// report it before the call error (aborts end with OnAbort).
-			r.notifyStepError(ctx, opts.OnStepError, r.err)
+			// report it before the call error (aborts end with OnAbort). TS
+			// notifyStepError gives onStepError and the telemetry onStepError
+			// wrapGatewayError(error), also when the model stream fails
+			// mid-step; the telemetry onError below gets the error itself.
+			stepErr := wrapGatewayError(r.err)
+			if r.openStep != nil && !stepErrorTelemetryFired {
+				stepCtx := r.stepReopenCtx
+				if stepCtx == nil {
+					stepCtx = r.telemetryCtx
+				}
+				telemetry.FireOnStepError(stepCtx, telemetry.TelemetryErrorEvent{Settings: r.telemetrySettings, CallID: r.cbCallID, Error: stepErr})
+			}
+			r.notifyStepError(ctx, opts.OnStepError, stepErr)
 		}
 		if opts.OnError != nil && !isAbortErr(ctx, r.err) && errorPartEnd {
 			safeInvoke(func() { opts.OnError(ctx, r.err) })

@@ -30,6 +30,11 @@ func wrapGatewayError(err error) error {
 	if err == nil {
 		return nil
 	}
+	// The wrapped error is no GatewayAuthenticationError itself (TS
+	// isInstance checks the error, not its cause), so wrapping is idempotent.
+	if _, ok := err.(*wrappedGatewayError); ok {
+		return err
+	}
 	var auth *gatewayerrors.GatewayAuthenticationError
 	if !errors.As(err, &auth) {
 		return err

@@ -106,6 +106,7 @@ already, you can skip them.
 | `experimental_onEvaluate`, `ai.evaluate`, `ai.evaluation.`, `gen_ai.operation.name=evaluate` | Renamed to decide | wire/protocol change | Update names | [Decide telemetry names](#decide-telemetry-names) |
 | Telemetry integration `OnAbort` for a cancelled `GenerateText` | Integrations get `OnError` | silent behavior change | Handle `OnError` | [GenerateText abort telemetry](#generate-cancel-telemetry) |
 | `OnStepStart:` / `OnStepStartEvent:` reading `e.Tools` or `e.Output` | The call's tools; `Output` is set | silent behavior change | Read `e.ActiveTools`, or `LanguageModelCallStartEvent.Tools` | [Step-start tools](#step-start-call-tools) |
+| Telemetry integration `OnStepError` for `StreamText` | Also called when the model stream fails mid-step; gateway auth errors arrive wrapped | silent behavior change | Expect `OnStepError` before `OnError`; use `errors.As` | [Telemetry step errors](#telemetry-step-error-mid-stream) |
 | `strings.Contains(err.Error(), "failed at step"` and other prefixes | Errors returned as is | error text only | Use `errors.As` / `errors.Is` | [Unprefixed errors](#errors-unprefixed) |
 | Error text with `%q`-quoted names (tool callers, tool search, decide, ID generator, download URL hostname) | TS quoting | error text only | Use `errors.As` | [Name quoting](#error-name-quoting) |
 | `"no such evaluationModel"` text checks on `ExperimentalEvaluate` / `ExperimentalDecide` errors | `*providererrors.NoSuchModelError` | error text only | Use `errors.As` | [Unknown decision model](#decide-unknown-model) |
@@ -1286,6 +1287,31 @@ compile-time changes.
   	},
   }
   _ = opts
+  ```
+
+- **Kind:** silent behavior change
+
+### Telemetry OnStepError runs for a StreamText step that fails mid-stream {#telemetry-step-error-mid-stream}
+
+- **What changed:** a telemetry integration's `OnStepError` now runs when a
+  `StreamText` step fails after its model stream opened (the stream returns
+  an error, ends without output, or a tool input callback, download or
+  conversion fails), before `OnError`. v0.5 called only `OnError`. The error
+  `OnStepError` gets is wrapped by the AI Gateway authentication wrapper, in
+  `GenerateText` too, as `OnStepErrorEvent.Error` is; `OnError` still gets
+  the error itself. TS `notifyStepError(wrapGatewayError(error))` notifies
+  `onStepError` and the telemetry `onStepError` together.
+- **Am I affected?** Custom telemetry integrations with an `OnStepError`
+  method that assume it only runs when a model call fails to open, or that
+  compare its `e.Error` with the provider's error by `==` or by text.
+- **What to do:** no action unless your integration does that. Match the
+  gateway error with `errors.As`:
+
+  ```go
+  func isGatewayAuth(err error) bool {
+  	var auth *gatewayerrors.GatewayAuthenticationError
+  	return errors.As(err, &auth) // also true for the wrapped error
+  }
   ```
 
 - **Kind:** silent behavior change
