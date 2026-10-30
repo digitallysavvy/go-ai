@@ -451,6 +451,16 @@ func (r *WorkflowStreamResult) Output() any {
 	return r.StreamTextResult.Output()
 }
 
+// PartialOutput returns the latest partial structured output, nil when
+// neither the call nor the agent sets an Output: TS WorkflowAgent's stream
+// mode parses only `options.output ?? this.output` and has no text default.
+func (r *WorkflowStreamResult) PartialOutput() any {
+	if r.StreamTextResult == nil || !aibridge.StreamTextHasOutputSpec(r.StreamTextResult) {
+		return nil
+	}
+	return r.StreamTextResult.PartialOutput()
+}
+
 // OutputErr returns the output parse error, nil when TS would not parse the
 // output (see skipOutput).
 func (r *WorkflowStreamResult) OutputErr() error {
@@ -1323,6 +1333,10 @@ type prepareCallState struct {
 	// baseMessages is the number of messages the first step started with;
 	// messages after that prefix are the loop's own history.
 	baseMessages int
+	// instructionsChanged records that the hook returned other instructions
+	// (System or InstructionMessages): TS validates the instructions
+	// prepareCall returns, which replace the call's own.
+	instructionsChanged bool
 }
 
 func (st *prepareCallState) overlay(opts LanguageModelCallOptions) LanguageModelCallOptions {
@@ -1405,7 +1419,7 @@ func (r *prepareCallRunner) runHook(ctx context.Context, c agent.PrepareCallConf
 			return opts, err
 		}
 	}
-	opts.System, opts.InstructionMessages, _ = resolveInstructionChange(inSystem, inInstructionMessages, opts.System, opts.InstructionMessages)
+	opts.System, opts.InstructionMessages, r.st.instructionsChanged = resolveInstructionChange(inSystem, inInstructionMessages, opts.System, opts.InstructionMessages)
 	kept := opts
 	r.st.prepared = &kept
 	return opts, nil
@@ -2207,15 +2221,27 @@ func (w *WorkflowAgent) effectiveToolApprovalSecret(ovr WorkflowStreamOptions, g
 	return w.ExperimentalToolApprovalSecret
 }
 
-// validateCallInstructions rejects an instructions value of an unsupported
-// type instead of silently running without it.
-func validateCallInstructions(values ...interface{}) error {
-	for _, v := range values {
-		if _, err := normalizeInstructions(v); err != nil {
-			return err
+// validateCallInstructions is TS standardizePrompt's instructions check on
+// the call's effective instructions: what PrepareCall returned when it
+// changed them (always a valid string or system messages), otherwise TS
+// `options.instructions ?? options.system ?? this.instructions` (the agent's
+// `instructions ?? system`). An unsupported Instructions type the call or
+// the hook replaces is not an error, as in TS.
+func (w *WorkflowAgent) validateCallInstructions(callSystem string, callInstructions interface{}, early *earlyPrepare) error {
+	if early != nil && early.runner != nil {
+		early.runner.st.mu.Lock()
+		changed := early.runner.st.instructionsChanged
+		early.runner.st.mu.Unlock()
+		if changed {
+			return nil
 		}
 	}
-	return nil
+	effective := callInstructions
+	if effective == nil && callSystem == "" {
+		effective = w.Instructions
+	}
+	_, err := normalizeInstructions(effective)
+	return err
 }
 
 // validatePromptExclusive rejects a call that gives both a prompt and
@@ -2228,11 +2254,40 @@ func validatePromptExclusive(prompt string, messages []types.Message) error {
 	return nil
 }
 
-// validatePromptPresent is TS standardizePrompt's check that the call, after
-// PrepareCall (which may supply the messages), has a prompt or non-empty
-// messages: an InvalidPromptError otherwise.
-func validatePromptPresent(prompt string, messages []types.Message) error {
-	return promptutils.ValidatePromptInput(prompt, messages)
+// standardizeWorkflowPrompt is TS standardizePrompt on the call after
+// PrepareCall (which may supply the messages), in its order: a missing
+// prompt, invalid instructions (see validateCallInstructions), empty
+// messages, then system-role messages without the allowSystemInMessages
+// opt-in. TS WorkflowAgent runs it before any callback, the root telemetry
+// or the approval resume, and stream() rejects with it.
+func (w *WorkflowAgent) standardizeWorkflowPrompt(prompt string, messages []types.Message, allowSystem bool, callSystem string, callInstructions interface{}, early *earlyPrepare) error {
+	if prompt == "" && messages == nil {
+		return promptutils.ValidatePromptInput(prompt, messages)
+	}
+	if err := w.validateCallInstructions(callSystem, callInstructions, early); err != nil {
+		return err
+	}
+	if err := promptutils.ValidatePromptInput(prompt, messages); err != nil {
+		return err
+	}
+	if !allowSystem {
+		for _, msg := range messages {
+			if msg.Role == types.RoleSystem {
+				return &promptutils.UnsupportedSystemMessageError{}
+			}
+		}
+	}
+	return nil
+}
+
+// workflowAllowSystem is the allowSystemInMessages setting the run's loop
+// uses: the PrepareCall result's when the hook ran (it starts from the
+// agent's or the call's), else the agent's or the call's.
+func workflowAllowSystem(prepared *LanguageModelCallOptions, agentAllow, callAllow bool) bool {
+	if prepared != nil {
+		return prepared.AllowSystemInMessages
+	}
+	return agentAllow || callAllow
 }
 
 // Generate runs the workflow agent and returns final result.
@@ -2329,12 +2384,8 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		return nil, err
 	}
 	// TS standardizePrompt runs after prepareCall, which may supply the
-	// messages, and after prepareToolCallConcurrency: a missing prompt, then
-	// invalid instructions.
-	if err := validatePromptPresent(opts.Prompt, opts.Messages); err != nil {
-		return nil, err
-	}
-	if err := validateCallInstructions(w.Instructions, opts.Instructions); err != nil {
+	// messages, and after prepareToolCallConcurrency.
+	if err := w.standardizeWorkflowPrompt(opts.Prompt, opts.Messages, workflowAllowSystem(prepared, w.AllowSystemInMessages, opts.AllowSystemInMessages), opts.System, opts.Instructions, early); err != nil {
 		return nil, err
 	}
 	callID := newWorkflowCallID()
@@ -2578,12 +2629,8 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		return nil, err
 	}
 	// TS standardizePrompt runs after prepareCall, which may supply the
-	// messages, and after prepareToolCallConcurrency: a missing prompt, then
-	// invalid instructions.
-	if err := validatePromptPresent(opts.Prompt, opts.Messages); err != nil {
-		return nil, err
-	}
-	if err := validateCallInstructions(w.Instructions, opts.Instructions); err != nil {
+	// messages, and after prepareToolCallConcurrency.
+	if err := w.standardizeWorkflowPrompt(opts.Prompt, opts.Messages, workflowAllowSystem(prepared, w.AllowSystemInMessages, opts.AllowSystemInMessages), opts.System, opts.Instructions, early); err != nil {
 		return nil, err
 	}
 	// Every root event carries the run's call ID (TS callId): each
@@ -2703,10 +2750,6 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	return &WorkflowStreamResult{StreamTextResult: stream}, nil
 }
 
-// isWorkflowAbort reports whether a failed run counts as an abort rather than
-// an error: the caller's context ended, or the failure is a cancellation or a
-// timeout such as the agent's own Timeout (TS classifies AbortError and
-// TimeoutError as aborts, so onAbort fires and onError does not).
 // workflowInternalOptions makes the loop continue after a provider-executed
 // tool call with no result (TS WorkflowAgent warns and sends an empty result).
 var workflowInternalOptions = &ai.InternalOptions{ContinueOnMissingProviderResult: true, StopOnStreamError: true, EndOnError: true, HeadersAsGiven: true, ApprovalID: workflowApprovalID, RequestMessagesAsPrompt: true, DeferApprovalRequests: true, ApprovalsResumed: true}
@@ -2715,6 +2758,10 @@ var workflowInternalOptions = &ai.InternalOptions{ContinueOnMissingProviderResul
 // `approval-${toolCallId}`, in generate and stream mode.
 func workflowApprovalID(toolCallID string) string { return "approval-" + toolCallID }
 
+// isWorkflowAbort reports whether a failed run counts as an abort rather than
+// an error: the caller's context ended, or the failure is a cancellation or a
+// timeout such as the agent's own Timeout (TS classifies AbortError and
+// TimeoutError as aborts, so onAbort fires and onError does not).
 func isWorkflowAbort(ctx context.Context, err error) bool {
 	if ctx != nil && ctx.Err() != nil {
 		return true
