@@ -503,7 +503,9 @@ func normalizeInstructions(instructions interface{}) (string, error) {
 	case []string:
 		return strings.Join(v, "\n"), nil
 	default:
-		return "", fmt.Errorf("workflow: unsupported instructions type %T", instructions)
+		// TS standardizePrompt throws an InvalidPromptError for instructions
+		// that are not a string or system messages.
+		return "", &providererrors.InvalidPromptError{Message: "instructions must be a string, SystemModelMessage, or array of SystemModelMessage"}
 	}
 }
 
@@ -2210,14 +2212,21 @@ func validateCallInstructions(values ...interface{}) error {
 	return nil
 }
 
-func validatePromptMessages(prompt string, messages []types.Message) error {
+// validatePromptExclusive rejects a call that gives both a prompt and
+// messages, before any hook runs (TS types forbid it; the error is
+// standardizePrompt's InvalidPromptError, as ai.GenerateText returns).
+func validatePromptExclusive(prompt string, messages []types.Message) error {
 	if prompt != "" && len(messages) > 0 {
-		return fmt.Errorf("workflow: use either prompt or messages, not both")
-	}
-	if prompt == "" && len(messages) == 0 {
-		return fmt.Errorf("workflow: either prompt or messages is required")
+		return promptutils.ValidatePromptInput(prompt, messages)
 	}
 	return nil
+}
+
+// validatePromptPresent is TS standardizePrompt's check that the call, after
+// PrepareCall (which may supply the messages), has a prompt or non-empty
+// messages: an InvalidPromptError otherwise.
+func validatePromptPresent(prompt string, messages []types.Message) error {
+	return promptutils.ValidatePromptInput(prompt, messages)
 }
 
 // Generate runs the workflow agent and returns final result.
@@ -2257,10 +2266,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	if w == nil {
 		return nil, fmt.Errorf("workflow: nil agent")
 	}
-	if err := validatePromptMessages(opts.Prompt, opts.Messages); err != nil {
-		return nil, err
-	}
-	if err := validateCallInstructions(w.Instructions, opts.Instructions); err != nil {
+	if err := validatePromptExclusive(opts.Prompt, opts.Messages); err != nil {
 		return nil, err
 	}
 	telemetrySettings := w.Telemetry
@@ -2314,6 +2320,15 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	modelProvider, modelID := workflowModelInfo(model)
 	toolCallConcurrency, err := resolveToolCallConcurrency(toolCallConcurrencyOverride, opts.ToolCallConcurrency, w.ToolCallConcurrency)
 	if err != nil {
+		return nil, err
+	}
+	// TS standardizePrompt runs after prepareCall, which may supply the
+	// messages, and after prepareToolCallConcurrency: a missing prompt, then
+	// invalid instructions.
+	if err := validatePromptPresent(opts.Prompt, opts.Messages); err != nil {
+		return nil, err
+	}
+	if err := validateCallInstructions(w.Instructions, opts.Instructions); err != nil {
 		return nil, err
 	}
 	callID := newWorkflowCallID()
@@ -2514,10 +2529,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	if w == nil {
 		return nil, fmt.Errorf("workflow: nil agent")
 	}
-	if err := validatePromptMessages(opts.Prompt, opts.Messages); err != nil {
-		return nil, err
-	}
-	if err := validateCallInstructions(w.Instructions, opts.Instructions); err != nil {
+	if err := validatePromptExclusive(opts.Prompt, opts.Messages); err != nil {
 		return nil, err
 	}
 	telemetrySettings := w.Telemetry
@@ -2557,6 +2569,15 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	modelProvider, modelID := workflowModelInfo(model)
 	toolCallConcurrency, err := resolveToolCallConcurrency(toolCallConcurrencyOverride, opts.ToolCallConcurrency, w.ToolCallConcurrency)
 	if err != nil {
+		return nil, err
+	}
+	// TS standardizePrompt runs after prepareCall, which may supply the
+	// messages, and after prepareToolCallConcurrency: a missing prompt, then
+	// invalid instructions.
+	if err := validatePromptPresent(opts.Prompt, opts.Messages); err != nil {
+		return nil, err
+	}
+	if err := validateCallInstructions(w.Instructions, opts.Instructions); err != nil {
 		return nil, err
 	}
 	// Every root event carries the run's call ID (TS callId): each

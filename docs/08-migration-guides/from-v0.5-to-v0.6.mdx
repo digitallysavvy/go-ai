@@ -607,9 +607,15 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   `*errors.InvalidPromptError` when neither or both of `Prompt` and
   `Messages` are set, or when `Messages` is an empty non-nil slice, as TS
   `standardizePrompt`. v0.5 sent an empty prompt, or ignored `Prompt` when
-  `Messages` was set.
+  `Messages` was set. `WorkflowAgent` `Generate` / `Stream` (and the
+  `WithOptions` forms) return the same `*InvalidPromptError`; v0.5 returned
+  plain errors ("workflow: either prompt or messages is required",
+  "workflow: use either prompt or messages, not both"). As TS, a
+  `WorkflowAgent` call without a prompt or messages is checked after
+  `PrepareCall`, so a `PrepareCall` hook may supply the messages.
 - **Am I affected?** Calls that set both `Prompt:` and `Messages:`, neither,
-  or `Messages: []types.Message{}`.
+  or `Messages: []types.Message{}`; matches on the `workflow: either prompt or
+  messages` error text.
 - **What to do:** pass exactly one of them.
 - **Kind:** silent behavior change
 
@@ -638,8 +644,12 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   `*InvalidArgumentError` ("Invalid argument for parameter instructions:
   ..."). It is now the `Cause`, so `errors.As` on either type matches. The
   checks run in TS order: a missing prompt first, then invalid instructions,
-  then empty messages.
-- **Am I affected?** Code that compares this error's text.
+  then empty messages. A `WorkflowAgent` `Instructions` value of an
+  unsupported type (not a string, `types.Message`, `[]types.Message` or
+  `[]string`) is the same `*InvalidPromptError`, from `NewWorkflowAgent` and
+  from the calls; v0.5 returned "workflow: unsupported instructions type T".
+- **Am I affected?** Code that compares this error's text, including
+  `workflow: unsupported instructions type`.
 - **What to do:** compare error types, not text:
 
   ```go
