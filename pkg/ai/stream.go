@@ -552,6 +552,12 @@ type StreamTextResult struct {
 	// final step's text).
 	outputSpec outputProcessor
 
+	// partialSpec parses PartialOutput(): outputSpec, or TextOutput() when no
+	// Output option was provided and the run keeps the replay buffer (TS
+	// createOutputTransformStream(output ?? text(), retention.replay ||
+	// output != null)). nil for a StreamTextLowMemory run without an Output.
+	partialSpec outputProcessor
+
 	// outputResult holds the final parsed output after streaming completes.
 	// Only populated when finishReason == Stop and an Output spec was provided.
 	// Protected by mu.
@@ -1537,6 +1543,10 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	r.telemetryCtx = telemetryCtx
 	r.telemetrySettings = telemetrySettings
 	r.outputSpec = outputSpec
+	r.partialSpec = outputSpec
+	if r.partialSpec == nil && !r.singleConsumer {
+		r.partialSpec = &textOutput{}
+	}
 	// Structured event callbacks
 	r.cbCallID = callID
 	r.cbOnEnd = onEnd
@@ -1969,8 +1979,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			for _, c := range chunks {
 				if rec != nil {
 					rec.record(c)
-					if r.outputSpec != nil && sinkPartialErr == nil {
-						partial, publish, perr := outputTracker.observe(ctx, r.outputSpec, c)
+					if r.partialSpec != nil && sinkPartialErr == nil {
+						partial, publish, perr := outputTracker.observe(ctx, r.partialSpec, c)
 						if perr != nil {
 							sinkPartialErr = perr
 						} else if publish {
@@ -2435,8 +2445,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				// structured-output response.
 				// With transforms the partial follows the transformed stream
 				// (see the sink in forwardThroughTransformChain).
-				if r.outputSpec != nil && rec == nil {
-					partial, publish, partialErr := stepPartialTracker.observe(ctx, r.outputSpec, *chunk)
+				if r.partialSpec != nil && rec == nil {
+					partial, publish, partialErr := stepPartialTracker.observe(ctx, r.partialSpec, *chunk)
 					if partialErr != nil {
 						r.err = partialErr
 						break
@@ -4659,8 +4669,10 @@ func (r *StreamTextResult) OutputErr() error {
 	return r.outputErr
 }
 
-// PartialOutput returns the most recently parsed partial output.
-// Only populated when an Output option was provided to StreamText.
+// PartialOutput returns the most recently parsed partial output. Without an
+// Output option it is the current step's text so far (TS partialOutputStream
+// parses with output ?? text()), except for StreamTextLowMemory, where it
+// stays nil (TS rejects partialOutputStream without an output there).
 // Safe to call concurrently with streaming.
 func (r *StreamTextResult) PartialOutput() any {
 	r.mu.Lock()
