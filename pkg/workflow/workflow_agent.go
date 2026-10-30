@@ -503,7 +503,9 @@ func normalizeInstructions(instructions interface{}) (string, error) {
 	case []string:
 		return strings.Join(v, "\n"), nil
 	default:
-		return "", fmt.Errorf("workflow: unsupported instructions type %T", instructions)
+		// TS standardizePrompt throws an InvalidPromptError for instructions
+		// that are not a string or system messages.
+		return "", &providererrors.InvalidPromptError{Message: "instructions must be a string, SystemModelMessage, or array of SystemModelMessage"}
 	}
 }
 
@@ -2210,14 +2212,21 @@ func validateCallInstructions(values ...interface{}) error {
 	return nil
 }
 
-func validatePromptMessages(prompt string, messages []types.Message) error {
+// validatePromptExclusive rejects a call that gives both a prompt and
+// messages, before any hook runs (TS types forbid it; the error is
+// standardizePrompt's InvalidPromptError, as ai.GenerateText returns).
+func validatePromptExclusive(prompt string, messages []types.Message) error {
 	if prompt != "" && len(messages) > 0 {
-		return fmt.Errorf("workflow: use either prompt or messages, not both")
-	}
-	if prompt == "" && len(messages) == 0 {
-		return fmt.Errorf("workflow: either prompt or messages is required")
+		return promptutils.ValidatePromptInput(prompt, messages)
 	}
 	return nil
+}
+
+// validatePromptPresent is TS standardizePrompt's check that the call, after
+// PrepareCall (which may supply the messages), has a prompt or non-empty
+// messages: an InvalidPromptError otherwise.
+func validatePromptPresent(prompt string, messages []types.Message) error {
+	return promptutils.ValidatePromptInput(prompt, messages)
 }
 
 // Generate runs the workflow agent and returns final result.
@@ -2257,10 +2266,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	if w == nil {
 		return nil, fmt.Errorf("workflow: nil agent")
 	}
-	if err := validatePromptMessages(opts.Prompt, opts.Messages); err != nil {
-		return nil, err
-	}
-	if err := validateCallInstructions(w.Instructions, opts.Instructions); err != nil {
+	if err := validatePromptExclusive(opts.Prompt, opts.Messages); err != nil {
 		return nil, err
 	}
 	telemetrySettings := w.Telemetry
@@ -2314,6 +2320,15 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	modelProvider, modelID := workflowModelInfo(model)
 	toolCallConcurrency, err := resolveToolCallConcurrency(toolCallConcurrencyOverride, opts.ToolCallConcurrency, w.ToolCallConcurrency)
 	if err != nil {
+		return nil, err
+	}
+	// TS standardizePrompt runs after prepareCall, which may supply the
+	// messages, and after prepareToolCallConcurrency: a missing prompt, then
+	// invalid instructions.
+	if err := validatePromptPresent(opts.Prompt, opts.Messages); err != nil {
+		return nil, err
+	}
+	if err := validateCallInstructions(w.Instructions, opts.Instructions); err != nil {
 		return nil, err
 	}
 	callID := newWorkflowCallID()
@@ -2514,10 +2529,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	if w == nil {
 		return nil, fmt.Errorf("workflow: nil agent")
 	}
-	if err := validatePromptMessages(opts.Prompt, opts.Messages); err != nil {
-		return nil, err
-	}
-	if err := validateCallInstructions(w.Instructions, opts.Instructions); err != nil {
+	if err := validatePromptExclusive(opts.Prompt, opts.Messages); err != nil {
 		return nil, err
 	}
 	telemetrySettings := w.Telemetry
@@ -2559,6 +2571,19 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	if err != nil {
 		return nil, err
 	}
+	// TS standardizePrompt runs after prepareCall, which may supply the
+	// messages, and after prepareToolCallConcurrency: a missing prompt, then
+	// invalid instructions.
+	if err := validatePromptPresent(opts.Prompt, opts.Messages); err != nil {
+		return nil, err
+	}
+	if err := validateCallInstructions(w.Instructions, opts.Instructions); err != nil {
+		return nil, err
+	}
+	// Every root event carries the run's call ID (TS callId): each
+	// integration finds its own root span by it, not through ctx, which holds
+	// only the last integration's span.
+	callID := newWorkflowCallID()
 	var prefixChunks []provider.StreamChunk
 	opts.Messages, prefixChunks, err = processWorkflowApprovalResume(ctx, workflowApprovalResumeOptions{
 		messages:            opts.Messages,
@@ -2570,7 +2595,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		onToolStart:         mergeToolStart(w.OnToolExecutionStart, opts.OnToolExecutionStart),
 		onToolEnd:           mergeToolEnd(w.OnToolExecutionEnd, opts.OnToolExecutionEnd),
 		telemetrySettings:   telemetrySettings,
-		telemetryCallID:     newWorkflowCallID(),
+		telemetryCallID:     callID,
 		toolCallConcurrency: toolCallConcurrency,
 	})
 	if err != nil {
@@ -2586,18 +2611,18 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	}
 	early.setConversation(prepared, opts.Messages, opts.Prompt)
 	// The root opens after the approved history tools ran, with the cleaned
-	// messages, as in GenerateWithOptions (TS onStart order). The span ends
-	// as soon as the underlying stream is obtained: the streaming happens as
-	// the caller drains WorkflowStreamResult, under the child span the
-	// delegated ai.StreamText call creates for itself.
+	// messages, as in GenerateWithOptions (TS onStart order). The streaming
+	// happens as the caller drains WorkflowStreamResult, under the child span
+	// the delegated ai.StreamText call creates for itself; the root ends when
+	// that run ends (see the stream hooks below).
 	cancelled := ctx != nil && ctx.Err() != nil
 	if cancelled {
 		fireWorkflowStartBeforeAbort(ctx, mergeStart(w.OnStart, opts.OnStart), model, opts.Messages, opts.Prompt, runtimeContext, toolsContext)
 	}
-	ctx = telemetrypkg.FireOnStart(ctx, workflowStartEvent(workflowRootOperation, "", modelProvider, modelID, telemetrySettings, early, prepared, opts.Messages, opts.Prompt, runtimeContext, toolsContext))
+	ctx = telemetrypkg.FireOnStart(ctx, workflowStartEvent(workflowRootOperation, callID, modelProvider, modelID, telemetrySettings, early, prepared, opts.Messages, opts.Prompt, runtimeContext, toolsContext))
 	onAbort := mergeAbort(w.OnAbort, opts.OnAbort)
 	if cancelled {
-		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings})
+		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID})
 		if onAbort != nil {
 			onAbort(ctx, nil)
 		}
@@ -2621,15 +2646,16 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	aibridge.SetWorkflowStreamHooks(&internal, func(done aibridge.StreamDoneInfo) {
 		if done.Err != nil {
 			if isWorkflowAbort(rootCtx, done.Err) {
-				telemetrypkg.FireOnAbort(rootCtx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, Steps: done.Steps})
+				telemetrypkg.FireOnAbort(rootCtx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Steps: done.Steps})
 				return
 			}
-			telemetrypkg.FireOnError(rootCtx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: done.Err})
+			telemetrypkg.FireOnError(rootCtx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: done.Err})
 		}
 		if len(done.Steps) == 0 {
 			return
 		}
 		telemetrypkg.FireOnEnd(rootCtx, telemetrypkg.TelemetryFinishEvent{
+			CallID:         callID,
 			Settings:       telemetrySettings,
 			RuntimeContext: workflowTelemetryRuntimeContext(telemetrySettings, runtimeContext),
 			FinishReason:   string(done.FinishReason),
@@ -2656,12 +2682,12 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	stream, err := a.Stream(ctx, call)
 	if err != nil {
 		if isWorkflowAbort(ctx, err) {
-			telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings})
+			telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID})
 			if onAbort != nil {
 				onAbort(ctx, nil)
 			}
 		} else {
-			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
+			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 			if onError := mergeError(w.OnError, opts.OnError); onError != nil {
 				onError(ctx, err)
 			}

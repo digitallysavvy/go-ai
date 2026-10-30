@@ -586,9 +586,15 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   `*errors.InvalidPromptError` when neither or both of `Prompt` and
   `Messages` are set, or when `Messages` is an empty non-nil slice, as TS
   `standardizePrompt`. v0.5 sent an empty prompt, or ignored `Prompt` when
-  `Messages` was set.
+  `Messages` was set. `WorkflowAgent` `Generate` / `Stream` (and the
+  `WithOptions` forms) return the same `*InvalidPromptError`; v0.5 returned
+  plain errors ("workflow: either prompt or messages is required",
+  "workflow: use either prompt or messages, not both"). As TS, a
+  `WorkflowAgent` call without a prompt or messages is checked after
+  `PrepareCall`, so a `PrepareCall` hook may supply the messages.
 - **Am I affected?** Calls that set both `Prompt:` and `Messages:`, neither,
-  or `Messages: []types.Message{}`.
+  or `Messages: []types.Message{}`; matches on the `workflow: either prompt or
+  messages` error text.
 - **What to do:** pass exactly one of them.
 - **Kind:** silent behavior change
 
@@ -617,8 +623,12 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   `*InvalidArgumentError` ("Invalid argument for parameter instructions:
   ..."). It is now the `Cause`, so `errors.As` on either type matches. The
   checks run in TS order: a missing prompt first, then invalid instructions,
-  then empty messages.
-- **Am I affected?** Code that compares this error's text.
+  then empty messages. A `WorkflowAgent` `Instructions` value of an
+  unsupported type (not a string, `types.Message`, `[]types.Message` or
+  `[]string`) is the same `*InvalidPromptError`, from `NewWorkflowAgent` and
+  from the calls; v0.5 returned "workflow: unsupported instructions type T".
+- **Am I affected?** Code that compares this error's text, including
+  `workflow: unsupported instructions type`.
 - **What to do:** compare error types, not text:
 
   ```go
@@ -1079,9 +1089,15 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   run with the error and then the end event (only when a step completed); for
   a run cancelled mid-stream with an abort. v0.5 ended the root, with no
   usage, as soon as the stream opened, so later failures never reached it.
+  Every root event of a `Stream` run (start, end, error, abort, and the
+  resumed approval tool events) now carries the run's `CallID`, as TS
+  `callId`, so each registered integration ends its own root span; v0.5 sent
+  an empty `CallID`, and with two integrations the first one's root span
+  never ended.
 - **Am I affected?** Telemetry integrations or dashboards that read the
   `Stream` root span's duration, status or usage, or that count
-  `OnEnd`/`OnError` events per call.
+  `OnEnd`/`OnError` events per call; custom integrations that key on an empty
+  `TelemetryStartEvent.CallID` for `ai.workflowAgent.stream`.
 - **What to do:** no action unless you relied on the root ending at stream
   start.
 - **Kind:** wire/protocol change
@@ -1434,14 +1450,25 @@ compile-time changes.
     `errors.Is` with `providererrors.ErrModelNotFound` now also match it (TS
     `NoSuchProviderError` extends `NoSuchModelError`). Its
     `ModelID` is the provider ID, as TS `getProvider` sets it (v0.5: the model
-    part of the ID). `Files` and `Skills` report `ModelType: "languageModel"`
-    (v0.5: `"files"` / `"skills"`).
+    part of the ID; empty from `GetProvider`). `Files` and `Skills` report
+    `ModelType: "languageModel"` (v0.5: `"files"` / `"skills"`).
+  - `Files` / `Skills` on a registered provider without that capability
+    return the TS text with the Go method name, `The provider "x" does not
+    support file uploads. Make sure it exposes a Files() method.` (and
+    `... does not support skills. Make sure it exposes a Skills() method.`).
+    v0.5: `No such provider: x (provider "x" does not support file uploads;
+    make sure it exposes a Files() method; available providers: ...)`. The
+    error is still a `*registry.NoSuchProviderError` (with `Reason` set), and
+    it matches neither `NoSuchModelError` nor `ErrModelNotFound` (TS throws a
+    plain `Error`).
 - **Am I affected?** `errors.As(err, &nsp)` with `*registry.NoSuchProviderError`
   after `ResolveVideoModel` / `ResolveDecisionModel` / `ResolveEvaluationModel`;
   `errors.As` checks for `*providererrors.NoSuchModelError` or
   `errors.Is(err, providererrors.ErrModelNotFound)` placed before a
   `NoSuchProviderError` check; reads of `NoSuchProviderError.ModelID` or
-  `.ModelType`; code that checks a resolved model for nil.
+  `.ModelType` (including after `GetProvider`); matches on the text of a
+  `Files` / `Skills` error (`does not support file uploads`); code that checks
+  a resolved model for nil.
 - **What to do:** check for the provider error first, then the model error:
 
   ```go
