@@ -1499,3 +1499,55 @@ func TestR71StreamExternalResultUIStreamOneToOne(t *testing.T) {
 		t.Fatalf("onStepEnd calls = %d", n)
 	}
 }
+
+// TS to-ui-message-chunk.test.ts 212: custom and lifecycle parts. A custom
+// part keeps its own providerMetadata (providers such as Anthropic set it on
+// CustomContent only); a start part maps to the start chunk (undefined with
+// sendStart false).
+func TestR71StreamToUIChunkCustomAndLifecycle(t *testing.T) {
+	md := json.RawMessage(`{"testProvider":{"signature":"sig-1"}}`)
+	custom := provider.StreamChunk{Type: provider.ChunkTypeCustom, CustomContent: &types.CustomContent{Kind: "openai.compaction", ProviderMetadata: md}}
+	got, ok := ToUIMessageChunk(custom, UIMessageStreamResultOptions{})
+	if !ok {
+		t.Fatal("custom: no chunk")
+	}
+	r71streamAssertJSON(t, "custom", got, `{"type":"custom","kind":"openai.compaction","providerMetadata":{"testProvider":{"signature":"sig-1"}}}`)
+
+	got, ok = ToUIMessageChunk(r71streamStart, UIMessageStreamResultOptions{
+		ResponseMessageID: "msg-1",
+		MessageMetadata:   func(map[string]interface{}) map[string]interface{} { return map[string]interface{}{"model": "test-model"} },
+	})
+	if !ok {
+		t.Fatal("start: no chunk")
+	}
+	r71streamAssertJSON(t, "start", got, `{"type":"start","messageId":"msg-1","messageMetadata":{"model":"test-model"}}`)
+	f := false
+	if got, ok := ToUIMessageChunk(r71streamStart, UIMessageStreamResultOptions{SendStart: &f}); ok {
+		t.Fatalf("start with sendStart false = %v", got)
+	}
+	got, _ = ToUIMessageChunk(r71streamStartStep, UIMessageStreamResultOptions{})
+	r71streamAssertJSON(t, "start-step", got, `{"type":"start-step"}`)
+	got, _ = ToUIMessageChunk(r71streamFinishStep("r"), UIMessageStreamResultOptions{})
+	r71streamAssertJSON(t, "finish-step", got, `{"type":"finish-step"}`)
+	got, _ = ToUIMessageChunk(provider.StreamChunk{Type: provider.ChunkTypeAbort, AbortReason: "user"}, UIMessageStreamResultOptions{})
+	r71streamAssertJSON(t, "abort", got, `{"type":"abort","reason":"user"}`)
+
+	// The UI stream of a StreamText-shaped source keeps it too.
+	chunks, err := r71streamCollect(t, []provider.StreamChunk{r71streamStart, custom}, UIMessageStreamResultOptions{})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	r71streamAssertJSON(t, "stream", chunks, `[{"type":"start"},{"type":"custom","kind":"openai.compaction","providerMetadata":{"testProvider":{"signature":"sig-1"}}}]`)
+}
+
+// TS to-ui-message-chunk.test.ts 679: parts that produce no UI chunk.
+func TestR71StreamToUIChunkUndefinedParts(t *testing.T) {
+	for _, part := range []provider.StreamChunk{
+		{Type: provider.ChunkTypeToolInputEnd, ID: "call-1"},
+		{Type: provider.ChunkTypeRaw, Raw: map[string]interface{}{"x": 1}},
+	} {
+		if got, ok := ToUIMessageChunk(part, UIMessageStreamResultOptions{}); ok {
+			t.Fatalf("%s: got %v", part.Type, got)
+		}
+	}
+}

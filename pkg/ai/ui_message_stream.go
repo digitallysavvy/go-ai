@@ -1287,6 +1287,23 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 // chunk. The boolean return is false for stream parts that do not produce UI
 // message chunks, matching TypeScript's undefined result.
 func ToUIMessageChunk(part provider.StreamChunk, opts UIMessageStreamResultOptions) (UIMessageChunk, bool) {
+	if part.Type == provider.ChunkTypeStart {
+		// TS toUIMessageChunk 'start': undefined when sendStart is false, else
+		// the start chunk with the message metadata and responseMessageId.
+		if !boolOption(opts.SendStart, true) {
+			return nil, false
+		}
+		chunk := UIMessageChunk{"type": "start"}
+		if opts.MessageMetadata != nil {
+			if metadata := opts.MessageMetadata(map[string]interface{}{"type": "start", "part": part}); metadata != nil {
+				chunk["messageMetadata"] = metadata
+			}
+		}
+		if opts.ResponseMessageID != "" {
+			chunk["messageId"] = opts.ResponseMessageID
+		}
+		return chunk, true
+	}
 	chunks := toUIMessageChunks(part, opts)
 	if len(chunks) == 0 {
 		return nil, false
@@ -2737,6 +2754,11 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 	case provider.ChunkTypeCustom:
 		if chunk.CustomContent == nil {
 			break
+		}
+		// TS part.providerMetadata is the custom part's own metadata;
+		// providers keep it on CustomContent (a chunk-level copy wins).
+		if len(chunk.ProviderMetadata) == 0 {
+			chunk.ProviderMetadata = chunk.CustomContent.ProviderMetadata
 		}
 		part := map[string]interface{}{
 			"type": "custom",
