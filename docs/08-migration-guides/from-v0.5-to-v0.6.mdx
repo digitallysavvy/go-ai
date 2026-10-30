@@ -103,6 +103,7 @@ already, you can skip them.
 | `KeepAliveMs` | Zero, negative or too large is an error | silent behavior change | Leave nil to disable | [KeepAliveMs](#keep-alive-range) |
 | Chunks you write with a `title` on `tool-output-*`, `"finishReason": null`, an empty reasoning `id`; `part["input"] == nil` | Message state follows TS | silent behavior change | Check for a missing `input` key | [UI message state](#ui-message-state-edge-cases) |
 | `ToUIMessageStream` `OnEnd`/`OnFinish` reading `e["finishReason"]` with `SendFinish: false` or a failed stream | Empty unless a `finish` chunk was sent | silent behavior change | Read the reason from `StreamTextResult` | [UI OnEnd finish reason](#ui-on-end-finish-reason) |
+| Counting `"type":"error"` chunks from `StreamTextResult.ToUIMessageStream` / `CreateUIMessageStream` | One error chunk for a run that ends with an error part | wire/protocol change | Expect one | [UI single error chunk](#ui-single-error-chunk) |
 | `Integrations: []telemetry.TelemetryIntegration{}` | Empty slice disables telemetry | silent behavior change | Leave nil for globals | [Empty Integrations](#empty-integrations) |
 | `"ai-sdk"`, `"go-ai"` tracer or instrumentation scope names, `telemetry.TracerName` | Tracers are `ai` and `gen_ai` | wire/protocol change | Update filters | [Tracer names](#tracer-names) |
 | `EnrichSpan:`, runtime context objects in spans | TS attribute rules | wire/protocol change | Read flattened keys | [Span attributes](#enrich-span-attributes) |
@@ -1241,6 +1242,36 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   ```
 
 - **Kind:** silent behavior change
+
+### One error chunk for a StreamText run that ends with an error part {#ui-single-error-chunk}
+
+- **What changed:** when a `StreamText` run ends with an `error` part (the
+  model call fails to open, the run fails before its first model stream, a
+  later step fails to prepare or open, or the model stream ends without
+  output), `StreamTextResult.ToUIMessageStream`, `CreateUIMessageStream` and
+  the UI message stream response helpers write that part's `error` chunk
+  only. v0.5 wrote a second `error` chunk for the same error when the stream
+  closed with it (review round 69). TS `streamText` closes its stream
+  normally after such a part, so `toUIMessageStream` writes one. The error
+  channel still carries the error, and `OnEnd` still reports a failed
+  outcome.
+- **Am I affected?** Clients or tests that count `"type":"error"` chunks in a
+  UI message stream, or expect two of them for one failed run.
+- **What to do:** no action unless you count error chunks. Expect one:
+
+  ```go
+  func errorChunks(chunks <-chan ai.UIMessageChunk) int {
+  	n := 0
+  	for c := range chunks {
+  		if c["type"] == "error" {
+  			n++ // v0.5: two for a run that ended with an error part
+  		}
+  	}
+  	return n
+  }
+  ```
+
+- **Kind:** wire/protocol change
 
 ## Telemetry and events {#telemetry-and-events}
 

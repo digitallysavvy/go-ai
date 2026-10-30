@@ -867,6 +867,9 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		// part messageMetadata sees carries the call's finishReason,
 		// rawFinishReason and totalUsage.
 		var callFinishPart *provider.StreamChunk
+		// lastErrChunk is the source's previous part when it was an error
+		// part, else nil.
+		var lastErrChunk *provider.StreamChunk
 		activeTextIDs := &orderedIDSet{}
 		activeReasoningIDs := &orderedIDSet{}
 		textID := ""
@@ -945,11 +948,23 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 					callOnEnd()
 					return
 				}
-				failSourceOutcome(err)
 				sendUIStreamErr(errCh, err)
-				appendErrorChunk(onError, safeEnqueue, err)
+				// A StreamText run that TS ends with an `error` part (a model
+				// call that fails to open, a failed step preparation, a model
+				// stream without output) closes its Go stream with that same
+				// error after the part. TS's source stream ends normally
+				// there, so the part's own error chunk is the only one and
+				// the outcome stays the part's failed outcome.
+				if lastErrChunk == nil || lastErrChunk.Err == nil || !errors.Is(err, lastErrChunk.Err) {
+					failSourceOutcome(err)
+					appendErrorChunk(onError, safeEnqueue, err)
+				}
 				callOnEnd()
 				return
+			}
+			lastErrChunk = nil
+			if chunk.Type == provider.ChunkTypeError {
+				lastErrChunk = chunk
 			}
 
 			if chunk.Type == provider.ChunkTypeFinish || chunk.Type == provider.ChunkTypeFinishStep {

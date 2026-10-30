@@ -249,6 +249,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **An out-of-range KeepAliveMs is an error** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#keep-alive-range)
 - **UI message state follows TS for four chunk edge cases** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-message-state-edge-cases)
 - **ToUIMessageStream OnEnd reports the finish chunk's reason** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-on-end-finish-reason)
+- **One error chunk for a StreamText run that ends with an error part** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-single-error-chunk)
 
 #### Telemetry and events
 
