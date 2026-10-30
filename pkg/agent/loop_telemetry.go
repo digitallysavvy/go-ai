@@ -482,6 +482,12 @@ type loopStepTelemetry struct {
 	// startedAt is the step's TS stepStartTimestampMs: taken just before the
 	// language model call start, it times both the model call and the step.
 	startedAt time.Time
+	// toolResults, when set, are the step's tool results for the telemetry
+	// step end, failed calls included: TelemetryStepEndEvent has no content,
+	// so its ToolResults carry the failures StepResult.ToolResults leaves
+	// out (TS toolResults holds only tool-result parts).
+	toolResults    []types.ToolResult
+	hasToolResults bool
 }
 
 func (a *ToolLoopAgent) startStepTelemetry(ctx context.Context, lt *loopTelemetry, stepIndex int, c PrepareCallConfig) *loopStepTelemetry {
@@ -532,6 +538,10 @@ func (s *loopStepTelemetry) finish(step *types.StepResult, rc interface{}, tc ma
 		return
 	}
 	s.closed = true
+	toolResults := step.ToolResults
+	if s.hasToolResults {
+		toolResults = s.toolResults
+	}
 	telemetry.FireOnStepEnd(s.stepCtx, telemetry.TelemetryStepEndEvent{
 		CallID:           s.lt.callID,
 		OperationType:    "ai.generateText",
@@ -543,7 +553,7 @@ func (s *loopStepTelemetry) finish(step *types.StepResult, rc interface{}, tc ma
 		ReasoningParts:   step.Reasoning,
 		ReasoningFiles:   loopReasoningFiles(step.Content),
 		ToolCalls:        step.ToolCalls,
-		ToolResults:      step.ToolResults,
+		ToolResults:      toolResults,
 		Files:            step.Files,
 		ProviderMetadata: step.ProviderMetadata,
 		// TS onStepEnd records event.response.id/modelId/timestamp.

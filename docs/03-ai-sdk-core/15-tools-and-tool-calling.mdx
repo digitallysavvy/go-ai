@@ -776,11 +776,12 @@ if err != nil {
     return
 }
 
-// Check for tool errors in the steps
+// Check for tool errors in the steps: a failed call is a tool-error content
+// part (ToolResults holds only successful results, as in TS).
 for _, step := range result.Steps {
-    for _, toolResult := range step.ToolResults {
-        if toolResult.Error != nil {
-            fmt.Printf("Tool %s failed: %v\n", toolResult.ToolName, toolResult.Error)
+    for _, part := range step.Content {
+        if te, ok := part.(types.ToolErrorContent); ok {
+            fmt.Printf("Tool %s failed: %v\n", te.ToolName, te.Error)
         }
     }
 }

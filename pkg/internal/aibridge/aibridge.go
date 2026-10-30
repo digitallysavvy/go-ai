@@ -17,6 +17,13 @@ var (
 	// result for (TS StepResult.toolResults lists them next to the locally
 	// executed results).
 	ProviderToolResultsFromContent func(content []types.ContentPart, executed []types.ToolResult) []types.ToolResult
+	// ProviderErrorResultsAsToolErrors turns provider tool-result parts that
+	// report an error (IsError) into tool-error parts (TS
+	// convertLanguageModelContent `part.isError`).
+	ProviderErrorResultsAsToolErrors func(parts []types.ContentPart) []types.ContentPart
+	// SuccessfulToolResults drops failed calls (Error or provider IsError)
+	// from a ToolResults list: TS toolResults holds only tool-result parts.
+	SuccessfulToolResults func(results []types.ToolResult) []types.ToolResult
 
 	// MessagesForModel removes the approval parts TS
 	// convertToLanguageModelPrompt keeps out of a model call's prompt (a

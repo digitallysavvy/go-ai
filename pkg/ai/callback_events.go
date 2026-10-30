@@ -364,7 +364,8 @@ type OnStepFinishEvent struct {
 	// DynamicToolCalls are tool calls from dynamically registered tools.
 	DynamicToolCalls []types.ToolCall
 
-	// ToolResults collected for this step
+	// ToolResults collected for this step (successful calls only; a failed
+	// call is a types.ToolErrorContent part of the step's content).
 	ToolResults []types.ToolResult
 
 	// StaticToolResults are results from non-dynamic (typed) tools.
@@ -450,7 +451,8 @@ type OnFinishEvent struct {
 	// DynamicToolCalls are tool calls from dynamically registered tools in all steps.
 	DynamicToolCalls []types.ToolCall
 
-	// ToolResults from all steps.
+	// ToolResults from all steps (successful calls only; a failed call is a
+	// types.ToolErrorContent part of its step's content).
 	ToolResults []types.ToolResult
 
 	// StaticToolResults are results from non-dynamic (typed) tools in all steps.

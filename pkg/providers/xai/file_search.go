@@ -36,44 +36,11 @@ type FileSearchOptions struct {
 }
 
 func FileSearch(config FileSearchConfig) types.Tool {
-	// Set default max results if not specified
-	maxResults := config.MaxNumResults
-	if maxResults == 0 {
-		maxResults = 10
-	}
-
-	// Build the parameters schema
-	properties := map[string]interface{}{
-		"query": map[string]interface{}{
-			"type":        "string",
-			"description": "Search query to find relevant information in vector stores",
-		},
-	}
-
-	// Only add optional parameters if they were specified
-	if len(config.VectorStoreIDs) > 0 {
-		properties["vectorStoreIds"] = map[string]interface{}{
-			"type":        "array",
-			"description": "Vector store IDs to search",
-			"items": map[string]interface{}{
-				"type": "string",
-			},
-			"default": config.VectorStoreIDs,
-		}
-	}
-
-	if config.MaxNumResults > 0 {
-		properties["maxNumResults"] = map[string]interface{}{
-			"type":        "integer",
-			"description": "Maximum number of results to return",
-			"default":     maxResults,
-		}
-	}
-
+	// TS xai fileSearch: inputSchema z.object({}). The vector store IDs and
+	// result limit are tool args (ProviderOptions), not model input.
 	parameters := map[string]interface{}{
 		"type":       "object",
-		"properties": properties,
-		"required":   []string{"query"},
+		"properties": map[string]interface{}{},
 	}
 
 	return types.Tool{

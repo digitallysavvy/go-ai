@@ -3300,7 +3300,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		for callID := range streamedToolResults {
 			delete(pendingDeferredToolCalls, callID)
 		}
-		publicStepToolResults := types.ResultsForPublicView(mergeStreamedToolResults(stepToolResults, streamedToolResults, streamedToolResultOrder))
+		// TS toolResults holds only tool-result parts: failed calls are
+		// tool-error content only (owner ruling r71). The telemetry step end
+		// keeps them (TelemetryStepEndEvent has no content).
+		stepTelemetryToolResults := types.ResultsForPublicView(mergeStreamedToolResults(stepToolResults, streamedToolResults, streamedToolResultOrder))
+		publicStepToolResults := successfulToolResults(stepTelemetryToolResults)
 
 		aggToolCallsLen, aggToolResultsLen, aggUsageBefore := len(r.toolCalls), len(r.toolResults), r.usage
 		// Accumulate step tool calls and results into the overall result.
@@ -3434,7 +3438,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			stepResult.StaticToolCalls = filterStaticToolCalls(stepResult.ToolCalls)
 			stepResult.DynamicToolCalls = filterDynamicToolCalls(stepResult.ToolCalls)
 			recordedToolResults = append([]types.ToolResult(nil), rec.toolResults...)
-			publicStepToolResults = types.ResultsForPublicView(recordedToolResults)
+			stepTelemetryToolResults = types.ResultsForPublicView(recordedToolResults)
+			publicStepToolResults = successfulToolResults(stepTelemetryToolResults)
 			stepResult.ToolResults = publicStepToolResults
 			stepResult.StaticToolResults = filterStaticToolResults(publicStepToolResults)
 			stepResult.DynamicToolResults = filterDynamicToolResults(publicStepToolResults)
@@ -3501,7 +3506,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				ReasoningParts: stepResult.Reasoning,
 				ReasoningFiles: reasoningFilesOf(stepResult.Content),
 				ToolCalls:      stepResult.ToolCalls,
-				ToolResults:    publicStepToolResults,
+				ToolResults:    stepTelemetryToolResults,
 				Files:          stepFiles,
 				// TS onStepEnd records event.providerMetadata and
 				// event.response.id/modelId/timestamp.
@@ -4679,6 +4684,8 @@ func (r *StreamTextResult) ToolCalls() []types.ToolCall {
 
 // ToolResults returns results from tool executions that ran after stream end.
 // Only populated when StreamText was called with callbacks and tool definitions.
+// It holds successful calls only: a failed call is a types.ToolErrorContent
+// part of its step's Content (TS toolResults holds only tool-result parts).
 // Safe to call concurrently with streaming.
 func (r *StreamTextResult) ToolResults() []types.ToolResult {
 	_ = r.ensureConsumed()
@@ -5219,16 +5226,19 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		r.mu.Unlock()
 	}
 	readAllToolResults := mergeStreamedToolResults(nil, streamedToolResults, streamedToolResultOrder)
-	if len(readAllToolResults) > 0 {
-		r.mu.Lock()
-		r.toolResults = readAllToolResults
-		r.mu.Unlock()
-	}
 	responseMessages := providerutils.ConvertToResponseMessages(
 		pendingToolCalls,
 		stepContent,
 		readAllToolResults,
 	)
+	// TS toolResults holds only tool-result parts; failed provider results
+	// are tool-error content only (owner ruling r71).
+	readAllToolResults = successfulToolResults(readAllToolResults)
+	if len(readAllToolResults) > 0 {
+		r.mu.Lock()
+		r.toolResults = readAllToolResults
+		r.mu.Unlock()
+	}
 	step := types.StepResult{
 		CallID:             r.cbCallID,
 		StepNumber:         0,

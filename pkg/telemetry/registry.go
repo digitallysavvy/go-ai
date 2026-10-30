@@ -440,10 +440,11 @@ type TelemetryStepFinishEvent struct {
 	// Integrations should check Settings.ShouldRecordOutputs() before recording.
 	Files []types.GeneratedFileContent
 
-	// ToolResults are the results of the tool calls of this step (including
-	// failed calls, which carry Error), mirroring TS's step-end
-	// `toolResults`. Integrations should check Settings.ShouldRecordOutputs() before
-	// recording.
+	// ToolResults are the results of the tool calls of this step, including
+	// failed calls, which carry Error. StepResult.ToolResults holds only the
+	// successful ones (TS toolResults); the failures are here because this
+	// event has no content to carry TS's tool-error parts. Integrations
+	// should check Settings.ShouldRecordOutputs() before recording.
 	ToolResults []types.ToolResult
 
 	// ProviderMetadata holds provider-specific response metadata for this step.

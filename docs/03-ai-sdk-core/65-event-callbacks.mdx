@@ -188,7 +188,7 @@ Called after each step (LLM call) completes.
 | `ModelID` | `string` | The model identifier. |
 | `Text` | `string` | The generated text from this step. |
 | `ToolCalls` | `[]types.ToolCall` | Tool calls made during this step. |
-| `ToolResults` | `[]types.ToolResult` | Results of tool calls from this step. |
+| `ToolResults` | `[]types.ToolResult` | Results of the successful tool calls of this step. A failed call is a `types.ToolErrorContent` part in the step's content. |
 | `FinishReason` | `types.FinishReason` | Why the generation finished (`"stop"`, `"length"`, `"tool-calls"`, etc.). |
 | `Usage` | `types.Usage` | Token usage for this step. |
 | `Warnings` | `[]types.Warning` | Warnings from the provider. |
@@ -202,7 +202,7 @@ Called when the entire generation completes (all steps finished). Includes aggre
 |-------|------|-------------|
 | `Text` | `string` | The full generated text. |
 | `ToolCalls` | `[]types.ToolCall` | Tool calls aggregated across all steps. |
-| `ToolResults` | `[]types.ToolResult` | Tool results aggregated across all steps. |
+| `ToolResults` | `[]types.ToolResult` | Results of the successful tool calls, aggregated across all steps. Failed calls are `types.ToolErrorContent` parts. |
 | `FinishReason` | `types.FinishReason` | Why the final step finished. |
 | `Steps` | `[]types.StepResult` | Results from all steps in the generation. |
 | `TotalUsage` | `types.Usage` | Aggregated token usage across all steps. |

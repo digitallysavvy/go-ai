@@ -21,10 +21,11 @@ func BrowserSearchTool() types.Tool {
 		Type:             types.ToolTypeProviderDefined,
 		ProviderID:       ToolIDBrowserSearch,
 		ProviderExecuted: true,
+		// TS inputSchema z.object({}): not strict, so extra input keys pass
+		// provider tool call validation.
 		Parameters: map[string]interface{}{
-			"type":                 "object",
-			"properties":           map[string]interface{}{},
-			"additionalProperties": false,
+			"type":       "object",
+			"properties": map[string]interface{}{},
 		},
 		OutputSchema: map[string]interface{}{
 			"type":                 "object",

@@ -10,6 +10,8 @@ import (
 // so they stay out of the public API.
 func init() {
 	aibridge.ProviderToolResultsFromContent = providerToolResultsFromContent
+	aibridge.ProviderErrorResultsAsToolErrors = providerErrorResultsAsToolErrors
+	aibridge.SuccessfulToolResults = successfulToolResults
 	aibridge.MessagesForModel = messagesForModel
 	aibridge.ValidateToolResultParts = validateToolResultPartsOf
 	aibridge.ResolveContentFiles = resolveContentFiles

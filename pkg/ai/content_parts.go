@@ -208,7 +208,59 @@ func generateResultContentParts(result *types.GenerateResult) []types.ContentPar
 		parts = append(parts, contentPartFromToolCall(call))
 	}
 	parts = replaceToolResultContentParts(parts, result.ToolCalls)
-	return parts
+	return providerErrorResultsAsToolErrors(parts)
+}
+
+// providerErrorResultsAsToolErrors turns each provider tool-result part that
+// reports an error (IsError true, or an Error text without an IsError flag)
+// into a tool-error part whose Error is the result value, as TS
+// convertLanguageModelContent does for `part.isError`. The response message
+// then replays it as an error-json output, and it is not one of the step's
+// ToolResults.
+func providerErrorResultsAsToolErrors(parts []types.ContentPart) []types.ContentPart {
+	var out []types.ContentPart
+	for i, part := range parts {
+		var p types.ToolResultContent
+		switch v := part.(type) {
+		case types.ToolResultContent:
+			p = v
+		case *types.ToolResultContent:
+			if v == nil {
+				continue
+			}
+			p = *v
+		default:
+			continue
+		}
+		if !isTrue(p.IsError) && (p.IsError != nil || p.Error == "") {
+			continue
+		}
+		var errValue interface{} = p.Result
+		if errValue == nil && p.Output != nil {
+			errValue = p.Output.Value
+		}
+		if errValue == nil {
+			errValue = p.Error
+		}
+		if out == nil {
+			out = append([]types.ContentPart(nil), parts...)
+		}
+		out[i] = types.ToolErrorContent{
+			ToolCallID:       p.ToolCallID,
+			ToolName:         p.ToolName,
+			Title:            p.Title,
+			Input:            p.Input,
+			Error:            errValue,
+			ProviderExecuted: true,
+			ProviderMetadata: p.ProviderMetadata,
+			ToolMetadata:     p.ToolMetadata,
+			Dynamic:          p.Dynamic,
+		}
+	}
+	if out == nil {
+		return parts
+	}
+	return out
 }
 
 // withApprovalRequestToolCall gives a provider tool-approval-request part (an

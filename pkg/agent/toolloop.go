@@ -1065,6 +1065,18 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			stepResult.DynamicToolResults = filterAgentDynamicToolResults(stepResult.ToolResults)
 			result.ToolResults = append(result.ToolResults[:toolResultsBefore:toolResultsBefore], stepResult.ToolResults...)
 		}
+		// TS toolResults holds only tool-result content parts: a failed call
+		// is a tool-error content part only (owner ruling r71). The telemetry
+		// step end keeps the failures.
+		if stepTel != nil {
+			stepTel.toolResults, stepTel.hasToolResults = stepResult.ToolResults, true
+		}
+		if successful := aibridge.SuccessfulToolResults(stepResult.ToolResults); len(successful) != len(stepResult.ToolResults) {
+			stepResult.ToolResults = successful
+			stepResult.StaticToolResults = filterAgentStaticToolResults(successful)
+			stepResult.DynamicToolResults = filterAgentDynamicToolResults(successful)
+			result.ToolResults = append(result.ToolResults[:toolResultsBefore:toolResultsBefore], successful...)
+		}
 		// A provider-executed call the provider gated behind its own
 		// tool-approval-request (MCP) pauses the loop until the caller
 		// answers; TS WorkflowAgent returns on providerApprovalRequests.
@@ -2727,7 +2739,9 @@ func contentFromGenerateResult(result *types.GenerateResult, toolCalls []types.T
 		parts = append(parts, agentContentPartFromToolCall(call))
 	}
 	parts = replaceAgentToolResultContentParts(parts, toolCalls)
-	return parts
+	// TS convertLanguageModelContent: an isError provider result is a
+	// tool-error part.
+	return aibridge.ProviderErrorResultsAsToolErrors(parts)
 }
 
 // agentApprovalRequestWithToolCall gives a provider tool-approval-request part

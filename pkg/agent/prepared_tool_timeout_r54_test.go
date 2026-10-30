@@ -2,7 +2,7 @@ package agent
 
 import (
 	"context"
-	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,8 +39,8 @@ func TestGenerateAgentToolTimeoutFromPrepareCall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var timeoutErr *ai.TimeoutError
-	if len(res.ToolResults) != 1 || !errors.As(res.ToolResults[0].Error, &timeoutErr) {
-		t.Fatalf("tool results = %+v, want a tool TimeoutError", res.ToolResults)
+	// A failed call is a tool-error content part, not a tool result (TS).
+	if toolErrors := r71integAgentToolErrors(res.Steps); len(res.ToolResults) != 0 || len(toolErrors) != 1 || !strings.HasPrefix(toolErrors[0].Error.(string), (&ai.TimeoutError{Reason: ai.TimeoutReasonTool}).Error()) {
+		t.Fatalf("tool results = %+v, tool errors = %+v, want a tool TimeoutError", res.ToolResults, toolErrors)
 	}
 }

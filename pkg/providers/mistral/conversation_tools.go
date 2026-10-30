@@ -36,11 +36,11 @@ func mistralProviderTool(id, description string) types.Tool {
 		ProviderID:       id,
 		Description:      description,
 		ProviderExecuted: true,
+		// TS inputSchema z.object({ arguments: z.string() }): not strict.
 		Parameters: map[string]interface{}{
-			"type":                 "object",
-			"properties":           map[string]interface{}{"arguments": map[string]interface{}{"type": "string"}},
-			"required":             []string{"arguments"},
-			"additionalProperties": false,
+			"type":       "object",
+			"properties": map[string]interface{}{"arguments": map[string]interface{}{"type": "string"}},
+			"required":   []string{"arguments"},
 		},
 	}
 }

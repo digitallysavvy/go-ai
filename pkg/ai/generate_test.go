@@ -878,12 +878,13 @@ func TestGenerateText_ToolNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Tool not found should still create a result with an error in the tool result
-	if len(result.ToolResults) != 1 {
-		t.Fatalf("expected 1 tool result, got %d", len(result.ToolResults))
+	// A tool that is not found is a tool-error content part, not a tool
+	// result (TS toolResults holds only tool-result parts).
+	if len(result.ToolResults) != 0 {
+		t.Fatalf("expected no tool results, got %+v", result.ToolResults)
 	}
-	if result.ToolResults[0].Error == nil {
-		t.Error("expected error in tool result for nonexistent tool")
+	if toolErrors := r71integToolErrors(result.Content); len(toolErrors) != 1 {
+		t.Errorf("expected one tool error for the nonexistent tool, got %+v", toolErrors)
 	}
 }
 
@@ -929,14 +930,12 @@ func TestGenerateText_ToolExecutionError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(result.ToolResults) != 1 {
-		t.Fatalf("expected 1 tool result, got %d", len(result.ToolResults))
+	if len(result.ToolResults) != 0 {
+		t.Fatalf("expected no tool results, got %+v", result.ToolResults)
 	}
-	if result.ToolResults[0].Error == nil {
-		t.Error("expected error in tool result")
-	}
-	if result.ToolResults[0].Error.Error() != "tool execution failed" {
-		t.Errorf("unexpected error message: %v", result.ToolResults[0].Error)
+	toolErrors := r71integToolErrors(result.Content)
+	if len(toolErrors) != 1 || toolErrors[0].Error != "tool execution failed" || toolErrors[0].ErrorText != "Error: tool execution failed" {
+		t.Errorf("tool errors = %+v, want the execution error", toolErrors)
 	}
 }
 

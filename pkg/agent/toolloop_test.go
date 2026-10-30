@@ -2073,8 +2073,8 @@ func TestToolLoopAgent_InvalidToolCallPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
-	if len(result.ToolResults) != 1 || !errors.Is(result.ToolResults[0].Error, invalidErr) {
-		t.Fatalf("invalid tool call error not preserved: %+v", result.ToolResults)
+	if toolErrors := r71integAgentToolErrors(result.Steps); len(result.ToolResults) != 0 || len(toolErrors) != 1 || toolErrors[0].Error != invalidErr.Error() {
+		t.Fatalf("invalid tool call error not preserved: results %+v, errors %+v", result.ToolResults, toolErrors)
 	}
 }
 
@@ -2207,8 +2207,8 @@ func TestToolLoopAgent_FilteredToolsUsedForExecution(t *testing.T) {
 	// parseAgentToolCalls) before reaching the separate "tool not found"
 	// branch, so it surfaces as an Invalid call with a NoSuchToolError
 	// message rather than the legacy "tool not found: X" text.
-	if len(result.ToolResults) != 1 || result.ToolResults[0].Error == nil || !strings.Contains(result.ToolResults[0].Error.Error(), "unavailable tool") {
-		t.Fatalf("expected not-found result for inactive tool, got %+v", result.ToolResults)
+	if toolErrors := r71integAgentToolErrors(result.Steps); len(result.ToolResults) != 0 || len(toolErrors) != 1 || !strings.Contains(toolErrors[0].ErrorText, "unavailable tool") {
+		t.Fatalf("expected a not-found tool error for the inactive tool, got results %+v, errors %+v", result.ToolResults, toolErrors)
 	}
 }
 

@@ -64,7 +64,6 @@ func ToolSearchRegex20251119() types.Tool {
 			"pattern": map[string]interface{}{
 				"type":        "string",
 				"description": "A regex pattern to search for tools. Uses Python re.search() syntax. Maximum 200 characters.\n\nExamples:\n- \"weather\" - matches tool names/descriptions containing \"weather\"\n- \"get_.*_data\" - matches tools like get_user_data, get_weather_data\n- \"database.*query|query.*database\" - OR patterns for flexibility\n- \"(?i)slack\" - case-insensitive search",
-				"maxLength":   200,
 			},
 			"limit": map[string]interface{}{
 				"type":        "number",

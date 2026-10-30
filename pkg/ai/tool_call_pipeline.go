@@ -420,9 +420,12 @@ func toolCallInputText(call types.ToolCall) string {
 
 // toolCallInputValidator returns a JSON-schema validator for the tool input,
 // or nil when the tool has no JSON schema that can validate a decoded map.
-// Provider-executed tools are validated by the provider.
+// Provider tools (provider-executed or not) are validated too: TS
+// parseToolCall checks every tool's inputSchema, and an invalid
+// provider-executed call becomes invalid and dynamic without a client tool
+// error. Provider tools without Parameters are not validated.
 func toolCallInputValidator(tool *types.Tool) schema.Validator {
-	if tool == nil || tool.ProviderExecuted || tool.Type == "provider" {
+	if tool == nil {
 		return nil
 	}
 	if isHintedParameters(tool.Parameters) {

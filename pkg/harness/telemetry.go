@@ -380,11 +380,14 @@ func (d *turnDriver) telStepEnd(stepNumber int, step types.StepResult) {
 		Usage:             telemetryUsageFromTypesUsage(step.Usage),
 		Text:              step.Text,
 		// TS legacy ai.response.reasoning joins the parts with "\n".
-		Reasoning:        telemetry.JoinReasoning(step.Reasoning),
-		ReasoningParts:   step.Reasoning,
-		ReasoningFiles:   harnessReasoningFiles(step.Content),
-		ToolCalls:        step.ToolCalls,
-		ToolResults:      step.ToolResults,
+		Reasoning:      telemetry.JoinReasoning(step.Reasoning),
+		ReasoningParts: step.Reasoning,
+		ReasoningFiles: harnessReasoningFiles(step.Content),
+		ToolCalls:      step.ToolCalls,
+		// The step's tool results with the failed calls: StepResult.ToolResults
+		// holds only TS tool-result parts, and TelemetryStepEndEvent has no
+		// content to carry the tool-error parts.
+		ToolResults:      harnessTelemetryToolResults(step.ToolResults, d.stepToolResults),
 		Files:            step.Files,
 		ProviderMetadata: step.ProviderMetadata,
 		RuntimeContext:   telemetryRuntimeContext(d.in.Telemetry, d.in.RuntimeContext),
@@ -523,6 +526,43 @@ func harnessReasoningFiles(content []types.ContentPart) []types.ReasoningFileCon
 			if v != nil {
 				out = append(out, *v)
 			}
+		}
+	}
+	return out
+}
+
+// harnessTelemetryToolResults returns the step's public tool results with the
+// failed ones of the turn driver's own record put back in record order (TS
+// lifecycle.stepEnd passes the step, whose content keeps the tool-error parts).
+func harnessTelemetryToolResults(public, recorded []types.ToolResult) []types.ToolResult {
+	hasFailure := false
+	for _, tr := range recorded {
+		if tr.Error != nil {
+			hasFailure = true
+			break
+		}
+	}
+	if !hasFailure {
+		return public
+	}
+	byID := make(map[string]types.ToolResult, len(public))
+	for _, tr := range public {
+		byID[tr.ToolCallID] = tr
+	}
+	out := make([]types.ToolResult, 0, len(recorded))
+	seen := make(map[string]bool, len(recorded))
+	for _, tr := range recorded {
+		if tr.Error == nil {
+			if p, ok := byID[tr.ToolCallID]; ok {
+				tr = p
+			}
+		}
+		seen[tr.ToolCallID] = true
+		out = append(out, tr)
+	}
+	for _, tr := range public {
+		if !seen[tr.ToolCallID] {
+			out = append(out, tr)
 		}
 	}
 	return out

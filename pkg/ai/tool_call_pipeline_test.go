@@ -315,12 +315,18 @@ func TestGenerateTextInvalidToolCalls(t *testing.T) {
 		t.Fatal("invalid tool call must not execute")
 	}
 	step := result.Steps[0]
-	if len(step.ToolResults) != 1 {
-		t.Fatalf("tool results = %+v", step.ToolResults)
+	// TS toolResults holds no failed call: the invalid call is a tool-error
+	// content part only (owner ruling r71).
+	if len(step.ToolResults) != 0 {
+		t.Fatalf("tool results = %+v, want none", step.ToolResults)
 	}
-	tr := step.ToolResults[0]
-	if tr.ToolCallID != "c1" || tr.Error == nil || !tr.Dynamic || !IsInvalidToolInputError(tr.Error) {
-		t.Fatalf("tool result = %+v", tr)
+	toolErrors := r71integToolErrors(step.Content)
+	if len(toolErrors) != 1 {
+		t.Fatalf("tool errors = %+v", toolErrors)
+	}
+	tr := toolErrors[0]
+	if tr.ToolCallID != "c1" || !tr.Dynamic || !strings.HasPrefix(tr.ErrorText, "AI_InvalidToolInputError:") {
+		t.Fatalf("tool error = %+v", tr)
 	}
 	if !step.ToolCalls[1].Invalid || !step.ToolCalls[1].ProviderExecuted {
 		t.Fatalf("provider-executed call = %+v", step.ToolCalls[1])
@@ -639,8 +645,8 @@ func TestGenerateTextRefineToolInputErrorBecomesInvalidToolCall(t *testing.T) {
 		t.Fatal("invalid tool call must not execute")
 	}
 	step := result.Steps[0]
-	if len(step.ToolResults) != 1 || !errors.Is(step.ToolResults[0].Error, boom) {
-		t.Fatalf("tool results = %+v", step.ToolResults)
+	if toolErrors := r71integToolErrors(step.Content); len(step.ToolResults) != 0 || len(toolErrors) != 1 || !strings.Contains(toolErrors[0].ErrorText, boom.Error()) {
+		t.Fatalf("tool results = %+v, tool errors = %+v", step.ToolResults, toolErrors)
 	}
 	if !step.ToolCalls[0].Invalid {
 		t.Fatalf("call = %+v", step.ToolCalls[0])

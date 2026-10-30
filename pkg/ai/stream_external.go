@@ -371,6 +371,9 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 		if step.response.ModelID != "" {
 			stepModelID = step.response.ModelID
 		}
+		// TS step toolResults are the tool-result content parts: failed
+		// calls are tool-error content only (owner ruling r71).
+		publicToolResults := successfulToolResults(step.toolResults)
 		result := types.StepResult{
 			CallID:             r.cbCallID,
 			StepNumber:         stepNumber,
@@ -381,11 +384,11 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 			ReasoningText:      reasoningText(reasoning),
 			Files:              step.files,
 			ToolCalls:          step.toolCalls,
-			ToolResults:        step.toolResults,
+			ToolResults:        publicToolResults,
 			StaticToolCalls:    filterStaticToolCalls(step.toolCalls),
 			DynamicToolCalls:   filterDynamicToolCalls(step.toolCalls),
-			StaticToolResults:  filterStaticToolResults(step.toolResults),
-			DynamicToolResults: filterDynamicToolResults(step.toolResults),
+			StaticToolResults:  filterStaticToolResults(publicToolResults),
+			DynamicToolResults: filterDynamicToolResults(publicToolResults),
 			ToolsContext:       opts.ToolsContext,
 			RuntimeContext:     opts.RuntimeContext,
 			FinishReason:       step.finishReason,
@@ -416,7 +419,7 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 		}
 		r.usage = r.usage.Add(step.usage)
 		r.toolCalls = append(r.toolCalls, step.toolCalls...)
-		r.toolResults = append(r.toolResults, step.toolResults...)
+		r.toolResults = append(r.toolResults, publicToolResults...)
 		r.sources = append(r.sources, step.sources...)
 		r.files = append(r.files, step.files...)
 		r.warnings = append(r.warnings, step.warnings...)

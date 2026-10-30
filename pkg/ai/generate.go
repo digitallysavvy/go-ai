@@ -737,7 +737,10 @@ type GenerateTextResult struct {
 	// DynamicToolCalls are tool calls from dynamically registered tools across all steps.
 	DynamicToolCalls []types.ToolCall `json:"dynamicToolCalls"`
 
-	// Tool results from all steps.
+	// Tool results from all steps: the results of successful calls only. A
+	// failed call (execution error, invalid call, provider error result) is a
+	// types.ToolErrorContent part in Content, as TS toolResults holds only
+	// tool-result parts.
 	ToolResults []types.ToolResult `json:"toolResults"`
 
 	// StaticToolResults are results from non-dynamic (typed) tools across all steps.
@@ -1880,6 +1883,21 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			result.DynamicToolResults = filterDynamicToolResults(result.ToolResults)
 		}
 
+		// TS toolResults holds only tool-result content parts: a failed call
+		// (an execution error, an invalid call, a provider isError result) is
+		// a tool-error content part only (owner ruling r71). The telemetry
+		// step end keeps the failures: TelemetryStepEndEvent has no content,
+		// so its ToolResults carry them.
+		stepTelemetryToolResults := stepResult.ToolResults
+		if successful := successfulToolResults(stepResult.ToolResults); len(successful) != len(stepResult.ToolResults) {
+			stepResult.ToolResults = successful
+			stepResult.StaticToolResults = filterStaticToolResults(successful)
+			stepResult.DynamicToolResults = filterDynamicToolResults(successful)
+			result.ToolResults = append(result.ToolResults[:toolResultsBefore:toolResultsBefore], successful...)
+			result.StaticToolResults = filterStaticToolResults(result.ToolResults)
+			result.DynamicToolResults = filterDynamicToolResults(result.ToolResults)
+		}
+
 		// Deferred provider tool tracking (mirrors TS SDK pendingDeferredToolCalls).
 		// Scan the current step's tool calls: if a provider tool with SupportsDeferredResults
 		// did not return its result inline in this response, register it as pending so the
@@ -2008,7 +2026,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				ReasoningParts:   stepTelReasoning,
 				ReasoningFiles:   reasoningFilesOf(genResult.Content),
 				ToolCalls:        genResult.ToolCalls,
-				ToolResults:      stepResult.ToolResults,
+				ToolResults:      stepTelemetryToolResults,
 				Files:            stepTelFiles,
 				ProviderMetadata: genResult.ProviderMetadata,
 				// TS onStepEnd records event.response.id/modelId/timestamp.
@@ -3089,6 +3107,30 @@ func filterDynamicToolCalls(calls []types.ToolCall) []types.ToolCall {
 	for _, c := range calls {
 		if c.Dynamic {
 			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// successfulToolResults returns the results that are TS tool-result parts:
+// it drops failed calls (Error set, or a provider IsError result), which TS
+// reports only as tool-error content. The input is returned as is when
+// nothing fails.
+func successfulToolResults(results []types.ToolResult) []types.ToolResult {
+	failed := func(tr types.ToolResult) bool { return tr.Error != nil || isTrue(tr.IsError) }
+	n := 0
+	for _, tr := range results {
+		if failed(tr) {
+			n++
+		}
+	}
+	if n == 0 {
+		return results
+	}
+	out := make([]types.ToolResult, 0, len(results)-n)
+	for _, tr := range results {
+		if !failed(tr) {
+			out = append(out, tr)
 		}
 	}
 	return out

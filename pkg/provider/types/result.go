@@ -415,7 +415,10 @@ type StepResult struct {
 	// DynamicToolCalls are tool calls from dynamically registered tools.
 	DynamicToolCalls []ToolCall `json:"dynamicToolCalls,omitempty"`
 
-	// Tool results from this step
+	// Tool results from this step: the results of successful calls only. A
+	// failed call (execution error, invalid call, provider error result) is a
+	// ToolErrorContent part in Content, as TS toolResults holds only
+	// tool-result parts.
 	ToolResults []ToolResult `json:"toolResults,omitempty"`
 
 	// StaticToolResults are results from non-dynamic (typed) tools.
