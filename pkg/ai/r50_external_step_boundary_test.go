@@ -31,7 +31,7 @@ func TestR50HarnessFinishAfterDiscardOpensNoStep(t *testing.T) {
 		}
 		got = append(got, c.Type)
 	}
-	want := []provider.ChunkType{provider.ChunkTypeStartStep, provider.ChunkTypeText, provider.ChunkTypeFinish}
+	want := []provider.ChunkType{provider.ChunkTypeStart, provider.ChunkTypeStartStep, provider.ChunkTypeText, provider.ChunkTypeFinish}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("full stream = %v, want %v", got, want)
 	}
@@ -50,7 +50,7 @@ func TestR50HarnessFinishAfterDiscardOpensNoStep(t *testing.T) {
 		}
 		got = append(got, c.Type)
 	}
-	if want := []provider.ChunkType{provider.ChunkTypeFinish}; !reflect.DeepEqual(got, want) {
+	if want := []provider.ChunkType{provider.ChunkTypeStart, provider.ChunkTypeFinish}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("empty turn full stream = %v, want %v", got, want)
 	}
 }
