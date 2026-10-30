@@ -160,12 +160,12 @@ func r70Attempt(body string, chunks ...provider.StreamChunk) func() (provider.Te
 }
 
 var (
-	r70Stop     = provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop"}
-	r70ProvErr  = errors.New("provider error")
-	r70ErrPart  = provider.StreamChunk{Type: provider.ChunkTypeError, Err: r70ProvErr, Text: r70ProvErr.Error()}
-	r70Schema   = schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "properties": map[string]interface{}{"x": map[string]interface{}{"type": "string"}}, "required": []interface{}{"x"}})
-	r70ZeroInt  = 0
-	r70OneRetry = 1
+	r70Stop        = provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop"}
+	errR70Provider = errors.New("provider error")
+	r70ErrPart     = provider.StreamChunk{Type: provider.ChunkTypeError, Err: errR70Provider, Text: errR70Provider.Error()}
+	r70Schema      = schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "properties": map[string]interface{}{"x": map[string]interface{}{"type": "string"}}, "required": []interface{}{"x"}})
+	r70ZeroInt     = 0
+	r70OneRetry    = 1
 )
 
 func r70Text(id, text string) []provider.StreamChunk {
