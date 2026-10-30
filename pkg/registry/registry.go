@@ -56,6 +56,13 @@ func (e *NoSuchProviderError) As(target interface{}) bool {
 	return true
 }
 
+// Is lets errors.Is(err, providererrors.ErrModelNotFound) match an
+// unknown-provider error, as it matches the *providererrors.NoSuchModelError
+// that errors.As finds through As. The capability errors (Reason set) do not.
+func (e *NoSuchProviderError) Is(target error) bool {
+	return e.Reason == "" && target == providererrors.ErrModelNotFound
+}
+
 // noSuchProviderLocked builds the TS getProvider error: modelId is the provider ID.
 func (r *Registry) noSuchProviderLocked(providerID, modelType string) *NoSuchProviderError {
 	return &NoSuchProviderError{ProviderID: providerID, ModelID: providerID, ModelType: modelType, AvailableProviders: r.listProvidersLocked()}
