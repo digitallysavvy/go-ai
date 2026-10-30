@@ -2309,6 +2309,8 @@ func finalStepModel(steps []types.StepResult, provider, modelID string) (string,
 
 // toolCallEventCallbacks groups the per-tool-call structured event callbacks
 // and their associated metadata. All fields are optional (nil-safe).
+// fallbackStart/fallbackFinish are the deprecated OnToolCallStart/
+// OnToolCallFinish; each runs only when onStart/onFinish is nil.
 type toolCallEventCallbacks struct {
 	callID              string
 	onStart             func(ctx context.Context, e OnToolCallStartEvent)
@@ -2740,7 +2742,13 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				RuntimeContext:      callbacks.runtimeContext,
 				ToolsContext:        callbacks.toolsContext,
 			}
-			Notify(ctx, startEvent, callbacks.onStart, callbacks.fallbackStart)
+			// TS `onToolExecutionStart ?? experimental_onToolCallStart`: the
+			// deprecated callback runs only when the new one is unset.
+			onToolStart := callbacks.onStart
+			if onToolStart == nil {
+				onToolStart = callbacks.fallbackStart
+			}
+			Notify(ctx, startEvent, onToolStart)
 
 			// Fire telemetry OnToolCallStart — integrations may inject a child span.
 			toolCtx := telemetry.FireOnToolCallStart(ctx, telemetry.TelemetryToolCallStartEvent{
@@ -2899,7 +2907,12 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				RuntimeContext:      callbacks.runtimeContext,
 				ToolsContext:        callbacks.toolsContext,
 			}
-			Notify(ctx, finishEvent, callbacks.onFinish, callbacks.fallbackFinish)
+			// TS `onToolExecutionEnd ?? experimental_onToolCallFinish`.
+			onToolEnd := callbacks.onFinish
+			if onToolEnd == nil {
+				onToolEnd = callbacks.fallbackFinish
+			}
+			Notify(ctx, finishEvent, onToolEnd)
 		}
 	}
 
