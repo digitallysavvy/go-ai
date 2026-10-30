@@ -451,6 +451,16 @@ func (r *WorkflowStreamResult) Output() any {
 	return r.StreamTextResult.Output()
 }
 
+// PartialOutput returns the latest partial structured output, nil when
+// neither the call nor the agent sets an Output: TS WorkflowAgent's stream
+// mode parses only `options.output ?? this.output` and has no text default.
+func (r *WorkflowStreamResult) PartialOutput() any {
+	if r.StreamTextResult == nil || !aibridge.StreamTextHasOutputSpec(r.StreamTextResult) {
+		return nil
+	}
+	return r.StreamTextResult.PartialOutput()
+}
+
 // OutputErr returns the output parse error, nil when TS would not parse the
 // output (see skipOutput).
 func (r *WorkflowStreamResult) OutputErr() error {
@@ -2719,10 +2729,6 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	return &WorkflowStreamResult{StreamTextResult: stream}, nil
 }
 
-// isWorkflowAbort reports whether a failed run counts as an abort rather than
-// an error: the caller's context ended, or the failure is a cancellation or a
-// timeout such as the agent's own Timeout (TS classifies AbortError and
-// TimeoutError as aborts, so onAbort fires and onError does not).
 // workflowInternalOptions makes the loop continue after a provider-executed
 // tool call with no result (TS WorkflowAgent warns and sends an empty result).
 var workflowInternalOptions = &ai.InternalOptions{ContinueOnMissingProviderResult: true, StopOnStreamError: true, EndOnError: true, HeadersAsGiven: true, ApprovalID: workflowApprovalID, RequestMessagesAsPrompt: true, DeferApprovalRequests: true, ApprovalsResumed: true}
@@ -2731,6 +2737,10 @@ var workflowInternalOptions = &ai.InternalOptions{ContinueOnMissingProviderResul
 // `approval-${toolCallId}`, in generate and stream mode.
 func workflowApprovalID(toolCallID string) string { return "approval-" + toolCallID }
 
+// isWorkflowAbort reports whether a failed run counts as an abort rather than
+// an error: the caller's context ended, or the failure is a cancellation or a
+// timeout such as the agent's own Timeout (TS classifies AbortError and
+// TimeoutError as aborts, so onAbort fires and onError does not).
 func isWorkflowAbort(ctx context.Context, err error) bool {
 	if ctx != nil && ctx.Err() != nil {
 		return true

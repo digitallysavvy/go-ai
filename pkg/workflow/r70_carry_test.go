@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
@@ -161,5 +162,41 @@ func TestR70OnlyEffectiveInstructionsAreValidated(t *testing.T) {
 		// Without a call override the agent's invalid instructions are the
 		// effective ones (TS this.instructions = instructions ?? system).
 		r69WantInvalidPrompt(t, "agent invalid instructions", r70Run(t, a, stream, "", nil), r70InvalidInstructions)
+	}
+}
+
+// TS WorkflowAgent's stream mode parses only `options.output ??
+// this.output` and exposes no partial output without one, so
+// WorkflowStreamResult.PartialOutput() stays nil without a spec whatever
+// core StreamText's default is; with a spec it is the core partial.
+func TestR70WorkflowStreamPartialOutputNeedsSpec(t *testing.T) {
+	chunks := []provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	}
+	a, err := NewWorkflowAgent(WorkflowAgent{Model: &fnModel{chunks: chunks}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := a.StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+	if got := st.PartialOutput(); got != nil {
+		t.Errorf("no spec: PartialOutput() = %#v, want nil", got)
+	}
+
+	st, err = a.StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "hi", Output: ai.TextOutput()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+	if got, core := st.PartialOutput(), st.StreamTextResult.PartialOutput(); got != core || got == nil {
+		t.Errorf("text spec: PartialOutput() = %#v, core %#v, want the core partial", got, core)
 	}
 }
