@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/aibridge"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -868,8 +869,8 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		}
 		if err != nil {
 			cancelStepTimeout()
-			stepTel.fail(err)
 			failStep(err)
+			stepTel.fail(err)
 			// Call OnChainError callback
 			if a.config.OnChainError != nil {
 				a.config.OnChainError(err)
@@ -902,8 +903,8 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			if inputErr != nil {
 				failErr = inputErr
 			}
-			stepTel.fail(failErr)
 			failStep(failErr)
+			stepTel.fail(failErr)
 			if a.config.OnChainError != nil {
 				a.config.OnChainError(failErr)
 			}
@@ -955,8 +956,8 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			if callConfig.ToolCallConcurrency != a.config.ToolCallConcurrency {
 				if err := validateToolCallConcurrency(callConfig.ToolCallConcurrency); err != nil {
 					cancelStepTimeout()
-					stepTel.fail(err)
 					failStep(err)
+					stepTel.fail(err)
 					return nil, err
 				}
 				local := *a
@@ -981,13 +982,15 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			toolResults, err := stepAgent.executeTools(stepCtx, stepResult.ToolCalls, callTools, callConfig.Messages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, preApprovals, cbs, result.Usage.Add(stepResult.Usage), timings)
 			if err != nil {
 				cancelStepTimeout()
-				stepTel.fail(err)
 				var conversionErr *toolResultModelOutputError
 				if errors.As(err, &conversionErr) {
 					failStep(conversionErr.Unwrap())
 				} else {
 					failStep(err)
 				}
+				// TS notify([onStepError, telemetry.onStepError]): the user
+				// callback first.
+				stepTel.fail(err)
 				// Call OnChainError callback
 				if a.config.OnChainError != nil {
 					a.config.OnChainError(err)
@@ -1105,8 +1108,6 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		result.Usage = result.Usage.Add(stepResult.Usage)
 		result.Warnings = append(result.Warnings, stepResult.Warnings...)
 
-		stepTel.finish(stepResult, callConfig.RuntimeContext, callConfig.ToolsContext)
-
 		// Call step end callback (legacy/basic).
 		if onStepEnd := resolveAgentBasicOnStepEnd(a.config); onStepEnd != nil {
 			onStepEnd(*stepResult)
@@ -1152,6 +1153,10 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			RuntimeContext:      callConfig.RuntimeContext,
 			ToolsContext:        callConfig.ToolsContext,
 		}, cbs.onStepFinish)
+		// The telemetry step end follows the user callbacks (TS
+		// notify([onStepFinish, telemetry.onStepEnd]) starts the callback
+		// first).
+		stepTel.finish(stepResult, callConfig.RuntimeContext, callConfig.ToolsContext)
 
 		// Check if we should continue
 		if !shouldContinue {
@@ -2506,18 +2511,66 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			}
 			execCancel()
 			timings.record(call.ID, durationMs)
-			telemetry.FireOnToolCallFinish(toolTelCtx, telemetry.TelemetryToolCallFinishEvent{
-				Settings:    tsettings,
-				CallID:      tcallID,
-				ToolCallID:  call.ID,
-				ToolName:    call.ToolName,
-				Args:        call.Arguments,
-				Result:      toolResult,
-				Error:       toolErr,
-				DurationMs:  durationMs,
-				ToolContext: telemetryToolContextFor(tsettings, call.ToolName, toolContext),
-			})
-			var modelOutput *types.ToolResultOutput
+			result := types.ToolResult{
+				ToolCallID:       call.ID,
+				ToolName:         call.ToolName,
+				Title:            call.Title,
+				Input:            call.Arguments,
+				Result:           toolResult,
+				Error:            toolErr,
+				ProviderExecuted: false,
+				ProviderMetadata: providerMetadata,
+				ToolMetadata:     call.ToolMetadata,
+			}
+			if approval.Status == types.ToolApprovalStatusApproved {
+				// An automatically approved call keeps its approval so its
+				// request/response parts are recorded, as in GenerateText.
+				result.ApprovalStatus = approval.Status
+				result.ApprovalReason = approval.Reason
+				result.ProviderExecutedSet = call.ProviderExecutedSet
+			}
+			// notifyToolEnd emits OnToolCallFinishEvent and then the telemetry
+			// tool end: TS notify([onToolExecutionEnd,
+			// telemetry.onToolExecutionEnd]) starts the user callback first.
+			notifyToolEnd := func(output types.ToolResult) {
+				// CB-T23: Emit OnToolCallFinishEvent
+				ai.Notify(ctx, ai.OnToolCallFinishEvent{
+					CallID:          eventCallID,
+					ToolContext:     toolContext,
+					Messages:        messages,
+					ToolCallID:      call.ID,
+					ToolName:        call.ToolName,
+					ToolCall:        call,
+					ToolOutput:      output,
+					ToolExecutionMs: durationMs,
+					// Args/Result/Error/DurationMs/StepNumber/ModelProvider are
+					// deprecated, JSON-excluded aliases kept for callbacks still
+					// reading the old fields (mirrors generate.go's
+					// OnToolCallFinishEvent population); ToolCall/ToolOutput/
+					// ToolExecutionMs above are the replacements.
+					Args:                call.Arguments,            //nolint:staticcheck
+					Result:              toolResult,                //nolint:staticcheck
+					Error:               toolErr,                   //nolint:staticcheck
+					DurationMs:          durationMs,                //nolint:staticcheck
+					StepNumber:          stepNum,                   //nolint:staticcheck
+					ModelProvider:       a.config.Model.Provider(), //nolint:staticcheck
+					ModelID:             a.config.Model.ModelID(),
+					ExperimentalContext: a.config.ExperimentalContext,
+					RuntimeContext:      runtimeContext,
+					ToolsContext:        toolsContext,
+				}, cbs.onToolCallFinish)
+				telemetry.FireOnToolCallFinish(toolTelCtx, telemetry.TelemetryToolCallFinishEvent{
+					Settings:    tsettings,
+					CallID:      tcallID,
+					ToolCallID:  call.ID,
+					ToolName:    call.ToolName,
+					Args:        call.Arguments,
+					Result:      toolResult,
+					Error:       toolErr,
+					DurationMs:  durationMs,
+					ToolContext: telemetryToolContextFor(tsettings, call.ToolName, toolContext),
+				})
+			}
 			callUsage := usage // per-call copy: calls may run concurrently
 			if toolErr == nil && tool.ToModelOutput != nil {
 				converted, convertErr := tool.ToModelOutput(ctx, types.ToModelOutputOptions{
@@ -2541,58 +2594,15 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 					Usage: &callUsage,
 				})
 				if convertErr != nil {
+					// TS converts the output only after executeToolCall has
+					// notified onToolExecutionEnd.
+					notifyToolEnd(result)
 					return results, &toolResultModelOutputError{err: convertErr}
 				}
-				modelOutput = converted
-			}
-
-			result := types.ToolResult{
-				ToolCallID:       call.ID,
-				ToolName:         call.ToolName,
-				Title:            call.Title,
-				Input:            call.Arguments,
-				Result:           toolResult,
-				ModelOutput:      modelOutput,
-				Error:            toolErr,
-				ProviderExecuted: false,
-				ProviderMetadata: providerMetadata,
-				ToolMetadata:     call.ToolMetadata,
-			}
-			if approval.Status == types.ToolApprovalStatusApproved {
-				// An automatically approved call keeps its approval so its
-				// request/response parts are recorded, as in GenerateText.
-				result.ApprovalStatus = approval.Status
-				result.ApprovalReason = approval.Reason
-				result.ProviderExecutedSet = call.ProviderExecutedSet
+				result.ModelOutput = converted
 			}
 			results = append(results, result)
-
-			// CB-T23: Emit OnToolCallFinishEvent
-			ai.Notify(ctx, ai.OnToolCallFinishEvent{
-				CallID:          eventCallID,
-				ToolContext:     toolContext,
-				Messages:        messages,
-				ToolCallID:      call.ID,
-				ToolName:        call.ToolName,
-				ToolCall:        call,
-				ToolOutput:      result,
-				ToolExecutionMs: durationMs,
-				// Args/Result/Error/DurationMs/StepNumber/ModelProvider are
-				// deprecated, JSON-excluded aliases kept for callbacks still
-				// reading the old fields (mirrors generate.go's
-				// OnToolCallFinishEvent population); ToolCall/ToolOutput/
-				// ToolExecutionMs above are the replacements.
-				Args:                call.Arguments,            //nolint:staticcheck
-				Result:              toolResult,                //nolint:staticcheck
-				Error:               toolErr,                   //nolint:staticcheck
-				DurationMs:          durationMs,                //nolint:staticcheck
-				StepNumber:          stepNum,                   //nolint:staticcheck
-				ModelProvider:       a.config.Model.Provider(), //nolint:staticcheck
-				ModelID:             a.config.Model.ModelID(),
-				ExperimentalContext: a.config.ExperimentalContext,
-				RuntimeContext:      runtimeContext,
-				ToolsContext:        toolsContext,
-			}, cbs.onToolCallFinish)
+			notifyToolEnd(result)
 
 			// Call tool result callback (legacy)
 			if a.config.OnToolResult != nil {
@@ -3172,7 +3182,9 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 				part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: output}
 				part.Result = nil
 			default:
-				part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: result.Result}
+				// TS createToolModelOutput: the output's JSON value
+				// (toJSONValue), not the Go value itself.
+				part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: agentToJSONValue(result.Result)}
 				part.Result = nil
 			}
 		}
@@ -3183,6 +3195,28 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 	out = append(out, requests...)
 	out = append(out, responses...)
 	return append(out, withApproval...)
+}
+
+// agentToJSONValue round-trips value through JSON (TS toJSONValue:
+// JSON.parse(JSON.stringify(value)); a marshal failure gives null), keeping
+// the key order of a json.RawMessage or ordered object, as GenerateText's
+// tool model output does.
+func agentToJSONValue(value interface{}) interface{} {
+	if value == nil {
+		return nil
+	}
+	if ordered, ok := jsonorder.Normalize(value); ok {
+		return ordered
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var out interface{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 func modelFacingToolResultOutput(result types.ToolResult) types.ToolResultOutput {

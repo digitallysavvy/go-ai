@@ -1049,9 +1049,6 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 	reqMeta := GenerateStepRequest{Body: genResult.RawRequest}
 	resMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
 
-	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), resMeta.ID, genResult.ProviderMetadata)
-	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, resMeta.ID, resMeta.ModelID, resMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
-
 	// Fire OnStepFinish after provider returns, BEFORE JSON parsing.
 	Notify(ctx, ObjectOnStepFinishEvent{
 		CallID:           cc.callID,
@@ -1067,6 +1064,10 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 		Response:         resMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
+	// The telemetry step end follows the user callback (TS
+	// notify([onStepEnd, telemetry.onObjectStepEnd])).
+	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), resMeta.ID, genResult.ProviderMetadata)
+	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, resMeta.ID, resMeta.ModelID, resMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
 
 	obj, _, _, err := parseGenerateObjectResult(structuredParseResult(genResult), ObjectModeObject, opts.Schema, nil, opts.Model)
 	repairTextFn := effectiveRepairText(opts.RepairText, opts.ExperimentalRepairText)
@@ -1216,9 +1217,6 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 	arrReqMeta := GenerateStepRequest{Body: genResult.RawRequest}
 	arrResMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
 
-	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), arrResMeta.ID, genResult.ProviderMetadata)
-	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, arrResMeta.ID, arrResMeta.ModelID, arrResMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
-
 	Notify(ctx, ObjectOnStepFinishEvent{
 		CallID:           cc.callID,
 		StepNumber:       0,
@@ -1233,6 +1231,10 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 		Response:         arrResMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
+	// The telemetry step end follows the user callback (TS
+	// notify([onStepEnd, telemetry.onObjectStepEnd])).
+	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), arrResMeta.ID, genResult.ProviderMetadata)
+	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, arrResMeta.ID, arrResMeta.ModelID, arrResMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
 
 	_, arr, _, err := parseGenerateObjectResult(structuredParseResult(genResult), ObjectModeArray, opts.Schema, nil, opts.Model)
 	repairTextFn := effectiveRepairText(opts.RepairText, opts.ExperimentalRepairText)
@@ -1373,9 +1375,6 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 	enumReqMeta := GenerateStepRequest{Body: genResult.RawRequest}
 	enumResMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
 
-	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), enumResMeta.ID, genResult.ProviderMetadata)
-	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, enumResMeta.ID, enumResMeta.ModelID, enumResMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
-
 	Notify(ctx, ObjectOnStepFinishEvent{
 		CallID:           cc.callID,
 		StepNumber:       0,
@@ -1390,6 +1389,10 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 		Response:         enumResMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
+	// The telemetry step end follows the user callback (TS
+	// notify([onStepEnd, telemetry.onObjectStepEnd])).
+	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), enumResMeta.ID, genResult.ProviderMetadata)
+	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, enumResMeta.ID, enumResMeta.ModelID, enumResMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
 
 	_, _, selectedValue, err := parseGenerateObjectResult(structuredParseResult(genResult), ObjectModeEnum, nil, opts.EnumValues, opts.Model)
 	repairTextFn := effectiveRepairText(opts.RepairText, opts.ExperimentalRepairText)
@@ -1524,9 +1527,6 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 	nsReqMeta := GenerateStepRequest{Body: genResult.RawRequest}
 	nsResMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
 
-	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), nsResMeta.ID, genResult.ProviderMetadata)
-	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, nsResMeta.ID, nsResMeta.ModelID, nsResMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
-
 	Notify(ctx, ObjectOnStepFinishEvent{
 		CallID:           cc.callID,
 		StepNumber:       0,
@@ -1541,6 +1541,10 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 		Response:         nsResMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
+	// The telemetry step end follows the user callback (TS
+	// notify([onStepEnd, telemetry.onObjectStepEnd])).
+	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), nsResMeta.ID, genResult.ProviderMetadata)
+	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, nsResMeta.ID, nsResMeta.ModelID, nsResMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
 
 	obj, _, _, err := parseGenerateObjectResult(structuredParseResult(genResult), ObjectModeNoSchema, nil, nil, opts.Model)
 	repairTextFn := effectiveRepairText(opts.RepairText, opts.ExperimentalRepairText)
@@ -1715,10 +1719,12 @@ type StreamObjectOptions struct {
 	// Deprecated: use OnStepStart.
 	ExperimentalOnStepStart func(ctx context.Context, e ObjectOnStepStartEvent)
 
-	// OnStepEnd is called after the provider returns, before JSON parsing.
+	// OnStepEnd is called after the stream ends and its final JSON has been
+	// parsed (and repaired), before OnEnd, as TS stream-object.ts parses in
+	// the finish part handler and notifies onStepEnd in its flush handler.
 	OnStepEnd func(ctx context.Context, e ObjectOnStepFinishEvent)
 
-	// OnStepFinish is called after the provider returns, before JSON parsing.
+	// OnStepFinish is a deprecated alias for OnStepEnd.
 	//
 	// Deprecated: use OnStepEnd.
 	OnStepFinish func(ctx context.Context, e ObjectOnStepFinishEvent)
@@ -2100,12 +2106,13 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	if accumulatedReasoning != "" {
 		streamCallEndContent = append(streamCallEndContent, types.ReasoningContent{Text: accumulatedReasoning})
 	}
-	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, finishReason, usage, streamCallEndContent, streamResMeta.ID, streamProviderMetadata)
-	fireObjectStepEnd(telStep, "ai.streamObject", opts.ExperimentalTelemetry, finishReason, usage, accumulatedText, streamResMeta.ID, streamResMeta.ModelID, streamResMeta.Timestamp, streamProviderMetadata, firstChunkAt)
-
-	// If the stream itself errored, fire OnStepFinish + OnFinishEvent with the
-	// error (matching TS flush handler) then return.
-	if streamErr != nil {
+	// fireStepEnd sends the step end: the user OnStepEnd first, then the
+	// language-model-call-end/step-end telemetry, as TS flush's
+	// notify([onStepFinish, telemetry.onObjectStepEnd]). TS's flush handler
+	// always runs, whether the stream ended cleanly or with a content error
+	// (H3 item 1). TS SDK passes reasoning: undefined here (the streaming
+	// object path does not extract reasoning).
+	fireStepEnd := func() {
 		Notify(ctx, ObjectOnStepFinishEvent{
 			CallID:           callID,
 			StepNumber:       0,
@@ -2120,6 +2127,14 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			Response:         streamResMeta,
 			ProviderMetadata: streamProviderMetadata,
 		}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
+		fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, finishReason, usage, streamCallEndContent, streamResMeta.ID, streamProviderMetadata)
+		fireObjectStepEnd(telStep, "ai.streamObject", opts.ExperimentalTelemetry, finishReason, usage, accumulatedText, streamResMeta.ID, streamResMeta.ModelID, streamResMeta.Timestamp, streamProviderMetadata, firstChunkAt)
+	}
+
+	// If the stream itself errored, fire OnStepFinish + OnFinishEvent with the
+	// error (matching TS flush handler) then return.
+	if streamErr != nil {
+		fireStepEnd()
 		Notify(ctx, ObjectOnFinishEvent{
 			CallID:           callID,
 			Object:           nil,
@@ -2143,24 +2158,9 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		return nil, streamErr
 	}
 
-	// Fire OnStepFinish after stream ends, BEFORE JSON parsing.
-	// TS SDK passes reasoning: undefined here (streaming object path does not extract reasoning).
-	Notify(ctx, ObjectOnStepFinishEvent{
-		CallID:           callID,
-		StepNumber:       0,
-		Provider:         opts.Model.Provider(),
-		ModelID:          opts.Model.ModelID(),
-		FinishReason:     finishReason,
-		Usage:            usage,
-		ObjectText:       accumulatedText,
-		Reasoning:        "", // TS SDK always passes reasoning: undefined in streaming callbacks
-		Warnings:         streamWarnings,
-		Request:          streamReqMeta,
-		Response:         streamResMeta,
-		ProviderMetadata: streamProviderMetadata,
-	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
-
-	// Parse final JSON
+	// Parse the final JSON (and repair it) before the step end: TS
+	// stream-object.ts parses in the finish part's handler, and its flush
+	// handler sends onStepFinish and onFinish afterwards.
 	var finalObject interface{}
 	var finalArray []interface{}
 	var finalEnum string
@@ -2187,6 +2187,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			parsedObject, parsedArray, parsedEnum, parseErr = parseObjectResult(&repairedResult, opts.OutputMode, opts.Schema, opts.EnumValues, opts.Model)
 		}
 	}
+	fireStepEnd()
 	if parseErr != nil {
 		// Parse failure: fire OnFinishEvent with error and nil object.
 		Notify(ctx, ObjectOnFinishEvent{
