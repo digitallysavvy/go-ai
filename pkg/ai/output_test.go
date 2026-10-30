@@ -1388,8 +1388,9 @@ func TestStreamText_NoOutput_NoResponseFormat(t *testing.T) {
 	if _, err := result.ReadAll(); err != nil {
 		t.Fatalf("ReadAll error: %v", err)
 	}
-	if result.PartialOutput() != nil {
-		t.Error("expected nil PartialOutput when no Output spec provided")
+	// TS parses partial output with output ?? text(): the step's text.
+	if got := result.PartialOutput(); got != "hello" {
+		t.Errorf("PartialOutput() = %#v, want the step's text %q", got, "hello")
 	}
 }
 

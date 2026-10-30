@@ -168,7 +168,7 @@ var (
 	r70OneRetry    = 1
 )
 
-func r70Text(id, text string) []provider.StreamChunk {
+func r70StreamText(id, text string) []provider.StreamChunk {
 	return []provider.StreamChunk{
 		{Type: provider.ChunkTypeTextStart, ID: id},
 		{Type: provider.ChunkTypeText, ID: id, Text: text},
@@ -189,11 +189,11 @@ func TestR70TSStreamRetryAfterProviderErrorPart(t *testing.T) {
 	model := r69Model(
 		func() (provider.TextStream, error) {
 			calls++
-			return testutil.NewMockTextStream(r70Cat(r70Text("1", "partial "), []provider.StreamChunk{r70ErrPart})), nil
+			return testutil.NewMockTextStream(r70Cat(r70StreamText("1", "partial "), []provider.StreamChunk{r70ErrPart})), nil
 		},
 		func() (provider.TextStream, error) {
 			calls++
-			return testutil.NewMockTextStream(r70Cat(r70Text("2", "recovered"), []provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: "2"}, r70Stop})), nil
+			return testutil.NewMockTextStream(r70Cat(r70StreamText("2", "recovered"), []provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: "2"}, r70Stop})), nil
 		},
 	)
 	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test-input", MaxRetries: &r70ZeroInt, StreamRetries: &r70OneRetry, OnError: func(context.Context, error) {}})
@@ -212,8 +212,8 @@ func TestR70TSStreamRetryAfterProviderErrorPart(t *testing.T) {
 // TS 3115: should exclude failed-attempt text from structured output state.
 func TestR70TSStreamRetryExcludesFailedAttemptFromOutput(t *testing.T) {
 	model := r69Model(
-		r70Chunks(r70Cat(r70Text("1", `{"x":`), []provider.StreamChunk{r70ErrPart})...),
-		r70Chunks(r70Cat(r70Text("2", `{"x":"ok"}`), []provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: "2"}, r70Stop})...),
+		r70Chunks(r70Cat(r70StreamText("1", `{"x":`), []provider.StreamChunk{r70ErrPart})...),
+		r70Chunks(r70Cat(r70StreamText("2", `{"x":"ok"}`), []provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: "2"}, r70Stop})...),
 	)
 	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test-input",
 		Output:        ObjectOutput[map[string]interface{}](ObjectOutputOptions{Schema: r70Schema}),
@@ -242,8 +242,8 @@ func TestR70TSStreamRetryUsesRecoveredAttemptMetadata(t *testing.T) {
 					ID: id, ModelID: model, Timestamp: time.UnixMilli(ts), Headers: map[string]string{"call": call}}}
 			}
 			model := r69Model(
-				r70Attempt("request-1", r70Cat([]provider.StreamChunk{meta("failed-id", "failed-model", 1, "1")}, r70Text("failed-text", `{"x":`), []provider.StreamChunk{r70ErrPart})...),
-				r70Attempt("request-2", r70Cat([]provider.StreamChunk{meta("recovered-id", "recovered-model", 2, "2")}, r70Text("recovered-text", `{"x":"ok"}`),
+				r70Attempt("request-1", r70Cat([]provider.StreamChunk{meta("failed-id", "failed-model", 1, "1")}, r70StreamText("failed-text", `{"x":`), []provider.StreamChunk{r70ErrPart})...),
+				r70Attempt("request-2", r70Cat([]provider.StreamChunk{meta("recovered-id", "recovered-model", 2, "2")}, r70StreamText("recovered-text", `{"x":"ok"}`),
 					[]provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: "recovered-text"}, r70Stop})...),
 			)
 			opts := StreamTextOptions{Model: model, Prompt: "test-input",
@@ -299,7 +299,7 @@ func TestR70TSStreamRetryRecoveredStreamWithoutOutput(t *testing.T) {
 	model := r69Model(
 		func() (provider.TextStream, error) {
 			calls++
-			return testutil.NewMockTextStream(r70Cat(r70Text("failed-text", "partial"), []provider.StreamChunk{r70ErrPart})), nil
+			return testutil.NewMockTextStream(r70Cat(r70StreamText("failed-text", "partial"), []provider.StreamChunk{r70ErrPart})), nil
 		},
 		func() (provider.TextStream, error) { calls++; return testutil.NewMockTextStream(nil), nil },
 	)
@@ -367,7 +367,7 @@ func TestR70TSStreamCallbackRetry(t *testing.T) {
 		},
 		func() (provider.TextStream, error) {
 			calls.Add(1)
-			return testutil.NewMockTextStream(r70Cat(r70Text("1", "recovered"), []provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: "1"}, r70Stop})), nil
+			return testutil.NewMockTextStream(r70Cat(r70StreamText("1", "recovered"), []provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: "1"}, r70Stop})), nil
 		},
 	)
 	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test-input", StreamRetries: &r70ZeroInt,
@@ -430,16 +430,16 @@ func TestR70TSStreamRetryNextStepContextFromRecoveredTransformedContent(t *testi
 		mu.Unlock()
 		switch n {
 		case 0:
-			return testutil.NewMockTextStream(r70Cat(r70Text("failed-text", "partial"), []provider.StreamChunk{r70ErrPart})), nil
+			return testutil.NewMockTextStream(r70Cat(r70StreamText("failed-text", "partial"), []provider.StreamChunk{r70ErrPart})), nil
 		case 1:
-			return testutil.NewMockTextStream(r70Cat(r70Text("recovered-text", "recovered"),
+			return testutil.NewMockTextStream(r70Cat(r70StreamText("recovered-text", "recovered"),
 				[]provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: "recovered-text"}, r70ToolCall("tool-call-1"), r70ToolCallsFinish})), nil
 		default:
 			b, _ := json.Marshal(o.Prompt.Messages)
 			mu.Lock()
 			nextPrompts = append(nextPrompts, string(b))
 			mu.Unlock()
-			return testutil.NewMockTextStream(r70Cat(r70Text("final-text", "done"), []provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: "final-text"}, r70Stop})), nil
+			return testutil.NewMockTextStream(r70Cat(r70StreamText("final-text", "done"), []provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: "final-text"}, r70Stop})), nil
 		}
 	}}
 	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test-input",
@@ -483,7 +483,7 @@ func TestR70TSStreamRetryPreservesCompletedSteps(t *testing.T) {
 	model := r69Model(
 		r70Chunks(r70ToolCall("tool-call-1"), r70ToolCallsFinish),
 		r70Chunks(r70ErrPart),
-		r70Chunks(r70Cat(r70Text("1", "recovered"), []provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: "1"}, r70Stop})...),
+		r70Chunks(r70Cat(r70StreamText("1", "recovered"), []provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: "1"}, r70Stop})...),
 	)
 	var calls atomic.Int32
 	inner := model.DoStreamFunc
@@ -515,7 +515,7 @@ func TestR70TSStreamRetryDiscardsFailedAttemptToolCalls(t *testing.T) {
 	var executed atomic.Int32
 	model := r69Model(
 		r70Chunks(r70ToolCall("failed-tool-call"), r70ErrPart),
-		r70Chunks(r70Cat(r70Text("1", "recovered"), []provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: "1"}, r70Stop})...),
+		r70Chunks(r70Cat(r70StreamText("1", "recovered"), []provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: "1"}, r70Stop})...),
 	)
 	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test-input",
 		Tools: []types.Tool{r70Tool("tool1", &executed)}, StreamRetries: &r70OneRetry, OnError: func(context.Context, error) {}})
@@ -562,7 +562,7 @@ func TestR70TSStreamRetryDiscardsFailedAttemptToolCallbacks(t *testing.T) {
 			provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: "failed-tool-call", Text: "{}"},
 			provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: "failed-tool-call"},
 			r70ToolCall("failed-tool-call"), r70ErrPart),
-		r70Chunks(r70Cat(r70Text("1", "recovered"), []provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: "1"}, r70Stop})...),
+		r70Chunks(r70Cat(r70StreamText("1", "recovered"), []provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: "1"}, r70Stop})...),
 	)
 	tool := types.Tool{Name: "tool1", Parameters: map[string]interface{}{"type": "object"},
 		OnInputStart:     func(context.Context, types.OnInputStartOptions) error { starts.Add(1); return nil },
@@ -593,7 +593,7 @@ func TestR70TSStreamRetryLifecycleCallbackScope(t *testing.T) {
 	var stepStarts, callStarts, callEnds atomic.Int32
 	model := r69Model(
 		r70Chunks(r70ErrPart),
-		r70Chunks(r70Cat(r70Text("1", "recovered"), []provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: "1"}, r70Stop})...),
+		r70Chunks(r70Cat(r70StreamText("1", "recovered"), []provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: "1"}, r70Stop})...),
 	)
 	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test-input", StreamRetries: &r70OneRetry,
 		OnStepStart:              func(context.Context, OnStepStartEvent) { stepStarts.Add(1) },
@@ -792,7 +792,7 @@ func TestR70TSStreamRecoveryCallFailsToStart(t *testing.T) {
 	var calls atomic.Int32
 	model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
 		if calls.Add(1) == 1 {
-			return testutil.NewMockTextStream(r70Cat(r70Text("failed-text", "partial"), []provider.StreamChunk{r70ToolCall("failed-tool-call"), r70ErrPart})), nil
+			return testutil.NewMockTextStream(r70Cat(r70StreamText("failed-text", "partial"), []provider.StreamChunk{r70ToolCall("failed-tool-call"), r70ErrPart})), nil
 		}
 		return nil, errors.New("recovery startup error")
 	}}
@@ -846,7 +846,7 @@ func TestR70TSStreamRejectsNegativeStreamRetries(t *testing.T) {
 func TestR70TSStreamSameProviderErrorForOnErrorAndStream(t *testing.T) {
 	status := 529
 	provErr := &providererrors.StreamProviderError{Provider: "anthropic.messages", Message: "Overloaded", Type: "overloaded_error", Code: "provider_overloaded", StatusCode: &status, IsRetryable: true}
-	model := r69Model(r70Chunks(r70Cat(r70Text("1", "Hello"), []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: provErr, Text: provErr.Error()}})...))
+	model := r69Model(r70Chunks(r70Cat(r70StreamText("1", "Hello"), []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: provErr, Text: provErr.Error()}})...))
 	var onErrorValue error
 	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test-input",
 		OnError: func(_ context.Context, err error) { onErrorValue = err }})
@@ -1209,7 +1209,7 @@ func TestR70TSStreamOnEndAfterMidStreamErrorPart(t *testing.T) {
 	var onErrors []error
 	var end *OnFinishEvent
 	r, err := StreamText(context.Background(), StreamTextOptions{Prompt: "test-input",
-		Model: r69Model(r70Chunks(r70Cat(r70Text("1", "Hello"), []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: chunkErr, Text: chunkErr.Error()},
+		Model: r69Model(r70Chunks(r70Cat(r70StreamText("1", "Hello"), []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: chunkErr, Text: chunkErr.Error()},
 			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonError, Usage: &types.Usage{InputTokens: r70Int64(3), OutputTokens: r70Int64(10), TotalTokens: r70Int64(13)}}})...)),
 		OnError:    func(_ context.Context, err error) { mu.Lock(); onErrors = append(onErrors, err); mu.Unlock() },
 		OnEndEvent: func(_ context.Context, e OnFinishEvent) { mu.Lock(); end = &e; mu.Unlock() }})
@@ -1227,7 +1227,6 @@ func TestR70TSStreamOnEndAfterMidStreamErrorPart(t *testing.T) {
 	}
 }
 
-func r70Int64(v int64) *int64 { return &v }
 
 // TS 4435 and 4480: a provider stream that closes before its finish chunk
 // rejects with the no-finish error, reaches onError and onStepError (with the
@@ -1306,7 +1305,7 @@ func TestR70TSStreamProviderStreamErrorsStepError(t *testing.T) {
 	providerErr := errors.New("provider stream failure")
 	rec := &r70Recorder{}
 	r := r70Run(t, rec, StreamTextOptions{Model: r69Model(func() (provider.TextStream, error) {
-		return &r70SliceStream{chunks: r70Cat([]provider.StreamChunk{{Type: provider.ChunkTypeStreamStart}}, r70Text("1", "Hello")), err: providerErr}, nil
+		return &r70SliceStream{chunks: r70Cat([]provider.StreamChunk{{Type: provider.ChunkTypeStreamStart}}, r70StreamText("1", "Hello")), err: providerErr}, nil
 	})})
 	if !errors.Is(r.Err(), providerErr) {
 		t.Fatalf("Err() = %v", r.Err())
