@@ -409,6 +409,12 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 			TopN:          opts.TopN,
 		})
 		res, callErr := opts.Model.DoRerank(attemptCtx, rerankOpts)
+		if callErr == nil && res == nil {
+			// TS reads modelResponse.ranking and rejects (TypeError) when a
+			// model resolves without a result; Go reports an error instead of
+			// dereferencing nil.
+			callErr = fmt.Errorf("reranking model %s/%s returned no result", opts.Model.Provider(), opts.Model.ModelID())
+		}
 		if callErr != nil {
 			// TS rerank()'s try/catch rethrows the doRerank error unmodified
 			// (`catch (error) { ...; throw error; }`) — no "reranking
@@ -505,6 +511,9 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 			providerMeta = b
 		}
 	}
+	// TS builds the event ranking with its own ranking.map(...), so an onEnd
+	// callback that mutates it leaves the result untouched.
+	eventRanking := append(make([]RerankItem, 0, len(result.Ranking)), result.Ranking...)
 	finishEvent := RerankOnFinishEvent{
 		CallID:           callID,
 		OperationID:      "ai.rerank",
@@ -513,7 +522,7 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		Documents:        opts.Documents,
 		Query:            opts.Query,
 		RuntimeContext:   opts.RuntimeContext,
-		Ranking:          result.Ranking,
+		Ranking:          eventRanking,
 		Warnings:         result.Warnings,
 		Response:         result.Response,
 		ProviderMetadata: providerMeta,

@@ -1116,18 +1116,8 @@ func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call typ
 		Messages:            opts.messages,
 		ExperimentalSandbox: opts.experimentalSandbox,
 	})
-	telemetrypkg.FireOnToolCallFinish(toolCtx, telemetrypkg.TelemetryToolCallFinishEvent{
-		Settings:   opts.telemetrySettings,
-		CallID:     opts.telemetryCallID,
-		ToolCallID: call.ID,
-		ToolName:   call.ToolName,
-		Args:       call.Arguments,
-		Result:     result,
-		Error:      err,
-		DurationMs: time.Since(start).Milliseconds(),
-	})
+	toolExecutionMs := time.Since(start).Milliseconds()
 	if opts.onToolEnd != nil {
-		toolExecutionMs := time.Since(start).Milliseconds()
 		toolOutput := types.ToolResult{ToolCallID: call.ID, ToolName: call.ToolName, Input: call.Arguments, Error: err}
 		if err == nil {
 			toolOutput.Result = result
@@ -1156,6 +1146,18 @@ func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call typ
 		}
 		opts.onToolEnd(ctx, finish)
 	}
+	// TS executeToolWithCallbacks awaits the merged onToolExecutionEnd
+	// callback before telemetryDispatcher.onToolExecutionEnd.
+	telemetrypkg.FireOnToolCallFinish(toolCtx, telemetrypkg.TelemetryToolCallFinishEvent{
+		Settings:   opts.telemetrySettings,
+		CallID:     opts.telemetryCallID,
+		ToolCallID: call.ID,
+		ToolName:   call.ToolName,
+		Args:       call.Arguments,
+		Result:     result,
+		Error:      err,
+		DurationMs: toolExecutionMs,
+	})
 	return result, err
 }
 
@@ -2429,10 +2431,12 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	ctx = telemetrypkg.FireOnStart(ctx, workflowStartEvent(workflowRootOperation, callID, modelProvider, modelID, telemetrySettings, early, prepared, opts.Messages, opts.Prompt, runtimeContext, toolsContext))
 	onAbort := mergeAbort(w.OnAbort, opts.OnAbort)
 	if cancelled {
-		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID})
+		// TS awaits options.onAbort first; the root abort is Go's stand-in
+		// for TS's telemetry end of an aborted run.
 		if onAbort != nil {
 			onAbort(ctx, nil)
 		}
+		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID})
 		return nil, ctx.Err()
 	}
 	system := opts.System
@@ -2452,16 +2456,19 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 			stepsMu.Lock()
 			steps := append([]types.StepResult(nil), completedSteps...)
 			stepsMu.Unlock()
-			telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Steps: steps})
+			// TS awaits options.onAbort first; the root abort is Go's stand-in
+			// for TS's telemetry end of an aborted run.
 			if onAbort != nil {
 				onAbort(ctx, steps)
 			}
+			telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Steps: steps})
 		} else {
-			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
-			// An abort reaches onAbort only, never onError (TS).
+			// An abort reaches onAbort only, never onError (TS). TS awaits
+			// options.onError before telemetryDispatcher.onError.
 			if onError := mergeError(w.OnError, opts.OnError); onError != nil {
 				onError(ctx, err)
 			}
+			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		}
 		return nil, err
 	}
@@ -2675,10 +2682,12 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	ctx = telemetrypkg.FireOnStart(ctx, workflowStartEvent(workflowRootOperation, callID, modelProvider, modelID, telemetrySettings, early, prepared, opts.Messages, opts.Prompt, runtimeContext, toolsContext))
 	onAbort := mergeAbort(w.OnAbort, opts.OnAbort)
 	if cancelled {
-		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID})
+		// TS awaits options.onAbort first; the root abort is Go's stand-in
+		// for TS's telemetry end of an aborted run.
 		if onAbort != nil {
 			onAbort(ctx, nil)
 		}
+		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID})
 		return nil, ctx.Err()
 	}
 	system := opts.System
@@ -2735,15 +2744,18 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	stream, err := a.Stream(ctx, call)
 	if err != nil {
 		if isWorkflowAbort(ctx, err) {
-			telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID})
+			// TS awaits options.onAbort first; the root abort is Go's stand-in
+			// for TS's telemetry end of an aborted run.
 			if onAbort != nil {
 				onAbort(ctx, nil)
 			}
+			telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID})
 		} else {
-			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
+			// TS awaits options.onError before telemetryDispatcher.onError.
 			if onError := mergeError(w.OnError, opts.OnError); onError != nil {
 				onError(ctx, err)
 			}
+			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		}
 		return nil, err
 	}
