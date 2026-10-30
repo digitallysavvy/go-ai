@@ -311,6 +311,11 @@ prefix TS leaves out. Match these errors with `errors.As`, not by their text
   `UnsupportedModelVersionError` for a model whose `specificationVersion` is
   not the current one. Go models are typed by their Go interface, so no Go
   resolver checks a version.
+- Go has no global default provider (TS
+  `globalThis.AI_SDK_DEFAULT_PROVIDER`). A string `Model` resolves through
+  `DecideOptions.DecisionProvider`, then the deprecated `Provider`, then the
+  AI Gateway. Both fields are typed, so the TS error "The default provider
+  does not support decision models" has no Go equivalent.
 - The Go `Decide` telemetry events (`telemetry.DecideStartEvent`,
   `DecideEndEvent`, `DecisionModelCallEndEvent`) carry the subset of the TS
   fields that the OpenTelemetry integration reads. They have no

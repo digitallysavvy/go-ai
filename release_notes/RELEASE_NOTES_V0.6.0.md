@@ -1195,8 +1195,11 @@ Notable ones:
   "Invalid argument for parameter ..."; TS's provider-package
   `InvalidArgumentError` has the bare text (coordinator ruling, round 67).
 - Go does not check a model's specification version (TS throws
-  `UnsupportedModelVersionError`), and the `Decide` telemetry events carry a
-  subset of the TS fields (Go design, round 67).
+  `UnsupportedModelVersionError`), has no global default provider for a
+  decision model ID (TS `AI_SDK_DEFAULT_PROVIDER`; Go resolves through
+  `DecisionProvider`, `Provider`, then the AI Gateway), and the `Decide`
+  telemetry events carry a subset of the TS fields (Go design, rounds 67
+  and 69).
 - A `WorkflowAgent.Stream` run cancelled mid-stream ends its
   `ai.workflowAgent.stream` root with `OnAbort`; TS reports a thrown abort to
   the root `onError` and leaves the root open for an abort its iterator

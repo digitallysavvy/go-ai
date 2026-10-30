@@ -1908,8 +1908,9 @@ after upgrading:
   parameter ..."**, also where TS throws the provider package's
   `InvalidArgumentError`, whose message is the bare text. See
   [InvalidArgumentError message prefix](./known-differences.mdx).
-- **Go does not check a model's specification version**, and the `Decide`
-  telemetry events carry a subset of the TS fields. See
+- **Go does not check a model's specification version**, has no global
+  default provider for a decision model ID, and the `Decide` telemetry
+  events carry a subset of the TS fields. See
   [Decide: model version check and telemetry fields](./known-differences.mdx).
 - **A `WorkflowAgent.Stream` run cancelled mid-stream ends its root span
   with `OnAbort`**, and the root telemetry `OnError`/`OnEnd` run after the
