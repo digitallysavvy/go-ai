@@ -237,6 +237,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Resumed approval results carry their model output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-resumed-output)
 - **WorkflowAgent PrepareStep overrides carry over to later steps** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-preparestep-carryover)
 - **A failed WorkflowAgent Stream run fires OnEnd** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-stream-failed-onend)
+- **WorkflowAgent Stream usage is input + output summed over the steps** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-stream-usage)
+- **The WorkflowAgent Stream root span ends with the run** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-stream-root-span-end)
 - **WorkflowAgent.Stream has no default step limit** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-stream-no-step-limit)
 - **The WorkflowAgent root span is ai.workflowAgent.stream for Generate too** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-root-span)
 - **WorkflowRunMultiplexer ends on a finish chunk** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-multiplexer-finish)

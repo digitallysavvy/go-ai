@@ -94,6 +94,8 @@ already, you can skip them.
 | `.Result` on `ResponseMessages[0]` after an approval resume | Use `Output` | silent behavior change | Read `Output` | [Resumed approval output](#workflow-resumed-output) |
 | `workflow.LanguageModelCallOptions` hooks that change a value for one step | Overrides carry over | silent behavior change | Reset the value on later steps | [WorkflowAgent PrepareStep](#workflow-preparestep-carryover) |
 | `OnEnd:` / `OnError:` on `WorkflowAgent.Stream` | Failed run fires `OnEnd` after `OnError` | silent behavior change | Check the outcome in `OnEnd` | [WorkflowAgent Stream failures](#workflow-stream-failed-onend) |
+| `OnEnd:` usage or `.Usage()` on `WorkflowAgent.Stream` | Input + output summed over steps; counts always set | silent behavior change | Check for 0, not nil | [WorkflowAgent Stream usage](#workflow-stream-usage) |
+| `ai.workflowAgent.stream` root span of `Stream` runs | Ends with the run, with usage, errors and aborts | wire/protocol change | Expect the full run duration | [WorkflowAgent Stream root span](#workflow-stream-root-span-end) |
 | `WorkflowAgent.Stream` without `StopWhen` | No default step limit | silent behavior change | Set `StopWhen` | [WorkflowAgent Stream limit](#workflow-stream-no-step-limit) |
 | `ai.workflowAgent.generate` in queries or dashboards | Root span is `ai.workflowAgent.stream` | wire/protocol change | Update queries | [WorkflowAgent root span](#workflow-root-span) |
 | SSE event named `done`, `OnChatSendMessage:` on `WorkflowRunMultiplexer` | Ends on a `finish` chunk; sees successful sends only | wire/protocol change | Emit a `finish` chunk | [WorkflowRunMultiplexer](#workflow-multiplexer-finish) |
@@ -1065,6 +1067,38 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 - **What to do:** check for a failure in `OnError` (or the stream's error)
   before you treat `OnEnd` as success.
 - **Kind:** silent behavior change
+
+#### WorkflowAgent Stream usage is input + output summed over the steps {#workflow-stream-usage}
+
+- **What changed:** in `WorkflowAgent.Stream` / `StreamWithOptions`, the
+  `OnEnd` `Usage` and `TotalUsage`, the result's `Usage()` / `TotalUsage()`
+  and the telemetry end usage are TS stream mode's `aggregateUsage`: input and
+  output tokens summed over the steps with a missing count as 0, and
+  `TotalTokens` = input + output. The three counts are always set (v0.5: nil
+  when no step reported them), and a provider's own total is not used. A
+  transformed `finish` part does not change the total. Token details are still
+  summed. `Generate` is unchanged.
+- **Am I affected?** `OnEnd:` on `WorkflowAgent.Stream` or `.Usage()` on a
+  `WorkflowStreamResult` that checks `InputTokens == nil` or reads
+  `TotalTokens`.
+- **What to do:** no action unless you rely on nil counts; check for 0
+  instead.
+- **Kind:** silent behavior change
+
+#### The WorkflowAgent Stream root span ends with the run {#workflow-stream-root-span-end}
+
+- **What changed:** the `ai.workflowAgent.stream` root of a `Stream` run ends
+  when the run ends, as TS reports its root `onEnd`: for a completed run with
+  the last step's text, finish reason and the stream-mode usage; for a failed
+  run with the error and then the end event (only when a step completed); for
+  a run cancelled mid-stream with an abort. v0.5 ended the root, with no
+  usage, as soon as the stream opened, so later failures never reached it.
+- **Am I affected?** Telemetry integrations or dashboards that read the
+  `Stream` root span's duration, status or usage, or that count
+  `OnEnd`/`OnError` events per call.
+- **What to do:** no action unless you relied on the root ending at stream
+  start.
+- **Kind:** wire/protocol change
 
 #### WorkflowAgent.Stream has no default step limit {#workflow-stream-no-step-limit}
 

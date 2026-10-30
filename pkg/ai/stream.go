@@ -745,6 +745,12 @@ type StreamTextResult struct {
 
 	processingDone chan struct{}
 
+	// onStreamDone is InternalOptions.OnStreamDone, run once before
+	// processingDone closes; streamDoneOnce guards it.
+	onStreamDone    func(StreamDoneInfo)
+	streamModeUsage bool
+	streamDoneOnce  sync.Once
+
 	// cancelBootstrap cancels bootstrapAndStream's context. It lets Close()
 	// interrupt in-flight bootstrap work (resuming approved tool calls, or
 	// making the first provider stream request) that hasn't produced a
@@ -844,6 +850,10 @@ func streamTextInternal(ctx context.Context, opts StreamTextOptions, steeringRun
 		result.skipTextAccumulation = !opts.collectContent
 	}
 	result.processingDone = make(chan struct{})
+	if opts.Internal != nil {
+		result.onStreamDone = opts.Internal.OnStreamDone
+		result.streamModeUsage = opts.Internal.StreamModeUsage
+	}
 
 	go result.bootstrapAndStream(bootstrapCtx, opts, instructionMessages)
 
@@ -1678,12 +1688,31 @@ func (r *StreamTextResult) fail(err error) {
 	r.mu.Lock()
 	r.status = StreamStatusDone
 	r.mu.Unlock()
+	r.notifyStreamDone()
 	if r.chunkBuf != nil {
 		r.chunkBuf.close(err)
 	}
 	if r.processingDone != nil {
 		close(r.processingDone)
 	}
+}
+
+// notifyStreamDone runs InternalOptions.OnStreamDone once, on the processing
+// goroutine, before the chunk buffer and processingDone close.
+func (r *StreamTextResult) notifyStreamDone() {
+	if r.onStreamDone == nil {
+		return
+	}
+	r.streamDoneOnce.Do(func() {
+		r.mu.Lock()
+		steps := append([]types.StepResult(nil), r.cbSteps...)
+		r.mu.Unlock()
+		info := StreamDoneInfo{Err: r.terminalErr(), Steps: steps, Usage: r.usage, FinishReason: r.finishReason, Text: r.finalStepText()}
+		if r.streamModeUsage {
+			info.Usage = streamModeUsage(steps)
+		}
+		safeInvoke(func() { r.onStreamDone(info) })
+	})
 }
 
 // setStream and currentStream synchronize the stream field against Close(),
@@ -1728,6 +1757,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	if r.chunkBuf != nil {
 		defer func() { r.chunkBuf.close(r.err) }()
 	}
+	defer r.notifyStreamDone()
 	opts := r.cbStreamOpts
 	currentMessages := r.cbMessages
 	currentTools := append([]types.Tool(nil), r.cbTools...)
@@ -3868,6 +3898,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.finalText = allSteps[len(allSteps)-1].Text
 		r.hasFinalText = true
 	}
+	if r.err == nil && opts.Internal != nil && opts.Internal.StreamModeUsage {
+		// TS WorkflowAgent stream mode reports aggregateUsage(steps).
+		r.usage = streamModeUsage(allSteps)
+	}
 	if r.err == nil {
 		totalUsage := r.usage
 		callFinishChunk := provider.StreamChunk{
@@ -3893,6 +3927,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				r.finishReason = types.FinishReasonOther
 				r.rawFinishReason = ""
 				r.usage = types.Usage{}
+			}
+			if opts.Internal != nil && opts.Internal.StreamModeUsage {
+				// The TS WorkflowAgent total comes from the steps, not
+				// from a transformed finish part.
+				r.usage = streamModeUsage(allSteps)
 			}
 		}
 	}
