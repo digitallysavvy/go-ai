@@ -837,3 +837,25 @@ func TestR70Gen_StreamText_ToolExecutionCallbacks_DeprecatedFallback(t *testing.
 		t.Errorf("both set: calls = %v, want only the new callbacks", got)
 	}
 }
+
+// A decision model whose DoDecide returns (nil, nil) fails the call with an
+// error (TS reads result.answers and rejects) instead of panicking.
+func TestR70Gen_Decide_NilModelResultIsAnError(t *testing.T) {
+	model := &mockDecisionModel{providerName: "p", modelID: "m", doDecide: func(context.Context, provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+		return nil, nil
+	}}
+	var ended bool
+	res, err := ExperimentalDecide(context.Background(), DecideOptions{
+		Model: model, State: "message", Questions: decisionQuestionsFixture(),
+		OnEnd: func(DecideOnEndEvent) { ended = true },
+	})
+	if err == nil || res != nil {
+		t.Fatalf("ExperimentalDecide = %v, %v; want an error", res, err)
+	}
+	if err.Error() != "decision model p/m returned no result" {
+		t.Errorf("error = %q", err)
+	}
+	if ended {
+		t.Error("OnEnd called for a failed decision")
+	}
+}

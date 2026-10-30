@@ -279,6 +279,14 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		return nil, err
 	}
 
+	if result == nil {
+		// TS reads result.answers right here, so a model that resolves
+		// without a result fails the call (a TypeError there) instead of
+		// crashing it.
+		err := fmt.Errorf("decision model %s/%s returned no result", model.Provider(), model.ModelID())
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err, CallID: callID})
+		return nil, err
+	}
 	if err := validateDecisionAnswers(opts.Questions, opts.QuestionOrder, result.Answers, result.Rounding); err != nil {
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err, CallID: callID})
 		return nil, err
