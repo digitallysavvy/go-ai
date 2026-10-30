@@ -881,3 +881,29 @@ func TestR70Gen_GenerateText_NilModelResultIsAnError(t *testing.T) {
 		t.Errorf("OnStepError error = %v, want %v", stepErr, err)
 	}
 }
+
+// A language model whose DoStream returns (nil, nil) fails StreamText with an
+// error instead of panicking.
+func TestR70Gen_StreamText_NilModelStreamIsAnError(t *testing.T) {
+	model := &testutil.MockLanguageModel{ProviderName: "p", ModelName: "m", DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		return nil, nil
+	}}
+	var onErr error
+	res, err := StreamText(context.Background(), StreamTextOptions{
+		Model: model, Prompt: "hi",
+		OnError: func(_ context.Context, e error) { onErr = e },
+	})
+	if err != nil {
+		if err.Error() != "language model p/m returned no stream" {
+			t.Fatalf("StreamText error = %q", err)
+		}
+		return
+	}
+	_, _ = res.ReadAll()
+	if res.Err() == nil || res.Err().Error() != "language model p/m returned no stream" {
+		t.Errorf("Err() = %v", res.Err())
+	}
+	if onErr == nil {
+		t.Error("OnError not called")
+	}
+}

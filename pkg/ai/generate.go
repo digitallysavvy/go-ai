@@ -194,6 +194,16 @@ func DoGenerateWithGatewayRetry(ctx context.Context, model provider.LanguageMode
 // start time. beforeRetry fires those and returns the ctx the attempt's
 // DoStream runs in (the new model-call span's ctx); nil keeps ctx.
 func doStreamWithGatewayRetryEach(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int, beforeRetry func() context.Context) (provider.TextStream, error) {
+	stream, err := doStreamWithGatewayRetryEachRaw(ctx, model, opts, maxRetries, beforeRetry)
+	if err == nil && stream == nil {
+		// TS reads the stream right after doStream, so a model that resolves
+		// without one fails the call instead of crashing it.
+		return nil, fmt.Errorf("language model %s/%s returned no stream", model.Provider(), model.ModelID())
+	}
+	return stream, err
+}
+
+func doStreamWithGatewayRetryEachRaw(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int, beforeRetry func() context.Context) (provider.TextStream, error) {
 	retries := gatewayMaxRetries(model, maxRetries)
 	if retries <= 0 {
 		return model.DoStream(ctx, opts)
