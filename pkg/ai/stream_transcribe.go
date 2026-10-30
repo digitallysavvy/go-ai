@@ -191,12 +191,12 @@ func (r *StreamTranscriptionResult) FullStream() (TranscriptionStream, error) {
 	return &transcriptionFullStream{result: r}, nil
 }
 
-// TranscriptionStream is a Next()-based stream of TranscriptionStreamPart,
-// following the same convention as provider.TextStream.
 // errTranscriptionStreamCancelled is the reason FullStream.Close aborts the
 // pipe with (TS Transformer.cancel's default reason).
 var errTranscriptionStreamCancelled = errors.New("Transcription stream was cancelled.") //nolint:staticcheck // matches TS SDK's exact error text
 
+// TranscriptionStream is a Next()-based stream of TranscriptionStreamPart,
+// following the same convention as provider.TextStream.
 type TranscriptionStream interface {
 	Next() (*TranscriptionStreamPart, error)
 	Err() error
