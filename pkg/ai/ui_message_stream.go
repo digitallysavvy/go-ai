@@ -576,7 +576,10 @@ func (r *StreamTextResult) uiOptionsWithRequestTools(opts []UIMessageStreamResul
 	return append([]UIMessageStreamResultOptions{options}, opts[min(len(opts), 1):]...)
 }
 
-// ToUIMessageStream converts a provider text stream into UI message chunks.
+// ToUIMessageStream converts a text stream into UI message chunks. A source
+// whose first part is ChunkTypeStart (StreamText-shaped parts) maps one to one
+// as TS toUIMessageStream; a raw provider stream is framed with start,
+// finish-step, finish and an incomplete-stream error chunk.
 func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...UIMessageStreamResultOptions) (<-chan UIMessageChunk, <-chan error) {
 	out := make(chan UIMessageChunk)
 	errCh := make(chan error, 1)
@@ -1283,9 +1286,11 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 	return out, errCh
 }
 
-// ToUIMessageChunk converts a single provider stream chunk into a UI message
-// chunk. The boolean return is false for stream parts that do not produce UI
-// message chunks, matching TypeScript's undefined result.
+// ToUIMessageChunk converts a single StreamText part into a UI message chunk
+// (TS toUIMessageChunk): ChunkTypeStart and ChunkTypeFinish give the start and
+// finish chunks (none with SendStart / SendFinish false), ChunkTypeFinishStep
+// gives finish-step. The boolean return is false for stream parts that do not
+// produce UI message chunks, matching TypeScript's undefined result.
 func ToUIMessageChunk(part provider.StreamChunk, opts UIMessageStreamResultOptions) (UIMessageChunk, bool) {
 	if part.Type == provider.ChunkTypeStart {
 		// TS toUIMessageChunk 'start': undefined when sendStart is false, else
@@ -1301,6 +1306,24 @@ func ToUIMessageChunk(part provider.StreamChunk, opts UIMessageStreamResultOptio
 		}
 		if opts.ResponseMessageID != "" {
 			chunk["messageId"] = opts.ResponseMessageID
+		}
+		return chunk, true
+	}
+	if part.Type == provider.ChunkTypeFinish {
+		// A single part is read in the StreamText part model, where
+		// ChunkTypeFinish is the call-level finish (the step end is
+		// ChunkTypeFinishStep), as TS toUIMessageChunk's 'finish': undefined
+		// when sendFinish is false, else the finish chunk with the finish
+		// reason and the message metadata. ToUIMessageStream keeps mapping a
+		// raw provider stream's finish to finish-step.
+		if !boolOption(opts.SendFinish, true) {
+			return nil, false
+		}
+		chunk := UIMessageChunk{"type": "finish", "finishReason": string(part.FinishReason)}
+		if opts.MessageMetadata != nil {
+			if metadata := opts.MessageMetadata(map[string]interface{}{"type": "finish", "part": part}); metadata != nil {
+				chunk["messageMetadata"] = metadata
+			}
 		}
 		return chunk, true
 	}

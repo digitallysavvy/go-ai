@@ -389,7 +389,7 @@ The operation-level result of a stream. Declare one with `UIMessageStreamWriter.
 
 | Function | Description |
 | --- | --- |
-| `ai.ToUIMessageChunk(part provider.StreamChunk, opts UIMessageStreamResultOptions) (UIMessageChunk, bool)` | Converts one provider stream chunk. The boolean is false when the part produces no UI chunk. |
+| `ai.ToUIMessageChunk(part provider.StreamChunk, opts UIMessageStreamResultOptions) (UIMessageChunk, bool)` | Converts one `StreamText` part (TS `toUIMessageChunk`): `ChunkTypeStart` and `ChunkTypeFinish` give the `start` and `finish` chunks, `ChunkTypeFinishStep` gives `finish-step`. The boolean is false when the part produces no UI chunk. |
 | `ai.ToUIMessageStream(ctx, stream provider.TextStream, opts ...UIMessageStreamResultOptions)` | Converts a whole provider stream to a chunk channel. |
 | `ai.IsUIMessageStreamError(err error) bool` | Reports whether `err` is an `*ai.UIMessageStreamError`. |
 

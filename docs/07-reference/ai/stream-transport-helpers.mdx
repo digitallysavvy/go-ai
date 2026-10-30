@@ -175,7 +175,9 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 func ToUIMessageChunk(part provider.StreamChunk, opts ai.UIMessageStreamResultOptions) (ai.UIMessageChunk, bool)
 ```
 
-`ToUIMessageStream` converts a provider stream to UI message chunks. `ToUIMessageChunk` converts one chunk and returns false when the part has no UI chunk.
+`ToUIMessageStream` converts a stream to UI message chunks. A source whose first part is `provider.ChunkTypeStart` (a `StreamText`, harness or `NewStreamTextResultFromParts` stream, or your own part slice) is mapped one to one, as TS `toUIMessageStream`: the start part writes the `start` chunk, the finish part writes the `finish` chunk where it occurs, and nothing is added at the end. A raw provider stream (no leading start part) is framed: a `start` chunk, text and reasoning blocks opened and closed, `finish-step` for the provider's `finish`, a final `finish`, and an incomplete-stream `error` chunk when it ended without output (see [Known differences](../../08-migration-guides/known-differences.mdx#touimessagestream-on-a-raw-provider-stream)).
+
+`ToUIMessageChunk` converts one part, read as a `StreamText` part (TS `toUIMessageChunk`), and returns false when the part has no UI chunk: `ChunkTypeStart` gives the `start` chunk and `ChunkTypeFinish` the `finish` chunk (none with `SendStart` / `SendFinish` false), `ChunkTypeFinishStep` gives `finish-step`.
 
 ## `CreateUIMessageStreamResponseWithInit` and `PipeUIMessageStreamToResponseWithInit`
 

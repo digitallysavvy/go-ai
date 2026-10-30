@@ -586,11 +586,23 @@ func TestToUIMessageChunk_StandaloneParity(t *testing.T) {
 		t.Fatalf("start-step chunk = %#v, %v", start, ok)
 	}
 
+	// TS toUIMessageChunk: 'finish' is the finish chunk (undefined with
+	// sendFinish false) and 'finish-step' the step boundary.
 	sendFinish := false
 	if finish, ok := ToUIMessageChunk(provider.StreamChunk{
 		Type: provider.ChunkTypeFinish,
-	}, UIMessageStreamResultOptions{SendFinish: &sendFinish}); !ok || finish["type"] != "finish-step" {
-		t.Fatalf("finish-step chunk = %#v, %v", finish, ok)
+	}, UIMessageStreamResultOptions{SendFinish: &sendFinish}); ok || finish != nil {
+		t.Fatalf("finish chunk with SendFinish false = %#v, %v; want none", finish, ok)
+	}
+	if finish, ok := ToUIMessageChunk(provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop}, UIMessageStreamResultOptions{
+		MessageMetadata: func(p map[string]interface{}) map[string]interface{} {
+			return map[string]interface{}{"seen": p["type"]}
+		},
+	}); !ok || !reflect.DeepEqual(finish, UIMessageChunk{"type": "finish", "finishReason": "stop", "messageMetadata": map[string]interface{}{"seen": "finish"}}) {
+		t.Fatalf("finish chunk = %#v, %v", finish, ok)
+	}
+	if finishStep, ok := ToUIMessageChunk(provider.StreamChunk{Type: provider.ChunkTypeFinishStep}, UIMessageStreamResultOptions{SendFinish: &sendFinish}); !ok || !reflect.DeepEqual(finishStep, UIMessageChunk{"type": "finish-step"}) {
+		t.Fatalf("finish-step chunk = %#v, %v", finishStep, ok)
 	}
 
 	abort, ok := ToUIMessageChunk(provider.StreamChunk{Type: provider.ChunkTypeAbort, AbortReason: "user"}, UIMessageStreamResultOptions{})
