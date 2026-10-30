@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/internal/aibridge"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
@@ -521,7 +522,9 @@ func (s *loopStepTelemetry) fail(err error) {
 		return
 	}
 	s.closed = true
-	telemetry.FireOnStepError(s.errCtx, telemetry.TelemetryErrorEvent{Settings: s.lt.settings, CallID: s.lt.callID, Error: err})
+	// TS generateText notifies telemetry onStepError with
+	// wrapGatewayError(error); telemetry onError gets the original error.
+	telemetry.FireOnStepError(s.errCtx, telemetry.TelemetryErrorEvent{Settings: s.lt.settings, CallID: s.lt.callID, Error: aibridge.WrapGatewayError(err)})
 }
 
 func (s *loopStepTelemetry) finish(step *types.StepResult, rc interface{}, tc map[string]interface{}) {

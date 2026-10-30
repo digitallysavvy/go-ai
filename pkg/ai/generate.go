@@ -966,6 +966,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// openStep is the step that has started but not ended; it is reported to
 	// OnStepError when the call fails before the step produces a result.
 	var openStep *OnStepStartEvent
+	// openStepTelemetryCtx is the open step's telemetry context (the step
+	// span, plus the model-call span while the model call runs); nil once
+	// telemetry onStepError has closed the step.
+	var openStepTelemetryCtx context.Context
 
 	// Ensure telemetry is always closed — OnError ends the span on failure,
 	// OnFinish ends it on success.
@@ -982,6 +986,12 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				openStep = nil
 				// TS notifies onStepError with wrapGatewayError(error).
 				Notify(ctx, OnStepErrorEvent{OnStepStartEvent: step, Error: wrapGatewayError(err)}, opts.OnStepError)
+				// TS notifies telemetry onStepError with it too, for every
+				// failure of a started step, before telemetry onError.
+				if openStepTelemetryCtx != nil {
+					telemetry.FireOnStepError(openStepTelemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: wrapGatewayError(err)})
+					openStepTelemetryCtx = nil
+				}
 			}
 			if isAbortErr(ctx, err) {
 				var abortSteps []types.StepResult
@@ -1419,6 +1429,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 			ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
 		})
+		openStepTelemetryCtx = stepCtx
 
 		// TS generateText takes one stepStartTimestampMs after onStepStart,
 		// just before onLanguageModelCallStart, and measures both the step
@@ -1470,6 +1481,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Seed:                genOpts.Seed,
 		})
 
+		openStepTelemetryCtx = modelCallCtx
+
 		// Call the model with step context
 		modelCallStart := stepStart
 		var genResult *types.GenerateResult
@@ -1485,16 +1498,14 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 					err = wrapTimeoutError(TimeoutReasonTotal, err)
 				}
 			}
-			// Close the step span (and, for the GenAI integration, the nested
-			// "chat" span) right here: they were opened in modelCallCtx/stepCtx,
-			// local to this loop iteration, which never gets threaded back into
-			// the outer ctx the deferred FireOnError above uses for the root
-			// span — so without this, they'd leak
-			// (H4 item 2). TS generateText reports an abort through
-			// onStepError too, so the spans record it as an error.
-			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
+			// The deferred handler closes the step span (and, for the GenAI
+			// integration, the nested "chat" span) through telemetry
+			// onStepError with modelCallCtx (H4 item 2). TS generateText
+			// reports an abort through onStepError too, so the spans record
+			// it as an error.
 			return nil, err
 		}
+		openStepTelemetryCtx = stepCtx
 		lastStructuredOutputText = genResult.StructuredOutputText
 		lastResponseHeaders = genResult.ResponseHeaders
 
@@ -1895,6 +1906,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		result.FinalStep = stepResult
 
 		openStep = nil
+		openStepTelemetryCtx = nil
 
 		// Call step finish callback (v6.0: with user context)
 		if onStepEnd != nil {
@@ -1992,6 +2004,14 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			})
 		}
 
+		// An interrupted step (provider stream ended without a completion
+		// signal) never continues the loop (TS #23778). TS checks it first in
+		// shouldStartNextStep, so an interrupted step that requested an
+		// approval leaves the steering reason at "finished".
+		if genResult.FinishReason == types.FinishReasonInterrupted {
+			break
+		}
+
 		if hasUserApproval {
 			// The step keeps the model's own finish reason (normally
 			// "tool-calls"), as in TS; pending approvals are reported as
@@ -1999,12 +2019,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			result.Text = stepResult.Text
 			result.FinishReason = stepResult.FinishReason
 			steeringEndReason = SteeringWaitingForToolResults
-			break
-		}
-
-		// An interrupted step (provider stream ended without a completion
-		// signal) never continues the loop (TS #23778).
-		if genResult.FinishReason == types.FinishReasonInterrupted {
 			break
 		}
 

@@ -1457,7 +1457,9 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 			r.abortBeforeStream(stepCtx, opts, preStreamCall{callID: callID, telemetryCtx: telemetryCtx, telemetrySettings: telemetrySettings}, err)
 		} else {
-			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
+			// TS notifyStepError(wrapGatewayError(error)) feeds both onStepError
+			// and telemetry onStepError; telemetry onError gets the original.
+			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: wrapGatewayError(err)})
 			r.notifyStepError(ctx, opts.OnStepError, wrapGatewayError(err))
 			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		}
@@ -3427,13 +3429,15 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			steeringEndReason = SteeringError
 			break
 		}
-		if hasUserApproval || skipStepTools {
-			steeringEndReason = SteeringWaitingForToolResults
+		// An interrupted step (provider stream ended without a completion
+		// signal) never continues the loop (TS #23778). TS checks it first in
+		// shouldStartNextStep, so an interrupted step that requested an
+		// approval leaves the steering reason at "finished".
+		if r.finishReason == types.FinishReasonInterrupted {
 			break
 		}
-		// An interrupted step (provider stream ended without a completion
-		// signal) never continues the loop (TS #23778).
-		if r.finishReason == types.FinishReasonInterrupted {
+		if hasUserApproval || skipStepTools {
+			steeringEndReason = SteeringWaitingForToolResults
 			break
 		}
 

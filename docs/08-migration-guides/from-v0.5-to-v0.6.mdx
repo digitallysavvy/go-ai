@@ -89,7 +89,7 @@ already, you can skip them.
 | `Timeout.PerStep` on the legacy agent with slow tools | Step timeout covers tools | silent behavior change | Raise `PerStep` or use `Total` | [Legacy step timeout and tools](#legacy-step-timeout-tools) |
 | `ActiveTools: []string{}` on the legacy agent | No tools active | silent behavior change | Use nil for all tools | [Legacy empty ActiveTools](#legacy-empty-active-tools) |
 | `PrepareCall:` that sets `Tools`, `ExperimentalToolCallers`, `ToolCallConcurrency` or `Output`; `ParseCompleteOutput` reading `Usage` | Legacy loop uses the prepared values; the parse gets the last step's usage | silent behavior change | Read `AgentResult.Usage` for the total | [Legacy PrepareCall](#legacy-preparecall-tools-output) |
-| "Unauthenticated request to AI Gateway" text, gateway auth errors from `GenerateAgent` | Wrapped TS error | error text only | Match `*GatewayAuthenticationError` | [Gateway auth error](#gateway-auth-error) |
+| "Unauthenticated request to AI Gateway" text, gateway auth errors from `GenerateAgent` or in telemetry `OnStepError` | Wrapped TS error | error text only | Match `*GatewayAuthenticationError` | [Gateway auth error](#gateway-auth-error) |
 | `.ToolCallID` used as an approval response ID (`WorkflowAgent`) | IDs are `approval-` + call ID | silent behavior change | Answer with `ApprovalID` | [WorkflowAgent approval IDs](#workflow-approval-ids) |
 | `.Result` on `ResponseMessages[0]` after an approval resume | Use `Output` | silent behavior change | Read `Output` | [Resumed approval output](#workflow-resumed-output) |
 | `workflow.LanguageModelCallOptions` hooks that change a value for one step | Overrides carry over | silent behavior change | Reset the value on later steps | [WorkflowAgent PrepareStep](#workflow-preparestep-carryover) |
@@ -106,6 +106,7 @@ already, you can skip them.
 | `experimental_onEvaluate`, `ai.evaluate`, `ai.evaluation.`, `gen_ai.operation.name=evaluate` | Renamed to decide | wire/protocol change | Update names | [Decide telemetry names](#decide-telemetry-names) |
 | Telemetry integration `OnAbort` for a cancelled `GenerateText` | Integrations get `OnError` | silent behavior change | Handle `OnError` | [GenerateText abort telemetry](#generate-cancel-telemetry) |
 | `OnStepStart:` / `OnStepStartEvent:` reading `e.Tools` or `e.Output` | The call's tools; `Output` is set | silent behavior change | Read `e.ActiveTools`, or `LanguageModelCallStartEvent.Tools` | [Step-start tools](#step-start-call-tools) |
+| Telemetry integration `OnStepError` for `GenerateText` | Fires for every failed step | silent behavior change | Don't assume the model call failed | [GenerateText step error telemetry](#generate-step-error-telemetry) |
 | `strings.Contains(err.Error(), "failed at step"` and other prefixes | Errors returned as is | error text only | Use `errors.As` / `errors.Is` | [Unprefixed errors](#errors-unprefixed) |
 | Error text with `%q`-quoted names (tool callers, tool search, decide, ID generator, download URL hostname) | TS quoting | error text only | Use `errors.As` | [Name quoting](#error-name-quoting) |
 | `"no such evaluationModel"` text checks on `ExperimentalEvaluate` / `ExperimentalDecide` errors | `*providererrors.NoSuchModelError` | error text only | Use `errors.As` | [Unknown decision model](#decide-unknown-model) |
@@ -984,7 +985,12 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   return an unauthenticated AI Gateway error with the TS message that says how
   to authenticate, as `GenerateText`, `StreamText`, `GenerateObject`,
   `StreamObject` and the batch cancel/list calls do (TS `wrapGatewayError`).
-- **Am I affected?** Code that matches the gateway error text.
+  A telemetry integration's `OnStepError` now gets the wrapped error too, from
+  `GenerateText`, `StreamText` and the legacy loop (TS notifies
+  `onStepError` with `wrapGatewayError(error)`); its `OnError` keeps the
+  original error.
+- **Am I affected?** Code that matches the gateway error text, including in a
+  `TelemetryIntegration.OnStepError` implementation.
 - **What to do:** match with `errors.As` on
   `*gatewayerrors.GatewayAuthenticationError`.
 - **Kind:** error text only
@@ -1286,6 +1292,20 @@ compile-time changes.
   _ = opts
   ```
 
+- **Kind:** silent behavior change
+
+### Telemetry OnStepError fires for every failed GenerateText step {#generate-step-error-telemetry}
+
+- **What changed:** a `GenerateText` step that fails after it started (a tool
+  choice violation, a tool approval or tool-context error, a parse or
+  download failure, not only a failed model call) reports `OnStepError` to
+  telemetry integrations before `OnError`, as TS `generateText` notifies
+  telemetry `onStepError` for its open step. In v0.5 only a failed model call did; the
+  step span was closed by `OnError` instead.
+- **Am I affected?** Custom `TelemetryIntegration` implementations with an
+  `OnStepError` method.
+- **What to do:** no action unless your `OnStepError` assumes the model call
+  failed (the error can be any step failure).
 - **Kind:** silent behavior change
 
 ## Errors {#errors}
