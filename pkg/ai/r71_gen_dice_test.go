@@ -350,3 +350,12 @@ func TestR71Gen_GenerateText_ProgrammaticToolCallingDiceGame(t *testing.T) {
 	}
 	r71genCheckJSON(t, "onFinish.usage", r71genJSON(t, endEvent.Usage), wantUsage)
 }
+
+func r71genMarshal(t *testing.T, v interface{}) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
