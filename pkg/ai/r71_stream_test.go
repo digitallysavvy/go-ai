@@ -1515,7 +1515,9 @@ func TestR71StreamToUIChunkCustomAndLifecycle(t *testing.T) {
 
 	got, ok = ToUIMessageChunk(r71streamStart, UIMessageStreamResultOptions{
 		ResponseMessageID: "msg-1",
-		MessageMetadata:   func(map[string]interface{}) map[string]interface{} { return map[string]interface{}{"model": "test-model"} },
+		MessageMetadata: func(map[string]interface{}) map[string]interface{} {
+			return map[string]interface{}{"model": "test-model"}
+		},
 	})
 	if !ok {
 		t.Fatal("start: no chunk")
