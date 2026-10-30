@@ -134,7 +134,7 @@ Decision models represent a refusal as an answer of `Type: "refusal"`, which is 
 | Perplexity | `perplexity.Provider.DecisionModel(id)` | Calls `POST /v1/decisions`. Choice, score and boolean; PNG/JPEG/WebP images. |
 | TypeSafe AI | `typesafeai.Provider.DecisionModel(id)` | Supports choice, score, boolean and box questions; PNG/JPEG images. |
 
-Pass a model ID string as `Model` to resolve it through `Provider` (or the AI Gateway when `Provider` is nil). The model registry and `registry.NewCustomProvider` resolve decision models through `ResolveDecisionModel` and `CustomProviderOptions.DecisionModels`.
+Pass a model ID string as `Model` to resolve it through `DecisionProvider` (a `provider.DecisionModelProvider`), or the AI Gateway when it is nil. The deprecated `Provider` field (a `provider.EvaluationModelProvider`) is used only when `DecisionProvider` is nil. The model registry and `registry.NewCustomProvider` resolve decision models through `ResolveDecisionModel` and `CustomProviderOptions.DecisionModels`.
 
 To use any language model, wrap it:
 
@@ -162,6 +162,7 @@ Telemetry integrations receive `OnDecideStart`, `OnDecisionModelCallStart`, `OnD
 | `ai.EvaluateOnStartEvent`, `ai.EvaluateOnEndEvent` | `ai.DecideOnStartEvent`, `ai.DecideOnEndEvent` |
 | `ai.NewEvaluationLanguageModel`, `ai.EvaluationLanguageModel`, `ai.EvaluationLanguageModelOptions` | `ai.NewDecisionLanguageModel`, `ai.DecisionLanguageModel`, `ai.DecisionLanguageModelOptions` |
 | `provider.EvaluationModel` (`DoEvaluate`), `provider.EvaluationModelProvider` | `provider.DecisionModel` (`DoDecide`), `provider.DecisionModelProvider` |
+| `DecideOptions.Provider` / `EvaluateOptions.Provider` | `DecideOptions.DecisionProvider` (wins when both are set) |
 | `provider.EvaluationQuestion`, `EvaluationAnswer`, `EvaluationResult`, `EvaluationCallOptions`, `EvaluationRounding`, `EvaluationUsage`, `EvaluationResponseInfo` | the matching `provider.Decision...` types |
 | `errors.EvaluationUnsupportedQuestionTypeError` | `errors.DecisionUnsupportedQuestionTypeError` |
 | `Provider.EvaluationModel(id)` on OpenAI, Anthropic, Google, Gateway, TypeSafe AI | `Provider.DecisionModel(id)` |
@@ -171,7 +172,7 @@ Telemetry integrations receive `OnDecideStart`, `OnDecisionModelCallStart`, `OnD
 | telemetry handlers `OnEvaluateStart`, `OnEvaluateEnd`, `OnEvaluationModelCallStart`, `OnEvaluationModelCallEnd` | `OnDecideStart`, `OnDecideEnd`, `OnDecisionModelCallStart`, `OnDecisionModelCallEnd` |
 | `telemetry.OpenTelemetryOptions.ExperimentalEvaluation` | `ExperimentalDecision` |
 
-Existing models that only implement `DoEvaluate` keep working: pass them as `Model`, register them in `EvaluationModels`, or return them from a provider's `EvaluationModel` method. The SDK adapts them to `DecisionModel`. If a provider only implements the deprecated `EvaluationModel` method, pass it as `DecideOptions.Provider` or as a registry or custom provider fallback. When a type provides both, the `Decision` method wins, and a telemetry integration that implements both a current and a deprecated handler receives only the current one.
+Existing models that only implement `DoEvaluate` keep working: pass them as `Model`, register them in `EvaluationModels`, or return them from a provider's `EvaluationModel` method. The SDK adapts them to `DecisionModel`. If a provider only implements the deprecated `EvaluationModel` method, pass it as the deprecated `DecideOptions.Provider` or as a registry or custom provider fallback. When a type provides both, the `Decision` method wins, and a telemetry integration that implements both a current and a deprecated handler receives only the current one.
 
 Some things changed along with the rename:
 

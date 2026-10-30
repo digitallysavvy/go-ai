@@ -48,10 +48,10 @@ func main() {
 	}
 
 	result, err := ai.ExperimentalDecide(context.Background(), ai.DecideOptions{
-		Model:     "jev-latest",
-		Provider:  tsai,
-		State:     state,
-		Questions: questions,
+		Model:            "jev-latest",
+		DecisionProvider: tsai,
+		State:            state,
+		Questions:        questions,
 	})
 	if err != nil {
 		log.Fatal(err)

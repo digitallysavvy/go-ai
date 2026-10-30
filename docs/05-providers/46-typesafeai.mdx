@@ -77,8 +77,8 @@ for id, answer := range result.Answers {
 ```
 
 `ai.ExperimentalDecide` also accepts any `provider.DecisionModel`
-instance (or a model ID string, resolved via `Provider`, falling back to
-the AI Gateway when `Provider` is nil) — you are not limited to
+instance (or a model ID string, resolved via `DecisionProvider`, falling
+back to the AI Gateway when it is nil) — you are not limited to
 TypeSafe AI as the judge model.
 
 ### Box questions
