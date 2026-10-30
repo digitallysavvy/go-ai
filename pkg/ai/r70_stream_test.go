@@ -1174,3 +1174,294 @@ func TestR70UIErrorPartThenSourceFailureWritesBothErrors(t *testing.T) {
 		})
 	}
 }
+
+// TS 2908 and 3010: a doStream that throws is a `start` and an `error` part,
+// and onError gets the error.
+func TestR70TSStreamDoStreamThrows(t *testing.T) {
+	testErr := errors.New("test error")
+	rec := &r70Recorder{}
+	r, err := StreamText(context.Background(), rec.options(StreamTextOptions{
+		Model: r69Model(func() (provider.TextStream, error) { return nil, testErr })}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range r70Parts(t, r) {
+		got = append(got, string(p.Type))
+		if p.Type == provider.ChunkTypeError && !errors.Is(p.Err, testErr) {
+			t.Fatalf("error part = %+v", p)
+		}
+	}
+	if strings.Join(got, " ") != "start error" {
+		t.Fatalf("parts = %v", got)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.errs) != 1 || !errors.Is(rec.errs[0], testErr) {
+		t.Fatalf("onError = %v", rec.errs)
+	}
+}
+
+// TS 3032: should call onFinish even when error chunk occurs mid-stream.
+func TestR70TSStreamOnEndAfterMidStreamErrorPart(t *testing.T) {
+	chunkErr := errors.New("chunk error")
+	var mu sync.Mutex
+	var onErrors []error
+	var end *OnFinishEvent
+	r, err := StreamText(context.Background(), StreamTextOptions{Prompt: "test-input",
+		Model: r69Model(r70Chunks(r70Cat(r70Text("1", "Hello"), []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: chunkErr, Text: chunkErr.Error()},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonError, Usage: &types.Usage{InputTokens: r70Int64(3), OutputTokens: r70Int64(10), TotalTokens: r70Int64(13)}}})...)),
+		OnError:    func(_ context.Context, err error) { mu.Lock(); onErrors = append(onErrors, err); mu.Unlock() },
+		OnEndEvent: func(_ context.Context, e OnFinishEvent) { mu.Lock(); end = &e; mu.Unlock() }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(onErrors) != 1 || !errors.Is(onErrors[0], chunkErr) {
+		t.Fatalf("onError = %v", onErrors)
+	}
+	if end == nil || end.FinishReason != types.FinishReasonError || end.Text != "Hello" || end.TotalUsage.TotalTokens == nil || *end.TotalUsage.TotalTokens != 13 {
+		t.Fatalf("onEnd = %+v", end)
+	}
+}
+
+func r70Int64(v int64) *int64 { return &v }
+
+// TS 4435 and 4480: a provider stream that closes before its finish chunk
+// rejects with the no-finish error, reaches onError and onStepError (with the
+// step's start event), and never onStepEnd.
+func TestR70TSStreamClosesBeforeFinishChunk(t *testing.T) {
+	rec := &r70Recorder{}
+	var startEvent OnStepStartEvent
+	opts := rec.options(StreamTextOptions{Model: r69Model(r70Chunks(
+		provider.StreamChunk{Type: provider.ChunkTypeStreamStart},
+		provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-0", ModelID: "mock-model-id", Timestamp: time.UnixMilli(0)}},
+	))})
+	inner := opts.OnStepStart
+	opts.OnStepStart = func(ctx context.Context, e OnStepStartEvent) { startEvent = e; inner(ctx, e) }
+	r, err := StreamText(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	if r.Err() == nil || r.Err().Error() != r70NoFinish {
+		t.Fatalf("Err() = %v", r.Err())
+	}
+	if len(r.Steps()) != 0 {
+		t.Fatalf("steps = %d", len(r.Steps()))
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.errs) != 1 || rec.errs[0].Error() != r70NoFinish {
+		t.Fatalf("onError = %v", rec.errs)
+	}
+	if len(rec.stepEnds) != 0 {
+		t.Fatalf("onStepEnd called %d times", len(rec.stepEnds))
+	}
+	if len(rec.stepErrors) != 1 || rec.stepErrors[0].Error.Error() != r70NoFinish || !reflect.DeepEqual(rec.stepErrors[0].OnStepStartEvent, startEvent) {
+		t.Fatalf("onStepError = %+v", rec.stepErrors)
+	}
+	// TS 4838: the telemetry onError gets the no-finish error once; no
+	// telemetry onStepEnd or onEnd.
+	if len(rec.telErrs) != 1 || rec.telErrs[0].Error() != r70NoFinish {
+		t.Fatalf("telemetry onError = %v", rec.telErrs)
+	}
+	for _, e := range rec.events {
+		if e == "tel:onStepEnd" || e == "tel:onEnd" || e == "onEnd" {
+			t.Fatalf("events = %q", rec.events)
+		}
+	}
+}
+
+// TS 4526 and 4551: a provider call that throws reaches onStepError for step
+// 0 with the error, and the telemetry gets onStepError before onError.
+func TestR70TSStreamProviderCallThrowsStepError(t *testing.T) {
+	providerErr := errors.New("provider failure")
+	rec := &r70Recorder{}
+	r := r70Run(t, rec, StreamTextOptions{Model: r69Model(func() (provider.TextStream, error) { return nil, providerErr }), MaxRetries: &r70ZeroInt})
+	if r.Err() == nil {
+		t.Fatal("Err() = nil")
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.stepErrors) != 1 || rec.stepErrors[0].StepNumber != 0 || !errors.Is(rec.stepErrors[0].Error, providerErr) {
+		t.Fatalf("onStepError = %+v", rec.stepErrors)
+	}
+	var tel []string
+	for _, e := range rec.events {
+		if strings.HasPrefix(e, "tel:") {
+			tel = append(tel, e)
+		}
+	}
+	if strings.Join(tel, " ") != "tel:onStepError tel:onError" {
+		t.Fatalf("telemetry events = %v", tel)
+	}
+}
+
+// TS 4580: a provider stream that errors mid-step reaches onStepError, not
+// onStepEnd.
+func TestR70TSStreamProviderStreamErrorsStepError(t *testing.T) {
+	providerErr := errors.New("provider stream failure")
+	rec := &r70Recorder{}
+	r := r70Run(t, rec, StreamTextOptions{Model: r69Model(func() (provider.TextStream, error) {
+		return &r70SliceStream{chunks: r70Cat([]provider.StreamChunk{{Type: provider.ChunkTypeStreamStart}}, r70Text("1", "Hello")), err: providerErr}, nil
+	})})
+	if !errors.Is(r.Err(), providerErr) {
+		t.Fatalf("Err() = %v", r.Err())
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.stepEnds) != 0 || len(rec.stepErrors) != 1 || rec.stepErrors[0].StepNumber != 0 || !errors.Is(rec.stepErrors[0].Error, providerErr) {
+		t.Fatalf("onStepEnd %d, onStepError %+v", len(rec.stepEnds), rec.stepErrors)
+	}
+}
+
+// TS 4618: should report the error of the failed step instead of an earlier
+// step error.
+func TestR70TSStreamReportsFailedStepError(t *testing.T) {
+	rec := &r70Recorder{}
+	r := r70Run(t, rec, StreamTextOptions{
+		Model: r69Model(
+			r70Chunks(provider.StreamChunk{Type: provider.ChunkTypeStreamStart}, provider.StreamChunk{Type: provider.ChunkTypeError, Err: errors.New("earlier step error"), Text: "earlier step error"},
+				r70ToolCall("call-1"), r70ToolCallsFinish),
+			r70Chunks(provider.StreamChunk{Type: provider.ChunkTypeStreamStart}),
+		),
+		Tools: []types.Tool{r70Tool("tool1", nil)}, StopWhen: []StopCondition{StepCountIs(3)},
+	})
+	if r.Err() == nil {
+		t.Fatal("Err() = nil")
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.stepErrors) != 1 || rec.stepErrors[0].StepNumber != 1 || !IsNoOutputGeneratedError(rec.stepErrors[0].Error) {
+		t.Fatalf("onStepError = %+v", rec.stepErrors)
+	}
+}
+
+// TS 4675: an abort, the total timeout and the step timeout end the step with
+// onAbort instead of onStepError.
+func TestR70TSStreamAbortEndsStepWithOnAbort(t *testing.T) {
+	blocking := func(ctx context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	cases := []struct {
+		name  string
+		setup func(*StreamTextOptions) context.Context
+	}{
+		{"an abort", func(*StreamTextOptions) context.Context {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return ctx
+		}},
+		{"the total timeout", func(o *StreamTextOptions) context.Context {
+			o.Timeout = &TimeoutConfig{Total: r70Duration(10 * time.Millisecond)}
+			return context.Background()
+		}},
+		{"the step timeout", func(o *StreamTextOptions) context.Context {
+			o.Timeout = &TimeoutConfig{PerStep: r70Duration(10 * time.Millisecond)}
+			return context.Background()
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &r70Recorder{}
+			opts := StreamTextOptions{Model: &testutil.MockLanguageModel{DoStreamFunc: blocking}, MaxRetries: &r70ZeroInt}
+			ctx := tc.setup(&opts)
+			r, err := StreamText(ctx, rec.options(opts))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = r.ConsumeStream()
+			rec.mu.Lock()
+			defer rec.mu.Unlock()
+			aborts := strings.Count(strings.Join(rec.events, " "), "onAbort") - strings.Count(strings.Join(rec.events, " "), "tel:onAbort")
+			if aborts != 1 || len(rec.stepErrors) != 0 {
+				t.Fatalf("events = %q", rec.events)
+			}
+		})
+	}
+}
+
+func r70Duration(d time.Duration) *time.Duration { return &d }
+
+// TS 4719: should end the step with onStepEnd when stream retries run out.
+func TestR70TSStreamRetriesRunOutEndsStepWithOnStepEnd(t *testing.T) {
+	var attempts atomic.Int32
+	rec := &r70Recorder{}
+	two := 2
+	r70Run(t, rec, StreamTextOptions{MaxRetries: &r70ZeroInt, StreamRetries: &two,
+		Model: &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			e := fmt.Errorf("failure %d", attempts.Add(1))
+			return testutil.NewMockTextStream([]provider.StreamChunk{{Type: provider.ChunkTypeStreamStart}, {Type: provider.ChunkTypeError, Err: e, Text: e.Error()}}), nil
+		}}})
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	starts := strings.Count(strings.Join(rec.events, " "), "onStepStart")
+	if attempts.Load() != 3 || starts != 1 || len(rec.stepEnds) != 1 || rec.stepEnds[0].FinishReason != types.FinishReasonError || len(rec.stepErrors) != 0 {
+		t.Fatalf("attempts %d, onStepStart %d, onStepEnd %d, onStepError %d", attempts.Load(), starts, len(rec.stepEnds), len(rec.stepErrors))
+	}
+}
+
+// TS 4880: should resolve with partial output when the provider stream
+// closes before its finish chunk after producing output.
+func TestR70TSStreamTruncatedAfterOutputResolves(t *testing.T) {
+	rec := &r70Recorder{}
+	r := r70Run(t, rec, StreamTextOptions{Model: r69Model(r70Chunks(
+		provider.StreamChunk{Type: provider.ChunkTypeStreamStart},
+		provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "1"},
+		provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+		provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: ", world"},
+	))})
+	if r.Err() != nil || r.Text() != "Hello, world" || r.FinishReason() != types.FinishReasonOther || len(r.Steps()) != 1 {
+		t.Fatalf("err %v, text %q, finish %q, steps %d", r.Err(), r.Text(), r.FinishReason(), len(r.Steps()))
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.errs) != 0 {
+		t.Fatalf("onError = %v", rec.errs)
+	}
+}
+
+// TS 4913: should reject result promises when the provider stream errors
+// after metadata.
+func TestR70TSStreamErrorsAfterMetadata(t *testing.T) {
+	streamErr := errors.New("simulated provider stream error")
+	r, err := StreamText(context.Background(), StreamTextOptions{Prompt: "test-input", Model: r69Model(func() (provider.TextStream, error) {
+		return &r70SliceStream{chunks: []provider.StreamChunk{{Type: provider.ChunkTypeStreamStart},
+			{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-0", ModelID: "mock-model-id"}}}, err: streamErr}, nil
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); !errors.Is(err, streamErr) {
+		t.Fatalf("ConsumeStream() = %v", err)
+	}
+	if !errors.Is(r.Err(), streamErr) || len(r.Steps()) != 0 {
+		t.Fatalf("Err() = %v, steps %d", r.Err(), len(r.Steps()))
+	}
+}
+
+// TS 4957: should reject when the provider stream is incomplete on a
+// continuation step.
+func TestR70TSStreamIncompleteContinuationStepRejects(t *testing.T) {
+	rec := &r70Recorder{}
+	r := r70Run(t, rec, StreamTextOptions{
+		Model: r70ToolCallModelThen(r70Chunks(provider.StreamChunk{Type: provider.ChunkTypeStreamStart},
+			provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-1", ModelID: "mock-model-id"}})),
+		Tools: []types.Tool{r70Tool("tool1", nil)}, StopWhen: []StopCondition{StepCountIs(3)},
+	})
+	if r.Err() == nil || r.Err().Error() != r70NoFinish {
+		t.Fatalf("Err() = %v", r.Err())
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.errs) != 1 || rec.errs[0].Error() != r70NoFinish || len(rec.stepEnds) != 1 {
+		t.Fatalf("onError %v, onStepEnd %d", rec.errs, len(rec.stepEnds))
+	}
+	if len(rec.telErrs) != 1 || rec.telErrs[0].Error() != r70NoFinish {
+		t.Fatalf("telemetry onError = %v", rec.telErrs)
+	}
+}
