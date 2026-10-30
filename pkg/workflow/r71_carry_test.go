@@ -2,11 +2,13 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
@@ -88,6 +90,60 @@ func TestR71CarryWorkflowResumeToolCallbacksBeforeTelemetry(t *testing.T) {
 			want := []string{"callback:start", "telemetry:start", "execute", "callback:end", "telemetry:end"}
 			if len(rec.log) < len(want) || !reflect.DeepEqual(rec.log[:len(want)], want) {
 				t.Fatalf("log = %v, want prefix %v", rec.log, want)
+			}
+		})
+	}
+}
+
+func (c *r71carryToolOrder) OnError(_ context.Context, _ telemetry.TelemetryErrorEvent) {
+	c.add("telemetry:error")
+}
+
+// r71carryStreamOpenErrorModel fails to open its stream.
+type r71carryStreamOpenErrorModel struct{ wfMockModel }
+
+func (m *r71carryStreamOpenErrorModel) DoStream(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+	return nil, errors.New("boom")
+}
+
+// TS execute's catch awaits options.onError before telemetryDispatcher.onError.
+func TestR71CarryWorkflowOnErrorBeforeTelemetryOnError(t *testing.T) {
+	for _, mode := range []string{"generate", "stream"} {
+		t.Run(mode, func(t *testing.T) {
+			rec := &r71carryToolOrder{}
+			var model provider.LanguageModel = &wfErrorModel{}
+			if mode == "stream" {
+				model = &r71carryStreamOpenErrorModel{}
+			}
+			wa, err := NewWorkflowAgent(WorkflowAgent{
+				Model:     model,
+				Telemetry: &telemetry.Options{IsEnabled: telemetry.Bool(true), Integrations: []telemetry.TelemetryIntegration{rec}},
+				OnError:   func(context.Context, error) { rec.add("callback:error") },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "generate" {
+				_, err = wa.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hi"})
+			} else {
+				var st *WorkflowStreamResult
+				st, err = wa.StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "hi"})
+				if err == nil {
+					_, _ = st.ReadAll()
+					err = st.Err()
+				}
+			}
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			rec.mu.Lock()
+			defer rec.mu.Unlock()
+			// In stream mode the delegated StreamText call reports its own
+			// telemetry error first; the workflow root's comes after the
+			// user callback.
+			want := []string{"callback:error", "telemetry:error"}
+			if n := len(rec.log); n < 2 || !reflect.DeepEqual(rec.log[n-2:], want) || (mode == "generate" && n != 2) {
+				t.Fatalf("log = %v, want it to end with %v", rec.log, want)
 			}
 		})
 	}

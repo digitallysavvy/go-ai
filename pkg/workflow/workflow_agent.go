@@ -2459,11 +2459,12 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 				onAbort(ctx, steps)
 			}
 		} else {
-			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
-			// An abort reaches onAbort only, never onError (TS).
+			// An abort reaches onAbort only, never onError (TS). TS awaits
+			// options.onError before telemetryDispatcher.onError.
 			if onError := mergeError(w.OnError, opts.OnError); onError != nil {
 				onError(ctx, err)
 			}
+			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		}
 		return nil, err
 	}
@@ -2742,10 +2743,11 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 				onAbort(ctx, nil)
 			}
 		} else {
-			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
+			// TS awaits options.onError before telemetryDispatcher.onError.
 			if onError := mergeError(w.OnError, opts.OnError); onError != nil {
 				onError(ctx, err)
 			}
+			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		}
 		return nil, err
 	}
