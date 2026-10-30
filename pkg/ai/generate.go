@@ -1992,6 +1992,14 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			})
 		}
 
+		// An interrupted step (provider stream ended without a completion
+		// signal) never continues the loop (TS #23778). TS checks it first in
+		// shouldStartNextStep, so an interrupted step that requested an
+		// approval leaves the steering reason at "finished".
+		if genResult.FinishReason == types.FinishReasonInterrupted {
+			break
+		}
+
 		if hasUserApproval {
 			// The step keeps the model's own finish reason (normally
 			// "tool-calls"), as in TS; pending approvals are reported as
@@ -1999,12 +2007,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			result.Text = stepResult.Text
 			result.FinishReason = stepResult.FinishReason
 			steeringEndReason = SteeringWaitingForToolResults
-			break
-		}
-
-		// An interrupted step (provider stream ended without a completion
-		// signal) never continues the loop (TS #23778).
-		if genResult.FinishReason == types.FinishReasonInterrupted {
 			break
 		}
 

@@ -3427,13 +3427,15 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			steeringEndReason = SteeringError
 			break
 		}
-		if hasUserApproval || skipStepTools {
-			steeringEndReason = SteeringWaitingForToolResults
+		// An interrupted step (provider stream ended without a completion
+		// signal) never continues the loop (TS #23778). TS checks it first in
+		// shouldStartNextStep, so an interrupted step that requested an
+		// approval leaves the steering reason at "finished".
+		if r.finishReason == types.FinishReasonInterrupted {
 			break
 		}
-		// An interrupted step (provider stream ended without a completion
-		// signal) never continues the loop (TS #23778).
-		if r.finishReason == types.FinishReasonInterrupted {
+		if hasUserApproval || skipStepTools {
+			steeringEndReason = SteeringWaitingForToolResults
 			break
 		}
 
