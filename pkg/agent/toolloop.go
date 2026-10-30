@@ -2171,6 +2171,9 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	// TS logs each step's model warnings just before the step is recorded.
 	ai.LogWarnings(ai.LogWarningsOptions{Warnings: genResult.Warnings, Provider: stepModel.Provider(), Model: stepModel.ModelID()})
 	stepResult := &types.StepResult{
+		// TS DefaultStepResult.callId: the run's call ID (generateText's
+		// callId; WorkflowAgent's run ID).
+		CallID:           stepTel.callID(),
 		StepNumber:       callConfig.StepNumber,
 		Model:            types.StepModel{Provider: stepModel.Provider(), ModelID: stepModel.ModelID()},
 		Text:             genResult.Text,

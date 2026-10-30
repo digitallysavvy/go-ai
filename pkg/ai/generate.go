@@ -146,6 +146,12 @@ func IsGatewayCallRetryable(err error) bool {
 
 func doGenerateWithGatewayRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int) (*types.GenerateResult, error) {
 	result, err := doGenerateWithGatewayRetryRaw(ctx, model, opts, maxRetries)
+	if err == nil && result == nil {
+		// TS reads the model response right after doGenerate, so a model
+		// that resolves without a result fails the call instead of crashing
+		// it.
+		return nil, fmt.Errorf("language model %s/%s returned no result", model.Provider(), model.ModelID())
+	}
 	normalizeGenerateResultText(result)
 	return result, err
 }
@@ -188,6 +194,16 @@ func DoGenerateWithGatewayRetry(ctx context.Context, model provider.LanguageMode
 // start time. beforeRetry fires those and returns the ctx the attempt's
 // DoStream runs in (the new model-call span's ctx); nil keeps ctx.
 func doStreamWithGatewayRetryEach(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int, beforeRetry func() context.Context) (provider.TextStream, error) {
+	stream, err := doStreamWithGatewayRetryEachRaw(ctx, model, opts, maxRetries, beforeRetry)
+	if err == nil && stream == nil {
+		// TS reads the stream right after doStream, so a model that resolves
+		// without one fails the call instead of crashing it.
+		return nil, fmt.Errorf("language model %s/%s returned no stream", model.Provider(), model.ModelID())
+	}
+	return stream, err
+}
+
+func doStreamWithGatewayRetryEachRaw(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int, beforeRetry func() context.Context) (provider.TextStream, error) {
 	retries := gatewayMaxRetries(model, maxRetries)
 	if retries <= 0 {
 		return model.DoStream(ctx, opts)
@@ -2309,6 +2325,8 @@ func finalStepModel(steps []types.StepResult, provider, modelID string) (string,
 
 // toolCallEventCallbacks groups the per-tool-call structured event callbacks
 // and their associated metadata. All fields are optional (nil-safe).
+// fallbackStart/fallbackFinish are the deprecated OnToolCallStart/
+// OnToolCallFinish; each runs only when onStart/onFinish is nil.
 type toolCallEventCallbacks struct {
 	callID              string
 	onStart             func(ctx context.Context, e OnToolCallStartEvent)
@@ -2740,7 +2758,13 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				RuntimeContext:      callbacks.runtimeContext,
 				ToolsContext:        callbacks.toolsContext,
 			}
-			Notify(ctx, startEvent, callbacks.onStart, callbacks.fallbackStart)
+			// TS `onToolExecutionStart ?? experimental_onToolCallStart`: the
+			// deprecated callback runs only when the new one is unset.
+			onToolStart := callbacks.onStart
+			if onToolStart == nil {
+				onToolStart = callbacks.fallbackStart
+			}
+			Notify(ctx, startEvent, onToolStart)
 
 			// Fire telemetry OnToolCallStart — integrations may inject a child span.
 			toolCtx := telemetry.FireOnToolCallStart(ctx, telemetry.TelemetryToolCallStartEvent{
@@ -2899,7 +2923,12 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				RuntimeContext:      callbacks.runtimeContext,
 				ToolsContext:        callbacks.toolsContext,
 			}
-			Notify(ctx, finishEvent, callbacks.onFinish, callbacks.fallbackFinish)
+			// TS `onToolExecutionEnd ?? experimental_onToolCallFinish`.
+			onToolEnd := callbacks.onFinish
+			if onToolEnd == nil {
+				onToolEnd = callbacks.fallbackFinish
+			}
+			Notify(ctx, finishEvent, onToolEnd)
 		}
 	}
 
