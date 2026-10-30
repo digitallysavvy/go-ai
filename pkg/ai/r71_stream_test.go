@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -635,5 +637,446 @@ func TestR71StreamToUICancellationAfterStart(t *testing.T) {
 	}
 	if outcome := events[0]["outcome"].(map[string]interface{}); outcome["status"] != "unknown" {
 		t.Fatalf("outcome = %v", outcome)
+	}
+}
+
+// Round 71 (stream): ports of TS stream-text.test.ts options.onStart,
+// options.onStepStart, options.onToolExecutionStart/End and their ordering
+// blocks, with field-by-field assertions.
+
+// r71streamModel returns a mock model ("mock-provider" / "mock-model-id")
+// whose n-th DoStream call streams steps[n] (the last one repeats), and
+// records "doStream" into order when it is set.
+func r71streamModel(order *r71streamOrder, steps ...[]provider.StreamChunk) *testutil.MockLanguageModel {
+	var mu sync.Mutex
+	calls := 0
+	return &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id", DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		mu.Lock()
+		i := calls
+		calls++
+		mu.Unlock()
+		if i >= len(steps) {
+			i = len(steps) - 1
+		}
+		if order != nil {
+			order.add("doStream")
+		}
+		return testutil.NewMockTextStream(steps[i]), nil
+	}}
+}
+
+type r71streamOrder struct {
+	mu    sync.Mutex
+	items []string
+}
+
+func (o *r71streamOrder) add(s string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.items = append(o.items, s)
+}
+
+func (o *r71streamOrder) get() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.items...)
+}
+
+// r71streamHelloWorld is TS createTestModel's default stream.
+var r71streamHelloWorld = []provider.StreamChunk{
+	{Type: provider.ChunkTypeTextStart, ID: "1"},
+	{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+	{Type: provider.ChunkTypeText, ID: "1", Text: ", "},
+	{Type: provider.ChunkTypeText, ID: "1", Text: "world!"},
+	{Type: provider.ChunkTypeTextEnd, ID: "1"},
+	{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r71streamUsage},
+}
+
+func r71streamToolCallStep(calls ...[2]string) []provider.StreamChunk {
+	var out []provider.StreamChunk
+	for _, c := range calls {
+		out = append(out, provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: c[0], ToolName: "tool1", Arguments: map[string]interface{}{"value": c[1]}, RawArguments: `{ "value": "` + c[1] + `" }`}})
+	}
+	return append(out, provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r71streamUsage})
+}
+
+var r71streamValueSchema = map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}, "required": []interface{}{"value"}}
+
+func r71streamTool1(execute bool, fail error, order *r71streamOrder) types.Tool {
+	tool := types.Tool{Name: "tool1", Parameters: r71streamValueSchema}
+	if execute {
+		tool.Execute = func(_ context.Context, args map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			if order != nil {
+				order.add("execute")
+			}
+			if fail != nil {
+				return nil, fail
+			}
+			return args["value"].(string) + "-result", nil
+		}
+	}
+	return tool
+}
+
+var r71streamInternal = &InternalOptions{GenerateID: func() string { return "test-call-id" }, GenerateCallID: func() string { return "test-telemetry-call-id" }}
+
+func r71streamUserMessages(text string) []types.Message {
+	return []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: text}}}}
+}
+
+func r71streamRun(t *testing.T, opts StreamTextOptions) *StreamTextResult {
+	t.Helper()
+	if opts.OnError == nil {
+		opts.OnError = func(context.Context, error) {}
+	}
+	r, err := StreamText(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("StreamText: %v", err)
+	}
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatalf("ConsumeStream: %v", err)
+	}
+	return r
+}
+
+// TS 9717: options.onStart > should send correct information with text prompt
+// (snapshot). Go leaves unset settings at their zero values; ToolsContext is
+// {} as in TS, while RuntimeContext stays nil where TS defaults it to {}
+// (open item, r71).
+func TestR71StreamOnStartTextPrompt(t *testing.T) {
+	var got OnStartEvent
+	calls := 0
+	r71streamRun(t, StreamTextOptions{
+		Model: r71streamModel(nil, r71streamHelloWorld), Prompt: "test-input",
+		Telemetry: &TelemetrySettings{FunctionID: "test-function"},
+		Internal:  r71streamInternal,
+		OnStart:   func(_ context.Context, e OnStartEvent) { calls++; got = e },
+	})
+	if calls != 1 {
+		t.Fatalf("onStart calls = %d", calls)
+	}
+	want := OnStartEvent{
+		CallID: "test-telemetry-call-id", OperationID: "ai.streamText",
+		Provider: "mock-provider", ModelProvider: "mock-provider", ModelID: "mock-model-id",
+		Prompt: "test-input", Messages: r71streamUserMessages("test-input"), MaxRetries: 2,
+		ToolsContext: map[string]interface{}{},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("onStart event:\n got  %#v\n want %#v", got, want)
+	}
+}
+
+// TS 9969: options.onStart > should send correct information with system and messages.
+func TestR71StreamOnStartSystemAndMessages(t *testing.T) {
+	var got OnStartEvent
+	instructions := "you are a helpful assistant"
+	maxTokens := 100
+	temperature := 0.5
+	r71streamRun(t, StreamTextOptions{
+		Model: r71streamModel(nil, r71streamHelloWorld), Instructions: &instructions,
+		Messages: r71streamUserMessages("test-message"), MaxTokens: &maxTokens, Temperature: &temperature,
+		OnStart: func(_ context.Context, e OnStartEvent) { got = e },
+	})
+	if got.Provider != "mock-provider" || got.ModelID != "mock-model-id" || got.Instructions != instructions || got.Prompt != "" {
+		t.Fatalf("onStart = %#v", got)
+	}
+	if !reflect.DeepEqual(got.Messages, r71streamUserMessages("test-message")) {
+		t.Fatalf("messages = %#v", got.Messages)
+	}
+	if got.MaxTokens == nil || *got.MaxTokens != 100 || got.Temperature == nil || *got.Temperature != 0.5 || got.MaxRetries != 2 {
+		t.Fatalf("settings: maxTokens %v temperature %v maxRetries %d", got.MaxTokens, got.Temperature, got.MaxRetries)
+	}
+}
+
+// TS 9998 / 10237: onStart, then onStepStart, run before doStream (each step).
+func TestR71StreamOnStartAndStepStartBeforeDoStream(t *testing.T) {
+	order := &r71streamOrder{}
+	r71streamRun(t, StreamTextOptions{
+		Model:       r71streamModel(order, r71streamToolCallStep([2]string{"call-1", "test"}), r71streamHelloWorld),
+		Prompt:      "test-input",
+		Tools:       []types.Tool{r71streamTool1(true, nil, nil)},
+		StopWhen:    []StopCondition{IsStepCount(3)},
+		OnStart:     func(context.Context, OnStartEvent) { order.add("onStart") },
+		OnStepStart: func(context.Context, OnStepStartEvent) { order.add("onStepStart") },
+	})
+	want := []string{"onStart", "onStepStart", "doStream", "onStepStart", "doStream"}
+	if got := order.get(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+}
+
+// TS 10041 / 10280: a panicking onStart or onStepStart does not break generation.
+func TestR71StreamStartCallbacksPanicDoNotBreak(t *testing.T) {
+	for name, opts := range map[string]StreamTextOptions{
+		"onStart":     {OnStart: func(context.Context, OnStartEvent) { panic(errors.New("callback error")) }},
+		"onStepStart": {OnStepStart: func(context.Context, OnStepStartEvent) { panic(errors.New("callback error")) }},
+	} {
+		opts.Model = r71streamModel(nil, r71streamHelloWorld)
+		opts.Prompt = "test-input"
+		if got := r71streamRun(t, opts).Text(); got != "Hello, world!" {
+			t.Fatalf("%s: text = %q", name, got)
+		}
+	}
+}
+
+// TS 10054 / 10078 / 10098: onStart exposes tools, toolChoice,
+// providerOptions and timeout.
+func TestR71StreamOnStartExposesSettings(t *testing.T) {
+	var got OnStartEvent
+	total, step := 5000*time.Millisecond, 1000*time.Millisecond
+	tool := types.Tool{Name: "myTool", Parameters: r71streamValueSchema}
+	r71streamRun(t, StreamTextOptions{
+		Model: r71streamModel(nil, r71streamHelloWorld), Prompt: "test-input",
+		Tools: []types.Tool{tool}, ToolChoice: types.AutoToolChoice(),
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"logprobs": true}},
+		Timeout:         &TimeoutConfig{Total: &total, PerStep: &step},
+		StopWhen:        []StopCondition{IsStepCount(3)},
+		OnStart:         func(_ context.Context, e OnStartEvent) { got = e },
+	})
+	if len(got.Tools) != 1 || got.Tools[0].Name != "myTool" || !reflect.DeepEqual(got.Tools[0].Parameters, r71streamValueSchema) {
+		t.Fatalf("tools = %#v", got.Tools)
+	}
+	if got.ToolChoice != types.AutoToolChoice() {
+		t.Fatalf("toolChoice = %#v", got.ToolChoice)
+	}
+	if !reflect.DeepEqual(got.ProviderOptions, map[string]interface{}{"openai": map[string]interface{}{"logprobs": true}}) {
+		t.Fatalf("providerOptions = %#v", got.ProviderOptions)
+	}
+	if got.Timeout == nil || got.Timeout.Total == nil || *got.Timeout.Total != total || got.Timeout.PerStep == nil || *got.Timeout.PerStep != step {
+		t.Fatalf("timeout = %#v", got.Timeout)
+	}
+}
+
+// TS 10119: onStepStart > should be called with correct data for a single step.
+func TestR71StreamOnStepStartSingleStep(t *testing.T) {
+	var events []OnStepStartEvent
+	r71streamRun(t, StreamTextOptions{
+		Model: r71streamModel(nil, r71streamHelloWorld), Prompt: "test-input",
+		OnStepStart: func(_ context.Context, e OnStepStartEvent) { events = append(events, e) },
+	})
+	if len(events) != 1 {
+		t.Fatalf("onStepStart calls = %d", len(events))
+	}
+	e := events[0]
+	if e.StepNumber != 0 || len(e.Steps) != 0 || e.Provider != "mock-provider" || e.ModelID != "mock-model-id" {
+		t.Fatalf("event = %#v", e)
+	}
+	if !reflect.DeepEqual(e.Messages, r71streamUserMessages("test-input")) {
+		t.Fatalf("messages = %#v", e.Messages)
+	}
+}
+
+// TS 10148: onStepStart > should be called once per step in a multi-step tool loop.
+func TestR71StreamOnStepStartPerStep(t *testing.T) {
+	var events []OnStepStartEvent
+	r71streamRun(t, StreamTextOptions{
+		Model:       r71streamModel(nil, r71streamToolCallStep([2]string{"call-1", "test"}), r71streamHelloWorld),
+		Prompt:      "test-input",
+		Tools:       []types.Tool{r71streamTool1(true, nil, nil)},
+		StopWhen:    []StopCondition{IsStepCount(3)},
+		OnStepStart: func(_ context.Context, e OnStepStartEvent) { events = append(events, e) },
+	})
+	if len(events) != 2 || events[0].StepNumber != 0 || len(events[0].Steps) != 0 || events[1].StepNumber != 1 || len(events[1].Steps) != 1 {
+		t.Fatalf("events = %d %#v", len(events), events)
+	}
+}
+
+// TS 10597: onStepStart exposes providerOptions and runtimeContext.
+func TestR71StreamOnStepStartProviderOptionsAndRuntimeContext(t *testing.T) {
+	var got OnStepStartEvent
+	r71streamRun(t, StreamTextOptions{
+		Model: r71streamModel(nil, r71streamHelloWorld), Prompt: "test-input",
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"logprobs": true}},
+		RuntimeContext:  map[string]interface{}{"userId": "test-user"},
+		OnStepStart:     func(_ context.Context, e OnStepStartEvent) { got = e },
+	})
+	if !reflect.DeepEqual(got.ProviderOptions, map[string]interface{}{"openai": map[string]interface{}{"logprobs": true}}) {
+		t.Fatalf("providerOptions = %#v", got.ProviderOptions)
+	}
+	if !reflect.DeepEqual(got.RuntimeContext, map[string]interface{}{"userId": "test-user"}) {
+		t.Fatalf("runtimeContext = %#v", got.RuntimeContext)
+	}
+}
+
+// TS 11080 / 11124 / 11516 / 11560: the deprecated OnToolCallStart /
+// OnToolCallFinish run only when OnToolExecutionStart / End are unset.
+func TestR71StreamToolExecutionCallbackAliases(t *testing.T) {
+	for _, preferNew := range []bool{false, true} {
+		order := &r71streamOrder{}
+		opts := StreamTextOptions{
+			Model:            r71streamModel(nil, r71streamToolCallStep([2]string{"call-1", "test"})),
+			Prompt:           "test-input",
+			Tools:            []types.Tool{r71streamTool1(true, nil, nil)},
+			OnToolCallStart:  func(context.Context, OnToolCallStartEvent) { order.add("experimental_onToolCallStart") },
+			OnToolCallFinish: func(context.Context, OnToolCallFinishEvent) { order.add("experimental_onToolCallFinish") },
+		}
+		want := []string{"experimental_onToolCallStart", "experimental_onToolCallFinish"}
+		if preferNew {
+			opts.OnToolExecutionStart = func(context.Context, OnToolCallStartEvent) { order.add("onToolExecutionStart") }
+			opts.OnToolExecutionEnd = func(context.Context, OnToolCallFinishEvent) { order.add("onToolExecutionEnd") }
+			want = []string{"onToolExecutionStart", "onToolExecutionEnd"}
+		}
+		r71streamRun(t, opts)
+		if got := order.get(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("preferNew=%v: order = %v, want %v", preferNew, got, want)
+		}
+	}
+}
+
+// TS 11171 / 11607 / 11854: onToolExecutionStart and onToolExecutionEnd
+// payloads (callId, messages, toolCall, toolContext; toolOutput and
+// toolExecutionMs on end), without and with a tool context.
+func TestR71StreamToolExecutionPayloads(t *testing.T) {
+	for _, withContext := range []bool{false, true} {
+		var starts []OnToolCallStartEvent
+		var ends []OnToolCallFinishEvent
+		tool := r71streamTool1(true, nil, nil)
+		opts := StreamTextOptions{
+			Model:                r71streamModel(nil, r71streamToolCallStep([2]string{"call-1", "test-arg"})),
+			Prompt:               "test-input",
+			Tools:                []types.Tool{tool},
+			Internal:             r71streamInternal,
+			OnToolExecutionStart: func(_ context.Context, e OnToolCallStartEvent) { starts = append(starts, e) },
+			OnToolExecutionEnd:   func(_ context.Context, e OnToolCallFinishEvent) { ends = append(ends, e) },
+		}
+		var wantContext interface{}
+		if withContext {
+			opts.Tools[0].ContextSchema = schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "properties": map[string]interface{}{"context": map[string]interface{}{"type": "string"}}, "required": []interface{}{"context"}})
+			opts.ToolsContext = map[string]interface{}{"tool1": map[string]interface{}{"context": "test"}}
+			wantContext = map[string]interface{}{"context": "test"}
+		}
+		r71streamRun(t, opts)
+		if len(starts) != 1 || len(ends) != 1 {
+			t.Fatalf("withContext=%v: starts %d ends %d", withContext, len(starts), len(ends))
+		}
+		s, e := starts[0], ends[0]
+		wantCall := types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "test-arg"}, RawArguments: `{ "value": "test-arg" }`}
+		if s.CallID != "test-telemetry-call-id" || s.ToolCallID != "call-1" || s.ToolName != "tool1" || !reflect.DeepEqual(s.ToolCall, wantCall) || !reflect.DeepEqual(s.ToolContext, wantContext) || !reflect.DeepEqual(s.Messages, r71streamUserMessages("test-input")) {
+			t.Fatalf("withContext=%v: start = %#v", withContext, s)
+		}
+		if e.CallID != "test-telemetry-call-id" || !reflect.DeepEqual(e.ToolCall, wantCall) || !reflect.DeepEqual(e.ToolContext, wantContext) || !reflect.DeepEqual(e.Messages, r71streamUserMessages("test-input")) || e.ToolExecutionMs < 0 {
+			t.Fatalf("withContext=%v: end = %#v", withContext, e)
+		}
+		out := e.ToolOutput
+		if out.ToolCallID != "call-1" || out.ToolName != "tool1" || out.Dynamic || out.Error != nil || out.Result != "test-arg-result" || !reflect.DeepEqual(out.Input, map[string]interface{}{"value": "test-arg"}) {
+			t.Fatalf("withContext=%v: toolOutput = %#v", withContext, out)
+		}
+	}
+}
+
+// TS 11654 / 11939: onToolExecutionEnd carries the tool error (TS
+// toolOutput type tool-error, error is the thrown error).
+func TestR71StreamToolExecutionEndError(t *testing.T) {
+	toolErr := errors.New("Tool execution failed")
+	var ends []OnToolCallFinishEvent
+	r71streamRun(t, StreamTextOptions{
+		Model:              r71streamModel(nil, r71streamToolCallStep([2]string{"call-1", "test"})),
+		Prompt:             "test-input",
+		Tools:              []types.Tool{r71streamTool1(true, toolErr, nil)},
+		OnToolExecutionEnd: func(_ context.Context, e OnToolCallFinishEvent) { ends = append(ends, e) },
+	})
+	if len(ends) != 1 {
+		t.Fatalf("ends = %d", len(ends))
+	}
+	e := ends[0]
+	if e.ToolCall.ToolName != "tool1" || e.ToolCall.ID != "call-1" || e.ToolExecutionMs < 0 {
+		t.Fatalf("end = %#v", e)
+	}
+	if !errors.Is(e.ToolOutput.Error, toolErr) || e.ToolOutput.ToolCallID != "call-1" || !reflect.DeepEqual(e.ToolOutput.Input, map[string]interface{}{"value": "test"}) {
+		t.Fatalf("toolOutput = %#v", e.ToolOutput)
+	}
+}
+
+// TS 11246: once per tool call in a multi-tool step.
+func TestR71StreamToolExecutionStartPerCall(t *testing.T) {
+	var mu sync.Mutex
+	var ids []string
+	r71streamRun(t, StreamTextOptions{
+		Model:  r71streamModel(nil, r71streamToolCallStep([2]string{"call-1", "a"}, [2]string{"call-2", "b"})),
+		Prompt: "test-input",
+		Tools:  []types.Tool{r71streamTool1(true, nil, nil)},
+		OnToolExecutionStart: func(_ context.Context, e OnToolCallStartEvent) {
+			mu.Lock()
+			ids = append(ids, e.ToolCallID)
+			mu.Unlock()
+		},
+	})
+	if len(ids) != 2 {
+		t.Fatalf("starts = %v", ids)
+	}
+}
+
+// TS 11299 / 12029: onToolExecutionStart runs before execute, and before
+// onToolExecutionEnd.
+func TestR71StreamToolExecutionOrder(t *testing.T) {
+	order := &r71streamOrder{}
+	r71streamRun(t, StreamTextOptions{
+		Model:                r71streamModel(nil, r71streamToolCallStep([2]string{"call-1", "test"})),
+		Prompt:               "test-input",
+		Tools:                []types.Tool{r71streamTool1(true, nil, order)},
+		OnToolExecutionStart: func(context.Context, OnToolCallStartEvent) { order.add("onToolExecutionStart") },
+		OnToolExecutionEnd:   func(context.Context, OnToolCallFinishEvent) { order.add("onToolExecutionEnd") },
+	})
+	if got, want := order.get(), []string{"onToolExecutionStart", "execute", "onToolExecutionEnd"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+}
+
+// TS 11349 / 11763: panicking tool execution callbacks do not break the run.
+func TestR71StreamToolExecutionCallbackPanics(t *testing.T) {
+	for name, opts := range map[string]StreamTextOptions{
+		"start": {OnToolExecutionStart: func(context.Context, OnToolCallStartEvent) { panic(errors.New("callback error")) }},
+		"end":   {OnToolExecutionEnd: func(context.Context, OnToolCallFinishEvent) { panic(errors.New("callback error")) }},
+	} {
+		opts.Model = r71streamModel(nil, r71streamToolCallStep([2]string{"call-1", "test"}))
+		opts.Prompt = "test-input"
+		opts.Tools = []types.Tool{r71streamTool1(true, nil, nil)}
+		results := r71streamRun(t, opts).ToolResults()
+		if len(results) != 1 || results[0].Result != "test-result" {
+			t.Fatalf("%s: tool results = %#v", name, results)
+		}
+	}
+}
+
+// TS 11394 / 11808: no tool execution callbacks for a tool without Execute.
+func TestR71StreamToolExecutionCallbacksSkipToolsWithoutExecute(t *testing.T) {
+	starts, ends := 0, 0
+	r71streamRun(t, StreamTextOptions{
+		Model:                r71streamModel(nil, r71streamToolCallStep([2]string{"call-1", "test"})),
+		Prompt:               "test-input",
+		Tools:                []types.Tool{r71streamTool1(false, nil, nil)},
+		OnToolExecutionStart: func(context.Context, OnToolCallStartEvent) { starts++ },
+		OnToolExecutionEnd:   func(context.Context, OnToolCallFinishEvent) { ends++ },
+	})
+	if starts != 0 || ends != 0 {
+		t.Fatalf("starts %d ends %d", starts, ends)
+	}
+}
+
+// TS 12077: tool execution callbacks fire for each tool in a multi-step loop.
+func TestR71StreamToolExecutionCallbacksMultiStep(t *testing.T) {
+	var mu sync.Mutex
+	var starts, ends []string
+	r71streamRun(t, StreamTextOptions{
+		Model:    r71streamModel(nil, r71streamToolCallStep([2]string{"call-1", "step0"}), r71streamToolCallStep([2]string{"call-2", "step1"}), r71streamHelloWorld),
+		Prompt:   "test-input",
+		Tools:    []types.Tool{r71streamTool1(true, nil, nil)},
+		StopWhen: []StopCondition{IsStepCount(3)},
+		OnToolExecutionStart: func(_ context.Context, e OnToolCallStartEvent) {
+			mu.Lock()
+			starts = append(starts, e.ToolCallID+":"+e.ToolCall.Arguments["value"].(string))
+			mu.Unlock()
+		},
+		OnToolExecutionEnd: func(_ context.Context, e OnToolCallFinishEvent) {
+			mu.Lock()
+			ends = append(ends, e.ToolCallID+":"+e.ToolOutput.Result.(string))
+			mu.Unlock()
+		},
+	})
+	if want := []string{"call-1:step0", "call-2:step1"}; !reflect.DeepEqual(starts, want) {
+		t.Fatalf("starts = %v", starts)
+	}
+	if want := []string{"call-1:step0-result", "call-2:step1-result"}; !reflect.DeepEqual(ends, want) {
+		t.Fatalf("ends = %v", ends)
 	}
 }
