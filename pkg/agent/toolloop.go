@@ -3216,21 +3216,7 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 // the key order of a json.RawMessage or ordered object, as GenerateText's
 // tool model output does.
 func agentToJSONValue(value interface{}) interface{} {
-	if value == nil {
-		return nil
-	}
-	if ordered, ok := jsonorder.Normalize(value); ok {
-		return ordered
-	}
-	data, err := json.Marshal(value)
-	if err != nil {
-		return nil
-	}
-	var out interface{}
-	if err := json.Unmarshal(data, &out); err != nil {
-		return nil
-	}
-	return out
+	return jsonorder.ToJSONValue(value)
 }
 
 func modelFacingToolResultOutput(result types.ToolResult) types.ToolResultOutput {

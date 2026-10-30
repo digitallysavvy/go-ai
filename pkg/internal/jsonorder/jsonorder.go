@@ -347,6 +347,29 @@ func (o *Object) Map() map[string]interface{} {
 	return m
 }
 
+// ToJSONValue round-trips value through JSON, as TS toJSONValue
+// (JSON.parse(JSON.stringify(value))): nil and a marshal failure give nil,
+// and a json.RawMessage or ordered object keeps its key order (Normalize).
+// The tool model output of GenerateText, the legacy agent loop and the
+// response messages share it.
+func ToJSONValue(value interface{}) interface{} {
+	if value == nil {
+		return nil
+	}
+	if ordered, ok := Normalize(value); ok {
+		return ordered
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var out interface{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
 // Normalize is the order-preserving case of a tool-result JSON round trip:
 // a json.RawMessage (or an *Object) that holds a JSON object or array comes
 // back as an ordered tree whose marshaled text keeps the source key order, as

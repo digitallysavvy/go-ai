@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -369,4 +370,23 @@ func TestR71Integ_LegacyReadAndExternalResultExcludeFailures(t *testing.T) {
 	}
 	r71integCheckProviderOK(t, "external steps[0].ToolResults", steps[0].ToolResults)
 	r71integCheckProviderOK(t, "external steps[0].StaticToolResults", steps[0].StaticToolResults)
+}
+
+// Mutation survivor (r71 carry fix 1): the onEnd event's ranking is a copy
+// with the same items as the result's (TS ranking.map(...)).
+func TestR71Integ_RerankOnEndRankingEqualsResult(t *testing.T) {
+	var got []RerankItem
+	result, err := Rerank(context.Background(), RerankOptions{
+		Model: r71carryRerankModel(nil, nil), Documents: r71carryRerankDocs, Query: "rainy day",
+		OnEnd: func(event RerankOnFinishEvent) { got = event.Ranking },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || !reflect.DeepEqual(got, result.Ranking) {
+		t.Fatalf("event ranking = %#v, want %#v", got, result.Ranking)
+	}
+	if &got[0] == &result.Ranking[0] {
+		t.Fatal("event ranking shares the result's backing array")
+	}
 }

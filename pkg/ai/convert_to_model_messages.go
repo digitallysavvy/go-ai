@@ -2,7 +2,6 @@ package ai
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -473,21 +472,7 @@ func uiErrorMessage(value interface{}) string {
 
 // toJSONValue normalizes a value to plain JSON data by round-tripping it.
 func toJSONValue(value interface{}) interface{} {
-	if value == nil {
-		return nil
-	}
-	if ordered, ok := jsonorder.Normalize(value); ok {
-		return ordered
-	}
-	data, err := json.Marshal(value)
-	if err != nil {
-		return nil
-	}
-	var out interface{}
-	if err := json.Unmarshal(data, &out); err != nil {
-		return nil
-	}
-	return out
+	return jsonorder.ToJSONValue(value)
 }
 
 func findUITool(tools []types.Tool, name string) *types.Tool {

@@ -503,21 +503,7 @@ func providerMetadataOptions(metadata json.RawMessage) map[string]interface{} {
 // TS createToolModelOutput's toJSONValue (JSON.stringify + JSON.parse;
 // undefined/marshal failure -> null). Audit row 6aa7c54 / WG24.
 func toJSONValue(value interface{}) interface{} {
-	if value == nil {
-		return nil
-	}
-	if ordered, ok := jsonorder.Normalize(value); ok {
-		return ordered
-	}
-	data, err := json.Marshal(value)
-	if err != nil {
-		return nil
-	}
-	var out interface{}
-	if err := json.Unmarshal(data, &out); err != nil {
-		return nil
-	}
-	return out
+	return jsonorder.ToJSONValue(value)
 }
 
 func providerMetadataRaw(metadata map[string]interface{}) json.RawMessage {
