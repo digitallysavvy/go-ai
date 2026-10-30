@@ -2159,8 +2159,10 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	}, callConfig.OnLanguageModelCallEnd)
 	stepTel.modelCallEnd(stepModel, genResult, modelCallContent, stepResponse, modelCallMs)
 	// An enforced tool choice (required, or a named tool) must produce a tool
-	// call, as in GenerateText (TS ToolChoiceViolationError).
-	if violation := aibridge.CheckToolChoiceViolation(genOpts.ToolChoice, genResult.ToolCalls, genResult.FinishReason, stepModel.Provider(), stepModel.ModelID(), contentFromGenerateResult(genResult, genResult.ToolCalls)); violation != nil {
+	// call, as in GenerateText (TS ToolChoiceViolationError). TS checks the
+	// parsed calls (stepToolCalls), so a call repaired to the forced tool
+	// satisfies it; the error content is the raw response content.
+	if violation := aibridge.CheckToolChoiceViolation(genOpts.ToolChoice, toolCalls, genResult.FinishReason, stepModel.Provider(), stepModel.ModelID(), contentFromGenerateResult(genResult, genResult.ToolCalls)); violation != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, violation
 	}
 	// The tools are notified of their calls (and the approvals resolved) by
