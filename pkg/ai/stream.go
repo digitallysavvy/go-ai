@@ -3136,21 +3136,21 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				cancelStep()
 				break
 			}
-			// A tool context that fails its schema (TS executeToolCall
-			// validates it outside its try) does not fail the run:
-			// executeToolsFromStream catches the throw and enqueues an `error`
-			// part (OnChunk, then OnError), and the step finishes. The call
-			// has no result, so no next step starts. Any other tool call
-			// failure errors the stream.
+			// A tool context that fails its schema errors the stream (TS
+			// executeToolCall validates it outside its try). TS's
+			// executeToolsFromStream catches it as an `error` part, so it
+			// reaches OnError; Go ends the run there (owner decision
+			// 2026-10-28, known difference "StreamText tool context failure
+			// ends the run"), so OnError is called here, before the open
+			// step's OnStepError.
 			if failure := unwrapToolCallFailure(toolsErr); failure != nil {
+				r.err = failure
 				var tcf *toolCallFailureError
-				if !errors.As(toolsErr, &tcf) || !tcf.toolContext {
-					r.err = failure
-					cancelStep()
-					break
+				if errors.As(toolsErr, &tcf) && tcf.toolContext && opts.OnError != nil {
+					safeInvoke(func() { opts.OnError(ctx, failure) })
 				}
-				forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: failure, Text: failure.Error()}})
-				toolsErr = nil
+				cancelStep()
+				break
 			}
 			// The caller's context ended while tools ran: queued tool calls
 			// were not started, so the step is incomplete. Report the abort
