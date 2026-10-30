@@ -1157,9 +1157,11 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   `tool-output-available` or `tool-output-error` chunk carries one (TS passes
   the invocation's title), keeps an empty `id` on a reasoning part, keeps the
   earlier finish reason when a `finish` chunk has `"finishReason": null`, and
-  leaves `input` out of a streaming tool part whose partial input cannot be
-  parsed (v0.5 set it to JSON `null`). TS `processUIMessageStream` does each
-  of these.
+  leaves `input` out of a tool part that never received one (v0.5 set it to
+  JSON `null`): a streaming tool part whose partial input cannot be parsed, a
+  `tool-output-available` or `tool-output-error` chunk for such a part, and a
+  `tool-input-available` or `tool-input-error` chunk with no `input` key
+  (review round 68). TS `processUIMessageStream` does each of these.
 - **Am I affected?** Only if you write such chunks yourself (through
   `UIMessageStreamWriter.Write` or a merged stream) and read the built
   message's parts, for example `part["title"]` or `part["input"] == nil`.
