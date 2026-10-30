@@ -716,8 +716,8 @@ type abortHandler interface {
 }
 
 // stepErrorHandler is implemented by integrations that close a still-open
-// step (and, for GenAI, model-call/"chat") span when the provider call
-// itself failed — see FireOnStepError.
+// step (and, for GenAI, model-call/"chat") span when the step failed before
+// it produced a result — see FireOnStepError.
 type stepErrorHandler interface {
 	OnStepError(context.Context, TelemetryErrorEvent)
 }
@@ -3284,8 +3284,10 @@ func FireOnAbort(ctx context.Context, e TelemetryAbortEvent) {
 
 // FireOnStepError closes a still-open step span (and, for the GenAI
 // integration, the nested model-call/"chat" span) when the provider call
-// itself failed, so neither OnStepEnd nor OnLanguageModelCallEnd will ever
-// fire for it (H4 item 2: "span leak on provider error"). Callers at the
+// itself failed, or a streamText step failed mid-stream before it produced a
+// result (TS notifyStepError), so neither OnStepEnd nor
+// OnLanguageModelCallEnd will ever fire for it (H4 item 2: "span leak on
+// provider error"). Callers at the
 // generateText/streamText/generateObject/streamObject provider-call failure
 // sites pass the most deeply-nested ctx they have available (typically the
 // ctx returned by FireOnLanguageModelCallStart) — unlike FireOnError/
