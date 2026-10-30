@@ -21,7 +21,7 @@ const defaultSeparator = ":"
 //
 // As in TS (getProvider), ModelID is the provider ID that was looked up, and
 // ModelType is the requested model type ("languageModel" for Files and
-// Skills). TS NoSuchProviderError extends NoSuchModelError, so errors.As with
+// Skills, empty for GetProvider). TS NoSuchProviderError extends NoSuchModelError, so errors.As with
 // a *providererrors.NoSuchModelError target also matches an unknown-provider
 // error (but not a Reason error, which TS throws as a plain Error).
 type NoSuchProviderError struct {
@@ -177,14 +177,16 @@ func (r *Registry) RegisterProvider(name string, p provider.Provider) {
 	r.providers[name] = p
 }
 
-// GetProvider returns a provider by name
+// GetProvider returns a provider by name. An unknown name is a
+// *NoSuchProviderError whose ModelID is the name, like the resolvers' (TS
+// getProvider); ModelType is empty, as no model type was requested.
 func (r *Registry) GetProvider(name string) (provider.Provider, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	p, ok := r.providers[name]
 	if !ok {
-		return nil, &NoSuchProviderError{ProviderID: name, AvailableProviders: r.listProvidersLocked()}
+		return nil, r.noSuchProviderLocked(name, "")
 	}
 	return p, nil
 }

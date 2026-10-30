@@ -37,3 +37,28 @@ func TestR68IntegratorUnknownProviderIsModelNotFound(t *testing.T) {
 		t.Fatalf("capability error %v matched *NoSuchModelError", err)
 	}
 }
+
+// GetProvider's unknown-provider error has the resolvers' shape: ModelID is
+// the provider ID (TS getProvider), so the NoSuchModelError that errors.As
+// finds through it names the provider.
+func TestR69GetProviderUnknownModelIDIsProviderID(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+	r.RegisterProvider("known", &testutil.MockProvider{})
+
+	_, err := r.GetProvider("missing")
+	var nsp *NoSuchProviderError
+	if !errors.As(err, &nsp) {
+		t.Fatalf("GetProvider(missing) = %v, want *NoSuchProviderError", err)
+	}
+	if nsp.ProviderID != "missing" || nsp.ModelID != "missing" || nsp.ModelType != "" {
+		t.Fatalf("NoSuchProviderError = %+v, want ProviderID and ModelID %q, empty ModelType", nsp, "missing")
+	}
+	var nsm *providererrors.NoSuchModelError
+	if !errors.As(err, &nsm) || nsm.ModelID != "missing" {
+		t.Fatalf("errors.As(*NoSuchModelError) = %+v, want ModelID %q", nsm, "missing")
+	}
+	if want := "No such provider: missing (available providers: known)"; err.Error() != want || nsm.Message != want {
+		t.Fatalf("error = %q (NoSuchModelError message %q), want %q", err.Error(), nsm.Message, want)
+	}
+}

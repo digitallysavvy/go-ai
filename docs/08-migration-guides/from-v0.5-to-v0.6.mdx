@@ -1457,14 +1457,25 @@ compile-time changes.
     `errors.Is` with `providererrors.ErrModelNotFound` now also match it (TS
     `NoSuchProviderError` extends `NoSuchModelError`). Its
     `ModelID` is the provider ID, as TS `getProvider` sets it (v0.5: the model
-    part of the ID). `Files` and `Skills` report `ModelType: "languageModel"`
-    (v0.5: `"files"` / `"skills"`).
+    part of the ID; empty from `GetProvider`). `Files` and `Skills` report
+    `ModelType: "languageModel"` (v0.5: `"files"` / `"skills"`).
+  - `Files` / `Skills` on a registered provider without that capability
+    return the TS text with the Go method name, `The provider "x" does not
+    support file uploads. Make sure it exposes a Files() method.` (and
+    `... does not support skills. Make sure it exposes a Skills() method.`).
+    v0.5: `No such provider: x (provider "x" does not support file uploads;
+    make sure it exposes a Files() method; available providers: ...)`. The
+    error is still a `*registry.NoSuchProviderError` (with `Reason` set), and
+    it matches neither `NoSuchModelError` nor `ErrModelNotFound` (TS throws a
+    plain `Error`).
 - **Am I affected?** `errors.As(err, &nsp)` with `*registry.NoSuchProviderError`
   after `ResolveVideoModel` / `ResolveDecisionModel` / `ResolveEvaluationModel`;
   `errors.As` checks for `*providererrors.NoSuchModelError` or
   `errors.Is(err, providererrors.ErrModelNotFound)` placed before a
   `NoSuchProviderError` check; reads of `NoSuchProviderError.ModelID` or
-  `.ModelType`; code that checks a resolved model for nil.
+  `.ModelType` (including after `GetProvider`); matches on the text of a
+  `Files` / `Skills` error (`does not support file uploads`); code that checks
+  a resolved model for nil.
 - **What to do:** check for the provider error first, then the model error:
 
   ```go
