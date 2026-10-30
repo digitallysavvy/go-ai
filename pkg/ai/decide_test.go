@@ -377,9 +377,9 @@ func TestExperimentalDecide_ResolvesStringModelViaProvider(t *testing.T) {
 	resolver := mockDecisionModelProvider{models: map[string]provider.DecisionModel{"resolved-model": mock}}
 
 	result, err := ExperimentalDecide(context.Background(), DecideOptions{
-		Model:    "resolved-model",
-		Provider: resolver,
-		State:    "s",
+		Model:            "resolved-model",
+		DecisionProvider: resolver,
+		State:            "s",
 		Questions: map[string]provider.DecisionQuestion{
 			"q": {Type: "boolean", Instructions: "i"},
 		},

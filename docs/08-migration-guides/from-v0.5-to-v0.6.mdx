@@ -44,7 +44,6 @@ already, you can skip them.
 | `RecordInputs:`, `RecordOutputs:` in `telemetry.Options` / `telemetry.Settings` | Fields are `*bool`; unset now records | compile error | Use `telemetry.Bool(...)`; set `false` to keep data out of spans | [Telemetry recording](#telemetry-record-pointers) |
 | `EvaluateEndEvent{`, `EvaluationModelCallEndEvent{`, `EvaluateOnEndEvent{` | Embedded field renamed to the Decide type | compile error | Use `DecideStartEvent:` and similar | [Evaluate event literals](#evaluate-event-literals) |
 | `acp.TextContentBlock{"` (unkeyed literal) | Type is an alias of `acp.ContentBlock` | compile error | Use keyed fields | [acp.TextContentBlock](#acp-text-content-block) |
-| `.Provider.EvaluationModel(` on `EvaluateOptions` / `DecideOptions` | `Provider` is `interface{}` | compile error | Type-assert, or pass the provider through | [Decide options provider](#decide-options-provider) |
 | `==` or map keys on provider `Config` / `Provider` values, `bytedance.Error`, `klingai.Error`, `responses.OutputTextDeltaEvent`, `workflow.WorkflowResult` | Structs gained map, slice or func fields | compile error | Compare fields instead | [Non-comparable structs](#non-comparable-structs) |
 | `.Text()` on a `StreamTextResult` with more than one step | Final step's text only | silent behavior change | Use `ReadAll()` or join `Steps` | [StreamText Text()](#streamtext-text-final-step) |
 | `OnFinish:` reading `Usage`, `ToolCalls`, `ToolResults` | Aggregated across steps | silent behavior change | Read `FinalStep` for the last step | [OnFinishEvent totals](#on-finish-aggregates) |
@@ -255,26 +254,6 @@ _ = end
 ```go
 block := acp.TextContentBlock{Type: "text", Text: "hello"}
 ```
-
-### `DecideOptions.Provider` is `interface{}` {#decide-options-provider}
-
-- **What changed:** `ai.DecideOptions.Provider` (and the deprecated alias
-  `ai.EvaluateOptions.Provider`) changed from
-  `provider.EvaluationModelProvider` to `interface{}`. It accepts a
-  `provider.DecisionModelProvider` or a legacy
-  `provider.EvaluationModelProvider`.
-- **Am I affected?** Only code that reads `opts.Provider` and calls a method
-  on it, such as `opts.Provider.EvaluationModel(id)`. Assigning a provider to
-  the field still compiles.
-- **What to do:** type-assert before calling it:
-
-  ```go
-  if p, ok := opts.Provider.(provider.DecisionModelProvider); ok {
-  	_ = p // p.DecisionModel(id)
-  }
-  ```
-
-- **Kind:** compile error
 
 ### Some structs are no longer comparable {#non-comparable-structs}
 
@@ -1421,9 +1400,7 @@ compile-time changes.
   string `Model` whose provider returns no model fail with
   `*providererrors.NoSuchModelError` (`ModelType: "decisionModel"`, message
   `No such decisionModel: <id>`), as TS `resolveDecisionModel`. v0.5 returned
-  a plain error, `no such evaluationModel: <id>`. A `Provider` with no
-  decision factory is also a `NoSuchModelError`, with the TS message ("The
-  default provider does not support decision models. ..."). The adapter from
+  a plain error, `no such evaluationModel: <id>`. The adapter from
   `provider.AdaptEvaluationModelProvider` reports a missing model the same
   way.
 - **Am I affected?** Code that compares an `ExperimentalEvaluate` or
@@ -1875,6 +1852,7 @@ the replacement when convenient. `staticcheck` (SA1019) reports their use.
 | `ai.EvaluationLanguageModel`, `ai.EvaluationLanguageModelOptions`, `ai.NewEvaluationLanguageModel`, `(*ai.DecisionLanguageModel).DoEvaluate` | `ai.DecisionLanguageModel`, `ai.DecisionLanguageModelOptions`, `ai.NewDecisionLanguageModel`, `DoDecide` |
 | `provider.EvaluationQuestion`, `EvaluationAnswer`, `EvaluationRounding`, `EvaluationUsage`, `EvaluationResponseInfo`, `EvaluationCallOptions`, `EvaluationResult` | `provider.DecisionQuestion`, `DecisionAnswer`, `DecisionRounding`, `DecisionUsage`, `DecisionResponseInfo`, `DecisionCallOptions`, `DecisionResult` |
 | `provider.EvaluationModel`, `provider.EvaluationModelProvider`, `AdaptEvaluationModel`, `AsEvaluationModel`, `AdaptEvaluationModelProvider` | `provider.DecisionModel`, `provider.DecisionModelProvider` |
+| `ai.DecideOptions.Provider` / `ai.EvaluateOptions.Provider` (`provider.EvaluationModelProvider`, unchanged from v0.5) | `DecisionProvider` (`provider.DecisionModelProvider`); it wins when both are set |
 | `provider.RegisterEvaluationModelDeserializer`, `DeserializeEvaluationModel`, `RegisteredEvaluationModelDeserializerKeys`, `SerializeEvaluationModel` | `RegisterDecisionModelDeserializer`, `DeserializeDecisionModel`, `RegisteredDecisionModelDeserializerKeys`, `SerializeDecisionModel` |
 | `providererrors.EvaluationUnsupportedQuestionTypeError`, `IsEvaluationUnsupportedQuestionTypeError` | `DecisionUnsupportedQuestionTypeError`, `IsDecisionUnsupportedQuestionTypeError` |
 | `EvaluationModel(modelID)` on the `anthropic`, `gateway`, `google`, `openai` and `typesafeai` providers; `DoEvaluate` on their decision models | `DecisionModel(modelID)`, `DoDecide` |

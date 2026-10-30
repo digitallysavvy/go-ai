@@ -58,7 +58,8 @@ go get github.com/digitallysavvy/go-ai@v0.6.0
   sandbox `fx acp` runtime stays the default. The pinned `fx-core.wasm` is
   downloaded on first use and checked against its hash.
 - **Decide additions.** A `box` question type (`provider.DecisionBox`),
-  `MaxOutputTokens` and `Reasoning` on `DecideOptions`, `QuestionOrder` and
+  `MaxOutputTokens`, `Reasoning` and a typed `DecisionProvider` on
+  `DecideOptions` (the v0.5 `Provider` field stays, deprecated), `QuestionOrder` and
   `CriteriaOrder` to keep question order (Go maps do not), and a Perplexity
   decision model.
 - **HeyGen provider.** `pkg/providers/heygen` adds text-, image- and
@@ -173,7 +174,6 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Telemetry RecordInputs and RecordOutputs are pointers, and unset records** (compile error). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-record-pointers)
 - **Evaluate end-event struct literals use the Decide field names** (compile error). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#evaluate-event-literals)
 - **Unkeyed acp.TextContentBlock literals** (compile error). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#acp-text-content-block)
-- **`DecideOptions.Provider` is `interface{}`** (compile error). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#decide-options-provider)
 - **Some structs are no longer comparable** (compile error). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#non-comparable-structs)
 
 ### Behavior changes that can break callers

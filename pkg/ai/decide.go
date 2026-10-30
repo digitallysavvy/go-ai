@@ -77,17 +77,24 @@ type DecideResult struct {
 
 // DecideOptions are options for ExperimentalDecide.
 type DecideOptions struct {
-	// Model is a provider.DecisionModel instance, or a string ID resolved
-	// via Provider (or the AI Gateway when Provider is nil).
+	// Model is a provider.DecisionModel instance (or a deprecated
+	// provider.EvaluationModel), or a string ID resolved via DecisionProvider,
+	// then Provider, then the AI Gateway.
 	Model interface{}
 
-	// Provider resolves a string Model ID to a DecisionModel. It must
-	// implement provider.DecisionModelProvider, or the deprecated
-	// provider.EvaluationModelProvider (the decision method is preferred).
-	// When nil and Model is a string, resolution falls back to the AI Gateway
-	// (mirrors TypeScript:
+	// DecisionProvider resolves a string Model ID to a DecisionModel. It
+	// takes precedence over Provider. When both are nil and Model is a
+	// string, resolution falls back to the AI Gateway (mirrors TypeScript:
 	// `(globalThis.AI_SDK_DEFAULT_PROVIDER ?? gateway).decisionModel(id)`).
-	Provider interface{}
+	DecisionProvider provider.DecisionModelProvider
+
+	// Provider resolves a string Model ID through the pre-rename
+	// EvaluationModel factory. It is used only when DecisionProvider is nil;
+	// a value that also implements provider.DecisionModelProvider is resolved
+	// through DecisionModel (TS `decisionModel ?? evaluationModel`).
+	//
+	// Deprecated: use DecisionProvider.
+	Provider provider.EvaluationModelProvider //nolint:staticcheck // v0.5.2 field type, kept for compatibility
 
 	// State is the shared state: a string, a JSON object
 	// (map[string]interface{}), or an ordered []provider.DecisionStatePart of
@@ -135,7 +142,7 @@ type DecideOptions struct {
 // ExperimentalDecide decides typed questions against one shared state.
 // Experimental: may change in patch releases.
 func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult, error) {
-	model, err := resolveDecisionModel(opts.Model, opts.Provider)
+	model, err := resolveDecisionModel(opts.Model, decisionResolver(opts))
 	if err != nil {
 		return nil, err
 	}
@@ -393,11 +400,25 @@ func telemetryUsageFromDecideUsage(u DecideUsage) telemetry.TelemetryUsage {
 	}
 }
 
+// decisionResolver picks the provider that resolves a string Model:
+// DecisionProvider, else the deprecated Provider, else nil (the AI Gateway).
+func decisionResolver(opts DecideOptions) provider.DecisionModelProvider {
+	if opts.DecisionProvider != nil {
+		return opts.DecisionProvider
+	}
+	if opts.Provider != nil { //nolint:staticcheck // deprecated compatibility path
+		return provider.AdaptEvaluationModelProvider(opts.Provider) //nolint:staticcheck // deprecated compatibility path
+	}
+	return nil
+}
+
 // resolveDecisionModel resolves model (a provider.DecisionModel instance
 // or a string ID) using resolver, falling back to the AI Gateway when
 // resolver is nil and model is a string. Mirrors TypeScript's
-// resolveDecisionModel.
-func resolveDecisionModel(model interface{}, resolver interface{}) (provider.DecisionModel, error) {
+// resolveDecisionModel. TS also throws "The default provider does not
+// support decision models" for a default provider without a decision
+// factory; in Go the resolver is typed, so that case cannot occur.
+func resolveDecisionModel(model interface{}, resolver provider.DecisionModelProvider) (provider.DecisionModel, error) {
 	switch v := model.(type) {
 	case provider.DecisionModel:
 		if v == nil {
@@ -419,17 +440,7 @@ func resolveDecisionModel(model interface{}, resolver interface{}) (provider.Dec
 			}
 			resolver = gw
 		}
-		resolved, supported, err := provider.DecisionModelFromProvider(resolver, v)
-		if !supported {
-			// TS resolveDecisionModel: a default provider without a
-			// decisionModel (or evaluationModel) factory is a NoSuchModelError.
-			return nil, &providererrors.NoSuchModelError{
-				ModelID:   v,
-				ModelType: "decisionModel",
-				Message: "The default provider does not support decision models. " +
-					"Pass a decision model instance or configure AI_SDK_DEFAULT_PROVIDER with a decisionModel method.",
-			}
-		}
+		resolved, err := resolver.DecisionModel(v)
 		if err != nil {
 			return nil, err
 		}
