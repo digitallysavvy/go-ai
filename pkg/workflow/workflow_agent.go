@@ -1116,18 +1116,8 @@ func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call typ
 		Messages:            opts.messages,
 		ExperimentalSandbox: opts.experimentalSandbox,
 	})
-	telemetrypkg.FireOnToolCallFinish(toolCtx, telemetrypkg.TelemetryToolCallFinishEvent{
-		Settings:   opts.telemetrySettings,
-		CallID:     opts.telemetryCallID,
-		ToolCallID: call.ID,
-		ToolName:   call.ToolName,
-		Args:       call.Arguments,
-		Result:     result,
-		Error:      err,
-		DurationMs: time.Since(start).Milliseconds(),
-	})
+	toolExecutionMs := time.Since(start).Milliseconds()
 	if opts.onToolEnd != nil {
-		toolExecutionMs := time.Since(start).Milliseconds()
 		toolOutput := types.ToolResult{ToolCallID: call.ID, ToolName: call.ToolName, Input: call.Arguments, Error: err}
 		if err == nil {
 			toolOutput.Result = result
@@ -1156,6 +1146,18 @@ func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call typ
 		}
 		opts.onToolEnd(ctx, finish)
 	}
+	// TS executeToolWithCallbacks awaits the merged onToolExecutionEnd
+	// callback before telemetryDispatcher.onToolExecutionEnd.
+	telemetrypkg.FireOnToolCallFinish(toolCtx, telemetrypkg.TelemetryToolCallFinishEvent{
+		Settings:   opts.telemetrySettings,
+		CallID:     opts.telemetryCallID,
+		ToolCallID: call.ID,
+		ToolName:   call.ToolName,
+		Args:       call.Arguments,
+		Result:     result,
+		Error:      err,
+		DurationMs: toolExecutionMs,
+	})
 	return result, err
 }
 
