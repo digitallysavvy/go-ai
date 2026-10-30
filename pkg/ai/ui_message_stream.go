@@ -2880,8 +2880,10 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if chunk.ToolApprovalRequest.Signature != "" {
 			part["signature"] = chunk.ToolApprovalRequest.Signature
 		}
-		if chunk.ToolApprovalRequest.InputSchemaInput != nil {
-			part["inputSchemaInput"] = chunk.ToolApprovalRequest.InputSchemaInput
+		// TS: only when the schema input differs from the (transformed)
+		// tool call input.
+		if input := chunk.ToolApprovalRequest.InputSchemaInput; input != nil && !isDeepEqualJSONData(input, chunk.ToolApprovalRequest.ToolCall.Arguments) {
+			part["inputSchemaInput"] = input
 		}
 		if chunk.ToolApprovalRequest.Reason != "" {
 			part["reason"] = chunk.ToolApprovalRequest.Reason

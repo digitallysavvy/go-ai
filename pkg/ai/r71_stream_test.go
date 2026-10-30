@@ -1553,3 +1553,19 @@ func TestR71StreamToUIChunkUndefinedParts(t *testing.T) {
 		}
 	}
 }
+
+// TS to-ui-message-chunk.test.ts 475: a transformed approval request keeps
+// its schema input; TS leaves it out when it equals the tool call input.
+func TestR71StreamToUIChunkApprovalSchemaInput(t *testing.T) {
+	request := func(schemaInput interface{}) provider.StreamChunk {
+		return provider.StreamChunk{Type: provider.ChunkTypeToolApprovalRequest, ToolApprovalRequest: &types.ToolApprovalRequestContent{
+			ApprovalID: "approval-1", ToolCallID: "call-1",
+			ToolCall:         types.ToolCall{ID: "call-1", ToolName: "staticTool", Arguments: map[string]interface{}{"value": "trimmed"}},
+			InputSchemaInput: schemaInput,
+		}}
+	}
+	got, _ := ToUIMessageChunk(request(map[string]interface{}{"value": " trimmed "}), UIMessageStreamResultOptions{})
+	r71streamAssertJSON(t, "transformed", got, `{"type":"tool-approval-request","approvalId":"approval-1","toolCallId":"call-1","inputSchemaInput":{"value":" trimmed "}}`)
+	got, _ = ToUIMessageChunk(request(map[string]interface{}{"value": "trimmed"}), UIMessageStreamResultOptions{})
+	r71streamAssertJSON(t, "unchanged", got, `{"type":"tool-approval-request","approvalId":"approval-1","toolCallId":"call-1"}`)
+}
