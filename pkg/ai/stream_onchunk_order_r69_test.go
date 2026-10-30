@@ -198,3 +198,41 @@ func TestR69StreamRetryResetsRawFinishReason(t *testing.T) {
 		t.Fatalf("step RawFinishReason = %q, want empty", got)
 	}
 }
+
+// A failure TS reports as an `error` part of the stream (a model stream that
+// ends without output, a later step whose model call fails to open) reaches
+// onError when the event processor reads the part, before the flush reports
+// the open step to onStepError.
+func TestR69StreamTextErrorPartReachesOnErrorBeforeOnStepError(t *testing.T) {
+	toolStep := r69Stream(
+		provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}}},
+		provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+	)
+	tool := types.Tool{Name: "t", Parameters: map[string]interface{}{"type": "object"}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "ok", nil
+	}}
+	cases := map[string]StreamTextOptions{
+		"no output": {Model: r69Model(r69Stream())},
+		"later step fails to open": {
+			Model:    r69Model(toolStep, func() (provider.TextStream, error) { return nil, errors.New("open failed") }),
+			Tools:    []types.Tool{tool},
+			StopWhen: []StopCondition{StepCountIs(3)},
+		},
+	}
+	for name, opts := range cases {
+		t.Run(name, func(t *testing.T) {
+			var log r69EventLog
+			opts.Prompt = "hi"
+			opts.OnError = func(context.Context, error) { log.add("onError") }
+			opts.OnStepError = func(context.Context, OnStepErrorEvent) { log.add("onStepError") }
+			res, err := StreamText(context.Background(), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = res.ReadAll()
+			if got, want := log.String(), "onError onStepError"; got != want {
+				t.Fatalf("callbacks = %q, want %q", got, want)
+			}
+		})
+	}
+}

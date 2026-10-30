@@ -4040,6 +4040,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if isAbortErr(ctx, r.err) {
 			fireAbort(r.err)
 		} else {
+			// A failure TS reports as an `error` part reaches onError when the
+			// event processor reads the part, before its flush reports the
+			// open step to onStepError.
+			if opts.OnError != nil && errorPartEnd {
+				safeInvoke(func() { opts.OnError(ctx, r.err) })
+			}
 			// A step that started without producing a result has failed;
 			// report it before the call error (aborts end with OnAbort). TS
 			// notifyStepError gives onStepError and the telemetry onStepError
@@ -4054,9 +4060,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				telemetry.FireOnStepError(stepCtx, telemetry.TelemetryErrorEvent{Settings: r.telemetrySettings, CallID: r.cbCallID, Error: stepErr})
 			}
 			r.notifyStepError(ctx, opts.OnStepError, stepErr)
-		}
-		if opts.OnError != nil && !isAbortErr(ctx, r.err) && errorPartEnd {
-			safeInvoke(func() { opts.OnError(ctx, r.err) })
 		}
 		if !isAbortErr(ctx, r.err) {
 			notifyFailedEnd(ctx, opts.Internal, r.cbOnEndEvent, r.cbCallID, r.cbRuntimeCtx, r.cbToolsCtx, r.initialResponseMessages, allSteps, r.err)
