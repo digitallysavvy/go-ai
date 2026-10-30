@@ -2635,6 +2635,11 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if fileContent == nil {
 			break
 		}
+		// TS part.providerMetadata is the file's own metadata (as for a
+		// source, a chunk-level copy wins).
+		if len(chunk.ProviderMetadata) == 0 {
+			chunk.ProviderMetadata = fileContent.ProviderMetadata
+		}
 		part := map[string]interface{}{
 			"type":      "file",
 			"mediaType": fileContent.MediaType,
@@ -2649,6 +2654,9 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		fileContent := chunk.ReasoningFileContent
 		if fileContent == nil {
 			break
+		}
+		if len(chunk.ProviderMetadata) == 0 {
+			chunk.ProviderMetadata = fileContent.ProviderMetadata
 		}
 		part := map[string]interface{}{
 			"type":      "reasoning-file",

@@ -1569,3 +1569,93 @@ func TestR70UIAbortPartEndsTheUIStream(t *testing.T) {
 		}
 	}
 }
+
+// TS result.toUIMessageStream "should send document source content when
+// sendSources is true" (6568) and "should send file content with
+// providerMetadata" (6734).
+func TestR70TSUIDocumentSourcesAndFiles(t *testing.T) {
+	tr := true
+	model := r69Model(r70Chunks(
+		provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &types.SourceContent{SourceType: "document", ID: "doc-123", MediaType: "application/pdf", Title: "Document Example", Filename: "example.pdf", ProviderMetadata: json.RawMessage(`{"provider":{"custom":"doc-value"}}`)}},
+		provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "1"},
+		provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: "Hello from document!"},
+		provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &types.SourceContent{SourceType: "document", ID: "doc-456", MediaType: "text/plain", Title: "Text Document", ProviderMetadata: json.RawMessage(`{"provider":{"custom":"doc-value2"}}`)}},
+		provider.StreamChunk{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: "text/plain", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "Hello World"}, ProviderMetadata: json.RawMessage(`{"testProvider":{"signature":"sig-1"}}`)}},
+		provider.StreamChunk{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: "image/jpeg", Data: []byte("BAUG")}},
+		r70Stop,
+	))
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test-input"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks, errCh := CreateUIMessageStream(context.Background(), r, UIMessageStreamResultOptions{SendSources: &tr})
+	var out []UIMessageChunk
+	for c := range chunks {
+		out = append(out, c)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(out)
+	want := `[{"type":"start"},{"type":"start-step"},` +
+		`{"filename":"example.pdf","mediaType":"application/pdf","providerMetadata":{"provider":{"custom":"doc-value"}},"sourceId":"doc-123","title":"Document Example","type":"source-document"},` +
+		`{"id":"1","type":"text-start"},{"delta":"Hello from document!","id":"1","type":"text-delta"},{"id":"1","type":"text-end"},` +
+		`{"mediaType":"text/plain","providerMetadata":{"provider":{"custom":"doc-value2"}},"sourceId":"doc-456","title":"Text Document","type":"source-document"},` +
+		`{"mediaType":"text/plain","providerMetadata":{"testProvider":{"signature":"sig-1"}},"type":"file","url":"data:text/plain;base64,Hello World"},` +
+		`{"mediaType":"image/jpeg","type":"file","url":"data:image/jpeg;base64,QkFVRw=="},` +
+		`{"type":"finish-step"},{"finishReason":"stop","type":"finish"}]`
+	if string(b) != want {
+		t.Fatalf("UI chunks =\n%s\nwant\n%s", b, want)
+	}
+}
+
+// TS result.toUIMessageStreamResponse "should mask error messages by
+// default" (7347) and "should support custom error messages" (7367).
+func TestR70TSUIResponseErrorMessages(t *testing.T) {
+	for _, custom := range []bool{false, true} {
+		t.Run(fmt.Sprintf("custom=%v", custom), func(t *testing.T) {
+			model := r69Model(r70Chunks(provider.StreamChunk{Type: provider.ChunkTypeError, Text: "error"}))
+			r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test-input", OnError: func(context.Context, error) {}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var opts []UIMessageStreamResultOptions
+			errorText := "An error occurred."
+			if custom {
+				opts = append(opts, UIMessageStreamResultOptions{OnError: func(e error) string { return "custom error message: " + e.Error() }})
+				errorText = "custom error message: error"
+			}
+			resp, err := r.ToUIMessageStreamResponse(context.Background(), nil, opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Go writes the event JSON with sorted keys (UIMessageChunk is a
+			// map); TS writes insertion order. Compare the events as JSON.
+			want := []string{`{"type":"start"}`, `{"type":"start-step"}`, `{"type":"error","errorText":"` + errorText + `"}`,
+				`{"type":"finish-step"}`, `{"type":"finish","finishReason":"error"}`, "[DONE]"}
+			events := strings.Split(strings.TrimSuffix(string(body), "\n\n"), "\n\n")
+			if len(events) != len(want) {
+				t.Fatalf("body = %q", body)
+			}
+			for i, ev := range events {
+				data := strings.TrimPrefix(ev, "data: ")
+				if want[i] == "[DONE]" {
+					if data != "[DONE]" {
+						t.Fatalf("event %d = %q", i, ev)
+					}
+					continue
+				}
+				var got, exp interface{}
+				if json.Unmarshal([]byte(data), &got) != nil || json.Unmarshal([]byte(want[i]), &exp) != nil || !reflect.DeepEqual(got, exp) {
+					t.Fatalf("event %d = %q, want %s", i, ev, want[i])
+				}
+			}
+		})
+	}
+}
