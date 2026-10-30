@@ -100,6 +100,7 @@ already, you can skip them.
 | `CreateUIMessageStreamWithOptions`, `ToUIMessageStream` with `OnEnd` / `OnStepEnd` | Out-of-sequence chunk ends the stream | silent behavior change | Emit start chunks first; handle `*ai.UIMessageStreamError` | [UI stream sequence](#ui-out-of-sequence) |
 | `KeepAliveMs` | Zero, negative or too large is an error | silent behavior change | Leave nil to disable | [KeepAliveMs](#keep-alive-range) |
 | Chunks you write with a `title` on `tool-output-*`, `"finishReason": null`, an empty reasoning `id`; `part["input"] == nil` | Message state follows TS | silent behavior change | Check for a missing `input` key | [UI message state](#ui-message-state-edge-cases) |
+| `ToUIMessageStream` `OnEnd`/`OnFinish` reading `e["finishReason"]` with `SendFinish: false` or a failed stream | Empty unless a `finish` chunk was sent | silent behavior change | Read the reason from `StreamTextResult` | [UI OnEnd finish reason](#ui-on-end-finish-reason) |
 | `Integrations: []telemetry.TelemetryIntegration{}` | Empty slice disables telemetry | silent behavior change | Leave nil for globals | [Empty Integrations](#empty-integrations) |
 | `"ai-sdk"`, `"go-ai"` tracer or instrumentation scope names, `telemetry.TracerName` | Tracers are `ai` and `gen_ai` | wire/protocol change | Update filters | [Tracer names](#tracer-names) |
 | `EnrichSpan:`, runtime context objects in spans | TS attribute rules | wire/protocol change | Read flattened keys | [Span attributes](#enrich-span-attributes) |
@@ -1173,6 +1174,29 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   func hasInput(part map[string]interface{}) bool {
   	_, ok := part["input"] // v0.5: present with a nil value
   	return ok
+  }
+  ```
+
+- **Kind:** silent behavior change
+
+### ToUIMessageStream OnEnd reports the finish chunk's reason {#ui-on-end-finish-reason}
+
+- **What changed:** the `finishReason` that `ToUIMessageStream` (and
+  `StreamTextResult.ToUIMessageStream`) passes to `OnEnd`/`OnFinish` is the
+  reason of the `finish` chunk the stream sent. With `SendFinish: false`, or
+  when the stream fails before its `finish` chunk, it is now empty
+  (`types.FinishReason("")`); v0.5 passed the source's last step or call
+  reason. TS `handleUIMessageStreamFinish` passes `state.finishReason`,
+  which only a `finish` chunk sets. The value is still a `types.FinishReason`.
+- **Am I affected?** `OnEnd:` or `OnFinish:` callbacks on a UI message
+  stream with `SendFinish: false` (for example a stream you merge into
+  another) that read `e["finishReason"]`.
+- **What to do:** no action unless you do that. Read the reason from the
+  result instead:
+
+  ```go
+  func finishReason(result *ai.StreamTextResult) types.FinishReason {
+  	return result.FinishReason() // v0.5: OnEnd's e["finishReason"] with SendFinish false
   }
   ```
 

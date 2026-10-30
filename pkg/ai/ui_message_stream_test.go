@@ -1027,7 +1027,9 @@ func TestStreamTextResult_ToUIMessageStream_OptionsAndCallbacks(t *testing.T) {
 	if isContinuation, ok := finishMessageReceived["isContinuation"].(bool); !ok || isContinuation {
 		t.Fatalf("finish callback should report continuation false for new message: %#v", finishMessageReceived["isContinuation"])
 	}
-	if gotReason, ok := finishMessageReceived["finishReason"].(types.FinishReason); !ok || gotReason != types.FinishReasonStop {
+	// SendFinish is false: no finish chunk reaches the message state, so
+	// there is no finish reason (TS state.finishReason is undefined).
+	if gotReason, ok := finishMessageReceived["finishReason"].(types.FinishReason); !ok || gotReason != "" {
 		t.Fatalf("finish callback finishReason = %#v", finishMessageReceived["finishReason"])
 	}
 	if gotMessages, ok := stepMessageReceived["messages"].([]UIMessageChunk); !ok || len(gotMessages) != 2 {

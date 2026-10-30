@@ -647,11 +647,22 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		// errors the stream and becomes the outcome).
 		var processingErr error
 		endCalled := false
-		callOnEnd := func(finishReason types.FinishReason) {
+		callOnEnd := func() {
 			if onEnd == nil || endCalled {
 				return
 			}
 			endCalled = true
+			// TS handleUIMessageStreamFinish passes state.finishReason: the
+			// reason of the last finish chunk the message state applied, so
+			// none when SendFinish is false or the stream failed before its
+			// finish chunk.
+			finishReason := types.FinishReason("")
+			switch reason := uiState.finishReason.(type) {
+			case string:
+				finishReason = types.FinishReason(reason)
+			case types.FinishReason:
+				finishReason = reason
+			}
 			if processingErr != nil {
 				sourceOutcome = UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: processingErr}
 			}
@@ -683,7 +694,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		finishReason := types.FinishReason("")
 		endOnPanic = func(err error) {
 			failSourceOutcome(err)
-			callOnEnd(finishReason)
+			callOnEnd()
 		}
 
 		onStepEnd := resolveUIMessageStreamOnStepEnd(options.OnStepEnd, options.OnStepFinish)
@@ -906,13 +917,13 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		}
 		for {
 			if processingErr != nil {
-				callOnEnd(finishReason)
+				callOnEnd()
 				return
 			}
 			select {
 			case <-ctx.Done():
 				sendUIStreamErr(errCh, ctx.Err())
-				callOnEnd(finishReason)
+				callOnEnd()
 				return
 			default:
 			}
@@ -931,13 +942,13 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 					}
 					processChunk(abortChunk)
 					processMessageMetadata(abortPart)
-					callOnEnd(finishReason)
+					callOnEnd()
 					return
 				}
 				failSourceOutcome(err)
 				sendUIStreamErr(errCh, err)
 				appendErrorChunk(onError, safeEnqueue, err)
-				callOnEnd(finishReason)
+				callOnEnd()
 				return
 			}
 
@@ -1104,7 +1115,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		}
 
 		if !sawTerminal && options.PartialStream {
-			callOnEnd(finishReason)
+			callOnEnd()
 			return
 		}
 		if !sawTerminal {
@@ -1116,7 +1127,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 					Type: provider.ChunkTypeError,
 					Text: err.Error(),
 				})
-				callOnEnd(finishReason)
+				callOnEnd()
 				return
 			}
 			finishReason = types.FinishReasonOther
@@ -1151,7 +1162,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			}
 			processChunk(finishEvent)
 		}
-		callOnEnd(finishReason)
+		callOnEnd()
 	}()
 	return out, errCh
 }
