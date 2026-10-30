@@ -1323,6 +1323,10 @@ type prepareCallState struct {
 	// baseMessages is the number of messages the first step started with;
 	// messages after that prefix are the loop's own history.
 	baseMessages int
+	// instructionsChanged records that the hook returned other instructions
+	// (System or InstructionMessages): TS validates the instructions
+	// prepareCall returns, which replace the call's own.
+	instructionsChanged bool
 }
 
 func (st *prepareCallState) overlay(opts LanguageModelCallOptions) LanguageModelCallOptions {
@@ -1405,7 +1409,7 @@ func (r *prepareCallRunner) runHook(ctx context.Context, c agent.PrepareCallConf
 			return opts, err
 		}
 	}
-	opts.System, opts.InstructionMessages, _ = resolveInstructionChange(inSystem, inInstructionMessages, opts.System, opts.InstructionMessages)
+	opts.System, opts.InstructionMessages, r.st.instructionsChanged = resolveInstructionChange(inSystem, inInstructionMessages, opts.System, opts.InstructionMessages)
 	kept := opts
 	r.st.prepared = &kept
 	return opts, nil
@@ -2207,15 +2211,27 @@ func (w *WorkflowAgent) effectiveToolApprovalSecret(ovr WorkflowStreamOptions, g
 	return w.ExperimentalToolApprovalSecret
 }
 
-// validateCallInstructions rejects an instructions value of an unsupported
-// type instead of silently running without it.
-func validateCallInstructions(values ...interface{}) error {
-	for _, v := range values {
-		if _, err := normalizeInstructions(v); err != nil {
-			return err
+// validateCallInstructions is TS standardizePrompt's instructions check on
+// the call's effective instructions: what PrepareCall returned when it
+// changed them (always a valid string or system messages), otherwise TS
+// `options.instructions ?? options.system ?? this.instructions` (the agent's
+// `instructions ?? system`). An unsupported Instructions type the call or
+// the hook replaces is not an error, as in TS.
+func (w *WorkflowAgent) validateCallInstructions(callSystem string, callInstructions interface{}, early *earlyPrepare) error {
+	if early != nil && early.runner != nil {
+		early.runner.st.mu.Lock()
+		changed := early.runner.st.instructionsChanged
+		early.runner.st.mu.Unlock()
+		if changed {
+			return nil
 		}
 	}
-	return nil
+	effective := callInstructions
+	if effective == nil && callSystem == "" {
+		effective = w.Instructions
+	}
+	_, err := normalizeInstructions(effective)
+	return err
 }
 
 // validatePromptExclusive rejects a call that gives both a prompt and
@@ -2334,7 +2350,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	if err := validatePromptPresent(opts.Prompt, opts.Messages); err != nil {
 		return nil, err
 	}
-	if err := validateCallInstructions(w.Instructions, opts.Instructions); err != nil {
+	if err := w.validateCallInstructions(opts.System, opts.Instructions, early); err != nil {
 		return nil, err
 	}
 	callID := newWorkflowCallID()
@@ -2583,7 +2599,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	if err := validatePromptPresent(opts.Prompt, opts.Messages); err != nil {
 		return nil, err
 	}
-	if err := validateCallInstructions(w.Instructions, opts.Instructions); err != nil {
+	if err := w.validateCallInstructions(opts.System, opts.Instructions, early); err != nil {
 		return nil, err
 	}
 	// Every root event carries the run's call ID (TS callId): each
