@@ -235,7 +235,7 @@ func providerErrorResultsAsToolErrors(parts []types.ContentPart) []types.Content
 		if !isTrue(p.IsError) && (p.IsError != nil || p.Error == "") {
 			continue
 		}
-		var errValue interface{} = p.Result
+		errValue := p.Result
 		if errValue == nil && p.Output != nil {
 			errValue = p.Output.Value
 		}
