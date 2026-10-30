@@ -2861,6 +2861,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					modelCallPerformance = nil
 					stepUsage = types.Usage{}
 					stepProviderMetadataRaw = nil
+					// TS retry boundary: stepRawFinishReason = undefined.
+					r.rawFinishReason = ""
 					stepSawTerminal = false
 					stepSawErrorChunk = false
 					stepSawOutput = false

@@ -165,3 +165,36 @@ func TestR69StreamTextOnChunkSeesErrorPartsBeforeOnError(t *testing.T) {
 		})
 	}
 }
+
+// TS resets the step's raw finish reason at a stream retry boundary, so a
+// retried attempt's finish part without one leaves it undefined.
+func TestR69StreamRetryResetsRawFinishReason(t *testing.T) {
+	one := 1
+	res, err := StreamText(context.Background(), StreamTextOptions{
+		Prompt:        "hi",
+		StreamRetries: &one,
+		Model: r69Model(
+			r69Stream(
+				provider.StreamChunk{Type: provider.ChunkTypeText, Text: "a"},
+				provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "first_attempt"},
+				provider.StreamChunk{Type: provider.ChunkTypeError, Text: "late failure"},
+			),
+			r69Stream(
+				provider.StreamChunk{Type: provider.ChunkTypeText, Text: "b"},
+				provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			),
+		),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := res.ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+	if got := res.RawFinishReason(); got != "" {
+		t.Fatalf("RawFinishReason = %q, want empty (the retried attempt reported none)", got)
+	}
+	if got := res.FinalStep().RawFinishReason; got != "" {
+		t.Fatalf("step RawFinishReason = %q, want empty", got)
+	}
+}
