@@ -725,6 +725,12 @@ type StreamTextResult struct {
 	// ToUIMessageStream uses as its step boundary. Nil for StreamText results.
 	uiChunkBuf *chunkBuffer
 
+	// onChunkReportedErr is the last model stream error part OnChunk already
+	// saw before OnError and the retry decision (TS
+	// errorsHandledForStreamRetry); the full stream's OnChunk call skips it.
+	// Only used by the processing goroutine.
+	onChunkReportedErr *provider.StreamChunk
+
 	// openStep is the step that has started but not ended (set and cleared by
 	// the goroutine that runs bootstrapAndStream and processStream); it is
 	// reported to OnStepError when the stream fails before the step produces
@@ -1479,14 +1485,14 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		startErr := wrapGatewayError(err)
 		if !isAbortErr(stepCtx, err) {
 			// TS streamText turns a doStream failure into an `error` part
-			// after `start` and reports it to onError instead of throwing.
+			// after `start` and reports it to onError (after onChunk) instead
+			// of throwing. The error part carries the model call's own error
+			// (TS `{ type: 'error', error }`); onError gets it wrapped.
+			r.pushPreStreamParts(ctx, opts, provider.StreamChunk{Type: provider.ChunkTypeStart}, provider.StreamChunk{Type: provider.ChunkTypeError, Err: err, Text: err.Error()})
 			if opts.OnError != nil {
 				safeInvoke(func() { opts.OnError(ctx, startErr) })
 			}
 			notifyFailedEnd(ctx, opts.Internal, onEndEvent, callID, runtimeContext, toolsContext, initialResponseMessages, nil, startErr)
-			// The error part carries the model call's own error (TS
-			// `{ type: 'error', error }`); onError gets it wrapped.
-			r.pushPreStreamParts(ctx, opts, provider.StreamChunk{Type: provider.ChunkTypeStart}, provider.StreamChunk{Type: provider.ChunkTypeError, Err: err, Text: err.Error()})
 		}
 		if stepCancel != nil {
 			stepCancel()
@@ -1578,11 +1584,51 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		if !isInternalStreamMarker(c.Type) {
 			r.chunkBuf.push(c)
 		}
-		if userOnChunk != nil {
+		if userOnChunk != nil && !r.takeOnChunkReportedErr(c) {
 			safeInvoke(func() { userOnChunk(c) })
 		}
 	}
 	r.processStream(ctx, combinedOnChunk, onEnd)
+}
+
+// reportModelErrorPartToOnChunk gives OnChunk an error part read from the
+// model call's stream before OnError and the stream retry decision see it,
+// as TS streamText does for every such part (retried or not); the part's own
+// pass through the full stream then skips OnChunk.
+func (r *StreamTextResult) reportModelErrorPartToOnChunk(onChunk func(provider.StreamChunk), chunk provider.StreamChunk) {
+	if onChunk == nil {
+		return
+	}
+	safeInvoke(func() { onChunk(chunk) })
+	r.onChunkReportedErr = &chunk
+}
+
+// takeOnChunkReportedErr reports whether c is the error part OnChunk already
+// saw (TS matches it by its error value), and forgets it.
+func (r *StreamTextResult) takeOnChunkReportedErr(c provider.StreamChunk) bool {
+	reported := r.onChunkReportedErr
+	if c.Type != provider.ChunkTypeError || reported == nil {
+		return false
+	}
+	same := c.Text == reported.Text
+	if c.Err != nil || reported.Err != nil {
+		same = sameErrorValue(c.Err, reported.Err)
+	}
+	if same {
+		r.onChunkReportedErr = nil
+	}
+	return same
+}
+
+// sameErrorValue is a == b, false for errors whose dynamic type cannot be
+// compared.
+func sameErrorValue(a, b error) (same bool) {
+	defer func() {
+		if recover() != nil {
+			same = false
+		}
+	}()
+	return a != nil && a == b
 }
 
 // notifyStepError reports the open step, if any, to OnStepError and closes it.
@@ -1607,24 +1653,45 @@ func (r *StreamTextResult) failBeforeStream(ctx context.Context, opts StreamText
 	if isAbortErr(ctx, err) {
 		r.abortBeforeStream(ctx, opts, call, err)
 	} else {
+		// TS's pipeline catch enqueues the error itself; its event
+		// processor calls onChunk for the part, then onError with the error
+		// wrapped.
+		r.pushPreStreamParts(ctx, opts, provider.StreamChunk{Type: provider.ChunkTypeStart}, provider.StreamChunk{Type: provider.ChunkTypeError, Err: err, Text: err.Error()})
 		wrapped := wrapGatewayError(err)
 		if opts.OnError != nil {
 			safeInvoke(func() { opts.OnError(ctx, wrapped) })
 		}
-		// TS's pipeline catch enqueues the error itself; onError gets it
-		// wrapped.
-		r.pushPreStreamParts(ctx, opts, provider.StreamChunk{Type: provider.ChunkTypeStart}, provider.StreamChunk{Type: provider.ChunkTypeError, Err: err, Text: err.Error()})
 	}
 	r.fail(err)
 }
 
 // pushPreStreamParts adds the parts of a run that ended before its first
-// model stream to the result streams. They pass through
-// ExperimentalTransform first, as TS's outer stream parts do; a transform
-// that stops the stream drops the parts that follow.
+// model stream to the result streams and OnChunk (TS's event processor calls
+// onChunk for every part). They pass through ExperimentalTransform first, as
+// TS's outer stream parts do; a transform that stops the stream drops the
+// parts that follow.
 func (r *StreamTextResult) pushPreStreamParts(ctx context.Context, opts StreamTextOptions, parts ...provider.StreamChunk) {
+	for _, c := range r.transformPreStreamParts(ctx, opts, parts...) {
+		r.deliverPreStreamPart(opts, c)
+	}
+}
+
+// deliverPreStreamPart adds one transformed pre-stream part to the result
+// streams and OnChunk.
+func (r *StreamTextResult) deliverPreStreamPart(opts StreamTextOptions, c provider.StreamChunk) {
 	if r.chunkBuf == nil {
 		return
+	}
+	r.chunkBuf.push(c)
+	if opts.OnChunk != nil {
+		safeInvoke(func() { opts.OnChunk(c) })
+	}
+}
+
+// transformPreStreamParts runs pre-stream parts through ExperimentalTransform.
+func (r *StreamTextResult) transformPreStreamParts(ctx context.Context, opts StreamTextOptions, parts ...provider.StreamChunk) []provider.StreamChunk {
+	if r.chunkBuf == nil {
+		return nil
 	}
 	transforms := opts.ExperimentalTransform
 	stopped := false
@@ -1647,9 +1714,7 @@ func (r *StreamTextResult) pushPreStreamParts(ctx context.Context, opts StreamTe
 		}
 		return out
 	}
-	for _, c := range run(0, parts) {
-		r.chunkBuf.push(c)
-	}
+	return run(0, parts)
 }
 
 // preStreamCall identifies the call for the abort events of a run that ends
@@ -1666,17 +1731,26 @@ type preStreamCall struct {
 // onAbort, and ends with an `abort` part.
 func (r *StreamTextResult) abortBeforeStream(ctx context.Context, opts StreamTextOptions, call preStreamCall, err error) {
 	reason := abortReason(ctx, err)
+	abortChunk := provider.StreamChunk{Type: provider.ChunkTypeAbort}
+	if reason != nil {
+		abortChunk.AbortReason = reason.Error()
+	}
+	// TS: `start` reaches onChunk first; abort() then notifies onAbort and
+	// the telemetry onAbort before it enqueues the `abort` part.
+	parts := r.transformPreStreamParts(ctx, opts, provider.StreamChunk{Type: provider.ChunkTypeStart}, abortChunk)
+	i := 0
+	for ; i < len(parts) && parts[i].Type != provider.ChunkTypeAbort; i++ {
+		r.deliverPreStreamPart(opts, parts[i])
+	}
 	if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
 		safeInvoke(func() { onAbort(ctx, GenerateTextAbortEvent{CallID: call.callID, Reason: reason}) })
 	}
 	if call.telemetryCtx != nil {
 		telemetry.FireOnAbort(call.telemetryCtx, telemetry.TelemetryAbortEvent{Settings: call.telemetrySettings, CallID: call.callID, Reason: reason})
 	}
-	abortChunk := provider.StreamChunk{Type: provider.ChunkTypeAbort}
-	if reason != nil {
-		abortChunk.AbortReason = reason.Error()
+	for ; i < len(parts); i++ {
+		r.deliverPreStreamPart(opts, parts[i])
 	}
-	r.pushPreStreamParts(ctx, opts, provider.StreamChunk{Type: provider.ChunkTypeStart}, abortChunk)
 }
 
 // fail records a failure that happened before the per-step stream loop ever
@@ -2622,6 +2696,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				// A terminal error whose held-back attempt chunks were just
 				// replayed: OnError and the retry decision already ran.
 				alreadyDecided := replayed && chunk == decidedErr
+				if !alreadyDecided {
+					// TS reads the part from the model call's stream and
+					// calls onChunk with it, then onError.
+					r.reportModelErrorPartToOnChunk(opts.OnChunk, *chunk)
+				}
 				if alreadyDecided {
 					normalizedErr = decidedErrNormalized
 				} else if opts.OnError != nil && (!stepSawErrorChunk || opts.Internal == nil || !opts.Internal.StopOnStreamError) {
@@ -2740,10 +2819,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 						// with finish-step (finish reason error) and the error
 						// reaches onError like any error part.
 						retryErr := wrapGatewayError(reopenErr)
+						forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: reopenErr, Text: reopenErr.Error()}})
 						if opts.OnError != nil {
 							safeInvoke(func() { opts.OnError(ctx, retryErr) })
 						}
-						forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: reopenErr, Text: reopenErr.Error()}})
 						stepSawTerminal = true
 						stepSawErrorChunk = true
 						r.finishReason = types.FinishReasonError
@@ -2956,10 +3035,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// model output (onError sees it), the run ends with `finish`, and
 			// Err() reports it like any error part.
 			r.finishReason = types.FinishReasonError
+			violationPart := provider.StreamChunk{Type: provider.ChunkTypeError, Err: violation, Text: violation.Error()}
+			// The part comes from the model call's stream (TS
+			// stream-language-model-call): onChunk, then onError.
+			r.reportModelErrorPartToOnChunk(opts.OnChunk, violationPart)
 			if opts.OnError != nil {
 				safeInvoke(func() { opts.OnError(ctx, violation) })
 			}
-			forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: violation, Text: violation.Error()}})
+			forwardThroughTransformChain(0, []provider.StreamChunk{violationPart})
 			r.mu.Lock()
 			if r.chunkErr == nil || opts.Internal == nil || !opts.Internal.StopOnStreamError {
 				r.chunkErr = violation

@@ -187,6 +187,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **StreamText OnError sees error parts only** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-onerror)
 - **A StreamText PrepareStep model applies to one step** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-preparestep-model)
 - **StreamText fires OnLanguageModelCallStart once per attempt** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-call-start-per-attempt)
+- **StreamText OnChunk sees every error part before OnError** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-onchunk-error-parts)
 - **StreamText keeps the request body only when asked** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-request-body)
 - **The StreamText full stream drops the Go-only markers** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-full-stream-markers)
 - **Truncated streams finish with interrupted** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#truncated-streams-interrupted)

@@ -53,6 +53,7 @@ already, you can skip them.
 | `OnError:` in `StreamTextOptions` | Called for error parts only | silent behavior change | Handle fatal errors from `Err()` / `OnStepError` | [StreamText OnError](#streamtext-onerror) |
 | `PrepareStep:` returning `Model` in `StreamTextOptions` | Override applies to one step | silent behavior change | Return the model from every call | [StreamText PrepareStep model](#streamtext-preparestep-model) |
 | `OnLanguageModelCallStart:` in `StreamTextOptions` | Fires once per retry attempt | silent behavior change | Count steps with `OnStepStart` | [Model call start per attempt](#streamtext-call-start-per-attempt) |
+| `OnChunk:` in `StreamTextOptions` checking `ChunkTypeError`, `ChunkTypeStart`, `ChunkTypeAbort` | Sees every error part before `OnError`, retried ones and pre-stream failures included | silent behavior change | Count failures in `OnError` | [StreamText OnChunk error parts](#streamtext-onchunk-error-parts) |
 | `Request()`, `.Request.Body` on `StreamText` steps or `start-step` chunks | Body only with `Include.RequestBody` | silent behavior change | Set `Include: &ai.IncludeOptions{RequestBody: true}` | [StreamText request body](#streamtext-request-body) |
 | `"stream-start"`, `"response-metadata"` in `FullStream` consumers | Go-only markers left out | silent behavior change | Use `OnChunk` | [Full stream markers](#streamtext-full-stream-markers) |
 | `FinishReasonOther` used to detect truncation | Truncated streams are `interrupted` | silent behavior change | Check `types.FinishReasonInterrupted` | [Truncated streams](#truncated-streams-interrupted) |
@@ -395,6 +396,35 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   `OnLanguageModelCallEnd`, or counts steps with call starts.
 - **What to do:** key on the last start, or count steps with `OnStepStart`,
   which fires once.
+- **Kind:** silent behavior change
+
+### StreamText OnChunk sees every error part before OnError {#streamtext-onchunk-error-parts}
+
+- **What changed:** as in TS, `OnChunk` is called for an `error` part before
+  `OnError` (review round 69). For an error part of the model's stream it is
+  called with the part as the model sent it, before `ExperimentalTransform`
+  and the stream retry decision, so `OnChunk` also sees an error part that
+  `StreamRetries` retries (it is not in the full stream) and one a transform
+  drops; it is not called again for that part. A run that fails before its
+  first model stream (an invalid prompt, a model call that fails to open)
+  now passes its `start` and `error` parts to `OnChunk`, and a run cancelled
+  before its first model stream passes `start`, then calls `OnAbort`, then
+  passes `abort`. v0.5 called `OnError` first, never passed a retried error
+  part to `OnChunk`, and passed no parts of such runs.
+- **Am I affected?** `OnChunk:` callbacks in `StreamTextOptions` that check
+  for `provider.ChunkTypeError`, `ChunkTypeStart` or `ChunkTypeAbort`, or
+  that rely on `OnError` running first.
+- **What to do:** no action unless you do that. Count failures in `OnError`,
+  not in `OnChunk`:
+
+  ```go
+  func countFailures(opts *ai.StreamTextOptions, n *int) {
+  	opts.OnError = func(ctx context.Context, err error) {
+  		*n++ // OnChunk also sees retried error parts
+  	}
+  }
+  ```
+
 - **Kind:** silent behavior change
 
 ### StreamText keeps the request body only when asked {#streamtext-request-body}
