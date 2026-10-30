@@ -214,10 +214,12 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		MaxRetries:     resolvedMaxRetries,
 		Headers:        opts.Headers,
 	}
-	ctx = telemetry.FireOnDecideStart(ctx, telemetryStartEvent)
+	// TS notify([onStart, telemetry.onStart]) starts the user callback
+	// first; OnStart takes no context, so nothing depends on the span.
 	if opts.OnStart != nil {
 		safeInvoke(func() { opts.OnStart(startEvent) })
 	}
+	ctx = telemetry.FireOnDecideStart(ctx, telemetryStartEvent)
 
 	headers := version.WithUserAgentSuffix(opts.Headers, version.UserAgent())
 
@@ -368,15 +370,7 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		Response:         response,
 	}
 
-	// Mirrors onDecideOperationEnd: ai.decision.answers is also recorded
-	// on the root span, output-gated, and the root span is ended.
-	// The end event carries every start field (TS `{ ...startEvent,
-	// ...decisionResult }`), including state, questions, maxRetries, headers.
-	telemetry.FireOnDecideEnd(ctx, telemetry.DecideEndEvent{
-		DecideStartEvent: telemetryStartEvent,
-		Answers:          evalResult.Answers,
-	})
-
+	// TS notify([onEnd, telemetry.onEnd]): the user callback first.
 	if opts.OnEnd != nil {
 		endEvent := DecideOnEndEvent{
 			DecideOnStartEvent: startEvent,
@@ -389,6 +383,15 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		}
 		safeInvoke(func() { opts.OnEnd(endEvent) })
 	}
+
+	// Mirrors onDecideOperationEnd: ai.decision.answers is also recorded
+	// on the root span, output-gated, and the root span is ended.
+	// The end event carries every start field (TS `{ ...startEvent,
+	// ...decisionResult }`), including state, questions, maxRetries, headers.
+	telemetry.FireOnDecideEnd(ctx, telemetry.DecideEndEvent{
+		DecideStartEvent: telemetryStartEvent,
+		Answers:          evalResult.Answers,
+	})
 
 	return evalResult, nil
 }
