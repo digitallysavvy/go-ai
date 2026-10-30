@@ -3,6 +3,8 @@ package ai
 import (
 	"context"
 	"errors"
+	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -248,4 +250,112 @@ func TestR71Gen_DecideCallbacksRunBeforeTelemetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	log.check(t, []string{"onStart", "telemetry.onStart", "onEnd", "telemetry.onEnd"})
+}
+
+// r71genObjectID marshals to a plain string, like the TS ObjectIdLike class
+// with a toJSON method.
+type r71genObjectID struct{}
+
+func (r71genObjectID) MarshalJSON() ([]byte, error) {
+	return []byte(`"507f1f77bcf86cd799439011"`), nil
+}
+
+// generate-text.test.ts 'options.stopWhen' > '2 steps: initial, tool-result' >
+// 'result.responseMessages should JSON serialize object tool outputs': the
+// tool message's output value is the JSON value of the tool's output, not
+// the Go value itself.
+func TestR71Gen_GenerateText_ResponseMessagesJSONSerializeToolOutputs(t *testing.T) {
+	n := 0
+	model := &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+		n++
+		if n == 1 {
+			return &types.GenerateResult{
+				Content:      []types.ContentPart{types.ToolCallContent{ToolCallID: "call-1", ToolName: "lookupRecord", Input: "{}"}},
+				ToolCalls:    []types.ToolCall{{ID: "call-1", ToolName: "lookupRecord", Arguments: map[string]interface{}{}, RawArguments: "{}"}},
+				FinishReason: types.FinishReasonToolCalls,
+			}, nil
+		}
+		return &types.GenerateResult{Content: []types.ContentPart{types.TextContent{Text: "done"}}, FinishReason: types.FinishReasonStop}, nil
+	}}
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model, Prompt: "look up the record",
+		Tools: []types.Tool{{Name: "lookupRecord", Parameters: map[string]interface{}{"type": "object"},
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return map[string]interface{}{"id": r71genObjectID{}}, nil
+			}}},
+		StopWhen: []StopCondition{IsStepCount(2)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := res.ResponseMessages
+	if len(msgs) != 3 || msgs[0].Role != types.RoleAssistant || msgs[1].Role != types.RoleTool || msgs[2].Role != types.RoleAssistant {
+		t.Fatalf("responseMessages = %+v", msgs)
+	}
+	if c, ok := msgs[0].Content[0].(types.ToolCallContent); !ok || len(msgs[0].Content) != 1 || c.ToolCallID != "call-1" || c.ToolName != "lookupRecord" || c.ProviderExecuted || len(c.Arguments) != 0 {
+		t.Errorf("assistant content = %#v", msgs[0].Content)
+	}
+	tr, ok := msgs[1].Content[0].(types.ToolResultContent)
+	if !ok || len(msgs[1].Content) != 1 || tr.ToolCallID != "call-1" || tr.ToolName != "lookupRecord" || tr.Output == nil {
+		t.Fatalf("tool content = %#v", msgs[1].Content)
+	}
+	if tr.Output.Type != types.ToolResultOutputJSON || !reflect.DeepEqual(tr.Output.Value, map[string]interface{}{"id": "507f1f77bcf86cd799439011"}) {
+		t.Errorf("tool output = %#v, want json {id: 507f1f77bcf86cd799439011}", tr.Output)
+	}
+	if txt, ok := msgs[2].Content[0].(types.TextContent); !ok || len(msgs[2].Content) != 1 || txt.Text != "done" {
+		t.Errorf("final assistant content = %#v", msgs[2].Content)
+	}
+}
+
+// generate-text.test.ts 'programmatic tool calling' > 'should stop for
+// client tool approval while a provider tool result is deferred'.
+func TestR71Gen_GenerateText_ApprovalWhileProviderResultDeferred(t *testing.T) {
+	executed, calls := 0, 0
+	model := &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+		calls++
+		return &types.GenerateResult{
+			Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "program-call", ToolName: "program", Input: `{"code":"getHours()"}`, ProviderExecuted: true},
+				types.ToolCallContent{ToolCallID: "get-hours-call", ToolName: "getHours", Input: `{"member":"Ada"}`},
+			},
+			ToolCalls: []types.ToolCall{
+				{ID: "program-call", ToolName: "program", Arguments: map[string]interface{}{"code": "getHours()"}, RawArguments: `{"code":"getHours()"}`, ProviderExecuted: true},
+				{ID: "get-hours-call", ToolName: "getHours", Arguments: map[string]interface{}{"member": "Ada"}, RawArguments: `{"member":"Ada"}`},
+			},
+			FinishReason: types.FinishReasonToolCalls,
+		}, nil
+	}}
+	ids := 0
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model, Prompt: "Get Ada hours with a program.",
+		Tools: []types.Tool{
+			{Name: "program", ProviderExecuted: true, SupportsDeferredResults: true, Parameters: map[string]interface{}{"type": "object"}},
+			{Name: "getHours", Parameters: map[string]interface{}{"type": "object"},
+				Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+					executed++
+					return nil, nil
+				}},
+		},
+		ToolApproval: map[string]types.ToolApprovalValue{"getHours": types.ToolApprovalStatusUserApproval},
+		StopWhen:     []StopCondition{IsStepCount(3)},
+		Internal: &InternalOptions{GenerateID: func() string {
+			ids++
+			return fmt.Sprintf("id-%d", ids-1)
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || executed != 0 || len(res.Steps) != 1 {
+		t.Fatalf("modelCalls=%d executed=%d steps=%d, want 1/0/1", calls, executed, len(res.Steps))
+	}
+	var requests []types.ToolApprovalRequestContent
+	for _, p := range res.Content {
+		if r, ok := p.(types.ToolApprovalRequestContent); ok {
+			requests = append(requests, r)
+		}
+	}
+	if len(requests) != 1 || requests[0].ToolCall.ID != "get-hours-call" || requests[0].ToolCall.ToolName != "getHours" {
+		t.Fatalf("approval requests = %+v", requests)
+	}
 }
