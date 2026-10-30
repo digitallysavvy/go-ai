@@ -148,3 +148,58 @@ func TestR71CarryWorkflowOnErrorBeforeTelemetryOnError(t *testing.T) {
 		})
 	}
 }
+
+func (c *r71carryToolOrder) OnAbort(_ context.Context, _ telemetry.TelemetryAbortEvent) {
+	c.add("telemetry:abort")
+}
+
+// r71carryCancelModel cancels the run's context from its model call.
+type r71carryCancelModel struct {
+	wfMockModel
+	cancel context.CancelFunc
+}
+
+func (m *r71carryCancelModel) DoGenerate(ctx context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+	m.cancel()
+	return nil, ctx.Err()
+}
+
+// TS awaits options.onAbort before anything ends the run's telemetry; Go's
+// root OnAbort comes after the callback.
+func TestR71CarryWorkflowOnAbortBeforeTelemetryAbort(t *testing.T) {
+	for _, mode := range []string{"generate-precancelled", "stream-precancelled", "generate-midrun"} {
+		t.Run(mode, func(t *testing.T) {
+			rec := &r71carryToolOrder{}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var model provider.LanguageModel = &wfMockModel{}
+			if mode == "generate-midrun" {
+				model = &r71carryCancelModel{cancel: cancel}
+			} else {
+				cancel()
+			}
+			wa, err := NewWorkflowAgent(WorkflowAgent{
+				Model:     model,
+				Telemetry: &telemetry.Options{IsEnabled: telemetry.Bool(true), Integrations: []telemetry.TelemetryIntegration{rec}},
+				OnAbort:   func(context.Context, []types.StepResult) { rec.add("callback:abort") },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "stream-precancelled" {
+				_, err = wa.StreamWithOptions(ctx, WorkflowStreamOptions{Prompt: "hi"})
+			} else {
+				_, err = wa.GenerateWithOptions(ctx, WorkflowGenerateOptions{Prompt: "hi"})
+			}
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			rec.mu.Lock()
+			defer rec.mu.Unlock()
+			want := []string{"callback:abort", "telemetry:abort"}
+			if n := len(rec.log); n < 2 || !reflect.DeepEqual(rec.log[n-2:], want) {
+				t.Fatalf("log = %v, want it to end with %v", rec.log, want)
+			}
+		})
+	}
+}
