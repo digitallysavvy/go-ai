@@ -64,3 +64,34 @@ func TestR70Gen_LegacyLoopNilModelResultIsAnError(t *testing.T) {
 		t.Errorf("error = %q", err)
 	}
 }
+
+// Every legacy-loop step carries the run's call ID (TS DefaultStepResult
+// callId), the one the start and end events report.
+func TestR70Gen_LegacyLoopStepsCarryCallID(t *testing.T) {
+	var startID, endID string
+	var stepEventSteps []types.StepResult
+	result, err := NewToolLoopAgent(AgentConfig{Model: r70StepModel(), Tools: []types.Tool{r67Tool("x")}}).
+		GenerateAgent(context.Background(), AgentGenerateOptions{
+			Prompt:      "hi",
+			OnStart:     func(_ context.Context, e ai.OnStartEvent) { startID = e.CallID },
+			OnStepStart: func(_ context.Context, e ai.OnStepStartEvent) { stepEventSteps = e.Steps },
+			OnEnd:       func(_ context.Context, e ai.OnFinishEvent) { endID = e.CallID },
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if startID == "" || startID != endID {
+		t.Fatalf("start/end call IDs = %q/%q", startID, endID)
+	}
+	if len(result.Steps) != 2 {
+		t.Fatalf("%d steps", len(result.Steps))
+	}
+	for i, s := range result.Steps {
+		if s.CallID != startID {
+			t.Errorf("Steps[%d].CallID = %q, want %q", i, s.CallID, startID)
+		}
+	}
+	if len(stepEventSteps) != 1 || stepEventSteps[0].CallID != startID {
+		t.Errorf("OnStepStart previous steps = %+v", stepEventSteps)
+	}
+}
