@@ -1492,7 +1492,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			// span — so without this, they'd leak
 			// (H4 item 2). TS generateText reports an abort through
 			// onStepError too, so the spans record it as an error.
-			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
+			// TS notifies telemetry onStepError with wrapGatewayError(error)
+			// (telemetry onError gets the original error).
+			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: wrapGatewayError(err)})
 			return nil, err
 		}
 		lastStructuredOutputText = genResult.StructuredOutputText
