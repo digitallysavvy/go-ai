@@ -261,6 +261,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Errors are returned without Go prefixes** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#errors-unprefixed)
 - **Error messages quote names as TS does** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#error-name-quoting)
 - **An unknown decision model ID is a NoSuchModelError** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#decide-unknown-model)
+- **Registry resolution errors follow the TS registry** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#registry-resolution-errors)
 - **Non-JSON error bodies use the HTTP status text** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#non-json-error-body)
 
 #### Providers

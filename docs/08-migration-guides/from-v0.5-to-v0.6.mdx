@@ -109,6 +109,7 @@ already, you can skip them.
 | `strings.Contains(err.Error(), "failed at step"` and other prefixes | Errors returned as is | error text only | Use `errors.As` / `errors.Is` | [Unprefixed errors](#errors-unprefixed) |
 | Error text with `%q`-quoted names (tool callers, tool search, decide, ID generator, download URL hostname) | TS quoting | error text only | Use `errors.As` | [Name quoting](#error-name-quoting) |
 | `"no such evaluationModel"` text checks on `ExperimentalEvaluate` / `ExperimentalDecide` errors | `*providererrors.NoSuchModelError` | error text only | Use `errors.As` | [Unknown decision model](#decide-unknown-model) |
+| `*registry.NoSuchProviderError` after `ResolveVideoModel` / `ResolveDecisionModel`; nil models from `registry.Resolve*` | `*providererrors.NoSuchModelError` with the full ID; unknown providers also match `NoSuchModelError` | silent behavior change | Check `NoSuchProviderError` first | [Registry errors](#registry-resolution-errors) |
 | `ProviderError.Message` for an empty or non-JSON error body | HTTP status text | error text only | Read `StatusCode` / `ResponseBody` | [Non-JSON error bodies](#non-json-error-body) |
 | `.Provider()` compared with `"groq"`, `"openai"`; `ai.model.provider` | TS `config.provider` IDs (`groq.chat`) | silent behavior change | Compare prefixes | [Provider IDs](#provider-ids) |
 | Custom or proxy endpoints that return non-standard JSON | "Invalid JSON response" | silent behavior change | Return the provider's schema | [Response validation](#response-validation) |
@@ -1341,6 +1342,44 @@ compile-time changes.
   ```
 
 - **Kind:** error text only
+
+### Registry resolution errors follow the TS registry {#registry-resolution-errors}
+
+- **What changed:** the `registry` resolvers return the errors TS
+  `createProviderRegistry` throws:
+  - A provider with no video or decision factory (`ResolveVideoModel`,
+    `ResolveDecisionModel`, `ResolveEvaluationModel`) is a
+    `*providererrors.NoSuchModelError` with the full registry ID
+    (`ModelID: "provider:model"`, message `No such videoModel: provider:model`).
+    v0.5 returned `*registry.NoSuchProviderError`.
+  - A provider factory that returns a nil model with a nil error is the same
+    `NoSuchModelError`, for every model type. v0.5 returned the nil model with
+    a nil error.
+  - An unknown provider is still a `*registry.NoSuchProviderError`, and
+    `errors.As` with a `*providererrors.NoSuchModelError` target now also
+    matches it (TS `NoSuchProviderError` extends `NoSuchModelError`). Its
+    `ModelID` is the provider ID, as TS `getProvider` sets it (v0.5: the model
+    part of the ID). `Files` and `Skills` report `ModelType: "languageModel"`
+    (v0.5: `"files"` / `"skills"`).
+- **Am I affected?** `errors.As(err, &nsp)` with `*registry.NoSuchProviderError`
+  after `ResolveVideoModel` / `ResolveDecisionModel` / `ResolveEvaluationModel`;
+  `errors.As` checks for `*providererrors.NoSuchModelError` placed before a
+  `NoSuchProviderError` check; reads of `NoSuchProviderError.ModelID` or
+  `.ModelType`; code that checks a resolved model for nil.
+- **What to do:** check for the provider error first, then the model error:
+
+  ```go
+  var nsp *registry.NoSuchProviderError
+  var nsm *providererrors.NoSuchModelError
+  switch {
+  case errors.As(err, &nsp):
+  	log.Printf("unknown provider %s", nsp.ProviderID)
+  case errors.As(err, &nsm):
+  	log.Printf("no %s %s", nsm.ModelType, nsm.ModelID)
+  }
+  ```
+
+- **Kind:** silent behavior change
 
 ### Non-JSON error bodies use the HTTP status text {#non-json-error-body}
 

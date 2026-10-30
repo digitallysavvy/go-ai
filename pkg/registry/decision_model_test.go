@@ -3,9 +3,11 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -112,16 +114,12 @@ func TestRegistry_ResolveDecisionModel_ProviderWithoutSupport(t *testing.T) {
 	r := NewRegistry()
 	r.RegisterProvider("plain", &testutil.MockProvider{ProviderName: "plain"})
 
+	// TS registry decisionModel: no factory -> NoSuchModelError with the
+	// full registry id.
 	_, err := r.ResolveDecisionModel("plain:jev-1")
-	var target *NoSuchProviderError
-	if err == nil {
-		t.Fatalf("expected error")
-	}
-	if e, ok := err.(*NoSuchProviderError); ok {
-		target = e
-	}
-	if target == nil || target.ModelType != "decisionModel" {
-		t.Fatalf("err = %v (%T), want NoSuchProviderError{ModelType: decisionModel}", err, err)
+	var target *providererrors.NoSuchModelError
+	if !errors.As(err, &target) || target.ModelType != "decisionModel" || target.ModelID != "plain:jev-1" {
+		t.Fatalf("err = %v (%T), want NoSuchModelError{plain:jev-1, decisionModel}", err, err)
 	}
 }
 
