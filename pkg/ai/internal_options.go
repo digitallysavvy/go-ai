@@ -56,6 +56,23 @@ type InternalOptions struct {
 	// final conversation, as TS's iterator returns it. Used by WorkflowAgent.
 	FailedEndMessages []types.Message
 
+	// StreamModeUsage makes a StreamText run report TS WorkflowAgent's
+	// stream-mode total usage (aggregateExecutionUsage(steps, 'stream'), that
+	// is aggregateUsage): the steps' input and output tokens summed with
+	// missing counts as 0, and TotalTokens their sum, set even when no step
+	// reported usage. It applies to the end event's Usage/TotalUsage (completed
+	// and failed runs), the telemetry end event and the result's Usage. The
+	// token details and raw usage of the plain sum are kept. Plain StreamText
+	// keeps TS streamText's addLanguageModelUsage totals. Used by WorkflowAgent.
+	StreamModeUsage bool
+
+	// OnStreamDone, when set, is called once when a StreamText run ends
+	// (completed, failed or aborted), after its end callbacks and before
+	// ReadAll, Err and the full stream return. TS WorkflowAgent reports its
+	// root telemetry end (onError, onEnd with the total usage) when the run's
+	// loop ends, not when the stream opens. Used by WorkflowAgent.
+	OnStreamDone func(StreamDoneInfo)
+
 	// HeadersAsGiven makes the legacy agent loop (pkg/agent GenerateAgent)
 	// send each step's headers to the model as they are, without its
 	// ai-sdk-agent/tool-loop and ai/<version> user-agent tags. TS
@@ -93,6 +110,22 @@ type InternalOptions struct {
 	// approval response as is, without generateText's execution-denied
 	// result. Used by WorkflowAgent.
 	ApprovalsResumed bool
+}
+
+// StreamDoneInfo describes a finished StreamText run for
+// InternalOptions.OnStreamDone. It may change without notice.
+type StreamDoneInfo struct {
+	// Err is the error that ended the run (nil when it completed).
+	Err error
+	// Steps are the completed steps.
+	Steps []types.StepResult
+	// Usage is the run's total usage (TS aggregateUsage with
+	// StreamModeUsage).
+	Usage types.Usage
+	// FinishReason and Text are the call's finish reason and the final
+	// step's text.
+	FinishReason types.FinishReason
+	Text         string
 }
 
 func deferApprovalRequests(internal *InternalOptions) bool {
@@ -145,6 +178,9 @@ func notifyFailedEnd(ctx context.Context, internal *InternalOptions, onEndEvent 
 	for _, step := range steps {
 		e.TotalUsage = e.TotalUsage.Add(step.Usage)
 	}
+	if internal.StreamModeUsage {
+		e.TotalUsage = streamModeUsage(steps)
+	}
 	if n := len(steps); n > 0 {
 		last := steps[n-1]
 		e.StepNumber, e.Model, e.ModelProvider, e.ModelID = last.StepNumber, last.Model, last.Model.Provider, last.Model.ModelID
@@ -156,6 +192,23 @@ func notifyFailedEnd(ctx context.Context, internal *InternalOptions, onEndEvent 
 		e.Messages = append([]types.Message(nil), internal.FailedEndMessages...)
 	}
 	Notify(ctx, e, onEndEvent)
+}
+
+// streamModeUsage is TS WorkflowAgent's stream-mode total (aggregateUsage):
+// inputTokens and outputTokens are the steps' sums with a missing count as 0,
+// and totalTokens is input + output, whatever the steps' own totals say. The
+// details and raw usage of the plain step sum are kept as Go extras.
+func streamModeUsage(steps []types.StepResult) types.Usage {
+	var total types.Usage
+	var input, output int64
+	for _, step := range steps {
+		total = total.Add(step.Usage)
+		input += step.Usage.GetInputTokens()
+		output += step.Usage.GetOutputTokens()
+	}
+	sum := input + output
+	total.InputTokens, total.OutputTokens, total.TotalTokens = &input, &output, &sum
+	return total
 }
 
 // stepCallSettings returns the headers and maxRetries for a step's model

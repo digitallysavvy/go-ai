@@ -111,6 +111,10 @@ messages. A run that ended on an error in the model stream itself keeps the full
 `Generate` fires `OnEnd` only when the run succeeds. A run whose context is already cancelled fires `OnStart`, then
 `OnAbort`.
 
+In `Stream`, the `OnEnd` `Usage` and `TotalUsage`, the result's `Usage()` and the telemetry end usage are the TS
+stream-mode total: input and output tokens summed over the steps (a missing count is 0) and `TotalTokens` their sum.
+The counts are set even when no step reported usage. `Generate` adds the steps' usage as `GenerateText` does.
+
 ### Continuing the conversation
 
 `WorkflowResult.ResponseMessages` holds the messages the run added: first the tool message with the results of any
@@ -124,7 +128,9 @@ Workflow telemetry events carry only the runtime context keys you opt in to with
 `Generate` and `Stream` each open one `ai.workflowAgent.stream` root span (the TS operation ID for both), and
 the agent's step, model-call and tool-call spans nest under it. The root opens after the approved tools from
 the message history have run, so its messages are the cleaned history and those resumed tool calls get no
-tool span, as in TS. If you open a telemetry root yourself (with
+tool span, as in TS. The `Stream` root ends when the run ends: with the end event (last step's text and finish reason,
+the stream-mode usage) for a completed run, with the error and then the end event for a failed run (no end event
+when no step completed), and with an abort event for a cancelled run. If you open a telemetry root yourself (with
 `telemetry.FireOnStart` and a `CallID`) and then run a `ToolLoopAgent` directly, pass the root's call ID with
 `agent.WithTelemetryCallID(ctx, callID)` so the agent loop reports under that root instead of opening a
 second one.
