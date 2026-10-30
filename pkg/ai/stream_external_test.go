@@ -585,12 +585,13 @@ func TestNewStreamTextResultFromParts_PublicStreamHasStartStepPerStep(t *testing
 			if err != nil {
 				break
 			}
-			if c.Type == provider.ChunkTypeStartStep && len(got) == 0 {
+			if c.Type == provider.ChunkTypeStartStep && len(got) == 1 {
 				firstWarnings = len(c.Warnings)
 			}
 			got = append(got, c.Type)
 		}
 		want := []provider.ChunkType{
+			provider.ChunkTypeStart,
 			provider.ChunkTypeStartStep, provider.ChunkTypeText, provider.ChunkTypeFinishStep,
 			provider.ChunkTypeStartStep, provider.ChunkTypeText, provider.ChunkTypeFinishStep,
 			provider.ChunkTypeFinish,

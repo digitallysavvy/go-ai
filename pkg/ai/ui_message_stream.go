@@ -790,17 +790,23 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			}
 		}
 
-		var startMetadata map[string]interface{}
-		if options.MessageMetadata != nil {
-			startMetadata = options.MessageMetadata(messageMetadataInput(provider.StreamChunk{Type: provider.ChunkType("start")}, "start"))
+		startMessageID := streamMessageID
+		if startMessageID == "" && options.GenerateMessageID != nil {
+			startMessageID = callbackMessageID
 		}
-		if sendStart {
+		// writeStart writes the UI "start" chunk for a start part (TS
+		// toUIMessageChunk 'start': messageMetadata, then messageId), calling
+		// messageMetadata once for it even when SendStart is false.
+		writeStart := func() {
+			var startMetadata map[string]interface{}
+			if options.MessageMetadata != nil {
+				startMetadata = options.MessageMetadata(messageMetadataInput(provider.StreamChunk{Type: provider.ChunkType("start")}, "start"))
+			}
+			if !sendStart {
+				return
+			}
 			startEvent := map[string]interface{}{
 				"type": "start",
-			}
-			startMessageID := streamMessageID
-			if startMessageID == "" && options.GenerateMessageID != nil {
-				startMessageID = callbackMessageID
 			}
 			if startMessageID != "" {
 				startEvent["messageId"] = startMessageID
@@ -809,6 +815,36 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				startEvent["messageMetadata"] = startMetadata
 			}
 			processChunk(startEvent)
+		}
+
+		// oneToOne: the source's first part is a ChunkTypeStart part, so it is
+		// a StreamText-shaped TextStreamPart sequence (StreamText,
+		// NewStreamTextResultFromParts, harness streams, or a caller's own
+		// part slice). TS toUIMessageStream maps such a source one to one:
+		// the start part writes the start chunk, the finish part writes the
+		// finish chunk where it occurs, and the end of the source adds
+		// nothing (no closing of open blocks, no finish-step or finish, no
+		// incomplete-stream error). A raw provider stream never starts with
+		// a start part and keeps Go's framing below (owner ruling
+		// 2026-10-30, option (a)).
+		oneToOne := false
+		var peeked *provider.StreamChunk
+		var peekedErr error
+		hasPeeked := false
+		select {
+		case <-ctx.Done():
+		default:
+			first, err := stream.Next()
+			hasPeeked = true
+			peekedErr = err
+			if err == nil && first != nil {
+				firstCopy := *first
+				peeked = &firstCopy
+				oneToOne = first.Type == provider.ChunkTypeStart
+			}
+		}
+		if !oneToOne {
+			writeStart()
 		}
 
 		sawTerminal := false
@@ -935,7 +971,14 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				return
 			default:
 			}
-			chunk, err := stream.Next()
+			var chunk *provider.StreamChunk
+			var err error
+			if hasPeeked {
+				chunk, err = peeked, peekedErr
+				hasPeeked, peeked, peekedErr = false, nil, nil
+			} else {
+				chunk, err = stream.Next()
+			}
 			if err != nil {
 				if err == io.EOF {
 					break
@@ -1015,6 +1058,32 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				sawOutput = true
 			}
 			if chunk.Type == provider.ChunkTypeText && chunk.Text == "" {
+				continue
+			}
+			if oneToOne && chunk.Type == provider.ChunkTypeStart {
+				writeStart()
+				continue
+			}
+			if oneToOne && chunk.Type == provider.ChunkTypeFinish {
+				// TS 'finish': the call-level finish chunk, where it occurs,
+				// with the messageMetadata of the finish part itself.
+				var metadata map[string]interface{}
+				if options.MessageMetadata != nil {
+					finishPart := *chunk
+					finishPart.Type = provider.ChunkType("finish")
+					metadata = options.MessageMetadata(messageMetadataInput(finishPart, "finish"))
+				}
+				allowStepStartUI = true
+				if sendFinish {
+					finishEvent := map[string]interface{}{
+						"type":         "finish",
+						"finishReason": string(chunk.FinishReason),
+					}
+					if metadata != nil {
+						finishEvent["messageMetadata"] = metadata
+					}
+					processChunk(finishEvent)
+				}
 				continue
 			}
 			if chunk.Type == provider.ChunkTypeStartStep {
@@ -1150,7 +1219,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			}
 		}
 
-		if !sawTerminal && options.PartialStream {
+		if oneToOne || (!sawTerminal && options.PartialStream) {
 			callOnEnd()
 			return
 		}
@@ -1218,6 +1287,23 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 // chunk. The boolean return is false for stream parts that do not produce UI
 // message chunks, matching TypeScript's undefined result.
 func ToUIMessageChunk(part provider.StreamChunk, opts UIMessageStreamResultOptions) (UIMessageChunk, bool) {
+	if part.Type == provider.ChunkTypeStart {
+		// TS toUIMessageChunk 'start': undefined when sendStart is false, else
+		// the start chunk with the message metadata and responseMessageId.
+		if !boolOption(opts.SendStart, true) {
+			return nil, false
+		}
+		chunk := UIMessageChunk{"type": "start"}
+		if opts.MessageMetadata != nil {
+			if metadata := opts.MessageMetadata(map[string]interface{}{"type": "start", "part": part}); metadata != nil {
+				chunk["messageMetadata"] = metadata
+			}
+		}
+		if opts.ResponseMessageID != "" {
+			chunk["messageId"] = opts.ResponseMessageID
+		}
+		return chunk, true
+	}
 	chunks := toUIMessageChunks(part, opts)
 	if len(chunks) == 0 {
 		return nil, false
@@ -2669,6 +2755,11 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if chunk.CustomContent == nil {
 			break
 		}
+		// TS part.providerMetadata is the custom part's own metadata;
+		// providers keep it on CustomContent (a chunk-level copy wins).
+		if len(chunk.ProviderMetadata) == 0 {
+			chunk.ProviderMetadata = chunk.CustomContent.ProviderMetadata
+		}
 		part := map[string]interface{}{
 			"type": "custom",
 			"kind": chunk.CustomContent.Kind,
@@ -2789,8 +2880,10 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if chunk.ToolApprovalRequest.Signature != "" {
 			part["signature"] = chunk.ToolApprovalRequest.Signature
 		}
-		if chunk.ToolApprovalRequest.InputSchemaInput != nil {
-			part["inputSchemaInput"] = chunk.ToolApprovalRequest.InputSchemaInput
+		// TS: only when the schema input differs from the (transformed)
+		// tool call input.
+		if input := chunk.ToolApprovalRequest.InputSchemaInput; input != nil && !isDeepEqualJSONData(input, chunk.ToolApprovalRequest.ToolCall.Arguments) {
+			part["inputSchemaInput"] = input
 		}
 		if chunk.ToolApprovalRequest.Reason != "" {
 			part["reason"] = chunk.ToolApprovalRequest.Reason
