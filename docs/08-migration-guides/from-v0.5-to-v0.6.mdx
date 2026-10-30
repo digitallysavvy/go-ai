@@ -52,6 +52,8 @@ already, you can skip them.
 | `OnError:` in `StreamTextOptions` | Called for error parts only | silent behavior change | Handle fatal errors from `Err()` / `OnStepError` | [StreamText OnError](#streamtext-onerror) |
 | `PrepareStep:` returning `Model` in `StreamTextOptions` | Override applies to one step | silent behavior change | Return the model from every call | [StreamText PrepareStep model](#streamtext-preparestep-model) |
 | `OnLanguageModelCallStart:` in `StreamTextOptions` | Fires once per retry attempt | silent behavior change | Count steps with `OnStepStart` | [Model call start per attempt](#streamtext-call-start-per-attempt) |
+| `OnChunk:` in `StreamTextOptions` checking `ChunkTypeError`, `ChunkTypeStart`, `ChunkTypeAbort` | Sees every error part before `OnError`, retried ones and pre-stream failures included | silent behavior change | Count failures in `OnError` | [StreamText OnChunk error parts](#streamtext-onchunk-error-parts) |
+| `RawFinishReason` with `StreamRetries:` | A retried step keeps only the retried attempt's value | silent behavior change | Read `FinishReason` | [Retry raw finish reason](#stream-retry-raw-finish-reason) |
 | `Request()`, `.Request.Body` on `StreamText` steps or `start-step` chunks | Body only with `Include.RequestBody` | silent behavior change | Set `Include: &ai.IncludeOptions{RequestBody: true}` | [StreamText request body](#streamtext-request-body) |
 | `"stream-start"`, `"response-metadata"` in `FullStream` consumers | Go-only markers left out | silent behavior change | Use `OnChunk` | [Full stream markers](#streamtext-full-stream-markers) |
 | `FinishReasonOther` used to detect truncation | Truncated streams are `interrupted` | silent behavior change | Check `types.FinishReasonInterrupted` | [Truncated streams](#truncated-streams-interrupted) |
@@ -102,6 +104,7 @@ already, you can skip them.
 | `KeepAliveMs` | Zero, negative or too large is an error | silent behavior change | Leave nil to disable | [KeepAliveMs](#keep-alive-range) |
 | Chunks you write with a `title` on `tool-output-*`, `"finishReason": null`, an empty reasoning `id`; `part["input"] == nil` | Message state follows TS | silent behavior change | Check for a missing `input` key | [UI message state](#ui-message-state-edge-cases) |
 | `ToUIMessageStream` `OnEnd`/`OnFinish` reading `e["finishReason"]` with `SendFinish: false` or a failed stream | Empty unless a `finish` chunk was sent | silent behavior change | Read the reason from `StreamTextResult` | [UI OnEnd finish reason](#ui-on-end-finish-reason) |
+| Counting `"type":"error"` chunks from `StreamTextResult.ToUIMessageStream` / `CreateUIMessageStream` | One error chunk for a run that ends with an error part | wire/protocol change | Expect one | [UI single error chunk](#ui-single-error-chunk) |
 | `Integrations: []telemetry.TelemetryIntegration{}` | Empty slice disables telemetry | silent behavior change | Leave nil for globals | [Empty Integrations](#empty-integrations) |
 | `"ai-sdk"`, `"go-ai"` tracer or instrumentation scope names, `telemetry.TracerName` | Tracers are `ai` and `gen_ai` | wire/protocol change | Update filters | [Tracer names](#tracer-names) |
 | `EnrichSpan:`, runtime context objects in spans | TS attribute rules | wire/protocol change | Read flattened keys | [Span attributes](#enrich-span-attributes) |
@@ -373,6 +376,54 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   `OnLanguageModelCallEnd`, or counts steps with call starts.
 - **What to do:** key on the last start, or count steps with `OnStepStart`,
   which fires once.
+- **Kind:** silent behavior change
+
+### StreamText OnChunk sees every error part before OnError {#streamtext-onchunk-error-parts}
+
+- **What changed:** as in TS, `OnChunk` is called for an `error` part before
+  `OnError` (review round 69). For an error part of the model's stream it is
+  called with the part as the model sent it, before `ExperimentalTransform`
+  and the stream retry decision, so `OnChunk` also sees an error part that
+  `StreamRetries` retries (it is not in the full stream) and one a transform
+  drops; it is not called again for that part. A run that fails before its
+  first model stream (an invalid prompt, a model call that fails to open)
+  now passes its `start` and `error` parts to `OnChunk`, and a run cancelled
+  before its first model stream passes `start`, then calls `OnAbort`, then
+  passes `abort`. v0.5 called `OnError` first, never passed a retried error
+  part to `OnChunk`, and passed no parts of such runs.
+- **Am I affected?** `OnChunk:` callbacks in `StreamTextOptions` that check
+  for `provider.ChunkTypeError`, `ChunkTypeStart` or `ChunkTypeAbort`, or
+  that rely on `OnError` running first.
+- **What to do:** no action unless you do that. Count failures in `OnError`,
+  not in `OnChunk`:
+
+  ```go
+  func countFailures(opts *ai.StreamTextOptions, n *int) {
+  	opts.OnError = func(ctx context.Context, err error) {
+  		*n++ // OnChunk also sees retried error parts
+  	}
+  }
+  ```
+
+- **Kind:** silent behavior change
+
+### A retried StreamText step drops the failed attempt's raw finish reason {#stream-retry-raw-finish-reason}
+
+- **What changed:** when `StreamRetries` retries a step whose failed attempt
+  had already sent a finish part, the step's `RawFinishReason` (and
+  `StreamTextResult.RawFinishReason()`) comes from the retried attempt only:
+  empty if its finish part has none. v0.5 kept the failed attempt's value.
+  TS resets the raw finish reason at the retry boundary (review round 69).
+- **Am I affected?** Code that reads `RawFinishReason` with `StreamRetries`
+  set, for a provider that sends an error after its finish part.
+- **What to do:** no action unless you do that. Read the unified reason:
+
+  ```go
+  func stepFinish(step types.StepResult) types.FinishReason {
+  	return step.FinishReason // RawFinishReason may be empty after a retry
+  }
+  ```
+
 - **Kind:** silent behavior change
 
 ### StreamText keeps the request body only when asked {#streamtext-request-body}
@@ -1236,6 +1287,36 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   ```
 
 - **Kind:** silent behavior change
+
+### One error chunk for a StreamText run that ends with an error part {#ui-single-error-chunk}
+
+- **What changed:** when a `StreamText` run ends with an `error` part (the
+  model call fails to open, the run fails before its first model stream, a
+  later step fails to prepare or open, or the model stream ends without
+  output), `StreamTextResult.ToUIMessageStream`, `CreateUIMessageStream` and
+  the UI message stream response helpers write that part's `error` chunk
+  only. v0.5 wrote a second `error` chunk for the same error when the stream
+  closed with it (review round 69). TS `streamText` closes its stream
+  normally after such a part, so `toUIMessageStream` writes one. The error
+  channel still carries the error, and `OnEnd` still reports a failed
+  outcome.
+- **Am I affected?** Clients or tests that count `"type":"error"` chunks in a
+  UI message stream, or expect two of them for one failed run.
+- **What to do:** no action unless you count error chunks. Expect one:
+
+  ```go
+  func errorChunks(chunks <-chan ai.UIMessageChunk) int {
+  	n := 0
+  	for c := range chunks {
+  		if c["type"] == "error" {
+  			n++ // v0.5: two for a run that ended with an error part
+  		}
+  	}
+  	return n
+  }
+  ```
+
+- **Kind:** wire/protocol change
 
 ## Telemetry and events {#telemetry-and-events}
 
