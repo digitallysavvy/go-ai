@@ -1569,3 +1569,87 @@ func TestR71StreamToUIChunkApprovalSchemaInput(t *testing.T) {
 	got, _ = ToUIMessageChunk(request(map[string]interface{}{"value": "trimmed"}), UIMessageStreamResultOptions{})
 	r71streamAssertJSON(t, "unchanged", got, `{"type":"tool-approval-request","approvalId":"approval-1","toolCallId":"call-1"}`)
 }
+
+// TS to-ui-message-chunk.test.ts 76 / 137 / 169 / 345 / 402 / 500 / 655:
+// the whole per-part mapping table, field by field.
+func TestR71StreamToUIChunkMappingTable(t *testing.T) {
+	md := json.RawMessage(`{"testProvider":{"signature":"sig-1"}}`)
+	mdMap := map[string]interface{}{"testProvider": map[string]interface{}{"signature": "sig-1"}}
+	toolMetadata := map[string]interface{}{"clientName": "test-client"}
+	tools := []types.Tool{{Name: "staticTool"}, {Name: "dynamicTool", Type: types.ToolTypeDynamic}}
+	f, tr := false, true
+	handled := func(err error) string { return "handled: " + err.Error() }
+	file := &types.GeneratedFileContent{MediaType: "text/plain", FileData: types.FileData{Type: "data", Data: []byte("Hello")}}
+	cases := []struct {
+		name string
+		part provider.StreamChunk
+		opts UIMessageStreamResultOptions
+		want string // "" = no chunk
+	}{
+		{"reasoning-start", provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-1", ProviderMetadata: md}, UIMessageStreamResultOptions{},
+			`{"type":"reasoning-start","id":"reasoning-1","providerMetadata":{"testProvider":{"signature":"sig-1"}}}`},
+		{"reasoning-delta", provider.StreamChunk{Type: provider.ChunkTypeReasoning, ID: "reasoning-1", Reasoning: "thinking", ProviderMetadata: md}, UIMessageStreamResultOptions{},
+			`{"type":"reasoning-delta","id":"reasoning-1","delta":"thinking","providerMetadata":{"testProvider":{"signature":"sig-1"}}}`},
+		{"reasoning-end", provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-1", ProviderMetadata: md}, UIMessageStreamResultOptions{},
+			`{"type":"reasoning-end","id":"reasoning-1","providerMetadata":{"testProvider":{"signature":"sig-1"}}}`},
+		{"reasoning-start disabled", provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-1"}, UIMessageStreamResultOptions{SendReasoning: &f}, ""},
+		{"reasoning-delta disabled", provider.StreamChunk{Type: provider.ChunkTypeReasoning, ID: "reasoning-1", Reasoning: "thinking"}, UIMessageStreamResultOptions{SendReasoning: &f}, ""},
+		{"reasoning-end disabled", provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-1"}, UIMessageStreamResultOptions{SendReasoning: &f}, ""},
+		{"file", provider.StreamChunk{Type: provider.ChunkTypeFile, GeneratedFileContent: file, ProviderMetadata: md}, UIMessageStreamResultOptions{},
+			`{"type":"file","mediaType":"text/plain","url":"data:text/plain;base64,SGVsbG8=","providerMetadata":{"testProvider":{"signature":"sig-1"}}}`},
+		{"reasoning-file", provider.StreamChunk{Type: provider.ChunkTypeReasoningFile, ReasoningFileContent: &types.ReasoningFileContent{MediaType: "text/plain", Data: []byte("Hello")}, ProviderMetadata: md}, UIMessageStreamResultOptions{},
+			`{"type":"reasoning-file","mediaType":"text/plain","url":"data:text/plain;base64,SGVsbG8=","providerMetadata":{"testProvider":{"signature":"sig-1"}}}`},
+		{"reasoning-file disabled", provider.StreamChunk{Type: provider.ChunkTypeReasoningFile, ReasoningFileContent: &types.ReasoningFileContent{MediaType: "text/plain", Data: []byte("Hello")}}, UIMessageStreamResultOptions{SendReasoning: &f}, ""},
+		{"url source default", provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &types.SourceContent{SourceType: "url", ID: "source-1", URL: "https://example.com", Title: "Example"}}, UIMessageStreamResultOptions{}, ""},
+		{"url source", provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &types.SourceContent{SourceType: "url", ID: "source-1", URL: "https://example.com", Title: "Example", ProviderMetadata: md}}, UIMessageStreamResultOptions{SendSources: &tr},
+			`{"type":"source-url","sourceId":"source-1","url":"https://example.com","title":"Example","providerMetadata":{"testProvider":{"signature":"sig-1"}}}`},
+		{"document source", provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &types.SourceContent{SourceType: "document", ID: "source-2", MediaType: "application/pdf", Title: "Document", Filename: "document.pdf", ProviderMetadata: md}}, UIMessageStreamResultOptions{SendSources: &tr},
+			`{"type":"source-document","sourceId":"source-2","mediaType":"application/pdf","title":"Document","filename":"document.pdf","providerMetadata":{"testProvider":{"signature":"sig-1"}}}`},
+		{"tool-input-start dynamic", provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "dynamicTool", InputEncoding: "text", ProviderExecuted: true, ProviderMetadata: mdMap, ToolMetadata: toolMetadata, Title: "Dynamic Tool"}}, UIMessageStreamResultOptions{Tools: tools},
+			`{"type":"tool-input-start","toolCallId":"call-1","toolName":"dynamicTool","inputEncoding":"text","providerExecuted":true,"providerMetadata":{"testProvider":{"signature":"sig-1"}},"toolMetadata":{"clientName":"test-client"},"dynamic":true,"title":"Dynamic Tool"}`},
+		{"tool-input-start unregistered", provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: "call-2", ToolName: "providerTool", Dynamic: true}}, UIMessageStreamResultOptions{Tools: tools},
+			`{"type":"tool-input-start","toolCallId":"call-2","toolName":"providerTool","dynamic":true}`},
+		{"tool-input-delta", provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: "call-1", Text: `{"value"`}, UIMessageStreamResultOptions{},
+			`{"type":"tool-input-delta","toolCallId":"call-1","inputTextDelta":"{\"value\""}`},
+		{"tool-call static", provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "staticTool", Arguments: map[string]interface{}{"value": "input"}, ProviderExecuted: true, ProviderMetadata: mdMap, ToolMetadata: toolMetadata, Title: "Static Tool"}}, UIMessageStreamResultOptions{Tools: tools},
+			`{"type":"tool-input-available","toolCallId":"call-1","toolName":"staticTool","input":{"value":"input"},"providerExecuted":true,"providerMetadata":{"testProvider":{"signature":"sig-1"}},"toolMetadata":{"clientName":"test-client"},"title":"Static Tool"}`},
+		{"tool-call runtime dynamic", provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-2", ToolName: "runtimeTool", Arguments: map[string]interface{}{"value": "input"}, Dynamic: true}}, UIMessageStreamResultOptions{},
+			`{"type":"tool-input-available","toolCallId":"call-2","toolName":"runtimeTool","input":{"value":"input"},"dynamic":true}`},
+		{"tool-call invalid", provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-3", ToolName: "runtimeTool", RawArguments: "{broken", Dynamic: true, Invalid: true, Error: errors.New("invalid input"), ProviderExecuted: true, ProviderMetadata: mdMap, ToolMetadata: toolMetadata, Title: "Invalid Tool"}}, UIMessageStreamResultOptions{OnError: handled},
+			`{"type":"tool-input-error","toolCallId":"call-3","toolName":"runtimeTool","input":"{broken","providerExecuted":true,"providerMetadata":{"testProvider":{"signature":"sig-1"}},"toolMetadata":{"clientName":"test-client"},"dynamic":true,"errorText":"handled: invalid input","title":"Invalid Tool"}`},
+		{"tool-result", provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-1", ToolName: "dynamicTool", Input: map[string]interface{}{"value": "input"}, Result: map[string]interface{}{"value": "output"}, ProviderExecuted: true, ProviderMetadata: mdMap, ToolMetadata: toolMetadata, Dynamic: true, Preliminary: true}}, UIMessageStreamResultOptions{Tools: tools},
+			`{"type":"tool-output-available","toolCallId":"call-1","output":{"value":"output"},"providerExecuted":true,"providerMetadata":{"testProvider":{"signature":"sig-1"}},"toolMetadata":{"clientName":"test-client"},"dynamic":true,"preliminary":true}`},
+		{"tool-result undefined output", provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-undefined", ToolName: "dynamicTool", Input: map[string]interface{}{"value": "input"}}}, UIMessageStreamResultOptions{Tools: tools},
+			`{"type":"tool-output-available","toolCallId":"call-undefined","output":null,"dynamic":true}`},
+		{"tool-error provider object", provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-2", ToolName: "dynamicTool", Input: map[string]interface{}{"value": "input"}, Error: errors.New("provider-error"), Result: map[string]interface{}{"code": "provider-error"}, ProviderExecuted: true, ProviderMetadata: mdMap, ToolMetadata: toolMetadata, Dynamic: true}}, UIMessageStreamResultOptions{Tools: tools, OnError: func(error) string { return "should not be used for provider-executed errors" }},
+			`{"type":"tool-output-error","toolCallId":"call-2","errorText":"{\"code\":\"provider-error\"}","providerExecuted":true,"providerMetadata":{"testProvider":{"signature":"sig-1"}},"toolMetadata":{"clientName":"test-client"},"dynamic":true}`},
+		{"tool-error provider string", provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-string-error", ToolName: "dynamicTool", Input: map[string]interface{}{"value": "input"}, Error: errors.New("provider string error"), ProviderExecuted: true, Dynamic: true}}, UIMessageStreamResultOptions{},
+			`{"type":"tool-output-error","toolCallId":"call-string-error","errorText":"provider string error","providerExecuted":true,"dynamic":true}`},
+		{"tool-error local", provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-3", ToolName: "staticTool", Input: map[string]interface{}{"value": "input"}, Error: errors.New("tool failed")}}, UIMessageStreamResultOptions{Tools: tools, OnError: handled},
+			`{"type":"tool-output-error","toolCallId":"call-3","errorText":"handled: tool failed"}`},
+		{"tool-approval-request", provider.StreamChunk{Type: provider.ChunkTypeToolApprovalRequest, ToolApprovalRequest: &types.ToolApprovalRequestContent{ApprovalID: "approval-1", ToolCall: types.ToolCall{ID: "call-5", ToolName: "staticTool", Arguments: map[string]interface{}{"value": "input"}}, Reason: "requires operator review", IsAutomatic: true}}, UIMessageStreamResultOptions{},
+			`{"type":"tool-approval-request","approvalId":"approval-1","toolCallId":"call-5","reason":"requires operator review","isAutomatic":true}`},
+		{"tool-approval-response", provider.StreamChunk{Type: provider.ChunkTypeToolApprovalResponse, ToolApprovalResponse: &types.ToolApprovalResponseContent{ApprovalID: "approval-1", ToolCallID: "call-5", Approved: false, Reason: "not allowed", ProviderExecuted: true}}, UIMessageStreamResultOptions{},
+			`{"type":"tool-approval-response","approvalId":"approval-1","approved":false,"reason":"not allowed","providerExecuted":true}`},
+		{"error", provider.StreamChunk{Type: provider.ChunkTypeError, Err: errors.New("boom")}, UIMessageStreamResultOptions{OnError: func(error) string { return "handled error" }},
+			`{"type":"error","errorText":"handled error"}`},
+	}
+	for _, c := range cases {
+		got, ok := ToUIMessageChunk(c.part, c.opts)
+		if c.want == "" {
+			if ok {
+				t.Errorf("%s: got %s, want no chunk", c.name, r71streamJSON(t, got))
+			}
+			continue
+		}
+		if !ok {
+			t.Errorf("%s: no chunk", c.name)
+			continue
+		}
+		var wantValue interface{}
+		_ = json.Unmarshal([]byte(c.want), &wantValue)
+		if g, w := r71streamJSON(t, got), r71streamJSON(t, wantValue); g != w {
+			t.Errorf("%s:\n got  %s\n want %s", c.name, g, w)
+		}
+	}
+}
