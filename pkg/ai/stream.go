@@ -1493,8 +1493,11 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		} else {
 			// TS notifyStepError(wrapGatewayError(error)) feeds both onStepError
 			// and telemetry onStepError; telemetry onError gets the original.
-			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: wrapGatewayError(err)})
-			r.notifyStepError(ctx, opts.OnStepError, wrapGatewayError(err))
+			// TS notify runs [onStepError, telemetry onStepError] in order.
+			if r.openStep != nil {
+				r.notifyStepError(ctx, opts.OnStepError, wrapGatewayError(err))
+				telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: wrapGatewayError(err)})
+			}
 			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		}
 		// TS reports the doStream failure itself, without wrapper text, after
@@ -1922,9 +1925,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	// that fails, a file download, an approval or tool input callback, a tool
 	// output conversion): the outer stream reports it to onStepError and the
 	// telemetry onError and errors the stream, without onError.
-	// stepErrorTelemetryFired: the open step's telemetry onStepError already
-	// ran (a later step that failed to open reports it at the failure site).
-	stepErrorTelemetryFired := false
+	// stepErrorTelemetryCtx: the telemetry context of a later step that failed
+	// to open (its model-call span), for the open step's telemetry
+	// onStepError after the loop.
+	var stepErrorTelemetryCtx context.Context
+	// continuationFailed: a later step failed to prepare or open, which TS
+	// ends with that step's `error` part (streamStep's catch) and no
+	// call-level `finish` part.
+	continuationFailed := false
 	abortFired := false
 	fireAbort := func(reason error) {
 		if abortFired {
@@ -2034,6 +2042,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// wrapGatewayError(part.error), as for a later step that fails to open.
 		r.err = wrapGatewayError(err)
 		if !isAbortErr(ctx, err) {
+			continuationFailed = true
 			// TS's step catch enqueues the error itself.
 			forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: err, Text: err.Error()}})
 		}
@@ -3995,8 +4004,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				// The error part carries the model call's own error (TS step
 				// catch); onError gets it wrapped.
 				forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: openErr, Text: openErr.Error()}})
-				telemetry.FireOnStepError(nextModelCallCtx, telemetry.TelemetryErrorEvent{Settings: r.telemetrySettings, CallID: r.cbCallID, Error: r.err})
-				stepErrorTelemetryFired = true
+				continuationFailed = true
+				stepErrorTelemetryCtx = nextModelCallCtx
 			}
 			nextStepCancel()
 			break
@@ -4010,6 +4019,46 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.steering.end(steeringEndReasonFor(ctx, r.err))
 	} else {
 		r.steering.end(steeringEndReason)
+	}
+
+	// notifyOpenStepError reports a step that started without producing a
+	// result: TS notifyStepError notifies [onStepError, telemetry
+	// onStepError] with wrapGatewayError(error).
+	notifyOpenStepError := func(stepErr error) {
+		if r.openStep == nil {
+			return
+		}
+		r.notifyStepError(ctx, opts.OnStepError, stepErr)
+		stepCtx := stepErrorTelemetryCtx
+		if stepCtx == nil {
+			stepCtx = r.stepReopenCtx
+		}
+		if stepCtx == nil {
+			stepCtx = r.telemetryCtx
+		}
+		telemetry.FireOnStepError(stepCtx, telemetry.TelemetryErrorEvent{Settings: r.telemetrySettings, CallID: r.cbCallID, Error: stepErr})
+	}
+
+	// A later step that failed to prepare or open ended the stream with its
+	// error part, which already reached OnChunk and OnError. TS's event
+	// processor flush then reports the open step (onStepError) and, with
+	// steps recorded, resolves the result like a finished run: there is no
+	// `finish` part, so the finish reason is "other" and the total usage
+	// empty (recordedFinishReason ?? 'other', recordedTotalUsage ?? null
+	// usage), onEnd and the telemetry onEnd run, and the telemetry onError
+	// does not. Err() keeps reporting the error part, as for a model stream
+	// error part. A WorkflowAgent run (InternalOptions.EndOnError) keeps
+	// failing there: its TS loop throws the step's error.
+	continuationErrorEnd := false
+	if continuationFailed && r.err != nil && len(allSteps) > 0 && !isAbortErr(ctx, r.err) && (opts.Internal == nil || !opts.Internal.EndOnError) {
+		continuationErrorEnd = true
+		notifyOpenStepError(wrapGatewayError(r.err))
+		r.mu.Lock()
+		if r.chunkErr == nil {
+			r.chunkErr = r.err
+		}
+		r.mu.Unlock()
+		r.err = nil
 	}
 
 	// Push the call-level ChunkTypeFinish exactly once, after the loop above
@@ -4030,14 +4079,23 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.usage = streamModeUsage(allSteps)
 	}
 	if r.err == nil {
-		totalUsage := r.usage
-		callFinishChunk := provider.StreamChunk{
-			Type:            provider.ChunkTypeFinish,
-			FinishReason:    r.finishReason,
-			RawFinishReason: r.rawFinishReason,
-			Usage:           &totalUsage,
+		if !continuationErrorEnd {
+			totalUsage := r.usage
+			callFinishChunk := provider.StreamChunk{
+				Type:            provider.ChunkTypeFinish,
+				FinishReason:    r.finishReason,
+				RawFinishReason: r.rawFinishReason,
+				Usage:           &totalUsage,
+			}
+			forwardThroughTransformChain(0, []provider.StreamChunk{callFinishChunk})
+		} else if rec == nil {
+			r.finishReason = types.FinishReasonOther
+			r.rawFinishReason = ""
+			r.usage = types.Usage{}
+			if opts.Internal != nil && opts.Internal.streamModeUsage {
+				r.usage = streamModeUsage(allSteps)
+			}
 		}
-		forwardThroughTransformChain(0, []provider.StreamChunk{callFinishChunk})
 		if rec != nil {
 			// The call-level finish reason and total usage are recorded from
 			// the transformed finish part (TS: recordedFinishReason ?? 'other',
@@ -4081,15 +4139,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// notifyStepError gives onStepError and the telemetry onStepError
 			// wrapGatewayError(error), also when the model stream fails
 			// mid-step; the telemetry onError below gets the error itself.
-			stepErr := wrapGatewayError(r.err)
-			if r.openStep != nil && !stepErrorTelemetryFired {
-				stepCtx := r.stepReopenCtx
-				if stepCtx == nil {
-					stepCtx = r.telemetryCtx
-				}
-				telemetry.FireOnStepError(stepCtx, telemetry.TelemetryErrorEvent{Settings: r.telemetrySettings, CallID: r.cbCallID, Error: stepErr})
-			}
-			r.notifyStepError(ctx, opts.OnStepError, stepErr)
+			notifyOpenStepError(wrapGatewayError(r.err))
 		}
 		if !isAbortErr(ctx, r.err) {
 			notifyFailedEnd(ctx, opts.Internal, r.cbOnEndEvent, r.cbCallID, r.cbRuntimeCtx, r.cbToolsCtx, r.initialResponseMessages, allSteps, r.err)
