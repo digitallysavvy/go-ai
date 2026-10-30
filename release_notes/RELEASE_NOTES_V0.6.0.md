@@ -208,6 +208,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Generated IDs use the TS formats** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#generated-id-formats)
 - **JSON is not HTML-escaped** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#json-not-html-escaped)
 - **The final SSE event needs its blank line** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#sse-final-event)
+- **Rerank OnEnd gets its own ranking** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#rerank-onend-ranking-copy)
 
 #### Prompts and validation
 
@@ -226,6 +227,9 @@ search for and ends with a checklist for coding agents. Entries marked
 - **A provider-executed tool call is never run locally** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provider-executed-not-local)
 - **Provider tool results stay in the assistant message** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provider-tool-results-assistant)
 - **ToolResults holds no bookkeeping entries** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-results-bookkeeping)
+- **Provider tool calls are validated against the tool's Parameters** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provider-tool-input-validation)
+- **Provider error results are tool errors** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provider-tool-error-results)
+- **ToolResults holds only successful calls** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-results-exclude-failures)
 - **Tool approval and tool-context errors fail the call** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-errors-fail-call)
 - **PrepareStep ActiveTools and ProviderOptions are applied** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#preparestep-active-tools)
 - **Some provider tools are client-executed** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#client-executed-provider-tools)
@@ -234,6 +238,7 @@ search for and ends with a checklist for coding agents. Entries marked
 
 - **Legacy ToolLoopAgent approval IDs are generated** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-approval-ids)
 - **Legacy ToolLoopAgent tool results list provider results** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-tool-results-provider)
+- **Legacy ToolLoopAgent tool messages carry the output's JSON value** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-tool-output-json-value)
 - **Legacy ToolLoopAgent request messages leave out the instructions** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-request-messages)
 - **The legacy ToolLoopAgent rejects a negative MaxRetries** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-negative-maxretries)
 - **A legacy ToolLoopAgent step timeout is context.DeadlineExceeded** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-step-timeout-deadline)
@@ -263,6 +268,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **One error chunk for a StreamText run that ends with an error part** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-single-error-chunk)
 - **UI message streams end like the source stream** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-finish-and-abort-chunks)
 - **UI file chunks carry the file's provider metadata** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-file-provider-metadata)
+- **ToUIMessageStream maps start-led part sequences one to one** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-start-part-one-to-one)
+- **UI custom, approval and single-part chunks follow TS** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-custom-chunk-metadata)
 
 #### Telemetry and events
 
@@ -273,7 +280,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **A cancelled GenerateText reports OnError to telemetry** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#generate-cancel-telemetry)
 - **Step-start events report the call's tools and the output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#step-start-call-tools)
 - **Telemetry OnStepError fires for every failed step** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-step-error)
-- **Telemetry step-end and end run after the callbacks** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-callback-order)
+- **Telemetry step-end, end, tool-end, error and abort run after the callbacks** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-callback-order)
 
 #### Errors
 
@@ -1230,6 +1237,16 @@ Notable ones:
   `PipeUIMessageStreamToResponse`, `CreateUIMessageStreamResponse`) write
   each chunk's JSON with sorted keys, because `UIMessageChunk` is a map; TS
   writes insertion order. The values are the same (round 70).
+- **ToUIMessageStream on a raw provider stream** is framed (start,
+  finish-step, finish, incomplete-stream error); start-led sources map one to
+  one as in TS (owner ruling 2026-10-30, round 71).
+- The telemetry `OnStart` / `OnStepStart` of `GenerateText`, `StreamText`
+  and the legacy `ToolLoopAgent` run before the user start callbacks, so the
+  callbacks run in the integration's span context; TS starts the callback
+  first. End, step-end, step-error and tool events run the callbacks first,
+  as in TS (round 71).
+- `RuntimeContext` stays nil when the caller sets none; TS defaults it to
+  `{}` (owner preference for idiomatic Go, round 71).
 - The Vertex Gemini image model accepts URL and `gs://` input images and
   sends them as `fileData` with the caller's media type, else one inferred
   from the URL path extension (query string and fragment ignored), else

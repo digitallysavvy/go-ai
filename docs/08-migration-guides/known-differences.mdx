@@ -353,6 +353,39 @@ keys (`{"errorText":"...","type":"error"}`). TS writes insertion order
 (`{"type":"error","errorText":"..."}`). The JSON values are the same; only
 byte-level comparisons of the stream differ (review round 70).
 
+## ToUIMessageStream on a raw provider stream
+
+`ai.ToUIMessageStream` also accepts a raw provider `TextStream` (one that does
+not start with a `ChunkTypeStart` part), which TS `toUIMessageStream` does not
+take. Go frames such a stream: it writes a `start` chunk (after the first
+source part arrives), opens and closes text and reasoning blocks, writes
+`finish-step` for the provider's `finish` and a final `finish`, and writes an
+incomplete-stream `error` chunk when the stream ended without output. A
+source that starts with a start part (`StreamText`, harness and
+`NewStreamTextResultFromParts` streams) is mapped one to one, as in TS
+(owner ruling 2026-10-30). In both modes a text delta with no open block gets
+a `text-start` first, because Go providers may stream text without one; TS
+forwards the delta alone (review round 71).
+
+## Telemetry start before the start callbacks
+
+`GenerateText`, `StreamText` and the legacy `ToolLoopAgent` call the
+telemetry `OnStart` (and, for `GenerateText` and `StreamText`,
+`OnStepStart`) before the user `OnStart` / `OnStepStart`, so the callbacks
+run inside the integration's span context (the context they receive is the
+one the integration returns). TS starts the callback first. End, step-end,
+step-error, tool and `ExperimentalDecide` events run the callbacks first, as
+in TS (review round 71).
+
+## RuntimeContext defaults to nil
+
+TS `generateText` and `streamText` default `runtimeContext` to `{}`, so
+`onStart`, `onStepStart`, the tool events and every step carry `{}` when the
+caller sets none. Go leaves `RuntimeContext` (and the deprecated
+`ExperimentalContext`) nil: a nil `interface{}` is the idiomatic "not set",
+and v0.5.x callers check it with `== nil` (owner preference, review round
+71). `ToolsContext` defaults to an empty map, as in TS.
+
 ## Vertex Gemini image model: URL input images
 
 The Vertex Gemini image model accepts URL and `gs://` input images

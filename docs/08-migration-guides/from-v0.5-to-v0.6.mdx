@@ -73,6 +73,7 @@ already, you can skip them.
 | `"call-"` prefix checks on response, approval or UI message IDs | TS ID formats (`aitxt-`, `aiobj-`, 16 chars) | silent behavior change | Do not parse ID prefixes | [Generated IDs](#generated-id-formats) |
 | `<`, `>`, `&` in expected request or stream JSON | JSON is not HTML-escaped | wire/protocol change | Update golden files | [JSON escaping](#json-not-html-escaped) |
 | Custom SSE servers or test fixtures whose last event has no blank line | Unterminated final event dropped | wire/protocol change | End every event with a blank line | [SSE final event](#sse-final-event) |
+| Writes to `event.Ranking` in `ai.Rerank` `OnEnd` callbacks | A copy; the result is unchanged | silent behavior change | Edit the returned result | [Rerank OnEnd ranking](#rerank-onend-ranking-copy) |
 | `Prompt:` and `Messages:` both set, neither set, or `Messages: []types.Message{}` | `InvalidPromptError` | silent behavior change | Pass exactly one | [Prompt validation](#prompt-validation) |
 | `RoleSystem` messages in `GenerateObjectOptions.Messages` / `StreamObjectOptions.Messages` | Rejected unless `AllowSystemMessages` | silent behavior change | Use `Instructions` | [Object system messages](#object-system-messages) |
 | `*InvalidArgumentError` or "Invalid argument for parameter instructions" for `InstructionMessages` | Now `*InvalidPromptError` | silent behavior change | Match with `errors.As` | [Invalid instructions](#invalid-instructions) |
@@ -85,11 +86,15 @@ already, you can skip them.
 | A local tool named like a provider tool (`web_search`, `code_execution`) | Provider-executed calls never run locally | silent behavior change | Rename the local tool | [Provider-executed calls](#provider-executed-not-local) |
 | `RoleTool` messages searched for provider tool results, `ProviderExecuted == false` | Provider results stay in the assistant message | silent behavior change | Read the assistant message | [Provider tool results](#provider-tool-results-assistant) |
 | `ToolResults` entries for pending approvals or denied calls | Bookkeeping entries removed | silent behavior change | Read approval parts in `Content` | [ToolResults entries](#tool-results-bookkeeping) |
+| Provider tools (`ProviderExecuted: true`, `Type: "provider"`) whose `Parameters` are not the call input; `Parameters` of `xai.MCPServer` / `xai.FileSearch` | Provider tool input validated; invalid calls marked `Invalid` and `Dynamic` | silent behavior change | Give the tool its input schema | [Provider tool input validation](#provider-tool-input-validation) |
+| `types.ToolResultContent` with `IsError` in `Content` or response messages | A `ToolErrorContent` part, replayed as `error-json` | silent behavior change | Read `ToolErrorContent` | [Provider error results](#provider-tool-error-results) |
+| `r.Error != nil` in loops over `ToolResults` / `StaticToolResults` / `DynamicToolResults` | Failed calls are only `ToolErrorContent` parts | silent behavior change | Read `ToolErrorContent` in `Content` | [ToolResults successful only](#tool-results-exclude-failures) |
 | `ContextSchema:`, `ToolApproval:` | Context and approval errors fail the call | silent behavior change | Fix config or handle `*ValidationError` | [Tool approval errors](#tool-errors-fail-call) |
 | `PrepareStep` returning `ActiveTools` or `ProviderOptions` | Honored; options deep-merged | silent behavior change | Return only what the step needs | [PrepareStep tools](#preparestep-active-tools) |
 | OpenAI `computer`, `local_shell`, `shell`, `apply_patch`; Anthropic `computer`, `text_editor`, `memory` tools | Client-executed | silent behavior change | Give them an `Execute` | [Client-executed tools](#client-executed-provider-tools) |
 | `.ToolCallID` used as an approval response ID (legacy `ToolLoopAgent`) | Approval IDs are generated | silent behavior change | Answer with `ApprovalID` | [Legacy approval IDs](#legacy-approval-ids) |
 | Loops over legacy `StepResult.ToolResults` / `AgentResult.ToolResults` | Provider results listed first | silent behavior change | Skip `ProviderExecuted` entries | [Legacy tool results](#legacy-tool-results-provider) |
+| `ToolResultOutput.Value` in legacy ToolLoopAgent step response messages | The output's JSON value, not the Go value | silent behavior change | Read `ToolResult.Result` for the Go value | [Legacy tool output JSON value](#legacy-tool-output-json-value) |
 | `Request.Messages[0]` with `Include.RequestMessages` (legacy loop) | Instructions left out | silent behavior change | Read instructions from config | [Legacy request messages](#legacy-request-messages) |
 | Negative `MaxRetries` on `AgentConfig` or from `PrepareCall` | Rejected | silent behavior change | Use 0 to disable | [Legacy negative MaxRetries](#legacy-negative-maxretries) |
 | `errors.Is(err, context.Canceled)` for a legacy step timeout | Now `context.DeadlineExceeded` | silent behavior change | Check `DeadlineExceeded` | [Legacy step timeout error](#legacy-step-timeout-deadline) |
@@ -116,6 +121,8 @@ already, you can skip them.
 | Counting `"type":"error"` chunks from `StreamTextResult.ToUIMessageStream` / `CreateUIMessageStream` | One error chunk for a run that ends with an error part | wire/protocol change | Expect one | [UI single error chunk](#ui-single-error-chunk) |
 | `"type":"finish"` / `"type":"abort"` chunks from a UI message stream | No `finish` without a finish part; one `abort` chunk | wire/protocol change | Treat `error` and `abort` as terminal | [UI finish and abort](#ui-finish-and-abort-chunks) |
 | UI `"type":"file"` / `"reasoning-file"` chunks | Include the file's own `providerMetadata` | wire/protocol change | None, or accept the field | [UI file metadata](#ui-file-provider-metadata) |
+| `ai.ToUIMessageStream` on parts that start with `ChunkTypeStart`; `NewStreamTextResultFromParts` `Stream()` / `FullStream()` | One UI chunk per part, no added framing; external streams begin with start | wire/protocol change | Send finish-step/finish parts yourself; skip a leading start | [Start-led UI streams](#ui-start-part-one-to-one) |
+| UI `"type":"custom"` / `"tool-approval-request"` chunks; `ai.ToUIMessageChunk` with start or finish parts | custom keeps `providerMetadata`; equal `inputSchemaInput` omitted; start / finish map to `start` / `finish` | wire/protocol change | Use `ChunkTypeFinishStep` for the step end | [UI custom chunks](#ui-custom-chunk-metadata) |
 | `Integrations: []telemetry.TelemetryIntegration{}` | Empty slice disables telemetry | silent behavior change | Leave nil for globals | [Empty Integrations](#empty-integrations) |
 | `"ai-sdk"`, `"go-ai"` tracer or instrumentation scope names, `telemetry.TracerName` | Tracers are `ai` and `gen_ai` | wire/protocol change | Update filters | [Tracer names](#tracer-names) |
 | `EnrichSpan:`, runtime context objects in spans | TS attribute rules | wire/protocol change | Read flattened keys | [Span attributes](#enrich-span-attributes) |
@@ -123,7 +130,7 @@ already, you can skip them.
 | Telemetry integration `OnAbort` for a cancelled `GenerateText` | Integrations get `OnError` | silent behavior change | Handle `OnError` | [GenerateText abort telemetry](#generate-cancel-telemetry) |
 | `OnStepStart:` / `OnStepStartEvent:` reading `e.Tools` or `e.Output` | The call's tools; `Output` is set | silent behavior change | Read `e.ActiveTools`, or `LanguageModelCallStartEvent.Tools` | [Step-start tools](#step-start-call-tools) |
 | Telemetry integration `OnStepError` for `GenerateText` or `StreamText` | Fires for every failed started step, also mid-stream | silent behavior change | Don't assume the model call failed to open | [Telemetry step errors](#telemetry-step-error) |
-| Telemetry integration `OnStepEnd` / `OnFinish` ordered against `OnStepEnd`, `OnEnd`, `OnEndEvent` callbacks | Callbacks run first | silent behavior change | Do last-step work in the integration | [Callback and telemetry order](#telemetry-callback-order) |
+| Telemetry integration `OnStepEnd` / `OnFinish` / `OnToolExecutionEnd` (and WorkflowAgent root `OnError` / `OnAbort`) ordered against the matching callbacks | Callbacks run first | silent behavior change | Do last-step work in the integration | [Callback and telemetry order](#telemetry-callback-order) |
 | `strings.Contains(err.Error(), "failed at step"` and other prefixes | Errors returned as is | error text only | Use `errors.As` / `errors.Is` | [Unprefixed errors](#errors-unprefixed) |
 | Error text with `%q`-quoted names (tool callers, tool search, decide, ID generator, download URL hostname) | TS quoting | error text only | Use `errors.As` | [Name quoting](#error-name-quoting) |
 | `"no such evaluationModel"` text checks on `ExperimentalEvaluate` / `ExperimentalDecide` errors | `*providererrors.NoSuchModelError` | error text only | Use `errors.As` | [Unknown decision model](#decide-unknown-model) |
@@ -793,6 +800,35 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **What to do:** end every event with a blank line (`\n\n`).
 - **Kind:** wire/protocol change
 
+### Rerank `OnEnd` gets its own ranking {#rerank-onend-ranking-copy}
+
+- **What changed:** `RerankOnFinishEvent.Ranking` passed to `OnEnd`,
+  `ExperimentalOnEnd` and `ExperimentalOnFinish` is now a copy of
+  `RerankResult.Ranking`. In v0.5 it was the same slice, so editing
+  `event.Ranking[i]` in the callback changed the returned result. TS builds
+  the event ranking with its own `ranking.map(...)` (rerank.test.ts "should
+  isolate the result from ranking mutations in onEnd", review round 71).
+- **Am I affected?** `OnEnd`, `ExperimentalOnEnd` or `ExperimentalOnFinish`
+  callbacks of `ai.Rerank` that write to `event.Ranking` and expect
+  `RerankResult.Ranking` to change.
+- **What to do:** no action unless you edit the ranking in the callback.
+  Edit the returned result instead:
+
+  ```go
+  func rerankTop(ctx context.Context, model provider.RerankingModel, docs []string, query string) (*ai.RerankResult, error) {
+  	result, err := ai.Rerank(ctx, ai.RerankOptions{Model: model, Documents: docs, Query: query})
+  	if err != nil {
+  		return nil, err
+  	}
+  	if len(result.Ranking) > 0 {
+  		result.Ranking[0].Score = 1 // edit the result, not event.Ranking
+  	}
+  	return result, nil
+  }
+  ```
+
+- **Kind:** silent behavior change
+
 ## Prompts and validation {#prompts-and-validation}
 
 ### Prompt validation matches TS {#prompt-validation}
@@ -1021,6 +1057,111 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   `ToolApprovalResponseContent`) in `Content`.
 - **Kind:** silent behavior change
 
+### Provider tool calls are validated against the tool's Parameters {#provider-tool-input-validation}
+
+- **What changed:** `GenerateText`, `StreamText` and the agents validate the
+  input of a provider tool call (a tool with `ProviderExecuted: true` or
+  `Type: "provider"`) against the tool's `Parameters`, as TS `parseToolCall`
+  checks every tool's `inputSchema`. An invalid provider-executed call is
+  marked `Invalid` and `Dynamic`; it gets no client tool error, and the
+  provider's own result is kept. v0.5 never validated provider tools. Provider
+  tools without `Parameters` are not validated. The Parameters of four
+  constructors now are the TS input schemas: `xai.MCPServer` and
+  `xai.FileSearch` (`{}`; their config, including the MCP authorization
+  token, was in `Parameters` as defaults and stays in the tool args),
+  `groq.BrowserSearchTool` and the mistral web search tools (no
+  `additionalProperties: false`), and the Anthropic regex tool search (no
+  `maxLength` on `pattern`) (review round 71).
+- **Am I affected?** Provider tools you define yourself with
+  `ProviderExecuted: true` or `Type: "provider"` whose `Parameters` do not
+  describe the call input; code that reads `Parameters` of `xai.MCPServer(`
+  or `xai.FileSearch(` (read `ProviderOptions` for the config).
+- **What to do:** no action unless your provider tool's `Parameters` are not
+  its input schema. Give it the input schema, or none:
+
+  ```go
+  var webSearch = types.Tool{
+  	Name:             "web_search",
+  	Type:             types.ToolTypeProviderDefined,
+  	ProviderExecuted: true,
+  	// The input the model sends, not the provider's configuration.
+  	Parameters: map[string]interface{}{
+  		"type":       "object",
+  		"properties": map[string]interface{}{"query": map[string]interface{}{"type": "string"}},
+  	},
+  }
+  ```
+
+- **Kind:** silent behavior change
+
+### Provider error results are tool errors {#provider-tool-error-results}
+
+- **What changed:** a provider tool result that reports an error (`IsError`
+  true, for example an Anthropic `web_search_tool_result_error`) is now a
+  `types.ToolErrorContent` part in `Content` (`Error` holds the provider's
+  error value) and is replayed in the response messages as an `error-json`
+  output, as TS `convertLanguageModelContent` maps `isError` results to
+  `tool-error` parts. v0.5 kept a `ToolResultContent` with `IsError` and a
+  `json` output, which the Anthropic converter could not send back as an
+  error block. `GenerateText` and the legacy `ToolLoopAgent` changed;
+  `StreamText` already did this (review round 71).
+- **Am I affected?** Code that looks for `types.ToolResultContent` with
+  `IsError` in `Content` or in the response messages.
+- **What to do:** read the tool-error part:
+
+  ```go
+  func providerErrors(content []types.ContentPart) []interface{} {
+  	var out []interface{}
+  	for _, part := range content {
+  		// v0.5: types.ToolResultContent with IsError set
+  		if te, ok := part.(types.ToolErrorContent); ok && te.ProviderExecuted {
+  			out = append(out, te.Error)
+  		}
+  	}
+  	return out
+  }
+  ```
+
+- **Kind:** silent behavior change
+
+### ToolResults holds only successful calls {#tool-results-exclude-failures}
+
+- **What changed:** `ToolResults`, `StaticToolResults` and
+  `DynamicToolResults` of `GenerateTextResult`, `StreamTextResult`,
+  `types.StepResult`, the step-end and end events, `AgentResult` and
+  `NewStreamTextResultFromParts` results no longer hold failed calls (a tool
+  execution error, an invalid or unknown tool call, a provider error result).
+  A failed call is only a `types.ToolErrorContent` part in the step's
+  `Content`; the model still gets it as an `error-text` / `error-json` tool
+  result. TS `toolResults` holds only `tool-result` content parts (owner
+  ruling, review round 71). Telemetry step-end events
+  (`TelemetryStepEndEvent.ToolResults`) still include the failures, since
+  that event has no content.
+- **Am I affected?** Code that loops over `ToolResults` and checks
+  `r.Error != nil`, or that expects one entry per tool call.
+- **What to do:** read the failures from the content. The typed error is in
+  `OnToolExecutionEnd`'s `ToolOutput.Error`:
+
+  ```go
+  func toolFailures(result *ai.GenerateTextResult) []string {
+  	var failures []string
+  	// v0.5:
+  	// for _, r := range result.ToolResults {
+  	// 	if r.Error != nil {
+  	// 		failures = append(failures, r.ToolName+": "+r.Error.Error())
+  	// 	}
+  	// }
+  	for _, part := range result.Content {
+  		if te, ok := part.(types.ToolErrorContent); ok {
+  			failures = append(failures, fmt.Sprintf("%s: %v", te.ToolName, te.Error))
+  		}
+  	}
+  	return failures
+  }
+  ```
+
+- **Kind:** silent behavior change
+
 ### Tool approval and tool-context errors fail the call {#tool-errors-fail-call}
 
 - **What changed:** a tool context that fails the tool's `ContextSchema`, an
@@ -1106,6 +1247,32 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   		continue // the provider's own result (web search, code execution, ...)
   	}
   	_ = r.Result
+  }
+  ```
+
+- **Kind:** silent behavior change
+
+#### Legacy ToolLoopAgent tool messages carry the output's JSON value {#legacy-tool-output-json-value}
+
+- **What changed:** the `json` output of a tool result in the legacy loop's
+  messages (`StepResult.ResponseMessages`, the next step's prompt) is now the
+  tool output's JSON value (a struct becomes a map, a `json.Marshaler` its
+  decoded value), as TS `createToolModelOutput` (`toJSONValue`) and as
+  `GenerateText` already did. v0.5 put the Go value itself there (review
+  round 71).
+- **Am I affected?** Code that type-asserts `ToolResultOutput.Value` of tool
+  messages from `AgentResult.Steps[i].ResponseMessages` or
+  `WorkflowResult.Steps` to a Go type returned by a tool.
+- **What to do:** no action unless you read that value as your Go type; read
+  `types.ToolResult.Result` instead:
+
+  ```go
+  func toolOutputs(step types.StepResult) []interface{} {
+  	var out []interface{}
+  	for _, r := range step.ToolResults {
+  		out = append(out, r.Result) // the Go value the tool returned
+  	}
+  	return out
   }
   ```
 
@@ -1597,6 +1764,69 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 
 - **Kind:** wire/protocol change
 
+### ToUIMessageStream maps start-led part sequences one to one {#ui-start-part-one-to-one}
+
+- **What changed:** when the source given to `ai.ToUIMessageStream` starts
+  with a `provider.ChunkTypeStart` part (a `StreamText`, harness or
+  `NewStreamTextResultFromParts` stream, or your own part slice), each part
+  now maps to its UI chunk as in TS `toUIMessageStream`. The start part
+  writes the `start` chunk and the finish part writes the `finish` chunk
+  where it occurs. Nothing is added at the end: no closing `text-end` /
+  `reasoning-end`, no `finish-step` for the `finish` part, no `finish` when
+  the source has no finish part, and no incomplete-stream `error` chunk. v0.5
+  framed these sources like raw provider streams. `NewStreamTextResultFromParts`
+  streams (`Stream()`, `FullStream()`) now begin with a `ChunkTypeStart` part,
+  as TS `HarnessStreamTextResult` does. A raw provider stream (no leading
+  start part) keeps its framing, but its `start` chunk is now written after
+  the first source chunk arrives (owner ruling 2026-10-30, review round 71).
+- **Am I affected?** `ai.ToUIMessageStream(` on part slices or streams that
+  begin with `provider.ChunkTypeStart`; code that reads
+  `NewStreamTextResultFromParts(` results' `Stream()` / `FullStream()` and
+  expects `ChunkTypeStartStep` first.
+- **What to do:** no action unless you rely on the added chunks. Send
+  `ChunkTypeFinishStep` and `ChunkTypeFinish` parts yourself, and skip a
+  leading start part:
+
+  ```go
+  func firstStepPart(s provider.TextStream) (*provider.StreamChunk, error) {
+  	for {
+  		c, err := s.Next()
+  		if err != nil || c.Type != provider.ChunkTypeStart {
+  			return c, err
+  		}
+  	}
+  }
+  ```
+
+- **Kind:** wire/protocol change
+
+### UI custom, approval and single-part chunks follow TS {#ui-custom-chunk-metadata}
+
+- **What changed:** a UI `"type":"custom"` chunk now carries the part's
+  `providerMetadata` also when the provider set it on `CustomContent` only
+  (Anthropic fallback parts, for example). v0.5 dropped it. A
+  `"tool-approval-request"` chunk leaves out `inputSchemaInput` when it
+  equals the tool call input. `ai.ToUIMessageChunk` reads its part as a
+  `StreamText` part, as TS `toUIMessageChunk`: a `ChunkTypeStart` part gives
+  the `start` chunk and a `ChunkTypeFinish` part the `finish` chunk (with
+  `finishReason` and the message metadata; none with `SendStart` /
+  `SendFinish` false). v0.5 returned no chunk for a start part and
+  `finish-step` for a finish part (review round 71).
+- **Am I affected?** Clients that read `"custom"` or
+  `"tool-approval-request"` chunks; calls of `ai.ToUIMessageChunk(` with
+  start or finish parts.
+- **What to do:** no action unless you depend on the missing field or on the
+  old single-part results. Map the step end with `ChunkTypeFinishStep`:
+
+  ```go
+  func stepEndChunk() (ai.UIMessageChunk, bool) {
+  	// v0.5: ChunkTypeFinish gave "finish-step"; v0.6 gives "finish"
+  	return ai.ToUIMessageChunk(provider.StreamChunk{Type: provider.ChunkTypeFinishStep}, ai.UIMessageStreamResultOptions{})
+  }
+  ```
+
+- **Kind:** wire/protocol change
+
 ## Telemetry and events {#telemetry-and-events}
 
 The [telemetry recording change](#telemetry-record-pointers) is listed under
@@ -1741,22 +1971,37 @@ compile-time changes.
 
 - **Kind:** silent behavior change
 
-### Telemetry step-end and end run after the callbacks {#telemetry-callback-order}
+### Telemetry step-end, end, tool-end, error and abort run after the callbacks {#telemetry-callback-order}
 
 - **What changed:** `GenerateText` and `StreamText` now call the user
   callbacks before the telemetry integrations for the same event: the step's
-  `OnStepEnd` / `OnStepEndEvent` before the integration `OnStepEnd`, and
-  `OnEnd` / `OnEndEvent` before the integration `OnFinish` (onEnd). v0.5 ran
-  the telemetry first for both end events and for the `StreamText` step end
-  (the `GenerateText` step end already ran the callbacks first). TS
-  `notify([callback, telemetry.onX])` starts the callback first (review
-  round 70, coordinator ruling). `OnStepError` also runs before the
-  telemetry `OnStepError` (see
-  [Later step failure](#streamtext-continuation-failure-end)).
-- **Am I affected?** Telemetry integrations whose `OnStepEnd` or `OnFinish`
-  shares state with your `OnStepEnd`, `OnEnd` or `OnEndEvent` callbacks and
-  depends on running first, for example a span the callback expects to be
-  ended already.
+  `OnStepEnd` / `OnStepEndEvent` before the integration `OnStepEnd`, `OnEnd`
+  / `OnEndEvent` before the integration `OnFinish` (onEnd), and
+  `OnToolExecutionEnd` before the integration `OnToolExecutionEnd`. v0.5 ran
+  the telemetry first for both end events, for the `StreamText` step end and
+  for every tool end (the `GenerateText` step end already ran the callbacks
+  first). `GenerateObject`, `StreamObject`, `ExperimentalDecide` and the
+  legacy `ToolLoopAgent` (also `WorkflowAgent.Generate`) follow the same
+  order: `OnStepEnd` before the telemetry step end, `OnEnd` before the
+  telemetry end, `OnToolExecutionEnd` before the telemetry tool end,
+  `OnStepError` before the telemetry step error, and `ExperimentalDecide`'s
+  `OnStart` before the telemetry `OnDecideStart`. `WorkflowAgent` likewise
+  calls `OnToolExecutionEnd` of an approval-resumed tool, `OnError` and
+  `OnAbort` before the root telemetry `OnToolExecutionEnd`, `OnError` and
+  `OnAbort`. `StreamObject` now parses and repairs the final JSON (calling
+  `RepairText`) before `OnStepEnd`, and a `ToModelOutput` failure still calls
+  `OnToolExecutionEnd` (with the raw output) before the call fails. TS
+  `notify([callback, telemetry.onX])` starts the callback first, and TS
+  WorkflowAgent awaits its callbacks before the telemetry dispatcher (review
+  rounds 70 and 71). `OnStepError` also runs before the telemetry
+  `OnStepError` (see [Later step failure](#streamtext-continuation-failure-end)).
+- **Am I affected?** Telemetry integrations whose `OnStepEnd`, `OnFinish`,
+  `OnToolExecutionEnd`, `OnError` or `OnAbort` shares state with your
+  `OnStepEnd`, `OnEnd`, `OnEndEvent`, `OnToolExecutionEnd`, `OnError` or
+  `OnAbort` callbacks and depends on running first, for example a span the
+  callback expects to be ended already. `RepairText` and `OnStepEnd` of
+  `StreamObject` that depend on their order; `OnToolExecutionEnd` callbacks
+  that assume a `ToModelOutput` failure never reaches them.
 - **What to do:** no action unless you rely on that order. Do the work that
   must come last in the integration:
 
@@ -2339,6 +2584,16 @@ after upgrading:
 - **UI message stream SSE events have sorted JSON keys**, because
   `UIMessageChunk` is a map; TS writes insertion order. The values are the
   same. See [UI message stream JSON key order](./known-differences.mdx).
+- **`ToUIMessageStream` frames a raw provider stream** (start, finish-step,
+  finish, incomplete-stream error); start-led sources (`StreamText`, harness
+  streams) map one to one as in TS. See
+  [ToUIMessageStream on a raw provider stream](./known-differences.mdx).
+- **The telemetry `OnStart` / `OnStepStart` run before the user start
+  callbacks**, so the callbacks run in the integration's span context. TS
+  starts the callback first; end events run the callbacks first, as TS. See
+  [Telemetry start before the start callbacks](./known-differences.mdx).
+- **`RuntimeContext` stays nil when unset**; TS defaults it to `{}`. See
+  [RuntimeContext defaults to nil](./known-differences.mdx).
 
 ## For coding agents {#for-coding-agents}
 
@@ -2374,7 +2629,8 @@ next one.
      -e 'Integrations:|"ai-sdk"|"go-ai"|TracerName|EnrichSpan|onEvaluate|ai\.evaluat|err\.Error\(\)|\.Provider\(\)' \
      -e 'promptCacheOptions|OPENAI_API_KEY|DEEPSEEK_API_KEY|DownloadError|klingai|perplexity|Issuer|RequestTimeoutMS|TimeoutMS' \
      -e 'codemode\.|wazero|acp\.|ClientAppName|AgentSettings|"terminal"|fx\.Settings|policy\.|cohere' \
-     -e 'OnStepStart|PrepareCall:|ParseCompleteOutput|StreamTranscri|no such (evaluation|decision)Model|finishReason|is not allowed' .
+     -e 'OnStepStart|PrepareCall:|ParseCompleteOutput|StreamTranscri|no such (evaluation|decision)Model|finishReason|is not allowed' \
+     -e 'ToUIMessageChunk|event\.Ranking|ToolErrorContent|IsError|RepairText|NewStreamTextResultFromParts|xai\.(MCPServer|FileSearch)' .
    ```
 
 4. For each match, open the entry the table links to. Apply **What to do**.
