@@ -2,6 +2,8 @@ package registry
 
 import (
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"sync"
 
@@ -82,8 +84,8 @@ var globalRegistry = NewRegistry()
 type Registry struct {
 	mu        sync.RWMutex
 	providers map[string]provider.Provider
-	// providerOrder lists provider names in first-registration order, the
-	// order TS Object.keys(providers) reports in NoSuchProviderError.
+	// providerOrder lists provider names in first-registration order;
+	// listProvidersLocked reports them in TS Object.keys(providers) order.
 	providerOrder []string
 	aliases       map[string]string // model alias -> provider:model
 	tools         map[string]ToolEntry
@@ -485,8 +487,49 @@ func (r *Registry) ListProviders() []string {
 	return r.listProvidersLocked()
 }
 
+// listProvidersLocked lists the provider names in TS Object.keys order:
+// array-index names ("0", "1", ... below 2^32-1, no leading zeros) first in
+// ascending numeric order, then the others in first-registration order.
 func (r *Registry) listProvidersLocked() []string {
-	return append([]string(nil), r.providerOrder...)
+	var indexes []string
+	others := make([]string, 0, len(r.providerOrder))
+	for _, name := range r.providerOrder {
+		if _, ok := arrayIndexKey(name); ok {
+			indexes = append(indexes, name)
+		} else {
+			others = append(others, name)
+		}
+	}
+	if len(indexes) == 0 {
+		return others
+	}
+	sort.Slice(indexes, func(i, j int) bool {
+		a, _ := arrayIndexKey(indexes[i])
+		b, _ := arrayIndexKey(indexes[j])
+		return a < b
+	})
+	return append(indexes, others...)
+}
+
+// arrayIndexKey reports whether name is an ECMAScript array index (the
+// canonical decimal form of an integer in [0, 2^32-2]), which Object.keys
+// lists before every other key.
+func arrayIndexKey(name string) (uint64, bool) {
+	if name == "" || len(name) > 10 || (len(name) > 1 && name[0] == '0') {
+		return 0, false
+	}
+	var n uint64
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + uint64(c-'0')
+	}
+	if n >= math.MaxUint32 {
+		return 0, false
+	}
+	return n, true
 }
 
 // ListAliases returns all registered aliases
