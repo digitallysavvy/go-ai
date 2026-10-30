@@ -62,9 +62,20 @@ func hasEmptyProviderResult(msgs []types.Message) bool {
 	return false
 }
 
+// stepResponseMessages collects every step's response messages.
+func stepResponseMessages(steps []types.StepResult) []types.Message {
+	var msgs []types.Message
+	for _, s := range steps {
+		msgs = append(msgs, s.Response.Messages...)
+	}
+	return msgs
+}
+
 // TS WorkflowAgent: a provider-executed tool call that got no result is
-// answered with an empty text result and the loop continues.
-func TestWorkflowGenerateContinuesAfterProviderToolWithoutResult(t *testing.T) {
+// answered with an empty text result (resolveProviderToolResult), and the
+// run ends there: modelCallIterator is done after a step without client
+// tool calls or pending deferred results.
+func TestWorkflowGenerateEndsAfterProviderToolWithoutResult(t *testing.T) {
 	m := &providerToolModel{}
 	a, err := NewWorkflowAgent(WorkflowAgent{Model: m, Tools: []types.Tool{{Name: "web", ProviderExecuted: true}}})
 	if err != nil {
@@ -74,15 +85,15 @@ func TestWorkflowGenerateContinuesAfterProviderToolWithoutResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.calls != 2 || r.Text != "done" || len(r.Steps) != 2 {
-		t.Fatalf("calls=%d text=%q steps=%d", m.calls, r.Text, len(r.Steps))
+	if m.calls != 1 || len(r.Steps) != 1 {
+		t.Fatalf("calls=%d steps=%d, want 1 and 1", m.calls, len(r.Steps))
 	}
-	if !hasEmptyProviderResult(m.second) {
-		t.Fatalf("second call lacks the empty provider result: %#v", m.second)
+	if !hasEmptyProviderResult(stepResponseMessages(r.Steps)) {
+		t.Fatalf("step response lacks the empty provider result: %#v", r.Steps[0].Response.Messages)
 	}
 }
 
-func TestWorkflowStreamContinuesAfterProviderToolWithoutResult(t *testing.T) {
+func TestWorkflowStreamEndsAfterProviderToolWithoutResult(t *testing.T) {
 	m := &providerToolModel{}
 	a, err := NewWorkflowAgent(WorkflowAgent{Model: m, Tools: []types.Tool{{Name: "web", ProviderExecuted: true}}})
 	if err != nil {
@@ -95,11 +106,11 @@ func TestWorkflowStreamContinuesAfterProviderToolWithoutResult(t *testing.T) {
 	if err := st.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if m.calls != 2 || st.Text() != "done" || len(st.Steps()) != 2 {
-		t.Fatalf("calls=%d text=%q steps=%d", m.calls, st.Text(), len(st.Steps()))
+	if m.calls != 1 || len(st.Steps()) != 1 {
+		t.Fatalf("calls=%d steps=%d, want 1 and 1", m.calls, len(st.Steps()))
 	}
-	if !hasEmptyProviderResult(m.second) {
-		t.Fatalf("second call lacks the empty provider result: %#v", m.second)
+	if !hasEmptyProviderResult(stepResponseMessages(st.Steps())) {
+		t.Fatalf("step response lacks the empty provider result: %#v", st.Steps()[0].Response.Messages)
 	}
 }
 
@@ -174,22 +185,23 @@ func (m *badJSONStreamModel) DoStream(context.Context, *provider.GenerateOptions
 	}), nil
 }
 
-// The core loops honor the internal option directly (generate and stream).
+// The core loops honor the internal option directly (generate and stream):
+// the call is answered and the loop ends after the step.
 func TestCoreInternalContinueOnMissingProviderResult(t *testing.T) {
 	internal := &ai.InternalOptions{ContinueOnMissingProviderResult: true}
 	tools := []types.Tool{{Name: "web", ProviderExecuted: true}}
 	m := &providerToolModel{}
 	r, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{Model: m, Prompt: "p", Tools: tools, Internal: internal, StopWhen: []ai.StopCondition{ai.IsStepCount(5)}})
-	if err != nil || m.calls != 2 || r.Text != "done" || !hasEmptyProviderResult(m.second) {
-		t.Fatalf("generate: calls=%d err=%v second=%#v", m.calls, err, m.second)
+	if err != nil || m.calls != 1 || len(r.Steps) != 1 || !hasEmptyProviderResult(stepResponseMessages(r.Steps)) {
+		t.Fatalf("generate: calls=%d err=%v steps=%#v", m.calls, err, r)
 	}
 	m = &providerToolModel{}
 	st, err := ai.StreamText(context.Background(), ai.StreamTextOptions{Model: m, Prompt: "p", Tools: tools, Internal: internal, StopWhen: []ai.StopCondition{ai.IsStepCount(5)}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Err(); err != nil || m.calls != 2 || !hasEmptyProviderResult(m.second) {
-		t.Fatalf("stream: calls=%d err=%v second=%#v", m.calls, err, m.second)
+	if err := st.Err(); err != nil || m.calls != 1 || !hasEmptyProviderResult(stepResponseMessages(st.Steps())) {
+		t.Fatalf("stream: calls=%d err=%v steps=%#v", m.calls, err, st.Steps())
 	}
 }
 

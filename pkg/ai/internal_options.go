@@ -19,12 +19,13 @@ type InternalOptions struct {
 	GenerateID     IDGenerator
 	GenerateCallID IDGenerator
 
-	// ContinueOnMissingProviderResult makes the step loop continue after a
-	// provider-executed tool call that got no result in its response. The
-	// loop warns and answers the call with an empty text result, as TS
-	// WorkflowAgent does (resolveProviderToolResult), instead of ending the
-	// run. Calls to deferred-result tools are left pending as usual. Used by
-	// WorkflowAgent; plain GenerateText/StreamText stop the loop like TS
+	// ContinueOnMissingProviderResult answers a provider-executed tool call
+	// that got no result in its response with an empty text result, with a
+	// warning, as TS WorkflowAgent does (resolveProviderToolResult). Like TS
+	// modelCallIterator, the loop still ends after a step without client
+	// tool calls or pending deferred results. Calls to deferred-result tools
+	// are left pending as usual. Used by WorkflowAgent; plain
+	// GenerateText/StreamText leave the call pending like TS
 	// generateText/streamText.
 	ContinueOnMissingProviderResult bool
 

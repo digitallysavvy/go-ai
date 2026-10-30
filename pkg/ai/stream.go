@@ -3028,9 +3028,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			r.finishReason = types.FinishReasonOther
 		}
 		// WorkflowAgent: answer provider-executed calls that got no result with
-		// an empty text result, as if the provider had streamed it, so the loop
-		// continues (TS resolveProviderToolResult).
-		injectedProviderResult := false
+		// an empty text result, as if the provider had streamed it (TS
+		// resolveProviderToolResult). The loop still ends after a step without
+		// client tool calls (TS modelCallIterator done rule).
 		if opts.Internal != nil && opts.Internal.ContinueOnMissingProviderResult && !transformStopped && (!stepSawErrorChunk || !opts.Internal.StopOnStreamError) && providerResultFinishAllowed(r.finishReason) {
 			for _, call := range missingProviderResultCalls(stepToolCalls, toolsByName, func(id string) bool {
 				_, ok := streamedToolResults[id]
@@ -3040,7 +3040,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				streamedToolResultOrder = recordStreamedToolResult(streamedToolResults, streamedToolResultOrder, synthetic)
 				stepContent = append(stepContent, toolResultContentFromToolResult(synthetic))
 				forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeToolResult, ToolResult: &synthetic}})
-				injectedProviderResult = true
 			}
 		}
 		// The consumer-visible per-step finish signal is ChunkTypeFinishStep,
@@ -3617,7 +3616,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			steeringEndReason = SteeringWaitingForToolResults
 			break
 		}
-		if !hasLocalToolCalls && len(pendingDeferredToolCalls) == 0 && !injectedProviderResult {
+		if !hasLocalToolCalls && len(pendingDeferredToolCalls) == 0 {
 			// A waiting steering message keeps the loop going for another
 			// step, unless the step failed.
 			if !r.steering.hasPendingMessages() {

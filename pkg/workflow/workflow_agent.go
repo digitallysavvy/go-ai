@@ -2750,8 +2750,8 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	return &WorkflowStreamResult{StreamTextResult: stream}, nil
 }
 
-// workflowInternalOptions makes the loop continue after a provider-executed
-// tool call with no result (TS WorkflowAgent warns and sends an empty result).
+// workflowInternalOptions answers a provider-executed tool call with no
+// result (TS WorkflowAgent warns and sends an empty result).
 var workflowInternalOptions = &ai.InternalOptions{ContinueOnMissingProviderResult: true, StopOnStreamError: true, EndOnError: true, HeadersAsGiven: true, ApprovalID: workflowApprovalID, RequestMessagesAsPrompt: true, DeferApprovalRequests: true, ApprovalsResumed: true}
 
 // workflowApprovalID is TS WorkflowAgent's approval ID for a tool call:

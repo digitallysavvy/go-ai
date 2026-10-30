@@ -1007,16 +1007,14 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 
 			// WorkflowAgent: a provider-executed call with no result gets an
 			// empty text result (TS resolveProviderToolResult) instead of the
-			// pending marker, so the loop continues with a text output.
+			// pending marker. Like TS modelCallIterator, the loop still ends
+			// after a step without client tool calls.
 			if callConfig.Internal != nil && callConfig.Internal.ContinueOnMissingProviderResult {
 				for _, synthetic := range aibridge.EmptyProviderResults(stepResult.ToolCalls, callConfig.Tools, stepResult.Content, stepResult.FinishReason, stepResult.Model.Provider, stepResult.Model.ModelID) {
 					for i := range toolResults {
 						if toolResults[i].ToolCallID == synthetic.ToolCallID && toolResults[i].ProviderExecuted && toolResults[i].Result == nil && toolResults[i].Error == nil {
 							toolResults[i].Result = synthetic.Result
 							toolResults[i].ModelOutput = synthetic.ModelOutput
-							// The answered call keeps the loop going (as
-							// generate.go's injectedProviderResult).
-							shouldContinue = true
 						}
 					}
 				}
@@ -2260,6 +2258,31 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				tool = &tools[j]
 				break
 			}
+		}
+
+		if tool == nil && call.ProviderExecuted {
+			// A provider-executed (dynamic) call of a tool not in the set is
+			// the provider's: TS parseToolCall keeps it and runs only client
+			// calls locally, so it gets no "tool not found" error result.
+			if a.config.OnToolStart != nil {
+				a.config.OnToolStart(call)
+			}
+			result := types.ToolResult{
+				ToolCallID:          call.ID,
+				ToolName:            call.ToolName,
+				Title:               call.Title,
+				Input:               call.Arguments,
+				ProviderExecuted:    true,
+				ProviderExecutedSet: true,
+				ProviderMetadata:    call.ProviderMetadata,
+				ToolMetadata:        call.ToolMetadata,
+				Dynamic:             call.Dynamic,
+			}
+			results = append(results, result)
+			if a.config.OnToolResult != nil {
+				a.config.OnToolResult(result)
+			}
+			return results, nil
 		}
 
 		if tool == nil {

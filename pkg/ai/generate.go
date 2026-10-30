@@ -1683,7 +1683,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		result.Usage = result.Usage.Add(genResult.Usage)
 
 		hasUserApproval := false
-		injectedProviderResult := false
 		var rawStepToolResults []types.ToolResult
 		toolResultsBefore := len(result.ToolResults)
 
@@ -1794,8 +1793,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			}
 
 			// WorkflowAgent: answer provider-executed calls that got no result
-			// with an empty text result so the loop continues (TS
-			// resolveProviderToolResult).
+			// with an empty text result (TS resolveProviderToolResult). The
+			// loop still ends after a step without client tool calls (TS
+			// modelCallIterator done rule).
 			if opts.Internal != nil && opts.Internal.ContinueOnMissingProviderResult && providerResultFinishAllowed(genResult.FinishReason) {
 				answered := func(id string) bool { return contentAnswersProviderCall(stepResult.Content, id) }
 				for _, call := range missingProviderResultCalls(genResult.ToolCalls, toolsByName, answered) {
@@ -1803,7 +1803,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 					stepResult.Content = append(stepResult.Content, toolResultContentFromToolResult(synthetic))
 					stepResult.ToolResults = append(stepResult.ToolResults, synthetic)
 					result.ToolResults = append(result.ToolResults, synthetic)
-					injectedProviderResult = true
 				}
 				stepResult.StaticToolResults = filterStaticToolResults(stepResult.ToolResults)
 				stepResult.DynamicToolResults = filterDynamicToolResults(stepResult.ToolResults)
@@ -2059,7 +2058,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			steeringEndReason = SteeringWaitingForToolResults
 			break
 		}
-		if !hasLocalToolCalls && !hasPendingDeferred && !injectedProviderResult {
+		if !hasLocalToolCalls && !hasPendingDeferred {
 			// A waiting steering message keeps the loop going for another
 			// step, unless the step failed.
 			if !steeringRun.hasPendingMessages() {

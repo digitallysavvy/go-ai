@@ -423,7 +423,6 @@ func (m *r70MissingResultModel) DoStream(_ context.Context, opts *provider.Gener
 // provider-executed call of an unregistered tool (the TS case's `tools: {}`;
 // parseToolCall keeps such a call only when it is dynamic) behave so.
 func TestR70WorkflowMissingProviderResultIsEmptyText(t *testing.T) {
-	t.Skip("parity bug: change requests CR-1 (generate.go/stream.go/toolloop.go keep the loop going after the synthetic result) and CR-2 (toolloop.go runs an unregistered dynamic provider-executed call locally), reports/loop-r70-carry.md")
 	for _, variant := range []string{"registered", "dynamic"} {
 		for _, stream := range []bool{false, true} {
 			m := &r70MissingResultModel{dyn: variant == "dynamic"}
