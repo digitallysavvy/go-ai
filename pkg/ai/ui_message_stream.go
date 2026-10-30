@@ -867,9 +867,14 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		// part messageMetadata sees carries the call's finishReason,
 		// rawFinishReason and totalUsage.
 		var callFinishPart *provider.StreamChunk
-		// lastErrChunk is the source's previous part when it was an error
-		// part, else nil.
-		var lastErrChunk *provider.StreamChunk
+		// lastPartErr is the error of the source's previous part when it was
+		// an error part carrying one, else nil (the value, not the part: a
+		// TextStream may reuse the chunk it returned).
+		var lastPartErr error
+		// lastPartAbort: the source's previous part was an abort part;
+		// sawAbortPart: any part was.
+		lastPartAbort := false
+		sawAbortPart := false
 		activeTextIDs := &orderedIDSet{}
 		activeReasoningIDs := &orderedIDSet{}
 		textID := ""
@@ -937,6 +942,14 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				}
 				if isAbortErr(ctx, err) {
 					setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeAborted})
+					if lastPartAbort {
+						// A StreamText run TS ends with an `abort` part closes
+						// its Go stream with the abort error after the part:
+						// TS's source ends normally there, so the part's own
+						// abort chunk is the only one.
+						callOnEnd()
+						return
+					}
 					abortPart := provider.StreamChunk{Type: provider.ChunkTypeAbort}
 					abortChunk := UIMessageChunk{"type": "abort"}
 					if err.Error() != "" {
@@ -955,16 +968,20 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				// error after the part. TS's source stream ends normally
 				// there, so the part's own error chunk is the only one and
 				// the outcome stays the part's failed outcome.
-				if lastErrChunk == nil || lastErrChunk.Err == nil || !errors.Is(err, lastErrChunk.Err) {
+				if lastPartErr == nil || !errors.Is(err, lastPartErr) {
 					failSourceOutcome(err)
 					appendErrorChunk(onError, safeEnqueue, err)
 				}
 				callOnEnd()
 				return
 			}
-			lastErrChunk = nil
+			lastPartErr = nil
 			if chunk.Type == provider.ChunkTypeError {
-				lastErrChunk = chunk
+				lastPartErr = chunk.Err
+			}
+			lastPartAbort = chunk.Type == provider.ChunkTypeAbort
+			if lastPartAbort {
+				sawAbortPart = true
 			}
 
 			if chunk.Type == provider.ChunkTypeFinish || chunk.Type == provider.ChunkTypeFinishStep {
@@ -982,6 +999,10 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeCompleted})
 				finishPart := *chunk
 				callFinishPart = &finishPart
+			}
+			if chunk.Type == provider.ChunkTypeAbort {
+				// TS: part.type === 'abort' → setSourceOutcome aborted.
+				setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeAborted})
 			}
 			if chunk.Type == provider.ChunkTypeError {
 				sawTerminal = true
@@ -1133,6 +1154,12 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			callOnEnd()
 			return
 		}
+		if !sawTerminal && sawAbortPart {
+			// TS writes the abort part's chunk and nothing after it: an
+			// aborted source is not an incomplete one, and has no finish.
+			callOnEnd()
+			return
+		}
 		if !sawTerminal {
 			if !sawOutput {
 				err := newIncompleteModelStreamError()
@@ -1167,7 +1194,12 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			finishPart.FinishReason = finishReason
 			finishMetadata = options.MessageMetadata(messageMetadataInput(finishPart, "finish"))
 		}
-		if sendFinish {
+		// TS writes the finish chunk for the source's `finish` part only: a
+		// StreamText run that ends without one (a later step that failed to
+		// prepare or open ends with its error part) gets none. A raw
+		// provider stream has no call-level finish part, so its end writes
+		// one.
+		if sendFinish && (endedWithCallFinish || !sawStartStepChunk) {
 			finishEvent := map[string]interface{}{
 				"type":         "finish",
 				"finishReason": string(finishReason),
@@ -2603,6 +2635,11 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if fileContent == nil {
 			break
 		}
+		// TS part.providerMetadata is the file's own metadata (as for a
+		// source, a chunk-level copy wins).
+		if len(chunk.ProviderMetadata) == 0 {
+			chunk.ProviderMetadata = fileContent.ProviderMetadata
+		}
 		part := map[string]interface{}{
 			"type":      "file",
 			"mediaType": fileContent.MediaType,
@@ -2617,6 +2654,9 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		fileContent := chunk.ReasoningFileContent
 		if fileContent == nil {
 			break
+		}
+		if len(chunk.ProviderMetadata) == 0 {
+			chunk.ProviderMetadata = fileContent.ProviderMetadata
 		}
 		part := map[string]interface{}{
 			"type":      "reasoning-file",

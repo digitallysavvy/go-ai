@@ -552,6 +552,12 @@ type StreamTextResult struct {
 	// final step's text).
 	outputSpec outputProcessor
 
+	// partialSpec parses PartialOutput(): outputSpec, or TextOutput() when no
+	// Output option was provided and the run keeps the replay buffer (TS
+	// createOutputTransformStream(output ?? text(), retention.replay ||
+	// output != null)). nil for a StreamTextLowMemory run without an Output.
+	partialSpec outputProcessor
+
 	// outputResult holds the final parsed output after streaming completes.
 	// Only populated when finishReason == Stop and an Output spec was provided.
 	// Protected by mu.
@@ -1487,8 +1493,11 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		} else {
 			// TS notifyStepError(wrapGatewayError(error)) feeds both onStepError
 			// and telemetry onStepError; telemetry onError gets the original.
-			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: wrapGatewayError(err)})
-			r.notifyStepError(ctx, opts.OnStepError, wrapGatewayError(err))
+			// TS notify runs [onStepError, telemetry onStepError] in order.
+			if r.openStep != nil {
+				r.notifyStepError(ctx, opts.OnStepError, wrapGatewayError(err))
+				telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: wrapGatewayError(err)})
+			}
 			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		}
 		// TS reports the doStream failure itself, without wrapper text, after
@@ -1500,9 +1509,6 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			// of throwing. The error part carries the model call's own error
 			// (TS `{ type: 'error', error }`); onError gets it wrapped.
 			r.pushPreStreamParts(ctx, opts, provider.StreamChunk{Type: provider.ChunkTypeStart}, provider.StreamChunk{Type: provider.ChunkTypeError, Err: err, Text: err.Error()})
-			if opts.OnError != nil {
-				safeInvoke(func() { opts.OnError(ctx, startErr) })
-			}
 			notifyFailedEnd(ctx, opts.Internal, onEndEvent, callID, runtimeContext, toolsContext, initialResponseMessages, nil, startErr)
 		}
 		if stepCancel != nil {
@@ -1537,6 +1543,10 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	r.telemetryCtx = telemetryCtx
 	r.telemetrySettings = telemetrySettings
 	r.outputSpec = outputSpec
+	r.partialSpec = outputSpec
+	if r.partialSpec == nil && !r.singleConsumer {
+		r.partialSpec = &textOutput{}
+	}
 	// Structured event callbacks
 	r.cbCallID = callID
 	r.cbOnEnd = onEnd
@@ -1595,8 +1605,17 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		if !isInternalStreamMarker(c.Type) {
 			r.chunkBuf.push(c)
 		}
-		if userOnChunk != nil && !r.takeOnChunkReportedErr(c) {
+		// TS's event processor skips onChunk and onError only for the error
+		// value the model stream reader already reported
+		// (errorsHandledForStreamRetry); every other error part leaving the
+		// transform chain reaches both.
+		handled := r.takeOnChunkReportedErr(c)
+		if userOnChunk != nil && !handled {
 			safeInvoke(func() { userOnChunk(c) })
+		}
+		if c.Type == provider.ChunkTypeError && !handled && opts.OnError != nil {
+			partErr := wrapGatewayError(streamChunkError(&c))
+			safeInvoke(func() { opts.OnError(ctx, partErr) })
 		}
 	}
 	r.processStream(ctx, combinedOnChunk, onEnd)
@@ -1607,10 +1626,9 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 // as TS streamText does for every such part (retried or not); the part's own
 // pass through the full stream then skips OnChunk.
 func (r *StreamTextResult) reportModelErrorPartToOnChunk(onChunk func(provider.StreamChunk), chunk provider.StreamChunk) {
-	if onChunk == nil {
-		return
+	if onChunk != nil {
+		safeInvoke(func() { onChunk(chunk) })
 	}
-	safeInvoke(func() { onChunk(chunk) })
 	r.onChunkReportedErr = &chunk
 }
 
@@ -1668,10 +1686,6 @@ func (r *StreamTextResult) failBeforeStream(ctx context.Context, opts StreamText
 		// processor calls onChunk for the part, then onError with the error
 		// wrapped.
 		r.pushPreStreamParts(ctx, opts, provider.StreamChunk{Type: provider.ChunkTypeStart}, provider.StreamChunk{Type: provider.ChunkTypeError, Err: err, Text: err.Error()})
-		wrapped := wrapGatewayError(err)
-		if opts.OnError != nil {
-			safeInvoke(func() { opts.OnError(ctx, wrapped) })
-		}
 	}
 	r.fail(err)
 }
@@ -1683,19 +1697,24 @@ func (r *StreamTextResult) failBeforeStream(ctx context.Context, opts StreamText
 // parts that follow.
 func (r *StreamTextResult) pushPreStreamParts(ctx context.Context, opts StreamTextOptions, parts ...provider.StreamChunk) {
 	for _, c := range r.transformPreStreamParts(ctx, opts, parts...) {
-		r.deliverPreStreamPart(opts, c)
+		r.deliverPreStreamPart(ctx, opts, c)
 	}
 }
 
 // deliverPreStreamPart adds one transformed pre-stream part to the result
-// streams and OnChunk.
-func (r *StreamTextResult) deliverPreStreamPart(opts StreamTextOptions, c provider.StreamChunk) {
+// streams and OnChunk; an error part then reaches OnError with
+// wrapGatewayError(error) (TS's event processor).
+func (r *StreamTextResult) deliverPreStreamPart(ctx context.Context, opts StreamTextOptions, c provider.StreamChunk) {
 	if r.chunkBuf == nil {
 		return
 	}
 	r.chunkBuf.push(c)
 	if opts.OnChunk != nil {
 		safeInvoke(func() { opts.OnChunk(c) })
+	}
+	if c.Type == provider.ChunkTypeError && opts.OnError != nil {
+		partErr := wrapGatewayError(streamChunkError(&c))
+		safeInvoke(func() { opts.OnError(ctx, partErr) })
 	}
 }
 
@@ -1751,7 +1770,7 @@ func (r *StreamTextResult) abortBeforeStream(ctx context.Context, opts StreamTex
 	parts := r.transformPreStreamParts(ctx, opts, provider.StreamChunk{Type: provider.ChunkTypeStart}, abortChunk)
 	i := 0
 	for ; i < len(parts) && parts[i].Type != provider.ChunkTypeAbort; i++ {
-		r.deliverPreStreamPart(opts, parts[i])
+		r.deliverPreStreamPart(ctx, opts, parts[i])
 	}
 	if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
 		safeInvoke(func() { onAbort(ctx, GenerateTextAbortEvent{CallID: call.callID, Reason: reason}) })
@@ -1760,7 +1779,7 @@ func (r *StreamTextResult) abortBeforeStream(ctx context.Context, opts StreamTex
 		telemetry.FireOnAbort(call.telemetryCtx, telemetry.TelemetryAbortEvent{Settings: call.telemetrySettings, CallID: call.callID, Reason: reason})
 	}
 	for ; i < len(parts); i++ {
-		r.deliverPreStreamPart(opts, parts[i])
+		r.deliverPreStreamPart(ctx, opts, parts[i])
 	}
 }
 
@@ -1899,18 +1918,21 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	// error parts go through it, as TS's abort and error parts pass through
 	// experimental_transform after the outer stream.
 	var forwardThroughTransformChain func(startIdx int, chunks []provider.StreamChunk)
-	// errorPartEnd: the run ended with a failure that TS reports as an `error` part
-	// (a later step that fails to prepare or open, an incomplete model
-	// stream, a tool context that fails its schema), which reaches the
-	// onError callback.
-	// Every other failure is thrown inside TS's stream (a model stream that
-	// fails, a file download, an approval or tool input callback, a tool
+	// A run that ends with a failure TS reports as an `error` part (a later
+	// step that fails to prepare or open, an incomplete model stream) reaches
+	// OnError when that part leaves the transform chain (bootstrapAndStream's
+	// sink). Every other failure is thrown inside TS's stream (a model stream
+	// that fails, a file download, an approval or tool input callback, a tool
 	// output conversion): the outer stream reports it to onStepError and the
 	// telemetry onError and errors the stream, without onError.
-	errorPartEnd := false
-	// stepErrorTelemetryFired: the open step's telemetry onStepError already
-	// ran (a later step that failed to open reports it at the failure site).
-	stepErrorTelemetryFired := false
+	// stepErrorTelemetryCtx: the telemetry context of a later step that failed
+	// to open (its model-call span), for the open step's telemetry
+	// onStepError after the loop.
+	var stepErrorTelemetryCtx context.Context
+	// continuationFailed: a later step failed to prepare or open, which TS
+	// ends with that step's `error` part (streamStep's catch) and no
+	// call-level `finish` part.
+	continuationFailed := false
 	abortFired := false
 	fireAbort := func(reason error) {
 		if abortFired {
@@ -1969,8 +1991,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			for _, c := range chunks {
 				if rec != nil {
 					rec.record(c)
-					if r.outputSpec != nil && sinkPartialErr == nil {
-						partial, publish, perr := outputTracker.observe(ctx, r.outputSpec, c)
+					if r.partialSpec != nil && sinkPartialErr == nil {
+						partial, publish, perr := outputTracker.observe(ctx, r.partialSpec, c)
 						if perr != nil {
 							sinkPartialErr = perr
 						} else if publish {
@@ -2019,8 +2041,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// onError (after the loop) gets r.err: TS's event processor passes
 		// wrapGatewayError(part.error), as for a later step that fails to open.
 		r.err = wrapGatewayError(err)
-		errorPartEnd = true
 		if !isAbortErr(ctx, err) {
+			continuationFailed = true
 			// TS's step catch enqueues the error itself.
 			forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: err, Text: err.Error()}})
 		}
@@ -2435,8 +2457,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				// structured-output response.
 				// With transforms the partial follows the transformed stream
 				// (see the sink in forwardThroughTransformChain).
-				if r.outputSpec != nil && rec == nil {
-					partial, publish, partialErr := stepPartialTracker.observe(ctx, r.outputSpec, *chunk)
+				if r.partialSpec != nil && rec == nil {
+					partial, publish, partialErr := stepPartialTracker.observe(ctx, r.partialSpec, *chunk)
 					if partialErr != nil {
 						r.err = partialErr
 						break
@@ -2835,9 +2857,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 						// reaches onError like any error part.
 						retryErr := wrapGatewayError(reopenErr)
 						forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: reopenErr, Text: reopenErr.Error()}})
-						if opts.OnError != nil {
-							safeInvoke(func() { opts.OnError(ctx, retryErr) })
-						}
 						stepSawTerminal = true
 						stepSawErrorChunk = true
 						r.finishReason = types.FinishReasonError
@@ -2866,6 +2885,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					stepTextParts = nil
 					stepPartialTracker.reset()
 					outputTracker.reset()
+					if rec != nil {
+						// TS eventProcessor retry boundary: the recorded
+						// content restarts (the step's start part stays).
+						startStep := rec.startStep
+						rec.resetStep()
+						rec.startStep = startStep
+					}
 					stepToolCalls = nil
 					eagerApprovals = make(map[string]preResolvedApproval)
 					pendingApprovalChunks = nil
@@ -2991,7 +3017,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if !stepSawTerminal {
 			if !stepSawOutput {
 				r.err = newIncompleteModelStreamError()
-				errorPartEnd = true
 				forwardThroughTransformChain(0, []provider.StreamChunk{{
 					Type: provider.ChunkTypeError,
 					Err:  r.err,
@@ -3130,12 +3155,15 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// A tool context that fails its schema errors the stream (TS
 			// executeToolCall validates it outside its try). TS's
 			// executeToolsFromStream catches it as an `error` part, so it
-			// reaches OnError.
+			// reaches OnError; Go ends the run there (owner decision
+			// 2026-10-28, known difference "StreamText tool context failure
+			// ends the run"), so OnError is called here, before the open
+			// step's OnStepError.
 			if failure := unwrapToolCallFailure(toolsErr); failure != nil {
 				r.err = failure
 				var tcf *toolCallFailureError
-				if errors.As(toolsErr, &tcf) && tcf.toolContext {
-					errorPartEnd = true
+				if errors.As(toolsErr, &tcf) && tcf.toolContext && opts.OnError != nil {
+					safeInvoke(func() { opts.OnError(ctx, failure) })
 				}
 				cancelStep()
 				break
@@ -3959,7 +3987,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			openErr := err
 			r.err = wrapGatewayError(err)
-			errorPartEnd = true
 			// Close the still-open step span and the model-call/"chat" span
 			// opened just above via FireOnStepStart/FireOnLanguageModelCallStart
 			// (this next step's own iteration of the outer loop is never
@@ -3977,8 +4004,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				// The error part carries the model call's own error (TS step
 				// catch); onError gets it wrapped.
 				forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: openErr, Text: openErr.Error()}})
-				telemetry.FireOnStepError(nextModelCallCtx, telemetry.TelemetryErrorEvent{Settings: r.telemetrySettings, CallID: r.cbCallID, Error: r.err})
-				stepErrorTelemetryFired = true
+				continuationFailed = true
+				stepErrorTelemetryCtx = nextModelCallCtx
 			}
 			nextStepCancel()
 			break
@@ -3992,6 +4019,46 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.steering.end(steeringEndReasonFor(ctx, r.err))
 	} else {
 		r.steering.end(steeringEndReason)
+	}
+
+	// notifyOpenStepError reports a step that started without producing a
+	// result: TS notifyStepError notifies [onStepError, telemetry
+	// onStepError] with wrapGatewayError(error).
+	notifyOpenStepError := func(stepErr error) {
+		if r.openStep == nil {
+			return
+		}
+		r.notifyStepError(ctx, opts.OnStepError, stepErr)
+		stepCtx := stepErrorTelemetryCtx
+		if stepCtx == nil {
+			stepCtx = r.stepReopenCtx
+		}
+		if stepCtx == nil {
+			stepCtx = r.telemetryCtx
+		}
+		telemetry.FireOnStepError(stepCtx, telemetry.TelemetryErrorEvent{Settings: r.telemetrySettings, CallID: r.cbCallID, Error: stepErr})
+	}
+
+	// A later step that failed to prepare or open ended the stream with its
+	// error part, which already reached OnChunk and OnError. TS's event
+	// processor flush then reports the open step (onStepError) and, with
+	// steps recorded, resolves the result like a finished run: there is no
+	// `finish` part, so the finish reason is "other" and the total usage
+	// empty (recordedFinishReason ?? 'other', recordedTotalUsage ?? null
+	// usage), onEnd and the telemetry onEnd run, and the telemetry onError
+	// does not. Err() keeps reporting the error part, as for a model stream
+	// error part. A WorkflowAgent run (InternalOptions.EndOnError) keeps
+	// failing there: its TS loop throws the step's error.
+	continuationErrorEnd := false
+	if continuationFailed && r.err != nil && len(allSteps) > 0 && !isAbortErr(ctx, r.err) && (opts.Internal == nil || !opts.Internal.EndOnError) {
+		continuationErrorEnd = true
+		notifyOpenStepError(wrapGatewayError(r.err))
+		r.mu.Lock()
+		if r.chunkErr == nil {
+			r.chunkErr = r.err
+		}
+		r.mu.Unlock()
+		r.err = nil
 	}
 
 	// Push the call-level ChunkTypeFinish exactly once, after the loop above
@@ -4012,14 +4079,23 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.usage = streamModeUsage(allSteps)
 	}
 	if r.err == nil {
-		totalUsage := r.usage
-		callFinishChunk := provider.StreamChunk{
-			Type:            provider.ChunkTypeFinish,
-			FinishReason:    r.finishReason,
-			RawFinishReason: r.rawFinishReason,
-			Usage:           &totalUsage,
+		if !continuationErrorEnd {
+			totalUsage := r.usage
+			callFinishChunk := provider.StreamChunk{
+				Type:            provider.ChunkTypeFinish,
+				FinishReason:    r.finishReason,
+				RawFinishReason: r.rawFinishReason,
+				Usage:           &totalUsage,
+			}
+			forwardThroughTransformChain(0, []provider.StreamChunk{callFinishChunk})
+		} else if rec == nil {
+			r.finishReason = types.FinishReasonOther
+			r.rawFinishReason = ""
+			r.usage = types.Usage{}
+			if opts.Internal != nil && opts.Internal.streamModeUsage {
+				r.usage = streamModeUsage(allSteps)
+			}
 		}
-		forwardThroughTransformChain(0, []provider.StreamChunk{callFinishChunk})
 		if rec != nil {
 			// The call-level finish reason and total usage are recorded from
 			// the transformed finish part (TS: recordedFinishReason ?? 'other',
@@ -4055,26 +4131,15 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if isAbortErr(ctx, r.err) {
 			fireAbort(r.err)
 		} else {
-			// A failure TS reports as an `error` part reaches onError when the
-			// event processor reads the part, before its flush reports the
-			// open step to onStepError.
-			if opts.OnError != nil && errorPartEnd {
-				safeInvoke(func() { opts.OnError(ctx, r.err) })
-			}
+			// A failure TS reports as an `error` part reached OnError when the
+			// part left the transform chain, before the open step's
+			// OnStepError below (TS event processor, then its flush).
 			// A step that started without producing a result has failed;
 			// report it before the call error (aborts end with OnAbort). TS
 			// notifyStepError gives onStepError and the telemetry onStepError
 			// wrapGatewayError(error), also when the model stream fails
 			// mid-step; the telemetry onError below gets the error itself.
-			stepErr := wrapGatewayError(r.err)
-			if r.openStep != nil && !stepErrorTelemetryFired {
-				stepCtx := r.stepReopenCtx
-				if stepCtx == nil {
-					stepCtx = r.telemetryCtx
-				}
-				telemetry.FireOnStepError(stepCtx, telemetry.TelemetryErrorEvent{Settings: r.telemetrySettings, CallID: r.cbCallID, Error: stepErr})
-			}
-			r.notifyStepError(ctx, opts.OnStepError, stepErr)
+			notifyOpenStepError(wrapGatewayError(r.err))
 		}
 		if !isAbortErr(ctx, r.err) {
 			notifyFailedEnd(ctx, opts.Internal, r.cbOnEndEvent, r.cbCallID, r.cbRuntimeCtx, r.cbToolsCtx, r.initialResponseMessages, allSteps, r.err)
@@ -4659,8 +4724,10 @@ func (r *StreamTextResult) OutputErr() error {
 	return r.outputErr
 }
 
-// PartialOutput returns the most recently parsed partial output.
-// Only populated when an Output option was provided to StreamText.
+// PartialOutput returns the most recently parsed partial output. Without an
+// Output option it is the current step's text so far (TS partialOutputStream
+// parses with output ?? text()), except for StreamTextLowMemory, where it
+// stays nil (TS rejects partialOutputStream without an output there).
 // Safe to call concurrently with streaming.
 func (r *StreamTextResult) PartialOutput() any {
 	r.mu.Lock()
