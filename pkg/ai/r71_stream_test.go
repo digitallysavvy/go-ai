@@ -1653,3 +1653,69 @@ func TestR71StreamToUIChunkMappingTable(t *testing.T) {
 		}
 	}
 }
+
+// TS 12649: options.onEnd > should send correct information. A tool call in
+// the middle of a text block keeps the block as one text part before it.
+func TestR71StreamOnEndCorrectInformation(t *testing.T) {
+	var events []OnFinishEvent
+	r71streamRun(t, StreamTextOptions{
+		Model: r71streamModel(nil, []provider.StreamChunk{
+			{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-0", ModelID: "mock-model-id", Timestamp: time.Unix(0, 0).UTC()}},
+			{Type: provider.ChunkTypeTextStart, ID: "1"},
+			{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+			{Type: provider.ChunkTypeText, ID: "1", Text: ", "},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "value"}, RawArguments: `{ "value": "value" }`}},
+			{Type: provider.ChunkTypeText, ID: "1", Text: "world!"},
+			{Type: provider.ChunkTypeTextEnd, ID: "1"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r71streamUsage, ProviderMetadata: json.RawMessage(`{"testProvider":{"testKey":"testValue"}}`)},
+		}),
+		Prompt:     "prompt",
+		Tools:      []types.Tool{r71streamTool1(true, nil, nil)},
+		Internal:   r71streamInternal,
+		OnEndEvent: func(_ context.Context, e OnFinishEvent) { events = append(events, e) },
+	})
+	if len(events) != 1 {
+		t.Fatalf("onEnd calls = %d", len(events))
+	}
+	e := events[0]
+	wantCall := types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "value"}, RawArguments: `{ "value": "value" }`}
+	if e.CallID != "test-telemetry-call-id" || e.Text != "Hello, world!" || e.FinishReason != types.FinishReasonStop || e.RawFinishReason != "stop" || e.StepNumber != 0 || len(e.Steps) != 1 {
+		t.Fatalf("event = %#v", e)
+	}
+	if e.Model != (types.StepModel{Provider: "mock-provider", ModelID: "mock-model-id"}) {
+		t.Fatalf("model = %#v", e.Model)
+	}
+	if len(e.Content) != 3 {
+		t.Fatalf("content = %#v", e.Content)
+	}
+	if text, ok := e.Content[0].(types.TextContent); !ok || text.Text != "Hello, world!" {
+		t.Fatalf("content[0] = %#v", e.Content[0])
+	}
+	if call, ok := e.Content[1].(types.ToolCallContent); !ok || call.ToolCallID != "call-1" || call.ToolName != "tool1" {
+		t.Fatalf("content[1] = %#v", e.Content[1])
+	}
+	if len(e.StaticToolCalls) != 1 || !reflect.DeepEqual(e.StaticToolCalls[0], wantCall) || len(e.DynamicToolCalls) != 0 {
+		t.Fatalf("static/dynamic tool calls = %#v / %#v", e.StaticToolCalls, e.DynamicToolCalls)
+	}
+	if len(e.StaticToolResults) != 1 || e.StaticToolResults[0].Result != "value-result" || e.StaticToolResults[0].Dynamic || len(e.DynamicToolResults) != 0 {
+		t.Fatalf("static/dynamic tool results = %#v / %#v", e.StaticToolResults, e.DynamicToolResults)
+	}
+	if !reflect.DeepEqual(e.ProviderMetadata, map[string]interface{}{"testProvider": map[string]interface{}{"testKey": "testValue"}}) {
+		t.Fatalf("providerMetadata = %#v", e.ProviderMetadata)
+	}
+	if e.Response.ID != "id-0" || e.Response.ModelID != "mock-model-id" || !e.Response.Timestamp.Equal(time.Unix(0, 0)) {
+		t.Fatalf("response = %#v", e.Response)
+	}
+	if len(e.ResponseMessages) != 2 || e.ResponseMessages[0].Role != types.RoleAssistant || e.ResponseMessages[1].Role != types.RoleTool {
+		t.Fatalf("response messages = %#v", e.ResponseMessages)
+	}
+	if len(e.ResponseMessages[0].Content) != 2 {
+		t.Fatalf("assistant message content = %#v", e.ResponseMessages[0].Content)
+	}
+	if !reflect.DeepEqual(e.FinalStep.Content, e.Content) || e.FinalStep.Response.ID != "id-0" || len(e.Sources) != 0 || len(e.Files) != 0 || len(e.Reasoning) != 0 {
+		t.Fatalf("final step = %#v", e.FinalStep)
+	}
+	if e.TotalUsage.TotalTokens == nil || *e.TotalUsage.TotalTokens != 2 || e.Usage.TotalTokens == nil || *e.Usage.TotalTokens != 2 {
+		t.Fatalf("usage = %#v / %#v", e.Usage, e.TotalUsage)
+	}
+}
