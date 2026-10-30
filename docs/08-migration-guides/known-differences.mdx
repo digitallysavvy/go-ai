@@ -344,6 +344,15 @@ only when it is true. TS `toUIMessageChunk` copies a tool part's own
 `dynamic` for a tool missing from the tool set, so it can write
 `dynamic: false`. Clients read a missing `dynamic` as false.
 
+## UI message stream JSON key order
+
+`UIMessageChunk` is a `map[string]interface{}`, so the SSE helpers
+(`ToUIMessageStreamResponse`, `PipeUIMessageStreamToResponse`,
+`CreateUIMessageStreamResponse`, ...) write each event's JSON with sorted
+keys (`{"errorText":"...","type":"error"}`). TS writes insertion order
+(`{"type":"error","errorText":"..."}`). The JSON values are the same; only
+byte-level comparisons of the stream differ (review round 70).
+
 ## Vertex Gemini image model: URL input images
 
 The Vertex Gemini image model accepts URL and `gs://` input images

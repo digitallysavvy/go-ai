@@ -143,7 +143,7 @@ fmt.Printf("Data: %v\n", data)
 
 ## Structured Streaming with StreamText
 
-Use `StreamText` with an `Output` factory to receive structured data as it streams. Call `result.PartialOutput()` at any time to get the most recently parsed partial value.
+Use `StreamText` with an `Output` factory to receive structured data as it streams. Call `result.PartialOutput()` at any time to get the most recently parsed partial value. Without an `Output` option it is the current step's text so far (TS `output ?? text()`); it stays nil for `StreamTextLowMemory`.
 
 ```go
 type Notification struct {

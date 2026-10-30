@@ -44,7 +44,7 @@ Go ships two mechanisms. Prefer the `Output` one; `GenerateObject`/`StreamObject
 | `Output.text()` | `ai.TextOutput()` | `output.go`. |
 | `Output.json()` | `ai.JSONOutput(ai.JSONOutputOptions{...})` | `output.go`. |
 | `generateText({output})` | `ai.GenerateTextOptions{Output: ai.ObjectOutput[T](...)}` | Result is `result.Output any` — type-assert to `T`. |
-| `streamText({output})`, `result.partialOutputStream` | `ai.StreamTextOptions{Output: ...}`, `result.PartialOutput()` | `PartialOutput()` returns the latest partial parse; `Output()` returns the final one after the stream drains. |
+| `streamText({output})`, `result.partialOutputStream` | `ai.StreamTextOptions{Output: ...}`, `result.PartialOutput()` | `PartialOutput()` returns the latest partial parse; `Output()` returns the final one after the stream drains. Without `Output` it is the step's text so far, as TS `partialOutputStream` yields text. |
 | `generateObject({model, schema, prompt})` (deprecated) | `ai.GenerateObject(ctx, ai.GenerateObjectOptions{Model: model, Schema: mySchema, Prompt: "..."})` | `pkg/ai/object.go`. `Schema` is a `schema.Schema`, not a Go generic — `result.Object` is `interface{}`. |
 | — | `ai.GenerateObjectInto(ctx, opts, &target)` | Go-only convenience: unmarshals straight into a struct pointer via reflection, no type assertion needed. |
 

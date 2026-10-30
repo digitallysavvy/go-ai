@@ -47,6 +47,7 @@ already, you can skip them.
 | `==` or map keys on provider `Config` / `Provider` values, `bytedance.Error`, `klingai.Error`, `responses.OutputTextDeltaEvent`, `workflow.WorkflowResult` | Structs gained map, slice or func fields | compile error | Compare fields instead | [Non-comparable structs](#non-comparable-structs) |
 | `.Text()` on a `StreamTextResult` with more than one step | Final step's text only | silent behavior change | Use `ReadAll()` or join `Steps` | [StreamText Text()](#streamtext-text-final-step) |
 | `result.Output == nil`, `Output() == nil` with no `Output` option | `Output` is the final step's text | silent behavior change | Check whether you set `Output`, or read `Text` | [Output without an Output option](#output-default-text) |
+| `PartialOutput()` on a `StreamText` result without `Output` | The step's text so far instead of nil | silent behavior change | Check `opts.Output` before treating it as structured | [PartialOutput default](#partial-output-default-text) |
 | `OnFinish:` reading `Usage`, `ToolCalls`, `ToolResults` | Aggregated across steps | silent behavior change | Read `FinalStep` for the last step | [OnFinishEvent totals](#on-finish-aggregates) |
 | `.TotalTokens` | Input + output tokens | silent behavior change | Read `Usage.Raw` for the wire value | [TotalTokens](#total-tokens) |
 | `ReasoningText` | Parts joined with no separator (was a newline) | silent behavior change | Join reasoning parts with a newline yourself | [ReasoningText](#reasoning-text) |
@@ -54,7 +55,10 @@ already, you can skip them.
 | `PrepareStep:` returning `Model` in `StreamTextOptions` | Override applies to one step | silent behavior change | Return the model from every call | [StreamText PrepareStep model](#streamtext-preparestep-model) |
 | `OnLanguageModelCallStart:` in `StreamTextOptions` | Fires once per retry attempt | silent behavior change | Count steps with `OnStepStart` | [Model call start per attempt](#streamtext-call-start-per-attempt) |
 | `OnChunk:` in `StreamTextOptions` checking `ChunkTypeError`, `ChunkTypeStart`, `ChunkTypeAbort` | Sees every error part before `OnError`, retried ones and pre-stream failures included | silent behavior change | Count failures in `OnError` | [StreamText OnChunk error parts](#streamtext-onchunk-error-parts) |
+| `ExperimentalTransform` that rewrites or drops `ChunkTypeError` with `OnError` | `OnError` follows the delivered error parts | silent behavior change | Expect `OnError` for rewritten parts, none for dropped ones | [Transformed error parts](#streamtext-onerror-transformed-parts) |
 | `RawFinishReason` with `StreamRetries:` | A retried step keeps only the retried attempt's value | silent behavior change | Read `FinishReason` | [Retry raw finish reason](#stream-retry-raw-finish-reason) |
+| `ExperimentalTransform` + `StreamRetries` / `OnErrorRetry` | The recovered step leaves out the failed attempt | silent behavior change | Read the failed attempt from `FullStream` if needed | [Retry with a transform](#stream-retry-transform-content) |
+| `OnEnd` / `OnEndEvent` / telemetry `OnError` of a multi-step `StreamText` whose later step fails to start | The call ends: `OnEnd` runs, finish reason `other`, no telemetry `OnError` | silent behavior change | Check `Err()` | [Later step failure](#streamtext-continuation-failure-end) |
 | `Request()`, `.Request.Body` on `StreamText` steps or `start-step` chunks | Body only with `Include.RequestBody` | silent behavior change | Set `Include: &ai.IncludeOptions{RequestBody: true}` | [StreamText request body](#streamtext-request-body) |
 | `"stream-start"`, `"response-metadata"` in `FullStream` consumers | Go-only markers left out | silent behavior change | Use `OnChunk` | [Full stream markers](#streamtext-full-stream-markers) |
 | `FinishReasonOther` used to detect truncation | Truncated streams are `interrupted` | silent behavior change | Check `types.FinishReasonInterrupted` | [Truncated streams](#truncated-streams-interrupted) |
@@ -62,6 +66,7 @@ already, you can skip them.
 | `Timeout.PerStep` together with `PrepareStep:` | Step timer starts before `PrepareStep` | silent behavior change | Size `PerStep` to include it | [Step timeout start](#step-timeout-before-preparestep) |
 | `MaxTokens:` set to `0` or a negative value | Rejected with `InvalidArgumentError` | silent behavior change | Leave nil or set at least 1 | [MaxTokens below 1](#max-tokens-min) |
 | `OnStartEvent.Messages` with `Prompt:` | Holds the prompt as one user message | silent behavior change | Read `OnStartEvent.Prompt` for the string | [Start event messages](#start-event-messages) |
+| `OnToolCallStart:` with `OnToolExecutionStart:`, `OnToolCallFinish:` with `OnToolExecutionEnd:` in `GenerateTextOptions` / `StreamTextOptions` | Only the new callback runs | silent behavior change | Move the work into the new callback | [Tool execution callback aliases](#tool-execution-callback-aliases) |
 | `PrepareStep:` that sets `System` and returns its options | `System` sets the step instructions | silent behavior change | Remove a `System` assignment meant to have no effect | [PrepareStep System](#preparestep-system-override) |
 | `ExperimentalStreamTranscribe` accessor errors after `FullStream().Close()`; `context.Canceled` checks | Cancel reason text after `Close`; the ctx cause after a caller cancel | silent behavior change | Match the text after `Close`, or cancel your own `ctx` | [StreamTranscribe cancel reason](#stream-transcribe-cancel-reason) |
 | `StopWhen:` conditions with side effects | Run only when the loop would continue | silent behavior change | Move side effects to `OnStepFinish` | [Stop conditions](#stop-conditions-only-when-continue) |
@@ -91,6 +96,8 @@ already, you can skip them.
 | `Timeout.PerStep` on the legacy agent with slow tools | Step timeout covers tools | silent behavior change | Raise `PerStep` or use `Total` | [Legacy step timeout and tools](#legacy-step-timeout-tools) |
 | `ActiveTools: []string{}` on the legacy agent | No tools active | silent behavior change | Use nil for all tools | [Legacy empty ActiveTools](#legacy-empty-active-tools) |
 | `PrepareCall:` that sets `Tools`, `ExperimentalToolCallers`, `ToolCallConcurrency` or `Output`; `ParseCompleteOutput` reading `Usage` | Legacy loop uses the prepared values; the parse gets the last step's usage | silent behavior change | Read `AgentResult.Usage` for the total | [Legacy PrepareCall](#legacy-preparecall-tools-output) |
+| `.CallID` on `AgentResult.Steps[i]` / `WorkflowResult.Steps[i]` | Set to the run's call ID | silent behavior change | None unless you relied on it being empty | [Legacy step call ID](#legacy-step-call-id) |
+| Provider-executed dynamic call of an unknown tool in the legacy agent loop, `tool not found:` | No error result, no `OnToolError` | silent behavior change | No action unless you matched the error | [Agent provider calls](#agent-provider-dynamic-unknown-tool) |
 | "Unauthenticated request to AI Gateway" text, gateway auth errors from `GenerateAgent` or in telemetry `OnStepError` | Wrapped TS error | error text only | Match `*GatewayAuthenticationError` | [Gateway auth error](#gateway-auth-error) |
 | `.ToolCallID` used as an approval response ID (`WorkflowAgent`) | IDs are `approval-` + call ID | silent behavior change | Answer with `ApprovalID` | [WorkflowAgent approval IDs](#workflow-approval-ids) |
 | `.Result` on `ResponseMessages[0]` after an approval resume | Use `Output` | silent behavior change | Read `Output` | [Resumed approval output](#workflow-resumed-output) |
@@ -100,12 +107,15 @@ already, you can skip them.
 | `ai.workflowAgent.stream` root span of `Stream` runs | Ends with the run, with usage, errors and aborts | wire/protocol change | Expect the full run duration | [WorkflowAgent Stream root span](#workflow-stream-root-span-end) |
 | `WorkflowAgent.Stream` without `StopWhen` | No default step limit | silent behavior change | Set `StopWhen` | [WorkflowAgent Stream limit](#workflow-stream-no-step-limit) |
 | `ai.workflowAgent.generate` in queries or dashboards | Root span is `ai.workflowAgent.stream` | wire/protocol change | Update queries | [WorkflowAgent root span](#workflow-root-span) |
+| Provider-executed call without a result in `WorkflowAgent` | Empty text tool result + warning; the run still ends | silent behavior change | No action unless you check for missing outputs | [Missing provider result](#workflow-missing-provider-result) |
 | SSE event named `done`, `OnChatSendMessage:` on `WorkflowRunMultiplexer` | Ends on a `finish` chunk; sees successful sends only | wire/protocol change | Emit a `finish` chunk | [WorkflowRunMultiplexer](#workflow-multiplexer-finish) |
 | `CreateUIMessageStreamWithOptions`, `ToUIMessageStream` with `OnEnd` / `OnStepEnd` | Out-of-sequence chunk ends the stream | silent behavior change | Emit start chunks first; handle `*ai.UIMessageStreamError` | [UI stream sequence](#ui-out-of-sequence) |
 | `KeepAliveMs` | Zero, negative or too large is an error | silent behavior change | Leave nil to disable | [KeepAliveMs](#keep-alive-range) |
 | Chunks you write with a `title` on `tool-output-*`, `"finishReason": null`, an empty reasoning `id`; `part["input"] == nil` | Message state follows TS | silent behavior change | Check for a missing `input` key | [UI message state](#ui-message-state-edge-cases) |
 | `ToUIMessageStream` `OnEnd`/`OnFinish` reading `e["finishReason"]` with `SendFinish: false` or a failed stream | Empty unless a `finish` chunk was sent | silent behavior change | Read the reason from `StreamTextResult` | [UI OnEnd finish reason](#ui-on-end-finish-reason) |
 | Counting `"type":"error"` chunks from `StreamTextResult.ToUIMessageStream` / `CreateUIMessageStream` | One error chunk for a run that ends with an error part | wire/protocol change | Expect one | [UI single error chunk](#ui-single-error-chunk) |
+| `"type":"finish"` / `"type":"abort"` chunks from a UI message stream | No `finish` without a finish part; one `abort` chunk | wire/protocol change | Treat `error` and `abort` as terminal | [UI finish and abort](#ui-finish-and-abort-chunks) |
+| UI `"type":"file"` / `"reasoning-file"` chunks | Include the file's own `providerMetadata` | wire/protocol change | None, or accept the field | [UI file metadata](#ui-file-provider-metadata) |
 | `Integrations: []telemetry.TelemetryIntegration{}` | Empty slice disables telemetry | silent behavior change | Leave nil for globals | [Empty Integrations](#empty-integrations) |
 | `"ai-sdk"`, `"go-ai"` tracer or instrumentation scope names, `telemetry.TracerName` | Tracers are `ai` and `gen_ai` | wire/protocol change | Update filters | [Tracer names](#tracer-names) |
 | `EnrichSpan:`, runtime context objects in spans | TS attribute rules | wire/protocol change | Read flattened keys | [Span attributes](#enrich-span-attributes) |
@@ -113,6 +123,7 @@ already, you can skip them.
 | Telemetry integration `OnAbort` for a cancelled `GenerateText` | Integrations get `OnError` | silent behavior change | Handle `OnError` | [GenerateText abort telemetry](#generate-cancel-telemetry) |
 | `OnStepStart:` / `OnStepStartEvent:` reading `e.Tools` or `e.Output` | The call's tools; `Output` is set | silent behavior change | Read `e.ActiveTools`, or `LanguageModelCallStartEvent.Tools` | [Step-start tools](#step-start-call-tools) |
 | Telemetry integration `OnStepError` for `GenerateText` or `StreamText` | Fires for every failed started step, also mid-stream | silent behavior change | Don't assume the model call failed to open | [Telemetry step errors](#telemetry-step-error) |
+| Telemetry integration `OnStepEnd` / `OnFinish` ordered against `OnStepEnd`, `OnEnd`, `OnEndEvent` callbacks | Callbacks run first | silent behavior change | Do last-step work in the integration | [Callback and telemetry order](#telemetry-callback-order) |
 | `strings.Contains(err.Error(), "failed at step"` and other prefixes | Errors returned as is | error text only | Use `errors.As` / `errors.Is` | [Unprefixed errors](#errors-unprefixed) |
 | Error text with `%q`-quoted names (tool callers, tool search, decide, ID generator, download URL hostname) | TS quoting | error text only | Use `errors.As` | [Name quoting](#error-name-quoting) |
 | `"no such evaluationModel"` text checks on `ExperimentalEvaluate` / `ExperimentalDecide` errors | `*providererrors.NoSuchModelError` | error text only | Use `errors.As` | [Unknown decision model](#decide-unknown-model) |
@@ -322,6 +333,33 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   the text.
 - **Kind:** silent behavior change
 
+### PartialOutput is the step's text when no Output option is set {#partial-output-default-text}
+
+- **What changed:** without an `Output` option,
+  `StreamTextResult.PartialOutput()` is now the current step's text so far,
+  a `string`. v0.5 returned nil. TS `streamText` parses partial output with
+  `output ?? text()` whenever the run keeps its replay buffer, so
+  `partialOutputStream` yields the text (review round 70). A
+  `StreamTextLowMemory` run without an `Output` still returns nil (TS
+  rejects `partialOutputStream` there), and so does
+  `WorkflowStreamResult.PartialOutput()` without an output spec (TS
+  WorkflowAgent stream mode parses only an output spec).
+- **Am I affected?** `PartialOutput()` on a `StreamText` result created
+  without `Output:`, especially `!= nil` checks.
+- **What to do:** no action unless you use `PartialOutput()` to detect
+  structured output. Check your own option instead:
+
+  ```go
+  func structuredPartial(opts ai.StreamTextOptions, result *ai.StreamTextResult) any {
+  	if opts.Output == nil {
+  		return nil // v0.5: PartialOutput() was nil without Output
+  	}
+  	return result.PartialOutput()
+  }
+  ```
+
+- **Kind:** silent behavior change
+
 ### OnFinishEvent aggregates across steps {#on-finish-aggregates}
 
 - **What changed:** `OnFinishEvent` usage, tool calls and results, sources,
@@ -434,6 +472,31 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 
 - **Kind:** silent behavior change
 
+### StreamText OnError runs for the error parts the stream delivers {#streamtext-onerror-transformed-parts}
+
+- **What changed:** with `ExperimentalTransform`, `OnError` now follows the
+  error parts that leave the transform chain. An error part a transform
+  replaces with a different error reaches `OnChunk` and `OnError` again with
+  the new error. An error part that a transform drops from a pre-stream
+  failure, a later step's failure or a failed stream retry no longer reaches
+  `OnError`. A model stream's own error part still reaches `OnChunk` and
+  `OnError` once, before the transforms. TS's event processor calls onChunk
+  and onError for every error part except the error value the model stream
+  reader already reported (review round 70).
+- **Am I affected?** `ExperimentalTransform` functions that rewrite or drop
+  `provider.ChunkTypeError` chunks while `OnError:` is set.
+- **What to do:** no action unless your transform rewrites or drops error
+  parts. To see the run's error whatever the transform does, read `Err()`
+  after the stream:
+
+  ```go
+  func runError(result *ai.StreamTextResult) error {
+  	return result.Err() // not affected by ExperimentalTransform
+  }
+  ```
+
+- **Kind:** silent behavior change
+
 ### A retried StreamText step drops the failed attempt's raw finish reason {#stream-retry-raw-finish-reason}
 
 - **What changed:** when `StreamRetries` retries a step whose failed attempt
@@ -448,6 +511,65 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   ```go
   func stepFinish(step types.StepResult) types.FinishReason {
   	return step.FinishReason // RawFinishReason may be empty after a retry
+  }
+  ```
+
+- **Kind:** silent behavior change
+
+### A stream retry with a transform keeps only the recovered attempt {#stream-retry-transform-content}
+
+- **What changed:** with `ExperimentalTransform` and `StreamRetries`, the
+  step recorded after a retried model call now holds only the recovered
+  attempt's transformed content: `Text()`, `Steps()`, `Content()`,
+  `ResponseMessages()`, the next step's prompt, and `Output()`. v0.5 also
+  kept the failed attempt's text and parts, which could break `Output`
+  parsing. TS resets the recorded content at the retry boundary (review
+  round 70).
+- **Am I affected?** `StreamText` calls that set both
+  `ExperimentalTransform:` and `StreamRetries:` / `OnErrorRetry:`.
+- **What to do:** no action unless you relied on the failed attempt's text
+  in the result. It is still in the full stream:
+
+  ```go
+  func failedAttemptText(result *ai.StreamTextResult) string {
+  	var all strings.Builder
+  	s := result.FullStream()
+  	for {
+  		c, err := s.Next()
+  		if err != nil {
+  			return all.String()
+  		}
+  		if c.Type == provider.ChunkTypeText {
+  			all.WriteString(c.Text) // includes the failed attempt's deltas
+  		}
+  	}
+  }
+  ```
+
+- **Kind:** silent behavior change
+
+### A later StreamText step that fails to start ends the call {#streamtext-continuation-failure-end}
+
+- **What changed:** when a later step of a `StreamText` call fails to
+  prepare or open (a `PrepareStep` result that fails validation, a prompt
+  that fails conversion, or a model call that returns an error), the stream
+  now ends with that step's `error` part and no `finish` part. `OnStepError`
+  runs for the step if it started, then `OnEnd` / `OnEndEvent` and the
+  telemetry `OnFinish` (onEnd) run with the steps recorded so far.
+  `FinishReason()` is `other` and `TotalUsage()` is empty (TS
+  `recordedFinishReason ?? 'other'`, `recordedTotalUsage ?? null usage`).
+  The telemetry `OnError` is no longer called. `Err()` still returns the
+  error. v0.5 failed the call: telemetry `OnError`, no `OnEnd`. Also,
+  `OnStepError` now runs before the telemetry `OnStepError` (TS order).
+  `WorkflowAgent.Stream` is unchanged (review round 70).
+- **Am I affected?** Multi-step `StreamText` calls that rely on `OnEnd` not
+  running after a failed later step, on the telemetry `OnError` for it, or
+  on `FinishReason()` / `TotalUsage()` after it.
+- **What to do:** check `Err()` in `OnEnd`, or after the stream:
+
+  ```go
+  func endedWithError(result *ai.StreamTextResult) bool {
+  	return result.Err() != nil // v0.5: OnEnd did not run after a failed later step
   }
   ```
 
@@ -552,6 +674,22 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **Am I affected?** `OnStart:` callbacks that read `Messages` and expect it
   empty for `Prompt` calls.
 - **What to do:** read `OnStartEvent.Prompt` for the original string.
+- **Kind:** silent behavior change
+
+### Deprecated tool execution callbacks run only when the new one is unset {#tool-execution-callback-aliases}
+
+- **What changed:** `GenerateText` and `StreamText` called both
+  `OnToolExecutionStart` and its deprecated alias `OnToolCallStart` (and
+  both `OnToolExecutionEnd` and `OnToolCallFinish`) when both were set. They
+  now call only the new callback, and the deprecated one only when the new
+  one is nil, as TS `onToolExecutionStart ?? experimental_onToolCallStart`
+  (review round 70).
+- **Am I affected?** `GenerateTextOptions` or `StreamTextOptions` literals
+  that set `OnToolCallStart:` together with `OnToolExecutionStart:`, or
+  `OnToolCallFinish:` together with `OnToolExecutionEnd:`.
+- **What to do:** no action unless you set both. Move the deprecated
+  callback's work into the new one.
+
 - **Kind:** silent behavior change
 
 ### A PrepareStep that sets only System changes the step instructions {#preparestep-system-override}
@@ -670,9 +808,18 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   "workflow: use either prompt or messages, not both"). As TS, a
   `WorkflowAgent` call without a prompt or messages is checked after
   `PrepareCall`, so a `PrepareCall` hook may supply the messages.
+  System-role messages in `Messages` without `AllowSystemInMessages` (agent
+  or call) are rejected there too, with `*InvalidPromptError` ("System
+  messages are not allowed in the prompt or messages fields. Use the
+  instructions option instead."). `StreamWithOptions` / `Stream` return the
+  error directly, before any callback or telemetry. In v0.5, `Generate`
+  returned it as `step 1 failed: ...` after `OnStart`, and `Stream` returned
+  it from `ReadAll`/`Err`. The checks run in TS order: missing prompt,
+  invalid instructions, empty messages, system messages (review round 70).
 - **Am I affected?** Calls that set both `Prompt:` and `Messages:`, neither,
   or `Messages: []types.Message{}`; matches on the `workflow: either prompt or
-  messages` error text.
+  messages` error text; `types.RoleSystem` messages in
+  `WorkflowGenerateOptions.Messages` / `WorkflowStreamOptions.Messages`.
 - **What to do:** pass exactly one of them.
 - **Kind:** silent behavior change
 
@@ -704,7 +851,11 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   then empty messages. A `WorkflowAgent` `Instructions` value of an
   unsupported type (not a string, `types.Message`, `[]types.Message` or
   `[]string`) is the same `*InvalidPromptError`, from `NewWorkflowAgent` and
-  from the calls; v0.5 returned "workflow: unsupported instructions type T".
+  from the calls; only the effective value is checked (the call's
+  `Instructions`, else its `System`, else the agent's), and not one that a
+  `PrepareCall` hook replaces, as TS validates `options.instructions ??
+  options.system ?? this.instructions` after prepareCall (review round 70);
+  v0.5 returned "workflow: unsupported instructions type T".
 - **Am I affected?** Code that compares this error's text, including
   `workflow: unsupported instructions type`.
 - **What to do:** compare error types, not text:
@@ -1050,6 +1201,37 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   For the total usage, read `AgentResult.Usage`.
 - **Kind:** silent behavior change
 
+#### Legacy ToolLoopAgent steps carry the call ID {#legacy-step-call-id}
+
+- **What changed:** each `types.StepResult` of the legacy loop now has
+  `CallID` set to the run's call ID (the `CallID` of its `OnStartEvent` and
+  `OnFinishEvent`), as TS step results' `callId` and as `GenerateText` steps
+  already did. v0.5 left it empty. `WorkflowAgent.Generate` steps carry the
+  workflow run's call ID (review round 70).
+- **Am I affected?** Code that reads `StepResult.CallID` from
+  `AgentResult.Steps`, `WorkflowResult.Steps` or the step lists of
+  `OnStepStartEvent` / `OnFinishEvent`, or compares step results with
+  `reflect.DeepEqual` against values without a `CallID`.
+- **What to do:** no action unless you relied on an empty `CallID`.
+
+- **Kind:** silent behavior change
+
+#### The agent loop leaves provider-executed calls of unknown tools to the provider {#agent-provider-dynamic-unknown-tool}
+
+- **What changed:** the legacy `ToolLoopAgent` loop (`Execute`,
+  `GenerateAgent`, hence `WorkflowAgent.Generate`) no longer answers a
+  provider-executed (dynamic) tool call whose tool is not in `Tools` with a
+  `tool not found: <name>` error result, and no longer calls `OnToolError`
+  for it. As in TS (`parseToolCall` keeps the call; only client calls run
+  locally), it is the provider's call: the loop records a pending
+  provider-executed result, as for a registered provider tool (review
+  round 70).
+- **Am I affected?** `OnToolError` callbacks or tool results that matched
+  `tool not found:` for provider-executed (`ProviderExecuted: true`) calls.
+- **What to do:** no action unless you relied on that error.
+
+- **Kind:** silent behavior change
+
 #### AI Gateway authentication errors are wrapped {#gateway-auth-error}
 
 - **What changed:** `GenerateAgent`, `Execute` and `ExecuteWithMessages`
@@ -1207,6 +1389,25 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 - **What to do:** match `ai.workflowAgent.stream`.
 - **Kind:** wire/protocol change
 
+#### WorkflowAgent answers a provider tool call that got no result {#workflow-missing-provider-result}
+
+- **What changed:** when a provider-executed tool call gets no result in the
+  model's response, `WorkflowAgent` adds an empty text tool result
+  (`Output.Type == "text"`, empty value) after the call in the step's
+  assistant message and logs a warning, as TS `resolveProviderToolResult`.
+  In v0.5 the call kept a pending result with no output. The run still ends
+  after that step unless the step also had client tool calls or a
+  deferred-result tool is pending (TS `modelCallIterator`), in `Generate`
+  and `Stream` (review round 70).
+- **Am I affected?** `WorkflowResult.ResponseMessages`,
+  `Steps[i].Response.Messages` or `ToolResults` read after a
+  provider-executed call (`ProviderExecuted: true`) the provider did not
+  answer; the "did not receive a result from the stream" warning.
+- **What to do:** no action unless you treated a provider tool result with
+  no output as "not answered".
+
+- **Kind:** silent behavior change
+
 #### WorkflowRunMultiplexer ends on a finish chunk {#workflow-multiplexer-finish}
 
 - **What changed:** `WorkflowRunMultiplexer` no longer treats an SSE event
@@ -1322,7 +1523,8 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   later step fails to prepare or open, or the model stream ends without
   output), `StreamTextResult.ToUIMessageStream`, `CreateUIMessageStream` and
   the UI message stream response helpers write that part's `error` chunk
-  only. v0.5 wrote a second `error` chunk for the same error when the stream
+  only (and, for a later step that fails to start, no `finish` chunk after
+  it; see [UI finish and abort](#ui-finish-and-abort-chunks)). v0.5 wrote a second `error` chunk for the same error when the stream
   closed with it (review round 69). TS `streamText` closes its stream
   normally after such a part, so `toUIMessageStream` writes one. The error
   channel still carries the error, and `OnEnd` still reports a failed
@@ -1340,6 +1542,56 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   		}
   	}
   	return n
+  }
+  ```
+
+- **Kind:** wire/protocol change
+
+### UI message streams end like the source stream {#ui-finish-and-abort-chunks}
+
+- **What changed:** `StreamTextResult.ToUIMessageStream`,
+  `CreateUIMessageStream`, `ToUIMessageStream` and the UI response helpers
+  write a `finish` chunk only when a StreamText source has its call-level
+  `finish` part (a later step that fails to start ends with its `error`
+  chunk). A run that ends with an `abort` part writes one `abort` chunk.
+  v0.5 wrote a second one when the stream then closed with the abort error.
+  A source that ends after an `abort` part gets nothing more (v0.5 added an
+  error chunk, `finish-step` and `finish`), and its `OnEnd` outcome is
+  `aborted`. TS writes `finish` for a `finish` part only and records an
+  `abort` part as the aborted outcome (review round 70). A raw provider
+  stream passed to `ToUIMessageStream` still gets a synthesized `finish`.
+- **Am I affected?** Clients or tests that expect a `"type":"finish"` chunk
+  after an error, or count `"type":"abort"` chunks.
+- **What to do:** no action unless you do that. Treat `error` or `abort` as
+  the end:
+
+  ```go
+  func ended(c ai.UIMessageChunk) bool {
+  	switch c["type"] {
+  	case "finish", "error", "abort":
+  		return true // v0.5: a finish chunk followed every StreamText run
+  	}
+  	return false
+  }
+  ```
+
+- **Kind:** wire/protocol change
+
+### UI file chunks carry the file's provider metadata {#ui-file-provider-metadata}
+
+- **What changed:** the UI `file` and `reasoning-file` chunks now include
+  `providerMetadata` when it is set only on
+  `GeneratedFileContent.ProviderMetadata` /
+  `ReasoningFileContent.ProviderMetadata` (TS `part.providerMetadata`). v0.5
+  dropped it unless the stream chunk also carried it (review round 70).
+- **Am I affected?** Clients that compare UI `file` chunks exactly, with
+  providers that put metadata only on the file (for example openresponses).
+- **What to do:** no action unless you compare file chunks exactly. Read the
+  field when present:
+
+  ```go
+  func fileMetadata(c ai.UIMessageChunk) interface{} {
+  	return c["providerMetadata"] // v0.5: missing for file-only metadata
   }
   ```
 
@@ -1484,6 +1736,37 @@ compile-time changes.
   func isGatewayAuth(err error) bool {
   	var auth *gatewayerrors.GatewayAuthenticationError
   	return errors.As(err, &auth) // also true for the wrapped error
+  }
+  ```
+
+- **Kind:** silent behavior change
+
+### Telemetry step-end and end run after the callbacks {#telemetry-callback-order}
+
+- **What changed:** `GenerateText` and `StreamText` now call the user
+  callbacks before the telemetry integrations for the same event: the step's
+  `OnStepEnd` / `OnStepEndEvent` before the integration `OnStepEnd`, and
+  `OnEnd` / `OnEndEvent` before the integration `OnFinish` (onEnd). v0.5 ran
+  the telemetry first for both end events and for the `StreamText` step end
+  (the `GenerateText` step end already ran the callbacks first). TS
+  `notify([callback, telemetry.onX])` starts the callback first (review
+  round 70, coordinator ruling). `OnStepError` also runs before the
+  telemetry `OnStepError` (see
+  [Later step failure](#streamtext-continuation-failure-end)).
+- **Am I affected?** Telemetry integrations whose `OnStepEnd` or `OnFinish`
+  shares state with your `OnStepEnd`, `OnEnd` or `OnEndEvent` callbacks and
+  depends on running first, for example a span the callback expects to be
+  ended already.
+- **What to do:** no action unless you rely on that order. Do the work that
+  must come last in the integration:
+
+  ```go
+  type lastRecorder struct {
+  	telemetry.NoopTelemetryIntegration
+  }
+
+  func (lastRecorder) OnFinish(ctx context.Context, e telemetry.TelemetryFinishEvent) {
+  	// runs after OnEnd / OnEndEvent (v0.5: before them)
   }
   ```
 
@@ -2053,6 +2336,9 @@ after upgrading:
   leaves the root open for an abort its iterator returns, and interleaves the
   user and telemetry callbacks. See
   [WorkflowAgent Stream: root telemetry at run end](./known-differences.mdx).
+- **UI message stream SSE events have sorted JSON keys**, because
+  `UIMessageChunk` is a map; TS writes insertion order. The values are the
+  same. See [UI message stream JSON key order](./known-differences.mdx).
 
 ## For coding agents {#for-coding-agents}
 

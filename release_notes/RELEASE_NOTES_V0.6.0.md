@@ -182,6 +182,7 @@ search for and ends with a checklist for coding agents. Entries marked
 
 - **StreamTextResult.Text() is the final step's text** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-text-final-step)
 - **Output is the text when no Output option is set** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#output-default-text)
+- **PartialOutput is the step's text when no Output option is set** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#partial-output-default-text)
 - **OnFinishEvent aggregates across steps** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#on-finish-aggregates)
 - **Usage.TotalTokens is input + output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#total-tokens)
 - **ReasoningText joins parts with no separator** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#reasoning-text)
@@ -189,7 +190,10 @@ search for and ends with a checklist for coding agents. Entries marked
 - **A StreamText PrepareStep model applies to one step** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-preparestep-model)
 - **StreamText fires OnLanguageModelCallStart once per attempt** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-call-start-per-attempt)
 - **StreamText OnChunk sees every error part before OnError** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-onchunk-error-parts)
+- **StreamText OnError runs for the error parts the stream delivers** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-onerror-transformed-parts)
 - **A retried StreamText step drops the failed attempt's raw finish reason** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-retry-raw-finish-reason)
+- **A stream retry with a transform keeps only the recovered attempt** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-retry-transform-content)
+- **A later StreamText step that fails to start ends the call** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-continuation-failure-end)
 - **StreamText keeps the request body only when asked** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-request-body)
 - **The StreamText full stream drops the Go-only markers** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-full-stream-markers)
 - **Truncated streams finish with interrupted** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#truncated-streams-interrupted)
@@ -197,6 +201,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **The per-step timeout starts before PrepareStep** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#step-timeout-before-preparestep)
 - **MaxTokens below 1 is rejected** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#max-tokens-min)
 - **Start events report a Prompt string as a user message** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#start-event-messages)
+- **Deprecated tool execution callbacks run only when the new one is unset** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-execution-callback-aliases)
 - **A PrepareStep that sets only System changes the step instructions** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#preparestep-system-override)
 - **ExperimentalStreamTranscribe reports the cancel reason after Close** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-transcribe-cancel-reason)
 - **Stop conditions run only when the loop would continue** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stop-conditions-only-when-continue)
@@ -235,6 +240,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **The legacy ToolLoopAgent step timeout covers tool execution** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-step-timeout-tools)
 - **An empty ActiveTools leaves no tools active in the legacy loop** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-empty-active-tools)
 - **The legacy ToolLoopAgent follows the PrepareCall tools, tool callers and output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-preparecall-tools-output)
+- **Legacy ToolLoopAgent steps carry the call ID** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-step-call-id)
+- **The agent loop leaves provider-executed calls of unknown tools to the provider** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#agent-provider-dynamic-unknown-tool)
 - **AI Gateway authentication errors are wrapped** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gateway-auth-error)
 - **WorkflowAgent approval IDs are approval-toolCallId** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-approval-ids)
 - **Resumed approval results carry their model output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-resumed-output)
@@ -244,6 +251,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **The WorkflowAgent Stream root span ends with the run** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-stream-root-span-end)
 - **WorkflowAgent.Stream has no default step limit** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-stream-no-step-limit)
 - **The WorkflowAgent root span is ai.workflowAgent.stream for Generate too** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-root-span)
+- **WorkflowAgent answers a provider tool call that got no result** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-missing-provider-result)
 - **WorkflowRunMultiplexer ends on a finish chunk** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-multiplexer-finish)
 
 #### UI message streams
@@ -253,6 +261,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **UI message state follows TS for four chunk edge cases** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-message-state-edge-cases)
 - **ToUIMessageStream OnEnd reports the finish chunk's reason** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-on-end-finish-reason)
 - **One error chunk for a StreamText run that ends with an error part** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-single-error-chunk)
+- **UI message streams end like the source stream** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-finish-and-abort-chunks)
+- **UI file chunks carry the file's provider metadata** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-file-provider-metadata)
 
 #### Telemetry and events
 
@@ -263,6 +273,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **A cancelled GenerateText reports OnError to telemetry** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#generate-cancel-telemetry)
 - **Step-start events report the call's tools and the output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#step-start-call-tools)
 - **Telemetry OnStepError fires for every failed step** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-step-error)
+- **Telemetry step-end and end run after the callbacks** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-callback-order)
 
 #### Errors
 
@@ -608,7 +619,7 @@ also listed, with a link to their migration entry, under
   call**, as TS ignores callback errors.
 - **Telemetry spans follow the TS GenAI shape**, and telemetry `callId` is
   `call-` plus 24 alphanumerics.
-- **The registry lists providers in registration order.**
+- **The registry lists providers in TS `Object.keys` order**: registration order, with array-index names (`"0"`, `"1"`, ...) first in numeric order.
 - **The JSON Schema validator** enforces `if`/`then`/`else`, `contains`,
   `dependencies` and `dependentSchemas`; input that ignored them now fails.
 - **`Rerank` and `Embed` accept an empty query, documents or input**, as TS.
@@ -821,6 +832,9 @@ in v0.5.3.
 
 ### Core
 
+- A model that returns no result or no stream (`(nil, nil)`) fails
+  `ExperimentalDecide`, `GenerateText`, `StreamText`, `GenerateObject` and the
+  legacy `ToolLoopAgent` loop with an error; they panicked.
 - The UI message stream's `MessageMetadata` callback runs once per stream
   part, as TS does; the `start` part of a `StreamText` stream called it twice.
 - The legacy `ToolLoopAgent` loop (`GenerateAgent`, `Execute`,
@@ -1212,6 +1226,10 @@ Notable ones:
 - UI tool parts cannot tell an unset `dynamic` from `dynamic: false` (Go
   `bool`), so Go writes `dynamic` only when true; TS can write
   `dynamic: false` for a tool missing from the tool set.
+- UI message stream SSE events (`ToUIMessageStreamResponse`,
+  `PipeUIMessageStreamToResponse`, `CreateUIMessageStreamResponse`) write
+  each chunk's JSON with sorted keys, because `UIMessageChunk` is a map; TS
+  writes insertion order. The values are the same (round 70).
 - The Vertex Gemini image model accepts URL and `gs://` input images and
   sends them as `fileData` with the caller's media type, else one inferred
   from the URL path extension (query string and fragment ignored), else
