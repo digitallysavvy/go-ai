@@ -3,11 +3,13 @@ package ai
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -52,4 +54,90 @@ func TestR70Integ_StreamObject_NilModelStreamIsAnError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "stream is nil") {
 		t.Fatalf("err = %v, want stream is nil", err)
 	}
+}
+
+// r70OrderTelemetry records the telemetry step-end and end calls in the
+// shared order log.
+type r70OrderTelemetry struct {
+	telemetry.NoopTelemetryIntegration
+	log *r70OrderLog
+}
+
+func (r *r70OrderTelemetry) OnStepEnd(context.Context, telemetry.TelemetryStepEndEvent) {
+	r.log.add("telemetry.onStepEnd")
+}
+
+func (r *r70OrderTelemetry) OnFinish(context.Context, telemetry.TelemetryFinishEvent) {
+	r.log.add("telemetry.onEnd")
+}
+
+type r70OrderLog struct {
+	mu  sync.Mutex
+	got []string
+}
+
+func (l *r70OrderLog) add(s string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.got = append(l.got, s)
+}
+
+func (l *r70OrderLog) check(t *testing.T, want []string) {
+	t.Helper()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if strings.Join(l.got, ",") != strings.Join(want, ",") {
+		t.Errorf("order = %v, want %v", l.got, want)
+	}
+}
+
+// Coordinator ruling (r70): TS notify([onStepFinish, telemetry.onStepEnd])
+// and notify([onEnd, telemetry.onEnd]) start the user callback first, so the
+// telemetry integration's step-end and end run after the callbacks, in
+// GenerateText and StreamText.
+func TestR70Integ_CallbacksRunBeforeTelemetryStepEndAndEnd(t *testing.T) {
+	want := []string{"onStepEnd", "onStepEndEvent", "telemetry.onStepEnd", "onEnd", "onEndEvent", "telemetry.onEnd"}
+
+	log := &r70OrderLog{}
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: "hi", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model, Prompt: "p",
+		Telemetry:      &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{&r70OrderTelemetry{log: log}}},
+		OnStepEnd:      func(context.Context, types.StepResult, interface{}) { log.add("onStepEnd") },
+		OnStepEndEvent: func(context.Context, OnStepFinishEvent) { log.add("onStepEndEvent") },
+		OnEnd:          func(context.Context, *GenerateTextResult, interface{}) { log.add("onEnd") },
+		OnEndEvent:     func(context.Context, OnFinishEvent) { log.add("onEndEvent") },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	log.check(t, want)
+
+	log = &r70OrderLog{}
+	smodel := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "hi"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	res, err := StreamText(context.Background(), StreamTextOptions{
+		Model: smodel, Prompt: "p",
+		Telemetry:      &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{&r70OrderTelemetry{log: log}}},
+		OnStepEnd:      func(context.Context, types.StepResult, interface{}) { log.add("onStepEnd") },
+		OnStepEndEvent: func(context.Context, OnStepFinishEvent) { log.add("onStepEndEvent") },
+		OnEnd:          func(*StreamTextResult) { log.add("onEnd") },
+		OnEndEvent:     func(context.Context, OnFinishEvent) { log.add("onEndEvent") },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := res.ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+	log.check(t, want)
 }

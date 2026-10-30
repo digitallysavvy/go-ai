@@ -1227,7 +1227,6 @@ func TestR70TSStreamOnEndAfterMidStreamErrorPart(t *testing.T) {
 	}
 }
 
-
 // TS 4435 and 4480: a provider stream that closes before its finish chunk
 // rejects with the no-finish error, reaches onError and onStepError (with the
 // step's start event), and never onStepEnd.

@@ -2174,7 +2174,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// TS onEndEvent.model is the final step's model (a PrepareStep model
 	// override included).
 	endProvider, endModelID := finalStepModel(result.Steps, opts.Model.Provider(), opts.Model.ModelID())
-	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
+	// The telemetry onEnd runs after the end callbacks: TS notify([onEnd,
+	// telemetry.onEnd]) starts the callback first.
+	endTelemetry := telemetry.TelemetryFinishEvent{
 		CallID:           callID,
 		OperationType:    "ai.generateText",
 		FinishReason:     string(result.FinishReason),
@@ -2192,7 +2194,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		Settings:         telemetrySettings,
 		RuntimeContext:   telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 		ToolsContext:     telemetryToolsContext(telemetrySettings, toolsContext),
-	})
+	}
 
 	// Call end callback (v6.0: with user context)
 	if onEnd != nil {
@@ -2275,6 +2277,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	}
 	finishEvent.SetAggregatesFromSteps(result.Steps, result.ResponseMessages)
 	Notify(ctx, finishEvent, onEndEvent)
+	telemetry.FireOnEnd(ctx, endTelemetry)
 
 	if outputParseErr != nil {
 		return nil, outputParseErr

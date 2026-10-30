@@ -3478,8 +3478,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 		allSteps = append(allSteps, stepResult)
 
-		// Fire step-finish telemetry — OTel implementation ends the child step span.
-		{
+		// Step-finish telemetry (the OTel implementation ends the child step
+		// span) runs after the step-end callbacks: TS notify([onStepFinish,
+		// telemetry.onStepEnd]) starts the callback first.
+		fireStepEndTelemetry := func() {
 			// The step's own usage (r.usage is the running total across steps).
 			stepTelUsage := telemetryUsageFromUsage(stepResult.Usage)
 			var stepFiles []types.GeneratedFileContent
@@ -3579,6 +3581,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			RuntimeContext:      r.cbRuntimeCtx,
 			ToolsContext:        r.cbToolsCtx,
 		}, r.cbOnStepFinishEvent)
+		fireStepEndTelemetry()
 
 		// Log this step's model warnings once per model call (TS
 		// stream-text.ts logWarnings, called per step just after the
@@ -4216,7 +4219,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	}
 	r.mu.Unlock()
 	endProvider, endModelID := finalStepModel(allSteps, r.cbModelProvider, r.cbModelID)
-	telemetry.FireOnEnd(r.telemetryCtx, telemetry.TelemetryFinishEvent{
+	// The telemetry onEnd runs after the end callbacks: TS notify([onEnd,
+	// telemetry.onEnd]) starts the callback first.
+	endTelemetry := telemetry.TelemetryFinishEvent{
 		CallID:           r.cbCallID,
 		OperationType:    "ai.streamText",
 		FinishReason:     string(r.finishReason),
@@ -4234,7 +4239,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		Settings:         r.telemetrySettings,
 		RuntimeContext:   telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
 		ToolsContext:     telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
-	})
+	}
 
 	// Mark stream as done before firing callbacks so callers that check
 	// Status() inside callbacks observe the terminal state. Request() and
@@ -4352,6 +4357,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	}
 	finishEvent.SetAggregatesFromSteps(stepsForEvent, responseMessagesWithInitial(r.initialResponseMessages, stepsForEvent))
 	Notify(ctx, finishEvent, r.cbOnEndEvent)
+	telemetry.FireOnEnd(r.telemetryCtx, endTelemetry)
 }
 
 func enrichStreamedToolResultForModelOutput(ctx context.Context, result types.ToolResult, fromModel bool, toolCalls []types.ToolCall, toolsByName map[string]*types.Tool, usage *types.Usage) (types.ToolResult, error) {
@@ -5310,7 +5316,8 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 	}
 	r.mu.Unlock()
 	endProvider, endModelID := finalStepModel([]types.StepResult{step}, r.cbModelProvider, r.cbModelID)
-	telemetry.FireOnEnd(r.telemetryCtx, telemetry.TelemetryFinishEvent{
+	// Telemetry onEnd after the end callbacks (TS notify order).
+	endTelemetry := telemetry.TelemetryFinishEvent{
 		CallID:           r.cbCallID,
 		OperationType:    "ai.streamText",
 		FinishReason:     string(r.finishReason),
@@ -5328,7 +5335,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		Settings:         r.telemetrySettings,
 		RuntimeContext:   telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
 		ToolsContext:     telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
-	})
+	}
 
 	// Mark stream as done.
 	r.mu.Lock()
@@ -5376,6 +5383,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 	}
 	finishEvent.SetAggregatesFromSteps(finishEvent.Steps, responseMessagesWithInitial(r.initialResponseMessages, finishEvent.Steps))
 	Notify(ctx, finishEvent, r.cbOnEndEvent)
+	telemetry.FireOnEnd(r.telemetryCtx, endTelemetry)
 
 	return r.text, nil
 }
