@@ -86,3 +86,26 @@ func TestR68StepErrorTelemetryGetsWrappedGatewayError(t *testing.T) {
 		rec.check(t, authErr)
 	})
 }
+
+// TS generateText notifies telemetry onStepError for every failure of a
+// started step (here a tool choice violation after the model call), not only
+// for a failed model call.
+func TestR68GenerateTextStepErrorTelemetryAfterModelCall(t *testing.T) {
+	rec := &r68StepErrorTelemetry{}
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: "x", FinishReason: types.FinishReasonStop}, nil
+		}},
+		Prompt: "q", ToolChoice: types.RequiredToolChoice(),
+		Tools:     []types.Tool{{Name: "a"}},
+		Telemetry: &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{rec}},
+	})
+	if !IsToolChoiceViolationError(err) {
+		t.Fatalf("err = %v, want a tool choice violation", err)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if rec.stepCalls != 1 || !IsToolChoiceViolationError(rec.stepErr) || rec.rootErr == nil {
+		t.Fatalf("telemetry OnStepError = %d call(s) (%v), OnError = %v; want one step error, then the root error", rec.stepCalls, rec.stepErr, rec.rootErr)
+	}
+}

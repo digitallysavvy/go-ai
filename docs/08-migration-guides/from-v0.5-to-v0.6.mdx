@@ -106,6 +106,7 @@ already, you can skip them.
 | `experimental_onEvaluate`, `ai.evaluate`, `ai.evaluation.`, `gen_ai.operation.name=evaluate` | Renamed to decide | wire/protocol change | Update names | [Decide telemetry names](#decide-telemetry-names) |
 | Telemetry integration `OnAbort` for a cancelled `GenerateText` | Integrations get `OnError` | silent behavior change | Handle `OnError` | [GenerateText abort telemetry](#generate-cancel-telemetry) |
 | `OnStepStart:` / `OnStepStartEvent:` reading `e.Tools` or `e.Output` | The call's tools; `Output` is set | silent behavior change | Read `e.ActiveTools`, or `LanguageModelCallStartEvent.Tools` | [Step-start tools](#step-start-call-tools) |
+| Telemetry integration `OnStepError` for `GenerateText` | Fires for every failed step | silent behavior change | Don't assume the model call failed | [GenerateText step error telemetry](#generate-step-error-telemetry) |
 | `strings.Contains(err.Error(), "failed at step"` and other prefixes | Errors returned as is | error text only | Use `errors.As` / `errors.Is` | [Unprefixed errors](#errors-unprefixed) |
 | Error text with `%q`-quoted names (tool callers, tool search, decide, ID generator, download URL hostname) | TS quoting | error text only | Use `errors.As` | [Name quoting](#error-name-quoting) |
 | `"no such evaluationModel"` text checks on `ExperimentalEvaluate` / `ExperimentalDecide` errors | `*providererrors.NoSuchModelError` | error text only | Use `errors.As` | [Unknown decision model](#decide-unknown-model) |
@@ -1291,6 +1292,20 @@ compile-time changes.
   _ = opts
   ```
 
+- **Kind:** silent behavior change
+
+### Telemetry OnStepError fires for every failed GenerateText step {#generate-step-error-telemetry}
+
+- **What changed:** a `GenerateText` step that fails after it started (a tool
+  choice violation, a tool approval or tool-context error, a parse or
+  download failure, not only a failed model call) reports `OnStepError` to
+  telemetry integrations before `OnError`, as TS `generateText` notifies
+  telemetry `onStepError` for its open step. In v0.5 only a failed model call did; the
+  step span was closed by `OnError` instead.
+- **Am I affected?** Custom `TelemetryIntegration` implementations with an
+  `OnStepError` method.
+- **What to do:** no action unless your `OnStepError` assumes the model call
+  failed (the error can be any step failure).
 - **Kind:** silent behavior change
 
 ## Errors {#errors}
