@@ -871,8 +871,10 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		// an error part carrying one, else nil (the value, not the part: a
 		// TextStream may reuse the chunk it returned).
 		var lastPartErr error
-		// lastPartAbort: the source's previous part was an abort part.
+		// lastPartAbort: the source's previous part was an abort part;
+		// sawAbortPart: any part was.
 		lastPartAbort := false
+		sawAbortPart := false
 		activeTextIDs := &orderedIDSet{}
 		activeReasoningIDs := &orderedIDSet{}
 		textID := ""
@@ -978,6 +980,9 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				lastPartErr = chunk.Err
 			}
 			lastPartAbort = chunk.Type == provider.ChunkTypeAbort
+			if lastPartAbort {
+				sawAbortPart = true
+			}
 
 			if chunk.Type == provider.ChunkTypeFinish || chunk.Type == provider.ChunkTypeFinishStep {
 				sawTerminal = true
@@ -994,6 +999,10 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeCompleted})
 				finishPart := *chunk
 				callFinishPart = &finishPart
+			}
+			if chunk.Type == provider.ChunkTypeAbort {
+				// TS: part.type === 'abort' → setSourceOutcome aborted.
+				setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeAborted})
 			}
 			if chunk.Type == provider.ChunkTypeError {
 				sawTerminal = true
@@ -1142,6 +1151,12 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		}
 
 		if !sawTerminal && options.PartialStream {
+			callOnEnd()
+			return
+		}
+		if !sawTerminal && sawAbortPart {
+			// TS writes the abort part's chunk and nothing after it: an
+			// aborted source is not an incomplete one, and has no finish.
 			callOnEnd()
 			return
 		}

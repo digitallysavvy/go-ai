@@ -1465,3 +1465,107 @@ func TestR70TSStreamIncompleteContinuationStepRejects(t *testing.T) {
 		t.Fatalf("telemetry onError = %v", rec.telErrs)
 	}
 }
+
+func r70UIOutcome(t *testing.T, src provider.TextStream, opts UIMessageStreamResultOptions) (outcomes []map[string]interface{}, streamErr error) {
+	t.Helper()
+	opts.OnEnd = func(e map[string]interface{}) {
+		o, _ := e["outcome"].(map[string]interface{})
+		outcomes = append(outcomes, o)
+	}
+	chunks, errCh := ToUIMessageStream(context.Background(), src, opts)
+	for range chunks {
+	}
+	return outcomes, <-errCh
+}
+
+// TS to-ui-message-stream.test.ts "reports the source outcome to onEnd",
+// "reports an errored source stream as failed exactly once" and "does not let
+// an earlier finish part hide a source stream failure" (634).
+func TestR70TSUISourceOutcome(t *testing.T) {
+	u := types.Usage{InputTokens: r70Int64(1), OutputTokens: r70Int64(1), TotalTokens: r70Int64(2)}
+	finish := provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: &u}
+	genErr := errors.New("generation failed")
+	errPart := provider.StreamChunk{Type: provider.ChunkTypeError, Err: genErr, Text: genErr.Error()}
+	abortPart := provider.StreamChunk{Type: provider.ChunkTypeAbort, AbortReason: "user cancelled"}
+	srcErr := errors.New("source stream failed")
+	cases := []struct {
+		name    string
+		src     provider.TextStream
+		status  string
+		wantErr error
+	}{
+		{"completed", testutil.NewMockTextStream([]provider.StreamChunk{finish}), "completed", nil},
+		{"failed", testutil.NewMockTextStream([]provider.StreamChunk{errPart}), "failed", genErr},
+		{"aborted", testutil.NewMockTextStream([]provider.StreamChunk{abortPart}), "aborted", nil},
+		{"completedBeforeError", testutil.NewMockTextStream([]provider.StreamChunk{finish, errPart}), "completed", nil},
+		{"completedAfterError", testutil.NewMockTextStream([]provider.StreamChunk{errPart, finish}), "completed", nil},
+		{"errored source", &r70SliceStream{err: srcErr}, "failed", srcErr},
+		{"finish then source failure", &r70SliceStream{chunks: []provider.StreamChunk{finish}, err: srcErr}, "failed", srcErr},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			outcomes, _ := r70UIOutcome(t, tc.src, UIMessageStreamResultOptions{})
+			if len(outcomes) != 1 {
+				t.Fatalf("onEnd called %d times", len(outcomes))
+			}
+			o := outcomes[0]
+			if o["status"] != tc.status {
+				t.Fatalf("outcome = %v, want status %s", o, tc.status)
+			}
+			if e, _ := o["error"].(error); tc.wantErr != nil && !errors.Is(e, tc.wantErr) || tc.wantErr == nil && o["error"] != nil {
+				t.Fatalf("outcome error = %v, want %v", o["error"], tc.wantErr)
+			}
+		})
+	}
+}
+
+// TS 669 and 700: a message metadata or UI chunk conversion (onError)
+// failure fails the stream and reaches onEnd once as a failed outcome.
+func TestR70TSUICallbackFailuresFailOnce(t *testing.T) {
+	u := types.Usage{InputTokens: r70Int64(1), OutputTokens: r70Int64(1), TotalTokens: r70Int64(2)}
+	finish := provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: &u}
+	metaErr := errors.New("message metadata failed")
+	convErr := errors.New("UI chunk conversion failed")
+	cases := []struct {
+		name string
+		src  []provider.StreamChunk
+		opts UIMessageStreamResultOptions
+		want error
+	}{
+		{"message metadata", []provider.StreamChunk{finish}, UIMessageStreamResultOptions{MessageMetadata: func(map[string]interface{}) map[string]interface{} { panic(metaErr) }}, metaErr},
+		{"conversion", []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: errors.New("generation failed"), Text: "generation failed"}}, UIMessageStreamResultOptions{OnError: func(error) string { panic(convErr) }}, convErr},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			outcomes, streamErr := r70UIOutcome(t, testutil.NewMockTextStream(tc.src), tc.opts)
+			if !errors.Is(streamErr, tc.want) {
+				t.Fatalf("stream error = %v, want %v", streamErr, tc.want)
+			}
+			if len(outcomes) != 1 || outcomes[0]["status"] != "failed" {
+				t.Fatalf("onEnd outcomes = %v", outcomes)
+			}
+			if e, _ := outcomes[0]["error"].(error); !errors.Is(e, tc.want) {
+				t.Fatalf("outcome error = %v", outcomes[0]["error"])
+			}
+		})
+	}
+}
+
+// TS writes nothing after an abort part's chunk: a source that ends after it
+// is neither incomplete (no error chunk) nor finished (no finish chunks).
+func TestR70UIAbortPartEndsTheUIStream(t *testing.T) {
+	chunks, errCh := ToUIMessageStream(context.Background(), testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "a"},
+		{Type: provider.ChunkTypeAbort, AbortReason: "user cancelled"},
+	}))
+	got := r70UITypes(chunks)
+	<-errCh
+	if last := got[len(got)-1]; last != "abort" {
+		t.Fatalf("UI chunks = %v, want abort last", got)
+	}
+	for _, typ := range got {
+		if typ == "error" || typ == "finish" || typ == "finish-step" {
+			t.Fatalf("UI chunks = %v", got)
+		}
+	}
+}
