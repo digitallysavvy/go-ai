@@ -859,3 +859,25 @@ func TestR70Gen_Decide_NilModelResultIsAnError(t *testing.T) {
 		t.Error("OnEnd called for a failed decision")
 	}
 }
+
+// A language model whose DoGenerate returns (nil, nil) fails GenerateText
+// with an error, after the step's OnStepError, instead of panicking.
+func TestR70Gen_GenerateText_NilModelResultIsAnError(t *testing.T) {
+	model := &testutil.MockLanguageModel{ProviderName: "p", ModelName: "m", DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+		return nil, nil
+	}}
+	var stepErr error
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model, Prompt: "hi",
+		OnStepError: func(_ context.Context, e OnStepErrorEvent) { stepErr = e.Error },
+	})
+	if err == nil || res != nil {
+		t.Fatalf("GenerateText = %v, %v; want an error", res, err)
+	}
+	if err.Error() != "language model p/m returned no result" {
+		t.Errorf("error = %q", err)
+	}
+	if stepErr == nil || stepErr.Error() != err.Error() {
+		t.Errorf("OnStepError error = %v, want %v", stepErr, err)
+	}
+}

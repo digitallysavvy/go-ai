@@ -146,6 +146,12 @@ func IsGatewayCallRetryable(err error) bool {
 
 func doGenerateWithGatewayRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int) (*types.GenerateResult, error) {
 	result, err := doGenerateWithGatewayRetryRaw(ctx, model, opts, maxRetries)
+	if err == nil && result == nil {
+		// TS reads the model response right after doGenerate, so a model
+		// that resolves without a result fails the call instead of crashing
+		// it.
+		return nil, fmt.Errorf("language model %s/%s returned no result", model.Provider(), model.ModelID())
+	}
 	normalizeGenerateResultText(result)
 	return result, err
 }
