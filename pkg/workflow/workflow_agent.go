@@ -2618,7 +2618,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	// total usage; an aborted run ends the root with onAbort here.
 	internal := *early.internalOptions(opts.Messages, opts.Prompt)
 	rootCtx := ctx
-	internal.OnStreamDone = func(done ai.StreamDoneInfo) {
+	aibridge.SetWorkflowStreamHooks(&internal, func(done aibridge.StreamDoneInfo) {
 		if done.Err != nil {
 			if isWorkflowAbort(rootCtx, done.Err) {
 				telemetrypkg.FireOnAbort(rootCtx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, Steps: done.Steps})
@@ -2642,7 +2642,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 				TotalTokens:  done.Usage.TotalTokens,
 			},
 		})
-	}
+	})
 	call := agent.AgentStreamOptions{
 		AgentGenerateOptions:  agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, InstructionMessages: instructionMessages, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: withFinishReasonStop(opts.StopWhen), Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: &internal},
 		OnChunk:               opts.OnChunk,
@@ -2677,7 +2677,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 // TimeoutError as aborts, so onAbort fires and onError does not).
 // workflowInternalOptions makes the loop continue after a provider-executed
 // tool call with no result (TS WorkflowAgent warns and sends an empty result).
-var workflowInternalOptions = &ai.InternalOptions{ContinueOnMissingProviderResult: true, StopOnStreamError: true, EndOnError: true, StreamModeUsage: true, HeadersAsGiven: true, ApprovalID: workflowApprovalID, RequestMessagesAsPrompt: true, DeferApprovalRequests: true, ApprovalsResumed: true}
+var workflowInternalOptions = &ai.InternalOptions{ContinueOnMissingProviderResult: true, StopOnStreamError: true, EndOnError: true, HeadersAsGiven: true, ApprovalID: workflowApprovalID, RequestMessagesAsPrompt: true, DeferApprovalRequests: true, ApprovalsResumed: true}
 
 // workflowApprovalID is TS WorkflowAgent's approval ID for a tool call:
 // `approval-${toolCallId}`, in generate and stream mode.

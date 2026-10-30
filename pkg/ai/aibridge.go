@@ -25,4 +25,5 @@ func init() {
 	aibridge.ValidateToolContext = validateToolContext
 	aibridge.ResolveToolApproval = resolveToolApproval
 	aibridge.WrapGatewayError = wrapGatewayError
+	aibridge.SetWorkflowStreamHooks = setWorkflowStreamHooks
 }

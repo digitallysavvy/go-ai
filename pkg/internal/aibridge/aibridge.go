@@ -73,4 +73,26 @@ var (
 	// WrapGatewayError is TS wrapGatewayError (an unauthenticated AI Gateway
 	// error becomes one that says how to authenticate).
 	WrapGatewayError func(err error) error
+
+	// SetWorkflowStreamHooks makes a StreamText run with internal (an
+	// *ai.InternalOptions) report TS WorkflowAgent's stream-mode total usage
+	// (aggregateUsage) and call onDone once when the run ends (completed,
+	// failed or aborted), after its end callbacks and before ReadAll, Err and
+	// the full stream return. Used by WorkflowAgent's stream path.
+	SetWorkflowStreamHooks func(internal interface{}, onDone func(StreamDoneInfo))
 )
+
+// StreamDoneInfo describes a finished StreamText run for
+// SetWorkflowStreamHooks.
+type StreamDoneInfo struct {
+	// Err is the error that ended the run (nil when it completed).
+	Err error
+	// Steps are the completed steps.
+	Steps []types.StepResult
+	// Usage is the run's total usage (TS aggregateUsage).
+	Usage types.Usage
+	// FinishReason and Text are the call's finish reason and the final
+	// step's text.
+	FinishReason types.FinishReason
+	Text         string
+}

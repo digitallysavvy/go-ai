@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/aibridge"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -56,22 +57,25 @@ type InternalOptions struct {
 	// final conversation, as TS's iterator returns it. Used by WorkflowAgent.
 	FailedEndMessages []types.Message
 
-	// StreamModeUsage makes a StreamText run report TS WorkflowAgent's
+	// streamModeUsage makes a StreamText run report TS WorkflowAgent's
 	// stream-mode total usage (aggregateExecutionUsage(steps, 'stream'), that
 	// is aggregateUsage): the steps' input and output tokens summed with
 	// missing counts as 0, and TotalTokens their sum, set even when no step
 	// reported usage. It applies to the end event's Usage/TotalUsage (completed
 	// and failed runs), the telemetry end event and the result's Usage. The
 	// token details and raw usage of the plain sum are kept. Plain StreamText
-	// keeps TS streamText's addLanguageModelUsage totals. Used by WorkflowAgent.
-	StreamModeUsage bool
-
-	// OnStreamDone, when set, is called once when a StreamText run ends
+	// keeps TS streamText's addLanguageModelUsage totals.
+	//
+	// onStreamDone, when set, is called once when a StreamText run ends
 	// (completed, failed or aborted), after its end callbacks and before
 	// ReadAll, Err and the full stream return. TS WorkflowAgent reports its
 	// root telemetry end (onError, onEnd with the total usage) when the run's
-	// loop ends, not when the stream opens. Used by WorkflowAgent.
-	OnStreamDone func(StreamDoneInfo)
+	// loop ends, not when the stream opens.
+	//
+	// Both are set by WorkflowAgent's stream path through
+	// aibridge.SetWorkflowStreamHooks; they are not public API.
+	streamModeUsage bool
+	onStreamDone    func(aibridge.StreamDoneInfo)
 
 	// HeadersAsGiven makes the legacy agent loop (pkg/agent GenerateAgent)
 	// send each step's headers to the model as they are, without its
@@ -112,20 +116,12 @@ type InternalOptions struct {
 	ApprovalsResumed bool
 }
 
-// StreamDoneInfo describes a finished StreamText run for
-// InternalOptions.OnStreamDone. It may change without notice.
-type StreamDoneInfo struct {
-	// Err is the error that ended the run (nil when it completed).
-	Err error
-	// Steps are the completed steps.
-	Steps []types.StepResult
-	// Usage is the run's total usage (TS aggregateUsage with
-	// StreamModeUsage).
-	Usage types.Usage
-	// FinishReason and Text are the call's finish reason and the final
-	// step's text.
-	FinishReason types.FinishReason
-	Text         string
+// setWorkflowStreamHooks is aibridge.SetWorkflowStreamHooks.
+func setWorkflowStreamHooks(internal interface{}, onDone func(aibridge.StreamDoneInfo)) {
+	if o, ok := internal.(*InternalOptions); ok && o != nil {
+		o.streamModeUsage = true
+		o.onStreamDone = onDone
+	}
 }
 
 func deferApprovalRequests(internal *InternalOptions) bool {
@@ -178,7 +174,7 @@ func notifyFailedEnd(ctx context.Context, internal *InternalOptions, onEndEvent 
 	for _, step := range steps {
 		e.TotalUsage = e.TotalUsage.Add(step.Usage)
 	}
-	if internal.StreamModeUsage {
+	if internal.streamModeUsage {
 		e.TotalUsage = streamModeUsage(steps)
 	}
 	if n := len(steps); n > 0 {

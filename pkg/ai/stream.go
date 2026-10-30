@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/aibridge"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -745,9 +746,9 @@ type StreamTextResult struct {
 
 	processingDone chan struct{}
 
-	// onStreamDone is InternalOptions.OnStreamDone, run once before
+	// onStreamDone is InternalOptions.onStreamDone, run once before
 	// processingDone closes; streamDoneOnce guards it.
-	onStreamDone    func(StreamDoneInfo)
+	onStreamDone    func(aibridge.StreamDoneInfo)
 	streamModeUsage bool
 	streamDoneOnce  sync.Once
 
@@ -851,8 +852,8 @@ func streamTextInternal(ctx context.Context, opts StreamTextOptions, steeringRun
 	}
 	result.processingDone = make(chan struct{})
 	if opts.Internal != nil {
-		result.onStreamDone = opts.Internal.OnStreamDone
-		result.streamModeUsage = opts.Internal.StreamModeUsage
+		result.onStreamDone = opts.Internal.onStreamDone
+		result.streamModeUsage = opts.Internal.streamModeUsage
 	}
 
 	go result.bootstrapAndStream(bootstrapCtx, opts, instructionMessages)
@@ -1699,7 +1700,7 @@ func (r *StreamTextResult) fail(err error) {
 	}
 }
 
-// notifyStreamDone runs InternalOptions.OnStreamDone once, on the processing
+// notifyStreamDone runs InternalOptions.onStreamDone once, on the processing
 // goroutine, before the chunk buffer and processingDone close.
 func (r *StreamTextResult) notifyStreamDone() {
 	if r.onStreamDone == nil {
@@ -1709,7 +1710,7 @@ func (r *StreamTextResult) notifyStreamDone() {
 		r.mu.Lock()
 		steps := append([]types.StepResult(nil), r.cbSteps...)
 		r.mu.Unlock()
-		info := StreamDoneInfo{Err: r.terminalErr(), Steps: steps, Usage: r.usage, FinishReason: r.finishReason, Text: r.finalStepText()}
+		info := aibridge.StreamDoneInfo{Err: r.terminalErr(), Steps: steps, Usage: r.usage, FinishReason: r.finishReason, Text: r.finalStepText()}
 		if r.streamModeUsage {
 			info.Usage = streamModeUsage(steps)
 		}
@@ -3906,7 +3907,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.finalText = allSteps[len(allSteps)-1].Text
 		r.hasFinalText = true
 	}
-	if r.err == nil && opts.Internal != nil && opts.Internal.StreamModeUsage {
+	if r.err == nil && opts.Internal != nil && opts.Internal.streamModeUsage {
 		// TS WorkflowAgent stream mode reports aggregateUsage(steps).
 		r.usage = streamModeUsage(allSteps)
 	}
@@ -3936,7 +3937,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				r.rawFinishReason = ""
 				r.usage = types.Usage{}
 			}
-			if opts.Internal != nil && opts.Internal.StreamModeUsage {
+			if opts.Internal != nil && opts.Internal.streamModeUsage {
 				// The TS WorkflowAgent total comes from the steps, not
 				// from a transformed finish part.
 				r.usage = streamModeUsage(allSteps)
