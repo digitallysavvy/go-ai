@@ -2844,7 +2844,66 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				}
 				toolErr = wrapTimeoutError(TimeoutReasonTool, toolErr)
 			}
-			var modelOutput *types.ToolResultOutput
+			results[i] = types.ToolResult{
+				ToolCallID:       call.ID,
+				ToolName:         call.ToolName,
+				Title:            call.Title,
+				Input:            call.Arguments,
+				Result:           toolResult,
+				Error:            toolErr,
+				ApprovalStatus:   approvalStatus,
+				ApprovalID:       approvalID,
+				ApprovalReason:   approvalReason,
+				ProviderExecuted: false,
+				// Only the automatic approval response reads the call's
+				// explicit false; the local output has no providerExecuted.
+				ProviderExecutedSet: call.ProviderExecutedSet && approvalStatus == types.ToolApprovalStatusApproved,
+				ProviderMetadata:    providerMetadata,
+				ToolMetadata:        call.ToolMetadata,
+			}
+			// notifyToolEnd emits OnToolCallFinishEvent (whether the execution
+			// succeeded or failed) and then the telemetry OnToolExecutionEnd:
+			// TS notify([onToolExecutionEnd, telemetry.onToolExecutionEnd])
+			// starts the user callback first.
+			notifyToolEnd := func(output types.ToolResult) {
+				finishEvent := OnToolCallFinishEvent{
+					CallID:              callbacks.callID,
+					ToolCallID:          call.ID,
+					ToolName:            call.ToolName,
+					ToolCall:            call,
+					ToolContext:         toolContext,
+					ToolOutput:          output,
+					ToolExecutionMs:     durationMs,
+					Args:                call.Arguments,
+					Result:              toolResult,
+					Error:               toolErr,
+					DurationMs:          durationMs,
+					StepNumber:          callbacks.stepNum,
+					ModelProvider:       callbacks.modelProvider,
+					ModelID:             callbacks.modelID,
+					Messages:            callbacks.messages,
+					ExperimentalContext: callbacks.experimentalContext,
+					RuntimeContext:      callbacks.runtimeContext,
+					ToolsContext:        callbacks.toolsContext,
+				}
+				// TS `onToolExecutionEnd ?? experimental_onToolCallFinish`.
+				onToolEnd := callbacks.onFinish
+				if onToolEnd == nil {
+					onToolEnd = callbacks.fallbackFinish
+				}
+				Notify(ctx, finishEvent, onToolEnd)
+				telemetry.FireOnToolCallFinish(toolCtx, telemetry.TelemetryToolCallFinishEvent{
+					Settings:    callbacks.telemetrySettings,
+					CallID:      callbacks.callID,
+					ToolCallID:  call.ID,
+					ToolName:    call.ToolName,
+					Args:        call.Arguments,
+					Result:      toolResult,
+					Error:       toolErr,
+					DurationMs:  durationMs,
+					ToolContext: telemetryToolContext(callbacks.telemetrySettings, call.ToolName, toolContext),
+				})
+			}
 			if toolErr == nil && tool.ToModelOutput != nil {
 				converted, convertErr := tool.ToModelOutput(ctx, types.ToModelOutputOptions{
 					ToolCallID: call.ID,
@@ -2867,70 +2926,15 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 					Usage: usage,
 				})
 				if convertErr != nil {
+					// TS converts the output (createToolModelOutput) only after
+					// executeToolCall has notified onToolExecutionEnd, so the
+					// execution's end events still fire before the call fails.
+					notifyToolEnd(results[i])
 					return results, &toolResultModelOutputError{err: convertErr}
 				}
-				modelOutput = converted
+				results[i].ModelOutput = converted
 			}
-
-			results[i] = types.ToolResult{
-				ToolCallID:       call.ID,
-				ToolName:         call.ToolName,
-				Title:            call.Title,
-				Input:            call.Arguments,
-				Result:           toolResult,
-				ModelOutput:      modelOutput,
-				Error:            toolErr,
-				ApprovalStatus:   approvalStatus,
-				ApprovalID:       approvalID,
-				ApprovalReason:   approvalReason,
-				ProviderExecuted: false,
-				// Only the automatic approval response reads the call's
-				// explicit false; the local output has no providerExecuted.
-				ProviderExecutedSet: call.ProviderExecutedSet && approvalStatus == types.ToolApprovalStatusApproved,
-				ProviderMetadata:    providerMetadata,
-				ToolMetadata:        call.ToolMetadata,
-			}
-
-			// Fire telemetry OnToolCallFinish so integrations can record errors.
-			telemetry.FireOnToolCallFinish(toolCtx, telemetry.TelemetryToolCallFinishEvent{
-				Settings:    callbacks.telemetrySettings,
-				CallID:      callbacks.callID,
-				ToolCallID:  call.ID,
-				ToolName:    call.ToolName,
-				Args:        call.Arguments,
-				Result:      toolResult,
-				Error:       toolErr,
-				DurationMs:  durationMs,
-				ToolContext: telemetryToolContext(callbacks.telemetrySettings, call.ToolName, toolContext),
-			})
-
-			// Emit OnToolCallFinishEvent after execution, whether it succeeded or failed.
-			finishEvent := OnToolCallFinishEvent{
-				CallID:              callbacks.callID,
-				ToolCallID:          call.ID,
-				ToolName:            call.ToolName,
-				ToolCall:            call,
-				ToolContext:         toolContext,
-				ToolOutput:          results[i],
-				ToolExecutionMs:     durationMs,
-				Args:                call.Arguments,
-				Result:              toolResult,
-				Error:               toolErr,
-				DurationMs:          durationMs,
-				StepNumber:          callbacks.stepNum,
-				ModelProvider:       callbacks.modelProvider,
-				ModelID:             callbacks.modelID,
-				Messages:            callbacks.messages,
-				ExperimentalContext: callbacks.experimentalContext,
-				RuntimeContext:      callbacks.runtimeContext,
-				ToolsContext:        callbacks.toolsContext,
-			}
-			// TS `onToolExecutionEnd ?? experimental_onToolCallFinish`.
-			onToolEnd := callbacks.onFinish
-			if onToolEnd == nil {
-				onToolEnd = callbacks.fallbackFinish
-			}
-			Notify(ctx, finishEvent, onToolEnd)
+			notifyToolEnd(results[i])
 		}
 	}
 
