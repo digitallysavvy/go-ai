@@ -2758,6 +2758,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					if s := r.currentStream(); s != nil {
 						_ = s.Close()
 					}
+					// A retried error part is never forwarded, so it must not
+					// make OnChunk skip a later part with the same error (TS
+					// adds only a forwarded part to errorsHandledForStreamRetry).
+					r.onChunkReportedErr = nil
 					// Drop the failed attempt's held-back chunks and close the
 					// text/reasoning blocks it left open downstream (TS
 					// closeOpenAttemptParts, before the retry's model call).
