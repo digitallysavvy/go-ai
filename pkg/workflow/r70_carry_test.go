@@ -280,3 +280,198 @@ func TestR70WorkflowInstructionsCheckedBeforeEmptyMessages(t *testing.T) {
 	_, err = a.StreamWithOptions(context.Background(), WorkflowStreamOptions{Messages: []types.Message{}, Instructions: 42})
 	r69WantInvalidPrompt(t, "stream", err, r70InvalidInstructions)
 }
+
+// r70ToolOnceModel calls testTool once, then answers "done".
+type r70ToolOnceModel struct {
+	wfMockModel
+	mu sync.Mutex
+	n  int
+}
+
+func (m *r70ToolOnceModel) next() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.n++
+	return m.n == 1
+}
+
+func (m *r70ToolOnceModel) DoGenerate(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+	if m.next() {
+		return &types.GenerateResult{FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{{ID: "test-call-id", ToolName: "testTool", Arguments: map[string]interface{}{}}}}, nil
+	}
+	return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+}
+
+func (m *r70ToolOnceModel) DoStream(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+	if m.next() {
+		return testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "test-call-id", ToolName: "testTool", Arguments: map[string]interface{}{}}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+		}), nil
+	}
+	return testutil.NewMockTextStream([]provider.StreamChunk{{Type: provider.ChunkTypeText, Text: "done"}, {Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop}}), nil
+}
+
+type r70Sandbox struct{ name string }
+
+// TS workflow-agent.test.ts experimental_sandbox: the stream-level sandbox,
+// the constructor-level one, the stream-level one over the constructor's,
+// and none (undefined) reach the tool's execute options.
+func TestR70WorkflowSandboxReachesToolExecution(t *testing.T) {
+	ctor, call := &r70Sandbox{"constructor"}, &r70Sandbox{"stream"}
+	cases := []struct {
+		name       string
+		ctor, call interface{}
+		want       interface{}
+	}{
+		{"stream-level", nil, call, call},
+		{"constructor-level", ctor, nil, ctor},
+		{"stream over constructor", ctor, call, call},
+		{"none", nil, nil, nil},
+	}
+	for _, stream := range []bool{false, true} {
+		for _, c := range cases {
+			var mu sync.Mutex
+			var got []interface{}
+			a, err := NewWorkflowAgent(WorkflowAgent{
+				Model:               &r70ToolOnceModel{},
+				ExperimentalSandbox: c.ctor,
+				Tools: []types.Tool{{
+					Name: "testTool", Description: "A test tool",
+					Parameters: map[string]interface{}{"type": "object"},
+					Execute: func(_ context.Context, _ map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+						mu.Lock()
+						got = append(got, o.ExperimentalSandbox)
+						mu.Unlock()
+						return "ok", nil
+					},
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stream {
+				st, err := a.StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "test", ExperimentalSandbox: c.call})
+				if err != nil {
+					t.Fatal(err)
+				}
+				_ = st.ConsumeStream()
+				if err := st.Err(); err != nil {
+					t.Fatalf("%s: %v", c.name, err)
+				}
+			} else if _, err := a.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "test", ExperimentalSandbox: c.call}); err != nil {
+				t.Fatalf("%s: %v", c.name, err)
+			}
+			mu.Lock()
+			if len(got) != 1 || got[0] != c.want {
+				t.Fatalf("stream=%v %s: execute saw %v, want [%v]", stream, c.name, got, c.want)
+			}
+			mu.Unlock()
+		}
+	}
+}
+
+// r70MissingResultModel calls the provider-executed WebSearch tool without a
+// result, then answers "done", recording the second call's prompt.
+type r70MissingResultModel struct {
+	wfMockModel
+	dyn    bool
+	mu     sync.Mutex
+	calls  int
+	second []types.Message
+}
+
+func (m *r70MissingResultModel) step(opts *provider.GenerateOptions) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls++
+	if m.calls == 2 {
+		m.second = opts.Prompt.Messages
+	}
+	return m.calls
+}
+
+func (m *r70MissingResultModel) call() types.ToolCall {
+	return types.ToolCall{ID: "missing-result-id", ToolName: "WebSearch", Arguments: map[string]interface{}{"query": "test query"}, ProviderExecuted: true, Dynamic: m.dyn}
+}
+
+func (m *r70MissingResultModel) DoGenerate(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	if m.step(opts) == 1 {
+		return &types.GenerateResult{FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{m.call()}}, nil
+	}
+	return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+}
+
+func (m *r70MissingResultModel) DoStream(_ context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	if m.step(opts) == 1 {
+		c := m.call()
+		return testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeToolCall, ToolCall: &c},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+		}), nil
+	}
+	return testutil.NewMockTextStream([]provider.StreamChunk{{Type: provider.ChunkTypeText, Text: "done"}, {Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop}}), nil
+}
+
+// TS workflow-agent.test.ts "should warn and return empty result when
+// provider-executed tool result is missing": the provider-executed call is
+// answered with one tool result whose output is type "text" and an empty value,
+// placed after the call in the assistant message (addToolResultsToConversation).
+// The run then ends: TS modelCallIterator sets done when the step had no
+// client tool calls and no pending deferred results, so the model is not
+// called again. Both a registered provider tool and a dynamic
+// provider-executed call of an unregistered tool (the TS case's `tools: {}`;
+// parseToolCall keeps such a call only when it is dynamic) behave so.
+func TestR70WorkflowMissingProviderResultIsEmptyText(t *testing.T) {
+	t.Skip("parity bug: change requests CR-1 (generate.go/stream.go/toolloop.go keep the loop going after the synthetic result) and CR-2 (toolloop.go runs an unregistered dynamic provider-executed call locally), reports/loop-r70-carry.md")
+	for _, variant := range []string{"registered", "dynamic"} {
+		for _, stream := range []bool{false, true} {
+			m := &r70MissingResultModel{dyn: variant == "dynamic"}
+			cfg := WorkflowAgent{Model: m}
+			if variant == "registered" {
+				cfg.Tools = []types.Tool{{Name: "WebSearch", ProviderExecuted: true}}
+			}
+			a, err := NewWorkflowAgent(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var response []types.Message
+			if stream {
+				st, err := a.StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "test"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				_ = st.ConsumeStream()
+				if err := st.Err(); err != nil {
+					t.Fatal(err)
+				}
+				for _, step := range st.Steps() {
+					response = append(response, step.Response.Messages...)
+				}
+			} else {
+				res, err := a.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "test"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				response = res.ResponseMessages
+			}
+			m.mu.Lock()
+			calls := m.calls
+			m.mu.Unlock()
+			if calls != 1 {
+				t.Errorf("%s stream=%v: model calls = %d, want 1", variant, stream, calls)
+			}
+			if len(response) != 1 || response[0].Role != types.RoleAssistant || len(response[0].Content) != 2 {
+				t.Fatalf("%s stream=%v: response = %#v, want one assistant message [tool-call, tool-result]", variant, stream, response)
+			}
+			if c, ok := response[0].Content[0].(types.ToolCallContent); !ok || c.ToolCallID != "missing-result-id" || !c.ProviderExecuted {
+				t.Fatalf("%s stream=%v: first part = %#v", variant, stream, response[0].Content[0])
+			}
+			r, ok := response[0].Content[1].(types.ToolResultContent)
+			if !ok || r.ToolCallID != "missing-result-id" || r.ToolName != "WebSearch" || r.Output == nil ||
+				r.Output.Type != types.ToolResultOutputText || r.Output.Value != "" {
+				t.Fatalf("%s stream=%v: second part = %#v", variant, stream, response[0].Content[1])
+			}
+		}
+	}
+}

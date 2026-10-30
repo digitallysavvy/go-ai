@@ -447,14 +447,9 @@ func TestWorkflowRejectsSystemMessagesByDefault(t *testing.T) {
 	if _, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Messages: messages, AllowSystemInMessages: true}); err != nil {
 		t.Fatalf("allowSystemInMessages generate error: %v", err)
 	}
-	// ai.StreamText (which WorkflowAgent.StreamWithOptions delegates to)
-	// returns immediately and normalizes the prompt in the background, so
-	// the rejection surfaces through ReadAll()/Err(), not the return value.
-	streamResult, err := agent.StreamWithOptions(context.Background(), WorkflowStreamOptions{Messages: messages})
-	if err != nil {
-		t.Fatalf("unexpected error starting stream: %v", err)
-	}
-	if _, err := streamResult.ReadAll(); err == nil {
+	// TS WorkflowAgent standardizes the prompt before the run, so stream()
+	// itself rejects (TestR70WorkflowRejectsSystemMessagesBeforeTheRun).
+	if _, err := agent.StreamWithOptions(context.Background(), WorkflowStreamOptions{Messages: messages}); err == nil {
 		t.Fatal("expected stream system message rejection by default")
 	}
 	if _, err := agent.StreamWithOptions(context.Background(), WorkflowStreamOptions{Messages: messages, AllowSystemInMessages: true}); err != nil {
