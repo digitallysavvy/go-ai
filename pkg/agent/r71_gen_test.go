@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -142,4 +143,54 @@ func TestR71Gen_LegacyLoopToModelOutputErrorStillEndsTheExecution(t *testing.T) 
 	if ended.ToolCallID != "call-1" || ended.ToolOutput.Result != "raw" || ended.ToolOutput.Error != nil || ended.ToolOutput.ModelOutput != nil {
 		t.Fatalf("tool end event = %+v", ended)
 	}
+}
+
+// r71genObjectID marshals to a plain string, like the TS ObjectIdLike class
+// with a toJSON method.
+type r71genObjectID struct{}
+
+func (r71genObjectID) MarshalJSON() ([]byte, error) {
+	return []byte(`"507f1f77bcf86cd799439011"`), nil
+}
+
+// generate-text.test.ts 'result.responseMessages should JSON serialize object
+// tool outputs', through the legacy loop (TS ToolLoopAgent runs
+// generateText): the tool message's json output is the output's JSON value,
+// in the step's response messages and in the next model call's prompt.
+func TestR71Gen_LegacyLoopJSONSerializesToolOutputs(t *testing.T) {
+	model := &mockLanguageModel{responses: []types.GenerateResult{
+		{ToolCalls: []types.ToolCall{{ID: "call-1", ToolName: "lookupRecord", Arguments: map[string]interface{}{}}}, FinishReason: types.FinishReasonToolCalls},
+		{Text: "done", FinishReason: types.FinishReasonStop},
+	}}
+	a := NewToolLoopAgent(AgentConfig{
+		Model: model,
+		Tools: []types.Tool{{Name: "lookupRecord", Parameters: map[string]interface{}{"type": "object"},
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return map[string]interface{}{"id": r71genObjectID{}}, nil
+			}}},
+	})
+	res, err := a.Execute(context.Background(), "look up the record")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]interface{}{"id": "507f1f77bcf86cd799439011"}
+	toolOutput := func(where string, msgs []types.Message) {
+		t.Helper()
+		for _, m := range msgs {
+			if m.Role != types.RoleTool {
+				continue
+			}
+			tr, ok := m.Content[0].(types.ToolResultContent)
+			if !ok || tr.Output == nil || tr.Output.Type != types.ToolResultOutputJSON || !reflect.DeepEqual(tr.Output.Value, want) {
+				t.Errorf("%s tool output = %#v, want json %v", where, m.Content[0], want)
+			}
+			return
+		}
+		t.Errorf("%s: no tool message in %+v", where, msgs)
+	}
+	toolOutput("steps[0].responseMessages", res.Steps[0].ResponseMessages)
+	if len(model.options) != 2 {
+		t.Fatalf("model calls = %d, want 2", len(model.options))
+	}
+	toolOutput("second prompt", model.options[1].Prompt.Messages)
 }

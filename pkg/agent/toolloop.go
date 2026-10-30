@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/aibridge"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -3181,7 +3182,9 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 				part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: output}
 				part.Result = nil
 			default:
-				part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: result.Result}
+				// TS createToolModelOutput: the output's JSON value
+				// (toJSONValue), not the Go value itself.
+				part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: agentToJSONValue(result.Result)}
 				part.Result = nil
 			}
 		}
@@ -3192,6 +3195,28 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 	out = append(out, requests...)
 	out = append(out, responses...)
 	return append(out, withApproval...)
+}
+
+// agentToJSONValue round-trips value through JSON (TS toJSONValue:
+// JSON.parse(JSON.stringify(value)); a marshal failure gives null), keeping
+// the key order of a json.RawMessage or ordered object, as GenerateText's
+// tool model output does.
+func agentToJSONValue(value interface{}) interface{} {
+	if value == nil {
+		return nil
+	}
+	if ordered, ok := jsonorder.Normalize(value); ok {
+		return ordered
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var out interface{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 func modelFacingToolResultOutput(result types.ToolResult) types.ToolResultOutput {
