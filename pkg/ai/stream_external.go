@@ -320,6 +320,24 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 		onEnd = opts.OnFinish
 	}
 
+	// TS HarnessStreamTextResult sends the message-level 'start' part first,
+	// as streamText does: the public stream and the UI conversion (which maps
+	// a start-led source one to one) both begin with it. A src that already
+	// starts with its own start part keeps that one.
+	startSent := false
+	sendStart := func(first *provider.StreamChunk) {
+		if startSent {
+			return
+		}
+		startSent = true
+		if first != nil && first.Type == provider.ChunkTypeStart {
+			return
+		}
+		startPart := provider.StreamChunk{Type: provider.ChunkTypeStart}
+		r.uiChunkBuf.push(startPart)
+		r.chunkBuf.push(startPart)
+	}
+
 	var accumulatedText []string
 	stepNumber := 0
 	step := &externalStepAccum{}
@@ -436,6 +454,7 @@ consumeLoop:
 			}
 			break
 		}
+		sendStart(chunk)
 
 		// TS discardCurrentStepContent: drop the step in progress (content,
 		// warnings, started flag) without recording it.
@@ -768,6 +787,8 @@ consumeLoop:
 		}
 	}
 
+	sendStart(nil)
+
 	// Resolve the final typed output, if a spec was provided, from the last
 	// step's own text — same scope and unconditional-on-finishReason contract
 	// as StreamText's own terminal output resolution (audit row 2a5ed55 /
@@ -819,7 +840,7 @@ func reasoningText(reasoning []types.ReasoningContent) string {
 // step boundary) do not open a step; error/abort chunks end the stream.
 func opensExternalStep(chunk *provider.StreamChunk, step *externalStepAccum, stepNumber int, terminalFinishClosesTurn bool) bool {
 	switch chunk.Type {
-	case provider.ChunkTypeStreamStart, provider.ChunkTypeResponseMetadata,
+	case provider.ChunkTypeStart, provider.ChunkTypeStreamStart, provider.ChunkTypeResponseMetadata,
 		provider.ChunkTypeFirstChunk, provider.ChunkTypeStreamFinish,
 		provider.ChunkTypeError, provider.ChunkTypeAbort, provider.ChunkTypeRaw:
 		return false

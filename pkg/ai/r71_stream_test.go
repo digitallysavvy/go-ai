@@ -1422,3 +1422,80 @@ func TestR71StreamToUICancelKeepsDeclaredOutcome(t *testing.T) {
 		}
 	}
 }
+
+func r71streamTypes(s provider.TextStream) []provider.ChunkType {
+	var got []provider.ChunkType
+	for {
+		c, err := s.Next()
+		if err != nil {
+			return got
+		}
+		got = append(got, c.Type)
+	}
+}
+
+// TS HarnessStreamTextResult enqueues { type: 'start' } first (#16717), as
+// streamText does; a src that already starts with one keeps a single start.
+func TestR71StreamExternalResultStartsWithStartPart(t *testing.T) {
+	cases := []struct {
+		name  string
+		parts []provider.StreamChunk
+		want  []provider.ChunkType
+	}{
+		{"harness turn", []provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart},
+			{Type: provider.ChunkTypeText, Text: "hi"},
+			{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonStop},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+		}, []provider.ChunkType{provider.ChunkTypeStart, provider.ChunkTypeStartStep, provider.ChunkTypeText, provider.ChunkTypeFinishStep, provider.ChunkTypeFinish}},
+		{"own start part", []provider.StreamChunk{
+			{Type: provider.ChunkTypeStart},
+			{Type: provider.ChunkTypeText, Text: "hi"},
+			{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonStop},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+		}, []provider.ChunkType{provider.ChunkTypeStart, provider.ChunkTypeStartStep, provider.ChunkTypeText, provider.ChunkTypeFinishStep, provider.ChunkTypeFinish}},
+		{"empty source", nil, []provider.ChunkType{provider.ChunkTypeStart}},
+	}
+	for _, c := range cases {
+		r := NewStreamTextResultFromParts(context.Background(), testutil.NewMockTextStream(c.parts), ExternalStreamOptions{TerminalFinishClosesTurn: true})
+		if got := r71streamTypes(r.FullStream()); !reflect.DeepEqual(got, c.want) {
+			t.Fatalf("%s: full stream = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// A harness turn's UI stream is the TS toUIMessageStream mapping of its part
+// sequence: one to one, the finish chunk at the finish part.
+func TestR71StreamExternalResultUIStreamOneToOne(t *testing.T) {
+	r := NewStreamTextResultFromParts(context.Background(), testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeTextStart, ID: "t1"},
+		{Type: provider.ChunkTypeText, ID: "t1", Text: "one"},
+		{Type: provider.ChunkTypeTextEnd, ID: "t1"},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonToolCalls},
+		{Type: provider.ChunkTypeTextStart, ID: "t2"},
+		{Type: provider.ChunkTypeText, ID: "t2", Text: "two"},
+		{Type: provider.ChunkTypeTextEnd, ID: "t2"},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonStop},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	}), ExternalStreamOptions{TerminalFinishClosesTurn: true})
+	var stepEnds r71streamCalls
+	chunks, errs := r.ToUIMessageStream(context.Background(), UIMessageStreamResultOptions{ResponseMessageID: "msg-1", OnStepEnd: stepEnds.record})
+	var got []UIMessageChunk
+	for c := range chunks {
+		got = append(got, c)
+	}
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+	}
+	r71streamAssertJSON(t, "chunks", got, `[
+		{"type":"start","messageId":"msg-1"},
+		{"type":"start-step"},{"type":"text-start","id":"t1"},{"type":"text-delta","id":"t1","delta":"one"},{"type":"text-end","id":"t1"},{"type":"finish-step"},
+		{"type":"start-step"},{"type":"text-start","id":"t2"},{"type":"text-delta","id":"t2","delta":"two"},{"type":"text-end","id":"t2"},{"type":"finish-step"},
+		{"type":"finish","finishReason":"stop"}]`)
+	if n := len(stepEnds.all()); n != 2 {
+		t.Fatalf("onStepEnd calls = %d", n)
+	}
+}
