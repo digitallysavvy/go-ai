@@ -246,6 +246,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **UI message streams fail on an out-of-sequence chunk** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-out-of-sequence)
 - **An out-of-range KeepAliveMs is an error** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#keep-alive-range)
 - **UI message state follows TS for four chunk edge cases** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-message-state-edge-cases)
+- **ToUIMessageStream OnEnd reports the finish chunk's reason** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-on-end-finish-reason)
 
 #### Telemetry and events
 
@@ -255,7 +256,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Evaluate telemetry and event names are decide names** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#decide-telemetry-names)
 - **A cancelled GenerateText reports OnError to telemetry** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#generate-cancel-telemetry)
 - **Step-start events report the call's tools and the output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#step-start-call-tools)
-- **Telemetry OnStepError fires for every failed GenerateText step** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#generate-step-error-telemetry)
+- **Telemetry OnStepError fires for every failed step** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-step-error)
 
 #### Errors
 

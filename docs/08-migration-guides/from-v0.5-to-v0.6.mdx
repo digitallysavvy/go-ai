@@ -100,13 +100,14 @@ already, you can skip them.
 | `CreateUIMessageStreamWithOptions`, `ToUIMessageStream` with `OnEnd` / `OnStepEnd` | Out-of-sequence chunk ends the stream | silent behavior change | Emit start chunks first; handle `*ai.UIMessageStreamError` | [UI stream sequence](#ui-out-of-sequence) |
 | `KeepAliveMs` | Zero, negative or too large is an error | silent behavior change | Leave nil to disable | [KeepAliveMs](#keep-alive-range) |
 | Chunks you write with a `title` on `tool-output-*`, `"finishReason": null`, an empty reasoning `id`; `part["input"] == nil` | Message state follows TS | silent behavior change | Check for a missing `input` key | [UI message state](#ui-message-state-edge-cases) |
+| `ToUIMessageStream` `OnEnd`/`OnFinish` reading `e["finishReason"]` with `SendFinish: false` or a failed stream | Empty unless a `finish` chunk was sent | silent behavior change | Read the reason from `StreamTextResult` | [UI OnEnd finish reason](#ui-on-end-finish-reason) |
 | `Integrations: []telemetry.TelemetryIntegration{}` | Empty slice disables telemetry | silent behavior change | Leave nil for globals | [Empty Integrations](#empty-integrations) |
 | `"ai-sdk"`, `"go-ai"` tracer or instrumentation scope names, `telemetry.TracerName` | Tracers are `ai` and `gen_ai` | wire/protocol change | Update filters | [Tracer names](#tracer-names) |
 | `EnrichSpan:`, runtime context objects in spans | TS attribute rules | wire/protocol change | Read flattened keys | [Span attributes](#enrich-span-attributes) |
 | `experimental_onEvaluate`, `ai.evaluate`, `ai.evaluation.`, `gen_ai.operation.name=evaluate` | Renamed to decide | wire/protocol change | Update names | [Decide telemetry names](#decide-telemetry-names) |
 | Telemetry integration `OnAbort` for a cancelled `GenerateText` | Integrations get `OnError` | silent behavior change | Handle `OnError` | [GenerateText abort telemetry](#generate-cancel-telemetry) |
 | `OnStepStart:` / `OnStepStartEvent:` reading `e.Tools` or `e.Output` | The call's tools; `Output` is set | silent behavior change | Read `e.ActiveTools`, or `LanguageModelCallStartEvent.Tools` | [Step-start tools](#step-start-call-tools) |
-| Telemetry integration `OnStepError` for `GenerateText` | Fires for every failed step | silent behavior change | Don't assume the model call failed | [GenerateText step error telemetry](#generate-step-error-telemetry) |
+| Telemetry integration `OnStepError` for `GenerateText` or `StreamText` | Fires for every failed started step, also mid-stream | silent behavior change | Don't assume the model call failed to open | [Telemetry step errors](#telemetry-step-error) |
 | `strings.Contains(err.Error(), "failed at step"` and other prefixes | Errors returned as is | error text only | Use `errors.As` / `errors.Is` | [Unprefixed errors](#errors-unprefixed) |
 | Error text with `%q`-quoted names (tool callers, tool search, decide, ID generator, download URL hostname) | TS quoting | error text only | Use `errors.As` | [Name quoting](#error-name-quoting) |
 | `"no such evaluationModel"` text checks on `ExperimentalEvaluate` / `ExperimentalDecide` errors | `*providererrors.NoSuchModelError` | error text only | Use `errors.As` | [Unknown decision model](#decide-unknown-model) |
@@ -1163,9 +1164,11 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   `tool-output-available` or `tool-output-error` chunk carries one (TS passes
   the invocation's title), keeps an empty `id` on a reasoning part, keeps the
   earlier finish reason when a `finish` chunk has `"finishReason": null`, and
-  leaves `input` out of a streaming tool part whose partial input cannot be
-  parsed (v0.5 set it to JSON `null`). TS `processUIMessageStream` does each
-  of these.
+  leaves `input` out of a tool part that never received one (v0.5 set it to
+  JSON `null`): a streaming tool part whose partial input cannot be parsed, a
+  `tool-output-available` or `tool-output-error` chunk for such a part, and a
+  `tool-input-available` or `tool-input-error` chunk with no `input` key
+  (review round 68). TS `processUIMessageStream` does each of these.
 - **Am I affected?** Only if you write such chunks yourself (through
   `UIMessageStreamWriter.Write` or a merged stream) and read the built
   message's parts, for example `part["title"]` or `part["input"] == nil`.
@@ -1176,6 +1179,29 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   func hasInput(part map[string]interface{}) bool {
   	_, ok := part["input"] // v0.5: present with a nil value
   	return ok
+  }
+  ```
+
+- **Kind:** silent behavior change
+
+### ToUIMessageStream OnEnd reports the finish chunk's reason {#ui-on-end-finish-reason}
+
+- **What changed:** the `finishReason` that `ToUIMessageStream` (and
+  `StreamTextResult.ToUIMessageStream`) passes to `OnEnd`/`OnFinish` is the
+  reason of the `finish` chunk the stream sent. With `SendFinish: false`, or
+  when the stream fails before its `finish` chunk, it is now empty
+  (`types.FinishReason("")`); v0.5 passed the source's last step or call
+  reason. TS `handleUIMessageStreamFinish` passes `state.finishReason`,
+  which only a `finish` chunk sets. The value is still a `types.FinishReason`.
+- **Am I affected?** `OnEnd:` or `OnFinish:` callbacks on a UI message
+  stream with `SendFinish: false` (for example a stream you merge into
+  another) that read `e["finishReason"]`.
+- **What to do:** no action unless you do that. Read the reason from the
+  result instead:
+
+  ```go
+  func finishReason(result *ai.StreamTextResult) types.FinishReason {
+  	return result.FinishReason() // v0.5: OnEnd's e["finishReason"] with SendFinish false
   }
   ```
 
@@ -1294,18 +1320,35 @@ compile-time changes.
 
 - **Kind:** silent behavior change
 
-### Telemetry OnStepError fires for every failed GenerateText step {#generate-step-error-telemetry}
+### Telemetry OnStepError fires for every failed step {#telemetry-step-error}
 
-- **What changed:** a `GenerateText` step that fails after it started (a tool
-  choice violation, a tool approval or tool-context error, a parse or
-  download failure, not only a failed model call) reports `OnStepError` to
-  telemetry integrations before `OnError`, as TS `generateText` notifies
-  telemetry `onStepError` for its open step. In v0.5 only a failed model call did; the
-  step span was closed by `OnError` instead.
+- **What changed:** a telemetry integration's `OnStepError` now runs, before
+  `OnError`, for every `GenerateText` or `StreamText` step that fails after
+  it started. In v0.5 it ran only when the model call failed to open; any
+  other failure closed the step span through `OnError` alone. Now it also
+  runs for a `GenerateText` tool choice violation, tool approval or
+  tool-context error, or parse or download failure after the model call, and
+  for a `StreamText` step whose model stream fails mid-step, ends without
+  output, or whose tool input callback, download or conversion fails. TS
+  `generateText` and `streamText` notify telemetry `onStepError` for the open
+  step on every failure (`notifyStepError`). The error is wrapped for an
+  unauthenticated AI Gateway request (see
+  [Gateway auth error](#gateway-auth-error)); `OnError` keeps the error
+  itself.
 - **Am I affected?** Custom `TelemetryIntegration` implementations with an
-  `OnStepError` method.
-- **What to do:** no action unless your `OnStepError` assumes the model call
-  failed (the error can be any step failure).
+  `OnStepError` method that assume it only runs when a model call fails to
+  open, or that compare its `e.Error` with the provider's error by `==` or by
+  text.
+- **What to do:** no action unless your integration does that. Match errors
+  with `errors.As`:
+
+  ```go
+  func isGatewayAuth(err error) bool {
+  	var auth *gatewayerrors.GatewayAuthenticationError
+  	return errors.As(err, &auth) // also true for the wrapped error
+  }
+  ```
+
 - **Kind:** silent behavior change
 
 ## Errors {#errors}
