@@ -1100,9 +1100,15 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   run with the error and then the end event (only when a step completed); for
   a run cancelled mid-stream with an abort. v0.5 ended the root, with no
   usage, as soon as the stream opened, so later failures never reached it.
+  Every root event of a `Stream` run (start, end, error, abort, and the
+  resumed approval tool events) now carries the run's `CallID`, as TS
+  `callId`, so each registered integration ends its own root span; v0.5 sent
+  an empty `CallID`, and with two integrations the first one's root span
+  never ended.
 - **Am I affected?** Telemetry integrations or dashboards that read the
   `Stream` root span's duration, status or usage, or that count
-  `OnEnd`/`OnError` events per call.
+  `OnEnd`/`OnError` events per call; custom integrations that key on an empty
+  `TelemetryStartEvent.CallID` for `ai.workflowAgent.stream`.
 - **What to do:** no action unless you relied on the root ending at stream
   start.
 - **Kind:** wire/protocol change

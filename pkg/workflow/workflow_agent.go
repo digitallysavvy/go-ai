@@ -2559,6 +2559,10 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	if err != nil {
 		return nil, err
 	}
+	// Every root event carries the run's call ID (TS callId): each
+	// integration finds its own root span by it, not through ctx, which holds
+	// only the last integration's span.
+	callID := newWorkflowCallID()
 	var prefixChunks []provider.StreamChunk
 	opts.Messages, prefixChunks, err = processWorkflowApprovalResume(ctx, workflowApprovalResumeOptions{
 		messages:            opts.Messages,
@@ -2570,7 +2574,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		onToolStart:         mergeToolStart(w.OnToolExecutionStart, opts.OnToolExecutionStart),
 		onToolEnd:           mergeToolEnd(w.OnToolExecutionEnd, opts.OnToolExecutionEnd),
 		telemetrySettings:   telemetrySettings,
-		telemetryCallID:     newWorkflowCallID(),
+		telemetryCallID:     callID,
 		toolCallConcurrency: toolCallConcurrency,
 	})
 	if err != nil {
@@ -2586,18 +2590,18 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	}
 	early.setConversation(prepared, opts.Messages, opts.Prompt)
 	// The root opens after the approved history tools ran, with the cleaned
-	// messages, as in GenerateWithOptions (TS onStart order). The span ends
-	// as soon as the underlying stream is obtained: the streaming happens as
-	// the caller drains WorkflowStreamResult, under the child span the
-	// delegated ai.StreamText call creates for itself.
+	// messages, as in GenerateWithOptions (TS onStart order). The streaming
+	// happens as the caller drains WorkflowStreamResult, under the child span
+	// the delegated ai.StreamText call creates for itself; the root ends when
+	// that run ends (see the stream hooks below).
 	cancelled := ctx != nil && ctx.Err() != nil
 	if cancelled {
 		fireWorkflowStartBeforeAbort(ctx, mergeStart(w.OnStart, opts.OnStart), model, opts.Messages, opts.Prompt, runtimeContext, toolsContext)
 	}
-	ctx = telemetrypkg.FireOnStart(ctx, workflowStartEvent(workflowRootOperation, "", modelProvider, modelID, telemetrySettings, early, prepared, opts.Messages, opts.Prompt, runtimeContext, toolsContext))
+	ctx = telemetrypkg.FireOnStart(ctx, workflowStartEvent(workflowRootOperation, callID, modelProvider, modelID, telemetrySettings, early, prepared, opts.Messages, opts.Prompt, runtimeContext, toolsContext))
 	onAbort := mergeAbort(w.OnAbort, opts.OnAbort)
 	if cancelled {
-		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings})
+		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID})
 		if onAbort != nil {
 			onAbort(ctx, nil)
 		}
@@ -2621,15 +2625,16 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	aibridge.SetWorkflowStreamHooks(&internal, func(done aibridge.StreamDoneInfo) {
 		if done.Err != nil {
 			if isWorkflowAbort(rootCtx, done.Err) {
-				telemetrypkg.FireOnAbort(rootCtx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, Steps: done.Steps})
+				telemetrypkg.FireOnAbort(rootCtx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Steps: done.Steps})
 				return
 			}
-			telemetrypkg.FireOnError(rootCtx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: done.Err})
+			telemetrypkg.FireOnError(rootCtx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: done.Err})
 		}
 		if len(done.Steps) == 0 {
 			return
 		}
 		telemetrypkg.FireOnEnd(rootCtx, telemetrypkg.TelemetryFinishEvent{
+			CallID:         callID,
 			Settings:       telemetrySettings,
 			RuntimeContext: workflowTelemetryRuntimeContext(telemetrySettings, runtimeContext),
 			FinishReason:   string(done.FinishReason),
@@ -2656,12 +2661,12 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	stream, err := a.Stream(ctx, call)
 	if err != nil {
 		if isWorkflowAbort(ctx, err) {
-			telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings})
+			telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID})
 			if onAbort != nil {
 				onAbort(ctx, nil)
 			}
 		} else {
-			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
+			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 			if onError := mergeError(w.OnError, opts.OnError); onError != nil {
 				onError(ctx, err)
 			}
