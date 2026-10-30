@@ -45,7 +45,7 @@ type Agent interface {
 | Field | Type | Description |
 |-------|------|-------------|
 | Text | string | Final text output |
-| Output | interface{} | Parsed/structured final output when an output strategy is configured |
+| Output | interface{} | Final output: the final text parsed with the output strategy, or the final text (a string) when none is configured; nil after a tool-calls finish or an empty non-stop finish |
 | Steps | []types.StepResult | All steps taken by the agent |
 | ToolResults | []types.ToolResult | All tool results from agent execution |
 | Delegations | []agent.SubagentDelegation | Subagent delegations during execution |

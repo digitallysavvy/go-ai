@@ -80,6 +80,12 @@ var (
 	// failed or aborted), after its end callbacks and before ReadAll, Err and
 	// the full stream return. Used by WorkflowAgent's stream path.
 	SetWorkflowStreamHooks func(internal interface{}, onDone func(StreamDoneInfo))
+
+	// StreamTextHasOutputSpec reports whether result (an
+	// *ai.StreamTextResult) was started with an Output option. Its Output()
+	// is the final text otherwise; WorkflowAgent's stream mode leaves the
+	// output unset then (TS parses only an effective output spec).
+	StreamTextHasOutputSpec func(result interface{}) bool
 )
 
 // StreamDoneInfo describes a finished StreamText run for

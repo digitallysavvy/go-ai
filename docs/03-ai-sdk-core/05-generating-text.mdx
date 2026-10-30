@@ -81,9 +81,10 @@ type GenerateTextResult struct {
     // metadata-bearing parts in the same order emitted by the model/tool loop.
     Content []types.ContentPart
 
-    // Output contains the parsed output when a WithOutput option was provided.
-    // Type-assert to the concrete type, e.g.: recipe := result.Output.(Recipe)
-    // Nil when no Output option was set.
+    // Output is the final step's parsed output. Type-assert to the concrete
+    // type, e.g.: recipe := result.Output.(Recipe). With no Output option it
+    // is the final step's text (a string). Nil after a tool-calls finish, or
+    // an empty non-stop finish.
     Output any
 
     // Tool calls made during generation

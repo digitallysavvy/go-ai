@@ -39,7 +39,11 @@ type AgentResult struct {
 	// Final text output
 	Text string
 
-	// Output is the parsed/structured final output when an output strategy is configured.
+	// Output is the final output: the final text parsed with the configured
+	// Output strategy, or the final text itself (a string) when none is
+	// configured (TS `output ?? text()`). As in TS generateText it is set
+	// only for a stop finish, or a finish other than tool-calls that
+	// produced text; nil otherwise.
 	Output interface{}
 
 	// All steps taken by the agent

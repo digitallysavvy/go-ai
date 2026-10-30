@@ -1336,8 +1336,9 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 	// rejects after the end event, and a tool-calls finish leaves the output
 	// unset instead of failing the call.
 	// The output is the prepared call's (TS ToolLoopAgent passes the
-	// prepareCall result to generateText).
-	if result.Output == nil && (fc.Output == nil || shouldParseAgentOutput(result.FinishReason, result.Text)) {
+	// prepareCall result to generateText); with no Output it is the text
+	// (TS `output ?? text()`), under the same finish-reason rule.
+	if result.Output == nil && shouldParseAgentOutput(result.FinishReason, result.Text) {
 		output, err := parseAgentOutput(ctx, fc.Output, result)
 		if err != nil {
 			emitFinishEvent()

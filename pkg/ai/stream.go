@@ -548,13 +548,23 @@ type StreamTextResult struct {
 	chunkErr error
 
 	// Output spec resolved from StreamTextOptions.Output.
-	// nil when no Output option was provided.
+	// nil when no Output option was provided (Output() then returns the
+	// final step's text).
 	outputSpec outputProcessor
 
 	// outputResult holds the final parsed output after streaming completes.
 	// Only populated when finishReason == Stop and an Output spec was provided.
 	// Protected by mu.
 	outputResult any
+
+	// textOutput is the final step's text once the stream completed with no
+	// Output spec: Output() returns it (TS `output ?? text()`). Nil until
+	// then, and for a run that failed without a step. Protected by mu.
+	textOutput *string
+
+	// hasOutputSpec records that the run was started with an Output option
+	// (set before StreamText returns; read-only after).
+	hasOutputSpec bool
 
 	// outputErr holds any error that occurred during final output parsing.
 	// Protected by mu.
@@ -849,6 +859,7 @@ func streamTextInternal(ctx context.Context, opts StreamTextOptions, steeringRun
 		resolvedToolCallers: resolvedToolCallers,
 		toolSearchState:     toolSearchState,
 		requestTools:        opts.Tools,
+		hasOutputSpec:       opts.Output != nil,
 	}
 	result.chunkBuf = newChunkBuffer()
 	if opts.lowMemory {
@@ -4100,6 +4111,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 		r.outputErr = parseErr
 		r.mu.Unlock()
+	} else if !r.hasOutputSpec {
+		// No Output spec: TS parses the final step's text with text().
+		text := lastStepText
+		r.mu.Lock()
+		r.textOutput = &text
+		r.mu.Unlock()
 	}
 
 	// Fire OnFinish — integrations record output attributes and end their spans.
@@ -4606,20 +4623,26 @@ func (r *StreamTextResult) Sources() []types.SourceContent {
 	return r.sources
 }
 
-// Output returns the final parsed typed output after streaming completes.
-// This calls ParseCompleteOutput on the full accumulated text, matching the
-// TypeScript SDK's `.output` property behavior.
+// Output returns the final output after streaming completes: the final
+// step's text parsed with the Output option, or, with no Output option, the
+// final step's text itself (a string, "" for an empty step), matching the
+// TypeScript SDK's `.output` (`output ?? text()`), which parses the final
+// step whatever its finish reason. A result from NewStreamTextResultFromParts
+// (a harness turn) has no text default: TS's harness result rejects `.output`
+// without an output specification, so Output() stays nil there.
 //
 // Returns nil if:
-//   - no Output option was provided to StreamText
 //   - the stream has not yet completed
-//   - finishReason was not Stop (e.g. length limit hit)
+//   - the stream failed or was aborted (TS rejects `.output`)
 //   - output parsing failed (check OutputErr for details)
 //
 // Safe to call concurrently with streaming.
 func (r *StreamTextResult) Output() any {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.textOutput != nil {
+		return *r.textOutput
+	}
 	return r.outputResult
 }
 
@@ -5186,6 +5209,11 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 			r.outputResult = parsed
 		}
 		r.outputErr = parseErr
+		r.mu.Unlock()
+	} else if !r.hasOutputSpec {
+		text := r.text
+		r.mu.Lock()
+		r.textOutput = &text
 		r.mu.Unlock()
 	}
 

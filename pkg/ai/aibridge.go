@@ -26,4 +26,8 @@ func init() {
 	aibridge.ResolveToolApproval = resolveToolApproval
 	aibridge.WrapGatewayError = wrapGatewayError
 	aibridge.SetWorkflowStreamHooks = setWorkflowStreamHooks
+	aibridge.StreamTextHasOutputSpec = func(result interface{}) bool {
+		r, ok := result.(*StreamTextResult)
+		return ok && r != nil && r.hasOutputSpec
+	}
 }

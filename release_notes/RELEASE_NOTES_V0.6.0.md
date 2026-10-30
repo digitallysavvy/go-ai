@@ -181,6 +181,7 @@ search for and ends with a checklist for coding agents. Entries marked
 #### Core text and streaming
 
 - **StreamTextResult.Text() is the final step's text** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-text-final-step)
+- **Output is the text when no Output option is set** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#output-default-text)
 - **OnFinishEvent aggregates across steps** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#on-finish-aggregates)
 - **Usage.TotalTokens is input + output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#total-tokens)
 - **ReasoningText joins parts with no separator** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#reasoning-text)

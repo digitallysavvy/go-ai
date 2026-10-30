@@ -73,7 +73,7 @@ func (a *ToolLoopAgent) Version() string
 | Field | Type | Description |
 |-------|------|-------------|
 | Text | string | Agent's final text output |
-| Output | interface{} | Parsed/structured output when an output strategy is configured |
+| Output | interface{} | Final output: the final text parsed with the output strategy, or the final text (a string) when none is configured; nil after a tool-calls finish or an empty non-stop finish |
 | Steps | []types.StepResult | All steps in the loop |
 | ToolResults | []types.ToolResult | All tool results from execution |
 | FinishReason | types.FinishReason | Final finish reason |

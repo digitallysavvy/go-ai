@@ -46,6 +46,7 @@ already, you can skip them.
 | `acp.TextContentBlock{"` (unkeyed literal) | Type is an alias of `acp.ContentBlock` | compile error | Use keyed fields | [acp.TextContentBlock](#acp-text-content-block) |
 | `==` or map keys on provider `Config` / `Provider` values, `bytedance.Error`, `klingai.Error`, `responses.OutputTextDeltaEvent`, `workflow.WorkflowResult` | Structs gained map, slice or func fields | compile error | Compare fields instead | [Non-comparable structs](#non-comparable-structs) |
 | `.Text()` on a `StreamTextResult` with more than one step | Final step's text only | silent behavior change | Use `ReadAll()` or join `Steps` | [StreamText Text()](#streamtext-text-final-step) |
+| `result.Output == nil`, `Output() == nil` with no `Output` option | `Output` is the final step's text | silent behavior change | Check whether you set `Output`, or read `Text` | [Output without an Output option](#output-default-text) |
 | `OnFinish:` reading `Usage`, `ToolCalls`, `ToolResults` | Aggregated across steps | silent behavior change | Read `FinalStep` for the last step | [OnFinishEvent totals](#on-finish-aggregates) |
 | `.TotalTokens` | Input + output tokens | silent behavior change | Read `Usage.Raw` for the wire value | [TotalTokens](#total-tokens) |
 | `ReasoningText` | Parts joined with no separator (was a newline) | silent behavior change | Join reasoning parts with a newline yourself | [ReasoningText](#reasoning-text) |
@@ -293,6 +294,32 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   _ = all
   ```
 
+- **Kind:** silent behavior change
+
+### Output is the text when no Output option is set {#output-default-text}
+
+- **What changed:** with no `Output` option, `GenerateTextResult.Output`
+  and `StreamTextResult.Output()` were nil. They are now the final step's
+  text (a `string`), as TS `output ?? text()`. `GenerateText` sets it for a
+  `stop` finish (also `""`), or a finish other than `tool-calls` with text,
+  and leaves it nil otherwise. `StreamText` sets it once the run completes,
+  whatever the finish reason, and leaves it nil for a failed or aborted
+  run. The legacy `ToolLoopAgent` (`Execute`, `GenerateAgent`) and
+  `WorkflowAgent.Generate` already returned the text in `AgentResult.Output`
+  and `WorkflowResult.Output`, but now follow the `GenerateText` rule: a run
+  that ends on a `tool-calls` finish has a nil `Output`. The end event's
+  `Output` stays nil without an `Output` option, `WorkflowStreamResult.Output()`
+  stays nil without one (TS stream mode parses only an output spec), and so
+  does a harness turn's result. JSON-encoded `GenerateTextResult` values now
+  carry an `"output"` field.
+- **Am I affected?** Code that tests `result.Output == nil` or
+  `res.Output() == nil` to detect a call without an `Output` option, or that
+  type-switches on `Output` without a `string` case; code that reads
+  `AgentResult.Output` / `WorkflowResult.Output` after a run that hit its
+  step limit on tool calls.
+- **What to do:** no action unless you rely on a nil `Output`. Check whether
+  you passed an `Output` option instead, and read `Text` (or `Text()`) for
+  the text.
 - **Kind:** silent behavior change
 
 ### OnFinishEvent aggregates across steps {#on-finish-aggregates}

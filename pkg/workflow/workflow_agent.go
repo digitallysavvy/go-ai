@@ -426,18 +426,24 @@ func (r *WorkflowResult) IsLoopFinished() bool {
 type WorkflowStreamResult struct{ *ai.StreamTextResult }
 
 // skipOutput reports whether TS WorkflowAgent's stream mode would not parse
-// the structured output: it parses the last step's text only when the text is
-// non-empty (whatever the finish reason, including tool-calls) and at least one
-// step ran. Core streamText parses unconditionally, so an empty final text
-// (for example a tool-calls finish) would otherwise surface a parse error the
-// workflow agent never produces.
+// the structured output: it parses the last step's text only with an output
+// specification (the call's or the agent's), when the text is non-empty
+// (whatever the finish reason, including tool-calls) and at least one step
+// ran. Core streamText parses unconditionally, and returns the text when no
+// Output is set (TS `output ?? text()`), so without these checks an empty
+// final text would surface a parse error, and a call without an output spec
+// an output, that the workflow agent never produces.
 func (r *WorkflowStreamResult) skipOutput() bool {
+	if r.StreamTextResult == nil || !aibridge.StreamTextHasOutputSpec(r.StreamTextResult) {
+		return true
+	}
 	steps := r.Steps()
 	return len(steps) == 0 || steps[len(steps)-1].Text == ""
 }
 
 // Output returns the parsed structured output, nil when TS would not parse it
-// (see skipOutput).
+// (see skipOutput), including when neither the call nor the agent sets an
+// Output.
 func (r *WorkflowStreamResult) Output() any {
 	if r.skipOutput() {
 		return nil

@@ -704,9 +704,12 @@ type GenerateTextResult struct {
 	// Deprecated: use FinalStep.ReasoningText instead.
 	ReasoningText string `json:"reasoningText,omitempty"`
 
-	// Output contains the parsed output when a WithOutput option was provided.
-	// Type-assert to the concrete type, e.g.: recipe := result.Output.(Recipe)
-	// Nil when no Output option was set.
+	// Output contains the parsed output of the final step. Type-assert to the
+	// concrete type, e.g.: recipe := result.Output.(Recipe). With no Output
+	// option it is the final step's text (a string), as TS `output ?? text()`.
+	// It is parsed only for a stop finish, or a finish other than tool-calls
+	// that produced text, and is nil otherwise (TS throws
+	// NoOutputGeneratedError on access).
 	Output any `json:"output,omitempty"`
 
 	// Tool calls made across all steps.
@@ -2108,7 +2111,13 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// after the step-end and end callbacks have fired, as in TS, where
 	// parseCompleteOutput runs after notify(onEnd).
 	var outputParseErr error
-	if op, ok := opts.Output.(outputProcessor); ok && len(result.Steps) > 0 && shouldParseFinalOutput(result.FinalStep.FinishReason, result.FinalStep.Text) {
+	op, ok := opts.Output.(outputProcessor)
+	if opts.Output == nil {
+		// TS `output ?? text()`: without an Output option the output is the
+		// final step's text.
+		op, ok = &textOutput{}, true
+	}
+	if ok && len(result.Steps) > 0 && shouldParseFinalOutput(result.FinalStep.FinishReason, result.FinalStep.Text) {
 		lastUsage := result.FinalStep.Usage
 		// Select the structured output without changing the complete response
 		// content, text or messages exposed to callers (TS textForOutput).
@@ -2243,7 +2252,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		ExperimentalContext: runtimeContext,
 		RuntimeContext:      runtimeContext,
 		ToolsContext:        toolsContext,
-		Output:              result.Output,
+	}
+	if opts.Output != nil {
+		// The end event carries the output only for an Output spec (TS
+		// stream-text onEnd: `...(output != null ? { output } : {})`).
+		finishEvent.Output = result.Output
 	}
 	finishEvent.SetAggregatesFromSteps(result.Steps, result.ResponseMessages)
 	Notify(ctx, finishEvent, onEndEvent)

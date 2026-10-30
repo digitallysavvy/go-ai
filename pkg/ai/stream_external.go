@@ -138,6 +138,7 @@ func NewStreamTextResultFromParts(ctx context.Context, src provider.TextStream, 
 		cbCallID:        callID,
 		cbModelProvider: opts.Provider,
 		cbModelID:       opts.ModelID,
+		hasOutputSpec:   opts.Output != nil,
 	}
 	if op, ok := opts.Output.(outputProcessor); ok {
 		result.outputSpec = op

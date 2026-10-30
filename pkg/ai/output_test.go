@@ -1099,8 +1099,9 @@ func TestGenerateText_NoOutput_NoChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Output != nil {
-		t.Errorf("expected nil Output, got %v", result.Output)
+	// TS `output ?? text()`: no Output option means the output is the text.
+	if got, ok := result.Output.(string); !ok || got != "plain text" {
+		t.Errorf("expected Output = %q (the text), got %#v", "plain text", result.Output)
 	}
 }
 

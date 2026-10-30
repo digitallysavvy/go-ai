@@ -60,6 +60,8 @@ _ = result.Output
 
 When `Output` is an `ai.Output` specification, `GenerateWithOptions` forwards its
 response format to the model and parses the final text into `WorkflowResult.Output`.
+Without one, `WorkflowResult.Output` is the final text (TS `Output.text()`), set
+for a `stop` finish or a non-`tool-calls` finish with text.
 
 ### Tool call concurrency
 
@@ -175,7 +177,7 @@ if err != nil {
 
 ### Output and provider tool calls
 
-Like TS stream mode, the stream result parses `Output` from the last step's text only when that text is non-empty, whatever the finish reason; a step with no text (for example a tool-calls finish) leaves `Output()` nil and `OutputErr()` nil. A parse failure also surfaces from `Err()`.
+Like TS stream mode, the stream result parses `Output` (the call's or the agent's) from the last step's text only when that text is non-empty, whatever the finish reason, and leaves `Output()` nil when neither sets an `Output` (core `StreamText` would return the text); a step with no text (for example a tool-calls finish) leaves `Output()` nil and `OutputErr()` nil. A parse failure also surfaces from `Err()`.
 
 A step that finishes with any reason other than `stop` or `tool-calls` (`length`, `content-filter`, `error`, `interrupted`, `other`) is the last one, as in TS: its local tool calls are not executed and the loop does not ask the model again, even in `Stream` where no step limit applies.
 
