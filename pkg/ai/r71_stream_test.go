@@ -1080,3 +1080,55 @@ func TestR71StreamToolExecutionCallbacksMultiStep(t *testing.T) {
 		t.Fatalf("ends = %v", ends)
 	}
 }
+
+// TS 13176 / 13526 / 13557: onEnd sends sources, custom parts and files, in
+// content order, with the same content on the final step.
+func TestR71StreamOnEndSourcesCustomFiles(t *testing.T) {
+	src1 := types.SourceContent{SourceType: "url", ID: "123", URL: "https://example.com", Title: "Example", ProviderMetadata: json.RawMessage(`{"provider":{"custom":"value"}}`)}
+	src2 := types.SourceContent{SourceType: "url", ID: "456", URL: "https://example.com/2", Title: "Example 2", ProviderMetadata: json.RawMessage(`{"provider":{"custom":"value2"}}`)}
+	file1 := types.GeneratedFileContent{MediaType: "text/plain", FileData: types.FileData{Type: "data", DataString: "Hello World"}}
+	file2 := types.GeneratedFileContent{MediaType: "image/jpeg", FileData: types.FileData{Type: "data", DataString: "QkFVRw=="}}
+	custom := types.CustomContent{Kind: "openai.compaction", ProviderMetadata: json.RawMessage(`{"openai":{"itemId":"cmp_123"}}`)}
+	text := []provider.StreamChunk{{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Hello!"}, {Type: provider.ChunkTypeTextEnd, ID: "1"}}
+	finish := provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: r71streamUsage}
+	cat := func(groups ...[]provider.StreamChunk) []provider.StreamChunk {
+		var out []provider.StreamChunk
+		for _, g := range groups {
+			out = append(out, g...)
+		}
+		return out
+	}
+	hello := types.TextContent{Text: "Hello!"}
+	cases := []struct {
+		name        string
+		chunks      []provider.StreamChunk
+		wantContent []types.ContentPart
+		wantSources []types.SourceContent
+		wantFiles   []types.GeneratedFileContent
+	}{
+		{"sources", cat([]provider.StreamChunk{{Type: provider.ChunkTypeSource, SourceContent: &src1}}, text, []provider.StreamChunk{{Type: provider.ChunkTypeSource, SourceContent: &src2}, finish}),
+			[]types.ContentPart{src1, hello, src2}, []types.SourceContent{src1, src2}, nil},
+		{"custom", cat(text, []provider.StreamChunk{{Type: provider.ChunkTypeCustom, CustomContent: &custom}, finish}),
+			[]types.ContentPart{hello, custom}, nil, nil},
+		{"files", cat([]provider.StreamChunk{{Type: provider.ChunkTypeFile, GeneratedFileContent: &file1}}, text, []provider.StreamChunk{{Type: provider.ChunkTypeFile, GeneratedFileContent: &file2}, finish}),
+			[]types.ContentPart{file1, hello, file2}, nil, []types.GeneratedFileContent{file1, file2}},
+	}
+	for _, c := range cases {
+		var events []OnFinishEvent
+		r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, c.chunks), Prompt: "prompt", Internal: r71streamInternal,
+			OnEndEvent: func(_ context.Context, e OnFinishEvent) { events = append(events, e) }})
+		if len(events) != 1 {
+			t.Fatalf("%s: onEnd calls = %d", c.name, len(events))
+		}
+		e := events[0]
+		if e.CallID != "test-telemetry-call-id" || e.Text != "Hello!" || e.FinishReason != types.FinishReasonStop || len(e.Steps) != 1 || len(e.DynamicToolCalls) != 0 || len(e.DynamicToolResults) != 0 {
+			t.Fatalf("%s: event = %#v", c.name, e)
+		}
+		if !reflect.DeepEqual(e.Content, c.wantContent) || !reflect.DeepEqual(e.FinalStep.Content, c.wantContent) {
+			t.Fatalf("%s: content = %#v, final step content = %#v", c.name, e.Content, e.FinalStep.Content)
+		}
+		if !reflect.DeepEqual(e.Sources, c.wantSources) || !reflect.DeepEqual(e.Files, c.wantFiles) {
+			t.Fatalf("%s: sources = %#v, files = %#v", c.name, e.Sources, e.Files)
+		}
+	}
+}
