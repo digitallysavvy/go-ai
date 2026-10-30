@@ -2876,6 +2876,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					stepTextParts = nil
 					stepPartialTracker.reset()
 					outputTracker.reset()
+					if rec != nil {
+						// TS eventProcessor retry boundary: the recorded
+						// content restarts (the step's start part stays).
+						startStep := rec.startStep
+						rec.resetStep()
+						rec.startStep = startStep
+					}
 					stepToolCalls = nil
 					eagerApprovals = make(map[string]preResolvedApproval)
 					pendingApprovalChunks = nil
