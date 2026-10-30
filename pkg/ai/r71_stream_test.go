@@ -1132,3 +1132,293 @@ func TestR71StreamOnEndSourcesCustomFiles(t *testing.T) {
 		}
 	}
 }
+
+// ---- TS ui-message-stream/handle-ui-message-stream-finish.test.ts ports,
+// through CreateUIMessageStreamWithOptions (TS createUIMessageStream wraps
+// its stream in handleUIMessageStreamFinish). ----
+
+func r71streamUIChunks(t *testing.T, raw string) []UIMessageChunk {
+	t.Helper()
+	var chunks []UIMessageChunk
+	if err := json.Unmarshal([]byte(raw), &chunks); err != nil {
+		t.Fatalf("bad chunks JSON: %v", err)
+	}
+	return chunks
+}
+
+func r71streamCreate(t *testing.T, input []UIMessageChunk, opts UIMessageStreamOptions) ([]UIMessageChunk, error) {
+	t.Helper()
+	opts.Execute = func(w UIMessageStreamWriter) {
+		for _, c := range input {
+			w.Write(cloneUIMessageChunk(c))
+		}
+	}
+	chunks, errs := CreateUIMessageStreamWithOptions(context.Background(), opts)
+	var got []UIMessageChunk
+	for c := range chunks {
+		got = append(got, c)
+	}
+	var err error
+	for e := range errs {
+		if err == nil {
+			err = e
+		}
+	}
+	return got, err
+}
+
+func r71streamParts(event map[string]interface{}) []interface{} {
+	return uiParts(event["responseMessage"].(UIMessageChunk))
+}
+
+// TS 703 / 752: onStepFinish once per finish-step with the accumulated
+// message, and both onStepFinish and onFinish when both are set.
+func TestR71StreamHandleFinishStepCallbacks(t *testing.T) {
+	input := r71streamUIChunks(t, `[
+		{"type":"start","messageId":"msg-multi-step"},
+		{"type":"text-start","id":"text-1"},{"type":"text-delta","id":"text-1","delta":"Step 1"},{"type":"text-end","id":"text-1"},
+		{"type":"finish-step"},
+		{"type":"start-step"},
+		{"type":"text-start","id":"text-2"},{"type":"text-delta","id":"text-2","delta":"Step 2"},{"type":"text-end","id":"text-2"},
+		{"type":"finish-step"},
+		{"type":"start-step"},
+		{"type":"text-start","id":"text-3"},{"type":"text-delta","id":"text-3","delta":"Step 3"},{"type":"text-end","id":"text-3"},
+		{"type":"finish-step"},
+		{"type":"finish"}]`)
+	var steps, finishes r71streamCalls
+	got, err := r71streamCreate(t, input, UIMessageStreamOptions{OnStepFinish: steps.record, OnFinish: finishes.record})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if r71streamJSON(t, got) != r71streamJSON(t, input) {
+		t.Fatalf("chunks = %s", r71streamJSON(t, got))
+	}
+	events := steps.all()
+	if len(events) != 3 || len(finishes.all()) != 1 {
+		t.Fatalf("onStepFinish %d onFinish %d", len(events), len(finishes.all()))
+	}
+	for i, want := range []int{1, 3, 5} {
+		if n := len(r71streamParts(events[i])); n != want {
+			t.Fatalf("step %d parts = %d, want %d", i+1, n, want)
+		}
+	}
+	r71streamAssertJSON(t, "final parts", r71streamParts(finishes.all()[0]), `[
+		{"type":"text","text":"Step 1","state":"done"},
+		{"type":"step-start"},{"type":"text","text":"Step 2","state":"done"},
+		{"type":"step-start"},{"type":"text","text":"Step 3","state":"done"}]`)
+}
+
+// TS 781: an onStepFinish that fails is reported through onError for each
+// step and the stream keeps going.
+func TestR71StreamHandleFinishStepCallbackFailureContinues(t *testing.T) {
+	input := r71streamUIChunks(t, `[
+		{"type":"start","messageId":"msg-error"},
+		{"type":"text-start","id":"text-1"},{"type":"text-delta","id":"text-1","delta":"Step 1"},{"type":"text-end","id":"text-1"},
+		{"type":"finish-step"},
+		{"type":"start-step"},
+		{"type":"text-start","id":"text-2"},{"type":"text-delta","id":"text-2","delta":"Step 2"},{"type":"text-end","id":"text-2"},
+		{"type":"finish-step"},
+		{"type":"finish"}]`)
+	var mu sync.Mutex
+	stepCalls := 0
+	var onErrors []error
+	got, err := r71streamCreate(t, input, UIMessageStreamOptions{
+		OnStepFinish: func(map[string]interface{}) {
+			mu.Lock()
+			stepCalls++
+			mu.Unlock()
+			panic(errors.New("DB error"))
+		},
+		OnError: func(err error) string {
+			mu.Lock()
+			onErrors = append(onErrors, err)
+			mu.Unlock()
+			return err.Error()
+		},
+	})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if r71streamJSON(t, got) != r71streamJSON(t, input) {
+		t.Fatalf("chunks = %s", r71streamJSON(t, got))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if stepCalls != 2 || len(onErrors) != 2 || onErrors[0].Error() != "DB error" || onErrors[1].Error() != "DB error" {
+		t.Fatalf("step calls %d, onError %v", stepCalls, onErrors)
+	}
+}
+
+// TS 820: continuation with onStepFinish.
+func TestR71StreamHandleFinishStepContinuation(t *testing.T) {
+	input := r71streamUIChunks(t, `[
+		{"type":"start","messageId":"assistant-msg-1"},
+		{"type":"text-start","id":"text-1"},{"type":"text-delta","id":"text-1","delta":" continued"},{"type":"text-end","id":"text-1"},
+		{"type":"finish-step"},{"type":"finish"}]`)
+	original := r71streamUIChunks(t, `[
+		{"id":"user-msg-1","role":"user","parts":[{"type":"text","text":"Continue this"}]},
+		{"id":"assistant-msg-1","role":"assistant","parts":[{"type":"text","text":"This is"}]}]`)
+	var steps r71streamCalls
+	if _, err := r71streamCreate(t, input, UIMessageStreamOptions{OriginalMessages: original, GenerateMessageID: func() string { return "msg-999" }, OnStepFinish: steps.record}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	events := steps.all()
+	if len(events) != 1 {
+		t.Fatalf("onStepFinish calls = %d", len(events))
+	}
+	e := events[0]
+	if e["isContinuation"] != true || e["responseMessage"].(UIMessageChunk)["id"] != "assistant-msg-1" || len(e["messages"].([]UIMessageChunk)) != 2 {
+		t.Fatalf("event = %v", e)
+	}
+	r71streamAssertJSON(t, "continued parts", r71streamParts(e), `[{"type":"text","text":"This is"},{"type":"text","text":" continued","state":"done"}]`)
+}
+
+// TS 864: onStepFinish gets a deep copy; its mutations do not reach onFinish.
+func TestR71StreamHandleFinishStepDeepCopy(t *testing.T) {
+	input := r71streamUIChunks(t, `[
+		{"type":"start","messageId":"msg-clone"},
+		{"type":"text-start","id":"text-1"},{"type":"text-delta","id":"text-1","delta":"Hello"},{"type":"text-end","id":"text-1"},
+		{"type":"finish-step"},{"type":"finish"}]`)
+	var stepParts int
+	var finishes r71streamCalls
+	_, err := r71streamCreate(t, input, UIMessageStreamOptions{
+		OnStepFinish: func(e map[string]interface{}) {
+			message := e["responseMessage"].(UIMessageChunk)
+			parts := uiParts(message)
+			asUIPartChunk(parts[0])["text"] = "MUTATED"
+			message["parts"] = append(parts, map[string]interface{}{"type": "text", "text": "MUTATION!"})
+			stepParts = len(uiParts(message))
+		},
+		OnFinish: finishes.record,
+	})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if stepParts != 2 || len(finishes.all()) != 1 {
+		t.Fatalf("step parts %d, onFinish calls %d", stepParts, len(finishes.all()))
+	}
+	r71streamAssertJSON(t, "onFinish parts", r71streamParts(finishes.all()[0]), `[{"type":"text","text":"Hello","state":"done"}]`)
+}
+
+// TS 230: empty original messages.
+func TestR71StreamHandleFinishEmptyOriginalMessages(t *testing.T) {
+	input := r71streamUIChunks(t, `[
+		{"type":"start","messageId":"msg-789"},
+		{"type":"text-start","id":"text-1"},{"type":"text-delta","id":"text-1","delta":"Response"},{"type":"text-end","id":"text-1"},
+		{"type":"finish"}]`)
+	var finishes r71streamCalls
+	if _, err := r71streamCreate(t, input, UIMessageStreamOptions{OriginalMessages: []UIMessageChunk{}, OnFinish: finishes.record}); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	events := finishes.all()
+	if len(events) != 1 || events[0]["isContinuation"] != false {
+		t.Fatalf("events = %v", events)
+	}
+	messages := events[0]["messages"].([]UIMessageChunk)
+	if len(messages) != 1 || r71streamJSON(t, messages[0]) != r71streamJSON(t, events[0]["responseMessage"]) {
+		t.Fatalf("messages = %v", messages)
+	}
+}
+
+// TS 392 / 456 / 481 / 903: abort chunks pass through unchanged, with and
+// without callbacks; any abort chunk makes isAborted true.
+func TestR71StreamHandleFinishAbortPassThrough(t *testing.T) {
+	cases := []struct {
+		name        string
+		input       string
+		withFinish  bool
+		wantAborted bool
+	}{
+		{"abort reason", `[{"type":"start","messageId":"msg-abort-reason"},{"type":"text-start","id":"text-1"},{"type":"text-delta","id":"text-1","delta":"Starting text"},{"type":"abort","reason":"manual abort"},{"type":"finish"}]`, true, true},
+		{"no onFinish", `[{"type":"start","messageId":"msg-abort-passthrough"},{"type":"text-start","id":"text-1"},{"type":"text-delta","id":"text-1","delta":"Text before abort"},{"type":"abort"},{"type":"finish"}]`, false, false},
+		{"multiple aborts", `[{"type":"start","messageId":"msg-multiple-abort"},{"type":"text-start","id":"text-1"},{"type":"abort"},{"type":"text-delta","id":"text-1","delta":"Some text"},{"type":"abort"},{"type":"finish"}]`, true, true},
+		{"no callbacks", `[{"type":"start","messageId":"msg-passthrough"},{"type":"text-start","id":"text-1"},{"type":"text-delta","id":"text-1","delta":"Test"},{"type":"text-end","id":"text-1"},{"type":"finish-step"},{"type":"finish"}]`, false, false},
+	}
+	for _, c := range cases {
+		input := r71streamUIChunks(t, c.input)
+		var finishes r71streamCalls
+		onErrors := 0
+		opts := UIMessageStreamOptions{OnError: func(error) string { onErrors++; return "" }}
+		if c.withFinish {
+			opts.OnFinish = finishes.record
+		}
+		got, err := r71streamCreate(t, input, opts)
+		if err != nil {
+			t.Fatalf("%s: err = %v", c.name, err)
+		}
+		if r71streamJSON(t, got) != r71streamJSON(t, input) {
+			t.Fatalf("%s: chunks = %s", c.name, r71streamJSON(t, got))
+		}
+		if onErrors != 0 {
+			t.Fatalf("%s: onError calls = %d", c.name, onErrors)
+		}
+		if c.withFinish {
+			events := finishes.all()
+			if len(events) != 1 || events[0]["isAborted"] != c.wantAborted {
+				t.Fatalf("%s: onFinish = %v", c.name, events)
+			}
+		}
+	}
+}
+
+type r71streamPartsThenBlock struct {
+	ctx   context.Context
+	parts []provider.StreamChunk
+	i     int
+}
+
+func (s *r71streamPartsThenBlock) Next() (*provider.StreamChunk, error) {
+	if s.i < len(s.parts) {
+		s.i++
+		return &s.parts[s.i-1], nil
+	}
+	<-s.ctx.Done()
+	return nil, io.EOF
+}
+func (s *r71streamPartsThenBlock) Close() error { return nil }
+func (s *r71streamPartsThenBlock) Err() error   { return nil }
+
+// TS 546 / 579: a consumer cancellation after the source declared its
+// outcome keeps that outcome and does not report isCancelled; an observed
+// abort wins over the cancellation.
+func TestR71StreamToUICancelKeepsDeclaredOutcome(t *testing.T) {
+	failure := errors.New("stream failed")
+	cases := []struct {
+		name   string
+		part   provider.StreamChunk
+		status string
+	}{
+		{"completed", r71streamFinish(), "completed"},
+		{"failed", provider.StreamChunk{Type: provider.ChunkTypeError, Err: failure}, "failed"},
+		{"aborted", provider.StreamChunk{Type: provider.ChunkTypeAbort}, "aborted"},
+	}
+	for _, c := range cases {
+		ctx, cancel := context.WithCancel(context.Background())
+		var ends r71streamCalls
+		chunks, errs := ToUIMessageStream(ctx, &r71streamPartsThenBlock{ctx: ctx, parts: []provider.StreamChunk{r71streamStart, c.part}}, UIMessageStreamResultOptions{ResponseMessageID: "msg-1", OnEnd: ends.record})
+		<-chunks
+		<-chunks
+		cancel()
+		for range chunks {
+		}
+		for range errs {
+		}
+		events := ends.all()
+		if len(events) != 1 {
+			t.Fatalf("%s: onEnd calls = %d", c.name, len(events))
+		}
+		outcome := events[0]["outcome"].(map[string]interface{})
+		if outcome["status"] != c.status {
+			t.Fatalf("%s: outcome = %v", c.name, outcome)
+		}
+		if c.status == "failed" && outcome["error"] != failure {
+			t.Fatalf("%s: outcome error = %v", c.name, outcome["error"])
+		}
+		if _, ok := events[0]["isCancelled"]; ok {
+			t.Fatalf("%s: isCancelled set: %v", c.name, events[0])
+		}
+		if c.status == "aborted" && events[0]["isAborted"] != true {
+			t.Fatalf("%s: isAborted = %v", c.name, events[0]["isAborted"])
+		}
+	}
+}
