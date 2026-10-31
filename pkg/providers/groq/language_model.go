@@ -179,7 +179,8 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if opts.TopP != nil {
 		body["top_p"] = *opts.TopP
 	}
-	if len(opts.StopSequences) > 0 {
+	// TS sends stopSequences as given: an empty list is kept.
+	if opts.StopSequences != nil {
 		body["stop"] = opts.StopSequences
 	}
 	if opts.Seed != nil {
