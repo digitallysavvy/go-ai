@@ -199,3 +199,20 @@ func TestR74prova_TSShapedAdvisorRequiresModel(t *testing.T) {
 		t.Fatalf("valid advisor: err %v tools %v", got.err, got.tools)
 	}
 }
+
+// TS checks the skills requirement by tool id: a code execution tool renamed
+// by the caller still counts.
+func TestR74prova_SkillsWarningByToolID(t *testing.T) {
+	model := NewLanguageModel(New(Config{APIKey: "k"}), ClaudeSonnet4_6, &ModelOptions{
+		Container: &ContainerConfig{ID: "c", Skills: []ContainerSkill{{Type: "anthropic", SkillID: "pptx"}}},
+	})
+	ce := tools.CodeExecution20250825()
+	ce.Name = "code_execution"
+	if w := model.detectSkillsWarning(&provider.GenerateOptions{Prompt: types.Prompt{Text: "x"}, Tools: []types.Tool{ce}}); w != nil {
+		t.Fatalf("warning = %+v, want none for a renamed code execution tool", w)
+	}
+	fn := types.Tool{Name: "code_execution", Parameters: map[string]interface{}{"type": "object"}}
+	if w := model.detectSkillsWarning(&provider.GenerateOptions{Prompt: types.Prompt{Text: "x"}, Tools: []types.Tool{fn}}); w == nil {
+		t.Fatal("no warning for a function tool named code_execution")
+	}
+}

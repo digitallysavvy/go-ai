@@ -1171,7 +1171,8 @@ func (m *LanguageModel) detectSkillsWarning(opts *provider.GenerateOptions) *typ
 	}
 	if opts != nil {
 		for _, t := range opts.Tools {
-			if t.Name == codeExecution20250825ToolName || t.Name == codeExecution20260120ToolName {
+			// TS checks tool.id; the tool's name is the caller's choice.
+			if id := ProviderToolID(t); id == codeExecution20250825ToolName || id == codeExecution20260120ToolName {
 				return nil
 			}
 		}
