@@ -869,3 +869,41 @@ func TestR74StreamExperimentalContextFollowsPreparedRuntimeContext(t *testing.T)
 		}
 	}
 }
+
+// TS streamText forwards an empty text-delta that carries provider metadata
+// (a Gemini thought signature), and toUIMessageChunk maps every text-delta
+// to a UI text-delta chunk with its providerMetadata, so the UI stream keeps
+// it and the UI message's text part gets that metadata.
+func TestR74StreamUIEmptyTextDeltaWithProviderMetadata(t *testing.T) {
+	sig := json.RawMessage(`{"google":{"thoughtSignature":"sig-1"}}`)
+	steps := []provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+		{Type: provider.ChunkTypeText, ID: "1", ProviderMetadata: sig},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+	}
+	var mu sync.Mutex
+	var ends []map[string]interface{}
+	got, err := r72streamUI(t, StreamTextOptions{Model: r71streamModel(nil, steps), Prompt: "test-input"}, UIMessageStreamResultOptions{
+		OnEnd: func(e map[string]interface{}) { mu.Lock(); ends = append(ends, e); mu.Unlock() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r74streamAssertJSON(t, "ui chunks", got, `[
+		{"type":"start"},
+		{"type":"start-step"},
+		{"type":"text-start","id":"1"},
+		{"type":"text-delta","id":"1","delta":"Hello"},
+		{"type":"text-delta","id":"1","delta":"","providerMetadata":{"google":{"thoughtSignature":"sig-1"}}},
+		{"type":"text-end","id":"1"},
+		{"type":"finish-step"},
+		{"type":"finish","finishReason":"stop"}]`)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ends) != 1 {
+		t.Fatalf("onEnd calls = %d", len(ends))
+	}
+	r74streamAssertJSON(t, "ui message parts", r71streamParts(ends[0]), `[{"type":"step-start"},{"type":"text","text":"Hello","state":"done","providerMetadata":{"google":{"thoughtSignature":"sig-1"}}}]`)
+}
