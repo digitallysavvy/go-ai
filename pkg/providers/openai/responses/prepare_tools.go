@@ -52,6 +52,9 @@ func PrepareToolsWithOptionsName(tools []types.Tool, providerOptionsName string)
 		if err := validateMCPToolArgs(t); err != nil {
 			return nil, err
 		}
+		if _, err := tsShapedShellEnvironment(t); err != nil {
+			return nil, err
+		}
 		def := convertTool(t)
 		if def != nil {
 			if functionDef, ok := def.(FunctionToolDef); ok {
@@ -515,7 +518,8 @@ func convertShellTool(t types.Tool) ShellToolDef {
 		env = &v
 	}
 	if env == nil && t.Type == types.ToolTypeProviderDefined {
-		env = shellEnvironmentFromArgs(t.ProviderArgs)
+		// PrepareToolsWithOptionsName already reported a mapping error.
+		env, _ = shellEnvironmentFromArgs(t.ProviderArgs)
 	}
 	if env == nil {
 		return def

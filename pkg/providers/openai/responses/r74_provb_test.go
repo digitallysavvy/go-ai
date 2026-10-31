@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -32,5 +33,39 @@ func TestR74ProvbToolArgsTypeValidationText(t *testing.T) {
 	const prefix = "Type validation failed: Value: {\"searchContextSize\":\"huge\"}.\nError message: "
 	if !errors.As(err, &tv) || len(err.Error()) <= len(prefix) || err.Error()[:len(prefix)] != prefix {
 		t.Fatalf("web search err = %v, want prefix %q", err, prefix)
+	}
+}
+
+// TestR74ProvbTSShapedShellEnvironment: a TS-shaped openai.shell tool
+// (e.g. restored from a workflow) is mapped as TS mapShellEnvironment does:
+// a skillReference resolves providerReference.openai (TS
+// resolveProviderReference throws NoSuchProviderReferenceError without it;
+// Go sent a skill without skill_id), and a disabled network policy is sent as
+// {type: "disabled"} only.
+func TestR74ProvbTSShapedShellEnvironment(t *testing.T) {
+	shell := func(env map[string]interface{}) types.Tool {
+		return types.Tool{Name: "shell", Type: types.ToolTypeProviderDefined, ProviderID: "openai.shell", ProviderArgs: map[string]interface{}{"environment": env}}
+	}
+	_, err := PrepareToolsWithError([]types.Tool{shell(map[string]interface{}{
+		"type":   "containerAuto",
+		"skills": []interface{}{map[string]interface{}{"type": "skillReference", "providerReference": map[string]interface{}{"anthropic": "sk_a"}}},
+	})})
+	var nsr *providererrors.NoSuchProviderReferenceError
+	if !errors.As(err, &nsr) || err.Error() != "No provider reference found for provider 'openai'. Available providers: anthropic" {
+		t.Fatalf("missing openai reference err = %v", err)
+	}
+
+	got, err := PrepareToolsWithError([]types.Tool{shell(map[string]interface{}{
+		"type":          "containerAuto",
+		"networkPolicy": map[string]interface{}{"type": "disabled", "allowedDomains": []interface{}{"x.com"}},
+		"skills":        []interface{}{map[string]interface{}{"type": "skillReference", "providerReference": map[string]interface{}{"openai": "sk_1"}}},
+	})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(got[0])
+	want := `{"type":"shell","environment":{"type":"container_auto","network_policy":{"type":"disabled"},"skills":[{"type":"skill_reference","skill_id":"sk_1","version":"latest"}]}}`
+	if string(b) != want {
+		t.Fatalf("shell tool =\n%s\nwant\n%s", b, want)
 	}
 }
