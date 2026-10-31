@@ -2709,7 +2709,7 @@ compile-time changes.
   )
 
   func exaSearchWithTitle() types.Tool {
-  	search := gatewaytools.NewExaSearch(gatewaytools.ExaSearchConfig{})
+  	search := types.Tool(gatewaytools.NewExaSearch(gatewaytools.ExaSearchConfig{}))
   	search.Title = "Exa Search"
   	return search
   }
