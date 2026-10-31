@@ -972,6 +972,82 @@ func TestR73StreamAbortDuringToolExecutionFullStream(t *testing.T) {
 	}
 }
 
+// TS 27419 / 27626: provider-executed dynamic tools with input streaming:
+// dynamic, providerExecuted and providerMetadata on the full-stream tool parts
+// and in the content.
+func TestR73StreamProviderExecutedDynamicTool(t *testing.T) {
+	pm := json.RawMessage(`{"anthropic":{"serverName":"echo"}}`)
+	pmMap := map[string]interface{}{"anthropic": map[string]interface{}{"serverName": "echo"}}
+	input := map[string]interface{}{"city": "San Francisco"}
+	output := map[string]interface{}{"status": "success", "text": "The weather in San Francisco is 72°F"}
+	step := []provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "cityAttractions", ProviderExecuted: true, ProviderExecutedSet: true, Dynamic: true}, ProviderMetadata: pm},
+		{Type: provider.ChunkTypeToolInputDelta, ID: "call-1", Text: `{ "city": "San Francisco" }`},
+		{Type: provider.ChunkTypeToolInputEnd, ToolCall: &types.ToolCall{ID: "call-1"}},
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "cityAttractions", Arguments: input, RawArguments: `{ "city": "San Francisco" }`, ProviderExecuted: true, ProviderExecutedSet: true, Dynamic: true, ProviderMetadata: pmMap}},
+		{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-1", ToolName: "cityAttractions", Input: input, Result: output, ProviderExecuted: true, ProviderExecutedSet: true, Dynamic: true, ProviderMetadata: pmMap}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+	}
+	r, parts := r73streamParts(t, StreamTextOptions{Model: r71streamModel(nil, step), Prompt: "test-input", Internal: r71streamInternal})
+	want := []string{"start", "start-step", "tool-input-start", "tool-input-delta", "tool-input-end", "tool-call:call-1:cityAttractions", "tool-result:call-1:" + fmt.Sprint(output), "finish-step:stop", "finish:stop"}
+	if got := r73streamNames(parts); !reflect.DeepEqual(got, want) {
+		t.Fatalf("parts = %v\nwant %v", got, want)
+	}
+	for _, p := range parts {
+		switch p.Type {
+		case provider.ChunkTypeToolInputStart:
+			if !p.ToolCall.Dynamic || !p.ToolCall.ProviderExecuted || string(p.ProviderMetadata) != string(pm) {
+				t.Errorf("tool-input-start = %+v pm %s", p.ToolCall, p.ProviderMetadata)
+			}
+		case provider.ChunkTypeToolCall:
+			if !p.ToolCall.Dynamic || !p.ToolCall.ProviderExecuted || !reflect.DeepEqual(p.ToolCall.ProviderMetadata, pmMap) || !reflect.DeepEqual(p.ToolCall.Arguments, input) {
+				t.Errorf("tool-call = %+v", p.ToolCall)
+			}
+		case provider.ChunkTypeToolResult:
+			if !p.ToolResult.Dynamic || !p.ToolResult.ProviderExecuted || !reflect.DeepEqual(p.ToolResult.ProviderMetadata, pmMap) || !reflect.DeepEqual(p.ToolResult.Input, input) || !reflect.DeepEqual(p.ToolResult.Result, output) {
+				t.Errorf("tool-result = %+v", p.ToolResult)
+			}
+		}
+	}
+	content := r.Content()
+	if len(content) != 2 {
+		t.Fatalf("content = %#v", content)
+	}
+	call, ok := content[0].(types.ToolCallContent)
+	if !ok || call.ToolCallID != "call-1" || call.ToolName != "cityAttractions" || !call.Dynamic || !call.ProviderExecuted || string(call.ProviderMetadata) != string(pm) || !reflect.DeepEqual(call.Arguments, input) {
+		t.Errorf("content[0] = %#v", content[0])
+	}
+	res, ok := content[1].(types.ToolResultContent)
+	// Go content carries the result as Output (TS content output; Result is
+	// the deprecated field).
+	if !ok || res.ToolCallID != "call-1" || !res.Dynamic || !res.ProviderExecuted || string(res.ProviderMetadata) != string(pm) ||
+		res.Output == nil || res.Output.Type != types.ToolResultOutputJSON || !reflect.DeepEqual(res.Output.Value, output) || !reflect.DeepEqual(res.Input, input) {
+		t.Errorf("content[1] = %#v", content[1])
+	}
+}
+
+// TS 29689: logWarnings is called once for each step with that step's
+// warnings and the provider/model ids.
+func TestR73StreamLogWarningsPerStep(t *testing.T) {
+	setupLogWarnings(t)
+	var mu sync.Mutex
+	var calls []LogWarningsOptions
+	SetLogWarnings(func(o LogWarningsOptions) {
+		mu.Lock()
+		calls = append(calls, o)
+		mu.Unlock()
+	})
+	r71streamRun(t, StreamTextOptions{Model: r73streamWarningSteps(), Prompt: "test-input", Tools: []types.Tool{r73streamEmptyTool}, StopWhen: []StopCondition{StepCountIs(3)}})
+	want := []LogWarningsOptions{
+		{Warnings: []types.Warning{r73streamWarning0}, Provider: "mock-provider", Model: "mock-model-id"},
+		{Warnings: []types.Warning{r73streamWarning1}, Provider: "mock-provider", Model: "mock-model-id"},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("logWarnings calls = %+v", calls)
+	}
+}
+
 // r73streamPUICasesJSON was extracted from ai/packages/ai/src/ui/process-ui-message-stream.test.ts
 // at e64ed82f27: per case the scripted chunks, the initial state and the
 // assertion values (vitest inline snapshots parsed, undefined dropped).
