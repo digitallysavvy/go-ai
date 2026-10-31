@@ -1968,6 +1968,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			ModelProvider:      stepResult.Model.Provider,
 			ModelID:            stepResult.Model.ModelID,
 			Text:               stepResult.Text,
+			Content:            stepResult.Content,
 			Reasoning:          stepResult.Reasoning,
 			ReasoningText:      stepResult.ReasoningText,
 			ToolCalls:          stepResult.ToolCalls,
@@ -1979,6 +1980,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			FinishReason:       stepResult.FinishReason,
 			RawFinishReason:    stepResult.RawFinishReason,
 			Usage:              stepResult.Usage,
+			Performance:        stepResult.Performance,
 			Warnings:           stepResult.Warnings,
 			Sources:            stepResult.Sources,
 			Files:              stepResult.Files,
@@ -1986,7 +1988,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			ResponseHeaders:    genResult.ResponseHeaders,
 			// The step's request/response, so the bodies follow Include as
 			// in TS (the step-end event is the StepResult).
-			Request: GenerateStepRequest{Body: stepResult.Request.Body},
+			Request: GenerateStepRequest{Body: stepResult.Request.Body, Messages: stepResult.Request.Messages},
 			Response: GenerateStepResponse{
 				ID:        stepResult.Response.ID,
 				Timestamp: stepResult.Response.Timestamp,
@@ -2259,6 +2261,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		lastDynamicResults = last.DynamicToolResults
 		lastSources = last.Sources
 	}
+	var finalRequestMessages []types.Message
+	if len(result.Steps) > 0 {
+		finalRequestMessages = result.Steps[len(result.Steps)-1].Request.Messages
+	}
 	finishEvent := OnFinishEvent{
 		CallID:             callID,
 		StepNumber:         lastStepNum,
@@ -2284,7 +2290,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		Files:              result.Files,
 		ProviderMetadata:   result.ProviderMetadata,
 		ResponseHeaders:    result.ResponseHeaders,
-		Request:            GenerateStepRequest{Body: result.RawRequest},
+		// TS onEndEvent.request is the final step's request.
+		Request: GenerateStepRequest{Body: result.RawRequest, Messages: finalRequestMessages},
 		// TS onEndEvent.response is the final step's response, as the step-end
 		// event of that step reports it.
 		Response: GenerateStepResponse{

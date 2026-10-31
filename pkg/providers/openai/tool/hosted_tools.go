@@ -56,7 +56,18 @@ type ImageGenerationConfig struct {
 
 // CodeInterpreter creates an OpenAI provider-executed code_interpreter tool.
 func CodeInterpreter(config CodeInterpreterConfig) types.Tool {
-	return providerExecutedHostedTool("openai.code_interpreter", config)
+	tool := providerExecutedHostedTool("openai.code_interpreter", config)
+	// TS codeInterpreterInputSchema: {code: z.string().nullish(),
+	// containerId: z.string()}.
+	tool.Parameters = map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"code":        map[string]interface{}{"anyOf": []interface{}{map[string]interface{}{"type": "string"}, map[string]interface{}{"type": "null"}}},
+			"containerId": map[string]interface{}{"type": "string"},
+		},
+		"required": []interface{}{"containerId"},
+	}
+	return tool
 }
 
 // FileSearch creates an OpenAI provider-executed file_search tool.

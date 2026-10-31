@@ -63,6 +63,15 @@ func CodeExecutionTool() types.Tool {
 	return types.Tool{
 		Type:       "provider",
 		ProviderID: "google.code_execution",
+		// TS codeExecutionInputSchema.
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"language": map[string]interface{}{"type": "string", "description": "The programming language of the code."},
+				"code":     map[string]interface{}{"type": "string", "description": "The code to be executed."},
+			},
+			"required": []interface{}{"language", "code"},
+		},
 	}
 }
 

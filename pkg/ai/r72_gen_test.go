@@ -404,10 +404,9 @@ func TestR72Gen_OutputParseDiagnostics(t *testing.T) {
 		nog.FinishReason != types.FinishReasonLength || nog.Usage == nil || nog.Usage.OutputTokens == nil || *nog.Usage.OutputTokens != 10 {
 		t.Fatalf("error = %+v", nog)
 	}
-	// TS also asserts error.cause instanceof JSONParseError; the Output
-	// parse lives in output.go (change request CR-1 in the r72 gen report).
-	if nog.Cause == nil {
-		t.Errorf("cause = nil")
+	// TS: error.cause instanceof JSONParseError (r72 gen CR-1, output.go).
+	if !providererrors.IsJSONParseError(nog.Cause) {
+		t.Errorf("cause = %T %v, want a JSONParseError", nog.Cause, nog.Cause)
 	}
 
 	for _, selected := range []string{"", `{"value":`} {
@@ -422,8 +421,8 @@ func TestR72Gen_OutputParseDiagnostics(t *testing.T) {
 		if !errors.As(err, &nog) || nog.Text != selected {
 			t.Fatalf("selected %q: err = %v", selected, err)
 		}
-		if nog.Cause == nil {
-			t.Errorf("selected %q: cause = nil", selected)
+		if !providererrors.IsJSONParseError(nog.Cause) {
+			t.Errorf("selected %q: cause = %T, want a JSONParseError", selected, nog.Cause)
 		}
 	}
 }

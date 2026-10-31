@@ -548,8 +548,9 @@ func buildCodeExecution20260120TextEditorSchema() map[string]interface{} {
 						"type":        "string",
 						"description": "The path to the file to create or update.",
 					},
+					// TS file_text: z.string().nullish().
 					"file_text": map[string]interface{}{
-						"type":        "string",
+						"anyOf":       []interface{}{map[string]interface{}{"type": "string"}, map[string]interface{}{"type": "null"}},
 						"description": "The text content of the file to create.",
 					},
 				},

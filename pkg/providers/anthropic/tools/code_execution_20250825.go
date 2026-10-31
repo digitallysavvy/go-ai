@@ -216,8 +216,9 @@ func buildTextEditorCodeExecutionSchema() map[string]interface{} {
 						"type":        "string",
 						"description": "The path to the file to edit.",
 					},
+					// TS file_text: z.string().nullish().
 					"file_text": map[string]interface{}{
-						"type":        "string",
+						"anyOf":       []interface{}{map[string]interface{}{"type": "string"}, map[string]interface{}{"type": "null"}},
 						"description": "The text of the file to edit.",
 					},
 				},

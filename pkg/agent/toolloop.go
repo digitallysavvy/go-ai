@@ -1146,6 +1146,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			ModelProvider:    stepResult.Model.Provider,
 			ModelID:          stepResult.Model.ModelID,
 			Text:             stepResult.Text,
+			Content:          stepResult.Content,
 			Reasoning:        stepResult.Reasoning,
 			ReasoningText:    stepResult.ReasoningText,
 			ToolCalls:        stepResult.ToolCalls,
@@ -1160,12 +1161,15 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			FinishReason:       stepResult.FinishReason,
 			RawFinishReason:    stepResult.RawFinishReason,
 			Usage:              stepResult.Usage,
+			Performance:        stepResult.Performance,
 			Warnings:           stepResult.Warnings,
 			Sources:            stepResult.Sources,
 			Files:              stepResult.Files,
 			ProviderMetadata:   stepResult.ProviderMetadata,
 			ResponseHeaders:    stepResult.Response.Headers,
-			Request:            ai.GenerateStepRequest{Body: stepResult.Request.Body},
+			// TS onStepEnd receives the StepResult (content, performance,
+			// request.messages).
+			Request: ai.GenerateStepRequest{Body: stepResult.Request.Body, Messages: stepResult.Request.Messages},
 			Response: ai.GenerateStepResponse{
 				ID:        stepResult.Response.ID,
 				Timestamp: stepResult.Response.Timestamp,
@@ -1337,7 +1341,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			finishEvent.RawFinishReason = last.RawFinishReason
 			finishEvent.ProviderMetadata = last.ProviderMetadata
 			finishEvent.ResponseHeaders = last.Response.Headers
-			finishEvent.Request = ai.GenerateStepRequest{Body: last.Request.Body}
+			finishEvent.Request = ai.GenerateStepRequest{Body: last.Request.Body, Messages: last.Request.Messages}
 			finishEvent.Response = ai.GenerateStepResponse{
 				ID:        last.Response.ID,
 				Timestamp: last.Response.Timestamp,

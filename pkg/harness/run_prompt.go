@@ -102,14 +102,14 @@ func stepFinishEvent(callID string, step types.StepResult) ai.OnStepFinishEvent 
 	return ai.OnStepFinishEvent{
 		CallID: callID, StepNumber: step.StepNumber, Model: step.Model,
 		ModelProvider: step.Model.Provider, ModelID: step.Model.ModelID,
-		Text: step.Text, Reasoning: step.Reasoning, ReasoningText: step.ReasoningText,
+		Text: step.Text, Content: step.Content, Reasoning: step.Reasoning, ReasoningText: step.ReasoningText,
 		ToolCalls: step.ToolCalls, StaticToolCalls: step.StaticToolCalls, DynamicToolCalls: step.DynamicToolCalls,
 		ToolResults: step.ToolResults, StaticToolResults: step.StaticToolResults, DynamicToolResults: step.DynamicToolResults,
-		FinishReason: step.FinishReason, RawFinishReason: step.RawFinishReason, Usage: step.Usage,
+		FinishReason: step.FinishReason, RawFinishReason: step.RawFinishReason, Usage: step.Usage, Performance: step.Performance,
 		Warnings: step.Warnings, Sources: step.Sources, Files: step.Files,
 		ProviderMetadata: step.ProviderMetadata,
 		ResponseHeaders:  step.Response.Headers,
-		Request:          ai.GenerateStepRequest{Body: step.Request.Body},
+		Request:          ai.GenerateStepRequest{Body: step.Request.Body, Messages: step.Request.Messages},
 		Response: ai.GenerateStepResponse{
 			ID: step.Response.ID, Timestamp: step.Response.Timestamp, ModelID: step.Response.ModelID,
 			Headers: step.Response.Headers, Messages: step.Response.Messages, Body: step.Response.Body,
