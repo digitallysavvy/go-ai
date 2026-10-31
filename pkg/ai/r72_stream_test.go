@@ -844,3 +844,52 @@ func TestR72StreamStepFinishEventCarriesContentPerformanceRequest(t *testing.T) 
 		t.Fatalf("onEnd request messages = %#v", end.Request.Messages)
 	}
 }
+
+// TS 5719: result.toUIMessageStream > should include tool metadata in ui
+// message stream chunks (full sequence; the executed result carries the
+// call's toolMetadata, TS execute-tool-call).
+func TestR72StreamUIToolMetadata(t *testing.T) {
+	steps := []provider.StreamChunk{
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "test-tool", Arguments: map[string]interface{}{"value": "value"}, RawArguments: `{ "value": "value" }`}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, RawFinishReason: "tool-calls", Usage: r72streamTestUsage},
+	}
+	tool := types.Tool{Name: "test-tool", Type: types.ToolTypeDynamic, Metadata: map[string]interface{}{"clientName": "MyMCPClient"}, Parameters: r71streamValueSchema,
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result", nil }}
+	r72streamAssertUI(t, StreamTextOptions{Model: r71streamModel(nil, steps), Prompt: "test-input", Tools: []types.Tool{tool}}, `[
+		{"type":"start"},
+		{"type":"start-step"},
+		{"dynamic":true,"input":{"value":"value"},"toolCallId":"call-1","toolMetadata":{"clientName":"MyMCPClient"},"toolName":"test-tool","type":"tool-input-available"},
+		{"dynamic":true,"output":"result","toolCallId":"call-1","toolMetadata":{"clientName":"MyMCPClient"},"type":"tool-output-available"},
+		{"type":"finish-step"},
+		{"finishReason":"tool-calls","type":"finish"}]`)
+}
+
+// TS stream-language-model-call.ts tool-result: a provider-executed result
+// carries its call's toolMetadata (`...(toolCall?.toolMetadata != null ?
+// { toolMetadata } : {})`), in the UI chunk and in the step content.
+func TestR72StreamProviderResultCarriesCallToolMetadata(t *testing.T) {
+	steps := []provider.StreamChunk{
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "web_search", Arguments: map[string]interface{}{"value": "value"}, RawArguments: `{ "value": "value" }`, ProviderExecuted: true, ProviderExecutedSet: true}},
+		{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-1", ToolName: "web_search", Result: "ok", ProviderExecuted: true, ProviderExecutedSet: true}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+	}
+	webSearch := r72streamWebSearch
+	webSearch.Metadata = map[string]interface{}{"source": "provider"}
+	opts := StreamTextOptions{Model: r71streamModel(nil, steps), Prompt: "test-input", Tools: []types.Tool{webSearch}}
+	r72streamAssertUI(t, opts, `[
+		{"type":"start"},
+		{"type":"start-step"},
+		{"input":{"value":"value"},"providerExecuted":true,"toolCallId":"call-1","toolMetadata":{"source":"provider"},"toolName":"web_search","type":"tool-input-available"},
+		{"output":"ok","providerExecuted":true,"toolCallId":"call-1","toolMetadata":{"source":"provider"},"type":"tool-output-available"},
+		{"type":"finish-step"},
+		{"finishReason":"stop","type":"finish"}]`)
+	r := r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, steps), Prompt: "test-input", Tools: []types.Tool{webSearch}})
+	content := r.Steps()[0].Content
+	res, ok := content[1].(types.ToolResultContent)
+	if !ok || !reflect.DeepEqual(res.ToolMetadata, map[string]interface{}{"source": "provider"}) {
+		t.Fatalf("content[1] = %#v, want the call's toolMetadata", content[1])
+	}
+	if tr := r.ToolResults(); len(tr) != 1 || !reflect.DeepEqual(tr[0].ToolMetadata, map[string]interface{}{"source": "provider"}) {
+		t.Fatalf("tool results = %#v", tr)
+	}
+}

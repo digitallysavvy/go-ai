@@ -4393,6 +4393,11 @@ func enrichStreamedToolResultForModelOutput(ctx context.Context, result types.To
 		if result.Input == nil {
 			result.Input = call.Arguments
 		}
+		// TS stream-language-model-call.ts: a streamed tool-result carries
+		// its call's toolMetadata.
+		if result.ToolMetadata == nil && call.ToolMetadata != nil {
+			result.ToolMetadata = call.ToolMetadata
+		}
 		if !result.ProviderExecuted {
 			if tool := toolsByName[call.ToolName]; tool != nil && tool.ProviderExecuted {
 				result.ProviderExecuted = true
