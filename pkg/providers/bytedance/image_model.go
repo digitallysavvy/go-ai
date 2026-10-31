@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/imageutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ImageModel implements the provider.ImageModel interface for ByteDance's
@@ -107,6 +108,10 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		})
 	}
 
+	// TS: the response timestamp is taken before the options are parsed and
+	// the request is sent.
+	currentDate := time.Now()
+
 	byteDanceOptions, err := extractImageProviderOptions(opts.ProviderOptions)
 	if err != nil {
 		return nil, err
@@ -124,10 +129,14 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		Body:    body,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("bytedance: image generation request failed: %w", err)
+		// TS postJsonToApi lets the transport failure propagate unchanged.
+		return nil, err
 	}
 	if httpResp.StatusCode >= 400 {
 		return nil, m.parseAPIError(httpResp.Body, httpResp.StatusCode)
+	}
+	if err := providerutils.MediaResponseValidator("bytedance", providerutils.SchemaByteDanceImage)(httpResp.StatusCode, httpResp.Headers, httpResp.Body); err != nil {
+		return nil, err
 	}
 
 	var imgResp byteDanceImageResponse
@@ -145,7 +154,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		Base64Images: images,
 		Usage:        mapImageUsage(imgResp.Usage),
 		Response: &types.ResponseMetadata{
-			Timestamp: time.Now(),
+			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   flattenHeaders(httpResp.Headers),
 		},
@@ -226,19 +235,7 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, byteD
 // parseAPIError parses a ByteDance image API error response (TS
 // byteDanceFailedResponseHandler).
 func (m *ImageModel) parseAPIError(body []byte, statusCode int) error {
-	var errResp errorResponse
-	if err := json.Unmarshal(body, &errResp); err == nil {
-		msg := ""
-		if errResp.Error != nil {
-			msg = errResp.Error.Message
-		} else if errResp.Message != "" {
-			msg = errResp.Message
-		}
-		if msg != "" {
-			return NewError(statusCode, msg, "")
-		}
-	}
-	return NewError(statusCode, fmt.Sprintf("API returned status %d", statusCode), string(body))
+	return newHTTPError(statusCode, body)
 }
 
 // encodeImageFile encodes a provider.ImageFile to the string form ByteDance
@@ -285,5 +282,4 @@ type byteDanceImageUsage struct {
 	TotalTokens  *int `json:"total_tokens"`
 }
 
-// errorResponse and errorDetail are shared with video_model.go's ByteDance
-// error envelope.
+// errorDetail is shared with video_model.go's ByteDance error envelope.

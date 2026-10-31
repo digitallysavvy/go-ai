@@ -81,8 +81,8 @@ func main() {
 	// Create telemetry settings
 	telemetrySettings := &telemetry.Options{
 		IsEnabled:     telemetry.Bool(true),
-		RecordInputs:  true,
-		RecordOutputs: true,
+		RecordInputs:  telemetry.Bool(true),
+		RecordOutputs: telemetry.Bool(true),
 		FunctionID:    "example-generation",
 	}
 

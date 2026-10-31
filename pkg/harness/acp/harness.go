@@ -1,10 +1,12 @@
 package acp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	jsonschema "github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 var harnessIDRegexp = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
@@ -35,14 +38,14 @@ type acpHarness struct {
 // (`acp-harness.ts`), minus the concrete per-implementation configs (Cursor,
 // fx, GitHub Copilot, Grok Build — WG12).
 func CreateACP(settings Settings) (harness.Harness, error) {
-	if (settings.CredentialEnv == nil) != (settings.CredentialBrokering == nil) {
+	if (settings.CredentialEnv == nil) != (settings.CredentialBrokering == nil && settings.CredentialBrokeringErr == nil) {
 		return nil, fmt.Errorf("ACP credentialEnv and credentialBrokering must be configured together.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if _, reserved := settings.MCPServers[ReservedMCPServerName]; reserved {
-		return nil, fmt.Errorf("ACP MCP server name %q is reserved for HarnessAgent tools.", ReservedMCPServerName) //nolint:staticcheck // matches TS SDK's exact error text
+		return nil, fmt.Errorf("ACP MCP server name %s is reserved for HarnessAgent tools.", jsonString(ReservedMCPServerName)) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if !harnessIDRegexp.MatchString(settings.HarnessID) {
-		return nil, fmt.Errorf("ACP harnessId must be a stable kebab-case identifier; received %q.", settings.HarnessID) //nolint:staticcheck // matches TS SDK's exact error text
+		return nil, fmt.Errorf("ACP harnessId must be a stable kebab-case identifier; received %s.", jsonString(settings.HarnessID)) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	impl := newImplementation(settings)
 	if err := validateImplementation(impl); err != nil {
@@ -66,10 +69,19 @@ func CreateACP(settings Settings) (harness.Harness, error) {
 	}
 	h := &acpHarness{
 		settings: settings, impl: impl, clientApp: clientApp, bootstrap: &bootstrapCache{},
-		permMap: settings.PermissionModeMapping,
+		permMap: completePermissionModeMapping(settings.PermissionModeMapping),
 	}
 	h.settings.BuiltinTools = builtinTools
 	return h, nil
+}
+
+// completePermissionModeMapping mirrors TS `isCompletePermissionModeMapping`:
+// only a mapping with an entry for every mode is used outside the identity.
+func completePermissionModeMapping(m *PermissionModeMapping) *PermissionModeMapping {
+	if m.IsComplete() {
+		return m
+	}
+	return nil
 }
 
 func (h *acpHarness) SpecificationVersion() string { return harness.SpecificationVersion }
@@ -91,7 +103,7 @@ func (h *acpHarness) GetBootstrap(ctx context.Context) (*harness.Bootstrap, erro
 // resumeStateData is the adapter-defined `data` payload of lifecycle state.
 // Mirrors TS `ACPLifecycleData` (`acp-v1-lifecycle.ts`).
 type resumeStateData struct {
-	ImplementationIdentity       string                         `json:"implementationIdentity"`
+	AgentIdentity                string                         `json:"agentIdentity"`
 	AuthenticationProfile        *authenticationProfileIdentity `json:"authenticationProfile,omitempty"`
 	SandboxCredentialEnvironment map[string]string              `json:"sandboxCredentialEnvironment,omitempty"`
 	ACPSessionID                 string                         `json:"acpSessionId,omitempty"`
@@ -100,7 +112,7 @@ type resumeStateData struct {
 	TurnStartConfig              *TurnStartConfig               `json:"turnStartConfig,omitempty"`
 	Recovery                     *recoveryInfo                  `json:"recovery,omitempty"`
 	Restoration                  *restorationInfo               `json:"restoration,omitempty"`
-	InitialGuidanceApplied       bool                           `json:"initialGuidanceApplied,omitempty"`
+	InitialGuidanceApplied       *bool                          `json:"initialGuidanceApplied,omitempty"` // pointer: an explicit false must round-trip (absent means true on resume)
 	InstructionsFingerprint      string                         `json:"instructionsFingerprint,omitempty"`
 	SkillsDirectory              string                         `json:"skillsDirectory,omitempty"`
 }
@@ -113,13 +125,168 @@ type bridgeCoords struct {
 	StateDir        string  `json:"stateDir,omitempty"`
 }
 
+// ValidateLifecycleStateData mirrors TS `acpResumeStateSchema` (zod): the data
+// must be an object carrying a string `agentIdentity`, well-typed
+// bridge coordinates, and enum-valued recovery/restoration markers.
 func (h *acpHarness) ValidateLifecycleStateData(data json.RawMessage) error {
-	if len(data) == 0 {
-		return nil
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil || probe == nil {
+		return fmt.Errorf("ACP lifecycle state data must be an object.") //nolint:staticcheck // mirrors the TS zod object requirement
+	}
+	var identity string
+	if raw, ok := probe["agentIdentity"]; !ok || json.Unmarshal(raw, &identity) != nil {
+		return fmt.Errorf("ACP lifecycle state data: agentIdentity must be a string.") //nolint:staticcheck // mirrors the TS zod string requirement
+	}
+	// zod `.optional()` rejects an explicit null.
+	for _, key := range []string{"authenticationProfile", "sandboxCredentialEnvironment", "acpSessionId", "bridge", "coldSession", "turnStartConfig", "recovery", "restoration", "initialGuidanceApplied", "instructionsFingerprint", "skillsDirectory"} {
+		if raw, ok := probe[key]; ok && string(bytes.TrimSpace(raw)) == "null" {
+			return fmt.Errorf("ACP lifecycle state data: %s must not be null.", key) //nolint:staticcheck // mirrors the TS zod optional
+		}
+	}
+	if err := harnessutil.RejectNullRecordValues(probe, "sandboxCredentialEnvironment"); err != nil {
+		return fmt.Errorf("ACP lifecycle state data: %w.", err) //nolint:staticcheck // mirrors the TS zod record
 	}
 	var v resumeStateData
-	return json.Unmarshal(data, &v)
+	if err := json.Unmarshal(data, &v); err != nil {
+		return fmt.Errorf("ACP lifecycle state data is invalid: %w", err)
+	}
+	if b := v.Bridge; b != nil {
+		var bridgeProbe map[string]json.RawMessage
+		_ = json.Unmarshal(probe["bridge"], &bridgeProbe)
+		for _, key := range []string{"port", "token", "lastSeenEventId"} {
+			if raw, ok := bridgeProbe[key]; !ok || isJSONNull(raw) {
+				return fmt.Errorf("ACP lifecycle state data: bridge.%s is required.", key) //nolint:staticcheck // mirrors the TS zod requirement
+			}
+		}
+		for _, key := range []string{"sandboxId", "stateDir"} {
+			if raw, ok := bridgeProbe[key]; ok && isJSONNull(raw) {
+				return fmt.Errorf("ACP lifecycle state data: bridge.%s must not be null.", key) //nolint:staticcheck // mirrors the TS zod optional
+			}
+		}
+	}
+	if rawProfile, ok := probe["authenticationProfile"]; ok {
+		var profile map[string]json.RawMessage
+		if err := json.Unmarshal(rawProfile, &profile); err != nil || profile == nil {
+			return fmt.Errorf("ACP lifecycle state data: authenticationProfile must be an object.") //nolint:staticcheck // mirrors the TS zod object
+		}
+		for _, key := range []string{"acpMethodId", "providerMode"} {
+			if raw, ok := profile[key]; ok && isJSONNull(raw) {
+				return fmt.Errorf("ACP lifecycle state data: authenticationProfile.%s must not be null.", key) //nolint:staticcheck // mirrors the TS zod optional
+			}
+		}
+		if raw, ok := profile["digest"]; !ok || isJSONNull(raw) {
+			return fmt.Errorf("ACP lifecycle state data: authenticationProfile.digest is required.") //nolint:staticcheck // mirrors the TS zod requirement
+		}
+		enums := []struct {
+			key      string
+			required bool
+			nullable bool
+			allowed  []string
+		}{
+			{"providerKind", true, false, []string{"direct", "ai-gateway"}},
+			{"providerMode", false, false, []string{"auto", "direct", "ai-gateway"}},
+			{"gatewayCredentialSource", false, true, []string{"AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"}},
+		}
+		for _, e := range enums {
+			raw, present := profile[e.key]
+			if !present {
+				if e.required {
+					return fmt.Errorf("ACP lifecycle state data: authenticationProfile.%s is required.", e.key) //nolint:staticcheck // mirrors the TS zod requirement
+				}
+				continue
+			}
+			if e.nullable && string(bytes.TrimSpace(raw)) == "null" {
+				continue
+			}
+			var value string
+			if json.Unmarshal(raw, &value) != nil || !slices.Contains(e.allowed, value) {
+				return fmt.Errorf("ACP lifecycle state data: authenticationProfile.%s must be one of %s.", e.key, strings.Join(e.allowed, ", ")) //nolint:staticcheck // mirrors the TS zod enum
+			}
+		}
+	}
+	if rawRecovery, ok := probe["recovery"]; ok {
+		var recovery map[string]json.RawMessage
+		_ = json.Unmarshal(rawRecovery, &recovery)
+		if raw, ok := recovery["reason"]; !ok || isJSONNull(raw) {
+			return fmt.Errorf("ACP lifecycle state data: recovery.reason is required.") //nolint:staticcheck // mirrors the TS zod requirement
+		}
+	}
+	// acpTurnStartConfigSchema / acpColdSessionStateSchema: the persisted start
+	// configuration must be well-formed before it is trusted for recovery.
+	if raw, ok := probe["turnStartConfig"]; ok {
+		if err := validateStartConfigShape(raw, "turnStartConfig", true); err != nil {
+			return err
+		}
+	}
+	if raw, ok := probe["coldSession"]; ok {
+		if err := validateStartConfigShape(raw, "coldSession", false); err != nil {
+			return err
+		}
+	}
+	if r := v.Recovery; r != nil && r.Mode != "disk-replay" && r.Mode != "lossy-rerun" {
+		return fmt.Errorf("ACP lifecycle state data: recovery.mode must be 'disk-replay' or 'lossy-rerun'.") //nolint:staticcheck // mirrors the TS zod enum
+	}
+	if r := v.Restoration; r != nil && r.Method != "resume" && r.Method != "load" {
+		return fmt.Errorf("ACP lifecycle state data: restoration.method must be 'resume' or 'load'.") //nolint:staticcheck // mirrors the TS zod enum
+	}
+	return nil
 }
+
+// validateStartConfigShape checks the required, enum and array fields of a
+// persisted turnStartConfig (withPrompt) or coldSession object, mirroring the
+// zod schemas' `version: literal(1)`, `configurationFingerprint: string`,
+// `permissionMode` enum, `prompt` content blocks and `tools`/`builtinTools`
+// arrays (`.default([])` accepts only an absent key, not null).
+func validateStartConfigShape(raw json.RawMessage, key string, withPrompt bool) error {
+	var cfg map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &cfg); err != nil || cfg == nil {
+		return fmt.Errorf("ACP lifecycle state data: %s must be an object.", key) //nolint:staticcheck // mirrors the TS zod object
+	}
+	if v, ok := cfg["version"]; !ok || string(bytes.TrimSpace(v)) != "1" {
+		return fmt.Errorf("ACP lifecycle state data: %s.version must be 1.", key) //nolint:staticcheck // mirrors the TS zod literal
+	}
+	var fingerprint string
+	if v, ok := cfg["configurationFingerprint"]; !ok || json.Unmarshal(v, &fingerprint) != nil {
+		return fmt.Errorf("ACP lifecycle state data: %s.configurationFingerprint must be a string.", key) //nolint:staticcheck // mirrors the TS zod string
+	}
+	var mode string
+	if v, ok := cfg["permissionMode"]; !ok || json.Unmarshal(v, &mode) != nil ||
+		(mode != string(harness.PermissionModeAllowReads) && mode != string(harness.PermissionModeAllowEdits) && mode != string(harness.PermissionModeAllowAll)) {
+		return fmt.Errorf("ACP lifecycle state data: %s.permissionMode must be one of allow-reads, allow-edits, allow-all.", key) //nolint:staticcheck // mirrors the TS zod enum
+	}
+	for _, name := range []string{"tools", "builtinTools"} {
+		if v, ok := cfg[name]; ok {
+			var items []json.RawMessage
+			if err := json.Unmarshal(v, &items); err != nil || items == nil {
+				return fmt.Errorf("ACP lifecycle state data: %s.%s must be an array.", key, name) //nolint:staticcheck // mirrors the TS zod array
+			}
+		}
+	}
+	if err := validateStartConfigMembers(cfg, key, !withPrompt); err != nil {
+		return err
+	}
+	if withPrompt {
+		var blocks []struct {
+			Type     string  `json:"type"`
+			Text     *string `json:"text"`
+			Data     *string `json:"data"`
+			MimeType *string `json:"mimeType"`
+		}
+		if v, ok := cfg["prompt"]; !ok || json.Unmarshal(v, &blocks) != nil || blocks == nil {
+			return fmt.Errorf("ACP lifecycle state data: %s.prompt must be an array of text and image blocks.", key) //nolint:staticcheck // mirrors the TS zod array
+		}
+		for _, b := range blocks {
+			validText := b.Type == "text" && b.Text != nil
+			validImage := b.Type == "image" && b.Data != nil && b.MimeType != nil
+			if !validText && !validImage {
+				return fmt.Errorf("ACP lifecycle state data: %s.prompt must be an array of text and image blocks.", key) //nolint:staticcheck // mirrors the TS zod array
+			}
+		}
+	}
+	return nil
+}
+
+func isJSONNull(raw json.RawMessage) bool { return string(bytes.TrimSpace(raw)) == "null" }
 
 func unsupported(harnessID, message string) error {
 	return harness.NewCapabilityUnsupportedError(message, harnessID, nil)
@@ -181,10 +348,11 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	}
 
 	compat := resolveProviderAuthenticationCompatibility(settings.Auth, settings.ProviderAuthentication, authenticationEnvironment)
-	implementationIdentity := createImplementationIdentity(implementationIdentityInput{
+	agentIdentity := createAgentIdentity(agentIdentityInput{
 		HarnessID: settings.HarnessID, Implementation: h.impl, ClientApp: h.clientApp,
 		ClientCapabilities: settings.ClientCapabilities, ModelMapping: settings.ModelMapping,
-		ProviderAuthentication: compat, PermissionModeMapping: h.permMap,
+		ProviderAuthentication: compat, PermissionModeMapping: h.settings.PermissionModeMapping,
+		NonTextContentTypes: settings.NonTextContentTypes,
 	})
 	authProfile := createAuthenticationProfileIdentity(settings.Authentication, compat)
 	resolvedProviderAuth, err := resolveProviderAuthentication(settings.Auth, settings.ProviderAuthentication, h.clientApp, authenticationEnvironment, compat)
@@ -199,21 +367,22 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	if isNetwork {
 		sandboxID = networkSession.ID()
 	}
-	if err := validateBasicSandboxSettings(sandboxSession, settings.Port, settings.PortEndpoint, settings.HarnessID); err != nil {
+	if err := bridge.ValidateBridgeSandboxSettings(sandboxSession, sandboxID, settings.Port, settings.PortEndpoint, settings.MintBridgeToken, settings.HarnessID); err != nil {
 		return nil, err
 	}
-	if settings.MintBridgeToken != nil && sandboxID == "" {
-		return nil, unsupported(settings.HarnessID, fmt.Sprintf(
-			"The %s ACP harness cannot use `mintBridgeToken` with a sandbox session that does not expose an id.", settings.HarnessID))
-	}
 
-	isContinue := opts.ContinueFrom != nil
+	// Mirrors TS `startOptions.continueFrom ?? startOptions.resumeFrom?.continueFrom`.
+	continueFrom := opts.ContinueFrom
+	if continueFrom == nil && opts.ResumeFrom != nil {
+		continueFrom = opts.ResumeFrom.ContinueFrom
+	}
+	isContinue := continueFrom != nil
 	isResume := isContinue || opts.ResumeFrom != nil
 	var lifecycleData json.RawMessage
 	var lifecycleHarnessID string
 	switch {
-	case opts.ContinueFrom != nil:
-		lifecycleData, lifecycleHarnessID = opts.ContinueFrom.Data, opts.ContinueFrom.HarnessID
+	case continueFrom != nil:
+		lifecycleData, lifecycleHarnessID = continueFrom.Data, continueFrom.HarnessID
 	case opts.ResumeFrom != nil:
 		lifecycleData, lifecycleHarnessID = opts.ResumeFrom.Data, opts.ResumeFrom.HarnessID
 	}
@@ -223,16 +392,16 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 			return nil, fmt.Errorf("ACP lifecycle state data is invalid: %w", err)
 		}
 		if lifecycleHarnessID != settings.HarnessID {
-			return nil, fmt.Errorf("ACP lifecycle state was produced by harness %q, but this harness is %q.", lifecycleHarnessID, settings.HarnessID) //nolint:staticcheck // matches TS SDK's exact error text
+			return nil, fmt.Errorf("ACP lifecycle state was produced by harness %s, but this harness is %s.", jsonString(lifecycleHarnessID), jsonString(settings.HarnessID)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
-		if resumeData.ImplementationIdentity != implementationIdentity {
-			return nil, fmt.Errorf("ACP lifecycle state is incompatible with the configured implementation.") //nolint:staticcheck // matches TS SDK's exact error text
+		if resumeData.AgentIdentity != agentIdentity {
+			return nil, fmt.Errorf("ACP lifecycle state is incompatible with the configured agent.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
-		if resumeData.AuthenticationProfile != nil && resumeData.AuthenticationProfile.Digest != authProfile.Digest {
+		if resumeData.AuthenticationProfile == nil || !authProfile.matchesDigest(resumeData.AuthenticationProfile.Digest) {
 			return nil, fmt.Errorf("ACP lifecycle state is incompatible with the configured authentication profile.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if coords := resumeData.Bridge; coords != nil && coords.SandboxID != "" && sandboxID != "" && coords.SandboxID != sandboxID {
-			return nil, fmt.Errorf("ACP lifecycle state belongs to sandbox %q, not %q.", coords.SandboxID, sandboxID) //nolint:staticcheck // matches TS SDK's exact error text
+			return nil, fmt.Errorf("ACP lifecycle state belongs to sandbox %s, not %s.", jsonString(coords.SandboxID), jsonString(sandboxID)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 
@@ -248,17 +417,24 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	sandboxProviderAuthEnvironment := resolvedProviderAuth.Env
 	var sandboxProviderEnvironment map[string]string
 	credentialEnvironmentVariables := uniqueStrings(append(append([]string{}, settings.CredentialEnv...), "AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"))
+	credentialForwardingEnvironmentVariables := uniqueStrings(append(append([]string{}, credentialEnvironmentVariables...), providerCredentialEnvironmentVariables(resolvedProviderAuth)...))
 	var sandboxCredentialEnvironment map[string]string
-	credentialsBrokered := false
 
-	if settings.CredentialBrokering != nil {
+	if settings.CredentialBrokering != nil || settings.CredentialBrokeringErr != nil {
 		if adder, ok := sandboxSession.(harness.RequestTransformationAdder); ok {
+			providerEnvironment, err := resolveProviderEnvironment(resolvedProviderAuth, h.clientApp)
+			if err != nil {
+				return nil, err
+			}
 			brokeringEnvironment := map[string]string{}
 			for k, v := range implementationEnvironment {
 				brokeringEnvironment[k] = v
 			}
+			for k, v := range providerEnvironment {
+				brokeringEnvironment[k] = v
+			}
 			sandboxCredentialEnvironment, err = harnessutil.ResolveSandboxCredentialEnvironment(ctx, harnessutil.CredentialForwardingOptions{
-				Environment: brokeringEnvironment, CredentialEnvironmentVariables: credentialEnvironmentVariables,
+				Environment: brokeringEnvironment, CredentialEnvironmentVariables: credentialForwardingEnvironmentVariables,
 				CredentialForwarding:                 settings.CredentialForwarding,
 				PreviousSandboxCredentialEnvironment: resumeData.SandboxCredentialEnvironment,
 			})
@@ -273,26 +449,40 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 				merged[k] = v
 			}
 			sandboxImplementationEnvironment = merged
-			headers := opts.Headers
-			transformations := settings.CredentialBrokering(brokeringEnvironment, sandboxImplementationEnvironment, headers)
+			var transformations []harness.RequestTransformation
+			if settings.CredentialBrokeringErr != nil {
+				transformations, err = settings.CredentialBrokeringErr(brokeringEnvironment, sandboxImplementationEnvironment, opts.Headers)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				transformations = settings.CredentialBrokering(brokeringEnvironment, sandboxImplementationEnvironment, opts.Headers)
+			}
 			if len(transformations) > 0 {
 				if err := adder.AddRequestTransformations(ctx, transformations); err != nil {
 					return nil, err
 				}
 			}
-			credentialsBrokered = true
 			if resolvedProviderAuth.Type == "ai-gateway" {
 				sandboxProviderEnvironment = map[string]string{}
 			}
 		}
 	}
 	if settings.CredentialForwarding != nil && sandboxProviderEnvironment == nil && resolvedProviderAuth.Type == "ai-gateway" {
-		sandboxProviderEnvironment = map[string]string{}
+		sandboxProviderEnvironment, err = resolveProviderEnvironment(resolvedProviderAuth, h.clientApp)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if sandboxProviderEnvironment != nil {
-		for k, v := range sandboxProviderEnvironment {
-			sandboxImplementationEnvironment[k] = v
+		merged := map[string]string{}
+		for k, v := range sandboxImplementationEnvironment {
+			merged[k] = v
 		}
+		for k, v := range sandboxProviderEnvironment {
+			merged[k] = v
+		}
+		sandboxImplementationEnvironment = merged
 		filtered := map[string]string{}
 		for k, v := range resolvedProviderAuth.Env {
 			if k != "AI_SDK_ACP_GATEWAY_API_KEY" && k != "AI_SDK_ACP_GATEWAY_BASE_URL" {
@@ -308,12 +498,12 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	}
 	stateDirectory := harness.StateDirectoryPath(sandboxHomeDir)
 	resolvedBridgeDir := stateDirectory + "/" + bootstrapDir(settings.HarnessID)
-	resolvedImplementationDir := resolvedBridgeDir + "/implementation"
+	agent := resolveAgentLaunch(resolvedBridgeDir, h.impl)
 	workDir := opts.SessionWorkDir
 	privateSessionDir := resolvePrivateSessionDirectory(stateDirectory, opts.SessionID)
 	implementationHomeDir := sandboxHomeDir
-	if h.impl.Source.Type == SourceInstallCommand {
-		implementationHomeDir = resolvedImplementationDir + "/home"
+	if agent.Home != "" {
+		implementationHomeDir = agent.Home
 	}
 	skillsDir := settings.SkillsDirectory
 	if skillsDir == "" {
@@ -326,7 +516,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	bridgeStateDir := privateSessionDir + "/bridge"
 
 	builtinToolCatalog := serializeBuiltinTools(settings.BuiltinTools)
-	onBridgeErr := func(*harness.ErrorPart) {}
+	onBridgeErr := bridge.CreateBridgeErrorHandler(settings.HarnessID, opts.SessionID)
 	var onDiagnostic func(bridge.OutboundMessage)
 	if opts.Observability != nil {
 		onDiagnostic = bridge.ReportDiagnostic(opts.Observability.Report, opts.SessionID)
@@ -334,15 +524,21 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 
 	sessionArgs := sessionParams{
 		sessionID: opts.SessionID, harnessID: settings.HarnessID,
-		modelMapping: settings.ModelMapping, sessionMeta: settings.SessionMeta,
+		modelMapping: settings.ModelMapping, streamStartFallbackModelID: settings.StreamStartFallbackModelID, sessionMeta: settings.SessionMeta,
 		instructionMapping: settings.InstructionMapping, outputSchemaMapping: settings.OutputSchemaMapping,
-		askUserQuestions: settings.AskUserQuestions, implementationIdentity: implementationIdentity,
+		askUserQuestions: settings.AskUserQuestions, agentIdentity: agentIdentity,
 		authenticationProfile: authProfile, builtinTools: builtinToolCatalog,
 		permissionMode: permissionMode, permissionModeMapping: h.permMap, mcpServers: settings.MCPServers,
 		isMcpToolCall: settings.IsMcpToolCall, sandbox: toolSafeSandboxSession,
 		homePath: implementationHomeDir, skillsDir: skillsDir, skillsDirectory: skillsDirectory,
 		sandboxID: sandboxID, sandboxCredentialEnvironment: sandboxCredentialEnvironment,
 		reconnect: settings.Reconnect, bridgeStateDir: bridgeStateDir,
+		debug: debugConfig(opts.Observability), instructionsFingerprint: resumeData.InstructionsFingerprint,
+	}
+	// Mirrors TS `resolveACPInitialGuidanceApplied`: false for a fresh
+	// session, else the persisted flag (default true).
+	if isResume {
+		sessionArgs.initialGuidanceApplied = resumeData.InitialGuidanceApplied == nil || *resumeData.InitialGuidanceApplied
 	}
 
 	// Attach to a still-running bridge when coordinates are known (TS's
@@ -365,7 +561,13 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 				return sess, nil
 			}
 			if isContinue {
-				logText, _ := toolSafeSandboxSession.ReadTextFile(ctx, providerutils.SandboxReadTextFileOptions{Path: bridgeStateDir + "/event-log.ndjson"})
+				// Unlike the other adapters (TS `.catch(() => null)`), ACP
+				// propagates a failed event-log read: the attach error is
+				// replaced by it, exactly as the TS catch block does.
+				logText, readErr := toolSafeSandboxSession.ReadTextFile(ctx, providerutils.SandboxReadTextFileOptions{Path: bridgeStateDir + "/event-log.ndjson"})
+				if readErr != nil {
+					return nil, readErr
+				}
 				if harnessutil.ClassifyDiskLog(logText) == harnessutil.DiskLogReplay {
 					respawnStrategy = &acpRespawnStrategy{mode: acpRecoveryDiskReplay, reason: "completed coherent event log", afterSeq: coords.LastSeenEventID}
 				} else {
@@ -410,14 +612,14 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	forwardedImplementationEnvironment := sandboxImplementationEnvironment
 	if sandboxCredentialEnvironment == nil {
 		forwardedImplementationEnvironment, err = harnessutil.ApplyCredentialForwarding(ctx, harnessutil.CredentialForwardingOptions{
-			Environment: sandboxImplementationEnvironment, CredentialEnvironmentVariables: credentialEnvironmentVariables,
+			Environment: sandboxImplementationEnvironment, CredentialEnvironmentVariables: credentialForwardingEnvironmentVariables,
 			CredentialForwarding: settings.CredentialForwarding,
 		})
 		if err != nil {
 			return nil, err
 		}
 	}
-	if settings.CredentialBrokering != nil && sandboxCredentialEnvironment == nil {
+	if (settings.CredentialBrokering != nil || settings.CredentialBrokeringErr != nil) && sandboxCredentialEnvironment == nil {
 		env := map[string]string{}
 		for k, v := range sandboxImplementationEnvironment {
 			env[k] = v
@@ -434,10 +636,9 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		}
 		harnessutil.WarnCredentialBrokeringUnavailable(harnessutil.WarnCredentialBrokeringUnavailableOptions{
 			Environment: env, ForwardedEnvironment: forwarded,
-			CredentialEnvironmentVariables: append(append([]string{}, credentialEnvironmentVariables...), "AI_SDK_ACP_GATEWAY_API_KEY"),
+			CredentialEnvironmentVariables: append(append([]string{}, credentialForwardingEnvironmentVariables...), "AI_SDK_ACP_GATEWAY_API_KEY"),
 		})
 	}
-	_ = credentialsBrokered
 
 	if settings.AuthenticationFiles != nil {
 		files := settings.AuthenticationFiles(implementationEnvironment, forwardedImplementationEnvironment, sandboxCredentialEnvironment != nil)
@@ -446,9 +647,9 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		}
 	}
 
-	port, err := bridge.ResolveBridgePort(sandboxSession, settings.Port)
+	port, err := bridge.ResolveBridgePortOrUnsupported(sandboxSession, settings.Port, settings.HarnessID)
 	if err != nil {
-		return nil, wrapPortError(err, settings.HarnessID)
+		return nil, err
 	}
 	token := mintBridgeToken(settings.MintBridgeToken, sandboxID)
 
@@ -466,15 +667,15 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	if resolvedProviderAuth.Type != "" {
 		bridgeProviderAuthentication = &bridgeProviderAuth{Type: resolvedProviderAuth.Type, Env: resolvedProviderAuth.GatewayEnv}
 	}
-	var providerEnvironment map[string]string
+	var providerEnvironment *map[string]string
 	if sandboxProviderEnvironment != nil {
-		providerEnvironment = map[string]string{}
+		providerEnvironment = &map[string]string{}
 	}
 	for k, v := range createBridgeEnvironment(bridgeConfiguration{
-		Authentication: settings.Authentication, ProviderAuthentication: bridgeProviderAuthentication,
+		Agent: agent, Authentication: settings.Authentication, ProviderAuthentication: bridgeProviderAuthentication,
 		ProviderEnvironment: providerEnvironment, SessionMeta: settings.SessionMeta,
 		ClientCapabilities: settings.ClientCapabilities, AskUserQuestionsRequestMethod: askUserQuestionsRequestMethod(settings.AskUserQuestions),
-		HostToolMCPTransport: settings.HostToolMCPTransport,
+		HostToolMCPTransport: settings.HostToolMCPTransport, NonTextContentTypes: settings.NonTextContentTypes,
 	}) {
 		env[k] = v
 	}
@@ -487,7 +688,6 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	command := "node " + harnessutil.ShellQuote(resolvedBridgeDir+"/bridge.mjs") +
 		" --workdir " + harnessutil.ShellQuote(workDir) +
 		" --bridge-state-dir " + harnessutil.ShellQuote(bridgeStateDir) +
-		" --implementation-dir " + harnessutil.ShellQuote(resolvedImplementationDir) +
 		" --bridge-type " + harnessutil.ShellQuote(settings.HarnessID)
 
 	timeout := settings.StartupTimeout
@@ -500,7 +700,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		BridgeStateDir: bridgeStateDir, BridgeType: settings.HarnessID, StartupTimeout: timeout,
 		ReplayFromDisk: respawnStrategy != nil && respawnStrategy.mode == acpRecoveryDiskReplay,
 		ResolveEndpoint: func(ctx context.Context, boundPort int) (harness.PortEndpoint, error) {
-			return resolveBridgeEndpoint(ctx, sandboxSession, settings.PortEndpoint, boundPort, settings.HarnessID)
+			return bridge.ResolveBridgeEndpointOrUnsupported(ctx, sandboxSession, settings.PortEndpoint, boundPort, settings.HarnessID)
 		},
 	})
 	if err != nil {
@@ -508,7 +708,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	}
 
 	channelOpts := bridge.ChannelOptions{
-		Connect:       bridge.NewConnectFunc(launched.Endpoint, bridge.DialOptions{Name: settings.HarnessID + " ACP bridge"}),
+		Connect:       bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{Name: settings.HarnessID + " ACP bridge", OpenRetryTimeout: timeout, StartContext: ctx}),
 		Decode:        decodeOutbound,
 		Reconnect:     settings.Reconnect,
 		OnBridgeError: onBridgeErr,
@@ -531,7 +731,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 				Tools: respawnStrategy.turnStartConfig.Tools, PermissionMode: permissionMode,
 				Debug: debugConfig(opts.Observability),
 			},
-			Prompt: []TextContentBlock{}, BuiltinTools: builtinToolCatalog, PermissionModeMapping: h.permMap,
+			Prompt: []ContentBlock{}, BuiltinTools: builtinToolCatalog, PermissionModeMapping: h.permMap,
 			TurnStartConfig: *respawnStrategy.turnStartConfig,
 			RecoveryMode:    &RecoveryMode{Type: "cold-restore", ACPSessionID: respawnStrategy.acpSessionID},
 		}
@@ -556,7 +756,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 
 	sessionArgs.channel = channel
 	sessionArgs.proc = launched.Proc
-	sessionArgs.bridgePort = port
+	sessionArgs.bridgePort = launched.Port
 	sessionArgs.bridgeToken = token
 	sessionArgs.isResume = isResume
 	sessionArgs.acpSessionID = resumeData.ACPSessionID
@@ -569,9 +769,9 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	sessionArgs.turnInFlight = respawnStrategy != nil && (respawnStrategy.mode == acpRecoveryDiskReplay || respawnStrategy.mode == acpRecoveryLossyRerun)
 	if respawnStrategy != nil && (respawnStrategy.mode == acpRecoveryDiskReplay || respawnStrategy.mode == acpRecoveryLossyRerun) {
 		sessionArgs.recoveryStatus = &recoveryInfo{Mode: string(respawnStrategy.mode), Reason: respawnStrategy.reason}
-	} else if resumeData.Recovery != nil {
-		sessionArgs.recoveryStatus = &recoveryInfo{Mode: resumeData.Recovery.Mode, Reason: resumeData.Recovery.Reason}
 	}
+	// TS leaves recoveryStatus undefined here (cold-restore or fresh): a stale
+	// persisted `recovery` marker is not carried into the next snapshot.
 	if coldRestoration != "" {
 		sessionArgs.restoration = &restorationInfo{Method: coldRestoration}
 	} else if resumeData.Restoration != nil {
@@ -603,37 +803,6 @@ func mintBridgeToken(cb harness.MintBridgeTokenCallback, sandboxID string) strin
 	return cb(sandboxID)
 }
 
-func validateBasicSandboxSettings(sandboxSession providerutils.SandboxSession, port int, portEndpoint *harness.PortEndpoint, harnessID string) error {
-	if _, ok := harness.AsNetworkSandboxSession(sandboxSession); ok {
-		return nil
-	}
-	if port == 0 {
-		return unsupported(harnessID, fmt.Sprintf("The %s ACP harness requires an explicit `port` when using a basic sandbox session.", harnessID))
-	}
-	if portEndpoint == nil {
-		return unsupported(harnessID, fmt.Sprintf("The %s ACP harness requires an explicit `portEndpoint` when using a basic sandbox session.", harnessID))
-	}
-	return nil
-}
-
-func resolveBridgeEndpoint(ctx context.Context, sandboxSession providerutils.SandboxSession, override *harness.PortEndpoint, port int, harnessID string) (harness.PortEndpoint, error) {
-	if override != nil {
-		return *override, nil
-	}
-	if n, ok := harness.AsNetworkSandboxSession(sandboxSession); ok {
-		return n.GetPortEndpoint(ctx, harness.PortEndpointOptions{Port: port, Protocol: harness.PortProtocolWS})
-	}
-	return harness.PortEndpoint{}, unsupported(harnessID, fmt.Sprintf("The %s ACP harness requires an explicit `portEndpoint` when using a basic sandbox session.", harnessID))
-}
-
-func wrapPortError(err error, harnessID string) error {
-	if err == bridge.ErrNoPort {
-		return unsupported(harnessID, fmt.Sprintf(
-			"The %s ACP harness needs a TCP port exposed by the sandbox. Create the sandbox with `ports: [<port>]` or pass `port` in settings.", harnessID))
-	}
-	return err
-}
-
 func uniqueStrings(values []string) []string {
 	seen := map[string]bool{}
 	out := make([]string, 0, len(values))
@@ -659,8 +828,7 @@ func writeAuthenticationFiles(ctx context.Context, sandbox providerutils.Sandbox
 			}
 		}
 		if f.Path == "" || posixpath.IsAbs(f.Path) || traversal {
-			quoted, _ := json.Marshal(f.Path)
-			return fmt.Errorf("ACP authentication file path must be relative without traversal: %s.", quoted) //nolint:staticcheck // matches TS SDK's exact error text
+			return fmt.Errorf("ACP authentication file path must be relative without traversal: %s.", jsonString(f.Path)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		targetPaths[i] = posixpath.Join(homePath, f.Path)
 	}
@@ -706,7 +874,7 @@ func serializeBuiltinTools(tools map[string]harness.BuiltinTool) []BuiltinToolMa
 	for _, name := range names {
 		tool := tools[name]
 		m := BuiltinToolMapping{ToolName: name, NativeName: tool.NativeName, Title: tool.Title, ToolUseKind: string(tool.ToolUseKind)}
-		if schema, ok := tool.Parameters.(map[string]any); ok {
+		if schema, ok := jsonschema.ParametersMap(tool.Parameters); ok {
 			m.InputSchema = schema
 		}
 		out = append(out, m)

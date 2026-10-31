@@ -7,7 +7,7 @@ description: Map Vercel AI SDK (ai@7.0.x) calls to their Go SDK equivalents, and
 
 This guide is for developers who know the [Vercel AI SDK](https://ai-sdk.dev) and are porting an app to Go, or building a new Go backend behind an existing TypeScript frontend. It assumes no Go SDK experience.
 
-The Go SDK (`github.com/digitallysavvy/go-ai`) targets 1:1 parity with TypeScript `ai@7.0.127`. Most concepts map directly: same function names in spirit, same option names where Go syntax allows, same wire formats for anything that crosses a network boundary (provider requests, UI message streams). The core package is `pkg/ai`, mirroring the `ai` package; individual providers live under `pkg/providers/*`, mirroring `@ai-sdk/*`.
+The Go SDK (`github.com/digitallysavvy/go-ai`) targets 1:1 parity with TypeScript `ai@7.0.153`. Most concepts map directly: same function names in spirit, same option names where Go syntax allows, same wire formats for anything that crosses a network boundary (provider requests, UI message streams). The core package is `pkg/ai`, mirroring the `ai` package; individual providers live under `pkg/providers/*`, mirroring `@ai-sdk/*`.
 
 If you're coming from TypeScript v5 or v6 rather than v7, read [Coming from TS v5 or v6](#coming-from-ts-v5-or-v6) first — several TS names changed on the way to v7, and Go only implements the current (v7) names.
 
@@ -44,7 +44,7 @@ Go ships two mechanisms. Prefer the `Output` one; `GenerateObject`/`StreamObject
 | `Output.text()` | `ai.TextOutput()` | `output.go`. |
 | `Output.json()` | `ai.JSONOutput(ai.JSONOutputOptions{...})` | `output.go`. |
 | `generateText({output})` | `ai.GenerateTextOptions{Output: ai.ObjectOutput[T](...)}` | Result is `result.Output any` — type-assert to `T`. |
-| `streamText({output})`, `result.partialOutputStream` | `ai.StreamTextOptions{Output: ...}`, `result.PartialOutput()` | `PartialOutput()` returns the latest partial parse; `Output()` returns the final one after the stream drains. |
+| `streamText({output})`, `result.partialOutputStream` | `ai.StreamTextOptions{Output: ...}`, `result.PartialOutput()` | `PartialOutput()` returns the latest partial parse; `Output()` returns the final one after the stream drains. Without `Output` it is the step's text so far, as TS `partialOutputStream` yields text. |
 | `generateObject({model, schema, prompt})` (deprecated) | `ai.GenerateObject(ctx, ai.GenerateObjectOptions{Model: model, Schema: mySchema, Prompt: "..."})` | `pkg/ai/object.go`. `Schema` is a `schema.Schema`, not a Go generic — `result.Object` is `interface{}`. |
 | — | `ai.GenerateObjectInto(ctx, opts, &target)` | Go-only convenience: unmarshals straight into a struct pointer via reflection, no type assertion needed. |
 
@@ -127,7 +127,7 @@ Go ships two mechanisms. Prefer the `Output` one; `GenerateObject`/`StreamObject
 | `UI_MESSAGE_STREAM_HEADERS` | `ai.UIMessageStreamHeaders()` | The `Pipe*` helpers set these on an `http.ResponseWriter` for you. |
 | `createAgentUIStreamResponse({ agent, uiMessages })` / `pipeAgentUIStreamToResponse({ response, agent, uiMessages })` | `agent.CreateAgentUIStreamResponseFromUIMessages` / `agent.PipeAgentUIStreamFromUIMessagesToResponse` | Validate and convert `useChat` messages, then stream the agent's reply. See [Agent UI Stream Helpers](../07-reference/ai/agent-ui-stream-helpers.mdx).
 | `readUIMessageStream(stream)` | `ai.ReadUIMessageStream(r io.Reader)` | `ui_message_stream.go`. |
-| chunk-sequence error passed to `onError` | `ai.UIMessageStreamError` / `ai.IsUIMessageStreamError(err)` | Typed error for malformed UI message stream sequences. |
+| chunk-sequence error (`AI_UIMessageStreamError`) | `ai.UIMessageStreamError` / `ai.IsUIMessageStreamError(err)` | Typed error for malformed UI message stream sequences. |
 | `lastAssistantMessageIsCompleteWithToolCalls` | `ai.LastAssistantMessageIsCompleteWithToolCalls(messages)` | Also `ai.LastAssistantMessageIsCompleteWithApprovalResponses`. |
 | `generateId()` / `createIdGenerator({...})` | `ai.GenerateID()` / `ai.CreateIDGenerator(ai.CreateIDGeneratorOptions{...})` | `pkg/ai/generate_id.go`. See [GenerateID reference](../07-reference/ai/generate-id.mdx). |
 
@@ -183,7 +183,7 @@ Go ships two mechanisms. Prefer the `Output` one; `GenerateObject`/`StreamObject
 | TypeScript | Go | Note |
 |---|---|---|
 | `experimental_startBatch` / `getBatchStatus` / `getBatchResults` / `cancelBatch` / `listBatches` | `ai.ExperimentalStartBatch` / `ExperimentalGetBatchStatus` / `ExperimentalGetBatchResults` / `ExperimentalCancelBatch` / `ExperimentalListBatches` | `pkg/ai/batch.go`. Implemented by Anthropic, OpenAI, and Google (including image requests), plus AI Gateway batch passthrough. |
-| `experimental_evaluate` | `ai.ExperimentalEvaluate` | `pkg/ai/evaluate.go`. Native `EvaluationModel()` on Anthropic, OpenAI, and Google; `ai.NewEvaluationLanguageModel` evaluates with any language model. |
+| `experimental_decide` | `ai.ExperimentalDecide` | `pkg/ai/decide.go`. Native `DecisionModel()` on Anthropic, OpenAI, and Google; `ai.NewDecisionLanguageModel` decides with any language model. |
 | `getFileMetadata` / `downloadFile` / `deleteFile` | `ai.GetFileMetadata` / `ai.DownloadFile` / `ai.DeleteFile` | Files API v4, with streamed multipart uploads; implemented for OpenAI (new this cycle), Anthropic, Google, DeepSeek. |
 
 ## Where Go differs
@@ -358,7 +358,7 @@ if err != nil {
 
 ### experimental_ prefixes → Go naming
 
-Where TS 7.0 graduated an `experimental_` option to a stable name, Go uses the stable name too: `telemetry` (not `experimental_telemetry`), `output` (not `experimental_output`), `onStart`/`onEnd` on `generateText`/`streamText`. Where TS 7.0 has **not** graduated something, Go keeps the same prefix rather than getting ahead of upstream: `ExperimentalTransform` (`smoothStream` input), `ExperimentalRepairText`, the `Embed`/`Rerank` `ExperimentalOnStart`/`ExperimentalOnEnd` callbacks, and the newer additions this cycle — `ai.ExperimentalStartBatch`/`ExperimentalEvaluate`/`ExperimentalStartVideo`/`ExperimentalStreamTranscribe`/`ExperimentalToolCallers` — all mirror TS's own `experimental_` state rather than being stale Go naming.
+Where TS 7.0 graduated an `experimental_` option to a stable name, Go uses the stable name too: `telemetry` (not `experimental_telemetry`), `output` (not `experimental_output`), `onStart`/`onEnd` on `generateText`/`streamText`. Where TS 7.0 has **not** graduated something, Go keeps the same prefix rather than getting ahead of upstream: `ExperimentalTransform` (`smoothStream` input), `ExperimentalRepairText`, the `Embed`/`Rerank` `ExperimentalOnStart`/`ExperimentalOnEnd` callbacks, and the newer additions this cycle — `ai.ExperimentalStartBatch`/`ExperimentalDecide`/`ExperimentalStartVideo`/`ExperimentalStreamTranscribe`/`ExperimentalToolCallers` — all mirror TS's own `experimental_` state rather than being stale Go naming.
 
 ### Dependency injection of fetch vs. http.Client
 
@@ -420,7 +420,7 @@ See [Known differences from the TypeScript AI SDK](./known-differences.mdx) for 
 
 As of v0.5.0, all of the following shipped and are no longer gaps: the
 **Batch API** (`ai.ExperimentalStartBatch` and friends), **`evaluate`**
-(`ai.ExperimentalEvaluate`), **async video jobs**
+(`ai.ExperimentalDecide`), **async video jobs**
 (`ai.ExperimentalStartVideo`/`ExperimentalGetVideoStatus`), **streaming
 transcription** (`ai.ExperimentalStreamTranscribe`, plus
 `ai.ExperimentalStreamTranslate` for speech translation), and **tool search /
@@ -487,4 +487,5 @@ For keep-alive, CORS, proxies, custom data parts and tool approval, see [Serve a
 ## See Also
 
 - [Migrating from v0.4.x to v0.5.0](./from-v0.4-to-v0.5.mdx)
+- [Migrating from v0.5.x to v0.6.0](./from-v0.5-to-v0.6.mdx)
 - [Known differences from the TypeScript AI SDK](./known-differences.mdx)

@@ -21,30 +21,53 @@ import (
 	"golang.org/x/net/websocket"
 )
 
+// xaiInputAudioFormatEncodings maps a recognized inputAudioFormat.type to
+// xAI's `encoding` query parameter, in the order TS lists them
+// (inputAudioFormatEncodings).
+var xaiInputAudioFormatEncodings = []struct{ typ, encoding string }{
+	{"audio/pcm", "pcm"},
+	{"audio/pcmu", "mulaw"},
+	{"audio/pcma", "alaw"},
+	{"audio/opus", "opus"},
+}
+
 // isKnownXAIInputAudioFormatType reports whether typ is one of xAI's
-// recognized raw input audio encodings, mirroring TS
-// isKnownInputAudioFormat.
+// recognized input audio encodings, mirroring TS
+// inputAudioFormatEncodings.has.
 func isKnownXAIInputAudioFormatType(typ string) bool {
-	return typ == "audio/pcm" || typ == "audio/pcmu" || typ == "audio/pcma"
+	for _, e := range xaiInputAudioFormatEncodings {
+		if e.typ == typ {
+			return true
+		}
+	}
+	return false
 }
 
 // xaiEncodingFromInputAudioFormat maps an inputAudioFormat.type to xAI's
-// `encoding` query parameter, mirroring TS encodingFromInputAudioFormat.
+// `encoding` query parameter, falling back to "pcm" for unrecognized types.
 func xaiEncodingFromInputAudioFormat(typ string) string {
-	switch typ {
-	case "audio/pcmu":
-		return "mulaw"
-	case "audio/pcma":
-		return "alaw"
-	default:
-		return "pcm"
+	for _, e := range xaiInputAudioFormatEncodings {
+		if e.typ == typ {
+			return e.encoding
+		}
 	}
+	return "pcm"
+}
+
+// xaiInputAudioFormatTypesList is the comma-separated list of recognized
+// inputAudioFormat types used in the unrecognized-format warning.
+func xaiInputAudioFormatTypesList() string {
+	types := make([]string, len(xaiInputAudioFormatEncodings))
+	for i, e := range xaiInputAudioFormatEncodings {
+		types[i] = e.typ
+	}
+	return strings.Join(types, ", ")
 }
 
 // buildXAIStreamingTranscriptionURL builds the wss:// streaming
 // transcription URL with query parameters, mirroring TS
 // buildXaiStreamingTranscriptionUrl.
-func buildXAIStreamingTranscriptionURL(baseURL string, inputAudioFormat provider.AudioFormat, opts XAITranscriptionProviderOptions) (*url.URL, error) {
+func buildXAIStreamingTranscriptionURL(baseURL, modelID string, inputAudioFormat provider.AudioFormat, opts XAITranscriptionProviderOptions) (*url.URL, error) {
 	full := strings.TrimRight(baseURL, "/") + "/stt"
 	u, err := url.Parse(full)
 	if err != nil {
@@ -58,6 +81,10 @@ func buildXAIStreamingTranscriptionURL(baseURL string, inputAudioFormat provider
 	}
 
 	q := u.Query()
+
+	if modelID != "" {
+		q.Set("model", modelID)
+	}
 
 	sampleRate := opts.SampleRate
 	if sampleRate == nil {
@@ -87,6 +114,9 @@ func buildXAIStreamingTranscriptionURL(baseURL string, inputAudioFormat provider
 	}
 	if opts.Channels != nil {
 		q.Set("channels", strconv.Itoa(*opts.Channels))
+	}
+	if opts.VadThreshold != nil {
+		q.Set("vad_threshold", strconv.FormatFloat(*opts.VadThreshold, 'f', -1, 64))
 	}
 	if opts.Streaming != nil {
 		if opts.Streaming.InterimResults != nil {
@@ -142,13 +172,13 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 			Type: "other",
 			Message: fmt.Sprintf(
 				"Unrecognized inputAudioFormat.type %q; falling back to raw PCM encoding. "+
-					"Use audio/pcm, audio/pcmu, or audio/pcma, or set providerOptions.xai.audioFormat explicitly.",
-				opts.InputAudioFormat.Type,
+					"Use %s, or set providerOptions.xai.audioFormat explicitly.",
+				opts.InputAudioFormat.Type, xaiInputAudioFormatTypesList(),
 			),
 		})
 	}
 
-	wsURL, err := buildXAIStreamingTranscriptionURL(m.provider.config.BaseURL, opts.InputAudioFormat, xaiOpts)
+	wsURL, err := buildXAIStreamingTranscriptionURL(m.provider.config.BaseURL, m.modelID, opts.InputAudioFormat, xaiOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +187,11 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	// headers, and the `ai-sdk-xai/VERSION` User-Agent tag) instead of
 	// rebuilding an untagged set, mirroring TS xai-transcription-model.ts's
 	// doStream, which reuses `this.config.headers()`.
-	headers := internalhttp.MergeHeaders(m.provider.client.Headers(), opts.Headers)
+	baseHeaders, err := m.provider.client.RequestHeaders()
+	if err != nil {
+		return nil, err
+	}
+	headers := internalhttp.MergeHeaders(baseHeaders, opts.Headers)
 
 	expectedDoneCount := 1
 	if xaiOpts.Multichannel != nil && *xaiOpts.Multichannel && xaiOpts.Channels != nil {

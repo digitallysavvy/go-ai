@@ -99,19 +99,22 @@ func TestAgent_TelemetrySpanNesting(t *testing.T) {
 			return "sunny", nil
 		},
 	}
-	mock := newMockHarness(mockHarnessOptions{
-		script: func(func(string, interface{})) []StreamPart {
-			return []StreamPart{
-				&StreamStartPart{},
-				&ToolCallPart{ToolCallID: "call_1", ToolName: "getWeather", Input: "{}"},
-				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)},
-				&ToolResultPart{ToolCallID: "call_1", ToolName: "getWeather", Result: "sunny"},
-				&TextDeltaPart{ID: "t1", Delta: "It is sunny."},
-				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
-				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(4, 4)},
-			}
+	// Realistic ordering: the runtime echoes the host tool's result only after
+	// the host submitted it, and a finish-step that arrives before the echo is
+	// not a step boundary (TS #23260).
+	mock := newScriptedHarness(
+		func(emit func(StreamPart)) {
+			emit(&StreamStartPart{})
+			emit(&ToolCallPart{ToolCallID: "call_1", ToolName: "getWeather", Input: "{}"})
 		},
-	})
+		func(sub ToolResultSubmission, emit func(StreamPart)) {
+			emit(&ToolResultPart{ToolCallID: "call_1", ToolName: "getWeather", Result: "sunny"})
+			emit(&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)})
+			emit(&TextDeltaPart{ID: "t1", Delta: "It is sunny."})
+			emit(&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)})
+			emit(&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(4, 4)})
+		},
+	)
 	a, err := NewAgent(AgentSettings{
 		Harness: mock.harness, Model: "harness-model", UserTools: map[string]types.Tool{"getWeather": weatherTool},
 		Telemetry: &telemetry.Options{
@@ -169,15 +172,12 @@ func TestAgent_TelemetrySpanNesting(t *testing.T) {
 	if len(toolSpans) != 1 {
 		t.Fatalf("execute_tool getWeather spans = %d, want 1", len(toolSpans))
 	}
-	// TS #21696: toolExecutionStart (and so the execute_tool span) now
-	// fires as soon as the host tool's own execution begins — while step 0
-	// is still open, since getWeather's ToolCallPart arrives before step
-	// 0's `finish-step` — rather than being deferred until its result is
-	// observed (which, per the scripted `tool-result` part arriving after
-	// step 0's `finish-step`, would be once step 1 has already opened).
-	// The execute_tool span is therefore nested under step 0, the step the
-	// tool call actually ran in, not step 1 (where its result happened to
-	// stream).
+	// TS #21696: toolExecutionStart (and so the execute_tool span) fires as
+	// soon as the host tool's own execution begins, while step 0 is still
+	// open (getWeather's ToolCallPart arrives before step 0's `finish-step`),
+	// rather than being deferred until its result is observed. The
+	// execute_tool span is therefore nested under step 0, the step the tool
+	// call actually ran in.
 	if toolSpans[0].Parent().SpanID() != step0[0].SpanContext().SpanID() {
 		t.Fatalf("execute_tool span is not nested under the step it started executing in (step 0)")
 	}
@@ -494,5 +494,144 @@ func TestAgent_TelemetryAbortDoesNotRecordErrorStatus(t *testing.T) {
 	}
 	if got := turnSpans[0].Status().Code; got == codes.Error {
 		t.Fatalf("ai.harness span status = %v, want anything but codes.Error for an abort", got)
+	}
+}
+
+type countingIntegration struct {
+	telemetry.NoopTelemetryIntegration
+	mu    sync.Mutex
+	calls []string
+}
+
+func (c *countingIntegration) note(s string) {
+	c.mu.Lock()
+	c.calls = append(c.calls, s)
+	c.mu.Unlock()
+}
+func (c *countingIntegration) OnStart(ctx context.Context, _ telemetry.TelemetryStartEvent) context.Context {
+	c.note("start")
+	return ctx
+}
+func (c *countingIntegration) OnStepStart(ctx context.Context, _ telemetry.TelemetryStepStartEvent) context.Context {
+	c.note("stepStart")
+	return ctx
+}
+func (c *countingIntegration) OnEnd(context.Context, telemetry.TelemetryFinishEvent) { c.note("end") }
+func (c *countingIntegration) OnError(context.Context, telemetry.TelemetryErrorEvent) {
+	c.note("error")
+}
+func (c *countingIntegration) ExecuteTool(ctx context.Context, name string, args map[string]interface{}, execute func(context.Context, map[string]interface{}) (interface{}, error)) (interface{}, error) {
+	c.note("executeTool")
+	return execute(ctx, args)
+}
+
+// TestAgent_NoTelemetrySettingsFiresNothingEvenWithGlobalIntegration mirrors
+// TS telemetry-integration.test.ts 'fires no telemetry when settings.telemetry
+// is unset': createTurnLifecycle builds no dispatcher when telemetry is null,
+// so an integration registered globally must not see the turn.
+func TestAgent_NoTelemetrySettingsFiresNothingEvenWithGlobalIntegration(t *testing.T) {
+	rec := &countingIntegration{}
+	telemetry.ClearTelemetryIntegrations()
+	telemetry.RegisterTelemetryIntegration(rec)
+	t.Cleanup(telemetry.ClearTelemetryIntegrations)
+
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&TextDeltaPart{ID: "t1", Delta: "Hello."},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	a, err := NewAgent(AgentSettings{Harness: mock.harness})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: testSandbox()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Generate(context.Background(), agent.AgentGenerateOptions{Prompt: "hi", HarnessSession: session}); err != nil {
+		t.Fatal(err)
+	}
+	rec.mu.Lock()
+	n := len(rec.calls)
+	rec.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("global integration saw %v with Telemetry unset", rec.calls)
+	}
+
+	// Control: the same agent with Telemetry set does reach the integration.
+	a2, _ := NewAgent(AgentSettings{Harness: mock.harness, Telemetry: telemetry.DefaultSettings()})
+	session2, _ := a2.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: testSandbox()})
+	if _, err := a2.Generate(context.Background(), agent.AgentGenerateOptions{Prompt: "hi", HarnessSession: session2}); err != nil {
+		t.Fatal(err)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.calls) == 0 {
+		t.Fatal("control: integration saw nothing with Telemetry set")
+	}
+}
+
+type toolContextIntegration struct {
+	telemetry.NoopTelemetryIntegration
+	mu     sync.Mutex
+	starts []map[string]interface{}
+	ends   []map[string]interface{}
+}
+
+func (c *toolContextIntegration) OnToolExecutionStart(ctx context.Context, e telemetry.TelemetryToolCallStartEvent) context.Context {
+	c.mu.Lock()
+	c.starts = append(c.starts, e.ToolContext)
+	c.mu.Unlock()
+	return ctx
+}
+func (c *toolContextIntegration) OnToolExecutionEnd(_ context.Context, e telemetry.TelemetryToolCallFinishEvent) {
+	c.mu.Lock()
+	c.ends = append(c.ends, e.ToolContext)
+	c.mu.Unlock()
+}
+
+// TS turn-telemetry publishes tool execution events with
+// `toolContext: undefined`, so the dispatcher adds no tool context even when
+// includeToolsContext selects keys for the tool.
+func TestAgent_TelemetryToolExecutionEventsCarryNoToolContext(t *testing.T) {
+	rec := &toolContextIntegration{}
+	tool := types.Tool{
+		Name: "ctxTool", Description: "d", Parameters: map[string]any{"type": "object"},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "done", nil
+		},
+	}
+	tools := map[string]types.Tool{"ctxTool": tool}
+	session := &slowToolTurnSession{toolName: "ctxTool"}
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: &mockHarnessAdapter{id: "mock", session: session}, Session: session,
+		Prompt: TextPrompt("go"), Tools: tools, ActiveTools: tools,
+		ToolsContext:   map[string]interface{}{"ctxTool": map[string]interface{}{"secret": "s", "public": "p"}},
+		SandboxSession: testSandbox(), Model: "harness-model",
+		Telemetry: &telemetry.Options{
+			IsEnabled:           telemetry.Bool(true),
+			Integrations:        []telemetry.TelemetryIntegration{rec},
+			IncludeToolsContext: map[string]map[string]bool{"ctxTool": {"public": true}},
+		},
+	})
+	stream := out.Result.Stream()
+	for {
+		if _, err := stream.Next(); err != nil {
+			break
+		}
+	}
+	<-out.Done
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.starts) != 1 || len(rec.ends) != 1 {
+		t.Fatalf("starts=%v ends=%v, want one of each", rec.starts, rec.ends)
+	}
+	if rec.starts[0] != nil || rec.ends[0] != nil {
+		t.Fatalf("tool execution events carry a tool context: start=%v end=%v", rec.starts[0], rec.ends[0])
 	}
 }

@@ -59,50 +59,51 @@ func (m *EmbeddingModel) SupportsParallelCalls() bool {
 	return true
 }
 
-// DoEmbed performs embedding for a single input
+// DoEmbed performs embedding for a single input. TS has only
+// doEmbed({values}), so this is a one-value batch (array input on the wire).
 func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
-	reqBody := map[string]interface{}{
-		"input": input,
-		"model": m.deploymentID,
-	}
-	path := m.provider.endpointPath(m.deploymentID, "/embeddings")
-	headers, err := m.provider.requestHeaders(ctx, optsHeaders(opts))
+	many, err := m.DoEmbedMany(ctx, []string{input}, opts)
 	if err != nil {
-		return nil, m.handleError(err)
+		return nil, err
 	}
-
-	var response azureEmbeddingResponse
-	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    path,
-		Body:    reqBody,
-		Headers: headers,
-	}, &response)
-	if err != nil {
-		return nil, m.handleError(err)
-	}
-
-	if len(response.Data) == 0 {
+	if len(many.Embeddings) == 0 {
 		return nil, fmt.Errorf("no embedding returned from Azure OpenAI")
 	}
+	result := &types.EmbeddingResult{Embedding: many.Embeddings[0], Usage: many.Usage, Warnings: many.Warnings}
+	if len(many.Responses) > 0 {
+		result.Response = many.Responses[0]
+	}
+	return result, nil
+}
 
-	return &types.EmbeddingResult{
-		Embedding: response.Data[0].Embedding,
-		Usage: types.EmbeddingUsage{
-			Tokens:      float64(response.Usage.PromptTokens),
-			InputTokens: response.Usage.PromptTokens,
-			TotalTokens: response.Usage.TotalTokens,
-		},
-		Response: types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response},
-	}, nil
+// azureEmbeddingOptionsSchema is openaiEmbeddingModelOptions (Azure reuses
+// OpenAIEmbeddingModel, which parses providerOptions.openai).
+var azureEmbeddingOptionsSchema = providerutils.OptionSchema{
+	"dimensions": providerutils.OptNumber,
+	"user":       providerutils.OptString,
 }
 
 // DoEmbedMany performs embedding for multiple inputs in a batch
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
-	reqBody := map[string]interface{}{
-		"input": inputs,
-		"model": m.deploymentID,
+	if len(inputs) > m.MaxEmbeddingsPerCall() {
+		return nil, &providererrors.TooManyEmbeddingValuesForCallError{
+			Provider:             m.Provider(),
+			ModelID:              m.deploymentID,
+			MaxEmbeddingsPerCall: m.MaxEmbeddingsPerCall(),
+			Values:               inputs,
+		}
 	}
+	if opts != nil {
+		if err := providerutils.ValidateMapProviderOptions("openai", opts.ProviderOptions, azureEmbeddingOptionsSchema); err != nil {
+			return nil, err
+		}
+	}
+	reqBody := map[string]interface{}{
+		"input":           inputs,
+		"model":           m.deploymentID,
+		"encoding_format": "float",
+	}
+	applyEmbeddingDimensions(reqBody, opts)
 	path := m.provider.endpointPath(m.deploymentID, "/embeddings")
 	headers, err := m.provider.requestHeaders(ctx, optsHeaders(opts))
 	if err != nil {
@@ -111,10 +112,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 
 	var response azureEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    path,
-		Body:    reqBody,
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaOpenAIEmbedding),
+		Method:           http.MethodPost,
+		Path:             path,
+		Body:             reqBody,
+		Headers:          headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -132,12 +134,15 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			InputTokens: response.Usage.PromptTokens,
 			TotalTokens: response.Usage.TotalTokens,
 		},
-		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response}},
+		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: providerutils.RawJSONBody(httpResp.Body)}},
 	}, nil
 }
 
 // handleError converts errors to provider errors
 func (m *EmbeddingModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
 
@@ -162,4 +167,20 @@ type azureEmbeddingResponse struct {
 		PromptTokens int `json:"prompt_tokens"`
 		TotalTokens  int `json:"total_tokens"`
 	} `json:"usage"`
+}
+
+// applyEmbeddingDimensions sets the request's dimensions:
+// providerOptions.openai.dimensions wins over the top-level dimensions
+// setting (TS #22338; Azure embeddings use the OpenAI options namespace).
+func applyEmbeddingDimensions(reqBody map[string]interface{}, opts *provider.EmbedModelOptions) {
+	if opts == nil {
+		return
+	}
+	if d, ok := providerutils.ResolveEmbeddingDimensions(providerutils.EmbedProviderOption(opts.ProviderOptions, "openai", "dimensions"), opts.Dimensions); ok {
+		reqBody["dimensions"] = d
+	}
+	// providerOptions.openai.user (TS openaiEmbeddingModelOptions.user).
+	if u, ok := providerutils.EmbedProviderOption(opts.ProviderOptions, "openai", "user").(string); ok {
+		reqBody["user"] = u
+	}
 }

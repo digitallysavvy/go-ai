@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -66,8 +67,9 @@ func TestVideoModel_MaxVideosPerCall(t *testing.T) {
 		t.Error("MaxVideosPerCall() returned nil")
 		return
 	}
-	if *maxVideos != 9007199254740991 {
-		t.Errorf("MaxVideosPerCall() = %v, want %v", *maxVideos, 9007199254740991)
+	want := min(int64(9007199254740991), int64(math.MaxInt))
+	if int64(*maxVideos) != want {
+		t.Errorf("MaxVideosPerCall() = %v, want %v", *maxVideos, want)
 	}
 }
 
@@ -752,11 +754,12 @@ func TestVideoModel_ZeroNumericOptionsWireParity(t *testing.T) {
 	zeroFloat := 0.0
 	zeroInt := 0
 	_, err = NewVideoModel(p, "google/veo-3.1").DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{
-		Prompt:   "",
-		N:        0,
-		Duration: &zeroFloat,
-		FPS:      &zeroInt,
-		Seed:     &zeroInt,
+		Prompt:    "",
+		PromptSet: true,
+		N:         0,
+		Duration:  &zeroFloat,
+		FPS:       &zeroInt,
+		Seed:      &zeroInt,
 	})
 	if err != nil {
 		t.Fatalf("DoGenerate() error: %v", err)
@@ -889,4 +892,24 @@ func TestVideoModel_SSEErrorEventStructured(t *testing.T) {
 // Helper function to create a float pointer
 func floatPtr(f float64) *float64 {
 	return &f
+}
+
+func TestVideoModel_OmitsUnsetPrompt(t *testing.T) {
+	var capturedBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", `{"type":"result","videos":[{"type":"url","url":"https://example.com/v.mp4","mediaType":"video/mp4"}]}`)
+	}))
+	defer server.Close()
+	p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewVideoModel(p, "google/veo-3.1").DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{N: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := capturedBody["prompt"]; ok {
+		t.Fatalf("unset prompt must be omitted like undefined in TS: %v", capturedBody)
+	}
 }

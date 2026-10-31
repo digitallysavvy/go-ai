@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -69,46 +70,77 @@ type vertexGeminiTranscriptionOptions struct {
 	Mode             string // "SMART" | "VERBATIM"
 }
 
-// parseVertexGeminiTranscriptionOptions checks providerOptions under
-// "googleVertex", then "vertex", then "google" -- matches TS's
-// GoogleVertexGeminiTranscriptionModel.parseOptions loop order.
-func parseVertexGeminiTranscriptionOptions(providerOptions map[string]interface{}) vertexGeminiTranscriptionOptions {
+// parseVertexGeminiTranscriptionOptionsChecked is the zod-validating form: a
+// present value of the wrong type (or a mode outside SMART/VERBATIM) fails
+// with an InvalidArgumentError. Empty arrays stay non-nil because TS forwards
+// `languageCodes: []`.
+func parseVertexGeminiTranscriptionOptionsChecked(providerOptions map[string]interface{}) (vertexGeminiTranscriptionOptions, error) {
+	invalid := func(key string, cause error) error {
+		return &providererrors.InvalidArgumentError{Field: "providerOptions", Message: "invalid " + key + " provider options", Cause: cause}
+	}
 	for _, key := range []string{"googleVertex", "vertex", "google"} {
-		raw, ok := providerOptions[key].(map[string]interface{})
-		if !ok {
+		rawAny, present := providerOptions[key]
+		if !present || rawAny == nil {
 			continue
 		}
+		raw, ok := rawAny.(map[string]interface{})
+		if !ok {
+			return vertexGeminiTranscriptionOptions{}, invalid(key, fmt.Errorf("%s: expected object, received %T", key, rawAny))
+		}
 		var out vertexGeminiTranscriptionOptions
-		if v, ok := raw["languageCodes"].([]string); ok {
-			out.LanguageCodes = v
-		} else if v, ok := raw["languageCodes"].([]interface{}); ok {
-			for _, s := range v {
-				if str, ok := s.(string); ok {
-					out.LanguageCodes = append(out.LanguageCodes, str)
+		strList := func(name string) ([]string, error) {
+			v, has := raw[name]
+			if !has || v == nil {
+				return nil, nil
+			}
+			switch list := v.(type) {
+			case []string:
+				return append([]string{}, list...), nil
+			case []interface{}:
+				res := make([]string, 0, len(list))
+				for i, item := range list {
+					str, isStr := item.(string)
+					if !isStr {
+						return nil, invalid(key, fmt.Errorf("%s[%d]: expected string, received %T", name, i, item))
+					}
+					res = append(res, str)
 				}
+				return res, nil
+			}
+			return nil, invalid(key, fmt.Errorf("%s: expected array, received %T", name, v))
+		}
+		var err error
+		if out.LanguageCodes, err = strList("languageCodes"); err != nil {
+			return out, err
+		}
+		if out.CustomVocabulary, err = strList("customVocabulary"); err != nil {
+			return out, err
+		}
+		for _, name := range []string{"wordTimestamp", "diarization"} {
+			v, has := raw[name]
+			if !has || v == nil {
+				continue
+			}
+			b, isBool := v.(bool)
+			if !isBool {
+				return out, invalid(key, fmt.Errorf("%s: expected boolean, received %T", name, v))
+			}
+			if name == "wordTimestamp" {
+				out.WordTimestamp = &b
+			} else {
+				out.Diarization = &b
 			}
 		}
-		if v, ok := raw["customVocabulary"].([]string); ok {
-			out.CustomVocabulary = v
-		} else if v, ok := raw["customVocabulary"].([]interface{}); ok {
-			for _, s := range v {
-				if str, ok := s.(string); ok {
-					out.CustomVocabulary = append(out.CustomVocabulary, str)
-				}
+		if v, has := raw["mode"]; has && v != nil {
+			mode, isStr := v.(string)
+			if !isStr || (mode != "SMART" && mode != "VERBATIM") {
+				return out, invalid(key, fmt.Errorf("mode: invalid option %v, expected one of SMART, VERBATIM", v))
 			}
+			out.Mode = mode
 		}
-		if v, ok := raw["wordTimestamp"].(bool); ok {
-			out.WordTimestamp = &v
-		}
-		if v, ok := raw["diarization"].(bool); ok {
-			out.Diarization = &v
-		}
-		if v, ok := raw["mode"].(string); ok {
-			out.Mode = v
-		}
-		return out
+		return out, nil
 	}
-	return vertexGeminiTranscriptionOptions{}
+	return vertexGeminiTranscriptionOptions{}, nil
 }
 
 // buildVertexAudioTranscriptionConfig builds Google's AudioTranscriptionConfig
@@ -118,10 +150,10 @@ func parseVertexGeminiTranscriptionOptions(providerOptions map[string]interface{
 // buildAudioTranscriptionConfig exactly.
 func buildVertexAudioTranscriptionConfig(opts vertexGeminiTranscriptionOptions) map[string]interface{} {
 	config := map[string]interface{}{}
-	if len(opts.LanguageCodes) > 0 {
+	if opts.LanguageCodes != nil {
 		config["languageCodes"] = opts.LanguageCodes
 	}
-	if len(opts.CustomVocabulary) > 0 {
+	if opts.CustomVocabulary != nil {
 		config["customVocabulary"] = opts.CustomVocabulary
 	}
 	if opts.WordTimestamp != nil {
@@ -140,14 +172,14 @@ func buildVertexAudioTranscriptionConfig(opts vertexGeminiTranscriptionOptions) 
 }
 
 type vertexGeminiTranscriptionWord struct {
-	Word        string `json:"word,omitempty"`
-	StartOffset string `json:"startOffset,omitempty"`
-	EndOffset   string `json:"endOffset,omitempty"`
+	Word        *string `json:"word,omitempty"`
+	StartOffset string  `json:"startOffset,omitempty"`
+	EndOffset   string  `json:"endOffset,omitempty"`
 }
 
 type vertexGeminiAudioTranscription struct {
 	Text         string                          `json:"text,omitempty"`
-	LanguageCode string                          `json:"languageCode,omitempty"`
+	LanguageCode *string                         `json:"languageCode,omitempty"`
 	SpeakerLabel string                          `json:"speakerLabel,omitempty"`
 	Words        []vertexGeminiTranscriptionWord `json:"words,omitempty"`
 }
@@ -188,7 +220,10 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 		audioBase64 = base64.StdEncoding.EncodeToString(opts.Audio)
 	}
 
-	transcriptionOpts := parseVertexGeminiTranscriptionOptions(opts.ProviderOptions)
+	transcriptionOpts, err := parseVertexGeminiTranscriptionOptionsChecked(opts.ProviderOptions)
+	if err != nil {
+		return nil, err
+	}
 	audioConfig := buildVertexAudioTranscriptionConfig(transcriptionOpts)
 
 	reqBody := map[string]interface{}{
@@ -213,39 +248,44 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 	}
 
 	var response vertexGeminiTranscriptionResponse
-	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    fmt.Sprintf("/%s:generateContent", gemini.GetModelPath(m.modelID)),
-		Body:    reqBody,
-		Headers: opts.Headers,
+	resp, err := m.provider.mainClient().DoJSONResponse(ctx, internalhttp.Request{
+		ValidateResponse: vertexValidator(m.Provider(), zVertexGeminiTranscription),
+		Method:           http.MethodPost,
+		Path:             fmt.Sprintf("/%s:generateContent", gemini.GetModelPath(m.modelID)),
+		Body:             reqBody,
+		Headers:          opts.Headers,
 	}, &response)
 	if err != nil {
-		return nil, providererrors.NewProviderError(m.Provider(), 0, "", "failed to transcribe audio: "+err.Error(), err)
+		return nil, m.handleError(err)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, providererrors.NewProviderError(m.Provider(), resp.StatusCode, "",
-			fmt.Sprintf("API returned status %d: %s", resp.StatusCode, string(resp.Body)), nil)
+		return nil, gemini.GoogleHTTPError(m.Provider(), resp.StatusCode, resp.Headers, resp.Body, nil)
 	}
 
 	var plainText, transcriptionText strings.Builder
 	var segments []types.TranscriptionTimestamp
 	var language string
+	languageSet := false
 	if len(response.Candidates) > 0 {
 		for _, part := range response.Candidates[0].Content.Parts {
 			plainText.WriteString(part.Text)
 			if part.AudioTranscription != nil {
 				transcriptionText.WriteString(part.AudioTranscription.Text)
-				if language == "" {
-					language = part.AudioTranscription.LanguageCode
+				// TS `language ??= transcription.languageCode`: the first
+				// non-null code wins, even an empty string.
+				if !languageSet && part.AudioTranscription.LanguageCode != nil {
+					language = *part.AudioTranscription.LanguageCode
+					languageSet = true
 				}
 				for _, word := range part.AudioTranscription.Words {
 					startSecond, ok1 := parseGoogleDuration(word.StartOffset)
 					endSecond, ok2 := parseGoogleDuration(word.EndOffset)
-					if word.Word == "" || !ok1 || !ok2 {
+					// TS skips only a null word; an empty string is kept.
+					if word.Word == nil || !ok1 || !ok2 {
 						continue
 					}
 					segments = append(segments, types.TranscriptionTimestamp{
-						Text:  word.Word,
+						Text:  *word.Word,
 						Start: startSecond,
 						End:   endSecond,
 					})
@@ -263,14 +303,14 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 	}
 
 	var providerMetadata map[string]interface{}
-	if len(response.UsageMetadata) > 0 {
+	if response.UsageMetadata != nil {
 		providerMetadata = map[string]interface{}{
 			"google": map[string]interface{}{"usageMetadata": response.UsageMetadata},
 		}
 	}
 
 	var providerUsage map[string]interface{}
-	if len(response.UsageMetadata) > 0 {
+	if response.UsageMetadata != nil {
 		providerUsage = response.UsageMetadata
 	}
 
@@ -289,4 +329,22 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 			Body:      json.RawMessage(resp.Body),
 		},
 	}, nil
+}
+
+// handleError maps transport errors like TS googleVertexFailedResponseHandler:
+// a missing key/credential error passes through and HTTP failures keep
+// status, headers and body for retry decisions.
+func (m *GeminiTranscriptionModel) handleError(err error) error {
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure is an APICallError as is
+	}
+	var loadKeyErr *providererrors.LoadAPIKeyError
+	if errors.As(err, &loadKeyErr) {
+		return err
+	}
+	var statusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		return gemini.GoogleHTTPError(m.Provider(), statusErr.StatusCode, statusErr.Headers, statusErr.Body, err)
+	}
+	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }

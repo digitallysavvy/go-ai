@@ -5,15 +5,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
+
+// googleFilesMaxResponseBytes bounds the metadata and error bodies read from
+// the Files API endpoints (the uploaded content itself is the request body).
+const googleFilesMaxResponseBytes = 8 << 20
 
 type FilesAPI struct {
 	provider *Provider
@@ -30,28 +37,54 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		baseURL = DefaultBaseURL
 	}
 	baseOrigin := strings.TrimSuffix(baseURL, "/v1beta")
-	headers := internalhttp.MergeHeaders(map[string]string{
-		"x-goog-api-key": f.provider.APIKey(),
-	}, f.provider.config.Headers)
+	keyHeaders, err := f.provider.apiKeyHeaders()
+	if err != nil {
+		return nil, err
+	}
+	// The provider's default headers (user-agent suffix, config headers) like
+	// TS getHeaders, with the request-time key and the call headers on top.
+	headers := internalhttp.MergeHeaders(f.provider.defaultHeaders(), keyHeaders, opts.Headers)
 
-	displayName := ""
+	var displayName *string
 	pollIntervalMs := int64(2000)
 	pollTimeoutMs := int64(300000)
-	if google, ok := opts.ProviderOptions["google"].(map[string]interface{}); ok {
-		if v, ok := google["displayName"].(string); ok {
-			displayName = v
+	if raw, present := opts.ProviderOptions["google"]; present && raw != nil {
+		// TS parseProviderOptions with z.looseObject({displayName: string,
+		// pollIntervalMs/pollTimeoutMs: positive number}, all nullish).
+		google, ok := raw.(map[string]interface{})
+		if !ok {
+			return nil, invalidGoogleFilesOptions(fmt.Errorf("expected object, received %T", raw))
 		}
-		if v, ok := google["pollIntervalMs"].(float64); ok && v > 0 {
-			pollIntervalMs = int64(v)
+		if v := google["displayName"]; v != nil {
+			s, isStr := v.(string)
+			if !isStr {
+				return nil, invalidGoogleFilesOptions(fmt.Errorf("displayName: expected string, received %T", v))
+			}
+			displayName = &s
 		}
-		if v, ok := google["pollTimeoutMs"].(float64); ok && v > 0 {
-			pollTimeoutMs = int64(v)
+		for _, f := range []struct {
+			key string
+			dst *int64
+		}{{"pollIntervalMs", &pollIntervalMs}, {"pollTimeoutMs", &pollTimeoutMs}} {
+			v := google[f.key]
+			if v == nil {
+				continue
+			}
+			n, isNum := googleFilesNumber(v)
+			if !isNum {
+				return nil, invalidGoogleFilesOptions(fmt.Errorf("%s: expected number, received %T", f.key, v))
+			}
+			if n <= 0 {
+				return nil, invalidGoogleFilesOptions(fmt.Errorf("%s: too small: expected number to be >0", f.key))
+			}
+			*f.dst = n
 		}
 	}
 
 	initBody := map[string]interface{}{"file": map[string]interface{}{}}
-	if displayName != "" {
-		initBody["file"] = map[string]interface{}{"display_name": displayName}
+	// TS: `displayName != null` -- an empty string is still sent.
+	if displayName != nil {
+		initBody["file"] = map[string]interface{}{"display_name": *displayName}
 	}
 	payload, _ := json.Marshal(initBody)
 	initReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, baseOrigin+"/upload/v1beta/files", bytes.NewReader(payload))
@@ -69,12 +102,12 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to initiate resumable upload: %d %s", resp.StatusCode, string(b))
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, googleFilesMaxResponseBytes))
+		return nil, googleFilesError("GOOGLE_FILES_UPLOAD_ERROR", fmt.Sprintf("Failed to initiate resumable upload: %d %s", resp.StatusCode, string(b)))
 	}
 	uploadURL := resp.Header.Get("x-goog-upload-url")
 	if uploadURL == "" {
-		return nil, fmt.Errorf("no upload URL returned from initiation request")
+		return nil, googleFilesError("GOOGLE_FILES_UPLOAD_ERROR", "No upload URL returned from initiation request")
 	}
 
 	uploadReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, bytes.NewReader(content))
@@ -87,13 +120,13 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	}
 	defer uploadResp.Body.Close() //nolint:errcheck
 	if uploadResp.StatusCode >= 400 {
-		b, _ := io.ReadAll(uploadResp.Body)
-		return nil, fmt.Errorf("failed to upload file data: %d %s", uploadResp.StatusCode, string(b))
+		b, _ := io.ReadAll(io.LimitReader(uploadResp.Body, googleFilesMaxResponseBytes))
+		return nil, googleFilesError("GOOGLE_FILES_UPLOAD_ERROR", fmt.Sprintf("Failed to upload file data: %d %s", uploadResp.StatusCode, string(b)))
 	}
 	var uploadResult struct {
 		File googleFileResource `json:"file"`
 	}
-	if err := json.NewDecoder(uploadResp.Body).Decode(&uploadResult); err != nil {
+	if err := json.NewDecoder(io.LimitReader(uploadResp.Body, googleFilesMaxResponseBytes)).Decode(&uploadResult); err != nil {
 		return nil, err
 	}
 	file := uploadResult.File
@@ -101,7 +134,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	start := time.Now()
 	for file.State == "PROCESSING" {
 		if time.Since(start) > time.Duration(pollTimeoutMs)*time.Millisecond {
-			return nil, fmt.Errorf("file processing timed out after %dms", pollTimeoutMs)
+			return nil, googleFilesError("GOOGLE_FILES_UPLOAD_TIMEOUT", fmt.Sprintf("File processing timed out after %dms", pollTimeoutMs))
 		}
 		// select on ctx.Done() during the wait (not a plain time.Sleep), so
 		// cancellation/timeout is honored promptly instead of being delayed
@@ -120,16 +153,28 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		if err != nil {
 			return nil, err
 		}
-		var polled googleFileResource
-		if err := json.NewDecoder(pollResp.Body).Decode(&polled); err != nil {
+		if pollResp.StatusCode >= 400 {
+			b, _ := io.ReadAll(io.LimitReader(pollResp.Body, googleFilesMaxResponseBytes))
 			_ = pollResp.Body.Close()
+			return nil, f.provider.handleFilesError(pollResp.StatusCode, pollResp.Header, b)
+		}
+		var polled googleFileResource
+		pollBody, err := io.ReadAll(io.LimitReader(pollResp.Body, googleFilesMaxResponseBytes))
+		_ = pollResp.Body.Close()
+		if err != nil {
 			return nil, err
 		}
-		_ = pollResp.Body.Close()
+		// TS createJsonResponseHandler(googleFileResponseSchema).
+		if err := googleValidator(zGoogleFile)(pollResp.StatusCode, pollResp.Header, pollBody); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(pollBody, &polled); err != nil {
+			return nil, err
+		}
 		file = polled
 	}
 	if file.State == "FAILED" {
-		return nil, fmt.Errorf("file processing failed for %s", file.Name)
+		return nil, googleFilesError("GOOGLE_FILES_UPLOAD_FAILED", fmt.Sprintf("File processing failed for %s", file.Name))
 	}
 
 	warnings := []types.Warning{}
@@ -137,13 +182,19 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "filename"})
 	}
 
+	// TS reads displayName and sizeBytes as optional: absent ones are left
+	// out of the metadata rather than sent as empty strings.
 	meta := map[string]interface{}{
-		"name":        file.Name,
-		"displayName": file.DisplayName,
-		"mimeType":    file.MimeType,
-		"sizeBytes":   file.SizeBytes,
-		"state":       file.State,
-		"uri":         file.URI,
+		"name":     file.Name,
+		"mimeType": file.MimeType,
+		"state":    file.State,
+		"uri":      file.URI,
+	}
+	if file.DisplayName != "" {
+		meta["displayName"] = file.DisplayName
+	}
+	if file.SizeBytes != "" {
+		meta["sizeBytes"] = file.SizeBytes
 	}
 	if file.CreateTime != "" {
 		meta["createTime"] = file.CreateTime
@@ -169,6 +220,12 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		ProviderMetadata:  map[string]interface{}{"google": meta},
 		Warnings:          warnings,
 	}, nil
+}
+
+// googleFilesError is the AISDKError TS throws for a failed upload; Name is
+// carried as the error code.
+func googleFilesError(name, message string) error {
+	return providererrors.NewProviderError("google", 0, name, message, nil)
 }
 
 type googleFileResource struct {
@@ -206,4 +263,38 @@ func googleFilePath(name string) string {
 		return "files/" + providerutils.EncodePathSegment(rest)
 	}
 	return providerutils.EncodePathSegment(name)
+}
+
+// googleFilesNumber reads a numeric provider option given as any Go number type.
+func googleFilesNumber(v interface{}) (int64, bool) {
+	switch n := v.(type) {
+	case int:
+		return int64(n), true
+	case int32:
+		return int64(n), true
+	case int64:
+		return n, true
+	case float32:
+		return int64(n), true
+	case float64:
+		return int64(n), true
+	case json.Number:
+		i, err := n.Int64()
+		return i, err == nil
+	}
+	return 0, false
+}
+
+// handleFilesError builds the ProviderError for a failed Files API response
+// (TS googleFailedResponseHandler: error.message, status as the code).
+func (p *Provider) handleFilesError(status int, headers http.Header, body []byte) error {
+	return gemini.GoogleHTTPError("google", status, headers, body, nil)
+}
+
+func invalidGoogleFilesOptions(cause error) error {
+	return &providererrors.InvalidArgumentError{
+		Field:   "providerOptions",
+		Message: "invalid google provider options",
+		Cause:   cause,
+	}
 }

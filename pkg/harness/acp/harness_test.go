@@ -3,7 +3,11 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"reflect"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +20,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
+var mvForce = regexp.MustCompile(`^mv -f '([^']+)' '([^']+)'$`)
+
 // fakeSandbox is a minimal harness.NetworkSandboxSession mirroring the
 // deepagents/opencode test doubles.
 type fakeSandbox struct {
@@ -26,10 +32,22 @@ type fakeSandbox struct {
 	addReqTrans   [][]harness.RequestTransformation
 	bridgeAddr    string
 	files         map[string]string
+	runs          []string
+	// readTextErr, when set, fails every ReadTextFile.
+	readTextErr error
 }
 
 func (s *fakeSandbox) Description() string { return "acp fake sandbox" }
 func (s *fakeSandbox) Run(_ context.Context, opts providerutils.SandboxProcessOptions) (providerutils.SandboxRunResult, error) {
+	s.mu.Lock()
+	s.runs = append(s.runs, opts.Command)
+	// Mirror the TS fake sandbox: `mv -f src dst` publishes a staged file.
+	if m := mvForce.FindStringSubmatch(opts.Command); m != nil {
+		if content, ok := s.files[m[1]]; ok {
+			s.files[m[2]] = content
+		}
+	}
+	s.mu.Unlock()
 	if opts.Command == `printf "%s" "$HOME"` {
 		return providerutils.SandboxRunResult{ExitCode: 0, Stdout: "/home/vercel-sandbox"}, nil
 	}
@@ -55,6 +73,9 @@ func (s *fakeSandbox) ReadBinaryFile(context.Context, string) ([]byte, error)  {
 func (s *fakeSandbox) ReadTextFile(_ context.Context, opts providerutils.SandboxReadTextFileOptions) (*string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.readTextErr != nil {
+		return nil, s.readTextErr
+	}
 	if v, ok := s.files[opts.Path]; ok {
 		return &v, nil
 	}
@@ -113,7 +134,7 @@ func newServer(t *testing.T, token string, onStart func(*bridgetest.Turn, map[st
 func testSettings(mut ...func(*Settings)) Settings {
 	s := Settings{
 		HarnessID:    "test-acp",
-		Source:       Source{Type: SourceNPMSimple, PackageName: "test-acp-agent"},
+		Source:       Source{Type: SourceNPMLocked, PackageJSON: "{\"name\":\"test-acp-agent\"}\n", PnpmLockYAML: "lockfileVersion: '9.0'\n"},
 		Executable:   "test-acp-agent",
 		ModelMapping: ModelMapping{Type: ModelMappingSessionModel, Path: "model"},
 	}
@@ -166,8 +187,13 @@ func TestCreateACPValidation(t *testing.T) {
 	}
 }
 
-func TestGetBootstrapNPMSimple(t *testing.T) {
-	h, err := CreateACP(testSettings())
+// Mirrors acp-v1-bootstrap.test.ts: a locked source is the complete bridge
+// installation, so its manifest, lockfile and workspace file replace the
+// bridge's own, and there is a single pnpm install.
+func TestGetBootstrapLockedSourceIsTheCompleteBridgeInstallation(t *testing.T) {
+	h, err := CreateACP(testSettings(func(s *Settings) {
+		s.Source.PnpmWorkspaceYAML = "allowBuilds:\n  '@example/acp-agent': true\n"
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,35 +205,29 @@ func TestGetBootstrapNPMSimple(t *testing.T) {
 		t.Fatalf("bootstrap = %+v", b)
 	}
 	var paths []string
+	contents := map[string]string{}
 	for _, f := range b.Files {
 		paths = append(paths, f.Path)
+		contents[f.Path] = f.Content
 	}
 	want := []string{
-		".harness-bootstrap/test-acp/package.json", ".harness-bootstrap/test-acp/pnpm-lock.yaml",
 		".harness-bootstrap/test-acp/bridge.mjs", ".harness-bootstrap/test-acp/host-tool-mcp.mjs",
-		".harness-bootstrap/test-acp/implementation/implementation.json",
-		".harness-bootstrap/test-acp/implementation/package.json",
+		".harness-bootstrap/test-acp/package.json", ".harness-bootstrap/test-acp/pnpm-lock.yaml",
+		".harness-bootstrap/test-acp/pnpm-workspace.yaml",
 	}
-	if len(paths) != len(want) {
+	if !reflect.DeepEqual(paths, want) {
 		t.Fatalf("paths = %v, want %v", paths, want)
 	}
-	for i := range want {
-		if paths[i] != want[i] {
-			t.Fatalf("paths[%d] = %q, want %q", i, paths[i], want[i])
-		}
+	if got := contents[".harness-bootstrap/test-acp/package.json"]; got != "{\"name\":\"test-acp-agent\"}\n" {
+		t.Fatalf("package.json = %q, want the caller-provided packageJson verbatim", got)
 	}
-	var commands []string
-	for _, c := range b.Commands {
-		commands = append(commands, c.Command)
-	}
-	if len(commands) != 2 || commands[0] != "pnpm install --frozen-lockfile --store-dir .pnpm-store" {
-		t.Fatalf("commands = %v", commands)
-	}
-	if !strings.Contains(commands[1], "pnpm --dir implementation install") || strings.Contains(commands[1], "--frozen-lockfile") {
-		t.Fatalf("install command = %q", commands[1])
+	if len(b.Commands) != 1 || b.Commands[0].Command != "pnpm install --frozen-lockfile --prod --store-dir .pnpm-store" {
+		t.Fatalf("commands = %+v", b.Commands)
 	}
 }
 
+// Mirrors acp-v1-bootstrap.test.ts: an install command runs after the bridge's
+// own manifest is installed, in a private home below the bootstrap directory.
 func TestGetBootstrapInstallCommand(t *testing.T) {
 	h, err := CreateACP(testSettings(func(s *Settings) {
 		s.Source = Source{Type: SourceInstallCommand, Command: "curl -fsSL https://example.com/install.sh | bash"}
@@ -219,69 +239,23 @@ func TestGetBootstrapInstallCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetBootstrap: %v", err)
 	}
-	found := false
+	var paths []string
 	for _, f := range b.Files {
-		if f.Path == ".harness-bootstrap/test-acp/implementation/install.sh" {
-			found = true
-			if !strings.Contains(f.Content, "curl -fsSL https://example.com/install.sh | bash") {
-				t.Fatalf("install.sh content = %q", f.Content)
-			}
+		paths = append(paths, f.Path)
+		if f.Path == ".harness-bootstrap/test-acp/install.sh" && !strings.Contains(f.Content, "curl -fsSL https://example.com/install.sh | bash") {
+			t.Fatalf("install.sh content = %q", f.Content)
 		}
 	}
-	if !found {
-		t.Fatal("expected an install.sh bootstrap file")
+	sort.Strings(paths)
+	want := []string{
+		".harness-bootstrap/test-acp/bridge.mjs", ".harness-bootstrap/test-acp/host-tool-mcp.mjs",
+		".harness-bootstrap/test-acp/install.sh", ".harness-bootstrap/test-acp/package.json", ".harness-bootstrap/test-acp/pnpm-lock.yaml",
 	}
-	if b.Commands[1].Command != "bash implementation/install.sh" {
-		t.Fatalf("install command = %q", b.Commands[1].Command)
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("paths = %v, want %v", paths, want)
 	}
-}
-
-// TS: "preserves caller-provided locked artifacts and freezes installation"
-// (implementation.test.ts) — an npm-locked source ships the caller's
-// package.json/pnpm-lock.yaml verbatim as bootstrap files and installs with
-// --frozen-lockfile (no --prod trimming ambiguity, exact caller artifacts).
-func TestGetBootstrapNPMLocked(t *testing.T) {
-	const packageJSON = `{
-  "name": "locked-acp-agent",
-  "private": true,
-  "dependencies": {
-    "@example/acp-agent": "1.2.3"
-  }
-}
-`
-	const pnpmLockYAML = `lockfileVersion: '9.0'
-importers:
-  .:
-    dependencies:
-      '@example/acp-agent':
-        specifier: 1.2.3
-        version: 1.2.3
-`
-	h, err := CreateACP(testSettings(func(s *Settings) {
-		s.Source = Source{Type: SourceNPMLocked, PackageJSON: packageJSON, PnpmLockYAML: pnpmLockYAML}
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := h.(harness.BootstrapProvider).GetBootstrap(context.Background())
-	if err != nil {
-		t.Fatalf("GetBootstrap: %v", err)
-	}
-	contents := map[string]string{}
-	for _, f := range b.Files {
-		contents[f.Path] = f.Content
-	}
-	if got := contents[".harness-bootstrap/test-acp/implementation/package.json"]; got != packageJSON {
-		t.Fatalf("implementation/package.json = %q, want the caller-provided packageJson verbatim", got)
-	}
-	if got := contents[".harness-bootstrap/test-acp/implementation/pnpm-lock.yaml"]; got != pnpmLockYAML {
-		t.Fatalf("implementation/pnpm-lock.yaml = %q, want the caller-provided pnpmLockYaml verbatim", got)
-	}
-	if _, ok := contents[".harness-bootstrap/test-acp/implementation/install.sh"]; ok {
-		t.Fatal("npm-locked source must not produce an install.sh bootstrap file")
-	}
-	if len(b.Commands) != 2 || !strings.Contains(b.Commands[1].Command, "--frozen-lockfile") || !strings.Contains(b.Commands[1].Command, "implementation") {
-		t.Fatalf("commands = %v, want the second command to pnpm-install the implementation dir with --frozen-lockfile", b.Commands)
+	if len(b.Commands) != 2 || b.Commands[0].Command != "pnpm install --frozen-lockfile --prod --store-dir .pnpm-store" || b.Commands[1].Command != "bash install.sh" {
+		t.Fatalf("commands = %+v", b.Commands)
 	}
 }
 
@@ -542,24 +516,24 @@ func TestResolveAuthenticationEnvironment(t *testing.T) {
 	}
 }
 
-func TestCreateImplementationIdentityStable(t *testing.T) {
-	impl := implementation{Source: Source{Type: SourceNPMSimple, PackageName: "foo"}, Executable: "foo"}
-	in := implementationIdentityInput{HarnessID: "test", Implementation: impl, ClientApp: DefaultClientApp, ModelMapping: ModelMapping{Type: ModelMappingSessionModel, Path: "model"}}
-	a := createImplementationIdentity(in)
-	b := createImplementationIdentity(in)
+func TestCreateAgentIdentityStable(t *testing.T) {
+	impl := implementation{Source: Source{Type: SourceInstallCommand, Command: "install foo"}, Executable: "foo"}
+	in := agentIdentityInput{HarnessID: "test", Implementation: impl, ClientApp: DefaultClientApp, ModelMapping: ModelMapping{Type: ModelMappingSessionModel, Path: "model"}}
+	a := createAgentIdentity(in)
+	b := createAgentIdentity(in)
 	if a != b {
-		t.Fatalf("createImplementationIdentity is not deterministic: %q != %q", a, b)
+		t.Fatalf("createAgentIdentity is not deterministic: %q != %q", a, b)
 	}
 	in2 := in
 	in2.Implementation.Executable = "bar"
-	c := createImplementationIdentity(in2)
+	c := createAgentIdentity(in2)
 	if a == c {
-		t.Fatal("createImplementationIdentity did not change when the executable changed")
+		t.Fatal("createAgentIdentity did not change when the executable changed")
 	}
 }
 
-func TestConvertPromptToTextBlocksRejectsImages(t *testing.T) {
-	blocks, err := convertPromptToTextBlocks(harness.TextPrompt("hi"), "test-acp")
+func TestConvertPromptToContentBlocksText(t *testing.T) {
+	blocks, err := convertPromptToContentBlocks(harness.TextPrompt("hi"), "test-acp")
 	if err != nil || len(blocks) != 1 || blocks[0].Text != "hi" {
 		t.Fatalf("blocks = %v, err = %v", blocks, err)
 	}
@@ -1206,5 +1180,183 @@ func TestDoDetach_ReattachReusesTokenHeadersAndReconnect(t *testing.T) {
 		if got := hdr.Get("E2B-Traffic-Access-Token"); got != "traffic-token" {
 			t.Fatalf("handshake[%d] E2B-Traffic-Access-Token header = %q, want %q", i, got, "traffic-token")
 		}
+	}
+}
+
+// TS #22367: nonTextContentTypes travels in the bridge configuration blob and
+// participates in the implementation identity only when declared.
+func TestNonTextContentTypes_BridgeEnvAndIdentity(t *testing.T) {
+	env := createBridgeEnvironment(bridgeConfiguration{NonTextContentTypes: []NonTextContentType{NonTextContentImage}})
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(env[BridgeConfigurationEnv]), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := cfg["nonTextContentTypes"].([]any); len(got) != 1 || got[0] != "image" {
+		t.Fatalf("nonTextContentTypes = %v, want [image]", cfg["nonTextContentTypes"])
+	}
+	if _, has := createBridgeEnvironment(bridgeConfiguration{})[BridgeConfigurationEnv]; !has {
+		t.Fatal("missing env")
+	}
+	var empty map[string]any
+	_ = json.Unmarshal([]byte(createBridgeEnvironment(bridgeConfiguration{})[BridgeConfigurationEnv]), &empty)
+	if _, has := empty["nonTextContentTypes"]; has {
+		t.Error("nonTextContentTypes must be omitted when none are declared")
+	}
+
+	impl := implementation{Source: Source{Type: SourceInstallCommand, Command: "install foo"}, Executable: "foo"}
+	base := agentIdentityInput{HarnessID: "test", Implementation: impl, ClientApp: DefaultClientApp, ModelMapping: ModelMapping{Type: ModelMappingSessionModel, Path: "model"}}
+	withNone := base
+	withNone.NonTextContentTypes = []NonTextContentType{}
+	if createAgentIdentity(base) != createAgentIdentity(withNone) {
+		t.Error("an empty declaration must not change the identity")
+	}
+	withImage := base
+	withImage.NonTextContentTypes = []NonTextContentType{NonTextContentImage}
+	dup := base
+	dup.NonTextContentTypes = []NonTextContentType{NonTextContentImage, NonTextContentImage}
+	if createAgentIdentity(base) == createAgentIdentity(withImage) {
+		t.Error("declaring image content must change the identity")
+	}
+	if createAgentIdentity(withImage) != createAgentIdentity(dup) {
+		t.Error("duplicate declarations must hash like a single one")
+	}
+}
+
+// TS ACP doStart propagates a failed event-log read during continue recovery
+// (the other adapters swallow it): the error replaces the attach failure.
+func TestDoStartACPContinueRecoveryPropagatesEventLogReadFailure(t *testing.T) {
+	const token = "readerr-token"
+	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
+	sandbox := newFakeSandbox(srv)
+	h, err := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return token } }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	sess, err := h.DoStart(ctx, harness.StartOptions{SessionID: "readerr-session", SessionWorkDir: "/vercel/sandbox/w", SandboxSession: sandbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.DoPromptTurn(ctx, harness.PromptTurnOptions{Prompt: harness.TextPrompt("hi"), Emit: func(harness.StreamPart) {}}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	continueState, err := sess.DoSuspendTurn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data resumeStateData
+	if err := json.Unmarshal(continueState.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	data.Bridge.Port = 9999 // unreachable: attach fails
+	continueState.Data, _ = json.Marshal(data)
+	sandbox.mu.Lock()
+	sandbox.readTextErr = errors.New("sandbox read failed")
+	sandbox.mu.Unlock()
+
+	_, err = h.DoStart(ctx, harness.StartOptions{
+		SessionID: "readerr-session", SessionWorkDir: "/vercel/sandbox/w", SandboxSession: sandbox, ContinueFrom: continueState,
+	})
+	if err == nil || err.Error() != "sandbox read failed" {
+		t.Fatalf("DoStart error = %v, want the event-log read failure", err)
+	}
+}
+
+// A CredentialBrokeringErr failure fails the session start (TS throws from
+// credentialBrokering inside doStart).
+func TestDoStartACPCredentialBrokeringErrFailsStart(t *testing.T) {
+	srv := newServer(t, "tok", func(*bridgetest.Turn, map[string]any) {})
+	sandbox := newFakeSandbox(srv)
+	h, err := CreateACP(testSettings(func(s *Settings) {
+		s.CredentialEnv = []string{"X_KEY"}
+		s.CredentialBrokeringErr = func(_, _, _ map[string]string) ([]harness.RequestTransformation, error) {
+			return nil, errors.New("invalid base url")
+		}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = h.DoStart(context.Background(), harness.StartOptions{SessionID: "brokerr", SessionWorkDir: "/vercel/sandbox/w", SandboxSession: sandbox})
+	if err == nil || err.Error() != "invalid base url" {
+		t.Fatalf("DoStart error = %v, want the brokering error", err)
+	}
+}
+
+func TestValidateLifecycleStateDataRejectsNullCredentialEnvValue(t *testing.T) {
+	h := &acpHarness{}
+	if err := h.ValidateLifecycleStateData(json.RawMessage(`{"agentIdentity":"x","sandboxCredentialEnvironment":{"A":"v"}}`)); err != nil {
+		t.Fatalf("string values must pass: %v", err)
+	}
+	if err := h.ValidateLifecycleStateData(json.RawMessage(`{"agentIdentity":"x","sandboxCredentialEnvironment":{"A":null}}`)); err == nil {
+		t.Fatal("null record value must be rejected")
+	}
+}
+
+// TS passes `recoveryStatus: undefined` for a cold-restored session, so a
+// `recovery` marker persisted in the old lifecycle state must not leak into the
+// restored session's next snapshot.
+func TestDoStartColdRestoreDropsStaleRecoveryStatus(t *testing.T) {
+	const token = "cold-token"
+	var mu sync.Mutex
+	var calls int
+	srv := newServer(t, token, func(turn *bridgetest.Turn, start map[string]any) {
+		mu.Lock()
+		calls++
+		first := calls == 1
+		mu.Unlock()
+		if first {
+			turn.Emit(map[string]any{"type": "bridge-thread", "threadId": "acp-session-cold"})
+		} else {
+			turn.Emit(map[string]any{"type": "raw", "rawValue": map[string]any{"type": "acp-session-restored", "method": "resume"}})
+		}
+		turn.Emit(map[string]any{
+			"type": "finish", "finishReason": map[string]any{"unified": "stop", "raw": "stop"},
+			"totalUsage": map[string]any{"inputTokens": map[string]any{}, "outputTokens": map[string]any{}},
+		})
+	})
+	sandbox := newFakeSandbox(srv)
+	h, err := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return token } }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	sess, err := h.DoStart(ctx, harness.StartOptions{SessionID: "cold-session", SessionWorkDir: "/vercel/sandbox/w", SandboxSession: sandbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	control, err := sess.DoPromptTurn(ctx, harness.PromptTurnOptions{Prompt: harness.TextPrompt("hi"), Emit: func(harness.StreamPart) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-control.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("initial turn did not finish")
+	}
+	resumeState, err := sess.DoStop(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var generic map[string]any
+	if err := json.Unmarshal(resumeState.Data, &generic); err != nil {
+		t.Fatal(err)
+	}
+	generic["recovery"] = map[string]any{"mode": "lossy-rerun", "reason": "stale"}
+	resumeState.Data, _ = json.Marshal(generic)
+
+	sess2, err := h.DoStart(ctx, harness.StartOptions{
+		SessionID: "cold-session", SessionWorkDir: "/vercel/sandbox/w", SandboxSession: sandbox, ResumeFrom: resumeState,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess2.DoDestroy(ctx) }()
+	s2 := sess2.(*session)
+	s2.mu.Lock()
+	recovery := s2.recoveryStatus
+	s2.mu.Unlock()
+	if recovery != nil {
+		t.Fatalf("recoveryStatus = %+v, want nil after a cold restore", recovery)
 	}
 }

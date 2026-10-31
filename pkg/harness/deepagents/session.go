@@ -5,14 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
-	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -108,7 +106,7 @@ func (c *promptControl) settleError(err error) {
 }
 
 func (c *promptControl) SubmitToolResult(_ context.Context, r harness.ToolResultSubmission) error {
-	return c.channel.Send(bridge.ToolResultCommand{ToolCallID: r.ToolCallID, Output: r.Output, IsError: r.IsError})
+	return c.channel.Send(bridge.ToolResultCommand{ToolCallID: r.ToolCallID, Output: r.Output, IsError: r.IsError, ToolResult: r.ToolResult})
 }
 
 func (c *promptControl) SubmitToolApproval(_ context.Context, a harness.ToolApprovalSubmission) error {
@@ -136,7 +134,7 @@ var _ harness.CheckpointPinner = (*promptControl)(nil)
 // wireTurn subscribes to one live turn's events, forwarding every
 // harness.StreamPart to emit until `finish`/`error` settle the turn or the
 // channel closes. Mirrors TS `wireTurn`.
-func wireTurn(ctx context.Context, channel *bridge.Channel, emit harness.EmitFunc) harness.PromptControl {
+func wireTurn(ctx context.Context, channel *bridge.Channel, emit harness.EmitFunc) *promptControl {
 	c := &promptControl{channel: channel, done: make(chan struct{})}
 	c.checkpoint = bridge.NewCheckpointRecorder(channel)
 
@@ -173,7 +171,7 @@ func wireTurn(ctx context.Context, channel *bridge.Channel, emit harness.EmitFun
 		errPart, _ := f.Part.(*harness.ErrorPart)
 		var err error
 		if errPart != nil {
-			err = fmt.Errorf("%v", errPart.Error)
+			err = errPart.AsError()
 		} else {
 			err = errors.New("deepagents: bridge reported an error")
 		}
@@ -191,14 +189,10 @@ func wireTurn(ctx context.Context, channel *bridge.Channel, emit harness.EmitFun
 		c.settleError(errors.New("deepagents bridge closed before the turn finished.")) //nolint:staticcheck // matches TS SDK's exact error text
 	})
 
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = channel.Send(bridge.AbortCommand{})
-			c.settleError(ctx.Err())
-		case <-c.done:
-		}
-	}()
+	go bridge.WatchAbort(ctx, c.done, func() {
+		_ = channel.Send(bridge.AbortCommand{})
+		c.settleError(context.Cause(ctx))
+	})
 
 	return c
 }
@@ -207,10 +201,6 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 	if opts.ResponseFormat != nil && opts.ResponseFormat.Type == harness.ResponseFormatJSON && opts.ResponseFormat.Schema == nil {
 		return nil, harness.NewCapabilityUnsupportedError(
 			"Harness 'deepagents' requires a JSON schema for structured output.", HarnessID, nil)
-	}
-	promptText, err := extractUserText(opts.Prompt)
-	if err != nil {
-		return nil, err
 	}
 	skillResult, err := harnessutil.WriteSkills(ctx, harnessutil.WriteSkillsOptions{
 		Sandbox: s.p.sandbox, HomePath: s.p.homeDir, SkillsDir: ".agents/skills", Skills: opts.Skills,
@@ -222,12 +212,19 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 	if err != nil {
 		return nil, err
 	}
+	// After the skill write, like TS (whose start message is built after it):
+	// a prompt that fails extraction still writes skills, and a skill error
+	// wins over a prompt error. Before wireTurn, so no listener is left behind.
+	content, err := harnessutil.ExtractPromptContent(opts.Prompt)
+	if err != nil {
+		return nil, err
+	}
 
 	control := wireTurn(ctx, s.p.channel, opts.Emit)
 
 	msg := StartMessage{
 		StartBase: bridge.StartBase{
-			Prompt: promptText, Tools: opts.Tools, Model: opts.Model,
+			Prompt: content.Text, Tools: opts.Tools, Model: opts.Model,
 			ResponseFormat: opts.ResponseFormat, PermissionMode: s.p.permissionMode,
 			BuiltinToolFiltering: s.p.builtinToolFiltering,
 		},
@@ -235,7 +232,11 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 		SkillsPaths: s.p.skillsPaths, SkillsChanged: skillResult.Changed,
 		RecursionLimit: s.p.recursionLimit, MCPServers: s.p.mcpServers, Headers: s.p.headers,
 	}
+	if !content.IsText() {
+		msg.PromptContent = &content
+	}
 	if err := s.p.channel.Send(msg); err != nil {
+		control.settleError(err)
 		return nil, err
 	}
 	return control, nil
@@ -345,7 +346,7 @@ func teardown(channel *bridge.Channel, proc providerutils.SandboxProcess, operat
 // returns the resulting session. On any failure it returns ok=false so the
 // caller falls through to a fresh spawn.
 func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.SandboxSession, settings Settings, coords *bridgeCoords, isContinue bool, onBridgeErr func(*harness.ErrorPart), onDiagnostic func(bridge.OutboundMessage), p sessionParams) (*session, bool) {
-	endpoint, err := resolveBridgeEndpoint(ctx, sandboxSession, settings.PortEndpoint, coords.Port)
+	endpoint, err := bridge.ResolveBridgeEndpointOrUnsupported(ctx, sandboxSession, settings.PortEndpoint, coords.Port, HarnessID)
 	if err != nil {
 		return nil, false
 	}
@@ -354,7 +355,7 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 		return nil, false
 	}
 	channel := bridge.NewChannel(bridge.ChannelOptions{
-		Connect:                bridge.NewConnectFunc(endpoint, bridge.DialOptions{Name: "deepagents bridge"}),
+		Connect:                bridge.NewBridgeConnectFunc(endpoint, bridge.BridgeConnectOptions{Name: "deepagents bridge"}),
 		InitialLastSeenEventID: coords.LastSeenEventID,
 		OnBridgeError:          onBridgeErr,
 		OnDiagnostic:           onDiagnostic,
@@ -369,25 +370,6 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 	p.bridgeToken = coords.Token
 	p.isResume = true
 	return newSession(p), true
-}
-
-// extractUserText reduces the prompt to plain user text; non-text parts are
-// unsupported. Mirrors TS `extractUserText`.
-func extractUserText(p harness.Prompt) (string, error) {
-	if p.Message == nil {
-		return p.Text, nil
-	}
-	var parts []string
-	for _, part := range p.Message.Content {
-		text, ok := part.(types.TextContent)
-		if !ok {
-			return "", harness.NewCapabilityUnsupportedError(
-				fmt.Sprintf("The deepagents harness does not yet support user message parts of type '%s'. Pass a string or a user message whose content contains only text parts.", part.ContentType()),
-				HarnessID, nil)
-		}
-		parts = append(parts, text.Text)
-	}
-	return strings.Join(parts, "\n\n"), nil
 }
 
 var skillNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$`)

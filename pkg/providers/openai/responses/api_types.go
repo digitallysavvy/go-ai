@@ -38,6 +38,10 @@ type AssistantMessageContent struct {
 	// Annotations holds citations attached to this text part (url_citation,
 	// file_citation, container_file_citation, file_path).
 	Annotations []TextAnnotation `json:"annotations,omitempty"`
+
+	// Logprobs is the raw per-token logprobs array, present when the request
+	// asked for message.output_text.logprobs.
+	Logprobs json.RawMessage `json:"logprobs,omitempty"`
 }
 
 // FunctionCallItem represents a function call output item.
@@ -50,6 +54,10 @@ type FunctionCallItem struct {
 
 	// CallID links this call to its output.
 	CallID string `json:"call_id"`
+
+	// Status is set by providers whose input items carry one (xAI sends
+	// "completed" on replayed function calls).
+	Status string `json:"status,omitempty"`
 
 	// Name is the function name.
 	Name string `json:"name"`
@@ -194,6 +202,9 @@ type CustomToolCallOutputPart struct {
 
 	// FileID is a provider file reference (input_file with uploaded file id).
 	FileID string `json:"file_id,omitempty"`
+
+	// PromptCacheBreakpoint is the per-part prompt cache breakpoint.
+	PromptCacheBreakpoint interface{} `json:"prompt_cache_breakpoint,omitempty"`
 }
 
 // CompactionEvent is received in the Responses API SSE stream when the server
@@ -204,7 +215,11 @@ type CompactionEvent struct {
 	// Type is always "compaction".
 	Type string `json:"type"`
 
-	// ItemID is the unique identifier of the compacted item.
+	// ID is the item id as the API sends it on the wire ("id").
+	ID string `json:"id,omitempty"`
+
+	// ItemID is the unique identifier of the compacted item. Older callers
+	// populate it directly; ID (the wire field) is used when it is empty.
 	ItemID string `json:"item_id,omitempty"`
 
 	// EncryptedContent is the opaque encrypted context blob.
@@ -261,7 +276,7 @@ type ToolSearchOutputItem struct {
 	CallID *string `json:"call_id"`
 
 	// Tools is the list of matched tool definitions returned by the search.
-	Tools []json.RawMessage `json:"tools,omitempty"`
+	Tools []json.RawMessage `json:"tools"`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -463,6 +478,10 @@ type UserMessage struct {
 type UserTextPart struct {
 	Type string `json:"type"` // "input_text"
 	Text string `json:"text"`
+
+	// PromptCacheBreakpoint is the per-part providerOptions.<name>.
+	// promptCacheBreakpoint value ({mode: "explicit"}), forwarded verbatim.
+	PromptCacheBreakpoint interface{} `json:"prompt_cache_breakpoint,omitempty"`
 }
 
 // UserImageURLPart is an image content part in a user message.
@@ -470,12 +489,18 @@ type UserImageURLPart struct {
 	Type     string `json:"type"` // "input_image"
 	ImageURL string `json:"image_url"`
 	Detail   string `json:"detail,omitempty"`
+
+	// PromptCacheBreakpoint is the per-part prompt cache breakpoint.
+	PromptCacheBreakpoint interface{} `json:"prompt_cache_breakpoint,omitempty"`
 }
 
 // UserFilePart references a file by URL in a user message.
 type UserFilePart struct {
 	Type    string `json:"type"` // "input_file"
 	FileURL string `json:"file_url"`
+
+	// PromptCacheBreakpoint is the per-part prompt cache breakpoint.
+	PromptCacheBreakpoint interface{} `json:"prompt_cache_breakpoint,omitempty"`
 }
 
 // FunctionCallOutputItem sends a function tool result back to the Responses API.
@@ -484,6 +509,27 @@ type FunctionCallOutputItem struct {
 	Type   string      `json:"type"` // "function_call_output"
 	CallID string      `json:"call_id"`
 	Output interface{} `json:"output"` // string or []CustomToolCallOutputPart
+	// Caller echoes the result's caller (providerOptions.<name>.caller) so a
+	// programmatic-tool-calling result stays attributed to its program.
+	Caller *ToolCaller `json:"caller,omitempty"`
+}
+
+// AdditionalToolsItem loads extra function definitions immediately after an
+// ordinary function tool result (TS `additional_tools` input item), for tools
+// a result discovered at runtime (providerOptions.openai.additionalTools).
+type AdditionalToolsItem struct {
+	Type  string              `json:"type"` // "additional_tools"
+	Role  string              `json:"role"` // "developer"
+	Tools []AdditionalToolDef `json:"tools"`
+}
+
+// AdditionalToolDef is one function definition inside an AdditionalToolsItem.
+type AdditionalToolDef struct {
+	Type        string                 `json:"type"` // "function"
+	Name        string                 `json:"name"`
+	Description *string                `json:"description,omitempty"`
+	Parameters  map[string]interface{} `json:"parameters"`
+	Strict      *bool                  `json:"strict,omitempty"`
 }
 
 // ImageGenerationCallItem represents a hosted image_generation tool call
@@ -789,8 +835,12 @@ type OutputItemAddedEvent struct {
 // OutputTextDeltaEvent carries an incremental text chunk.
 type OutputTextDeltaEvent struct {
 	Type        string `json:"type"` // "response.output_text.delta"
+	ItemID      string `json:"item_id,omitempty"`
 	OutputIndex int    `json:"output_index"`
 	Delta       string `json:"delta"`
+
+	// Logprobs is the raw per-token logprobs array for this delta.
+	Logprobs json.RawMessage `json:"logprobs,omitempty"`
 }
 
 // FunctionCallArgumentsDeltaEvent carries an incremental tool input chunk.
@@ -907,6 +957,46 @@ type TextAnnotation struct {
 	Filename    string `json:"filename,omitempty"`
 	Index       int    `json:"index,omitempty"`
 	ContainerID string `json:"container_id,omitempty"`
+}
+
+// MarshalJSON emits exactly the fields the TS schema declares for each
+// annotation type, keeping zero-valued indexes (start_index 0, index 0) that
+// the omitempty struct tags would otherwise drop from providerMetadata.
+func (a TextAnnotation) MarshalJSON() ([]byte, error) {
+	switch a.Type {
+	case "url_citation":
+		return json.Marshal(struct {
+			Type       string `json:"type"`
+			StartIndex int    `json:"start_index"`
+			EndIndex   int    `json:"end_index"`
+			URL        string `json:"url"`
+			Title      string `json:"title"`
+		}{a.Type, a.StartIndex, a.EndIndex, a.URL, a.Title})
+	case "file_citation":
+		return json.Marshal(struct {
+			Type     string `json:"type"`
+			FileID   string `json:"file_id"`
+			Filename string `json:"filename"`
+			Index    int    `json:"index"`
+		}{a.Type, a.FileID, a.Filename, a.Index})
+	case "container_file_citation":
+		return json.Marshal(struct {
+			Type        string `json:"type"`
+			ContainerID string `json:"container_id"`
+			FileID      string `json:"file_id"`
+			Filename    string `json:"filename"`
+			StartIndex  int    `json:"start_index"`
+			EndIndex    int    `json:"end_index"`
+		}{a.Type, a.ContainerID, a.FileID, a.Filename, a.StartIndex, a.EndIndex})
+	case "file_path":
+		return json.Marshal(struct {
+			Type   string `json:"type"`
+			FileID string `json:"file_id"`
+			Index  int    `json:"index"`
+		}{a.Type, a.FileID, a.Index})
+	}
+	type plain TextAnnotation
+	return json.Marshal(plain(a))
 }
 
 // OutputItemDoneEvent is emitted when an output item is fully assembled.

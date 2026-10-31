@@ -227,6 +227,19 @@ fmt.Printf("Total tokens used: %d\n", result.Usage.TotalTokens)
 
 ## Settings
 
+### Dimensions
+
+Set `Dimensions` to request a specific output size from providers that support it (OpenAI, Azure, Together, Fireworks, Google, Vertex, Cohere, Mistral, Voyage, Perplexity, Alibaba, Bedrock, Gateway). It must be a positive integer. An explicit provider option (for example `"openai": {"dimensions": ...}`) takes precedence over this setting. OpenAI-compatible embedding models (OpenAI, Azure, Together, Fireworks) also forward `providerOptions[<provider>]["user"]`.
+
+```go
+dimensions := 512
+result, err := ai.Embed(ctx, ai.EmbedOptions{
+    Model:      embeddingModel,
+    Input:      "sunny day at the beach",
+    Dimensions: &dimensions,
+})
+```
+
 ### Provider Options
 
 Embedding model settings can be configured using `ProviderOptions` for provider-specific parameters:

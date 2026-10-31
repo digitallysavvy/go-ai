@@ -81,9 +81,10 @@ func (c *httpPolicyClient) Evaluate(ctx context.Context, policyPath string, inpu
 		return nil, err
 	}
 	if record, ok := decoded.(map[string]any); ok {
-		if result, ok := record["result"]; ok {
-			return result, nil
-		}
+		// OPA answers an undefined decision (no rule matched) with `{}`: the
+		// TS client returns the response's `result` field, undefined here,
+		// which normalizes to not-applicable rather than a denial.
+		return record["result"], nil
 	}
 	return decoded, nil
 }

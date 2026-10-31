@@ -40,8 +40,8 @@ type LanguageModelCapabilities struct {
 	SupportedReasoningEfforts []string
 
 	// SupportsNonReasoningParameters reports whether temperature/topP/
-	// logprobs may be sent when reasoningEffort is "none" (GPT-5.1+, but
-	// not GPT-6+, which uses SupportedReasoningEfforts instead).
+	// logprobs may be sent when reasoningEffort is "none" (GPT-5.1+ and
+	// GPT-6 Sol/Luna, but not other GPT-6+ models).
 	SupportsNonReasoningParameters bool
 }
 
@@ -80,8 +80,11 @@ func GetLanguageModelCapabilities(modelID string) LanguageModelCapabilities {
 		(hasGV && gv.major >= 5 && !isGptChatModel)
 
 	// https://platform.openai.com/docs/guides/latest-model#gpt-5-1-parameter-compatibility
-	supportsNonReasoningParameters := !isGpt6OrLaterModel && hasGV &&
-		(gv.major > 5 || (gv.major == 5 && gv.minor >= 1))
+	// GPT-5.1 through GPT-5.x and GPT-6 Sol/Luna support temperature, topP,
+	// and logprobs when reasoningEffort is none.
+	supportsNonReasoningParameters := isGpt6SolOrLuna ||
+		(!isGpt6OrLaterModel && hasGV &&
+			(gv.major > 5 || (gv.major == 5 && gv.minor >= 1)))
 
 	systemMessageMode := "system"
 	if isReasoningModel {

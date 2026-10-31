@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -52,8 +53,8 @@ func TestXAIProvider_WrappersAndDefaults(t *testing.T) {
 	if model, err := p.SpeechModel("x"); err != nil || model.Provider() != "xai.speech" || model.ModelID() != "" {
 		t.Fatalf("SpeechModel = %v, %v; want xai.speech model with empty model ID", model, err)
 	}
-	if model, err := p.TranscriptionModel("x"); err != nil || model.Provider() != "xai.transcription" || model.ModelID() != "" {
-		t.Fatalf("TranscriptionModel = %v, %v; want xai.transcription model with empty model ID", model, err)
+	if model, err := p.TranscriptionModel("x"); err != nil || model.Provider() != "xai.transcription" || model.ModelID() != "x" {
+		t.Fatalf("TranscriptionModel = %v, %v; want xai.transcription model with model ID x", model, err)
 	}
 	if _, err := p.RerankingModel("x"); err == nil {
 		t.Fatal("RerankingModel expected unsupported error")
@@ -192,6 +193,9 @@ func TestXAIResponsesStreamHelpers(t *testing.T) {
 	t.Parallel()
 
 	respStream := newXAIResponsesStream(io.NopCloser(strings.NewReader("data: [DONE]\n\n")))
+	if c, err := respStream.Next(); err != nil || c.Type != provider.ChunkTypeFinish {
+		t.Fatalf("xaiResponsesStream first Next() = %#v, %v, want finish", c, err)
+	}
 	_, err := respStream.Next()
 	if !errors.Is(err, io.EOF) {
 		t.Fatalf("xaiResponsesStream Next() err = %v, want EOF", err)

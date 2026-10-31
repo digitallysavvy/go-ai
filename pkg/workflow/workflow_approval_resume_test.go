@@ -54,13 +54,9 @@ func TestWorkflowResumeRejectsForgedSignedApproval(t *testing.T) {
 		wantExec  int
 		wantError string
 	}{
-		// TS only reports "missing signature" for a null/undefined
-		// signature, which it can distinguish from an explicit empty
-		// string; Go's plain string field cannot represent that
-		// distinction, so an empty signature falls through to
-		// verification and fails as "invalid signature" like TS reports
-		// for an explicit empty string (see pkg/ai/validate_tool_approvals.go).
-		{name: "missing", signature: "", wantError: "invalid signature"},
+		// An empty signature is Go's representation of an absent one (TS
+		// signature == null): reported as "missing signature".
+		{name: "missing", signature: "", wantError: "missing signature"},
 		{name: "forged", signature: "Zm9yZ2Vk", wantError: "invalid signature"},
 		{name: "valid", signature: validSig, wantExec: 1},
 	} {
@@ -104,7 +100,9 @@ func TestWorkflowResumeRejectsForgedSignedApproval(t *testing.T) {
 	}
 }
 
-// TS 05672ad: failed approved tool executions stream as tool errors.
+// TS writeApprovalToolResults: a failed approved tool streams a plain
+// tool-result whose output is the error text (tool-output-available), not a
+// tool-output-error.
 func TestWorkflowResumeStreamsFailedApprovedToolAsToolError(t *testing.T) {
 	model := &wfMockModel{}
 	agent, err := NewWorkflowAgent(WorkflowAgent{
@@ -135,8 +133,12 @@ func TestWorkflowResumeStreamsFailedApprovedToolAsToolError(t *testing.T) {
 			got = c.ToolResult
 		}
 	}
-	if got == nil || got.Error == nil || got.Error.Error() != "weather service down" || got.Result != nil {
-		t.Fatalf("tool chunk = %+v, want tool error", got)
+	if got == nil || got.Error != nil || got.Result != "weather service down" {
+		t.Fatalf("tool chunk = %+v, want tool result carrying the error text", got)
+	}
+	ui, ok := ToUIMessageChunk(ModelCallStreamPart{Type: provider.ChunkTypeToolResult, ToolResult: got})
+	if !ok || ui["type"] != "tool-output-available" || ui["output"] != "weather service down" {
+		t.Fatalf("ui chunk = %v, want tool-output-available with error text", ui)
 	}
 	tr := lastToolResultInPrompt(t, model, "weather-1")
 	if tr.Output == nil || tr.Output.Type != types.ToolResultOutputErrorText || tr.Output.Value != "weather service down" {
@@ -197,5 +199,38 @@ func TestWorkflowResumeRejectsUnknownApprovalID(t *testing.T) {
 	}})
 	if !ai.IsInvalidToolApprovalError(err) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TS guards resume with `!tool.needsApproval` (truthiness): a function setting
+// counts as declaring approval without being called, so an approved call whose
+// function now answers false still runs.
+func TestWorkflowResumeFunctionNeedsApprovalIsTruthy(t *testing.T) {
+	model := &wfMockModel{}
+	executions := 0
+	agent, err := NewWorkflowAgent(WorkflowAgent{
+		Model: model,
+		Tools: []types.Tool{{
+			Name: "getWeather",
+			NeedsApproval: types.ToolNeedsApprovalFunc(func(context.Context, map[string]interface{}, types.ToolNeedsApprovalOptions) bool {
+				return false
+			}),
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				executions++
+				return "sunny", nil
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := agent.StreamWithOptions(context.Background(), WorkflowStreamOptions{Messages: workflowApprovalMessages("")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = stream.Steps()
+	tr := lastToolResultInPrompt(t, model, "weather-1")
+	if executions != 1 || (tr.Output != nil && tr.Output.Type == types.ToolResultOutputErrorText) {
+		t.Fatalf("executions=%d output=%+v, want the approved call to run", executions, tr.Output)
 	}
 }

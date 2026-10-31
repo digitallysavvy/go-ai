@@ -244,7 +244,7 @@ func TestConvertToOpenResponsesInput_ReferenceFilePartsAreUnsupportedLikeTS(t *t
 	}
 
 	_, _, _, err := ConvertToOpenResponsesInputForProvider(msgs, "", "open-responses")
-	if err == nil || !strings.Contains(err.Error(), "provider references are not supported") {
+	if err == nil || !strings.Contains(err.Error(), "file parts with provider references") {
 		t.Fatalf("error = %v, want unsupported provider reference", err)
 	}
 }
@@ -265,7 +265,7 @@ func TestConvertToOpenResponsesInput_TextFilePartsAreUnsupportedLikeTS(t *testin
 	}
 
 	_, _, _, err := ConvertToOpenResponsesInputForProvider(msgs, "", "open-responses")
-	if err == nil || !strings.Contains(err.Error(), "text file parts are not supported") {
+	if err == nil || !strings.Contains(err.Error(), "text file parts") {
 		t.Fatalf("error = %v, want unsupported text file", err)
 	}
 }
@@ -423,15 +423,22 @@ func TestConvertToOpenResponsesInput_ClientAndProviderExecutedToolCalls(t *testi
 		t.Fatalf("ConvertToOpenResponsesInputForProvider() error = %v", err)
 	}
 
+	// TS has no providerExecuted check on the plain function_call path: a
+	// provider-executed call that is not a registered extension replays as a
+	// function_call like any other.
 	items := input.([]interface{})
-	if len(items) != 2 {
-		t.Fatalf("items = %#v, want client function_call plus output", items)
+	if len(items) != 3 {
+		t.Fatalf("items = %#v, want two function_calls plus output", items)
 	}
-	call := items[0].(FunctionCallItem)
+	prov := items[0].(FunctionCallItem)
+	if prov.CallID != "call_provider" || prov.Name != "server_tool" {
+		t.Fatalf("provider call = %#v", prov)
+	}
+	call := items[1].(FunctionCallItem)
 	if call.CallID != "call_client" || call.Name != "client_tool" {
 		t.Fatalf("call = %#v", call)
 	}
-	output := items[1].(FunctionCallOutputItem)
+	output := items[2].(FunctionCallOutputItem)
 	if output.CallID != "call_client" || output.Output != "ok" {
 		t.Fatalf("output = %#v", output)
 	}
@@ -626,5 +633,26 @@ func TestConvertToOpenResponsesInput_CustomToolResultsPreserveTextImagesAndFiles
 	}
 	if file := parts[4].(InputFileContent); file.Type != "input_file" || file.Filename != "result.pdf" || file.FileData != "data:application/pdf;base64,cGRm" {
 		t.Fatalf("data file part = %#v", file)
+	}
+}
+
+// TS always writes `summary` on a reasoning item (empty array when none),
+// writes `content: []` for an explicitly empty reasoningContent, and writes
+// annotations/logprobs arrays (even empty) on strict output text.
+func TestConvertAssistantContent_EmptyArraysOnTheWire(t *testing.T) {
+	content := []types.ContentPart{
+		types.ReasoningContent{Text: "x", ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{
+			"itemId": "rs_1", "reasoningContent": []interface{}{},
+		}}},
+		types.TextContent{Text: "hi", ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"itemId": "msg_1"}}},
+	}
+	items := convertAssistantContent(content, "openai", true)
+	b, err := json.Marshal(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"type":"reasoning","summary":[],"id":"rs_1","content":[]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi","annotations":[],"logprobs":[]}],"id":"msg_1","status":"completed"}]`
+	if string(b) != want {
+		t.Fatalf("got  %s\nwant %s", b, want)
 	}
 }

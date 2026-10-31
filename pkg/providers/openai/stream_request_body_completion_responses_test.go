@@ -23,7 +23,7 @@ func TestCompletionModelDoStream_ImplementsStreamRequestBody(t *testing.T) {
 			t.Fatalf("decode request: %v", err)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, `data: {"id":"cmpl_1","choices":[{"text":"hi","index":0,"finish_reason":"stop"}]}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"id":"cmpl_1","choices":[{"index":0,"text":"hi","index":0,"finish_reason":"stop"}]}`+"\n\n")
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	}))
 	defer server.Close()

@@ -349,8 +349,12 @@ func TestDoGenerate_ParsesToolCallsReasoningAndUsage(t *testing.T) {
 	if res.ToolCalls[0].Arguments["city"] != "SF" {
 		t.Fatalf("tool call arguments = %#v", res.ToolCalls[0].Arguments)
 	}
-	if len(res.Content) != 1 {
-		t.Fatalf("Content = %#v, want one reasoning part", res.Content)
+	// Content keeps the response order: reasoning, then the tool call.
+	if len(res.Content) != 2 {
+		t.Fatalf("Content = %#v, want reasoning then tool call", res.Content)
+	}
+	if call, ok := res.Content[1].(types.ToolCallContent); !ok || call.ToolCallID != "tool_1" {
+		t.Fatalf("Content[1] = %#v, want the tool call", res.Content[1])
 	}
 	reasoning, ok := res.Content[0].(types.ReasoningContent)
 	if !ok || reasoning.Text != "thinking..." || reasoning.Signature != "sig123" {
@@ -463,7 +467,9 @@ func TestDoStream_RequestMetadataForwardedToTopLevel(t *testing.T) {
 	}
 }
 
-func TestDoGenerate_ErrorResponseUsesTypeAndMessage(t *testing.T) {
+// TS doGenerate's inline error handler uses only error.message (no type
+// prefix); the streaming and other endpoints use the shared "type: message".
+func TestDoGenerate_ErrorResponseUsesMessageOnly(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400)
 		_, _ = w.Write([]byte(`{"message":"model not found","type":"ValidationException"}`))
@@ -475,8 +481,8 @@ func TestDoGenerate_ErrorResponseUsesTypeAndMessage(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "ValidationException: model not found") {
-		t.Fatalf("error = %v, want %q", err, "ValidationException: model not found")
+	if !strings.Contains(err.Error(), "model not found") || strings.Contains(err.Error(), "ValidationException") {
+		t.Fatalf("error = %v, want the bare message", err)
 	}
 }
 
@@ -1025,7 +1031,9 @@ func TestPrepareTools_RejectsForcedToolUse(t *testing.T) {
 		wantWarning := types.Warning{
 			Type:    "unsupported",
 			Feature: "toolChoice",
-			Details: "toolChoice 'tool' is not supported by this model because it rejects forced tool use. Only the 'bash' tool is sent with 'auto' tool choice. Instruct the model to use the tool in the prompt and verify that a tool call was made.",
+			// TS takes this warning from prepareAnthropicTools, whose text differs
+			// from Bedrock's own function-tool fallback warning.
+			Details: "toolChoice 'tool' is not supported with this model or thinking configuration. Only the 'bash' tool is sent with 'auto' tool choice. Instruct the model to use the tool in the prompt and verify that a tool call was made.",
 		}
 		if len(result.Warnings) != 1 || result.Warnings[0] != wantWarning {
 			t.Fatalf("warnings = %#v, want [%#v]", result.Warnings, wantWarning)
@@ -1136,9 +1144,8 @@ func TestPrepareTools_ToolSearchWireShape(t *testing.T) {
 	if !ok {
 		t.Fatalf("toolSpec.inputSchema = %#v, want a map", toolSpec["inputSchema"])
 	}
-	jsonSchema, ok := inputSchema["json"].(map[string]interface{})
-	if !ok || jsonSchema["type"] != "object" {
-		t.Fatalf("toolSpec.inputSchema.json = %#v, want the tool_search input schema", inputSchema["json"])
+	if got := wireSchemaJSON(t, inputSchema["json"]); !strings.Contains(got, `"type":"object"`) {
+		t.Fatalf("toolSpec.inputSchema.json = %s, want the tool_search input schema", got)
 	}
 }
 
@@ -1180,31 +1187,35 @@ func TestPrepareTools_BuiltinToolsForwarded(t *testing.T) {
 	if !ok {
 		t.Fatalf("toolSpec.inputSchema = %#v, want a map", toolSpec["inputSchema"])
 	}
-	if jsonSchema, ok := inputSchema["json"].(map[string]interface{}); !ok || jsonSchema["type"] != "object" {
-		t.Fatalf("toolSpec.inputSchema.json = %#v, want the bash input schema", inputSchema["json"])
+	if got := wireSchemaJSON(t, inputSchema["json"]); !strings.Contains(got, `"type":"object"`) {
+		t.Fatalf("toolSpec.inputSchema.json = %s, want the bash input schema", got)
 	}
 }
 
-// TestPrepareTools_UnrecognizedAnthropicToolWarns verifies an Anthropic
-// provider tool built as a raw types.Tool literal (no ProviderOptions, e.g. a
-// caller-constructed value rather than one of the
-// pkg/providers/anthropic/tools constructors) produces an "unsupported"
-// warning naming the tool, instead of being silently dropped or sent with a
-// broken wire shape. Real self-serializing tools (see
-// TestPrepareTools_SelfSerializingAnthropicToolsForwarded) carry ProviderOptions
-// that implement anthropicAPIMapper and ARE forwarded — this test's tool
-// intentionally omits ProviderOptions to exercise the "can't derive a wire
-// name at all" fallback.
+// TestPrepareTools_UnrecognizedAnthropicToolWarns: a provider tool id
+// without an Anthropic tool factory is dropped with the Anthropic
+// prepareTools warning and the Bedrock "tool <id>" warning, as TS. A raw
+// literal named after a known id (no ProviderOptions) is sent like the
+// constructor's tool: TS finds its factory by id.
 func TestPrepareTools_UnrecognizedAnthropicToolWarns(t *testing.T) {
 	tools := []types.Tool{
-		{Name: "anthropic.computer_toolset_20260801", ProviderExecuted: true},
+		{Name: "anthropic.unknown_tool_20990101", ProviderExecuted: true},
 	}
 	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil, false)
 	if len(result.ToolConfig.Tools) != 0 {
 		t.Fatalf("expected the unrecognized tool to be dropped, got %#v", result.ToolConfig.Tools)
 	}
-	if len(result.Warnings) != 1 || result.Warnings[0].Feature != "tool anthropic.computer_toolset_20260801" {
-		t.Fatalf("warnings = %#v, want a single 'tool anthropic.computer_toolset_20260801' warning", result.Warnings)
+	if len(result.Warnings) != 2 || result.Warnings[0].Feature != "provider-defined tool anthropic.unknown_tool_20990101" ||
+		result.Warnings[1].Feature != "tool anthropic.unknown_tool_20990101" {
+		t.Fatalf("warnings = %#v, want the provider-defined tool and tool warnings", result.Warnings)
+	}
+
+	literal := prepareBedrockTools([]types.Tool{{Name: "anthropic.computer_toolset_20260801", ProviderExecuted: true}}, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil, false)
+	if len(literal.Warnings) != 0 || len(literal.ToolConfig.Tools) != 1 {
+		t.Fatalf("literal toolset: tools %#v warnings %#v", literal.ToolConfig.Tools, literal.Warnings)
+	}
+	if name := literal.ToolConfig.Tools[0]["toolSpec"].(map[string]interface{})["name"]; name != "computer" {
+		t.Fatalf("literal toolset name = %v, want computer", name)
 	}
 }
 
@@ -1262,9 +1273,8 @@ func TestPrepareTools_SelfSerializingAnthropicToolsForwarded(t *testing.T) {
 			if !ok {
 				t.Fatalf("toolSpec.inputSchema = %#v, want a map", toolSpec["inputSchema"])
 			}
-			jsonSchema, ok := inputSchema["json"].(map[string]interface{})
-			if !ok || jsonSchema["type"] != "object" {
-				t.Fatalf("toolSpec.inputSchema.json = %#v, want the tool's own JSON schema", inputSchema["json"])
+			if got := wireSchemaJSON(t, inputSchema["json"]); !strings.Contains(got, `"type":"object"`) {
+				t.Fatalf("toolSpec.inputSchema.json = %s, want the tool's JSON schema", got)
 			}
 		})
 	}
@@ -1336,8 +1346,12 @@ func TestBedrockAPIError_FormatsTypeAndMessage(t *testing.T) {
 	}
 
 	errUnparsable := bedrockAPIError(502, []byte("not json"), nil)
-	if errUnparsable.Message != "not json" {
-		t.Fatalf("Message = %q, want raw body fallback", errUnparsable.Message)
+	// TS createJsonErrorResponseHandler: unparseable/empty body -> status text.
+	if errUnparsable.Message != "Bad Gateway" || errUnparsable.ResponseBody != "not json" {
+		t.Fatalf("Message = %q body = %q, want status text with the body kept", errUnparsable.Message, errUnparsable.ResponseBody)
+	}
+	if empty := bedrockAPIError(503, nil, nil); empty.Message != "Service Unavailable" {
+		t.Fatalf("empty body Message = %q", empty.Message)
 	}
 }
 

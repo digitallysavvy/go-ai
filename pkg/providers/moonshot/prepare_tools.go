@@ -2,6 +2,7 @@ package moonshot
 
 import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // moonshotFunctionTool is the wire shape Moonshot expects for a function tool
@@ -32,6 +33,18 @@ func prepareMoonshotTools(tools []types.Tool, toolChoice types.ToolChoice, hasTo
 	moonshotTools := make([]moonshotFunctionTool, 0, len(tools))
 
 	for _, tool := range tools {
+		// TS: tool.type === 'provider' (the typed provider-defined tool).
+		if tool.Type == "provider" {
+			id := tool.ProviderID
+			if id == "" {
+				id = tool.Name
+			}
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "provider-defined tool " + id,
+			})
+			continue
+		}
 		if tool.ProviderExecuted {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
@@ -40,7 +53,7 @@ func prepareMoonshotTools(tools []types.Tool, toolChoice types.ToolChoice, hasTo
 			continue
 		}
 
-		normalized, err := NormalizeJSONSchemaForMFJS(moonshotDefaultObjectSchema(tool.Parameters))
+		normalized, err := normalizeMFJSKeepingOrder(tool.Parameters)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -92,7 +105,7 @@ func prepareMoonshotTools(tools []types.Tool, toolChoice types.ToolChoice, hasTo
 
 // moonshotDefaultObjectSchema mirrors the tool package's defaultObjectSchema:
 // nil parameters become an empty object schema; a schema missing "type" gets
-// "object" injected so the MFJS root-object check passes.
+// "object" injected so the MFJS root-object check passes (root unions excluded).
 func moonshotDefaultObjectSchema(parameters interface{}) interface{} {
 	if parameters == nil {
 		return map[string]interface{}{
@@ -101,7 +114,12 @@ func moonshotDefaultObjectSchema(parameters interface{}) interface{} {
 		}
 	}
 	if schema, ok := parameters.(map[string]interface{}); ok {
-		if _, hasType := schema["type"]; !hasType {
+		_, hasType := schema["type"]
+		_, hasAnyOf := schema["anyOf"]
+		_, hasOneOf := schema["oneOf"]
+		// A typeless root union is left for NormalizeJSONSchemaForMFJS: a union
+		// of objects gets type "object", any other union throws like TS.
+		if !hasType && !hasAnyOf && !hasOneOf {
 			copied := make(map[string]interface{}, len(schema)+1)
 			for key, value := range schema {
 				copied[key] = value
@@ -111,4 +129,24 @@ func moonshotDefaultObjectSchema(parameters interface{}) interface{} {
 		}
 	}
 	return parameters
+}
+
+// normalizeMFJSKeepingOrder normalizes tool parameters for MFJS. Raw JSON
+// (json.RawMessage) and *schema.OrderedSchema parameters are decoded for the
+// normalization and written back in their source key order, like the JS
+// object TS normalizes.
+func normalizeMFJSKeepingOrder(parameters interface{}) (interface{}, error) {
+	raw, isRaw := providerutils.RawJSONObject(parameters)
+	if isRaw {
+		if m := providerutils.DecodeRawJSONObject(raw); m != nil {
+			parameters = m
+		} else {
+			isRaw = false
+		}
+	}
+	normalized, err := NormalizeJSONSchemaForMFJS(moonshotDefaultObjectSchema(parameters))
+	if err != nil || !isRaw {
+		return normalized, err
+	}
+	return providerutils.OrderLike(normalized, raw), nil
 }

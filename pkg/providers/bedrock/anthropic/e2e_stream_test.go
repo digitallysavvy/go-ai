@@ -30,6 +30,7 @@ func TestEndToEndStreamThroughEventStream(t *testing.T) {
 			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`,
 			`{"type":"content_block_stop","index":0}`,
 			`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`,
+			`{"type":"message_stop"}`,
 		} {
 			_, _ = w.Write(bedrockChunk(t, ev))
 		}
@@ -42,7 +43,7 @@ func TestEndToEndStreamThroughEventStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, IncludeRawChunks: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,13 +70,36 @@ func TestEndToEndStreamThroughEventStream(t *testing.T) {
 	if text != "Hello" || !finish {
 		t.Fatalf("text=%q finish=%v raws=%d", text, finish, raws)
 	}
+	if raws != 6 {
+		t.Fatalf("raws = %d, want 6", raws)
+	}
 }
 
-// A modeled exception reaches the stream as an error chunk carrying the
-// Bedrock status code and retryability (TS getAmazonBedrockStreamErrorMetadata).
+// A modeled exception as the very first event fails DoStream with a retryable
+// provider error carrying the Bedrock status code (TS doStream turns a first
+// error part into an APICallError; getAmazonBedrockStreamErrorMetadata
+// supplies the status/retryability).
+func TestEndToEndStreamExceptionFirstEvent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		_, _ = w.Write(encodeEventStreamMessage(t, map[string]string{":message-type": "exception", ":exception-type": "throttlingException"}, []byte(`{"message":"slow down"}`)))
+	}))
+	defer srv.Close()
+	p := New(Config{BaseURL: srv.URL, BearerToken: "t", HTTPClient: srv.Client()})
+	model, _ := p.LanguageModel("anthropic.claude-sonnet-4-5-20250929-v1:0")
+	_, err := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.StatusCode != 429 || !pe.IsRetryable() {
+		t.Fatalf("err = %#v", err)
+	}
+}
+
+// After content has started, an exception reaches the stream as an error
+// chunk carrying the Bedrock status code and retryability.
 func TestEndToEndStreamExceptionMetadata(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		_, _ = w.Write(bedrockChunk(t, `{"type":"message_start","message":{"id":"m1","usage":{"input_tokens":3}}}`))
 		_, _ = w.Write(encodeEventStreamMessage(t, map[string]string{":message-type": "exception", ":exception-type": "throttlingException"}, []byte(`{"message":"slow down"}`)))
 	}))
 	defer srv.Close()

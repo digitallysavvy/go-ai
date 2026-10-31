@@ -85,11 +85,13 @@ const (
 	ModelGemini31FlashImagePreview = "gemini-3.1-flash-image-preview" // image model (#12883)
 
 	// Gemini 3.5-3.8 series
-	ModelGemini35Flash     = "gemini-3.5-flash"
-	ModelGemini35FlashLite = "gemini-3.5-flash-lite"
-	ModelGemini36Flash     = "gemini-3.6-flash"
-	ModelGemini37Flash     = "gemini-3.7-flash"
-	ModelGemini38Flash     = "gemini-3.8-flash"
+	ModelGemini35Flash      = "gemini-3.5-flash"
+	ModelGemini35FlashLite  = "gemini-3.5-flash-lite"
+	ModelGemini36Flash      = "gemini-3.6-flash"
+	ModelGemini37Flash      = "gemini-3.7-flash"
+	ModelGemini38Flash      = "gemini-3.8-flash"
+	ModelGemini4Argon       = "gemini-4-argon"         // long decode (TS #23261)
+	ModelGeminiNanoBanana21 = "gemini-nano-banana-2.1" // language + image model (TS #22164)
 
 	// Preview models
 	ModelGemini20FlashLitePreview0205 = "gemini-2.0-flash-lite-preview-02-05"

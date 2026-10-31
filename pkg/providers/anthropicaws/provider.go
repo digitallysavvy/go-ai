@@ -17,8 +17,10 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 	anthropictools "github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 const (
@@ -60,12 +62,22 @@ func New(cfg Config) (*Provider, error) {
 	if cfg.BaseURL == "" && region == "" {
 		return nil, fmt.Errorf("anthropicaws: AWS region is required; set Config.Region or AWS_REGION")
 	}
+	// The region is interpolated into the default endpoint host, so only a
+	// single DNS label is accepted (TS anthropic-aws getRegion); a value such
+	// as "evil.example.com/#" would otherwise redirect the request, including
+	// its x-api-key header. Custom endpoints go through BaseURL.
+	if cfg.BaseURL == "" && !providerutils.IsValidHostnamePart(region) {
+		return nil, &providererrors.InvalidArgumentError{
+			Field:   "region",
+			Message: "Invalid AWS region. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.", //nolint:staticcheck // matches TS SDK's exact error text
+		}
+	}
 	workspaceID := firstNonEmpty(cfg.WorkspaceID, os.Getenv("ANTHROPIC_AWS_WORKSPACE_ID"))
 	if workspaceID == "" {
 		return nil, fmt.Errorf("anthropicaws: workspaceId is required; set Config.WorkspaceID or ANTHROPIC_AWS_WORKSPACE_ID")
 	}
 
-	baseURL := strings.TrimRight(cfg.BaseURL, "/")
+	baseURL := strings.TrimSuffix(cfg.BaseURL, "/")
 	if baseURL == "" {
 		baseURL = fmt.Sprintf("https://aws-external-anthropic.%s.api.aws/v1", region)
 	}
@@ -75,23 +87,21 @@ func New(cfg Config) (*Provider, error) {
 		"anthropic-workspace-id": workspaceID,
 	}, cfg.Headers)
 
-	apiKey := firstNonEmpty(cfg.APIKey, os.Getenv("ANTHROPIC_AWS_API_KEY"))
-	httpClient := cfg.HTTPClient
-	var transport *sigV4Transport
-	if apiKey != "" {
-		headers["x-api-key"] = apiKey
-	} else {
-		transport = &sigV4Transport{
-			base:               baseRoundTripper(httpClient),
-			region:             region,
-			accessKeyID:        cfg.AccessKeyID,
-			secretAccessKey:    cfg.SecretAccessKey,
-			sessionToken:       cfg.SessionToken,
-			credentialProvider: cfg.CredentialProvider,
-		}
-		httpClient = cloneHTTPClient(httpClient)
-		httpClient.Transport = transport
+	// The API key is resolved per request (providerutils.APIKeyOrEnv, the
+	// lookup half of TS loadApiKey) so ANTHROPIC_AWS_API_KEY set or rotated
+	// after the provider was created is honored; with no key, requests are
+	// SigV4-signed.
+	httpClient := cloneHTTPClient(cfg.HTTPClient)
+	transport := &sigV4Transport{
+		base:               baseRoundTripper(cfg.HTTPClient),
+		region:             region,
+		apiKey:             cfg.APIKey,
+		accessKeyID:        cfg.AccessKeyID,
+		secretAccessKey:    cfg.SecretAccessKey,
+		sessionToken:       cfg.SessionToken,
+		credentialProvider: cfg.CredentialProvider,
 	}
+	httpClient.Transport = transport
 
 	inner := anthropic.New(anthropic.Config{
 		Name:          "anthropic-aws.messages",
@@ -119,23 +129,23 @@ func (p *Provider) LanguageModelWithOptions(modelID string, options *anthropic.M
 }
 
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("anthropicaws does not support embedding models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("anthropicaws does not support image generation")
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("anthropicaws does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("anthropicaws does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("anthropicaws does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 func (p *Provider) Files() provider.FilesAPI {
@@ -160,6 +170,7 @@ func (p *Provider) LastSigningCredentials() Credentials {
 type sigV4Transport struct {
 	base               http.RoundTripper
 	region             string
+	apiKey             string
 	accessKeyID        string
 	secretAccessKey    string
 	sessionToken       string
@@ -188,6 +199,11 @@ func (t *sigV4Transport) setLastCredentials(creds Credentials) {
 }
 
 func (t *sigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if key := providerutils.APIKeyOrEnv(t.apiKey, "ANTHROPIC_AWS_API_KEY"); key != "" {
+		req = req.Clone(req.Context())
+		req.Header.Set("x-api-key", key)
+		return t.base.RoundTrip(req)
+	}
 	if req.Method != http.MethodPost || req.Body == nil {
 		return t.base.RoundTrip(req)
 	}
@@ -199,12 +215,18 @@ func (t *sigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	req.ContentLength = int64(len(body))
 
+	// TS loads the region first, at request time, and fails when it is
+	// missing even if a custom baseURL made it unnecessary for routing.
+	region := firstNonEmpty(t.region, os.Getenv("AWS_REGION"))
+	if region == "" {
+		return nil, fmt.Errorf("AWS region setting is missing. Pass it using the 'region' parameter or the AWS_REGION environment variable")
+	}
 	creds, err := t.credentials(req.Context())
 	if err != nil {
 		return nil, err
 	}
 	t.setLastCredentials(creds)
-	signAWSRequest(req, body, t.region, creds)
+	signAWSRequest(req, body, region, creds)
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	return t.base.RoundTrip(req)
 }
@@ -225,10 +247,10 @@ func (t *sigV4Transport) credentials(ctx context.Context) (Credentials, error) {
 	secretAccessKey := firstNonEmpty(t.secretAccessKey, os.Getenv("AWS_SECRET_ACCESS_KEY"))
 	sessionToken := firstNonEmpty(t.sessionToken, os.Getenv("AWS_SESSION_TOKEN"))
 	if accessKeyID == "" {
-		return Credentials{}, fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n1. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables\n2. Provide AccessKeyID and SecretAccessKey in Config\n3. Use a CredentialProvider function\n4. Use API key authentication with ANTHROPIC_AWS_API_KEY or Config.APIKey")
+		return Credentials{}, fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n1. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables\n2. Provide AccessKeyID and SecretAccessKey in Config\n3. Use a CredentialProvider function\n4. Use API key authentication with ANTHROPIC_AWS_API_KEY or Config.APIKey\nOriginal error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable.") //nolint:staticcheck // message text matches TS
 	}
 	if secretAccessKey == "" {
-		return Credentials{}, fmt.Errorf("AWS SigV4 authentication requires both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Please ensure both credentials are provided")
+		return Credentials{}, fmt.Errorf("AWS SigV4 authentication requires both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Please ensure both credentials are provided.\nOriginal error: AWS secret access key setting is missing. Pass it using the 'secretAccessKey' parameter or the AWS_SECRET_ACCESS_KEY environment variable.") //nolint:staticcheck // message text matches TS
 	}
 	return Credentials{AccessKeyID: accessKeyID, SecretAccessKey: secretAccessKey, SessionToken: sessionToken}, nil
 }
@@ -264,6 +286,11 @@ func canonicalHeaders(headers http.Header) (string, string) {
 	keys := make([]string, 0, len(headers))
 	values := map[string]string{}
 	for k, vals := range headers {
+		if len(vals) > 0 && !isASCII(vals[0]) {
+			// Non-ASCII header values are not signed (TS #22265); they are
+			// still sent as-is.
+			continue
+		}
 		lower := strings.ToLower(k)
 		keys = append(keys, lower)
 		if len(vals) > 0 {
@@ -322,4 +349,13 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }

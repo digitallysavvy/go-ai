@@ -1,7 +1,8 @@
 package elevenlabs
 
 import (
-	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -22,6 +23,10 @@ type Config struct {
 
 	// BaseURL is the base URL for the ElevenLabs API (optional)
 	BaseURL string
+
+	// Headers are custom HTTP headers sent with every request (TS provider
+	// settings `headers`).
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // New creates a new ElevenLabs provider with the given configuration
@@ -30,16 +35,23 @@ func New(cfg Config) *Provider {
 	if baseURL == "" {
 		baseURL = "https://api.elevenlabs.io"
 	}
+	// Keep the resolved URL: the WebSocket models derive their endpoints from
+	// config.BaseURL, which would otherwise stay empty with the default API.
+	cfg.BaseURL = baseURL
 	if cfg.APIKey == "" {
 		cfg.APIKey = os.Getenv("ELEVENLABS_API_KEY")
 	}
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
-		Headers: version.WithUserAgentSuffix(map[string]string{
+		Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
 			"xi-api-key":   cfg.APIKey,
 			"Content-Type": "application/json",
-		}, version.ProviderUserAgent("elevenlabs")),
+		}, cfg.Headers), version.ProviderUserAgent("elevenlabs")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "ELEVENLABS_API_KEY", "ElevenLabs", "xi-api-key", "")
+		},
 	})
 
 	return &Provider{
@@ -55,17 +67,17 @@ func (p *Provider) Name() string {
 
 // LanguageModel returns a language model by ID
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return nil, fmt.Errorf("ElevenLabs does not support language models")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "languageModel", Message: "ElevenLabs does not provide language models"}
 }
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("ElevenLabs does not support embeddings")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "embeddingModel", Message: "ElevenLabs does not provide embedding models"}
 }
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("ElevenLabs does not support image generation")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "imageModel", Message: "ElevenLabs does not provide image models"}
 }
 
 // SpeechModel returns a speech synthesis model by ID
@@ -80,7 +92,7 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("ElevenLabs does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client for making API requests

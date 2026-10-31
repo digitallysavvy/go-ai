@@ -3,11 +3,14 @@ package googlevertex
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,7 +22,7 @@ func TestImageModel_SpecificationVersion(t *testing.T) {
 
 func TestImageModel_Provider(t *testing.T) {
 	model := NewImageModel(nil, "gemini-2.5-flash-image")
-	assert.Equal(t, "google-vertex", model.Provider())
+	assert.Equal(t, "google.vertex.image", model.Provider())
 }
 
 func TestImageModel_ModelID(t *testing.T) {
@@ -231,12 +234,15 @@ func TestImageModel_DoGenerate_Gemini_WithFilesOptionsAndWarnings(t *testing.T) 
 		assert.Equal(t, "aW5saW5l", inline["data"])
 		fileData := parts[2].(map[string]interface{})["fileData"].(map[string]interface{})
 		assert.Equal(t, "https://example.com/ref.png", fileData["fileUri"])
-		assert.Equal(t, "image/*", fileData["mimeType"])
+		assert.Equal(t, "image/png", fileData["mimeType"]) // "image/*" is not a full media type; resolved from the URL extension
 
 		genConfig := reqBody["generationConfig"].(map[string]interface{})
 		imageConfig := genConfig["imageConfig"].(map[string]interface{})
 		assert.Equal(t, "9:16", imageConfig["aspectRatio"])
-		assert.Equal(t, "low", genConfig["thinkingBudget"])
+		// Options go through the language model: thinkingConfig lands in
+		// generationConfig and labels at the request top level.
+		assert.Equal(t, map[string]interface{}{"thinkingBudget": float64(128)}, genConfig["thinkingConfig"])
+		assert.Equal(t, map[string]interface{}{"team": "art"}, reqBody["labels"])
 
 		response := vertexGeminiImageResponse{
 			Candidates: []struct {
@@ -292,7 +298,8 @@ func TestImageModel_DoGenerate_Gemini_WithFilesOptionsAndWarnings(t *testing.T) 
 		},
 		ProviderOptions: map[string]interface{}{
 			"googleVertex": map[string]interface{}{
-				"thinkingBudget": "low",
+				"thinkingConfig": map[string]interface{}{"thinkingBudget": 128},
+				"labels":         map[string]interface{}{"team": "art"},
 			},
 		},
 	})
@@ -387,9 +394,11 @@ func TestImageModel_DoGenerate_Error_EmptyResponse(t *testing.T) {
 		Prompt: "Test",
 	})
 
-	assert.Error(t, err)
-	assert.Nil(t, result)
-	assert.Contains(t, err.Error(), "no image in response")
+	// An empty response is returned as an empty result (TS), not an error.
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Empty(t, result.Images)
+	assert.Nil(t, result.IsRetryable)
 }
 
 func TestImageModel_DoGenerate_Error_HTTPError(t *testing.T) {
@@ -451,46 +460,66 @@ func TestGetIntValue(t *testing.T) {
 	}
 }
 
-func TestProvider_New_ValidationErrors(t *testing.T) {
+// TS createGoogleVertex does not load project/location up front: loadBaseURL
+// (called from createConfig for every model) reports the missing setting.
+func TestProvider_MissingProjectLocation_ErrorsAtModelCreation(t *testing.T) {
+	t.Setenv("GOOGLE_VERTEX_PROJECT", "")
+	t.Setenv("GOOGLE_VERTEX_LOCATION", "")
+	t.Setenv("GOOGLE_VERTEX_API_KEY", "")
 	tests := []struct {
 		name        string
 		config      Config
 		expectError string
 	}{
-		{
-			name: "Missing project",
-			config: Config{
-				Location:    "us-central1",
-				AccessToken: "token",
-			},
-			expectError: "project is required",
-		},
-		{
-			name: "Missing location",
-			config: Config{
-				Project:     "my-project",
-				AccessToken: "token",
-			},
-			expectError: "location is required",
-		},
-		{
-			name: "Missing access token",
-			config: Config{
-				Project:  "my-project",
-				Location: "us-central1",
-			},
-			expectError: "access token is required",
-		},
+		// TS loadBaseURL loads the location first, then the project.
+		{"Missing both reports location first", Config{AccessToken: "token"}, "Google Vertex location setting is missing"},
+		{"Missing project", Config{Location: "us-central1", AccessToken: "token"}, "Google Vertex project setting is missing"},
+		{"Missing location", Config{Project: "my-project", AccessToken: "token"}, "Google Vertex location setting is missing"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			prov, err := New(tt.config)
-			assert.Error(t, err)
-			assert.Nil(t, prov)
+			require.NoError(t, err)
+			require.NotNil(t, prov)
+			_, err = prov.LanguageModel("gemini-2.5-flash")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.expectError)
+			_, err = prov.EmbeddingModel("text-embedding-005")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.expectError)
+			_, err = prov.ImageModel("gemini-2.5-flash-image")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.expectError)
+			_, err = prov.VideoModel("veo-3.0-generate-preview")
+			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.expectError)
 		})
 	}
+}
+
+// The environment variables are read when a model is created, not when the
+// provider is (TS loadSetting inside loadBaseURL).
+func TestProvider_ProjectLocationEnvReadLazily(t *testing.T) {
+	t.Setenv("GOOGLE_VERTEX_PROJECT", "")
+	t.Setenv("GOOGLE_VERTEX_LOCATION", "")
+	t.Setenv("GOOGLE_VERTEX_API_KEY", "")
+	var gotURL string
+	prov, err := New(Config{AccessToken: "token", HTTPClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotURL = r.URL.String()
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"candidates":[]}`)), Request: r}, nil
+	})}})
+	require.NoError(t, err)
+
+	t.Setenv("GOOGLE_VERTEX_PROJECT", "env-project")
+	t.Setenv("GOOGLE_VERTEX_LOCATION", "europe-west4")
+
+	assert.Equal(t, "env-project", prov.Project())
+	assert.Equal(t, "europe-west4", prov.Location())
+	m, err := prov.LanguageModel("gemini-2.5-flash")
+	require.NoError(t, err)
+	_, _ = m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	assert.Equal(t, "https://europe-west4-aiplatform.googleapis.com/v1beta1/projects/env-project/locations/europe-west4/publishers/google/models/gemini-2.5-flash:generateContent", gotURL)
 }
 
 func TestProvider_New_Success(t *testing.T) {
@@ -915,4 +944,48 @@ func TestExtractVertexOptions(t *testing.T) {
 // Helper function
 func intPtr(i int) *int {
 	return &i
+}
+
+func TestImageModel_DoGenerate_MultipleImagesMergeConfigAndContentFilter(t *testing.T) {
+	var gen map[string]interface{}
+	var headerSeen string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gen, _ = body["generationConfig"].(map[string]interface{})
+		headerSeen = r.Header.Get("X-Custom")
+		w.Header().Set("Content-Type", "application/json")
+		if gen["seed"] == float64(7) {
+			_, _ = w.Write([]byte(`{"candidates":[{"finishReason":"IMAGE_SAFETY","content":{"parts":[]}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"candidates":[{"finishReason":"STOP","content":{"parts":[
+			{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgo="}},
+			{"inlineData":{"mimeType":"image/png","data":"AAAA"}}]}}]}`))
+	}))
+	defer server.Close()
+	prov, _ := New(Config{Project: "p", Location: "us-central1", AccessToken: "t", BaseURL: server.URL})
+	model := NewImageModel(prov, "gemini-2.5-flash-image")
+	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt:      "x",
+		AspectRatio: "16:9",
+		Headers:     map[string]string{"X-Custom": "yes"},
+		ProviderOptions: map[string]interface{}{"vertex": map[string]interface{}{
+			"responseModalities": []string{"TEXT"},
+			"imageConfig":        map[string]interface{}{"imageSize": "2K"},
+		}},
+	})
+	require.NoError(t, err)
+	assert.Len(t, result.Images, 2)
+	assert.Equal(t, 2, result.Usage.ImageCount)
+	assert.Equal(t, "yes", headerSeen, "per-call headers must reach the request")
+	assert.Equal(t, []interface{}{"IMAGE"}, gen["responseModalities"])
+	assert.Equal(t, map[string]interface{}{"imageSize": "2K", "aspectRatio": "16:9"}, gen["imageConfig"])
+
+	seed := 7
+	filtered, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x", Seed: &seed})
+	require.NoError(t, err)
+	assert.Empty(t, filtered.Images)
+	require.NotNil(t, filtered.IsRetryable)
+	assert.False(t, *filtered.IsRetryable)
 }

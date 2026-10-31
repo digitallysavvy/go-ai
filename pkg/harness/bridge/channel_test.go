@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1288,4 +1289,38 @@ func TestChannelReportsErrorFramesToOnBridgeError(t *testing.T) {
 	if ch.LastSeenEventID() != 1 {
 		t.Fatalf("LastSeenEventID = %v, want 1", ch.LastSeenEventID())
 	}
+}
+
+// closeCountConn fails its first Receive without closing itself, like a
+// transport that reports a read error but leaves the descriptor open.
+type closeCountConn struct {
+	closes atomic.Int32
+	failed chan struct{}
+}
+
+func (c *closeCountConn) Receive() ([]byte, error) {
+	<-c.failed
+	return nil, &CloseError{Code: 1006, Reason: "socket error"}
+}
+func (c *closeCountConn) Send([]byte) error { return nil }
+func (c *closeCountConn) Close() error      { c.closes.Add(1); return nil }
+
+func TestChannelClosesDroppedConnectionBeforeReconnect(t *testing.T) {
+	first := &closeCountConn{failed: make(chan struct{})}
+	var calls atomic.Int32
+	ch := NewChannel(ChannelOptions{
+		Connect: func(context.Context) (Conn, error) {
+			if calls.Add(1) == 1 {
+				return first, nil
+			}
+			return newFakeConn(), nil
+		},
+		Decode:    decodeFake,
+		Reconnect: testReconnect(),
+	})
+	t.Cleanup(ch.Close)
+	mustOpen(t, ch)
+	close(first.failed)
+	waitFor(t, time.Second, func() bool { return calls.Load() >= 2 })
+	waitFor(t, time.Second, func() bool { return first.closes.Load() >= 1 })
 }

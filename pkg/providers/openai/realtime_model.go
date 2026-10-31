@@ -116,9 +116,6 @@ var (
 )
 
 func (m *OpenAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
-	if m.provider.config.APIKey == "" {
-		return provider.ClientSecretResult{}, fmt.Errorf("OpenAI API key is missing. Pass it using the 'apiKey' parameter or the OPENAI_API_KEY environment variable.") //nolint:staticcheck // matches TS SDK's exact error text
-	}
 	session := map[string]interface{}{"type": "realtime", "model": m.modelID}
 	if opts.SessionConfig != nil {
 		if built, ok := m.BuildSessionConfig(*opts.SessionConfig).(map[string]interface{}); ok {
@@ -139,7 +136,10 @@ func (m *OpenAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 		return provider.ClientSecretResult{}, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return provider.ClientSecretResult{}, fmt.Errorf("OpenAI realtime client secret request failed: %d %s", resp.StatusCode, string(resp.Body))
+		// TS: `OpenAI realtime client secret request failed: ${status} ${text}`.
+		cause := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}
+		return provider.ClientSecretResult{}, providererrors.NewProviderError("openai", 0, "",
+			fmt.Sprintf("OpenAI realtime client secret request failed: %d %s", resp.StatusCode, string(resp.Body)), cause)
 	}
 	var data struct {
 		Value     string `json:"value"`
@@ -203,9 +203,6 @@ func addOpenAIRealtimeSessionFields(session map[string]interface{}, config provi
 			if config.InputAudioTranscription.Model != nil {
 				model = *config.InputAudioTranscription.Model
 			}
-			if model == "" {
-				model = ""
-			}
 			transcription := map[string]interface{}{"model": model}
 			if config.InputAudioTranscription.Language != nil {
 				transcription["language"] = *config.InputAudioTranscription.Language
@@ -250,10 +247,10 @@ func audioFormatMap(f *provider.RealtimeAudioFormat) map[string]interface{} {
 func turnDetectionMap(td *provider.RealtimeTurnDetection, openaiNames bool) map[string]interface{} {
 	t := td.Type
 	if openaiNames {
-		switch t {
-		case "server-vad":
+		// TS: type === 'server-vad' ? 'server_vad' : 'semantic_vad'.
+		if t == "server-vad" {
 			t = "server_vad"
-		case "semantic-vad":
+		} else {
 			t = "semantic_vad"
 		}
 	} else {
@@ -449,6 +446,11 @@ func parseOpenAICompatibleRealtimeServerEvent(raw json.RawMessage, xai bool) pro
 		} else {
 			e.Code = stringField(event, "code")
 		}
+		// TS: clientEventId = error.event_id (the id of the client event the
+		// error answers).
+		if clientEventID, ok := nestedStringField(event, "error", "event_id"); ok {
+			e.ClientEventID = clientEventID
+		}
 	default:
 		e.Type = "custom"
 		e.RawType = rawType
@@ -460,9 +462,17 @@ func serializeOpenAICompatibleRealtimeClientEvent(event provider.RealtimeClientE
 	var out interface{}
 	switch event.Type {
 	case "session-update":
-		out = map[string]interface{}{"type": "session.update", "session": buildSession(event.Config)}
+		m := map[string]interface{}{"type": "session.update", "session": buildSession(event.Config)}
+		if event.EventID != "" {
+			m["event_id"] = event.EventID
+		}
+		out = m
 	case "input-audio-append":
-		out = map[string]interface{}{"type": "input_audio_buffer.append", "audio": event.Audio}
+		m := map[string]interface{}{"type": "input_audio_buffer.append", "audio": event.Audio}
+		if event.EventID != "" {
+			m["event_id"] = event.EventID
+		}
+		out = m
 	case "input-audio-commit":
 		out = map[string]interface{}{"type": "input_audio_buffer.commit"}
 	case "input-audio-clear":

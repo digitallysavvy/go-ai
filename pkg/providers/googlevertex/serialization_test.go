@@ -25,8 +25,8 @@ func TestVertexSerializeAndDeserializeModel(t *testing.T) {
 	}
 
 	serialized := modelAny.(*LanguageModel).Serialize()
-	if serialized.Provider != "google-vertex" {
-		t.Fatalf("provider = %q, want google-vertex", serialized.Provider)
+	if serialized.Provider != "google.vertex.chat" {
+		t.Fatalf("provider = %q, want google.vertex.chat", serialized.Provider)
 	}
 	if serialized.ModelID != "gemini-2.0-flash" {
 		t.Fatalf("modelID = %q", serialized.ModelID)
@@ -42,8 +42,8 @@ func TestVertexSerializeAndDeserializeModel(t *testing.T) {
 	}
 
 	_, err = deserializeModel(serialized)
-	if err == nil {
-		t.Fatal("expected deserializeModel() to fail because serialized config omits auth tokens")
+	if err != nil {
+		t.Fatalf("expected deserializeModel() must succeed (credentials default to ADC): %v", err)
 	}
 
 	manual := provider.SerializedModel{
@@ -61,7 +61,7 @@ func TestVertexSerializeAndDeserializeModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeModel(manual) error = %v", err)
 	}
-	if restored.Provider() != "google-vertex" || restored.ModelID() != "gemini-2.0-flash" {
+	if restored.Provider() != "google.vertex.chat" || restored.ModelID() != "gemini-2.0-flash" {
 		t.Fatalf("manual restored mismatch provider=%q model=%q", restored.Provider(), restored.ModelID())
 	}
 
@@ -69,7 +69,7 @@ func TestVertexSerializeAndDeserializeModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("provider.DeserializeModel() error = %v", err)
 	}
-	if restoredByRegistry.Provider() != "google-vertex" {
+	if restoredByRegistry.Provider() != "google.vertex.chat" {
 		t.Fatalf("registry restored provider = %q", restoredByRegistry.Provider())
 	}
 }
@@ -98,7 +98,7 @@ func TestVertexSerializeAndDeserializeEmbeddingModel(t *testing.T) {
 		t.Fatalf("EmbeddingModel() error = %v", err)
 	}
 	serialized := modelAny.(*EmbeddingModel).Serialize()
-	if serialized.Provider != "google-vertex" || serialized.ModelID != "text-embedding-004" {
+	if serialized.Provider != "google.vertex.embedding" || serialized.ModelID != "text-embedding-004" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["AccessToken"]; ok {
@@ -118,7 +118,7 @@ func TestVertexSerializeAndDeserializeEmbeddingModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeEmbeddingModel(manual) error = %v", err)
 	}
-	if restored.Provider() != "google-vertex" || restored.ModelID() != "text-embedding-004" {
+	if restored.Provider() != "google.vertex.embedding" || restored.ModelID() != "text-embedding-004" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 
@@ -142,7 +142,7 @@ func TestVertexSerializeAndDeserializeImageModel(t *testing.T) {
 		t.Fatalf("ImageModel() error = %v", err)
 	}
 	serialized := modelAny.(*ImageModel).Serialize()
-	if serialized.Provider != "google-vertex" || serialized.ModelID != "gemini-2.5-flash-image" {
+	if serialized.Provider != "google.vertex.image" || serialized.ModelID != "gemini-2.5-flash-image" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["AccessToken"]; ok {
@@ -162,7 +162,7 @@ func TestVertexSerializeAndDeserializeImageModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeImageModel(manual) error = %v", err)
 	}
-	if restored.Provider() != "google-vertex" || restored.ModelID() != "gemini-2.5-flash-image" {
+	if restored.Provider() != "google.vertex.image" || restored.ModelID() != "gemini-2.5-flash-image" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 
@@ -253,8 +253,8 @@ func TestVertexSerializeAndDeserializeGeminiTranscriptionModel(t *testing.T) {
 	// The credential is stripped by design (see the transcription test
 	// above), so deserializing the auto-serialized config fails; a manual
 	// config with accessToken restored proves the rest round-trips.
-	if _, err := deserializeTranscriptionModel(serialized); err == nil {
-		t.Fatal("expected deserializeTranscriptionModel() to fail because serialized config omits auth tokens")
+	if _, err := deserializeTranscriptionModel(serialized); err != nil {
+		t.Fatalf("deserializeTranscriptionModel() must succeed (credentials default to ADC): %v", err)
 	}
 
 	manual := provider.SerializedModel{
@@ -318,8 +318,8 @@ func TestVertexSerializeAndDeserializeSpeechModel_GeminiTTS(t *testing.T) {
 		t.Fatalf("access token must be omitted from serializable config: %#v", serialized.Config)
 	}
 
-	if _, err := deserializeSpeechModel(serialized); err == nil {
-		t.Fatal("expected deserializeSpeechModel() to fail because serialized config omits auth tokens")
+	if _, err := deserializeSpeechModel(serialized); err != nil {
+		t.Fatalf("deserializeSpeechModel() must succeed (credentials default to ADC): %v", err)
 	}
 
 	manual := provider.SerializedModel{
@@ -382,8 +382,8 @@ func TestVertexSerializeAndDeserializeSpeechModel_CloudTTS(t *testing.T) {
 		t.Fatalf("access token must be omitted from serializable config: %#v", serialized.Config)
 	}
 
-	if _, err := deserializeSpeechModel(serialized); err == nil {
-		t.Fatal("expected deserializeSpeechModel() to fail because serialized config omits auth tokens")
+	if _, err := deserializeSpeechModel(serialized); err != nil {
+		t.Fatalf("deserializeSpeechModel() must succeed (credentials default to ADC): %v", err)
 	}
 
 	manual := provider.SerializedModel{
@@ -491,8 +491,8 @@ func TestVertexSerializeAndDeserializeInteractionsModel(t *testing.T) {
 		t.Fatalf("access token must be omitted from serializable config: %#v", serialized.Config)
 	}
 
-	if _, err := deserializeInteractionsModel(serialized); err == nil {
-		t.Fatal("expected deserializeInteractionsModel() to fail because serialized config omits auth tokens")
+	if _, err := deserializeInteractionsModel(serialized); err != nil {
+		t.Fatalf("deserializeInteractionsModel() must succeed (credentials default to ADC): %v", err)
 	}
 
 	manual := provider.SerializedModel{

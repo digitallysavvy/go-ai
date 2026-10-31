@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -103,8 +104,31 @@ func IsUnauthorizedClientError(err error) bool {
 }
 
 func oauthErrorCodeIs(err error, code string) bool {
-	oauthErr, ok := err.(*MCPClientOAuthError)
-	return ok && oauthErr.Code == code
+	var oauthErr *MCPClientOAuthError
+	return errors.As(err, &oauthErr) && oauthErr.Code == code
+}
+
+// parseOAuthErrorBody decodes an OAuthErrorResponseSchema body: `error` must
+// be a string (possibly empty) and error_description/error_uri, when present,
+// strings (Zod .optional() rejects null).
+func parseOAuthErrorBody(body []byte) (oauthErrorResponseBody, bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return oauthErrorResponseBody{}, false
+	}
+	if !isJSONString(fields["error"]) {
+		return oauthErrorResponseBody{}, false
+	}
+	for _, key := range []string{"error_description", "error_uri"} {
+		if raw, present := fields[key]; present && !isJSONString(raw) {
+			return oauthErrorResponseBody{}, false
+		}
+	}
+	var parsed oauthErrorResponseBody
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return oauthErrorResponseBody{}, false
+	}
+	return parsed, true
 }
 
 // oauthErrorResponseBody is the RFC 6749 §5.2 error response shape.
@@ -137,13 +161,18 @@ func ParseOAuthErrorResponse(resp *http.Response) *MCPClientOAuthError {
 		}
 	}
 
-	var parsed oauthErrorResponseBody
-	if err := json.Unmarshal(body, &parsed); err != nil || parsed.Error == "" {
+	parsed, ok := parseOAuthErrorBody(body)
+	if !ok {
 		return &MCPClientOAuthError{
 			Code:       OAuthErrorCodeServerError,
 			StatusCode: resp.StatusCode,
 			Message:    fmt.Sprintf("HTTP %d: Invalid OAuth error response. Raw body: %s", resp.StatusCode, string(body)),
 		}
+	}
+	// TS z.string() accepts an empty `error`; OAUTH_ERRORS[''] is unmapped so
+	// it becomes a ServerError carrying error_description.
+	if parsed.Error == "" {
+		parsed.Error = OAuthErrorCodeServerError
 	}
 
 	var cause error

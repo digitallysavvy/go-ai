@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -476,7 +477,9 @@ func TestDoPromptTurn_DrainsAbortedTurnBeforeNextTurn(t *testing.T) {
 }
 
 func TestDoStartSpawnsBridgeWithSkillsDirFlag(t *testing.T) {
-	srv := newServer(t, "", func(*bridgetest.Turn, map[string]any) {})
+	// The default random token is unknown to the test, so the server accepts any.
+	srv := bridgetest.NewServer(bridgetest.Options{AnyToken: true})
+	t.Cleanup(srv.Close)
 	sandbox := newFakeSandbox(srv)
 	h, err := CreateOpenCode()
 	if err != nil {
@@ -496,7 +499,7 @@ func TestDoStartSpawnsBridgeWithSkillsDirFlag(t *testing.T) {
 	if !strings.Contains(cmd, "--skills-dir '/home/vercel-sandbox/.agents/skills'") {
 		t.Fatalf("spawn command = %q", cmd)
 	}
-	if len(sandbox.spawnEnvs) == 0 || sandbox.spawnEnvs[0]["AI_SDK_HARNESS_CLIENT_APP"] != "ai-sdk/harness-opencode/"+Version {
+	if len(sandbox.spawnEnvs) == 0 || sandbox.spawnEnvs[0]["AI_SDK_HARNESS_CLIENT_APP"] != "ai-sdk-harness-opencode/"+Version {
 		t.Fatalf("spawn env = %v", sandbox.spawnEnvs)
 	}
 }
@@ -600,12 +603,6 @@ func TestSplitOpenCodeModel(t *testing.T) {
 	providerID, modelID, model = SplitOpenCodeModel("", "openai")
 	if providerID != "" || modelID != "" || model != "" {
 		t.Fatalf("SplitOpenCodeModel(empty) = (%q, %q, %q), want all empty", providerID, modelID, model)
-	}
-}
-
-func TestExtractUserTextRejectsNonTextParts(t *testing.T) {
-	if _, err := extractUserText(harness.TextPrompt("hi")); err != nil {
-		t.Fatalf("extractUserText(text) error = %v", err)
 	}
 }
 
@@ -723,8 +720,9 @@ func TestDoCompact_SendsCompactOperation(t *testing.T) {
 	if prompt, ok := capturedStart["prompt"]; ok && prompt != "" {
 		t.Fatalf("start.prompt = %v, want empty for a compaction", prompt)
 	}
-	if _, ok := capturedStart["tools"]; ok {
-		t.Fatalf("start.tools = %v, want none for a compaction", capturedStart["tools"])
+	// TS doCompact sends `tools: []`.
+	if tools, ok := capturedStart["tools"].([]any); !ok || len(tools) != 0 {
+		t.Fatalf("start.tools = %v, want [] for a compaction", capturedStart["tools"])
 	}
 }
 
@@ -1057,5 +1055,37 @@ func TestDoStart_PropagatesNativeConfigThroughPromptsCompactionAndResumedSession
 	assertNativeConfig(t, "resumed prompt", resumedPromptStart, OperationPrompt, "opencode-session")
 	if resumedPromptStart["prompt"] != "resume thinking" || resumedPromptStart["instructions"] != "be concise" {
 		t.Fatalf("resumed prompt start = %v", resumedPromptStart)
+	}
+}
+
+// A compaction whose bridge never answers must return when the caller's
+// context ends instead of blocking forever.
+func TestDoCompact_ReturnsWhenContextEnds(t *testing.T) {
+	const token = "compact-ctx-token"
+	srv := newServer(t, token, func(turn *bridgetest.Turn, start map[string]any) {})
+	sandbox := newFakeSandbox(srv)
+	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return token }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "compact-ctx", SessionWorkDir: "/vercel/sandbox/compact-ctx", SandboxSession: sandbox,
+	})
+	if err != nil {
+		t.Fatalf("DoStart: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- sess.DoCompact(ctx, "") }()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("DoCompact error = %v, want deadline exceeded", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("DoCompact did not return after its context ended")
 	}
 }

@@ -35,10 +35,10 @@ func NewVideoModel(prov *Provider, modelID string) *VideoModel {
 }
 
 // SpecificationVersion returns the specification version.
-func (m *VideoModel) SpecificationVersion() string { return "v3" }
+func (m *VideoModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
-func (m *VideoModel) Provider() string { return "google-vertex" }
+func (m *VideoModel) Provider() string { return "google.vertex.video" }
 
 // ModelID returns the model ID.
 func (m *VideoModel) ModelID() string { return m.modelID }
@@ -79,24 +79,45 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*GoogleVertexVide
 	if opts == nil {
 		return nil, nil, nil
 	}
-	raw, ok := opts["googleVertex"]
-	if !ok {
-		raw, ok = opts["vertex"]
+	// TS parseProviderOptions returns undefined for a null/absent entry, so
+	// a nil "googleVertex" value falls through to the legacy "vertex" key.
+	raw := opts["googleVertex"]
+	key := "googleVertex"
+	if raw == nil {
+		raw = opts["vertex"]
+		key = "vertex"
 	}
-	if !ok {
+	if raw == nil {
 		return nil, nil, nil
 	}
+	invalidVertexVideoOptions := func(cause error) error { return invalidVertexVideoOptionsFor(key, cause) }
 	jsonData, err := json.Marshal(raw)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to marshal googleVertex video provider options: %w", err)
+		return nil, nil, invalidVertexVideoOptions(fmt.Errorf("failed to marshal googleVertex video provider options: %w", err))
 	}
 	var provOpts GoogleVertexVideoModelOptions
 	if err := json.Unmarshal(jsonData, &provOpts); err != nil {
-		return nil, nil, fmt.Errorf("failed to unmarshal googleVertex video provider options: %w", err)
+		return nil, nil, invalidVertexVideoOptions(fmt.Errorf("failed to unmarshal googleVertex video provider options: %w", err))
 	}
 	var rawMap map[string]interface{}
 	if err := json.Unmarshal(jsonData, &rawMap); err != nil {
-		return nil, nil, fmt.Errorf("failed to unmarshal googleVertex video provider options map: %w", err)
+		return nil, nil, invalidVertexVideoOptions(fmt.Errorf("failed to unmarshal googleVertex video provider options map: %w", err))
+	}
+	// TS googleVertexVideoModelOptionsSchema: personGeneration is an enum and
+	// the poll settings are positive numbers.
+	if provOpts.PersonGeneration != nil {
+		switch *provOpts.PersonGeneration {
+		case "dont_allow", "allow_adult", "allow_all":
+		default:
+			return nil, nil, invalidVertexVideoOptions(fmt.Errorf("personGeneration: invalid option %q, expected one of dont_allow, allow_adult, allow_all", *provOpts.PersonGeneration))
+		}
+	}
+	for _, key := range []string{"pollIntervalMs", "pollTimeoutMs"} {
+		if v, ok := rawMap[key]; ok && v != nil {
+			if n, isNum := v.(float64); !isNum || n <= 0 {
+				return nil, nil, invalidVertexVideoOptions(fmt.Errorf("%s: expected a positive number", key))
+			}
+		}
 	}
 	extra := make(map[string]interface{})
 	for k, v := range rawMap {
@@ -105,6 +126,16 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*GoogleVertexVide
 		}
 	}
 	return &provOpts, extra, nil
+}
+
+// invalidVertexVideoOptionsFor mirrors TS parseProviderOptions, which names
+// the key it parsed (googleVertex or the legacy vertex).
+func invalidVertexVideoOptionsFor(key string, cause error) error {
+	return &providererrors.InvalidArgumentError{
+		Field:   "providerOptions",
+		Message: "invalid " + key + " provider options",
+		Cause:   cause,
+	}
 }
 
 func vertexVideoGetFirstFrameImage(opts *provider.VideoModelV3CallOptions) *provider.VideoModelV3File {
@@ -313,11 +344,12 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	}
 
 	var operation vertexVideoOperationWire
-	httpResp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    fmt.Sprintf("/models/%s:predictLongRunning", m.modelID),
-		Body:    body,
-		Headers: callOpts.Headers,
+	httpResp, err := m.prov.mainClient().DoJSONResponse(ctx, internalhttp.Request{
+		ValidateResponse: vertexValidator(m.Provider(), zVertexOperation),
+		Method:           http.MethodPost,
+		Path:             fmt.Sprintf("/models/%s:predictLongRunning", m.modelID),
+		Body:             body,
+		Headers:          callOpts.Headers,
 	}, &operation)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -354,11 +386,12 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	}
 
 	var operation vertexVideoOperationWire
-	httpResp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    fmt.Sprintf("/models/%s:fetchPredictOperation", m.modelID),
-		Body:    map[string]interface{}{"operationName": op.OperationName},
-		Headers: opts.Headers,
+	httpResp, err := m.prov.mainClient().DoJSONResponse(ctx, internalhttp.Request{
+		ValidateResponse: vertexValidator(m.Provider(), zVertexOperation),
+		Method:           http.MethodPost,
+		Path:             fmt.Sprintf("/models/%s:fetchPredictOperation", m.modelID),
+		Body:             map[string]interface{}{"operationName": op.OperationName},
+		Headers:          opts.Headers,
 	}, &operation)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -507,23 +540,23 @@ func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling
 	opts := polling.PollOptions{PollIntervalMs: 5000, PollTimeoutMs: 600000}
 
 	if providerOpts != nil {
-		raw, ok := providerOpts["googleVertex"]
-		if !ok {
-			raw, ok = providerOpts["vertex"]
+		// A null "googleVertex" entry falls through to "vertex", like TS
+		// parseProviderOptions treating null as absent.
+		raw := providerOpts["googleVertex"]
+		if raw == nil {
+			raw = providerOpts["vertex"]
 		}
-		if ok {
-			if vertexOpts, ok := raw.(map[string]interface{}); ok {
-				// CoerceInt (not a bare `.(int)` assertion) because
-				// providerOpts commonly arrives via encoding/json.Unmarshal
-				// (a JSON config file, or a request body forwarded straight
-				// into ProviderOptions), which decodes JSON numbers as
-				// float64, not int.
-				if interval, ok := providerutils.CoerceInt(vertexOpts["pollIntervalMs"]); ok {
-					opts.PollIntervalMs = interval
-				}
-				if timeout, ok := providerutils.CoerceInt(vertexOpts["pollTimeoutMs"]); ok {
-					opts.PollTimeoutMs = timeout
-				}
+		if vertexOpts, ok := raw.(map[string]interface{}); ok {
+			// CoerceInt (not a bare `.(int)` assertion) because
+			// providerOpts commonly arrives via encoding/json.Unmarshal
+			// (a JSON config file, or a request body forwarded straight
+			// into ProviderOptions), which decodes JSON numbers as
+			// float64, not int.
+			if interval, ok := providerutils.CoerceInt(vertexOpts["pollIntervalMs"]); ok {
+				opts.PollIntervalMs = interval
+			}
+			if timeout, ok := providerutils.CoerceInt(vertexOpts["pollTimeoutMs"]); ok {
+				opts.PollTimeoutMs = timeout
 			}
 		}
 	}

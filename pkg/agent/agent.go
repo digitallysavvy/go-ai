@@ -39,7 +39,11 @@ type AgentResult struct {
 	// Final text output
 	Text string
 
-	// Output is the parsed/structured final output when an output strategy is configured.
+	// Output is the final output: the final text parsed with the configured
+	// Output strategy, or the final text itself (a string) when none is
+	// configured (TS `output ?? text()`). As in TS generateText it is set
+	// only for a stop finish, or a finish other than tool-calls that
+	// produced text; nil otherwise.
 	Output interface{}
 
 	// All steps taken by the agent
@@ -81,14 +85,25 @@ type AgentGenerateOptions struct {
 	ToolsContext   map[string]interface{}
 	CallOptions    interface{}
 
+	// ExperimentalSteering adds user messages to the run at the next step
+	// boundary (see ai.Steering). Supported by ToolLoopAgent.Generate,
+	// ToolLoopAgent.Stream and CreateAgentUIStream; the legacy
+	// Execute/GenerateAgent loop ignores it. Create one per call with
+	// ai.NewSteering. Experimental (TS experimental_steering, #23813).
+	ExperimentalSteering *ai.Steering
+
 	Model provider.LanguageModel
 
-	Tools       []types.Tool
-	ToolChoice  types.ToolChoice
-	ToolOrder   []string
-	ActiveTools []string
-	StopWhen    []ai.StopCondition
-	MaxSteps    int
+	Tools      []types.Tool
+	ToolChoice types.ToolChoice
+	ToolOrder  []string
+	// ToolCallConcurrency is the maximum number of tool calls that may execute
+	// concurrently within a step (1 = sequential). Must be >= 1 when set.
+	// When unset, all tool calls of a step execute concurrently.
+	ToolCallConcurrency *int
+	ActiveTools         []string
+	StopWhen            []ai.StopCondition
+	MaxSteps            int
 
 	// ExperimentalToolCallers configures which tools may call which other
 	// tools, and which tools stay hidden until discovered via ai.ToolSearch.
@@ -115,6 +130,10 @@ type AgentGenerateOptions struct {
 	Include                 *ai.IncludeOptions
 	ToolApproval            types.ToolApprovalConfig
 	Internal                *ai.InternalOptions
+
+	// Timeout overrides AgentConfig.Timeout for this call (TS
+	// `timeout ?? preparedCall.timeout` in ToolLoopAgent.generate/stream).
+	Timeout *ai.TimeoutConfig
 
 	ExperimentalSandbox         interface{}
 	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
@@ -185,6 +204,14 @@ type AgentStreamOptions struct {
 	// stream chunks before they reach OnChunk and the returned
 	// StreamTextResult, forwarded to ai.StreamTextOptions.ExperimentalTransform.
 	ExperimentalTransform []ai.StreamTransformFunc
+
+	// OnError is called for error chunks received while streaming, forwarded
+	// to ai.StreamTextOptions.OnError.
+	OnError func(ctx context.Context, err error)
+
+	// OnAbort is called when streaming is aborted by context cancellation,
+	// forwarded to ai.StreamTextOptions.OnAbort.
+	OnAbort func(ctx context.Context, steps []types.StepResult)
 }
 
 // AgentAction represents an action the agent has decided to take
@@ -286,6 +313,13 @@ type AgentConfig struct {
 
 	// ToolOrder controls the order tools are sent to providers.
 	ToolOrder []string
+
+	// ToolCallConcurrency is the maximum number of tool calls that may execute
+	// concurrently within a step. Set to 1 to execute tool calls sequentially
+	// in the order they were generated. Must be >= 1 when set. When unset,
+	// all tool calls of a step execute concurrently. Applies to Generate,
+	// Stream and the legacy Execute/GenerateAgent loop. Mirrors TS ToolLoopAgentSettings.toolCallConcurrency.
+	ToolCallConcurrency *int
 
 	// ExperimentalToolCallers configures which tools may call which other
 	// tools, and which tools stay hidden until discovered via ai.ToolSearch.
@@ -510,6 +544,25 @@ type AgentConfig struct {
 	// OnStepStart is called at the beginning of each LLM step.
 	OnStepStartEvent func(ctx context.Context, e ai.OnStepStartEvent)
 
+	// OnStepError is called when a step that started fails before it produces
+	// a step result (the provider call fails or, in Stream, the model stream
+	// ends without output). OnStepEnd is not called for such a step. In
+	// Generate an abort or timeout also ends the step here; in Stream it ends
+	// with OnAbort. Config-only: it has no per-call counterpart (TS #23758).
+	OnStepError func(ctx context.Context, e ai.OnStepErrorEvent)
+
+	// ErrorHandler is called when an error occurs. For Stream it receives the
+	// errors of the stream, for Generate it receives the error before it is
+	// returned. Aborts and timeouts are not reported. A per-call
+	// AgentStreamOptions.OnError fires after it. Config-only (TS onError).
+	ErrorHandler func(ctx context.Context, err error)
+
+	// AbortHandler is called when Stream is aborted or times out. Generate
+	// does not call it: an aborted Generate call returns an error and its step
+	// ends with OnStepError. A per-call AgentStreamOptions.OnAbort fires after
+	// it. Config-only (TS onAbort).
+	AbortHandler func(ctx context.Context, steps []types.StepResult)
+
 	// OnToolExecutionStart is called just before each tool's Execute function runs.
 	OnToolExecutionStart func(ctx context.Context, e ai.OnToolCallStartEvent)
 
@@ -635,6 +688,10 @@ type PrepareCallConfig struct {
 
 	// ToolOrder controls the order tools are sent to providers for this call.
 	ToolOrder []string
+
+	// ToolCallConcurrency is the maximum number of tool calls that may execute
+	// concurrently within a step for this call.
+	ToolCallConcurrency *int
 
 	// ExperimentalToolCallers configures which tools may call which other
 	// tools for this call.

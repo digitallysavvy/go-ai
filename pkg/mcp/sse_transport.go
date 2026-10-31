@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +26,9 @@ type SSETransport struct {
 	endpoint  *url.URL
 	client    *http.Client
 	sseClient SSEClient
+	// streamClient is client without http.Client.Timeout, which would cut the
+	// long-lived event stream off after the request timeout.
+	streamClient *http.Client
 
 	receiveMu    sync.Mutex
 	receiveQueue []*MCPMessage
@@ -36,10 +38,20 @@ type SSETransport struct {
 	protocolVersion string
 	streamBody      io.Closer
 	cancel          context.CancelFunc
-	streamErr       error
+	// streamCtx is the transport-lifetime context (TS abortController
+	// signal), canceled by Close. Every Send POST also watches it.
+	streamCtx context.Context
+	streamErr error
+	// streamGen identifies the current stream. Connect and Close each bump
+	// it, so a reader goroutine left over from a closed or failed stream
+	// (Close does not wait for it) cannot clear the state of a newer one.
+	streamGen uint64
 
 	config TransportConfig
 	oauth  *OAuthConfig
+	auth   *transportAuth
+	// onError receives non-fatal diagnostics (TS onerror).
+	onError func(error)
 
 	// refreshMu/refreshCh/refreshErr single-flight concurrent OAuth token
 	// refreshes triggered by a 401 response (hash 4b5cb49), mirroring
@@ -47,6 +59,10 @@ type SSETransport struct {
 	refreshMu  sync.Mutex
 	refreshCh  chan struct{}
 	refreshErr error
+	// refreshCanceled is set when the shared refresh failed because the
+	// caller that ran it canceled its ctx; a waiter whose own ctx is live
+	// runs the refresh again (as transportAuth.authorizeOnce does).
+	refreshCanceled bool
 }
 
 // SSETransportConfig contains configuration for legacy SSE transport.
@@ -63,26 +79,48 @@ type SSETransportConfig struct {
 	// Config is the base transport configuration.
 	Config TransportConfig
 
-	// HTTPClient is an optional custom HTTP client used for GET and POST requests.
+	// HTTPClient is an optional custom HTTP client used for GET and POST
+	// requests. The transport uses a copy of it, so the request timeout and
+	// redirect policy it applies do not change the client itself.
 	HTTPClient *http.Client
 
 	// SSEClient is an optional custom SSE-capable client used instead of
 	// HTTPClient when supplied.
 	SSEClient SSEClient
+
+	// AuthProvider enables the MCP OAuth flow: its tokens are sent as a
+	// bearer token, and a 401 response runs Auth once (shared by concurrent
+	// requests) before the request is retried. Matches TS SseMCPTransport's
+	// authProvider. When Auth cannot complete without user interaction the
+	// request fails with *UnauthorizedError.
+	AuthProvider OAuthClientProvider `json:"-"`
+
+	// AuthHTTPClient is the HTTP client used for the OAuth discovery,
+	// registration and token requests Auth makes (TS passes the transport's
+	// fetch). Nil uses Auth's default client.
+	AuthHTTPClient *http.Client `json:"-"`
+
+	// OnError, when set, receives non-fatal diagnostics (TS onerror).
+	OnError func(error) `json:"-"`
 }
 
 // NewSSETransport creates a new legacy SSE transport.
 func NewSSETransport(config SSETransportConfig) *SSETransport {
 	timeout := time.Duration(config.TimeoutMS) * time.Millisecond
-	if timeout == 0 {
-		timeout = 30 * time.Second
-	}
+	// No default: TS fetch has no request timeout, the caller's ctx governs.
 
-	httpClient := config.HTTPClient
-	if httpClient == nil {
+	// A caller's client is copied, not modified (as in NewHTTPTransport):
+	// setting its timeout or redirect policy would change every other use of
+	// it (http.DefaultClient, for one) and race with them.
+	var httpClient *http.Client
+	if config.HTTPClient == nil {
 		httpClient = &http.Client{Timeout: timeout}
-	} else if httpClient.Timeout == 0 {
-		httpClient.Timeout = timeout
+	} else {
+		c := *config.HTTPClient
+		httpClient = &c
+		if httpClient.Timeout == 0 && timeout > 0 {
+			httpClient.Timeout = timeout
+		}
 	}
 
 	if config.Config.Redirect != MCPRedirectFollow {
@@ -92,14 +130,34 @@ func NewSSETransport(config SSETransportConfig) *SSETransport {
 	}
 
 	baseURL, _ := url.Parse(config.URL)
+	streamClient := *httpClient
+	streamClient.Timeout = 0
 	return &SSETransport{
 		url:          config.URL,
 		baseURL:      baseURL,
 		client:       httpClient,
+		streamClient: &streamClient,
 		sseClient:    config.SSEClient,
 		receiveQueue: make([]*MCPMessage, 0),
 		config:       config.Config,
 		oauth:        config.OAuth,
+		auth:         newTransportAuth(config.AuthProvider, config.URL, config.AuthHTTPClient),
+		onError:      config.OnError,
+	}
+}
+
+// sendFailed reports a send failure through OnError unless the caller's own
+// context was cancelled (TS: `if (options?.signal?.aborted) throw error`).
+func (t *SSETransport) sendFailed(ctx context.Context, err error) error {
+	if ctx.Err() == nil {
+		t.reportError(err)
+	}
+	return err
+}
+
+func (t *SSETransport) reportError(err error) {
+	if t.onError != nil && err != nil {
+		t.onError(err)
 	}
 }
 
@@ -116,63 +174,170 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 		return NewMCPClientError(0, "MCP SSE Transport Error: invalid URL", nil)
 	}
 
-	reqCtx, cancel := context.WithCancel(ctx)
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, t.url, nil)
-	if err != nil {
+	// The stream outlives this call: only the handshake is bound to ctx
+	// (TS start() has no caller signal), so cancelling a setup context after
+	// Connect returns does not drop the connection.
+	reqCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stopWatch := context.AfterFunc(ctx, cancel)
+	// Install the stream's abort handle before the GET, as TS start() creates
+	// its abortController first: a Close during the handshake aborts the
+	// request instead of being lost. A Connect still in flight is superseded
+	// and its request or stream is aborted, so its reader cannot leak.
+	t.mu.Lock()
+	prevCancel, prevBody := t.cancel, t.streamBody
+	t.streamGen++
+	gen := t.streamGen
+	t.cancel = cancel
+	t.streamCtx = reqCtx
+	t.streamBody = nil
+	t.mu.Unlock()
+	if prevCancel != nil {
+		prevCancel()
+	}
+	if prevBody != nil {
+		prevBody.Close() //nolint:errcheck
+	}
+	// fail ends a handshake that never started a reader. Once Close (or a
+	// later Connect) owns the transport, TS is silent: the aborted fetch
+	// returns without onerror.
+	fail := func(err error) error {
+		stopWatch()
 		cancel()
-		return NewTransportError("failed to create SSE request", err)
-	}
-	t.applyHeaders(ctx, req, map[string]string{"Accept": "text/event-stream"})
-
-	client := SSEClient(t.client)
-	if t.sseClient != nil {
-		client = t.sseClient
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		cancel()
-		return NewTransportError("failed to establish SSE connection", err)
-	}
-	if resp == nil {
-		cancel()
-		return NewTransportError("failed to establish SSE connection", fmt.Errorf("nil HTTP response"))
-	}
-	if resp.Body == nil {
-		resp.Body = io.NopCloser(bytes.NewReader(nil))
-	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		defer resp.Body.Close() //nolint:errcheck
-		cancel()
-		statusText := http.StatusText(resp.StatusCode)
-		if statusText == "" {
-			statusText = resp.Status
+		if !t.releaseHandshake(gen) {
+			return errSSEClosedDuringConnect()
 		}
+		if ctx.Err() == nil {
+			t.reportError(err)
+		}
+		return err
+	}
+	var resp *http.Response
+	// TS fails the connection when an OK response has no body (`!response.ok
+	// || !response.body`); only a custom SSEClient can return one.
+	missingBody := false
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, t.url, nil)
+		if err != nil {
+			return fail(NewTransportError("failed to create SSE request", err))
+		}
+		if err := t.applyHeaders(ctx, req, map[string]string{"Accept": "text/event-stream"}); err != nil {
+			// TS: a failing tokens() throws into establishConnection's catch,
+			// which reports it.
+			return fail(NewTransportError("failed to load OAuth tokens", err))
+		}
+
+		client := SSEClient(t.streamClient)
+		if t.sseClient != nil {
+			client = t.sseClient
+		}
+		resp, err = client.Do(req)
+		if err != nil {
+			// TS reports a failed fetch through onerror unless it was aborted.
+			return fail(NewTransportError("failed to establish SSE connection", err))
+		}
+		if resp == nil {
+			return fail(NewTransportError("failed to establish SSE connection", fmt.Errorf("nil HTTP response")))
+		}
+		missingBody = resp.Body == nil
+		if missingBody {
+			resp.Body = io.NopCloser(bytes.NewReader(nil))
+		}
+		if resp.StatusCode == http.StatusUnauthorized && t.auth.enabled() && attempt == 0 {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, mcpMaxErrorBodyBytes))
+			resp.Body.Close() //nolint:errcheck
+			if err := t.auth.authorize(ctx, resp); err != nil {
+				// TS authorizeOnce is not tied to the abort signal, so its
+				// failure is reported even after close(); only the caller's
+				// own cancellation (Go-only) is not.
+				stopWatch()
+				cancel()
+				t.releaseHandshake(gen)
+				if ctx.Err() == nil {
+					t.reportError(err)
+				}
+				return err
+			}
+			continue
+		}
+		break
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || missingBody {
+		defer resp.Body.Close() //nolint:errcheck
+		statusText := responseStatusText(resp)
+		// TS #19430: keep the (bounded) response body on the error.
+		text := string(readErrorBody(resp.Body))
 		message := fmt.Sprintf("MCP SSE Transport Error: %d %s", resp.StatusCode, statusText)
+		if text != "" {
+			message += ": " + text
+		}
 		if resp.StatusCode == http.StatusMethodNotAllowed {
 			message += ". This server does not support SSE transport. Try using `http` transport instead"
 		}
-		return NewMCPClientError(0, strings.TrimSpace(message), nil, WithMCPHTTPResponse(resp.StatusCode, t.url, ""))
+		return fail(NewMCPClientError(0, message, nil, WithMCPHTTPResponse(resp.StatusCode, t.url, text)))
 	}
 
 	ready := make(chan error, 1)
 	t.mu.Lock()
+	if t.streamGen != gen {
+		// Close (or a later Connect) ran during the handshake.
+		t.mu.Unlock()
+		stopWatch()
+		cancel()
+		resp.Body.Close() //nolint:errcheck
+		return errSSEClosedDuringConnect()
+	}
 	t.streamBody = resp.Body
-	t.cancel = cancel
 	t.streamErr = nil
 	t.mu.Unlock()
-	go t.readSSEStream(resp.Body, ready)
+	go t.readSSEStream(resp.Body, gen, ready)
 
 	select {
 	case err := <-ready:
+		stopWatch()
 		if err != nil {
-			t.closeWithoutCallback()
+			// A stale stream means Close ran while Connect waited: it
+			// already reset the transport (and a later Connect may own it
+			// now), and TS reports nothing once aborted.
+			if t.closeStream(gen) {
+				t.reportError(err)
+			}
 			return err
 		}
 		return nil
 	case <-ctx.Done():
-		t.closeWithoutCallback()
+		stopWatch()
+		// Close only this Connect's stream: a Close and a later Connect may
+		// have replaced it while ctx ended.
+		t.closeStream(gen)
 		return ctx.Err()
 	}
+}
+
+// releaseHandshake clears the abort handle a failed handshake installed and
+// reports whether gen was still the current stream (no Close or later
+// Connect since).
+func (t *SSETransport) releaseHandshake(gen uint64) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.streamGen != gen {
+		return false
+	}
+	t.cancel = nil
+	t.streamCtx = nil
+	t.streamBody = nil
+	return true
+}
+
+// closeStream closes the transport if gen is still its current stream and
+// reports whether it did.
+func (t *SSETransport) closeStream(gen uint64) bool {
+	t.mu.Lock()
+	if t.streamGen != gen {
+		t.mu.Unlock()
+		return false
+	}
+	t.closeLocked()
+	return true
 }
 
 // Close closes the SSE stream and clears the locked endpoint.
@@ -183,13 +348,21 @@ func (t *SSETransport) Close() error {
 
 func (t *SSETransport) closeWithoutCallback() {
 	t.mu.Lock()
+	t.closeLocked()
+}
+
+// closeLocked resets the transport and aborts its stream. It is called with
+// t.mu held and releases it.
+func (t *SSETransport) closeLocked() {
 	body := t.streamBody
 	cancel := t.cancel
 	t.connected = false
 	t.endpoint = nil
 	t.streamBody = nil
 	t.cancel = nil
+	t.streamCtx = nil
 	t.streamErr = io.EOF
+	t.streamGen++
 	t.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -201,18 +374,35 @@ func (t *SSETransport) closeWithoutCallback() {
 
 // Send posts a JSON-RPC message to the endpoint received from the SSE stream.
 func (t *SSETransport) Send(ctx context.Context, message *MCPMessage) error {
+	// TS send() starts with options.signal.throwIfAborted().
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	t.mu.Lock()
 	connected := t.connected
 	endpoint := t.endpoint
+	streamCtx := t.streamCtx
 	t.mu.Unlock()
 
 	if !connected || endpoint == nil {
 		return NewMCPClientError(0, "MCP SSE Transport Error: Not connected", nil)
 	}
 
+	// TS send() signals the POST with AbortSignal.any([transportSignal,
+	// options.signal]): Close aborts an in-flight POST. sendFailed still
+	// checks only the caller's ctx, so that abort is reported, as in TS.
+	reqCtx := ctx
+	if streamCtx != nil {
+		var cancel context.CancelFunc
+		reqCtx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		stop := context.AfterFunc(streamCtx, cancel)
+		defer stop()
+	}
+
 	data, err := json.Marshal(message)
 	if err != nil {
-		return NewTransportError("failed to marshal message", err)
+		return t.sendFailed(ctx, NewTransportError("failed to marshal message", err))
 	}
 	if t.config.EnableLogging {
 		fmt.Printf("MCP SSE Send: %s\n", string(data))
@@ -225,11 +415,15 @@ func (t *SSETransport) Send(ctx context.Context, message *MCPMessage) error {
 	// instead of triggering a second, redundant refresh.
 	var resp *http.Response
 	for attempt := 0; attempt < 2; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(data))
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint.String(), bytes.NewReader(data))
 		if err != nil {
-			return NewTransportError("failed to create request", err)
+			return t.sendFailed(ctx, NewTransportError("failed to create request", err))
 		}
-		t.applyHeaders(ctx, req, map[string]string{"Content-Type": "application/json"})
+		// TS builds the headers (authProvider.tokens()) inside attempt's try,
+		// so a failure is reported through onerror like a failed fetch.
+		if err := t.applyHeaders(ctx, req, map[string]string{"Content-Type": "application/json"}); err != nil {
+			return t.sendFailed(ctx, NewTransportError("failed to load OAuth tokens", err))
+		}
 		sentToken, _, _ := t.oauthTokenSnapshot()
 
 		client := SSEClient(t.client)
@@ -238,35 +432,50 @@ func (t *SSETransport) Send(ctx context.Context, message *MCPMessage) error {
 		}
 		resp, err = client.Do(req)
 		if err != nil {
-			return NewTransportError("failed to send request", err)
+			return t.sendFailed(ctx, NewTransportError("failed to send request", err))
 		}
 		if resp == nil {
-			return NewTransportError("failed to send request", fmt.Errorf("nil HTTP response"))
+			return t.sendFailed(ctx, NewTransportError("failed to send request", fmt.Errorf("nil HTTP response")))
 		}
 		if resp.Body == nil {
 			resp.Body = io.NopCloser(bytes.NewReader(nil))
 		}
 
-		if resp.StatusCode != http.StatusUnauthorized || !t.oauthConfigured() || attempt == 1 {
+		if resp.StatusCode != http.StatusUnauthorized || attempt == 1 || (!t.oauthConfigured() && !t.auth.enabled()) {
 			break
 		}
-		_, _ = io.Copy(io.Discard, resp.Body)
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, mcpMaxErrorBodyBytes))
 		resp.Body.Close() //nolint:errcheck
 
+		if t.auth.enabled() {
+			// Another request may already have refreshed the token (TS
+			// accessTokenChanged): retry with it instead of re-authorizing.
+			changed, err := t.auth.tokenChanged(ctx, req.Header.Get("Authorization"))
+			if err != nil {
+				return t.sendFailed(ctx, NewTransportError("failed to load OAuth tokens", err))
+			}
+			if changed {
+				continue
+			}
+			if err := t.auth.authorize(ctx, resp); err != nil {
+				return t.sendFailed(ctx, err)
+			}
+			continue
+		}
 		if currentToken, _, _ := t.oauthTokenSnapshot(); currentToken == "" || currentToken == sentToken {
 			if err := t.refreshOAuthToken(ctx); err != nil {
-				return NewTransportError("failed to refresh OAuth token", err)
+				return t.sendFailed(ctx, NewTransportError("failed to refresh OAuth token", err))
 			}
 		}
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		body, _ := io.ReadAll(resp.Body)
+		body := readErrorBody(resp.Body)
 		message := fmt.Sprintf("MCP SSE Transport Error: POSTing to endpoint (HTTP %d): %s", resp.StatusCode, string(body))
-		return NewMCPClientError(0, message, nil, WithMCPHTTPResponse(resp.StatusCode, endpoint.String(), string(body)))
+		return t.sendFailed(ctx, NewMCPClientError(0, message, nil, WithMCPHTTPResponse(resp.StatusCode, endpoint.String(), string(body))))
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
+	drainBody(resp.Body)
 	return nil
 }
 
@@ -325,7 +534,7 @@ func (t *SSETransport) ProtocolVersion() string {
 	return ProtocolVersion
 }
 
-func (t *SSETransport) applyHeaders(ctx context.Context, req *http.Request, base map[string]string) {
+func (t *SSETransport) applyHeaders(ctx context.Context, req *http.Request, base map[string]string) error {
 	for k, v := range t.config.Headers {
 		req.Header.Set(k, v)
 	}
@@ -343,9 +552,10 @@ func (t *SSETransport) applyHeaders(ctx context.Context, req *http.Request, base
 		}
 	}
 	setMCPUserAgent(req.Header)
+	return t.auth.setBearer(ctx, req.Header)
 }
 
-func (t *SSETransport) readSSEStream(body io.ReadCloser, ready chan<- error) {
+func (t *SSETransport) readSSEStream(body io.ReadCloser, gen uint64, ready chan<- error) {
 	defer body.Close() //nolint:errcheck
 	parser := streaming.NewSSEParser(body)
 	readySent := false
@@ -353,27 +563,65 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, ready chan<- error) {
 		event, err := parser.Next()
 		if err == io.EOF {
 			t.mu.Lock()
-			wasConnected := t.connected
-			t.connected = false
-			t.endpoint = nil
-			if readySent && wasConnected {
-				t.streamErr = NewMCPClientError(0, "MCP SSE Transport Error: Connection closed unexpectedly", nil)
-			} else {
-				t.streamErr = io.EOF
+			// A Close (or a later Connect) since this stream started owns
+			// the transport state now: leave it alone (TS returns silently
+			// once its abortController is aborted).
+			aborted := t.streamGen != gen
+			var unexpected error
+			if !aborted {
+				wasConnected := t.connected
+				t.connected = false
+				t.endpoint = nil
+				if readySent && wasConnected {
+					unexpected = NewMCPClientError(0, "MCP SSE Transport Error: Connection closed unexpectedly", nil)
+					t.streamErr = unexpected
+				} else {
+					t.streamErr = io.EOF
+				}
 			}
 			t.mu.Unlock()
 			if !readySent {
-				ready <- NewMCPClientError(0, "MCP SSE Transport Error: Connection closed unexpectedly", nil)
+				if aborted {
+					ready <- errSSEClosedDuringConnect()
+				} else {
+					ready <- NewMCPClientError(0, "MCP SSE Transport Error: Connection closed before endpoint event was received", nil)
+				}
+			}
+			// TS processEvents: a stream that ends after the endpoint event
+			// throws into its catch, which reports through onerror (an
+			// intentional close returns silently first).
+			if unexpected != nil && !aborted {
+				t.reportError(unexpected)
 			}
 			return
 		}
 		if err != nil {
+			t.mu.Lock()
+			aborted := t.streamGen != gen // closed via Close, or replaced
+			if !aborted {
+				t.connected = false
+				t.endpoint = nil
+				t.streamErr = NewMCPClientError(0, "MCP SSE Transport Error: Connection closed unexpectedly", nil)
+			}
+			t.mu.Unlock()
 			if !readySent {
-				ready <- NewTransportError("failed to read SSE event", err)
+				if aborted {
+					ready <- errSSEClosedDuringConnect()
+				} else {
+					ready <- NewTransportError("failed to read SSE event", err)
+				}
+			} else if !aborted {
+				t.reportError(NewTransportError("failed to read SSE event", err))
 			}
 			return
 		}
 
+		if t.isStaleStream(gen) {
+			if !readySent {
+				ready <- errSSEClosedDuringConnect()
+			}
+			return
+		}
 		if event.Event == "endpoint" {
 			if t.hasEndpoint() {
 				continue
@@ -386,17 +634,26 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, ready chan<- error) {
 				return
 			}
 			endpoint = t.baseURL.ResolveReference(endpoint)
-			if endpoint.Scheme != t.baseURL.Scheme || endpoint.Host != t.baseURL.Host {
+			if origin(endpoint) != origin(t.baseURL) {
 				t.mu.Lock()
-				t.connected = false
-				t.endpoint = nil
+				if t.streamGen == gen {
+					t.connected = false
+					t.endpoint = nil
+				}
 				t.mu.Unlock()
 				if !readySent {
-					ready <- NewMCPClientError(0, fmt.Sprintf("MCP SSE Transport Error: Endpoint origin does not match connection origin: %s://%s", endpoint.Scheme, endpoint.Host), nil)
+					ready <- NewMCPClientError(0, fmt.Sprintf("MCP SSE Transport Error: Endpoint origin does not match connection origin: %s", origin(endpoint)), nil)
 				}
 				return
 			}
 			t.mu.Lock()
+			if t.streamGen != gen {
+				t.mu.Unlock()
+				if !readySent {
+					ready <- errSSEClosedDuringConnect()
+				}
+				return
+			}
 			t.endpoint = endpoint
 			t.connected = true
 			t.mu.Unlock()
@@ -410,12 +667,37 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, ready chan<- error) {
 		if event.Event != "" && event.Event != "message" {
 			continue
 		}
-		var msg MCPMessage
-		if err := unmarshalSafeJSON([]byte(event.Data), &msg); err != nil {
+		msg, err := parseMCPMessage([]byte(event.Data))
+		if err != nil {
+			// TS reports the parse failure through onerror and keeps reading.
+			t.reportError(&MCPClientError{Message: "MCP SSE Transport Error: Failed to parse message", Cause: err})
 			continue
 		}
-		t.queueReceivedMessages([]*MCPMessage{&msg})
+		// Queue only while this stream is current: a Close and reconnect
+		// between the stale check above and here must not deliver it.
+		t.mu.Lock()
+		if t.streamGen != gen {
+			t.mu.Unlock()
+			return
+		}
+		t.queueReceivedMessages([]*MCPMessage{msg})
+		t.mu.Unlock()
 	}
+}
+
+// errSSEClosedDuringConnect is what Connect returns when Close ends the
+// stream before its endpoint event. TS start() never settles in that case
+// (the aborted reader returns silently); a blocking Connect has to return.
+func errSSEClosedDuringConnect() error {
+	return NewMCPClientError(0, "MCP SSE Transport Error: Transport closed before endpoint event was received", nil)
+}
+
+// isStaleStream reports whether the stream gen belongs to has been closed or
+// replaced by a later Connect.
+func (t *SSETransport) isStaleStream(gen uint64) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.streamGen != gen
 }
 
 func (t *SSETransport) hasEndpoint() bool {
@@ -442,15 +724,23 @@ func (t *SSETransport) refreshOAuthToken(ctx context.Context) error {
 		return fmt.Errorf("OAuth not configured")
 	}
 
-	t.refreshMu.Lock()
-	if t.refreshCh != nil {
+	for {
+		t.refreshMu.Lock()
+		if t.refreshCh == nil {
+			break // still holding refreshMu
+		}
 		ch := t.refreshCh
 		t.refreshMu.Unlock()
 		select {
 		case <-ch:
 			t.refreshMu.Lock()
-			err := t.refreshErr
+			err, canceled := t.refreshErr, t.refreshCanceled
 			t.refreshMu.Unlock()
+			// A refresh that ended because the caller that ran it gave up
+			// is not this caller's result: run it again.
+			if canceled && ctx.Err() == nil {
+				continue
+			}
 			return err
 		case <-ctx.Done():
 			return ctx.Err()
@@ -459,13 +749,18 @@ func (t *SSETransport) refreshOAuthToken(ctx context.Context) error {
 	t.refreshCh = make(chan struct{})
 	t.refreshMu.Unlock()
 
-	err := t.doRefreshOAuthToken(ctx)
-
-	t.refreshMu.Lock()
-	t.refreshErr = err
-	close(t.refreshCh)
-	t.refreshCh = nil
-	t.refreshMu.Unlock()
+	// The refresh is released even when RefreshTokenFunc panics, so later
+	// refreshes do not wait on it forever (see transportAuth.runFlight).
+	err := errOAuthRefreshPanicked
+	defer func() {
+		t.refreshMu.Lock()
+		t.refreshErr = err
+		t.refreshCanceled = err != nil && ctx.Err() != nil
+		close(t.refreshCh)
+		t.refreshCh = nil
+		t.refreshMu.Unlock()
+	}()
+	err = t.doRefreshOAuthToken(ctx)
 	return err
 }
 

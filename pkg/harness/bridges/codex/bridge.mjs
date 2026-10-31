@@ -8,6 +8,71 @@ import { spawn } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
 import path from "node:path";
 //#region ../harness/dist/bridge/index.js
+const name = "AI_HarnessBridgeCapabilityUnsupportedError";
+/**
+* Signals an unsupported capability discovered inside a sandbox bridge.
+* `isInstance` also recognizes the serialized error shape received by the
+* host, where it can be translated to `HarnessCapabilityUnsupportedError`.
+*/
+var HarnessBridgeCapabilityUnsupportedError = class extends Error {
+	constructor({ message, harnessId, cause }) {
+		super(message);
+		Object.defineProperty(this, "name", { value: name });
+		this.harnessId = harnessId;
+		this.cause = cause;
+	}
+	static isInstance(error) {
+		return error != null && typeof error === "object" && "name" in error && error.name === name && "message" in error && typeof error.message === "string";
+	}
+};
+function getNormalizedInlineImage(part) {
+	if (part.type === "file" && part.mediaType.startsWith("image/") && part.mediaType !== "image/*" && part.data.type === "data" && typeof part.data.data === "string") return {
+		data: part.data.data,
+		mediaType: part.mediaType
+	};
+}
+function convertHarnessToolModelOutput({ output }) {
+	switch (output.type) {
+		case "text":
+		case "error-text": return {
+			content: [{
+				type: "text",
+				text: output.value
+			}],
+			isError: output.type === "error-text"
+		};
+		case "json":
+		case "error-json": return {
+			content: [{
+				type: "text",
+				text: JSON.stringify(output.value)
+			}],
+			isError: output.type === "error-json"
+		};
+		case "execution-denied": return {
+			content: [{
+				type: "text",
+				text: output.reason ?? "Tool execution denied."
+			}],
+			isError: true
+		};
+		case "content": return {
+			content: output.value.map((part) => {
+				if (part.type === "text") return {
+					type: "text",
+					text: part.text
+				};
+				const image = getNormalizedInlineImage(part);
+				if (image != null) return {
+					type: "image",
+					...image
+				};
+				throw new HarnessBridgeCapabilityUnsupportedError({ message: `Harnesses support only text and inline images in tool model output; unsupported content '${part.type}'.` });
+			}),
+			isError: false
+		};
+	}
+}
 const DEBUG_LEVEL_WEIGHT = {
 	error: 0,
 	warn: 1,
@@ -1095,6 +1160,7 @@ function normalizeItem({ item, textByItem, reasoningByItem }) {
 			server: typeof item.server === "string" ? item.server : void 0,
 			tool: typeof item.tool === "string" ? item.tool : void 0,
 			arguments: item.arguments,
+			status: normalizeMcpStatus(item.status),
 			result: result == null ? item.result : {
 				content: result.content,
 				structured_content: result.structuredContent
@@ -1134,6 +1200,10 @@ function normalizeCommandStatus(value) {
 	if (value === "completed") return "completed";
 	if (value === "inProgress") return "in_progress";
 	return "failed";
+}
+function normalizeMcpStatus(value) {
+	if (value === "inProgress") return "in_progress";
+	if (value === "completed" || value === "failed") return value;
 }
 function matchesActiveTurn({ params, activeThreadId, activeTurnId }) {
 	const nestedTurn = asRecord$2(params.turn);
@@ -1272,12 +1342,14 @@ const CODEX_CLI_PATH = fileURLToPath(new URL("./node_modules/@openai/codex/bin/c
 function createCodexAppServerRuntime() {
 	let client;
 	let loadedThreadId;
+	let loadedThreadModel;
 	let loadedConfig;
 	let activeTurn;
 	const close = async () => {
 		const previous = client;
 		client = void 0;
 		loadedThreadId = void 0;
+		loadedThreadModel = void 0;
 		loadedConfig = void 0;
 		await previous?.close();
 	};
@@ -1347,7 +1419,8 @@ function createCodexAppServerRuntime() {
 						request,
 						dynamicTools: active.dynamicTools,
 						emit: active.options.emit,
-						requestToolResult: active.options.turn.requestToolResult
+						requestToolResult: active.options.turn.requestToolResult,
+						stepTracker: active.options.stepTracker
 					}).catch((error) => {
 						active.fail(error);
 						throw error;
@@ -1434,6 +1507,7 @@ function createCodexAppServerRuntime() {
 					params: { threadId: loadedThreadId }
 				}) });
 				loadedThreadId = void 0;
+				loadedThreadModel = void 0;
 			}
 			if (trustedHook != null) assertTrustedApplyPatchHook({
 				response: await raceWithProcess({ operation: runningClient.request({
@@ -1476,9 +1550,18 @@ function createCodexAppServerRuntime() {
 					method: threadMethod
 				});
 				loadedThreadId = currentTurn.threadId;
+				loadedThreadModel = {
+					requestedModel: codexModel,
+					modelId: readOptionalString(asRecord(threadResponse)?.model)
+				};
 			}
 			handler.announceThread(currentTurn.threadId);
-			emit({ type: "stream-start" });
+			const threadModel = loadedThreadModel;
+			const streamStartModelId = threadModel != null && threadModel.requestedModel === codexModel && threadModel.modelId != null ? threadModel.modelId : codexModel;
+			emit({
+				type: "stream-start",
+				...streamStartModelId ? { modelId: streamStartModelId } : {}
+			});
 			currentTurn.turnId = readNestedString({
 				value: await raceWithProcess({ operation: runningClient.request({
 					method: "turn/start",
@@ -1554,11 +1637,18 @@ function createTurnParams({ threadId, start, codexModel, disableEnvironments = f
 	return {
 		threadId,
 		...disableEnvironments ? { environments: [] } : {},
-		input: [{
+		input: typeof start.prompt === "string" ? [{
 			type: "text",
 			text: start.prompt,
 			text_elements: []
-		}],
+		}] : start.prompt.map((part) => part.type === "text" ? {
+			type: "text",
+			text: part.text,
+			text_elements: []
+		} : {
+			type: "image",
+			url: `data:${part.mediaType};base64,${part.data}`
+		}),
 		approvalPolicy: "never",
 		sandboxPolicy: {
 			type: "externalSandbox",
@@ -1602,7 +1692,7 @@ function createDynamicTools(tools) {
 function isValidDynamicToolName(name) {
 	return name.length > 0 && name.length <= 128 && /^[a-zA-Z0-9_-]+$/.test(name) && name !== "mcp" && !name.startsWith("mcp__");
 }
-async function handleAppServerRequest({ request, dynamicTools, emit, requestToolResult }) {
+async function handleAppServerRequest({ request, dynamicTools, emit, requestToolResult, stepTracker }) {
 	if (request.method !== "item/tool/call") throw new Error(`Codex app-server requested unsupported method '${request.method}'.`);
 	const params = asRecord(request.params);
 	if (params == null || typeof params.callId !== "string" || typeof params.tool !== "string") throw new Error("Codex app-server sent an invalid dynamic tool request.");
@@ -1615,7 +1705,9 @@ async function handleAppServerRequest({ request, dynamicTools, emit, requestTool
 		input: JSON.stringify(params.arguments ?? {}),
 		providerExecuted: false
 	});
-	const result = await requestToolResult(params.callId);
+	const callId = params.callId;
+	stepTracker.awaitHostInput({ itemId: callId });
+	const result = await requestToolResult(callId).finally(() => stepTracker.resolveHostInput({ itemId: callId }));
 	emit({
 		type: "tool-result",
 		toolCallId: params.callId,
@@ -1623,6 +1715,19 @@ async function handleAppServerRequest({ request, dynamicTools, emit, requestTool
 		result: result.output ?? null,
 		isError: result.isError === true
 	});
+	if (result.toolResult != null) {
+		const converted = convertHarnessToolModelOutput({ output: result.toolResult.output });
+		return {
+			contentItems: converted.content.map((part) => part.type === "text" ? {
+				type: "inputText",
+				text: part.text
+			} : {
+				type: "inputImage",
+				imageUrl: `data:${part.mediaType};base64,${part.data}`
+			}),
+			success: result.isError !== true && !converted.isError
+		};
+	}
 	return {
 		contentItems: [{
 			type: "inputText",
@@ -1653,11 +1758,16 @@ function assertSuccessfulTurn(result) {
 function asRecord(value) {
 	return value != null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
 }
+function readOptionalString(value) {
+	return typeof value === "string" && value.length > 0 ? value : void 0;
+}
 //#endregion
 //#region src/bridge/codex-step-tracker.ts
 function createCodexStepTracker(input) {
 	let stepOpen = false;
 	const pendingToolItemIds = /* @__PURE__ */ new Set();
+	const hostInputWaitingItemIds = /* @__PURE__ */ new Set();
+	const earlyFinishStepItemIds = /* @__PURE__ */ new Set();
 	const finishStep = () => {
 		if (!stepOpen || pendingToolItemIds.size > 0) return;
 		input.send({
@@ -1670,6 +1780,23 @@ function createCodexStepTracker(input) {
 			harnessMetadata: { codex: { inferredStep: true } }
 		});
 		stepOpen = false;
+		earlyFinishStepItemIds.clear();
+	};
+	const emitEarlyFinishStepIfReady = () => {
+		if (!stepOpen || pendingToolItemIds.size === 0) return;
+		for (const itemId of pendingToolItemIds) if (!hostInputWaitingItemIds.has(itemId)) return;
+		const uncovered = [...pendingToolItemIds].filter((itemId) => !earlyFinishStepItemIds.has(itemId));
+		if (uncovered.length === 0) return;
+		for (const itemId of uncovered) earlyFinishStepItemIds.add(itemId);
+		input.send({
+			type: "finish-step",
+			finishReason: {
+				unified: "tool-calls",
+				raw: "host-input"
+			},
+			usage: defaultUsage(),
+			harnessMetadata: { codex: { inferredStep: true } }
+		});
 	};
 	return {
 		observeEvent({ event, itemId }) {
@@ -1677,8 +1804,10 @@ function createCodexStepTracker(input) {
 			if (!item || !isStepItem(item)) return;
 			stepOpen = true;
 			if (isToolStepItem(item)) {
-				if (event.type === "item.started" && itemId) pendingToolItemIds.add(itemId);
-				else if (event.type === "item.completed") {
+				if (event.type === "item.started" && itemId) {
+					pendingToolItemIds.add(itemId);
+					emitEarlyFinishStepIfReady();
+				} else if (event.type === "item.completed") {
 					if (itemId) pendingToolItemIds.delete(itemId);
 					finishStep();
 				}
@@ -1686,7 +1815,17 @@ function createCodexStepTracker(input) {
 		},
 		finishTurn() {
 			pendingToolItemIds.clear();
+			hostInputWaitingItemIds.clear();
 			finishStep();
+		},
+		awaitHostInput({ itemId }) {
+			stepOpen = true;
+			pendingToolItemIds.add(itemId);
+			hostInputWaitingItemIds.add(itemId);
+			emitEarlyFinishStepIfReady();
+		},
+		resolveHostInput({ itemId }) {
+			hostInputWaitingItemIds.delete(itemId);
 		}
 	};
 }
@@ -1876,6 +2015,7 @@ function createEmitStreamEvent({ send, stepTracker, setTurnUsage, setThreadId, e
 				toolCallId: id,
 				toolName,
 				result: extractMcpToolCallResult(item),
+				...item.status === "failed" ? { isError: true } : {},
 				dynamic: true
 			});
 			observeStep();

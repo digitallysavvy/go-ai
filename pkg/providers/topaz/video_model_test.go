@@ -1038,3 +1038,20 @@ func TestVideoModel_DoGenerate_RespectsContextCancellation(t *testing.T) {
 		t.Fatal("expected an error after ctx is canceled before DoGenerate starts")
 	}
 }
+
+// TS spreads `estimatedCredits: created.estimates.cost` whenever cost is
+// non-null, including an empty array.
+func TestVideoModel_ReportsEmptyCostEstimateArray(t *testing.T) {
+	ts := newVideoTestServer(t)
+	defer ts.server.Close()
+	ts.expressBody = fmt.Sprintf(`{"requestId":%q,"uploadUrls":[%q],"estimates":{"cost":[]}}`, videoRequestID, ts.server.URL+"/upload/part-1")
+
+	result, err := ts.model().DoStart(context.Background(), defaultStartOptions())
+	if err != nil {
+		t.Fatalf("DoStart() error: %v", err)
+	}
+	topazMeta := result.ProviderMetadata["topaz"].(map[string]interface{})
+	if _, ok := topazMeta["estimatedCredits"]; !ok {
+		t.Errorf("estimatedCredits missing for an empty cost array: %#v", topazMeta)
+	}
+}

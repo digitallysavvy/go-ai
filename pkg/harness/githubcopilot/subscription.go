@@ -1,7 +1,6 @@
 package githubcopilot
 
 import (
-	"bytes"
 	"context"
 	"net/url"
 	"os"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 const copilotKeyringService = "copilot-cli"
@@ -47,7 +47,7 @@ func ResolveSubscriptionEnvironment(ctx context.Context, opts ResolveSubscriptio
 	if harnessutil.IsAuthenticationEnvironment(opts.Auth) {
 		return opts.Auth.Environment, nil
 	}
-	hasDirect := opts.Env["COPILOT_GITHUB_TOKEN"] != "" || opts.Env["GH_TOKEN"] != "" || opts.Env["GITHUB_TOKEN"] != ""
+	hasDirect := envHas(opts.Env, "COPILOT_GITHUB_TOKEN") || envHas(opts.Env, "GH_TOKEN") || envHas(opts.Env, "GITHUB_TOKEN")
 	if !harnessutil.ShouldResolveNativeSubscription(opts.Auth.Mode, opts.Env, hasDirect) {
 		return opts.Env, nil
 	}
@@ -107,9 +107,12 @@ func ReadSubscription(ctx context.Context, opts ReadSubscriptionOptions) (*Subsc
 	if goos == "" {
 		goos = runtime.GOOS
 	}
-	copilotHome := env["COPILOT_HOME"]
-	if copilotHome == "" {
+	copilotHome, ok := env["COPILOT_HOME"]
+	if !ok {
 		copilotHome = filepath.Join(homeDirectory, ".copilot")
+	}
+	if abs, err := filepath.Abs(copilotHome); err == nil {
+		copilotHome = abs // TS resolve()
 	}
 	config := readCopilotConfig(filepath.Join(copilotHome, "config.json"))
 	account := selectAccount(config)
@@ -134,7 +137,7 @@ func ReadSubscription(ctx context.Context, opts ReadSubscriptionOptions) (*Subsc
 	host := ""
 	if account != nil {
 		host = account.Host
-	} else if normalized := normalizeGitHubOrigin(firstNonEmpty(env["COPILOT_GH_HOST"], env["GH_HOST"], "github.com")); normalized != "" {
+	} else if normalized := normalizeGitHubOrigin(firstPresent(env, "github.com", "COPILOT_GH_HOST", "GH_HOST")); normalized != "" {
 		host = normalized
 	}
 	if host == "" {
@@ -146,7 +149,11 @@ func ReadSubscription(ctx context.Context, opts ReadSubscriptionOptions) (*Subsc
 		findExecutable = FindGitHubCliExecutable
 	}
 	executable, err := findExecutable(ctx, env, goos)
-	if err != nil || executable == "" {
+	if err != nil {
+		// TS awaits the finder without a catch: a rejection propagates.
+		return nil, err
+	}
+	if executable == "" {
 		return nil, nil
 	}
 
@@ -158,13 +165,13 @@ func ReadSubscription(ctx context.Context, opts ReadSubscriptionOptions) (*Subsc
 	if err != nil || !isNonEmpty(token) {
 		return nil, nil
 	}
-	return &Subscription{Token: strings.TrimSpace(token), Host: host}, nil
+	return &Subscription{Token: providerutils.JSTrim(token), Host: host}, nil
 }
 
 // FindGitHubCliExecutable searches env's PATH for a `gh` executable. Mirrors
 // TS `findHostGitHubCliExecutable`.
 func FindGitHubCliExecutable(_ context.Context, env map[string]string, goos string) (string, error) {
-	path := firstNonEmpty(env["PATH"], env["Path"], env["path"])
+	path := firstPresent(env, "", "PATH", "Path", "path")
 	if path == "" {
 		return "", nil
 	}
@@ -172,16 +179,22 @@ func FindGitHubCliExecutable(_ context.Context, env map[string]string, goos stri
 	names := []string{"gh"}
 	if harnessutil.IsWindows(goos) {
 		separator = ";"
-		names = windowsGitHubCliExecutableNames(env["PATHEXT"])
+		pathExt, pathExtSet := env["PATHEXT"]
+		names = windowsGitHubCliExecutableNames(pathExt, pathExtSet)
 	}
 	for _, directory := range strings.Split(path, separator) {
-		directory = strings.Trim(directory, `"`)
+		directory = strings.TrimSuffix(strings.TrimPrefix(directory, `"`), `"`) // TS replace(/^"|"$/g, '')
 		if directory == "" {
 			continue
 		}
 		for _, name := range names {
 			candidate := filepath.Join(directory, name)
-			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			if abs, err := filepath.Abs(candidate); err == nil {
+				candidate = abs // TS resolve(directory, name)
+			}
+			// TS access(candidate, X_OK) also accepts a directory with an
+			// execute bit, so a directory named `gh` ends the search.
+			if info, err := os.Stat(candidate); err == nil {
 				if harnessutil.IsWindows(goos) || info.Mode().Perm()&0o111 != 0 {
 					return candidate, nil
 				}
@@ -191,13 +204,16 @@ func FindGitHubCliExecutable(_ context.Context, env map[string]string, goos stri
 	return "", nil
 }
 
-func windowsGitHubCliExecutableNames(pathExt string) []string {
-	if pathExt == "" {
+// windowsGitHubCliExecutableNames mirrors TS `pathExt ?? default`: only an
+// absent PATHEXT falls back to the default list; entries that are blank
+// after trimming are dropped.
+func windowsGitHubCliExecutableNames(pathExt string, pathExtSet bool) []string {
+	if !pathExtSet {
 		pathExt = ".COM;.EXE;.BAT;.CMD"
 	}
 	names := []string{"gh"}
 	for _, ext := range strings.Split(pathExt, ";") {
-		if ext != "" {
+		if isNonEmpty(ext) {
 			names = append(names, "gh"+ext)
 		}
 	}
@@ -208,14 +224,11 @@ func readHostGitHubCliToken(ctx context.Context, executable, hostname string, en
 	// Mirrors TS `readHostGitHubCliToken`'s `timeout: 10_000`.
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, executable, "auth", "token", "--hostname", hostname)
-	cmd.Env = mapToEnvList(env)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
-		return "", err
-	}
-	return stdout.String(), nil
+	return subscription.RunCapped(ctx, func(ctx context.Context) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, executable, "auth", "token", "--hostname", hostname)
+		cmd.Env = mapToEnvList(env)
+		return cmd
+	})
 }
 
 func mapToEnvList(env map[string]string) []string {
@@ -313,32 +326,88 @@ func plaintextToken(config map[string]any, accountKey string) string {
 	return ""
 }
 
-func normalizeGitHubOrigin(host string) string {
+// parseGitHubURL mirrors `new URL(host.includes('://') ? host : "https://"+host)`
+// closely enough for host normalization: it returns the lowercased hostname
+// (IPv6 keeps its brackets, like WHATWG `hostname`), the port with the scheme's
+// default dropped, and the scheme.
+func parseGitHubURL(host string) (scheme, hostname, port string, ok bool) {
 	full := host
 	if !strings.Contains(host, "://") {
 		full = "https://" + host
 	}
 	u, err := url.Parse(full)
 	if err != nil || u.Scheme == "" || u.Host == "" {
-		return ""
+		return "", "", "", false
 	}
-	return u.Scheme + "://" + u.Host
+	hostname = strings.ToLower(u.Hostname())
+	if strings.HasPrefix(u.Host, "[") {
+		hostname = "[" + hostname + "]"
+	}
+	port = u.Port()
+	switch u.Scheme {
+	case "http", "ws":
+		if port == "80" {
+			port = ""
+		}
+	case "https", "wss":
+		if port == "443" {
+			port = ""
+		}
+	case "ftp":
+		if port == "21" {
+			port = ""
+		}
+	}
+	return strings.ToLower(u.Scheme), hostname, port, true
 }
 
-// normalizeGitHubHost returns host's hostname (no scheme, no port unless
-// present in the input). Mirrors TS `normalizeGitHubHost`.
-func normalizeGitHubHost(host string) string {
-	full := host
-	if !strings.Contains(host, "://") {
-		full = "https://" + host
+// normalizeGitHubOrigin mirrors TS `normalizeGitHubOrigin` (`URL.origin`):
+// lowercase host, default port dropped, and the literal "null" for
+// non-special schemes.
+func normalizeGitHubOrigin(host string) string {
+	scheme, hostname, port, ok := parseGitHubURL(host)
+	if !ok {
+		return ""
 	}
-	u, err := url.Parse(full)
-	if err != nil {
+	switch scheme {
+	case "http", "https", "ws", "wss", "ftp":
+	default:
+		return "null"
+	}
+	if port != "" {
+		hostname += ":" + port
+	}
+	return scheme + "://" + hostname
+}
+
+// normalizeGitHubHost returns host's hostname (no scheme, no port). Mirrors TS
+// `normalizeGitHubHost` (`URL.hostname`).
+func normalizeGitHubHost(host string) string {
+	_, hostname, _, ok := parseGitHubURL(host)
+	if !ok {
 		return host
 	}
-	return u.Hostname()
+	return hostname
 }
 
 func isNonEmpty(s string) bool {
-	return strings.TrimSpace(s) != ""
+	return providerutils.JSTrim(s) != ""
+}
+
+// envHas mirrors TS `env.X != null`: a variable that is set to the empty
+// string still counts as a direct credential.
+func envHas(env map[string]string, key string) bool {
+	_, ok := env[key]
+	return ok
+}
+
+// firstPresent mirrors a TS `a ?? b ?? fallback` chain over env: the first
+// variable that is set (even to "") wins.
+func firstPresent(env map[string]string, fallback string, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := env[k]; ok {
+			return v
+		}
+	}
+	return fallback
 }

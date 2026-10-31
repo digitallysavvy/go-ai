@@ -24,7 +24,7 @@ func ResolveOpenAICompatibleProviderOptions(providerName string, providerOptions
 
 	var warnings []types.Warning
 	mergeProviderOptions(resolved, providerOptions["openai-compatible"])
-	if _, ok := providerOptions["openai-compatible"]; ok {
+	if providerOptions["openai-compatible"] != nil {
 		warnings = append(warnings, deprecatedProviderOptionsKeyWarning("openai-compatible", "openaiCompatible"))
 	}
 
@@ -33,7 +33,7 @@ func ResolveOpenAICompatibleProviderOptions(providerName string, providerOptions
 
 	camelProviderName := ToOpenAICompatibleCamelCase(providerName)
 	if providerName != camelProviderName {
-		if _, ok := providerOptions[providerName]; ok {
+		if providerOptions[providerName] != nil {
 			warnings = append(warnings, deprecatedProviderOptionsKeyWarning(providerName, camelProviderName))
 		}
 		mergeProviderOptions(resolved, providerOptions[camelProviderName])
@@ -45,19 +45,19 @@ func ResolveOpenAICompatibleProviderOptions(providerName string, providerOptions
 // ToOpenAICompatibleCamelCase matches the TS helper that converts hyphen and
 // underscore followed by a lower-case character to camelCase.
 func ToOpenAICompatibleCamelCase(value string) string {
+	// JS: value.replace(/[_-]([a-z])/g, g => g[1].toUpperCase()). A hyphen or
+	// underscore that is not followed by a-z (digit, another separator, end of
+	// string) is kept as is.
 	var b strings.Builder
 	b.Grow(len(value))
-	upperNext := false
-	for _, r := range value {
-		if r == '-' || r == '_' {
-			upperNext = true
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if (c == '-' || c == '_') && i+1 < len(value) && value[i+1] >= 'a' && value[i+1] <= 'z' {
+			b.WriteByte(value[i+1] - ('a' - 'A'))
+			i++
 			continue
 		}
-		if upperNext && r >= 'a' && r <= 'z' {
-			r = r - ('a' - 'A')
-		}
-		upperNext = false
-		b.WriteRune(r)
+		b.WriteByte(c)
 	}
 	return b.String()
 }
@@ -126,6 +126,52 @@ func ApplyOpenAICompatibleCommonRequestOptions(body map[string]interface{}, opti
 	}
 }
 
+// ApplyOpenAICompatibleCallSettings applies what TS
+// OpenAICompatibleChatLanguageModel.getArgs sends beyond the model, messages,
+// tools and max_tokens / temperature / top_p / stop: frequency_penalty,
+// presence_penalty and seed, an `unsupported` warning for topK, and the
+// provider options that are not one of the chat option fields (user,
+// reasoningEffort, textVerbosity, strictJsonSchema), which TS spreads straight
+// into the request body from providerOptions[name] and providerOptions[camel]
+// (so they can override the standardized settings). Keys TS always overwrites
+// afterwards (reasoning_effort, verbosity, messages, tools, tool_choice, stream,
+// stream_options) and the extra `exclude` keys a provider handles itself are
+// skipped.
+func ApplyOpenAICompatibleCallSettings(body map[string]interface{}, frequencyPenalty, presencePenalty *float64, seed, topK *int, providerName string, providerOptions map[string]interface{}, exclude ...string) []types.Warning {
+	var warnings []types.Warning
+	if topK != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK"})
+	}
+	if frequencyPenalty != nil {
+		body["frequency_penalty"] = *frequencyPenalty
+	}
+	if presencePenalty != nil {
+		body["presence_penalty"] = *presencePenalty
+	}
+	if seed != nil {
+		body["seed"] = *seed
+	}
+	skip := map[string]bool{
+		"user": true, "reasoningEffort": true, "textVerbosity": true, "strictJsonSchema": true,
+		"reasoning_effort": true, "verbosity": true, "messages": true, "tools": true,
+		"tool_choice": true, "stream": true, "stream_options": true,
+	}
+	for _, k := range exclude {
+		skip[k] = true
+	}
+	passthrough := map[string]interface{}{}
+	mergeProviderOptions(passthrough, providerOptions[providerName])
+	if camel := ToOpenAICompatibleCamelCase(providerName); camel != providerName {
+		mergeProviderOptions(passthrough, providerOptions[camel])
+	}
+	for k, v := range passthrough {
+		if !skip[k] {
+			body[k] = v
+		}
+	}
+	return warnings
+}
+
 func OpenAICompatibleCommonOptionWarnings(options map[string]interface{}) []types.Warning {
 	return DeprecatedOpenAICompatibleOptionWarnings(options, map[string]string{
 		"reasoning-effort": "reasoningEffort",
@@ -158,7 +204,10 @@ func mergeProviderOptions(target map[string]interface{}, raw interface{}) {
 func deprecatedProviderOptionsKeyWarning(rawName, camelName string) types.Warning {
 	message := "Use '" + camelName + "' instead."
 	return types.Warning{
-		Type:    "deprecated",
+		Type: "deprecated",
+		// TS: { type: 'deprecated', setting: "providerOptions key '<raw>'", message }.
+		// Feature is kept for callers of v0.5.2, which only set it.
+		Setting: "providerOptions key '" + rawName + "'",
 		Feature: "providerOptions key '" + rawName + "'",
 		Details: message,
 		Message: message,
@@ -169,8 +218,21 @@ func deprecatedProviderOptionKeyWarning(rawName, camelName string) types.Warning
 	message := "Use '" + camelName + "' instead."
 	return types.Warning{
 		Type:    "deprecated",
+		Setting: "provider option key '" + rawName + "'",
 		Feature: "provider option key '" + rawName + "'",
 		Details: message,
 		Message: message,
 	}
+}
+
+// ResolveOpenAICompatibleMetadataKey mirrors TS resolveProviderOptionsKey:
+// the providerMetadata namespace is the camelCase provider name only when the
+// caller supplied provider options under that camelCase key, else the raw
+// provider name.
+func ResolveOpenAICompatibleMetadataKey(rawName string, providerOptions map[string]interface{}) string {
+	camel := ToOpenAICompatibleCamelCase(rawName)
+	if camel != rawName && providerOptions[camel] != nil {
+		return camel
+	}
+	return rawName
 }

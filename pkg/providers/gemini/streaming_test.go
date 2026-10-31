@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -651,7 +653,7 @@ func drainChunks(t *testing.T, s *stream) []*provider.StreamChunk {
 
 func TestStreamServiceTierAccumulated(t *testing.T) {
 	// First chunk sets serviceTier; second chunk has text + finish.
-	chunk1 := `{"serviceTier":"SERVICE_TIER_STANDARD","candidates":[{"content":{"parts":[{"text":"Hi"}]}}]}`
+	chunk1 := `{"usageMetadata":{"serviceTier":"SERVICE_TIER_STANDARD"},"candidates":[{"content":{"parts":[{"text":"Hi"}]}}]}`
 	chunk2 := `{"candidates":[{"content":{"parts":[{"text":"!"}]},"finishReason":"STOP"}]}`
 
 	s := newTestStream(sseStream(chunk1, chunk2))
@@ -729,8 +731,8 @@ func TestStreamServiceTierNullWhenAbsent(t *testing.T) {
 
 func TestStreamServiceTierLastValueWins(t *testing.T) {
 	// When multiple chunks set serviceTier, the last non-empty value wins.
-	chunk1 := `{"serviceTier":"SERVICE_TIER_STANDARD","candidates":[{"content":{"parts":[{"text":"Hi"}]}}]}`
-	chunk2 := `{"serviceTier":"SERVICE_TIER_PRIORITY","candidates":[{"content":{"parts":[{"text":"!"}]},"finishReason":"STOP"}]}`
+	chunk1 := `{"usageMetadata":{"serviceTier":"SERVICE_TIER_STANDARD"},"candidates":[{"content":{"parts":[{"text":"Hi"}]}}]}`
+	chunk2 := `{"usageMetadata":{"serviceTier":"SERVICE_TIER_PRIORITY"},"candidates":[{"content":{"parts":[{"text":"!"}]},"finishReason":"STOP"}]}`
 
 	s := newTestStream(sseStream(chunk1, chunk2))
 	chunks := drainChunks(t, s)
@@ -821,4 +823,291 @@ func runGeminiStreamRecursionChild() {
 		return
 	}
 	fmt.Println("BF5_CHILD_OK")
+}
+
+// TS puts an inlineData part's own thoughtSignature in providerMetadata.google
+// for streamed file and reasoning-file parts.
+func TestStream_InlineDataCarriesItsThoughtSignature(t *testing.T) {
+	s := newTestStream(sseStream(`{"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/png","data":"aGk="},"thought":true,"thoughtSignature":"img_sig1"},{"inlineData":{"mimeType":"image/jpeg","data":"aGk="},"thoughtSignature":"img_sig2"}]},"finishReason":"STOP"}]}`))
+	defer s.Close() //nolint:errcheck
+	var rf, f *provider.StreamChunk
+	for {
+		c, err := s.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch c.Type {
+		case provider.ChunkTypeReasoningFile:
+			rf = c
+		case provider.ChunkTypeFile:
+			f = c
+		}
+	}
+	if rf == nil || !strings.Contains(string(rf.ProviderMetadata), `"thoughtSignature":"img_sig1"`) {
+		t.Fatalf("reasoning-file chunk = %#v", rf)
+	}
+	if f == nil || !strings.Contains(string(f.ProviderMetadata), `"thoughtSignature":"img_sig2"`) {
+		t.Fatalf("file chunk = %#v", f)
+	}
+}
+
+// TS gives each executable-code tool call a generateId() id, so the id is not
+// the same in every request of a multi-step run.
+func TestStream_CodeExecutionToolCallIDComesFromGenerateID(t *testing.T) {
+	event := `{"candidates":[{"content":{"parts":[{"executableCode":{"language":"PYTHON","code":"x"}},{"codeExecutionResult":{"outcome":"OUTCOME_OK","output":"1"}}]},"finishReason":"STOP"}]}`
+	s := newStream(sseStream(event), Config{MetadataKey: "google", GenerateID: func() string { return "gen-1" }}, nil, nil, "")
+	defer s.Close() //nolint:errcheck
+	var ids []string
+	for _, c := range drainChunks(t, s) {
+		if c.Type == provider.ChunkTypeToolCall {
+			ids = append(ids, c.ToolCall.ID)
+		}
+		if c.Type == provider.ChunkTypeToolResult {
+			ids = append(ids, c.ToolResult.ToolCallID)
+		}
+	}
+	if len(ids) != 2 || ids[0] != "gen-1" || ids[1] != "gen-1" {
+		t.Fatalf("ids = %v", ids)
+	}
+}
+
+// TS emits response-metadata on the first chunk that carries a responseId, even
+// when earlier chunks had none.
+func TestStream_ResponseIDArrivingInLaterChunkIsEmitted(t *testing.T) {
+	s := newTestStream(sseStream(
+		`{"candidates":[{"content":{"parts":[{"text":"a"}]}}]}`,
+		`{"responseId":"resp-9","candidates":[{"content":{"parts":[{"text":"b"}]},"finishReason":"STOP"}]}`,
+		`{"responseId":"resp-9","candidates":[]}`,
+	))
+	defer s.Close() //nolint:errcheck
+	var ids []string
+	for _, c := range drainChunks(t, s) {
+		if c.Type == provider.ChunkTypeResponseMetadata {
+			ids = append(ids, c.ResponseMetadata.ID)
+		}
+	}
+	if len(ids) != 2 || ids[0] != "" || ids[1] != "resp-9" {
+		t.Fatalf("response-metadata ids = %q", ids)
+	}
+}
+
+// TS reads serviceTier from the final usage metadata only: an earlier chunk's
+// tier is not carried over when the last usage object has none.
+func TestStream_ServiceTierComesFromFinalUsage(t *testing.T) {
+	// A top-level serviceTier is not read (TS usage?.serviceTier only).
+	t.Run("top-level ignored", func(t *testing.T) {
+		s := newTestStream(sseStream(`{"serviceTier":"SERVICE_TIER_PRIORITY","candidates":[{"content":{"parts":[{"text":"Hi"}]},"finishReason":"STOP"}]}`))
+		defer s.Close() //nolint:errcheck
+		for _, c := range drainChunks(t, s) {
+			if c.Type == provider.ChunkTypeFinish {
+				var m map[string]map[string]interface{}
+				if err := json.Unmarshal(c.ProviderMetadata, &m); err != nil {
+					t.Fatal(err)
+				}
+				if v, ok := m["google"]["serviceTier"]; !ok || v != nil {
+					t.Errorf("serviceTier = %v (present %v), want null", v, ok)
+				}
+			}
+		}
+	})
+	tier := func(events ...string) string {
+		s := newTestStream(sseStream(events...))
+		defer s.Close() //nolint:errcheck
+		for _, c := range drainChunks(t, s) {
+			if c.Type == provider.ChunkTypeFinish {
+				var m map[string]map[string]interface{}
+				if err := json.Unmarshal(c.ProviderMetadata, &m); err != nil {
+					t.Fatal(err)
+				}
+				if v, ok := m["google"]["serviceTier"].(string); ok {
+					return v
+				}
+				return "<null>"
+			}
+		}
+		return "<no finish>"
+	}
+	first := `{"candidates":[{"content":{"parts":[{"text":"a"}]}}],"usageMetadata":{"promptTokenCount":1,"serviceTier":"priority"}}`
+	last := `{"candidates":[{"content":{"parts":[{"text":"b"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1}}`
+	if got := tier(first, last); got != "<null>" {
+		t.Fatalf("tier = %s, want null", got)
+	}
+	if got := tier(first); got != "priority" {
+		t.Fatalf("tier = %s", got)
+	}
+}
+
+// TS #23814: a stream that ends without a candidate finishReason reports
+// interrupted; an unparsable chunk reports error until a finishReason arrives.
+func TestStreamInterruptedWithoutFinishReason(t *testing.T) {
+	s := newTestStream(sseStream(`{"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}`))
+	chunks := drainChunks(t, s)
+	last := chunks[len(chunks)-1]
+	if last.Type != provider.ChunkTypeFinish || last.FinishReason != types.FinishReasonInterrupted {
+		t.Fatalf("finish = %+v", last)
+	}
+}
+
+func TestStreamParseErrorReportsErrorFinish(t *testing.T) {
+	s := newTestStream(sseStream(`{"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}`, `{"candidates":"nope"}`))
+	chunks := drainChunks(t, s)
+	last := chunks[len(chunks)-1]
+	if last.Type != provider.ChunkTypeFinish || last.FinishReason != types.FinishReasonError {
+		t.Fatalf("finish = %+v", last)
+	}
+}
+
+func TestStreamFinishReasonSurvivesParseError(t *testing.T) {
+	s := newTestStream(sseStream(`{"candidates":"nope"}`, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}`))
+	chunks := drainChunks(t, s)
+	last := chunks[len(chunks)-1]
+	if last.FinishReason != types.FinishReasonStop {
+		t.Fatalf("finish = %+v", last)
+	}
+}
+
+// TS #23814 (continuation-start): when the continuation response is empty or
+// cut off, the stream reports interrupted rather than the prior response's
+// length finish reason.
+func TestStreamContinuationResetsFinishReason(t *testing.T) {
+	s := newTestStream(sseStream(`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"CONTINUATION","continuationToken":"tok"}]}`))
+	s.continueFn = func(token string) (io.ReadCloser, error) {
+		return sseStream(`{"candidates":[{"content":{"parts":[{"text":" more"}]}}]}`), nil
+	}
+	chunks := drainChunks(t, s)
+	last := chunks[len(chunks)-1]
+	if last.Type != provider.ChunkTypeFinish || last.FinishReason != types.FinishReasonInterrupted {
+		t.Fatalf("finish = %+v", last)
+	}
+}
+
+// Ported from TS #23459 'in-stream errors': Google can send an error frame
+// mid-stream; it is surfaced as a provider stream error and the stream
+// finishes with reason "error".
+func TestStream_InStreamError(t *testing.T) {
+	cases := []struct {
+		name        string
+		partialText bool
+		code        interface{}
+		status      string
+		retryable   bool
+	}{
+		{"503 no text", false, 503, "UNAVAILABLE", true},
+		{"503 partial text", true, 503, "UNAVAILABLE", true},
+		{"400", false, 400, "INVALID_ARGUMENT", false},
+		{"null code", false, nil, "UNKNOWN", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			errFrame := mustMarshal(map[string]interface{}{"error": map[string]interface{}{
+				"code": tc.code, "message": "Provider error", "status": tc.status,
+				"details": []interface{}{map[string]interface{}{"@type": "type.googleapis.com/google.rpc.RetryInfo"}},
+			}})
+			var frames []string
+			if tc.partialText {
+				frames = append(frames, `{"candidates":[{"content":{"parts":[{"text":"Partial answer"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"totalTokenCount":12}}`)
+			}
+			frames = append(frames, errFrame, "[DONE]")
+			chunks := drainStream(t, newTestStream(sseStream(frames...)))
+
+			var types_ []string
+			var errChunk, finish *provider.StreamChunk
+			for _, c := range chunks {
+				switch c.Type {
+				case provider.ChunkTypeResponseMetadata:
+					continue
+				case provider.ChunkTypeError:
+					errChunk = c
+				case provider.ChunkTypeFinish:
+					finish = c
+				}
+				types_ = append(types_, string(c.Type))
+			}
+			want := []string{"error", "finish"}
+			if tc.partialText {
+				want = []string{"text-start", "text", "error", "text-end", "finish"}
+			}
+			if strings.Join(types_, ",") != strings.Join(want, ",") {
+				t.Fatalf("chunk types = %v, want %v", types_, want)
+			}
+			spe, ok := errChunk.Err.(*providererrors.StreamProviderError)
+			if !ok {
+				t.Fatalf("err = %#v, want *StreamProviderError", errChunk.Err)
+			}
+			if spe.Message != "Provider error" || spe.Type != tc.status || spe.IsRetryable != tc.retryable {
+				t.Fatalf("stream error = %+v", spe)
+			}
+			if tc.code == nil {
+				if spe.Code != nil || spe.StatusCode != nil {
+					t.Fatalf("code/status = %v/%v, want nil", spe.Code, spe.StatusCode)
+				}
+			} else if spe.StatusCode == nil || *spe.StatusCode != tc.code.(int) {
+				t.Fatalf("statusCode = %v, want %v", spe.StatusCode, tc.code)
+			}
+			data, _ := spe.Data.(map[string]interface{})
+			if data["status"] != tc.status {
+				t.Fatalf("data = %#v", spe.Data)
+			}
+			if finish.FinishReason != types.FinishReasonError || finish.RawFinishReason != "" {
+				t.Fatalf("finish = %q raw %q", finish.FinishReason, finish.RawFinishReason)
+			}
+			if tc.partialText && (finish.Usage == nil || finish.Usage.InputTokens == nil || *finish.Usage.InputTokens != 10) {
+				t.Fatalf("usage = %+v", finish.Usage)
+			}
+		})
+	}
+}
+
+// TS emits the thrown continuation error itself as the error part, so callers
+// can still match its type; it must not be wrapped in a generic stream error.
+func TestStreamContinuationFailureKeepsErrorType(t *testing.T) {
+	s := newTestStream(sseStream(`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"CONTINUATION","continuationToken":"tok"}]}`))
+	cause := providererrors.NewProviderError("google", 503, "", "overloaded", nil)
+	s.continueFn = func(token string) (io.ReadCloser, error) { return nil, cause }
+	chunks := drainChunks(t, s)
+	var errChunk *provider.StreamChunk
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeError {
+			errChunk = c
+		}
+	}
+	if errChunk == nil {
+		t.Fatal("no error chunk")
+	}
+	var pe *providererrors.ProviderError
+	if !errors.As(errChunk.Err, &pe) || pe != cause {
+		t.Fatalf("error chunk Err = %#v, want the original ProviderError", errChunk.Err)
+	}
+	if last := chunks[len(chunks)-1]; last.FinishReason != types.FinishReasonLength {
+		t.Fatalf("finish = %+v", last)
+	}
+}
+
+// TS records the candidate's safetyRatings, finishMessage and grounding
+// before the confirmed-prompt-block check, so a block chunk that also carries
+// them still reports them in the finish provider metadata.
+func TestStreamConfirmedPromptBlockKeepsCandidateMetadata(t *testing.T) {
+	s := newTestStream(sseStream(
+		`{"promptFeedback":{"blockReason":"SAFETY"},"candidates":[{"safetyRatings":[{"category":"HARM_CATEGORY_HARASSMENT"}],"finishMessage":"blocked"}]}`,
+		`{"candidates":[{"content":{"parts":[{"text":"ignored"}]},"groundingMetadata":{"webSearchQueries":["q"]}}]}`,
+	))
+	chunks := drainChunks(t, s)
+	last := chunks[len(chunks)-1]
+	if last.Type != provider.ChunkTypeFinish || last.FinishReason != types.FinishReasonContentFilter {
+		t.Fatalf("finish = %+v", last)
+	}
+	meta := string(last.ProviderMetadata)
+	for _, want := range []string{`"safetyRatings":[{"category":"HARM_CATEGORY_HARASSMENT"}]`, `"finishMessage":"blocked"`, `"webSearchQueries":["q"]`} {
+		if !strings.Contains(meta, want) {
+			t.Errorf("finish metadata missing %s: %s", want, meta)
+		}
+	}
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeText {
+			t.Fatalf("content after a confirmed prompt block must be dropped: %+v", c)
+		}
+	}
 }

@@ -53,6 +53,28 @@ type FunctionTool struct {
 	Description string                 `json:"description,omitempty"`
 	Parameters  map[string]interface{} `json:"parameters,omitempty"`
 	Strict      *bool                  `json:"strict,omitempty"`
+
+	// rawParameters is the schema as raw JSON when the caller supplied one;
+	// it is written in its own key order (a JS object keeps insertion order).
+	rawParameters json.RawMessage
+}
+
+// MarshalJSON writes the tool with raw JSON parameters in author key order.
+func (t FunctionTool) MarshalJSON() ([]byte, error) {
+	w := struct {
+		Type        string      `json:"type"`
+		Name        string      `json:"name"`
+		Description string      `json:"description,omitempty"`
+		Parameters  interface{} `json:"parameters,omitempty"`
+		Strict      *bool       `json:"strict,omitempty"`
+	}{Type: t.Type, Name: t.Name, Description: t.Description, Strict: t.Strict}
+	switch {
+	case len(t.rawParameters) > 0:
+		w.Parameters = t.rawParameters
+	case len(t.Parameters) > 0:
+		w.Parameters = t.Parameters
+	}
+	return json.Marshal(w)
 }
 
 // CustomToolItem represents a caller-executed "custom" tool definition sent
@@ -76,6 +98,27 @@ type ReasoningInputItem struct {
 	EncryptedContent string              `json:"encrypted_content,omitempty"`
 	Summary          []SummaryPart       `json:"summary,omitempty"`
 	Content          []ReasoningTextPart `json:"content,omitempty"`
+}
+
+// MarshalJSON mirrors the TS reasoning item literal: summary is always
+// written (an empty array when there is none), content is written whenever it
+// is set, even as an empty array.
+func (r ReasoningInputItem) MarshalJSON() ([]byte, error) {
+	summary := r.Summary
+	if summary == nil {
+		summary = []SummaryPart{}
+	}
+	out := struct {
+		Type             string               `json:"type"`
+		Summary          []SummaryPart        `json:"summary"`
+		ID               string               `json:"id,omitempty"`
+		Content          *[]ReasoningTextPart `json:"content,omitempty"`
+		EncryptedContent string               `json:"encrypted_content,omitempty"`
+	}{Type: r.Type, Summary: summary, ID: r.ID, EncryptedContent: r.EncryptedContent}
+	if r.Content != nil {
+		out.Content = &r.Content
+	}
+	return json.Marshal(out)
 }
 
 // SummaryPart is a single entry in a reasoning item's summary array.
@@ -131,6 +174,25 @@ type OutputTextContent struct {
 	// output-text item shape.
 	Annotations []Annotation  `json:"annotations,omitempty"`
 	Logprobs    []interface{} `json:"logprobs,omitempty"`
+}
+
+// MarshalJSON writes annotations and logprobs whenever they are set, even as
+// empty arrays (TS: `annotations: part.annotations ?? []` under
+// strictResponseInput, and a parsed empty annotations array otherwise).
+func (o OutputTextContent) MarshalJSON() ([]byte, error) {
+	out := struct {
+		Type        string         `json:"type"`
+		Text        string         `json:"text"`
+		Annotations *[]Annotation  `json:"annotations,omitempty"`
+		Logprobs    *[]interface{} `json:"logprobs,omitempty"`
+	}{Type: o.Type, Text: o.Text}
+	if o.Annotations != nil {
+		out.Annotations = &o.Annotations
+	}
+	if o.Logprobs != nil {
+		out.Logprobs = &o.Logprobs
+	}
+	return json.Marshal(out)
 }
 
 // FunctionCallItem represents a function call
@@ -267,6 +329,22 @@ type Annotation struct {
 	Title      string `json:"title,omitempty"`
 }
 
+// MarshalJSON always writes start_index and end_index for url_citation
+// annotations: an index of 0 is a valid offset and must not be omitted.
+func (a Annotation) MarshalJSON() ([]byte, error) {
+	if a.Type != "url_citation" {
+		type plain Annotation
+		return json.Marshal(plain(a))
+	}
+	return json.Marshal(struct {
+		Type       string `json:"type"`
+		URL        string `json:"url"`
+		StartIndex int    `json:"start_index"`
+		EndIndex   int    `json:"end_index"`
+		Title      string `json:"title"`
+	}{a.Type, a.URL, a.StartIndex, a.EndIndex, a.Title})
+}
+
 // Usage represents token usage information
 type Usage struct {
 	InputTokens  int `json:"input_tokens"`
@@ -276,11 +354,43 @@ type Usage struct {
 	// Detailed token breakdown
 	InputTokensDetails  *InputTokensDetails  `json:"input_tokens_details,omitempty"`
 	OutputTokensDetails *OutputTokensDetails `json:"output_tokens_details,omitempty"`
+
+	// rawWire is the usage object exactly as the API sent it (TS usage.raw),
+	// as JSON text so Usage stays comparable with == as in v0.5.2.
+	rawWire string
+}
+
+// wire decodes rawWire; nil when the usage was not decoded from the wire.
+func (u Usage) wire() map[string]interface{} {
+	if u.rawWire == "" {
+		return nil
+	}
+	var m map[string]interface{}
+	if json.Unmarshal([]byte(u.rawWire), &m) != nil {
+		return nil
+	}
+	return m
+}
+
+// UnmarshalJSON decodes the typed fields and keeps the wire object.
+func (u *Usage) UnmarshalJSON(b []byte) error {
+	type plain Usage
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*u = Usage(p)
+	var raw map[string]interface{}
+	if json.Unmarshal(b, &raw) == nil {
+		u.rawWire = string(b)
+	}
+	return nil
 }
 
 // InputTokensDetails provides detailed input token information
 type InputTokensDetails struct {
-	CachedTokens int `json:"cached_tokens,omitempty"`
+	CachedTokens     int  `json:"cached_tokens,omitempty"`
+	CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
 }
 
 // OutputTokensDetails provides detailed output token information

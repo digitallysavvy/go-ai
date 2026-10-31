@@ -45,7 +45,7 @@ type Agent interface {
 | Field | Type | Description |
 |-------|------|-------------|
 | Text | string | Final text output |
-| Output | interface{} | Parsed/structured final output when an output strategy is configured |
+| Output | interface{} | Final output: the final text parsed with the output strategy, or the final text (a string) when none is configured; nil after a tool-calls finish or an empty non-stop finish |
 | Steps | []types.StepResult | All steps taken by the agent |
 | ToolResults | []types.ToolResult | All tool results from agent execution |
 | Delegations | []agent.SubagentDelegation | Subagent delegations during execution |
@@ -129,10 +129,12 @@ These tables are generated from the `agent.AgentGenerateOptions` and `agent.Agen
 | `RuntimeContext` | `interface{}` |  |
 | `ToolsContext` | `map[string]interface{}` |  |
 | `CallOptions` | `interface{}` |  |
+| `ExperimentalSteering` | `*ai.Steering` | ExperimentalSteering adds user messages to the run at the next step boundary (see ai.Steering). Supported by ToolLoopAgent.Generate, ToolLoopAgent.Stream and CreateAgentUIStream; the legacy Execute/GenerateAgent loop ignores it. Create one per call with ai.NewSteering. Experimental (TS experimental_steering, #23813). |
 | `Model` | `provider.LanguageModel` |  |
 | `Tools` | `[]types.Tool` |  |
 | `ToolChoice` | `types.ToolChoice` |  |
 | `ToolOrder` | `[]string` |  |
+| `ToolCallConcurrency` | `*int` | ToolCallConcurrency is the maximum number of tool calls that may execute concurrently within a step (1 = sequential). Must be &gt;= 1 when set. When unset, all tool calls of a step execute concurrently. |
 | `ActiveTools` | `[]string` |  |
 | `StopWhen` | `[]ai.StopCondition` |  |
 | `MaxSteps` | `int` |  |
@@ -156,6 +158,7 @@ These tables are generated from the `agent.AgentGenerateOptions` and `agent.Agen
 | `Include` | `*ai.IncludeOptions` |  |
 | `ToolApproval` | `types.ToolApprovalConfig` |  |
 | `Internal` | `*ai.InternalOptions` |  |
+| `Timeout` | `*ai.TimeoutConfig` | Timeout overrides AgentConfig.Timeout for this call (TS `timeout ?? preparedCall.timeout` in ToolLoopAgent.generate/stream). |
 | `ExperimentalSandbox` | `interface{}` |  |
 | `ExperimentalRefineToolInput` | `map[string]ai.ToolInputRefiner` |  |
 | `ExperimentalDownload` | `ai.DownloadFunction` |  |
@@ -191,6 +194,8 @@ These tables are generated from the `agent.AgentGenerateOptions` and `agent.Agen
 | `OnChunk` | `func(chunk provider.StreamChunk)` |  |
 | `InitialStreamChunks` | `[]provider.StreamChunk` |  |
 | `ExperimentalTransform` | `[]ai.StreamTransformFunc` | ExperimentalTransform is an ordered list of transforms applied to stream chunks before they reach OnChunk and the returned StreamTextResult, forwarded to ai.StreamTextOptions.ExperimentalTransform. |
+| `OnError` | `func(ctx context.Context, err error)` | OnError is called for error chunks received while streaming, forwarded to ai.StreamTextOptions.OnError. |
+| `OnAbort` | `func(ctx context.Context, steps []types.StepResult)` | OnAbort is called when streaming is aborted by context cancellation, forwarded to ai.StreamTextOptions.OnAbort. |
 
 {/* /gen:fields */}
 

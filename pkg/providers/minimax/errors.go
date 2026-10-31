@@ -8,6 +8,20 @@ type Error struct {
 	// Name is the AISDKError name (e.g. "MINIMAX_VIDEO_GENERATION_ERROR").
 	Name    string
 	Message string
+
+	// StatusCode and ResponseBody are set for a non-2xx API response (TS
+	// APICallError statusCode / responseBody); zero otherwise.
+	StatusCode   int
+	ResponseBody string
+}
+
+// IsRetryable reports whether the call may be retried: only an API response
+// with a retryable status (408, 409, 429 or 5xx, like TS APICallError) is.
+func (e *Error) IsRetryable() bool {
+	if e == nil || e.StatusCode == 0 {
+		return false
+	}
+	return e.StatusCode == 408 || e.StatusCode == 409 || e.StatusCode == 429 || e.StatusCode >= 500
 }
 
 // Error implements the error interface.

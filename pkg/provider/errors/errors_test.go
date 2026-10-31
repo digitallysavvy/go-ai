@@ -71,6 +71,9 @@ func TestProviderError_IsRetryable(t *testing.T) {
 	}{
 		{status: 0, want: true},
 		{status: 400, want: false},
+		{status: 404, want: false},
+		{status: 408, want: true},
+		{status: 409, want: true},
 		{status: 429, want: true},
 		{status: 500, want: true},
 		{status: 503, want: true},
@@ -811,4 +814,33 @@ func containsHelper(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TS TypeValidationError prints `Value: ${JSON.stringify(value)}.`; a Go map or
+// slice must render as JSON, not as fmt's map[...] form.
+func TestValidationErrorValueIsJSON(t *testing.T) {
+	t.Parallel()
+
+	err := NewValidationErrorWithContext(map[string]interface{}{"a": 1, "b": []int{2}}, "bad", nil, &ValidationContext{})
+	want := "Type validation failed: Value: {\"a\":1,\"b\":[2]}.\nError message: bad"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestInvalidArgumentErrorText(t *testing.T) {
+	t.Parallel()
+
+	if got, want := (&InvalidArgumentError{Field: "maxRetries", Message: "maxRetries must be >= 0"}).Error(), "Invalid argument for parameter maxRetries: maxRetries must be >= 0"; got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
+// TS TypeValidationError writes `id: "${entityId}"` without escaping.
+func TestValidationErrorEntityIDIsNotGoQuoted(t *testing.T) {
+	err := NewValidationErrorWithContext(nil, "bad", nil, &ValidationContext{Field: "f", EntityName: "tool", EntityID: `a"b\c`})
+	want := "Type validation failed for f (tool, id: \"a\"b\\c\"):\nError message: bad"
+	if got := err.Error(); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
 }

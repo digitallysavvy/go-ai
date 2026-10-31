@@ -26,6 +26,11 @@ type Config struct {
 	// This is the DashScope native endpoint for embedding models
 	EmbeddingBaseURL string
 
+	// IncludeUsage sends stream_options.include_usage on streaming chat
+	// requests so token usage arrives in the final chunk (TS includeUsage).
+	// nil means the TS default, true.
+	IncludeUsage *bool `json:"includeUsage,omitempty"`
+
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string `json:"headers,omitempty"`
 }

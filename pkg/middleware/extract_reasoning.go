@@ -7,14 +7,29 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
+
+// ReasoningDelimiters are literal opening and closing delimiters for a
+// reasoning section, for formats that are not XML tags (for example Gemma's
+// "<|channel>thought\n" ... "<channel|>").
+type ReasoningDelimiters struct {
+	Opening string
+	Closing string
+}
 
 // ExtractReasoningOptions configures the reasoning extraction middleware
 type ExtractReasoningOptions struct {
 	// TagName is the XML tag name to extract reasoning from
 	// (e.g., "think" for Anthropic, "reasoning" for OpenAI)
 	TagName string
+
+	// Delimiters, when set, replaces TagName with literal opening and closing
+	// delimiters (regex metacharacters are matched literally). Both must be
+	// non-empty or ExtractReasoningMiddleware panics with an
+	// *errors.InvalidArgumentError.
+	Delimiters *ReasoningDelimiters
 
 	// Separator is the separator to use between reasoning and text sections
 	// Default: "\n"
@@ -55,6 +70,16 @@ func ExtractReasoningMiddleware(options *ExtractReasoningOptions) *LanguageModel
 
 	openingTag := fmt.Sprintf("<%s>", options.TagName)
 	closingTag := fmt.Sprintf("</%s>", options.TagName)
+	if options.Delimiters != nil {
+		openingTag = options.Delimiters.Opening
+		closingTag = options.Delimiters.Closing
+		if openingTag == "" || closingTag == "" {
+			panic(&providererrors.InvalidArgumentError{
+				Field:   "tagName",
+				Message: "Reasoning delimiters must not be empty.",
+			})
+		}
+	}
 
 	return &LanguageModelMiddleware{
 		SpecificationVersion: "v3",
@@ -71,58 +96,55 @@ func ExtractReasoningMiddleware(options *ExtractReasoningOptions) *LanguageModel
 				return nil, err
 			}
 
-			text := result.Text
-			if options.StartWithReasoning {
-				text = openingTag + text
-			}
-
-			// Extract all reasoning blocks
-			pattern := fmt.Sprintf(`%s(.*?)%s`, regexp.QuoteMeta(openingTag), regexp.QuoteMeta(closingTag))
+			// Same as TS wrapGenerate: each text part containing reasoning
+			// is replaced by a reasoning part followed by the remaining text.
+			pattern := fmt.Sprintf(`(?s)%s(.*?)%s`, regexp.QuoteMeta(openingTag), regexp.QuoteMeta(closingTag))
 			re := regexp.MustCompile(pattern)
-			matches := re.FindAllStringSubmatch(text, -1)
-
-			if len(matches) == 0 {
-				return result, nil
-			}
-
-			// Collect all reasoning text
-			reasoningParts := make([]string, len(matches))
-			for i, match := range matches {
-				if len(match) > 1 {
-					reasoningParts[i] = match[1]
+			// extractReasoning splits one text into its reasoning and the
+			// remaining text (TS extractReasoning); ok is false when the
+			// text has no reasoning section.
+			extractReasoning := func(input string) (text string, reasoning string, ok bool) {
+				text = input
+				if options.StartWithReasoning {
+					text = openingTag + input
 				}
-			}
-			// reasoningText is extracted but not stored in GenerateResult (no field for it yet)
-			_ = strings.Join(reasoningParts, options.Separator)
-
-			// Remove reasoning blocks from text
-			textWithoutReasoning := text
-			for i := len(matches) - 1; i >= 0; i-- {
-				match := matches[i]
-				matchIndex := strings.Index(textWithoutReasoning, match[0])
-				if matchIndex == -1 {
-					continue
+				matches := re.FindAllStringSubmatchIndex(text, -1)
+				if len(matches) == 0 {
+					return input, "", false
 				}
-
-				beforeMatch := textWithoutReasoning[:matchIndex]
-				afterMatch := textWithoutReasoning[matchIndex+len(match[0]):]
-
-				separator := ""
-				if len(beforeMatch) > 0 && len(afterMatch) > 0 {
-					separator = options.Separator
+				reasoningParts := make([]string, len(matches))
+				for i, m := range matches {
+					reasoningParts[i] = text[m[2]:m[3]]
 				}
-
-				textWithoutReasoning = beforeMatch + separator + afterMatch
+				textWithoutReasoning := text
+				for i := len(matches) - 1; i >= 0; i-- {
+					m := matches[i]
+					beforeMatch := textWithoutReasoning[:m[0]]
+					afterMatch := textWithoutReasoning[m[1]:]
+					separator := ""
+					if len(beforeMatch) > 0 && len(afterMatch) > 0 {
+						separator = options.Separator
+					}
+					textWithoutReasoning = beforeMatch + separator + afterMatch
+				}
+				return textWithoutReasoning, strings.Join(reasoningParts, options.Separator), true
 			}
-
-			// Update result with separated reasoning and text
-			// Note: The Go SDK stores reasoning separately but still includes it in Text field
-			// for backwards compatibility
-			result.Text = textWithoutReasoning
-
-			// Store reasoning in a structured way (if there's a field for it in the future)
-			// For now, we've extracted it but the Go SDK doesn't have a separate Reasoning field
-			// in GenerateResult. This is primarily useful for streaming where we emit separate chunks.
+			mapGenerateTextParts(result, func(part types.TextContent) []types.ContentPart {
+				text, reasoning, ok := extractReasoning(part.Text)
+				if !ok {
+					return []types.ContentPart{part}
+				}
+				return []types.ContentPart{
+					types.ReasoningContent{Text: reasoning},
+					types.TextContent{Text: text},
+				}
+			})
+			// The provider-selected structured output text loses its
+			// reasoning sections too (TS extractReasoning(structuredOutputText).text).
+			if result.StructuredOutputText != nil {
+				text, _, _ := extractReasoning(*result.StructuredOutputText)
+				result.StructuredOutputText = &text
+			}
 
 			return result, nil
 		},

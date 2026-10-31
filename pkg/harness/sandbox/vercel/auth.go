@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 )
@@ -23,6 +24,12 @@ type Credentials struct {
 // credentials nor VERCEL_OIDC_TOKEN are available.
 var ErrNoCredentials = errors.New("vercel sandbox: no credentials configured (set VERCEL_OIDC_TOKEN, or pass Token, TeamID, and ProjectID)")
 
+// ErrPartialCredentials is returned by ResolveCredentials when only some of
+// Token, TeamID and ProjectID are set. Mirrors @vercel/sandbox's "Missing
+// credentials parameters" error, which TS reports as an authentication
+// failure.
+var ErrPartialCredentials = errors.New("Missing credentials parameters to access the Vercel API") //nolint:staticcheck // matches @vercel/sandbox error text
+
 // ResolveCredentials mirrors TS `getCredentials`: explicit credentials win
 // when all three fields are set; otherwise the VERCEL_OIDC_TOKEN env var is
 // decoded as a JWT for its owner_id/project_id claims.
@@ -39,7 +46,19 @@ func ResolveCredentials(explicit Credentials) (Credentials, error) {
 		return explicit, nil
 	}
 	if explicit.Token != "" || explicit.TeamID != "" || explicit.ProjectID != "" {
-		return Credentials{}, errors.New("vercel sandbox: Token, TeamID, and ProjectID must all be set together, or all omitted")
+		var missing []string
+		if explicit.Token == "" {
+			missing = append(missing, "token")
+		}
+		if explicit.TeamID == "" {
+			missing = append(missing, "teamId")
+		}
+		if explicit.ProjectID == "" {
+			missing = append(missing, "projectId")
+		}
+		// Text mirrors @vercel/sandbox, which TS classifies as an
+		// authentication failure by message.
+		return Credentials{}, fmt.Errorf("%w: %s", ErrPartialCredentials, strings.Join(missing, ", "))
 	}
 	token := os.Getenv("VERCEL_OIDC_TOKEN")
 	if token == "" {

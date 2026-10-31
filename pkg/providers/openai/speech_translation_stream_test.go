@@ -45,7 +45,8 @@ func TestSpeechTranslationModel_BaseWSHeadersCarryUserAgentTag(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	m := NewSpeechTranslationModel(p, "gpt-realtime-translate")
 
-	ua := m.baseSpeechTranslationWSHeaders()["user-agent"]
+	baseHeaders, _ := m.baseSpeechTranslationWSHeaders()
+	ua := baseHeaders["user-agent"]
 	if !strings.HasPrefix(ua, "ai-sdk-openai/") {
 		t.Fatalf("user-agent = %q, want ai-sdk-openai/... prefix", ua)
 	}
@@ -588,5 +589,30 @@ func TestOpenAIRealtimeWSAuth_CaseInsensitiveBearerScheme(t *testing.T) {
 	}
 	if len(filtered) != 0 {
 		t.Fatalf("filtered headers = %v, want empty", filtered)
+	}
+}
+
+// A non-object providerOptions.openai fails like TS parseProviderOptions
+// (z.object({}) declares no members but still rejects non-objects).
+func TestSpeechTranslationModel_DoStream_RejectsNonObjectProviderOptions(t *testing.T) {
+	model := NewSpeechTranslationModel(New(Config{APIKey: "test-key"}), "gpt-realtime-translate")
+	_, err := model.DoStream(context.Background(), &provider.SpeechTranslationStreamOptions{
+		Audio:            newChanTestAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+		TargetLanguage:   "es",
+		ProviderOptions:  map[string]interface{}{"openai": "x"},
+	})
+	var invalidArg *providererrors.InvalidArgumentError
+	if !errors.As(err, &invalidArg) || invalidArg.Message != "invalid openai provider options" {
+		t.Fatalf("err = %v, want invalid openai provider options", err)
+	}
+}
+
+// The model id is encoded with encodeURIComponent (space -> %20, not +).
+func TestRealtimeSpeechTranslationWebSocketURL_EncodesModelLikeJS(t *testing.T) {
+	got := realtimeSpeechTranslationWebSocketURL("https://api.openai.com/v1", "a b/c*(d)!'~")
+	want := "wss://api.openai.com/v1/realtime/translations?model=a%20b%2Fc*(d)!'~"
+	if got != want {
+		t.Fatalf("url = %q, want %q", got, want)
 	}
 }

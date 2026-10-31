@@ -91,6 +91,13 @@ the first time that identity is seen, then forks a live sandbox from the
 snapshot — this is the template-snapshot behavior mentioned in the v0.5.0
 release notes.
 
+The template is prepared in a non-persistent builder sandbox, and a manual
+snapshot is taken only after `Template.Prepare` completes. Concurrent callers
+for the same identity that find the named builder (or hit the duplicate-name
+error) wait up to 60 seconds for the winner's completed manual snapshot
+instead of reusing an incomplete one. Automatic and unfinished snapshots are
+ignored.
+
 ## Resuming a session
 
 ```go

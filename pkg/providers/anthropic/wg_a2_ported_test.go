@@ -3,6 +3,7 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -137,6 +139,7 @@ func TestSafeguardResultsFromMessageDeltaStreaming(t *testing.T) {
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
+	skipMessageStartChunk(t, stream)
 
 	textChunk, err := stream.Next()
 	if err != nil || textChunk.Type != provider.ChunkTypeText {
@@ -274,6 +277,7 @@ func TestInputTransformationsFromStreamMessageStartAndDelta(t *testing.T) {
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
+	skipMessageStartChunk(t, stream)
 
 	textChunk, err := stream.Next()
 	if err != nil || textChunk.Type != provider.ChunkTypeText {
@@ -314,6 +318,7 @@ func TestSplicedStreamRejected(t *testing.T) {
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
+	skipMessageStartChunk(t, stream)
 
 	textChunk, err := stream.Next()
 	if err != nil || textChunk.Type != provider.ChunkTypeText || textChunk.Text != "hi" {
@@ -338,6 +343,11 @@ func TestSplicedStreamRejected(t *testing.T) {
 		t.Errorf("Text = %q, want %q", chunk.Text, wantMsg)
 	}
 
+	var invalid *providererrors.InvalidResponseDataError
+	if !errors.As(chunk.Err, &invalid) || invalid.Message != wantMsg {
+		t.Errorf("chunk.Err = %#v, want *InvalidResponseDataError carrying the message", chunk.Err)
+	}
+
 	// Everything after the spliced message_start (including the "spliced" text
 	// delta and message_stop) is discarded; the stream ends without a finish
 	// chunk, exactly as TS never re-enqueues after hasInvalidMessageSequence.
@@ -358,6 +368,7 @@ func TestNonSplicedRepeatMessageStartIgnored(t *testing.T) {
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
+	skipMessageStartChunk(t, stream)
 	textChunk, err := stream.Next()
 	if err != nil || textChunk.Type != provider.ChunkTypeText || textChunk.Text != "hi" {
 		t.Fatalf("text chunk = %#v, err = %v", textChunk, err)
@@ -412,6 +423,7 @@ func TestThinkingTokensUsageStreamingMessageDelta(t *testing.T) {
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
+	skipMessageStartChunk(t, stream)
 	textChunk, err := stream.Next()
 	if err != nil || textChunk.Type != provider.ChunkTypeText {
 		t.Fatalf("text chunk = %#v, err = %v", textChunk, err)

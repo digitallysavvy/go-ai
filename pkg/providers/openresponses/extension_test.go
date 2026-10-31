@@ -858,3 +858,71 @@ data: {"type":"response.completed","response":{"id":"r1","output":[],"status":"c
 		t.Fatalf("extensionState[calls] = %#v, want 1 (state persists across the stream)", s.extensionState["calls"])
 	}
 }
+
+// A DecodeItem failure mid-stream becomes an error part carrying the decode
+// error itself (TS enqueues the caught error as the part's `error`).
+func TestOpenResponsesExtensionItemDecodeStreamErrorCarriesErr(t *testing.T) {
+	decodeErr := errors.New("bad extension item")
+	p := New(Config{BaseURL: "http://localhost:1234/v1", Extensions: []Extension{{
+		ID:        "lmstudio.broken",
+		ItemTypes: []string{"lmstudio:broken"},
+		DecodeItem: func(ExtensionItem, string) ([]types.ContentPart, error) {
+			return nil, decodeErr
+		},
+	}}})
+	var item OutputItem
+	if err := json.Unmarshal([]byte(`{"type":"lmstudio:broken","id":"b_1","status":"completed"}`), &item); err != nil {
+		t.Fatalf("unmarshal item failed: %v", err)
+	}
+	s := newOpenResponsesStream(io.NopCloser(strings.NewReader("")), nil, "open-responses")
+	s.extensionRegistry = p.extensionRegistry
+	chunk, ok := s.handleStreamEvent(&StreamEvent{Type: "response.output_item.done", Item: &item})
+	if !ok || chunk == nil || chunk.Type != provider.ChunkTypeError || !errors.Is(chunk.Err, decodeErr) {
+		t.Fatalf("chunk = %#v, want error chunk carrying decodeErr", chunk)
+	}
+}
+
+// TS replays a tool-call or tool-result of a provider tool with a registered
+// extension through encodeInputItem (and warns when it yields nothing), in the
+// assistant and tool messages alike, whether or not the provider executed it.
+func TestOpenResponsesProviderToolHistoryThroughExtension(t *testing.T) {
+	p := New(Config{BaseURL: "http://localhost:1234/v1", Extensions: []Extension{codeExecutionExtension()}})
+	model := NewLanguageModel(p, "local-model")
+	body, warnings, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{
+			{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "ce_9", ToolName: "run_code", Input: "print(9)"},
+			}},
+			{Role: types.RoleTool, Content: []types.ContentPart{
+				types.ToolResultContent{ToolCallID: "ce_9", ToolName: "run_code", Result: "9"},
+			}},
+		}},
+		Tools: []types.Tool{{Name: "run_code", Type: "provider", ProviderID: "lmstudio.code_execution"}},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, _ := body["input"].([]interface{})
+	if len(input) != 1 {
+		t.Fatalf("input = %#v, want only the encoded call item", input)
+	}
+	if m, _ := input[0].(map[string]interface{}); m["type"] != "lmstudio:code_execution" || m["code"] != "print(9)" {
+		t.Fatalf("input[0] = %#v", input[0])
+	}
+	var warned bool
+	for _, w := range warnings {
+		if w.Type == "unsupported" && w.Feature == "provider-defined tool lmstudio.code_execution tool-result history" {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Fatalf("warnings = %#v, want the tool-result history warning", warnings)
+	}
+}
+
+func TestConvertToolResultErrorJSONIsStringified(t *testing.T) {
+	out, err := convertStructuredToolResultOutput(types.ToolResultOutput{Type: types.ToolResultOutputErrorJSON, Value: map[string]interface{}{"a": 1}}, &[]types.Warning{}, "openai")
+	if err != nil || out != `{"a":1}` {
+		t.Fatalf("out = %#v, err = %v", out, err)
+	}
+}

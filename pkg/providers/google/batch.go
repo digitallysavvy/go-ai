@@ -4,22 +4,24 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/geminischema"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
 // googleBatchInputFileMaxBytes is the maximum size Google accepts for a batch
@@ -113,7 +115,15 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		}
 	}
 
-	displayName := "ai-sdk-batch-" + generateGoogleBatchDisplayNameSuffix()
+	// TS `ai-sdk-batch-${this.batchGenerateId()}` with batchGenerateId =
+	// config.generateId ?? generateId (the provider's generateId setting).
+	suffix := ""
+	if b.provider.config.GenerateID != nil {
+		suffix = b.provider.config.GenerateID()
+	} else {
+		suffix = generateGoogleBatchDisplayNameSuffix()
+	}
+	displayName := "ai-sdk-batch-" + suffix
 	batchFields := map[string]interface{}{"displayName": displayName}
 	if opts.WebhookURL != "" {
 		batchFields["webhookConfig"] = map[string]interface{}{"uris": []string{opts.WebhookURL}}
@@ -129,15 +139,14 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		"requests": map[string]interface{}{"requests": inlinedRequests},
 	}
 	requestBody := map[string]interface{}{"batch": inlineBody}
-	inlineJSON, _ := json.Marshal(requestBody)
-
-	if len(inlineJSON) < googleBatchInlineCreationMaxBytes {
+	if googleBatchInlineInputBytes(requestBody) < googleBatchInlineCreationMaxBytes {
 		var operation googleBatchOperationWire
 		if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-			Method:  http.MethodPost,
-			Path:    createPath,
-			Body:    requestBody,
-			Headers: opts.Headers,
+			ValidateResponse: googleValidator(zGoogleBatchOperation),
+			Method:           http.MethodPost,
+			Path:             createPath,
+			Body:             requestBody,
+			Headers:          opts.Headers,
 		}, &operation); err != nil {
 			return nil, b.handleError(err)
 		}
@@ -153,7 +162,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		fileParts.Write(encoded)
 		fileParts.WriteByte('\n')
 	}
-	if fileParts.Len() > googleBatchInputFileMaxBytes {
+	if int64(fileParts.Len()) > googleBatchInputFileMaxBytes {
 		return nil, &providererrors.InvalidArgumentError{Field: "requests", Message: "Google batch input files must not exceed 2 GB."}
 	}
 
@@ -170,10 +179,11 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 
 	var operation googleBatchOperationWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    createPath,
-		Body:    map[string]interface{}{"batch": fileBatchBody},
-		Headers: opts.Headers,
+		ValidateResponse: googleValidator(zGoogleBatchOperation),
+		Method:           http.MethodPost,
+		Path:             createPath,
+		Body:             map[string]interface{}{"batch": fileBatchBody},
+		Headers:          opts.Headers,
 	}, &operation); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -201,7 +211,11 @@ type googleBatchUploadedFile struct {
 // GoogleBatch.doStartBatch.
 func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displayName string, headers map[string]string) (*googleBatchUploadedFile, error) {
 	baseOrigin := strings.TrimSuffix(b.provider.config.BaseURL, "/v1beta")
-	authHeaders := internalhttp.MergeHeaders(map[string]string{"x-goog-api-key": b.provider.APIKey()}, b.provider.config.Headers)
+	keyHeaders, err := b.provider.apiKeyHeaders()
+	if err != nil {
+		return nil, err
+	}
+	authHeaders := internalhttp.MergeHeaders(b.provider.defaultHeaders(), keyHeaders)
 	authHeaders = internalhttp.MergeHeaders(authHeaders, headers)
 
 	initPayload, err := json.Marshal(map[string]interface{}{"file": map[string]interface{}{"display_name": displayName}})
@@ -227,7 +241,7 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 	}
 	defer initResp.Body.Close() //nolint:errcheck
 	if initResp.StatusCode >= 400 {
-		body, _ := io.ReadAll(initResp.Body)
+		body, _ := io.ReadAll(io.LimitReader(initResp.Body, googleFilesMaxResponseBytes))
 		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: initResp.StatusCode, Headers: initResp.Header, Body: body})
 	}
 	uploadURL := initResp.Header.Get("x-goog-upload-url")
@@ -250,7 +264,7 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 	}
 	defer uploadResp.Body.Close() //nolint:errcheck
 	if uploadResp.StatusCode >= 400 {
-		body, _ := io.ReadAll(uploadResp.Body)
+		body, _ := io.ReadAll(io.LimitReader(uploadResp.Body, googleFilesMaxResponseBytes))
 		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: uploadResp.StatusCode, Headers: uploadResp.Header, Body: body})
 	}
 
@@ -260,7 +274,15 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 			ExpirationTime string `json:"expirationTime"`
 		} `json:"file"`
 	}
-	if err := json.NewDecoder(uploadResp.Body).Decode(&result); err != nil {
+	uploadBody, err := io.ReadAll(io.LimitReader(uploadResp.Body, googleFilesMaxResponseBytes))
+	if err != nil {
+		return nil, err
+	}
+	// TS createJsonResponseHandler(googleFileUploadResponseSchema).
+	if err := googleValidator(zGoogleBatchFileUpload)(uploadResp.StatusCode, uploadResp.Header, uploadBody); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(uploadBody, &result); err != nil {
 		return nil, err
 	}
 	return &googleBatchUploadedFile{Name: result.File.Name, ExpirationTime: result.File.ExpirationTime}, nil
@@ -289,12 +311,16 @@ func (b *Batch) prepareImageBatchRequest(req *provider.ImageBatchV4Request) (map
 
 	warnings := googleImageWarnings(&opts)
 
+	content, err := googleGeminiImageContent(&opts)
+	if err != nil {
+		return nil, nil, err
+	}
 	providerOptions, googleSearch := geminiImageProviderOptions(&opts)
 	lmOpts := &provider.GenerateOptions{
 		Prompt: types.Prompt{
 			Messages: []types.Message{{
 				Role:    types.RoleUser,
-				Content: googleGeminiImageContent(&opts),
+				Content: content,
 			}},
 		},
 		Seed:            opts.Seed,
@@ -327,10 +353,11 @@ func (b *Batch) DoGetBatchStatus(ctx context.Context, opts provider.BatchV4Opera
 func (b *Batch) DoCancelBatch(ctx context.Context, opts provider.BatchV4OperationOptions) (*provider.BatchV4CancelResult, error) {
 	var response map[string]interface{}
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/" + opts.BatchID + ":cancel",
-		Body:    map[string]interface{}{},
-		Headers: opts.Headers,
+		ValidateResponse: googleValidator(zGoogleBatchCancel),
+		Method:           http.MethodPost,
+		Path:             "/" + opts.BatchID + ":cancel",
+		Body:             map[string]interface{}{},
+		Headers:          opts.Headers,
 	}, &response); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -352,10 +379,11 @@ func (b *Batch) DoListBatches(ctx context.Context, opts provider.BatchV4ListOpti
 		NextPageToken string                     `json:"nextPageToken"`
 	}
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodGet,
-		Path:    "/batches",
-		Query:   query,
-		Headers: opts.Headers,
+		ValidateResponse: googleValidator(zGoogleBatchList),
+		Method:           http.MethodGet,
+		Path:             "/batches",
+		Query:            query,
+		Headers:          opts.Headers,
 	}, &response); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -391,8 +419,8 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 		return newGoogleBatchInlineResultsStream(b, inlined), nil
 	}
 
-	responsesFile := operation.responsesFile()
-	if responsesFile == "" {
+	responsesFile, hasResponsesFile := operation.responsesFile()
+	if !hasResponsesFile {
 		if status.Status == provider.BatchStatusCompleted {
 			return nil, providererrors.NewInvalidResponseDataError(operation,
 				fmt.Sprintf("Google batch %q completed without batch output.", opts.BatchID))
@@ -407,11 +435,20 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	baseOrigin := strings.TrimSuffix(b.provider.config.BaseURL, "/v1beta")
 	downloadURL := fmt.Sprintf("%s/download/v1beta/%s:download?alt=media", baseOrigin, strings.Join(segments, "/"))
 
+	maxLineBytes, err := b.provider.config.BatchResultDownloads.ResolveMaxLineBytes()
+	if err != nil {
+		return nil, err
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	authHeaders := internalhttp.MergeHeaders(map[string]string{"x-goog-api-key": b.provider.APIKey()}, b.provider.config.Headers)
+	keyHeaders, err := b.provider.apiKeyHeaders()
+	if err != nil {
+		return nil, err
+	}
+	authHeaders := internalhttp.MergeHeaders(b.provider.defaultHeaders(), keyHeaders)
 	authHeaders = internalhttp.MergeHeaders(authHeaders, opts.Headers)
 	for k, v := range authHeaders {
 		req.Header.Set(k, v)
@@ -423,19 +460,20 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	}
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close() //nolint:errcheck
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, googleFilesMaxResponseBytes))
 		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Header, Body: body})
 	}
 
-	return newGoogleBatchFileResultsStream(b, resp.Body), nil
+	return newGoogleBatchFileResultsStream(b, resp.Body, downloadURL, maxLineBytes), nil
 }
 
 func (b *Batch) retrieveBatch(ctx context.Context, batchID string, headers map[string]string) (*googleBatchOperationWire, error) {
 	var operation googleBatchOperationWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodGet,
-		Path:    "/" + batchID,
-		Headers: headers,
+		ValidateResponse: googleValidator(zGoogleBatchOperation),
+		Method:           http.MethodGet,
+		Path:             "/" + batchID,
+		Headers:          headers,
 	}, &operation); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -494,33 +532,56 @@ func getGoogleBatchModelID(requests []provider.BatchV4Request) (string, error) {
 	return modelID, nil
 }
 
-// generateGoogleBatchDisplayNameSuffix returns a short random identifier for
-// batch displayName values.
+// googleBatchIDAlphabet is the alphabet of the TS generateId default.
+const googleBatchIDAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+// generateGoogleBatchDisplayNameSuffix returns a 16-character random
+// identifier like the TS default generateId, so displayName (and with it the
+// inline creation body size that decides inline versus file input) has the
+// same length as in TS.
 func generateGoogleBatchDisplayNameSuffix() string {
-	return streaming.GenerateID()
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return strings.Repeat("0", len(raw))
+	}
+	out := make([]byte, len(raw))
+	for i, v := range raw {
+		out[i] = googleBatchIDAlphabet[int(v)%len(googleBatchIDAlphabet)]
+	}
+	return string(out)
 }
 
 // --- Wire types -------------------------------------------------------
 
 type googleRPCStatusWire struct {
 	Code    interface{} `json:"code"`
-	Message string      `json:"message"`
-	Status  string      `json:"status"`
+	Message *string     `json:"message"`
+	Status  *string     `json:"status"`
 }
 
+// codeString is TS String(error.code): a JSON number prints as a JS number.
+func (e *googleRPCStatusWire) codeString() string {
+	if f, ok := e.Code.(float64); ok {
+		return providerutils.JSNumberString(f)
+	}
+	return fmt.Sprintf("%v", e.Code)
+}
+
+// toBatchError is TS convertGoogleRpcError: `message ?? fallback` keeps an
+// explicit empty message, and a present status / code is always copied.
 func (e *googleRPCStatusWire) toBatchError(fallbackMessage string) *provider.BatchError {
 	if e == nil {
 		return nil
 	}
-	out := &provider.BatchError{Message: e.Message}
-	if out.Message == "" {
-		out.Message = fallbackMessage
+	out := &provider.BatchError{Message: fallbackMessage}
+	if e.Message != nil {
+		out.Message = *e.Message
 	}
-	if e.Status != "" {
-		out.Type = e.Status
+	if e.Status != nil {
+		out.Type = *e.Status
 	}
 	if e.Code != nil {
-		out.Code = fmt.Sprintf("%v", e.Code)
+		out.Code = e.codeString()
 	}
 	return out
 }
@@ -541,7 +602,8 @@ type googleBatchInlinedResponseWire struct {
 }
 
 type googleBatchOutputWire struct {
-	ResponsesFile    string `json:"responsesFile"`
+	// ResponsesFile is a pointer: TS `??` keeps an empty string.
+	ResponsesFile    *string `json:"responsesFile"`
 	InlinedResponses *struct {
 		InlinedResponses []googleBatchInlinedResponseWire `json:"inlinedResponses"`
 	} `json:"inlinedResponses"`
@@ -550,7 +612,7 @@ type googleBatchOutputWire struct {
 type googleBatchOperationWire struct {
 	Name     string `json:"name"`
 	Metadata *struct {
-		State      string                 `json:"state"`
+		State      *string                `json:"state"`
 		CreateTime string                 `json:"createTime"`
 		BatchStats *googleBatchStatsWire  `json:"batchStats"`
 		Output     *googleBatchOutputWire `json:"output"`
@@ -570,25 +632,28 @@ func (o googleBatchOperationWire) inlinedResponses() []googleBatchInlinedRespons
 	return nil
 }
 
-func (o googleBatchOperationWire) responsesFile() string {
-	if o.Metadata != nil && o.Metadata.Output != nil && o.Metadata.Output.ResponsesFile != "" {
-		return o.Metadata.Output.ResponsesFile
+// responsesFile is TS `metadata.output.responsesFile ?? response.responsesFile`:
+// only null/absent falls through, so an empty string is a value.
+func (o googleBatchOperationWire) responsesFile() (string, bool) {
+	if o.Metadata != nil && o.Metadata.Output != nil && o.Metadata.Output.ResponsesFile != nil {
+		return *o.Metadata.Output.ResponsesFile, true
 	}
-	if o.Response != nil {
-		return o.Response.ResponsesFile
+	if o.Response != nil && o.Response.ResponsesFile != nil {
+		return *o.Response.ResponsesFile, true
 	}
-	return ""
+	return "", false
 }
 
 func (o googleBatchOperationWire) toStatus() provider.BatchV4Status {
 	var rawStatus string
-	if o.Metadata != nil {
-		rawStatus = o.Metadata.State
+	hasRawStatus := false
+	if o.Metadata != nil && o.Metadata.State != nil {
+		rawStatus, hasRawStatus = *o.Metadata.State, true
 	}
 	batchErr := o.Error.toBatchError("Google batch failed.")
 
 	status := provider.BatchV4Status{
-		Status:    mapGoogleBatchStatus(rawStatus, o.Done, batchErr != nil),
+		Status:    mapGoogleBatchStatus(rawStatus, hasRawStatus, o.Done, batchErr != nil),
 		RawStatus: rawStatus,
 		Error:     batchErr,
 	}
@@ -599,11 +664,14 @@ func (o googleBatchOperationWire) toStatus() provider.BatchV4Status {
 	return status
 }
 
-func mapGoogleBatchStatus(rawStatus string, done bool, hasError bool) provider.BatchStatusValue {
+// mapGoogleBatchStatus is TS mapGoogleBatchStatus. hasRawStatus is false only
+// when the state is absent or null: an empty-string state is a value, maps to
+// no known state and so stays pending even when done is true.
+func mapGoogleBatchStatus(rawStatus string, hasRawStatus bool, done bool, hasError bool) provider.BatchStatusValue {
 	if hasError {
 		return provider.BatchStatusFailed
 	}
-	if rawStatus == "" {
+	if !hasRawStatus {
 		if done {
 			return provider.BatchStatusCompleted
 		}
@@ -639,6 +707,9 @@ func convertGoogleRequestCounts(stats *googleBatchStatsWire) *provider.BatchRequ
 	return providerutils.NormalizeBatchRequestCounts(total, pending, completed, failed)
 }
 
+// maxSafeJSInteger is Number.MAX_SAFE_INTEGER.
+const maxSafeJSInteger = 1<<53 - 1
+
 // parseGoogleBatchCount parses a wire count (string or float64) into a
 // non-negative int, returning nil when missing or invalid (matching TS
 // parseCount's Number.isSafeInteger && >= 0 check; Go's int has no separate
@@ -646,12 +717,19 @@ func convertGoogleRequestCounts(stats *googleBatchStatsWire) *provider.BatchRequ
 func parseGoogleBatchCount(v interface{}) *int {
 	switch t := v.(type) {
 	case string:
-		if n, err := strconv.Atoi(t); err == nil && n >= 0 {
-			return &n
+		// TS accepts only /^\d+$/ strings, up to Number.MAX_SAFE_INTEGER.
+		if t == "" || strings.Trim(t, "0123456789") != "" {
+			return nil
+		}
+		// A count past math.MaxInt (only possible on 32-bit) is unrepresentable.
+		if n, err := strconv.ParseInt(t, 10, 64); err == nil && n <= maxSafeJSInteger && n <= math.MaxInt {
+			v := int(n)
+			return &v
 		}
 		return nil
 	case float64:
-		if n := int(t); float64(n) == t && n >= 0 {
+		if t >= 0 && t <= maxSafeJSInteger && t == float64(int64(t)) && int64(t) <= math.MaxInt {
+			n := int(t)
 			return &n
 		}
 		return nil
@@ -675,8 +753,7 @@ func parseGoogleBatchCountOrZero(v interface{}) *int {
 func (b *Batch) convertGoogleBatchResultLine(key string, response json.RawMessage, errWire *googleRPCStatusWire) *provider.BatchV4ItemResult {
 	if errWire != nil {
 		status := provider.BatchItemFailed
-		codeStr := fmt.Sprintf("%v", errWire.Code)
-		if errWire.Status == "CANCELLED" || codeStr == "1" {
+		if (errWire.Status != nil && *errWire.Status == "CANCELLED") || (errWire.Code != nil && errWire.codeString() == "1") {
 			status = provider.BatchItemCancelled
 		}
 		return &provider.BatchV4ItemResult{
@@ -699,7 +776,7 @@ func (b *Batch) convertGoogleBatchResultLine(key string, response json.RawMessag
 	var preview struct {
 		Candidates     []json.RawMessage `json:"candidates"`
 		PromptFeedback *struct {
-			BlockReason string `json:"blockReason"`
+			BlockReason *string `json:"blockReason"`
 		} `json:"promptFeedback"`
 	}
 	if err := json.Unmarshal(response, &preview); err == nil && len(preview.Candidates) == 0 {
@@ -708,13 +785,18 @@ func (b *Batch) convertGoogleBatchResultLine(key string, response json.RawMessag
 		errType := ""
 		var meta map[string]interface{}
 		if preview.PromptFeedback != nil {
+			// TS: blockReason ?? null (an empty string is a block reason).
+			var blockReason interface{}
+			if preview.PromptFeedback.BlockReason != nil {
+				blockReason = *preview.PromptFeedback.BlockReason
+			}
 			meta = map[string]interface{}{"google": map[string]interface{}{
-				"promptFeedback": map[string]interface{}{"blockReason": preview.PromptFeedback.BlockReason},
+				"promptFeedback": map[string]interface{}{"blockReason": blockReason},
 			}}
-			if preview.PromptFeedback.BlockReason != "" {
-				message = fmt.Sprintf("Google blocked the batch request (%s).", preview.PromptFeedback.BlockReason)
+			if preview.PromptFeedback.BlockReason != nil {
+				message = fmt.Sprintf("Google blocked the batch request (%s).", *preview.PromptFeedback.BlockReason)
 				code = "prompt_blocked"
-				errType = preview.PromptFeedback.BlockReason
+				errType = *preview.PromptFeedback.BlockReason
 			}
 		}
 		item := &provider.BatchV4ItemResult{
@@ -729,8 +811,10 @@ func (b *Batch) convertGoogleBatchResultLine(key string, response json.RawMessag
 		return item
 	}
 
-	var geminiResp gemini.Response
-	if err := json.Unmarshal(response, &geminiResp); err != nil {
+	// TS safeValidateTypes(responseSchema): a result that does not match the
+	// schema fails that item.
+	var decoded gemini.GenerateResponse
+	if geminischema.GenerateValidationMessage(string(response)) != "" || json.Unmarshal(response, &decoded) != nil {
 		return &provider.BatchV4ItemResult{
 			Type:   provider.BatchRequestTypeText,
 			ID:     key,
@@ -740,7 +824,7 @@ func (b *Batch) convertGoogleBatchResultLine(key string, response json.RawMessag
 	}
 
 	lm := NewLanguageModel(b.provider, "")
-	genResult := lm.ConvertBatchResponse(geminiResp)
+	genResult := lm.ConvertBatchResponse(decoded.Response)
 
 	if imageResult := convertGoogleBatchImageResult(genResult); imageResult != nil {
 		return &provider.BatchV4ItemResult{
@@ -874,23 +958,26 @@ type googleBatchResultLineWire struct {
 // googleBatchFileResultsStream implements provider.BatchV4ItemResultStream
 // over the NDJSON body of a downloaded responses file.
 type googleBatchFileResultsStream struct {
-	batch   *Batch
-	scanner *bufio.Scanner
-	body    io.ReadCloser
-	err     error
+	batch        *Batch
+	scanner      *bufio.Scanner
+	body         io.ReadCloser
+	url          string
+	maxLineBytes int
+	err          error
 }
 
-func newGoogleBatchFileResultsStream(b *Batch, body io.ReadCloser) *googleBatchFileResultsStream {
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
-	return &googleBatchFileResultsStream{batch: b, scanner: scanner, body: body}
+func newGoogleBatchFileResultsStream(b *Batch, body io.ReadCloser, url string, maxLineBytes int) *googleBatchFileResultsStream {
+	scanner := providerutils.NewJSONLinesScanner(body, maxLineBytes)
+	return &googleBatchFileResultsStream{batch: b, scanner: scanner, body: body, url: url, maxLineBytes: maxLineBytes}
 }
 
 func (s *googleBatchFileResultsStream) Next() (*provider.BatchV4ItemResult, error) {
 	for {
 		if !s.scanner.Scan() {
 			if err := s.scanner.Err(); err != nil {
+				err = providerutils.JSONLinesScanError(err, s.url, s.maxLineBytes)
 				s.err = err
+				_ = s.body.Close()
 				return nil, err
 			}
 			return nil, io.EOF
@@ -898,6 +985,14 @@ func (s *googleBatchFileResultsStream) Next() (*provider.BatchV4ItemResult, erro
 		line := bytes.TrimSpace(s.scanner.Bytes())
 		if len(line) == 0 {
 			continue
+		}
+		// TS createJsonLinesResponseHandler(googleBatchResultLineSchema): a line
+		// that is not JSON (JSONParseError) or does not match the schema
+		// (TypeValidationError) fails the stream.
+		if err := googleBatchLineError(line); err != nil {
+			s.err = err
+			_ = s.body.Close()
+			return nil, err
 		}
 		var wire googleBatchResultLineWire
 		if err := json.Unmarshal(line, &wire); err != nil {
@@ -908,5 +1003,34 @@ func (s *googleBatchFileResultsStream) Next() (*provider.BatchV4ItemResult, erro
 	}
 }
 
+// googleBatchLineError validates one responses-file line against
+// googleBatchResultLineSchema.
+func googleBatchLineError(line []byte) error {
+	var value interface{}
+	if syntax := json.Unmarshal(line, &value); syntax != nil {
+		return providererrors.NewJSONParseError(string(line), syntax)
+	}
+	if bad := zGoogleBatchResultLine(value, true, nil); bad != nil {
+		_, typed := providerutils.ChunkParseFailure(string(line), bad)
+		return typed
+	}
+	return nil
+}
+
 func (s *googleBatchFileResultsStream) Err() error   { return s.err }
 func (s *googleBatchFileResultsStream) Close() error { return s.body.Close() }
+
+// googleBatchInlineInputBytes is TS's inlineInputBytes. TS starts from the
+// JSON.stringify byte length of the whole creation body (batch wrapper,
+// displayName and webhookConfig, with an empty request list) and adds each
+// inlined request's bytes plus one per separator, which is exactly the byte
+// length of the complete creation body. JSON.stringify leaves <, > and &
+// unescaped, so HTML escaping is off; the encoder's trailing newline is not
+// counted.
+func googleBatchInlineInputBytes(requestBody map[string]interface{}) int {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(requestBody)
+	return max(buf.Len()-1, 0)
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -50,7 +51,19 @@ type AgentSession struct {
 
 	pendingApprovals map[string]PendingToolApproval
 	pendingResults   map[string]PendingToolResult
-	turnSettings     *TurnSettings
+	// approvalOrder/resultOrder keep insertion order (TS Maps iterate in
+	// insertion order), so persisted pending lists are deterministic.
+	approvalOrder []string
+	resultOrder   []string
+	// turnSettings are the persisted settings of the unfinished turn
+	// (TS `persistedTurnSettings`).
+	turnSettings *TurnSettings
+	// activeTurn caches the resolved settings (tools, contexts) of the
+	// unfinished turn (TS `activeTurnSettings`).
+	activeTurn *activeTurnSettings
+	// activePromptDone is closed when the driver of the current turn has
+	// finished (TS `activePromptDone`).
+	activePromptDone <-chan struct{}
 
 	sessionState SessionState
 	turnState    TurnState
@@ -76,7 +89,27 @@ type AgentSession struct {
 	// underlying adapter's DoSuspendTurn twice — the second caller simply
 	// receives the first call's already-resolved state. Cleared whenever a
 	// fresh turn starts (startTrackedTurn).
-	suspendedState *ContinueTurnState
+	suspend *suspendCall
+}
+
+// suspendCall memoizes one DoSuspendTurn invocation (TS
+// `suspendedTurnState`, a cached promise). The error is memoized too, like a
+// rejected promise.
+type suspendCall struct {
+	done  chan struct{}
+	state *ContinueTurnState
+	err   error
+}
+
+// activeTurnSettings are the resolved settings of the unfinished turn. Mirrors
+// TS `ActiveTurnSettings`.
+type activeTurnSettings struct {
+	persisted            TurnSettings
+	tools                map[string]types.Tool
+	toolsContext         map[string]interface{}
+	runtimeContext       interface{}
+	activeTools          map[string]types.Tool
+	builtinToolFiltering *BuiltinToolFiltering
 }
 
 // steerHandoff carries the in-flight turn's PromptControl to a caller
@@ -130,10 +163,10 @@ func newAgentSession(opts AgentSessionOptions) *AgentSession {
 		s.turnState = TurnStateIdle
 	}
 	for _, a := range opts.PendingToolApprovals {
-		s.pendingApprovals[a.ApprovalID] = a
+		s.setApprovalLocked(a)
 	}
 	for _, r := range opts.PendingToolResults {
-		s.pendingResults[r.ToolCallID] = r
+		s.setResultLocked(r)
 	}
 	return s
 }
@@ -172,9 +205,9 @@ func (s *AgentSession) requirePromptableTurnLocked() error {
 	case TurnStateIdle:
 		return nil
 	case TurnStateRunning:
-		return fmt.Errorf("harness session '%s' already has a turn in progress", s.sessionID)
+		return fmt.Errorf("Harness session %s already has a turn in progress.", s.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	default:
-		return fmt.Errorf("harness session '%s' has an unfinished turn; call ContinueGenerate/ContinueStream instead", s.sessionID)
+		return fmt.Errorf("Harness session %s has an unfinished turn and must be continued before accepting a new prompt.", s.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 }
 
@@ -185,9 +218,9 @@ func (s *AgentSession) requireContinuableTurnLocked() error {
 	case TurnStateAwaitingApproval, TurnStateAwaitingResult, TurnStateSuspended:
 		return nil
 	case TurnStateRunning:
-		return fmt.Errorf("harness session '%s' already has a turn in progress", s.sessionID)
+		return fmt.Errorf("Harness session %s already has a turn in progress.", s.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	default:
-		return fmt.Errorf("harness session '%s' has no unfinished turn to continue", s.sessionID)
+		return fmt.Errorf("Harness session %s has no unfinished turn to continue.", s.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 }
 
@@ -213,17 +246,30 @@ func (s *AgentSession) requireContinuableTurnLocked() error {
 // than checking early (e.g. before PrepareCall/tool-filtering work) and
 // transitioning only afterward, which leaves a window where two calls can
 // both pass the guard.
-func (s *AgentSession) startTrackedTurn(mode string) (int, error) {
+func (s *AgentSession) startTrackedTurn(mode string, cur *activeTurnSettings) (int, *activeTurnSettings, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.requireReusableLocked(); err != nil {
+		return 0, nil, err
+	}
 	var err error
+	var active *activeTurnSettings
 	if mode == "continue" {
-		err = s.requireContinuableTurnLocked()
+		if err = s.requireContinuableTurnLocked(); err == nil {
+			active, err = s.resolveActiveTurnSettingsLocked(cur)
+		}
 	} else {
-		err = s.requirePromptableTurnLocked()
+		if err = s.requirePromptableTurnLocked(); err == nil {
+			// TS promptTurn: the turn's settings are persisted so a suspend,
+			// detach or stop can carry them in the continuation.
+			persisted := cur.persisted
+			s.turnSettings = &persisted
+			s.activeTurn = cur
+			active = cur
+		}
 	}
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	s.turnState = TurnStateRunning
 	s.turnSeq++
@@ -231,8 +277,70 @@ func (s *AgentSession) startTrackedTurn(mode string) (int, error) {
 	s.activeTurnID = turnID
 	s.clearActiveHandoffLocked()
 	s.activeHandoff = &steerHandoff{turnID: turnID, ready: make(chan struct{})}
-	s.suspendedState = nil
-	return turnID, nil
+	s.suspend = nil
+	return turnID, active, nil
+}
+
+// setActivePromptDone records the done channel of turn turnID's driver, unless
+// a newer turn has started meanwhile.
+func (s *AgentSession) setActivePromptDone(turnID int, done <-chan struct{}) {
+	s.mu.Lock()
+	if s.activeTurnID == turnID {
+		s.activePromptDone = done
+	}
+	s.mu.Unlock()
+}
+
+// isTurnSuspending reports whether turnID is the active turn and the host
+// has suspended it. Mirrors TS `isTurnSuspending`.
+func (s *AgentSession) isTurnSuspending(turnID int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activeTurnID == turnID && s.suspend != nil
+}
+
+// requireReusableLocked mirrors TS `requireReusableSession`.
+func (s *AgentSession) requireReusableLocked() error {
+	if s.sessionState != SessionStateActive || s.underlying == nil {
+		return fmt.Errorf("Harness session %s has ended and cannot be reused.", s.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
+	}
+	return nil
+}
+
+// resolveActiveTurnSettingsLocked mirrors TS `resolveActiveTurnSettings`: a
+// continuation reuses the settings of the turn started in this process; a
+// session resumed from persisted state rebuilds them from the persisted
+// turn settings and requires every persisted tool to still be available.
+func (s *AgentSession) resolveActiveTurnSettingsLocked(cur *activeTurnSettings) (*activeTurnSettings, error) {
+	if s.activeTurn != nil {
+		return s.activeTurn, nil
+	}
+	persisted := s.turnSettings
+	if persisted == nil {
+		p := cur.persisted
+		persisted = &p
+	}
+	s.turnSettings = persisted
+	activeTools := map[string]types.Tool{}
+	for _, spec := range persisted.Tools {
+		t, ok := cur.activeTools[spec.Name]
+		if !ok {
+			return nil, fmt.Errorf("HarnessAgent cannot continue turn because tool '%s' is no longer available.", spec.Name) //nolint:staticcheck // matches TS SDK's exact error text
+		}
+		activeTools[spec.Name] = t
+	}
+	toolsContext, runtimeContext := cur.toolsContext, cur.runtimeContext
+	if s.resumedToolsContext != nil {
+		toolsContext = s.resumedToolsContext
+	}
+	if s.resumedRuntimeContext != nil {
+		runtimeContext = s.resumedRuntimeContext
+	}
+	s.activeTurn = &activeTurnSettings{
+		persisted: *persisted, tools: cur.tools, toolsContext: toolsContext, runtimeContext: runtimeContext,
+		activeTools: activeTools, builtinToolFiltering: cur.builtinToolFiltering,
+	}
+	return s.activeTurn, nil
 }
 
 // setActivePromptControl hands the running turn's PromptControl to any
@@ -295,7 +403,10 @@ func (s *AgentSession) finishTrackedTurn(turnID int) {
 		s.clearActiveHandoffLocked()
 		s.pendingApprovals = map[string]PendingToolApproval{}
 		s.pendingResults = map[string]PendingToolResult{}
-		s.suspendedState = nil
+		s.approvalOrder, s.resultOrder = nil, nil
+		s.suspend = nil
+		s.activeTurn = nil
+		s.turnSettings = nil
 		s.turnState = TurnStateIdle
 	}
 	s.mu.Unlock()
@@ -307,15 +418,48 @@ func (s *AgentSession) finishTrackedTurn(turnID int) {
 func (s *AgentSession) snapshotPendingState() ([]PendingToolApproval, []PendingToolResult, *TurnSettings) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	approvals := make([]PendingToolApproval, 0, len(s.pendingApprovals))
-	for _, a := range s.pendingApprovals {
-		approvals = append(approvals, a)
+	return s.pendingApprovalsLocked(), s.pendingResultsLocked(), s.turnSettings
+}
+
+func (s *AgentSession) pendingApprovalsLocked() []PendingToolApproval {
+	approvals := make([]PendingToolApproval, 0, len(s.approvalOrder))
+	for _, id := range s.approvalOrder {
+		approvals = append(approvals, s.pendingApprovals[id])
 	}
-	results := make([]PendingToolResult, 0, len(s.pendingResults))
-	for _, r := range s.pendingResults {
-		results = append(results, r)
+	return approvals
+}
+
+func (s *AgentSession) pendingResultsLocked() []PendingToolResult {
+	results := make([]PendingToolResult, 0, len(s.resultOrder))
+	for _, id := range s.resultOrder {
+		results = append(results, s.pendingResults[id])
 	}
-	return approvals, results, s.turnSettings
+	return results
+}
+
+// setApprovalLocked/setResultLocked mirror a TS Map `set`: re-setting an
+// existing key keeps its position.
+func (s *AgentSession) setApprovalLocked(a PendingToolApproval) {
+	if _, ok := s.pendingApprovals[a.ApprovalID]; !ok {
+		s.approvalOrder = append(s.approvalOrder, a.ApprovalID)
+	}
+	s.pendingApprovals[a.ApprovalID] = a
+}
+
+func (s *AgentSession) setResultLocked(r PendingToolResult) {
+	if _, ok := s.pendingResults[r.ToolCallID]; !ok {
+		s.resultOrder = append(s.resultOrder, r.ToolCallID)
+	}
+	s.pendingResults[r.ToolCallID] = r
+}
+
+func removeOrdered(order []string, id string) []string {
+	for i, v := range order {
+		if v == id {
+			return append(order[:i:i], order[i+1:]...)
+		}
+	}
+	return order
 }
 
 // recordPendingApproval records a newly pending approval and — mirroring TS
@@ -325,8 +469,8 @@ func (s *AgentSession) snapshotPendingState() ([]PendingToolApproval, []PendingT
 // discovers it needs one, not retrospectively once the turn settles.
 func (s *AgentSession) recordPendingApproval(a PendingToolApproval) {
 	s.mu.Lock()
-	s.pendingApprovals[a.ApprovalID] = a
-	if s.turnState == TurnStateRunning {
+	s.setApprovalLocked(a)
+	if s.sessionState == SessionStateActive {
 		s.clearActiveHandoffLocked()
 		s.turnState = TurnStateAwaitingApproval
 	}
@@ -336,6 +480,7 @@ func (s *AgentSession) recordPendingApproval(a PendingToolApproval) {
 func (s *AgentSession) settleApproval(approvalID string) {
 	s.mu.Lock()
 	delete(s.pendingApprovals, approvalID)
+	s.approvalOrder = removeOrdered(s.approvalOrder, approvalID)
 	s.mu.Unlock()
 }
 
@@ -344,8 +489,8 @@ func (s *AgentSession) settleApproval(approvalID string) {
 // `markAwaitingToolResultIfActive`; see recordPendingApproval.
 func (s *AgentSession) recordPendingResult(r PendingToolResult) {
 	s.mu.Lock()
-	s.pendingResults[r.ToolCallID] = r
-	if s.turnState == TurnStateRunning {
+	s.setResultLocked(r)
+	if s.sessionState == SessionStateActive {
 		s.clearActiveHandoffLocked()
 		s.turnState = TurnStateAwaitingResult
 	}
@@ -355,6 +500,7 @@ func (s *AgentSession) recordPendingResult(r PendingToolResult) {
 func (s *AgentSession) settleResult(toolCallID string) {
 	s.mu.Lock()
 	delete(s.pendingResults, toolCallID)
+	s.resultOrder = removeOrdered(s.resultOrder, toolCallID)
 	s.mu.Unlock()
 }
 
@@ -362,12 +508,13 @@ func (s *AgentSession) settleResult(toolCallID string) {
 // `HarnessAgentSession.compact`.
 func (s *AgentSession) Compact(ctx context.Context, customInstructions string) error {
 	s.mu.Lock()
-	turnState := s.turnState
+	err := s.requireReusableLocked()
+	underlying := s.underlying
 	s.mu.Unlock()
-	if turnState != TurnStateIdle {
-		return fmt.Errorf("harness session '%s': cannot compact while a turn is in progress or unfinished", s.sessionID)
+	if err != nil {
+		return err
 	}
-	return s.underlying.DoCompact(ctx, customInstructions)
+	return underlying.DoCompact(ctx, customInstructions)
 }
 
 // ExperimentalSteerTurn submits an additional user message to the active
@@ -381,9 +528,13 @@ func (s *AgentSession) Compact(ctx context.Context, customInstructions string) e
 // `HarnessAgentSession.experimental_steerTurn`.
 func (s *AgentSession) ExperimentalSteerTurn(ctx context.Context, text string) error {
 	s.mu.Lock()
-	if s.sessionState != SessionStateActive || s.turnState != TurnStateRunning || s.activeHandoff == nil {
+	if err := s.requireReusableLocked(); err != nil {
 		s.mu.Unlock()
-		return fmt.Errorf("harness session '%s' has no running turn to steer", s.sessionID)
+		return err
+	}
+	if s.turnState != TurnStateRunning || s.suspend != nil || s.activeHandoff == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("Harness session %s has no running turn to steer.", s.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	handoff := s.activeHandoff
 	s.mu.Unlock()
@@ -397,10 +548,10 @@ func (s *AgentSession) ExperimentalSteerTurn(ctx context.Context, text string) e
 	}
 
 	s.mu.Lock()
-	stillTargeted := s.sessionState == SessionStateActive && s.turnState == TurnStateRunning && s.activeHandoff == handoff
+	stillTargeted := s.sessionState == SessionStateActive && s.turnState == TurnStateRunning && s.suspend == nil && s.activeHandoff == handoff
 	s.mu.Unlock()
 	if !stillTargeted || control == nil {
-		return fmt.Errorf("harness session '%s' no longer has the running turn targeted for steering", s.sessionID)
+		return fmt.Errorf("Harness session %s no longer has the running turn targeted for steering.", s.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
 	submitter, ok := control.(UserMessageSubmitter)
@@ -429,86 +580,143 @@ func (s *AgentSession) ExperimentalSteerTurn(ctx context.Context, text string) e
 // same session.
 func (s *AgentSession) SuspendTurn(ctx context.Context) (*ContinueTurnState, error) {
 	s.mu.Lock()
-	if s.sessionState != SessionStateActive {
+	if s.sessionState != SessionStateActive || s.underlying == nil {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("harness session '%s' is not active and cannot be suspended", s.sessionID)
+		return nil, fmt.Errorf("Harness session %s is not active and cannot be suspended.", s.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if s.turnState == TurnStateIdle {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("harness session '%s': no unfinished turn to suspend", s.sessionID)
+		return nil, fmt.Errorf("Harness session %s has no unfinished turn to suspend.", s.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
-	// A StopWhen early-stop (suspendOrFinishNow -> captureStopConditionBoundary)
-	// may have already suspended this exact turn and cached the result —
-	// reuse it instead of calling the underlying adapter's DoSuspendTurn a
-	// second time, mirroring TS `suspendCurrentTurn`'s
-	// `this.suspendedTurnState ??= ...` memoization.
-	if s.suspendedState != nil {
-		state := s.suspendedState
-		s.turnState = TurnStateSuspended
-		s.clearActiveHandoffLocked()
-		s.sessionState = SessionStateDetached
-		s.mu.Unlock()
-		return state, nil
-	}
+	s.mu.Unlock()
+	// Like TS, the local handle is detached whether or not suspending succeeded.
+	defer s.endLocalHandle(SessionStateDetached)
+	return s.finalizeCurrentTurnSuspension(ctx)
+}
+
+// endLocalHandle ends this in-process handle. Mirrors TS `endLocalHandle`.
+func (s *AgentSession) endLocalHandle(state SessionState) {
+	s.mu.Lock()
 	s.clearActiveHandoffLocked()
+	s.sessionState = state
+	s.mu.Unlock()
+}
+
+// suspendCurrentTurn suspends the underlying turn once and memoizes the
+// result for the lifetime of the turn: a StopWhen early-stop and a later
+// explicit SuspendTurn must not call the adapter's DoSuspendTurn twice. The
+// adapter's state is validated and extended with the session's pending tool
+// approvals/results and turn settings. Mirrors TS `suspendCurrentTurn`.
+func (s *AgentSession) suspendCurrentTurn(ctx context.Context) (*ContinueTurnState, error) {
+	s.mu.Lock()
+	s.clearActiveHandoffLocked()
+	call := s.suspend
+	owner := call == nil
+	underlying := s.underlying
+	if owner {
+		call = &suspendCall{done: make(chan struct{})}
+		s.suspend = call
+	}
 	s.mu.Unlock()
 
-	state, err := s.underlying.DoSuspendTurn(ctx)
+	if owner {
+		raw, err := underlying.DoSuspendTurn(ctx)
+		if err == nil && raw == nil {
+			err = NewHarnessError("Harness session returned no state when suspending the turn.", nil)
+		}
+		if err == nil {
+			err = validateLifecycleStateData(s.harness, raw)
+		}
+		if err == nil {
+			call.state = s.addPendingToolState(raw)
+		}
+		call.err = err
+		close(call.done)
+	} else {
+		select {
+		case <-call.done:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if call.err != nil {
+		return nil, call.err
+	}
+	s.mu.Lock()
+	s.turnState = TurnStateSuspended
+	s.mu.Unlock()
+	return call.state, nil
+}
+
+// finalizeCurrentTurnSuspension suspends the turn, waits for the in-flight
+// prompt driver to wind down, then re-reads the pending tool state so host
+// work that completed meanwhile is included. Mirrors TS
+// `finalizeCurrentTurnSuspension`.
+func (s *AgentSession) finalizeCurrentTurnSuspension(ctx context.Context) (*ContinueTurnState, error) {
+	state, err := s.suspendCurrentTurn(ctx)
 	if err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
-	s.suspendedState = state
-	s.turnState = TurnStateSuspended
-	s.sessionState = SessionStateDetached
+	done := s.activePromptDone
 	s.mu.Unlock()
-	return state, nil
+	if done != nil {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return s.addPendingToolState(state), nil
+}
+
+// addPendingToolState returns state extended with the session's turn
+// settings and pending tool approvals/results. Mirrors TS
+// `addPendingToolState`.
+func (s *AgentSession) addPendingToolState(state *ContinueTurnState) *ContinueTurnState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := &ContinueTurnState{
+		Type: state.Type, HarnessID: state.HarnessID, SpecificationVersion: state.SpecificationVersion, Data: state.Data,
+	}
+	if s.turnSettings != nil {
+		ts := *s.turnSettings
+		out.TurnSettings = &ts
+	}
+	approvals, results := s.pendingApprovalsLocked(), s.pendingResultsLocked()
+	if len(approvals) > 0 {
+		out.PendingToolApprovals = approvals
+	}
+	if len(results) > 0 {
+		out.PendingToolResults = results
+	}
+	return out
+}
+
+// toResumeStateWithContinuation wraps an unfinished turn's state in a
+// resume-session state. Mirrors TS `toResumeStateWithContinuation`.
+func toResumeStateWithContinuation(continueFrom *ContinueTurnState) *ResumeSessionState {
+	return &ResumeSessionState{
+		Type: LifecycleStateResumeSession, HarnessID: continueFrom.HarnessID,
+		SpecificationVersion: continueFrom.SpecificationVersion, Data: continueFrom.Data, ContinueFrom: continueFrom,
+	}
 }
 
 // captureStopConditionBoundary suspends the underlying harness session's
 // turn in place when a StopWhen condition matches after a completed step,
 // keeping it resumable via ContinueGenerate/ContinueStream instead of
 // discarding it. Wired as runPrompt's OnStopConditionMet callback
-// (turnID-scoped, like OnTurnFinished/OnPromptControlAvailable — see
-// Agent.startTurn). A no-op (returns nil, nil) once turnID is no longer the
-// active "running" turn, mirroring TS's identical guard in
-// `AgentSession.captureStopConditionBoundary`: by the time this runs, a
-// concurrent Detach/Stop/Destroy (or, in principle, a fresher turn) may
-// already have superseded it. See run_prompt.go's suspendOrFinishNow doc
-// for what TS behavior around this is deferred to WG13/bridge adapters.
+// (turnID-scoped, like OnTurnFinished/OnPromptControlAvailable). A no-op
+// (returns nil, nil) once turnID is no longer the active turn of an active
+// session, mirroring TS's identical guard in `captureStopConditionBoundary`.
 func (s *AgentSession) captureStopConditionBoundary(ctx context.Context, turnID int) (*ContinueTurnState, error) {
 	s.mu.Lock()
 	if s.sessionState != SessionStateActive || s.activeTurnID != turnID {
 		s.mu.Unlock()
 		return nil, nil
 	}
-	if s.suspendedState != nil {
-		state := s.suspendedState
-		s.mu.Unlock()
-		return state, nil
-	}
 	s.mu.Unlock()
-
-	state, err := s.underlying.DoSuspendTurn(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	s.mu.Lock()
-	// Re-check after the (possibly slow) adapter call: a concurrent
-	// Detach/Stop/Destroy or a newer turn may have superseded this one while
-	// DoSuspendTurn was in flight. The adapter has already frozen its side
-	// regardless, so the state is still returned to the caller (matching TS,
-	// which awaits and returns `state` from `suspendCurrentTurn` even when
-	// its own later steps no-op) — only this session's own bookkeeping is
-	// skipped.
-	if s.sessionState == SessionStateActive && s.activeTurnID == turnID {
-		s.suspendedState = state
-		s.clearActiveHandoffLocked()
-		s.turnState = TurnStateSuspended
-	}
-	s.mu.Unlock()
-	return state, nil
+	return s.suspendCurrentTurn(ctx)
 }
 
 // Detach detaches from the runtime without tearing it down, returning a
@@ -516,61 +724,115 @@ func (s *AgentSession) captureStopConditionBoundary(ctx context.Context, turnID 
 // ResumeFrom. Mirrors TS `HarnessAgentSession.detach`.
 func (s *AgentSession) Detach(ctx context.Context) (*ResumeSessionState, error) {
 	s.mu.Lock()
-	if s.turnState != TurnStateIdle {
+	if s.sessionState != SessionStateActive || s.underlying == nil {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("harness session '%s': cannot detach with an unfinished turn; suspend it first", s.sessionID)
+		return nil, fmt.Errorf("Harness session %s is not active and cannot be detached.", s.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
+	unfinished := s.turnState != TurnStateIdle
+	underlying := s.underlying
 	s.mu.Unlock()
 
-	state, err := s.underlying.DoDetach(ctx)
-	if err != nil {
-		return nil, err
+	var state *ResumeSessionState
+	if unfinished {
+		continueFrom, err := s.finalizeCurrentTurnSuspension(ctx)
+		if err != nil {
+			return nil, err
+		}
+		state = toResumeStateWithContinuation(continueFrom)
+	} else {
+		var err error
+		if state, err = s.doResumeState(ctx, underlying.DoDetach); err != nil {
+			return nil, err
+		}
 	}
-	s.mu.Lock()
-	s.clearActiveHandoffLocked()
-	s.sessionState = SessionStateDetached
-	s.mu.Unlock()
+	s.endLocalHandle(SessionStateDetached)
 	return state, nil
 }
 
-// Stop persists enough state to resume later, then stops the runtime.
-// Mirrors TS `HarnessAgentSession.stop`.
+// doResumeState runs an adapter lifecycle call and validates the returned
+// resume-session state (TS `validateLifecycleStateData` with
+// expectedType 'resume-session').
+func (s *AgentSession) doResumeState(ctx context.Context, call func(context.Context) (*ResumeSessionState, error)) (*ResumeSessionState, error) {
+	state, err := call(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if state == nil {
+		return nil, NewHarnessError("Harness session returned no resume state.", nil)
+	}
+	if err := validateLifecycleStateData(s.harness, state); err != nil {
+		return nil, err
+	}
+	return state, nil
+}
+
+// Stop persists enough state to resume later, then stops the runtime and
+// any harness-owned sandbox. An unfinished turn is suspended and returned as
+// the state's ContinueFrom. Mirrors TS `HarnessAgentSession.stop`.
 func (s *AgentSession) Stop(ctx context.Context) (*ResumeSessionState, error) {
 	s.mu.Lock()
-	if s.turnState != TurnStateIdle {
+	if s.sessionState != SessionStateActive || s.underlying == nil {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("harness session '%s': cannot stop with an unfinished turn; suspend it first", s.sessionID)
+		return nil, fmt.Errorf("Harness session %s is not active and cannot be stopped.", s.sessionID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
-	s.mu.Unlock()
-
-	state, err := s.underlying.DoStop(ctx)
-	if err != nil {
-		return nil, err
-	}
-	s.mu.Lock()
-	s.clearActiveHandoffLocked()
-	s.sessionState = SessionStateStopped
+	unfinished := s.turnState != TurnStateIdle
+	underlying := s.underlying
 	sandbox, owns := s.sandboxSession, s.ownsSandboxLifecycle
 	s.mu.Unlock()
-	if owns {
-		stopSandbox(ctx, sandbox)
+
+	// The local handle ends and an owned sandbox stops whether or not
+	// persisting the state succeeded (TS `finally`).
+	defer func() {
+		s.endLocalHandle(SessionStateStopped)
+		if owns {
+			stopSandbox(ctx, sandbox)
+		}
+	}()
+	if unfinished {
+		continueFrom, err := s.finalizeCurrentTurnSuspension(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return toResumeStateWithContinuation(continueFrom), nil
 	}
-	return state, nil
+	return s.doResumeState(ctx, underlying.DoStop)
 }
 
-// Destroy stops the runtime without returning lifecycle state. Mirrors TS
-// `HarnessAgentSession.destroy`.
+// Destroy stops the runtime without returning lifecycle state and discards
+// resumability. A harness-owned network sandbox is destroyed. Calling it on
+// an ended session is a no-op. Teardown is best-effort, exactly as in TS
+// `HarnessAgentSession.destroy`: an adapter or sandbox destroy failure is
+// swallowed, so the returned error is always nil (kept for source
+// compatibility).
 func (s *AgentSession) Destroy(ctx context.Context) error {
-	err := s.underlying.DoDestroy(ctx)
 	s.mu.Lock()
-	s.clearActiveHandoffLocked()
-	s.sessionState = SessionStateDestroyed
+	if s.sessionState != SessionStateActive {
+		s.mu.Unlock()
+		return nil
+	}
+	underlying := s.underlying
 	sandbox, owns := s.sandboxSession, s.ownsSandboxLifecycle
 	s.mu.Unlock()
-	if owns {
-		stopSandbox(ctx, sandbox)
+
+	s.endLocalHandle(SessionStateDestroyed)
+	if underlying != nil {
+		// TS awaits `doDestroy()` and swallows its rejection
+		// (`.catch(() => {})`): destroying is best-effort teardown and the
+		// owned sandbox below is destroyed regardless.
+		_ = underlying.DoDestroy(ctx)
 	}
-	return err
+	if owns {
+		destroySandbox(ctx, sandbox)
+	}
+	return nil
+}
+
+// destroySandbox destroys an owned network sandbox, swallowing errors like
+// TS (`destroy()` followed by `.catch(() => {})`).
+func destroySandbox(ctx context.Context, sandbox providerutils.SandboxSession) {
+	if network, ok := AsNetworkSandboxSession(sandbox); ok {
+		_ = network.Destroy(ctx)
+	}
 }
 
 func stopSandbox(ctx context.Context, sandbox providerutils.SandboxSession) {

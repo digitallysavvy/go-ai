@@ -3,11 +3,14 @@ package google
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // intPtr is a small test helper shared across the google package's test
@@ -29,7 +32,7 @@ func TestVideoModel_ConstructorInfo(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
 	model := NewVideoModel(prov, "veo-3.1-generate-preview")
 
-	if model.SpecificationVersion() != "v3" {
+	if model.SpecificationVersion() != "v4" {
 		t.Errorf("SpecificationVersion() = %q", model.SpecificationVersion())
 	}
 	if model.Provider() != "google.generative-ai" {
@@ -428,5 +431,70 @@ func TestVideoModel_GetPollOptions_JSONNumbers(t *testing.T) {
 	got := m.getPollOptions(providerOpts)
 	if got.PollIntervalMs != 111 || got.PollTimeoutMs != 222 {
 		t.Fatalf("JSON-sourced poll options were dropped: got PollIntervalMs=%d PollTimeoutMs=%d, want 111/222", got.PollIntervalMs, got.PollTimeoutMs)
+	}
+}
+
+// The API key is appended only to download URLs on the provider's own origin;
+// a response naming another host must never receive it (TS isSameOrigin).
+func TestVideoModel_DoStatus_NeverLeaksAPIKeyOffOrigin(t *testing.T) {
+	var srvURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"name": "operations/op", "done": true,
+			"response": map[string]interface{}{"generateVideoResponse": map[string]interface{}{"generatedSamples": []map[string]interface{}{
+				{"video": map[string]interface{}{"uri": "https://evil.example.com/v.mp4"}},
+				{"video": map[string]interface{}{"uri": srvURL + "@evil.example.com/v.mp4"}},
+				{"video": map[string]interface{}{"uri": srvURL + "/ok.mp4"}},
+			}}},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	srvURL = srv.URL
+	model := NewVideoModel(New(Config{APIKey: "secret-key", BaseURL: srv.URL}), "veo-3.1-generate-preview")
+	op, _ := json.Marshal(googleVideoOperation{OperationName: "operations/op"})
+	result, err := model.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: op})
+	if err != nil || len(result.Videos) != 3 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	for i, v := range result.Videos[:2] {
+		if strings.Contains(v.URL, "secret-key") {
+			t.Errorf("video %d leaked the API key: %s", i, v.URL)
+		}
+	}
+	if result.Videos[2].URL != srvURL+"/ok.mp4?key=secret-key" {
+		t.Errorf("same-origin URL = %s", result.Videos[2].URL)
+	}
+}
+
+func TestVideoProviderOptionsValidationAndEmptySamplesMessage(t *testing.T) {
+	m := NewVideoModel(New(Config{APIKey: "k"}), "veo-3.0-generate-001")
+	_, _, err := m.buildRequest(&provider.VideoModelV3CallOptions{N: 1, ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"personGeneration": "nobody"}}})
+	var ia *providererrors.InvalidArgumentError
+	if !errors.As(err, &ia) {
+		t.Fatalf("personGeneration err = %v", err)
+	}
+	_, _, err = m.buildRequest(&provider.VideoModelV3CallOptions{N: 1, ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"pollIntervalMs": 0}}})
+	if !errors.As(err, &ia) {
+		t.Fatalf("pollIntervalMs err = %v", err)
+	}
+
+	var op googleVideoOperationWire
+	if err := json.Unmarshal([]byte(`{"name":"op","done":true,"response":{"generateVideoResponse":{"generatedSamples":[]}}}`), &op); err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.buildCompletedResult(&op, provider.VideoModelV3ResponseInfo{})
+	want := `No videos in response. Response: {"name":"op","done":true,"response":{"generateVideoResponse":{"generatedSamples":[]}}}`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// An entry with neither a usable bytesBase64Encoded nor gcsUri is passed
+// through as given (TS convertProviderReferenceImage returns the entry).
+func TestVideoModel_ReferenceImageWithoutUsableFieldIsPassedThrough(t *testing.T) {
+	got := convertProviderReferenceImage(googleVideoReferenceImageOpt{BytesBase64Encoded: func() *string { s := ""; return &s }()})
+	if v, ok := got["bytesBase64Encoded"]; !ok || v != "" || len(got) != 1 {
+		t.Fatalf("got %#v, want {bytesBase64Encoded: \"\"}", got)
 	}
 }

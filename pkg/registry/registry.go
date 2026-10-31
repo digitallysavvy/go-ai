@@ -2,6 +2,8 @@ package registry
 
 import (
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"sync"
 
@@ -17,7 +19,13 @@ const defaultSeparator = ":"
 
 // NoSuchProviderError mirrors the TypeScript AI SDK registry error. It is
 // returned when a provider ID cannot be resolved, or when a provider does not
-// expose a requested capability such as Files or Skills.
+// expose Files or Skills (Reason is then set).
+//
+// As in TS (getProvider), ModelID is the provider ID that was looked up, and
+// ModelType is the requested model type ("languageModel" for Files and
+// Skills, empty for GetProvider). TS NoSuchProviderError extends NoSuchModelError, so errors.As with
+// a *providererrors.NoSuchModelError target also matches an unknown-provider
+// error (but not a Reason error, which TS throws as a plain Error).
 type NoSuchProviderError struct {
 	ProviderID         string
 	ModelID            string
@@ -28,9 +36,45 @@ type NoSuchProviderError struct {
 
 func (e *NoSuchProviderError) Error() string {
 	if e.Reason != "" {
-		return fmt.Sprintf("No such provider: %s (%s; available providers: %s)", e.ProviderID, e.Reason, strings.Join(e.AvailableProviders, ","))
+		// TS files()/skills() throw a plain Error with exactly this text for a
+		// registered provider that lacks the capability.
+		return e.Reason
 	}
 	return fmt.Sprintf("No such provider: %s (available providers: %s)", e.ProviderID, strings.Join(e.AvailableProviders, ","))
+}
+
+// As lets errors.As match a *providererrors.NoSuchModelError target, as TS
+// NoSuchModelError.isInstance(noSuchProviderError) is true. The capability
+// errors (Reason set) are plain errors in TS and do not match.
+func (e *NoSuchProviderError) As(target interface{}) bool {
+	if e.Reason != "" {
+		return false
+	}
+	t, ok := target.(**providererrors.NoSuchModelError)
+	if !ok {
+		return false
+	}
+	*t = &providererrors.NoSuchModelError{ModelID: e.ModelID, ModelType: e.ModelType, Message: e.Error()}
+	return true
+}
+
+// Is lets errors.Is(err, providererrors.ErrModelNotFound) match an
+// unknown-provider error, as it matches the *providererrors.NoSuchModelError
+// that errors.As finds through As. The capability errors (Reason set) do not.
+func (e *NoSuchProviderError) Is(target error) bool {
+	return e.Reason == "" && target == providererrors.ErrModelNotFound
+}
+
+// noSuchProviderLocked builds the TS getProvider error: modelId is the provider ID.
+func (r *Registry) noSuchProviderLocked(providerID, modelType string) *NoSuchProviderError {
+	return &NoSuchProviderError{ProviderID: providerID, ModelID: providerID, ModelType: modelType, AvailableProviders: r.listProvidersLocked()}
+}
+
+// noSuchRegistryModel is the TS registry error when the provider has no
+// factory for the model type or the factory returns no model: modelId is the
+// whole registry ID ("provider:model").
+func noSuchRegistryModel(id, modelType string) error {
+	return providererrors.NewNoSuchModelError(id, modelType)
 }
 
 // Global registry instance
@@ -40,8 +84,11 @@ var globalRegistry = NewRegistry()
 type Registry struct {
 	mu        sync.RWMutex
 	providers map[string]provider.Provider
-	aliases   map[string]string // model alias -> provider:model
-	tools     map[string]ToolEntry
+	// providerOrder lists provider names in first-registration order;
+	// listProvidersLocked reports them in TS Object.keys(providers) order.
+	providerOrder []string
+	aliases       map[string]string // model alias -> provider:model
+	tools         map[string]ToolEntry
 
 	// separator is used between provider ID and model ID in a combined
 	// "providerId<sep>modelId" identifier. Defaults to ":", matching
@@ -126,17 +173,22 @@ type ToolEntry struct {
 func (r *Registry) RegisterProvider(name string, p provider.Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if _, exists := r.providers[name]; !exists {
+		r.providerOrder = append(r.providerOrder, name)
+	}
 	r.providers[name] = p
 }
 
-// GetProvider returns a provider by name
+// GetProvider returns a provider by name. An unknown name is a
+// *NoSuchProviderError whose ModelID is the name, like the resolvers' (TS
+// getProvider); ModelType is empty, as no model type was requested.
 func (r *Registry) GetProvider(name string) (provider.Provider, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	p, ok := r.providers[name]
 	if !ok {
-		return nil, &NoSuchProviderError{ProviderID: name, AvailableProviders: r.listProvidersLocked()}
+		return nil, r.noSuchProviderLocked(name, "")
 	}
 	return p, nil
 }
@@ -171,13 +223,16 @@ func (r *Registry) ResolveLanguageModel(model string) (provider.LanguageModel, e
 	// Get provider
 	p, ok := r.providers[providerName]
 	if !ok {
-		return nil, &NoSuchProviderError{ProviderID: providerName, ModelID: modelID, ModelType: "languageModel", AvailableProviders: r.listProvidersLocked()}
+		return nil, r.noSuchProviderLocked(providerName, "languageModel")
 	}
 
 	// Get model from provider
 	lm, err := p.LanguageModel(modelID)
 	if err != nil {
 		return nil, err
+	}
+	if lm == nil {
+		return nil, noSuchRegistryModel(model, "languageModel")
 	}
 
 	// Apply any registry-configured language model middleware, matching
@@ -208,21 +263,31 @@ func (r *Registry) ResolveEmbeddingModel(model string) (provider.EmbeddingModel,
 	// Get provider
 	p, ok := r.providers[providerName]
 	if !ok {
-		return nil, &NoSuchProviderError{ProviderID: providerName, ModelID: modelID, ModelType: "embeddingModel", AvailableProviders: r.listProvidersLocked()}
+		return nil, r.noSuchProviderLocked(providerName, "embeddingModel")
 	}
 
 	// Get model from provider
-	return p.EmbeddingModel(modelID)
+	em, err := p.EmbeddingModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+	if em == nil {
+		return nil, noSuchRegistryModel(model, "embeddingModel")
+	}
+	return em, nil
 }
 
 func (r *Registry) ResolveImageModel(model string) (provider.ImageModel, error) {
-	p, modelID, err := r.resolveProviderAndModel(model, "imageModel")
+	p, id, modelID, err := r.resolveProviderAndModel(model, "imageModel")
 	if err != nil {
 		return nil, err
 	}
 	im, err := p.ImageModel(modelID)
 	if err != nil {
 		return nil, err
+	}
+	if im == nil {
+		return nil, noSuchRegistryModel(id, "imageModel")
 	}
 
 	// Apply any registry-configured image model middleware, matching
@@ -238,27 +303,48 @@ func (r *Registry) ResolveImageModel(model string) (provider.ImageModel, error) 
 }
 
 func (r *Registry) ResolveSpeechModel(model string) (provider.SpeechModel, error) {
-	p, modelID, err := r.resolveProviderAndModel(model, "speechModel")
+	p, id, modelID, err := r.resolveProviderAndModel(model, "speechModel")
 	if err != nil {
 		return nil, err
 	}
-	return p.SpeechModel(modelID)
+	m, err := p.SpeechModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+	if m == nil {
+		return nil, noSuchRegistryModel(id, "speechModel")
+	}
+	return m, nil
 }
 
 func (r *Registry) ResolveTranscriptionModel(model string) (provider.TranscriptionModel, error) {
-	p, modelID, err := r.resolveProviderAndModel(model, "transcriptionModel")
+	p, id, modelID, err := r.resolveProviderAndModel(model, "transcriptionModel")
 	if err != nil {
 		return nil, err
 	}
-	return p.TranscriptionModel(modelID)
+	m, err := p.TranscriptionModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+	if m == nil {
+		return nil, noSuchRegistryModel(id, "transcriptionModel")
+	}
+	return m, nil
 }
 
 func (r *Registry) ResolveRerankingModel(model string) (provider.RerankingModel, error) {
-	p, modelID, err := r.resolveProviderAndModel(model, "rerankingModel")
+	p, id, modelID, err := r.resolveProviderAndModel(model, "rerankingModel")
 	if err != nil {
 		return nil, err
 	}
-	return p.RerankingModel(modelID)
+	m, err := p.RerankingModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+	if m == nil {
+		return nil, noSuchRegistryModel(id, "rerankingModel")
+	}
+	return m, nil
 }
 
 func (r *Registry) ResolveVideoModel(model string) (provider.VideoModelV3, error) {
@@ -273,41 +359,54 @@ func (r *Registry) ResolveVideoModel(model string) (provider.VideoModelV3, error
 	}
 	p, ok := r.providers[providerName]
 	if !ok {
-		return nil, &NoSuchProviderError{ProviderID: providerName, ModelID: modelID, ModelType: "videoModel", AvailableProviders: r.listProvidersLocked()}
+		return nil, r.noSuchProviderLocked(providerName, "videoModel")
 	}
 	vp, ok := p.(interface {
 		VideoModel(string) (provider.VideoModelV3, error)
 	})
 	if !ok {
-		return nil, &NoSuchProviderError{ProviderID: providerName, ModelID: modelID, ModelType: "videoModel", AvailableProviders: r.listProvidersLocked()}
+		// TS: provider.videoModel?.(modelId) is undefined -> NoSuchModelError.
+		return nil, noSuchRegistryModel(model, "videoModel")
 	}
-	return vp.VideoModel(modelID)
+	vm, err := vp.VideoModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+	if vm == nil {
+		return nil, noSuchRegistryModel(model, "videoModel")
+	}
+	return vm, nil
 }
 
-// ResolveEvaluationModel resolves a "provider:model" string to an
-// EvaluationModel. Evaluation is experimental and not part of the stable
+// ResolveDecisionModel resolves a "provider:model" string to an
+// DecisionModel. Decision is experimental and not part of the stable
 // Provider contract: the resolved provider must additionally implement
-// provider.EvaluationModelProvider (mirrors TypeScript's registry
-// `evaluationModel`).
-func (r *Registry) ResolveEvaluationModel(model string) (provider.EvaluationModel, error) {
+// provider.DecisionModelProvider (mirrors TypeScript's registry
+// `decisionModel`).
+func (r *Registry) ResolveDecisionModel(model string) (provider.DecisionModel, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if target, ok := r.aliases[model]; ok {
 		model = target
 	}
-	providerName, modelID, err := parseModelString(model, r.separator, "evaluationModel")
+	providerName, modelID, err := parseModelString(model, r.separator, "decisionModel")
 	if err != nil {
 		return nil, err
 	}
 	p, ok := r.providers[providerName]
 	if !ok {
-		return nil, &NoSuchProviderError{ProviderID: providerName, ModelID: modelID, ModelType: "evaluationModel", AvailableProviders: r.listProvidersLocked()}
+		return nil, r.noSuchProviderLocked(providerName, "decisionModel")
 	}
-	ep, ok := p.(provider.EvaluationModelProvider)
-	if !ok {
-		return nil, &NoSuchProviderError{ProviderID: providerName, ModelID: modelID, ModelType: "evaluationModel", AvailableProviders: r.listProvidersLocked()}
+	resolved, ok, err := provider.DecisionModelFromProvider(p, modelID)
+	if err != nil {
+		return nil, err
 	}
-	return ep.EvaluationModel(modelID)
+	if !ok || resolved == nil {
+		// TS: no decisionModel/evaluationModel factory, or a factory that
+		// returns no model -> NoSuchModelError({ modelId: id, modelType }).
+		return nil, noSuchRegistryModel(model, "decisionModel")
+	}
+	return resolved, nil
 }
 
 func (r *Registry) Files(providerID string) (provider.FilesAPI, error) {
@@ -315,15 +414,17 @@ func (r *Registry) Files(providerID string) (provider.FilesAPI, error) {
 	defer r.mu.RUnlock()
 	p, ok := r.providers[providerID]
 	if !ok {
-		return nil, &NoSuchProviderError{ProviderID: providerID, ModelType: "files", AvailableProviders: r.listProvidersLocked()}
+		// TS files()/skills() call getProvider(id, 'languageModel').
+		return nil, r.noSuchProviderLocked(providerID, "languageModel")
 	}
 	api, err := provider.ResolveFilesAPI(p)
 	if err != nil {
 		return nil, &NoSuchProviderError{
 			ProviderID:         providerID,
-			ModelType:          "files",
+			ModelID:            providerID,
+			ModelType:          "languageModel",
 			AvailableProviders: r.listProvidersLocked(),
-			Reason:             fmt.Sprintf("provider %q does not support file uploads; make sure it exposes a Files() method", providerID),
+			Reason:             fmt.Sprintf("The provider %q does not support file uploads. Make sure it exposes a Files() method.", providerID),
 		}
 	}
 	return api, nil
@@ -334,21 +435,25 @@ func (r *Registry) Skills(providerID string) (provider.SkillsAPI, error) {
 	defer r.mu.RUnlock()
 	p, ok := r.providers[providerID]
 	if !ok {
-		return nil, &NoSuchProviderError{ProviderID: providerID, ModelType: "skills", AvailableProviders: r.listProvidersLocked()}
+		// TS files()/skills() call getProvider(id, 'languageModel').
+		return nil, r.noSuchProviderLocked(providerID, "languageModel")
 	}
 	api, err := provider.ResolveSkillsAPI(p)
 	if err != nil {
 		return nil, &NoSuchProviderError{
 			ProviderID:         providerID,
-			ModelType:          "skills",
+			ModelID:            providerID,
+			ModelType:          "languageModel",
 			AvailableProviders: r.listProvidersLocked(),
-			Reason:             fmt.Sprintf("provider %q does not support skills; make sure it exposes a Skills() method", providerID),
+			Reason:             fmt.Sprintf("The provider %q does not support skills. Make sure it exposes a Skills() method.", providerID),
 		}
 	}
 	return api, nil
 }
 
-func (r *Registry) resolveProviderAndModel(model, modelType string) (provider.Provider, string, error) {
+// resolveProviderAndModel returns the provider, the full registry ID (after
+// alias substitution) and the model part of it.
+func (r *Registry) resolveProviderAndModel(model, modelType string) (provider.Provider, string, string, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if target, ok := r.aliases[model]; ok {
@@ -356,13 +461,13 @@ func (r *Registry) resolveProviderAndModel(model, modelType string) (provider.Pr
 	}
 	providerName, modelID, err := parseModelString(model, r.separator, modelType)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	p, ok := r.providers[providerName]
 	if !ok {
-		return nil, "", &NoSuchProviderError{ProviderID: providerName, ModelID: modelID, ModelType: modelType, AvailableProviders: r.listProvidersLocked()}
+		return nil, "", "", r.noSuchProviderLocked(providerName, modelType)
 	}
-	return p, modelID, nil
+	return p, model, modelID, nil
 }
 
 // ResolveFilesAPI returns the files upload API for a registered provider.
@@ -382,12 +487,49 @@ func (r *Registry) ListProviders() []string {
 	return r.listProvidersLocked()
 }
 
+// listProvidersLocked lists the provider names in TS Object.keys order:
+// array-index names ("0", "1", ... below 2^32-1, no leading zeros) first in
+// ascending numeric order, then the others in first-registration order.
 func (r *Registry) listProvidersLocked() []string {
-	names := make([]string, 0, len(r.providers))
-	for name := range r.providers {
-		names = append(names, name)
+	var indexes []string
+	others := make([]string, 0, len(r.providerOrder))
+	for _, name := range r.providerOrder {
+		if _, ok := arrayIndexKey(name); ok {
+			indexes = append(indexes, name)
+		} else {
+			others = append(others, name)
+		}
 	}
-	return names
+	if len(indexes) == 0 {
+		return others
+	}
+	sort.Slice(indexes, func(i, j int) bool {
+		a, _ := arrayIndexKey(indexes[i])
+		b, _ := arrayIndexKey(indexes[j])
+		return a < b
+	})
+	return append(indexes, others...)
+}
+
+// arrayIndexKey reports whether name is an ECMAScript array index (the
+// canonical decimal form of an integer in [0, 2^32-2]), which Object.keys
+// lists before every other key.
+func arrayIndexKey(name string) (uint64, bool) {
+	if name == "" || len(name) > 10 || (len(name) > 1 && name[0] == '0') {
+		return 0, false
+	}
+	var n uint64
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + uint64(c-'0')
+	}
+	if n >= math.MaxUint32 {
+		return 0, false
+	}
+	return n, true
 }
 
 // ListAliases returns all registered aliases
@@ -534,8 +676,27 @@ func ResolveVideoModel(model string) (provider.VideoModelV3, error) {
 	return globalRegistry.ResolveVideoModel(model)
 }
 
-// ResolveEvaluationModel resolves an evaluation model string using the
+// ResolveDecisionModel resolves a decision model string using the
 // global registry.
+func ResolveDecisionModel(model string) (provider.DecisionModel, error) {
+	return globalRegistry.ResolveDecisionModel(model)
+}
+
+// ResolveEvaluationModel is the deprecated form of ResolveDecisionModel.
+//
+// Deprecated: Use ResolveDecisionModel instead.
+func (r *Registry) ResolveEvaluationModel(model string) (provider.EvaluationModel, error) {
+	resolved, err := r.ResolveDecisionModel(model)
+	if err != nil {
+		return nil, err
+	}
+	return provider.AsEvaluationModel(resolved), nil
+}
+
+// ResolveEvaluationModel is the deprecated form of ResolveDecisionModel
+// using the global registry.
+//
+// Deprecated: Use ResolveDecisionModel instead.
 func ResolveEvaluationModel(model string) (provider.EvaluationModel, error) {
 	return globalRegistry.ResolveEvaluationModel(model)
 }

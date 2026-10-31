@@ -22,6 +22,7 @@ func TestXAIResponsesDoGenerateRawFinishReason(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"object": "response",
 			"id":     "resp_1",
 			"status": "incomplete",
 			"incomplete_details": map[string]interface{}{
@@ -42,8 +43,10 @@ func TestXAIResponsesDoGenerateRawFinishReason(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGenerate() error: %v", err)
 	}
-	if result.FinishReason != types.FinishReasonLength {
-		t.Fatalf("FinishReason = %v, want length", result.FinishReason)
+	// TS doGenerate maps response.status alone, and "incomplete" is "other"
+	// (incomplete_details only drives the streaming response.incomplete path).
+	if result.FinishReason != types.FinishReasonOther {
+		t.Fatalf("FinishReason = %v, want other", result.FinishReason)
 	}
 	if result.RawFinishReason != "incomplete" {
 		t.Fatalf("RawFinishReason = %q, want %q", result.RawFinishReason, "incomplete")
@@ -55,7 +58,7 @@ func TestXAIResponsesDoGenerateRawFinishReason(t *testing.T) {
 // mirroring TS's `raw: response.status` on the
 // response.done/response.completed/response.incomplete event handler.
 func TestXAIResponsesDoStreamCompletedRawFinishReason(t *testing.T) {
-	stream := newXAIResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}
+	stream := newXAIResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","output":[],"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}
 
 data: [DONE]
 
@@ -100,13 +103,13 @@ data: [DONE]
 // verbatim response.status ("completed"), unaffected by hasFunctionCall —
 // TS's `raw: response.status` does not consult hasFunctionCall.
 func TestXAIResponsesDoStreamHasFunctionCallForcesToolCallsUnified(t *testing.T) {
-	sse := `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"item_1","call_id":"call_1","name":"get_weather"}}
+	sse := `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"item_1","call_id":"call_1","name":"get_weather","arguments":""}}
 
-data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"location\":\"NYC\"}"}
+data: {"type":"response.function_call_arguments.delta","item_id":"item_1","output_index":0,"delta":"{\"location\":\"NYC\"}"}
 
 data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"item_1","call_id":"call_1","name":"get_weather","arguments":"{\"location\":\"NYC\"}"}}
 
-data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}
+data: {"type":"response.completed","response":{"id":"resp_1","object":"response","output":[],"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}
 
 data: [DONE]
 
@@ -157,11 +160,11 @@ data: [DONE]
 // response.done alias (Gap 4) also honors hasFunctionCall the same way
 // response.completed does.
 func TestXAIResponsesDoStreamHasFunctionCallWithResponseDoneAlias(t *testing.T) {
-	sse := `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"item_1","call_id":"call_1","name":"get_weather"}}
+	sse := `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"item_1","call_id":"call_1","name":"get_weather","arguments":""}}
 
-data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"item_1","call_id":"call_1","name":"get_weather"}}
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"item_1","call_id":"call_1","name":"get_weather","arguments":""}}
 
-data: {"type":"response.done","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}
+data: {"type":"response.done","response":{"id":"resp_1","object":"response","output":[],"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}
 
 data: [DONE]
 

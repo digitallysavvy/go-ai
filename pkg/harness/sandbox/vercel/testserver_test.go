@@ -15,9 +15,17 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 )
+
+type fakeSnapshot struct {
+	ID             string `json:"id"`
+	Name           string `json:"-"`
+	Status         string `json:"status"`
+	CreationMethod string `json:"creationMethod"`
+}
 
 type fakeCommand struct {
 	id       string
@@ -66,6 +74,20 @@ type fakeServer struct {
 	// (simulating a sandbox that snapshots on stop).
 	snapshotOnStop bool
 
+	// snapshots is the fake snapshot store (template snapshots created via
+	// the snapshot endpoint, plus any a test seeds).
+	snapshots     []fakeSnapshot
+	snapshotReqs  int
+	listSnapshots int
+	// onListSnapshots, when set, runs at each list call (under no lock) so a
+	// test can publish a snapshot mid-poll.
+	onListSnapshots func(call int)
+	// snapshotPageSize, when >0, paginates the list response with the real
+	// API's string `cursor` / `pagination.next`.
+	snapshotPageSize int
+	// snapshotListQueries records the query of each list call.
+	snapshotListQueries []url.Values
+
 	// forceCreateError, when set, makes every create request fail with this
 	// error instead of creating a sandbox.
 	forceCreateError *APIError
@@ -91,6 +113,7 @@ func newFakeServer() *fakeServer {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v2/sandboxes", f.handleCreateOrList)
 	mux.HandleFunc("/v3/sandboxes", f.handleCreateOrList)
+	mux.HandleFunc("/v2/sandboxes/snapshots", f.handleListSnapshots)
 	mux.HandleFunc("/v2/sandboxes/", f.handleSandboxPath)
 	f.srv = httptest.NewServer(mux)
 	return f
@@ -289,6 +312,8 @@ func (f *fakeServer) handleSessionPath(w http.ResponseWriter, r *http.Request, r
 	switch {
 	case sub == "stop" && r.Method == http.MethodPost:
 		f.handleStop(w, state)
+	case sub == "snapshot" && r.Method == http.MethodPost:
+		f.handleCreateSnapshot(w, state)
 	case sub == "network-policy" && r.Method == http.MethodPost:
 		f.handleSessionNetworkPolicy(w, r, state)
 	case sub == "cmd" && r.Method == http.MethodPost:
@@ -476,4 +501,56 @@ func orDefault(v, def string) string {
 		return def
 	}
 	return v
+}
+
+func (f *fakeServer) handleCreateSnapshot(w http.ResponseWriter, state *fakeSandboxState) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.snapshotReqs++
+	f.nextSnapshot++
+	id := fmt.Sprintf("snap_%d", f.nextSnapshot)
+	state.stopped = true
+	state.currentSnapshotID = id
+	f.snapshots = append(f.snapshots, fakeSnapshot{ID: id, Name: state.name, Status: "created", CreationMethod: "manual"})
+	writeJSON(w, 200, createSnapshotResponse{
+		Snapshot: snapshotWire{ID: id, Status: "created", CreationMethod: "manual"},
+		Session:  f.sessionToWire(state),
+	})
+}
+
+func (f *fakeServer) handleListSnapshots(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	f.listSnapshots++
+	call := f.listSnapshots
+	hook := f.onListSnapshots
+	f.mu.Unlock()
+	if hook != nil {
+		hook(call)
+	}
+	name := r.URL.Query().Get("name")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.snapshotListQueries = append(f.snapshotListQueries, r.URL.Query())
+	all := []fakeSnapshot{}
+	for i := len(f.snapshots) - 1; i >= 0; i-- { // newest first (sortOrder=desc)
+		if f.snapshots[i].Name == name {
+			all = append(all, f.snapshots[i])
+		}
+	}
+	// Real @vercel/sandbox: `project` query param, opaque string `cursor`,
+	// `pagination.next` is a string or null.
+	start := 0
+	if c := r.URL.Query().Get("cursor"); c != "" {
+		if _, err := fmt.Sscanf(c, "cur_%d", &start); err != nil {
+			http.Error(w, "bad cursor", http.StatusBadRequest)
+			return
+		}
+	}
+	out := all[min(start, len(all)):]
+	var next interface{}
+	if f.snapshotPageSize > 0 && len(out) > f.snapshotPageSize {
+		out = out[:f.snapshotPageSize]
+		next = fmt.Sprintf("cur_%d", start+f.snapshotPageSize)
+	}
+	writeJSON(w, 200, map[string]interface{}{"snapshots": out, "pagination": map[string]interface{}{"count": len(out), "next": next}})
 }

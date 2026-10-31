@@ -2,12 +2,14 @@ package cohere
 
 import (
 	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"net/url"
 	"regexp"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -29,8 +31,8 @@ type Config struct {
 	APIKey string
 
 	// BaseURL is the base URL for the Cohere API including the version
-	// (default: https://api.cohere.com/v2). A value without a version
-	// segment, such as "https://api.cohere.com" or a proxy path, gets "/v2" appended
+	// (default: https://api.cohere.com/v2). A host-only value such as
+	// "https://api.cohere.com" gets "/v2" appended, as v0.5.2 callers expected.
 	BaseURL string
 
 	// Headers are custom HTTP headers to include in requests.
@@ -39,6 +41,8 @@ type Config struct {
 
 // New creates a new Cohere provider with the given configuration
 func New(cfg Config) *Provider {
+	// TS loadApiKey: the key defaults to the COHERE_API_KEY environment variable.
+	cfg.APIKey = providerutils.APIKeyOrEnv(cfg.APIKey, "COHERE_API_KEY")
 	baseURL := normalizeBaseURL(cfg.BaseURL)
 
 	// Create HTTP client with default headers
@@ -49,6 +53,10 @@ func New(cfg Config) *Provider {
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
 		Headers: version.WithUserAgentSuffix(http.MergeHeaders(headers, cfg.Headers), version.ProviderUserAgent("cohere")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "COHERE_API_KEY", "Cohere", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{
@@ -99,17 +107,17 @@ func (p *Provider) EmbeddingModelWithOptions(modelID string, options EmbeddingOp
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("cohere does not support image generation")
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("cohere does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("cohere does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns a reranking model by ID
@@ -128,7 +136,8 @@ func (p *Provider) Client() *http.Client {
 
 // normalizeBaseURL applies the default and keeps custom base URLs working:
 // v0.5.2 appended "/v2/chat" to the configured base, so a base that does not
-// already end in a version segment (a host, or a proxy path) meant "<base>/v2".
+// already end in a version segment (a host, or a proxy path) meant "<base>/v2"
+// (v0.5.3 behavior, kept for compatibility).
 func normalizeBaseURL(base string) string {
 	base = strings.TrimRight(base, "/")
 	if base == "" {

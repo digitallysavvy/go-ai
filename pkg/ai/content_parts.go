@@ -2,8 +2,12 @@ package ai
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // appendTextPart accumulates a ChunkTypeText delta into stepContent, merging
@@ -91,17 +95,92 @@ func appendReasoningPart(parts []types.ContentPart, text string, metadata json.R
 	return append(parts, types.ReasoningContent{Text: text, ProviderMetadata: metadata})
 }
 
+// startNewReasoningPart marks a ChunkTypeReasoningStart boundary in
+// stepContent: a fresh ReasoningContent part seeded with the reasoning-start
+// chunk's ProviderMetadata (TS stream-text.ts pushes a record per
+// reasoning-start, keyed by id). Without it two adjacent reasoning blocks (a
+// thinking block followed by a redacted_thinking block, say) would merge into
+// one part, and a redacted block's redactedData would be lost.
+func startNewReasoningPart(parts []types.ContentPart, metadata json.RawMessage) []types.ContentPart {
+	return append(parts, types.ReasoningContent{ProviderMetadata: metadata})
+}
+
+// setTrailingReasoningMetadata applies a reasoning-end chunk's ProviderMetadata
+// to the trailing reasoning part (TS: activeReasoning.providerMetadata =
+// part.providerMetadata ?? activeReasoning.providerMetadata).
+func setTrailingReasoningMetadata(parts []types.ContentPart, metadata json.RawMessage) []types.ContentPart {
+	if len(metadata) == 0 {
+		return parts
+	}
+	if n := len(parts); n > 0 {
+		if last, ok := parts[n-1].(types.ReasoningContent); ok {
+			last.ProviderMetadata = metadata
+			parts[n-1] = last
+		}
+	}
+	return parts
+}
+
+// reasoningPartsOf returns the ReasoningContent parts of content in order.
+func reasoningPartsOf(content []types.ContentPart) []types.ReasoningContent {
+	var out []types.ReasoningContent
+	for _, p := range content {
+		if rc, ok := p.(types.ReasoningContent); ok {
+			out = append(out, rc)
+		}
+	}
+	return out
+}
+
+// reasoningFilesOf returns the reasoning file parts of content (TS
+// StepResult.reasoning holds them next to the reasoning parts).
+func reasoningFilesOf(content []types.ContentPart) []types.ReasoningFileContent {
+	var out []types.ReasoningFileContent
+	for _, p := range content {
+		switch v := p.(type) {
+		case types.ReasoningFileContent:
+			out = append(out, v)
+		case *types.ReasoningFileContent:
+			if v != nil {
+				out = append(out, *v)
+			}
+		}
+	}
+	return out
+}
+
 func generateResultContentParts(result *types.GenerateResult) []types.ContentPart {
 	if result == nil {
 		return nil
 	}
 	parts := append([]types.ContentPart(nil), result.Content...)
 	if result.Text != "" && !contentHasText(parts) {
-		parts = append([]types.ContentPart{types.TextContent{Text: result.Text}}, parts...)
+		parts = types.InsertLeadText(parts, result.Text)
 	}
 	seenToolCalls := map[string]bool{}
 	for i, part := range parts {
 		switch p := part.(type) {
+		case types.ToolResultContent:
+			// TS convertLanguageModelContent: every tool-result or
+			// tool-error the model returns is provider-executed, so it stays
+			// in the assistant response message.
+			p.ProviderExecuted = true
+			parts[i] = p
+		case *types.ToolResultContent:
+			if p != nil {
+				c := *p
+				c.ProviderExecuted = true
+				parts[i] = c
+			}
+		case types.ToolErrorContent:
+			p.ProviderExecuted = true
+			parts[i] = p
+		case *types.ToolErrorContent:
+			if p != nil {
+				c := *p
+				c.ProviderExecuted = true
+				parts[i] = c
+			}
 		case types.ToolCallContent:
 			seenToolCalls[p.ToolCallID] = true
 			if call, ok := toolCallByID(result.ToolCalls, p.ToolCallID); ok {
@@ -114,6 +193,12 @@ func generateResultContentParts(result *types.GenerateResult) []types.ContentPar
 					parts[i] = contentPartFromToolCall(call)
 				}
 			}
+		case types.ToolApprovalRequestContent:
+			parts[i] = withApprovalRequestToolCall(p, result.ToolCalls)
+		case *types.ToolApprovalRequestContent:
+			if p != nil {
+				parts[i] = withApprovalRequestToolCall(*p, result.ToolCalls)
+			}
 		}
 	}
 	for _, call := range result.ToolCalls {
@@ -123,7 +208,71 @@ func generateResultContentParts(result *types.GenerateResult) []types.ContentPar
 		parts = append(parts, contentPartFromToolCall(call))
 	}
 	parts = replaceToolResultContentParts(parts, result.ToolCalls)
-	return parts
+	return providerErrorResultsAsToolErrors(parts)
+}
+
+// providerErrorResultsAsToolErrors turns each provider tool-result part that
+// reports an error (IsError true, or an Error text without an IsError flag)
+// into a tool-error part whose Error is the result value, as TS
+// convertLanguageModelContent does for `part.isError`. The response message
+// then replays it as an error-json output, and it is not one of the step's
+// ToolResults.
+func providerErrorResultsAsToolErrors(parts []types.ContentPart) []types.ContentPart {
+	var out []types.ContentPart
+	for i, part := range parts {
+		var p types.ToolResultContent
+		switch v := part.(type) {
+		case types.ToolResultContent:
+			p = v
+		case *types.ToolResultContent:
+			if v == nil {
+				continue
+			}
+			p = *v
+		default:
+			continue
+		}
+		if !isTrue(p.IsError) && (p.IsError != nil || p.Error == "") {
+			continue
+		}
+		errValue := p.Result
+		if errValue == nil && p.Output != nil {
+			errValue = p.Output.Value
+		}
+		if errValue == nil {
+			errValue = p.Error
+		}
+		if out == nil {
+			out = append([]types.ContentPart(nil), parts...)
+		}
+		out[i] = types.ToolErrorContent{
+			ToolCallID:       p.ToolCallID,
+			ToolName:         p.ToolName,
+			Title:            p.Title,
+			Input:            p.Input,
+			Error:            errValue,
+			ProviderExecuted: true,
+			ProviderMetadata: p.ProviderMetadata,
+			ToolMetadata:     p.ToolMetadata,
+			Dynamic:          p.Dynamic,
+		}
+	}
+	if out == nil {
+		return parts
+	}
+	return out
+}
+
+// withApprovalRequestToolCall gives a provider tool-approval-request part (an
+// MCP server asking for approval of its call) the parsed call it belongs to,
+// as TS convertLanguageModelContent does ({type, approvalId, toolCall}).
+// validateToolResultParts has already rejected a request without a call.
+func withApprovalRequestToolCall(p types.ToolApprovalRequestContent, calls []types.ToolCall) types.ToolApprovalRequestContent {
+	p = normalizeApprovalRequest(p)
+	if call, ok := toolCallByID(calls, p.ToolCallID); ok {
+		p.ToolCall = call
+	}
+	return p
 }
 
 func replaceToolCallContentParts(parts []types.ContentPart, calls []types.ToolCall) []types.ContentPart {
@@ -312,9 +461,12 @@ func toolCallForToolResult(tr types.ToolResult) types.ToolCall {
 		Title:            tr.Title,
 		Arguments:        tr.Input,
 		ProviderExecuted: tr.ProviderExecuted,
-		ProviderMetadata: tr.ProviderMetadata,
-		ToolMetadata:     tr.ToolMetadata,
-		Dynamic:          tr.Dynamic,
+		// TS keeps the parsed tool call's providerExecuted, explicit false
+		// included.
+		ProviderExecutedSet: tr.ProviderExecutedSet,
+		ProviderMetadata:    tr.ProviderMetadata,
+		ToolMetadata:        tr.ToolMetadata,
+		Dynamic:             tr.Dynamic,
 	}
 }
 
@@ -346,7 +498,72 @@ func toolApprovalResponseFromToolResult(tr types.ToolResult) types.ToolApprovalR
 		Approved:         tr.ApprovalStatus == types.ToolApprovalStatusApproved,
 		Reason:           reason,
 		ProviderExecuted: tr.ProviderExecuted,
+		// TS: providerExecuted: toolCall.providerExecuted, so an explicit
+		// false on the call reaches the response.
+		ProviderExecutedSet: tr.ProviderExecutedSet,
 	}
+}
+
+// approvedUnexecutedOutput is the Result of an entry that carries only the
+// automatic approval of a local call that did not run: its tool has no
+// Execute, or the step's finish reason does not allow execution. TS
+// generateText still records the call's approval request and response
+// (convertLanguageModelContent toolApprovalRequests/toolApprovalResponses),
+// but no tool output.
+type approvedUnexecutedOutput struct{}
+
+func isApprovedUnexecuted(tr types.ToolResult) bool {
+	_, ok := tr.Result.(approvedUnexecutedOutput)
+	return ok
+}
+
+// withApprovedUnexecutedCalls returns the step's results for its content
+// parts: results, plus (in call order) an approval-only entry for each valid
+// local call whose approval was approved but that has no result because it
+// never ran. results must be in call order; it is returned as is when no
+// entry is added. The entries are for content only: they are not tool
+// results (TS step.toolResults), and the call still counts as unanswered.
+func withApprovedUnexecutedCalls(results []types.ToolResult, calls []types.ToolCall, tools []types.Tool, approvals map[string]preResolvedApproval) []types.ToolResult {
+	var out []types.ToolResult
+	added := false
+	j := 0
+	for _, call := range calls {
+		start := j
+		for j < len(results) && results[j].ToolCallID == call.ID {
+			j++
+		}
+		if j > start {
+			out = append(out, results[start:j]...)
+			continue
+		}
+		pre, ok := approvals[call.ID]
+		if !ok || call.Invalid || pre.err != nil || pre.approval.Status != types.ToolApprovalStatusApproved {
+			continue
+		}
+		tool := findToolForCall(call, tools)
+		if tool == nil || tool.ProviderExecuted || call.ProviderExecuted {
+			continue
+		}
+		out = append(out, types.ToolResult{
+			ToolCallID:          call.ID,
+			ToolName:            call.ToolName,
+			Title:               call.Title,
+			Input:               call.Arguments,
+			Result:              approvedUnexecutedOutput{},
+			ApprovalStatus:      types.ToolApprovalStatusApproved,
+			ApprovalID:          pre.id,
+			ApprovalReason:      pre.approval.Reason,
+			ProviderExecutedSet: call.ProviderExecutedSet,
+			ProviderMetadata:    mergeProviderMetadataMaps(call.ProviderMetadata, tool.ProviderMetadata),
+			ToolMetadata:        call.ToolMetadata,
+			Dynamic:             call.Dynamic,
+		})
+		added = true
+	}
+	if !added {
+		return results
+	}
+	return append(out, results[j:]...)
 }
 
 func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []types.ContentPart {
@@ -375,7 +592,7 @@ func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []t
 		case types.ToolApprovalStatusApproved:
 			approvalRequests = append(approvalRequests, approvalRequest)
 			approvalResponses = append(approvalResponses, toolApprovalResponseFromToolResult(tr))
-			if tr.ProviderExecuted {
+			if tr.ProviderExecuted || isApprovedUnexecuted(tr) {
 				continue
 			}
 		case types.ToolApprovalStatusDenied:
@@ -388,15 +605,18 @@ func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []t
 			ToolName:         tr.ToolName,
 			Input:            tr.Input,
 			Result:           tr.Result,
+			IsError:          tr.IsError,
 			ProviderExecuted: tr.ProviderExecuted,
 			ProviderMetadata: providerMetadataRaw(tr.ProviderMetadata),
 			ToolMetadata:     tr.ToolMetadata,
 			Dynamic:          tr.Dynamic,
 			Preliminary:      tr.Preliminary,
 		}
+		// TS step content tool-result `output` is the raw tool output; the
+		// model output is derived only for the response messages. Go keeps
+		// the raw value in Result next to the model-facing Output.
 		if tr.ModelOutput != nil {
 			part.Output = tr.ModelOutput
-			part.Result = nil
 		}
 		if tr.Error != nil {
 			errPart := types.ToolErrorContent{
@@ -404,6 +624,8 @@ func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []t
 				ToolName:         tr.ToolName,
 				Input:            tr.Input,
 				Error:            tr.Error.Error(),
+				Err:              tr.Error,
+				ErrorText:        providerutils.ToolErrorText(tr.Error),
 				ProviderExecuted: tr.ProviderExecuted,
 				ProviderMetadata: providerMetadataRaw(tr.ProviderMetadata),
 				ToolMetadata:     tr.ToolMetadata,
@@ -433,6 +655,8 @@ func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []t
 				ToolName:         tr.ToolName,
 				Input:            tr.Input,
 				Error:            output.Error(),
+				Err:              output,
+				ErrorText:        providerutils.ToolErrorText(output),
 				ProviderExecuted: tr.ProviderExecuted,
 				ProviderMetadata: providerMetadataRaw(tr.ProviderMetadata),
 				ToolMetadata:     tr.ToolMetadata,
@@ -452,7 +676,6 @@ func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []t
 		default:
 			if part.Output == nil {
 				part.Output = toolResultModelOutput(tr.Result)
-				part.Result = nil
 			}
 		}
 		if tr.ApprovalStatus == types.ToolApprovalStatusApproved || tr.ApprovalStatus == types.ToolApprovalStatusDenied {
@@ -483,11 +706,30 @@ func toolResultModelOutput(result interface{}) *types.ToolResultOutput {
 
 func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart {
 	if result.Error != nil {
+		// A provider-executed error is the provider's own error value (TS
+		// tool-error.error: a string or a structured object such as
+		// {type: 'web_fetch_tool_result_error', errorCode}), replayed as
+		// error-json. Providers that carry the structured payload put it in
+		// Result next to the Error summary.
+		var errValue interface{} = result.Error.Error()
+		errorText := providerutils.ToolErrorText(result.Error)
+		typedErr := result.Error
+		if result.ProviderExecuted {
+			errorText = ""
+			if result.Result != nil {
+				// The provider's error is a structured value, not a Go
+				// error: Err stays nil.
+				errValue = result.Result
+				typedErr = nil
+			}
+		}
 		return types.ToolErrorContent{
 			ToolCallID:       result.ToolCallID,
 			ToolName:         result.ToolName,
 			Input:            result.Input,
-			Error:            result.Error.Error(),
+			Error:            errValue,
+			Err:              typedErr,
+			ErrorText:        errorText,
 			ProviderExecuted: result.ProviderExecuted,
 			ProviderMetadata: providerMetadataRaw(result.ProviderMetadata),
 			ToolMetadata:     result.ToolMetadata,
@@ -499,15 +741,16 @@ func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart 
 		ToolName:         result.ToolName,
 		Input:            result.Input,
 		Result:           result.Result,
+		IsError:          result.IsError,
 		ProviderExecuted: result.ProviderExecuted,
 		ProviderMetadata: providerMetadataRaw(result.ProviderMetadata),
 		ToolMetadata:     result.ToolMetadata,
 		Dynamic:          result.Dynamic,
 		Preliminary:      result.Preliminary,
 	}
+	// The raw tool output stays in Result (TS content `output`).
 	if result.ModelOutput != nil {
 		part.Output = result.ModelOutput
-		part.Result = nil
 	}
 	switch output := result.Result.(type) {
 	case types.ToolResultOutput:
@@ -526,6 +769,8 @@ func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart 
 			ToolName:         result.ToolName,
 			Input:            result.Input,
 			Error:            output.Error(),
+			Err:              output,
+			ErrorText:        providerutils.ToolErrorText(output),
 			ProviderExecuted: result.ProviderExecuted,
 			ProviderMetadata: providerMetadataRaw(result.ProviderMetadata),
 			ToolMetadata:     result.ToolMetadata,
@@ -534,8 +779,417 @@ func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart 
 	default:
 		if part.Output == nil {
 			part.Output = toolResultModelOutput(result.Result)
-			part.Result = nil
 		}
 	}
 	return part
+}
+
+// setTrailingTextEnd applies a text-end chunk to the most recent TextContent
+// part in parts (TS stream-text.ts: `activeText.providerMetadata =
+// part.providerMetadata ?? activeText.providerMetadata; if (part.citations !=
+// null) activeText.citations = part.citations`).
+func setTrailingTextEnd(parts []types.ContentPart, metadata json.RawMessage, citations []types.Citation) []types.ContentPart {
+	if len(citations) == 0 && len(metadata) == 0 {
+		return parts
+	}
+	for i := len(parts) - 1; i >= 0; i-- {
+		if text, ok := parts[i].(types.TextContent); ok {
+			if len(metadata) > 0 {
+				text.ProviderMetadata = metadata
+			}
+			if len(citations) > 0 {
+				text.Citations = citations
+			}
+			parts[i] = text
+			return parts
+		}
+	}
+	return parts
+}
+
+// normalizeGenerateResultText fills GenerateResult.Text from the text parts of
+// Content when a provider returned its text only there. TS derives text from
+// the text parts of content (extractTextContent), so core accepts both shapes:
+// text in Text with the remaining parts in Content, or every part in Content.
+// completeUsageTotal fills TotalTokens with InputTokens + OutputTokens when
+// the model left it unset and reported either count (TS asLanguageModelUsage:
+// totalTokens = addTokenCounts(inputTokens.total, outputTokens.total), which
+// is undefined only when both are).
+func completeUsageTotal(u types.Usage) types.Usage {
+	if u.TotalTokens != nil || (u.InputTokens == nil && u.OutputTokens == nil) {
+		return u
+	}
+	var total int64
+	if u.InputTokens != nil {
+		total += *u.InputTokens
+	}
+	if u.OutputTokens != nil {
+		total += *u.OutputTokens
+	}
+	u.TotalTokens = &total
+	return u
+}
+
+func normalizeGenerateResultText(result *types.GenerateResult) {
+	if result == nil || result.Text != "" {
+		return
+	}
+	var text strings.Builder
+	for _, part := range result.Content {
+		switch p := part.(type) {
+		case types.TextContent:
+			text.WriteString(p.Text)
+		case *types.TextContent:
+			if p != nil {
+				text.WriteString(p.Text)
+			}
+		}
+	}
+	result.Text = text.String()
+}
+
+// providerToolResultsFromContent converts the tool-result and tool-error parts
+// a model response carries (results the provider executed) into ToolResults,
+// skipping calls that already have an executed result in executed. TS
+// `toolResults` holds these parts alongside the locally executed results.
+func providerToolResultsFromContent(content []types.ContentPart, executed []types.ToolResult) []types.ToolResult {
+	var out []types.ToolResult
+	seen := make(map[string]bool, len(executed))
+	for _, tr := range executed {
+		if !tr.ProviderExecuted || tr.Result != nil || tr.Error != nil {
+			seen[tr.ToolCallID] = true
+		}
+	}
+	for _, part := range content {
+		var tr types.ToolResult
+		switch p := part.(type) {
+		case types.ToolResultContent:
+			tr = providerToolResultFromResult(p)
+		case *types.ToolResultContent:
+			if p == nil {
+				continue
+			}
+			tr = providerToolResultFromResult(*p)
+		case types.ToolErrorContent:
+			tr = providerToolResultFromError(p)
+		case *types.ToolErrorContent:
+			if p == nil {
+				continue
+			}
+			tr = providerToolResultFromError(*p)
+		default:
+			continue
+		}
+		if seen[tr.ToolCallID] {
+			continue
+		}
+		seen[tr.ToolCallID] = true
+		out = append(out, tr)
+	}
+	return out
+}
+
+func providerToolResultFromResult(p types.ToolResultContent) types.ToolResult {
+	tr := types.ToolResult{
+		ToolCallID:       p.ToolCallID,
+		ToolName:         p.ToolName,
+		Title:            p.Title,
+		Input:            p.Input,
+		Result:           p.Result,
+		IsError:          p.IsError,
+		ProviderExecuted: true,
+		ProviderMetadata: decodeProviderMetadataMap(p.ProviderMetadata),
+		ToolMetadata:     p.ToolMetadata,
+		Dynamic:          p.Dynamic,
+		Preliminary:      p.Preliminary,
+	}
+	if p.Error != "" {
+		tr.Error = errors.New(p.Error)
+	}
+	if tr.Result == nil && p.Output != nil {
+		tr.Result = p.Output.Value
+		tr.ModelOutput = p.Output
+	}
+	return tr
+}
+
+func providerToolResultFromError(p types.ToolErrorContent) types.ToolResult {
+	var err error
+	var structured interface{}
+	switch e := p.Error.(type) {
+	case error:
+		err = e
+	case string:
+		err = errors.New(e)
+		if p.Err != nil {
+			// A provider that kept its Go error in Err: the tool result
+			// carries the typed error, as the content part does.
+			err = p.Err
+		}
+	default:
+		// A structured provider error (TS tool-error.error as an object)
+		// keeps its value in Result next to the Error summary, the shape
+		// toolResultContentFromToolResult replays as error-json.
+		err = fmt.Errorf("%v", e)
+		structured = e
+	}
+	return types.ToolResult{
+		Result:           structured,
+		ToolCallID:       p.ToolCallID,
+		ToolName:         p.ToolName,
+		Title:            p.Title,
+		Input:            p.Input,
+		Error:            err,
+		ProviderExecuted: true,
+		ProviderMetadata: decodeProviderMetadataMap(p.ProviderMetadata),
+		ToolMetadata:     p.ToolMetadata,
+		Dynamic:          p.Dynamic,
+	}
+}
+
+// blockContent tracks the text and reasoning blocks a model stream opened with
+// an explicit start part, by block id. TS stream-text records content per id
+// (activeText / activeReasoning), so blocks the provider interleaves (a
+// second text block starting before the first ended) keep their own deltas.
+// A delta whose id has no open block (providers without start parts) falls
+// back to merging into the trailing part, as before.
+type blockContent struct {
+	text      map[string]int
+	reasoning map[string]int
+}
+
+func (b *blockContent) reset() { b.text, b.reasoning = nil, nil }
+
+func (b *blockContent) openText(parts []types.ContentPart, id string, metadata json.RawMessage) []types.ContentPart {
+	parts = startNewTextPart(parts, metadata)
+	if id != "" {
+		if b.text == nil {
+			b.text = map[string]int{}
+		}
+		b.text[id] = len(parts) - 1
+	}
+	return parts
+}
+
+func (b *blockContent) textDelta(parts []types.ContentPart, id, text string, metadata json.RawMessage) []types.ContentPart {
+	if i, ok := b.text[id]; ok && id != "" {
+		if text == "" && len(metadata) == 0 {
+			return parts
+		}
+		if tc, ok := parts[i].(types.TextContent); ok {
+			tc.Text += text
+			if len(metadata) > 0 {
+				tc.ProviderMetadata = metadata
+			}
+			parts[i] = tc
+			return parts
+		}
+	}
+	return appendTextPart(parts, text, metadata)
+}
+
+func (b *blockContent) closeText(parts []types.ContentPart, id string, metadata json.RawMessage, citations []types.Citation) []types.ContentPart {
+	if i, ok := b.text[id]; ok && id != "" {
+		delete(b.text, id)
+		if tc, ok := parts[i].(types.TextContent); ok {
+			if len(metadata) > 0 {
+				tc.ProviderMetadata = metadata
+			}
+			if len(citations) > 0 {
+				tc.Citations = citations
+			}
+			parts[i] = tc
+		}
+		return parts
+	}
+	return setTrailingTextEnd(parts, metadata, citations)
+}
+
+func (b *blockContent) openReasoning(parts []types.ContentPart, id string, metadata json.RawMessage) []types.ContentPart {
+	parts = startNewReasoningPart(parts, metadata)
+	if id != "" {
+		if b.reasoning == nil {
+			b.reasoning = map[string]int{}
+		}
+		b.reasoning[id] = len(parts) - 1
+	}
+	return parts
+}
+
+func (b *blockContent) reasoningDelta(parts []types.ContentPart, id, text string, metadata json.RawMessage) []types.ContentPart {
+	if i, ok := b.reasoning[id]; ok && id != "" {
+		if text == "" && len(metadata) == 0 {
+			return parts
+		}
+		if rc, ok := parts[i].(types.ReasoningContent); ok {
+			rc.Text += text
+			if len(metadata) > 0 {
+				rc.ProviderMetadata = metadata
+			}
+			parts[i] = rc
+			return parts
+		}
+	}
+	return appendReasoningPart(parts, text, metadata)
+}
+
+func (b *blockContent) closeReasoning(parts []types.ContentPart, id string, metadata json.RawMessage) []types.ContentPart {
+	if i, ok := b.reasoning[id]; ok && id != "" {
+		delete(b.reasoning, id)
+		if len(metadata) > 0 {
+			if rc, ok := parts[i].(types.ReasoningContent); ok {
+				rc.ProviderMetadata = metadata
+				parts[i] = rc
+			}
+		}
+		return parts
+	}
+	return setTrailingReasoningMetadata(parts, metadata)
+}
+
+// textOfContent joins the text parts of content in order (TS extractTextContent).
+func textOfContent(parts []types.ContentPart) string {
+	var b strings.Builder
+	for _, part := range parts {
+		switch p := part.(type) {
+		case types.TextContent:
+			b.WriteString(p.Text)
+		case *types.TextContent:
+			if p != nil {
+				b.WriteString(p.Text)
+			}
+		}
+	}
+	return b.String()
+}
+
+// validateToolResultParts mirrors TS convertLanguageModelContent: a
+// tool-result (or tool-error) part must answer a tool call of the same
+// response, unless it is the deferred result of a provider tool that supports
+// deferred results. Anything else throws "Tool call <id> not found.". A
+// tool-approval-request part without its call throws
+// ToolCallNotFoundForApprovalError.
+func validateToolResultParts(content []types.ContentPart, calls []types.ToolCall, tools map[string]*types.Tool) error {
+	for _, part := range content {
+		var id, name string
+		switch p := part.(type) {
+		case types.ToolApprovalRequestContent, *types.ToolApprovalRequestContent:
+			// A provider tool-approval-request must name a tool call of the
+			// same response (TS ToolCallNotFoundForApprovalError).
+			var request types.ToolApprovalRequestContent
+			if v, ok := p.(types.ToolApprovalRequestContent); ok {
+				request = v
+			} else if v := p.(*types.ToolApprovalRequestContent); v != nil {
+				request = *v
+			} else {
+				continue
+			}
+			request = normalizeApprovalRequest(request)
+			if _, ok := toolCallByID(calls, request.ToolCallID); !ok {
+				return &ToolCallNotFoundForApprovalError{ToolCallID: request.ToolCallID, ApprovalID: request.ApprovalID}
+			}
+			continue
+		case types.ToolResultContent:
+			id, name = p.ToolCallID, p.ToolName
+		case *types.ToolResultContent:
+			if p == nil {
+				continue
+			}
+			id, name = p.ToolCallID, p.ToolName
+		case types.ToolErrorContent:
+			id, name = p.ToolCallID, p.ToolName
+		case *types.ToolErrorContent:
+			if p == nil {
+				continue
+			}
+			id, name = p.ToolCallID, p.ToolName
+		default:
+			continue
+		}
+		if _, ok := toolCallByID(calls, id); ok {
+			continue
+		}
+		if t := tools[name]; t != nil && t.ProviderExecuted && t.SupportsDeferredResults {
+			continue
+		}
+		return fmt.Errorf("Tool call %s not found.", id) //nolint:staticcheck // matches the TS SDK's exact error text
+	}
+	return nil
+}
+
+// withDeferredToolResultMetadata gives a deferred provider tool result (a
+// tool-result or tool-error part that answers no tool call of the response)
+// its tool definition's metadata, as TS convertLanguageModelContent does
+// (`toolMetadata: tool.metadata`): there is no call to copy it from. content
+// is not modified; changed reports whether the returned copy differs.
+func withDeferredToolResultMetadata(content []types.ContentPart, calls []types.ToolCall, tools map[string]*types.Tool) (_ []types.ContentPart, changed bool) {
+	var out []types.ContentPart
+	set := func(i int, part types.ContentPart) {
+		if out == nil {
+			out = append([]types.ContentPart(nil), content...)
+		}
+		out[i] = part
+	}
+	metadataFor := func(id, name string, current map[string]interface{}) (map[string]interface{}, bool) {
+		if current != nil {
+			return nil, false
+		}
+		if _, ok := toolCallByID(calls, id); ok {
+			return nil, false
+		}
+		if t := tools[name]; t != nil && t.Metadata != nil {
+			return t.Metadata, true
+		}
+		return nil, false
+	}
+	for i, part := range content {
+		switch p := part.(type) {
+		case types.ToolResultContent:
+			if md, ok := metadataFor(p.ToolCallID, p.ToolName, p.ToolMetadata); ok {
+				p.ToolMetadata = md
+				set(i, p)
+			}
+		case *types.ToolResultContent:
+			if p == nil {
+				continue
+			}
+			if md, ok := metadataFor(p.ToolCallID, p.ToolName, p.ToolMetadata); ok {
+				c := *p
+				c.ToolMetadata = md
+				set(i, c)
+			}
+		case types.ToolErrorContent:
+			if md, ok := metadataFor(p.ToolCallID, p.ToolName, p.ToolMetadata); ok {
+				p.ToolMetadata = md
+				set(i, p)
+			}
+		case *types.ToolErrorContent:
+			if p == nil {
+				continue
+			}
+			if md, ok := metadataFor(p.ToolCallID, p.ToolName, p.ToolMetadata); ok {
+				c := *p
+				c.ToolMetadata = md
+				set(i, c)
+			}
+		}
+	}
+	if out == nil {
+		return content, false
+	}
+	return out, true
+}
+
+// validateToolResultPartsOf is validateToolResultParts for a step's tool set
+// (batch results and, through pkg/internal/aibridge, the legacy agent loop).
+func validateToolResultPartsOf(content []types.ContentPart, calls []types.ToolCall, tools []types.Tool) error {
+	return validateToolResultParts(content, calls, toolsByNameOf(tools))
+}
+
+func toolsByNameOf(tools []types.Tool) map[string]*types.Tool {
+	byName := make(map[string]*types.Tool, len(tools))
+	for i := range tools {
+		byName[tools[i].Name] = &tools[i]
+	}
+	return byName
 }

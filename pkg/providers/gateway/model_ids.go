@@ -22,8 +22,8 @@ type (
 	GatewayTranscriptionModelID string
 	// GatewayRealtimeModelID mirrors TS GatewayRealtimeModelId.
 	GatewayRealtimeModelID string
-	// GatewayEvaluationModelID mirrors TS GatewayEvaluationModelId.
-	GatewayEvaluationModelID string
+	// GatewayDecisionModelID mirrors TS GatewayDecisionModelId.
+	GatewayDecisionModelID string
 )
 
 // GatewayLanguageModelID constants mirror gateway-language-model-settings.ts.
@@ -32,20 +32,13 @@ const (
 	GatewayLanguageModelAlibabaQwen3235b                 GatewayLanguageModelID = "alibaba/qwen-3-235b"
 	GatewayLanguageModelAlibabaQwen330b                  GatewayLanguageModelID = "alibaba/qwen-3-30b"
 	GatewayLanguageModelAlibabaQwen332b                  GatewayLanguageModelID = "alibaba/qwen-3-32b"
-	GatewayLanguageModelAlibabaQwen36MaxPreview          GatewayLanguageModelID = "alibaba/qwen-3.6-max-preview"
-	GatewayLanguageModelAlibabaQwen3235bA22bThinking     GatewayLanguageModelID = "alibaba/qwen3-235b-a22b-thinking"
 	GatewayLanguageModelAlibabaQwen3Coder                GatewayLanguageModelID = "alibaba/qwen3-coder"
 	GatewayLanguageModelAlibabaQwen3Coder30bA3b          GatewayLanguageModelID = "alibaba/qwen3-coder-30b-a3b"
 	GatewayLanguageModelAlibabaQwen3CoderNext            GatewayLanguageModelID = "alibaba/qwen3-coder-next"
-	GatewayLanguageModelAlibabaQwen3CoderPlus            GatewayLanguageModelID = "alibaba/qwen3-coder-plus"
-	GatewayLanguageModelAlibabaQwen3Max                  GatewayLanguageModelID = "alibaba/qwen3-max"
-	GatewayLanguageModelAlibabaQwen3MaxPreview           GatewayLanguageModelID = "alibaba/qwen3-max-preview"
 	GatewayLanguageModelAlibabaQwen3MaxThinking          GatewayLanguageModelID = "alibaba/qwen3-max-thinking"
 	GatewayLanguageModelAlibabaQwen3Next80bA3bInstruct   GatewayLanguageModelID = "alibaba/qwen3-next-80b-a3b-instruct"
 	GatewayLanguageModelAlibabaQwen3Next80bA3bThinking   GatewayLanguageModelID = "alibaba/qwen3-next-80b-a3b-thinking"
-	GatewayLanguageModelAlibabaQwen3Vl235bA22bInstruct   GatewayLanguageModelID = "alibaba/qwen3-vl-235b-a22b-instruct"
 	GatewayLanguageModelAlibabaQwen3VlInstruct           GatewayLanguageModelID = "alibaba/qwen3-vl-instruct"
-	GatewayLanguageModelAlibabaQwen3VlThinking           GatewayLanguageModelID = "alibaba/qwen3-vl-thinking"
 	GatewayLanguageModelAlibabaQwen35Flash               GatewayLanguageModelID = "alibaba/qwen3.5-flash"
 	GatewayLanguageModelAlibabaQwen35Plus                GatewayLanguageModelID = "alibaba/qwen3.5-plus"
 	GatewayLanguageModelAlibabaQwen3627b                 GatewayLanguageModelID = "alibaba/qwen3.6-27b"
@@ -64,33 +57,45 @@ const (
 	GatewayLanguageModelAmazonNovaLite                   GatewayLanguageModelID = "amazon/nova-lite"
 	GatewayLanguageModelAmazonNovaMicro                  GatewayLanguageModelID = "amazon/nova-micro"
 	GatewayLanguageModelAmazonNovaPro                    GatewayLanguageModelID = "amazon/nova-pro"
-	GatewayLanguageModelAnthropicClaude3Haiku            GatewayLanguageModelID = "anthropic/claude-3-haiku"
 	GatewayLanguageModelAnthropicClaudeFable5            GatewayLanguageModelID = "anthropic/claude-fable-5"
+	GatewayLanguageModelAnthropicClaudeFable5Batch       GatewayLanguageModelID = "anthropic/claude-fable-5-batch"
 	GatewayLanguageModelAnthropicClaudeFable51           GatewayLanguageModelID = "anthropic/claude-fable-5.1"
+	GatewayLanguageModelAnthropicClaudeFable51Batch      GatewayLanguageModelID = "anthropic/claude-fable-5.1-batch"
 	GatewayLanguageModelAnthropicClaudeHaiku45           GatewayLanguageModelID = "anthropic/claude-haiku-4.5"
-	GatewayLanguageModelAnthropicClaudeOpus4             GatewayLanguageModelID = "anthropic/claude-opus-4"
+	GatewayLanguageModelAnthropicClaudeHaiku45Batch      GatewayLanguageModelID = "anthropic/claude-haiku-4.5-batch"
+	GatewayLanguageModelAnthropicClaudeHaiku55           GatewayLanguageModelID = "anthropic/claude-haiku-5.5"
+	GatewayLanguageModelAnthropicClaudeHaiku55Batch      GatewayLanguageModelID = "anthropic/claude-haiku-5.5-batch"
 	GatewayLanguageModelAnthropicClaudeOpus45            GatewayLanguageModelID = "anthropic/claude-opus-4.5"
+	GatewayLanguageModelAnthropicClaudeOpus45Batch       GatewayLanguageModelID = "anthropic/claude-opus-4.5-batch"
 	GatewayLanguageModelAnthropicClaudeOpus46            GatewayLanguageModelID = "anthropic/claude-opus-4.6"
+	GatewayLanguageModelAnthropicClaudeOpus46Batch       GatewayLanguageModelID = "anthropic/claude-opus-4.6-batch"
 	GatewayLanguageModelAnthropicClaudeOpus47            GatewayLanguageModelID = "anthropic/claude-opus-4.7"
+	GatewayLanguageModelAnthropicClaudeOpus47Batch       GatewayLanguageModelID = "anthropic/claude-opus-4.7-batch"
 	GatewayLanguageModelAnthropicClaudeOpus48            GatewayLanguageModelID = "anthropic/claude-opus-4.8"
+	GatewayLanguageModelAnthropicClaudeOpus48Batch       GatewayLanguageModelID = "anthropic/claude-opus-4.8-batch"
 	GatewayLanguageModelAnthropicClaudeOpus48Fast        GatewayLanguageModelID = "anthropic/claude-opus-4.8-fast"
 	GatewayLanguageModelAnthropicClaudeOpus5             GatewayLanguageModelID = "anthropic/claude-opus-5"
+	GatewayLanguageModelAnthropicClaudeOpus5Batch        GatewayLanguageModelID = "anthropic/claude-opus-5-batch"
 	GatewayLanguageModelAnthropicClaudeOpus5Fast         GatewayLanguageModelID = "anthropic/claude-opus-5-fast"
 	GatewayLanguageModelAnthropicClaudeOpus55            GatewayLanguageModelID = "anthropic/claude-opus-5.5"
+	GatewayLanguageModelAnthropicClaudeOpus55Batch       GatewayLanguageModelID = "anthropic/claude-opus-5.5-batch"
 	GatewayLanguageModelAnthropicClaudeOpus55Fast        GatewayLanguageModelID = "anthropic/claude-opus-5.5-fast"
-	GatewayLanguageModelAnthropicClaudeSonnet4           GatewayLanguageModelID = "anthropic/claude-sonnet-4"
 	GatewayLanguageModelAnthropicClaudeSonnet45          GatewayLanguageModelID = "anthropic/claude-sonnet-4.5"
+	GatewayLanguageModelAnthropicClaudeSonnet45Batch     GatewayLanguageModelID = "anthropic/claude-sonnet-4.5-batch"
 	GatewayLanguageModelAnthropicClaudeSonnet46          GatewayLanguageModelID = "anthropic/claude-sonnet-4.6"
+	GatewayLanguageModelAnthropicClaudeSonnet46Batch     GatewayLanguageModelID = "anthropic/claude-sonnet-4.6-batch"
 	GatewayLanguageModelAnthropicClaudeSonnet5           GatewayLanguageModelID = "anthropic/claude-sonnet-5"
+	GatewayLanguageModelAnthropicClaudeSonnet5Batch      GatewayLanguageModelID = "anthropic/claude-sonnet-5-batch"
 	GatewayLanguageModelAnthropicClaudeSonnet55          GatewayLanguageModelID = "anthropic/claude-sonnet-5.5"
+	GatewayLanguageModelAnthropicClaudeSonnet55Batch     GatewayLanguageModelID = "anthropic/claude-sonnet-5.5-batch"
 	GatewayLanguageModelArceeAiTrinityLargeThinking      GatewayLanguageModelID = "arcee-ai/trinity-large-thinking"
 	GatewayLanguageModelBytedanceSeed16                  GatewayLanguageModelID = "bytedance/seed-1.6"
 	GatewayLanguageModelBytedanceSeed18                  GatewayLanguageModelID = "bytedance/seed-1.8"
 	GatewayLanguageModelBytedanceSeed21Turbo             GatewayLanguageModelID = "bytedance/seed-2.1-turbo"
+	GatewayLanguageModelCallstackApex                    GatewayLanguageModelID = "callstack/apex"
 	GatewayLanguageModelCohereCommandA                   GatewayLanguageModelID = "cohere/command-a"
 	GatewayLanguageModelDeepseekDeepseekR1               GatewayLanguageModelID = "deepseek/deepseek-r1"
 	GatewayLanguageModelDeepseekDeepseekV31              GatewayLanguageModelID = "deepseek/deepseek-v3.1"
-	GatewayLanguageModelDeepseekDeepseekV31Terminus      GatewayLanguageModelID = "deepseek/deepseek-v3.1-terminus"
 	GatewayLanguageModelDeepseekDeepseekV32              GatewayLanguageModelID = "deepseek/deepseek-v3.2"
 	GatewayLanguageModelDeepseekDeepseekV32Thinking      GatewayLanguageModelID = "deepseek/deepseek-v3.2-thinking"
 	GatewayLanguageModelDeepseekDeepseekV4Flash          GatewayLanguageModelID = "deepseek/deepseek-v4-flash"
@@ -99,39 +104,55 @@ const (
 	GatewayLanguageModelDeepseekDeepseekV4Pro            GatewayLanguageModelID = "deepseek/deepseek-v4-pro"
 	GatewayLanguageModelDeepseekDeepseekV4Pro0813        GatewayLanguageModelID = "deepseek/deepseek-v4-pro-0813"
 	GatewayLanguageModelDeepseekDeepseekV41Flash         GatewayLanguageModelID = "deepseek/deepseek-v4.1-flash"
+	GatewayLanguageModelDeepseekDeepseekV41Flash1017     GatewayLanguageModelID = "deepseek/deepseek-v4.1-flash-1017"
+	GatewayLanguageModelDeepseekDeepseekV41Flash1017Fast GatewayLanguageModelID = "deepseek/deepseek-v4.1-flash-1017-fast"
+	GatewayLanguageModelDeepseekDeepseekV41FlashFast     GatewayLanguageModelID = "deepseek/deepseek-v4.1-flash-fast"
+	GatewayLanguageModelElorianGlimpse                   GatewayLanguageModelID = "elorian/glimpse"
 	GatewayLanguageModelFireworksEmber1                  GatewayLanguageModelID = "fireworks/ember-1"
 	GatewayLanguageModelGoogleGemini25Flash              GatewayLanguageModelID = "google/gemini-2.5-flash"
+	GatewayLanguageModelGoogleGemini25FlashBatch         GatewayLanguageModelID = "google/gemini-2.5-flash-batch"
 	GatewayLanguageModelGoogleGemini25FlashImage         GatewayLanguageModelID = "google/gemini-2.5-flash-image"
 	GatewayLanguageModelGoogleGemini25FlashLite          GatewayLanguageModelID = "google/gemini-2.5-flash-lite"
+	GatewayLanguageModelGoogleGemini25FlashLiteBatch     GatewayLanguageModelID = "google/gemini-2.5-flash-lite-batch"
 	GatewayLanguageModelGoogleGemini25Pro                GatewayLanguageModelID = "google/gemini-2.5-pro"
+	GatewayLanguageModelGoogleGemini25ProBatch           GatewayLanguageModelID = "google/gemini-2.5-pro-batch"
 	GatewayLanguageModelGoogleGemini3Flash               GatewayLanguageModelID = "google/gemini-3-flash"
+	GatewayLanguageModelGoogleGemini3FlashBatch          GatewayLanguageModelID = "google/gemini-3-flash-batch"
 	GatewayLanguageModelGoogleGemini3ProImage            GatewayLanguageModelID = "google/gemini-3-pro-image"
 	GatewayLanguageModelGoogleGemini31FlashImage         GatewayLanguageModelID = "google/gemini-3.1-flash-image"
 	GatewayLanguageModelGoogleGemini31FlashImagePreview  GatewayLanguageModelID = "google/gemini-3.1-flash-image-preview"
 	GatewayLanguageModelGoogleGemini31FlashLite          GatewayLanguageModelID = "google/gemini-3.1-flash-lite"
+	GatewayLanguageModelGoogleGemini31FlashLiteBatch     GatewayLanguageModelID = "google/gemini-3.1-flash-lite-batch"
 	GatewayLanguageModelGoogleGemini31FlashLiteImage     GatewayLanguageModelID = "google/gemini-3.1-flash-lite-image"
 	GatewayLanguageModelGoogleGemini31ProPreview         GatewayLanguageModelID = "google/gemini-3.1-pro-preview"
+	GatewayLanguageModelGoogleGemini31ProPreviewBatch    GatewayLanguageModelID = "google/gemini-3.1-pro-preview-batch"
 	GatewayLanguageModelGoogleGemini35Flash              GatewayLanguageModelID = "google/gemini-3.5-flash"
+	GatewayLanguageModelGoogleGemini35FlashBatch         GatewayLanguageModelID = "google/gemini-3.5-flash-batch"
 	GatewayLanguageModelGoogleGemini35FlashLite          GatewayLanguageModelID = "google/gemini-3.5-flash-lite"
+	GatewayLanguageModelGoogleGemini35FlashLiteBatch     GatewayLanguageModelID = "google/gemini-3.5-flash-lite-batch"
 	GatewayLanguageModelGoogleGemini36Flash              GatewayLanguageModelID = "google/gemini-3.6-flash"
+	GatewayLanguageModelGoogleGemini36FlashBatch         GatewayLanguageModelID = "google/gemini-3.6-flash-batch"
 	GatewayLanguageModelGoogleGemini37Flash              GatewayLanguageModelID = "google/gemini-3.7-flash"
+	GatewayLanguageModelGoogleGemini37FlashBatch         GatewayLanguageModelID = "google/gemini-3.7-flash-batch"
 	GatewayLanguageModelGoogleGemini38Flash              GatewayLanguageModelID = "google/gemini-3.8-flash"
+	GatewayLanguageModelGoogleGemini4Argon               GatewayLanguageModelID = "google/gemini-4-argon"
+	GatewayLanguageModelGoogleGeminiNanoBanana21         GatewayLanguageModelID = "google/gemini-nano-banana-2.1"
 	GatewayLanguageModelGoogleGeminiOmniFlashPreview     GatewayLanguageModelID = "google/gemini-omni-flash-preview"
 	GatewayLanguageModelGoogleGemma426bA4bIt             GatewayLanguageModelID = "google/gemma-4-26b-a4b-it"
 	GatewayLanguageModelGoogleGemma431bIt                GatewayLanguageModelID = "google/gemma-4-31b-it"
 	GatewayLanguageModelInceptionMercury2                GatewayLanguageModelID = "inception/mercury-2"
 	GatewayLanguageModelInceptionMercury25               GatewayLanguageModelID = "inception/mercury-2.5"
+	GatewayLanguageModelInceptionMercury3                GatewayLanguageModelID = "inception/mercury-3"
 	GatewayLanguageModelInceptionMercuryCoderSmall       GatewayLanguageModelID = "inception/mercury-coder-small"
 	GatewayLanguageModelInclusionaiLing30Flash           GatewayLanguageModelID = "inclusionai/ling-3.0-flash"
 	GatewayLanguageModelInclusionaiLing30FlashFin        GatewayLanguageModelID = "inclusionai/ling-3.0-flash-fin"
 	GatewayLanguageModelInclusionaiLing30FlashSante      GatewayLanguageModelID = "inclusionai/ling-3.0-flash-sante"
-	GatewayLanguageModelInclusionaiLing30FlashSanteFree  GatewayLanguageModelID = "inclusionai/ling-3.0-flash-sante-free"
 	GatewayLanguageModelInclusionaiLing30FlashVl         GatewayLanguageModelID = "inclusionai/ling-3.0-flash-vl"
 	GatewayLanguageModelInclusionaiLing31Flash           GatewayLanguageModelID = "inclusionai/ling-3.1-flash"
-	GatewayLanguageModelInclusionaiLing31FlashFree       GatewayLanguageModelID = "inclusionai/ling-3.1-flash-free"
 	GatewayLanguageModelInferenceNetSchematronV2Small    GatewayLanguageModelID = "inference-net/schematron-v2-small"
 	GatewayLanguageModelInferenceNetSchematronV2Turbo    GatewayLanguageModelID = "inference-net/schematron-v2-turbo"
 	GatewayLanguageModelInterfazeInterfazeBeta           GatewayLanguageModelID = "interfaze/interfaze-beta"
+	GatewayLanguageModelLiquidLfm2524bA2b                GatewayLanguageModelID = "liquid/lfm2.5-24b-a2b"
 	GatewayLanguageModelMeituanLongcat25Preview          GatewayLanguageModelID = "meituan/longcat-2.5-preview"
 	GatewayLanguageModelMetaLlama3170b                   GatewayLanguageModelID = "meta/llama-3.1-70b"
 	GatewayLanguageModelMetaLlama318b                    GatewayLanguageModelID = "meta/llama-3.1-8b"
@@ -144,6 +165,8 @@ const (
 	GatewayLanguageModelMetaMuseSpark12Contributor       GatewayLanguageModelID = "meta/muse-spark-1.2-contributor"
 	GatewayLanguageModelMetaMuseSpark13                  GatewayLanguageModelID = "meta/muse-spark-1.3"
 	GatewayLanguageModelMetaMuseSpark13Contributor       GatewayLanguageModelID = "meta/muse-spark-1.3-contributor"
+	GatewayLanguageModelMetaMuseSparkOpen                GatewayLanguageModelID = "meta/muse-spark-open"
+	GatewayLanguageModelMetaMuseWonder10                 GatewayLanguageModelID = "meta/muse-wonder-1.0"
 	GatewayLanguageModelMinimaxMinimaxM2                 GatewayLanguageModelID = "minimax/minimax-m2"
 	GatewayLanguageModelMinimaxMinimaxM21                GatewayLanguageModelID = "minimax/minimax-m2.1"
 	GatewayLanguageModelMinimaxMinimaxM21Lightning       GatewayLanguageModelID = "minimax/minimax-m2.1-lightning"
@@ -152,83 +175,106 @@ const (
 	GatewayLanguageModelMinimaxMinimaxM27                GatewayLanguageModelID = "minimax/minimax-m2.7"
 	GatewayLanguageModelMinimaxMinimaxM27Highspeed       GatewayLanguageModelID = "minimax/minimax-m2.7-highspeed"
 	GatewayLanguageModelMinimaxMinimaxM3                 GatewayLanguageModelID = "minimax/minimax-m3"
+	GatewayLanguageModelMinimaxMinimaxM31Flash           GatewayLanguageModelID = "minimax/minimax-m3.1-flash"
 	GatewayLanguageModelMistralCodestral                 GatewayLanguageModelID = "mistral/codestral"
 	GatewayLanguageModelMistralMinistral14b              GatewayLanguageModelID = "mistral/ministral-14b"
 	GatewayLanguageModelMistralMinistral3b               GatewayLanguageModelID = "mistral/ministral-3b"
 	GatewayLanguageModelMistralMinistral8b               GatewayLanguageModelID = "mistral/ministral-8b"
 	GatewayLanguageModelMistralMistralLarge3             GatewayLanguageModelID = "mistral/mistral-large-3"
+	GatewayLanguageModelMistralMistralLarge4             GatewayLanguageModelID = "mistral/mistral-large-4"
 	GatewayLanguageModelMistralMistralMedium35           GatewayLanguageModelID = "mistral/mistral-medium-3.5"
 	GatewayLanguageModelMistralMistralNemo               GatewayLanguageModelID = "mistral/mistral-nemo"
 	GatewayLanguageModelMistralMistralSmall              GatewayLanguageModelID = "mistral/mistral-small"
 	GatewayLanguageModelMixedbreadToast1                 GatewayLanguageModelID = "mixedbread/toast-1"
 	GatewayLanguageModelMoonshotaiKimiK2                 GatewayLanguageModelID = "moonshotai/kimi-k2"
-	GatewayLanguageModelMoonshotaiKimiK2Thinking         GatewayLanguageModelID = "moonshotai/kimi-k2-thinking"
 	GatewayLanguageModelMoonshotaiKimiK25                GatewayLanguageModelID = "moonshotai/kimi-k2.5"
 	GatewayLanguageModelMoonshotaiKimiK26                GatewayLanguageModelID = "moonshotai/kimi-k2.6"
 	GatewayLanguageModelMoonshotaiKimiK27Code            GatewayLanguageModelID = "moonshotai/kimi-k2.7-code"
 	GatewayLanguageModelMoonshotaiKimiK27CodeHighspeed   GatewayLanguageModelID = "moonshotai/kimi-k2.7-code-highspeed"
 	GatewayLanguageModelMoonshotaiKimiK3                 GatewayLanguageModelID = "moonshotai/kimi-k3"
 	GatewayLanguageModelMoonshotaiKimiK3Fast             GatewayLanguageModelID = "moonshotai/kimi-k3-fast"
+	GatewayLanguageModelMoonshotaiKimiK31Pro             GatewayLanguageModelID = "moonshotai/kimi-k3.1-pro"
+	GatewayLanguageModelMoonshotaiKimiK31ProHighspeed    GatewayLanguageModelID = "moonshotai/kimi-k3.1-pro-highspeed"
 	GatewayLanguageModelMorphMorphV3Fast                 GatewayLanguageModelID = "morph/morph-v3-fast"
 	GatewayLanguageModelMorphMorphV3Large                GatewayLanguageModelID = "morph/morph-v3-large"
 	GatewayLanguageModelNvidiaNemotron3Nano30bA3b        GatewayLanguageModelID = "nvidia/nemotron-3-nano-30b-a3b"
 	GatewayLanguageModelNvidiaNemotron3Super120bA12b     GatewayLanguageModelID = "nvidia/nemotron-3-super-120b-a12b"
 	GatewayLanguageModelNvidiaNemotron3Ultra550bA55b     GatewayLanguageModelID = "nvidia/nemotron-3-ultra-550b-a55b"
 	GatewayLanguageModelNvidiaNemotron35Lightning        GatewayLanguageModelID = "nvidia/nemotron-3.5-lightning"
+	GatewayLanguageModelNvidiaNemotron35LightningFree    GatewayLanguageModelID = "nvidia/nemotron-3.5-lightning-free"
+	GatewayLanguageModelNvidiaNemotron35SuperVl          GatewayLanguageModelID = "nvidia/nemotron-3.5-super-vl"
 	GatewayLanguageModelNvidiaNemotronNano12bV2Vl        GatewayLanguageModelID = "nvidia/nemotron-nano-12b-v2-vl"
 	GatewayLanguageModelNvidiaNemotronNano9bV2           GatewayLanguageModelID = "nvidia/nemotron-nano-9b-v2"
-	GatewayLanguageModelOpenaiGpt35Turbo                 GatewayLanguageModelID = "openai/gpt-3.5-turbo"
-	GatewayLanguageModelOpenaiGpt4Turbo                  GatewayLanguageModelID = "openai/gpt-4-turbo"
 	GatewayLanguageModelOpenaiGpt41                      GatewayLanguageModelID = "openai/gpt-4.1"
+	GatewayLanguageModelOpenaiGpt41Batch                 GatewayLanguageModelID = "openai/gpt-4.1-batch"
 	GatewayLanguageModelOpenaiGpt41Fast                  GatewayLanguageModelID = "openai/gpt-4.1-fast"
 	GatewayLanguageModelOpenaiGpt41Mini                  GatewayLanguageModelID = "openai/gpt-4.1-mini"
+	GatewayLanguageModelOpenaiGpt41MiniBatch             GatewayLanguageModelID = "openai/gpt-4.1-mini-batch"
 	GatewayLanguageModelOpenaiGpt41MiniFast              GatewayLanguageModelID = "openai/gpt-4.1-mini-fast"
 	GatewayLanguageModelOpenaiGpt41Nano                  GatewayLanguageModelID = "openai/gpt-4.1-nano"
-	GatewayLanguageModelOpenaiGpt41NanoFast              GatewayLanguageModelID = "openai/gpt-4.1-nano-fast"
 	GatewayLanguageModelOpenaiGpt4o                      GatewayLanguageModelID = "openai/gpt-4o"
+	GatewayLanguageModelOpenaiGpt4oBatch                 GatewayLanguageModelID = "openai/gpt-4o-batch"
 	GatewayLanguageModelOpenaiGpt4oFast                  GatewayLanguageModelID = "openai/gpt-4o-fast"
 	GatewayLanguageModelOpenaiGpt4oMini                  GatewayLanguageModelID = "openai/gpt-4o-mini"
+	GatewayLanguageModelOpenaiGpt4oMiniBatch             GatewayLanguageModelID = "openai/gpt-4o-mini-batch"
 	GatewayLanguageModelOpenaiGpt4oMiniFast              GatewayLanguageModelID = "openai/gpt-4o-mini-fast"
 	GatewayLanguageModelOpenaiGpt5                       GatewayLanguageModelID = "openai/gpt-5"
+	GatewayLanguageModelOpenaiGpt5Batch                  GatewayLanguageModelID = "openai/gpt-5-batch"
 	GatewayLanguageModelOpenaiGpt5Codex                  GatewayLanguageModelID = "openai/gpt-5-codex"
 	GatewayLanguageModelOpenaiGpt5Fast                   GatewayLanguageModelID = "openai/gpt-5-fast"
 	GatewayLanguageModelOpenaiGpt5Mini                   GatewayLanguageModelID = "openai/gpt-5-mini"
+	GatewayLanguageModelOpenaiGpt5MiniBatch              GatewayLanguageModelID = "openai/gpt-5-mini-batch"
 	GatewayLanguageModelOpenaiGpt5MiniFast               GatewayLanguageModelID = "openai/gpt-5-mini-fast"
 	GatewayLanguageModelOpenaiGpt5Nano                   GatewayLanguageModelID = "openai/gpt-5-nano"
+	GatewayLanguageModelOpenaiGpt5NanoBatch              GatewayLanguageModelID = "openai/gpt-5-nano-batch"
 	GatewayLanguageModelOpenaiGpt5Pro                    GatewayLanguageModelID = "openai/gpt-5-pro"
+	GatewayLanguageModelOpenaiGpt5ProBatch               GatewayLanguageModelID = "openai/gpt-5-pro-batch"
 	GatewayLanguageModelOpenaiGpt51Codex                 GatewayLanguageModelID = "openai/gpt-5.1-codex"
 	GatewayLanguageModelOpenaiGpt51CodexMax              GatewayLanguageModelID = "openai/gpt-5.1-codex-max"
 	GatewayLanguageModelOpenaiGpt51CodexMini             GatewayLanguageModelID = "openai/gpt-5.1-codex-mini"
 	GatewayLanguageModelOpenaiGpt51Thinking              GatewayLanguageModelID = "openai/gpt-5.1-thinking"
 	GatewayLanguageModelOpenaiGpt51ThinkingFast          GatewayLanguageModelID = "openai/gpt-5.1-thinking-fast"
 	GatewayLanguageModelOpenaiGpt52                      GatewayLanguageModelID = "openai/gpt-5.2"
+	GatewayLanguageModelOpenaiGpt52Batch                 GatewayLanguageModelID = "openai/gpt-5.2-batch"
 	GatewayLanguageModelOpenaiGpt52Codex                 GatewayLanguageModelID = "openai/gpt-5.2-codex"
 	GatewayLanguageModelOpenaiGpt52Fast                  GatewayLanguageModelID = "openai/gpt-5.2-fast"
 	GatewayLanguageModelOpenaiGpt52Pro                   GatewayLanguageModelID = "openai/gpt-5.2-pro"
 	GatewayLanguageModelOpenaiGpt53Codex                 GatewayLanguageModelID = "openai/gpt-5.3-codex"
 	GatewayLanguageModelOpenaiGpt53CodexFast             GatewayLanguageModelID = "openai/gpt-5.3-codex-fast"
 	GatewayLanguageModelOpenaiGpt54                      GatewayLanguageModelID = "openai/gpt-5.4"
+	GatewayLanguageModelOpenaiGpt54Batch                 GatewayLanguageModelID = "openai/gpt-5.4-batch"
 	GatewayLanguageModelOpenaiGpt54Fast                  GatewayLanguageModelID = "openai/gpt-5.4-fast"
 	GatewayLanguageModelOpenaiGpt54Mini                  GatewayLanguageModelID = "openai/gpt-5.4-mini"
+	GatewayLanguageModelOpenaiGpt54MiniBatch             GatewayLanguageModelID = "openai/gpt-5.4-mini-batch"
 	GatewayLanguageModelOpenaiGpt54MiniFast              GatewayLanguageModelID = "openai/gpt-5.4-mini-fast"
 	GatewayLanguageModelOpenaiGpt54Nano                  GatewayLanguageModelID = "openai/gpt-5.4-nano"
+	GatewayLanguageModelOpenaiGpt54NanoBatch             GatewayLanguageModelID = "openai/gpt-5.4-nano-batch"
 	GatewayLanguageModelOpenaiGpt54Pro                   GatewayLanguageModelID = "openai/gpt-5.4-pro"
 	GatewayLanguageModelOpenaiGpt55                      GatewayLanguageModelID = "openai/gpt-5.5"
+	GatewayLanguageModelOpenaiGpt55Batch                 GatewayLanguageModelID = "openai/gpt-5.5-batch"
 	GatewayLanguageModelOpenaiGpt55Fast                  GatewayLanguageModelID = "openai/gpt-5.5-fast"
 	GatewayLanguageModelOpenaiGpt55Pro                   GatewayLanguageModelID = "openai/gpt-5.5-pro"
+	GatewayLanguageModelOpenaiGpt55ProBatch              GatewayLanguageModelID = "openai/gpt-5.5-pro-batch"
 	GatewayLanguageModelOpenaiGpt56Luna                  GatewayLanguageModelID = "openai/gpt-5.6-luna"
+	GatewayLanguageModelOpenaiGpt56LunaBatch             GatewayLanguageModelID = "openai/gpt-5.6-luna-batch"
 	GatewayLanguageModelOpenaiGpt56LunaFast              GatewayLanguageModelID = "openai/gpt-5.6-luna-fast"
 	GatewayLanguageModelOpenaiGpt56Sol                   GatewayLanguageModelID = "openai/gpt-5.6-sol"
+	GatewayLanguageModelOpenaiGpt56SolBatch              GatewayLanguageModelID = "openai/gpt-5.6-sol-batch"
 	GatewayLanguageModelOpenaiGpt56SolFast               GatewayLanguageModelID = "openai/gpt-5.6-sol-fast"
 	GatewayLanguageModelOpenaiGpt56Terra                 GatewayLanguageModelID = "openai/gpt-5.6-terra"
+	GatewayLanguageModelOpenaiGpt56TerraBatch            GatewayLanguageModelID = "openai/gpt-5.6-terra-batch"
 	GatewayLanguageModelOpenaiGpt56TerraFast             GatewayLanguageModelID = "openai/gpt-5.6-terra-fast"
 	GatewayLanguageModelOpenaiGpt6Astra                  GatewayLanguageModelID = "openai/gpt-6-astra"
+	GatewayLanguageModelOpenaiGpt6AstraBatch             GatewayLanguageModelID = "openai/gpt-6-astra-batch"
 	GatewayLanguageModelOpenaiGpt6AstraFast              GatewayLanguageModelID = "openai/gpt-6-astra-fast"
 	GatewayLanguageModelOpenaiGpt6Luna                   GatewayLanguageModelID = "openai/gpt-6-luna"
+	GatewayLanguageModelOpenaiGpt6LunaBatch              GatewayLanguageModelID = "openai/gpt-6-luna-batch"
 	GatewayLanguageModelOpenaiGpt6LunaFast               GatewayLanguageModelID = "openai/gpt-6-luna-fast"
 	GatewayLanguageModelOpenaiGpt6Sol                    GatewayLanguageModelID = "openai/gpt-6-sol"
+	GatewayLanguageModelOpenaiGpt6SolBatch               GatewayLanguageModelID = "openai/gpt-6-sol-batch"
 	GatewayLanguageModelOpenaiGpt6SolFast                GatewayLanguageModelID = "openai/gpt-6-sol-fast"
 	GatewayLanguageModelOpenaiGpt61Sol                   GatewayLanguageModelID = "openai/gpt-6.1-sol"
+	GatewayLanguageModelOpenaiGpt61SolBatch              GatewayLanguageModelID = "openai/gpt-6.1-sol-batch"
 	GatewayLanguageModelOpenaiGpt61SolFast               GatewayLanguageModelID = "openai/gpt-6.1-sol-fast"
 	GatewayLanguageModelOpenaiGptOss120b                 GatewayLanguageModelID = "openai/gpt-oss-120b"
 	GatewayLanguageModelOpenaiGptOss20b                  GatewayLanguageModelID = "openai/gpt-oss-20b"
@@ -240,30 +286,35 @@ const (
 	GatewayLanguageModelOpenaiO3Mini                     GatewayLanguageModelID = "openai/o3-mini"
 	GatewayLanguageModelOpenaiO3Pro                      GatewayLanguageModelID = "openai/o3-pro"
 	GatewayLanguageModelOpenaiO4Mini                     GatewayLanguageModelID = "openai/o4-mini"
-	GatewayLanguageModelOpenaiO4MiniFast                 GatewayLanguageModelID = "openai/o4-mini-fast"
 	GatewayLanguageModelPerplexitySonar                  GatewayLanguageModelID = "perplexity/sonar"
 	GatewayLanguageModelPoolsideLagunaS21                GatewayLanguageModelID = "poolside/laguna-s-2.1"
 	GatewayLanguageModelPoolsideLagunaS21Free            GatewayLanguageModelID = "poolside/laguna-s-2.1-free"
 	GatewayLanguageModelQuiveraiArrow2                   GatewayLanguageModelID = "quiverai/arrow-2"
 	GatewayLanguageModelQuiveraiArrow2Telos              GatewayLanguageModelID = "quiverai/arrow-2-telos"
+	GatewayLanguageModelReflectionBeam                   GatewayLanguageModelID = "reflection/beam"
+	GatewayLanguageModelReflectionBeamFree               GatewayLanguageModelID = "reflection/beam-free"
 	GatewayLanguageModelSakanaFuguMax                    GatewayLanguageModelID = "sakana/fugu-max"
 	GatewayLanguageModelSakanaFuguUltra                  GatewayLanguageModelID = "sakana/fugu-ultra"
 	GatewayLanguageModelSakanaFuguUltraV2                GatewayLanguageModelID = "sakana/fugu-ultra-v2"
 	GatewayLanguageModelSakanaNamazu                     GatewayLanguageModelID = "sakana/namazu"
-	GatewayLanguageModelSpacexaiGrok41FastNonReasoning   GatewayLanguageModelID = "spacexai/grok-4.1-fast-non-reasoning"
-	GatewayLanguageModelSpacexaiGrok41FastReasoning      GatewayLanguageModelID = "spacexai/grok-4.1-fast-reasoning"
+	GatewayLanguageModelScaledownScaledownExtract1       GatewayLanguageModelID = "scaledown/scaledown-extract-1"
+	GatewayLanguageModelScaledownScaledownSummarize1     GatewayLanguageModelID = "scaledown/scaledown-summarize-1"
 	GatewayLanguageModelSpacexaiGrok420MultiAgent        GatewayLanguageModelID = "spacexai/grok-4.20-multi-agent"
+	GatewayLanguageModelSpacexaiGrok420MultiAgentBatch   GatewayLanguageModelID = "spacexai/grok-4.20-multi-agent-batch"
 	GatewayLanguageModelSpacexaiGrok420MultiAgentBeta    GatewayLanguageModelID = "spacexai/grok-4.20-multi-agent-beta"
 	GatewayLanguageModelSpacexaiGrok420NonReasoning      GatewayLanguageModelID = "spacexai/grok-4.20-non-reasoning"
+	GatewayLanguageModelSpacexaiGrok420NonReasoningBatch GatewayLanguageModelID = "spacexai/grok-4.20-non-reasoning-batch"
 	GatewayLanguageModelSpacexaiGrok420NonReasoningBeta  GatewayLanguageModelID = "spacexai/grok-4.20-non-reasoning-beta"
 	GatewayLanguageModelSpacexaiGrok420Reasoning         GatewayLanguageModelID = "spacexai/grok-4.20-reasoning"
+	GatewayLanguageModelSpacexaiGrok420ReasoningBatch    GatewayLanguageModelID = "spacexai/grok-4.20-reasoning-batch"
 	GatewayLanguageModelSpacexaiGrok420ReasoningBeta     GatewayLanguageModelID = "spacexai/grok-4.20-reasoning-beta"
 	GatewayLanguageModelSpacexaiGrok43                   GatewayLanguageModelID = "spacexai/grok-4.3"
+	GatewayLanguageModelSpacexaiGrok43Batch              GatewayLanguageModelID = "spacexai/grok-4.3-batch"
 	GatewayLanguageModelSpacexaiGrok45                   GatewayLanguageModelID = "spacexai/grok-4.5"
 	GatewayLanguageModelSpacexaiGrok46                   GatewayLanguageModelID = "spacexai/grok-4.6"
 	GatewayLanguageModelSpacexaiGrok47                   GatewayLanguageModelID = "spacexai/grok-4.7"
 	GatewayLanguageModelSpacexaiGrokBuild01              GatewayLanguageModelID = "spacexai/grok-build-0.1"
-	GatewayLanguageModelStepfunStep35Flash               GatewayLanguageModelID = "stepfun/step-3.5-flash"
+	GatewayLanguageModelStealthGlyphCluster              GatewayLanguageModelID = "stealth/glyph-cluster"
 	GatewayLanguageModelStepfunStep37Flash               GatewayLanguageModelID = "stepfun/step-3.7-flash"
 	GatewayLanguageModelStepfunStep5Preview              GatewayLanguageModelID = "stepfun/step-5-preview"
 	GatewayLanguageModelTencentHyMt2Lite                 GatewayLanguageModelID = "tencent/hy-mt2-lite"
@@ -304,6 +355,8 @@ const (
 	GatewayEmbeddingModelAlibabaQwen3Embedding8b            GatewayEmbeddingModelID = "alibaba/qwen3-embedding-8b"
 	GatewayEmbeddingModelAmazonTitanEmbedTextV2             GatewayEmbeddingModelID = "amazon/titan-embed-text-v2"
 	GatewayEmbeddingModelCohereEmbedV40                     GatewayEmbeddingModelID = "cohere/embed-v4.0"
+	GatewayEmbeddingModelCohereEmbedV50Fast                 GatewayEmbeddingModelID = "cohere/embed-v5.0-fast"
+	GatewayEmbeddingModelCohereEmbedV50Pro                  GatewayEmbeddingModelID = "cohere/embed-v5.0-pro"
 	GatewayEmbeddingModelGoogleGeminiEmbedding001           GatewayEmbeddingModelID = "google/gemini-embedding-001"
 	GatewayEmbeddingModelGoogleGeminiEmbedding2             GatewayEmbeddingModelID = "google/gemini-embedding-2"
 	GatewayEmbeddingModelGoogleTextEmbedding005             GatewayEmbeddingModelID = "google/text-embedding-005"
@@ -334,6 +387,8 @@ const (
 	GatewayImageModelBflFlux2Klein9b             GatewayImageModelID = "bfl/flux-2-klein-9b"
 	GatewayImageModelBflFlux2Max                 GatewayImageModelID = "bfl/flux-2-max"
 	GatewayImageModelBflFlux2Pro                 GatewayImageModelID = "bfl/flux-2-pro"
+	GatewayImageModelBflFlux3Image               GatewayImageModelID = "bfl/flux-3-image"
+	GatewayImageModelBflFlux3ImageKlein          GatewayImageModelID = "bfl/flux-3-image-klein"
 	GatewayImageModelBflFluxKontextMax           GatewayImageModelID = "bfl/flux-kontext-max"
 	GatewayImageModelBflFluxKontextPro           GatewayImageModelID = "bfl/flux-kontext-pro"
 	GatewayImageModelBflFluxPro10Fill            GatewayImageModelID = "bfl/flux-pro-1.0-fill"
@@ -344,14 +399,14 @@ const (
 	GatewayImageModelBytedanceSeedream50Lite     GatewayImageModelID = "bytedance/seedream-5.0-lite"
 	GatewayImageModelBytedanceSeedream50Pro      GatewayImageModelID = "bytedance/seedream-5.0-pro"
 	GatewayImageModelMetaMuseImage10             GatewayImageModelID = "meta/muse-image-1.0"
-	GatewayImageModelOpenaiGptImage1             GatewayImageModelID = "openai/gpt-image-1"
+	GatewayImageModelMicrosoftMaiImage26         GatewayImageModelID = "microsoft/mai-image-2.6"
+	GatewayImageModelMicrosoftMaiImage26Flash    GatewayImageModelID = "microsoft/mai-image-2.6-flash"
 	GatewayImageModelOpenaiGptImage1Mini         GatewayImageModelID = "openai/gpt-image-1-mini"
 	GatewayImageModelOpenaiGptImage15            GatewayImageModelID = "openai/gpt-image-1.5"
 	GatewayImageModelOpenaiGptImage2             GatewayImageModelID = "openai/gpt-image-2"
 	GatewayImageModelOpenaiGptImage25Flare       GatewayImageModelID = "openai/gpt-image-2.5-flare"
 	GatewayImageModelOpenaiGptImage25Sunburst    GatewayImageModelID = "openai/gpt-image-2.5-sunburst"
 	GatewayImageModelProdiaFluxFastSchnell       GatewayImageModelID = "prodia/flux-fast-schnell"
-	GatewayImageModelQuiveraiArrow11             GatewayImageModelID = "quiverai/arrow-1.1"
 	GatewayImageModelRecraftRecraftV2            GatewayImageModelID = "recraft/recraft-v2"
 	GatewayImageModelRecraftRecraftV3            GatewayImageModelID = "recraft/recraft-v3"
 	GatewayImageModelRecraftRecraftV4            GatewayImageModelID = "recraft/recraft-v4"
@@ -363,45 +418,50 @@ const (
 	GatewayImageModelRecraftRecraftV41UtilityPro GatewayImageModelID = "recraft/recraft-v4.1-utility-pro"
 	GatewayImageModelSpacexaiGrokImagineImage    GatewayImageModelID = "spacexai/grok-imagine-image"
 	GatewayImageModelSpacexaiGrokImagineImage20  GatewayImageModelID = "spacexai/grok-imagine-image-2.0"
+	GatewayImageModelTopazWonder35               GatewayImageModelID = "topaz/wonder-3.5"
 )
 
 // GatewayVideoModelID constants mirror gateway-video-model-settings.ts.
 const (
-	GatewayVideoModelAlibabaWanV25T2vPreview      GatewayVideoModelID = "alibaba/wan-v2.5-t2v-preview"
-	GatewayVideoModelAlibabaWanV26I2v             GatewayVideoModelID = "alibaba/wan-v2.6-i2v"
-	GatewayVideoModelAlibabaWanV26I2vFlash        GatewayVideoModelID = "alibaba/wan-v2.6-i2v-flash"
-	GatewayVideoModelAlibabaWanV26R2v             GatewayVideoModelID = "alibaba/wan-v2.6-r2v"
-	GatewayVideoModelAlibabaWanV26R2vFlash        GatewayVideoModelID = "alibaba/wan-v2.6-r2v-flash"
-	GatewayVideoModelAlibabaWanV26T2v             GatewayVideoModelID = "alibaba/wan-v2.6-t2v"
-	GatewayVideoModelAlibabaWanV27R2v             GatewayVideoModelID = "alibaba/wan-v2.7-r2v"
-	GatewayVideoModelAlibabaWanV27T2v             GatewayVideoModelID = "alibaba/wan-v2.7-t2v"
-	GatewayVideoModelAlibabaWanV30Video           GatewayVideoModelID = "alibaba/wan-v3.0-video"
-	GatewayVideoModelAlibabaWanV30VideoPrime      GatewayVideoModelID = "alibaba/wan-v3.0-video-prime"
-	GatewayVideoModelBflFlux3Video                GatewayVideoModelID = "bfl/flux-3-video"
-	GatewayVideoModelBytedanceSeedance20          GatewayVideoModelID = "bytedance/seedance-2.0"
-	GatewayVideoModelBytedanceSeedance20Fast      GatewayVideoModelID = "bytedance/seedance-2.0-fast"
-	GatewayVideoModelBytedanceSeedance20Mini      GatewayVideoModelID = "bytedance/seedance-2.0-mini"
-	GatewayVideoModelBytedanceSeedance25          GatewayVideoModelID = "bytedance/seedance-2.5"
-	GatewayVideoModelBytedanceSeedanceV10Pro      GatewayVideoModelID = "bytedance/seedance-v1.0-pro"
-	GatewayVideoModelBytedanceSeedanceV10ProFast  GatewayVideoModelID = "bytedance/seedance-v1.0-pro-fast"
-	GatewayVideoModelBytedanceSeedanceV15Pro      GatewayVideoModelID = "bytedance/seedance-v1.5-pro"
-	GatewayVideoModelGoogleVeo30FastGenerate001   GatewayVideoModelID = "google/veo-3.0-fast-generate-001"
-	GatewayVideoModelGoogleVeo30Generate001       GatewayVideoModelID = "google/veo-3.0-generate-001"
-	GatewayVideoModelGoogleVeo31FastGenerate001   GatewayVideoModelID = "google/veo-3.1-fast-generate-001"
-	GatewayVideoModelGoogleVeo31Generate001       GatewayVideoModelID = "google/veo-3.1-generate-001"
-	GatewayVideoModelGoogleVeo31LiteGenerate001   GatewayVideoModelID = "google/veo-3.1-lite-generate-001"
-	GatewayVideoModelKlingaiKlingV25TurboI2v      GatewayVideoModelID = "klingai/kling-v2.5-turbo-i2v"
-	GatewayVideoModelKlingaiKlingV25TurboT2v      GatewayVideoModelID = "klingai/kling-v2.5-turbo-t2v"
-	GatewayVideoModelKlingaiKlingV26I2v           GatewayVideoModelID = "klingai/kling-v2.6-i2v"
-	GatewayVideoModelKlingaiKlingV26MotionControl GatewayVideoModelID = "klingai/kling-v2.6-motion-control"
-	GatewayVideoModelKlingaiKlingV26T2v           GatewayVideoModelID = "klingai/kling-v2.6-t2v"
-	GatewayVideoModelKlingaiKlingV30I2v           GatewayVideoModelID = "klingai/kling-v3.0-i2v"
-	GatewayVideoModelKlingaiKlingV30MotionControl GatewayVideoModelID = "klingai/kling-v3.0-motion-control"
-	GatewayVideoModelKlingaiKlingV30T2v           GatewayVideoModelID = "klingai/kling-v3.0-t2v"
-	GatewayVideoModelMinimaxMinimaxH3             GatewayVideoModelID = "minimax/minimax-h3"
-	GatewayVideoModelMinimaxMinimaxH3Max          GatewayVideoModelID = "minimax/minimax-h3-max"
-	GatewayVideoModelSpacexaiGrokImagineVideo     GatewayVideoModelID = "spacexai/grok-imagine-video"
-	GatewayVideoModelSpacexaiGrokImagineVideo15   GatewayVideoModelID = "spacexai/grok-imagine-video-1.5"
+	GatewayVideoModelAlibabaWanV25T2vPreview        GatewayVideoModelID = "alibaba/wan-v2.5-t2v-preview"
+	GatewayVideoModelAlibabaWanV26I2v               GatewayVideoModelID = "alibaba/wan-v2.6-i2v"
+	GatewayVideoModelAlibabaWanV26I2vFlash          GatewayVideoModelID = "alibaba/wan-v2.6-i2v-flash"
+	GatewayVideoModelAlibabaWanV26R2v               GatewayVideoModelID = "alibaba/wan-v2.6-r2v"
+	GatewayVideoModelAlibabaWanV26R2vFlash          GatewayVideoModelID = "alibaba/wan-v2.6-r2v-flash"
+	GatewayVideoModelAlibabaWanV26T2v               GatewayVideoModelID = "alibaba/wan-v2.6-t2v"
+	GatewayVideoModelAlibabaWanV27R2v               GatewayVideoModelID = "alibaba/wan-v2.7-r2v"
+	GatewayVideoModelAlibabaWanV27T2v               GatewayVideoModelID = "alibaba/wan-v2.7-t2v"
+	GatewayVideoModelAlibabaWanV30Video             GatewayVideoModelID = "alibaba/wan-v3.0-video"
+	GatewayVideoModelAlibabaWanV30VideoPrime        GatewayVideoModelID = "alibaba/wan-v3.0-video-prime"
+	GatewayVideoModelBflFlux3Video                  GatewayVideoModelID = "bfl/flux-3-video"
+	GatewayVideoModelBytedanceSeedance20            GatewayVideoModelID = "bytedance/seedance-2.0"
+	GatewayVideoModelBytedanceSeedance20Fast        GatewayVideoModelID = "bytedance/seedance-2.0-fast"
+	GatewayVideoModelBytedanceSeedance20Mini        GatewayVideoModelID = "bytedance/seedance-2.0-mini"
+	GatewayVideoModelBytedanceSeedance25            GatewayVideoModelID = "bytedance/seedance-2.5"
+	GatewayVideoModelBytedanceSeedanceV10Pro        GatewayVideoModelID = "bytedance/seedance-v1.0-pro"
+	GatewayVideoModelBytedanceSeedanceV10ProFast    GatewayVideoModelID = "bytedance/seedance-v1.0-pro-fast"
+	GatewayVideoModelBytedanceSeedanceV15Pro        GatewayVideoModelID = "bytedance/seedance-v1.5-pro"
+	GatewayVideoModelGoogleVeo30FastGenerate001     GatewayVideoModelID = "google/veo-3.0-fast-generate-001"
+	GatewayVideoModelGoogleVeo30Generate001         GatewayVideoModelID = "google/veo-3.0-generate-001"
+	GatewayVideoModelGoogleVeo31FastGenerate001     GatewayVideoModelID = "google/veo-3.1-fast-generate-001"
+	GatewayVideoModelGoogleVeo31Generate001         GatewayVideoModelID = "google/veo-3.1-generate-001"
+	GatewayVideoModelGoogleVeo31LiteGenerate001     GatewayVideoModelID = "google/veo-3.1-lite-generate-001"
+	GatewayVideoModelHeygenHeygenVideo1             GatewayVideoModelID = "heygen/heygen-video-1"
+	GatewayVideoModelKlingaiKlingV25TurboI2v        GatewayVideoModelID = "klingai/kling-v2.5-turbo-i2v"
+	GatewayVideoModelKlingaiKlingV25TurboT2v        GatewayVideoModelID = "klingai/kling-v2.5-turbo-t2v"
+	GatewayVideoModelKlingaiKlingV26I2v             GatewayVideoModelID = "klingai/kling-v2.6-i2v"
+	GatewayVideoModelKlingaiKlingV26MotionControl   GatewayVideoModelID = "klingai/kling-v2.6-motion-control"
+	GatewayVideoModelKlingaiKlingV26T2v             GatewayVideoModelID = "klingai/kling-v2.6-t2v"
+	GatewayVideoModelKlingaiKlingV30I2v             GatewayVideoModelID = "klingai/kling-v3.0-i2v"
+	GatewayVideoModelKlingaiKlingV30MotionControl   GatewayVideoModelID = "klingai/kling-v3.0-motion-control"
+	GatewayVideoModelKlingaiKlingV30T2v             GatewayVideoModelID = "klingai/kling-v3.0-t2v"
+	GatewayVideoModelMinimaxMinimaxH3               GatewayVideoModelID = "minimax/minimax-h3"
+	GatewayVideoModelMinimaxMinimaxH3Max            GatewayVideoModelID = "minimax/minimax-h3-max"
+	GatewayVideoModelSpacexaiGrokImagineVideo       GatewayVideoModelID = "spacexai/grok-imagine-video"
+	GatewayVideoModelSpacexaiGrokImagineVideo15     GatewayVideoModelID = "spacexai/grok-imagine-video-1.5"
+	GatewayVideoModelSpacexaiGrokImagineVideo15Lite GatewayVideoModelID = "spacexai/grok-imagine-video-1.5-lite"
+	GatewayVideoModelTopazProteus                   GatewayVideoModelID = "topaz/proteus"
+	GatewayVideoModelTopazStarlightPrecise26        GatewayVideoModelID = "topaz/starlight-precise-2.6"
 )
 
 // GatewayRerankingModelID constants mirror gateway-reranking-model-settings.ts.
@@ -409,6 +469,8 @@ const (
 	GatewayRerankingModelCohereRerankV35    GatewayRerankingModelID = "cohere/rerank-v3.5"
 	GatewayRerankingModelCohereRerankV4Fast GatewayRerankingModelID = "cohere/rerank-v4-fast"
 	GatewayRerankingModelCohereRerankV4Pro  GatewayRerankingModelID = "cohere/rerank-v4-pro"
+	GatewayRerankingModelCohereRerankV5Fast GatewayRerankingModelID = "cohere/rerank-v5-fast"
+	GatewayRerankingModelCohereRerankV5Pro  GatewayRerankingModelID = "cohere/rerank-v5-pro"
 	GatewayRerankingModelVoyageRerank25     GatewayRerankingModelID = "voyage/rerank-2.5"
 	GatewayRerankingModelVoyageRerank25Lite GatewayRerankingModelID = "voyage/rerank-2.5-lite"
 	GatewayRerankingModelVoyageRerank3      GatewayRerankingModelID = "voyage/rerank-3"
@@ -417,6 +479,7 @@ const (
 
 // GatewaySpeechModelID constants mirror gateway-speech-model-settings.ts.
 const (
+	GatewaySpeechModelFishAudioDrama3            GatewaySpeechModelID = "fish-audio/drama-3"
 	GatewaySpeechModelFishAudioS1                GatewaySpeechModelID = "fish-audio/s1"
 	GatewaySpeechModelFishAudioS2Pro             GatewaySpeechModelID = "fish-audio/s2-pro"
 	GatewaySpeechModelFishAudioS21Pro            GatewaySpeechModelID = "fish-audio/s2.1-pro"
@@ -426,6 +489,7 @@ const (
 	GatewaySpeechModelMicrosoftMaiVoice2Flash    GatewaySpeechModelID = "microsoft/mai-voice-2-flash"
 	GatewaySpeechModelMicrosoftMaiVoice21        GatewaySpeechModelID = "microsoft/mai-voice-2.1"
 	GatewaySpeechModelMicrosoftMaiVoice21Flash   GatewaySpeechModelID = "microsoft/mai-voice-2.1-flash"
+	GatewaySpeechModelMistralVoxtralMiniTts3     GatewaySpeechModelID = "mistral/voxtral-mini-tts-3"
 	GatewaySpeechModelOpenaiTts1                 GatewaySpeechModelID = "openai/tts-1"
 	GatewaySpeechModelOpenaiTts1Hd               GatewaySpeechModelID = "openai/tts-1-hd"
 	GatewaySpeechModelSpacexaiGrokTts            GatewaySpeechModelID = "spacexai/grok-tts"
@@ -436,9 +500,10 @@ const (
 	GatewayTranscriptionModelFishAudioTranscribe1             GatewayTranscriptionModelID = "fish-audio/transcribe-1"
 	GatewayTranscriptionModelGoogleGemini35Transcribe         GatewayTranscriptionModelID = "google/gemini-3.5-transcribe"
 	GatewayTranscriptionModelGoogleGemini35TranscribeLive     GatewayTranscriptionModelID = "google/gemini-3.5-transcribe-live"
-	GatewayTranscriptionModelMicrosoftMaiTranscribe15         GatewayTranscriptionModelID = "microsoft/mai-transcribe-1.5"
 	GatewayTranscriptionModelMicrosoftMaiTranscribe2          GatewayTranscriptionModelID = "microsoft/mai-transcribe-2"
 	GatewayTranscriptionModelMicrosoftMaiTranscribe2Streaming GatewayTranscriptionModelID = "microsoft/mai-transcribe-2-streaming"
+	GatewayTranscriptionModelMistralVoxtralMiniTranscribe3    GatewayTranscriptionModelID = "mistral/voxtral-mini-transcribe-3"
+	GatewayTranscriptionModelMistralVoxtralSmallTranscribe3   GatewayTranscriptionModelID = "mistral/voxtral-small-transcribe-3"
 	GatewayTranscriptionModelOpenaiGpt4oMiniTranscribe        GatewayTranscriptionModelID = "openai/gpt-4o-mini-transcribe"
 	GatewayTranscriptionModelOpenaiGpt4oTranscribe            GatewayTranscriptionModelID = "openai/gpt-4o-transcribe"
 	GatewayTranscriptionModelOpenaiGptRealtimeWhisper         GatewayTranscriptionModelID = "openai/gpt-realtime-whisper"
@@ -455,14 +520,26 @@ const (
 	GatewayRealtimeModelOpenaiGptRealtime2                 GatewayRealtimeModelID = "openai/gpt-realtime-2"
 	GatewayRealtimeModelOpenaiGptRealtime21                GatewayRealtimeModelID = "openai/gpt-realtime-2.1"
 	GatewayRealtimeModelOpenaiGptRealtimeMini              GatewayRealtimeModelID = "openai/gpt-realtime-mini"
-	GatewayRealtimeModelSpacexaiGrokVoiceThinkFast10       GatewayRealtimeModelID = "spacexai/grok-voice-think-fast-1.0"
+	GatewayRealtimeModelSpacexaiGrokVoice30                GatewayRealtimeModelID = "spacexai/grok-voice-3.0"
 	GatewayRealtimeModelSpacexaiGrokVoiceThinkFast20       GatewayRealtimeModelID = "spacexai/grok-voice-think-fast-2.0"
 )
 
-// GatewayEvaluationModelID constants mirror gateway-evaluation-model-settings.ts.
+// GatewayDecisionModelID constants mirror gateway-decision-model-settings.ts.
 const (
-	GatewayEvaluationModelLiquidD1      GatewayEvaluationModelID = "liquid/d1"
-	GatewayEvaluationModelTypesafeAiJev GatewayEvaluationModelID = "typesafe-ai/jev"
+	GatewayDecisionModelBasetenElephant1              GatewayDecisionModelID = "baseten/elephant-1"
+	GatewayDecisionModelBasetenMammoth1               GatewayDecisionModelID = "baseten/mammoth-1"
+	GatewayDecisionModelConvaiinnovationsLaya         GatewayDecisionModelID = "convaiinnovations/laya"
+	GatewayDecisionModelConvaiinnovationsLayaFree     GatewayDecisionModelID = "convaiinnovations/laya-free"
+	GatewayDecisionModelLiquidD1                      GatewayDecisionModelID = "liquid/d1"
+	GatewayDecisionModelLiquidD1Ultra                 GatewayDecisionModelID = "liquid/d1-ultra"
+	GatewayDecisionModelMicrosoftMicrosoftDecision1   GatewayDecisionModelID = "microsoft/microsoft-decision-1"
+	GatewayDecisionModelOpenaiGpt6LunaDecisions       GatewayDecisionModelID = "openai/gpt-6-luna-decisions"
+	GatewayDecisionModelPerplexityPplxDeciderFlashV12 GatewayDecisionModelID = "perplexity/pplx-decider-flash-v1.2"
+	GatewayDecisionModelPerplexityPplxDeciderV12      GatewayDecisionModelID = "perplexity/pplx-decider-v1.2"
+	GatewayDecisionModelScaledownScaledownClassify1   GatewayDecisionModelID = "scaledown/scaledown-classify-1"
+	GatewayDecisionModelTypesafeAiJev                 GatewayDecisionModelID = "typesafe-ai/jev"
+	GatewayDecisionModelTypesafeAiJev1130             GatewayDecisionModelID = "typesafe-ai/jev-1.13.0"
+	GatewayDecisionModelTypesafeAiJev1140             GatewayDecisionModelID = "typesafe-ai/jev-1.14.0"
 )
 
 // GatewayLanguageModelIDs lists the suggested gateway language model IDs from gateway-language-model-settings.ts.
@@ -471,20 +548,13 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelAlibabaQwen3235b,
 	GatewayLanguageModelAlibabaQwen330b,
 	GatewayLanguageModelAlibabaQwen332b,
-	GatewayLanguageModelAlibabaQwen36MaxPreview,
-	GatewayLanguageModelAlibabaQwen3235bA22bThinking,
 	GatewayLanguageModelAlibabaQwen3Coder,
 	GatewayLanguageModelAlibabaQwen3Coder30bA3b,
 	GatewayLanguageModelAlibabaQwen3CoderNext,
-	GatewayLanguageModelAlibabaQwen3CoderPlus,
-	GatewayLanguageModelAlibabaQwen3Max,
-	GatewayLanguageModelAlibabaQwen3MaxPreview,
 	GatewayLanguageModelAlibabaQwen3MaxThinking,
 	GatewayLanguageModelAlibabaQwen3Next80bA3bInstruct,
 	GatewayLanguageModelAlibabaQwen3Next80bA3bThinking,
-	GatewayLanguageModelAlibabaQwen3Vl235bA22bInstruct,
 	GatewayLanguageModelAlibabaQwen3VlInstruct,
-	GatewayLanguageModelAlibabaQwen3VlThinking,
 	GatewayLanguageModelAlibabaQwen35Flash,
 	GatewayLanguageModelAlibabaQwen35Plus,
 	GatewayLanguageModelAlibabaQwen3627b,
@@ -503,33 +573,45 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelAmazonNovaLite,
 	GatewayLanguageModelAmazonNovaMicro,
 	GatewayLanguageModelAmazonNovaPro,
-	GatewayLanguageModelAnthropicClaude3Haiku,
 	GatewayLanguageModelAnthropicClaudeFable5,
+	GatewayLanguageModelAnthropicClaudeFable5Batch,
 	GatewayLanguageModelAnthropicClaudeFable51,
+	GatewayLanguageModelAnthropicClaudeFable51Batch,
 	GatewayLanguageModelAnthropicClaudeHaiku45,
-	GatewayLanguageModelAnthropicClaudeOpus4,
+	GatewayLanguageModelAnthropicClaudeHaiku45Batch,
+	GatewayLanguageModelAnthropicClaudeHaiku55,
+	GatewayLanguageModelAnthropicClaudeHaiku55Batch,
 	GatewayLanguageModelAnthropicClaudeOpus45,
+	GatewayLanguageModelAnthropicClaudeOpus45Batch,
 	GatewayLanguageModelAnthropicClaudeOpus46,
+	GatewayLanguageModelAnthropicClaudeOpus46Batch,
 	GatewayLanguageModelAnthropicClaudeOpus47,
+	GatewayLanguageModelAnthropicClaudeOpus47Batch,
 	GatewayLanguageModelAnthropicClaudeOpus48,
+	GatewayLanguageModelAnthropicClaudeOpus48Batch,
 	GatewayLanguageModelAnthropicClaudeOpus48Fast,
 	GatewayLanguageModelAnthropicClaudeOpus5,
+	GatewayLanguageModelAnthropicClaudeOpus5Batch,
 	GatewayLanguageModelAnthropicClaudeOpus5Fast,
 	GatewayLanguageModelAnthropicClaudeOpus55,
+	GatewayLanguageModelAnthropicClaudeOpus55Batch,
 	GatewayLanguageModelAnthropicClaudeOpus55Fast,
-	GatewayLanguageModelAnthropicClaudeSonnet4,
 	GatewayLanguageModelAnthropicClaudeSonnet45,
+	GatewayLanguageModelAnthropicClaudeSonnet45Batch,
 	GatewayLanguageModelAnthropicClaudeSonnet46,
+	GatewayLanguageModelAnthropicClaudeSonnet46Batch,
 	GatewayLanguageModelAnthropicClaudeSonnet5,
+	GatewayLanguageModelAnthropicClaudeSonnet5Batch,
 	GatewayLanguageModelAnthropicClaudeSonnet55,
+	GatewayLanguageModelAnthropicClaudeSonnet55Batch,
 	GatewayLanguageModelArceeAiTrinityLargeThinking,
 	GatewayLanguageModelBytedanceSeed16,
 	GatewayLanguageModelBytedanceSeed18,
 	GatewayLanguageModelBytedanceSeed21Turbo,
+	GatewayLanguageModelCallstackApex,
 	GatewayLanguageModelCohereCommandA,
 	GatewayLanguageModelDeepseekDeepseekR1,
 	GatewayLanguageModelDeepseekDeepseekV31,
-	GatewayLanguageModelDeepseekDeepseekV31Terminus,
 	GatewayLanguageModelDeepseekDeepseekV32,
 	GatewayLanguageModelDeepseekDeepseekV32Thinking,
 	GatewayLanguageModelDeepseekDeepseekV4Flash,
@@ -538,39 +620,55 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelDeepseekDeepseekV4Pro,
 	GatewayLanguageModelDeepseekDeepseekV4Pro0813,
 	GatewayLanguageModelDeepseekDeepseekV41Flash,
+	GatewayLanguageModelDeepseekDeepseekV41Flash1017,
+	GatewayLanguageModelDeepseekDeepseekV41Flash1017Fast,
+	GatewayLanguageModelDeepseekDeepseekV41FlashFast,
+	GatewayLanguageModelElorianGlimpse,
 	GatewayLanguageModelFireworksEmber1,
 	GatewayLanguageModelGoogleGemini25Flash,
+	GatewayLanguageModelGoogleGemini25FlashBatch,
 	GatewayLanguageModelGoogleGemini25FlashImage,
 	GatewayLanguageModelGoogleGemini25FlashLite,
+	GatewayLanguageModelGoogleGemini25FlashLiteBatch,
 	GatewayLanguageModelGoogleGemini25Pro,
+	GatewayLanguageModelGoogleGemini25ProBatch,
 	GatewayLanguageModelGoogleGemini3Flash,
+	GatewayLanguageModelGoogleGemini3FlashBatch,
 	GatewayLanguageModelGoogleGemini3ProImage,
 	GatewayLanguageModelGoogleGemini31FlashImage,
 	GatewayLanguageModelGoogleGemini31FlashImagePreview,
 	GatewayLanguageModelGoogleGemini31FlashLite,
+	GatewayLanguageModelGoogleGemini31FlashLiteBatch,
 	GatewayLanguageModelGoogleGemini31FlashLiteImage,
 	GatewayLanguageModelGoogleGemini31ProPreview,
+	GatewayLanguageModelGoogleGemini31ProPreviewBatch,
 	GatewayLanguageModelGoogleGemini35Flash,
+	GatewayLanguageModelGoogleGemini35FlashBatch,
 	GatewayLanguageModelGoogleGemini35FlashLite,
+	GatewayLanguageModelGoogleGemini35FlashLiteBatch,
 	GatewayLanguageModelGoogleGemini36Flash,
+	GatewayLanguageModelGoogleGemini36FlashBatch,
 	GatewayLanguageModelGoogleGemini37Flash,
+	GatewayLanguageModelGoogleGemini37FlashBatch,
 	GatewayLanguageModelGoogleGemini38Flash,
+	GatewayLanguageModelGoogleGemini4Argon,
+	GatewayLanguageModelGoogleGeminiNanoBanana21,
 	GatewayLanguageModelGoogleGeminiOmniFlashPreview,
 	GatewayLanguageModelGoogleGemma426bA4bIt,
 	GatewayLanguageModelGoogleGemma431bIt,
 	GatewayLanguageModelInceptionMercury2,
 	GatewayLanguageModelInceptionMercury25,
+	GatewayLanguageModelInceptionMercury3,
 	GatewayLanguageModelInceptionMercuryCoderSmall,
 	GatewayLanguageModelInclusionaiLing30Flash,
 	GatewayLanguageModelInclusionaiLing30FlashFin,
 	GatewayLanguageModelInclusionaiLing30FlashSante,
-	GatewayLanguageModelInclusionaiLing30FlashSanteFree,
 	GatewayLanguageModelInclusionaiLing30FlashVl,
 	GatewayLanguageModelInclusionaiLing31Flash,
-	GatewayLanguageModelInclusionaiLing31FlashFree,
 	GatewayLanguageModelInferenceNetSchematronV2Small,
 	GatewayLanguageModelInferenceNetSchematronV2Turbo,
 	GatewayLanguageModelInterfazeInterfazeBeta,
+	GatewayLanguageModelLiquidLfm2524bA2b,
 	GatewayLanguageModelMeituanLongcat25Preview,
 	GatewayLanguageModelMetaLlama3170b,
 	GatewayLanguageModelMetaLlama318b,
@@ -583,6 +681,8 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelMetaMuseSpark12Contributor,
 	GatewayLanguageModelMetaMuseSpark13,
 	GatewayLanguageModelMetaMuseSpark13Contributor,
+	GatewayLanguageModelMetaMuseSparkOpen,
+	GatewayLanguageModelMetaMuseWonder10,
 	GatewayLanguageModelMinimaxMinimaxM2,
 	GatewayLanguageModelMinimaxMinimaxM21,
 	GatewayLanguageModelMinimaxMinimaxM21Lightning,
@@ -591,83 +691,106 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelMinimaxMinimaxM27,
 	GatewayLanguageModelMinimaxMinimaxM27Highspeed,
 	GatewayLanguageModelMinimaxMinimaxM3,
+	GatewayLanguageModelMinimaxMinimaxM31Flash,
 	GatewayLanguageModelMistralCodestral,
 	GatewayLanguageModelMistralMinistral14b,
 	GatewayLanguageModelMistralMinistral3b,
 	GatewayLanguageModelMistralMinistral8b,
 	GatewayLanguageModelMistralMistralLarge3,
+	GatewayLanguageModelMistralMistralLarge4,
 	GatewayLanguageModelMistralMistralMedium35,
 	GatewayLanguageModelMistralMistralNemo,
 	GatewayLanguageModelMistralMistralSmall,
 	GatewayLanguageModelMixedbreadToast1,
 	GatewayLanguageModelMoonshotaiKimiK2,
-	GatewayLanguageModelMoonshotaiKimiK2Thinking,
 	GatewayLanguageModelMoonshotaiKimiK25,
 	GatewayLanguageModelMoonshotaiKimiK26,
 	GatewayLanguageModelMoonshotaiKimiK27Code,
 	GatewayLanguageModelMoonshotaiKimiK27CodeHighspeed,
 	GatewayLanguageModelMoonshotaiKimiK3,
 	GatewayLanguageModelMoonshotaiKimiK3Fast,
+	GatewayLanguageModelMoonshotaiKimiK31Pro,
+	GatewayLanguageModelMoonshotaiKimiK31ProHighspeed,
 	GatewayLanguageModelMorphMorphV3Fast,
 	GatewayLanguageModelMorphMorphV3Large,
 	GatewayLanguageModelNvidiaNemotron3Nano30bA3b,
 	GatewayLanguageModelNvidiaNemotron3Super120bA12b,
 	GatewayLanguageModelNvidiaNemotron3Ultra550bA55b,
 	GatewayLanguageModelNvidiaNemotron35Lightning,
+	GatewayLanguageModelNvidiaNemotron35LightningFree,
+	GatewayLanguageModelNvidiaNemotron35SuperVl,
 	GatewayLanguageModelNvidiaNemotronNano12bV2Vl,
 	GatewayLanguageModelNvidiaNemotronNano9bV2,
-	GatewayLanguageModelOpenaiGpt35Turbo,
-	GatewayLanguageModelOpenaiGpt4Turbo,
 	GatewayLanguageModelOpenaiGpt41,
+	GatewayLanguageModelOpenaiGpt41Batch,
 	GatewayLanguageModelOpenaiGpt41Fast,
 	GatewayLanguageModelOpenaiGpt41Mini,
+	GatewayLanguageModelOpenaiGpt41MiniBatch,
 	GatewayLanguageModelOpenaiGpt41MiniFast,
 	GatewayLanguageModelOpenaiGpt41Nano,
-	GatewayLanguageModelOpenaiGpt41NanoFast,
 	GatewayLanguageModelOpenaiGpt4o,
+	GatewayLanguageModelOpenaiGpt4oBatch,
 	GatewayLanguageModelOpenaiGpt4oFast,
 	GatewayLanguageModelOpenaiGpt4oMini,
+	GatewayLanguageModelOpenaiGpt4oMiniBatch,
 	GatewayLanguageModelOpenaiGpt4oMiniFast,
 	GatewayLanguageModelOpenaiGpt5,
+	GatewayLanguageModelOpenaiGpt5Batch,
 	GatewayLanguageModelOpenaiGpt5Codex,
 	GatewayLanguageModelOpenaiGpt5Fast,
 	GatewayLanguageModelOpenaiGpt5Mini,
+	GatewayLanguageModelOpenaiGpt5MiniBatch,
 	GatewayLanguageModelOpenaiGpt5MiniFast,
 	GatewayLanguageModelOpenaiGpt5Nano,
+	GatewayLanguageModelOpenaiGpt5NanoBatch,
 	GatewayLanguageModelOpenaiGpt5Pro,
+	GatewayLanguageModelOpenaiGpt5ProBatch,
 	GatewayLanguageModelOpenaiGpt51Codex,
 	GatewayLanguageModelOpenaiGpt51CodexMax,
 	GatewayLanguageModelOpenaiGpt51CodexMini,
 	GatewayLanguageModelOpenaiGpt51Thinking,
 	GatewayLanguageModelOpenaiGpt51ThinkingFast,
 	GatewayLanguageModelOpenaiGpt52,
+	GatewayLanguageModelOpenaiGpt52Batch,
 	GatewayLanguageModelOpenaiGpt52Codex,
 	GatewayLanguageModelOpenaiGpt52Fast,
 	GatewayLanguageModelOpenaiGpt52Pro,
 	GatewayLanguageModelOpenaiGpt53Codex,
 	GatewayLanguageModelOpenaiGpt53CodexFast,
 	GatewayLanguageModelOpenaiGpt54,
+	GatewayLanguageModelOpenaiGpt54Batch,
 	GatewayLanguageModelOpenaiGpt54Fast,
 	GatewayLanguageModelOpenaiGpt54Mini,
+	GatewayLanguageModelOpenaiGpt54MiniBatch,
 	GatewayLanguageModelOpenaiGpt54MiniFast,
 	GatewayLanguageModelOpenaiGpt54Nano,
+	GatewayLanguageModelOpenaiGpt54NanoBatch,
 	GatewayLanguageModelOpenaiGpt54Pro,
 	GatewayLanguageModelOpenaiGpt55,
+	GatewayLanguageModelOpenaiGpt55Batch,
 	GatewayLanguageModelOpenaiGpt55Fast,
 	GatewayLanguageModelOpenaiGpt55Pro,
+	GatewayLanguageModelOpenaiGpt55ProBatch,
 	GatewayLanguageModelOpenaiGpt56Luna,
+	GatewayLanguageModelOpenaiGpt56LunaBatch,
 	GatewayLanguageModelOpenaiGpt56LunaFast,
 	GatewayLanguageModelOpenaiGpt56Sol,
+	GatewayLanguageModelOpenaiGpt56SolBatch,
 	GatewayLanguageModelOpenaiGpt56SolFast,
 	GatewayLanguageModelOpenaiGpt56Terra,
+	GatewayLanguageModelOpenaiGpt56TerraBatch,
 	GatewayLanguageModelOpenaiGpt56TerraFast,
 	GatewayLanguageModelOpenaiGpt6Astra,
+	GatewayLanguageModelOpenaiGpt6AstraBatch,
 	GatewayLanguageModelOpenaiGpt6AstraFast,
 	GatewayLanguageModelOpenaiGpt6Luna,
+	GatewayLanguageModelOpenaiGpt6LunaBatch,
 	GatewayLanguageModelOpenaiGpt6LunaFast,
 	GatewayLanguageModelOpenaiGpt6Sol,
+	GatewayLanguageModelOpenaiGpt6SolBatch,
 	GatewayLanguageModelOpenaiGpt6SolFast,
 	GatewayLanguageModelOpenaiGpt61Sol,
+	GatewayLanguageModelOpenaiGpt61SolBatch,
 	GatewayLanguageModelOpenaiGpt61SolFast,
 	GatewayLanguageModelOpenaiGptOss120b,
 	GatewayLanguageModelOpenaiGptOss20b,
@@ -679,30 +802,35 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelOpenaiO3Mini,
 	GatewayLanguageModelOpenaiO3Pro,
 	GatewayLanguageModelOpenaiO4Mini,
-	GatewayLanguageModelOpenaiO4MiniFast,
 	GatewayLanguageModelPerplexitySonar,
 	GatewayLanguageModelPoolsideLagunaS21,
 	GatewayLanguageModelPoolsideLagunaS21Free,
 	GatewayLanguageModelQuiveraiArrow2,
 	GatewayLanguageModelQuiveraiArrow2Telos,
+	GatewayLanguageModelReflectionBeam,
+	GatewayLanguageModelReflectionBeamFree,
 	GatewayLanguageModelSakanaFuguMax,
 	GatewayLanguageModelSakanaFuguUltra,
 	GatewayLanguageModelSakanaFuguUltraV2,
 	GatewayLanguageModelSakanaNamazu,
-	GatewayLanguageModelSpacexaiGrok41FastNonReasoning,
-	GatewayLanguageModelSpacexaiGrok41FastReasoning,
+	GatewayLanguageModelScaledownScaledownExtract1,
+	GatewayLanguageModelScaledownScaledownSummarize1,
 	GatewayLanguageModelSpacexaiGrok420MultiAgent,
+	GatewayLanguageModelSpacexaiGrok420MultiAgentBatch,
 	GatewayLanguageModelSpacexaiGrok420MultiAgentBeta,
 	GatewayLanguageModelSpacexaiGrok420NonReasoning,
+	GatewayLanguageModelSpacexaiGrok420NonReasoningBatch,
 	GatewayLanguageModelSpacexaiGrok420NonReasoningBeta,
 	GatewayLanguageModelSpacexaiGrok420Reasoning,
+	GatewayLanguageModelSpacexaiGrok420ReasoningBatch,
 	GatewayLanguageModelSpacexaiGrok420ReasoningBeta,
 	GatewayLanguageModelSpacexaiGrok43,
+	GatewayLanguageModelSpacexaiGrok43Batch,
 	GatewayLanguageModelSpacexaiGrok45,
 	GatewayLanguageModelSpacexaiGrok46,
 	GatewayLanguageModelSpacexaiGrok47,
 	GatewayLanguageModelSpacexaiGrokBuild01,
-	GatewayLanguageModelStepfunStep35Flash,
+	GatewayLanguageModelStealthGlyphCluster,
 	GatewayLanguageModelStepfunStep37Flash,
 	GatewayLanguageModelStepfunStep5Preview,
 	GatewayLanguageModelTencentHyMt2Lite,
@@ -743,6 +871,8 @@ var GatewayEmbeddingModelIDs = []GatewayEmbeddingModelID{
 	GatewayEmbeddingModelAlibabaQwen3Embedding8b,
 	GatewayEmbeddingModelAmazonTitanEmbedTextV2,
 	GatewayEmbeddingModelCohereEmbedV40,
+	GatewayEmbeddingModelCohereEmbedV50Fast,
+	GatewayEmbeddingModelCohereEmbedV50Pro,
 	GatewayEmbeddingModelGoogleGeminiEmbedding001,
 	GatewayEmbeddingModelGoogleGeminiEmbedding2,
 	GatewayEmbeddingModelGoogleTextEmbedding005,
@@ -773,6 +903,8 @@ var GatewayImageModelIDs = []GatewayImageModelID{
 	GatewayImageModelBflFlux2Klein9b,
 	GatewayImageModelBflFlux2Max,
 	GatewayImageModelBflFlux2Pro,
+	GatewayImageModelBflFlux3Image,
+	GatewayImageModelBflFlux3ImageKlein,
 	GatewayImageModelBflFluxKontextMax,
 	GatewayImageModelBflFluxKontextPro,
 	GatewayImageModelBflFluxPro10Fill,
@@ -783,14 +915,14 @@ var GatewayImageModelIDs = []GatewayImageModelID{
 	GatewayImageModelBytedanceSeedream50Lite,
 	GatewayImageModelBytedanceSeedream50Pro,
 	GatewayImageModelMetaMuseImage10,
-	GatewayImageModelOpenaiGptImage1,
+	GatewayImageModelMicrosoftMaiImage26,
+	GatewayImageModelMicrosoftMaiImage26Flash,
 	GatewayImageModelOpenaiGptImage1Mini,
 	GatewayImageModelOpenaiGptImage15,
 	GatewayImageModelOpenaiGptImage2,
 	GatewayImageModelOpenaiGptImage25Flare,
 	GatewayImageModelOpenaiGptImage25Sunburst,
 	GatewayImageModelProdiaFluxFastSchnell,
-	GatewayImageModelQuiveraiArrow11,
 	GatewayImageModelRecraftRecraftV2,
 	GatewayImageModelRecraftRecraftV3,
 	GatewayImageModelRecraftRecraftV4,
@@ -802,6 +934,7 @@ var GatewayImageModelIDs = []GatewayImageModelID{
 	GatewayImageModelRecraftRecraftV41UtilityPro,
 	GatewayImageModelSpacexaiGrokImagineImage,
 	GatewayImageModelSpacexaiGrokImagineImage20,
+	GatewayImageModelTopazWonder35,
 }
 
 // GatewayVideoModelIDs lists the suggested gateway video model IDs from gateway-video-model-settings.ts.
@@ -829,6 +962,7 @@ var GatewayVideoModelIDs = []GatewayVideoModelID{
 	GatewayVideoModelGoogleVeo31FastGenerate001,
 	GatewayVideoModelGoogleVeo31Generate001,
 	GatewayVideoModelGoogleVeo31LiteGenerate001,
+	GatewayVideoModelHeygenHeygenVideo1,
 	GatewayVideoModelKlingaiKlingV25TurboI2v,
 	GatewayVideoModelKlingaiKlingV25TurboT2v,
 	GatewayVideoModelKlingaiKlingV26I2v,
@@ -841,6 +975,9 @@ var GatewayVideoModelIDs = []GatewayVideoModelID{
 	GatewayVideoModelMinimaxMinimaxH3Max,
 	GatewayVideoModelSpacexaiGrokImagineVideo,
 	GatewayVideoModelSpacexaiGrokImagineVideo15,
+	GatewayVideoModelSpacexaiGrokImagineVideo15Lite,
+	GatewayVideoModelTopazProteus,
+	GatewayVideoModelTopazStarlightPrecise26,
 }
 
 // GatewayRerankingModelIDs lists the suggested gateway reranking model IDs from gateway-reranking-model-settings.ts.
@@ -848,6 +985,8 @@ var GatewayRerankingModelIDs = []GatewayRerankingModelID{
 	GatewayRerankingModelCohereRerankV35,
 	GatewayRerankingModelCohereRerankV4Fast,
 	GatewayRerankingModelCohereRerankV4Pro,
+	GatewayRerankingModelCohereRerankV5Fast,
+	GatewayRerankingModelCohereRerankV5Pro,
 	GatewayRerankingModelVoyageRerank25,
 	GatewayRerankingModelVoyageRerank25Lite,
 	GatewayRerankingModelVoyageRerank3,
@@ -856,6 +995,7 @@ var GatewayRerankingModelIDs = []GatewayRerankingModelID{
 
 // GatewaySpeechModelIDs lists the suggested gateway speech model IDs from gateway-speech-model-settings.ts.
 var GatewaySpeechModelIDs = []GatewaySpeechModelID{
+	GatewaySpeechModelFishAudioDrama3,
 	GatewaySpeechModelFishAudioS1,
 	GatewaySpeechModelFishAudioS2Pro,
 	GatewaySpeechModelFishAudioS21Pro,
@@ -865,6 +1005,7 @@ var GatewaySpeechModelIDs = []GatewaySpeechModelID{
 	GatewaySpeechModelMicrosoftMaiVoice2Flash,
 	GatewaySpeechModelMicrosoftMaiVoice21,
 	GatewaySpeechModelMicrosoftMaiVoice21Flash,
+	GatewaySpeechModelMistralVoxtralMiniTts3,
 	GatewaySpeechModelOpenaiTts1,
 	GatewaySpeechModelOpenaiTts1Hd,
 	GatewaySpeechModelSpacexaiGrokTts,
@@ -875,9 +1016,10 @@ var GatewayTranscriptionModelIDs = []GatewayTranscriptionModelID{
 	GatewayTranscriptionModelFishAudioTranscribe1,
 	GatewayTranscriptionModelGoogleGemini35Transcribe,
 	GatewayTranscriptionModelGoogleGemini35TranscribeLive,
-	GatewayTranscriptionModelMicrosoftMaiTranscribe15,
 	GatewayTranscriptionModelMicrosoftMaiTranscribe2,
 	GatewayTranscriptionModelMicrosoftMaiTranscribe2Streaming,
+	GatewayTranscriptionModelMistralVoxtralMiniTranscribe3,
+	GatewayTranscriptionModelMistralVoxtralSmallTranscribe3,
 	GatewayTranscriptionModelOpenaiGpt4oMiniTranscribe,
 	GatewayTranscriptionModelOpenaiGpt4oTranscribe,
 	GatewayTranscriptionModelOpenaiGptRealtimeWhisper,
@@ -894,12 +1036,24 @@ var GatewayRealtimeModelIDs = []GatewayRealtimeModelID{
 	GatewayRealtimeModelOpenaiGptRealtime2,
 	GatewayRealtimeModelOpenaiGptRealtime21,
 	GatewayRealtimeModelOpenaiGptRealtimeMini,
-	GatewayRealtimeModelSpacexaiGrokVoiceThinkFast10,
+	GatewayRealtimeModelSpacexaiGrokVoice30,
 	GatewayRealtimeModelSpacexaiGrokVoiceThinkFast20,
 }
 
-// GatewayEvaluationModelIDs lists the suggested gateway evaluation model IDs from gateway-evaluation-model-settings.ts.
-var GatewayEvaluationModelIDs = []GatewayEvaluationModelID{
-	GatewayEvaluationModelLiquidD1,
-	GatewayEvaluationModelTypesafeAiJev,
+// GatewayDecisionModelIDs lists the suggested gateway decision model IDs from gateway-decision-model-settings.ts.
+var GatewayDecisionModelIDs = []GatewayDecisionModelID{
+	GatewayDecisionModelBasetenElephant1,
+	GatewayDecisionModelBasetenMammoth1,
+	GatewayDecisionModelConvaiinnovationsLaya,
+	GatewayDecisionModelConvaiinnovationsLayaFree,
+	GatewayDecisionModelLiquidD1,
+	GatewayDecisionModelLiquidD1Ultra,
+	GatewayDecisionModelMicrosoftMicrosoftDecision1,
+	GatewayDecisionModelOpenaiGpt6LunaDecisions,
+	GatewayDecisionModelPerplexityPplxDeciderFlashV12,
+	GatewayDecisionModelPerplexityPplxDeciderV12,
+	GatewayDecisionModelScaledownScaledownClassify1,
+	GatewayDecisionModelTypesafeAiJev,
+	GatewayDecisionModelTypesafeAiJev1130,
+	GatewayDecisionModelTypesafeAiJev1140,
 }

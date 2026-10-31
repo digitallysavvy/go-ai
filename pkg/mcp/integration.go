@@ -1,11 +1,15 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
@@ -36,7 +40,7 @@ func NewMCPToolConverter(client *MCPClient) *MCPToolConverter {
 func (c *MCPToolConverter) ConvertToGoAITools(ctx context.Context) ([]types.Tool, error) {
 	mcpTools, err := c.client.ListAllTools(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list MCP tools: %w", err)
+		return nil, err
 	}
 
 	return c.ToolsFromDefinitions(mcpTools, nil)
@@ -50,7 +54,7 @@ func (c *MCPToolConverter) ConvertToGoAITools(ctx context.Context) ([]types.Tool
 func (c *MCPToolConverter) ConvertToGoAIToolsWithSchemas(ctx context.Context, schemas map[string]MCPToolSchema) ([]types.Tool, error) {
 	mcpTools, err := c.client.ListAllTools(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list MCP tools: %w", err)
+		return nil, err
 	}
 	return c.ToolsFromDefinitions(mcpTools, schemas)
 }
@@ -59,6 +63,13 @@ func (c *MCPToolConverter) ConvertToGoAIToolsWithSchemas(ctx context.Context, sc
 // TypeScript toolsFromDefinitions. Passing nil schemas uses automatic schema
 // discovery; a non-nil schemas map filters to own matching tool names.
 func (c *MCPToolConverter) ToolsFromDefinitions(mcpTools []MCPTool, schemas map[string]MCPToolSchema) ([]types.Tool, error) {
+	// TS toolsFromDefinitions runs prepareToolDefinitions, so definitions
+	// fetched earlier (e.g. cached via GetSerializableTools) still register
+	// their x-mcp-header bindings and drop tools with invalid annotations.
+	prepared := ListToolsResult{Tools: append([]MCPTool(nil), mcpTools...)}
+	c.client.prepareToolDefinitions(&prepared, false)
+	mcpTools = prepared.Tools
+
 	goaiTools := make([]types.Tool, 0, len(mcpTools))
 	for _, mcpTool := range mcpTools {
 		var toolSchema *MCPToolSchema
@@ -101,7 +112,7 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool, toolSchema *MCPToolSchem
 		mcpMetadata["app"] = app
 	}
 	providerMetadata := map[string]interface{}{"mcp": mcpMetadata}
-	parameters := interface{}(normalizeAutomaticMCPInputSchema(mcpTool.InputSchema))
+	parameters, parameterKeyOrder := automaticMCPParameters(mcpTool)
 	var outputSchema schema.Schema
 	toolType := types.ToolTypeDynamic
 	if toolSchema != nil {
@@ -112,6 +123,7 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool, toolSchema *MCPToolSchem
 				return types.Tool{}, err
 			}
 			parameters = normalizedInputSchema
+			parameterKeyOrder = nil
 		}
 		var err error
 		outputSchema, err = normalizeMCPOutputSchema(toolSchema.OutputSchema)
@@ -121,21 +133,24 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool, toolSchema *MCPToolSchem
 	}
 
 	return types.Tool{
-		Name:             mcpTool.Name,
-		Description:      mcpTool.Description,
-		Title:            resolvedTitle,
-		Parameters:       parameters,
-		OutputSchema:     outputSchema,
-		ProviderName:     "mcp",
-		ProviderMetadata: providerMetadata,
-		Metadata:         mcpMetadata,
-		Meta:             copyMap(mcpTool.Meta),
-		Type:             toolType,
+		Name:              mcpTool.Name,
+		Description:       mcpTool.Description,
+		Title:             resolvedTitle,
+		Parameters:        parameters,
+		ParameterKeyOrder: parameterKeyOrder,
+		OutputSchema:      outputSchema,
+		ProviderName:      "mcp",
+		ProviderMetadata:  providerMetadata,
+		Metadata:          mcpMetadata,
+		Meta:              copyMap(mcpTool.Meta),
+		Type:              toolType,
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
-			// Call MCP tool
+			// Call MCP tool. TS execute lets the callTool error propagate
+			// unchanged, so the tool-error text the model sees is the
+			// MCPClientError message itself (no Go-only prefix).
 			result, err := c.client.CallTool(ctx, mcpTool.Name, input)
 			if err != nil {
-				return nil, fmt.Errorf("MCP tool execution failed: %w", err)
+				return nil, err
 			}
 			if outputSchema != nil && !result.IsError {
 				return extractMCPStructuredOutput(*result, outputSchema, mcpTool.Name)
@@ -183,6 +198,32 @@ func extractMCPToolAnnotations(annotations map[string]interface{}) map[string]in
 		}
 	}
 	return out
+}
+
+// automaticMCPParameters is the tool's Parameters for a tool converted with no
+// explicit schema: the server's inputSchema, normalized, as a plain map. The
+// second result is the key order the server sent, for Tool.ParameterKeyOrder,
+// as TS spreads the JS object
+// `{...inputSchema, properties: inputSchema.properties ?? {},
+// additionalProperties: false}`: the server's keys in order, then
+// `properties` and `additionalProperties` if the server did not send them.
+func automaticMCPParameters(mcpTool MCPTool) (map[string]interface{}, interface{}) {
+	normalized := normalizeAutomaticMCPInputSchema(mcpTool.InputSchema)
+	hint, ok := mcpTool.inputSchemaHint.(*jsonorder.Object)
+	if !ok {
+		return normalized, nil
+	}
+	ordered := jsonorder.New()
+	for _, k := range hint.Keys() {
+		v, _ := hint.Get(k)
+		ordered.Set(k, v)
+	}
+	for _, k := range []string{"properties", "additionalProperties"} {
+		if _, has := ordered.Get(k); !has {
+			ordered.Set(k, nil)
+		}
+	}
+	return normalized, ordered
 }
 
 func normalizeAutomaticMCPInputSchema(input map[string]interface{}) map[string]interface{} {
@@ -244,34 +285,54 @@ func extractMCPStructuredOutput(result CallToolResult, outputSchema schema.Schem
 	if result.StructuredContent != nil {
 		defaulted := schema.ApplyDefaults(result.StructuredContent, outputSchema)
 		if err := outputSchema.Validator().Validate(defaulted); err != nil {
-			return nil, NewMCPClientError(0, fmt.Sprintf("Tool %q returned structuredContent that does not match the expected outputSchema", toolName), err.Error())
+			return nil, &MCPClientError{Message: "Tool \"" + toolName + "\" returned structuredContent that does not match the expected outputSchema", Cause: err}
 		}
 		return defaulted, nil
 	}
+	// TS uses the first text part (content.find); one without a text field
+	// falls through to the error below.
 	for _, part := range result.Content {
-		if part.Type != "text" || !part.hasTextField() {
+		if part.Type != "text" {
 			continue
+		}
+		if !part.hasTextField() {
+			break
 		}
 		var parsed interface{}
 		if err := json.Unmarshal([]byte(part.Text), &parsed); err != nil {
-			return nil, NewMCPClientError(0, fmt.Sprintf("Tool %q returned content that does not match the expected outputSchema", toolName), err.Error())
+			return nil, &MCPClientError{Message: "Tool \"" + toolName + "\" returned content that does not match the expected outputSchema", Cause: err}
 		}
 		defaulted := schema.ApplyDefaults(parsed, outputSchema)
 		if err := outputSchema.Validator().Validate(defaulted); err != nil {
-			return nil, NewMCPClientError(0, fmt.Sprintf("Tool %q returned content that does not match the expected outputSchema", toolName), err.Error())
+			return nil, &MCPClientError{Message: "Tool \"" + toolName + "\" returned content that does not match the expected outputSchema", Cause: err}
 		}
 		return defaulted, nil
 	}
-	return nil, NewMCPClientError(0, fmt.Sprintf("Tool %q did not return structuredContent or parseable text content", toolName), nil)
+	return nil, NewMCPClientError(0, "Tool \""+toolName+"\" did not return structuredContent or parseable text content", nil)
 }
 
 // convertToModelOutput converts a tool result to model-readable output
+//
+// Primitive and nullish outputs (for example from an outputSchema or an
+// application wrapper that serializes the result) are handled before the
+// MCP envelope check: a string is text, anything else without MCP content is
+// JSON, with nil staying a JSON null (TS #23935).
 func (c *MCPToolConverter) convertToModelOutput(result interface{}) types.ToolResultOutput {
+	if text, ok := result.(string); ok {
+		return types.ToolResultOutput{Type: types.ToolResultOutputText, Value: text}
+	}
 	mcpResult, ok := result.(CallToolResult)
 	if !ok {
 		if ptr, ptrOK := result.(*CallToolResult); ptrOK && ptr != nil {
 			mcpResult = *ptr
 			ok = true
+		}
+	}
+	if !ok {
+		// TS converts any object with a content array, not only a typed
+		// CallToolResult (for example a map from an application wrapper).
+		if blocks, isContent := genericMCPContentBlocks(result); isContent {
+			return types.ToolResultOutput{Type: types.ToolResultOutputContent, Content: blocks}
 		}
 	}
 	if !ok || mcpResult.Content == nil {
@@ -305,8 +366,86 @@ func convertMCPContentToModelOutputBlock(part ToolResultContent) types.ToolResul
 	return types.TextContentBlock{Text: marshalMCPContentForModelOutput(part)}
 }
 
+// genericMCPContentBlocks mirrors the TS duck-typed check
+// `'content' in output && Array.isArray(output.content)` for values that are
+// not a typed CallToolResult: maps and structs (or pointers to them) whose
+// JSON form is an object with a "content" array. Each part is converted with
+// the same rules as typed content; unknown parts keep their JSON text.
+func genericMCPContentBlocks(result interface{}) ([]types.ToolResultContentBlock, bool) {
+	rv := reflect.ValueOf(result)
+	for rv.IsValid() && rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return nil, false
+		}
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() || (rv.Kind() != reflect.Map && rv.Kind() != reflect.Struct) {
+		return nil, false
+	}
+	data, err := jsonstr.Marshal(result)
+	if err != nil {
+		return nil, false
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		return nil, false
+	}
+	var parts []json.RawMessage
+	rawContent, has := top["content"]
+	if !has || len(bytes.TrimSpace(rawContent)) == 0 || bytes.TrimSpace(rawContent)[0] != '[' {
+		return nil, false
+	}
+	if err := json.Unmarshal(rawContent, &parts); err != nil {
+		return nil, false
+	}
+	blocks := make([]types.ToolResultContentBlock, 0, len(parts))
+	for _, raw := range parts {
+		blocks = append(blocks, convertGenericMCPContentPart(raw))
+	}
+	return blocks, true
+}
+
+func convertGenericMCPContentPart(raw json.RawMessage) types.ToolResultContentBlock {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err == nil && fields != nil {
+		var partType string
+		_ = json.Unmarshal(fields["type"], &partType)
+		if text, has := fields["text"]; has && partType == "text" {
+			return types.TextContentBlock{Text: rawJSONStringValue(text)}
+		}
+		data, hasData := fields["data"]
+		mime, hasMime := fields["mimeType"]
+		if partType == "image" && hasData && hasMime {
+			mediaType := rawJSONStringValue(mime)
+			return types.FileContentBlock{
+				FileData:  types.FileData{Type: types.FileDataTypeData, DataString: rawJSONStringValue(data), MediaType: mediaType},
+				MediaType: mediaType,
+			}
+		}
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil {
+		return types.TextContentBlock{Text: string(raw)}
+	}
+	return types.TextContentBlock{Text: compact.String()}
+}
+
+// rawJSONStringValue returns a JSON string's value, or the compact JSON text
+// of any other value (TS casts with `as string` and passes it through).
+func rawJSONStringValue(raw json.RawMessage) string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil {
+		return string(raw)
+	}
+	return compact.String()
+}
+
 func marshalMCPContentForModelOutput(part ToolResultContent) string {
-	data, err := json.Marshal(part)
+	data, err := jsonstr.Marshal(part)
 	if err != nil {
 		return "{}"
 	}
@@ -355,10 +494,9 @@ func CreateStdioMCPClient(command string, args []string) (*MCPClient, error) {
 	})
 
 	config := MCPClientConfig{
-		ClientName:       "go-ai-mcp-client",
-		ClientVersion:    "1.0.0",
-		RequestTimeoutMS: 30000,
-		EnableLogging:    false,
+		ClientName:    "go-ai-mcp-client",
+		ClientVersion: "1.0.0",
+		EnableLogging: false,
 	}
 
 	return CreateMCPClient(config, transport)
@@ -394,10 +532,9 @@ func CreateHTTPMCPClient(url string, oauth *OAuthConfig) (*MCPClient, error) {
 	})
 
 	config := MCPClientConfig{
-		ClientName:       "go-ai-mcp-client",
-		ClientVersion:    "1.0.0",
-		RequestTimeoutMS: 30000,
-		EnableLogging:    false,
+		ClientName:    "go-ai-mcp-client",
+		ClientVersion: "1.0.0",
+		EnableLogging: false,
 	}
 
 	return CreateMCPClient(config, transport)
@@ -425,10 +562,9 @@ func CreateSSEMCPClient(url string, oauth *OAuthConfig) (*MCPClient, error) {
 	})
 
 	config := MCPClientConfig{
-		ClientName:       "go-ai-mcp-client",
-		ClientVersion:    "1.0.0",
-		RequestTimeoutMS: 30000,
-		EnableLogging:    false,
+		ClientName:    "go-ai-mcp-client",
+		ClientVersion: "1.0.0",
+		EnableLogging: false,
 	}
 
 	return CreateMCPClient(config, transport)

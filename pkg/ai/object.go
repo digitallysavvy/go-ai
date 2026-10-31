@@ -13,7 +13,9 @@ import (
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
 	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/version"
@@ -134,6 +136,21 @@ func cloneSchemaValue(value interface{}) interface{} {
 }
 
 func doGenerateWithRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries int) (*types.GenerateResult, error) {
+	result, err := doGenerateWithRetryRaw(ctx, model, opts, maxRetries)
+	if err == nil && result == nil {
+		// TS reads the model response right after doGenerate, so a model
+		// that resolves without a result fails the call instead of crashing
+		// it.
+		return nil, fmt.Errorf("language model %s/%s returned no result", model.Provider(), model.ModelID())
+	}
+	normalizeGenerateResultText(result)
+	if result != nil {
+		result.Usage = completeUsageTotal(result.Usage)
+	}
+	return result, err
+}
+
+func doGenerateWithRetryRaw(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries int) (*types.GenerateResult, error) {
 	if maxRetries <= 0 {
 		return model.DoGenerate(ctx, opts)
 	}
@@ -142,7 +159,6 @@ func doGenerateWithRetry(ctx context.Context, model provider.LanguageModel, opts
 	err := retryutil.Do(ctx, retryutil.Config{
 		MaxRetries:   maxRetries,
 		InitialDelay: 2 * time.Second,
-		MaxDelay:     60 * time.Second,
 		Multiplier:   2,
 		Jitter:       false,
 		ShouldRetry:  isGatewayCallRetryable,
@@ -154,6 +170,8 @@ func doGenerateWithRetry(ctx context.Context, model provider.LanguageModel, opts
 	return result, err
 }
 
+// doStreamWithRetry opens the model stream; StreamObject reports a nil
+// stream as "stream is nil" (v0.5.2 text).
 func doStreamWithRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries int) (provider.TextStream, error) {
 	if maxRetries <= 0 {
 		return model.DoStream(ctx, opts)
@@ -163,7 +181,6 @@ func doStreamWithRetry(ctx context.Context, model provider.LanguageModel, opts *
 	err := retryutil.Do(ctx, retryutil.Config{
 		MaxRetries:   maxRetries,
 		InitialDelay: 2 * time.Second,
-		MaxDelay:     60 * time.Second,
 		Multiplier:   2,
 		Jitter:       false,
 		ShouldRetry:  isGatewayCallRetryable,
@@ -175,41 +192,61 @@ func doStreamWithRetry(ctx context.Context, model provider.LanguageModel, opts *
 	return stream, err
 }
 
-func normalizeObjectMaxRetries(maxRetries int) (int, error) {
-	if maxRetries < 0 {
-		return 0, fmt.Errorf("maxRetries must be >= 0")
+// normalizeObjectMaxRetries mirrors TS prepareRetries: nil selects the
+// default of 2, 0 disables retries, and a negative value is rejected.
+func normalizeObjectMaxRetries(maxRetries *int) (int, error) {
+	if err := validateMaxRetries(maxRetries); err != nil {
+		return 0, err
 	}
-	if maxRetries == 0 {
+	if maxRetries == nil {
 		return defaultObjectMaxRetries, nil
 	}
-	return maxRetries, nil
+	return *maxRetries, nil
 }
 
 func responseMetadataFromGenerateResult(model provider.LanguageModel, result *types.GenerateResult) *types.ResponseMetadata {
-	return responseMetadataFromGenerateResultWithID(model, result, newCallID)
+	return responseMetadataFromGenerateResultWithID(model, result, newObjectID)
 }
 
 func responseMetadataFromGenerateResultWithID(model provider.LanguageModel, result *types.GenerateResult, generateID IDGenerator) *types.ResponseMetadata {
 	if result == nil {
 		return nil
 	}
-	if result.ResponseMetadata != nil {
-		return result.ResponseMetadata
+	meta := result.ResponseMetadata
+	if meta != nil && meta.ID != "" && !meta.Timestamp.IsZero() && meta.ModelID != "" && (meta.Headers != nil || result.ResponseHeaders == nil) {
+		return meta
 	}
 	if generateID == nil {
-		generateID = newCallID
+		generateID = newTextID
 	}
-	result.ResponseMetadata = &types.ResponseMetadata{
-		ID:        generateID(),
-		Timestamp: time.Now(),
-		ModelID:   model.ModelID(),
-		Headers:   result.ResponseHeaders,
+	// TS responseData: each field the provider left out gets its default
+	// (id ?? generateId(), timestamp ?? new Date(), modelId ?? model.modelId).
+	// The provider's struct is copied, not modified.
+	filled := types.ResponseMetadata{Headers: result.ResponseHeaders}
+	if meta != nil {
+		filled = *meta
 	}
+	if filled.ID == "" {
+		filled.ID = generateID()
+	}
+	if filled.Timestamp.IsZero() {
+		filled.Timestamp = time.Now()
+	}
+	if filled.ModelID == "" {
+		filled.ModelID = model.ModelID()
+	}
+	if filled.Headers == nil {
+		// TS response.headers: a provider that reports its HTTP headers
+		// only in ResponseHeaders (e.g. gmicloud, zai) still has them on
+		// the step and result response.
+		filled.Headers = result.ResponseHeaders
+	}
+	result.ResponseMetadata = &filled
 	return result.ResponseMetadata
 }
 
 func generateStepResponseFromGenerateResult(model provider.LanguageModel, result *types.GenerateResult) GenerateStepResponse {
-	return generateStepResponseFromGenerateResultWithID(model, result, newCallID)
+	return generateStepResponseFromGenerateResultWithID(model, result, newObjectID)
 }
 
 func generateStepResponseFromGenerateResultWithID(model provider.LanguageModel, result *types.GenerateResult, generateID IDGenerator) GenerateStepResponse {
@@ -250,7 +287,8 @@ func parseObjectResult(result *types.GenerateResult, mode ObjectOutputMode, s sc
 		return nil, nil, "", newNoObjectGeneratedError("No object generated.", nil, "", model, nil)
 	}
 	if result.Text == "" {
-		return nil, nil, "", newNoObjectGeneratedError("No object generated: could not parse the response.", io.ErrUnexpectedEOF, "", model, result)
+		// TS safeParseJSON('') fails with a JSONParseError.
+		return nil, nil, "", newNoObjectGeneratedError("No object generated: could not parse the response.", providererrors.NewJSONParseError("", io.ErrUnexpectedEOF), "", model, result)
 	}
 	obj, arr, enumValue, err := parseStreamFinal(mode, s, enumValues, result.Text)
 	if err != nil {
@@ -260,6 +298,10 @@ func parseObjectResult(result *types.GenerateResult, mode ObjectOutputMode, s sc
 		switch {
 		case errors.As(err, &syntaxErr), errors.As(err, &unmarshalTypeErr), errors.Is(err, io.ErrUnexpectedEOF):
 			message = "No object generated: could not parse the response."
+			// TS: the cause (and the error repairText gets) is a
+			// JSONParseError; the parser error stays reachable through
+			// Unwrap.
+			err = providererrors.NewJSONParseError(result.Text, err)
 		}
 		return nil, nil, "", newNoObjectGeneratedError(message, err, result.Text, model, result)
 	}
@@ -277,10 +319,35 @@ func attemptRepair(
 	}
 	cause := parseErr
 	var noObjErr *NoObjectGeneratedError
-	if errors.As(parseErr, &noObjErr) && noObjErr.Cause != nil {
+	if errors.As(parseErr, &noObjErr) {
+		// TS only repairs a JSONParseError / TypeValidationError cause; a
+		// NoObjectGeneratedError without one (the model returned no text
+		// part at all) is rethrown as is.
+		if noObjErr.Cause == nil {
+			return nil, nil
+		}
 		cause = noObjErr.Cause
 	}
 	return repair(ctx, text, cause)
+}
+
+// objectOutputJSONSchema is TS outputStrategy.jsonSchema(), the schema the
+// onStart event and the telemetry ai.schema attribute carry: the schema for
+// object output, the wrapper the model is asked for in array and enum
+// output, and none for no-schema output.
+func objectOutputJSONSchema(mode ObjectOutputMode, s schema.Schema, enumValues []string) map[string]interface{} {
+	switch mode {
+	case ObjectModeArray, ObjectModeEnum:
+		format, err := buildStreamObjectResponseFormat(StreamObjectOptions{OutputMode: mode, Schema: s, EnumValues: enumValues})
+		if err != nil {
+			return nil
+		}
+		wrapped, _ := format.Schema.(map[string]interface{})
+		return wrapped
+	case ObjectModeNoSchema:
+		return nil
+	}
+	return schemaToMap(s)
 }
 
 func buildStreamObjectResponseFormat(opts StreamObjectOptions) (*provider.ResponseFormat, error) {
@@ -419,6 +486,16 @@ func parseStreamPartial(mode ObjectOutputMode, s schema.Schema, enumValues []str
 	}
 }
 
+// objectTypeValidationError builds the TS TypeValidationError carried as the
+// cause of NoObjectGeneratedError when the parsed value does not satisfy the
+// output strategy.
+func objectTypeValidationError(value interface{}, message string, cause error) error {
+	if cause == nil {
+		cause = errors.New(message)
+	}
+	return providererrors.NewValidationErrorWithContext(value, message, cause, &providererrors.ValidationContext{})
+}
+
 func parseStreamFinal(mode ObjectOutputMode, s schema.Schema, enumValues []string, text string) (interface{}, []interface{}, string, error) {
 	if text == "" {
 		return nil, nil, "", nil
@@ -432,50 +509,47 @@ func parseStreamFinal(mode ObjectOutputMode, s schema.Schema, enumValues []strin
 		}
 		obj = schema.ApplyDefaults(obj, s)
 		if err := s.Validator().Validate(obj); err != nil {
-			return nil, nil, "", err
+			return nil, nil, "", objectTypeValidationError(obj, err.Error(), err)
 		}
 		return obj, nil, "", nil
 	case ObjectModeArray:
-		var wrapper map[string]interface{}
-		if err := json.Unmarshal([]byte(text), &wrapper); err != nil {
+		var root interface{}
+		if err := json.Unmarshal([]byte(text), &root); err != nil {
 			return nil, nil, "", err
 		}
-		rawElements, ok := wrapper["elements"]
+		// Mirrors TS arrayOutputStrategy.validateFinalResult: the value must
+		// be an object holding an `elements` array.
+		wrapper, _ := root.(map[string]interface{})
+		arr, ok := wrapper["elements"].([]interface{})
 		if !ok {
-			return nil, nil, "", fmt.Errorf("missing 'elements' field")
-		}
-		arr, ok := rawElements.([]interface{})
-		if !ok {
-			return nil, nil, "", fmt.Errorf("'elements' is not an array")
+			return nil, nil, "", objectTypeValidationError(root, "value must be an object that contains an array of elements", nil)
 		}
 		resultArray := make([]interface{}, len(arr))
 		for i, element := range arr {
 			element = schema.ApplyDefaults(element, s)
 			if err := s.Validator().Validate(element); err != nil {
-				return nil, nil, "", fmt.Errorf("validation failed for element %d: %w", i, err)
+				return nil, nil, "", objectTypeValidationError(element, err.Error(), err)
 			}
 			resultArray[i] = element
 		}
 		return resultArray, resultArray, "", nil
 	case ObjectModeEnum:
-		var wrapper map[string]interface{}
-		if err := json.Unmarshal([]byte(text), &wrapper); err != nil {
+		var root interface{}
+		if err := json.Unmarshal([]byte(text), &root); err != nil {
 			return nil, nil, "", err
 		}
-		rawResult, ok := wrapper["result"]
+		// Mirrors TS enumOutputStrategy.validateFinalResult.
+		wrapper, _ := root.(map[string]interface{})
+		selected, ok := wrapper["result"].(string)
 		if !ok {
-			return nil, nil, "", fmt.Errorf("enum output missing 'result' field")
-		}
-		selected, ok := rawResult.(string)
-		if !ok {
-			return nil, nil, "", fmt.Errorf("enum output 'result' is not a string: %T", rawResult)
+			return nil, nil, "", objectTypeValidationError(root, `value must be an object that contains a string in the "result" property.`, nil)
 		}
 		for _, enumVal := range enumValues {
 			if selected == enumVal {
 				return selected, nil, selected, nil
 			}
 		}
-		return nil, nil, "", fmt.Errorf("invalid enum value: %q (expected one of %v)", selected, enumValues)
+		return nil, nil, "", objectTypeValidationError(root, "value must be a string in the enum", nil)
 	case ObjectModeNoSchema:
 		var obj interface{}
 		if err := json.Unmarshal([]byte(text), &obj); err != nil {
@@ -504,6 +578,24 @@ const (
 	ObjectModeNoSchema ObjectOutputMode = "no-schema"
 )
 
+// prepareObjectPrompt builds the prompt for an object call, downloads remote
+// files the model cannot read by URL (the same download and SupportedURLs
+// handling as GenerateText, TS convertToLanguageModelPrompt) and rejects tool
+// calls without results.
+func prepareObjectPrompt(ctx context.Context, promptText string, messages []types.Message, system string, allowSystem bool, model provider.LanguageModel, download DownloadFunction) (types.Prompt, error) {
+	if err := promptutils.ValidatePromptInput(promptText, messages); err != nil {
+		return types.Prompt{}, err
+	}
+	prompt, err := promptutils.NormalizePromptWithDownloadSupport(ctx, buildPrompt(promptText, messages, system), allowSystem, effectiveDownload(download), supportedURLChecker(model))
+	if err != nil {
+		return types.Prompt{}, err
+	}
+	if err := validateStepToolResults(prompt.Messages, nil); err != nil {
+		return types.Prompt{}, err
+	}
+	return prompt, nil
+}
+
 // GenerateObjectOptions contains options for structured object generation
 type GenerateObjectOptions struct {
 	// Model to use for generation
@@ -513,6 +605,24 @@ type GenerateObjectOptions struct {
 	Prompt   string
 	Messages []types.Message
 	System   string
+
+	// Instructions is a TypeScript-compatible alias for System.
+	// When set, Instructions takes precedence over System.
+	Instructions *string
+
+	// AllowSystemMessages permits system-role messages in Messages. Defaults
+	// to false, as in TS (allowSystemInMessages): use System or Instructions
+	// for system instructions.
+	AllowSystemMessages bool
+
+	// AllowSystemInMessages is a TypeScript-compatible alias for
+	// AllowSystemMessages. Either field enables system-role messages.
+	AllowSystemInMessages bool
+
+	// ExperimentalDownload downloads remote file URLs the model cannot read
+	// directly (per its SupportedURLs). Defaults to DefaultDownload, as in
+	// GenerateText. Mirrors TS experimental_download.
+	ExperimentalDownload DownloadFunction
 
 	// Schema for the output object (not required for no-schema mode)
 	Schema schema.Schema
@@ -531,7 +641,11 @@ type GenerateObjectOptions struct {
 	FrequencyPenalty *float64
 	PresencePenalty  *float64
 	Seed             *int
-	MaxRetries       int
+	// MaxRetries controls transient provider call retries (HTTP 408, 409, 429
+	// and 5xx, or errors a provider marks retryable). nil uses the TypeScript
+	// SDK default of 2 retries with exponential backoff starting at 2s; set to
+	// 0 to disable.
+	MaxRetries *int
 
 	// RepairText repairs invalid JSON or schema-invalid object output.
 	// Return nil when the output cannot be repaired. Takes precedence over
@@ -694,71 +808,36 @@ type GenerateObjectResult struct {
 // ChoiceOutput(), or JSONOutput() instead. The Output option provides
 // type-safe structured generation without a separate function call.
 func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateObjectResult, error) {
+	LogWarnings(LogWarningsOptions{Warnings: []types.Warning{{
+		Type:    "deprecated",
+		Setting: "generateObject",
+		Message: "Use generateText with an output setting instead.",
+	}}})
 	// Validate options
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
 	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
+	// TS: system is `instructions ?? system` everywhere.
+	opts.System = effectiveSystem(opts.System, opts.Instructions)
 
 	// Set default output mode
 	if opts.OutputMode == "" {
 		opts.OutputMode = ObjectModeObject
 	}
+	// Validate mode-specific requirements (TS validateObjectGenerationInput),
+	// before maxRetries as TS calls prepareRetries after it.
+	if err := validateObjectGenerationInput(opts.OutputMode, opts.Schema != nil, opts.SchemaName, opts.SchemaDescription, opts.EnumValues); err != nil {
+		return nil, err
+	}
 	maxRetries, maxRetryErr := normalizeObjectMaxRetries(opts.MaxRetries)
 	if maxRetryErr != nil {
 		return nil, maxRetryErr
 	}
-	opts.MaxRetries = maxRetries
-
-	// Validate mode-specific requirements.
-	// Mirrors TS SDK's validateObjectGenerationInput() in validate-object-generation-input.ts.
-	switch opts.OutputMode {
-	case ObjectModeObject:
-		if opts.Schema == nil {
-			return nil, fmt.Errorf("schema is required for object output")
-		}
-		if len(opts.EnumValues) != 0 {
-			return nil, fmt.Errorf("enum values are not supported for object output")
-		}
-	case ObjectModeArray:
-		if opts.Schema == nil {
-			return nil, fmt.Errorf("element schema is required for array output")
-		}
-		if len(opts.EnumValues) != 0 {
-			return nil, fmt.Errorf("enum values are not supported for array output")
-		}
-	case ObjectModeEnum:
-		if opts.Schema != nil {
-			return nil, fmt.Errorf("schema is not supported for enum output")
-		}
-		if opts.SchemaDescription != "" {
-			return nil, fmt.Errorf("schema description is not supported for enum output")
-		}
-		if opts.SchemaName != "" {
-			return nil, fmt.Errorf("schema name is not supported for enum output")
-		}
-		if len(opts.EnumValues) == 0 {
-			return nil, fmt.Errorf("enum values are required for enum output")
-		}
-	case ObjectModeNoSchema:
-		if opts.Schema != nil {
-			return nil, fmt.Errorf("schema is not supported for no-schema output")
-		}
-		if opts.SchemaDescription != "" {
-			return nil, fmt.Errorf("schema description is not supported for no-schema output")
-		}
-		if opts.SchemaName != "" {
-			return nil, fmt.Errorf("schema name is not supported for no-schema output")
-		}
-		if len(opts.EnumValues) != 0 {
-			return nil, fmt.Errorf("enum values are not supported for no-schema output")
-		}
-	default:
-		return nil, fmt.Errorf("invalid output mode: %s", opts.OutputMode)
-	}
-
-	if opts.OutputMode != ObjectModeNoSchema && !opts.Model.SupportsStructuredOutput() {
-		return nil, fmt.Errorf("model does not support structured output")
+	opts.MaxRetries = &maxRetries
+	// TS prepareLanguageModelCallOptions(settings) follows prepareRetries.
+	if err := validateMaxOutputTokens(opts.MaxTokens); err != nil {
+		return nil, err
 	}
 
 	// TS generate-object.ts tags every call's headers with `ai/${VERSION}`
@@ -777,10 +856,9 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	var isEnabled, recordInputs, recordOutputs *bool
 	if opts.ExperimentalTelemetry != nil {
 		isEnabled = opts.ExperimentalTelemetry.IsEnabled
-		ri := opts.ExperimentalTelemetry.RecordInputs
-		recordInputs = &ri
-		ro := opts.ExperimentalTelemetry.RecordOutputs
-		recordOutputs = &ro
+		// TS telemetry?.recordInputs / recordOutputs: nil when unset.
+		recordInputs = opts.ExperimentalTelemetry.RecordInputs
+		recordOutputs = opts.ExperimentalTelemetry.RecordOutputs
 	}
 
 	// Fire ExperimentalOnStart before any LLM call.
@@ -799,11 +877,11 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 		FrequencyPenalty:  opts.FrequencyPenalty,
 		PresencePenalty:   opts.PresencePenalty,
 		Seed:              opts.Seed,
-		MaxRetries:        opts.MaxRetries,
+		MaxRetries:        *opts.MaxRetries,
 		Headers:           opts.Headers,
 		ProviderOptions:   opts.ProviderOptions,
 		Output:            opts.OutputMode,
-		Schema:            schemaToMap(opts.Schema),
+		Schema:            objectOutputJSONSchema(opts.OutputMode, opts.Schema, opts.EnumValues),
 		SchemaName:        opts.SchemaName,
 		SchemaDescription: opts.SchemaDescription,
 		IsEnabled:         isEnabled,
@@ -817,8 +895,8 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	// an OTel span directly in core (G4/5d0f18e): with no integration
 	// registered this is a no-op, and with one registered it creates exactly
 	// one "ai.generateObject" span instead of a duplicate.
-	telObjectRecordInputs := opts.ExperimentalTelemetry == nil || opts.ExperimentalTelemetry.RecordInputs
-	objectMaxRetries := opts.MaxRetries
+	telObjectRecordInputs := opts.ExperimentalTelemetry.ShouldRecordInputs()
+	objectMaxRetries := *opts.MaxRetries
 	startEvent := telemetry.TelemetryStartEvent{
 		CallID:           callID,
 		OperationType:    "ai.generateObject",
@@ -836,13 +914,15 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 		Seed:             opts.Seed,
 		MaxRetries:       &objectMaxRetries,
 		SettingsOutput:   string(opts.OutputMode),
+		// TS ai.schema.name/description are plain values; only ai.schema
+		// is an input.
+		SchemaName:        opts.SchemaName,
+		SchemaDescription: opts.SchemaDescription,
 	}
 	if telObjectRecordInputs {
 		startEvent.System = opts.System
 		startEvent.Messages = opts.Messages
-		startEvent.Schema = schemaToMap(opts.Schema)
-		startEvent.SchemaName = opts.SchemaName
-		startEvent.SchemaDescription = opts.SchemaDescription
+		startEvent.Schema = objectOutputJSONSchema(opts.OutputMode, opts.Schema, opts.EnumValues)
 	}
 	ctx = telemetry.FireOnStart(ctx, startEvent)
 
@@ -870,7 +950,7 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 
 	if err != nil {
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
-		return result, err
+		return result, wrapGatewayError(err)
 	}
 	if result != nil {
 		telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
@@ -883,11 +963,9 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 			Text:             result.Text,
 			Object:           objectResultValue(opts.OutputMode, result),
 			ProviderMetadata: result.ProviderMetadata,
-			Usage: telemetry.TelemetryUsage{
-				InputTokens:  result.Usage.InputTokens,
-				OutputTokens: result.Usage.OutputTokens,
-				TotalTokens:  result.Usage.TotalTokens,
-			},
+			// The whole usage, as StreamObject: TS onObjectOperationEnd also
+			// records ai.usage.reasoningTokens and ai.usage.cachedInputTokens.
+			Usage: telemetryUsageFromUsage(result.Usage),
 		})
 	}
 
@@ -914,7 +992,10 @@ func objectResultValue(mode ObjectOutputMode, r *GenerateObjectResult) interface
 
 // generateObjectMode handles standard object generation
 func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc objectCallCtx) (*GenerateObjectResult, error) {
-	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
+	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), opts.Model, opts.ExperimentalDownload)
+	if err != nil {
+		return nil, err
+	}
 
 	genOpts := &provider.GenerateOptions{
 		Prompt:           prompt,
@@ -953,14 +1034,23 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 	// GenerateObject previously fired no step/model-call spans at all.
 	telStep := fireObjectStepStart(ctx, "ai.generateObject", cc.callID, opts.Model, genOpts, opts.ExperimentalTelemetry)
 
-	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, opts.MaxRetries)
+	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, *opts.MaxRetries)
 	if err != nil {
 		// Close the step span (and, for the GenAI integration, the nested
 		// "chat" span) opened by fireObjectStepStart above — otherwise they
 		// leak, since no fireObjectStepEnd/fireObjectLanguageModelCallEnd will
 		// ever run for this step (H4 item 2).
 		fireObjectStepError(telStep, opts.ExperimentalTelemetry, err)
-		return nil, fmt.Errorf("generation failed: %w", err)
+		// TS generateObject rethrows the model error unwrapped (the retry utility
+		// builds the RetryError around it).
+		return nil, err
+	}
+
+	// A response without any text fails before the step-end event, as in TS
+	// generateObject (extractTextContent(content) === undefined).
+	if noResponseErr := generateObjectNoResponseError(genResult, opts.Model); noResponseErr != nil {
+		fireObjectStepError(telStep, opts.ExperimentalTelemetry, noResponseErr)
+		return nil, noResponseErr
 	}
 
 	// Log model warnings once per model call (TS generate-object.ts
@@ -972,9 +1062,6 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 
 	reqMeta := GenerateStepRequest{Body: genResult.RawRequest}
 	resMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
-
-	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), resMeta.ID, genResult.ProviderMetadata)
-	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, resMeta.ID, resMeta.ModelID, resMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
 
 	// Fire OnStepFinish after provider returns, BEFORE JSON parsing.
 	Notify(ctx, ObjectOnStepFinishEvent{
@@ -991,15 +1078,19 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 		Response:         resMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
+	// The telemetry step end follows the user callback (TS
+	// notify([onStepEnd, telemetry.onObjectStepEnd])).
+	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), resMeta.ID, genResult.ProviderMetadata)
+	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, resMeta.ID, resMeta.ModelID, resMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
 
-	obj, _, _, err := parseObjectResult(genResult, ObjectModeObject, opts.Schema, nil, opts.Model)
+	obj, _, _, err := parseGenerateObjectResult(structuredParseResult(genResult), ObjectModeObject, opts.Schema, nil, opts.Model)
 	repairTextFn := effectiveRepairText(opts.RepairText, opts.ExperimentalRepairText)
 	if err != nil && repairTextFn != nil {
-		repairedText, repairErr := attemptRepair(ctx, repairTextFn, genResult.Text, err)
+		repairedText, repairErr := attemptRepair(ctx, repairTextFn, structuredParseText(genResult), err)
 		if repairErr != nil {
 			return nil, repairErr
 		}
-		if repairedText != nil && *repairedText != genResult.Text {
+		if repairedText != nil && *repairedText != structuredParseText(genResult) {
 			repairedResult := *genResult
 			repairedResult.Text = *repairedText
 			obj, _, _, err = parseObjectResult(&repairedResult, ObjectModeObject, opts.Schema, nil, opts.Model)
@@ -1036,7 +1127,7 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 	}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
 
 	if opts.OnFinish != nil {
-		opts.OnFinish(ctx, result, opts.ExperimentalContext)
+		safeInvoke(func() { opts.OnFinish(ctx, result, opts.ExperimentalContext) })
 	}
 
 	return result, nil
@@ -1044,7 +1135,10 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 
 // generateArrayMode handles array generation
 func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objectCallCtx) (*GenerateObjectResult, error) {
-	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
+	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), opts.Model, opts.ExperimentalDownload)
+	if err != nil {
+		return nil, err
+	}
 
 	// Build the wrapped array schema matching TS SDK's arrayOutputStrategy.jsonSchema():
 	// { type: 'object', properties: { elements: { type: 'array', items: itemSchema } }, required: ['elements'] }
@@ -1108,14 +1202,23 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 
 	telStep := fireObjectStepStart(ctx, "ai.generateObject", cc.callID, opts.Model, genOpts, opts.ExperimentalTelemetry)
 
-	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, opts.MaxRetries)
+	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, *opts.MaxRetries)
 	if err != nil {
 		// Close the step span (and, for the GenAI integration, the nested
 		// "chat" span) opened by fireObjectStepStart above — otherwise they
 		// leak, since no fireObjectStepEnd/fireObjectLanguageModelCallEnd will
 		// ever run for this step (H4 item 2).
 		fireObjectStepError(telStep, opts.ExperimentalTelemetry, err)
-		return nil, fmt.Errorf("generation failed: %w", err)
+		// TS generateObject rethrows the model error unwrapped (the retry utility
+		// builds the RetryError around it).
+		return nil, err
+	}
+
+	// A response without any text fails before the step-end event, as in TS
+	// generateObject (extractTextContent(content) === undefined).
+	if noResponseErr := generateObjectNoResponseError(genResult, opts.Model); noResponseErr != nil {
+		fireObjectStepError(telStep, opts.ExperimentalTelemetry, noResponseErr)
+		return nil, noResponseErr
 	}
 
 	// Log model warnings once per model call (TS generate-object.ts
@@ -1127,9 +1230,6 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 
 	arrReqMeta := GenerateStepRequest{Body: genResult.RawRequest}
 	arrResMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
-
-	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), arrResMeta.ID, genResult.ProviderMetadata)
-	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, arrResMeta.ID, arrResMeta.ModelID, arrResMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
 
 	Notify(ctx, ObjectOnStepFinishEvent{
 		CallID:           cc.callID,
@@ -1145,15 +1245,19 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 		Response:         arrResMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
+	// The telemetry step end follows the user callback (TS
+	// notify([onStepEnd, telemetry.onObjectStepEnd])).
+	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), arrResMeta.ID, genResult.ProviderMetadata)
+	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, arrResMeta.ID, arrResMeta.ModelID, arrResMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
 
-	_, arr, _, err := parseObjectResult(genResult, ObjectModeArray, opts.Schema, nil, opts.Model)
+	_, arr, _, err := parseGenerateObjectResult(structuredParseResult(genResult), ObjectModeArray, opts.Schema, nil, opts.Model)
 	repairTextFn := effectiveRepairText(opts.RepairText, opts.ExperimentalRepairText)
 	if err != nil && repairTextFn != nil {
-		repairedText, repairErr := attemptRepair(ctx, repairTextFn, genResult.Text, err)
+		repairedText, repairErr := attemptRepair(ctx, repairTextFn, structuredParseText(genResult), err)
 		if repairErr != nil {
 			return nil, repairErr
 		}
-		if repairedText != nil && *repairedText != genResult.Text {
+		if repairedText != nil && *repairedText != structuredParseText(genResult) {
 			repairedResult := *genResult
 			repairedResult.Text = *repairedText
 			_, arr, _, err = parseObjectResult(&repairedResult, ObjectModeArray, opts.Schema, nil, opts.Model)
@@ -1189,7 +1293,7 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 	}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
 
 	if opts.OnFinish != nil {
-		opts.OnFinish(ctx, result, opts.ExperimentalContext)
+		safeInvoke(func() { opts.OnFinish(ctx, result, opts.ExperimentalContext) })
 	}
 
 	return result, nil
@@ -1201,7 +1305,10 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 // because most LLMs cannot generate a top-level enum value directly.
 // The model outputs { "result": "value" } and we extract value.result.
 func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc objectCallCtx) (*GenerateObjectResult, error) {
-	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
+	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), opts.Model, opts.ExperimentalDownload)
+	if err != nil {
+		return nil, err
+	}
 
 	// Build the wrapped enum schema matching TS SDK's enumOutputStrategy.jsonSchema().
 	enumVals := make([]interface{}, len(opts.EnumValues))
@@ -1253,14 +1360,23 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 
 	telStep := fireObjectStepStart(ctx, "ai.generateObject", cc.callID, opts.Model, genOpts, opts.ExperimentalTelemetry)
 
-	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, opts.MaxRetries)
+	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, *opts.MaxRetries)
 	if err != nil {
 		// Close the step span (and, for the GenAI integration, the nested
 		// "chat" span) opened by fireObjectStepStart above — otherwise they
 		// leak, since no fireObjectStepEnd/fireObjectLanguageModelCallEnd will
 		// ever run for this step (H4 item 2).
 		fireObjectStepError(telStep, opts.ExperimentalTelemetry, err)
-		return nil, fmt.Errorf("generation failed: %w", err)
+		// TS generateObject rethrows the model error unwrapped (the retry utility
+		// builds the RetryError around it).
+		return nil, err
+	}
+
+	// A response without any text fails before the step-end event, as in TS
+	// generateObject (extractTextContent(content) === undefined).
+	if noResponseErr := generateObjectNoResponseError(genResult, opts.Model); noResponseErr != nil {
+		fireObjectStepError(telStep, opts.ExperimentalTelemetry, noResponseErr)
+		return nil, noResponseErr
 	}
 
 	// Log model warnings once per model call (TS generate-object.ts
@@ -1272,9 +1388,6 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 
 	enumReqMeta := GenerateStepRequest{Body: genResult.RawRequest}
 	enumResMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
-
-	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), enumResMeta.ID, genResult.ProviderMetadata)
-	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, enumResMeta.ID, enumResMeta.ModelID, enumResMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
 
 	Notify(ctx, ObjectOnStepFinishEvent{
 		CallID:           cc.callID,
@@ -1290,15 +1403,19 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 		Response:         enumResMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
+	// The telemetry step end follows the user callback (TS
+	// notify([onStepEnd, telemetry.onObjectStepEnd])).
+	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), enumResMeta.ID, genResult.ProviderMetadata)
+	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, enumResMeta.ID, enumResMeta.ModelID, enumResMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
 
-	_, _, selectedValue, err := parseObjectResult(genResult, ObjectModeEnum, nil, opts.EnumValues, opts.Model)
+	_, _, selectedValue, err := parseGenerateObjectResult(structuredParseResult(genResult), ObjectModeEnum, nil, opts.EnumValues, opts.Model)
 	repairTextFn := effectiveRepairText(opts.RepairText, opts.ExperimentalRepairText)
 	if err != nil && repairTextFn != nil {
-		repairedText, repairErr := attemptRepair(ctx, repairTextFn, genResult.Text, err)
+		repairedText, repairErr := attemptRepair(ctx, repairTextFn, structuredParseText(genResult), err)
 		if repairErr != nil {
 			return nil, repairErr
 		}
-		if repairedText != nil && *repairedText != genResult.Text {
+		if repairedText != nil && *repairedText != structuredParseText(genResult) {
 			repairedResult := *genResult
 			repairedResult.Text = *repairedText
 			_, _, selectedValue, err = parseObjectResult(&repairedResult, ObjectModeEnum, nil, opts.EnumValues, opts.Model)
@@ -1334,7 +1451,7 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 	}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
 
 	if opts.OnFinish != nil {
-		opts.OnFinish(ctx, result, opts.ExperimentalContext)
+		safeInvoke(func() { opts.OnFinish(ctx, result, opts.ExperimentalContext) })
 	}
 
 	return result, nil
@@ -1359,7 +1476,10 @@ func (n noopValidator) JSONSchema() map[string]interface{} { return n.jsonSchema
 
 // generateNoSchemaMode handles raw JSON generation without validation
 func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc objectCallCtx) (*GenerateObjectResult, error) {
-	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
+	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), opts.Model, opts.ExperimentalDownload)
+	if err != nil {
+		return nil, err
+	}
 
 	genOpts := &provider.GenerateOptions{
 		Prompt:           prompt,
@@ -1392,14 +1512,23 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 
 	telStep := fireObjectStepStart(ctx, "ai.generateObject", cc.callID, opts.Model, genOpts, opts.ExperimentalTelemetry)
 
-	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, opts.MaxRetries)
+	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, *opts.MaxRetries)
 	if err != nil {
 		// Close the step span (and, for the GenAI integration, the nested
 		// "chat" span) opened by fireObjectStepStart above — otherwise they
 		// leak, since no fireObjectStepEnd/fireObjectLanguageModelCallEnd will
 		// ever run for this step (H4 item 2).
 		fireObjectStepError(telStep, opts.ExperimentalTelemetry, err)
-		return nil, fmt.Errorf("generation failed: %w", err)
+		// TS generateObject rethrows the model error unwrapped (the retry utility
+		// builds the RetryError around it).
+		return nil, err
+	}
+
+	// A response without any text fails before the step-end event, as in TS
+	// generateObject (extractTextContent(content) === undefined).
+	if noResponseErr := generateObjectNoResponseError(genResult, opts.Model); noResponseErr != nil {
+		fireObjectStepError(telStep, opts.ExperimentalTelemetry, noResponseErr)
+		return nil, noResponseErr
 	}
 
 	// Log model warnings once per model call (TS generate-object.ts
@@ -1411,9 +1540,6 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 
 	nsReqMeta := GenerateStepRequest{Body: genResult.RawRequest}
 	nsResMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
-
-	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), nsResMeta.ID, genResult.ProviderMetadata)
-	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, nsResMeta.ID, nsResMeta.ModelID, nsResMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
 
 	Notify(ctx, ObjectOnStepFinishEvent{
 		CallID:           cc.callID,
@@ -1429,15 +1555,19 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 		Response:         nsResMeta,
 		ProviderMetadata: genResult.ProviderMetadata,
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
+	// The telemetry step end follows the user callback (TS
+	// notify([onStepEnd, telemetry.onObjectStepEnd])).
+	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), nsResMeta.ID, genResult.ProviderMetadata)
+	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, nsResMeta.ID, nsResMeta.ModelID, nsResMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
 
-	obj, _, _, err := parseObjectResult(genResult, ObjectModeNoSchema, nil, nil, opts.Model)
+	obj, _, _, err := parseGenerateObjectResult(structuredParseResult(genResult), ObjectModeNoSchema, nil, nil, opts.Model)
 	repairTextFn := effectiveRepairText(opts.RepairText, opts.ExperimentalRepairText)
 	if err != nil && repairTextFn != nil {
-		repairedText, repairErr := attemptRepair(ctx, repairTextFn, genResult.Text, err)
+		repairedText, repairErr := attemptRepair(ctx, repairTextFn, structuredParseText(genResult), err)
 		if repairErr != nil {
 			return nil, repairErr
 		}
-		if repairedText != nil && *repairedText != genResult.Text {
+		if repairedText != nil && *repairedText != structuredParseText(genResult) {
 			repairedResult := *genResult
 			repairedResult.Text = *repairedText
 			obj, _, _, err = parseObjectResult(&repairedResult, ObjectModeNoSchema, nil, nil, opts.Model)
@@ -1473,7 +1603,7 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 	}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
 
 	if opts.OnFinish != nil {
-		opts.OnFinish(ctx, result, opts.ExperimentalContext)
+		safeInvoke(func() { opts.OnFinish(ctx, result, opts.ExperimentalContext) })
 	}
 
 	return result, nil
@@ -1509,6 +1639,24 @@ type StreamObjectOptions struct {
 	Messages []types.Message
 	System   string
 
+	// Instructions is a TypeScript-compatible alias for System.
+	// When set, Instructions takes precedence over System.
+	Instructions *string
+
+	// AllowSystemMessages permits system-role messages in Messages. Defaults
+	// to false, as in TS (allowSystemInMessages): use System or Instructions
+	// for system instructions.
+	AllowSystemMessages bool
+
+	// AllowSystemInMessages is a TypeScript-compatible alias for
+	// AllowSystemMessages. Either field enables system-role messages.
+	AllowSystemInMessages bool
+
+	// ExperimentalDownload downloads remote file URLs the model cannot read
+	// directly (per its SupportedURLs). Defaults to DefaultDownload, as in
+	// GenerateText. Mirrors TS experimental_download.
+	ExperimentalDownload DownloadFunction
+
 	// Schema for the output object
 	Schema schema.Schema
 
@@ -1526,7 +1674,11 @@ type StreamObjectOptions struct {
 	FrequencyPenalty *float64
 	PresencePenalty  *float64
 	Seed             *int
-	MaxRetries       int
+	// MaxRetries controls transient provider call retries (HTTP 408, 409, 429
+	// and 5xx, or errors a provider marks retryable). nil uses the TypeScript
+	// SDK default of 2 retries with exponential backoff starting at 2s; set to
+	// 0 to disable.
+	MaxRetries *int
 
 	// RepairText repairs invalid JSON or schema-invalid object output.
 	// Return nil when the output cannot be repaired. Takes precedence over
@@ -1581,10 +1733,12 @@ type StreamObjectOptions struct {
 	// Deprecated: use OnStepStart.
 	ExperimentalOnStepStart func(ctx context.Context, e ObjectOnStepStartEvent)
 
-	// OnStepEnd is called after the provider returns, before JSON parsing.
+	// OnStepEnd is called after the stream ends and its final JSON has been
+	// parsed (and repaired), before OnEnd, as TS stream-object.ts parses in
+	// the finish part handler and notifies onStepEnd in its flush handler.
 	OnStepEnd func(ctx context.Context, e ObjectOnStepFinishEvent)
 
-	// OnStepFinish is called after the provider returns, before JSON parsing.
+	// OnStepFinish is a deprecated alias for OnStepEnd.
 	//
 	// Deprecated: use OnStepEnd.
 	OnStepFinish func(ctx context.Context, e ObjectOnStepFinishEvent)
@@ -1617,65 +1771,34 @@ type StreamObjectOptions struct {
 // instead. The Output option provides type-safe structured streaming with
 // PartialOutput() for incremental results.
 func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjectResult, error) {
+	LogWarnings(LogWarningsOptions{Warnings: []types.Warning{{
+		Type:    "deprecated",
+		Setting: "streamObject",
+		Message: "Use streamText with an output setting instead.",
+	}}})
 	// Validate options
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
 	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
+	// TS: system is `instructions ?? system` everywhere.
+	opts.System = effectiveSystem(opts.System, opts.Instructions)
 	if opts.OutputMode == "" {
 		opts.OutputMode = ObjectModeObject
+	}
+	// TS streamObject validates the output settings before its result's
+	// constructor calls prepareRetries.
+	if err := validateObjectGenerationInput(opts.OutputMode, opts.Schema != nil, opts.SchemaName, opts.SchemaDescription, opts.EnumValues); err != nil {
+		return nil, err
 	}
 	maxRetries, maxRetryErr := normalizeObjectMaxRetries(opts.MaxRetries)
 	if maxRetryErr != nil {
 		return nil, maxRetryErr
 	}
-	opts.MaxRetries = maxRetries
-	switch opts.OutputMode {
-	case ObjectModeObject:
-		if opts.Schema == nil {
-			return nil, fmt.Errorf("schema is required for object output")
-		}
-		if len(opts.EnumValues) != 0 {
-			return nil, fmt.Errorf("enum values are not supported for object output")
-		}
-	case ObjectModeArray:
-		if opts.Schema == nil {
-			return nil, fmt.Errorf("element schema is required for array output")
-		}
-		if len(opts.EnumValues) != 0 {
-			return nil, fmt.Errorf("enum values are not supported for array output")
-		}
-	case ObjectModeEnum:
-		if opts.Schema != nil {
-			return nil, fmt.Errorf("schema is not supported for enum output")
-		}
-		if opts.SchemaDescription != "" {
-			return nil, fmt.Errorf("schema description is not supported for enum output")
-		}
-		if opts.SchemaName != "" {
-			return nil, fmt.Errorf("schema name is not supported for enum output")
-		}
-		if len(opts.EnumValues) == 0 {
-			return nil, fmt.Errorf("enum values are required for enum output")
-		}
-	case ObjectModeNoSchema:
-		if opts.Schema != nil {
-			return nil, fmt.Errorf("schema is not supported for no-schema output")
-		}
-		if opts.SchemaDescription != "" {
-			return nil, fmt.Errorf("schema description is not supported for no-schema output")
-		}
-		if opts.SchemaName != "" {
-			return nil, fmt.Errorf("schema name is not supported for no-schema output")
-		}
-		if len(opts.EnumValues) != 0 {
-			return nil, fmt.Errorf("enum values are not supported for no-schema output")
-		}
-	default:
-		return nil, fmt.Errorf("invalid output mode: %s", opts.OutputMode)
-	}
-	if opts.OutputMode != ObjectModeNoSchema && !opts.Model.SupportsStructuredOutput() {
-		return nil, fmt.Errorf("model does not support structured output")
+	opts.MaxRetries = &maxRetries
+	// TS prepareLanguageModelCallOptions(settings) follows prepareRetries.
+	if err := validateMaxOutputTokens(opts.MaxTokens); err != nil {
+		return nil, err
 	}
 
 	// Generate call ID and extract telemetry info for callback events.
@@ -1685,10 +1808,9 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	var isEnabled, recordInputs, recordOutputs *bool
 	if opts.ExperimentalTelemetry != nil {
 		isEnabled = opts.ExperimentalTelemetry.IsEnabled
-		ri := opts.ExperimentalTelemetry.RecordInputs
-		recordInputs = &ri
-		ro := opts.ExperimentalTelemetry.RecordOutputs
-		recordOutputs = &ro
+		// TS telemetry?.recordInputs / recordOutputs: nil when unset.
+		recordInputs = opts.ExperimentalTelemetry.RecordInputs
+		recordOutputs = opts.ExperimentalTelemetry.RecordOutputs
 	}
 
 	// Fire ExperimentalOnStart before any LLM call.
@@ -1707,11 +1829,11 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		FrequencyPenalty:  opts.FrequencyPenalty,
 		PresencePenalty:   opts.PresencePenalty,
 		Seed:              opts.Seed,
-		MaxRetries:        opts.MaxRetries,
+		MaxRetries:        *opts.MaxRetries,
 		Headers:           opts.Headers,
 		ProviderOptions:   opts.ProviderOptions,
 		Output:            opts.OutputMode,
-		Schema:            schemaToMap(opts.Schema),
+		Schema:            objectOutputJSONSchema(opts.OutputMode, opts.Schema, opts.EnumValues),
 		SchemaName:        opts.SchemaName,
 		SchemaDescription: opts.SchemaDescription,
 		IsEnabled:         isEnabled,
@@ -1724,8 +1846,8 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	// Route telemetry through the shared Fire* dispatch (H3 item 1):
 	// StreamObject previously fired no telemetry spans whatsoever, unlike
 	// GenerateObject/GenerateText/StreamText.
-	streamObjectRecordInputs := opts.ExperimentalTelemetry == nil || opts.ExperimentalTelemetry.RecordInputs
-	streamObjectMaxRetries := opts.MaxRetries
+	streamObjectRecordInputs := opts.ExperimentalTelemetry.ShouldRecordInputs()
+	streamObjectMaxRetries := *opts.MaxRetries
 	startEvent := telemetry.TelemetryStartEvent{
 		CallID:           callID,
 		OperationType:    "ai.streamObject",
@@ -1743,18 +1865,27 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		Seed:             opts.Seed,
 		MaxRetries:       &streamObjectMaxRetries,
 		SettingsOutput:   string(opts.OutputMode),
+		// TS ai.schema.name/description are plain values; only ai.schema
+		// is an input.
+		SchemaName:        opts.SchemaName,
+		SchemaDescription: opts.SchemaDescription,
 	}
 	if streamObjectRecordInputs {
 		startEvent.System = opts.System
 		startEvent.Messages = opts.Messages
-		startEvent.Schema = schemaToMap(opts.Schema)
-		startEvent.SchemaName = opts.SchemaName
-		startEvent.SchemaDescription = opts.SchemaDescription
+		startEvent.Schema = objectOutputJSONSchema(opts.OutputMode, opts.Schema, opts.EnumValues)
 	}
 	ctx = telemetry.FireOnStart(ctx, startEvent)
 
 	// Build prompt
-	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
+	// A failure from here on still closes the root span opened by FireOnStart
+	// (TS stream-object.ts reports pipeline errors, including prompt
+	// standardization, through telemetry onError).
+	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), opts.Model, opts.ExperimentalDownload)
+	if err != nil {
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
+		return nil, err
+	}
 
 	// Create streaming generation options
 	genOpts := &provider.GenerateOptions{
@@ -1773,6 +1904,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	}
 	responseFormat, err := buildStreamObjectResponseFormat(opts)
 	if err != nil {
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
 		return nil, err
 	}
 	genOpts.ResponseFormat = responseFormat
@@ -1792,11 +1924,12 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 
 	telStep := fireObjectStepStart(ctx, "ai.streamObject", callID, opts.Model, genOpts, opts.ExperimentalTelemetry)
 
-	stream, err := doStreamWithRetry(telStep.modelCallCtx, opts.Model, genOpts, opts.MaxRetries)
+	stream, err := doStreamWithRetry(telStep.modelCallCtx, opts.Model, genOpts, *opts.MaxRetries)
 	if err != nil || stream == nil {
 		if err == nil {
 			err = errors.New("stream is nil")
 		}
+		err = wrapGatewayError(err)
 		if opts.OnError != nil {
 			safeInvoke(func() { opts.OnError(ctx, err) })
 		}
@@ -1805,7 +1938,9 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		// FireOnError call below, which only closes the root span (H4 item 2).
 		fireObjectStepError(telStep, opts.ExperimentalTelemetry, err)
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
-		return nil, fmt.Errorf("stream error: %w", err)
+		// TS streamObject surfaces the model error as is (no "stream error: "
+		// message prefix).
+		return nil, err
 	}
 	defer stream.Close() //nolint:errcheck
 
@@ -1818,10 +1953,17 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	var streamWarnings []types.Warning
 	var streamProviderMetadata map[string]interface{}
 	var streamErr error // captures a non-EOF stream error for deferred callback firing
+	// rawStreamErr is set when streamErr came from stream.Next itself rather
+	// than from a provider error part (TS: a rejected stream rather than an
+	// 'error' chunk).
+	rawStreamErr := false
+	// sawFinish records a finish part (TS logs the warnings in its finish
+	// handler).
+	sawFinish := false
 
 	// Response metadata fields updated by ChunkTypeResponseMetadata chunks.
 	streamResMeta := GenerateStepResponse{
-		ID:        newCallID(),
+		ID:        newObjectID(),
 		Timestamp: time.Now(),
 		ModelID:   opts.Model.ModelID(),
 	}
@@ -1833,21 +1975,25 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	// legacy onObjectStepEnd "ai.stream.firstChunk" span event.
 	var firstChunkAt time.Time
 
-	// Process stream chunks. On a non-EOF error we record it and break so that
-	// OnStepFinish / OnFinishEvent still fire with whatever was accumulated —
-	// matching the TS SDK's TransformStream flush behaviour where the flush
-	// handler always executes even after a transform error.
-streamLoop:
+	// Process stream chunks. A provider error part does not end the stream
+	// (TS stream-object.ts records the first one as the terminal error and
+	// keeps reading). A non-EOF error from the stream itself is recorded and
+	// ends the loop; OnStepFinish / OnFinishEvent still fire with whatever was
+	// accumulated.
 	for {
 		chunk, chunkErr := stream.Next()
 		if chunkErr != nil {
 			if chunkErr == io.EOF || errors.Is(chunkErr, io.ErrClosedPipe) {
 				break
 			}
+			chunkErr = wrapGatewayError(chunkErr)
 			if opts.OnError != nil {
 				safeInvoke(func() { opts.OnError(ctx, chunkErr) })
 			}
-			streamErr = chunkErr
+			if streamErr == nil {
+				streamErr = chunkErr
+				rawStreamErr = true
+			}
 			break
 		}
 
@@ -1887,29 +2033,49 @@ streamLoop:
 			accumulatedReasoning += chunk.Reasoning
 
 		case provider.ChunkTypeUsage:
+			// The latest usage wins (TS: usage comes from the finish part,
+			// never summed; StreamText assigns the same way).
 			if chunk.Usage != nil {
-				usage = usage.Add(*chunk.Usage)
+				usage = completeUsageTotal(*chunk.Usage)
 			}
 
 		case provider.ChunkTypeFinish:
-			finishReason = chunk.FinishReason
+			sawFinish = true
+			// The call's provider metadata is the finish part's (TS
+			// stream-object.ts `providerMetadata = chunk.providerMetadata`
+			// in 'finish', as StreamText's step metadata); metadata on
+			// other chunks belongs to their parts.
+			streamProviderMetadata = nil
+			if len(chunk.ProviderMetadata) > 0 {
+				var pm map[string]interface{}
+				if jsonErr := json.Unmarshal(chunk.ProviderMetadata, &pm); jsonErr == nil {
+					streamProviderMetadata = pm
+				}
+			}
+			// After an error part the finish reason stays "error" (TS
+			// `terminalError === undefined ? chunk.finishReason.unified :
+			// 'error'`); the finish part's usage is kept either way.
+			if streamErr == nil {
+				finishReason = chunk.FinishReason
+			}
 			if chunk.Usage != nil {
-				usage = usage.Add(*chunk.Usage)
+				usage = completeUsageTotal(*chunk.Usage)
 			}
 
 		case provider.ChunkTypeError:
-			// A provider error part is terminal: stop reading immediately
-			// rather than continuing to consume chunks after it, and report
-			// finishReason "error" instead of whatever finish reason (if
-			// any) the model happened to send. Mirrors TS stream-object.ts's
-			// TransformStream error handling (audit row b181020 / WG5).
-			chunkErr := errors.New(chunk.Text)
+			// The first provider error part is the call's terminal error and
+			// sets finishReason "error"; every error part reaches onError.
+			// Reading continues (TS stream-object.ts, b181020): later text
+			// still updates the partial object and a later finish part still
+			// supplies usage and provider metadata.
+			chunkErr := wrapGatewayError(streamChunkError(chunk))
 			if opts.OnError != nil {
 				safeInvoke(func() { opts.OnError(ctx, chunkErr) })
 			}
-			streamErr = chunkErr
-			finishReason = types.FinishReasonError
-			break streamLoop
+			if streamErr == nil {
+				streamErr = chunkErr
+				finishReason = types.FinishReasonError
+			}
 
 		case provider.ChunkTypeResponseMetadata:
 			if chunk.ResponseMetadata != nil {
@@ -1927,15 +2093,6 @@ streamLoop:
 				}
 			}
 		}
-
-		// Accumulate provider metadata from any chunk that carries it
-		// (Gemini emits it on ChunkTypeFinish; mirrors stream.go behaviour).
-		if len(chunk.ProviderMetadata) > 0 {
-			var pm map[string]interface{}
-			if jsonErr := json.Unmarshal(chunk.ProviderMetadata, &pm); jsonErr == nil {
-				streamProviderMetadata = pm
-			}
-		}
 	}
 
 	// Apply default finish reason, mirroring TS SDK's `finishReason ?? 'other'` in the flush handler.
@@ -1945,10 +2102,14 @@ streamLoop:
 		finishReason = types.FinishReasonOther
 	}
 
-	// Log model warnings once per model call (TS stream-object.ts
-	// logWarnings, called once the stream's terminal chunk has been
-	// processed, regardless of whether it ended in an error).
-	logModelWarnings(streamWarnings, opts.Model.Provider(), opts.Model.ModelID())
+	// Log model warnings once per model call. TS stream-object.ts logs them
+	// in the finish part's handler (after an error part too), so a stream
+	// that fails without a finish part logs nothing. A stream that ends
+	// cleanly without one is still parsed here (known difference), so its
+	// warnings are logged as for a finished stream.
+	if sawFinish || streamErr == nil {
+		logModelWarnings(streamWarnings, opts.Model.Provider(), opts.Model.ModelID())
+	}
 
 	streamReqMeta := GenerateStepRequest{}
 
@@ -1969,12 +2130,13 @@ streamLoop:
 	if accumulatedReasoning != "" {
 		streamCallEndContent = append(streamCallEndContent, types.ReasoningContent{Text: accumulatedReasoning})
 	}
-	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, finishReason, usage, streamCallEndContent, streamResMeta.ID, streamProviderMetadata)
-	fireObjectStepEnd(telStep, "ai.streamObject", opts.ExperimentalTelemetry, finishReason, usage, accumulatedText, streamResMeta.ID, streamResMeta.ModelID, streamResMeta.Timestamp, streamProviderMetadata, firstChunkAt)
-
-	// If the stream itself errored, fire OnStepFinish + OnFinishEvent with the
-	// error (matching TS flush handler) then return.
-	if streamErr != nil {
+	// fireStepEnd sends the step end: the user OnStepEnd first, then the
+	// language-model-call-end/step-end telemetry, as TS flush's
+	// notify([onStepFinish, telemetry.onObjectStepEnd]). TS's flush handler
+	// always runs, whether the stream ended cleanly or with a content error
+	// (H3 item 1). TS SDK passes reasoning: undefined here (the streaming
+	// object path does not extract reasoning).
+	fireStepEnd := func() {
 		Notify(ctx, ObjectOnStepFinishEvent{
 			CallID:           callID,
 			StepNumber:       0,
@@ -1989,6 +2151,14 @@ streamLoop:
 			Response:         streamResMeta,
 			ProviderMetadata: streamProviderMetadata,
 		}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
+		fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, finishReason, usage, streamCallEndContent, streamResMeta.ID, streamProviderMetadata)
+		fireObjectStepEnd(telStep, "ai.streamObject", opts.ExperimentalTelemetry, finishReason, usage, accumulatedText, streamResMeta.ID, streamResMeta.ModelID, streamResMeta.Timestamp, streamProviderMetadata, firstChunkAt)
+	}
+
+	// If the stream itself errored, fire OnStepFinish + OnFinishEvent with the
+	// error (matching TS flush handler) then return.
+	if streamErr != nil {
+		fireStepEnd()
 		Notify(ctx, ObjectOnFinishEvent{
 			CallID:           callID,
 			Object:           nil,
@@ -2001,28 +2171,20 @@ streamLoop:
 			Response:         streamResMeta,
 			ProviderMetadata: streamProviderMetadata,
 		}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
-		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: streamErr})
-		return nil, fmt.Errorf("stream error: %w", streamErr)
+		if rawStreamErr {
+			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: streamErr})
+		} else {
+			// TS sends an error part's outcome through the flush handler's
+			// onEnd (finishReason "error"), not onError.
+			fireStreamObjectTelemetryEnd(ctx, opts, callID, finishReason, accumulatedText, nil, streamProviderMetadata, usage)
+		}
+		// TS streamObject surfaces the stream error as is (no message prefix).
+		return nil, streamErr
 	}
 
-	// Fire OnStepFinish after stream ends, BEFORE JSON parsing.
-	// TS SDK passes reasoning: undefined here (streaming object path does not extract reasoning).
-	Notify(ctx, ObjectOnStepFinishEvent{
-		CallID:           callID,
-		StepNumber:       0,
-		Provider:         opts.Model.Provider(),
-		ModelID:          opts.Model.ModelID(),
-		FinishReason:     finishReason,
-		Usage:            usage,
-		ObjectText:       accumulatedText,
-		Reasoning:        "", // TS SDK always passes reasoning: undefined in streaming callbacks
-		Warnings:         streamWarnings,
-		Request:          streamReqMeta,
-		Response:         streamResMeta,
-		ProviderMetadata: streamProviderMetadata,
-	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
-
-	// Parse final JSON
+	// Parse the final JSON (and repair it) before the step end: TS
+	// stream-object.ts parses in the finish part's handler, and its flush
+	// handler sends onStepFinish and onFinish afterwards.
 	var finalObject interface{}
 	var finalArray []interface{}
 	var finalEnum string
@@ -2049,6 +2211,7 @@ streamLoop:
 			parsedObject, parsedArray, parsedEnum, parseErr = parseObjectResult(&repairedResult, opts.OutputMode, opts.Schema, opts.EnumValues, opts.Model)
 		}
 	}
+	fireStepEnd()
 	if parseErr != nil {
 		// Parse failure: fire OnFinishEvent with error and nil object.
 		Notify(ctx, ObjectOnFinishEvent{
@@ -2063,7 +2226,9 @@ streamLoop:
 			Response:         streamResMeta,
 			ProviderMetadata: streamProviderMetadata,
 		}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
-		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: parseErr})
+		// TS reports a final parse or validation failure through the flush
+		// handler's onEnd (object undefined), not onError.
+		fireStreamObjectTelemetryEnd(ctx, opts, callID, finishReason, accumulatedText, nil, streamProviderMetadata, usage)
 		return nil, parseErr
 	}
 	finalObject = parsedObject
@@ -2099,6 +2264,20 @@ streamLoop:
 		Response:         streamResMeta,
 		ProviderMetadata: streamProviderMetadata,
 	}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
+	fireStreamObjectTelemetryEnd(ctx, opts, callID, finishReason, accumulatedText, objectResultValue(opts.OutputMode, result), streamProviderMetadata, usage)
+
+	// Call legacy OnFinish if provided
+	if opts.OnFinish != nil {
+		safeInvoke(func() { opts.OnFinish(ctx, result, opts.ExperimentalContext) })
+	}
+
+	return result, nil
+}
+
+// fireStreamObjectTelemetryEnd ends a StreamObject call's telemetry the way
+// TS stream-object.ts's flush handler does (telemetryDispatcher.onEnd), with a
+// nil object when the call failed.
+func fireStreamObjectTelemetryEnd(ctx context.Context, opts StreamObjectOptions, callID string, finishReason types.FinishReason, text string, object interface{}, providerMetadata map[string]interface{}, usage types.Usage) {
 	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
 		CallID:           callID,
 		OperationType:    "ai.streamObject",
@@ -2106,18 +2285,11 @@ streamLoop:
 		ModelProvider:    opts.Model.Provider(),
 		ModelID:          opts.Model.ModelID(),
 		FinishReason:     string(finishReason),
-		Text:             accumulatedText,
-		Object:           objectResultValue(opts.OutputMode, result),
-		ProviderMetadata: streamProviderMetadata,
+		Text:             text,
+		Object:           object,
+		ProviderMetadata: providerMetadata,
 		Usage:            telemetryUsageFromUsage(usage),
 	})
-
-	// Call legacy OnFinish if provided
-	if opts.OnFinish != nil {
-		opts.OnFinish(ctx, result, opts.ExperimentalContext)
-	}
-
-	return result, nil
 }
 
 // parsePartialJSON wraps the jsonparser.ParsePartialJSON function
@@ -2138,10 +2310,126 @@ func deepEqual(a, b interface{}) bool {
 	return reflect.DeepEqual(a, b)
 }
 
+// validateObjectGenerationInput mirrors TS validateObjectGenerationInput: the
+// same checks, parameter names and messages, reported as InvalidArgumentError.
+func validateObjectGenerationInput(mode ObjectOutputMode, hasSchema bool, schemaName, schemaDescription string, enumValues []string) error {
+	invalid := func(field, message string) error {
+		return &providererrors.InvalidArgumentError{Field: field, Message: message}
+	}
+	switch mode {
+	case ObjectModeObject:
+		if !hasSchema {
+			return invalid("schema", "Schema is required for object output.")
+		}
+		if len(enumValues) != 0 {
+			return invalid("enumValues", "Enum values are not supported for object output.")
+		}
+	case ObjectModeArray:
+		if !hasSchema {
+			return invalid("schema", "Element schema is required for array output.")
+		}
+		if len(enumValues) != 0 {
+			return invalid("enumValues", "Enum values are not supported for array output.")
+		}
+	case ObjectModeEnum:
+		if hasSchema {
+			return invalid("schema", "Schema is not supported for enum output.")
+		}
+		if schemaDescription != "" {
+			return invalid("schemaDescription", "Schema description is not supported for enum output.")
+		}
+		if schemaName != "" {
+			return invalid("schemaName", "Schema name is not supported for enum output.")
+		}
+		if len(enumValues) == 0 {
+			return invalid("enumValues", "Enum values are required for enum output.")
+		}
+	case ObjectModeNoSchema:
+		if hasSchema {
+			return invalid("schema", "Schema is not supported for no-schema output.")
+		}
+		if schemaDescription != "" {
+			return invalid("schemaDescription", "Schema description is not supported for no-schema output.")
+		}
+		if schemaName != "" {
+			return invalid("schemaName", "Schema name is not supported for no-schema output.")
+		}
+		if len(enumValues) != 0 {
+			return invalid("enumValues", "Enum values are not supported for no-schema output.")
+		}
+	default:
+		return invalid("output", "Invalid output type.")
+	}
+	return nil
+}
+
+// structuredParseText returns the text a non-streaming response is parsed
+// from: the provider's StructuredOutputText when set, otherwise Text (TS
+// generateObject `generateResult.structuredOutputText ?? text`).
+func structuredParseText(result *types.GenerateResult) string {
+	if result != nil && result.StructuredOutputText != nil {
+		return *result.StructuredOutputText
+	}
+	if result == nil {
+		return ""
+	}
+	return result.Text
+}
+
+// structuredParseResult returns result, or a shallow copy whose Text is the
+// structured output text when the provider supplied one. The original result
+// (and the text exposed to callers) is never modified.
+func structuredParseResult(result *types.GenerateResult) *types.GenerateResult {
+	if result == nil || result.StructuredOutputText == nil {
+		return result
+	}
+	parsed := *result
+	parsed.Text = *result.StructuredOutputText
+	return &parsed
+}
+
+// parseGenerateObjectResult is parseObjectResult for a non-streaming model
+// response: a response with no text at all fails as in TS generateObject
+// (extractTextContent(content) === undefined) before any parsing.
+func parseGenerateObjectResult(result *types.GenerateResult, mode ObjectOutputMode, s schema.Schema, enumValues []string, model provider.LanguageModel) (interface{}, []interface{}, string, error) {
+	if result != nil && result.Text == "" && !hasTextContentPart(result.Content) {
+		return nil, nil, "", newNoObjectGeneratedError("No object generated: the model did not return a response.", nil, "", model, result)
+	}
+	return parseObjectResult(result, mode, s, enumValues, model)
+}
+
+// generateObjectNoResponseError returns the NoObjectGeneratedError for a
+// response with no text part, or nil.
+func generateObjectNoResponseError(result *types.GenerateResult, model provider.LanguageModel) error {
+	if result != nil && result.Text == "" && !hasTextContentPart(result.Content) {
+		return newNoObjectGeneratedError("No object generated: the model did not return a response.", nil, "", model, result)
+	}
+	return nil
+}
+
+// hasTextContentPart reports whether parts holds any text part, empty or not.
+func hasTextContentPart(parts []types.ContentPart) bool {
+	for _, part := range parts {
+		switch p := part.(type) {
+		case types.TextContent:
+			return true
+		case *types.TextContent:
+			if p != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // objectResponseSchema is the value of ResponseFormat.Schema for object
 // output: the JSON Schema map (TS passes the JSON schema, not a schema
-// object), so providers that read the schema as a map send it.
+// object). An *schema.OrderedSchema is kept so a provider that marshals it
+// writes the keys in their source order.
 func objectResponseSchema(s schema.Schema) interface{} {
+	if o, ok := s.(*schema.OrderedSchema); ok {
+		return o
+	}
 	if m := schemaToMap(s); m != nil {
 		return m
 	}

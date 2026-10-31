@@ -14,6 +14,7 @@ func TestImageModelSupportsFileAndMaskInputs(t *testing.T) {
 		{"gemini-2.5-flash-image", "gemini-2.5-flash-image", boolPtr(true)},
 		{"gemini-3-pro-image-preview", "gemini-3-pro-image-preview", boolPtr(true)},
 		{"gemini-3.1-flash-image-preview", "gemini-3.1-flash-image-preview", boolPtr(true)},
+		{"gemini-nano-banana-2.1", "gemini-nano-banana-2.1", boolPtr(true)},
 		{"unrecognized gemini model", "gemini-9-unknown", nil},
 	}
 

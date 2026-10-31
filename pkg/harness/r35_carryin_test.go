@@ -1,0 +1,166 @@
+package harness
+
+import (
+	"context"
+	"errors"
+	"sync/atomic"
+	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+// TS run-prompt.ts opens the step (lifecycle.ensureStepOpen) before the
+// settled-replay `continue`, so a step whose only content is a replay of an
+// already-settled call still opens (and closes) as a step.
+func TestRunPrompt_SettledReplayOpensStep(t *testing.T) {
+	restricted := types.Tool{Name: "restricted", Parameters: restrictedSchema()}
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&ToolCallPart{ToolCallID: "c1", ToolName: "restricted", Input: `{"city":`},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)},
+				// Second step: only a replay of the settled call.
+				&ToolApprovalRequestPart{ApprovalID: "a1", ToolCallID: "c1"},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(2, 2)},
+			}
+		},
+	})
+	tools := map[string]types.Tool{"restricted": restricted}
+	var starts atomic.Int32
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session,
+		Prompt: TextPrompt("go"), Tools: tools, ActiveTools: tools,
+		SandboxSession: testSandbox(),
+		Callbacks:      Callbacks{OnStepStart: func(context.Context, ai.OnStepStartEvent) { starts.Add(1) }},
+	})
+	drainRunPrompt(t, out)
+	if got := starts.Load(); got != 2 {
+		t.Fatalf("OnStepStart calls = %d, want 2", got)
+	}
+}
+
+// TS: a terminal finish with an unclosed step calls onTurnFinished, then
+// result.finish() fails the result with an error part.
+func TestRunPrompt_FinishWithUnclosedStepFiresFinishedOnly(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&TextDeltaPart{ID: "t1", Delta: "x"},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	logs := captureTurnLogs(t)
+	var finished, failed atomic.Int32
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session,
+		Prompt: TextPrompt("go"), SandboxSession: testSandbox(),
+		OnTurnFinished: func() { finished.Add(1) },
+		OnTurnFailed:   func() { failed.Add(1) },
+	})
+	chunks := drainRunPrompt(t, out)
+	// TS result.finish() fails the result in place without throwing: only
+	// onTurnFinished runs, and nothing is logged.
+	if finished.Load() != 1 || failed.Load() != 0 {
+		t.Fatalf("finished=%d failed=%d, want 1 and 0", finished.Load(), failed.Load())
+	}
+	if errs := chunksOfType(chunks, provider.ChunkTypeError); len(errs) != 1 || errs[0].Err == nil || errs[0].Err.Error() != unclosedStepErrorMessage {
+		t.Fatalf("error chunks = %+v, want the unclosed step error", errs)
+	}
+	if got := logs(); len(got) != 0 {
+		t.Fatalf("turn logs = %q, want none", got)
+	}
+}
+
+// TS lifecycle.error/abort start the lifecycle (onStart callback) and mark the
+// turn ended even when no telemetry is configured.
+func TestRunPrompt_StartFailureFiresOnStartWithoutTelemetry(t *testing.T) {
+	sess := &mockSession{id: "r35-session"}
+	sess.doPromptTurn = func(context.Context, PromptTurnOptions) (PromptControl, error) {
+		return nil, errors.New("boom")
+	}
+	h := &mockHarnessAdapter{id: "mock", session: sess}
+	var starts atomic.Int32
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: h, Session: sess,
+		Prompt: TextPrompt("go"), SandboxSession: testSandbox(),
+		Callbacks: Callbacks{OnStart: func(context.Context, ai.OnStartEvent) { starts.Add(1) }},
+	})
+	drainRunPrompt(t, out)
+	if starts.Load() != 1 {
+		t.Fatalf("OnStart calls = %d, want 1", starts.Load())
+	}
+}
+
+// TS lifecycle.languageModelCallEnd opens the step first: a finish-step with
+// no content still reports step-start, model-call start and end.
+func TestRunPrompt_ContentlessFinishStepStillOpensStep(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	var starts, modelStarts, modelEnds, stepEnds atomic.Int32
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session,
+		Prompt: TextPrompt("go"), SandboxSession: testSandbox(),
+		Callbacks: Callbacks{
+			OnStepStart:              func(context.Context, ai.OnStepStartEvent) { starts.Add(1) },
+			OnLanguageModelCallStart: func(context.Context, ai.LanguageModelCallStartEvent) { modelStarts.Add(1) },
+			OnLanguageModelCallEnd:   func(context.Context, ai.LanguageModelCallEndEvent) { modelEnds.Add(1) },
+			OnStepEnd:                func(context.Context, ai.OnStepFinishEvent) { stepEnds.Add(1) },
+		},
+	})
+	drainRunPrompt(t, out)
+	if starts.Load() != 1 || modelStarts.Load() != 1 || modelEnds.Load() != 1 || stepEnds.Load() != 1 {
+		t.Fatalf("starts=%d modelStarts=%d modelEnds=%d stepEnds=%d, want 1 each", starts.Load(), modelStarts.Load(), modelEnds.Load(), stepEnds.Load())
+	}
+}
+
+// TS opens the step (lifecycle.ensureStepOpen) before the settled-replay
+// `continue`, but the skipped replay adds no step content, and
+// HarnessStreamTextResult.finish() fails only for unclosed content
+// (currentStepContent.length > 0): a bare finish after a replay-only step
+// finishes the turn normally.
+func TestRunPrompt_SettledReplayThenBareFinishFinishes(t *testing.T) {
+	restricted := types.Tool{Name: "restricted", Parameters: restrictedSchema()}
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&ToolCallPart{ToolCallID: "c1", ToolName: "restricted", Input: `{"city":`},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)},
+				&ToolApprovalRequestPart{ApprovalID: "a1", ToolCallID: "c1"},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	tools := map[string]types.Tool{"restricted": restricted}
+	var finished, failed atomic.Int32
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session,
+		Prompt: TextPrompt("go"), Tools: tools, ActiveTools: tools,
+		SandboxSession: testSandbox(),
+		OnTurnFinished: func() { finished.Add(1) },
+		OnTurnFailed:   func() { failed.Add(1) },
+	})
+	chunks := drainRunPrompt(t, out)
+	if finished.Load() != 1 || failed.Load() != 0 {
+		t.Fatalf("finished=%d failed=%d, want 1 and 0", finished.Load(), failed.Load())
+	}
+	if errs := chunksOfType(chunks, provider.ChunkTypeError); len(errs) != 0 || out.Result.Err() != nil {
+		t.Fatalf("error chunks = %+v, err = %v; want none (no unclosed content)", errs, out.Result.Err())
+	}
+	if f := chunksOfType(chunks, provider.ChunkTypeFinish); len(f) != 1 {
+		t.Fatalf("finish chunks = %+v", f)
+	}
+}

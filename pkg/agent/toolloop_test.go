@@ -162,11 +162,12 @@ func TestToolLoopAgent_ResponseMessagesUseFullStepContent(t *testing.T) {
 	if got, want := len(step.Content), 4; got != want {
 		t.Fatalf("step content len = %d, want %d: %#v", got, want, step.Content)
 	}
-	if _, ok := step.Content[0].(types.TextContent); !ok {
-		t.Fatalf("content[0] = %T, want TextContent", step.Content[0])
+	// Reasoning precedes the answer text (provider order), as in TS content.
+	if _, ok := step.Content[0].(types.ReasoningContent); !ok {
+		t.Fatalf("content[0] = %T, want ReasoningContent", step.Content[0])
 	}
-	if _, ok := step.Content[1].(types.ReasoningContent); !ok {
-		t.Fatalf("content[1] = %T, want ReasoningContent", step.Content[1])
+	if _, ok := step.Content[1].(types.TextContent); !ok {
+		t.Fatalf("content[1] = %T, want TextContent", step.Content[1])
 	}
 	if _, ok := step.Content[2].(types.ToolCallContent); !ok {
 		t.Fatalf("content[2] = %T, want ToolCallContent", step.Content[2])
@@ -177,8 +178,8 @@ func TestToolLoopAgent_ResponseMessagesUseFullStepContent(t *testing.T) {
 	if len(step.ResponseMessages) != 2 {
 		t.Fatalf("response messages len = %d, want 2: %#v", len(step.ResponseMessages), step.ResponseMessages)
 	}
-	if _, ok := step.ResponseMessages[0].Content[1].(types.ReasoningContent); !ok {
-		t.Fatalf("assistant response content[1] = %T, want ReasoningContent", step.ResponseMessages[0].Content[1])
+	if _, ok := step.ResponseMessages[0].Content[0].(types.ReasoningContent); !ok {
+		t.Fatalf("assistant response content[0] = %T, want ReasoningContent", step.ResponseMessages[0].Content[0])
 	}
 }
 
@@ -208,8 +209,10 @@ func TestToolLoopAgent_ProviderExecutedToolResolvesApproval(t *testing.T) {
 		t.Fatalf("steps len = %d, want 1", len(result.Steps))
 	}
 	step := result.Steps[0]
-	if len(step.ToolResults) != 1 || !step.ToolResults[0].ProviderExecuted || step.ToolResults[0].ApprovalStatus != types.ToolApprovalStatusApproved {
-		t.Fatalf("tool results = %#v, want approved provider-executed result", step.ToolResults)
+	// The provider returns the result itself; until it does there is no
+	// tool-result part, so TS toolResults is empty.
+	if len(step.ToolResults) != 0 {
+		t.Fatalf("tool results = %#v, want none", step.ToolResults)
 	}
 	if got, want := len(step.Content), 3; got != want {
 		t.Fatalf("step content len = %d, want tool-call + approval request/response: %#v", got, step.Content)
@@ -1872,16 +1875,13 @@ func TestToolLoopAgent_InvalidToolContextReturnsValidationResult(t *testing.T) {
 		MaxSteps:     2,
 	})
 
-	result, err := agent.Execute(context.Background(), "test")
-	if err != nil {
-		t.Fatalf("Execute failed: %v", err)
-	}
-	if len(result.ToolResults) == 0 || result.ToolResults[0].Error == nil {
-		t.Fatalf("expected validation error result")
-	}
+	// TS executeToolCall validates the tool context outside its try: the
+	// run fails with the validation error (owner decision 2026-10-28; it was
+	// a tool-error result sent to the model).
+	_, err := agent.Execute(context.Background(), "test")
 	var validationErr *providererrors.ValidationError
-	if !errors.As(result.ToolResults[0].Error, &validationErr) {
-		t.Fatalf("expected validation error, got %T: %v", result.ToolResults[0].Error, result.ToolResults[0].Error)
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("expected validation error, got %T: %v", err, err)
 	}
 	if validationErr.Context == nil || validationErr.Context.Field != "tool context" || validationErr.Context.EntityName != "ctx_tool" {
 		t.Fatalf("validation context = %+v, want field tool context and entity ctx_tool", validationErr.Context)
@@ -2017,8 +2017,17 @@ func TestToolLoopAgent_ApprovalNilAndDenied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
-	if result.ToolResults[0].ApprovalStatus != types.ToolApprovalStatusDenied || *result.ToolResults[0].ApprovalReason != "policy" {
-		t.Fatalf("denial not preserved: %+v", result.ToolResults[0])
+	if len(result.ToolResults) != 0 {
+		t.Fatalf("denied call must not be a tool result: %+v", result.ToolResults)
+	}
+	var resp *types.ToolApprovalResponseContent
+	for _, part := range result.Steps[0].Content {
+		if r, ok := part.(types.ToolApprovalResponseContent); ok {
+			resp = &r
+		}
+	}
+	if resp == nil || resp.Approved || resp.Reason != "policy" {
+		t.Fatalf("denial not preserved: %+v", resp)
 	}
 }
 
@@ -2064,8 +2073,8 @@ func TestToolLoopAgent_InvalidToolCallPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
-	if len(result.ToolResults) != 1 || !errors.Is(result.ToolResults[0].Error, invalidErr) {
-		t.Fatalf("invalid tool call error not preserved: %+v", result.ToolResults)
+	if toolErrors := r71integAgentToolErrors(result.Steps); len(result.ToolResults) != 0 || len(toolErrors) != 1 || toolErrors[0].Error != invalidErr.Error() {
+		t.Fatalf("invalid tool call error not preserved: results %+v, errors %+v", result.ToolResults, toolErrors)
 	}
 }
 
@@ -2132,10 +2141,16 @@ func TestToolLoopAgent_GeneratePerCallOptionsOverrideConfig(t *testing.T) {
 	}
 }
 
+// TestToolLoopAgent_OnStepStartReceivesFilteredTools: the step-start event
+// reports the call's tools (TS stepStartEvent.tools); the filtered,
+// model-visible set is on the language model call start event.
 func TestToolLoopAgent_OnStepStartReceivesFilteredTools(t *testing.T) {
 	mock := &mockLanguageModel{responses: []types.GenerateResult{{Text: "done", FinishReason: types.FinishReasonStop, Usage: types.Usage{TotalTokens: intPtr(1)}}}}
-	var eventTools []types.Tool
+	var eventTools, modelTools []types.Tool
 	agent := NewToolLoopAgent(AgentConfig{
+		OnLanguageModelCallStart: func(_ context.Context, e ai.LanguageModelCallStartEvent) {
+			modelTools = e.Tools
+		},
 		Model: mock,
 		Tools: []types.Tool{
 			{Name: "keep", Parameters: map[string]interface{}{"type": "object"}},
@@ -2151,8 +2166,11 @@ func TestToolLoopAgent_OnStepStartReceivesFilteredTools(t *testing.T) {
 	if _, err := agent.Execute(context.Background(), "test"); err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
-	if len(eventTools) != 1 || eventTools[0].Name != "keep" {
-		t.Fatalf("OnStepStart tools were not filtered: %+v", eventTools)
+	if len(eventTools) != 2 {
+		t.Fatalf("OnStepStart tools = %d, want the call's 2 tools", len(eventTools))
+	}
+	if len(modelTools) != 1 || modelTools[0].Name != "keep" {
+		t.Fatalf("model call tools were not filtered: %+v", modelTools)
 	}
 }
 
@@ -2189,8 +2207,8 @@ func TestToolLoopAgent_FilteredToolsUsedForExecution(t *testing.T) {
 	// parseAgentToolCalls) before reaching the separate "tool not found"
 	// branch, so it surfaces as an Invalid call with a NoSuchToolError
 	// message rather than the legacy "tool not found: X" text.
-	if len(result.ToolResults) != 1 || result.ToolResults[0].Error == nil || !strings.Contains(result.ToolResults[0].Error.Error(), "unavailable tool") {
-		t.Fatalf("expected not-found result for inactive tool, got %+v", result.ToolResults)
+	if toolErrors := r71integAgentToolErrors(result.Steps); len(result.ToolResults) != 0 || len(toolErrors) != 1 || !strings.Contains(toolErrors[0].ErrorText, "unavailable tool") {
+		t.Fatalf("expected a not-found tool error for the inactive tool, got results %+v, errors %+v", result.ToolResults, toolErrors)
 	}
 }
 
@@ -2888,8 +2906,14 @@ func TestToolLoopAgentNativeApprovalSupportsGenericAndSingleFuncs(t *testing.T) 
 		if err != nil {
 			t.Fatalf("Execute() error = %v", err)
 		}
-		if result.ToolResults[0].ApprovalStatus != types.ToolApprovalStatusDenied {
-			t.Fatalf("approval = %q, want denied", result.ToolResults[0].ApprovalStatus)
+		var denied bool
+		for _, part := range result.Steps[0].Content {
+			if r, ok := part.(types.ToolApprovalResponseContent); ok && !r.Approved {
+				denied = true
+			}
+		}
+		if !denied || len(result.ToolResults) != 0 {
+			t.Fatalf("want a denied approval response and no tool results, got %+v / %+v", result.Steps[0].Content, result.ToolResults)
 		}
 	})
 
@@ -2979,8 +3003,14 @@ func TestToolLoopAgentNativeApprovalSupportsGenericAndSingleFuncs(t *testing.T) 
 		if !called {
 			t.Fatal("generic approval callback should run before per-tool context validation")
 		}
-		if result.ToolResults[0].ApprovalStatus != types.ToolApprovalStatusDenied {
-			t.Fatalf("approval = %q, want denied", result.ToolResults[0].ApprovalStatus)
+		var denied bool
+		for _, part := range result.Steps[0].Content {
+			if r, ok := part.(types.ToolApprovalResponseContent); ok && !r.Approved {
+				denied = true
+			}
+		}
+		if !denied || len(result.ToolResults) != 0 {
+			t.Fatalf("want a denied approval response and no tool results, got %+v / %+v", result.Steps[0].Content, result.ToolResults)
 		}
 	})
 
@@ -3013,15 +3043,13 @@ func TestToolLoopAgentNativeApprovalSupportsGenericAndSingleFuncs(t *testing.T) 
 			},
 			StopWhen: []ai.StopCondition{ai.IsStepCount(1)},
 		})
-		result, err := agent.Execute(context.Background(), "start")
-		if err != nil {
-			t.Fatalf("Execute() error = %v", err)
+		_, err := agent.Execute(context.Background(), "start")
+		var validationErr *providererrors.ValidationError
+		if !errors.As(err, &validationErr) {
+			t.Fatalf("Execute() error = %T %v, want the tool context ValidationError (TS throws)", err, err)
 		}
 		if called {
 			t.Fatal("single approval callback should not run when context validation fails")
-		}
-		if len(result.ToolResults) != 1 || result.ToolResults[0].Error == nil {
-			t.Fatalf("tool results = %+v, want validation error", result.ToolResults)
 		}
 	})
 
@@ -3070,8 +3098,14 @@ func TestToolLoopAgentNativeApprovalSupportsGenericAndSingleFuncs(t *testing.T) 
 		if !called {
 			t.Fatal("tool-defined approval callback was not called")
 		}
-		if len(result.ToolResults) != 1 || result.ToolResults[0].ApprovalStatus != types.ToolApprovalStatusUserApproval {
-			t.Fatalf("tool results = %+v, want user-approval", result.ToolResults)
+		var pending bool
+		for _, part := range result.Steps[0].Content {
+			if _, ok := part.(types.ToolApprovalRequestContent); ok {
+				pending = true
+			}
+		}
+		if !pending || len(result.ToolResults) != 0 {
+			t.Fatalf("want a tool-approval-request and no tool results, got %+v / %+v", result.Steps[0].Content, result.ToolResults)
 		}
 	})
 }
@@ -3266,7 +3300,7 @@ func TestExecuteWithMessagesDeferredToolDiscovery(t *testing.T) {
 // with the pre-toolSearch tool list and only narrowed callConfig.Tools
 // afterward, so a still-deferred tool was visibly reported at step start.
 func TestExecuteWithMessagesDeferredToolDiscovery_OnStepStartReportsEffectiveTools(t *testing.T) {
-	var stepStartToolNames [][]string
+	var stepStartToolNames, modelToolNames [][]string
 	calls := 0
 	model := &functionalAgentLanguageModel{
 		doGenerate: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
@@ -3305,6 +3339,13 @@ func TestExecuteWithMessagesDeferredToolDiscovery_OnStepStartReportsEffectiveToo
 			}
 			stepStartToolNames = append(stepStartToolNames, names)
 		},
+		OnLanguageModelCallStart: func(_ context.Context, e ai.LanguageModelCallStartEvent) {
+			names := make([]string, 0, len(e.Tools))
+			for _, tl := range e.Tools {
+				names = append(names, tl.Name)
+			}
+			modelToolNames = append(modelToolNames, names)
+		},
 	})
 
 	if _, err := agent.GenerateAgent(context.Background(), AgentGenerateOptions{Prompt: "hi"}); err != nil {
@@ -3313,9 +3354,14 @@ func TestExecuteWithMessagesDeferredToolDiscovery_OnStepStartReportsEffectiveToo
 	if len(stepStartToolNames) < 1 {
 		t.Fatalf("expected at least 1 OnStepStartEvent, got %d", len(stepStartToolNames))
 	}
-	for _, name := range stepStartToolNames[0] {
+	// TS stepStartEvent.tools is the call's tool set; the model-visible set
+	// (secret hidden until discovered) is on the model call start event.
+	if got := strings.Join(stepStartToolNames[0], ","); got != "toolSearch,secret" {
+		t.Fatalf("OnStepStartEvent step 1 tools = %v, want the call's tools", stepStartToolNames[0])
+	}
+	for _, name := range modelToolNames[0] {
 		if name == "secret" {
-			t.Fatalf("OnStepStartEvent step 1 tools = %v, want secret hidden until discovered (matches the tools actually sent to the model)", stepStartToolNames[0])
+			t.Fatalf("model call step 1 tools = %v, want secret hidden until discovered", modelToolNames[0])
 		}
 	}
 }
@@ -3410,5 +3456,197 @@ func TestExecuteWithMessagesToolCallers_LateBindsLocalCaller(t *testing.T) {
 	names, ok := result.ToolResults[0].Result.([]string)
 	if !ok || len(names) != 1 || names[0] != "getInventory" {
 		t.Fatalf("ToolResults[0].Result = %v, want [getInventory] (caller's bound Execute must see the routed callee)", result.ToolResults[0].Result)
+	}
+}
+
+// TS validateTypes({context: {field: 'options'}}) throws a TypeValidationError;
+// the v0.5.2 *InvalidArgumentError stays reachable through the cause chain.
+func TestValidateAgentCallOptions_IsTypeValidationError(t *testing.T) {
+	sch := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "required": []interface{}{"ok"}})
+	_, err := validateAgentCallOptions(sch, map[string]interface{}{"mode": "bad"})
+	if !providererrors.IsValidationError(err) {
+		t.Fatalf("err = %v, want TypeValidationError", err)
+	}
+	if !strings.HasPrefix(err.Error(), "Type validation failed for options: Value: {\"mode\":\"bad\"}.\nError message: ") {
+		t.Fatalf("message = %q", err.Error())
+	}
+	var invalidArg *providererrors.InvalidArgumentError
+	if !errors.As(err, &invalidArg) {
+		t.Fatalf("errors.As(*InvalidArgumentError) failed for %v", err)
+	}
+}
+
+// The agent hands the call to generateText/streamText, so the prompt checks are
+// TS InvalidPromptErrors; the v0.5.2 ValidationError stays reachable.
+func TestValidateAgentPromptOptions_InvalidPromptError(t *testing.T) {
+	err := validateAgentPromptOptions("", nil)
+	var invalid *providererrors.InvalidPromptError
+	if !errors.As(err, &invalid) || err.Error() != "Invalid prompt: prompt or messages must be defined" {
+		t.Fatalf("err = %v", err)
+	}
+	if !providererrors.IsValidationError(err) {
+		t.Fatalf("v0.5.2 ValidationError not reachable from %v", err)
+	}
+	user := []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "x"}}}}
+	if err := validateAgentPromptOptions("p", user); err == nil || err.Error() != "Invalid prompt: prompt and messages cannot be defined at the same time" {
+		t.Fatalf("both: %v", err)
+	}
+	if err := validateAgentPromptOptions("p", nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A PrepareCall model override applies to the tool-call events of the step.
+func TestExecuteTool_EventsReportPreparedModel(t *testing.T) {
+	stepModel := &mockLanguageModel{responses: []types.GenerateResult{
+		{Text: "call", FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}}}, Usage: types.Usage{TotalTokens: intPtr(1)}},
+		{Text: "done", FinishReason: types.FinishReasonStop, Usage: types.Usage{TotalTokens: intPtr(1)}},
+	}}
+	base := &mockLanguageModel{}
+	var gotModelID []string
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: base,
+		Tools: []types.Tool{{Name: "t", Parameters: map[string]interface{}{"type": "object"},
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "ok", nil
+			}}},
+		PrepareCall: func(ctx context.Context, c PrepareCallConfig) PrepareCallConfig {
+			c.Model = namedModel{stepModel, "prepared-model"}
+			return c
+		},
+		OnToolExecutionEnd: func(_ context.Context, e ai.OnToolCallFinishEvent) { gotModelID = append(gotModelID, e.ModelID) },
+		MaxSteps:           2,
+	})
+	if _, err := agent.Execute(context.Background(), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if len(gotModelID) != 1 || gotModelID[0] != "prepared-model" {
+		t.Fatalf("tool-call event model ids = %v, want [prepared-model]", gotModelID)
+	}
+}
+
+type namedModel struct {
+	*mockLanguageModel
+	id string
+}
+
+func (n namedModel) ModelID() string { return n.id }
+
+func TestExecuteStep_ToolResultWithoutCallIsRejected(t *testing.T) {
+	model := &mockLanguageModel{responses: []types.GenerateResult{{
+		Text:         "x",
+		FinishReason: types.FinishReasonStop,
+		Content:      []types.ContentPart{types.ToolResultContent{ToolCallID: "ghost", ToolName: "t", Result: "r"}},
+	}}}
+	agent := NewToolLoopAgent(AgentConfig{Model: model, MaxSteps: 1})
+	_, err := agent.Execute(context.Background(), "hi")
+	if err == nil || !strings.Contains(err.Error(), "Tool call ghost not found.") {
+		t.Fatalf("err = %v, want Tool call ghost not found.", err)
+	}
+}
+
+// TS convertLanguageModelContent downloads URL-backed generated files and the
+// step logs its model warnings; the legacy loop does both.
+func TestExecuteStep_DownloadsGeneratedFileURLsAndLogsWarnings(t *testing.T) {
+	logged := captureWarnings(t)
+	orig := ai.DefaultDownload
+	t.Cleanup(func() { ai.DefaultDownload = orig })
+	ai.DefaultDownload = func(_ context.Context, reqs []ai.DownloadRequest) ([]*ai.DownloadResult, error) {
+		out := make([]*ai.DownloadResult, len(reqs))
+		for i := range reqs {
+			out[i] = &ai.DownloadResult{Data: []byte("PNGDATA")}
+		}
+		return out, nil
+	}
+	model := &mockLanguageModel{responses: []types.GenerateResult{{
+		Text:         "x",
+		FinishReason: types.FinishReasonStop,
+		Warnings:     []types.Warning{{Type: "other", Message: "careful"}},
+		Content: []types.ContentPart{types.GeneratedFileContent{
+			MediaType: "image/png",
+			FileData:  types.FileData{Type: types.FileDataTypeURL, URL: "https://example.com/a.png"},
+		}},
+	}}}
+	agent := NewToolLoopAgent(AgentConfig{Model: model, MaxSteps: 1})
+	res, err := agent.Execute(context.Background(), "hi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Steps) != 1 || len(res.Steps[0].Files) != 1 || string(res.Steps[0].Files[0].Data) != "PNGDATA" {
+		t.Fatalf("files = %#v", res.Steps)
+	}
+	if got := logged(); len(got) != 1 || len(got[0].Warnings) != 1 || got[0].Warnings[0].Message != "careful" {
+		t.Fatalf("logged warnings = %#v", got)
+	}
+}
+
+// TS continues after client tool calls whatever the finish reason: a "stop"
+// response that carries tool calls runs them and takes another step, while a
+// truncated ("length") one never executes them and ends the run.
+func TestRunLoop_ContinuesAfterToolCallsWithStopFinishReason(t *testing.T) {
+	for _, tc := range []struct {
+		finish    types.FinishReason
+		wantSteps int
+		wantExec  int
+	}{
+		{types.FinishReasonStop, 2, 1},
+		{types.FinishReasonLength, 1, 0},
+	} {
+		t.Run(string(tc.finish), func(t *testing.T) {
+			executed := 0
+			model := &mockLanguageModel{responses: []types.GenerateResult{
+				{Text: "call", FinishReason: tc.finish, ToolCalls: []types.ToolCall{{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}}}},
+				{Text: "done", FinishReason: types.FinishReasonStop},
+			}}
+			agent := NewToolLoopAgent(AgentConfig{
+				Model: model,
+				Tools: []types.Tool{{Name: "t", Parameters: map[string]interface{}{"type": "object"},
+					Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+						executed++
+						return "ok", nil
+					}}},
+				MaxSteps: 3,
+			})
+			res, err := agent.Execute(context.Background(), "hi")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Steps) != tc.wantSteps || executed != tc.wantExec {
+				t.Fatalf("steps=%d executed=%d, want %d and %d", len(res.Steps), executed, tc.wantSteps, tc.wantExec)
+			}
+		})
+	}
+}
+
+// TS generateText notifies tools (onInputStart then onInputAvailable) before
+// they run; the legacy loop does too.
+func TestExecuteStep_InvokesToolInputCallbacks(t *testing.T) {
+	var order []string
+	model := &mockLanguageModel{responses: []types.GenerateResult{
+		{Text: "call", FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{"a": 1.0}}}},
+		{Text: "done", FinishReason: types.FinishReasonStop},
+	}}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: model,
+		Tools: []types.Tool{{Name: "t", Parameters: map[string]interface{}{"type": "object"},
+			OnInputStart: func(_ context.Context, o types.OnInputStartOptions) error {
+				order = append(order, "start:"+o.ToolCallID)
+				return nil
+			},
+			OnInputAvailable: func(_ context.Context, o types.OnInputAvailableOptions) error {
+				order = append(order, "available:"+o.ToolCallID)
+				return nil
+			},
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				order = append(order, "execute")
+				return "ok", nil
+			}}},
+		MaxSteps: 3,
+	})
+	if _, err := agent.Execute(context.Background(), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(order, ","); got != "start:c1,available:c1,execute" {
+		t.Fatalf("order = %s", got)
 	}
 }

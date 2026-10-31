@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
@@ -86,6 +87,32 @@ type Callbacks struct {
 	OnToolExecutionEnd       func(ctx context.Context, e ai.OnToolCallFinishEvent)
 	OnStepEnd                func(ctx context.Context, e ai.OnStepFinishEvent)
 	OnEnd                    func(ctx context.Context, e ai.OnFinishEvent)
+}
+
+// panicSafe wraps every set callback so a panicking callback is recovered
+// and dropped instead of crashing the turn (TS awaits each callback inside
+// `Promise.allSettled`, so a throwing callback never fails the turn).
+func (c Callbacks) panicSafe() Callbacks {
+	return Callbacks{
+		OnStart:                  safeCallback(c.OnStart),
+		OnStepStart:              safeCallback(c.OnStepStart),
+		OnLanguageModelCallStart: safeCallback(c.OnLanguageModelCallStart),
+		OnLanguageModelCallEnd:   safeCallback(c.OnLanguageModelCallEnd),
+		OnToolExecutionStart:     safeCallback(c.OnToolExecutionStart),
+		OnToolExecutionEnd:       safeCallback(c.OnToolExecutionEnd),
+		OnStepEnd:                safeCallback(c.OnStepEnd),
+		OnEnd:                    safeCallback(c.OnEnd),
+	}
+}
+
+func safeCallback[E any](fn func(context.Context, E)) func(context.Context, E) {
+	if fn == nil {
+		return nil
+	}
+	return func(ctx context.Context, e E) {
+		defer func() { _ = recover() }()
+		fn(ctx, e)
+	}
 }
 
 // AgentSettings are the construction-time settings for a HarnessAgent.
@@ -171,6 +198,12 @@ type AgentSettings struct {
 	// host-executed tools.
 	ToolApproval AgentToolApprovalConfiguration
 
+	// ToolApprovalReasons carries the optional `reason` of a ToolApproval
+	// entry (TS `{ type: 'denied', reason }`). The reason of a denied tool is
+	// sent to the model in the execution-denied result and recorded on the
+	// automatic approval response.
+	ToolApprovalReasons map[string]string
+
 	// ActiveTools / InactiveTools limit the tools available to the harness
 	// without changing the tool call/result types in the result. Mutually
 	// exclusive; leave both nil to allow every tool.
@@ -192,6 +225,19 @@ type AgentSettings struct {
 	// nest model-call and tool-execution spans. Nil disables it. Mirrors TS
 	// `HarnessAgentSettings.telemetry`.
 	Telemetry *telemetry.Options
+
+	// Debug configures diagnostics: bridge log forwarding (sandbox console
+	// lines and structured debug events) and the HARNESS_DEBUG stderr
+	// default. Set &DebugConfig{Enabled: &true} to turn it on in code; the
+	// HARNESS_DEBUG, HARNESS_DEBUG_LEVEL and HARNESS_DEBUG_SUBSYSTEMS env vars
+	// fill any unset field. Mirrors TS `HarnessAgentSettings.debug`.
+	Debug *DebugConfig
+
+	// OnLog is a programmatic sink for forwarded bridge diagnostics. It
+	// receives every captured console line and structured event, normalized,
+	// independent of the stderr default. Only called when diagnostics are
+	// enabled via Debug or HARNESS_DEBUG. Mirrors TS `onLog`.
+	OnLog func(Diagnostic)
 }
 
 var forbiddenAgentHeaders = map[string]struct{}{
@@ -207,13 +253,22 @@ func normalizeAgentHeaders(headers map[string]string) (map[string]string, error)
 	if len(headers) == 0 {
 		return nil, nil
 	}
-	out := make(map[string]string, len(headers))
-	for name, value := range headers {
-		lower := strings.ToLower(name)
+	// TS picks the first forbidden name in the headers object's key order.
+	// A Go map has no order, so the lower-cased names are visited sorted:
+	// the error is deterministic for any combination of forbidden headers.
+	names := make([]string, 0, len(headers))
+	for name := range headers {
+		names = append(names, strings.ToLower(name))
+	}
+	sort.Strings(names)
+	for _, lower := range names {
 		if _, forbidden := forbiddenAgentHeaders[lower]; forbidden {
 			return nil, fmt.Errorf("HarnessAgent: `headers` must not include the managed header `%s`.", lower) //nolint:staticcheck // matches TS SDK's exact error text
 		}
-		out[lower] = value
+	}
+	out := make(map[string]string, len(headers))
+	for name, value := range headers {
+		out[strings.ToLower(name)] = value
 	}
 	return out, nil
 }

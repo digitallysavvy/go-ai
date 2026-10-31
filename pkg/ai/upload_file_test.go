@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -91,5 +92,37 @@ func TestUploadFile_UnsupportedAPI(t *testing.T) {
 	_, err := UploadFile(context.Background(), UploadFileOptions{API: struct{}{}, Data: []byte{1}})
 	if !errors.Is(err, ErrFilesAPINotSupported) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TS detectMediaType only knows magic numbers: HTML stays text/plain (net/http
+// sniffing would have reported text/html; charset=utf-8).
+func TestUploadFile_HTMLIsTextPlain(t *testing.T) {
+	filesAPI := &mockUploadFilesAPI{res: &types.UploadFileResult{}}
+	_, err := UploadFile(context.Background(), UploadFileOptions{API: filesAPI, Data: []byte("<!DOCTYPE html><html></html>")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filesAPI.last.MediaType != "text/plain" {
+		t.Fatalf("MediaType = %q", filesAPI.last.MediaType)
+	}
+}
+
+type closeTracker struct {
+	*strings.Reader
+	closed bool
+}
+
+func (c *closeTracker) Close() error { c.closed = true; return nil }
+
+func TestUploadFile_FailedUploadClosesStream(t *testing.T) {
+	stream := &closeTracker{Reader: strings.NewReader("x")}
+	filesAPI := &mockUploadFilesAPI{err: errors.New("boom")}
+	_, err := UploadFile(context.Background(), UploadFileOptions{
+		API:  filesAPI,
+		Data: types.FileData{Type: types.FileDataTypeStream, Stream: stream},
+	})
+	if err == nil || !stream.closed {
+		t.Fatalf("err=%v closed=%v", err, stream.closed)
 	}
 }

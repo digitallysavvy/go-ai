@@ -257,7 +257,8 @@ func TestNormalizePromptWithDownloadSupportCombinesConsecutiveToolMessages(t *te
 			{
 				Role: types.RoleAssistant,
 				Content: []types.ContentPart{
-					types.ToolCallContent{ToolCallID: "toolCallId", ToolName: "toolName", Input: "{}"},
+					types.ToolCallContent{ToolCallID: "toolCallId1", ToolName: "toolName", Input: "{}"},
+					types.ToolCallContent{ToolCallID: "toolCallId2", ToolName: "toolName", Input: "{}"},
 				},
 			},
 			{

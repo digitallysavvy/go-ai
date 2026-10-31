@@ -254,7 +254,7 @@ func buildOpenAILiveSessionConfig(config provider.RealtimeSessionConfig, modelID
 			session["delegation"] = nil
 		}
 	}
-	if len(options.Input) > 0 {
+	if options.Input != nil {
 		session["input"] = options.Input
 	}
 	if options.Store != nil {
@@ -292,14 +292,34 @@ func serializeOpenAILiveClientEvent(event provider.RealtimeClientEvent, modelID 
 	case "input-audio-unmute":
 		out = map[string]interface{}{"type": "session.input_audio.unmute"}
 	case "context-append":
+		// TS: z.strictObject({ channel: z.enum([instructions, thinking,
+		// commentary]).optional() }).parse(providerOptions.openai ?? {}) and
+		// delegationId: z.string().min(1).nullable().
 		channel := "thinking"
-		if openaiOpts, ok := event.ProviderOptions["openai"].(map[string]interface{}); ok {
-			if c, _ := openaiOpts["channel"].(string); c != "" {
+		if raw, present := event.ProviderOptions["openai"]; present && raw != nil {
+			openaiOpts, ok := raw.(map[string]interface{})
+			if !ok {
+				return nil, &providererrors.InvalidArgumentError{Field: "providerOptions.openai", Message: "must be an object"}
+			}
+			for key, value := range openaiOpts {
+				if key != "channel" {
+					return nil, &providererrors.InvalidArgumentError{Field: "providerOptions.openai." + key, Message: "unrecognized key"}
+				}
+				if value == nil {
+					continue
+				}
+				c, _ := value.(string)
+				if c != "instructions" && c != "thinking" && c != "commentary" {
+					return nil, &providererrors.InvalidArgumentError{Field: "providerOptions.openai.channel", Message: `must be "instructions", "thinking" or "commentary"`}
+				}
 				channel = c
 			}
 		}
 		var delegationID interface{}
 		if event.DelegationID != nil {
+			if *event.DelegationID == "" {
+				return nil, &providererrors.InvalidArgumentError{Field: "delegationId", Message: "must be a non-empty string or null"}
+			}
 			delegationID = *event.DelegationID
 		}
 		out = map[string]interface{}{

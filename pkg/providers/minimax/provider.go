@@ -15,10 +15,12 @@ package minimax
 
 import (
 	"fmt"
-	"os"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
@@ -34,6 +36,10 @@ const DefaultVideoBaseURL = "https://api.minimax.io"
 type Provider struct {
 	config            Config
 	anthropicProvider *anthropic.Provider
+	// anthropicConfig is the Anthropic transport configuration. Models with
+	// the M3.1 capabilities get their own transport derived from it
+	// (see newM31AnthropicProvider).
+	anthropicConfig anthropic.Config
 
 	// videoClient serves the video generation API (Authorization: Bearer
 	// <apiKey>, no anthropic-version header, unlike the chat client). The
@@ -74,20 +80,21 @@ func New(cfg Config) *Provider {
 		baseURL = DefaultBaseURL
 	}
 
-	videoBaseURL := cfg.VideoBaseURL
+	// TS withoutTrailingSlash: exactly one trailing slash is removed.
+	videoBaseURL := strings.TrimSuffix(cfg.VideoBaseURL, "/")
 	if videoBaseURL == "" {
 		videoBaseURL = DefaultVideoBaseURL
 	}
 
-	// resolveAPIKey() below re-reads MINIMAX_API_KEY per call, so the
-	// Anthropic sub-provider (which resolves its own API key once, here, at
-	// construction time) is the one exception: that eager resolution is the
-	// existing pkg/providers/anthropic convention, unchanged by this package.
-	anthropicProvider := anthropic.New(anthropic.Config{
-		APIKey:  resolveAPIKey(cfg.APIKey),
-		Name:    "minimax",
-		BaseURL: baseURL,
-		Headers: cfg.Headers,
+	// MINIMAX_API_KEY is read per request (TS loadApiKey) by the Anthropic
+	// sub-provider through APIKeyEnvVar and by resolveVideoHeaders.
+	anthropicConfig := anthropic.Config{
+		APIKey:            cfg.APIKey,
+		APIKeyEnvVar:      "MINIMAX_API_KEY",
+		APIKeyDescription: "MiniMax API key",
+		Name:              "minimax",
+		BaseURL:           baseURL,
+		Headers:           cfg.Headers,
 		// TS sets supportedUrls: () => ({}) for MiniMax: unlike direct
 		// Anthropic, it never accepts https image/PDF URLs directly and
 		// always converts to base64.
@@ -95,7 +102,8 @@ func New(cfg Config) *Provider {
 			return map[string][]string{}
 		},
 		UserAgentName: "minimax",
-	})
+	}
+	anthropicProvider := anthropic.New(anthropicConfig)
 
 	// No static headers: resolveVideoHeaders builds the Authorization header
 	// fresh on every video request instead.
@@ -106,18 +114,10 @@ func New(cfg Config) *Provider {
 	return &Provider{
 		config:            cfg,
 		anthropicProvider: anthropicProvider,
+		anthropicConfig:   anthropicConfig,
 		videoClient:       videoClient,
 		videoBaseURL:      videoBaseURL,
 	}
-}
-
-// resolveAPIKey returns explicitKey, trimmed, or falls back to the
-// MINIMAX_API_KEY environment variable.
-func resolveAPIKey(explicitKey string) string {
-	if explicitKey != "" {
-		return explicitKey
-	}
-	return os.Getenv("MINIMAX_API_KEY")
 }
 
 // resolveVideoHeaders builds the headers for a MiniMax video API request,
@@ -126,9 +126,15 @@ func resolveAPIKey(explicitKey string) string {
 // once and cached) and layering per-request headers over the provider's
 // configured ones (TS `combineHeaders(await resolve(this.config.headers),
 // options.headers)`: request headers win).
-func (p *Provider) resolveVideoHeaders(requestHeaders map[string]string) map[string]string {
-	headers := map[string]string{
-		"Authorization": "Bearer " + resolveAPIKey(p.config.APIKey),
+func (p *Provider) resolveVideoHeaders(requestHeaders map[string]string) (map[string]string, error) {
+	// TS loadApiKey: a missing key is a LoadAPIKeyError.
+	authHeaders, err := providerutils.RequestAuthHeader(p.config.Headers, p.config.APIKey, "MINIMAX_API_KEY", "MiniMax API key", "Authorization", "Bearer ")
+	if err != nil {
+		return nil, err
+	}
+	headers := authHeaders
+	if headers == nil {
+		headers = map[string]string{}
 	}
 	for k, v := range p.config.Headers {
 		headers[k] = v
@@ -136,7 +142,7 @@ func (p *Provider) resolveVideoHeaders(requestHeaders map[string]string) map[str
 	for k, v := range requestHeaders {
 		headers[k] = v
 	}
-	return version.WithUserAgentSuffix(headers, version.ProviderUserAgent("minimax"))
+	return version.WithUserAgentSuffix(headers, version.ProviderUserAgent("minimax")), nil
 }
 
 // CreateMiniMax creates a new MiniMax provider.
@@ -165,30 +171,30 @@ func (p *Provider) ChatModel(modelID string) (provider.LanguageModel, error) {
 // EmbeddingModel returns an error: MiniMax does not support embeddings (TS
 // createMiniMax throws NoSuchModelError for embeddingModel).
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("minimax provider does not support embedding models (no such model: %q)", modelID)
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // ImageModel returns an error: MiniMax does not support image generation (TS
 // createMiniMax throws NoSuchModelError for imageModel).
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("minimax provider does not support image models (no such model: %q)", modelID)
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 // SpeechModel returns an error: MiniMax's chat surface does not support
 // speech synthesis.
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("minimax provider does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns an error: MiniMax's chat surface does not
 // support transcription.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("minimax provider does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns an error: MiniMax does not support reranking.
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("minimax provider does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // VideoModel returns a MiniMax video generation model by ID (TS

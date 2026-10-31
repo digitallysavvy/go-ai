@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"reflect"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // toJSONPayload JSON-encodes a Go value produced outside the sandbox (a
@@ -80,13 +82,10 @@ var errCircularReference = errors.New("circular reference")
 //   - time.Time (and *time.Time) values encode as their ECMA-262
 //     Date#toISOString() form ("1970-01-01T00:00:00.000Z"), not Go's
 //     RFC3339Nano.
-//   - map[string]interface{} entries whose value is nil are omitted,
-//     approximating JSON.stringify's `undefined`-valued-property omission
-//     (Go has no distinct null/undefined: a Go nil is treated as
-//     "undefined" and dropped; an explicit JSON `null` decoded from a
-//     provider response survives as-is since it round-trips through Go as
-//     a non-nil json.RawMessage-free `interface{}` wrapping nil only when
-//     it, too, was nil -- this is a known, documented limitation).
+//   - map[string]interface{} entries whose value is nil encode as JSON
+//     `null`, as in TS (a decoded JSON null stays null). Go has no
+//     `undefined`, so a nil map value is never dropped; only a whole
+//     result that is nil is treated as `undefined` (toJSONPayload).
 //   - a map or slice that contains itself (directly or transitively)
 //     fails with errCircularReference, mirroring JSON.stringify's
 //     "Converting circular structure to JSON" TypeError.
@@ -99,7 +98,9 @@ func marshalJSCompatible(value interface{}) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := json.Marshal(converted)
+	// jsonstr: JSON.stringify text, so the byte-size limit counts '<', '>' and
+	// '&' as one byte, not as a six-byte escape.
+	data, err := jsonstr.Marshal(converted)
 	if err != nil {
 		return "", err
 	}
@@ -130,9 +131,6 @@ func jsCompatibleValue(value interface{}, ancestors map[uintptr]bool) (interface
 
 		out := make(map[string]interface{}, len(v))
 		for k, val := range v {
-			if val == nil {
-				continue
-			}
 			converted, err := jsCompatibleValue(val, ancestors)
 			if err != nil {
 				return nil, err

@@ -1,11 +1,16 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 const (
@@ -40,6 +45,27 @@ type MCPAppResource struct {
 	MimeType string                 `json:"mimeType"`
 	HTML     string                 `json:"html"`
 	Meta     map[string]interface{} `json:"meta,omitempty"`
+
+	// cspUndefined lists csp fields present but malformed in the read
+	// result. Zod's catch(undefined) keeps such a key (as undefined) on the
+	// parsed csp, which TS canonicalJSON hashes as null, so the fingerprint
+	// needs to know about keys Meta no longer carries.
+	cspUndefined []string
+}
+
+// MarshalJSON keeps an empty-but-present meta object (`"meta":{}`), as
+// JSON.stringify does for the TS resource; only a nil Meta is omitted.
+func (r MCPAppResource) MarshalJSON() ([]byte, error) {
+	if r.Meta != nil && len(r.Meta) == 0 {
+		return json.Marshal(struct {
+			URI      string                 `json:"uri"`
+			MimeType string                 `json:"mimeType"`
+			HTML     string                 `json:"html"`
+			Meta     map[string]interface{} `json:"meta"`
+		}{r.URI, r.MimeType, r.HTML, r.Meta})
+	}
+	type plain MCPAppResource
+	return json.Marshal(plain(r))
 }
 
 // MCPAppClientCapabilities returns the client capabilities advertised by hosts
@@ -59,8 +85,10 @@ func MCPAppClientCapabilities() ClientCapabilities {
 // legacy flat _meta["ui/resourceUri"] key.
 func GetMCPAppToolMeta(tool MCPTool) (*MCPAppToolMeta, error) {
 	uiMeta := mapFromInterface(tool.Meta["ui"])
+	// TS: `uiMeta?.resourceUri ?? tool._meta?.['ui/resourceUri']`; a null
+	// ui.resourceUri falls through to the legacy key like a missing one.
 	resourceValue, hasResource := uiMeta["resourceUri"]
-	if !hasResource {
+	if resourceValue == nil {
 		resourceValue, hasResource = tool.Meta[MCPAppLegacyResourceURIMetaKey]
 	}
 	if !hasResource && uiMeta == nil {
@@ -71,20 +99,21 @@ func GetMCPAppToolMeta(tool MCPTool) (*MCPAppToolMeta, error) {
 	if hasResource {
 		resourceURI, ok := resourceValue.(string)
 		if !ok || !strings.HasPrefix(resourceURI, "ui://") {
-			encoded, _ := json.Marshal(resourceValue)
-			return nil, fmt.Errorf("invalid MCP App resource URI: %s", encoded)
+			// JSON.stringify does not HTML-escape <, > or &.
+			encoded, _ := jsonstr.Marshal(resourceValue)
+			return nil, mcpAppError("Invalid MCP App resource URI: %s", encoded)
 		}
 		meta.ResourceURI = resourceURI
 		meta.Extra["resourceUri"] = resourceURI
 	}
+	// TS parseVisibility: an array is filtered to "model"/"app" and replaces
+	// the raw value even when the result is empty (an empty visibility list
+	// hides the tool from both the model and the app); a non-array leaves the
+	// visibility unset.
 	if visibilityValue, ok := uiMeta["visibility"]; ok {
-		meta.Visibility = parseMCPAppVisibility(visibilityValue)
-		if len(meta.Visibility) > 0 {
+		if meta.Visibility = parseMCPAppVisibility(visibilityValue); meta.Visibility != nil {
 			meta.Extra["visibility"] = meta.Visibility
 		}
-	}
-	if len(meta.Extra) == 0 && meta.ResourceURI == "" {
-		return nil, nil
 	}
 	return meta, nil
 }
@@ -107,6 +136,8 @@ func IsMCPAppTool(tool MCPTool) (bool, error) {
 // SplitMCPAppTools splits tool definitions into model-visible and app-visible
 // lists while preserving pagination metadata.
 func SplitMCPAppTools(definitions ListToolsResult) (modelVisible ListToolsResult, appVisible ListToolsResult, err error) {
+	// TS always returns a tools array; keep an empty one empty (not null).
+	modelVisible.Tools, appVisible.Tools = []MCPTool{}, []MCPTool{}
 	modelVisible.NextCursor = definitions.NextCursor
 	appVisible.NextCursor = definitions.NextCursor
 	for _, tool := range definitions.Tools {
@@ -114,7 +145,7 @@ func SplitMCPAppTools(definitions ListToolsResult) (modelVisible ListToolsResult
 		if metaErr != nil {
 			return ListToolsResult{}, ListToolsResult{}, metaErr
 		}
-		if meta == nil || len(meta.Visibility) == 0 || containsString(meta.Visibility, "model") {
+		if meta == nil || meta.Visibility == nil || containsString(meta.Visibility, "model") {
 			modelVisible.Tools = append(modelVisible.Tools, tool)
 		}
 		if meta != nil && containsString(meta.Visibility, "app") {
@@ -149,28 +180,40 @@ func GetMCPAppResourceFromReadResult(uri string, resource ReadResourceResult) (M
 			continue
 		}
 		if content.MimeType != MCPAppMimeType {
-			return MCPAppResource{}, fmt.Errorf("unsupported MCP App resource MIME type: %s", content.MimeType)
-		}
-		html := content.Text
-		if html == "" && content.Blob != "" {
-			decoded, err := base64.StdEncoding.DecodeString(content.Blob)
-			if err != nil {
-				return MCPAppResource{}, fmt.Errorf("unsupported MCP App resource content format: %s", uri)
+			// A missing mimeType reads as "undefined" in the TS template string.
+			mime := content.MimeType
+			if mime == "" {
+				mime = "undefined"
 			}
-			html = string(decoded)
+			return MCPAppResource{}, mcpAppError("Unsupported MCP App resource MIME type: %s", mime)
 		}
-		if html == "" {
-			return MCPAppResource{}, fmt.Errorf("unsupported MCP App resource content format: %s", uri)
+		// TS: a string text wins (even ""), else a string blob is decoded.
+		var html string
+		switch {
+		case content.Text != "" || content.textPresent:
+			html = content.Text
+		case content.Blob != "" || content.blobPresent:
+			decoded, err := decodeBase64Lenient(content.Blob)
+			if err != nil {
+				// TS: atob throws on malformed base64 before any format check.
+				return MCPAppResource{}, mcpAppError("The string to be decoded is not correctly encoded.")
+			}
+			html = decodeUTF8Lenient(decoded)
+		default:
+			return MCPAppResource{}, mcpAppError("Unsupported MCP App resource content format: %s", uri)
 		}
 		var meta map[string]interface{}
+		var cspUndefined []string
 		if uiMeta := mapFromInterface(content.Meta["ui"]); uiMeta != nil {
-			meta = validateMCPAppResourceMeta(uiMeta)
+			meta, cspUndefined = validateMCPAppResourceMeta(uiMeta)
 		}
 		return MCPAppResource{
 			URI:      uri,
 			MimeType: MCPAppMimeType,
 			HTML:     html,
 			Meta:     meta,
+
+			cspUndefined: cspUndefined,
 		}, nil
 	}
 	return MCPAppResource{}, fmt.Errorf("MCP App resource not found in read result: %s", uri)
@@ -179,7 +222,7 @@ func GetMCPAppResourceFromReadResult(uri string, resource ReadResourceResult) (M
 // ReadMCPAppResource reads and normalizes a ui:// MCP App resource.
 func ReadMCPAppResource(ctx context.Context, client *MCPClient, uri string) (MCPAppResource, error) {
 	if !strings.HasPrefix(uri, "ui://") {
-		return MCPAppResource{}, fmt.Errorf("unsupported MCP App resource URI: %s", uri)
+		return MCPAppResource{}, mcpAppError("Unsupported MCP App resource URI: %s", uri)
 	}
 	result, err := client.ReadResource(ctx, uri)
 	if err != nil {
@@ -193,8 +236,9 @@ func ReadMCPAppResource(ctx context.Context, client *MCPClient, uri string) (MCP
 // frameDomains are each filtered to their string elements when present as an
 // array, and dropped entirely when the field is present but not an array.
 // Unknown keys pass through unchanged (forward-compat).
-func validateMCPAppResourceCSP(raw map[string]interface{}) map[string]interface{} {
+func validateMCPAppResourceCSP(raw map[string]interface{}) (map[string]interface{}, []string) {
 	out := copyMap(raw)
+	var dropped []string
 	for _, key := range []string{"connectDomains", "resourceDomains", "frameDomains"} {
 		value, ok := out[key]
 		if !ok {
@@ -203,6 +247,7 @@ func validateMCPAppResourceCSP(raw map[string]interface{}) map[string]interface{
 		values, ok := value.([]interface{})
 		if !ok {
 			delete(out, key)
+			dropped = append(dropped, key)
 			continue
 		}
 		strs := make([]string, 0, len(values))
@@ -213,7 +258,7 @@ func validateMCPAppResourceCSP(raw map[string]interface{}) map[string]interface{
 		}
 		out[key] = strs
 	}
-	return out
+	return out, dropped
 }
 
 // validateMCPAppResourceMeta mirrors TS MCPAppResourceMetaSchema (a loose
@@ -222,8 +267,9 @@ func validateMCPAppResourceCSP(raw map[string]interface{}) map[string]interface{
 // recursively), and permissions must be an object; a malformed field is
 // dropped rather than failing the whole parse. Unknown keys pass through
 // unchanged for forward-compat.
-func validateMCPAppResourceMeta(raw map[string]interface{}) map[string]interface{} {
+func validateMCPAppResourceMeta(raw map[string]interface{}) (map[string]interface{}, []string) {
 	out := copyMap(raw)
+	var cspDropped []string
 	if value, ok := out["prefersBorder"]; ok {
 		if _, isBool := value.(bool); !isBool {
 			delete(out, "prefersBorder")
@@ -231,7 +277,7 @@ func validateMCPAppResourceMeta(raw map[string]interface{}) map[string]interface
 	}
 	if value, ok := out["csp"]; ok {
 		if cspMap, isMap := value.(map[string]interface{}); isMap {
-			out["csp"] = validateMCPAppResourceCSP(cspMap)
+			out["csp"], cspDropped = validateMCPAppResourceCSP(cspMap)
 		} else {
 			delete(out, "csp")
 		}
@@ -241,17 +287,22 @@ func validateMCPAppResourceMeta(raw map[string]interface{}) map[string]interface
 			delete(out, "permissions")
 		}
 	}
-	return out
+	return out, cspDropped
 }
 
+// parseMCPAppVisibility filters an array to "model"/"app" entries. It returns
+// nil when value is not an array and a non-nil (possibly empty) slice
+// otherwise.
 func parseMCPAppVisibility(value interface{}) []string {
 	values, ok := value.([]interface{})
 	if !ok {
-		if stringsValue, ok := value.([]string); ok {
-			values = make([]interface{}, len(stringsValue))
-			for i, v := range stringsValue {
-				values[i] = v
-			}
+		stringsValue, isStrings := value.([]string)
+		if !isStrings {
+			return nil
+		}
+		values = make([]interface{}, len(stringsValue))
+		for i, v := range stringsValue {
+			values[i] = v
 		}
 	}
 	out := []string{}
@@ -289,4 +340,87 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// decodeBase64Lenient mirrors TS convertBase64ToUint8Array: base64url
+// characters are mapped to the standard alphabet and (as with atob) padding
+// is optional and ASCII whitespace is ignored.
+func decodeBase64Lenient(s string) ([]byte, error) {
+	s = strings.Map(func(r rune) rune {
+		switch r {
+		case '-':
+			return '+'
+		case '_':
+			return '/'
+		case ' ', '\t', '\n', '\f', '\r':
+			return -1
+		}
+		return r
+	}, s)
+	// WHATWG forgiving-base64: only when the length is a multiple of four are
+	// one or two trailing "=" dropped; any other "=" is an invalid character.
+	if len(s)%4 == 0 {
+		if strings.HasSuffix(s, "==") {
+			s = s[:len(s)-2]
+		} else if strings.HasSuffix(s, "=") {
+			s = s[:len(s)-1]
+		}
+	}
+	return base64.RawStdEncoding.DecodeString(s)
+}
+
+// mcpAppError builds a plain error whose text starts with a capital letter,
+// like the TS `new Error(...)` messages (staticcheck ST1005 only inspects
+// literal error constructors).
+func mcpAppError(format string, args ...interface{}) error {
+	msg := fmt.Sprintf(format, args...)
+	return errors.New(msg)
+}
+
+// decodeUTF8Lenient mirrors `new TextDecoder().decode(bytes)` (WHATWG UTF-8
+// decode): a leading BOM is dropped and every maximal invalid subpart becomes
+// one U+FFFD, so the html (and its fingerprint) match TS for a blob that is
+// not valid UTF-8.
+func decodeUTF8Lenient(b []byte) string {
+	b = bytes.TrimPrefix(b, []byte{0xEF, 0xBB, 0xBF})
+	if utf8.Valid(b) {
+		return string(b)
+	}
+	var out strings.Builder
+	for i := 0; i < len(b); {
+		if r, size := utf8.DecodeRune(b[i:]); r != utf8.RuneError || size > 1 {
+			out.Write(b[i : i+size])
+			i += size
+			continue
+		}
+		lead := b[i]
+		need, lower, upper := 0, byte(0x80), byte(0xBF)
+		switch {
+		case lead >= 0xC2 && lead <= 0xDF:
+			need = 1
+		case lead >= 0xE0 && lead <= 0xEF:
+			need = 2
+			switch lead {
+			case 0xE0:
+				lower = 0xA0
+			case 0xED:
+				upper = 0x9F
+			}
+		case lead >= 0xF0 && lead <= 0xF4:
+			need = 3
+			switch lead {
+			case 0xF0:
+				lower = 0x90
+			case 0xF4:
+				upper = 0x8F
+			}
+		}
+		i++
+		for ; need > 0 && i < len(b) && b[i] >= lower && b[i] <= upper; need-- {
+			i++
+			lower, upper = 0x80, 0xBF
+		}
+		out.WriteRune(utf8.RuneError)
+	}
+	return out.String()
 }

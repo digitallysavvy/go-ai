@@ -28,12 +28,12 @@ func NewEmbeddingModel(provider *Provider, modelID string) *EmbeddingModel {
 
 // SpecificationVersion returns the specification version
 func (m *EmbeddingModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
 func (m *EmbeddingModel) Provider() string {
-	return "together"
+	return "togetherai.embedding"
 }
 
 // ModelID returns the model ID
@@ -62,8 +62,10 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		return nil, fmt.Errorf("no embedding data in response")
 	}
 	r := &types.EmbeddingResult{
-		Embedding: result.Embeddings[0],
-		Usage:     result.Usage,
+		Embedding:        result.Embeddings[0],
+		Usage:            result.Usage,
+		Warnings:         result.Warnings,
+		ProviderMetadata: result.ProviderMetadata,
 	}
 	if len(result.Responses) > 0 {
 		r.Response = result.Responses[0]
@@ -73,16 +75,35 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 
 // DoEmbedMany performs embedding for multiple inputs in a batch
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+	// TS OpenAICompatibleEmbeddingModel parses provider options before the
+	// too-many-values check.
+	if opts != nil {
+		if err := providerutils.ValidateOpenAICompatibleEmbeddingOptions(opts.ProviderOptions, "togetherai"); err != nil {
+			return nil, err
+		}
+	}
+	if len(inputs) > m.MaxEmbeddingsPerCall() {
+		return nil, &providererrors.TooManyEmbeddingValuesForCallError{
+			Provider:             m.Provider(),
+			ModelID:              m.modelID,
+			MaxEmbeddingsPerCall: m.MaxEmbeddingsPerCall(),
+			Values:               inputs,
+		}
+	}
 	reqBody := map[string]interface{}{
 		"input": inputs,
 		"model": m.modelID,
+		// TS OpenAICompatibleEmbeddingModel always sends encoding_format.
+		"encoding_format": "float",
 	}
+	warnings := applyEmbeddingDimensions(reqBody, opts)
 	var response togetherEmbedResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/v1/embeddings",
-		Body:    reqBody,
-		Headers: optsHeaders(opts),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaCompatEmbedding),
+		Method:           http.MethodPost,
+		Path:             "/v1/embeddings",
+		Body:             reqBody,
+		Headers:          optsHeaders(opts),
 	}, &response)
 	if err != nil {
 		return nil, providererrors.NewProviderError("together", 0, "", err.Error(), err)
@@ -91,15 +112,23 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	for i, item := range response.Data {
 		embeddings[i] = item.Embedding
 	}
-	return &types.EmbeddingsResult{
+	result := &types.EmbeddingsResult{
 		Embeddings: embeddings,
+		Warnings:   warnings,
 		Usage: types.EmbeddingUsage{
 			Tokens:      float64(response.Usage.PromptTokens),
 			InputTokens: response.Usage.PromptTokens,
 			TotalTokens: response.Usage.TotalTokens,
 		},
-		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response}},
-	}, nil
+		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: providerutils.RawJSONBody(httpResp.Body)}},
+	}
+	if len(response.ProviderMetadata) > 0 {
+		result.ProviderMetadata = map[string]interface{}{}
+		for k, v := range response.ProviderMetadata {
+			result.ProviderMetadata[k] = v
+		}
+	}
+	return result, nil
 }
 
 // optsHeaders extracts the Headers map from EmbedModelOptions (nil-safe).
@@ -122,4 +151,26 @@ type togetherEmbedResponse struct {
 		PromptTokens int `json:"prompt_tokens"`
 		TotalTokens  int `json:"total_tokens"`
 	} `json:"usage"`
+	// ProviderMetadata is passed through like TS OpenAICompatibleEmbeddingModel.
+	ProviderMetadata map[string]map[string]interface{} `json:"providerMetadata"`
+}
+
+// applyEmbeddingDimensions sets the request's dimensions: the provider option
+// wins over the top-level dimensions setting (TS #22338).
+func applyEmbeddingDimensions(reqBody map[string]interface{}, opts *provider.EmbedModelOptions) []types.Warning {
+	if opts == nil {
+		return nil
+	}
+	resolved, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("together", opts.ProviderOptions)
+	// TS provider id togetherai.embedding: its options live under "togetherai".
+	mergeTogetherAIProviderOptions(resolved, opts.ProviderOptions)
+	if d, ok := providerutils.ResolveEmbeddingDimensions(resolved["dimensions"], opts.Dimensions); ok {
+		reqBody["dimensions"] = d
+	}
+	// providerOptions.<provider>.user (TS openaiCompatibleEmbeddingModelOptions.user).
+	// An empty string is kept (JSON.stringify keeps user: '').
+	if u, ok := resolved["user"].(string); ok {
+		reqBody["user"] = u
+	}
+	return warnings
 }

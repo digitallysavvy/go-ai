@@ -1,6 +1,11 @@
 package gemini
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+)
 
 // toSchemaMap converts a JSON schema value of any Go shape (map, struct,
 // json.RawMessage, ...) into a map. Returns false when the value is not a
@@ -40,12 +45,33 @@ func toSchemaMap(schema interface{}) (map[string]interface{}, bool) {
 // `responseJsonSchema` does not support `const`. All other schema properties
 // are preserved and the input is never mutated.
 // Mirrors TS sanitizeResponseJsonSchema (sanitize-response-json-schema.ts).
+//
+// A schema.Schema (what ai.GenerateObject passes) is resolved to its JSON
+// Schema first. Raw JSON keeps the key order the caller wrote, like the JS
+// object TS sanitizes, so `properties` stay in order on the wire.
 func sanitizeResponseJSONSchema(schema interface{}) interface{} {
+	var hint interface{}
+	switch s := schema.(type) {
+	case json.RawMessage:
+		hint, _ = jsonorder.Parse(s)
+	case []byte:
+		hint, _ = jsonorder.Parse(s)
+	default:
+		// An ordered schema comes back as raw JSON and keeps its key order.
+		schema = providerutils.ResponseFormatJSONSchemaOrdered(schema)
+		if raw, ok := schema.(json.RawMessage); ok {
+			hint, _ = jsonorder.Parse(raw)
+		}
+	}
 	m, ok := toSchemaMap(schema)
 	if !ok {
 		return schema
 	}
-	return sanitizeSchemaMap(m)
+	out := sanitizeSchemaMap(m)
+	if hint != nil {
+		return jsonorder.Hinted{V: out, Hint: hint}
+	}
+	return out
 }
 
 func sanitizeSchemaMap(schema map[string]interface{}) map[string]interface{} {

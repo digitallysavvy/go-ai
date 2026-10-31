@@ -1,12 +1,13 @@
 package xai
 
 import (
-	"fmt"
 	"os"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -61,6 +62,10 @@ func New(cfg Config) *Provider {
 			"Authorization": "Bearer " + apiKey,
 			"Content-Type":  "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("xai")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, apiKey, "XAI_API_KEY", "xAI API key", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{
@@ -107,7 +112,8 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("xAI does not support embeddings")
+	// TS: provider.embeddingModel throws NoSuchModelError.
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // ImageModel returns an image generation model by ID
@@ -124,15 +130,18 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 	return NewSpeechModel(p, ""), nil
 }
 
-// TranscriptionModel returns the xAI speech-to-text model. The TypeScript
-// provider has no transcription model ID parameter, so Go ignores modelID for parity.
+// TranscriptionModel returns the xAI speech-to-text model. When modelID is
+// empty, xAI's default transcription model is used; otherwise it is sent as
+// the `model` request parameter (e.g. "grok-voice-transcribe-2.0").
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return NewTranscriptionModel(p, ""), nil
+	return NewTranscriptionModel(p, modelID), nil
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("xAI does not support reranking")
+	// The TS xAI provider has no rerankingModel, so the registry resolves it
+	// to NoSuchModelError.
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // VideoModel returns a video generation model by ID

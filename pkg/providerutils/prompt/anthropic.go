@@ -6,7 +6,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/digitallysavvy/go-ai/pkg/internal/media"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -25,6 +29,7 @@ const (
 	AnthropicBetaMidConversationToolChanges = "mid-conversation-tool-changes-2026-07-01"
 	AnthropicBetaMidConversationClearAt     = "mid-conversation-system-clear-at-2026-08-21"
 	AnthropicBetaMidConversationOutputCfg   = "mid-conversation-output-config-2026-07-01"
+	AnthropicBetaServerSideFallback         = "server-side-fallback-2026-06-01"
 )
 
 // anthropicMaxCacheBreakpoints is the maximum number of cache breakpoints
@@ -60,10 +65,12 @@ var anthropicProviderToolNames = map[string]string{
 	"anthropic.advisor_20260301":           "advisor",
 }
 
-// AnthropicProviderToolName maps a Go SDK tool name to the Anthropic wire tool
-// name. In the Go SDK provider tools are named by their provider ID (for
-// example "anthropic.web_search_20250305"), so the ID doubles as the custom
-// tool name. Unknown names are returned unchanged, like TS
+// AnthropicProviderToolName maps an Anthropic provider tool id (for example
+// "anthropic.web_search_20250305", the Name the Go constructors give their
+// tools) to the Anthropic wire tool name. The Anthropic provider maps the
+// request's custom tool names by tool id first
+// (AnthropicPromptOptions.ToProviderToolName) and falls back to this table.
+// Unknown names are returned unchanged, like TS
 // ToolNameMapping.toProviderToolName.
 func AnthropicProviderToolName(toolName string) string {
 	if providerName, ok := anthropicProviderToolNames[toolName]; ok {
@@ -73,11 +80,18 @@ func AnthropicProviderToolName(toolName string) string {
 }
 
 // AnthropicToolsetNames returns the toolset_name for toolset tools passed to
-// the request. Mirrors getAnthropicToolsetNames in anthropic-language-model.ts.
+// the request, keyed by tool name. Mirrors getAnthropicToolsetNames in
+// anthropic-language-model.ts, which selects the tools by id (ProviderID for
+// a provider tool, else the Name the Go constructors give it), so a renamed
+// computer toolset is found too.
 func AnthropicToolsetNames(tools []types.Tool) map[string]string {
 	out := map[string]string{}
 	for _, t := range tools {
-		if t.Name == "anthropic.computer_toolset_20260801" {
+		id := t.Name
+		if t.Type == types.ToolTypeProviderDefined && t.ProviderID != "" {
+			id = t.ProviderID
+		}
+		if id == "anthropic.computer_toolset_20260801" {
 			out[t.Name] = "computer"
 		}
 	}
@@ -90,6 +104,10 @@ func AnthropicToolsetNames(tools []types.Tool) map[string]string {
 type AnthropicCacheControlValidator struct {
 	breakpointCount int
 	warnings        []types.Warning
+	// providerOptionsName is the cache option namespace of compatible
+	// providers (TS CacheControlValidator providerOptionsName). Empty means
+	// only the canonical "anthropic" namespace is read.
+	providerOptionsName string
 }
 
 // NewAnthropicCacheControlValidator creates a validator for one request.
@@ -97,10 +115,17 @@ func NewAnthropicCacheControlValidator() *AnthropicCacheControlValidator {
 	return &AnthropicCacheControlValidator{}
 }
 
+// NewAnthropicCacheControlValidatorFor creates a validator that prefers the
+// cache options in providerOptions[providerOptionsName] and falls back to the
+// canonical "anthropic" namespace (TS CacheControlValidator constructor).
+func NewAnthropicCacheControlValidatorFor(providerOptionsName string) *AnthropicCacheControlValidator {
+	return &AnthropicCacheControlValidator{providerOptionsName: providerOptionsName}
+}
+
 // GetCacheControl returns the cache_control value from the anthropic provider
 // options (accepting both cacheControl and cache_control), or nil.
 func (v *AnthropicCacheControlValidator) GetCacheControl(providerOptions map[string]interface{}, contextType string, canCache bool) interface{} {
-	value := anthropicCacheControlFromOptions(providerOptions)
+	value := anthropicCacheControlFromOptions(providerOptions, v.providerOptionsName)
 	if value == nil {
 		return nil
 	}
@@ -129,22 +154,42 @@ func (v *AnthropicCacheControlValidator) Warnings() []types.Warning {
 	return v.warnings
 }
 
-func anthropicCacheControlFromOptions(options map[string]interface{}) interface{} {
-	anthropicOpts := anthropicOptions(options)
-	if anthropicOpts == nil {
-		return nil
+func anthropicCacheControlFromOptions(options map[string]interface{}, providerOptionsName string) interface{} {
+	// Prefer the configured namespace, retaining the canonical namespace as a
+	// fallback. Both cacheControl and cache_control are accepted.
+	var namespaces []map[string]interface{}
+	if providerOptionsName != "" && providerOptionsName != "anthropic" && options != nil {
+		if custom, ok := options[providerOptionsName].(map[string]interface{}); ok {
+			namespaces = append(namespaces, custom)
+		}
 	}
-	if cacheControl, ok := anthropicOpts["cacheControl"]; ok && cacheControl != nil {
-		return cacheControl
+	if anthropicOpts := anthropicOptions(options); anthropicOpts != nil {
+		namespaces = append(namespaces, anthropicOpts)
 	}
-	if cacheControl, ok := anthropicOpts["cache_control"]; ok && cacheControl != nil {
-		return cacheControl
+	for _, ns := range namespaces {
+		if cacheControl, ok := ns["cacheControl"]; ok && cacheControl != nil {
+			return cacheControl
+		}
+		if cacheControl, ok := ns["cache_control"]; ok && cacheControl != nil {
+			return cacheControl
+		}
 	}
 	return nil
 }
 
+// AnthropicMediaPartConverter lets compatible providers convert a file part
+// into their own image or video block (TS AnthropicMediaPartConverter). The
+// returned block must not carry cache_control; the converter adds it. A nil
+// block (with a nil error) means "use the default conversion".
+type AnthropicMediaPartConverter func(part types.FileContent) (map[string]interface{}, error)
+
 // AnthropicPromptOptions configures ConvertToAnthropicPrompt.
 type AnthropicPromptOptions struct {
+	// ConvertMediaPart overrides the file conversion of user message parts
+	// (including image parts, which are file parts with an image media type).
+	// nil uses the default conversion.
+	ConvertMediaPart AnthropicMediaPartConverter
+
 	// SendReasoning controls whether reasoning parts are sent back as
 	// thinking / redacted_thinking blocks. nil means true (TS default).
 	SendReasoning *bool
@@ -264,7 +309,9 @@ func ConvertToAnthropicPrompt(messages []types.Message, opts AnthropicPromptOpti
 		isLastBlock := i == len(blocks)-1
 		switch block.role {
 		case types.RoleSystem:
-			c.convertSystemBlock(block, i, &system, &out)
+			if err := c.convertSystemBlock(block, i, &system, &out); err != nil {
+				return nil, err
+			}
 
 		case types.RoleAssistant:
 			content, err := c.convertAssistantBlock(block, isLastBlock, sendReasoning)
@@ -414,12 +461,76 @@ type anthropicSystemMessage struct {
 	toolChangeCount int
 }
 
-func (c *anthropicConverter) convertSystemBlock(block anthropicBlock, index int, system *[]map[string]interface{}, out *[]map[string]interface{}) {
+// validateAnthropicSystemMessageOptions mirrors TS parseProviderOptions with
+// anthropicSystemMessageProviderOptions: clearAt, effort and toolChanges are
+// schema-checked and a violation is an InvalidArgumentError. It returns the
+// toolChanges normalised to []interface{}.
+func validateAnthropicSystemMessageOptions(sysOpts map[string]interface{}) ([]interface{}, error) {
+	invalid := func(format string, args ...interface{}) error {
+		return &providererrors.InvalidArgumentError{
+			Field:   "providerOptions",
+			Message: "invalid anthropic provider options",
+			Cause:   fmt.Errorf(format, args...),
+		}
+	}
+	if v, ok := sysOpts["clearAt"]; ok && v != nil {
+		if s, isString := v.(string); !isString || s != "next_user_message" {
+			return nil, invalid("clearAt: invalid input, expected \"next_user_message\"")
+		}
+	}
+	if v, ok := sysOpts["effort"]; ok && v != nil {
+		s, isString := v.(string)
+		switch {
+		case !isString:
+			return nil, invalid("effort: invalid input, expected one of low, medium, high, xhigh, max")
+		case s != "low" && s != "medium" && s != "high" && s != "xhigh" && s != "max":
+			return nil, invalid("effort: invalid option %q, expected one of low, medium, high, xhigh, max", s)
+		}
+	}
+	raw, ok := sysOpts["toolChanges"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	toolChanges := interfaceSlice(raw)
+	if toolChanges == nil {
+		// Typed slices (e.g. []map[string]string) normalise through JSON.
+		if encoded, err := json.Marshal(raw); err == nil {
+			_ = json.Unmarshal(encoded, &toolChanges)
+		}
+		if toolChanges == nil {
+			return nil, invalid("toolChanges: invalid input, expected an array")
+		}
+	}
+	for i, change := range toolChanges {
+		m, isMap := change.(map[string]interface{})
+		if !isMap {
+			if encoded, err := json.Marshal(change); err == nil {
+				_ = json.Unmarshal(encoded, &m)
+			}
+			if m == nil {
+				return nil, invalid("toolChanges[%d]: invalid input, expected an object", i)
+			}
+			toolChanges[i] = m
+		}
+		if t, _ := m["type"].(string); t != "tool_addition" && t != "tool_removal" {
+			return nil, invalid("toolChanges[%d].type: invalid option, expected tool_addition or tool_removal", i)
+		}
+		if _, isString := m["toolName"].(string); !isString {
+			return nil, invalid("toolChanges[%d].toolName: invalid input, expected string", i)
+		}
+	}
+	return toolChanges, nil
+}
+
+func (c *anthropicConverter) convertSystemBlock(block anthropicBlock, index int, system *[]map[string]interface{}, out *[]map[string]interface{}) error {
 	converted := make([]anthropicSystemMessage, 0, len(block.messages))
 	for _, msg := range block.messages {
 		text := messageText(msg)
 		sysOpts := anthropicOptions(msg.ProviderOptions)
-		toolChanges := interfaceSlice(sysOpts["toolChanges"])
+		toolChanges, err := validateAnthropicSystemMessageOptions(sysOpts)
+		if err != nil {
+			return err
+		}
 		clearAt := sysOpts["clearAt"]
 		effort := sysOpts["effort"]
 
@@ -493,7 +604,7 @@ func (c *anthropicConverter) convertSystemBlock(block anthropicBlock, index int,
 			}
 		}
 		*system = sys
-		return
+		return nil
 	}
 
 	c.addBeta(AnthropicBetaMidConversationSystem)
@@ -516,6 +627,7 @@ func (c *anthropicConverter) convertSystemBlock(block anthropicBlock, index int,
 			c.addBeta(AnthropicBetaMidConversationOutputCfg)
 		}
 	}
+	return nil
 }
 
 func messageText(msg types.Message) string {
@@ -685,6 +797,43 @@ func resolveAnthropicFile(fileData types.FileData, data []byte, url, reference, 
 	return f, nil
 }
 
+// AnthropicFilePart is a resolved view of a file part for custom media
+// converters (see AnthropicMediaPartConverter): the tagged data kind and its
+// payload, whichever of the FileContent forms the caller used.
+type AnthropicFilePart struct {
+	// Kind is the data kind: data, url, reference or text.
+	Kind types.FileDataType
+	// Data holds the bytes for Kind == FileDataTypeData.
+	Data []byte
+	// URL holds the URL for Kind == FileDataTypeURL.
+	URL string
+	// Reference holds the provider references for Kind == FileDataTypeReference.
+	Reference types.ProviderReference
+	// MediaType is the declared media type; it may be a bare top-level type
+	// such as "image". Use FullMediaType to resolve it.
+	MediaType string
+
+	file anthropicFile
+}
+
+// ResolveAnthropicFilePart normalizes a file part (legacy Data/URL/Reference
+// fields, tagged FileData, data: URLs) into an AnthropicFilePart.
+func ResolveAnthropicFilePart(p types.FileContent) (AnthropicFilePart, error) {
+	f, err := resolveAnthropicFile(p.FileData, p.Data, p.URL, p.Reference, p.Text, firstNonEmpty(p.MediaType, p.MimeType), p.Filename)
+	if err != nil {
+		return AnthropicFilePart{}, err
+	}
+	return AnthropicFilePart{Kind: f.kind, Data: f.data, URL: f.url, Reference: f.reference, MediaType: f.mediaType, file: f}, nil
+}
+
+// TopLevelMediaType returns the part before "/" of the media type ("image"
+// for "image/png").
+func (f AnthropicFilePart) TopLevelMediaType() string { return topLevelMediaType(f.MediaType) }
+
+// FullMediaType resolves a full media type, detecting it from inline bytes
+// when only the top-level type was given (TS resolveFullMediaType).
+func (f AnthropicFilePart) FullMediaType() (string, error) { return f.file.resolveFullMediaType() }
+
 func topLevelMediaType(mediaType string) string {
 	if i := strings.Index(mediaType, "/"); i >= 0 {
 		return mediaType[:i]
@@ -721,33 +870,60 @@ func (f anthropicFile) resolveFullMediaType() (string, error) {
 }
 
 func detectAnthropicMediaType(data []byte, topLevel string) string {
-	isPDF := len(data) >= 4 && string(data[:4]) == "%PDF"
-	switch topLevel {
-	case "image":
-		if len(data) < 3 {
-			return ""
-		}
-		return media.DetectImageMediaType(data)
-	case "application":
-		if isPDF {
-			return "application/pdf"
-		}
-	case "":
-		if isPDF {
-			return "application/pdf"
-		}
-	}
-	return ""
+	// An empty top-level type (Go callers often omit MediaType) scans every
+	// signature table, like the other converters (resolveFullMediaTypeStrict).
+	detected, _ := fileutil.DetectMediaTypeSignature(data, topLevel)
+	return detected
 }
 
-func (c *anthropicConverter) documentMetadata(providerOptions map[string]interface{}, filename string, block map[string]interface{}) {
-	opts := anthropicOptions(providerOptions)
-	title, _ := opts["title"].(string)
-	if title == "" {
-		title = filename
+// validateAnthropicFilePartOptions mirrors TS parseProviderOptions with
+// anthropicFilePartProviderOptions: containerUpload (boolean), citations
+// ({enabled: boolean}), title and context (strings).
+func validateAnthropicFilePartOptions(opts map[string]interface{}) error {
+	invalid := func(format string, args ...interface{}) error {
+		return &providererrors.InvalidArgumentError{
+			Field:   "providerOptions",
+			Message: "invalid anthropic provider options",
+			Cause:   fmt.Errorf(format, args...),
+		}
 	}
-	if title != "" {
+	for _, key := range []string{"containerUpload"} {
+		if v, ok := opts[key]; ok && v != nil {
+			if _, isBool := v.(bool); !isBool {
+				return invalid("%s: invalid input, expected boolean", key)
+			}
+		}
+	}
+	for _, key := range []string{"title", "context"} {
+		if v, ok := opts[key]; ok && v != nil {
+			if _, isString := v.(string); !isString {
+				return invalid("%s: invalid input, expected string", key)
+			}
+		}
+	}
+	if v, ok := opts["citations"]; ok && v != nil {
+		citations, isMap := v.(map[string]interface{})
+		if !isMap {
+			return invalid("citations: invalid input, expected object")
+		}
+		if _, isBool := citations["enabled"].(bool); !isBool {
+			return invalid("citations.enabled: invalid input, expected boolean")
+		}
+	}
+	return nil
+}
+
+func (c *anthropicConverter) documentMetadata(providerOptions map[string]interface{}, filename string, block map[string]interface{}) error {
+	opts := anthropicOptions(providerOptions)
+	if err := validateAnthropicFilePartOptions(opts); err != nil {
+		return err
+	}
+	// TS: metadata.title ?? part.filename -- an explicit empty title stays
+	// empty (and is sent), only an absent title falls back to the filename.
+	if title, ok := opts["title"].(string); ok {
 		block["title"] = title
+	} else if filename != "" {
+		block["title"] = filename
 	}
 	if context, _ := opts["context"].(string); context != "" {
 		block["context"] = context
@@ -757,9 +933,24 @@ func (c *anthropicConverter) documentMetadata(providerOptions map[string]interfa
 			block["citations"] = map[string]interface{}{"enabled": true}
 		}
 	}
+	return nil
 }
 
 func (c *anthropicConverter) convertUserFile(p types.FileContent, cacheControl interface{}) (map[string]interface{}, error) {
+	if c.opts.ConvertMediaPart != nil {
+		converted, err := c.opts.ConvertMediaPart(p)
+		if err != nil {
+			return nil, err
+		}
+		if converted != nil {
+			block := make(map[string]interface{}, len(converted)+1)
+			for k, v := range converted {
+				block[k] = v
+			}
+			setIfNotNil(block, "cache_control", cacheControl)
+			return block, nil
+		}
+	}
 	f, err := resolveAnthropicFile(p.FileData, p.Data, p.URL, p.Reference, p.Text, firstNonEmpty(p.MediaType, p.MimeType), p.Filename)
 	if err != nil {
 		return nil, err
@@ -773,6 +964,9 @@ func (c *anthropicConverter) convertUserFile(p types.FileContent, cacheControl i
 			return nil, err
 		}
 		c.addBeta(AnthropicBetaFilesAPI)
+		if err := validateAnthropicFilePartOptions(anthropicOptions(p.ProviderOptions)); err != nil {
+			return nil, err
+		}
 		if containerUpload, _ := anthropicOptions(p.ProviderOptions)["containerUpload"].(bool); containerUpload {
 			return map[string]interface{}{"type": "container_upload", "file_id": fileID}, nil
 		}
@@ -794,7 +988,9 @@ func (c *anthropicConverter) convertUserFile(p types.FileContent, cacheControl i
 				"data":       f.text,
 			},
 		}
-		c.documentMetadata(p.ProviderOptions, f.filename, block)
+		if err := c.documentMetadata(p.ProviderOptions, f.filename, block); err != nil {
+			return nil, err
+		}
 
 	default: // url, data
 		topLevel := topLevelMediaType(f.mediaType)
@@ -830,7 +1026,9 @@ func (c *anthropicConverter) convertUserFile(p types.FileContent, cacheControl i
 				}
 			}
 			block = map[string]interface{}{"type": "document", "source": source}
-			c.documentMetadata(p.ProviderOptions, f.filename, block)
+			if err := c.documentMetadata(p.ProviderOptions, f.filename, block); err != nil {
+				return nil, err
+			}
 
 		case f.mediaType == "text/plain":
 			var source map[string]interface{}
@@ -844,7 +1042,9 @@ func (c *anthropicConverter) convertUserFile(p types.FileContent, cacheControl i
 				}
 			}
 			block = map[string]interface{}{"type": "document", "source": source}
-			c.documentMetadata(p.ProviderOptions, f.filename, block)
+			if err := c.documentMetadata(p.ProviderOptions, f.filename, block); err != nil {
+				return nil, err
+			}
 
 		default:
 			return nil, &providererrors.UnsupportedFunctionalityError{
@@ -1064,6 +1264,17 @@ func (c *anthropicConverter) convertToolResultContentBlock(block types.ToolResul
 func (c *anthropicConverter) convertToolResultFile(f anthropicFile) (map[string]interface{}, error) {
 	topLevel := topLevelMediaType(f.mediaType)
 	switch f.kind {
+	case types.FileDataTypeReference:
+		fileID, err := providerutils.ResolveProviderReference(f.reference, "anthropic")
+		if err != nil {
+			return nil, err
+		}
+		c.addBeta(AnthropicBetaFilesAPI)
+		blockType := "document"
+		if topLevel == "image" {
+			blockType = "image"
+		}
+		return map[string]interface{}{"type": blockType, "source": map[string]interface{}{"type": "file", "file_id": fileID}}, nil
 	case types.FileDataTypeURL:
 		if topLevel == "image" {
 			return map[string]interface{}{"type": "image", "source": map[string]interface{}{"type": "url", "url": f.url}}, nil
@@ -1106,9 +1317,16 @@ func (c *anthropicConverter) convertToolResultFile(f anthropicFile) (map[string]
 // anthropicToolCall is the unified view of a tool-call part, from either a
 // ToolCallContent part or the legacy Message.ToolCalls field.
 type anthropicToolCall struct {
-	id               string
-	toolName         string
-	input            interface{}
+	id       string
+	toolName string
+	input    interface{}
+	// inputRaw is the wire text of the input when the part carries it
+	// (ToolCallContent.Input / ToolCall.RawArguments). Go maps have no key
+	// order, so the converter takes the order of the keys from it.
+	inputRaw string
+	// inputNull is true when the input is the JSON literal null (as opposed
+	// to absent); TS wraps it as {rawInvalidInput: null}.
+	inputNull        bool
 	providerExecuted bool
 	providerOptions  map[string]interface{}
 }
@@ -1130,6 +1348,8 @@ func toolCallFromContent(p types.ToolCallContent) anthropicToolCall {
 		id:               p.ToolCallID,
 		toolName:         p.ToolName,
 		input:            input,
+		inputRaw:         p.Input,
+		inputNull:        p.Arguments == nil && strings.TrimSpace(p.Input) == "null",
 		providerExecuted: p.ProviderExecuted,
 		providerOptions:  opts,
 	}
@@ -1148,6 +1368,8 @@ func toolCallFromLegacy(p types.ToolCall) anthropicToolCall {
 		id:               p.ID,
 		toolName:         p.ToolName,
 		input:            input,
+		inputRaw:         p.RawArguments,
+		inputNull:        p.Arguments == nil && strings.TrimSpace(p.RawArguments) == "null",
 		providerExecuted: p.ProviderExecuted,
 		providerOptions:  p.ProviderMetadata,
 	}
@@ -1245,43 +1467,52 @@ func (c *anthropicConverter) convertAssistantBlock(block anthropicBlock, isLastB
 				}
 
 			case types.CustomContent:
-				// Go extension: forward anthropic-keyed custom blocks verbatim,
-				// reading from ProviderOptions (caller-constructed) or falling
-				// back to ProviderMetadata (round-tripped from a previous
-				// response), mirroring convertReasoning's same fallback.
+				// TS replays only anthropic.fallback custom parts. The
+				// informational kinds the SDK itself emits (message_start
+				// accounting, container_upload) are never sent back.
+				if p.Kind == "anthropic.message_start" || p.Kind == "anthropic.container_upload" {
+					break
+				}
+				// The metadata is read from ProviderOptions (caller-constructed)
+				// or, for a part round-tripped from a previous response,
+				// ProviderMetadata.
 				opts := p.ProviderOptions
 				if opts == nil {
 					opts = rawMetadataMap(p.ProviderMetadata)
 				}
 				anthropicOpts, ok := opts["anthropic"].(map[string]interface{})
-				if !ok {
-					break
-				}
-				if p.Kind == "anthropic.fallback" {
-					// Fallback blocks require from.model and to.model to
-					// round-trip; anything else is dropped with a warning
-					// rather than sent malformed (TS commit a587f554f7,
-					// #21736).
-					from, _ := anthropicOpts["from"].(map[string]interface{})
-					to, _ := anthropicOpts["to"].(map[string]interface{})
-					fromModel, _ := from["model"].(string)
-					toModel, _ := to["model"].(string)
-					if fromModel == "" || toModel == "" {
-						c.warn("anthropic fallback metadata must include from.model and to.model")
+				if p.Kind != "anthropic.fallback" {
+					if !ok {
 						break
 					}
-					content = append(content, map[string]interface{}{
-						"type": "fallback",
-						"from": map[string]interface{}{"model": fromModel},
-						"to":   map[string]interface{}{"model": toModel},
-					})
+					// Go extension (kept from v0.5.2): forward other
+					// anthropic-keyed custom blocks verbatim.
+					forwarded := make(map[string]interface{}, len(anthropicOpts))
+					for key, value := range anthropicOpts {
+						forwarded[key] = value
+					}
+					content = append(content, forwarded)
 					break
 				}
-				forwarded := make(map[string]interface{}, len(anthropicOpts))
-				for key, value := range anthropicOpts {
-					forwarded[key] = value
+				// TS anthropicFallbackContentSchema: type "fallback" plus
+				// from.model and to.model strings; anything else is dropped
+				// with a warning rather than sent malformed.
+				from, _ := anthropicOpts["from"].(map[string]interface{})
+				to, _ := anthropicOpts["to"].(map[string]interface{})
+				fromModel, fromOK := from["model"].(string)
+				toModel, toOK := to["model"].(string)
+				if anthropicOpts["type"] != "fallback" || !fromOK || !toOK {
+					c.warn("anthropic fallback metadata must include from.model and to.model")
+					break
 				}
-				content = append(content, forwarded)
+				// Replayed fallback blocks need the beta even when no
+				// fallback chain is configured (TS #22007).
+				c.addBeta(AnthropicBetaServerSideFallback)
+				content = append(content, map[string]interface{}{
+					"type": "fallback",
+					"from": map[string]interface{}{"model": fromModel},
+					"to":   map[string]interface{}{"model": toModel},
+				})
 			}
 			// file and reasoning-file parts are not sent back to Anthropic.
 		}
@@ -1315,7 +1546,7 @@ func (c *anthropicConverter) convertAssistantText(content *[]map[string]interfac
 	text := p.Text
 	if trim {
 		// Anthropic rejects trailing whitespace in pre-filled assistant responses.
-		text = strings.TrimSpace(text)
+		text = providerutils.JSTrim(text)
 	}
 	block := map[string]interface{}{"type": "text", "text": text}
 	if citations, ok := textMetadata["citations"]; ok && citations != nil {
@@ -1398,7 +1629,7 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 				"type":        "mcp_tool_use",
 				"id":          part.id,
 				"name":        part.toolName,
-				"input":       inputOrEmpty(part.input),
+				"input":       orderedInput(inputOrEmpty(part.input), part.inputRaw),
 				"server_name": serverName,
 			}
 			setIfNotNil(block, "cache_control", cacheControl)
@@ -1407,15 +1638,15 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 		case providerToolName == "code_execution" &&
 			(inputType == "bash_code_execution" || inputType == "text_editor_code_execution"):
 			// code execution sub-tools: map back to the sub-tool name.
-			serverToolUse(inputType, withoutKey(inputMap, "type"))
+			serverToolUse(inputType, orderedInput(withoutKey(inputMap, "type"), part.inputRaw))
 
 		case providerToolName == "code_execution" && inputType == "programmatic-tool-call":
 			// Strip the synthetic 'programmatic-tool-call' discriminator.
-			serverToolUse("code_execution", withoutKey(inputMap, "type"))
+			serverToolUse("code_execution", orderedInput(withoutKey(inputMap, "type"), part.inputRaw))
 
 		case providerToolName == "code_execution" || providerToolName == "web_fetch" || providerToolName == "web_search",
 			providerToolName == "tool_search_tool_regex" || providerToolName == "tool_search_tool_bm25":
-			serverToolUse(providerToolName, part.input)
+			serverToolUse(providerToolName, orderedInput(part.input, part.inputRaw))
 
 		case providerToolName == "advisor":
 			// The advisor server_tool_use.input is always {}.
@@ -1436,7 +1667,7 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 		// tool-result/error for this call; otherwise Anthropic rejects the
 		// request for a dangling result with no matching call (TS commit
 		// c35458eac5, #21875).
-		rawInput := toAnthropicToolInput(part.input)
+		rawInput := part.toolInput()
 		action, hasAction := rawInput["action"].(string)
 		if !hasAction {
 			c.warn(fmt.Sprintf("toolset tool call for tool %s is missing the action", part.toolName))
@@ -1450,7 +1681,7 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 			"id":           part.id,
 			"name":         name,
 			"toolset_name": toolsetName,
-			"input":        rawInput,
+			"input":        orderedInput(rawInput, part.inputRaw),
 		}
 		if caller != nil {
 			block["caller"] = caller
@@ -1464,7 +1695,7 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 		"type":  "tool_use",
 		"id":    part.id,
 		"name":  part.toolName,
-		"input": toAnthropicToolInput(part.input),
+		"input": orderedInput(part.toolInput(), part.inputRaw),
 	}
 	if caller != nil {
 		block["caller"] = caller
@@ -1527,10 +1758,14 @@ func (c *anthropicConverter) convertProviderToolResult(content *[]map[string]int
 			unsupportedOutput()
 			return nil
 		}
+		value, err := validateAnthropicToolOutput(output.value, zWebFetchOutput)
+		if err != nil {
+			return err
+		}
 		push(map[string]interface{}{
 			"type":        "web_fetch_tool_result",
 			"tool_use_id": part.ToolCallID,
-			"content":     anthropicWebFetchResultContent(output.value),
+			"content":     anthropicWebFetchResultContent(value),
 		}, true)
 
 	case "web_search":
@@ -1549,19 +1784,44 @@ func (c *anthropicConverter) convertProviderToolResult(content *[]map[string]int
 			unsupportedOutput()
 			return nil
 		}
+		value, err := validateAnthropicToolOutput(output.value, zWebSearchOutput)
+		if err != nil {
+			return err
+		}
 		push(map[string]interface{}{
 			"type":        "web_search_tool_result",
 			"tool_use_id": part.ToolCallID,
-			"content":     anthropicWebSearchResultContent(output.value),
+			"content":     anthropicWebSearchResultContent(value),
 		}, true)
 
 	case "tool_search_tool_regex", "tool_search_tool_bm25":
+		// Failed tool searches round-trip as tool_search_tool_result_error
+		// (TS #22438).
+		isErrorValue := false
+		if v, ok := output.value.(map[string]interface{}); ok && output.kind == "json" {
+			isErrorValue = v["type"] == "tool_search_tool_result_error"
+		}
+		if output.kind == "error-json" || isErrorValue {
+			push(map[string]interface{}{
+				"type":        "tool_search_tool_result",
+				"tool_use_id": part.ToolCallID,
+				"content": map[string]interface{}{
+					"type":       "tool_search_tool_result_error",
+					"error_code": extractErrorCode(output.value),
+				},
+			}, false)
+			return nil
+		}
 		if output.kind != "json" {
 			unsupportedOutput()
 			return nil
 		}
+		toolSearchValue, err := validateAnthropicToolOutput(output.value, zToolSearchOutput)
+		if err != nil {
+			return err
+		}
 		refs := make([]map[string]interface{}, 0)
-		for _, item := range interfaceSlice(output.value) {
+		for _, item := range interfaceSlice(toolSearchValue) {
 			if m, ok := item.(map[string]interface{}); ok {
 				refs = append(refs, map[string]interface{}{"type": "tool_reference", "tool_name": m["toolName"]})
 			}
@@ -1580,7 +1840,11 @@ func (c *anthropicConverter) convertProviderToolResult(content *[]map[string]int
 			unsupportedOutput()
 			return nil
 		}
-		value, _ := output.value.(map[string]interface{})
+		advisorValue, err := validateAnthropicToolOutput(output.value, zAdvisorOutput)
+		if err != nil {
+			return err
+		}
+		value, _ := advisorValue.(map[string]interface{})
 		var resultContent map[string]interface{}
 		switch value["type"] {
 		case "advisor_result":
@@ -1640,12 +1904,34 @@ func (c *anthropicConverter) convertCodeExecutionResult(part types.ToolResultCon
 		unsupportedOutput()
 		return nil
 	}
-	value, ok := output.value.(map[string]interface{})
-	valueType, typeOK := value["type"].(string)
+	rawValue, ok := output.value.(map[string]interface{})
+	valueType, typeOK := rawValue["type"].(string)
+	if !ok {
+		// A typed (non-map) value is checked through its JSON form.
+		if normalized, err := normalizeToolOutput(output.value); err == nil {
+			rawValue, ok = normalized.(map[string]interface{})
+			valueType, typeOK = rawValue["type"].(string)
+		}
+	}
 	if !ok || !typeOK {
 		c.warn(fmt.Sprintf("provider executed tool result output value is not a valid code execution result for tool %s", part.ToolName))
 		return nil
 	}
+	// TS picks the schema from the result type: code_execution_result is
+	// the 20250522 schema, encrypted_code_execution_result the 20260120 one,
+	// everything else the 20250825 union.
+	schema := zCodeExecution20250825Output
+	switch valueType {
+	case "code_execution_result":
+		schema = zCodeExecution20250522Output
+	case "encrypted_code_execution_result":
+		schema = zCodeExecution20260120Output
+	}
+	validated, err := validateAnthropicToolOutput(rawValue, schema)
+	if err != nil {
+		return err
+	}
+	value, _ := validated.(map[string]interface{})
 	switch valueType {
 	case "code_execution_result":
 		push(map[string]interface{}{
@@ -1656,7 +1942,7 @@ func (c *anthropicConverter) convertCodeExecutionResult(part types.ToolResultCon
 				"stdout":      value["stdout"],
 				"stderr":      value["stderr"],
 				"return_code": value["return_code"],
-				"content":     sliceOrEmpty(value["content"]),
+				"content":     codeExecutionOutputFiles(value["content"]),
 			},
 		}, false)
 	case "encrypted_code_execution_result":
@@ -1668,7 +1954,7 @@ func (c *anthropicConverter) convertCodeExecutionResult(part types.ToolResultCon
 				"encrypted_stdout": value["encrypted_stdout"],
 				"stderr":           value["stderr"],
 				"return_code":      value["return_code"],
-				"content":          sliceOrEmpty(value["content"]),
+				"content":          codeExecutionOutputFiles(value["content"]),
 			},
 		}, false)
 	case "bash_code_execution_result":
@@ -1680,24 +1966,158 @@ func (c *anthropicConverter) convertCodeExecutionResult(part types.ToolResultCon
 				"stdout":      value["stdout"],
 				"stderr":      value["stderr"],
 				"return_code": value["return_code"],
-				"content":     value["content"],
+				"content":     codeExecutionOutputFiles(value["content"]),
 			},
 		}, false)
 	case "bash_code_execution_tool_result_error":
 		push(map[string]interface{}{
 			"type":        "bash_code_execution_tool_result",
 			"tool_use_id": part.ToolCallID,
-			"content":     value,
+			"content":     pickKeys(value, "type", "error_code"),
 		}, false)
 	default:
+		// zod strips keys the schema does not list.
 		push(map[string]interface{}{
 			"type":        "text_editor_code_execution_tool_result",
 			"tool_use_id": part.ToolCallID,
-			"content":     value,
+			"content":     pickKeys(value, textEditorKeys[valueType]...),
 		}, false)
 	}
 	return nil
 }
+
+var textEditorKeys = map[string][]string{
+	"text_editor_code_execution_tool_result_error":  {"type", "error_code"},
+	"text_editor_code_execution_view_result":        {"type", "content", "file_type", "num_lines", "start_line", "total_lines"},
+	"text_editor_code_execution_create_result":      {"type", "is_file_update"},
+	"text_editor_code_execution_str_replace_result": {"type", "lines", "new_lines", "new_start", "old_lines", "old_start"},
+}
+
+// pickKeys keeps only keys of m (zod object parsing drops unknown keys).
+func pickKeys(m map[string]interface{}, keys ...string) map[string]interface{} {
+	out := make(map[string]interface{}, len(keys))
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// codeExecutionOutputFiles returns the validated file list with only the
+// schema's keys (type, file_id); an absent list is the zod default [].
+func codeExecutionOutputFiles(v interface{}) interface{} {
+	items, ok := v.([]interface{})
+	if !ok {
+		return []interface{}{}
+	}
+	out := make([]interface{}, len(items))
+	for i, item := range items {
+		m, _ := item.(map[string]interface{})
+		out[i] = pickKeys(m, "type", "file_id")
+	}
+	return out
+}
+
+// normalizeToolOutput round-trips a tool output value through JSON so typed
+// values are validated and read like the JS object the TS SDK receives.
+func normalizeToolOutput(v interface{}) (interface{}, error) {
+	data, err := jsonstr.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var out interface{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// validateAnthropicToolOutput is TS validateTypes for a provider tool output
+// schema: a mismatch is the TypeValidationError the TS conversion throws. It
+// returns the JSON-normalized value.
+func validateAnthropicToolOutput(value interface{}, schema zodlite.Node) (interface{}, error) {
+	normalized, err := normalizeToolOutput(value)
+	if err != nil {
+		return nil, err
+	}
+	data := jsonStringify(normalized)
+	if message := zodlite.ValidationMessage(schema, data); message != "" {
+		return nil, providererrors.NewValidationErrorWithContext(zodlite.CompactJSON(data), zodlite.IssueText(message), nil, &providererrors.ValidationContext{})
+	}
+	return normalized, nil
+}
+
+// Output schemas of the Anthropic provider tools (packages/anthropic/src/tool).
+var (
+	zCEOutputFiles = func(t string) zodlite.Node {
+		return zodlite.Optional(zodlite.Array(zodlite.Typed(t, zodlite.F("file_id", zodlite.String))))
+	}
+	zCEResult = zodlite.Typed("code_execution_result",
+		zodlite.F("stdout", zodlite.String), zodlite.F("stderr", zodlite.String),
+		zodlite.F("return_code", zodlite.Number), zodlite.F("content", zCEOutputFiles("code_execution_output")))
+	zCEEncrypted = zodlite.Typed("encrypted_code_execution_result",
+		zodlite.F("encrypted_stdout", zodlite.String), zodlite.F("stderr", zodlite.String),
+		zodlite.F("return_code", zodlite.Number), zodlite.F("content", zCEOutputFiles("code_execution_output")))
+	zCEBash = zodlite.Typed("bash_code_execution_result",
+		zodlite.F("content", zodlite.Array(zodlite.Typed("bash_code_execution_output", zodlite.F("file_id", zodlite.String)))),
+		zodlite.F("stdout", zodlite.String), zodlite.F("stderr", zodlite.String), zodlite.F("return_code", zodlite.Number))
+	zCEBashError   = zodlite.Typed("bash_code_execution_tool_result_error", zodlite.F("error_code", zodlite.String))
+	zCEEditorError = zodlite.Typed("text_editor_code_execution_tool_result_error", zodlite.F("error_code", zodlite.String))
+	zCEEditorView  = zodlite.Typed("text_editor_code_execution_view_result",
+		zodlite.F("content", zodlite.String), zodlite.F("file_type", zodlite.String),
+		zodlite.F("num_lines", zodlite.Nullable(zodlite.Number)), zodlite.F("start_line", zodlite.Nullable(zodlite.Number)),
+		zodlite.F("total_lines", zodlite.Nullable(zodlite.Number)))
+	zCEEditorCreate  = zodlite.Typed("text_editor_code_execution_create_result", zodlite.F("is_file_update", zodlite.Boolean))
+	zCEEditorReplace = zodlite.Typed("text_editor_code_execution_str_replace_result",
+		zodlite.F("lines", zodlite.Nullable(zodlite.Array(zodlite.String))), zodlite.F("new_lines", zodlite.Nullable(zodlite.Number)),
+		zodlite.F("new_start", zodlite.Nullable(zodlite.Number)), zodlite.F("old_lines", zodlite.Nullable(zodlite.Number)),
+		zodlite.F("old_start", zodlite.Nullable(zodlite.Number)))
+
+	zCodeExecution20250522Output = zCEResult
+	zCodeExecution20250825Output = zodlite.Disc(map[string]zodlite.Node{
+		"code_execution_result":                         zCEResult,
+		"bash_code_execution_result":                    zCEBash,
+		"bash_code_execution_tool_result_error":         zCEBashError,
+		"text_editor_code_execution_tool_result_error":  zCEEditorError,
+		"text_editor_code_execution_view_result":        zCEEditorView,
+		"text_editor_code_execution_create_result":      zCEEditorCreate,
+		"text_editor_code_execution_str_replace_result": zCEEditorReplace,
+	})
+	zCodeExecution20260120Output = zodlite.Disc(map[string]zodlite.Node{
+		"code_execution_result":                         zCEResult,
+		"encrypted_code_execution_result":               zCEEncrypted,
+		"bash_code_execution_result":                    zCEBash,
+		"bash_code_execution_tool_result_error":         zCEBashError,
+		"text_editor_code_execution_tool_result_error":  zCEEditorError,
+		"text_editor_code_execution_view_result":        zCEEditorView,
+		"text_editor_code_execution_create_result":      zCEEditorCreate,
+		"text_editor_code_execution_str_replace_result": zCEEditorReplace,
+	})
+
+	zWebFetchOutput = zodlite.Typed("web_fetch_result",
+		zodlite.F("url", zodlite.String),
+		zodlite.F("content", zodlite.Typed("document",
+			zodlite.F("title", zodlite.Nullable(zodlite.String)),
+			zodlite.F("citations", zodlite.Optional(zodlite.Object(zodlite.F("enabled", zodlite.Boolean)))),
+			zodlite.F("source", zodlite.Union(
+				zodlite.Typed("base64", zodlite.F("mediaType", zodlite.Literal("application/pdf")), zodlite.F("data", zodlite.String)),
+				zodlite.Typed("text", zodlite.F("mediaType", zodlite.Literal("text/plain")), zodlite.F("data", zodlite.String)),
+			)))),
+		zodlite.F("retrievedAt", zodlite.Nullable(zodlite.String)))
+
+	zWebSearchOutput = zodlite.Array(zodlite.Typed("web_search_result",
+		zodlite.F("url", zodlite.String), zodlite.F("title", zodlite.Nullable(zodlite.String)),
+		zodlite.F("pageAge", zodlite.Nullable(zodlite.String)), zodlite.F("encryptedContent", zodlite.String)))
+
+	zToolSearchOutput = zodlite.Array(zodlite.Typed("tool_reference", zodlite.F("toolName", zodlite.String)))
+
+	zAdvisorOutput = zodlite.Disc(map[string]zodlite.Node{
+		"advisor_result":            zodlite.Typed("advisor_result", zodlite.F("text", zodlite.String), zodlite.F("stopReason", zodlite.Optional(zodlite.String))),
+		"advisor_redacted_result":   zodlite.Typed("advisor_redacted_result", zodlite.F("encryptedContent", zodlite.String), zodlite.F("stopReason", zodlite.Optional(zodlite.String))),
+		"advisor_tool_result_error": zodlite.Typed("advisor_tool_result_error", zodlite.F("errorCode", zodlite.String)),
+	})
+)
 
 // moveToolUseBlocksToEnd moves client tool_use blocks after the other blocks
 // of their segment; thinking and redacted_thinking blocks delimit segments.
@@ -1758,6 +2178,15 @@ func anthropicCaller(providerOptions map[string]interface{}) map[string]interfac
 	return nil
 }
 
+// toolInput is the tool_use input: a JSON null input is recorded as
+// {rawInvalidInput: null} like TS, other non-objects via toAnthropicToolInput.
+func (t anthropicToolCall) toolInput() map[string]interface{} {
+	if t.inputNull {
+		return map[string]interface{}{"rawInvalidInput": nil}
+	}
+	return toAnthropicToolInput(t.input)
+}
+
 // toAnthropicToolInput wraps invalid (non-object) tool call input because
 // Anthropic requires tool_use.input to be an object.
 func toAnthropicToolInput(input interface{}) map[string]interface{} {
@@ -1769,6 +2198,21 @@ func toAnthropicToolInput(input interface{}) map[string]interface{} {
 	default:
 		return map[string]interface{}{"rawInvalidInput": v}
 	}
+}
+
+// orderedInput returns v so that it marshals with the key order of raw, the
+// wire text of the tool input it was decoded from (TS keeps the parsed input
+// as is, so a replayed tool call has the key order the model produced). Go maps
+// have none; without raw (or when raw is not JSON) v is returned unchanged.
+func orderedInput(v interface{}, raw string) interface{} {
+	if raw == "" || v == nil {
+		return v
+	}
+	hint, ok := jsonorder.Parse([]byte(raw))
+	if !ok {
+		return v
+	}
+	return jsonorder.Hinted{V: v, Hint: hint}
 }
 
 func inputOrEmpty(input interface{}) interface{} {
@@ -1815,13 +2259,6 @@ func withoutKey(m map[string]interface{}, key string) map[string]interface{} {
 	return out
 }
 
-func sliceOrEmpty(v interface{}) interface{} {
-	if v == nil {
-		return []interface{}{}
-	}
-	return v
-}
-
 func stringValue(v interface{}) string {
 	if s, ok := v.(string); ok {
 		return s
@@ -1831,7 +2268,7 @@ func stringValue(v interface{}) string {
 
 // jsonStringify mirrors JSON.stringify for tool output values.
 func jsonStringify(v interface{}) string {
-	data, err := json.Marshal(v)
+	data, err := jsonstr.Marshal(v)
 	if err != nil {
 		return fmt.Sprintf("%v", v)
 	}

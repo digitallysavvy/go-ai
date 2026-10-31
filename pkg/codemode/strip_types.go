@@ -3,6 +3,7 @@ package codemode
 import (
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // stripTypeScriptAnnotations removes type-only TypeScript syntax from
@@ -68,7 +69,15 @@ import (
 //   - A function/method's `this` parameter (`function f(this: Window, x:
 //     number)`), erased entirely -- name, type, and the comma that followed
 //     it -- since `this` can never legally be a JavaScript parameter name.
-//   - `import type ...;` / `export type ...;` statements.
+//   - Function types (`let f: (a: number) => void`), `catch (e: unknown)`,
+//     object-literal method signatures, `${x as T}` inside template
+//     literals, abstract members and class index signatures.
+//
+// Type syntax is blanked, not removed: the erased text becomes spaces and
+// keeps its line breaks, as Node does, so line and column numbers in errors
+// still match the source. A static `import`/`export` (type-only forms
+// included) cannot appear in the function body the snippet is wrapped in, so
+// Node rejects it and the snippet runs unmodified; so does `<T>expr`.
 //   - Class member access modifiers (`public`/`private`/`protected`) and
 //     `readonly`/`override`/`declare`, plus bodyless (abstract or overload)
 //     member/function signatures, which are erased entirely.
@@ -104,53 +113,134 @@ func stripWithRecover(src string, core func(string) (string, error)) (out string
 // recovery. Only stripTypeScriptAnnotations and tests call it directly.
 func stripTypeScriptAnnotationsUnchecked(src string) (string, error) {
 	tokens := tokenizeTS(src)
-	if err := checkStripNesting(tokens); err != nil {
+	if err := checkBracketBalance(tokens); err != nil {
 		return src, err
 	}
 	kept, err := stripTSTokens(tokens)
 	if err != nil {
 		return src, err
 	}
-	var b strings.Builder
-	for _, t := range kept {
-		b.WriteString(t.text)
-	}
-	return b.String(), nil
+	return blankDropped(src, kept), nil
 }
 
-// maxStripNesting bounds how deeply brackets may nest in a snippet the
-// stripper works on. The transforms rescan the enclosing span at every level,
-// so nesting costs quadratic time; no real snippet nests anywhere near this
+// maxStripNesting bounds how deeply brackets and template substitutions may
+// nest in a snippet the stripper works on. The transforms rescan the enclosing
+// span at every level, so nesting costs quadratic time (a 256 KiB snippet of
+// nested parentheses took minutes); no real snippet nests anywhere near this
 // deep. A deeper one is left unmodified, like any source the stripper rejects.
 const maxStripNesting = 256
 
-// checkStripNesting rejects a token stream whose ( [ { nest deeper than
-// maxStripNesting.
-func checkStripNesting(tokens []tsToken) error {
-	depth := 0
-	for _, t := range tokens {
-		if t.kind != "punct" {
-			continue
-		}
-		switch t.text {
-		case "(", "[", "{":
-			depth++
-			if depth > maxStripNesting {
-				return fmt.Errorf("codemode: brackets nested deeper than %d in TypeScript source", maxStripNesting)
+// templateNestingDepth is the deepest `${` nesting inside a template literal
+// token (braces inside nested strings are not told apart; it only bounds work).
+func templateNestingDepth(text string) int {
+	depth, max := 0, 0
+	for i := 0; i < len(text); i++ {
+		switch text[i] {
+		case '\\':
+			i++
+		case '$':
+			if i+1 < len(text) && text[i+1] == '{' {
+				depth++
+				i++
+				if depth > max {
+					max = depth
+				}
 			}
-		case ")", "]", "}":
+		case '}':
 			if depth > 0 {
 				depth--
 			}
 		}
 	}
+	return max
+}
+
+// checkBracketBalance rejects a snippet whose ( [ { ) ] } do not pair up, as
+// Node's parser does for the wrapped `async function __runUser__(){ ... }`
+// (so `x = a as T);` is a syntax error, not something to blank). The wrapper's
+// own braces take part: a leading `}` closes the function body and is fine as
+// long as a later `{` reopens one for the wrapper's trailing `}`.
+func checkBracketBalance(tokens []tsToken) error {
+	stack := []string{"{"}
+	for _, t := range tokens {
+		if t.kind == "string" && strings.HasPrefix(t.text, "`") && templateNestingDepth(t.text) > maxStripNesting {
+			return fmt.Errorf("codemode: template literals nested deeper than %d in TypeScript source", maxStripNesting)
+		}
+		if t.kind != "punct" {
+			continue
+		}
+		switch t.text {
+		case "(", "[", "{":
+			stack = append(stack, t.text)
+			if len(stack) > maxStripNesting+1 {
+				return fmt.Errorf("codemode: brackets nested deeper than %d in TypeScript source", maxStripNesting)
+			}
+		case ")", "]", "}":
+			want := map[string]string{")": "(", "]": "[", "}": "{"}[t.text]
+			if n := len(stack); n == 0 || stack[n-1] != want {
+				return fmt.Errorf("codemode: unbalanced %q in TypeScript source", t.text)
+			}
+			stack = stack[:len(stack)-1]
+		}
+	}
+	if len(stack) != 1 {
+		return fmt.Errorf("codemode: unbalanced %q in TypeScript source", stack[len(stack)-1])
+	}
 	return nil
+}
+
+// blankDropped writes the kept tokens and replaces every dropped span of src
+// with spaces, keeping line breaks, like Node's stripTypeScriptTypes: the
+// erased type syntax keeps its width, so line and column numbers in errors
+// and stack traces still point at the source the model wrote.
+func blankDropped(src string, kept []tsToken) string {
+	runes := []rune(src)
+	var b strings.Builder
+	end := 0
+	blank := func(from, to int) {
+		for _, r := range runes[from:to] {
+			// Only visible characters become spaces; whitespace (tabs
+			// included) and line breaks stay, like Node.
+			switch {
+			case unicode.IsSpace(r) || r == 0xFEFF:
+				b.WriteRune(r)
+			case r < 0x80:
+				b.WriteByte(' ')
+			case r < 0x800:
+				// Node keeps the UTF-8 length of every erased character: a
+				// two-byte character becomes a no-break space, a three-byte
+				// one an en space, a four-byte one a space and a BOM.
+				b.WriteRune(0x00A0)
+			case r < 0x10000:
+				b.WriteRune(0x2002)
+			default:
+				b.WriteByte(' ')
+				b.WriteRune(0xFEFF)
+			}
+		}
+	}
+	for _, t := range kept {
+		if t.pos > end && t.pos <= len(runes) {
+			blank(end, t.pos)
+		}
+		b.WriteString(t.text)
+		if e := t.pos + len([]rune(t.text)); e > end {
+			end = e
+		}
+	}
+	if end < len(runes) {
+		blank(end, len(runes))
+	}
+	return b.String()
 }
 
 // tsToken is one lexical token of (possibly-TypeScript) source.
 type tsToken struct {
 	kind string // "ident", "number", "string", "regex", "punct", "space", "comment"
 	text string
+	// pos is the rune offset of the token in the source, so the output can
+	// blank what was dropped instead of closing the gap.
+	pos int
 }
 
 // tokenizeTS splits src into tokens, correctly skipping over the contents
@@ -167,16 +257,21 @@ func tokenizeTS(src string) []tsToken {
 	// token, used to disambiguate a leading `/` as a regex literal (as
 	// opposed to division) the same way real JS lexers do.
 	var prevSignificant *tsToken
+	// divisionAfterPrev is set when prevSignificant is a `}` closing an
+	// expression (object literal) or a `>` closing type arguments: a `/`
+	// after either divides instead of starting a regex literal.
+	divisionAfterPrev := false
+	var braceIsExpr []bool
 	i := 0
 	for i < n {
 		c := runes[i]
 		switch {
 		case c == '/' && i+1 < n && runes[i+1] == '/':
 			j := i + 2
-			for j < n && runes[j] != '\n' {
+			for j < n && !isLineTerminator(runes[j]) {
 				j++
 			}
-			tokens = append(tokens, tsToken{"comment", string(runes[i:j])})
+			tokens = append(tokens, tsToken{"comment", string(runes[i:j]), i})
 			i = j
 
 		case c == '/' && i+1 < n && runes[i+1] == '*':
@@ -188,12 +283,12 @@ func tokenizeTS(src string) []tsToken {
 			if end > n {
 				end = n
 			}
-			tokens = append(tokens, tsToken{"comment", string(runes[i:end])})
+			tokens = append(tokens, tsToken{"comment", string(runes[i:end]), i})
 			i = end
 
-		case c == '/' && regexAllowedAfter(prevSignificant) && !postfixIncDecBefore(tokens):
+		case c == '/' && regexAllowedAfter(prevSignificant) && !divisionAfterPrev && !postfixIncDecBefore(tokens, i):
 			if end, ok := scanRegexLiteral(runes, i, regexMemo); ok {
-				tokens = append(tokens, tsToken{"regex", string(runes[i:end])})
+				tokens = append(tokens, tsToken{"regex", string(runes[i:end]), i})
 				i = end
 				prevSignificant = &tokens[len(tokens)-1]
 				continue
@@ -202,17 +297,17 @@ func tokenizeTS(src string) []tsToken {
 
 		case c == '"' || c == '\'':
 			j := scanStringLiteral(runes, i)
-			tokens = append(tokens, tsToken{"string", string(runes[i:j])})
+			tokens = append(tokens, tsToken{"string", string(runes[i:j]), i})
 			i = j
 
 		case c == '`':
-			j := scanTemplateLiteral(runes, i)
-			tokens = append(tokens, tsToken{"string", string(runes[i:j])})
+			j := scanTemplateLiteral(runes, i, regexMemo)
+			tokens = append(tokens, tsToken{"string", string(runes[i:j]), i})
 			i = j
 
 		case isDigit(c) || (c == '.' && i+1 < n && isDigit(runes[i+1])):
 			j := scanNumber(runes, i)
-			tokens = append(tokens, tsToken{"number", string(runes[i:j])})
+			tokens = append(tokens, tsToken{"number", string(runes[i:j]), i})
 			i = j
 
 		case isTSIdentStart(c):
@@ -220,24 +315,24 @@ func tokenizeTS(src string) []tsToken {
 			for j < n && isTSIdentPart(runes[j]) {
 				j++
 			}
-			tokens = append(tokens, tsToken{"ident", string(runes[i:j])})
+			tokens = append(tokens, tsToken{"ident", string(runes[i:j]), i})
 			i = j
 
-		case c == ' ' || c == '\t' || c == '\r' || c == '\n':
+		case isTSWhitespace(c):
 			j := i
-			for j < n && (runes[j] == ' ' || runes[j] == '\t' || runes[j] == '\r' || runes[j] == '\n') {
+			for j < n && isTSWhitespace(runes[j]) {
 				j++
 			}
-			tokens = append(tokens, tsToken{"space", string(runes[i:j])})
+			tokens = append(tokens, tsToken{"space", string(runes[i:j]), i})
 			i = j
 
 		default:
 			matched := matchTSOperator(runes[i:])
 			if matched != "" {
-				tokens = append(tokens, tsToken{"punct", matched})
+				tokens = append(tokens, tsToken{"punct", matched, i})
 				i += len([]rune(matched))
 			} else {
-				tokens = append(tokens, tsToken{"punct", string(c)})
+				tokens = append(tokens, tsToken{"punct", string(c), i})
 				i++
 			}
 		}
@@ -245,6 +340,20 @@ func tokenizeTS(src string) []tsToken {
 		if len(tokens) > 0 {
 			last := tokens[len(tokens)-1]
 			if last.kind != "space" && last.kind != "comment" {
+				divisionAfterPrev = false
+				if last.kind == "punct" {
+					switch last.text {
+					case "{":
+						braceIsExpr = append(braceIsExpr, braceOpensExpression(prevSignificant))
+					case "}":
+						if n := len(braceIsExpr); n > 0 {
+							divisionAfterPrev = braceIsExpr[n-1]
+							braceIsExpr = braceIsExpr[:n-1]
+						}
+					case ">":
+						divisionAfterPrev = closesTypeArguments(tokens)
+					}
+				}
 				prevSignificant = &tokens[len(tokens)-1]
 			}
 		}
@@ -278,7 +387,7 @@ func scanStringLiteral(runes []rune, i int) int {
 // nested strings, template literals, and comments, so a `}`, backtick, or
 // quote inside a nested string/template cannot prematurely close the
 // interpolation or the outer template.
-func scanTemplateLiteral(runes []rune, i int) int {
+func scanTemplateLiteral(runes []rune, i int, memo *regexFailMemo) int {
 	n := len(runes)
 	j := i + 1
 	for j < n {
@@ -289,7 +398,7 @@ func scanTemplateLiteral(runes []rune, i int) int {
 		case c == '`':
 			return j + 1
 		case c == '$' && j+1 < n && runes[j+1] == '{':
-			j = scanBalancedExpr(runes, j+2)
+			j = scanBalancedExprMemo(runes, j+2, memo)
 		default:
 			j++
 		}
@@ -303,17 +412,26 @@ func scanTemplateLiteral(runes []rune, i int) int {
 // strings, template literals, and comments so their contents can't disturb
 // that count.
 func scanBalancedExpr(runes []rune, j int) int {
+	return scanBalancedExprMemo(runes, j, &regexFailMemo{})
+}
+
+func scanBalancedExprMemo(runes []rune, j int, memo *regexFailMemo) int {
 	n := len(runes)
 	depth := 0
+	// last is the previous significant rune ('a' after an operand), used to
+	// tell a regular expression literal from a division.
+	var last rune
 	for j < n {
 		c := runes[j]
 		switch {
 		case c == '\'' || c == '"':
 			j = scanStringLiteral(runes, j)
+			last = 'a'
 		case c == '`':
-			j = scanTemplateLiteral(runes, j)
+			j = scanTemplateLiteral(runes, j, memo)
+			last = 'a'
 		case c == '/' && j+1 < n && runes[j+1] == '/':
-			for j < n && runes[j] != '\n' {
+			for j < n && !isLineTerminator(runes[j]) {
 				j++
 			}
 		case c == '/' && j+1 < n && runes[j+1] == '*':
@@ -325,32 +443,67 @@ func scanBalancedExpr(runes []rune, j int) int {
 			if j > n {
 				j = n
 			}
+		case c == '/' && interpolationRegexAllowed(last):
+			// A regular expression literal: its quotes, backticks and
+			// brackets are not code.
+			if end, ok := scanRegexLiteral(runes, j, memo); ok {
+				j = end
+				last = 'a'
+				continue
+			}
+			last = c
+			j++
 		case c == '{' || c == '(' || c == '[':
 			depth++
+			last = c
 			j++
 		case c == '}':
 			if depth == 0 {
 				return j + 1
 			}
 			depth--
+			last = 'a'
 			j++
 		case c == ')' || c == ']':
 			if depth > 0 {
 				depth--
 			}
+			last = 'a'
 			j++
 		default:
+			if c != ' ' && c != '\t' && !isLineTerminator(c) {
+				if isTSIdentPart(c) || ((c == '+' || c == '-') && last == c) {
+					// An operand, or the second `+`/`-` of a postfix `++`/`--`.
+					last = 'a'
+				} else {
+					last = c
+				}
+			}
 			j++
 		}
 	}
 	return j
 }
 
+// interpolationRegexAllowed reports whether a `/` after the significant rune
+// last (0 at the start) begins a regular expression literal rather than a
+// division. A keyword before it (`typeof /x/`) is read as an operand, which
+// only makes the scan skip fewer regex literals.
+func interpolationRegexAllowed(last rune) bool {
+	return last == 0 || strings.ContainsRune("(,=:[!&|?{};+-*%<>~^", last)
+}
+
+// isLineTerminator reports whether r ends a `//` comment: LF, CR, U+2028 and
+// U+2029 are all ECMAScript line terminators.
+func isLineTerminator(r rune) bool {
+	return r == '\n' || r == '\r' || r == '\u2028' || r == '\u2029'
+}
+
 // regexFailMemo remembers the scan states (position, inside a character class
-// or not) that scanRegexLiteral walked through. The scan is deterministic, so
-// a later scan that reaches one of them fails too; without this, a long line
-// of unterminated `/[` candidates rescanned to the end of the line at every
-// `/` (quadratic time on a source of the default size limit).
+// or not) that a failed scanRegexLiteral walked through. The scan is
+// deterministic, so a later scan that reaches one of them fails too; without
+// this, a long line of unterminated `/[` candidates rescanned to the end of the
+// line at every `/` (quadratic time on a source of the default size limit).
 type regexFailMemo struct {
 	seen [2][]bool
 }
@@ -411,42 +564,6 @@ func scanRegexLiteral(runes []rune, i int, memo *regexFailMemo) (int, bool) {
 	return 0, false
 }
 
-// postfixIncDecBefore reports whether the last significant tokens are a
-// postfix `++`/`--` (an operand on the same line before it), after which a `/`
-// divides: `n++ / 2`. A prefix `++` cannot be followed by a regex literal, and
-// a line break before the operator (`a\n++\n/re/`) makes it a prefix one.
-// The tokenizer emits `++` as two adjacent `+` tokens (likewise `--`).
-func postfixIncDecBefore(tokens []tsToken) bool {
-	k := len(tokens) - 1
-	for k >= 0 && (tokens[k].kind == "space" || tokens[k].kind == "comment") {
-		k--
-	}
-	if k < 1 || tokens[k].kind != "punct" || tokens[k-1].kind != "punct" ||
-		(tokens[k].text != "+" && tokens[k].text != "-") || tokens[k-1].text != tokens[k].text {
-		return false
-	}
-	k--
-	for k--; k >= 0; k-- {
-		t := tokens[k]
-		if t.kind == "space" || t.kind == "comment" {
-			if strings.ContainsAny(t.text, "\n\r\u2028\u2029") {
-				return false
-			}
-			continue
-		}
-		switch t.kind {
-		case "number", "string", "regex":
-			return true
-		case "ident":
-			return !isRegexPrecedingKeyword(t.text)
-		case "punct":
-			return t.text == ")" || t.text == "]"
-		}
-		return false
-	}
-	return false
-}
-
 // regexAllowedAfter reports whether a `/` immediately following prev could
 // start a regular expression literal, as opposed to being a division or
 // division-assignment operator. It uses the same approximation real JS
@@ -472,6 +589,100 @@ func regexAllowedAfter(prev *tsToken) bool {
 		}
 	}
 	return true
+}
+
+// postfixIncDecBefore reports whether the last significant token is a postfix
+// `++`/`--` (an operand on the same line before it), after which a `/`
+// divides: `n++ / 2`. A prefix `++` cannot be followed by a regex literal, and
+// a line break before the operator (`a\n++\n/re/`) makes it a prefix one.
+func postfixIncDecBefore(tokens []tsToken, slashPos int) bool {
+	k := len(tokens) - 1
+	for k >= 0 && (tokens[k].kind == "space" || tokens[k].kind == "comment") {
+		k--
+	}
+	if k < 0 || tokens[k].kind != "punct" || (tokens[k].text != "++" && tokens[k].text != "--") {
+		return false
+	}
+	for k--; k >= 0; k-- {
+		t := tokens[k]
+		if t.kind == "space" || t.kind == "comment" {
+			if strings.ContainsAny(t.text, "\n\r\u2028\u2029") {
+				return false
+			}
+			continue
+		}
+		switch t.kind {
+		case "number", "string", "regex":
+			return true
+		case "ident":
+			return !isRegexPrecedingKeyword(t.text)
+		case "punct":
+			return t.text == ")" || t.text == "]"
+		}
+		return false
+	}
+	return false
+}
+
+// braceOpensExpression reports whether a `{` after prev opens an object
+// literal (or type literal) rather than a block, so the matching `}` ends an
+// operand and a following `/` divides.
+func braceOpensExpression(prev *tsToken) bool {
+	if prev == nil {
+		return false
+	}
+	switch prev.kind {
+	case "ident":
+		return isRegexPrecedingKeyword(prev.text)
+	case "punct":
+		switch prev.text {
+		case ")", ";", "}", "{", "=>", ">", "]":
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+// closesTypeArguments reports whether the `>` that ends tokens closes the
+// type arguments of an instantiation expression (`id<T>`), after which a `/`
+// is a division (TypeScript treats `/` as a binary operator there, so
+// `a<b>/c/d` parses as `(a<b>) / c / d`).
+func closesTypeArguments(tokens []tsToken) bool {
+	depth := 1
+	for k, steps := len(tokens)-2, 0; k >= 0 && steps < 256; k, steps = k-1, steps+1 {
+		t := tokens[k]
+		if t.kind == "space" || t.kind == "comment" {
+			continue
+		}
+		if t.kind != "punct" {
+			continue
+		}
+		switch t.text {
+		case ">":
+			depth++
+		case ">>":
+			depth += 2
+		case "<":
+			depth--
+			if depth == 0 {
+				for m := k - 1; m >= 0; m-- {
+					if tokens[m].kind == "space" || tokens[m].kind == "comment" {
+						continue
+					}
+					return tokens[m].kind == "ident" && !isRegexPrecedingKeyword(tokens[m].text)
+				}
+				return false
+			}
+		case ";", "=", "==", "===", "!=", "!==", "&&", "||", "??", "+", "-", "*", "/", "%",
+			"<=", ">=", "+=", "-=", "{", "}", "(", ")":
+			if t.text == "{" || t.text == "}" || t.text == "(" || t.text == ")" {
+				continue
+			}
+			return false
+		}
+	}
+	return false
 }
 
 var regexPrecedingKeywords = map[string]bool{
@@ -530,10 +741,13 @@ func isHexDigit(c rune) bool {
 	return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }
 
+// tsMultiCharOperators omits `>=`, `>>=` and `>>>=`: they lex as `>`, `>>` or
+// `>>>` followed by `=`, because a type can end in `>` right before an
+// assignment (`const x: Array<number>= []`). Joined back, the text is the same.
 var tsMultiCharOperators = []string{
-	">>>=", "===", "!==", "**=", "<<=", ">>=", "&&=", "||=", "??=",
-	"=>", "...", "?.", "??", "**", "<<", ">>>", ">>", "&&", "||",
-	"==", "!=", "<=", ">=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=",
+	"===", "!==", "**=", "<<=", "&&=", "||=", "??=",
+	"=>", "...", "?.", "??", "**", "++", "--", "<<", ">>>", ">>", "&&", "||",
+	"==", "!=", "<=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=",
 }
 
 func matchTSOperator(remaining []rune) string {
@@ -549,10 +763,32 @@ func matchTSOperator(remaining []rune) string {
 	return ""
 }
 
+// isTSIdentStart reports whether c can start an identifier: ASCII letters,
+// `_` and `$`, and any Unicode letter or letter number (ID_Start), so names
+// like `café`, `π` or `変数` lex as one identifier.
 func isTSIdentStart(c rune) bool {
-	return c == '_' || c == '$' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+	if c < 0x80 {
+		return c == '_' || c == '$' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+	}
+	return unicode.IsLetter(c) || unicode.Is(unicode.Nl, c)
 }
 
+// isTSIdentPart reports whether c can continue an identifier (ID_Continue plus
+// the zero-width joiners ECMAScript allows).
 func isTSIdentPart(c rune) bool {
-	return isTSIdentStart(c) || (c >= '0' && c <= '9')
+	if c < 0x80 {
+		return isTSIdentStart(c) || (c >= '0' && c <= '9')
+	}
+	return isTSIdentStart(c) || unicode.In(c, unicode.Mn, unicode.Mc, unicode.Nd, unicode.Pc) || c == 0x200c || c == 0x200d
+}
+
+// isTSWhitespace reports whether c is ECMAScript whitespace or a line
+// terminator: tab, vertical tab, form feed, space, no-break space, BOM, any
+// other Zs character, and CR, LF, U+2028 and U+2029.
+func isTSWhitespace(c rune) bool {
+	switch c {
+	case ' ', '\t', '\v', '\f', '\r', '\n', 0x00a0, 0xfeff, 0x2028, 0x2029:
+		return true
+	}
+	return c > 0x7f && unicode.Is(unicode.Zs, c)
 }

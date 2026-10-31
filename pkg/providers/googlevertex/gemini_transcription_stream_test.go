@@ -132,6 +132,10 @@ func (s *liveTranscriptionTestServer) close() {
 	s.ts.Close()
 }
 
+func (s *liveTranscriptionTestServer) closeConnection() {
+	close(s.closeConn)
+}
+
 func (s *liveTranscriptionTestServer) all() []map[string]interface{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -422,5 +426,181 @@ func TestGeminiTranscriptionModel_DoStream_PassesSmartModeIntoLiveSetup(t *testi
 
 	if _, err := drainUntilFinishOrError(t, result.Stream); err != nil {
 		t.Fatalf("stream error = %v", err)
+	}
+}
+
+// TestGeminiTranscriptionModel_DoStream_AbortSurfacesCause: TS
+// finishWithError receives abortSignal.reason.
+func TestGeminiTranscriptionModel_DoStream_AbortSurfacesCause(t *testing.T) {
+	server := newLiveTranscriptionTestServer(t)
+	defer server.close()
+
+	model := newLiveTestModel(t, server.ts.URL)
+	abortCtx, abort := context.WithCancelCause(context.Background())
+	defer abort(nil)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            &chanAudioStream{chunks: make(chan []byte)},
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+		AbortSignal:      abortCtx,
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() (stream-start) error = %v", err)
+	}
+	cause := errors.New("user aborted")
+	abort(cause)
+	for {
+		_, err := result.Stream.Next()
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, cause) {
+			t.Fatalf("stream error = %v, want abort cause", err)
+		}
+		return
+	}
+}
+
+// TestGeminiTranscriptionModel_DoStream_CleanCloseRacingAudioEnded: the clean
+// close wins the select while audio-ended is pending; TS finishes normally.
+func TestGeminiTranscriptionModel_DoStream_CleanCloseRacingAudioEnded(t *testing.T) {
+	testHideAudioEnded.Store(true)
+	t.Cleanup(func() { testHideAudioEnded.Store(false) })
+
+	server := newLiveTranscriptionTestServer(t)
+	defer server.close()
+	model := newLiveTestModel(t, server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanAudioStream([]byte{1, 2}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, time.Second)
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() error = %v", err)
+	}
+	server.toSend <- map[string]interface{}{"setupComplete": map[string]interface{}{}}
+	server.waitFor(t, hasRealtimeInputKey("audioStreamEnd"), time.Second)
+	time.Sleep(50 * time.Millisecond)
+	server.closeConnection()
+
+	parts, err := drainUntilFinishOrError(t, result.Stream)
+	if err != nil {
+		t.Fatalf("stream error = %v", err)
+	}
+	if last := parts[len(parts)-1]; last.Type != provider.TranscriptionStreamPartTypeFinish {
+		t.Fatalf("last part = %+v", last)
+	}
+}
+
+// TS createVertexLiveTranscriptionStream error texts start with "Vertex Live"
+// (not "Google Vertex Live").
+func TestGeminiTranscriptionModel_DoStream_ErrorTextsMatchTS(t *testing.T) {
+	t.Run("server error without message", func(t *testing.T) {
+		server := newLiveTranscriptionTestServer(t)
+		defer server.close()
+		model := newLiveTestModel(t, server.ts.URL)
+		result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+			Audio:            &chanAudioStream{chunks: make(chan []byte)},
+			InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer result.Stream.Close() //nolint:errcheck
+		if _, err := result.Stream.Next(); err != nil {
+			t.Fatal(err)
+		}
+		server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, time.Second)
+		server.toSend <- map[string]interface{}{"error": map[string]interface{}{}}
+		_, err = drainUntilFinishOrError(t, result.Stream)
+		if err == nil || err.Error() != "Vertex Live API error" {
+			t.Fatalf("err = %v, want %q", err, "Vertex Live API error")
+		}
+	})
+	t.Run("close before finishing", func(t *testing.T) {
+		server := newLiveTranscriptionTestServer(t)
+		defer server.close()
+		model := newLiveTestModel(t, server.ts.URL)
+		result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+			Audio:            &chanAudioStream{chunks: make(chan []byte)},
+			InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer result.Stream.Close() //nolint:errcheck
+		if _, err := result.Stream.Next(); err != nil {
+			t.Fatal(err)
+		}
+		server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, time.Second)
+		server.closeConnection()
+		_, err = drainUntilFinishOrError(t, result.Stream)
+		if err == nil || !strings.HasPrefix(err.Error(), "Vertex Live transcription") {
+			t.Fatalf("err = %v, want a \"Vertex Live transcription ...\" error", err)
+		}
+	})
+}
+
+// TestGeminiTranscriptionModel_DoStream_EmptyLanguageCodeOverwrites: TS
+// `if (transcription.languageCode != null) language = ...` so an empty code
+// replaces an earlier one.
+func TestGeminiTranscriptionModel_DoStream_EmptyLanguageCodeOverwrites(t *testing.T) {
+	server := newLiveTranscriptionTestServer(t)
+	defer server.close()
+
+	model := newLiveTestModel(t, server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanAudioStream([]byte{1}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, time.Second)
+	if _, err := result.Stream.Next(); err != nil { // stream-start
+		t.Fatal(err)
+	}
+	server.toSend <- map[string]interface{}{"setupComplete": map[string]interface{}{}}
+	server.waitFor(t, hasRealtimeInputKey("audioStreamEnd"), time.Second)
+	server.toSend <- map[string]interface{}{"serverContent": map[string]interface{}{"inputTranscription": map[string]interface{}{"text": "a", "languageCode": "en-US"}}}
+	server.toSend <- map[string]interface{}{"serverContent": map[string]interface{}{"inputTranscription": map[string]interface{}{"text": "b", "languageCode": ""}}}
+	server.toSend <- map[string]interface{}{"serverContent": map[string]interface{}{"turnComplete": true, "interactionStatus": "IDLE"}}
+
+	parts, err := drainUntilFinishOrError(t, result.Stream)
+	if err != nil {
+		t.Fatalf("stream error = %v", err)
+	}
+	finish := parts[len(parts)-1]
+	if finish.Type != provider.TranscriptionStreamPartTypeFinish || finish.Language != "" || finish.FinishText != "ab" {
+		t.Fatalf("finish = %+v", finish)
+	}
+}
+
+// TestGeminiTranscriptionModel_DoStream_RejectsInvalidLocation: the location
+// becomes the WebSocket host (and the bearer token is sent there), so a value
+// that is not a single DNS label must be rejected before any dial, even when
+// the model was built through the exported constructor.
+func TestGeminiTranscriptionModel_DoStream_RejectsInvalidLocation(t *testing.T) {
+	prov, err := New(Config{Project: "p", Location: "evil.example/x#", AccessToken: "tok", BaseURL: "http://example.invalid"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := NewGeminiTranscriptionModel(prov, ModelGemini35TranscribeLive)
+	_, err = model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	var invalidArg *providererrors.InvalidArgumentError
+	if !errors.As(err, &invalidArg) || invalidArg.Field != "location" {
+		t.Fatalf("err = %v, want InvalidArgumentError on location", err)
 	}
 }

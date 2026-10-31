@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"golang.org/x/net/websocket"
@@ -82,5 +83,38 @@ func TestXNetWebSocketConn_ReceiveFrameReportsBinary(t *testing.T) {
 	}
 	if len(data) != 4 || data[0] != 0x00 || data[3] != 0xff {
 		t.Errorf("data = %v, want the echoed binary payload", data)
+	}
+}
+
+// A receive abandoned by ctx cancellation must not swallow the next frame:
+// the in-flight read is kept and its frame delivered to the next call.
+func TestXNetWebSocketConn_CancelledReceiveDoesNotLoseFrame(t *testing.T) {
+	handler := websocket.Handler(func(ws *websocket.Conn) {
+		time.Sleep(150 * time.Millisecond)
+		_ = websocket.Message.Send(ws, "late-1")
+		_ = websocket.Message.Send(ws, "late-2")
+		time.Sleep(500 * time.Millisecond)
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	rawConn, err := WebSocketRealtimeDialer{}.Dial(context.Background(), provider.WebSocketConfig{URL: "ws" + strings.TrimPrefix(server.URL, "http")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rawConn.Close() //nolint:errcheck
+
+	short, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := rawConn.Receive(short); err == nil {
+		t.Fatal("first Receive should time out")
+	}
+	for _, want := range []string{"late-1", "late-2"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		got, err := rawConn.Receive(ctx)
+		cancel()
+		if err != nil || string(got) != want {
+			t.Fatalf("Receive = %q, %v; want %q", got, err, want)
+		}
 	}
 }

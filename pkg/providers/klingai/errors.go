@@ -14,6 +14,18 @@ type Error struct {
 	ErrorCode string // semantic error code (e.g. ErrCodeKlingVideoMissingOptions)
 	Message   string
 	Details   string
+
+	// httpStatus and httpBody carry the non-2xx HTTP response this error was
+	// built from, so retry classification follows the TS APICallError rule
+	// (only 408, 409, 429 and 5xx are retryable) instead of retrying every
+	// error. Zero for errors that are not an HTTP response.
+	httpStatus int
+	httpBody   []byte
+}
+
+// HTTPStatusDetails implements providererrors.HTTPStatusDetails.
+func (e *Error) HTTPStatusDetails() (int, map[string]string, []byte) {
+	return e.httpStatus, nil, e.httpBody
 }
 
 // Error implements the error interface
@@ -99,3 +111,26 @@ func NewMissingVideoOptionsError(field string) *Error {
 		Message:   fmt.Sprintf("%s is required for motion control", field),
 	}
 }
+
+// newVideoGenerationErrorText is a KLINGAI_VIDEO_GENERATION_ERROR whose whole
+// text is the TS AISDKError message (no "Video generation failed" prefix).
+func newVideoGenerationErrorText(message string) *Error {
+	return &Error{Code: 500, ErrorCode: "KLINGAI_VIDEO_GENERATION_ERROR", Message: message}
+}
+
+// missingCredentialsError is the error DoStart and DoStatus return when no
+// credentials are configured: TS throws LoadAPIKeyError, while v0.5.2 returned
+// the *Error from NewAuthError. Both match with errors.As; the text is the TS
+// LoadAPIKeyError message.
+type missingCredentialsError struct {
+	loadErr error
+	auth    *Error
+}
+
+func newMissingCredentialsError(loadErr error) error {
+	return &missingCredentialsError{loadErr: loadErr, auth: NewAuthError(loadErr.Error())}
+}
+
+func (e *missingCredentialsError) Error() string { return e.loadErr.Error() }
+
+func (e *missingCredentialsError) Unwrap() []error { return []error{e.loadErr, e.auth} }

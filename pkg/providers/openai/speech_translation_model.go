@@ -11,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // SpeechTranslationModel implements provider.SpeechTranslationModel over the
@@ -84,7 +85,14 @@ func buildOpenAISpeechTranslationSession(targetLanguage string) map[string]inter
 func realtimeSpeechTranslationWebSocketURL(baseURL, modelID string) string {
 	wsBase := strings.Replace(baseURL, "https://", "wss://", 1)
 	wsBase = strings.Replace(wsBase, "http://", "ws://", 1)
-	return wsBase + "/realtime/translations?model=" + url.QueryEscape(modelID)
+	return wsBase + "/realtime/translations?model=" + encodeURIComponent(modelID)
+}
+
+// encodeURIComponent mirrors ECMAScript encodeURIComponent (TS encodes the
+// model id with it): a space is %20 and ! ' ( ) * stay literal.
+func encodeURIComponent(s string) string {
+	r := strings.NewReplacer("+", "%20", "%21", "!", "%27", "'", "%28", "(", "%29", ")", "%2A", "*")
+	return r.Replace(url.QueryEscape(s))
 }
 
 // baseSpeechTranslationWSHeaders rebuilds the provider's default headers
@@ -96,8 +104,8 @@ func realtimeSpeechTranslationWebSocketURL(baseURL, modelID string) string {
 // mirroring TS openai-speech-translation-model.ts's doStream, which reuses
 // `this.config.headers()` -- the same tagged getHeaders() closure used for
 // REST calls -- rather than rebuilding an untagged header set.
-func (m *SpeechTranslationModel) baseSpeechTranslationWSHeaders() map[string]string {
-	return m.provider.client.Headers()
+func (m *SpeechTranslationModel) baseSpeechTranslationWSHeaders() (map[string]string, error) {
+	return m.provider.client.RequestHeaders()
 }
 
 // DoStream streams a speech-to-speech translation over the OpenAI realtime
@@ -113,11 +121,17 @@ func (m *SpeechTranslationModel) DoStream(ctx context.Context, opts *provider.Sp
 		}
 	}
 
+	// TS parseProviderOptions({provider: 'openai', schema: z.object({})}):
+	// no member is declared, but a non-object value is invalid.
+	if _, err := providerutils.ParseProviderOptions("openai", opts.ProviderOptions, providerutils.OptionSchema{}); err != nil {
+		return nil, err
+	}
+
 	if err := validateOpenAISpeechTranslationInputAudioFormat(opts.InputAudioFormat); err != nil {
 		return nil, err
 	}
 
-	var warnings []types.Warning
+	warnings := []types.Warning{}
 	if opts.SourceLanguage != "" {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
@@ -133,7 +147,11 @@ func (m *SpeechTranslationModel) DoStream(ctx context.Context, opts *provider.Sp
 		})
 	}
 
-	headers := internalhttp.MergeHeaders(m.baseSpeechTranslationWSHeaders(), opts.Headers)
+	baseHeaders, err := m.baseSpeechTranslationWSHeaders()
+	if err != nil {
+		return nil, err
+	}
+	headers := internalhttp.MergeHeaders(baseHeaders, opts.Headers)
 	sessionUpdate := buildOpenAISpeechTranslationSession(opts.TargetLanguage)
 	wsURL := realtimeSpeechTranslationWebSocketURL(m.provider.config.BaseURL, m.modelID)
 

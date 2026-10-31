@@ -20,6 +20,23 @@ import (
 type CompletionModel struct {
 	provider *Provider
 	modelID  string
+	// requestModelID, when set, is sent as `model` instead of modelID (TS
+	// config.requestModelId; Azure reports the model ID but routes by deployment).
+	requestModelID string
+}
+
+// WithRequestModelID sets the model ID sent to the API, keeping ModelID() as
+// the reported identity. It returns m for chaining.
+func (m *CompletionModel) WithRequestModelID(id string) *CompletionModel {
+	m.requestModelID = id
+	return m
+}
+
+func (m *CompletionModel) requestModel() string {
+	if m.requestModelID != "" {
+		return m.requestModelID
+	}
+	return m.modelID
 }
 
 // NewCompletionModel creates a new OpenAI completion model.
@@ -47,11 +64,12 @@ func (m *CompletionModel) DoGenerate(ctx context.Context, opts *provider.Generat
 
 	var response openAICompletionResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/completions",
-		Query:   m.provider.completionQuery(),
-		Body:    body,
-		Headers: opts.Headers,
+		Method:           http.MethodPost,
+		Path:             "/completions",
+		Query:            m.provider.completionQuery(),
+		Body:             body,
+		Headers:          opts.Headers,
+		ValidateResponse: providerutils.ChatResponseValidator(m.Provider(), m.responseKind()),
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -59,6 +77,9 @@ func (m *CompletionModel) DoGenerate(ctx context.Context, opts *provider.Generat
 
 	result := m.convertCompletionResponse(response, warnings)
 	result.RawRequest = body
+	if len(resp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(resp.Body) // TS response.body is the raw JSON
+	}
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	result.ResponseMetadata = completionResponseMetadata(response.ID, response.Created, response.Model, result.ResponseHeaders)
 	return result, nil
@@ -84,11 +105,16 @@ func (m *CompletionModel) DoStream(ctx context.Context, opts *provider.GenerateO
 	}
 
 	inner := newCompletionStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, m.Provider(), httpResp.Header)
+	inner.compat = m.provider.config.OpenAICompatible
 	inner.requestBody = body
 	return streaming.NewWarningsStream(inner, warnings), nil
 }
 
 func (m *CompletionModel) buildCompletionRequest(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
+	// TS parseProviderOptions runs before the prompt conversion.
+	if err := m.validateCompletionProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, nil, err
+	}
 	warnings := completionWarnings(opts)
 	completionPrompt, stopSequences, err := convertToCompletionPrompt(opts.Prompt)
 	if err != nil {
@@ -96,7 +122,7 @@ func (m *CompletionModel) buildCompletionRequest(opts *provider.GenerateOptions,
 	}
 
 	body := map[string]interface{}{
-		"model":  m.modelID,
+		"model":  m.requestModel(),
 		"prompt": completionPrompt,
 	}
 	stop := append([]string{}, stopSequences...)
@@ -147,9 +173,35 @@ func (m *CompletionModel) buildCompletionRequest(opts *provider.GenerateOptions,
 		}
 	}
 
+	if m.provider.config.OpenAICompatible {
+		// OpenAICompatibleCompletionLanguageModel spreads the provider's own
+		// options (raw name, then camelCase) into the body, before prompt/stop.
+		name := m.provider.completionProviderOptionsName()
+		camel := providerutils.ToOpenAICompatibleCamelCase(name)
+		if camel != name {
+			if v, ok := opts.ProviderOptions[name]; ok && v != nil {
+				msg := "Use '" + camel + "' instead."
+				warnings = append(warnings, types.Warning{Type: "deprecated", Setting: "providerOptions key '" + name + "'", Feature: "providerOptions key '" + name + "'", Message: msg, Details: msg})
+			}
+		}
+		for _, key := range []string{name, camel} {
+			if raw, ok := opts.ProviderOptions[key].(map[string]interface{}); ok {
+				for k, v := range raw {
+					if k == "prompt" || k == "stop" {
+						continue
+					}
+					body[k] = v
+				}
+			}
+		}
+	}
+
 	if stream {
 		body["stream"] = true
-		body["stream_options"] = map[string]interface{}{"include_usage": true}
+		// The compat model asks for usage only when config.includeUsage is set.
+		if !m.provider.config.OpenAICompatible || m.provider.config.IncludeUsage {
+			body["stream_options"] = map[string]interface{}{"include_usage": true}
+		}
 	}
 
 	return body, warnings, nil
@@ -220,12 +272,12 @@ func convertToCompletionPrompt(prompt types.Prompt) (string, []string, error) {
 	for _, message := range messages {
 		switch message.Role {
 		case types.RoleSystem:
-			return "", nil, fmt.Errorf("unexpected system message in prompt")
+			return "", nil, &providererrors.InvalidPromptError{Message: "Unexpected system message in prompt: " + completionTextContent(message.Content)}
 		case types.RoleUser:
 			text += "user:\n" + completionTextContent(message.Content) + "\n\n"
 		case types.RoleAssistant:
 			if len(message.ToolCalls) > 0 {
-				return "", nil, fmt.Errorf("unsupported functionality: tool-call messages")
+				return "", nil, &providererrors.UnsupportedFunctionalityError{Functionality: "tool-call messages"}
 			}
 			assistantText, err := completionAssistantTextContent(message.Content)
 			if err != nil {
@@ -233,7 +285,7 @@ func convertToCompletionPrompt(prompt types.Prompt) (string, []string, error) {
 			}
 			text += "assistant:\n" + assistantText + "\n\n"
 		case types.RoleTool:
-			return "", nil, fmt.Errorf("unsupported functionality: tool messages")
+			return "", nil, &providererrors.UnsupportedFunctionalityError{Functionality: "tool messages"}
 		default:
 			return "", nil, fmt.Errorf("unsupported role: %s", message.Role)
 		}
@@ -264,7 +316,7 @@ func completionAssistantTextContent(parts []types.ContentPart) (string, error) {
 				text += p.Text
 			}
 		case types.ToolCallContent, *types.ToolCallContent:
-			return "", fmt.Errorf("unsupported functionality: tool-call messages")
+			return "", &providererrors.UnsupportedFunctionalityError{Functionality: "tool-call messages"}
 		}
 	}
 	return text, nil
@@ -289,6 +341,10 @@ func (m *CompletionModel) convertCompletionResponse(response openAICompletionRes
 	if len(choice.Logprobs) > 0 && string(choice.Logprobs) != "null" {
 		result.ProviderMetadata["openai"].(map[string]interface{})["logprobs"] = json.RawMessage(choice.Logprobs)
 	}
+	if m.provider.config.OpenAICompatible {
+		// TS OpenAICompatibleCompletionLanguageModel returns no providerMetadata.
+		result.ProviderMetadata = nil
+	}
 	return result
 }
 
@@ -299,7 +355,7 @@ func convertOpenAICompletionUsage(usage *openAICompletionUsage) types.Usage {
 
 	input := int64(usage.PromptTokens)
 	output := int64(usage.CompletionTokens)
-	total := int64(usage.TotalTokens)
+	total := input + output // TS core: input total + output total
 	return types.Usage{
 		InputTokens:  &input,
 		OutputTokens: &output,
@@ -331,6 +387,12 @@ func completionResponseMetadata(id string, created *int64, model string, headers
 }
 
 func (m *CompletionModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
 	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
 
@@ -370,8 +432,11 @@ type completionStream struct {
 	rawFinishReason  string
 	usage            *types.Usage
 	providerMetadata map[string]interface{}
-	providerName     string
-	responseHeaders  http.Header
+	// compat is set for OpenAI-compatible hosts, whose TS completion model
+	// reports no providerMetadata.
+	compat          bool
+	providerName    string
+	responseHeaders http.Header
 
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
@@ -395,7 +460,7 @@ func newCompletionStreamWithMetadata(reader io.ReadCloser, includeRawChunks bool
 		reader:           reader,
 		parser:           streaming.NewSSEParser(reader),
 		includeRawChunks: includeRawChunks,
-		finishReason:     types.FinishReasonOther,
+		finishReason:     types.FinishReasonInterrupted,
 		providerMetadata: map[string]interface{}{"openai": map[string]interface{}{}},
 		providerName:     providerName,
 		responseHeaders:  headers,
@@ -427,12 +492,22 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 			continue
 		}
 		var chunk openAICompletionChunk
-		if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
+		// TS openaiCompletionChunkSchema: invalid JSON or a schema mismatch is
+		// an error part carrying a typed error; the error envelope is routed
+		// below.
+		msg, perr := providerutils.CheckChatChunk(event.Data, providerutils.ChatChunkShape{Kind: providerutils.ChunkKindOpenAICompletion})
+		if perr == nil {
+			if derr := providerutils.UnmarshalChunk([]byte(event.Data), &chunk); derr != nil {
+				msg, perr = providerutils.ChunkParseFailure(event.Data, derr)
+			}
+		}
+		if perr != nil {
 			s.queueRawChunk(event.Data)
 			s.finishReason = types.FinishReasonError
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+				Text: msg,
+				Err:  perr,
 			})
 			continue
 		}
@@ -452,6 +527,10 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: openAIStreamErrorText(chunk.Error),
+				// TS createOpenAIProviderStreamError(value.error): attach the
+				// structured StreamProviderError so retries see its
+				// type/code/statusCode/isRetryable.
+				Err: newOpenAIStreamProviderErrorChunk(s.providerName, chunk.Error),
 			})
 			continue
 		}
@@ -511,16 +590,25 @@ func (s *completionStream) finish() {
 	}
 	s.finished = true
 	s.flushPendingMetadata()
+	// TS opens the text block on the first valid chunk, whether or not it
+	// carries text, and closes it in flush().
+	if s.metadataEmitted && !s.textStarted {
+		s.textStarted = true
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "0"})
+	}
 	if s.textStarted {
 		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "0"})
 	}
-	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-		Type:             provider.ChunkTypeFinish,
-		FinishReason:     s.finishReason,
-		RawFinishReason:  s.rawFinishReason,
-		Usage:            s.usage,
-		ProviderMetadata: mustMarshalCompletionProviderMetadata(s.providerMetadata),
-	})
+	finish := &provider.StreamChunk{
+		Type:            provider.ChunkTypeFinish,
+		FinishReason:    s.finishReason,
+		RawFinishReason: s.rawFinishReason,
+		Usage:           s.usage,
+	}
+	if !s.compat {
+		finish.ProviderMetadata = mustMarshalCompletionProviderMetadata(s.providerMetadata)
+	}
+	s.flushQueue = append(s.flushQueue, finish)
 	s.err = io.EOF
 }
 
@@ -545,10 +633,7 @@ func (s *completionStream) rawChunk(data string) *provider.StreamChunk {
 	if !s.includeRawChunks {
 		return nil
 	}
-	var raw interface{}
-	if err := json.Unmarshal([]byte(data), &raw); err != nil {
-		raw = data
-	}
+	raw := streaming.RawChunkValue(data)
 	return &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw}
 }
 
@@ -594,3 +679,13 @@ type openAICompletionChunkChoice struct {
 }
 
 var _ provider.LanguageModel = (*CompletionModel)(nil)
+
+// responseKind selects the TS response schema of a non-streaming completion
+// call: openaiCompletionResponseSchema, or
+// openaiCompatibleCompletionResponseSchema for the openai-compatible wrappers.
+func (m *CompletionModel) responseKind() providerutils.ChatResponseKind {
+	if m.provider.config.OpenAICompatible {
+		return providerutils.ResponseKindCompatCompletion
+	}
+	return providerutils.ResponseKindOpenAICompletion
+}

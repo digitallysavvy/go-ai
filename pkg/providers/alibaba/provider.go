@@ -1,7 +1,8 @@
 package alibaba
 
 import (
-	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -19,6 +20,10 @@ type Provider struct {
 
 // New creates a new Alibaba Cloud provider with the given configuration
 func New(cfg Config) *Provider {
+	// TS withoutTrailingSlash(baseURL): a trailing "/" must not double up with request paths.
+	cfg.BaseURL = providerutils.WithoutTrailingSlash(cfg.BaseURL)
+	cfg.VideoBaseURL = providerutils.WithoutTrailingSlash(cfg.VideoBaseURL)
+	cfg.EmbeddingBaseURL = providerutils.WithoutTrailingSlash(cfg.EmbeddingBaseURL)
 	if cfg.APIKey == "" {
 		cfg.APIKey = os.Getenv("ALIBABA_API_KEY")
 	}
@@ -44,20 +49,28 @@ func New(cfg Config) *Provider {
 		"Content-Type":  "application/json",
 	}, cfg.Headers), version.ProviderUserAgent("alibaba"))
 
+	// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+	headersFunc := func() (map[string]string, error) {
+		return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "ALIBABA_API_KEY", "Alibaba Cloud (DashScope)", "Authorization", "Bearer ")
+	}
+
 	// Create HTTP client for chat API
 	client := http.NewClient(http.Config{
-		BaseURL: baseURL,
-		Headers: headers,
+		BaseURL:     baseURL,
+		Headers:     headers,
+		HeadersFunc: headersFunc,
 	})
 
 	// Create HTTP client for video API
 	videoClient := http.NewClient(http.Config{
-		BaseURL: videoBaseURL,
-		Headers: headers,
+		BaseURL:     videoBaseURL,
+		Headers:     headers,
+		HeadersFunc: headersFunc,
 	})
 	embeddingClient := http.NewClient(http.Config{
-		BaseURL: embeddingBaseURL,
-		Headers: headers,
+		BaseURL:     embeddingBaseURL,
+		Headers:     headers,
+		HeadersFunc: headersFunc,
 	})
 
 	return &Provider{
@@ -116,22 +129,22 @@ func (p *Provider) Embedding(modelID string) (provider.EmbeddingModel, error) {
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("Alibaba provider does not support image generation") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("Alibaba provider does not support speech synthesis") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("Alibaba provider does not support transcription") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("Alibaba provider does not support reranking") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client for chat API requests

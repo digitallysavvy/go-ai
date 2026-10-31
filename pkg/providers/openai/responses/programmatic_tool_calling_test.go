@@ -54,4 +54,19 @@ func TestNewProgrammaticToolCallingTool_ToolCaller(t *testing.T) {
 			t.Fatalf("allowedCallers = %v", openaiOpts["allowedCallers"])
 		}
 	})
+
+	t.Run("keeps existing callers first and appends programmatic (TS Set order)", func(t *testing.T) {
+		in := map[string]interface{}{"openai": map[string]interface{}{"allowedCallers": []string{"direct"}}}
+		out := tool.ExperimentalToolCaller.PrepareProviderOptions(in)
+		callers := out["openai"].(map[string]interface{})["allowedCallers"].([]string)
+		if len(callers) != 2 || callers[0] != "direct" || callers[1] != "programmatic" {
+			t.Fatalf("allowedCallers = %v, want [direct programmatic]", callers)
+		}
+	})
+
+	t.Run("supports deferred results like TS", func(t *testing.T) {
+		if !tool.SupportsDeferredResults {
+			t.Fatal("SupportsDeferredResults must be true")
+		}
+	})
 }

@@ -478,7 +478,7 @@ func TestDoTranscribe_PollError(t *testing.T) {
 	p := New(Config{APIKey: "k", BaseURL: srv.URL})
 	mAny, _ := p.TranscriptionModel("")
 	_, err := mAny.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a")})
-	if err == nil || !strings.Contains(err.Error(), "transcription failed: bad audio") {
+	if err == nil || !strings.Contains(err.Error(), "Transcription failed: bad audio") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -371,12 +372,8 @@ func TestValidateApprovedToolApprovals(t *testing.T) {
 			t.Fatalf("valid signature: %+v, %v", got, err)
 		}
 
-		// TS only reports "missing signature" for a null/undefined
-		// signature, which it can distinguish from an explicit empty
-		// string; Go's plain string field cannot represent that
-		// distinction, so an empty signature falls through to
-		// verification and fails as "invalid signature" like TS reports
-		// for an explicit empty string.
+		// An absent signature is reported as "missing signature" (TS
+		// approvalRequest.signature == null).
 		missing := approval(input)
 		_, err = ValidateApprovedToolApprovals(ctx, ValidateApprovedToolApprovalsOptions{
 			ApprovedToolApprovals: []CollectedToolApproval{missing},
@@ -384,7 +381,7 @@ func TestValidateApprovedToolApprovals(t *testing.T) {
 			ToolApprovalSecret:    secret,
 		})
 		var sigErr *InvalidToolApprovalSignatureError
-		if !errors.As(err, &sigErr) || sigErr.Reason != "invalid signature" {
+		if !errors.As(err, &sigErr) || sigErr.Reason != "missing signature" {
 			t.Fatalf("missing signature err = %v", err)
 		}
 
@@ -710,11 +707,8 @@ func TestGenerateText_ResumeWithApprovalSecret(t *testing.T) {
 	})
 
 	t.Run("missing signature rejected", func(t *testing.T) {
-		// An empty signature is Go's only representation of "no signature
-		// sent" (a plain string field cannot distinguish absent from
-		// empty, unlike TS's null/undefined). It falls through to
-		// verification and is rejected as "invalid signature", matching
-		// what TS itself reports for an explicit empty-string signature.
+		// An empty signature is Go's representation of an absent one and is
+		// reported as "missing signature" (TS signature == null).
 		executed := 0
 		_, err := GenerateText(context.Background(), GenerateTextOptions{
 			Model:                          failingModel,
@@ -722,7 +716,7 @@ func TestGenerateText_ResumeWithApprovalSecret(t *testing.T) {
 			ExperimentalToolApprovalSecret: secret,
 			Messages:                       approvalHistory("tool1", input, "", true, ""),
 		})
-		if err == nil || !strings.Contains(err.Error(), "invalid signature") || !IsInvalidToolApprovalSignatureError(err) || executed != 0 {
+		if err == nil || !strings.Contains(err.Error(), "missing signature") || !IsInvalidToolApprovalSignatureError(err) || executed != 0 {
 			t.Fatalf("err=%v executed=%d", err, executed)
 		}
 	})
@@ -831,7 +825,8 @@ func TestGenerateText_DoesNotExecuteToolsOnUnsafeFinishReason(t *testing.T) {
 				},
 			}
 			result, err := GenerateText(context.Background(), GenerateTextOptions{
-				Model: model,
+				Prompt: "hi",
+				Model:  model,
 				Tools: []types.Tool{{
 					Name: "testTool",
 					Execute: func(ctx context.Context, in map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
@@ -1051,7 +1046,8 @@ func TestStreamText_DoesNotExecuteToolsOnUnsafeFinishReason(t *testing.T) {
 		},
 	}
 	result, err := StreamText(context.Background(), StreamTextOptions{
-		Model: model,
+		Prompt: "hi",
+		Model:  model,
 		Tools: []types.Tool{{
 			Name: "testTool",
 			Execute: func(ctx context.Context, in map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
@@ -1103,7 +1099,9 @@ func TestMessagesForModelStripsApprovalParts(t *testing.T) {
 		t.Fatalf("tool message = %+v", got[1])
 	}
 	resp, ok := got[1].Content[0].(types.ToolApprovalResponseContent)
-	if !ok || resp.ApprovalID != "a2" || !resp.ProviderExecuted {
+	// TS LanguageModelV4 tool-approval-response: {approvalId, approved,
+	// reason}, no providerExecuted (r73 gen CR-1).
+	if !ok || resp.ApprovalID != "a2" || resp.ProviderExecuted {
 		t.Fatalf("provider-executed approval response = %+v", got[1].Content[0])
 	}
 	// Input is not mutated.
@@ -1468,4 +1466,84 @@ func TestStreamText_ResumeExecutesApprovedToolsInParallel(t *testing.T) {
 	if first.Output == nil || first.Output.Value != "call-result" || second.Output == nil || second.Output.Value != "call-result" {
 		t.Fatalf("unexpected results: first=%+v second=%+v", first, second)
 	}
+}
+
+// Ports TS #22178: provider options of an approval-only tool message survive
+// combining with the following tool-result message.
+func TestMessagesForModel_PreservesProviderOptionsOfEmptyApprovalToolMessage(t *testing.T) {
+	approvalOpts := map[string]interface{}{"test": map[string]interface{}{"cacheControl": "approval"}}
+	result := types.ToolResultContent{ToolCallID: "c1", ToolName: "tool", Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "result"}}
+	messages := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentPart{
+			types.ToolCallContent{ToolCallID: "c1", ToolName: "tool"},
+			types.ToolApprovalRequestContent{ApprovalID: "a1", ToolCallID: "c1"},
+		}},
+		{Role: types.RoleTool, ProviderOptions: approvalOpts, Content: []types.ContentPart{
+			types.ToolApprovalResponseContent{ApprovalID: "a1", Approved: true},
+		}},
+		{Role: types.RoleTool, Content: []types.ContentPart{result}},
+	}
+	got := messagesForModel(messages)
+	last := got[len(got)-1]
+	if last.Role != types.RoleTool || len(last.Content) != 1 {
+		t.Fatalf("last = %#v", last)
+	}
+	if !reflect.DeepEqual(last.ProviderOptions, approvalOpts) {
+		t.Fatalf("providerOptions = %#v, want %#v", last.ProviderOptions, approvalOpts)
+	}
+}
+
+// TS collect-tool-approvals.test.ts "only one approval decision per tool call"
+// (#23791).
+func TestCollectToolApprovals_OneDecisionPerToolCall(t *testing.T) {
+	call := types.ToolCallContent{ToolCallID: "call-1", ToolName: "tool1"}
+	req := func(approvalID string) types.ToolApprovalRequestContent {
+		return types.ToolApprovalRequestContent{ApprovalID: approvalID, ToolCallID: "call-1"}
+	}
+	resp := func(approvalID string, approved bool) types.ToolApprovalResponseContent {
+		return types.ToolApprovalResponseContent{ApprovalID: approvalID, Approved: approved}
+	}
+	collect := func(parts ...types.ContentPart) CollectToolApprovalsResult {
+		t.Helper()
+		got, err := CollectToolApprovals([]types.Message{
+			{Role: types.RoleAssistant, Content: []types.ContentPart{call, req("a1"), req("a2")}},
+			{Role: types.RoleTool, Content: parts},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	t.Run("identical replay", func(t *testing.T) {
+		got := collect(resp("a1", true), resp("a1", true))
+		if len(got.ApprovedToolApprovals) != 1 || len(got.DeniedToolApprovals) != 0 {
+			t.Fatalf("got %+v", got)
+		}
+	})
+	t.Run("conflicting decisions keep the first", func(t *testing.T) {
+		got := collect(resp("a1", true), resp("a1", false))
+		if len(got.ApprovedToolApprovals) != 1 || len(got.DeniedToolApprovals) != 0 {
+			t.Fatalf("got %+v", got)
+		}
+		got = collect(resp("a1", false), resp("a1", true))
+		if len(got.ApprovedToolApprovals) != 0 || len(got.DeniedToolApprovals) != 1 {
+			t.Fatalf("got %+v", got)
+		}
+	})
+	t.Run("another approval id for the same call", func(t *testing.T) {
+		got := collect(resp("a1", true), resp("a2", false))
+		if len(got.ApprovedToolApprovals) != 1 || len(got.DeniedToolApprovals) != 0 {
+			t.Fatalf("got %+v", got)
+		}
+	})
+	t.Run("unknown approval id still errors", func(t *testing.T) {
+		_, err := CollectToolApprovals([]types.Message{
+			{Role: types.RoleAssistant, Content: []types.ContentPart{call, req("a1")}},
+			{Role: types.RoleTool, Content: []types.ContentPart{resp("a1", true), resp("nope", true)}},
+		})
+		if !IsInvalidToolApprovalError(err) {
+			t.Fatalf("err = %v", err)
+		}
+	})
 }

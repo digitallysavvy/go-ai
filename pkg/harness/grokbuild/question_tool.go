@@ -3,12 +3,15 @@ package grokbuild
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"strconv"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/acp"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 type grokBuildQuestionOption struct {
@@ -44,6 +47,9 @@ var AskUserQuestions = acp.AskUserQuestionsSettings{
 // JSON-decoded (Go `any`, TS `unknown`), so parsing is a round trip through
 // JSON to apply the schema's shape/required-field checks.
 func parseGrokBuildQuestionRequest(nativeRequest any) (*grokBuildQuestionRequest, bool) {
+	if !validGrokBuildQuestionRequestShape(nativeRequest) {
+		return nil, false
+	}
 	data, err := json.Marshal(nativeRequest)
 	if err != nil {
 		return nil, false
@@ -63,8 +69,7 @@ func fromNativeRequest(nativeRequest any, _ *acp.ToolCall) *harness.ToolCallPart
 	if !ok {
 		return nil
 	}
-	input := toHarnessQuestionsInput(req)
-	inputJSON, err := json.Marshal(input)
+	inputJSON, err := jsstr.Marshal(toHarnessQuestionsInput(req))
 	if err != nil {
 		return nil
 	}
@@ -77,32 +82,46 @@ func fromNativeRequest(nativeRequest any, _ *acp.ToolCall) *harness.ToolCallPart
 	}
 }
 
-func toHarnessQuestionsInput(req *grokBuildQuestionRequest) harness.QuestionsToolInput {
-	questions := make([]harness.Question, len(req.Questions))
+// The harness input is built from local wire types, not harness.Question /
+// harness.QuestionOption: TS spreads `description` (even "") and `preview`
+// (even "") whenever the request carries them, while the shared types drop
+// empty strings (omitempty).
+type wireQuestionOption struct {
+	ID          string  `json:"id"`
+	Label       string  `json:"label"`
+	Description string  `json:"description"`
+	Preview     *string `json:"preview,omitempty"`
+}
+
+type wireQuestion struct {
+	ID            string               `json:"id"`
+	Question      string               `json:"question"`
+	Options       []wireQuestionOption `json:"options"`
+	AllowMultiple *bool                `json:"allowMultiple,omitempty"`
+	AllowFreeForm bool                 `json:"allowFreeForm"`
+}
+
+type wireQuestionsInput struct {
+	AllowPartialAnswers bool           `json:"allowPartialAnswers"`
+	Questions           []wireQuestion `json:"questions"`
+}
+
+func toHarnessQuestionsInput(req *grokBuildQuestionRequest) wireQuestionsInput {
+	questions := make([]wireQuestion, len(req.Questions))
 	for i, q := range req.Questions {
-		options := make([]harness.QuestionOption, len(q.Options))
+		options := make([]wireQuestionOption, len(q.Options))
 		for j, o := range q.Options {
-			options[j] = harness.QuestionOption{
-				ID:          optionID(j),
-				Label:       o.Label,
-				Description: o.Description,
-			}
-			if o.Preview != nil {
-				options[j].Preview = *o.Preview
-			}
+			options[j] = wireQuestionOption{ID: optionID(j), Label: o.Label, Description: o.Description, Preview: o.Preview}
 		}
-		question := harness.Question{
+		questions[i] = wireQuestion{
 			ID:            questionID(i),
 			Question:      q.Question,
 			Options:       options,
-			AllowFreeForm: &harness.AllowFreeForm{Enabled: true},
+			AllowMultiple: q.MultiSelect,
+			AllowFreeForm: true,
 		}
-		if q.MultiSelect != nil {
-			question.AllowMultiple = q.MultiSelect
-		}
-		questions[i] = question
 	}
-	return harness.QuestionsToolInput{AllowPartialAnswers: true, Questions: questions}
+	return wireQuestionsInput{AllowPartialAnswers: true, Questions: questions}
 }
 
 // toNativeResponse mirrors TS `toNativeResponse`: TS parses nativeRequest
@@ -162,7 +181,8 @@ func toNativeAnswers(req *grokBuildQuestionRequest, output *harness.QuestionsToo
 		if !ok {
 			continue
 		}
-		var labels []string
+		// Non-nil: TS flatMap yields [] (JSON `[]`), never null.
+		labels := []string{}
 		for _, id := range answer.OptionIDs {
 			idx, ok := positionalIDIndex(id, "option-")
 			if !ok || idx < 0 || idx >= len(q.Options) {
@@ -193,30 +213,167 @@ func parseQuestionsOutput(toolResult types.ToolResultContent) (*harness.Question
 var errInvalidToolResult = errors.New("Grok Build askUserQuestions requires a JSON tool result.") //nolint:staticcheck // matches TS SDK's exact error text
 
 func matchesNativeRequest(previousNativeRequest, nativeRequest any) bool {
-	previous, ok1 := parseGrokBuildQuestionRequest(previousNativeRequest)
-	current, ok2 := parseGrokBuildQuestionRequest(nativeRequest)
+	_, ok1 := parseGrokBuildQuestionRequest(previousNativeRequest)
+	_, ok2 := parseGrokBuildQuestionRequest(nativeRequest)
 	if !ok1 || !ok2 {
 		return false
 	}
-	return questionFingerprint(previous) == questionFingerprint(current)
+	return questionFingerprint(previousNativeRequest) == questionFingerprint(nativeRequest)
 }
 
-func questionFingerprint(req *grokBuildQuestionRequest) string {
-	data, _ := json.Marshal(map[string]any{"questions": req.Questions, "mode": req.Mode})
+// questionFingerprint mirrors TS `JSON.stringify({ questions, mode })` over the
+// zod-parsed request. Zod strips unknown keys, emits the remaining keys in
+// schema order, and keeps an explicit `null` for the nullable().optional()
+// fields (`preview`, `multi_select`) while an absent key stays absent, so a
+// request with `preview: null` fingerprints differently from one without it.
+// The request has already passed validGrokBuildQuestionRequestShape.
+func questionFingerprint(raw any) string {
+	root, _ := raw.(map[string]any)
+	questions, _ := root["questions"].([]any)
+	var b strings.Builder
+	b.WriteString(`{"questions":[`)
+	for i, q := range questions {
+		qm, _ := q.(map[string]any)
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`{"question":`)
+		b.WriteString(fingerprintJSON(qm["question"]))
+		b.WriteString(`,"options":[`)
+		options, _ := qm["options"].([]any)
+		for j, o := range options {
+			om, _ := o.(map[string]any)
+			if j > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(`{"label":`)
+			b.WriteString(fingerprintJSON(om["label"]))
+			b.WriteString(`,"description":`)
+			b.WriteString(fingerprintJSON(om["description"]))
+			if v, present := om["preview"]; present {
+				b.WriteString(`,"preview":`)
+				b.WriteString(fingerprintJSON(v))
+			}
+			b.WriteByte('}')
+		}
+		b.WriteByte(']')
+		if v, present := qm["multi_select"]; present {
+			b.WriteString(`,"multi_select":`)
+			b.WriteString(fingerprintJSON(v))
+		}
+		b.WriteByte('}')
+	}
+	b.WriteString(`],"mode":`)
+	b.WriteString(fingerprintJSON(root["mode"]))
+	b.WriteByte('}')
+	return b.String()
+}
+
+func fingerprintJSON(v any) string {
+	data, _ := json.Marshal(v)
 	return string(data)
 }
 
 func questionID(index int) string { return "question-" + strconv.Itoa(index+1) }
 func optionID(index int) string   { return "option-" + strconv.Itoa(index+1) }
 
+// positionalIDIndex mirrors TS positionalIdIndex: `Number(suffix) - 1` must be
+// a non-negative integer. JS Number() semantics apply to the suffix: it is
+// whitespace-trimmed, empty is 0, and decimal ("2.0", "1e0") and 0x/0o/0b
+// integer forms are accepted.
 func positionalIDIndex(id, prefix string) (int, bool) {
 	if !strings.HasPrefix(id, prefix) {
 		return 0, false
 	}
-	n, err := strconv.Atoi(id[len(prefix):])
-	if err != nil {
+	n, ok := jsNumber(id[len(prefix):])
+	if !ok {
 		return 0, false
 	}
 	index := n - 1
-	return index, index >= 0
+	if index != math.Trunc(index) || index < 0 || index > math.MaxInt32 {
+		return 0, false
+	}
+	return int(index), true
+}
+
+func jsNumber(s string) (float64, bool) {
+	s = providerutils.JSTrim(s)
+	if s == "" {
+		return 0, true
+	}
+	if len(s) > 2 && s[0] == '0' {
+		base := 0
+		switch s[1] {
+		case 'x', 'X':
+			base = 16
+		case 'o', 'O':
+			base = 8
+		case 'b', 'B':
+			base = 2
+		}
+		if base != 0 {
+			u, err := strconv.ParseUint(s[2:], base, 53)
+			if err != nil || strings.ContainsAny(s[2:], "_+-") {
+				return 0, false
+			}
+			return float64(u), true
+		}
+	}
+	// Reject Go-only float syntax (underscores, hex floats, inf/nan words).
+	for _, c := range s {
+		if (c < '0' || c > '9') && c != '.' && c != 'e' && c != 'E' && c != '+' && c != '-' {
+			return 0, false
+		}
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsInf(f, 0) || math.IsNaN(f) {
+		return 0, false
+	}
+	return f, true
+}
+
+// validGrokBuildQuestionRequestShape enforces the zod schema's required
+// fields and types (json.Unmarshal alone accepts missing fields, nulls and
+// absent arrays, which `safeParse` rejects).
+func validGrokBuildQuestionRequestShape(v any) bool {
+	root, ok := v.(map[string]any)
+	if !ok {
+		return false
+	}
+	isStr := func(m map[string]any, k string) bool { _, ok := m[k].(string); return ok }
+	if !isStr(root, "sessionId") || !isStr(root, "toolCallId") || !isStr(root, "mode") {
+		return false
+	}
+	questions, ok := root["questions"].([]any)
+	if !ok {
+		return false
+	}
+	// nullable().optional(): absent or null or the typed value.
+	optional := func(m map[string]any, k string, typed func(any) bool) bool {
+		val, present := m[k]
+		return !present || val == nil || typed(val)
+	}
+	for _, q := range questions {
+		qm, ok := q.(map[string]any)
+		if !ok || !isStr(qm, "question") {
+			return false
+		}
+		options, ok := qm["options"].([]any)
+		if !ok {
+			return false
+		}
+		for _, o := range options {
+			om, ok := o.(map[string]any)
+			if !ok || !isStr(om, "label") || !isStr(om, "description") {
+				return false
+			}
+			if !optional(om, "preview", func(x any) bool { _, ok := x.(string); return ok }) {
+				return false
+			}
+		}
+		if !optional(qm, "multi_select", func(x any) bool { _, ok := x.(bool); return ok }) {
+			return false
+		}
+	}
+	return true
 }

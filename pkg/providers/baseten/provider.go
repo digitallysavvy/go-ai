@@ -1,12 +1,15 @@
 package baseten
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providerrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -76,17 +79,23 @@ func New(cfg Config) *Provider {
 		chatBaseURL = cfg.ModelURL
 	}
 
+	structuredOutputs := true
 	chatProvider := openai.New(openai.Config{
-		APIKey:           apiKey,
-		APIKeyEnvVar:     "BASETEN_API_KEY",
-		BaseURL:          chatBaseURL,
-		Headers:          cfg.Headers,
-		HTTPClient:       cfg.HTTPClient,
-		ChatProviderName: "baseten.chat",
+		APIKey:            apiKey,
+		APIKeyEnvVar:      "BASETEN_API_KEY",
+		APIKeyDescription: "Baseten API key",
+		BaseURL:           chatBaseURL,
+		Headers:           cfg.Headers,
+		HTTPClient:        cfg.HTTPClient,
+		Name:              "baseten",
+		ChatProviderName:  "baseten.chat",
 		// TS createChatModel builds an OpenAICompatibleChatLanguageModel,
 		// which supports video_url content parts (7dd9ec320c).
-		AllowVideo:    true,
-		UserAgentName: "baseten",
+		AllowVideo:                true,
+		OpenAICompatible:          true,
+		SupportsStructuredOutputs: &structuredOutputs, // TS supportsStructuredOutputs: true
+		IncludeUsage:              true,
+		UserAgentName:             "baseten",
 	})
 
 	p := &Provider{
@@ -96,13 +105,16 @@ func New(cfg Config) *Provider {
 
 	if cfg.ModelURL != "" && strings.Contains(cfg.ModelURL, "/sync") {
 		p.embedding = openai.New(openai.Config{
-			APIKey:        apiKey,
-			APIKeyEnvVar:  "BASETEN_API_KEY",
-			BaseURL:       basetenEmbeddingURL(cfg.ModelURL),
-			Headers:       cfg.Headers,
-			HTTPClient:    cfg.HTTPClient,
-			Name:          "baseten.embedding",
-			UserAgentName: "baseten",
+			APIKey:            apiKey,
+			APIKeyEnvVar:      "BASETEN_API_KEY",
+			APIKeyDescription: "Baseten API key",
+			BaseURL:           basetenEmbeddingURL(cfg.ModelURL),
+			Headers:           cfg.Headers,
+			HTTPClient:        cfg.HTTPClient,
+			Name:              "baseten",
+			OpenAICompatible:  true,
+			IncludeUsage:      true,
+			UserAgentName:     "baseten",
 		})
 	}
 
@@ -180,6 +192,20 @@ type embeddingModel struct {
 
 func (m *embeddingModel) MaxEmbeddingsPerCall() int {
 	return maxEmbeddingsPerCall
+}
+
+// DoEmbedMany enforces Baseten's lower batch limit (TS maxEmbeddingsPerCall
+// check in the OpenAI-compatible embedding model).
+func (m *embeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+	if len(inputs) > maxEmbeddingsPerCall {
+		return nil, &providerrors.TooManyEmbeddingValuesForCallError{
+			Provider:             m.Provider(),
+			ModelID:              m.ModelID(),
+			MaxEmbeddingsPerCall: maxEmbeddingsPerCall,
+			Values:               inputs,
+		}
+	}
+	return m.EmbeddingModel.DoEmbedMany(ctx, inputs, opts)
 }
 
 // Name returns the provider name.

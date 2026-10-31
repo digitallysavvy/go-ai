@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	providerrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -90,8 +91,8 @@ func TestConvertPromptToInputWithOptionsUnsupportedFileDefaultAndPassThrough(t *
 	if _, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{}); err == nil {
 		t.Fatal("expected unsupported file media type error")
 	}
-	if _, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{ProviderOptionsName: "azure"}); err == nil || !strings.Contains(err.Error(), "providerOptions.azure.passThroughUnsupportedFiles") {
-		t.Fatalf("azure unsupported file error = %v, want azure providerOptions hint", err)
+	if _, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{ProviderOptionsName: "azure"}); !providerrors.IsUnsupportedFunctionalityError(err) || !strings.Contains(err.Error(), "'file part media type text/csv' functionality not supported.") {
+		t.Fatalf("azure unsupported file error = %v, want TS UnsupportedFunctionalityError", err)
 	}
 	input, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{PassThroughUnsupportedFiles: true})
 	if err != nil {
@@ -237,8 +238,8 @@ func TestConvertPromptToInput_UserFileDataVariants(t *testing.T) {
 			}},
 		}},
 	}, "system", ConvertOptions{})
-	if err == nil {
-		t.Fatal("expected text file parts to be rejected")
+	if !providerrors.IsUnsupportedFunctionalityError(err) {
+		t.Fatalf("err = %v, want UnsupportedFunctionalityError for text file parts", err)
 	}
 }
 
@@ -1415,7 +1416,7 @@ func TestConvertPromptToInput_ToolCallsWithoutItemIDDoNotSetID(t *testing.T) {
 					{
 						ID:        "local-call",
 						ToolName:  "openai.local_shell",
-						Arguments: map[string]interface{}{"action": map[string]interface{}{"command": []interface{}{}}},
+						Arguments: map[string]interface{}{"action": map[string]interface{}{"type": "exec", "command": []interface{}{}}},
 					},
 					{
 						ID:        "shell-call",
@@ -1425,7 +1426,7 @@ func TestConvertPromptToInput_ToolCallsWithoutItemIDDoNotSetID(t *testing.T) {
 					{
 						ID:        "patch-call",
 						ToolName:  "openai.apply_patch",
-						Arguments: map[string]interface{}{"callId": "call-explicit", "operation": map[string]interface{}{}},
+						Arguments: map[string]interface{}{"callId": "call-explicit", "operation": map[string]interface{}{"type": "delete_file", "path": "a.txt"}},
 					},
 					{
 						ID:           "custom-call",
@@ -1705,5 +1706,138 @@ func TestConvertPromptToInput_ReasoningWithoutEncryptedContentWarns(t *testing.T
 	if len(warnings) != 1 || warnings[0].Type != "other" ||
 		!strings.Contains(warnings[0].Message, "Reasoning parts without encrypted content are not supported when store is false") {
 		t.Fatalf("warnings = %#v, want reasoning-dropped warning", warnings)
+	}
+}
+
+// Ported from convert-to-openai-responses-input.test.ts (TS #22209): tool
+// errors are wrapped as {"error": value} for function and custom tools,
+// with or without an output schema. (The Go Responses converter has no
+// prompt cache breakpoint support for tool outputs, so that axis of the TS
+// test is not ported.)
+func TestConvertPromptToInput_WrapsToolErrors(t *testing.T) {
+	t.Parallel()
+
+	for _, custom := range []bool{false, true} {
+		for _, tc := range []struct {
+			name     string
+			output   types.ToolResultOutput
+			expected string
+		}{
+			{"error-text", types.ToolResultOutput{Type: types.ToolResultOutputErrorText, Value: "E42"}, `{"error":"E42"}`},
+			{"error-json", types.ToolResultOutput{Type: types.ToolResultOutputErrorJSON, Value: map[string]interface{}{"code": "E42"}}, `{"error":{"code":"E42"}}`},
+		} {
+			for _, hasSchema := range []bool{false, true} {
+				{
+					output := tc.output
+					part := types.ToolResultContent{ToolCallID: "call_error", ToolName: "deploy", Output: &output}
+					opts := ConvertOptions{Store: true}
+					if custom {
+						opts.CustomToolNames = map[string]bool{"deploy": true}
+					}
+					if hasSchema {
+						opts.OutputSchemaToolNames = map[string]bool{"deploy": true}
+					}
+					input, warnings, err := ConvertPromptToInputWithOptions(types.Prompt{Messages: []types.Message{{
+						Role:    types.RoleTool,
+						Content: []types.ContentPart{part},
+					}}}, "system", opts)
+					if err != nil || len(warnings) != 0 || len(input) != 1 {
+						t.Fatalf("custom=%v %s: input=%v warnings=%v err=%v", custom, tc.name, input, warnings, err)
+					}
+					raw, _ := json.Marshal(input[0])
+					var item map[string]interface{}
+					_ = json.Unmarshal(raw, &item)
+					wantType := "function_call_output"
+					if custom {
+						wantType = "custom_tool_call_output"
+					}
+					if item["type"] != wantType {
+						t.Fatalf("type = %v, want %s", item["type"], wantType)
+					}
+					if item["output"] != tc.expected {
+						t.Fatalf("custom=%v schema=%v %s: output = %#v, want %s", custom, hasSchema, tc.name, item["output"], tc.expected)
+					}
+				}
+			}
+		}
+	}
+}
+
+// TS returns a URL file part as input_file/file_url before any media type
+// check, so a non-PDF URL is never rejected.
+func TestConvertPromptToInput_NonPDFURLFilePassesThrough(t *testing.T) {
+	prompt := types.Prompt{Messages: []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentPart{types.FileContent{
+			MediaType: "text/csv",
+			FileData:  types.FileData{Type: types.FileDataTypeURL, URL: "https://x/a.csv"},
+		}},
+	}}}
+	input, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	part := input[0].(UserMessage).Content.([]interface{})[0].(UserFilePart)
+	if part.FileURL != "https://x/a.csv" {
+		t.Fatalf("part = %+v", part)
+	}
+}
+
+// TS matches apply_patch results on the RAW tool name (part.toolName ===
+// 'apply_patch'), not the provider-mapped name.
+func TestConvertPromptToInput_ApplyPatchOutputMatchesRawToolName(t *testing.T) {
+	t.Parallel()
+
+	input, _, err := ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{types.ToolResultContent{
+				ToolCallID: "patch-call",
+				ToolName:   "patcher",
+				Output: &types.ToolResultOutput{
+					Type:  types.ToolResultOutputJSON,
+					Value: map[string]interface{}{"status": "completed", "output": "ok"},
+				},
+			}},
+		}},
+	}, "system", ConvertOptions{
+		HasApplyPatchTool: true,
+		ProviderToolNames: map[string]string{"patcher": "apply_patch"},
+	})
+	if err != nil {
+		t.Fatalf("conversion failed: %v", err)
+	}
+	for _, it := range input {
+		if _, ok := it.(ApplyPatchCallOutput); ok {
+			t.Fatalf("mapped (non-raw) tool name produced apply_patch_call_output: %#v", input)
+		}
+	}
+}
+
+// TS resolves the full media type and enforces passThroughUnsupportedFiles
+// before the file-id branch of a non-image data part, so a file id with a
+// non-PDF media type is rejected unless pass-through is on.
+func TestConvertPromptToInput_FileIDNonPDFHonorsPassThroughCheck(t *testing.T) {
+	t.Parallel()
+
+	prompt := types.Prompt{Messages: []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentPart{types.FileContent{FileData: types.FileData{
+			Type:       types.FileDataTypeData,
+			DataString: "file-abc",
+			MediaType:  "text/plain",
+		}}},
+	}}}
+	_, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{FileIDPrefixes: []string{"file-"}})
+	if !providerrors.IsUnsupportedFunctionalityError(err) || !strings.Contains(err.Error(), "file part media type text/plain") {
+		t.Fatalf("err = %v, want unsupported file part media type text/plain", err)
+	}
+	input, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{FileIDPrefixes: []string{"file-"}, PassThroughUnsupportedFiles: true})
+	if err != nil {
+		t.Fatalf("pass-through err = %v", err)
+	}
+	part := input[0].(UserMessage).Content.([]interface{})[0].(map[string]interface{})
+	if part["file_id"] != "file-abc" {
+		t.Fatalf("part = %#v, want file_id file-abc", part)
 	}
 }

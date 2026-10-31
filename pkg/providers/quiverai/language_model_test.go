@@ -829,3 +829,34 @@ func writeSSE(w http.ResponseWriter, events []map[string]interface{}) {
 	}
 	_, _ = w.Write([]byte("data: [DONE]\n\n"))
 }
+
+// The struct-level EncryptedContent of a replayed reasoning part must not
+// reach the wire either: TS rebuilds the part's quiverai options from itemId
+// and reasoningSummary only.
+func TestLanguageModelDropsStructEncryptedReasoningContent(t *testing.T) {
+	var requestBody map[string]interface{}
+	p, _ := newQuiverTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&requestBody)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(quiverResponse(nil, "", nil))
+	})
+	model, err := p.LanguageModel(ModelArrow2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{{
+		Role: types.RoleAssistant,
+		Content: []types.ContentPart{types.ReasoningContent{
+			Text: "private", EncryptedContent: "blob",
+			ProviderOptions: map[string]interface{}{"quiverai": map[string]interface{}{"itemId": "rs_1"}},
+		}},
+	}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, _ := requestBody["input"].([]interface{})
+	item, _ := input[0].(map[string]interface{})
+	if _, has := item["encrypted_content"]; has {
+		t.Fatalf("reasoning item leaked encrypted_content: %+v", item)
+	}
+}

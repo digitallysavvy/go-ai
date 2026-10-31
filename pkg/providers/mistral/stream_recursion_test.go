@@ -48,9 +48,9 @@ func runMistralStreamRecursionChild() {
 	for i := 0; i < n; i++ {
 		// No "choices" field: hits `if len(chunkData.Choices) == 0 { ...
 		// continue }`.
-		sb.WriteString(`data: {}` + "\n\n")
+		sb.WriteString(`data: {"choices":[]}` + "\n\n")
 	}
-	sb.WriteString(`data: {"choices":[{"delta":{"content":"hello"}}]}` + "\n\n")
+	sb.WriteString(`data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}` + "\n\n")
 
 	s := newMistralStream(io.NopCloser(strings.NewReader(sb.String())))
 	// This call used to recurse once per choices-less event -- 300,000 deep

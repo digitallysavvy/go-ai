@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // preparedTools is the result of prepareTools.
@@ -35,7 +36,7 @@ func defaultToolSchema(parameters interface{}) interface{} {
 	if parameters == nil {
 		return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
 	}
-	return parameters
+	return providerutils.ResponseFormatJSONSchemaOrdered(parameters)
 }
 
 // prepareTools ports TS prepareTools (google-prepare-tools.ts).

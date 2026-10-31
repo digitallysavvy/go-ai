@@ -100,7 +100,7 @@ func TestIsAsyncModel(t *testing.T) {
 		modelID string
 		want    bool
 	}{
-		{"accounts/fireworks/models/flux-kontext-dev", true},
+		{"accounts/fireworks/models/flux-kontext-dev", false},
 		{"accounts/fireworks/models/flux-kontext-pro", true},
 		{"accounts/fireworks/models/flux-kontext-max", true},
 		{"accounts/fireworks/models/flux-1-dev-fp8", false},
@@ -119,7 +119,7 @@ func TestIsAsyncModel(t *testing.T) {
 
 // TestDoGenerateAsync_ImmediateSuccess tests the happy path where polling succeeds on the first attempt.
 func TestDoGenerateAsync_ImmediateSuccess(t *testing.T) {
-	const modelID = "accounts/fireworks/models/flux-kontext-dev"
+	const modelID = "accounts/fireworks/models/flux-kontext-pro"
 	const requestID = "req-abc123"
 
 	// Use a placeholder; the real image URL will reference the test server after it starts.
@@ -247,7 +247,7 @@ func TestDoGenerateAsync_MultiPollSuccess(t *testing.T) {
 // count-based budget (ceil(timeout/interval) attempts) would let the loop
 // run several times longer than pollTimeoutMs before giving up.
 func TestDoGenerateAsync_TimesOutOnWallClockDeadline(t *testing.T) {
-	const modelID = "accounts/fireworks/models/flux-kontext-dev"
+	const modelID = "accounts/fireworks/models/flux-kontext-pro"
 	const requestID = "req-slow-poll"
 	const pollLatency = 30 * time.Millisecond
 	const pollTimeoutMs = 50
@@ -309,7 +309,7 @@ func TestDoGenerateAsync_TimesOutOnWallClockDeadline(t *testing.T) {
 // abortSignal, not pollForImageUrl's internal timeoutController signal, so a
 // slow download that outlives the remaining poll budget must still succeed.
 func TestDoGenerateAsync_DownloadIsNotBoundByPollDeadline(t *testing.T) {
-	const modelID = "accounts/fireworks/models/flux-kontext-dev"
+	const modelID = "accounts/fireworks/models/flux-kontext-pro"
 	const requestID = "req-slow-download"
 	const pollTimeoutMs = 30
 	const downloadLatency = 100 * time.Millisecond
@@ -365,7 +365,7 @@ func TestDoGenerateAsync_DownloadIsNotBoundByPollDeadline(t *testing.T) {
 
 // TestDoGenerateAsync_SubmitRequestBody verifies the submit request body is correctly built.
 func TestDoGenerateAsync_SubmitRequestBody(t *testing.T) {
-	const modelID = "accounts/fireworks/models/flux-kontext-dev"
+	const modelID = "accounts/fireworks/models/flux-kontext-pro"
 	const requestID = "req-body-check"
 
 	ts := &asyncTestServer{}
@@ -436,7 +436,7 @@ func TestDoGenerateAsync_SubmitRequestBody(t *testing.T) {
 
 // TestDoGenerateAsync_Failure tests that a failed generation returns a descriptive error.
 func TestDoGenerateAsync_Failure(t *testing.T) {
-	const modelID = "accounts/fireworks/models/flux-kontext-dev"
+	const modelID = "accounts/fireworks/models/flux-kontext-pro"
 	const requestID = "req-fail"
 
 	failResp := fmt.Sprintf(`{"id": %q, "status": "Error", "result": null}`, requestID)
@@ -482,7 +482,7 @@ func TestDoGenerateAsync_FailedStatus(t *testing.T) {
 
 // TestDoGenerateAsync_ContextCancellation tests that cancelling the context stops polling.
 func TestDoGenerateAsync_ContextCancellation(t *testing.T) {
-	const modelID = "accounts/fireworks/models/flux-kontext-dev"
+	const modelID = "accounts/fireworks/models/flux-kontext-pro"
 	const requestID = "req-cancel"
 
 	// Server always returns Pending so polling would loop forever without cancellation
@@ -512,7 +512,7 @@ func TestDoGenerateAsync_ContextCancellation(t *testing.T) {
 
 // TestDoGenerateAsync_ReadyMissingSample tests error when Ready but result.sample is nil.
 func TestDoGenerateAsync_ReadyMissingSample(t *testing.T) {
-	const modelID = "accounts/fireworks/models/flux-kontext-dev"
+	const modelID = "accounts/fireworks/models/flux-kontext-pro"
 	const requestID = "req-no-sample"
 
 	// Ready but result has no sample field
@@ -539,16 +539,22 @@ func TestDoGenerateAsync_ReadyMissingSample(t *testing.T) {
 func TestDoGenerateSync_NonAsyncModel(t *testing.T) {
 	const modelID = "accounts/fireworks/models/stable-diffusion-xl-1024-v1-0"
 
-	// The sync path POSTs to /v1/images/generations and returns JSON with a data array
+	// TS getUrlForModel: image_generation models POST to
+	// /image_generation/{model} and answer with the image bytes.
+	var gotBody map[string]interface{}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/images/generations", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/image_generation/"+modelID, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.NotFound(w, r)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprintln(w, `{"data": [{"url": "https://example.com/sync.png"}]}`) //nolint:errcheck
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("IMGBYTES"))
+	})
+	mux.HandleFunc("/v1/workflows/accounts/fireworks/models/flux-1-dev-fp8/text_to_image", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("FLUXBYTES"))
 	})
 
 	server := httptest.NewServer(mux)
@@ -557,14 +563,27 @@ func TestDoGenerateSync_NonAsyncModel(t *testing.T) {
 	prov := providerForAsyncServer(server.URL)
 	model := NewImageModel(prov, modelID)
 
+	n := 2
+	seed := 3
 	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
-		Prompt: "Mountains",
+		Prompt: "Mountains", N: &n, Seed: &seed, Size: "512x768", AspectRatio: "1:1",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.URL != "https://example.com/sync.png" {
-		t.Errorf("expected sync URL, got %q", result.URL)
+	if string(result.Image) != "IMGBYTES" || result.MimeType != "image/jpeg" || result.Response == nil {
+		t.Errorf("unexpected result: %+v", result)
+	}
+	if gotBody["samples"] != float64(2) || gotBody["seed"] != float64(3) || gotBody["width"] != "512" || gotBody["height"] != "768" {
+		t.Errorf("body = %v", gotBody)
+	}
+	if len(result.Warnings) != 1 || result.Warnings[0].Feature != "aspectRatio" {
+		t.Errorf("warnings = %+v", result.Warnings)
+	}
+
+	flux, err := NewImageModel(prov, "accounts/fireworks/models/flux-1-dev-fp8").DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
+	if err != nil || string(flux.Image) != "FLUXBYTES" {
+		t.Fatalf("workflows text_to_image: %v %+v", err, flux)
 	}
 }
 
@@ -586,7 +605,7 @@ func TestCheckAsyncStatus_Statuses(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			const modelID = "accounts/fireworks/models/flux-kontext-dev"
+			const modelID = "accounts/fireworks/models/flux-kontext-pro"
 			const requestID = "req-status-test"
 
 			var respBody string
@@ -608,7 +627,7 @@ func TestCheckAsyncStatus_Statuses(t *testing.T) {
 			prov := providerForAsyncServer(server.URL)
 			model := NewImageModel(prov, modelID)
 
-			_, done, err := model.checkAsyncStatus(context.Background(), requestID)
+			_, done, err := model.checkAsyncStatus(context.Background(), requestID, nil)
 
 			if tt.wantErrStr != "" {
 				if err == nil {
@@ -631,7 +650,7 @@ func TestCheckAsyncStatus_Statuses(t *testing.T) {
 // TestBuildAsyncRequestBody verifies that buildAsyncRequestBody includes all expected fields.
 func TestBuildAsyncRequestBody(t *testing.T) {
 	prov := New(Config{APIKey: "test"})
-	model := NewImageModel(prov, "accounts/fireworks/models/flux-kontext-dev")
+	model := NewImageModel(prov, "accounts/fireworks/models/flux-kontext-pro")
 
 	seed := 42
 	n := 1
@@ -695,10 +714,10 @@ func TestBuildRequestBody_SyncProviderOptionsPassthrough(t *testing.T) {
 	if body["prompt"] != "Test prompt" {
 		t.Errorf("expected prompt, got %v", body["prompt"])
 	}
-	if body["n"] != 2 {
-		t.Errorf("expected n=2, got %v", body["n"])
+	if body["samples"] != 2 {
+		t.Errorf("expected samples=2, got %v", body["samples"])
 	}
-	if body["width"] != 512 || body["height"] != 512 {
+	if body["width"] != "512" || body["height"] != "512" {
 		t.Errorf("expected width/height=512, got %v/%v", body["width"], body["height"])
 	}
 	if body["cfg_scale"] != 7.5 {
@@ -723,11 +742,10 @@ func TestDoGenerateSync_ProviderOptionsInRequestBody(t *testing.T) {
 
 	var gotBody map[string]interface{}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/images/generations", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/image_generation/"+modelID, func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprintln(w, `{"data": [{"url": "https://example.com/sync.png"}]}`) //nolint:errcheck
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("PNG"))
 	})
 
 	server := httptest.NewServer(mux)
@@ -759,7 +777,7 @@ func TestDoGenerateSync_ProviderOptionsInRequestBody(t *testing.T) {
 
 // TestDoGenerateAsync_Warnings verifies that unsupported options produce the correct warnings.
 func TestDoGenerateAsync_Warnings(t *testing.T) {
-	const modelID = "accounts/fireworks/models/flux-kontext-dev"
+	const modelID = "accounts/fireworks/models/flux-kontext-pro"
 	const requestID = "req-warnings"
 
 	ts := &asyncTestServer{}
@@ -809,26 +827,17 @@ func TestDoGenerateAsync_Warnings(t *testing.T) {
 		t.Errorf("expected 3 warnings, got %d: %v", len(result.Warnings), result.Warnings)
 	}
 
-	warnTypes := make(map[string]bool)
+	feats := map[string]bool{}
 	for _, w := range result.Warnings {
-		warnTypes[w.Type] = true
-		if w.Type != "unsupported-setting" {
-			t.Errorf("unexpected warning type %q", w.Type)
+		feats[w.Type+"/"+w.Feature] = true
+		if w.Type == "other" && !strings.Contains(w.Message, "Fireworks only supports a single input image") {
+			t.Errorf("unexpected other warning %q", w.Message)
 		}
 	}
-
-	warnMessages := make(map[string]bool)
-	for _, w := range result.Warnings {
-		warnMessages[w.Message] = true
-	}
-	if !warnMessages["size is not supported for flux-kontext models; use aspect_ratio instead"] {
-		t.Errorf("expected size warning, got: %v", result.Warnings)
-	}
-	if !warnMessages["only the first input image is used; multiple files are not supported"] {
-		t.Errorf("expected multiple-files warning, got: %v", result.Warnings)
-	}
-	if !warnMessages["mask is not supported for flux-kontext models"] {
-		t.Errorf("expected mask warning, got: %v", result.Warnings)
+	for _, want := range []string{"unsupported/size", "other/", "unsupported/mask"} {
+		if !feats[want] {
+			t.Errorf("missing warning %s in %+v", want, result.Warnings)
+		}
 	}
 }
 
@@ -842,7 +851,7 @@ func TestFireworksFluxKontextAsync(t *testing.T) {
 	prov := New(Config{
 		APIKey: os.Getenv("FIREWORKS_API_KEY"),
 	})
-	model, err := prov.ImageModel("accounts/fireworks/models/flux-kontext-dev")
+	model, err := prov.ImageModel("accounts/fireworks/models/flux-kontext-pro")
 	if err != nil {
 		t.Fatalf("failed to get model: %v", err)
 	}

@@ -3,7 +3,6 @@ package fireworks
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ImageModel implements the provider.ImageModel interface for Fireworks AI
@@ -38,7 +38,7 @@ func (m *ImageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *ImageModel) Provider() string {
-	return "fireworks"
+	return "fireworks.image"
 }
 
 // ModelID returns the model ID
@@ -87,49 +87,102 @@ func boolPtr(b bool) *bool {
 // DoGenerate performs image generation, routing flux-kontext-* models through
 // the async submission and polling path.
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+	if err := validateImageOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	if m.isAsyncModel() {
 		return m.doGenerateAsync(ctx, opts)
 	}
 	return m.doGenerateSync(ctx, opts)
 }
 
-// isAsyncModel returns true for flux-kontext-* models that require async polling.
+// isAsyncModel returns true for the models TS maps to urlFormat
+// 'workflows_async' (flux-kontext-pro and flux-kontext-max only); any other id,
+// including other flux-kontext variants, uses the synchronous workflow path.
 func (m *ImageModel) isAsyncModel() bool {
-	return strings.Contains(m.modelID, "flux-kontext")
+	return m.modelID == "accounts/fireworks/models/flux-kontext-pro" ||
+		m.modelID == "accounts/fireworks/models/flux-kontext-max"
 }
 
-// doGenerateSync handles synchronous image generation for standard models.
+// fireworksSyncBackend mirrors TS modelToBackendConfig for the non-workflow
+// models: URL format and whether the backend takes `size`.
+var fireworksImageGenerationModels = map[string]bool{
+	"accounts/fireworks/models/playground-v2-5-1024px-aesthetic": true,
+	"accounts/fireworks/models/japanese-stable-diffusion-xl":     true,
+	"accounts/fireworks/models/playground-v2-1024px-aesthetic":   true,
+	"accounts/fireworks/models/stable-diffusion-xl-1024-v1-0":    true,
+	"accounts/fireworks/models/SSD-1B":                           true,
+}
+
+// syncPath mirrors TS getUrlForModel for the synchronous (binary response)
+// backends.
+func (m *ImageModel) syncPath() string {
+	if fireworksImageGenerationModels[m.modelID] {
+		return "/v1/image_generation/" + m.modelID
+	}
+	return "/v1/workflows/" + m.modelID + "/text_to_image"
+}
+
+// MaxImagesPerCall mirrors TS FireworksImageModel#maxImagesPerCall.
+func (m *ImageModel) MaxImagesPerCall() int { return 1 }
+
+// doGenerateSync handles synchronous image generation: the backend answers
+// with the image bytes directly (TS createBinaryResponseHandler).
 func (m *ImageModel) doGenerateSync(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+	warnings := m.buildWarnings(opts)
+	currentDate := time.Now()
 	reqBody := m.buildRequestBody(opts)
 
-	resp, err := m.provider.client.Post(ctx, "/v1/images/generations", reqBody)
+	resp, err := m.provider.client.Do(ctx, internalhttp.Request{Method: "POST", Path: m.syncPath(), Body: reqBody, Headers: opts.Headers})
 	if err != nil {
 		return nil, providererrors.NewProviderError("fireworks", 0, "", err.Error(), err)
 	}
 
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("Fireworks AI API returned status %d: %s", resp.StatusCode, string(resp.Body)) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, internalhttp.StatusProviderError("fireworks", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
-	return m.convertResponse(resp.Body)
+	// TS createBinaryResponseHandler: an empty body is an error.
+	if len(resp.Body) == 0 {
+		return nil, providererrors.NewProviderError("fireworks", resp.StatusCode, "", "Response body is empty", nil)
+	}
+
+	mimeType := "image/png"
+	if ct := resp.Headers.Get("Content-Type"); strings.HasPrefix(ct, "image/") {
+		mimeType = strings.TrimSpace(strings.SplitN(ct, ";", 2)[0])
+	}
+	return &types.ImageResult{
+		Image:    resp.Body,
+		Images:   [][]byte{resp.Body},
+		MimeType: mimeType,
+		Usage:    types.ImageUsage{ImageCount: 1},
+		Warnings: warnings,
+		Response: &types.ResponseMetadata{Timestamp: currentDate, ModelID: m.modelID, Headers: providerutils.ExtractHeaders(resp.Headers)},
+	}, nil
 }
 
 // doGenerateAsync handles async image generation for flux-kontext-* models.
 // It submits a request, then polls until the image is ready.
 func (m *ImageModel) doGenerateAsync(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
-	warnings := m.buildAsyncWarnings(opts)
+	warnings := m.buildWarnings(opts)
+	currentDate := time.Now()
 
 	requestID, err := m.submitAsyncRequest(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
 
-	result, err := m.pollAsyncResult(ctx, requestID)
+	result, err := m.pollAsyncResult(ctx, requestID, opts.Headers)
 	if err != nil {
 		return nil, err
 	}
 
 	result.Warnings = warnings
+	if result.Response == nil {
+		result.Response = &types.ResponseMetadata{}
+	}
+	result.Response.Timestamp = currentDate
+	result.Response.ModelID = m.modelID
 	return result, nil
 }
 
@@ -138,7 +191,10 @@ func (m *ImageModel) submitAsyncRequest(ctx context.Context, opts *provider.Imag
 	body := m.buildAsyncRequestBody(opts)
 
 	var submitResp AsyncSubmitResponse
-	if err := m.provider.client.PostJSON(ctx, "/v1/workflows/"+m.modelID, body, &submitResp); err != nil {
+	if err := m.provider.client.DoJSON(ctx, internalhttp.Request{Method: "POST", Path: "/v1/workflows/" + m.modelID, Body: body, Headers: opts.Headers, ValidateResponse: providerutils.NodeResponseValidator("fireworks", asyncSubmitNode)}, &submitResp); err != nil {
+		if providerutils.IsInvalidJSONResponse(err) {
+			return "", err
+		}
 		return "", fmt.Errorf("Fireworks async submit failed: %w", err) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 	}
 
@@ -151,11 +207,14 @@ func (m *ImageModel) submitAsyncRequest(ctx context.Context, opts *provider.Imag
 
 // checkAsyncStatus polls the status of an async generation job once.
 // Returns the image URL when succeeded, whether the job is complete, and any error.
-func (m *ImageModel) checkAsyncStatus(ctx context.Context, requestID string) (string, bool, error) {
+func (m *ImageModel) checkAsyncStatus(ctx context.Context, requestID string, callHeaders map[string]string) (string, bool, error) {
 	pollBody := map[string]interface{}{"id": requestID}
 
 	var pollResp AsyncPollResponse
-	if err := m.provider.client.PostJSON(ctx, "/v1/workflows/"+m.modelID+"/get_result", pollBody, &pollResp); err != nil {
+	if err := m.provider.client.DoJSON(ctx, internalhttp.Request{Method: "POST", Path: "/v1/workflows/" + m.modelID + "/get_result", Body: pollBody, Headers: callHeaders, ValidateResponse: providerutils.NodeResponseValidator("fireworks", asyncPollNode)}, &pollResp); err != nil {
+		if providerutils.IsInvalidJSONResponse(err) {
+			return "", false, err
+		}
 		return "", false, fmt.Errorf("Fireworks async status check failed: %w", err) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 	}
 
@@ -192,7 +251,7 @@ func (m *ImageModel) asyncPollTimeoutMs() int {
 // pollAsyncResult polls for the async result until Ready, timeout, or context cancellation.
 // Polls immediately on the first attempt, then waits between subsequent attempts (matching
 // the TypeScript reference implementation).
-func (m *ImageModel) pollAsyncResult(ctx context.Context, requestID string) (*types.ImageResult, error) {
+func (m *ImageModel) pollAsyncResult(ctx context.Context, requestID string, callHeaders map[string]string) (*types.ImageResult, error) {
 	intervalMs := m.asyncPollIntervalMs()
 	timeoutMs := m.asyncPollTimeoutMs()
 
@@ -214,7 +273,7 @@ func (m *ImageModel) pollAsyncResult(ctx context.Context, requestID string) (*ty
 	defer timer.Stop()
 
 	for {
-		imageURL, done, err := m.checkAsyncStatus(pollCtx, requestID)
+		imageURL, done, err := m.checkAsyncStatus(pollCtx, requestID, callHeaders)
 		if err != nil {
 			if timedOut.Load() {
 				return nil, fmt.Errorf("Fireworks image generation timed out after %dms", timeoutMs) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
@@ -228,7 +287,7 @@ func (m *ImageModel) pollAsyncResult(ctx context.Context, requestID string) (*ty
 			// would let the deadline timer (still armed until this function
 			// returns) abort an in-progress download that outlives the
 			// remaining poll budget.
-			return m.downloadImage(ctx, imageURL)
+			return m.downloadImage(ctx, imageURL, callHeaders)
 		}
 
 		select {
@@ -250,7 +309,7 @@ func (m *ImageModel) pollAsyncResult(ctx context.Context, requestID string) (*ty
 // foreign-origin URLs and redirect hops are SSRF-validated and DNS-pinned, and
 // provider credentials are only sent when the URL is same-origin with the
 // configured base URL (never to a CDN or an attacker-named host).
-func (m *ImageModel) downloadImage(ctx context.Context, imageURL string) (*types.ImageResult, error) {
+func (m *ImageModel) downloadImage(ctx context.Context, imageURL string, callHeaders ...map[string]string) (*types.ImageResult, error) {
 	baseURL := m.baseURL()
 	var trustedTransport http.RoundTripper
 	if c := m.provider.client.HTTPClient(); c != nil {
@@ -259,8 +318,11 @@ func (m *ImageModel) downloadImage(ctx context.Context, imageURL string) (*types
 	dlOpts := fileutil.TrustedOriginDownloadOptions(baseURL, trustedTransport)
 	if fileutil.IsSameOrigin(imageURL, baseURL) {
 		dlOpts.Headers = internalhttp.MergeHeaders(map[string]string{
-			"Authorization": "Bearer " + m.provider.config.APIKey,
+			"Authorization": "Bearer " + providerutils.APIKeyOrEnv(m.provider.config.APIKey, "FIREWORKS_API_KEY"),
 		}, m.provider.config.Headers)
+		for _, h := range callHeaders {
+			dlOpts.Headers = internalhttp.MergeHeaders(dlOpts.Headers, h)
+		}
 	}
 
 	downloaded, err := fileutil.DownloadWithMetadata(ctx, imageURL, dlOpts)
@@ -292,36 +354,45 @@ func (m *ImageModel) baseURL() string {
 	return "https://api.fireworks.ai/inference"
 }
 
-// buildAsyncWarnings returns warnings for unsupported options on flux-kontext models,
-// matching the TypeScript reference implementation.
-func (m *ImageModel) buildAsyncWarnings(opts *provider.ImageGenerateOptions) []types.Warning {
-	var warnings []types.Warning
+// buildWarnings mirrors the TS doGenerate warnings shared by the sync and
+// async paths.
+func (m *ImageModel) buildWarnings(opts *provider.ImageGenerateOptions) []types.Warning {
+	warnings := []types.Warning{}
+	supportsSize := fireworksImageGenerationModels[m.modelID]
 
-	if opts.Size != "" {
+	if !supportsSize && opts.Size != "" {
 		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-setting",
-			Message: "size is not supported for flux-kontext models; use aspect_ratio instead",
+			Type:    "unsupported",
+			Feature: "size",
+			Details: "This model does not support the `size` option. Use `aspectRatio` instead.",
 		})
 	}
-
+	// supportsSize doubles as "does not support aspectRatio" for the known set.
+	if supportsSize && opts.AspectRatio != "" {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "aspectRatio",
+			Details: "This model does not support the `aspectRatio` option.",
+		})
+	}
 	if len(opts.Files) > 1 {
 		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-setting",
-			Message: "only the first input image is used; multiple files are not supported",
+			Type:    "other",
+			Message: "Fireworks only supports a single input image. Additional images are ignored.",
 		})
 	}
-
 	if opts.Mask != nil {
 		warnings = append(warnings, types.Warning{
-			Type:    "unsupported-setting",
-			Message: "mask is not supported for flux-kontext models",
+			Type:    "unsupported",
+			Feature: "mask",
+			Details: "Fireworks Kontext models do not support explicit masks. Use the prompt to describe the areas to edit.",
 		})
 	}
-
 	return warnings
 }
 
-// buildAsyncRequestBody builds the request body for async flux-kontext image generation.
+// buildAsyncRequestBody builds the request body (TS doGenerate `body`), shared
+// by the sync and async paths.
 func (m *ImageModel) buildAsyncRequestBody(opts *provider.ImageGenerateOptions) map[string]interface{} {
 	body := map[string]interface{}{
 		"prompt": opts.Prompt,
@@ -349,10 +420,13 @@ func (m *ImageModel) buildAsyncRequestBody(opts *provider.ImageGenerateOptions) 
 
 	// Handle input image for image editing
 	if len(opts.Files) > 0 {
-		body["input_image"] = m.encodeImageFile(&opts.Files[0])
+		if img := m.encodeImageFile(&opts.Files[0]); img != "" {
+			body["input_image"] = img
+		}
 	}
 
-	// Merge provider-specific options (passthrough)
+	// Merge provider-specific options (passthrough); applied last like TS
+	// `...fireworksOptions`.
 	if opts.ProviderOptions != nil {
 		if fwOpts, ok := opts.ProviderOptions["fireworks"].(map[string]interface{}); ok {
 			for k, v := range fwOpts {
@@ -380,69 +454,5 @@ func (m *ImageModel) encodeImageFile(file *provider.ImageFile) string {
 }
 
 func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[string]interface{} {
-	reqBody := map[string]interface{}{
-		"model":  m.modelID,
-		"prompt": opts.Prompt,
-	}
-
-	if opts.N != nil {
-		reqBody["n"] = *opts.N
-	}
-
-	if opts.Size != "" {
-		var width, height int
-		_, _ = fmt.Sscanf(opts.Size, "%dx%d", &width, &height) //nolint:errcheck
-		if width > 0 && height > 0 {
-			reqBody["width"] = width
-			reqBody["height"] = height
-		}
-	}
-
-	// Merge provider-specific options (passthrough). Matches TS, where the same
-	// fireworks-image-model-options schema (cfg_scale/steps for legacy
-	// image_generation models, plus guidance_scale/num_inference_steps/
-	// output_format/webhook_url/webhook_secret/prompt_upsampling/
-	// safety_tolerance) applies uniformly to both the sync and async paths.
-	if opts.ProviderOptions != nil {
-		if fwOpts, ok := opts.ProviderOptions["fireworks"].(map[string]interface{}); ok {
-			for k, v := range fwOpts {
-				reqBody[k] = v
-			}
-		}
-	}
-
-	return reqBody
-}
-
-func (m *ImageModel) convertResponse(body []byte) (*types.ImageResult, error) {
-	var response struct {
-		Data []struct {
-			URL     string `json:"url"`
-			B64JSON string `json:"b64_json"`
-		} `json:"data"`
-	}
-
-	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	if len(response.Data) == 0 {
-		return nil, fmt.Errorf("no images generated")
-	}
-
-	result := &types.ImageResult{
-		Usage: types.ImageUsage{},
-	}
-
-	if response.Data[0].URL != "" {
-		result.URL = response.Data[0].URL
-		result.MimeType = "image/png"
-	}
-
-	if response.Data[0].B64JSON != "" {
-		result.Image = []byte(response.Data[0].B64JSON)
-		result.MimeType = "image/png"
-	}
-
-	return result, nil
+	return m.buildAsyncRequestBody(opts)
 }

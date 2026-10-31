@@ -25,8 +25,8 @@ func TestOTelIntegrationStepFinishFinishAndError(t *testing.T) {
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
 	settings := &Settings{
 		IsEnabled:     Bool(true),
-		RecordInputs:  true,
-		RecordOutputs: true,
+		RecordInputs:  Bool(true),
+		RecordOutputs: Bool(true),
 		FunctionID:    "fn-id",
 	}
 
@@ -134,8 +134,8 @@ func TestLegacyOpenTelemetryOnStartBaseAttributes(t *testing.T) {
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
 	settings := &Settings{
 		IsEnabled:     Bool(true),
-		RecordInputs:  true,
-		RecordOutputs: true,
+		RecordInputs:  Bool(true),
+		RecordOutputs: Bool(true),
 		FunctionID:    "test-function-id",
 	}
 
@@ -247,7 +247,7 @@ func TestLegacyOpenTelemetryOnStartPromptJSON(t *testing.T) {
 	tracer := tp.Tracer("legacy-prompt-json-test")
 
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true)}
 
 	// generateText: `event.messages` is always the normalized message list,
 	// even though this event is built directly here (bypassing pkg/ai's
@@ -299,7 +299,7 @@ func TestLegacyOpenTelemetryOnStartEmbedRerankAttributes(t *testing.T) {
 	tracer := tp.Tracer("legacy-embed-rerank-test")
 
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true)}
 
 	integration.OnStart(context.Background(), TelemetryStartEvent{
 		OperationType: "ai.embed",
@@ -373,10 +373,11 @@ func TestLegacyOpenTelemetryNestedEmbedRerankSpans(t *testing.T) {
 	tracer := tp.Tracer("legacy-nested-embed-rerank-test")
 
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 	maxRetries := 2
 
 	rootCtx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		CallID:        "embed-call",
 		OperationType: "ai.embed",
 		ModelProvider: "openai",
 		ModelID:       "text-embedding-3-small",
@@ -429,6 +430,7 @@ func TestLegacyOpenTelemetryNestedEmbedRerankSpans(t *testing.T) {
 	}
 
 	rerankRootCtx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		CallID:        "rerank-call",
 		OperationType: "ai.rerank",
 		ModelProvider: "cohere",
 		ModelID:       "rerank-v3.5",
@@ -487,7 +489,7 @@ func TestLegacyOpenTelemetryOnEndPerOperationShape(t *testing.T) {
 	tracer := tp.Tracer("legacy-onend-shape-test")
 
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
-	settings := &Settings{IsEnabled: Bool(true), RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordOutputs: Bool(true)}
 
 	// rerank: OnEnd sets nothing at all.
 	rerankCtx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.rerank", Settings: settings})
@@ -568,7 +570,7 @@ func TestLegacyOpenTelemetryToolCallSpan(t *testing.T) {
 	tracer := tp.Tracer("legacy-toolcall-test")
 
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
 		OperationType: "ai.generateText",
@@ -621,7 +623,7 @@ func TestLegacyOpenTelemetryToolCallSpan_RecordOutputsFalse(t *testing.T) {
 	tracer := tp.Tracer("legacy-toolcall-recordoutputs-false-test")
 
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: false}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(false)}
 
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
 		OperationType: "ai.generateText",
@@ -707,6 +709,10 @@ func TestOTelIntegrationCustomSpanAttributes(t *testing.T) {
 		StepNumber:   0,
 		FinishReason: "tool-calls",
 	})
+	// TS drops model-call events for a callId with no operation state, so
+	// the embed and rerank calls get their own operation roots.
+	embedCtx := integration.OnStart(context.Background(), TelemetryStartEvent{CallID: "embed-1", OperationType: "ai.embed", Settings: settings})
+	rerankCtx := integration.OnStart(context.Background(), TelemetryStartEvent{CallID: "rerank-1", OperationType: "ai.rerank", Settings: settings})
 	integration.OnEmbedStart(ctx, EmbeddingModelCallStartEvent{
 		Settings:      settings,
 		CallID:        "embed-1",
@@ -737,6 +743,8 @@ func TestOTelIntegrationCustomSpanAttributes(t *testing.T) {
 	integration.OnEnd(ctx, TelemetryFinishEvent{Settings: settings, FinishReason: "stop"})
 
 	ended := rec.Ended()
+	integration.OnEnd(embedCtx, TelemetryFinishEvent{Settings: settings, CallID: "embed-1"})
+	integration.OnEnd(rerankCtx, TelemetryFinishEvent{Settings: settings, CallID: "rerank-1"})
 	if len(ended) != 5 {
 		t.Fatalf("ended spans = %d, want 5", len(ended))
 	}
@@ -890,7 +898,7 @@ func TestLegacyOpenTelemetryStreamFirstChunkFinishEvents(t *testing.T) {
 	tracer := tp.Tracer("legacy-stream-events-test")
 
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 	perf := LanguageModelCallPerformance{
 		ResponseTimeMs:                 500,
 		EffectiveOutputTokensPerSecond: 20,
@@ -961,7 +969,7 @@ func TestLegacyOpenTelemetryObjectStepFirstChunkEvent(t *testing.T) {
 	tracer := tp.Tracer("legacy-object-step-events-test")
 
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 
 	rootCtx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.streamObject", Settings: settings})
 	stepCtx := integration.OnStepStart(rootCtx, TelemetryStepStartEvent{
@@ -1052,5 +1060,34 @@ func TestLegacyOpenTelemetrySpanStatusErrorOnErrorFinishReason(t *testing.T) {
 				t.Errorf("root span status = %v, want %v", got, wantCode)
 			}
 		})
+	}
+}
+
+// TestLegacyOpenTelemetryOnStartDropsEmptyStopSequences ports TS's
+// sanitizeAttributeValue: an empty array has no primitive type, so
+// ai.settings.stopSequences is dropped rather than recorded as [].
+func TestLegacyOpenTelemetryOnStartDropsEmptyStopSequences(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("legacy-empty-stop")})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.generateText",
+		ModelProvider: "p",
+		ModelID:       "m",
+		Settings:      settings,
+		StopSequences: []string{},
+	})
+	trace.SpanFromContext(ctx).End()
+
+	span := findSpan(rec, "ai.generateText")
+	if span == nil {
+		t.Fatal("expected ai.generateText span")
+	}
+	if v, ok := attrValue(span, "ai.settings.stopSequences"); ok {
+		t.Errorf("ai.settings.stopSequences = %v, want it dropped for an empty slice", v)
 	}
 }

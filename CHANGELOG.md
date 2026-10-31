@@ -7,6 +7,146 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - Unreleased
+
+TS parity catch-up from `ai@7.0.127` to `ai@7.0.153`, built on v0.5.3 (all
+v0.5.3 fixes are included). See
+[`release_notes/RELEASE_NOTES_V0.6.0.md`](./release_notes/RELEASE_NOTES_V0.6.0.md)
+and the [v0.5 to v0.6 migration guide](./docs/08-migration-guides/from-v0.5-to-v0.6.mdx).
+
+### Added
+
+- Experimental steering: `ai.NewSteering()` and `ExperimentalSteering` on
+  `GenerateText`, `StreamText` and the agent inject messages between steps
+  (`StepResult.ExperimentalSteeringMessages`).
+- `OnStepError` on `GenerateText`, `StreamText` and the agent; agent
+  `ErrorHandler` and `AbortHandler`.
+- `ai.ExperimentalStreamSpeech` with the optional `provider.SpeechStreamer`
+  interface, implemented by the AI Gateway and ElevenLabs over WebSocket.
+- `pkg/toolbash` (bash tool over a sandbox session) and `pkg/toolwebfetch`
+  (web fetch with SSRF checks on every redirect, DNS pinning and
+  HTML-to-Markdown).
+- MCP events: `MCPClientConfig.ExperimentalEvents`,
+  `(*MCPClient).ExperimentalEvents()` / `ExperimentalManagedEvents()` and
+  `ExperimentalCreateMCPEventWebhook` (Standard Webhooks v1 signatures). MCP
+  per-request timeouts (`mcp.WithRequestOptions`) and
+  `InitializationOptions`.
+- fx: opt-in libfx runtime, `fx.Settings{Runtime: fx.RuntimeLibfx}`, with AI
+  Gateway or Codex/Grok subscription auth and HTTP/SSE MCP servers. The
+  sandbox `fx acp` runtime stays the default.
+- Decide: `box` questions, `MaxOutputTokens` and `Reasoning`,
+  `QuestionOrder` / `CriteriaOrder`, and a Perplexity decision model.
+- HeyGen video provider (`pkg/providers/heygen`).
+- Models: Claude Haiku 5.5, `gemini-4-argon` (long-decode continuation),
+  `gemini-nano-banana-2.1`, MiniMax M3.1, `kimi-k3.1-pro`, Mistral Voxtral 3
+  and GLM 5.3 reasoning, `grok-imagine-image-2.0`, BFL flux-3, Azure
+  MAI-Image; regenerated AI Gateway catalog.
+- `ai.StreamTextLowMemory`, `ToolCallConcurrency`,
+  `types.FinishReasonInterrupted`, `ToolResultContent.IsError`,
+  `StreamTextResult.NewStream()`, `codemode.ResetMaxWorkers()`.
+- Image prompt input for the Claude Code, Codex, OpenCode, Deep Agents, ACP
+  and GitHub Copilot harness adapters.
+- 32-bit builds (linux/386, linux/arm), checked in CI.
+
+### Changed
+
+- Tools in a step run concurrently by default, as TS `Promise.all`. Set
+  `ToolCallConcurrency: 1` for sequential execution.
+- Errors are returned as is, without Go-added prefixes; match them with
+  `errors.As` / `errors.Is`.
+- `StreamTextResult.Text()` is the final step's text; `OnFinishEvent`
+  aggregates usage, tool calls and results across steps.
+- `Usage.TotalTokens` is input + output tokens for every provider.
+- Provider model IDs follow TS `config.provider` (`groq.chat`,
+  `openai.image`, ...). Option and metadata keys are unchanged.
+- Responses, stream chunks and provider options are validated against the
+  TS schemas; mismatches fail with "Invalid JSON response" or
+  `InvalidArgumentError`.
+- Experimental evaluate is renamed to decide (old names are deprecated
+  aliases); wire and telemetry names changed to `ai.decide*` /
+  `ai.decision.*`.
+- `WorkflowAgent.Stream` has no default step limit; MCP clients have no
+  default request timeout.
+- An OPA HTTP policy response without `result` is not-applicable instead of
+  denied.
+- Generated response, approval and UI message IDs use the TS formats
+  (`aitxt-`/`aiobj-` plus 24 characters, or 16 for UI messages) instead of
+  `call-` plus 24; approval IDs come from `InternalOptions.GenerateID`.
+- Code mode runs on wazero v1.12.0 and compiles QuickJS once per process
+  (faster startup).
+
+### Breaking
+
+The most common ones are below. The
+[migration guide](./docs/08-migration-guides/from-v0.5-to-v0.6.mdx) lists
+every change that can need an edit, with a quick-scan table of patterns to
+search for.
+
+- `GenerateObjectOptions.MaxRetries` and `StreamObjectOptions.MaxRetries`
+  are `*int`; an explicit 0 disables retries.
+- `telemetry.Options.RecordInputs` / `RecordOutputs` are `*bool`, and unset
+  now records prompts and outputs. Set both to `telemetry.Bool(false)` to
+  keep them out of spans.
+- Evaluate end-event struct literals use the Decide embedded field names;
+  unkeyed `acp.TextContentBlock` literals no longer compile.
+- Prompts with neither or both of `Prompt` and `Messages`, or an empty
+  `Messages`, fail with `*errors.InvalidPromptError`.
+- `GenerateObject` / `StreamObject` reject system messages in `Messages`
+  unless `AllowSystemMessages` is set; use `Instructions`.
+- ACP lifecycle state persisted by v0.5.x does not resume.
+- KlingAI reports an unknown model ID from `DoStart`, not `VideoModel()`.
+- Code mode: default 10 s CPU limit (`CPUTimeoutMs`) and a memory-based
+  concurrent-script cap (at most 32, `*codemode.ConcurrencyError`).
+- OpenAI Responses `promptCacheOptions` is validated.
+- Failed generated-media downloads in BFL, Luma and fal return
+  `*providererrors.ProviderError`.
+- Wrapper providers (Baseten, Cerebras, DeepInfra, Fireworks, Together,
+  Vercel, Vertex MaaS, Azure delegates) read only their own API key.
+- A failed harness `DoSuspendTurn` after a `StopWhen` condition fails the
+  turn.
+- `StreamText` exposes the provider request body only with
+  `Include.RequestBody`; the `GenerateText` step-end event bodies follow
+  `Include`.
+- MCP OAuth rejects pre-registered confidential clients without an
+  `Issuer`; `ToolChoice: none` is enforced with
+  `*ai.ToolChoiceViolationError`; truncated streams finish with
+  `interrupted`.
+
+### Fixed
+
+- AI Gateway language model speaks the V4 wire protocol.
+- Tool parameters built with `schema.NewSimpleJSONSchema` reached providers
+  as `{}`.
+- Bedrock Anthropic (InvokeModel) streaming returned no content.
+- Anthropic `contextManagement` edits are sent with snake_case names, and
+  function tool schemas are sent untouched.
+- `ToUIMessageStream` no longer blocks after a failed callback, and a
+  panicking callback fails the stream instead of crashing the process.
+- MCP `HTTPTransport` works after `Close` then `Connect`.
+- Code mode counts real sandbox thread CPU time on Linux, macOS and Windows.
+- fx on libfx rejects `MemoryLimitBytes` above 4 GiB instead of crashing.
+- Stability no longer panics on nil options; Bedrock picks up rotated AWS
+  credentials without a restart.
+- The SDK reports version 0.6.0 in `User-Agent` and telemetry.
+
+### Security
+
+- Downloads: `.internal` hostnames are blocked, and hostnames are mapped
+  through IDNA before the SSRF blocklist, so fullwidth forms cannot bypass
+  it.
+- Fireworks, Together, the Azure delegates and Azure DeepSeek no longer fall
+  back to `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` (the other wrappers were
+  fixed in v0.5.3).
+- Code mode: sandboxed scripts no longer see Go stack traces or host source
+  paths; a panicking host tool is a tool failure.
+- Harness JSON parsing rejects `__proto__` and `constructor.prototype` keys;
+  the local sandbox gains a `HostEnv` allowlist and owner-only session
+  directories.
+- Response-derived IDs (ByteDance, KlingAI, fal, Luma, Rev.ai) are encoded
+  as single path segments; BFL and OpenAI-compatible image downloads send
+  credentials only to same-origin URLs.
+- Also includes every v0.5.3 security fix.
+
 ## [0.5.3] - 2026-10-27
 
 Patch release: bug and security fixes backported from the v0.6.0 line.
@@ -1326,6 +1466,7 @@ Apache 2.0 - See LICENSE for details
 ---
 
 [Unreleased]: https://github.com/digitallysavvy/go-ai/compare/v0.5.3...HEAD
+[0.6.0]: https://github.com/digitallysavvy/go-ai/compare/v0.5.3...v0.6.0
 [0.5.3]: https://github.com/digitallysavvy/go-ai/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/digitallysavvy/go-ai/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/digitallysavvy/go-ai/compare/v0.5.0...v0.5.1

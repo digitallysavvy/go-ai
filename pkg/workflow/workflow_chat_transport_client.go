@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -56,8 +56,14 @@ type WorkflowChatTransportOptions struct {
 	OnChatSendMessage func(resp *http.Response, req ai.ChatTransportSendMessagesRequest) error
 	// OnChatEnd is invoked once, after a "finish" chunk is observed.
 	OnChatEnd func(WorkflowChatTransportEndEvent) error
-	// MaxConsecutiveErrors bounds reconnect attempts. Defaults to 3.
+	// MaxConsecutiveErrors bounds reconnect attempts. Streams that end without
+	// receiving any UI message chunks count as errors. Defaults to 3.
 	MaxConsecutiveErrors int
+	// MaxConsecutiveErrorsSet makes MaxConsecutiveErrors be used as given,
+	// including 0 (and negative values), matching TS `maxConsecutiveErrors ?? 3`
+	// where an explicit 0 fails on the first reconnect error. When false (the
+	// default) a value <= 0 means "unset" and becomes 3, as in earlier releases.
+	MaxConsecutiveErrorsSet bool
 	// InitialStartIndex is the default startIndex used by ReconnectToStream
 	// when it is called directly (not as part of a SendMessages recovery).
 	// Negative values are tail-relative (e.g. -10 reads the last 10 chunks),
@@ -98,7 +104,7 @@ func NewWorkflowChatTransport(opts WorkflowChatTransportOptions) *WorkflowChatTr
 		client = http.DefaultClient
 	}
 	maxErrs := opts.MaxConsecutiveErrors
-	if maxErrs <= 0 {
+	if maxErrs <= 0 && !opts.MaxConsecutiveErrorsSet {
 		maxErrs = 3
 	}
 	return &WorkflowChatTransport{
@@ -139,21 +145,21 @@ func (t *WorkflowChatTransport) ReconnectToStream(ctx context.Context, req ai.Ch
 		defer close(out)
 		defer close(errs)
 		normalizer := newUIStreamNormalizer()
-		t.reconnectLoop(ctx, req.ChatID, req.ChatID, 0, true, normalizer, out, errs)
+		t.reconnectLoop(ctx, req.ChatID, req.ChatID, 0, req.StartIndex, normalizer, out, errs)
 	}()
 	return out, errs
 }
 
 func (t *WorkflowChatTransport) sendMessages(ctx context.Context, req ai.ChatTransportSendMessagesRequest, out chan<- ai.UIMessageChunk, errs chan<- error) {
-	body := map[string]interface{}{"messages": req.Messages}
-	if req.ChatID != "" {
-		body["chatId"] = req.ChatID
+	// TS default POST body is `{ messages, ...options.body }`: chatId,
+	// messageId and trigger reach the server only through
+	// prepareSendMessagesRequest.
+	body := map[string]interface{}{}
+	for k, v := range req.Body {
+		body[k] = v
 	}
-	if req.MessageID != "" {
-		body["messageId"] = req.MessageID
-	}
-	if req.Trigger != "" {
-		body["trigger"] = req.Trigger
+	if _, ok := req.Body["messages"]; !ok {
+		body["messages"] = req.Messages
 	}
 	api := t.api
 	headers := map[string]string{}
@@ -196,21 +202,21 @@ func (t *WorkflowChatTransport) sendMessages(ctx context.Context, req ai.ChatTra
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 || resp.Body == nil {
 		payload, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		_ = resp.Body.Close()
-		errs <- fmt.Errorf("workflow chat transport: failed to fetch chat: %d %s", resp.StatusCode, strings.TrimSpace(string(payload)))
+		errs <- fmt.Errorf("Failed to fetch chat: %d %s", resp.StatusCode, string(payload)) //nolint:staticcheck // matches TS SDK error text
 		return
 	}
 
 	workflowRunID := resp.Header.Get("x-workflow-run-id")
 	if workflowRunID == "" {
-		_, _ = io.Copy(io.Discard, resp.Body)
+		// TS throws at once; draining an open run stream would wait for it
+		// to end.
 		_ = resp.Body.Close()
-		errs <- fmt.Errorf(`workflow chat transport: workflow run ID not found in "x-workflow-run-id" response header`)
+		errs <- fmt.Errorf(`Workflow run ID not found in "x-workflow-run-id" response header`) //nolint:staticcheck // matches TS SDK error text
 		return
 	}
 
 	if t.onChatSendMessage != nil {
 		if err := t.onChatSendMessage(resp, req); err != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
 			errs <- err
 			return
@@ -218,7 +224,7 @@ func (t *WorkflowChatTransport) sendMessages(ctx context.Context, req ai.ChatTra
 	}
 
 	normalizer := newUIStreamNormalizer()
-	chunkIndex, gotFinish := t.pumpChunkStream(ctx, resp.Body, normalizer, nil, out)
+	chunkIndex, gotFinish, _ := t.pumpChunkStream(ctx, resp.Body, normalizer, nil, out)
 	_ = resp.Body.Close()
 
 	if gotFinish {
@@ -227,19 +233,26 @@ func (t *WorkflowChatTransport) sendMessages(ctx context.Context, req ai.ChatTra
 	}
 	// The initial POST stream ended without a finish chunk (dropped
 	// connection or platform function timeout) — reconnect to resume.
-	t.reconnectLoop(ctx, req.ChatID, workflowRunID, chunkIndex, false, normalizer, out, errs)
+	t.reconnectLoop(ctx, req.ChatID, workflowRunID, chunkIndex, nil, normalizer, out, errs)
 }
 
 // reconnectLoop mirrors TS's reconnectToStreamIterator: it GETs the run's
 // stream, resuming from the running chunkIndex (or an explicit startIndex on
 // the first request), retrying up to maxConsecutiveErrors times on read
 // failures, until a "finish" chunk is observed.
-func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID string, initialChunkIndex int, useConfiguredStartIndex bool, normalizer *uiStreamNormalizer, out chan<- ai.UIMessageChunk, errs chan<- error) {
+func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID string, initialChunkIndex int, startIndexOverride *int, normalizer *uiStreamNormalizer, out chan<- ai.UIMessageChunk, errs chan<- error) {
 	chunkIndex := initialChunkIndex
+	// TS: `options.startIndex ?? this.initialStartIndex`, applied to the first
+	// request whenever the loop starts at chunk 0 (also after a POST stream
+	// that delivered no chunks) and the value is not 0.
 	explicitStartIndex := t.initialStartIndex
-	useExplicitStartIndex := useConfiguredStartIndex && explicitStartIndex != 0
+	if startIndexOverride != nil {
+		explicitStartIndex = *startIndexOverride
+	}
+	useExplicitStartIndex := initialChunkIndex == 0 && explicitStartIndex != 0
 
-	base := fmt.Sprintf("%s/%s/stream", strings.TrimRight(t.api, "/"), url.PathEscape(runID))
+	// TS: `${this.api}/${encodeURIComponent(workflowRunId ?? chatId)}/stream`.
+	base := fmt.Sprintf("%s/%s/stream", t.api, encodeURIComponent(runID))
 	reconnectCtx := WorkflowChatTransportReconnectContext{ChatID: chatID, API: base}
 	headers := map[string]string{}
 	usedDefaultBase := true
@@ -305,46 +318,86 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 || resp.Body == nil {
 			payload, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			_ = resp.Body.Close()
-			errs <- fmt.Errorf("workflow chat transport: failed to fetch chat: %d %s", resp.StatusCode, strings.TrimSpace(string(payload)))
+			errs <- fmt.Errorf("Failed to fetch chat: %d %s", resp.StatusCode, string(payload)) //nolint:staticcheck // matches TS SDK error text
 			return
 		}
 
 		if useExplicitStartIndex && explicitStartIndex > 0 {
 			chunkIndex = explicitStartIndex
 		} else if useExplicitStartIndex && explicitStartIndex < 0 {
-			if tailHeader := resp.Header.Get("x-workflow-stream-tail-index"); tailHeader != "" {
-				if tailIndex, err := strconv.Atoi(tailHeader); err == nil {
-					chunkIndex = tailIndex + 1 + explicitStartIndex
-					if chunkIndex < 0 {
-						chunkIndex = 0
-					}
-				} else {
-					log.Printf("[WorkflowChatTransport] Negative initialStartIndex is configured (%d) but the reconnection endpoint returned an unparseable \"x-workflow-stream-tail-index\" header. Retries will replay the stream from the beginning.", explicitStartIndex)
-					replayFromStart = true
+			if tailIndex, ok := parseIntPrefix(resp.Header.Get("x-workflow-stream-tail-index")); ok {
+				// Resolve: e.g. tailIndex=499, startIndex=-20 -> 500 + (-20) = 480.
+				chunkIndex = tailIndex + 1 + explicitStartIndex
+				if chunkIndex < 0 {
+					chunkIndex = 0
 				}
 			} else {
-				log.Printf("[WorkflowChatTransport] Negative initialStartIndex is configured (%d) but the reconnection endpoint did not return an \"x-workflow-stream-tail-index\" header. Retries will replay the stream from the beginning.", explicitStartIndex)
+				// Header missing or unparseable: replay from the beginning so
+				// retries do not resume from a wrong position.
+				log.Printf("[WorkflowChatTransport] Negative initialStartIndex is configured (%d) but the reconnection endpoint did not return a valid \"x-workflow-stream-tail-index\" header. Retries will replay the stream from the beginning. See: https://workflow.dev/docs/ai/resumable-streams#resuming-from-the-end-of-the-stream", explicitStartIndex)
 				replayFromStart = true
 			}
 		}
 		useExplicitStartIndex = false
 
-		read, finished := t.pumpChunkStream(ctx, resp.Body, normalizer, orphans, out)
+		read, finished, streamErr := t.pumpChunkStream(ctx, resp.Body, normalizer, orphans, out)
 		_ = resp.Body.Close()
 		chunkIndex += read
-		if finished {
-			// Not updating gotFinish/consecutiveErrors here: break ends the
-			// loop immediately, and neither is read again afterward.
+		if finished && streamErr == nil {
 			break
 		}
+		if streamErr == nil && read > 0 {
+			// The stream ended without a finish chunk but made progress
+			// (chunks advanced the cursor, including ones the orphan filter
+			// dropped): reset the error count and resume from the new cursor.
+			consecutiveErrors = 0
+			continue
+		}
+		// A read/parse failure, or a stream that ended without receiving any
+		// UI message chunks (an empty SSE response, keep-alives only, or a
+		// bare [DONE]), counts as an error so an endpoint that keeps returning
+		// the same empty response cannot loop forever (TS #22436).
+		// The message mirrors TS getErrorMessage(error), which is
+		// error.toString(): "Error: <message>".
+		lastErr := "Error: Reconnect stream ended without receiving chunks."
+		if streamErr != nil {
+			lastErr = "Error: " + streamErr.Error()
+		}
+		// A stream that fails after its finish chunk still counts (TS's catch
+		// runs whether or not gotFinish was set), and the loop then ends.
 		consecutiveErrors++
 		if consecutiveErrors >= t.maxConsecutiveErrors {
-			errs <- fmt.Errorf("workflow chat transport: failed to reconnect after %d consecutive errors", t.maxConsecutiveErrors)
+			errs <- fmt.Errorf("Failed to reconnect after %d consecutive errors. Last error: %s", t.maxConsecutiveErrors, lastErr) //nolint:staticcheck // matches TS SDK error text
 			return
+		}
+		if finished {
+			break
 		}
 	}
 
 	t.finishChat(chatID, chunkIndex, errs)
+}
+
+// parseIntPrefix is JavaScript parseInt(s, 10): leading whitespace, an optional
+// sign and the longest run of digits; ok is false when there is none (NaN).
+func parseIntPrefix(s string) (int, bool) {
+	s = strings.TrimLeft(s, " \t\n\r\v\f")
+	i := 0
+	if i < len(s) && (s[i] == '+' || s[i] == '-') {
+		i++
+	}
+	start := i
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	if i == start {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s[:i])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 func (t *WorkflowChatTransport) finishChat(chatID string, chunkIndex int, errs chan<- error) {
@@ -363,18 +416,23 @@ func (t *WorkflowChatTransport) finishChat(chatID string, chunkIndex int, errs c
 // mid-stream (rather than a clean EOF) simply stops the pump — the caller
 // treats an incomplete stream the same as a dropped connection and
 // reconnects, matching TS's `catch { console.error(...) }` fallthrough.
+// streamErr is nil when the body ended at EOF and non-nil when it ended by a
+// read error, malformed frame, or cancelled context.
 //
 // Every send on out also selects on ctx.Done() (R2-4): without it, a
 // consumer that stops draining the channel returned by SendMessages /
 // ReconnectToStream — without separately cancelling ctx — leaves this
 // goroutine permanently blocked on `out <- repaired`, leaking it for the
 // life of the process.
-func (t *WorkflowChatTransport) pumpChunkStream(ctx context.Context, body io.Reader, normalizer *uiStreamNormalizer, orphans *orphanFilter, out chan<- ai.UIMessageChunk) (read int, gotFinish bool) {
+func (t *WorkflowChatTransport) pumpChunkStream(ctx context.Context, body io.Reader, normalizer *uiStreamNormalizer, orphans *orphanFilter, out chan<- ai.UIMessageChunk) (read int, gotFinish bool, streamErr error) {
 	parser := streaming.NewSSEParser(body)
 	for {
 		event, err := parser.Next()
 		if err != nil {
-			return read, gotFinish
+			if errors.Is(err, io.EOF) {
+				return read, gotFinish, nil
+			}
+			return read, gotFinish, err
 		}
 		data := strings.TrimSpace(event.Data)
 		if data == "" || data == "[DONE]" {
@@ -390,7 +448,7 @@ func (t *WorkflowChatTransport) pumpChunkStream(ctx context.Context, body io.Rea
 			// silently skipped: stop the pump so the caller's reconnect path
 			// runs, matching TS instead of dropping one frame and continuing
 			// on the same (possibly desynced) connection.
-			return read, gotFinish
+			return read, gotFinish, fmt.Errorf("invalid UI message chunk: %w", err)
 		}
 		read++
 		// The orphan filter runs on the raw chunk, before framing repair —
@@ -404,7 +462,7 @@ func (t *WorkflowChatTransport) pumpChunkStream(ctx context.Context, body io.Rea
 				select {
 				case out <- repaired:
 				case <-ctx.Done():
-					return read, gotFinish
+					return read, gotFinish, ctx.Err()
 				}
 			}
 		}
@@ -587,4 +645,25 @@ func (f *orphanFilter) warn(orphanKind, orphanRef string) {
 		"start chunk wasn't in the resumed window. To preserve the full message, configure "+
 		"your stream endpoint to rewind to a step boundary before returning the readable.",
 		orphanKind, orphanRef)
+}
+
+// encodeURIComponent mirrors JavaScript's encodeURIComponent, which
+// url.PathEscape does not (it leaves ':', '@', '&', '=', '+', '$' and ','
+// unescaped): everything except A-Z a-z 0-9 and -_.!~*'() is percent-encoded.
+func encodeURIComponent(s string) string {
+	const hex = "0123456789ABCDEF"
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
+			strings.IndexByte("-_.!~*'()", c) >= 0:
+			b.WriteByte(c)
+		default:
+			b.WriteByte('%')
+			b.WriteByte(hex[c>>4])
+			b.WriteByte(hex[c&15])
+		}
+	}
+	return b.String()
 }

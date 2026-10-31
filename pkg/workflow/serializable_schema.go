@@ -1,10 +1,17 @@
 package workflow
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"sort"
+	"strconv"
+	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
@@ -58,22 +65,168 @@ type SerializableToolDef struct {
 	SupportsDeferredResults bool                     `json:"supportsDeferredResults,omitempty"`
 	InputExamples           []types.ToolInputExample `json:"inputExamples,omitempty"`
 	ProviderMetadata        map[string]interface{}   `json:"providerMetadata,omitempty"`
+	// HasOwnValidator records that the original input schema validates (and
+	// possibly normalizes) input with its own runtime validator, not just JSON
+	// Schema. ValidateSerializableToolInput defers to that original validator
+	// instead of re-validating the lossy JSON Schema copy (TS #22397).
+	HasOwnValidator bool `json:"hasOwnValidator,omitempty"`
+
+	// Metadata, ProviderOptions and the HasOnInput* flags mirror the TS
+	// SerializableToolDef fields of the same names. Callbacks themselves never
+	// cross the boundary; the flags tell the receiver that the original tool
+	// has them.
+	Metadata        map[string]interface{} `json:"metadata,omitempty"`
+	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
+	HasOnInputStart bool                   `json:"hasOnInputStart,omitempty"`
+	HasOnInputDelta bool                   `json:"hasOnInputDelta,omitempty"`
+	HasOnInputAvail bool                   `json:"hasOnInputAvailable,omitempty"`
+
+	// parametersHint and inputSchemaHint hold the key order of the schema the
+	// definition was made from (or decoded from), which the map fields cannot
+	// keep. They survive MarshalJSON/UnmarshalJSON and ResolveSerializableTools,
+	// so an MCP tool's schema keeps the server's key order across a durable
+	// boundary, like TS (JSON text keeps its order).
+	parametersHint  interface{}
+	inputSchemaHint interface{}
 }
 
-// SerializeToolSet converts tools to a JSON-safe map keyed by tool name.
+// serializableToolDefJSON has the fields of SerializableToolDef and no methods,
+// so MarshalJSON and UnmarshalJSON can reuse the struct's own encoding.
+type serializableToolDefJSON SerializableToolDef
+
+// MarshalJSON writes the definition with its schemas in their source key order.
+func (d SerializableToolDef) MarshalJSON() ([]byte, error) {
+	if d.parametersHint == nil && d.inputSchemaHint == nil {
+		return json.Marshal(serializableToolDefJSON(d))
+	}
+	aux := struct {
+		serializableToolDefJSON
+		Parameters  json.RawMessage `json:"parameters,omitempty"`
+		InputSchema json.RawMessage `json:"inputSchema,omitempty"`
+	}{serializableToolDefJSON: serializableToolDefJSON(d)}
+	var err error
+	if aux.Parameters, err = marshalOrdered(d.Parameters, d.parametersHint); err != nil {
+		return nil, err
+	}
+	if aux.InputSchema, err = marshalOrdered(d.InputSchema, d.inputSchemaHint); err != nil {
+		return nil, err
+	}
+	return json.Marshal(aux)
+}
+
+func marshalOrdered(m map[string]interface{}, hint interface{}) (json.RawMessage, error) {
+	if m == nil {
+		return nil, nil
+	}
+	if hint == nil {
+		return json.Marshal(m)
+	}
+	return jsonorder.Hinted{V: m, Hint: hint}.MarshalJSON()
+}
+
+// UnmarshalJSON reads the definition and remembers the key order of its
+// schemas.
+func (d *SerializableToolDef) UnmarshalJSON(data []byte) error {
+	if err := json.Unmarshal(data, (*serializableToolDefJSON)(d)); err != nil {
+		return err
+	}
+	var raw struct {
+		Parameters  json.RawMessage `json:"parameters"`
+		InputSchema json.RawMessage `json:"inputSchema"`
+	}
+	d.parametersHint, d.inputSchemaHint = nil, nil
+	if json.Unmarshal(data, &raw) == nil {
+		d.parametersHint = parseOrderHint(raw.Parameters)
+		d.inputSchemaHint = parseOrderHint(raw.InputSchema)
+	}
+	return nil
+}
+
+func parseOrderHint(raw []byte) interface{} {
+	if len(raw) == 0 {
+		return nil
+	}
+	if v, ok := jsonorder.Parse(raw); ok {
+		if o, isObj := v.(*jsonorder.Object); isObj {
+			return o
+		}
+	}
+	return nil
+}
+
+// toolParametersHint is the key order of a tool's Parameters when it carries
+// one (jsonorder.Hinted from an MCP server, or an *schema.OrderedSchema).
+func toolParametersHint(tool types.Tool) interface{} {
+	if o, ok := tool.ParameterKeyOrder.(*jsonorder.Object); ok && o != nil {
+		if _, isMap := tool.Parameters.(map[string]interface{}); isMap {
+			return o
+		}
+	}
+	var raw []byte
+	switch p := tool.Parameters.(type) {
+	case jsonorder.Hinted:
+		raw, _ = p.MarshalJSON() //nolint:errcheck // no hint on failure
+	case *jsonorder.Hinted:
+		if p != nil {
+			raw, _ = p.MarshalJSON() //nolint:errcheck // no hint on failure
+		}
+	case *schema.OrderedSchema:
+		if p != nil {
+			raw, _ = p.MarshalJSON() //nolint:errcheck // no hint on failure
+		}
+	}
+	return parseOrderHint(raw)
+}
+
+// SerializeToolSetOptions configures SerializeToolSetWithOptions (TS
+// serializeToolSet's second argument).
+type SerializeToolSetOptions struct {
+	// ToolsContext holds the per-tool context values keyed by tool name. A
+	// tool's DescriptionFunc receives its entry.
+	ToolsContext map[string]interface{}
+	// ExperimentalSandbox is passed to each tool's DescriptionFunc.
+	ExperimentalSandbox interface{}
+}
+
+// SerializeToolSet converts tools to a JSON-safe map keyed by tool name. A
+// tool's DescriptionFunc is resolved with no tools context and no sandbox;
+// use SerializeToolSetWithOptions to supply them.
 func SerializeToolSet(tools []types.Tool) (map[string]SerializableToolDef, error) {
+	return SerializeToolSetWithOptions(context.Background(), tools, SerializeToolSetOptions{})
+}
+
+// SerializeToolSetWithOptions converts tools to a JSON-safe map keyed by tool
+// name, resolving each DescriptionFunc with the tool's ToolsContext entry and
+// the sandbox, as TS serializeToolSet(tools, {toolsContext,
+// experimental_sandbox}) resolves a function description.
+func SerializeToolSetWithOptions(ctx context.Context, tools []types.Tool, opts SerializeToolSetOptions) (map[string]SerializableToolDef, error) {
 	if len(tools) == 0 {
 		return nil, nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	out := make(map[string]SerializableToolDef, len(tools))
 	for _, tool := range tools {
-		params, err := MarshalSchema(tool.Parameters)
+		params, hasOwnValidator, err := serializeToolParameters(tool.Parameters)
 		if err != nil {
 			return nil, err
 		}
+		hint := toolParametersHint(tool)
+		description := tool.Description
+		if tool.DescriptionFunc != nil {
+			var toolContext interface{}
+			if opts.ToolsContext != nil {
+				toolContext = opts.ToolsContext[tool.Name]
+			}
+			description = tool.DescriptionFunc(ctx, types.ToolDescriptionOptions{
+				Context:             toolContext,
+				ExperimentalSandbox: opts.ExperimentalSandbox,
+			})
+		}
 		def := SerializableToolDef{
 			Name:                    tool.Name,
-			Description:             tool.Description,
+			Description:             description,
 			Title:                   tool.Title,
 			Parameters:              params,
 			InputSchema:             params,
@@ -83,22 +236,65 @@ func SerializeToolSet(tools []types.Tool) (map[string]SerializableToolDef, error
 			SupportsDeferredResults: tool.SupportsDeferredResults,
 			InputExamples:           tool.InputExamples,
 			ProviderMetadata:        tool.ProviderMetadata,
+			HasOwnValidator:         hasOwnValidator,
+			parametersHint:          hint,
+			inputSchemaHint:         hint,
 		}
 		if tool.ProviderExecuted {
 			def.Type = "provider"
 		}
-		if providerArgs, err := MarshalSchema(tool.ProviderOptions); err == nil {
-			def.Args = providerArgs
-			if id, ok := providerArgs["id"].(string); ok {
+		def.Metadata = tool.Metadata
+		def.HasOnInputStart = tool.OnInputStart != nil
+		def.HasOnInputDelta = tool.OnInputDelta != nil
+		def.HasOnInputAvail = tool.OnInputAvailable != nil
+		providerOptions, err := MarshalSchema(tool.ProviderOptions)
+		if err != nil {
+			providerOptions = nil
+		}
+		def.ProviderOptions = providerOptions
+		switch tool.Type {
+		case "dynamic":
+			def.Type = "dynamic"
+		case "provider":
+			// Keep the provider tool identity so the receiver can tell it is
+			// a provider-defined tool (TS: type, id, args).
+			def.Type = "provider"
+			def.ID = tool.ProviderID
+			def.Args = tool.ProviderArgs
+		default:
+			// Before ProviderOptions had its own field it travelled in Args.
+			def.Args = providerOptions
+			if id, ok := providerOptions["id"].(string); ok {
 				def.ID = id
 			}
-			if typ, ok := providerArgs["type"].(string); ok {
+			if typ, ok := providerOptions["type"].(string); ok {
 				def.Type = typ
 			}
 		}
 		out[tool.Name] = def
 	}
 	return out, nil
+}
+
+// serializeToolParameters converts a tool's Parameters to a JSON Schema map.
+// A schema.Schema contributes its validator's JSON Schema, and reports
+// hasOwnValidator when that validator is anything other than a plain JSON
+// Schema validator (for example a struct-based validator).
+func serializeToolParameters(parameters interface{}) (map[string]interface{}, bool, error) {
+	if s, ok := parameters.(schema.Schema); ok && s != nil {
+		if o, isOrdered := s.(*schema.OrderedSchema); isOrdered {
+			// Plain JSON Schema that only keeps its key order: no own validator.
+			params, err := MarshalSchema(o)
+			return params, false, err
+		}
+		if v := s.Validator(); v != nil {
+			params, err := MarshalSchema(v.JSONSchema())
+			_, plainJSON := v.(*schema.JSONSchemaValidator)
+			return params, !plainJSON, err
+		}
+	}
+	params, err := MarshalSchema(parameters)
+	return params, false, err
 }
 
 // ResolveSerializableTools reconstructs non-executable tool descriptors from
@@ -108,28 +304,72 @@ func ResolveSerializableTools(defs map[string]SerializableToolDef) []types.Tool 
 	if len(defs) == 0 {
 		return nil
 	}
+	// A Go map has no order; TS keeps the record's insertion order. Sorting by
+	// key gives a stable tool order (it is part of the request, so it keeps
+	// prompt caches warm), like orderedTools does for a ToolSet.
+	names := make([]string, 0, len(defs))
+	for name := range defs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	tools := make([]types.Tool, 0, len(defs))
-	for name, def := range defs {
+	for _, name := range names {
+		def := defs[name]
 		toolName := def.Name
 		if toolName == "" {
 			toolName = name
 		}
 		params := def.Parameters
+		hint := def.parametersHint
 		if params == nil {
 			params = def.InputSchema
+			hint = def.inputSchemaHint
 		}
-		tools = append(tools, types.Tool{
-			Name:                    toolName,
-			Description:             def.Description,
-			Title:                   def.Title,
-			Parameters:              params,
-			Strict:                  def.Strict,
-			ProviderExecuted:        def.ProviderExecuted || def.IsProviderExecuted || def.Type == "provider",
-			SupportsDeferredResults: def.SupportsDeferredResults,
+		// Parameters stays a plain map (as in v0.5.2); the key order rides
+		// in ParameterKeyOrder.
+		var parameters interface{} = params
+		var keyOrder interface{}
+		if hint != nil && params != nil {
+			keyOrder = hint
+		}
+		providerOptions := def.ProviderOptions
+		resolved := types.Tool{
+			Name:              toolName,
+			Description:       def.Description,
+			Title:             def.Title,
+			Parameters:        parameters,
+			ParameterKeyOrder: keyOrder,
+			Strict:            def.Strict,
+			// TS resolve: only isProviderExecuted makes a tool provider-executed
+			// (a client-executed provider tool keeps type "provider"), and
+			// supportsDeferredResults is kept only for a provider-executed one.
+			ProviderExecuted:        def.ProviderExecuted || def.IsProviderExecuted,
+			SupportsDeferredResults: def.SupportsDeferredResults && (def.ProviderExecuted || def.IsProviderExecuted),
 			InputExamples:           def.InputExamples,
-			ProviderOptions:         def.Args,
 			ProviderMetadata:        def.ProviderMetadata,
-		})
+			Metadata:                def.Metadata,
+		}
+		switch {
+		case def.Type == "provider" && def.ID != "":
+			resolved.Type = "provider"
+			resolved.ProviderID = def.ID
+			resolved.ProviderArgs = def.Args
+			if providerOptions != nil {
+				resolved.ProviderOptions = providerOptions
+			}
+		case def.Type == "dynamic":
+			// TS resolve builds dynamicTool({description, inputExamples,
+			// providerOptions, inputSchema}): a resolved dynamic tool has no
+			// title, metadata or strict flag.
+			resolved.Type = "dynamic"
+			resolved.Title = ""
+			resolved.Metadata = nil
+			resolved.Strict = nil
+			resolved.ProviderOptions = optionsOrArgs(providerOptions, def.Args)
+		default:
+			resolved.ProviderOptions = optionsOrArgs(providerOptions, def.Args)
+		}
+		tools = append(tools, resolved)
 	}
 	return tools
 }
@@ -146,21 +386,164 @@ func ResolveSerializableTools(defs map[string]SerializableToolDef) []types.Tool 
 // actually reach the tool (mirrors TS's validateTypes/safeValidateTypes,
 // whose defaulted parse result is always what downstream code consumes).
 func ValidateSerializableToolInput(def SerializableToolDef, input interface{}) (interface{}, error) {
+	if def.HasOwnValidator {
+		// The original schema validates after the durable boundary, where it
+		// is available; the JSON Schema copy here cannot reproduce it.
+		return input, nil
+	}
 	params := def.InputSchema
+	hint := def.inputSchemaHint
 	if params == nil {
 		params = def.Parameters
+		hint = def.parametersHint
 	}
 	if params == nil {
 		return input, nil
 	}
+	// Formats are annotations here, not assertions, and unknown keywords and
+	// formats never reject a schema (TS #22080 validates with Ajv
+	// validateFormats: false).
+	normalized, err := MarshalSchema(params) // normalizes []string etc. to JSON shapes
+	if err != nil {
+		return nil, fmt.Errorf("workflow: invalid schema for %s: %w", def.Name, err)
+	}
+	params = stripSchemaFormats(normalized).(map[string]interface{})
 	s := schema.NewSimpleJSONSchema(params)
 	defaulted := schema.ApplyDefaults(input, s)
-	if err := s.Validator().Validate(defaulted); err != nil {
-		name := def.Name
-		if name == "" {
-			name = "tool"
-		}
-		return nil, fmt.Errorf("workflow: invalid input for %s: %w", name, err)
+	name := def.Name
+	if name == "" {
+		name = "tool"
+	}
+	// The Ajv-ordered walk is the validator: it knows the keywords Ajv does and
+	// words the errors like it. A second, generic validator would reject input
+	// Ajv accepts (`required` on a null where the type allows null) and word
+	// errors differently.
+	details := collectActionableErrors(defaulted, params, hint, "data")
+	if len(details) > 0 {
+		return nil, fmt.Errorf("workflow: invalid input for %s: %s", name, strings.Join(details, ", "))
 	}
 	return defaulted, nil
+}
+
+// stripSchemaFormats returns a deep copy of a JSON Schema value with string
+// "format" keywords removed.
+func stripSchemaFormats(v interface{}) interface{} {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(t))
+		for k, val := range t {
+			if k == "format" {
+				if _, isString := val.(string); isString {
+					continue
+				}
+			}
+			out[k] = stripSchemaFormats(val)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(t))
+		for i, val := range t {
+			out[i] = stripSchemaFormats(val)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
+func jsonString(v interface{}) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprint(v)
+	}
+	return string(b)
+}
+
+func jsonEqual(a, b interface{}) bool {
+	return jsonString(a) == jsonString(b)
+}
+
+// escapeInstancePathKey escapes a property name for a JSON pointer, as Ajv's
+// instancePath does.
+func escapeInstancePathKey(k string) string {
+	return strings.NewReplacer("~", "~0", "/", "~1").Replace(k)
+}
+
+func jsonNumber(v interface{}) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int8:
+		return float64(n), true
+	case int16:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case uint:
+		return float64(n), true
+	case uint8:
+		return float64(n), true
+	case uint16:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	case uint64:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	}
+	return 0, false
+}
+
+func matchesJSONType(v interface{}, name string) bool {
+	f, isNum := jsonNumber(v)
+	switch name {
+	case "string":
+		_, ok := v.(string)
+		return ok
+	case "number":
+		return isNum
+	case "integer":
+		return isNum && f == math.Trunc(f) && !math.IsInf(f, 0)
+	case "boolean":
+		_, ok := v.(bool)
+		return ok
+	case "null":
+		return v == nil
+	case "object":
+		_, ok := v.(map[string]interface{})
+		return ok
+	case "array":
+		_, ok := v.([]interface{})
+		return ok
+	}
+	return true
+}
+
+// formatJSNumber is JavaScript's Number toString (1e21 prints as 1e+21, 1e-7
+// as 1e-7), the text Ajv puts in its limit messages.
+func formatJSNumber(f float64) string {
+	if b, err := jsonstr.Marshal(f); err == nil {
+		return string(b)
+	}
+	return strconv.FormatFloat(f, 'f', -1, 64)
+}
+
+// optionsOrArgs returns the tool's provider options, falling back to Args for
+// definitions serialized before ProviderOptions had its own field.
+func optionsOrArgs(options, args map[string]interface{}) interface{} {
+	if options != nil {
+		return options
+	}
+	if args != nil {
+		return args
+	}
+	return nil
 }

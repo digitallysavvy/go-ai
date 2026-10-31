@@ -9,6 +9,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -25,6 +27,10 @@ type Provider struct {
 
 // Config contains configuration for the Google provider
 type Config struct {
+	// BatchResultDownloads configures JSON Lines batch result downloads, e.g.
+	// the maximum bytes per result row (TS `batchResultDownloads`).
+	BatchResultDownloads providerutils.BatchResultDownloads
+
 	// APIKey is the Google API key
 	APIKey string
 
@@ -40,6 +46,12 @@ type Config struct {
 
 	// HTTPClient overrides the HTTP client used for requests.
 	HTTPClient *http.Client
+
+	// GenerateID generates the ids the chat and Interactions models create
+	// (tool calls without an id, sources, processing steps) and the batch
+	// displayName suffix ("ai-sdk-batch-" plus the id). TS `generateId`; defaults
+	// to a random id.
+	GenerateID func() string `json:"-"`
 }
 
 // New creates a new Google provider with the given configuration
@@ -48,7 +60,7 @@ func New(cfg Config) *Provider {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
+	baseURL = strings.TrimSuffix(baseURL, "/")
 	cfg.BaseURL = baseURL
 
 	apiKey := cfg.APIKey
@@ -61,16 +73,60 @@ func New(cfg Config) *Provider {
 		"x-goog-api-key": apiKey,
 	}, cfg.Headers), version.ProviderUserAgent("google"))
 
-	client := internalhttp.NewClient(internalhttp.Config{
+	p := &Provider{config: cfg}
+	p.client = internalhttp.NewClient(internalhttp.Config{
 		BaseURL:    baseURL,
 		Headers:    headers,
 		HTTPClient: cfg.HTTPClient,
+		// TS getHeaders runs per request: the key is (re)loaded then and a
+		// missing key fails the request with a LoadAPIKeyError.
+		HeadersFunc: p.apiKeyHeaders,
 	})
 
-	return &Provider{
-		config: cfg,
-		client: client,
+	return p
+}
+
+// apiKeyHeaders resolves the x-goog-api-key header at request time like TS
+// getHeaders/loadApiKey: Config.APIKey or GOOGLE_GENERATIVE_AI_API_KEY, and a
+// LoadAPIKeyError when neither is set. A non-empty x-goog-api-key in
+// Config.Headers already authenticates the request and is kept.
+func (p *Provider) apiKeyHeaders() (map[string]string, error) {
+	for k, v := range p.config.Headers {
+		if strings.EqualFold(k, "x-goog-api-key") && v != "" {
+			return nil, nil
+		}
 	}
+	key, err := providerutils.LoadAPIKey(p.config.APIKey, "GOOGLE_GENERATIVE_AI_API_KEY", "Google Generative AI")
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{"x-goog-api-key": key}, nil
+}
+
+// defaultHeaders returns the client's default headers (user-agent suffix and
+// config headers) without the empty placeholder x-goog-api-key that New sets
+// when no key is configured, so a differently-cased header from Config.Headers
+// or the request-time key cannot collide with an empty value.
+func (p *Provider) defaultHeaders() map[string]string {
+	h := p.client.Headers()
+	for k, v := range h {
+		if v == "" {
+			delete(h, k)
+		}
+	}
+	return h
+}
+
+// headersSnapshot returns the client's default headers with the lazily
+// loaded API key applied (a missing key leaves the header as configured).
+func (p *Provider) headersSnapshot() map[string]string {
+	h := p.client.Headers()
+	if extra, err := p.apiKeyHeaders(); err == nil {
+		for k, v := range extra {
+			h[k] = v
+		}
+	}
+	return h
 }
 
 // CreateGoogle creates a new Google Generative AI provider.
@@ -182,7 +238,7 @@ func (p *Provider) Transcription(modelID string) (provider.TranscriptionModel, e
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
 	// Google doesn't provide reranking models
-	return nil, fmt.Errorf("Google does not support reranking") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // VideoModel returns a video generation model by ID
@@ -202,29 +258,37 @@ func (p *Provider) Client() *internalhttp.Client {
 
 // APIKey returns the API key
 func (p *Provider) APIKey() string {
-	if p.config.APIKey != "" {
-		return p.config.APIKey
-	}
-	return os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")
+	return providerutils.APIKeyOrEnv(p.config.APIKey, "GOOGLE_GENERATIVE_AI_API_KEY")
 }
 
 func (p *Provider) Files() provider.FilesAPI {
 	return &FilesAPI{provider: p}
 }
 
-// EvaluationModel returns an experimental evaluation model backed by the
+// DecisionModel returns an experimental decision model backed by the
 // Google Generative AI chat language model. Mirrors TypeScript's
-// GoogleGenerativeAIProvider.evaluationModel: `provider.evaluationModel =
-// (modelId) => new EvaluationLanguageModel({ model: createChatModel(modelId),
-// provider: providerName.replace(/\.generative-ai$/, "") + '.evaluation' })`.
-func (p *Provider) EvaluationModel(modelID string) (provider.EvaluationModel, error) {
+// GoogleGenerativeAIProvider.decisionModel: `provider.decisionModel =
+// (modelId) => new DecisionLanguageModel({ model: createChatModel(modelId),
+// provider: providerName.replace(/\.generative-ai$/, "") + '.decision' })`.
+func (p *Provider) DecisionModel(modelID string) (provider.DecisionModel, error) {
 	model, err := p.LanguageModel(modelID)
 	if err != nil {
 		return nil, err
 	}
-	providerName := strings.TrimSuffix(p.Name(), ".generative-ai") + ".evaluation"
-	return ai.NewEvaluationLanguageModel(ai.EvaluationLanguageModelOptions{
+	providerName := strings.TrimSuffix(p.Name(), ".generative-ai") + ".decision"
+	return ai.NewDecisionLanguageModel(ai.DecisionLanguageModelOptions{
 		Model:    model,
 		Provider: providerName,
 	})
+}
+
+// EvaluationModel is the deprecated form of DecisionModel.
+//
+// Deprecated: Use DecisionModel instead.
+func (p *Provider) EvaluationModel(modelID string) (provider.EvaluationModel, error) {
+	model, err := p.DecisionModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+	return provider.AsEvaluationModel(model), nil
 }

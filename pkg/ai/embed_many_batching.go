@@ -24,7 +24,6 @@ func withEmbedRetry(ctx context.Context, maxRetries int, fn func(ctx context.Con
 	return retryutil.Do(ctx, retryutil.Config{
 		MaxRetries:   maxRetries,
 		InitialDelay: 2 * time.Second,
-		MaxDelay:     60 * time.Second,
 		Multiplier:   2,
 		Jitter:       false,
 		ShouldRetry:  isGatewayCallRetryable,
@@ -56,10 +55,12 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 				ModelProvider: model.Provider(),
 				ModelID:       model.ModelID(),
 				Values:        values,
+				Dimensions:    opts.Dimensions,
 			})
 			res, err := model.DoEmbedMany(attemptCtx, values, &provider.EmbedModelOptions{
 				ProviderOptions: providerOptions,
 				Headers:         opts.Headers,
+				Dimensions:      opts.Dimensions,
 			})
 			if err != nil {
 				// TS embedMany()'s try/catch rethrows the doEmbed error
@@ -179,22 +180,35 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 		}
 
 		results := make([]*types.EmbeddingsResult, len(group))
-		errs := make([]error, len(group))
+		var groupErr error
 		if len(group) == 1 {
-			results[0], errs[0] = callModel(ctx, group[0], groupOptions[0])
+			results[0], groupErr = callModel(ctx, group[0], groupOptions[0])
 		} else {
+			// TS Promise.all rejects with the first failure in time, not
+			// the lowest batch index. The siblings are not cancelled (TS
+			// does not abort them either); Go waits for them so no call
+			// outlives EmbedMany.
 			var wg sync.WaitGroup
+			var errMu sync.Mutex
 			for i := range group {
 				wg.Add(1)
 				go func(i int) {
 					defer wg.Done()
-					results[i], errs[i] = callModel(ctx, group[i], groupOptions[i])
+					res, err := callModel(ctx, group[i], groupOptions[i])
+					results[i] = res
+					if err != nil {
+						errMu.Lock()
+						if groupErr == nil {
+							groupErr = err
+						}
+						errMu.Unlock()
+					}
 				}(i)
 			}
 			wg.Wait()
 		}
-		if err := firstNonNil(errs); err != nil {
-			return nil, err
+		if groupErr != nil {
+			return nil, groupErr
 		}
 
 		for _, result := range results {
@@ -209,15 +223,6 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 	}
 
 	return out, nil
-}
-
-func firstNonNil(errs []error) error {
-	for _, err := range errs {
-		if err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // embeddingResponsesOrPlaceholder keeps one response entry per model call

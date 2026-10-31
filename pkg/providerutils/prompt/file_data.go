@@ -2,13 +2,13 @@ package prompt
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"mime"
 	"net/url"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -45,7 +45,31 @@ func (e *ReasoningFileConstraintError) Error() string {
 type UnsupportedSystemMessageError struct{}
 
 func (e *UnsupportedSystemMessageError) Error() string {
-	return "system messages are not allowed in the messages field; use the system option instead or set AllowSystemMessages"
+	// TS standardizePrompt's InvalidPromptError message ("Invalid prompt: " prefix included).
+	return "Invalid prompt: " + unsupportedSystemMessageText
+}
+
+const unsupportedSystemMessageText = "System messages are not allowed in the prompt or messages fields. Use the instructions option instead."
+
+// Unwrap exposes the TS InvalidPromptError the condition corresponds to, so
+// errors.As matches *InvalidPromptError as well as this type.
+func (e *UnsupportedSystemMessageError) Unwrap() error {
+	return &providererrors.InvalidPromptError{Message: unsupportedSystemMessageText}
+}
+
+// ValidatePromptInput is the first part of TS standardizePrompt: a call must
+// carry a prompt or messages, not both, and the messages must not be empty.
+// (An empty prompt string counts as unset in Go.)
+func ValidatePromptInput(prompt string, messages []types.Message) error {
+	switch {
+	case prompt != "" && len(messages) > 0:
+		return &providererrors.InvalidPromptError{Prompt: prompt, Message: "prompt and messages cannot be defined at the same time"}
+	case prompt == "" && messages == nil:
+		return &providererrors.InvalidPromptError{Prompt: prompt, Message: "prompt or messages must be defined"}
+	case prompt == "" && len(messages) == 0:
+		return &providererrors.InvalidPromptError{Prompt: prompt, Message: "messages must not be empty"}
+	}
+	return nil
 }
 
 // NormalizePrompt applies the core prompt conversion rules before providers see
@@ -148,15 +172,144 @@ func NormalizePromptWithDownloadSupport(ctx context.Context, prompt types.Prompt
 		return types.Prompt{}, err
 	}
 	if download == nil {
-		normalized.Messages = MergeConsecutiveToolMessages(normalized.Messages)
+		normalized.Messages = MergeConsecutiveToolMessages(sniffImageMediaTypes(normalized.Messages))
 		return normalized, nil
 	}
 	messages, err := DownloadUnsupportedFileURLs(ctx, normalized.Messages, download, isURLSupported)
 	if err != nil {
 		return types.Prompt{}, err
 	}
-	normalized.Messages = MergeConsecutiveToolMessages(messages)
+	normalized.Messages = MergeConsecutiveToolMessages(sniffImageMediaTypes(messages))
 	return normalized, nil
+}
+
+// sniffImageMediaTypes mirrors the tail of TS convertPartToLanguageModelPart:
+// inline file data whose bytes carry an image signature gets that image media
+// type, replacing whatever was declared (including the bare "image" default of
+// a legacy image part). It applies to user file parts and tool-result file
+// content, not to assistant file parts. Messages are copied before changes.
+func sniffImageMediaTypes(messages []types.Message) []types.Message {
+	var out []types.Message
+	for i, message := range messages {
+		if message.Role != types.RoleUser && message.Role != types.RoleTool && message.Role != types.RoleAssistant {
+			continue
+		}
+		var parts []types.ContentPart
+		for j, part := range message.Content {
+			if !isDownloadablePart(message.Role, part) {
+				continue
+			}
+			var replaced types.ContentPart
+			switch typed := part.(type) {
+			case types.FileContent:
+				if f, ok := sniffFileContent(typed); ok {
+					replaced = f
+				}
+			case *types.FileContent:
+				if typed != nil {
+					if f, ok := sniffFileContent(*typed); ok {
+						replaced = &f
+					}
+				}
+			case types.ToolResultContent:
+				if t, ok := sniffToolResult(typed); ok {
+					replaced = t
+				}
+			case *types.ToolResultContent:
+				if typed != nil {
+					if t, ok := sniffToolResult(*typed); ok {
+						replaced = &t
+					}
+				}
+			}
+			if replaced == nil {
+				continue
+			}
+			if out == nil {
+				out = append([]types.Message(nil), messages...)
+			}
+			if parts == nil {
+				parts = append([]types.ContentPart(nil), message.Content...)
+			}
+			parts[j] = replaced
+		}
+		if parts != nil {
+			out[i].Content = parts
+		}
+	}
+	if out == nil {
+		return messages
+	}
+	return out
+}
+
+func sniffImageType(data []byte) (string, bool) {
+	if len(data) == 0 {
+		return "", false
+	}
+	return fileutil.DetectMediaTypeSignature(data, "image")
+}
+
+func sniffFileContent(f types.FileContent) (types.FileContent, bool) {
+	if f.FileData.Type != types.FileDataTypeData {
+		return f, false
+	}
+	detected, ok := sniffImageType(f.FileData.Data)
+	if !ok || (f.MediaType == detected && f.FileData.MediaType == detected) {
+		return f, false
+	}
+	f.MediaType = detected
+	f.FileData.MediaType = detected
+	if f.MimeType != "" {
+		f.MimeType = detected
+	}
+	return f, true
+}
+
+func sniffToolResult(t types.ToolResultContent) (types.ToolResultContent, bool) {
+	if t.Output == nil || t.Output.Type != types.ToolResultOutputContent {
+		return t, false
+	}
+	var blocks []types.ToolResultContentBlock
+	for i, block := range t.Output.Content {
+		var b types.FileContentBlock
+		var isPtr bool
+		switch typed := block.(type) {
+		case types.FileContentBlock:
+			b = typed
+		case *types.FileContentBlock:
+			if typed == nil {
+				continue
+			}
+			b, isPtr = *typed, true
+		default:
+			continue
+		}
+		if b.FileData.Type != types.FileDataTypeData {
+			continue
+		}
+		detected, ok := sniffImageType(b.FileData.Data)
+		if !ok || (b.MediaType == detected && b.FileData.MediaType == detected) {
+			continue
+		}
+		b.MediaType = detected
+		b.FileData.MediaType = detected
+		if blocks == nil {
+			blocks = append([]types.ToolResultContentBlock(nil), t.Output.Content...)
+		}
+		if isPtr {
+			blocks[i] = &b
+		} else {
+			blocks[i] = b
+		}
+	}
+	if blocks == nil {
+		return t, false
+	}
+	output := *t.Output
+	output.Content = blocks
+	t.Output = &output
+	return t, true
 }
 
 // NormalizeMessages rewrites message content into provider-facing v4 content.
@@ -226,10 +379,27 @@ func collectDownloadRequests(messages []types.Message, isURLSupported URLSupport
 	var requests []DownloadRequest
 	for _, message := range messages {
 		for _, part := range message.Content {
+			if !isDownloadablePart(message.Role, part) {
+				continue
+			}
 			collectContentPartDownloadRequests(part, isURLSupported, &requests)
 		}
 	}
 	return requests
+}
+
+// isDownloadablePart mirrors TS downloadAssets: file parts are downloaded only
+// from user messages, and tool-result file content only from tool and
+// assistant messages. File parts inside assistant messages are passed through
+// untouched.
+func isDownloadablePart(role types.MessageRole, part types.ContentPart) bool {
+	switch part.(type) {
+	case types.FileContent, *types.FileContent:
+		return role == types.RoleUser
+	case types.ToolResultContent, *types.ToolResultContent:
+		return role == types.RoleTool || role == types.RoleAssistant
+	}
+	return false
 }
 
 func collectContentPartDownloadRequests(part types.ContentPart, isURLSupported URLSupportChecker, requests *[]DownloadRequest) {
@@ -286,16 +456,20 @@ func applyDownloadedFiles(messages []types.Message, downloaded map[string]*Downl
 	for i, message := range messages {
 		converted := message
 		if len(message.Content) > 0 {
-			converted.Content = applyDownloadedContent(message.Content, downloaded)
+			converted.Content = applyDownloadedContent(message.Role, message.Content, downloaded)
 		}
 		out[i] = converted
 	}
 	return out
 }
 
-func applyDownloadedContent(parts []types.ContentPart, downloaded map[string]*DownloadResult) []types.ContentPart {
+func applyDownloadedContent(role types.MessageRole, parts []types.ContentPart, downloaded map[string]*DownloadResult) []types.ContentPart {
 	out := make([]types.ContentPart, len(parts))
 	for i, part := range parts {
+		if !isDownloadablePart(role, part) {
+			out[i] = part
+			continue
+		}
 		switch typed := part.(type) {
 		case types.FileContent:
 			converted := applyDownloadedFileContent(typed, downloaded)
@@ -402,8 +576,10 @@ func applyDownloadedFileContentBlock(block types.FileContentBlock, downloaded ma
 }
 
 func isFullMediaType(mediaType string) bool {
-	parts := strings.Split(mediaType, "/")
-	return len(parts) == 2 && parts[0] != "" && parts[1] != ""
+	// TS isFullMediaType: a slash followed by a non-empty subtype other than
+	// the "*" wildcard (the top-level type is not checked).
+	_, subtype, ok := strings.Cut(mediaType, "/")
+	return ok && subtype != "" && subtype != "*"
 }
 
 // NormalizeContentParts rewrites content parts into provider-facing v4 content.
@@ -422,6 +598,9 @@ func NormalizeContentParts(parts []types.ContentPart) ([]types.ContentPart, erro
 			}
 			normalized = append(normalized, file)
 		case *types.ImageContent:
+			if typed == nil {
+				continue
+			}
 			file, err := NormalizeImageContent(*typed)
 			if err != nil {
 				return nil, err
@@ -434,6 +613,9 @@ func NormalizeContentParts(parts []types.ContentPart) ([]types.ContentPart, erro
 			}
 			normalized = append(normalized, file)
 		case *types.FileContent:
+			if typed == nil {
+				continue
+			}
 			file, err := NormalizeFileContent(*typed)
 			if err != nil {
 				return nil, err
@@ -446,6 +628,9 @@ func NormalizeContentParts(parts []types.ContentPart) ([]types.ContentPart, erro
 			}
 			normalized = append(normalized, file)
 		case *types.ReasoningFileContent:
+			if typed == nil {
+				continue
+			}
 			file, err := NormalizeReasoningFileContent(*typed)
 			if err != nil {
 				return nil, err
@@ -458,6 +643,9 @@ func NormalizeContentParts(parts []types.ContentPart) ([]types.ContentPart, erro
 			}
 			normalized = append(normalized, toolResult)
 		case *types.ToolResultContent:
+			if typed == nil {
+				continue
+			}
 			toolResult, err := NormalizeToolResultContent(*typed)
 			if err != nil {
 				return nil, err
@@ -544,8 +732,16 @@ func NormalizeFileContent(part types.FileContent) (types.FileContent, error) {
 		return types.FileContent{}, err
 	}
 	part.FileData = normalized
-	part.MediaType = firstNonEmpty(part.MediaType, normalized.MediaType, part.MimeType)
-	part.MimeType = firstNonEmpty(part.MimeType, part.MediaType)
+	if data.Type == types.FileDataTypeURL && strings.HasPrefix(data.URL, "data:") {
+		// TS: mediaType = dataUrlMediaType ?? part.mediaType, so the media
+		// type embedded in a data: URL wins over the declared one, even when
+		// it is the empty string of `data:;base64,...`.
+		part.MediaType = normalized.MediaType
+		part.MimeType = normalized.MediaType
+	} else {
+		part.MediaType = firstNonEmpty(part.MediaType, normalized.MediaType, part.MimeType)
+		part.MimeType = firstNonEmpty(part.MimeType, part.MediaType)
+	}
 	part.Data = nil
 	part.URL = ""
 	part.Reference = ""
@@ -645,6 +841,9 @@ func NormalizeToolResultContent(part types.ToolResultContent) (types.ToolResultC
 			}
 			blocks = append(blocks, normalized)
 		case *types.FileContentBlock:
+			if typed == nil {
+				continue
+			}
 			normalized, err := NormalizeToolResultFileContent(*typed)
 			if err != nil {
 				return types.ToolResultContent{}, err
@@ -661,6 +860,9 @@ func NormalizeToolResultContent(part types.ToolResultContent) (types.ToolResultC
 			}
 			blocks = append(blocks, normalized)
 		case *types.ImageContentBlock:
+			if typed == nil {
+				continue
+			}
 			normalized, err := NormalizeToolResultFileContent(types.FileContentBlock{
 				Data:            typed.Data,
 				MediaType:       firstNonEmpty(typed.MediaType, "image"),
@@ -718,17 +920,22 @@ func ParseDataURL(value string) (types.FileData, error) {
 		return types.FileData{}, &InvalidInlineDataURLError{Value: value, Cause: fmt.Errorf("missing comma separator")}
 	}
 	parts := strings.Split(meta, ";")
+	// TS splitDataUrl: `data:;base64,...` has the empty media type "" (not
+	// text/plain), and "" is not nullish so it wins over the declared one.
 	mediaType := parts[0]
-	if mediaType == "" {
-		mediaType = "text/plain"
-	}
 	if err := validateMediaType(mediaType); err != nil {
 		return types.FileData{}, &InvalidInlineDataURLError{Value: value, Cause: err}
 	}
 	if len(parts) == 1 || parts[len(parts)-1] != "base64" {
 		return types.FileData{}, &InvalidInlineDataURLError{Value: value, Cause: fmt.Errorf("only base64 data URLs are supported")}
 	}
-	decoded, err := base64.StdEncoding.DecodeString(body)
+	// TS keeps the text after the first comma and later decodes it with atob
+	// after mapping the URL-safe alphabet (convertBase64ToUint8Array): the
+	// forgiving decode accepts whitespace and missing padding.
+	if i := strings.IndexByte(body, ','); i >= 0 {
+		body = body[:i]
+	}
+	decoded, err := fileutil.DecodeForgivingBase64(strings.NewReplacer("-", "+", "_", "/").Replace(body))
 	if err != nil {
 		return types.FileData{}, &InvalidInlineDataURLError{Value: value, Cause: err}
 	}
@@ -740,8 +947,14 @@ func validateRemoteFileURL(value string) error {
 	if err != nil {
 		return err
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("remote file URL must use http or https scheme")
+	// TS file URLs are any `new URL(...)`; providers match their own schemes
+	// (ms://, gs://, s3://, ...) through supportedUrls. Local-file schemes
+	// are never remote.
+	switch strings.ToLower(parsed.Scheme) {
+	case "":
+		return fmt.Errorf("remote file URL must include a scheme")
+	case "file", "javascript", "vbscript":
+		return fmt.Errorf("remote file URL must not use the %s scheme", parsed.Scheme)
 	}
 	if parsed.Host == "" {
 		return fmt.Errorf("remote file URL must include a host")

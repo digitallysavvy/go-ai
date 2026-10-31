@@ -1,6 +1,7 @@
 package providerutils
 
 import (
+	"encoding/json"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
@@ -45,7 +46,8 @@ func ChatResponseFormat(rf *provider.ResponseFormat, opts ChatResponseFormatOpti
 	if !IsJSONResponseFormat(rf) {
 		return nil, nil
 	}
-	schema := ResponseFormatJSONSchema(rf.Schema)
+	// An *schema.OrderedSchema stays in source key order (raw JSON).
+	schema := ResponseFormatJSONSchemaOrdered(rf.Schema)
 	if rf.Type == "json_object" {
 		// Explicit JSON-object mode never sends a schema.
 		schema = nil
@@ -103,6 +105,20 @@ func ResponseFormatJSONSchema(value interface{}) interface{} {
 		}
 	}
 	return value
+}
+
+// ResponseFormatJSONSchemaOrdered is ResponseFormatJSONSchema for call sites
+// that put the schema on the wire as it is: a *schema.OrderedSchema comes back
+// as raw JSON text, which keeps its key order (the JS object TS sends keeps
+// insertion order); every other value resolves as ResponseFormatJSONSchema.
+// Raw JSON is already a valid schema value everywhere a map is.
+func ResponseFormatJSONSchemaOrdered(value interface{}) interface{} {
+	if ordered, ok := value.(*schema.OrderedSchema); ok && ordered != nil {
+		if raw, err := ordered.MarshalJSON(); err == nil {
+			return json.RawMessage(raw)
+		}
+	}
+	return ResponseFormatJSONSchema(value)
 }
 
 // BoolOption reads a boolean provider option, returning def when absent.

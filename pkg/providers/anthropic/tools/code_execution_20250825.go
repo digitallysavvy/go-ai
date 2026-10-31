@@ -60,7 +60,11 @@ func CodeExecution20250825() types.Tool {
 	parameters := buildCodeExecution20250825Schema()
 
 	tool := types.Tool{
-		Name: "anthropic.code_execution_20250825",
+		Name:         "anthropic.code_execution_20250825",
+		Type:         types.ToolTypeProviderDefined,
+		ProviderID:   "anthropic.code_execution_20250825",
+		OutputSchema: toolOutputSchema("anthropic.code_execution_20250825"),
+		ProviderArgs: noProviderArgs(),
 		Description: `Code execution tool for running Python and Bash code in a secure, sandboxed environment.
 
 This tool enables Claude to:
@@ -216,8 +220,9 @@ func buildTextEditorCodeExecutionSchema() map[string]interface{} {
 						"type":        "string",
 						"description": "The path to the file to edit.",
 					},
+					// TS file_text: z.string().nullish().
 					"file_text": map[string]interface{}{
-						"type":        "string",
+						"anyOf":       []interface{}{map[string]interface{}{"type": "string"}, map[string]interface{}{"type": "null"}},
 						"description": "The text of the file to edit.",
 					},
 				},

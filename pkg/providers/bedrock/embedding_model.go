@@ -5,10 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -77,7 +75,7 @@ func (m *EmbeddingModel) modelFamily() EmbeddingModelFamily {
 
 func detectBedrockEmbeddingModelFamily(modelID string) EmbeddingModelFamily {
 	switch {
-	case strings.HasPrefix(modelID, "amazon.nova-") && strings.Contains(modelID, "embed"):
+	case strings.Contains(modelID, "amazon.nova-") && strings.Contains(modelID, "embed"):
 		return EmbeddingModelFamilyNova
 	case bedrockIsCohereEmbeddingModel(modelID):
 		return EmbeddingModelFamilyCohere
@@ -97,6 +95,9 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 	var reqBody map[string]interface{}
 	embeddingOptions := m.options
 	if opts != nil {
+		if err := validateEmbeddingProviderOptions(opts.ProviderOptions); err != nil {
+			return nil, err
+		}
 		embeddingOptions = mergeEmbeddingOptions(embeddingOptions, bedrockEmbeddingOptions(opts.ProviderOptions))
 	}
 
@@ -118,6 +119,9 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		embeddingDimension := 1024
 		if novaOpts.EmbeddingDimension != nil {
 			embeddingDimension = *novaOpts.EmbeddingDimension
+		} else if opts != nil && opts.Dimensions != nil {
+			// Top-level dimensions (TS #22338); the provider option wins.
+			embeddingDimension = *opts.Dimensions
 		}
 		truncate := string(novaOpts.Truncate)
 		if truncate == "" {
@@ -155,6 +159,8 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 
 		if cohereOpts.OutputDimension != nil {
 			reqBody["output_dimension"] = int(*cohereOpts.OutputDimension)
+		} else if opts != nil && opts.Dimensions != nil {
+			reqBody["output_dimension"] = *opts.Dimensions
 		}
 
 		if cohereOpts.Truncate != "" {
@@ -164,6 +170,11 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		// Titan or other models
 		reqBody = map[string]interface{}{
 			"inputText": input,
+		}
+
+		if opts != nil && opts.Dimensions != nil {
+			// Top-level dimensions (TS #22338); the Titan option below wins.
+			reqBody["dimensions"] = *opts.Dimensions
 		}
 
 		// Add Titan-specific options if provided
@@ -182,17 +193,20 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("/model/%s/invoke", url.PathEscape(m.modelID))
 	baseURL, err := m.provider.runtimeBaseURL()
 	if err != nil {
 		return nil, err
 	}
-	url := fmt.Sprintf("%s%s", baseURL, endpoint)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
 	}
+	invokeURL, _, err := bedrockModelURL(baseURL, m.modelID, "/invoke")
+	if err != nil {
+		return nil, err
+	}
+	req.URL = invokeURL
+	req.Host = invokeURL.Host
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -217,18 +231,26 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
+	}
+
+	if err := bedrockValidator(zbEmbedding)(resp.StatusCode, resp.Header, respBody); err != nil {
+		return nil, err
 	}
 
 	// Parse response based on model type
 	var embedding []float64
 	var inputTokens int
+	// TS picks the token count by response shape: Titan and Nova report it in
+	// the body, the Cohere shapes only in the x-amzn-bedrock-input-token-count
+	// header.
+	tokensFromHeader := false
 
 	var parsed struct {
 		Embedding           []float64       `json:"embedding"`
@@ -263,6 +285,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		var cohereV3 [][]float64
 		if err := json.Unmarshal(parsed.Embeddings, &cohereV3); err == nil && len(cohereV3) > 0 {
 			embedding = cohereV3[0]
+			tokensFromHeader = true
 			break
 		}
 
@@ -271,6 +294,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		}
 		if err := json.Unmarshal(parsed.Embeddings, &cohereV4); err == nil && len(cohereV4.Float) > 0 {
 			embedding = cohereV4.Float[0]
+			tokensFromHeader = true
 			break
 		}
 	}
@@ -278,7 +302,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		return nil, fmt.Errorf("no embeddings in response")
 	}
 	tokens := float64(inputTokens)
-	if family == EmbeddingModelFamilyCohere {
+	if tokensFromHeader {
 		if headerTokens, err := strconv.Atoi(resp.Header.Get("x-amzn-bedrock-input-token-count")); err == nil {
 			inputTokens = headerTokens
 			tokens = float64(headerTokens)
@@ -407,11 +431,9 @@ func intOption(value interface{}) (int, bool) {
 }
 
 func bedrockIsCohereEmbeddingModel(modelID string) bool {
-	if strings.HasPrefix(modelID, "cohere.embed-") {
-		return true
-	}
-	parts := strings.SplitN(modelID, ".", 2)
-	return len(parts) == 2 && strings.HasPrefix(parts[1], "cohere.embed-")
+	// TS modelId.includes('cohere.embed-'): cross-region inference profile ids
+	// (us.cohere.embed-v4:0, global.cohere.embed-v4:0) are detected too.
+	return strings.Contains(modelID, "cohere.embed-")
 }
 
 // DoEmbedMany performs embedding for multiple inputs in a batch
@@ -485,6 +507,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 func (m *EmbeddingModel) doEmbedCohereBatch(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
 	embeddingOptions := m.options
 	if opts != nil {
+		if err := validateEmbeddingProviderOptions(opts.ProviderOptions); err != nil {
+			return nil, err
+		}
 		embeddingOptions = mergeEmbeddingOptions(embeddingOptions, bedrockEmbeddingOptions(opts.ProviderOptions))
 	}
 	if embeddingOptions != nil && embeddingOptions.CohereOptions != nil {
@@ -503,6 +528,8 @@ func (m *EmbeddingModel) doEmbedCohereBatch(ctx context.Context, inputs []string
 	}
 	if cohereOpts.OutputDimension != nil {
 		reqBody["output_dimension"] = int(*cohereOpts.OutputDimension)
+	} else if opts != nil && opts.Dimensions != nil {
+		reqBody["output_dimension"] = *opts.Dimensions
 	}
 	if cohereOpts.Truncate != "" {
 		reqBody["truncate"] = string(cohereOpts.Truncate)
@@ -513,17 +540,20 @@ func (m *EmbeddingModel) doEmbedCohereBatch(ctx context.Context, inputs []string
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("/model/%s/invoke", url.PathEscape(m.modelID))
 	baseURL, err := m.provider.runtimeBaseURL()
 	if err != nil {
 		return nil, err
 	}
-	reqURL := fmt.Sprintf("%s%s", baseURL, endpoint)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", reqURL, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
 	}
+	invokeURL, _, err := bedrockModelURL(baseURL, m.modelID, "/invoke")
+	if err != nil {
+		return nil, err
+	}
+	req.URL = invokeURL
+	req.Host = invokeURL.Host
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	requestHeaders := map[string]string{}
@@ -543,14 +573,17 @@ func (m *EmbeddingModel) doEmbedCohereBatch(ctx context.Context, inputs []string
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
-	if resp.StatusCode != 200 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
+	if err := bedrockValidator(zbEmbedding)(resp.StatusCode, resp.Header, respBody); err != nil {
+		return nil, err
+	}
 	var parsed struct {
 		Embeddings json.RawMessage `json:"embeddings"`
 	}

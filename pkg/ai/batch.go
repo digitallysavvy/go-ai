@@ -2,15 +2,18 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"reflect"
-	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gateway"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	toolutil "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 	"github.com/digitallysavvy/go-ai/pkg/version"
@@ -29,6 +32,20 @@ type BatchTextRequest struct {
 	Prompt   string
 	Messages []types.Message
 	System   string
+	// Instructions is a TypeScript-compatible alias for System (TS
+	// TextBatchRequest.instructions, from Prompt). When set, it takes
+	// precedence over System.
+	Instructions *string
+	// InstructionMessages supplies the instructions as system messages (TS
+	// instructions: SystemModelMessage | SystemModelMessage[]), keeping each
+	// message's ProviderOptions. When non-empty it takes precedence over
+	// Instructions and System. Every message must have the system role.
+	InstructionMessages []types.Message
+
+	// AllowSystemInMessages permits system-role messages in Messages (TS
+	// TextBatchRequest.allowSystemInMessages, from Prompt). Defaults to
+	// false: system messages in Messages are rejected.
+	AllowSystemInMessages bool
 
 	Temperature      *float64
 	MaxTokens        *int
@@ -152,6 +169,9 @@ type StartBatchOptions struct {
 	// erroring.
 	WebhookURL string
 
+	// MaxRetries is kept for v0.5 callers. It is validated (it must not be
+	// negative) but not used: TS startBatch takes no maxRetries and calls
+	// doStartBatch once, so a failed start is never retried.
 	MaxRetries *int
 	Headers    map[string]string
 	Timeout    *time.Duration
@@ -168,9 +188,6 @@ type StartBatchResult struct {
 // requests. Experimental: may change in patch releases.
 func ExperimentalStartBatch(ctx context.Context, opts StartBatchOptions) (*StartBatchResult, error) {
 	if err := validateBatchRequests(opts.Requests); err != nil {
-		return nil, err
-	}
-	if err := validateBatchToolCompatibility(opts.Requests); err != nil {
 		return nil, err
 	}
 	if err := validateMaxRetries(opts.MaxRetries); err != nil {
@@ -192,15 +209,21 @@ func ExperimentalStartBatch(ctx context.Context, opts StartBatchOptions) (*Start
 	urlChecker := SupportedURLCheckerFromPatterns(batchAPI.SupportedURLs())
 
 	providerRequests := make([]provider.BatchV4Request, 0, len(opts.Requests))
+	toolsByName := map[string]interface{}{}
 	for _, req := range opts.Requests {
 		if err := callCtx.Err(); err != nil {
 			return nil, err
 		}
-		pr, buildErr := buildBatchProviderRequest(callCtx, req, urlChecker)
+		pr, buildErr := buildBatchProviderRequest(callCtx, req, urlChecker, toolsByName)
 		if buildErr != nil {
 			return nil, buildErr
 		}
 		providerRequests = append(providerRequests, pr)
+	}
+	// TS `operationAbortSignal?.throwIfAborted()` also runs after the last
+	// request is normalized: an abort then never reaches doStartBatch.
+	if err := callCtx.Err(); err != nil {
+		return nil, err
 	}
 
 	result, err := batchAPI.DoStartBatch(callCtx, provider.BatchV4StartOptions{
@@ -210,7 +233,7 @@ func ExperimentalStartBatch(ctx context.Context, opts StartBatchOptions) (*Start
 		WebhookURL:      opts.WebhookURL,
 	})
 	if err != nil {
-		return nil, err
+		return nil, wrapGatewayError(err)
 	}
 
 	modelByRequestID := make(map[string]string, len(opts.Requests))
@@ -278,7 +301,7 @@ func ExperimentalGetBatchStatus(ctx context.Context, opts GetBatchStatusOptions)
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, wrapGatewayError(err)
 	}
 
 	return &Batch{BatchReference: opts.Batch, BatchV4Status: *status}, nil
@@ -292,6 +315,13 @@ type GetBatchResultsOptions struct {
 	MaxRetries      *int
 	Headers         map[string]string
 	Timeout         *time.Duration
+
+	// Tools are the client tool definitions given to the StartBatch requests.
+	// They are used only to validate and normalize the tool calls of
+	// succeeded text results (TS getBatchResults `tools`): calls to unknown
+	// tools or with invalid input come back with Invalid and Error set. Their
+	// Execute functions are never invoked.
+	Tools []types.Tool
 }
 
 // BatchItemResult is a complete terminal result for one request in a batch.
@@ -306,6 +336,11 @@ type BatchItemResult struct {
 	// Image is populated when Type is image and Status is succeeded.
 	Image *types.ImageResult
 
+	// Images are the generated images of a succeeded image result as
+	// generated files with detected media types and per-image provider
+	// metadata (TS convertImageResult -> DefaultGeneratedFile).
+	Images []types.GeneratedFile
+
 	Error            *provider.BatchError
 	ProviderMetadata map[string]interface{}
 }
@@ -316,6 +351,8 @@ type BatchItemResult struct {
 type BatchResultsStream struct {
 	inner  provider.BatchV4ItemResultStream
 	cancel context.CancelFunc
+	ctx    context.Context
+	tools  []types.Tool
 }
 
 // Next returns the next item result in the stream. Returns io.EOF when the
@@ -323,13 +360,35 @@ type BatchResultsStream struct {
 func (s *BatchResultsStream) Next() (*BatchItemResult, error) {
 	item, err := s.inner.Next()
 	if err != nil {
-		return nil, err
+		if errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		return nil, wrapGatewayError(err)
+	}
+	textResult := item.TextResult
+	if textResult != nil && item.Status == provider.BatchItemSucceeded {
+		// TS convertGenerateResult runs parseToolCall (no repair) on every
+		// tool call against the tools given to getBatchResults.
+		parsed, parseErr := parseBatchToolCalls(s.ctx, textResult, s.tools)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		textResult = parsed
+	}
+	var images []types.GeneratedFile
+	if item.ImageResult != nil && item.Status == provider.BatchItemSucceeded {
+		files, convErr := generatedFilesFromImageResult(item.ImageResult)
+		if convErr != nil {
+			return nil, convErr
+		}
+		images = files
 	}
 	return &BatchItemResult{
+		Images:           images,
 		Type:             item.Type,
 		ID:               item.ID,
 		Status:           item.Status,
-		Text:             item.TextResult,
+		Text:             textResult,
 		Image:            item.ImageResult,
 		Error:            item.Error,
 		ProviderMetadata: item.ProviderMetadata,
@@ -338,7 +397,7 @@ func (s *BatchResultsStream) Next() (*BatchItemResult, error) {
 
 // Err returns any error that occurred during streaming.
 func (s *BatchResultsStream) Err() error {
-	return s.inner.Err()
+	return wrapGatewayError(s.inner.Err())
 }
 
 // Close releases resources held by the stream, including the operation
@@ -385,10 +444,41 @@ func ExperimentalGetBatchResults(ctx context.Context, opts GetBatchResultsOption
 	})
 	if err != nil {
 		cancel()
-		return nil, err
+		return nil, wrapGatewayError(err)
 	}
 
-	return &BatchResultsStream{inner: inner, cancel: cancel}, nil
+	return &BatchResultsStream{inner: inner, cancel: cancel, ctx: callCtx, tools: opts.Tools}, nil
+}
+
+// parseBatchToolCalls validates the tool calls of a succeeded text result
+// against tools and returns a copy of the result carrying the parsed calls.
+func parseBatchToolCalls(ctx context.Context, result *types.GenerateResult, tools []types.Tool) (*types.GenerateResult, error) {
+	// TS convertGenerateResult -> convertLanguageModelContent downloads
+	// URL-backed file parts and rejects a tool-result part that answers no
+	// tool call of the same response ("Tool call <id> not found.").
+	resolved, err := resolveContentFiles(ctx, result.Content)
+	if err != nil {
+		return nil, err
+	}
+	parsedCalls := result.ToolCalls
+	if len(parsedCalls) > 0 {
+		parsedCalls, _, err = parseToolCalls(ctx, result.ToolCalls, ParseToolCallOptions{Tools: tools})
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := validateToolResultPartsOf(resolved, parsedCalls, tools); err != nil {
+		return nil, err
+	}
+	resolved, _ = withDeferredToolResultMetadata(resolved, parsedCalls, toolsByNameOf(tools))
+	out := *result
+	out.ToolCalls = parsedCalls
+	out.Content = resolved
+	// The content GenerateText builds (TS convertLanguageModelContent): the
+	// parsed calls, and every tool result the model returns provider-executed
+	// with its call's input.
+	out.Content = generateResultContentParts(&out)
+	return &out, nil
 }
 
 // CancelBatchOptions are options for requesting cancellation of a batch.
@@ -433,7 +523,7 @@ func ExperimentalCancelBatch(ctx context.Context, opts CancelBatchOptions) (*Can
 		Headers:         version.WithUserAgentSuffix(opts.Headers, version.UserAgent()),
 	})
 	if err != nil {
-		return nil, err
+		return nil, wrapGatewayError(err)
 	}
 	return &CancelBatchResult{ProviderMetadata: result.ProviderMetadata}, nil
 }
@@ -499,7 +589,7 @@ func ExperimentalListBatches(ctx context.Context, opts ListBatchesOptions) (*Lis
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, wrapGatewayError(err)
 	}
 
 	batches := make([]Batch, 0, len(result.Batches))
@@ -554,7 +644,8 @@ func validateBatchRequests(requests []BatchRequest) error {
 			return err
 		}
 		id := req.id()
-		if strings.TrimSpace(id) == "" {
+		// TS `request.id.trim().length === 0` (JavaScript whitespace).
+		if providerutils.JSTrim(id) == "" {
 			return &providererrors.InvalidArgumentError{
 				Field:   "requests",
 				Message: "request IDs must not be empty",
@@ -562,8 +653,9 @@ func validateBatchRequests(requests []BatchRequest) error {
 		}
 		if _, ok := seen[id]; ok {
 			return &providererrors.InvalidArgumentError{
-				Field:   "requests",
-				Message: fmt.Sprintf("request IDs must be unique; duplicate ID %q", id),
+				Field: "requests",
+				// TS template literal: the ID is not escaped.
+				Message: fmt.Sprintf(`request IDs must be unique; duplicate ID "%s"`, id),
 			}
 		}
 		seen[id] = struct{}{}
@@ -571,53 +663,64 @@ func validateBatchRequests(requests []BatchRequest) error {
 	return nil
 }
 
-// validateBatchToolCompatibility rejects batches where the same tool name is
-// given different definitions across requests. Mirrors TypeScript's
-// validateCompatibleTools (compares definitions, not the Execute closures).
-func validateBatchToolCompatibility(requests []BatchRequest) error {
-	byName := make(map[string]types.Tool)
-	for _, req := range requests {
-		if req.Text == nil {
-			continue
-		}
-		for _, tool := range req.Text.Tools {
-			if prev, ok := byName[tool.Name]; ok {
-				if !toolDefinitionsEqual(prev, tool) {
-					return &providererrors.InvalidArgumentError{
-						Field:   "requests",
-						Message: fmt.Sprintf("tool %q must have the same definition in every batch request", tool.Name),
-					}
-				}
-				continue
+// validateCompatibleBatchTools rejects a request whose prepared tools give a
+// tool name already seen in an earlier request a different definition
+// (TS validateCompatibleTools over the prepareTools output, compared with
+// isDeepEqualData). tools are the request's tools after the descriptions are
+// resolved and toolOrder is applied; toolsByName carries the definitions of
+// the earlier requests.
+func validateCompatibleBatchTools(tools []types.Tool, toolsByName map[string]interface{}) error {
+	for i := range tools {
+		def := preparedBatchToolDefinition(&tools[i])
+		if prev, ok := toolsByName[tools[i].Name]; ok && !reflect.DeepEqual(prev, def) {
+			return &providererrors.InvalidArgumentError{
+				Field:   "requests",
+				Message: fmt.Sprintf(`tool "%s" must have the same definition in every batch request`, tools[i].Name),
 			}
-			byName[tool.Name] = tool
 		}
+		toolsByName[tools[i].Name] = def
 	}
 	return nil
 }
 
-// toolDefinitionsEqual compares the provider-facing definition of two tools,
-// ignoring Execute/approval/context closures that cannot be meaningfully
-// compared with reflect.DeepEqual.
-func toolDefinitionsEqual(a, b types.Tool) bool {
-	return a.Name == b.Name &&
-		a.Description == b.Description &&
-		a.Title == b.Title &&
-		toolStrictEqual(a.Strict, b.Strict) &&
-		a.ProviderExecuted == b.ProviderExecuted &&
-		reflect.DeepEqual(a.Parameters, b.Parameters) &&
-		reflect.DeepEqual(a.OutputSchema, b.OutputSchema)
-}
-
-// toolStrictEqual compares two *bool Tool.Strict values by value (nil means
-// "unset"), not by pointer identity — a plain a == b comparison after
-// Tool.Strict became *bool would almost always be false even when both sides
-// are, say, a fresh `true` pointer (hand-off: "Tool.Strict bool -> *bool").
-func toolStrictEqual(a, b *bool) bool {
-	if a == nil || b == nil {
-		return a == b
+// preparedBatchToolDefinition is the provider-facing definition TS
+// prepareTools builds for a tool: {type:'provider', name, id, args} for a
+// provider tool, else {type:'function', name, inputSchema, description?,
+// inputExamples?, providerOptions?, strict?}. It is normalized through JSON so
+// that, like isDeepEqualData, object key order and Go value types don't
+// matter.
+func preparedBatchToolDefinition(tool *types.Tool) interface{} {
+	def := map[string]interface{}{"name": tool.Name}
+	if tool.Type == types.ToolTypeProviderDefined {
+		def["type"] = "provider"
+		def["id"] = tool.ProviderID
+		def["args"] = tool.ProviderArgs
+	} else {
+		def["type"] = "function"
+		// The schema as sent (toolutil.ResolveToolSchemas output).
+		def["inputSchema"] = tool.Parameters
+		if tool.Description != "" {
+			def["description"] = tool.Description
+		}
+		if tool.InputExamples != nil {
+			def["inputExamples"] = tool.InputExamples
+		}
+		if tool.ProviderOptions != nil {
+			def["providerOptions"] = tool.ProviderOptions
+		}
+		if tool.Strict != nil {
+			def["strict"] = *tool.Strict
+		}
 	}
-	return *a == *b
+	data, err := json.Marshal(def)
+	if err != nil {
+		return def
+	}
+	var normalized interface{}
+	if err := json.Unmarshal(data, &normalized); err != nil {
+		return def
+	}
+	return normalized
 }
 
 func validateBatchReference(batchAPI provider.BatchV4, batch BatchReference) error {
@@ -636,7 +739,7 @@ func validateBatchReference(batchAPI provider.BatchV4, batch BatchReference) err
 	return nil
 }
 
-func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker promptutils.URLSupportChecker) (provider.BatchV4Request, error) {
+func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker promptutils.URLSupportChecker, toolsByName map[string]interface{}) (provider.BatchV4Request, error) {
 	switch {
 	case req.Text != nil:
 		t := req.Text
@@ -647,36 +750,71 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 		// since batch does not expose an experimental_download option), so
 		// remote file URLs the batch interface can't consume directly are
 		// inlined before the request is sent.
+		// TS standardizePrompt(request) runs first: the prompt input and
+		// instructions checks, then the system message check.
+		instructionMessages := cloneInstructionMessages(t.InstructionMessages)
+		if err := validateStandardizedPromptInput(t.Prompt, t.Messages, instructionMessages); err != nil {
+			return provider.BatchV4Request{}, err
+		}
+		system := effectiveSystem(t.System, t.Instructions)
+		if len(instructionMessages) > 0 {
+			system = ""
+		}
+		if !t.AllowSystemInMessages {
+			for _, m := range t.Messages {
+				if m.Role == types.RoleSystem {
+					return provider.BatchV4Request{}, &promptutils.UnsupportedSystemMessageError{}
+				}
+			}
+		}
+		// Mirrors TypeScript's `prepareTools({ tools, toolOrder, toolsContext })`
+		// in packages/ai/src/batch/batch.ts: dynamic tool descriptions are
+		// resolved via toolsContext, then tools are reordered per toolOrder.
+		// TS then runs validateCompatibleTools on the prepared tools.
+		resolvedTools := resolveStepTools(ctx, t.Tools, t.ToolsContext, nil)
+		resolvedTools = orderStepTools(resolvedTools, t.ToolOrder)
+		if err := validateCompatibleBatchTools(toolutil.ResolveToolSchemas(resolvedTools), toolsByName); err != nil {
+			return provider.BatchV4Request{}, err
+		}
+		// TS prepareLanguageModelCallOptions(request), before the prompt is
+		// converted.
+		if err := validateMaxOutputTokens(t.MaxTokens); err != nil {
+			return provider.BatchV4Request{}, err
+		}
 		normalizedPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(
 			ctx,
-			buildPrompt(t.Prompt, t.Messages, t.System),
-			false,
+			buildPrompt(t.Prompt, t.Messages, system),
+			t.AllowSystemInMessages,
 			DefaultDownload,
 			urlChecker,
 		)
 		if normErr != nil {
 			return provider.BatchV4Request{}, normErr
 		}
-		// Mirrors TypeScript's `prepareTools({ tools, toolOrder, toolsContext })`
-		// in packages/ai/src/batch/batch.ts: dynamic tool descriptions are
-		// resolved via toolsContext, then tools are reordered per toolOrder.
-		resolvedTools := resolveStepTools(ctx, t.Tools, t.ToolsContext, nil)
-		resolvedTools = orderStepTools(resolvedTools, t.ToolOrder)
+		// convertToLanguageModelPrompt also rejects a tool call without a
+		// result (MissingToolResultsError); batch never executes tools, so the
+		// prompt must already be complete.
+		if err := validateStepToolResults(normalizedPrompt.Messages, t.Tools); err != nil {
+			return provider.BatchV4Request{}, err
+		}
+		normalizedPrompt = prependInstructionMessages(normalizedPrompt, instructionMessages)
 		genOpts := provider.GenerateOptions{
-			Prompt:           normalizedPrompt,
-			Temperature:      t.Temperature,
-			MaxTokens:        t.MaxTokens,
-			TopP:             t.TopP,
-			TopK:             t.TopK,
-			FrequencyPenalty: t.FrequencyPenalty,
-			PresencePenalty:  t.PresencePenalty,
-			StopSequences:    t.StopSequences,
-			Seed:             t.Seed,
-			Tools:            toolutil.ResolveToolSchemas(resolvedTools),
-			ToolChoice:       t.ToolChoice,
-			Reasoning:        t.Reasoning,
-			ResponseFormat:   t.ResponseFormat,
-			ProviderOptions:  t.ProviderOptions,
+			Prompt:                normalizedPrompt,
+			AllowSystemMessages:   t.AllowSystemInMessages,
+			AllowSystemInMessages: t.AllowSystemInMessages,
+			Temperature:           t.Temperature,
+			MaxTokens:             t.MaxTokens,
+			TopP:                  t.TopP,
+			TopK:                  t.TopK,
+			FrequencyPenalty:      t.FrequencyPenalty,
+			PresencePenalty:       t.PresencePenalty,
+			StopSequences:         t.StopSequences,
+			Seed:                  t.Seed,
+			Tools:                 toolutil.ResolveToolSchemas(resolvedTools),
+			ToolChoice:            preparedToolChoice(t.ToolChoice), // TS prepareToolChoice
+			Reasoning:             t.Reasoning,
+			ResponseFormat:        t.ResponseFormat,
+			ProviderOptions:       t.ProviderOptions,
 		}
 		return provider.BatchV4Request{
 			Type: provider.BatchRequestTypeText,
@@ -684,14 +822,21 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 		}, nil
 	case req.Image != nil:
 		i := req.Image
+		// TS: `n: request.n ?? 1`.
+		n := 1
+		if i.N != nil {
+			n = *i.N
+		}
+		// TS normalizeImagePrompt gives every input image a media type.
+		imageFiles, imageMask := normalizeImageInputs(i.Files, i.Mask)
 		imgOpts := provider.ImageGenerateOptions{
 			Prompt:          i.Prompt,
-			N:               i.N,
+			N:               &n,
 			Size:            i.Size,
 			AspectRatio:     i.AspectRatio,
 			Seed:            i.Seed,
-			Files:           i.Files,
-			Mask:            i.Mask,
+			Files:           imageFiles,
+			Mask:            imageMask,
 			ProviderOptions: i.ProviderOptions,
 		}
 		return provider.BatchV4Request{

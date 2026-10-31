@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"io"
 	"time"
+	"unicode/utf8"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -27,7 +30,7 @@ func NewLanguageModel(provider *Provider, modelID string) *LanguageModel {
 
 // SpecificationVersion returns the specification version
 func (m *LanguageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
@@ -63,13 +66,13 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	reqBody := m.buildRequestBody(opts)
 
 	// Create prediction
-	resp, err := m.provider.client.Post(ctx, "/predictions", reqBody)
+	resp, err := m.provider.client.Do(ctx, internalhttp.Request{Method: "POST", Path: "/predictions", Body: reqBody, Headers: opts.Headers})
 	if err != nil {
-		return nil, providererrors.NewProviderError("replicate", 0, "", err.Error(), err)
+		return nil, err // TS postJsonToApi lets a transport failure propagate unchanged
 	}
 
-	if resp.StatusCode != 201 && resp.StatusCode != 200 {
-		return nil, fmt.Errorf("replicate API returned status %d: %s", resp.StatusCode, string(resp.Body))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, internalhttp.StatusProviderError("replicate", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	var prediction replicatePrediction
@@ -78,7 +81,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 
 	// Poll for completion
-	prediction, err = m.pollPrediction(ctx, prediction.ID)
+	prediction, err = m.pollPrediction(ctx, prediction.ID, opts.Headers)
 	if err != nil {
 		return nil, err
 	}
@@ -106,6 +109,9 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) map[string]interface{} {
 	// Build prompt from messages
 	var promptText string
+	if opts.Prompt.System != "" {
+		promptText += fmt.Sprintf("System: %s\n", opts.Prompt.System)
+	}
 	if opts.Prompt.IsMessages() {
 		for _, msg := range opts.Prompt.Messages {
 			content := ""
@@ -126,7 +132,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) map[str
 		}
 		promptText += "Assistant: "
 	} else if opts.Prompt.IsSimple() {
-		promptText = opts.Prompt.Text
+		promptText += opts.Prompt.Text
 	}
 
 	input := map[string]interface{}{
@@ -151,7 +157,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) map[str
 	}
 }
 
-func (m *LanguageModel) pollPrediction(ctx context.Context, predictionID string) (replicatePrediction, error) {
+func (m *LanguageModel) pollPrediction(ctx context.Context, predictionID string, headers map[string]string) (replicatePrediction, error) {
 	maxAttempts := 60
 	pollInterval := 2 * time.Second
 
@@ -162,7 +168,7 @@ func (m *LanguageModel) pollPrediction(ctx context.Context, predictionID string)
 		default:
 		}
 
-		resp, err := m.provider.client.Get(ctx, "/predictions/"+predictionID)
+		resp, err := m.provider.client.Do(ctx, internalhttp.Request{Method: "GET", Path: "/predictions/" + predictionID, Headers: headers})
 		if err != nil {
 			return replicatePrediction{}, err
 		}
@@ -170,8 +176,7 @@ func (m *LanguageModel) pollPrediction(ctx context.Context, predictionID string)
 		// progress (its body would otherwise decode to an empty status and the
 		// loop would spin until the attempt limit).
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return replicatePrediction{}, providererrors.NewProviderError("replicate", resp.StatusCode, "",
-				fmt.Sprintf("replicate API returned status %d: %s", resp.StatusCode, string(resp.Body)), nil)
+			return replicatePrediction{}, internalhttp.StatusProviderError("replicate", resp.StatusCode, resp.Headers, resp.Body)
 		}
 
 		var prediction replicatePrediction
@@ -186,7 +191,7 @@ func (m *LanguageModel) pollPrediction(ctx context.Context, predictionID string)
 		if prediction.Status == "failed" || prediction.Status == "canceled" {
 			return replicatePrediction{}, providererrors.NewInvalidResponseDataError(
 				prediction,
-				fmt.Sprintf("Replicate generation %s: %s", prediction.Status, replicateErrorOrUnknown(prediction.Error)),
+				fmt.Sprintf("Replicate generation %s: %s", prediction.Status, replicateErrorOrUnknown(optionalString(prediction.Error))),
 			)
 		}
 
@@ -201,6 +206,14 @@ func (m *LanguageModel) pollPrediction(ctx context.Context, predictionID string)
 	}
 
 	return replicatePrediction{}, fmt.Errorf("prediction timed out after %d attempts", maxAttempts)
+}
+
+// optionalString is nil for "" (this Go-only model has no nullish distinction).
+func optionalString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 func (m *LanguageModel) convertResponse(prediction replicatePrediction) *types.GenerateResult {
@@ -240,7 +253,8 @@ type replicateStream struct {
 
 func (s *replicateStream) Next() (*provider.StreamChunk, error) {
 	if s.done {
-		return nil, fmt.Errorf("stream exhausted")
+		// TextStream contract: io.EOF once complete or closed.
+		return nil, io.EOF
 	}
 
 	// Emit text in chunks
@@ -260,6 +274,11 @@ func (s *replicateStream) Next() (*provider.StreamChunk, error) {
 	end := s.position + chunkSize
 	if end > len(text) {
 		end = len(text)
+	}
+	// Never split a multi-byte rune: an invalid-UTF-8 delta would be
+	// corrupted (U+FFFD) when the chunk is JSON-encoded downstream.
+	for end < len(text) && !utf8.RuneStart(text[end]) {
+		end++
 	}
 
 	chunk := text[s.position:end]

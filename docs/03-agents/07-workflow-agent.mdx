@@ -38,7 +38,9 @@ agent, err := workflow.NewWorkflowAgent(workflow.WorkflowAgent{
 Tools can be supplied as either a `[]types.Tool` or a TypeScript-style keyed `ToolSet`
 using `map[string]types.Tool`; missing tool names are filled from the map key.
 `MaxSteps` is intentionally not part of `WorkflowAgent`; use `StopWhen` with
-`ai.IsStepCount(n)`.
+`ai.IsStepCount(n)`. When `StopWhen` is empty, `Generate` stops after 20 steps but
+`Stream` runs until the model stops calling tools (the same defaults as the TypeScript
+`WorkflowAgent`); set `StopWhen` on the agent or the call to bound a stream.
 
 ## Generate
 
@@ -58,6 +60,82 @@ _ = result.Output
 
 When `Output` is an `ai.Output` specification, `GenerateWithOptions` forwards its
 response format to the model and parses the final text into `WorkflowResult.Output`.
+Without one, `WorkflowResult.Output` is the final text (TS `Output.text()`), set
+for a `stop` finish or a non-`tool-calls` finish with text.
+
+### Tool call concurrency
+
+`ToolCallConcurrency` (on `WorkflowAgent`, `WorkflowGenerateOptions` and `WorkflowStreamOptions`)
+bounds how many tool calls run at once, both within a model step and when a run resumes after a tool
+approval. The per-call value overrides the agent's. Leave it `nil` to run them all concurrently, or set it to `1` to run them one at a time in model order, for
+example when the tools have side effects that must not overlap. A value below 1 returns an
+`InvalidArgumentError`. Results and stream events always follow model order, whatever order the calls
+finish in, and queued calls are not started once the context is cancelled. Tool execution callbacks can
+run concurrently, so guard shared state with a mutex.
+
+```go
+one := 1
+agent, err := workflow.NewWorkflowAgent(workflow.WorkflowAgent{
+  Model:               model,
+  Tools:               tools,
+  ToolCallConcurrency: &one,
+})
+```
+
+### Per-call options
+
+Both `WorkflowGenerateOptions` and `WorkflowStreamOptions` accept `ToolChoice`, `ActiveTools`, `Output` and
+`PrepareStep`, which override the agent's values for that call (a per-call `PrepareStep` replaces the
+agent's, as in TypeScript). `ToolSet` entries (and `ResolveSerializableTools` results) reach the model sorted by name, so the tool list is stable between runs.
+
+The agent's `PrepareCall` runs once per call, before the first step and before any `PrepareStep`; what it
+changes (messages, instructions, settings) applies to every step. `PrepareStep` runs before every step.
+What `PrepareStep` returns carries over to the following steps, as in TypeScript: the next step's hook
+starts from the previous step's model, instructions, messages, tool choice, active tools, runtime and
+tools contexts and generation settings, so an override stays in effect until a later step changes it
+(the sandbox is the only per-step value). The generation settings include `Headers` and `MaxRetries`,
+in `Stream` as in `Generate`. Model calls carry the `ai-sdk-agent/workflow` user-agent suffix until a
+`PrepareStep` returns different `Headers`: as in TypeScript, the hook's headers then replace the call's, suffix
+included. A `PrepareStep` `ActiveTools` narrows the call's active tools (the agent's or
+the call's `ActiveTools`, after `PrepareCall`); it cannot enable a tool outside them, as in TypeScript.
+
+Both option structs also accept the generation settings `Temperature`, `MaxTokens`, `TopP`, `TopK`,
+`FrequencyPenalty`, `PresencePenalty`, `StopSequences`, `Seed`, `Headers`, `Reasoning` and `ProviderOptions`.
+A value set on the call replaces the agent's (`Headers` and `ProviderOptions` replace as a whole).
+
+`OnAbort` receives the steps completed before the abort (generate and stream). `OnError` and `OnAbort` fire for failures that happen while a stream is being consumed (provider error chunks,
+cancellation), not only before it starts. A timeout (the agent's `Timeout`, or a context deadline) counts as an
+abort like a cancellation: `OnAbort` fires and `OnError` does not. In `Stream`, `OnEnd` fires for every run that was not
+aborted, as in TypeScript: after a failure (a model call or `PrepareStep` hook that fails) it follows `OnError`
+and carries the steps completed so far. When the run failed that way, its `Messages` are the input messages only
+(after `PrepareCall` and the approval resume, without the instructions), as TypeScript falls back to the prompt
+messages. A run that ended on an error in the model stream itself keeps the full conversation.
+`Generate` fires `OnEnd` only when the run succeeds. A run whose context is already cancelled fires `OnStart`, then
+`OnAbort`.
+
+In `Stream`, the `OnEnd` `Usage` and `TotalUsage`, the result's `Usage()` and the telemetry end usage are the TS
+stream-mode total: input and output tokens summed over the steps (a missing count is 0) and `TotalTokens` their sum.
+The counts are set even when no step reported usage. `Generate` adds the steps' usage as `GenerateText` does.
+
+### Continuing the conversation
+
+`WorkflowResult.ResponseMessages` holds the messages the run added: first the tool message with the results of any
+approvals the run resumed, then each step's assistant and tool messages. Append them to the input messages for the next turn.
+
+### Telemetry and runtime context
+
+Workflow telemetry events carry only the runtime context keys you opt in to with
+`Telemetry.IncludeRuntimeContext`. With no entries, events carry an empty runtime context.
+
+`Generate` and `Stream` each open one `ai.workflowAgent.stream` root span (the TS operation ID for both), and
+the agent's step, model-call and tool-call spans nest under it. The root opens after the approved tools from
+the message history have run, so its messages are the cleaned history and those resumed tool calls get no
+tool span, as in TS. The `Stream` root ends when the run ends: with the end event (last step's text and finish reason,
+the stream-mode usage) for a completed run, with the error and then the end event for a failed run (no end event
+when no step completed), and with an abort event for a cancelled run. If you open a telemetry root yourself (with
+`telemetry.FireOnStart` and a `CallID`) and then run a `ToolLoopAgent` directly, pass the root's call ID with
+`agent.WithTelemetryCallID(ctx, callID)` so the agent loop reports under that root instead of opening a
+second one.
 
 ## Stream
 
@@ -96,6 +174,14 @@ if err != nil {
   return err
 }
 ```
+
+### Output and provider tool calls
+
+Like TS stream mode, the stream result parses `Output` (the call's or the agent's) from the last step's text only when that text is non-empty, whatever the finish reason, and leaves `Output()` nil when neither sets an `Output` (core `StreamText` would return the text); a step with no text (for example a tool-calls finish) leaves `Output()` nil and `OutputErr()` nil. A parse failure also surfaces from `Err()`.
+
+A step that finishes with any reason other than `stop` or `tool-calls` (`length`, `content-filter`, `error`, `interrupted`, `other`) is the last one, as in TS: its local tool calls are not executed and the loop does not ask the model again, even in `Stream` where no step limit applies.
+
+When a provider-executed tool call gets no result from the provider, WorkflowAgent logs a warning, answers the call with an empty text result and continues the loop (deferred-result tools are left pending). `ai.GenerateText` and `ai.StreamText` stop the loop instead.
 
 ## Chat Transport
 
@@ -147,6 +233,41 @@ chunks, errs = transport.ReconnectToStream(ctx, ai.ChatTransportReconnectToStrea
 })
 ```
 
+The POST body is `{"messages": ...}` plus the fields of `ChatTransportSendMessagesRequest.Body`, as in
+TypeScript; `ChatID`, `MessageID` and `Trigger` reach the server only through `PrepareSendMessagesRequest`.
+
+`MaxConsecutiveErrors` (default 3) bounds reconnect attempts. A reconnect response that ends without
+any UI message chunks (an empty body, keep-alive comments only, or a bare `[DONE]`) counts as an
+error, so an endpoint that keeps answering `200 OK` with nothing cannot loop forever. A response that
+delivers chunks resets the count and the next request resumes from the new cursor.
+
+## Model-call parts to UI chunks
+
+A durable run writes `workflow.ModelCallStreamPart` values (an alias of `provider.StreamChunk`; use
+`workflow.ChunkTypeResetStep` for a retried step). `workflow.ToUIMessageChunk` converts one part, and
+`workflow.CreateModelCallToUIChunkTransform` wraps a whole part stream with `start`/`start-step` and
+`finish-step`/`finish`:
+
+```go
+tr, err := workflow.CreateModelCallToUIChunkTransform(workflow.ModelCallToUIChunkTransformOptions{
+  UIStartIndex: 4, // UI chunks the client already received
+})
+chunks := tr.Pipe(ctx, parts)
+```
+
+To resume, replay the source parts from index 0 and set `UIStartIndex` to the number of UI chunks the
+client already has: raw parts and UI chunks are not one to one, so never use a UI index as the source
+start. `workflow.NormalizeUIMessageStreamParts(ctx, chunks)` repairs text and reasoning part framing
+(missing starts, replayed chunks, `reset-step`).
+
+The `OnEnd` event of a `WorkflowAgent` also carries `Messages`, the final conversation: the
+instructions as a system message, the input messages after `PrepareCall` and after resolved tool
+approvals were replaced by their tool results, then every step's response messages. When a
+`PrepareStep` changed the instructions or messages, the conversation starts from the last step's
+prompt instead, followed by that step's response messages.
+To continue the conversation from it, drop the leading system message (or set
+`AllowSystemInMessages`), since `Messages` rejects system messages by default.
+
 ## Serializable Schemas And Tools
 
 Use `workflow.MarshalSchema` and `workflow.UnmarshalSchema` for JSON Schema round trips.
@@ -155,6 +276,14 @@ crossing a workflow boundary, then `workflow.ResolveSerializableTools` to restor
 non-executable tool descriptors in the resumed step.
 Use `workflow.ValidateSerializableToolInput` to validate reconstructed tool inputs
 against the serialized JSON Schema before executing an attached Go function.
+
+Validation treats `format` as an annotation (it is not enforced), accepts annotation and union
+`type` keywords, and enforces `dependentRequired` for schemas whose `$schema` declares JSON Schema 2019-09 or 2020-12. A failure
+lists every problem with the details a model needs to retry, for example
+`data/action must be one of "click", "type", "scroll"` or
+`data/edits/0 has unexpected property "path"`. When a tool's `Parameters` is a `schema.Schema` with
+its own validator, `SerializeToolSet` sets `HasOwnValidator` and `ValidateSerializableToolInput`
+returns the input unchanged, leaving validation to the original schema.
 
 ## Provider Serialization
 
@@ -176,7 +305,7 @@ provider.SerializeVideoModel / DeserializeVideoModel / RegisterVideoModelDeseria
 provider.SerializeSpeechModel / DeserializeSpeechModel / RegisterSpeechModelDeserializer
 provider.SerializeTranscriptionModel / DeserializeTranscriptionModel / RegisterTranscriptionModelDeserializer
 provider.SerializeEmbeddingModel / DeserializeEmbeddingModel / RegisterEmbeddingModelDeserializer
-provider.SerializeEvaluationModel / DeserializeEvaluationModel / RegisterEvaluationModelDeserializer
+provider.SerializeDecisionModel / DeserializeDecisionModel / RegisterDecisionModelDeserializer
 ```
 
 None of this is wired into the workflow runtime automatically — there is no

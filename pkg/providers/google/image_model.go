@@ -2,9 +2,8 @@ package google
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
-	"strings"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -95,6 +94,7 @@ var googleImageModelsWithFileInputSupport = map[string]bool{
 	"gemini-2.5-flash-image":         true,
 	"gemini-3-pro-image-preview":     true,
 	"gemini-3.1-flash-image-preview": true,
+	"gemini-nano-banana-2.1":         true,
 }
 
 // SupportsFileInputs reports whether the model accepts file inputs for image
@@ -134,12 +134,16 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 	if opts.Mask != nil {
 		return nil, providererrors.NewProviderError("google", 0, "", "Gemini image models do not support mask-based image editing.", nil)
 	}
+	content, err := googleGeminiImageContent(opts)
+	if err != nil {
+		return nil, err
+	}
 	providerOptions, googleSearch := geminiImageProviderOptions(opts)
 	lmOpts := &provider.GenerateOptions{
 		Prompt: types.Prompt{
 			Messages: []types.Message{{
 				Role:    types.RoleUser,
-				Content: googleGeminiImageContent(opts),
+				Content: content,
 			}},
 		},
 		Seed:            opts.Seed,
@@ -155,37 +159,46 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 	if err != nil {
 		return nil, err
 	}
-	file, ok := firstGeneratedImage(lmResult.Content)
-	if !ok {
-		return nil, providererrors.NewProviderError("google", 0, "", "no image data in response", nil)
-	}
-	base64Image := base64.StdEncoding.EncodeToString(file.Data)
-	usage := types.ImageUsage{ImageCount: 1}
+	// Every image part is returned. A response without images is not an error
+	// here (TS returns an empty images array): the caller decides whether to
+	// retry, and a content-filter block is marked terminal.
+	out := gemini.ExtractImages(lmResult.Content)
+	usage := types.ImageUsage{ImageCount: len(out.Images)}
 	if lmResult.Usage.InputTokens != nil {
 		usage.InputTokens = int(*lmResult.Usage.InputTokens)
 	}
 	if lmResult.Usage.OutputTokens != nil {
 		usage.OutputTokens = int(*lmResult.Usage.OutputTokens)
 	}
-	if lmResult.Usage.TotalTokens != nil {
-		usage.TotalTokens = int(*lmResult.Usage.TotalTokens)
-	}
+	// TS: totalTokens = (inputTokens.total ?? 0) + (outputTokens.total ?? 0).
+	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 
+	// TS returns only the image model's own warnings; the inner language-model
+	// call's warnings are dropped.
 	warnings := googleImageWarnings(opts)
-	warnings = append(warnings, lmResult.Warnings...)
-	return &types.ImageResult{
-		Image:        file.Data,
-		Images:       [][]byte{file.Data},
-		Base64Image:  base64Image,
-		Base64Images: []string{base64Image},
-		MimeType:     file.MediaType,
-		Usage:        usage,
-		Warnings:     warnings,
-		ProviderMetadata: map[string]interface{}{
-			"google": googleImageProviderMetadata(lmResult.ProviderMetadata, rawFinishReason(lmResult.RawResponse)),
-		},
-		Response: lmResult.ResponseMetadata,
-	}, nil
+	metadata := googleImageProviderMetadata(lmResult.ProviderMetadata, firstNonEmpty(lmResult.RawFinishReason, rawFinishReason(lmResult.RawResponse)))
+	metadata["images"] = make([]map[string]interface{}, len(out.Images))
+	for i := range out.Images {
+		metadata["images"].([]map[string]interface{})[i] = map[string]interface{}{}
+	}
+	result := &types.ImageResult{
+		Images:           out.Images,
+		Base64Images:     out.Base64Images,
+		MimeType:         out.MediaType,
+		Usage:            usage,
+		Warnings:         warnings,
+		ProviderMetadata: map[string]interface{}{"google": metadata},
+		Response:         imageResponseMetadata(m.modelID, lmResult.ResponseHeaders),
+	}
+	if len(out.Images) > 0 {
+		result.Image = out.Images[0]
+		result.Base64Image = out.Base64Images[0]
+	}
+	if lmResult.FinishReason == types.FinishReasonContentFilter {
+		retryable := false
+		result.IsRetryable = &retryable
+	}
+	return result, nil
 }
 
 // rawFinishReason extracts the raw Gemini candidate finishReason string from
@@ -199,12 +212,24 @@ func rawFinishReason(raw interface{}) string {
 	return resp.Candidates[0].FinishReason
 }
 
-func googleGeminiImageContent(opts *provider.ImageGenerateOptions) []types.ContentPart {
+// googleGeminiImageContent builds the single user message of a Gemini image
+// call. A URL file is sent by TS as a file part with media type "image/*",
+// which the Google prompt conversion rejects (resolveFullMediaType needs a
+// subtype and cannot detect one without inline bytes), so image editing with
+// URL inputs throws an UnsupportedFunctionalityError there.
+func googleGeminiImageContent(opts *provider.ImageGenerateOptions) ([]types.ContentPart, error) {
 	parts := []types.ContentPart{}
 	if opts.Prompt != "" {
 		parts = append(parts, types.TextContent{Text: opts.Prompt})
 	}
 	for _, file := range opts.Files {
+		if file.URL != "" {
+			functionality := `file of media type "image/*" must specify subtype since it is not passed as inline bytes`
+			return nil, &providererrors.UnsupportedFunctionalityError{
+				Functionality: functionality,
+				Message:       "'" + functionality + "' functionality not supported.",
+			}
+		}
 		mediaType := file.MediaType
 		if mediaType == "" {
 			mediaType = "image/*"
@@ -213,50 +238,14 @@ func googleGeminiImageContent(opts *provider.ImageGenerateOptions) []types.Conte
 			Data:      file.Data,
 			MediaType: mediaType,
 			MimeType:  mediaType,
-			URL:       file.URL,
 		})
 	}
-	return parts
+	return parts, nil
 }
 
 func geminiImageProviderOptions(opts *provider.ImageGenerateOptions) (map[string]interface{}, interface{}) {
-	googleOpts := map[string]interface{}{
-		"responseModalities": []string{"IMAGE"},
-	}
-	imageConfig := map[string]interface{}{}
-	if opts.AspectRatio != "" {
-		imageConfig["aspectRatio"] = opts.AspectRatio
-	}
-	for key, value := range extractGoogleOptions(opts.ProviderOptions) {
-		if key == "googleSearch" {
-			continue
-		}
-		if key == "imageSize" {
-			if value != nil {
-				imageConfig["imageSize"] = value
-			}
-			continue
-		}
-		if value != nil {
-			googleOpts[key] = value
-		}
-	}
-	if len(imageConfig) > 0 {
-		googleOpts["imageConfig"] = imageConfig
-	}
-	googleSearch := extractGoogleOptions(opts.ProviderOptions)["googleSearch"]
+	googleOpts, googleSearch := gemini.ImageCallOptions(extractGoogleOptions(opts.ProviderOptions), opts.AspectRatio, "imageSize")
 	return map[string]interface{}{"google": googleOpts}, googleSearch
-}
-
-func firstGeneratedImage(content []types.ContentPart) (types.GeneratedFileContent, bool) {
-	for _, part := range content {
-		file, ok := part.(types.GeneratedFileContent)
-		if !ok || !strings.HasPrefix(file.MediaType, "image/") || len(file.Data) == 0 {
-			continue
-		}
-		return file, true
-	}
-	return types.GeneratedFileContent{}, false
 }
 
 func googleImageProviderMetadata(providerMetadata map[string]interface{}, finishReason string) map[string]interface{} {
@@ -390,4 +379,10 @@ type geminiImageResponse struct {
 type InlineData struct {
 	MimeType string `json:"mimeType"`
 	Data     string `json:"data"` // base64-encoded
+}
+
+// imageResponseMetadata is the TS image-model response: the call time, this
+// model's id (not the language model's response id) and the HTTP headers.
+func imageResponseMetadata(modelID string, headers map[string]string) *types.ResponseMetadata {
+	return &types.ResponseMetadata{Timestamp: time.Now(), ModelID: modelID, Headers: headers}
 }

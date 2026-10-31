@@ -4,10 +4,10 @@ import (
 	"context"
 	"regexp"
 	"strings"
-	"unicode"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ExtractJSONOptions configures the JSON extraction middleware
@@ -20,22 +20,28 @@ type ExtractJSONOptions struct {
 // defaultJSONTransform strips markdown code fences from text
 func defaultJSONTransform(text string) string {
 	// Remove opening fence: ```json or ```
-	text = regexp.MustCompile(`^`+"```"+`(?:json)?\s*\n?`).ReplaceAllString(text, "")
+	text = jsonFencePrefixRe.ReplaceAllString(text, "")
 	// Remove closing fence: ```
-	text = regexp.MustCompile(`\n?`+"```"+`\s*$`).ReplaceAllString(text, "")
-	return strings.TrimSpace(text)
+	text = jsonFenceSuffixRe.ReplaceAllString(text, "")
+	return providerutils.JSTrim(text)
 }
 
 // jsonFenceSuffixRe matches a trailing markdown code fence, mirroring TS
 // stripMarkdownCodeFenceSuffix's regex.
-var jsonFenceSuffixRe = regexp.MustCompile(`\n?` + "```" + `\s*$`)
+var jsonFenceSuffixRe = regexp.MustCompile(`\n?` + "```" + jsWS + `*$`)
+
+// jsWS is the character class of JavaScript's regex \s (RE2's \s is ASCII
+// only and omits \v, NBSP, U+FEFF and the Unicode spaces).
+const jsWS = `[\t\n\v\f\r \x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]`
+
+var jsonFencePrefixRe = regexp.MustCompile(`^` + "```" + `(?:json)?` + jsWS + `*\n?`)
 
 // stripMarkdownCodeFenceSuffix removes a trailing markdown code fence (with
 // an optional leading newline) and trims trailing whitespace only — it must
 // never trim leading whitespace, since earlier text may already have
 // streamed out.
 func stripMarkdownCodeFenceSuffix(text string) string {
-	return strings.TrimRight(jsonFenceSuffixRe.ReplaceAllString(text, ""), " \t\n\r")
+	return providerutils.JSTrimEnd(jsonFenceSuffixRe.ReplaceAllString(text, ""))
 }
 
 // getPotentialSuffixStart returns the byte offset from which text could
@@ -48,7 +54,7 @@ func getPotentialSuffixStart(text string) int {
 	runes := []rune(text)
 	index := len(runes)
 
-	for index > 0 && unicode.IsSpace(runes[index-1]) {
+	for index > 0 && providerutils.IsJSWhiteSpace(runes[index-1]) {
 		index--
 	}
 
@@ -59,7 +65,7 @@ func getPotentialSuffixStart(text string) int {
 	}
 
 	if backtickCount > 0 {
-		for index > 0 && unicode.IsSpace(runes[index-1]) {
+		for index > 0 && providerutils.IsJSWhiteSpace(runes[index-1]) {
 			index--
 		}
 	}
@@ -109,8 +115,17 @@ func ExtractJSONMiddleware(options *ExtractJSONOptions) *LanguageModelMiddleware
 				return nil, err
 			}
 
-			// Transform the text content
-			result.Text = transform(result.Text)
+			// Transform every text part (TS maps over content).
+			mapGenerateTextParts(result, func(part types.TextContent) []types.ContentPart {
+				part.Text = transform(part.Text)
+				return []types.ContentPart{part}
+			})
+			// The provider-selected structured output text is transformed
+			// too (TS: structuredOutputText: transform(structuredOutputText)).
+			if result.StructuredOutputText != nil {
+				transformed := transform(*result.StructuredOutputText)
+				result.StructuredOutputText = &transformed
+			}
 			return result, nil
 		},
 
@@ -131,18 +146,31 @@ func ExtractJSONMiddleware(options *ExtractJSONOptions) *LanguageModelMiddleware
 	}
 }
 
-// streamingExtractJSONWrapper wraps a TextStream and handles the final chunk transformation
+// jsonTextBlock is the per-text-block state of the streaming JSON extractor
+// (TS textBlocks[id]).
+type jsonTextBlock struct {
+	start          *provider.StreamChunk // withheld text-start (nil when the provider sent none)
+	phase          string                // prefix | streaming | buffering
+	buffer         string
+	prefixStripped bool
+}
+
+// streamingExtractJSONWrapper mirrors TS extractJsonMiddleware's wrapStream:
+// every text block (keyed by chunk ID) is tracked independently, the
+// text-start is withheld until the fence prefix is resolved, and whatever is
+// still held back is flushed as a final text delta when the block's text-end
+// arrives, so the delta always precedes the text-end and finish chunks.
 type streamingExtractJSONWrapper struct {
 	stream             provider.TextStream
 	transform          func(string) string
 	hasCustomTransform bool
-	phase              string
-	buffer             string
-	prefixStripped     bool
-	finalized          bool
+	blocks             map[string]*jsonTextBlock
+	order              []string // block IDs in creation order, for the EOF flush
+	pending            []*provider.StreamChunk
+	eof                error
 }
 
-// newStreamingExtractJSONWrapper creates a wrapper that properly handles final transformations
+// newStreamingExtractJSONWrapper creates the block-aware wrapper.
 func newStreamingExtractJSONWrapper(
 	stream provider.TextStream,
 	transform func(string) string,
@@ -152,99 +180,144 @@ func newStreamingExtractJSONWrapper(
 		stream:             stream,
 		transform:          transform,
 		hasCustomTransform: hasCustomTransform,
-		phase:              "prefix",
-		buffer:             "",
-		prefixStripped:     false,
-		finalized:          false,
+		blocks:             map[string]*jsonTextBlock{},
 	}
 }
 
-// Next returns the next chunk with transformations applied
+func (w *streamingExtractJSONWrapper) newBlock(id string, start *provider.StreamChunk) *jsonTextBlock {
+	phase := "prefix"
+	if w.hasCustomTransform {
+		phase = "buffering"
+	}
+	b := &jsonTextBlock{start: start, phase: phase}
+	w.blocks[id] = b
+	w.order = append(w.order, id)
+	return b
+}
+
+func (w *streamingExtractJSONWrapper) emitStart(b *jsonTextBlock) {
+	if b.start != nil {
+		w.pending = append(w.pending, b.start)
+		b.start = nil
+	}
+}
+
+func (w *streamingExtractJSONWrapper) emitText(id, text string, template *provider.StreamChunk) {
+	c := provider.StreamChunk{}
+	if template != nil {
+		c = *template
+	}
+	c.Type = provider.ChunkTypeText
+	c.ID = id
+	c.Text = text
+	w.pending = append(w.pending, &c)
+}
+
+// flushBlock emits the remaining buffered text of a block (the TS text-end
+// handling).
+func (w *streamingExtractJSONWrapper) flushBlock(id string, b *jsonTextBlock) {
+	if b.phase == "prefix" || b.phase == "buffering" {
+		w.emitStart(b)
+	}
+	remaining := b.buffer
+	switch {
+	case b.phase == "buffering":
+		remaining = w.transform(remaining)
+	case b.prefixStripped:
+		remaining = stripMarkdownCodeFenceSuffix(remaining)
+	case b.phase == "prefix":
+		remaining = w.transform(remaining)
+	default:
+		remaining = stripMarkdownCodeFenceSuffix(remaining)
+	}
+	if len(remaining) > 0 {
+		w.emitText(id, remaining, nil)
+	}
+	delete(w.blocks, id)
+}
+
+func (w *streamingExtractJSONWrapper) handleDelta(chunk *provider.StreamChunk) {
+	b := w.blocks[chunk.ID]
+	if b == nil {
+		// No text-start seen (providers that do not emit block boundaries):
+		// treat the delta as the start of an implicit block.
+		b = w.newBlock(chunk.ID, nil)
+	}
+	b.buffer += chunk.Text
+
+	if b.phase == "buffering" {
+		return
+	}
+
+	if b.phase == "prefix" {
+		switch {
+		case len(b.buffer) > 0 && !strings.HasPrefix(b.buffer, "`"):
+			b.phase = "streaming"
+			w.emitStart(b)
+		case strings.HasPrefix(b.buffer, "```"):
+			if strings.Contains(b.buffer, "\n") {
+				re := regexp.MustCompile(`^` + "```" + `(?:json)?` + jsWS + `*\n`)
+				if loc := re.FindStringIndex(b.buffer); loc != nil {
+					b.buffer = b.buffer[loc[1]:]
+					b.prefixStripped = true
+				}
+				b.phase = "streaming"
+				w.emitStart(b)
+			}
+		case len(b.buffer) >= 3:
+			b.phase = "streaming"
+			w.emitStart(b)
+		}
+	}
+
+	if b.phase == "streaming" {
+		potentialSuffixStart := getPotentialSuffixStart(b.buffer)
+		toStream := b.buffer[:potentialSuffixStart]
+		b.buffer = b.buffer[potentialSuffixStart:]
+		if len(toStream) > 0 {
+			w.emitText(chunk.ID, toStream, chunk)
+		}
+	}
+}
+
+// Next returns the next chunk with transformations applied.
 func (w *streamingExtractJSONWrapper) Next() (*provider.StreamChunk, error) {
 	for {
+		if len(w.pending) > 0 {
+			c := w.pending[0]
+			w.pending = w.pending[1:]
+			return c, nil
+		}
+		if w.eof != nil {
+			return nil, w.eof
+		}
+
 		chunk, err := w.stream.Next()
-
-		// Handle EOF - apply final transformations
 		if err != nil {
-			if !w.finalized && len(w.buffer) > 0 {
-				w.finalized = true
-
-				var remaining string
-				switch {
-				case w.hasCustomTransform:
-					remaining = w.transform(w.buffer)
-				case w.prefixStripped:
-					// Strip suffix since prefix was already handled.
-					remaining = stripMarkdownCodeFenceSuffix(w.buffer)
-				case w.phase == "prefix":
-					// No text has streamed yet, so the full transform is safe.
-					remaining = w.transform(w.buffer)
-				default:
-					// Only strip the suffix. Since earlier text may already
-					// have streamed, trimming the remaining suffix with the
-					// full transform (which also trims leading whitespace)
-					// would remove valid leading whitespace at the stream
-					// boundary.
-					remaining = stripMarkdownCodeFenceSuffix(w.buffer)
-				}
-
-				if len(remaining) > 0 {
-					// Return final text chunk before the error
-					w.buffer = ""
-					return &provider.StreamChunk{
-						Type: provider.ChunkTypeText,
-						Text: remaining,
-					}, nil
+			// Flush blocks that never saw a text-end (including implicit
+			// blocks) before reporting the end of the stream.
+			for _, id := range w.order {
+				if b, ok := w.blocks[id]; ok {
+					w.flushBlock(id, b)
 				}
 			}
-			return chunk, err
-		}
-
-		// Pass through non-text chunks
-		if chunk.Type != provider.ChunkTypeText {
-			return chunk, nil
-		}
-
-		// Buffer text chunks
-		w.buffer += chunk.Text
-
-		// Custom transform: buffer everything
-		if w.hasCustomTransform {
+			w.eof = err
 			continue
 		}
 
-		// Prefix detection phase
-		if w.phase == "prefix" {
-			if len(w.buffer) > 0 && !strings.HasPrefix(w.buffer, "`") {
-				w.phase = "streaming"
-			} else if strings.HasPrefix(w.buffer, "```") {
-				if strings.Contains(w.buffer, "\n") {
-					re := regexp.MustCompile(`^` + "```" + `(?:json)?\s*\n`)
-					if loc := re.FindStringIndex(w.buffer); loc != nil {
-						w.buffer = w.buffer[loc[1]:]
-						w.prefixStripped = true
-						w.phase = "streaming"
-					} else {
-						w.phase = "streaming"
-					}
-				}
-			} else if len(w.buffer) >= 3 {
-				w.phase = "streaming"
+		switch chunk.Type {
+		case provider.ChunkTypeTextStart:
+			c := *chunk
+			w.newBlock(chunk.ID, &c)
+		case provider.ChunkTypeText:
+			w.handleDelta(chunk)
+		case provider.ChunkTypeTextEnd:
+			if b, ok := w.blocks[chunk.ID]; ok {
+				w.flushBlock(chunk.ID, b)
 			}
-		}
-
-		// Stream content while retaining anything that could still become
-		// trailing whitespace or a markdown fence suffix.
-		if w.phase == "streaming" {
-			potentialSuffixStart := getPotentialSuffixStart(w.buffer)
-			toStream := w.buffer[:potentialSuffixStart]
-			w.buffer = w.buffer[potentialSuffixStart:]
-			if len(toStream) > 0 {
-				return &provider.StreamChunk{
-					Type: provider.ChunkTypeText,
-					Text: toStream,
-				}, nil
-			}
+			w.pending = append(w.pending, chunk)
+		default:
+			w.pending = append(w.pending, chunk)
 		}
 	}
 }

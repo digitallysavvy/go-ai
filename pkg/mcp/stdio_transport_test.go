@@ -3,10 +3,13 @@ package mcp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestValidateStdioCommandForGOOS mirrors TS createChildProcess's Windows
@@ -14,8 +17,9 @@ import (
 // commands/args with CR or LF are rejected only on Windows.
 func TestValidateStdioCommandForGOOS(t *testing.T) {
 	t.Run("rejects command with line break on windows", func(t *testing.T) {
-		if err := validateStdioCommandForGOOS("windows", "node\n", nil); err == nil {
-			t.Fatal("expected error for command containing a line break on windows")
+		err := validateStdioCommandForGOOS("windows", "node\n", nil)
+		if err == nil || err.Error() != "Stdio MCP commands and arguments must not contain line breaks on Windows." {
+			t.Fatalf("err = %v, want the TS TypeError text", err)
 		}
 	})
 
@@ -86,7 +90,8 @@ func TestStdioTransportAlreadyConnected(t *testing.T) {
 	defer func() { _ = transport.Close() }()
 
 	err := transport.Connect(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "already connected") {
+	var ce *MCPClientError
+	if !errors.As(err, &ce) || err.Error() != "StdioMCPTransport already started." {
 		t.Fatalf("second Connect() error = %v", err)
 	}
 }
@@ -120,10 +125,15 @@ func TestStdioTransportSendAndReceiveWhenNotConnected(t *testing.T) {
 	}
 }
 
-func TestStdioTransportReceiveInvalidJSON(t *testing.T) {
+// A stdout line that is not JSON-RPC (servers print logs there) is reported
+// through OnError and skipped; later valid messages are still delivered (TS
+// calls onerror and keeps reading).
+func TestStdioTransportSkipsInvalidJSONLines(t *testing.T) {
+	var reported []error
 	transport := NewStdioTransport(StdioTransportConfig{
 		Command: "sh",
-		Args:    []string{"-c", "printf 'not-json\\n'"},
+		Args:    []string{"-c", `printf 'not-json\n{"level":"info"}\n\n{"jsonrpc":"2.0","id":1,"result":{}}\n'`},
+		OnError: func(err error) { reported = append(reported, err) },
 	})
 
 	if err := transport.Connect(context.Background()); err != nil {
@@ -131,12 +141,92 @@ func TestStdioTransportReceiveInvalidJSON(t *testing.T) {
 	}
 	defer func() { _ = transport.Close() }()
 
-	_, err := transport.Receive(context.Background())
-	if err == nil {
-		t.Fatal("expected Receive() unmarshal error")
-	}
-	if !strings.Contains(err.Error(), "failed to unmarshal message") {
+	msg, err := transport.Receive(context.Background())
+	if err != nil {
 		t.Fatalf("Receive() error = %v", err)
+	}
+	if msg.ID == nil {
+		t.Fatalf("message = %+v", msg)
+	}
+	// JSON that is not a JSON-RPC message (a structured log line) is skipped
+	// too, as TS parseJSONRPCMessage rejects it, and so is the blank line
+	// (TS JSON.parse('') throws and reaches onerror).
+	if len(reported) != 3 {
+		t.Fatalf("reported = %v", reported)
+	}
+	for _, err := range reported {
+		if !strings.Contains(err.Error(), "failed to unmarshal message") {
+			t.Fatalf("reported = %v", reported)
+		}
+	}
+}
+
+// The child must outlive the context passed to Connect.
+func TestStdioTransportChildOutlivesConnectContext(t *testing.T) {
+	transport := NewStdioTransport(StdioTransportConfig{
+		Command: "sh",
+		Args:    []string{"-c", `sleep 0.3; printf '{"jsonrpc":"2.0","id":1,"result":{}}\n'`},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := transport.Connect(ctx); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	cancel()
+	defer func() { _ = transport.Close() }()
+	if _, err := transport.Receive(context.Background()); err != nil {
+		t.Fatalf("child was killed with the Connect context: %v", err)
+	}
+}
+
+type countingWriter struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.n += len(p)
+	return len(p), nil
+}
+
+// StdioTransportConfig.Stderr (TS StdioConfig.stderr) receives the child's
+// stderr, and a chatty child never blocks on it.
+func TestStdioTransportStderrWriter(t *testing.T) {
+	w := &countingWriter{}
+	transport := NewStdioTransport(StdioTransportConfig{
+		Command: "sh",
+		// ~1 MiB on stderr (far more than the pipe buffer), then a message.
+		Args:   []string{"-c", `head -c 1048576 /dev/zero >&2; printf '{"jsonrpc":"2.0","id":1,"result":{}}\n'`},
+		Stderr: w,
+	})
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	defer func() { _ = transport.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := transport.Receive(ctx); err != nil {
+		t.Fatalf("Receive() error = %v (child blocked on stderr?)", err)
+	}
+	_ = transport.Close()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.n != 1048576 {
+		t.Fatalf("stderr writer received %d bytes, want 1048576", w.n)
+	}
+}
+
+// With no Stderr option the child's stderr is inherited from the parent
+// process (TS default 'inherit').
+func TestStdioTransportInheritsStderrByDefault(t *testing.T) {
+	transport := NewStdioTransport(StdioTransportConfig{Command: "true"})
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = transport.Close() }()
+	if transport.cmd.Stderr != os.Stderr {
+		t.Fatalf("cmd.Stderr = %v, want os.Stderr", transport.cmd.Stderr)
 	}
 }
 
@@ -184,4 +274,63 @@ func TestStdioTransportReceiveCloseRace(t *testing.T) {
 	}()
 	_ = tr.Close()
 	wg.Wait()
+}
+
+// TS StdioMCPTransport sets supportsProtocolVersionDiscovery = true, so the
+// client probes server/discover over stdio too.
+func TestStdioTransportSupportsProtocolVersionDiscovery(t *testing.T) {
+	var transport Transport = NewStdioTransport(StdioTransportConfig{Command: "true"})
+	client := NewMCPClient(transport, MCPClientConfig{})
+	if !client.supportsProtocolVersionDiscovery() {
+		t.Fatal("stdio transport must support protocol version discovery")
+	}
+}
+
+// TestStdioSendHonorsContextOnFullPipe: a child that never reads stdin fills
+// the pipe; Send must return when ctx expires instead of blocking forever.
+func TestStdioSendHonorsContextOnFullPipe(t *testing.T) {
+	tr := NewStdioTransport(StdioTransportConfig{Command: "sleep", Args: []string{"30"}})
+	if err := tr.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tr.Close() }()
+	big := `"` + strings.Repeat("x", 4<<20) + `"`
+	msg := &MCPMessage{JSONRpc: "2.0", ID: 0, Method: "m", Params: []byte(big)}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- tr.Send(ctx, msg) }()
+	select {
+	case err := <-done:
+		if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("err = %v, want deadline exceeded", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Send did not honor ctx")
+	}
+}
+
+// TS StdioMCPTransport's ReadBuffer only yields newline-terminated lines, so
+// a final message the child writes without "\n" before exiting is never
+// delivered.
+func TestStdioTransportDropsUnterminatedFinalLine(t *testing.T) {
+	transport := NewStdioTransport(StdioTransportConfig{
+		Command: "sh",
+		Args:    []string{"-c", `printf '{"jsonrpc":"2.0","id":1,"result":{}}\r\n{"jsonrpc":"2.0","id":2,"result":{}}'`},
+	})
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	defer func() { _ = transport.Close() }()
+
+	msg, err := transport.Receive(context.Background())
+	if err != nil {
+		t.Fatalf("Receive() error = %v", err)
+	}
+	if fmt.Sprint(msg.ID) != "1" {
+		t.Fatalf("first message id = %v, want 1", msg.ID)
+	}
+	if msg, err := transport.Receive(context.Background()); !errors.Is(err, io.EOF) {
+		t.Fatalf("Receive() = %+v, %v; want EOF without the unterminated message", msg, err)
+	}
 }

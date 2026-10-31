@@ -3,7 +3,10 @@ package prodia
 import (
 	"bytes"
 	"context"
+	"errors"
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -264,8 +268,9 @@ func TestDoGenerateRejectsInvalidAspectRatio(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid aspect ratio, got nil")
 	}
-	if !strings.Contains(err.Error(), "aspectRatio") {
-		t.Errorf("error %q does not mention aspectRatio", err.Error())
+	var ia *providererrors.InvalidArgumentError
+	if !errors.As(err, &ia) || ia.Cause == nil || !strings.Contains(ia.Cause.Error(), "aspectRatio") {
+		t.Errorf("error %v is not an InvalidArgumentError naming aspectRatio", err)
 	}
 }
 
@@ -438,22 +443,29 @@ func TestProdiaLanguageModelMultipartRequest(t *testing.T) {
 		t.Errorf("content-type %q missing boundary", ct)
 	}
 
-	// Parse the produced body to verify structure.
-	jobResp, outputData, outputMIME, err := parseMultipartResponse(ct, buf.Bytes())
+	// Parse the produced body to verify structure: this is a request body, so
+	// read it with a plain multipart reader (it has no response job schema).
+	_, params, err := mime.ParseMediaType(ct)
 	if err != nil {
-		t.Fatalf("parseMultipartResponse error: %v", err)
+		t.Fatalf("ParseMediaType: %v", err)
 	}
-	// The job response from our body is the job metadata from the request body,
-	// which encodes as the jobBody above.  The "job" part is present.
-	_ = jobResp // job part was present (no parse error)
-
-	// The image was written to the "input" part (not "output"), so outputData
-	// will be nil from parseMultipartResponse (it only reads "output" form name).
-	// The purpose of this test is to confirm the multipart was well-formed.
-	_ = outputData
-	_ = outputMIME
-
-	_ = ct
+	mr := multipart.NewReader(bytes.NewReader(buf.Bytes()), params["boundary"])
+	sawJob := false
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("multipart not well-formed: %v", err)
+		}
+		if part.FormName() == "job" {
+			sawJob = true
+		}
+	}
+	if !sawJob {
+		t.Error("job part missing")
+	}
 }
 
 // TestProviderLanguageModelRouting verifies provider.LanguageModel() routes
@@ -478,9 +490,73 @@ func TestProviderLanguageModelRouting(t *testing.T) {
 		t.Errorf("default ModelID() = %q, want %q", lm2.ModelID(), LanguageModelNanoBananaImgToImgV2)
 	}
 
-	// Unknown model ID should return an error.
-	_, err = prov.LanguageModel("gpt-4")
-	if err == nil {
-		t.Error("expected error for unsupported language model, got nil")
+	// TS accepts any model id (`(string & {})`).
+	if lm3, err := prov.LanguageModel("gpt-4"); err != nil || lm3.ModelID() != "gpt-4" {
+		t.Errorf("LanguageModel(any id) = %v, %v", lm3, err)
+	}
+}
+
+// TS prodia-language-model rejects image parts that are provider references.
+func TestDoGenerateRejectsProviderReferenceImage(t *testing.T) {
+	model := NewLanguageModel(New(Config{APIKey: "k", BaseURL: "http://127.0.0.1:1"}), LanguageModelNanoBananaImgToImgV2)
+	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentPart{types.FileContent{
+			MediaType: "image/png",
+			FileData:  types.FileData{Type: types.FileDataTypeReference, Reference: types.ProviderReference{"prodia": "f"}},
+		}},
+	}}}})
+	if !providererrors.IsUnsupportedFunctionalityError(err) {
+		t.Fatalf("err = %v, want UnsupportedFunctionalityError", err)
+	}
+}
+
+// URL image parts are fetched and uploaded (TS fetches part.data.url).
+func TestDoGenerateFetchesURLImage(t *testing.T) {
+	prev := promptImageDownloadOptions
+	promptImageDownloadOptions = func() fileutil.DownloadOptions {
+		return fileutil.DownloadOptions{MaxSize: maxPromptImageBytes}
+	}
+	defer func() { promptImageDownloadOptions = prev }()
+	img := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A})
+	}))
+	defer img.Close()
+	fake := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A}
+	body, ct := buildTestMultipartBody(`{"id":"j"}`, fake, "image/png")
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", ct)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	model := NewLanguageModel(New(Config{APIKey: "k", BaseURL: srv.URL}), LanguageModelNanoBananaImgToImgV2)
+	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentPart{
+			types.TextContent{Text: "edit"},
+			types.FileContent{MediaType: "image/png", FileData: types.FileData{Type: types.FileDataTypeURL, URL: img.URL}},
+		},
+	}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gotBody), "PNG") {
+		t.Fatalf("image bytes not uploaded: %q", gotBody)
+	}
+}
+
+// A URL image part pointing at a loopback/private address is refused by the
+// SSRF-validated download instead of being fetched.
+func TestFetchImageURLRefusesLoopback(t *testing.T) {
+	hit := false
+	img := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		_, _ = w.Write([]byte{0x89, 'P', 'N', 'G'})
+	}))
+	defer img.Close()
+	if _, err := fetchImageURL(context.Background(), img.URL); err == nil || hit {
+		t.Fatalf("err = %v, hit = %v; want the loopback fetch refused", err, hit)
 	}
 }

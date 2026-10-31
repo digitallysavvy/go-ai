@@ -8,14 +8,18 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // pollTimeout and pollInterval mirror GladiaTranscriptionModel.doGenerate's
@@ -42,7 +46,7 @@ func (m *TranscriptionModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *TranscriptionModel) Provider() string {
-	return "gladia"
+	return "gladia.transcription"
 }
 
 // ModelID returns the model ID
@@ -98,7 +102,7 @@ func buildRequestBody(gOpts *TranscriptionModelOptions) map[string]interface{} {
 	setOptional(body, "structured_data_extraction", gOpts.StructuredDataExtraction)
 	setOptional(body, "sentiment_analysis", gOpts.SentimentAnalysis)
 	setOptional(body, "audio_to_llm", gOpts.AudioToLlm)
-	if len(gOpts.CustomMetadata) > 0 {
+	if gOpts.CustomMetadata != nil {
 		body["custom_metadata"] = gOpts.CustomMetadata
 	}
 	setOptional(body, "sentences", gOpts.Sentences)
@@ -106,12 +110,34 @@ func buildRequestBody(gOpts *TranscriptionModelOptions) map[string]interface{} {
 	setOptional(body, "punctuation_enhanced", gOpts.PunctuationEnhanced)
 
 	if gOpts.CustomVocabularyConfig != nil {
-		cfg := map[string]interface{}{"vocabulary": gOpts.CustomVocabularyConfig.Vocabulary}
+		// TS maps each entry: strings pass through; objects are rebuilt as
+		// {value, intensity, pronunciations, language} so unknown keys are
+		// dropped and null fields become undefined (omitted).
+		vocabulary := make([]interface{}, 0, len(gOpts.CustomVocabularyConfig.Vocabulary))
+		for _, item := range gOpts.CustomVocabularyConfig.Vocabulary {
+			obj, isObj := item.(map[string]interface{})
+			if !isObj {
+				vocabulary = append(vocabulary, item)
+				continue
+			}
+			entry := map[string]interface{}{"value": obj["value"]}
+			for _, k := range []string{"intensity", "pronunciations", "language"} {
+				if v, ok := obj[k]; ok && v != nil {
+					entry[k] = v
+				}
+			}
+			vocabulary = append(vocabulary, entry)
+		}
+		cfg := map[string]interface{}{"vocabulary": vocabulary}
 		setOptional(cfg, "default_intensity", gOpts.CustomVocabularyConfig.DefaultIntensity)
 		body["custom_vocabulary_config"] = cfg
 	}
 	if gOpts.CodeSwitchingConfig != nil {
-		body["code_switching_config"] = map[string]interface{}{"languages": gOpts.CodeSwitchingConfig.Languages}
+		cfg := map[string]interface{}{}
+		if gOpts.CodeSwitchingConfig.Languages != nil {
+			cfg["languages"] = gOpts.CodeSwitchingConfig.Languages
+		}
+		body["code_switching_config"] = cfg
 	}
 	if gOpts.CallbackConfig != nil {
 		cfg := map[string]interface{}{"url": gOpts.CallbackConfig.URL}
@@ -120,7 +146,7 @@ func buildRequestBody(gOpts *TranscriptionModelOptions) map[string]interface{} {
 	}
 	if gOpts.SubtitlesConfig != nil {
 		cfg := map[string]interface{}{}
-		if len(gOpts.SubtitlesConfig.Formats) > 0 {
+		if gOpts.SubtitlesConfig.Formats != nil {
 			cfg["formats"] = gOpts.SubtitlesConfig.Formats
 		}
 		setOptional(cfg, "minimum_duration", gOpts.SubtitlesConfig.MinimumDuration)
@@ -168,6 +194,26 @@ func buildRequestBody(gOpts *TranscriptionModelOptions) map[string]interface{} {
 	return body
 }
 
+// keepEmptyStringOptions restores free-form string options set to "": TS
+// `x ?? undefined` only drops null/absent, so contextPrompt, language and
+// translationConfig.model are sent even when empty.
+func keepEmptyStringOptions(body map[string]interface{}, providerOptions map[string]interface{}) {
+	raw, _ := providerOptions["gladia"].(map[string]interface{})
+	if v, ok := raw["contextPrompt"].(string); ok {
+		body["context_prompt"] = v
+	}
+	if v, ok := raw["language"].(string); ok {
+		body["language"] = v
+	}
+	if cfg, ok := raw["translationConfig"].(map[string]interface{}); ok {
+		if v, ok := cfg["model"].(string); ok {
+			if out, ok := body["translation_config"].(map[string]interface{}); ok {
+				out["model"] = v
+			}
+		}
+	}
+}
+
 func setOptional[T any](body map[string]interface{}, key string, value *T) {
 	if value != nil {
 		body[key] = *value
@@ -196,27 +242,33 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		AudioURL string `json:"audio_url"`
 	}
 	_, err = m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/upload",
-		Body:    uploadBody,
-		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaGladiaUpload),
+		Method:           http.MethodPost,
+		Path:             "/upload",
+		Body:             uploadBody,
+		Headers:          internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
 	}, &uploadResult)
 	if err != nil {
 		return nil, handleError(err)
 	}
 
 	// Step 2: start a pre-recorded transcription job.
+	if err := validateOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	body := buildRequestBody(extractOptions(opts.ProviderOptions))
+	keepEmptyStringOptions(body, opts.ProviderOptions)
 	body["audio_url"] = uploadResult.AudioURL
 
 	var initResult struct {
 		ResultURL string `json:"result_url"`
 	}
 	_, err = m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/pre-recorded",
-		Body:    body,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaGladiaInit),
+		Method:           http.MethodPost,
+		Path:             "/pre-recorded",
+		Body:             body,
+		Headers:          opts.Headers,
 	}, &initResult)
 	if err != nil {
 		return nil, handleError(err)
@@ -230,6 +282,13 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, err
 	}
 
+	// TS AISDKError TranscriptionResultEmpty (cause: the result).
+	if result, ok := raw["result"].(map[string]interface{}); !ok || result == nil {
+		empty := providererrors.NewProviderError("gladia", 0, "", "Transcription result is empty", nil)
+		empty.Data = raw
+		return nil, empty
+	}
+
 	return convertPollResult(raw, headers, currentDate), nil
 }
 
@@ -237,11 +296,20 @@ func buildUploadMultipart(opts *provider.TranscriptionOptions) (*bytes.Buffer, s
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
-	part, err := writer.CreateFormFile("audio", "audio."+gladiaAudioExtension(opts.MimeType))
+	audio := opts.Audio
+	if len(audio) == 0 && opts.AudioBase64 != "" {
+		decoded, err := types.DecodeFileDataString(opts.AudioBase64)
+		if err != nil {
+			return nil, "", fmt.Errorf("gladia: failed to decode base64 audio: %w", err)
+		}
+		audio = decoded
+	}
+
+	part, err := providerutils.CreateTypedFormFile(writer, "audio", "audio."+gladiaAudioExtension(opts.MimeType), opts.MimeType)
 	if err != nil {
 		return nil, "", err
 	}
-	if _, err := part.Write(opts.Audio); err != nil {
+	if _, err := part.Write(audio); err != nil {
 		return nil, "", err
 	}
 	if err := writer.Close(); err != nil {
@@ -251,22 +319,7 @@ func buildUploadMultipart(opts *provider.TranscriptionOptions) (*bytes.Buffer, s
 }
 
 func gladiaAudioExtension(mimeType string) string {
-	switch mimeType {
-	case "audio/mpeg", "audio/mp3":
-		return "mp3"
-	case "audio/wav", "audio/wave", "audio/x-wav":
-		return "wav"
-	case "audio/webm":
-		return "webm"
-	case "audio/mp4", "audio/m4a":
-		return "m4a"
-	case "audio/flac":
-		return "flac"
-	case "audio/ogg":
-		return "ogg"
-	default:
-		return "wav"
-	}
+	return providerutils.MediaTypeToExtension(mimeType)
 }
 
 // pollResult polls resultURL until the job reaches status "done" or "error",
@@ -286,13 +339,21 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 		default:
 		}
 		if time.Since(start) > pollTimeout {
-			return nil, nil, fmt.Errorf("gladia: transcription job polling timed out")
+			// TS AISDKError TranscriptionJobPollingTimedOut.
+			return nil, nil, providererrors.NewProviderError("gladia", 0, "TranscriptionJobPollingTimedOut", "Transcription job polling timed out", nil)
 		}
 
-		var raw map[string]interface{}
-		result, err := fileutil.PollJSON(ctx, resultURL, pollOpts, &raw)
+		result, err := fileutil.DownloadWithMetadata(ctx, resultURL, pollOpts)
 		if err != nil {
 			return nil, nil, handleError(err)
+		}
+		// TS createJsonResponseHandler(gladiaTranscriptionResultResponseSchema).
+		if err := providerutils.MediaResponseValidator("gladia.transcription", providerutils.SchemaGladiaResult)(http.StatusOK, http.Header(result.Headers), result.Data); err != nil {
+			return nil, nil, err
+		}
+		var raw map[string]interface{}
+		if err := json.Unmarshal(result.Data, &raw); err != nil {
+			return nil, nil, fmt.Errorf("gladia: failed to decode poll response: %w", err)
 		}
 
 		status, _ := raw["status"].(string)
@@ -300,7 +361,10 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 		case "done":
 			return raw, flattenHeaders(result.Headers), nil
 		case "error":
-			return nil, nil, fmt.Errorf("gladia: transcription job failed: %v", raw["error_code"])
+			// TS AISDKError TranscriptionJobFailed (cause: the result).
+			failure := providererrors.NewProviderError("gladia", 0, "", "Transcription job failed", nil)
+			failure.Data = raw
+			return nil, nil, failure
 		}
 
 		select {
@@ -311,14 +375,14 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 	}
 }
 
-// pollHeaders withholds the API key and caller headers unless the
-// response-supplied result URL is same-origin with the configured API (TS
-// getFromApi credentialedOrigin).
+// pollHeaders is TS getFromApi({ credentialedOrigin }): caller and provider
+// headers (the API key) are withheld unless the response-supplied URL is
+// same-origin with the configured API; the user agent is still sent.
 func (m *TranscriptionModel) pollHeaders(resultURL, trustedOrigin string, headers map[string]string) map[string]string {
 	if !fileutil.IsSameOrigin(resultURL, trustedOrigin) {
-		return nil
+		return version.WithUserAgentSuffix(nil, version.ProviderUserAgent("gladia"))
 	}
-	return internalhttp.MergeHeaders(map[string]string{"x-gladia-key": m.provider.config.APIKey}, headers)
+	return version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{"x-gladia-key": providerutils.APIKeyOrEnv(m.provider.config.APIKey, "GLADIA_API_KEY")}, m.provider.config.Headers, headers), version.ProviderUserAgent("gladia"))
 }
 
 // flattenHeaders joins multi-value HTTP headers into single strings, matching
@@ -366,7 +430,7 @@ func convertPollResult(raw map[string]interface{}, headers map[string]string, cu
 				Headers:   headers,
 				Body:      raw,
 			},
-			ProviderMetadata: map[string]interface{}{"gladia": raw},
+			ProviderMetadata: map[string]interface{}{"gladia": gladiaSchemaResult(raw)},
 		}
 	}
 
@@ -400,7 +464,7 @@ func convertPollResult(raw map[string]interface{}, headers map[string]string, cu
 		// preserving per-utterance speaker/channel/confidence/words/language
 		// and diarization info that the AI SDK's `segments` shape can't
 		// represent (matches TS: providerMetadata: { gladia: transcriptionResult }).
-		ProviderMetadata: map[string]interface{}{"gladia": raw},
+		ProviderMetadata: map[string]interface{}{"gladia": gladiaSchemaResult(raw)},
 		Response: &types.ResponseMetadata{
 			Timestamp: currentDate,
 			// Gladia's model ID is not selectable in the pre-recorded API;
@@ -419,18 +483,21 @@ func convertPollResult(raw map[string]interface{}, headers map[string]string, cu
 // gladia-transcription-model.ts uses the same gladiaFailedResponseHandler for
 // both the upload/init requests and the result_url polling GET).
 func handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		message, code := parseGladiaErrorBody(statusErr.Body)
-		return providererrors.NewProviderError("gladia", statusErr.StatusCode, code, message, err)
+		message, code := parseGladiaErrorBody(statusErr.StatusCode, statusErr.Body)
+		return providererrors.NewProviderErrorFromResponse("gladia", 0, code, message, err)
 	}
 
 	var downloadErr *providererrors.DownloadError
-	if errors.As(err, &downloadErr) {
-		message, code := parseGladiaErrorBody(downloadErr.Body)
-		if message == "" {
-			message = downloadErr.Error()
-		}
+	if errors.As(err, &downloadErr) && downloadErr.StatusCode != 0 {
+		// A handler message is final, an empty one included (TS APICallError
+		// keeps ""). A download failure with no status never reached an HTTP
+		// response and propagates unchanged below.
+		message, code := parseGladiaErrorBody(downloadErr.StatusCode, downloadErr.Body)
 		providerErr := providererrors.NewProviderError("gladia", downloadErr.StatusCode, code, message, err)
 		providerErr.ResponseHeaders = flattenHeaders(downloadErr.Headers)
 		if len(downloadErr.Body) > 0 {
@@ -439,23 +506,76 @@ func handleError(err error) error {
 		return providerErr
 	}
 
-	return providererrors.NewProviderError("gladia", 0, "", err.Error(), err)
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return err
 }
 
-// parseGladiaErrorBody decodes Gladia's `{"error":{"message","code"}}` error
-// envelope. It returns the raw body as the message (and an empty code) when
-// body is empty or does not match the envelope.
-func parseGladiaErrorBody(body []byte) (message string, code string) {
-	message = string(body)
+// parseGladiaErrorBody mirrors TS gladiaFailedResponseHandler: a body that
+// matches {"error":{"message":string,"code":number}} gives that message
+// (even an empty one) and the code; anything else (empty, not JSON, a missing
+// or wrongly typed field) gives the HTTP status text as the message.
+func parseGladiaErrorBody(statusCode int, body []byte) (message string, code string) {
 	var payload struct {
-		Error struct {
-			Message string `json:"message"`
-			Code    int    `json:"code"`
+		Error *struct {
+			Message *string  `json:"message"`
+			Code    *float64 `json:"code"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(body, &payload); err == nil && payload.Error.Message != "" {
-		message = payload.Error.Message
-		code = fmt.Sprintf("%d", payload.Error.Code)
+	if err := json.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
+		payload.Error.Message != nil && payload.Error.Code != nil {
+		return *payload.Error.Message, strconv.FormatFloat(*payload.Error.Code, 'f', -1, 64)
 	}
-	return message, code
+	return http.StatusText(statusCode), ""
+}
+
+// gladiaSchemaResult applies the TS result schema (zod strips unknown keys):
+// providerMetadata.gladia holds the parsed result, not the raw response.
+func gladiaSchemaResult(raw map[string]interface{}) map[string]interface{} {
+	pick := func(m map[string]interface{}, keys ...string) map[string]interface{} {
+		out := map[string]interface{}{}
+		for _, k := range keys {
+			if v, ok := m[k]; ok {
+				out[k] = v
+			}
+		}
+		return out
+	}
+	out := pick(raw, "status")
+	res, ok := raw["result"].(map[string]interface{})
+	if !ok {
+		if v, present := raw["result"]; present && v == nil {
+			out["result"] = nil
+		}
+		return out
+	}
+	r := map[string]interface{}{}
+	if md, ok := res["metadata"].(map[string]interface{}); ok {
+		r["metadata"] = pick(md, "audio_duration")
+	}
+	if tr, ok := res["transcription"].(map[string]interface{}); ok {
+		t := pick(tr, "full_transcript", "languages")
+		if us, ok := tr["utterances"].([]interface{}); ok {
+			utts := make([]interface{}, 0, len(us))
+			for _, u := range us {
+				um, _ := u.(map[string]interface{})
+				item := pick(um, "start", "end", "text", "speaker", "confidence", "language")
+				if ws, ok := um["words"].([]interface{}); ok {
+					words := make([]interface{}, 0, len(ws))
+					for _, w := range ws {
+						wm, _ := w.(map[string]interface{})
+						words = append(words, pick(wm, "word", "start", "end", "confidence"))
+					}
+					item["words"] = words
+				} else if v, present := um["words"]; present && v == nil {
+					item["words"] = nil
+				}
+				utts = append(utts, item)
+			}
+			t["utterances"] = utts
+		}
+		r["transcription"] = t
+	}
+	out["result"] = r
+	return out
 }

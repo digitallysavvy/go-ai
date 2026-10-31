@@ -27,3 +27,10 @@ func TestClassifyDiskLog(t *testing.T) {
 		})
 	}
 }
+
+func TestClassifyDiskLog_JSTrimBOM(t *testing.T) {
+	raw := "{\"type\":\"x\"}\n\ufeff{\"type\":\"finish\"}\n"
+	if got := ClassifyDiskLog(&raw); got != DiskLogReplay {
+		t.Fatalf("got %q, want %q (JS trim strips U+FEFF)", got, DiskLogReplay)
+	}
+}

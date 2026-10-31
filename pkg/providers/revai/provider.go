@@ -6,7 +6,8 @@
 package revai
 
 import (
-	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -21,6 +22,10 @@ type Config struct {
 
 	// BaseURL is the base URL for the Rev.ai API (optional).
 	BaseURL string
+
+	// Headers are custom HTTP headers sent with every request (TS provider
+	// settings `headers`).
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // Provider represents the Rev.ai provider.
@@ -40,9 +45,13 @@ func New(config Config) *Provider {
 
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: config.BaseURL,
-		Headers: version.WithUserAgentSuffix(map[string]string{
+		Headers: version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
 			"Authorization": "Bearer " + config.APIKey,
-		}, version.ProviderUserAgent("revai")),
+		}, config.Headers), version.ProviderUserAgent("revai")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(config.Headers, config.APIKey, "REVAI_API_KEY", "Rev.ai", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{
@@ -63,22 +72,22 @@ func (p *Provider) Name() string {
 
 // LanguageModel returns a language model (not supported by Rev.ai).
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return nil, fmt.Errorf("revai does not provide language models")
+	return nil, &providererrors.NoSuchModelError{ModelID: "unknown", ModelType: "languageModel", Message: "Rev.ai does not provide language models"}
 }
 
 // EmbeddingModel returns an embedding model (not supported by Rev.ai).
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("revai does not provide embedding models")
+	return nil, &providererrors.NoSuchModelError{ModelID: "unknown", ModelType: "embeddingModel", Message: "Rev.ai does not provide text embedding models"}
 }
 
 // ImageModel returns an image model (not supported by Rev.ai).
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("revai does not provide image models")
+	return nil, &providererrors.NoSuchModelError{ModelID: "unknown", ModelType: "imageModel", Message: "Rev.ai does not provide image models"}
 }
 
 // SpeechModel returns a speech model (not supported by Rev.ai).
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("revai does not provide speech synthesis models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a speech-to-text model.
@@ -88,5 +97,5 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 
 // RerankingModel returns a reranking model (not supported by Rev.ai).
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("revai does not provide reranking models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }

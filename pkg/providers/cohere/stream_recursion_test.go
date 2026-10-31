@@ -50,7 +50,7 @@ func runCohereStreamRecursionChild() {
 		sb.WriteString(`event: message-start` + "\n" + `data: {"type":"message-start"}` + "\n\n")
 	}
 	sb.WriteString(`event: content-start` + "\n" +
-		`data: {"type":"content-start","index":0,"delta":{"message":{"content":{"type":"text"}}}}` + "\n\n")
+		`data: {"type":"content-start","index":0,"delta":{"message":{"content":{"type":"text","text":""}}}}` + "\n\n")
 	sb.WriteString(`event: content-delta` + "\n" +
 		`data: {"type":"content-delta","index":0,"delta":{"message":{"content":{"text":"hello"}}}}` + "\n\n")
 
@@ -58,6 +58,9 @@ func runCohereStreamRecursionChild() {
 	// This call used to recurse once per "message-start" event -- 300,000
 	// deep -- before reaching the real text chunk.
 	chunk, err := s.Next()
+	if err == nil && chunk != nil && chunk.Type == provider.ChunkTypeTextStart {
+		chunk, err = s.Next()
+	}
 	if err != nil {
 		fmt.Println("BF5_CHILD_FAIL: unexpected error:", err)
 		return

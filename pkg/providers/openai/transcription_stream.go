@@ -43,23 +43,30 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		}
 	}
 
+	if err := validateTranscriptionProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	streamOpts := TranscriptionStreamOpenAIOptions(opts.ProviderOptions)
 
 	var warnings []types.Warning
 	if streamOpts.HasInclude {
 		warnings = append(warnings, UnsupportedStreamingTranscriptionWarning("include"))
 	}
-	if streamOpts.Prompt != "" {
+	if streamOpts.HasPrompt {
 		warnings = append(warnings, UnsupportedStreamingTranscriptionWarning("prompt"))
 	}
 	if streamOpts.HasTemperature {
 		warnings = append(warnings, UnsupportedStreamingTranscriptionWarning("temperature"))
 	}
-	if len(streamOpts.TimestampGranularities) > 0 {
+	if streamOpts.HasTimestampGranularities {
 		warnings = append(warnings, UnsupportedStreamingTranscriptionWarning("timestampGranularities"))
 	}
 
-	headers := internalhttp.MergeHeaders(m.baseWSHeaders(), opts.Headers)
+	baseHeaders, err := m.baseWSHeaders()
+	if err != nil {
+		return nil, err
+	}
+	headers := internalhttp.MergeHeaders(baseHeaders, opts.Headers)
 	sessionUpdate := BuildOpenAIRealtimeTranscriptionSession(m.modelID, opts.InputAudioFormat, streamOpts)
 	wsURL := realtimeTranscriptionWebSocketURL(m.provider.config.BaseURL)
 
@@ -91,8 +98,8 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 // mirroring TS openai-transcription-model.ts's doStream, which reuses
 // `this.config.headers()` -- the same tagged getHeaders() closure used for
 // REST calls -- rather than rebuilding an untagged header set.
-func (m *TranscriptionModel) baseWSHeaders() map[string]string {
-	return m.provider.client.Headers()
+func (m *TranscriptionModel) baseWSHeaders() (map[string]string, error) {
+	return m.provider.client.RequestHeaders()
 }
 
 func UnsupportedStreamingTranscriptionWarning(option string) types.Warning {
@@ -121,7 +128,10 @@ func BuildOpenAIRealtimeTranscriptionSession(modelID string, format provider.Aud
 	if opts.Language != "" {
 		transcription["language"] = opts.Language
 	}
-	if opts.StreamingDelay != nil {
+	// TS: streaming.delay is an enum string (minimal|low|medium|high|xhigh).
+	if opts.StreamingDelayLevel != "" {
+		transcription["delay"] = opts.StreamingDelayLevel
+	} else if opts.StreamingDelay != nil {
 		transcription["delay"] = *opts.StreamingDelay
 	}
 
@@ -135,7 +145,7 @@ func BuildOpenAIRealtimeTranscriptionSession(modelID string, format provider.Aud
 			},
 		},
 	}
-	if len(opts.StreamingInclude) > 0 {
+	if opts.StreamingInclude != nil {
 		session["include"] = opts.StreamingInclude
 	}
 	return map[string]interface{}{"type": "session.update", "session": session}
@@ -146,12 +156,17 @@ func BuildOpenAIRealtimeTranscriptionSession(modelID string, format provider.Aud
 // warn when set during streaming.
 type TranscriptionStreamOpenAIOptionsValue struct {
 	Language               string
-	StreamingDelay         *int
+	StreamingDelay         *int // Deprecated: TS streaming.delay is a string; use StreamingDelayLevel.
+	StreamingDelayLevel    string
 	StreamingInclude       []string
 	HasInclude             bool
 	Prompt                 string
 	HasTemperature         bool
 	TimestampGranularities []string
+	// HasPrompt and HasTimestampGranularities mirror TS's `!= null` checks on
+	// the raw options: an empty prompt or an empty array still warns.
+	HasPrompt                 bool
+	HasTimestampGranularities bool
 }
 
 func TranscriptionStreamOpenAIOptions(providerOptions map[string]interface{}) TranscriptionStreamOpenAIOptionsValue {
@@ -169,12 +184,10 @@ func TranscriptionStreamOpenAIOptions(providerOptions map[string]interface{}) Tr
 	if v, ok := openaiOpts["prompt"].(string); ok {
 		result.Prompt = v
 	}
-	if _, ok := openaiOpts["temperature"]; ok {
-		result.HasTemperature = true
-	}
-	if v, ok := openaiOpts["include"].([]interface{}); ok && len(v) > 0 {
-		result.HasInclude = true
-	}
+	result.HasPrompt = openaiOpts["prompt"] != nil
+	result.HasTemperature = openaiOpts["temperature"] != nil
+	result.HasInclude = openaiOpts["include"] != nil
+	result.HasTimestampGranularities = openaiOpts["timestampGranularities"] != nil
 	if v, ok := openaiOpts["timestampGranularities"].([]interface{}); ok {
 		for _, item := range v {
 			if s, ok := item.(string); ok {
@@ -183,11 +196,14 @@ func TranscriptionStreamOpenAIOptions(providerOptions map[string]interface{}) Tr
 		}
 	}
 	if streaming, ok := openaiOpts["streaming"].(map[string]interface{}); ok {
-		if v, ok := numericValue(streaming["delay"]); ok {
+		if level, ok := streaming["delay"].(string); ok {
+			result.StreamingDelayLevel = level
+		} else if v, ok := numericValue(streaming["delay"]); ok {
 			d := int(v)
 			result.StreamingDelay = &d
 		}
 		if v, ok := streaming["include"].([]interface{}); ok {
+			result.StreamingInclude = []string{}
 			for _, item := range v {
 				if s, ok := item.(string); ok {
 					result.StreamingInclude = append(result.StreamingInclude, s)

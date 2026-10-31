@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 	"strings"
 	"testing"
 	"time"
@@ -44,8 +46,8 @@ func TestGenerateObject_AppendsAIUserAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if capturedHeaders["user-agent"] != "ai/0.5.3" {
-		t.Fatalf("user-agent = %q, want ai/0.5.3", capturedHeaders["user-agent"])
+	if capturedHeaders["user-agent"] != "ai/"+sdkversion.Version {
+		t.Fatalf("user-agent = %q, want ai/<sdk version>", capturedHeaders["user-agent"])
 	}
 }
 
@@ -522,24 +524,29 @@ func TestGenerateObject_CrossModeValidation(t *testing.T) {
 	}
 }
 
-func TestGenerateObject_StructuredOutputUnsupported(t *testing.T) {
+// TS generateObject has no capability check: the call always carries
+// responseFormat {type: json, schema} and the provider decides how to honor it.
+func TestGenerateObject_ModelWithoutStructuredOutputIsStillCalled(t *testing.T) {
 	t.Parallel()
 
-	model := &testutil.MockLanguageModel{StructuredSupport: false}
-
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: false,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: `{"name":"a"}`, FinishReason: types.FinishReasonStop}, nil
+		},
+	}
 	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
 
-	_, err := GenerateObject(context.Background(), GenerateObjectOptions{
-		Model:  model,
-		Prompt: "Generate",
-		Schema: testSchema,
-	})
-
-	if err == nil {
-		t.Fatal("expected error for unsupported structured output")
-	}
-	if err.Error() != "model does not support structured output" {
+	result, err := GenerateObject(context.Background(), GenerateObjectOptions{Model: model, Prompt: "Generate", Schema: testSchema})
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if m, ok := result.Object.(map[string]interface{}); !ok || m["name"] != "a" {
+		t.Fatalf("object = %#v", result.Object)
+	}
+	rf := model.GenerateCalls[0].ResponseFormat
+	if rf == nil || rf.Type != "json" || rf.Schema == nil {
+		t.Fatalf("response format = %#v, want json with schema", rf)
 	}
 }
 
@@ -701,19 +708,24 @@ func TestGenerateObject_NoTextReturnsNoObjectGeneratedError(t *testing.T) {
 	}
 
 	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+	stepEnds := 0
 	_, err := GenerateObject(context.Background(), GenerateObjectOptions{
-		Model:  model,
-		Prompt: "Generate",
-		Schema: testSchema,
+		Model:     model,
+		Prompt:    "Generate",
+		Schema:    testSchema,
+		OnStepEnd: func(context.Context, ObjectOnStepFinishEvent) { stepEnds++ },
 	})
 	if err == nil {
 		t.Fatal("expected error")
+	}
+	if stepEnds != 0 {
+		t.Fatalf("step end fired %d times before the no-response error; TS errors first", stepEnds)
 	}
 	var noObjErr *NoObjectGeneratedError
 	if !errors.As(err, &noObjErr) {
 		t.Fatalf("expected NoObjectGeneratedError, got %T", err)
 	}
-	if noObjErr.Message != "No object generated: could not parse the response." {
+	if noObjErr.Message != "No object generated: the model did not return a response." {
 		t.Fatalf("message = %q", noObjErr.Message)
 	}
 	if noObjErr.Response == nil || noObjErr.Response.ID != "resp_empty" {
@@ -1072,6 +1084,31 @@ func TestStreamObject_Basic(t *testing.T) {
 	}
 }
 
+func TestStreamObject_ModelWithoutStructuredOutputIsStillCalled(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: false,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"result": "streamed"}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	result, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:  model,
+		Prompt: "Stream object",
+		Schema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"}),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Object == nil {
+		t.Error("expected non-nil object")
+	}
+}
+
 // TestStreamObject_PanickingOnChunkDoesNotAbortStream ports TS's callback
 // exception containment (audit row 9a37469 / WG5): a panicking OnChunk must
 // not kill StreamObject's stream-processing loop.
@@ -1107,24 +1144,24 @@ func TestStreamObject_PanickingOnChunkDoesNotAbortStream(t *testing.T) {
 	}
 }
 
-// TestStreamObject_ErrorChunkIsTerminal ports TS stream-object.ts's
-// TransformStream error handling (audit row b181020 / WG5): a provider error
-// part must stop consumption immediately (no later chunks processed) and
-// report finishReason "error" rather than whatever finish reason the model
-// sent (or omitted).
-func TestStreamObject_ErrorChunkIsTerminal(t *testing.T) {
+// TestStreamObject_ErrorChunkKeepsReading ports TS stream-object.ts's
+// error-part handling (b181020): the first error part is the call's error
+// and makes the finish reason "error", but reading continues, so later text
+// still updates the partial object, a later finish part still supplies the
+// usage, and every error part reaches onError.
+func TestStreamObject_ErrorChunkKeepsReading(t *testing.T) {
 	t.Parallel()
+	threeTokens := int64(3)
 
 	model := &testutil.MockLanguageModel{
 		StructuredSupport: true,
 		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
 			return testutil.NewMockTextStream([]provider.StreamChunk{
-				{Type: provider.ChunkTypeText, Text: `{"result": "partial"`},
+				{Type: provider.ChunkTypeText, Text: `{"result": "par`},
 				{Type: provider.ChunkTypeError, Text: "provider exploded"},
-				// These must never be observed: the stream is terminal at the
-				// error part above.
-				{Type: provider.ChunkTypeText, Text: `"}`},
-				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+				{Type: provider.ChunkTypeText, Text: `tial"}`},
+				{Type: provider.ChunkTypeError, Text: "second error"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: &types.Usage{InputTokens: &threeTokens}},
 			}), nil
 		},
 	}
@@ -1132,16 +1169,23 @@ func TestStreamObject_ErrorChunkIsTerminal(t *testing.T) {
 	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
 
 	var finishEvent *ObjectOnFinishEvent
+	var partials []interface{}
+	var onErrors []error
 	_, err := StreamObject(context.Background(), StreamObjectOptions{
-		Model:  model,
-		Prompt: "Stream object",
-		Schema: testSchema,
+		Model:   model,
+		Prompt:  "Stream object",
+		Schema:  testSchema,
+		OnChunk: func(p interface{}) { partials = append(partials, p) },
+		OnError: func(_ context.Context, e error) { onErrors = append(onErrors, e) },
 		OnEnd: func(ctx context.Context, e ObjectOnFinishEvent) {
 			finishEvent = &e
 		},
 	})
 	if err == nil || !strings.Contains(err.Error(), "provider exploded") {
-		t.Fatalf("StreamObject() error = %v, want it to wrap the provider error part", err)
+		t.Fatalf("StreamObject() error = %v, want the first provider error part", err)
+	}
+	if len(onErrors) != 2 {
+		t.Fatalf("onError calls = %d, want one per error part", len(onErrors))
 	}
 	if finishEvent == nil {
 		t.Fatal("OnEnd was not called")
@@ -1149,8 +1193,15 @@ func TestStreamObject_ErrorChunkIsTerminal(t *testing.T) {
 	if finishEvent.FinishReason != types.FinishReasonError {
 		t.Fatalf("FinishReason = %q, want error", finishEvent.FinishReason)
 	}
-	if finishEvent.Object != nil {
-		t.Fatalf("Object = %#v, want nil after an error part", finishEvent.Object)
+	if finishEvent.Object != nil || !strings.Contains(fmt.Sprint(finishEvent.Error), "provider exploded") {
+		t.Fatalf("Object = %#v, Error = %v, want nil and the first error", finishEvent.Object, finishEvent.Error)
+	}
+	if finishEvent.Usage.InputTokens == nil || *finishEvent.Usage.InputTokens != 3 {
+		t.Fatalf("Usage = %#v, want the finish part's usage", finishEvent.Usage)
+	}
+	last, _ := partials[len(partials)-1].(map[string]interface{})
+	if last["result"] != "partial" {
+		t.Fatalf("last partial = %#v, want the text after the error part included", partials[len(partials)-1])
 	}
 }
 
@@ -1351,11 +1402,12 @@ func TestGenerateObject_RetriesDoGenerate(t *testing.T) {
 	}
 	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
 
+	retries := 2
 	result, err := GenerateObject(context.Background(), GenerateObjectOptions{
 		Model:      model,
 		Prompt:     "retry",
 		Schema:     testSchema,
-		MaxRetries: 2,
+		MaxRetries: &retries,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2102,5 +2154,182 @@ func TestGenerateObject_RawText(t *testing.T) {
 
 	if expected.(map[string]interface{})["test"] != actual.(map[string]interface{})["test"] {
 		t.Error("text content mismatch")
+	}
+}
+
+func TestObjectCallsRejectMissingToolResults(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			called = true
+			return &types.GenerateResult{Text: `{}`, FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		{Role: types.RoleAssistant, Content: []types.ContentPart{types.ToolCallContent{ToolCallID: "c1", ToolName: "t", Input: "{}"}}},
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "again"}}},
+	}
+	s := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+	var missing *types.MissingToolResultsError
+	if _, err := GenerateObject(context.Background(), GenerateObjectOptions{Model: model, Messages: msgs, Schema: s}); !errors.As(err, &missing) {
+		t.Fatalf("GenerateObject err = %v, want MissingToolResultsError", err)
+	}
+	if _, err := StreamObject(context.Background(), StreamObjectOptions{Model: model, Messages: msgs, Schema: s}); !errors.As(err, &missing) {
+		t.Fatalf("StreamObject err = %v, want MissingToolResultsError", err)
+	}
+	if called {
+		t.Fatal("model must not be called")
+	}
+}
+
+func objectFileMessages() []types.Message {
+	return []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentPart{types.FileContent{
+			MediaType: "image/png",
+			FileData:  types.FileData{Type: types.FileDataTypeURL, URL: "https://example.test/cat.png", MediaType: "image/png"},
+		}},
+	}}
+}
+
+func TestObjectCallsDownloadUnsupportedFileURLs(t *testing.T) {
+	s := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+	check := func(t *testing.T, opts *provider.GenerateOptions, wantURL bool) {
+		t.Helper()
+		file, ok := opts.Prompt.Messages[0].Content[0].(types.FileContent)
+		if !ok {
+			t.Fatalf("content = %T", opts.Prompt.Messages[0].Content[0])
+		}
+		if isURL := file.FileData.Type == types.FileDataTypeURL; isURL != wantURL {
+			t.Fatalf("file data type = %v, want url=%v", file.FileData.Type, wantURL)
+		}
+	}
+	download := func(ctx context.Context, reqs []DownloadRequest) ([]*DownloadResult, error) {
+		out := make([]*DownloadResult, len(reqs))
+		for i, r := range reqs {
+			if !r.IsURLSupportedByModel {
+				out[i] = &DownloadResult{Data: []byte("png"), MediaType: "image/png"}
+			}
+		}
+		return out, nil
+	}
+	for _, tc := range []struct {
+		name      string
+		supported map[string][]string
+		wantURL   bool
+	}{
+		{"unsupported is inlined", nil, false},
+		{"supported stays a URL", map[string][]string{"image/*": {`^https://example\.test/.+`}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var seen int
+			model := &supportedURLMockModel{
+				MockLanguageModel: &testutil.MockLanguageModel{
+					StructuredSupport: true,
+					DoGenerateFunc: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+						seen++
+						check(t, opts, tc.wantURL)
+						return &types.GenerateResult{Text: `{}`, FinishReason: types.FinishReasonStop}, nil
+					},
+					DoStreamFunc: func(_ context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+						seen++
+						check(t, opts, tc.wantURL)
+						return testutil.NewMockTextStream([]provider.StreamChunk{
+							{Type: provider.ChunkTypeText, Text: `{}`},
+							{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+						}), nil
+					},
+				},
+				supported: tc.supported,
+			}
+			if _, err := GenerateObject(context.Background(), GenerateObjectOptions{Model: model, Messages: objectFileMessages(), Schema: s, ExperimentalDownload: download}); err != nil {
+				t.Fatalf("GenerateObject: %v", err)
+			}
+			_, err := StreamObject(context.Background(), StreamObjectOptions{Model: model, Messages: objectFileMessages(), Schema: s, ExperimentalDownload: download})
+			if err != nil {
+				t.Fatalf("StreamObject: %v", err)
+			}
+			if seen != 2 {
+				t.Fatalf("model calls = %d, want 2", seen)
+			}
+		})
+	}
+}
+
+// TS array/enum output strategies reject a non-object root as a schema
+// mismatch (TypeValidationError cause), not as a JSON parse failure.
+func TestGenerateObject_NonObjectRootIsSchemaMismatch(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		mode  ObjectOutputMode
+		text  string
+		cause string
+	}{
+		{"array", ObjectModeArray, `[1,2]`, "value must be an object that contains an array of elements"},
+		{"enum", ObjectModeEnum, `["happy"]`, `value must be an object that contains a string in the "result" property.`},
+		{"enum-not-member", ObjectModeEnum, `{"result":"angry"}`, "value must be a string in the enum"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &testutil.MockLanguageModel{
+				StructuredSupport: true,
+				DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+					return &types.GenerateResult{Text: tc.text, FinishReason: types.FinishReasonStop}, nil
+				},
+			}
+			o := GenerateObjectOptions{Model: model, Prompt: "x", OutputMode: tc.mode}
+			if tc.mode == ObjectModeEnum {
+				o.EnumValues = []string{"happy", "sad"}
+			} else {
+				o.Schema = schema.NewSimpleJSONSchema(map[string]interface{}{"type": "string"})
+			}
+			_, err := GenerateObject(context.Background(), o)
+			var noObjErr *NoObjectGeneratedError
+			if !errors.As(err, &noObjErr) {
+				t.Fatalf("expected NoObjectGeneratedError, got %v", err)
+			}
+			if !strings.Contains(noObjErr.Message, "response did not match schema") {
+				t.Errorf("message = %q", noObjErr.Message)
+			}
+			if !strings.Contains(noObjErr.Cause.Error(), tc.cause) {
+				t.Errorf("cause = %q, want %q", noObjErr.Cause.Error(), tc.cause)
+			}
+		})
+	}
+}
+
+// TS parseAndValidateObjectResultWithRepair only invokes repairText for a
+// JSONParseError / TypeValidationError cause, not when no text was returned.
+func TestGenerateObject_RepairTextNotCalledWithoutTextPart(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	_, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model:  model,
+		Prompt: "x",
+		Schema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"}),
+		RepairText: func(context.Context, string, error) (*string, error) {
+			called = true
+			s := `{}`
+			return &s, nil
+		},
+	})
+	var noObjErr *NoObjectGeneratedError
+	if !errors.As(err, &noObjErr) || !strings.Contains(noObjErr.Message, "did not return a response") {
+		t.Fatalf("err = %v", err)
+	}
+	if called {
+		t.Fatal("repairText must not be called when the model returned no text")
 	}
 }

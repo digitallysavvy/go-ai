@@ -2,8 +2,8 @@ package moonshot
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -61,7 +61,7 @@ func convertToMoonshotChatMessages(modelID string, messages []types.Message, res
 				Message: "Moonshot AI Partial Mode requires `partial: true` on an assistant message.",
 			}
 		}
-		if msgOpts != nil && len(msgOpts.Tools) > 0 && msg.Role != types.RoleSystem {
+		if msgOpts != nil && msgOpts.HasTools && msg.Role != types.RoleSystem {
 			return nil, nil, &providererrors.InvalidArgumentError{
 				Field:   "prompt",
 				Message: "Moonshot dynamic tools must be configured on a system message.",
@@ -159,7 +159,8 @@ func convertToMoonshotChatMessages(modelID string, messages []types.Message, res
 				}
 			}
 
-			hasToolCalls := len(msg.ToolCalls) > 0
+			toolCalls := providerutils.AssistantToolCalls(msg)
+			hasToolCalls := len(toolCalls) > 0
 			assistantMsg := map[string]interface{}{"role": "assistant"}
 			if hasToolCalls {
 				if text.Len() > 0 {
@@ -180,7 +181,7 @@ func convertToMoonshotChatMessages(modelID string, messages []types.Message, res
 				assistantMsg["reasoning_content"] = reasoning.String()
 			}
 			if hasToolCalls {
-				assistantMsg["tool_calls"] = moonshotWireToolCalls(msg.ToolCalls)
+				assistantMsg["tool_calls"] = moonshotWireToolCalls(toolCalls)
 			}
 			out = append(out, assistantMsg)
 
@@ -227,7 +228,7 @@ func moonshotWireToolCalls(toolCalls []types.ToolCall) []map[string]interface{} 
 			if args == nil {
 				args = map[string]interface{}{}
 			}
-			if b, err := json.Marshal(args); err == nil {
+			if b, err := jsonstr.Marshal(args); err == nil {
 				arguments = string(b)
 			}
 		}
@@ -244,32 +245,7 @@ func moonshotWireToolCalls(toolCalls []types.ToolCall) []map[string]interface{} 
 }
 
 func extractMoonshotToolResultText(tr types.ToolResultContent) string {
-	if tr.Output != nil {
-		switch tr.Output.Type {
-		case types.ToolResultOutputText, types.ToolResultOutputErrorText:
-			if v, ok := tr.Output.Value.(string); ok {
-				return v
-			}
-		case types.ToolResultOutputExecutionDenied:
-			if tr.Output.Reason != "" {
-				return tr.Output.Reason
-			}
-			return "Tool call execution denied."
-		case types.ToolResultOutputJSON, types.ToolResultOutputContent, types.ToolResultOutputErrorJSON:
-			if b, err := json.Marshal(tr.Output.Value); err == nil {
-				return string(b)
-			}
-		}
-	}
-	if tr.Result != nil {
-		if s, ok := tr.Result.(string); ok {
-			return s
-		}
-		if b, err := json.Marshal(tr.Result); err == nil {
-			return string(b)
-		}
-	}
-	return tr.Error
+	return prompt.ToolResultText(tr)
 }
 
 // topLevelMoonshotMediaType returns the portion of a media type before "/",
@@ -321,7 +297,14 @@ func convertMoonshotFilePart(fc types.FileContent) (map[string]interface{}, erro
 				Functionality: "file part media type " + normalized.MediaType,
 			}
 		}
-		ref, err := providerutils.ResolveProviderReference(normalized.FileData.Reference, "moonshot")
+		// TS resolves the "moonshotai" key; "moonshot" is accepted as the Go
+		// provider's own name.
+		ref, err := providerutils.ResolveProviderReference(normalized.FileData.Reference, "moonshotai")
+		if err != nil {
+			if alt, ok := normalized.FileData.Reference["moonshot"]; ok {
+				ref, err = alt, nil
+			}
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -383,6 +366,15 @@ func convertMoonshotFilePart(fc types.FileContent) (map[string]interface{}, erro
 // (e.g. an unresolved "image/*" wildcard from supportedUrls negotiation).
 func formatMoonshotMediaURL(fd types.FileData, supportedMediaTypes []string, topLevelMediaType string) (string, error) {
 	mediaType := fd.MediaType
+	if fd.Type == types.FileDataTypeData {
+		// TS resolveFullMediaType: a bare or wildcard type on inline bytes
+		// is sniffed from the bytes.
+		resolved, err := prompt.ResolveFullMediaType(mediaType, fd.Data, true)
+		if err != nil {
+			return "", err
+		}
+		mediaType = resolved
+	}
 	allowed := containsMoonshotMediaType(supportedMediaTypes, mediaType)
 	if !allowed && fd.Type == types.FileDataTypeURL && (mediaType == topLevelMediaType || mediaType == topLevelMediaType+"/*") {
 		allowed = true

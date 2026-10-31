@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 func prepareInteractionsTools(tools []types.Tool, toolChoice types.ToolChoice) ([]map[string]interface{}, interface{}, []types.Warning) {
@@ -16,12 +17,16 @@ func prepareInteractionsTools(tools []types.Tool, toolChoice types.ToolChoice) (
 	for _, t := range tools {
 		if t.Type == "" || t.Type == types.ToolTypeFunction || t.Type == types.ToolTypeDynamic {
 			hasFunction = true
-			out = append(out, pruneMap(map[string]interface{}{
+			// TS: description ?? '' (always on the wire), parameters as given.
+			fn := map[string]interface{}{
 				"type":        "function",
 				"name":        t.Name,
 				"description": t.Description,
-				"parameters":  t.Parameters,
-			}))
+			}
+			if params := providerutils.ResponseFormatJSONSchemaOrdered(t.Parameters); params != nil {
+				fn["parameters"] = params
+			}
+			out = append(out, fn)
 			continue
 		}
 		if t.Type == types.ToolTypeProviderDefined || t.Type == "provider" {
@@ -86,31 +91,31 @@ func mapInteractionsProviderTool(t types.Tool) (map[string]interface{}, *types.W
 	case "google.url_context":
 		return map[string]interface{}{"type": "url_context"}, nil
 	case "google.file_search":
-		return pruneMap(map[string]interface{}{
+		return dropNilValues(map[string]interface{}{
 			"type":                    "file_search",
 			"file_search_store_names": args["fileSearchStoreNames"],
 			"top_k":                   args["topK"],
 			"metadata_filter":         args["metadataFilter"],
 		}), nil
 	case "google.google_maps":
-		return pruneMap(map[string]interface{}{
+		return dropNilValues(map[string]interface{}{
 			"type":          "google_maps",
 			"latitude":      args["latitude"],
 			"longitude":     args["longitude"],
 			"enable_widget": args["enableWidget"],
 		}), nil
 	case "google.computer_use":
-		environment, _ := args["environment"].(string)
-		if environment == "" {
-			environment = "browser"
+		var environment interface{} = "browser"
+		if e := args["environment"]; e != nil {
+			environment = e
 		}
-		return pruneMap(map[string]interface{}{
+		return dropNilValues(map[string]interface{}{
 			"type":                        "computer_use",
 			"environment":                 environment,
 			"excludedPredefinedFunctions": args["excludedPredefinedFunctions"],
 		}), nil
 	case "google.mcp_server":
-		return pruneMap(map[string]interface{}{
+		return dropNilValues(map[string]interface{}{
 			"type":          "mcp_server",
 			"name":          args["name"],
 			"url":           args["url"],
@@ -122,7 +127,7 @@ func mapInteractionsProviderTool(t types.Tool) (map[string]interface{}, *types.W
 		if retrievalTypes == nil {
 			retrievalTypes = []string{"vertex_ai_search"}
 		}
-		return pruneMap(map[string]interface{}{
+		return dropNilValues(map[string]interface{}{
 			"type":                    "retrieval",
 			"retrieval_types":         retrievalTypes,
 			"vertex_ai_search_config": args["vertexAiSearchConfig"],

@@ -47,7 +47,7 @@ func TestMoonshotCamelCaseProviderOptions(t *testing.T) {
 
 	foundDeprecated := false
 	for _, w := range warnings {
-		if w.Type == "deprecated" && w.Setting == "providerOptions.moonshot.thinking.budgetTokens" {
+		if w.Type == "deprecated" && w.Setting == "providerOptions.moonshotai.thinking.budgetTokens" {
 			foundDeprecated = true
 		}
 	}

@@ -569,3 +569,77 @@ func TestStreamTextMultiStepEventOrdering(t *testing.T) {
 		}
 	}
 }
+
+// TS passes the same language-model-call-end event (modelId = the response's
+// model id) to the callbacks and the telemetry dispatcher, so the GenAI chat
+// span's gen_ai.response.model is the model the provider reported.
+func TestGenAIChatSpanResponseModelIsTheProviderReportedModel(t *testing.T) {
+	t.Parallel()
+
+	responseModel := func(t *testing.T, run func(tracer otelapi.Tracer)) string {
+		t.Helper()
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+		run(tp.Tracer("response-model-test"))
+		for _, s := range rec.Ended() {
+			if strings.HasPrefix(s.Name(), "chat") {
+				for _, kv := range s.Attributes() {
+					if string(kv.Key) == "gen_ai.response.model" {
+						return kv.Value.AsString()
+					}
+				}
+			}
+		}
+		t.Fatal("no gen_ai.response.model on the chat span")
+		return ""
+	}
+	opts := func(tracer otelapi.Tracer) *telemetry.Options {
+		return &telemetry.Options{
+			IsEnabled:    telemetry.Bool(true),
+			Integrations: []telemetry.TelemetryIntegration{telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer})},
+		}
+	}
+
+	gotGenerate := responseModel(t, func(tracer otelapi.Tracer) {
+		model := &testutil.MockLanguageModel{
+			ModelName: "requested-model",
+			DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+				return &types.GenerateResult{
+					Text:             "hi",
+					FinishReason:     types.FinishReasonStop,
+					ResponseMetadata: &types.ResponseMetadata{ID: "r1", ModelID: "served-model"},
+				}, nil
+			},
+		}
+		if _, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "hi", Telemetry: opts(tracer)}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if gotGenerate != "served-model" {
+		t.Errorf("generate gen_ai.response.model = %q, want served-model", gotGenerate)
+	}
+
+	gotStream := responseModel(t, func(tracer otelapi.Tracer) {
+		model := &testutil.MockLanguageModel{
+			ModelName: "requested-model",
+			DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "r1", ModelID: "served-model"}},
+					{Type: provider.ChunkTypeText, Text: "hi"},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+				}), nil
+			},
+		}
+		res, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", Telemetry: opts(tracer)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := res.ReadAll(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if gotStream != "served-model" {
+		t.Errorf("stream gen_ai.response.model = %q, want served-model", gotStream)
+	}
+}

@@ -34,7 +34,9 @@ const (
 )
 
 var knownGatewayModelTypes = map[string]struct{}{
-	"embedding":     {},
+	"decision":  {},
+	"embedding": {},
+	// Keep "evaluation" until Gateway migrates its model catalog to "decision".
 	"evaluation":    {},
 	"image":         {},
 	"language":      {},
@@ -55,8 +57,16 @@ type Provider struct {
 	metadataCache    *MetadataResponse
 	metadataMutex    sync.RWMutex
 	lastFetchTime    time.Time
-	pendingMetadata  *sync.Once
+	pendingMetadata  *metadataFetch
 	cacheRefreshTime time.Duration
+	nowFn            func() time.Time
+}
+
+// metadataFetch is an in-flight (or settled) metadata refresh shared by callers.
+type metadataFetch struct {
+	done chan struct{}
+	meta *MetadataResponse
+	err  error
 }
 
 type gatewayAuthResolver func(ctx context.Context) (token string, authMethod string, err error)
@@ -72,8 +82,15 @@ func (t *gatewayAuthTransport) RoundTrip(req *http.Request) (*http.Response, err
 		return nil, err
 	}
 	clone := req.Clone(req.Context())
-	clone.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	clone.Header.Set("ai-gateway-auth-method", authMethod)
+	// TS spreads options.headers after the auth headers, so a caller-supplied
+	// Authorization or ai-gateway-auth-method header wins over the resolved
+	// credential.
+	if clone.Header.Get("Authorization") == "" {
+		clone.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	}
+	if clone.Header.Get("ai-gateway-auth-method") == "" {
+		clone.Header.Set("ai-gateway-auth-method", authMethod)
+	}
 	return t.base.RoundTrip(clone)
 }
 
@@ -114,6 +131,10 @@ func gatewayRequestID(ctx context.Context) string {
 
 // Config contains configuration for the AI Gateway provider
 type Config struct {
+	// BatchResultDownloads configures JSON Lines batch result downloads, e.g.
+	// the maximum bytes per result row (TS `batchResultDownloads`).
+	BatchResultDownloads providerutils.BatchResultDownloads
+
 	// APIKey is the AI Gateway API key
 	// or Vercel access token. Can also be set via AI_GATEWAY_API_KEY.
 	APIKey string
@@ -373,6 +394,12 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 		"ai-gateway-protocol-version": AIGatewayProtocolVersion,
 	}
 
+	// TS: the team header precedes options.headers, so a custom header of the
+	// same name wins.
+	if cfg.TeamIDOrSlug != "" {
+		headers["x-vercel-ai-gateway-team"] = cfg.TeamIDOrSlug
+	}
+
 	// Add custom headers
 	for k, v := range cfg.Headers {
 		headers[k] = v
@@ -386,9 +413,6 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 	// Inject project ID header when explicitly configured
 	if cfg.ProjectID != nil {
 		headers["ai-o11y-project-id"] = *cfg.ProjectID
-	}
-	if cfg.TeamIDOrSlug != "" {
-		headers["x-vercel-ai-gateway-team"] = cfg.TeamIDOrSlug
 	}
 	headers = version.WithUserAgentSuffix(headers, version.ProviderUserAgent("gateway"))
 
@@ -414,7 +438,6 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 		headers:          headers,
 		authResolver:     authResolver,
 		cacheRefreshTime: cacheRefreshTime,
-		pendingMetadata:  &sync.Once{},
 	}, nil
 }
 
@@ -521,17 +544,50 @@ func (p *Provider) Reranking(modelID string) (provider.RerankingModel, error) {
 	return p.RerankingModel(modelID)
 }
 
-// GetAvailableModels returns available providers and models from the gateway
+// GetAvailableModels returns available providers and models from the gateway.
+//
+// Mirrors TS getAvailableModels: once the refresh window has elapsed a refresh
+// is started in the background, but an existing (stale) cache is still returned
+// immediately; only the first call waits for the fetch.
 func (p *Provider) GetAvailableModels(ctx context.Context) (*MetadataResponse, error) {
-	// Check if we have cached metadata and it's still fresh
-	p.metadataMutex.RLock()
-	if p.metadataCache != nil && time.Since(p.lastFetchTime) < p.cacheRefreshTime {
-		cached := p.metadataCache
-		p.metadataMutex.RUnlock()
+	p.metadataMutex.Lock()
+	now := p.now()
+	if p.pendingMetadata == nil || now.Sub(p.lastFetchTime) > p.cacheRefreshTime {
+		p.lastFetchTime = now
+		f := &metadataFetch{done: make(chan struct{})}
+		p.pendingMetadata = f
+		go func() {
+			defer close(f.done)
+			f.meta, f.err = p.fetchMetadata(context.WithoutCancel(ctx))
+			if f.err == nil {
+				p.metadataMutex.Lock()
+				p.metadataCache = f.meta
+				p.metadataMutex.Unlock()
+			}
+		}()
+	}
+	cached := p.metadataCache
+	pending := p.pendingMetadata
+	p.metadataMutex.Unlock()
+	if cached != nil {
 		return cached, nil
 	}
-	p.metadataMutex.RUnlock()
+	select {
+	case <-pending.done:
+		return pending.meta, pending.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
 
+func (p *Provider) now() time.Time {
+	if p.nowFn != nil {
+		return p.nowFn()
+	}
+	return time.Now()
+}
+
+func (p *Provider) fetchMetadata(ctx context.Context) (*MetadataResponse, error) {
 	// Fetch fresh metadata
 	resp, err := p.client.Get(ctx, "/config")
 	if err != nil {
@@ -542,6 +598,9 @@ func (p *Provider) GetAvailableModels(ctx context.Context) (*MetadataResponse, e
 	}
 	var wire metadataResponseWire
 	if err := json.Unmarshal(resp.Body, &wire); err != nil {
+		return nil, p.handleErrorWithContext(ctx, err)
+	}
+	if err := validateMetadataResponse(resp.Body); err != nil {
 		return nil, p.handleErrorWithContext(ctx, err)
 	}
 	metadata := MetadataResponse{Models: make([]ModelMetadata, 0, len(wire.Models))}
@@ -575,12 +634,6 @@ func (p *Provider) GetAvailableModels(ctx context.Context) (*MetadataResponse, e
 		})
 	}
 
-	// Update cache
-	p.metadataMutex.Lock()
-	p.metadataCache = &metadata
-	p.lastFetchTime = time.Now()
-	p.metadataMutex.Unlock()
-
 	return &metadata, nil
 }
 
@@ -605,6 +658,9 @@ func (p *Provider) GetCredits(ctx context.Context) (*CreditsInfo, error) {
 	body, err := p.doOriginRequest(ctx, path)
 	if err != nil {
 		return nil, err
+	}
+	if err := providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayCredits)(http.StatusOK, http.Header{}, body); err != nil {
+		return nil, p.handleErrorWithContext(ctx, err)
 	}
 	var wire struct {
 		Balance   string `json:"balance"`
@@ -640,6 +696,9 @@ func (p *Provider) handleErrorWithContext(ctx context.Context, err error) error 
 	}
 	if gatewayerrors.IsGatewayError(err) {
 		return err
+	}
+	if converted, ok := p.gatewayInvalidJSONError(ctx, err); ok {
+		return converted
 	}
 	if providererrors.IsProviderError(err) {
 		return err
@@ -759,6 +818,27 @@ func (p *Provider) gatewayAPIErrorWithContext(ctx context.Context, resp *interna
 		Data:            gatewayErrorData(resp.Body),
 	}
 	return gatewayerrors.CreateGatewayErrorFromResponse(resp.Body, resp.StatusCode, "Gateway request failed", cause, authMethod)
+}
+
+// gatewayInvalidJSONError converts a successful body that failed its response
+// schema (TS createJsonResponseHandler APICallError "Invalid JSON response")
+// the way TS asGatewayError does for any APICallError: the body is parsed as
+// a gateway error response (which fails for a normal body, giving a
+// GatewayResponseError "Invalid error response format: Gateway request
+// failed" with the original status), with the APICallError as the cause.
+func (p *Provider) gatewayInvalidJSONError(ctx context.Context, err error) (error, bool) {
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.Message != providererrors.InvalidJSONResponseMessage {
+		return nil, false
+	}
+	authMethod := ""
+	if p.authResolver != nil {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		_, authMethod, _ = p.authResolver(ctx)
+	}
+	return gatewayerrors.CreateGatewayErrorFromResponse([]byte(pe.ResponseBody), pe.StatusCode, "Gateway request failed", pe, authMethod), true
 }
 
 func (p *Provider) gatewayUnknownError(err error) error {
@@ -891,6 +971,16 @@ func GetO11yHeaders(ctx context.Context) O11yHeaders {
 	}
 }
 
+// gatewayRequestHeaders merges the per-call headers, the model's own headers
+// and the observability headers in the TS order (later wins):
+// combineHeaders(config, options.headers, model headers, o11y). The client's
+// own headers are applied by the HTTP client underneath.
+func gatewayRequestHeaders(ctx context.Context, call, model map[string]string) map[string]string {
+	headers := internalhttp.MergeHeaders(call, model)
+	AddO11yHeaders(headers, GetO11yHeaders(ctx))
+	return headers
+}
+
 // AddO11yHeaders adds observability headers to the request headers
 func AddO11yHeaders(headers map[string]string, o11y O11yHeaders) {
 	if o11y.DeploymentID != "" {
@@ -917,4 +1007,36 @@ func MarshalJSONField(v interface{}) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// validateMetadataResponse applies the required-field checks of TS
+// gatewayAvailableModelsResponseSchema that the lenient wire struct cannot
+// see: `models` must be an array and every model needs id, name and a
+// specification of version "v4" with provider and modelId.
+func validateMetadataResponse(body []byte) error {
+	var raw struct {
+		Models *[]struct {
+			ID            *string `json:"id"`
+			Name          *string `json:"name"`
+			Specification *struct {
+				SpecificationVersion *string `json:"specificationVersion"`
+				Provider             *string `json:"provider"`
+				ModelID              *string `json:"modelId"`
+			} `json:"specification"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return err
+	}
+	if raw.Models == nil {
+		return errors.New("Invalid JSON response: models must be an array") //nolint:staticcheck // mirrors TS wording
+	}
+	for i, m := range *raw.Models {
+		spec := m.Specification
+		if m.ID == nil || m.Name == nil || spec == nil || spec.Provider == nil || spec.ModelID == nil ||
+			spec.SpecificationVersion == nil || *spec.SpecificationVersion != "v4" {
+			return fmt.Errorf("Invalid JSON response: models[%d] does not match the gateway model schema", i) //nolint:staticcheck // mirrors TS wording
+		}
+	}
+	return nil
 }

@@ -36,60 +36,61 @@ type FileSearchOptions struct {
 }
 
 func FileSearch(config FileSearchConfig) types.Tool {
-	// Set default max results if not specified
-	maxResults := config.MaxNumResults
-	if maxResults == 0 {
-		maxResults = 10
-	}
-
-	// Build the parameters schema
-	properties := map[string]interface{}{
-		"query": map[string]interface{}{
-			"type":        "string",
-			"description": "Search query to find relevant information in vector stores",
-		},
-	}
-
-	// Only add optional parameters if they were specified
-	if len(config.VectorStoreIDs) > 0 {
-		properties["vectorStoreIds"] = map[string]interface{}{
-			"type":        "array",
-			"description": "Vector store IDs to search",
-			"items": map[string]interface{}{
-				"type": "string",
-			},
-			"default": config.VectorStoreIDs,
-		}
-	}
-
-	if config.MaxNumResults > 0 {
-		properties["maxNumResults"] = map[string]interface{}{
-			"type":        "integer",
-			"description": "Maximum number of results to return",
-			"default":     maxResults,
-		}
-	}
-
+	// TS xai fileSearch: inputSchema z.object({}). The vector store IDs and
+	// result limit are tool args (ProviderOptions), not model input.
 	parameters := map[string]interface{}{
 		"type":       "object",
-		"properties": properties,
-		"required":   []string{"query"},
+		"properties": map[string]interface{}{},
 	}
 
-	return types.Tool{
+	// TS fileSearch({vectorStoreIds: undefined}) has no vectorStoreIds arg
+	// (JSON drops undefined); an empty list is kept.
+	args := map[string]interface{}{}
+	if config.VectorStoreIDs != nil {
+		args["vectorStoreIds"] = config.VectorStoreIDs
+	}
+	if config.MaxNumResults > 0 {
+		args["maxNumResults"] = config.MaxNumResults
+	}
+	return xaiProviderTool(types.Tool{
 		Name:        "xai.file_search",
 		Description: "Search vector stores for relevant information. Returns queries and results including file IDs, filenames, relevance scores, and matching text snippets.",
 		Title:       "File Search",
 		Parameters:  parameters,
-		// ProviderOptions carries the typed config for API serialization by prepareXAIResponsesTools.
-		ProviderOptions: FileSearchOptions{
-			VectorStoreIDs: config.VectorStoreIDs,
-			MaxNumResults:  maxResults,
+		// TS outputSchema: {queries: string[], results: {fileId, filename,
+		// score (0-1), text}[] | null} (ValidateUIMessages checks outputs).
+		OutputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"queries": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+				"results": map[string]interface{}{
+					"anyOf": []interface{}{
+						map[string]interface{}{
+							"type": "array",
+							"items": map[string]interface{}{
+								"type": "object",
+								"properties": map[string]interface{}{
+									"fileId":   map[string]interface{}{"type": "string"},
+									"filename": map[string]interface{}{"type": "string"},
+									"score":    map[string]interface{}{"type": "number", "minimum": 0, "maximum": 1},
+									"text":     map[string]interface{}{"type": "string"},
+								},
+								"required": []interface{}{"fileId", "filename", "score", "text"},
+							},
+						},
+						map[string]interface{}{"type": "null"},
+					},
+				},
+			},
+			"required": []interface{}{"queries", "results"},
 		},
+		// ProviderOptions carries the typed config for API serialization by prepareXAIResponsesTools.
+		// max_num_results is sent only when set (TS sends it only if given).
+		ProviderOptions: FileSearchOptions(config),
 		// This tool is executed by xAI's servers, not locally
 		ProviderExecuted: true,
 		Execute:          providerExecutedNoop("xai.file_search"),
-	}
+	}, args)
 }
 
 // FileSearchWithDefaults creates a FileSearch tool with default configuration

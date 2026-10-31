@@ -25,7 +25,7 @@ func TestOllamaEmbeddingModelMetadataAndDoEmbed(t *testing.T) {
 		}, nil
 	})
 	m := NewEmbeddingModel(p, "nomic-embed")
-	if m.SpecificationVersion() != "v3" || m.Provider() != "ollama" || m.ModelID() != "nomic-embed" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "ollama" || m.ModelID() != "nomic-embed" {
 		t.Fatalf("metadata mismatch: spec=%s provider=%s model=%s", m.SpecificationVersion(), m.Provider(), m.ModelID())
 	}
 	if m.MaxEmbeddingsPerCall() != 1 || !m.SupportsParallelCalls() {
@@ -60,7 +60,7 @@ func TestOllamaLanguageModelBuildConvertAndUsage(t *testing.T) {
 	temp := float64(0.2)
 	maxTokens := 12
 	topP := float64(0.9)
-	body := m.buildRequestBody(&provider.GenerateOptions{
+	body, _ := m.buildRequestBody(&provider.GenerateOptions{
 		Prompt: types.Prompt{
 			Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}},
 			System:   "sys",

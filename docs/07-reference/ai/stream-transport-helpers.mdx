@@ -91,7 +91,7 @@ Returns the headers a UI message stream response carries: `Content-Type: text/ev
 
 ### Keep-alive
 
-`CreateUIMessageStreamResponseWithInit` and `PipeUIMessageStreamToResponseWithInit` accept a `*ai.UIMessageStreamResponseInit` with a `KeepAliveMs *time.Duration` field. When set to a positive duration, the pipeline writes an opening `: stream-open\n\n` SSE comment immediately — so a reverse proxy sees the response start right away instead of buffering an empty connection — and then a `: keep-alive\n\n` comment whenever that duration elapses with no other write, resetting on every real chunk:
+`CreateUIMessageStreamResponseWithInit` and `PipeUIMessageStreamToResponseWithInit` accept a `*ai.UIMessageStreamResponseInit` with a `KeepAliveMs *time.Duration` field. When set (it must be a positive duration of at most 2147483647ms, or the helpers return an error, as TS throws), the pipeline writes an opening `: stream-open\n\n` SSE comment immediately — so a reverse proxy sees the response start right away instead of buffering an empty connection — and then a `: keep-alive\n\n` comment whenever that duration elapses with no other write, resetting on every real chunk:
 
 ```go
 keepAlive := 15 * time.Second
@@ -175,7 +175,9 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 func ToUIMessageChunk(part provider.StreamChunk, opts ai.UIMessageStreamResultOptions) (ai.UIMessageChunk, bool)
 ```
 
-`ToUIMessageStream` converts a provider stream to UI message chunks. `ToUIMessageChunk` converts one chunk and returns false when the part has no UI chunk.
+`ToUIMessageStream` converts a stream to UI message chunks. A source whose first part is `provider.ChunkTypeStart` (a `StreamText`, harness or `NewStreamTextResultFromParts` stream, or your own part slice) is mapped one to one, as TS `toUIMessageStream`: the start part writes the `start` chunk, the finish part writes the `finish` chunk where it occurs, and nothing is added at the end. A raw provider stream (no leading start part) is framed: a `start` chunk, text and reasoning blocks opened and closed, `finish-step` for the provider's `finish`, a final `finish`, and an incomplete-stream `error` chunk when it ended without output (see [Known differences](../../08-migration-guides/known-differences.mdx#touimessagestream-on-a-raw-provider-stream)).
+
+`ToUIMessageChunk` converts one part, read as a `StreamText` part (TS `toUIMessageChunk`), and returns false when the part has no UI chunk: `ChunkTypeStart` gives the `start` chunk and `ChunkTypeFinish` the `finish` chunk (none with `SendStart` / `SendFinish` false), `ChunkTypeFinishStep` gives `finish-step`.
 
 ## `CreateUIMessageStreamResponseWithInit` and `PipeUIMessageStreamToResponseWithInit`
 
@@ -194,13 +196,15 @@ func ReadUIMessages(ctx context.Context, opts ai.ReadUIMessagesOptions) (<-chan 
 
 Folds a chunk stream into progressively updated `ai.UIMessage` snapshots. See [UI messages](./ui-messages.mdx#readuimessages).
 
+When `opts.Message` seeds a message and the stream's `start` chunk carries a different `messageId`, the seeded message is discarded and a new message with that ID begins, so a resumed stream for another response never adopts an unrelated turn's content. A `start` chunk with the same ID, or no ID, keeps the seeded parts and metadata.
+
 ## `IsUIMessageStreamError`
 
 ```go
 func IsUIMessageStreamError(err error) bool
 ```
 
-Reports whether `err` is an `*ai.UIMessageStreamError`, which the stream reports through `OnError` when a chunk refers to a part that does not exist.
+Reports whether `err` is an `*ai.UIMessageStreamError`: the error a UI message stream fails with when a chunk refers to a part that does not exist. As in TypeScript, the stream only checks this while it builds the message for an `OnEnd` or `OnStepEnd` callback; the error goes to the error channel and the `OnEnd` outcome, not to `OnError`. `ReadUIMessages` reports it through its `OnError`.
 
 ## `SmoothStream`
 
@@ -249,6 +253,7 @@ type ChatTransport interface {
 | `MessageID` | `string` | MessageID is the id of the message being responded to, when known. |
 | `Trigger` | `string` | Trigger describes why SendMessages was called (for example "submit-message" or "regenerate-message"), matching the TypeScript ChatTransport's `trigger` field. |
 | `Messages` | `[]types.Message` | Messages is the full message history sent to the transport. |
+| `Body` | `map[string]interface{}` | Body holds extra request body fields (TS ChatRequestOptions.body). The workflow chat transport merges them into the default POST body after "messages". |
 
 {/* /gen:fields */}
 
@@ -257,5 +262,6 @@ type ChatTransport interface {
 | Field | Type | Description |
 | --- | --- | --- |
 | `ChatID` | `string` | ChatID identifies the conversation whose in-progress stream should be resumed. |
+| `StartIndex` | `*int` | StartIndex overrides the transport's default start index for this reconnect (TS ReconnectToStreamOptions.startIndex). Negative values read the tail of the stream. nil keeps the transport default; an explicit 0 replays from the beginning. Only the workflow chat transport reads it. |
 
 {/* /gen:fields */}

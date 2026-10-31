@@ -3,11 +3,12 @@ package xai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"net/http"
 	"regexp"
-	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -102,7 +103,7 @@ func NewResponsesLanguageModel(p *Provider, modelID string) *ResponsesLanguageMo
 }
 
 // SpecificationVersion returns the provider spec version.
-func (m *ResponsesLanguageModel) SpecificationVersion() string { return "v3" }
+func (m *ResponsesLanguageModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider identifier. Uses the ".responses" suffix to
 // distinguish Responses API models from Chat Completions models.
@@ -131,7 +132,15 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 	}
 
 	var resp responses.ResponsesAPIResponse
-	if err := m.provider.client.PostJSON(ctx, "/responses", body, &resp); err != nil {
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "/responses",
+		Body:    body,
+		Headers: opts.Headers,
+		// TS createJsonResponseHandler(xaiResponsesResponseSchema).
+		ValidateResponse: providerutils.XAIResponsesResponseValidator("xai.responses"),
+	}, &resp)
+	if err != nil {
 		return nil, m.wrapErr(err)
 	}
 
@@ -142,6 +151,15 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 	if len(warnings) > 0 {
 		result.Warnings = append(warnings, result.Warnings...)
 	}
+	result.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Headers)
+	// TS result.request.body: the request as sent.
+	result.RawRequest = body
+	// TS response.body is the raw parsed JSON, not the schema-filtered value.
+	if len(httpResp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(httpResp.Body)
+	}
+	result.ResponseMetadata = providerutils.BuildResponseMetadata(resp.ID, resp.Model, resp.CreatedAt)
+	result.ResponseMetadata.Headers = result.ResponseHeaders
 	return result, nil
 }
 
@@ -155,19 +173,19 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 	}
 
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/responses",
-		Body:   body,
-		Headers: map[string]string{
-			"Accept": "text/event-stream",
-		},
+		Method:  http.MethodPost,
+		Path:    "/responses",
+		Body:    body,
+		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
 	if err != nil {
 		return nil, m.wrapErr(err)
 	}
 
 	stream := newXAIResponsesStream(httpResp.Body, opts.IncludeRawChunks)
+	stream.responseHeaders = httpResp.Header
 	stream.requestBody = body
+	stream.toolNames = resolveProviderToolNames(opts.Tools)
 	return streaming.NewWarningsStream(stream, warnings), nil
 }
 
@@ -175,12 +193,6 @@ func xaiResponsesWarnings(opts *provider.GenerateOptions) []types.Warning {
 	var warnings []types.Warning
 	if opts == nil {
 		return warnings
-	}
-	if len(opts.StopSequences) > 0 {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "stopSequences",
-		})
 	}
 	// Row dc2f851: xAI Responses does not support frequencyPenalty/
 	// presencePenalty (topK IS supported and forwarded as top_k, see
@@ -191,6 +203,14 @@ func xaiResponsesWarnings(opts *provider.GenerateOptions) []types.Warning {
 	if opts.PresencePenalty != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "presencePenalty"})
 	}
+	// TS warns frequencyPenalty, presencePenalty, then stopSequences.
+	// TS: stopSequences != null (an empty array warns too).
+	if opts.StopSequences != nil {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "stopSequences",
+		})
+	}
 	return warnings
 }
 
@@ -198,80 +218,45 @@ func xaiResponsesWarnings(opts *provider.GenerateOptions) []types.Warning {
 func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
 	var warnings []types.Warning
 
+	if err := validateResponsesOptions(opts.ProviderOptions); err != nil {
+		return nil, warnings, err
+	}
+
 	// Extract XAI-specific provider options.
 	var xaiOpts XAIResponsesProviderOptions
+	var rawXAIOpts map[string]interface{}
 	if opts.ProviderOptions != nil {
 		if raw, ok := opts.ProviderOptions["xai"]; ok {
 			if jsonData, err := json.Marshal(raw); err == nil {
-				json.Unmarshal(jsonData, &xaiOpts) //nolint:errcheck
+				json.Unmarshal(jsonData, &xaiOpts)    //nolint:errcheck
+				json.Unmarshal(jsonData, &rawXAIOpts) //nolint:errcheck
 			}
 		}
 	}
-
-	if err := validateXAIResponsesFileParts(opts.Prompt); err != nil {
-		return nil, warnings, err
+	// TS forwards every string option that is not undefined, so an empty
+	// string is sent; the typed struct cannot tell "" from absent.
+	xaiString := func(key string) (string, bool) {
+		v, ok := rawXAIOpts[key].(string)
+		return v, ok
 	}
 
-	input, _, err := responses.ConvertPromptToInputWithOptions(opts.Prompt, "system", responses.ConvertOptions{
-		PassThroughUnsupportedFiles: true,
-		// Row 72eee24: use providerOptions.xai (not .openai) for xAI-specific
-		// input conversion options such as imageDetail on file parts.
-		ProviderOptionsName: "xai",
-	})
+	// TS convertToXaiResponsesInput: a converter of its own (xAI item ids,
+	// reasoning replay, verbatim tool errors, no inline non-image files).
+	input, inputWarnings, err := responses.ConvertPromptToXAIInput(opts.Prompt)
 	if err != nil {
 		return nil, warnings, err
 	}
+	warnings = append(warnings, inputWarnings...)
 
 	body := map[string]interface{}{
-		"model":  m.modelID,
-		"stream": stream,
-		"input":  input,
+		"model": m.modelID,
+		"input": input,
+	}
+	if stream {
+		// TS sends stream only when streaming.
+		body["stream"] = true
 	}
 
-	// Reasoning effort: provider option takes precedence over top-level
-	// opts.Reasoning. Effort map mirrors TS: {minimal:'low', low:'low',
-	// medium:'medium', high:'high', xhigh: grok-4.6 ? 'xhigh' : 'high'}.
-	// Row 8e006de: grok-4.20-(non-)reasoning models reject the reasoning
-	// effort parameter entirely (including "none"); reasoning:"none" maps to
-	// effort "none" (not omitted) on models that do support it.
-	effort := xaiOpts.ReasoningEffort
-	// TS gates this whole branch on isCustomReasoning(reasoning), which
-	// excludes the "provider-default" sentinel (types.ReasoningDefault):
-	// requesting the provider's own default reasoning is never "custom"
-	// reasoning and must never trigger the unsupported-model warning below.
-	if effort == "" && opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
-		if !supportsReasoningEffort(m.modelID) {
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: "reasoning",
-				Details: fmt.Sprintf("reasoning %q is not supported by this model.", string(*opts.Reasoning)),
-			})
-		} else {
-			switch *opts.Reasoning {
-			case types.ReasoningNone:
-				effort = "none"
-			case types.ReasoningMinimal, types.ReasoningLow:
-				effort = "low"
-			case types.ReasoningMedium:
-				effort = "medium"
-			case types.ReasoningHigh:
-				effort = "high"
-			case types.ReasoningXHigh:
-				if m.modelID == "grok-4.6" {
-					effort = "xhigh"
-				} else {
-					effort = "high"
-				}
-			}
-		}
-	}
-
-	// Row 0a5dd0f9c3: xAI ignores the requested reasoning summary level and
-	// always returns a detailed summary, so reasoning.summary is no longer
-	// sent (xaiOpts.ReasoningSummary is deprecated and read nowhere here).
-	if effort != "" {
-		body["reasoning"] = map[string]interface{}{"effort": effort}
-	}
 	if opts.MaxTokens != nil {
 		body["max_output_tokens"] = *opts.MaxTokens
 	}
@@ -298,14 +283,14 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 	if xaiOpts.ParallelToolCalls != nil {
 		body["parallel_tool_calls"] = *xaiOpts.ParallelToolCalls
 	}
-	if xaiOpts.PromptCacheKey != "" {
-		body["prompt_cache_key"] = xaiOpts.PromptCacheKey
+	if v, ok := xaiString("promptCacheKey"); ok {
+		body["prompt_cache_key"] = v
 	}
-	if xaiOpts.SafetyIdentifier != "" {
-		body["safety_identifier"] = xaiOpts.SafetyIdentifier
+	if v, ok := xaiString("safetyIdentifier"); ok {
+		body["safety_identifier"] = v
 	}
-	if xaiOpts.User != "" {
-		body["user"] = xaiOpts.User
+	if v, ok := xaiString("user"); ok {
+		body["user"] = v
 	}
 
 	// Row 484293f: serviceTier ("default" or "priority"), surfaced back in
@@ -331,24 +316,18 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 	copy(include, xaiOpts.Include)
 	if xaiOpts.Store != nil && !*xaiOpts.Store {
 		body["store"] = false
-		hasEncrypted := false
-		for _, v := range include {
-			if v == "reasoning.encrypted_content" {
-				hasEncrypted = true
-				break
-			}
-		}
-		if !hasEncrypted {
-			include = append(include, "reasoning.encrypted_content")
-		}
+		// TS appends reasoning.encrypted_content without a duplicate check.
+		include = append(include, "reasoning.encrypted_content")
 	}
-	if len(include) > 0 {
+	// TS: `options.include ? [...options.include] : undefined` -- an empty
+	// array is truthy, so `include: []` is sent when the option is present.
+	if _, includePresent := rawXAIOpts["include"].([]interface{}); len(include) > 0 || includePresent {
 		body["include"] = include
 	}
 
 	// Previous response ID for stateful multi-turn conversations.
-	if xaiOpts.PreviousResponseID != "" {
-		body["previous_response_id"] = xaiOpts.PreviousResponseID
+	if v, ok := xaiString("previousResponseId"); ok {
+		body["previous_response_id"] = v
 	}
 
 	// Response format (JSON schema / structured output).
@@ -376,52 +355,68 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 
 	// Tools.
 	if len(opts.Tools) > 0 {
-		body["tools"] = prepareXAIResponsesTools(opts.Tools)
-		if opts.ToolChoice.Type != "" {
-			body["tool_choice"] = convertXAIResponsesToolChoice(opts.ToolChoice)
+		if err := validateXAIResponsesToolArgs(opts.Tools); err != nil {
+			return nil, nil, err
 		}
+		preparedTools, toolWarnings := prepareXAIResponsesToolsWithWarnings(opts.Tools)
+		warnings = append(warnings, toolWarnings...)
+		// TS sets tools only when at least one tool survived preparation.
+		if len(preparedTools) > 0 {
+			body["tools"] = preparedTools
+		}
+		if opts.ToolChoice.Type != "" {
+			choice, choiceWarnings := resolveXAIResponsesToolChoice(opts.ToolChoice, opts.Tools)
+			warnings = append(warnings, choiceWarnings...)
+			if choice != nil {
+				body["tool_choice"] = choice
+			}
+		}
+	}
+
+	// TS resolves reasoning after the input and tool warnings.
+	// Reasoning effort: provider option takes precedence over top-level
+	// opts.Reasoning. Effort map mirrors TS: {minimal:'low', low:'low',
+	// medium:'medium', high:'high', xhigh: grok-4.6 ? 'xhigh' : 'high'}.
+	// Row 8e006de: grok-4.20-(non-)reasoning models reject the reasoning
+	// effort parameter entirely (including "none"); reasoning:"none" maps to
+	// effort "none" (not omitted) on models that do support it.
+	effort := xaiOpts.ReasoningEffort
+	// TS gates this whole branch on isCustomReasoning(reasoning), which
+	// excludes the "provider-default" sentinel (types.ReasoningDefault):
+	// requesting the provider's own default reasoning is never "custom"
+	// reasoning and must never trigger the unsupported-model warning below.
+	if effort == "" && opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
+		if !supportsReasoningEffort(m.modelID) {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "reasoning",
+				Details: fmt.Sprintf("reasoning %q is not supported by this model.", string(*opts.Reasoning)),
+			})
+		} else {
+			if *opts.Reasoning == types.ReasoningNone {
+				effort = "none"
+			} else {
+				xhigh := "high"
+				if m.modelID == "grok-4.6" {
+					xhigh = "xhigh"
+				}
+				effort, _ = providerutils.MapReasoningToProviderEffort(*opts.Reasoning, map[types.ReasoningLevel]string{
+					types.ReasoningMinimal: "low", types.ReasoningLow: "low",
+					types.ReasoningMedium: "medium", types.ReasoningHigh: "high",
+					types.ReasoningXHigh: xhigh, types.ReasoningMax: xhigh,
+				}, &warnings)
+			}
+		}
+	}
+
+	// Row 0a5dd0f9c3: xAI ignores the requested reasoning summary level and
+	// always returns a detailed summary, so reasoning.summary is no longer
+	// sent (xaiOpts.ReasoningSummary is deprecated and read nowhere here).
+	if effort != "" {
+		body["reasoning"] = map[string]interface{}{"effort": effort}
 	}
 
 	return body, warnings, nil
-}
-
-func validateXAIResponsesFileParts(prompt types.Prompt) error {
-	for _, msg := range prompt.Messages {
-		if msg.Role != types.RoleUser {
-			continue
-		}
-		for _, part := range msg.Content {
-			file, ok := part.(types.FileContent)
-			if !ok {
-				continue
-			}
-			mediaType := xaiFileMediaType(file)
-			fileData := file.FileData
-			switch {
-			case fileData.Type == types.FileDataTypeText || file.Text != "":
-				return fmt.Errorf("xAI Responses API does not support text file parts")
-			case fileData.Type == types.FileDataTypeData && !isXAIImageMediaType(mediaType):
-				return fmt.Errorf("xAI Responses API does not support file part media type %s as inline data; use a URL or Files API reference for non-image files", mediaType)
-			case fileData.Type == "" && len(file.Data) > 0 && !isXAIImageMediaType(mediaType):
-				return fmt.Errorf("xAI Responses API does not support file part media type %s as inline data; use a URL or Files API reference for non-image files", mediaType)
-			}
-		}
-	}
-	return nil
-}
-
-func xaiFileMediaType(file types.FileContent) string {
-	if file.FileData.MediaType != "" {
-		return file.FileData.MediaType
-	}
-	if file.MediaType != "" {
-		return file.MediaType
-	}
-	return file.MimeType
-}
-
-func isXAIImageMediaType(mediaType string) bool {
-	return strings.HasPrefix(mediaType, "image/") || mediaType == "image"
 }
 
 // convertXAIResponsesToolChoice maps a types.ToolChoice to the Responses API format.
@@ -446,6 +441,9 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	result := &types.GenerateResult{
 		Usage:       convertXAIResponsesUsage(resp.Usage),
 		RawResponse: resp,
+	}
+	if resp.Usage == nil {
+		result.Usage = xaiZeroUsage()
 	}
 	if resp.Usage != nil && resp.Usage.CostInUsdTicks != nil {
 		result.ProviderMetadata = map[string]interface{}{
@@ -505,6 +503,20 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 
 	var toolCalls []types.ToolCall
 	var hasFunctionCall bool // true only when a function_call item is encountered
+	// pushCall records a tool call and puts its tool-call part in the content
+	// at the output item's position: TS doGenerate pushes every part in output
+	// order, so a function call ahead of a message stays ahead of its text and
+	// a provider-executed call comes before its tool-result.
+	pushCall := func(tc types.ToolCall) {
+		toolCalls = append(toolCalls, tc)
+		result.Content = append(result.Content, types.ToolCallContent{
+			ToolCallID:       tc.ID,
+			ToolName:         tc.ToolName,
+			Input:            tc.RawArguments,
+			Arguments:        tc.Arguments,
+			ProviderExecuted: tc.ProviderExecuted,
+		})
+	}
 
 	for _, rawItem := range resp.Output {
 		var peek struct {
@@ -519,38 +531,26 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			// Parse with annotations support for url_citation.
 			var item struct {
 				Content []struct {
-					Type        string `json:"type"`
-					Text        string `json:"text"`
-					Annotations []struct {
-						Type  string `json:"type"`
-						URL   string `json:"url,omitempty"`
-						Title string `json:"title,omitempty"`
-					} `json:"annotations,omitempty"`
+					Type        string            `json:"type"`
+					Text        string            `json:"text"`
+					Annotations []json.RawMessage `json:"annotations,omitempty"`
 				} `json:"content"`
 			}
 			if err := json.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
-			var msgText string
+			// TS emits, per content part, its text and then its url_citation
+			// sources.
 			for _, part := range item.Content {
-				msgText += part.Text
+				if part.Text != "" {
+					result.Text += part.Text
+					result.Content = append(result.Content, types.TextContent{Text: part.Text})
+				}
 				for _, ann := range part.Annotations {
-					if ann.Type == "url_citation" && ann.URL != "" {
-						title := ann.Title
-						if title == "" {
-							title = ann.URL
-						}
-						result.Content = append(result.Content, types.SourceContent{
-							SourceType: "url",
-							URL:        ann.URL,
-							Title:      title,
-						})
+					if source := xaiURLCitationSource(ann); source != nil {
+						result.Content = append(result.Content, *source)
 					}
 				}
-			}
-			if msgText != "" {
-				result.Text += msgText
-				result.Content = append(result.Content, types.TextContent{Text: msgText})
 			}
 
 		case "function_call":
@@ -560,23 +560,13 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			}
 			var args map[string]interface{}
 			json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
-			toolCalls = append(toolCalls, types.ToolCall{
-				ID:        item.CallID,
-				ToolName:  item.Name,
-				Arguments: args,
+			pushCall(types.ToolCall{
+				ID:           item.CallID,
+				ToolName:     item.Name,
+				Arguments:    args,
+				RawArguments: item.Arguments,
 			})
 			hasFunctionCall = true
-
-		case "custom_tool_call":
-			var item responses.CustomToolCallItem
-			if err := json.Unmarshal(rawItem, &item); err != nil {
-				continue
-			}
-			toolCalls = append(toolCalls, types.ToolCall{
-				ID:        item.CallID,
-				ToolName:  item.Name,
-				Arguments: map[string]interface{}{"input": item.Input},
-			})
 
 		case "reasoning":
 			// Extract reasoning text from summary parts and encrypted content.
@@ -625,22 +615,39 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					rc.ProviderMetadata = raw
 				}
 			}
-			result.Content = append(result.Content, rc)
+			// TS: a reasoning part is emitted only when it has text or
+			// encrypted content.
+			if reasoningText != "" || item.EncryptedContent != "" {
+				result.Content = append(result.Content, rc)
+			}
 
 		case "web_search_call", "x_search_call", "code_interpreter_call",
-			"code_execution_call", "view_image_call", "view_x_video_call":
+			"code_execution_call", "view_image_call", "view_x_video_call",
+			"custom_tool_call", "mcp_call":
 			var item struct {
-				ID     string          `json:"id"`
-				Name   string          `json:"name,omitempty"`
-				Action json.RawMessage `json:"action,omitempty"`
+				ID        string          `json:"id"`
+				Name      string          `json:"name,omitempty"`
+				Action    json.RawMessage `json:"action,omitempty"`
+				Arguments string          `json:"arguments,omitempty"`
+				Input     string          `json:"input,omitempty"`
 			}
 			if err := json.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
-			toolName := resolvedToolName(peek.Type, item.Name, toolNames)
-			toolCalls = append(toolCalls, types.ToolCall{
+			toolName := bareXAIToolName(peek.Type, item.Name, toolNames)
+			// TS: the call's input is the item's arguments (input for
+			// custom_tool_call), verbatim.
+			toolInput := item.Arguments
+			if peek.Type == "custom_tool_call" {
+				toolInput = item.Input
+			}
+			var toolArgs map[string]interface{}
+			_ = json.Unmarshal([]byte(toolInput), &toolArgs)
+			pushCall(types.ToolCall{
 				ID:               item.ID,
 				ToolName:         toolName,
+				Arguments:        toolArgs,
+				RawArguments:     toolInput,
 				ProviderExecuted: true,
 			})
 			// Row 6843788: preserve the web_search action (query/queries/
@@ -669,9 +676,9 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			}
 			toolName := toolNames["xai.file_search"]
 			if toolName == "" {
-				toolName = "xai.file_search"
+				toolName = "file_search"
 			}
-			toolCalls = append(toolCalls, types.ToolCall{
+			pushCall(types.ToolCall{
 				ID:               item.ID,
 				ToolName:         toolName,
 				ProviderExecuted: true,
@@ -683,8 +690,13 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				Score    float64 `json:"score"`
 				Text     string  `json:"text"`
 			}
+			// TS: queries ?? [].
+			queries := item.Queries
+			if queries == nil {
+				queries = []string{}
+			}
 			resultData := map[string]interface{}{
-				"queries": item.Queries,
+				"queries": queries,
 			}
 			if item.Results != nil {
 				mapped := make([]fileSearchResult, len(item.Results))
@@ -701,24 +713,6 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				Result:     resultData,
 			})
 
-		case "mcp_call":
-			var item struct {
-				ID   string `json:"id"`
-				Name string `json:"name,omitempty"`
-			}
-			if err := json.Unmarshal(rawItem, &item); err != nil {
-				continue
-			}
-			mcpName := toolNames["xai.mcp"]
-			if mcpName == "" {
-				mcpName = item.Name
-			}
-			toolCalls = append(toolCalls, types.ToolCall{
-				ID:               item.ID,
-				ToolName:         mcpName,
-				ProviderExecuted: true,
-			})
-
 		case "image_generation_call":
 			// Row fa2c2bb: server-side image generation tool.
 			var item struct {
@@ -732,9 +726,9 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			}
 			toolName := toolNames["xai.image_generation"]
 			if toolName == "" {
-				toolName = "xai.image_generation"
+				toolName = "image_generation"
 			}
-			toolCalls = append(toolCalls, types.ToolCall{
+			pushCall(types.ToolCall{
 				ID:               item.ID,
 				ToolName:         toolName,
 				RawArguments:     "{}",
@@ -751,10 +745,13 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					Result:     resultValue,
 				})
 			} else {
+				// TS: isError with the message as the result value.
+				failure := fmt.Sprintf("Image generation failed (status: %s).", item.Status)
 				result.Content = append(result.Content, types.ToolResultContent{
 					ToolCallID: item.ID,
 					ToolName:   toolName,
-					Error:      fmt.Sprintf("Image generation failed (status: %s).", item.Status),
+					Result:     failure,
+					Error:      failure,
 				})
 			}
 		}
@@ -769,11 +766,27 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	if hasFunctionCall {
 		result.FinishReason = types.FinishReasonToolCalls
 	} else {
-		result.FinishReason = mapXAIResponsesFinishReason(resp.Status, resp.IncompleteDetails)
+		// TS doGenerate maps response.status alone: an "incomplete" status is
+		// "other" here (incomplete_details only drives the streaming path).
+		result.FinishReason = mapXAIResponsesFinishReason(resp.Status, nil)
 	}
 	result.RawFinishReason = resp.Status
 
 	return result, nil
+}
+
+// xaiZeroUsage is the usage TS reports when a response carries none (doGenerate
+// without usage, a stream with no terminal usage): explicit zeros, cacheWrite
+// included, and no raw usage.
+func xaiZeroUsage() types.Usage {
+	z := func() *int64 { v := int64(0); return &v }
+	return types.Usage{
+		InputTokens:   z(),
+		OutputTokens:  z(),
+		TotalTokens:   z(),
+		InputDetails:  &types.InputTokenDetails{NoCacheTokens: z(), CacheReadTokens: z(), CacheWriteTokens: z()},
+		OutputDetails: &types.OutputTokenDetails{TextTokens: z(), ReasoningTokens: z()},
+	}
 }
 
 // resolveProviderToolNames scans the registered tools list and returns a map of
@@ -785,10 +798,15 @@ func resolveProviderToolNames(tools []types.Tool) map[string]string {
 		"xai.web_search": true, "xai.x_search": true,
 		"xai.code_execution": true, "xai.file_search": true,
 		"xai.mcp": true, "xai.view_image": true, "xai.view_x_video": true,
+		"xai.image_generation": true,
 	}
 	names := make(map[string]string)
 	for _, t := range tools {
-		if knownIDs[t.Name] {
+		// TS-shaped tools are identified by ProviderID and carry their own
+		// SDK name; Go-style tools use the canonical id as Name.
+		if knownIDs[t.ProviderID] {
+			names[t.ProviderID] = t.Name
+		} else if knownIDs[t.Name] {
 			names[t.Name] = t.Name
 		}
 	}
@@ -864,63 +882,105 @@ func mapWebSearchAction(raw json.RawMessage) map[string]interface{} {
 	if len(raw) == 0 {
 		return result
 	}
-	var action struct {
-		Type    string        `json:"type"`
-		Query   *string       `json:"query,omitempty"`
-		Queries []string      `json:"queries,omitempty"`
-		URL     *string       `json:"url,omitempty"`
-		Pattern *string       `json:"pattern,omitempty"`
-		Sources []interface{} `json:"sources,omitempty"`
+	// TS webSearchWireActionSchema: a discriminated union on type whose
+	// string fields are nullish; a field of the wrong type fails the parse.
+	// Only the matched branch's fields are checked (zod strips other keys).
+	var head struct {
+		Type string `json:"type"`
 	}
-	if err := json.Unmarshal(raw, &action); err != nil {
+	if err := json.Unmarshal(raw, &head); err != nil {
 		return result
 	}
-
-	var sources []map[string]interface{}
-	for _, s := range action.Sources {
-		sm, ok := s.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if sm["type"] != "url" {
-			continue
-		}
-		url, _ := sm["url"].(string)
-		if url == "" {
-			continue
-		}
-		sources = append(sources, map[string]interface{}{"type": "url", "url": url})
+	var action struct {
+		Type    string
+		Query   *string
+		Queries []string
+		URL     *string
+		Pattern *string
+		Sources []json.RawMessage
 	}
-	if len(sources) > 0 {
-		result["sources"] = sources
+	action.Type = head.Type
+	var branchErr error
+	switch head.Type {
+	case "search":
+		var b struct {
+			Query   *string           `json:"query"`
+			Queries []string          `json:"queries"`
+			Sources []json.RawMessage `json:"sources"`
+		}
+		branchErr = json.Unmarshal(raw, &b)
+		action.Query, action.Queries, action.Sources = b.Query, b.Queries, b.Sources
+	case "open_page":
+		var b struct {
+			URL     *string           `json:"url"`
+			Sources []json.RawMessage `json:"sources"`
+		}
+		branchErr = json.Unmarshal(raw, &b)
+		action.URL, action.Sources = b.URL, b.Sources
+	case "find_in_page":
+		var b struct {
+			URL     *string           `json:"url"`
+			Pattern *string           `json:"pattern"`
+			Sources []json.RawMessage `json:"sources"`
+		}
+		branchErr = json.Unmarshal(raw, &b)
+		action.URL, action.Pattern, action.Sources = b.URL, b.Pattern, b.Sources
+	}
+	if branchErr != nil {
+		return result
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return result
+	}
+	// nullable returns a nullish string field as TS passes it on: the value,
+	// null when the wire sent null, and absent when it was absent.
+	nullable := func(a map[string]interface{}, key string, v *string) {
+		if v != nil {
+			a[key] = *v
+		} else if f, ok := fields[key]; ok && string(f) == "null" {
+			a[key] = nil
+		}
 	}
 
+	var a map[string]interface{}
 	switch action.Type {
 	case "search":
-		a := map[string]interface{}{"type": "search"}
+		a = map[string]interface{}{"type": "search"}
 		if action.Query != nil {
 			a["query"] = *action.Query
 		}
 		if action.Queries != nil {
 			a["queries"] = action.Queries
 		}
-		result["action"] = a
 	case "open_page":
-		url := ""
-		if action.URL != nil {
-			url = *action.URL
-		}
-		result["action"] = map[string]interface{}{"type": "openPage", "url": url}
+		a = map[string]interface{}{"type": "openPage"}
+		nullable(a, "url", action.URL)
 	case "find_in_page":
-		url := ""
-		if action.URL != nil {
-			url = *action.URL
+		a = map[string]interface{}{"type": "findInPage"}
+		nullable(a, "url", action.URL)
+		nullable(a, "pattern", action.Pattern)
+	default:
+		// TS: an action that matches no branch of the union yields {}.
+		return result
+	}
+	result["action"] = a
+
+	// TS webSearchWireSourceSchema: {type: 'url', url: string}; other
+	// sources are dropped.
+	var sources []map[string]interface{}
+	for _, rawSource := range action.Sources {
+		var source struct {
+			Type string  `json:"type"`
+			URL  *string `json:"url"`
 		}
-		pattern := ""
-		if action.Pattern != nil {
-			pattern = *action.Pattern
+		if json.Unmarshal(rawSource, &source) != nil || source.Type != "url" || source.URL == nil {
+			continue
 		}
-		result["action"] = map[string]interface{}{"type": "findInPage", "url": url, "pattern": pattern}
+		sources = append(sources, map[string]interface{}{"type": "url", "url": *source.URL})
+	}
+	if len(sources) > 0 {
+		result["sources"] = sources
 	}
 	return result
 }
@@ -954,32 +1014,37 @@ func convertXAIResponsesUsage(u *responses.ResponsesAPIUsage) types.Usage {
 	if u == nil {
 		return types.Usage{}
 	}
+	// TS convertXaiResponsesUsage: the breakdown is always reported, and a
+	// cached count above input_tokens means input_tokens excludes the cache.
+	var cached, reasoning int64
+	if u.InputTokensDetails != nil {
+		cached = int64(u.InputTokensDetails.CachedTokens)
+	}
+	if u.OutputTokensDetails != nil {
+		reasoning = int64(u.OutputTokensDetails.ReasoningTokens)
+	}
 	inputTokens := int64(u.InputTokens)
 	outputTokens := int64(u.OutputTokens)
+	noCache := inputTokens - cached
+	if cached > inputTokens {
+		noCache = inputTokens
+		inputTokens += cached
+	}
 	total := inputTokens + outputTokens
+	textOut := outputTokens - reasoning
 
 	result := types.Usage{
 		InputTokens:  &inputTokens,
 		OutputTokens: &outputTokens,
 		TotalTokens:  &total,
-	}
-
-	if u.InputTokensDetails != nil && u.InputTokensDetails.CachedTokens > 0 {
-		cached := int64(u.InputTokensDetails.CachedTokens)
-		noCached := inputTokens - cached
-		result.InputDetails = &types.InputTokenDetails{
+		InputDetails: &types.InputTokenDetails{
 			CacheReadTokens: &cached,
-			NoCacheTokens:   &noCached,
-		}
-	}
-
-	if u.OutputTokensDetails != nil && u.OutputTokensDetails.ReasoningTokens > 0 {
-		reasoning := int64(u.OutputTokensDetails.ReasoningTokens)
-		textOut := outputTokens - reasoning
-		result.OutputDetails = &types.OutputTokenDetails{
+			NoCacheTokens:   &noCache,
+		},
+		OutputDetails: &types.OutputTokenDetails{
 			ReasoningTokens: &reasoning,
 			TextTokens:      &textOut,
-		}
+		},
 	}
 
 	// Row 41e7760: keep the full raw usage object (not just the hand-picked
@@ -998,6 +1063,12 @@ func convertXAIResponsesUsage(u *responses.ResponsesAPIUsage) types.Usage {
 }
 
 func (m *ResponsesLanguageModel) wrapErr(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
 	return providererrors.NewProviderError("xai.responses", 0, "", err.Error(), err)
 }
 
@@ -1014,12 +1085,13 @@ type xaiResponsesToolAccum struct {
 // xaiResponsesStream implements provider.TextStream for the XAI Responses API SSE stream.
 // XAI's Responses API uses the same SSE event schema as the OpenAI Responses API.
 type xaiResponsesStream struct {
-	reader     io.ReadCloser
-	parser     *streaming.SSEParser
-	err        error
-	toolAccum  map[int]*xaiResponsesToolAccum
-	itemTypes  map[int]string
-	flushQueue []*provider.StreamChunk
+	responseHeaders http.Header
+	reader          io.ReadCloser
+	parser          *streaming.SSEParser
+	err             error
+	toolAccum       map[int]*xaiResponsesToolAccum
+	itemTypes       map[int]string
+	flushQueue      []*provider.StreamChunk
 	// activeReasoning tracks item IDs for which a reasoning-start chunk has been emitted.
 	// Used to emit the matching reasoning-end in output_item.done, and to avoid
 	// double-emitting reasoning-start for encrypted reasoning (no summary events sent).
@@ -1032,6 +1104,27 @@ type xaiResponsesStream struct {
 	// response.output_item.done (not .added) and used to force the unified
 	// finish reason to 'tool-calls' regardless of response.status.
 	hasFunctionCall bool
+
+	// toolNames maps canonical provider tool ids to the SDK names the caller
+	// registered; seenToolCalls dedupes the added/done events of one item.
+	toolNames     map[string]string
+	seenToolCalls map[string]bool
+
+	// textBlocks lists the open text block ids in start order. TS keeps them
+	// in contentBlocks and ends them all in flush(), just before `finish`.
+	textBlocks []string
+	textSeen   map[string]bool
+	// finish state recorded by response.completed / .done / .incomplete /
+	// .failed; TS only enqueues `finish` from flush() at the end of the
+	// stream, with whatever was recorded last (default: other, zero usage).
+	finishReason    types.FinishReason
+	rawFinishReason string
+	finishUsage     *types.Usage
+	finishMeta      json.RawMessage
+	// usageMeta is the usage-derived metadata (costInUsdTicks, cost). TS only
+	// replaces it when a terminal event carries usage, so a later event
+	// without usage keeps the earlier value.
+	usageMeta map[string]interface{}
 
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
@@ -1052,6 +1145,8 @@ func newXAIResponsesStream(r io.ReadCloser, includeRawChunks ...bool) *xaiRespon
 		itemTypes:        make(map[int]string),
 		activeReasoning:  make(map[string]struct{}),
 		includeRawChunks: emitRaw,
+		textSeen:         make(map[string]bool),
+		finishReason:     types.FinishReasonInterrupted,
 	}
 }
 
@@ -1108,19 +1203,20 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 
 		event, err := s.parser.Next()
 		if err != nil {
+			if err == io.EOF {
+				s.queueFlush()
+				continue
+			}
 			s.err = err
 			return nil, err
 		}
 
 		if streaming.IsStreamDone(event) {
-			s.err = io.EOF
-			return nil, io.EOF
+			s.queueFlush()
+			continue
 		}
 		if s.includeRawChunks {
-			var raw interface{}
-			if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
-				raw = event.Data
-			}
+			raw := streaming.RawChunkValue(event.Data)
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type: provider.ChunkTypeRaw,
 				Raw:  raw,
@@ -1129,9 +1225,28 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 
 		var peek responses.ResponsesStreamEvent
 		if err := json.Unmarshal([]byte(event.Data), &peek); err != nil {
+			msg, perr := providerutils.ChunkParseFailure(event.Data, err)
+			s.finishReason, s.rawFinishReason = types.FinishReasonError, ""
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+				Text: msg,
+				Err:  perr,
+			})
+			if ok {
+				return chunk, nil
+			}
+			continue
+		}
+
+		// TS xaiResponsesChunkSchema is a closed union: an event type it does
+		// not list, or a listed one whose members do not match, fails the
+		// parse and becomes an error part (the stream keeps going).
+		if msg, perr := providerutils.CheckXAIResponsesChunk(event.Data); perr != nil {
+			s.finishReason, s.rawFinishReason = types.FinishReasonError, ""
+			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: msg,
+				Err:  perr,
 			})
 			if ok {
 				return chunk, nil
@@ -1152,6 +1267,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			metadata := &provider.ResponseMetadata{
 				ID:      e.Response.ID,
 				ModelID: e.Response.Model,
+				Headers: providerutils.ExtractHeaders(s.responseHeaders),
 			}
 			if e.Response.CreatedAt != 0 {
 				metadata.Timestamp = time.Unix(e.Response.CreatedAt, 0)
@@ -1171,29 +1287,53 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.itemTypes[e.OutputIndex] = e.Item.Type
+			if e.Item.Type == "message" {
+				var added struct {
+					Item json.RawMessage `json:"item"`
+				}
+				if json.Unmarshal([]byte(event.Data), &added) == nil {
+					s.queueMessageItem(added.Item)
+				}
+			}
 			if e.Item.Type == "function_call" {
 				s.toolAccum[e.OutputIndex] = &xaiResponsesToolAccum{
 					id:   e.Item.CallID,
 					name: e.Item.Name,
 				}
+				// TS streams the call's input: tool-input-start now,
+				// deltas as arguments arrive, tool-input-end at done.
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type:     provider.ChunkTypeToolInputStart,
+					ToolCall: &types.ToolCall{ID: e.Item.CallID, ToolName: e.Item.Name},
+				})
+			}
+			if isXAIProviderExecutedItem(e.Item.Type) {
+				var added struct {
+					Item json.RawMessage `json:"item"`
+				}
+				if json.Unmarshal([]byte(event.Data), &added) == nil {
+					s.queueProviderExecutedItem(e.Item.Type, added.Item, false)
+				}
 			}
 			continue
 
 		case "response.output_text.delta":
-			var e responses.OutputTextDeltaEvent
+			var e struct {
+				ItemID string `json:"item_id"`
+				Delta  string `json:"delta"`
+			}
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
-			if e.Delta == "" {
-				continue
-			}
-			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+			// TS: text-start once per `text-<item_id>` block, then a
+			// text-delta for every event (an empty delta included).
+			blockID := "text-" + e.ItemID
+			s.startTextBlock(blockID)
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type: provider.ChunkTypeText,
+				ID:   blockID,
 				Text: e.Delta,
 			})
-			if ok {
-				return chunk, nil
-			}
 			continue
 
 		case "response.function_call_arguments.delta":
@@ -1203,6 +1343,11 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			if accum, ok := s.toolAccum[e.OutputIndex]; ok {
 				accum.arguments += e.Delta
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type: provider.ChunkTypeToolInputDelta,
+					ID:   accum.id,
+					Text: e.Delta,
+				})
 			}
 			continue
 
@@ -1234,9 +1379,6 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
-			if e.Delta == "" {
-				continue
-			}
 			blockID := "reasoning-" + e.ItemID
 			meta, _ := json.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": e.ItemID}})
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
@@ -1260,28 +1402,21 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
-			if e.Delta == "" {
-				continue
-			}
 			blockID := "reasoning-" + e.ItemID
 			meta, _ := json.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": e.ItemID}})
 			if _, started := s.activeReasoning[e.ItemID]; !started {
 				// First delta without a prior summary_part.added — emit start now.
 				s.activeReasoning[e.ItemID] = struct{}{}
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type:             provider.ChunkTypeReasoningStart,
+					ID:               blockID,
+					ProviderMetadata: meta,
+				}, &provider.StreamChunk{
 					Type:             provider.ChunkTypeReasoning,
 					ID:               blockID,
 					Reasoning:        e.Delta,
 					ProviderMetadata: meta,
 				})
-				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
-					Type:             provider.ChunkTypeReasoningStart,
-					ID:               blockID,
-					ProviderMetadata: meta,
-				})
-				if ok {
-					return chunk, nil
-				}
 				continue
 			}
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
@@ -1298,29 +1433,14 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		// Gap 7: url_citation annotations delivered when a text item is finalised.
 		case "response.output_text.done":
 			var e struct {
-				Annotations []struct {
-					Type  string `json:"type"`
-					URL   string `json:"url,omitempty"`
-					Title string `json:"title,omitempty"`
-				} `json:"annotations,omitempty"`
+				Annotations []json.RawMessage `json:"annotations,omitempty"`
 			}
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
 			for _, ann := range e.Annotations {
-				if ann.Type == "url_citation" && ann.URL != "" {
-					title := ann.Title
-					if title == "" {
-						title = ann.URL
-					}
-					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-						Type: provider.ChunkTypeSource,
-						SourceContent: &types.SourceContent{
-							SourceType: "url",
-							URL:        ann.URL,
-							Title:      title,
-						},
-					})
+				if source := xaiURLCitationSource(ann); source != nil {
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: source})
 				}
 			}
 			continue
@@ -1328,33 +1448,51 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		// Gap 7: individual annotation added mid-stream.
 		case "response.output_text.annotation.added":
 			var e struct {
-				Annotation struct {
-					Type  string `json:"type"`
-					URL   string `json:"url,omitempty"`
-					Title string `json:"title,omitempty"`
-				} `json:"annotation"`
+				Annotation json.RawMessage `json:"annotation"`
 			}
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
-			if e.Annotation.Type == "url_citation" && e.Annotation.URL != "" {
-				title := e.Annotation.Title
-				if title == "" {
-					title = e.Annotation.URL
-				}
+			if source := xaiURLCitationSource(e.Annotation); source != nil {
 				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
-					Type: provider.ChunkTypeSource,
-					SourceContent: &types.SourceContent{
-						SourceType: "url",
-						URL:        e.Annotation.URL,
-						Title:      title,
-					},
+					Type:          provider.ChunkTypeSource,
+					SourceContent: source,
 				})
 				if ok {
 					return chunk, nil
 				}
 				continue
 			}
+			continue
+
+		// TS announces a hosted image_generation call from its progress events
+		// when output_item.added has not been seen for the item.
+		case "response.image_generation_call.in_progress", "response.image_generation_call.generating", "response.image_generation_call.completed":
+			var e struct {
+				ItemID string `json:"item_id"`
+			}
+			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+				continue
+			}
+			if s.seenToolCalls == nil {
+				s.seenToolCalls = map[string]bool{}
+			}
+			if s.seenToolCalls[e.ItemID] {
+				continue
+			}
+			s.seenToolCalls[e.ItemID] = true
+			toolName := s.toolNames["xai.image_generation"]
+			if toolName == "" {
+				toolName = "image_generation"
+			}
+			s.flushQueue = append(s.flushQueue,
+				&provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: e.ItemID, ToolName: toolName}},
+				&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: e.ItemID, Text: "{}"},
+				&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: e.ItemID, ToolCall: &types.ToolCall{ID: e.ItemID, ToolName: toolName}},
+				&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+					ID: e.ItemID, ToolName: toolName, Arguments: map[string]interface{}{}, RawArguments: "{}", ProviderExecuted: true,
+				}},
+			)
 			continue
 
 		case "response.output_item.done":
@@ -1368,72 +1506,30 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			continue
 
-		// Gap 4: response.done is an alias for response.completed.
+		// Gap 4: response.done is an alias for response.completed. TS only
+		// records the usage, finish reason and metadata here; `finish` is
+		// enqueued by flush() at the end of the stream.
 		case "response.completed", "response.done":
 			var e responses.ResponseCompletedEvent
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-				s.err = io.EOF
-				return nil, io.EOF
+				continue
 			}
-			usage := convertXAIResponsesUsage(e.Response.Usage)
-			// Mirrors TS xai-responses-language-model.ts's response.completed/
-			// response.done branch: unified finish reason is forced to
+			s.recordUsage(e.Response.Usage)
+			// Mirrors TS: the unified finish reason is forced to
 			// 'tool-calls' when a function_call item completed during the
 			// stream, regardless of what response.status reports.
-			var finishReason types.FinishReason
-			if s.hasFunctionCall {
-				finishReason = types.FinishReasonToolCalls
-			} else {
-				finishReason = mapXAIResponsesFinishReason(e.Response.Status, e.Response.IncompleteDetails)
+			if e.Response.Status != "" {
+				if s.hasFunctionCall {
+					s.finishReason = types.FinishReasonToolCalls
+				} else {
+					s.finishReason = mapXAIResponsesFinishReason(e.Response.Status, nil)
+				}
+				s.rawFinishReason = e.Response.Status
+			} else if s.finishReason == types.FinishReasonInterrupted {
+				// The terminal event arrived, but supplied no recognized reason.
+				s.finishReason, s.rawFinishReason = types.FinishReasonOther, ""
 			}
-
-			var meta json.RawMessage
-			metaMap := map[string]interface{}{}
-			hasCost := e.Response.Usage != nil && (e.Response.Usage.CostInUsdTicks != nil || e.Response.Usage.InputTokensCost != nil || e.Response.Usage.OutputTokensCost != nil)
-			// Row 484293f: serviceTier surfaces in providerMetadata.xai
-			// alongside costInUsdTicks in streaming too, not just doGenerate.
-			// Row 0a5dd0f9c3: promptCacheKey/safetyIdentifier echo the same way.
-			if hasCost || e.Response.ServiceTier != "" || e.Response.PromptCacheKey != "" || e.Response.SafetyIdentifier != "" {
-				xaiMeta := map[string]interface{}{}
-				if e.Response.Usage != nil && e.Response.Usage.CostInUsdTicks != nil {
-					xaiMeta["costInUsdTicks"] = *e.Response.Usage.CostInUsdTicks
-				}
-				if e.Response.Usage != nil && (e.Response.Usage.InputTokensCost != nil || e.Response.Usage.OutputTokensCost != nil) {
-					cost := map[string]interface{}{}
-					if e.Response.Usage.InputTokensCost != nil {
-						cost["inputTokensCost"] = *e.Response.Usage.InputTokensCost
-					}
-					if e.Response.Usage.OutputTokensCost != nil {
-						cost["outputTokensCost"] = *e.Response.Usage.OutputTokensCost
-					}
-					xaiMeta["cost"] = cost
-				}
-				if e.Response.ServiceTier != "" {
-					xaiMeta["serviceTier"] = e.Response.ServiceTier
-				}
-				if e.Response.PromptCacheKey != "" {
-					xaiMeta["promptCacheKey"] = e.Response.PromptCacheKey
-				}
-				if e.Response.SafetyIdentifier != "" {
-					xaiMeta["safetyIdentifier"] = e.Response.SafetyIdentifier
-				}
-				metaMap["xai"] = xaiMeta
-			}
-			if len(metaMap) > 0 {
-				meta, _ = json.Marshal(metaMap)
-			}
-
-			s.err = io.EOF
-			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
-				Type:             provider.ChunkTypeFinish,
-				FinishReason:     finishReason,
-				RawFinishReason:  e.Response.Status,
-				Usage:            &usage,
-				ProviderMetadata: meta,
-			})
-			if ok {
-				return chunk, nil
-			}
+			s.recordMetadata(e.Response.Usage, e.Response.ServiceTier, e.Response.PromptCacheKey, e.Response.SafetyIdentifier)
 			continue
 
 		case "response.incomplete":
@@ -1443,27 +1539,21 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 					ID                string                       `json:"id,omitempty"`
 					Usage             *responses.ResponsesAPIUsage `json:"usage,omitempty"`
 					IncompleteDetails *responses.IncompleteDetails `json:"incomplete_details,omitempty"`
+					ServiceTier       string                       `json:"service_tier,omitempty"`
+					PromptCacheKey    string                       `json:"prompt_cache_key,omitempty"`
+					SafetyIdentifier  string                       `json:"safety_identifier,omitempty"`
 				} `json:"response"`
 			}
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
-			usage := convertXAIResponsesUsage(e.Response.Usage)
-			finishReason := mapXAIResponsesFinishReason("incomplete", e.Response.IncompleteDetails)
-			rawFinishReason := "incomplete"
+			s.recordUsage(e.Response.Usage)
+			s.finishReason = mapXAIResponsesFinishReason("incomplete", e.Response.IncompleteDetails)
+			s.rawFinishReason = "incomplete"
 			if e.Response.IncompleteDetails != nil && e.Response.IncompleteDetails.Reason != "" {
-				rawFinishReason = e.Response.IncompleteDetails.Reason
+				s.rawFinishReason = e.Response.IncompleteDetails.Reason
 			}
-			s.err = io.EOF
-			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
-				Type:            provider.ChunkTypeFinish,
-				FinishReason:    finishReason,
-				RawFinishReason: rawFinishReason,
-				Usage:           &usage,
-			})
-			if ok {
-				return chunk, nil
-			}
+			s.recordMetadata(e.Response.Usage, e.Response.ServiceTier, e.Response.PromptCacheKey, e.Response.SafetyIdentifier)
 			continue
 
 		case "response.failed":
@@ -1471,16 +1561,17 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
-			usage := convertXAIResponsesUsage(e.Response.Usage)
-			finishReason := types.FinishReasonError
-			rawFinishReason := "error"
+			s.finishReason = types.FinishReasonError
+			s.rawFinishReason = "error"
 			if e.Response.IncompleteDetails != nil && e.Response.IncompleteDetails.Reason != "" {
-				finishReason = mapXAIResponsesFinishReason("incomplete", e.Response.IncompleteDetails)
-				rawFinishReason = e.Response.IncompleteDetails.Reason
+				s.finishReason = mapXAIResponsesFinishReason("incomplete", e.Response.IncompleteDetails)
+				s.rawFinishReason = e.Response.IncompleteDetails.Reason
 			}
+			s.recordUsage(e.Response.Usage)
 			// Mirrors TS xai-responses-language-model.ts's response.failed
 			// branch: response.error != null enqueues a structured error chunk
-			// (createXaiResponsesStreamError) before the terminal finish chunk.
+			// (createXaiResponsesStreamError); the finish chunk follows at the
+			// end of the stream.
 			if e.Response.Error != nil {
 				var data interface{}
 				_ = json.Unmarshal([]byte(event.Data), &data)
@@ -1490,16 +1581,6 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 					Err:  newXAIResponsesStreamError("xai", e.Response.Error.Message, e.Response.Error.Code, peek.Type, data),
 				})
 			}
-			s.err = io.EOF
-			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
-				Type:            provider.ChunkTypeFinish,
-				FinishReason:    finishReason,
-				RawFinishReason: rawFinishReason,
-				Usage:           &usage,
-			})
-			if ok {
-				return chunk, nil
-			}
 			continue
 
 		case "error":
@@ -1508,6 +1589,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			streamErr := &XAIStreamError{Code: e.Code, Message: e.Message}
+			s.finishReason, s.rawFinishReason = types.FinishReasonError, ""
 			var data interface{}
 			_ = json.Unmarshal([]byte(event.Data), &data)
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
@@ -1521,178 +1603,217 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			continue
 
 		default:
+			// Validated above: a listed event with nothing to emit.
 			continue
 		}
 
 	}
 }
 
+// xaiCitationTitle is TS `annotation.title ?? annotation.url`: only a missing
+// or null title falls back to the URL, an empty title stays empty.
+func xaiCitationTitle(title *string, url string) string {
+	if title == nil {
+		return url
+	}
+	return *title
+}
+
+// xaiURLCitationSource is TS's `annotation.type === 'url_citation' && 'url'
+// in annotation` over xAI's annotation union: the url_citation branch needs a
+// string url (an empty one included) and an absent or string title; an
+// annotation that fails it parses as the bare {type} branch and is no source.
+func xaiURLCitationSource(raw json.RawMessage) *types.SourceContent {
+	var ann struct {
+		Type  string  `json:"type"`
+		URL   *string `json:"url"`
+		Title *string `json:"title"`
+	}
+	if json.Unmarshal(raw, &ann) != nil || ann.Type != "url_citation" || ann.URL == nil {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return nil
+	}
+	if title, ok := fields["title"]; ok && string(title) == "null" {
+		return nil
+	}
+	return &types.SourceContent{SourceType: "url", ID: streaming.GenerateID(), URL: *ann.URL, Title: xaiCitationTitle(ann.Title, *ann.URL)}
+}
+
+// startTextBlock enqueues text-start the first time a text block id is seen.
+func (s *xaiResponsesStream) startTextBlock(blockID string) {
+	if s.textSeen[blockID] {
+		return
+	}
+	s.textSeen[blockID] = true
+	s.textBlocks = append(s.textBlocks, blockID)
+	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: blockID})
+}
+
+// queueMessageItem mirrors the TS `message` output item branch: text that was
+// not already streamed through output_text.delta is emitted whole, and each
+// url_citation annotation becomes a source (on every added/done event, as TS).
+func (s *xaiResponsesStream) queueMessageItem(raw json.RawMessage) {
+	var item struct {
+		ID      string `json:"id"`
+		Content []struct {
+			Text        string            `json:"text"`
+			Annotations []json.RawMessage `json:"annotations"`
+		} `json:"content"`
+	}
+	if json.Unmarshal(raw, &item) != nil {
+		return
+	}
+	blockID := "text-" + item.ID
+	for _, part := range item.Content {
+		if part.Text != "" && !s.textSeen[blockID] {
+			s.startTextBlock(blockID)
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, ID: blockID, Text: part.Text})
+		}
+		for _, ann := range part.Annotations {
+			if source := xaiURLCitationSource(ann); source != nil {
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: source})
+			}
+		}
+	}
+}
+
+func (s *xaiResponsesStream) recordUsage(u *responses.ResponsesAPIUsage) {
+	if u == nil {
+		return
+	}
+	usage := convertXAIResponsesUsage(u)
+	s.finishUsage = &usage
+}
+
+func (s *xaiResponsesStream) recordMetadata(u *responses.ResponsesAPIUsage, serviceTier, promptCacheKey, safetyIdentifier string) {
+	if u != nil {
+		s.usageMeta = map[string]interface{}{}
+		if u.CostInUsdTicks != nil {
+			s.usageMeta["costInUsdTicks"] = *u.CostInUsdTicks
+		}
+		if u.InputTokensCost != nil || u.OutputTokensCost != nil {
+			cost := map[string]interface{}{}
+			if u.InputTokensCost != nil {
+				cost["inputTokensCost"] = *u.InputTokensCost
+			}
+			if u.OutputTokensCost != nil {
+				cost["outputTokensCost"] = *u.OutputTokensCost
+			}
+			s.usageMeta["cost"] = cost
+		}
+	}
+	xaiMeta := map[string]interface{}{}
+	for k, v := range s.usageMeta {
+		xaiMeta[k] = v
+	}
+	if serviceTier != "" {
+		xaiMeta["serviceTier"] = serviceTier
+	}
+	if promptCacheKey != "" {
+		xaiMeta["promptCacheKey"] = promptCacheKey
+	}
+	if safetyIdentifier != "" {
+		xaiMeta["safetyIdentifier"] = safetyIdentifier
+	}
+	if len(xaiMeta) == 0 {
+		s.finishMeta = nil
+		return
+	}
+	s.finishMeta, _ = json.Marshal(map[string]interface{}{"xai": xaiMeta})
+}
+
+// queueFlush is TS flush(): end every text block, then enqueue `finish` with
+// the last recorded finish reason, usage and metadata (other / zero usage when
+// the stream ended without a terminal response event), and end the stream.
+func (s *xaiResponsesStream) queueFlush() {
+	for _, id := range s.textBlocks {
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: id})
+	}
+	usage := s.finishUsage
+	if usage == nil {
+		zero := xaiZeroUsage()
+		usage = &zero
+	}
+	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+		Type:             provider.ChunkTypeFinish,
+		FinishReason:     s.finishReason,
+		RawFinishReason:  s.rawFinishReason,
+		Usage:            usage,
+		ProviderMetadata: s.finishMeta,
+	})
+	s.err = io.EOF
+}
+
 func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) (*provider.StreamChunk, bool) {
 	itemType := s.itemTypes[e.OutputIndex]
+	var doneType struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(e.Item, &doneType) == nil && doneType.Type == "message" {
+		delete(s.itemTypes, e.OutputIndex)
+		s.queueMessageItem(e.Item)
+		return nil, false
+	}
+	// TS dispatches on the done item's own type, so an item that was never
+	// announced by output_item.added is still handled.
+	if doneType.Type != "" {
+		itemType = doneType.Type
+	}
 
 	switch itemType {
 	case "function_call":
 		s.hasFunctionCall = true
 		accum, ok := s.toolAccum[e.OutputIndex]
 		if !ok {
-			return nil, false
+			accum = &xaiResponsesToolAccum{}
 		}
 		delete(s.toolAccum, e.OutputIndex)
 		delete(s.itemTypes, e.OutputIndex)
 
-		var args map[string]interface{}
-		if accum.arguments != "" {
-			json.Unmarshal([]byte(accum.arguments), &args) //nolint:errcheck
+		// TS uses the done item's call_id / name / arguments.
+		callID, name, rawArgs := accum.id, accum.name, accum.arguments
+		var doneItem struct {
+			CallID    string `json:"call_id"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
 		}
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type: provider.ChunkTypeToolCall,
-			ToolCall: &types.ToolCall{
-				ID:        accum.id,
-				ToolName:  accum.name,
-				Arguments: args,
-			},
-		})
+		if json.Unmarshal(e.Item, &doneItem) == nil {
+			if doneItem.CallID != "" {
+				callID = doneItem.CallID
+			}
+			if doneItem.Name != "" {
+				name = doneItem.Name
+			}
+			// TS: `input: part.arguments` -- the done item's arguments verbatim,
+			// not the accumulated deltas.
+			rawArgs = doneItem.Arguments
+		}
+		var args map[string]interface{}
+		if rawArgs != "" {
+			json.Unmarshal([]byte(rawArgs), &args) //nolint:errcheck
+		}
+		s.flushQueue = append(s.flushQueue,
+			&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: callID, ToolCall: &types.ToolCall{ID: callID, ToolName: name}},
+			&provider.StreamChunk{
+				Type: provider.ChunkTypeToolCall,
+				ToolCall: &types.ToolCall{
+					ID:           callID,
+					ToolName:     name,
+					Arguments:    args,
+					RawArguments: rawArgs,
+				},
+			})
+		return nil, false
 
 	case "web_search_call", "x_search_call", "code_interpreter_call",
-		"code_execution_call", "view_image_call", "view_x_video_call":
+		"code_execution_call", "view_image_call", "view_x_video_call",
+		"file_search_call", "image_generation_call", "custom_tool_call", "mcp_call":
 		delete(s.itemTypes, e.OutputIndex)
-		var item struct {
-			ID     string          `json:"id"`
-			Action json.RawMessage `json:"action,omitempty"`
-		}
-		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return nil, false
-		}
-		toolName := providerToolNameFromType(itemType)
-		// Row 5520b8a: emit a tool-result chunk right after the tool-call for
-		// completed provider-executed tools; web_search additionally carries
-		// its mapped action/sources (row 6843788).
-		result := interface{}(map[string]interface{}{})
-		if itemType == "web_search_call" {
-			result = mapWebSearchAction(item.Action)
-		}
-		// Queue both chunks (FIFO) so the tool-call is returned now and the
-		// tool-result follows on the next Next() call, preserving any
-		// chunks already pending ahead of them.
-		s.flushQueue = append(s.flushQueue,
-			&provider.StreamChunk{
-				Type: provider.ChunkTypeToolCall,
-				ToolCall: &types.ToolCall{
-					ID:               item.ID,
-					ToolName:         toolName,
-					ProviderExecuted: true,
-				},
-			},
-			&provider.StreamChunk{
-				Type: provider.ChunkTypeToolResult,
-				ToolResult: &types.ToolResult{
-					ToolCallID: item.ID,
-					ToolName:   toolName,
-					Result:     result,
-				},
-			},
-		)
-		next := s.flushQueue[0]
-		s.flushQueue = s.flushQueue[1:]
-		return next, true
-
-	case "file_search_call":
-		delete(s.itemTypes, e.OutputIndex)
-		var item struct {
-			ID string `json:"id"`
-		}
-		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return nil, false
-		}
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type: provider.ChunkTypeToolCall,
-			ToolCall: &types.ToolCall{
-				ID:               item.ID,
-				ToolName:         "xai.file_search",
-				ProviderExecuted: true,
-			},
-		})
-
-	case "mcp_call":
-		delete(s.itemTypes, e.OutputIndex)
-		var item struct {
-			ID   string `json:"id"`
-			Name string `json:"name,omitempty"`
-		}
-		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return nil, false
-		}
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type: provider.ChunkTypeToolCall,
-			ToolCall: &types.ToolCall{
-				ID:               item.ID,
-				ToolName:         item.Name,
-				ProviderExecuted: true,
-			},
-		})
-
-	case "image_generation_call":
-		// Row fa2c2bb.
-		delete(s.itemTypes, e.OutputIndex)
-		var item struct {
-			ID     string  `json:"id"`
-			Status string  `json:"status"`
-			Prompt *string `json:"prompt,omitempty"`
-			Result *string `json:"result,omitempty"`
-		}
-		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return nil, false
-		}
-		var resultChunk types.ToolResult
-		if item.Result != nil {
-			resultValue := map[string]interface{}{"result": *item.Result}
-			if item.Prompt != nil {
-				resultValue["prompt"] = *item.Prompt
-			}
-			resultChunk = types.ToolResult{ToolCallID: item.ID, ToolName: "xai.image_generation", Result: resultValue}
-		} else {
-			resultChunk = types.ToolResult{
-				ToolCallID: item.ID,
-				ToolName:   "xai.image_generation",
-				Error:      fmt.Errorf("Image generation failed (status: %s).", item.Status), //nolint:staticcheck // matches TS SDK's exact error text
-			}
-		}
-		s.flushQueue = append(s.flushQueue,
-			&provider.StreamChunk{
-				Type: provider.ChunkTypeToolCall,
-				ToolCall: &types.ToolCall{
-					ID:               item.ID,
-					ToolName:         "xai.image_generation",
-					RawArguments:     "{}",
-					ProviderExecuted: true,
-				},
-			},
-			&provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &resultChunk},
-		)
-		next := s.flushQueue[0]
-		s.flushQueue = s.flushQueue[1:]
-		return next, true
-
-	// Gap 3: custom_tool_call handled on done (input arrives via custom_tool_call_input.delta).
-	case "custom_tool_call":
-		delete(s.itemTypes, e.OutputIndex)
-		var item struct {
-			ID    string `json:"id"`
-			Name  string `json:"name,omitempty"`
-			Input string `json:"input,omitempty"`
-		}
-		if err := json.Unmarshal(e.Item, &item); err != nil {
-			return nil, false
-		}
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type: provider.ChunkTypeToolCall,
-			ToolCall: &types.ToolCall{
-				ID:               item.ID,
-				ToolName:         item.Name,
-				Arguments:        map[string]interface{}{"input": item.Input},
-				ProviderExecuted: true,
-			},
-		})
+		s.queueProviderExecutedItem(itemType, e.Item, true)
+		return nil, false
 
 	// Gap 2: forward encrypted_content from reasoning items so callers can
 	// round-trip it in subsequent turns when store=false.
@@ -1708,9 +1829,8 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
-		if item.ID == "" && item.EncryptedContent == "" {
-			return nil, false
-		}
+		// TS emits reasoning-start/-end for every done reasoning item, even
+		// one without an id or encrypted content.
 		meta := map[string]interface{}{}
 		if item.ID != "" {
 			meta["itemId"] = item.ID
@@ -1724,19 +1844,16 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 		// If no reasoning-start was emitted yet (encrypted reasoning path where
 		// reasoning_summary_part.added events are not sent), emit one now.
 		if _, started := s.activeReasoning[item.ID]; !started {
-			s.activeReasoning[item.ID] = struct{}{}
-			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-				Type:             provider.ChunkTypeReasoningEnd,
-				ID:               blockID,
-				ProviderMetadata: providerMeta,
-			})
-			delete(s.activeReasoning, item.ID)
-			startMeta, _ := json.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": item.ID}})
-			return s.emitParsedChunk(&provider.StreamChunk{
-				Type:             provider.ChunkTypeReasoningStart,
-				ID:               blockID,
-				ProviderMetadata: startMeta,
-			})
+			startXAI := map[string]interface{}{}
+			if item.ID != "" {
+				startXAI["itemId"] = item.ID
+			}
+			startMeta, _ := json.Marshal(map[string]interface{}{"xai": startXAI})
+			s.flushQueue = append(s.flushQueue,
+				&provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: blockID, ProviderMetadata: startMeta},
+				&provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: blockID, ProviderMetadata: providerMeta},
+			)
+			return nil, false
 		}
 
 		delete(s.activeReasoning, item.ID)
@@ -1754,3 +1871,150 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 
 // Compile-time interface check.
 var _ provider.LanguageModel = (*ResponsesLanguageModel)(nil)
+
+func isXAIProviderExecutedItem(t string) bool {
+	switch t {
+	case "web_search_call", "x_search_call", "code_interpreter_call", "code_execution_call",
+		"view_image_call", "view_x_video_call", "custom_tool_call", "mcp_call",
+		"file_search_call", "image_generation_call":
+		return true
+	}
+	return false
+}
+
+// queueProviderExecutedItem mirrors the TS doStream handling of
+// provider-executed output items (web/x search, code execution, file search,
+// image generation, custom and MCP tools): on the first sighting of an item
+// it streams tool-input-start / delta / end followed by the tool-call, and on
+// done it adds the tool-result. custom_tool_call is only emitted on done.
+func (s *xaiResponsesStream) queueProviderExecutedItem(itemType string, raw json.RawMessage, done bool) {
+	var item struct {
+		ID        string          `json:"id"`
+		Name      string          `json:"name,omitempty"`
+		Action    json.RawMessage `json:"action,omitempty"`
+		Arguments string          `json:"arguments,omitempty"`
+		Input     string          `json:"input,omitempty"`
+		Status    string          `json:"status,omitempty"`
+		Prompt    *string         `json:"prompt,omitempty"`
+		Result    *string         `json:"result,omitempty"`
+		Queries   []string        `json:"queries,omitempty"`
+		Results   []struct {
+			FileID   string  `json:"file_id"`
+			Filename string  `json:"filename"`
+			Score    float64 `json:"score"`
+			Text     string  `json:"text"`
+		} `json:"results,omitempty"`
+	}
+	if json.Unmarshal(raw, &item) != nil {
+		return
+	}
+	if s.seenToolCalls == nil {
+		s.seenToolCalls = map[string]bool{}
+	}
+	var toolName, toolInput string
+	switch itemType {
+	case "file_search_call":
+		toolName = s.toolNames["xai.file_search"]
+		if toolName == "" {
+			toolName = "file_search"
+		}
+	case "image_generation_call":
+		toolName = s.toolNames["xai.image_generation"]
+		if toolName == "" {
+			toolName = "image_generation"
+		}
+		toolInput = "{}"
+	default:
+		toolName = bareXAIToolName(itemType, item.Name, s.toolNames)
+		toolInput = item.Arguments
+		if itemType == "custom_tool_call" {
+			toolInput = item.Input
+		}
+	}
+	emit := !s.seenToolCalls[item.ID]
+	if itemType == "custom_tool_call" {
+		emit = emit && done
+	}
+	if emit {
+		s.seenToolCalls[item.ID] = true
+		var args map[string]interface{}
+		_ = json.Unmarshal([]byte(toolInput), &args)
+		s.flushQueue = append(s.flushQueue,
+			&provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: item.ID, ToolName: toolName}},
+			&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: item.ID, Text: toolInput},
+			&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: item.ID, ToolCall: &types.ToolCall{ID: item.ID, ToolName: toolName}},
+			&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+				ID: item.ID, ToolName: toolName, Arguments: args, RawArguments: toolInput, ProviderExecuted: true,
+			}},
+		)
+	}
+	if !done {
+		return
+	}
+	result := types.ToolResult{ToolCallID: item.ID, ToolName: toolName}
+	switch itemType {
+	case "file_search_call":
+		results := interface{}(nil)
+		if item.Results != nil {
+			mapped := make([]map[string]interface{}, len(item.Results))
+			for i, r := range item.Results {
+				mapped[i] = map[string]interface{}{"fileId": r.FileID, "filename": r.Filename, "score": r.Score, "text": r.Text}
+			}
+			results = mapped
+		}
+		queries := item.Queries
+		if queries == nil {
+			queries = []string{}
+		}
+		result.Result = map[string]interface{}{"queries": queries, "results": results}
+	case "image_generation_call":
+		if item.Result != nil {
+			v := map[string]interface{}{"result": *item.Result}
+			if item.Prompt != nil {
+				v["prompt"] = *item.Prompt
+			}
+			result.Result = v
+		} else {
+			// TS: isError with the message as the result value.
+			failure := fmt.Sprintf("Image generation failed (status: %s).", item.Status)
+			result.Result = failure
+			result.Error = errors.New(failure)
+		}
+	case "web_search_call":
+		result.Result = mapWebSearchAction(item.Action)
+	default:
+		result.Result = map[string]interface{}{}
+	}
+	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &result})
+}
+
+// bareXAIToolName resolves the SDK name of a provider-executed item like TS:
+// the registered name when the tool was declared, otherwise the bare tool
+// name ("web_search", "x_search", "code_execution", the item's own name).
+func bareXAIToolName(itemType, itemName string, toolNames map[string]string) string {
+	webSearchSubTools := map[string]bool{"web_search": true, "web_search_with_snippets": true, "browse_page": true}
+	xSearchSubTools := map[string]bool{"x_user_search": true, "x_keyword_search": true, "x_semantic_search": true, "x_thread_fetch": true}
+	pick := func(id, bare string) string {
+		if n := toolNames[id]; n != "" {
+			return n
+		}
+		return bare
+	}
+	switch {
+	case webSearchSubTools[itemName] || itemType == "web_search_call":
+		return pick("xai.web_search", "web_search")
+	case xSearchSubTools[itemName] || itemType == "x_search_call":
+		return pick("xai.x_search", "x_search")
+	case itemName == "code_execution" || itemType == "code_interpreter_call" || itemType == "code_execution_call":
+		return pick("xai.code_execution", "code_execution")
+	case itemType == "mcp_call":
+		if n := toolNames["xai.mcp"]; n != "" {
+			return n
+		}
+		if itemName != "" {
+			return itemName
+		}
+		return "mcp"
+	}
+	return itemName
+}

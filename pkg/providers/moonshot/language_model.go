@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -34,12 +36,12 @@ func NewLanguageModel(prov *Provider, modelID string) *LanguageModel {
 
 // SpecificationVersion returns the specification version
 func (m *LanguageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
 func (m *LanguageModel) Provider() string {
-	return "moonshot"
+	return "moonshotai.chat"
 }
 
 // ModelID returns the model ID
@@ -84,9 +86,11 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 	var response moonshotResponse
 	resp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/chat/completions",
-		Body:   reqBody,
+		Method:           http.MethodPost,
+		Path:             "/chat/completions",
+		Body:             reqBody,
+		Headers:          opts.Headers,
+		ValidateResponse: providerutils.ChatResponseValidator(m.Provider(), providerutils.ResponseKindMoonshot),
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -96,7 +100,18 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, err
 	}
 	result.Warnings = append(warnings, result.Warnings...)
+	if raw, ok := cacheWriteTokensByTTL(resp.Headers); ok {
+		if meta, ok := result.ProviderMetadata["moonshotai"].(map[string]json.RawMessage); ok {
+			meta["cacheWriteTokens"] = raw
+		}
+	}
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	// TS result.request.body: the request as sent.
+	result.RawRequest = reqBody
+	// TS response.body is the raw parsed JSON, not the schema-filtered value.
+	if len(resp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(resp.Body)
+	}
 	responseMetadata := &types.ResponseMetadata{
 		ID:      response.ID,
 		ModelID: response.Model,
@@ -117,12 +132,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	httpResp, err := m.prov.client.DoStream(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/chat/completions",
-		Body:   reqBody,
-		Headers: map[string]string{
-			"Accept": "text/event-stream",
-		},
+		Method:  http.MethodPost,
+		Path:    "/chat/completions",
+		Body:    reqBody,
+		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
 	if err != nil {
 		return nil, m.handleError(err)
@@ -130,6 +143,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 
 	inner := newMoonshotStream(httpResp.Body, opts.IncludeRawChunks)
 	inner.requestBody = reqBody
+	inner.responseHeaders = httpResp.Header
 	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(inner, warnings), httpResp.Header, m.ModelID()), nil
 }
 
@@ -181,7 +195,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		message := "Moonshot Chat Completions does not support budget_tokens. Remove budgetTokens; the option has been omitted."
 		warnings = append(warnings, types.Warning{
 			Type:    "deprecated",
-			Setting: "providerOptions.moonshot.thinking.budgetTokens",
+			Setting: "providerOptions.moonshotai.thinking.budgetTokens",
 			Message: message,
 			Details: message,
 		})
@@ -227,7 +241,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		if requestedReasoningEffort != "" {
 			reasoningEffort = requestedReasoningEffort
 		} else if isCustomReasoning(opts.Reasoning) && !reasoningNone {
-			reasoningEffort = mapReasoningToMoonshotEffort(*opts.Reasoning)
+			reasoningEffort, _ = providerutils.MapReasoningToProviderEffort(*opts.Reasoning, moonshotEffortMap, &warnings)
 		}
 
 	case FamilyKimiK27:
@@ -297,13 +311,13 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: `reasoning "none"`,
-				Details: "Use providerOptions.moonshot.thinking to control thinking on custom models.",
+				Details: "Use providerOptions.moonshotai.thinking to control thinking on custom models.",
 			})
 		}
 		if requestedReasoningEffort != "" {
 			reasoningEffort = requestedReasoningEffort
 		} else if isCustomReasoning(opts.Reasoning) && !reasoningNone {
-			reasoningEffort = mapReasoningToMoonshotEffort(*opts.Reasoning)
+			reasoningEffort, _ = providerutils.MapReasoningToProviderEffort(*opts.Reasoning, moonshotEffortMap, &warnings)
 		}
 		if requestedThinking != nil && requestedThinking.Type != "" {
 			thinkingBody = map[string]interface{}{"type": requestedThinking.Type}
@@ -316,9 +330,15 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	var responseFormat map[string]interface{}
 	var responseFormatType string
 	if providerutils.IsJSONResponseFormat(opts.ResponseFormat) {
-		schemaVal := providerutils.ResponseFormatJSONSchema(opts.ResponseFormat.Schema)
+		schemaVal := providerutils.ResponseFormatJSONSchemaOrdered(opts.ResponseFormat.Schema)
 		if opts.ResponseFormat.Type == "json_object" {
 			schemaVal = nil
+		}
+		var schemaRaw json.RawMessage
+		if raw, ok := providerutils.RawJSONObject(schemaVal); ok {
+			if decoded := providerutils.DecodeRawJSONObject(raw); decoded != nil {
+				schemaRaw, schemaVal = raw, decoded
+			}
 		}
 		schemaMap, _ := schemaVal.(map[string]interface{})
 		if SupportsStructuredOutputs(m.modelID) && schemaMap != nil {
@@ -332,6 +352,9 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			normalized, err := NormalizeJSONSchemaForMFJS(cleaned)
 			if err != nil {
 				return nil, nil, err
+			}
+			if schemaRaw != nil {
+				normalized = providerutils.OrderLike(normalized, schemaRaw)
 			}
 			strict := true
 			if modelOpts.HasStrictJSONSchema {
@@ -427,10 +450,17 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if reasoningEffort != "" {
 		body["reasoning_effort"] = reasoningEffort
 	}
-	if modelOpts.PromptCacheKey != "" {
+	if modelOpts.HasPromptCacheKey {
 		body["prompt_cache_key"] = modelOpts.PromptCacheKey
 	}
-	if modelOpts.SafetyIdentifier != "" {
+	if modelOpts.PromptCacheOptions != nil {
+		cacheOptions := map[string]interface{}{"mode": modelOpts.PromptCacheOptions.Mode}
+		if modelOpts.PromptCacheOptions.TTL != "" {
+			cacheOptions["ttl"] = modelOpts.PromptCacheOptions.TTL
+		}
+		body["prompt_cache_options"] = cacheOptions
+	}
+	if modelOpts.HasSafetyIdentifier {
 		body["safety_identifier"] = modelOpts.SafetyIdentifier
 	}
 
@@ -456,15 +486,22 @@ func isCustomReasoning(r *types.ReasoningLevel) bool {
 	return r != nil && *r != types.ReasoningDefault
 }
 
+// moonshotEffortMap is the TS effortMap for Kimi K3 and unknown models.
+var moonshotEffortMap = map[types.ReasoningLevel]string{
+	types.ReasoningMinimal: "low", types.ReasoningLow: "low",
+	types.ReasoningMedium: "high", types.ReasoningHigh: "high",
+	types.ReasoningXHigh: "max", types.ReasoningMax: "max",
+}
+
 // mapReasoningToMoonshotEffort mirrors the effortMap used for Kimi K3 and
-// unknown models: minimal/low -> low, medium/high -> high, xhigh -> max.
+// unknown models: minimal/low -> low, medium/high -> high, xhigh/max -> max.
 func mapReasoningToMoonshotEffort(r types.ReasoningLevel) string {
 	switch r {
 	case types.ReasoningMinimal, types.ReasoningLow:
 		return "low"
 	case types.ReasoningMedium, types.ReasoningHigh:
 		return "high"
-	case types.ReasoningXHigh:
+	case types.ReasoningXHigh, types.ReasoningMax:
 		return "max"
 	default:
 		return ""
@@ -519,10 +556,11 @@ func (m *LanguageModel) convertResponse(resp moonshotResponse) (*types.GenerateR
 	if len(choice.Message.ToolCalls) > 0 {
 		result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
 		for i, tc := range choice.Message.ToolCalls {
+			// The wire value is a JSON string holding the arguments' JSON text.
+			rawArgs := providerutils.ToolArgumentsString(tc.Function.Arguments)
 			var args map[string]interface{}
-			argText := toolArgumentsString(tc.Function.Arguments)
-			if argText != "" {
-				_ = json.Unmarshal([]byte(argText), &args)
+			if rawArgs != "" {
+				_ = json.Unmarshal([]byte(rawArgs), &args)
 			}
 			if args == nil {
 				args = map[string]interface{}{}
@@ -535,7 +573,7 @@ func (m *LanguageModel) convertResponse(resp moonshotResponse) (*types.GenerateR
 				ID:           id,
 				ToolName:     tc.Function.Name,
 				Arguments:    args,
-				RawArguments: argText,
+				RawArguments: rawArgs,
 			}
 		}
 	}
@@ -564,17 +602,16 @@ func (m *LanguageModel) convertResponse(resp moonshotResponse) (*types.GenerateR
 			meta["messageRole"] = b
 		}
 	}
-	if len(choice.Message.ToolCalls) > 0 {
+	// TS: `choice.message.tool_calls != null` keeps toolCallTypes, even empty.
+	if choice.Message.ToolCalls != nil {
 		toolCallTypes := make([]string, 0, len(choice.Message.ToolCalls))
 		for _, tc := range choice.Message.ToolCalls {
 			if tc.Type != "" {
 				toolCallTypes = append(toolCallTypes, tc.Type)
 			}
 		}
-		if len(toolCallTypes) > 0 {
-			if b, err := json.Marshal(toolCallTypes); err == nil {
-				meta["toolCallTypes"] = b
-			}
+		if b, err := json.Marshal(toolCallTypes); err == nil {
+			meta["toolCallTypes"] = b
 		}
 	}
 	result.ProviderMetadata = map[string]interface{}{"moonshotai": meta}
@@ -585,6 +622,12 @@ func (m *LanguageModel) convertResponse(resp moonshotResponse) (*types.GenerateR
 // handleError converts errors to SDK error types, preserving the Moonshot
 // {error:{message,type,code}} envelope's code when present.
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
 	if parsed := parseMoonshotProviderError(err); parsed != err {
 		return parsed
 	}
@@ -667,8 +710,8 @@ type moonshotStreamToolCallDelta struct {
 	ID       string `json:"id"`
 	Type     string `json:"type"`
 	Function struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
+		Name      streaming.WireName `json:"name"`
+		Arguments *string            `json:"arguments"`
 	} `json:"function"`
 }
 
@@ -707,6 +750,9 @@ type moonshotStream struct {
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
 	// "stream request body field").
 	requestBody interface{}
+
+	// responseHeaders carry the msh-usage-cache-write-tokens-* split.
+	responseHeaders http.Header
 }
 
 // RequestBody implements provider.StreamRequestBody, exposing the raw
@@ -746,6 +792,14 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 
 		event, err := s.parser.Next()
 		if err != nil {
+			if err == io.EOF {
+				// TS flush() runs at the end of the stream whether or not a
+				// [DONE] marker arrived: close open blocks, finalize tool
+				// calls and enqueue the finish chunk.
+				s.done = true
+				s.flushQueue = s.buildFlushChunks()
+				continue
+			}
 			s.err = err
 			return nil, err
 		}
@@ -757,16 +811,24 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 		}
 
 		if s.includeRawChunks {
-			var raw interface{}
-			if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
-				raw = event.Data
-			}
+			raw := streaming.RawChunkValue(event.Data)
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw})
 		}
 
 		var chunk moonshotStreamChunk
-		if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
-			errChunk := &provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("failed to parse stream chunk: %v", err)}
+		// TS moonshotAIChatChunkSchema: invalid JSON or a schema mismatch is an
+		// error part carrying a typed error (finish reason error); the error
+		// envelope is routed below.
+		msg, perr := providerutils.CheckChatChunk(event.Data, providerutils.ChatChunkShape{Kind: providerutils.ChunkKindMoonshot})
+		if perr == nil {
+			if derr := providerutils.UnmarshalChunk([]byte(event.Data), &chunk); derr != nil {
+				msg, perr = providerutils.ChunkParseFailure(event.Data, derr)
+			}
+		}
+		if perr != nil {
+			s.finishReason = types.FinishReasonError
+			s.rawFinishReason = "" // TS: finishReason = { unified: 'error', raw: undefined }
+			errChunk := &provider.StreamChunk{Type: provider.ChunkTypeError, Text: msg, Err: perr}
 			if len(s.flushQueue) > 0 {
 				s.flushQueue = append(s.flushQueue, errChunk)
 				continue
@@ -775,8 +837,10 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 		}
 
 		if chunk.Error != nil {
-			s.err = newMoonshotStreamProviderError(*chunk.Error, []byte(event.Data))
+			// TS: an error chunk sets the finish reason to error and enqueues
+			// the error part; the stream keeps going and flush() finishes it.
 			s.finishReason = types.FinishReasonError
+			s.rawFinishReason = "" // TS: finishReason = { unified: 'error', raw: undefined }
 			// P1-1c part 2: attach the structured StreamProviderError (TS
 			// createMoonshotAIStreamError) so streamRetries/IsRetryable see the
 			// real type/code/statusCode/isRetryable instead of generic inference.
@@ -883,7 +947,7 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 					}
 					s.toolCallTypes[idx] = tc.Type
 				}
-				for _, tcc := range s.toolCallTracker.Track(&idx, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+				for _, tcc := range s.toolCallTracker.TrackWirePtr(&idx, tc.ID, tc.Function.Name, tc.Function.Arguments) {
 					c := tcc
 					s.flushQueue = append(s.flushQueue, &c)
 				}
@@ -917,7 +981,9 @@ func (s *moonshotStream) buildFlushChunks() []*provider.StreamChunk {
 
 	finishReason := s.finishReason
 	if finishReason == "" {
-		finishReason = types.FinishReasonOther
+		// A clean end without the provider's completion signal is
+		// interrupted (TS #23814).
+		finishReason = types.FinishReasonInterrupted
 	}
 
 	usageRaw := s.topLevelUsage
@@ -979,8 +1045,46 @@ func (s *moonshotStream) buildProviderMetadata() json.RawMessage {
 			meta["toolCallTypes"] = b
 		}
 	}
+	if raw, ok := cacheWriteTokensByTTL(s.responseHeaders); ok {
+		meta["cacheWriteTokens"] = raw
+	}
 	raw, _ := json.Marshal(map[string]interface{}{"moonshotai": meta})
 	return raw
+}
+
+// cacheWriteTokensByTTL mirrors TS extractCacheWriteTokensByTtl: the cache
+// write tokens split by TTL from Moonshot's usage response headers, as
+// {"ttl5m": n, "ttl1h": n}. A missing or malformed header counts as 0 when the
+// other is present; neither present yields no metadata.
+func cacheWriteTokensByTTL(headers http.Header) (json.RawMessage, bool) {
+	ttl5m, ok5m := parseTokenCountHeader(headers.Get("msh-usage-cache-write-tokens-5m"))
+	ttl1h, ok1h := parseTokenCountHeader(headers.Get("msh-usage-cache-write-tokens-1h"))
+	if !ok5m && !ok1h {
+		return nil, false
+	}
+	raw, err := json.Marshal(map[string]int64{"ttl5m": ttl5m, "ttl1h": ttl1h})
+	if err != nil {
+		return nil, false
+	}
+	return raw, true
+}
+
+// parseTokenCountHeader accepts only a (trimmed) run of ASCII digits.
+func parseTokenCountHeader(value string) (int64, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // Err returns any error that occurred during streaming
@@ -989,18 +1093,4 @@ func (s *moonshotStream) Err() error {
 		return nil
 	}
 	return s.err
-}
-
-// toolArgumentsString returns a tool call's arguments as JSON text. The wire
-// value is normally a JSON string holding JSON text (OpenAI style); some hosts
-// send the object itself, whose text is returned as is.
-func toolArgumentsString(raw json.RawMessage) string {
-	if len(raw) == 0 || string(raw) == "null" {
-		return ""
-	}
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return s
-	}
-	return string(raw)
 }

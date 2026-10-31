@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
@@ -18,8 +19,8 @@ import (
 const HarnessID = "codex"
 
 // version is used in the client-app attribution string, mirroring TS
-// `VERSION` pinned to the ai@7.0.127 release this port targets.
-const version = "1.0.140"
+// `VERSION` pinned to the embedded bridge's source package version (VERSIONS.json).
+const version = "1.0.166"
 
 var _ harness.Harness = (*Harness)(nil)
 var _ harness.BootstrapProvider = (*Harness)(nil)
@@ -78,14 +79,7 @@ type bridgeCoords struct {
 // ValidateLifecycleStateData accepts any JSON object (TS `z.object`, all
 // fields optional).
 func (h *Harness) ValidateLifecycleStateData(data json.RawMessage) error {
-	if len(data) == 0 || string(data) == "null" {
-		return nil
-	}
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return fmt.Errorf("codex: invalid lifecycle state data: %w", err)
-	}
-	return nil
+	return harnessutil.ValidateLifecycleStateObject(data, &resumeStateData{})
 }
 
 // DoStart starts a fresh session or respawns the bridge for a resumed one.
@@ -104,16 +98,8 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	if isNetwork {
 		sandboxID = networkSandbox.ID()
 	}
-	if !isNetwork {
-		if settings.Port == 0 {
-			return nil, harness.NewCapabilityUnsupportedError("The codex harness requires an explicit `port` when using a basic sandbox session.", HarnessID, nil)
-		}
-		if settings.PortEndpoint == nil {
-			return nil, harness.NewCapabilityUnsupportedError("The codex harness requires an explicit `portEndpoint` when using a basic sandbox session.", HarnessID, nil)
-		}
-	}
-	if settings.MintBridgeToken != nil && sandboxID == "" {
-		return nil, harness.NewCapabilityUnsupportedError("The codex harness cannot use `mintBridgeToken` with a sandbox session that does not expose an id.", HarnessID, nil)
+	if err := bridge.ValidateBridgeSandboxSettings(sandboxSession, sandboxID, settings.Port, settings.PortEndpoint, settings.MintBridgeToken, HarnessID); err != nil {
+		return nil, err
 	}
 
 	var resumeData resumeStateData
@@ -125,7 +111,11 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	}
 
 	authMode := resolveAuthenticationMode(settings.Auth, harnessutil.ProcessEnv())
-	resolvedAuthEnv := resolveAuthenticationEnvironment(ctx, settings.Auth, harnessutil.ProcessEnv())
+	storeMode, _ := settings.CodexConfig["cli_auth_credentials_store"].(string)
+	resolvedAuthEnv, resolvedRequestHeaders, err := resolveAuthentication(ctx, settings.Auth, harnessutil.ProcessEnv(), storeMode)
+	if err != nil {
+		return nil, err
+	}
 
 	sandboxAuthEnv := resolvedAuthEnv
 	var sandboxCredentialEnv map[string]string
@@ -147,7 +137,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		for k, v := range sandboxCredentialEnv {
 			sandboxAuthEnv[k] = v
 		}
-		transformations, err := requestTransformations(resolvedAuthEnv, sandboxAuthEnv, authMode)
+		transformations, err := requestTransformations(resolvedAuthEnv, sandboxAuthEnv, authMode, resolvedRequestHeaders)
 		if err != nil {
 			return nil, err
 		}
@@ -176,10 +166,6 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		timeout = bridge.DefaultStartupTimeout
 	}
 
-	if err := mkdirs(ctx, restricted, workDir, bridgeStateDir); err != nil {
-		return nil, err
-	}
-
 	// Normalize each forwarded bridge diagnostics frame into the general
 	// harness.Diagnostic and report it. Mirrors TS `codex-harness.ts`
 	// `onDiagnostic` (report ? frame => report(harnessV1DiagnosticFromBridgeFrame(...)) : undefined).
@@ -199,7 +185,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	if coords != nil {
 		if sess := h.tryAttach(ctx, attachOptions{
 			coords: coords, sandboxSession: sandboxSession, settings: settings, timeout: timeout,
-			sessionID: opts.SessionID, isContinue: opts.ContinueFrom != nil,
+			sessionID: opts.SessionID, sandboxID: sandboxID, isContinue: opts.ContinueFrom != nil,
 			reasoningEffort: settings.ReasoningEffort, webSearch: settings.WebSearch,
 			builtinToolFiltering: opts.BuiltinToolFiltering,
 			codexConfig:          settings.CodexConfig, mcpServers: settings.MCPServers, headers: opts.Headers,
@@ -208,6 +194,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 			permissionMode:               opts.PermissionMode, sandbox: restricted, sandboxHomeDir: sandboxHomeDir,
 			turnConfigurationFingerprint: resumeData.TurnConfigurationFingerprint,
 			onDiagnostic:                 onDiagnostic,
+			debug:                        debugConfig(opts.Observability),
 		}); sess != nil {
 			return sess, nil
 		}
@@ -228,10 +215,9 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		}
 	}
 
-	port, err := bridge.ResolveBridgePort(sandboxSession, settings.Port)
+	port, err := bridge.ResolveBridgePortOrUnsupported(sandboxSession, settings.Port, HarnessID)
 	if err != nil {
-		return nil, harness.NewCapabilityUnsupportedError(
-			"The codex harness needs a TCP port exposed by the sandbox. Create the sandbox with `ports: [<port>]` or pass `New(Settings{Port: ...})`.", HarnessID, err)
+		return nil, err
 	}
 	token := bridge.CreateBridgeToken()
 	if settings.MintBridgeToken != nil {
@@ -257,14 +243,23 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	}
 	env["AI_SDK_HARNESS_CLIENT_APP"] = harnessutil.ClientApp(HarnessID, version)
 
+	// A fresh start creates the workdir and bridge-state directory; resumes
+	// reuse the ones already in the sandbox. Mirrors TS `respawnStrategy ===
+	// undefined` mkdir.
+	if respawnStrategy == "" {
+		if err := mkdirs(ctx, restricted, workDir, bridgeStateDir); err != nil {
+			return nil, err
+		}
+	}
+
 	launched, err := bridge.Launch(ctx, bridge.LaunchOptions{
 		Label: "codex bridge", Source: HarnessID, Sandbox: restricted,
-		Command: fmt.Sprintf("node %s/bridge.mjs --workdir %s --bridge-state-dir %s",
-			harnessutil.ShellQuote(bootstrapDir), harnessutil.ShellQuote(workDir), harnessutil.ShellQuote(bridgeStateDir)),
+		Command: fmt.Sprintf("node %s --workdir %s --bridge-state-dir %s",
+			harnessutil.ShellQuote(bootstrapDir+"/bridge.mjs"), harnessutil.ShellQuote(workDir), harnessutil.ShellQuote(bridgeStateDir)),
 		Env: env, Port: port, Token: token, ReplayFromDisk: respawnStrategy == "replay",
 		BridgeStateDir: bridgeStateDir, BridgeType: HarnessID, StartupTimeout: timeout,
 		ResolveEndpoint: func(ctx context.Context, boundPort int) (harness.PortEndpoint, error) {
-			return bridge.ResolveBridgeEndpoint(ctx, sandboxSession, settings.PortEndpoint, boundPort)
+			return bridge.ResolveBridgeEndpointOrUnsupported(ctx, sandboxSession, settings.PortEndpoint, boundPort, HarnessID)
 		},
 	})
 	if err != nil {
@@ -272,11 +267,10 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	}
 
 	channelOpts := bridge.ChannelOptions{
-		Connect: func(ctx context.Context) (bridge.Conn, error) {
-			return bridge.Dial(ctx, launched.Endpoint, bridge.DialOptions{Name: "codex bridge"})
-		},
-		Reconnect:    settings.Reconnect,
-		OnDiagnostic: onDiagnostic,
+		Connect:       bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{Name: "codex bridge", OpenRetryTimeout: timeout, StartContext: ctx}),
+		Reconnect:     settings.Reconnect,
+		OnDiagnostic:  onDiagnostic,
+		OnBridgeError: bridge.CreateBridgeErrorHandler(HarnessID, opts.SessionID),
 	}
 	replaying := respawnStrategy == "replay"
 	if replaying {
@@ -300,12 +294,13 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		model: DefaultModel, reasoningEffort: settings.ReasoningEffort, webSearch: settings.WebSearch,
 		builtinToolFiltering: opts.BuiltinToolFiltering,
 		codexConfig:          settings.CodexConfig, mcpServers: settings.MCPServers, headers: opts.Headers,
-		isResume: isResume, seedResumeThreadOnFirstPrompt: isResume, rerunContinue: isResume,
+		isResume: isResume, seedResumeThreadOnFirstPrompt: isResume, rerunContinue: respawnStrategy == "rerun",
 		resumeThreadID: resumeData.ThreadID,
-		bridgePort:     port, bridgeToken: token, sandboxID: sandboxID,
+		bridgePort:     launched.Port, bridgeToken: token, sandboxID: sandboxID,
 		sandboxCredentialEnvironment: sandboxCredentialEnv,
 		permissionMode:               opts.PermissionMode, sandbox: restricted, sandboxHomeDir: sandboxHomeDir,
 		turnConfigurationFingerprint: resumeData.TurnConfigurationFingerprint,
+		debug:                        debugConfig(opts.Observability),
 	}), nil
 }
 
@@ -316,6 +311,7 @@ type attachOptions struct {
 	settings       Settings
 	timeout        time.Duration
 	sessionID      string
+	sandboxID      string
 	isContinue     bool
 
 	reasoningEffort              string
@@ -331,6 +327,7 @@ type attachOptions struct {
 	sandboxHomeDir               string
 	turnConfigurationFingerprint string
 	onDiagnostic                 func(bridge.OutboundMessage)
+	debug                        *harness.DebugConfig
 }
 
 // tryAttach reopens a socket to a still-running bridge using persisted
@@ -348,12 +345,11 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 		return nil
 	}
 	channel := bridge.NewChannel(bridge.ChannelOptions{
-		Connect: func(ctx context.Context) (bridge.Conn, error) {
-			return bridge.Dial(ctx, attachEndpoint, bridge.DialOptions{Name: "codex bridge"})
-		},
+		Connect:                bridge.NewBridgeConnectFunc(attachEndpoint, bridge.BridgeConnectOptions{Name: "codex bridge"}),
 		Reconnect:              opts.settings.Reconnect,
 		InitialLastSeenEventID: opts.coords.LastSeenEventID,
 		OnDiagnostic:           opts.onDiagnostic,
+		OnBridgeError:          bridge.CreateBridgeErrorHandler(HarnessID, opts.sessionID),
 	})
 	var finishAttachment func()
 	if opts.isContinue {
@@ -373,20 +369,26 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 		codexConfig:          opts.codexConfig, mcpServers: opts.mcpServers, headers: opts.headers,
 		isResume: true, seedResumeThreadOnFirstPrompt: false, rerunContinue: false,
 		resumeThreadID: opts.resumeThreadID,
-		bridgePort:     opts.coords.Port, bridgeToken: opts.coords.Token, sandboxID: opts.coords.SandboxID,
+		bridgePort:     opts.coords.Port, bridgeToken: opts.coords.Token, sandboxID: opts.sandboxID,
 		sandboxCredentialEnvironment: opts.sandboxCredentialEnvironment,
 		permissionMode:               opts.permissionMode, sandbox: opts.sandbox, sandboxHomeDir: opts.sandboxHomeDir,
 		turnConfigurationFingerprint: opts.turnConfigurationFingerprint,
+		debug:                        opts.debug,
 	})
 }
 
 func mkdirs(ctx context.Context, sandbox providerutils.SandboxSession, dirs ...string) error {
-	for _, dir := range dirs {
-		if _, err := sandbox.Run(ctx, providerutils.SandboxProcessOptions{
-			Command: "mkdir -p " + harnessutil.ShellQuote(dir),
-		}); err != nil {
-			return err
-		}
+	quoted := make([]string, len(dirs))
+	for i, dir := range dirs {
+		quoted[i] = harnessutil.ShellQuote(dir)
 	}
-	return nil
+	_, err := sandbox.Run(ctx, providerutils.SandboxProcessOptions{Command: "mkdir -p " + strings.Join(quoted, " ")})
+	return err
+}
+
+func debugConfig(o *harness.Observability) *harness.DebugConfig {
+	if o == nil {
+		return nil
+	}
+	return o.Debug
 }

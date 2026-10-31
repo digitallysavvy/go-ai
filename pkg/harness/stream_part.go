@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"reflect"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 )
 
 // StreamPart is one event emitted by a harness adapter during a prompt turn.
@@ -49,12 +52,95 @@ const (
 // ProviderMetadata mirrors `SharedV4ProviderMetadata` on tool parts.
 type ProviderMetadata map[string]map[string]any
 
+// UnmarshalJSON decodes the record and rejects a null namespace entry: zod's
+// `z.record(z.string(), z.record(...))` requires every value to be an object
+// (null values nested inside an entry are valid JSON values and stay).
+func (m *ProviderMetadata) UnmarshalJSON(data []byte) error {
+	out, err := decodeNamespacedRecord(data)
+	if err != nil {
+		return err
+	}
+	*m = out
+	return nil
+}
+
+// decodeNamespacedRecord decodes `Record<string, Record<string, JSONValue>>`.
+func decodeNamespacedRecord(data []byte) (map[string]map[string]any, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	if raw == nil {
+		return nil, nil
+	}
+	out := make(map[string]map[string]any, len(raw))
+	for key, v := range raw {
+		var inner map[string]any
+		if err := json.Unmarshal(v, &inner); err != nil {
+			return nil, fmt.Errorf("harness: metadata entry %q must be an object: %w", key, err)
+		}
+		if inner == nil {
+			return nil, fmt.Errorf("harness: metadata entry %q must be an object, not null", key)
+		}
+		out[key] = inner
+	}
+	return out, nil
+}
+
 // InputTokenUsage is the input-token breakdown of LanguageModelV4Usage.
 type InputTokenUsage struct {
 	Total      *int `json:"total,omitempty"`
 	NoCache    *int `json:"noCache,omitempty"`
 	CacheRead  *int `json:"cacheRead,omitempty"`
 	CacheWrite *int `json:"cacheWrite,omitempty"`
+}
+
+// UnmarshalJSON accepts any JSON number for a token count, like zod
+// `z.number()` (`1e3`, `1000.0`, `1.5`); the Go field is an int, so a
+// fraction is truncated toward zero.
+func (u *InputTokenUsage) UnmarshalJSON(data []byte) error {
+	var w struct {
+		Total      *float64 `json:"total"`
+		NoCache    *float64 `json:"noCache"`
+		CacheRead  *float64 `json:"cacheRead"`
+		CacheWrite *float64 `json:"cacheWrite"`
+	}
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*u = InputTokenUsage{Total: tokenCount(w.Total), NoCache: tokenCount(w.NoCache),
+		CacheRead: tokenCount(w.CacheRead), CacheWrite: tokenCount(w.CacheWrite)}
+	return nil
+}
+
+// UnmarshalJSON accepts any JSON number for a token count; see
+// InputTokenUsage.UnmarshalJSON.
+func (u *OutputTokenUsage) UnmarshalJSON(data []byte) error {
+	var w struct {
+		Total     *float64 `json:"total"`
+		Text      *float64 `json:"text"`
+		Reasoning *float64 `json:"reasoning"`
+	}
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*u = OutputTokenUsage{Total: tokenCount(w.Total), Text: tokenCount(w.Text), Reasoning: tokenCount(w.Reasoning)}
+	return nil
+}
+
+func tokenCount(f *float64) *int {
+	if f == nil {
+		return nil
+	}
+	n := int(math.MaxInt32) // clamp: out-of-range counts stay usable
+	switch {
+	case *f >= float64(math.MaxInt32):
+	case *f <= -float64(math.MaxInt32):
+		n = -math.MaxInt32
+	default:
+		n = int(*f)
+	}
+	return &n
 }
 
 // OutputTokenUsage is the output-token breakdown of LanguageModelV4Usage.
@@ -78,6 +164,7 @@ const (
 	FinishReasonContentFilter = "content-filter"
 	FinishReasonToolCalls     = "tool-calls"
 	FinishReasonError         = "error"
+	FinishReasonInterrupted   = "interrupted"
 	FinishReasonOther         = "other"
 )
 
@@ -90,7 +177,7 @@ type FinishReason struct {
 func (r FinishReason) validate() error {
 	switch r.Unified {
 	case FinishReasonStop, FinishReasonLength, FinishReasonContentFilter,
-		FinishReasonToolCalls, FinishReasonError, FinishReasonOther:
+		FinishReasonToolCalls, FinishReasonError, FinishReasonInterrupted, FinishReasonOther:
 		return nil
 	}
 	return fmt.Errorf("invalid finish reason %q", r.Unified)
@@ -149,6 +236,11 @@ type ToolInputStartPart struct {
 	ProviderExecuted bool             `json:"providerExecuted,omitempty"`
 	Dynamic          bool             `json:"dynamic,omitempty"`
 	Title            string           `json:"title,omitempty"`
+	// ProviderExecutedOmitted is set by DecodeStreamPart when the wire frame
+	// carried no `providerExecuted` key. TS forwards the part unchanged, so
+	// an explicit false stays visible to consumers that forward
+	// `providerExecuted` whenever it is defined. Never serialized.
+	ProviderExecutedOmitted bool `json:"-"`
 }
 
 // ToolInputDeltaPart is the `tool-input-delta` part (V4 primitive).
@@ -179,7 +271,17 @@ type ToolCallPart struct {
 	NativeName string `json:"nativeName,omitempty"`
 	// StepToolCallCount is the total tool calls in the current model step,
 	// when known up front. Must be a positive integer when set.
+	//
+	// Deprecated: ignored by the host since TS #23260. Parallel approvals and
+	// client tool results are collected by pausing at the step's next
+	// finish-step instead, so adapters no longer need to populate it.
 	StepToolCallCount *int `json:"stepToolCallCount,omitempty"`
+	// ProviderExecutedOmitted is set by DecodeStreamPart when the wire frame
+	// carried no `providerExecuted` key. A Go bool cannot tell "absent" from
+	// false, but TS defaults a builtin approval's providerExecuted to true
+	// when the tool call left it undefined (`rawToolCall?.providerExecuted
+	// ?? true`). Never serialized.
+	ProviderExecutedOmitted bool `json:"-"`
 }
 
 // ToolApprovalRequestPart is the `tool-approval-request` part.
@@ -249,6 +351,69 @@ type CompactionPart struct {
 // ErrorPart is the `error` part. Error is an arbitrary JSON value.
 type ErrorPart struct {
 	Error any `json:"error"`
+
+	// errorText is JSON.stringify of the wire error object, with the wire key
+	// order (a Go map would sort the keys). Set only when decoded from JSON.
+	errorText string
+	// errorTextFor is the Error value errorText was computed for; a caller
+	// that replaces Error invalidates the cached text.
+	errorTextFor any
+}
+
+// UnmarshalJSON decodes the part and keeps the wire key order of an object
+// or array error, like the JS value TS rejects with.
+func (p *ErrorPart) UnmarshalJSON(data []byte) error {
+	var aux struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	p.Error, p.errorText, p.errorTextFor = nil, "", nil
+	if len(aux.Error) == 0 {
+		return nil
+	}
+	var v any
+	if err := json.Unmarshal(aux.Error, &v); err != nil {
+		return err
+	}
+	p.Error = v
+	switch v.(type) {
+	case map[string]any, []any:
+		p.errorText = jsonorder.Text(aux.Error, nil)
+		p.errorTextFor = v
+	}
+	return nil
+}
+
+// Message renders the error value like TS getErrorMessage: an object error is
+// JSON.stringify of the wire object, keys in wire order.
+func (p *ErrorPart) Message() string {
+	if p.errorText != "" && sameErrorValue(p.Error, p.errorTextFor) {
+		return p.errorText
+	}
+	return ErrorValueMessage(p.Error)
+}
+
+// AsError converts the part's error value to a Go error: an error passes
+// through, anything else carries Message().
+func (p *ErrorPart) AsError() error {
+	if err, ok := p.Error.(error); ok {
+		return err
+	}
+	return &rawValueError{message: p.Message()}
+}
+
+func sameErrorValue(a, b any) bool {
+	switch x := a.(type) {
+	case map[string]any:
+		y, ok := b.(map[string]any)
+		return ok && reflect.ValueOf(x).Pointer() == reflect.ValueOf(y).Pointer()
+	case []any:
+		y, ok := b.([]any)
+		return ok && len(x) == len(y) && (len(x) == 0 || &x[0] == &y[0])
+	}
+	return false
 }
 
 // RawPart is the `raw` part: adapter-specific passthrough.
@@ -355,6 +520,38 @@ var streamPartSpecs = map[string]streamPartSpec{
 	PartTypeRaw:        {func() StreamPart { return &RawPart{} }, nil},
 }
 
+// streamPartOptionalKeys lists each variant's `.optional()` keys: absent is
+// fine, an explicit JSON null is not (zod rejects it).
+var streamPartOptionalKeys = map[string][]string{
+	PartTypeStreamStart:         {"warnings", "modelId"},
+	PartTypeTextStart:           {"harnessMetadata"},
+	PartTypeTextDelta:           {"harnessMetadata"},
+	PartTypeTextEnd:             {"harnessMetadata"},
+	PartTypeReasoningStart:      {"harnessMetadata"},
+	PartTypeReasoningDelta:      {"harnessMetadata"},
+	PartTypeReasoningEnd:        {"harnessMetadata"},
+	PartTypeToolInputStart:      {"providerMetadata", "providerExecuted", "dynamic", "title"},
+	PartTypeToolInputDelta:      {"providerMetadata"},
+	PartTypeToolInputEnd:        {"providerMetadata"},
+	PartTypeToolCall:            {"providerExecuted", "dynamic", "providerMetadata", "nativeName"},
+	PartTypeToolApprovalRequest: {"providerMetadata"},
+	PartTypeToolResult:          {"isError", "preliminary", "dynamic", "providerMetadata"},
+	PartTypeFinishStep:          {"harnessMetadata"},
+	PartTypeFinish:              {"harnessMetadata"},
+	PartTypeFileChange:          {"harnessMetadata"},
+	PartTypeCompaction:          {"tokensBefore", "tokensAfter", "harnessMetadata"},
+}
+
+// RejectNullKeys fails when any of the optional keys is present as JSON null.
+func RejectNullKeys(typ string, fields map[string]json.RawMessage, optional []string) error {
+	for _, key := range optional {
+		if raw, ok := fields[key]; ok && string(raw) == "null" {
+			return fmt.Errorf("harness: invalid %s frame: %q must not be null", typ, key)
+		}
+	}
+	return nil
+}
+
 // IsStreamPartType reports whether typ is a stream-part discriminator.
 func IsStreamPartType(typ string) bool {
 	_, ok := streamPartSpecs[typ]
@@ -379,14 +576,123 @@ func DecodeStreamPart(data []byte) (StreamPart, error) {
 	if err := RequireKeys(typ, fields, spec.required); err != nil {
 		return nil, err
 	}
+	// zod `.optional()` accepts an absent key but rejects an explicit null.
+	if err := RejectNullKeys(typ, fields, streamPartOptionalKeys[typ]); err != nil {
+		return nil, err
+	}
+	if err := requireUsageShape(typ, fields); err != nil {
+		return nil, err
+	}
 	part := spec.newPart()
-	if err := json.Unmarshal(data, part); err != nil {
+	if tc, ok := part.(*ToolCallPart); ok {
+		// TS dropped `stepToolCallCount` from the tool-call schema, so zod
+		// strips it whatever its value: an unusable count is ignored, never a
+		// reason to reject the frame.
+		type toolCallAlias ToolCallPart
+		wire := struct {
+			*toolCallAlias
+			StepToolCallCount json.RawMessage `json:"stepToolCallCount"`
+		}{toolCallAlias: (*toolCallAlias)(tc)}
+		if err := json.Unmarshal(data, &wire); err != nil {
+			return nil, fmt.Errorf("harness: invalid %s part: %w", typ, err)
+		}
+		var n int
+		if json.Unmarshal(wire.StepToolCallCount, &n) == nil && n > 0 {
+			tc.StepToolCallCount = &n
+		}
+	} else if err := json.Unmarshal(data, part); err != nil {
 		return nil, fmt.Errorf("harness: invalid %s part: %w", typ, err)
 	}
 	if err := validateStreamPart(part); err != nil {
 		return nil, fmt.Errorf("harness: invalid %s part: %w", typ, err)
 	}
+	if typ == PartTypeStreamStart {
+		if err := requireWarningKeys(fields["warnings"]); err != nil {
+			return nil, err
+		}
+	}
+	switch p := part.(type) {
+	case *ToolCallPart:
+		_, present := fields["providerExecuted"]
+		p.ProviderExecutedOmitted = !present
+	case *ToolInputStartPart:
+		_, present := fields["providerExecuted"]
+		p.ProviderExecutedOmitted = !present
+	}
 	return part, nil
+}
+
+// requireWarningKeys checks the per-variant keys of `harnessV1CallWarningSchema`:
+// `setting` (unsupported-setting), `tool` (unsupported-tool) and `message`
+// (other) are required strings, `details` is optional but not null.
+func requireWarningKeys(raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	var warnings []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &warnings); err != nil {
+		return nil // the typed decode already rejected a malformed list
+	}
+	for _, w := range warnings {
+		var typ CallWarningType
+		_ = json.Unmarshal(w["type"], &typ)
+		required := map[CallWarningType]string{
+			CallWarningUnsupportedSetting: "setting", CallWarningUnsupportedTool: "tool", CallWarningOther: "message",
+		}[typ]
+		if err := RequireKeys("stream-start warning", w, []string{required}); err != nil {
+			return err
+		}
+		if typ != CallWarningOther {
+			if err := RejectNullKeys("stream-start warning", w, []string{"details"}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// requireUsageShape checks the usage of a finish-step or finish part like
+// `harnessV1UsageSchema`: `inputTokens` and `outputTokens` are required
+// objects, so an empty usage object is invalid.
+func requireUsageShape(typ string, fields map[string]json.RawMessage) error {
+	key := "usage"
+	if typ == PartTypeFinish {
+		key = "totalUsage"
+	} else if typ != PartTypeFinishStep {
+		return nil
+	}
+	invalid := func() error {
+		return fmt.Errorf("harness: invalid %s frame: %s must carry inputTokens and outputTokens objects", typ, key)
+	}
+	var usage map[string]json.RawMessage
+	if err := json.Unmarshal(fields[key], &usage); err != nil || usage == nil {
+		return invalid()
+	}
+	// zod `.optional()` accepts an absent key but rejects an explicit null,
+	// at every level of the usage and finish-reason objects.
+	if err := RejectNullKeys(typ+" "+key, usage, []string{"raw"}); err != nil {
+		return err
+	}
+	for _, m := range []struct {
+		name     string
+		optional []string
+	}{
+		{"inputTokens", []string{"total", "noCache", "cacheRead", "cacheWrite"}},
+		{"outputTokens", []string{"total", "text", "reasoning"}},
+	} {
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(usage[m.name], &obj); err != nil || obj == nil {
+			return invalid()
+		}
+		if err := RejectNullKeys(typ+" "+key+"."+m.name, obj, m.optional); err != nil {
+			return err
+		}
+	}
+	var reason map[string]json.RawMessage
+	if json.Unmarshal(fields["finishReason"], &reason) == nil {
+		return RejectNullKeys(typ+" finishReason", reason, []string{"raw"})
+	}
+	return nil
 }
 
 // ReadTagged returns the `type` discriminator and the raw top-level fields of
@@ -435,10 +741,6 @@ func validateStreamPart(part StreamPart) error {
 			default:
 				return fmt.Errorf("invalid warning type %q", w.Type)
 			}
-		}
-	case *ToolCallPart:
-		if p.StepToolCallCount != nil && *p.StepToolCallCount <= 0 {
-			return errors.New("stepToolCallCount must be a positive integer")
 		}
 	case *FinishStepPart:
 		return p.FinishReason.validate()

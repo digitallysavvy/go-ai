@@ -46,7 +46,7 @@ Ends the message. Sent once, when `SendFinish` is not false.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `finishReason` | `string` | Why generation ended: `stop`, `length`, `content-filter`, `tool-calls`, `user-approval`, `error` or `other`. |
+| `finishReason` | `string` | Why generation ended: `stop`, `length`, `content-filter`, `tool-calls`, `user-approval`, `error`, `interrupted` (the provider stream ended without a completion signal) or `other`. |
 | `messageMetadata` | `object` | Optional. Result of the `MessageMetadata` callback for the `finish` part. |
 
 ### `abort`
@@ -71,7 +71,7 @@ Begins one model call. Carries no fields. A client adds a `step-start` part to t
 
 ### `finish-step`
 
-Ends one model call. Carries no fields.
+Ends one model call. Carries no fields. When `MessageMetadata` returns metadata for the step, the `message-metadata` chunk is emitted before `finish-step`, so the message passed to `OnStepEnd` already includes it.
 
 ### `reset-step`
 
@@ -165,13 +165,14 @@ The model started writing a tool call. Sent when the provider streams tool input
 | `toolName` | `string` | Tool name. |
 | `providerExecuted` | `bool` | Optional. True when the provider runs the tool. |
 | `dynamic` | `bool` | Optional. True for dynamic tools. |
+| `inputEncoding` | `string` | Optional. `"json"` (default) or `"text"`. With `"text"` the deltas are raw text (for example OpenAI custom tools) and the UI input is the accumulated string instead of partial JSON. |
 | `title` | `string` | Optional. Tool title. |
 | `toolMetadata` | `object` | Optional. Tool metadata from `types.Tool.Metadata`. |
 | `providerMetadata` | `object` | Optional. |
 
 ### `tool-input-delta`
 
-A piece of the raw JSON tool input.
+A piece of the raw tool input (partial JSON unless `tool-input-start` set `inputEncoding` to `"text"`).
 
 | Field | Type | Description |
 | --- | --- | --- |
@@ -329,6 +330,7 @@ Options for `ai.CreateUIMessageStream`, `ai.ToUIMessageStream` and the response 
 | `OnEnd` | `UIMessageStreamOnEndCallback` |  |
 | `OnFinish` | `UIMessageStreamOnFinishCallback` | Deprecated: use OnEnd. |
 | `OnError` | `func(error) string` |  |
+| `PartialStream` | `bool` | PartialStream marks a source that may end without a finish or error chunk because the producer intentionally suspended it mid-step (a time-sliced harness turn). The converter then forwards what arrived and stops: it does not close open parts, invent a trailing `finish-step` or `finish`, or report an incomplete-stream error. TS forwards stream parts as they come and repairs nothing. |
 
 {/* /gen:fields */}
 
@@ -345,7 +347,7 @@ Options for the response helpers that take an init value.
 | `Headers` | `map[string]string` | Headers sets a single value per header key. Use Header instead when a header (e.g. Set-Cookie) needs multiple values. |
 | `Header` | `http.Header` | Header carries repeated header values (e.g. multiple Set-Cookie entries), which map[string]string cannot represent. Values here are added in addition to Headers, so both can be set together. |
 | `ConsumeSSEStream` | `func(io.Reader) error` |  |
-| `KeepAliveMs` | `*time.Duration` | KeepAliveMs, when set, makes the SSE pipeline flush an opening ": stream-open\n\n" comment immediately (so headers reach the client right away even if the first real chunk is slow) and send a ": keep-alive\n\n" comment whenever this duration elapses without any other write, resetting on every chunk. Must be a positive duration; zero or negative disables it the same as a nil value. Mirrors TS createSseStreamWithKeepAlive's `keepAliveMs` option (TS #21672). |
+| `KeepAliveMs` | `*time.Duration` | KeepAliveMs, when set, makes the SSE pipeline flush an opening ": stream-open\n\n" comment immediately (so headers reach the client right away even if the first real chunk is slow) and send a ": keep-alive\n\n" comment whenever this duration elapses without any other write, resetting on every chunk. Must be a positive duration; zero, a negative duration or one above 2147483647ms is an error, as in TS createSseStreamWithKeepAlive's `keepAliveMs` option (TS #21672). |
 
 {/* /gen:fields */}
 
@@ -387,8 +389,8 @@ The operation-level result of a stream. Declare one with `UIMessageStreamWriter.
 
 | Function | Description |
 | --- | --- |
-| `ai.ToUIMessageChunk(part provider.StreamChunk, opts UIMessageStreamResultOptions) (UIMessageChunk, bool)` | Converts one provider stream chunk. The boolean is false when the part produces no UI chunk. |
+| `ai.ToUIMessageChunk(part provider.StreamChunk, opts UIMessageStreamResultOptions) (UIMessageChunk, bool)` | Converts one `StreamText` part (TS `toUIMessageChunk`): `ChunkTypeStart` and `ChunkTypeFinish` give the `start` and `finish` chunks, `ChunkTypeFinishStep` gives `finish-step`. The boolean is false when the part produces no UI chunk. |
 | `ai.ToUIMessageStream(ctx, stream provider.TextStream, opts ...UIMessageStreamResultOptions)` | Converts a whole provider stream to a chunk channel. |
 | `ai.IsUIMessageStreamError(err error) bool` | Reports whether `err` is an `*ai.UIMessageStreamError`. |
 
-`ai.UIMessageStreamError` is the error type reported through `OnError` when a chunk refers to a part that does not exist, for example a `text-delta` with no matching `text-start`.
+`ai.UIMessageStreamError` is the error a UI message stream fails with when a chunk refers to a part that does not exist, for example a `text-delta` with no matching `text-start`. Like TypeScript, the stream checks this only while it builds the message for an `OnEnd` or `OnStepEnd` callback: the chunk is not delivered, the stream stops, the error arrives on the error channel and is the `OnEnd` outcome (`failed`). `ReadUIMessages` reports it through its `OnError`.

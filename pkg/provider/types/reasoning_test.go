@@ -14,6 +14,7 @@ func TestReasoningLevelConstantValues(t *testing.T) {
 		ReasoningMedium,
 		ReasoningHigh,
 		ReasoningXHigh,
+		ReasoningMax,
 	}
 	want := []ReasoningLevel{
 		"provider-default",
@@ -23,6 +24,7 @@ func TestReasoningLevelConstantValues(t *testing.T) {
 		"medium",
 		"high",
 		"xhigh",
+		"max",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("reasoning constants mismatch\n got: %v\nwant: %v", got, want)

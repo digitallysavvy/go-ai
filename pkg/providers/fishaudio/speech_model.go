@@ -2,7 +2,6 @@ package fishaudio
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -44,13 +43,13 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	if opts == nil {
 		opts = &provider.SpeechGenerateOptions{}
 	}
+	if err := validateSpeechOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	currentDate := time.Now()
 	requestBody, warnings := m.buildRequestBody(opts)
 
-	requestBytes, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, err
-	}
+	requestBytes := []byte(providerutils.StringifyOrdered(requestBody, fishSpeechBodyOrder))
 
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
 		Method: http.MethodPost,
@@ -58,7 +57,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		Body:   requestBytes,
 		// Fish Audio selects the TTS model with a `model` HTTP header rather
 		// than a request body field.
-		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"model": m.modelID}),
+		Headers: internalhttp.MergeHeaders(map[string]string{"model": m.modelID}, opts.Headers),
 	})
 	if err != nil {
 		return nil, handleError(err)
@@ -77,9 +76,16 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(resp.Headers),
-			Body:      resp.Body,
 		},
 	}, nil
+}
+
+// fishSpeechBodyOrder is the key order of the TS requestBody (fish-audio-speech-model.ts).
+var fishSpeechBodyOrder = map[string][]string{
+	"": {"text", "format", "reference_id", "prosody", "sample_rate", "mp3_bitrate", "opus_bitrate", "latency",
+		"temperature", "top_p", "chunk_length", "min_chunk_length", "normalize", "max_new_tokens",
+		"repetition_penalty", "condition_on_previous_chunks", "early_stop_threshold", "features"},
+	"prosody": {"speed", "volume", "normalize_loudness"},
 }
 
 func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (map[string]interface{}, []types.Warning) {
@@ -212,7 +218,7 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 		if fishOpts.EarlyStopThreshold != nil {
 			body["early_stop_threshold"] = *fishOpts.EarlyStopThreshold
 		}
-		if len(fishOpts.Features) > 0 {
+		if fishOpts.Features != nil {
 			body["features"] = fishOpts.Features
 		}
 	}

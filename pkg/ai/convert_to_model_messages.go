@@ -2,13 +2,14 @@ package ai
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // MessageConversionError is returned when a UI message cannot be converted to
@@ -290,7 +291,7 @@ func convertUIAssistantBlock(ctx context.Context, message UIMessage, block []UIM
 					output = p.ErrorText
 					errorMode = "json"
 				}
-				modelOutput, err := createUIToolModelOutput(ctx, p.ToolCallID, p.Input, output, findUITool(options.Tools, toolName), errorMode)
+				modelOutput, err := createUIPartModelOutput(ctx, p, output, findUITool(options.Tools, toolName), errorMode)
 				if err != nil {
 					return msg, err
 				}
@@ -373,7 +374,7 @@ func convertUIToolBlock(ctx context.Context, block []UIMessagePart, options Conv
 				output = p.ErrorText
 				errorMode = "text"
 			}
-			modelOutput, err := createUIToolModelOutput(ctx, p.ToolCallID, p.Input, output, findUITool(options.Tools, toolName), errorMode)
+			modelOutput, err := createUIPartModelOutput(ctx, p, output, findUITool(options.Tools, toolName), errorMode)
 			if err != nil {
 				return msg, err
 			}
@@ -401,15 +402,26 @@ func uiToolCallContent(toolCallID, toolName string, input interface{}, providerE
 		call.Input = v
 	case map[string]interface{}:
 		call.Arguments = v
-		if data, err := json.Marshal(v); err == nil {
+		if data, err := jsonstr.Marshal(v); err == nil {
 			call.Input = string(data)
 		}
 	default:
-		if data, err := json.Marshal(v); err == nil {
+		if data, err := jsonstr.Marshal(v); err == nil {
 			call.Input = string(data)
 		}
 	}
 	return call
+}
+
+// createUIPartModelOutput mirrors the TS createModelOutput helper in
+// convertToModelMessages: when a static tool part was normalized to a
+// dynamic-tool part and its tool is still unavailable, the persisted output
+// is omitted rather than sent to the model unfiltered.
+func createUIPartModelOutput(ctx context.Context, part *ToolUIPart, output interface{}, tool *types.Tool, errorMode string) (*types.ToolResultOutput, error) {
+	if errorMode == "none" && tool == nil && isToolPartFromUnavailableTool(part) {
+		return &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "Tool output omitted because the tool is no longer available."}, nil
+	}
+	return createUIToolModelOutput(ctx, part.ToolCallID, part.Input, output, tool, errorMode)
 }
 
 // createUIToolModelOutput mirrors TS createToolModelOutput.
@@ -450,7 +462,7 @@ func uiErrorMessage(value interface{}) string {
 	case error:
 		return v.Error()
 	default:
-		data, err := json.Marshal(v)
+		data, err := jsonstr.Marshal(v)
 		if err != nil {
 			return fmt.Sprint(v)
 		}
@@ -460,18 +472,7 @@ func uiErrorMessage(value interface{}) string {
 
 // toJSONValue normalizes a value to plain JSON data by round-tripping it.
 func toJSONValue(value interface{}) interface{} {
-	if value == nil {
-		return nil
-	}
-	data, err := json.Marshal(value)
-	if err != nil {
-		return nil
-	}
-	var out interface{}
-	if err := json.Unmarshal(data, &out); err != nil {
-		return nil
-	}
-	return out
+	return jsonorder.ToJSONValue(value)
 }
 
 func findUITool(tools []types.Tool, name string) *types.Tool {

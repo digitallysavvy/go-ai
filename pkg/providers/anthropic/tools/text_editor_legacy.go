@@ -1,9 +1,6 @@
 package tools
 
 import (
-	"context"
-	"fmt"
-
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -19,13 +16,12 @@ import (
 //	tool := anthropicTools.TextEditor20241022()
 func TextEditor20241022() types.Tool {
 	return types.Tool{
-		Name:        "anthropic.text_editor_20241022",
-		Description: buildLegacyTextEditorDescription(true),
-		Parameters:  buildLegacyTextEditorSchema(true),
-		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("text editor tool must be executed by the provider (Anthropic)")
-		},
-		ProviderExecuted: true,
+		Name:         "anthropic.text_editor_20241022",
+		Type:         types.ToolTypeProviderDefined,
+		ProviderID:   "anthropic.text_editor_20241022",
+		ProviderArgs: noProviderArgs(),
+		Description:  buildLegacyTextEditorDescription(true),
+		Parameters:   buildLegacyTextEditorSchema(true),
 	}
 }
 
@@ -41,13 +37,12 @@ func TextEditor20241022() types.Tool {
 //	tool := anthropicTools.TextEditor20250124()
 func TextEditor20250124() types.Tool {
 	return types.Tool{
-		Name:        "anthropic.text_editor_20250124",
-		Description: buildLegacyTextEditorDescription(true),
-		Parameters:  buildLegacyTextEditorSchema(true),
-		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("text editor tool must be executed by the provider (Anthropic)")
-		},
-		ProviderExecuted: true,
+		Name:         "anthropic.text_editor_20250124",
+		Type:         types.ToolTypeProviderDefined,
+		ProviderID:   "anthropic.text_editor_20250124",
+		ProviderArgs: noProviderArgs(),
+		Description:  buildLegacyTextEditorDescription(true),
+		Parameters:   buildLegacyTextEditorSchema(true),
 	}
 }
 
@@ -63,13 +58,12 @@ func TextEditor20250124() types.Tool {
 //	tool := anthropicTools.TextEditor20250429()
 func TextEditor20250429() types.Tool {
 	return types.Tool{
-		Name:        "anthropic.text_editor_20250429",
-		Description: buildLegacyTextEditorDescription(false),
-		Parameters:  buildLegacyTextEditorSchema(false),
-		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("text editor tool must be executed by the provider (Anthropic)")
-		},
-		ProviderExecuted: true,
+		Name:         "anthropic.text_editor_20250429",
+		Type:         types.ToolTypeProviderDefined,
+		ProviderID:   "anthropic.text_editor_20250429",
+		ProviderArgs: noProviderArgs(),
+		Description:  buildLegacyTextEditorDescription(false),
+		Parameters:   buildLegacyTextEditorSchema(false),
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +12,9 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 )
 
 const (
@@ -36,7 +38,7 @@ func ResolveSubscriptionEnvironment(ctx context.Context, opts ResolveSubscriptio
 	if harnessutil.IsAuthenticationEnvironment(opts.Auth) {
 		return opts.Auth.Environment, nil
 	}
-	if !harnessutil.ShouldResolveNativeSubscription(opts.Auth.Mode, opts.Env, opts.Env["XAI_API_KEY"] != "") {
+	if !harnessutil.ShouldResolveNativeSubscription(opts.Auth.Mode, opts.Env, envHas(opts.Env, "XAI_API_KEY")) {
 		return opts.Env, nil
 	}
 	subs, err := ReadSubscription(ctx, ReadSubscriptionOptions{
@@ -82,14 +84,20 @@ func ReadSubscription(ctx context.Context, opts ReadSubscriptionOptions) (map[st
 		}
 		homeDirectory = h
 	}
-	grokHome := env["GROK_HOME"]
-	if grokHome == "" {
+	grokHome, hasGrokHome := env["GROK_HOME"] // TS `??`: only an absent variable falls back
+	if !hasGrokHome {
 		grokHome = filepath.Join(homeDirectory, ".grok")
+	}
+	if abs, err := filepath.Abs(grokHome); err == nil {
+		grokHome = abs // TS resolve()
 	}
 	authPath := filepath.Join(grokHome, "auth.json")
 	text, err := os.ReadFile(authPath)
 	if err != nil {
 		return nil, nil
+	}
+	if securejson.Check(text) != nil {
+		return nil, nil // safeParseJSON rejects a __proto__ key
 	}
 	scopeOrder, authRecords, err := decodeOrderedObject(text)
 	if err != nil {
@@ -125,17 +133,11 @@ func ReadSubscription(ctx context.Context, opts ReadSubscriptionOptions) (map[st
 		if refreshToken == "" {
 			refreshToken = selected.record.refreshToken
 		}
-		original, _ := authRecords[selected.scope].(map[string]any)
-		updated := map[string]any{}
-		for k, v := range original {
-			updated[k] = v
+		rendered, err := renderRefreshedAuthRecords(text, selected.scope, refreshed.AccessToken, refreshToken, refreshed.ExpiresAt)
+		if err != nil {
+			return nil, err
 		}
-		updated["key"] = refreshed.AccessToken
-		updated["refresh_token"] = refreshToken
-		updated["expires_at"] = refreshed.ExpiresAt
-		authRecords[selected.scope] = updated
-
-		if err := persistAuthRecords(authPath, authRecords); err != nil {
+		if err := persistAuthRecords(authPath, rendered); err != nil {
 			return nil, err
 		}
 	}
@@ -193,7 +195,7 @@ func decodeOrderedObject(data []byte) ([]string, map[string]any, error) {
 		order = append(order, key)
 		m[key] = v
 	}
-	return order, m, nil
+	return jsonorder.JSKeyOrder(order), m, nil
 }
 
 // selectOAuthRecord mirrors TS `selectOAuthRecord`: the first scope (in
@@ -206,11 +208,12 @@ func selectOAuthRecord(scopeOrder []string, value map[string]any) *selectedOAuth
 		if !ok {
 			continue
 		}
-		key, _ := record["key"].(string)
-		refreshToken, _ := record["refresh_token"].(string)
+		// TS only checks `typeof === 'string'`; empty strings are accepted.
+		key, keyOK := record["key"].(string)
+		refreshToken, refreshOK := record["refresh_token"].(string)
 		expiresAt, ok := normalizeExpiresAt(record["expires_at"])
 		separator := strings.LastIndex(scope, "::")
-		if key == "" || refreshToken == "" || !ok || separator <= 0 {
+		if !keyOK || !refreshOK || !ok || separator <= 0 {
 			continue
 		}
 		if scope[separator+2:] != xaiClientID {
@@ -233,11 +236,8 @@ func normalizeExpiresAt(value any) (int64, bool) {
 		}
 		return int64(v), true
 	case string:
-		t, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			return 0, false
-		}
-		return t.UnixMilli(), true
+		// TS Date.parse.
+		return harnessutil.ParseJSDate(v)
 	}
 	return 0, false
 }
@@ -252,7 +252,7 @@ func discoverTokenEndpoint(ctx context.Context, issuer string, client *http.Clie
 		return "", err
 	}
 	defer resp.Body.Close() //nolint:errcheck
-	body, err := io.ReadAll(resp.Body)
+	body, err := harnessutil.ReadBoundedResponse(resp.Body)
 	if err != nil {
 		return "", err
 	}
@@ -260,7 +260,7 @@ func discoverTokenEndpoint(ctx context.Context, issuer string, client *http.Clie
 		return "", fmt.Errorf("Grok OAuth discovery failed with status %d.", resp.StatusCode) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	var parsed map[string]any
-	if err := json.Unmarshal(body, &parsed); err != nil {
+	if err := securejson.Unmarshal(body, &parsed); err != nil {
 		return "", fmt.Errorf("Grok OAuth discovery returned no token endpoint.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	endpoint, ok := parsed["token_endpoint"].(string)
@@ -270,12 +270,122 @@ func discoverTokenEndpoint(ctx context.Context, issuer string, client *http.Clie
 	return endpoint, nil
 }
 
-func persistAuthRecords(path string, records map[string]any) error {
-	data, err := json.MarshalIndent(records, "", "  ")
+// renderRefreshedAuthRecords rewrites auth.json with the selected scope's
+// record updated in place, like TS (`{...authRecords}` plus a spread of the
+// original record keeps every key's position, and JSON.stringify keeps
+// insertion order). Key order matters: selectOAuthRecord picks the first
+// matching scope, so a re-sorted file could change which account is used.
+func renderRefreshedAuthRecords(text []byte, scope, accessToken, refreshToken string, expiresAt int64) ([]byte, error) {
+	keys, values, err := decodeRawObject(text)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	data = append(data, '\n')
+	updates := []struct {
+		key   string
+		value any
+	}{{"key", accessToken}, {"refresh_token", refreshToken}, {"expires_at", expiresAt}}
+	var buf bytes.Buffer
+	enc := func(v any) ([]byte, error) {
+		return jsstr.Marshal(v)
+	}
+	buf.WriteByte('{')
+	for i, k := range keys {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		kb, err := enc(k)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(kb)
+		buf.WriteByte(':')
+		if k != scope {
+			buf.WriteString(canonicalJSON(values[k]))
+			continue
+		}
+		innerKeys, innerValues, err := decodeRawObject(values[k])
+		if err != nil {
+			innerKeys, innerValues = nil, map[string]json.RawMessage{}
+		}
+		for ik, raw := range innerValues {
+			innerValues[ik] = json.RawMessage(canonicalJSON(raw))
+		}
+		for _, u := range updates {
+			ub, err := enc(u.value)
+			if err != nil {
+				return nil, err
+			}
+			if _, exists := innerValues[u.key]; !exists {
+				innerKeys = append(innerKeys, u.key)
+			}
+			innerValues[u.key] = ub
+		}
+		buf.WriteByte('{')
+		for j, ik := range innerKeys {
+			if j > 0 {
+				buf.WriteByte(',')
+			}
+			ikb, err := enc(ik)
+			if err != nil {
+				return nil, err
+			}
+			buf.Write(ikb)
+			buf.WriteByte(':')
+			buf.Write(innerValues[ik])
+		}
+		buf.WriteByte('}')
+	}
+	buf.WriteByte('}')
+	var out bytes.Buffer
+	if err := json.Indent(&out, buf.Bytes(), "", "  "); err != nil {
+		return nil, err
+	}
+	out.WriteByte('\n')
+	return out.Bytes(), nil
+}
+
+// canonicalJSON is JSON.stringify(JSON.parse(raw)): the persisted file is
+// re-serialized from the parsed value, so escapes (\u003c), number spellings
+// (1.0) and key order normalize the way they do in TS.
+func canonicalJSON(raw json.RawMessage) string {
+	if v, ok := jsonorder.Parse(raw); ok {
+		return jsonorder.Stringify(v)
+	}
+	return string(raw)
+}
+
+// decodeRawObject returns an object's keys in file order (first occurrence)
+// with each key's last raw value, like a JS object parsed from JSON.
+func decodeRawObject(data []byte) ([]string, map[string]json.RawMessage, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, nil, err
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return nil, nil, fmt.Errorf("grokbuild: not a JSON object")
+	}
+	var order []string
+	m := map[string]json.RawMessage{}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil, nil, err
+		}
+		key, _ := keyTok.(string)
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return nil, nil, err
+		}
+		if _, seen := m[key]; !seen {
+			order = append(order, key)
+		}
+		m[key] = raw
+	}
+	return jsonorder.JSKeyOrder(order), m, nil
+}
+
+func persistAuthRecords(path string, data []byte) error {
 	tmp := fmt.Sprintf("%s.%d.tmp", path, os.Getpid())
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
@@ -284,4 +394,11 @@ func persistAuthRecords(path string, records map[string]any) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// envHas mirrors TS `env.X != null`: a variable that is set to the empty
+// string still counts as a direct credential.
+func envHas(env map[string]string, key string) bool {
+	_, ok := env[key]
+	return ok
 }

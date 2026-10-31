@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
@@ -314,12 +315,18 @@ func TestGenerateTextInvalidToolCalls(t *testing.T) {
 		t.Fatal("invalid tool call must not execute")
 	}
 	step := result.Steps[0]
-	if len(step.ToolResults) != 1 {
-		t.Fatalf("tool results = %+v", step.ToolResults)
+	// TS toolResults holds no failed call: the invalid call is a tool-error
+	// content part only (owner ruling r71).
+	if len(step.ToolResults) != 0 {
+		t.Fatalf("tool results = %+v, want none", step.ToolResults)
 	}
-	tr := step.ToolResults[0]
-	if tr.ToolCallID != "c1" || tr.Error == nil || !tr.Dynamic || !IsInvalidToolInputError(tr.Error) {
-		t.Fatalf("tool result = %+v", tr)
+	toolErrors := r71integToolErrors(step.Content)
+	if len(toolErrors) != 1 {
+		t.Fatalf("tool errors = %+v", toolErrors)
+	}
+	tr := toolErrors[0]
+	if tr.ToolCallID != "c1" || !tr.Dynamic || !strings.HasPrefix(tr.ErrorText, "AI_InvalidToolInputError:") {
+		t.Fatalf("tool error = %+v", tr)
 	}
 	if !step.ToolCalls[1].Invalid || !step.ToolCalls[1].ProviderExecuted {
 		t.Fatalf("provider-executed call = %+v", step.ToolCalls[1])
@@ -575,3 +582,104 @@ func TestParseToolCallAppliesSchemaDefaults(t *testing.T) {
 }
 
 func ptrFloat(v float64) *float64 { return &v }
+
+func TestToolCallInputValidator_HintedPointerForm(t *testing.T) {
+	m := map[string]interface{}{"type": "object", "required": []interface{}{"a"}}
+	for name, p := range map[string]interface{}{
+		"value":   jsonorder.Hinted{V: m},
+		"pointer": &jsonorder.Hinted{V: m},
+	} {
+		tool := &types.Tool{Name: "t", Parameters: p}
+		if toolCallInputValidator(tool) == nil {
+			t.Errorf("%s: validator is nil", name)
+		}
+		if got := toolInputJSONSchema(tool); got["type"] != "object" || got["required"] == nil {
+			t.Errorf("%s: toolInputJSONSchema = %v", name, got)
+		}
+	}
+}
+
+// TS doParseToolCall sets `dynamic` only from the matched tool's type: a
+// provider-supplied dynamic flag does not leak onto a registered static tool.
+func TestParseToolCall_StaticToolDropsProviderDynamicFlag(t *testing.T) {
+	tools := []types.Tool{pipelineTestTool("testTool", nil)}
+	got, err := ParseToolCall(context.Background(), ParseToolCallOptions{
+		ToolCall: types.ToolCall{ID: "c1", ToolName: "testTool", RawArguments: `{"value":"x"}`, Dynamic: true},
+		Tools:    tools,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Invalid || got.Dynamic {
+		t.Fatalf("expected valid static call, got invalid=%v dynamic=%v", got.Invalid, got.Dynamic)
+	}
+}
+
+// TS parseToolCall runs refineToolInput inside its try block: a refiner that
+// throws yields an invalid tool call (reported to the model) instead of
+// failing the whole generation.
+func TestGenerateTextRefineToolInputErrorBecomesInvalidToolCall(t *testing.T) {
+	executed := false
+	tool := pipelineTestTool("testTool", func(map[string]interface{}) (interface{}, error) {
+		executed = true
+		return "ok", nil
+	})
+	boom := errors.New("refine boom")
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: toolCallModel([]types.ToolCall{
+			{ID: "c1", ToolName: "testTool", RawArguments: `{"value":"x"}`},
+		}, ""),
+		Prompt:   "hi",
+		Tools:    []types.Tool{tool},
+		StopWhen: []StopCondition{StepCountIs(1)},
+		ExperimentalRefineToolInput: map[string]ToolInputRefiner{
+			"testTool": func(context.Context, ToolInputRefinementOptions) (map[string]interface{}, error) {
+				return nil, boom
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if executed {
+		t.Fatal("invalid tool call must not execute")
+	}
+	step := result.Steps[0]
+	if toolErrors := r71integToolErrors(step.Content); len(step.ToolResults) != 0 || len(toolErrors) != 1 || !strings.Contains(toolErrors[0].ErrorText, boom.Error()) {
+		t.Fatalf("tool results = %+v, tool errors = %+v", step.ToolResults, toolErrors)
+	}
+	if !step.ToolCalls[0].Invalid {
+		t.Fatalf("call = %+v", step.ToolCalls[0])
+	}
+}
+
+// TS parseToolCall runs refineToolInput inside the parse try block, so a
+// refiner that throws InvalidToolInputError triggers repairToolCall, and the
+// repaired call is parsed and refined again.
+func TestParseToolCallRefinerInvalidInputTriggersRepair(t *testing.T) {
+	tools := []types.Tool{pipelineTestTool("testTool", nil)}
+	refiner := func(_ context.Context, o ToolInputRefinementOptions) (map[string]interface{}, error) {
+		if o.ToolCall.Arguments["value"] == "bad" {
+			return nil, &InvalidToolInputError{ToolName: "testTool", ToolInput: "bad", Cause: errors.New("refine failed")}
+		}
+		return map[string]interface{}{"value": "refined-" + o.ToolCall.Arguments["value"].(string)}, nil
+	}
+	var repairErr error
+	got, pre, err := parseAndRefineToolCall(context.Background(), ParseToolCallOptions{
+		ToolCall:        types.ToolCall{ID: "1", ToolName: "testTool", RawArguments: `{"value":"bad"}`},
+		Tools:           tools,
+		RefineToolInput: map[string]ToolInputRefiner{"testTool": refiner},
+		RepairToolCall: func(_ context.Context, o ToolCallRepairOptions) (*types.ToolCall, error) {
+			repairErr = o.Error
+			repaired := o.ToolCall
+			repaired.RawArguments = `{"value":"good"}`
+			return &repaired, nil
+		},
+	})
+	if err != nil || got.Invalid || got.Arguments["value"] != "refined-good" || pre.Arguments["value"] != "good" {
+		t.Fatalf("got %+v pre %+v err %v", got, pre, err)
+	}
+	if !IsInvalidToolInputError(repairErr) {
+		t.Fatalf("repair error = %v", repairErr)
+	}
+}

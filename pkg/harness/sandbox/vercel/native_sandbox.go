@@ -202,12 +202,16 @@ func (s *Sandbox) UpdateNetworkPolicy(ctx context.Context, policy NetworkPolicy)
 // included and a session is running, also updating that session's policy.
 // Mirrors TS `Sandbox.update`.
 func (s *Sandbox) Update(ctx context.Context, params UpdateParams) error {
-	resp, err := s.client.UpdateSandbox(ctx, s.name, updateSandboxRequest{
+	req := updateSandboxRequest{
 		Persistent:         params.Persistent,
 		NetworkPolicy:      params.NetworkPolicy,
 		Ports:              params.Ports,
 		SnapshotExpiration: params.SnapshotExpiration,
-	})
+	}
+	if params.TimeoutMs != nil {
+		req.Timeout = *params.TimeoutMs
+	}
+	resp, err := s.client.UpdateSandbox(ctx, s.name, req)
 	if err != nil {
 		return err
 	}
@@ -250,6 +254,17 @@ func (s *Sandbox) Stop(ctx context.Context) (snapshotID string, err error) {
 		s.currentSnapshotID = resp.Sandbox.CurrentSnapshotID
 	}
 	return snapshotID, nil
+}
+
+// Snapshot snapshots the running session and returns the snapshot ID (TS
+// `Sandbox.snapshot`). The session is stopped by the API once the snapshot
+// is taken.
+func (s *Sandbox) Snapshot(ctx context.Context, expiration *int64) (string, error) {
+	resp, err := s.client.CreateSnapshot(ctx, s.sessionID, expiration)
+	if err != nil {
+		return "", err
+	}
+	return resp.Snapshot.ID, nil
 }
 
 // Delete deletes the sandbox. After this the instance should not be used.

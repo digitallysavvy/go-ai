@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -130,7 +129,11 @@ func (o *computer20251124Opts) ToAnthropicAPIMap() map[string]interface{} {
 		"name":              "computer",
 		"display_width_px":  o.Args.DisplayWidthPx,
 		"display_height_px": o.Args.DisplayHeightPx,
-		"enable_zoom":       o.Args.EnableZoom,
+	}
+	// TS leaves enable_zoom out unless enableZoom is set (the API default is
+	// false); a Go bool cannot tell unset from false, so false is omitted.
+	if o.Args.EnableZoom {
+		m["enable_zoom"] = true
 	}
 	if o.Args.DisplayNumber != nil {
 		m["display_number"] = *o.Args.DisplayNumber
@@ -140,18 +143,17 @@ func (o *computer20251124Opts) ToAnthropicAPIMap() map[string]interface{} {
 
 func Computer20251124(args Computer20251124Args) types.Tool {
 	return types.Tool{
-		Name:        "anthropic.computer_20251124",
-		Description: buildComputerDescription(args),
-		Parameters:  buildComputer20251124Schema(args.EnableZoom),
-		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("computer tool must be executed by the provider (Anthropic). Set ProviderExecuted: true")
-		},
-		ProviderExecuted: true,
-		ProviderOptions:  &computer20251124Opts{Args: args},
+		Name:            "anthropic.computer_20251124",
+		Type:            types.ToolTypeProviderDefined,
+		ProviderID:      "anthropic.computer_20251124",
+		ProviderArgs:    computer20251124ProviderArgs(args),
+		Description:     buildComputerDescription(args),
+		Parameters:      buildComputer20251124Schema(),
+		ProviderOptions: &computer20251124Opts{Args: args},
 	}
 }
 
-func buildComputer20251124Schema(enableZoom bool) map[string]interface{} {
+func buildComputer20251124Schema() map[string]interface{} {
 	// Build action enum
 	actions := []string{
 		string(ActionKey),
@@ -170,10 +172,8 @@ func buildComputer20251124Schema(enableZoom bool) map[string]interface{} {
 		string(ActionScroll),
 		string(ActionWait),
 		string(ActionScreenshot),
-	}
-
-	if enableZoom {
-		actions = append(actions, string(ActionZoom))
+		// TS's schema always lists zoom, whatever enableZoom says.
+		string(ActionZoom),
 	}
 
 	schema := map[string]interface{}{
@@ -207,7 +207,7 @@ func buildComputer20251124Schema(enableZoom bool) map[string]interface{} {
 				"description": "[x1, y1, x2, y2]: The coordinates defining the region to zoom into. x1, y1 is the top-left corner and x2, y2 is the bottom-right corner. Required for zoom action.",
 			},
 			"scroll_amount": map[string]interface{}{
-				"type":        "integer",
+				"type":        "number",
 				"description": "The number of 'clicks' to scroll. Required for scroll action.",
 			},
 			"scroll_direction": map[string]interface{}{

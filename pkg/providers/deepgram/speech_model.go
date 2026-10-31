@@ -3,7 +3,9 @@ package deepgram
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -36,7 +38,7 @@ func NewSpeechModel(p *Provider, modelID string) *SpeechModel {
 func (m *SpeechModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
-func (m *SpeechModel) Provider() string { return "deepgram" }
+func (m *SpeechModel) Provider() string { return "deepgram.speech" }
 
 // ModelID returns the model ID.
 func (m *SpeechModel) ModelID() string { return m.modelID }
@@ -54,8 +56,20 @@ func extractSpeechModelOptions(providerOptions map[string]interface{}) *SpeechMo
 		return nil
 	}
 	var opts SpeechModelOptions
+	var rate struct {
+		SampleRate *float64 `json:"sampleRate"`
+	}
+	if json.Unmarshal(b, &rate) == nil {
+		opts.sampleRate = rate.SampleRate
+	}
 	if err := json.Unmarshal(b, &opts); err != nil {
-		return nil
+		// A field the Go struct can't hold (TS sampleRate is z.number(), the
+		// struct an int) must not drop every other option: encoding/json
+		// leaves the offending field unset and fills the rest.
+		var typeErr *json.UnmarshalTypeError
+		if !errors.As(err, &typeErr) {
+			return nil
+		}
 	}
 	return &opts
 }
@@ -67,6 +81,9 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	}
 	currentDate := time.Now()
 
+	if err := validateSpeechOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	queryParams, warnings, err := m.buildArgs(opts)
 	if err != nil {
 		return nil, err
@@ -91,10 +108,8 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		})
 	}
 
-	requestBytes, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, fmt.Errorf("deepgram: failed to marshal speech request metadata: %w", err)
-	}
+	// JSON.stringify leaves <, > and & literal.
+	requestBytes := []byte(providerutils.StringifyOrdered(requestBody, nil))
 
 	result := &types.SpeechResult{
 		Audio:            resp.Body,
@@ -107,12 +122,11 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(resp.Headers),
-			Body:      resp.Body,
 		},
 	}
 	// TS: `...(charCount != null ? { usage: { characters: charCount } } : {})`.
-	if charCount := headerInt(resp.Headers, "Dg-Char-Count"); charCount != nil {
-		result.Usage = map[string]interface{}{"characters": *charCount}
+	if charCount := headerNumber(resp.Headers, "Dg-Char-Count"); charCount != nil {
+		result.Usage = map[string]interface{}{"characters": charCount}
 	}
 	return result, nil
 }
@@ -125,9 +139,9 @@ func (m *SpeechModel) buildArgs(opts *provider.SpeechGenerateOptions) (map[strin
 	// family ID is used; full voice IDs pass through.
 	upstreamModelID := m.modelID
 	if voiceFamilyIDs[m.modelID] {
-		trimmedVoice := strings.TrimSpace(opts.Voice)
+		trimmedVoice := providerutils.JSTrim(opts.Voice)
 		if trimmedVoice == "" {
-			return nil, nil, fmt.Errorf("deepgram: speech model %q requires a `voice` to be set (e.g. voice: 'thalia')", m.modelID)
+			return nil, nil, fmt.Errorf("Deepgram speech model \"%s\" requires a `voice` to be set (e.g. voice: 'thalia').", m.modelID) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		language := opts.Language
 		if language == "auto" {
@@ -146,9 +160,12 @@ func (m *SpeechModel) buildArgs(opts *provider.SpeechGenerateOptions) (map[strin
 
 	query := map[string]string{"model": upstreamModelID}
 
-	if opts.OutputFormat != "" {
-		applyOutputFormat(query, opts.OutputFormat)
+	// TS: outputFormat = 'mp3' default.
+	outputFormat := opts.OutputFormat
+	if outputFormat == "" {
+		outputFormat = "mp3"
 	}
+	applyOutputFormat(query, outputFormat)
 
 	if dgOpts != nil {
 		applyDeepgramSpeechOptions(query, dgOpts, &warnings)
@@ -165,7 +182,7 @@ func (m *SpeechModel) buildArgs(opts *provider.SpeechGenerateOptions) (map[strin
 	}
 
 	if opts.Speed != nil {
-		query["speed"] = strconv.FormatFloat(*opts.Speed, 'f', -1, 64)
+		query["speed"] = providerutils.JSNumberString(*opts.Speed)
 	}
 
 	if upstreamModelID == m.modelID && opts.Language != "" {
@@ -225,12 +242,12 @@ func applyOutputFormat(query map[string]string, outputFormat string) {
 	}
 
 	// Try to parse a format like "wav_44100" or "linear16_24000".
-	parts := strings.SplitN(formatLower, "_", 2)
+	parts := strings.Split(formatLower, "_")
 	if len(parts) < 2 {
 		return
 	}
 	firstPart, secondPart := parts[0], parts[1]
-	sampleRate, sampleRateErr := strconv.Atoi(secondPart)
+	sampleRate, sampleRateErr := jsParseInt(secondPart)
 
 	switch firstPart {
 	case "linear16", "mulaw", "alaw", "mp3", "opus", "flac", "aac":
@@ -242,14 +259,14 @@ func applyOutputFormat(query map[string]string, outputFormat string) {
 			query["container"] = "ogg"
 		}
 		if sampleRateErr == nil {
-			validRates := map[string][]int{
+			validRates := map[string][]float64{
 				"linear16": {8000, 16000, 24000, 32000, 48000},
 				"mulaw":    {8000, 16000},
 				"alaw":     {8000, 16000},
 				"flac":     {8000, 16000, 22050, 32000, 48000},
 			}
-			if rates, ok := validRates[firstPart]; ok && intInSlice(rates, sampleRate) {
-				query["sample_rate"] = strconv.Itoa(sampleRate)
+			if rates, ok := validRates[firstPart]; ok && inRates(rates, sampleRate) {
+				query["sample_rate"] = providerutils.JSNumberString(sampleRate)
 			}
 		}
 	case "wav", "ogg":
@@ -261,13 +278,32 @@ func applyOutputFormat(query map[string]string, outputFormat string) {
 			query["encoding"] = "opus"
 		}
 		if sampleRateErr == nil {
-			query["sample_rate"] = strconv.Itoa(sampleRate)
+			query["sample_rate"] = providerutils.JSNumberString(sampleRate)
 		}
 	}
 }
 
-func intInSlice(s []int, v int) bool {
-	for _, x := range s {
+// jsParseInt is JS parseInt(s, 10): the leading integer of s (arbitrarily
+// large values become the nearest double, as in JS), an error (NaN) when s does
+// not start with one.
+func jsParseInt(s string) (float64, error) {
+	s = strings.TrimLeft(s, " \t\n\r\v\f")
+	end := 0
+	if end < len(s) && (s[end] == '+' || s[end] == '-') {
+		end++
+	}
+	digits := end
+	for end < len(s) && s[end] >= '0' && s[end] <= '9' {
+		end++
+	}
+	if end == digits {
+		return 0, fmt.Errorf("not a number: %q", s)
+	}
+	return strconv.ParseFloat(s[:end], 64)
+}
+
+func inRates(rates []float64, v float64) bool {
+	for _, x := range rates {
 		if x == v {
 			return true
 		}
@@ -351,39 +387,62 @@ func applyDeepgramSpeechOptions(query map[string]string, opts *SpeechModelOption
 		}
 	}
 
-	if opts.SampleRate != nil {
+	sampleRatePtr := opts.sampleRate
+	if sampleRatePtr == nil && opts.SampleRate != nil {
+		v := float64(*opts.SampleRate)
+		sampleRatePtr = &v
+	}
+	if sampleRatePtr != nil {
 		encoding := strings.ToLower(query["encoding"])
-		sampleRate := *opts.SampleRate
+		sampleRate := *sampleRatePtr
+		// JS String(number): 22050.5 stays fractional, 48000 has no ".0".
+		rateStr := providerutils.JSNumberString(sampleRate)
+		inRates := func(rates ...float64) bool {
+			for _, r := range rates {
+				if r == sampleRate {
+					return true
+				}
+			}
+			return false
+		}
+		unsupported := func(details string) {
+			*warnings = append(*warnings, types.Warning{Type: "unsupported", Feature: "providerOptions", Details: details})
+		}
 		switch encoding {
 		case "linear16":
-			if !intInSlice([]int{8000, 16000, 24000, 32000, 48000}, sampleRate) {
-				*warnings = append(*warnings, types.Warning{Type: "unsupported", Feature: "providerOptions", Details: fmt.Sprintf(`Encoding "linear16" only supports sample rates: 8000, 16000, 24000, 32000, 48000. Sample rate %d was ignored.`, sampleRate)})
+			if !inRates(8000, 16000, 24000, 32000, 48000) {
+				unsupported(fmt.Sprintf(`Encoding "linear16" only supports sample rates: 8000, 16000, 24000, 32000, 48000. Sample rate %s was ignored.`, rateStr))
 			} else {
-				query["sample_rate"] = strconv.Itoa(sampleRate)
+				query["sample_rate"] = rateStr
 			}
 		case "mulaw", "alaw":
-			if !intInSlice([]int{8000, 16000}, sampleRate) {
-				*warnings = append(*warnings, types.Warning{Type: "unsupported", Feature: "providerOptions", Details: fmt.Sprintf(`Encoding "%s" only supports sample rates: 8000, 16000. Sample rate %d was ignored.`, encoding, sampleRate)})
+			if !inRates(8000, 16000) {
+				unsupported(fmt.Sprintf(`Encoding "%s" only supports sample rates: 8000, 16000. Sample rate %s was ignored.`, encoding, rateStr))
 			} else {
-				query["sample_rate"] = strconv.Itoa(sampleRate)
+				query["sample_rate"] = rateStr
 			}
 		case "flac":
-			if !intInSlice([]int{8000, 16000, 22050, 32000, 48000}, sampleRate) {
-				*warnings = append(*warnings, types.Warning{Type: "unsupported", Feature: "providerOptions", Details: fmt.Sprintf(`Encoding "flac" only supports sample rates: 8000, 16000, 22050, 32000, 48000. Sample rate %d was ignored.`, sampleRate)})
+			if !inRates(8000, 16000, 22050, 32000, 48000) {
+				unsupported(fmt.Sprintf(`Encoding "flac" only supports sample rates: 8000, 16000, 22050, 32000, 48000. Sample rate %s was ignored.`, rateStr))
 			} else {
-				query["sample_rate"] = strconv.Itoa(sampleRate)
+				query["sample_rate"] = rateStr
 			}
 		case "mp3", "opus", "aac":
-			*warnings = append(*warnings, types.Warning{Type: "unsupported", Feature: "providerOptions", Details: fmt.Sprintf(`Encoding "%s" has a fixed sample rate and does not support sample_rate parameter. Sample rate %d was ignored.`, encoding, sampleRate)})
+			unsupported(fmt.Sprintf(`Encoding "%s" has a fixed sample rate and does not support sample_rate parameter. Sample rate %s was ignored.`, encoding, rateStr))
 		default:
-			query["sample_rate"] = strconv.Itoa(sampleRate)
+			query["sample_rate"] = rateStr
 		}
 	}
 
 	if opts.BitRate != nil {
 		encoding := strings.ToLower(query["encoding"])
-		bitRateStr := fmt.Sprint(opts.BitRate)
-		bitRateNum, _ := strconv.ParseFloat(bitRateStr, 64)
+		bitRateStr := jsStringOf(opts.BitRate)
+		// TS Number(bitRate): a non-numeric string is NaN, so every range
+		// comparison is false (opus/aac accept it) and mp3's list check fails.
+		bitRateNum, numOK := providerutils.JSNumber(bitRateStr)
+		if !numOK {
+			bitRateNum = math.NaN()
+		}
 		switch encoding {
 		case "mp3":
 			if bitRateNum != 32000 && bitRateNum != 48000 {
@@ -429,6 +488,11 @@ func applyDeepgramSpeechOptions(query map[string]string, opts *SpeechModelOption
 			query["tag"] = strings.Join(parts, ",")
 		case []string:
 			query["tag"] = strings.Join(tag, ",")
+		case string:
+			// TS `if (deepgramOptions.tag)`: an empty string is falsy.
+			if tag != "" {
+				query["tag"] = tag
+			}
 		default:
 			query["tag"] = fmt.Sprint(tag)
 		}
@@ -446,17 +510,17 @@ func buildSpeechProviderMetadata(headers http.Header) map[string]interface{} {
 	if v := headers.Get("Dg-Model-Uuid"); v != "" {
 		metadata["modelUuid"] = v
 	}
-	if v := headers.Get("Dg-Additional-Model-Uuids"); v != "" {
-		metadata["additionalModelUuids"] = strings.Split(v, ",")
+	if vals := headers.Values("Dg-Additional-Model-Uuids"); len(vals) > 0 {
+		metadata["additionalModelUuids"] = strings.Split(vals[0], ",")
 	}
-	if v := headerInt(headers, "Dg-Char-Count"); v != nil {
-		metadata["charCount"] = *v
+	if v := headerNumber(headers, "Dg-Char-Count"); v != nil {
+		metadata["charCount"] = v
 	}
-	if v := headerInt(headers, "Dg-Breaks-Applied"); v != nil {
-		metadata["breaksApplied"] = *v
+	if v := headerNumber(headers, "Dg-Breaks-Applied"); v != nil {
+		metadata["breaksApplied"] = v
 	}
-	if v := headerInt(headers, "Dg-Pronunciations-Applied"); v != nil {
-		metadata["pronunciationsApplied"] = *v
+	if v := headerNumber(headers, "Dg-Pronunciations-Applied"); v != nil {
+		metadata["pronunciationsApplied"] = v
 	}
 	if v := headers.Get("Dg-Pronunciation-Warnings"); v != "" {
 		metadata["pronunciationWarnings"] = v
@@ -467,14 +531,39 @@ func buildSpeechProviderMetadata(headers http.Header) map[string]interface{} {
 	return metadata
 }
 
-func headerInt(headers http.Header, name string) *int {
-	v := headers.Get(name)
-	if v == "" {
+// headerNumber is the TS headerNumber helper: absent -> nil, otherwise
+// Number(value) (an empty header is 0), NaN -> nil. Integral values stay int.
+func headerNumber(headers http.Header, name string) interface{} {
+	vals := headers.Values(name)
+	if len(vals) == 0 {
 		return nil
 	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
+	f, ok := providerutils.JSNumber(vals[0])
+	if !ok || math.IsNaN(f) {
 		return nil
 	}
-	return &n
+	if f == math.Trunc(f) && math.Abs(f) < 1e15 {
+		return int(f)
+	}
+	return f
+}
+
+// jsStringOf is JS String(value) for a decoded JSON scalar (bitRate is
+// number | string).
+func jsStringOf(v interface{}) string {
+	switch n := v.(type) {
+	case float64:
+		return providerutils.JSNumberString(n)
+	case float32:
+		return providerutils.JSNumberString(float64(n))
+	case int:
+		return strconv.Itoa(n)
+	case int64:
+		return strconv.FormatInt(n, 10)
+	case json.Number:
+		if f, err := n.Float64(); err == nil {
+			return providerutils.JSNumberString(f)
+		}
+	}
+	return fmt.Sprint(v)
 }

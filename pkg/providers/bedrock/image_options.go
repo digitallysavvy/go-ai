@@ -1,7 +1,9 @@
 package bedrock
 
 import (
+	"encoding/json"
 	"fmt"
+	"reflect"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
@@ -23,6 +25,8 @@ type ImageModelOptions struct {
 	TaskType string
 	// MaskPrompt is a natural-language description of the mask region.
 	MaskPrompt string
+	// MaskPromptSet reports a present maskPrompt (TS `!= null`), even if empty.
+	MaskPromptSet bool
 	// OutPaintingMode: "DEFAULT" or "PRECISE".
 	OutPaintingMode string
 	// SimilarityStrength controls how closely a variation matches the source.
@@ -85,6 +89,10 @@ func parseBedrockImageOptions(providerOptions map[string]interface{}) (*ImageMod
 		MaskPrompt:      stringOption(raw["maskPrompt"]),
 		OutPaintingMode: stringOption(raw["outPaintingMode"]),
 	}
+	if v, ok := raw["maskPrompt"].(string); ok {
+		out.MaskPrompt = v
+		out.MaskPromptSet = true
+	}
 	if v, ok := numberOption(raw["cfgScale"]); ok {
 		if f, ok := toFloat64(v); ok {
 			out.CfgScale = f
@@ -115,6 +123,11 @@ func toFloat64(value interface{}) (float64, bool) {
 		return float64(v), true
 	case int64:
 		return float64(v), true
+	case uint, uint32, uint64:
+		return float64(reflect.ValueOf(v).Uint()), true
+	case json.Number:
+		f, err := v.Float64()
+		return f, err == nil
 	default:
 		return 0, false
 	}

@@ -3,7 +3,10 @@ package alibaba
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +14,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/imageutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodjson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -82,14 +86,28 @@ const (
 	alibabaProtocolWan3   alibabaVideoProtocol = "wan3"
 )
 
+// alibabaModelVersionRe matches the version prefix of a Wan model id; "wanx"
+// is the older id prefix (e.g. wanx2.1-t2v-turbo). The trailing group stands in
+// for the TS lookahead (?=[.-]|$).
+var alibabaModelVersionRe = regexp.MustCompile(`^wanx?(\d+)(?:\.(\d+))?(?:[.-]|$)`)
+
 func detectAlibabaVideoProtocol(modelID string) alibabaVideoProtocol {
-	if strings.HasPrefix(modelID, "wan3") {
-		return alibabaProtocolWan3
+	if v := alibabaModelVersionRe.FindStringSubmatch(modelID); v != nil {
+		major, _ := strconv.Atoi(v[1])
+		minor := 0
+		if v[2] != "" {
+			minor, _ = strconv.Atoi(v[2])
+		}
+		if major < 2 || (major == 2 && minor < 7) {
+			return alibabaProtocolLegacy
+		}
+		if major == 2 {
+			return alibabaProtocolWan27
+		}
 	}
-	if strings.HasPrefix(modelID, "wan2.7") {
-		return alibabaProtocolWan27
-	}
-	return alibabaProtocolLegacy
+
+	// Unrecognized IDs inherit the latest all-in-one media protocol.
+	return alibabaProtocolWan3
 }
 
 // alibabaResolutionTierMap maps SDK "WIDTHxHEIGHT" resolutions to Alibaba
@@ -115,15 +133,21 @@ var alibabaSupportedRatios = map[string]bool{
 }
 
 func deriveAlibabaRatioFromResolution(resolution string) (string, bool) {
-	parts := strings.SplitN(resolution, "x", 2)
-	if len(parts) != 2 {
+	// TS: resolution.split('x').map(Number) and Number.isInteger checks; only
+	// the first two parts are used.
+	parts := strings.Split(resolution, "x")
+	if len(parts) < 2 {
 		return "", false
 	}
-	width, err1 := strconv.Atoi(parts[0])
-	height, err2 := strconv.Atoi(parts[1])
-	if err1 != nil || err2 != nil || width <= 0 || height <= 0 {
-		return "", false
+	var dims [2]int
+	for i := 0; i < 2; i++ {
+		f, err := strconv.ParseFloat(providerutils.JSTrim(parts[i]), 64)
+		if err != nil || math.IsInf(f, 0) || math.IsNaN(f) || f != math.Trunc(f) || f <= 0 || f > 1<<53 {
+			return "", false
+		}
+		dims[i] = int(f)
 	}
+	width, height := dims[0], dims[1]
 	a, b := width, height
 	for b != 0 {
 		a, b = b, a%b
@@ -174,13 +198,13 @@ func alibabaResolveStartImage(opts *provider.VideoModelV3CallOptions) *provider.
 	return opts.Image
 }
 
+// alibabaVideoURLRe is TS isVideoUrl: /\.(mp4|mov)([?#]|$)/i, unanchored at
+// the start, so ".mp4" followed by "?", "#" or the end anywhere in the URL
+// (a query value such as ?file=a.mp4 included) is a video.
+var alibabaVideoURLRe = regexp.MustCompile(`(?i)\.(mp4|mov)([?#]|$)`)
+
 func alibabaIsVideoURL(url string) bool {
-	lower := strings.ToLower(url)
-	// Strip query/fragment before checking the extension.
-	if idx := strings.IndexAny(lower, "?#"); idx >= 0 {
-		lower = lower[:idx]
-	}
-	return strings.HasSuffix(lower, ".mp4") || strings.HasSuffix(lower, ".mov")
+	return alibabaVideoURLRe.MatchString(url)
 }
 
 // alibabaResolveMedia builds the input.media array (wan2.7 and wan3) from
@@ -503,17 +527,28 @@ func containsString(list []string, s string) bool {
 // video-synthesis endpoint and returns an opaque operation reference
 // (TS AlibabaVideoModel#doStart).
 func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3StartOptions) (*provider.VideoModelV3OperationStartResult, error) {
+	currentDate := time.Now() // TS: taken before the request is built and sent
+	// TS buildRequest runs parseProviderOptions first; invalid options throw.
+	if err := validateVideoProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	req := m.buildRequest(&opts.VideoModelV3CallOptions)
 
-	headers := map[string]string{"X-DashScope-Async": "enable"}
+	// TS combineHeaders(config, options.headers, {X-DashScope-Async}): the
+	// async flag wins over caller headers.
+	headers := map[string]string{}
 	for k, v := range opts.Headers {
-		headers[k] = v
+		if !strings.EqualFold(k, "X-DashScope-Async") {
+			headers[k] = v
+		}
 	}
+	headers["X-DashScope-Async"] = "enable"
 
 	var createResp alibabaVideoCreateResponse
 	httpResp, err := m.prov.videoClient.DoJSONResponse(ctx, internalhttp.Request{
-		Method: "POST",
-		Path:   "/api/v1/services/aigc/video-generation/video-synthesis",
+		ValidateResponse: providerutils.MediaResponseValidator("alibaba", providerutils.SchemaAlibabaVideoTask),
+		Method:           "POST",
+		Path:             "/api/v1/services/aigc/video-generation/video-synthesis",
 		Body: map[string]interface{}{
 			"model":      m.modelID,
 			"input":      req.Input,
@@ -531,7 +566,8 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	}
 	if taskID == "" {
 		return nil, providererrors.NewVideoGenerationError("alibaba", m.modelID,
-			fmt.Sprintf("No task_id returned from Alibaba API. Response: %s", string(mustMarshal(createResp))), nil)
+			// TS JSON.stringify(createResponse): the zod-parsed body.
+			"No task_id returned from Alibaba API. Response: "+zodjson.Stringify(httpResp.Body, alibabaCreateSpec), nil)
 	}
 
 	operation, _ := json.Marshal(alibabaOperation{TaskID: taskID})
@@ -540,7 +576,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Operation: operation,
 		Warnings:  req.Warnings,
 		Response: provider.VideoModelV3ResponseInfo{
-			Timestamp: time.Now(),
+			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   flattenHTTPHeaders(httpResp.Headers),
 		},
@@ -554,6 +590,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 // response), matching TS's `getFromApi({ validateUrl: false })` for this
 // call, so no additional SSRF validation is required.
 func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
+	currentDate := time.Now() // TS: taken before the status request
 	var operation alibabaOperation
 	if err := json.Unmarshal(opts.Operation, &operation); err != nil {
 		return nil, fmt.Errorf("alibaba: invalid operation reference: %w", err)
@@ -561,16 +598,17 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	var statusResp alibabaVideoStatusResponse
 	httpResp, err := m.prov.videoClient.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  "GET",
-		Path:    "/api/v1/tasks/" + providerutils.EncodePathSegment(operation.TaskID),
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator("alibaba", providerutils.SchemaAlibabaVideoStat),
+		Method:           "GET",
+		Path:             "/api/v1/tasks/" + providerutils.EncodePathSegment(operation.TaskID),
+		Headers:          opts.Headers,
 	}, &statusResp)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 
 	responseInfo := provider.VideoModelV3ResponseInfo{
-		Timestamp: time.Now(),
+		Timestamp: currentDate,
 		ModelID:   m.modelID,
 		Headers:   flattenHTTPHeaders(httpResp.Headers),
 	}
@@ -582,14 +620,14 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	switch taskStatus {
 	case "SUCCEEDED":
-		return m.buildCompletedResult(&statusResp, responseInfo)
+		return m.buildCompletedResult(&statusResp, httpResp.Body, responseInfo)
 
 	case "FAILED", "CANCELED":
 		message := ""
 		if statusResp.Output != nil {
 			message = statusResp.Output.Message
 		}
-		errMsg := strings.TrimSpace(fmt.Sprintf("Video generation %s. Task ID: %s. %s", strings.ToLower(taskStatus), operation.TaskID, message))
+		errMsg := providerutils.JSTrim(fmt.Sprintf("Video generation %s. Task ID: %s. %s", strings.ToLower(taskStatus), operation.TaskID, message))
 		return &provider.VideoModelV3OperationStatusResult{
 			Status:   provider.VideoOperationStatusError,
 			Error:    errMsg,
@@ -604,7 +642,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	}
 }
 
-func (m *VideoModel) buildCompletedResult(statusResp *alibabaVideoStatusResponse, responseInfo provider.VideoModelV3ResponseInfo) (*provider.VideoModelV3OperationStatusResult, error) {
+func (m *VideoModel) buildCompletedResult(statusResp *alibabaVideoStatusResponse, rawBody []byte, responseInfo provider.VideoModelV3ResponseInfo) (*provider.VideoModelV3OperationStatusResult, error) {
 	var taskID, videoURL, actualPrompt string
 	if statusResp.Output != nil {
 		taskID = statusResp.Output.TaskID
@@ -625,27 +663,27 @@ func (m *VideoModel) buildCompletedResult(statusResp *alibabaVideoStatusResponse
 		alibabaMeta["actualPrompt"] = actualPrompt
 	}
 	if statusResp.Usage != nil {
+		// TS reads the zod-parsed usage: duration/outputVideoDuration/
+		// resolution/size are always spread, so a null stays null (an absent
+		// key is dropped); the wan3 fields only appear when non-null.
+		var rawUsage map[string]interface{}
+		if rawBody != nil {
+			var top struct {
+				Usage map[string]interface{} `json:"usage"`
+			}
+			_ = json.Unmarshal(rawBody, &top)
+			rawUsage = top.Usage
+		}
 		usage := map[string]interface{}{}
-		if statusResp.Usage.Duration != nil {
-			usage["duration"] = *statusResp.Usage.Duration
+		for wire, key := range map[string]string{"duration": "duration", "output_video_duration": "outputVideoDuration", "SR": "resolution", "size": "size"} {
+			if v, ok := rawUsage[wire]; ok {
+				usage[key] = v
+			}
 		}
-		if statusResp.Usage.OutputVideoDuration != nil {
-			usage["outputVideoDuration"] = *statusResp.Usage.OutputVideoDuration
-		}
-		if statusResp.Usage.SR != nil {
-			usage["resolution"] = *statusResp.Usage.SR
-		}
-		if statusResp.Usage.Size != "" {
-			usage["size"] = statusResp.Usage.Size
-		}
-		if statusResp.Usage.InputVideoDuration != nil {
-			usage["inputVideoDuration"] = *statusResp.Usage.InputVideoDuration
-		}
-		if statusResp.Usage.FPS != nil {
-			usage["fps"] = *statusResp.Usage.FPS
-		}
-		if statusResp.Usage.Ratio != "" {
-			usage["ratio"] = statusResp.Usage.Ratio
+		for wire, key := range map[string]string{"input_video_duration": "inputVideoDuration", "fps": "fps", "ratio": "ratio"} {
+			if v, ok := rawUsage[wire]; ok && v != nil {
+				usage[key] = v
+			}
 		}
 		alibabaMeta["usage"] = usage
 	}
@@ -721,19 +759,20 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 // handleError converts an HTTPStatusError carrying the DashScope error
 // envelope ({code, message, request_id}) into a provider error.
 func (m *VideoModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
 	var httpErr *internalhttp.HTTPStatusError
-	if statusErr, ok := err.(*internalhttp.HTTPStatusError); ok {
-		httpErr = statusErr
+	if !errors.As(err, &httpErr) {
+		// TS postJsonToApi / getFromApi let a transport failure (abort,
+		// "Cannot connect to API") propagate unchanged.
+		return err
 	}
-	if httpErr == nil {
-		return providererrors.NewVideoGenerationError("alibaba", m.modelID, err.Error(), err)
-	}
-	var apiErr alibabaVideoAPIError
-	message := string(httpErr.Body)
-	if jsonErr := json.Unmarshal(httpErr.Body, &apiErr); jsonErr == nil && apiErr.Message != "" {
-		message = apiErr.Message
-	}
-	return providererrors.NewProviderError("alibaba", httpErr.StatusCode, apiErr.Code, message, err)
+	message, code := alibabaNativeErrorMessage(httpErr.StatusCode, httpErr.Body)
+	return providererrors.NewProviderErrorFromResponse("alibaba", 0, code, message, err)
 }
 
 func flattenHTTPHeaders(headers map[string][]string) map[string]string {
@@ -746,23 +785,15 @@ func flattenHTTPHeaders(headers map[string][]string) map[string]string {
 	return out
 }
 
-func mustMarshal(v interface{}) []byte {
-	b, _ := json.Marshal(v)
-	return b
-}
+// alibabaCreateSpec is TS alibabaVideoCreateTaskSchema's shape.
+var alibabaCreateSpec = zodjson.Obj([]string{"output", "request_id"}, map[string]*zodjson.Node{
+	"output": zodjson.Obj([]string{"task_status", "task_id"}, nil),
+})
 
 // alibabaOperation is the opaque operation reference returned by DoStart and
 // passed back into DoStatus.
 type alibabaOperation struct {
 	TaskID string `json:"taskId"`
-}
-
-// alibabaVideoAPIError is the DashScope native API error format (different
-// from the OpenAI-compatible chat endpoint).
-type alibabaVideoAPIError struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	RequestID string `json:"request_id"`
 }
 
 type alibabaVideoCreateResponse struct {

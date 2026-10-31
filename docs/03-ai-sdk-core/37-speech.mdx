@@ -585,6 +585,54 @@ if err := validateTextLength(text, 4096); err != nil {
 }
 ```
 
+## Streaming Speech (Experimental)
+
+`ExperimentalStreamSpeech` synthesizes speech for text that arrives
+incrementally, such as the output of a language model, and streams audio back
+as it is generated. The model must implement the optional
+`provider.SpeechStreamer` interface; the existing `provider.SpeechModel`
+interface is unchanged. ElevenLabs and the AI Gateway support it.
+
+```go
+deltas := make(chan string)
+go func() {
+    defer close(deltas)
+    for _, d := range []string{"Hello, ", "streamed ", "speech."} {
+        deltas <- d
+    }
+}()
+
+result, err := ai.ExperimentalStreamSpeech(ctx, ai.StreamSpeechOptions{
+    Model:      speechModel,
+    TextStream: ai.NewChannelStringSpeechTextStream(deltas, nil),
+})
+if err != nil {
+    log.Fatal(err)
+}
+audio, err := result.AudioStream()
+if err != nil {
+    log.Fatal(err)
+}
+defer audio.Close()
+for {
+    chunk, err := audio.Next()
+    if err == io.EOF {
+        break
+    }
+    if err != nil {
+        log.Fatal(err)
+    }
+    play(chunk)
+}
+```
+
+For a complete string, set `Text` instead of `TextStream`. Use
+`FullStream()` to also see raw and error parts, and read `Usage()`,
+`Warnings()` and `ProviderMetadata()` after the stream finishes. See the
+[API reference](../07-reference/ai/stream-speech.mdx).
+
+This feature is experimental and its API may change.
+
 ## Speech Translation (Experimental)
 
 Speech-to-speech translation streams source-language audio in and receives
@@ -637,3 +685,4 @@ under `pkg/providers/google` and `pkg/providers/openai` for the current
 - [Settings](./25-settings.mdx)
 - [Error Handling](./50-error-handling.mdx)
 - [API Reference: GenerateSpeech](../07-reference/ai/generate-speech.mdx)
+- [API Reference: ExperimentalStreamSpeech](../07-reference/ai/stream-speech.mdx)

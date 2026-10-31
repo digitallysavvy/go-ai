@@ -93,11 +93,11 @@ func TestLanguageModelValidation(t *testing.T) {
 				t.Errorf("expected model ID %s, got %s", tt.modelID, model.ModelID())
 			}
 
-			if model.Provider() != "moonshot" {
-				t.Errorf("expected provider 'moonshot', got %s", model.Provider())
+			if model.Provider() != "moonshotai.chat" {
+				t.Errorf("expected provider 'moonshotai.chat', got %s", model.Provider())
 			}
 
-			if model.SpecificationVersion() != "v3" {
+			if model.SpecificationVersion() != "v4" {
 				t.Errorf("expected specification version 'v3', got %s", model.SpecificationVersion())
 			}
 

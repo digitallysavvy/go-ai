@@ -44,8 +44,19 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 }
 
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+	// TS VoyageEmbeddingModel parses provider options before the count check.
+	if opts != nil {
+		if err := validateEmbeddingProviderOptions(opts.ProviderOptions); err != nil {
+			return nil, err
+		}
+	}
 	if len(inputs) > m.MaxEmbeddingsPerCall() {
-		return nil, fmt.Errorf("too many embedding values for %s/%s: max %d, got %d", m.Provider(), m.modelID, m.MaxEmbeddingsPerCall(), len(inputs))
+		return nil, &providererrors.TooManyEmbeddingValuesForCallError{
+			Provider:             m.Provider(),
+			ModelID:              m.modelID,
+			MaxEmbeddingsPerCall: m.MaxEmbeddingsPerCall(),
+			Values:               inputs,
+		}
 	}
 
 	reqBody := map[string]interface{}{"input": inputs, "model": m.modelID}
@@ -64,6 +75,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		}
 	}
 
+	// Top-level dimensions (TS #22338); providerOptions.voyage.outputDimension wins.
+	if _, ok := reqBody["output_dimension"]; !ok && opts != nil && opts.Dimensions != nil {
+		reqBody["output_dimension"] = *opts.Dimensions
+	}
+
 	var response struct {
 		Data []struct {
 			Embedding []float64 `json:"embedding"`
@@ -74,13 +90,14 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		} `json:"usage,omitempty"`
 	}
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/embeddings",
-		Body:    reqBody,
-		Headers: optsHeaders(opts),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaVoyageEmbedding),
+		Method:           http.MethodPost,
+		Path:             "/embeddings",
+		Body:             reqBody,
+		Headers:          optsHeaders(opts),
 	}, &response)
 	if err != nil {
-		return nil, providererrors.NewProviderError("voyage", 0, "", err.Error(), err)
+		return nil, handleError(err)
 	}
 	sort.Slice(response.Data, func(i, j int) bool { return response.Data[i].Index < response.Data[j].Index })
 	embeddings := make([][]float64, 0, len(response.Data))
@@ -94,7 +111,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
 		Usage:      types.EmbeddingUsage{Tokens: float64(tokens), InputTokens: tokens, TotalTokens: tokens},
-		Responses:  []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response}},
+		Responses:  []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: providerutils.RawJSONBody(httpResp.Body)}},
 	}, nil
 }
 

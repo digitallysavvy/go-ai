@@ -104,3 +104,21 @@ func TestStream_ErrorEventExplicitOverridesInference(t *testing.T) {
 		t.Error("IsRetryable = true, want explicit false (not inferred true)")
 	}
 }
+
+// TS message_delta sets container = delta.container ?? null: a delta without
+// a container clears the one message_start reported.
+func TestStreamMessageDeltaWithoutContainerClearsContainer(t *testing.T) {
+	body := "event: message_start\ndata: " + `{"type":"message_start","message":{"id":"m1","model":"claude-sonnet-4-5","usage":{"input_tokens":1,"output_tokens":0},"container":{"id":"c1","expires_at":"2030-01-01T00:00:00Z"}}}` + "\n\n" +
+		"event: message_delta\ndata: " + `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}` + "\n\n" +
+		"event: message_stop\ndata: " + `{"type":"message_stop"}` + "\n\n"
+	s := newAnthropicStream(io.NopCloser(strings.NewReader(body)), false)
+	finish := drainForFinish(t, s)
+	if finish == nil {
+		t.Fatal("no finish chunk")
+	}
+	meta := decodeStreamFinishMetadata(t, finish.ProviderMetadata)
+	anth, _ := meta["anthropic"].(map[string]interface{})
+	if v, ok := anth["container"]; !ok || v != nil {
+		t.Fatalf("container = %#v, want null", anth["container"])
+	}
+}

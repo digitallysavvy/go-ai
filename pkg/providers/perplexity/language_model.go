@@ -3,8 +3,10 @@ package perplexity
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -98,7 +100,8 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (map[string]inte
 	if opts.PresencePenalty != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "presencePenalty"})
 	}
-	if len(opts.StopSequences) > 0 {
+	// TS: stopSequences != null (an empty array warns too).
+	if opts.StopSequences != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "stopSequences"})
 	}
 	if opts.Seed != nil {
@@ -139,7 +142,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (map[string]inte
 		if *opts.Reasoning == types.ReasoningNone {
 			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: `reasoning "none"`})
 		} else {
-			reasoningConfig = map[string]interface{}{"effort": string(*opts.Reasoning)}
+			reasoningConfig = map[string]interface{}{"effort": perplexityReasoningEffort(*opts.Reasoning, &warnings)}
 		}
 	}
 
@@ -151,6 +154,14 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (map[string]inte
 	}
 	for k, v := range extras {
 		body[k] = v
+	}
+	// TS builds the body as {...agentOptions, ...modelSelection, input,
+	// max_output_tokens, temperature, top_p, reasoning, response_format, tools}:
+	// those keys are always assigned, so a loose providerOptions.perplexity
+	// entry of the same name never reaches the wire when the call value is
+	// undefined (JSON.stringify drops it).
+	for _, k := range []string{"max_output_tokens", "temperature", "top_p", "response_format"} {
+		delete(body, k)
 	}
 	if model != "" {
 		body["model"] = model
@@ -249,7 +260,8 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 	if response.Error != nil || response.Status == "failed" {
 		message := "Perplexity response failed"
-		if response.Error != nil && response.Error.Message != "" {
+		if response.Error != nil {
+			// TS: response.error?.message ?? 'Perplexity response failed'.
 			message = response.Error.Message
 		}
 		return nil, &providererrors.ProviderError{
@@ -270,7 +282,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	_ = json.Unmarshal(resp.Body, &bodyGeneric)
 	result.ResponseMetadata = &types.ResponseMetadata{
 		ID:        response.ID,
-		Timestamp: time.Unix(response.CreatedAt, 0),
+		Timestamp: perplexityCreatedAt(response.CreatedAt),
 		ModelID:   response.Model,
 		Headers:   responseHeaders,
 		Body:      bodyGeneric,
@@ -310,11 +322,20 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 
 // handleError converts an HTTP-level error into a ProviderError, resolving
 // the Agent API's error envelope when present (see errors.go).
+// perplexityCreatedAt is TS `new Date(created_at * 1000)`; created_at is a
+// zod number, so a fractional second is valid.
+func perplexityCreatedAt(createdAt float64) time.Time {
+	sec := math.Floor(createdAt)
+	return time.Unix(int64(sec), int64((createdAt-sec)*1e9))
+}
+
 func (m *LanguageModel) handleError(err error) error {
-	if parsed := parsePerplexityHTTPError(err); parsed != nil {
-		if pe, ok := parsed.(*providererrors.ProviderError); ok {
-			return pe
-		}
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if pe, ok := perplexityHTTPError(err, "perplexity").(*providererrors.ProviderError); ok {
+		pe.Cause = err
+		return pe
 	}
 	return providererrors.NewProviderError("perplexity", 0, "", err.Error(), err)
 }
@@ -421,7 +442,7 @@ func (m *LanguageModel) convertResponse(response *perplexityAgentResponse, rawBo
 		FinishReason:     mapPerplexityFinishReason(response.Status, incompleteReason, hasFunctionCall),
 		RawFinishReason:  rawFinishReason,
 		Usage:            convertPerplexityUsage(response.Usage, perplexityRawUsageBytes(rawBody)),
-		RawResponse:      response,
+		RawResponse:      providerutils.RawJSONBody(rawBody),
 		ProviderMetadata: getPerplexityProviderMetadata(response.Usage),
 	}
 	if len(textParts) > 0 {
@@ -498,14 +519,12 @@ func perplexityFetchedContentSource(fc perplexityFetchedContent) types.SourceCon
 
 type perplexityToolCallMeta struct {
 	ItemID           *string `json:"itemId"`
-	ThoughtSignature string  `json:"thoughtSignature,omitempty"`
+	ThoughtSignature *string `json:"thoughtSignature,omitempty"`
 }
 
 func perplexityToolCallMetadata(item perplexityOutputItem) json.RawMessage {
-	m := perplexityToolCallMeta{ItemID: item.ID}
-	if item.ThoughtSignature != nil {
-		m.ThoughtSignature = *item.ThoughtSignature
-	}
+	// TS spreads thoughtSignature whenever it is not null, so "" stays.
+	m := perplexityToolCallMeta{ItemID: item.ID, ThoughtSignature: item.ThoughtSignature}
 	raw, _ := json.Marshal(map[string]interface{}{"perplexity": m})
 	return raw
 }
@@ -521,22 +540,28 @@ func perplexityToolCallMetadataMap(item perplexityOutputItem) map[string]interfa
 	return map[string]interface{}{"perplexity": inner}
 }
 
+// formatPplxNumber renders n like JS String(number) for the values that occur
+// here: integers without a fraction part, fractions in shortest form.
+func formatPplxNumber(n pplxNumber) string {
+	return strconv.FormatFloat(float64(n), 'f', -1, 64)
+}
+
 // perplexityTextID mirrors TS getTextId: a text block's identity is the
 // item's own id, or its output index, or "text" as a last resort; a nonzero
 // content_index is appended so multiple content parts on one item get
 // distinct blocks.
-func perplexityTextID(itemID *string, outputIndex *int64, contentIndex *int64) string {
+func perplexityTextID(itemID *string, outputIndex *pplxNumber, contentIndex *pplxNumber) string {
 	id := "text"
 	switch {
 	case itemID != nil:
 		id = *itemID
 	case outputIndex != nil:
-		id = strconv.FormatInt(*outputIndex, 10)
+		id = formatPplxNumber(*outputIndex)
 	}
 	if contentIndex == nil || *contentIndex == 0 {
 		return id
 	}
-	return fmt.Sprintf("%s:%d", id, *contentIndex)
+	return id + ":" + formatPplxNumber(*contentIndex)
 }
 
 // perplexityTextState tracks one text block's accumulated text and whether
@@ -602,7 +627,7 @@ func newPerplexityAgentStream(reader io.ReadCloser, warnings []types.Warning, in
 		textStates:        map[string]*perplexityTextState{},
 		emittedSourceURLs: map[string]bool{},
 		pendingSources:    map[string]types.SourceContent{},
-		finishReason:      types.FinishReasonOther,
+		finishReason:      types.FinishReasonInterrupted,
 	}
 }
 
@@ -653,16 +678,28 @@ func (s *perplexityAgentStream) Close() error {
 
 func (s *perplexityAgentStream) processEvent(data string) {
 	if s.includeRaw {
+		// TS enqueues the raw part for every frame; rawValue is undefined
+		// when the frame is not JSON.
 		var rawValue interface{}
-		if err := json.Unmarshal([]byte(data), &rawValue); err == nil {
-			s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: rawValue})
+		if err := json.Unmarshal([]byte(data), &rawValue); err != nil {
+			rawValue = nil
 		}
+		s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: rawValue})
 	}
 
+	// TS perplexityAgentChunkSchema: invalid JSON or a mistyped member is an
+	// error part carrying a typed error, and the finish reason turns to error.
 	var chunk perplexityAgentChunk
-	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+	msg, perr := providerutils.CheckPerplexityAgentChunk(data)
+	if perr == nil {
+		if derr := providerutils.UnmarshalChunk([]byte(data), &chunk); derr != nil {
+			msg, perr = providerutils.ChunkParseFailure(data, derr)
+		}
+	}
+	if perr != nil {
 		s.finishReason = types.FinishReasonError
-		s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error()})
+		s.rawFinishReason = "" // TS: { unified: 'error', raw: undefined }
+		s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: msg, Err: perr})
 		return
 	}
 
@@ -684,7 +721,7 @@ func (s *perplexityAgentStream) processEvent(data string) {
 		}
 		seq := streaming.GenerateID()
 		if chunk.SequenceNumber != nil {
-			seq = strconv.FormatInt(*chunk.SequenceNumber, 10)
+			seq = formatPplxNumber(*chunk.SequenceNumber)
 		}
 		s.activeReasoningID = "reasoning-" + seq
 		s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: s.activeReasoningID})
@@ -726,7 +763,7 @@ func (s *perplexityAgentStream) processEvent(data string) {
 			s.emitResponseMetadataOnce(chunk.Response)
 			for i := range chunk.Response.Output {
 				item := chunk.Response.Output[i]
-				outputIndex := int64(i)
+				outputIndex := pplxNumber(i)
 				s.finishOutputText(&item, &outputIndex)
 				s.emitOutputSources(&item)
 				s.emitFunctionCall(&item)
@@ -743,16 +780,34 @@ func (s *perplexityAgentStream) processEvent(data string) {
 			}
 			s.finishReason = mapPerplexityFinishReason(chunk.Response.Status, incompleteReason, s.hasFunctionCall)
 			s.rawFinishReason = raw
+		} else if s.finishReason == types.FinishReasonInterrupted {
+			// The terminal event arrived without response details.
+			s.finishReason = types.FinishReasonOther
+			s.rawFinishReason = ""
 		}
 
 	case "response.failed":
 		s.finishReason = types.FinishReasonError
 		s.rawFinishReason = "failed"
+		// TS enqueues `value.error ?? new Error('Perplexity response failed')`
+		// and the core normalizes the error object into a stream provider
+		// error (type, code, message and the object as data).
 		message := "Perplexity response failed"
-		if chunk.Error != nil && chunk.Error.Message != "" {
+		var errorObject interface{}
+		if chunk.Error != nil {
 			message = chunk.Error.Message
+			var probe struct {
+				Error map[string]interface{} `json:"error"`
+			}
+			if json.Unmarshal([]byte(data), &probe) == nil && probe.Error != nil {
+				errorObject = probe.Error
+			}
 		}
-		s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: message})
+		s.pending = append(s.pending, &provider.StreamChunk{
+			Type: provider.ChunkTypeError,
+			Text: message,
+			Err:  providererrors.NormalizeStreamProviderError(errors.New(message), "perplexity", errorObject),
+		})
 	}
 }
 
@@ -765,7 +820,7 @@ func (s *perplexityAgentStream) emitResponseMetadataOnce(response *perplexityAge
 		Type: provider.ChunkTypeResponseMetadata,
 		ResponseMetadata: &provider.ResponseMetadata{
 			ID:        response.ID,
-			Timestamp: time.Unix(response.CreatedAt, 0),
+			Timestamp: perplexityCreatedAt(response.CreatedAt),
 			ModelID:   response.Model,
 			Headers:   s.responseHeaders,
 		},
@@ -805,7 +860,7 @@ func (s *perplexityAgentStream) finishText(id string, text *string) {
 	}
 }
 
-func (s *perplexityAgentStream) finishOutputText(item *perplexityOutputItem, outputIndex *int64) {
+func (s *perplexityAgentStream) finishOutputText(item *perplexityOutputItem, outputIndex *pplxNumber) {
 	if item == nil || item.Type != "message" {
 		return
 	}
@@ -813,7 +868,7 @@ func (s *perplexityAgentStream) finishOutputText(item *perplexityOutputItem, out
 		if part.Type != "output_text" {
 			continue
 		}
-		contentIndex := int64(i)
+		contentIndex := pplxNumber(i)
 		s.finishText(perplexityTextID(item.ID, outputIndex, &contentIndex), part.Text)
 	}
 }
@@ -948,4 +1003,16 @@ func perplexityExtractNestedUsageBytes(raw []byte) []byte {
 		return nil
 	}
 	return probe.Response.Usage
+}
+
+// perplexityReasoningEffort maps a portable reasoning level to a Perplexity
+// reasoning effort (TS mapReasoningToProviderEffort with max -> xhigh). A
+// compatibility warning is appended when the level is coerced.
+func perplexityReasoningEffort(level types.ReasoningLevel, warnings *[]types.Warning) string {
+	if level != types.ReasoningMax {
+		return string(level)
+	}
+	details := fmt.Sprintf("reasoning %q is not directly supported by this model. mapped to effort %q.", string(level), "xhigh")
+	*warnings = append(*warnings, types.Warning{Type: "compatibility", Feature: "reasoning", Details: details, Message: details})
+	return "xhigh"
 }

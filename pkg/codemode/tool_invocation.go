@@ -3,8 +3,10 @@ package codemode
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
@@ -90,14 +92,13 @@ type toolBridge struct {
 	// call.
 	fatalErr CodeModeError
 
-	// lastTypedErr/lastTypedErrIndex record the most recent CodeModeError
-	// produced by a bridge call, so RunCodeMode can re-surface the
-	// original typed error (via the lastCodeModeErr getter) instead of the
-	// generic JavaScript exception text that comes back once it
-	// round-trips through the sandbox (mirrors TypeScript's
-	// codeModeErrors accumulator / findPreservedCodeModeError).
-	lastTypedErr      CodeModeError
-	lastTypedErrIndex int
+	// typedErrs records every CodeModeError produced by a bridge call, so
+	// RunCodeMode can re-surface the original typed error (via
+	// preservedCodeModeErr) instead of the generic JavaScript exception
+	// text that comes back once it round-trips through the sandbox
+	// (mirrors TypeScript's codeModeErrors accumulator /
+	// findPreservedCodeModeError).
+	typedErrs []CodeModeError
 }
 
 func newToolBridge(ctx context.Context, input RunInput, options *Options, policy resolvedPolicy, outerToolCall string, replayLedger map[int]replayRecord, resumePendings map[int]PendingInterruption, resumeResolutions map[int]interface{}) *toolBridge {
@@ -126,12 +127,18 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 		if err != nil {
 			if cmErr, ok := err.(CodeModeError); ok {
 				b.mu.Lock()
-				b.lastTypedErr = cmErr
-				b.lastTypedErrIndex = b.requestCount
+				b.typedErrs = append(b.typedErrs, cmErr)
 				b.mu.Unlock()
 			}
 		}
 	}()
+
+	// The sandbox is blocked for the whole host call: time spent in tools,
+	// approval callbacks and validation does not count toward the CPU budget.
+	if budget := cpuBudgetFrom(b.ctx); budget != nil {
+		budget.pause()
+		defer budget.resume()
+	}
 
 	if cErr := b.ctx.Err(); cErr != nil {
 		return "", NewAbortedError()
@@ -143,7 +150,7 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 	b.mu.Unlock()
 	if b.policy.MaxBridgeRequests > 0 && n > b.policy.MaxBridgeRequests {
 		return "", NewBridgeLimitError(
-			fmt.Sprintf("Code mode exceeded the %d bridge request limit.", b.policy.MaxBridgeRequests),
+			fmt.Sprintf("JavaScript runtime exceeded the %d bridge request limit.", b.policy.MaxBridgeRequests),
 			map[string]interface{}{"maxBridgeRequests": b.policy.MaxBridgeRequests},
 		)
 	}
@@ -163,29 +170,52 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 		return rec.OutputJSON, nil
 	}
 
+	// TS invokeCodeModeTool serializes the input against maxToolInputBytes
+	// before invokeHostTool looks the tool up, so an oversized input fails
+	// with the size error even for an unknown tool.
+	if err := assertJSONPayloadSize(inputJSON, b.policy.MaxToolInputBytes, "Tool \""+toolName+"\" input"); err != nil {
+		return "", err
+	}
+
 	tool, ok := b.tools[toolName]
 	if !ok {
 		names := make([]string, 0, len(b.tools))
 		for name := range b.tools {
 			names = append(names, name)
 		}
+		// TS lists Object.keys(tools) (insertion order); a Go map has none,
+		// so the list is sorted to stay deterministic.
+		sort.Strings(names)
 		return "", NewToolError(fmt.Sprintf("Unknown tool: %s", toolName), map[string]interface{}{
 			"toolName":       toolName,
 			"availableTools": names,
 		})
 	}
 	if tool.Execute == nil {
-		return "", NewToolError(fmt.Sprintf("Tool %q does not have execute().", toolName), map[string]interface{}{"toolName": toolName})
+		return "", NewToolError("Tool \""+toolName+"\" does not have execute().", map[string]interface{}{"toolName": toolName})
 	}
 
-	if err := assertJSONPayloadSize(inputJSON, b.policy.MaxToolInputBytes, fmt.Sprintf("Tool %q input", toolName)); err != nil {
-		return "", err
-	}
 	inputVal, ferr := fromJSONPayload(inputJSON)
 	if ferr != nil {
 		return "", ferr
 	}
-	input, _ := inputVal.(map[string]interface{})
+	input, isObject := inputVal.(map[string]interface{})
+	if !isObject && inputJSON != "" {
+		// TS passes the sandbox value through unchanged, so a non-object
+		// argument (tools.x("text"), tools.x([1]), tools.x(null)) fails input
+		// validation instead of being replaced by an empty object. A Go tool's
+		// Execute takes an object, so such a value is always an input error.
+		cause := fmt.Sprintf("expected an object, received %s", jsonKindName(inputVal))
+		if validator := toolInputValidator(tool); validator != nil {
+			if verr := validator.Validate(inputVal); verr != nil {
+				cause = verr.Error()
+			}
+		}
+		return "", NewToolError(
+			"Invalid input for tool \""+toolName+"\": "+cause,
+			map[string]interface{}{"toolName": toolName, "input": inputVal, "cause": cause},
+		)
+	}
 	if input == nil {
 		input = map[string]interface{}{}
 	}
@@ -196,11 +226,14 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 		// passes validation.value (not the raw input) on to execute. Apply
 		// defaults before validating for the same effect (schema.Validate
 		// alone does not fill defaults).
+		// The error details carry the input as the sandbox passed it (TS
+		// reports `input`, not validation.value).
+		rawInput := inputVal
 		input = applyToolInputDefaults(input, validator)
 		if verr := validator.Validate(input); verr != nil {
 			return "", NewToolError(
-				fmt.Sprintf("Invalid input for tool %q: %s", toolName, verr.Error()),
-				map[string]interface{}{"toolName": toolName, "input": input, "cause": verr.Error()},
+				"Invalid input for tool \""+toolName+"\": "+verr.Error(),
+				map[string]interface{}{"toolName": toolName, "input": rawInput, "cause": verr.Error()},
 			)
 		}
 	}
@@ -241,7 +274,7 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 			return "", aerr
 		}
 		if needsApproval {
-			if err := b.resolveApproval(tool, toolName, input, toolCallID, n); err != nil {
+			if err := b.resolveApproval(tool, toolName, input, inputJSON, toolCallID, n); err != nil {
 				return "", err
 			}
 		}
@@ -251,24 +284,28 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 		return tool.Execute(b.ctx, input, execOptions)
 	})
 	if oerr != nil {
-		if cmErr, ok := oerr.(CodeModeError); ok && cmErr.ErrorCode() == "CODE_MODE_ABORTED" {
-			// Mirrors TypeScript's raceAgainstAbort: cancellation wins
-			// the race and propagates as-is, unsanitized (it is not a
-			// tool-thrown error).
+		if _, ok := oerr.(CodeModeError); ok {
+			// Mirrors TypeScript's invokeCodeModeTool: a CodeModeError
+			// (cancellation winning raceAgainstAbort, or one the tool
+			// itself returned, such as RequestCodeModeInterrupt's
+			// *ProtocolError for a malformed payload) propagates as-is,
+			// unsanitized, and is preserved for the caller.
 			return "", oerr
 		}
 		if sig, ok := oerr.(*interruptSignal); ok {
 			// The tool called RequestCodeModeInterrupt: pause here
-			// instead of sanitizing this as a tool failure.
-			return "", b.raiseInterrupt(toolName, input, toolCallID, n, sig.payload)
+			// instead of sanitizing this as a tool failure. The pending
+			// interruption keeps the sandbox's raw argument, as in TS.
+			return "", b.raiseInterrupt(toolName, rawToolInput(inputJSON), toolCallID, n, sig.payload)
 		}
 		// Mirrors TypeScript's invokeCodeModeTool: any non-CodeModeError
-		// thrown by a host tool is sanitized to a generic message so raw
-		// tool internals never leak into the sandbox.
-		return "", NewToolError("Host tool failed.", map[string]interface{}{"toolName": toolName, "cause": oerr.Error()})
+		// thrown by a host tool is sanitized to a generic message, with TS's
+		// CODE_MODE_HOST_TOOL_ERROR code, so raw tool internals never leak
+		// into the sandbox. The cause stays in Details for the Go caller.
+		return "", newHostToolFailedError(toolName, oerr)
 	}
 
-	outJSON, jerr := toJSONPayload(output, b.policy.MaxToolOutputBytes, fmt.Sprintf("Tool %q output", toolName))
+	outJSON, jerr := toJSONPayload(output, b.policy.MaxToolOutputBytes, "Tool \""+toolName+"\" output")
 	if jerr != nil {
 		return "", jerr
 	}
@@ -306,13 +343,22 @@ func (b *toolBridge) raiseInterrupt(toolName string, input interface{}, toolCall
 	defer b.mu.Unlock()
 	if b.policy.MaxInFlightBridgeRequests > 0 && len(b.pendingBatch) >= b.policy.MaxInFlightBridgeRequests {
 		b.fatalErr = NewBridgeLimitError(
-			fmt.Sprintf("Code mode exceeded the %d in-flight bridge request limit.", b.policy.MaxInFlightBridgeRequests),
+			fmt.Sprintf("JavaScript runtime exceeded the %d in-flight bridge request limit.", b.policy.MaxInFlightBridgeRequests),
 			map[string]interface{}{"maxInFlightBridgeRequests": b.policy.MaxInFlightBridgeRequests},
 		)
 		return b.fatalErr
 	}
 	b.pendingBatch = append(b.pendingBatch, pending)
 	return &interruptUnwind{pending: pending}
+}
+
+// rawToolInput decodes a call's argument as the sandbox passed it (nil when
+// it passed none), freshly, so neither schema defaults nor a tool that
+// modified its input map change the recorded interruption input. inputJSON
+// was already decoded once by invoke, so it cannot fail here.
+func rawToolInput(inputJSON string) interface{} {
+	v, _ := fromJSONPayload(inputJSON)
+	return v
 }
 
 // interruptUnwind is the sentinel error returned by invoke when a call
@@ -353,12 +399,30 @@ func (b *toolBridge) committedSnapshot() map[int]replayRecord {
 	return snap
 }
 
-// lastCodeModeErr returns the most recent typed CodeModeError a bridge
-// call produced, if any (see lastTypedErr's doc comment).
-func (b *toolBridge) lastCodeModeErr() CodeModeError {
+// preservedCodeModeErr returns the typed CodeModeError a bridge call
+// produced whose rejection is the error the sandboxed script failed with
+// (message is that error's `message`), if any (see typedErrs' doc comment).
+// TS matches the run's error code against codeModeErrors; the Go sandbox
+// sees the rejection value itself, so it matches its message. A script that
+// caught a tool error and then failed some other way (its own throw, a
+// timeout) is not reported as that tool error.
+func (b *toolBridge) preservedCodeModeErr(message string) CodeModeError {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.lastTypedErr
+	for i := len(b.typedErrs) - 1; i >= 0; i-- {
+		if b.typedErrs[i].Error() == message {
+			return b.typedErrs[i]
+		}
+	}
+	return nil
+}
+
+// requestTotal returns how many host calls this invocation has made (TS
+// run's totalBridgeRequests).
+func (b *toolBridge) requestTotal() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.requestCount
 }
 
 // fatal returns the invocation's fatal error, if any (see fatalErr's doc
@@ -380,7 +444,10 @@ func (b *toolBridge) setFatal(err CodeModeError) {
 	}
 }
 
-func (b *toolBridge) resolveApproval(tool types.Tool, toolName string, input map[string]interface{}, toolCallID string, n int) error {
+// inputJSON is the call's argument as the sandbox passed it: TS records an
+// interruption's input from the host function arguments
+// (toPendingInterruptions), not from the validated value.
+func (b *toolBridge) resolveApproval(tool types.Tool, toolName string, input map[string]interface{}, inputJSON string, toolCallID string, n int) error {
 	mode := ApprovalModeCallback
 	var onApprovalRequired OnApprovalRequiredFunc
 	if b.options != nil && b.options.Approval != nil {
@@ -391,7 +458,7 @@ func (b *toolBridge) resolveApproval(tool types.Tool, toolName string, input map
 	}
 
 	if mode == ApprovalModeInterrupt {
-		return b.raiseInterrupt(toolName, input, toolCallID, n, InterruptPayload{"kind": ToolApprovalKind})
+		return b.raiseInterrupt(toolName, rawToolInput(inputJSON), toolCallID, n, InterruptPayload{"kind": ToolApprovalKind})
 	}
 
 	if onApprovalRequired == nil {
@@ -453,6 +520,12 @@ func applyToolInputDefaults(input map[string]interface{}, validator schema.Valid
 // or nil when the tool has no JSON schema. Mirrors
 // pkg/ai/tool_call_pipeline.go's toolCallInputValidator.
 func toolInputValidator(tool types.Tool) schema.Validator {
+	if isHintedParameters(tool.Parameters) {
+		if m, ok := schema.ParametersMap(tool.Parameters); ok && len(m) > 0 {
+			return schema.NewJSONSchema(m)
+		}
+		return nil
+	}
 	switch s := tool.Parameters.(type) {
 	case map[string]interface{}:
 		if len(s) == 0 {
@@ -493,6 +566,14 @@ func raceAgainstAbort[T any](ctx context.Context, fn func() (T, error)) (T, erro
 	}
 	ch := make(chan outcome, 1)
 	go func() {
+		// A panic in a host tool must not take the process down (this runs on
+		// its own goroutine, where nothing above can recover it): report it
+		// as an ordinary tool failure, like a thrown error in TS.
+		defer func() {
+			if r := recover(); r != nil {
+				ch <- outcome{zero, fmt.Errorf("host tool panicked: %v", r)}
+			}
+		}()
 		v, err := fn()
 		ch <- outcome{v, err}
 	}()
@@ -502,5 +583,32 @@ func raceAgainstAbort[T any](ctx context.Context, fn func() (T, error)) (T, erro
 		return out.v, out.err
 	case <-ctx.Done():
 		return zero, NewAbortedError()
+	}
+}
+
+// isHintedParameters reports whether a tool's Parameters is a
+// jsonorder.Hinted, in its value or pointer form.
+func isHintedParameters(p interface{}) bool {
+	switch p.(type) {
+	case jsonorder.Hinted, *jsonorder.Hinted:
+		return true
+	}
+	return false
+}
+
+func jsonKindName(v interface{}) string {
+	switch v.(type) {
+	case nil:
+		return "null"
+	case string:
+		return "string"
+	case bool:
+		return "boolean"
+	case []interface{}:
+		return "array"
+	case map[string]interface{}:
+		return "object"
+	default:
+		return "number"
 	}
 }

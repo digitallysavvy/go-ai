@@ -1,8 +1,10 @@
 package bedrock
 
 import (
+	"errors"
 	"testing"
 
+	providerrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -141,6 +143,52 @@ func TestSanitizeDocumentName(t *testing.T) {
 	for _, tt := range tests {
 		if got := sanitizeDocumentName(tt.name); got != tt.want {
 			t.Errorf("sanitizeDocumentName(%q) = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+// A legacy ToolResultContent{Result: map} (no Output) is JSON.stringify'd like
+// the Anthropic and Google converters do, not rendered with Go's %v.
+func TestBedrockToolResultContent_LegacyResultIsJSONEncoded(t *testing.T) {
+	got, err := bedrockToolResultContent(types.ToolResultContent{Result: map[string]interface{}{"a": 1.0, "b": []interface{}{"x"}}}, func(string) string { return "doc" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0]["text"] != `{"a":1,"b":["x"]}` {
+		t.Fatalf("got %#v", got)
+	}
+}
+
+// JS \s matches NBSP and other Unicode spaces, which collapse to one space
+// before the invalid-character strip (RE2 \s would let them be stripped).
+func TestSanitizeDocumentNameJSWhitespace(t *testing.T) {
+	for in, want := range map[string]string{
+		"my file.pdf": "my file",
+		"a  　 b.txt":  "a b",
+		"x\vy":        "x y",
+	} {
+		if got := sanitizeDocumentName(in); got != want {
+			t.Errorf("sanitizeDocumentName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestPartProviderOptionsValidation: TS parseProviderOptions with the
+// amazonBedrock text/image/file part schemas rejects wrongly typed options.
+func TestPartProviderOptionsValidation(t *testing.T) {
+	bad := map[string]types.ContentPart{
+		"qualifier": types.TextContent{Text: "hi", ProviderOptions: map[string]interface{}{
+			"bedrock": map[string]interface{}{"guardContent": true, "guardContentQualifiers": []interface{}{"nope"}}}},
+		"guardContent": types.TextContent{Text: "hi", ProviderOptions: map[string]interface{}{
+			"amazonBedrock": map[string]interface{}{"guardContent": "yes"}}},
+		"citations": types.FileContent{Data: []byte("%PDF-1.4"), MediaType: "application/pdf", ProviderOptions: map[string]interface{}{
+			"bedrock": map[string]interface{}{"citations": map[string]interface{}{"enabled": "yes"}}}},
+	}
+	for name, part := range bad {
+		_, _, err := convertToBedrockChatMessages([]types.Message{{Role: types.RoleUser, Content: []types.ContentPart{part}}}, false)
+		var invalid *providerrors.InvalidArgumentError
+		if !errors.As(err, &invalid) {
+			t.Errorf("%s: want InvalidArgumentError, got %v", name, err)
 		}
 	}
 }

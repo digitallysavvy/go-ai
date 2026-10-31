@@ -41,6 +41,17 @@ func TestDoStreamIgnoresDefaultClientTimeout(t *testing.T) {
 	}
 }
 
+func TestStatusProviderError(t *testing.T) {
+	err := StatusProviderError("x", 503, http.Header{"Retry-After": {"1"}}, []byte(`{"message":"busy"}`))
+	pe, ok := err.(interface{ IsRetryable() bool })
+	if !ok || !pe.IsRetryable() {
+		t.Fatalf("503 should be retryable: %v", err)
+	}
+	if got := StatusProviderError("x", 400, nil, []byte(`oops`)); got.(interface{ IsRetryable() bool }).IsRetryable() {
+		t.Fatal("400 must not be retryable")
+	}
+}
+
 // A slow non-streaming provider call (reasoning model, image generation) must
 // not hit an arbitrary whole-request timeout: TS fetch has none.
 func TestDefaultHTTPClientHasNoWholeRequestTimeout(t *testing.T) {

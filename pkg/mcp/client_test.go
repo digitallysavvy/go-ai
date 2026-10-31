@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -276,7 +277,9 @@ func (m *mockTransport) Send(ctx context.Context, msg *MCPMessage) error {
 				Version: "1.0.0",
 			},
 			Capabilities: ServerCapabilities{
-				Tools: &ToolsCapability{},
+				Tools:     &ToolsCapability{},
+				Resources: &ResourcesCapability{},
+				Prompts:   &PromptsCapability{},
 			},
 		}
 
@@ -582,7 +585,7 @@ func TestGetSerializableToolsNotInitialized(t *testing.T) {
 		t.Fatal("expected error when calling GetSerializableTools without initialization")
 	}
 
-	if err.Error() != "client not initialized" {
+	if err.Error() != "Attempted to send a request from a closed client" {
 		t.Errorf("unexpected error message: %s", err.Error())
 	}
 }
@@ -664,7 +667,7 @@ func (t *pagedToolsTransport) Send(ctx context.Context, msg *MCPMessage) error {
 	switch msg.Method {
 	case "initialize":
 		response := &MCPMessage{JSONRpc: "2.0", ID: msg.ID}
-		result := InitializeResult{ProtocolVersion: ProtocolVersion, ServerInfo: ServerInfo{Name: "paged-server", Version: "1.0.0"}}
+		result := InitializeResult{ProtocolVersion: ProtocolVersion, Capabilities: ServerCapabilities{Tools: &ToolsCapability{}, Resources: &ResourcesCapability{}, Prompts: &PromptsCapability{}}, ServerInfo: ServerInfo{Name: "paged-server", Version: "1.0.0"}}
 		data, _ := json.Marshal(result)
 		response.Result = data
 		t.messages <- response
@@ -767,7 +770,7 @@ func (t *retryableCallTransport) Send(ctx context.Context, msg *MCPMessage) erro
 	switch msg.Method {
 	case "initialize":
 		response := &MCPMessage{JSONRpc: "2.0", ID: msg.ID}
-		result := InitializeResult{ProtocolVersion: ProtocolVersion, ServerInfo: ServerInfo{Name: "retry-server", Version: "1.0.0"}}
+		result := InitializeResult{ProtocolVersion: ProtocolVersion, Capabilities: ServerCapabilities{Tools: &ToolsCapability{}, Resources: &ResourcesCapability{}, Prompts: &PromptsCapability{}}, ServerInfo: ServerInfo{Name: "retry-server", Version: "1.0.0"}}
 		data, _ := json.Marshal(result)
 		response.Result = data
 		t.messages <- response
@@ -1192,5 +1195,71 @@ func TestMCPClientElicitationRequestUnsupportedMethodRespondsMethodNotFound(t *t
 	response := awaitResponseTo(t, transport, "unsupported-1")
 	if response.Error == nil || response.Error.Code != ErrorCodeMethodNotFound {
 		t.Fatalf("response.Error = %#v, want code %d", response.Error, ErrorCodeMethodNotFound)
+	}
+}
+
+// TestCallToolRetryExhaustionKeepsLastErrorAsCause mirrors TS
+// createRetryError: the MCPClientError that reports exhausted retries carries
+// the last attempt's error as its cause.
+func TestCallToolRetryExhaustionKeepsLastErrorAsCause(t *testing.T) {
+	transport := newRetryableCallTransport(2, fmt.Errorf("dial tcp 127.0.0.1:1234: connect: %w", syscall.ECONNREFUSED))
+	client := NewMCPClient(transport, MCPClientConfig{MaxRetries: 1})
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	_, err := client.CallTool(context.Background(), "retry-tool", nil)
+	var mcpErr *MCPClientError
+	if !errors.As(err, &mcpErr) || !strings.Contains(mcpErr.Message, "Failed after 2 attempts") {
+		t.Fatalf("err = %v, want MCPClientError Failed after 2 attempts", err)
+	}
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Fatalf("err = %v, want the last attempt's error as cause", err)
+	}
+}
+
+// emptyCursorTransport answers tools/list with nextCursor "" on the first
+// page; TS continues while nextCursor != null, sending cursor: "" next.
+type emptyCursorTransport struct {
+	*pagedToolsTransport
+	raw []string
+}
+
+func (t *emptyCursorTransport) Send(ctx context.Context, msg *MCPMessage) error {
+	if msg.Method != "tools/list" {
+		return t.pagedToolsTransport.Send(ctx, msg)
+	}
+	t.mu.Lock()
+	t.raw = append(t.raw, string(msg.Params))
+	n := len(t.raw)
+	t.mu.Unlock()
+	body := `{"tools":[{"name":"p1","inputSchema":{"type":"object"}}],"nextCursor":""}`
+	if n > 1 {
+		body = `{"tools":[{"name":"p2","inputSchema":{"type":"object"}}]}`
+	}
+	t.messages <- &MCPMessage{JSONRpc: "2.0", ID: msg.ID, Result: json.RawMessage(body)}
+	return nil
+}
+
+func TestListAllToolsContinuesOnEmptyStringNextCursor(t *testing.T) {
+	transport := &emptyCursorTransport{pagedToolsTransport: newPagedToolsTransport()}
+	client := NewMCPClient(transport, MCPClientConfig{})
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	tools, err := client.ListAllTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 2 || tools[0].Name != "p1" || tools[1].Name != "p2" {
+		t.Fatalf("tools = %#v, want p1,p2", tools)
+	}
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	if len(transport.raw) != 2 || !strings.Contains(transport.raw[1], `"cursor":""`) {
+		t.Fatalf("raw params = %v, want second request to carry cursor \"\"", transport.raw)
 	}
 }

@@ -2,16 +2,14 @@ package bridge
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
-	"golang.org/x/net/websocket"
-
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
+	"golang.org/x/net/websocket"
 )
 
 // Conn is one established host<->bridge socket. Receive blocks until a
@@ -24,8 +22,23 @@ type Conn interface {
 	Close() error
 }
 
-// CloseError is returned by Conn.Receive when the socket closes. Code follows
-// WebSocket close codes: 1000 for a clean close, 1006 for an abnormal one.
+// closeCodeUnauthorized is the close code the bridge uses for a connection
+// with a missing or wrong token.
+const closeCodeUnauthorized = 1008
+
+// UnauthorizedError means the bridge closed the connection with code 1008
+// because it rejected the bridge token. Retrying cannot help, so the retrying
+// open fails fast on it. Mirrors TS `BridgeWebSocketUnauthorizedError`.
+type UnauthorizedError struct{ Code int }
+
+func (e *UnauthorizedError) Error() string {
+	return fmt.Sprintf("The harness bridge rejected the WebSocket connection as unauthorized (code %d).", e.Code) //nolint:staticcheck // matches TS SDK's exact error text
+}
+
+// CloseError is returned by Conn.Receive when the socket closes. Code and
+// Reason are the peer's close frame, as the TS `ws` close event reports them:
+// 1005 for a close frame without a status code, 1006 for a connection that
+// ended without a close frame or failed.
 type CloseError struct {
 	Code   int
 	Reason string
@@ -48,6 +61,7 @@ const DefaultWriteTimeout = 10 * time.Second
 // support, so every blocking call is bounded by deadlines instead.
 type wsConn struct {
 	ws           *websocket.Conn
+	closeInfo    *wsutil.CloseInfo // nil: close codes unknown
 	writeTimeout time.Duration
 	writeMu      sync.Mutex
 	closeOnce    sync.Once
@@ -60,7 +74,12 @@ func (c *wsConn) Receive() ([]byte, error) {
 	if err := websocket.Message.Receive(c.ws, &msg); err != nil {
 		if isEOF(err) {
 			// x/net reports a received close frame (or an orderly TCP
-			// shutdown) as io.EOF; it does not expose the close code.
+			// shutdown) as io.EOF; closeInfo recovered the code and reason
+			// like the TS `ws` close event (1005 without a status code,
+			// 1006 without a close frame).
+			if c.closeInfo != nil {
+				return nil, &CloseError{Code: c.closeInfo.Code(), Reason: c.closeInfo.Reason(), Err: err}
+			}
 			return nil, &CloseError{Code: 1000, Err: err}
 		}
 		return nil, &CloseError{Code: 1006, Reason: "socket error", Err: err}
@@ -87,8 +106,8 @@ func (c *wsConn) Close() error {
 
 // DialOptions configures Dial.
 type DialOptions struct {
-	// Name labels error messages ("claude-code bridge did not send
-	// bridge-hello ..."). Default "bridge".
+	// Name labels the connection. Error texts follow TS ("The harness bridge
+	// ..."), which does not include it; kept for compatibility.
 	Name string
 	// OpenTimeout bounds the WebSocket upgrade (0: only ctx bounds it).
 	OpenTimeout time.Duration
@@ -123,19 +142,20 @@ func Dial(ctx context.Context, endpoint harness.PortEndpoint, opts DialOptions) 
 	if err := ctx.Err(); err != nil {
 		return nil, abortError(ctx)
 	}
-	name := opts.Name
-	if name == "" {
-		name = "bridge"
-	}
-
 	dialCtx := ctx
 	if opts.OpenTimeout > 0 {
 		var cancel context.CancelFunc
 		dialCtx, cancel = context.WithTimeoutCause(ctx, opts.OpenTimeout,
-			fmt.Errorf("WebSocket open timed out after %dms", opts.OpenTimeout.Milliseconds()))
+			fmt.Errorf("The harness bridge WebSocket did not open within %dms.", opts.OpenTimeout.Milliseconds())) //nolint:staticcheck // matches TS SDK's exact error text
 		defer cancel()
 	}
-	ws, err := wsutil.Dial(dialCtx, endpoint.URL, wsutil.DialOptions{Headers: endpoint.Headers})
+	// x/net/websocket reports every close as io.EOF; closeInfo reads the
+	// server's close frame off the raw connection.
+	closeInfo := &wsutil.CloseInfo{}
+	ws, err := wsutil.Dial(dialCtx, endpoint.URL, wsutil.DialOptions{
+		Headers:  endpoint.Headers,
+		WrapConn: closeInfo.Wrap,
+	})
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, abortError(ctx)
@@ -149,7 +169,7 @@ func Dial(ctx context.Context, endpoint harness.PortEndpoint, opts DialOptions) 
 	if writeTimeout <= 0 {
 		writeTimeout = DefaultWriteTimeout
 	}
-	conn := &wsConn{ws: ws, writeTimeout: writeTimeout}
+	conn := &wsConn{ws: ws, closeInfo: closeInfo, writeTimeout: writeTimeout}
 	if !opts.WaitForHello {
 		if ctx.Err() != nil {
 			_ = conn.Close()
@@ -199,9 +219,16 @@ func Dial(ctx context.Context, endpoint harness.PortEndpoint, opts DialOptions) 
 				return fail(abortError(ctx))
 			}
 			if !helloDeadline.IsZero() && !time.Now().Before(helloDeadline) {
-				return fail(fmt.Errorf("%s did not send bridge-hello within %dms", name, helloTimeout.Milliseconds()))
+				return fail(fmt.Errorf("The harness bridge did not send bridge-hello within %dms.", helloTimeout.Milliseconds())) //nolint:staticcheck // matches TS SDK's exact error text
 			}
-			return fail(fmt.Errorf("%s closed before sending bridge-hello", name))
+			// Like the TS `ws` close event: the server's status code, 1005
+			// for a close frame without one, 1006 for no close frame. Like
+			// TS, 1008 is a rejected token and is final.
+			code := closeInfo.Code()
+			if code == closeCodeUnauthorized {
+				return fail(&UnauthorizedError{Code: code})
+			}
+			return fail(fmt.Errorf("The harness bridge closed the WebSocket (code %d) before sending bridge-hello.", code)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		hello, ok := parseHello(msg)
 		if !ok {
@@ -219,18 +246,17 @@ func Dial(ctx context.Context, endpoint harness.PortEndpoint, opts DialOptions) 
 	}
 }
 
-// parseHello returns the frame when it is a JSON object whose type is
-// `bridge-hello` (other frames before hello are ignored, as in TS).
+// parseHello returns the frame when it passes the TS hello schema
+// (harnessV1BridgeHelloSchema): a `bridge-hello` object whose optional keys
+// are not null and have the right types. Other frames, and hellos that fail
+// the schema, are ignored, as in TS.
 func parseHello(msg []byte) (*Hello, bool) {
-	var probe struct {
-		Type any `json:"type"`
-	}
-	if json.Unmarshal(msg, &probe) != nil || probe.Type != TypeHello {
+	frame, _, err := DecodeOutbound(msg)
+	if err != nil {
 		return nil, false
 	}
-	var hello Hello
-	_ = json.Unmarshal(msg, &hello)
-	return &hello, true
+	hello, ok := frame.(*Hello)
+	return hello, ok
 }
 
 // SupportsUserMessageResponses reports the hello capability
@@ -317,6 +343,10 @@ func OpenBridgeWebSocket(ctx context.Context, endpoint harness.PortEndpoint, opt
 		if ctx.Err() != nil {
 			return nil, abortError(ctx)
 		}
+		var unauthorized *UnauthorizedError
+		if errors.As(err, &unauthorized) {
+			return nil, err
+		}
 		lastErr = err
 		remaining = time.Until(deadline)
 		if remaining <= 0 {
@@ -327,12 +357,11 @@ func OpenBridgeWebSocket(ctx context.Context, endpoint harness.PortEndpoint, opt
 	if ctx.Err() != nil {
 		return nil, abortError(ctx)
 	}
-	lastMsg := "undefined"
-	if lastErr != nil {
-		lastMsg = lastErr.Error()
-	}
-	return nil, fmt.Errorf("%s did not complete WebSocket handshake within %dms after %d attempt(s). Last error: %s",
-		name, opts.Timeout.Milliseconds(), attempt, lastMsg)
+	// Like TS, the message omits the last error (it can carry connection
+	// details); it is the error's cause.
+	return nil, harness.NewHarnessError(
+		fmt.Sprintf("The harness bridge did not complete the WebSocket handshake within %dms after %d attempt(s).",
+			opts.Timeout.Milliseconds(), attempt), lastErr)
 }
 
 // Sleep waits for d or until ctx ends, whichever is first. It never returns

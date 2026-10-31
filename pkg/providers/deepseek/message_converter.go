@@ -2,13 +2,14 @@ package deepseek
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // deepseekMaxImageURLLength mirrors the TypeScript SDK's 8192 character limit
@@ -30,34 +31,6 @@ func firstNonEmptyDS(values ...string) string {
 		}
 	}
 	return ""
-}
-
-// deepseekProviderOptionsMap extracts the provider-options block for the
-// given provider namespace (usually "deepseek") from a generic
-// providerOptions map keyed by provider name.
-func deepseekProviderOptionsMap(providerOptionsName string, providerOptions map[string]interface{}) map[string]interface{} {
-	if providerOptions == nil {
-		return nil
-	}
-	if m, ok := providerOptions[providerOptionsName].(map[string]interface{}); ok {
-		return m
-	}
-	return nil
-}
-
-// deepseekValidateImageDetail rejects an imageDetail value outside TS's
-// deepseekFilePartProviderOptions zod enum (low/high/original/auto). Empty
-// means the option was not set and is always allowed.
-func deepseekValidateImageDetail(imageDetail string) error {
-	switch imageDetail {
-	case "", "low", "high", "original", "auto":
-		return nil
-	default:
-		return &providererrors.InvalidArgumentError{
-			Field:   "providerOptions.deepseek.imageDetail",
-			Message: "imageDetail must be one of \"low\", \"high\", \"original\", \"auto\".",
-		}
-	}
 }
 
 // convertMessages converts unified messages to DeepSeek's chat completions
@@ -82,7 +55,11 @@ func (m *LanguageModel) convertMessages(messages []types.Message) ([]map[string]
 	}
 
 	for index, msg := range messages {
-		msgOpts := deepseekProviderOptionsMap(providerOptionsName, msg.ProviderOptions)
+		// TS parses the message options (name, prefix) for every role.
+		msgOpts, err := providerutils.ParseProviderOptions(providerOptionsName, msg.ProviderOptions, deepseekMessageOptionsSchema)
+		if err != nil {
+			return nil, nil, err
+		}
 		name, hasName := msgOpts["name"].(string)
 		prefix, _ := msgOpts["prefix"].(bool)
 
@@ -96,7 +73,7 @@ func (m *LanguageModel) convertMessages(messages []types.Message) ([]map[string]
 		switch msg.Role {
 		case types.RoleSystem:
 			entry := map[string]interface{}{"role": "system", "content": deepseekTextOnly(msg.Content)}
-			if hasName && name != "" {
+			if hasName {
 				entry["name"] = name
 			}
 			result = append(result, entry)
@@ -107,7 +84,7 @@ func (m *LanguageModel) convertMessages(messages []types.Message) ([]map[string]
 				return nil, nil, err
 			}
 			warnings = append(warnings, userWarnings...)
-			if hasName && name != "" {
+			if hasName {
 				entry["name"] = name
 			}
 			result = append(result, entry)
@@ -128,7 +105,7 @@ func (m *LanguageModel) convertMessages(messages []types.Message) ([]map[string]
 				}
 			}
 			entry := deepseekConvertAssistantMessage(msg, index, lastUserMessageIndex, isV4)
-			if hasName && name != "" {
+			if hasName {
 				entry["name"] = name
 			}
 			if prefix {
@@ -137,7 +114,7 @@ func (m *LanguageModel) convertMessages(messages []types.Message) ([]map[string]
 			result = append(result, entry)
 
 		case types.RoleTool:
-			if hasName && name != "" {
+			if hasName {
 				warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "message name on tool messages"})
 			}
 			entries, toolWarnings, err := m.convertToolMessage(msg, providerOptionsName)
@@ -262,6 +239,19 @@ func deepseekResolveImageMediaType(mediaType string) (string, error) {
 	return normalized, nil
 }
 
+// deepseekFullImageMediaType is TS resolveDeepSeekImageMediaType: the part's
+// media type is first resolved to a full type/subtype (sniffed from inline
+// bytes when bare or wildcard), then checked against the supported images.
+func deepseekFullImageMediaType(f types.FileContent) (string, error) {
+	mediaType := firstNonEmptyDS(f.MediaType, f.MimeType, f.FileData.MediaType)
+	inline := deepseekFileURL(f) == ""
+	resolved, err := prompt.ResolveFullMediaType(mediaType, deepseekFileBytes(f), inline)
+	if err != nil {
+		return "", err
+	}
+	return deepseekResolveImageMediaType(resolved)
+}
+
 func deepseekImageDataURL(mediaType string, data []byte) string {
 	wireMediaType := mediaType
 	if wireMediaType == "image/jpg" {
@@ -276,11 +266,11 @@ func deepseekImageDataURL(mediaType string, data []byte) string {
 // file semantics instead of image_url). Mirrors the TypeScript SDK's inline
 // handling in convertToDeepSeekChatMessages for user messages.
 func deepseekResolveUserImagePart(f types.FileContent, providerOptionsName string) (map[string]interface{}, error) {
-	fileOpts := deepseekProviderOptionsMap(providerOptionsName, f.ProviderOptions)
-	imageDetail, _ := fileOpts["imageDetail"].(string)
-	if err := deepseekValidateImageDetail(imageDetail); err != nil {
+	fileOpts, err := providerutils.ParseProviderOptions(providerOptionsName, f.ProviderOptions, deepseekFilePartOptionsSchema)
+	if err != nil {
 		return nil, err
 	}
+	imageDetail, _ := fileOpts["imageDetail"].(string)
 	fileData, _ := fileOpts["fileData"].(bool)
 
 	if ref, err := deepseekFileReference(f); err != nil {
@@ -289,7 +279,7 @@ func deepseekResolveUserImagePart(f types.FileContent, providerOptionsName strin
 		return map[string]interface{}{"type": "file", "file_id": ref}, nil
 	}
 
-	mediaType, err := deepseekResolveImageMediaType(firstNonEmptyDS(f.MediaType, f.MimeType, f.FileData.MediaType))
+	mediaType, err := deepseekFullImageMediaType(f)
 	if err != nil {
 		return nil, err
 	}
@@ -349,14 +339,14 @@ func deepseekResolveToolResultImagePart(f types.FileContent, providerOptionsName
 		return map[string]interface{}{"type": "file", "file_id": ref}, nil
 	}
 
-	mediaType, err := deepseekResolveImageMediaType(firstNonEmptyDS(f.MediaType, f.MimeType, f.FileData.MediaType))
+	fileOpts, err := providerutils.ParseProviderOptions(providerOptionsName, f.ProviderOptions, deepseekFilePartOptionsSchema)
 	if err != nil {
 		return nil, err
 	}
-
-	fileOpts := deepseekProviderOptionsMap(providerOptionsName, f.ProviderOptions)
 	imageDetail, _ := fileOpts["imageDetail"].(string)
-	if err := deepseekValidateImageDetail(imageDetail); err != nil {
+
+	mediaType, err := deepseekFullImageMediaType(f)
+	if err != nil {
 		return nil, err
 	}
 
@@ -436,8 +426,8 @@ func deepseekConvertAssistantMessage(msg types.Message, index, lastUserMessageIn
 	}
 
 	entry := map[string]interface{}{"role": "assistant", "content": text.String()}
-	if len(msg.ToolCalls) > 0 {
-		entry["tool_calls"] = deepseekToolCallsWire(msg.ToolCalls)
+	if toolCalls := providerutils.AssistantToolCalls(msg); len(toolCalls) > 0 {
+		entry["tool_calls"] = deepseekToolCallsWire(toolCalls)
 	}
 
 	switch {
@@ -461,7 +451,7 @@ func deepseekToolCallsWire(calls []types.ToolCall) []map[string]interface{} {
 			if args == nil {
 				args = map[string]interface{}{}
 			}
-			if b, err := json.Marshal(args); err == nil {
+			if b, err := jsonstr.Marshal(args); err == nil {
 				arguments = string(b)
 			}
 		}
@@ -503,7 +493,7 @@ func (m *LanguageModel) convertToolMessage(msg types.Message, providerOptionsNam
 			entries = append(entries, deepseekToolMessage(tr.ToolCallID, reason))
 
 		case types.ToolResultOutputJSON, types.ToolResultOutputErrorJSON, types.ToolResultOutputError:
-			b, _ := json.Marshal(tr.Output.Value)
+			b, _ := jsonstr.Marshal(tr.Output.Value)
 			entries = append(entries, deepseekToolMessage(tr.ToolCallID, string(b)))
 
 		case types.ToolResultOutputContent:
@@ -515,7 +505,7 @@ func (m *LanguageModel) convertToolMessage(msg types.Message, providerOptionsNam
 				}
 			}
 			if !hasImage {
-				b, _ := json.Marshal(tr.Output.Content)
+				b, _ := jsonstr.Marshal(tr.Output.Content)
 				entries = append(entries, deepseekToolMessage(tr.ToolCallID, string(b)))
 				continue
 			}
@@ -578,7 +568,7 @@ func deepseekStringValue(v interface{}) string {
 	if s, ok := v.(string); ok {
 		return s
 	}
-	b, _ := json.Marshal(v)
+	b, _ := jsonstr.Marshal(v)
 	return string(b)
 }
 
@@ -589,7 +579,7 @@ func deepseekStringifyResult(v interface{}) string {
 	if s, ok := v.(string); ok {
 		return s
 	}
-	b, err := json.Marshal(v)
+	b, err := jsonstr.Marshal(v)
 	if err != nil {
 		return fmt.Sprintf("%v", v)
 	}

@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -17,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock/eventstream"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	tool "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
 
@@ -62,11 +63,18 @@ type converseArgs struct {
 	Warnings             []types.Warning
 	UsesJSONInstruction  bool
 	UsesJSONResponseTool bool
+	// ToolNames maps toolSpec names back to tool names (see
+	// preparedTools.ToolNames).
+	ToolNames map[string]string
 }
 
 // getArgs ports TS amazon-bedrock-chat-language-model.ts#getArgs.
 func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, error) {
 	warnings := []types.Warning{}
+
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 
 	amazonBedrockOptions := cloneMap(bedrockProviderOptions(opts))
 	anthropicOptions := bedrockProviderOptionMap(opts.ProviderOptions, "anthropic")
@@ -154,12 +162,17 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 	}
 
 	additionalModelRequestFields := map[string]interface{}{}
+	// TS sends amazonBedrockOptions.additionalModelRequestFields whenever it
+	// is set, so an empty providerOptions object (or one emptied by the
+	// jsonTool output_config.format strip) still reaches the wire as {}.
+	additionalFieldsProvided := false
 	if m.options != nil {
 		for k, v := range m.options.AdditionalModelRequestFields {
 			additionalModelRequestFields[k] = v
 		}
 	}
 	if raw, ok := amazonBedrockOptions["additionalModelRequestFields"].(map[string]interface{}); ok {
+		additionalFieldsProvided = true
 		for k, v := range raw {
 			additionalModelRequestFields[k] = v
 		}
@@ -187,6 +200,8 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 
 	useJSONInstructionForStructuredOutput := !useNativeStructuredOutput && isAnthropic && responseFormatIsJSON &&
 		(caps.RejectsForcedToolUse ||
+			(strings.Contains(m.modelID, "claude-") && (!caps.IsKnownModel || !caps.SupportsStructuredOutput) &&
+				!bedrockSupportsNativeStructuredOutput(m.modelID) && structuredOutputMode != "jsonTool") ||
 			(structuredOutputMode != "jsonTool" && !bedrockSupportsStrictTools(m.modelID) && len(opts.Tools) > 0))
 
 	var jsonResponseTool *types.Tool
@@ -195,7 +210,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 			Type:        types.ToolTypeFunction,
 			Name:        "json",
 			Description: "Respond with a JSON object.",
-			Parameters:  opts.ResponseFormat.Schema,
+			Parameters:  providerutils.ResponseFormatJSONSchemaOrdered(opts.ResponseFormat.Schema),
 		}
 	}
 
@@ -215,14 +230,48 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 		disableParallelToolUse = m.options.DisableParallelToolUse
 	}
 
-	prepared := prepareBedrockTools(toolsForPrep, toolChoiceForPrep, hasToolChoice, m.modelID, m.modelFamily(), reasoningBudgetTokens, disableParallelToolUse, caps.RejectsForcedToolUse)
+	// TS passes prepareTools the budget of the reasoning config after
+	// resolveAmazonBedrockReasoningConfig, which drops budgetTokens from a
+	// disabled config under a custom reasoning level.
+	toolsReasoningBudgetTokens := reasoningBudgetTokens
+	if resolvedReasoningConfig != nil && resolvedReasoningConfig.BudgetTokens == nil {
+		toolsReasoningBudgetTokens = nil
+	}
+	prepared := prepareBedrockTools(toolsForPrep, toolChoiceForPrep, hasToolChoice, m.modelID, m.modelFamily(), toolsReasoningBudgetTokens, disableParallelToolUse, caps.RejectsForcedToolUse)
+	if prepared.Err != nil {
+		return nil, prepared.Err
+	}
 	warnings = append(warnings, prepared.Warnings...)
 	for k, v := range prepared.AdditionalTools {
 		additionalModelRequestFields[k] = v
 	}
 
-	if anthropicBetaRaw, ok := amazonBedrockOptions["anthropicBeta"].([]interface{}); ok && len(anthropicBetaRaw) > 0 {
-		additionalModelRequestFields["anthropic_beta"] = anthropicBetaRaw
+	// TS: anthropic_beta = [...providerOptions.anthropicBeta, ...tool betas]
+	// whenever either is present. A caller may supply []string or
+	// []interface{}.
+	{
+		var existing []interface{}
+		betaProvided := false // TS: an empty (truthy) anthropicBeta array still sets anthropic_beta
+		switch v := amazonBedrockOptions["anthropicBeta"].(type) {
+		case []interface{}:
+			betaProvided = true
+			existing = append(existing, v...)
+		case []string:
+			betaProvided = true
+			for _, b := range v {
+				existing = append(existing, b)
+			}
+		}
+		if betaProvided || len(prepared.Betas) > 0 {
+			merged := existing
+			if merged == nil {
+				merged = []interface{}{}
+			}
+			for _, b := range prepared.Betas {
+				merged = append(merged, b)
+			}
+			additionalModelRequestFields["anthropic_beta"] = merged
+		}
 	}
 
 	thinkingType := ""
@@ -253,7 +302,8 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 	if topK != nil {
 		inferenceConfig["topK"] = *topK
 	}
-	if len(opts.StopSequences) > 0 {
+	// TS: stopSequences != null (an empty list is still sent).
+	if opts.StopSequences != nil {
 		inferenceConfig["stopSequences"] = opts.StopSequences
 	}
 
@@ -424,8 +474,10 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 	}
 
 	if useJSONInstructionForStructuredOutput {
-		filteredMessages = injectBedrockJSONInstruction(filteredMessages, opts.ResponseFormat.Schema)
+		filteredMessages = injectBedrockJSONInstruction(filteredMessages, providerutils.ResponseFormatJSONSchemaOrdered(opts.ResponseFormat.Schema))
 	}
+
+	filteredMessages = renameBedrockToolCalls(filteredMessages, prepared.ToolNames)
 
 	isMistral := isMistralModel(m.modelID)
 	system, messages, err := convertToBedrockChatMessages(filteredMessages, isMistral)
@@ -445,7 +497,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 		"messages": messages,
 		"system":   system,
 	}
-	if len(additionalModelRequestFields) > 0 {
+	if additionalFieldsProvided || len(additionalModelRequestFields) > 0 {
 		body["additionalModelRequestFields"] = additionalModelRequestFields
 	}
 	if isAnthropic {
@@ -481,7 +533,70 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 		Warnings:             warnings,
 		UsesJSONInstruction:  useJSONInstructionForStructuredOutput,
 		UsesJSONResponseTool: jsonResponseTool != nil,
+		ToolNames:            prepared.ToolNames,
 	}, nil
+}
+
+// renameBedrockToolCalls sends the history's calls of an Anthropic provider
+// tool under the toolSpec name the request declares for it (toolNames maps
+// toolSpec name -> tool name). Messages are copied, never modified in place.
+func renameBedrockToolCalls(messages []types.Message, toolNames map[string]string) []types.Message {
+	if len(toolNames) == 0 {
+		return messages
+	}
+	specName := make(map[string]string, len(toolNames))
+	for spec, name := range toolNames {
+		specName[name] = spec
+	}
+	out := make([]types.Message, len(messages))
+	for i, msg := range messages {
+		out[i] = msg
+		if msg.Role != types.RoleAssistant {
+			continue
+		}
+		var content []types.ContentPart
+		for j, part := range msg.Content {
+			tc, ok := part.(types.ToolCallContent)
+			if !ok {
+				continue
+			}
+			spec, ok := specName[tc.ToolName]
+			if !ok {
+				continue
+			}
+			if content == nil {
+				content = append([]types.ContentPart(nil), msg.Content...)
+			}
+			tc.ToolName = spec
+			content[j] = tc
+		}
+		if content != nil {
+			out[i].Content = content
+		}
+		if len(msg.ToolCalls) > 0 {
+			var calls []types.ToolCall
+			for j, call := range msg.ToolCalls {
+				if spec, ok := specName[call.ToolName]; ok {
+					if calls == nil {
+						calls = append([]types.ToolCall(nil), msg.ToolCalls...)
+					}
+					calls[j].ToolName = spec
+				}
+			}
+			if calls != nil {
+				out[i].ToolCalls = calls
+			}
+		}
+	}
+	return out
+}
+
+// bedrockToolName maps a toolSpec name the model called back to the tool name.
+func bedrockToolName(name string, toolNames map[string]string) string {
+	if mapped, ok := toolNames[name]; ok {
+		return mapped
+	}
+	return name
 }
 
 var openAIModelIDPattern = regexp.MustCompile(`^(?:[^.]+\.)?(openai\..+)$`)
@@ -569,6 +684,22 @@ func normalizePromptMessages(prompt types.Prompt) []types.Message {
 // hasAnyTools filtering. Returns the filtered messages and whether anything
 // was removed.
 func filterToolContent(messages []types.Message) ([]types.Message, bool) {
+	// TS filters only when some message holds a tool call or result; otherwise
+	// the prompt (empty messages included) is used as is. An assistant
+	// message's legacy Message.ToolCalls count as tool-call parts (the
+	// converter turns them into toolUse blocks).
+	hasToolContent := false
+	for _, msg := range messages {
+		for _, part := range withLegacyToolCalls(msg) {
+			switch part.(type) {
+			case types.ToolCallContent, types.ToolResultContent:
+				hasToolContent = true
+			}
+		}
+	}
+	if !hasToolContent {
+		return messages, false
+	}
 	removed := false
 	out := make([]types.Message, 0, len(messages))
 	for _, msg := range messages {
@@ -576,8 +707,9 @@ func filterToolContent(messages []types.Message) ([]types.Message, bool) {
 			out = append(out, msg)
 			continue
 		}
-		filteredContent := make([]types.ContentPart, 0, len(msg.Content))
-		for _, part := range msg.Content {
+		content := withLegacyToolCalls(msg)
+		filteredContent := make([]types.ContentPart, 0, len(content))
+		for _, part := range content {
 			switch part.(type) {
 			case types.ToolCallContent, types.ToolResultContent:
 				removed = true
@@ -588,8 +720,9 @@ func filterToolContent(messages []types.Message) ([]types.Message, bool) {
 		if len(filteredContent) > 0 {
 			clone := msg
 			clone.Content = filteredContent
+			clone.ToolCalls = nil
 			out = append(out, clone)
-		} else if len(msg.Content) > 0 {
+		} else if len(content) > 0 {
 			removed = true
 		}
 	}
@@ -612,15 +745,21 @@ func injectBedrockJSONInstruction(messages []types.Message, schema interface{}) 
 		}
 	}
 
-	schemaJSON, _ := json.Marshal(schema)
+	schemaJSON := jsonStringify(schema)
 
 	lines := []string{}
 	if existingText != "" {
 		lines = append(lines, existingText, "")
 	}
-	lines = append(lines, "JSON schema:", string(schemaJSON), suffix)
+	lines = append(lines, "JSON schema:", schemaJSON, suffix)
 
+	// TS spreads the existing system message ({...messages[0]}), keeping its
+	// providerOptions (e.g. a cachePoint); only the content is replaced.
 	newSystem := types.Message{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: strings.Join(lines, "\n")}}}
+	if hasSystem {
+		newSystem = messages[0]
+		newSystem.Content = []types.ContentPart{types.TextContent{Text: strings.Join(lines, "\n")}}
+	}
 
 	if hasSystem {
 		out := make([]types.Message, 0, len(messages))
@@ -694,16 +833,23 @@ func (e *jsonObjectTextExtractor) process(text string) string {
 // for AWS SigV4 canonicalization. Ports TS getUrl(): encodeURIComponent(id)
 // so ARNs (which may contain '/' and ':') survive as a single path segment.
 func (m *LanguageModel) converseURL(baseURL, suffix string) (*url.URL, string, error) {
+	return bedrockModelURL(baseURL, m.modelID, suffix)
+}
+
+// bedrockModelURL builds `${baseURL}/model/${encodeURIComponent(modelID)}${suffix}`
+// as an opaque URL so the percent-encoding (and any base URL path prefix)
+// reaches the wire and the SigV4 canonicalization exactly like TS.
+func bedrockModelURL(baseURL, modelID, suffix string) (*url.URL, string, error) {
 	base, err := url.Parse(baseURL)
 	if err != nil {
 		return nil, "", err
 	}
-	rawPath := "/model/" + jsEncodeURIComponent(m.modelID) + suffix
+	rawPath := strings.TrimSuffix(base.EscapedPath(), "/") + "/model/" + jsEncodeURIComponent(modelID) + suffix
 	reqURL := &url.URL{Scheme: base.Scheme, Host: base.Host, Opaque: rawPath}
 	return reqURL, rawPath, nil
 }
 
-func (m *LanguageModel) newConverseRequest(ctx context.Context, suffix string, body []byte) (*http.Request, error) {
+func (m *LanguageModel) newConverseRequest(ctx context.Context, suffix string, body []byte, callHeaders map[string]string) (*http.Request, error) {
 	baseURL, err := m.provider.runtimeBaseURL()
 	if err != nil {
 		return nil, err
@@ -726,7 +872,7 @@ func (m *LanguageModel) newConverseRequest(ctx context.Context, suffix string, b
 	req.Host = reqURL.Host
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	m.provider.applyRequestHeaders(req, nil)
+	m.provider.applyRequestHeaders(req, callHeaders)
 	if err := m.provider.authenticateRequest(ctx, req, body); err != nil {
 		return nil, err
 	}
@@ -745,7 +891,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := m.newConverseRequest(ctx, "/converse", bodyBytes)
+	req, err := m.newConverseRequest(ctx, "/converse", bodyBytes, opts.Headers)
 	if err != nil {
 		return nil, err
 	}
@@ -757,17 +903,32 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
+		return nil, bedrockConverseGenerateAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
+	// TS createJsonResponseHandler(AmazonBedrockResponseSchema).
+	if err := bedrockValidator(zbConverse)(resp.StatusCode, resp.Header, respBody); err != nil {
+		return nil, err
+	}
 	result, err := m.convertConverseResponse(respBody, args.UsesJSONInstruction, args.UsesJSONResponseTool)
 	if err != nil {
 		return nil, err
+	}
+	if len(args.ToolNames) > 0 {
+		for i := range result.ToolCalls {
+			result.ToolCalls[i].ToolName = bedrockToolName(result.ToolCalls[i].ToolName, args.ToolNames)
+		}
+		for i, part := range result.Content {
+			if tc, ok := part.(types.ToolCallContent); ok {
+				tc.ToolName = bedrockToolName(tc.ToolName, args.ToolNames)
+				result.Content[i] = tc
+			}
+		}
 	}
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Header)
 	result.RawRequest = args.Body
@@ -806,7 +967,9 @@ type bedrockConverseReasoningContent struct {
 	RedactedReasoning *struct {
 		Data string `json:"data"`
 	} `json:"redactedReasoning"`
-	RedactedContent string `json:"redactedContent"`
+	// RedactedContent is a pointer: TS `'redactedContent' in part` keeps
+	// an empty value.
+	RedactedContent *string `json:"redactedContent"`
 }
 
 type bedrockConverseContentBlock struct {
@@ -848,7 +1011,6 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("failed to decode Bedrock Converse response: %w", err)
 	}
-
 	result := &types.GenerateResult{RawResponse: json.RawMessage(body)}
 	isMistral := isMistralModel(m.modelID)
 
@@ -858,6 +1020,12 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 	}
 
 	isJSONResponseFromTool := false
+
+	// ordered keeps text, reasoning and tool calls in the order the model
+	// produced them (TS builds a single ordered content array); it is only
+	// surfaced on result.Content when something other than text is present.
+	var ordered []types.ContentPart
+	hasNonText := false
 
 	for _, part := range resp.Output.Message.Content {
 		var textParts []string
@@ -875,32 +1043,56 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 				text = extractor.process(text)
 			}
 			result.Text += text
+			ordered = append(ordered, types.TextContent{Text: text})
 		}
 
 		if rc := part.ReasoningContent; rc != nil {
+			var reasoning types.ContentPart
 			switch {
 			case rc.ReasoningText != nil:
-				reasoning := types.ReasoningContent{Text: rc.ReasoningText.Text}
+				r := types.ReasoningContent{Text: rc.ReasoningText.Text}
 				if rc.ReasoningText.Signature != "" {
-					reasoning.Signature = rc.ReasoningText.Signature
+					r.Signature = rc.ReasoningText.Signature
+					// TS: providerMetadata.{amazonBedrock,bedrock}.signature.
+					r.ProviderMetadata = mustMarshalProviderMetadata(map[string]interface{}{
+						"amazonBedrock": map[string]interface{}{"signature": rc.ReasoningText.Signature},
+						"bedrock":       map[string]interface{}{"signature": rc.ReasoningText.Signature},
+					})
 				}
-				result.Content = append(result.Content, reasoning)
+				reasoning = r
 			case rc.RedactedReasoning != nil:
-				result.Content = append(result.Content, types.ReasoningContent{RedactedData: rc.RedactedReasoning.Data})
-			case rc.RedactedContent != "":
-				result.Content = append(result.Content, types.ReasoningContent{
+				reasoning = types.ReasoningContent{
+					RedactedData: rc.RedactedReasoning.Data,
 					ProviderMetadata: mustMarshalProviderMetadata(map[string]interface{}{
-						"amazonBedrock": map[string]interface{}{"redactedContent": rc.RedactedContent},
-						"bedrock":       map[string]interface{}{"redactedContent": rc.RedactedContent},
+						"amazonBedrock": map[string]interface{}{"redactedData": rc.RedactedReasoning.Data},
+						"bedrock":       map[string]interface{}{"redactedData": rc.RedactedReasoning.Data},
 					}),
-				})
+				}
+			case rc.RedactedContent != nil:
+				reasoning = types.ReasoningContent{
+					ProviderMetadata: mustMarshalProviderMetadata(map[string]interface{}{
+						"amazonBedrock": map[string]interface{}{"redactedContent": *rc.RedactedContent},
+						"bedrock":       map[string]interface{}{"redactedContent": *rc.RedactedContent},
+					}),
+				}
+			}
+			if reasoning != nil {
+				ordered = append(ordered, reasoning)
+				hasNonText = true
 			}
 		}
 
 		if part.ToolUse != nil {
 			if usesJSONResponseTool && part.ToolUse.Name == "json" {
 				isJSONResponseFromTool = true
-				result.Text = string(part.ToolUse.Input)
+				// TS: text = JSON.stringify(toolUse.input), appended after any
+				// text the model produced before the tool call.
+				jsonText := jsonorder.Text(part.ToolUse.Input, nil)
+				if len(ordered) > 0 {
+					hasNonText = true // several text parts: keep the ordered content
+				}
+				result.Text += jsonText
+				ordered = append(ordered, types.TextContent{Text: jsonText})
 				continue
 			}
 			var args map[string]interface{}
@@ -908,12 +1100,32 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 			if args == nil {
 				args = map[string]interface{}{}
 			}
-			result.ToolCalls = append(result.ToolCalls, types.ToolCall{
-				ID:        normalizeToolCallID(part.ToolUse.ToolUseID, isMistral),
-				ToolName:  part.ToolUse.Name,
+			// TS: toolUseId || generateId(), name ?? `tool-${generateId()}`.
+			// The schema requires a string name, so an empty name is kept
+			// (only a nullish one would fall back).
+			rawID := part.ToolUse.ToolUseID
+			if rawID == "" {
+				rawID = streaming.GenerateID()
+			}
+			name := part.ToolUse.Name
+			call := types.ToolCall{
+				ID:        normalizeToolCallID(rawID, isMistral),
+				ToolName:  name,
 				Arguments: args,
-			})
+				// TS: input: JSON.stringify(toolUse.input ?? {}), wire key order.
+				RawArguments: jsonorder.Text(part.ToolUse.Input, args),
+			}
+			result.ToolCalls = append(result.ToolCalls, call)
+			ordered = append(ordered, types.ToolCallContent{ToolCallID: call.ID, ToolName: call.ToolName, Arguments: args, Input: call.RawArguments})
+			hasNonText = true
 		}
+	}
+	// TS reports every text block (and every citation text) as its own part.
+	if len(ordered) > 1 {
+		hasNonText = true
+	}
+	if hasNonText {
+		result.Content = ordered
 	}
 
 	var stopSequence *string
@@ -930,9 +1142,13 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 
 	metadataPayload := map[string]interface{}{}
 	if len(resp.Trace) > 0 && string(resp.Trace) != "null" {
+		// TS: `response.trace && typeof response.trace === 'object'`.
 		var trace interface{}
 		if json.Unmarshal(resp.Trace, &trace) == nil {
-			metadataPayload["trace"] = trace
+			switch trace.(type) {
+			case map[string]interface{}, []interface{}:
+				metadataPayload["trace"] = trace
+			}
 		}
 	}
 	if len(resp.PerformanceConfig) > 0 {
@@ -943,10 +1159,11 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 	}
 	if usageMap != nil {
 		usageMeta := map[string]interface{}{}
-		if v, ok := usageMap["cacheWriteInputTokens"]; ok {
+		// TS spreads each field only when it is `!= null`.
+		if v := usageMap["cacheWriteInputTokens"]; v != nil {
 			usageMeta["cacheWriteInputTokens"] = v
 		}
-		if v, ok := usageMap["cacheDetails"]; ok {
+		if v := usageMap["cacheDetails"]; v != nil {
 			usageMeta["cacheDetails"] = v
 		}
 		if len(usageMeta) > 0 {
@@ -961,7 +1178,10 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 	} else {
 		metadataPayload["stopSequence"] = nil
 	}
-	if len(metadataPayload) > 1 || metadataPayload["stopSequence"] != nil {
+	// TS emits providerMetadata whenever trace, usage, performanceConfig,
+	// serviceTier, the json-tool flag or a stop sequence is present; usage is a
+	// required response field, so it is always emitted (stopSequence: null).
+	if usageMap != nil || len(metadataPayload) > 1 || metadataPayload["stopSequence"] != nil {
 		result.ProviderMetadata = map[string]interface{}{
 			"amazonBedrock": metadataPayload,
 			"bedrock":       metadataPayload,
@@ -980,14 +1200,17 @@ func mustMarshalProviderMetadata(v interface{}) json.RawMessage {
 }
 
 func mapBedrockFinishReason(stopReason string, isJSONResponseFromTool bool) types.FinishReason {
+	// TS map-amazon-bedrock-finish-reason.ts handles only these five values;
+	// the other members of BEDROCK_STOP_REASONS ('stop', 'length',
+	// 'content-filter', 'tool-calls') fall through to 'other'.
 	switch stopReason {
-	case "stop_sequence", "end_turn", "stop":
+	case "stop_sequence", "end_turn":
 		return types.FinishReasonStop
-	case "max_tokens", "length":
+	case "max_tokens":
 		return types.FinishReasonLength
-	case "content_filtered", "guardrail_intervened", "content-filter":
+	case "content_filtered", "guardrail_intervened":
 		return types.FinishReasonContentFilter
-	case "tool_use", "tool-calls":
+	case "tool_use":
 		if isJSONResponseFromTool {
 			return types.FinishReasonStop
 		}
@@ -999,6 +1222,10 @@ func mapBedrockFinishReason(stopReason string, isJSONResponseFromTool bool) type
 
 // convertBedrockConverseUsage ports TS convert-amazon-bedrock-usage.ts.
 func convertBedrockConverseUsage(raw json.RawMessage) types.Usage {
+	// TS createNullLanguageModelUsage: nothing is known without a usage object.
+	if len(raw) == 0 || string(raw) == "null" {
+		return types.Usage{}
+	}
 	var usage struct {
 		InputTokens           int `json:"inputTokens"`
 		OutputTokens          int `json:"outputTokens"`
@@ -1046,7 +1273,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := m.newConverseRequest(ctx, "/converse-stream", bodyBytes)
+	req, err := m.newConverseRequest(ctx, "/converse-stream", bodyBytes, opts.Headers)
 	if err != nil {
 		return nil, err
 	}
@@ -1057,7 +1284,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, providerErrorFromTransport(err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := readResponseBody(resp.Body)
 		resp.Body.Close() //nolint:errcheck
 		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
 	}
@@ -1072,8 +1299,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		responseHeaders:      providerutils.ExtractHeaders(resp.Header),
 		requestID:            resp.Header.Get("x-amzn-requestid"),
 		contentBlocks:        map[int]*bedrockStreamContentBlock{},
-		finishReason:         types.FinishReasonOther,
+		finishReason:         types.FinishReasonInterrupted,
 		requestBody:          args.Body,
+		includeRawChunks:     opts.IncludeRawChunks,
+		toolNames:            args.ToolNames,
 	}
 	if dateHeader := resp.Header.Get("date"); dateHeader != "" {
 		if ts, err := time.Parse(time.RFC1123, dateHeader); err == nil {

@@ -28,12 +28,14 @@ func TestPollCredentialsOnlyToConfiguredOrigin(t *testing.T) {
 func TestPollHeadersWithheldFromForeignOrigin(t *testing.T) {
 	m := &TranscriptionModel{provider: New(Config{APIKey: "secret", BaseURL: "https://api.gladia.io/v2"}), modelID: "default"}
 	own := m.pollHeaders("https://api.gladia.io/v2/pre-recorded/1", "https://api.gladia.io/v2", map[string]string{"X-Caller": "c"})
-	if own["x-gladia-key"] != "secret" || own["X-Caller"] != "c" {
+	if own["x-gladia-key"] != "secret" || own["x-caller"] != "c" && own["X-Caller"] != "c" {
 		t.Errorf("own origin headers = %v", own)
 	}
 	for _, u := range []string{"https://evil.example/steal", "http://api.gladia.io/v2/x", "https://api.gladia.io:8443/v2/x", "not a url"} {
 		foreign := m.pollHeaders(u, "https://api.gladia.io/v2", map[string]string{"X-Caller": "c"})
-		if len(foreign) != 0 {
+		// v0.6.0 still sends the SDK User-Agent everywhere; only the key and
+		// the caller headers are credentials.
+		if foreign["x-gladia-key"] != "" || foreign["x-caller"] != "" || foreign["X-Caller"] != "" {
 			t.Errorf("%s got credentials: %v", u, foreign)
 		}
 	}

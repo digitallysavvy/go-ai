@@ -208,6 +208,44 @@ func (c *APIClient) StopSession(ctx context.Context, sessionID string) (*stopSes
 	return &out, nil
 }
 
+// CreateSnapshot posts POST /v2/sandboxes/sessions/{id}/snapshot. Like TS
+// `Sandbox.snapshot`, taking a snapshot stops the session.
+func (c *APIClient) CreateSnapshot(ctx context.Context, sessionID string, expiration *int64) (*createSnapshotResponse, error) {
+	var out createSnapshotResponse
+	if err := c.http.DoJSON(ctx, httpinternal.Request{
+		Method: http.MethodPost, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/snapshot", Headers: c.headers(nil), Query: c.query(nil), Body: createSnapshotRequest{Expiration: expiration},
+	}, &out); err != nil {
+		return nil, toAPIError(err)
+	}
+	return &out, nil
+}
+
+// maxSnapshotListPages bounds how many pages ListSnapshots follows.
+const maxSnapshotListPages = 20
+
+// ListSnapshots lists the project's snapshots for a sandbox name, newest
+// first, following pagination (TS `Snapshot.list({ name, sortOrder: 'desc' })`
+// iterated with `for await`).
+func (c *APIClient) ListSnapshots(ctx context.Context, name string) ([]snapshotWire, error) {
+	var all []snapshotWire
+	cursor := ""
+	for page := 0; page < maxSnapshotListPages; page++ {
+		var out listSnapshotsResponse
+		if err := c.http.DoJSON(ctx, httpinternal.Request{
+			Method: http.MethodGet, Path: "/v2/sandboxes/snapshots", Headers: c.headers(nil),
+			Query: c.query(map[string]string{"project": c.credentials.ProjectID, "name": name, "sortOrder": "desc", "cursor": cursor}),
+		}, &out); err != nil {
+			return nil, toAPIError(err)
+		}
+		all = append(all, out.Snapshots...)
+		if out.Pagination.Next == nil || *out.Pagination.Next == "" || len(out.Snapshots) == 0 {
+			break
+		}
+		cursor = *out.Pagination.Next
+	}
+	return all, nil
+}
+
 // UpdateSessionNetworkPolicy posts POST
 // /v2/sandboxes/sessions/{id}/network-policy.
 func (c *APIClient) UpdateSessionNetworkPolicy(ctx context.Context, sessionID string, policy NetworkPolicy) (*sessionResponse, error) {
@@ -257,7 +295,16 @@ func (c *APIClient) RunCommandWait(ctx context.Context, sessionID string, req ru
 
 	result := &RunCommandWaitResult{}
 
-	if !scanner.Scan() {
+	// Blank lines carry no record; skip them as GetLogs does.
+	scan := func() bool {
+		for scanner.Scan() {
+			if len(bytes.TrimSpace(scanner.Bytes())) > 0 {
+				return true
+			}
+		}
+		return false
+	}
+	if !scan() {
 		return result, streamEndedEarly(sessionID, wrapScanError(scanner.Err(), sessionID))
 	}
 	var first ndjsonLine
@@ -265,7 +312,7 @@ func (c *APIClient) RunCommandWait(ctx context.Context, sessionID string, req ru
 		return result, err
 	}
 
-	for scanner.Scan() {
+	for scan() {
 		var line ndjsonLine
 		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
 			return result, err

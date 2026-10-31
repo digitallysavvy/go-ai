@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -102,7 +104,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	if filesOpts.expiresAfter != nil {
 		parts = append(parts,
 			internalhttp.MultipartStreamPart{Name: "expires_after[anchor]", Value: "created_at"},
-			internalhttp.MultipartStreamPart{Name: "expires_after[seconds]", Value: strconv.FormatInt(*filesOpts.expiresAfter, 10)},
+			internalhttp.MultipartStreamPart{Name: "expires_after[seconds]", Value: strconv.FormatFloat(*filesOpts.expiresAfter, 'f', -1, 64)},
 		)
 	}
 
@@ -144,9 +146,12 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("openai files upload failed: %d %s", resp.StatusCode, string(resp.Body))
+		return nil, internalhttp.StatusProviderError("openai", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
+	if err := providerutils.MediaResponseValidator("openai", providerutils.SchemaOpenAIFile)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var out openAIFilesResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		return nil, err
@@ -187,9 +192,12 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("openai files retrieve failed: %d %s", resp.StatusCode, string(resp.Body))
+		return nil, internalhttp.StatusProviderError("openai", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
+	if err := providerutils.MediaResponseValidator("openai", providerutils.SchemaOpenAIFile)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var out openAIFilesResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		return nil, err
@@ -222,6 +230,10 @@ func (f *FilesAPI) DownloadFile(ctx context.Context, opts provider.DownloadFileO
 		Headers: opts.Headers,
 	})
 	if err != nil {
+		var statusErr *internalhttp.HTTPStatusError
+		if errors.As(err, &statusErr) {
+			return nil, internalhttp.StatusProviderError("openai", statusErr.StatusCode, statusErr.Headers, statusErr.Body)
+		}
 		return nil, err
 	}
 
@@ -254,9 +266,12 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("openai files delete failed: %d %s", resp.StatusCode, string(resp.Body))
+		return nil, internalhttp.StatusProviderError("openai", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
+	if err := providerutils.MediaResponseValidator("openai", providerutils.SchemaFileDelete)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var out struct {
 		ID      string `json:"id"`
 		Object  string `json:"object"`
@@ -278,7 +293,7 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 func openAIFileID(file types.ProviderReference) (string, error) {
 	fileID, ok := file["openai"]
 	if !ok || strings.TrimSpace(fileID) == "" {
-		return "", fmt.Errorf("file reference is missing an 'openai' file id.") //nolint:staticcheck // matches TS SDK's exact error text
+		return "", &providererrors.InvalidArgumentError{Field: "file", Message: "file reference is missing an 'openai' file id."}
 	}
 	return fileID, nil
 }
@@ -287,29 +302,39 @@ func openAIFileID(file types.ProviderReference) (string, error) {
 // UploadFile (TS OpenAIFilesOptions: purpose?: string, expiresAfter?: number).
 type openAIFilesUploadOptions struct {
 	purpose      string
-	expiresAfter *int64
+	expiresAfter *float64
 }
 
 func parseOpenAIFilesOptions(providerOptions map[string]interface{}) (openAIFilesUploadOptions, error) {
 	var out openAIFilesUploadOptions
-	openaiOpts, ok := providerOptions["openai"].(map[string]interface{})
-	if !ok {
+	raw, present := providerOptions["openai"]
+	if !present || raw == nil {
 		return out, nil
 	}
-	if v, ok := openaiOpts["purpose"]; ok {
+	invalid := func(msg string) error {
+		return &providererrors.InvalidArgumentError{
+			Field:   "providerOptions",
+			Message: "invalid openai provider options",
+			Cause:   errors.New(msg),
+		}
+	}
+	openaiOpts, ok := raw.(map[string]interface{})
+	if !ok {
+		return out, invalid("Invalid input: expected object")
+	}
+	if v, ok := openaiOpts["purpose"]; ok && v != nil {
 		s, ok := v.(string)
 		if !ok {
-			return out, fmt.Errorf("providerOptions.openai.purpose must be a string")
+			return out, invalid("Invalid input: expected string at purpose")
 		}
 		out.purpose = s
 	}
 	if v, ok := openaiOpts["expiresAfter"]; ok && v != nil {
-		n, ok := v.(float64)
+		n, ok := numericValue(v)
 		if !ok {
-			return out, fmt.Errorf("providerOptions.openai.expiresAfter must be a number")
+			return out, invalid("Invalid input: expected number at expiresAfter")
 		}
-		seconds := int64(n)
-		out.expiresAfter = &seconds
+		out.expiresAfter = &n
 	}
 	return out, nil
 }

@@ -23,11 +23,14 @@ package websocket
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"time"
 
 	"golang.org/x/net/websocket"
 )
@@ -42,6 +45,12 @@ type DialOptions struct {
 	// Protocols are the WebSocket subprotocols offered in the handshake
 	// (Sec-WebSocket-Protocol), mirroring TS's `protocols` option.
 	Protocols []string
+
+	// WrapConn, when set, wraps the raw network connection (after TLS for
+	// wss) before the WebSocket handshake. It lets a caller observe bytes
+	// x/net/websocket does not expose, such as a close frame's status code.
+	// Reads on the wrapper happen on the connection's reading goroutine.
+	WrapConn func(net.Conn) net.Conn
 }
 
 // Dial opens a client WebSocket connection to rawURL, mirroring TS
@@ -79,7 +88,12 @@ func Dial(ctx context.Context, rawURL string, opts DialOptions) (*websocket.Conn
 		}
 	}
 
-	conn, err := wsConfig.DialContext(ctx)
+	var conn *websocket.Conn
+	if opts.WrapConn != nil {
+		conn, err = dialWrapped(ctx, wsConfig, opts.WrapConn)
+	} else {
+		conn, err = wsConfig.DialContext(ctx)
+	}
 	if err != nil {
 		return nil, redactDialError(rawURL, err)
 	}
@@ -214,4 +228,66 @@ func Send(ctx context.Context, conn *websocket.Conn, v interface{}) error {
 // error that must fail the stream rather than finish it silently.
 func IsCleanClose(err error) bool {
 	return errors.Is(err, io.EOF)
+}
+
+// dialWrapped mirrors websocket.Config.DialContext, but hands the raw
+// connection to wrap before the handshake. Errors are *websocket.DialError,
+// like DialContext's.
+func dialWrapped(ctx context.Context, config *websocket.Config, wrap func(net.Conn) net.Conn) (*websocket.Conn, error) {
+	if config.Location == nil {
+		return nil, &websocket.DialError{Config: config, Err: websocket.ErrBadWebSocketLocation}
+	}
+	if config.Origin == nil {
+		return nil, &websocket.DialError{Config: config, Err: websocket.ErrBadWebSocketOrigin}
+	}
+	dialer := config.Dialer
+	if dialer == nil {
+		dialer = &net.Dialer{}
+	}
+	var raw net.Conn
+	var err error
+	addr := config.Location.Host
+	switch config.Location.Scheme {
+	case "ws":
+		if config.Location.Port() == "" {
+			addr = net.JoinHostPort(config.Location.Hostname(), "80")
+		}
+		raw, err = dialer.DialContext(ctx, "tcp", addr)
+	case "wss":
+		if config.Location.Port() == "" {
+			addr = net.JoinHostPort(config.Location.Hostname(), "443")
+		}
+		raw, err = (&tls.Dialer{NetDialer: dialer, Config: config.TlsConfig}).DialContext(ctx, "tcp", addr)
+	default:
+		err = websocket.ErrBadScheme
+	}
+	if err != nil {
+		return nil, &websocket.DialError{Config: config, Err: err}
+	}
+	client := wrap(raw)
+
+	var ws *websocket.Conn
+	var wsErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var e error
+		ws, e = websocket.NewClient(config, client)
+		if e != nil {
+			wsErr = &websocket.DialError{Config: config, Err: e}
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		_ = client.SetDeadline(time.Now())
+		<-done
+		_ = client.Close()
+		return nil, &websocket.DialError{Config: config, Err: ctx.Err()}
+	case <-done:
+		if wsErr != nil {
+			_ = client.Close()
+			return nil, wsErr
+		}
+		return ws, nil
+	}
 }

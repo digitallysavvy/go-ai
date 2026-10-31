@@ -3,7 +3,9 @@ package openresponses
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"net/http"
 	"strings"
@@ -94,7 +96,12 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 	// Make API request
 	var response OpenResponsesResponse
-	err = m.provider.client.PostJSON(ctx, "", reqBody, &response)
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "",
+		Body:    reqBody,
+		Headers: opts.Headers,
+	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
@@ -126,7 +133,11 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		if detail != "" {
 			message = fmt.Sprintf("Responses API returned no output (%s)", detail)
 		}
-		return nil, providererrors.NewProviderError(m.provider.config.Name, 500, "", message, nil)
+		// TS APICallError({statusCode: 500, isRetryable: false}).
+		noOutput := providererrors.NewProviderError(m.provider.config.Name, 500, "", message, nil)
+		notRetryable := false
+		noOutput.Retryable = &notRetryable
+		return nil, noOutput
 	}
 
 	// Convert response to GenerateResult
@@ -135,6 +146,15 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, m.handleError(err)
 	}
 	result.Warnings = warnings
+	result.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Headers)
+	// TS result.request.body: the request as sent.
+	result.RawRequest = reqBody
+	// TS response.body is the raw parsed JSON, not the schema-filtered value.
+	if len(httpResp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(httpResp.Body)
+	}
+	result.ResponseMetadata = providerutils.BuildResponseMetadata(response.ID, response.Model, response.CreatedAt)
+	result.ResponseMetadata.Headers = result.ResponseHeaders
 
 	return result, nil
 }
@@ -149,12 +169,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 
 	// Make streaming API request
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "",
-		Body:   reqBody,
-		Headers: map[string]string{
-			"Accept": "text/event-stream",
-		},
+		Method:  http.MethodPost,
+		Path:    "",
+		Body:    reqBody,
+		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
 	if err != nil {
 		return nil, m.handleError(err)
@@ -165,18 +183,48 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	stream.extensionRegistry = m.provider.extensionRegistry
 	stream.getResponseErrorMetadata = m.provider.config.GetResponseErrorMetadata
 	stream.requestBody = reqBody
-	return stream, nil
+	stream.includeRawChunks = opts.IncludeRawChunks
+	// TS enqueues stream-start with the warnings first.
+	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(stream, warnings), httpResp.Header, m.ModelID()), nil
 }
 
 // buildRequestBody builds the Open Responses API request body
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
 	var warnings []types.Warning
 	provOpts := extractOpenResponsesProviderOptions(opts.ProviderOptions, m.provider.config.Name)
+	// TS parseProviderOptions(openResponsesLanguageModelOptions): a mistyped
+	// reasoningEffort / reasoningSummary is an InvalidArgumentError.
+	if provOpts.Raw != nil {
+		if _, err := providerutils.ParseProviderOptions(m.provider.config.Name, map[string]interface{}{m.provider.config.Name: provOpts.Raw}, openResponsesOptionsSchema); err != nil {
+			return nil, nil, err
+		}
+	}
 	if openResponsesTruthyString(provOpts.Raw["conversation"]) && openResponsesTruthyString(provOpts.Raw["previousResponseId"]) {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "conversation",
 			Details: "conversation and previousResponseId cannot be used together",
+		})
+	}
+
+	// These are ignored with warnings (TS reports them before the input
+	// conversion warnings).
+	if opts.StopSequences != nil {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "stopSequences",
+		})
+	}
+	if opts.TopK != nil {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "topK",
+		})
+	}
+	if opts.Seed != nil {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "seed",
 		})
 	}
 
@@ -210,39 +258,13 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if opts.TopP != nil {
 		body["top_p"] = *opts.TopP
 	}
-	// Note: Open Responses doesn't support frequencyPenalty, presencePenalty,
-	// stopSequences, topK, or seed. These are ignored with TS-shaped warnings.
-	if opts.FrequencyPenalty != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "frequencyPenalty",
-		})
-	}
+	// TS forwards presence_penalty / frequency_penalty; stopSequences, topK
+	// and seed are ignored with warnings.
 	if opts.PresencePenalty != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "presencePenalty",
-		})
+		body["presence_penalty"] = *opts.PresencePenalty
 	}
-
-	// These are ignored with warnings
-	if opts.StopSequences != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "stopSequences",
-		})
-	}
-	if opts.TopK != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "topK",
-		})
-	}
-	if opts.Seed != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "seed",
-		})
+	if opts.FrequencyPenalty != nil {
+		body["frequency_penalty"] = *opts.FrequencyPenalty
 	}
 
 	// Convert tools. Provider-defined tools are encoded via a registered
@@ -318,7 +340,12 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	// passed through verbatim, matching TS's
 	// `openResponsesOptions?.reasoningEffort ?? mapReasoningToProviderEffort(...)`.
 	var reasoningEffort string
-	if opts.Reasoning != nil {
+	// TS `??` only skips null/undefined: an empty-string reasoningEffort is a
+	// resolved value and is sent as is.
+	effortOption, effortOptionSet := provOpts.Raw["reasoningEffort"].(string)
+	// TS `reasoningEffort ?? (isCustomReasoning(reasoning) ? map...)`: the
+	// mapping (and its compatibility warning) only runs without the option.
+	if opts.Reasoning != nil && !effortOptionSet {
 		switch *opts.Reasoning {
 		case types.ReasoningNone:
 			reasoningEffort = "none"
@@ -340,29 +367,18 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			reasoningEffort = "high"
 		case types.ReasoningXHigh:
 			reasoningEffort = "xhigh"
+		case types.ReasoningMax:
+			reasoningEffort = "max"
 			// ReasoningDefault ("provider-default"): omit.
 		}
 	}
 	resolvedReasoningSummary := provOpts.ReasoningSummary
-	if provOpts.ReasoningSummarySet && resolvedReasoningSummary != "" {
-		switch resolvedReasoningSummary {
-		case "concise", "detailed", "auto":
-			// valid
-		default:
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: "reasoningSummary",
-				Details: fmt.Sprintf("reasoningSummary %q is not a supported value (concise, detailed, auto)", resolvedReasoningSummary),
-			})
-			resolvedReasoningSummary = ""
-		}
+	if effortOptionSet {
+		reasoningEffort = effortOption
 	}
-	if provOpts.ReasoningEffort != "" {
-		reasoningEffort = provOpts.ReasoningEffort
-	}
-	if reasoningEffort != "" || resolvedReasoningSummary != "" {
+	if reasoningEffort != "" || effortOptionSet || resolvedReasoningSummary != "" {
 		reasoning := map[string]interface{}{}
-		if reasoningEffort != "" {
+		if reasoningEffort != "" || effortOptionSet {
 			reasoning["effort"] = reasoningEffort
 		}
 		if resolvedReasoningSummary != "" {
@@ -431,18 +447,20 @@ func extractOpenResponsesProviderOptions(providerOptions map[string]interface{},
 			continue
 		}
 		var opts OpenResponsesProviderOptions
-		if err := json.Unmarshal(data, &opts); err == nil {
-			if values, ok := raw.(map[string]interface{}); ok {
-				opts.Raw = values
-				if summary, ok := values["reasoningSummary"]; ok {
-					opts.ReasoningSummarySet = true
-					if text, ok := summary.(string); ok {
-						opts.ReasoningSummary = text
-					}
+		// A member of the wrong type fails the struct decode; the raw map is
+		// kept regardless so buildRequestBody can report it (TS
+		// parseProviderOptions throws).
+		_ = json.Unmarshal(data, &opts)
+		if values, ok := raw.(map[string]interface{}); ok {
+			opts.Raw = values
+			if summary, ok := values["reasoningSummary"]; ok {
+				opts.ReasoningSummarySet = true
+				if text, ok := summary.(string); ok {
+					opts.ReasoningSummary = text
 				}
 			}
-			return opts
 		}
+		return opts
 	}
 	return OpenResponsesProviderOptions{}
 }
@@ -705,6 +723,9 @@ func convertToolsToOpenResponses(tools []types.Tool, registry *ExtensionRegistry
 			// Convert parameters to map if possible
 			if paramsMap, ok := t.Parameters.(map[string]interface{}); ok {
 				ft.Parameters = paramsMap
+			} else if raw, ok := providerutils.RawJSONObject(t.Parameters); ok {
+				ft.Parameters = providerutils.DecodeRawJSONObject(raw)
+				ft.rawParameters = raw
 			}
 		}
 
@@ -830,6 +851,15 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 	// Convert usage information
 	if response.Usage != nil {
 		result.Usage = convertOpenResponsesUsage(response.Usage)
+	} else {
+		// TS doGenerate builds the usage from `response.usage?.x` with
+		// `(inputTokens ?? 0) - ...` fallbacks, so a response without usage
+		// still reports noCache 0 and text 0 (totals stay undefined).
+		noCache, text := int64(0), int64(0)
+		result.Usage = types.Usage{
+			InputDetails:  &types.InputTokenDetails{NoCacheTokens: &noCache},
+			OutputDetails: &types.OutputTokenDetails{TextTokens: &text},
+		}
 	}
 
 	// Extract content from output items
@@ -849,36 +879,39 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 			// item id a later turn needs to replay this text under
 			// Config.StrictResponseInput.
 			itemCopy := item
-			for _, part := range item.Content {
-				if part.Type == "output_text" {
-					textParts = append(textParts, part.Text)
-					result.Content = append(result.Content, types.TextContent{
-						Text:             part.Text,
-						ProviderMetadata: openResponsesTextMetadataPayload(m.providerName(), itemCopy.ID, part.Annotations),
-					})
-				}
+			validAnnotations := openResponsesOutputTextAnnotations(item.Raw, item.Content)
+			// TS pushes a text part for EVERY content part, whatever its
+			// type: a refusal part has no `text`, so it becomes an empty
+			// text part that still carries the item id.
+			for i, part := range item.Content {
+				textParts = append(textParts, part.Text)
+				result.Content = append(result.Content, types.TextContent{
+					Text:             part.Text,
+					ProviderMetadata: openResponsesTextMetadataPayload(m.providerName(), itemCopy.ID, validAnnotations[i]),
+				})
 			}
 
 		case "reasoning":
-			// Include reasoning parts when the item has an ID or encrypted_content (#12869).
-			// Previously these were skipped when ItemID was absent; now we include them
-			// as long as either the ID or EncryptedContent is non-empty.
-			if item.ID != "" || item.EncryptedContent != "" {
-				// Reasoning items expose their text through Summary, not Content.
+			// TS emits one reasoning part per reasoning_text content part, or a
+			// single part with the joined summary when there is no content,
+			// for every reasoning item (including one with no id and no
+			// encrypted_content).
+			itemCopy := item
+			if len(item.Content) > 0 {
+				for _, cp := range item.Content {
+					one := itemCopy
+					one.Content = []ContentPart{cp}
+					result.Content = append(result.Content, types.ReasoningContent{
+						Text:             cp.Text,
+						EncryptedContent: item.EncryptedContent,
+						ProviderMetadata: openResponsesReasoningProviderMetadata(m.providerName(), &one),
+					})
+				}
+			} else {
 				var summaryText string
 				for _, part := range item.Summary {
-					if part.Type == "summary_text" || part.Type == "text" {
-						summaryText += part.Text
-					}
+					summaryText += part.Text
 				}
-				if summaryText != "" {
-					textParts = append(textParts, summaryText)
-				}
-				itemCopy := item
-				// Preserve EncryptedContent so callers can forward this reasoning
-				// block in subsequent turns (input-side round-trip, #12869), plus
-				// full itemId/reasoningSummary/reasoningContent metadata (row
-				// 1c1a9d1) so replay can reconstruct the original item exactly.
 				result.Content = append(result.Content, types.ReasoningContent{
 					Text:             summaryText,
 					EncryptedContent: item.EncryptedContent,
@@ -895,10 +928,11 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 				_ = json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 			}
 
-			toolCalls = append(toolCalls, types.ToolCall{
+			pushOpenResponsesCall(&toolCalls, &result.Content, types.ToolCall{
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        args,
+				RawArguments:     item.Arguments,
 				ProviderMetadata: openResponsesToolCallMetadata(m.providerName(), item.ID, item.Namespace),
 			})
 
@@ -909,7 +943,7 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 			// Arguments (a synthetic {"input": ...} map used only internally).
 			hasToolCalls = true
 			rawArgs, _ := json.Marshal(item.Input) //nolint:errcheck
-			toolCalls = append(toolCalls, types.ToolCall{
+			pushOpenResponsesCall(&toolCalls, &result.Content, types.ToolCall{
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        map[string]interface{}{"input": item.Input},
@@ -981,11 +1015,29 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 	return result, nil
 }
 
+// pushOpenResponsesCall records a tool call and puts its tool-call part in
+// the content at the output item's position (TS doGenerate pushes every part
+// in output order; core would otherwise append the call after the text).
+func pushOpenResponsesCall(calls *[]types.ToolCall, content *[]types.ContentPart, tc types.ToolCall) {
+	*calls = append(*calls, tc)
+	var meta json.RawMessage
+	if len(tc.ProviderMetadata) > 0 {
+		meta, _ = json.Marshal(tc.ProviderMetadata)
+	}
+	*content = append(*content, types.ToolCallContent{
+		ToolCallID:       tc.ID,
+		ToolName:         tc.ToolName,
+		Input:            tc.RawArguments,
+		Arguments:        tc.Arguments,
+		ProviderMetadata: meta,
+	})
+}
+
 // convertOpenResponsesUsage converts Open Responses usage to AI SDK usage
 func convertOpenResponsesUsage(usage *Usage) types.Usage {
 	inputTokens := int64(usage.InputTokens)
 	outputTokens := int64(usage.OutputTokens)
-	totalTokens := int64(usage.TotalTokens)
+	totalTokens := inputTokens + outputTokens // TS core: input total + output total
 
 	result := types.Usage{
 		InputTokens:  &inputTokens,
@@ -993,41 +1045,57 @@ func convertOpenResponsesUsage(usage *Usage) types.Usage {
 		TotalTokens:  &totalTokens,
 	}
 
-	// Calculate cached tokens
-	var cachedTokens int64
+	// TS reads cached_tokens / cache_write_tokens / reasoning_tokens as
+	// optional values: absent stays undefined, a reported 0 stays 0. The
+	// typed struct cannot tell them apart, so consult the wire object when
+	// present (hand-built usage keeps the details it carries).
+	cachedPresent, reasoningPresent := true, true
+	if wire := usage.wire(); wire != nil {
+		cachedPresent = wireNumberPresent(wire, "input_tokens_details", "cached_tokens")
+		reasoningPresent = wireNumberPresent(wire, "output_tokens_details", "reasoning_tokens")
+	}
+	var cachedTokens, reasoningTokens int64
 	if usage.InputTokensDetails != nil {
 		cachedTokens = int64(usage.InputTokensDetails.CachedTokens)
 	}
-
-	// Calculate reasoning tokens
-	var reasoningTokens int64
 	if usage.OutputTokensDetails != nil {
 		reasoningTokens = int64(usage.OutputTokensDetails.ReasoningTokens)
 	}
 
-	// Set input token details
-	if cachedTokens > 0 {
+	// TS: noCache = input - cached - cacheWrite, text = output - reasoning.
+	{
 		noCacheTokens := inputTokens - cachedTokens
+		var cacheWrite *int64
+		if usage.InputTokensDetails != nil && usage.InputTokensDetails.CacheWriteTokens != nil {
+			cw := int64(*usage.InputTokensDetails.CacheWriteTokens)
+			cacheWrite = &cw
+			noCacheTokens -= cw
+		}
 		result.InputDetails = &types.InputTokenDetails{
-			NoCacheTokens:   &noCacheTokens,
-			CacheReadTokens: &cachedTokens,
+			NoCacheTokens:    &noCacheTokens,
+			CacheWriteTokens: cacheWrite,
+		}
+		if cachedPresent {
+			result.InputDetails.CacheReadTokens = &cachedTokens
 		}
 	}
-
-	// Set output token details
-	if reasoningTokens > 0 {
+	{
 		textTokens := outputTokens - reasoningTokens
-		result.OutputDetails = &types.OutputTokenDetails{
-			TextTokens:      &textTokens,
-			ReasoningTokens: &reasoningTokens,
+		result.OutputDetails = &types.OutputTokenDetails{TextTokens: &textTokens}
+		if reasoningPresent {
+			result.OutputDetails.ReasoningTokens = &reasoningTokens
 		}
 	}
 
-	// Store raw usage
-	result.Raw = map[string]interface{}{
-		"input_tokens":  usage.InputTokens,
-		"output_tokens": usage.OutputTokens,
-		"total_tokens":  usage.TotalTokens,
+	// Store raw usage: the wire object verbatim (TS raw: response.usage).
+	if wire := usage.wire(); wire != nil {
+		result.Raw = wire
+	} else {
+		result.Raw = map[string]interface{}{
+			"input_tokens":  usage.InputTokens,
+			"output_tokens": usage.OutputTokens,
+			"total_tokens":  usage.TotalTokens,
+		}
 	}
 
 	return result
@@ -1039,6 +1107,9 @@ func convertOpenResponsesUsage(usage *Usage) types.Usage {
 // `failedResponseHandler` provider setting); returning nil falls back to the
 // default generic wrapping.
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	if m.provider.config.FailedResponseHandler != nil {
 		if statusErr, ok := err.(*internalhttp.HTTPStatusError); ok {
 			if mapped := m.provider.config.FailedResponseHandler(statusErr); mapped != nil {
@@ -1078,6 +1149,10 @@ type openResponsesStream struct {
 	toolCallsByItemID map[string]*toolCallState
 	hasToolCalls      bool
 	finishReason      types.FinishReason
+	// rawFinishReason and finishUsage are what the last terminal event
+	// recorded; flush() puts them on the finish chunk.
+	rawFinishReason string
+	finishUsage     *types.Usage
 
 	// customToolCallsByItemID mirrors toolCallsByItemID for caller-executed
 	// "custom" tool calls (Config.CustomToolID), whose input streams as raw
@@ -1107,6 +1182,13 @@ type openResponsesStream struct {
 	// exercising extensions set extensionRegistry.
 	extensionRegistry *ExtensionRegistry
 	extensionState    map[string]interface{}
+
+	// includeRawChunks emits a raw chunk before each event is processed
+	// (LanguageModelV4CallOptions.includeRawChunks); pendingEventData holds the
+	// event whose raw chunk was just returned.
+	includeRawChunks bool
+	pendingEventData string
+	hasPendingEvent  bool
 
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
@@ -1139,7 +1221,7 @@ func newOpenResponsesStream(reader io.ReadCloser, warnings []types.Warning, prov
 		providerName:            name,
 		toolCallsByItemID:       make(map[string]*toolCallState),
 		customToolCallsByItemID: make(map[string]*toolCallState),
-		finishReason:            types.FinishReasonOther,
+		finishReason:            types.FinishReasonInterrupted,
 		extensionState:          make(map[string]interface{}),
 	}
 }
@@ -1161,23 +1243,66 @@ func (s *openResponsesStream) Next() (*provider.StreamChunk, error) {
 			return nil, s.err
 		}
 
-		// Get next SSE event
-		event, err := s.parser.Next()
-		if err != nil {
-			s.err = err
-			return nil, err
+		var eventData string
+		if s.hasPendingEvent {
+			// The raw chunk for this event was returned by the previous call.
+			eventData = s.pendingEventData
+			s.pendingEventData, s.hasPendingEvent = "", false
+		} else {
+			// Get next SSE event
+			event, err := s.parser.Next()
+			if err != nil {
+				if err == io.EOF {
+					s.queueFlush()
+					continue
+				}
+				s.err = err
+				return nil, err
+			}
+
+			// TS only skips the [DONE] marker; flush() runs when the stream ends.
+			if streaming.IsStreamDone(event) {
+				s.queueFlush()
+				continue
+			}
+			eventData = event.Data
+
+			// TS enqueues {type: 'raw', rawValue} for every parse result
+			// before processing it when includeRawChunks is set.
+			if s.includeRawChunks {
+				s.pendingEventData, s.hasPendingEvent = eventData, true
+				raw := streaming.RawChunkValue(eventData)
+				return &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw}, nil
+			}
 		}
 
-		// Check for stream completion
-		if streaming.IsStreamDone(event) {
-			s.err = io.EOF
-			return nil, io.EOF
+		// TS validates each chunk with z.any(), so JSON that is not an object
+		// (a number, string, array or boolean) passes and matches no event
+		// type; null passes validation too but `chunk.type` then throws a
+		// TypeError that errors the whole stream.
+		if trimmed := strings.TrimLeft(eventData, " \t\r\n"); trimmed != "" && trimmed[0] != '{' {
+			var probe interface{}
+			if json.Unmarshal([]byte(eventData), &probe) == nil {
+				if probe == nil {
+					s.err = errors.New("Cannot read properties of null (reading 'type')") //nolint:staticcheck // ST1005: TypeError text from TS
+					return nil, s.err
+				}
+				continue
+			}
 		}
 
-		// Parse the event data as JSON
+		// Parse the event data as JSON. TS enqueues an error part for an
+		// event that does not parse and keeps reading.
 		var streamEvent StreamEvent
-		if err := json.Unmarshal([]byte(event.Data), &streamEvent); err != nil {
-			return nil, fmt.Errorf("failed to parse stream event: %w", err)
+		if err := json.Unmarshal([]byte(eventData), &streamEvent); err != nil {
+			msg, perr := providerutils.ChunkParseFailure(eventData, err)
+			s.finishReason = types.FinishReasonError
+			s.rawFinishReason = ""
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: msg,
+				Err:  perr,
+			}, nil
 		}
 
 		// Handle different event types
@@ -1198,9 +1323,11 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		if event.Item != nil && event.Item.Type == "function_call" {
 			// Initialize tool call tracking
 			s.toolCallsByItemID[event.Item.ID] = &toolCallState{
-				ID:               event.Item.CallID,
-				ToolName:         event.Item.Name,
-				ArgsJSON:         "",
+				ID:       event.Item.CallID,
+				ToolName: event.Item.Name,
+				// TS seeds the accumulator with the item's own arguments;
+				// later deltas append to them.
+				ArgsJSON:         event.Item.Arguments,
 				ProviderMetadata: openResponsesToolCallMetadata(s.providerName, event.Item.ID, event.Item.Namespace),
 			}
 			return nil, false
@@ -1281,10 +1408,8 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			}
 			s.toolCallsByItemID[event.ItemID] = state
 		}
-		// Use the final arguments from the event if provided
-		if event.Arguments != "" {
-			state.ArgsJSON = event.Arguments
-		}
+		// TS: toolCall.arguments = chunk.arguments, even when it is "".
+		state.ArgsJSON = event.Arguments
 		return nil, false
 
 	case "response.custom_tool_call_input.delta":
@@ -1338,10 +1463,13 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			argsJSON := event.Item.Arguments
 			providerMetadata := openResponsesToolCallMetadata(s.providerName, event.Item.ID, event.Item.Namespace)
 			if ok {
-				if id == "" {
+				// TS: toolCall?.toolCallId ?? item.call_id and
+				// toolCall?.toolName ?? item.name -- the id and name seen when
+				// the item was added win over those of the done item.
+				if state.ID != "" {
 					id = state.ID
 				}
-				if toolName == "" {
+				if state.ToolName != "" {
 					toolName = state.ToolName
 				}
 				if argsJSON == "" {
@@ -1355,6 +1483,9 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			if argsJSON != "" {
 				_ = json.Unmarshal([]byte(argsJSON), &args) //nolint:errcheck
 			}
+			// TS toolCallsByItemId.delete(item.id): a repeated done event for
+			// the same item must not reuse the accumulated arguments.
+			delete(s.toolCallsByItemID, event.Item.ID)
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeToolCall,
 				ToolCall: &types.ToolCall{
@@ -1376,10 +1507,11 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			toolName := event.Item.Name
 			input := event.Item.Input
 			if ok {
-				if customToolCallID == "" {
+				// TS: toolCall?.toolCallId ?? item.call_id (likewise the name).
+				if custom.ID != "" {
 					customToolCallID = custom.ID
 				}
-				if toolName == "" {
+				if custom.ToolName != "" {
 					toolName = custom.ToolName
 				}
 				if input == "" {
@@ -1444,7 +1576,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			if err != nil {
 				// Mirrors TS's try/catch around decodeExtensionItem: a
 				// decode failure doesn't abort the whole stream.
-				return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error()}, true
+				return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error(), Err: err}, true
 			}
 			for _, part := range decoded {
 				if tc, ok := part.(types.ToolCallContent); ok {
@@ -1518,102 +1650,61 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		return nil, false
 
 	case "response.completed", "response.incomplete":
+		// TS only records the finish reason and usage here; `finish` is
+		// enqueued by flush() when the stream ends.
 		finishReason := ""
 		if event.Response != nil && event.Response.IncompleteDetails != nil {
 			finishReason = event.Response.IncompleteDetails.Reason
 		}
-		fr := MapOpenResponsesFinishReason(finishReason, s.hasToolCalls)
-
-		var usage *types.Usage
+		s.finishReason = MapOpenResponsesFinishReason(finishReason, s.hasToolCalls)
+		s.rawFinishReason = finishReason
 		if event.Response != nil && event.Response.Usage != nil {
 			u := convertOpenResponsesUsage(event.Response.Usage)
-			usage = &u
+			s.finishUsage = &u
 		}
-
-		s.err = io.EOF
-		finishChunk := &provider.StreamChunk{
-			Type:            provider.ChunkTypeFinish,
-			FinishReason:    fr,
-			RawFinishReason: finishReason,
-			Usage:           usage,
-		}
-		// Row 6fe187f: close an unfinished reasoning block (using its
-		// original item id) before the finish chunk, mirroring TS's
-		// transform stream flush().
-		if s.activeReasoningID != "" {
-			reasoningEnd := &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: s.activeReasoningID}
-			s.activeReasoningID = ""
-			s.pending = append(s.pending, finishChunk)
-			return reasoningEnd, true
-		}
-		return finishChunk, true
+		return nil, false
 
 	case "response.failed":
 		// Response failed. The error lives inside the nested response object
-		// (response.error), not a top-level event.error field. Mirrors TS: a
-		// response.failed event still ends the stream with a finish chunk
-		// (via flush()); the error, if present, is enqueued as a separate
-		// mid-stream error chunk immediately before it (not thrown/fatal).
+		// (response.error), not a top-level event.error field. Mirrors TS: the
+		// finish reason is recorded (finish itself comes from flush()); the
+		// error, if present, is enqueued as a mid-stream error chunk.
 		s.finishReason = types.FinishReasonError
 		var respErr *ResponseError
 		var status string
-		var usage *types.Usage
 		if event.Response != nil {
 			respErr = event.Response.Error
 			status = event.Response.Status
 			if event.Response.Usage != nil {
 				u := convertOpenResponsesUsage(event.Response.Usage)
-				usage = &u
+				s.finishUsage = &u
 			}
 		}
-		rawReason := status
+		s.rawFinishReason = status
 		if respErr != nil && respErr.Code != "" {
-			rawReason = respErr.Code
+			s.rawFinishReason = respErr.Code
 		}
-		s.err = io.EOF
-		finishChunk := &provider.StreamChunk{
-			Type:            provider.ChunkTypeFinish,
-			FinishReason:    types.FinishReasonError,
-			RawFinishReason: rawReason,
-			Usage:           usage,
-		}
-		// Row 6fe187f (extended to response.failed): close an unfinished
-		// reasoning block before the finish chunk here too, mirroring TS's
-		// flush() running unconditionally regardless of what ended the
-		// stream.
-		tail := s.finishChunksAfterReasoningClose(finishChunk)
 		if respErr == nil {
-			first := tail[0]
-			s.pending = append(s.pending, tail[1:]...)
-			return first, true
+			return nil, false
 		}
-		s.pending = append(s.pending, tail...)
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: respErr.Message,
-			Err:  s.streamProviderError(respErr),
+			Err:  s.streamProviderError(event, respErr),
 		}, true
 
 	case "error":
-		// A bare error event (no response wrapper). Mirrors TS: enqueued as a
-		// mid-stream error chunk; the stream still ends normally via a later
-		// [DONE]/flush, so a finish chunk (with any still-open reasoning
-		// block closed first, same as response.failed above) is queued
-		// behind it here too.
+		// A bare error event (no response wrapper). Mirrors TS: the finish
+		// reason becomes error and the error is enqueued as a mid-stream chunk.
 		if event.Error == nil {
 			return nil, false
 		}
 		s.finishReason = types.FinishReasonError
-		finishChunk := &provider.StreamChunk{
-			Type:            provider.ChunkTypeFinish,
-			FinishReason:    types.FinishReasonError,
-			RawFinishReason: event.Error.Code,
-		}
-		s.pending = append(s.pending, s.finishChunksAfterReasoningClose(finishChunk)...)
+		s.rawFinishReason = event.Error.Code
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: event.Error.Message,
-			Err:  s.streamProviderError(event.Error),
+			Err:  s.streamProviderError(event, event.Error),
 		}, true
 
 	default:
@@ -1626,7 +1717,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		if err != nil {
 			// Mirrors TS's try/catch around extension.decodeEvent: a decode
 			// failure doesn't abort the whole stream.
-			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error()}, true
+			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error(), Err: err}, true
 		}
 		for _, chunk := range decoded {
 			if chunk.Type == provider.ChunkTypeToolCall || chunk.Type == provider.ChunkTypeToolInputStart {
@@ -1650,8 +1741,9 @@ func openResponsesReasoningProviderMetadata(providerName string, item *OutputIte
 	for _, part := range item.Summary {
 		summary = append(summary, map[string]interface{}{"type": "summary_text", "text": part.Text})
 	}
+	// TS: reasoningContent == null ? null : [...]; an empty array stays [].
 	var reasoningContent interface{}
-	if len(item.Content) > 0 {
+	if item.Content != nil {
 		content := make([]map[string]interface{}, 0, len(item.Content))
 		for _, part := range item.Content {
 			content = append(content, map[string]interface{}{"type": "reasoning_text", "text": part.Text})
@@ -1703,10 +1795,59 @@ func openResponsesTextProviderMetadata(providerName string, item *OutputItem) js
 		return nil
 	}
 	var annotations []Annotation
-	for _, part := range item.Content {
-		annotations = append(annotations, part.Annotations...)
+	for _, partAnnotations := range openResponsesOutputTextAnnotations(item.Raw, item.Content) {
+		annotations = append(annotations, partAnnotations...)
 	}
 	return openResponsesTextMetadataPayload(providerName, item.ID, annotations)
+}
+
+// openResponsesOutputTextAnnotations is TS getOutputTextAnnotations applied to
+// every content part of a message item: a part's annotations are kept only
+// when every one of them is a well-formed url_citation (numeric start_index and
+// end_index, string url and title), otherwise the whole part contributes none.
+// The raw item JSON is consulted so a missing member is told apart from a zero
+// value; an item built without raw JSON keeps its typed annotations.
+func openResponsesOutputTextAnnotations(rawItem json.RawMessage, content []ContentPart) [][]Annotation {
+	out := make([][]Annotation, len(content))
+	var rawParts []struct {
+		Annotations json.RawMessage `json:"annotations"`
+	}
+	if len(rawItem) > 0 {
+		var item struct {
+			Content []struct {
+				Annotations json.RawMessage `json:"annotations"`
+			} `json:"content"`
+		}
+		if json.Unmarshal(rawItem, &item) == nil {
+			rawParts = item.Content
+		}
+	}
+	if len(rawParts) != len(content) {
+		for i, part := range content {
+			out[i] = part.Annotations
+		}
+		return out
+	}
+	for i, rawPart := range rawParts {
+		var entries []map[string]interface{}
+		if len(rawPart.Annotations) == 0 || json.Unmarshal(rawPart.Annotations, &entries) != nil {
+			continue
+		}
+		valid := make([]Annotation, 0, len(entries))
+		for _, entry := range entries {
+			startIndex, startOK := entry["start_index"].(float64)
+			endIndex, endOK := entry["end_index"].(float64)
+			url, urlOK := entry["url"].(string)
+			title, titleOK := entry["title"].(string)
+			if entry["type"] != "url_citation" || !startOK || !endOK || !urlOK || !titleOK {
+				valid = nil
+				break
+			}
+			valid = append(valid, Annotation{Type: "url_citation", URL: url, StartIndex: int(startIndex), EndIndex: int(endIndex), Title: title})
+		}
+		out[i] = valid
+	}
+	return out
 }
 
 func openResponsesToolCallMetadata(providerName, itemID, namespace string) map[string]interface{} {
@@ -1738,34 +1879,58 @@ func (s *openResponsesStream) Err() error {
 	return s.err
 }
 
-// finishChunksAfterReasoningClose returns finishChunk alone, or -- when a
-// reasoning block is still open (s.activeReasoningID != "") -- a
-// reasoning-end chunk for it followed by finishChunk, closing s's active
-// reasoning state either way. Used by response.failed and a bare error
-// event (response.completed/incomplete apply the same reasoning-close
-// ordering inline above) so an interrupted reasoning block always closes
-// before the finish chunk, no matter which event ended the stream, mirroring
-// TS's flush() (which runs unconditionally at the end of the ReadableStream
-// regardless of the reason) closing `activeReasoningId` before enqueuing
-// `finish`.
-func (s *openResponsesStream) finishChunksAfterReasoningClose(finishChunk *provider.StreamChunk) []*provider.StreamChunk {
-	if s.activeReasoningID == "" {
-		return []*provider.StreamChunk{finishChunk}
+// queueFlush is TS flush(): close a still-open reasoning block, then enqueue
+// `finish` with what the stream recorded (other / no usage when it ended
+// without a terminal response event), and end the stream.
+func (s *openResponsesStream) queueFlush() {
+	if s.activeReasoningID != "" {
+		s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: s.activeReasoningID})
+		s.activeReasoningID = ""
 	}
-	reasoningEnd := &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: s.activeReasoningID}
-	s.activeReasoningID = ""
-	return []*provider.StreamChunk{reasoningEnd, finishChunk}
+	s.pending = append(s.pending, &provider.StreamChunk{
+		Type:            provider.ChunkTypeFinish,
+		FinishReason:    s.finishReason,
+		RawFinishReason: s.rawFinishReason,
+		Usage:           s.finishUsage,
+	})
+	s.err = io.EOF
 }
 
 // streamProviderError classifies a streamed response.failed/error event's
 // embedded ResponseError into a *providererrors.StreamProviderError,
 // applying getResponseErrorMetadata when set. Mirrors TS's
 // createOpenResponsesStreamError.
-func (s *openResponsesStream) streamProviderError(respErr *ResponseError) *providererrors.StreamProviderError {
+func (s *openResponsesStream) streamProviderError(event *StreamEvent, respErr *ResponseError) *providererrors.StreamProviderError {
 	var statusCode *int
 	var retryable *bool
 	if s.getResponseErrorMetadata != nil {
 		statusCode, retryable = s.getResponseErrorMetadata(respErr)
 	}
-	return providererrors.NewStreamProviderError(respErr.Message, s.providerName, "", respErr.Code, statusCode, retryable, respErr)
+	// TS createProviderStreamError({message, type: chunk.type, code, ...metadata,
+	// data: chunk}): the type is the event type and the data is the whole chunk.
+	var data interface{} = respErr
+	if len(event.Raw) > 0 {
+		var chunk interface{}
+		if json.Unmarshal(event.Raw, &chunk) == nil {
+			data = chunk
+		}
+	}
+	return providererrors.NewStreamProviderError(respErr.Message, s.providerName, event.Type, respErr.Code, statusCode, retryable, data)
+}
+
+// wireNumberPresent reports whether raw[object][key] is a JSON number.
+func wireNumberPresent(raw map[string]interface{}, object, key string) bool {
+	m, ok := raw[object].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	_, ok = m[key].(float64)
+	return ok
+}
+
+// openResponsesOptionsSchema is openResponsesLanguageModelOptions: both
+// members are nullish (a null summary suppresses it); other keys pass.
+var openResponsesOptionsSchema = providerutils.OptionSchema{
+	"reasoningEffort":  providerutils.OptNullable(providerutils.OptString),
+	"reasoningSummary": providerutils.OptNullable(providerutils.OptEnum("concise", "detailed", "auto")),
 }

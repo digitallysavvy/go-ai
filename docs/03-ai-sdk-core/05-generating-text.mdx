@@ -81,9 +81,10 @@ type GenerateTextResult struct {
     // metadata-bearing parts in the same order emitted by the model/tool loop.
     Content []types.ContentPart
 
-    // Output contains the parsed output when a WithOutput option was provided.
-    // Type-assert to the concrete type, e.g.: recipe := result.Output.(Recipe)
-    // Nil when no Output option was set.
+    // Output is the final step's parsed output. Type-assert to the concrete
+    // type, e.g.: recipe := result.Output.(Recipe). With no Output option it
+    // is the final step's text (a string). Nil after a tool-calls finish, or
+    // an empty non-stop finish.
     Output any
 
     // Tool calls made during generation
@@ -132,6 +133,8 @@ fmt.Printf("Raw request: %+v\n", result.RawRequest)
 fmt.Printf("Raw response: %+v\n", result.RawResponse)
 ```
 
+Response header keys use Go canonical casing (for example `Content-Type`, `X-Request-Id`), whereas the TypeScript SDK exposes them lower-cased. Look headers up with `http.Header.Get`, or canonicalize the key before indexing a map.
+
 ### OnFinish Callback
 
 When using `GenerateText`, you can provide an `OnFinish` callback that is triggered after the last step is finished. It contains the text, usage information, finish reason, and more:
@@ -148,6 +151,16 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
         fmt.Printf("Steps: %d\n", len(result.Steps))
     },
 })
+```
+
+### Interrupted finish reason
+
+`types.FinishReasonInterrupted` (`"interrupted"`) means the provider stream ended without a completion signal, so the output may be incomplete. The partial text and tool calls are preserved, but the step never executes tools, never raises a `ToolChoiceViolationError` for a required tool choice, and never continues the tool loop. Check for it when you need to distinguish a cut-off response from a normal `stop`.
+
+```go
+if result.FinishReason == types.FinishReasonInterrupted {
+    fmt.Println("response was cut off:", result.Text)
+}
 ```
 
 ### ToolOrder
@@ -352,6 +365,41 @@ for chunk := range result.Chunks() {
 completeText := builder.String()
 ```
 
+### Low-Memory Streaming
+
+`ai.StreamTextLowMemory` is an experimental variant of `StreamText` for output you consume once. It uses the same options and execution engine, but keeps no replay buffer: a chunk is released as soon as you read it, and the producer waits for the consumer (backpressure). For plain text streaming it also avoids accumulating the complete generated text. Content is still collected where its contract needs it: tools, tool choice, structured output, `PrepareStep`, stop conditions, completion callbacks and telemetry.
+
+```go
+res, err := ai.StreamTextLowMemory(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Describe the history of astronomy.",
+})
+if err != nil {
+    return err
+}
+
+stream, err := res.Stream()
+if err != nil {
+    return err
+}
+defer stream.Close()
+for {
+    chunk, err := stream.Next()
+    if err != nil {
+        break
+    }
+    if chunk.Type == provider.ChunkTypeText {
+        fmt.Print(chunk.Text)
+    }
+}
+
+fmt.Println(res.TotalUsage()) // completion metadata does not consume the stream
+```
+
+The result (`*ai.StreamTextSingleConsumerResult`) has `Stream`, `ConsumeStream`, `ToUIMessageStream`, `ToUIMessageStreamResponse`, `PipeUIMessageStreamToResponse`, `ToTextStreamResponse`, `PipeTextStreamToResponse`, `FinishReason`, `RawFinishReason`, `Usage`, `TotalUsage`, `PartialOutput` (latest partial structured output), `Err` and `Close`. `ai.ElementStreamSingleConsumer` is the single-consumer form of `ai.ElementStream`. Final-content accessors such as `Text`, `Content`, `Steps`, `ResponseMessages` and `Output` are not available; use `StreamText` when you need them or independent readers.
+
+Choose **one** stream accessor, response helper or `ConsumeStream` call. A second attempt fails with `ai.ErrStreamAlreadyConsumed`, and there is no replay after completion. Start a consumer before you read completion metadata, because the generation only finishes while its output is consumed. Closing the stream (or the result) cancels the generation.
+
 ### Context Cancellation
 
 Streaming respects context cancellation, allowing you to stop generation early:
@@ -454,6 +502,29 @@ for i, step := range result.Steps {
         i+1, len(step.ToolCalls), len(step.ToolResults))
 }
 ```
+
+### Citations
+
+`Sources` is the set of references a provider retrieved (for example web-search results or file-search documents). Inline references that support a specific piece of generated text are exposed separately as `Citations` on the text content part, so you can render them next to the text they support without mixing them into the retrieved set.
+
+```go
+for _, part := range result.Content {
+    text, ok := part.(types.TextContent)
+    if !ok {
+        continue
+    }
+    for _, c := range text.Citations {
+        fmt.Printf("%s -> %s", text.Text, c.Source.URL)
+        if c.StartIndex != nil && c.EndIndex != nil {
+            // Offsets are positions in the generated text of this part.
+            fmt.Printf(" [%d:%d]", *c.StartIndex, *c.EndIndex)
+        }
+        fmt.Println()
+    }
+}
+```
+
+When streaming, citations arrive on the `ChunkTypeTextEnd` chunk (`chunk.Citations`) and are attached to the text part in `result.Content()`. In UI message streams they are sent as `citations` on the `text-end` chunk and stored on the text part (`ai.TextUIPart.Citations`). `StartIndex`/`EndIndex` are only set when the provider supplies output offsets (OpenAI `url_citation` and `container_file_citation`); `CitedText` holds the supporting passage when the provider returns one (Anthropic). When a response contains no retrieval data (no web-search results or file-search documents), citation-derived sources are still added to `Sources` so existing code keeps working.
 
 ### Sources
 

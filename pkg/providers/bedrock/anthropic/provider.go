@@ -83,13 +83,17 @@ type Config struct {
 // via AWS Bedrock.
 type BedrockAnthropicProvider struct {
 	config Config
-	region string
 }
 
 // New creates a new Bedrock Anthropic provider.
 func New(config Config) *BedrockAnthropicProvider {
-	region := firstNonEmpty(config.Region, os.Getenv("AWS_REGION"))
-	return &BedrockAnthropicProvider{config: config, region: region}
+	return &BedrockAnthropicProvider{config: config}
+}
+
+// awsRegion resolves the region on every use (TS loadSetting reads AWS_REGION
+// lazily), so a region exported after New is still honored.
+func (p *BedrockAnthropicProvider) awsRegion() string {
+	return firstNonEmpty(p.config.Region, os.Getenv("AWS_REGION"))
 }
 
 // CreateAmazonBedrockAnthropic mirrors the TypeScript SDK's
@@ -112,7 +116,7 @@ func (p *BedrockAnthropicProvider) Name() string { return providerName }
 func (p *BedrockAnthropicProvider) runtimeBaseURL() (string, error) {
 	return bedrock.ResolveAmazonBedrockBaseURL(bedrock.ResolveBaseURLOptions{
 		BaseURL:                              p.config.BaseURL,
-		Region:                               p.region,
+		Region:                               p.awsRegion(),
 		Service:                              "bedrock-runtime",
 		ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
 	})
@@ -184,21 +188,21 @@ func (p *BedrockAnthropicProvider) ImageModel(modelID string) (provider.ImageMod
 
 // SpeechModel returns a speech model (not supported).
 func (p *BedrockAnthropicProvider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("bedrock-anthropic provider does not support speech models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a transcription model (not supported).
 func (p *BedrockAnthropicProvider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("bedrock-anthropic provider does not support transcription models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns a reranking model (not supported).
 func (p *BedrockAnthropicProvider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("bedrock-anthropic provider does not support reranking models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 func noSuchModelError(modelID, modelType string) error {
-	return fmt.Errorf("%w: bedrock-anthropic %s %q", providererrors.ErrModelNotFound, modelType, modelID)
+	return providererrors.NewNoSuchModelError(modelID, modelType)
 }
 
 // --- authentication ---------------------------------------------------------
@@ -252,12 +256,20 @@ func (t *bedrockAnthropicTransport) RoundTrip(req *http.Request) (*http.Response
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	req.ContentLength = int64(len(body))
 
+	// TS loads the region first (createSigV4FetchFunction's credentials
+	// callback), so a missing region is reported before any credential
+	// problem. It matters with an explicit BaseURL, which needs no region.
+	region := t.provider.awsRegion()
+	if region == "" {
+		return nil, fmt.Errorf("AWS region setting is missing. Pass it using the 'region' parameter or the AWS_REGION environment variable.") //nolint:staticcheck // message text matches TS
+	}
+
 	creds, err := t.provider.resolveCredentials(req.Context())
 	if err != nil {
 		return nil, err
 	}
 
-	signer := bedrock.NewAWSSigner(creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken, t.provider.region)
+	signer := bedrock.NewAWSSigner(creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken, region)
 	if err := signer.SignRequest(req, body); err != nil {
 		return nil, err
 	}
@@ -267,9 +279,8 @@ func (t *bedrockAnthropicTransport) RoundTrip(req *http.Request) (*http.Response
 
 // resolveCredentials resolves SigV4 credentials: CredentialProvider first,
 // then explicit Config.Credentials, then environment variables. The ambient
-// AWS_SESSION_TOKEN is only used as a fallback when the caller did not
-// explicitly supply both an access key and a secret key (TS row 6732c16;
-// matches pkg/providers/bedrock.Provider's resolveCredentials).
+// AWS_SESSION_TOKEN is always the fallback when Config does not supply a
+// session token (TS amazon-bedrock-anthropic-provider.ts loadOptionalSetting).
 func (p *BedrockAnthropicProvider) resolveCredentials(ctx context.Context) (AWSCredentials, error) {
 	if p.config.CredentialProvider != nil {
 		creds, err := p.config.CredentialProvider(ctx)
@@ -291,20 +302,19 @@ func (p *BedrockAnthropicProvider) resolveCredentials(ctx context.Context) (AWSC
 
 	accessKeyID := firstNonEmpty(explicitAccessKeyID, os.Getenv("AWS_ACCESS_KEY_ID"))
 	secretAccessKey := firstNonEmpty(explicitSecretAccessKey, os.Getenv("AWS_SECRET_ACCESS_KEY"))
-	sessionToken := explicitSessionToken
-	if sessionToken == "" && (explicitAccessKeyID == "" || explicitSecretAccessKey == "") {
-		sessionToken = os.Getenv("AWS_SESSION_TOKEN")
-	}
+	// TS (amazon-bedrock-anthropic-provider.ts) always falls back to the
+	// AWS_SESSION_TOKEN environment variable via loadOptionalSetting.
+	sessionToken := firstNonEmpty(explicitSessionToken, os.Getenv("AWS_SESSION_TOKEN"))
 
 	if accessKeyID == "" {
-		return AWSCredentials{}, fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n" +
+		return AWSCredentials{}, fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n" + //nolint:staticcheck // message text matches TS
 			"1. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables\n" +
 			"2. Provide Credentials in Config\n" +
 			"3. Use a CredentialProvider function\n" +
-			"4. Use API key authentication with BearerToken or AWS_BEARER_TOKEN_BEDROCK")
+			"4. Use API key authentication with BearerToken or AWS_BEARER_TOKEN_BEDROCK\nOriginal error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable.") //nolint:staticcheck // message text matches TS
 	}
 	if secretAccessKey == "" {
-		return AWSCredentials{}, fmt.Errorf("AWS SigV4 authentication requires both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Please ensure both credentials are provided")
+		return AWSCredentials{}, fmt.Errorf("AWS SigV4 authentication requires both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Please ensure both credentials are provided.\nOriginal error: AWS secret access key setting is missing. Pass it using the 'secretAccessKey' parameter or the AWS_SECRET_ACCESS_KEY environment variable.") //nolint:staticcheck // message text matches TS
 	}
 
 	return AWSCredentials{AccessKeyID: accessKeyID, SecretAccessKey: secretAccessKey, SessionToken: sessionToken}, nil

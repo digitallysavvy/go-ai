@@ -3,11 +3,10 @@ package http
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"fmt"
 	"io"
-	"mime/multipart"
-	"net/textproto"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 // MultipartStreamPart is one part of a streaming multipart/form-data upload
@@ -57,65 +56,102 @@ func NewMultipartStreamBody(parts []MultipartStreamPart) (io.ReadCloser, string,
 	}
 
 	pr, pw := io.Pipe()
-	mw := multipart.NewWriter(pw)
-	if err := mw.SetBoundary(boundary); err != nil {
-		return nil, "", err
-	}
+	body := &multipartBody{pr: pr, parts: parts}
 
 	go func() {
-		var writeErr error
-		for _, part := range parts {
-			if !part.IsFile {
-				if writeErr = mw.WriteField(part.Name, part.Value); writeErr != nil {
-					break
-				}
-				continue
-			}
-
-			mediaType := part.MediaType
-			if mediaType == "" {
-				mediaType = "application/octet-stream"
-			}
-			var fw io.Writer
-			fw, writeErr = createFormFilePart(mw, part.Name, part.Filename, mediaType)
-			if writeErr != nil {
-				break
-			}
-			if part.Content != nil {
-				if _, writeErr = io.Copy(fw, part.Content); writeErr != nil {
-					break
-				}
-			}
-		}
-		if writeErr == nil {
-			writeErr = mw.Close()
-		}
+		writeErr := writeMultipartParts(pw, boundary, parts)
 		// pw.CloseWithError(nil) is equivalent to pw.Close(): io.Pipe reports a
 		// nil error as io.EOF to the reader side.
+		if writeErr == nil {
+			body.completed.Store(true)
+		}
 		_ = pw.CloseWithError(writeErr)
+		if writeErr != nil {
+			// TS dispose(): release every source part after a failed write.
+			body.releaseContents()
+		}
 	}()
 
-	return pr, mw.FormDataContentType(), nil
+	return body, "multipart/form-data; boundary=" + boundary, nil
 }
 
-// createFormFilePart is like multipart.Writer.CreateFormFile, but accepts an
-// explicit media type instead of hardcoding "application/octet-stream".
-func createFormFilePart(w *multipart.Writer, fieldName, filename, mediaType string) (io.Writer, error) {
-	h := make(textproto.MIMEHeader)
-	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`,
-		multipartHeaderValue(fieldName), multipartHeaderValue(filename)))
-	h.Set("Content-Type", stripCRLF(mediaType))
-	return w.CreatePart(h)
+// multipartBody is the read side of the pipe. Close tears the upload down the
+// way TS createMultipartBody.dispose does: the pipe is closed and every
+// closable file Content is released (a blocked Read is interrupted).
+type multipartBody struct {
+	pr        *io.PipeReader
+	parts     []MultipartStreamPart
+	once      sync.Once
+	completed atomic.Bool // every part was fully written
+}
+
+func (b *multipartBody) Read(p []byte) (int, error) { return b.pr.Read(p) }
+
+func (b *multipartBody) Close() error {
+	err := b.pr.Close()
+	b.releaseContents()
+	return err
+}
+
+func (b *multipartBody) releaseContents() {
+	b.once.Do(func() {
+		if b.completed.Load() {
+			return
+		}
+		for _, part := range b.parts {
+			if !part.IsFile || part.Content == nil {
+				continue
+			}
+			if c, ok := part.Content.(io.Closer); ok {
+				_ = c.Close()
+			}
+		}
+	})
 }
 
 // multipartHeaderValue mirrors TS escapeMultipartHeaderValue: CR/LF are
 // dropped (no header smuggling) and backslash and quote are escaped.
 func multipartHeaderValue(value string) string {
-	return escapeMultipartQuotes(stripCRLF(value))
+	value = strings.NewReplacer("\r", "", "\n", "").Replace(value)
+	return escapeMultipartQuotes(value)
 }
 
-func stripCRLF(value string) string {
-	return strings.NewReplacer("\r", "", "\n", "").Replace(value)
+func writeMultipartParts(w io.Writer, boundary string, parts []MultipartStreamPart) error {
+	for _, part := range parts {
+		disposition := "--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + multipartHeaderValue(part.Name) + "\""
+		if !part.IsFile {
+			if _, err := io.WriteString(w, disposition+"\r\n\r\n"+part.Value+"\r\n"); err != nil {
+				return err
+			}
+			continue
+		}
+
+		// A filename parameter is always emitted (TS defaults it to "blob"):
+		// without it multipart parsers treat the part as a scalar field.
+		filename := part.Filename
+		if filename == "" {
+			filename = "blob"
+		}
+		mediaType := part.MediaType
+		if mediaType == "" {
+			mediaType = "application/octet-stream"
+		}
+		mediaType = strings.NewReplacer("\r", "", "\n", "").Replace(mediaType)
+		header := disposition + "; filename=\"" + multipartHeaderValue(filename) + "\"\r\nContent-Type: " + mediaType + "\r\n\r\n"
+		if _, err := io.WriteString(w, header); err != nil {
+			return err
+		}
+		if part.Content != nil {
+			if _, err := io.Copy(w, part.Content); err != nil {
+				return err
+			}
+		}
+		if _, err := io.WriteString(w, "\r\n"); err != nil {
+			return err
+		}
+	}
+	_, err := io.WriteString(w, "--"+boundary+"--\r\n")
+	return err
 }
 
 func escapeMultipartQuotes(s string) string {

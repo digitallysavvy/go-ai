@@ -5,9 +5,9 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -183,7 +183,7 @@ func AssertOAuthResourceMetadataURLSameOrigin(serverURL string, resourceMetadata
 		return err
 	}
 	if origin(server) != origin(resource) {
-		return NewMCPClientError(0, fmt.Sprintf("OAuth protected resource metadata URL %s must have the same origin as the MCP server URL %s", resource.String(), origin(server)), nil)
+		return oauthClientError(fmt.Sprintf("OAuth protected resource metadata URL %s must have the same origin as the MCP server URL %s", resource.String(), origin(server)))
 	}
 	return nil
 }
@@ -213,18 +213,22 @@ func ExtractWWWAuthenticateParams(resp *http.Response) WWWAuthenticateParams {
 	if resp == nil {
 		return WWWAuthenticateParams{}
 	}
-	header := resp.Header.Get("WWW-Authenticate")
+	// Fetch's Headers.get joins repeated header lines with ", "; a challenge
+	// parameter on a later line is found just like one on the first.
+	header := strings.Join(resp.Header.Values("WWW-Authenticate"), ", ")
 	if header == "" {
 		return WWWAuthenticateParams{}
 	}
-	parts := strings.SplitN(header, " ", 2)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
+	// TS: `const [type, scheme] = header.split(' ')`; the second
+	// space-separated token must be non-empty ("Bearer  x" has an empty one).
+	parts := strings.Split(header, " ")
+	if len(parts) < 2 || parts[1] == "" || !strings.EqualFold(parts[0], "bearer") {
 		return WWWAuthenticateParams{}
 	}
 
 	var out WWWAuthenticateParams
 	if resourceMetadataURL := extractQuotedChallengeParam(header, "resource_metadata"); resourceMetadataURL != "" {
-		if parsed, err := url.Parse(resourceMetadataURL); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		if parsed, ok := parseOAuthURL(resourceMetadataURL); ok {
 			out.ResourceMetadataURL = parsed
 		}
 	}
@@ -236,17 +240,14 @@ func ExtractWWWAuthenticateParams(resp *http.Response) WWWAuthenticateParams {
 // header (e.g. WWW-Authenticate), matching TS's per-param regex extraction in
 // extractWWWAuthenticateParams.
 func extractQuotedChallengeParam(header, key string) string {
-	needle := key + `="`
-	start := strings.Index(header, needle)
-	if start < 0 {
-		return ""
+	// TS: header.match(/(?:^|[,\s])key="([^"]*)"/i): the name must start the
+	// header or follow a comma or whitespace (not be the tail of another
+	// name), and matches case-insensitively.
+	re := regexp.MustCompile(`(?i)(?:^|[,\s])` + regexp.QuoteMeta(key) + `="([^"]*)"`)
+	if m := re.FindStringSubmatch(header); m != nil {
+		return m[1]
 	}
-	start += len(needle)
-	end := strings.Index(header[start:], `"`)
-	if end < 0 {
-		return ""
-	}
-	return header[start : start+end]
+	return ""
 }
 
 // DiscoverOAuthProtectedResourceMetadata discovers MCP protected resource
@@ -294,6 +295,13 @@ func DiscoverOAuthProtectedResourceMetadata(ctx context.Context, serverURL strin
 	if err != nil {
 		return OAuthProtectedResourceMetadata{}, err
 	}
+	var prmFields map[string]json.RawMessage
+	if err := json.Unmarshal(rawBody, &prmFields); err != nil {
+		return OAuthProtectedResourceMetadata{}, err
+	}
+	if err := checkOAuthOptionalFields(prmFields, oauthPRMFieldRules); err != nil {
+		return OAuthProtectedResourceMetadata{}, fmt.Errorf("invalid OAuth protected resource metadata: %w", err)
+	}
 	var metadata OAuthProtectedResourceMetadata
 	if err := json.Unmarshal(rawBody, &metadata); err != nil {
 		return OAuthProtectedResourceMetadata{}, err
@@ -319,8 +327,11 @@ func BuildAuthorizationServerDiscoveryURLs(authorizationServerURL string) ([]OAu
 			{URL: rootIssuer + "/.well-known/openid-configuration", Type: "oidc", ExpectedIssuer: rootIssuer},
 		}, nil
 	}
-	pathname := strings.TrimSuffix(parsed.Path, "/")
+	pathname := strings.TrimSuffix(parsed.EscapedPath(), "/")
 	pathIssuer := rootIssuer + pathname
+	// Build candidates by string concatenation onto the origin (never by
+	// resolving the path as a URL reference): a path beginning with // would
+	// otherwise replace the authorization server host (TS #22248).
 	return []OAuthDiscoveryURL{
 		{URL: rootIssuer + "/.well-known/oauth-authorization-server" + pathname, Type: "oauth", ExpectedIssuer: pathIssuer},
 		{URL: rootIssuer + "/.well-known/oauth-authorization-server", Type: "oauth", ExpectedIssuer: rootIssuer},
@@ -340,6 +351,19 @@ func DiscoverAuthorizationServerMetadata(ctx context.Context, authorizationServe
 	urls, err := BuildAuthorizationServerDiscoveryURLs(authorizationServerURL)
 	if err != nil {
 		return nil, err
+	}
+	// Check every candidate before any request so discovery cannot bypass an
+	// application's authorization server validation by changing the origin
+	// (TS #22248).
+	serverURL, err := url.Parse(authorizationServerURL)
+	if err != nil {
+		return nil, err
+	}
+	for _, candidate := range urls {
+		candidateURL, perr := url.Parse(candidate.URL)
+		if perr != nil || origin(candidateURL) != origin(serverURL) {
+			return nil, &MCPClientOAuthError{Message: "OAuth discovery URL changed authorization-server origin"}
+		}
 	}
 	for _, candidate := range urls {
 		resp, err := oauthMetadataGET(ctx, client, candidate.URL, protocolVersion, opts.TrustedOrigin)
@@ -365,15 +389,28 @@ func DiscoverAuthorizationServerMetadata(ctx context.Context, authorizationServe
 		if bodyErr != nil {
 			return nil, bodyErr
 		}
+		var asFields map[string]json.RawMessage
+		if err := json.Unmarshal(rawBody, &asFields); err != nil {
+			return nil, err
+		}
+		typeRules := oauthASOAuthFieldRules
+		if candidate.Type == "oidc" {
+			typeRules = oauthASOIDCFieldRules
+		}
+		if err := checkOAuthOptionalFields(asFields, oauthASCommonFieldRules, typeRules); err != nil {
+			return nil, fmt.Errorf("invalid authorization server metadata: %w", err)
+		}
 		var metadata OAuthAuthorizationServerMetadata
 		if err := json.Unmarshal(rawBody, &metadata); err != nil {
 			return nil, err
 		}
-		if err := validateOAuthAuthorizationServerMetadata(metadata, candidate.Type); err != nil {
+		// TS issuer is z.string(): present-but-empty passes the schema and is
+		// then rejected by the issuer match below.
+		if err := validateOAuthAuthorizationServerMetadataIssuer(metadata, candidate.Type, isJSONString(asFields["issuer"])); err != nil {
 			return nil, err
 		}
 		if !oauthIssuerMatches(metadata.Issuer, candidate.ExpectedIssuer) {
-			return nil, NewMCPClientError(0, fmt.Sprintf("OAuth authorization server metadata issuer %s does not match expected issuer %s", metadata.Issuer, candidate.ExpectedIssuer), nil)
+			return nil, oauthClientError(fmt.Sprintf("OAuth authorization server metadata issuer %s does not match expected issuer %s", metadata.Issuer, candidate.ExpectedIssuer))
 		}
 		if candidate.Type == "oidc" && !containsOAuthString(metadata.CodeChallengeMethodsSupported, "S256") {
 			return nil, fmt.Errorf("Incompatible OIDC provider at %s: does not support S256 code challenge method required by MCP specification", candidate.URL) //nolint:staticcheck // matches TS SDK's exact error text
@@ -395,8 +432,15 @@ func protectedResourceMetadataURL(serverURL, explicit string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	pathname := strings.TrimSuffix(server.Path, "/")
-	server.Path = "/.well-known/oauth-protected-resource" + pathname
+	// WHATWG pathname keeps percent-encoding (%2F stays %2F), so the encoded
+	// path is carried over rather than the decoded one.
+	rawPath := "/.well-known/oauth-protected-resource" + strings.TrimSuffix(server.EscapedPath(), "/")
+	decoded, err := url.PathUnescape(rawPath)
+	if err != nil {
+		return "", err
+	}
+	server.Path = decoded
+	server.RawPath = rawPath
 	return server.String(), nil
 }
 
@@ -414,6 +458,11 @@ func oauthIssuerMatches(issuer, expected string) bool {
 }
 
 func shouldAttemptOAuthFallback(resp *http.Response, _ string, serverURL string) bool {
+	// TS shouldAttemptFallback: `!response || (4xx && pathname !== '/')`; a
+	// transport failure is retried at the root even for a root server URL.
+	if resp == nil {
+		return true
+	}
 	server, err := url.Parse(serverURL)
 	if err != nil {
 		return false
@@ -421,13 +470,13 @@ func shouldAttemptOAuthFallback(resp *http.Response, _ string, serverURL string)
 	if server.Path == "" || server.Path == "/" {
 		return false
 	}
-	return resp == nil || (resp.StatusCode >= http.StatusBadRequest && resp.StatusCode < http.StatusInternalServerError)
+	return (resp.StatusCode >= http.StatusBadRequest && resp.StatusCode < http.StatusInternalServerError)
 }
 
 func closeResponse(resp *http.Response) {
 	if resp != nil && resp.Body != nil {
-		io.Copy(io.Discard, resp.Body) //nolint:errcheck
-		resp.Body.Close()              //nolint:errcheck
+		drainBody(resp.Body)
+		resp.Body.Close() //nolint:errcheck
 	}
 }
 
@@ -439,17 +488,46 @@ func normalizeOAuthURL(raw string) string {
 	return oauthURLHref(parsed)
 }
 
+// origin mirrors the WHATWG URL.origin serialization the TS SDK relies on:
+// lower-case scheme and host, with a default port (80 for http, 443 for
+// https) dropped.
 func origin(u *url.URL) string {
-	return u.Scheme + "://" + u.Host
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Hostname())
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	port := u.Port()
+	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
+		port = ""
+	}
+	if port != "" {
+		host += ":" + port
+	}
+	return scheme + "://" + host
 }
 
+// oauthURLHref approximates the WHATWG URL.href that TS normalizeUrl relies
+// on for hierarchical URLs: an empty path becomes "/" (also before a query or
+// fragment), the host is lower-cased and a default port is dropped.
 func oauthURLHref(u *url.URL) string {
-	if u.Path == "" && u.RawQuery == "" && u.Fragment == "" && u.Host != "" {
-		copy := *u
-		copy.Path = "/"
-		return copy.String()
+	if u.Host == "" {
+		return u.String()
 	}
-	return u.String()
+	c := *u
+	if c.Path == "" {
+		c.Path = "/"
+	}
+	host := strings.ToLower(c.Hostname())
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	scheme, port := strings.ToLower(c.Scheme), c.Port()
+	if port != "" && (scheme != "http" || port != "80") && (scheme != "https" || port != "443") {
+		host += ":" + port
+	}
+	c.Host = host
+	return c.String()
 }
 
 func containsOAuthString(values []string, want string) bool {
@@ -477,7 +555,11 @@ func validateOAuthProtectedResourceMetadata(metadata OAuthProtectedResourceMetad
 }
 
 func validateOAuthAuthorizationServerMetadata(metadata OAuthAuthorizationServerMetadata, metadataType string) error {
-	if metadata.Issuer == "" {
+	return validateOAuthAuthorizationServerMetadataIssuer(metadata, metadataType, metadata.Issuer != "")
+}
+
+func validateOAuthAuthorizationServerMetadataIssuer(metadata OAuthAuthorizationServerMetadata, metadataType string, issuerPresent bool) error {
+	if !issuerPresent {
 		return fmt.Errorf("OAuth authorization server metadata missing required issuer")
 	}
 	if metadata.AuthorizationEndpoint == "" {
@@ -492,7 +574,9 @@ func validateOAuthAuthorizationServerMetadata(metadata OAuthAuthorizationServerM
 	if !isSafeOAuthURL(metadata.TokenEndpoint) {
 		return fmt.Errorf("OAuth authorization server metadata token_endpoint must be a valid URL")
 	}
-	if len(metadata.ResponseTypesSupported) == 0 {
+	// zod z.array(...) requires the key but accepts an empty array, so only
+	// an absent (nil) slice is invalid.
+	if metadata.ResponseTypesSupported == nil {
 		return fmt.Errorf("OAuth authorization server metadata missing required response_types_supported")
 	}
 	if metadata.RegistrationEndpoint != "" {
@@ -507,30 +591,51 @@ func validateOAuthAuthorizationServerMetadata(metadata OAuthAuthorizationServerM
 		if !isSafeOAuthURL(metadata.JWKSURI) {
 			return fmt.Errorf("OpenID provider metadata jwks_uri must be a valid URL")
 		}
-		if len(metadata.SubjectTypesSupported) == 0 {
+		if metadata.SubjectTypesSupported == nil {
 			return fmt.Errorf("OpenID provider metadata missing required subject_types_supported")
 		}
-		if len(metadata.IDTokenSigningAlgValues) == 0 {
+		if metadata.IDTokenSigningAlgValues == nil {
 			return fmt.Errorf("OpenID provider metadata missing required id_token_signing_alg_values_supported")
 		}
 	}
 	return nil
 }
 
+// oauthURLCleanup mirrors the WHATWG URL parser's input cleanup: leading and
+// trailing C0 controls and spaces are stripped and tabs/newlines removed.
+var oauthURLCleanup = strings.NewReplacer("\t", "", "\n", "", "\r", "")
+
+func parseOAuthURL(raw string) (*url.URL, bool) {
+	cleaned := oauthURLCleanup.Replace(strings.Trim(raw, "\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f "))
+	parsed, err := url.Parse(cleaned)
+	if err != nil || parsed.Scheme == "" {
+		return nil, false
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https", "ws", "wss", "ftp":
+		// Special schemes need a host; Go keeps "http:host" as an opaque URL
+		// that WHATWG reads as http://host/.
+		if parsed.Host == "" && parsed.Opaque == "" {
+			return nil, false
+		}
+	}
+	return parsed, true
+}
+
+// isAbsoluteOAuthURL is TS z.string().url(): anything `new URL(value)`
+// accepts, so a host-less custom scheme such as com.example.app:/callback (an
+// RFC 8252 native redirect URI) is valid.
 func isAbsoluteOAuthURL(raw string) bool {
-	parsed, err := url.Parse(raw)
-	return err == nil && parsed.Scheme != "" && parsed.Host != ""
+	_, ok := parseOAuthURL(raw)
+	return ok
 }
 
 // isSafeOAuthURL is TS SafeUrlSchema: a parseable absolute URL that does not
 // use the javascript:, data: or vbscript: scheme (javascript://host/%0a... has
 // a host and would otherwise pass).
 func isSafeOAuthURL(raw string) bool {
-	if !isAbsoluteOAuthURL(raw) {
-		return false
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil {
+	parsed, ok := parseOAuthURL(raw)
+	if !ok {
 		return false
 	}
 	switch strings.ToLower(parsed.Scheme) {
@@ -538,4 +643,12 @@ func isSafeOAuthURL(raw string) bool {
 		return false
 	}
 	return true
+}
+
+// oauthClientError builds the TS MCPClientOAuthError for a client-side OAuth
+// check. v0.5.2 returned a *MCPClientError for these, so that error is kept
+// as the cause: errors.As matches both *MCPClientOAuthError (TS parity) and
+// *MCPClientError (existing callers).
+func oauthClientError(message string) error {
+	return &MCPClientOAuthError{Message: message, Cause: NewMCPClientError(0, message, nil)}
 }

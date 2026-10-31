@@ -3,6 +3,7 @@ package streaming
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -50,15 +51,53 @@ const (
 type SSEParser struct {
 	scanner *bufio.Scanner
 	err     error
+	started bool
+	// unterminated is set by the split function when the token it just
+	// returned is the stream's final line with no line terminator after it.
+	unterminated bool
+}
+
+// scanSSELines splits on "\n", "\r\n" and a bare "\r", the three line
+// terminators of the SSE spec (bufio.ScanLines knows only the first two).
+// The stream's final bytes with no terminator after them (including a lone
+// trailing "\r", which eventsource-parser holds back as a possible CRLF half)
+// come back as one last token with p.unterminated set.
+func (p *SSEParser) scanSSELines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+	i := bytes.IndexAny(data, "\r\n")
+	if i < 0 {
+		if atEOF {
+			p.unterminated = true
+			return len(data), data, nil
+		}
+		return 0, nil, nil
+	}
+	if data[i] == '\n' {
+		return i + 1, data[:i], nil
+	}
+	// Bare CR or the CR of a CRLF pair: look at the next byte to tell them apart.
+	if i+1 < len(data) {
+		if data[i+1] == '\n' {
+			return i + 2, data[:i], nil
+		}
+		return i + 1, data[:i], nil
+	}
+	if atEOF {
+		p.unterminated = true
+		return i + 1, data[:i], nil
+	}
+	return 0, nil, nil
 }
 
 // NewSSEParser creates a new SSE parser for the given reader
 func NewSSEParser(r io.Reader) *SSEParser {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, sseScannerInitialBufferSize), sseScannerMaxLineSize)
-	return &SSEParser{
-		scanner: scanner,
-	}
+	p := &SSEParser{scanner: scanner}
+	scanner.Split(p.scanSSELines)
+	return p
 }
 
 // Next returns the next SSE event from the stream
@@ -72,15 +111,32 @@ func (p *SSEParser) Next() (*SSEEvent, error) {
 	var dataLines []string
 
 	for p.scanner.Scan() {
+		if p.unterminated {
+			// The final line has no terminator: eventsource-parser keeps it
+			// as an incomplete line, and EventSourceParserStream (3.0.8, the
+			// version TS provider-utils resolves) has no flush, so it is
+			// never parsed.
+			break
+		}
 		line := p.scanner.Text()
+		if !p.started {
+			// eventsource-parser strips a leading byte order mark.
+			p.started = true
+			line = strings.TrimPrefix(line, "\ufeff")
+		}
 
-		// Empty line signals end of event
+		// Empty line signals end of event. Like eventsource-parser, an event
+		// is dispatched only when it has a data field; an empty "data:" line
+		// dispatches an event with empty data (the consumer's JSON parse then
+		// fails, as in TS), while an event with no data field is dropped.
 		if line == "" {
-			if len(dataLines) > 0 || event.Event != "" {
+			if len(dataLines) > 0 {
 				// Combine data lines
 				event.Data = strings.Join(dataLines, "\n")
 				return event, nil
 			}
+			// Nothing to dispatch: the event type, id and retry are reset.
+			event = &SSEEvent{}
 			continue
 		}
 
@@ -92,13 +148,13 @@ func (p *SSEParser) Next() (*SSEEvent, error) {
 
 		// Split by first colon
 		colonIdx := strings.Index(line, ":")
-		if colonIdx == -1 {
-			// Treat as field with empty value
-			continue
+		field := line
+		value := ""
+		if colonIdx != -1 {
+			// A line without a colon is a field with an empty value.
+			field = line[:colonIdx]
+			value = line[colonIdx+1:]
 		}
-
-		field := line[:colonIdx]
-		value := line[colonIdx+1:]
 
 		// Remove leading space from value
 		if len(value) > 0 && value[0] == ' ' {
@@ -130,13 +186,10 @@ func (p *SSEParser) Next() (*SSEEvent, error) {
 		return nil, err
 	}
 
-	// Check if we have any data left
-	if len(dataLines) > 0 || event.Event != "" {
-		event.Data = strings.Join(dataLines, "\n")
-		return event, nil
-	}
-
-	// End of stream
+	// End of stream. An event still pending (data lines with no closing
+	// blank line) is dropped: eventsource-parser dispatches only on a blank
+	// line, and EventSourceParserStream never flushes or resets the parser
+	// when its input ends.
 	p.err = io.EOF
 	return nil, io.EOF
 }
@@ -234,7 +287,23 @@ func (w *SSEWriter) WriteDone() error {
 	})
 }
 
-// IsStreamDone checks if an SSE event signals the stream is done
+// RawChunkValue is the value a raw stream part carries for an SSE data
+// payload (TS `rawValue: chunk.rawValue` from parseJsonEventStream): the
+// parsed JSON, or nil when the payload is not valid JSON, as safeParseJSON
+// returns `rawValue: undefined` for a JSONParseError. A payload that parses
+// but fails the chunk schema keeps its parsed value.
+func RawChunkValue(data string) interface{} {
+	var raw interface{}
+	if err := json.Unmarshal([]byte(data), &raw); err != nil {
+		return nil
+	}
+	return raw
+}
+
+// IsStreamDone reports whether an SSE event is the `[DONE]` sentinel that
+// OpenAI-style streams send. Only the data counts: TS parseJsonEventStream
+// ignores SSE event names entirely and skips just `data === '[DONE]'`, so a
+// frame named `event: done` that carries a JSON payload is an ordinary chunk.
 func IsStreamDone(event *SSEEvent) bool {
-	return event.Data == "[DONE]" || event.Event == "done"
+	return event.Data == "[DONE]"
 }

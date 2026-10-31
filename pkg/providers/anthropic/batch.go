@@ -14,10 +14,12 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // Batch implements provider.BatchV4 for the Anthropic Message Batches API
@@ -39,7 +41,7 @@ func (p *Provider) ExperimentalBatch() provider.BatchV4 { return NewBatch(p) }
 func (b *Batch) SpecificationVersion() string { return "v4" }
 
 // Provider returns the batch interface's provider ID, e.g. "anthropic.batch".
-func (b *Batch) Provider() string { return b.provider.Name() + ".batch" }
+func (b *Batch) Provider() string { return b.provider.baseName() + ".batch" }
 
 // SupportedURLs returns the same URL patterns the underlying language model
 // accepts directly, matching TS `supportedUrls: () => supportedUrls` shared
@@ -61,6 +63,9 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	}
 
 	providerName := b.provider.Name()
+	if err := validateAnthropicBatchProviderOptions(providerName, opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	explicitBatchBetas := anthropicBatchProviderBetas(providerName, opts.ProviderOptions)
 	betas := betaSet{}
 	betas.add(explicitBatchBetas...)
@@ -80,6 +85,9 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	for _, req := range opts.Requests {
 		textReq := req.Text
 
+		if err := validateAnthropicBatchProviderOptions(providerName, textReq.Options.ProviderOptions); err != nil {
+			return nil, err
+		}
 		requestBetas := anthropicBatchProviderBetas(providerName, textReq.Options.ProviderOptions)
 		if len(requestBetas) > 0 {
 			return nil, &providererrors.UnsupportedFunctionalityError{
@@ -92,7 +100,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		}
 
 		lm := NewLanguageModel(b.provider, textReq.ModelID, nil)
-		prepared, err := lm.prepareRequest(&textReq.Options, false)
+		prepared, err := lm.prepareRequestWithBetas(&textReq.Options, false, explicitBatchBetas)
 		if err != nil {
 			return nil, err
 		}
@@ -134,15 +142,13 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 
 	var response anthropicBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodPost,
-		Path:    "/messages/batches",
-		Body:    map[string]interface{}{"requests": preparedRequests},
-		Headers: headers,
+		ValidateResponse: anthropicSchemaValidator(b.provider.Name(), zBatchResponse),
+		Method:           stdhttp.MethodPost,
+		Path:             "/messages/batches",
+		Body:             map[string]interface{}{"requests": preparedRequests},
+		Headers:          headers,
 	}, &response); err != nil {
 		return nil, b.handleError(err)
-	}
-	if err := response.validate(); err != nil {
-		return nil, err
 	}
 
 	return &provider.BatchV4StartResult{
@@ -168,15 +174,13 @@ func (b *Batch) DoGetBatchStatus(ctx context.Context, opts provider.BatchV4Opera
 func (b *Batch) DoCancelBatch(ctx context.Context, opts provider.BatchV4OperationOptions) (*provider.BatchV4CancelResult, error) {
 	var response anthropicBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodPost,
-		Path:    "/messages/batches/" + providerutils.EncodePathSegment(opts.BatchID) + "/cancel",
-		Body:    map[string]interface{}{},
-		Headers: opts.Headers,
+		ValidateResponse: anthropicSchemaValidator(b.provider.Name(), zBatchResponse),
+		Method:           stdhttp.MethodPost,
+		Path:             "/messages/batches/" + providerutils.EncodePathSegment(opts.BatchID) + "/cancel",
+		Body:             map[string]interface{}{},
+		Headers:          opts.Headers,
 	}, &response); err != nil {
 		return nil, b.handleError(err)
-	}
-	if err := response.validate(); err != nil {
-		return nil, err
 	}
 	return &provider.BatchV4CancelResult{}, nil
 }
@@ -193,22 +197,17 @@ func (b *Batch) DoListBatches(ctx context.Context, opts provider.BatchV4ListOpti
 
 	var response anthropicBatchListResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodGet,
-		Path:    "/messages/batches",
-		Query:   query,
-		Headers: opts.Headers,
+		ValidateResponse: anthropicSchemaValidator(b.provider.Name(), zBatchList),
+		Method:           stdhttp.MethodGet,
+		Path:             "/messages/batches",
+		Query:            query,
+		Headers:          opts.Headers,
 	}, &response); err != nil {
 		return nil, b.handleError(err)
 	}
 
 	batches := make([]provider.BatchV4ListItem, 0, len(response.Data))
 	for _, item := range response.Data {
-		// Mirrors TS's anthropicBatchListResponseSchema, which validates every
-		// entry in "data" against the same required-field envelope as a single
-		// batch response; one malformed entry fails the whole list call.
-		if err := item.validate(); err != nil {
-			return nil, err
-		}
 		batches = append(batches, provider.BatchV4ListItem{BatchV4Status: item.toStatus(), BatchID: item.ID})
 	}
 
@@ -265,12 +264,21 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 		return nil, err
 	}
 
+	maxLineBytes, err := b.provider.config.BatchResultDownloads.ResolveMaxLineBytes()
+	if err != nil {
+		return nil, err
+	}
+
 	httpReq, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodGet, resultsURL, nil)
 	if err != nil {
 		return nil, err
 	}
 	if isTrusted(resultsURL) {
-		for k, v := range b.rawRequestHeaders(opts.Headers) {
+		rawHeaders, err := b.rawRequestHeaders(opts.Headers)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range rawHeaders {
 			httpReq.Header.Set(k, v)
 		}
 	}
@@ -286,7 +294,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: httpResp.StatusCode, Headers: httpResp.Header, Body: body})
 	}
 
-	return newAnthropicBatchResultsStream(httpResp.Body, b.provider), nil
+	return newAnthropicBatchResultsStream(httpResp.Body, b.provider, resultsURL, maxLineBytes), nil
 }
 
 // retrieveBatch fetches one batch's current representation
@@ -294,14 +302,12 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 func (b *Batch) retrieveBatch(ctx context.Context, batchID string, headers map[string]string) (*anthropicBatchResponseWire, error) {
 	var response anthropicBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodGet,
-		Path:    "/messages/batches/" + providerutils.EncodePathSegment(batchID),
-		Headers: headers,
+		ValidateResponse: anthropicSchemaValidator(b.provider.Name(), zBatchResponse),
+		Method:           stdhttp.MethodGet,
+		Path:             "/messages/batches/" + providerutils.EncodePathSegment(batchID),
+		Headers:          headers,
 	}, &response); err != nil {
 		return nil, b.handleError(err)
-	}
-	if err := response.validate(); err != nil {
-		return nil, err
 	}
 	return &response, nil
 }
@@ -321,6 +327,13 @@ func (b *Batch) handleError(err error) error {
 func (b *Batch) startBatchHeaders(betas []string, headers map[string]string) map[string]string {
 	out := map[string]string{}
 	for k, v := range headers {
+		// TS normalizeHeaders lower-cases the caller's keys and the computed
+		// { 'anthropic-beta': undefined } entry then replaces any caller
+		// value, so a caller anthropic-beta never reaches the wire, whatever
+		// its casing and even when no betas are computed.
+		if strings.EqualFold(k, "anthropic-beta") {
+			continue
+		}
 		out[k] = v
 	}
 	if len(betas) > 0 {
@@ -329,30 +342,29 @@ func (b *Batch) startBatchHeaders(betas []string, headers map[string]string) map
 	return out
 }
 
-// rawRequestHeaders builds the authentication headers used for a raw
+// rawRequestHeaders builds the provider headers used for a raw
 // (non-client-relative) request, such as following a results_url returned by
-// the batches API. Duplicates the header construction in New() because
-// *http.Client (returned by Client.HTTPClient()) does not carry the
-// provider's default headers.
-func (b *Batch) rawRequestHeaders(extra map[string]string) map[string]string {
-	headers := map[string]string{}
-	if b.provider.config.APIKey != "" {
-		headers["x-api-key"] = b.provider.config.APIKey
+// the batches API: the client's default headers (API version, configured
+// headers, user-agent suffix) with the request-time API key and the call
+// headers on top. *http.Client (returned by Client.HTTPClient()) does not
+// carry them itself.
+func (b *Batch) rawRequestHeaders(extra map[string]string) (map[string]string, error) {
+	// The client's default headers carry the API version, configured headers
+	// and the user-agent suffix (TS getBatchHeaders resolves the same
+	// provider headers).
+	headers := b.provider.client.Headers()
+	// A missing API key fails the request like TS getBatchHeaders/loadApiKey.
+	lazy, err := requestAuthHeaders(b.provider.config)
+	if err != nil {
+		return nil, err
 	}
-	if !b.provider.config.OmitAPIVersionHeader {
-		apiVersion := b.provider.config.APIVersion
-		if apiVersion == "" {
-			apiVersion = DefaultAPIVersion
-		}
-		headers["anthropic-version"] = apiVersion
-	}
-	for k, v := range b.provider.config.Headers {
+	for k, v := range lazy {
 		headers[k] = v
 	}
 	for k, v := range extra {
 		headers[k] = v
 	}
-	return headers
+	return headers, nil
 }
 
 // anthropicBatchProviderBetas extracts providerOptions.anthropic.anthropicBeta
@@ -360,6 +372,11 @@ func (b *Batch) rawRequestHeaders(extra map[string]string) map[string]string {
 // provider was constructed with a custom Name), mirroring TS
 // getAnthropicBatchProviderBetas's canonical+custom option merge.
 func anthropicBatchProviderBetas(providerName string, providerOptions map[string]interface{}) []string {
+	// TS: provider.split('.')[0], the same name the language model reads its
+	// options under ("foo.messages" -> "foo").
+	if idx := strings.IndexByte(providerName, '.'); idx != -1 {
+		providerName = providerName[:idx]
+	}
 	betas := anthropicBetaOptionList(providerOptions, "anthropic")
 	if providerName != "anthropic" {
 		if opts, ok := providerOptions[providerName].(map[string]interface{}); ok {
@@ -376,17 +393,67 @@ func anthropicBetaOptionList(providerOptions map[string]interface{}, key string)
 	if !ok {
 		return nil
 	}
-	raw, ok := opts["anthropicBeta"].([]interface{})
-	if !ok {
-		return nil
+	switch raw := opts["anthropicBeta"].(type) {
+	case []string:
+		return append([]string(nil), raw...)
+	case []interface{}:
+		out := make([]string, 0, len(raw))
+		for _, v := range raw {
+			if s, ok := v.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
 	}
-	out := make([]string, 0, len(raw))
-	for _, v := range raw {
-		if s, ok := v.(string); ok {
-			out = append(out, s)
+	return nil
+}
+
+// validateAnthropicBatchProviderOptions mirrors TS parseProviderOptions with
+// anthropicLanguageModelOptions.pick({anthropicBeta}) for the canonical
+// `anthropic` key and the provider's own key: a non-object entry or an
+// anthropicBeta that is not an array of strings (null included) fails with an
+// InvalidArgumentError instead of being ignored.
+func validateAnthropicBatchProviderOptions(providerName string, providerOptions map[string]interface{}) error {
+	if idx := strings.IndexByte(providerName, '.'); idx != -1 {
+		providerName = providerName[:idx]
+	}
+	keys := []string{"anthropic"}
+	if providerName != "anthropic" {
+		keys = append(keys, providerName)
+	}
+	for _, key := range keys {
+		value := providerOptions[key]
+		if value == nil {
+			continue
+		}
+		invalid := func(cause error) error {
+			return &providererrors.InvalidArgumentError{
+				Field:   "providerOptions",
+				Message: fmt.Sprintf("invalid %s provider options", key),
+				Cause:   cause,
+			}
+		}
+		opts, ok := value.(map[string]interface{})
+		if !ok {
+			return invalid(fmt.Errorf("expected object, received %T", value))
+		}
+		beta, present := opts["anthropicBeta"]
+		if !present {
+			continue
+		}
+		switch list := beta.(type) {
+		case []string:
+		case []interface{}:
+			for i, v := range list {
+				if _, isString := v.(string); !isString {
+					return invalid(fmt.Errorf("anthropicBeta[%d]: expected string, received %T", i, v))
+				}
+			}
+		default:
+			return invalid(fmt.Errorf("anthropicBeta: expected array, received %T", beta))
 		}
 	}
-	return out
+	return nil
 }
 
 // validateAnthropicTextBatchRequests mirrors TS assertTextBatchRequests: every
@@ -461,6 +528,15 @@ func findAliasedAnthropicProviderTool(tools []types.Tool, toolsetNames map[strin
 		if mapped, ok := toolsetNames[t.Name]; ok && mapped != t.Name {
 			return t.Name
 		}
+		// A provider tool renamed from its id (TS: a tools record key that
+		// differs from the wire name, e.g. "search" for web_search) cannot be
+		// restored either. Tools keeping the constructor's id as their name
+		// stay accepted: their batch results carry the wire name.
+		if id := ProviderToolID(t); id != t.Name {
+			if wire := prompt.AnthropicProviderToolName(id); wire != id && wire != t.Name {
+				return t.Name
+			}
+		}
 	}
 	return ""
 }
@@ -486,30 +562,6 @@ type anthropicBatchResponseWire struct {
 	CancelInitiatedAt *string                         `json:"cancel_initiated_at"`
 	EndedAt           *string                         `json:"ended_at"`
 	ResultsURL        *string                         `json:"results_url"`
-}
-
-// validate rejects a batch-object response missing fields the TS zod schema
-// (anthropicBatchResponseZodSchema) requires: id, type === "message_batch",
-// processing_status, created_at, and expires_at (request_counts is a nested
-// object whose own zero value -- all-zero counts -- is a legitimate state
-// for a just-created batch, so it cannot be distinguished from "missing" the
-// way the scalar string fields can and is left unchecked). Mirrors TS's
-// createJsonResponseHandler throwing when safeParseJSON/schema validation
-// fails on the decoded envelope.
-func (r anthropicBatchResponseWire) validate() error {
-	switch {
-	case r.ID == "":
-		return providererrors.NewInvalidResponseDataError(r, "Anthropic batch response is missing required field \"id\".")
-	case r.Type != "message_batch":
-		return providererrors.NewInvalidResponseDataError(r, fmt.Sprintf("Anthropic batch response has unexpected \"type\" %q, want \"message_batch\".", r.Type))
-	case r.ProcessingStatus == "":
-		return providererrors.NewInvalidResponseDataError(r, "Anthropic batch response is missing required field \"processing_status\".")
-	case r.CreatedAt == "":
-		return providererrors.NewInvalidResponseDataError(r, "Anthropic batch response is missing required field \"created_at\".")
-	case r.ExpiresAt == "":
-		return providererrors.NewInvalidResponseDataError(r, "Anthropic batch response is missing required field \"expires_at\".")
-	}
-	return nil
 }
 
 func (r anthropicBatchResponseWire) toStatus() provider.BatchV4Status {
@@ -554,8 +606,8 @@ type anthropicBatchListResponseWire struct {
 type anthropicBatchResultErrorWire struct {
 	Type  string `json:"type"`
 	Error struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
+		Type    *string `json:"type"`
+		Message *string `json:"message"`
 	} `json:"error"`
 	RequestID *string `json:"request_id"`
 }
@@ -574,23 +626,26 @@ type anthropicBatchResultLineWire struct {
 // anthropicBatchResultsStream implements provider.BatchV4ItemResultStream
 // over the JSONL body returned by a batch's results_url.
 type anthropicBatchResultsStream struct {
-	scanner  *bufio.Scanner
-	body     io.ReadCloser
-	provider *Provider
-	err      error
+	scanner      *bufio.Scanner
+	body         io.ReadCloser
+	provider     *Provider
+	url          string
+	maxLineBytes int
+	err          error
 }
 
-func newAnthropicBatchResultsStream(body io.ReadCloser, p *Provider) *anthropicBatchResultsStream {
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
-	return &anthropicBatchResultsStream{scanner: scanner, body: body, provider: p}
+func newAnthropicBatchResultsStream(body io.ReadCloser, p *Provider, url string, maxLineBytes int) *anthropicBatchResultsStream {
+	scanner := providerutils.NewJSONLinesScanner(body, maxLineBytes)
+	return &anthropicBatchResultsStream{scanner: scanner, body: body, provider: p, url: url, maxLineBytes: maxLineBytes}
 }
 
 func (s *anthropicBatchResultsStream) Next() (*provider.BatchV4ItemResult, error) {
 	for {
 		if !s.scanner.Scan() {
 			if err := s.scanner.Err(); err != nil {
+				err = providerutils.JSONLinesScanError(err, s.url, s.maxLineBytes)
 				s.err = err
+				_ = s.body.Close()
 				return nil, err
 			}
 			return nil, io.EOF
@@ -599,6 +654,14 @@ func (s *anthropicBatchResultsStream) Next() (*provider.BatchV4ItemResult, error
 		if len(line) == 0 {
 			continue
 		}
+		// TS createJsonLinesResponseHandler(anthropicBatchResultLineSchema): a
+		// line that is not JSON (JSONParseError) or lacks a string custom_id
+		// (TypeValidationError) fails the stream.
+		if err := anthropicBatchLineError(line); err != nil {
+			s.err = err
+			_ = s.body.Close()
+			return nil, err
+		}
 		var wire anthropicBatchResultLineWire
 		if err := json.Unmarshal(line, &wire); err != nil {
 			s.err = err
@@ -606,6 +669,19 @@ func (s *anthropicBatchResultsStream) Next() (*provider.BatchV4ItemResult, error
 		}
 		return s.convertResult(wire), nil
 	}
+}
+
+// anthropicBatchLineError validates one results line against
+// anthropicBatchResultLineSchema ({custom_id: string, result: unknown}).
+func anthropicBatchLineError(line []byte) error {
+	if syntax := json.Unmarshal(line, new(interface{})); syntax != nil {
+		return providererrors.NewJSONParseError(string(line), syntax)
+	}
+	message := zodlite.ValidationMessage(zBatchResultLine, string(line))
+	if message == "" {
+		return nil
+	}
+	return providererrors.NewValidationErrorWithContext(compactJSON(string(line)), validationIssueText(message), nil, &providererrors.ValidationContext{})
 }
 
 func (s *anthropicBatchResultsStream) convertResult(wire anthropicBatchResultLineWire) *provider.BatchV4ItemResult {
@@ -626,16 +702,16 @@ func (s *anthropicBatchResultsStream) convertResult(wire anthropicBatchResultLin
 		}
 		// Mirrors TS anthropicBatchResultSchema's discriminated-union member for
 		// "errored", which requires error.type === "error" (z.literal('error'))
-		// plus non-empty error.error.type/message; any mismatch fails the whole
+		// plus string error.error.type/message (empty is valid); any mismatch fails the whole
 		// result line rather than surfacing a partially-populated error.
-		if errWire.Type != "error" || errWire.Error.Type == "" || errWire.Error.Message == "" {
+		if errWire.Type != "error" || errWire.Error.Type == nil || errWire.Error.Message == nil {
 			return invalidAnthropicBatchResult(wire.CustomID)
 		}
 		item := &provider.BatchV4ItemResult{
 			Type:   provider.BatchRequestTypeText,
 			ID:     wire.CustomID,
 			Status: provider.BatchItemFailed,
-			Error:  &provider.BatchError{Message: errWire.Error.Message, Type: errWire.Error.Type},
+			Error:  &provider.BatchError{Message: *errWire.Error.Message, Type: *errWire.Error.Type},
 		}
 		if errWire.RequestID != nil {
 			item.ProviderMetadata = map[string]interface{}{"anthropic": map[string]interface{}{"requestId": *errWire.RequestID}}
@@ -700,84 +776,61 @@ var anthropicKnownBatchContentTypes = map[string]bool{
 	"web_search_tool_result":                 true,
 }
 
-// anthropicBatchContentBlockRequiredFields lists the JSON fields
-// anthropicResponseSchema requires to be present for content-block types
-// simple enough to check by field presence alone (mirrors the per-variant
-// required fields in anthropic-api.ts's anthropicResponseSchema). A known
-// type with no entry here (e.g. the several deeply nested
-// *_tool_result/*_code_execution_* variants) is accepted once it parses as
-// a JSON object with a recognized type; porting every nested union's full
-// shape is out of scope for this presence-level check.
-var anthropicBatchContentBlockRequiredFields = map[string][]string{
-	"text":              {"text"},
-	"thinking":          {"thinking", "signature"},
-	"redacted_thinking": {"data"},
-	"tool_use":          {"id", "name"},
-	"server_tool_use":   {"id", "name"},
-	"mcp_tool_use":      {"id", "name", "server_name"},
-	"mcp_tool_result":   {"tool_use_id", "is_error", "content"},
-}
-
-// validateAnthropicBatchMessage mirrors TS parseAnthropicBatchResponse: a
-// partial, field-presence-level port of anthropicResponseSchema. It
-// validates the message envelope (type "message", a content array, and a
-// usage object with numeric input/output token counts — all required,
-// non-nullish fields of the schema), then per content block: an
-// unrecognized block type is dropped; a recognized type missing one of its
-// required fields fails the whole message; anything else is kept as-is.
-// Returns the (possibly content-filtered) message JSON and true on success,
-// or nil/false when the message can't be salvaged into a valid result at
-// all, matching TS returning undefined from parseAnthropicBatchResponse.
+// validateAnthropicBatchMessage mirrors TS parseAnthropicBatchResponse: the
+// message must match anthropicResponseSchema (zAnthropicResponse). When it
+// does not, each content block is validated on its own: a block outside the
+// known types is dropped (a possible future block type), while a known type
+// that fails its schema, or a block that is not an object with a string type,
+// makes the whole message invalid. The remaining blocks must then pass the
+// schema together. It returns the (possibly content-filtered) message JSON,
+// or nil/false when TS returns undefined.
 func validateAnthropicBatchMessage(raw json.RawMessage) (json.RawMessage, bool) {
-	var envelope struct {
-		Type    string            `json:"type"`
-		Content []json.RawMessage `json:"content"`
-		Usage   *struct {
-			InputTokens  *float64 `json:"input_tokens"`
-			OutputTokens *float64 `json:"output_tokens"`
-		} `json:"usage"`
+	if zodlite.ValidationMessage(zAnthropicResponse, string(raw)) == "" {
+		return raw, true
 	}
-	if err := json.Unmarshal(raw, &envelope); err != nil ||
-		envelope.Type != "message" ||
-		envelope.Content == nil ||
-		envelope.Usage == nil ||
-		envelope.Usage.InputTokens == nil ||
-		envelope.Usage.OutputTokens == nil {
+	var full map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &full); err != nil || full == nil {
 		return nil, false
 	}
-
-	filtered := make([]json.RawMessage, 0, len(envelope.Content))
-	for _, block := range envelope.Content {
-		var fields map[string]interface{}
-		if err := json.Unmarshal(block, &fields); err != nil {
+	var parts []json.RawMessage
+	if err := json.Unmarshal(full["content"], &parts); err != nil || parts == nil {
+		return nil, false
+	}
+	withContent := func(content []json.RawMessage) (json.RawMessage, bool) {
+		contentJSON, err := json.Marshal(content)
+		if err != nil {
 			return nil, false
 		}
-		blockType, _ := fields["type"].(string)
-		if !anthropicKnownBatchContentTypes[blockType] {
-			continue
+		clone := make(map[string]json.RawMessage, len(full))
+		for k, v := range full {
+			clone[k] = v
 		}
-		for _, field := range anthropicBatchContentBlockRequiredFields[blockType] {
-			if v, ok := fields[field]; !ok || v == nil {
-				return nil, false
-			}
-		}
-		filtered = append(filtered, block)
+		clone["content"] = contentJSON
+		out, err := json.Marshal(clone)
+		return out, err == nil
 	}
 
-	var full map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &full); err != nil {
+	kept := make([]json.RawMessage, 0, len(parts))
+	for _, part := range parts {
+		single, ok := withContent([]json.RawMessage{part})
+		if ok && zodlite.ValidationMessage(zAnthropicResponse, string(single)) == "" {
+			kept = append(kept, part)
+			continue
+		}
+		var fields map[string]interface{}
+		if err := json.Unmarshal(part, &fields); err != nil || fields == nil {
+			return nil, false
+		}
+		blockType, isString := fields["type"].(string)
+		if !isString || anthropicKnownBatchContentTypes[blockType] {
+			return nil, false
+		}
+	}
+	recovered, ok := withContent(kept)
+	if !ok || zodlite.ValidationMessage(zAnthropicResponse, string(recovered)) != "" {
 		return nil, false
 	}
-	filteredJSON, err := json.Marshal(filtered)
-	if err != nil {
-		return nil, false
-	}
-	full["content"] = filteredJSON
-	rebuilt, err := json.Marshal(full)
-	if err != nil {
-		return nil, false
-	}
-	return rebuilt, true
+	return recovered, true
 }
 
 func invalidAnthropicBatchResult(id string) *provider.BatchV4ItemResult {

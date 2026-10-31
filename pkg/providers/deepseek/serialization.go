@@ -8,6 +8,7 @@ import (
 
 func init() {
 	provider.RegisterModelDeserializer("deepseek", deserializeModel)
+	provider.RegisterModelDeserializer("deepseek.chat", deserializeModel)
 }
 
 func (m *LanguageModel) Serialize() provider.SerializedModel {

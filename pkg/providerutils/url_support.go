@@ -41,7 +41,8 @@ func CompileSupportedURLPatterns(patternsByMediaType map[string][]string) map[st
 // TypeScript's isUrlSupported (ai@7.0.118 commit bc49f786f0, which tightened
 // the non-wildcard case): a pattern registered under the exact media type
 // (equality, not a prefix match, when the key carries no `*`), its `type/*`
-// prefix, or the wildcard "*"/"*/*" must match the (lowercased) URL. Before
+// prefix, or the wildcard "*"/"*/*" must match the URL as given (case-sensitively unless the pattern uses
+// (?i)). Before
 // that commit, TS (and this port) used a plain prefix match even for
 // non-wildcard keys, so e.g. supportedUrls["image/png"] would incorrectly
 // also match a URL declared with mediaType "image/png-not-supported".
@@ -49,8 +50,9 @@ func MatchesSupportedURL(compiled map[string][]*regexp.Regexp, mediaType, url st
 	if len(compiled) == 0 {
 		return false
 	}
+	// Only the media type is lowercased; the URL is matched as given, so
+	// patterns are case-sensitive unless they say otherwise (TS #23333).
 	mediaType = strings.ToLower(mediaType)
-	url = strings.ToLower(url)
 	topLevelOnly := !strings.Contains(mediaType, "/")
 	for key, regexes := range compiled {
 		prefix := strings.ReplaceAll(key, "*", "")

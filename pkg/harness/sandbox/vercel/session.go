@@ -5,6 +5,7 @@ import (
 	"io"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -75,8 +76,13 @@ func (a *sandboxProcessAdapter) Wait() (providerutils.SandboxProcessResult, erro
 	return providerutils.SandboxProcessResult{ExitCode: code}, nil
 }
 
+// Kill terminates the command. TS calls `command.kill()` without the spawn
+// abort signal, so a kill after the spawn context was cancelled (the usual
+// cleanup order) must still reach the sandbox.
 func (a *sandboxProcessAdapter) Kill() error {
-	return a.proc.Kill(a.ctx)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(a.ctx), 30*time.Second)
+	defer cancel()
+	return a.proc.Kill(ctx)
 }
 
 // ReadFile reads path, returning nil when it does not exist.
@@ -99,22 +105,11 @@ func (s *Session) ReadTextFile(ctx context.Context, opts providerutils.SandboxRe
 	if err != nil || data == nil {
 		return nil, err
 	}
-	text := string(data)
-	if opts.StartLine != nil || opts.EndLine != nil {
-		lines := strings.Split(text, "\n")
-		start, end := 1, len(lines)
-		if opts.StartLine != nil && *opts.StartLine > 1 {
-			start = *opts.StartLine
-		}
-		if opts.EndLine != nil && *opts.EndLine < end {
-			end = *opts.EndLine
-		}
-		if start > end {
-			text = ""
-		} else {
-			text = strings.Join(lines[start-1:end], "\n")
-		}
+	text, err := providerutils.DecodeSandboxText(data, opts.Encoding)
+	if err != nil {
+		return nil, err
 	}
+	text = providerutils.ExtractLines(text, opts.StartLine, opts.EndLine)
 	return &text, nil
 }
 
@@ -141,5 +136,9 @@ func (s *Session) WriteBinaryFile(ctx context.Context, path string, content []by
 
 // WriteTextFile writes UTF-8 text to a path.
 func (s *Session) WriteTextFile(ctx context.Context, opts providerutils.SandboxWriteTextFileOptions) error {
-	return s.WriteBinaryFile(ctx, opts.Path, []byte(opts.Content))
+	data, err := providerutils.EncodeSandboxText(opts.Content, opts.Encoding)
+	if err != nil {
+		return err
+	}
+	return s.WriteBinaryFile(ctx, opts.Path, data)
 }

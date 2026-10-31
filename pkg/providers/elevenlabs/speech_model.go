@@ -2,14 +2,12 @@ package elevenlabs
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -47,6 +45,38 @@ type SpeechModelOptions struct {
 	ApplyTextNormalization          string
 	ApplyLanguageTextNormalization  *bool
 	EnableLogging                   *bool
+
+	// Streaming holds options for ai.ExperimentalStreamSpeech.
+	Streaming *StreamingSpeechOptions
+
+	// Dialogue streams the speech as Text-to-Dialogue (eleven_v3 and
+	// eleven_v4 models, ai.ExperimentalStreamSpeech only).
+	Dialogue *DialogueOptions
+
+	// Inputs generates a multi-voice dialogue with ai.GenerateSpeech (eleven_v3
+	// and eleven_v4 models). It replaces the text and the voice.
+	Inputs []DialogueInput
+
+	// Music options (music_ models).
+
+	// MusicLengthMs is the length of the track, 3000 to 600000. Leave unset to
+	// let the model decide.
+	MusicLengthMs *int
+	// ForceInstrumental forces an instrumental track.
+	ForceInstrumental *bool
+	// CompositionPlan is a native (snake_case) composition plan sent in place
+	// of the prompt. It cannot be combined with MusicLengthMs or
+	// ForceInstrumental.
+	CompositionPlan map[string]interface{}
+
+	// Sound effects options (eleven_text_to_sound models).
+
+	// DurationSeconds is the length of the effect, 0.5 to 30.
+	DurationSeconds *float64
+	// PromptInfluence is how closely to follow the prompt, 0 to 1.
+	PromptInfluence *float64
+	// Loop makes the effect loop smoothly.
+	Loop *bool
 }
 
 // NewSpeechModel creates a new ElevenLabs speech synthesis model
@@ -64,7 +94,7 @@ func (m *SpeechModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *SpeechModel) Provider() string {
-	return "elevenlabs"
+	return "elevenlabs.speech"
 }
 
 // ModelID returns the model ID
@@ -72,34 +102,49 @@ func (m *SpeechModel) ModelID() string {
 	return m.modelID
 }
 
-// DoGenerate performs speech synthesis
+// DoGenerate performs speech synthesis. Music (music_) and sound effects
+// (eleven_text_to_sound) models take a text prompt and return audio, so they
+// share this interface; providerOptions.elevenlabs.inputs generates a
+// multi-voice dialogue with an eleven_v3 or eleven_v4 model.
 func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGenerateOptions) (*types.SpeechResult, error) {
-	reqBody, queryParams, warnings, voice := m.buildRequestArgs(opts)
+	if err := validateSpeechProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	currentDate := time.Now()
+	req, err := m.buildRequest(opts)
+	if err != nil {
+		return nil, err
+	}
 
-	path := fmt.Sprintf("/v1/text-to-speech/%s", voice)
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
-		Path:    path,
-		Body:    reqBody,
-		Query:   queryParams,
+		Path:    req.path,
+		Body:    req.body,
+		Query:   req.query,
 		Headers: opts.Headers,
 	})
 	if err != nil {
-		return nil, providererrors.NewProviderError("elevenlabs", 0, "", err.Error(), err)
+		return nil, err // TS postJsonToApi lets a transport failure propagate unchanged
 	}
 
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("ElevenLabs TTS API returned status %d: %s", resp.StatusCode, string(resp.Body))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// TS elevenlabsFailedResponseHandler: {"error":{"message","code"}} or
+		// the HTTP status text.
+		return nil, handleTranscriptionError(&internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body})
 	}
-	requestBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal ElevenLabs speech request metadata: %w", err)
+	requestBytes := []byte(providerutils.StringifyOrdered(req.body, req.bodyOrder))
+
+	metadata := map[string]interface{}{}
+	if format, ok := req.query["output_format"]; ok {
+		metadata["outputFormat"] = format
+	}
+	if req.requestedDurationMs != nil {
+		metadata["requestedDurationMs"] = *req.requestedDurationMs
 	}
 
 	return &types.SpeechResult{
 		Audio:    resp.Body,
-		Warnings: warnings,
+		Warnings: req.warnings,
 		Request: &types.StepRequest{
 			Body: string(requestBytes),
 		},
@@ -107,9 +152,50 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(resp.Headers),
-			Body:      resp.Body,
 		},
+		ProviderMetadata: map[string]interface{}{"elevenlabs": metadata},
 	}, nil
+}
+
+// speechRequest is a prepared HTTP speech request.
+type speechRequest struct {
+	path      string
+	body      map[string]interface{}
+	bodyOrder map[string][]string
+	query     map[string]string
+	warnings  []types.Warning
+
+	// requestedDurationMs is the length asked for (music and sound effects).
+	requestedDurationMs *float64
+}
+
+// buildRequest prepares the request for the model kind: music, sound effects,
+// dialogue (providerOptions.elevenlabs.inputs), or text-to-speech.
+func (m *SpeechModel) buildRequest(opts *provider.SpeechGenerateOptions) (*speechRequest, error) {
+	if isMusicModelID(m.modelID) || isSoundEffectsModelID(m.modelID) {
+		return m.buildAudioGenerationRequest(opts)
+	}
+	if elOpts, ok := extractSpeechModelOptions(opts.ProviderOptions); ok && elOpts.Inputs != nil {
+		return m.buildDialogueRequest(opts, elOpts)
+	}
+	body, query, warnings, voice := m.buildRequestArgs(opts)
+	return &speechRequest{
+		path:      fmt.Sprintf("/v1/text-to-speech/%s", voice),
+		body:      body,
+		bodyOrder: elevenlabsSpeechBodyOrder,
+		query:     query,
+		warnings:  warnings,
+	}, nil
+}
+
+// elevenlabsSpeechBodyOrder is the key order of the TS requestBody
+// (elevenlabs-speech-model.ts); voice_settings is assigned last.
+var elevenlabsSpeechBodyOrder = map[string][]string{
+	"": {"text", "model_id", "language_code", "pronunciation_dictionary_locators", "seed", "previous_text",
+		"next_text", "previous_request_ids", "next_request_ids", "apply_text_normalization",
+		"apply_language_text_normalization", "voice_settings"},
+	"pronunciation_dictionary_locators": {"pronunciation_dictionary_id", "version_id"},
+	"voice_settings":                    {"speed", "stability", "similarity_boost", "style", "use_speaker_boost"},
 }
 
 func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) map[string]interface{} {
@@ -136,13 +222,17 @@ func (m *SpeechModel) buildRequestArgs(opts *provider.SpeechGenerateOptions) (ma
 
 	voiceSettings := map[string]interface{}{}
 	warnings := make([]types.Warning, 0)
+	elevenLabsOptions, hasOptions := extractSpeechModelOptions(opts.ProviderOptions)
+	if hasOptions {
+		warnings = append(warnings, speechCommonWarnings(elevenLabsOptions)...)
+	}
 	if opts.Language != "" {
 		body["language_code"] = opts.Language
 	}
 	if opts.Speed != nil {
 		voiceSettings["speed"] = *opts.Speed
 	}
-	if elevenLabsOptions, ok := extractSpeechModelOptions(opts.ProviderOptions); ok {
+	if hasOptions {
 		applySpeechModelOptions(body, voiceSettings, queryParams, elevenLabsOptions)
 	}
 	if len(voiceSettings) > 0 {
@@ -204,7 +294,8 @@ func applySpeechModelOptions(body, voiceSettings map[string]interface{}, queryPa
 			body["language_code"] = opts.LanguageCode
 		}
 	}
-	if len(opts.PronunciationDictionaryLocators) > 0 {
+	// JS truthiness: an empty array is truthy and is sent as [].
+	if opts.PronunciationDictionaryLocators != nil {
 		locators := make([]map[string]interface{}, 0, len(opts.PronunciationDictionaryLocators))
 		for _, locator := range opts.PronunciationDictionaryLocators {
 			item := map[string]interface{}{
@@ -226,10 +317,10 @@ func applySpeechModelOptions(body, voiceSettings map[string]interface{}, queryPa
 	if opts.NextText != "" {
 		body["next_text"] = opts.NextText
 	}
-	if len(opts.PreviousRequestIDs) > 0 {
+	if opts.PreviousRequestIDs != nil {
 		body["previous_request_ids"] = opts.PreviousRequestIDs
 	}
-	if len(opts.NextRequestIDs) > 0 {
+	if opts.NextRequestIDs != nil {
 		body["next_request_ids"] = opts.NextRequestIDs
 	}
 	if opts.ApplyTextNormalization != "" {
@@ -316,6 +407,34 @@ func parseSpeechModelOptionsMap(raw map[string]interface{}) SpeechModelOptions {
 	if v, ok := raw["enableLogging"].(bool); ok {
 		opts.EnableLogging = &v
 	}
+	if v, ok := raw["streaming"].(map[string]interface{}); ok {
+		opts.Streaming = parseStreamingSpeechOptions(v)
+	}
+	if v, ok := raw["dialogue"].(map[string]interface{}); ok {
+		opts.Dialogue = parseDialogueOptions(v)
+	}
+	if v, present := raw["inputs"]; present {
+		opts.Inputs = parseDialogueInputs(v)
+	}
+	if n, ok := numberAsFloat(raw["musicLengthMs"]); ok {
+		i := int(n)
+		opts.MusicLengthMs = &i
+	}
+	if v, ok := raw["forceInstrumental"].(bool); ok {
+		opts.ForceInstrumental = &v
+	}
+	if v, ok := raw["compositionPlan"].(map[string]interface{}); ok {
+		opts.CompositionPlan = v
+	}
+	if n, ok := numberAsFloat(raw["durationSeconds"]); ok {
+		opts.DurationSeconds = &n
+	}
+	if n, ok := numberAsFloat(raw["promptInfluence"]); ok {
+		opts.PromptInfluence = &n
+	}
+	if v, ok := raw["loop"].(bool); ok {
+		opts.Loop = &v
+	}
 	return opts
 }
 
@@ -370,4 +489,61 @@ func numberAsFloat(value interface{}) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// elevenLabsSpeechOptionsSchema is elevenLabsSpeechModelOptionsSchema
+// (elevenlabs-speech-model-options.ts): every member is .optional(), so an
+// explicit null fails.
+var elevenLabsSpeechOptionsSchema = func() providerutils.OptionSchema {
+	unit := providerutils.OptRange(0, 1)
+	three := func(item providerutils.OptionCheck) providerutils.OptionCheck {
+		return providerutils.OptArray(item, 0, 3)
+	}
+	return providerutils.OptionSchema{
+		"languageCode": providerutils.OptString,
+		"voiceSettings": providerutils.OptObject(providerutils.OptionSchema{
+			"stability": unit, "similarityBoost": unit, "style": unit,
+			"useSpeakerBoost": providerutils.OptBool,
+		}),
+		"pronunciationDictionaryLocators": func(path string, v interface{}) error {
+			locator := providerutils.OptObjectWith(providerutils.OptionSchema{
+				"pronunciationDictionaryId": providerutils.OptString, "versionId": providerutils.OptString,
+			}, "pronunciationDictionaryId")
+			// Typed locators are valid by construction; only their count is checked.
+			return three(func(p string, item interface{}) error {
+				if _, typed := item.(PronunciationDictionaryLocator); typed {
+					return nil
+				}
+				return locator(p, item)
+			})(path, v)
+		},
+		"seed":                           providerutils.OptRange(0, 4294967295),
+		"previousText":                   providerutils.OptString,
+		"nextText":                       providerutils.OptString,
+		"previousRequestIds":             three(providerutils.OptString),
+		"nextRequestIds":                 three(providerutils.OptString),
+		"applyTextNormalization":         providerutils.OptEnum("auto", "on", "off"),
+		"applyLanguageTextNormalization": providerutils.OptBool,
+		"enableLogging":                  providerutils.OptBool,
+		"streaming":                      streamingSpeechOptionsCheck(),
+		"dialogue":                       dialogueOptionsCheck(),
+		"inputs":                         dialogueInputsCheck(),
+		"musicLengthMs":                  providerutils.OptInt(intRef(3000), intRef(600000)),
+		"forceInstrumental":              providerutils.OptBool,
+		"compositionPlan":                compositionPlanCheck(),
+		"durationSeconds":                providerutils.OptRange(0.5, 30),
+		"promptInfluence":                providerutils.OptRange(0, 1),
+		"loop":                           providerutils.OptBool,
+	}
+}()
+
+// validateSpeechProviderOptions is TS parseProviderOptions with
+// elevenLabsSpeechModelOptionsSchema; typed option structs are valid by
+// construction.
+func validateSpeechProviderOptions(providerOptions map[string]interface{}) error {
+	if _, ok := providerOptions["elevenlabs"].(map[string]interface{}); !ok {
+		return nil
+	}
+	_, err := providerutils.ParseProviderOptions("elevenlabs", providerOptions, elevenLabsSpeechOptionsSchema)
+	return err
 }

@@ -25,7 +25,7 @@ func NewWorkflowAgent(agent WorkflowAgent) (*WorkflowAgent, error)
 | `AllowSystemInMessages` | `bool` | AllowSystemInMessages permits system-role messages in Messages. By default WorkflowAgent rejects system messages; use Instructions/System for default system prompts. |
 | `Tools` | `[]types.Tool` |  |
 | `ToolSet` | `map[string]types.Tool` |  |
-| `StopWhen` | `[]ai.StopCondition` |  |
+| `StopWhen` | `[]ai.StopCondition` | StopWhen is the default stop condition. When empty NewWorkflowAgent sets IsStepCount(20), which applies to Generate; Stream is unbounded unless StopWhen is set explicitly on the agent or the call (TS: only generate defaults to isStepCount(20)). |
 | `Output` | `interface{}` |  |
 | `Telemetry` | `*ai.TelemetrySettings` |  |
 | `ID` | `string` |  |
@@ -69,6 +69,7 @@ func NewWorkflowAgent(agent WorkflowAgent) (*WorkflowAgent, error)
 | `ExperimentalToolApprovalSecret` | `[]byte` | ExperimentalToolApprovalSecret signs issued approval requests and verifies resumed approvals before approved tools execute. |
 | `MaxRetries` | `*int` | MaxRetries controls transient provider call retries for each model call, forwarded to agent.AgentConfig.MaxRetries. Defaults to 2 when nil, matching TS WorkflowAgent's `mergedGenerationSettings.maxRetries ?? 2`. |
 | `Timeout` | `*ai.TimeoutConfig` | Timeout provides granular timeout controls, forwarded to agent.AgentConfig.Timeout. |
+| `ToolCallConcurrency` | `*int` | ToolCallConcurrency is the maximum number of local tool calls that may execute concurrently. Set to 1 to execute calls sequentially in model order, including approved calls resumed by the agent. nil runs all calls concurrently. Values below 1 return an InvalidArgumentError. Mirrors TS WorkflowAgent's `toolCallConcurrency`. |
 | `ExperimentalDownload` | `ai.DownloadFunction` | ExperimentalDownload customizes remote file URL downloads before model calls, forwarded to agent.AgentConfig.ExperimentalDownload. |
 
 {/* /gen:fields */}
@@ -86,6 +87,17 @@ func NewWorkflowAgent(agent WorkflowAgent) (*WorkflowAgent, error)
 
 | Field | Type | Description |
 | --- | --- | --- |
+| `Temperature` | `*float64` | Per-call generation settings (TS Partial&lt;GenerationSettings&gt;). A value set here replaces the agent's; Headers and ProviderOptions replace as a whole. |
+| `MaxTokens` | `*int` |  |
+| `TopP` | `*float64` |  |
+| `TopK` | `*int` |  |
+| `FrequencyPenalty` | `*float64` |  |
+| `PresencePenalty` | `*float64` |  |
+| `StopSequences` | `[]string` |  |
+| `Seed` | `*int` |  |
+| `Headers` | `map[string]string` |  |
+| `Reasoning` | `*types.ReasoningLevel` |  |
+| `ProviderOptions` | `map[string]interface{}` |  |
 | `Prompt` | `string` |  |
 | `Messages` | `[]types.Message` |  |
 | `System` | `string` |  |
@@ -95,16 +107,21 @@ func NewWorkflowAgent(agent WorkflowAgent) (*WorkflowAgent, error)
 | `ToolSet` | `map[string]types.Tool` |  |
 | `StopWhen` | `[]ai.StopCondition` |  |
 | `Telemetry` | `*ai.TelemetrySettings` |  |
+| `ActiveTools` | `[]string` |  |
 | `RuntimeContext` | `interface{}` |  |
 | `ToolsContext` | `map[string]interface{}` |  |
 | `Include` | `*ai.IncludeOptions` |  |
 | `ExperimentalSandbox` | `interface{}` |  |
 | `ExperimentalRefineToolInput` | `map[string]ai.ToolInputRefiner` |  |
+| `ToolChoice` | `types.ToolChoice` | ToolChoice overrides the agent's ToolChoice for this call (TS `toolChoice`). |
+| `Output` | `interface{}` | Output overrides the agent's Output specification for this call (TS `output`). |
+| `PrepareStep` | `PrepareStepHook` | PrepareStep is a per-call step hook that replaces the agent-level PrepareStep for this call (TS `options.prepareStep ?? this.prepareStep`). |
 | `RepairToolCall` | `ai.ToolCallRepairFunction` | RepairToolCall attempts to repair tool calls that fail to parse. |
 | `ExperimentalRepairToolCall` | `ai.ToolCallRepairFunction` | ExperimentalRepairToolCall is a deprecated alias for RepairToolCall. Deprecated: use RepairToolCall. |
 | `ExperimentalToolApprovalSecret` | `[]byte` | ExperimentalToolApprovalSecret overrides the agent's approval secret. |
 | `MaxRetries` | `*int` | MaxRetries overrides the agent's MaxRetries for this call. |
 | `Timeout` | `*ai.TimeoutConfig` | Timeout overrides the agent's Timeout for this call. |
+| `ToolCallConcurrency` | `*int` | ToolCallConcurrency is the maximum number of local tool calls that may execute concurrently. Set to 1 to execute calls sequentially in model order, including approved calls resumed by the agent. nil runs all calls concurrently. Values below 1 return an InvalidArgumentError. Mirrors TS WorkflowAgent's `toolCallConcurrency`. |
 | `ExperimentalDownload` | `ai.DownloadFunction` | ExperimentalDownload overrides the agent's ExperimentalDownload for this call. |
 | `OnStart` | `StartCallback` |  |
 | `OnStepStart` | `StepStartCallback` |  |
@@ -125,6 +142,17 @@ func NewWorkflowAgent(agent WorkflowAgent) (*WorkflowAgent, error)
 
 | Field | Type | Description |
 | --- | --- | --- |
+| `Temperature` | `*float64` | Per-call generation settings (TS Partial&lt;GenerationSettings&gt;). A value set here replaces the agent's; Headers and ProviderOptions replace as a whole. |
+| `MaxTokens` | `*int` |  |
+| `TopP` | `*float64` |  |
+| `TopK` | `*int` |  |
+| `FrequencyPenalty` | `*float64` |  |
+| `PresencePenalty` | `*float64` |  |
+| `StopSequences` | `[]string` |  |
+| `Seed` | `*int` |  |
+| `Headers` | `map[string]string` |  |
+| `Reasoning` | `*types.ReasoningLevel` |  |
+| `ProviderOptions` | `map[string]interface{}` |  |
 | `Prompt` | `string` |  |
 | `Messages` | `[]types.Message` |  |
 | `System` | `string` |  |
@@ -140,11 +168,15 @@ func NewWorkflowAgent(agent WorkflowAgent) (*WorkflowAgent, error)
 | `Include` | `*ai.IncludeOptions` |  |
 | `ExperimentalSandbox` | `interface{}` |  |
 | `ExperimentalRefineToolInput` | `map[string]ai.ToolInputRefiner` |  |
+| `ToolChoice` | `types.ToolChoice` | ToolChoice overrides the agent's ToolChoice for this call (TS `toolChoice`). |
+| `Output` | `interface{}` | Output overrides the agent's Output specification for this call (TS `output`). |
+| `PrepareStep` | `PrepareStepHook` | PrepareStep is a per-call step hook that replaces the agent-level PrepareStep for this call (TS `options.prepareStep ?? this.prepareStep`). |
 | `RepairToolCall` | `ai.ToolCallRepairFunction` | RepairToolCall attempts to repair tool calls that fail to parse. |
 | `ExperimentalRepairToolCall` | `ai.ToolCallRepairFunction` | ExperimentalRepairToolCall is a deprecated alias for RepairToolCall. Deprecated: use RepairToolCall. |
 | `ExperimentalToolApprovalSecret` | `[]byte` | ExperimentalToolApprovalSecret overrides the agent's approval secret. |
 | `MaxRetries` | `*int` | MaxRetries overrides the agent's MaxRetries for this call. |
 | `Timeout` | `*ai.TimeoutConfig` | Timeout overrides the agent's Timeout for this call. |
+| `ToolCallConcurrency` | `*int` | ToolCallConcurrency is the maximum number of local tool calls that may execute concurrently. Set to 1 to execute calls sequentially in model order, including approved calls resumed by the agent. nil runs all calls concurrently. Values below 1 return an InvalidArgumentError. Mirrors TS WorkflowAgent's `toolCallConcurrency`. |
 | `ExperimentalDownload` | `ai.DownloadFunction` | ExperimentalDownload overrides the agent's ExperimentalDownload for this call. |
 | `ExperimentalTransform` | `[]ai.StreamTransformFunc` | ExperimentalTransform is an ordered list of transforms applied to raw model stream chunks before they reach OnChunk or the returned WorkflowStreamResult, matching TS WorkflowAgent's `experimental_transform` stream option (hash 165455d). Previously declared-but-unused in TS; this forwards it through to the underlying ai.StreamText call so it actually runs. |
 | `OnChunk` | `func(chunk provider.StreamChunk)` |  |
@@ -170,6 +202,7 @@ func NewWorkflowAgent(agent WorkflowAgent) (*WorkflowAgent, error)
 | Field | Type | Description |
 | --- | --- | --- |
 | (embedded) | `*agent.AgentResult` | Embedded. |
+| `ResponseMessages` | `[]types.Message` | ResponseMessages are the messages this run added to the conversation: first the tool message holding the results of any tool approvals the run resumed (executed before the first model call), then each step's assistant and tool messages. Append them to the input messages to continue the conversation (TS result.response.messages). |
 
 {/* /gen:fields */}
 
@@ -206,6 +239,7 @@ The hook and callback function types mirror the `ToolLoopAgent` ones.
 | Field | Type | Description |
 | --- | --- | --- |
 | `StepNumber` | `int` |  |
+| `Model` | `provider.LanguageModel` | Model is the language model for the call (TS prepareCall/prepareStep `model`). A hook may set it to run the call (PrepareCall) or the step (PrepareStep) on another model; nil keeps the current one. |
 | `System` | `string` |  |
 | `AllowSystemInMessages` | `bool` |  |
 | `Messages` | `[]types.Message` |  |
@@ -237,6 +271,10 @@ The hook and callback function types mirror the `ToolLoopAgent` ones.
 | `Timeout` | `*ai.TimeoutConfig` |  |
 | `InitialInstructions` | `string` | InitialInstructions and InitialMessages are the original (unmutated) instructions/messages the call was invoked with, matching TS prepareCall's initial-inputs parity (b666f57). They are read-only: a hook should mutate System/Messages to change what is sent, not these. |
 | `InitialMessages` | `[]types.Message` |  |
+| `InstructionMessages` | `[]types.Message` | InstructionMessages are the instructions when they were given as system messages (TS `instructions: SystemModelMessage \| SystemModelMessage[]`), keeping each message's ProviderOptions. A hook may return a different list to replace them. When the hook changes System and leaves InstructionMessages alone, System wins, as TS `instructions` does. |
+| `InitialInstructionMessages` | `[]types.Message` | InitialInstructionMessages are the original instructions given as system messages; read-only like InitialInstructions. |
+| `ToolCallConcurrency` | `*int` | ToolCallConcurrency and Telemetry mirror TS prepareCall's `toolCallConcurrency` and `telemetry`. The hook sees the call's current value (nil when none is set) and may return another; nil leaves the call's value. As in TS, a per-call ToolCallConcurrency wins over a PrepareCall override. PrepareStep does not apply either. |
+| `Telemetry` | `*ai.TelemetrySettings` |  |
 
 {/* /gen:fields */}
 
@@ -256,7 +294,8 @@ A durable run cannot persist a Go function. These helpers carry the tool definit
 
 | Function | Description |
 | --- | --- |
-| `workflow.SerializeToolSet(tools []types.Tool) (map[string]SerializableToolDef, error)` | Converts tools to a JSON-safe map keyed by name. |
+| `workflow.SerializeToolSet(tools []types.Tool) (map[string]SerializableToolDef, error)` | Converts tools to a JSON-safe map keyed by name. A tool's `DescriptionFunc` is resolved with no tools context and no sandbox. |
+| `workflow.SerializeToolSetWithOptions(ctx context.Context, tools []types.Tool, opts SerializeToolSetOptions) (map[string]SerializableToolDef, error)` | Like `SerializeToolSet`, resolving each `DescriptionFunc` with `opts.ToolsContext[name]` and `opts.ExperimentalSandbox`. |
 | `workflow.ResolveSerializableTools(defs map[string]SerializableToolDef) []types.Tool` | Rebuilds non-executable tool descriptors. |
 | `workflow.ValidateSerializableToolInput(def SerializableToolDef, input interface{}) (interface{}, error)` | Validates input against the serialized schema. It applies schema defaults first, and returns the defaulted value. Pass that value to the tool, not the raw input. |
 | `workflow.MarshalSchema(schema interface{}) (map[string]interface{}, error)` | Converts a JSON-serializable schema to a map. |
@@ -280,6 +319,12 @@ A durable run cannot persist a Go function. These helpers carry the tool definit
 | `SupportsDeferredResults` | `bool` |  |
 | `InputExamples` | `[]types.ToolInputExample` |  |
 | `ProviderMetadata` | `map[string]interface{}` |  |
+| `HasOwnValidator` | `bool` | HasOwnValidator records that the original input schema validates (and possibly normalizes) input with its own runtime validator, not just JSON Schema. ValidateSerializableToolInput defers to that original validator instead of re-validating the lossy JSON Schema copy (TS #22397). |
+| `Metadata` | `map[string]interface{}` | Metadata, ProviderOptions and the HasOnInput\* flags mirror the TS SerializableToolDef fields of the same names. Callbacks themselves never cross the boundary; the flags tell the receiver that the original tool has them. |
+| `ProviderOptions` | `map[string]interface{}` |  |
+| `HasOnInputStart` | `bool` |  |
+| `HasOnInputDelta` | `bool` |  |
+| `HasOnInputAvail` | `bool` |  |
 
 {/* /gen:fields */}
 
@@ -303,7 +348,8 @@ func NewWorkflowChatTransport(opts WorkflowChatTransportOptions) *WorkflowChatTr
 | `HTTPClient` | `*http.Client` | HTTPClient is used for both the initial POST and any reconnect GETs. Defaults to http.DefaultClient. |
 | `OnChatSendMessage` | `func(resp *http.Response, req ai.ChatTransportSendMessagesRequest) error` | OnChatSendMessage is invoked after the initial POST completes, useful for inspecting response headers or tracking chat history. |
 | `OnChatEnd` | `func(WorkflowChatTransportEndEvent) error` | OnChatEnd is invoked once, after a "finish" chunk is observed. |
-| `MaxConsecutiveErrors` | `int` | MaxConsecutiveErrors bounds reconnect attempts. Defaults to 3. |
+| `MaxConsecutiveErrors` | `int` | MaxConsecutiveErrors bounds reconnect attempts. Streams that end without receiving any UI message chunks count as errors. Defaults to 3. |
+| `MaxConsecutiveErrorsSet` | `bool` | MaxConsecutiveErrorsSet makes MaxConsecutiveErrors be used as given, including 0 (and negative values), matching TS `maxConsecutiveErrors ?? 3` where an explicit 0 fails on the first reconnect error. When false (the default) a value &lt;= 0 means "unset" and becomes 3, as in earlier releases. |
 | `InitialStartIndex` | `int` | InitialStartIndex is the default startIndex used by ReconnectToStream when it is called directly (not as part of a SendMessages recovery). Negative values are tail-relative (e.g. -10 reads the last 10 chunks), useful for resuming a chat UI after a page refresh without replaying the whole conversation. Defaults to 0 (replay from the beginning). |
 | `PrepareSendMessagesRequest` | `func(ai.ChatTransportSendMessagesRequest) (PreparedChatRequest, error)` | PrepareSendMessagesRequest customizes the API endpoint, body, and headers used for the initial POST. |
 | `PrepareReconnectToStreamRequest` | `func(WorkflowChatTransportReconnectContext) (PreparedChatRequest, error)` | PrepareReconnectToStreamRequest customizes the API endpoint and headers used for reconnect GETs. |

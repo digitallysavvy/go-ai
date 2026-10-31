@@ -6,12 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
-	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -44,14 +45,15 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		return nil, err
 	}
 
-	headers := internalhttp.MergeHeaders(m.provider.headers, m.getModelConfigHeaders())
+	// TS: combineHeaders(config.headers (auth included), options.headers,
+	// model headers, o11y) — so a per-call Authorization / auth-method /
+	// team header wins, and the subprotocols derive from the merged set.
+	headers := mergeHeadersFold(
+		map[string]string{"Authorization": "Bearer " + token, "ai-gateway-auth-method": authMethod},
+		m.provider.headers, opts.Headers, m.getModelConfigHeaders(),
+	)
 	AddO11yHeaders(headers, GetO11yHeaders(ctx))
-	headers = internalhttp.MergeHeaders(headers, opts.Headers)
-	// The handshake carries auth on both channels, matching TS
-	// createAuthHeaders: the raw Authorization/ai-gateway-auth-method headers
-	// alongside the ai-gateway-auth.<token> subprotocol below.
-	headers["Authorization"] = "Bearer " + token
-	headers["ai-gateway-auth-method"] = authMethod
+	authMethod = gatewayHeaderValue(headers, "ai-gateway-auth-method")
 
 	startFrame := map[string]interface{}{
 		"type":             transcriptionStreamStartFrameType,
@@ -65,12 +67,15 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	}
 
 	wsURL := ToGatewayTranscriptionURL(m.provider.baseURL, m.modelID)
-	// The team scope rides the subprotocol from the fully merged per-call
+	// The auth token and team scope ride the subprotocols from the fully merged per-call
 	// header set (headers, above — config headers + opts.Headers), not the
 	// static TeamIDOrSlug config field, so a caller overriding
 	// x-vercel-ai-gateway-team per call (e.g. via opts.Headers) takes effect
 	// here exactly like it does on every other Gateway request.
-	protocols := GetGatewayTranscriptionProtocols(token, gatewayTeamFromHeaders(headers))
+	protocols := []string{GatewayTranscriptionSubprotocol}
+	if bearer := gatewayHeaderValue(headers, "authorization"); strings.HasPrefix(bearer, "Bearer ") {
+		protocols = GetGatewayTranscriptionProtocols(strings.TrimPrefix(bearer, "Bearer "), gatewayTeamFromHeaders(headers))
+	}
 
 	abortCtx := opts.AbortSignal
 	if abortCtx == nil {
@@ -84,6 +89,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		startFrame: startFrame,
 		audio:      opts.Audio,
 		authMethod: authMethod,
+		wrapError:  m.provider.gatewayUnknownError,
 	})
 
 	return &provider.TranscriptionStreamResult{
@@ -91,6 +97,34 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		RequestBody: startFrame,
 		Response:    &provider.TranscriptionStreamResponseMetadata{Timestamp: time.Now(), ModelID: m.modelID},
 	}, nil
+}
+
+// mergeHeadersFold merges header layers, later layers winning, with header
+// names compared case-insensitively (a per-call "authorization" replaces the
+// default "Authorization" instead of sitting beside it).
+func mergeHeadersFold(layers ...map[string]string) map[string]string {
+	out := make(map[string]string)
+	for _, layer := range layers {
+		for k, v := range layer {
+			for existing := range out {
+				if strings.EqualFold(existing, k) {
+					delete(out, existing)
+				}
+			}
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// gatewayHeaderValue looks a header up case-insensitively (TS normalizeHeaders).
+func gatewayHeaderValue(headers map[string]string, name string) string {
+	for k, v := range headers {
+		if strings.EqualFold(k, name) {
+			return v
+		}
+	}
+	return ""
 }
 
 func transcriptionAudioFormatWire(f provider.AudioFormat) map[string]interface{} {
@@ -108,6 +142,8 @@ type gatewayTranscriptionStreamConfig struct {
 	startFrame map[string]interface{}
 	audio      provider.AudioStream
 	authMethod string
+	// wrapError mirrors TS asGatewayError (nil keeps errors unwrapped).
+	wrapError func(error) error
 }
 
 // gatewayTranscriptionStream implements provider.TranscriptionStream over the
@@ -136,6 +172,13 @@ func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 	defer s.CancelContext()
 
 	fail := func(err error) {
+		// TS finishWithError runs every terminal error except an abort reason
+		// through asGatewayError, so callers always see a GatewayError for
+		// connection, protocol and audio-read failures.
+		if cfg.wrapError != nil && !gatewayerrors.IsGatewayError(err) &&
+			!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			err = cfg.wrapError(err)
+		}
 		s.SetErr(err)
 		cfg.audio.Cancel(err)
 	}
@@ -261,13 +304,22 @@ var gatewayServerErrorStatusCodes = map[string]int{
 	"rate_limit_exceeded":   429,
 }
 
-// gatewayTranscriptionServerError maps a server error-part payload
+// gatewayTranscriptionServerError maps a server error-part payload for a
+// transcription stream; see gatewayStreamServerError.
+func gatewayTranscriptionServerError(payload interface{}, authMethod string) error {
+	return gatewayStreamServerError(payload, authMethod, "transcription")
+}
+
+// gatewayStreamServerError maps a server error-part payload
 // ({message, type}) to the typed Gateway error class for its type, mirroring
 // TS createErrorFromServerErrorPart; unknown shapes keep the generic message.
-func gatewayTranscriptionServerError(payload interface{}, authMethod string) error {
+// streamLabel names the stream in the generic message ("transcription",
+// "speech").
+func gatewayStreamServerError(payload interface{}, authMethod, streamLabel string) error {
 	m, ok := payload.(map[string]interface{})
+	msg, hasMsg := "", false
 	if ok {
-		msg, hasMsg := m["message"].(string)
+		msg, hasMsg = m["message"].(string)
 		errType, hasType := m["type"].(string)
 		if hasMsg && hasType {
 			if statusCode, known := gatewayServerErrorStatusCodes[errType]; known {
@@ -275,15 +327,28 @@ func gatewayTranscriptionServerError(payload interface{}, authMethod string) err
 					"error": map[string]interface{}{"message": msg, "type": errType},
 				})
 				if marshalErr == nil {
-					return gatewayerrors.CreateGatewayErrorFromResponse(body, statusCode, "AI Gateway transcription stream failed", nil, authMethod)
+					return gatewayerrors.CreateGatewayErrorFromResponse(body, statusCode, "AI Gateway "+streamLabel+" stream failed", nil, authMethod)
 				}
 			}
 		}
-		if hasMsg && msg != "" {
-			return fmt.Errorf("AI Gateway transcription stream failed: %s", msg)
+	}
+	// TS getServerErrorMessage: a string message property, else getErrorMessage
+	// (null/undefined -> "unknown error", string as is, others JSON.stringify).
+	if !hasMsg {
+		switch v := payload.(type) {
+		case nil:
+			msg = "unknown error"
+		case string:
+			msg = v
+		default:
+			if b, err := jsonstr.Marshal(v); err == nil {
+				msg = string(b)
+			} else {
+				msg = fmt.Sprint(v)
+			}
 		}
 	}
-	return fmt.Errorf("AI Gateway transcription stream failed: %v", payload)
+	return fmt.Errorf("AI Gateway %s stream failed: %s", streamLabel, msg)
 }
 
 // pumpAudio reads chunks from audio and forwards them as binary frames (split
@@ -364,7 +429,7 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 		if !ok {
 			return nil, false
 		}
-		if !isOptionalString(raw["id"]) || !isOptionalRecord(raw["providerMetadata"]) {
+		if !isOptionalStringKey(raw, "id") || !isOptionalRecordKey(raw, "providerMetadata") {
 			return nil, false
 		}
 		part.Delta = delta
@@ -376,9 +441,9 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 		if !ok {
 			return nil, false
 		}
-		if !isOptionalString(raw["id"]) || !isOptionalNumber(raw["startSecond"]) ||
-			!isOptionalNumber(raw["durationInSeconds"]) || !isOptionalNumber(raw["channelIndex"]) ||
-			!isOptionalRecord(raw["providerMetadata"]) {
+		if !isOptionalStringKey(raw, "id") || !isOptionalNumberKey(raw, "startSecond") ||
+			!isOptionalNumberKey(raw, "durationInSeconds") || !isOptionalNumberKey(raw, "channelIndex") ||
+			!isOptionalRecordKey(raw, "providerMetadata") {
 			return nil, false
 		}
 		part.Text = text
@@ -393,9 +458,9 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 		if !ok {
 			return nil, false
 		}
-		if !isOptionalString(raw["id"]) || !isOptionalNumber(raw["startSecond"]) ||
-			!isOptionalNumber(raw["endSecond"]) || !isOptionalNumber(raw["channelIndex"]) ||
-			!isOptionalRecord(raw["providerMetadata"]) {
+		if !isOptionalStringKey(raw, "id") || !isOptionalNumberKey(raw, "startSecond") ||
+			!isOptionalNumberKey(raw, "endSecond") || !isOptionalNumberKey(raw, "channelIndex") ||
+			!isOptionalRecordKey(raw, "providerMetadata") {
 			return nil, false
 		}
 		part.Text = text
@@ -406,7 +471,7 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 		part.ProviderMetadata = mapFromInterface(raw["providerMetadata"])
 
 	case provider.TranscriptionStreamPartTypeResponseMetadata:
-		if !isOptionalString(raw["modelId"]) || !isOptionalRecord(raw["headers"]) {
+		if !isOptionalStringKey(raw, "modelId") || !isOptionalRecordKey(raw, "headers") {
 			return nil, false
 		}
 		part.ModelID, _ = raw["modelId"].(string)
@@ -432,14 +497,15 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 		if !ok {
 			return nil, false
 		}
-		if !isOptionalString(raw["language"]) || !isOptionalNumber(raw["durationInSeconds"]) ||
-			!isOptionalRecord(raw["providerMetadata"]) {
+		if !isOptionalStringKey(raw, "language") || !isOptionalNumberKey(raw, "durationInSeconds") ||
+			!isOptionalRecordKey(raw, "usage") || !isOptionalRecordKey(raw, "providerMetadata") {
 			return nil, false
 		}
 		part.FinishText = text
 		part.Language, _ = raw["language"].(string)
 		part.DurationInSeconds = float64PtrFromInterface(raw["durationInSeconds"])
 		part.ProviderMetadata = mapFromInterface(raw["providerMetadata"])
+		part.Usage = mapFromInterface(raw["usage"])
 		part.Segments = segments
 
 	case provider.TranscriptionStreamPartTypeRaw:
@@ -461,28 +527,32 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 	return part, true
 }
 
-// isOptionalString mirrors TS isOptional(value, isString): absent (nil) is
-// fine; present-but-non-string is not.
-func isOptionalString(v interface{}) bool {
-	if v == nil {
+// isOptionalStringKey mirrors TS isOptional(value, isString): the key is
+// absent (JS undefined) or holds a string. An explicit JSON null is not
+// undefined, so it fails the check.
+func isOptionalStringKey(raw map[string]interface{}, key string) bool {
+	v, present := raw[key]
+	if !present {
 		return true
 	}
 	_, ok := v.(string)
 	return ok
 }
 
-// isOptionalNumber mirrors TS isOptional(value, isNumber).
-func isOptionalNumber(v interface{}) bool {
-	if v == nil {
+// isOptionalNumberKey mirrors TS isOptional(value, isNumber).
+func isOptionalNumberKey(raw map[string]interface{}, key string) bool {
+	v, present := raw[key]
+	if !present {
 		return true
 	}
 	_, ok := v.(float64)
 	return ok
 }
 
-// isOptionalRecord mirrors TS isOptional(value, isRecord).
-func isOptionalRecord(v interface{}) bool {
-	if v == nil {
+// isOptionalRecordKey mirrors TS isOptional(value, isRecord).
+func isOptionalRecordKey(raw map[string]interface{}, key string) bool {
+	v, present := raw[key]
+	if !present {
 		return true
 	}
 	_, ok := v.(map[string]interface{})

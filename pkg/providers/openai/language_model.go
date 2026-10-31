@@ -3,7 +3,6 @@ package openai
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -23,6 +22,23 @@ import (
 type LanguageModel struct {
 	provider *Provider
 	modelID  string
+	// requestModelID, when set, is sent as `model` instead of modelID (TS
+	// config.requestModelId; Azure reports the model ID but routes by deployment).
+	requestModelID string
+}
+
+// WithRequestModelID sets the model ID sent to the API, keeping ModelID() (and
+// capability detection) on the reported model ID. It returns m for chaining.
+func (m *LanguageModel) WithRequestModelID(id string) *LanguageModel {
+	m.requestModelID = id
+	return m
+}
+
+func (m *LanguageModel) requestModel() string {
+	if m.requestModelID != "" {
+		return m.requestModelID
+	}
+	return m.modelID
 }
 
 // NewLanguageModel creates a new OpenAI language model
@@ -36,6 +52,22 @@ func NewLanguageModel(provider *Provider, modelID string) *LanguageModel {
 // SpecificationVersion returns the specification version
 func (m *LanguageModel) SpecificationVersion() string {
 	return "v4"
+}
+
+// fileReferenceProvider is the provider key used to resolve provider file
+// references (types.FileDataTypeReference) to this model's file IDs. TS
+// OpenAI (and Azure) chat resolves the fixed key "openai"; the
+// openai-compatible chat models (baseten, deepinfra, cerebras, ...) resolve
+// their own provider name, e.g. "baseten" for "baseten.chat" (TS #22466).
+func (m *LanguageModel) fileReferenceProvider() string {
+	if !m.provider.config.OpenAICompatible {
+		return "openai"
+	}
+	name, _, _ := strings.Cut(m.Provider(), ".")
+	if name == "" {
+		return "openai"
+	}
+	return name
 }
 
 // Provider returns the provider name
@@ -74,6 +106,18 @@ func (m *LanguageModel) SupportsImageInput() bool {
 		m.modelID == "gpt-4o-mini"
 }
 
+// SupportedURLs lists the URLs the model accepts directly, without the SDK
+// downloading them first (TS supportedUrls).
+func (m *LanguageModel) SupportedURLs() map[string][]string {
+	if m.provider.config.OpenAICompatible {
+		// TS OpenAICompatibleChatLanguageModel defaults supportedUrls to {}.
+		return map[string][]string{}
+	}
+	return map[string][]string{
+		"image/*": {`^https?://.*$`},
+	}
+}
+
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
 	// Build request body
@@ -85,24 +129,52 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	// Make API request, capturing response headers.
 	var response openAIResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/chat/completions",
-		Body:    reqBody,
-		Headers: opts.Headers,
+		Method:           http.MethodPost,
+		Path:             "/chat/completions",
+		Query:            m.provider.config.ChatQuery,
+		Body:             reqBody,
+		Headers:          opts.Headers,
+		ValidateResponse: providerutils.ChatResponseValidator(m.Provider(), m.responseKind()),
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 
+	// TS: a response without choices is InvalidResponseDataError.
+	if len(response.Choices) == 0 {
+		return nil, providererrors.NewInvalidResponseDataError(response, "Response did not contain any choices.")
+	}
+
 	// Convert response to GenerateResult and attach HTTP headers.
 	result := m.convertResponse(response)
+	// TS result.request.body / result.response.body: the request as sent and
+	// the response as received.
+	result.RawRequest = reqBody
+	var rawResponse interface{}
+	if json.Unmarshal(resp.Body, &rawResponse) == nil {
+		result.RawResponse = rawResponse
+	}
+	m.applyChatLogprobs(result, resp.Body)
+	if m.provider.config.OpenAICompatible {
+		m.applyCompatMetadataKey(result, opts.ProviderOptions)
+		// The compat usage schema is loose: extra wire fields are kept in raw.
+		if raw, ok := rawResponse.(map[string]interface{}); ok {
+			if u, ok := raw["usage"].(map[string]interface{}); ok {
+				result.Usage.Raw = u
+			}
+		}
+	}
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	result.ResponseMetadata = &types.ResponseMetadata{
-		ID:        response.ID,
-		Timestamp: time.Unix(response.Created, 0).UTC(),
-		ModelID:   response.Model,
-		Headers:   result.ResponseHeaders,
+		ID:      response.ID,
+		ModelID: response.Model,
+		Headers: result.ResponseHeaders,
+	}
+	// TS getResponseMetadata: `created || undefined` -- a missing/zero
+	// timestamp stays unset instead of becoming the Unix epoch.
+	if response.Created != 0 {
+		result.ResponseMetadata.Timestamp = time.Unix(response.Created, 0).UTC()
 	}
 	return result, nil
 }
@@ -119,6 +191,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/chat/completions",
+		Query:   m.provider.config.ChatQuery,
 		Body:    reqBody,
 		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
@@ -128,6 +201,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 
 	inner := newOpenAIStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, m.Provider(), httpResp.Header)
 	inner.requestBody = reqBody
+	inner.compat = m.provider.config.OpenAICompatible
+	if inner.compat {
+		inner.metaKey = providerutils.ResolveOpenAICompatibleMetadataKey(m.compatName(), opts.ProviderOptions)
+	}
 	return streaming.NewWarningsStream(inner, warnings), nil
 }
 
@@ -150,16 +227,32 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
 	var warnings []types.Warning
 	capabilities := GetLanguageModelCapabilities(m.modelID)
+	if m.provider.config.OpenAICompatible {
+		// TS OpenAICompatibleChatLanguageModel has no model-id capability
+		// logic: no developer role, sampling-parameter removal, GPT-6 effort
+		// restrictions or service-tier gating.
+		capabilities = LanguageModelCapabilities{
+			SystemMessageMode:              "system",
+			SupportsFlexProcessing:         true,
+			SupportsPriorityProcessing:     true,
+			SupportsNonReasoningParameters: true,
+		}
+	}
 	body := map[string]interface{}{
-		"model": m.modelID,
+		"model": m.requestModel(),
 	}
 	if stream {
 		body["stream"] = true
-		// Ask for usage: without it a streamed chat completion carries none
-		// (TS OpenAIChatLanguageModel always sets include_usage).
-		if !m.provider.config.OmitStreamUsage {
+		// TS OpenAIChatLanguageModel always asks for usage; the
+		// OpenAI-compatible model only when config.includeUsage is set.
+		if !m.provider.config.OpenAICompatible || m.provider.config.IncludeUsage {
 			body["stream_options"] = map[string]interface{}{"include_usage": true}
 		}
+	}
+
+	// TS parseProviderOptions: an invalid provider option fails the call.
+	if err := m.validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, nil, err
 	}
 
 	// Extract the "openai" provider options map once; every option below reads
@@ -169,16 +262,32 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		openaiOpts, _ = opts.ProviderOptions["openai"].(map[string]interface{})
 	}
 
-	// reasoningSummary is a Responses API option; the chat options schema has
-	// no field for it, so it would otherwise be silently dropped. Warn
-	// instead (TS commit 5b8e63bad8, #21178). The message is provider-neutral
-	// because azure.chat() shares this code path.
-	if v, ok := openaiOpts["reasoningSummary"]; ok && v != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "reasoningSummary",
-			Details: "reasoningSummary is only supported by the Responses API, not the Chat Completions API",
-		})
+	// OpenAI-compatible wrappers (baseten, deepinfra, vertex MaaS, ...) read
+	// options from openaiCompatible / <providerName> / <camelCaseName> like
+	// TS OpenAICompatibleChatLanguageModel; the legacy "openai" key keeps
+	// working underneath. Unknown keys from the provider-named maps are
+	// forwarded to the request body (TS passes them through).
+	var compatPassthrough map[string]interface{}
+	if m.provider.config.OpenAICompatible {
+		resolved, resolveWarnings := providerutils.ResolveOpenAICompatibleProviderOptions(m.fileReferenceProvider(), opts.ProviderOptions)
+		warnings = append(warnings, resolveWarnings...)
+		// Only the options TS OpenAICompatibleChatLanguageModel models itself
+		// (user, reasoningEffort, textVerbosity; strictJsonSchema is read
+		// separately) are interpreted from the provider-named maps; every
+		// other key there is passed through to the body verbatim (below), not
+		// also converted into the OpenAI-only snake_case fields. The legacy
+		// "openai" key keeps its v0.5.2 native handling.
+		merged := make(map[string]interface{}, len(openaiOpts)+3)
+		for k, v := range openaiOpts {
+			merged[k] = v
+		}
+		for _, k := range []string{"user", "reasoningEffort", "textVerbosity"} {
+			if v, ok := resolved[k]; ok {
+				merged[k] = v
+			}
+		}
+		openaiOpts = merged
+		compatPassthrough = resolved
 	}
 
 	// Extract store flag early — needed before message conversion so we can
@@ -230,6 +339,25 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		resolvedReasoningEffort = ""
 	}
 
+	// TS getArgs warning order: reasoningEffort, topK, reasoningSummary, message
+	// warnings, response-format schema warnings, promptCacheRetention, the
+	// reasoning-model removals, serviceTier and finally the tool warnings.
+	if opts.TopK != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK"})
+	}
+
+	// reasoningSummary is a Responses API option; the chat options schema has
+	// no field for it, so it would otherwise be silently dropped. Warn
+	// instead (TS commit 5b8e63bad8, #21178). The message is provider-neutral
+	// because azure.chat() shares this code path.
+	if v, ok := openaiOpts["reasoningSummary"]; ok && v != nil {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "reasoningSummary",
+			Details: "reasoningSummary is only supported by the Responses API, not the Chat Completions API",
+		})
+	}
+
 	// Convert messages, filtering unencrypted reasoning from assistant messages
 	// when store=false. Without server-side persistence the API cannot reconstruct
 	// the reasoning context in subsequent turns, making these parts useless.
@@ -253,9 +381,23 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// object is sent as "{}" rather than forwarded verbatim. This is unique
 	// to OpenAI's own chat conversion -- other ToOpenAIMessages callers
 	// (Groq/DeepSeek/openai-compatible/Alibaba/...) must not opt in.
-	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{SanitizeReplayedToolCallArguments: true, IncludePromptCacheBreakpoint: true, AllowVideo: m.provider.config.AllowVideo}
+	native := !m.provider.config.OpenAICompatible
+	// A prompt with neither messages nor text (e.g. system-only) must still
+	// carry a concrete message slice for the system-message prepend below.
+	body["messages"] = []map[string]interface{}{}
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{ThoughtSignatureKey: m.thoughtSignatureKey(), SanitizeReplayedToolCallArguments: native, IncludePromptCacheBreakpoint: native, WrapToolErrorOutputs: native, AllowVideo: m.provider.config.AllowVideo || m.provider.config.OpenAICompatible, SupportsMultiPartToolContent: m.provider.config.SupportsMultiPartToolContent, Provider: m.fileReferenceProvider()}
+	toOpenAIMessagesOpts.FileParts = prompt.FilePartsOpenAIChat
+	if !native {
+		toOpenAIMessagesOpts.ReasoningKey = "reasoning_content"
+		toOpenAIMessagesOpts.SpreadCompatMetadata = true
+		toOpenAIMessagesOpts.FileParts = prompt.FilePartsOpenAICompatible
+	}
 	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToOpenAIMessages(convertMessages(opts.Prompt.Messages), toOpenAIMessagesOpts)
+		converted, convErr := prompt.ToOpenAIMessagesWithError(convertMessages(opts.Prompt.Messages), toOpenAIMessagesOpts)
+		if convErr != nil {
+			return nil, nil, convErr
+		}
+		body["messages"] = converted
 	} else if opts.Prompt.IsSimple() {
 		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), toOpenAIMessagesOpts)
 	}
@@ -269,15 +411,42 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// which takes precedence over the capability-derived default (TS getArgs:
 	// `openaiOptions.systemMessageMode ?? (isReasoningModel ? 'developer' :
 	// modelCapabilities.systemMessageMode)`).
+	// The same mode applies to system-role messages carried in Messages (TS
+	// convertToOpenAIChatMessages handles every system message alike).
+	systemRole := capabilities.SystemMessageMode
+	if isReasoningModel {
+		systemRole = "developer"
+	}
+	if v, ok := openaiOpts["systemMessageMode"].(string); ok && v != "" {
+		systemRole = v
+	}
+	if msgs, ok := body["messages"].([]map[string]interface{}); ok {
+		kept := make([]map[string]interface{}, 0, len(msgs))
+		removed := false
+		for _, mm := range msgs {
+			if mm["role"] == "system" {
+				switch systemRole {
+				case "developer":
+					mm["role"] = "developer"
+				case "remove":
+					removed = true
+					continue
+				}
+			}
+			kept = append(kept, mm)
+		}
+		body["messages"] = kept
+		if removed {
+			warnings = append(warnings, types.Warning{
+				Type:    "other",
+				Message: "system messages are removed for this model",
+				Details: "system messages are removed for this model",
+			})
+		}
+	}
 	if opts.Prompt.System != "" {
-		messages := body["messages"].([]map[string]interface{})
-		role := capabilities.SystemMessageMode
-		if isReasoningModel {
-			role = "developer"
-		}
-		if v, ok := openaiOpts["systemMessageMode"].(string); ok && v != "" {
-			role = v
-		}
+		messages, _ := body["messages"].([]map[string]interface{})
+		role := systemRole
 		switch role {
 		case "remove":
 			warnings = append(warnings, types.Warning{
@@ -292,6 +461,88 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 				"content": opts.Prompt.System,
 			}
 			body["messages"] = append([]map[string]interface{}{systemMsg}, messages...)
+		}
+	}
+
+	// Add response format if present
+	// Response format (TS openai-chat-language-model.ts): json_schema when a
+	// schema is present (strictJsonSchema defaults to true), else json_object.
+	// The schema is normalized for OpenAI structured outputs first (d5e3024,
+	// 411b3f2: drop propertyNames / lookaround patterns).
+	responseFormat := opts.ResponseFormat
+	if m.provider.config.OpenAICompatible {
+		supportsStructured := m.provider.config.SupportsStructuredOutputs != nil && *m.provider.config.SupportsStructuredOutputs // TS default false
+		// OpenAICompatibleChatLanguageModel: json_schema only when
+		// supportsStructuredOutputs and a schema is present (no strict flag, no
+		// OpenAI schema normalization), else json_object.
+		if responseFormat != nil && responseFormat.Type == "json" {
+			schema := providerutils.ResponseFormatJSONSchema(responseFormat.Schema)
+			if supportsStructured && schema != nil {
+				name := responseFormat.Name
+				if name == "" {
+					name = "response"
+				}
+				strict := true
+				cname, _, _ := strings.Cut(m.provider.Name(), ".")
+				if resolved, _ := providerutils.ResolveOpenAICompatibleProviderOptions(strings.TrimSpace(cname), opts.ProviderOptions); resolved != nil {
+					if v, ok := resolved["strictJsonSchema"].(bool); ok {
+						strict = v
+					}
+				}
+				js := map[string]interface{}{"schema": schema, "strict": strict, "name": name}
+				if responseFormat.Description != "" {
+					js["description"] = responseFormat.Description
+				}
+				body["response_format"] = map[string]interface{}{"type": "json_schema", "json_schema": js}
+			} else {
+				body["response_format"] = map[string]interface{}{"type": "json_object"}
+				if schema != nil {
+					warnings = append(warnings, types.Warning{
+						Type:    "unsupported",
+						Feature: "responseFormat",
+						Details: "JSON response format schema is only supported with structuredOutputs",
+					})
+				}
+			}
+		}
+	} else {
+		if responseFormat != nil && responseFormat.Type == "json" {
+			if rawSchema := providerutils.ResponseFormatJSONSchemaOrdered(responseFormat.Schema); rawSchema != nil {
+				{
+					normalizedSchema, schemaWarnings, normErr := NormalizeOpenAISchemaValue(rawSchema)
+					if normErr != nil {
+						return nil, nil, normErr
+					}
+					warnings = append(warnings, schemaWarnings...)
+					rfCopy := *responseFormat
+					rfCopy.Schema = normalizedSchema
+					responseFormat = &rfCopy
+				}
+			}
+		}
+		if format, fmtWarnings := providerutils.ChatResponseFormat(responseFormat, providerutils.ChatResponseFormatOptions{
+			StructuredOutputs: true,
+			StrictJSONSchema:  m.strictJSONSchema(opts.ProviderOptions),
+		}); format != nil {
+			body["response_format"] = format
+			warnings = append(warnings, fmtWarnings...)
+		}
+	}
+
+	// Apply OpenAI-specific provider options
+	// Add prompt cache retention if present.
+	// Supports "in_memory" (default) and "24h" (for gpt-5.1 series).
+	// GPT-6+ models don't support it; use promptCacheOptions instead
+	// (b2b1bb9).
+	if promptCacheRetention, ok := openaiOpts["promptCacheRetention"].(string); ok && promptCacheRetention != "" {
+		if capabilities.SupportedReasoningEfforts != nil {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "promptCacheRetention",
+				Details: "promptCacheRetention is not supported by GPT-6 and later models; use promptCacheOptions instead",
+			})
+		} else {
+			body["prompt_cache_retention"] = promptCacheRetention
 		}
 	}
 
@@ -351,7 +602,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if v, ok := openaiOpts["parallelToolCalls"].(bool); ok {
 		body["parallel_tool_calls"] = v
 	}
-	if v, ok := openaiOpts["user"].(string); ok && v != "" {
+	if v, ok := openaiOpts["user"].(string); ok { // z.string(): "" is forwarded like TS
 		body["user"] = v
 	}
 	if v, ok := openaiOpts["metadata"]; ok && v != nil {
@@ -360,10 +611,10 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if v, ok := openaiOpts["prediction"]; ok && v != nil {
 		body["prediction"] = v
 	}
-	if v, ok := openaiOpts["safetyIdentifier"].(string); ok && v != "" {
+	if v, ok := openaiOpts["safetyIdentifier"].(string); ok { // z.string(): "" is forwarded like TS
 		body["safety_identifier"] = v
 	}
-	if v, ok := openaiOpts["promptCacheKey"].(string); ok && v != "" {
+	if v, ok := openaiOpts["promptCacheKey"].(string); ok { // z.string(): "" is forwarded like TS
 		body["prompt_cache_key"] = v
 	}
 
@@ -452,72 +703,10 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		}
 	}
 
-	// Add tools if present. Function tool parameter schemas are normalized
-	// for OpenAI structured outputs (d5e3024, 411b3f2), mirroring TS
-	// prepareChatTools -- kept local to the OpenAI chat model rather than the
-	// shared tool.ToOpenAIFormat helper, which other OpenAI-compatible
-	// providers also use.
-	if len(opts.Tools) > 0 {
-		openaiTools := tool.ToOpenAIFormat(opts.Tools)
-		normalizedTools, toolSchemaWarnings, normErr := normalizeOpenAIChatToolSchemas(openaiTools)
-		if normErr != nil {
-			return nil, nil, normErr
-		}
-		warnings = append(warnings, toolSchemaWarnings...)
-		body["tools"] = normalizedTools
-		if opts.ToolChoice.Type != "" {
-			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
-		}
-	}
-
-	// Add response format if present
-	// Response format (TS openai-chat-language-model.ts): json_schema when a
-	// schema is present (strictJsonSchema defaults to true), else json_object.
-	// The schema is normalized for OpenAI structured outputs first (d5e3024,
-	// 411b3f2: drop propertyNames / lookaround patterns).
-	responseFormat := opts.ResponseFormat
-	if responseFormat != nil && responseFormat.Type == "json" {
-		if rawSchema := providerutils.ResponseFormatJSONSchema(responseFormat.Schema); rawSchema != nil {
-			if schemaMap, ok := rawSchema.(map[string]interface{}); ok {
-				normalizedSchema, schemaWarnings, normErr := NormalizeOpenAIJSONSchema(schemaMap)
-				if normErr != nil {
-					return nil, nil, normErr
-				}
-				warnings = append(warnings, schemaWarnings...)
-				rfCopy := *responseFormat
-				rfCopy.Schema = normalizedSchema
-				responseFormat = &rfCopy
-			}
-		}
-	}
-	if format, fmtWarnings := providerutils.ChatResponseFormat(responseFormat, providerutils.ChatResponseFormatOptions{
-		StructuredOutputs: true,
-		StrictJSONSchema:  m.strictJSONSchema(opts.ProviderOptions),
-	}); format != nil {
-		body["response_format"] = format
-		warnings = append(warnings, fmtWarnings...)
-	}
-
 	if resolvedReasoningEffort != "" {
 		body["reasoning_effort"] = resolvedReasoningEffort
 	}
 
-	// Apply OpenAI-specific provider options
-	// Add prompt cache retention if present.
-	// Supports "in_memory" (default) and "24h" (for gpt-5.1 series).
-	// GPT-6+ models don't support it; use promptCacheOptions instead
-	// (b2b1bb9).
-	if promptCacheRetention, ok := openaiOpts["promptCacheRetention"].(string); ok && promptCacheRetention != "" {
-		if capabilities.SupportedReasoningEfforts != nil {
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: "promptCacheRetention",
-				Details: "promptCacheRetention is not supported by GPT-6 and later models; use promptCacheOptions instead",
-			})
-		} else {
-			body["prompt_cache_retention"] = promptCacheRetention
-		}
-	}
 	// promptCacheOptions (b2b1bb9): {mode, ttl} forwarded as-is to
 	// prompt_cache_options.
 	if promptCacheOptions, ok := openaiOpts["promptCacheOptions"]; ok && promptCacheOptions != nil {
@@ -543,6 +732,33 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			body["service_tier"] = serviceTier
 		}
 	}
+	// Add tools if present. Function tool parameter schemas are normalized
+	// for OpenAI structured outputs (d5e3024, 411b3f2), mirroring TS
+	// prepareChatTools -- kept local to the OpenAI chat model rather than the
+	// shared tool.ToOpenAIFormat helper, which other OpenAI-compatible
+	// providers also use.
+	if len(opts.Tools) > 0 {
+		// Provider-defined tools are not Chat Completions tools: TS warns
+		// `tool type: provider` (native) / `provider-defined tool <id>`
+		// (openai-compatible) and drops them.
+		var label func(types.Tool) string
+		if !m.provider.config.OpenAICompatible {
+			label = func(types.Tool) string { return "tool type: provider" }
+		}
+		functionTools, droppedTools := tool.DropProviderDefinedTools(opts.Tools, label)
+		warnings = append(warnings, droppedTools...)
+		openaiTools := tool.ToOpenAIFormat(functionTools)
+		normalizedTools, toolSchemaWarnings, normErr := normalizeOpenAIChatToolSchemas(openaiTools)
+		if normErr != nil {
+			return nil, nil, normErr
+		}
+		warnings = append(warnings, toolSchemaWarnings...)
+		body["tools"] = normalizedTools
+		if opts.ToolChoice.Type != "" {
+			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
+		}
+	}
+
 	// Forward store only when explicitly set (already extracted above).
 	if storeExplicit {
 		body["store"] = store
@@ -553,8 +769,22 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		body["verbosity"] = v
 	}
 
+	for k, v := range compatPassthrough {
+		switch k {
+		case "user", "reasoningEffort", "textVerbosity", "strictJsonSchema",
+			"messages", "tools", "tool_choice", "reasoning_effort", "verbosity", "stream", "stream_options":
+			continue
+		}
+		body[k] = v
+	}
+
 	if m.provider.config.TransformRequestBody != nil {
 		body = m.provider.config.TransformRequestBody(body)
+	}
+	if m.provider.config.TransformRequestBodyWithWarnings != nil {
+		var transformWarnings []types.Warning
+		body, transformWarnings = m.provider.config.TransformRequestBodyWithWarnings(body)
+		warnings = append(warnings, transformWarnings...)
 	}
 
 	return body, warnings, nil
@@ -569,11 +799,19 @@ func chatStringSliceContains(list []string, s string) bool {
 	return false
 }
 
+// convertUsage converts the wire usage with the model's token accounting.
+func (m *LanguageModel) convertUsage(usage openAIUsage) types.Usage {
+	if m.provider.config.OpenAICompatible {
+		return convertCompatUsage(usage)
+	}
+	return convertOpenAIUsage(usage)
+}
+
 // convertResponse converts an OpenAI response to GenerateResult
 // Updated in v6.0 to support detailed usage tracking
 func (m *LanguageModel) convertResponse(response openAIResponse) *types.GenerateResult {
 	result := &types.GenerateResult{
-		Usage:       convertOpenAIUsage(response.Usage),
+		Usage:       m.convertUsage(response.Usage),
 		RawResponse: response,
 	}
 
@@ -589,6 +827,22 @@ func (m *LanguageModel) convertResponse(response openAIResponse) *types.Generate
 			result.Text = choice.Message.Audio.Transcript
 		}
 
+		// Reasoning text from OpenAI-compatible hosts comes first (TS
+		// openai-compatible content order: reasoning, text, tool calls).
+		if m.provider.config.OpenAICompatible {
+			// content may carry thinking parts (TS convertOpenAICompatibleContent).
+			if choice.Message.ContentThinking != "" {
+				result.Content = append(result.Content, types.ReasoningContent{Text: choice.Message.ContentThinking})
+			}
+			reasoning := choice.Message.ReasoningContent
+			if reasoning == nil {
+				reasoning = choice.Message.Reasoning
+			}
+			if reasoning != nil && *reasoning != "" {
+				result.Content = append(result.Content, types.ReasoningContent{Text: *reasoning})
+			}
+		}
+
 		// Extract tool calls
 		if len(choice.Message.ToolCalls) > 0 {
 			result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
@@ -596,10 +850,38 @@ func (m *LanguageModel) convertResponse(response openAIResponse) *types.Generate
 				var args map[string]interface{}
 				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
 
+				id := tc.ID
+				if id == "" {
+					// TS: toolCall.id ?? generateId().
+					id = streaming.GenerateID()
+				}
 				result.ToolCalls[i] = types.ToolCall{
-					ID:        tc.ID,
+					ID:        id,
 					ToolName:  tc.Function.Name,
 					Arguments: args,
+					// Wire text keeps the key order TS keeps (JSON.stringify of the parsed input).
+					RawArguments: tc.Function.Arguments,
+				}
+				if m.provider.config.OpenAICompatible && tc.ExtraContent != nil && tc.ExtraContent.Google != nil &&
+					tc.ExtraContent.Google.ThoughtSignature != nil && *tc.ExtraContent.Google.ThoughtSignature != "" {
+					sig := *tc.ExtraContent.Google.ThoughtSignature
+					key := m.compatName()
+					result.ToolCalls[i].ThoughtSignature = sig
+					result.ToolCalls[i].ProviderMetadata = map[string]interface{}{key: map[string]interface{}{"thoughtSignature": sig}}
+				}
+			}
+		}
+
+		// url_citation annotations become url sources (TS OpenAIChatLanguageModel).
+		if !m.provider.config.OpenAICompatible {
+			for _, ann := range choice.Message.Annotations {
+				if ann.Type == "url_citation" && ann.URLCitation != nil {
+					result.Content = append(result.Content, types.SourceContent{
+						SourceType: "url",
+						ID:         streaming.GenerateID(),
+						URL:        ann.URLCitation.URL,
+						Title:      ann.URLCitation.Title,
+					})
 				}
 			}
 		}
@@ -607,17 +889,81 @@ func (m *LanguageModel) convertResponse(response openAIResponse) *types.Generate
 		// Extract finish reason
 		result.FinishReason = providerutils.MapOpenAIFinishReason(choice.FinishReason)
 		result.RawFinishReason = choice.FinishReason
+
+		result.ProviderMetadata = m.chatProviderMetadata(response.Usage.CompletionTokensDetails, nil)
+	} else {
+		result.ProviderMetadata = m.chatProviderMetadata(response.Usage.CompletionTokensDetails, nil)
 	}
 
 	return result
 }
 
+// applyChatLogprobs adds choices[0].logprobs.content to the provider metadata
+// (TS providerMetadata.openai.logprobs; native OpenAI chat only).
+func (m *LanguageModel) applyChatLogprobs(result *types.GenerateResult, body []byte) {
+	if m.provider.config.OpenAICompatible {
+		return
+	}
+	var wire struct {
+		Choices []struct {
+			Logprobs *struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"logprobs"`
+		} `json:"choices"`
+	}
+	if json.Unmarshal(body, &wire) != nil || len(wire.Choices) == 0 || wire.Choices[0].Logprobs == nil {
+		return
+	}
+	content := wire.Choices[0].Logprobs.Content
+	if len(content) == 0 || string(content) == "null" {
+		return
+	}
+	if meta, ok := result.ProviderMetadata["openai"].(map[string]interface{}); ok {
+		meta["logprobs"] = content
+	}
+}
+
+// chatProviderMetadata builds the provider metadata TS OpenAIChatLanguageModel
+// (key "openai") and OpenAICompatibleChatLanguageModel (key = providerOptions
+// name) attach to results: accepted/rejected prediction tokens and logprobs.
+func (m *LanguageModel) chatProviderMetadata(details *struct {
+	ReasoningTokens          *int `json:"reasoning_tokens,omitempty"`
+	AcceptedPredictionTokens *int `json:"accepted_prediction_tokens,omitempty"`
+	RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
+}, logprobs json.RawMessage) map[string]interface{} {
+	key := "openai"
+	if m.provider.config.OpenAICompatible {
+		key = m.compatName()
+	}
+	meta := map[string]interface{}{}
+	if details != nil {
+		if details.AcceptedPredictionTokens != nil {
+			meta["acceptedPredictionTokens"] = *details.AcceptedPredictionTokens
+		}
+		if details.RejectedPredictionTokens != nil {
+			meta["rejectedPredictionTokens"] = *details.RejectedPredictionTokens
+		}
+	}
+	if len(logprobs) > 0 && !m.provider.config.OpenAICompatible {
+		meta["logprobs"] = logprobs
+	}
+	return map[string]interface{}{key: meta}
+}
+
 // convertOpenAIUsage converts OpenAI usage to detailed Usage struct
 // Implements the v6.0 detailed token tracking with cache and reasoning tokens
 func convertOpenAIUsage(usage openAIUsage) types.Usage {
+	// TS: a response without a usage object yields the null usage (unknown
+	// token counts), not zero tokens.
+	if usage.rawWire == nil && usage.PromptTokens == 0 && usage.CompletionTokens == 0 && usage.TotalTokens == 0 &&
+		usage.PromptTokensDetails == nil && usage.CompletionTokensDetails == nil {
+		return types.Usage{}
+	}
 	promptTokens := int64(usage.PromptTokens)
 	completionTokens := int64(usage.CompletionTokens)
-	totalTokens := int64(usage.TotalTokens)
+	// TS core totalTokens = input total + output total (wire total_tokens is
+	// optional and ignored).
+	totalTokens := promptTokens + completionTokens
 
 	result := types.Usage{
 		InputTokens:  &promptTokens,
@@ -659,7 +1005,7 @@ func convertOpenAIUsage(usage openAIUsage) types.Usage {
 	}
 
 	// Set input token details
-	if cachedTokens > 0 || cacheWriteTokens != nil || textTokens != nil || imageTokens != nil {
+	{
 		noCacheTokens := promptTokens - cachedTokens
 		if cacheWriteTokens != nil {
 			noCacheTokens -= *cacheWriteTokens
@@ -674,8 +1020,11 @@ func convertOpenAIUsage(usage openAIUsage) types.Usage {
 	}
 
 	// Set output token details
-	if reasoningTokens > 0 {
+	{
 		textTokens := completionTokens - reasoningTokens
+		if textTokens < 0 {
+			textTokens = 0
+		}
 		result.OutputDetails = &types.OutputTokenDetails{
 			TextTokens:      &textTokens,
 			ReasoningTokens: &reasoningTokens,
@@ -695,12 +1044,39 @@ func convertOpenAIUsage(usage openAIUsage) types.Usage {
 	if usage.CompletionTokensDetails != nil {
 		result.Raw["completion_tokens_details"] = usage.CompletionTokensDetails
 	}
+	if usage.rawWire != nil {
+		result.Raw = usage.rawWire
+	}
 
 	return result
 }
 
+// convertCompatUsage is convertOpenAIUsage with the openai-compatible
+// accounting (TS convertOpenAICompatibleChatUsage): cache_write_tokens is not
+// modeled, so noCache is prompt - cached, and usage.raw is the loose object.
+func convertCompatUsage(usage openAIUsage) types.Usage {
+	u := convertOpenAIUsage(usage)
+	if u.InputDetails != nil && u.InputTokens != nil {
+		u.InputDetails.CacheWriteTokens = nil
+		if u.InputDetails.CacheReadTokens != nil {
+			noCache := *u.InputTokens - *u.InputDetails.CacheReadTokens
+			u.InputDetails.NoCacheTokens = &noCache
+		}
+	}
+	if usage.rawFull != nil {
+		u.Raw = usage.rawFull
+	}
+	return u
+}
+
 // handleError converts various errors to provider errors
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
 	// Try to parse as OpenAI error response
 	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
@@ -740,19 +1116,87 @@ type openAIUsage struct {
 		AcceptedPredictionTokens *int `json:"accepted_prediction_tokens,omitempty"`
 		RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
 	} `json:"completion_tokens_details,omitempty"`
+
+	// rawWire is the usage object as the TS OpenAI chat schema keeps it
+	// (unmodeled keys stripped); rawFull is the object exactly as sent, which
+	// the loose openai-compatible schema keeps (TS usage.raw).
+	rawWire map[string]interface{}
+	rawFull map[string]interface{}
+}
+
+// UnmarshalJSON decodes the usage and keeps the wire object so Usage.Raw is
+// the provider payload verbatim, not a re-encoding of the typed fields.
+func (u *openAIUsage) UnmarshalJSON(b []byte) error {
+	type plain openAIUsage
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*u = openAIUsage(p)
+	var raw map[string]interface{}
+	if json.Unmarshal(b, &raw) == nil && raw != nil {
+		u.rawWire = filterChatUsageRaw(raw)
+		u.rawFull = raw
+	}
+	return nil
+}
+
+// filterChatUsageRaw keeps only the keys the TS openai chat usage schema
+// declares: its zod parse strips the rest (e.g. audio_tokens) from usage.raw.
+func filterChatUsageRaw(raw map[string]interface{}) map[string]interface{} {
+	pick := func(m map[string]interface{}, keys ...string) map[string]interface{} {
+		o := map[string]interface{}{}
+		for _, k := range keys {
+			if v, ok := m[k]; ok {
+				o[k] = v
+			}
+		}
+		return o
+	}
+	out := pick(raw, "prompt_tokens", "completion_tokens", "total_tokens")
+	if d, ok := raw["prompt_tokens_details"].(map[string]interface{}); ok {
+		out["prompt_tokens_details"] = pick(d, "cached_tokens", "cache_write_tokens")
+	} else if v, ok := raw["prompt_tokens_details"]; ok {
+		out["prompt_tokens_details"] = v
+	}
+	if d, ok := raw["completion_tokens_details"].(map[string]interface{}); ok {
+		out["completion_tokens_details"] = pick(d, "reasoning_tokens", "accepted_prediction_tokens", "rejected_prediction_tokens")
+	} else if v, ok := raw["completion_tokens_details"]; ok {
+		out["completion_tokens_details"] = v
+	}
+	return out
 }
 
 // openAIMessage represents an OpenAI message
 type openAIMessage struct {
-	Role      string           `json:"role"`
-	Content   string           `json:"content"`
-	ToolCalls []openAIToolCall `json:"tool_calls,omitempty"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	// ContentThinking is the reasoning text carried by "thinking" content
+	// parts (OpenAI-compatible hosts); Content holds the text parts.
+	ContentThinking string           `json:"-"`
+	ToolCalls       []openAIToolCall `json:"tool_calls,omitempty"`
 	// Audio carries the transcript for audio-output chat completions
 	// (gpt-4o-audio-preview etc.); used as fallback text when Content is
 	// empty (6d1f881).
 	Audio *struct {
 		Transcript string `json:"transcript"`
 	} `json:"audio,omitempty"`
+	// ReasoningContent / Reasoning carry reasoning text from
+	// OpenAI-compatible hosts (TS openai-compatible: reasoning_content ??
+	// reasoning).
+	ReasoningContent *string `json:"reasoning_content,omitempty"`
+	Reasoning        *string `json:"reasoning,omitempty"`
+	// Annotations carries url_citation entries (OpenAI web search).
+	Annotations []openAIAnnotation `json:"annotations,omitempty"`
+}
+
+// openAIAnnotation is a chat completion message/delta annotation.
+type openAIAnnotation struct {
+	Type        string `json:"type"`
+	URLCitation *struct {
+		URL   string `json:"url"`
+		Title string `json:"title"`
+	} `json:"url_citation,omitempty"`
 }
 
 // openAIToolCall represents an OpenAI tool call
@@ -763,6 +1207,13 @@ type openAIToolCall struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"` // JSON string
 	} `json:"function"`
+	// ExtraContent carries Gemini thought signatures on OpenAI-compatible
+	// endpoints (extra_content.google.thought_signature).
+	ExtraContent *struct {
+		Google *struct {
+			ThoughtSignature *string `json:"thought_signature"`
+		} `json:"google"`
+	} `json:"extra_content,omitempty"`
 }
 
 // filterUnencryptedReasoningParts removes ReasoningContent parts that have no
@@ -817,18 +1268,32 @@ type openAIStream struct {
 	metadataEmitted  bool
 	pendingRaw       []*provider.StreamChunk
 	pendingMetadata  *provider.StreamChunk
-	outputStarted    bool
-	providerName     string
-	responseHeaders  http.Header
-	requestBody      interface{}
+	// outputStarted is set once the stream is past TS
+	// throwIfOpenAIStreamErrorBeforeOutput's peek: a chunk with content, tool
+	// calls or annotations arrived, a chunk failed to parse, or the stream
+	// ended. Until then an error frame fails the call and nothing is handed out
+	// (held keeps the chunks produced so far).
+	outputStarted   bool
+	held            []*provider.StreamChunk
+	providerName    string
+	responseHeaders http.Header
+	requestBody     interface{}
+
+	// compat marks an OpenAI-compatible wrapper (reasoning deltas, no
+	// annotations/logprobs); metaKey is the providerMetadata namespace.
+	compat  bool
+	metaKey string
 
 	// The terminal finish chunk is held back until the stream ends so a
 	// trailing usage-only chunk (stream_options.include_usage) can be merged
 	// into it, as TS does in flush().
-	finishRaw  string
-	finishSeen bool
-	finished   bool
-	usage      *openAIUsage
+	finishRaw         string
+	finishSeen        bool // a choice carried a non-null finish_reason
+	finishErrored     bool // TS finishReason={unified:'error'} after an unparsable/error chunk
+	finished          bool
+	isActiveReasoning bool
+	usage             *openAIUsage
+	logprobs          json.RawMessage
 }
 
 // newOpenAIStream creates a new OpenAI stream
@@ -844,11 +1309,39 @@ func newOpenAIStreamWithMetadata(reader io.ReadCloser, emitRaw bool, providerNam
 	return &openAIStream{
 		reader:           reader,
 		parser:           streaming.NewSSEParser(reader),
-		toolCallTracker:  streaming.NewStreamingToolCallTracker(),
+		toolCallTracker:  newOpenAIToolCallTracker(),
 		includeRawChunks: emitRaw,
 		providerName:     providerName,
 		responseHeaders:  headers,
 	}
+}
+
+// chunkShape selects the TS chunk schema for this stream: the OpenAI chat
+// schema, or openai-compatible's chunkBaseSchema (with the provider's error
+// member) for compat wrappers.
+func (s *openAIStream) chunkShape() providerutils.ChatChunkShape {
+	if !s.compat {
+		return providerutils.ChatChunkShape{Kind: providerutils.ChunkKindOpenAI}
+	}
+	name, _, _ := strings.Cut(s.providerName, ".")
+	return providerutils.ChatChunkShape{Error: providerutils.ChunkErrorKindForProvider(strings.TrimSpace(name))}
+}
+
+// contentParts reads a delta's `content` (already schema-validated): a string,
+// or for compat wrappers an array of text / thinking parts.
+func (s *openAIStream) contentParts(raw json.RawMessage) []streaming.CompatContentPart {
+	if s.compat {
+		parts, _ := streaming.OpenAICompatContentParts(raw)
+		return parts
+	}
+	// TS OpenAIChatLanguageModel: `delta.content != null` opens the text
+	// block and emits a text-delta, even for the empty string OpenAI sends in
+	// its role chunk (the TS test expects { delta: '' } first).
+	var text string
+	if len(raw) == 0 || string(raw) == "null" || json.Unmarshal(raw, &text) != nil {
+		return nil
+	}
+	return []streaming.CompatContentPart{{Text: text}}
 }
 
 // RequestBody implements provider.StreamRequestBody, exposing the raw
@@ -867,6 +1360,8 @@ func (s *openAIStream) Close() error {
 // Next returns the next chunk in the stream
 func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 	for {
+		s.settleHeld()
+
 		// Emit any fully-assembled chunks before reading more SSE events.
 		if len(s.flushQueue) > 0 {
 			chunk := s.flushQueue[0]
@@ -903,39 +1398,58 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			Created int64  `json:"created"`
 			Choices []struct {
 				Delta struct {
-					Content   string `json:"content"`
-					ToolCalls []struct {
+					Content          json.RawMessage `json:"content"`
+					ReasoningContent *string         `json:"reasoning_content,omitempty"`
+					Reasoning        *string         `json:"reasoning,omitempty"`
+					ToolCalls        []struct {
 						Index    *int    `json:"index"`
 						ID       string  `json:"id"`
 						Type     *string `json:"type"` // nullable: OpenAI may send null for type in streaming deltas (#12901)
 						Function struct {
-							Name      string `json:"name"`
-							Arguments string `json:"arguments"`
+							Name      streaming.WireName `json:"name"`
+							Arguments *string            `json:"arguments"`
 						} `json:"function"`
 					} `json:"tool_calls,omitempty"`
+					Annotations []openAIAnnotation `json:"annotations,omitempty"`
 				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
+				Logprobs     *struct {
+					Content json.RawMessage `json:"content"`
+				} `json:"logprobs,omitempty"`
 			} `json:"choices"`
 			Usage *openAIUsage    `json:"usage,omitempty"`
 			Error json.RawMessage `json:"error,omitempty"`
 		}
 
-		if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
+		// TS openaiChatChunkSchema (openai-compatible chunkBaseSchema for
+		// compat wrappers): a frame that is not valid JSON or fails the schema
+		// is an error part carrying a typed error. The schema also accepts the
+		// provider's error envelope, which is routed below.
+		msg, perr := providerutils.CheckChatChunk(event.Data, s.chunkShape())
+		if perr == nil {
+			if derr := providerutils.UnmarshalChunk([]byte(event.Data), &chunkData); derr != nil {
+				msg, perr = providerutils.ChunkParseFailure(event.Data, derr)
+			}
+		}
+		if perr != nil {
+			// TS returns the stream from the peek on a chunk that fails to parse.
+			s.outputStarted = true
 			s.queueRawChunk(event.Data)
-			errorChunk := &provider.StreamChunk{
+			s.finishErrored = true
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
-			}
-			if len(s.flushQueue) > 0 {
-				s.flushQueue = append(s.flushQueue, errorChunk)
-				continue
-			}
-			return errorChunk, nil
+				Text: msg,
+				Err:  perr,
+			})
+			continue
 		}
 		rawChunk := s.rawChunk(event.Data)
 		if len(chunkData.Error) > 0 {
-			if !s.outputStarted {
+			// TS throwIfOpenAIStreamErrorBeforeOutput wraps only the native OpenAI
+			// models; the openai-compatible chat model emits an error part.
+			if !s.outputStarted && !s.compat {
 				s.flushQueue = nil
+				s.held = nil
 				s.pendingRaw = nil
 				s.pendingMetadata = nil
 				s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
@@ -944,6 +1458,7 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			if rawChunk != nil {
 				s.flushQueue = append(s.flushQueue, rawChunk)
 			}
+			s.finishErrored = true
 			errorChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: openAIStreamErrorText(chunkData.Error),
@@ -981,66 +1496,154 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			s.usage = chunkData.Usage
 		}
 
-		if len(chunkData.Choices) > 0 {
-			choice := chunkData.Choices[0]
-
-			// Text chunk
-			if choice.Delta.Content != "" {
+		// TS isOpenAIChatOutputChunk: any choice with content, tool calls or
+		// annotations ends the peek for an error frame.
+		for _, c := range chunkData.Choices {
+			var text string
+			_ = json.Unmarshal(c.Delta.Content, &text) //nolint:errcheck // null / non-string content is not output
+			if text != "" || len(c.Delta.ToolCalls) > 0 || len(c.Delta.Annotations) > 0 {
 				s.outputStarted = true
+				break
+			}
+		}
+
+		produced := false
+		emit := func(c *provider.StreamChunk) {
+			if !produced {
+				produced = true
 				if rawChunk != nil {
 					s.pendingRaw = append(s.pendingRaw, rawChunk)
 				}
 				s.flushPendingMetadata()
-				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-					Type: provider.ChunkTypeText,
-					Text: choice.Delta.Content,
-				})
-				if choice.FinishReason != nil && len(choice.Delta.ToolCalls) == 0 {
-					s.flushOpenAIToolCalls(*choice.FinishReason)
+			}
+			s.flushQueue = append(s.flushQueue, c)
+		}
+
+		if len(chunkData.Choices) > 0 {
+			choice := chunkData.Choices[0]
+
+			if choice.Logprobs != nil && len(choice.Logprobs.Content) > 0 && string(choice.Logprobs.Content) != "null" {
+				s.logprobs = choice.Logprobs.Content
+			}
+
+			// Reasoning text (OpenAI-compatible hosts): reasoning_content ?? reasoning.
+			if s.compat {
+				reasoning := choice.Delta.ReasoningContent
+				if reasoning == nil {
+					reasoning = choice.Delta.Reasoning
 				}
-				continue
+				if reasoning != nil && *reasoning != "" {
+					if !s.isActiveReasoning {
+						s.isActiveReasoning = true
+						emit(&provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
+					}
+					emit(&provider.StreamChunk{Type: provider.ChunkTypeReasoning, Reasoning: *reasoning, ID: "reasoning-0"})
+				}
+			}
+
+			// Text chunk: a string, or (compat) an array of text / thinking
+			// parts as TS convertOpenAICompatibleContent reads it.
+			for _, part := range s.contentParts(choice.Delta.Content) {
+				if part.Reasoning {
+					if !s.isActiveReasoning {
+						s.isActiveReasoning = true
+						emit(&provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
+					}
+					emit(&provider.StreamChunk{Type: provider.ChunkTypeReasoning, Reasoning: part.Text, ID: "reasoning-0"})
+					continue
+				}
+				if s.isActiveReasoning {
+					s.isActiveReasoning = false
+					emit(&provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+				}
+				emit(&provider.StreamChunk{
+					Type: provider.ChunkTypeText,
+					Text: part.Text,
+				})
 			}
 
 			// Tool call delta — accumulate partial arguments by index.
 			// OpenAI sends: first delta has id + name + empty/partial args;
 			// subsequent deltas for the same index carry argument fragments only.
-			if len(choice.Delta.ToolCalls) > 0 {
-				if rawChunk != nil {
-					s.pendingRaw = append(s.pendingRaw, rawChunk)
+			// TS compat: an active reasoning block ends before tool calls start.
+			if len(choice.Delta.ToolCalls) > 0 && s.isActiveReasoning {
+				s.isActiveReasoning = false
+				emit(&provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+			}
+			for _, tc := range choice.Delta.ToolCalls {
+				// TS openai chat rejects a present non-function type;
+				// openai-compatible does not validate it.
+				toolCallType := ""
+				if !s.compat && tc.Type != nil {
+					toolCallType = *tc.Type
 				}
-				for _, tc := range choice.Delta.ToolCalls {
-					for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
-						c := chunk
-						s.flushPendingMetadata()
-						s.flushQueue = append(s.flushQueue, &c)
-						s.outputStarted = true
-					}
+				for _, chunk := range s.toolCallTracker.TrackWireWithTypePtr(tc.Index, tc.ID, tc.Function.Name, toolCallType, tc.Function.Arguments) {
+					c := chunk
+					emit(&c)
 				}
-				if choice.FinishReason != nil {
-					s.flushOpenAIToolCalls(*choice.FinishReason)
-				}
-				// No chunk to emit yet — keep accumulating.
-				continue
 			}
 
-			// Finish chunk — flush all accumulated tool calls first.
-			if choice.FinishReason != nil {
-				if rawChunk != nil && !s.outputStarted {
-					s.pendingRaw = append(s.pendingRaw, rawChunk)
+			// url_citation annotations become url sources (native chat only).
+			if !s.compat {
+				for _, ann := range choice.Delta.Annotations {
+					if ann.Type == "url_citation" && ann.URLCitation != nil {
+						emit(&provider.StreamChunk{
+							Type: provider.ChunkTypeSource,
+							SourceContent: &types.SourceContent{
+								SourceType: "url",
+								ID:         streaming.GenerateID(),
+								URL:        ann.URLCitation.URL,
+								Title:      ann.URLCitation.Title,
+							},
+						})
+					}
 				}
-				s.flushPendingMetadata()
-				s.flushOpenAIToolCalls(*choice.FinishReason)
-				s.outputStarted = true
-				continue
+			}
+
+			// Finish reason: only recorded. TS closes blocks, finalizes tool
+			// calls and enqueues finish in flush(), so deltas and usage that
+			// arrive after finish_reason still count.
+			if choice.FinishReason != nil {
+				if !produced {
+					produced = true
+					if rawChunk != nil {
+						s.pendingRaw = append(s.pendingRaw, rawChunk)
+					}
+					s.flushPendingMetadata()
+				}
+				s.finishErrored = false
+				s.finishSeen = true
+				s.finishRaw = *choice.FinishReason
 			}
 		}
 
+		if produced {
+			continue
+		}
 		if rawChunk != nil {
 			s.pendingRaw = append(s.pendingRaw, rawChunk)
 		}
 		// Empty chunk, get next
 		continue
 
+	}
+}
+
+// settleHeld holds the chunks produced before the first output chunk of a
+// native OpenAI stream, so an error frame arriving first can still fail the
+// call with nothing handed out (TS throwIfOpenAIStreamErrorBeforeOutput), and
+// releases them in order once the peek is over.
+func (s *openAIStream) settleHeld() {
+	if s.compat || s.outputStarted {
+		if len(s.held) > 0 {
+			s.flushQueue = append(s.held, s.flushQueue...)
+			s.held = nil
+		}
+		return
+	}
+	if len(s.flushQueue) > 0 {
+		s.held = append(s.held, s.flushQueue...)
+		s.flushQueue = nil
 	}
 }
 
@@ -1065,10 +1668,7 @@ func (s *openAIStream) rawChunk(data string) *provider.StreamChunk {
 	if !s.includeRawChunks {
 		return nil
 	}
-	var raw interface{}
-	if err := json.Unmarshal([]byte(data), &raw); err != nil {
-		raw = data
-	}
+	raw := streaming.RawChunkValue(data)
 	return &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw}
 }
 
@@ -1094,35 +1694,86 @@ func (s *openAIStream) Err() error {
 	return s.err
 }
 
-func (s *openAIStream) flushOpenAIToolCalls(finishReason string) {
-	// Emit one ChunkTypeToolCall per accumulated entry in index order.
+// closeBlocksAndToolCalls ends an open reasoning block and emits the finalized
+// tool calls (TS flush(): tool-call parts are emitted when the stream ends).
+func (s *openAIStream) closeBlocksAndToolCalls() {
+	if s.isActiveReasoning {
+		s.isActiveReasoning = false
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+	}
 	for _, chunk := range s.toolCallTracker.Flush() {
 		c := chunk
 		s.flushQueue = append(s.flushQueue, &c)
 	}
-	// The finish chunk itself waits for the end of the stream (endStream) so
-	// trailing usage can be merged into it.
-	s.finishSeen = true
-	s.finishRaw = finishReason
 }
 
-// endStream queues the terminal finish chunk, with usage when the provider
-// sent any, once the SSE stream has ended, then marks the stream complete.
+// endStream queues the terminal finish chunk (usage, provider metadata) once
+// the SSE stream has ended, then marks the stream as complete.
 func (s *openAIStream) endStream() {
+	// TS returns the stream from the peek when the source ends.
+	s.outputStarted = true
 	if !s.finished {
 		s.finished = true
-		if s.finishSeen {
-			finish := &provider.StreamChunk{
-				Type:            provider.ChunkTypeFinish,
-				FinishReason:    providerutils.MapOpenAIFinishReason(s.finishRaw),
-				RawFinishReason: s.finishRaw,
-			}
-			if s.usage != nil {
-				u := convertOpenAIUsage(*s.usage)
-				finish.Usage = &u
-			}
-			s.flushQueue = append(s.flushQueue, finish)
+		s.flushPendingMetadata()
+		s.closeBlocksAndToolCalls()
+		if s.compat && !s.finishSeen && !s.finishErrored {
+			// TS OpenAICompatibleChatLanguageModel flush(): a stream that
+			// ends without any finish_reason is an invalid response.
+			msg := "Response stream ended without a finish reason."
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: msg,
+				Err:  providererrors.NewInvalidResponseDataError(nil, msg),
+			})
+			s.finishErrored = true
 		}
+		finish := &provider.StreamChunk{
+			Type:            provider.ChunkTypeFinish,
+			FinishReason:    providerutils.MapOpenAIFinishReason(s.finishRaw),
+			RawFinishReason: s.finishRaw,
+		}
+		if !s.compat && !s.finishSeen {
+			// A clean end without the provider's completion signal is
+			// interrupted (TS #23814); OpenAI-compatible keeps its error.
+			finish.FinishReason = types.FinishReasonInterrupted
+		}
+		if s.finishErrored {
+			finish.FinishReason, finish.RawFinishReason = types.FinishReasonError, ""
+		}
+		var details *struct {
+			ReasoningTokens          *int `json:"reasoning_tokens,omitempty"`
+			AcceptedPredictionTokens *int `json:"accepted_prediction_tokens,omitempty"`
+			RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
+		}
+		if s.usage != nil {
+			convert := convertOpenAIUsage
+			if s.compat {
+				convert = convertCompatUsage
+			}
+			u := convert(*s.usage)
+			finish.Usage = &u
+			details = s.usage.CompletionTokensDetails
+		}
+		key := s.metaKey
+		if key == "" {
+			key = "openai"
+		}
+		meta := map[string]interface{}{}
+		if details != nil {
+			if details.AcceptedPredictionTokens != nil {
+				meta["acceptedPredictionTokens"] = *details.AcceptedPredictionTokens
+			}
+			if details.RejectedPredictionTokens != nil {
+				meta["rejectedPredictionTokens"] = *details.RejectedPredictionTokens
+			}
+		}
+		if len(s.logprobs) > 0 && !s.compat {
+			meta["logprobs"] = s.logprobs
+		}
+		if raw, err := json.Marshal(map[string]interface{}{key: meta}); err == nil {
+			finish.ProviderMetadata = raw
+		}
+		s.flushQueue = append(s.flushQueue, finish)
 	}
 	s.err = io.EOF
 }
@@ -1141,4 +1792,117 @@ func (m *LanguageModel) strictJSONSchema(providerOptions map[string]interface{})
 		}
 	}
 	return strict
+}
+
+// UnmarshalJSON accepts a string, null, or (on OpenAI-compatible hosts) an
+// array of text / thinking parts for "content" (TS
+// convertOpenAICompatibleContent); unknown parts are ignored.
+func (m *openAIMessage) UnmarshalJSON(b []byte) error {
+	type plain openAIMessage
+	aux := struct {
+		*plain
+		Content json.RawMessage `json:"content"`
+	}{plain: (*plain)(m)}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	m.Content, m.ContentThinking = "", ""
+	if len(aux.Content) == 0 || string(aux.Content) == "null" {
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(aux.Content, &s); err == nil {
+		m.Content = s
+		return nil
+	}
+	var parts []struct {
+		Type     string          `json:"type"`
+		Text     json.RawMessage `json:"text"`
+		Thinking json.RawMessage `json:"thinking"`
+	}
+	if err := json.Unmarshal(aux.Content, &parts); err != nil {
+		return err
+	}
+	var text, thinking strings.Builder
+	for _, p := range parts {
+		switch p.Type {
+		case "text":
+			var t string
+			if json.Unmarshal(p.Text, &t) == nil {
+				text.WriteString(t)
+			}
+		case "thinking":
+			var chunks []json.RawMessage
+			if json.Unmarshal(p.Thinking, &chunks) != nil {
+				continue // not an array of chunks: ignored like TS
+			}
+			for _, raw := range chunks {
+				var chunk struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				}
+				if json.Unmarshal(raw, &chunk) == nil && chunk.Type == "text" {
+					thinking.WriteString(chunk.Text)
+				}
+			}
+		}
+	}
+	m.Content, m.ContentThinking = text.String(), thinking.String()
+	return nil
+}
+
+// thoughtSignatureKey is the providerOptions key holding a replayed tool
+// call's thoughtSignature on OpenAI-compatible hosts (TS providerOptionsKey);
+// empty for native OpenAI.
+func (m *LanguageModel) thoughtSignatureKey() string {
+	if !m.provider.config.OpenAICompatible {
+		return ""
+	}
+	name, _, _ := strings.Cut(m.provider.Name(), ".")
+	return strings.TrimSpace(name)
+}
+
+// compatName is the provider name used for provider options and metadata on
+// OpenAI-compatible hosts (TS providerOptionsName: provider.split('.')[0]).
+func (m *LanguageModel) compatName() string {
+	name, _, _ := strings.Cut(m.provider.Name(), ".")
+	return strings.TrimSpace(name)
+}
+
+// applyCompatMetadataKey moves the camelCase namespace convertResponse uses
+// for compat metadata to the key TS resolves from the call's provider options.
+func (m *LanguageModel) applyCompatMetadataKey(result *types.GenerateResult, providerOptions map[string]interface{}) {
+	from := m.compatName()
+	to := providerutils.ResolveOpenAICompatibleMetadataKey(from, providerOptions)
+	if to == from {
+		return
+	}
+	move := func(md map[string]interface{}) {
+		if v, ok := md[from]; ok {
+			delete(md, from)
+			md[to] = v
+		}
+	}
+	move(result.ProviderMetadata)
+	for i := range result.ToolCalls {
+		move(result.ToolCalls[i].ProviderMetadata)
+	}
+}
+
+// responseKind selects the TS response schema of a non-streaming chat call:
+// openaiChatResponseSchema, or OpenAICompatibleChatResponseSchema for the
+// openai-compatible wrappers.
+func (m *LanguageModel) responseKind() providerutils.ChatResponseKind {
+	if m.provider.config.OpenAICompatible {
+		return providerutils.ResponseKindOpenAICompatible
+	}
+	return providerutils.ResponseKindOpenAI
+}
+
+// newOpenAIToolCallTracker rejects a present tool call type that is not
+// "function" (TS openai chat typeValidation: 'if-present').
+func newOpenAIToolCallTracker() *streaming.StreamingToolCallTracker {
+	t := streaming.NewStreamingToolCallTracker()
+	t.SetTypeValidation(streaming.TypeValidationIfPresent)
+	return t
 }

@@ -39,6 +39,7 @@ var logWarningsState = struct {
 	disabled        bool
 	custom          LogWarningsFunction
 	hasLoggedBefore bool
+	emittedCodes    map[string]struct{}
 	output          io.Writer
 }{}
 
@@ -74,6 +75,9 @@ func DisableLogWarnings() {
 //   - otherwise each warning is formatted as "AI SDK Warning (provider / model): ..."
 //     and written to os.Stderr (never stdout), preceded once per process by
 //     FirstWarningInfoMessage.
+//   - deprecations carry a stable code (GetDeprecationCode); the default
+//     logger prefixes the line with "[CODE] " and emits each code only once
+//     per process. Custom loggers receive every warning.
 func LogWarnings(options LogWarningsOptions) {
 	if len(options.Warnings) == 0 {
 		return
@@ -100,7 +104,19 @@ func LogWarnings(options LogWarningsOptions) {
 		_, _ = fmt.Fprintln(out, FirstWarningInfoMessage)
 	}
 	for _, warning := range options.Warnings {
-		_, _ = fmt.Fprintln(out, FormatWarning(warning, options.Provider, options.Model))
+		line := FormatWarning(warning, options.Provider, options.Model)
+		if warning.Type == "deprecated" {
+			code := GetDeprecationCode(warning.Setting, options.Provider)
+			if _, seen := logWarningsState.emittedCodes[code]; seen {
+				continue
+			}
+			if logWarningsState.emittedCodes == nil {
+				logWarningsState.emittedCodes = map[string]struct{}{}
+			}
+			logWarningsState.emittedCodes[code] = struct{}{}
+			line = "[" + code + "] " + line
+		}
+		_, _ = fmt.Fprintln(out, line)
 	}
 }
 
@@ -163,5 +179,6 @@ func resetLogWarningsState(output io.Writer) {
 	logWarningsState.disabled = false
 	logWarningsState.custom = nil
 	logWarningsState.hasLoggedBefore = false
+	logWarningsState.emittedCodes = nil
 	logWarningsState.output = output
 }

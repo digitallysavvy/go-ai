@@ -29,6 +29,7 @@ func TestMistralReasoningEffortSupportedModelsMatchTypeScript(t *testing.T) {
 				{types.ReasoningMedium, "high", true},
 				{types.ReasoningHigh, "high", true},
 				{types.ReasoningXHigh, "high", true},
+				{types.ReasoningMax, "high", true},
 				{types.ReasoningDefault, "", false},
 			}
 
@@ -243,7 +244,7 @@ func TestMistralNonReasoningModelWarning(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"test","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hello"}}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`))
+		_, _ = w.Write([]byte(`{"id":"test","object":"chat.completion","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hello"}}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`))
 	}))
 	defer srv.Close()
 
@@ -276,7 +277,7 @@ func TestMistralSmallNoWarning(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"test","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hello"}}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`))
+		_, _ = w.Write([]byte(`{"id":"test","object":"chat.completion","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hello"}}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`))
 	}))
 	defer srv.Close()
 
@@ -299,7 +300,7 @@ func TestMistralSmall2603NoWarning(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"id":"test","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hello"}}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`))
+		_, _ = w.Write([]byte(`{"id":"test","object":"chat.completion","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hello"}}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}`))
 	}))
 	defer srv.Close()
 
@@ -469,5 +470,19 @@ func TestMistralReasoningEffortModelIDsMatchTypeScript(t *testing.T) {
 				t.Errorf("%s: want no reasoning-effort support", id)
 			}
 		})
+	}
+}
+
+// Go int option values must not be dropped (only float64 was read before).
+func TestMistralIntOptionValuesAreForwarded(t *testing.T) {
+	m := &LanguageModel{modelID: "mistral-large-latest"}
+	body := m.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"mistral": map[string]interface{}{
+			"documentImageLimit": 3, "documentPageLimit": int64(7),
+		}},
+	}, false)
+	if body["document_image_limit"] != float64(3) || body["document_page_limit"] != float64(7) {
+		t.Fatalf("body = %#v", body)
 	}
 }

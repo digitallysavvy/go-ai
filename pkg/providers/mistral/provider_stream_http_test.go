@@ -54,9 +54,9 @@ func TestMistralDoGenerateAndDoStream(t *testing.T) {
 		if strings.Contains(seenPath, "/chat/completions") {
 			_ = json.NewDecoder(r.Body).Decode(&seenBody)
 			if r.Header.Get("Accept") == "text/event-stream" {
-				sse := `data: {"choices":[{"delta":{"content":"hello"},"finish_reason":""}]}
+				sse := `data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":""}]}
 
-data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
 
 data: [DONE]
 
@@ -67,6 +67,7 @@ data: [DONE]
 				StatusCode: 200,
 				Header:     http.Header{"X-Request-Id": []string{"req1"}},
 				Body: io.NopCloser(strings.NewReader(`{
+					"object":"chat.completion",
 					"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":"ok","tool_calls":[{"id":"tc1","type":"function","function":{"name":"lookup","arguments":"{\"x\":1}"}}]}}],
 					"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}
 				}`)),
@@ -75,7 +76,7 @@ data: [DONE]
 		return nil, errors.New("unexpected path")
 	})
 	lm := NewLanguageModel(p, ModelMistralSmallLatest)
-	if lm.SpecificationVersion() != "v3" || lm.Provider() != "mistral" || lm.ModelID() != ModelMistralSmallLatest {
+	if lm.SpecificationVersion() != "v4" || lm.Provider() != "mistral.chat" || lm.ModelID() != ModelMistralSmallLatest {
 		t.Fatalf("metadata mismatch")
 	}
 	if !lm.SupportsTools() || !lm.SupportsStructuredOutput() || lm.SupportsImageInput() {
@@ -130,7 +131,7 @@ func TestMistralLanguageHelpers(t *testing.T) {
 	if mapMistralFinishReason("something_unknown") != types.FinishReasonOther {
 		t.Fatalf("finish reason mapping for unknown value should remain %q", types.FinishReasonOther)
 	}
-	lm := NewLanguageModel(New(Config{APIKey: "k"}), "mistral-large")
+	lm := NewLanguageModel(New(Config{APIKey: "k"}), "mistral-large-latest")
 	if ws := lm.checkReasoningWarnings(&provider.GenerateOptions{Reasoning: func() *types.ReasoningLevel { v := types.ReasoningMedium; return &v }()}); len(ws) == 0 {
 		t.Fatal("expected reasoning warning on unsupported model")
 	}

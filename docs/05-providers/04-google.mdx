@@ -53,6 +53,8 @@ Use the constants in `pkg/providers/google/model_ids.go` instead of raw strings.
 | Model ID | Go constant | Best for |
 |----------|-------------|----------|
 | `gemini-3.8-flash` | `google.ModelGemini38Flash` | Fast, current-generation Flash |
+| `gemini-4-argon` | `google.ModelGemini4Argon` | Long decode with automatic continuation |
+| `gemini-nano-banana-2.1` | `google.ModelGeminiNanoBanana21` | Language and image model |
 | `gemini-3.7-flash` | `google.ModelGemini37Flash` | Fast, current-generation Flash |
 | `gemini-3.6-flash` | `google.ModelGemini36Flash` | Fast, current-generation Flash |
 | `gemini-3.5-flash` | `google.ModelGemini35Flash` | Fast multimodal tasks |
@@ -81,6 +83,7 @@ Earlier Gemini 2.0, 1.5 and Gemma models still have constants. Prefer the models
 | Model ID | Go constant | Best for |
 |----------|-------------|----------|
 | `gemini-3.1-flash-image-preview` | `google.ModelGemini31FlashImagePreview` | Fast Gemini generation |
+| `gemini-nano-banana-2.1` | `google.ModelGeminiNanoBanana21` | Supports file inputs for editing |
 | `gemini-3-pro-image-preview` | `google.ModelGemini3ProImagePreview` | Advanced generation |
 | `gemini-2.5-flash-image` | `google.ModelGemini25FlashImage` | Fast Gemini generation |
 
@@ -103,6 +106,12 @@ result, err := imageModel.DoGenerate(ctx, &provider.ImageGenerateOptions{
 
 `googleSearch` is only supported for Gemini image models — the only image models this provider exposes now that Imagen has been removed.
 
+Image editing takes its input images as bytes (`provider.ImageFile` with
+`Type: "file"`, `Data` and `MediaType`). A `Type: "url"` entry returns an
+`UnsupportedFunctionalityError` ("file of media type "image/*" must specify
+subtype since it is not passed as inline bytes"), as the TypeScript SDK does,
+for `DoGenerate` and for image batches. Download the image and pass the bytes.
+
 ### Embedding Models
 
 | Model ID | Go constant | Dimensions | Best for |
@@ -120,6 +129,8 @@ Google Gemini TTS is exposed through `Provider.SpeechModel` and `Provider.Speech
 | gemini-2.5-flash-preview-tts | `google.ModelGemini25FlashTTS` |
 | gemini-2.5-pro-preview-tts | `google.ModelGemini25ProTTS` |
 | gemini-3.1-flash-tts-preview | `google.ModelGemini31FlashTTSPreview` |
+| gemini-3.8-flash-tts | `google.ModelGemini38FlashTTS` |
+| gemini-3.8-flash-lite-tts | `google.ModelGemini38FlashLiteTTS` |
 
 ```go
 speechModel, err := googleProvider.SpeechModel(google.ModelGemini25FlashTTS)
@@ -140,6 +151,24 @@ fmt.Println(result.Audio.MediaType)
 ```
 
 Gemini TTS defaults to the `Kore` voice when no voice is supplied. Use `ProviderOptions["google"]` with `google.GoogleSpeechModelOptions` to pass Gemini-specific speech options such as multi-speaker voice configuration.
+
+Models outside the `gemini-2.5-*` and `gemini-3.1-*` families (Gemini 3.8 TTS and later) use structured speech. `Instructions` become each turn's `style`, `GoogleSpeechModelOptions.Turns` replaces the top-level text with an ordered transcript, and each turn can carry `SpeechMetadata` with a `Speaker` and a `Style`. With `MultiSpeakerVoiceConfig` every turn must name a configured speaker. `OutputFormat` accepts `wav`, `pcm`, `mulaw` and `alaw` (or the `audio/*` forms) on these models and `wav` or `pcm` on the older ones. The 2.5 and 3.1 models take directions in the prompt instead, so `Turns` and `SpeechMetadata` are rejected for them. Custom voices (`voice_*`, `voicekey_*`) are not supported.
+
+```go skip-compile
+style := "whisper"
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel, // gemini-3.8-flash-tts
+    Text:  "",          // empty when Turns is used
+    ProviderOptions: map[string]interface{}{
+        "google": google.GoogleSpeechModelOptions{
+            Turns: []google.GoogleSpeechTurn{
+                {Text: "Hello there."},
+                {Text: "Psst, over here.", SpeechMetadata: &google.GoogleSpeechMetadata{Style: &style}},
+            },
+        },
+    },
+})
+```
 
 ### Realtime Models
 
@@ -389,7 +418,7 @@ if err != nil {
 fmt.Println(result.Text)
 ```
 
-Use `PreviousInteractionID` with `Store` for stateful follow-up calls. Agent models run as background interactions and are polled until a terminal status; `PollingTimeoutMs` controls that wait. Agent model IDs include `deep-research-pro-preview-12-2025`, `deep-research-preview-04-2026`, `deep-research-max-preview-04-2026`, and `antigravity-preview-05-2026`.
+Use `PreviousInteractionID` with `Store` for stateful follow-up calls. `DoGenerate` polls an agent call (or any call with `Background` set) until it reaches a terminal status; `PollingTimeoutMs` controls that wait. The SDK sends `background` only when `Background` is set: Deep Research agents need `Background: &background` with `background := true`, while managed agents reject it. `DoStream` streams directly unless `Background` is set. The `Environment` option (a string, or a map with `sources` and `network`) applies to agent calls only; on a model call it is dropped with a warning. Agent model IDs include `deep-research-pro-preview-12-2025`, `deep-research-preview-04-2026`, `deep-research-max-preview-04-2026`, and `antigravity-preview-05-2026`.
 
 ```go
 agentModel, err := googleProvider.InteractionsAgent(google.InteractionsAgentDeepResearchProPreview)
@@ -401,6 +430,7 @@ result, err := agentModel.DoGenerate(ctx, &provider.GenerateOptions{
     Prompt: types.Prompt{Text: "Research the main tradeoffs in retrieval augmented generation."},
     ProviderOptions: map[string]interface{}{
         "google": google.GoogleInteractionsProviderOptions{
+            Background:       &background, // background := true; Deep Research agents need it
             PollingTimeoutMs: 120000,
         },
     },
@@ -473,6 +503,45 @@ for chunk := range stream.Chunks() {
 }
 ```
 
+### Long Decode (Gemini 4)
+
+`gemini-4-argon` can produce very long responses. A `generateContent` request that stops at the per-request cap while `MaxTokens` budget remains (finish reason `CONTINUATION`) is continued automatically by `DoGenerate` and `DoStream`: the same request is resent with the continuation token and the results are combined into one response. Usage is summed across requests. Because every continued request re-sends the prompt plus all output so far, `providerMetadata.google.initialPromptTokenCount` holds the first request's prompt token count for context-window checks.
+
+For an automatically continued response, `providerMetadata.google.groundingMetadataPerRequest` lists each request's grounding metadata in request order (`null` for requests that returned none), so search queries from earlier requests are not lost. `groundingMetadata` keeps its meaning: the final request's grounding.
+
+A response that uses up the caller's `MaxTokens` returns finish reason `length` with `providerMetadata.google.continuationToken`. Resume it by passing the token back with the original prompt and a higher `MaxTokens` (the budget is cumulative):
+
+```go
+model, _ := googleProvider.LanguageModel(google.ModelGemini4Argon)
+
+maxTokens := 100_000
+first, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:     model,
+    Prompt:    "Write a very long report.",
+    MaxTokens: &maxTokens,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+raw, _ := json.Marshal(first.ProviderMetadata)
+meta := map[string]map[string]interface{}{}
+_ = json.Unmarshal(raw, &meta)
+if token, ok := meta["google"]["continuationToken"].(string); ok && first.FinishReason == types.FinishReasonLength {
+    higher := 200_000
+    _, err = ai.GenerateText(ctx, ai.GenerateTextOptions{
+        Model:     model,
+        Prompt:    "Write a very long report.",
+        MaxTokens: &higher,
+        ProviderOptions: map[string]interface{}{
+            "google": map[string]interface{}{"continuationToken": token},
+        },
+    })
+}
+```
+
+When a stream stops early (budget used up, or a continuation request fails) the finish chunk carries `continuationToken`; checkpoint tokens of a stream that finished normally are not surfaced. The Interactions API does not continue client-side. Use `ProviderOptions["google"]["background"] = true`; `DoGenerate` then polls the interaction until it reaches a terminal status, as it already did for agents.
+
 ### Thinking Mode
 
 Gemini 2.0 Flash Thinking uses extended reasoning:
@@ -495,6 +564,12 @@ fmt.Println("Answer:", result.Text)
 ```
 
 Gemini 3 thinking and tool-call streams preserve `thoughtSignature` in provider metadata so multi-step calls can safely round-trip model-generated reasoning and function calls. Streaming no-argument function calls are emitted with `{}` input instead of being dropped.
+
+When call-level `Reasoning` is used with Gemini 3+ models, the lowest `thinkingLevel` is `"low"` for Pro models (3 and later), `gemini-flash-latest` and Flash models from 3.7; other Flash models still accept `"minimal"`. Regional model IDs such as `eu.gemini-2.5-flash` or `au.gemini-3.5-flash` are classified the same as their unprefixed names. An explicit `thinkingBudget` or `thinkingLevel` in `ProviderOptions["google"]["thinkingConfig"]` replaces the `Reasoning` mapping entirely; the two are never combined.
+
+Tool errors are sent to Gemini under `functionResponse.response.error` (for `error-text`, `error-json` and denied tool calls), while successful results use `functionResponse.response.content`, so the model can tell a failed tool from a result.
+
+Gemini models before Gemini 3 reject a JSON response format combined with function tools, and Gemini 3 only supports the combination with automatic tool choice. When a request has a JSON response format with a schema and function tools in either unsupported case (also for Vertex Gemini models), the provider adds a synthetic `json` tool (`json_1`, `json_2`, ... if the name is taken), forces a tool call, and returns that tool's arguments as the text output so the SDK can parse the structured output after any application tool calls. Gemini 3 with automatic tool choice keeps native structured output.
 
 Usage includes per-modality token details when the API returns them. Text, image, audio, and video token counts are preserved in the result usage details rather than collapsed into only total input/output tokens.
 
@@ -730,9 +805,9 @@ if err != nil {
 }
 
 result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
-    Model:  geminiImageModel,
-    Prompt: "Abstract colorful art with geometric shapes and vibrant patterns",
-    Size:   "1920x1080", // 16:9 aspect ratio
+    Model:       geminiImageModel,
+    Prompt:      "Abstract colorful art with geometric shapes and vibrant patterns",
+    AspectRatio: "16:9", // Size is not supported (it returns a warning)
 })
 if err != nil {
     log.Fatal(err)
@@ -742,12 +817,11 @@ fmt.Printf("Image generated: %d bytes\n", len(result.Images[0].Data))
 os.WriteFile("gemini_output.png", result.Images[0].Data, 0644)
 ```
 
-**Supported Aspect Ratios:**
-- `1:1` - Square (1024x1024, 512x512)
-- `4:3` - Standard (1024x768)
-- `3:4` - Portrait (768x1024)
-- `16:9` - Widescreen (1920x1080, 1792x1024)
-- `9:16` - Vertical (1080x1920, 1024x1792)
+**Aspect ratio:** set `AspectRatio` (sent as `generationConfig.imageConfig.aspectRatio`):
+`1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, `21:9`, `1:8`,
+`8:1`, `1:4` or `4:1`. Gemini image models do not support `Size`: it is
+ignored and the result carries an `unsupported` warning, as in the TypeScript
+SDK.
 
 **Model Comparison:**
 
@@ -968,6 +1042,22 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
                 "thinkingBudget": 512,
                 "includeThoughts": true,
             },
+        },
+    },
+})
+```
+
+### Response modalities
+
+The `responseModalities` provider option accepts `TEXT`, `IMAGE`, and `AUDIO`; which values work depends on the model. Generated audio is returned as a file part (for example `audio/wav`) in the result content.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Compose a short jingle.",
+    ProviderOptions: map[string]interface{}{
+        "google": map[string]interface{}{
+            "responseModalities": []string{"TEXT", "AUDIO"},
         },
     },
 })

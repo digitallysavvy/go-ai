@@ -20,12 +20,11 @@ import (
 
 // mockResponsesResponse returns a minimal valid Responses API response body.
 func mockResponsesResponse(id, text string) responses.ResponsesAPIResponse {
-	content, _ := json.Marshal(responses.AssistantMessageItem{
-		Type: "message",
-		Role: "assistant",
-		Content: []responses.AssistantMessageContent{
-			{Type: "output_text", Text: text},
-		},
+	// The wire shape TS openaiResponsesResponseSchema requires: message id and
+	// an annotations array on every output_text part.
+	content, _ := json.Marshal(map[string]interface{}{
+		"type": "message", "role": "assistant", "id": "msg_" + id,
+		"content": []interface{}{map[string]interface{}{"type": "output_text", "text": text, "annotations": []interface{}{}}},
 	})
 	return responses.ResponsesAPIResponse{
 		ID:     id,
@@ -132,8 +131,12 @@ func TestResponsesLanguageModel_WebSearchIncludesSourcesAndMapsQueries(t *testin
 	if len(result.ToolCalls) != 1 || !result.ToolCalls[0].ProviderExecuted {
 		t.Fatalf("tool calls = %#v", result.ToolCalls)
 	}
-	if len(result.Content) != 2 {
-		t.Fatalf("content len = %d, want 2", len(result.Content))
+	// tool call, tool result, then the retrieved URL source (TS #21797).
+	if len(result.Content) != 3 {
+		t.Fatalf("content len = %d, want 3", len(result.Content))
+	}
+	if src, ok := result.Content[2].(types.SourceContent); !ok || src.SourceType != "url" || src.URL != "https://go.dev/doc/" {
+		t.Fatalf("content[2] = %#v, want retrieved url source", result.Content[2])
 	}
 	toolResult, ok := result.Content[1].(types.ToolResultContent)
 	if !ok {
@@ -234,7 +237,7 @@ func TestResponsesLanguageModel_WebSearchPreviewPreservesToolNameAndEmptyArrays(
 
 	p := New(Config{APIKey: "test-key"})
 	model := NewResponsesLanguageModel(p, "gpt-4o")
-	tools := []types.Tool{openaitool.WebSearchPreview(openaitool.WebSearchPreviewConfig{})}
+	tools := []types.Tool{openaitool.WebSearchPreview(openaitool.WebSearchPreviewConfig{})} //nolint:staticcheck // exercises the deprecated tool
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		ID:     "resp_web",
 		Model:  "gpt-4o",
@@ -609,11 +612,11 @@ func TestResponsesLanguageModel_DoStream_Text(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 
 		events := []string{
-			`{"type":"response.created","response":{"id":"resp_stream","model":"gpt-4o"}}`,
+			`{"type":"response.created","response":{"id":"resp_stream","created_at":1,"model":"gpt-4o"}}`,
 			`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1"}}`,
-			`{"type":"response.output_text.delta","output_index":0,"delta":"Hello"}`,
-			`{"type":"response.output_text.delta","output_index":0,"delta":" world"}`,
-			`{"type":"response.output_item.done","output_index":0,"item":{"type":"message"}}`,
+			`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"Hello"}`,
+			`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":" world"}`,
+			`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1"}}`,
 			`{"type":"response.completed","response":{"id":"resp_stream","usage":{"input_tokens":5,"output_tokens":3}}}`,
 		}
 		for _, e := range events {
@@ -677,11 +680,11 @@ func TestResponsesLanguageModel_DoStream_TextBoundaries(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 
 		events := []string{
-			`{"type":"response.created","response":{"id":"resp_stream","model":"gpt-4o"}}`,
+			`{"type":"response.created","response":{"id":"resp_stream","created_at":1,"model":"gpt-4o"}}`,
 			`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}`,
-			`{"type":"response.output_text.delta","output_index":0,"delta":"See "}`,
+			`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"See "}`,
 			`{"type":"response.output_text.annotation.added","annotation":{"type":"url_citation","url":"https://example.com","title":"Example","start_index":0,"end_index":3}}`,
-			`{"type":"response.output_text.delta","output_index":0,"delta":"this."}`,
+			`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"this."}`,
 			`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}`,
 			`{"type":"response.completed","response":{"id":"resp_stream","usage":{"input_tokens":5,"output_tokens":3}}}`,
 		}
@@ -784,9 +787,9 @@ func TestResponsesLanguageModel_DoStream_TextEndPhaseFallsBackToAddedEvent(t *te
 		w.WriteHeader(http.StatusOK)
 
 		events := []string{
-			`{"type":"response.created","response":{"id":"resp_stream","model":"gpt-4o"}}`,
+			`{"type":"response.created","response":{"id":"resp_stream","created_at":1,"model":"gpt-4o"}}`,
 			`{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer"}}`,
-			`{"type":"response.output_text.delta","output_index":0,"delta":"Hi."}`,
+			`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"delta":"Hi."}`,
 			`{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1"}}`,
 			`{"type":"response.completed","response":{"id":"resp_stream","usage":{"input_tokens":5,"output_tokens":3}}}`,
 		}
@@ -839,7 +842,7 @@ func TestResponsesLanguageModel_DoStreamIncludesRawChunks(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, `data: {"type":"response.created","response":{"id":"resp_1","created_at":1702657020,"model":"gpt-4o"}}
 
-data: {"type":"response.output_text.delta","delta":"Hello"}
+data: {"type":"response.output_text.delta","item_id":"msg_1","delta":"Hello"}
 
 data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}
 
@@ -930,7 +933,7 @@ data: [DONE]
 	if chunk.Type != provider.ChunkTypeError {
 		t.Fatalf("second chunk type = %v, want error", chunk.Type)
 	}
-	if !strings.Contains(chunk.Text, "failed to parse stream chunk") {
+	if !strings.Contains(chunk.Text, "JSON parsing failed") {
 		t.Fatalf("error text = %q, want parse failure", chunk.Text)
 	}
 }
@@ -938,7 +941,7 @@ data: [DONE]
 func TestResponsesLanguageModel_DoStreamEarlyProviderErrorReturnsError(t *testing.T) {
 	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_error","created_at":1741269019,"model":"gpt-4o"}}
 
-data: {"type":"error","code":"rate_limit_exceeded","message":"boom"}
+data: {"type":"error","sequence_number":1,"code":"rate_limit_exceeded","message":"boom"}
 
 data: [DONE]
 
@@ -1040,7 +1043,7 @@ data: {"type":"response.failed","sequence_number":1,"response":{"id":"resp_1","e
 func TestResponsesLanguageModel_DoStreamMidStreamErrorEventAttachesStructuredPayload(t *testing.T) {
 	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1"}}
 
-data: {"type":"error","message":"rate limited","code":"rate_limit_exceeded"}
+data: {"type":"error","sequence_number":1,"message":"rate limited","code":"rate_limit_exceeded"}
 
 `)), false)
 	defer stream.Close() //nolint:errcheck
@@ -1119,12 +1122,13 @@ func TestResponsesLanguageModel_DoStream_ToolCall(t *testing.T) {
 			"call_id":   "call_xyz",
 			"name":      "search",
 			"namespace": "search_tools",
+			"status":    "completed",
 			"arguments": `{"query":"go lang"}`,
 		})
 		events := []string{
-			`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_xyz","call_id":"call_xyz","name":"search","namespace":"search_tools"}}`,
-			`{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"query\":"}`,
-			`{"type":"response.function_call_arguments.delta","output_index":0,"delta":"\"go lang\"}"}`,
+			`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_xyz","call_id":"call_xyz","name":"search","arguments":"","namespace":"search_tools"}}`,
+			`{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"{\"query\":"}`,
+			`{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"\"go lang\"}"}`,
 			fmt.Sprintf(`{"type":"response.output_item.done","output_index":0,"item":%s}`, string(callDoneItem)),
 			`{"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":5,"output_tokens":5}}}`,
 		}
@@ -1215,7 +1219,7 @@ func TestResponsesLanguageModel_DoStream_WebSearchCallLifecycle(t *testing.T) {
 				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Search"}}},
 			},
 		},
-		Tools: []types.Tool{openaitool.WebSearchPreview(openaitool.WebSearchPreviewConfig{})},
+		Tools: []types.Tool{openaitool.WebSearchPreview(openaitool.WebSearchPreviewConfig{})}, //nolint:staticcheck // exercises the deprecated tool
 	})
 	if err != nil {
 		t.Fatalf("DoStream failed: %v", err)
@@ -2509,7 +2513,7 @@ func TestResponsesLanguageModel_PromptCacheOptionsPassthrough(t *testing.T) {
 		}},
 		ProviderOptions: map[string]interface{}{
 			"openai": map[string]interface{}{
-				"promptCacheOptions": map[string]interface{}{"mode": "manual", "ttl": "24h"},
+				"promptCacheOptions": map[string]interface{}{"mode": "explicit", "ttl": "12h", "prewarm": true},
 			},
 		},
 	}, false)
@@ -2517,7 +2521,7 @@ func TestResponsesLanguageModel_PromptCacheOptionsPassthrough(t *testing.T) {
 		t.Fatalf("buildRequestBody failed: %v", err)
 	}
 	opts, ok := body["prompt_cache_options"].(map[string]interface{})
-	if !ok || opts["mode"] != "manual" || opts["ttl"] != "24h" {
+	if !ok || opts["mode"] != "explicit" || opts["ttl"] != "12h" || opts["prewarm"] != true {
 		t.Fatalf("prompt_cache_options = %#v, want passthrough", body["prompt_cache_options"])
 	}
 }
@@ -2619,6 +2623,10 @@ func TestResponsesLanguageModel_DoGenerateNoOutputReturnsDescriptiveError(t *tes
 	if !strings.Contains(err.Error(), "Responses API returned no output (max_output_tokens)") {
 		t.Fatalf("error = %v, want descriptive no-output message", err)
 	}
+	// TS isRetryable: false (a 500 would otherwise be retried).
+	if provErr.IsRetryable() {
+		t.Fatal("no-output error is retryable, want isRetryable false")
+	}
 }
 
 // TestResponsesLanguageModel_DoGenerateEmbeddedErrorMapsTo400 covers row
@@ -2667,17 +2675,26 @@ func TestResponsesLanguageModel_NullUsageYieldsNilUsageFields(t *testing.T) {
 // "type" discriminator) produces a helpful error instead of being silently
 // skipped.
 func TestResponsesLanguageModel_DoStreamChatCompletionsMismatchError(t *testing.T) {
-	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}]}
 
 `)), false)
 	defer stream.Close() //nolint:errcheck
 
-	_, err := stream.Next()
-	if err == nil {
-		t.Fatal("expected an error for a Chat Completions-shaped chunk")
+	// TS delivers the mismatch as an error part, then finishes with "error".
+	chunk, err := stream.Next()
+	if err != nil || chunk.Type != provider.ChunkTypeError {
+		t.Fatalf("first chunk = %+v err=%v, want an error part", chunk, err)
 	}
-	if !strings.Contains(err.Error(), "Received a Chat Completions stream while using the OpenAI Responses API") {
-		t.Fatalf("error = %v, want the Chat Completions mismatch message", err)
+	if !strings.Contains(chunk.Err.Error(), "Received a Chat Completions stream while using the OpenAI Responses API") {
+		t.Fatalf("error = %v, want the Chat Completions mismatch message", chunk.Err)
+	}
+	var perr *providererrors.ProviderError
+	if !errors.As(chunk.Err, &perr) || !strings.Contains(perr.ResponseBody, `"chatcmpl-1"`) {
+		t.Fatalf("error should carry the offending chunk as ResponseBody: %#v", chunk.Err)
+	}
+	finish, err := stream.Next()
+	if err != nil || finish.Type != provider.ChunkTypeFinish || finish.FinishReason != types.FinishReasonError {
+		t.Fatalf("finish = %+v err=%v, want finish reason error", finish, err)
 	}
 }
 
@@ -2686,7 +2703,7 @@ func TestResponsesLanguageModel_DoStreamChatCompletionsMismatchError(t *testing.
 // ChunkTypeError chunk, and forces the eventual finish reason to "error"
 // even though the terminal event itself reports a normal completion.
 func TestResponsesLanguageModel_DoStreamKnownEventDecodeErrorForcesErrorFinish(t *testing.T) {
-	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_text.delta","delta":123}
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_text.delta","item_id":"msg_1","delta":123}
 
 data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}
 
@@ -2733,8 +2750,8 @@ func TestResponsesLanguageModel_ApplyPatchCallDecodesAsToolCall(t *testing.T) {
 		t.Fatalf("ToolCalls = %#v, want one apply_patch tool call", result.ToolCalls)
 	}
 	tc := result.ToolCalls[0]
-	if tc.ID != "call_1" || tc.ToolName != "openai.apply_patch" {
-		t.Fatalf("tool call = %#v, want callId call_1 and toolName openai.apply_patch", tc)
+	if tc.ID != "call_1" || tc.ToolName != "apply_patch" {
+		t.Fatalf("tool call = %#v, want callId call_1 and toolName apply_patch", tc)
 	}
 	if tc.Arguments["callId"] != "call_1" {
 		t.Fatalf("arguments = %#v, want callId call_1", tc.Arguments)
@@ -2751,7 +2768,7 @@ func TestResponsesLanguageModel_ApplyPatchCallDecodesAsToolCall(t *testing.T) {
 // TestResponsesLanguageModel_StreamApplyPatchCallDecodesAsToolCall covers row
 // 45f2b6a for the streaming path.
 func TestResponsesLanguageModel_StreamApplyPatchCallDecodesAsToolCall(t *testing.T) {
-	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"apply_patch_call","id":"ap_1","call_id":"call_1","operation":{"type":"delete_file","path":"bar.go"}}}
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"apply_patch_call","id":"ap_1","call_id":"call_1","status":"in_progress","operation":{"type":"delete_file","path":"bar.go"}}}
 
 data: {"type":"response.output_item.done","output_index":0,"item":{"type":"apply_patch_call","id":"ap_1","call_id":"call_1","status":"completed","operation":{"type":"delete_file","path":"bar.go"}}}
 
@@ -2780,8 +2797,8 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"apply
 	if chunk.Type != provider.ChunkTypeToolCall || chunk.ToolCall == nil {
 		t.Fatalf("chunk = %#v, want a tool call", chunk)
 	}
-	if chunk.ToolCall.ID != "call_1" || chunk.ToolCall.ToolName != "openai.apply_patch" {
-		t.Fatalf("tool call = %#v, want callId call_1 toolName openai.apply_patch", chunk.ToolCall)
+	if chunk.ToolCall.ID != "call_1" || chunk.ToolCall.ToolName != "apply_patch" {
+		t.Fatalf("tool call = %#v, want callId call_1 toolName apply_patch", chunk.ToolCall)
 	}
 	operation, ok := chunk.ToolCall.Arguments["operation"].(map[string]interface{})
 	if !ok || operation["type"] != "delete_file" {
@@ -2819,7 +2836,7 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reaso
 func TestResponsesLanguageModel_StreamFailedRawFinishReason(t *testing.T) {
 	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.created","response":{"id":"resp_1","created_at":1741269019,"model":"gpt-4o"}}
 
-data: {"type":"response.failed","response":{"id":"resp_1","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":1,"output_tokens":1}}}
+data: {"type":"response.failed","sequence_number":1,"response":{"id":"resp_1","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":1,"output_tokens":1}}}
 
 `)), false)
 	defer stream.Close() //nolint:errcheck
@@ -2827,6 +2844,13 @@ data: {"type":"response.failed","response":{"id":"resp_1","incomplete_details":{
 	chunk, err := stream.Next()
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
+	}
+	// response.created's metadata is held until the stream is handed out (TS
+	// early-error peek), so it precedes the finish.
+	if chunk.Type == provider.ChunkTypeResponseMetadata {
+		if chunk, err = stream.Next(); err != nil {
+			t.Fatalf("Next() error = %v", err)
+		}
 	}
 	if chunk.Type != provider.ChunkTypeFinish || chunk.RawFinishReason != "max_output_tokens" {
 		t.Fatalf("finish chunk = %#v, want RawFinishReason=max_output_tokens", chunk)
@@ -2966,8 +2990,8 @@ func TestResponsesLanguageModel_ComputerToolPrepareAndDecode(t *testing.T) {
 		t.Fatalf("ToolCalls = %#v, want one computer tool call", result.ToolCalls)
 	}
 	tc := result.ToolCalls[0]
-	if tc.ID != "call_1" || tc.ToolName != "openai.computer" {
-		t.Fatalf("tool call = %#v, want callId call_1 toolName openai.computer", tc)
+	if tc.ID != "call_1" || tc.ToolName != "computer" {
+		t.Fatalf("tool call = %#v, want callId call_1 toolName computer", tc)
 	}
 	actions, ok := tc.Arguments["actions"].([]map[string]interface{})
 	if !ok || len(actions) != 2 {
@@ -2985,18 +3009,29 @@ func TestResponsesLanguageModel_ComputerToolPrepareAndDecode(t *testing.T) {
 	}
 
 	// Streaming path.
-	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"computer_call","id":"cu_1"}}
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"computer_call","id":"cu_1","status":"in_progress"}}
 
 data: {"type":"response.output_item.done","output_index":0,"item":{"type":"computer_call","id":"cu_1","call_id":"call_1","status":"completed","actions":[{"type":"screenshot"}],"pending_safety_checks":[]}}
 
 `)), false)
 	defer stream.Close() //nolint:errcheck
 
+	// TS: tool-input-start (added), then tool-input-delta / tool-input-end /
+	// tool-call at output_item.done.
+	for _, want := range []provider.ChunkType{provider.ChunkTypeToolInputStart, provider.ChunkTypeToolInputDelta, provider.ChunkTypeToolInputEnd} {
+		chunk, err := stream.Next()
+		if err != nil {
+			t.Fatalf("Next() error = %v", err)
+		}
+		if chunk.Type != want {
+			t.Fatalf("chunk = %#v, want %s", chunk, want)
+		}
+	}
 	chunk, err := stream.Next()
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
-	if chunk.Type != provider.ChunkTypeToolCall || chunk.ToolCall.ToolName != "openai.computer" {
+	if chunk.Type != provider.ChunkTypeToolCall || chunk.ToolCall.ToolName != "computer" {
 		t.Fatalf("chunk = %#v, want an openai.computer tool call", chunk)
 	}
 }
@@ -3024,11 +3059,11 @@ func TestResponsesLanguageModel_ComputerToolNullCallIDIsProviderExecuted(t *test
 		t.Fatalf("Content = %#v, want a tool-call/tool-result pair", result.Content)
 	}
 	tc, ok := result.Content[0].(types.ToolCallContent)
-	if !ok || tc.ToolCallID != "computer_1" || tc.ToolName != "openai.computer_use" || !tc.ProviderExecuted || tc.Input != "" {
+	if !ok || tc.ToolCallID != "computer_1" || tc.ToolName != "computer_use" || !tc.ProviderExecuted || tc.Input != "" {
 		t.Fatalf("Content[0] = %#v, want a providerExecuted computer_use tool-call with empty input", result.Content[0])
 	}
 	tr, ok := result.Content[1].(types.ToolResultContent)
-	if !ok || tr.ToolCallID != "computer_1" || tr.ToolName != "openai.computer_use" {
+	if !ok || tr.ToolCallID != "computer_1" || tr.ToolName != "computer_use" {
 		t.Fatalf("Content[1] = %#v, want a computer_use tool-result", result.Content[1])
 	}
 	resultMap, ok := tr.Result.(map[string]interface{})
@@ -3037,32 +3072,35 @@ func TestResponsesLanguageModel_ComputerToolNullCallIDIsProviderExecuted(t *test
 	}
 
 	// Streaming path emits tool-input-end, tool-call, then tool-result.
-	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"computer_call","id":"computer_1"}}
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"computer_call","id":"computer_1","status":"in_progress"}}
 
 data: {"type":"response.output_item.done","output_index":0,"item":{"type":"computer_call","id":"computer_1","status":"completed"}}
 
 `)), false)
 	defer stream.Close() //nolint:errcheck
 
+	if start, err := stream.Next(); err != nil || start.Type != provider.ChunkTypeToolInputStart {
+		t.Fatalf("start = %#v, err = %v, want tool-input-start", start, err)
+	}
 	chunk1, err := stream.Next()
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
-	if chunk1.Type != provider.ChunkTypeToolInputEnd || chunk1.ToolCall.ToolName != "openai.computer_use" {
+	if chunk1.Type != provider.ChunkTypeToolInputEnd || chunk1.ToolCall.ToolName != "computer_use" {
 		t.Fatalf("chunk1 = %#v, want tool-input-end for computer_use", chunk1)
 	}
 	chunk2, err := stream.Next()
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
-	if chunk2.Type != provider.ChunkTypeToolCall || chunk2.ToolCall.ToolName != "openai.computer_use" || !chunk2.ToolCall.ProviderExecuted {
+	if chunk2.Type != provider.ChunkTypeToolCall || chunk2.ToolCall.ToolName != "computer_use" || !chunk2.ToolCall.ProviderExecuted {
 		t.Fatalf("chunk2 = %#v, want a providerExecuted computer_use tool-call", chunk2)
 	}
 	chunk3, err := stream.Next()
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
-	if chunk3.Type != provider.ChunkTypeToolResult || chunk3.ToolResult.ToolName != "openai.computer_use" {
+	if chunk3.Type != provider.ChunkTypeToolResult || chunk3.ToolResult.ToolName != "computer_use" {
 		t.Fatalf("chunk3 = %#v, want a computer_use tool-result", chunk3)
 	}
 }
@@ -3090,8 +3128,9 @@ func TestResponsesLanguageModel_ComputerToolInputReplay(t *testing.T) {
 		ID:       "call_1",
 		ToolName: "openai.computer",
 		Arguments: map[string]interface{}{
-			"status":  "completed",
-			"actions": []interface{}{map[string]interface{}{"type": "click", "button": "left", "x": 1, "y": 2}},
+			"status":              "completed",
+			"pendingSafetyChecks": []interface{}{},
+			"actions":             []interface{}{map[string]interface{}{"type": "click", "button": "left", "x": 1, "y": 2}},
 		},
 	}
 	input, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
@@ -3117,7 +3156,7 @@ func TestResponsesLanguageModel_ComputerToolInputReplay(t *testing.T) {
 				Output: &types.ToolResultOutput{
 					Type: types.ToolResultOutputJSON,
 					Value: map[string]interface{}{
-						"output": map[string]interface{}{"imageUrl": "https://example.com/shot.png"},
+						"output": map[string]interface{}{"type": "computer_screenshot", "imageUrl": "https://example.com/shot.png"},
 					},
 				},
 			}},
@@ -3175,7 +3214,7 @@ func TestResponsesLanguageModel_ProgrammaticToolCallingPrepareAndDecode(t *testi
 		t.Fatalf("ToolCalls = %#v, want one programmatic tool call", result.ToolCalls)
 	}
 	tc := result.ToolCalls[0]
-	if tc.ID != "call_1" || tc.ToolName != "openai.programmatic_tool_calling" || !tc.ProviderExecuted {
+	if tc.ID != "call_1" || tc.ToolName != "programmatic_tool_calling" || !tc.ProviderExecuted {
 		t.Fatalf("tool call = %#v, want provider-executed openai.programmatic_tool_calling", tc)
 	}
 	if tc.Arguments["code"] != "callTool('lookup', {})" || tc.Arguments["fingerprint"] != "fp_1" {
@@ -3199,7 +3238,7 @@ func TestResponsesLanguageModel_ProgrammaticToolCallingPrepareAndDecode(t *testi
 
 	// Streaming path: "program" and "program_output" are separate output
 	// items, each decoded on its own output_item.done event.
-	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"program","id":"pg_1"}}
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"program","id":"pg_1","call_id":"call_1","code":"","fingerprint":"fp"}}
 
 data: {"type":"response.output_item.done","output_index":0,"item":{"type":"program","id":"pg_1","call_id":"call_1","code":"callTool('lookup', {})","fingerprint":"fp_1"}}
 
@@ -3210,11 +3249,11 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"progr
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
-	if chunk.Type != provider.ChunkTypeToolCall || chunk.ToolCall.ToolName != "openai.programmatic_tool_calling" || !chunk.ToolCall.ProviderExecuted {
+	if chunk.Type != provider.ChunkTypeToolCall || chunk.ToolCall.ToolName != "programmatic_tool_calling" || !chunk.ToolCall.ProviderExecuted {
 		t.Fatalf("chunk = %#v, want a provider-executed openai.programmatic_tool_calling tool call", chunk)
 	}
 
-	outputStream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":1,"item":{"type":"program_output","id":"pgo_1"}}
+	outputStream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":1,"item":{"type":"program_output","id":"pgo_1","call_id":"call_1","result":"","status":"completed"}}
 
 data: {"type":"response.output_item.done","output_index":1,"item":{"type":"program_output","id":"pgo_1","call_id":"call_1","result":"42","status":"completed"}}
 
@@ -3404,29 +3443,37 @@ func TestResponsesLanguageModel_ParallelToolCallExpandsDeclaredTools(t *testing.
 
 	// Streaming path: the wrapper's arguments arrive as one delta, expansion
 	// happens at output_item.done.
-	stream := newResponsesStreamWithMetadata(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_p","name":"parallel"}}
+	stream := newResponsesStreamWithMetadata(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_p","name":"parallel","arguments":"","status":"completed"}}
 
-data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"`+strings.ReplaceAll(rawInput, `"`, `\"`)+`"}
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":0,"delta":"`+strings.ReplaceAll(rawInput, `"`, `\"`)+`"}
 
-data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_p","name":"parallel","arguments":""}}
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_p","name":"parallel","arguments":"","status":"completed"}}
 
 `)), false, "web_search", "openai", nil)
 	stream.tools = tools
 	defer stream.Close() //nolint:errcheck
 
-	chunk1, err := stream.Next()
-	if err != nil {
-		t.Fatalf("Next() error = %v", err)
+	// The wrapper is expanded like TS: each child streams
+	// tool-input-start/delta/end before its tool-call; the wrapper itself
+	// never streams input.
+	var seq []string
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			break
+		}
+		name := string(c.Type)
+		if c.ToolCall != nil {
+			name += ":" + c.ToolCall.ToolName
+		}
+		seq = append(seq, name)
 	}
-	if chunk1.Type != provider.ChunkTypeToolCall || chunk1.ToolCall.ToolName != "get_weather" {
-		t.Fatalf("chunk1 = %#v, want get_weather tool call", chunk1)
+	want := []string{
+		"tool-input-start:get_weather", "tool-input-delta", "tool-input-end:get_weather", "tool-call:get_weather",
+		"tool-input-start:get_time", "tool-input-delta", "tool-input-end:get_time", "tool-call:get_time",
 	}
-	chunk2, err := stream.Next()
-	if err != nil {
-		t.Fatalf("Next() error = %v", err)
-	}
-	if chunk2.Type != provider.ChunkTypeToolCall || chunk2.ToolCall.ToolName != "get_time" {
-		t.Fatalf("chunk2 = %#v, want get_time tool call", chunk2)
+	if len(seq) < len(want) || strings.Join(seq[:len(want)], ",") != strings.Join(want, ",") {
+		t.Fatalf("stream sequence = %v, want prefix %v", seq, want)
 	}
 }
 
@@ -3597,5 +3644,95 @@ func TestResponsesLanguageModel_ToolResultContentNeverProviderExecuted(t *testin
 	}
 	if sawToolCall != 3 {
 		t.Fatalf("saw %d tool-call parts, want 3", sawToolCall)
+	}
+}
+
+// TestResponsesLanguageModel_ComputerCallReplaySendsEmptyPendingSafetyChecks
+// mirrors TS, which always sends pending_safety_checks (an empty array when
+// there are none); the API requires the field.
+func TestResponsesLanguageModel_ComputerCallReplaySendsEmptyPendingSafetyChecks(t *testing.T) {
+	tc := types.ToolCall{ID: "call_1", ToolName: "openai.computer", Arguments: map[string]interface{}{
+		"status":              "completed",
+		"pendingSafetyChecks": []interface{}{},
+		"actions":             []interface{}{map[string]interface{}{"type": "screenshot"}},
+	}}
+	input, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{tc}}},
+	}, "system", responses.ConvertOptions{HasComputerTool: true})
+	if err != nil || len(input) != 1 {
+		t.Fatalf("input=%#v err=%v", input, err)
+	}
+	raw, _ := json.Marshal(input[0])
+	if !strings.Contains(string(raw), `"pending_safety_checks":[]`) {
+		t.Fatalf("wire = %s, want pending_safety_checks:[]", raw)
+	}
+}
+
+// TS: systemMessageMode ?? (isReasoningModel ? 'developer' :
+// modelCapabilities.systemMessageMode), so forceReasoning:false on a
+// recognized reasoning model keeps the capability-derived "developer" role.
+func TestResponsesLanguageModel_SystemRole_ForceReasoningFalseKeepsCapabilityMode(t *testing.T) {
+	for modelID, want := range map[string]string{"gpt-5.4": "developer", "gpt-4o": "system"} {
+		p := New(Config{APIKey: "test-key"})
+		model := NewResponsesLanguageModel(p, modelID)
+		body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+			Prompt:          types.Prompt{System: "sys", Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hi"}}}}},
+			ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"forceReasoning": false}},
+		}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sysMsg, ok := body["input"].([]interface{})[0].(responses.SystemMessage)
+		if !ok || sysMsg.Role != want {
+			t.Fatalf("%s: got %#v want role %s", modelID, body["input"].([]interface{})[0], want)
+		}
+	}
+}
+
+// TS custom_tool_call: zod strips `caller`, and output_item.done falls back to
+// the async flag seen at output_item.added.
+func TestResponsesStream_CustomToolCallAsyncFallbackAndNoCaller(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"fmt","input":"","async":true}}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"fmt","input":"x","status":"completed","caller":{"type":"program","caller_id":"p1"}}}
+
+`)), false)
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			t.Fatal("no tool call chunk")
+		}
+		if chunk.Type != provider.ChunkTypeToolCall {
+			continue
+		}
+		md, _ := chunk.ToolCall.ProviderMetadata["openai"].(map[string]interface{})
+		if md["async"] != true {
+			t.Fatalf("async fallback missing: %#v", md)
+		}
+		if _, has := md["caller"]; has {
+			t.Fatalf("caller must be stripped for custom_tool_call: %#v", md)
+		}
+		return
+	}
+}
+
+// TS keeps the event's own item id when a nullish output_index is absent.
+func TestResponsesStream_TextDeltaWithoutOutputIndexKeepsItemID(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_first","role":"assistant","content":[]}}
+
+data: {"type":"response.output_text.delta","item_id":"msg_other","delta":"hi"}
+
+`)), false)
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			t.Fatal("no text chunk")
+		}
+		if chunk.Type == provider.ChunkTypeText {
+			if chunk.ID != "msg_other" {
+				t.Fatalf("id = %q, want msg_other", chunk.ID)
+			}
+			return
+		}
 	}
 }

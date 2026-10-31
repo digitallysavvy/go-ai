@@ -3,6 +3,7 @@ package google
 import (
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -801,5 +802,36 @@ func TestGoogleBatch_ImageRequestRejectsMultipleImages(t *testing.T) {
 	})
 	if !providererrors.IsUnsupportedFunctionalityError(err) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestBatchPromptFeedbackWithoutBlockReasonIsNullInMetadata(t *testing.T) {
+	b := NewBatch(New(Config{APIKey: "k"}))
+	item := b.convertGoogleBatchResultLine("r1", []byte(`{"promptFeedback":{}}`), nil)
+	meta, _ := item.ProviderMetadata["google"].(map[string]interface{})
+	pf, _ := meta["promptFeedback"].(map[string]interface{})
+	if v, ok := pf["blockReason"]; !ok || v != nil {
+		t.Fatalf("promptFeedback = %#v", pf)
+	}
+}
+
+// TS parseCount accepts only digit-only strings up to Number.MAX_SAFE_INTEGER.
+func TestParseGoogleBatchCountStrictLikeTS(t *testing.T) {
+	for _, bad := range []interface{}{"+5", "-1", "1.5", "", " 3", "9007199254740993", float64(-1), float64(1.5), float64(1 << 60)} {
+		if got := parseGoogleBatchCount(bad); got != nil {
+			t.Errorf("parseGoogleBatchCount(%#v) = %d, want nil", bad, *got)
+		}
+	}
+	for in, want := range map[interface{}]int64{"007": 7, "12": 12, float64(4): 4, "9007199254740991": 9007199254740991, float64(1<<53 - 1): 1<<53 - 1} {
+		got := parseGoogleBatchCount(in)
+		if want > math.MaxInt { // 32-bit: the count does not fit an int
+			if got != nil {
+				t.Errorf("parseGoogleBatchCount(%#v) = %d, want nil on a 32-bit platform", in, *got)
+			}
+			continue
+		}
+		if got == nil || int64(*got) != want {
+			t.Errorf("parseGoogleBatchCount(%#v) = %v, want %d", in, got, want)
+		}
 	}
 }

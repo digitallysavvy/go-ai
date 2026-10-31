@@ -39,7 +39,7 @@ func NewVideoModel(prov *Provider, modelID string) *VideoModel {
 
 // SpecificationVersion returns the specification version
 func (m *VideoModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
@@ -90,15 +90,31 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*GoogleVideoModel
 	}
 	jsonData, err := json.Marshal(raw)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to marshal google video provider options: %w", err)
+		return nil, nil, invalidGoogleFilesOptions(fmt.Errorf("failed to marshal google video provider options: %w", err))
 	}
 	var provOpts GoogleVideoModelOptions
 	if err := json.Unmarshal(jsonData, &provOpts); err != nil {
-		return nil, nil, fmt.Errorf("failed to unmarshal google video provider options: %w", err)
+		return nil, nil, invalidGoogleFilesOptions(fmt.Errorf("failed to unmarshal google video provider options: %w", err))
 	}
 	var rawMap map[string]interface{}
 	if err := json.Unmarshal(jsonData, &rawMap); err != nil {
-		return nil, nil, fmt.Errorf("failed to unmarshal google video provider options map: %w", err)
+		return nil, nil, invalidGoogleFilesOptions(fmt.Errorf("failed to unmarshal google video provider options map: %w", err))
+	}
+	// TS googleVideoModelOptionsSchema: personGeneration is an enum and the
+	// poll settings are positive numbers.
+	if provOpts.PersonGeneration != nil {
+		switch *provOpts.PersonGeneration {
+		case "dont_allow", "allow_adult", "allow_all":
+		default:
+			return nil, nil, invalidGoogleFilesOptions(fmt.Errorf("personGeneration: invalid option %q, expected one of dont_allow, allow_adult, allow_all", *provOpts.PersonGeneration))
+		}
+	}
+	for _, key := range []string{"pollIntervalMs", "pollTimeoutMs"} {
+		if v, ok := rawMap[key]; ok && v != nil {
+			if n, isNum := v.(float64); !isNum || n <= 0 {
+				return nil, nil, invalidGoogleFilesOptions(fmt.Errorf("%s: expected a positive number", key))
+			}
+		}
 	}
 	extra := make(map[string]interface{})
 	for k, v := range rawMap {
@@ -183,19 +199,28 @@ func convertFileToGoogleImage(file *provider.VideoModelV3File, warnings *[]types
 // referenceImages entry to the request's referenceImages shape (TS
 // convertProviderReferenceImage).
 func convertProviderReferenceImage(ref googleVideoReferenceImageOpt) map[string]interface{} {
-	if ref.BytesBase64Encoded != nil {
+	if ref.BytesBase64Encoded != nil && *ref.BytesBase64Encoded != "" {
 		return map[string]interface{}{
 			"image":         map[string]interface{}{"bytesBase64Encoded": *ref.BytesBase64Encoded, "mimeType": "image/png"},
 			"referenceType": "asset",
 		}
 	}
-	if ref.GcsURI != nil {
+	if ref.GcsURI != nil && *ref.GcsURI != "" {
 		return map[string]interface{}{
 			"image":         map[string]interface{}{"gcsUri": *ref.GcsURI, "mimeType": "image/png"},
 			"referenceType": "asset",
 		}
 	}
-	return map[string]interface{}{}
+	// TS returns the entry itself when neither field is truthy, so empty
+	// strings are sent as given.
+	out := map[string]interface{}{}
+	if ref.BytesBase64Encoded != nil {
+		out["bytesBase64Encoded"] = *ref.BytesBase64Encoded
+	}
+	if ref.GcsURI != nil {
+		out["gcsUri"] = *ref.GcsURI
+	}
+	return out
 }
 
 // convertInputReferenceImage converts an inputReferences entry into the
@@ -323,10 +348,11 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 
 	var operation googleVideoOperationWire
 	httpResp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    fmt.Sprintf("/models/%s:predictLongRunning", m.modelID),
-		Body:    body,
-		Headers: callOpts.Headers,
+		ValidateResponse: googleValidator(zGoogleOperation),
+		Method:           http.MethodPost,
+		Path:             fmt.Sprintf("/models/%s:predictLongRunning", m.modelID),
+		Body:             body,
+		Headers:          callOpts.Headers,
 	}, &operation)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -362,9 +388,10 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	var operation googleVideoOperationWire
 	httpResp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodGet,
-		Path:    "/" + op.OperationName,
-		Headers: opts.Headers,
+		ValidateResponse: googleValidator(zGoogleOperation),
+		Method:           http.MethodGet,
+		Path:             "/" + op.OperationName,
+		Headers:          opts.Headers,
 	}, &operation)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -397,17 +424,17 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 // directly fetchable.
 func (m *VideoModel) buildCompletedResult(operation *googleVideoOperationWire, responseInfo provider.VideoModelV3ResponseInfo) (*provider.VideoModelV3OperationStatusResult, error) {
 	if operation.Response == nil || operation.Response.GenerateVideoResponse == nil ||
-		len(operation.Response.GenerateVideoResponse.GeneratedSamples) == 0 {
+		operation.Response.GenerateVideoResponse.GeneratedSamples == nil || len(*operation.Response.GenerateVideoResponse.GeneratedSamples) == 0 {
 		raw, _ := json.Marshal(operation)
 		return nil, providererrors.NewVideoGenerationError("google", m.modelID, fmt.Sprintf("No videos in response. Response: %s", string(raw)), nil)
 	}
 
-	apiKey := m.prov.client.Headers()["x-goog-api-key"]
+	apiKey := m.prov.headersSnapshot()["x-goog-api-key"]
 
 	videos := []provider.VideoModelV3VideoData{}
 	videoMetadata := []map[string]interface{}{}
 
-	for _, sample := range operation.Response.GenerateVideoResponse.GeneratedSamples {
+	for _, sample := range *operation.Response.GenerateVideoResponse.GeneratedSamples {
 		if sample.Video == nil || sample.Video.URI == "" {
 			continue
 		}
@@ -539,7 +566,7 @@ func convertGoogleHeaders(h http.Header) map[string]string {
 
 // googleVideoOperationWire mirrors TS googleOperationSchema.
 type googleVideoOperationWire struct {
-	Name  string `json:"name"`
+	Name  string `json:"name,omitempty"`
 	Done  bool   `json:"done"`
 	Error *struct {
 		Code    *int   `json:"code,omitempty"`
@@ -548,7 +575,9 @@ type googleVideoOperationWire struct {
 	} `json:"error,omitempty"`
 	Response *struct {
 		GenerateVideoResponse *struct {
-			GeneratedSamples []struct {
+			// Pointer so an empty array prints as [] in the "No videos in
+			// response" error, like TS JSON.stringify of the parsed body.
+			GeneratedSamples *[]struct {
 				Video *struct {
 					URI string `json:"uri,omitempty"`
 				} `json:"video,omitempty"`

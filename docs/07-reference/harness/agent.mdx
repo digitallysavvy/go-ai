@@ -69,17 +69,22 @@ result, err := coder.Generate(ctx, agent.AgentGenerateOptions{
 | `Callbacks` | `Callbacks` |  |
 | `PermissionMode` | `PermissionMode` | PermissionMode is the baseline permission mode for adapter-native built-in tools. Defaults to PermissionModeAllowAll. |
 | `ToolApproval` | `AgentToolApprovalConfiguration` | ToolApproval is the per-tool static approval configuration for host-executed tools. |
+| `ToolApprovalReasons` | `map[string]string` | ToolApprovalReasons carries the optional `reason` of a ToolApproval entry (TS `{ type: 'denied', reason }`). The reason of a denied tool is sent to the model in the execution-denied result and recorded on the automatic approval response. |
 | `ActiveTools` | `[]string` | ActiveTools / InactiveTools limit the tools available to the harness without changing the tool call/result types in the result. Mutually exclusive; leave both nil to allow every tool. |
 | `InactiveTools` | `[]string` |  |
 | `Sandbox` | `SandboxProvider` | Sandbox is the provider used to create or resume network sandbox sessions. When nil, every CreateSession call must provide an existing sandbox session. |
 | `SandboxConfig` | `AgentSandboxConfig` | SandboxConfig is the sandbox working-directory and lifecycle-hook configuration. |
 | `Telemetry` | `*telemetry.Options` | Telemetry configures OpenTelemetry span/attribute reporting for every turn this agent runs, via pkg/telemetry's dispatch pattern (see run_prompt.go's telemetry.go): a turn span nests step spans, which nest model-call and tool-execution spans. Nil disables it. Mirrors TS `HarnessAgentSettings.telemetry`. |
+| `Debug` | `*DebugConfig` | Debug configures diagnostics: bridge log forwarding (sandbox console lines and structured debug events) and the HARNESS_DEBUG stderr default. Set &DebugConfig\{Enabled: &true\} to turn it on in code; the HARNESS_DEBUG, HARNESS_DEBUG_LEVEL and HARNESS_DEBUG_SUBSYSTEMS env vars fill any unset field. Mirrors TS `HarnessAgentSettings.debug`. |
+| `OnLog` | `func(Diagnostic)` | OnLog is a programmatic sink for forwarded bridge diagnostics. It receives every captured console line and structured event, normalized, independent of the stderr default. Only called when diagnostics are enabled via Debug or HARNESS_DEBUG. Mirrors TS `onLog`. |
 
 {/* /gen:fields */}
 
 ### Callbacks
 
 The callbacks reuse the event types from `pkg/ai`, so a harness turn appears in callback-driven tooling like a `StreamText` call. See [Callback events](../ai/callback-events.mdx).
+
+The `OnStepEnd` and `OnEnd` events carry the same step data as `result.Steps()` (content, reasoning, warnings, response id and model, response messages, final step). The callbacks you set on a call (`agent.AgentGenerateOptions.OnStart`, `OnStepStart`, `OnToolExecutionStart`, `OnToolExecutionEnd`, `OnStepEnd`, `OnEnd` and their deprecated aliases) run next to the agent's own on a fresh prompt; a continuation uses the agent's callbacks only.
 
 {/* gen:fields harness.Callbacks */}
 
@@ -135,7 +140,7 @@ The callbacks reuse the event types from `pkg/ai`, so a harness turn appears in 
 
 | Method | Description |
 | --- | --- |
-| `Generate(ctx, agent.AgentGenerateOptions) (*ai.GenerateTextResult, error)` | Runs a fresh prompt turn on `HarnessSession` and waits for the result. |
+| `Generate(ctx, agent.AgentGenerateOptions) (*ai.GenerateTextResult, error)` | Runs a fresh prompt turn on `HarnessSession` and waits for the result. The turn runs the last `user` message of `Messages`. A trailing `tool` message carrying approval responses or tool results continues the session's unfinished turn instead, like `ContinueGenerate`. |
 | `Stream(ctx, agent.AgentStreamOptions) (*ai.StreamTextResult, error)` | Runs a fresh prompt turn on `HarnessSession` and streams the result. |
 | `ContinueGenerate(ctx, opts, toolApprovalContinuations, toolResultContinuations)` | Resumes a paused turn and waits for the result. |
 | `ContinueStream(ctx, opts, toolApprovalContinuations, toolResultContinuations)` | Resumes a paused turn and streams the result. |
@@ -181,9 +186,9 @@ The callbacks reuse the event types from `pkg/ai`, so a harness turn appears in 
 | `ReadHistory(ctx, since string) (*ReadHistoryResult, error)` | Reads the conversation history the runtime persisted. Returns `*HistoryUnavailableError` when the adapter supports it but cannot reach the history. |
 | `ExperimentalSteerTurn(ctx, text string) error` | Sends an extra user message to the running turn. |
 | `SuspendTurn(ctx) (*ContinueTurnState, error)` | Freezes the active turn and returns the state to persist. The handle is detached afterward, so create a new session from the state to continue. |
-| `Detach(ctx) (*ResumeSessionState, error)` | Detaches without tearing down the runtime. Pass the state to `CreateSessionOptions.ResumeFrom` later. |
-| `Stop(ctx) (*ResumeSessionState, error)` | Persists enough state to resume, then stops the runtime. |
-| `Destroy(ctx) error` | Stops the runtime and returns no state. |
+| `Detach(ctx) (*ResumeSessionState, error)` | Detaches without tearing down the runtime. Pass the state to `CreateSessionOptions.ResumeFrom` later. With an unfinished turn, the turn is suspended and returned as the state's `ContinueFrom`. |
+| `Stop(ctx) (*ResumeSessionState, error)` | Persists enough state to resume, then stops the runtime. With an unfinished turn, the turn is suspended and returned as the state's `ContinueFrom`. |
+| `Destroy(ctx) error` | Stops the runtime and returns no state. Does nothing on an ended session. |
 
 {/* gen:consts harness.SessionState */}
 
@@ -307,7 +312,7 @@ The callbacks reuse the event types from `pkg/ai`, so a harness turn appears in 
 
 ### Pausing for approval or results
 
-A turn pauses when the runtime wants approval for a tool, or when it calls a client-executed tool. The paused state is recorded as a `harness.PendingToolApproval` or `harness.PendingToolResult`. Their kinds are `harness.PendingToolApprovalBuiltin` and `harness.PendingToolApprovalCustom`. A `harness.CompletedToolResult` is a client tool result executed while suspending, submitted on resume without running the tool again.
+A turn pauses when the runtime wants approval for a tool, or when it calls a client-executed tool. An approval request or pending client tool result does not end the response right away. The rest of the step is still surfaced, so every approval and pending result of a parallel batch is reported. The turn pauses at the step's next `finish-step`, after every host tool started in that response has been echoed back by the runtime. An adapter that cannot make progress without host input emits a `finish-step` for that. The host ignores such a `finish-step` while host tools it started have not been echoed yet. The paused state is recorded as a `harness.PendingToolApproval` or `harness.PendingToolResult`. Their kinds are `harness.PendingToolApprovalBuiltin` and `harness.PendingToolApprovalCustom`. A `harness.CompletedToolResult` is a client tool result executed while suspending, submitted on resume without running the tool again.
 
 {/* gen:fields harness.PendingToolApproval */}
 
@@ -349,7 +354,7 @@ To resume, take the client's trailing tool message and pass the continuations to
 
 | Function | Description |
 | --- | --- |
-| `harness.CollectToolApprovalContinuations(messages []types.Message) ([]types.ToolApprovalResponseContent, error)` | Extracts approval decisions from a trailing `tool` message. Responses that already have a tool result are ignored. |
+| `harness.CollectToolApprovalContinuations(messages []types.Message) ([]types.ToolApprovalResponseContent, error)` | Extracts approval decisions from a trailing `tool` message. Responses that already have a tool result are ignored. A synthesized `execution-denied` result does not count, so a newly denied approval still continues the turn. |
 | `harness.CollectToolResultContinuations(messages []types.Message) []types.ToolResultContent` | Extracts client-provided tool results from the trailing `tool` message. |
 
 `harness.AgentPendingToolApproval` and `harness.AgentPendingToolResult` are the consumer-facing aliases.
@@ -365,6 +370,9 @@ To resume, take the client's trailing tool message and pass the continuations to
 | `harness.BuiltinToolName`, `harness.BuiltinToolUseKind` | A common name, and a classification for permission handling: `harness.BuiltinToolUseKindReadonly`, `harness.BuiltinToolUseKindEdit` or `harness.BuiltinToolUseKindBash`. |
 | `harness.AgentBuiltinTool`, `harness.AgentBuiltinToolName`, `harness.AgentBuiltinToolUseKind`, `harness.AgentToolSpec` | Consumer-facing aliases. |
 | `harness.ToolSpec` | Describes a host-defined tool made available to the runtime. |
+| `harness.NormalizeToolModelOutput(output)` | Validates a tool's model output for delivery to a runtime: text and inline images only. Returns a `*harness.CapabilityUnsupportedError` otherwise. |
+| `harness.ConvertToolModelOutput(output)` | Converts a normalized model output into `[]harness.ToolModelOutputContent` blocks and an error flag, for adapters that build the runtime's tool result. |
+| `harness.ToolModelOutputContent`, `harness.ToolModelOutputContentType` | One text or inline-image block of a tool's model output. `Type` is `harness.ToolModelOutputContentText` or `harness.ToolModelOutputContentImage`. |
 | `harness.BuiltinToolFiltering` | Selects the adapter-native built-in tools for a session. `Mode` is `harness.BuiltinToolFilteringAllow` or `harness.BuiltinToolFilteringDeny`. |
 | `harness.BuiltinToolFilteringMode` | The type of `Mode`. |
 | `harness.ResolveToolFiltering(ResolveToolFilteringOptions) ResolvedToolFiltering` | Computes the active user tools and the built-in filtering to send to the adapter from `ActiveTools` and `InactiveTools`. |
@@ -424,6 +432,63 @@ The `askUserQuestions` tool lets the runtime ask the user a question and wait fo
 ## Telemetry and diagnostics
 
 `AgentSettings.Telemetry` takes a `*telemetry.Options`. A turn span contains step spans, which contain model-call and tool-execution spans.
+
+### Diagnostics
+
+Set `AgentSettings.Debug` (or the `HARNESS_DEBUG`, `HARNESS_DEBUG_LEVEL` and `HARNESS_DEBUG_SUBSYSTEMS` env vars, which only fill fields the setting leaves unset) to forward the bridge's sandbox console lines and structured debug events. Each `harness.Diagnostic` goes to stderr, to `AgentSettings.OnLog`, and to every integration in `Telemetry.Integrations` that implements `harness.DiagnosticConsumer`. With diagnostics disabled, `DoStart` receives a nil `Observability`.
+
+```go
+enabled := true
+agent, err := harness.NewAgent(harness.AgentSettings{
+	Harness: h,
+	Debug:   &harness.DebugConfig{Enabled: &enabled, Level: harness.DebugLevelInfo},
+	OnLog:   func(d harness.Diagnostic) { log.Printf("%s %s", d.Subsystem, d.Message) },
+})
+```
+
+A failed turn is also written to stderr, one prefixed line per line of the error (`[harness:<id>:error session=<id>] harness turn failed: ...`), unless the caller cancelled it. `harness.LogBridgeError(harness.LogBridgeErrorOptions{HarnessID, SessionID, Context, Error, Write})` writes the same format, and `harness.FormatBridgeError` renders an error value for it.
+
+### File reporter
+
+`harness.NewFileReporter` returns a telemetry integration that appends a unified `events.jsonl` with the turn, step and tool lifecycle plus forwarded diagnostics. It needs no collector. Register it in `Telemetry.Integrations` and close it when you are done.
+
+```go
+reporter, err := harness.NewFileReporter(harness.FileReporterOptions{Dir: "./logs", FailOnly: true})
+if err != nil {
+	return err
+}
+defer reporter.Close()
+
+tel := telemetry.DefaultSettings() // RecordInputs and RecordOutputs on
+tel.Integrations = []telemetry.TelemetryIntegration{reporter}
+agent, err := harness.NewAgent(harness.AgentSettings{Harness: h, Telemetry: tel})
+```
+
+Each line is a JSON object with `ts` (epoch ms) and `kind`: `turn-start`, `step-start`, `tool-start`, `tool-end`, `step-finish`, `turn-finish`, `error`, `turn-abort` or `diagnostic`. Records are buffered per turn and written when the turn ends. With `FailOnly`, a turn is written only if it recorded an error-level diagnostic, a failed tool or an `error`; a clean turn is skipped. Diagnostics attach to the most recently started open turn, or are written alone when none is open. `turn-start` carries `input` and `step-finish` carries `output` (text, reasoning, files, tool calls, tool results and tool errors) unless the call's `telemetry.Options` has `RecordInputs` or `RecordOutputs` false. Errors are written as `{name, message}`, where `name` is the Go error type. A failed tool's `tool-end` output (and a step's `tool-error` error) is the error value the runtime reported, or `{}` for an error a host tool returned, as TS writes the raw value and a JS `Error` stringifies to `{}`. Usage always carries `inputTokenDetails` and `outputTokenDetails` objects, and a harness turn's input message holds the prompt text as a string.
+
+The directory is created with mode 0700 and the file with 0600. `FileName` is joined to `Dir` as it is, like TS, so a name the operating system cannot open shows up in `reporter.Err()`. A host tool that fails with a Go error is recorded with `"output": {}`, as TS records a thrown `Error`. Writes are best-effort and never fail a turn; `reporter.Err()` returns the first write error. `Close` writes any turn still open (not with `FailOnly`) and closes the file, and records after `Close` are dropped.
+
+### Trace tree reporter
+
+`harness.NewTraceTreeReporter` returns a telemetry integration that renders an ASCII tree of each turn (turn, steps, tools, with durations) to `TraceTreeReporterOptions.Write` when the turn ends. It writes to stderr by default. It is for local debugging when no OpenTelemetry backend is wired up.
+
+{/* gen:fields harness.FileReporterOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Dir` | `string` | Dir is the directory for the events file (created if absent). Required. |
+| `FailOnly` | `bool` | FailOnly buffers a turn's records in memory and writes them only if the turn produced an error (an error-level diagnostic, a failed tool, or an error finish). Default false (write everything). |
+| `FileName` | `string` | FileName is the file name within Dir. Default "events.jsonl". Like TS (`${dir}/${fileName}`) it is not validated; a name the OS cannot open surfaces through Err, never through a turn. |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.TraceTreeReporterOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Write` | `func(chunk string)` | Write receives the rendered tree. Default writes to os.Stderr. |
+
+{/* /gen:fields */}
 
 | Name | Description |
 | --- | --- |

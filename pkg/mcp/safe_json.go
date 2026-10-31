@@ -4,11 +4,44 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 )
 
 const (
-	defaultJSONMaxDepth  = 64
-	defaultJSONMaxFields = 4096
+	// mcpMaxResponseBodyBytes bounds a JSON response read from an MCP server
+	// (tool results can legitimately carry multi-megabyte base64 images).
+	mcpMaxResponseBodyBytes = 64 << 20
+	// mcpMaxErrorBodyBytes bounds the text kept from a failed HTTP response.
+	mcpMaxErrorBodyBytes = 1 << 20
+)
+
+// readErrorBody reads at most mcpMaxErrorBodyBytes of an error response body.
+func readErrorBody(r io.Reader) []byte {
+	body, _ := io.ReadAll(io.LimitReader(r, mcpMaxErrorBodyBytes))
+	return body
+}
+
+// readResponseBody reads a response body from an untrusted server, failing
+// instead of buffering more than mcpMaxResponseBodyBytes.
+func readResponseBody(r io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, mcpMaxResponseBodyBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > mcpMaxResponseBodyBytes {
+		return nil, fmt.Errorf("response body exceeds %d bytes", mcpMaxResponseBodyBytes)
+	}
+	return body, nil
+}
+
+const (
+	defaultJSONMaxDepth = 64
+	// defaultJSONMaxFields is a backstop only: TS parses MCP messages with no
+	// field limit, and a legitimate large result (a tools/list of a few
+	// hundred tools with schemas, or a structuredContent list of records)
+	// easily carries tens of thousands of object members. Memory is already
+	// bounded by mcpMaxResponseBodyBytes.
+	defaultJSONMaxFields = 1 << 22
 )
 
 func unmarshalSafeJSON(data []byte, target interface{}) error {
@@ -66,4 +99,11 @@ func rejectUnsafeJSONWalk(value interface{}, depth, maxDepth, maxFields int, fie
 		}
 	}
 	return nil
+}
+
+// drainBody discards the rest of a response body we do not use, so the
+// connection can be reused. TS never reads such a body; reading is capped so
+// a server that streams forever cannot hold the caller.
+func drainBody(r io.Reader) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(r, mcpMaxErrorBodyBytes))
 }

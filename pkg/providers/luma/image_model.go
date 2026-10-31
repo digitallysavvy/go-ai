@@ -4,14 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	stdhttp "net/http"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	"github.com/digitallysavvy/go-ai/pkg/internal/media"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // Default polling configuration (TS LumaImageModel.pollIntervalMillis /
@@ -90,6 +92,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		})
 	}
 
+	if err := validateLumaImageOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	lumaOpts := parseImageModelOptions(opts.ProviderOptions)
 
 	editingOptions, err := m.getEditingOptions(opts.Files, opts.Mask, lumaOpts)
@@ -121,25 +126,34 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		Headers: opts.Headers,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("luma: failed to submit generation request: %w", err)
+		// TS postJsonToApi lets a transport failure propagate unchanged.
+		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, m.parseErrorResponse(resp.Body, resp.StatusCode)
+		return nil, m.parseErrorResponseWithHeaders(resp.Body, resp.StatusCode, resp.Headers)
 	}
 
+	// TS createJsonResponseHandler(lumaGenerationResponseSchema).
+	if err := validateLumaGeneration(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var genResp lumaGenerationResponse
 	if err := json.Unmarshal(resp.Body, &genResp); err != nil {
 		return nil, fmt.Errorf("luma: failed to decode generation response: %w", err)
 	}
 
-	pollIntervalMillis := defaultPollIntervalMillis
-	maxPollAttempts := defaultMaxPollAttempts
+	pollIntervalMillis := float64(defaultPollIntervalMillis)
+	maxPollAttempts := float64(defaultMaxPollAttempts)
 	if lumaOpts != nil {
-		if lumaOpts.PollIntervalMillis != nil {
-			pollIntervalMillis = *lumaOpts.PollIntervalMillis
+		if lumaOpts.pollIntervalMillisF != nil {
+			pollIntervalMillis = *lumaOpts.pollIntervalMillisF
+		} else if lumaOpts.PollIntervalMillis != nil {
+			pollIntervalMillis = float64(*lumaOpts.PollIntervalMillis)
 		}
-		if lumaOpts.MaxPollAttempts != nil {
-			maxPollAttempts = *lumaOpts.MaxPollAttempts
+		if lumaOpts.maxPollAttemptsF != nil {
+			maxPollAttempts = *lumaOpts.maxPollAttemptsF
+		} else if lumaOpts.MaxPollAttempts != nil {
+			maxPollAttempts = float64(*lumaOpts.MaxPollAttempts)
 		}
 	}
 
@@ -150,12 +164,18 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 
 	imageData, contentType, err := m.downloadImage(ctx, imageURL)
 	if err != nil {
-		return nil, fmt.Errorf("luma: failed to download generated image: %w", err)
+		// TS getFromApi with createStatusCodeErrorResponseHandler.
+		return nil, providerutils.StatusCodeDownloadError("luma", err)
 	}
 
 	mimeType := contentType
 	if mimeType == "" || mimeType == "application/octet-stream" {
-		mimeType = media.DetectImageMediaType(imageData)
+		// TS signature tables (also bmp/tiff/avif/heic); undetected bytes
+		// fall through to the image/png default below, as in TS.
+		mimeType = ""
+		if detected, ok := fileutil.DetectMediaTypeSignature(imageData, "image"); ok {
+			mimeType = detected
+		}
 	}
 	if mimeType == "" {
 		mimeType = "image/png"
@@ -183,10 +203,10 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 // `getFromApi({ validateUrl: false })` for this call, so no additional SSRF
 // validation is required here -- only the final image download (below) needs
 // it, since that URL comes from the response body.
-func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, headers map[string]string, pollIntervalMillis, maxPollAttempts int) (string, error) {
-	path := "/dream-machine/v1/generations/" + generationID
+func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, headers map[string]string, pollIntervalMillis, maxPollAttempts float64) (string, error) {
+	path := "/dream-machine/v1/generations/" + providerutils.EncodePathSegment(generationID)
 
-	for i := 0; i < maxPollAttempts; i++ {
+	for i := 0; float64(i) < maxPollAttempts; i++ {
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
@@ -199,12 +219,15 @@ func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, h
 			Headers: headers,
 		})
 		if err != nil {
-			return "", fmt.Errorf("luma: failed to check generation status: %w", err)
+			return "", err // TS getFromApi lets a transport failure propagate unchanged
 		}
 		if resp.StatusCode >= 400 {
-			return "", m.parseErrorResponse(resp.Body, resp.StatusCode)
+			return "", m.parseErrorResponseWithHeaders(resp.Body, resp.StatusCode, resp.Headers)
 		}
 
+		if err := validateLumaGeneration(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+			return "", err
+		}
 		var status lumaGenerationResponse
 		if err := json.Unmarshal(resp.Body, &status); err != nil {
 			return "", fmt.Errorf("luma: failed to parse status response: %w", err)
@@ -223,7 +246,7 @@ func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, h
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
-		case <-time.After(time.Duration(pollIntervalMillis) * time.Millisecond):
+		case <-time.After(time.Duration(pollIntervalMillis * float64(time.Millisecond))):
 		}
 	}
 
@@ -318,7 +341,12 @@ func (m *ImageModel) getEditingOptions(files []provider.ImageFile, mask *provide
 			}
 			identities[id] = append(identities[id], f.URL)
 		}
-		for id, imgs := range identities {
+		// TS validates in insertion order, so the first oversized identity
+		// is the one reported.
+		// Object.entries(identities) lists integer-like ids first, ascending.
+		order = jsonorder.JSKeyOrder(order)
+		for _, id := range order {
+			imgs := identities[id]
 			if len(imgs) > 4 {
 				return nil, fmt.Errorf("Luma AI character supports up to 4 images per identity. Identity '%s' has %d images.", id, len(imgs)) //nolint:staticcheck // matches TS SDK's exact error text
 			}
@@ -346,12 +374,24 @@ func (m *ImageModel) getEditingOptions(files []provider.ImageFile, mask *provide
 // parseErrorResponse converts a Luma error envelope
 // ({detail: [{msg, ...}]}) into a provider error.
 func (m *ImageModel) parseErrorResponse(body []byte, statusCode int) error {
+	return m.parseErrorResponseWithHeaders(body, statusCode, nil)
+}
+
+// parseErrorResponseWithHeaders is parseErrorResponse keeping the failed
+// response's headers on the error (TS APICallError.responseHeaders).
+func (m *ImageModel) parseErrorResponseWithHeaders(body []byte, statusCode int, headers stdhttp.Header) error {
+	// TS createJsonErrorResponseHandler: a body that does not match the error
+	// schema (or is empty) gives the HTTP status text as the message.
+	msg := stdhttp.StatusText(statusCode)
 	var errResp lumaErrorResponse
-	msg := "Unknown error"
-	if err := json.Unmarshal(body, &errResp); err == nil && len(errResp.Detail) > 0 && errResp.Detail[0].Msg != "" {
-		msg = errResp.Detail[0].Msg
+	if err := json.Unmarshal(body, &errResp); err == nil && errResp.valid() {
+		// detail[0].msg is a required string, so `?? 'Unknown error'` never
+		// applies; an empty detail array makes errorToMessage throw, which
+		// the handler also turns into the status text.
+		msg = *errResp.Detail[0].Msg
 	}
-	return providererrors.NewProviderError("luma", statusCode, "", msg, nil)
+	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
+	return providererrors.NewProviderErrorFromResponse("luma", 0, "", msg, cause)
 }
 
 func flattenHeaders(headers map[string][]string) map[string]string {
@@ -376,12 +416,37 @@ type lumaGenerationResponse struct {
 	} `json:"assets"`
 }
 
+// lumaErrorDetail mirrors one entry of TS lumaErrorSchema.detail: type, loc
+// (string array), msg and input are all required strings, ctx is an optional
+// object with a required string `expected`. Pointers distinguish absent from
+// zero.
 type lumaErrorDetail struct {
-	Type  string `json:"type"`
-	Msg   string `json:"msg"`
-	Input string `json:"input"`
+	Type  *string   `json:"type"`
+	Loc   *[]string `json:"loc"`
+	Msg   *string   `json:"msg"`
+	Input *string   `json:"input"`
+	Ctx   *struct {
+		Expected *string `json:"expected"`
+	} `json:"ctx"`
 }
 
 type lumaErrorResponse struct {
 	Detail []lumaErrorDetail `json:"detail"`
+}
+
+// valid reports whether the body matches lumaErrorSchema and detail[0]
+// exists.
+func (r lumaErrorResponse) valid() bool {
+	if len(r.Detail) == 0 {
+		return false
+	}
+	for _, d := range r.Detail {
+		if d.Type == nil || d.Loc == nil || d.Msg == nil || d.Input == nil {
+			return false
+		}
+		if d.Ctx != nil && d.Ctx.Expected == nil {
+			return false
+		}
+	}
+	return true
 }

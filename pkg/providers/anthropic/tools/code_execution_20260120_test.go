@@ -20,9 +20,9 @@ func TestCodeExecution20260120_Basic(t *testing.T) {
 	assert.NotEmpty(t, tool.Description)
 	assert.NotNil(t, tool.Parameters)
 	assert.NotNil(t, tool.Execute)
-	// This tool is CLIENT-executed (unlike 20250825 which is provider-executed).
-	// The client runs bash/text-editor commands locally and returns results.
-	assert.False(t, tool.ProviderExecuted, "20260120 is client-executed, not provider-executed")
+	// TS createProviderExecutedToolFactory with supportsDeferredResults: true.
+	assert.True(t, tool.ProviderExecuted, "20260120 is provider-executed")
+	assert.True(t, tool.SupportsDeferredResults, "20260120 supports deferred results")
 }
 
 func TestCodeExecution20260120_Constants(t *testing.T) {

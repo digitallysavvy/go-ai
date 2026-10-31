@@ -60,11 +60,13 @@ func CreateIDGenerator(opts ...CreateIDGeneratorOptions) (IDGenerator, error) {
 		separator = "-"
 	}
 
+	alphabetRunes := []rune(alphabet)
 	generator := func() string {
-		alphabetLen := len(alphabet)
-		chars := make([]byte, size)
+		// Index by rune so a non-ASCII alphabet yields valid characters
+		// (TS indexes UTF-16 code units).
+		chars := make([]rune, size)
 		for i := 0; i < size; i++ {
-			chars[i] = alphabet[rand.Intn(alphabetLen)]
+			chars[i] = alphabetRunes[rand.Intn(len(alphabetRunes))]
 		}
 		return string(chars)
 	}
@@ -78,7 +80,7 @@ func CreateIDGenerator(opts ...CreateIDGeneratorOptions) (IDGenerator, error) {
 	if strings.Contains(alphabet, separator) {
 		return nil, &providererrors.InvalidArgumentError{
 			Field:   "separator",
-			Message: fmt.Sprintf("The separator %q must not be part of the alphabet %q.", separator, alphabet),
+			Message: fmt.Sprintf("The separator \"%s\" must not be part of the alphabet \"%s\".", separator, alphabet),
 		}
 	}
 

@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -52,6 +54,14 @@ type HTTPTransport struct {
 	client    *http.Client
 	sseClient SSEClient
 
+	// streamClient is client without the overall http.Client.Timeout, which
+	// would also cut off a long-lived text/event-stream body (the standing
+	// inbound GET, or a POST response that streams while a slow tool runs).
+	// requestTimeout bounds POSTs until their response headers arrive (and
+	// for the whole exchange when the response is not an event stream).
+	streamClient   *http.Client
+	requestTimeout time.Duration
+
 	// Message queue for receiving
 	receiveMu    sync.Mutex
 	receiveQueue []*MCPMessage
@@ -60,15 +70,31 @@ type HTTPTransport struct {
 	connected       bool
 	protocolVersion string
 	mu              sync.Mutex
+	// closeGen counts Close calls, so a Connect that a Close overlaps (during
+	// its OAuth refresh, or before its inbound SSE lifecycle started) can
+	// tell and stay closed instead of starting a GET nothing will stop.
+	closeGen uint64
+	// startMu makes Connect's start (marking the transport connected and
+	// starting the inbound SSE lifecycle) and Close's teardown (stopping that
+	// lifecycle and marking it disconnected) mutually exclusive. Without it a
+	// Connect that started after Close bumped closeGen could finish before
+	// Close cleared connected: it returned nil, and then Close marked the
+	// transport disconnected while its inbound SSE GET kept running.
+	startMu sync.Mutex
 
 	// Configuration
 	config TransportConfig
 
 	// OAuth
+	auth       *transportAuth
 	oauth      *OAuthConfig
 	refreshMu  sync.Mutex
 	refreshCh  chan struct{}
 	refreshErr error
+	// refreshCanceled is set when the shared refresh failed because the
+	// caller that ran it canceled its ctx; a waiter whose own ctx is live
+	// runs the refresh again (as transportAuth.authorizeOnce does).
+	refreshCanceled bool
 
 	// Streamable HTTP session (hash 241a8c5): sessionID is captured from an
 	// `mcp-session-id` response header and echoed on subsequent requests.
@@ -94,24 +120,97 @@ type HTTPTransport struct {
 	// `AbortSignal.any([transportSignal, options.signal])`. sseConnCancel
 	// cancels just the current inbound GET/read, used when the negotiated
 	// protocol switches to modern mid-flight. sseClosing gates every place
-	// that would otherwise race a WaitGroup.Add against Close()'s Wait:
-	// startInboundSSE (sseWG) and the POST-response SSE reader (postSSEWG).
+	// that would otherwise start a background goroutine after Close() stopped
+	// waiting: startInboundSSE and the POST-response SSE reader.
 	sseMu                sync.Mutex
 	sseLifecycleCtx      context.Context
 	sseLifecycleCancel   context.CancelFunc
 	sseClosing           bool
 	sseConnCancel        context.CancelFunc
 	sseReconnectAttempts int
-	sseReconnectTimer    *time.Timer
-	lastInboundEventID   string
-	sseWG                sync.WaitGroup
+	// sseReconnectTimers holds every pending reconnect timer. Two inbound
+	// GETs can be in flight at once (the one Connect opens and one a 202
+	// starts before the first has a response), so more than one can be
+	// scheduled; Close must stop all of them, not wait for one to fire.
+	sseReconnectTimers map[*time.Timer]struct{}
+	lastInboundEventID string
 
-	// postSSEWG tracks background goroutines draining a text/event-stream
-	// POST response (readMCPHTTPSSEMessages), so Close() can wait for them to
-	// exit rather than leaking them, matching this slice's "goroutines must
-	// exit" requirement (TS has no equivalent: JS has no goroutines to leak).
-	postSSEWG sync.WaitGroup
+	// bg tracks the background goroutines (inbound SSE GETs, pending
+	// reconnect timers, and readers draining a text/event-stream POST
+	// response) so Close() can wait for them to exit rather than leak them
+	// (TS has no equivalent: JS has no goroutines to leak).
+	bg bgTracker
 }
+
+// bgTracker counts a transport's background goroutines for Close to wait on.
+// A goroutine running a user callback (OnError, OnSessionIDChange,
+// OnSessionExpired, or the inbound GET's OAuth authorization, which runs the
+// AuthProvider's methods) is not waited for: TS lets onerror call close(), and
+// Close waiting for the goroutine that called it would deadlock. Such a
+// goroutine exits once its callback returns, as Close has canceled its
+// context by then.
+type bgTracker struct {
+	mu         sync.Mutex
+	running    int
+	inCallback int
+	changed    chan struct{}
+}
+
+func (b *bgTracker) notifyLocked() {
+	if b.changed != nil {
+		close(b.changed)
+		b.changed = nil
+	}
+}
+
+func (b *bgTracker) add() {
+	b.mu.Lock()
+	b.running++
+	b.mu.Unlock()
+}
+
+func (b *bgTracker) done() {
+	b.mu.Lock()
+	b.running--
+	b.notifyLocked()
+	b.mu.Unlock()
+}
+
+// callback runs a user callback from a background goroutine.
+func (b *bgTracker) callback(fn func()) {
+	b.mu.Lock()
+	b.inCallback++
+	b.notifyLocked()
+	b.mu.Unlock()
+	defer func() {
+		b.mu.Lock()
+		b.inCallback--
+		b.mu.Unlock()
+	}()
+	fn()
+}
+
+// wait returns once every background goroutine has exited or is running a
+// user callback.
+func (b *bgTracker) wait() {
+	for {
+		b.mu.Lock()
+		if b.running <= b.inCallback {
+			b.mu.Unlock()
+			return
+		}
+		if b.changed == nil {
+			b.changed = make(chan struct{})
+		}
+		ch := b.changed
+		b.mu.Unlock()
+		<-ch
+	}
+}
+
+// errMCPRequestTimeout is the cancellation cause of a POST that exceeded the
+// transport's request timeout.
+var errMCPRequestTimeout = errors.New("mcp: request timeout")
 
 // HTTPTransportConfig contains configuration for HTTP transport
 type HTTPTransportConfig struct {
@@ -124,11 +223,25 @@ type HTTPTransportConfig struct {
 	// OAuth configuration (optional)
 	OAuth *OAuthConfig
 
+	// AuthProvider enables the MCP OAuth flow: its tokens are sent as a
+	// bearer token, and a 401 response runs Auth once (shared by concurrent
+	// requests) before the request is retried. Matches TS HttpMCPTransport's
+	// authProvider. When Auth cannot complete without user interaction the
+	// request fails with *UnauthorizedError (also reported through OnError).
+	AuthProvider OAuthClientProvider `json:"-"`
+
+	// AuthHTTPClient is the HTTP client used for the OAuth discovery,
+	// registration and token requests Auth makes (TS passes the transport's
+	// fetch). Nil uses Auth's default client.
+	AuthHTTPClient *http.Client `json:"-"`
+
 	// Config is the base transport configuration
 	Config TransportConfig
 
 	// HTTPClient is an optional custom HTTP client used for all MCP HTTP requests.
-	// Useful for TLS customization, proxy settings, and custom dialers.
+	// Useful for TLS customization, proxy settings, and custom dialers. The
+	// transport uses a copy of it, so the request timeout and redirect policy
+	// it applies do not change the client itself.
 	HTTPClient *http.Client
 
 	// SSEClient is an optional custom SSE-capable client used instead of
@@ -136,13 +249,21 @@ type HTTPTransportConfig struct {
 	// transports, TLS settings, proxy behavior, or dialers.
 	SSEClient SSEClient
 
+	// InitialProtocolVersion is the MCP protocol version sent before the
+	// client negotiates one (TS initialProtocolVersion). Empty uses
+	// LatestProtocolVersion, as TS createMcpTransport does for an `http`
+	// transport: no standing inbound SSE GET is opened and no session id is
+	// sent until the handshake selects a legacy protocol version.
+	InitialProtocolVersion string
+
 	// InitialSessionID resumes a previously established streamable HTTP
 	// session (hash 241a8c5), sent as `mcp-session-id` on every request until
 	// the server issues a new one.
 	InitialSessionID string
 
 	// OnSessionIDChange is called whenever the server assigns or changes the
-	// session id (from an `mcp-session-id` response header).
+	// session id (from an `mcp-session-id` response header), and with "" when
+	// an expired session id is cleared (TS calls it with undefined).
 	OnSessionIDChange func(sessionID string) `json:"-"`
 
 	// OnSessionExpired is called when the server responds 404 to a request
@@ -198,15 +319,20 @@ type OAuthConfig struct {
 // NewHTTPTransport creates a new HTTP transport
 func NewHTTPTransport(config HTTPTransportConfig) *HTTPTransport {
 	timeout := time.Duration(config.TimeoutMS) * time.Millisecond
-	if timeout == 0 {
-		timeout = 30 * time.Second
-	}
+	// No default: TS fetch has no request timeout, the caller's ctx governs.
 
-	httpClient := config.HTTPClient
-	if httpClient == nil {
+	// A caller's client is copied, not modified: setting its timeout or
+	// redirect policy would change every other use of it (http.DefaultClient,
+	// for one) and race with them.
+	var httpClient *http.Client
+	if config.HTTPClient == nil {
 		httpClient = &http.Client{Timeout: timeout}
-	} else if httpClient.Timeout == 0 {
-		httpClient.Timeout = timeout
+	} else {
+		c := *config.HTTPClient
+		httpClient = &c
+		if httpClient.Timeout == 0 && timeout > 0 {
+			httpClient.Timeout = timeout
+		}
 	}
 
 	// Default redirect policy: error on redirect (security-first posture for MCP).
@@ -222,13 +348,25 @@ func NewHTTPTransport(config HTTPTransportConfig) *HTTPTransport {
 		terminateSessionOnClose = *config.TerminateSessionOnClose
 	}
 
+	streamClient := *httpClient
+	streamClient.Timeout = 0
+
+	initialProtocolVersion := config.InitialProtocolVersion
+	if initialProtocolVersion == "" {
+		initialProtocolVersion = LatestProtocolVersion
+	}
+
 	return &HTTPTransport{
 		url:                     config.URL,
 		client:                  httpClient,
+		streamClient:            &streamClient,
+		requestTimeout:          httpClient.Timeout,
 		sseClient:               config.SSEClient,
 		receiveQueue:            make([]*MCPMessage, 0),
 		config:                  config.Config,
 		oauth:                   config.OAuth,
+		auth:                    newTransportAuth(config.AuthProvider, config.URL, config.AuthHTTPClient),
+		protocolVersion:         initialProtocolVersion,
 		sessionID:               config.InitialSessionID,
 		onSessionIDChange:       config.OnSessionIDChange,
 		onSessionExpired:        config.OnSessionExpired,
@@ -246,30 +384,50 @@ func (t *HTTPTransport) SessionID() string {
 }
 
 func (t *HTTPTransport) setSessionID(sessionID string) {
+	t.setSessionIDVia(sessionID, runNow)
+}
+
+// runNow runs a user callback on the calling (foreground) goroutine.
+func runNow(fn func()) { fn() }
+
+// setSessionIDVia records the session id, then runs OnSessionIDChange through
+// run: bg.callback on a background goroutine, so that Close waits for the
+// session id write and skips only the user callback.
+func (t *HTTPTransport) setSessionIDVia(sessionID string, run func(func())) {
 	t.mu.Lock()
 	changed := t.sessionID != sessionID
 	t.sessionID = sessionID
 	onChange := t.onSessionIDChange
 	t.mu.Unlock()
 	if changed && onChange != nil {
-		onChange(sessionID)
+		run(func() { onChange(sessionID) })
 	}
 }
 
-// expireSessionID clears the session id after the server responds 404 to a
-// request that carried it, matching TS HTTPTransport.expireSessionId (hash
-// 241a8c5).
+// expireSessionID handles a 404 to a request that carried the session id
+// expired, matching TS HttpMCPTransport.expireSessionId: when expired is still
+// the current session id it is cleared (so OnSessionIDChange
+// fires with ""), and OnSessionExpired fires either way.
 func (t *HTTPTransport) expireSessionID(expired string) {
+	t.expireSessionIDVia(expired, runNow)
+}
+
+// expireSessionIDVia is expireSessionID with the user callbacks run through
+// run (see setSessionIDVia).
+func (t *HTTPTransport) expireSessionIDVia(expired string, run func(func())) {
 	t.mu.Lock()
-	if t.sessionID != expired {
-		t.mu.Unlock()
-		return
+	cleared := t.sessionID == expired && expired != ""
+	if cleared {
+		t.sessionID = ""
 	}
-	t.sessionID = ""
+	onChange := t.onSessionIDChange
 	onExpired := t.onSessionExpired
 	t.mu.Unlock()
+	if cleared && onChange != nil {
+		run(func() { onChange("") })
+	}
 	if onExpired != nil {
-		onExpired(expired)
+		run(func() { onExpired(expired) })
 	}
 }
 
@@ -285,12 +443,14 @@ func (t *HTTPTransport) expireSessionID(expired string) {
 // request, matching TS send()'s `includeSessionId: !isInitializeRequest`
 // (a fresh session has not been established yet, so nothing to echo).
 func (t *HTTPTransport) applyStandardHeaders(req *http.Request, includeSessionID bool) (sentSessionID string) {
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", mcpHTTPAcceptHeader)
-	req.Header.Set("mcp-protocol-version", t.ProtocolVersion())
+	// TS commonHeaders spreads the configured headers first, so the transport's
+	// own content-type, accept and protocol-version headers win over them.
 	for k, v := range t.config.Headers {
 		req.Header.Set(k, v)
 	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", mcpHTTPAcceptHeader)
+	req.Header.Set("mcp-protocol-version", t.ProtocolVersion())
 	setMCPUserAgent(req.Header)
 	if includeSessionID && !t.isModernProtocol() {
 		if sessionID := t.SessionID(); sessionID != "" {
@@ -301,10 +461,51 @@ func (t *HTTPTransport) applyStandardHeaders(req *http.Request, includeSessionID
 	return sentSessionID
 }
 
+// applyModernRequestHeaders adds the per-request headers that only the modern
+// (2026-07-28) protocol era carries: the caller's extra headers (the
+// `Mcp-Param-*` headers of a tools/call) and, for a request, the standard
+// `Mcp-Method` and `Mcp-Name` routing headers (TS send() with
+// getStandardRequestHeaders).
+func (t *HTTPTransport) applyModernRequestHeaders(req *http.Request, message *MCPMessage, extraHeaders map[string]string) {
+	if !t.isModernProtocol() {
+		return
+	}
+	for k, v := range extraHeaders {
+		req.Header.Set(k, v)
+	}
+	if !IsRequest(message) {
+		return
+	}
+	req.Header.Set("Mcp-Method", message.Method)
+	var params struct {
+		URI  interface{} `json:"uri"`
+		Name interface{} `json:"name"`
+	}
+	if len(message.Params) > 0 {
+		_ = json.Unmarshal(message.Params, &params)
+	}
+	var name interface{}
+	switch message.Method {
+	case "resources/read":
+		name = params.URI
+	case "tools/call", "prompts/get":
+		name = params.Name
+	}
+	if s, ok := name.(string); ok {
+		req.Header.Set("Mcp-Name", EncodeMCPHeaderValue(s))
+	}
+}
+
 // isInitializeMessage reports whether message is a JSON-RPC `initialize`
 // request, matching TS send()'s `isInitializeRequest` check.
 func isInitializeMessage(message *MCPMessage) bool {
 	return message != nil && message.Method == "initialize"
+}
+
+// errHTTPTransportAlreadyStarted is TS HttpMCPTransport.start()'s error for a
+// transport that is already started.
+func errHTTPTransportAlreadyStarted() *MCPClientError {
+	return NewMCPClientError(0, "MCP HTTP Transport Error: Transport already started. Note: client.connect() calls start() automatically.", nil)
 }
 
 // Connect establishes a connection to the HTTP server
@@ -312,9 +513,10 @@ func (t *HTTPTransport) Connect(ctx context.Context) error {
 	t.mu.Lock()
 	if t.connected {
 		t.mu.Unlock()
-		return fmt.Errorf("already connected")
+		return errHTTPTransportAlreadyStarted()
 	}
 	hasOAuth := t.oauth != nil
+	closeGen := t.closeGen
 	t.mu.Unlock()
 
 	// If OAuth is configured, get access token
@@ -326,10 +528,16 @@ func (t *HTTPTransport) Connect(ctx context.Context) error {
 
 	// Test connection with a ping
 	// For now, just mark as connected
+	t.startMu.Lock()
+	defer t.startMu.Unlock()
 	t.mu.Lock()
 	if t.connected {
 		t.mu.Unlock()
-		return fmt.Errorf("already connected")
+		return errHTTPTransportAlreadyStarted()
+	}
+	if t.closeGen != closeGen {
+		t.mu.Unlock()
+		return errHTTPTransportClosedDuringStart()
 	}
 	t.connected = true
 	t.mu.Unlock()
@@ -342,8 +550,22 @@ func (t *HTTPTransport) Connect(ctx context.Context) error {
 	if !t.isModernProtocol() {
 		t.startInboundSSE(false, "")
 	}
+	// startMu keeps Close out until the lifecycle has started, so the Close
+	// sees and stops it.
 	return nil
 }
+
+// errHTTPTransportClosedDuringStart is what Connect returns when Close runs
+// while it is starting. TS start() cannot interleave with close() (it has no
+// await before creating its abortController); a Go Connect can.
+func errHTTPTransportClosedDuringStart() *MCPClientError {
+	return NewMCPClientError(0, "MCP HTTP Transport Error: Transport closed while starting", nil)
+}
+
+// sessionTerminateTimeout bounds the session-termination DELETE in Close when
+// the caller's context has no earlier deadline (undici's 5 minute headers
+// timeout is what bounds TS's close()). A variable so tests can shorten it.
+var sessionTerminateTimeout = 5 * time.Minute
 
 // Close closes the connection. When a streamable HTTP session is
 // established and TerminateSessionOnClose is enabled (the default), it sends
@@ -353,6 +575,14 @@ func (t *HTTPTransport) Connect(ctx context.Context) error {
 // this.sessionId && ...`, no DELETE is sent for the modern (2026-07-28)
 // protocol era.
 func (t *HTTPTransport) Close() error {
+	return t.CloseContext(context.Background())
+}
+
+// CloseContext is Close with a context that bounds the session-termination
+// DELETE (TS close({ signal })). A context that is already done skips the
+// DELETE, as TS throwIfAborted does. The client uses it to bound cleanup after
+// a failed initialization by the initialization timeout.
+func (t *HTTPTransport) CloseContext(ctx context.Context) error {
 	// Cancel the transport-lifetime context (in-flight GET/POST requests, any
 	// POST-response SSE reader, and any scheduled inbound-SSE reconnect) and
 	// wait for every goroutine it owns to exit before proceeding, matching
@@ -361,8 +591,20 @@ func (t *HTTPTransport) Close() error {
 	// sseLifecycleCtx, which every in-flight Send()'s derived request context
 	// (see deriveRequestContext) is also watching, so this unblocks in-flight
 	// POST requests and POST-response SSE reads too, not just inbound SSE.
+	t.startMu.Lock()
+	t.sseMu.Lock()
+	started := t.sseLifecycleCtx != nil
+	t.sseMu.Unlock()
+	t.mu.Lock()
+	started = started || t.connected
+	t.closeGen++
+	t.mu.Unlock()
 	t.stopInboundSSE()
-	t.postSSEWG.Wait()
+
+	t.mu.Lock()
+	t.connected = false
+	t.mu.Unlock()
+	t.startMu.Unlock()
 
 	t.mu.Lock()
 	sessionID := t.sessionID
@@ -371,24 +613,48 @@ func (t *HTTPTransport) Close() error {
 	httpClient := t.client
 	sseClient := t.sseClient
 	protocolVersion := t.protocolVersion
-	t.connected = false
 	t.mu.Unlock()
 
-	if terminate && sessionID != "" && !t.isModernProtocol() {
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, url, nil)
+	// TS close() only terminates the session of a transport that was started
+	// (`this.abortController`): closing one that never connected (for
+	// example after Connect failed) leaves a resumable session alone.
+	if started && terminate && sessionID != "" && !t.isModernProtocol() && ctx.Err() == nil {
+		// A server that never answers the DELETE must not hang Close. TS has
+		// no deadline of its own but Node's fetch (undici) gives up waiting
+		// for response headers after 5 minutes, so that bounds TS's close();
+		// the same bound applies here unless ctx ends sooner.
+		ctx, cancel := context.WithTimeout(ctx, sessionTerminateTimeout)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 		if err == nil {
+			// TS builds the DELETE with commonHeaders: the configured
+			// headers, the protocol version and session id, and the bearer
+			// token. A server that needs authentication rejects it without
+			// them and the session stays open.
+			for k, v := range t.config.Headers {
+				req.Header.Set(k, v)
+			}
 			req.Header.Set("mcp-session-id", sessionID)
 			if protocolVersion != "" {
 				req.Header.Set("mcp-protocol-version", protocolVersion)
 			}
 			setMCPUserAgent(req.Header)
+			if token, _, ok := t.oauthTokenSnapshot(); ok && token != "" {
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
+			if authErr := t.auth.setBearer(ctx, req.Header); authErr != nil {
+				// TS skips the DELETE when loading the tokens throws.
+				req = nil
+			}
+		}
+		if err == nil && req != nil {
 			client := SSEClient(httpClient)
 			if sseClient != nil {
 				client = sseClient
 			}
 			if resp, doErr := client.Do(req); doErr == nil && resp != nil {
 				if resp.Body != nil {
-					_, _ = io.Copy(io.Discard, resp.Body)
+					drainBody(resp.Body)
 					resp.Body.Close() //nolint:errcheck
 				}
 			}
@@ -411,6 +677,10 @@ func (t *HTTPTransport) SendWithHeaders(ctx context.Context, message *MCPMessage
 }
 
 func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHeaders map[string]string) error {
+	// TS send() starts with options.signal.throwIfAborted().
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	t.mu.Lock()
 	connected := t.connected
 	t.mu.Unlock()
@@ -452,7 +722,22 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 	// draining it. release must run exactly once the derived context is no
 	// longer needed; handedOff tracks whether that responsibility moved to a
 	// background goroutine (the SSE-reader case) instead of happening here.
-	reqCtx, release := t.deriveRequestContext(ctx)
+	reqCtx, lifecycleCtx, releaseBase := t.deriveRequestContext(ctx)
+	// The request timeout (the http.Client timeout would also cut off a
+	// streamed response body) is enforced by a timer that is disarmed once an
+	// event-stream response starts.
+	reqCtx, timeoutCancel := context.WithCancelCause(reqCtx)
+	var timeoutTimer *time.Timer
+	if t.requestTimeout > 0 && t.sseClient == nil {
+		timeoutTimer = time.AfterFunc(t.requestTimeout, func() { timeoutCancel(errMCPRequestTimeout) })
+	}
+	release := func() {
+		if timeoutTimer != nil {
+			timeoutTimer.Stop()
+		}
+		timeoutCancel(nil)
+		releaseBase()
+	}
 	handedOff := false
 	defer func() {
 		if !handedOff {
@@ -472,9 +757,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 	// !isInitializeRequest`.
 	includeSessionID := !isInitializeMessage(message)
 	sentSessionID := t.applyStandardHeaders(req, includeSessionID)
-	for k, v := range extraHeaders {
-		req.Header.Set(k, v)
-	}
+	t.applyModernRequestHeaders(req, message, extraHeaders)
 
 	// Set OAuth token if available
 	if token, expired, ok := t.oauthTokenSnapshot(); ok {
@@ -488,21 +771,35 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
 	}
+	if err := t.auth.setBearer(ctx, req.Header); err != nil {
+		return fail(NewTransportError("failed to load OAuth tokens", err))
+	}
 
 	var resp *http.Response
 	for attempt := 0; attempt < 2; attempt++ {
-		client := SSEClient(t.client)
+		client := SSEClient(t.streamClient)
 		if t.sseClient != nil {
 			client = t.sseClient
 		}
 		resp, err = client.Do(req)
 		if err != nil {
+			if errors.Is(context.Cause(reqCtx), errMCPRequestTimeout) {
+				return fail(NewTransportError("failed to send request", fmt.Errorf("request timed out after %s: %w", t.requestTimeout, context.DeadlineExceeded)))
+			}
 			return fail(NewTransportError("failed to send request", err))
 		}
 		if resp == nil {
 			return fail(NewTransportError("failed to send request", fmt.Errorf("nil HTTP response")))
 		}
-		if resp.StatusCode != http.StatusUnauthorized || !t.oauthConfigured() || attempt == 1 {
+		// TS applySessionIdFromResponse runs on every response, a 401 included,
+		// before the retry, so the retried request carries a session id the
+		// 401 assigned. It is a no-op for the modern (2026-07-28) protocol era.
+		if !t.isModernProtocol() {
+			if sessionID := resp.Header.Get("mcp-session-id"); sessionID != "" {
+				t.setSessionID(sessionID)
+			}
+		}
+		if resp.StatusCode != http.StatusUnauthorized || attempt == 1 || (!t.oauthConfigured() && !t.auth.enabled()) {
 			break
 		}
 		// A nil Body here is not the case this fix cares about (see the
@@ -510,10 +807,14 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		// intermediate 401 response is discarded and retried regardless of
 		// its body.
 		if resp.Body != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, mcpMaxErrorBodyBytes))
 			resp.Body.Close() //nolint:errcheck
 		}
-		if err := t.refreshOAuthToken(ctx); err != nil {
+		if t.auth.enabled() {
+			if err := t.auth.authorize(ctx, resp); err != nil {
+				return fail(err)
+			}
+		} else if err := t.refreshOAuthToken(ctx); err != nil {
 			return fail(NewTransportError("failed to refresh OAuth token", err))
 		}
 		req, err = http.NewRequestWithContext(reqCtx, "POST", t.url, bytes.NewReader(data))
@@ -521,21 +822,12 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 			return fail(NewTransportError("failed to create request", err))
 		}
 		sentSessionID = t.applyStandardHeaders(req, includeSessionID)
-		for k, v := range extraHeaders {
-			req.Header.Set(k, v)
-		}
+		t.applyModernRequestHeaders(req, message, extraHeaders)
 		if token, _, ok := t.oauthTokenSnapshot(); ok && token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
-	}
-
-	// Matching TS applySessionIdFromResponse/the 404 handling in send(),
-	// both are no-ops entirely for the modern (2026-07-28) protocol era:
-	// `if (this.isModernProtocol()) return;` and
-	// `if (!this.isModernProtocol() && sessionIdForRequest) { ... }`.
-	if !t.isModernProtocol() {
-		if sessionID := resp.Header.Get("mcp-session-id"); sessionID != "" {
-			t.setSessionID(sessionID)
+		if err := t.auth.setBearer(ctx, req.Header); err != nil {
+			return fail(NewTransportError("failed to load OAuth tokens", err))
 		}
 	}
 
@@ -543,7 +835,21 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		var body []byte
 		if resp.Body != nil {
 			defer resp.Body.Close() //nolint:errcheck
-			body, _ = io.ReadAll(resp.Body)
+			body = readErrorBody(resp.Body)
+		}
+		// Matches TS send(): when the failed response to a request carries a
+		// JSON-RPC error, deliver it as the request's response (a null id is
+		// filled in with the request id) instead of an HTTP transport error.
+		// TS parses the body as one JSON-RPC message (parseJSONRPCMessage), so
+		// an array body is an HTTP error.
+		if message.ID != nil && len(body) > 0 {
+			if msg, perr := parseMCPMessage(bytes.TrimSpace(body)); perr == nil && msg.Error != nil {
+				if msg.ID == nil {
+					msg.ID = message.ID
+				}
+				t.queueReceivedMessages([]*MCPMessage{msg})
+				return nil
+			}
 		}
 		errMessage := fmt.Sprintf("MCP HTTP Transport Error: POSTing to endpoint (HTTP %d): %s", resp.StatusCode, string(body))
 		// Matches TS send()'s two distinct 404 suffixes: a request that
@@ -571,7 +877,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		// client's pool -- JS's GC reclaims an unread body implicitly, Go's
 		// http.Client does not.
 		if resp.Body != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
+			drainBody(resp.Body)
 			resp.Body.Close() //nolint:errcheck
 		}
 		if !t.isModernProtocol() {
@@ -589,7 +895,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		// notification's response body is never inspected. Go must still
 		// drain and close it to return the connection to the pool.
 		if resp.Body != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
+			drainBody(resp.Body)
 			resp.Body.Close() //nolint:errcheck
 		}
 		return nil
@@ -606,7 +912,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		if resp.Body != nil {
 			defer resp.Body.Close() //nolint:errcheck
 			var readErr error
-			body, readErr = io.ReadAll(resp.Body)
+			body, readErr = readResponseBody(resp.Body)
 			if readErr != nil {
 				return fail(NewTransportError("failed to read response", readErr))
 			}
@@ -634,25 +940,27 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 			return fail(NewMCPClientError(0, "MCP HTTP Transport Error: text/event-stream response without body", nil, WithMCPHTTPStatus(resp.StatusCode), WithMCPHTTPURL(t.url)))
 		}
 		// Guard the handoff with the same sseClosing flag (and sseMu lock)
-		// startInboundSSE uses for sseWG: postSSEWG.Add must never race
-		// Close()'s postSSEWG.Wait, so a transport that is already closing
-		// drains and discards the stream here instead of starting a
-		// goroutine Close() might already have stopped waiting for.
+		// startInboundSSE uses: a transport that is already closing drains
+		// and discards the stream here instead of starting a goroutine
+		// Close() might already have stopped waiting for.
 		t.sseMu.Lock()
 		closing := t.sseClosing
 		if !closing {
-			t.postSSEWG.Add(1)
+			t.bg.add()
 		}
 		t.sseMu.Unlock()
 		if closing {
-			_, _ = io.Copy(io.Discard, resp.Body)
+			drainBody(resp.Body)
 			resp.Body.Close() //nolint:errcheck
 			return nil
 		}
 		handedOff = true
+		if timeoutTimer != nil {
+			timeoutTimer.Stop()
+		}
 		go func() {
-			defer t.postSSEWG.Done()
-			t.readMCPHTTPSSEMessages(reqCtx, release, resp.Body)
+			defer t.bg.done()
+			t.readMCPHTTPSSEMessages(reqCtx, lifecycleCtx, release, resp.Body)
 		}()
 		return nil
 
@@ -661,6 +969,22 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 			resp.Body.Close() //nolint:errcheck
 		}
 		return fail(NewMCPClientError(0, fmt.Sprintf("MCP HTTP Transport Error: Unexpected content type: %s", contentType), nil, WithMCPHTTPStatus(resp.StatusCode), WithMCPHTTPURL(t.url)))
+	}
+}
+
+// responseStatusText is fetch's Response.statusText: the reason phrase the
+// server sent (resp.Status without the code, "" when it sent none), or the
+// canonical text when resp.Status does not start with the code (a custom
+// SSEClient).
+func responseStatusText(resp *http.Response) string {
+	code := strconv.Itoa(resp.StatusCode)
+	switch {
+	case strings.HasPrefix(resp.Status, code+" "):
+		return strings.TrimPrefix(resp.Status, code+" ")
+	case resp.Status == code:
+		return ""
+	default:
+		return http.StatusText(resp.StatusCode)
 	}
 }
 
@@ -676,25 +1000,44 @@ func (t *HTTPTransport) queueReceivedMessages(messages []*MCPMessage) {
 func parseMCPHTTPJSONMessages(body []byte) ([]*MCPMessage, error) {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
-		return nil, nil
+		// TS response.json() rejects an empty body, so the request fails
+		// instead of waiting for a response that never comes.
+		return nil, errors.New("unexpected end of JSON input")
 	}
+	// TS validateJSONRPCMessage runs on the body, or on each element of an
+	// array body, and throws on a message that is not JSON-RPC.
 	if trimmed[0] == '[' {
-		var batch []MCPMessage
+		var batch []json.RawMessage
 		if err := unmarshalSafeJSON(trimmed, &batch); err != nil {
 			return nil, err
 		}
 		messages := make([]*MCPMessage, 0, len(batch))
-		for i := range batch {
-			msg := batch[i]
-			messages = append(messages, &msg)
+		for _, raw := range batch {
+			msg, err := parseMCPMessage(raw)
+			if err != nil {
+				return nil, err
+			}
+			messages = append(messages, msg)
 		}
 		return messages, nil
 	}
-	var responseMsg MCPMessage
-	if err := unmarshalSafeJSON(trimmed, &responseMsg); err != nil {
+	msg, err := parseMCPMessage(trimmed)
+	if err != nil {
 		return nil, err
 	}
-	return []*MCPMessage{&responseMsg}, nil
+	return []*MCPMessage{msg}, nil
+}
+
+// closeBodyWhenDone closes body as soon as ctx ends, and at the latest when
+// the returned func runs. body is closed exactly once.
+func closeBodyWhenDone(ctx context.Context, body io.Closer) func() {
+	var once sync.Once
+	closeBody := func() { once.Do(func() { body.Close() }) } //nolint:errcheck
+	stop := context.AfterFunc(ctx, closeBody)
+	return func() {
+		stop()
+		closeBody()
+	}
 }
 
 // readMCPHTTPSSEMessages parses a text/event-stream response returned from a
@@ -712,30 +1055,47 @@ func parseMCPHTTPJSONMessages(body []byte) ([]*MCPMessage, error) {
 // reported via OnError but does not stop the loop, matching TS's inner catch
 // around `parseJSONRPCMessage`. release is deriveRequestContext's cleanup
 // func for ctx, invoked once this goroutine is done with it.
-func (t *HTTPTransport) readMCPHTTPSSEMessages(ctx context.Context, release context.CancelFunc, body io.ReadCloser) {
+//
+// Once ctx or lifecycleCtx (the transport-lifetime context ctx derives from,
+// nil before Connect) is done, no further event is delivered or reported: TS
+// close() and a caller abort cancel the reader, which discards the events
+// still buffered. lifecycleCtx is checked as well because ctx follows it only
+// asynchronously, and an OnError that calls Close resumes this loop at once.
+func (t *HTTPTransport) readMCPHTTPSSEMessages(ctx, lifecycleCtx context.Context, release context.CancelFunc, body io.ReadCloser) {
 	defer release()
-	defer body.Close() //nolint:errcheck
+	// TS close() cancels the reader, which cancels the body. A body from a
+	// custom SSEClient may not watch the request context, so close it when
+	// ctx ends; otherwise Close would wait on this goroutine forever.
+	defer closeBodyWhenDone(ctx, body)()
 	parser := streaming.NewSSEParser(body)
 	for {
 		event, err := parser.Next()
 		if err == io.EOF {
 			return
 		}
+		// ctx follows lifecycleCtx only asynchronously, so a read error right
+		// after an OnError that called Close must check lifecycleCtx too: TS
+		// close() aborts the reader, which ends it with an AbortError that is
+		// not reported.
+		aborted := ctx.Err() != nil || (lifecycleCtx != nil && lifecycleCtx.Err() != nil)
 		if err != nil {
-			if ctx.Err() == nil {
-				t.reportError(NewTransportError("failed to read event-stream response", err))
+			if !aborted {
+				t.bgReportError(NewTransportError("failed to read event-stream response", err))
 			}
+			return
+		}
+		if aborted {
 			return
 		}
 		if event.Event != "" && event.Event != "message" {
 			continue
 		}
-		var msg MCPMessage
-		if err := unmarshalSafeJSON([]byte(event.Data), &msg); err != nil {
-			t.reportError(NewMCPClientError(0, "MCP HTTP Transport Error: Failed to parse message", err))
+		msg, err := parseMCPMessage([]byte(event.Data))
+		if err != nil {
+			t.bgReportError(&MCPClientError{Message: "MCP HTTP Transport Error: Failed to parse message", Cause: err})
 			continue
 		}
-		t.queueReceivedMessages([]*MCPMessage{&msg})
+		t.queueReceivedMessages([]*MCPMessage{msg})
 	}
 }
 
@@ -762,6 +1122,13 @@ func (t *HTTPTransport) reportError(err error) {
 	}
 }
 
+// bgReportError is reportError from a background goroutine (see bgTracker).
+func (t *HTTPTransport) bgReportError(err error) {
+	if t.onError != nil {
+		t.bg.callback(func() { t.onError(err) })
+	}
+}
+
 // deriveRequestContext derives the context.Context for a single outbound
 // Send() POST request (and, when its response is itself a text/event-stream,
 // the reader draining it) by combining the caller-supplied ctx with the
@@ -775,16 +1142,16 @@ func (t *HTTPTransport) reportError(err error) {
 // context.AfterFunc registers against the transport-lifetime context;
 // otherwise that watcher would sit blocked until Close() finally cancels it,
 // leaking one per Send() call for the life of the transport.
-func (t *HTTPTransport) deriveRequestContext(ctx context.Context) (context.Context, context.CancelFunc) {
+func (t *HTTPTransport) deriveRequestContext(ctx context.Context) (reqCtx, lifecycleCtx context.Context, release context.CancelFunc) {
 	t.sseMu.Lock()
-	lifecycleCtx := t.sseLifecycleCtx
+	lifecycleCtx = t.sseLifecycleCtx
 	t.sseMu.Unlock()
 	if lifecycleCtx == nil {
-		return ctx, func() {}
+		return ctx, nil, func() {}
 	}
 	reqCtx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(lifecycleCtx, cancel)
-	return reqCtx, func() {
+	return reqCtx, lifecycleCtx, func() {
 		stop()
 		cancel()
 	}
@@ -797,9 +1164,14 @@ func (t *HTTPTransport) deriveRequestContext(ctx context.Context) (context.Conte
 func (t *HTTPTransport) startInboundSSELifecycle() {
 	t.sseMu.Lock()
 	defer t.sseMu.Unlock()
-	if t.sseLifecycleCtx != nil {
+	if t.sseLifecycleCtx != nil && !t.sseClosing {
 		return
 	}
+	// A Connect after Close starts a fresh lifecycle: the closed one is
+	// canceled, and every request derived from it would fail at once.
+	t.sseClosing = false
+	t.sseConnCancel = nil
+	t.sseReconnectAttempts = 0
 	ctx, cancel := context.WithCancel(context.Background())
 	t.sseLifecycleCtx = ctx
 	t.sseLifecycleCancel = cancel
@@ -817,17 +1189,20 @@ func (t *HTTPTransport) stopInboundSSE() {
 	if t.sseLifecycleCancel != nil {
 		t.sseLifecycleCancel()
 	}
-	timer := t.sseReconnectTimer
-	t.sseReconnectTimer = nil
+	timers := t.sseReconnectTimers
+	t.sseReconnectTimers = nil
 	t.sseMu.Unlock()
 
-	if timer != nil && timer.Stop() {
-		// The timer's callback (which would have called sseWG.Done() itself)
-		// will now never run, so account for its earlier sseWG.Add(1) here.
-		t.sseWG.Done()
+	for timer := range timers {
+		if timer.Stop() {
+			// The timer's callback (which would have called bg.done()
+			// itself) will now never run, so account for its earlier
+			// bg.add() here.
+			t.bg.done()
+		}
 	}
 
-	t.sseWG.Wait()
+	t.bg.wait()
 }
 
 // closeInboundSSEConnection cancels only the current inbound SSE connection,
@@ -858,11 +1233,11 @@ func (t *HTTPTransport) startInboundSSE(triedAuth bool, resumeToken string) {
 		return
 	}
 	lifecycleCtx := t.sseLifecycleCtx
-	t.sseWG.Add(1)
+	t.bg.add()
 	t.sseMu.Unlock()
 
 	go func() {
-		defer t.sseWG.Done()
+		defer t.bg.done()
 		t.openInboundSSE(lifecycleCtx, triedAuth, resumeToken)
 	}()
 }
@@ -891,24 +1266,34 @@ func (t *HTTPTransport) scheduleInboundSSEReconnection() {
 	attempts := t.sseReconnectAttempts
 	if inboundSSEMaxRetries > 0 && attempts >= inboundSSEMaxRetries {
 		t.sseMu.Unlock()
-		t.reportError(NewMCPClientError(0, fmt.Sprintf("MCP HTTP Transport Error: Maximum reconnection attempts (%d) exceeded.", inboundSSEMaxRetries), nil))
+		t.bgReportError(NewMCPClientError(0, fmt.Sprintf("MCP HTTP Transport Error: Maximum reconnection attempts (%d) exceeded.", inboundSSEMaxRetries), nil))
 		return
 	}
 	delay := nextInboundReconnectDelay(attempts)
 	t.sseReconnectAttempts = attempts + 1
-	resumeToken := t.lastInboundEventID
 	lifecycleCtx := t.sseLifecycleCtx
-	t.sseWG.Add(1)
-	t.sseReconnectTimer = time.AfterFunc(delay, func() {
-		defer t.sseWG.Done()
+	t.bg.add()
+	var timer *time.Timer
+	// The callback takes sseMu before reading timer, and timer is assigned
+	// below while sseMu is still held, so the callback always sees it.
+	timer = time.AfterFunc(delay, func() {
+		defer t.bg.done()
 		t.sseMu.Lock()
+		delete(t.sseReconnectTimers, timer)
 		closing := t.sseClosing
+		// TS reads this.lastInboundEventId when the timer fires: another
+		// inbound GET may have received events during the backoff.
+		resumeToken := t.lastInboundEventID
 		t.sseMu.Unlock()
 		if closing || lifecycleCtx == nil || lifecycleCtx.Err() != nil {
 			return
 		}
 		t.openInboundSSE(lifecycleCtx, false, resumeToken)
 	})
+	if t.sseReconnectTimers == nil {
+		t.sseReconnectTimers = make(map[*time.Timer]struct{})
+	}
+	t.sseReconnectTimers[timer] = struct{}{}
 	t.sseMu.Unlock()
 }
 
@@ -943,7 +1328,7 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 	req, err := http.NewRequestWithContext(connCtx, http.MethodGet, t.url, nil)
 	if err != nil {
 		connCancel()
-		t.reportError(NewTransportError("failed to create inbound SSE request", err))
+		t.bgReportError(NewTransportError("failed to create inbound SSE request", err))
 		// Matches TS: a thrown error while building the request/headers falls
 		// into openInboundSse's outer catch, which schedules a reconnect.
 		t.maybeScheduleInboundSSEReconnect(lifecycleCtx)
@@ -965,7 +1350,7 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 		if expired {
 			if err := t.refreshOAuthToken(connCtx); err != nil {
 				connCancel()
-				t.reportError(NewTransportError("failed to refresh OAuth token", err))
+				t.bgReportError(NewTransportError("failed to refresh OAuth token", err))
 				return
 			}
 			token, _, ok = t.oauthTokenSnapshot()
@@ -974,8 +1359,14 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
 	}
+	if err := t.auth.setBearer(connCtx, req.Header); err != nil {
+		connCancel()
+		t.bgReportError(NewTransportError("failed to load OAuth tokens", err))
+		t.maybeScheduleInboundSSEReconnect(lifecycleCtx)
+		return
+	}
 
-	client := SSEClient(t.client)
+	client := SSEClient(t.streamClient)
 	if t.sseClient != nil {
 		client = t.sseClient
 	}
@@ -987,30 +1378,44 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 		if aborted {
 			return
 		}
-		t.reportError(NewTransportError("failed to establish inbound SSE connection", err))
+		t.bgReportError(NewTransportError("failed to establish inbound SSE connection", err))
 		t.maybeScheduleInboundSSEReconnect(lifecycleCtx)
 		return
 	}
 	if resp == nil {
 		connCancel()
-		t.reportError(NewTransportError("failed to establish inbound SSE connection", fmt.Errorf("nil HTTP response")))
+		t.bgReportError(NewTransportError("failed to establish inbound SSE connection", fmt.Errorf("nil HTTP response")))
 		t.maybeScheduleInboundSSEReconnect(lifecycleCtx)
 		return
 	}
-	if sessionID := resp.Header.Get("mcp-session-id"); sessionID != "" {
-		t.setSessionID(sessionID)
+	// TS applySessionIdFromResponse is a no-op for the modern protocol era,
+	// which a SetProtocolVersion can switch to while this GET is in flight.
+	if sessionID := resp.Header.Get("mcp-session-id"); sessionID != "" && !t.isModernProtocol() {
+		t.setSessionIDVia(sessionID, t.bg.callback)
 	}
 
 	// 401: run the OAuth refresh once (reusing the single-flight path used by
 	// send()), then retry, matching TS's authorizeOnce()-guarded retry.
-	if resp.StatusCode == http.StatusUnauthorized && t.oauthConfigured() && !triedAuth {
+	if resp.StatusCode == http.StatusUnauthorized && (t.oauthConfigured() || t.auth.enabled()) && !triedAuth {
 		if resp.Body != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, mcpMaxErrorBodyBytes))
 			resp.Body.Close() //nolint:errcheck
 		}
-		if err := t.refreshOAuthToken(connCtx); err != nil {
+		if t.auth.enabled() {
+			// TS authorizeOnce is not tied to the abort signal: a Close during
+			// the flow does not cancel it, and its failure is still reported
+			// (a success then finds the transport aborted and stops). The flow
+			// runs the provider's callbacks, so Close does not wait for it.
+			var authErr error
+			t.bg.callback(func() { authErr = t.auth.authorize(context.WithoutCancel(connCtx), resp) })
+			if authErr != nil {
+				connCancel()
+				t.bgReportError(authErr)
+				return
+			}
+		} else if err := t.refreshOAuthToken(connCtx); err != nil {
 			connCancel()
-			t.reportError(NewTransportError("failed to refresh OAuth token", err))
+			t.bgReportError(NewTransportError("failed to refresh OAuth token", err))
 			return
 		}
 		connCancel()
@@ -1022,7 +1427,7 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 	// this is silent (no error reported, no reconnection scheduled).
 	if resp.StatusCode == http.StatusMethodNotAllowed {
 		if resp.Body != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
+			drainBody(resp.Body)
 			resp.Body.Close() //nolint:errcheck
 		}
 		connCancel()
@@ -1034,17 +1439,16 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 	// status itself is OK (only reachable via a custom SSEClient, since a
 	// real net/http response body is never nil).
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || resp.Body == nil {
-		var body []byte
 		if resp.Body != nil {
-			body, _ = io.ReadAll(resp.Body)
+			drainBody(resp.Body)
 			resp.Body.Close() //nolint:errcheck
 		}
 		if resp.StatusCode == http.StatusNotFound && sessionIDForRequest != "" {
-			t.expireSessionID(sessionIDForRequest)
+			t.expireSessionIDVia(sessionIDForRequest, t.bg.callback)
 		}
-		statusText := http.StatusText(resp.StatusCode)
-		message := fmt.Sprintf("MCP HTTP Transport Error: GET SSE failed: %d %s", resp.StatusCode, statusText)
-		t.reportError(NewMCPClientError(0, message, nil, WithMCPHTTPResponse(resp.StatusCode, t.url, string(body))))
+		message := fmt.Sprintf("MCP HTTP Transport Error: GET SSE failed: %d %s", resp.StatusCode, responseStatusText(resp))
+		// TS reports only the status and URL here, not the response body.
+		t.bgReportError(NewMCPClientError(0, message, nil, WithMCPHTTPStatus(resp.StatusCode), WithMCPHTTPURL(t.url)))
 		connCancel()
 		return
 	}
@@ -1065,7 +1469,11 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 // intentionally canceled (Close, or a switch to the modern protocol).
 func (t *HTTPTransport) readInboundSSEStream(connCtx context.Context, connCancel context.CancelFunc, body io.ReadCloser) {
 	defer connCancel()
-	defer body.Close() //nolint:errcheck
+	// TS inboundSseConnection.close() cancels the reader, which cancels the
+	// body. A body from a custom SSEClient may not watch the request
+	// context, so close it when connCtx ends (Close, or a switch to the
+	// modern protocol); otherwise Close would wait on this goroutine forever.
+	defer closeBodyWhenDone(connCtx, body)()
 	parser := streaming.NewSSEParser(body)
 	for {
 		event, err := parser.Next()
@@ -1076,11 +1484,22 @@ func (t *HTTPTransport) readInboundSSEStream(connCtx context.Context, connCancel
 			if connCtx.Err() != nil {
 				return
 			}
-			t.reportError(NewTransportError("failed to read inbound SSE event", err))
+			t.bgReportError(NewTransportError("failed to read inbound SSE event", err))
+			// TS checks the abort signal after onerror, which may have
+			// closed the transport.
+			if connCtx.Err() != nil {
+				return
+			}
 			t.scheduleInboundSSEReconnection()
 			return
 		}
 
+		// TS close() (and a switch to the modern protocol) cancels the
+		// reader, discarding the events still buffered: an OnError that
+		// closed the transport must not see a later event delivered.
+		if connCtx.Err() != nil {
+			return
+		}
 		if event.ID != "" {
 			t.sseMu.Lock()
 			t.lastInboundEventID = event.ID
@@ -1090,12 +1509,12 @@ func (t *HTTPTransport) readInboundSSEStream(connCtx context.Context, connCancel
 		if event.Event != "" && event.Event != "message" {
 			continue
 		}
-		var msg MCPMessage
-		if err := unmarshalSafeJSON([]byte(event.Data), &msg); err != nil {
-			t.reportError(NewMCPClientError(0, "MCP HTTP Transport Error: Failed to parse message", err))
+		msg, err := parseMCPMessage([]byte(event.Data))
+		if err != nil {
+			t.bgReportError(&MCPClientError{Message: "MCP HTTP Transport Error: Failed to parse message", Cause: err})
 			continue
 		}
-		t.queueReceivedMessages([]*MCPMessage{&msg})
+		t.queueReceivedMessages([]*MCPMessage{msg})
 	}
 }
 
@@ -1167,6 +1586,11 @@ func (t *HTTPTransport) SetProtocolVersion(version string) {
 // StreamableHTTPClientTransport.supportsProtocolVersionDiscovery.
 func (t *HTTPTransport) SupportsProtocolVersionDiscovery() bool { return true }
 
+// WaitsForProtocolVersionDiscovery reports that the client waits for the
+// `server/discover` response instead of falling back to `initialize` after
+// the 1 s probe timeout (TS HttpMCPTransport.waitsForProtocolVersionDiscovery).
+func (t *HTTPTransport) WaitsForProtocolVersionDiscovery() bool { return true }
+
 // SupportsMCPToolParameterHeaders reports that HTTPTransport supports
 // binding tool call arguments to HTTP headers via `x-mcp-header` (hash
 // 0c60a40), matching TS StreamableHTTPClientTransport.supportsMcpToolParameterHeaders.
@@ -1189,15 +1613,23 @@ func (t *HTTPTransport) refreshOAuthToken(ctx context.Context) error {
 		return fmt.Errorf("OAuth not configured")
 	}
 
-	t.refreshMu.Lock()
-	if t.refreshCh != nil {
+	for {
+		t.refreshMu.Lock()
+		if t.refreshCh == nil {
+			break // still holding refreshMu
+		}
 		ch := t.refreshCh
 		t.refreshMu.Unlock()
 		select {
 		case <-ch:
 			t.refreshMu.Lock()
-			err := t.refreshErr
+			err, canceled := t.refreshErr, t.refreshCanceled
 			t.refreshMu.Unlock()
+			// A refresh that ended because the caller that ran it gave up
+			// is not this caller's result: run it again.
+			if canceled && ctx.Err() == nil {
+				continue
+			}
 			return err
 		case <-ctx.Done():
 			return ctx.Err()
@@ -1206,13 +1638,18 @@ func (t *HTTPTransport) refreshOAuthToken(ctx context.Context) error {
 	t.refreshCh = make(chan struct{})
 	t.refreshMu.Unlock()
 
-	err := t.doRefreshOAuthToken(ctx)
-
-	t.refreshMu.Lock()
-	t.refreshErr = err
-	close(t.refreshCh)
-	t.refreshCh = nil
-	t.refreshMu.Unlock()
+	// The refresh is released even when RefreshTokenFunc panics, so later
+	// refreshes do not wait on it forever (see transportAuth.runFlight).
+	err := errOAuthRefreshPanicked
+	defer func() {
+		t.refreshMu.Lock()
+		t.refreshErr = err
+		t.refreshCanceled = err != nil && ctx.Err() != nil
+		close(t.refreshCh)
+		t.refreshCh = nil
+		t.refreshMu.Unlock()
+	}()
+	err = t.doRefreshOAuthToken(ctx)
 	return err
 }
 

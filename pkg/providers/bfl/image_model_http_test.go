@@ -3,6 +3,7 @@ package bfl
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providerrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 func TestBFLImageModel_MetadataAndClient(t *testing.T) {
@@ -26,7 +28,7 @@ func TestBFLImageModel_MetadataAndClient(t *testing.T) {
 	if m.SpecificationVersion() != "v4" {
 		t.Fatalf("SpecificationVersion() = %q", m.SpecificationVersion())
 	}
-	if m.Provider() != "bfl" {
+	if m.Provider() != "black-forest-labs.image" {
 		t.Fatalf("Provider() = %q", m.Provider())
 	}
 }
@@ -158,7 +160,8 @@ func TestBFLImageModel_HeadersForTrustedAndForeignURLs(t *testing.T) {
 	if pollHeaders.Get("Custom-Provider-Header") != "provider" || pollHeaders.Get("Custom-Request-Header") != "request" || pollHeaders.Get("Content-Type") != "" {
 		t.Fatalf("poll headers = %#v", pollHeaders)
 	}
-	if imageHeaders.Get("Custom-Provider-Header") != "provider" || imageHeaders.Get("Custom-Request-Header") != "request" {
+	// Signed BFL delivery URLs are fetched without provider or API credentials.
+	if imageHeaders.Get("Custom-Provider-Header") != "" || imageHeaders.Get("Custom-Request-Header") != "" || imageHeaders.Get("X-Key") != "" {
 		t.Fatalf("image headers = %#v", imageHeaders)
 	}
 
@@ -215,7 +218,7 @@ func (r *fakeDNSResolver) LookupIPAddr(_ context.Context, host string) ([]net.IP
 func TestBFLImageModel_TrustedRedirectToForeignHostIsDNSPinned(t *testing.T) {
 	// Not parallel: overrides the package-level downloadTransport.
 	oldDownloadTransport := downloadTransport
-	resolver := &fakeDNSResolver{answers: map[string][]string{"evil.internal": {"169.254.169.254"}}}
+	resolver := &fakeDNSResolver{answers: map[string][]string{"evil.example": {"169.254.169.254"}}}
 	downloadTransport = func() http.RoundTripper {
 		return fileutil.NewSafeTransport(fileutil.SafeDialOptions{Resolver: resolver})
 	}
@@ -231,7 +234,7 @@ func TestBFLImageModel_TrustedRedirectToForeignHostIsDNSPinned(t *testing.T) {
 			// it is trusted, but the server redirects it to a foreign host.
 			_, _ = w.Write([]byte(`{"status":"Ready","result":{"sample":"` + server.URL + `/redirect"}}`))
 		case "/redirect":
-			http.Redirect(w, r, "http://evil.internal/image.png", http.StatusFound)
+			http.Redirect(w, r, "http://evil.example/image.png", http.StatusFound)
 		default:
 			http.NotFound(w, r)
 		}
@@ -349,7 +352,7 @@ func TestBFLImageModel_DoGenerateErrorPaths(t *testing.T) {
 		p := New(Config{APIKey: "k", BaseURL: server.URL})
 		m := NewImageModel(p, "flux-pro")
 		_, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
-		if err == nil || !strings.Contains(err.Error(), "status 400") {
+		if err == nil || !strings.Contains(err.Error(), "provider error (400)") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
@@ -360,7 +363,7 @@ func TestBFLImageModel_DoGenerateErrorPaths(t *testing.T) {
 			case "/flux-pro":
 				_, _ = w.Write([]byte(`{"id":"req-2","polling_url":"http://` + r.Host + `/get_result"}`))
 			case "/get_result":
-				_, _ = w.Write([]byte(`{"id":"req-2","status":"Failed","result":{}}`))
+				_, _ = w.Write([]byte(`{"id":"req-2","status":"Failed","result":null}`))
 			default:
 				http.NotFound(w, r)
 			}
@@ -387,7 +390,7 @@ func TestBFLImageModel_SubmitResponseRequiresPollingURL(t *testing.T) {
 	p := New(Config{APIKey: "k", BaseURL: server.URL})
 	m := NewImageModel(p, "flux-pro")
 	_, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
-	if err == nil || !strings.Contains(err.Error(), "missing polling_url") {
+	if err == nil || !strings.Contains(err.Error(), "Invalid JSON response") || !strings.Contains(err.Error(), "polling_url") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -483,5 +486,116 @@ func TestBFLImageModel_PollResultWallClockDeadline(t *testing.T) {
 	// configured timeout plus one in-flight poll.
 	if elapsed > 500*time.Millisecond {
 		t.Fatalf("expected wall-clock deadline to abort quickly, took %v", elapsed)
+	}
+}
+
+// TestBFLImageModel_DownloadCredentialPolicy covers the delivery-host policy
+// (TS #22034): provider and request headers only reach a same-origin, non-bfl.ai
+// base URL (custom proxy); bfl.ai hosts (even same-origin with the base URL)
+// and foreign hosts get only the SDK user agent.
+func TestBFLImageModel_DownloadCredentialPolicy(t *testing.T) {
+	// Not parallel: swaps the process-global http.DefaultTransport.
+	var got http.Header
+	oldDefault := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		got = r.Header.Clone()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"image/png"}},
+			Body:       io.NopCloser(strings.NewReader("image")),
+		}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = oldDefault })
+	oldDownload := downloadTransport
+	downloadTransport = func() http.RoundTripper { return http.DefaultTransport }
+	t.Cleanup(func() { downloadTransport = oldDownload })
+
+	cases := []struct {
+		name, baseURL, imageURL string
+		wantCreds               bool
+	}{
+		{"bfl.ai base, same-origin delivery", "https://api.bfl.ai", "https://api.bfl.ai/img.png", false},
+		{"bfl.ai subdomain delivery", "https://api.bfl.ai", "https://delivery-us1.bfl.ai/img.png", false},
+		{"custom proxy, same-origin", "https://proxy.example.com", "https://proxy.example.com/img.png", true},
+		{"custom proxy, other bfl.ai host", "https://proxy.example.com", "https://delivery-us1.bfl.ai/img.png", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got = nil
+			m := NewImageModel(New(Config{APIKey: "secret", BaseURL: tc.baseURL}), "flux-pro")
+			_, _, err := m.downloadImage(context.Background(), tc.imageURL, map[string]string{
+				"Custom-Provider-Header": "provider",
+			})
+			if err != nil {
+				t.Fatalf("downloadImage: %v", err)
+			}
+			if got == nil {
+				t.Fatal("no request captured")
+			}
+			hasCreds := got.Get("X-Key") != "" || got.Get("Custom-Provider-Header") != ""
+			if hasCreds != tc.wantCreds {
+				t.Fatalf("credentials forwarded = %v, want %v (headers %#v)", hasCreds, tc.wantCreds, got)
+			}
+			if !tc.wantCreds && !strings.Contains(got.Get("User-Agent"), "black-forest-labs") {
+				t.Fatalf("expected SDK user agent, got %q", got.Get("User-Agent"))
+			}
+		})
+	}
+}
+
+func TestBFLImageModel_PollBodyIsValidatedLikeBflPollSchema(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ name, poll string }{
+		{"unknown status", `{"status":"Queued"}`},
+		{"missing status and state", `{"details":{}}`},
+		{"ready sample not a url", `{"status":"Ready","result":{"sample":"not a url"}}`},
+		{"ready without sample", `{"status":"Ready","result":{"seed":1}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/flux-pro":
+					_, _ = w.Write([]byte(`{"id":"req","polling_url":"http://` + r.Host + `/get_result"}`))
+				default:
+					_, _ = w.Write([]byte(tc.poll))
+				}
+			}))
+			defer server.Close()
+
+			p := New(Config{APIKey: "k", BaseURL: server.URL})
+			_, err := NewImageModel(p, "flux-pro").DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
+			var pe *providerrors.ProviderError
+			if !errors.As(err, &pe) || pe.Message != "Invalid JSON response" {
+				t.Fatalf("error = %v, want ProviderError \"Invalid JSON response\"", err)
+			}
+		})
+	}
+}
+
+// TS getFromApi with createStatusCodeErrorResponseHandler: a failed image
+// download is an APICallError whose message is the HTTP status text.
+func TestBFLImageModel_FailedDownloadIsStatusTextProviderError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/flux-pro":
+			_, _ = w.Write([]byte(`{"id":"r","polling_url":"http://` + r.Host + `/poll"}`))
+		case "/poll":
+			_, _ = w.Write([]byte(`{"status":"Ready","result":{"sample":"http://` + r.Host + `/img.png"}}`))
+		default:
+			http.Error(w, "gone", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	m := NewImageModel(New(Config{APIKey: "k", BaseURL: server.URL}), "flux-pro")
+	_, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt:          "x",
+		ProviderOptions: map[string]interface{}{"blackForestLabs": map[string]interface{}{"pollIntervalMillis": 1}},
+	})
+	// Unwrapped, like TS (getFromApi errors propagate unchanged).
+	pe, ok := err.(*providerrors.ProviderError)
+	if !ok || pe.StatusCode != 404 || pe.Message != "Not Found" {
+		t.Fatalf("err = %v (%#v)", err, pe)
 	}
 }

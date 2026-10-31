@@ -17,6 +17,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providerErrs "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock/eventstream"
 )
@@ -245,7 +246,7 @@ func TestBedrockEmbeddingModelDoEmbedAndDoEmbedMany(t *testing.T) {
 		Headers: map[string]string{"Content-Type": "application/json"},
 		HTTPClient: &http.Client{Transport: bedrockRoundTripper(func(req *http.Request) (*http.Response, error) {
 			body, _ := io.ReadAll(req.Body)
-			if strings.Contains(req.URL.Path, "cohere.embed") {
+			if strings.Contains(req.URL.RequestURI(), "cohere.embed") {
 				var payload map[string]interface{}
 				if err := json.Unmarshal(body, &payload); err != nil {
 					t.Fatalf("decode cohere request: %v", err)
@@ -259,7 +260,7 @@ func TestBedrockEmbeddingModelDoEmbedAndDoEmbedMany(t *testing.T) {
 					Body:       io.NopCloser(strings.NewReader(`{"embeddings":[[1,2,3]]}`)),
 				}, nil
 			}
-			if strings.Contains(req.URL.Path, "amazon.nova") {
+			if strings.Contains(req.URL.RequestURI(), "amazon.nova") {
 				var payload map[string]interface{}
 				if err := json.Unmarshal(body, &payload); err != nil {
 					t.Fatalf("decode nova request: %v", err)
@@ -378,8 +379,8 @@ func TestBedrockEmbeddingCohereInferenceProfileUsesCohereShape(t *testing.T) {
 			if err := json.Unmarshal(body, &requestBody); err != nil {
 				t.Fatalf("decode cohere request: %v", err)
 			}
-			if !strings.Contains(req.URL.Path, "us.cohere.embed-v4:0") {
-				t.Fatalf("path = %q, want inference profile model ID", req.URL.Path)
+			if !strings.Contains(req.URL.RequestURI(), "us.cohere.embed-v4%3A0") {
+				t.Fatalf("path = %q, want inference profile model ID", req.URL.RequestURI())
 			}
 			return &http.Response{
 				StatusCode: 200,
@@ -469,10 +470,10 @@ func TestBedrockEmbeddingProviderOptionsMatchTS(t *testing.T) {
 			}
 			bodies = append(bodies, payload)
 			response := `{"embedding":[0.1,0.2],"inputTextTokenCount":1}`
-			if strings.Contains(req.URL.Path, "cohere.embed") {
+			if strings.Contains(req.URL.RequestURI(), "cohere.embed") {
 				response = `{"embeddings":[[0.1,0.2]]}`
 			}
-			if strings.Contains(req.URL.Path, "amazon.nova") {
+			if strings.Contains(req.URL.RequestURI(), "amazon.nova") {
 				response = `{"embeddings":[{"embeddingType":"FLOAT","embedding":[0.1,0.2]}],"inputTokenCount":1}`
 			}
 			return &http.Response{
@@ -738,7 +739,7 @@ func TestBedrockImageAndLanguageDoGenerateAndStream(t *testing.T) {
 		BaseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
 		Headers: map[string]string{"Content-Type": "application/json"},
 		HTTPClient: &http.Client{Transport: bedrockRoundTripper(func(req *http.Request) (*http.Response, error) {
-			if strings.Contains(req.URL.Path, "/model/amazon.nova-canvas-v1:0/invoke") {
+			if strings.Contains(req.URL.RequestURI(), "/model/amazon.nova-canvas-v1%3A0/invoke") {
 				return &http.Response{
 					StatusCode: 200,
 					Header:     http.Header{"X-Req": []string{"img"}},
@@ -908,4 +909,87 @@ type bedrockRoundTripper func(*http.Request) (*http.Response, error)
 
 func (f bedrockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func TestBedrockRerankingInvalidProviderOptions(t *testing.T) {
+	model := NewRerankingModel(New(Config{Region: "us-east-1"}), "amazon.rerank-v1:0")
+	for name, po := range map[string]map[string]interface{}{
+		"nextToken number":   {"amazonBedrock": map[string]interface{}{"nextToken": 5}},
+		"fields not object":  {"bedrock": map[string]interface{}{"additionalModelRequestFields": "x"}},
+		"options not object": {"amazonBedrock": "x"},
+	} {
+		_, err := model.buildRequestBody(&provider.RerankOptions{Query: "q", Documents: []string{"a"}, ProviderOptions: po})
+		var iae *providerErrs.InvalidArgumentError
+		if !errors.As(err, &iae) {
+			t.Errorf("%s: err = %#v, want InvalidArgumentError", name, err)
+		}
+	}
+}
+
+func TestBedrockFlattenHeadersJoinsMultiValues(t *testing.T) {
+	h := http.Header{}
+	h.Add("X-Multi", "a")
+	h.Add("X-Multi", "b")
+	if got := flattenHeaders(h)["X-Multi"]; got != "a, b" {
+		t.Fatalf("got %q, want %q", got, "a, b")
+	}
+}
+
+func TestBedrockRegionResolvedLazilyFromEnv(t *testing.T) {
+	t.Setenv("AWS_REGION", "")
+	p := New(Config{})
+	t.Setenv("AWS_REGION", "us-west-2")
+	if got := p.Region(); got != "us-west-2" {
+		t.Fatalf("Region() = %q, want us-west-2", got)
+	}
+	base, err := p.runtimeBaseURL()
+	if err != nil || base != "https://bedrock-runtime.us-west-2.amazonaws.com" {
+		t.Fatalf("runtimeBaseURL = %q, %v", base, err)
+	}
+}
+
+// An AWS_REGION that was already set at New and changes afterwards is read
+// again on use (TS loadSetting), not frozen at construction.
+func TestBedrockRegionChangedAfterNewIsHonored(t *testing.T) {
+	t.Setenv("AWS_REGION", "us-east-1")
+	p := New(Config{})
+	t.Setenv("AWS_REGION", "eu-central-1")
+	base, err := p.runtimeBaseURL()
+	if err != nil || base != "https://bedrock-runtime.eu-central-1.amazonaws.com" {
+		t.Fatalf("runtimeBaseURL = %q, %v", base, err)
+	}
+	if got := New(Config{Region: "ap-south-1"}).Region(); got != "ap-south-1" {
+		t.Fatalf("explicit Region = %q, want ap-south-1", got)
+	}
+}
+
+func TestBedrockImageNumericOptionsAcceptJSONNumber(t *testing.T) {
+	// isNumber (validation) accepts json.Number and unsigned ints, so the
+	// request builder must not drop them silently.
+	opts, err := parseBedrockImageOptions(map[string]interface{}{
+		"amazonBedrock": map[string]interface{}{"cfgScale": json.Number("7.5"), "similarityStrength": uint32(1)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.CfgScaleSet || opts.CfgScale != 7.5 || !opts.SimilarityStrengthSet || opts.SimilarityStrength != 1 {
+		t.Fatalf("options = %+v", opts)
+	}
+}
+
+// validateImageProviderOptions must accept the same numeric types the request
+// builder reads: json.Number (UseNumber-decoded options) and small ints.
+func TestBedrockImageValidationAcceptsJSONNumberAndRejectsInf(t *testing.T) {
+	ok := map[string]interface{}{
+		"amazonBedrock": map[string]interface{}{"cfgScale": json.Number("7.5"), "similarityStrength": uint8(1)},
+	}
+	if err := validateImageProviderOptions(ok); err != nil {
+		t.Fatalf("validateImageProviderOptions: %v", err)
+	}
+	bad := map[string]interface{}{
+		"amazonBedrock": map[string]interface{}{"cfgScale": math.Inf(1)},
+	}
+	if err := validateImageProviderOptions(bad); err == nil {
+		t.Fatal("expected +Inf cfgScale to be rejected like zod z.number()")
+	}
 }

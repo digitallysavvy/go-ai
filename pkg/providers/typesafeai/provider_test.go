@@ -10,22 +10,22 @@ import (
 
 // Ported from packages/typesafe-ai/src/typesafe-ai-provider.test.ts.
 
-func TestProvider_ProvidesEvaluationCapability(t *testing.T) {
+func TestProvider_ProvidesDecisionCapability(t *testing.T) {
 	p := New(Config{})
-	model, err := p.EvaluationModel("jev-latest")
+	model, err := p.DecisionModel("jev-latest")
 	if err != nil {
-		t.Fatalf("EvaluationModel: %v", err)
+		t.Fatalf("DecisionModel: %v", err)
 	}
 	if model.SpecificationVersion() != "v4" {
 		t.Fatalf("SpecificationVersion = %q", model.SpecificationVersion())
 	}
-	if model.Provider() != "typesafe.evaluation" {
+	if model.Provider() != "typesafe.decision" {
 		t.Fatalf("Provider = %q", model.Provider())
 	}
 	if model.ModelID() != "jev-latest" {
 		t.Fatalf("ModelID = %q", model.ModelID())
 	}
-	want := []string{"choice", "score", "boolean"}
+	want := []string{"choice", "score", "boolean", "box"}
 	got := model.SupportedQuestionTypes()
 	if len(got) != len(want) {
 		t.Fatalf("SupportedQuestionTypes = %v", got)
@@ -76,12 +76,53 @@ func TestNew_TrailingSlashIsStripped(t *testing.T) {
 	defer server.Close()
 
 	p := New(Config{APIKey: "k", BaseURL: server.URL + "/"})
-	model, _ := p.EvaluationModel("jev-latest")
-	_, err := model.DoEvaluate(t.Context(), provider.EvaluationCallOptions{State: "test", Questions: nativeQuestions()})
+	model, _ := p.DecisionModel("jev-latest")
+	_, err := model.DoDecide(t.Context(), provider.DecisionCallOptions{State: "test", Questions: nativeQuestions()})
 	if err != nil {
-		t.Fatalf("DoEvaluate: %v", err)
+		t.Fatalf("DoDecide: %v", err)
 	}
 	if gotPath != "/systemone" {
 		t.Fatalf("path = %q, want /systemone (no double slash)", gotPath)
+	}
+}
+
+func TestNew_BaseURLFromEnvironment(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(nativeResponseJSON))
+	}))
+	defer server.Close()
+
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("env URL used despite explicit BaseURL")
+	}))
+	defer other.Close()
+
+	run := func(p *Provider) {
+		t.Helper()
+		model, _ := p.DecisionModel("jev-latest")
+		if _, err := model.DoDecide(t.Context(), provider.DecisionCallOptions{State: "test", Questions: nativeQuestions()}); err != nil {
+			t.Fatalf("DoDecide: %v", err)
+		}
+	}
+
+	t.Setenv("TYPESAFE_AI_BASE_URL", server.URL+"/")
+	run(New(Config{APIKey: "k"}))
+	if gotPath != "/systemone" {
+		t.Fatalf("env: path = %q", gotPath)
+	}
+
+	t.Setenv("TYPESAFE_AI_BASE_URL", other.URL)
+	gotPath = ""
+	run(New(Config{APIKey: "k", BaseURL: server.URL + "/"}))
+	if gotPath != "/systemone" {
+		t.Fatalf("explicit: path = %q", gotPath)
+	}
+
+	t.Setenv("TYPESAFE_AI_BASE_URL", "")
+	if p := New(Config{APIKey: "k"}); p.client == nil {
+		t.Fatal("expected client")
 	}
 }

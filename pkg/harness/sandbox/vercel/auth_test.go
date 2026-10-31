@@ -3,7 +3,10 @@ package vercel
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/harness"
 )
 
 func makeTestOIDCToken(t *testing.T, ownerID, projectID string) string {
@@ -51,5 +54,16 @@ func TestResolveCredentialsRejectsPartialExplicit(t *testing.T) {
 	_, err := ResolveCredentials(Credentials{Token: "tok"})
 	if err == nil {
 		t.Fatal("expected an error for partially-specified credentials")
+	}
+}
+
+func TestPartialCredentialsAreAuthenticationFailures(t *testing.T) {
+	t.Setenv("VERCEL_OIDC_TOKEN", "")
+	_, err := ResolveCredentials(Credentials{Token: "tok"})
+	if !errors.Is(err, ErrPartialCredentials) {
+		t.Fatalf("expected ErrPartialCredentials, got %v", err)
+	}
+	if !harness.IsSandboxAuthenticationError(withAuthError(err)) {
+		t.Fatalf("partial credentials must surface as a SandboxAuthenticationError")
 	}
 }

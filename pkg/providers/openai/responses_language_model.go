@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
 	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -28,6 +30,9 @@ import (
 type ResponsesLanguageModel struct {
 	provider *Provider
 	modelID  string
+	// requestModelID, when set, is sent as `model` instead of modelID (TS
+	// config.requestModelId; Azure reports the model ID but routes by deployment).
+	requestModelID string
 }
 
 // NewResponsesLanguageModel returns a ResponsesLanguageModel for the given model ID.
@@ -44,6 +49,20 @@ func (m *ResponsesLanguageModel) Provider() string { return m.provider.responses
 
 // ModelID returns the model ID.
 func (m *ResponsesLanguageModel) ModelID() string { return m.modelID }
+
+// WithRequestModelID sets the model ID sent to the API, keeping ModelID() (and
+// capability detection) on the reported model ID. It returns m for chaining.
+func (m *ResponsesLanguageModel) WithRequestModelID(id string) *ResponsesLanguageModel {
+	m.requestModelID = id
+	return m
+}
+
+func (m *ResponsesLanguageModel) requestModel() string {
+	if m.requestModelID != "" {
+		return m.requestModelID
+	}
+	return m.modelID
+}
 
 // SupportsTools reports whether the model supports tool calling.
 func (m *ResponsesLanguageModel) SupportsTools() bool { return true }
@@ -63,13 +82,16 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 	webSearchToolName := responsesWebSearchToolName(opts.Tools)
 
 	var resp responses.ResponsesAPIResponse
-	if err := m.provider.client.DoJSON(ctx, internalhttp.Request{
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/responses",
 		Query:   m.provider.responsesQuery(),
 		Body:    body,
 		Headers: opts.Headers,
-	}, &resp); err != nil {
+		// TS createJsonResponseHandler(openaiResponsesResponseSchema).
+		ValidateResponse: providerutils.ResponsesResponseValidator(m.Provider()),
+	}, &resp)
+	if err != nil {
 		return nil, m.wrapErr(err)
 	}
 
@@ -86,7 +108,12 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		if resp.IncompleteDetails != nil && resp.IncompleteDetails.Reason != "" {
 			message = fmt.Sprintf("Responses API returned no output (%s)", resp.IncompleteDetails.Reason)
 		}
-		return nil, providererrors.NewProviderError(m.Provider(), 500, "", message, nil)
+		// TS APICallError({statusCode: 500, isRetryable: false}): retrying
+		// cannot produce output for this request.
+		noOutput := providererrors.NewProviderError(m.Provider(), 500, "", message, nil)
+		notRetryable := false
+		noOutput.Retryable = &notRetryable
+		return nil, noOutput
 	}
 
 	approvalFromPrompt := extractApprovalRequestIDToToolCallIDFromPrompt(opts.Prompt)
@@ -95,6 +122,24 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		return nil, err
 	}
 	result.Warnings = append(warnings, result.Warnings...)
+	if opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json" {
+		result.StructuredOutputText = responsesStructuredOutputText(resp.Output)
+	}
+	if responsesLogprobsRequested(opts.ProviderOptions, m.provider.responsesProviderOptionsName()) {
+		if logprobs := responsesOutputLogprobs(resp.Output); len(logprobs) > 0 {
+			if pm, ok := result.ProviderMetadata[m.provider.responsesProviderOptionsName()].(map[string]interface{}); ok {
+				pm["logprobs"] = logprobs
+			}
+		}
+	}
+	result.RawRequest = body
+	var rawResponse interface{}
+	if json.Unmarshal(httpResp.Body, &rawResponse) == nil {
+		result.RawResponse = rawResponse
+	}
+	result.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Headers)
+	result.ResponseMetadata = providerutils.BuildResponseMetadata(resp.ID, resp.Model, resp.CreatedAt)
+	result.ResponseMetadata.Headers = result.ResponseHeaders
 	return result, nil
 }
 
@@ -120,6 +165,7 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 	stream := newResponsesStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, webSearchToolName, m.provider.responsesProviderOptionsName(), httpResp.Header)
 	stream.requestBody = body
 	stream.tools = opts.Tools
+	stream.logprobsEnabled = responsesLogprobsRequested(opts.ProviderOptions, m.provider.responsesProviderOptionsName())
 	stream.store = responsesExplicitStore(body)
 	stream.approvalFromPrompt = extractApprovalRequestIDToToolCallIDFromPrompt(opts.Prompt)
 	if name := toolSearchToolName(opts.Tools); name != "" {
@@ -215,6 +261,19 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				promptCacheRetention = v
 			}
 			if v, ok := openaiOpts["promptCacheOptions"]; ok {
+				if err := validateResponsesPromptCacheOptions(v, providerOptionsName); err != nil {
+					return nil, store, nil, err
+				}
+				// zod's object schema drops unknown keys before TS sends it.
+				if m, isMap := v.(map[string]interface{}); isMap {
+					known := make(map[string]interface{}, len(m))
+					for _, k := range []string{"mode", "ttl", "prewarm"} {
+						if val, has := m[k]; has {
+							known[k] = val
+						}
+					}
+					v = known
+				}
 				promptCacheOptions = v
 			}
 			if v, ok := openaiOpts["promptCacheKey"].(string); ok {
@@ -322,13 +381,6 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	if opts.StopSequences != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "stopSequences"})
 	}
-	if conversation != "" && previousResponseID != "" {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "conversation",
-			Details: "conversation and previousResponseId cannot be used together",
-		})
-	}
 
 	modelCapabilities := GetLanguageModelCapabilities(m.modelID)
 
@@ -362,6 +414,14 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		isReasoning = *forceReasoning
 	}
 
+	// TS: resolvedReasoningEffort = openaiOptions.reasoningEffort ??
+	// (isCustomReasoning(reasoning) ? reasoning : undefined), resolved once so
+	// the top-level `reasoning` value goes through the same GPT-6+ check.
+	reasoningEffortOption := reasoningEffort
+	if reasoningEffort == "" && opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
+		reasoningEffort = string(*opts.Reasoning)
+	}
+
 	// GPT-6+ models restrict reasoning effort to a fixed set; drop and warn
 	// on anything else (row 17e489e).
 	if reasoningEffort != "" && modelCapabilities.SupportedReasoningEfforts != nil &&
@@ -373,9 +433,20 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		})
 		reasoningEffort = ""
 	}
+	// TS reports this after the reasoningEffort check above.
+	if conversation != "" && previousResponseID != "" {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "conversation",
+			Details: "conversation and previousResponseId cannot be used together",
+		})
+	}
 
 	// Determine system message mode based on model type.
-	systemMsgMode := "system"
+	// TS: systemMessageMode ?? (isReasoningModel ? 'developer' :
+	// modelCapabilities.systemMessageMode) -- so forceReasoning:false on a
+	// recognized reasoning model still resolves to "developer".
+	systemMsgMode := modelCapabilities.SystemMessageMode
 	if isReasoning {
 		systemMsgMode = "developer"
 	}
@@ -412,9 +483,13 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		FileIDPrefixes:                       m.provider.responsesFileIDPrefixes(),
 		ProviderOptionsName:                  providerOptionsName,
 		ToolSearchToolName:                   toolSearchToolName(opts.Tools),
-		OutputSchemaToolNames:                outputSchemaToolNames(opts.Tools),
+		ProviderToolNames:                    openAIProviderToolNames(opts.Tools),
+		OutputSchemaToolNames:                outputSchemaToolNames(responses.ScopeFunctionToolOptions(opts.Tools, providerOptionsName)),
 		ExplicitMessageItemType:              m.provider.explicitMessageItemType(),
+		IncludePromptCacheBreakpoint:         true,
 		ConfigurationUpdateUnsupportedReason: configurationUpdateUnsupportedReason,
+		IsReasoningModel:                     isReasoning,
+		WebSearchToolName:                    responsesWebSearchToolName(opts.Tools),
 	})
 	if err != nil {
 		return nil, store, warnings, err
@@ -500,36 +575,47 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		input = append(input, map[string]interface{}{"type": "compaction_trigger"})
 	}
 
+	// TS normalizes the response format schema right after the compaction
+	// trigger, so its warnings (and any error) precede the reasoning-model
+	// warnings below.
+	var normalizedResponseSchema interface{}
+	hasJSONFormat := opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json"
+	if hasJSONFormat && opts.ResponseFormat.Schema != nil {
+		// Normalize the response schema for OpenAI structured outputs
+		// (d5e3024, 411b3f2: drop propertyNames / lookaround patterns),
+		// matching the chat model's handling.
+		normalizedResponseSchema = opts.ResponseFormat.Schema
+		if rawSchema := providerutils.ResponseFormatJSONSchemaOrdered(opts.ResponseFormat.Schema); rawSchema != nil {
+			normalizedSchema, schemaWarnings, normErr := NormalizeOpenAISchemaValue(rawSchema)
+			if normErr != nil {
+				return nil, false, warnings, normErr
+			}
+			warnings = append(warnings, schemaWarnings...)
+			normalizedResponseSchema = normalizedSchema
+		}
+	}
+
+	// TS reports the GPT-6 promptCacheRetention removal before the
+	// reasoning-model warnings.
+	if promptCacheRetention != "" && modelCapabilities.SupportsConfigurationUpdate {
+		// GPT-6+ models do not support promptCacheRetention; use
+		// promptCacheOptions instead.
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "promptCacheRetention",
+			Details: "promptCacheRetention is not supported by GPT-6 and later models; use promptCacheOptions instead",
+		})
+	}
+
 	body := map[string]interface{}{
-		"model": m.modelID,
+		"model": m.requestModel(),
 		"input": input,
 	}
 	if stream {
 		body["stream"] = true
 	}
 
-	// Reasoning effort (from top-level Reasoning param or provider options).
-	effort := ""
-	if opts.Reasoning != nil {
-		switch *opts.Reasoning {
-		case types.ReasoningNone:
-			effort = "none"
-		case types.ReasoningMinimal:
-			effort = "minimal"
-		case types.ReasoningLow:
-			effort = "low"
-		case types.ReasoningMedium:
-			effort = "medium"
-		case types.ReasoningHigh:
-			effort = "high"
-		case types.ReasoningXHigh:
-			effort = "xhigh"
-		}
-	}
-	// Provider-level reasoningEffort overrides the top-level param.
-	if reasoningEffort != "" {
-		effort = reasoningEffort
-	}
+	effort := reasoningEffort
 	resolvedReasoningSummary := reasoningSummary
 	if !reasoningSummarySet && resolvedReasoningSummary == "" && effort != "" && effort != "none" {
 		resolvedReasoningSummary = "detailed"
@@ -551,8 +637,41 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			reasoning["context"] = reasoningContext
 		}
 		body["reasoning"] = reasoning
-	} else if !isReasoning {
-		if reasoningEffort != "" {
+	}
+
+	// Build the include list in TS order (user include, logprobs, web search
+	// sources, code interpreter outputs, then reasoning.encrypted_content when
+	// store=false on a reasoning model so multi-turn works without server-side
+	// persistence).
+	if responsesTopLogprobsIncluded(topLogprobs) {
+		includeFields = appendUnique(includeFields, "message.output_text.logprobs")
+	}
+	if includeWebSearchSources && (hasTool(opts.Tools, "openai.web_search") || hasTool(opts.Tools, "openai.web_search_preview")) {
+		includeFields = appendUnique(includeFields, "web_search_call.action.sources")
+	}
+	if hasTool(opts.Tools, "openai.code_interpreter") {
+		includeFields = appendUnique(includeFields, "code_interpreter_call.outputs")
+	}
+	if !store && isReasoning {
+		includeFields = appendUnique(includeFields, "reasoning.encrypted_content")
+	}
+
+	// Temperature and top_p: forbidden for reasoning models except GPT-5.1 and
+	// later families when reasoning effort is disabled.
+	// Input configuration updates change the effort used to validate sampling
+	// parameters (TS #22304).
+	effectiveEffort := effort
+	for _, item := range input {
+		if m0, ok := item.(map[string]interface{}); ok && m0["type"] == "configuration_update" {
+			if r, ok := m0["reasoning"].(map[string]interface{}); ok {
+				if e, ok := r["effort"].(string); ok {
+					effectiveEffort = e
+				}
+			}
+		}
+	}
+	if !isReasoning {
+		if reasoningEffortOption != "" {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "reasoningEffort",
@@ -581,10 +700,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			})
 		}
 	}
-
-	// Temperature and top_p: forbidden for reasoning models except GPT-5.1 and
-	// later families when reasoning effort is disabled.
-	supportsNonReasoningParams := !isReasoning || (effort == "none" && supportsNonReasoningParameters(m.modelID))
+	supportsNonReasoningParams := !isReasoning || (effectiveEffort == "none" && supportsNonReasoningParameters(m.modelID))
 	if supportsNonReasoningParams {
 		if opts.Temperature != nil {
 			body["temperature"] = *opts.Temperature
@@ -609,8 +725,19 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		}
 		// GPT-6+ models (which have a fixed SupportedReasoningEfforts list)
 		// do not support logprobs while reasoning is active.
-		if modelCapabilities.SupportedReasoningEfforts != nil && topLogprobs != nil {
+		if modelCapabilities.SupportedReasoningEfforts != nil && (topLogprobs != nil || sliceHas(includeFields, "message.output_text.logprobs")) {
 			topLogprobs = nil
+			filtered := includeFields[:0:0]
+			for _, v := range includeFields {
+				if v != "message.output_text.logprobs" {
+					filtered = append(filtered, v)
+				}
+			}
+			includeFields = filtered
+			if len(filtered) == 0 {
+				// TS: an emptied include list becomes undefined.
+				includeExplicit = false
+			}
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "logprobs",
@@ -625,25 +752,11 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 
 	// Response format and/or text verbosity → "text" object.
 	// TS only creates text.format for responseFormat.type === "json".
-	hasJSONFormat := opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json"
 	if hasJSONFormat || textVerbosity != "" {
 		textObj := map[string]interface{}{}
 		if hasJSONFormat {
 			if opts.ResponseFormat.Schema != nil {
-				// Normalize the response schema for OpenAI structured outputs
-				// (d5e3024, 411b3f2: drop propertyNames / lookaround
-				// patterns), matching the chat model's handling.
-				responseSchema := opts.ResponseFormat.Schema
-				if rawSchema := providerutils.ResponseFormatJSONSchema(responseSchema); rawSchema != nil {
-					if schemaMap, ok := rawSchema.(map[string]interface{}); ok {
-						normalizedSchema, schemaWarnings, normErr := NormalizeOpenAIJSONSchema(schemaMap)
-						if normErr != nil {
-							return nil, false, warnings, normErr
-						}
-						warnings = append(warnings, schemaWarnings...)
-						responseSchema = normalizedSchema
-					}
-				}
+				responseSchema := normalizedResponseSchema
 				format := map[string]interface{}{
 					"type":   "json_schema",
 					"strict": strictJSONSchema,
@@ -667,9 +780,10 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		body["text"] = textObj
 	}
 
-	// Tools.
+	// Tools. TS appends every tool warning after all other warnings.
+	var toolWarnings []types.Warning
 	if len(opts.Tools) > 0 {
-		preparedTools, err := responses.PrepareToolsWithError(opts.Tools)
+		preparedTools, err := responses.PrepareToolsWithOptionsName(opts.Tools, providerOptionsName)
 		if err != nil {
 			return nil, false, nil, err
 		}
@@ -677,37 +791,25 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		if err != nil {
 			return nil, false, nil, err
 		}
-		warnings = append(warnings, toolSchemaWarnings...)
+		toolWarnings = append(toolWarnings, toolSchemaWarnings...)
 		body["tools"] = preparedTools
 		if len(allowedToolNames) > 0 {
-			allowedTools, allowedToolWarnings, err := responses.ResolveAllowedTools(opts.Tools, allowedToolNames, allowedToolsMode)
-			warnings = append(warnings, allowedToolWarnings...)
+			allowedTools, allowedToolWarnings, err := responses.ResolveAllowedToolsWithOptionsName(opts.Tools, allowedToolNames, allowedToolsMode, providerOptionsName)
+			toolWarnings = append(toolWarnings, allowedToolWarnings...)
 			if err != nil {
-				return nil, false, warnings, err
+				return nil, false, append(warnings, toolWarnings...), err
 			}
 			if allowedTools != nil {
 				body["tool_choice"] = *allowedTools
 			}
 		} else if opts.ToolChoice.Type != "" {
+			if err := responses.CheckOmittedToolChoice(opts.Tools, opts.ToolChoice); err != nil {
+				return nil, false, warnings, err
+			}
 			body["tool_choice"] = convertResponsesToolChoice(opts.ToolChoice, opts.Tools)
 		}
 	}
 
-	// Build include list — always add reasoning.encrypted_content when
-	// store=false and we have a reasoning model, so multi-turn works without
-	// server-side persistence.
-	if !store && isReasoning {
-		includeFields = appendUnique(includeFields, "reasoning.encrypted_content")
-	}
-	if includeWebSearchSources && (hasTool(opts.Tools, "openai.web_search") || hasTool(opts.Tools, "openai.web_search_preview")) {
-		includeFields = appendUnique(includeFields, "web_search_call.action.sources")
-	}
-	if hasTool(opts.Tools, "openai.code_interpreter") {
-		includeFields = appendUnique(includeFields, "code_interpreter_call.outputs")
-	}
-	if topLogprobs != nil {
-		includeFields = appendUnique(includeFields, "message.output_text.logprobs")
-	}
 	if len(includeFields) > 0 {
 		body["include"] = includeFields
 	} else if hasNilProviderOption(openaiOpts, "include") {
@@ -738,16 +840,11 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	} else if hasNilProviderOption(openaiOpts, "previousResponseId") {
 		body["previous_response_id"] = nil
 	}
-	if promptCacheRetention != "" && modelCapabilities.SupportsConfigurationUpdate {
-		// GPT-6+ models do not support promptCacheRetention; use
-		// promptCacheOptions instead.
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "promptCacheRetention",
-			Details: "promptCacheRetention is not supported by GPT-6 and later models; use promptCacheOptions instead",
-		})
-	} else if promptCacheRetention != "" {
-		body["prompt_cache_retention"] = promptCacheRetention
+	if promptCacheRetention != "" {
+		// GPT-6+ drops it (warned about above).
+		if !modelCapabilities.SupportsConfigurationUpdate {
+			body["prompt_cache_retention"] = promptCacheRetention
+		}
 	} else if hasNilProviderOption(openaiOpts, "promptCacheRetention") {
 		body["prompt_cache_retention"] = nil
 	}
@@ -823,7 +920,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		body["context_management"] = contextManagement
 	}
 
-	return body, store, warnings, nil
+	return body, store, append(warnings, toolWarnings...), nil
 }
 
 func stringSliceFromInterface(value interface{}) []string {
@@ -859,6 +956,10 @@ func intFromInterface(value interface{}) (int, bool) {
 	return 0, false
 }
 
+// responsesTopLogprobs mirrors TS: a number is sent verbatim as top_logprobs
+// (including 0), true maps to TOP_LOGPROBS_MAX (20). Only a non-zero value
+// also adds the message.output_text.logprobs include (see
+// responsesTopLogprobsIncluded).
 func responsesTopLogprobs(value interface{}) (interface{}, bool) {
 	switch v := value.(type) {
 	case bool:
@@ -866,25 +967,23 @@ func responsesTopLogprobs(value interface{}) (interface{}, bool) {
 			return 20, true
 		}
 	case int:
-		if v > 0 {
-			return v, true
-		}
+		return v, true
 	case int64:
-		if v > 0 {
-			return v, true
-		}
+		return int(v), true
 	case float64:
-		if v > 0 {
-			return v, true
-		}
+		return int(v), true
 	case json.Number:
 		if i, err := v.Int64(); err == nil {
-			if i > 0 {
-				return i, true
-			}
+			return int(i), true
 		}
 	}
 	return nil, false
+}
+
+// responsesTopLogprobsIncluded is TS's `if (topLogprobs)` truthiness check.
+func responsesTopLogprobsIncluded(v interface{}) bool {
+	n, ok := v.(int)
+	return ok && n != 0
 }
 
 func responsesContextManagement(value interface{}) []map[string]interface{} {
@@ -947,11 +1046,11 @@ func convertResponsesToolChoice(tc types.ToolChoice, tools []types.Tool) interfa
 	case types.ToolChoiceTool:
 		name, tool := resolveResponsesToolChoiceName(tc.ToolName, tools)
 		switch name {
-		case "code_interpreter", "file_search", "image_generation", "web_search_preview", "web_search", "mcp", "apply_patch", "computer":
+		case "code_interpreter", "file_search", "image_generation", "web_search_preview", "web_search", "mcp", "apply_patch", "computer", "programmatic_tool_calling":
 			return map[string]interface{}{"type": name}
 		}
 		if tool != nil {
-			if _, ok := tool.ProviderOptions.(openaitool.CustomTool); ok {
+			if isOpenAICustomSDKTool(*tool) {
 				return map[string]interface{}{"type": "custom", "name": name}
 			}
 		}
@@ -1002,9 +1101,8 @@ func normalizeResponsesToolSchemas(tools []interface{}, supportsAsync bool) ([]t
 
 func normalizeResponsesFunctionToolDef(fn responses.FunctionToolDef, supportsAsync bool) (responses.FunctionToolDef, []types.Warning, error) {
 	var warnings []types.Warning
-	schemaMap, ok := fn.Parameters.(map[string]interface{})
-	if ok && schemaMap != nil {
-		normalized, schemaWarnings, err := NormalizeOpenAIJSONSchema(schemaMap)
+	if fn.Parameters != nil {
+		normalized, schemaWarnings, err := NormalizeOpenAISchemaValue(fn.Parameters)
 		if err != nil {
 			return fn, nil, err
 		}
@@ -1033,22 +1131,24 @@ func gateResponsesToolAsync(async **bool, toolName string, supportsAsync bool) [
 
 func resolveResponsesToolChoiceName(name string, tools []types.Tool) (string, *types.Tool) {
 	providerNames := map[string]string{
-		"openai.code_interpreter":   "code_interpreter",
-		"openai.file_search":        "file_search",
-		"openai.image_generation":   "image_generation",
-		"openai.web_search_preview": "web_search_preview",
-		"openai.web_search":         "web_search",
-		"openai.mcp":                "mcp",
-		"openai.apply_patch":        "apply_patch",
-		"openai.computer":           "computer",
-		"code_interpreter":          "code_interpreter",
-		"file_search":               "file_search",
-		"image_generation":          "image_generation",
-		"web_search_preview":        "web_search_preview",
-		"web_search":                "web_search",
-		"mcp":                       "mcp",
-		"apply_patch":               "apply_patch",
-		"computer":                  "computer",
+		"openai.code_interpreter":          "code_interpreter",
+		"openai.file_search":               "file_search",
+		"openai.image_generation":          "image_generation",
+		"openai.web_search_preview":        "web_search_preview",
+		"openai.web_search":                "web_search",
+		"openai.mcp":                       "mcp",
+		"openai.apply_patch":               "apply_patch",
+		"openai.computer":                  "computer",
+		"openai.programmatic_tool_calling": "programmatic_tool_calling",
+		"code_interpreter":                 "code_interpreter",
+		"file_search":                      "file_search",
+		"image_generation":                 "image_generation",
+		"web_search_preview":               "web_search_preview",
+		"web_search":                       "web_search",
+		"mcp":                              "mcp",
+		"apply_patch":                      "apply_patch",
+		"computer":                         "computer",
+		"programmatic_tool_calling":        "programmatic_tool_calling",
 	}
 	if mapped, ok := providerNames[name]; ok {
 		for i := range tools {
@@ -1089,7 +1189,7 @@ func customToolNames(tools []types.Tool) map[string]bool {
 	}
 	names := map[string]bool{}
 	for _, tool := range tools {
-		if _, ok := tool.ProviderOptions.(openaitool.CustomTool); ok {
+		if isOpenAICustomSDKTool(tool) {
 			names[tool.Name] = true
 		}
 	}
@@ -1097,6 +1197,41 @@ func customToolNames(tools []types.Tool) map[string]bool {
 		return nil
 	}
 	return names
+}
+
+// responsesLogprobsRequested mirrors TS's truthiness check of
+// providerOptions[providerOptionsName].logprobs (true or a non-zero number).
+func responsesLogprobsRequested(providerOptions map[string]interface{}, providerName string) bool {
+	opts, _ := providerOptions[providerName].(map[string]interface{})
+	switch v := opts["logprobs"].(type) {
+	case bool:
+		return v
+	case int:
+		return v != 0
+	case int64:
+		return v != 0
+	case float64:
+		return v != 0
+	}
+	return false
+}
+
+// openAIProviderToolNames maps each declared OpenAI provider tool's SDK name
+// to its bare provider tool name (TS createToolNameMapping providerToolNames).
+func openAIProviderToolNames(tools []types.Tool) map[string]string {
+	var m map[string]string
+	for _, tool := range tools {
+		// openai.custom is not in TS providerToolNames: a custom tool keeps
+		// its own name.
+		if tool.Name == "" || !strings.HasPrefix(tool.ProviderID, "openai.") || tool.ProviderID == "openai.custom" {
+			continue
+		}
+		if m == nil {
+			m = map[string]string{}
+		}
+		m[tool.Name] = strings.TrimPrefix(tool.ProviderID, "openai.")
+	}
+	return m
 }
 
 func hasTool(tools []types.Tool, name string) bool {
@@ -1132,13 +1267,51 @@ func toolSearchToolName(tools []types.Tool) string {
 // TS's untouched fallback -- TS's providerToolNames table maps every one of
 // these ids to its bare identity string, and toCustomToolName returns that
 // input unchanged when no custom mapping exists.
-func openAIProviderToolDisplayName(tools []types.Tool, providerID, bareName string) string {
+// openAIDeclaredToolName resolves the SDK-facing name of the declared OpenAI
+// provider tool with the given id: a tool identified by ProviderID, or by a
+// Name equal to the id (the openai.* constructors), reports its own Name (TS
+// toolNameMapping.toCustomToolName); an undeclared tool reports the bare
+// provider name.
+func openAIDeclaredToolName(tools []types.Tool, providerID, bareName string) string {
 	for _, tool := range tools {
-		if tool.ProviderID == providerID {
+		if tool.ProviderID == providerID || (tool.ProviderID == "" && tool.Name == providerID) {
 			return tool.Name
 		}
 	}
 	return bareName
+}
+
+func openAIProviderToolDisplayName(tools []types.Tool, providerID, bareName string) string {
+	for _, tool := range tools {
+		// The openaitool constructors name a hosted tool by its id
+		// (Name == ProviderID); such a tool keeps the bare name, as it did
+		// before the constructors set ProviderID.
+		if tool.ProviderID == providerID && tool.Name != providerID {
+			return tool.Name
+		}
+	}
+	return bareName
+}
+
+// openAIToolSearchDisplayName is the tool name of tool_search calls and
+// outputs: the declared tool_search tool's Name (TS
+// toolNameMapping.toCustomToolName), else "tool_search". Stream and generate
+// use the same name, and a client-mode call names a tool the SDK can run.
+func openAIToolSearchDisplayName(tools []types.Tool) string {
+	if name := toolSearchToolName(tools); name != "" {
+		return name
+	}
+	return "tool_search"
+}
+
+// isOpenAICustomSDKTool reports whether tool is an OpenAI custom tool: an
+// openaitool.CustomTool (CustomTool.ToTool) or a TS-shaped "openai.custom"
+// provider tool.
+func isOpenAICustomSDKTool(tool types.Tool) bool {
+	if _, ok := tool.ProviderOptions.(openaitool.CustomTool); ok {
+		return true
+	}
+	return tool.Type == types.ToolTypeProviderDefined && tool.ProviderID == "openai.custom"
 }
 
 // outputSchemaToolNames returns the set of function tool names that declared
@@ -1227,6 +1400,35 @@ func responsesWebSearchToolName(tools []types.Tool) string {
 // Non-streaming response conversion
 // ─────────────────────────────────────────────────────────────────────────────
 
+// responsesStructuredOutputText returns the text of the last "final_answer"
+// message in output (all of its content parts joined), or nil when there is
+// none. A Responses API response can hold several assistant messages with
+// JSON; concatenating them breaks structured-output parsing, so JSON output
+// is parsed from the last final answer only while every message stays in
+// the generated content (TS structuredOutputText, #23895).
+func responsesStructuredOutputText(output []json.RawMessage) *string {
+	var selected *string
+	for _, rawItem := range output {
+		var peek struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(rawItem, &peek) != nil || peek.Type != "message" {
+			continue
+		}
+		var item responses.AssistantMessageItem
+		if json.Unmarshal(rawItem, &item) != nil || item.Phase == nil || *item.Phase != "final_answer" {
+			continue
+		}
+		var text strings.Builder
+		for _, part := range item.Content {
+			text.WriteString(part.Text)
+		}
+		joined := text.String()
+		selected = &joined
+	}
+	return selected
+}
+
 func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResponse, store bool, webSearchToolName string, tools []types.Tool, approvalFromPrompt map[string]string, providerOptionsName ...string) (*types.GenerateResult, error) {
 	providerName := "openai"
 	if len(providerOptionsName) > 0 && providerOptionsName[0] != "" {
@@ -1246,6 +1448,16 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	// hasFunctionCall tracks client-side tool calls for the finish reason
 	// (TS hasFunctionCall); provider-executed tools don't count.
 	hasFunctionCall := false
+	hasWebSearchActionSources, hasFileSearchResults := openAIResponseRetrievalFlags(resp.Output)
+	retrievedFileIDs := map[string]bool{}
+	// pushCall records a client tool call and puts its tool-call part in the
+	// content at the output item's position: TS doGenerate pushes every part
+	// in output order, so a function call that precedes a message stays ahead
+	// of its text (and of the next step's message items).
+	pushCall := func(tc types.ToolCall) {
+		toolCalls = append(toolCalls, tc)
+		result.Content = append(result.Content, responsesToolCallContent(tc))
+	}
 
 	for _, rawItem := range resp.Output {
 		// Peek at type field.
@@ -1255,7 +1467,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 		if err := json.Unmarshal(rawItem, &peek); err != nil {
 			continue
 		}
-		if isResponsesFunctionCallType(peek.Type) {
+		if responsesItemIsFunctionCall(peek.Type, rawItem, false) {
 			hasFunctionCall = true
 		}
 
@@ -1267,12 +1479,24 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			}
 			for _, part := range item.Content {
 				result.Text += part.Text
-				result.Content = append(result.Content, types.TextContent{
+				msgMeta := openAIResponsesMessageProviderOptions(providerName, item.ID, item.Phase, part.Annotations)
+				text := types.TextContent{
 					Text:            part.Text,
-					ProviderOptions: openAIResponsesMessageProviderOptions(providerName, item.ID, item.Phase, part.Annotations),
-				})
+					Citations:       openAIAnnotationCitations(providerName, part.Annotations),
+					ProviderOptions: msgMeta,
+				}
+				// TS exposes the same data as the part's providerMetadata.
+				if msgMeta != nil {
+					text.ProviderMetadata, _ = json.Marshal(msgMeta)
+				}
+				result.Content = append(result.Content, text)
 				for _, ann := range part.Annotations {
-					if src, ok := openAIAnnotationToSource(providerName, ann); ok {
+					// Use citation-derived sources only when retrieval data
+					// is unavailable.
+					if openAIAnnotationHasRetrievedSource(ann, hasWebSearchActionSources, hasFileSearchResults) {
+						continue
+					}
+					if src, ok := openAIAnnotationToSource(providerName, ann, streaming.GenerateID()); ok {
 						result.Content = append(result.Content, src)
 					}
 				}
@@ -1287,7 +1511,9 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			// one tool call per nested recipient, when every recipient names
 			// a declared function tool.
 			if expanded, ok := responses.ExpandParallelToolCall(item.CallID, item.Name, item.Arguments, item.ID, tools, providerName); ok {
-				toolCalls = append(toolCalls, expanded...)
+				for _, tc := range expanded {
+					pushCall(tc)
+				}
 				continue
 			}
 			var args map[string]interface{}
@@ -1296,9 +1522,10 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        args,
+				RawArguments:     item.Arguments,
 				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, item.Namespace, item.Async, item.Caller),
 			}
-			toolCalls = append(toolCalls, tc)
+			pushCall(tc)
 
 		case "apply_patch_call":
 			// Row 45f2b6a: decode into a tool call ({callId, operation}) and
@@ -1307,7 +1534,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if err := json.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
-			rawArgs, _ := json.Marshal(map[string]interface{}{
+			rawArgs := marshalNoEscape(map[string]interface{}{
 				"callId":    item.CallID,
 				"operation": item.Operation,
 			})
@@ -1317,9 +1544,9 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if item.ID != nil {
 				itemID = *item.ID
 			}
-			toolCalls = append(toolCalls, types.ToolCall{
+			pushCall(types.ToolCall{
 				ID:               item.CallID,
-				ToolName:         "openai.apply_patch",
+				ToolName:         openAIDeclaredToolName(tools, "openai.apply_patch", "apply_patch"),
 				Arguments:        args,
 				RawArguments:     string(rawArgs),
 				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, itemID, "", nil, nil),
@@ -1342,7 +1569,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				// instead of a client-executable "computer" tool call.
 				tc := types.ToolCall{
 					ID:               computerItemID,
-					ToolName:         "openai.computer_use",
+					ToolName:         "computer_use",
 					Arguments:        map[string]interface{}{},
 					ProviderExecuted: true,
 				}
@@ -1350,14 +1577,14 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				result.Content = append(result.Content,
 					types.ToolCallContent{
 						ToolCallID:       computerItemID,
-						ToolName:         "openai.computer_use",
+						ToolName:         "computer_use",
 						Input:            "",
 						Arguments:        map[string]interface{}{},
 						ProviderExecuted: true,
 					},
 					types.ToolResultContent{
 						ToolCallID: computerItemID,
-						ToolName:   "openai.computer_use",
+						ToolName:   "computer_use",
 						Result:     map[string]interface{}{"type": "computer_use_tool_result", "status": item.Status},
 						// TS never sets providerExecuted on this tool-result,
 						// only on the tool-call.
@@ -1366,9 +1593,9 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				continue
 			}
 			args, rawArgs := computerCallArguments(item)
-			toolCalls = append(toolCalls, types.ToolCall{
+			pushCall(types.ToolCall{
 				ID:               *item.CallID,
-				ToolName:         "openai.computer",
+				ToolName:         openAIDeclaredToolName(tools, "openai.computer", "computer"),
 				Arguments:        args,
 				RawArguments:     rawArgs,
 				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, computerItemID, "", nil, nil),
@@ -1405,7 +1632,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				result.Content = append(result.Content, types.ReasoningContent{
 					Text:             s.Text,
 					EncryptedContent: item.EncryptedContent,
-					ProviderMetadata: openAIResponsesReasoningMetadata(providerName, item.ID),
+					ProviderMetadata: openAIResponsesReasoningMetadataWithEncrypted(providerName, item.ID, item.EncryptedContent),
 				})
 			}
 
@@ -1414,11 +1641,15 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if err := json.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
-			toolCalls = append(toolCalls, types.ToolCall{
+			// TS: input: JSON.stringify(part.input) -- the JSON string literal
+			// of the raw custom tool text.
+			customRaw, _ := jsonstr.Marshal(item.Input)
+			pushCall(types.ToolCall{
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        map[string]interface{}{"input": item.Input},
-				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, "", item.Async, item.Caller),
+				RawArguments:     string(customRaw),
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, "", item.Async, nil),
 			})
 
 		case "program":
@@ -1432,7 +1663,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			args, rawArgs := programCallArguments(item)
 			tc := types.ToolCall{
 				ID:               item.CallID,
-				ToolName:         "openai.programmatic_tool_calling",
+				ToolName:         openAIDeclaredToolName(tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
 				Arguments:        args,
 				RawArguments:     rawArgs,
 				ProviderExecuted: true,
@@ -1441,7 +1672,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			toolCalls = append(toolCalls, tc)
 			result.Content = append(result.Content, types.ToolCallContent{
 				ToolCallID:       item.CallID,
-				ToolName:         "openai.programmatic_tool_calling",
+				ToolName:         openAIDeclaredToolName(tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
 				Input:            rawArgs,
 				Arguments:        args,
 				ProviderExecuted: true,
@@ -1455,7 +1686,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			}
 			result.Content = append(result.Content, types.ToolResultContent{
 				ToolCallID: item.CallID,
-				ToolName:   "openai.programmatic_tool_calling",
+				ToolName:   openAIDeclaredToolName(tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
 				Result:     map[string]interface{}{"result": item.Result, "status": item.Status},
 				// TS never sets providerExecuted on this tool-result, only
 				// on the tool-call.
@@ -1477,6 +1708,18 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ProviderExecuted: true,
 			}
 			toolCalls = append(toolCalls, tc)
+			webSearchResult := types.ToolResultContent{
+				ToolCallID: item.ID,
+				ToolName:   toolName,
+				Result:     mapWebSearchOutput(item.Action),
+				// TS never sets providerExecuted on this tool-result,
+				// only on the tool-call.
+			}
+			if isFailedWebSearchStatus(item.Status) {
+				// TS #22330: failed/incomplete searches are tool errors.
+				webSearchResult.Result = map[string]interface{}{"status": item.Status}
+				webSearchResult.Error = item.Status
+			}
 			result.Content = append(result.Content,
 				types.ToolCallContent{
 					ToolCallID:       item.ID,
@@ -1485,21 +1728,47 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					Arguments:        map[string]interface{}{},
 					ProviderExecuted: true,
 				},
-				types.ToolResultContent{
-					ToolCallID: item.ID,
-					ToolName:   toolName,
-					Result:     mapWebSearchOutput(item.Action),
-					// TS never sets providerExecuted on this tool-result,
-					// only on the tool-call.
-				},
+				webSearchResult,
 			)
+			for _, src := range openAIWebSearchActionSources(item.Action, streaming.GenerateID) {
+				result.Content = append(result.Content, src)
+			}
+
+		case "local_shell_call":
+			if tc, ok := openAILocalShellToolCall(providerName, tools, rawItem, false); ok {
+				pushCall(tc)
+			}
+
+		case "shell_call":
+			if tc, ok := openAIShellToolCall(providerName, tools, rawItem); ok {
+				if !tc.ProviderExecuted {
+					pushCall(tc)
+				} else {
+					toolCalls = append(toolCalls, tc)
+					// Hosted-container shell calls are provider-executed:
+					// TS reports the call in content next to its output.
+					result.Content = append(result.Content, types.ToolCallContent{
+						ToolCallID:       tc.ID,
+						ToolName:         tc.ToolName,
+						Input:            tc.RawArguments,
+						Arguments:        tc.Arguments,
+						ProviderExecuted: true,
+						ProviderMetadata: marshalOrNil(tc.ProviderMetadata),
+					})
+				}
+			}
+
+		case "shell_call_output":
+			if tr, ok := openAIShellToolResult(tools, rawItem); ok {
+				result.Content = append(result.Content, tr)
+			}
 
 		case "compaction":
 			var item responses.CompactionEvent
 			if err := json.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
-			chunk := responses.CompactionEventToChunk(item)
+			chunk := responses.CompactionEventToChunkForProvider(item, providerName)
 			if chunk.CustomContent != nil {
 				result.Content = append(result.Content, *chunk.CustomContent)
 			}
@@ -1538,7 +1807,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if err := json.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
-			toolName := openAIProviderToolDisplayName(tools, "openai.tool_search", "tool_search")
+			toolName := openAIToolSearchDisplayName(tools)
 			isHosted := item.Execution == "server"
 			toolCallID := item.ID
 			if item.CallID != nil && *item.CallID != "" {
@@ -1547,7 +1816,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if isHosted {
 				hostedToolSearchCallIds = append(hostedToolSearchCallIds, toolCallID)
 			}
-			inputRaw, _ := json.Marshal(map[string]interface{}{
+			inputRaw := marshalNoEscape(map[string]interface{}{
 				"arguments": item.Arguments,
 				"call_id":   item.CallID,
 			})
@@ -1561,7 +1830,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if isHosted {
 				tc.ProviderExecuted = true
 			}
-			toolCalls = append(toolCalls, tc)
+			pushCall(tc)
 
 		case "tool_search_output":
 			var item responses.ToolSearchOutputItem
@@ -1583,7 +1852,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			}
 			result.Content = append(result.Content, types.ToolResultContent{
 				ToolCallID:       toolCallID,
-				ToolName:         openAIProviderToolDisplayName(tools, "openai.tool_search", "tool_search"),
+				ToolName:         openAIToolSearchDisplayName(tools),
 				Result:           map[string]interface{}{"tools": matchedTools},
 				ProviderMetadata: toRawMetadata(openAIResponsesToolCallMetadata(providerName, item.ID, "", nil, nil)),
 			})
@@ -1630,6 +1899,11 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					// only on the tool-call.
 				},
 			)
+			for _, r := range item.Results {
+				if src, ok := openAIFileSearchResultSource(providerName, r, retrievedFileIDs, streaming.GenerateID()); ok {
+					result.Content = append(result.Content, src)
+				}
+			}
 
 		case "code_interpreter_call":
 			var item responses.CodeInterpreterCallItem
@@ -1645,7 +1919,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				codeValue = *item.Code
 			}
 			codeArgs := map[string]interface{}{"containerId": item.ContainerID, "code": codeValue}
-			rawCodeArgs, _ := json.Marshal(codeArgs)
+			rawCodeArgs := marshalNoEscape(codeArgs)
 			codeInterpreterToolName := openAIProviderToolDisplayName(tools, "openai.code_interpreter", "code_interpreter")
 			toolCalls = append(toolCalls, types.ToolCall{
 				ID:               item.ID,
@@ -1810,6 +2084,59 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	return result, nil
 }
 
+// responsesToolCallContent is the tool-call content part of a decoded call.
+func responsesToolCallContent(tc types.ToolCall) types.ToolCallContent {
+	return types.ToolCallContent{
+		ToolCallID:       tc.ID,
+		ToolName:         tc.ToolName,
+		Input:            tc.RawArguments,
+		Arguments:        tc.Arguments,
+		ProviderExecuted: tc.ProviderExecuted,
+		ProviderMetadata: marshalOrNil(tc.ProviderMetadata),
+		Dynamic:          tc.Dynamic,
+	}
+}
+
+// normalizeResponsesLogprobs keeps only the fields the TS logprobs schema
+// declares (token, logprob, top_logprobs[].token/logprob); zod strips the
+// wire's bytes arrays from providerMetadata.
+func normalizeResponsesLogprobs(raw json.RawMessage) json.RawMessage {
+	var items []struct {
+		Token       string  `json:"token"`
+		Logprob     float64 `json:"logprob"`
+		TopLogprobs []struct {
+			Token   string  `json:"token"`
+			Logprob float64 `json:"logprob"`
+		} `json:"top_logprobs"`
+	}
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return raw
+	}
+	out, err := json.Marshal(items)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+// responsesOutputLogprobs collects the per-content-part logprobs of every
+// message output item (TS: logprobs.push(contentPart.logprobs)).
+func responsesOutputLogprobs(output []json.RawMessage) []json.RawMessage {
+	var out []json.RawMessage
+	for _, raw := range output {
+		var item responses.AssistantMessageItem
+		if json.Unmarshal(raw, &item) != nil || item.Type != "message" {
+			continue
+		}
+		for _, part := range item.Content {
+			if len(part.Logprobs) > 0 && string(part.Logprobs) != "null" {
+				out = append(out, normalizeResponsesLogprobs(part.Logprobs))
+			}
+		}
+	}
+	return out
+}
+
 // programCallArguments builds the SDK-facing {code, fingerprint} arguments
 // for a decoded "program" item, mirroring TS's
 // programmaticToolCallingInputSchema (row 1f6dd3a).
@@ -1818,7 +2145,7 @@ func programCallArguments(item responses.ProgramItem) (map[string]interface{}, s
 		"code":        item.Code,
 		"fingerprint": item.Fingerprint,
 	}
-	raw, _ := json.Marshal(args)
+	raw := marshalNoEscape(args)
 	return args, string(raw)
 }
 
@@ -1857,7 +2184,7 @@ func computerCallArguments(item responses.ComputerCall) (map[string]interface{},
 		"pendingSafetyChecks": checks,
 		"status":              status,
 	}
-	raw, _ := json.Marshal(args)
+	raw := marshalNoEscape(args)
 	return args, string(raw)
 }
 
@@ -1889,12 +2216,18 @@ func openAIResponsesToolCallMetadata(providerName, itemID, namespace string, asy
 	return map[string]interface{}{providerName: openai}
 }
 
-func openAIResponsesReasoningMetadata(providerName, itemID string) json.RawMessage {
-	if itemID == "" {
-		return nil
+// openAIResponsesReasoningMetadataWithEncrypted mirrors the TS reasoning
+// providerMetadata {itemId, reasoningEncryptedContent: encrypted_content ?? null}.
+func openAIResponsesReasoningMetadataWithEncrypted(providerName, itemID, encrypted string) json.RawMessage {
+	// TS always builds {itemId: part.id, reasoningEncryptedContent:
+	// part.encrypted_content ?? null}, so an item with an empty id and no
+	// encrypted_content still carries both keys.
+	var enc interface{}
+	if encrypted != "" {
+		enc = encrypted
 	}
 	raw, _ := json.Marshal(map[string]interface{}{
-		providerName: map[string]interface{}{"itemId": itemID},
+		providerName: map[string]interface{}{"itemId": itemID, "reasoningEncryptedContent": enc},
 	})
 	return raw
 }
@@ -1924,8 +2257,7 @@ func openAIResponsesMessageProviderOptions(providerName, itemID string, phase *s
 // `this.config.generateId?.() ?? generateId()` for each source there;
 // streaming.GenerateID() is this file's existing stand-in for that (also
 // used for the mcp_approval_request dummy tool-call id below).
-func openAIAnnotationToSource(providerName string, ann responses.TextAnnotation) (types.SourceContent, bool) {
-	id := streaming.GenerateID()
+func openAIAnnotationToSource(providerName string, ann responses.TextAnnotation, id string) (types.SourceContent, bool) {
 	switch ann.Type {
 	case "url_citation":
 		return types.SourceContent{
@@ -1986,6 +2318,108 @@ func openAIAnnotationToSource(providerName string, ann responses.TextAnnotation)
 	return types.SourceContent{}, false
 }
 
+// openAIAnnotationCitations maps text annotations to normalized citations,
+// mirroring TS mapOpenAIResponsesCitations: file_path annotations are not
+// citations, a url source's id is its URL and a file source's id is its file
+// ID, and url_citation / container_file_citation carry output offsets. Returns
+// nil when there is nothing to cite.
+func openAIAnnotationCitations(providerName string, annotations []responses.TextAnnotation) []types.Citation {
+	var citations []types.Citation
+	for _, ann := range annotations {
+		if ann.Type == "file_path" {
+			continue
+		}
+		id := ann.FileID
+		if ann.Type == "url_citation" {
+			id = ann.URL
+		}
+		src, ok := openAIAnnotationToSource(providerName, ann, id)
+		if !ok {
+			continue
+		}
+		c := types.Citation{Source: src}
+		if ann.Type == "url_citation" || ann.Type == "container_file_citation" {
+			start, end := ann.StartIndex, ann.EndIndex
+			c.StartIndex, c.EndIndex = &start, &end
+		}
+		citations = append(citations, c)
+	}
+	return citations
+}
+
+// openAIAnnotationHasRetrievedSource reports whether a citation-derived source
+// should be skipped because the response already carries retrieval data for
+// it (web-search action sources or file-search results).
+func openAIAnnotationHasRetrievedSource(ann responses.TextAnnotation, hasWebSearchActionSources, hasFileSearchResults bool) bool {
+	return (ann.Type == "url_citation" && hasWebSearchActionSources) ||
+		(ann.Type == "file_citation" && hasFileSearchResults)
+}
+
+// openAIResponseRetrievalFlags scans response output items for web-search
+// action URL sources and file-search results.
+func openAIResponseRetrievalFlags(output []json.RawMessage) (webSearchSources, fileSearchResults bool) {
+	for _, raw := range output {
+		var peek struct {
+			Type    string            `json:"type"`
+			Action  *WebSearchAction  `json:"action"`
+			Results []json.RawMessage `json:"results"`
+		}
+		if json.Unmarshal(raw, &peek) != nil {
+			continue
+		}
+		switch peek.Type {
+		case "web_search_call":
+			if peek.Action != nil && peek.Action.Type == "search" {
+				for _, s := range peek.Action.Sources {
+					if s.Type == "url" {
+						webSearchSources = true
+					}
+				}
+			}
+		case "file_search_call":
+			if len(peek.Results) > 0 {
+				fileSearchResults = true
+			}
+		}
+	}
+	return webSearchSources, fileSearchResults
+}
+
+// openAIWebSearchActionSources returns the URL sources retrieved by a
+// web_search_call "search" action (TS: one source per `url` entry).
+func openAIWebSearchActionSources(action *WebSearchAction, newID func() string) []types.SourceContent {
+	if action == nil || action.Type != "search" {
+		return nil
+	}
+	var out []types.SourceContent
+	for _, s := range action.Sources {
+		if s.Type == "url" {
+			out = append(out, types.SourceContent{SourceType: "url", ID: newID(), URL: s.URL})
+		}
+	}
+	return out
+}
+
+// openAIFileSearchResultSource returns the document source for a retrieved
+// file-search result, deduplicated by file ID (seen is updated).
+func openAIFileSearchResultSource(providerName string, r responses.FileSearchResult, seen map[string]bool, id string) (types.SourceContent, bool) {
+	if seen[r.FileID] {
+		return types.SourceContent{}, false
+	}
+	seen[r.FileID] = true
+	meta, _ := json.Marshal(map[string]interface{}{
+		providerName: map[string]interface{}{"type": "file_search", "fileId": r.FileID},
+	})
+	return types.SourceContent{
+		SourceType:       "document",
+		ID:               id,
+		MediaType:        "text/plain",
+		Title:            r.Filename,
+		Filename:         r.Filename,
+		ProviderMetadata: meta,
+	}, true
+}
+
 // toRawMetadata marshals a provider metadata map into json.RawMessage, for
 // the types.ToolResultContent.ProviderMetadata field (unlike
 // types.ToolCall/types.ToolResult, which take the map directly).
@@ -1995,6 +2429,12 @@ func toRawMetadata(m map[string]interface{}) json.RawMessage {
 	}
 	raw, _ := json.Marshal(m)
 	return raw
+}
+
+// customToolRaw is TS JSON.stringify of a custom tool call's raw text input.
+func customToolRaw(input string) string {
+	raw, _ := jsonstr.Marshal(input)
+	return string(raw)
 }
 
 // nonEmptyOrNil returns nil for an empty string so it marshals as JSON null
@@ -2011,7 +2451,8 @@ func nonEmptyOrNil(s string) interface{} {
 // progressive tool-input-delta streaming. Mirrors TS's escapeJSONDelta
 // (`JSON.stringify(delta).slice(1, -1)`).
 func escapeJSONDelta(delta string) string {
-	raw, err := json.Marshal(delta)
+	// jsonstr keeps <, > and & literal like JSON.stringify.
+	raw, err := jsonstr.Marshal(delta)
 	if err != nil || len(raw) < 2 {
 		return delta
 	}
@@ -2070,12 +2511,28 @@ func mapWebSearchOutput(action *WebSearchAction) map[string]interface{} {
 	return result
 }
 
-// isResponsesFunctionCallType reports whether a Responses output item is a
-// client-side tool call, which TS counts as hasFunctionCall.
-func isResponsesFunctionCallType(itemType string) bool {
+// responsesItemIsFunctionCall reports whether a Responses output item is a
+// client-side tool call, which TS counts as hasFunctionCall. A computer_call
+// without a call_id is executed server-side and does not count; streaming
+// only counts an apply_patch_call once its status is "completed" (doGenerate
+// counts every apply_patch_call).
+func responsesItemIsFunctionCall(itemType string, raw json.RawMessage, streaming bool) bool {
 	switch itemType {
-	case "function_call", "custom_tool_call", "computer_call", "apply_patch_call":
+	case "function_call", "custom_tool_call":
 		return true
+	case "computer_call":
+		var item struct {
+			CallID *string `json:"call_id"`
+		}
+		return json.Unmarshal(raw, &item) == nil && item.CallID != nil
+	case "apply_patch_call":
+		if !streaming {
+			return true
+		}
+		var item struct {
+			Status string `json:"status"`
+		}
+		return json.Unmarshal(raw, &item) == nil && item.Status == "completed"
 	}
 	return false
 }
@@ -2125,29 +2582,35 @@ func convertResponsesUsage(u *responses.ResponsesAPIUsage) types.Usage {
 		TotalTokens:  &total,
 	}
 
-	if u.InputTokensDetails != nil && (u.InputTokensDetails.CachedTokens > 0 || u.InputTokensDetails.CacheWriteTokens != nil) {
-		cached := int64(u.InputTokensDetails.CachedTokens)
-		var cacheWrite int64
-		var cacheWritePtr *int64
+	// TS convertOpenAIResponsesUsage always reports the breakdown (cached and
+	// reasoning default to 0; cacheWrite stays undefined unless sent).
+	var cached int64
+	var cacheWritePtr *int64
+	if u.InputTokensDetails != nil {
+		cached = int64(u.InputTokensDetails.CachedTokens)
 		if u.InputTokensDetails.CacheWriteTokens != nil {
-			cacheWrite = int64(*u.InputTokensDetails.CacheWriteTokens)
-			cacheWritePtr = &cacheWrite
-		}
-		noCached := inputTokens - cached - cacheWrite
-		result.InputDetails = &types.InputTokenDetails{
-			CacheReadTokens:  &cached,
-			CacheWriteTokens: cacheWritePtr,
-			NoCacheTokens:    &noCached,
+			cw := int64(*u.InputTokensDetails.CacheWriteTokens)
+			cacheWritePtr = &cw
 		}
 	}
+	noCached := inputTokens - cached
+	if cacheWritePtr != nil {
+		noCached -= *cacheWritePtr
+	}
+	result.InputDetails = &types.InputTokenDetails{
+		CacheReadTokens:  &cached,
+		CacheWriteTokens: cacheWritePtr,
+		NoCacheTokens:    &noCached,
+	}
 
-	if u.OutputTokensDetails != nil && u.OutputTokensDetails.ReasoningTokens > 0 {
-		reasoning := int64(u.OutputTokensDetails.ReasoningTokens)
-		textOut := outputTokens - reasoning
-		result.OutputDetails = &types.OutputTokenDetails{
-			ReasoningTokens: &reasoning,
-			TextTokens:      &textOut,
-		}
+	var reasoning int64
+	if u.OutputTokensDetails != nil {
+		reasoning = int64(u.OutputTokensDetails.ReasoningTokens)
+	}
+	textOut := outputTokens - reasoning
+	result.OutputDetails = &types.OutputTokenDetails{
+		ReasoningTokens: &reasoning,
+		TextTokens:      &textOut,
 	}
 
 	// Row 7243530/2c4767d: keep the complete raw usage object (captured by
@@ -2162,6 +2625,12 @@ func convertResponsesUsage(u *responses.ResponsesAPIUsage) types.Usage {
 }
 
 func (m *ResponsesLanguageModel) wrapErr(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
 	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
 
@@ -2176,6 +2645,11 @@ type responsesToolAccum struct {
 	name      string
 	namespace string
 	arguments string
+	async     *bool
+	// suppressInputStreaming is set for an undeclared "parallel" wrapper call:
+	// its input deltas are buffered and replayed (TS isUndeclaredParallelToolCall).
+	suppressInputStreaming bool
+	bufferedInputDeltas    []string
 }
 
 // responsesReasoningAccum tracks the lifecycle of a streaming reasoning
@@ -2193,9 +2667,12 @@ type responsesReasoningAccum struct {
 
 // responsesStream implements provider.TextStream for the Responses API SSE stream.
 type responsesStream struct {
-	reader io.ReadCloser
-	parser *streaming.SSEParser
-	err    error
+	// curEventData is the SSE data of the frame being processed (for typed
+	// validation errors).
+	curEventData string
+	reader       io.ReadCloser
+	parser       *streaming.SSEParser
+	err          error
 
 	// hasFunctionCall is set once a client-side tool call item finishes; it
 	// makes the finish reason "tool-calls" (TS hasFunctionCall).
@@ -2222,10 +2699,16 @@ type responsesStream struct {
 	webSearchToolName string
 	providerName      string
 	responseID        string
+	logprobsEnabled   bool              // providerOptions.<name>.logprobs is truthy
+	logprobs          []json.RawMessage // per-delta logprobs collected for finish metadata
 	outputStarted     bool
-	pendingRaw        []*provider.StreamChunk
-	pendingMetadata   *provider.StreamChunk
-	responseHeaders   http.Header
+	// held keeps, in arrival order, the chunks produced before the first output
+	// event (the raw chunks and response-metadata of response.created and
+	// response.in_progress, unmodeled events). TS hands the stream out only
+	// after its early-error peek, so an error frame in that window fails the
+	// call with nothing delivered; markOutputStarted releases the chunks.
+	held            []*provider.StreamChunk
+	responseHeaders http.Header
 
 	// hadDecodeError is set when a known event type (one with a dedicated
 	// case below) fails schema decode (row eee6200). The stream keeps
@@ -2234,6 +2717,9 @@ type responsesStream struct {
 	// instead of whatever response.completed/incomplete would otherwise
 	// report, so callers don't see a false "stop"/"length" outcome.
 	hadDecodeError bool
+	// sawErrorEvent records a provider "error" event (TS sets the finish
+	// reason's raw value to 'error' for it).
+	sawErrorEvent bool
 
 	// tools holds the request's declared tools, used to expand an internal
 	// "parallel" tool call wrapper into its nested recipients (row 6be0f51).
@@ -2293,6 +2779,15 @@ type responsesStream struct {
 	// text-end providerMetadata.openai.annotations (TS `ongoingAnnotations`).
 	ongoingAnnotations []responses.TextAnnotation
 
+	// Retrieval-vs-citation source tracking (TS #21797): url_citation and
+	// file_citation annotations only become fallback sources at the end of
+	// the stream, and only when no web-search action sources / file-search
+	// results were retrieved.
+	hasWebSearchActionSources bool
+	hasFileSearchResults      bool
+	retrievedFileIDs          map[string]bool
+	fallbackAnnotations       []responses.TextAnnotation
+
 	// activeMessagePhase captures the "message" item's phase at
 	// output_item.added, used as a fallback for text-end's providerMetadata
 	// when the output_item.done event's own item omits phase (TS
@@ -2320,6 +2815,9 @@ type responsesOngoingToolCall struct {
 	codeInterpreter *codeInterpreterStreamState
 	// toolSearchExecution is "server" or "client" for a tool_search_call.
 	toolSearchExecution string
+	// async is the output_item.added item's async flag (custom_tool_call),
+	// the fallback when output_item.done omits it (TS ongoingToolCall.async).
+	async *bool
 }
 
 // applyPatchStreamState tracks whether an apply_patch_call's diff has
@@ -2344,6 +2842,20 @@ type codeInterpreterStreamState struct {
 // event carrying item_id -- response.reasoning_summary_part.added,
 // response.reasoning_summary_text.delta, and
 // response.reasoning_summary_part.done -- not just output_item.done.
+// resolveEventItemID is resolveOutputItemID for the events whose TS schema
+// makes output_index nullish (text delta, reasoning summary part added/done,
+// summary text delta): TS keeps the event's own item id when output_index is
+// null or absent, instead of mapping it through index 0.
+func (s *responsesStream) resolveEventItemID(outputIndex int, itemID string) string {
+	var peek struct {
+		OutputIndex *int `json:"output_index"`
+	}
+	if json.Unmarshal([]byte(s.curEventData), &peek) != nil || peek.OutputIndex == nil {
+		return itemID
+	}
+	return s.resolveOutputItemID(outputIndex, itemID)
+}
+
 func (s *responsesStream) resolveOutputItemID(outputIndex int, itemID string) string {
 	if first, ok := s.firstItemIDByOutputIndex[outputIndex]; ok {
 		return first
@@ -2360,9 +2872,14 @@ func (s *responsesStream) resolveOutputItemID(outputIndex int, itemID string) st
 // emitParsedChunk below for why this no longer recurses into Next()).
 func (s *responsesStream) emitDecodeError(eventType string, err error) (*provider.StreamChunk, bool) {
 	s.hadDecodeError = true
+	// The frame is valid JSON with a string `type` but a member that does not
+	// fit that event's typed decode: TS's chunk schema rejects it as a
+	// TypeValidationError.
+	msg, perr := providerutils.ChunkParseFailure(s.curEventData, fmt.Errorf("%s event: %w", eventType, err))
 	return s.emitParsedChunk(&provider.StreamChunk{
 		Type: provider.ChunkTypeError,
-		Text: fmt.Sprintf("failed to parse %s event: %v", eventType, err),
+		Text: msg,
+		Err:  perr,
 	})
 }
 
@@ -2418,6 +2935,75 @@ func (s *responsesStream) Err() error {
 	return s.err
 }
 
+// queueFallbackSources enqueues citation-derived sources for url_citation /
+// file_citation annotations once the stream's complete source set is known,
+// skipping those superseded by retrieval data (TS flush()).
+// queueEOFFinish is TS flush() for a stream that ended without a terminal
+// response event: the source fallbacks, then `finish` with the default
+// finish reason (interrupted, or error after a decode failure) and responseId
+// metadata, and the end of the stream.
+func (s *responsesStream) queueEOFFinish() {
+	// TS hands the stream out when its early-error peek reaches the end.
+	s.markOutputStarted()
+	s.queueFallbackSources()
+	finishReason := types.FinishReasonInterrupted
+	if s.hadDecodeError {
+		finishReason = types.FinishReasonError
+	}
+	// TS always reports responseId (null until response.created arrives).
+	fields := map[string]interface{}{"responseId": nonEmptyOrNil(s.responseID)}
+	if len(s.logprobs) > 0 {
+		fields["logprobs"] = s.logprobs
+	}
+	meta, _ := json.Marshal(map[string]interface{}{s.providerName: fields})
+	usage := convertResponsesUsage(nil)
+	rawFinishReason := ""
+	if s.sawErrorEvent {
+		rawFinishReason = "error"
+	}
+	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+		Type:             provider.ChunkTypeFinish,
+		FinishReason:     finishReason,
+		RawFinishReason:  rawFinishReason,
+		Usage:            &usage,
+		ProviderMetadata: meta,
+	})
+	s.err = io.EOF
+}
+
+func (s *responsesStream) queueFallbackSources() {
+	for _, ann := range s.fallbackAnnotations {
+		if openAIAnnotationHasRetrievedSource(ann, s.hasWebSearchActionSources, s.hasFileSearchResults) {
+			continue
+		}
+		if src, ok := openAIAnnotationToSource(s.providerName, ann, streaming.GenerateID()); ok {
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &src})
+		}
+	}
+	s.fallbackAnnotations = nil
+
+	// TS flush(): a suppressed (undeclared "parallel") tool call that never
+	// reached output_item.done still surfaces its buffered input.
+	indices := make([]int, 0, len(s.toolAccum))
+	for idx, accum := range s.toolAccum {
+		if accum.suppressInputStreaming {
+			indices = append(indices, idx)
+		}
+	}
+	sort.Ints(indices)
+	for _, idx := range indices {
+		accum := s.toolAccum[idx]
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+			Type:     provider.ChunkTypeToolInputStart,
+			ToolCall: &types.ToolCall{ID: accum.id, ToolName: accum.name},
+		})
+		for _, d := range accum.bufferedInputDeltas {
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: accum.id, Text: d})
+		}
+		delete(s.toolAccum, idx)
+	}
+}
+
 // emitParsedChunk decides how a freshly built chunk should be delivered: if
 // nothing is queued ahead of it, it is returned immediately (chunk, true);
 // otherwise it is appended behind the pending flushQueue and the caller
@@ -2469,22 +3055,34 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 		event, err := s.parser.Next()
 		if err != nil {
+			if err == io.EOF {
+				// End of stream without a terminal event: TS flush() still
+				// decides the citation-derived source fallbacks and enqueues
+				// `finish` (other, no usage).
+				s.queueEOFFinish()
+				continue
+			}
 			s.err = err
 			return nil, err
 		}
 
-		// Standard [DONE] terminator (some OpenAI SSE streams still send it).
+		// Standard [DONE] terminator (some OpenAI SSE streams still send it);
+		// TS skips it and flush() runs at the end of the stream.
 		if streaming.IsStreamDone(event) {
-			s.err = io.EOF
-			return nil, io.EOF
+			s.queueEOFFinish()
+			continue
 		}
 		// Parse the "type" discriminator.
+		s.curEventData = event.Data
 		var peek responses.ResponsesStreamEvent
 		if err := json.Unmarshal([]byte(event.Data), &peek); err != nil {
+			s.markOutputStarted() // TS hands the stream out on a chunk that fails to parse
 			s.queueRawChunk(event.Data)
+			msg, perr := providerutils.ChunkParseFailure(event.Data, err)
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+				Text: msg,
+				Err:  perr,
 			})
 			if ok {
 				return chunk, nil
@@ -2500,21 +3098,61 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			trimmed := bytes.TrimSpace(peek.Choices)
 			isArray = len(trimmed) > 0 && trimmed[0] == '['
 			if isArray {
-				s.err = providererrors.NewProviderError(s.providerName, 0, "", chatCompletionsMismatchMessage, nil)
-				return nil, s.err
+				// TS delivers this as an error part (an APICallError carrying
+				// the offending chunk as responseBody) and finishes the stream
+				// with finish reason "error".
+				notRetryable := false
+				mismatch := providererrors.NewProviderError(s.providerName, 0, "", chatCompletionsMismatchMessage, nil)
+				mismatch.ResponseBody = event.Data
+				mismatch.Retryable = &notRetryable
+				s.markOutputStarted()
+				s.queueRawChunk(event.Data)
+				s.hadDecodeError = true
+				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+					Type: provider.ChunkTypeError,
+					Text: chatCompletionsMismatchMessage,
+					Err:  mismatch,
+				})
+				if ok {
+					return chunk, nil
+				}
+				continue
 			}
 		}
+		// TS openaiResponsesChunkSchema: a modeled event whose members fail its
+		// schema, or a frame without a string `type`, is a parse failure (error
+		// part + finish reason "error"); unmodeled event types pass as
+		// unknown chunks.
+		if msg, perr := providerutils.CheckResponsesChunk(event.Data); perr != nil {
+			s.markOutputStarted()
+			s.queueRawChunk(event.Data)
+			s.hadDecodeError = true
+			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: msg,
+				Err:  perr,
+			})
+			if ok {
+				return chunk, nil
+			}
+			continue
+		}
+		// Every raw chunk is queued exactly once, ahead of the chunks its event
+		// produces. Before the first output event they wait in held (an early
+		// error frame drops them, as TS never exposes them); response.failed is
+		// decided by its handler, which may find no error and carry on.
 		var eventRawChunk *provider.StreamChunk
 		if s.includeRawChunks {
-			eventRawChunk = openAIResponsesRawChunk(event.Data)
-			if !s.outputStarted && peek.Type == "response.created" {
-				s.pendingRaw = append(s.pendingRaw, eventRawChunk)
-			} else if !s.outputStarted && (peek.Type == "error" || peek.Type == "response.failed") {
+			rawChunk := openAIResponsesRawChunk(event.Data)
+			switch {
+			case s.outputStarted:
+				s.flushQueue = append(s.flushQueue, rawChunk)
+			case peek.Type == "error":
 				// TS checks early errors before exposing raw chunks.
-			} else if !s.outputStarted {
-				// First output raw is queued after pending metadata in the handler.
-			} else {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
+			case peek.Type == "response.failed":
+				eventRawChunk = rawChunk
+			default:
+				s.held = append(s.held, rawChunk)
 			}
 		}
 
@@ -2535,13 +3173,19 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			metadata := &provider.ResponseMetadata{
 				ID:      e.Response.ID,
 				ModelID: e.Response.Model,
+				Headers: providerutils.ExtractHeaders(s.responseHeaders),
 			}
 			if e.Response.CreatedAt != 0 {
 				metadata.Timestamp = time.Unix(e.Response.CreatedAt, 0)
 			}
-			s.pendingMetadata = &provider.StreamChunk{
+			metadataChunk := &provider.StreamChunk{
 				Type:             provider.ChunkTypeResponseMetadata,
 				ResponseMetadata: metadata,
+			}
+			if s.outputStarted {
+				s.flushQueue = append(s.flushQueue, metadataChunk)
+			} else {
+				s.held = append(s.held, metadataChunk)
 			}
 			continue
 
@@ -2560,17 +3204,30 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 					s.firstItemIDByOutputIndex[e.OutputIndex] = e.Item.ID
 				}
 			}
-			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
+			// TS isResponseOutputChunk: an item type the chunk schema does not
+			// model is an unknown_chunk, which does not end the early-error peek.
+			if providerutils.IsModeledResponsesItemType(e.Item.Type) {
+				s.markOutputStarted()
 			}
 			switch e.Item.Type {
 			case "function_call":
+				suppress := responses.IsUndeclaredParallelToolCall(e.Item.Name, s.tools)
 				s.toolAccum[e.OutputIndex] = &responsesToolAccum{
-					id:        e.Item.CallID,
-					itemID:    e.Item.ID,
-					name:      e.Item.Name,
-					namespace: e.Item.Namespace,
+					id:                     e.Item.CallID,
+					itemID:                 e.Item.ID,
+					name:                   e.Item.Name,
+					namespace:              e.Item.Namespace,
+					async:                  e.Item.Async,
+					suppressInputStreaming: suppress,
+				}
+				if !suppress {
+					// TS streams the tool input: tool-input-start here, a
+					// tool-input-delta per arguments delta, tool-input-end at
+					// output_item.done.
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+						Type:     provider.ChunkTypeToolInputStart,
+						ToolCall: &types.ToolCall{ID: e.Item.CallID, ToolName: e.Item.Name},
+					})
 				}
 			case "web_search_call":
 				s.flushQueue = append(s.flushQueue,
@@ -2637,6 +3294,21 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 					Type:             provider.ChunkTypeReasoningStart,
 					ID:               e.Item.ID + ":0",
 					ProviderMetadata: meta,
+				})
+				continue
+			case "computer_call":
+				// TS: tool-input-start under call_id ?? id; the input and
+				// tool-input-end follow at output_item.done.
+				computerCallID := e.Item.ID
+				if e.Item.CallID != "" {
+					computerCallID = e.Item.CallID
+				}
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type: provider.ChunkTypeToolInputStart,
+					ToolCall: &types.ToolCall{
+						ID:       computerCallID,
+						ToolName: openAIDeclaredToolName(s.tools, "openai.computer", "computer"),
+					},
 				})
 				continue
 			case "file_search_call":
@@ -2709,14 +3381,20 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
 					toolName:   e.Item.Name,
 					toolCallID: e.Item.CallID,
+					async:      e.Item.Async,
 				}
-				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-					Type: provider.ChunkTypeToolInputStart,
-					ToolCall: &types.ToolCall{
-						ID:       e.Item.CallID,
-						ToolName: e.Item.Name,
+				s.flushQueue = append(s.flushQueue,
+					&provider.StreamChunk{
+						Type: provider.ChunkTypeToolInputStart,
+						ToolCall: &types.ToolCall{
+							ID:       e.Item.CallID,
+							ToolName: e.Item.Name,
+							// Custom tool deltas are raw text; the final tool
+							// call input stays JSON-encoded (TS #23407).
+							InputEncoding: "text",
+						},
 					},
-				})
+				)
 				continue
 			case "apply_patch_call":
 				// Row 45f2b6a / item 9: progressive tool-input streaming, mirroring
@@ -2729,7 +3407,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				}
 				isDelete := opType == "delete_file"
 				s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
-					toolName:   "openai.apply_patch",
+					toolName:   openAIDeclaredToolName(s.tools, "openai.apply_patch", "apply_patch"),
 					toolCallID: callID,
 					applyPatch: &applyPatchStreamState{hasDiff: isDelete, endEmitted: isDelete},
 				}
@@ -2737,14 +3415,20 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 					Type: provider.ChunkTypeToolInputStart,
 					ToolCall: &types.ToolCall{
 						ID:       callID,
-						ToolName: "openai.apply_patch",
+						ToolName: openAIDeclaredToolName(s.tools, "openai.apply_patch", "apply_patch"),
 					},
 				})
 				if isDelete {
-					inputStr, _ := json.Marshal(map[string]interface{}{
-						"callId":    callID,
-						"operation": map[string]interface{}{"type": opType, "path": opPath},
-					})
+					inputStr := marshalNoEscape(struct {
+						CallID    string `json:"callId"`
+						Operation struct {
+							Type string `json:"type"`
+							Path string `json:"path"`
+						} `json:"operation"`
+					}{CallID: callID, Operation: struct {
+						Type string `json:"type"`
+						Path string `json:"path"`
+					}{opType, opPath}})
 					s.flushQueue = append(s.flushQueue,
 						&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: callID, Text: string(inputStr)},
 						&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: callID},
@@ -2758,7 +3442,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 						Path string `json:"path"`
 						Diff string `json:"diff"`
 					}
-					prefixJSON, _ := json.Marshal(struct {
+					prefixJSON := marshalNoEscape(struct {
 						CallID    string       `json:"callId"`
 						Operation applyPatchOp `json:"operation"`
 					}{CallID: callID, Operation: applyPatchOp{Type: opType, Path: opPath}})
@@ -2777,16 +3461,15 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				}
 				continue
 			}
-			if e.Delta == "" {
-				continue
+			if s.logprobsEnabled && len(e.Logprobs) > 0 && string(e.Logprobs) != "null" {
+				s.logprobs = append(s.logprobs, normalizeResponsesLogprobs(e.Logprobs))
 			}
+			// TS enqueues text-delta unconditionally (even for ""), keyed by
+			// resolveOutputItemId(item_id, output_index).
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeText,
-				ID:   s.firstItemIDByOutputIndex[e.OutputIndex],
+				ID:   s.resolveEventItemID(e.OutputIndex, e.ItemID),
 				Text: e.Delta,
 			})
 			if ok {
@@ -2804,11 +3487,17 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			if accum, ok := s.toolAccum[e.OutputIndex]; ok {
 				accum.arguments += e.Delta
+				if accum.suppressInputStreaming {
+					accum.bufferedInputDeltas = append(accum.bufferedInputDeltas, e.Delta)
+				} else {
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+						Type: provider.ChunkTypeToolInputDelta,
+						ID:   accum.id,
+						Text: e.Delta,
+					})
+				}
 			}
 			continue
 
@@ -2822,12 +3511,9 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			// TS unconditionally enqueues reasoning-delta here, even for an
 			// empty-string delta -- no guard.
-			itemID := s.resolveOutputItemID(e.OutputIndex, e.ItemID)
+			itemID := s.resolveEventItemID(e.OutputIndex, e.ItemID)
 			meta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type:             provider.ChunkTypeReasoning,
@@ -2850,14 +3536,11 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			// The first summary part's reasoning-start was already emitted from
 			// output_item.added; only summary_index > 0 needs boundary handling
 			// here (row a0d2e8c/6fe187f area).
 			if e.SummaryIndex > 0 {
-				itemID := s.resolveOutputItemID(e.OutputIndex, e.ItemID)
+				itemID := s.resolveEventItemID(e.OutputIndex, e.ItemID)
 				if accum := s.reasoningAccum[itemID]; accum != nil {
 					accum.summaryParts[e.SummaryIndex] = "active"
 					// A new active summary part means every "can-conclude" part
@@ -2906,10 +3589,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
-			itemID := s.resolveOutputItemID(e.OutputIndex, e.ItemID)
+			itemID := s.resolveEventItemID(e.OutputIndex, e.ItemID)
 			if accum := s.reasoningAccum[itemID]; accum != nil {
 				if s.store {
 					// The response is stored server-side, so no encrypted_content
@@ -2942,13 +3622,16 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			// TS: `ongoingAnnotations.push(value.annotation)` -- surfaced on the
 			// owning message item's text-end providerMetadata.openai.annotations.
 			s.ongoingAnnotations = append(s.ongoingAnnotations, e.Annotation)
-			if src, ok := openAIAnnotationToSource(s.providerName, e.Annotation); ok {
+			if e.Annotation.Type == "url_citation" || e.Annotation.Type == "file_citation" {
+				// Retrieval events may arrive after the annotation. Decide the
+				// compatibility fallback once the complete source set is known.
+				s.fallbackAnnotations = append(s.fallbackAnnotations, e.Annotation)
+				continue
+			}
+			if src, ok := openAIAnnotationToSource(s.providerName, e.Annotation, streaming.GenerateID()); ok {
 				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 					Type:          provider.ChunkTypeSource,
 					SourceContent: &src,
@@ -2970,9 +3653,6 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok {
 				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 					Type: provider.ChunkTypeToolInputDelta,
@@ -2996,9 +3676,6 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok && toolCall.applyPatch != nil {
 				toolCall.applyPatch.hasDiff = true
 				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
@@ -3023,9 +3700,6 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok && toolCall.applyPatch != nil && !toolCall.applyPatch.endEmitted {
 				if !toolCall.applyPatch.hasDiff {
 					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
@@ -3053,9 +3727,6 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeToolResult,
 				ToolResult: &types.ToolResult{
@@ -3080,9 +3751,6 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok {
 				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 					Type: provider.ChunkTypeToolInputDelta,
@@ -3106,16 +3774,13 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok {
 				delete(s.ongoingToolCalls, e.OutputIndex)
 				containerID := ""
 				if toolCall.codeInterpreter != nil {
 					containerID = toolCall.codeInterpreter.containerID
 				}
-				inputStr, _ := json.Marshal(map[string]interface{}{"code": e.Code, "containerId": containerID})
+				inputStr := marshalNoEscape(map[string]interface{}{"code": e.Code, "containerId": containerID})
 				s.flushQueue = append(s.flushQueue,
 					&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: toolCall.toolCallID, Text: `"}`},
 					&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: toolCall.toolCallID},
@@ -3141,9 +3806,13 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				}
 				continue
 			}
-			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
+			// An unmodeled item type is TS unknown_chunk: not output.
+			var doneItem struct {
+				Type string `json:"type"`
+			}
+			_ = json.Unmarshal(e.Item, &doneItem) //nolint:errcheck // schema-checked above
+			if providerutils.IsModeledResponsesItemType(doneItem.Type) {
+				s.markOutputStarted()
 			}
 			chunk, ok := s.handleOutputItemDone(e)
 			if ok {
@@ -3170,22 +3839,33 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			// finish reason to "error", regardless of what this event reports.
 			if s.hadDecodeError {
 				finishReason = types.FinishReasonError
+				rawFinishReason = ""
+				if s.sawErrorEvent {
+					rawFinishReason = "error" // TS: raw 'error' after an error event
+				}
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 
 			var meta json.RawMessage
+			// TS reports the id from response.created only (null when it never arrived).
 			responseID := s.responseID
-			if responseID == "" {
-				responseID = e.Response.ID
-			}
-			if responseID != "" {
-				meta, _ = json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"responseId": responseID}})
+			{
+				// TS: { responseId, logprobs?, serviceTier?, reasoningContext? }.
+				fields := map[string]interface{}{"responseId": nonEmptyOrNil(responseID)}
+				if len(s.logprobs) > 0 {
+					fields["logprobs"] = s.logprobs
+				}
+				if e.Response.ServiceTier != "" {
+					fields["serviceTier"] = e.Response.ServiceTier
+				}
+				if e.Response.Reasoning != nil && e.Response.Reasoning.Context != "" {
+					fields["reasoningContext"] = e.Response.Reasoning.Context
+				}
+				meta, _ = json.Marshal(map[string]interface{}{s.providerName: fields})
 			}
 
 			s.err = io.EOF
+			s.queueFallbackSources()
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type:             provider.ChunkTypeFinish,
 				FinishReason:     finishReason,
@@ -3206,10 +3886,15 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			if !s.outputStarted && e.Response.Error != nil {
 				s.flushQueue = nil
-				s.pendingRaw = nil
-				s.pendingMetadata = nil
+				s.held = nil
 				s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
 				return nil, s.err
+			}
+			// No error object: TS keeps peeking past this chunk, so the stream is
+			// handed out with everything held and the raw chunk first.
+			s.markOutputStarted()
+			if eventRawChunk != nil {
+				s.flushQueue = append(s.flushQueue, eventRawChunk)
 			}
 			usage := convertResponsesUsage(e.Response.Usage)
 			finishReason := types.FinishReason("error")
@@ -3219,21 +3904,16 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				rawFinishReason = e.Response.IncompleteDetails.Reason
 			}
 
-			metaMap := map[string]interface{}{}
+			// TS reports the id from response.created only (null when it never arrived).
 			responseID := s.responseID
-			if responseID == "" {
-				responseID = e.Response.ID
+			metaMap := map[string]interface{}{"responseId": nonEmptyOrNil(responseID)}
+			if len(s.logprobs) > 0 {
+				metaMap["logprobs"] = s.logprobs
 			}
-			if responseID != "" {
-				metaMap["responseId"] = responseID
+			if e.Response.Reasoning != nil && e.Response.Reasoning.Context != "" {
+				metaMap["reasoningContext"] = e.Response.Reasoning.Context
 			}
-			if e.Response.ServiceTier != "" {
-				metaMap["serviceTier"] = e.Response.ServiceTier
-			}
-			var meta json.RawMessage
-			if len(metaMap) > 0 {
-				meta, _ = json.Marshal(map[string]interface{}{s.providerName: metaMap})
-			}
+			meta, _ := json.Marshal(map[string]interface{}{s.providerName: metaMap})
 
 			// Output already started (encounteredStreamError branch, TS
 			// openai-responses-language-model.ts ~line 2737): a response.failed
@@ -3243,7 +3923,8 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			// constructs), enqueued before the terminal finish chunk. Previously
 			// Go only emitted the finish chunk here and silently dropped the
 			// error entirely (P1-1c part 2).
-			if e.Response.Error != nil {
+			if e.Response.Error != nil && !s.hadDecodeError {
+				s.hadDecodeError = true
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 					Type: provider.ChunkTypeError,
 					Text: e.Response.Error.Message,
@@ -3252,6 +3933,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			}
 
 			s.err = io.EOF
+			s.queueFallbackSources()
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type:             provider.ChunkTypeFinish,
 				FinishReason:     finishReason,
@@ -3271,11 +3953,14 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			if !s.outputStarted {
 				s.flushQueue = nil
-				s.pendingRaw = nil
-				s.pendingMetadata = nil
+				s.held = nil
 				s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
 				return nil, s.err
 			}
+			// TS encounteredStreamError: a later response.completed must not
+			// replace the error finish reason.
+			s.hadDecodeError = true
+			s.sawErrorEvent = true
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: e.Message,
@@ -3286,6 +3971,12 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			if ok {
 				return chunk, nil
 			}
+			continue
+
+		case "response.function_call_arguments.done":
+			// Modeled by the TS chunk schema (so an output chunk that ends the
+			// early-error peek) but handled through output_item.done.
+			s.markOutputStarted()
 			continue
 
 		default:
@@ -3302,14 +3993,8 @@ func (s *responsesStream) markOutputStarted() {
 		return
 	}
 	s.outputStarted = true
-	if len(s.pendingRaw) > 0 {
-		s.flushQueue = append(s.flushQueue, s.pendingRaw...)
-		s.pendingRaw = nil
-	}
-	if s.pendingMetadata != nil {
-		s.flushQueue = append(s.flushQueue, s.pendingMetadata)
-		s.pendingMetadata = nil
-	}
+	s.flushQueue = append(s.flushQueue, s.held...)
+	s.held = nil
 }
 
 func (s *responsesStream) queueRawChunk(data string) {
@@ -3319,10 +4004,7 @@ func (s *responsesStream) queueRawChunk(data string) {
 }
 
 func openAIResponsesRawChunk(data string) *provider.StreamChunk {
-	var raw interface{}
-	if err := json.Unmarshal([]byte(data), &raw); err != nil {
-		raw = data
-	}
+	raw := streaming.RawChunkValue(data)
 	return &provider.StreamChunk{
 		Type: provider.ChunkTypeRaw,
 		Raw:  raw,
@@ -3334,8 +4016,17 @@ func openAIResponsesRawChunk(data string) *provider.StreamChunk {
 // For compaction items it emits a ChunkTypeCustom.
 // All other item types were emitted incrementally and need no action here.
 func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) (*provider.StreamChunk, bool) {
+	// TS dispatches output_item.done on the done item's own type, not the
+	// type recorded at output_item.added; the recorded type is only a
+	// fallback for a done item that omits its type.
 	itemType := s.itemTypes[e.OutputIndex]
-	if isResponsesFunctionCallType(itemType) {
+	var doneType struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(e.Item, &doneType) == nil && doneType.Type != "" {
+		itemType = doneType.Type
+	}
+	if responsesItemIsFunctionCall(itemType, e.Item, true) {
 		s.hasFunctionCall = true
 	}
 
@@ -3343,16 +4034,28 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 	case "function_call":
 		accum, ok := s.toolAccum[e.OutputIndex]
 		if !ok {
-			return nil, false
+			// No function_call was recorded at output_item.added (the
+			// added item had another type, or none arrived): TS still emits
+			// the call from the done item alone.
+			var seed responses.FunctionCallItem
+			if err := json.Unmarshal(e.Item, &seed); err != nil {
+				return nil, false
+			}
+			accum = &responsesToolAccum{
+				id:                     seed.CallID,
+				itemID:                 seed.ID,
+				name:                   seed.Name,
+				namespace:              seed.Namespace,
+				async:                  seed.Async,
+				suppressInputStreaming: responses.IsUndeclaredParallelToolCall(seed.Name, s.tools),
+			}
 		}
 		delete(s.toolAccum, e.OutputIndex)
 		delete(s.itemTypes, e.OutputIndex)
 
-		var args map[string]interface{}
-		if accum.arguments != "" {
-			json.Unmarshal([]byte(accum.arguments), &args) //nolint:errcheck
-		}
-		rawArguments := accum.arguments
+		// TS builds the tool-input-end / tool-call parts from the done item
+		// (call_id, name, arguments), not from the accumulated deltas.
+		callID, name, rawArguments := accum.id, accum.name, accum.arguments
 		var item responses.FunctionCallItem
 		if err := json.Unmarshal(e.Item, &item); err == nil {
 			if item.ID != "" {
@@ -3361,40 +4064,110 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			if item.Namespace != "" {
 				accum.namespace = item.Namespace
 			}
-			if accum.arguments == "" && item.Arguments != "" {
-				json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+			if item.CallID != "" {
+				callID = item.CallID
+			}
+			if item.Name != "" {
+				name = item.Name
+			}
+			if item.Arguments != "" || accum.arguments == "" {
 				rawArguments = item.Arguments
 			}
+		}
+		async := item.Async
+		if async == nil {
+			async = accum.async
+		}
+		newToolCall := func(id, toolName, input string, metadata map[string]interface{}) *provider.StreamChunk {
+			var args map[string]interface{}
+			if input != "" {
+				json.Unmarshal([]byte(input), &args) //nolint:errcheck
+			}
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeToolCall,
+				ToolCall: &types.ToolCall{
+					ID:               id,
+					ToolName:         toolName,
+					Arguments:        args,
+					RawArguments:     input,
+					ProviderMetadata: metadata,
+				},
+			}
+		}
+		emitUnexpanded := func() {
+			if accum.suppressInputStreaming {
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type:     provider.ChunkTypeToolInputStart,
+					ToolCall: &types.ToolCall{ID: callID, ToolName: name},
+				})
+				if len(accum.bufferedInputDeltas) > 0 {
+					for _, d := range accum.bufferedInputDeltas {
+						s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: callID, Text: d})
+					}
+				} else if len(rawArguments) > 0 {
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: callID, Text: rawArguments})
+				}
+			}
+			end := &provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: callID, ToolCall: &types.ToolCall{ID: callID, ToolName: name}}
+			if accum.namespace != "" {
+				end.ProviderMetadata, _ = json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"namespace": accum.namespace}})
+			}
+			s.flushQueue = append(s.flushQueue, end,
+				newToolCall(callID, name, rawArguments, openAIResponsesToolCallMetadata(s.providerName, accum.itemID, accum.namespace, async, item.Caller)))
+		}
+		if !accum.suppressInputStreaming {
+			emitUnexpanded()
+			return nil, false
 		}
 		// Row 6be0f51: expand an internal "parallel" wrapper call into one
 		// tool-call chunk per nested recipient, when every recipient names a
 		// declared function tool.
-		if expanded, ok := responses.ExpandParallelToolCall(accum.id, accum.name, rawArguments, accum.itemID, s.tools, s.providerName); ok {
+		if expanded, ok := responses.ExpandParallelToolCall(callID, name, rawArguments, accum.itemID, s.tools, s.providerName); ok {
 			for _, tc := range expanded {
 				tc := tc
-				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-					Type:     provider.ChunkTypeToolCall,
-					ToolCall: &tc,
-				})
+				s.flushQueue = append(s.flushQueue,
+					&provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: tc.ID, ToolName: tc.ToolName}},
+					&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: tc.ID, Text: tc.RawArguments},
+					&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: tc.ID, ToolCall: &types.ToolCall{ID: tc.ID, ToolName: tc.ToolName}},
+					&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &tc},
+				)
 			}
 			return nil, false
 		}
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type: provider.ChunkTypeToolCall,
-			ToolCall: &types.ToolCall{
-				ID:               accum.id,
-				ToolName:         accum.name,
-				Arguments:        args,
-				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, accum.itemID, accum.namespace, item.Async, item.Caller),
-			},
-		})
+		emitUnexpanded()
+		return nil, false
+
+	case "local_shell_call":
+		delete(s.itemTypes, e.OutputIndex)
+		if tc, ok := openAILocalShellToolCall(s.providerName, s.tools, e.Item, true); ok {
+			return s.emitParsedChunk(&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &tc})
+		}
+		return nil, false
+
+	case "shell_call":
+		delete(s.itemTypes, e.OutputIndex)
+		if tc, ok := openAIShellToolCall(s.providerName, s.tools, e.Item); ok {
+			return s.emitParsedChunk(&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &tc})
+		}
+		return nil, false
+
+	case "shell_call_output":
+		delete(s.itemTypes, e.OutputIndex)
+		if tr, ok := openAIShellToolResult(s.tools, e.Item); ok {
+			return s.emitParsedChunk(&provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{
+				ToolCallID: tr.ToolCallID,
+				ToolName:   tr.ToolName,
+				Result:     tr.Result,
+			}})
+		}
+		return nil, false
 
 	case "compaction":
 		var item responses.CompactionEvent
 		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
-		chunk := responses.CompactionEventToChunk(item)
+		chunk := responses.CompactionEventToChunkForProvider(item, s.providerName)
 		return s.emitParsedChunk(chunk)
 
 	case "message":
@@ -3431,6 +4204,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type:             provider.ChunkTypeTextEnd,
 			ID:               itemID,
+			Citations:        openAIAnnotationCitations(s.providerName, annotations),
 			ProviderMetadata: meta,
 		})
 
@@ -3448,9 +4222,12 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			ID               string `json:"id,omitempty"`
 			EncryptedContent string `json:"encrypted_content,omitempty"`
 		}
-		if err := json.Unmarshal(e.Item, &item); err != nil || (item.ID == "" && item.EncryptedContent == "") {
+		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
+		// TS resolves the id from the output_index first, so a done item that
+		// carries neither an id nor encrypted_content still closes the
+		// reasoning parts opened at output_item.added.
 		id := firstID
 		if id == "" {
 			id = item.ID
@@ -3462,10 +4239,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		// not only when non-empty -- matches the key name/shape used at the
 		// other two reasoning-end sites in this file (output_item.added and
 		// reasoning_summary_part.added).
-		meta := map[string]interface{}{"reasoningEncryptedContent": nonEmptyOrNil(item.EncryptedContent)}
-		if id != "" {
-			meta["itemId"] = id
-		}
+		meta := map[string]interface{}{"itemId": id, "reasoningEncryptedContent": nonEmptyOrNil(item.EncryptedContent)}
 		providerMeta, _ := json.Marshal(map[string]interface{}{s.providerName: meta})
 
 		// Row 3b9f025/6fe187f: close every summary part that is still open
@@ -3479,8 +4253,6 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 					indices = append(indices, idx)
 				}
 			}
-		} else {
-			indices = []int{0}
 		}
 		sort.Ints(indices)
 		if len(indices) == 0 {
@@ -3525,7 +4297,12 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: toolCall.toolCallID},
 			)
 		}
-		rawArgs, _ := json.Marshal(map[string]interface{}{
+		// TS emits the final tool-call only for an item that was announced by
+		// output_item.added and whose status is "completed".
+		if toolCall == nil || item.Status != "completed" {
+			return nil, false
+		}
+		rawArgs := marshalNoEscape(map[string]interface{}{
 			"callId":    item.CallID,
 			"operation": item.Operation,
 		})
@@ -3539,7 +4316,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
 				ID:               item.CallID,
-				ToolName:         "openai.apply_patch",
+				ToolName:         openAIDeclaredToolName(s.tools, "openai.apply_patch", "apply_patch"),
 				Arguments:        args,
 				RawArguments:     string(rawArgs),
 				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, itemID, "", nil, nil),
@@ -3567,7 +4344,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 					Type: provider.ChunkTypeToolInputEnd,
 					ToolCall: &types.ToolCall{
 						ID:               computerItemID,
-						ToolName:         "openai.computer_use",
+						ToolName:         "computer_use",
 						ProviderExecuted: true,
 					},
 				},
@@ -3575,7 +4352,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 					Type: provider.ChunkTypeToolCall,
 					ToolCall: &types.ToolCall{
 						ID:               computerItemID,
-						ToolName:         "openai.computer_use",
+						ToolName:         "computer_use",
 						Arguments:        map[string]interface{}{},
 						ProviderExecuted: true,
 					},
@@ -3585,17 +4362,24 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				Type: provider.ChunkTypeToolResult,
 				ToolResult: &types.ToolResult{
 					ToolCallID: computerItemID,
-					ToolName:   "openai.computer_use",
+					ToolName:   "computer_use",
 					Result:     map[string]interface{}{"type": "computer_use_tool_result", "status": item.Status},
 				},
 			})
 		}
 		computerArgs, computerRawArgs := computerCallArguments(item)
+		s.flushQueue = append(s.flushQueue,
+			&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: *item.CallID, Text: computerRawArgs},
+			&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: *item.CallID, ToolCall: &types.ToolCall{
+				ID:       *item.CallID,
+				ToolName: openAIDeclaredToolName(s.tools, "openai.computer", "computer"),
+			}},
+		)
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
 				ID:               *item.CallID,
-				ToolName:         "openai.computer",
+				ToolName:         openAIDeclaredToolName(s.tools, "openai.computer", "computer"),
 				Arguments:        computerArgs,
 				RawArguments:     computerRawArgs,
 				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, computerItemID, "", nil, nil),
@@ -3604,22 +4388,29 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 
 	case "custom_tool_call":
 		delete(s.itemTypes, e.OutputIndex)
+		ongoingCustom := s.ongoingToolCalls[e.OutputIndex]
 		delete(s.ongoingToolCalls, e.OutputIndex)
 		var item responses.CustomToolCallItem
 		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
-		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-			Type:     provider.ChunkTypeToolInputEnd,
-			ToolCall: &types.ToolCall{ID: item.CallID},
-		})
+		if item.Async == nil && ongoingCustom != nil {
+			item.Async = ongoingCustom.async
+		}
+		s.flushQueue = append(s.flushQueue,
+			&provider.StreamChunk{
+				Type:     provider.ChunkTypeToolInputEnd,
+				ToolCall: &types.ToolCall{ID: item.CallID},
+			},
+		)
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        map[string]interface{}{"input": item.Input},
-				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", item.Async, item.Caller),
+				RawArguments:     customToolRaw(item.Input),
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", item.Async, nil),
 			},
 		})
 
@@ -3629,14 +4420,27 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type: provider.ChunkTypeToolResult,
-			ToolResult: &types.ToolResult{
-				ToolCallID: item.ID,
-				ToolName:   s.webSearchToolName,
-				Result:     mapWebSearchOutput(item.Action),
-			},
+		webSearchResult := &types.ToolResult{
+			ToolCallID: item.ID,
+			ToolName:   s.webSearchToolName,
+			Result:     mapWebSearchOutput(item.Action),
+		}
+		if isFailedWebSearchStatus(item.Status) {
+			// TS #22330: failed/incomplete searches are tool errors.
+			webSearchResult.Result = map[string]interface{}{"status": item.Status}
+			webSearchResult.Error = errors.New(item.Status)
+		}
+		chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+			Type:       provider.ChunkTypeToolResult,
+			ToolResult: webSearchResult,
 		})
+		// Retrieved URL sources follow the tool result (TS order).
+		for _, src := range openAIWebSearchActionSources(item.Action, streaming.GenerateID) {
+			s.hasWebSearchActionSources = true
+			src := src
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &src})
+		}
+		return chunk, ok
 
 	case "program":
 		// Row 1f6dd3a: the hosted programmatic-tool-calling sandbox generated
@@ -3652,7 +4456,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
 				ID:               item.CallID,
-				ToolName:         "openai.programmatic_tool_calling",
+				ToolName:         openAIDeclaredToolName(s.tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
 				Arguments:        args,
 				RawArguments:     rawArgs,
 				ProviderExecuted: true,
@@ -3671,7 +4475,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			Type: provider.ChunkTypeToolResult,
 			ToolResult: &types.ToolResult{
 				ToolCallID: item.CallID,
-				ToolName:   "openai.programmatic_tool_calling",
+				ToolName:   openAIDeclaredToolName(s.tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
 				Result:     map[string]interface{}{"result": item.Result, "status": item.Status},
 			},
 		})
@@ -3711,7 +4515,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			}
 			results = mapped
 		}
-		return s.emitParsedChunk(&provider.StreamChunk{
+		chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolResult,
 			ToolResult: &types.ToolResult{
 				ToolCallID: item.ID,
@@ -3719,6 +4523,17 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				Result:     map[string]interface{}{"queries": item.Queries, "results": results},
 			},
 		})
+		// Retrieved documents follow the tool result, deduplicated by file.
+		if s.retrievedFileIDs == nil {
+			s.retrievedFileIDs = map[string]bool{}
+		}
+		for _, r := range item.Results {
+			s.hasFileSearchResults = true
+			if src, ok := openAIFileSearchResultSource(s.providerName, r, s.retrievedFileIDs, streaming.GenerateID()); ok {
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &src})
+			}
+		}
+		return chunk, ok
 
 	case "code_interpreter_call":
 		// The tool-call itself was already emitted by the
@@ -3792,7 +4607,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		} else {
 			callIDForInput = toolCallID
 		}
-		inputRaw, _ := json.Marshal(map[string]interface{}{"arguments": item.Arguments, "call_id": callIDForInput})
+		inputRaw := marshalNoEscape(map[string]interface{}{"arguments": item.Arguments, "call_id": callIDForInput})
 		tc := types.ToolCall{
 			ID:               toolCallID,
 			ToolName:         toolCall.toolName,
@@ -3937,3 +4752,54 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 // Ensure ResponsesLanguageModel satisfies the provider.LanguageModel interface
 // at compile time.
 var _ provider.LanguageModel = (*ResponsesLanguageModel)(nil)
+
+func sliceHas(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+// isFailedWebSearchStatus reports whether a web_search_call status marks the
+// search as a tool error (TS: status === 'failed' || 'incomplete').
+func isFailedWebSearchStatus(status string) bool {
+	return status == "failed" || status == "incomplete"
+}
+
+// validateResponsesPromptCacheOptions mirrors the TS Responses option schema
+// z.object({mode: z.enum(['implicit','explicit']).optional(),
+// ttl: z.enum(['30m','12h']).optional(), prewarm: z.boolean().optional()}).
+func validateResponsesPromptCacheOptions(value interface{}, providerOptionsName string) error {
+	field := "providerOptions." + providerOptionsName + ".promptCacheOptions"
+	invalid := func(sub, message string) error {
+		if sub != "" {
+			field += "." + sub
+		}
+		return &providererrors.InvalidArgumentError{Field: field, Message: message}
+	}
+	if value == nil {
+		return nil
+	}
+	m, ok := value.(map[string]interface{})
+	if !ok {
+		return invalid("", "must be an object")
+	}
+	if v, ok := m["mode"]; ok {
+		if s, isString := v.(string); !isString || (s != "implicit" && s != "explicit") {
+			return invalid("mode", `must be one of "implicit", "explicit"`)
+		}
+	}
+	if v, ok := m["ttl"]; ok {
+		if s, isString := v.(string); !isString || (s != "30m" && s != "12h") {
+			return invalid("ttl", `must be one of "30m", "12h"`)
+		}
+	}
+	if v, ok := m["prewarm"]; ok {
+		if _, isBool := v.(bool); !isBool {
+			return invalid("prewarm", "must be a boolean")
+		}
+	}
+	return nil
+}

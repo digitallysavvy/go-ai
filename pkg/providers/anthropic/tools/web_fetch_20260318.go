@@ -69,10 +69,10 @@ func (o *webFetch20260318Opts) ToAnthropicAPIMap() map[string]interface{} {
 	if o.Config.MaxUses != nil {
 		m["max_uses"] = *o.Config.MaxUses
 	}
-	if len(o.Config.AllowedDomains) > 0 {
+	if o.Config.AllowedDomains != nil {
 		m["allowed_domains"] = o.Config.AllowedDomains
 	}
-	if len(o.Config.BlockedDomains) > 0 {
+	if o.Config.BlockedDomains != nil {
 		m["blocked_domains"] = o.Config.BlockedDomains
 	}
 	if o.Config.Citations != nil {
@@ -125,8 +125,12 @@ func ParseWebFetch20260318Result(data []byte) (*WebFetchResult20260318, error) {
 //	})
 func WebFetch20260318(config WebFetch20260318Config) types.Tool {
 	return types.Tool{
-		Name:        "anthropic.web_fetch_20260318",
-		Description: "Fetch and read content from a URL (Anthropic web fetch, version 2026-03-18). Returns PDF or plain text content. Executed by Anthropic's servers.",
+		Name:         "anthropic.web_fetch_20260318",
+		Type:         types.ToolTypeProviderDefined,
+		ProviderID:   "anthropic.web_fetch_20260318",
+		OutputSchema: toolOutputSchema("anthropic.web_fetch_20260318"),
+		ProviderArgs: webFetch20260318ProviderArgs(config),
+		Description:  "Fetch and read content from a URL (Anthropic web fetch, version 2026-03-18). Returns PDF or plain text content. Executed by Anthropic's servers.",
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{

@@ -1,7 +1,8 @@
 package prodia
 
 import (
-	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 	"strings"
 
@@ -34,6 +35,8 @@ type Config struct {
 // If Config.APIKey is empty, the API key is loaded from the PRODIA_TOKEN
 // environment variable.
 func New(cfg Config) *Provider {
+	// TS withoutTrailingSlash(baseURL): a trailing "/" must not double up with request paths.
+	cfg.BaseURL = providerutils.WithoutTrailingSlash(cfg.BaseURL)
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://inference.prodia.com/v2"
@@ -55,6 +58,10 @@ func New(cfg Config) *Provider {
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: baseURL,
 		Headers: version.WithUserAgentSuffix(headers, version.ProviderUserAgent("prodia")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "PRODIA_TOKEN", "Prodia", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{
@@ -77,42 +84,39 @@ func (p *Provider) effectiveBaseURL() string {
 	return "https://inference.prodia.com/v2"
 }
 
-// effectiveAPIKey returns the API key, falling back to the PRODIA_TOKEN
-// environment variable when Config.APIKey was not set.
-func (p *Provider) effectiveAPIKey() string {
-	if p.config.APIKey != "" {
-		return p.config.APIKey
+// effectiveAPIKey loads the API key like TS loadApiKey: Config.APIKey, else
+// the PRODIA_TOKEN environment variable, else a LoadAPIKeyError. A caller
+// that supplies its own Authorization header keeps it (empty key, no error).
+func (p *Provider) effectiveAPIKey() (string, error) {
+	h, err := providerutils.RequestAuthHeader(p.config.Headers, p.config.APIKey, "PRODIA_TOKEN", "Prodia", "Authorization", "Bearer ")
+	if err != nil || h == nil {
+		return "", err
 	}
-	return os.Getenv("PRODIA_TOKEN")
+	return strings.TrimPrefix(h["Authorization"], "Bearer "), nil
 }
 
-// LanguageModel returns a language model by ID.
-// Routes inference.nano-banana.* model IDs to ProdiaLanguageModel.
+// LanguageModel returns a language model by ID. Any ID is accepted (TS
+// ProdiaLanguageModelId is `'inference.nano-banana.img2img.v2' | (string & {})`),
+// so new Prodia job types work without an SDK release.
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
 	if modelID == "" {
 		modelID = LanguageModelNanoBananaImgToImgV2
 	}
-	if strings.HasPrefix(modelID, "inference.nano-banana.") {
-		return NewLanguageModel(p, modelID), nil
-	}
-	return nil, fmt.Errorf("prodia: unsupported language model %q", modelID)
+	return NewLanguageModel(p, modelID), nil
 }
 
-// VideoModel returns a video generation model by ID.
-// Routes inference.wan2-2.* model IDs to ProdiaVideoModel.
+// VideoModel returns a video generation model by ID. Any ID is accepted (TS
+// ProdiaVideoModelId ends in `(string & {})`).
 func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 	if modelID == "" {
 		modelID = VideoModelWan22LightningTxt2Vid
 	}
-	if strings.HasPrefix(modelID, "inference.wan2-2.") {
-		return NewVideoModel(p, modelID), nil
-	}
-	return nil, fmt.Errorf("prodia: unsupported video model %q", modelID)
+	return NewVideoModel(p, modelID), nil
 }
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("prodia does not support embeddings")
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // ImageModel returns an image generation model by ID
@@ -125,15 +129,15 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("prodia does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("prodia does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("prodia does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }

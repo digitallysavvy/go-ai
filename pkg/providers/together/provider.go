@@ -1,12 +1,15 @@
 package together
 
 import (
-	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -58,6 +61,7 @@ func New(cfg Config) *Provider {
 	if baseURL == "" {
 		baseURL = "https://api.together.xyz"
 	}
+	baseURL = trimBaseURL(baseURL)
 
 	apiKey := getAPIKey(cfg.APIKey)
 
@@ -67,6 +71,10 @@ func New(cfg Config) *Provider {
 			"Authorization": "Bearer " + apiKey,
 			"Content-Type":  "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("togetherai")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, getAPIKey(cfg.APIKey), "TOGETHER_API_KEY", "TogetherAI", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{
@@ -86,6 +94,26 @@ func CreateTogetherAI(cfg Config) *Provider {
 // Name returns the provider name
 func (p *Provider) Name() string {
 	return "together"
+}
+
+// CompletionModel returns a text completion model (TS provider.completionModel,
+// an OpenAICompatibleCompletionLanguageModel with includeUsage: true).
+func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, error) {
+	baseURL := p.config.BaseURL
+	if baseURL == "" {
+		baseURL = "https://api.together.xyz"
+	}
+	return openai.New(openai.Config{
+		APIKey:            getAPIKey(p.config.APIKey),
+		APIKeyEnvVar:      "TOGETHER_API_KEY",
+		APIKeyDescription: "TogetherAI",
+		BaseURL:           trimBaseURL(baseURL) + "/v1",
+		Headers:           p.config.Headers,
+		Name:              "togetherai",
+		OpenAICompatible:  true,
+		IncludeUsage:      true,
+		UserAgentName:     "togetherai",
+	}).CompletionModel(modelID)
 }
 
 // LanguageModel returns a language model by ID
@@ -117,12 +145,12 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("together AI does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("together AI does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns a reranking model by ID
@@ -137,4 +165,11 @@ func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, erro
 // Client returns the HTTP client for making API requests
 func (p *Provider) Client() *http.Client {
 	return p.client
+}
+
+// trimBaseURL mirrors TS withoutTrailingSlash and also accepts TS-style base
+// URLs that already carry the "/v1" segment: every request path in this
+// package starts with "/v1/", so ".../v1" must not double it.
+func trimBaseURL(baseURL string) string {
+	return strings.TrimSuffix(providerutils.WithoutTrailingSlash(baseURL), "/v1")
 }

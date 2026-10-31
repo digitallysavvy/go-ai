@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -74,7 +73,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 		return nil, providererrors.NewProviderError("amazon-bedrock", 0, "", err.Error(), err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readResponseBody(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read rerank response: %w", err)
 	}
@@ -82,6 +81,9 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
+	if err := bedrockValidator(zbRerank)(resp.StatusCode, resp.Header, respBody); err != nil {
+		return nil, err
+	}
 	var parsed struct {
 		Results []types.RerankItem `json:"results"`
 	}
@@ -100,6 +102,9 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 }
 
 func (m *RerankingModel) buildRequestBody(opts *provider.RerankOptions) (map[string]interface{}, error) {
+	if err := validateRerankProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	options := bedrockRerankingOptions(opts.ProviderOptions)
 	sources, err := bedrockRerankSources(opts.Documents)
 	if err != nil {
@@ -107,7 +112,7 @@ func (m *RerankingModel) buildRequestBody(opts *provider.RerankOptions) (map[str
 	}
 	region := m.provider.Region()
 	if region == "" {
-		return nil, fmt.Errorf("AWS region is required: set Region or AWS_REGION")
+		return nil, errRegionMissing()
 	}
 	modelConfiguration := map[string]interface{}{
 		"modelArn": fmt.Sprintf("arn:aws:bedrock:%s::foundation-model/%s", region, m.modelID),

@@ -46,6 +46,7 @@ type CodeModeError interface {
 var (
 	_ CodeModeError = (*BaseError)(nil)
 	_ CodeModeError = (*TimeoutError)(nil)
+	_ CodeModeError = (*CPUTimeoutError)(nil)
 	_ CodeModeError = (*AbortedError)(nil)
 	_ CodeModeError = (*ConcurrencyError)(nil)
 	_ CodeModeError = (*SourceTooLargeError)(nil)
@@ -68,6 +69,20 @@ func NewTimeoutError(timeoutMs int) *TimeoutError {
 		fmt.Sprintf("Code mode execution timed out after %dms.", timeoutMs),
 		"CODE_MODE_TIMEOUT",
 		map[string]interface{}{"timeoutMs": timeoutMs},
+	)}
+}
+
+// CPUTimeoutError is raised when sandboxed code exceeds its CPU time limit.
+// Time spent waiting on host tools does not count toward this limit. Mirrors
+// TypeScript's CodeModeCpuTimeoutError.
+type CPUTimeoutError struct{ *BaseError }
+
+// NewCPUTimeoutError creates a CPUTimeoutError for the given CPU budget.
+func NewCPUTimeoutError(cpuTimeoutMs int) *CPUTimeoutError {
+	return &CPUTimeoutError{NewError(
+		fmt.Sprintf("Code mode execution exceeded its CPU time limit of %dms.", cpuTimeoutMs),
+		"CODE_MODE_CPU_TIMEOUT",
+		map[string]interface{}{"cpuTimeoutMs": cpuTimeoutMs},
 	)}
 }
 
@@ -179,6 +194,15 @@ func NewToolError(message string, details interface{}) *ToolError {
 	return &ToolError{NewError(message, "CODE_MODE_TOOL_ERROR", details)}
 }
 
+// newHostToolFailedError is the sanitized error for a host tool that failed
+// with an error that is not a CodeModeError. TS throws
+// `new RunError('Host tool failed.', 'CODE_MODE_HOST_TOOL_ERROR')`; Go keeps
+// the *ToolError type with TS's code.
+func newHostToolFailedError(toolName string, cause error) *ToolError {
+	return &ToolError{NewError("Host tool failed.", "CODE_MODE_HOST_TOOL_ERROR",
+		map[string]interface{}{"toolName": toolName, "cause": cause.Error()})}
+}
+
 // ToolApprovalRequiredError is raised when a host tool requires approval but
 // no approval decision was obtained (approval mode "callback" with no
 // OnApprovalRequired callback configured, or the callback returned no
@@ -188,10 +212,16 @@ type ToolApprovalRequiredError struct{ *BaseError }
 // NewToolApprovalRequiredError creates a ToolApprovalRequiredError.
 func NewToolApprovalRequiredError(toolName string, input interface{}, toolCallID string) *ToolApprovalRequiredError {
 	return &ToolApprovalRequiredError{NewError(
-		fmt.Sprintf("Tool %q requires approval before execution.", toolName),
+		"Tool \""+toolName+"\" requires approval before execution.",
 		"CODE_MODE_TOOL_APPROVAL_REQUIRED",
 		map[string]interface{}{"toolName": toolName, "input": input, "toolCallId": toolCallID},
 	)}
+}
+
+// As lets errors.As match a *ToolError target: TS
+// CodeModeToolApprovalRequiredError extends CodeModeToolError.
+func (e *ToolApprovalRequiredError) As(target interface{}) bool {
+	return asToolError(e.BaseError, target)
 }
 
 // ToolApprovalDeniedError is raised when a host tool's approval was denied.
@@ -200,11 +230,25 @@ type ToolApprovalDeniedError struct{ *BaseError }
 
 // NewToolApprovalDeniedError creates a ToolApprovalDeniedError.
 func NewToolApprovalDeniedError(toolName string, input interface{}, toolCallID, reason string) *ToolApprovalDeniedError {
-	msg := fmt.Sprintf("Tool %q approval was denied.", toolName)
+	msg := "Tool \"" + toolName + "\" approval was denied."
 	details := map[string]interface{}{"toolName": toolName, "input": input, "toolCallId": toolCallID}
 	if reason != "" {
-		msg = fmt.Sprintf("Tool %q approval was denied: %s", toolName, reason)
+		msg = "Tool \"" + toolName + "\" approval was denied: " + reason
 		details["reason"] = reason
 	}
 	return &ToolApprovalDeniedError{NewError(msg, "CODE_MODE_TOOL_APPROVAL_DENIED", details)}
+}
+
+// As lets errors.As match a *ToolError target: TS
+// CodeModeToolApprovalDeniedError extends CodeModeToolError.
+func (e *ToolApprovalDeniedError) As(target interface{}) bool {
+	return asToolError(e.BaseError, target)
+}
+
+func asToolError(base *BaseError, target interface{}) bool {
+	if t, ok := target.(**ToolError); ok {
+		*t = &ToolError{base}
+		return true
+	}
+	return false
 }

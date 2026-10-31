@@ -507,3 +507,30 @@ func TestConvertToGoAIToolsErrorPath(t *testing.T) {
 		t.Fatal("GetMCPToolsForAgent() expected error on disconnected client")
 	}
 }
+
+// TS #23935: primitive and nullish outputs convert without an MCP envelope.
+func TestMCPToolConverterModelOutputPrimitiveAndNullish(t *testing.T) {
+	converter := NewMCPToolConverter(NewMCPClient(newMockTransport(), MCPClientConfig{}))
+	tests := []struct {
+		name     string
+		output   interface{}
+		wantType types.ToolResultOutputType
+		want     interface{}
+	}{
+		{"string", "Hello world", types.ToolResultOutputText, "Hello world"},
+		{"empty string", "", types.ToolResultOutputText, ""},
+		{"number", 7, types.ToolResultOutputJSON, 7},
+		{"zero", 0, types.ToolResultOutputJSON, 0},
+		{"true", true, types.ToolResultOutputJSON, true},
+		{"false", false, types.ToolResultOutputJSON, false},
+		{"nil", nil, types.ToolResultOutputJSON, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := converter.convertToModelOutput(tt.output)
+			if out.Type != tt.wantType || out.Value != tt.want || len(out.Content) != 0 {
+				t.Fatalf("out = %#v, want type %q value %#v", out, tt.wantType, tt.want)
+			}
+		})
+	}
+}

@@ -19,12 +19,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
-// now returns the current time in milliseconds since Unix epoch.
-// Used for measuring tool call execution duration.
-func now() int64 {
-	return time.Now().UnixMilli()
-}
-
 // abortReason resolves the reason an aborted call should report:
 // context.Cause(ctx) when the context carries a specific cancellation cause,
 // else fallback (typically the error that surfaced the abort). Mirrors TS
@@ -65,6 +59,18 @@ func validateMaxRetries(maxRetries *int) error {
 	return nil
 }
 
+// validateMaxOutputTokens mirrors TS prepareLanguageModelCallOptions: a
+// maxOutputTokens below 1 is an InvalidArgumentError (nil leaves it unset).
+func validateMaxOutputTokens(maxOutputTokens *int) error {
+	if maxOutputTokens != nil && *maxOutputTokens < 1 {
+		return &providererrors.InvalidArgumentError{
+			Field:   "maxOutputTokens",
+			Message: "maxOutputTokens must be >= 1",
+		}
+	}
+	return nil
+}
+
 func preparedMaxRetries(maxRetries *int) int {
 	if maxRetries == nil {
 		return 2
@@ -96,6 +102,9 @@ func isGatewayCallRetryable(err error) bool {
 	}
 	var providerErr *providererrors.ProviderError
 	if errors.As(err, &providerErr) {
+		// An explicit override wins (TS APICallError.isRetryable): e.g.
+		// Bedrock's modelStreamErrorException is retryable at status 424,
+		// and an overloaded stream error is retryable by type.
 		if providerErr.Retryable != nil {
 			return *providerErr.Retryable
 		}
@@ -116,6 +125,15 @@ func isGatewayCallRetryable(err error) bool {
 	if errors.As(err, &retryable) {
 		return retryable.IsRetryable()
 	}
+	// A provider error that carries its HTTP response (e.g. KlingAI and
+	// ByteDance API errors) follows the TS APICallError rule: only 408, 409,
+	// 429 and 5xx are retryable.
+	var httpErr providererrors.HTTPStatusDetails
+	if errors.As(err, &httpErr) {
+		if code, _, _ := httpErr.HTTPStatusDetails(); code != 0 {
+			return code == 408 || code == 409 || code == 429 || code >= 500
+		}
+	}
 	return false
 }
 
@@ -127,6 +145,21 @@ func IsGatewayCallRetryable(err error) bool {
 }
 
 func doGenerateWithGatewayRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int) (*types.GenerateResult, error) {
+	result, err := doGenerateWithGatewayRetryRaw(ctx, model, opts, maxRetries)
+	if err == nil && result == nil {
+		// TS reads the model response right after doGenerate, so a model
+		// that resolves without a result fails the call instead of crashing
+		// it.
+		return nil, fmt.Errorf("language model %s/%s returned no result", model.Provider(), model.ModelID())
+	}
+	normalizeGenerateResultText(result)
+	if result != nil {
+		result.Usage = completeUsageTotal(result.Usage)
+	}
+	return result, err
+}
+
+func doGenerateWithGatewayRetryRaw(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int) (*types.GenerateResult, error) {
 	retries := gatewayMaxRetries(model, maxRetries)
 	if retries <= 0 {
 		return model.DoGenerate(ctx, opts)
@@ -136,7 +169,6 @@ func doGenerateWithGatewayRetry(ctx context.Context, model provider.LanguageMode
 	err := retryutil.Do(ctx, retryutil.Config{
 		MaxRetries:   retries,
 		InitialDelay: 2 * time.Second,
-		MaxDelay:     60 * time.Second,
 		Multiplier:   2,
 		Jitter:       false,
 		ShouldRetry:  isGatewayCallRetryable,
@@ -156,23 +188,48 @@ func DoGenerateWithGatewayRetry(ctx context.Context, model provider.LanguageMode
 	return doGenerateWithGatewayRetry(ctx, model, opts, maxRetries)
 }
 
-func doStreamWithGatewayRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int) (provider.TextStream, error) {
+// doStreamWithGatewayRetryEach calls model.DoStream with the call's retry
+// policy (maxRetries, default 2), running a hook before every attempt after
+// the first. TS streamText retries
+// streamLanguageModelCall as a whole (`retry(async () =>
+// streamLanguageModelCall(...))`), so each retried open is a new model call
+// with its own onLanguageModelCallStart (callback and telemetry) and call
+// start time. beforeRetry fires those and returns the ctx the attempt's
+// DoStream runs in (the new model-call span's ctx); nil keeps ctx.
+func doStreamWithGatewayRetryEach(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int, beforeRetry func() context.Context) (provider.TextStream, error) {
+	stream, err := doStreamWithGatewayRetryEachRaw(ctx, model, opts, maxRetries, beforeRetry)
+	if err == nil && stream == nil {
+		// TS reads the stream right after doStream, so a model that resolves
+		// without one fails the call instead of crashing it.
+		return nil, fmt.Errorf("language model %s/%s returned no stream", model.Provider(), model.ModelID())
+	}
+	return stream, err
+}
+
+func doStreamWithGatewayRetryEachRaw(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int, beforeRetry func() context.Context) (provider.TextStream, error) {
 	retries := gatewayMaxRetries(model, maxRetries)
 	if retries <= 0 {
 		return model.DoStream(ctx, opts)
 	}
 
 	var stream provider.TextStream
+	attempt := 0
 	err := retryutil.Do(ctx, retryutil.Config{
 		MaxRetries:   retries,
 		InitialDelay: 2 * time.Second,
-		MaxDelay:     60 * time.Second,
 		Multiplier:   2,
 		Jitter:       false,
 		ShouldRetry:  isGatewayCallRetryable,
 	}, func(retryCtx context.Context) error {
+		attemptCtx := retryCtx
+		if attempt > 0 && beforeRetry != nil {
+			if c := beforeRetry(); c != nil {
+				attemptCtx = c
+			}
+		}
+		attempt++
 		var err error
-		stream, err = model.DoStream(retryCtx, opts)
+		stream, err = model.DoStream(attemptCtx, opts)
 		return err
 	})
 	return stream, err
@@ -246,6 +303,13 @@ type GenerateTextOptions struct {
 	// Deprecated: use StopWhen with StepCountIs instead.
 	// If StopWhen is set, MaxSteps is ignored.
 	MaxSteps *int
+
+	// ToolCallConcurrency is the maximum number of tool calls that may execute
+	// concurrently within a step. Set to 1 to execute tool calls sequentially
+	// in the order they were generated. Must be >= 1 when set. When unset, all
+	// tool calls of a step execute concurrently (results stay in call order).
+	// Mirrors TS toolCallConcurrency.
+	ToolCallConcurrency *int
 
 	// StopWhen defines conditions that terminate the tool-calling loop.
 	// Conditions are evaluated OR -- first non-empty string stops the loop.
@@ -327,8 +391,8 @@ type GenerateTextOptions struct {
 	Reasoning *types.ReasoningLevel
 
 	// SendReasoning controls whether reasoning/thinking stream boundary chunks
-	// are exposed to callbacks. nil and false suppress reasoning-start/end,
-	// matching the TypeScript SDK default.
+	// are exposed to callbacks. nil (the default) keeps them, as TS does; an
+	// explicit false suppresses reasoning-start/end.
 	SendReasoning *bool
 
 	// ========================================================================
@@ -413,9 +477,9 @@ type GenerateTextOptions struct {
 	//       Model: model,
 	//       Prompt: "Hello",
 	//       ExperimentalTelemetry: &telemetry.Options{
-	//           IsEnabled: true,
-	//           RecordInputs: true,
-	//           RecordOutputs: true,
+	//           IsEnabled:     telemetry.Bool(true),
+	//           RecordInputs:  telemetry.Bool(false), // unset (nil) records
+	//           RecordOutputs: telemetry.Bool(false),
 	//       },
 	//   })
 	//
@@ -464,6 +528,20 @@ type GenerateTextOptions struct {
 
 	// OnStepStart is called at the beginning of each LLM step.
 	OnStepStart func(ctx context.Context, e OnStepStartEvent)
+
+	// ExperimentalSteering adds user messages to the generation at the next
+	// step boundary. Create it with NewSteering before the call; it can be
+	// used for one generation only. A message waiting when the model finishes
+	// its answer keeps the loop going for another step unless a stop condition
+	// is met. Experimental (TS experimental_steering, #23813).
+	ExperimentalSteering *Steering
+
+	// OnStepError is called when a step that started fails before it produces
+	// a step result: the provider call fails or an error occurs while the step
+	// runs. OnStepEnd is not called for such a step. In GenerateText an abort
+	// or timeout also ends the step here (the event's Error is the abort or
+	// timeout error). The call then returns the error. Additive (TS #23758).
+	OnStepError func(ctx context.Context, e OnStepErrorEvent)
 
 	// OnToolExecutionStart is called just before each tool's Execute function runs.
 	OnToolExecutionStart func(ctx context.Context, e OnToolCallStartEvent)
@@ -580,6 +658,14 @@ type PrepareStepOptions struct {
 	// Current step number
 	StepNumber int
 
+	// ExperimentalSteeringMessages are the steering user messages added to
+	// Messages for this step; nil when the step received none. Messages
+	// already contains them. A PrepareStep that rebuilds Messages from other
+	// fields must add them back, together with the steering messages of
+	// earlier steps (Steps[i].ExperimentalSteeringMessages), or they are
+	// reported as not delivered (SteeringRemovedByPrepareStep).
+	ExperimentalSteeringMessages []types.Message
+
 	// Steps contains completed step results before this step.
 	Steps []types.StepResult
 
@@ -589,7 +675,9 @@ type PrepareStepOptions struct {
 	ActiveTools []string
 	ToolOrder   []string
 
-	// ProviderOptions are provider-specific options for this step.
+	// ProviderOptions are provider-specific options for this step. Options
+	// returned from PrepareStep are deep-merged onto the call's
+	// ProviderOptions (nested maps merge; other values replace), as in TS.
 	ProviderOptions map[string]interface{}
 
 	// ExperimentalSandbox overrides the sandbox for this step only.
@@ -635,9 +723,12 @@ type GenerateTextResult struct {
 	// Deprecated: use FinalStep.ReasoningText instead.
 	ReasoningText string `json:"reasoningText,omitempty"`
 
-	// Output contains the parsed output when a WithOutput option was provided.
-	// Type-assert to the concrete type, e.g.: recipe := result.Output.(Recipe)
-	// Nil when no Output option was set.
+	// Output contains the parsed output of the final step. Type-assert to the
+	// concrete type, e.g.: recipe := result.Output.(Recipe). With no Output
+	// option it is the final step's text (a string), as TS `output ?? text()`.
+	// It is parsed only for a stop finish, or a finish other than tool-calls
+	// that produced text, and is nil otherwise (TS throws
+	// NoOutputGeneratedError on access).
 	Output any `json:"output,omitempty"`
 
 	// Tool calls made across all steps.
@@ -649,7 +740,10 @@ type GenerateTextResult struct {
 	// DynamicToolCalls are tool calls from dynamically registered tools across all steps.
 	DynamicToolCalls []types.ToolCall `json:"dynamicToolCalls"`
 
-	// Tool results from all steps.
+	// Tool results from all steps: the results of successful calls only. A
+	// failed call (execution error, invalid call, provider error result) is a
+	// types.ToolErrorContent part in Content, as TS toolResults holds only
+	// tool-result parts.
 	ToolResults []types.ToolResult `json:"toolResults"`
 
 	// StaticToolResults are results from non-dynamic (typed) tools across all steps.
@@ -674,7 +768,8 @@ type GenerateTextResult struct {
 	// Empty if the loop ended naturally (model stopped calling tools).
 	StopReason string `json:"stopReason,omitempty"`
 
-	// Token usage information (last step)
+	// Usage is the total token usage of all steps (the sum of the step
+	// usages), as TS result.usage. FinalStep.Usage is the last step's.
 	Usage types.Usage `json:"usage"`
 
 	// Context management information (Anthropic-specific)
@@ -725,17 +820,35 @@ type GenerateTextResult struct {
 
 // GenerateText performs non-streaming text generation with optional tool calling
 func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *GenerateTextResult, err error) {
+	// TS generateText rethrows every failure through wrapGatewayError.
+	defer func() {
+		if err != nil {
+			err = wrapGatewayError(err)
+		}
+	}()
+	// TS generateText starts the steering run before anything else, so a
+	// steering object that was already used is the first error, and a call
+	// that fails before its loop starts (e.g. an invalid prompt) still ends
+	// the run, resolving waiting steering messages as not delivered.
+	steeringRun, steeringErr := startSteeringRun(opts.ExperimentalSteering)
+	if steeringErr != nil {
+		return nil, steeringErr
+	}
+	defer func() {
+		if err != nil {
+			steeringRun.end(steeringEndReasonFor(ctx, err))
+		}
+	}()
 	// Validate options
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
-	if err := validateMaxRetries(opts.MaxRetries); err != nil {
+	// TS generateTextInternal validates in this order: toolCallConcurrency,
+	// the tool callers, the tool search state, then maxRetries.
+	toolCallConcurrency, err := prepareToolCallConcurrency(opts.ToolCallConcurrency)
+	if err != nil {
 		return nil, err
 	}
-	// TS generate-text.ts tags every call's headers with `ai/${VERSION}`
-	// (`headersWithUserAgent = withUserAgentSuffix(headers ?? {}, ai/${VERSION})`)
-	// right after validating retries, before the prompt is standardized.
-	opts.Headers = version.WithUserAgentSuffix(opts.Headers, version.UserAgent())
 	resolvedToolCallers, err := ResolveToolCallerConfiguration(opts.Tools, opts.ExperimentalToolCallers)
 	if err != nil {
 		return nil, err
@@ -744,30 +857,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	if err != nil {
 		return nil, err
 	}
-	telemetrySettings := effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
-	runtimeContext := effectiveRuntimeContext(opts.RuntimeContext, opts.ExperimentalContext)
-	system := effectiveSystem(opts.System, opts.Instructions)
-	instructionMessages := cloneInstructionMessages(opts.InstructionMessages)
-	if err := validateInstructionMessages(instructionMessages); err != nil {
-		return nil, err
-	}
-	if len(instructionMessages) > 0 {
-		// System-message instructions take precedence over text instructions.
-		system = ""
-	}
-	repairToolCall := effectiveRepairToolCall(opts.RepairToolCall, opts.ExperimentalRepairToolCall)
-	onLanguageModelCallStart := firstLMCallStart(opts.OnLanguageModelCallStart, opts.ExperimentalOnLanguageModelCallStart)
-	onLanguageModelCallEnd := firstLMCallEnd(opts.OnLanguageModelCallEnd, opts.ExperimentalOnLanguageModelCallEnd)
-	include := effectiveInclude(opts.Include, opts.ExperimentalInclude, false)
-	if opts.Include == nil && opts.ExperimentalInclude == nil && opts.ExperimentalRetention != nil {
-		include.RequestBody = opts.ExperimentalRetention.ShouldRetainRequestBody()
-		include.ResponseBody = opts.ExperimentalRetention.ShouldRetainResponseBody()
-	}
-	toolsContext := opts.ToolsContext
-	if toolsContext == nil {
-		toolsContext = map[string]interface{}{}
-	}
-
+	// TS logs these after the tool search state, before prepareRetries.
 	// Warn (once, up front) when a streaming-only timeout setting is passed
 	// to the non-streaming GenerateText (TS 349afe7 / generate-text.ts
 	// getFirstChunkTimeoutMs/getChunkTimeoutMs unsupportedTimeoutWarnings).
@@ -795,15 +885,62 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		}
 	}
 
+	if err := validateMaxRetries(opts.MaxRetries); err != nil {
+		return nil, err
+	}
+	// TS prepareLanguageModelCallOptions(settings) follows prepareRetries.
+	if err := validateMaxOutputTokens(opts.MaxTokens); err != nil {
+		return nil, err
+	}
+	// TS generate-text.ts tags every call's headers with `ai/${VERSION}`
+	// (`headersWithUserAgent = withUserAgentSuffix(headers ?? {}, ai/${VERSION})`)
+	// right after validating retries, before the prompt is standardized.
+	opts.Headers = version.WithUserAgentSuffix(opts.Headers, version.UserAgent())
+	telemetrySettings := effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
+	runtimeContext := effectiveRuntimeContext(opts.RuntimeContext, opts.ExperimentalContext)
+	system := effectiveSystem(opts.System, opts.Instructions)
+	instructionMessages := cloneInstructionMessages(opts.InstructionMessages)
+	if len(instructionMessages) > 0 {
+		// System-message instructions take precedence over text instructions.
+		system = ""
+	}
+	repairToolCall := effectiveRepairToolCall(opts.RepairToolCall, opts.ExperimentalRepairToolCall)
+	onLanguageModelCallStart := firstLMCallStart(opts.OnLanguageModelCallStart, opts.ExperimentalOnLanguageModelCallStart)
+	onLanguageModelCallEnd := firstLMCallEnd(opts.OnLanguageModelCallEnd, opts.ExperimentalOnLanguageModelCallEnd)
+	include := effectiveInclude(opts.Include, opts.ExperimentalInclude, false)
+	if opts.Include == nil && opts.ExperimentalInclude == nil && opts.ExperimentalRetention != nil {
+		include.RequestBody = opts.ExperimentalRetention.ShouldRetainRequestBody()
+		include.ResponseBody = opts.ExperimentalRetention.ShouldRetainResponseBody()
+	}
+	toolsContext := opts.ToolsContext
+	if toolsContext == nil {
+		toolsContext = map[string]interface{}{}
+	}
+
+	// Standardize the prompt first: TS standardizePrompt throws before any
+	// start event or telemetry is emitted.
+	// Build prompt
+	if err := validateStandardizedPromptInput(opts.Prompt, opts.Messages, instructionMessages); err != nil {
+		return nil, err
+	}
+	prompt := buildPrompt(opts.Prompt, opts.Messages, system)
+	allowSystem := allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages)
+	prompt, err = promptutils.NormalizePrompt(prompt, allowSystem)
+	if err != nil {
+		return nil, err
+	}
+
 	// Fire OnStart — registered integrations start their root spans here and
 	// embed them in the returned context.  When no integration is registered
 	// the fire function is a no-op.
 	telSystem := ""
-	var telMessages []types.Message
-	if telemetrySettings != nil && telemetrySettings.RecordInputs {
+	var telMessages, telInstructionMessages []types.Message
+	// A nil *Options records inputs (integrations treat it the same way).
+	if telemetrySettings.ShouldRecordInputs() {
 		telSystem = system
 		if len(instructionMessages) > 0 {
 			telSystem = instructionMessagesText(instructionMessages)
+			telInstructionMessages = instructionMessages
 		}
 		// TS's GenerateTextStartEvent.messages is always the *normalized*
 		// message list (initialPrompt.messages from standardizePrompt),
@@ -821,61 +958,93 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// event to track its own root span by CallID.
 	callID := internalGenerateCallID(opts.Internal)()
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
-		CallID:           callID,
-		OperationType:    "ai.generateText",
-		ModelProvider:    opts.Model.Provider(),
-		ModelID:          opts.Model.ModelID(),
-		Settings:         telemetrySettings,
-		System:           telSystem,
-		Messages:         telMessages,
-		Headers:          opts.Headers,
-		MaxOutputTokens:  opts.MaxTokens,
-		Temperature:      opts.Temperature,
-		TopP:             opts.TopP,
-		TopK:             opts.TopK,
-		PresencePenalty:  opts.PresencePenalty,
-		FrequencyPenalty: opts.FrequencyPenalty,
-		StopSequences:    opts.StopSequences,
-		Seed:             opts.Seed,
-		MaxRetries:       &generateTextMaxRetries,
-		RuntimeContext:   telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
-		ToolsContext:     telemetryToolsContext(telemetrySettings, toolsContext),
+		CallID:              callID,
+		OperationType:       "ai.generateText",
+		ModelProvider:       opts.Model.Provider(),
+		ModelID:             opts.Model.ModelID(),
+		Settings:            telemetrySettings,
+		System:              telSystem,
+		Messages:            telMessages,
+		InstructionMessages: telInstructionMessages,
+		Headers:             opts.Headers,
+		MaxOutputTokens:     opts.MaxTokens,
+		Temperature:         opts.Temperature,
+		TopP:                opts.TopP,
+		TopK:                opts.TopK,
+		PresencePenalty:     opts.PresencePenalty,
+		FrequencyPenalty:    opts.FrequencyPenalty,
+		StopSequences:       opts.StopSequences,
+		Seed:                opts.Seed,
+		MaxRetries:          &generateTextMaxRetries,
+		RuntimeContext:      telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
+		ToolsContext:        telemetryToolsContext(telemetrySettings, toolsContext),
 	})
+
+	// liveResult is the result under construction. The deferred abort handler
+	// reads the steps completed so far from it: a failing step returns a nil
+	// named result, which would otherwise hide them.
+	var liveResult *GenerateTextResult
+
+	// steeringEndReason says why waiting steering messages are not delivered
+	// when the loop ends.
+	steeringEndReason := SteeringFinished
+
+	// openStep is the step that has started but not ended; it is reported to
+	// OnStepError when the call fails before the step produces a result.
+	var openStep *OnStepStartEvent
+	// openStepTelemetryCtx is the open step's telemetry context (the step
+	// span, plus the model-call span while the model call runs); nil once
+	// telemetry onStepError has closed the step.
+	var openStepTelemetryCtx context.Context
 
 	// Ensure telemetry is always closed — OnError ends the span on failure,
 	// OnFinish ends it on success.
 	defer func() {
 		if err != nil {
+			// A call that fails ends the steering run (a no-op after the loop).
+			steeringRun.end(steeringEndReasonFor(ctx, err))
+		}
+		if err != nil {
+			// GenerateText has no OnAbort for a failing step, so aborts and
+			// timeouts also end the open step here.
+			if openStep != nil {
+				step := *openStep
+				openStep = nil
+				// TS notifies onStepError with wrapGatewayError(error).
+				Notify(ctx, OnStepErrorEvent{OnStepStartEvent: step, Error: wrapGatewayError(err)}, opts.OnStepError)
+				// TS notifies telemetry onStepError with it too, for every
+				// failure of a started step, before telemetry onError.
+				if openStepTelemetryCtx != nil {
+					telemetry.FireOnStepError(openStepTelemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: wrapGatewayError(err)})
+					openStepTelemetryCtx = nil
+				}
+			}
 			if isAbortErr(ctx, err) {
 				var abortSteps []types.StepResult
-				if result != nil {
-					abortSteps = append([]types.StepResult(nil), result.Steps...)
+				if liveResult != nil {
+					abortSteps = append([]types.StepResult(nil), liveResult.Steps...)
 				}
 				reason := abortReason(ctx, err)
 				if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
-					onAbort(ctx, GenerateTextAbortEvent{CallID: callID, Steps: abortSteps, Reason: reason})
+					safeInvoke(func() { onAbort(ctx, GenerateTextAbortEvent{CallID: callID, Steps: abortSteps, Reason: reason}) })
 				}
-				telemetry.FireOnAbort(ctx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: reason, Steps: abortSteps})
-				return
 			}
+			// TS generateText has no abort telemetry: an abort or timeout is
+			// reported through telemetry onError like any other failure, so
+			// the spans record it as an error.
 			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		}
 	}()
 
-	// Apply total timeout if configured
+	// Apply total timeout if configured. totalParent tells the total
+	// deadline apart from the caller's own cancellation or deadline.
+	totalParent := ctx
 	var cancel context.CancelFunc
 	if opts.Timeout != nil && opts.Timeout.HasTotal() {
 		ctx, cancel = opts.Timeout.CreateTimeoutContext(ctx, "total")
 		defer cancel()
 	}
 
-	// Build prompt
-	prompt := buildPrompt(opts.Prompt, opts.Messages, system)
-	allowSystem := allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages)
-	prompt, err = promptutils.NormalizePrompt(prompt, allowSystem)
-	if err != nil {
-		return nil, err
-	}
 	// Extract telemetry info once for all callback events
 	cbFuncID, cbMeta := telemetryCallbackInfo(telemetrySettings)
 	generateID := internalGenerateID(opts.Internal)
@@ -909,7 +1078,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		InstructionMessages: instructionMessages,
 		System:              system,
 		Prompt:              opts.Prompt,
-		Messages:            opts.Messages,
+		// TS start event messages: the standardized prompt's messages (a
+		// prompt string becomes one user message).
+		Messages:            buildPrompt(opts.Prompt, opts.Messages, "").Messages,
 		Tools:               opts.Tools,
 		ActiveTools:         opts.ActiveTools,
 		ToolOrder:           opts.ToolOrder,
@@ -937,6 +1108,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	result = &GenerateTextResult{
 		Steps: []types.StepResult{},
 	}
+	liveResult = result
 
 	stopConditions := resolveStopConditions(opts.StopWhen, opts.MaxSteps)
 	maxSteps := 1000 // safety ceiling only
@@ -949,14 +1121,15 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// + validateApprovedToolApprovals): execute re-validated approved tools,
 	// report invalid inputs and denials to the model before the first step.
 	resumed, err := resumeToolApprovals(ctx, toolApprovalResumeOptions{
-		messages:       initialMessages,
-		tools:          opts.Tools,
-		toolApproval:   opts.ToolApproval,
-		toolsContext:   toolsContext,
-		runtimeContext: runtimeContext,
-		secret:         opts.ExperimentalToolApprovalSecret,
-		refine:         opts.ExperimentalRefineToolInput,
-		usage:          &result.Usage,
+		messages:            initialMessages,
+		tools:               opts.Tools,
+		toolApproval:        opts.ToolApproval,
+		toolsContext:        toolsContext,
+		runtimeContext:      runtimeContext,
+		secret:              opts.ExperimentalToolApprovalSecret,
+		refine:              opts.ExperimentalRefineToolInput,
+		usage:               &result.Usage,
+		toolCallConcurrency: toolCallConcurrency,
 		callbacks: toolCallEventCallbacks{
 			callID:              callID,
 			onStart:             opts.OnToolExecutionStart,
@@ -992,13 +1165,43 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// a subsequent response (SupportsDeferredResults=true). Key = toolCallID, value = toolName.
 	pendingDeferredToolCalls := make(map[string]string)
 
+	// lastStructuredOutputText is the last model response's StructuredOutputText
+	// (TS currentModelResponse.structuredOutputText).
+	var lastStructuredOutputText *string
+
+	// lastResponseHeaders are the last model response's HTTP headers (the
+	// final step's, for the end event and ResponseHeaders).
+	var lastResponseHeaders map[string]string
+
 	// Execute generation loop (for tool calling)
 	for stepNum := 1; stepNum <= maxSteps; stepNum++ {
-		stepStart := time.Now()
+		// TS `if (steps.length > 0) mergedAbortSignal?.throwIfAborted()`: a
+		// call aborted after a step ended (e.g. while a tool that ignores
+		// ctx ran) fails before the next step starts, so PrepareStep and the
+		// step callbacks are not called for it.
+		if stepNum > 1 && ctx.Err() != nil {
+			abortErr := context.Cause(ctx)
+			if opts.Timeout.HasTotal() && deadlineFired(ctx, totalParent) {
+				abortErr = wrapTimeoutError(TimeoutReasonTotal, abortErr)
+			}
+			return nil, abortErr
+		}
 		stepIndex := stepNum - 1
+		// The per-step timeout starts with the step, before PrepareStep, as
+		// TS arms its step timer at the top of the step loop.
+		stepCtx := ctx
+		var stepCancel context.CancelFunc
+		if opts.Timeout != nil && opts.Timeout.HasPerStep() {
+			stepCtx, stepCancel = opts.Timeout.CreateTimeoutContext(ctx, "step")
+			defer stepCancel()
+		}
 		stepModel := opts.Model
 		stepSystem := instructionsForNextStep
 		stepInstructionMessages := instructionMessagesForNextStep
+		steeringMessages := steeringRun.takeMessages()
+		if len(steeringMessages) > 0 {
+			currentMessages = append(append([]types.Message(nil), currentMessages...), steeringMessages...)
+		}
 		stepMessages := currentMessages
 		stepSandbox := opts.ExperimentalSandbox
 		stepTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
@@ -1022,37 +1225,39 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		accumulatedResponseMessages := responseMessagesWithInitial(initialResponseMessages, result.Steps)
 		if opts.PrepareStep != nil {
+			givenInstructions := stepSystem
 			prepared := opts.PrepareStep(ctx, PrepareStepOptions{
-				Model:                      stepModel,
-				System:                     stepSystem,
-				Instructions:               &stepSystem,
-				InitialInstructions:        &initialInstructions,
-				InstructionMessages:        cloneInstructionMessages(stepInstructionMessages),
-				InitialInstructionMessages: cloneInstructionMessages(instructionMessages),
-				Messages:                   append([]types.Message(nil), stepMessages...),
-				InitialMessages:            append([]types.Message(nil), initialMessages...),
-				ResponseMessages:           accumulatedResponseMessages,
-				UserContext:                runtimeContext,
-				RuntimeContext:             runtimeContext,
-				ToolsContext:               toolsContext,
-				StepNumber:                 stepIndex,
-				Steps:                      append([]types.StepResult(nil), result.Steps...),
-				Tools:                      stepTools,
-				ToolChoice:                 stepToolChoice,
-				ActiveTools:                opts.ActiveTools,
-				ToolOrder:                  stepToolOrder,
-				ProviderOptions:            stepProviderOptions,
-				ExperimentalSandbox:        stepSandbox,
-				AccumulatedUsage:           result.Usage,
-				MaxOutputTokens:            stepMaxTokens,
-				Temperature:                stepTemperature,
-				TopP:                       stepTopP,
-				TopK:                       stepTopK,
-				PresencePenalty:            stepPresencePenalty,
-				FrequencyPenalty:           stepFrequencyPenalty,
-				StopSequences:              stepStopSequences,
-				Seed:                       stepSeed,
-				Reasoning:                  stepReasoningLevel,
+				Model:                        stepModel,
+				System:                       stepSystem,
+				Instructions:                 &givenInstructions,
+				InitialInstructions:          &initialInstructions,
+				InstructionMessages:          cloneInstructionMessages(stepInstructionMessages),
+				InitialInstructionMessages:   cloneInstructionMessages(instructionMessages),
+				Messages:                     append([]types.Message(nil), stepMessages...),
+				InitialMessages:              append([]types.Message(nil), initialMessages...),
+				ResponseMessages:             accumulatedResponseMessages,
+				UserContext:                  runtimeContext,
+				RuntimeContext:               runtimeContext,
+				ToolsContext:                 toolsContext,
+				StepNumber:                   stepIndex,
+				Steps:                        append([]types.StepResult(nil), result.Steps...),
+				ExperimentalSteeringMessages: append([]types.Message(nil), steeringMessages...),
+				Tools:                        stepTools,
+				ToolChoice:                   stepToolChoice,
+				ActiveTools:                  opts.ActiveTools,
+				ToolOrder:                    stepToolOrder,
+				ProviderOptions:              stepProviderOptions,
+				ExperimentalSandbox:          stepSandbox,
+				AccumulatedUsage:             result.Usage,
+				MaxOutputTokens:              stepMaxTokens,
+				Temperature:                  stepTemperature,
+				TopP:                         stepTopP,
+				TopK:                         stepTopK,
+				PresencePenalty:              stepPresencePenalty,
+				FrequencyPenalty:             stepFrequencyPenalty,
+				StopSequences:                stepStopSequences,
+				Seed:                         stepSeed,
+				Reasoning:                    stepReasoningLevel,
 			})
 			if prepared.Model != nil {
 				stepModel = prepared.Model
@@ -1063,7 +1268,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				}
 				stepInstructionMessages = cloneInstructionMessages(prepared.InstructionMessages)
 				stepSystem = ""
-			} else if prepared.Instructions != nil {
+			} else if preparedInstructionsSet(prepared.Instructions, &givenInstructions, stepSystem) {
 				stepSystem = *prepared.Instructions
 				stepInstructionMessages = nil
 			} else if prepared.System != "" {
@@ -1083,7 +1288,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				stepToolOrder = prepared.ToolOrder
 			}
 			if prepared.ProviderOptions != nil {
-				stepProviderOptions = prepared.ProviderOptions
+				// TS mergeObjects(providerOptions, prepareStepResult.providerOptions):
+				// the returned options deep-merge onto the call's options.
+				stepProviderOptions = promptutils.MergeProviderOptions(opts.ProviderOptions, prepared.ProviderOptions)
 			}
 			if prepared.RuntimeContext != nil {
 				runtimeContext = prepared.RuntimeContext
@@ -1136,6 +1343,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			stepMessages = AppendToolCallerMessages(stepMessages, toolCallerMessages)
 		}
 
+		// Steering messages are delivered when they are part of the messages
+		// sent to the model after PrepareStep.
+		deliveredSteeringMessages := steeringRun.resolveTakenMessages(stepIndex, stepMessages)
+
 		stepTools = resolveStepTools(ctx, stepTools, toolsContext, stepSandbox)
 		stepTools = orderStepTools(stepTools, stepToolOrder)
 		stepExecutionTools = resolveStepTools(ctx, stepExecutionTools, toolsContext, stepSandbox)
@@ -1146,16 +1357,26 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			toolsByName[stepExecutionTools[i].Name] = &stepExecutionTools[i]
 		}
 
-		// Apply per-step timeout if configured
-		stepCtx := ctx
-		var stepCancel context.CancelFunc
-		if opts.Timeout != nil && opts.Timeout.HasPerStep() {
-			stepCtx, stepCancel = opts.Timeout.CreateTimeoutContext(ctx, "step")
-			defer stepCancel()
+		stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
+			Messages: messagesForModel(stepMessages),
+			System:   appendSandboxDescription(stepSystem, stepSandbox),
+		}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
+		if normErr != nil {
+			return nil, normErr
+		}
+		if err := validateStepToolResults(stepPrompt.Messages, opts.Tools); err != nil {
+			return nil, err
+		}
+		stepPrompt = prependInstructionMessages(stepPrompt, stepInstructionMessages)
+		// TS generateText runs prepareStepCallSettings (which validates the
+		// step's settings) after convertToLanguageModelPrompt and before the
+		// step start event.
+		if err := validateMaxOutputTokens(stepMaxTokens); err != nil {
+			return nil, err
 		}
 
 		// Emit OnStepStartEvent.
-		Notify(ctx, OnStepStartEvent{
+		stepStartEvent := OnStepStartEvent{
 			CallID:              callID,
 			StepNumber:          stepIndex,
 			Provider:            stepModel.Provider(),
@@ -1165,38 +1386,34 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			InstructionMessages: stepInstructionMessages,
 			System:              stepSystem,
 			Messages:            stepMessages,
-			Tools:               stepTools,
+			// TS stepStartEvent.tools: the call's tools ("the tools available
+			// for this generation"); ActiveTools narrows them for the step.
+			Tools:               opts.Tools,
 			ToolChoice:          stepToolChoice,
 			ActiveTools:         stepActiveTools,
 			ToolOrder:           stepToolOrder,
 			ProviderOptions:     stepProviderOptions,
+			Output:              opts.Output,
 			Steps:               result.Steps,
 			PreviousSteps:       result.Steps, // deprecated alias
 			ExperimentalContext: runtimeContext,
 			RuntimeContext:      runtimeContext,
 			ToolsContext:        toolsContext,
-		}, opts.OnStepStart)
+		}
+		Notify(ctx, stepStartEvent, opts.OnStepStart)
+		openStep = &stepStartEvent
 
-		// Resolve ResponseFormat: prefer explicit opts.ResponseFormat; fall back to Output's format.
+		// Resolve ResponseFormat: prefer explicit opts.ResponseFormat; fall back
+		// to Output's format. TS awaits output.responseFormat inside doGenerate,
+		// so a failure fails the model call itself, after the step start and
+		// the language model call start; the rejection propagates as is.
 		responseFormat := opts.ResponseFormat
+		var responseFormatErr error
 		if responseFormat == nil {
 			if op, ok := opts.Output.(outputProcessor); ok {
-				rf, rfErr := op.ResponseFormat(stepCtx)
-				if rfErr != nil {
-					return nil, fmt.Errorf("output.ResponseFormat failed: %w", rfErr)
-				}
-				responseFormat = rf
+				responseFormat, responseFormatErr = op.ResponseFormat(stepCtx)
 			}
 		}
-
-		stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
-			Messages: messagesForModel(stepMessages),
-			System:   appendSandboxDescription(stepSystem, stepSandbox),
-		}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
-		if normErr != nil {
-			return nil, fmt.Errorf("prompt normalization failed at step %d: %w", stepNum, normErr)
-		}
-		stepPrompt = prependInstructionMessages(stepPrompt, stepInstructionMessages)
 
 		// Build generate options
 		genOpts := &provider.GenerateOptions{
@@ -1213,7 +1430,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Seed:                  stepSeed,
 			Headers:               opts.Headers,
 			Tools:                 toolutil.ResolveToolSchemas(stepTools),
-			ToolChoice:            stepToolChoice,
+			ToolChoice:            preparedToolChoice(stepToolChoice),
 			RuntimeContext:        runtimeContext,
 			ToolsContext:          toolsContext,
 			ResponseFormat:        responseFormat,
@@ -1238,7 +1455,13 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 			ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
 		})
+		openStepTelemetryCtx = stepCtx
 
+		// TS generateText takes one stepStartTimestampMs after onStepStart,
+		// just before onLanguageModelCallStart, and measures both the step
+		// time and the model call's response time from it (retries
+		// included).
+		stepStart := time.Now()
 		Notify(stepCtx, LanguageModelCallStartEvent{
 			CallID:              callID,
 			Provider:            stepModel.Provider(),
@@ -1265,65 +1488,110 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// should be parented under the step span, not the (by-then-ended)
 		// model-call span.
 		modelCallCtx := telemetry.FireOnLanguageModelCallStart(stepCtx, telemetry.LanguageModelCallStartEvent{
-			Settings:         telemetrySettings,
-			CallID:           callID,
-			ModelProvider:    stepModel.Provider(),
-			ModelID:          stepModel.ModelID(),
-			Prompt:           genOpts.Prompt,
-			Tools:            genOpts.Tools,
-			System:           stepSystem,
-			Temperature:      genOpts.Temperature,
-			MaxOutputTokens:  genOpts.MaxTokens,
-			TopP:             genOpts.TopP,
-			TopK:             genOpts.TopK,
-			PresencePenalty:  genOpts.PresencePenalty,
-			FrequencyPenalty: genOpts.FrequencyPenalty,
-			StopSequences:    genOpts.StopSequences,
-			Seed:             genOpts.Seed,
+			Settings:            telemetrySettings,
+			CallID:              callID,
+			ModelProvider:       stepModel.Provider(),
+			ModelID:             stepModel.ModelID(),
+			Prompt:              genOpts.Prompt,
+			Messages:            stepMessages,
+			InstructionMessages: stepInstructionMessages,
+			Tools:               genOpts.Tools,
+			System:              stepSystem,
+			Temperature:         genOpts.Temperature,
+			MaxOutputTokens:     genOpts.MaxTokens,
+			TopP:                genOpts.TopP,
+			TopK:                genOpts.TopK,
+			PresencePenalty:     genOpts.PresencePenalty,
+			FrequencyPenalty:    genOpts.FrequencyPenalty,
+			StopSequences:       genOpts.StopSequences,
+			Seed:                genOpts.Seed,
 		})
 
+		openStepTelemetryCtx = modelCallCtx
+
 		// Call the model with step context
-		modelCallStart := time.Now()
-		genResult, err := doGenerateWithGatewayRetry(modelCallCtx, stepModel, genOpts, opts.MaxRetries)
+		modelCallStart := stepStart
+		var genResult *types.GenerateResult
+		err := responseFormatErr
+		if err == nil {
+			genResult, err = doGenerateWithGatewayRetry(modelCallCtx, stepModel, genOpts, opts.MaxRetries)
+		}
 		if err != nil {
 			if opts.Timeout != nil {
-				if opts.Timeout.HasPerStep() && stepCtx.Err() != nil {
+				if opts.Timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
 					err = wrapTimeoutError(TimeoutReasonStep, err)
-				} else if opts.Timeout.HasTotal() && ctx.Err() != nil {
+				} else if opts.Timeout.HasTotal() && deadlineFired(ctx, totalParent) {
 					err = wrapTimeoutError(TimeoutReasonTotal, err)
 				}
 			}
-			// Close the step span (and, for the GenAI integration, the nested
-			// "chat" span) right here: they were opened in modelCallCtx/stepCtx,
-			// local to this loop iteration, which never gets threaded back into
-			// the outer ctx the deferred FireOnAbort/FireOnError below (line
-			// ~825) uses for the root span — so without this, they'd leak
-			// (H4 item 2). No error status is recorded for an abort, matching
-			// TS onAbort's plain span.end().
-			stepErr := err
-			if isAbortErr(stepCtx, err) {
-				stepErr = nil
-			}
-			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: stepErr})
-			return nil, fmt.Errorf("generation failed at step %d: %w", stepNum, err)
+			// The deferred handler closes the step span (and, for the GenAI
+			// integration, the nested "chat" span) through telemetry
+			// onStepError with modelCallCtx (H4 item 2). TS generateText
+			// reports an abort through onStepError too, so the spans record
+			// it as an error.
+			return nil, err
 		}
+		openStepTelemetryCtx = stepCtx
+		lastStructuredOutputText = genResult.StructuredOutputText
+		lastResponseHeaders = genResult.ResponseHeaders
 
 		modelCallUsage := telemetryUsageFromUsage(genResult.Usage)
 		performance := stepPerformance(modelCallStart, genResult.Usage, nil, nil)
 
 		// Parse (validate / repair) the tool calls of this model call before
 		// the language-model-call-end event (TS parseToolCall).
-		parsedToolCalls, parseErr := parseToolCalls(stepCtx, genResult.ToolCalls, ParseToolCallOptions{
+		// With tool choice none every tool call is rejected below, so user
+		// repair/refine callbacks must not process them (TS #23843).
+		parseRepair, parseRefine := repairToolCall, opts.ExperimentalRefineToolInput
+		if stepToolChoice.Type == types.ToolChoiceNone {
+			parseRepair, parseRefine = nil, nil
+		}
+		parsedToolCalls, preRefinementCalls, parseErr := parseToolCalls(stepCtx, genResult.ToolCalls, ParseToolCallOptions{
 			Tools:               stepTools,
-			RepairToolCall:      repairToolCall,
+			RepairToolCall:      parseRepair,
 			Instructions:        stepSystem,
 			InstructionMessages: stepInstructionMessages,
 			Messages:            stepMessages,
+			RefineToolInput:     parseRefine,
+			RuntimeContext:      runtimeContext,
+			ToolsContext:        toolsContext,
 		})
 		if parseErr != nil {
+			// Parsing fails only when the call is aborted (a repair is
+			// abandoned): TS throwIfAborted() rethrows the abort reason, the
+			// step or total TimeoutError when that deadline fired.
+			if opts.Timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
+				parseErr = wrapTimeoutError(TimeoutReasonStep, parseErr)
+			} else if opts.Timeout.HasTotal() && deadlineFired(ctx, totalParent) {
+				parseErr = wrapTimeoutError(TimeoutReasonTotal, parseErr)
+			} else if cause := context.Cause(stepCtx); cause != nil && errors.Is(parseErr, context.Canceled) {
+				parseErr = cause
+			}
 			return nil, parseErr
 		}
 		genResult.ToolCalls = parsedToolCalls
+
+		// URL-backed generated files are downloaded once, before anything
+		// observes the content (TS convertLanguageModelContent).
+		if resolvedContent, resolveErr := resolveContentFiles(stepCtx, genResult.Content); resolveErr != nil {
+			return nil, resolveErr
+		} else if len(resolvedContent) > 0 {
+			resolvedResult := *genResult
+			resolvedResult.Content = resolvedContent
+			genResult = &resolvedResult
+		}
+
+		// A deferred provider result is checked against the call's tools, not
+		// the step's active tools (TS convertLanguageModelContent gets `tools`).
+		callToolsByName := toolsByNameOf(opts.Tools)
+		if err := validateToolResultParts(genResult.Content, genResult.ToolCalls, callToolsByName); err != nil {
+			return nil, err
+		}
+		if content, changed := withDeferredToolResultMetadata(genResult.Content, genResult.ToolCalls, callToolsByName); changed {
+			withMetadata := *genResult
+			withMetadata.Content = content
+			genResult = &withMetadata
+		}
 
 		responseID := ""
 		responseModelID := stepModel.ModelID()
@@ -1348,7 +1616,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Settings:         telemetrySettings,
 			CallID:           callID,
 			ModelProvider:    stepModel.Provider(),
-			ModelID:          stepModel.ModelID(),
+			ModelID:          responseModelID, // the response model (TS event.modelId), not the request model
 			FinishReason:     string(genResult.FinishReason),
 			Usage:            modelCallUsage,
 			Content:          generateResultContentParts(genResult),
@@ -1357,7 +1625,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Performance:      languageModelCallPerformance(performance),
 		})
 
-		if violation := checkToolChoiceViolation(stepToolChoice, genResult.ToolCalls, genResult.FinishReason, stepModel.Provider(), stepModel.ModelID(), genResult.Content); violation != nil {
+		if violation := checkToolChoiceViolation(stepToolChoice, genResult.ToolCalls, genResult.FinishReason, stepModel.Provider(), stepModel.ModelID(), generateResultContentParts(genResult)); violation != nil {
 			return nil, violation
 		}
 
@@ -1396,25 +1664,26 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		// Create step result
 		stepResult := types.StepResult{
-			CallID:           callID,
-			StepNumber:       stepIndex,
-			Model:            types.StepModel{Provider: stepModel.Provider(), ModelID: stepModel.ModelID()},
-			Content:          genResult.Content,
-			Text:             genResult.Text,
-			Reasoning:        stepReasoning,
-			ReasoningText:    stepReasoningText,
-			Files:            stepFiles,
-			ToolCalls:        genResult.ToolCalls,
-			StaticToolCalls:  filterStaticToolCalls(genResult.ToolCalls),
-			DynamicToolCalls: filterDynamicToolCalls(genResult.ToolCalls),
-			ToolResults:      []types.ToolResult{},
-			FinishReason:     genResult.FinishReason,
-			RawFinishReason:  stepRawFinishReason,
-			Usage:            genResult.Usage,
-			Performance:      performance,
-			Warnings:         genResult.Warnings,
-			Sources:          stepSources,
-			Request:          stepRequest,
+			CallID:                       callID,
+			ExperimentalSteeringMessages: deliveredSteeringMessages,
+			StepNumber:                   stepIndex,
+			Model:                        types.StepModel{Provider: stepModel.Provider(), ModelID: stepModel.ModelID()},
+			Content:                      genResult.Content,
+			Text:                         genResult.Text,
+			Reasoning:                    stepReasoning,
+			ReasoningText:                stepReasoningText,
+			Files:                        stepFiles,
+			ToolCalls:                    genResult.ToolCalls,
+			StaticToolCalls:              filterStaticToolCalls(genResult.ToolCalls),
+			DynamicToolCalls:             filterDynamicToolCalls(genResult.ToolCalls),
+			ToolResults:                  []types.ToolResult{},
+			FinishReason:                 genResult.FinishReason,
+			RawFinishReason:              stepRawFinishReason,
+			Usage:                        genResult.Usage,
+			Performance:                  performance,
+			Warnings:                     genResult.Warnings,
+			Sources:                      stepSources,
+			Request:                      stepRequest,
 			Response: types.StepResponse{
 				ID:        stepResp.ID,
 				Timestamp: stepResp.Timestamp,
@@ -1431,14 +1700,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		result.Usage = result.Usage.Add(genResult.Usage)
 
 		hasUserApproval := false
+		var rawStepToolResults []types.ToolResult
+		toolResultsBefore := len(result.ToolResults)
 
 		// Check if there are tool calls to execute
-		preRefinementCalls := genResult.ToolCalls
-		refinedToolCalls, refineErr := RefineToolCalls(ctx, genResult.ToolCalls, stepTools, opts.ExperimentalRefineToolInput, runtimeContext, toolsContext)
-		if refineErr != nil {
-			return nil, fmt.Errorf("tool input refinement failed at step %d: %w", stepNum, refineErr)
-		}
-		genResult.ToolCalls = enrichToolCallMetadata(refinedToolCalls, stepTools)
+		genResult.ToolCalls = enrichToolCallMetadata(genResult.ToolCalls, stepTools)
 		stepResult.ToolCalls = genResult.ToolCalls
 		stepResult.StaticToolCalls = filterStaticToolCalls(genResult.ToolCalls)
 		stepResult.DynamicToolCalls = filterDynamicToolCalls(genResult.ToolCalls)
@@ -1447,13 +1713,27 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		result.StaticToolCalls = filterStaticToolCalls(result.ToolCalls)
 		result.DynamicToolCalls = filterDynamicToolCalls(result.ToolCalls)
 
-		// Notify the tools that the tool calls are available (TS order:
-		// OnInputStart then OnInputAvailable, valid calls only).
-		if err := invokeToolInputCallbacks(stepCtx, genResult.ToolCalls, stepTools, stepMessages, toolsContext); err != nil {
+		workflowBlocked := workflowBlockedToolStep(opts.Internal, genResult.FinishReason, stepResult.Content)
+		// With no tools at all the model's calls are all invalid (NoSuchTool)
+		// or provider-executed dynamic calls; TS still answers every invalid
+		// client call with a tool-error output.
+		toolsToExecute := genResult.ToolCalls
+		if len(stepTools) == 0 {
+			toolsToExecute = invalidClientToolCalls(genResult.ToolCalls)
+		}
+		resolveApprovals := len(toolsToExecute) > 0 && !workflowBlocked && len(stepTools) > 0
+
+		// Notify the tools that the tool calls are available and resolve each
+		// call's approval in the same pass, before any tool runs (TS
+		// generateText: per valid call with a known tool, OnInputStart, then
+		// OnInputAvailable, then resolveToolApproval; an error fails the call).
+		approvalIDs := toolCallEventCallbacks{generateID: generateID, approvalID: internalApprovalID(opts.Internal, generateID)}
+		preApprovals, err := notifyToolCallsAndResolveApprovals(stepCtx, genResult.ToolCalls, stepExecutionTools, stepMessages, runtimeContext, toolsContext, opts.ToolApproval, resolveApprovals, approvalIDs.newApprovalID)
+		if err != nil {
 			return nil, err
 		}
 
-		if len(genResult.ToolCalls) > 0 && len(stepTools) > 0 {
+		if len(toolsToExecute) > 0 && !workflowBlocked {
 			// Execute tools with context flow (v6.0) and structured callbacks (v6.1)
 			toolCallbacks := toolCallEventCallbacks{
 				callID:              callID,
@@ -1474,42 +1754,77 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				telemetrySettings:   telemetrySettings,
 				experimentalSandbox: stepSandbox,
 				toolExecutionMs:     map[string]int64{},
+				generateID:          generateID,
+				approvalID:          approvalIDs.approvalID,
 				executionBlocked:    !isToolExecutionAllowedFinishReason(genResult.FinishReason),
 			}
+			toolCallbacks.preApprovals = preApprovals
 			// Tools run inside the step context: the TS step timeout aborts the
-			// whole step (mergedAbortSignal also feeds executeTools).
-			toolResults, err := executeTools(stepCtx, genResult.ToolCalls, stepExecutionTools, runtimeContext, toolsContext, opts.ToolApproval, &result.Usage, toolCallbacks)
+			// whole step (mergedAbortSignal also feeds executeTools), and the
+			// tool spans parent under the step span.
+			toolResults, err := executeToolsConfigured(stepCtx, toolsToExecute, stepExecutionTools, runtimeContext, toolsContext, opts.ToolApproval, &result.Usage, toolCallbacks, toolCallConcurrency)
+			if failure := unwrapToolCallFailure(err); failure != nil {
+				return nil, failure
+			}
 			if err != nil {
-				if opts.Timeout != nil && opts.Timeout.HasPerStep() && stepCtx.Err() != nil && ctx.Err() == nil {
+				if opts.Timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
 					err = wrapTimeoutError(TimeoutReasonStep, err)
-				} else if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
+				} else if opts.Timeout.HasTotal() && deadlineFired(ctx, totalParent) {
 					err = wrapTimeoutError(TimeoutReasonTotal, err)
 				}
 				var conversionErr *toolResultModelOutputError
 				if errors.As(err, &conversionErr) {
 					return nil, conversionErr.Unwrap()
 				}
-				return nil, fmt.Errorf("tool execution failed at step %d: %w", stepNum, err)
+				return nil, err
 			}
 
 			// Validate tool results (v6.0.57)
 			// This ensures provider-executed tools have proper results
 			if err := validateToolResults(toolResults); err != nil {
-				return nil, fmt.Errorf("tool result validation failed at step %d: %w", stepNum, err)
+				return nil, err
 			}
 
-			stepResult.ToolResults = toolResults
-			stepResult.StaticToolResults = filterStaticToolResults(toolResults)
-			stepResult.DynamicToolResults = filterDynamicToolResults(toolResults)
-			stepResult.Content = append(stepResult.Content, attachInputSchemaInputs(toolResultsToContentParts(toolResults, opts.ExperimentalToolApprovalSecret), inputSchemaInputs(preRefinementCalls, genResult.ToolCalls))...)
+			// TS toolResults holds only tool-result content parts; approval
+			// requests, auto-denied calls and pending provider-executed
+			// markers stay out (the content parts carry them).
+			rawStepToolResults = toolResults
+			publicResults := types.ResultsForPublicView(toolResults)
+			stepResult.ToolResults = publicResults
+			stepResult.StaticToolResults = filterStaticToolResults(publicResults)
+			stepResult.DynamicToolResults = filterDynamicToolResults(publicResults)
+			// An approved local call that did not run (no Execute, or a finish
+			// reason that blocks execution) still records its approval
+			// request and response, as TS does.
+			attachToolApprovalSignatures(toolResults, opts.ExperimentalToolApprovalSecret)
+			contentResults := withApprovedUnexecutedCalls(toolResults, toolsToExecute, stepExecutionTools, preApprovals)
+			stepResult.Content = append(stepResult.Content, attachInputSchemaInputs(toolResultsToContentParts(contentResults, opts.ExperimentalToolApprovalSecret), inputSchemaInputs(preRefinementCalls, genResult.ToolCalls))...)
 			stepResult.Performance = finishStepPerformance(stepResult.Performance, stepStart, toolCallbacks.toolExecutionMs)
-			result.ToolResults = append(result.ToolResults, toolResults...)
+			result.ToolResults = append(result.ToolResults, publicResults...)
 			result.StaticToolResults = filterStaticToolResults(result.ToolResults)
 			result.DynamicToolResults = filterDynamicToolResults(result.ToolResults)
 			for _, tr := range toolResults {
 				if tr.ApprovalStatus == types.ToolApprovalStatusUserApproval {
 					hasUserApproval = true
 				}
+			}
+
+			// WorkflowAgent: answer provider-executed calls that got no result
+			// with an empty text result (TS resolveProviderToolResult). The
+			// loop still ends after a step without client tool calls (TS
+			// modelCallIterator done rule).
+			if opts.Internal != nil && opts.Internal.ContinueOnMissingProviderResult && providerResultFinishAllowed(genResult.FinishReason) {
+				answered := func(id string) bool { return contentAnswersProviderCall(stepResult.Content, id) }
+				for _, call := range missingProviderResultCalls(genResult.ToolCalls, toolsByName, answered) {
+					synthetic := emptyProviderResult(call, stepModel.Provider(), stepModel.ModelID())
+					stepResult.Content = append(stepResult.Content, toolResultContentFromToolResult(synthetic))
+					stepResult.ToolResults = append(stepResult.ToolResults, synthetic)
+					result.ToolResults = append(result.ToolResults, synthetic)
+				}
+				stepResult.StaticToolResults = filterStaticToolResults(stepResult.ToolResults)
+				stepResult.DynamicToolResults = filterDynamicToolResults(stepResult.ToolResults)
+				result.StaticToolResults = filterStaticToolResults(result.ToolResults)
+				result.DynamicToolResults = filterDynamicToolResults(result.ToolResults)
 			}
 
 			// Build response messages: assistant + tool results.
@@ -1550,9 +1865,13 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			}
 
 			// Build response messages for this (final) step.
+			finalCalls, finalContent := genResult.ToolCalls, stepResult.Content
+			if workflowBlocked {
+				finalCalls, finalContent = workflowBlockedResponse(finalCalls, finalContent)
+			}
 			finalMsgs := providerutils.ConvertToResponseMessages(
-				genResult.ToolCalls,
-				stepResult.Content,
+				finalCalls,
+				finalContent,
 				nil,
 			)
 			// Same rationale as the tool-calls branch above: TS updates
@@ -1564,25 +1883,33 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			stepResult.Response.Messages = finalMsgs
 			result.Response.Messages = finalMsgs
 
-			// Parse typed output if an Output spec was provided. Parse on a
-			// clean stop, or on any other finish reason besides tool-calls
-			// as long as the step produced text — e.g. a provider that
-			// omits/misreports finishReason but still returned the object
-			// (audit rows eed7950/9de0baf / WG4). A 'length' finish with no
-			// text is still skipped: it would likely be invalid/truncated
-			// JSON, surfaced instead as NoObjectGeneratedError by the Output
-			// spec's own parseCompleteOutput.
-			if op, ok := opts.Output.(outputProcessor); ok && shouldParseFinalOutput(genResult.FinishReason, genResult.Text) {
-				parsed, parseErr := op.parseCompleteOutput(stepCtx, ParseCompleteOutputOptions{
-					Text:         genResult.Text,
-					FinishReason: genResult.FinishReason,
-					Usage:        &genResult.Usage,
-				})
-				if parseErr != nil {
-					return nil, fmt.Errorf("output parsing failed: %w", parseErr)
-				}
-				result.Output = parsed
-			}
+		}
+
+		// Provider-executed results the model returned in this response are
+		// tool-result content parts, so TS toolResults has them (in content
+		// order, before the locally executed results).
+		if providerResults := providerToolResultsFromContent(generateResultContentParts(genResult), rawStepToolResults); len(providerResults) > 0 {
+			stepResult.ToolResults = append(providerResults, stepResult.ToolResults...)
+			stepResult.StaticToolResults = filterStaticToolResults(stepResult.ToolResults)
+			stepResult.DynamicToolResults = filterDynamicToolResults(stepResult.ToolResults)
+			result.ToolResults = append(result.ToolResults[:toolResultsBefore:toolResultsBefore], stepResult.ToolResults...)
+			result.StaticToolResults = filterStaticToolResults(result.ToolResults)
+			result.DynamicToolResults = filterDynamicToolResults(result.ToolResults)
+		}
+
+		// TS toolResults holds only tool-result content parts: a failed call
+		// (an execution error, an invalid call, a provider isError result) is
+		// a tool-error content part only (owner ruling r71). The telemetry
+		// step end keeps the failures: TelemetryStepEndEvent has no content,
+		// so its ToolResults carry them.
+		stepTelemetryToolResults := stepResult.ToolResults
+		if successful := successfulToolResults(stepResult.ToolResults); len(successful) != len(stepResult.ToolResults) {
+			stepResult.ToolResults = successful
+			stepResult.StaticToolResults = filterStaticToolResults(successful)
+			stepResult.DynamicToolResults = filterDynamicToolResults(successful)
+			result.ToolResults = append(result.ToolResults[:toolResultsBefore:toolResultsBefore], successful...)
+			result.StaticToolResults = filterStaticToolResults(result.ToolResults)
+			result.DynamicToolResults = filterDynamicToolResults(result.ToolResults)
 		}
 
 		// Deferred provider tool tracking (mirrors TS SDK pendingDeferredToolCalls).
@@ -1628,9 +1955,12 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		result.ResponseMessages = responseMessagesWithInitial(initialResponseMessages, result.Steps)
 		result.FinalStep = stepResult
 
+		openStep = nil
+		openStepTelemetryCtx = nil
+
 		// Call step finish callback (v6.0: with user context)
 		if onStepEnd != nil {
-			onStepEnd(ctx, stepResult, runtimeContext)
+			safeInvoke(func() { onStepEnd(ctx, stepResult, runtimeContext) })
 		}
 
 		// Emit structured OnStepFinishEvent.
@@ -1641,6 +1971,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			ModelProvider:      stepResult.Model.Provider,
 			ModelID:            stepResult.Model.ModelID,
 			Text:               stepResult.Text,
+			Content:            stepResult.Content,
 			Reasoning:          stepResult.Reasoning,
 			ReasoningText:      stepResult.ReasoningText,
 			ToolCalls:          stepResult.ToolCalls,
@@ -1652,19 +1983,25 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			FinishReason:       stepResult.FinishReason,
 			RawFinishReason:    stepResult.RawFinishReason,
 			Usage:              stepResult.Usage,
+			Performance:        stepResult.Performance,
 			Warnings:           stepResult.Warnings,
 			Sources:            stepResult.Sources,
 			Files:              stepResult.Files,
 			ProviderMetadata:   stepResult.ProviderMetadata,
 			ResponseHeaders:    genResult.ResponseHeaders,
-			Request:            GenerateStepRequest{Body: genResult.RawRequest},
+			// TS GenerateTextStepEndEvent = StepResult, which carries
+			// experimental_steeringMessages (step-result.ts).
+			ExperimentalSteeringMessages: stepResult.ExperimentalSteeringMessages,
+			// The step's request/response, so the bodies follow Include as
+			// in TS (the step-end event is the StepResult).
+			Request: GenerateStepRequest{Body: stepResult.Request.Body, Messages: stepResult.Request.Messages},
 			Response: GenerateStepResponse{
 				ID:        stepResult.Response.ID,
 				Timestamp: stepResult.Response.Timestamp,
 				ModelID:   stepResult.Response.ModelID,
 				Headers:   stepResult.Response.Headers,
 				Messages:  stepResult.ResponseMessages,
-				Body:      genResult.RawResponse,
+				Body:      stepResult.Response.Body,
 			},
 			ExperimentalContext: runtimeContext,
 			RuntimeContext:      runtimeContext,
@@ -1688,18 +2025,13 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				stepTelUsage.ReasoningTokens = genResult.Usage.OutputDetails.ReasoningTokens
 			}
 			var stepTelFiles []types.GeneratedFileContent
-			var stepTelReasoning strings.Builder
+			var stepTelReasoning []types.ReasoningContent
 			for _, part := range genResult.Content {
 				switch v := part.(type) {
 				case types.GeneratedFileContent:
 					stepTelFiles = append(stepTelFiles, v)
 				case types.ReasoningContent:
-					if v.Text != "" {
-						if stepTelReasoning.Len() > 0 {
-							stepTelReasoning.WriteByte('\n')
-						}
-						stepTelReasoning.WriteString(v.Text)
-					}
+					stepTelReasoning = append(stepTelReasoning, v)
 				}
 			}
 			telemetry.FireOnStepEnd(stepCtx, telemetry.TelemetryStepEndEvent{
@@ -1709,15 +2041,30 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				FinishReason:     string(genResult.FinishReason),
 				Usage:            stepTelUsage,
 				Text:             genResult.Text,
-				Reasoning:        stepTelReasoning.String(),
+				Reasoning:        telemetry.JoinReasoning(stepTelReasoning),
+				ReasoningParts:   stepTelReasoning,
+				ReasoningFiles:   reasoningFilesOf(genResult.Content),
 				ToolCalls:        genResult.ToolCalls,
+				ToolResults:      stepTelemetryToolResults,
 				Files:            stepTelFiles,
 				ProviderMetadata: genResult.ProviderMetadata,
-				Performance:      languageModelCallPerformance(performance),
-				Settings:         telemetrySettings,
-				RuntimeContext:   telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
-				ToolsContext:     telemetryToolsContext(telemetrySettings, toolsContext),
+				// TS onStepEnd records event.response.id/modelId/timestamp.
+				ResponseID:        stepResult.Response.ID,
+				ResponseModelID:   stepResult.Response.ModelID,
+				ResponseTimestamp: stepResult.Response.Timestamp,
+				Performance:       languageModelCallPerformance(performance),
+				Settings:          telemetrySettings,
+				RuntimeContext:    telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
+				ToolsContext:      telemetryToolsContext(telemetrySettings, toolsContext),
 			})
+		}
+
+		// An interrupted step (provider stream ended without a completion
+		// signal) never continues the loop (TS #23778). TS checks it first in
+		// shouldStartNextStep, so an interrupted step that requested an
+		// approval leaves the steering reason at "finished".
+		if genResult.FinishReason == types.FinishReasonInterrupted {
+			break
 		}
 
 		if hasUserApproval {
@@ -1726,23 +2073,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			// tool-approval-request content, not as a finish reason.
 			result.Text = stepResult.Text
 			result.FinishReason = stepResult.FinishReason
+			steeringEndReason = SteeringWaitingForToolResults
 			break
-		}
-
-		// Evaluate stop conditions after steps with tool results
-		if len(stopConditions) > 0 {
-			state := StopConditionState{
-				Steps:    result.Steps,
-				Messages: currentMessages,
-				Usage:    result.Usage,
-			}
-			if reason := EvaluateStopConditions(stopConditions, state); reason != "" {
-				result.StopReason = reason
-				lastStep := result.Steps[len(result.Steps)-1]
-				result.Text = lastStep.Text
-				result.FinishReason = lastStep.FinishReason
-				break
-			}
 		}
 
 		// Check if we should continue.
@@ -1756,24 +2088,54 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			}
 		}
 		hasPendingDeferred := len(pendingDeferredToolCalls) > 0
-		if !hasLocalToolCalls && !hasPendingDeferred {
-			break
-		}
 		// Continue only after every local tool call has an output or was
 		// denied (TS: clientToolOutputs + denied === clientToolCalls). Calls
 		// left unexecuted because of an unsafe finish reason stop the loop.
-		if hasUnresolvedLocalToolCalls(genResult.ToolCalls, toolsByName, stepResult.ToolResults) {
+		if hasUnresolvedLocalToolCalls(genResult.ToolCalls, toolsByName, rawStepToolResults) {
+			steeringEndReason = SteeringWaitingForToolResults
 			break
+		}
+		if !hasLocalToolCalls && !hasPendingDeferred {
+			// A waiting steering message keeps the loop going for another
+			// step, unless the step failed.
+			if !steeringRun.hasPendingMessages() {
+				break
+			}
+			if genResult.FinishReason == types.FinishReasonError {
+				steeringEndReason = SteeringError
+				break
+			}
+		}
+
+		// TS evaluates stop conditions only when the loop would otherwise
+		// continue (client tool calls resolved, plus results or pending
+		// deferred provider results); on natural ends they are not called.
+		if len(stopConditions) > 0 {
+			state := StopConditionState{
+				Steps:    result.Steps,
+				Messages: currentMessages,
+				Usage:    result.Usage,
+			}
+			if reason := EvaluateStopConditions(stopConditions, state); reason != "" {
+				result.StopReason = reason
+				lastStep := result.Steps[len(result.Steps)-1]
+				result.Text = lastStep.Text
+				result.FinishReason = lastStep.FinishReason
+				steeringEndReason = SteeringStopCondition
+				break
+			}
 		}
 
 		// TS generate-text.ts: the step timeout aborts the shared signal for
 		// good, so the next iteration's throwIfAborted() rejects with the
 		// step TimeoutError (a tool that swallowed the abort does not
 		// prevent it).
-		if opts.Timeout != nil && opts.Timeout.HasPerStep() && stepCtx.Err() != nil && ctx.Err() == nil {
+		if opts.Timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
 			return nil, wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
 		}
 	}
+
+	steeringRun.end(steeringEndReason)
 
 	// Populate TotalUsage and final shortcuts before finish callbacks observe the result.
 	result.TotalUsage = result.Usage
@@ -1790,9 +2152,45 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		result.ProviderMetadata = result.FinalStep.ProviderMetadata
 		result.Request = result.FinalStep.Request
 		result.Response = result.FinalStep.Response
+		result.ResponseHeaders = lastResponseHeaders
 		result.ResponseMessages = responseMessagesWithInitial(initialResponseMessages, result.Steps)
 		result.RawRequest = result.Request.Body
 		result.RawResponse = result.Response.Body
+	}
+
+	// Parse the typed output of the last step (TS generate-text.ts: after the
+	// loop, from lastStep.text/finishReason). The parse error is returned only
+	// after the step-end and end callbacks have fired, as in TS, where
+	// parseCompleteOutput runs after notify(onEnd).
+	var outputParseErr error
+	op, ok := opts.Output.(outputProcessor)
+	if opts.Output == nil {
+		// TS `output ?? text()`: without an Output option the output is the
+		// final step's text.
+		op, ok = &textOutput{}, true
+	}
+	if ok && len(result.Steps) > 0 && shouldParseFinalOutput(result.FinalStep.FinishReason, result.FinalStep.Text) {
+		lastUsage := result.FinalStep.Usage
+		// Select the structured output without changing the complete response
+		// content, text or messages exposed to callers (TS textForOutput).
+		textForOutput := result.FinalStep.Text
+		if lastStructuredOutputText != nil {
+			if rf, rfErr := op.ResponseFormat(ctx); rfErr == nil && rf != nil && rf.Type == "json" {
+				textForOutput = *lastStructuredOutputText
+			}
+		}
+		parsed, parseErr := op.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
+			Text:         textForOutput,
+			FinishReason: result.FinalStep.FinishReason,
+			Usage:        &lastUsage,
+		})
+		if parseErr != nil {
+			// TS parseCompleteOutput rejects with its own error (e.g.
+			// NoObjectGeneratedError), which generateText rethrows unchanged.
+			outputParseErr = parseErr
+		} else {
+			result.Output = parsed
+		}
 	}
 
 	// Fire OnFinish — integrations record output attributes and end their spans.
@@ -1810,26 +2208,34 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		telUsage.OutputTextTokens = result.Usage.OutputDetails.TextTokens
 		telUsage.ReasoningTokens = result.Usage.OutputDetails.ReasoningTokens
 	}
-	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
+	// TS onEndEvent.model is the final step's model (a PrepareStep model
+	// override included).
+	endProvider, endModelID := finalStepModel(result.Steps, opts.Model.Provider(), opts.Model.ModelID())
+	// The telemetry onEnd runs after the end callbacks: TS notify([onEnd,
+	// telemetry.onEnd]) starts the callback first.
+	endTelemetry := telemetry.TelemetryFinishEvent{
 		CallID:           callID,
 		OperationType:    "ai.generateText",
 		FinishReason:     string(result.FinishReason),
 		Usage:            telUsage,
-		ModelProvider:    opts.Model.Provider(),
-		ModelID:          opts.Model.ModelID(),
+		ModelProvider:    endProvider,
+		ModelID:          endModelID,
 		Text:             result.Text,
-		Reasoning:        result.ReasoningText,
+		Reasoning:        telemetry.JoinReasoning(result.Reasoning),
 		ToolCalls:        result.ToolCalls,
+		ToolResults:      result.ToolResults,
+		ReasoningParts:   result.Reasoning,
+		ReasoningFiles:   reasoningFilesOf(result.FinalStep.Content),
 		Files:            result.Files,
 		ProviderMetadata: result.ProviderMetadata,
 		Settings:         telemetrySettings,
 		RuntimeContext:   telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 		ToolsContext:     telemetryToolsContext(telemetrySettings, toolsContext),
-	})
+	}
 
 	// Call end callback (v6.0: with user context)
 	if onEnd != nil {
-		onEnd(ctx, result, runtimeContext)
+		safeInvoke(func() { onEnd(ctx, result, runtimeContext) })
 	}
 
 	// Emit structured OnFinishEvent.
@@ -1861,7 +2267,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		lastDynamicResults = last.DynamicToolResults
 		lastSources = last.Sources
 	}
-	Notify(ctx, OnFinishEvent{
+	var finalRequestMessages []types.Message
+	if len(result.Steps) > 0 {
+		finalRequestMessages = result.Steps[len(result.Steps)-1].Request.Messages
+	}
+	finishEvent := OnFinishEvent{
 		CallID:             callID,
 		StepNumber:         lastStepNum,
 		Model:              lastModel,
@@ -1886,20 +2296,34 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		Files:              result.Files,
 		ProviderMetadata:   result.ProviderMetadata,
 		ResponseHeaders:    result.ResponseHeaders,
-		Request:            GenerateStepRequest{Body: result.RawRequest},
+		// TS onEndEvent.request is the final step's request.
+		Request: GenerateStepRequest{Body: result.RawRequest, Messages: finalRequestMessages},
+		// TS onEndEvent.response is the final step's response, as the step-end
+		// event of that step reports it.
 		Response: GenerateStepResponse{
 			ID:        result.Response.ID,
 			Timestamp: result.Response.Timestamp,
 			ModelID:   result.Response.ModelID,
-			Headers:   result.ResponseHeaders,
+			Headers:   result.Response.Headers,
 			Messages:  result.Response.Messages,
 			Body:      result.RawResponse,
 		},
 		ExperimentalContext: runtimeContext,
 		RuntimeContext:      runtimeContext,
 		ToolsContext:        toolsContext,
-		Output:              result.Output,
-	}, onEndEvent)
+	}
+	if opts.Output != nil {
+		// The end event carries the output only for an Output spec (TS
+		// stream-text onEnd: `...(output != null ? { output } : {})`).
+		finishEvent.Output = result.Output
+	}
+	finishEvent.SetAggregatesFromSteps(result.Steps, result.ResponseMessages)
+	Notify(ctx, finishEvent, onEndEvent)
+	telemetry.FireOnEnd(ctx, endTelemetry)
+
+	if outputParseErr != nil {
+		return nil, outputParseErr
+	}
 
 	// Apply retention settings (v6.0.60)
 	// Exclude request/response bodies based on retention settings
@@ -1915,8 +2339,38 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	return result, nil
 }
 
+// preparedInstructionsSet reports whether a PrepareStep result sets
+// Instructions (TS prepareStepResult.instructions): it holds a pointer other
+// than the given one, or the callback wrote through the given one. The given
+// pointer passed back unchanged leaves System to decide (TS
+// `instructions ?? system`), so a callback that only sets System overrides
+// the step instructions.
+func preparedInstructionsSet(prepared, given *string, current string) bool {
+	return prepared != nil && (prepared != given || *given != current)
+}
+
+// preparedToolChoice is TS prepareToolChoice: the model call gets an unset
+// tool choice as auto (the events keep the choice as given).
+func preparedToolChoice(choice types.ToolChoice) types.ToolChoice {
+	if choice.Type == "" {
+		return types.AutoToolChoice()
+	}
+	return choice
+}
+
+// finalStepModel is the provider and model id of the last step (TS
+// onEndEvent.model: lastStep.model), or the fallback when there is none.
+func finalStepModel(steps []types.StepResult, provider, modelID string) (string, string) {
+	if n := len(steps); n > 0 && (steps[n-1].Model.Provider != "" || steps[n-1].Model.ModelID != "") {
+		return steps[n-1].Model.Provider, steps[n-1].Model.ModelID
+	}
+	return provider, modelID
+}
+
 // toolCallEventCallbacks groups the per-tool-call structured event callbacks
 // and their associated metadata. All fields are optional (nil-safe).
+// fallbackStart/fallbackFinish are the deprecated OnToolCallStart/
+// OnToolCallFinish; each runs only when onStart/onFinish is nil.
 type toolCallEventCallbacks struct {
 	callID              string
 	onStart             func(ctx context.Context, e OnToolCallStartEvent)
@@ -1936,10 +2390,43 @@ type toolCallEventCallbacks struct {
 	telemetrySettings   *TelemetrySettings
 	experimentalSandbox interface{}
 	toolExecutionMs     map[string]int64
+	// generateID creates approval IDs (TS generateId, InternalOptions.GenerateID
+	// here); nil uses a random ID.
+	generateID IDGenerator
+	// approvalID, when set, names each approval (InternalOptions.ApprovalID).
+	approvalID func(toolCallID string) string
 	// executionBlocked resolves approvals but skips local tool execution.
 	// Set when the step finished with a finish reason that does not allow
 	// automatic tool execution (TS isToolExecutionAllowedFinishReason).
 	executionBlocked bool
+	// onPreliminary receives the intermediate outputs of streaming
+	// (generator-style) tools as preliminary tool results. Nil when the caller
+	// does not stream (TS generateText ignores preliminary results).
+	onPreliminary func(result types.ToolResult)
+	// preApprovals holds approval decisions already made while the step's
+	// stream was running (StreamText); executeTools reuses them instead of
+	// resolving the approval a second time.
+	preApprovals map[string]preResolvedApproval
+	// startGate, when set, is waited on before the call's start callbacks
+	// fire, and startDone is called once they have fired (user start
+	// callback, then telemetry tool start). executeToolsLimited chains them
+	// so parallel calls fire their start callbacks in call order, as TS
+	// executeTools does (each executeToolCall reaches notify after the same
+	// number of awaits), while the executions still overlap.
+	startGate <-chan struct{}
+	startDone func()
+}
+
+// newApprovalID returns an approval ID from the call's ID generator (TS
+// generateId()).
+func (c toolCallEventCallbacks) newApprovalID(toolCallID string) string {
+	if c.approvalID != nil {
+		return c.approvalID(toolCallID)
+	}
+	if c.generateID != nil {
+		return c.generateID()
+	}
+	return newTextID()
 }
 
 // isToolExecutionAllowedFinishReason reports whether client tools may be
@@ -1954,6 +2441,73 @@ type toolResultModelOutputError struct {
 	err error
 }
 
+// toolCallFailureError is an error TS throws out of the tool-call handling,
+// failing the whole call instead of becoming a tool-error result: a tool
+// approval that cannot be resolved (for example an approval function whose
+// tool context fails its schema) or a tool context that fails its schema
+// before execution (TS resolveToolApproval and validateToolContext run
+// outside executeToolCall's try). Ordinary tool execution errors still
+// become tool errors.
+type toolCallFailureError struct {
+	err error
+	// toolContext marks a tool context that failed its schema. In StreamText
+	// TS's executeToolsFromStream catches that throw and enqueues an `error`
+	// part, so onError sees it (an approval failure stays a thrown error).
+	toolContext bool
+}
+
+func (e *toolCallFailureError) Error() string { return e.err.Error() }
+func (e *toolCallFailureError) Unwrap() error { return e.err }
+
+// unwrapToolCallFailure returns the error a toolCallFailureError carries, or
+// nil when err is not one.
+func unwrapToolCallFailure(err error) error {
+	var failure *toolCallFailureError
+	if errors.As(err, &failure) {
+		return failure.err
+	}
+	return nil
+}
+
+// notifyToolCallsAndResolveApprovals runs, for every valid call with a known
+// tool and in call order, the tool's OnInputStart and OnInputAvailable and
+// then (when resolveApprovals is set) the call's approval, as TS
+// generateText does in its tool-call notification loop: an error in either
+// fails the call before any tool executes. Approval ids are generated in call
+// order, only for calls whose approval applies.
+func notifyToolCallsAndResolveApprovals(ctx context.Context, calls []types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}, toolApproval interface{}, resolveApprovals bool, newID func(toolCallID string) string) (map[string]preResolvedApproval, error) {
+	if toolsCtx == nil {
+		toolsCtx = map[string]interface{}{}
+	}
+	out := map[string]preResolvedApproval{}
+	for _, call := range calls {
+		if call.Invalid {
+			continue
+		}
+		tool := findToolForCall(call, tools)
+		if tool == nil {
+			continue
+		}
+		if err := invokeToolInputCallbacksFor(ctx, call, tool, messages, toolsCtx); err != nil {
+			return nil, err
+		}
+		if !resolveApprovals {
+			continue
+		}
+		approval, err := resolveToolApproval(ctx, call, tools, messages, runtimeCtx, toolsCtx, toolApproval)
+		if err != nil {
+			return nil, err
+		}
+		pre := preResolvedApproval{approval: approval}
+		switch approval.Status {
+		case types.ToolApprovalStatusUserApproval, types.ToolApprovalStatusApproved, types.ToolApprovalStatusDenied:
+			pre.id = newID(call.ID)
+		}
+		out[call.ID] = pre
+	}
+	return out, nil
+}
+
 func (e *toolResultModelOutputError) Error() string {
 	if e == nil || e.err == nil {
 		return ""
@@ -1966,6 +2520,18 @@ func (e *toolResultModelOutputError) Unwrap() error {
 		return nil
 	}
 	return e.err
+}
+
+// invalidClientToolCalls returns the invalid, locally handled calls of a step:
+// the calls TS answers with a tool-error output even when no tools exist.
+func invalidClientToolCalls(calls []types.ToolCall) []types.ToolCall {
+	var out []types.ToolCall
+	for _, call := range calls {
+		if call.Invalid && !call.ProviderExecuted {
+			out = append(out, call)
+		}
+	}
+	return out
 }
 
 // isClientToolCall reports whether a tool call is one the SDK must answer
@@ -1988,8 +2554,7 @@ func hasUnresolvedLocalToolCalls(calls []types.ToolCall, toolsByName map[string]
 		resolved[result.ToolCallID] = true
 	}
 	for _, call := range calls {
-		tool := toolsByName[call.ToolName]
-		if tool == nil || tool.ProviderExecuted {
+		if !isClientToolCall(call, toolsByName) {
 			continue
 		}
 		if !resolved[call.ID] {
@@ -2014,6 +2579,31 @@ func responseMessagesFromSteps(steps []types.StepResult) []types.Message {
 	return messages
 }
 
+// applyPreparedTools applies the tool-related overrides a PrepareStep callback
+// returned. TS PrepareStepResult.activeTools restricts the step to those
+// tools (filterActiveTools on the full tool set); Go's additional Tools
+// override, when set, replaces the base the filter runs on.
+func applyPreparedTools(callTools, current []types.Tool, currentActive []string, prepared PrepareStepOptions) ([]types.Tool, []string) {
+	tools := current
+	if prepared.Tools != nil {
+		tools = prepared.Tools
+	}
+	if prepared.ActiveTools == nil {
+		return tools, currentActive
+	}
+	base := callTools
+	if prepared.Tools != nil {
+		base = prepared.Tools
+	}
+	return FilterActiveTools(base, prepared.ActiveTools), prepared.ActiveTools
+}
+
+// RefineToolCalls applies the per-tool input refiners to the valid calls.
+// Mirroring TS parseToolCall, where the refiner runs inside the parse try
+// block, a refiner that fails does not abort the generation: the call becomes
+// an invalid dynamic call carrying the error (which is then reported back to
+// the model like any other invalid tool call). Only a cancelled ctx is
+// returned as an error.
 func RefineToolCalls(ctx context.Context, calls []types.ToolCall, tools []types.Tool, refiners map[string]ToolInputRefiner, runtimeContext interface{}, toolsContext map[string]interface{}) ([]types.ToolCall, error) {
 	if len(calls) == 0 || len(refiners) == 0 {
 		return calls, nil
@@ -2038,32 +2628,19 @@ func RefineToolCalls(ctx context.Context, calls []types.ToolCall, tools []types.
 			ToolsContext:   toolsContext,
 		})
 		if err != nil {
-			return nil, err
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			refined[i].Dynamic = true
+			refined[i].Invalid = true
+			refined[i].Error = err
+			continue
 		}
 		if input != nil {
 			refined[i].Arguments = input
 		}
 	}
 	return refined, nil
-}
-
-// applyPreparedTools applies the tool-related overrides a PrepareStep callback
-// returned. TS PrepareStepResult.activeTools restricts the step to those
-// tools (filterActiveTools on the full tool set); Go's additional Tools
-// override, when set, replaces the base the filter runs on.
-func applyPreparedTools(callTools, current []types.Tool, currentActive []string, prepared PrepareStepOptions) ([]types.Tool, []string) {
-	tools := current
-	if prepared.Tools != nil {
-		tools = prepared.Tools
-	}
-	if prepared.ActiveTools == nil {
-		return tools, currentActive
-	}
-	base := callTools
-	if prepared.Tools != nil {
-		base = prepared.Tools
-	}
-	return FilterActiveTools(base, prepared.ActiveTools), prepared.ActiveTools
 }
 
 // executeTools executes a list of tool calls
@@ -2113,28 +2690,29 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 		// Check if this is a provider-executed tool.
 		// ProviderExecuted is set to true on types.Tool by each provider tool constructor
 		// (e.g., web_search_20260209, web_fetch_20260209, code_execution, tool_search_bm25).
-		providerExecuted := tool.ProviderExecuted
+		// A call the provider marks as executed is never run locally, even
+		// when a local tool has its name (TS: client tool calls are the calls
+		// without providerExecuted).
+		providerExecuted := tool.ProviderExecuted || call.ProviderExecuted
 
 		providerMetadata := mergeProviderMetadataMaps(call.ProviderMetadata, tool.ProviderMetadata)
-		approval, approvalErr := resolveToolApproval(ctx, call, availableTools, callbacks.messages, runtimeContext, toolsContext, toolApproval)
+		var approval types.ToolApprovalResult
+		var approvalErr error
 		approvalID := ""
-		if approval.Status == types.ToolApprovalStatusUserApproval ||
-			approval.Status == types.ToolApprovalStatusApproved ||
-			approval.Status == types.ToolApprovalStatusDenied {
-			approvalID = newCallID()
+		if pre, ok := callbacks.preApprovals[call.ID]; ok {
+			approval, approvalErr, approvalID = pre.approval, pre.err, pre.id
+		} else {
+			approval, approvalErr = resolveToolApproval(ctx, call, availableTools, callbacks.messages, runtimeContext, toolsContext, toolApproval)
+			if approval.Status == types.ToolApprovalStatusUserApproval ||
+				approval.Status == types.ToolApprovalStatusApproved ||
+				approval.Status == types.ToolApprovalStatusDenied {
+				approvalID = callbacks.newApprovalID(call.ID)
+			}
 		}
 		if approvalErr != nil {
-			results[i] = types.ToolResult{
-				ToolCallID:       call.ID,
-				ToolName:         call.ToolName,
-				Title:            call.Title,
-				Input:            call.Arguments,
-				Error:            approvalErr,
-				ProviderExecuted: providerExecuted,
-				ProviderMetadata: providerMetadata,
-				ToolMetadata:     call.ToolMetadata,
-			}
-			continue
+			// TS resolveToolApproval throws: the call fails, no tool-error
+			// result is sent to the model.
+			return nil, &toolCallFailureError{err: approvalErr}
 		}
 		switch approval.Status {
 		case types.ToolApprovalStatusDenied:
@@ -2157,23 +2735,26 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				ApprovalID:       approvalID,
 				ApprovalReason:   reason,
 				ProviderExecuted: providerExecuted,
-				ProviderMetadata: providerMetadata,
-				ToolMetadata:     call.ToolMetadata,
+				// TS approval parts carry toolCall.providerExecuted.
+				ProviderExecutedSet: call.ProviderExecutedSet,
+				ProviderMetadata:    providerMetadata,
+				ToolMetadata:        call.ToolMetadata,
 			}
 			continue
 		case types.ToolApprovalStatusUserApproval:
 			results[i] = types.ToolResult{
-				ToolCallID:       call.ID,
-				ToolName:         call.ToolName,
-				Title:            call.Title,
-				Input:            call.Arguments,
-				Result:           map[string]interface{}{"type": "tool-approval-request", "approvalId": approvalID, "toolCall": call},
-				ApprovalStatus:   types.ToolApprovalStatusUserApproval,
-				ApprovalReason:   approval.Reason,
-				ApprovalID:       approvalID,
-				ProviderExecuted: providerExecuted,
-				ProviderMetadata: providerMetadata,
-				ToolMetadata:     call.ToolMetadata,
+				ToolCallID:          call.ID,
+				ToolName:            call.ToolName,
+				Title:               call.Title,
+				Input:               call.Arguments,
+				Result:              map[string]interface{}{"type": "tool-approval-request", "approvalId": approvalID, "toolCall": call},
+				ApprovalStatus:      types.ToolApprovalStatusUserApproval,
+				ApprovalReason:      approval.Reason,
+				ApprovalID:          approvalID,
+				ProviderExecuted:    providerExecuted,
+				ProviderExecutedSet: call.ProviderExecutedSet,
+				ProviderMetadata:    providerMetadata,
+				ToolMetadata:        call.ToolMetadata,
 			}
 			continue
 		}
@@ -2181,18 +2762,19 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			// Provider-executed tool: result will come from provider in next response
 			// We don't execute locally, just mark as pending
 			results[i] = types.ToolResult{
-				ToolCallID:       call.ID,
-				ToolName:         call.ToolName,
-				Title:            call.Title,
-				Input:            call.Arguments,
-				Result:           nil,
-				Error:            nil,
-				ApprovalStatus:   approval.Status,
-				ApprovalID:       approvalID,
-				ApprovalReason:   approval.Reason,
-				ProviderExecuted: true,
-				ProviderMetadata: providerMetadata,
-				ToolMetadata:     call.ToolMetadata,
+				ToolCallID:          call.ID,
+				ToolName:            call.ToolName,
+				Title:               call.Title,
+				Input:               call.Arguments,
+				Result:              nil,
+				Error:               nil,
+				ApprovalStatus:      approval.Status,
+				ApprovalID:          approvalID,
+				ApprovalReason:      approval.Reason,
+				ProviderExecuted:    true,
+				ProviderExecutedSet: true,
+				ProviderMetadata:    providerMetadata,
+				ToolMetadata:        call.ToolMetadata,
 			}
 		} else {
 			if callbacks.executionBlocked || tool.Execute == nil {
@@ -2206,16 +2788,10 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 
 			toolContext, err := validateToolContextFor(tool, call.ToolName, toolsContext[call.ToolName])
 			if err != nil {
-				results[i] = types.ToolResult{
-					ToolCallID:       call.ID,
-					ToolName:         call.ToolName,
-					Title:            call.Title,
-					Input:            call.Arguments,
-					Error:            err,
-					ProviderMetadata: providerMetadata,
-					ToolMetadata:     call.ToolMetadata,
-				}
-				continue
+				// TS executeToolCall validates the tool context outside its
+				// try: a failure fails the call instead of becoming a tool
+				// error.
+				return nil, &toolCallFailureError{err: err, toolContext: true}
 			}
 
 			// Emit OnToolCallStartEvent before execution.
@@ -2234,7 +2810,14 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				RuntimeContext:      callbacks.runtimeContext,
 				ToolsContext:        callbacks.toolsContext,
 			}
-			Notify(ctx, startEvent, callbacks.onStart, callbacks.fallbackStart)
+			// TS `onToolExecutionStart ?? experimental_onToolCallStart`: the
+			// deprecated callback runs only when the new one is unset.
+			onToolStart := callbacks.onStart
+			if onToolStart == nil {
+				onToolStart = callbacks.fallbackStart
+			}
+			waitToolStartGate(ctx, callbacks.startGate)
+			Notify(ctx, startEvent, onToolStart)
 
 			// Fire telemetry OnToolCallStart — integrations may inject a child span.
 			toolCtx := telemetry.FireOnToolCallStart(ctx, telemetry.TelemetryToolCallStartEvent{
@@ -2245,6 +2828,9 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				Args:        call.Arguments,
 				ToolContext: telemetryToolContext(callbacks.telemetrySettings, call.ToolName, toolContext),
 			})
+			if callbacks.startDone != nil {
+				callbacks.startDone()
+			}
 
 			// Locally-executed tool: execute now, wrapped by telemetry integrations
 			// so they can create nested spans.
@@ -2259,6 +2845,21 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				Messages:            callbacks.messages,
 				ExperimentalSandbox: callbacks.experimentalSandbox,
 			}
+			if callbacks.onPreliminary != nil {
+				execOptions.OnPreliminaryResult = func(output interface{}) {
+					callbacks.onPreliminary(types.ToolResult{
+						ToolCallID:       call.ID,
+						ToolName:         call.ToolName,
+						Title:            call.Title,
+						Input:            call.Arguments,
+						Result:           output,
+						Preliminary:      true,
+						ProviderMetadata: providerMetadata,
+						ToolMetadata:     call.ToolMetadata,
+						Dynamic:          call.Dynamic,
+					})
+				}
+			}
 
 			// Apply per-tool timeout if configured.
 			execCtx := toolCtx
@@ -2267,7 +2868,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				execCtx, execCancel = context.WithTimeout(toolCtx, *toolTimeout)
 			}
 
-			startTime := now()
+			toolStarted := time.Now()
 			toolResult, toolErr := telemetry.FireExecuteToolWithSettings(
 				execCtx,
 				callbacks.telemetrySettings,
@@ -2277,7 +2878,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 					return tool.Execute(execCtx, args, execOptions)
 				},
 			)
-			durationMs := now() - startTime
+			durationMs := time.Since(toolStarted).Milliseconds()
 			if callbacks.toolExecutionMs != nil {
 				callbacks.toolExecutionMs[call.ID] = durationMs
 			}
@@ -2297,7 +2898,66 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				}
 				toolErr = wrapTimeoutError(TimeoutReasonTool, toolErr)
 			}
-			var modelOutput *types.ToolResultOutput
+			results[i] = types.ToolResult{
+				ToolCallID:       call.ID,
+				ToolName:         call.ToolName,
+				Title:            call.Title,
+				Input:            call.Arguments,
+				Result:           toolResult,
+				Error:            toolErr,
+				ApprovalStatus:   approvalStatus,
+				ApprovalID:       approvalID,
+				ApprovalReason:   approvalReason,
+				ProviderExecuted: false,
+				// Only the automatic approval response reads the call's
+				// explicit false; the local output has no providerExecuted.
+				ProviderExecutedSet: call.ProviderExecutedSet && approvalStatus == types.ToolApprovalStatusApproved,
+				ProviderMetadata:    providerMetadata,
+				ToolMetadata:        call.ToolMetadata,
+			}
+			// notifyToolEnd emits OnToolCallFinishEvent (whether the execution
+			// succeeded or failed) and then the telemetry OnToolExecutionEnd:
+			// TS notify([onToolExecutionEnd, telemetry.onToolExecutionEnd])
+			// starts the user callback first.
+			notifyToolEnd := func(output types.ToolResult) {
+				finishEvent := OnToolCallFinishEvent{
+					CallID:              callbacks.callID,
+					ToolCallID:          call.ID,
+					ToolName:            call.ToolName,
+					ToolCall:            call,
+					ToolContext:         toolContext,
+					ToolOutput:          output,
+					ToolExecutionMs:     durationMs,
+					Args:                call.Arguments,
+					Result:              toolResult,
+					Error:               toolErr,
+					DurationMs:          durationMs,
+					StepNumber:          callbacks.stepNum,
+					ModelProvider:       callbacks.modelProvider,
+					ModelID:             callbacks.modelID,
+					Messages:            callbacks.messages,
+					ExperimentalContext: callbacks.experimentalContext,
+					RuntimeContext:      callbacks.runtimeContext,
+					ToolsContext:        callbacks.toolsContext,
+				}
+				// TS `onToolExecutionEnd ?? experimental_onToolCallFinish`.
+				onToolEnd := callbacks.onFinish
+				if onToolEnd == nil {
+					onToolEnd = callbacks.fallbackFinish
+				}
+				Notify(ctx, finishEvent, onToolEnd)
+				telemetry.FireOnToolCallFinish(toolCtx, telemetry.TelemetryToolCallFinishEvent{
+					Settings:    callbacks.telemetrySettings,
+					CallID:      callbacks.callID,
+					ToolCallID:  call.ID,
+					ToolName:    call.ToolName,
+					Args:        call.Arguments,
+					Result:      toolResult,
+					Error:       toolErr,
+					DurationMs:  durationMs,
+					ToolContext: telemetryToolContext(callbacks.telemetrySettings, call.ToolName, toolContext),
+				})
+			}
 			if toolErr == nil && tool.ToModelOutput != nil {
 				converted, convertErr := tool.ToModelOutput(ctx, types.ToModelOutputOptions{
 					ToolCallID: call.ID,
@@ -2307,74 +2967,28 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 					// ToModelOutput implementations still reading it.
 					Result: toolResult, //nolint:staticcheck
 					ToolCall: &types.ToolCall{
-						ID:               call.ID,
-						ToolName:         call.ToolName,
-						Title:            call.Title,
-						Arguments:        call.Arguments,
-						ProviderExecuted: call.ProviderExecuted,
-						ProviderMetadata: call.ProviderMetadata,
-						ToolMetadata:     call.ToolMetadata,
-						Dynamic:          call.Dynamic,
+						ID:                  call.ID,
+						ToolName:            call.ToolName,
+						Title:               call.Title,
+						Arguments:           call.Arguments,
+						ProviderExecuted:    call.ProviderExecuted,
+						ProviderExecutedSet: call.ProviderExecutedSet,
+						ProviderMetadata:    call.ProviderMetadata,
+						ToolMetadata:        call.ToolMetadata,
+						Dynamic:             call.Dynamic,
 					},
 					Usage: usage,
 				})
 				if convertErr != nil {
+					// TS converts the output (createToolModelOutput) only after
+					// executeToolCall has notified onToolExecutionEnd, so the
+					// execution's end events still fire before the call fails.
+					notifyToolEnd(results[i])
 					return results, &toolResultModelOutputError{err: convertErr}
 				}
-				modelOutput = converted
+				results[i].ModelOutput = converted
 			}
-
-			results[i] = types.ToolResult{
-				ToolCallID:       call.ID,
-				ToolName:         call.ToolName,
-				Title:            call.Title,
-				Input:            call.Arguments,
-				Result:           toolResult,
-				ModelOutput:      modelOutput,
-				Error:            toolErr,
-				ApprovalStatus:   approvalStatus,
-				ApprovalID:       approvalID,
-				ApprovalReason:   approvalReason,
-				ProviderExecuted: false,
-				ProviderMetadata: providerMetadata,
-				ToolMetadata:     call.ToolMetadata,
-			}
-
-			// Fire telemetry OnToolCallFinish so integrations can record errors.
-			telemetry.FireOnToolCallFinish(toolCtx, telemetry.TelemetryToolCallFinishEvent{
-				Settings:    callbacks.telemetrySettings,
-				CallID:      callbacks.callID,
-				ToolCallID:  call.ID,
-				ToolName:    call.ToolName,
-				Args:        call.Arguments,
-				Result:      toolResult,
-				Error:       toolErr,
-				DurationMs:  durationMs,
-				ToolContext: telemetryToolContext(callbacks.telemetrySettings, call.ToolName, toolContext),
-			})
-
-			// Emit OnToolCallFinishEvent after execution, whether it succeeded or failed.
-			finishEvent := OnToolCallFinishEvent{
-				CallID:              callbacks.callID,
-				ToolCallID:          call.ID,
-				ToolName:            call.ToolName,
-				ToolCall:            call,
-				ToolContext:         toolContext,
-				ToolOutput:          results[i],
-				ToolExecutionMs:     durationMs,
-				Args:                call.Arguments,
-				Result:              toolResult,
-				Error:               toolErr,
-				DurationMs:          durationMs,
-				StepNumber:          callbacks.stepNum,
-				ModelProvider:       callbacks.modelProvider,
-				ModelID:             callbacks.modelID,
-				Messages:            callbacks.messages,
-				ExperimentalContext: callbacks.experimentalContext,
-				RuntimeContext:      callbacks.runtimeContext,
-				ToolsContext:        callbacks.toolsContext,
-			}
-			Notify(ctx, finishEvent, callbacks.onFinish, callbacks.fallbackFinish)
+			notifyToolEnd(results[i])
 		}
 	}
 
@@ -2429,6 +3043,34 @@ func telemetryCallbackInfo(t *TelemetrySettings) (functionID string, metadata ma
 	return functionID, metadata
 }
 
+// telemetryToolResultsOf returns the tool results of every step (TS
+// onEndEvent.toolResults).
+func telemetryToolResultsOf(steps []types.StepResult) []types.ToolResult {
+	var out []types.ToolResult
+	for _, step := range steps {
+		out = append(out, step.ToolResults...)
+	}
+	return out
+}
+
+// telemetryFinalReasoningOf returns the reasoning parts of the final step (TS
+// finalStep.reasoning).
+func telemetryFinalReasoningOf(steps []types.StepResult) []types.ReasoningContent {
+	if len(steps) == 0 {
+		return nil
+	}
+	return steps[len(steps)-1].Reasoning
+}
+
+// telemetryFinalReasoningFilesOf returns the reasoning file parts of the
+// final step.
+func telemetryFinalReasoningFilesOf(steps []types.StepResult) []types.ReasoningFileContent {
+	if len(steps) == 0 {
+		return nil
+	}
+	return reasoningFilesOf(steps[len(steps)-1].Content)
+}
+
 func telemetryUsageFromUsage(usage types.Usage) telemetry.TelemetryUsage {
 	out := telemetry.TelemetryUsage{
 		InputTokens:  usage.InputTokens,
@@ -2478,9 +3120,6 @@ func buildReasoningText(parts []types.ReasoningContent) string {
 	var sb strings.Builder
 	for _, p := range parts {
 		if p.Text != "" {
-			if sb.Len() > 0 {
-				sb.WriteByte('\n')
-			}
 			sb.WriteString(p.Text)
 		}
 	}
@@ -2504,6 +3143,30 @@ func filterDynamicToolCalls(calls []types.ToolCall) []types.ToolCall {
 	for _, c := range calls {
 		if c.Dynamic {
 			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// successfulToolResults returns the results that are TS tool-result parts:
+// it drops failed calls (Error set, or a provider IsError result), which TS
+// reports only as tool-error content. The input is returned as is when
+// nothing fails.
+func successfulToolResults(results []types.ToolResult) []types.ToolResult {
+	failed := func(tr types.ToolResult) bool { return tr.Error != nil || isTrue(tr.IsError) }
+	n := 0
+	for _, tr := range results {
+		if failed(tr) {
+			n++
+		}
+	}
+	if n == 0 {
+		return results
+	}
+	out := make([]types.ToolResult, 0, len(results)-n)
+	for _, tr := range results {
+		if !failed(tr) {
+			out = append(out, tr)
 		}
 	}
 	return out

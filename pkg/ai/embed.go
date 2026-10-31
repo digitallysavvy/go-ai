@@ -3,23 +3,42 @@ package ai
 import (
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/version"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
-// newCallID generates a short random hex string for correlating start/finish events.
-func newCallID() string {
-	b := make([]byte, 8)
+// newCallID generates the call ID that correlates start/finish events: "call-"
+// plus 24 random alphanumerics, the TS createIdGenerator({prefix: 'call',
+// size: 24}) default every AI SDK operation uses for callId.
+func newCallID() string { return newPrefixedID("call") }
+
+// newTextID is TS generateText/streamText's default generateId,
+// createIdGenerator({prefix: 'aitxt', size: 24}): generated response,
+// approval and part IDs.
+func newTextID() string { return newPrefixedID("aitxt") }
+
+// newObjectID is TS generateObject/streamObject's default generateId,
+// createIdGenerator({prefix: 'aiobj', size: 24}).
+func newObjectID() string { return newPrefixedID("aiobj") }
+
+// newPrefixedID returns prefix, "-" and 24 random alphanumerics.
+func newPrefixedID(prefix string) string {
+	b := make([]byte, 24)
 	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	for i := range b {
+		b[i] = defaultIDAlphabet[int(b[i])%len(defaultIDAlphabet)]
+	}
+	return prefix + "-" + string(b)
 }
 
 func warningsOrEmpty(warnings []types.Warning) []types.Warning {
@@ -44,6 +63,8 @@ type EmbedOnStartEvent struct {
 	// Values are the input texts being embedded (single value for Embed,
 	// multiple for EmbedMany).
 	Values []string
+	// Dimensions is the requested output dimensions, when specified.
+	Dimensions *int
 	// MaxRetries is the configured retry limit (0 if not set).
 	MaxRetries int
 	// Ctx is the context passed to Embed / EmbedMany.
@@ -139,6 +160,11 @@ type EmbedOptions struct {
 	// Keyed by provider name, e.g. map[string]interface{}{"openai": map[string]interface{}{"dimensions": 256}}.
 	ProviderOptions map[string]interface{}
 
+	// Dimensions is the requested number of output dimensions for the
+	// embeddings. Must be a positive integer when set. Support and allowed
+	// values depend on the model and provider. nil leaves it unspecified.
+	Dimensions *int
+
 	// Telemetry configures observability for this operation.
 	// When both Telemetry and ExperimentalTelemetry are set, Telemetry wins.
 	Telemetry *TelemetrySettings
@@ -172,6 +198,9 @@ type EmbedOptions struct {
 
 // EmbedResult contains the result of an embedding operation
 type EmbedResult struct {
+	// Value is the text that was embedded (TS EmbedResult.value).
+	Value string
+
 	// Embedding vector
 	Embedding []float64
 
@@ -194,8 +223,9 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
-	if opts.Input == "" {
-		return nil, fmt.Errorf("input is required")
+	// TS embed() does not reject an empty value; it reaches the provider.
+	if err := validateEmbeddingDimensions(opts.Dimensions); err != nil {
+		return nil, err
 	}
 	if err := validateMaxRetries(opts.MaxRetries); err != nil {
 		return nil, err
@@ -214,8 +244,9 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	var telRecordInputs, telRecordOutputs bool
 	if opts.ExperimentalTelemetry != nil {
 		telFuncID = opts.ExperimentalTelemetry.FunctionID
-		telRecordInputs = opts.ExperimentalTelemetry.RecordInputs
-		telRecordOutputs = opts.ExperimentalTelemetry.RecordOutputs
+		// The event carries TS telemetry?.recordInputs: unset reads as false.
+		telRecordInputs = opts.ExperimentalTelemetry.RecordInputs != nil && *opts.ExperimentalTelemetry.RecordInputs
+		telRecordOutputs = opts.ExperimentalTelemetry.RecordOutputs != nil && *opts.ExperimentalTelemetry.RecordOutputs
 	}
 
 	// Fire ExperimentalOnStart callback
@@ -226,6 +257,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		ModelID:          opts.Model.ModelID(),
 		RuntimeContext:   opts.RuntimeContext,
 		Values:           []string{opts.Input},
+		Dimensions:       opts.Dimensions,
 		MaxRetries:       resolvedMaxRetries,
 		Ctx:              ctx,
 		Headers:          opts.Headers,
@@ -240,9 +272,9 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedStart, startEvent)
 	}
 	if opts.OnStart != nil {
-		opts.OnStart(startEvent)
+		safeInvoke(func() { opts.OnStart(startEvent) })
 	} else if opts.ExperimentalOnStart != nil {
-		opts.ExperimentalOnStart(startEvent)
+		safeInvoke(func() { opts.ExperimentalOnStart(startEvent) })
 	}
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
 		CallID:         callID,
@@ -251,6 +283,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		ModelID:        opts.Model.ModelID(),
 		Settings:       opts.ExperimentalTelemetry,
 		Prompt:         telemetryInputValue(opts.ExperimentalTelemetry, opts.Input),
+		Dimensions:     opts.Dimensions,
 		Headers:        opts.Headers,
 		MaxRetries:     &resolvedMaxRetries,
 		RuntimeContext: telemetryRuntimeContext(opts.ExperimentalTelemetry, opts.RuntimeContext),
@@ -261,6 +294,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	embedModelOpts := &provider.EmbedModelOptions{
 		ProviderOptions: opts.ProviderOptions,
 		Headers:         opts.Headers,
+		Dimensions:      opts.Dimensions,
 	}
 
 	// Call the model (with retries). Mirrors TS embed(): the embed-call
@@ -276,6 +310,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 			ModelProvider: opts.Model.Provider(),
 			ModelID:       opts.Model.ModelID(),
 			Values:        []string{opts.Input},
+			Dimensions:    opts.Dimensions,
 		})
 		res, callErr := opts.Model.DoEmbed(callCtx, opts.Input, embedModelOpts)
 		if callErr != nil {
@@ -333,6 +368,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	}
 
 	embedResult := &EmbedResult{
+		Value:            opts.Input,
 		Embedding:        result.Embedding,
 		Usage:            result.Usage,
 		Warnings:         warningsOrEmpty(result.Warnings),
@@ -364,13 +400,13 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedEnd, finishEvent)
 	}
 	if opts.OnEnd != nil {
-		opts.OnEnd(finishEvent)
+		safeInvoke(func() { opts.OnEnd(finishEvent) })
 	} else {
 		if opts.ExperimentalOnEnd != nil {
-			opts.ExperimentalOnEnd(finishEvent)
+			safeInvoke(func() { opts.ExperimentalOnEnd(finishEvent) })
 		}
 		if opts.ExperimentalOnFinish != nil {
-			opts.ExperimentalOnFinish(finishEvent)
+			safeInvoke(func() { opts.ExperimentalOnFinish(finishEvent) })
 		}
 	}
 	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
@@ -421,6 +457,11 @@ type EmbedManyOptions struct {
 	// Keyed by provider name, e.g. map[string]interface{}{"openai": map[string]interface{}{"dimensions": 256}}.
 	ProviderOptions map[string]interface{}
 
+	// Dimensions is the requested number of output dimensions for the
+	// embeddings. Must be a positive integer when set. Support and allowed
+	// values depend on the model and provider. nil leaves it unspecified.
+	Dimensions *int
+
 	// Telemetry configures observability for this operation.
 	// When both Telemetry and ExperimentalTelemetry are set, Telemetry wins.
 	Telemetry *TelemetrySettings
@@ -454,6 +495,10 @@ type EmbedManyOptions struct {
 
 // EmbedManyResult contains the result of a batch embedding operation
 type EmbedManyResult struct {
+	// Values are the texts that were embedded, in input order (TS
+	// EmbedManyResult.values).
+	Values []string
+
 	// Embeddings for each input
 	Embeddings [][]float64
 
@@ -489,6 +534,9 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 	// TS embedMany does not special-case an empty values array: it falls
 	// through to model.doEmbed({values: []}) (or an empty batch split) and
 	// returns an empty result. Match that instead of erroring.
+	if err := validateEmbeddingDimensions(opts.Dimensions); err != nil {
+		return nil, err
+	}
 	if err := validateMaxRetries(opts.MaxRetries); err != nil {
 		return nil, err
 	}
@@ -506,8 +554,9 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 	var telRecordInputs, telRecordOutputs bool
 	if opts.ExperimentalTelemetry != nil {
 		telFuncID = opts.ExperimentalTelemetry.FunctionID
-		telRecordInputs = opts.ExperimentalTelemetry.RecordInputs
-		telRecordOutputs = opts.ExperimentalTelemetry.RecordOutputs
+		// The event carries TS telemetry?.recordInputs: unset reads as false.
+		telRecordInputs = opts.ExperimentalTelemetry.RecordInputs != nil && *opts.ExperimentalTelemetry.RecordInputs
+		telRecordOutputs = opts.ExperimentalTelemetry.RecordOutputs != nil && *opts.ExperimentalTelemetry.RecordOutputs
 	}
 
 	// Fire ExperimentalOnStart callback
@@ -518,6 +567,7 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		ModelID:          opts.Model.ModelID(),
 		RuntimeContext:   opts.RuntimeContext,
 		Values:           opts.Inputs,
+		Dimensions:       opts.Dimensions,
 		MaxRetries:       resolvedMaxRetries,
 		Ctx:              ctx,
 		Headers:          opts.Headers,
@@ -532,9 +582,9 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedStart, startEvent)
 	}
 	if opts.OnStart != nil {
-		opts.OnStart(startEvent)
+		safeInvoke(func() { opts.OnStart(startEvent) })
 	} else if opts.ExperimentalOnStart != nil {
-		opts.ExperimentalOnStart(startEvent)
+		safeInvoke(func() { opts.ExperimentalOnStart(startEvent) })
 	}
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
 		CallID:         callID,
@@ -544,6 +594,7 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		Settings:       opts.ExperimentalTelemetry,
 		Prompt:         telemetryInputValue(opts.ExperimentalTelemetry, opts.Inputs),
 		ValueCount:     len(opts.Inputs),
+		Dimensions:     opts.Dimensions,
 		Values:         opts.Inputs,
 		Headers:        opts.Headers,
 		MaxRetries:     &resolvedMaxRetries,
@@ -556,6 +607,8 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
 		return nil, err
 	}
+
+	embedResult.Values = opts.Inputs
 
 	logModelWarnings(embedResult.Warnings, opts.Model.Provider(), opts.Model.ModelID())
 
@@ -581,13 +634,13 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		telemetry.PublishDiagnostic(ctx, telemetry.DiagnosticEventOnEmbedEnd, finishEvent)
 	}
 	if opts.OnEnd != nil {
-		opts.OnEnd(finishEvent)
+		safeInvoke(func() { opts.OnEnd(finishEvent) })
 	} else {
 		if opts.ExperimentalOnEnd != nil {
-			opts.ExperimentalOnEnd(finishEvent)
+			safeInvoke(func() { opts.ExperimentalOnEnd(finishEvent) })
 		}
 		if opts.ExperimentalOnFinish != nil {
-			opts.ExperimentalOnFinish(finishEvent)
+			safeInvoke(func() { opts.ExperimentalOnFinish(finishEvent) })
 		}
 	}
 	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
@@ -605,19 +658,30 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 	return embedResult, nil
 }
 
+// telemetryUsageFromEmbeddingUsage carries the embedding token count the legacy
+// root span records as ai.usage.tokens (TS usage.tokens). A provider that
+// reports no usage (TS NaN, Go zero) leaves it unset, like TS dropping the NaN
+// attribute.
 func telemetryUsageFromEmbeddingUsage(usage types.EmbeddingUsage) telemetry.TelemetryUsage {
-	total := int64(usage.TotalTokens)
+	tokens := usage.Tokens
+	if math.IsNaN(tokens) || math.IsInf(tokens, 0) || tokens <= 0 {
+		tokens = float64(usage.TotalTokens)
+	}
+	if tokens <= 0 {
+		return telemetry.TelemetryUsage{}
+	}
+	total := int64(tokens)
 	return telemetry.TelemetryUsage{TotalTokens: &total}
 }
 
 func telemetryInputValue(settings *TelemetrySettings, value interface{}) string {
-	if settings != nil && !settings.RecordInputs {
+	if !settings.ShouldRecordInputs() {
 		return ""
 	}
 	if str, ok := value.(string); ok {
 		return str
 	}
-	b, err := json.Marshal(value)
+	b, err := jsonstr.Marshal(value)
 	if err != nil {
 		return ""
 	}
@@ -752,14 +816,8 @@ func RankBySimilarity(query []float64, candidates [][]float64) ([]int, []float64
 		results[i] = result{index: i, similarity: sim}
 	}
 
-	// Sort by similarity (descending)
-	for i := 0; i < len(results); i++ {
-		for j := i + 1; j < len(results); j++ {
-			if results[j].similarity > results[i].similarity {
-				results[i], results[j] = results[j], results[i]
-			}
-		}
-	}
+	// Sort by similarity (descending); ties keep input order.
+	sort.SliceStable(results, func(i, j int) bool { return results[i].similarity > results[j].similarity })
 
 	// Extract indices and similarities
 	indices := make([]int, len(results))
@@ -770,4 +828,16 @@ func RankBySimilarity(query []float64, candidates [][]float64) ([]int, []float64
 	}
 
 	return indices, similarities, nil
+}
+
+// validateEmbeddingDimensions rejects a non-positive dimensions value (TS
+// validateEmbeddingDimensions). nil means unspecified.
+func validateEmbeddingDimensions(dimensions *int) error {
+	if dimensions != nil && *dimensions <= 0 {
+		return &providererrors.InvalidArgumentError{
+			Field:   "dimensions",
+			Message: "dimensions must be a positive integer",
+		}
+	}
+	return nil
 }

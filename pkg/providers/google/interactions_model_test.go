@@ -37,8 +37,8 @@ func TestInteractionsGenerateRequestAndResponse(t *testing.T) {
 			"model":"gemini-2.5-flash",
 			"created":"2026-05-04T19:00:00Z",
 			"steps":[
-				{"type":"thought","signature":"sig-1","summary":[{"type":"text","text":"thinking"}]},
-				{"type":"text","text":"hello"},
+				{"type":"thought","signature":"sig-1","summary":[{"type":"model_output","content":[{"type":"text","text":"thinking"}]}]},
+				{"type":"model_output","content":[{"type":"text","text":"hello"}]},
 				{"type":"function_call","id":"call-1","name":"lookup","arguments":{"q":"x"},"signature":"sig-2"}
 			],
 			"usage":{"total_input_tokens":3,"total_output_tokens":4,"total_tokens":7,"total_thought_tokens":2}
@@ -153,7 +153,7 @@ func TestInteractionsPreviousInteractionCompactsAssistantAndToolResult(t *testin
 	var captured map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&captured)
-		_, _ = fmt.Fprint(w, `{"id":"v1_next","status":"completed","steps":[{"type":"text","text":"next"}]}`)
+		_, _ = fmt.Fprint(w, `{"id":"v1_next","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"next"}]}]}`)
 	}))
 	defer server.Close()
 
@@ -193,7 +193,7 @@ func TestInteractionsPreviousInteractionCompactsAssistantAndToolResult(t *testin
 	}
 }
 
-func TestInteractionsAgentPollingTimeoutCancelsInteraction(t *testing.T) {
+func TestInteractionsAgentPollingTimeoutDoesNotCancelInteraction(t *testing.T) {
 	t.Parallel()
 
 	cancelCalled := make(chan struct{}, 1)
@@ -224,10 +224,15 @@ func TestInteractionsAgentPollingTimeoutCancelsInteraction(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
+	if want := "google.interactions: timed out polling interaction v1_agent after 5ms."; err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+	// TS pollGoogleInteractionUntilTerminal only cancels on abort errors; a
+	// timeout leaves the run going so it can be retrieved by id.
 	select {
 	case <-cancelCalled:
-	case <-time.After(time.Second):
-		t.Fatal("expected cancel endpoint to be called")
+		t.Fatal("timeout must not cancel the interaction")
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 
@@ -251,7 +256,7 @@ func TestInteractionsAgentUsesCurrentDeepResearchAgentName(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		_, _ = fmt.Fprint(w, `{"id":"v1_agent","status":"completed","steps":[{"type":"text","text":"ok"}]}`)
+		_, _ = fmt.Fprint(w, `{"id":"v1_agent","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"ok"}]}]}`)
 	}))
 	defer server.Close()
 
@@ -266,8 +271,9 @@ func TestInteractionsAgentUsesCurrentDeepResearchAgentName(t *testing.T) {
 	if captured["agent"] != InteractionsAgentDeepResearchProPreview {
 		t.Fatalf("agent = %v, want %s", captured["agent"], InteractionsAgentDeepResearchProPreview)
 	}
-	if captured["background"] != true {
-		t.Fatalf("background = %v", captured["background"])
+	// TS sends background only when providerOptions.google.background is set.
+	if _, ok := captured["background"]; ok {
+		t.Fatalf("background = %v, want it omitted", captured["background"])
 	}
 }
 
@@ -279,7 +285,7 @@ func TestInteractionsTypedImageConfigMapsToSnakeCase(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		_, _ = fmt.Fprint(w, `{"id":"v1_img","status":"completed","steps":[{"type":"text","text":"ok"}]}`)
+		_, _ = fmt.Fprint(w, `{"id":"v1_img","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"ok"}]}]}`)
 	}))
 	defer server.Close()
 
@@ -346,7 +352,7 @@ func TestInteractionsResponseFormatVideoEntry(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		_, _ = fmt.Fprint(w, `{"id":"v1_vid","status":"completed","steps":[{"type":"text","text":"ok"}]}`)
+		_, _ = fmt.Fprint(w, `{"id":"v1_vid","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"ok"}]}]}`)
 	}))
 	defer server.Close()
 
@@ -407,7 +413,7 @@ func TestInteractionsResponseFormatVideoEntry_AgentKeepsIt(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		_, _ = fmt.Fprint(w, `{"id":"v1_agent_vid","status":"completed","steps":[{"type":"text","text":"ok"}]}`)
+		_, _ = fmt.Fprint(w, `{"id":"v1_agent_vid","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"ok"}]}]}`)
 	}))
 	defer server.Close()
 
@@ -485,9 +491,9 @@ func TestInteractionsParseOutputsPreservesToolCallsInOrderedContent(t *testing.T
 	p := New(Config{APIKey: "test-key"})
 	model := NewInteractionsLanguageModel(p, ModelGemini25Flash)
 	content, toolCalls, hasFunctionCall := model.parseOutputs([]interactionsContentBlock{
-		{Type: "text", Text: "before"},
+		{Type: "model_output", ContentRaw: json.RawMessage(`[{"type":"text","text":"before"}]`)},
 		{Type: "function_call", ID: "call-1", Name: "lookup", Arguments: json.RawMessage(`{"q":"x"}`), Signature: "sig"},
-		{Type: "text", Text: "after"},
+		{Type: "model_output", ContentRaw: json.RawMessage(`[{"type":"text","text":"after"}]`)},
 		{Type: "google_search_call", ID: "search-1", Arguments: json.RawMessage(`{"query":"go"}`)},
 	}, "v1_order")
 
@@ -552,9 +558,9 @@ func TestInteractionsAssistantToolCallContentRoundTrips(t *testing.T) {
 	if call["signature"] != "sig-1" {
 		t.Fatalf("signature = %#v", call["signature"])
 	}
-	args := call["arguments"].(map[string]interface{})
-	if args["q"] != "x" {
-		t.Fatalf("arguments = %#v", args)
+	argsJSON, _ := json.Marshal(call["arguments"]) //nolint:errcheck // test
+	if string(argsJSON) != `{"q":"x"}` {
+		t.Fatalf("arguments = %s", argsJSON)
 	}
 }
 
@@ -563,7 +569,7 @@ func TestInteractionsImageURIOutputsAreGeneratedFiles(t *testing.T) {
 
 	model := NewInteractionsLanguageModel(New(Config{APIKey: "test-key"}), ModelGemini25Flash)
 	content, _, _ := model.parseOutputs([]interactionsContentBlock{
-		{Type: "image", URI: "https://example.com/out.png", MimeType: "image/png"},
+		{Type: "model_output", ContentRaw: json.RawMessage(`[{"type":"image","uri":"https://example.com/out.png","mime_type":"image/png"}]`)},
 	}, "v1_img")
 	if len(content) != 1 {
 		t.Fatalf("content len = %d", len(content))
@@ -778,7 +784,7 @@ func TestInteractionsOutputTokensByModality(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprint(w, `{"id":"v1_mod","status":"completed","steps":[{"type":"text","text":"ok"}],"usage":{"output_tokens_by_modality":[{"modality":"video","tokens":57920},{"modality":"text","tokens":12}]}}`)
+		_, _ = fmt.Fprint(w, `{"id":"v1_mod","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"ok"}]}],"usage":{"output_tokens_by_modality":[{"modality":"video","tokens":57920},{"modality":"text","tokens":12}]}}`)
 	}))
 	defer server.Close()
 
@@ -805,7 +811,7 @@ func TestInteractionsGenerateEmptyProviderMetadataGoogleObject(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprint(w, `{"status":"completed","steps":[{"type":"text","text":"ok"}]}`)
+		_, _ = fmt.Fprint(w, `{"status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"ok"}]}]}`)
 	}))
 	defer server.Close()
 
@@ -858,7 +864,11 @@ func TestInteractionsAgentStreamReconnectsAfterIntermittentEOF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InteractionsAgent: %v", err)
 	}
-	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}})
+	background := true
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt:          types.Prompt{Text: "hello"},
+		ProviderOptions: map[string]interface{}{"google": GoogleInteractionsProviderOptions{Background: &background}},
+	})
 	if err != nil {
 		t.Fatalf("DoStream: %v", err)
 	}
@@ -968,8 +978,8 @@ func TestInteractionsStreamFlushesFinishWithoutComplete(t *testing.T) {
 			finish = chunk
 		}
 	}
-	if !sawTextEnd {
-		t.Fatal("expected open text block to be closed on EOF")
+	if sawTextEnd {
+		t.Fatal("TS flush emits only the finish part: unclosed blocks stay open")
 	}
 	if finish == nil || finish.FinishReason != types.FinishReasonLength {
 		t.Fatalf("finish = %#v", finish)
@@ -1043,7 +1053,7 @@ func TestInteractionsStreamProcessingAndVideoSteps(t *testing.T) {
 		``,
 		`data: {"event_type":"step.stop","index":1}`,
 		``,
-		`data: {"event_type":"step.start","index":2,"step":{"type":"video"}}`,
+		`data: {"event_type":"step.start","index":2,"step":{"type":"model_output"}}`,
 		``,
 		`data: {"event_type":"step.delta","index":2,"delta":{"type":"video","uri":"gs://bucket/out.mp4","mime_type":"video/mp4"}}`,
 		``,
@@ -1094,6 +1104,7 @@ func TestInteractionsStreamErrorEmitsErrorAndFinish(t *testing.T) {
 		``,
 		`data: {"event_type":"error","error":{"code":"bad","message":"boom"}}`,
 		``,
+		``,
 	}, "\n")
 	stream := newInteractionsEventStream(context.Background(), New(Config{APIKey: "test-key"}).client, io.NopCloser(strings.NewReader(body)), "", nil, nil, nil, 0)
 	defer func() { _ = stream.Close() }()
@@ -1138,6 +1149,13 @@ func TestInteractionsStreamFinishMetadataAlwaysGoogleObject(t *testing.T) {
 	defer func() { _ = stream.Close() }()
 
 	chunk, err := stream.Next()
+	if err != nil {
+		t.Fatalf("stream.Next: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeStreamStart {
+		t.Fatalf("first chunk type = %s, want stream-start (TS always enqueues it)", chunk.Type)
+	}
+	chunk, err = stream.Next()
 	if err != nil {
 		t.Fatalf("stream.Next: %v", err)
 	}
@@ -1211,5 +1229,56 @@ func writeSSE(w http.ResponseWriter, data string) {
 	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
+	}
+}
+
+func TestInteractionsReplayedToolArgumentsKeepKeyOrder(t *testing.T) {
+	t.Parallel()
+	const raw = `{"zeta":1,"alpha":{"yy":1,"aa":2}}`
+	args := map[string]interface{}{"zeta": 1, "alpha": map[string]interface{}{"yy": 1, "aa": 2}}
+	msgs := []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+		types.ToolCallContent{ToolCallID: "c1", ToolName: "t", Input: raw, Arguments: args},
+	}, ToolCalls: []types.ToolCall{{ID: "c2", ToolName: "t", RawArguments: raw, Arguments: args}}}}
+	model := NewInteractionsLanguageModel(New(Config{APIKey: "test-key"}), ModelGemini25Flash)
+	steps, _, err := model.convertAssistantSteps(msgs[0].Content, msgs[0].ToolCalls, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(steps) //nolint:errcheck // test
+	if got := strings.Count(string(b), `"arguments":`+raw); got != 2 {
+		t.Fatalf("want 2 ordered arguments objects, got %d in %s", got, b)
+	}
+}
+
+// TS #23814: an interactions stream that ends without interaction.completed
+// and without a terminal status reports interrupted.
+func TestInteractionsStreamInterruptedWithoutCompletion(t *testing.T) {
+	t.Parallel()
+
+	finishOf := func(body string) *provider.StreamChunk {
+		stream := newInteractionsEventStream(context.Background(), New(Config{APIKey: "test-key"}).client, io.NopCloser(strings.NewReader(body)), "", nil, nil, nil, 0)
+		defer func() { _ = stream.Close() }()
+		var finish *provider.StreamChunk
+		for {
+			chunk, err := stream.Next()
+			if err != nil {
+				break
+			}
+			if chunk.Type == provider.ChunkTypeFinish {
+				finish = chunk
+			}
+		}
+		if finish == nil {
+			t.Fatal("no finish chunk")
+		}
+		return finish
+	}
+	cut := finishOf(`data: {"event_type":"interaction.created","interaction":{"id":"v1","status":"in_progress","model":"gemini-2.5-flash"}}` + "\n\n")
+	if cut.FinishReason != types.FinishReasonInterrupted || cut.RawFinishReason != "" {
+		t.Fatalf("cut finish = %+v", cut)
+	}
+	done := finishOf(`data: {"event_type":"interaction.completed","interaction":{"id":"v1","status":"completed"}}` + "\n\n")
+	if done.FinishReason != types.FinishReasonStop {
+		t.Fatalf("completed finish = %+v", done)
 	}
 }

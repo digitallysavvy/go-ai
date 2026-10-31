@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -21,6 +22,25 @@ type TranslateOptions struct {
 	// treats every failure as provider-executed, matching TS's `?? true`
 	// default.
 	IsProviderExecuted func(toolCallID string) bool
+
+	// GetToolCall returns the parsed tool call that produced a tool-result
+	// event. Harness tool-result events only carry the output, so the input
+	// and execution origin (providerExecuted) are restored from the
+	// originating call. Mirrors TS `translateStreamPart`'s `getToolCall`
+	// option (TS #23096). A nil func (or a missing call) leaves both unset.
+	GetToolCall func(toolCallID string) (ToolCallInfo, bool)
+}
+
+// ToolCallInfo is the slice of a parsed tool call TranslatePart needs to
+// restore on its tool-result: the parsed input and whether the harness
+// runtime (rather than the host) executed it.
+type ToolCallInfo struct {
+	Input            map[string]interface{}
+	ProviderExecuted bool
+	// ProviderExecutedSet reports that the call defined providerExecuted
+	// (types.ToolCall.ProviderExecutedSet). TS copies it onto the tool-result
+	// only when it is not undefined, so an explicit false is kept.
+	ProviderExecutedSet bool
 }
 
 func (o TranslateOptions) isProviderExecuted(toolCallID string) bool {
@@ -83,15 +103,18 @@ func TranslatePart(part StreamPart, opts TranslateOptions) []provider.StreamChun
 			ToolCall: &types.ToolCall{
 				ID: p.ID, ToolName: p.ToolName, Title: p.Title,
 				ProviderExecuted: p.ProviderExecuted, Dynamic: p.Dynamic,
-				ProviderMetadata: convertProviderMetadata(p.ProviderMetadata),
+				// TS forwards the event unchanged: an explicit
+				// `providerExecuted: false` stays set.
+				ProviderExecutedSet: p.ProviderExecuted || !p.ProviderExecutedOmitted,
+				ProviderMetadata:    convertProviderMetadata(p.ProviderMetadata),
 			},
 		}}
 
 	case *ToolInputDeltaPart:
-		return []provider.StreamChunk{{Type: provider.ChunkTypeToolInputDelta, ID: p.ID, Text: p.Delta}}
+		return []provider.StreamChunk{{Type: provider.ChunkTypeToolInputDelta, ID: p.ID, Text: p.Delta, ProviderMetadata: marshalProviderMetadata(p.ProviderMetadata)}}
 
 	case *ToolInputEndPart:
-		return []provider.StreamChunk{{Type: provider.ChunkTypeToolInputEnd, ToolCall: &types.ToolCall{ID: p.ID}}}
+		return []provider.StreamChunk{{Type: provider.ChunkTypeToolInputEnd, ID: p.ID, ToolCall: &types.ToolCall{ID: p.ID}, ProviderMetadata: marshalProviderMetadata(p.ProviderMetadata)}}
 
 	case *ToolCallPart:
 		// Validated and emitted by run_prompt.go (async schema parsing needs
@@ -103,15 +126,32 @@ func TranslatePart(part StreamPart, opts TranslateOptions) []provider.StreamChun
 		return nil
 
 	case *ToolResultPart:
-		if p.IsError && opts.isProviderExecuted(p.ToolCallID) {
+		var call ToolCallInfo
+		hasCall := false
+		if opts.GetToolCall != nil {
+			call, hasCall = opts.GetToolCall(p.ToolCallID)
+		}
+		// TS `toolCall?.providerExecuted ?? isProviderExecuted?.(id) ?? true`:
+		// a call that leaves providerExecuted undefined falls back too.
+		providerExecuted := opts.isProviderExecuted(p.ToolCallID)
+		if hasCall && (call.ProviderExecuted || call.ProviderExecutedSet) {
+			providerExecuted = call.ProviderExecuted
+		}
+		if p.IsError && providerExecuted {
 			return []provider.StreamChunk{{
 				Type: provider.ChunkTypeToolResult,
 				ToolResult: &types.ToolResult{
 					ToolCallID: p.ToolCallID, ToolName: p.ToolName,
-					Error:            fmt.Errorf("%v", p.Result),
+					Input: call.Input,
+					Error: fmt.Errorf("%v", p.Result),
+					// The raw error value (TS tool-error.error): core replays a
+					// structured one as error-json and JSON-encodes it in the
+					// UI error text.
+					Result:           p.Result,
 					ProviderExecuted: true,
+					// TS tool-error carries only dynamic and providerMetadata:
+					// no preliminary flag.
 					Dynamic:          p.Dynamic,
-					Preliminary:      p.Preliminary,
 					ProviderMetadata: convertProviderMetadata(p.ProviderMetadata),
 				},
 			}}
@@ -120,9 +160,13 @@ func TranslatePart(part StreamPart, opts TranslateOptions) []provider.StreamChun
 			Type: provider.ChunkTypeToolResult,
 			ToolResult: &types.ToolResult{
 				ToolCallID: p.ToolCallID, ToolName: p.ToolName, Result: p.Result,
-				Dynamic:          p.Dynamic,
-				Preliminary:      p.Preliminary,
-				ProviderMetadata: convertProviderMetadata(p.ProviderMetadata),
+				Input:            call.Input,
+				ProviderExecuted: hasCall && call.ProviderExecuted,
+				// TS `...(toolCall?.providerExecuted !== undefined ? {...} : {})`.
+				ProviderExecutedSet: hasCall && (call.ProviderExecuted || call.ProviderExecutedSet),
+				Dynamic:             p.Dynamic,
+				Preliminary:         p.Preliminary,
+				ProviderMetadata:    convertProviderMetadata(p.ProviderMetadata),
 			},
 		}}
 
@@ -136,7 +180,7 @@ func TranslatePart(part StreamPart, opts TranslateOptions) []provider.StreamChun
 				Dynamic: true, ProviderExecuted: true, ProviderMetadata: md,
 			}},
 			{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{
-				ToolCallID: toolCallID, ToolName: "fileChange", Result: payload,
+				ToolCallID: toolCallID, ToolName: "fileChange", Input: payload, Result: payload,
 				Dynamic: true, ProviderExecuted: true, ProviderMetadata: md,
 			}},
 		}
@@ -157,13 +201,18 @@ func TranslatePart(part StreamPart, opts TranslateOptions) []provider.StreamChun
 				Dynamic: true, ProviderExecuted: true, ProviderMetadata: md,
 			}},
 			{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{
-				ToolCallID: toolCallID, ToolName: "compaction", Result: output,
+				ToolCallID: toolCallID, ToolName: "compaction", Input: map[string]interface{}{}, Result: output,
 				Dynamic: true, ProviderExecuted: true, ProviderMetadata: md,
 			}},
 		}
 
 	case *ErrorPart:
-		return []provider.StreamChunk{{Type: provider.ChunkTypeError, Text: fmt.Sprintf("%v", p.Error)}}
+		chunk := provider.StreamChunk{Type: provider.ChunkTypeError, Text: p.Message()}
+		if err, ok := p.Error.(error); ok {
+			// Keep the typed error so errors.As works on the result's Err().
+			chunk.Err = err
+		}
+		return []provider.StreamChunk{chunk}
 
 	case *RawPart:
 		return []provider.StreamChunk{{Type: provider.ChunkTypeRaw, Raw: p.RawValue}}
@@ -212,11 +261,22 @@ func convertProviderMetadata(md ProviderMetadata) map[string]interface{} {
 	return out
 }
 
+func marshalProviderMetadata(md ProviderMetadata) json.RawMessage {
+	if len(md) == 0 {
+		return nil
+	}
+	raw, err := jsstr.Marshal(md)
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
 func marshalMetadata(md Metadata) json.RawMessage {
 	if len(md) == 0 {
 		return nil
 	}
-	raw, err := json.Marshal(md)
+	raw, err := jsstr.Marshal(md)
 	if err != nil {
 		return nil
 	}

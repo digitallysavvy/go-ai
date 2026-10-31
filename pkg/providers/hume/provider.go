@@ -5,7 +5,8 @@
 package hume
 
 import (
-	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -20,6 +21,10 @@ type Config struct {
 
 	// BaseURL is the base URL for the Hume API (optional).
 	BaseURL string
+
+	// Headers are custom HTTP headers sent with every request (TS provider
+	// settings `headers`).
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // Provider represents the Hume provider.
@@ -39,9 +44,13 @@ func New(config Config) *Provider {
 
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: config.BaseURL,
-		Headers: version.WithUserAgentSuffix(map[string]string{
+		Headers: version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
 			"X-Hume-Api-Key": config.APIKey,
-		}, version.ProviderUserAgent("hume")),
+		}, config.Headers), version.ProviderUserAgent("hume")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(config.Headers, config.APIKey, "HUME_API_KEY", "Hume", "X-Hume-Api-Key", "")
+		},
 	})
 
 	return &Provider{
@@ -62,17 +71,17 @@ func (p *Provider) Name() string {
 
 // LanguageModel returns a language model (not supported by Hume).
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return nil, fmt.Errorf("hume does not provide language models")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "languageModel", Message: "Hume does not provide language models"}
 }
 
 // EmbeddingModel returns an embedding model (not supported by Hume).
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("hume does not provide embedding models")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "embeddingModel", Message: "Hume does not provide embedding models"}
 }
 
 // ImageModel returns an image model (not supported by Hume).
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("hume does not provide image models")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "imageModel", Message: "Hume does not provide image models"}
 }
 
 // SpeechModel returns a text-to-speech model. Hume has no selectable model
@@ -84,10 +93,10 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 
 // TranscriptionModel returns a speech-to-text model (not supported by Hume).
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("hume does not provide transcription models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns a reranking model (not supported by Hume).
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("hume does not provide reranking models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }

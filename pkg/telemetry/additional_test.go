@@ -313,7 +313,7 @@ func TestSettingsHelpersAndSpanUtilities(t *testing.T) {
 	if Enabled(s) {
 		t.Fatal("settings should be disabled after WithEnabled(false)")
 	}
-	if s.RecordInputs || s.RecordOutputs || s.FunctionID != "fn" {
+	if s.ShouldRecordInputs() || s.ShouldRecordOutputs() || s.FunctionID != "fn" {
 		t.Fatalf("unexpected settings copy: %#v", s)
 	}
 

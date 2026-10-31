@@ -20,26 +20,28 @@ func convertPerplexityUsage(usage *perplexityUsage, rawUsage []byte) types.Usage
 		return types.Usage{}
 	}
 
-	inputTokens := usage.InputTokens
-	outputTokens := usage.OutputTokens
-	totalTokens := usage.TotalTokens
+	inputTokens := int64(usage.InputTokens)
+	outputTokens := int64(usage.OutputTokens)
+	// TS core derives totalTokens as input total + output total; the wire
+	// total_tokens is optional and never used.
+	totalTokens := inputTokens + outputTokens
 
 	var cacheReadTokens int64
 	var cacheWriteTokens int64
 	if usage.InputTokensDetails != nil {
 		if usage.InputTokensDetails.CacheReadInputTokens != nil {
-			cacheReadTokens = *usage.InputTokensDetails.CacheReadInputTokens
+			cacheReadTokens = int64(*usage.InputTokensDetails.CacheReadInputTokens)
 		} else if usage.InputTokensDetails.CachedTokens != nil {
-			cacheReadTokens = *usage.InputTokensDetails.CachedTokens
+			cacheReadTokens = int64(*usage.InputTokensDetails.CachedTokens)
 		}
 		if usage.InputTokensDetails.CacheCreationInputTokens != nil {
-			cacheWriteTokens = *usage.InputTokensDetails.CacheCreationInputTokens
+			cacheWriteTokens = int64(*usage.InputTokensDetails.CacheCreationInputTokens)
 		}
 	}
 
 	var reasoningTokens int64
 	if usage.OutputTokensDetails != nil && usage.OutputTokensDetails.ReasoningTokens != nil {
-		reasoningTokens = *usage.OutputTokensDetails.ReasoningTokens
+		reasoningTokens = int64(*usage.OutputTokensDetails.ReasoningTokens)
 	}
 
 	noCache := inputTokens - cacheReadTokens - cacheWriteTokens
@@ -130,14 +132,14 @@ func getPerplexityProviderMetadata(usage *perplexityUsage) map[string]interface{
 				continue
 			}
 			if inv := usage.ToolCallsDetails[name].Invocation; inv != nil {
-				total += *inv
+				total += int64(*inv)
 			}
 		}
 		meta.Usage.NumSearchQueries = &total
 
 		meta.ToolCalls = make(map[string]PerplexityToolCallUsage, len(usage.ToolCallsDetails))
 		for _, name := range names {
-			meta.ToolCalls[name] = PerplexityToolCallUsage{Invocation: usage.ToolCallsDetails[name].Invocation}
+			meta.ToolCalls[name] = PerplexityToolCallUsage{Invocation: toInt64Ptr(usage.ToolCallsDetails[name].Invocation)}
 		}
 	}
 
@@ -156,4 +158,13 @@ func getPerplexityProviderMetadata(usage *perplexityUsage) map[string]interface{
 	}
 
 	return map[string]interface{}{"perplexity": meta}
+}
+
+// toInt64Ptr truncates a nullable TS number() count to the Go integral type.
+func toInt64Ptr(n *pplxNumber) *int64 {
+	if n == nil {
+		return nil
+	}
+	v := int64(*n)
+	return &v
 }

@@ -86,16 +86,27 @@ type speechTranslationModelOptions struct {
 	EchoTargetLanguage *bool
 }
 
-func parseSpeechTranslationModelOptions(providerOptions map[string]interface{}) speechTranslationModelOptions {
+// parseSpeechTranslationModelOptionsChecked mirrors TS parseProviderOptions
+// with googleSpeechTranslationModelOptions: a present value of the wrong type
+// fails with an InvalidArgumentError.
+func parseSpeechTranslationModelOptionsChecked(providerOptions map[string]interface{}) (speechTranslationModelOptions, error) {
 	var out speechTranslationModelOptions
-	google, _ := providerOptions["google"].(map[string]interface{})
-	if google == nil {
-		return out
+	raw, ok := providerOptions["google"]
+	if !ok || raw == nil {
+		return out, nil
 	}
-	if v, ok := google["echoTargetLanguage"].(bool); ok {
-		out.EchoTargetLanguage = &v
+	google, isMap := raw.(map[string]interface{})
+	if !isMap {
+		return out, invalidGoogleFilesOptions(fmt.Errorf("google: expected object, received %T", raw))
 	}
-	return out
+	if v, present := google["echoTargetLanguage"]; present && v != nil {
+		b, isBool := v.(bool)
+		if !isBool {
+			return out, invalidGoogleFilesOptions(fmt.Errorf("echoTargetLanguage: expected boolean, received %T", v))
+		}
+		out.EchoTargetLanguage = &b
+	}
+	return out, nil
 }
 
 // validateSpeechTranslationInputAudioFormat mirrors TS
@@ -135,7 +146,7 @@ func buildSpeechTranslationSetup(modelID, targetLanguage string, opts speechTran
 // per-call options.headers -- the same tagged getHeaders() closure used for
 // REST calls, not a freshly rebuilt untagged header set.
 func (m *SpeechTranslationModel) baseSpeechTranslationHeaders() map[string]string {
-	return m.prov.client.Headers()
+	return m.prov.headersSnapshot()
 }
 
 // getLiveSpeechTranslationWebSocketURL builds the wss:// Live API URL for
@@ -166,7 +177,10 @@ func (m *SpeechTranslationModel) DoStream(ctx context.Context, opts *provider.Sp
 		}
 	}
 
-	translationOpts := parseSpeechTranslationModelOptions(opts.ProviderOptions)
+	translationOpts, err := parseSpeechTranslationModelOptionsChecked(opts.ProviderOptions)
+	if err != nil {
+		return nil, err
+	}
 
 	var warnings []types.Warning
 
@@ -192,6 +206,10 @@ func (m *SpeechTranslationModel) DoStream(ctx context.Context, opts *provider.Sp
 	// Resolve the API key from the provider-level and per-call header maps
 	// separately, with the per-call value taking precedence, before merging
 	// them (see the matching comment in transcription_stream.go DoStream).
+	// TS getHeaders() loads the key first: a missing key is a LoadAPIKeyError.
+	if _, err := m.prov.apiKeyHeaders(); err != nil {
+		return nil, err
+	}
 	baseAPIKey, filteredBaseHeaders := extractGoogleAPIKeyHeader(m.baseSpeechTranslationHeaders())
 	callAPIKey, filteredCallHeaders := extractGoogleAPIKeyHeader(opts.Headers)
 	apiKey := baseAPIKey

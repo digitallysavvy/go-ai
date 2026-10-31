@@ -19,11 +19,17 @@ type ImageGenerationConfig struct {
 //
 //	tool := xai.ImageGeneration(xai.ImageGenerationConfig{Action: "generate"})
 func ImageGeneration(config ImageGenerationConfig) types.Tool {
-	return types.Tool{
+	args := map[string]interface{}{}
+	if config.Action != "" {
+		args["action"] = config.Action
+	}
+	return xaiProviderTool(types.Tool{
 		Name:             "xai.image_generation",
 		Description:      "Generate or edit images inline using xAI's server-side image generation tool.",
+		Parameters:       xaiSchema(xaiEmptyInputSchemaJSON),
+		OutputSchema:     xaiSchema(xaiImageGenerationOutputSchemaJSON),
 		ProviderExecuted: true,
 		ProviderOptions:  config,
 		Execute:          providerExecutedNoop("xai.image_generation"),
-	}
+	}, args)
 }

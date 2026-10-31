@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // GenerationInfoParams identifies a generation to retrieve.
@@ -69,9 +72,12 @@ func (p *Provider) GetGenerationInfo(ctx context.Context, params GenerationInfoP
 		return nil, err
 	}
 
+	if err := providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayGenerationInfo)(http.StatusOK, http.Header{}, body); err != nil {
+		return nil, p.handleErrorWithContext(ctx, err)
+	}
 	var envelope generationInfoEnvelope
 	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, fmt.Errorf("failed to decode generation info response: %w", err)
+		return nil, p.handleErrorWithContext(ctx, fmt.Errorf("failed to decode generation info response: %w", err))
 	}
 
 	return &GenerationInfo{

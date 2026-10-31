@@ -21,8 +21,8 @@ func TestXAIResponsesLanguageModelMetadata(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	model := NewResponsesLanguageModel(p, "grok-3")
 
-	if model.SpecificationVersion() != "v3" {
-		t.Errorf("SpecificationVersion() = %q, want %q", model.SpecificationVersion(), "v3")
+	if model.SpecificationVersion() != "v4" {
+		t.Errorf("SpecificationVersion() = %q, want %q", model.SpecificationVersion(), "v4")
 	}
 	if model.Provider() != "xai.responses" {
 		t.Errorf("Provider() = %q, want %q", model.Provider(), "xai.responses")
@@ -47,9 +47,9 @@ func TestXAIResponsesDoStreamIncludesRawChunks(t *testing.T) {
 			t.Fatalf("path = %q, want /responses", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","delta":"Hello"}
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","item_id":"it1","output_index":0,"content_index":0,"delta":"Hello"}
 
-data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}
+data: {"type":"response.completed","response":{"id":"resp_1","object":"response","output":[],"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}
 
 data: [DONE]
 
@@ -89,15 +89,22 @@ data: [DONE]
 	if err != nil {
 		t.Fatalf("third chunk error: %v", err)
 	}
-	if chunk.Type != provider.ChunkTypeText || chunk.Text != "Hello" {
-		t.Fatalf("third chunk = %#v, want text Hello", chunk)
+	if chunk.Type != provider.ChunkTypeTextStart || chunk.ID != "text-it1" {
+		t.Fatalf("third chunk = %#v, want text-start text-it1", chunk)
+	}
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("fourth chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeText || chunk.Text != "Hello" || chunk.ID != "text-it1" {
+		t.Fatalf("fourth chunk = %#v, want text Hello", chunk)
 	}
 }
 
 func TestXAIResponsesDoStreamEmitsResponseMetadataLikeTypeScript(t *testing.T) {
-	stream := newXAIResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.created","response":{"id":"resp_1","created_at":1741269019,"model":"grok-3"}}
+	stream := newXAIResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.created","response":{"id":"resp_1","object":"response","output":[],"created_at":1741269019,"model":"grok-3"}}
 
-data: {"type":"response.in_progress","response":{"id":"resp_1","created_at":1741269019,"model":"grok-3"}}
+data: {"type":"response.in_progress","response":{"id":"resp_1","object":"response","output":[],"created_at":1741269019,"model":"grok-3"}}
 
 data: [DONE]
 
@@ -118,9 +125,18 @@ data: [DONE]
 		t.Fatalf("timestamp = %d, want 1741269019", got)
 	}
 
+	// TS flush(): finish is always enqueued at the end of the stream (interrupted,
+	// zero usage when no terminal response event arrived).
+	chunk, err = stream.Next()
+	if err != nil || chunk.Type != provider.ChunkTypeFinish || chunk.FinishReason != types.FinishReasonInterrupted {
+		t.Fatalf("second Next = %#v, %v, want finish(interrupted)", chunk, err)
+	}
+	if chunk.Usage == nil || chunk.Usage.InputTokens == nil || *chunk.Usage.InputTokens != 0 {
+		t.Fatalf("finish usage = %#v, want zero usage", chunk.Usage)
+	}
 	_, err = stream.Next()
 	if err != io.EOF {
-		t.Fatalf("second Next error = %v, want io.EOF", err)
+		t.Fatalf("third Next error = %v, want io.EOF", err)
 	}
 }
 
@@ -129,7 +145,7 @@ func TestXAIResponsesDoStreamWarningsMatchTypeScript(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","delta":"Hello"}
 
-data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}
+data: {"type":"response.completed","response":{"id":"resp_1","object":"response","output":[],"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}
 
 data: [DONE]
 
@@ -364,11 +380,14 @@ func TestXAIResponsesReasoningExtractionDoGenerate(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
-			"id": "resp_abc",
+			"object": "response",
+			"status": "completed",
+			"id":     "resp_abc",
 			"output": []interface{}{
 				map[string]interface{}{
-					"type": "reasoning",
-					"id":   "rs_001",
+					"type":   "reasoning",
+					"id":     "rs_001",
+					"status": "completed",
 					"summary": []interface{}{
 						map[string]interface{}{"type": "summary_text", "text": "First reasoning part. "},
 						map[string]interface{}{"type": "summary_text", "text": "Second reasoning part."},
@@ -376,8 +395,10 @@ func TestXAIResponsesReasoningExtractionDoGenerate(t *testing.T) {
 					"encrypted_content": "encrypted-blob-xyz",
 				},
 				map[string]interface{}{
-					"type": "message",
-					"role": "assistant",
+					"type":   "message",
+					"id":     "msg_001",
+					"status": "completed",
+					"role":   "assistant",
 					"content": []interface{}{
 						map[string]interface{}{"type": "output_text", "text": "The answer is 42."},
 					},
@@ -452,6 +473,7 @@ func TestXAIResponsesDoGenerateCostInUsdTicksMetadata(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"object": "response",
 			"id":     "resp_cost",
 			"status": "completed",
 			"output": []interface{}{},
@@ -974,6 +996,7 @@ func TestXAIResponsesDoGenerateTokenCostMetadata(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"object": "response",
 			"id":     "resp_cost",
 			"status": "completed",
 			"output": []interface{}{},
@@ -1007,9 +1030,10 @@ func TestXAIResponsesStreamEventsHandling(t *testing.T) {
 		wantChunkTypes []provider.ChunkType
 	}{
 		{
-			name:           "error",
-			event:          `{"type":"error","code":"bad_request","message":"boom"}`,
-			wantChunkTypes: []provider.ChunkType{provider.ChunkTypeError},
+			name:  "error",
+			event: `{"type":"error","code":"bad_request","message":"boom"}`,
+			// finish follows from TS flush() at the end of the stream.
+			wantChunkTypes: []provider.ChunkType{provider.ChunkTypeError, provider.ChunkTypeFinish},
 		},
 		{
 			name:           "incomplete",
@@ -1081,7 +1105,7 @@ data: [DONE]
 	if chunk.Type != provider.ChunkTypeError {
 		t.Fatalf("second chunk type = %v, want error", chunk.Type)
 	}
-	if !strings.Contains(chunk.Text, "failed to parse stream chunk") {
+	if !strings.Contains(chunk.Text, "JSON parsing failed") {
 		t.Fatalf("error text = %q, want parse failure", chunk.Text)
 	}
 }
@@ -1385,7 +1409,9 @@ func TestXAIResponsesServiceTier(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
-			"id": "resp_test", "output": []interface{}{}, "service_tier": "priority",
+			"object": "response",
+			"status": "completed",
+			"id":     "resp_test", "output": []interface{}{}, "service_tier": "priority",
 			"usage": map[string]interface{}{"input_tokens": 5, "output_tokens": 3},
 		})
 	}))
@@ -1416,7 +1442,7 @@ func TestXAIResponsesServiceTier(t *testing.T) {
 func TestXAIResponsesServiceTierStreaming(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","service_tier":"priority","usage":{"input_tokens":1,"output_tokens":1}}}
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_1","object":"response","output":[],"status":"completed","service_tier":"priority","usage":{"input_tokens":1,"output_tokens":1}}}
 
 `)
 	}))
@@ -1468,7 +1494,9 @@ func TestXAIResponsesAdditionalRequestOptions(t *testing.T) {
 		json.NewDecoder(r.Body).Decode(&capturedBody) //nolint:errcheck
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
-			"id": "resp_test", "output": []interface{}{},
+			"object": "response",
+			"status": "completed",
+			"id":     "resp_test", "output": []interface{}{},
 			"usage": map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
 		})
 	}))
@@ -1521,7 +1549,8 @@ func TestXAIResponsesEchoedRequestIdentifiers(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
-			"id": "resp_123", "status": "completed", "output": []interface{}{},
+			"object": "response",
+			"id":     "resp_123", "status": "completed", "output": []interface{}{},
 			"usage":             map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
 			"prompt_cache_key":  "conversation-123",
 			"safety_identifier": "hashed-user-123",
@@ -1553,7 +1582,7 @@ func TestXAIResponsesEchoedRequestIdentifiers(t *testing.T) {
 func TestXAIResponsesEchoedRequestIdentifiersStreaming(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","prompt_cache_key":"conversation-123","safety_identifier":"hashed-user-123","usage":{"input_tokens":1,"output_tokens":1}}}
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_1","object":"response","output":[],"status":"completed","prompt_cache_key":"conversation-123","safety_identifier":"hashed-user-123","usage":{"input_tokens":1,"output_tokens":1}}}
 
 `)
 	}))
@@ -1599,7 +1628,9 @@ func TestXAIResponsesFullRawUsage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
-			"id": "resp_test", "output": []interface{}{},
+			"object": "response",
+			"status": "completed",
+			"id":     "resp_test", "output": []interface{}{},
 			"usage": map[string]interface{}{
 				"input_tokens": 5, "output_tokens": 3, "total_tokens": 8,
 				"num_sources_used": 2, "num_server_side_tools_used": 1,
@@ -1744,8 +1775,28 @@ func TestXAIResponsesImageGenerationFailedStatus(t *testing.T) {
 		if tr.Error == "" || !strings.Contains(tr.Error, "failed") {
 			t.Fatalf("tool result error = %q, want a failure message", tr.Error)
 		}
+		// TS: isError with the failure message as the result value.
+		if tr.Result != "Image generation failed (status: failed)." {
+			t.Fatalf("tool result = %#v", tr.Result)
+		}
 	}
 	if !found {
 		t.Fatal("no image_generation tool-result content found")
+	}
+}
+
+// TestXAIResponsesMaxEffortModelGating covers TS #22045: portable max maps
+// like xhigh ("xhigh" for grok-4.6, "high" otherwise).
+func TestXAIResponsesMaxEffortModelGating(t *testing.T) {
+	p := New(Config{APIKey: "test-key"})
+	level := types.ReasoningMax
+	for model, want := range map[string]string{"grok-4.6": "xhigh", "grok-4.3": "high"} {
+		body, _, err := NewResponsesLanguageModel(p, model).buildRequestBody(&provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, Reasoning: &level}, false)
+		if err != nil {
+			t.Fatalf("buildRequestBody failed: %v", err)
+		}
+		if got := body["reasoning"].(map[string]interface{})["effort"]; got != want {
+			t.Fatalf("%s effort = %v, want %s", model, got, want)
+		}
 	}
 }

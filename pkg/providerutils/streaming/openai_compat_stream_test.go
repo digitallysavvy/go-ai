@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -103,6 +104,7 @@ data: [DONE]
 	chunks := collectStreamChunks(t, stream)
 	wantTypes := []provider.ChunkType{
 		provider.ChunkTypeRaw,
+		provider.ChunkTypeResponseMetadata, // first event carries an id
 		provider.ChunkTypeText,
 		provider.ChunkTypeRaw,
 		provider.ChunkTypeFinish,
@@ -123,8 +125,8 @@ data: [DONE]
 		encoded, _ := json.Marshal(raw)
 		t.Fatalf("raw chunk = %s, want id raw-1", encoded)
 	}
-	if chunks[1].Text != "Hello" {
-		t.Fatalf("text chunk = %q, want Hello", chunks[1].Text)
+	if chunks[2].Text != "Hello" {
+		t.Fatalf("text chunk = %q, want Hello", chunks[2].Text)
 	}
 }
 
@@ -360,6 +362,10 @@ data: [DONE]
 	if errorChunks[0].Text != "Expected 'function.name' to be a string." {
 		t.Fatalf("error text = %q", errorChunks[0].Text)
 	}
+	var invalid *providererrors.InvalidResponseDataError
+	if !errors.As(errorChunks[0].Err, &invalid) {
+		t.Fatalf("error chunk Err = %T, want InvalidResponseDataError", errorChunks[0].Err)
+	}
 	if toolCalls := compatChunksOfType(chunks, provider.ChunkTypeToolCall); len(toolCalls) != 0 {
 		t.Fatalf("expected no tool-call chunks, got %#v", toolCalls)
 	}
@@ -590,7 +596,7 @@ data: [DONE]
 	if chunk.Type != provider.ChunkTypeError {
 		t.Fatalf("second chunk type = %v, want error", chunk.Type)
 	}
-	if !strings.Contains(chunk.Text, "failed to parse stream chunk") {
+	if !strings.Contains(chunk.Text, "JSON parsing failed") {
 		t.Fatalf("error text = %q, want parse failure", chunk.Text)
 	}
 }
@@ -743,7 +749,7 @@ data: [DONE]
 	if len(errorChunks) != 1 {
 		t.Fatalf("expected 1 error chunk, got %#v", chunks)
 	}
-	if !strings.Contains(errorChunks[0].Text, "failed to parse stream chunk") {
+	if !strings.Contains(errorChunks[0].Text, "JSON parsing failed") {
 		t.Fatalf("error text = %q, want parse failure", errorChunks[0].Text)
 	}
 	finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish)
@@ -980,7 +986,7 @@ func runOpenAICompatStreamRecursionChild() {
 	for i := 0; i < n; i++ {
 		// An empty event (no choices, no usage, no error) hits the "Empty or
 		// unrecognised event — skip and fetch the next one" branch.
-		sb.WriteString("data: {}\n\n")
+		sb.WriteString("data: {\"choices\":[]}\n\n")
 	}
 	sb.WriteString(`data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n")
 	sb.WriteString("data: [DONE]\n\n")
@@ -996,4 +1002,126 @@ func runOpenAICompatStreamRecursionChild() {
 		return
 	}
 	fmt.Println("BF5_CHILD_OK")
+}
+
+// An empty `data:` event is a JSON parse error in TS (safeParseJSON of ""),
+// with includeRawChunks as well as without.
+func TestOpenAICompatStream_EmptyDataEventIsParseError(t *testing.T) {
+	for _, raw := range []bool{false, true} {
+		stream := newTestStream("data:\n\ndata: [DONE]\n\n")
+		stream.IncludeRawChunks = raw
+		chunks := collectStreamChunks(t, stream)
+		var sawErr bool
+		for _, c := range chunks {
+			if c.Type == provider.ChunkTypeError && strings.Contains(c.Text, "JSON parsing failed") {
+				sawErr = true
+			}
+		}
+		if !sawErr {
+			t.Errorf("includeRaw=%v: no parse error chunk in %d chunks", raw, len(chunks))
+		}
+		_ = stream.Close()
+	}
+}
+
+// TS records any non-null finish_reason, including "" (mapped to "other"), so
+// a stream whose only finish_reason is empty ends with a finish part and no
+// "ended without a finish reason" error.
+func TestOpenAICompatStream_EmptyFinishReasonIsRecorded(t *testing.T) {
+	stream := newTestStream("data: {\"id\":\"1\",\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"\"}]}\n\ndata: [DONE]\n\n")
+	chunks := collectStreamChunks(t, stream)
+	if errs := compatChunksOfType(chunks, provider.ChunkTypeError); len(errs) != 0 {
+		t.Fatalf("unexpected error chunk: %+v", errs[0])
+	}
+	fin := compatChunksOfType(chunks, provider.ChunkTypeFinish)
+	if len(fin) != 1 || fin[0].FinishReason != types.FinishReasonOther {
+		t.Fatalf("finish = %+v", fin)
+	}
+}
+
+// TS derives totalTokens as input + output; the wire total_tokens is optional.
+func TestOpenAICompatStream_TotalTokensIsInputPlusOutput(t *testing.T) {
+	stream := newTestStream("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}\n\ndata: [DONE]\n\n")
+	chunks := collectStreamChunks(t, stream)
+	last := chunks[len(chunks)-1]
+	if last.Usage == nil || last.Usage.TotalTokens == nil || *last.Usage.TotalTokens != 15 {
+		t.Fatalf("usage = %+v", last.Usage)
+	}
+}
+
+// TS ignores a present-but-blank function name even when no other call exists:
+// the stream finishes normally with no tool calls and no error.
+func TestOpenAICompatStream_OnlyBlankToolCallNameIsIgnored(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"  ","arguments":"{}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+	chunks := collectStreamChunks(t, stream)
+	if errs := compatChunksOfType(chunks, provider.ChunkTypeError); len(errs) != 0 {
+		t.Fatalf("blank name must not error: %#v", errs)
+	}
+	if tcs := compatChunksOfType(chunks, provider.ChunkTypeToolCall); len(tcs) != 0 {
+		t.Fatalf("unexpected tool calls: %#v", tcs)
+	}
+	if f := compatChunksOfType(chunks, provider.ChunkTypeFinish); len(f) != 1 {
+		t.Fatalf("expected finish, got %#v", chunks)
+	}
+}
+
+// TS throws for a new call with no function.name even when a named call
+// exists in the same stream; it must not be dropped silently.
+func TestOpenAICompatStream_AbsentToolCallNameErrorsDespiteNamedSibling(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"valid_tool","arguments":"{}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"arguments":"{}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+	chunks := collectStreamChunks(t, stream)
+	errs := compatChunksOfType(chunks, provider.ChunkTypeError)
+	if len(errs) != 1 || errs[0].Text != "Expected 'function.name' to be a string." {
+		t.Fatalf("want function.name error, got %#v", chunks)
+	}
+}
+
+// TestOpenAICompatStream_EventNamedDoneIsAnOrdinaryChunk: TS
+// parseJsonEventStream reads only the SSE data and skips just `[DONE]`, so a
+// frame named `event: done` that carries a chat chunk is parsed like any
+// other and the stream keeps reading after it.
+func TestOpenAICompatStream_EventNamedDoneIsAnOrdinaryChunk(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}
+
+event: done
+data: {"choices":[{"delta":{"content":" world"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	texts := compatChunksOfType(chunks, provider.ChunkTypeText)
+	if len(texts) != 2 || texts[0].Text != "Hello" || texts[1].Text != " world" {
+		t.Fatalf("text chunks = %#v, want Hello and \" world\"", texts)
+	}
+	finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish)
+	if len(finishes) != 1 || finishes[0].FinishReason != types.FinishReasonStop {
+		t.Fatalf("finish chunks = %#v, want one stop finish", finishes)
+	}
+	if errs := compatChunksOfType(chunks, provider.ChunkTypeError); len(errs) != 0 {
+		t.Fatalf("unexpected error chunks %#v", errs)
+	}
 }

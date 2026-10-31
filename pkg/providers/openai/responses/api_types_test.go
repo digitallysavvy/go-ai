@@ -353,7 +353,7 @@ func TestConvertAssistantItems_DefaultToolCallArgsToEmptyObject(t *testing.T) {
 		},
 	}
 
-	items, _ := convertAssistantItems(msg, ConvertOptions{})
+	items, _, _ := convertAssistantItems(msg, ConvertOptions{})
 	if len(items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(items))
 	}
@@ -385,7 +385,7 @@ func TestConvertAssistantItems_PreservesToolCallNamespace(t *testing.T) {
 		},
 	}
 
-	items, _ := convertAssistantItems(msg, ConvertOptions{})
+	items, _, _ := convertAssistantItems(msg, ConvertOptions{})
 	call := items[0].(FunctionCallItem)
 	if call.Namespace != "weather.tools" {
 		t.Fatalf("namespace = %q, want weather.tools", call.Namespace)
@@ -503,4 +503,28 @@ func containsStr(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TS filters unencrypted reasoning once over the whole input, so several
+// assistant messages produce a single warning.
+func TestConvertPromptToInput_UnencryptedReasoningWarnsOnce(t *testing.T) {
+	reasoningMsg := func(id string) types.Message {
+		return types.Message{Role: types.RoleAssistant, Content: []types.ContentPart{
+			types.ReasoningContent{Text: "hm", ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"itemId": id}}},
+			types.TextContent{Text: "ok"},
+		}}
+	}
+	_, warnings, err := ConvertPromptToInputWithOptions(types.Prompt{Messages: []types.Message{reasoningMsg("rs_1"), reasoningMsg("rs_2")}}, "system", ConvertOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, w := range warnings {
+		if w.Message == "Reasoning parts without encrypted content are not supported when store is false. Skipping reasoning parts." {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("warnings = %+v (want exactly one filter warning)", warnings)
+	}
 }

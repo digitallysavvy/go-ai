@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -118,7 +119,7 @@ func TestGenerateVideoSingleCallDefaultsAndConversion(t *testing.T) {
 	if gotOpts.ProviderOptions == nil {
 		t.Fatal("expected providerOptions to default to an empty map")
 	}
-	if !strings.Contains(gotOpts.Headers["user-agent"], "ai/0.5.3") {
+	if !strings.Contains(gotOpts.Headers["user-agent"], "ai/"+sdkversion.Version) {
 		t.Fatalf("expected ai/<version> user-agent suffix, got headers=%+v", gotOpts.Headers)
 	}
 	if res.Video == nil || res.Video.URL != "" || !bytes.Equal(res.Video.Data, []byte{0x00, 0x00, 0x00, 0x20, 'f', 't', 'y', 'p'}) {
@@ -440,8 +441,17 @@ func TestConvertPromptImageAndVideoDataHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("default data URL image conversion error = %v", err)
 	}
-	if dataURLDefaultImg == nil || dataURLDefaultImg.MediaType != "image/png" {
+	// TS splitDataUrl yields "" for an empty type and `"" ?? detect` keeps it.
+	if dataURLDefaultImg == nil || dataURLDefaultImg.MediaType != "" || !bytes.Equal(dataURLDefaultImg.Data, []byte{1, 2}) {
 		t.Fatalf("unexpected default data URL media type: %+v", dataURLDefaultImg)
+	}
+
+	dataURLDefaultRef, err := convertReferenceImage(&VideoPromptImage{DataString: "data:;base64,AQI="})
+	if err != nil {
+		t.Fatalf("default data URL reference conversion error = %v", err)
+	}
+	if dataURLDefaultRef == nil || dataURLDefaultRef.MediaType != "" {
+		t.Fatalf("unexpected default data URL reference media type: %+v", dataURLDefaultRef)
 	}
 
 	urlFile, err := convertVideoData(context.Background(), provider.VideoModelV3VideoData{

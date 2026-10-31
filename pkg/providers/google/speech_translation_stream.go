@@ -333,7 +333,26 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 		cfg.audio.Cancel(nil)
 	}
 
+	// drainAudioEnded consumes an audio-ended signal that lost the select
+	// race against a clean close in the same tick (TS orders them).
+	drainAudioEnded := func() bool {
+		select {
+		case <-audioEndedCh:
+			audioEnded = true
+			audioEndedCh = nil
+			if sawTurnComplete && !openTurn {
+				schedulePendingFinish()
+			}
+		default:
+		}
+		return false
+	}
+
 	for {
+		audioEndedSel := audioEndedCh
+		if testHideAudioEnded.Load() {
+			audioEndedSel = nil
+		}
 		select {
 		case <-s.Context().Done():
 			fail(context.Cause(s.Context()))
@@ -344,7 +363,7 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 			finish()
 			return
 
-		case <-audioEndedCh:
+		case <-audioEndedSel:
 			audioEnded = true
 			audioEndedCh = nil // consumed once; a nil channel blocks forever in future selects
 			if sawTurnComplete && !openTurn {
@@ -367,7 +386,7 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 					// An abnormal disconnection (TS onSocketError) always
 					// fails the stream.
 					fail(errors.New("Google Live translation error")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
-				} else if finishTimer != nil {
+				} else if drainAudioEnded() || finishTimer != nil {
 					// A close while a finish is pending confirms that no
 					// further turn activity follows (TS onClose's
 					// `finishTimer != null` branch).

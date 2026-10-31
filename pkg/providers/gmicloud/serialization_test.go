@@ -9,7 +9,7 @@ func TestGMICloudSerializeAndDeserializeLanguageModel(t *testing.T) {
 		t.Fatalf("LanguageModel error = %v", err)
 	}
 	serialized := model.(*LanguageModel).Serialize()
-	if serialized.Provider != "gmicloud" || serialized.ModelID != "deepseek-ai/DeepSeek-R1" {
+	if serialized.Provider != "gmicloud.chat" || serialized.ModelID != "deepseek-ai/DeepSeek-R1" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["APIKey"]; ok {
@@ -19,7 +19,7 @@ func TestGMICloudSerializeAndDeserializeLanguageModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeModel error = %v", err)
 	}
-	if restored.Provider() != "gmicloud" || restored.ModelID() != "deepseek-ai/DeepSeek-R1" {
+	if restored.Provider() != "gmicloud.chat" || restored.ModelID() != "deepseek-ai/DeepSeek-R1" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 }

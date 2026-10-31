@@ -6,39 +6,48 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 )
 
 // DiagnosticEventType is the stable name of a telemetry diagnostic event.
 type DiagnosticEventType string
 
 const (
-	DiagnosticEventOnStart                    DiagnosticEventType = "onStart"
-	DiagnosticEventOnStepStart                DiagnosticEventType = "onStepStart"
-	DiagnosticEventOnLanguageModelCallStart   DiagnosticEventType = "onLanguageModelCallStart"
-	DiagnosticEventOnLanguageModelCallEnd     DiagnosticEventType = "onLanguageModelCallEnd"
-	DiagnosticEventOnToolExecutionStart       DiagnosticEventType = "onToolExecutionStart"
-	DiagnosticEventOnToolExecutionEnd         DiagnosticEventType = "onToolExecutionEnd"
-	DiagnosticEventOnChunk                    DiagnosticEventType = "onChunk"
-	DiagnosticEventOnStepEnd                  DiagnosticEventType = "onStepEnd"
-	DiagnosticEventOnStepFinish               DiagnosticEventType = "onStepFinish"
-	DiagnosticEventOnObjectStepStart          DiagnosticEventType = "onObjectStepStart"
-	DiagnosticEventOnObjectStepFinish         DiagnosticEventType = "onObjectStepFinish"
-	DiagnosticEventOnEmbedStart               DiagnosticEventType = "onEmbedStart"
-	DiagnosticEventOnEmbedEnd                 DiagnosticEventType = "onEmbedEnd"
-	DiagnosticEventOnRerankStart              DiagnosticEventType = "onRerankStart"
-	DiagnosticEventOnRerankEnd                DiagnosticEventType = "onRerankEnd"
-	DiagnosticEventOnEvaluateStart            DiagnosticEventType = "experimental_onEvaluateStart"
-	DiagnosticEventOnEvaluateEnd              DiagnosticEventType = "experimental_onEvaluateEnd"
-	DiagnosticEventOnEvaluationModelCallStart DiagnosticEventType = "experimental_onEvaluationModelCallStart"
-	DiagnosticEventOnEvaluationModelCallEnd   DiagnosticEventType = "experimental_onEvaluationModelCallEnd"
-	DiagnosticEventOnEnd                      DiagnosticEventType = "onEnd"
-	DiagnosticEventOnError                    DiagnosticEventType = "onError"
-	DiagnosticEventOnAbort                    DiagnosticEventType = "onAbort"
+	DiagnosticEventOnStart                  DiagnosticEventType = "onStart"
+	DiagnosticEventOnStepStart              DiagnosticEventType = "onStepStart"
+	DiagnosticEventOnLanguageModelCallStart DiagnosticEventType = "onLanguageModelCallStart"
+	DiagnosticEventOnLanguageModelCallEnd   DiagnosticEventType = "onLanguageModelCallEnd"
+	DiagnosticEventOnToolExecutionStart     DiagnosticEventType = "onToolExecutionStart"
+	DiagnosticEventOnToolExecutionEnd       DiagnosticEventType = "onToolExecutionEnd"
+	DiagnosticEventOnChunk                  DiagnosticEventType = "onChunk"
+	DiagnosticEventOnStepEnd                DiagnosticEventType = "onStepEnd"
+	DiagnosticEventOnStepFinish             DiagnosticEventType = "onStepFinish"
+	DiagnosticEventOnObjectStepStart        DiagnosticEventType = "onObjectStepStart"
+	DiagnosticEventOnObjectStepFinish       DiagnosticEventType = "onObjectStepFinish"
+	DiagnosticEventOnEmbedStart             DiagnosticEventType = "onEmbedStart"
+	DiagnosticEventOnEmbedEnd               DiagnosticEventType = "onEmbedEnd"
+	DiagnosticEventOnRerankStart            DiagnosticEventType = "onRerankStart"
+	DiagnosticEventOnRerankEnd              DiagnosticEventType = "onRerankEnd"
+	DiagnosticEventOnDecideStart            DiagnosticEventType = "experimental_onDecideStart"
+	DiagnosticEventOnDecideEnd              DiagnosticEventType = "experimental_onDecideEnd"
+	DiagnosticEventOnDecisionModelCallStart DiagnosticEventType = "experimental_onDecisionModelCallStart"
+	DiagnosticEventOnDecisionModelCallEnd   DiagnosticEventType = "experimental_onDecisionModelCallEnd"
+	DiagnosticEventOnEnd                    DiagnosticEventType = "onEnd"
+	DiagnosticEventOnError                  DiagnosticEventType = "onError"
+	DiagnosticEventOnAbort                  DiagnosticEventType = "onAbort"
 
 	// Deprecated compatibility aliases.
 	DiagnosticEventOnEmbedFinish  DiagnosticEventType = DiagnosticEventOnEmbedEnd
 	DiagnosticEventOnRerankFinish DiagnosticEventType = DiagnosticEventOnRerankEnd
 	DiagnosticEventOnFinish       DiagnosticEventType = DiagnosticEventOnEnd
+
+	// Deprecated: the evaluate events were renamed to decide; the published
+	// event type is the decide one.
+	DiagnosticEventOnEvaluateStart            DiagnosticEventType = DiagnosticEventOnDecideStart
+	DiagnosticEventOnEvaluateEnd              DiagnosticEventType = DiagnosticEventOnDecideEnd
+	DiagnosticEventOnEvaluationModelCallStart DiagnosticEventType = DiagnosticEventOnDecisionModelCallStart
+	DiagnosticEventOnEvaluationModelCallEnd   DiagnosticEventType = DiagnosticEventOnDecisionModelCallEnd
 )
 
 // DiagnosticMessage is published to diagnostic subscribers for every telemetry
@@ -46,6 +55,11 @@ const (
 type DiagnosticMessage struct {
 	Type  DiagnosticEventType
 	Event interface{}
+	// AIVersion is the version of the SDK that emitted the event, so
+	// subscribers can tell which release filtered runtime and tool context.
+	// Publish fills it in when empty. Mirrors the TS `aiVersion` field the
+	// telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // DiagnosticHandler receives diagnostic messages.
@@ -92,6 +106,9 @@ func (c *DiagnosticChannel) Subscribe(handler DiagnosticHandler) func() {
 func (c *DiagnosticChannel) Publish(ctx context.Context, msg DiagnosticMessage) error {
 	if c == nil {
 		return nil
+	}
+	if msg.AIVersion == "" {
+		msg.AIVersion = sdkversion.Version
 	}
 	c.mu.RLock()
 	handlers := make([]DiagnosticHandler, 0, len(c.subscribers))

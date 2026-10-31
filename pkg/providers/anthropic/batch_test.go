@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // Ported from packages/anthropic/src/anthropic-batch.test.ts.
@@ -157,6 +159,35 @@ func TestBatch_ComputedBetaHeaderWinsOverCallerHeader(t *testing.T) {
 	}
 	if capturedBeta != "computed-beta" {
 		t.Fatalf("anthropic-beta = %q, want computed-beta (computed value must win)", capturedBeta)
+	}
+}
+
+// TestBatch_CallerBetaHeaderDroppedWhenNoBetasComputed mirrors TS
+// getStartBatchHeaders: the computed { 'anthropic-beta': undefined } entry
+// replaces a caller anthropic-beta (any casing) on the create request.
+func TestBatch_CallerBetaHeaderDroppedWhenNoBetasComputed(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Values("anthropic-beta")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "msgbatch_1", "type": "message_batch", "processing_status": "in_progress",
+			"request_counts": {"processing": 1, "succeeded": 0, "errored": 0, "canceled": 0, "expired": 0},
+			"created_at": "2024-01-01T00:00:00Z", "expires_at": "2024-01-02T00:00:00Z"
+		}`))
+	}))
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	_, err := p.ExperimentalBatch().DoStartBatch(t.Context(), provider.BatchV4StartOptions{
+		Requests: []provider.BatchV4Request{textBatchRequest("req-1", ClaudeSonnet4_5, "Hello")},
+		Headers:  map[string]string{"Anthropic-Beta": "caller-literal-beta"},
+	})
+	if err != nil {
+		t.Fatalf("DoStartBatch: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("anthropic-beta = %v, want none (TS drops the caller value)", got)
 	}
 }
 
@@ -353,8 +384,8 @@ func TestBatch_ListRejectsMalformedItemFailsWholeCall(t *testing.T) {
 	p := New(Config{APIKey: "k", BaseURL: srv.URL})
 	b := p.ExperimentalBatch().(provider.BatchV4Lister)
 	result, err := b.DoListBatches(t.Context(), provider.BatchV4ListOptions{})
-	if err == nil || !providererrors.IsInvalidResponseDataError(err) {
-		t.Fatalf("err = %v, want InvalidResponseDataError", err)
+	if !providerutils.IsInvalidJSONResponse(err) {
+		t.Fatalf("err = %v, want Invalid JSON response", err)
 	}
 	if result != nil {
 		t.Fatalf("result = %+v, want nil on validation failure", result)
@@ -589,8 +620,8 @@ func TestBatch_BatchEnvelopeMissingRequiredFieldFails(t *testing.T) {
 			_, err := b.DoStartBatch(t.Context(), provider.BatchV4StartOptions{
 				Requests: []provider.BatchV4Request{textBatchRequest("1", "claude-sonnet-4-5", "hi")},
 			})
-			if err == nil || !providererrors.IsInvalidResponseDataError(err) {
-				t.Fatalf("err = %v, want InvalidResponseDataError", err)
+			if !providerutils.IsInvalidJSONResponse(err) {
+				t.Fatalf("err = %v, want Invalid JSON response", err)
 			}
 		})
 	}
@@ -835,7 +866,7 @@ func TestBatch_WebFetchToolResultNeverGrowsCitationDocuments(t *testing.T) {
 		`"content":[` +
 		`{"type":"web_fetch_tool_result","tool_use_id":"toolu_1","content":` + webFetchResultContent("Fetched Report", "application/pdf") + `},` +
 		`{"type":"text","text":"The report shows growth.","citations":[` +
-		`{"type":"page_location","cited_text":"growth","document_index":0,"start_page_number":1,"end_page_number":2}` +
+		`{"type":"page_location","cited_text":"growth","document_index":0,"document_title":null,"start_page_number":1,"end_page_number":2}` +
 		`]}` +
 		`],"stop_reason":"end_turn","usage":{"input_tokens":0,"output_tokens":0}}`
 	resultsBody := `{"custom_id":"web-fetch-citation","result":{"type":"succeeded","message":` + message + `}}`
@@ -862,9 +893,18 @@ func TestBatch_WebFetchToolResultNeverGrowsCitationDocuments(t *testing.T) {
 			t.Fatalf("expected no SourceContent (page_location can't resolve in batch even against a web-fetched document), got %+v", res.Content)
 		}
 	}
-	text, ok := res.Content[0].(types.TextContent)
-	if !ok {
-		t.Fatalf("Content[0] = %T, want types.TextContent", res.Content[0])
+	// Content follows the order of the response blocks: the web_fetch result
+	// comes first, then the cited text.
+	var text types.TextContent
+	foundText := false
+	for _, c := range res.Content {
+		if tc, ok := c.(types.TextContent); ok {
+			text, foundText = tc, true
+			break
+		}
+	}
+	if !foundText {
+		t.Fatalf("no TextContent in %+v", res.Content)
 	}
 	var meta map[string]struct {
 		Citations []map[string]interface{} `json:"citations"`
@@ -1158,4 +1198,194 @@ func asInvalidArgumentError(err error, target **providererrors.InvalidArgumentEr
 		return true
 	}
 	return false
+}
+
+// TS #22096: batch result rows over batchResultDownloads.maxLineBytes fail
+// with a DownloadError and close the body.
+func TestAnthropicBatchResultsStreamRejectsOversizedRow(t *testing.T) {
+	body := &closeTrackingBody{Reader: strings.NewReader(`{"custom_id":"a","result":{"type":"canceled"}}` + "\n")}
+	stream := newAnthropicBatchResultsStream(body, nil, "https://results.example/x", 10)
+	_, err := stream.Next()
+	var dl *providererrors.DownloadError
+	if !errors.As(err, &dl) || dl.URL != "https://results.example/x" || !strings.Contains(dl.Message, "maximum line size of 10 bytes") {
+		t.Fatalf("err = %v", err)
+	}
+	if !body.closed {
+		t.Fatal("body should be closed")
+	}
+}
+
+type closeTrackingBody struct {
+	io.Reader
+	closed bool
+}
+
+func (c *closeTrackingBody) Close() error { c.closed = true; return nil }
+
+// Following results_url on the provider's own origin sends the provider's
+// default headers, including the user-agent suffix (TS getBatchHeaders).
+func TestBatch_ResultsDownloadSendsProviderHeaders(t *testing.T) {
+	var gotUA, gotVersion, gotKey string
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	mux.HandleFunc("/messages/batches/b1", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"ended","request_counts":{"processing":0,"succeeded":0,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z","results_url":"` + srv.URL + `/results"}`))
+	})
+	mux.HandleFunc("/results", func(w http.ResponseWriter, r *http.Request) {
+		gotUA, gotVersion, gotKey = r.Header.Get("User-Agent"), r.Header.Get("anthropic-version"), r.Header.Get("x-api-key")
+	})
+
+	b := New(Config{APIKey: "k", BaseURL: srv.URL}).ExperimentalBatch()
+	stream, err := b.DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "b1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = stream.Close()
+	if !strings.Contains(gotUA, "ai-sdk-anthropic/") || gotVersion == "" || gotKey != "k" {
+		t.Fatalf("user-agent=%q version=%q key=%q", gotUA, gotVersion, gotKey)
+	}
+}
+
+// Batch requests take betas only from providerOptions.anthropic.anthropicBeta
+// on startBatch (TS passes userSuppliedBetas: new Set(explicitBatchBetas));
+// an anthropic-beta header on a request's own options is not used.
+func TestBatch_RequestHeaderBetasAreNotCollected(t *testing.T) {
+	var capturedBeta string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBeta = r.Header.Get("anthropic-beta")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"b","type":"message_batch","processing_status":"in_progress","request_counts":{"processing":1,"succeeded":0,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z"}`))
+	}))
+	defer srv.Close()
+
+	req := textBatchRequest("r1", ClaudeSonnet4_5, "Hello")
+	req.Text.Options.Headers = map[string]string{"anthropic-beta": "request-level-beta"}
+	_, err := New(Config{APIKey: "k", BaseURL: srv.URL}).ExperimentalBatch().DoStartBatch(t.Context(), provider.BatchV4StartOptions{
+		Requests:        []provider.BatchV4Request{req},
+		ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"anthropicBeta": []interface{}{"explicit-beta"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capturedBeta != "explicit-beta" {
+		t.Fatalf("anthropic-beta = %q, want only explicit-beta", capturedBeta)
+	}
+}
+
+// TestBatchResult_ErroredAcceptsEmptyStrings mirrors the TS errored schema,
+// where error.error.type and error.error.message are plain z.string() (empty
+// is valid); only a missing/non-string field invalidates the line.
+func TestBatchResult_ErroredAcceptsEmptyStrings(t *testing.T) {
+	s := &anthropicBatchResultsStream{}
+	line := anthropicBatchResultLineWire{
+		CustomID: "r1",
+		Result:   []byte(`{"type":"errored","error":{"type":"error","error":{"type":"","message":""}}}`),
+	}
+	got := s.convertResult(line)
+	if got.Status != provider.BatchItemFailed || got.Error == nil || got.Error.Code != "" {
+		t.Fatalf("empty-string error treated as invalid: %+v", got)
+	}
+	missing := anthropicBatchResultLineWire{
+		CustomID: "r2",
+		Result:   []byte(`{"type":"errored","error":{"type":"error","error":{"type":"x"}}}`),
+	}
+	if got := s.convertResult(missing); got.Error == nil || got.Error.Code != "invalid_response" {
+		t.Fatalf("missing message must be invalid: %+v", got)
+	}
+}
+
+// TS parseAnthropicBatchResponse validates every content block against
+// anthropicResponseSchema: a known block type that fails its schema makes the
+// item invalid even when its required top-level fields are present, while an
+// unknown block type is dropped.
+func TestBatch_InvalidKnownBlockFailsItemUnknownBlockDropped(t *testing.T) {
+	invalid := `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5",` +
+		`"content":[{"type":"web_search_tool_result","content":[]},{"type":"text","text":"hi"}],` +
+		`"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+	unknown := `{"id":"msg_2","type":"message","role":"assistant","model":"claude-opus-5",` +
+		`"content":[{"type":"future_block","x":1},{"type":"text","text":"hi"}],` +
+		`"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+	resultsBody := `{"custom_id":"bad","result":{"type":"succeeded","message":` + invalid + `}}` + "\n" +
+		`{"custom_id":"future","result":{"type":"succeeded","message":` + unknown + `}}`
+	srv := anthropicBatchResultsServer(t, resultsBody)
+	defer srv.Close()
+
+	b := New(Config{APIKey: "k", BaseURL: srv.URL}).ExperimentalBatch()
+	stream, err := b.DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "b1"})
+	if err != nil {
+		t.Fatalf("DoGetBatchResults: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	items := drainAnthropicBatchResults(t, stream)
+	if got := items["bad"]; got == nil || got.Status != provider.BatchItemFailed || got.Error == nil || got.Error.Code != "invalid_response" {
+		t.Fatalf("bad = %+v", got)
+	}
+	if got := items["future"]; got == nil || got.Status != provider.BatchItemSucceeded || got.TextResult == nil {
+		t.Fatalf("future = %+v", got)
+	}
+}
+
+// The custom providerOptions key is the first segment of the provider name
+// (TS provider.split('.')[0]), as for the language model.
+func TestAnthropicBatchProviderBetasUsesFirstNameSegment(t *testing.T) {
+	opts := map[string]interface{}{
+		"anthropic": map[string]interface{}{"anthropicBeta": []interface{}{"a"}},
+		"custom":    map[string]interface{}{"anthropicBeta": []interface{}{"b"}},
+	}
+	got := anthropicBatchProviderBetas("custom.messages", opts)
+	if len(got) != 1 || got[0] != "b" {
+		t.Fatalf("betas = %v, want [b]", got)
+	}
+	got = anthropicBatchProviderBetas("anthropic.messages", opts)
+	if len(got) != 1 || got[0] != "a" {
+		t.Fatalf("betas = %v, want [a]", got)
+	}
+}
+
+// TS createJsonLinesResponseHandler(anthropicBatchResultLineSchema): a results
+// line that is not JSON or lacks a string custom_id fails the stream with a
+// JSONParseError / TypeValidationError instead of yielding an item.
+func TestBatch_ResultsLineValidation(t *testing.T) {
+	cases := map[string]string{
+		"not json":          `{"custom_id":"a"`,
+		"missing custom_id": `{"result":{"type":"canceled"}}`,
+		"numeric custom_id": `{"custom_id":1,"result":{"type":"canceled"}}`,
+		"not an object":     `[1]`,
+	}
+	for name, line := range cases {
+		t.Run(name, func(t *testing.T) {
+			stream := newAnthropicBatchResultsStream(io.NopCloser(strings.NewReader(line+"\n")), nil, "https://x.example/r", 1<<20)
+			item, err := stream.Next()
+			var jp *providererrors.JSONParseError
+			var tv *providererrors.TypeValidationError
+			if item != nil || (!errors.As(err, &jp) && !errors.As(err, &tv)) {
+				t.Fatalf("item=%+v err=%T %v, want JSONParseError or TypeValidationError", item, err, err)
+			}
+		})
+	}
+}
+
+// TS convertAnthropicBatchResponse emits every server_tool_use block as a
+// provider-executed tool call, even with a name it does not know.
+func TestBatch_UnknownServerToolUseIsEmitted(t *testing.T) {
+	msg := `{"id":"msg_1","type":"message","role":"assistant","model":"claude-3-haiku-20240307",` +
+		`"content":[{"type":"server_tool_use","id":"srv_1","name":"future_tool","input":{"q":"x"}}],` +
+		`"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+	srv := anthropicBatchResultsServer(t, `{"custom_id":"a","result":{"type":"succeeded","message":`+msg+`}}`)
+	defer srv.Close()
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	stream, err := p.ExperimentalBatch().DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "b1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Close() }()
+	item := drainAnthropicBatchResults(t, stream)["a"]
+	if item == nil || item.TextResult == nil || len(item.TextResult.ToolCalls) != 1 {
+		t.Fatalf("item = %+v", item)
+	}
+	tc := item.TextResult.ToolCalls[0]
+	if tc.ToolName != "future_tool" || !tc.ProviderExecuted || tc.RawArguments != `{"q":"x"}` {
+		t.Fatalf("tool call = %+v", tc)
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -33,12 +34,12 @@ func NewLanguageModel(provider *Provider, modelID string) *LanguageModel {
 
 // SpecificationVersion returns the specification version
 func (m *LanguageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
 func (m *LanguageModel) Provider() string {
-	return "fireworks"
+	return "fireworks.chat"
 }
 
 // ModelID returns the model ID
@@ -63,41 +64,72 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	reqBody := m.buildRequestBody(opts, false)
+	if err := providerutils.ValidateOpenAICompatibleChatOptions(opts.ProviderOptions, "fireworks"); err != nil {
+		return nil, err
+	}
+	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "fireworks"); err != nil {
+		return nil, err
+	}
+	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, false)
 	var response fireworksResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/v1/chat/completions",
-		Body:   reqBody,
-	}, &response)
+		Method:           http.MethodPost,
+		Path:             "/v1/chat/completions",
+		Body:             reqBody,
+		Headers:          opts.Headers,
+		ValidateResponse: providerutils.ChatResponseValidator(m.Provider(), providerutils.ResponseKindOpenAICompatible),
+	}, &streaming.OpenAICompatChatDecoder{Target: &response})
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 	result := m.convertResponse(response)
+	if err := streaming.ApplyOpenAICompatibleChatResponse(result, resp.Body, providerutils.ExtractHeaders(resp.Headers), "fireworks"); err != nil {
+		return nil, err
+	}
+	providerutils.ApplyWireUsageRaw(result, resp.Body)
+	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	// TS result.request.body: the request as sent.
+	result.RawRequest = reqBody
+	// TS response.body is the raw parsed JSON, not the schema-filtered value.
+	if len(resp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(resp.Body)
+	}
 	return result, nil
 }
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	reqBody := m.buildRequestBody(opts, true)
+	if err := providerutils.ValidateOpenAICompatibleChatOptions(opts.ProviderOptions, "fireworks"); err != nil {
+		return nil, err
+	}
+	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "fireworks"); err != nil {
+		return nil, err
+	}
+	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, true)
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/v1/chat/completions",
-		Body:   reqBody,
-		Headers: map[string]string{
-			"Accept": "text/event-stream",
-		},
+		Method:  http.MethodPost,
+		Path:    "/v1/chat/completions",
+		Body:    reqBody,
+		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 	stream := newFireworksStream(httpResp.Body)
 	stream.SetRequestBody(reqBody)
-	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
+	stream.IncludeRawChunks = opts.IncludeRawChunks
+	stream.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Header)
+	return streaming.NewWarningsStream(stream, warnings), nil
 }
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
+	body, _ := m.buildRequestBodyWithWarnings(opts, stream)
+	return body
+}
+
+func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning) {
+	var warnings []types.Warning
 	body := map[string]interface{}{
 		"model": m.modelID,
 	}
@@ -108,7 +140,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	// AllowVideo: true -- Fireworks wraps @ai-sdk/openai-compatible's
 	// OpenAICompatibleChatLanguageModel in TS, which supports video_url
 	// content parts (7dd9ec320c).
-	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true}
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "fireworks", ThoughtSignatureKey: "fireworks", ReasoningKey: "reasoning_content", SpreadCompatMetadata: true, FileParts: prompt.FilePartsOpenAICompatible}
 	if opts.Prompt.IsMessages() {
 		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {
@@ -134,8 +166,11 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if len(opts.StopSequences) > 0 {
 		body["stop"] = opts.StopSequences
 	}
+	var toolWarnings []types.Warning
 	if len(opts.Tools) > 0 {
-		body["tools"] = tool.ToOpenAIFormat(opts.Tools)
+		functionTools, dropped := tool.DropProviderDefinedTools(opts.Tools, nil)
+		toolWarnings = dropped
+		body["tools"] = tool.ToOpenAIFormat(functionTools)
 		if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
@@ -143,7 +178,20 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	// Response format (TS openai-compatible chat model with
 	// supportsStructuredOutputs: true): json_schema when a schema is present,
 	// strictJsonSchema (default true) from the fireworks provider options.
-	fireworksOptions, _ := providerutils.ResolveOpenAICompatibleProviderOptions("fireworks", opts.ProviderOptions)
+	fireworksOptions, optionWarnings := providerutils.ResolveOpenAICompatibleProviderOptions("fireworks", opts.ProviderOptions)
+	warnings = append(warnings, optionWarnings...)
+	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(fireworksOptions)...)
+	// Fireworks' transformRequestBody consumes thinking, reasoningHistory,
+	// promptCacheKey and serviceTier itself; every other unknown provider
+	// option is spread into the body like the shared TS chat model does.
+	warnings = append(warnings, providerutils.ApplyOpenAICompatibleCallSettings(body, opts.FrequencyPenalty, opts.PresencePenalty, opts.Seed, opts.TopK, "fireworks", opts.ProviderOptions,
+		"thinking", "reasoningHistory", "promptCacheKey", "serviceTier")...)
+	if user, ok := providerutils.OpenAICompatibleStringOption(fireworksOptions, "user"); ok {
+		body["user"] = user
+	}
+	if verbosity, ok := providerutils.OpenAICompatibleStringOption(fireworksOptions, "textVerbosity", "text_verbosity", "text-verbosity"); ok {
+		body["verbosity"] = verbosity
+	}
 	if format, _ := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
 		StructuredOutputs: true,
 		StrictJSONSchema:  providerutils.BoolOption(fireworksOptions, "strictJsonSchema", true),
@@ -176,15 +224,23 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			reasoningEffort, hasReasoningEffort = "high", true
 		case types.ReasoningXHigh:
 			reasoningEffort, hasReasoningEffort = "xhigh", true
+		case types.ReasoningMax:
+			reasoningEffort, hasReasoningEffort = "max", true
 			// ReasoningDefault: omit
 		}
 	}
 	if hasReasoningEffort {
+		// Fireworks supports low, medium, and high reasoning levels.
+		original := reasoningEffort
 		switch reasoningEffort {
 		case "minimal":
 			reasoningEffort = "low"
-		case "xhigh":
+		case "xhigh", "max":
 			reasoningEffort = "high"
+		}
+		if reasoningEffort != original {
+			details := fmt.Sprintf("reasoning %q is not directly supported by this model. mapped to effort %q.", original, reasoningEffort)
+			warnings = append(warnings, types.Warning{Type: "compatibility", Feature: "reasoning", Details: details, Message: details})
 		}
 		body["reasoning_effort"] = reasoningEffort
 	}
@@ -208,13 +264,15 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			thinkingBody["budget_tokens"] = budgetTokens
 		}
 
-		if len(thinkingBody) > 0 {
-			body["thinking"] = thinkingBody
-		}
+		// TS `...(thinking && { thinking: {...} })`: an empty object is
+		// truthy, so `thinking: {}` is forwarded as {}.
+		body["thinking"] = thinkingBody
 	}
 
 	// Extract reasoningHistory and convert to snake_case (reasoning_history)
-	if reasoningHistory, ok := providerutils.OpenAICompatibleStringOption(fireworksOptions, "reasoningHistory"); ok {
+	// TS `...(reasoningHistory && { reasoning_history })`: an empty string is
+	// falsy and is not forwarded.
+	if reasoningHistory, ok := providerutils.OpenAICompatibleStringOption(fireworksOptions, "reasoningHistory"); ok && reasoningHistory != "" {
 		body["reasoning_history"] = reasoningHistory
 	}
 
@@ -230,7 +288,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["service_tier"] = serviceTier
 	}
 
-	return body
+	return body, append(warnings, toolWarnings...)
 }
 
 func (m *LanguageModel) convertResponse(response fireworksResponse) *types.GenerateResult {
@@ -245,7 +303,7 @@ func (m *LanguageModel) convertResponse(response fireworksResponse) *types.Gener
 		Text:            choice.Message.Content,
 		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
 		RawFinishReason: choice.FinishReason,
-		Usage:           convertFireworksUsage(response.Usage),
+		Usage:           convertFireworksUsagePtr(response.Usage),
 		RawResponse:     response,
 	}
 	if choice.Message.ReasoningContent != "" {
@@ -258,10 +316,17 @@ func (m *LanguageModel) convertResponse(response fireworksResponse) *types.Gener
 			if tc.Function.Arguments != "" {
 				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
 			}
+			// TS openai-compatible chat: `toolCall.id || generateId()`.
+			id := tc.ID
+			if id == "" {
+				id = streaming.GenerateID()
+			}
 			result.ToolCalls[i] = types.ToolCall{
-				ID:        tc.ID,
+				ID:        id,
 				ToolName:  tc.Function.Name,
 				Arguments: args,
+				// Wire text keeps the key order TS keeps (JSON.stringify of the parsed input).
+				RawArguments: tc.Function.Arguments,
 			}
 		}
 	}
@@ -269,6 +334,12 @@ func (m *LanguageModel) convertResponse(response fireworksResponse) *types.Gener
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
 	if parsed := parseFireworksProviderError(err); parsed != nil {
 		return parsed
 	}
@@ -285,10 +356,20 @@ func (m *LanguageModel) handleError(err error) error {
 }
 
 // convertFireworksUsage converts Fireworks usage to detailed Usage struct
+// convertFireworksUsagePtr is TS convert usage of a possibly missing wire usage: an
+// absent or null usage object yields the null usage (unknown token counts),
+// not zero tokens.
+func convertFireworksUsagePtr(usage *fireworksUsage) types.Usage {
+	if usage == nil {
+		return types.Usage{}
+	}
+	return convertFireworksUsage(*usage)
+}
+
 func convertFireworksUsage(usage fireworksUsage) types.Usage {
 	promptTokens := int64(usage.PromptTokens)
 	completionTokens := int64(usage.CompletionTokens)
-	totalTokens := int64(usage.TotalTokens)
+	totalTokens := promptTokens + completionTokens // TS core: input total + output total
 	result := types.Usage{
 		InputTokens:  &promptTokens,
 		OutputTokens: &completionTokens,
@@ -314,7 +395,7 @@ func convertFireworksUsage(usage fireworksUsage) types.Usage {
 	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
 		reasoningTokens = int64(*usage.CompletionTokensDetails.ReasoningTokens)
 	}
-	if cachedTokens > 0 || textTokens != nil || imageTokens != nil {
+	{
 		noCacheTokens := promptTokens - cachedTokens
 		result.InputDetails = &types.InputTokenDetails{
 			NoCacheTokens:    &noCacheTokens,
@@ -324,8 +405,11 @@ func convertFireworksUsage(usage fireworksUsage) types.Usage {
 			ImageTokens:      imageTokens,
 		}
 	}
-	if reasoningTokens > 0 {
+	{
 		textTokens := completionTokens - reasoningTokens
+		if textTokens < 0 {
+			textTokens = 0
+		}
 		result.OutputDetails = &types.OutputTokenDetails{
 			TextTokens:      &textTokens,
 			ReasoningTokens: &reasoningTokens,
@@ -367,7 +451,7 @@ type fireworksResponse struct {
 			} `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
-	Usage fireworksUsage `json:"usage"`
+	Usage *fireworksUsage `json:"usage"`
 }
 
 // fireworksUsage represents Fireworks usage information with detailed token tracking
@@ -394,6 +478,8 @@ type fireworksStream struct {
 
 func newFireworksStream(reader io.ReadCloser) *fireworksStream {
 	s := streaming.NewOpenAICompatStream(reader, providerutils.MapOpenAIFinishReason)
+	s.MetadataKey = "fireworks"
+	s.ChunkErrorKind = providerutils.ChunkErrorStringOrObject
 	s.OnReasoningDelta = func(eventBytes []byte) (string, bool) {
 		var chunk struct {
 			Choices []struct {

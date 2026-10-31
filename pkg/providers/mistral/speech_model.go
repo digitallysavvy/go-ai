@@ -34,7 +34,7 @@ func NewSpeechModel(provider *Provider, modelID string) *SpeechModel {
 func (m *SpeechModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
-func (m *SpeechModel) Provider() string { return "mistral" }
+func (m *SpeechModel) Provider() string { return "mistral.speech" }
 
 // ModelID returns the model ID.
 func (m *SpeechModel) ModelID() string { return m.modelID }
@@ -42,6 +42,11 @@ func (m *SpeechModel) ModelID() string { return m.modelID }
 // DoGenerate performs non-streaming speech synthesis.
 func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGenerateOptions) (*types.SpeechResult, error) {
 	currentDate := time.Now()
+	// TS parseProviderOptions(mistralSpeechModelOptions): refAudio is a
+	// non-empty string.
+	if _, err := providerutils.ParseProviderOptions("mistral", opts.ProviderOptions, mistralSpeechOptionsSchema); err != nil {
+		return nil, err
+	}
 	reqBody, warnings := m.buildRequestBody(opts)
 
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
@@ -54,6 +59,13 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, providererrors.NewProviderError("mistral", 0, "", err.Error(), err)
 	}
 
+	if resp.StatusCode >= 400 {
+		return nil, internalhttp.StatusProviderError("mistral", resp.StatusCode, resp.Headers, resp.Body)
+	}
+
+	if err := providerutils.MediaResponseValidator("mistral", providerutils.SchemaMistralSpeech)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var response mistralSpeechResponse
 	if err := json.Unmarshal(resp.Body, &response); err != nil {
 		return nil, fmt.Errorf("mistral: failed to decode speech response: %w", err)
@@ -78,9 +90,24 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(resp.Headers),
-			Body:      resp.Body,
+			Body:      providerutils.RawJSONBody(resp.Body),
 		},
 	}, nil
+}
+
+// mistralSpeechOptionsSchema is mistralSpeechModelOptions.
+var mistralSpeechOptionsSchema = providerutils.OptionSchema{
+	"refAudio": providerutils.OptStringLen(1, -1),
+	// expressiveness: 1 to 5. Supported by Voxtral 3.
+	"expressiveness": providerutils.OptRange(1, 5),
+	// phonemeHints: words mapped to non-empty lists of IPA phonemes.
+	// Supported by Voxtral 3.
+	"phonemeHints": providerutils.OptRecord(func(key string) error {
+		if key == "" {
+			return fmt.Errorf("too small: expected string to have >=1 characters")
+		}
+		return nil
+	}, providerutils.OptArray(providerutils.OptStringLen(1, -1), 1, -1)),
 }
 
 // redactedSpeechRequestBody returns a shallow copy of body with ref_audio
@@ -145,11 +172,15 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 	}
 
 	refAudio := ""
+	var expressiveness interface{}
+	var phonemeHints interface{}
 	if opts.ProviderOptions != nil {
 		if mistralOpts, ok := opts.ProviderOptions["mistral"].(map[string]interface{}); ok {
 			if v, ok := mistralOpts["refAudio"].(string); ok {
 				refAudio = v
 			}
+			expressiveness = mistralOpts["expressiveness"]
+			phonemeHints = mistralOpts["phonemeHints"]
 		}
 	}
 
@@ -163,6 +194,12 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 		body["ref_audio"] = refAudio
 	} else if opts.Voice != "" {
 		body["voice_id"] = opts.Voice
+	}
+	if expressiveness != nil {
+		body["expressiveness"] = expressiveness
+	}
+	if phonemeHints != nil {
+		body["phoneme_hints"] = phonemeHints
 	}
 
 	return body, warnings

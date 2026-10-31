@@ -331,7 +331,7 @@ result, _ := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
 type Config struct {
     Project     string  // Required: Google Cloud project ID
     Location    string  // Required: GCP location (e.g., "us-central1")
-    AccessToken string  // Required: OAuth2 access token
+    AccessToken string  // Optional: OAuth2 access token (defaults to Application Default Credentials)
     BaseURL     string  // Optional: Custom base URL
 }
 ```

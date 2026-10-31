@@ -7,6 +7,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // toolApprovalResumeOptions carries the call settings needed to resume tool
@@ -26,6 +27,10 @@ type toolApprovalResumeOptions struct {
 	// forwarded to the provider as approval responses instead), and stream
 	// chunks are produced for every outcome.
 	streaming bool
+	// toolCallConcurrency is the validated ToolCallConcurrency (0 = unset).
+	// When unset, resumed approvals run unbounded in parallel in both
+	// generateText and streamText (TS Promise.all).
+	toolCallConcurrency int
 }
 
 // toolApprovalResumeResult is the outcome of resuming approvals before the
@@ -144,13 +149,22 @@ func resumeToolApprovals(ctx context.Context, opts toolApprovalResumeOptions) (t
 		noApproval := types.GenericToolApprovalFunc(func(types.ToolApprovalOptions) types.ToolApprovalResult {
 			return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
 		})
+		// Resumed approvals run concurrently by default (TS Promise.all),
+		// bounded by ToolCallConcurrency, with results in model order.
+		callbacks := opts.callbacks
+		var preliminaryMu sync.Mutex
 		if opts.streaming {
-			// TS streamText's initial tool-execution stream runs resumed
-			// approvals in parallel (Promise.all); generateText's resume
-			// stays sequential, matching executeTools elsewhere.
-			executed, err = executeToolsParallel(ctx, executable, opts.tools, opts.runtimeContext, opts.toolsContext, noApproval, opts.usage, opts.callbacks)
-		} else {
-			executed, err = executeTools(ctx, executable, opts.tools, opts.runtimeContext, opts.toolsContext, noApproval, opts.usage, opts.callbacks)
+			// Preliminary results of streaming tools are full-stream parts in
+			// the order they were produced, ahead of the final results.
+			callbacks.onPreliminary = func(result types.ToolResult) {
+				preliminaryMu.Lock()
+				defer preliminaryMu.Unlock()
+				out.chunks = append(out.chunks, provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &result})
+			}
+		}
+		executed, err = executeToolsLimited(ctx, executable, opts.tools, opts.runtimeContext, opts.toolsContext, noApproval, opts.usage, callbacks, opts.toolCallConcurrency)
+		if failure := unwrapToolCallFailure(err); failure != nil {
+			return out, failure
 		}
 		if err != nil {
 			return out, err
@@ -252,13 +266,20 @@ func messagesForModel(messages []types.Message) []types.Message {
 			}
 		}
 	}
-	keepResponse := func(response types.ToolApprovalResponseContent) (types.ToolApprovalResponseContent, bool) {
-		if response.ProviderExecuted {
-			return response, true
+	// A kept response reaches the model as TS's LanguageModelV4
+	// tool-approval-response part: {approvalId, approved, reason}, without
+	// providerExecuted or the tool call (TS convert-to-language-model-prompt.ts
+	// maps the kept part to exactly these fields).
+	modelResponse := func(response types.ToolApprovalResponseContent) types.ToolApprovalResponseContent {
+		return types.ToolApprovalResponseContent{
+			ApprovalID: response.ApprovalID,
+			Approved:   response.Approved,
+			Reason:     response.Reason,
 		}
-		if providerExecutedCalls[approvalToolCall[response.ApprovalID]] || response.ToolCall.ProviderExecuted {
-			response.ProviderExecuted = true
-			return response, true
+	}
+	keepResponse := func(response types.ToolApprovalResponseContent) (types.ToolApprovalResponseContent, bool) {
+		if response.ProviderExecuted || providerExecutedCalls[approvalToolCall[response.ApprovalID]] || response.ToolCall.ProviderExecuted {
+			return modelResponse(response), true
 		}
 		return response, false
 	}
@@ -297,6 +318,13 @@ func messagesForModel(messages []types.Message) []types.Message {
 				filtered = append(filtered, part)
 			}
 			message.Content = filtered
+			if n := len(out); n > 0 && out[n-1].Role == types.RoleTool && len(out[n-1].Content) == 0 {
+				// Previous tool message became empty (approval-only): keep
+				// its provider options on the combined message (TS #22178).
+				message.ProviderOptions = promptutils.MergeProviderOptions(out[n-1].ProviderOptions, message.ProviderOptions)
+				out[n-1] = message
+				continue
+			}
 			if n := len(out); n > 0 && out[n-1].Role == types.RoleTool && len(out[n-1].ProviderOptions) == 0 && len(message.ProviderOptions) == 0 {
 				merged := append(append([]types.ContentPart(nil), out[n-1].Content...), message.Content...)
 				out[n-1].Content = merged
@@ -363,50 +391,6 @@ func attachInputSchemaInputs(parts []types.ContentPart, inputs map[string]interf
 	return parts
 }
 
-// executeToolsParallel runs each of calls through executeTools independently
-// and concurrently, collecting results in the original call order (TS
-// Promise.all semantics for the initial resumed-approval tool execution in
-// streamText — see collect-tool-approvals.ts / stream-text.ts). Each call
-// gets its own *types.Usage accumulator so concurrent tool Execute functions
-// never race on the same pointer; the totals are merged into usage once every
-// goroutine has finished.
-func executeToolsParallel(ctx context.Context, calls []types.ToolCall, tools []types.Tool, runtimeContext interface{}, toolsContext map[string]interface{}, toolApproval interface{}, usage *types.Usage, callbacks toolCallEventCallbacks) ([]types.ToolResult, error) {
-	if len(calls) <= 1 {
-		return executeTools(ctx, calls, tools, runtimeContext, toolsContext, toolApproval, usage, callbacks)
-	}
-
-	perCallResults := make([][]types.ToolResult, len(calls))
-	perCallUsage := make([]types.Usage, len(calls))
-	errs := make([]error, len(calls))
-
-	var wg sync.WaitGroup
-	wg.Add(len(calls))
-	for i, call := range calls {
-		go func(i int, call types.ToolCall) {
-			defer wg.Done()
-			results, err := executeTools(ctx, []types.ToolCall{call}, tools, runtimeContext, toolsContext, toolApproval, &perCallUsage[i], callbacks)
-			perCallResults[i] = results
-			errs[i] = err
-		}(i, call)
-	}
-	wg.Wait()
-
-	merged := usage.Add(types.Usage{})
-	out := make([]types.ToolResult, 0, len(calls))
-	for i := range calls {
-		merged = merged.Add(perCallUsage[i])
-		out = append(out, perCallResults[i]...)
-	}
-	*usage = merged
-
-	for _, err := range errs {
-		if err != nil {
-			return out, err
-		}
-	}
-	return out, nil
-}
-
 // ResumeToolApprovalsOptions configures ResumeToolApprovals, the exported
 // entry point other packages (e.g. pkg/agent's legacy tool-loop) use to
 // resume tool approvals collected from the tail of a message history:
@@ -433,6 +417,10 @@ type ResumeToolApprovalsOptions struct {
 	RefineToolInput map[string]ToolInputRefiner
 	// CallID correlates emitted tool execution events with the caller's call.
 	CallID string
+	// ToolCallConcurrency bounds how many approved calls run at once. Nil
+	// runs them all concurrently; values below 1 return an
+	// InvalidArgumentError.
+	ToolCallConcurrency *int
 	// ModelProvider and ModelID identify the model for emitted events.
 	ModelProvider string
 	ModelID       string
@@ -462,15 +450,20 @@ type ResumeToolApprovalsResult struct {
 // state/parity/sep_23_2026/review-p0-1-p0-2-round1.md).
 func ResumeToolApprovals(ctx context.Context, opts ResumeToolApprovalsOptions) (ResumeToolApprovalsResult, error) {
 	var usage types.Usage
+	concurrency, err := prepareToolCallConcurrency(opts.ToolCallConcurrency)
+	if err != nil {
+		return ResumeToolApprovalsResult{}, err
+	}
 	resumed, err := resumeToolApprovals(ctx, toolApprovalResumeOptions{
-		messages:       opts.Messages,
-		tools:          opts.Tools,
-		toolApproval:   opts.ToolApproval,
-		toolsContext:   opts.ToolsContext,
-		runtimeContext: opts.RuntimeContext,
-		secret:         opts.Secret,
-		refine:         opts.RefineToolInput,
-		usage:          &usage,
+		toolCallConcurrency: concurrency,
+		messages:            opts.Messages,
+		tools:               opts.Tools,
+		toolApproval:        opts.ToolApproval,
+		toolsContext:        opts.ToolsContext,
+		runtimeContext:      opts.RuntimeContext,
+		secret:              opts.Secret,
+		refine:              opts.RefineToolInput,
+		usage:               &usage,
 		callbacks: toolCallEventCallbacks{
 			callID:              opts.CallID,
 			onStart:             opts.OnToolExecutionStart,
@@ -487,4 +480,17 @@ func ResumeToolApprovals(ctx context.Context, opts ResumeToolApprovalsOptions) (
 		return ResumeToolApprovalsResult{}, err
 	}
 	return ResumeToolApprovalsResult{ResponseMessages: resumed.responseMessages, Usage: usage}, nil
+}
+
+// validateStepToolResults rejects a step prompt that leaves a tool call
+// without a tool result before later context or the end of the conversation
+// (TS convertToLanguageModelPrompt MissingToolResultsError, TS #22449).
+func validateStepToolResults(messages []types.Message, tools []types.Tool) error {
+	var providerTools []string
+	for _, tool := range tools {
+		if tool.ProviderExecuted {
+			providerTools = append(providerTools, tool.Name)
+		}
+	}
+	return promptutils.ValidateToolResults(messages, providerTools...)
 }

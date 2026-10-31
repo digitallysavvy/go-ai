@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -65,7 +66,8 @@ type CollectToolApprovalsResult struct {
 // message when it is a tool message. Approved responses whose tool call
 // already has a result are skipped; denied responses are skipped only when an
 // existing result is not an execution-denied output (so a client denial can
-// override an earlier synthetic denial). Mirrors TS collectToolApprovals.
+// override an earlier synthetic denial). Only the first response per tool call
+// is collected; later ones are ignored. Mirrors TS collectToolApprovals.
 func CollectToolApprovals(messages []types.Message) (CollectToolApprovalsResult, error) {
 	var result CollectToolApprovalsResult
 	if len(messages) == 0 || messages[len(messages)-1].Role != types.RoleTool {
@@ -77,6 +79,8 @@ func CollectToolApprovals(messages []types.Message) (CollectToolApprovalsResult,
 	// exact-key, so client-supplied IDs cannot resolve inherited properties
 	// (the TS Object.create(null) concern does not apply).
 	toolCallsByID := map[string]types.ToolCall{}
+	toolCallOrder := map[string]int{}
+	nextToolCallIndex := 0
 	requestsByApprovalID := map[string]types.ToolApprovalRequestContent{}
 	for _, message := range messages {
 		if message.Role != types.RoleAssistant {
@@ -84,16 +88,22 @@ func CollectToolApprovals(messages []types.Message) (CollectToolApprovalsResult,
 		}
 		for _, call := range message.ToolCalls {
 			toolCallsByID[call.ID] = call
+			toolCallOrder[call.ID] = nextToolCallIndex
+			nextToolCallIndex++
 		}
 		for _, part := range message.Content {
 			switch p := part.(type) {
 			case types.ToolCallContent:
 				call := toolCallFromContentPart(p)
 				toolCallsByID[call.ID] = call
+				toolCallOrder[call.ID] = nextToolCallIndex
+				nextToolCallIndex++
 			case *types.ToolCallContent:
 				if p != nil {
 					call := toolCallFromContentPart(*p)
 					toolCallsByID[call.ID] = call
+					toolCallOrder[call.ID] = nextToolCallIndex
+					nextToolCallIndex++
 				}
 			}
 		}
@@ -128,6 +138,7 @@ func CollectToolApprovals(messages []types.Message) (CollectToolApprovalsResult,
 		}
 	}
 
+	collectedToolCallIDs := map[string]bool{}
 	for _, part := range lastMessage.Content {
 		var response types.ToolApprovalResponseContent
 		switch p := part.(type) {
@@ -164,6 +175,15 @@ func CollectToolApprovals(messages []types.Message) (CollectToolApprovalsResult,
 			}
 		}
 
+		// Only the first response for a tool call is collected. Later
+		// responses (replays, conflicting decisions, or responses to another
+		// approval of the same call) would otherwise execute the tool twice
+		// or both execute and deny it (TS #23791).
+		if collectedToolCallIDs[toolCall.ID] {
+			continue
+		}
+		collectedToolCallIDs[toolCall.ID] = true
+
 		approval := CollectedToolApproval{
 			ApprovalRequest:    request,
 			ApprovalResponse:   response,
@@ -176,6 +196,11 @@ func CollectToolApprovals(messages []types.Message) (CollectToolApprovalsResult,
 			result.DeniedToolApprovals = append(result.DeniedToolApprovals, approval)
 		}
 	}
+	// Approval responses can arrive in a different order than the model's
+	// calls. Restore model order before execution is scheduled (TS #22135).
+	sort.SliceStable(result.ApprovedToolApprovals, func(i, j int) bool {
+		return toolCallOrder[result.ApprovedToolApprovals[i].ToolCall.ID] < toolCallOrder[result.ApprovedToolApprovals[j].ToolCall.ID]
+	})
 	return result, nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	stdhttp "net/http"
 	"strings"
 	"time"
 
@@ -65,7 +66,7 @@ type minimaxOperation struct {
 // dropped, but not how many survived, which callers that meter usage need.
 type minimaxResolvedInputs struct {
 	ImageCount            int   `json:"imageCount"`
-	ReferenceVideoIndices []int `json:"referenceVideoIndices,omitempty"`
+	ReferenceVideoIndices []int `json:"referenceVideoIndices"`
 }
 
 // DoStart starts an asynchronous video generation via MiniMax's task
@@ -89,10 +90,14 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		body["callback_url"] = opts.WebhookURL
 	}
 
+	submitHeaders, err := m.prov.resolveVideoHeaders(opts.Headers)
+	if err != nil {
+		return nil, err
+	}
 	submitResp, err := m.prov.videoClient.Do(ctx, internalhttp.Request{
 		Method:  "POST",
 		Path:    "/v2/video_generation",
-		Headers: m.prov.resolveVideoHeaders(opts.Headers),
+		Headers: submitHeaders,
 		Body:    body,
 	})
 	if err != nil {
@@ -102,6 +107,9 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, m.parseAPIError(submitResp.Body, submitResp.StatusCode)
 	}
 
+	if err := providerutils.MediaResponseValidator("minimax", providerutils.SchemaMiniMaxCreate)(submitResp.StatusCode, submitResp.Headers, submitResp.Body); err != nil {
+		return nil, err
+	}
 	var createResp struct {
 		TaskID string `json:"task_id"`
 	}
@@ -109,9 +117,21 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to parse creation response: %v", err))
 	}
 	if createResp.TaskID == "" {
-		return nil, NewVideoGenerationError(fmt.Sprintf("No task_id returned from the MiniMax API. Response: %s", string(submitResp.Body)))
+		// TS prints JSON.stringify of the zod-parsed response, which keeps
+		// only task_id (null/"" kept, absent omitted).
+		parsed := "{}"
+		var raw map[string]json.RawMessage
+		if json.Unmarshal(submitResp.Body, &raw) == nil {
+			if v, ok := raw["task_id"]; ok {
+				parsed = `{"task_id":` + string(v) + `}`
+			}
+		}
+		return nil, NewVideoGenerationError(fmt.Sprintf("No task_id returned from the MiniMax API. Response: %s", parsed))
 	}
 
+	if resolvedInputs.ReferenceVideoIndices == nil {
+		resolvedInputs.ReferenceVideoIndices = []int{}
+	}
 	operation, _ := json.Marshal(minimaxOperation{TaskID: createResp.TaskID, ResolvedInputs: resolvedInputs})
 
 	return &provider.VideoModelV3OperationStartResult{
@@ -158,14 +178,25 @@ func (m *VideoModel) getStatus(ctx context.Context, opts *provider.VideoModelV3S
 	}
 
 	downloadOpts := fileutil.TrustedOriginDownloadOptions(m.prov.videoBaseURL, nil)
-	downloadOpts.Headers = m.prov.resolveVideoHeaders(opts.Headers)
+	statusHeaders, err := m.prov.resolveVideoHeaders(opts.Headers)
+	if err != nil {
+		return nil, nil, err
+	}
+	downloadOpts.Headers = statusHeaders
 
-	statusURL := strings.TrimRight(m.prov.videoBaseURL, "/") + "/v2/query/video_generation/" + providerutils.EncodePathSegment(op.TaskID)
+	statusURL := m.prov.videoBaseURL + "/v2/query/video_generation/" + providerutils.EncodePathSegment(op.TaskID)
 
-	var statusResp minimaxStatusResponse
-	result, err := fileutil.PollJSON(ctx, statusURL, downloadOpts, &statusResp)
+	result, err := fileutil.DownloadWithMetadata(ctx, statusURL, downloadOpts)
 	if err != nil {
 		return nil, nil, m.handlePollError(err)
+	}
+	// TS createJsonResponseHandler(minimaxVideoStatusResponseSchema).
+	if err := providerutils.MediaResponseValidator("minimax", providerutils.SchemaMiniMaxStatus)(stdhttp.StatusOK, stdhttp.Header(result.Headers), result.Data); err != nil {
+		return nil, nil, err
+	}
+	var statusResp minimaxStatusResponse
+	if err := json.Unmarshal(result.Data, &statusResp); err != nil {
+		return nil, nil, fmt.Errorf("minimax: failed to decode status response: %w", err)
 	}
 
 	responseInfo := provider.VideoModelV3ResponseInfo{
@@ -181,12 +212,17 @@ func (m *VideoModel) getStatus(ctx context.Context, opts *provider.VideoModelV3S
 			return nil, nil, NewVideoGenerationError(fmt.Sprintf("MiniMax video generation completed but no video URL was returned. Task ID: %s", op.TaskID))
 		}
 
+		referenceVideoIndices := op.ResolvedInputs.ReferenceVideoIndices
+		if referenceVideoIndices == nil {
+			// TS always reports an array (an empty one when no video was sent).
+			referenceVideoIndices = []int{}
+		}
 		meta := map[string]interface{}{
 			"taskId":   op.TaskID,
 			"videoUrl": task.Content.URL,
 			"resolvedInputs": map[string]interface{}{
 				"imageCount":            op.ResolvedInputs.ImageCount,
-				"referenceVideoIndices": op.ResolvedInputs.ReferenceVideoIndices,
+				"referenceVideoIndices": referenceVideoIndices,
 			},
 		}
 		if task.Duration != nil {
@@ -199,11 +235,18 @@ func (m *VideoModel) getStatus(ctx context.Context, opts *provider.VideoModelV3S
 			meta["resolution"] = *task.Resolution
 		}
 		if task.Usage != nil {
-			meta["usage"] = map[string]interface{}{
-				"totalSeconds":  task.Usage.TotalSeconds,
-				"inputSeconds":  task.Usage.InputSeconds,
-				"outputSeconds": task.Usage.OutputSeconds,
+			// TS leaves undefined members out of the object.
+			usage := map[string]interface{}{}
+			if task.Usage.TotalSeconds != nil {
+				usage["totalSeconds"] = *task.Usage.TotalSeconds
 			}
+			if task.Usage.InputSeconds != nil {
+				usage["inputSeconds"] = *task.Usage.InputSeconds
+			}
+			if task.Usage.OutputSeconds != nil {
+				usage["outputSeconds"] = *task.Usage.OutputSeconds
+			}
+			meta["usage"] = usage
 		}
 
 		return &provider.VideoModelV3OperationStatusResult{
@@ -282,6 +325,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 
 	var finalStatus *provider.VideoModelV3OperationStatusResult
 	var jobFailureErr error
+	var statusCheckErr error
 
 	checker := func(ctx context.Context) (*polling.JobResult, error) {
 		status, statusErr, err := m.getStatus(ctx, &provider.VideoModelV3StatusOptions{
@@ -289,6 +333,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 			Headers:   opts.Headers,
 		})
 		if err != nil {
+			statusCheckErr = err
 			return nil, err
 		}
 		switch status.Status {
@@ -314,6 +359,10 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		if jobFailureErr != nil {
 			return nil, jobFailureErr
 		}
+		if statusCheckErr != nil && ctx.Err() == nil && !strings.Contains(pollErr.Error(), "polling timeout") {
+			// TS lets the getFromApi / schema error propagate unchanged.
+			return nil, statusCheckErr
+		}
 		if strings.Contains(pollErr.Error(), "polling timeout") || strings.Contains(pollErr.Error(), "max polling attempts") {
 			return nil, NewTimeoutError(fmt.Sprintf("MiniMax video generation timed out after %dms. Task ID: %s", pollTimeoutMs, op.TaskID))
 		}
@@ -322,7 +371,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 
 	providerMetadata := finalStatus.ProviderMetadata
 	if mmMeta, ok := providerMetadata["minimax"].(map[string]interface{}); ok {
-		var referenceVideoURLs []string
+		referenceVideoURLs := []string{}
 		for _, idx := range op.ResolvedInputs.ReferenceVideoIndices {
 			if idx >= 0 && idx < len(opts.InputReferences) {
 				file := opts.InputReferences[idx]
@@ -331,10 +380,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 				}
 			}
 		}
-		resolved := map[string]interface{}{"imageCount": op.ResolvedInputs.ImageCount}
-		if referenceVideoURLs != nil {
-			resolved["referenceVideoUrls"] = referenceVideoURLs
-		}
+		resolved := map[string]interface{}{"imageCount": op.ResolvedInputs.ImageCount, "referenceVideoUrls": referenceVideoURLs}
 		enriched := map[string]interface{}{}
 		for k, v := range mmMeta {
 			enriched[k] = v
@@ -439,7 +485,7 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 	}
 
 	sentImageCount := 0
-	var sentReferenceVideoIndices []int
+	sentReferenceVideoIndices := []int{}
 
 	firstFrameImage := minimaxGetFirstFrame(opts)
 	firstFrame := firstFrameImage
@@ -649,7 +695,7 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 					warnings = append(warnings, types.Warning{
 						Type:    "unsupported",
 						Feature: "referenceAudioUrls",
-						Details: fmt.Sprintf("%s accepts at most %d reference audios. Extra audios were ignored.", m.modelID, minimaxMaxReferenceAudios),
+						Details: fmt.Sprintf("MiniMax-H3 accepts at most %d reference audios. Extra audios were ignored.", minimaxMaxReferenceAudios),
 					})
 				}
 			}
@@ -702,7 +748,11 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 	duration := minimaxDefaultDuration
 	if opts.Duration != nil {
 		raw := *opts.Duration
-		rounded := math.Round(raw)
+		// JS Math.round rounds half toward +Infinity.
+		rounded := math.Floor(raw + 0.5)
+		if math.IsNaN(raw) || math.IsInf(raw, 0) {
+			rounded = raw
+		}
 		if rounded != raw {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
@@ -710,21 +760,24 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 				Details: fmt.Sprintf("%s requires a whole number of seconds. The requested duration of %v was rounded to %v.", m.modelID, raw, rounded),
 			})
 		}
-		d := int(rounded)
-		if d > minimaxMaxDuration {
+		var d int
+		switch {
+		case rounded > minimaxMaxDuration:
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "duration",
 				Details: fmt.Sprintf("%s supports at most %d seconds. The requested duration of %v was clamped to %d.", m.modelID, minimaxMaxDuration, raw, minimaxMaxDuration),
 			})
 			d = minimaxMaxDuration
-		} else if d < minDurationSeconds {
+		case rounded < float64(minDurationSeconds):
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "duration",
 				Details: fmt.Sprintf("%s requires at least %d seconds. The requested duration of %v was clamped to %d.", m.modelID, minDurationSeconds, raw, minDurationSeconds),
 			})
 			d = minDurationSeconds
+		default:
+			d = int(rounded)
 		}
 		duration = d
 	}
@@ -819,15 +872,22 @@ func minimaxEncodeFile(f *provider.VideoModelV3File) (string, error) {
 // parseAPIError parses a MiniMax API error response (TS
 // minimaxVideoFailedResponseHandler / minimaxVideoErrorSchema).
 func (m *VideoModel) parseAPIError(body []byte, statusCode int) error {
+	// TS createJsonErrorResponseHandler: the message is
+	// `error?.message ?? 'MiniMax video generation error'`; a body that is
+	// empty or not a JSON object gives the HTTP status text.
+	message := stdhttp.StatusText(statusCode)
 	var errResp struct {
 		Error *struct {
-			Message string `json:"message"`
+			Message *string `json:"message"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(body, &errResp); err == nil && errResp.Error != nil && errResp.Error.Message != "" {
-		return NewAPIError(statusCode, errResp.Error.Message)
+	if json.Unmarshal(body, &errResp) == nil {
+		message = "MiniMax video generation error"
+		if errResp.Error != nil && errResp.Error.Message != nil {
+			message = *errResp.Error.Message
+		}
 	}
-	return NewAPIError(statusCode, string(body))
+	return &Error{Name: "MINIMAX_API_ERROR", Message: message, StatusCode: statusCode, ResponseBody: string(body)}
 }
 
 // handlePollError converts a fileutil poll error (a providererrors.DownloadError

@@ -6,9 +6,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/net/websocket"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -104,8 +108,9 @@ func TestSpeechTranslationModel_DoStream_RequiresAPIKey(t *testing.T) {
 		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
 		TargetLanguage:   "es",
 	})
-	if err == nil || !strings.Contains(err.Error(), "API key is required for streaming translation") {
-		t.Fatalf("err = %v, want a missing-API-key message", err)
+	var loadErr *providererrors.LoadAPIKeyError
+	if !errors.As(err, &loadErr) {
+		t.Fatalf("err = %v, want LoadAPIKeyError (TS getHeaders loads the key first)", err)
 	}
 }
 
@@ -710,5 +715,156 @@ func TestProvider_Translation_CreatesSpeechTranslationModel(t *testing.T) {
 	}
 	if m.ModelID() != "gemini-3.5-live-translate-preview" {
 		t.Fatalf("ModelID() = %q", m.ModelID())
+	}
+}
+
+// Ports of the TS tests "should find the API key with case-insensitive header
+// lookup" and "should pass non-credential headers to the WebSocket
+// constructor": the key travels in the URL only, custom headers reach the
+// handshake, and a header-supplied key is found in any case.
+func TestSpeechTranslationModel_DoStream_HandshakeHeadersAndKey(t *testing.T) {
+	type handshake struct {
+		query  string
+		apiKey string
+		custom string
+	}
+	got := make(chan handshake, 1)
+	srv := httptest.NewServer(websocket.Server{
+		Handler: func(conn *websocket.Conn) {
+			r := conn.Request()
+			got <- handshake{query: r.URL.RawQuery, apiKey: r.Header.Get("X-Goog-Api-Key"), custom: r.Header.Get("Custom-Header")}
+			var raw string
+			_ = websocket.Message.Receive(conn, &raw)
+		},
+		// accept any origin
+		Handshake: func(*websocket.Config, *http.Request) error { return nil },
+	})
+	defer srv.Close()
+
+	p := New(Config{APIKey: "provider-key", BaseURL: srv.URL, Headers: map[string]string{"Custom-Header": "custom-value"}})
+	model := NewSpeechTranslationModel(p, "gemini-3.5-live-translate-preview")
+	result, err := model.DoStream(context.Background(), &provider.SpeechTranslationStreamOptions{
+		Headers:          map[string]string{"X-Goog-Api-Key": "case-insensitive-key"},
+		Audio:            newChanAudioStream([]byte{1, 2, 3}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+		TargetLanguage:   "es",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	select {
+	case h := <-got:
+		if !strings.Contains(h.query, "key=case-insensitive-key") || h.apiKey != "" || h.custom != "custom-value" {
+			t.Fatalf("handshake = %+v", h)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no websocket handshake")
+	}
+}
+
+// Port of "should include all turns that arrive after the audio ended early":
+// audioStreamEnd is sent before any turn arrives, and the second turn's
+// activity cancels the pending finish.
+func TestSpeechTranslationModel_DoStream_IncludesTurnsAfterAudioEndedEarly(t *testing.T) {
+	server := newLiveTranscriptionTestServer(t)
+	defer server.close()
+	model := newSpeechTranslationTestModel(t, server.ts.URL, 30*time.Millisecond)
+	result, err := model.DoStream(context.Background(), &provider.SpeechTranslationStreamOptions{
+		Audio:            newChanAudioStream([]byte{1, 2, 3}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+		TargetLanguage:   "es",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, time.Second)
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() (stream-start) error = %v", err)
+	}
+	server.toSend <- map[string]interface{}{"setupComplete": map[string]interface{}{}}
+	server.waitFor(t, hasRealtimeInputKey("audioStreamEnd"), time.Second)
+
+	turn := func(in, out string) {
+		server.toSend <- map[string]interface{}{"serverContent": map[string]interface{}{
+			"inputTranscription": map[string]interface{}{"text": in}, "outputTranscription": map[string]interface{}{"text": out},
+		}}
+		server.toSend <- map[string]interface{}{"serverContent": map[string]interface{}{"turnComplete": true}}
+	}
+	turn("Hello ", "Hola ")
+	turn("world", "mundo")
+
+	parts, err := drainUntilTranslationFinishOrError(t, result.Stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finish := parts[len(parts)-1]
+	if finish.SourceText != "Hello world" || finish.OutputText != "Hola mundo" {
+		t.Fatalf("finish = %+v", finish)
+	}
+	finals := 0
+	for _, p := range parts {
+		if p.Type == provider.SpeechTranslationStreamPartTypeOutputTextFinal {
+			finals++
+		}
+	}
+	if finals != 2 {
+		t.Fatalf("output-text-final parts = %d, want 2", finals)
+	}
+}
+
+func TestSpeechTranslationModel_DoStream_RejectsBadOptionTypes(t *testing.T) {
+	p := New(Config{APIKey: "k"})
+	m := NewSpeechTranslationModel(p, "gemini-3.5-live-translate-preview")
+	_, err := m.DoStream(context.Background(), &provider.SpeechTranslationStreamOptions{
+		Audio:            newChanAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+		TargetLanguage:   "es",
+		ProviderOptions:  map[string]interface{}{"google": map[string]interface{}{"echoTargetLanguage": "yes"}},
+	})
+	var ia *providererrors.InvalidArgumentError
+	if !errors.As(err, &ia) {
+		t.Fatalf("err = %v, want InvalidArgumentError", err)
+	}
+}
+
+// TestSpeechTranslationModel_DoStream_CleanCloseRacingAudioEnded: a turn is
+// complete, the clean close wins the select while audio-ended is pending; TS
+// finishes normally.
+func TestSpeechTranslationModel_DoStream_CleanCloseRacingAudioEnded(t *testing.T) {
+	server := newLiveTranscriptionTestServer(t)
+	defer server.close()
+
+	model := newSpeechTranslationTestModel(t, server.ts.URL, 10*time.Second)
+	result, err := model.DoStream(context.Background(), &provider.SpeechTranslationStreamOptions{
+		Audio:            newChanAudioStream([]byte{1, 2, 3}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+		TargetLanguage:   "es",
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	testHideAudioEnded.Store(true)
+	t.Cleanup(func() { testHideAudioEnded.Store(false) })
+	server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, time.Second)
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() error = %v", err)
+	}
+	server.toSend <- map[string]interface{}{"setupComplete": map[string]interface{}{}}
+	server.waitFor(t, hasRealtimeInputKey("audioStreamEnd"), time.Second)
+	server.toSend <- map[string]interface{}{"serverContent": map[string]interface{}{"outputTranscription": map[string]interface{}{"text": "Hola"}}}
+	server.toSend <- map[string]interface{}{"serverContent": map[string]interface{}{"turnComplete": true}}
+	time.Sleep(50 * time.Millisecond)
+	server.closeConnection()
+
+	parts, err := drainUntilTranslationFinishOrError(t, result.Stream)
+	if err != nil {
+		t.Fatalf("stream error = %v", err)
+	}
+	if finish := parts[len(parts)-1]; finish.OutputText != "Hola" {
+		t.Fatalf("finish = %+v", finish)
 	}
 }

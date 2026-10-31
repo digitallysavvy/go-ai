@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -563,7 +564,7 @@ func TestTerminalRendererInterruptsStreamingWhileWaitingForNextChunk(t *testing.
 
 	select {
 	case <-stream.started:
-	case <-time.After(time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("stream did not start")
 	}
 	input.Push(TerminalKey{Type: TerminalKeyCtrlC})
@@ -573,7 +574,7 @@ func TestTerminalRendererInterruptsStreamingWhileWaitingForNextChunk(t *testing.
 		if !errors.Is(err, errInterrupted) {
 			t.Fatalf("RenderStream error = %v, want Interrupted", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("RenderStream did not interrupt")
 	}
 	// The underlying stream is now closed by StreamRenderSource's owning
@@ -582,7 +583,9 @@ func TestTerminalRendererInterruptsStreamingWhileWaitingForNextChunk(t *testing.
 	// call's own goroutine -- so it may close shortly after RenderStream
 	// itself returns, not necessarily before. Poll instead of asserting it
 	// synchronously.
-	deadlineClosed := time.Now().Add(time.Second)
+	// The fixture's Next() polls for ~100 x 5ms; timer granularity on a loaded
+	// machine can stretch that past a second, so allow a generous bound.
+	deadlineClosed := time.Now().Add(30 * time.Second)
 	for {
 		stream.mu.Lock()
 		closed := stream.closed
@@ -600,11 +603,54 @@ func TestTerminalRendererInterruptsStreamingWhileWaitingForNextChunk(t *testing.
 	}
 }
 
+// slowWindDownKeyInput is a key reader whose reads take a while to return after
+// their context is cancelled, like a terminal poll loop. It counts the reads
+// in flight.
+type slowWindDownKeyInput struct {
+	*testKeyInput
+	active atomic.Int32
+}
+
+func (i *slowWindDownKeyInput) ReadTerminalKey(ctx context.Context) (TerminalKey, error) {
+	i.active.Add(1)
+	defer i.active.Add(-1)
+	select {
+	case key := <-i.keys:
+		return key, nil
+	case <-ctx.Done():
+		time.Sleep(20 * time.Millisecond)
+		return TerminalKey{}, ctx.Err()
+	}
+}
+
+// doneFrameWriter reports the first frame that shows the "Done" status, and
+// how many key reads were in flight when it was painted.
+type doneFrameWriter struct {
+	input  *slowWindDownKeyInput
+	seen   chan struct{}
+	once   sync.Once
+	active atomic.Int32
+}
+
+func (w *doneFrameWriter) Write(p []byte) (int, error) {
+	if strings.Contains(stripANSI(string(p)), "Done") {
+		w.once.Do(func() {
+			w.active.Store(w.input.active.Load())
+			close(w.seen)
+		})
+	}
+	return len(p), nil
+}
+
+// The key listener of a stream must be gone before the "Done" frame is painted:
+// a key pressed once the frame shows reaches the exit prompt, and is neither
+// consumed by the stream's listener nor read concurrently with it. The test
+// waits on events only, with no timing assumptions.
 func TestTerminalRendererCtrlCAtExitPromptDoesNotInterruptCompletedStream(t *testing.T) {
-	out := &recordingWriter{}
+	input := &slowWindDownKeyInput{testKeyInput: newTestKeyInput()}
+	out := &doneFrameWriter{input: input, seen: make(chan struct{})}
 	useSync := false
 	frame := NewTerminalFrameBuffer(out, TerminalFrameBufferOptions{UseSynchronizedUpdates: &useSync})
-	input := newTestKeyInput()
 	source := NewStreamRenderSourceFromTextStream(
 		testutil.NewMockTextStream([]provider.StreamChunk{
 			{Type: provider.ChunkTypeText, ID: "text-1", Text: "complete"},
@@ -621,13 +667,9 @@ func TestTerminalRendererCtrlCAtExitPromptDoesNotInterruptCompletedStream(t *tes
 		done <- err
 	}()
 
-	deadline := time.After(time.Second)
-	for !strings.Contains(stripANSI(frame.LastFrame()), "Done") {
-		select {
-		case <-deadline:
-			t.Fatalf("renderer did not reach done state:\n%s", stripANSI(frame.LastFrame()))
-		case <-time.After(5 * time.Millisecond):
-		}
+	<-out.seen
+	if n := out.active.Load(); n != 0 {
+		t.Fatalf("%d stream key reads were still in flight when the Done frame was painted", n)
 	}
 	input.Push(TerminalKey{Type: TerminalKeyCtrlC})
 
@@ -636,7 +678,7 @@ func TestTerminalRendererCtrlCAtExitPromptDoesNotInterruptCompletedStream(t *tes
 		if err != nil {
 			t.Fatalf("RenderStream error = %v, want nil after completed-stream Ctrl+C", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(30 * time.Second): // safety net only
 		t.Fatal("RenderStream did not exit after completed-stream Ctrl+C")
 	}
 	if strings.Contains(stripANSI(frame.LastFrame()), "Interrupted") {
@@ -772,4 +814,41 @@ func (s *blockingTextStream) Close() error {
 	defer s.mu.Unlock()
 	s.closed = true
 	return nil
+}
+
+// TS waitForExit is skipped only for `waitForExit: false`; continueSession does
+// not skip it.
+func TestTerminalRendererContinueSessionStillWaitsForExit(t *testing.T) {
+	input := newTestKeyInput()
+	out := &recordingWriter{}
+	useSync := false
+	frame := NewTerminalFrameBuffer(out, TerminalFrameBufferOptions{UseSynchronizedUpdates: &useSync})
+	source := NewStreamRenderSourceFromTextStream(
+		testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeText, ID: "text-1", Text: "complete"},
+			{Type: provider.ChunkTypeFinish},
+		}),
+		nil,
+		types.StepResult{},
+	)
+	renderer := NewTerminalRenderer(TerminalRendererOptions{Input: input, Output: out, FrameBuffer: frame, Columns: 56, Rows: 16})
+	done := make(chan error, 1)
+	go func() {
+		_, err := renderer.RenderStream(context.Background(), AgentTUIStreamResult{Stream: source}, TerminalSessionOptions{ContinueSession: true})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("RenderStream returned (%v) without waiting for the exit key", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	input.Push(TerminalKey{Type: TerminalKeyCtrlC})
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RenderStream error = %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("RenderStream did not exit after the exit key")
+	}
 }

@@ -52,6 +52,9 @@ Resolves a provider tool call against the available tools, parses and validates 
 | `Instructions` | `string` |  |
 | `InstructionMessages` | `[]types.Message` |  |
 | `Messages` | `[]types.Message` |  |
+| `RefineToolInput` | `map[string]ToolInputRefiner` | RefineToolInput refines the parsed input by tool name inside the parse step (TS refineToolInput), so an InvalidToolInputError (or a NoSuchToolError) returned by a refiner triggers RepairToolCall like a schema failure does. |
+| `RuntimeContext` | `interface{}` |  |
+| `ToolsContext` | `map[string]interface{}` |  |
 
 {/* /gen:fields */}
 

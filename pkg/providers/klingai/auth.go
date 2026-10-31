@@ -9,6 +9,9 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // resolveKlingAIAuthToken resolves the bearer token to use for a KlingAI API
@@ -28,7 +31,7 @@ import (
 //
 // See https://kling.ai/document-api/guides/get-started/quick-start.
 func resolveKlingAIAuthToken(apiKey, accessKey, secretKey string) (string, error) {
-	if explicit := strings.TrimSpace(apiKey); explicit != "" {
+	if explicit := providerutils.JSTrim(apiKey); explicit != "" {
 		return explicit, nil
 	}
 
@@ -36,7 +39,7 @@ func resolveKlingAIAuthToken(apiKey, accessKey, secretKey string) (string, error
 		return generateJWTToken(accessKey, secretKey)
 	}
 
-	if envAPIKey := strings.TrimSpace(os.Getenv("KLINGAI_API_KEY")); envAPIKey != "" {
+	if envAPIKey := providerutils.JSTrim(os.Getenv("KLINGAI_API_KEY")); envAPIKey != "" {
 		return envAPIKey, nil
 	}
 
@@ -44,10 +47,11 @@ func resolveKlingAIAuthToken(apiKey, accessKey, secretKey string) (string, error
 		trimmedSettingPresent(secretKey, "KLINGAI_SECRET_KEY")
 
 	if !hasLegacyCredentials {
-		return "", fmt.Errorf("KlingAI API key is missing. Pass it using the 'apiKey' parameter " + //nolint:staticcheck // matches TS SDK's exact error text
+		// TS throws LoadAPIKeyError here.
+		return "", &providererrors.LoadAPIKeyError{Message: "KlingAI API key is missing. Pass it using the 'apiKey' parameter " +
 			"or the KLINGAI_API_KEY environment variable. Alternatively, pass the " +
 			"legacy 'accessKey' and 'secretKey' parameters or the " +
-			"KLINGAI_ACCESS_KEY and KLINGAI_SECRET_KEY environment variables.")
+			"KLINGAI_ACCESS_KEY and KLINGAI_SECRET_KEY environment variables."}
 	}
 
 	return generateJWTToken(accessKey, secretKey)
@@ -56,10 +60,10 @@ func resolveKlingAIAuthToken(apiKey, accessKey, secretKey string) (string, error
 // trimmedSettingPresent reports whether settingValue (trimmed) is non-empty,
 // or, when it is empty, whether the named environment variable (trimmed) is.
 func trimmedSettingPresent(settingValue, envVar string) bool {
-	if strings.TrimSpace(settingValue) != "" {
+	if providerutils.JSTrim(settingValue) != "" {
 		return true
 	}
-	return strings.TrimSpace(os.Getenv(envVar)) != ""
+	return providerutils.JSTrim(os.Getenv(envVar)) != ""
 }
 
 // generateJWTToken generates a JWT token for KlingAI API authentication from
@@ -73,13 +77,14 @@ func generateJWTToken(accessKey, secretKey string) (string, error) {
 		accessKey = os.Getenv("KLINGAI_ACCESS_KEY")
 	}
 	if accessKey == "" {
-		return "", fmt.Errorf("KlingAI access key is required (set KLINGAI_ACCESS_KEY or provide Config.AccessKey)")
+		// TS loadSetting's LoadSettingError text.
+		return "", fmt.Errorf("KlingAI access key setting is missing. Pass it using the 'accessKey' parameter or the KLINGAI_ACCESS_KEY environment variable.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if secretKey == "" {
 		secretKey = os.Getenv("KLINGAI_SECRET_KEY")
 	}
 	if secretKey == "" {
-		return "", fmt.Errorf("KlingAI secret key is required (set KLINGAI_SECRET_KEY or provide Config.SecretKey)")
+		return "", fmt.Errorf("KlingAI secret key setting is missing. Pass it using the 'secretKey' parameter or the KLINGAI_SECRET_KEY environment variable.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
 	now := time.Now().Unix()
@@ -90,11 +95,14 @@ func generateJWTToken(accessKey, secretKey string) (string, error) {
 		"typ": "JWT",
 	}
 
-	// Create JWT payload with claims
-	payload := map[string]interface{}{
-		"iss": accessKey,
-		"exp": now + 1800, // Valid for 30 minutes
-		"nbf": now - 5,    // Valid 5 seconds before current time
+	// Create JWT payload with claims, in the TS key order (iss, exp, nbf).
+	payload := providerutils.OrderedMap{
+		Keys: []string{"iss", "exp", "nbf"},
+		Vals: map[string]interface{}{
+			"iss": accessKey,
+			"exp": now + 1800, // Valid for 30 minutes
+			"nbf": now - 5,    // Valid 5 seconds before current time
+		},
 	}
 
 	// Encode header and payload to base64url

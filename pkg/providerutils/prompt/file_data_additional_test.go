@@ -139,3 +139,40 @@ func TestNormalizeContentPartsAndToolResultPassThrough(t *testing.T) {
 		t.Fatalf("NormalizeToolResultContent(text output) changed type = %v", unchanged.Output.Type)
 	}
 }
+
+// TS splitDataUrl: `data:;base64,...` has media type "" (not text/plain) and
+// "" ?? part.mediaType stays "", so the declared media type does not apply.
+func TestNormalizeFileContent_EmptyDataURLMediaTypeStaysEmpty(t *testing.T) {
+	parsed, err := ParseDataURL("data:;base64,AQI=")
+	if err != nil || parsed.MediaType != "" {
+		t.Fatalf("ParseDataURL = %+v, %v; want empty media type", parsed, err)
+	}
+	got, err := NormalizeFileContent(types.FileContent{
+		FileData:  types.FileData{Type: types.FileDataTypeURL, URL: "data:;base64,AQI="},
+		MediaType: "image/png",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MediaType != "" || got.MimeType != "" || len(got.Data) != 2 {
+		t.Fatalf("got media=%q mime=%q data=%v; want empty media type and 2 bytes", got.MediaType, got.MimeType, got.Data)
+	}
+}
+
+// TS decodes a data URL's content with atob after mapping the URL-safe
+// alphabet: whitespace, missing padding and "-"/"_" are accepted.
+func TestParseDataURLUsesForgivingBase64(t *testing.T) {
+	for _, tc := range []struct{ url, want string }{
+		{"data:text/plain;base64,aGk", "hi"},
+		{"data:text/plain;base64,aG k=", "hi"},
+		{"data:application/octet-stream;base64,-_-_", "\xfb\xff\xbf"},
+	} {
+		got, err := ParseDataURL(tc.url)
+		if err != nil || string(got.Data) != tc.want {
+			t.Errorf("%s: %q %v, want %q", tc.url, got.Data, err, tc.want)
+		}
+	}
+	if _, err := ParseDataURL("data:text/plain;base64,a"); err == nil {
+		t.Error("a single base64 character must fail")
+	}
+}

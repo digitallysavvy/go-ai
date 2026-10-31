@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -33,12 +32,12 @@ func NewLanguageModel(provider *Provider, modelID string) *LanguageModel {
 
 // SpecificationVersion returns the specification version
 func (m *LanguageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
 func (m *LanguageModel) Provider() string {
-	return "together"
+	return "togetherai.chat"
 }
 
 // ModelID returns the model ID
@@ -64,32 +63,54 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	if err := providerutils.ValidateOpenAICompatibleChatOptions(opts.ProviderOptions, "togetherai"); err != nil {
+		return nil, err
+	}
+	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "togetherai"); err != nil {
+		return nil, err
+	}
 	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, false)
 	var response togetherResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/v1/chat/completions",
-		Body:   reqBody,
-	}, &response)
+		Method:           http.MethodPost,
+		Path:             "/v1/chat/completions",
+		Body:             reqBody,
+		Headers:          opts.Headers,
+		ValidateResponse: providerutils.ChatResponseValidator(m.Provider(), providerutils.ResponseKindOpenAICompatible),
+	}, &streaming.OpenAICompatChatDecoder{Target: &response})
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 	result := m.convertResponse(response)
+	if err := streaming.ApplyOpenAICompatibleChatResponse(result, resp.Body, providerutils.ExtractHeaders(resp.Headers), "togetherai"); err != nil {
+		return nil, err
+	}
+	providerutils.ApplyWireUsageRaw(result, resp.Body)
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	// TS result.request.body: the request as sent.
+	result.RawRequest = reqBody
+	// TS response.body is the raw parsed JSON, not the schema-filtered value.
+	if len(resp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(resp.Body)
+	}
 	return result, nil
 }
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	if err := providerutils.ValidateOpenAICompatibleChatOptions(opts.ProviderOptions, "togetherai"); err != nil {
+		return nil, err
+	}
+	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "togetherai"); err != nil {
+		return nil, err
+	}
 	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, true)
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/v1/chat/completions",
-		Body:   reqBody,
-		Headers: map[string]string{
-			"Accept": "text/event-stream",
-		},
+		Method:  http.MethodPost,
+		Path:    "/v1/chat/completions",
+		Body:    reqBody,
+		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
 	if err != nil {
 		return nil, m.handleError(err)
@@ -97,7 +118,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	inner := newTogetherStream(httpResp.Body)
 	inner.SetRequestBody(reqBody)
 	inner.IncludeRawChunks = opts.IncludeRawChunks
-	inner.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
+	inner.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Header)
 	return streaming.NewWarningsStream(inner, warnings), nil
 }
 
@@ -119,7 +140,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// AllowVideo: true -- Together wraps @ai-sdk/openai-compatible's
 	// OpenAICompatibleChatLanguageModel in TS, which supports video_url
 	// content parts (7dd9ec320c).
-	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true}
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "togetherai", ThoughtSignatureKey: "togetherai", ReasoningKey: "reasoning_content", SpreadCompatMetadata: true, FileParts: prompt.FilePartsOpenAICompatible}
 	if opts.Prompt.IsMessages() {
 		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {
@@ -145,13 +166,17 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if len(opts.StopSequences) > 0 {
 		body["stop"] = opts.StopSequences
 	}
+	var toolWarnings []types.Warning
 	if len(opts.Tools) > 0 {
-		body["tools"] = tool.ToOpenAIFormat(opts.Tools)
+		functionTools, dropped := tool.DropProviderDefinedTools(opts.Tools, nil)
+		toolWarnings = dropped
+		body["tools"] = tool.ToOpenAIFormat(functionTools)
 		if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
 	}
 	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("together", opts.ProviderOptions)
+	warnings = append(warnings, providerutils.ApplyOpenAICompatibleCallSettings(body, opts.FrequencyPenalty, opts.PresencePenalty, opts.Seed, opts.TopK, "togetherai", opts.ProviderOptions)...)
 	mergeTogetherAIProviderOptions(compatibleOptions, opts.ProviderOptions)
 	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
 	// Response format (TS openai-compatible chat model with
@@ -167,8 +192,13 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		body["response_format"] = responseFormat
 	}
 	warnings = append(warnings, formatWarnings...)
+	// TS: reasoning_effort = compatibleOptions.reasoningEffort ??
+	// (isCustomReasoning(reasoning) ? reasoning : undefined), the raw level.
+	if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
+		body["reasoning_effort"] = string(*opts.Reasoning)
+	}
 	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
-	return body, warnings
+	return body, append(warnings, toolWarnings...)
 }
 
 func (m *LanguageModel) convertResponse(response togetherResponse) *types.GenerateResult {
@@ -183,7 +213,7 @@ func (m *LanguageModel) convertResponse(response togetherResponse) *types.Genera
 		Text:            choice.Message.Content,
 		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
 		RawFinishReason: choice.FinishReason,
-		Usage:           convertTogetherUsage(response.Usage),
+		Usage:           convertTogetherUsagePtr(response.Usage),
 		RawResponse:     response,
 	}
 	if len(choice.Message.ToolCalls) > 0 {
@@ -193,10 +223,17 @@ func (m *LanguageModel) convertResponse(response togetherResponse) *types.Genera
 			if tc.Function.Arguments != "" {
 				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
 			}
+			// TS openai-compatible chat: `toolCall.id || generateId()`.
+			id := tc.ID
+			if id == "" {
+				id = streaming.GenerateID()
+			}
 			result.ToolCalls[i] = types.ToolCall{
-				ID:        tc.ID,
+				ID:        id,
 				ToolName:  tc.Function.Name,
 				Arguments: args,
+				// Wire text keeps the key order TS keeps (JSON.stringify of the parsed input).
+				RawArguments: tc.Function.Arguments,
 			}
 		}
 	}
@@ -204,15 +241,31 @@ func (m *LanguageModel) convertResponse(response togetherResponse) *types.Genera
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
 	return providererrors.NewProviderError("together", 0, "", err.Error(), err)
 }
 
 // convertTogetherUsage converts Together AI usage to detailed Usage struct
 // Implements v6.0 detailed token tracking (OpenAI-compatible format)
+// convertTogetherUsagePtr is TS convert usage of a possibly missing wire usage: an
+// absent or null usage object yields the null usage (unknown token counts),
+// not zero tokens.
+func convertTogetherUsagePtr(usage *togetherUsage) types.Usage {
+	if usage == nil {
+		return types.Usage{}
+	}
+	return convertTogetherUsage(*usage)
+}
+
 func convertTogetherUsage(usage togetherUsage) types.Usage {
 	promptTokens := int64(usage.PromptTokens)
 	completionTokens := int64(usage.CompletionTokens)
-	totalTokens := int64(usage.TotalTokens)
+	totalTokens := promptTokens + completionTokens // TS core: input total + output total
 
 	result := types.Usage{
 		InputTokens:  &promptTokens,
@@ -247,7 +300,7 @@ func convertTogetherUsage(usage togetherUsage) types.Usage {
 	}
 
 	// Set input token details
-	if cachedTokens > 0 || textTokens != nil || imageTokens != nil {
+	{
 		noCacheTokens := promptTokens - cachedTokens
 		result.InputDetails = &types.InputTokenDetails{
 			NoCacheTokens:    &noCacheTokens,
@@ -259,8 +312,11 @@ func convertTogetherUsage(usage togetherUsage) types.Usage {
 	}
 
 	// Set output token details
-	if reasoningTokens > 0 {
+	{
 		textTokens := completionTokens - reasoningTokens
+		if textTokens < 0 {
+			textTokens = 0
+		}
 		result.OutputDetails = &types.OutputTokenDetails{
 			TextTokens:      &textTokens,
 			ReasoningTokens: &reasoningTokens,
@@ -305,7 +361,7 @@ type togetherResponse struct {
 			} `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
-	Usage togetherUsage `json:"usage"`
+	Usage *togetherUsage `json:"usage"`
 }
 
 // togetherUsage represents Together AI usage information with detailed token tracking
@@ -331,40 +387,13 @@ type togetherUsage struct {
 
 type togetherStream struct {
 	*streaming.OpenAICompatStream
-	responseHeaders         map[string]string
-	responseMetadataEmitted bool
 }
 
 func newTogetherStream(reader io.ReadCloser) *togetherStream {
 	s := &togetherStream{
 		OpenAICompatStream: streaming.NewOpenAICompatStream(reader, providerutils.MapOpenAIFinishReason),
 	}
-	s.OnBeforeDelta = func(data []byte) []*provider.StreamChunk {
-		var peek struct {
-			ID      string `json:"id"`
-			Model   string `json:"model"`
-			Created int64  `json:"created"`
-		}
-		if json.Unmarshal(data, &peek) != nil {
-			return nil
-		}
-		if s.responseMetadataEmitted || (peek.ID == "" && peek.Model == "" && peek.Created == 0 && len(s.responseHeaders) == 0) {
-			return nil
-		}
-		s.responseMetadataEmitted = true
-		meta := &provider.ResponseMetadata{
-			ID:      peek.ID,
-			ModelID: peek.Model,
-			Headers: s.responseHeaders,
-		}
-		if peek.Created != 0 {
-			meta.Timestamp = time.Unix(peek.Created, 0)
-		}
-		return []*provider.StreamChunk{{
-			Type:             provider.ChunkTypeResponseMetadata,
-			ResponseMetadata: meta,
-		}}
-	}
+	s.MetadataKey = "togetherai"
 	return s
 }
 

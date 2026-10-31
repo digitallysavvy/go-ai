@@ -367,7 +367,7 @@ func (c *Channel) Open(ctx context.Context, resume bool) error {
 	c.activeConnect = handle
 	c.mu.Unlock()
 
-	conn, err := c.connectOnce(connectCtx)
+	conn, err := c.connectOnce(WithConnectReason(connectCtx, ConnectReasonOpen))
 
 	c.mu.Lock()
 	if c.activeConnect == handle {
@@ -621,6 +621,11 @@ func (c *Channel) onDrop(conn Conn, code int, reason string) {
 	c.connected = false
 	closing := c.closing
 	c.mu.Unlock()
+	// A failed read ends this socket for good; release it so a transport that
+	// keeps the descriptor open after a protocol or read error (x/net reports
+	// every close as EOF without closing the TCP connection) cannot leak one
+	// connection per reconnect. Close is idempotent.
+	_ = conn.Close()
 	if closing {
 		c.enqueue(func() { c.finalizeClose(code, reason) })
 	} else {
@@ -669,7 +674,7 @@ func (c *Channel) reconnectLoop() {
 		c.activeConnect = ahandle
 		c.mu.Unlock()
 
-		conn, err := c.connectOnce(actx)
+		conn, err := c.connectOnce(WithConnectReason(actx, ConnectReasonReconnect))
 
 		timer.Stop()
 		c.mu.Lock()

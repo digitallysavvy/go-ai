@@ -13,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -213,10 +214,11 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 
 	var response googleEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    path,
-		Body:    reqBody,
-		Headers: optsHeaders(opts),
+		ValidateResponse: googleValidator(zGoogleSingleEmbedding),
+		Method:           http.MethodPost,
+		Path:             path,
+		Body:             reqBody,
+		Headers:          optsHeaders(opts),
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -239,24 +241,17 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 
 // DoEmbedMany performs embedding for multiple inputs in a batch
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
-	if len(inputs) == 0 {
-		return &types.EmbeddingsResult{
-			Embeddings: [][]float64{},
-			Usage:      types.EmbeddingUsage{},
-		}, nil
-	}
 	googleOpts, err := parseEmbeddingProviderOptions(opts)
 	if err != nil {
 		return nil, err
 	}
 	if len(inputs) > m.MaxEmbeddingsPerCall() {
-		return nil, providererrors.NewProviderError(
-			m.Provider(),
-			0,
-			"too_many_embedding_values_for_call",
-			fmt.Sprintf("too many embedding values for model %s: got %d, max %d", m.modelID, len(inputs), m.MaxEmbeddingsPerCall()),
-			nil,
-		)
+		return nil, &providererrors.TooManyEmbeddingValuesForCallError{
+			Provider:             m.Provider(),
+			ModelID:              m.modelID,
+			MaxEmbeddingsPerCall: m.MaxEmbeddingsPerCall(),
+			Values:               inputs,
+		}
 	}
 	if len(inputs) == 1 {
 		one, err := m.DoEmbed(ctx, inputs[0], opts)
@@ -271,6 +266,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		}, nil
 	}
 
+	if googleOpts.Content != nil && len(googleOpts.Content) != len(inputs) {
+		return nil, fmt.Errorf("The number of multimodal content entries (%d) must match the number of values (%d).", len(googleOpts.Content), len(inputs)) //nolint:staticcheck // matches TS SDK's exact error text
+	}
 	requests := make([]map[string]interface{}, 0, len(inputs))
 	for i, input := range inputs {
 		parts, err := embeddingPartsForValue(input, i, len(inputs), googleOpts)
@@ -293,15 +291,18 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 
 	var response googleBatchEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    path,
-		Body:    reqBody,
-		Headers: optsHeaders(opts),
+		ValidateResponse: googleValidator(zGoogleBatchEmbedding),
+		Method:           http.MethodPost,
+		Path:             path,
+		Body:             reqBody,
+		Headers:          optsHeaders(opts),
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	if len(response.Embeddings) != len(inputs) {
+	// TS sends an empty batch for zero values and returns whatever the API
+	// answers; only non-empty batches are checked for count alignment.
+	if len(inputs) > 0 && len(response.Embeddings) != len(inputs) {
 		return nil, fmt.Errorf("google embedding response count %d does not match input count %d", len(response.Embeddings), len(inputs))
 	}
 	embeddings := make([][]float64, len(response.Embeddings))
@@ -341,9 +342,10 @@ func (m *EmbeddingModel) DoEmbedParts(ctx context.Context, text string, parts []
 
 	var response googleEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   path,
-		Body:   reqBody,
+		ValidateResponse: googleValidator(zGoogleSingleEmbedding),
+		Method:           http.MethodPost,
+		Path:             path,
+		Body:             reqBody,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -427,7 +429,7 @@ func embeddingAPIParts(parts []EmbeddingPart) ([]map[string]interface{}, error) 
 func embeddingPartsForValue(text string, index, valueCount int, opts GoogleEmbeddingProviderOptions) ([]map[string]interface{}, error) {
 	if opts.Content != nil {
 		if len(opts.Content) != valueCount {
-			return nil, fmt.Errorf("the number of multimodal content entries (%d) must match the number of values (%d)", len(opts.Content), valueCount)
+			return nil, fmt.Errorf("The number of multimodal content entries (%d) must match the number of values (%d).", len(opts.Content), valueCount) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		textParts := make([]map[string]interface{}, 0, 1+len(opts.Content[index]))
 		if text != "" {
@@ -462,7 +464,25 @@ func addEmbeddingModelOptions(body map[string]interface{}, opts GoogleEmbeddingP
 	}
 }
 
+// parseEmbeddingProviderOptions parses the google provider options and falls
+// back to the top-level dimensions setting for outputDimensionality when the
+// provider option is unset (TS #22338).
 func parseEmbeddingProviderOptions(opts *provider.EmbedModelOptions) (GoogleEmbeddingProviderOptions, error) {
+	out, err := parseEmbeddingProviderOptionsRaw(opts)
+	if err != nil {
+		// TS parseProviderOptions: InvalidArgumentError "invalid google
+		// provider options" wrapping the schema failure.
+		return out, invalidGoogleFilesOptions(err)
+	}
+	if out.OutputDimensionality == nil && out.outputDimensionality == nil && opts != nil && opts.Dimensions != nil {
+		d := *opts.Dimensions
+		out.OutputDimensionality = &d
+		out.outputDimensionality = d
+	}
+	return out, nil
+}
+
+func parseEmbeddingProviderOptionsRaw(opts *provider.EmbedModelOptions) (GoogleEmbeddingProviderOptions, error) {
 	if opts == nil || opts.ProviderOptions == nil {
 		return GoogleEmbeddingProviderOptions{}, nil
 	}
@@ -623,27 +643,18 @@ func parseEmbeddingContentPart(raw interface{}) (EmbeddingPart, error) {
 
 // handleError converts various errors to provider errors
 func (m *EmbeddingModel) handleError(err error) error {
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure is an APICallError as is
+	}
+	var loadKeyErr *providererrors.LoadAPIKeyError
+	if errors.As(err, &loadKeyErr) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		// Preserve the HTTP status and headers so ai.EmbedMany/Embed retries
-		// follow the TS APICallError semantics (429/5xx retryable, retry-after).
-		var payload struct {
-			Error struct {
-				Message string `json:"message"`
-				Status  string `json:"status"`
-			} `json:"error"`
-		}
-		message := string(statusErr.Body)
-		code := ""
-		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil {
-			if payload.Error.Message != "" {
-				message = payload.Error.Message
-			}
-			code = payload.Error.Status
-		}
-		providerErr := providererrors.NewProviderError("google", statusErr.StatusCode, code, message, err)
-		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
-		return providerErr
+		// Preserve the HTTP status and headers so retries follow the TS
+		// APICallError semantics (429/5xx retryable, retry-after).
+		return gemini.GoogleHTTPError("google", statusErr.StatusCode, statusErr.Headers, statusErr.Body, err)
 	}
 	return providererrors.NewProviderError("google", 0, "", err.Error(), err)
 }

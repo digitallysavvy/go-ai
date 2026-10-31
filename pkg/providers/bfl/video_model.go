@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"math"
 	"net/http"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -35,7 +37,7 @@ func NewVideoModel(provider *Provider, modelID string) *VideoModel {
 func (m *VideoModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name
-func (m *VideoModel) Provider() string { return "bfl.video" }
+func (m *VideoModel) Provider() string { return "black-forest-labs.video" }
 
 // ModelID returns the model ID
 func (m *VideoModel) ModelID() string { return m.modelID }
@@ -135,7 +137,7 @@ func getDraftEnhanceArgs(opts *provider.VideoModelV3CallOptions, bflOpts *VideoM
 		feature string
 		isSet   bool
 	}{
-		{"prompt", strings.TrimSpace(opts.Prompt) != ""},
+		{"prompt", providerutils.JSTrim(opts.Prompt) != ""},
 		{"aspectRatio", opts.AspectRatio != "" || bflOpts.AspectRatio != nil},
 		{"resolution", opts.Resolution != "" || bflOpts.Resolution != nil},
 		{"duration", opts.Duration != nil},
@@ -189,6 +191,9 @@ func getDraftEnhanceArgs(opts *provider.VideoModelV3CallOptions, bflOpts *VideoM
 // BlackForestLabsVideoModel#getArgs).
 func (m *VideoModel) buildVideoArgs(opts *provider.VideoModelV3CallOptions) (map[string]interface{}, []types.Warning, error) {
 	var warnings []types.Warning
+	if err := validateBFLVideoOptions(opts.ProviderOptions); err != nil {
+		return nil, nil, err
+	}
 	bflOpts := parseVideoModelOptions(opts.ProviderOptions)
 
 	if bflOpts != nil && bflOpts.DraftCache != nil {
@@ -391,7 +396,7 @@ func (m *VideoModel) buildVideoArgs(opts *provider.VideoModelV3CallOptions) (map
 		origDuration := *opts.Duration
 		d := origDuration
 		if d != math.Trunc(d) {
-			rounded := math.Round(d)
+			rounded := math.Floor(d + 0.5) // JS Math.round: halves round toward +Infinity
 			warnings = append(warnings, types.Warning{
 				Type: "unsupported", Feature: "duration",
 				Details: fmt.Sprintf("FLUX 3 video requires a whole number of seconds. The requested duration of %v was rounded to %v.", d, rounded),
@@ -421,7 +426,7 @@ func (m *VideoModel) buildVideoArgs(opts *provider.VideoModelV3CallOptions) (map
 		}
 	}
 	if duration == nil && untimedKeyframeCount >= untimedKeyframesNeedingDuration {
-		return nil, nil, providererrors.NewValidationError("duration",
+		return nil, nil, invalidArgument("duration",
 			fmt.Sprintf("FLUX 3 video requires an explicit duration when %d or more keyframes are sent without a timestamp.", untimedKeyframesNeedingDuration), nil)
 	}
 
@@ -470,6 +475,8 @@ func (m *VideoModel) buildVideoArgs(opts *provider.VideoModelV3CallOptions) (map
 // DoStart submits a FLUX 3 video generation request and returns an opaque
 // operation reference (TS BlackForestLabsVideoModel#doStart).
 func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3StartOptions) (*provider.VideoModelV3OperationStartResult, error) {
+	// TS: the response timestamp is taken before the request is sent.
+	currentDate := time.Now()
 	body, warnings, err := m.buildVideoArgs(&opts.VideoModelV3CallOptions)
 	if err != nil {
 		return nil, err
@@ -477,21 +484,19 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 
 	resp, err := m.provider.client.Do(ctx, bflInternalRequest(http.MethodPost, "/"+m.modelID, body, opts.Headers))
 	if err != nil {
-		return nil, providererrors.NewProviderError("bfl", 0, "", err.Error(), err)
+		return nil, err // TS postJsonToApi lets a transport failure propagate unchanged
 	}
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("BFL API returned status %d: %s", resp.StatusCode, string(resp.Body))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, bflStatusError(resp.StatusCode, resp.Headers, resp.Body)
 	}
 
+	// TS createJsonResponseHandler(bflVideoSubmitSchema).
+	if err := validateBFLSubmitBody(resp.Body); err != nil {
+		return nil, providerutils.InvalidJSONResponseError("bfl", resp.StatusCode, resp.Headers, resp.Body, err)
+	}
 	var submit bflVideoSubmitResponse
 	if err := json.Unmarshal(resp.Body, &submit); err != nil {
 		return nil, fmt.Errorf("failed to decode submit response: %w", err)
-	}
-	if submit.ID == "" || submit.PollingURL == "" {
-		return nil, fmt.Errorf("missing id or polling_url in BFL video submit response")
-	}
-	if parsed, err := url.Parse(submit.PollingURL); err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return nil, fmt.Errorf("invalid polling_url in BFL video submit response")
 	}
 
 	operation, _ := json.Marshal(bflVideoOperation{
@@ -506,7 +511,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Operation: operation,
 		Warnings:  warnings,
 		Response: provider.VideoModelV3ResponseInfo{
-			Timestamp: time.Now(),
+			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   flattenHTTPHeader(resp.Headers),
 		},
@@ -515,18 +520,98 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 
 // ensurePollingURLHasID adds the request id as an `id` query parameter when
 // the polling URL does not already carry one (TS doStatus's
-// url.searchParams.set fallback).
+// url.searchParams.set fallback). Like URLSearchParams, set() re-serializes
+// the whole query as application/x-www-form-urlencoded (key order kept,
+// "%20" becomes "+", "a" becomes "a=", ...), but only when it actually runs;
+// a URL that already has `id` (even an empty `id=`) is left untouched.
 func ensurePollingURLHasID(pollingURL, requestID string) (string, error) {
 	u, err := url.Parse(pollingURL)
 	if err != nil {
 		return "", err
 	}
-	q := u.Query()
-	if q.Get("id") == "" {
-		q.Set("id", requestID)
-		u.RawQuery = q.Encode()
+	pairs := parseFormURLEncoded(u.RawQuery)
+	for _, p := range pairs {
+		if p[0] == "id" {
+			return u.String(), nil
+		}
 	}
+	pairs = append(pairs, [2]string{"id", requestID})
+	var sb strings.Builder
+	for i, p := range pairs {
+		if i > 0 {
+			sb.WriteByte('&')
+		}
+		sb.WriteString(formURLEncode(p[0]))
+		sb.WriteByte('=')
+		sb.WriteString(formURLEncode(p[1]))
+	}
+	u.RawQuery = sb.String()
 	return u.String(), nil
+}
+
+// parseFormURLEncoded is the WHATWG application/x-www-form-urlencoded parser
+// (new URLSearchParams(query)): empty segments are skipped, '+' is a space,
+// malformed percent escapes stay literal and invalid UTF-8 becomes U+FFFD.
+func parseFormURLEncoded(q string) [][2]string {
+	var out [][2]string
+	for _, seg := range strings.Split(q, "&") {
+		if seg == "" {
+			continue
+		}
+		name, value, _ := strings.Cut(seg, "=")
+		out = append(out, [2]string{formDecode(name), formDecode(value)})
+	}
+	return out
+}
+
+func formDecode(s string) string {
+	b := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '+':
+			b = append(b, ' ')
+		case c == '%' && i+2 < len(s) && isHex(s[i+1]) && isHex(s[i+2]):
+			b = append(b, unhex(s[i+1])<<4|unhex(s[i+2]))
+			i += 2
+		default:
+			b = append(b, c)
+		}
+	}
+	return string([]rune(string(b)))
+}
+
+func isHex(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
+}
+
+func unhex(c byte) byte {
+	switch {
+	case c >= 'a':
+		return c - 'a' + 10
+	case c >= 'A':
+		return c - 'A' + 10
+	}
+	return c - '0'
+}
+
+func formURLEncode(s string) string {
+	const hexd = "0123456789ABCDEF"
+	var sb strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == ' ':
+			sb.WriteByte('+')
+		case c == '*' || c == '-' || c == '.' || c == '_' || c >= '0' && c <= '9' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z':
+			sb.WriteByte(c)
+		default:
+			sb.WriteByte('%')
+			sb.WriteByte(hexd[c>>4])
+			sb.WriteByte(hexd[c&15])
+		}
+	}
+	return sb.String()
 }
 
 // fetchStatusJSON fetches and decodes the poll response for pollURL, which
@@ -538,7 +623,7 @@ func ensurePollingURLHasID(pollingURL, requestID string) (string, error) {
 // TrustRoutingTransport strips them again if any hop then leaves that origin
 // (TS getFromApi({validateUrl:true, trustedOrigin}) plus the
 // isTrustedUrl(...) ? headers : undefined guard on the initial request).
-func (m *VideoModel) fetchStatusJSON(ctx context.Context, pollURL string, headers map[string]string, target interface{}) (map[string][]string, error) {
+func (m *VideoModel) fetchStatusJSON(ctx context.Context, pollURL string, headers map[string]string) ([]byte, map[string][]string, error) {
 	baseURL := m.provider.baseURL()
 	isTrusted := func(raw string) bool { return bflTrustedURL(raw, baseURL) }
 
@@ -547,22 +632,23 @@ func (m *VideoModel) fetchStatusJSON(ctx context.Context, pollURL string, header
 	opts.URLValidator = fileutil.TrustedURLValidator(isTrusted)
 	opts.Transport = fileutil.TrustRoutingTransport(isTrusted, nil, downloadTransport())
 	if err := opts.URLValidator(pollURL); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if isTrusted(pollURL) {
 		opts.Headers = headers
 	}
 
-	result, err := fileutil.PollJSON(ctx, pollURL, opts, target)
+	result, err := fileutil.PollJSON(ctx, pollURL, opts, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return result.Headers, nil
+	return result.Data, result.Headers, nil
 }
 
 // DoStatus checks the status of an asynchronous FLUX 3 video generation
 // started with DoStart (TS BlackForestLabsVideoModel#doStatus).
 func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
+	currentDate := time.Now()
 	var op bflVideoOperation
 	if err := json.Unmarshal(opts.Operation, &op); err != nil {
 		return nil, fmt.Errorf("bfl: invalid operation reference: %w", err)
@@ -575,21 +661,32 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	headers := mergeStringMaps(m.provider.config.Headers, opts.Headers)
 
-	var pollResp bflVideoPollResponse
-	respHeaders, err := m.fetchStatusJSON(ctx, pollURL, headers, &pollResp)
+	pollBody, respHeaders, err := m.fetchStatusJSON(ctx, pollURL, headers)
 	if err != nil {
 		return nil, m.handleVideoPollError(err)
 	}
+	// TS createJsonResponseHandler(bflVideoPollSchema).
+	if err := validateBFLVideoPollBody(pollBody); err != nil {
+		return nil, providerutils.InvalidJSONResponseError("bfl", http.StatusOK, http.Header(respHeaders), pollBody, err)
+	}
+	var pollResp bflVideoPollResponse
+	if err := json.Unmarshal(pollBody, &pollResp); err != nil {
+		return nil, fmt.Errorf("failed to decode poll response: %w", err)
+	}
 
 	responseInfo := provider.VideoModelV3ResponseInfo{
-		Timestamp: time.Now(),
+		Timestamp: currentDate,
 		ModelID:   m.modelID,
 		Headers:   flattenHeaderSlice(respHeaders),
 	}
 
-	status := pollResp.Status
-	if status == "" {
-		status = pollResp.State
+	// bflVideoPollSchema transform: status ?? state (an empty status is a
+	// present status). The schema check above guarantees one of them is set.
+	var status string
+	if pollResp.Status != nil {
+		status = *pollResp.Status
+	} else if pollResp.State != nil {
+		status = *pollResp.State
 	}
 	cost := pollResp.Cost
 	if cost == nil {
@@ -602,7 +699,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 			return nil, providererrors.NewVideoGenerationError("bfl", m.modelID,
 				fmt.Sprintf("Black Forest Labs reported the video as Ready but returned no result.sample URL. Request id: %s", op.RequestID), nil)
 		}
-		if err := json.Unmarshal(pollResp.Result, &result); err != nil || result.Sample == "" {
+		if err := json.Unmarshal(pollResp.Result, &result); err != nil || bflURLNode(result.Sample, result.Sample != "", nil) != nil {
 			return nil, providererrors.NewVideoGenerationError("bfl", m.modelID,
 				fmt.Sprintf("Black Forest Labs reported the video as Ready but returned no result.sample URL. Request id: %s", op.RequestID), nil)
 		}
@@ -620,8 +717,8 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		if result.Duration != nil {
 			video["duration"] = *result.Duration
 		}
-		if result.DraftCache != "" {
-			video["draftCache"] = result.DraftCache
+		if result.DraftCache != nil { // TS `draft_cache != null`: "" is kept
+			video["draftCache"] = *result.DraftCache
 		}
 		if cost != nil {
 			video["cost"] = *cost
@@ -666,6 +763,11 @@ func describePollDetails(raw json.RawMessage) string {
 	if err := json.Unmarshal(raw, &s); err == nil {
 		return s
 	}
+	// TS JSON.stringify(details): numbers go through a double, strings are
+	// re-escaped and duplicate keys collapse.
+	if tree, ok := jsonorder.Parse(raw); ok {
+		return jsonorder.Stringify(tree)
+	}
 	return string(raw)
 }
 
@@ -674,26 +776,10 @@ func describePollDetails(raw json.RawMessage) string {
 func (m *VideoModel) handleVideoPollError(err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		var envelope struct {
-			Message string      `json:"message"`
-			Detail  interface{} `json:"detail"`
-		}
-		if jsonErr := json.Unmarshal(dlErr.Body, &envelope); jsonErr == nil {
-			if s, ok := envelope.Detail.(string); ok && s != "" {
-				return fmt.Errorf("Black Forest Labs API error: %s", s) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
-			}
-			if envelope.Detail != nil {
-				if b, mErr := json.Marshal(envelope.Detail); mErr == nil {
-					return fmt.Errorf("Black Forest Labs API error: %s", string(b)) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
-				}
-			}
-			if envelope.Message != "" {
-				return fmt.Errorf("Black Forest Labs API error: %s", envelope.Message) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
-			}
-		}
-		return fmt.Errorf("Black Forest Labs API error: status check returned %d: %s", dlErr.StatusCode, string(dlErr.Body)) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+		return bflStatusError(dlErr.StatusCode, dlErr.Headers, dlErr.Body)
 	}
-	return fmt.Errorf("failed to check status: %w", err)
+	// TS getFromApi lets a transport failure propagate unchanged.
+	return err
 }
 
 // DoGenerate generates a video synchronously by starting the operation and
@@ -785,8 +871,8 @@ type bflVideoSubmitResponse struct {
 
 // bflVideoPollResponse is the JSON body returned by the polling URL.
 type bflVideoPollResponse struct {
-	Status  string          `json:"status"`
-	State   string          `json:"state"`
+	Status  *string         `json:"status"`
+	State   *string         `json:"state"`
 	Details json.RawMessage `json:"details"`
 	Result  json.RawMessage `json:"result"`
 	// Cost is `SettledCostResultResponse.cost` -- the price actually
@@ -802,5 +888,5 @@ type bflVideoResultData struct {
 	StartTime  *float64 `json:"start_time"`
 	EndTime    *float64 `json:"end_time"`
 	Duration   *float64 `json:"duration"`
-	DraftCache string   `json:"draft_cache"`
+	DraftCache *string  `json:"draft_cache"`
 }

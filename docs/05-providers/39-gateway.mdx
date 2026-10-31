@@ -202,6 +202,25 @@ result, err := ai.GenerateImage(context.Background(), ai.GenerateImageOptions{
 // GenerateImageResult.
 ```
 
+## Transcription
+
+`gateway.NewTranscriptionModel` transcribes audio through the Gateway's `/transcription-model` endpoint. When a request asks for xAI speaker diarization (`providerOptions` `"xai"` or `"spacexai"` with `"diarize": true`) on a `spacexai/` or `xai/` model, but the Gateway response contains no `speaker` metadata, the result carries an `unsupported` warning (`providerOptions.xai.diarize`: "AI Gateway does not currently expose xAI speaker diarization metadata."). When speaker data is present in the response (for example in `ProviderMetadata["xai"]["words"]`), no warning is added.
+
+## Streaming speech (experimental)
+
+`gateway.NewSpeechModel` also implements `provider.SpeechStreamer`, so it works with `ai.ExperimentalStreamSpeech`. Text is streamed to the Gateway's `/speech-model` WebSocket (subprotocol `ai-gateway-speech.v1`) and audio streams back. The WebSocket URL is built from the provider's configured base URL, so credentials are sent only to that host.
+
+```go
+model := provider.ExperimentalSpeech("elevenlabs/eleven-flash-v2.5")
+
+result, err := ai.ExperimentalStreamSpeech(ctx, ai.StreamSpeechOptions{
+    Model: model,
+    Text:  "Hello from the Gateway.",
+})
+```
+
+`provider.GetSpeechToken(ctx, modelID, nil)` mints a short-lived, speech-bound client secret (`vcst_...`) and returns it with the WebSocket URL, so a client can stream without holding your Gateway credential. Call it on your server only. See [Streaming speech](../03-ai-sdk-core/37-speech.mdx#streaming-speech-experimental).
+
 ## Embeddings
 
 ```go
@@ -243,7 +262,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 - **gateway.tags**: Routing tags.
 - **gateway.models**: Ordered fallback model list. Build entries with
   `gateway.GatewayModel(id)` for a plain fallback, or
-  `gateway.GatewayConditionalModelFallback(id, when)` for an evaluation-only
+  `gateway.GatewayConditionalModelFallback(id, when)` for a decision-only
   conditional fallback (only the first entry may be conditional). JSON also
   accepts a plain model-ID string in place of either helper.
 - **gateway.has**: Restrict routing to models satisfying capability tags
@@ -449,13 +468,17 @@ fmt.Printf("Total Used: %s\n", credits.TotalUsed)
 
 `/v1/credits` reads the team from a `teamId`/`slug` query parameter rather than the `x-vercel-ai-gateway-team` header every other endpoint uses. When `Config.TeamIDOrSlug` (or a per-call `x-vercel-ai-gateway-team` header) is set, `GetCredits` forwards it as that query parameter too, so credentials that can access multiple teams (such as Vercel access tokens) are scoped correctly instead of getting a 401.
 
-## Evaluation model fallbacks
+## Decision models
 
-`EvaluationFallbackCondition.Question` is optional. Without it, `ConfidenceBelow` checks every Choice/Score question and `ProbabilityBetween` checks every Boolean question, instead of a single named question:
+`Provider.DecisionModel(id)` returns a decision model for [`ai.ExperimentalDecide`](../03-ai-sdk-core/32-decisions.mdx). It posts to `{baseURL}/decision-model` with the `ai-decision-model-specification-version: 4` header. The state is sent as ordered `stateParts`; image bytes are sent as base64, and URL, reference, or text file data is rejected before the request. `Provider.EvaluationModel(id)` and the other `Evaluation` names remain as deprecated aliases.
+
+## Decision model fallbacks
+
+`DecisionFallbackCondition.Question` is optional. Without it, `ConfidenceBelow` checks every Choice/Score question and `ProbabilityBetween` checks every Boolean question, instead of a single named question:
 
 ```go
 confidenceBelow := 0.6
-when := gateway.EvaluationFallbackCondition{ConfidenceBelow: &confidenceBelow}
+when := gateway.DecisionFallbackCondition{ConfidenceBelow: &confidenceBelow}
 fallback := gateway.GatewayConditionalModelFallback("openai/gpt-5.6-sol", when)
 ```
 

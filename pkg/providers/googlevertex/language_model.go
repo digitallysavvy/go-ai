@@ -18,15 +18,22 @@ type LanguageModel struct {
 
 // NewLanguageModel creates a Google Vertex AI language model.
 func NewLanguageModel(p *Provider, modelID string) *LanguageModel {
-	client := p.client
-	if isEndpointModelID(modelID) && p.endpointClient != nil {
+	return newLanguageModel(p, modelID, "google.vertex.chat")
+}
+
+// newLanguageModel is NewLanguageModel with the provider name its errors
+// report; the image model passes its own (TS google-vertex-image-model.ts
+// builds its GoogleLanguageModel with the image model's provider).
+func newLanguageModel(p *Provider, modelID, providerName string) *LanguageModel {
+	client := p.mainClient()
+	if c, err := p.clients(); err == nil && isEndpointModelID(modelID) && c.endpointClient != nil {
 		// Tuned models are served from ".../locations/{region}/endpoints/{id}",
 		// which omits the "/publishers/google" suffix the base-model paths
 		// carry (TS isEndpointModelId / loadBaseURL({endpoint: true})).
-		client = p.endpointClient
+		client = c.endpointClient
 	}
 	cfg := gemini.Config{
-		ProviderName: "google-vertex",
+		ProviderName: providerName,
 		MetadataKey:  "vertex",
 		// TS parity: Vertex reads "googleVertex" first, then the legacy "vertex"
 		// key, then "google" (cross-namespace fallback), and writes provider
@@ -41,6 +48,7 @@ func NewLanguageModel(p *Provider, modelID string) *LanguageModel {
 			return fmt.Sprintf("/%s:streamGenerateContent?alt=sse", gemini.GetModelPath(id))
 		},
 		Client:             client,
+		GenerateID:         p.config.GenerateID,
 		SupportsImageInput: vertexSupportsImageInput,
 		SupportedURLs: func(string) map[string][]string {
 			return map[string][]string{

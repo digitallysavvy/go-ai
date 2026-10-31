@@ -17,7 +17,7 @@ import (
 func TestMistralEmbeddingModelMetadataAndLimits(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	m := NewEmbeddingModel(p, "mistral-embed")
-	if m.SpecificationVersion() != "v3" || m.Provider() != "mistral" || m.ModelID() != "mistral-embed" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "mistral.embedding" || m.ModelID() != "mistral-embed" {
 		t.Fatalf("metadata mismatch: spec=%s provider=%s model=%s", m.SpecificationVersion(), m.Provider(), m.ModelID())
 	}
 	// TS MistralEmbeddingModel: maxEmbeddingsPerCall = 32, supportsParallelCalls = false.

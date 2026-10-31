@@ -3,9 +3,11 @@ package anthropic
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock/eventstream"
 )
@@ -86,19 +88,34 @@ func writeSSEEvent(w io.Writer, event *EventStreamEvent) error {
 	case "event":
 		switch event.EventType {
 		case "chunk":
-			var chunkData struct {
-				Bytes string `json:"bytes"`
+			// TS safeParseJSON accepts any JSON value, then reads
+			// `parsed.value.bytes`: a JSON null throws (erroring the stream),
+			// a truthy non-string `bytes` throws inside
+			// convertBase64ToUint8Array, and anything else without a non-empty
+			// string `bytes` falls back to the raw payload.
+			var parsed interface{}
+			if err := json.Unmarshal([]byte(event.Data), &parsed); err == nil && parsed == nil {
+				return errors.New("Cannot read properties of null (reading 'bytes')") //nolint:staticcheck // TS TypeError text
 			}
-			if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil || chunkData.Bytes == "" {
+			var bytesValue interface{}
+			if m, ok := parsed.(map[string]interface{}); ok {
+				bytesValue = m["bytes"]
+			}
+			chunkBytes, isString := bytesValue.(string)
+			if !isString && jsTruthy(bytesValue) {
+				return errors.New("base64String.replace is not a function")
+			}
+			if chunkBytes == "" {
 				// Malformed or bytes-less chunk: fall back to the raw payload,
 				// matching TS's fallback behavior.
 				_, err := fmt.Fprintf(w, "data: %s\n\n", event.Data)
 				return err
 			}
-			decoded, err := base64.StdEncoding.DecodeString(chunkData.Bytes)
+			// TS convertBase64ToUint8Array (atob) throws on invalid base64,
+			// which errors the stream; it does not fall back to the payload.
+			decoded, err := convertBase64ToBytes(chunkBytes)
 			if err != nil {
-				_, ferr := fmt.Fprintf(w, "data: %s\n\n", event.Data)
-				return ferr
+				return fmt.Errorf("invalid base64 in bedrock chunk bytes: %w", err)
 			}
 			_, err = fmt.Fprintf(w, "data: %s\n\n", string(decoded))
 			return err
@@ -149,6 +166,46 @@ func writeSSEEvent(w io.Writer, event *EventStreamEvent) error {
 		return err
 	}
 	return nil
+}
+
+// jsTruthy reports whether a decoded JSON value is truthy in JavaScript.
+func jsTruthy(v interface{}) bool {
+	switch x := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return x
+	case float64:
+		return x != 0
+	case string:
+		return x != ""
+	default:
+		return true // objects and arrays
+	}
+}
+
+// convertBase64ToBytes ports TS convertBase64ToUint8Array: base64url
+// characters are mapped to the standard alphabet and the result is decoded
+// with the WHATWG forgiving-base64 rules of atob (ASCII whitespace ignored,
+// padding optional, length 1 mod 4 or any non-alphabet byte is an error).
+func convertBase64ToBytes(s string) ([]byte, error) {
+	s = strings.NewReplacer("-", "+", "_", "/").Replace(s)
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\t', '\n', '\f', '\r', ' ':
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	data := b.String()
+	if len(data)%4 == 0 {
+		data = strings.TrimSuffix(strings.TrimSuffix(data, "="), "=")
+	}
+	if len(data)%4 == 1 {
+		return nil, base64.CorruptInputError(len(data))
+	}
+	return base64.RawStdEncoding.DecodeString(data)
 }
 
 // bedrockStreamErrorMetadata ports TS getAmazonBedrockStreamErrorMetadata.

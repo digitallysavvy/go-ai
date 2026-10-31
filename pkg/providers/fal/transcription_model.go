@@ -21,7 +21,8 @@ import (
 // matching fal-transcription-model.ts's failedResponseHandler check.
 const falTranscriptionStillInProgress = "Request is still in progress"
 
-const falTranscriptionPollTimeout = 60 * time.Second
+// falTranscriptionPollTimeout is a var so in-package tests can shorten it.
+var falTranscriptionPollTimeout = 60 * time.Second
 
 // falTranscriptionPollInterval is a var (not const) so in-package tests can
 // speed it up; production code never reassigns it.
@@ -70,14 +71,20 @@ type falTranscriptionResultResponse struct {
 }
 
 // falTranscriptionParsedOptions mirrors falTranscriptionModelOptionsSchema
-// in fal-transcription-model-options.ts, including its defaults.
+// in fal-transcription-model-options.ts, including its defaults. The *Null
+// flags record an explicit JSON null, which zod's .nullish().default(x) keeps
+// (the default only replaces an absent value).
 type falTranscriptionParsedOptions struct {
-	Language    string
-	Diarize     bool
-	ChunkLevel  string
-	Version     string
-	BatchSize   float64
-	NumSpeakers *float64
+	Language       string
+	LanguageNull   bool
+	Diarize        bool
+	ChunkLevel     string
+	ChunkLevelNull bool
+	Version        string
+	VersionNull    bool
+	BatchSize      float64
+	BatchSizeNull  bool
+	NumSpeakers    *float64
 }
 
 // parseFalTranscriptionOptions applies the schema defaults from
@@ -101,20 +108,28 @@ func parseFalTranscriptionOptions(raw interface{}) (*falTranscriptionParsedOptio
 	if !ok {
 		return nil, fmt.Errorf("invalid fal provider options: expected object")
 	}
-	if v, ok := m["language"].(string); ok {
-		out.Language = v
+	if v, present := m["language"]; present && v == nil {
+		out.LanguageNull = true
+	} else if s, ok := v.(string); ok {
+		out.Language = s
 	}
 	if v, ok := m["diarize"].(bool); ok {
 		out.Diarize = v
 	}
-	if v, ok := m["chunkLevel"].(string); ok {
-		out.ChunkLevel = v
+	if v, present := m["chunkLevel"]; present && v == nil {
+		out.ChunkLevelNull = true
+	} else if s, ok := v.(string); ok {
+		out.ChunkLevel = s
 	}
-	if v, ok := m["version"].(string); ok {
-		out.Version = v
+	if v, present := m["version"]; present && v == nil {
+		out.VersionNull = true
+	} else if s, ok := v.(string); ok {
+		out.Version = s
 	}
-	if v, ok := toFalFloat64(m["batchSize"]); ok {
-		out.BatchSize = v
+	if v, present := m["batchSize"]; present && v == nil {
+		out.BatchSizeNull = true
+	} else if f, ok := toFalFloat64(v); ok {
+		out.BatchSize = f
 	}
 	if v, ok := toFalFloat64(m["numSpeakers"]); ok {
 		out.NumSpeakers = &v
@@ -149,16 +164,28 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 	}
 
 	if opts.ProviderOptions != nil {
-		if raw, ok := opts.ProviderOptions["fal"]; ok {
+		// TS parseProviderOptions: a null providerOptions.fal is absent.
+		if raw, ok := opts.ProviderOptions["fal"]; ok && raw != nil {
 			parsed, err := parseFalTranscriptionOptions(raw)
 			if err != nil {
 				return nil, err
 			}
-			body["language"] = parsed.Language
-			body["version"] = parsed.Version
-			body["batch_size"] = parsed.BatchSize
+			// TS: language is assigned as-is (an explicit null is sent as
+			// null); version and batchSize use `?? undefined`, so an explicit
+			// null omits them; a null chunkLevel is falsy and keeps 'word'.
+			if parsed.LanguageNull {
+				body["language"] = nil
+			} else {
+				body["language"] = parsed.Language
+			}
+			if !parsed.VersionNull {
+				body["version"] = parsed.Version
+			}
+			if !parsed.BatchSizeNull {
+				body["batch_size"] = parsed.BatchSize
+			}
 			body["diarize"] = parsed.Diarize
-			if parsed.ChunkLevel != "" {
+			if !parsed.ChunkLevelNull && parsed.ChunkLevel != "" {
 				body["chunk_level"] = parsed.ChunkLevel
 			}
 			if parsed.NumSpeakers != nil {
@@ -174,6 +201,9 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
+	}
+	if err := validateTranscriptionOptions(opts.ProviderOptions); err != nil {
+		return nil, err
 	}
 	body, err := m.buildRequestBody(opts)
 	if err != nil {
@@ -192,20 +222,20 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	var submitResp falTranscriptionQueueResponse
 	_, err = m.provider.absClient.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    submitPath,
-		Body:    body,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaFalJob),
+		Method:           http.MethodPost,
+		Path:             submitPath,
+		Body:             body,
+		Headers:          opts.Headers,
 	}, &submitResp)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 
-	if submitResp.RequestID == "" {
-		return nil, providererrors.NewInvalidResponseDataError(submitResp, "fal transcription queue response missing request_id")
-	}
-
-	resultPath := fmt.Sprintf("%s/fal-ai/%s/requests/%s", m.provider.queueHost, m.modelID, submitResp.RequestID)
+	// TS: encodePathSegment(queueResponse.request_id ?? '') — a missing
+	// request_id is not an error; the result URL is polled with an empty
+	// segment.
+	resultPath := fmt.Sprintf("%s/fal-ai/%s/requests/%s", m.provider.queueHost, m.modelID, providerutils.EncodePathSegment(submitResp.RequestID))
 
 	result, responseHeaders, rawBody, err := m.pollForResult(ctx, resultPath, opts.Headers)
 	if err != nil {
@@ -294,7 +324,7 @@ func (m *TranscriptionModel) pollForResult(ctx context.Context, resultPath strin
 			if detail.Detail == falTranscriptionStillInProgress {
 				if time.Now().After(deadline) {
 					return nil, nil, nil, providererrors.NewProviderError(
-						m.Provider(), 0, "", "Transcription request timed out after 60 seconds", nil,
+						m.Provider(), 0, "TranscriptionRequestTimedOut", "Transcription request timed out after 60 seconds", nil,
 					)
 				}
 				select {
@@ -311,6 +341,9 @@ func (m *TranscriptionModel) pollForResult(ctx context.Context, resultPath strin
 			})
 		}
 
+		if err := providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaFalTranscr)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+			return nil, nil, nil, err
+		}
 		var result falTranscriptionResultResponse
 		if err := json.Unmarshal(resp.Body, &result); err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to decode fal transcription response: %w", err)
@@ -320,12 +353,15 @@ func (m *TranscriptionModel) pollForResult(ctx context.Context, resultPath strin
 }
 
 func (m *TranscriptionModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		message := parseFalErrorMessage(statusErr.Body, string(statusErr.Body))
-		providerErr := providererrors.NewProviderError(m.Provider(), statusErr.StatusCode, "", message, err)
-		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
-		return providerErr
+		message := parseFalErrorMessage(statusErr.Body, http.StatusText(statusErr.StatusCode))
+		return providererrors.NewProviderErrorFromResponse(m.Provider(), 0, "", message, err)
 	}
-	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return err
 }

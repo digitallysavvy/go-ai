@@ -1,6 +1,11 @@
 package elevenlabs
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"errors"
+
+	providerrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+)
 
 // TranscriptionModelOptions contains ElevenLabs-specific transcription
 // options, mirroring the TypeScript SDK's
@@ -25,7 +30,7 @@ type TranscriptionModelOptions struct {
 	// TimestampsGranularity is "none", "word", or "character". Defaults to "word".
 	TimestampsGranularity string `json:"timestampsGranularity,omitempty"`
 
-	// Diarize enables speaker diarization. Defaults to false.
+	// Diarize enables speaker diarization. Defaults to true.
 	Diarize *bool `json:"diarize,omitempty"`
 
 	// FileFormat is "pcm_s16le_16" or "other". Defaults to "other".
@@ -103,9 +108,16 @@ func extractTranscriptionOptions(providerOptions map[string]interface{}) (opts *
 	}
 
 	opts = &TranscriptionModelOptions{}
+	// explicitNull: zod `.nullish().default(x)` applies x only to a missing
+	// key; an explicit null stays null, and TS then skips the field.
+	explicitNull := func(string) bool { return false }
 	if rawMap, ok := raw.(map[string]interface{}); ok {
 		if v, ok := rawMap["streaming"]; ok && v != nil {
 			hasStreaming = true
+		}
+		explicitNull = func(key string) bool {
+			v, present := rawMap[key]
+			return present && v == nil
 		}
 	}
 	if raw != nil {
@@ -115,20 +127,127 @@ func extractTranscriptionOptions(providerOptions map[string]interface{}) (opts *
 	}
 
 	// Apply schema defaults (zod .default()), matching TS parseProviderOptions.
-	if opts.TagAudioEvents == nil {
+	if opts.TagAudioEvents == nil && !explicitNull("tagAudioEvents") {
 		tagDefault := true
 		opts.TagAudioEvents = &tagDefault
 	}
-	if opts.TimestampsGranularity == "" {
+	if opts.TimestampsGranularity == "" && !explicitNull("timestampsGranularity") {
 		opts.TimestampsGranularity = "word"
 	}
 	if opts.Diarize == nil {
-		diarizeDefault := false
+		diarizeDefault := true
 		opts.Diarize = &diarizeDefault
 	}
-	if opts.FileFormat == "" {
+	if opts.FileFormat == "" && !explicitNull("fileFormat") {
 		opts.FileFormat = "other"
 	}
 
 	return opts, true, hasStreaming
+}
+
+// validateTranscriptionOptions mirrors TS parseProviderOptions with
+// elevenLabsTranscriptionModelOptionsSchema (map form): a violation is an
+// InvalidArgumentError("invalid elevenlabs provider options").
+func validateTranscriptionOptions(providerOptions map[string]interface{}) error {
+	raw, ok := providerOptions["elevenlabs"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	fail := func(msg string) error {
+		return &providerrors.InvalidArgumentError{
+			Field:   "providerOptions",
+			Message: "invalid elevenlabs provider options",
+			Cause:   errors.New(msg),
+		}
+	}
+	isBool := func(v interface{}) bool { _, ok := v.(bool); return ok }
+	isString := func(v interface{}) bool { _, ok := v.(string); return ok }
+	isInt := func(v interface{}, min, max float64) bool {
+		n, ok := numberAsFloat(v)
+		return ok && n == float64(int64(n)) && n >= min && n <= max
+	}
+	isNum := func(v interface{}, min, max float64) bool {
+		n, ok := numberAsFloat(v)
+		return ok && n >= min && n <= max
+	}
+	oneOf := func(v interface{}, allowed ...string) bool {
+		s, ok := v.(string)
+		if !ok {
+			return false
+		}
+		for _, a := range allowed {
+			if s == a {
+				return true
+			}
+		}
+		return false
+	}
+	check := func(obj map[string]interface{}, prefix, key string, valid func(interface{}) bool) error {
+		if v, ok := obj[key]; ok && v != nil && !valid(v) {
+			return fail("Invalid input at " + prefix + key)
+		}
+		return nil
+	}
+	top := []struct {
+		key   string
+		valid func(interface{}) bool
+	}{
+		{"languageCode", isString},
+		{"tagAudioEvents", isBool},
+		{"numSpeakers", func(v interface{}) bool { return isInt(v, 1, 32) }},
+		{"timestampsGranularity", func(v interface{}) bool { return oneOf(v, "none", "word", "character") }},
+		{"diarize", isBool},
+		{"fileFormat", func(v interface{}) bool { return oneOf(v, "pcm_s16le_16", "other") }},
+	}
+	for _, f := range top {
+		if err := check(raw, "", f.key, f.valid); err != nil {
+			return err
+		}
+	}
+	sv, ok := raw["streaming"]
+	if !ok || sv == nil {
+		return nil
+	}
+	st, ok := sv.(map[string]interface{})
+	if !ok {
+		return fail("Invalid input: expected object at streaming")
+	}
+	strList := func(maxItems, maxLen int) func(interface{}) bool {
+		return func(v interface{}) bool {
+			list, ok := stringSlice(v)
+			if !ok || len(list) > maxItems {
+				return false
+			}
+			for _, s := range list {
+				if maxLen > 0 && len([]rune(s)) > maxLen {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	sub := []struct {
+		key   string
+		valid func(interface{}) bool
+	}{
+		{"commitStrategy", func(v interface{}) bool { return oneOf(v, "manual", "vad") }},
+		{"enableLogging", isBool},
+		{"filterBackgroundAudio", isBool},
+		{"includeLanguageDetection", isBool},
+		{"includeTimestamps", isBool},
+		{"keyterms", strList(50, 20)},
+		{"minSilenceDurationMs", func(v interface{}) bool { return isInt(v, 50, 2000) }},
+		{"minSpeechDurationMs", func(v interface{}) bool { return isInt(v, 50, 2000) }},
+		{"noVerbatim", isBool},
+		{"previousText", isString},
+		{"secondaryLanguages", strList(1<<30, 0)},
+		{"vadSilenceThresholdSecs", func(v interface{}) bool { return isNum(v, 0.3, 3) }},
+		{"vadThreshold", func(v interface{}) bool { return isNum(v, 0.1, 0.9) }},
+	}
+	for _, f := range sub {
+		if err := check(st, "streaming.", f.key, f.valid); err != nil {
+			return err
+		}
+	}
+	return nil
 }

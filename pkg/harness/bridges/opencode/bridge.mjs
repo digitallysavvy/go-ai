@@ -1,11 +1,12 @@
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { argv, env, pid, stdout } from "node:process";
 import { WebSocketServer } from "ws";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { createOpencodeClient, createOpencodeServer } from "@opencode-ai/sdk/v2";
+import { rgPath } from "@vscode/ripgrep";
 import { createServer } from "node:http";
 //#region ../harness/dist/bridge/index.js
 const DEBUG_LEVEL_WEIGHT = {
@@ -578,6 +579,73 @@ function serialiseError(err) {
 	return err;
 }
 //#endregion
+//#region src/bridge/opencode-host-input-tracker.ts
+function createOpenCodeHostInputTracker({ emit }) {
+	const unsettledToolCalls = /* @__PURE__ */ new Map();
+	const waitingToolCallIds = /* @__PURE__ */ new Set();
+	const groupWaits = /* @__PURE__ */ new Map([["host-tool", /* @__PURE__ */ new Set()], ["subagent", /* @__PURE__ */ new Set()]]);
+	const coveredIds = /* @__PURE__ */ new Set();
+	const emitEarlyFinishStepIfReady = () => {
+		if (unsettledToolCalls.size === 0) return;
+		const notWaitingByGroup = /* @__PURE__ */ new Map();
+		for (const [callID, group] of unsettledToolCalls) {
+			if (waitingToolCallIds.has(callID)) continue;
+			if (group == null) return;
+			notWaitingByGroup.set(group, (notWaitingByGroup.get(group) ?? 0) + 1);
+		}
+		for (const [group, count] of notWaitingByGroup) if (count > groupWaits.get(group).size) return;
+		const uncovered = [...waitingToolCallIds, ...[...groupWaits.values()].flatMap((ids) => [...ids])].filter((id) => !coveredIds.has(id));
+		if (uncovered.length === 0) return;
+		for (const id of uncovered) coveredIds.add(id);
+		emit({
+			type: "finish-step",
+			finishReason: {
+				unified: "tool-calls",
+				raw: "host-input"
+			},
+			usage: {
+				inputTokens: {
+					total: 0,
+					noCache: 0,
+					cacheRead: 0,
+					cacheWrite: 0
+				},
+				outputTokens: {
+					total: 0,
+					text: 0
+				}
+			},
+			harnessMetadata: { opencode: { inferredStep: true } }
+		});
+	};
+	return {
+		observeToolCall({ callID, status, group }) {
+			if (status === "started") unsettledToolCalls.set(callID, group);
+			else unsettledToolCalls.delete(callID);
+			emitEarlyFinishStepIfReady();
+		},
+		markWaiting({ toolCallId }) {
+			if (!unsettledToolCalls.has(toolCallId)) unsettledToolCalls.set(toolCallId, void 0);
+			waitingToolCallIds.add(toolCallId);
+			emitEarlyFinishStepIfReady();
+		},
+		clearWaiting({ toolCallId, settled = false }) {
+			waitingToolCallIds.delete(toolCallId);
+			if (settled) unsettledToolCalls.delete(toolCallId);
+		},
+		markGroupWaiting({ group, id }) {
+			groupWaits.get(group).add(id);
+			emitEarlyFinishStepIfReady();
+		},
+		clearGroupWaiting({ group, id }) {
+			groupWaits.get(group).delete(id);
+		},
+		observeFinishStep() {
+			coveredIds.clear();
+		}
+	};
+}
+//#endregion
 //#region src/bridge/opencode-types.ts
 function asOpenCodeObject(value) {
 	return value != null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
@@ -965,7 +1033,7 @@ function translateLegacyStepFinishPart(value) {
 }
 //#endregion
 //#region src/bridge/create-emit-stream-event.ts
-function createEmitStreamEvent({ state, emit, emitWarning, emitError, toWireToolName, nativeNameField, getHostToolName, authorizeHostToolCall, onSubagentSession, isMcpToolName, stripWorkDir, formatError }) {
+function createEmitStreamEvent({ state, emit, emitWarning, emitError, toWireToolName, nativeNameField, getHostToolName, authorizeHostToolCall, onSubagentSession, onToolCallStatus, isMcpToolName, stripWorkDir, formatError }) {
 	const compactionMessages = /* @__PURE__ */ new Set();
 	let compactionTrigger = "auto";
 	let compaction;
@@ -1080,6 +1148,7 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitError, toWireTool
 				getHostToolName,
 				authorizeHostToolCall,
 				onSubagentSession,
+				onToolCallStatus,
 				isMcpToolName
 			});
 			return;
@@ -1152,6 +1221,11 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitError, toWireTool
 			const callID = String(props.callID ?? event.id);
 			const command = String(props.command ?? "");
 			state.shellCommands.set(callID, command);
+			onToolCallStatus?.({
+				callID,
+				status: "started",
+				group: void 0
+			});
 			emit({
 				type: "tool-call",
 				toolCallId: callID,
@@ -1164,6 +1238,11 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitError, toWireTool
 		}
 		if (type === "session.next.shell.ended") {
 			const callID = String(props.callID ?? event.id);
+			onToolCallStatus?.({
+				callID,
+				status: "settled",
+				group: void 0
+			});
 			emit({
 				type: "tool-result",
 				toolCallId: callID,
@@ -1194,6 +1273,14 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitError, toWireTool
 				toolName
 			});
 			const hostToolName = getHostToolName(toolName, props.tool);
+			onToolCallStatus?.({
+				callID,
+				status: "started",
+				group: toolCallGroup({
+					hostToolName,
+					toolName
+				})
+			});
 			if (hostToolName) {
 				authorizeHostToolCall({
 					callID,
@@ -1224,6 +1311,11 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitError, toWireTool
 			const rawToolName = cachedTool?.rawToolName ?? String(props.tool ?? "");
 			if (rawToolName === "StructuredOutput" || rawToolName === "question") return;
 			const toolName = cachedTool?.toolName ?? toWireToolName(rawToolName || "unknown");
+			onToolCallStatus?.({
+				callID,
+				status: "settled",
+				group: void 0
+			});
 			if (getHostToolName(toolName, rawToolName)) return;
 			emit({
 				type: "tool-result",
@@ -1290,6 +1382,10 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitError, toWireTool
 		}
 	};
 }
+function toolCallGroup({ hostToolName, toolName }) {
+	if (hostToolName) return "host-tool";
+	if (toolName === "agent") return "subagent";
+}
 function closeLegacyOpenParts({ state, emit }) {
 	for (const id of state.legacyReasoningPartIds) {
 		emit({
@@ -1324,7 +1420,7 @@ function emitLegacyStepFinishPart({ part, state, emit }) {
 	emit(event);
 	return true;
 }
-function emitLegacyToolPart({ part, state, emit, toWireToolName, nativeNameField, getHostToolName, authorizeHostToolCall, onSubagentSession, isMcpToolName }) {
+function emitLegacyToolPart({ part, state, emit, toWireToolName, nativeNameField, getHostToolName, authorizeHostToolCall, onSubagentSession, onToolCallStatus, isMcpToolName }) {
 	const toolPart = legacyToolPartFromValue(part);
 	if (!toolPart) return;
 	const status = toolPart.status;
@@ -1350,6 +1446,14 @@ function emitLegacyToolPart({ part, state, emit, toWireToolName, nativeNameField
 		toolName
 	});
 	const hostToolName = getHostToolName(toolName, rawToolName);
+	onToolCallStatus?.({
+		callID,
+		status: status === "running" ? "started" : "settled",
+		group: toolCallGroup({
+			hostToolName,
+			toolName
+		})
+	});
 	if (hostToolName) {
 		if (status === "running") authorizeHostToolCall({
 			callID,
@@ -1388,11 +1492,7 @@ function emitLegacyToolPart({ part, state, emit, toWireToolName, nativeNameField
 	}
 }
 function legacyToolPartInput(part) {
-	return {
-		...part.metadata,
-		...part.state?.metadata,
-		...part.state?.input
-	};
+	return { ...part.state?.input };
 }
 function legacyToolPartOutput(part) {
 	const state = part.state;
@@ -1465,8 +1565,12 @@ function openCodeErrorFromValue(value) {
 //#endregion
 //#region src/bridge/opencode-path.ts
 const fallbackPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
-function prependOpenCodeBinToPath({ bootstrapDir, env }) {
-	env.PATH = [path.join(bootstrapDir, "node_modules", ".bin"), env.PATH || fallbackPath].join(path.delimiter);
+function configureOpenCodePath({ bootstrapDir, env }) {
+	env.PATH = [
+		path.join(bootstrapDir, "node_modules", ".bin"),
+		env.PATH || fallbackPath,
+		path.dirname(rgPath)
+	].join(path.delimiter);
 }
 //#endregion
 //#region src/bridge/opencode-server-auth.ts
@@ -1556,7 +1660,7 @@ function normalizeJsonValue(value) {
 }
 //#endregion
 //#region src/bridge/tool-relay.ts
-async function startAuthorizedToolRelay({ tools, emit, requestToolResult, authorizer = new ToolRelayAuthorizer() }) {
+async function startAuthorizedToolRelay({ tools, emit, requestToolResult, onWaitingChange, authorizer = new ToolRelayAuthorizer() }) {
 	const toolNames = new Set(tools.map((tool) => tool.name));
 	const server = createServer(async (req, res) => {
 		try {
@@ -1589,7 +1693,14 @@ async function startAuthorizedToolRelay({ tools, emit, requestToolResult, author
 				input: JSON.stringify(input ?? {}),
 				providerExecuted: false
 			});
-			const { output, isError } = await requestToolResult(requestId);
+			onWaitingChange?.({
+				requestId,
+				waiting: true
+			});
+			const { output, isError, toolResult } = await requestToolResult(requestId).finally(() => onWaitingChange?.({
+				requestId,
+				waiting: false
+			}));
 			emit({
 				type: "tool-result",
 				toolCallId: requestId,
@@ -1598,7 +1709,11 @@ async function startAuthorizedToolRelay({ tools, emit, requestToolResult, author
 				isError: !!isError
 			});
 			res.writeHead(200, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ result: output }));
+			res.end(JSON.stringify({
+				result: output,
+				...isError != null ? { isError } : {},
+				...toolResult != null ? { toolResult } : {}
+			}));
 		} catch (error) {
 			res.writeHead(500, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
@@ -1668,6 +1783,22 @@ function positionalIdIndex(input) {
 	return Number.isInteger(oneBasedIndex) && oneBasedIndex > 0 ? oneBasedIndex - 1 : void 0;
 }
 //#endregion
+//#region src/bridge/opencode-prompt.ts
+function toOpenCodePromptParts(prompt) {
+	if (typeof prompt === "string") return [{
+		type: "text",
+		text: prompt
+	}];
+	return prompt.map((part) => part.type === "text" ? {
+		type: "text",
+		text: part.text
+	} : {
+		type: "file",
+		mime: part.mediaType,
+		url: `data:${part.mediaType};base64,${part.data}`
+	});
+}
+//#endregion
 //#region src/bridge/index.ts
 const NATIVE_TO_COMMON = {
 	view: "read",
@@ -1688,9 +1819,10 @@ const OPENCODE_TO_WIRE = {
 	askUserQuestions: "question",
 	subtask: "agent"
 };
-const PUBLIC_TO_NATIVE = {
-	read: "view",
-	write: "write",
+const BUILTIN_TOOL_PERMISSION = {
+	askUserQuestions: "question",
+	read: "read",
+	write: "edit",
 	edit: "edit",
 	bash: "bash",
 	glob: "glob",
@@ -1699,7 +1831,7 @@ const PUBLIC_TO_NATIVE = {
 	webfetch: "webfetch",
 	skill: "skill",
 	todowrite: "todowrite",
-	agent: "agent"
+	agent: "task"
 };
 const TOOL_KIND = {
 	read: "readonly",
@@ -1724,7 +1856,9 @@ const runtime = {
 	toolNames: /* @__PURE__ */ new Set(),
 	mcpToolPrefixes: /* @__PURE__ */ new Set()
 };
-prependOpenCodeBinToPath({
+let currentHostInputTracker;
+let currentTurn;
+configureOpenCodePath({
 	bootstrapDir,
 	env
 });
@@ -1735,14 +1869,11 @@ await runBridge({
 	onStop: () => runtime.sessionId ? { openCodeSessionId: runtime.sessionId } : {}
 });
 async function runTurn(start, turn) {
+	currentTurn = turn;
 	const emit = (msg) => turn.emit(msg);
 	let totalUsage;
 	try {
-		await ensureRuntime({
-			start,
-			turn,
-			emit
-		});
+		await ensureRuntime({ start });
 		const client = runtime.client;
 		if (start.skillsChanged) await client.instance.dispose({ directory: workdir });
 		const sessionId = await ensureSession({
@@ -1798,18 +1929,15 @@ async function switchSessionModel({ client, sessionId, start }) {
 	});
 	if (response.error != null) throw response.error;
 }
-async function ensureRuntime({ start, turn, emit }) {
-	if (runtime.client && isDeepStrictEqual(runtime.openCodeConfig, start.openCodeConfig)) return;
+async function ensureRuntime({ start }) {
+	if (runtime.client && isDeepStrictEqual(runtime.openCodeConfig, start.openCodeConfig) && isDeepStrictEqual(runtime.inactiveBuiltinToolNames, start.inactiveBuiltinToolNames)) return;
 	closeRuntime();
 	try {
 		if (start.tools && start.tools.length > 0) {
 			runtime.toolNames = new Set(start.tools.map((tool) => tool.name));
-			runtime.relay = await startToolRelay({
-				tools: start.tools,
-				emit,
-				requestToolResult: turn.requestToolResult
-			});
+			runtime.relay = await startToolRelay({ tools: start.tools });
 		}
+		const toolSchemasPath = runtime.relay && start.tools ? writeHostToolSchemas(start.tools) : void 0;
 		const serverAuthHeaders = configureOpenCodeServerAuth({ env });
 		const server = await createOpencodeServer({
 			hostname: "127.0.0.1",
@@ -1817,7 +1945,8 @@ async function ensureRuntime({ start, turn, emit }) {
 			timeout: 3e4,
 			config: buildOpenCodeConfig({
 				start,
-				relayPort: runtime.relay?.port
+				relayPort: runtime.relay?.port,
+				toolSchemasPath
 			})
 		});
 		runtime.server = server;
@@ -1829,6 +1958,7 @@ async function ensureRuntime({ start, turn, emit }) {
 		const mcpServers = asOpenCodeObject((await runtime.client.mcp.status()).data) ?? {};
 		runtime.mcpToolPrefixes = new Set(Object.entries(mcpServers).filter(([serverName, status]) => serverName !== "harness-tools" && asOpenCodeObject(status)?.status === "connected").map(([serverName]) => `${sanitizeMcpToolName(serverName)}_`));
 		runtime.openCodeConfig = structuredClone(start.openCodeConfig);
+		runtime.inactiveBuiltinToolNames = structuredClone(start.inactiveBuiltinToolNames);
 	} catch (error) {
 		closeRuntime();
 		throw error;
@@ -1841,10 +1971,11 @@ function closeRuntime() {
 	runtime.client = void 0;
 	runtime.relay = void 0;
 	runtime.openCodeConfig = void 0;
+	runtime.inactiveBuiltinToolNames = void 0;
 	runtime.toolNames = /* @__PURE__ */ new Set();
 	runtime.mcpToolPrefixes = /* @__PURE__ */ new Set();
 }
-function buildOpenCodeConfig({ start, relayPort }) {
+function buildOpenCodeConfig({ start, relayPort, toolSchemasPath }) {
 	const config = {
 		...withoutAgentPolicyOverrides(start.openCodeConfig),
 		share: "disabled",
@@ -1865,31 +1996,32 @@ function buildOpenCodeConfig({ start, relayPort }) {
 	};
 	if (start.model) config.model = start.model;
 	if (skillsDir) config.skills = { paths: [skillsDir] };
-	const inactiveToolNames = resolveInactiveBuiltinToolNames(start);
 	const permission = config.permission;
-	for (const toolName of inactiveToolNames) {
-		const permissionName = toPermissionToolName(PUBLIC_TO_NATIVE[toolName] ?? toolName);
-		if (permissionName === "ls") permission.list = "ask";
-		else permission[permissionName] = "ask";
-	}
+	for (const toolName of start.inactiveBuiltinToolNames ?? []) permission[BUILTIN_TOOL_PERMISSION[toolName]] = "deny";
 	const provider = buildProviderConfig(start);
 	if (provider) config.provider = provider;
 	const mcp = { ...start.mcpServers };
-	if (relayPort && start.tools && start.tools.length > 0) mcp["harness-tools"] = {
+	if (relayPort && toolSchemasPath) mcp["harness-tools"] = {
 		type: "local",
 		enabled: true,
 		command: ["node", `${bootstrapDir}/host-tool-mcp.mjs`],
 		environment: {
-			TOOL_SCHEMAS: JSON.stringify(start.tools.map((t) => ({
-				name: t.name,
-				description: t.description,
-				inputSchema: t.inputSchema
-			}))),
+			TOOL_SCHEMAS_PATH: toolSchemasPath,
 			TOOL_RELAY_URL: `http://127.0.0.1:${relayPort}`
 		}
 	};
 	if (Object.keys(mcp).length > 0) config.mcp = mcp;
 	return config;
+}
+function writeHostToolSchemas(tools) {
+	mkdirSync(bridgeStateDir, { recursive: true });
+	const toolSchemasPath = path.resolve(bridgeStateDir, "host-tool-schemas.json");
+	writeFileSync(toolSchemasPath, JSON.stringify(tools.map((tool) => ({
+		name: tool.name,
+		description: tool.description,
+		inputSchema: tool.inputSchema
+	}))));
+	return toolSchemasPath;
 }
 function withoutAgentPolicyOverrides(input) {
 	const config = { ...input };
@@ -1972,7 +2104,7 @@ async function legacySessionGet({ client, sessionId }) {
 async function legacySessionCreate({ client }) {
 	return client.session.create({});
 }
-async function legacySessionPrompt({ client, sessionId, start, prompt: promptText }) {
+async function legacySessionPrompt({ client, sessionId, start, prompt }) {
 	const session = client.session;
 	return (session.promptAsync ?? session.prompt).call(session, {
 		sessionID: sessionId,
@@ -1982,10 +2114,7 @@ async function legacySessionPrompt({ client, sessionId, start, prompt: promptTex
 			type: "json_schema",
 			schema: start.responseFormat.schema
 		} } : {},
-		parts: [{
-			type: "text",
-			text: promptText ?? start.prompt
-		}]
+		parts: toOpenCodePromptParts(prompt)
 	});
 }
 async function legacySessionAbort({ client, sessionId }) {
@@ -2090,6 +2219,8 @@ async function runPrompt({ client, sessionId, start, turn, emit }) {
 	let terminalError;
 	let submittingUserMessage = false;
 	const state = createTranslationState();
+	const hostInputTracker = createOpenCodeHostInputTracker({ emit });
+	currentHostInputTracker = hostInputTracker;
 	const initialSessionTokens = await readSessionTokens({
 		client,
 		sessionId
@@ -2105,12 +2236,14 @@ async function runPrompt({ client, sessionId, start, turn, emit }) {
 		client,
 		sessionId,
 		permissionMode: start.permissionMode,
-		builtinToolFiltering: start.builtinToolFiltering,
+		inactiveBuiltinToolNames: start.inactiveBuiltinToolNames,
 		turn,
 		state,
+		hostInputTracker,
 		emit: (msg) => {
 			if (msg.type === "text-delta" || msg.type === "reasoning-delta") sawContent = true;
 			if (msg.type === "finish-step") {
+				hostInputTracker.observeFinishStep();
 				sawFinishStep = true;
 				stepUsage = addUsage({
 					left: stepUsage,
@@ -2217,7 +2350,8 @@ async function runPrompt({ client, sessionId, start, turn, emit }) {
 			prompted = await legacySessionPrompt({
 				client,
 				sessionId,
-				start
+				start,
+				prompt: start.prompt
 			});
 		} catch (error) {
 			promptRequestSettled.resolve(void 0);
@@ -2286,7 +2420,7 @@ async function runCompaction({ client, sessionId, start, turn, emit }) {
 		client,
 		sessionId,
 		permissionMode: start.permissionMode,
-		builtinToolFiltering: start.builtinToolFiltering,
+		inactiveBuiltinToolNames: start.inactiveBuiltinToolNames,
 		turn,
 		state: createTranslationState(),
 		emit: (msg) => {
@@ -2335,7 +2469,7 @@ async function runCompaction({ client, sessionId, start, turn, emit }) {
 		harnessMetadata: { opencode: { missingSummary: true } }
 	});
 }
-async function consumeEvents({ client, sessionId, permissionMode, builtinToolFiltering, turn, state, emit, signal, onSubscribed, onEvent }) {
+async function consumeEvents({ client, sessionId, permissionMode, inactiveBuiltinToolNames, turn, state, hostInputTracker, emit, signal, onSubscribed, onEvent }) {
 	const stream = await subscribeLegacyEvents({
 		client,
 		signal
@@ -2359,6 +2493,7 @@ async function consumeEvents({ client, sessionId, permissionMode, builtinToolFil
 			state
 		}),
 		onSubagentSession: registerSubagentSession(sessionId),
+		onToolCallStatus: (input) => hostInputTracker?.observeToolCall(input),
 		isMcpToolName: (toolName) => [...runtime.mcpToolPrefixes].some((prefix) => toolName.startsWith(prefix)),
 		stripWorkDir,
 		formatError
@@ -2422,42 +2557,91 @@ async function consumeEvents({ client, sessionId, permissionMode, builtinToolFil
 		}
 		processEvent(event);
 	};
-	for await (const rawEvent of stream) {
-		if (signal.aborted || turn.abortSignal.aborted) break;
+	let rejectHandlerFailure;
+	const handlerFailure = new Promise((_, reject) => {
+		rejectHandlerFailure = reject;
+	});
+	handlerFailure.catch(() => {});
+	const runHandler = (handler) => {
+		handler.catch((error) => rejectHandlerFailure(error));
+	};
+	const hostInputWait = ({ toolCallId, isDescendant, settlesToolCall }) => {
+		if (hostInputTracker == null) return void 0;
+		if (isDescendant) {
+			const id = toolCallId;
+			return {
+				markWaiting: () => hostInputTracker.markGroupWaiting({
+					group: "subagent",
+					id
+				}),
+				clearWaiting: () => hostInputTracker.clearGroupWaiting({
+					group: "subagent",
+					id
+				})
+			};
+		}
+		return {
+			markWaiting: () => hostInputTracker.markWaiting({ toolCallId }),
+			clearWaiting: () => hostInputTracker.clearWaiting({
+				toolCallId,
+				settled: settlesToolCall
+			})
+		};
+	};
+	const iterator = stream[Symbol.asyncIterator]();
+	try {
+		for (;;) {
+			const next = await Promise.race([iterator.next(), handlerFailure]);
+			if (next.done) break;
+			if (consumeEvent(next.value)) break;
+		}
+	} finally {
+		iterator.return?.();
+	}
+	function consumeEvent(rawEvent) {
+		if (signal.aborted || turn.abortSignal.aborted) return true;
 		const event = unwrapOpenCodeEvent(rawEvent);
 		const eventSessionId = event ? getOpenCodeEventSessionId(event) : void 0;
-		if (!event) continue;
+		if (!event) return false;
 		const scopedSessionId = !eventSessionId || eventSessionId === sessionId ? sessionId : taskSessionIds.has(eventSessionId) ? eventSessionId : void 0;
-		if (!scopedSessionId) continue;
+		if (!scopedSessionId) return false;
 		const isDescendant = scopedSessionId !== sessionId;
-		if (event.type === "question.asked") await handleQuestion({
+		const waitFor = ({ toolCallId, settlesToolCall }) => hostInputWait({
+			toolCallId: isDescendant ? `${scopedSessionId}:${toolCallId}` : toolCallId,
+			isDescendant,
+			settlesToolCall
+		});
+		if (event.type === "question.asked") runHandler(handleQuestion({
 			client,
 			turn,
 			emit,
-			event
-		});
-		else if (event.type === "permission.v2.asked") await handlePermissionV2({
-			client,
-			sessionId: scopedSessionId,
-			permissionMode,
-			builtinToolFiltering,
-			turn,
-			emit,
-			event
-		});
-		else if (event.type === "permission.asked") await handlePermission({
+			event,
+			waitFor
+		}));
+		else if (event.type === "permission.v2.asked") runHandler(handlePermissionV2({
 			client,
 			sessionId: scopedSessionId,
 			permissionMode,
-			builtinToolFiltering,
+			inactiveBuiltinToolNames,
 			turn,
 			emit,
-			event
-		});
+			event,
+			waitFor
+		}));
+		else if (event.type === "permission.asked") runHandler(handlePermission({
+			client,
+			sessionId: scopedSessionId,
+			permissionMode,
+			inactiveBuiltinToolNames,
+			turn,
+			emit,
+			event,
+			waitFor
+		}));
 		else if (isDescendant) processDescendantEvent(scopedSessionId, event);
 		else emitStreamEvent(event);
-		if (isDescendant) continue;
-		if (onEvent?.(event)) break;
+		if (isDescendant) return false;
+		return onEvent?.(event) === true;
 	}
 }
 function getSubagentStepId(event) {
@@ -2469,7 +2653,7 @@ function getSubagentStepId(event) {
 	if (event?.type !== "session.next.step.ended") return void 0;
 	return stringValue(event.properties?.stepID) ?? event.id;
 }
-async function handleQuestion({ client, turn, emit, event }) {
+async function handleQuestion({ client, turn, emit, event, waitFor }) {
 	const nativeRequest = event.properties;
 	if (nativeRequest == null || typeof nativeRequest.id !== "string" || typeof nativeRequest.sessionID !== "string" || !Array.isArray(nativeRequest.questions)) return;
 	const toolCallId = nativeRequest.tool?.callID ?? nativeRequest.id;
@@ -2483,6 +2667,11 @@ async function handleQuestion({ client, turn, emit, event }) {
 		providerMetadata: { opencode: { nativeRequest } }
 	});
 	const questionKey = openCodeQuestionKey(nativeRequest);
+	const wait = waitFor?.({
+		toolCallId,
+		settlesToolCall: true
+	});
+	wait?.markWaiting();
 	const nativeResponse = toOpenCodeQuestionResponse({
 		nativeRequest,
 		output: (await turn.requestToolResult({
@@ -2491,7 +2680,7 @@ async function handleQuestion({ client, turn, emit, event }) {
 				const continuedRequest = candidate.toolResult?.providerOptions?.opencode?.nativeRequest;
 				return continuedRequest != null && openCodeQuestionKey(continuedRequest) === questionKey;
 			}
-		})).output
+		}).finally(() => wait?.clearWaiting())).output
 	});
 	const response = nativeResponse.action === "reject" ? await client.question.reject({
 		requestID: nativeRequest.id,
@@ -2506,7 +2695,7 @@ async function handleQuestion({ client, turn, emit, event }) {
 function sanitizeMcpToolName(value) {
 	return value.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
-async function handlePermissionV2({ client, sessionId, permissionMode, builtinToolFiltering, turn, emit, event }) {
+async function handlePermissionV2({ client, sessionId, permissionMode, inactiveBuiltinToolNames, turn, emit, event, waitFor }) {
 	const props = event.properties ?? {};
 	const requestID = String(props.id ?? "");
 	if (!requestID) return;
@@ -2516,9 +2705,10 @@ async function handlePermissionV2({ client, sessionId, permissionMode, builtinTo
 		requestID,
 		toolCallId: String(props.source?.callID ?? requestID),
 		permissionMode,
-		builtinToolFiltering,
+		inactiveBuiltinToolNames,
 		turn,
-		emit
+		emit,
+		waitFor
 	});
 	await client.v2.session.permission.reply({
 		sessionID: sessionId,
@@ -2527,7 +2717,7 @@ async function handlePermissionV2({ client, sessionId, permissionMode, builtinTo
 		...reply.message ? { message: reply.message } : {}
 	});
 }
-async function handlePermission({ client, sessionId, permissionMode, builtinToolFiltering, turn, emit, event }) {
+async function handlePermission({ client, sessionId, permissionMode, inactiveBuiltinToolNames, turn, emit, event, waitFor }) {
 	const props = event.properties ?? {};
 	const requestID = String(props.id ?? "");
 	if (!requestID) return;
@@ -2538,9 +2728,10 @@ async function handlePermission({ client, sessionId, permissionMode, builtinTool
 		requestID,
 		toolCallId: String(tool?.callID ?? requestID),
 		permissionMode,
-		builtinToolFiltering,
+		inactiveBuiltinToolNames,
 		turn,
-		emit
+		emit,
+		waitFor
 	});
 	await client.permission.reply({
 		requestID,
@@ -2549,18 +2740,26 @@ async function handlePermission({ client, sessionId, permissionMode, builtinTool
 		...reply.message ? { message: reply.message } : {}
 	});
 }
-async function selectPermissionReply({ action, resources, requestID, toolCallId, permissionMode, builtinToolFiltering, turn, emit }) {
+async function selectPermissionReply({ action, resources, requestID, toolCallId, permissionMode, inactiveBuiltinToolNames, turn, emit, waitFor }) {
+	const requestApproval = async () => {
+		const wait = waitFor?.({
+			toolCallId,
+			settlesToolCall: false
+		});
+		wait?.markWaiting();
+		return turn.requestToolApproval(requestID).finally(() => wait?.clearWaiting());
+	};
 	const toolName = toPermissionToolName(action);
 	if (isBuiltinToolInactive({
 		toolName,
-		toolFiltering: builtinToolFiltering
+		inactiveBuiltinToolNames
 	})) {
 		emit({
 			type: "tool-approval-request",
 			approvalId: requestID,
 			toolCallId
 		});
-		const decision = await turn.requestToolApproval(requestID);
+		const decision = await requestApproval();
 		return decision.approved ? { reply: "once" } : {
 			reply: "reject",
 			...decision.reason ? { message: decision.reason } : {}
@@ -2578,7 +2777,7 @@ async function selectPermissionReply({ action, resources, requestID, toolCallId,
 		approvalId: requestID,
 		toolCallId
 	});
-	const decision = await turn.requestToolApproval(requestID);
+	const decision = await requestApproval();
 	return decision.approved ? { reply: "once" } : {
 		reply: "reject",
 		...decision.reason ? { message: decision.reason } : {}
@@ -2597,14 +2796,8 @@ function toPermissionToolName(action) {
 	if (normalized.includes("read")) return "read";
 	return toWireToolName(normalized);
 }
-function resolveInactiveBuiltinToolNames(start) {
-	const toolFiltering = start.builtinToolFiltering;
-	if (toolFiltering == null) return [];
-	return toolFiltering.mode === "allow" ? Object.keys(PUBLIC_TO_NATIVE).filter((name) => !toolFiltering.toolNames.includes(name)) : toolFiltering.toolNames;
-}
 function isBuiltinToolInactive(input) {
-	if (input.toolFiltering == null) return false;
-	return input.toolFiltering.mode === "allow" ? !input.toolFiltering.toolNames.includes(input.toolName) : input.toolFiltering.toolNames.includes(input.toolName);
+	return input.inactiveBuiltinToolNames?.some((toolName) => toolName === input.toolName) ?? false;
 }
 function isExternalPath(resource) {
 	if (!path.isAbsolute(resource)) return false;
@@ -2753,11 +2946,26 @@ function emitAssistantContentPart(part, emit) {
 		id
 	});
 }
-async function startToolRelay({ tools, emit, requestToolResult }) {
+async function startToolRelay({ tools }) {
 	return startAuthorizedToolRelay({
 		tools,
-		emit,
-		requestToolResult
+		emit: (message) => {
+			currentTurn?.emit(message);
+		},
+		requestToolResult: (toolCallId) => {
+			if (!currentTurn) throw new Error("No active turn in OpenCode bridge");
+			return currentTurn.requestToolResult(toolCallId);
+		},
+		onWaitingChange: ({ requestId, waiting }) => {
+			if (waiting) currentHostInputTracker?.markGroupWaiting({
+				group: "host-tool",
+				id: requestId
+			});
+			else currentHostInputTracker?.clearGroupWaiting({
+				group: "host-tool",
+				id: requestId
+			});
+		}
 	});
 }
 function createDeferred() {

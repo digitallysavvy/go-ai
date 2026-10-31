@@ -59,6 +59,10 @@ type TextContent struct {
 	// Used by Google/Vertex providers to carry thoughtSignature for text parts
 	// that are associated with model reasoning.
 	ProviderMetadata json.RawMessage `json:"providerMetadata,omitempty"`
+
+	// Citations are references supporting this text, separate from the set of
+	// retrieved sources (TS LanguageModelV4Text.citations).
+	Citations []Citation `json:"citations,omitempty"`
 }
 
 // ContentType implements ContentPart interface
@@ -424,7 +428,7 @@ func (t ToolCallContent) MarshalJSON() ([]byte, error) {
 		ToolCallID       string                 `json:"toolCallId"`
 		ToolName         string                 `json:"toolName"`
 		Title            string                 `json:"title,omitempty"`
-		Input            interface{}            `json:"input,omitempty"`
+		Input            interface{}            `json:"input"`
 		ProviderExecuted bool                   `json:"providerExecuted,omitempty"`
 		ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
 		ProviderMetadata json.RawMessage        `json:"providerMetadata,omitempty"`
@@ -456,7 +460,8 @@ func toolCallContentInput(t ToolCallContent) interface{} {
 		return t.Arguments
 	}
 	if t.Input == "" {
-		return nil
+		// TS always carries an input; a call without arguments has {}.
+		return map[string]interface{}{}
 	}
 	var parsed interface{}
 	if err := json.Unmarshal([]byte(t.Input), &parsed); err == nil {
@@ -573,6 +578,12 @@ type ToolResultContent struct {
 	// Optional error if tool execution failed
 	Error string `json:"error,omitempty"`
 
+	// IsError is the TS tool-result isError flag of a provider-executed
+	// result: nil when the provider did not say, true or false when it did
+	// (an explicit false stays distinguishable from unset). Error carries the
+	// error text of a failed result.
+	IsError *bool `json:"isError,omitempty"`
+
 	// Structured output (takes precedence over Result)
 	// Use this for rich tool outputs with multiple content blocks
 	Output *ToolResultOutput `json:"output,omitempty"`
@@ -614,6 +625,7 @@ func (t ToolResultContent) MarshalJSON() ([]byte, error) {
 		Input            map[string]interface{} `json:"input,omitempty"`
 		Result           interface{}            `json:"result,omitempty"`
 		Error            string                 `json:"error,omitempty"`
+		IsError          *bool                  `json:"isError,omitempty"`
 		Output           *ToolResultOutput      `json:"output,omitempty"`
 		ProviderExecuted bool                   `json:"providerExecuted,omitempty"`
 		ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
@@ -630,6 +642,7 @@ func (t ToolResultContent) MarshalJSON() ([]byte, error) {
 		Input:            t.Input,
 		Result:           t.Result,
 		Error:            t.Error,
+		IsError:          t.IsError,
 		Output:           t.Output,
 		ProviderExecuted: t.ProviderExecuted,
 		ProviderOptions:  t.ProviderOptions,
@@ -642,20 +655,46 @@ func (t ToolResultContent) MarshalJSON() ([]byte, error) {
 
 // ToolErrorContent represents a failed tool execution in ordered content.
 type ToolErrorContent struct {
-	ToolCallID       string                 `json:"toolCallId"`
-	ToolName         string                 `json:"toolName"`
-	Title            string                 `json:"title,omitempty"`
-	Input            map[string]interface{} `json:"input,omitempty"`
-	Error            interface{}            `json:"error"`
+	ToolCallID string                 `json:"toolCallId"`
+	ToolName   string                 `json:"toolName"`
+	Title      string                 `json:"title,omitempty"`
+	Input      map[string]interface{} `json:"input,omitempty"`
+	Error      interface{}            `json:"error"`
+	// ErrorText is the text the model sees for this error in the tool result
+	// message: TS getErrorMessage(error), which is error.toString() ("Error:
+	// message", "AI_InvalidToolInputError: message"). Empty means Error is used.
+	ErrorText        string                 `json:"errorText,omitempty"`
 	ProviderExecuted bool                   `json:"providerExecuted,omitempty"`
 	ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
 	ProviderMetadata json.RawMessage        `json:"providerMetadata,omitempty"`
 	ToolMetadata     map[string]interface{} `json:"toolMetadata,omitempty"`
 	Dynamic          bool                   `json:"dynamic,omitempty"`
+
+	// Err is the typed error behind a failed tool call: the error the tool's
+	// Execute returned, or the SDK's own error (an InvalidToolInputError, a
+	// NoSuchToolError, ...), as TS keeps the thrown value as the tool-error
+	// part's error. Error stays its text, so match the type with
+	// errors.As(part.Err, &target). Err is nil for parts decoded from JSON and
+	// for provider-executed failures whose error is not a Go error (a
+	// structured provider error value). It is never serialized.
+	Err error `json:"-"`
 }
 
 func (t ToolErrorContent) ContentType() string {
 	return "tool-error"
+}
+
+// MarshalJSON emits the TypeScript SDK discriminated content-part shape
+// (`type: "tool-error"`), like every other content part.
+func (t ToolErrorContent) MarshalJSON() ([]byte, error) {
+	type toolErrorContentAlias ToolErrorContent
+	return json.Marshal(struct {
+		Type string `json:"type"`
+		toolErrorContentAlias
+	}{
+		Type:                  t.ContentType(),
+		toolErrorContentAlias: toolErrorContentAlias(t),
+	})
 }
 
 // ToolApprovalRequestContent indicates that a tool call requires approval before execution.
@@ -714,12 +753,25 @@ func (t ToolApprovalRequestContent) MarshalJSON() ([]byte, error) {
 
 // ToolApprovalResponseContent indicates that approval was granted or denied.
 type ToolApprovalResponseContent struct {
-	ApprovalID       string   `json:"approvalId"`
-	ToolCallID       string   `json:"toolCallId,omitempty"`
-	ToolCall         ToolCall `json:"toolCall,omitempty"`
-	Approved         bool     `json:"approved"`
-	Reason           string   `json:"reason,omitempty"`
-	ProviderExecuted bool     `json:"providerExecuted,omitempty"`
+	ApprovalID string   `json:"approvalId"`
+	ToolCallID string   `json:"toolCallId,omitempty"`
+	ToolCall   ToolCall `json:"toolCall,omitempty"`
+	Approved   bool     `json:"approved"`
+	// Reason is an optional reason for the approval or denial. For denied tool
+	// calls, the reason is included in the execution-denied tool result that
+	// is sent to the model. For approved tool calls executed by the SDK, the
+	// reason remains in the message history: it is not included in the model
+	// prompt and is not exposed through a dedicated tool execution option. For
+	// provider-executed tools, the approval response (including the reason) is
+	// forwarded to the provider.
+	Reason           string `json:"reason,omitempty"`
+	ProviderExecuted bool   `json:"providerExecuted,omitempty"`
+	// ProviderExecutedSet marks ProviderExecuted as explicitly set, so an
+	// explicit `providerExecuted: false` is kept (in the UI chunk and in the
+	// marshaled part) where TS sends one, for example on an automatic denial
+	// of a tool call that carried an explicit false. It follows
+	// ToolCall.ProviderExecutedSet.
+	ProviderExecutedSet bool `json:"-"`
 }
 
 func (t ToolApprovalResponseContent) ContentType() string {
@@ -735,14 +787,17 @@ func (t ToolApprovalResponseContent) MarshalJSON() ([]byte, error) {
 		ToolCall         *ToolCallContent `json:"toolCall,omitempty"`
 		Approved         bool             `json:"approved"`
 		Reason           string           `json:"reason,omitempty"`
-		ProviderExecuted bool             `json:"providerExecuted,omitempty"`
+		ProviderExecuted *bool            `json:"providerExecuted,omitempty"`
 	}
 	out := toolApprovalResponseContentJSON{
-		Type:             t.ContentType(),
-		ApprovalID:       t.ApprovalID,
-		Approved:         t.Approved,
-		Reason:           t.Reason,
-		ProviderExecuted: t.ProviderExecuted,
+		Type:       t.ContentType(),
+		ApprovalID: t.ApprovalID,
+		Approved:   t.Approved,
+		Reason:     t.Reason,
+	}
+	if t.ProviderExecuted || t.ProviderExecutedSet {
+		providerExecuted := t.ProviderExecuted
+		out.ProviderExecuted = &providerExecuted
 	}
 	if !toolCallIsZero(t.ToolCall) {
 		toolCall := toolCallContentFromToolCall(t.ToolCall)

@@ -16,7 +16,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 const (
@@ -59,11 +61,27 @@ func GetParallelToolCallMetadata(metadata map[string]interface{}, providerName s
 	if err != nil {
 		return ParallelToolCallMetadata{}, false
 	}
-	var m ParallelToolCallMetadata
-	if err := json.Unmarshal(data, &m); err != nil {
+	// TS isJSONObject + typeof checks: every field must be present with its
+	// exact type (itemId/toolCallId/toolName/input strings, index/count
+	// integers); empty strings are accepted.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
 		return ParallelToolCallMetadata{}, false
 	}
-	if m.ToolCallID == "" || m.ToolName == "" || m.Index < 0 || m.Count <= m.Index {
+	var m ParallelToolCallMetadata
+	for key, dst := range map[string]interface{}{"itemId": &m.ItemID, "toolCallId": &m.ToolCallID, "toolName": &m.ToolName, "input": &m.Input} {
+		v, present := fields[key]
+		if !present || json.Unmarshal(v, dst) != nil || len(v) == 0 || v[0] != '"' {
+			return ParallelToolCallMetadata{}, false
+		}
+	}
+	for key, dst := range map[string]*int{"index": &m.Index, "count": &m.Count} {
+		v, present := fields[key]
+		if !present || json.Unmarshal(v, dst) != nil {
+			return ParallelToolCallMetadata{}, false
+		}
+	}
+	if m.Index < 0 || m.Count <= m.Index {
 		return ParallelToolCallMetadata{}, false
 	}
 	return m, true
@@ -117,6 +135,17 @@ func ExpandParallelToolCall(toolCallID, toolName, input, itemID string, tools []
 		return nil, false
 	}
 
+	// TS JSON.stringify(parameters) keeps the model's key order; the ordered
+	// tree gives each nested call's input text.
+	var orderedUses []interface{}
+	if tree, ok := jsonorder.Parse([]byte(input)); ok {
+		if obj, ok := tree.(*jsonorder.Object); ok {
+			if uses, ok := obj.Get("tool_uses"); ok {
+				orderedUses, _ = uses.([]interface{})
+			}
+		}
+	}
+
 	availableToolNames := map[string]bool{}
 	for _, t := range tools {
 		if isFunctionTool(t) {
@@ -142,7 +171,14 @@ func ExpandParallelToolCall(toolCallID, toolName, input, itemID string, tools []
 		if childToolName == "" || !availableToolNames[childToolName] {
 			return nil, false
 		}
-		childInput, _ := json.Marshal(parameters)
+		childInput, _ := jsonstr.Marshal(parameters)
+		if index < len(orderedUses) {
+			if use, ok := orderedUses[index].(*jsonorder.Object); ok {
+				if params, ok := use.Get("parameters"); ok {
+					childInput = []byte(jsonorder.Stringify(params))
+				}
+			}
+		}
 		expanded = append(expanded, types.ToolCall{
 			ID:           fmt.Sprintf("%s_%d", toolCallID, index),
 			ToolName:     childToolName,

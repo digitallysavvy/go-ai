@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // StreamEvent is a LangGraph stream event. Mode is commonly "messages" or
@@ -28,10 +30,19 @@ type StreamEvent struct {
 	Data         interface{}
 	Namespace    []string
 	HasNamespace bool
+
+	// Err, when set, reports that the upstream stream failed (TS: the
+	// iterator throws). The adapter calls the final and error/abort callbacks
+	// and ends the UI stream with an `error` chunk.
+	Err error
 }
 
 // StreamCallbacks mirrors the TypeScript adapter callback surface for stream
-// lifecycle hooks. Callback errors are reported on the returned error channel.
+// lifecycle hooks. A callback error during the stream follows the TS catch
+// block: OnFinal, then OnError (OnAbort for a cancellation), then an `error`
+// chunk with the error text. An OnStart error, or an error from OnFinal,
+// OnAbort or OnError while handling a failure, errors the stream: it arrives
+// on the returned error channel.
 type StreamCallbacks struct {
 	OnStart  func() error
 	OnToken  func(token string) error
@@ -145,14 +156,28 @@ func ToUIMessageStreamFromAnyWithCallbacks(ctx context.Context, events <-chan in
 	converted := make(chan StreamEvent)
 	go func() {
 		defer close(converted)
+		// The stream type is decided by the first value, like TS.
+		streamType := ""
 		for event := range events {
-			streamEvent := StreamEvent{Mode: "model", Data: event}
-			if tuple, ok := asSlice(event); ok {
-				streamEvent = ParseLangGraphEvent(tuple)
-			} else if m, ok := asMap(event); ok {
-				if stringValue(m["event"]) != "" {
-					streamEvent = StreamEvent{Mode: "streamEvents", Data: event}
+			if streamType == "" {
+				switch {
+				case isTuple(event):
+					streamType = "langgraph"
+				case isStreamEventsEvent(event):
+					streamType = "streamEvents"
+				default:
+					streamType = "model"
 				}
+			}
+			var streamEvent StreamEvent
+			switch streamType {
+			case "langgraph":
+				tuple, _ := asSlice(event)
+				streamEvent = ParseLangGraphEvent(tuple)
+			case "streamEvents":
+				streamEvent = StreamEvent{Mode: "streamEvents", Data: event}
+			default:
+				streamEvent = StreamEvent{Mode: "model", Data: event}
 			}
 			select {
 			case <-ctx.Done():
@@ -162,6 +187,36 @@ func ToUIMessageStreamFromAnyWithCallbacks(ctx context.Context, events <-chan in
 		}
 	}()
 	return ToUIMessageStreamWithCallbacks(ctx, converted, callbacks)
+}
+
+func isTuple(v interface{}) bool {
+	_, ok := asSlice(v)
+	return ok
+}
+
+// isStreamEventsEvent mirrors TS isStreamEventsEvent: an object with a string
+// `event` and a `data` that is an object or null.
+func isStreamEventsEvent(v interface{}) bool {
+	m, ok := asMap(v)
+	if !ok {
+		return false
+	}
+	if _, ok := m["event"].(string); !ok {
+		return false
+	}
+	data, present := m["data"]
+	if !present {
+		return false
+	}
+	if data == nil {
+		return true
+	}
+	// TS `typeof obj.data === 'object'`: an array counts.
+	if _, ok := asSlice(data); ok {
+		return true
+	}
+	_, ok = asMap(data)
+	return ok
 }
 
 // ToUIMessageStream converts LangGraph messages/values stream events into AI SDK
@@ -182,9 +237,14 @@ func ToUIMessageStreamWithCallbacks(ctx context.Context, events <-chan StreamEve
 		state := newEventState()
 		var textChunks []string
 		var lastValuesData interface{}
+		// TS detects the stream type on the first value: a stream with no
+		// values emits no finish chunk.
+		received := false
 		if callbacks != nil && callbacks.OnStart != nil {
 			if err := callbacks.OnStart(); err != nil {
-				reportCallbackError(errs, callbacks, err)
+				// TS awaits onStart outside its try block: a throw errors
+				// the stream (no onError, no error chunk).
+				errs <- err
 				return
 			}
 		}
@@ -208,9 +268,9 @@ func ToUIMessageStreamWithCallbacks(ctx context.Context, events <-chan StreamEve
 				return
 			case event, ok := <-events:
 				if !ok {
-					for _, chunk := range finishChunks(state, sendFinishEnabled(callbacks)) {
+					for _, chunk := range finishChunks(state, received && sendFinishEnabled(callbacks)) {
 						if err := handleCallbackChunk(callbacks, &textChunks, chunk); err != nil {
-							reportCallbackError(errs, callbacks, err)
+							failStream(ctx, out, errs, callbacks, textChunks, err)
 							return
 						}
 						if !sendChunk(ctx, out, chunk) {
@@ -218,15 +278,22 @@ func ToUIMessageStreamWithCallbacks(ctx context.Context, events <-chan StreamEve
 							return
 						}
 					}
-					finalizeCallbacks(errs, callbacks, textChunks, lastValuesData, nil)
+					completeStream(ctx, out, errs, callbacks, textChunks, lastValuesData)
 					return
 				}
+				if event.Err != nil {
+					// TS catch block: onFinal, then onAbort/onError, then an
+					// `error` chunk; the stream still closes normally.
+					failStream(ctx, out, errs, callbacks, textChunks, event.Err)
+					return
+				}
+				received = true
 				if event.Mode == "values" {
 					lastValuesData = event.Data
 				}
 				for _, chunk := range processLangGraphEvent(state, event) {
 					if err := handleCallbackChunk(callbacks, &textChunks, chunk); err != nil {
-						reportCallbackError(errs, callbacks, err)
+						failStream(ctx, out, errs, callbacks, textChunks, err)
 						return
 					}
 					if !sendChunk(ctx, out, chunk) {
@@ -238,6 +305,56 @@ func ToUIMessageStreamWithCallbacks(ctx context.Context, events <-chan StreamEve
 		}
 	}()
 	return out, errs
+}
+
+// completeStream runs the end-of-stream callbacks (onFinal, then onFinish). A
+// callback that fails lands in the TS catch block, like any other error of
+// the stream body.
+func completeStream(ctx context.Context, out chan<- ai.UIMessageChunk, errs chan<- error, callbacks *StreamCallbacks, textChunks []string, finalState interface{}) {
+	if callbacks == nil {
+		return
+	}
+	if callbacks.OnFinal != nil {
+		if err := callbacks.OnFinal(strings.Join(textChunks, "")); err != nil {
+			failStream(ctx, out, errs, callbacks, textChunks, err)
+			return
+		}
+	}
+	if callbacks.OnFinish != nil {
+		if err := callbacks.OnFinish(finalState); err != nil {
+			failStream(ctx, out, errs, callbacks, textChunks, err)
+		}
+	}
+}
+
+// failStream ends a stream whose upstream or callback failed, like the TS
+// catch block of toUIMessageStream: onFinal, then onAbort or onError, then an
+// `error` chunk; the stream still closes normally. A failure of the catch
+// block's own callbacks errors the stream instead.
+func failStream(ctx context.Context, out chan<- ai.UIMessageChunk, errs chan<- error, callbacks *StreamCallbacks, textChunks []string, cause error) {
+	if callbacks != nil && callbacks.OnFinal != nil {
+		if err := callbacks.OnFinal(strings.Join(textChunks, "")); err != nil {
+			errs <- err
+			return
+		}
+	}
+	if callbacks != nil {
+		var err error
+		// TS isAbortError matches name === 'AbortError' only: a deadline is a
+		// TimeoutError there and goes to onError.
+		if errors.Is(cause, context.Canceled) {
+			if callbacks.OnAbort != nil {
+				err = callbacks.OnAbort()
+			}
+		} else if callbacks.OnError != nil {
+			err = callbacks.OnError(cause)
+		}
+		if err != nil {
+			errs <- err
+			return
+		}
+	}
+	sendChunk(ctx, out, ai.UIMessageChunk{"type": "error", "errorText": cause.Error()})
 }
 
 func handleCallbackChunk(callbacks *StreamCallbacks, textChunks *[]string, chunk ai.UIMessageChunk) error {
@@ -266,46 +383,42 @@ func handleCallbackChunk(callbacks *StreamCallbacks, textChunks *[]string, chunk
 	return nil
 }
 
+// finalizeCallbacks ends a stream cut short by terminalErr (a cancelled
+// context): onFinal, then onAbort or onError, and the error on the channel.
+// A callback that fails errors the stream with its own error.
 func finalizeCallbacks(errs chan<- error, callbacks *StreamCallbacks, textChunks []string, finalState interface{}, terminalErr error) {
+	if terminalErr == nil {
+		return
+	}
 	completion := strings.Join(textChunks, "")
 	if callbacks != nil && callbacks.OnFinal != nil {
 		if err := callbacks.OnFinal(completion); err != nil {
-			reportCallbackError(errs, callbacks, err)
+			errs <- err
 			return
 		}
 	}
-	if terminalErr != nil {
-		if callbacks != nil && callbacks.OnAbort != nil && isContextAbort(terminalErr) {
+	// TS: an abort reaches onAbort only (never onError), whether or not an
+	// onAbort callback is configured.
+	if callbacks != nil && isContextAbort(terminalErr) {
+		if callbacks.OnAbort != nil {
 			if err := callbacks.OnAbort(); err != nil {
-				reportCallbackError(errs, callbacks, err)
-				return
-			}
-		} else if callbacks != nil && callbacks.OnError != nil {
-			if err := callbacks.OnError(terminalErr); err != nil {
-				reportCallbackError(errs, callbacks, err)
+				errs <- err
 				return
 			}
 		}
-		errs <- terminalErr
-		return
-	}
-	if callbacks != nil && callbacks.OnFinish != nil {
-		if err := callbacks.OnFinish(finalState); err != nil {
-			reportCallbackError(errs, callbacks, err)
+	} else if callbacks != nil && callbacks.OnError != nil {
+		if err := callbacks.OnError(terminalErr); err != nil {
+			errs <- err
 			return
 		}
 	}
+	errs <- terminalErr
 }
 
-func reportCallbackError(errs chan<- error, callbacks *StreamCallbacks, err error) {
-	if callbacks != nil && callbacks.OnError != nil {
-		_ = callbacks.OnError(err)
-	}
-	errs <- err
-}
-
+// isContextAbort reports a cancellation (TS AbortError). A deadline is a
+// TimeoutError in TS, which toUIMessageStream reports through onError.
 func isContextAbort(err error) bool {
-	return err == context.Canceled || err == context.DeadlineExceeded
+	return err == context.Canceled
 }
 
 // LangChainMessage is a JSON-compatible representation of a LangChain message.
@@ -320,9 +433,9 @@ func ConvertModelMessages(messages []types.Message) []LangChainMessage {
 	for _, message := range messages {
 		switch message.Role {
 		case types.RoleSystem:
-			out = append(out, LangChainMessage{"type": "system", "content": contentText(message.Content)})
+			out = append(out, wireMessage(LangChainMessage{"type": "system", "content": contentText(message.Content)}))
 		case types.RoleUser:
-			out = append(out, LangChainMessage{"type": "human", "content": convertUserContent(message.Content)})
+			out = append(out, wireMessage(LangChainMessage{"type": "human", "content": convertUserContent(message.Content)}))
 		case types.RoleAssistant:
 			out = append(out, convertAssistantContent(message.Content))
 		case types.RoleTool:
@@ -368,6 +481,15 @@ type eventState struct {
 	messageNamespaces           map[string][]string
 	toolCallInfoByIndex         map[string]map[int]toolCall
 
+	// messageOrder lists messageSeen keys in first-seen order.
+	messageOrder []string
+	// emittedImages, emittedReasoningIDs and messageReasoningIDs mirror the TS
+	// state of the same names (image ids already emitted; GPT-5 reasoning ids
+	// already emitted, and the id each message streamed its reasoning under).
+	emittedImages       map[string]bool
+	emittedReasoningIDs map[string]bool
+	messageReasoningIDs map[string]string
+
 	// per-namespace step lifecycle bookkeeping, keyed by namespaceKey(...)
 	currentStepsByNamespace                    map[string]int
 	messageIdsInCurrentStepByNamespace         map[string]map[string]bool
@@ -386,6 +508,7 @@ type eventState struct {
 
 	// direct model / streamEvents stream state
 	streamMessageID        string
+	streamStarted          bool
 	streamTextStarted      bool
 	streamTextID           string
 	streamReasoningStarted bool
@@ -403,6 +526,9 @@ func newEventState() *eventState {
 		messageSeen:                 map[string]*messageSeenState{},
 		messageNamespaces:           map[string][]string{},
 		toolCallInfoByIndex:         map[string]map[int]toolCall{},
+		emittedImages:               map[string]bool{},
+		emittedReasoningIDs:         map[string]bool{},
+		messageReasoningIDs:         map[string]string{},
 
 		currentStepsByNamespace:                    map[string]int{},
 		messageIdsInCurrentStepByNamespace:         map[string]map[string]bool{},
@@ -418,6 +544,20 @@ type messageSeenState struct {
 	text      bool
 	reasoning bool
 	tools     map[string]bool
+	toolOrder []string
+}
+
+func (s *messageSeenState) hasTool(id string) bool { return s.tools[id] }
+
+// addTool records a tool call id, keeping first-seen order (a JS Set).
+func (s *messageSeenState) addTool(id string) {
+	if s.tools == nil {
+		s.tools = map[string]bool{}
+	}
+	if !s.tools[id] {
+		s.tools[id] = true
+		s.toolOrder = append(s.toolOrder, id)
+	}
 }
 
 // startNamespaceStep begins a new LangGraph step scope for the given
@@ -543,19 +683,35 @@ func closeStepNamespaceMessages(state *eventState, stepNamespace string) ([]ai.U
 			}
 			chunks = append(chunks, chunk)
 		}
-		delete(state.messageSeen, id)
-		delete(state.messageNamespaces, id)
+		state.deleteSeen(id)
 	}
 	return chunks, hasConcurrentMessageParts
 }
 
+// sortedMessageSeenIDs returns the ids of the messages with open parts in the
+// order they were first seen (a JS Map keeps insertion order; chunk order
+// across concurrent messages must not depend on the ids).
 func sortedMessageSeenIDs(state *eventState) []string {
 	ids := make([]string, 0, len(state.messageSeen))
-	for id := range state.messageSeen {
-		ids = append(ids, id)
+	for _, id := range state.messageOrder {
+		if state.messageSeen[id] != nil {
+			ids = append(ids, id)
+		}
 	}
-	sort.Strings(ids)
 	return ids
+}
+
+// deleteSeen forgets a message's open-part bookkeeping.
+func (state *eventState) deleteSeen(id string) {
+	delete(state.messageSeen, id)
+	delete(state.messageNamespaces, id)
+	delete(state.messageReasoningIDs, id)
+	for i, existing := range state.messageOrder {
+		if existing == id {
+			state.messageOrder = append(state.messageOrder[:i:i], state.messageOrder[i+1:]...)
+			break
+		}
+	}
 }
 
 // namespaceEligibleTypes mirrors the TypeScript adapter's
@@ -690,19 +846,26 @@ func processCustomEvent(data interface{}) []ai.UIMessageChunk {
 	customTypeName := "custom"
 	var partID interface{}
 	if m, ok := asMap(data); ok {
-		if typ := stringValue(m["type"]); typ != "" {
+		// TS `typeof dataObj.type === 'string' && dataObj.type`: a number is
+		// not a type name or part id.
+		if typ, _ := m["type"].(string); typ != "" {
 			customTypeName = typ
 		}
-		if id := stringValue(m["id"]); id != "" {
+		if id, _ := m["id"].(string); id != "" {
 			partID = id
 		}
 	}
-	return []ai.UIMessageChunk{{
+	chunk := ai.UIMessageChunk{
 		"type":      "data-" + customTypeName,
-		"id":        partID,
 		"transient": partID == nil,
 		"data":      data,
-	}}
+	}
+	// TS leaves `id` undefined (absent on the wire) for a transient part; a
+	// JSON null would fail the client's `id: string | undefined` schema.
+	if partID != nil {
+		chunk["id"] = partID
+	}
+	return []ai.UIMessageChunk{chunk}
 }
 
 func processMessagesEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk {
@@ -715,9 +878,10 @@ func processMessagesEvent(state *eventState, event StreamEvent) []ai.UIMessageCh
 		return nil
 	}
 
+	// TS: a message without an id is ignored.
 	msgID := messageID(message)
 	if msgID == "" {
-		msgID = "langchain-msg-1"
+		return nil
 	}
 
 	eventNS := namespaceKey(event.Namespace)
@@ -767,12 +931,66 @@ func processMessagesEvent(state *eventState, event StreamEvent) []ai.UIMessageCh
 		state.messageIdsInCurrentStepByNamespace[eventNS][msgID] = true
 	}
 
+	if isAIMessageChunk(message) {
+		return append(chunks, processAIMessageChunk(state, message, msgID, eventNS)...)
+	}
 	if isToolMessage(message) {
 		chunks = append(chunks, processToolMessage(state, message, eventNS, startedUIReducerStep)...)
-		return chunks
+	}
+	return chunks
+}
+
+// processAIMessageChunk mirrors the isAIMessageChunk branch of TS
+// processLangGraphEvent for a messages-mode chunk: image outputs, then tool
+// call chunks (which end the chunk's processing), then reasoning, text and
+// citations.
+func processAIMessageChunk(state *eventState, message map[string]interface{}, msgID, eventNS string) []ai.UIMessageChunk {
+	var chunks []ai.UIMessageChunk
+	source := messageDataSource(message)
+	chunks = append(chunks, imageOutputChunks(state, source)...)
+
+	if toolChunks := extractToolCallChunks(message); len(toolChunks) > 0 {
+		return append(chunks, processToolCallChunks(state, msgID, eventNS, toolChunks)...)
 	}
 
-	for _, call := range extractToolCallChunks(message) {
+	if reasoningID := extractReasoningID(message); reasoningID != "" {
+		if _, ok := state.messageReasoningIDs[msgID]; !ok {
+			state.messageReasoningIDs[msgID] = reasoningID
+		}
+		state.emittedReasoningIDs[reasoningID] = true
+	}
+	if reasoning := messageReasoning(message); reasoning != "" {
+		reasoningID := firstString(state.messageReasoningIDs[msgID], firstString(extractReasoningID(message), msgID))
+		seen := state.messageSeen[msgID]
+		if seen == nil || !seen.reasoning {
+			chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-start", "id": msgID})
+			state.seenFor(msgID).reasoning = true
+		}
+		chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-delta", "delta": reasoning, "id": msgID})
+		state.emittedReasoningIDs[reasoningID] = true
+	}
+
+	if text := messageText(message); text != "" {
+		seen := state.messageSeen[msgID]
+		if seen != nil && seen.reasoning && !seen.text {
+			chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-end", "id": msgID})
+			seen.reasoning = false
+		}
+		if seen == nil || !seen.text {
+			chunks = append(chunks, ai.UIMessageChunk{"type": "text-start", "id": msgID})
+			state.seenFor(msgID).text = true
+		}
+		chunks = append(chunks, ai.UIMessageChunk{"type": "text-delta", "delta": text, "id": msgID})
+	}
+	return append(chunks, emitSourceChunks(state, msgID, extractCitations(message))...)
+}
+
+// processToolCallChunks emits the tool-input lifecycle for streamed tool call
+// chunks. The first chunk of a call carries its id and name; later chunks only
+// carry an index and argument text, so the id and name are remembered by index.
+func processToolCallChunks(state *eventState, msgID, eventNS string, calls []toolCall) []ai.UIMessageChunk {
+	var chunks []ai.UIMessageChunk
+	for _, call := range calls {
 		if call.id != "" {
 			if state.toolCallInfoByIndex[msgID] == nil {
 				state.toolCallInfoByIndex[msgID] = map[int]toolCall{}
@@ -788,11 +1006,8 @@ func processMessagesEvent(state *eventState, event StreamEvent) []ai.UIMessageCh
 			continue
 		}
 		seen := state.seenFor(msgID)
-		if seen.tools == nil {
-			seen.tools = map[string]bool{}
-		}
-		if !seen.tools[call.id] {
-			seen.tools[call.id] = true
+		if !seen.hasTool(call.id) {
+			seen.addTool(call.id)
 			if !state.hasEmittedToolCallInCurrentStep(call.id, eventNS) {
 				state.markToolCallStarted(call.id, eventNS)
 				chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": call.id, "toolName": firstString(call.name, "unknown"), "dynamic": true})
@@ -802,43 +1017,131 @@ func processMessagesEvent(state *eventState, event StreamEvent) []ai.UIMessageCh
 			chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-delta", "toolCallId": call.id, "inputTextDelta": argDelta})
 		}
 	}
-	if text := messageText(message); text != "" {
-		seen := state.seenFor(msgID)
-		// Close any reasoning part still open on this message before
-		// starting/continuing text, mirroring LangGraph model turns that
-		// stream reasoning followed by text on the same message ID.
-		if seen.reasoning && !seen.text {
-			chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-end", "id": msgID})
-			seen.reasoning = false
-		}
-		if !seen.text {
-			chunks = append(chunks, ai.UIMessageChunk{"type": "text-start", "id": msgID})
-			seen.text = true
-		}
-		chunks = append(chunks, ai.UIMessageChunk{"type": "text-delta", "delta": text, "id": msgID})
-	}
-	if reasoning := messageReasoning(message); reasoning != "" {
-		seen := state.seenFor(msgID)
-		if !seen.reasoning {
-			chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-start", "id": msgID})
-			seen.reasoning = true
-		}
-		chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-delta", "delta": reasoning, "id": msgID})
-	}
-	chunks = append(chunks, emitSourceChunks(state, msgID, extractCitations(message))...)
 	return chunks
 }
 
-func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk {
-	root, ok := asMap(event.Data)
-	if !ok {
-		return nil
+// isAIMessageChunk mirrors TS isAIMessageChunk for JSON messages: type "ai"
+// (TypeScript langchain-core), "AIMessageChunk" (Python) or a serialized
+// constructor whose id path names AIMessageChunk or AIMessage.
+func isAIMessageChunk(message map[string]interface{}) bool {
+	switch stringValue(message["type"]) {
+	case "ai", "AIMessageChunk":
+		return true
+	case "constructor":
+		ids, _ := asSlice(message["id"])
+		for _, id := range ids {
+			if name := stringValue(id); name == "AIMessageChunk" || name == "AIMessage" {
+				return true
+			}
+		}
 	}
+	return false
+}
+
+// imageOutputChunks emits a file part for each image_generation_call in
+// additional_kwargs.tool_outputs that carries data and was not emitted yet.
+func imageOutputChunks(state *eventState, source map[string]interface{}) []ai.UIMessageChunk {
+	additional, _ := asMap(source["additional_kwargs"])
+	outputs, _ := asSlice(additional["tool_outputs"])
+	var chunks []ai.UIMessageChunk
+	for _, raw := range outputs {
+		output, ok := asMap(raw)
+		if !ok || stringValue(output["type"]) != "image_generation_call" {
+			continue
+		}
+		result := stringValue(output["result"])
+		id := stringValue(output["id"])
+		if result == "" || state.emittedImages[id] {
+			continue
+		}
+		state.emittedImages[id] = true
+		mediaType := "image/" + firstString(output["output_format"], "png")
+		chunks = append(chunks, ai.UIMessageChunk{"type": "file", "mediaType": mediaType, "url": "data:" + mediaType + ";base64," + result})
+	}
+	return chunks
+}
+
+// extractReasoningID mirrors TS extractReasoningId: the GPT-5 reasoning block
+// id, consistent across streaming and values events.
+func extractReasoningID(message map[string]interface{}) string {
+	source := kwargsSource(message)
+	if additional, ok := asMap(source["additional_kwargs"]); ok {
+		if reasoning, ok := asMap(additional["reasoning"]); ok {
+			if id := stringValue(reasoning["id"]); id != "" {
+				return id
+			}
+		}
+	}
+	if metadata, ok := asMap(source["response_metadata"]); ok {
+		items, _ := asSlice(metadata["output"])
+		for _, item := range items {
+			if block, ok := asMap(item); ok && stringValue(block["type"]) == "reasoning" {
+				if _, isArray := asSlice(block["summary"]); isArray {
+					return stringValue(block["id"])
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// summaryTexts joins the text of reasoning summary items.
+func summaryTexts(summary []interface{}, requireNonEmpty bool) string {
+	var b strings.Builder
+	for _, item := range summary {
+		block, ok := asMap(item)
+		if !ok {
+			continue
+		}
+		if text, ok := block["text"].(string); ok && (!requireNonEmpty || text != "") {
+			b.WriteString(text)
+		}
+	}
+	return b.String()
+}
+
+// reasoningFromValuesMessage mirrors TS extractReasoningFromValuesMessage: the
+// accumulated reasoning in response_metadata.output (GPT-5 final format), with
+// additional_kwargs.reasoning.summary as a fallback.
+func reasoningFromValuesMessage(message map[string]interface{}) string {
+	source := kwargsSource(message)
+	if metadata, ok := asMap(source["response_metadata"]); ok {
+		items, _ := asSlice(metadata["output"])
+		var b strings.Builder
+		for _, item := range items {
+			block, ok := asMap(item)
+			if !ok || stringValue(block["type"]) != "reasoning" {
+				continue
+			}
+			if summary, ok := asSlice(block["summary"]); ok {
+				b.WriteString(summaryTexts(summary, true))
+			}
+		}
+		if b.Len() > 0 {
+			return b.String()
+		}
+	}
+	if additional, ok := asMap(source["additional_kwargs"]); ok {
+		if reasoning, ok := asMap(additional["reasoning"]); ok {
+			if summary, ok := asSlice(reasoning["summary"]); ok {
+				return summaryTexts(summary, false)
+			}
+		}
+	}
+	return ""
+}
+
+func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk {
 	eventNS := namespaceKey(event.Namespace)
 	var chunks []ai.UIMessageChunk
 
-	toolCallsByID := extractToolCallsByID(root)
-	chunks = append(chunks, finalizeSeenPartsForValues(state, toolCallsByID)...)
+	// TS finalizes the open message parts before it looks at the data, so a
+	// values event whose data is null or not an object still closes them.
+	chunks = append(chunks, finalizeSeenPartsForValues(state)...)
+	root, ok := asMap(event.Data)
+	if !ok {
+		return chunks
+	}
 
 	messages := messageMaps(root)
 	if len(messages) > 0 {
@@ -869,8 +1172,8 @@ func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChun
 			}
 			completedToolCallIDs[toolCallID] = true
 			if idx >= trailingStart {
-				outputID := messageID(msg)
-				if outputID == "" {
+				outputID, hasID := messageIDOpt(msg)
+				if !hasID {
 					outputID = fmt.Sprintf("%s:%d", toolCallID, idx)
 				}
 				trailingToolMessages[toolCallID] = trailingToolMessage{data: source, outputID: outputID}
@@ -885,7 +1188,8 @@ func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChun
 				continue
 			}
 
-			for _, call := range extractToolCalls(msg) {
+			msgCalls := extractToolCalls(msg)
+			for _, call := range msgCalls {
 				if call.id == "" {
 					continue
 				}
@@ -911,7 +1215,7 @@ func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChun
 					state.emittedToolCallsByKey[key] = call.id
 					chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": call.id, "toolName": call.name, "dynamic": true})
 					state.markToolInputEmitted(call.id, lifecycleNS)
-					chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-available", "toolCallId": call.id, "toolName": call.name, "input": call.args, "dynamic": true})
+					chunks = append(chunks, toolInputAvailableChunk(call.id, call.name, call.args))
 				} else if state.emittedToolCalls[call.id] {
 					key := toolCallKey(call.name, call.args)
 					state.emittedToolCallsByKey[key] = call.id
@@ -930,8 +1234,24 @@ func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChun
 						}
 						chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-error", "toolCallId": call.id, "errorText": errText})
 					} else {
-						chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-available", "toolCallId": call.id, "output": trailing.data["content"]})
+						chunks = append(chunks, toolOutputChunk(call.id, trailing.data, "content", false))
 					}
+				}
+			}
+
+			// Reasoning that was not streamed (GPT-5 final format). A message
+			// with tool calls that was not streamed in this request is
+			// historical (a resumed HITL run) and is skipped, as is reasoning
+			// already emitted under the same reasoning id.
+			if reasoningID := extractReasoningID(msg); reasoningID != "" && !state.emittedReasoningIDs[reasoningID] &&
+				(state.messageSeen[msgID] != nil || len(msgCalls) == 0) {
+				if reasoning := reasoningFromValuesMessage(msg); reasoning != "" {
+					chunks = append(chunks,
+						ai.UIMessageChunk{"type": "reasoning-start", "id": msgID},
+						ai.UIMessageChunk{"type": "reasoning-delta", "delta": reasoning, "id": msgID},
+						ai.UIMessageChunk{"type": "reasoning-end", "id": msgID},
+					)
+					state.emittedReasoningIDs[reasoningID] = true
 				}
 			}
 
@@ -941,6 +1261,42 @@ func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChun
 
 	chunks = append(chunks, actionRequestChunks(state, root, eventNS)...)
 	return chunks
+}
+
+// nowMillis is Date.now(); a variable so tests can pin it like TS vi.spyOn.
+var nowMillis = func() int64 { return time.Now().UnixMilli() }
+
+// toolOutputChunk builds a tool-output-available chunk with the output read
+// from source[key]: an absent member is left off the wire like a TS undefined
+// (JSON.stringify drops it); an explicit null is kept.
+func toolOutputChunk(toolCallID string, source map[string]interface{}, key string, preliminary bool) ai.UIMessageChunk {
+	chunk := ai.UIMessageChunk{"type": "tool-output-available", "toolCallId": toolCallID}
+	if output, present := source[key]; present {
+		chunk["output"] = output
+	}
+	if preliminary {
+		chunk["preliminary"] = true
+	}
+	return chunk
+}
+
+// stringOr is `typeof v === 'string' ? v : fallback`: unlike firstString an
+// empty string is kept.
+func stringOr(v interface{}, fallback string) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fallback
+}
+
+// toolInputAvailableChunk builds a tool-input-available chunk; an undefined
+// (nil) input is left off the wire like TS, not sent as null.
+func toolInputAvailableChunk(toolCallID, toolName string, input interface{}) ai.UIMessageChunk {
+	chunk := ai.UIMessageChunk{"type": "tool-input-available", "toolCallId": toolCallID, "toolName": toolName, "dynamic": true}
+	if input != nil {
+		chunk["input"] = input
+	}
+	return chunk
 }
 
 func actionRequestChunks(state *eventState, root map[string]interface{}, eventNS string) []ai.UIMessageChunk {
@@ -955,14 +1311,14 @@ func actionRequestChunks(state *eventState, root map[string]interface{}, eventNS
 			toolCallID = request.id
 		}
 		if toolCallID == "" {
-			toolCallID = fmt.Sprintf("hitl-%s-%d", request.name, time.Now().UnixMilli())
+			toolCallID = fmt.Sprintf("hitl-%s-%d", request.name, nowMillis())
 		}
 		if !state.emittedToolCalls[toolCallID] {
 			state.markToolCallStarted(toolCallID, eventNS)
 			state.emittedToolCallsByKey[key] = toolCallID
 			chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": toolCallID, "toolName": request.name, "dynamic": true})
 			state.markToolInputEmitted(toolCallID, eventNS)
-			chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-available", "toolCallId": toolCallID, "toolName": request.name, "input": request.input, "dynamic": true})
+			chunks = append(chunks, toolInputAvailableChunk(toolCallID, request.name, request.input))
 		}
 		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-approval-request", "approvalId": toolCallID, "toolCallId": toolCallID})
 	}
@@ -978,11 +1334,12 @@ func processToolsEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk
 	if !ok {
 		return nil
 	}
-	toolCallID := stringValue(payload["toolCallId"])
+	// TS `typeof payload.toolCallId === 'string'`: a numeric id is ignored.
+	toolCallID, _ := payload["toolCallId"].(string)
 	if toolCallID == "" {
 		return nil
 	}
-	toolName := firstString(payload["name"], "unknown")
+	toolName := stringOr(payload["name"], "unknown")
 	ns := namespaceKey(event.Namespace)
 
 	var chunks []ai.UIMessageChunk
@@ -990,18 +1347,22 @@ func processToolsEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk
 	case "on_tool_start":
 		key := toolCallKey(toolName, payload["input"])
 		state.emittedToolCallsByKey[key] = toolCallID
-		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload["input"], false)...)
+		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload, false)...)
 	case "on_tool_event":
-		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload["input"], true)...)
-		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-available", "toolCallId": toolCallID, "output": payload["data"], "preliminary": true})
+		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload, true)...)
+		chunks = append(chunks, toolOutputChunk(toolCallID, payload, "data", true))
 	case "on_tool_end":
-		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload["input"], true)...)
+		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload, true)...)
 		state.markToolOutputEmitted(toolCallID, ns)
-		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-available", "toolCallId": toolCallID, "output": payload["output"]})
+		chunks = append(chunks, toolOutputChunk(toolCallID, payload, "output", false))
 	case "on_tool_error":
-		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload["input"], true)...)
+		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload, true)...)
 		state.markToolOutputEmitted(toolCallID, ns)
-		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-error", "toolCallId": toolCallID, "errorText": formatToolError(payload["error"])})
+		errorText := "undefined" // TS String(undefined) for a missing error
+		if rawErr, present := payload["error"]; present {
+			errorText = formatToolError(rawErr)
+		}
+		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-error", "toolCallId": toolCallID, "errorText": errorText})
 	}
 	return chunks
 }
@@ -1011,7 +1372,7 @@ func processToolsEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk
 // allowPreviousStep is true and the call was already emitted in a prior step
 // (globally, but not in the current step), it is treated as a delayed event
 // for that prior step's call and no new input lifecycle is synthesized at all.
-func ensureToolInputLifecycle(state *eventState, toolCallID, toolName, ns string, input interface{}, allowPreviousStep bool) []ai.UIMessageChunk {
+func ensureToolInputLifecycle(state *eventState, toolCallID, toolName, ns string, payload map[string]interface{}, allowPreviousStep bool) []ai.UIMessageChunk {
 	var chunks []ai.UIMessageChunk
 	if !state.hasEmittedToolCallInCurrentStep(toolCallID, ns) {
 		if allowPreviousStep && state.hasUnfinishedToolCall(toolCallID, ns) {
@@ -1022,7 +1383,13 @@ func ensureToolInputLifecycle(state *eventState, toolCallID, toolName, ns string
 	}
 	if !state.hasEmittedToolInputInCurrentStep(toolCallID, ns) {
 		state.markToolInputEmitted(toolCallID, ns)
-		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-available", "toolCallId": toolCallID, "toolName": toolName, "input": input, "dynamic": true})
+		chunk := ai.UIMessageChunk{"type": "tool-input-available", "toolCallId": toolCallID, "toolName": toolName, "dynamic": true}
+		// TS passes payload.input as is: an absent input is undefined and
+		// left off the wire, not sent as null.
+		if input, ok := payload["input"]; ok {
+			chunk["input"] = input
+		}
+		chunks = append(chunks, chunk)
 	}
 	return chunks
 }
@@ -1036,7 +1403,7 @@ func formatToolError(v interface{}) string {
 	case error:
 		return e.Error()
 	default:
-		data, err := json.Marshal(e)
+		data, err := jsonstr.Marshal(e)
 		if err != nil {
 			return fmt.Sprint(e)
 		}
@@ -1069,7 +1436,7 @@ func processToolMessage(state *eventState, message map[string]interface{}, ns st
 			chunks = append(chunks, ai.UIMessageChunk{"type": "start-step"})
 		}
 		state.markToolCallStarted(toolCallID, ns)
-		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": toolCallID, "toolName": firstString(stringValue(source["name"]), "unknown"), "dynamic": true})
+		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": toolCallID, "toolName": stringOr(source["name"], "unknown"), "dynamic": true})
 	}
 	if msgID := messageID(message); msgID != "" {
 		state.emittedToolOutputMessageIDs[msgID] = true
@@ -1083,10 +1450,48 @@ func processToolMessage(state *eventState, message map[string]interface{}, ns st
 		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-error", "toolCallId": toolCallID, "errorText": errText})
 		return chunks
 	}
-	chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-available", "toolCallId": toolCallID, "output": source["content"]})
+	chunks = append(chunks, toolOutputChunk(toolCallID, source, "content", false))
 	return chunks
 }
 
+// modelMessageID is the id of the current direct-model / streamEvents message
+// (TS modelState.messageId, initially "langchain-msg-1").
+func (state *eventState) modelMessageID() string {
+	return firstString(state.streamMessageID, "langchain-msg-1")
+}
+
+// modelReasoning and modelText emit reasoning and text for a direct model or
+// streamEvents chunk. They mirror the shared TS logic: reasoning ends when
+// text starts (unless text was already open), and each part keeps the id it
+// started under.
+func (state *eventState) modelReasoning(reasoning string) []ai.UIMessageChunk {
+	var chunks []ai.UIMessageChunk
+	if !state.streamReasoningStarted {
+		state.streamReasoningID = state.modelMessageID()
+		chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-start", "id": state.streamReasoningID})
+		state.streamReasoningStarted = true
+		state.streamStarted = true
+	}
+	return append(chunks, ai.UIMessageChunk{"type": "reasoning-delta", "delta": reasoning, "id": firstString(state.streamReasoningID, state.modelMessageID())})
+}
+
+func (state *eventState) modelText(text string) []ai.UIMessageChunk {
+	var chunks []ai.UIMessageChunk
+	if state.streamReasoningStarted && !state.streamTextStarted {
+		chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-end", "id": firstString(state.streamReasoningID, state.modelMessageID())})
+		state.streamReasoningStarted = false
+	}
+	if !state.streamTextStarted {
+		state.streamTextID = state.modelMessageID()
+		chunks = append(chunks, ai.UIMessageChunk{"type": "text-start", "id": state.streamTextID})
+		state.streamTextStarted = true
+		state.streamStarted = true
+	}
+	return append(chunks, ai.UIMessageChunk{"type": "text-delta", "delta": text, "id": firstString(state.streamTextID, state.modelMessageID())})
+}
+
+// processModelChunk handles one chunk of a direct model stream (TS
+// processModelChunk).
 func processModelChunk(state *eventState, data interface{}) []ai.UIMessageChunk {
 	chunk, ok := asMap(data)
 	if !ok {
@@ -1095,75 +1500,72 @@ func processModelChunk(state *eventState, data interface{}) []ai.UIMessageChunk 
 	if id := messageID(chunk); id != "" {
 		state.streamMessageID = id
 	}
-	msgID := firstString(state.streamMessageID, "langchain-msg-1")
 	var chunks []ai.UIMessageChunk
-	if reasoning := messageReasoning(chunk); reasoning != "" {
-		if !state.streamReasoningStarted {
-			state.streamReasoningStarted = true
-			state.streamReasoningID = msgID
-			chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-start", "id": msgID})
-		}
-		chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-delta", "delta": reasoning, "id": state.streamReasoningID})
+	images := imageOutputChunks(state, messageDataSource(chunk))
+	if len(images) > 0 {
+		state.streamStarted = true
+	}
+	chunks = append(chunks, images...)
+	// For a direct model stream there is no values event that could duplicate
+	// accumulated reasoning, so both sources are read.
+	reasoning := messageReasoning(chunk)
+	if reasoning == "" {
+		reasoning = reasoningFromValuesMessage(chunk)
+	}
+	if reasoning != "" {
+		chunks = append(chunks, state.modelReasoning(reasoning)...)
 	}
 	if text := messageText(chunk); text != "" {
-		if state.streamReasoningStarted && !state.streamTextStarted {
-			chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-end", "id": state.streamReasoningID})
-			state.streamReasoningStarted = false
-			state.streamReasoningID = ""
-		}
-		if !state.streamTextStarted {
-			state.streamTextStarted = true
-			state.streamTextID = msgID
-			chunks = append(chunks, ai.UIMessageChunk{"type": "text-start", "id": msgID})
-		}
-		chunks = append(chunks, ai.UIMessageChunk{"type": "text-delta", "delta": text, "id": state.streamTextID})
+		chunks = append(chunks, state.modelText(text)...)
 	}
-	chunks = append(chunks, emitSourceChunks(state, msgID, extractCitations(chunk))...)
-	return chunks
+	return append(chunks, emitSourceChunks(state, state.modelMessageID(), extractCitations(chunk))...)
 }
 
+// processStreamEventsEvent handles one LangChain streamEvents (v2) event (TS
+// processStreamEventsEvent).
 func processStreamEventsEvent(state *eventState, data interface{}) []ai.UIMessageChunk {
 	event, ok := asMap(data)
 	if !ok {
 		return nil
 	}
-	eventName := stringValue(event["event"])
-	payload, _ := asMap(event["data"])
-	switch eventName {
+	// The run id on the event names the message until output has started.
+	if runID := stringValue(event["run_id"]); runID != "" && !state.streamStarted {
+		state.streamMessageID = runID
+	}
+	payload, ok := asMap(event["data"])
+	if !ok {
+		// TS skips only a null/undefined data; an array is a truthy object
+		// with none of the properties read below.
+		if _, isArray := asSlice(event["data"]); !isArray {
+			return nil
+		}
+		payload = map[string]interface{}{}
+	}
+	switch stringValue(event["event"]) {
 	case "on_chat_model_start":
+		// Close the previous model turn's parts so deltas of the next turn
+		// cannot attach to them.
 		chunks := finalizeStreamEventParts(state)
-		state.streamMessageID = firstString(event["run_id"], stringValue(payload["run_id"]))
+		if runID := firstString(event["run_id"], stringValue(payload["run_id"])); runID != "" {
+			state.streamMessageID = runID
+		}
 		return chunks
 	case "on_chat_model_stream":
-		chunk, _ := asMap(payload["chunk"])
-		if id := messageID(chunk); id != "" {
+		chunk, ok := asMap(payload["chunk"])
+		if !ok {
+			return nil
+		}
+		if id := stringValue(chunk["id"]); id != "" {
 			state.streamMessageID = id
 		}
-		msgID := firstString(state.streamMessageID, "langchain-stream")
 		var chunks []ai.UIMessageChunk
 		if reasoning := messageReasoning(chunk); reasoning != "" {
-			if !state.streamReasoningStarted {
-				state.streamReasoningStarted = true
-				state.streamReasoningID = msgID
-				chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-start", "id": msgID})
-			}
-			chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-delta", "delta": reasoning, "id": msgID})
+			chunks = append(chunks, state.modelReasoning(reasoning)...)
 		}
 		if text := messageText(chunk); text != "" {
-			if state.streamReasoningStarted {
-				chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-end", "id": state.streamReasoningID})
-				state.streamReasoningStarted = false
-				state.streamReasoningID = ""
-			}
-			if !state.streamTextStarted {
-				state.streamTextStarted = true
-				state.streamTextID = msgID
-				chunks = append(chunks, ai.UIMessageChunk{"type": "text-start", "id": msgID})
-			}
-			chunks = append(chunks, ai.UIMessageChunk{"type": "text-delta", "delta": text, "id": state.streamTextID})
+			chunks = append(chunks, state.modelText(text)...)
 		}
-		chunks = append(chunks, emitSourceChunks(state, msgID, extractCitations(chunk))...)
-		return chunks
+		return append(chunks, emitSourceChunks(state, state.modelMessageID(), extractCitations(chunk))...)
 	case "on_tool_start":
 		runID := firstString(event["run_id"], stringValue(payload["run_id"]))
 		name := firstString(event["name"], stringValue(payload["name"]))
@@ -1176,8 +1578,7 @@ func processStreamEventsEvent(state *eventState, data interface{}) []ai.UIMessag
 		if runID == "" {
 			return nil
 		}
-		output := firstPresent(payload, "output", "result")
-		return []ai.UIMessageChunk{{"type": "tool-output-available", "toolCallId": runID, "output": output}}
+		return []ai.UIMessageChunk{toolOutputChunk(runID, payload, "output", false)}
 	default:
 		return nil
 	}
@@ -1188,6 +1589,7 @@ func (state *eventState) seenFor(messageID string) *messageSeenState {
 	if seen == nil {
 		seen = &messageSeenState{}
 		state.messageSeen[messageID] = seen
+		state.messageOrder = append(state.messageOrder, messageID)
 	}
 	return seen
 }
@@ -1212,8 +1614,7 @@ func finalizeOpenMessageParts(state *eventState) []ai.UIMessageChunk {
 			}
 			chunks = append(chunks, chunk)
 		}
-		delete(state.messageSeen, id)
-		delete(state.messageNamespaces, id)
+		state.deleteSeen(id)
 	}
 	return chunks
 }
@@ -1233,12 +1634,11 @@ func finalizeStreamEventParts(state *eventState) []ai.UIMessageChunk {
 	return chunks
 }
 
-func finalizeSeenPartsForValues(state *eventState, callsByID map[string]toolCall) []ai.UIMessageChunk {
+func finalizeSeenPartsForValues(state *eventState) []ai.UIMessageChunk {
 	var chunks []ai.UIMessageChunk
 	for _, id := range sortedMessageSeenIDs(state) {
 		seen := state.messageSeen[id]
 		ns, hasNS := state.messageNamespaces[id]
-		msgNSKey := namespaceKey(ns)
 
 		// Tag with the per-message namespace before deleting it below.
 		if seen.text {
@@ -1248,18 +1648,10 @@ func finalizeSeenPartsForValues(state *eventState, callsByID map[string]toolCall
 			}
 			chunks = append(chunks, chunk)
 		}
-		for callID := range seen.tools {
-			call, ok := callsByID[callID]
-			if !ok || call.name == "" {
-				continue
-			}
-			state.markToolCallEmitted(callID, msgNSKey)
-			state.emittedToolCallsByKey[toolCallKey(call.name, call.args)] = callID
-			if !state.hasEmittedToolInputInCurrentStep(callID, msgNSKey) {
-				state.markToolInputEmitted(callID, msgNSKey)
-				chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-available", "toolCallId": callID, "toolName": call.name, "input": call.args, "dynamic": true})
-			}
-		}
+		// TS emits tool-input-available here only from an accumulated
+		// AIMessageChunk class instance (messageConcat); RemoteGraph yields
+		// plain JSON, so it never does. The values message pass below
+		// registers the key mapping for streamed calls instead.
 		if seen.reasoning {
 			chunk := ai.UIMessageChunk{"type": "reasoning-end", "id": id}
 			if hasNS {
@@ -1267,8 +1659,7 @@ func finalizeSeenPartsForValues(state *eventState, callsByID map[string]toolCall
 			}
 			chunks = append(chunks, chunk)
 		}
-		delete(state.messageSeen, id)
-		delete(state.messageNamespaces, id)
+		state.deleteSeen(id)
 	}
 	return chunks
 }
@@ -1309,31 +1700,39 @@ func extractToolCallChunks(message map[string]interface{}) []toolCall {
 	return calls
 }
 
+// extractToolCalls mirrors the values-event tool call lookup of TS
+// processLangGraphEvent: only AI messages carry tool calls; the normalized
+// `tool_calls` array is used as is (a call without an id is skipped by the
+// caller), and `additional_kwargs.tool_calls` (OpenAI format) is converted with
+// the `call_<index>` / `unknown` / `{}` fallbacks.
 func extractToolCalls(message map[string]interface{}) []toolCall {
-	source := messageDataSource(message)
-	raw, ok := asSlice(source["tool_calls"])
-	if !ok {
-		raw = openAIToolCalls(source)
+	if !isAIMessageChunk(message) {
+		return nil
 	}
+	source := messageDataSource(message)
+	if raw, ok := asSlice(source["tool_calls"]); ok {
+		calls := make([]toolCall, 0, len(raw))
+		for _, item := range raw {
+			m, ok := asMap(item)
+			if !ok {
+				continue
+			}
+			calls = append(calls, toolCall{id: stringValue(m["id"]), name: stringValue(m["name"]), args: m["args"]})
+		}
+		return calls
+	}
+	raw := openAIToolCalls(source)
 	calls := make([]toolCall, 0, len(raw))
 	for i, item := range raw {
 		m, ok := asMap(item)
 		if !ok {
 			continue
 		}
-		name := stringValue(m["name"])
-		args := m["args"]
-		if fn, ok := asMap(m["function"]); ok {
-			name = stringValue(fn["name"])
-			args = parseArgs(fn["arguments"])
-		}
-		if args == nil {
-			args = map[string]interface{}{}
-		}
+		fn, _ := asMap(m["function"])
 		calls = append(calls, toolCall{
 			id:   firstString(m["id"], fmt.Sprintf("call_%d", i)),
-			name: name,
-			args: args,
+			name: firstString(fn["name"], "unknown"),
+			args: parseArgs(fn["arguments"]),
 		})
 	}
 	return calls
@@ -1346,18 +1745,6 @@ func openAIToolCalls(source map[string]interface{}) []interface{} {
 	}
 	raw, _ := asSlice(additional["tool_calls"])
 	return raw
-}
-
-func extractToolCallsByID(root map[string]interface{}) map[string]toolCall {
-	out := map[string]toolCall{}
-	for _, msg := range messageMaps(root) {
-		for _, call := range extractToolCalls(msg) {
-			if call.id != "" {
-				out[call.id] = call
-			}
-		}
-	}
-	return out
 }
 
 func messageMaps(root map[string]interface{}) []map[string]interface{} {
@@ -1389,7 +1776,12 @@ func actionRequests(root map[string]interface{}) []actionRequest {
 		if !ok {
 			continue
 		}
-		rawRequests, ok := asSlice(firstPresent(value, "actionRequests", "action_requests"))
+		// TS: `interruptValue.actionRequests || interruptValue.action_requests`.
+		requests := value["actionRequests"]
+		if !jsTruthy(requests) {
+			requests = value["action_requests"]
+		}
+		rawRequests, ok := asSlice(requests)
 		if !ok {
 			continue
 		}
@@ -1398,7 +1790,11 @@ func actionRequests(root map[string]interface{}) []actionRequest {
 			if !ok {
 				continue
 			}
-			input := firstPresent(req, "args", "arguments")
+			// TS: `actionRequest.args || actionRequest.arguments`.
+			input := req["args"]
+			if !jsTruthy(input) {
+				input = req["arguments"]
+			}
 			out = append(out, actionRequest{
 				id:    stringValue(req["id"]),
 				name:  stringValue(req["name"]),
@@ -1409,16 +1805,36 @@ func actionRequests(root map[string]interface{}) []actionRequest {
 	return out
 }
 
+// messageDataSource is the object a message's fields live on: kwargs for a
+// serialized `{type: "constructor", kwargs}` message, the message itself
+// otherwise (TS `msgObj.type === 'constructor' && msgObj.kwargs`).
 func messageDataSource(message map[string]interface{}) map[string]interface{} {
+	if message["type"] == "constructor" {
+		if kwargs, ok := asMap(message["kwargs"]); ok {
+			return kwargs
+		}
+	}
+	return message
+}
+
+// kwargsSource is the object the TS reasoning and citation extractors read: the
+// message's kwargs whenever it has an object kwargs (no `type: "constructor"`
+// check there), the message itself otherwise.
+func kwargsSource(message map[string]interface{}) map[string]interface{} {
 	if kwargs, ok := asMap(message["kwargs"]); ok {
 		return kwargs
 	}
 	return message
 }
 
+// isToolMessage mirrors TS isToolMessageType for plain objects: type "tool", or
+// a serialized constructor whose id path names ToolMessage.
 func isToolMessage(message map[string]interface{}) bool {
-	if stringValue(message["type"]) == "tool" || stringValue(message["type"]) == "ToolMessage" {
+	if message["type"] == "tool" {
 		return true
+	}
+	if message["type"] != "constructor" {
+		return false
 	}
 	ids, ok := asSlice(message["id"])
 	if !ok {
@@ -1440,11 +1856,20 @@ func metadataMap(items []interface{}) (map[string]interface{}, bool) {
 }
 
 func messageID(message map[string]interface{}) string {
-	if id := stringValue(message["id"]); id != "" {
-		return id
+	id, _ := messageIDOpt(message)
+	return id
+}
+
+// messageIDOpt is TS getMessageId: `typeof id === 'string'` on the message,
+// else on its kwargs for a serialized constructor. An empty string id is an
+// id (present), which matters for `getMessageId(msg) ?? fallback`.
+func messageIDOpt(message map[string]interface{}) (string, bool) {
+	if id, ok := message["id"].(string); ok {
+		return id, true
 	}
 	source := messageDataSource(message)
-	return stringValue(source["id"])
+	id, ok := source["id"].(string)
+	return id, ok
 }
 
 func messageText(message map[string]interface{}) string {
@@ -1464,51 +1889,65 @@ func messageText(message map[string]interface{}) string {
 		}
 		return b.String()
 	default:
-		return stringValue(source["text"])
+		// TS getMessageText: content that is neither a string nor an array
+		// (or absent) yields no text.
+		return ""
 	}
 }
 
+// messageReasoning mirrors TS extractReasoningFromContentBlocks, for streaming
+// chunks whose content is delta text: reasoning/thinking content blocks first,
+// then additional_kwargs.reasoning.summary. It never reads
+// response_metadata.output, which holds accumulated text.
 func messageReasoning(message map[string]interface{}) string {
-	source := messageDataSource(message)
-	contentBlocks := langChainContentBlocks(source)
+	source := kwargsSource(message)
 	var b strings.Builder
-	for _, block := range contentBlocks {
-		typ := stringValue(block["type"])
-		switch typ {
+	parts := 0
+	for _, block := range langChainContentBlocks(source) {
+		switch stringValue(block["type"]) {
 		case "reasoning":
-			b.WriteString(stringValue(block["reasoning"]))
+			if text, ok := block["reasoning"].(string); ok {
+				b.WriteString(text)
+				parts++
+			}
 		case "thinking":
-			b.WriteString(stringValue(block["thinking"]))
-		}
-	}
-	if additional, ok := asMap(source["additional_kwargs"]); ok {
-		if reasoning := stringValue(additional["reasoning"]); reasoning != "" {
-			b.WriteString(reasoning)
-		}
-		if reasoning, ok := asMap(additional["reasoning"]); ok {
-			if summary, ok := asSlice(reasoning["summary"]); ok {
-				for _, item := range summary {
-					if summaryItem, ok := asMap(item); ok {
-						b.WriteString(stringValue(summaryItem["text"]))
-					}
-				}
+			if text, ok := block["thinking"].(string); ok {
+				b.WriteString(text)
+				parts++
 			}
 		}
 	}
-	return b.String()
+	// TS returns once any block contributed, even an empty string: the
+	// additional_kwargs fallback is only for messages with no such block.
+	if parts > 0 {
+		return b.String()
+	}
+	if additional, ok := asMap(source["additional_kwargs"]); ok {
+		if reasoning, ok := asMap(additional["reasoning"]); ok {
+			if summary, ok := asSlice(reasoning["summary"]); ok {
+				return summaryTexts(summary, false)
+			}
+		}
+	}
+	return ""
 }
 
 type langChainCitation struct {
 	URL       string
 	Title     string
 	CitedText string
-	Start     interface{}
-	End       interface{}
-	Source    interface{}
+	// TitleEmpty and CitedTextEmpty mark a title or cited text that is the
+	// empty string rather than absent: TS `??` and `typeof === 'string'`
+	// tell the two apart.
+	TitleEmpty     bool
+	CitedTextEmpty bool
+	Start          interface{}
+	End            interface{}
+	Source         interface{}
 }
 
 func extractCitations(message map[string]interface{}) []langChainCitation {
-	source := messageDataSource(message)
+	source := kwargsSource(message)
 	var out []langChainCitation
 	for _, block := range langChainContentBlocks(source) {
 		rawAnnotations, ok := asSlice(block["annotations"])
@@ -1520,13 +1959,20 @@ func extractCitations(message map[string]interface{}) []langChainCitation {
 			if !ok || stringValue(annotation["type"]) != "citation" {
 				continue
 			}
+			citedText := firstPresent(annotation, "cited_text", "citedText", "text")
 			citation := langChainCitation{
 				URL:       stringValue(annotation["url"]),
-				Title:     firstString(annotation["title"], stringValue(annotation["source"])),
-				CitedText: stringValue(firstPresent(annotation, "cited_text", "citedText", "text")),
+				Title:     stringValue(annotation["title"]),
+				CitedText: stringValue(citedText),
 				Start:     firstPresent(annotation, "start_index", "startIndex"),
 				End:       firstPresent(annotation, "end_index", "endIndex"),
 				Source:    annotation["source"],
+			}
+			if title, ok := annotation["title"].(string); ok && title == "" {
+				citation.TitleEmpty = true
+			}
+			if text, ok := citedText.(string); ok && text == "" {
+				citation.CitedTextEmpty = true
 			}
 			out = append(out, citation)
 		}
@@ -1560,12 +2006,20 @@ func emitSourceChunks(state *eventState, messageID string, citations []langChain
 	for _, citation := range citations {
 		sourceID := citation.URL
 		chunkType := "source-url"
-		if sourceID == "" {
-			sourceID = messageID + ":" + citation.Title + ":" + citation.CitedText + ":" + stringValue(citation.Start) + ":" + stringValue(citation.End)
+		// TS: a document source is labelled by title ?? source; a url source
+		// carries only the citation's own title.
+		label := citation.Title
+		if citation.URL == "" {
+			// TS `citation.title ?? citation.source`: an empty title is not
+			// absent, so it does not fall back to the source.
+			if label == "" && !citation.TitleEmpty {
+				label = stringValue(citation.Source)
+			}
+			if label == "" {
+				continue
+			}
+			sourceID = messageID + ":" + label + ":" + citation.CitedText + ":" + stringValue(citation.Start) + ":" + stringValue(citation.End)
 			chunkType = "source-document"
-		}
-		if citation.URL == "" && citation.Title == "" {
-			continue
 		}
 		if sourceID == "" || state.emittedSources[sourceID] {
 			continue
@@ -1578,8 +2032,8 @@ func emitSourceChunks(state *eventState, messageID string, citations []langChain
 		if metadata := citationProviderMetadata(citation); len(metadata) > 0 {
 			chunk["providerMetadata"] = map[string]interface{}{"langchain": metadata}
 		}
-		if citation.Title != "" {
-			chunk["title"] = citation.Title
+		if label != "" {
+			chunk["title"] = label
 		}
 		if citation.URL != "" {
 			chunk["url"] = citation.URL
@@ -1593,7 +2047,7 @@ func emitSourceChunks(state *eventState, messageID string, citations []langChain
 
 func citationProviderMetadata(citation langChainCitation) map[string]interface{} {
 	metadata := map[string]interface{}{}
-	if citation.CitedText != "" {
+	if citation.CitedText != "" || citation.CitedTextEmpty {
 		metadata["citedText"] = citation.CitedText
 	}
 	if isNumber(citation.Start) {
@@ -1602,10 +2056,40 @@ func citationProviderMetadata(citation langChainCitation) map[string]interface{}
 	if isNumber(citation.End) {
 		metadata["endIndex"] = citation.End
 	}
-	if stringValue(citation.Source) != "" {
+	// TS `typeof citation.source === 'string'`: an empty string counts.
+	if _, ok := citation.Source.(string); ok {
 		metadata["source"] = citation.Source
 	}
 	return metadata
+}
+
+// hasForbiddenPrototypeKey mirrors secure-json-parse: an object at any depth
+// with an own `__proto__` key, or a `constructor` object with an own
+// `prototype` key, is rejected.
+func hasForbiddenPrototypeKey(v interface{}) bool {
+	switch x := v.(type) {
+	case map[string]interface{}:
+		if _, ok := x["__proto__"]; ok {
+			return true
+		}
+		if c, ok := x["constructor"].(map[string]interface{}); ok {
+			if _, has := c["prototype"]; has {
+				return true
+			}
+		}
+		for _, e := range x {
+			if hasForbiddenPrototypeKey(e) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, e := range x {
+			if hasForbiddenPrototypeKey(e) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func parseArgs(raw interface{}) interface{} {
@@ -1616,10 +2100,17 @@ func parseArgs(raw interface{}) interface{} {
 		if v == "" {
 			return map[string]interface{}{}
 		}
+		// Tool call arguments are model output and untrusted: TS uses
+		// secureJsonParse (TS #16320), so a payload carrying `__proto__` or
+		// `constructor.prototype` keys falls back to {} like invalid JSON.
 		var decoded interface{}
-		if err := json.Unmarshal([]byte(v), &decoded); err == nil {
+		if err := json.Unmarshal([]byte(v), &decoded); err == nil && !hasForbiddenPrototypeKey(decoded) {
 			return decoded
 		}
+		return map[string]interface{}{}
+	case map[string]interface{}:
+		// TS JSON.parse(object) coerces it to "[object Object]", fails and
+		// falls back to {}.
 		return map[string]interface{}{}
 	default:
 		return v
@@ -1661,19 +2152,27 @@ func convertAssistantContent(parts []types.ContentPart) LangChainMessage {
 			})
 		}
 	}
-	msg := LangChainMessage{"type": "ai", "content": strings.Join(textParts, "")}
-	if len(toolCalls) > 0 {
-		msg["tool_calls"] = toolCalls
+	// langchain-core's AIMessage always carries tool_calls and
+	// invalid_tool_calls (empty when there are none) in toDict().data.
+	msg := LangChainMessage{
+		"type":               "ai",
+		"content":            strings.Join(textParts, ""),
+		"tool_calls":         toolCalls,
+		"invalid_tool_calls": []interface{}{},
 	}
+	return wireMessage(msg)
+}
+
+// wireMessage adds the fields TS RemoteGraph serializes with every message
+// ({...message.toDict().data, role: message.getType()}).
+func wireMessage(msg LangChainMessage) LangChainMessage {
+	msg["role"] = msg["type"]
+	msg["additional_kwargs"] = map[string]interface{}{}
+	msg["response_metadata"] = map[string]interface{}{}
 	return msg
 }
 
 func convertUserContent(parts []types.ContentPart) interface{} {
-	if len(parts) == 1 {
-		if text, ok := parts[0].(types.TextContent); ok {
-			return text.Text
-		}
-	}
 	blocks := make([]interface{}, 0, len(parts))
 	for _, part := range parts {
 		switch p := part.(type) {
@@ -1685,15 +2184,29 @@ func convertUserContent(parts []types.ContentPart) interface{} {
 			blocks = append(blocks, fileContentBlock(p))
 		}
 	}
+	// TS: when every block is text the message content is the joined string.
+	var joined strings.Builder
+	allText := true
+	for _, block := range blocks {
+		m := block.(map[string]interface{})
+		if m["type"] != "text" {
+			allText = false
+			break
+		}
+		joined.WriteString(m["text"].(string))
+	}
+	if allText {
+		return joined.String()
+	}
 	return blocks
 }
 
 func convertToolResultPart(result types.ToolResultContent) LangChainMessage {
-	return LangChainMessage{
+	return wireMessage(LangChainMessage{
 		"type":         "tool",
 		"tool_call_id": result.ToolCallID,
 		"content":      toolResultContent(result),
-	}
+	})
 }
 
 func toolResultContent(result types.ToolResultContent) string {
@@ -1707,7 +2220,7 @@ func toolResultContent(result types.ToolResultContent) string {
 		if s, ok := result.Result.(string); ok {
 			return s
 		}
-		data, err := json.Marshal(result.Result)
+		data, err := jsonstr.Marshal(result.Result)
 		if err != nil {
 			return fmt.Sprint(result.Result)
 		}
@@ -1717,7 +2230,7 @@ func toolResultContent(result types.ToolResultContent) string {
 	case types.ToolResultOutputText, types.ToolResultOutputErrorText:
 		return stringValue(result.Output.Value)
 	case types.ToolResultOutputJSON, types.ToolResultOutputErrorJSON:
-		data, err := json.Marshal(result.Output.Value)
+		data, err := jsonstr.Marshal(result.Output.Value)
 		if err != nil {
 			return ""
 		}
@@ -1740,6 +2253,9 @@ func toolResultContent(result types.ToolResultContent) string {
 // `{type:'image', data, mimeType}`), matching
 // `convertImageToContentBlock` in the TypeScript adapter.
 func imageContentBlock(part types.ImageContent) map[string]interface{} {
+	if isNonWebURL(part.URL) {
+		return map[string]interface{}{"type": "image", "url": part.URL}
+	}
 	return canonicalImageContentBlock(part.URL, "", part.Image, part.MimeType)
 }
 
@@ -1789,61 +2305,107 @@ func parseBase64DataURL(dataURL string) (mime string, data string, ok bool) {
 	}
 	mime = rest[:idx]
 	data = rest[idx+len(marker):]
-	if mime == "" || data == "" {
+	// The TS pattern is /^data:([^;]+);base64,(.+)$/: the media type cannot
+	// contain another parameter.
+	// `.` does not match a line terminator, and the pattern is anchored at
+	// both ends without the m flag, so a payload with a line break is not a
+	// base64 data URL (TS keeps it as a plain url).
+	if mime == "" || data == "" || strings.Contains(mime, ";") || strings.ContainsAny(data, "\n\r\u2028\u2029") {
 		return "", "", false
 	}
 	return mime, data, true
 }
 
+// fileData returns the file's data the way the TS adapter normalizes the
+// tagged data shape: a URL, inline text or base64 string; a provider reference
+// becomes "".
+func fileData(part types.FileContent) string {
+	switch {
+	case part.URL != "":
+		return part.URL
+	case part.Text != "":
+		return part.Text
+	case part.Reference != "":
+		return ""
+	}
+	switch part.FileData.Type {
+	case types.FileDataTypeURL:
+		return part.FileData.URL
+	case types.FileDataTypeText:
+		return part.FileData.Text
+	case types.FileDataTypeReference:
+		return ""
+	}
+	if part.FileData.DataString != "" {
+		return part.FileData.DataString
+	}
+	data := part.Data
+	if len(data) == 0 {
+		data = part.FileData.Data
+	}
+	return base64.StdEncoding.EncodeToString(data)
+}
+
+// fileContentBlock mirrors the non-image branch of TS convertUserContent:
+// {type:'file', url | data, mimeType, filename}.
 func fileContentBlock(part types.FileContent) map[string]interface{} {
 	mediaType := part.MediaType
 	if mediaType == "" {
 		mediaType = part.MimeType
 	}
+	isURL := part.URL != "" || (part.FileData.Type == types.FileDataTypeURL && part.FileData.URL != "")
 	if strings.HasPrefix(mediaType, "image/") {
-		return canonicalImageBlockForFile(part, mediaType)
+		if isURL && isNonWebURL(fileData(part)) {
+			return map[string]interface{}{"type": "image", "url": fileData(part)}
+		}
+		return canonicalImageBlockFromString(fileData(part), mediaType)
 	}
 	filename := part.Filename
 	if filename == "" {
 		filename = defaultFilename(mediaType, "file")
 	}
-	metadata := map[string]interface{}{"filename": filename}
+	data := fileData(part)
+	if isURL && isNonWebURL(data) {
+		// A URL object whose protocol is not data: becomes a url block
+		// whatever its scheme (TS `data instanceof URL`).
+		return map[string]interface{}{"type": "file", "url": data, "mimeType": mediaType, "filename": filename}
+	}
+	block := func(key, value, mime string) map[string]interface{} {
+		return map[string]interface{}{"type": "file", key: value, "mimeType": mime, "filename": filename}
+	}
 	switch {
-	case part.URL != "":
-		return map[string]interface{}{"type": "file", "source_type": "url", "url": part.URL, "mime_type": mediaType, "metadata": metadata}
-	case part.Text != "":
-		return map[string]interface{}{"type": "file", "source_type": "text", "text": part.Text, "mime_type": mediaType, "metadata": metadata}
-	case part.Reference != "":
-		return map[string]interface{}{"type": "file", "source_type": "reference", "reference": part.Reference, "mime_type": mediaType, "metadata": metadata}
-	case part.FileData.Type == types.FileDataTypeURL:
-		return map[string]interface{}{"type": "file", "source_type": "url", "url": part.FileData.URL, "mime_type": mediaType, "metadata": metadata}
+	case strings.HasPrefix(data, "http://") || strings.HasPrefix(data, "https://"):
+		return block("url", data, mediaType)
+	case strings.HasPrefix(data, "data:"):
+		if mime, b64, ok := parseBase64DataURL(data); ok {
+			return block("data", b64, mime)
+		}
+		return block("url", data, mediaType)
 	default:
-		data := part.Data
-		if len(data) == 0 && len(part.FileData.Data) > 0 {
-			data = part.FileData.Data
-		}
-		encoded := part.FileData.DataString
-		if encoded == "" {
-			encoded = base64.StdEncoding.EncodeToString(data)
-		}
-		return map[string]interface{}{"type": "file", "source_type": "base64", "data": encoded, "mime_type": mediaType, "metadata": metadata}
+		return block("data", data, mediaType)
 	}
 }
 
-// canonicalImageBlockForFile converts a non-image-typed FileContent whose
-// mediaType is an image/* MIME type into LangChain's canonical image content
-// block, matching the TypeScript adapter's `isImage` branch in
-// `convertUserContent`.
-func canonicalImageBlockForFile(part types.FileContent, mediaType string) map[string]interface{} {
-	urlOrDataURL := part.URL
-	if urlOrDataURL == "" && part.FileData.Type == types.FileDataTypeURL {
-		urlOrDataURL = part.FileData.URL
+// isNonWebURL reports a URL value (a TS URL object, not a bare string) whose
+// scheme is neither http(s) nor data:, such as gs:// or s3://. TS
+// convertImageToContentBlock / convertUserContent send those as `{url}`; only
+// plain strings fall through to the base64 data branch.
+func isNonWebURL(raw string) bool {
+	scheme, _, ok := strings.Cut(raw, ":")
+	if !ok || scheme == "" {
+		return false
 	}
-	data := part.Data
-	if len(data) == 0 && len(part.FileData.Data) > 0 {
-		data = part.FileData.Data
+	for i, r := range scheme {
+		isAlpha := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+		if !isAlpha && (i == 0 || ((r < '0' || r > '9') && r != '+' && r != '-' && r != '.')) {
+			return false
+		}
 	}
-	return canonicalImageContentBlock(urlOrDataURL, part.FileData.DataString, data, mediaType)
+	switch strings.ToLower(scheme) {
+	case "http", "https", "data":
+		return false
+	}
+	return true
 }
 
 func defaultFilename(mediaType, prefix string) string {
@@ -1860,7 +2422,7 @@ func toolCallKey(name string, args interface{}) string {
 
 func stableJSONString(v interface{}) string {
 	normalized := normalizeForStableJSON(v)
-	data, err := json.Marshal(normalized)
+	data, err := jsonstr.Marshal(normalized)
 	if err != nil {
 		return "null"
 	}
@@ -1919,6 +2481,29 @@ func asSlice(v interface{}) ([]interface{}, bool) {
 		return out, true
 	}
 	return nil, false
+}
+
+// jsTruthy reports JavaScript truthiness of a decoded JSON value.
+func jsTruthy(v interface{}) bool {
+	switch x := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return x
+	case string:
+		return x != ""
+	case float64:
+		return x != 0
+	case int:
+		return x != 0
+	case int64:
+		return x != 0
+	case json.Number:
+		f, err := x.Float64()
+		return err != nil || f != 0
+	default:
+		return true
+	}
 }
 
 func firstPresent(m map[string]interface{}, keys ...string) interface{} {

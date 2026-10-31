@@ -13,10 +13,9 @@ package llamaindex
 
 import (
 	"context"
-	"strings"
-	"unicode"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // EngineResponse is the minimal Go analog of a LlamaIndex chat-engine
@@ -150,11 +149,10 @@ func ToUIMessageStream(ctx context.Context, stream <-chan EngineResponse, callba
 	return out, errs
 }
 
-// trimStart mirrors JavaScript's String.prototype.trimStart: it strips
-// leading Unicode whitespace only, matching `text.trimStart()` in the
-// TypeScript adapter.
+// trimStart mirrors JavaScript's String.prototype.trimStart, matching
+// `text.trimStart()` in the TypeScript adapter.
 func trimStart(text string) string {
-	return strings.TrimLeftFunc(text, unicode.IsSpace)
+	return providerutils.JSTrimStart(text)
 }
 
 func sendChunk(ctx context.Context, out chan<- ai.UIMessageChunk, chunk ai.UIMessageChunk) bool {

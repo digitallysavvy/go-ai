@@ -60,8 +60,8 @@ func TestDialHelloTimeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a timeout error")
 	}
-	if !strings.Contains(err.Error(), "did not send bridge-hello") {
-		t.Fatalf("err = %v, want it to mention \"did not send bridge-hello\"", err)
+	if got, want := err.Error(), "The harness bridge did not send bridge-hello within 100ms."; got != want {
+		t.Fatalf("err = %q, want TS text %q", got, want)
 	}
 }
 
@@ -192,5 +192,33 @@ func TestDialDoesNotLeakBridgeTokenOnConnectionFailure(t *testing.T) {
 	}
 	if strings.Contains(dialErr.Error(), secretToken) {
 		t.Fatalf("Dial error leaked the bridge token: %v", dialErr)
+	}
+}
+
+// A server that accepts TCP but never answers the upgrade hits the open
+// timeout with the TS text.
+func TestDialOpenTimeoutText(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			t.Cleanup(func() { _ = c.Close() })
+		}
+	}()
+	_, err = bridge.Dial(context.Background(), harness.PortEndpoint{URL: "ws://" + ln.Addr().String() + "/"}, bridge.DialOptions{
+		OpenTimeout: 100 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected an open timeout error")
+	}
+	if got, want := err.Error(), "The harness bridge WebSocket did not open within 100ms."; got != want {
+		t.Fatalf("err = %q, want TS text %q", got, want)
 	}
 }

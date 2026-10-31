@@ -300,6 +300,8 @@ result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
+When `ToolChoice` is `none`, the SDK keeps the tool definitions in the request but rejects any tool call the model returns anyway. `GenerateText` and `StreamText` fail with an `ai.ToolChoiceViolationError` (`"Model response contained a tool call even though tool choice was none."`) and never execute the tool or run its `OnInputStart`, `OnInputDelta` and `OnInputAvailable` callbacks. With `StreamText`, tool parts are also withheld from the stream, so client-side tools cannot act on them, and `RepairToolCall` and `ExperimentalRefineToolInput` are not invoked for the rejected calls. A `PrepareStep` override that replaces `none` with another choice lifts the restriction for that step.
+
 ## Tool Execution Options
 
 When tools are called, they receive the context and input parameters. You can use the context for cancellation, timeouts, and passing request-scoped values.
@@ -774,11 +776,12 @@ if err != nil {
     return
 }
 
-// Check for tool errors in the steps
+// Check for tool errors in the steps: a failed call is a tool-error content
+// part (ToolResults holds only successful results, as in TS).
 for _, step := range result.Steps {
-    for _, toolResult := range step.ToolResults {
-        if toolResult.Error != nil {
-            fmt.Printf("Tool %s failed: %v\n", toolResult.ToolName, toolResult.Error)
+    for _, part := range step.Content {
+        if te, ok := part.(types.ToolErrorContent); ok {
+            fmt.Printf("Tool %s failed: %v\n", te.ToolName, te.Error)
         }
     }
 }
@@ -799,7 +802,22 @@ for _, step := range result.Steps {
 
 ## Concurrency and Parallel Tool Execution
 
-The Go AI SDK executes tools sequentially by default, but you can implement parallel execution patterns:
+The Go AI SDK executes all tool calls of a step concurrently by default, as the TypeScript AI SDK does, and returns the results in the order the model generated the calls. Set `ToolCallConcurrency` on `ai.GenerateTextOptions`, `ai.StreamTextOptions`, `agent.AgentConfig` or `agent.AgentGenerateOptions` to run them concurrently with a bound:
+
+```go
+concurrency := 2 // at most two tool calls run at once; 1 means sequential, in model order
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:               model,
+    Prompt:              "Check the weather in three cities.",
+    Tools:               tools,
+    ToolCallConcurrency: &concurrency,
+    StopWhen:            []ai.StopCondition{ai.IsStepCount(5)},
+})
+```
+
+The value must be at least `1`; otherwise the call returns an `*errors.InvalidArgumentError` for `toolCallConcurrency` before the model is called. Results stay in model order whatever the finishing order. Queued calls are not started after the context is cancelled or a tool execution fails. This option limits SDK-executed (local) tool calls only; provider-executed tools and provider-side parallel tool call settings are unaffected. Approved tool calls resumed from message history run in model order and follow the same default and limit. Because tool `Execute` functions can run at the same time, they must be safe for concurrent use; set `ToolCallConcurrency` to `1` for side-effecting tools that need model order. The legacy `agent.ToolLoopAgent` loop (`Execute`, `GenerateAgent`) follows the same default and bound.
+
+You can also implement your own parallel execution patterns:
 
 ```go
 type ParallelToolExecutor struct {
@@ -940,3 +958,5 @@ tools := []types.Tool{
 - [Settings](./25-settings.mdx)
 - [Error Handling](./50-error-handling.mdx)
 - [API Reference: Tool Types](../07-reference/types/tools.mdx)
+- [API Reference: Bash Tool](../07-reference/ai/tool-bash.mdx)
+- [API Reference: Web Fetch Tool](../07-reference/ai/tool-web-fetch.mdx)

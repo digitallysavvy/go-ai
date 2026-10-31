@@ -3,37 +3,46 @@ package hume
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
+	"net/http"
+	"strconv"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // humeErrorPayload documents Hume's error envelope: {"error":{"message","code"}}.
 type humeErrorPayload struct {
-	Error struct {
-		Message string `json:"message"`
-		Code    int    `json:"code"`
+	Error *struct {
+		Message *string  `json:"message"`
+		Code    *float64 `json:"code"`
 	} `json:"error"`
 }
 
 // handleError converts an HTTP error into a ProviderError, parsing Hume's
 // `{"error":{"message","code"}}` error shape when present.
 func handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		var payload humeErrorPayload
-		message := string(statusErr.Body)
-		code := ""
-		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil && payload.Error.Message != "" {
-			message = payload.Error.Message
-			code = fmt.Sprintf("%d", payload.Error.Code)
-		}
-		providerErr := providererrors.NewProviderError("hume", statusErr.StatusCode, code, message, err)
-		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
-		providerErr.ResponseBody = string(statusErr.Body)
-		return providerErr
+		message, code := errorMessageAndCode(statusErr.StatusCode, statusErr.Body)
+		return providererrors.NewProviderErrorFromResponse("hume", 0, code, message, err)
 	}
-	return providererrors.NewProviderError("hume", 0, "", err.Error(), err)
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return err
+}
+
+// errorMessageAndCode mirrors the TS humeFailedResponseHandler: a body matching
+// {"error":{"message":string,"code":number}} gives that message (even an
+// empty one) and the code; anything else (empty, not JSON, a missing or
+// wrongly typed field) gives the HTTP status text.
+func errorMessageAndCode(statusCode int, body []byte) (message, code string) {
+	var payload humeErrorPayload
+	if err := json.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
+		payload.Error.Message != nil && payload.Error.Code != nil {
+		return *payload.Error.Message, strconv.FormatFloat(*payload.Error.Code, 'f', -1, 64)
+	}
+	return http.StatusText(statusCode), ""
 }

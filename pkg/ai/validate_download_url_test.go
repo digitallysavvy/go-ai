@@ -389,3 +389,45 @@ func TestValidateDownloadURL_TrailingDotHostnamesBlocked(t *testing.T) {
 		}
 	}
 }
+
+// TS #23653: .internal hostnames (incl. nested, uppercase, trailing dot, port)
+// are blocked before DNS resolution; lookalikes stay allowed.
+func TestValidateDownloadURL_InternalHostnames(t *testing.T) {
+	orig := netLookupHost
+	netLookupHost = func(string) ([]string, error) { return []string{"8.8.8.8"}, nil }
+	defer func() { netLookupHost = orig }()
+	for _, u := range []string{
+		"http://metadata.google.internal/file",
+		"https://service.namespace.internal/file",
+		"https://SERVICE.INTERNAL/file",
+		"https://service.internal./file",
+		"http://service.internal:8080/file",
+	} {
+		if err := validateDownloadURL(u); err == nil {
+			t.Errorf("%s: expected error", u)
+		}
+	}
+	for _, u := range []string{
+		"https://internal.example.com/file",
+		"https://service.internal.example.com/file",
+		"https://service.notinternal/file",
+		"https://example.com/service.internal",
+	} {
+		if err := validateDownloadURL(u); err != nil {
+			t.Errorf("%s: unexpected error %v", u, err)
+		}
+	}
+}
+
+func TestValidateDownloadURLBlocksIDNInternalForms(t *testing.T) {
+	for _, u := range []string{
+		"https://a.internal。/x",
+		"https://a.ｉｎｔｅｒｎａｌ/x",
+		"https://ＬＯＣＡＬＨＯＳＴ/x",
+		"https://a.INTERNAL./x",
+	} {
+		if err := validateDownloadURL(u); err == nil {
+			t.Errorf("%q should be rejected", u)
+		}
+	}
+}

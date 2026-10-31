@@ -7,6 +7,8 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	jsonschema "github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 // PrepareTools converts SDK tools to the OpenAI Responses API tool format.
@@ -28,13 +30,31 @@ func PrepareTools(tools []types.Tool) []interface{} {
 // PrepareToolsWithError converts SDK tools to OpenAI Responses API tool
 // definitions and reports TS-parity unsupported functionality errors.
 func PrepareToolsWithError(tools []types.Tool) ([]interface{}, error) {
+	return PrepareToolsWithOptionsName(tools, "")
+}
+
+// PrepareToolsWithOptionsName is PrepareToolsWithError for providers whose
+// provider-options key is not "openai" (TS prepareResponsesTools
+// providerOptionsName, e.g. "azure"). Function tool options are read from
+// providerOptions[providerOptionsName], falling back to providerOptions.openai.
+func PrepareToolsWithOptionsName(tools []types.Tool, providerOptionsName string) ([]interface{}, error) {
 	if len(tools) == 0 {
 		return nil, nil
 	}
+	tools = scopeFunctionToolOptions(tools, providerOptionsName)
 
 	result := make([]interface{}, 0, len(tools))
 	namespaces := map[string]*NamespaceToolDef{}
 	for _, t := range tools {
+		if err := validateOpenAIToolArgsSchema(t); err != nil {
+			return nil, err
+		}
+		if err := validateMCPToolArgs(t); err != nil {
+			return nil, err
+		}
+		if _, err := tsShapedShellEnvironment(t); err != nil {
+			return nil, err
+		}
 		def := convertTool(t)
 		if def != nil {
 			if functionDef, ok := def.(FunctionToolDef); ok {
@@ -67,11 +87,34 @@ func PrepareToolsWithError(tools []types.Tool) ([]interface{}, error) {
 	return result, nil
 }
 
+// validateMCPToolArgs mirrors the mcpArgsSchema refinement TS applies with
+// validateTypes: an openai.mcp tool needs a serverUrl or a connectorId.
+func validateMCPToolArgs(t types.Tool) error {
+	toolID := t.ProviderID
+	if toolID == "" {
+		toolID = t.Name
+	}
+	if toolID != "openai.mcp" {
+		return nil
+	}
+	var cfg openaitool.MCPConfig
+	if !toolConfig(t, &cfg) || cfg.ServerURL != "" || cfg.ConnectorID != "" {
+		return nil
+	}
+	var args interface{} = t.ProviderArgs
+	if t.ProviderArgs == nil {
+		args = cfg // a hand-built tool: its config holds the TS arg names
+	}
+	// zod's custom issue for the mcpArgsSchema refine, as ZodError.message
+	// renders it (JSON.stringify(issues, null, 2)).
+	return openAIToolArgsError(args, "[\n  {\n    \"code\": \"custom\",\n    \"path\": [],\n    \"message\": \"One of serverUrl or connectorId must be provided.\"\n  }\n]", nil)
+}
+
 // convertTool converts a single types.Tool to its Responses API representation.
 func convertTool(t types.Tool) interface{} {
 	// Custom tools are detected by ProviderOptions type since t.Name holds the
 	// caller-assigned tool name (not the "openai.custom" sentinel).
-	if _, ok := t.ProviderOptions.(openaitool.CustomTool); ok {
+	if _, ok := openAICustomToolConfig(t); ok {
 		return convertCustomTool(t)
 	}
 	toolID := t.ProviderID
@@ -107,6 +150,12 @@ func convertTool(t types.Tool) interface{} {
 		if t.Type == types.ToolTypeProviderDefined {
 			return nil
 		}
+		// A function tool supplied in history through additionalTools stays
+		// active in the SDK (validation and execution) but is left out of the
+		// request's tools array (TS omitFromRequestTools).
+		if functionToolOmitFromRequestTools(t.ProviderOptions) {
+			return nil
+		}
 		return convertFunctionTool(t)
 	}
 }
@@ -117,7 +166,7 @@ func convertTool(t types.Tool) interface{} {
 func convertCustomTool(t types.Tool) CustomToolDef {
 	def := CustomToolDef{Type: "custom", Name: t.Name}
 
-	ct, ok := t.ProviderOptions.(openaitool.CustomTool)
+	ct, ok := openAICustomToolConfig(t)
 	if !ok {
 		return def
 	}
@@ -143,24 +192,29 @@ func convertCustomTool(t types.Tool) CustomToolDef {
 
 func convertCodeInterpreterTool(t types.Tool) map[string]interface{} {
 	def := map[string]interface{}{"type": "code_interpreter"}
-	cfg, _ := t.ProviderOptions.(openaitool.CodeInterpreterConfig)
+	var cfg openaitool.CodeInterpreterConfig
+	toolConfig(t, &cfg)
 	switch container := cfg.Container.(type) {
 	case string:
-		if container != "" {
-			def["container"] = container
-		} else {
-			def["container"] = map[string]interface{}{"type": "auto"}
-		}
+		// TS forwards any string container id as is, including "".
+		def["container"] = container
 	case openaitool.CodeInterpreterContainer:
 		containerDef := map[string]interface{}{"type": "auto"}
-		if len(container.FileIDs) > 0 {
+		if container.FileIDs != nil {
 			containerDef["file_ids"] = container.FileIDs
 		}
 		def["container"] = containerDef
 	case *openaitool.CodeInterpreterContainer:
 		containerDef := map[string]interface{}{"type": "auto"}
-		if container != nil && len(container.FileIDs) > 0 {
+		if container != nil && container.FileIDs != nil {
 			containerDef["file_ids"] = container.FileIDs
+		}
+		def["container"] = containerDef
+	case map[string]interface{}:
+		// TS args form {fileIds?: string[]} (ProviderArgs).
+		containerDef := map[string]interface{}{"type": "auto"}
+		if fileIDs, ok := container["fileIds"]; ok && fileIDs != nil {
+			containerDef["file_ids"] = fileIDs
 		}
 		def["container"] = containerDef
 	default:
@@ -171,7 +225,8 @@ func convertCodeInterpreterTool(t types.Tool) map[string]interface{} {
 
 func convertFileSearchTool(t types.Tool) map[string]interface{} {
 	def := map[string]interface{}{"type": "file_search"}
-	cfg, _ := t.ProviderOptions.(openaitool.FileSearchConfig)
+	var cfg openaitool.FileSearchConfig
+	toolConfig(t, &cfg)
 	def["vector_store_ids"] = cfg.VectorStoreIDs
 	if cfg.MaxNumResults != nil {
 		def["max_num_results"] = *cfg.MaxNumResults
@@ -194,7 +249,8 @@ func convertFileSearchTool(t types.Tool) map[string]interface{} {
 
 func convertImageGenerationTool(t types.Tool) map[string]interface{} {
 	def := map[string]interface{}{"type": "image_generation"}
-	cfg, _ := t.ProviderOptions.(openaitool.ImageGenerationConfig)
+	var cfg openaitool.ImageGenerationConfig
+	toolConfig(t, &cfg)
 	if cfg.Action != "" {
 		def["action"] = cfg.Action
 	}
@@ -240,13 +296,16 @@ func convertImageGenerationTool(t types.Tool) map[string]interface{} {
 
 func convertWebSearchTool(t types.Tool) WebSearchToolDef {
 	def := WebSearchToolDef{Type: "web_search"}
-	cfg, _ := t.ProviderOptions.(openaitool.WebSearchConfig)
-	if cfg.Filters != nil && (len(cfg.Filters.AllowedDomains) > 0 || len(cfg.Filters.BlockedDomains) > 0) {
+	var cfg openaitool.WebSearchConfig
+	toolConfig(t, &cfg)
+	// TS: `filters != null ? {allowed_domains, blocked_domains} : undefined`,
+	// so a present filters object is sent (undefined members dropped).
+	if cfg.Filters != nil {
 		filters := map[string]interface{}{}
-		if len(cfg.Filters.AllowedDomains) > 0 {
+		if cfg.Filters.AllowedDomains != nil {
 			filters["allowed_domains"] = cfg.Filters.AllowedDomains
 		}
-		if len(cfg.Filters.BlockedDomains) > 0 {
+		if cfg.Filters.BlockedDomains != nil {
 			filters["blocked_domains"] = cfg.Filters.BlockedDomains
 		}
 		def.Filters = filters
@@ -259,14 +318,16 @@ func convertWebSearchTool(t types.Tool) WebSearchToolDef {
 
 func convertWebSearchPreviewTool(t types.Tool) WebSearchPreviewToolDef {
 	def := WebSearchPreviewToolDef{Type: "web_search_preview"}
-	cfg, _ := t.ProviderOptions.(openaitool.WebSearchPreviewConfig)
+	var cfg openaitool.WebSearchPreviewConfig
+	toolConfig(t, &cfg)
 	def.SearchContextSize = cfg.SearchContextSize
 	def.UserLocation = webSearchLocation(cfg.UserLocation)
 	return def
 }
 
 func convertMCPTool(t types.Tool) map[string]interface{} {
-	cfg, _ := t.ProviderOptions.(openaitool.MCPConfig)
+	var cfg openaitool.MCPConfig
+	toolConfig(t, &cfg)
 	def := map[string]interface{}{
 		"type":             "mcp",
 		"server_label":     cfg.ServerLabel,
@@ -281,7 +342,8 @@ func convertMCPTool(t types.Tool) map[string]interface{} {
 	if cfg.ConnectorID != "" {
 		def["connector_id"] = cfg.ConnectorID
 	}
-	if len(cfg.Headers) > 0 {
+	if cfg.Headers != nil {
+		// TS forwards `headers: args.headers`, so an empty object stays.
 		def["headers"] = cfg.Headers
 	}
 	if cfg.RequireApproval != nil {
@@ -314,6 +376,16 @@ func mcpAllowedTools(value interface{}) interface{} {
 			return nil
 		}
 		return mcpAllowedTools(*v)
+	case map[string]interface{}:
+		// TS args form {readOnly?, toolNames?} (ProviderArgs).
+		out := map[string]interface{}{}
+		if readOnly, ok := v["readOnly"]; ok && readOnly != nil {
+			out["read_only"] = readOnly
+		}
+		if toolNames, ok := v["toolNames"]; ok && toolNames != nil {
+			out["tool_names"] = toolNames
+		}
+		return out
 	default:
 		return v
 	}
@@ -338,6 +410,17 @@ func mcpRequireApproval(value interface{}) interface{} {
 			return "never"
 		}
 		return mcpRequireApproval(*v)
+	case map[string]interface{}:
+		// TS args form {never?: {toolNames?}} (ProviderArgs).
+		never, _ := v["never"].(map[string]interface{})
+		if never == nil {
+			return "never"
+		}
+		neverOut := map[string]interface{}{}
+		if toolNames, ok := never["toolNames"]; ok && toolNames != nil {
+			neverOut["tool_names"] = toolNames
+		}
+		return map[string]interface{}{"never": neverOut}
 	default:
 		return v
 	}
@@ -372,7 +455,9 @@ func convertToolSearchTool(t types.Tool) ToolSearchToolDef {
 	def := ToolSearchToolDef{Type: "tool_search"}
 
 	opts, ok := t.ProviderOptions.(openaitool.ToolSearchOptions)
-	if ok && opts.Execution != "" && opts.Execution != "server" {
+	// TS: `...(args.execution != null ? { execution: args.execution } : {})`,
+	// so an explicit "server" is sent too.
+	if ok && opts.Execution != "" && (opts.ExecutionSet || opts.Execution != "server") {
 		def.Execution = opts.Execution
 	}
 
@@ -380,9 +465,40 @@ func convertToolSearchTool(t types.Tool) ToolSearchToolDef {
 		def.Description = t.Description
 	}
 
-	if t.Parameters != nil {
-		if params, ok := t.Parameters.(map[string]interface{}); ok {
+	// The search arguments schema: openaitool.ToolSearch keeps it in
+	// ToolSearchOptions.Parameters (the tool's Parameters is the TS call
+	// input schema); a TS-shaped tool carries it in ProviderArgs; a
+	// hand-built tool in Parameters.
+	var parameters interface{}
+	switch {
+	case ok:
+		if opts.Parameters != nil {
+			parameters = opts.Parameters
+		}
+	case t.Type == types.ToolTypeProviderDefined && t.ProviderArgs != nil:
+		if execution, isString := t.ProviderArgs["execution"].(string); isString {
+			def.Execution = execution
+		}
+		if description, isString := t.ProviderArgs["description"].(string); isString && def.Description == "" {
+			def.Description = description
+		}
+		if p, present := t.ProviderArgs["parameters"]; present && p != nil {
+			parameters = p
+		}
+	default:
+		if t.Parameters != nil {
+			parameters = t.Parameters
+		}
+	}
+
+	if parameters != nil {
+		if ordered, ok := jsonschema.OrderedParameters(parameters); ok {
+			parameters = ordered
+		}
+		if params, ok := parameters.(map[string]interface{}); ok {
 			def.Parameters = params
+		} else if raw, ok := providerutils.RawJSONObject(parameters); ok {
+			def.Parameters = providerutils.DecodeRawJSONObject(raw)
 		}
 	}
 
@@ -394,16 +510,28 @@ func convertToolSearchTool(t types.Tool) ToolSearchToolDef {
 func convertShellTool(t types.Tool) ShellToolDef {
 	def := ShellToolDef{Type: "shell"}
 
-	if t.ProviderOptions == nil {
+	var env *ShellEnvironment
+	switch v := t.ProviderOptions.(type) {
+	case *ShellEnvironment:
+		env = v
+	case ShellEnvironment:
+		env = &v
+	}
+	if env == nil && t.Type == types.ToolTypeProviderDefined {
+		// PrepareToolsWithOptionsName already reported a mapping error.
+		env, _ = shellEnvironmentFromArgs(t.ProviderArgs)
+	}
+	if env == nil {
 		return def
 	}
 
-	env, ok := t.ProviderOptions.(*ShellEnvironment)
-	if !ok {
-		return def
+	// TS mapShellEnvironment: anything that is not containerAuto or
+	// containerReference is the local environment, sent as type "local".
+	envType := env.Type
+	if envType == "" {
+		envType = "local"
 	}
-
-	toolEnv := &ShellToolDefEnvironment{Type: env.Type}
+	toolEnv := &ShellToolDefEnvironment{Type: envType}
 
 	if len(env.FileIDs) > 0 {
 		toolEnv.FileIDs = env.FileIDs
@@ -415,7 +543,17 @@ func convertShellTool(t types.Tool) ShellToolDef {
 		toolEnv.NetworkPolicy = env.NetworkPolicy
 	}
 	if len(env.Skills) > 0 {
-		toolEnv.Skills = env.Skills
+		// TS mapShellSkills: a skill reference without a version is sent
+		// as version "latest".
+		skills := make([]ShellSkill, len(env.Skills))
+		copy(skills, env.Skills)
+		for i := range skills {
+			if skills[i].Type != nil && *skills[i].Type == "skill_reference" && skills[i].Version == nil {
+				latest := "latest"
+				skills[i].Version = &latest
+			}
+		}
+		toolEnv.Skills = skills
 	}
 	if env.ContainerID != nil {
 		toolEnv.ContainerID = env.ContainerID
@@ -469,6 +607,43 @@ func functionToolDeferLoading(providerOptions interface{}) (bool, bool) {
 	}
 	deferLoading, ok := openaiOptions["deferLoading"].(bool)
 	return deferLoading, ok
+}
+
+// functionToolOmitFromRequestTools reports providerOptions.openai
+// .omitFromRequestTools === true.
+func functionToolOmitFromRequestTools(providerOptions interface{}) bool {
+	openaiOptions, ok := functionToolOpenAIOptions(providerOptions)
+	if !ok {
+		return false
+	}
+	omit, _ := openaiOptions["omitFromRequestTools"].(bool)
+	return omit
+}
+
+// CheckOmittedToolChoice rejects forcing (toolChoice type "tool") a function
+// tool that is omitted from the request tools array: the API never receives
+// its definition, so only automatic tool choice works for history-loaded
+// tools (TS prepareResponsesTools UnsupportedFunctionalityError).
+func CheckOmittedToolChoice(tools []types.Tool, toolChoice types.ToolChoice) error {
+	if toolChoice.Type != types.ToolChoiceTool {
+		return nil
+	}
+	for _, t := range tools {
+		if t.Name != toolChoice.ToolName || t.Type == types.ToolTypeProviderDefined {
+			continue
+		}
+		if isOpenAICustomTool(t) {
+			continue
+		}
+		if functionToolOmitFromRequestTools(t.ProviderOptions) {
+			functionality := fmt.Sprintf("forcing tool %q omitted from the request tools array; use automatic tool choice for history-loaded tools", t.Name)
+			return &providererrors.UnsupportedFunctionalityError{
+				Functionality: functionality,
+				Message:       fmt.Sprintf("'%s' functionality not supported.", functionality),
+			}
+		}
+	}
+	return nil
 }
 
 func functionToolAsync(providerOptions interface{}) (bool, bool) {
@@ -540,6 +715,40 @@ func functionToolNamespace(providerOptions interface{}) (functionToolNamespaceOp
 	return functionToolNamespaceOption{Name: name, Description: description}, true
 }
 
+// ScopeFunctionToolOptions returns tools whose map-valued ProviderOptions
+// expose the options under providerOptionsName (when set and non-nil) as the
+// "openai" entry, matching TS `tool.providerOptions?.[name] ?? tool.providerOptions?.openai`.
+// The input tools and their option maps are never mutated.
+func ScopeFunctionToolOptions(tools []types.Tool, providerOptionsName string) []types.Tool {
+	return scopeFunctionToolOptions(tools, providerOptionsName)
+}
+
+func scopeFunctionToolOptions(tools []types.Tool, name string) []types.Tool {
+	if name == "" || name == "openai" {
+		return tools
+	}
+	var out []types.Tool
+	for i, t := range tools {
+		options, ok := t.ProviderOptions.(map[string]interface{})
+		if !ok || options[name] == nil {
+			continue
+		}
+		if out == nil {
+			out = append([]types.Tool(nil), tools...)
+		}
+		scoped := make(map[string]interface{}, len(options))
+		for k, v := range options {
+			scoped[k] = v
+		}
+		scoped["openai"] = options[name]
+		out[i].ProviderOptions = scoped
+	}
+	if out == nil {
+		return tools
+	}
+	return out
+}
+
 func functionToolOpenAIOptions(providerOptions interface{}) (map[string]interface{}, bool) {
 	options, ok := providerOptions.(map[string]interface{})
 	if !ok {
@@ -569,7 +778,7 @@ type allowedToolResolution struct {
 // shape for a single SDK tool, mirroring TS `toAllowedToolResolution` plus
 // the "custom" and "function" cases from `openai-responses-prepare-tools.ts`.
 func resolveAllowedToolForTool(t types.Tool) allowedToolResolution {
-	if _, ok := t.ProviderOptions.(openaitool.CustomTool); ok {
+	if isOpenAICustomTool(t) {
 		return allowedToolResolution{supported: true, entry: AllowedToolsToolEntry{Type: "custom", Name: t.Name}}
 	}
 	toolID := t.ProviderID
@@ -578,7 +787,8 @@ func resolveAllowedToolForTool(t types.Tool) allowedToolResolution {
 	}
 	switch toolID {
 	case "openai.mcp":
-		cfg, _ := t.ProviderOptions.(openaitool.MCPConfig)
+		var cfg openaitool.MCPConfig
+		toolConfig(t, &cfg)
 		return allowedToolResolution{supported: true, entry: AllowedToolsToolEntry{Type: "mcp", ServerLabel: cfg.ServerLabel}}
 	case "openai.file_search", "openai.web_search", "openai.web_search_preview",
 		"openai.image_generation", "openai.code_interpreter", "openai.computer",
@@ -589,7 +799,14 @@ func resolveAllowedToolForTool(t types.Tool) allowedToolResolution {
 	if t.Type == types.ToolTypeProviderDefined {
 		return allowedToolResolution{
 			supported: false,
-			reason:    fmt.Sprintf("OpenAI does not support %s tools in tool_choice.allowed_tools", toolID),
+			// TS uses the wire tool type (tool_search), not the provider id.
+			reason: fmt.Sprintf("OpenAI does not support %s tools in tool_choice.allowed_tools", normalizeOpenAIToolName(toolID)),
+		}
+	}
+	if functionToolOmitFromRequestTools(t.ProviderOptions) {
+		return allowedToolResolution{
+			supported: false,
+			reason:    "tools omitted from the request tools array cannot be allow-listed",
 		}
 	}
 	if _, ok := functionToolNamespace(t.ProviderOptions); ok {
@@ -632,30 +849,31 @@ func isSameAllowedTool(a, b allowedToolResolution) bool {
 	return false
 }
 
-// canonicalAllowedToolName returns the "provider tool name" a resolved
-// allowedTools entry would be known by on the wire, independent of the SDK
-// tool's own (possibly custom) Name -- mirrors TS's static
-// `providerToolNames` table (id -> fixed provider tool name, e.g.
-// "openai.mcp" -> "mcp") consulted through
-// `toolNameMapping.toProviderToolName`. This is deliberately just the
-// resolved entry's Type, NOT `allowedToolKey(entry)`: TS's canonical name for
-// every MCP tool is the single fixed string "mcp" regardless of
-// server_label (all "openai.mcp" tools share one entry in providerToolNames),
-// whereas allowedToolKey intentionally differentiates MCP entries by
-// server_label for the *equality* check in isSameAllowedTool. Reusing
-// allowedToolKey here would make the canonical key already unique per
-// server_label, so two different MCP servers could never collide on it --
-// silently making the "ambiguous" case below unreachable. Function/custom
-// tools have no separate wire identity distinct from their own name, so they
-// return "" (no alias is recorded for them, matching TS passing `undefined`
-// as canonicalName in the function-tool branch).
-func canonicalAllowedToolName(entry AllowedToolsToolEntry) string {
-	switch entry.Type {
-	case "function", "custom":
-		return ""
-	default:
-		return entry.Type
+// openAIAllowedToolProviderName returns the provider tool name TS records as
+// a tool's allowedTools alias (toolNameMapping.toProviderToolName, from the
+// providerToolNames table: "openai.tool_search" -> "tool_search", every
+// "openai.mcp" tool -> "mcp"), for supported and unsupported resolutions
+// alike; "" for function and custom tools (no alias). known is false for a
+// provider tool whose id prepareResponsesTools does not send.
+func openAIAllowedToolProviderName(t types.Tool) (name string, known bool) {
+	if isOpenAICustomTool(t) {
+		return "", true
 	}
+	toolID := t.ProviderID
+	if toolID == "" {
+		toolID = t.Name
+	}
+	switch toolID {
+	case "openai.code_interpreter", "openai.computer", "openai.file_search",
+		"openai.image_generation", "openai.local_shell", "openai.shell",
+		"openai.web_search", "openai.web_search_preview", "openai.mcp",
+		"openai.apply_patch", "openai.tool_search", "openai.programmatic_tool_calling":
+		return normalizeOpenAIToolName(toolID), true
+	}
+	if t.Type == types.ToolTypeProviderDefined {
+		return "", false
+	}
+	return "", true
 }
 
 // allowedToolAlias is either a resolved allowedToolResolution or the
@@ -689,14 +907,21 @@ type allowedToolAlias struct {
 //
 // This is reachable in Go the same way it is in TS: two different MCP tools
 // (distinct ProviderOptions.ServerLabel, and therefore distinct SDK Names)
-// both canonicalize to the fixed alias "mcp" (see canonicalAllowedToolName),
+// both canonicalize to the fixed alias "mcp" (see openAIAllowedToolProviderName),
 // so an allowedTools entry of "mcp" is genuinely ambiguous between them and
 // is dropped with a warning -- the caller must use each tool's own Name
 // instead.
 func ResolveAllowedTools(tools []types.Tool, toolNames []string, mode string) (*AllowedToolsToolChoice, []types.Warning, error) {
+	return ResolveAllowedToolsWithOptionsName(tools, toolNames, mode, "")
+}
+
+// ResolveAllowedToolsWithOptionsName is ResolveAllowedTools reading function
+// tool options from providerOptions[providerOptionsName] (fallback "openai").
+func ResolveAllowedToolsWithOptionsName(tools []types.Tool, toolNames []string, mode string, providerOptionsName string) (*AllowedToolsToolChoice, []types.Warning, error) {
 	if len(toolNames) == 0 {
 		return nil, nil, nil
 	}
+	tools = scopeFunctionToolOptions(tools, providerOptionsName)
 	if mode == "" {
 		mode = "auto"
 	}
@@ -704,13 +929,16 @@ func ResolveAllowedTools(tools []types.Tool, toolNames []string, mode string) (*
 	resolutions := make(map[string]allowedToolResolution, len(tools))
 	aliases := make(map[string]allowedToolAlias)
 	for _, t := range tools {
+		canonical, known := openAIAllowedToolProviderName(t)
+		if !known {
+			// TS records only tools prepareResponsesTools sends: a provider
+			// tool with an unknown id is dropped from the request, so its
+			// name is "not part of the tools for this request".
+			continue
+		}
 		resolution := resolveAllowedToolForTool(t)
 		resolutions[t.Name] = resolution
 
-		canonical := ""
-		if resolution.supported {
-			canonical = canonicalAllowedToolName(resolution.entry)
-		}
 		if canonical == "" || canonical == t.Name {
 			continue
 		}
@@ -789,6 +1017,14 @@ func defaultFunctionParameters(parameters interface{}) interface{} {
 			"type":       "object",
 			"properties": map[string]interface{}{},
 		}
+	}
+	if ordered, ok := parameters.(*jsonschema.OrderedSchema); ok {
+		// Keeps the source key order on the wire; a schema without a type
+		// gets the default object type like a map does.
+		if _, hasType := ordered.JSONSchema()["type"]; hasType {
+			return ordered
+		}
+		parameters = ordered.JSONSchema()
 	}
 	if schema, ok := parameters.(map[string]interface{}); ok {
 		if _, hasType := schema["type"]; !hasType {

@@ -28,12 +28,12 @@ func NewEmbeddingModel(provider *Provider, modelID string) *EmbeddingModel {
 
 // SpecificationVersion returns the specification version
 func (m *EmbeddingModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
 func (m *EmbeddingModel) Provider() string {
-	return "mistral"
+	return "mistral.embedding"
 }
 
 // ModelID returns the model ID
@@ -74,6 +74,19 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 
 // DoEmbedMany performs embedding for multiple inputs in a batch
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+	if len(inputs) > m.MaxEmbeddingsPerCall() {
+		return nil, &providererrors.TooManyEmbeddingValuesForCallError{
+			Provider:             m.Provider(),
+			ModelID:              m.modelID,
+			MaxEmbeddingsPerCall: m.MaxEmbeddingsPerCall(),
+			Values:               inputs,
+		}
+	}
+	if opts != nil {
+		if err := validateEmbeddingProviderOptions(opts.ProviderOptions); err != nil {
+			return nil, err
+		}
+	}
 	reqBody := map[string]interface{}{
 		"input": inputs,
 		"model": m.modelID,
@@ -91,12 +104,17 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			reqBody["output_dtype"] = mistralOpts.OutputDtype
 		}
 	}
+	// Top-level dimensions (TS #22338); providerOptions.mistral.outputDimension wins.
+	if _, ok := reqBody["output_dimension"]; !ok && opts != nil && opts.Dimensions != nil {
+		reqBody["output_dimension"] = *opts.Dimensions
+	}
 	var response mistralEmbedResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/v1/embeddings",
-		Body:    reqBody,
-		Headers: optsHeaders(opts),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaOpenAIEmbedding),
+		Method:           http.MethodPost,
+		Path:             "/v1/embeddings",
+		Body:             reqBody,
+		Headers:          optsHeaders(opts),
 	}, &response)
 	if err != nil {
 		return nil, providererrors.NewProviderError("mistral", 0, "", err.Error(), err)
@@ -112,7 +130,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			InputTokens: response.Usage.PromptTokens,
 			TotalTokens: response.Usage.TotalTokens,
 		},
-		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response}},
+		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: providerutils.RawJSONBody(httpResp.Body)}},
 	}, nil
 }
 
@@ -157,8 +175,7 @@ func extractMistralEmbeddingOptions(opts *provider.EmbedModelOptions) *mistralEm
 	if v, ok := m["metadata"].(map[string]interface{}); ok {
 		result.Metadata = v
 	}
-	if v, ok := m["outputDimension"].(float64); ok {
-		iv := int(v)
+	if iv, ok := providerutils.CoerceInt(m["outputDimension"]); ok {
 		result.OutputDimension = &iv
 	}
 	if v, ok := m["outputDtype"].(string); ok {

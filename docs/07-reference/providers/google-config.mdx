@@ -15,11 +15,13 @@ The tables on this page are generated from the Go source. For usage, see the [Go
 
 | Field | Type | Description |
 | --- | --- | --- |
+| `BatchResultDownloads` | `providerutils.BatchResultDownloads` | BatchResultDownloads configures JSON Lines batch result downloads, e.g. the maximum bytes per result row (TS `batchResultDownloads`). |
 | `APIKey` | `string` | APIKey is the Google API key |
 | `BaseURL` | `string` | BaseURL is the base URL for the Google API (default: https://generativelanguage.googleapis.com) |
 | `Headers` | `map[string]string` | Headers are custom HTTP headers to include in requests. |
 | `Name` | `string` | Name overrides the provider name returned by Provider.Name(). Defaults to "google.generative-ai". |
 | `HTTPClient` | `*http.Client` | HTTPClient overrides the HTTP client used for requests. |
+| `GenerateID` | `func() string` | GenerateID generates the ids the chat and Interactions models create (tool calls without an id, sources, processing steps) and the batch displayName suffix ("ai-sdk-batch-" plus the id). TS `generateId`; defaults to a random id. |
 
 {/* /gen:fields */}
 
@@ -56,6 +58,8 @@ The tables on this page are generated from the Go source. For usage, see the [Go
 
 | Field | Type | Description |
 | --- | --- | --- |
+| `SpeechMetadata` | `*GoogleSpeechMetadata` | SpeechMetadata is turn-level direction for the top-level text (Gemini 3.8 TTS). |
+| `Turns` | `[]GoogleSpeechTurn` | Turns is a structured transcript that replaces the top-level text (Gemini 3.8 TTS). Pass an empty Text when using turns; each multi-speaker turn must name a configured speaker in SpeechMetadata. |
 | `MultiSpeakerVoiceConfig` | `map[string]interface{}` | MultiSpeakerVoiceConfig configures Gemini multi-speaker TTS. When set it takes precedence over the top-level voice. |
 
 {/* /gen:fields */}

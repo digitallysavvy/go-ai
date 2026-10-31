@@ -61,12 +61,13 @@ func main() {
 	if len(result.ToolResults) > 0 {
 		fmt.Printf("\n=== Tool Executions (%d) ===\n", len(result.ToolResults))
 		for _, tr := range result.ToolResults {
-			fmt.Printf("Tool: %s\n", tr.ToolName)
-			if tr.Error != nil {
-				fmt.Printf("  Error: %v\n", tr.Error)
-			} else {
-				fmt.Printf("  Result: %v\n", tr.Result)
-			}
+			fmt.Printf("Tool: %s\n  Result: %v\n", tr.ToolName, tr.Result)
+		}
+	}
+	// Failed tool calls are tool-error content parts, not ToolResults.
+	for _, part := range result.Content {
+		if te, ok := part.(types.ToolErrorContent); ok {
+			fmt.Printf("Tool: %s\n  Error: %v\n", te.ToolName, te.Error)
 		}
 	}
 }

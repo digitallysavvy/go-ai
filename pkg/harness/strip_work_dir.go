@@ -2,7 +2,8 @@ package harness
 
 import (
 	"encoding/json"
-	"regexp"
+	"strings"
+	"unicode/utf8"
 )
 
 // StripWorkDir removes the session working-directory prefix from path-bearing
@@ -155,13 +156,13 @@ func (s *toolInputWorkDirStripper) strip(part StreamPart) []StreamPart {
 		pendingStart := len(value) - len(pending)
 		if len(pending) > 0 {
 			if pendingStart > 0 {
-				st.precedingCharacter = string(value[pendingStart-1])
+				st.precedingCharacter = lastRuneString(value[:pendingStart])
 				st.havePrecedingChar = true
 			}
 			// else: keep the previous preceding character (nothing consumed
 			// yet from this delta).
 		} else if len(value) > 0 {
-			st.precedingCharacter = string(value[len(value)-1])
+			st.precedingCharacter = lastRuneString(value)
 			st.havePrecedingChar = true
 		}
 		st.pending = pending
@@ -189,9 +190,6 @@ func (s *toolInputWorkDirStripper) strip(part StreamPart) []StreamPart {
 	}
 }
 
-var pathBoundaryRe = regexp.MustCompile(`[\s"'` + "`" + `=]`)
-var pathTerminatorRe = regexp.MustCompile(`[\s"'` + "`" + `;|&<>()]`)
-
 // stripStreamingStringWithPending incrementally strips workDir occurrences
 // from value. When final is false, a trailing fragment that might still
 // become a match once more input arrives is held back in the returned
@@ -218,7 +216,7 @@ func stripStreamingStringWithPending(value, workDir string, final bool, precedin
 			if !isPath {
 				output += remaining[:followingIndex]
 				if followingIndex > 0 {
-					characterBeforeRemaining = string(remaining[followingIndex-1])
+					characterBeforeRemaining = lastRuneString(remaining[:followingIndex])
 					haveChar = true
 				}
 				remaining = remaining[followingIndex:]
@@ -273,22 +271,41 @@ func hasPrefix(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }
 
+// isJSSpace reports whether r matches the JavaScript regex class `\s`, which
+// (unlike Go's ASCII-only `\s`) includes the vertical tab, no-break space,
+// the Unicode space separators, the line/paragraph separators and the BOM.
+func isJSSpace(r rune) bool {
+	switch r {
+	case '\t', '\n', '\v', '\f', '\r', ' ', 0x00a0, 0x1680, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff:
+		return true
+	}
+	return r >= 0x2000 && r <= 0x200a
+}
+
 func isPathBoundary(value string, index int, precedingCharacter string, havePrecedingCharacter bool) bool {
-	var character string
+	var r rune
 	if index == 0 {
 		if !havePrecedingCharacter {
 			return true
 		}
-		character = precedingCharacter
+		r, _ = utf8.DecodeLastRuneInString(precedingCharacter)
 	} else {
-		character = string(value[index-1])
+		r, _ = utf8.DecodeLastRuneInString(value[:index])
 	}
-	return pathBoundaryRe.MatchString(character)
+	return isJSSpace(r) || r == '"' || r == '\'' || r == '`' || r == '='
 }
 
 func isPathTerminatorByte(value string, index int) bool {
 	if index >= len(value) {
 		return true
 	}
-	return pathTerminatorRe.MatchString(string(value[index]))
+	r, _ := utf8.DecodeRuneInString(value[index:])
+	return isJSSpace(r) || strings.ContainsRune("\"'`;|&<>()", r)
+}
+
+// lastRuneString returns the final character of s (a whole UTF-8 sequence,
+// not its last byte).
+func lastRuneString(s string) string {
+	r, _ := utf8.DecodeLastRuneInString(s)
+	return string(r)
 }

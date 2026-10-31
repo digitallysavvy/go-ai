@@ -1,5 +1,5 @@
 // Package harness is the Go port of the TypeScript `@ai-sdk/harness` package
-// (pinned to ai@7.0.113).
+// (pinned to ai@7.0.153, TS e64ed82f27).
 //
 // It contains the harness-v1 specification types that adapters implement
 // (TS `HarnessV1*`), the stream-part vocabulary, JSON lifecycle state that is
@@ -426,6 +426,17 @@ type SkillFile struct {
 // Metadata is adapter-namespaced opaque data attached to harness events, keyed
 // by harness id. Mirrors TS `HarnessV1Metadata`.
 type Metadata map[string]map[string]any
+
+// UnmarshalJSON decodes the record and rejects a null harness entry like
+// `harnessV1MetadataSchema` (every value must be an object).
+func (m *Metadata) UnmarshalJSON(data []byte) error {
+	out, err := decodeNamespacedRecord(data)
+	if err != nil {
+		return err
+	}
+	*m = out
+	return nil
+}
 
 // CallWarningType discriminates CallWarning.
 type CallWarningType string

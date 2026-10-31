@@ -233,3 +233,13 @@ func assertChunksEqual(t *testing.T, got, want []ai.UIMessageChunk) {
 		}
 	}
 }
+
+// JS String.prototype.trimStart strips U+FEFF but not U+0085.
+func TestTrimStartMatchesJavaScriptWhitespace(t *testing.T) {
+	if got := trimStart("\uFEFF \u00A0\u2003x"); got != "x" {
+		t.Fatalf("trimStart stripped %q, want x", got)
+	}
+	if got := trimStart("\u0085x"); got != "\u0085x" {
+		t.Fatalf("trimStart must keep U+0085, got %q", got)
+	}
+}

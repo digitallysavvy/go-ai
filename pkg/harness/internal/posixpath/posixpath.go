@@ -107,6 +107,9 @@ func Dirname(p string) string {
 		return "."
 	case idx == 0:
 		return "/"
+	case idx == 1 && trimmed[0] == '/':
+		// Node: dirname("//a") === "//".
+		return "//"
 	default:
 		return trimmed[:idx]
 	}

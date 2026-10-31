@@ -11,12 +11,14 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ImageModel implements the provider.ImageModel interface for DeepInfra.
@@ -41,7 +43,7 @@ func NewImageModel(p *Provider, modelID, baseURL, editBaseURL string) *ImageMode
 func (m *ImageModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
-func (m *ImageModel) Provider() string { return "deepinfra" }
+func (m *ImageModel) Provider() string { return "deepinfra.image" }
 
 // ModelID returns the model ID.
 func (m *ImageModel) ModelID() string { return m.modelID }
@@ -86,6 +88,9 @@ func boolPtr(b bool) *bool {
 // DoGenerate performs image generation or, when Files are supplied, image
 // editing via DeepInfra's OpenAI-compatible /images/edits endpoint.
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+	if err := providerutils.ValidateMapProviderOptions("deepinfra", opts.ProviderOptions, deepInfraImageOptionsSchema); err != nil {
+		return nil, err
+	}
 	if len(opts.Files) > 0 {
 		return m.doEdit(ctx, opts)
 	}
@@ -128,6 +133,9 @@ func (m *ImageModel) doGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if resp.StatusCode >= 400 {
 		return nil, m.parseGenerateError(resp)
 	}
+	if err := providerutils.MediaResponseValidator("deepinfra", providerutils.SchemaDeepInfraImage)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 
 	var decoded struct {
 		Images []string `json:"images"`
@@ -149,6 +157,7 @@ func (m *ImageModel) doGenerate(ctx context.Context, opts *provider.ImageGenerat
 		}
 	}
 	result.MimeType = "image/png"
+	result.Response = &types.ResponseMetadata{Timestamp: time.Now(), ModelID: m.modelID, Headers: providerutils.ExtractHeaders(resp.Headers)}
 	return result, nil
 }
 
@@ -206,6 +215,9 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 	if resp.StatusCode >= 400 {
 		return nil, m.parseEditError(resp)
 	}
+	if err := providerutils.MediaResponseValidator("deepinfra", providerutils.SchemaDeepInfraEdit)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 
 	var decoded struct {
 		Data []struct {
@@ -228,6 +240,7 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 		}
 	}
 	result.MimeType = "image/png"
+	result.Response = &types.ResponseMetadata{Timestamp: time.Now(), ModelID: m.modelID, Headers: providerutils.ExtractHeaders(resp.Headers)}
 	return result, nil
 }
 
@@ -271,22 +284,22 @@ func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.
 				}
 			}
 			for key, value := range deepInfraImageOptions(opts.ProviderOptions) {
+				if value == nil {
+					continue // convertToFormData skips null/undefined values
+				}
 				if err := writer.WriteField(key, fmt.Sprintf("%v", value)); err != nil {
 					return err
 				}
 			}
 
-			imageField := "image"
-			if len(opts.Files) > 1 {
-				imageField = "image[]"
-			}
-			for i, file := range opts.Files {
-				if err := writeImageFilePart(ctx, writer, imageField, fmt.Sprintf("image-%d.png", i), file); err != nil {
+			// TS convertToFormData(..., { useArrayBrackets: false }): repeated "image".
+			for _, file := range opts.Files {
+				if err := writeImageFilePart(ctx, writer, "image", "", file); err != nil {
 					return err
 				}
 			}
 			if opts.Mask != nil {
-				if err := writeImageFilePart(ctx, writer, "mask", "mask.png", *opts.Mask); err != nil {
+				if err := writeImageFilePart(ctx, writer, "mask", "", *opts.Mask); err != nil {
 					return err
 				}
 			}
@@ -303,7 +316,8 @@ func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.
 }
 
 func writeImageFilePart(ctx context.Context, writer *multipart.Writer, fieldName, filename string, file provider.ImageFile) error {
-	part, err := writer.CreateFormFile(fieldName, filename)
+	// TS appends a typed Blob (filename "blob").
+	part, err := providerutils.CreateTypedFormFile(writer, fieldName, "blob", file.MediaType)
 	if err != nil {
 		return err
 	}
@@ -317,6 +331,19 @@ func writeImageFilePart(ctx context.Context, writer *multipart.Writer, fieldName
 	}
 	_, err = part.Write(file.Data)
 	return err
+}
+
+// deepInfraImageOptionsSchema is deepInfraImageModelOptionsSchema (a loose
+// object: unknown keys pass; null is accepted for every declared key).
+var deepInfraImageOptionsSchema = providerutils.OptionSchema{
+	"negative_prompt":     providerutils.OptNullable(providerutils.OptString),
+	"num_inference_steps": providerutils.OptNullable(providerutils.OptNumber),
+	"guidance_scale":      providerutils.OptNullable(providerutils.OptNumber),
+	"guidance":            providerutils.OptNullable(providerutils.OptNumber),
+	"response_format":     providerutils.OptNullable(providerutils.OptEnum("b64_json")),
+	"quality":             providerutils.OptNullable(providerutils.OptString),
+	"style":               providerutils.OptNullable(providerutils.OptString),
+	"user":                providerutils.OptNullable(providerutils.OptString),
 }
 
 // deepInfraImageOptions returns providerOptions.deepinfra as-is (a loose,

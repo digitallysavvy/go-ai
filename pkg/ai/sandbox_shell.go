@@ -8,11 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
+	"time"
 
-	"golang.org/x/text/encoding/htmlindex"
-	"golang.org/x/text/transform"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ShellSandbox executes commands through the local shell. It is the default
@@ -49,6 +48,10 @@ func (s *ShellSandbox) Description() string {
 	return s.description
 }
 
+// shellSandboxPipeGrace is how long Run waits, after its ctx is done, for the
+// command's output pipes to reach EOF before closing them.
+const shellSandboxPipeGrace = 500 * time.Millisecond
+
 // Run runs command in the configured shell.
 func (s *ShellSandbox) Run(ctx context.Context, opts SandboxProcessOptions) (SandboxRunResult, error) {
 	process, err := s.spawn(ctx, opts.Command, opts.WorkingDirectory, opts.Env)
@@ -73,7 +76,31 @@ func (s *ShellSandbox) Run(ctx context.Context, opts SandboxProcessOptions) (San
 	// against io.Copy and can truncate output under load (see
 	// https://pkg.go.dev/os/exec#Cmd.StdoutPipe: "it is incorrect to call
 	// Wait before all reads from the pipe have completed").
+	//
+	// A cancelled ctx kills only the shell; a child it forked (sh -c "a; b")
+	// keeps the pipes open, which would hold this call until that child
+	// exits. After ctx is done the pipes are closed following a short grace
+	// period, so Run returns promptly with whatever output was captured.
+	copied := make(chan struct{})
+	go func() {
+		select {
+		case <-copied:
+			return
+		case <-ctx.Done():
+		}
+		select {
+		case <-copied:
+			return
+		case <-time.After(shellSandboxPipeGrace):
+		}
+		for _, r := range []io.Reader{process.Stdout(), process.Stderr()} {
+			if c, ok := r.(io.Closer); ok {
+				_ = c.Close()
+			}
+		}
+	}()
 	copyWG.Wait()
+	close(copied)
 	waitResult, waitErr := process.Wait()
 	return SandboxRunResult{
 		Stdout:   stdout.String(),
@@ -155,22 +182,7 @@ func (s *ShellSandbox) ReadTextFile(ctx context.Context, opts SandboxReadTextFil
 	if err != nil {
 		return nil, err
 	}
-	if opts.StartLine != nil || opts.EndLine != nil {
-		lines := strings.Split(text, "\n")
-		start := 1
-		if opts.StartLine != nil && *opts.StartLine > 1 {
-			start = *opts.StartLine
-		}
-		end := len(lines)
-		if opts.EndLine != nil && *opts.EndLine < end {
-			end = *opts.EndLine
-		}
-		if start > end || start > len(lines) {
-			empty := ""
-			return &empty, nil
-		}
-		text = strings.Join(lines[start-1:end], "\n")
-	}
+	text = providerutils.ExtractLines(text, opts.StartLine, opts.EndLine)
 	return &text, nil
 }
 
@@ -190,8 +202,10 @@ func (s *ShellSandbox) WriteFile(ctx context.Context, path string, content io.Re
 	if err != nil {
 		return err
 	}
-	defer f.Close() //nolint:errcheck
 	_, err = io.Copy(f, content)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
 	return err
 }
 
@@ -210,30 +224,11 @@ func (s *ShellSandbox) WriteTextFile(ctx context.Context, opts SandboxWriteTextF
 }
 
 func decodeSandboxText(data []byte, encodingLabel string) (string, error) {
-	if encodingLabel == "" || strings.EqualFold(encodingLabel, "utf-8") || strings.EqualFold(encodingLabel, "utf8") {
-		return string(data), nil
-	}
-	enc, err := htmlindex.Get(encodingLabel)
-	if err != nil {
-		return "", err
-	}
-	decoded, _, err := transform.Bytes(enc.NewDecoder(), data)
-	if err != nil {
-		return "", err
-	}
-	return string(decoded), nil
+	return providerutils.DecodeSandboxText(data, encodingLabel)
 }
 
 func encodeSandboxText(text string, encodingLabel string) ([]byte, error) {
-	if encodingLabel == "" || strings.EqualFold(encodingLabel, "utf-8") || strings.EqualFold(encodingLabel, "utf8") {
-		return []byte(text), nil
-	}
-	enc, err := htmlindex.Get(encodingLabel)
-	if err != nil {
-		return nil, err
-	}
-	encoded, _, err := transform.Bytes(enc.NewEncoder(), []byte(text))
-	return encoded, err
+	return providerutils.EncodeSandboxText(text, encodingLabel)
 }
 
 type shellSandboxProcess struct {

@@ -481,3 +481,79 @@ func TestSSETransportConcurrent401sRefreshOnceAndStaleRetriesSkipRefresh(t *test
 		t.Fatalf("refresh count = %d, want 1 (deduplicated across concurrent 401s)", got)
 	}
 }
+
+// TS #21727: closing the stream before the endpoint event must fail Connect
+// promptly instead of hanging.
+func TestSSETransportConnectRejectsWhenClosedBeforeEndpoint(t *testing.T) {
+	reader, writer := io.Pipe()
+	transport := NewSSETransport(SSETransportConfig{
+		URL:       "http://localhost:3000/sse",
+		SSEClient: &sseRecordingClient{stream: reader},
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- transport.Connect(ctx) }()
+	writer.Close() //nolint:errcheck
+	err := <-done
+	var mcpErr *MCPClientError
+	if !errors.As(err, &mcpErr) || !strings.Contains(err.Error(), "MCP SSE Transport Error: Connection closed before endpoint event was received") {
+		t.Fatalf("Connect error = %v", err)
+	}
+}
+
+// TS reports an unparseable message and an unexpectedly closed stream through
+// onerror (the HTTP transport already does); the SSE transport swallowed both.
+func TestSSETransportReportsParseFailureAndUnexpectedClose(t *testing.T) {
+	reader, writer := io.Pipe()
+	var mu sync.Mutex
+	var reported []string
+	transport := NewSSETransport(SSETransportConfig{
+		URL:       "http://localhost:3000/sse",
+		SSEClient: &sseRecordingClient{stream: reader},
+		OnError: func(err error) {
+			mu.Lock()
+			reported = append(reported, err.Error())
+			mu.Unlock()
+		},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- transport.Connect(ctx) }()
+	writer.Write([]byte("event: endpoint\ndata: http://localhost:3000/messages\n\n")) //nolint:errcheck
+	if err := <-done; err != nil {
+		t.Fatalf("Connect error = %v", err)
+	}
+	defer transport.Close() //nolint:errcheck
+
+	writer.Write([]byte("event: message\ndata: {\"foo\":1}\n\n"))                                           //nolint:errcheck
+	writer.Write([]byte("event: message\ndata: {not json\n\n"))                                             //nolint:errcheck
+	writer.Write([]byte(`event: message` + "\n" + `data: {"jsonrpc":"2.0","id":"2","result":{}}` + "\n\n")) //nolint:errcheck
+	if _, err := transport.Receive(ctx); err != nil {
+		t.Fatalf("Receive error = %v", err)
+	}
+	writer.Close() //nolint:errcheck
+	if _, err := transport.Receive(ctx); err == nil {
+		t.Fatal("expected the stream failure from Receive")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		mu.Lock()
+		got := append([]string(nil), reported...)
+		mu.Unlock()
+		if len(got) == 3 {
+			parseFailure := "MCP SSE Transport Error: Failed to parse message"
+			if got[0] != parseFailure || got[1] != parseFailure || got[2] != "MCP SSE Transport Error: Connection closed unexpectedly" {
+				t.Fatalf("reported = %q", got)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("reported = %q, want parse failure then unexpected close", got)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -61,9 +61,12 @@ func resolveOutputFormat(outputFormat string, opts *SpeechModelOptions, warnings
 	}
 	parts := strings.Split(strings.ToLower(outputFormat), "_")
 	formatName := parts[0]
+	// TS destructures `[formatName, sampleRateText, ...extraParts]`: a
+	// trailing underscore ("mp3_") gives an empty, but present, sample rate.
 	var sampleRateText string
+	hasSampleRate := len(parts) > 1
 	var extraParts []string
-	if len(parts) > 1 {
+	if hasSampleRate {
 		sampleRateText = parts[1]
 		extraParts = parts[2:]
 	}
@@ -80,10 +83,11 @@ func resolveOutputFormat(outputFormat string, opts *SpeechModelOptions, warnings
 			Feature: "outputFormat",
 			Details: fmt.Sprintf("Unknown output format %q. Falling back to mp3. Use providerOptions.cartesia to configure container, encoding, and sampleRate directly.", outputFormat),
 		})
-	} else if sampleRateText != "" {
-		parsedRate, err := strconv.Atoi(sampleRateText)
-		if len(extraParts) == 0 && err == nil && cartesiaSampleRates[parsedRate] {
-			resolved.SampleRate = parsedRate
+	} else if hasSampleRate {
+		// TS Number(sampleRateText) + Number.isInteger + the rate list.
+		parsedRate, ok := providerutils.JSNumber(sampleRateText)
+		if len(extraParts) == 0 && ok && parsedRate == math.Trunc(parsedRate) && cartesiaSampleRates[int(parsedRate)] {
+			resolved.SampleRate = int(parsedRate)
 		} else {
 			*warnings = append(*warnings, types.Warning{
 				Type:    "unsupported",
@@ -143,21 +147,31 @@ func resolveOutputFormat(outputFormat string, opts *SpeechModelOptions, warnings
 	return map[string]interface{}{"container": container, "encoding": encoding, "sample_rate": sampleRate}
 }
 
+// cartesiaSpeechBodyOrder is the key order of the TS requestBody literal
+// (cartesia-speech-model.ts) and its output_format object, which
+// JSON.stringify keeps.
+var cartesiaSpeechBodyOrder = map[string][]string{
+	"":              {"model_id", "transcript", "voice", "output_format", "language", "generation_config"},
+	"voice":         {"mode", "id"},
+	"output_format": {"container", "encoding", "sample_rate", "bit_rate"},
+}
+
 // DoGenerate performs text-to-speech synthesis.
 func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGenerateOptions) (*types.SpeechResult, error) {
 	if opts == nil {
 		opts = &provider.SpeechGenerateOptions{}
 	}
+	// TS getArgs parses the provider options before requiring a voice.
+	if err := validateSpeechOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	if opts.Voice == "" {
-		return nil, errors.New("cartesia: speech models require a `voice` to be set")
+		return nil, errors.New("Cartesia speech models require a `voice` to be set.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	currentDate := time.Now()
 
 	requestBody, warnings := m.buildRequestBody(opts)
-	requestBytes, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, err
-	}
+	requestBytes := []byte(providerutils.StringifyOrdered(requestBody, cartesiaSpeechBodyOrder))
 
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
@@ -182,7 +196,6 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(resp.Headers),
-			Body:      resp.Body,
 		},
 	}, nil
 }
@@ -207,8 +220,10 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 		body["language"] = opts.Language
 	}
 	// Provider-specific options override the corresponding generic options.
-	if cartesiaOpts != nil && cartesiaOpts.Language != "" {
-		body["language"] = cartesiaOpts.Language
+	// TS `cartesiaOptions.language != null`: an empty string that is present
+	// still overrides.
+	if lang, ok := speechLanguageOption(opts.ProviderOptions, cartesiaOpts); ok {
+		body["language"] = lang
 	}
 
 	resolvedSpeed := opts.Speed
@@ -236,4 +251,26 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 	}
 
 	return body, warnings
+}
+
+// speechLanguageOption reports providerOptions.cartesia.language and whether
+// it is present and a string (the typed options struct cannot tell "" from
+// unset, so a map-shaped option is consulted directly).
+func speechLanguageOption(providerOptions map[string]interface{}, parsed *SpeechModelOptions) (string, bool) {
+	if parsed != nil && parsed.Language != "" {
+		return parsed.Language, true
+	}
+	raw, ok := providerOptions["cartesia"]
+	if !ok || raw == nil {
+		return "", false
+	}
+	m, ok := raw.(map[string]interface{})
+	if !ok {
+		b, err := json.Marshal(raw)
+		if err != nil || json.Unmarshal(b, &m) != nil {
+			return "", false
+		}
+	}
+	lang, ok := m["language"].(string)
+	return lang, ok
 }

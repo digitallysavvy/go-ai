@@ -1,6 +1,8 @@
 package providerutils
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -33,9 +35,13 @@ type responseMetadataStream struct {
 	passQueue  []*provider.StreamChunk
 	checkedOne bool
 	sawStart   bool
+	pendingErr error
 }
 
 func (s *responseMetadataStream) Next() (*provider.StreamChunk, error) {
+	if s.pendingErr != nil {
+		return nil, s.pendingErr
+	}
 	if len(s.passQueue) > 0 {
 		chunk := s.passQueue[0]
 		s.passQueue = s.passQueue[1:]
@@ -46,7 +52,7 @@ func (s *responseMetadataStream) Next() (*provider.StreamChunk, error) {
 			s.checkedOne = true
 			chunk, err := s.inner.Next()
 			if err != nil {
-				return chunk, err
+				return s.metaThenErr(chunk, err)
 			}
 			if chunk != nil && chunk.Type == provider.ChunkTypeStreamStart {
 				s.sawStart = true
@@ -57,7 +63,7 @@ func (s *responseMetadataStream) Next() (*provider.StreamChunk, error) {
 		if s.sawStart {
 			chunk, err := s.inner.Next()
 			if err != nil {
-				return chunk, err
+				return s.metaThenErr(chunk, err)
 			}
 			if chunk != nil && chunk.Type == provider.ChunkTypeRaw {
 				s.passQueue = append(s.passQueue, s.meta)
@@ -71,6 +77,19 @@ func (s *responseMetadataStream) Next() (*provider.StreamChunk, error) {
 	}
 	return s.inner.Next()
 }
+
+// metaThenErr delivers the response metadata before surfacing an inner stream
+// error/EOF that occurred before any content, so headers are never lost on
+// short streams. Genuine (non-EOF) errors are returned as is.
+func (s *responseMetadataStream) metaThenErr(chunk *provider.StreamChunk, err error) (*provider.StreamChunk, error) {
+	if err != io.EOF {
+		return chunk, err
+	}
+	s.emitted = true
+	s.pendingErr = err
+	return s.meta, nil
+}
+
 func (s *responseMetadataStream) Err() error   { return s.inner.Err() }
 func (s *responseMetadataStream) Close() error { return s.inner.Close() }
 
@@ -104,4 +123,30 @@ func WithResponseMetadata(stream provider.TextStream, h http.Header, modelID str
 		},
 	}
 	return &responseMetadataStream{meta: meta, inner: stream}
+}
+
+// RawJSONBody decodes a JSON response body for ResponseMetadata.Body, which
+// mirrors the TS `response.body` (the parsed raw JSON, not bytes). Bodies that
+// are not valid JSON are returned as a string.
+func RawJSONBody(b []byte) interface{} {
+	var v interface{}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return string(b)
+	}
+	return v
+}
+
+// ToolArgumentsString returns a tool call's arguments as the JSON text the
+// model produced. The wire value is normally a JSON string holding JSON text
+// (OpenAI style); some hosts send the object itself, whose text is returned
+// as is.
+func ToolArgumentsString(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	return string(raw)
 }

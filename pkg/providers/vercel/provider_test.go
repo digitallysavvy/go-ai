@@ -18,8 +18,8 @@ func TestEmbeddingModelFactory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddingModel: %v", err)
 	}
-	if m.Provider() != "openai" {
-		t.Fatalf("Provider = %q, want openai", m.Provider())
+	if m.Provider() != "openai.embedding" {
+		t.Fatalf("Provider = %q, want openai.embedding", m.Provider())
 	}
 	if m.ModelID() != "text-embedding-3-small" {
 		t.Fatalf("ModelID = %q", m.ModelID())

@@ -25,6 +25,7 @@ type recordedToolResult struct {
 	ToolCallID string
 	Output     interface{}
 	IsError    bool
+	ToolResult any
 }
 
 type recordedApproval struct {
@@ -38,6 +39,7 @@ type mockPromptControl struct {
 	toolResults    *[]recordedToolResult
 	toolApprovals  *[]recordedApproval
 	onSubmitResult func(ToolResultSubmission)
+	submitErr      error
 	done           chan struct{}
 	err            error
 
@@ -82,9 +84,9 @@ func (c *mockPromptControl) SubmitToolResult(_ context.Context, r ToolResultSubm
 		c.onSubmitResult(r)
 	}
 	c.mu.Lock()
-	*c.toolResults = append(*c.toolResults, recordedToolResult{ToolCallID: r.ToolCallID, Output: r.Output, IsError: r.IsError})
+	*c.toolResults = append(*c.toolResults, recordedToolResult(r))
 	c.mu.Unlock()
-	return nil
+	return c.submitErr
 }
 
 func (c *mockPromptControl) SubmitToolApproval(_ context.Context, a ToolApprovalSubmission) error {
@@ -120,6 +122,7 @@ type mockHarnessOptions struct {
 	continueScript   func(submit func(toolCallID string, output interface{})) []StreamPart
 	builtinTools     map[string]BuiltinTool
 	onSubmitResult   func(ToolResultSubmission)
+	submitErr        error
 	supportsApproval bool
 	supportsSteering bool
 	// promptDone, when set, is called once per DoPromptTurn/DoContinueTurn
@@ -174,7 +177,7 @@ func newMockHarness(opts mockHarnessOptions) *mockHarnessResult {
 	newControl := func() (PromptControl, *mockPromptControl) {
 		base := &mockPromptControl{
 			toolResults: &res.toolResults, toolApprovals: &res.toolApprovals,
-			onSubmitResult: opts.onSubmitResult, done: make(chan struct{}), onPin: opts.onPin,
+			onSubmitResult: opts.onSubmitResult, submitErr: opts.submitErr, done: make(chan struct{}), onPin: opts.onPin,
 		}
 		if opts.onControl != nil {
 			opts.onControl(base)
@@ -254,6 +257,8 @@ type mockSession struct {
 	// DoDetach — used to exercise a detach failure leaving the local session
 	// handle usable for Stop-based cleanup (TS #21591).
 	doDetach func(context.Context) (*ResumeSessionState, error)
+	// doDestroy, when set, overrides mockSession's default DoDestroy.
+	doDestroy func(context.Context) error
 }
 
 func (s *mockSession) SessionID() string { return s.id }
@@ -283,7 +288,12 @@ func (s *mockSession) DoDetach(ctx context.Context) (*ResumeSessionState, error)
 func (s *mockSession) DoStop(context.Context) (*ResumeSessionState, error) {
 	return NewResumeSessionState("mock", map[string]any{})
 }
-func (s *mockSession) DoDestroy(context.Context) error { return nil }
+func (s *mockSession) DoDestroy(ctx context.Context) error {
+	if s.doDestroy != nil {
+		return s.doDestroy(ctx)
+	}
+	return nil
+}
 
 // mockSessionWithHistory wraps mockSession and additionally implements
 // HistoryReader, mirroring TS mockHarness's optional `doReadHistory`
@@ -376,9 +386,8 @@ func TestAgent_SimpleTextTurn(t *testing.T) {
 	if len(result.Steps) != 1 {
 		t.Fatalf("Steps = %d, want 1", len(result.Steps))
 	}
-	// Verifies the harness-constructed GenerateTextResult's TotalUsage
-	// (not Usage, which this package sets to only the final step's usage;
-	// see streamResultToGenerateResult) carries the FinishPart's usage.
+	// Verifies the harness-constructed GenerateTextResult's TotalUsage (the
+	// deprecated alias of Usage) carries the FinishPart's usage.
 	if got := *result.TotalUsage.TotalTokens; got != 8 { //nolint:staticcheck
 		t.Fatalf("TotalUsage.TotalTokens = %d, want 8", got)
 	}
@@ -415,9 +424,8 @@ func TestAgent_TotalUsageOverridesLocalSum(t *testing.T) {
 	if len(result.Steps) != 2 {
 		t.Fatalf("Steps = %d, want 2 (no phantom step for the terminal boundary)", len(result.Steps))
 	}
-	// Verifies the harness-constructed GenerateTextResult's TotalUsage
-	// (not Usage, which this package sets to only the final step's usage;
-	// see streamResultToGenerateResult) carries the bridge's override.
+	// Verifies the harness-constructed GenerateTextResult's TotalUsage (the
+	// deprecated alias of Usage) carries the bridge's override.
 	if got := *result.TotalUsage.TotalTokens; got != 100 { //nolint:staticcheck
 		t.Fatalf("TotalUsage.TotalTokens = %d, want 100 (overridden, not summed to 4)", got)
 	}
@@ -521,6 +529,9 @@ func TestAgent_CustomToolApprovalPauseAndContinue(t *testing.T) {
 		continueScript: func(submit func(string, interface{})) []StreamPart {
 			return []StreamPart{
 				&ToolResultPart{ToolCallID: "call_1", ToolName: "deleteFile", Result: "deleted"},
+				// The resumed step closes with a finish-step the driver swallows (TS
+				// closingResumedStep); the follow-up model step comes after it.
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}},
 				&TextDeltaPart{ID: "t1", Delta: "Done."},
 				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
 				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(2, 2)},
@@ -584,6 +595,9 @@ func TestAgent_ClientSideToolPauseAndContinue(t *testing.T) {
 		continueScript: func(submit func(string, interface{})) []StreamPart {
 			return []StreamPart{
 				&ToolResultPart{ToolCallID: "call_1", ToolName: "askUser", Result: "blue"},
+				// The resumed step closes with a finish-step the driver swallows (TS
+				// closingResumedStep); the follow-up model step comes after it.
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}},
 				&TextDeltaPart{ID: "t1", Delta: "Got it: blue."},
 				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
 				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(2, 2)},
@@ -893,13 +907,11 @@ func TestAgent_SurfacesEveryApprovalFromACountedToolCallStep(t *testing.T) {
 	}
 }
 
-// TestAgent_PausesOnFirstApprovalWithoutStepToolCallCount verifies the
-// backward-compatible default: an adapter that never populates
-// StepToolCallCount on its tool-call events keeps the original
-// pause-on-first behavior — only the first of two approval-required tool
-// calls is surfaced before the turn pauses, matching pre-32349cc behavior
-// for adapters that cannot know a step's tool-call cardinality up front.
-func TestAgent_PausesOnFirstApprovalWithoutStepToolCallCount(t *testing.T) {
+// TestAgent_SurfacesEveryApprovalWithoutStepToolCallCount verifies TS #23260:
+// an approval request no longer ends the response immediately, so both
+// approval-required tool calls of a step are surfaced even though the adapter
+// never populates the (now ignored) StepToolCallCount.
+func TestAgent_SurfacesEveryApprovalWithoutStepToolCallCount(t *testing.T) {
 	mock := newMockHarness(mockHarnessOptions{
 		script: func(submit func(string, interface{})) []StreamPart {
 			return []StreamPart{
@@ -931,8 +943,12 @@ func TestAgent_PausesOnFirstApprovalWithoutStepToolCallCount(t *testing.T) {
 	}
 
 	approvals, _, _ := session.snapshotPendingState()
-	if len(approvals) != 1 || approvals[0].ToolCallID != "c1" {
-		t.Fatalf("pending approvals = %+v, want only c1 (pause-on-first, unaware of c2)", approvals)
+	seen := map[string]bool{}
+	for _, approval := range approvals {
+		seen[approval.ToolCallID] = true
+	}
+	if len(approvals) != 2 || !seen["c1"] || !seen["c2"] {
+		t.Fatalf("pending approvals = %+v, want both c1 and c2", approvals)
 	}
 }
 
@@ -1152,14 +1168,12 @@ func TestAgent_StopWhenReleasesCheckpointPinOnAbort(t *testing.T) {
 	}
 }
 
-// TestAgent_StopWhenFallsBackToHardFinishWhenSuspendUnsupported ports the
-// other half of suspendOrFinishNow's contract: when the adapter's
-// DoSuspendTurn fails (e.g. CapabilityUnsupportedError), the local result
-// still settles the same way, but the session falls back to WG4's original
-// hard-finish behavior — OnTurnFinished fires and the session returns to
-// idle — instead of getting stuck reporting an unfinished turn nothing can
-// ever resume.
-func TestAgent_StopWhenFallsBackToHardFinishWhenSuspendUnsupported(t *testing.T) {
+// TestAgent_StopWhenSuspendFailureFailsTurn ports the other half of
+// suspendOrFinishNow's contract: when the adapter's DoSuspendTurn fails (e.g.
+// CapabilityUnsupportedError), the turn fails with that error, as TS awaits
+// onStopConditionMet inside the turn's try block.
+func TestAgent_StopWhenSuspendFailureFailsTurn(t *testing.T) {
+	logs := captureTurnLogs(t)
 	mock := newMockHarness(mockHarnessOptions{
 		script: func(submit func(string, interface{})) []StreamPart {
 			return []StreamPart{
@@ -1191,14 +1205,17 @@ func TestAgent_StopWhenFallsBackToHardFinishWhenSuspendUnsupported(t *testing.T)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	if err := result.Err(); err != nil {
-		t.Fatalf("Err() = %v", err)
+	if err := result.Err(); !IsCapabilityUnsupportedError(err) {
+		t.Fatalf("Err() = %v, want the DoSuspendTurn CapabilityUnsupportedError", err)
 	}
-	if result.Text() != "first" {
-		t.Fatalf("Text() = %q, want %q", result.Text(), "first")
+	if got := logs(); len(got) != 1 || !strings.Contains(got[0], "harness turn failed: mock harness cannot suspend turns") {
+		t.Fatalf("turn logs = %q, want one \"harness turn failed\" line", got)
 	}
-	if session.HasUnfinishedTurn() {
-		t.Fatal("session should be idle: DoSuspendTurn failed, so this must fall back to a hard finish")
+	// As TS: the failed suspension leaves the session's suspend state set,
+	// so isTurnSuspending suppresses onTurnFailed and the turn stays
+	// unfinished.
+	if !session.HasUnfinishedTurn() {
+		t.Fatal("session reports no unfinished turn, want the turn left unfinished like TS")
 	}
 }
 
@@ -1700,8 +1717,8 @@ func TestAgent_ExperimentalSteer_RejectsAfterExplicitSuspend(t *testing.T) {
 	}
 
 	err = a.ExperimentalSteer(context.Background(), session, "Change course.")
-	if err == nil || !strings.Contains(err.Error(), "no running turn to steer") {
-		t.Fatalf("ExperimentalSteer err = %v, want \"no running turn to steer\"", err)
+	if err == nil || !strings.Contains(err.Error(), "has ended and cannot be reused") {
+		t.Fatalf("ExperimentalSteer err = %v, want \"has ended and cannot be reused\"", err)
 	}
 	if len(mock.userMessages) != 0 {
 		t.Fatalf("userMessages = %v, want none", mock.userMessages)
@@ -1723,9 +1740,15 @@ func TestAgent_ExperimentalSteer_RejectsAfterExplicitSuspend(t *testing.T) {
 // `sessionState !== 'active'` guard.
 func TestAgentSession_SuspendTurn_DetachesLocalHandle(t *testing.T) {
 	finishPrompt := make(chan struct{})
+	var closeOnce sync.Once
 	mock := newMockHarness(mockHarnessOptions{
 		script:     steerTestScript,
 		promptDone: func() <-chan struct{} { return finishPrompt },
+		// A real adapter's DoSuspendTurn ends the turn it suspends.
+		doSuspendTurn: func(context.Context) (*ContinueTurnState, error) {
+			closeOnce.Do(func() { close(finishPrompt) })
+			return NewContinueTurnState("mock", map[string]any{})
+		},
 	})
 	a, session := newTestAgent(t, mock, nil, Callbacks{}, nil)
 
@@ -1743,7 +1766,6 @@ func TestAgentSession_SuspendTurn_DetachesLocalHandle(t *testing.T) {
 		t.Fatalf("second SuspendTurn err = %v, want \"is not active\"", err)
 	}
 
-	close(finishPrompt)
 	if err := result.Err(); err != nil {
 		t.Fatalf("result.Err() = %v", err)
 	}
@@ -1873,7 +1895,7 @@ func TestAgent_ConcurrentStream_SecondCallerRejected(t *testing.T) {
 	if len(succeeded) != 1 || len(failed) != 1 {
 		t.Fatalf("got %d succeeded, %d failed (want exactly 1 of each); results = %+v", len(succeeded), len(failed), []callResult{r1, r2})
 	}
-	wantErr := "harness session '" + session.SessionID() + "' already has a turn in progress"
+	wantErr := "Harness session " + session.SessionID() + " already has a turn in progress."
 	if got := failed[0].err.Error(); got != wantErr {
 		t.Fatalf("rejected caller's error = %q, want %q", got, wantErr)
 	}

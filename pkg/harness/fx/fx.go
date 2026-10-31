@@ -1,21 +1,25 @@
-// Package fx is the Go port of the TypeScript `@ai-sdk/harness-fx` package
-// (pinned to ai@7.0.113, hash d0b241d).
+// Package fx is the Go port of the TypeScript `@ai-sdk/harness-fx` package.
 //
-// Like pkg/harness/cursor, fx is an "ACP-derived" adapter: TS `createFx()`
-// is a thin configuration layer over `createACP()` (`@ai-sdk/harness-acp`).
-// BuildConfig assembles the exact acp.Settings TS's `createFx()` passes to
-// `createACP()`, and CreateFx wires it into a live harness.Harness.
+// CreateFx has two runtimes, chosen with Settings.Runtime:
 //
-// fx is server-side/sandboxable: `fx acp` is spawned inside the sandbox by
-// the shared ACP bridge (pkg/harness/bridges.ACP); this package has no
-// bridge assets of its own.
+//   - RuntimeSandboxACP (the default, go-ai v0.5.x behavior): fx is an
+//     "ACP-derived" adapter. BuildConfig assembles the acp.Settings the
+//     pre-libfx TS `createFx()` passed to `createACP()`, and `fx acp` runs
+//     inside the sandbox through the shared ACP bridge.
+//   - RuntimeLibfx (opt-in): the libfx core, fx-core.wasm, runs in the host
+//     process on wazero, as TS @ai-sdk/harness-fx (pinned to ai e64ed82f27)
+//     does. Its built-in tools (LibfxBuiltinTools) run as commands in the
+//     session sandbox; the host makes the model requests. It authenticates
+//     with AI Gateway or a codex or grok subscription and connects HTTP and
+//     SSE MCP servers from the host.
 package fx
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/acp"
@@ -23,8 +27,14 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 )
 
+// fxVersion is the pinned fx release the install command fetches, instead of
+// whatever "latest" resolves to at bootstrap time (TS #23138 `FX_VERSION`).
+// To update it, find the newest release with the fx installer's release list
+// and bump this constant together with the TS-parity tests.
+const fxVersion = "0.0.13"
+
 const (
-	ClientAppName    = "ai-sdk/harness-fx"
+	ClientAppName    = "ai-sdk-harness-fx"
 	ClientAppVersion = "0.0.0-go"
 	HarnessID        = "fx"
 
@@ -34,31 +44,83 @@ const (
 // AuthenticationMode is TS `FxAuthenticationMode`.
 type AuthenticationMode = harness.Authentication
 
-// Settings configures the fx harness adapter. Mirrors TS `FxHarnessSettings`.
+// Settings configures the fx harness adapter. Mirrors TS `FxHarnessSettings`
+// plus the go-ai v0.5.x sandbox-ACP settings.
 type Settings struct {
-	Auth                 AuthenticationMode
+	Auth AuthenticationMode
+	// CredentialForwarding, Port, PortEndpoint, StartupTimeoutMS, Reconnect
+	// and MintBridgeToken configure the sandbox-ACP runtime; the libfx
+	// runtime ignores them.
 	CredentialForwarding harness.CredentialForwarding
 	Port                 *int
 	PortEndpoint         *harness.PortEndpoint
 	StartupTimeoutMS     *int
 	Reconnect            *bridge.ReconnectOptions
-	MCPServers           map[string]any
-	MintBridgeToken      harness.MintBridgeTokenCallback
+	// MCPServers configures MCP servers. Under RuntimeLibfx each entry is
+	// {url, type?: "http"|"sse"|"streamableHttp", headers?, disabled?}; the
+	// host connects to it and its tools reach the model as
+	// mcp_<server>_<tool>. A command (stdio) server fails the turn with a
+	// *harness.CapabilityUnsupportedError.
+	MCPServers map[string]any
+	// MCPServerOrder optionally lists MCPServers names in the insertion
+	// order of the TypeScript mcpServers object (Go maps are unordered).
+	// Under RuntimeLibfx servers are connected, and their tools and
+	// instructions listed, in this order; names it omits follow, sorted,
+	// and names not in MCPServers are ignored. Nil keeps the sorted order.
+	MCPServerOrder  []string
+	MintBridgeToken harness.MintBridgeTokenCallback
+
+	// Runtime selects the fx runtime; the zero value is RuntimeSandboxACP.
+	Runtime Runtime
+
+	// The settings below apply to RuntimeLibfx only.
+
+	// Headers are added to AI Gateway requests (TS headers).
+	Headers map[string]string
+	// Effort is the reasoning effort passed to libfx (TS effort).
+	Effort string
+	// ServiceTier is "", "default", "fast" or "ultrafast" (TS serviceTier).
+	ServiceTier string
+	// Backend is "", "auto" or "wasm". Go always runs libfx's wasm backend;
+	// "native" (the Node addon) returns a *harness.CapabilityUnsupportedError.
+	Backend string
+	// Wasm says where fx-core.wasm comes from; nil downloads and caches the
+	// pinned module on first use (see WasmSource).
+	Wasm *WasmSource
+	// MemoryLimitBytes caps each core's memory, up to the wasm32 maximum of
+	// 4 GiB; 0 means 1 GiB.
+	MemoryLimitBytes int64
+	// HTTPClient sends the core's model requests. nil uses an SSRF-safe
+	// client. Either way only the AI Gateway base origin and libfx's default
+	// provider origins are reachable.
+	HTTPClient *http.Client
 }
 
-// CreateFx returns the fx harness-v1 adapter, wiring BuildConfig's
-// acp.Settings into a live harness.Harness via acp.CreateACP. Mirrors TS
-// `createFx()`.
+// CreateFx returns the fx harness-v1 adapter. With the default
+// RuntimeSandboxACP it wires BuildConfig's acp.Settings into a live
+// harness.Harness via acp.CreateACP, as go-ai v0.5.x did; with RuntimeLibfx
+// it returns the libfx harness, the port of TS `createFx()`.
 func CreateFx(settings ...Settings) (harness.Harness, error) {
 	s := Settings{}
 	if len(settings) > 0 {
 		s = settings[0]
 	}
-	return acp.CreateACP(BuildConfig(s))
+	switch s.Runtime {
+	case "", RuntimeSandboxACP:
+		h, err := acp.CreateACP(BuildConfig(s))
+		if err != nil {
+			return nil, err
+		}
+		return legacyHarness{h}, nil
+	case RuntimeLibfx:
+		return newLibfxHarness(s)
+	}
+	return nil, fmt.Errorf("fx: unknown runtime %q", s.Runtime)
 }
 
-// BuildConfig assembles the acp.Settings `createFx()` builds (TS
-// `ACPHarnessSettings` as passed to `createACP()`).
+// BuildConfig assembles the acp.Settings the pre-libfx `createFx()` built
+// (TS `ACPHarnessSettings` as passed to `createACP()`). It configures the
+// RuntimeSandboxACP runtime only.
 func BuildConfig(settings Settings) acp.Settings {
 	mcpToolTitlePrefixes := make([]string, 0, len(settings.MCPServers))
 	for name := range settings.MCPServers {
@@ -89,7 +151,7 @@ func BuildConfig(settings Settings) acp.Settings {
 		BuiltinTools:    BuiltinTools,
 		Source: acp.Source{
 			Type:    acp.SourceInstallCommand,
-			Command: "curl -fsSL https://fx.sh/setup.sh | bash",
+			Command: "curl -fsSL https://fx.sh/setup.sh | bash -s -- v" + fxVersion,
 		},
 		Executable: "fx",
 		Args:       []string{"acp"},
@@ -104,6 +166,9 @@ func BuildConfig(settings Settings) acp.Settings {
 		CredentialEnv: append([]string{"VERCEL_OIDC_TOKEN", "AI_GATEWAY_API_KEY"}, SubscriptionEnvironmentVariables...),
 		CredentialBrokering: func(env, sandboxEnv, headers map[string]string) []harness.RequestTransformation {
 			return CredentialBrokering(env, sandboxEnv, headers, suppliedAuthenticationEnvironment)
+		},
+		CredentialBrokeringErr: func(env, sandboxEnv, headers map[string]string) ([]harness.RequestTransformation, error) {
+			return CredentialBrokeringErr(env, sandboxEnv, headers, suppliedAuthenticationEnvironment)
 		},
 		ProviderAuthentication: &acp.ProviderAuthentication{
 			GatewayEnv: map[string]any{
@@ -132,7 +197,25 @@ func BuildConfig(settings Settings) acp.Settings {
 // CredentialBrokering builds the request transformations for fx's
 // subscription and AI Gateway credentials. Mirrors the `credentialBrokering`
 // closure in `createFx()`.
+//
+// A transformation that cannot be built (an invalid `AI_GATEWAY_BASE_URL`) is
+// skipped here for source compatibility; CredentialBrokeringErr surfaces it
+// the way TS (which throws) does, and is what createFx wires.
 func CredentialBrokering(env, sandboxEnv, headers map[string]string, suppliedAuthenticationEnvironment bool) []harness.RequestTransformation {
+	transformations, err := credentialBrokering(env, sandboxEnv, headers, suppliedAuthenticationEnvironment, true)
+	if err != nil {
+		return nil
+	}
+	return transformations
+}
+
+// CredentialBrokeringErr is CredentialBrokering returning the error from
+// building a transformation instead of dropping it.
+func CredentialBrokeringErr(env, sandboxEnv, headers map[string]string, suppliedAuthenticationEnvironment bool) ([]harness.RequestTransformation, error) {
+	return credentialBrokering(env, sandboxEnv, headers, suppliedAuthenticationEnvironment, false)
+}
+
+func credentialBrokering(env, sandboxEnv, headers map[string]string, suppliedAuthenticationEnvironment, lenient bool) ([]harness.RequestTransformation, error) {
 	var transformations []harness.RequestTransformation
 	for _, rc := range GetSubscriptionRequestCredentials(env, sandboxEnv) {
 		matchURL := "https://api.x.ai/v1"
@@ -151,12 +234,15 @@ func CredentialBrokering(env, sandboxEnv, headers map[string]string, suppliedAut
 			TransformHeaders: transformHeaders,
 		})
 		if err != nil {
-			continue
+			if lenient {
+				continue
+			}
+			return nil, err
 		}
 		transformations = append(transformations, tr)
 	}
 	if len(transformations) > 0 {
-		return transformations
+		return transformations, nil
 	}
 
 	environmentVariableName := "AI_GATEWAY_API_KEY"
@@ -170,10 +256,12 @@ func CredentialBrokering(env, sandboxEnv, headers map[string]string, suppliedAut
 	credential := env[environmentVariableName]
 	sandboxCredential := sandboxEnv[environmentVariableName]
 	if credential == "" || sandboxCredential == "" {
-		return nil
+		return nil, nil
 	}
-	baseURL := env["AI_GATEWAY_BASE_URL"]
-	if baseURL == "" {
+	// TS `env.AI_GATEWAY_BASE_URL ?? DEFAULT`: only an absent key falls back;
+	// an empty string is kept (and then fails URL parsing like `new URL("")`).
+	baseURL, ok := env["AI_GATEWAY_BASE_URL"]
+	if !ok {
 		baseURL = defaultAIGatewayBaseURL
 	}
 	transformHeaders := map[string]string{}
@@ -188,9 +276,9 @@ func CredentialBrokering(env, sandboxEnv, headers map[string]string, suppliedAut
 		TransformHeaders: transformHeaders,
 	})
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return []harness.RequestTransformation{tr}
+	return []harness.RequestTransformation{tr}, nil
 }
 
 // sanitizeMCPToolNameSegment mirrors TS `sanitizeFxMcpToolNameSegment`:
@@ -200,18 +288,13 @@ func sanitizeMCPToolNameSegment(value string) string {
 	if value == "" {
 		return "server"
 	}
-	out := make([]rune, 0, len(value))
-	for _, r := range value {
-		if (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '-' || r == '_' {
-			out = append(out, r)
-			continue
-		}
-		if r > unicode.MaxLatin1 {
-			// TS encodes to UTF-8 bytes first; each non-ASCII byte becomes
-			// its own '_', so a single multi-byte rune becomes several '_'.
-			for range []byte(string(r)) {
-				out = append(out, '_')
-			}
+	// TS iterates the UTF-8 bytes of the string: every byte outside
+	// [0-9A-Za-z_-] becomes one '_' (so a multi-byte rune becomes several).
+	out := make([]byte, 0, len(value))
+	for i := 0; i < len(value); i++ {
+		b := value[i]
+		if (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || b == '-' || b == '_' {
+			out = append(out, b)
 			continue
 		}
 		out = append(out, '_')

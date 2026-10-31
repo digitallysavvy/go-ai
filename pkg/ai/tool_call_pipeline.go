@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
@@ -114,6 +117,14 @@ type ParseToolCallOptions struct {
 	Instructions        string
 	InstructionMessages []types.Message
 	Messages            []types.Message
+
+	// RefineToolInput refines the parsed input by tool name inside the parse
+	// step (TS refineToolInput), so an InvalidToolInputError (or a
+	// NoSuchToolError) returned by a refiner triggers RepairToolCall like a
+	// schema failure does.
+	RefineToolInput map[string]ToolInputRefiner
+	RuntimeContext  interface{}
+	ToolsContext    map[string]interface{}
 }
 
 // ParseToolCall resolves a provider tool call against the available tools,
@@ -123,13 +134,20 @@ type ParseToolCallOptions struct {
 // error is a context error when ctx is cancelled (pending repairs are
 // abandoned). Mirrors TS parseToolCall.
 func ParseToolCall(ctx context.Context, opts ParseToolCallOptions) (types.ToolCall, error) {
+	refined, _, err := parseAndRefineToolCall(ctx, opts)
+	return refined, err
+}
+
+// parseAndRefineToolCall is ParseToolCall that also returns the call as it
+// was parsed, before RefineToolInput ran (the approval inputSchemaInput).
+func parseAndRefineToolCall(ctx context.Context, opts ParseToolCallOptions) (types.ToolCall, types.ToolCall, error) {
 	call := opts.ToolCall
-	parsed, err := parseToolCallWithRepair(ctx, opts)
+	parsed, pre, err := parseToolCallWithRepair(ctx, opts)
 	if err == nil {
-		return parsed, nil
+		return parsed, pre, nil
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return types.ToolCall{}, ctxErr
+		return types.ToolCall{}, types.ToolCall{}, ctxErr
 	}
 	tool := findToolForCall(call, opts.Tools)
 	invalid := call
@@ -145,52 +163,106 @@ func ParseToolCall(ctx context.Context, opts ParseToolCallOptions) (types.ToolCa
 			invalid.ToolMetadata = cloneStringAnyMap(tool.Metadata)
 		}
 	}
-	return invalid, nil
+	return invalid, invalid, nil
 }
 
-func parseToolCallWithRepair(ctx context.Context, opts ParseToolCallOptions) (types.ToolCall, error) {
+// refineParsedToolCall runs the refiner registered for the call's tool; the
+// refiner's error is returned (TS refineParsedToolCallInput).
+func refineParsedToolCall(ctx context.Context, parsed types.ToolCall, opts ParseToolCallOptions) (types.ToolCall, error) {
+	refiner := opts.RefineToolInput[parsed.ToolName]
+	if refiner == nil {
+		return parsed, nil
+	}
+	var tool *types.Tool
+	for i := range opts.Tools {
+		if opts.Tools[i].Name == parsed.ToolName {
+			tool = &opts.Tools[i]
+			break
+		}
+	}
+	input, err := refiner(ctx, ToolInputRefinementOptions{
+		ToolCall:       parsed,
+		Tool:           tool,
+		RuntimeContext: opts.RuntimeContext,
+		ToolsContext:   opts.ToolsContext,
+	})
+	if err != nil {
+		return types.ToolCall{}, err
+	}
+	if input != nil {
+		parsed.Arguments = input
+	}
+	return parsed, nil
+}
+
+func parseToolCallWithRepair(ctx context.Context, opts ParseToolCallOptions) (types.ToolCall, types.ToolCall, error) {
 	call := opts.ToolCall
-	if len(opts.Tools) == 0 {
+	refine := func(parsed types.ToolCall) (types.ToolCall, types.ToolCall, error) {
+		refined, err := refineParsedToolCall(ctx, parsed, opts)
+		return refined, parsed, err
+	}
+	// TS `tools == null`: a nil slice means no tools at all, while an empty,
+	// non-nil set (ActiveTools filtering every tool out) still goes through
+	// doParseToolCall, so its NoSuchToolError lists the (empty) available
+	// tools and RepairToolCall runs.
+	if opts.Tools == nil {
 		// TS parseToolCall: `toolCall.providerExecuted && toolCall.dynamic`.
 		// A provider-executed call that isn't marked dynamic (e.g. Anthropic
 		// web_search/web_fetch, which rely on a matching registered tool)
 		// must still raise NoSuchToolError when no tools are registered at
 		// all — it is not implicitly treated as a dynamic provider tool.
 		if call.ProviderExecuted && call.Dynamic {
-			return parseProviderExecutedDynamicToolCall(call)
+			parsed, err := parseProviderExecutedDynamicToolCall(call)
+			if err != nil {
+				return types.ToolCall{}, types.ToolCall{}, err
+			}
+			return refine(parsed)
 		}
-		return types.ToolCall{}, &NoSuchToolError{ToolName: call.ToolName}
+		return types.ToolCall{}, types.ToolCall{}, &NoSuchToolError{ToolName: call.ToolName}
 	}
 
 	parsed, err := doParseToolCall(call, opts.Tools)
 	if err == nil {
-		return parsed, nil
+		// The refiner runs inside the same try block as the parse (TS), so
+		// its NoSuchTool/InvalidToolInput errors are repaired too.
+		var refined, pre types.ToolCall
+		if refined, pre, err = refine(parsed); err == nil {
+			return refined, pre, nil
+		}
 	}
+	return repairParsedToolCall(ctx, opts, err, refine)
+}
+
+func repairParsedToolCall(ctx context.Context, opts ParseToolCallOptions, err error, refine func(types.ToolCall) (types.ToolCall, types.ToolCall, error)) (types.ToolCall, types.ToolCall, error) {
 	if opts.RepairToolCall == nil || (!IsNoSuchToolError(err) && !IsInvalidToolInputError(err)) {
-		return types.ToolCall{}, err
+		return types.ToolCall{}, types.ToolCall{}, err
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return types.ToolCall{}, ctxErr
+		return types.ToolCall{}, types.ToolCall{}, ctxErr
 	}
 
 	repaired, repairErr := waitForRepair(ctx, opts, err)
 	if repairErr != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return types.ToolCall{}, ctxErr
+			return types.ToolCall{}, types.ToolCall{}, ctxErr
 		}
-		return types.ToolCall{}, &ToolCallRepairError{Cause: repairErr, OriginalError: err}
+		return types.ToolCall{}, types.ToolCall{}, &ToolCallRepairError{Cause: repairErr, OriginalError: err}
 	}
 	if repaired == nil {
-		return types.ToolCall{}, err
+		return types.ToolCall{}, types.ToolCall{}, err
 	}
 	parsedRepaired, err := doParseToolCall(*repaired, opts.Tools)
 	if err != nil {
-		return types.ToolCall{}, err
+		return types.ToolCall{}, types.ToolCall{}, err
+	}
+	refinedRepaired, pre, err := refine(parsedRepaired)
+	if err != nil {
+		return types.ToolCall{}, types.ToolCall{}, err
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return types.ToolCall{}, ctxErr
+		return types.ToolCall{}, types.ToolCall{}, ctxErr
 	}
-	return parsedRepaired, nil
+	return refinedRepaired, pre, nil
 }
 
 // waitForRepair runs the repair function and returns as soon as ctx is
@@ -204,7 +276,13 @@ func waitForRepair(ctx context.Context, opts ParseToolCallOptions, parseErr erro
 		InputSchema: func(toolName string) (map[string]interface{}, error) {
 			tool := findToolForCall(types.ToolCall{ToolName: toolName}, tools)
 			if tool == nil {
-				return nil, &NoSuchToolError{ToolName: toolName, AvailableTools: toolNames(tools)}
+				// TS asSchema(getOwn(tools, toolName)?.inputSchema): an
+				// unknown tool has the empty object schema, not an error.
+				return map[string]interface{}{
+					"type":                 "object",
+					"properties":           map[string]interface{}{},
+					"additionalProperties": false,
+				}, nil
 			}
 			return toolInputJSONSchema(tool), nil
 		},
@@ -275,7 +353,7 @@ func doParseToolCall(call types.ToolCall, tools []types.Tool) (types.ToolCall, e
 	if tool.Metadata != nil {
 		parsed.ToolMetadata = cloneStringAnyMap(tool.Metadata)
 	}
-	parsed.Dynamic = call.Dynamic || tool.Type == "dynamic"
+	parsed.Dynamic = tool.Type == "dynamic"
 	return parsed, nil
 }
 
@@ -287,6 +365,7 @@ func parseProviderExecutedDynamicToolCall(call types.ToolCall) (types.ToolCall, 
 	parsed := call
 	parsed.Arguments = args
 	parsed.ProviderExecuted = true
+	parsed.ProviderExecutedSet = true
 	parsed.Dynamic = true
 	return parsed, nil
 }
@@ -295,8 +374,9 @@ func parseProviderExecutedDynamicToolCall(call types.ToolCall) (types.ToolCall, 
 // input takes precedence; an empty input is treated as an empty object (many
 // models emit empty strings for tools without arguments).
 func toolCallInputArguments(call types.ToolCall) (map[string]interface{}, error) {
-	raw := strings.TrimSpace(call.RawArguments)
-	if raw == "" {
+	raw := call.RawArguments
+	// TS: toolCall.input.trim() === '' (JavaScript whitespace).
+	if providerutils.JSTrim(raw) == "" {
 		if call.Arguments == nil {
 			return map[string]interface{}{}, nil
 		}
@@ -311,6 +391,14 @@ func toolCallInputArguments(call types.ToolCall) (map[string]interface{}, error)
 		return v, nil
 	case nil:
 		return map[string]interface{}{}, nil
+	case string:
+		// A custom (text) tool call: providers carry TS's
+		// `input: JSON.stringify(text)` as RawArguments and the same text as
+		// Arguments {"input": text}.
+		if call.Arguments != nil {
+			return call.Arguments, nil
+		}
+		return nil, fmt.Errorf("tool input must be a JSON object, got %T", value)
 	default:
 		return nil, fmt.Errorf("tool input must be a JSON object, got %T", value)
 	}
@@ -323,7 +411,7 @@ func toolCallInputText(call types.ToolCall) string {
 	if call.Arguments == nil {
 		return ""
 	}
-	data, err := json.Marshal(call.Arguments)
+	data, err := jsonstr.Marshal(call.Arguments)
 	if err != nil {
 		return ""
 	}
@@ -332,9 +420,18 @@ func toolCallInputText(call types.ToolCall) string {
 
 // toolCallInputValidator returns a JSON-schema validator for the tool input,
 // or nil when the tool has no JSON schema that can validate a decoded map.
-// Provider-executed tools are validated by the provider.
+// Provider tools (provider-executed or not) are validated too: TS
+// parseToolCall checks every tool's inputSchema, and an invalid
+// provider-executed call becomes invalid and dynamic without a client tool
+// error. Provider tools without Parameters are not validated.
 func toolCallInputValidator(tool *types.Tool) schema.Validator {
-	if tool == nil || tool.ProviderExecuted || tool.Type == "provider" {
+	if tool == nil {
+		return nil
+	}
+	if isHintedParameters(tool.Parameters) {
+		if m, ok := schema.ParametersMap(tool.Parameters); ok && len(m) > 0 {
+			return schema.NewJSONSchema(m)
+		}
 		return nil
 	}
 	switch s := tool.Parameters.(type) {
@@ -347,8 +444,26 @@ func toolCallInputValidator(tool *types.Tool) schema.Validator {
 		if s == nil {
 			return nil
 		}
-		if v, ok := s.Validator().(*schema.JSONSchemaValidator); ok {
-			return v
+		return jsonSchemaToolValidator(s.Validator())
+	case schema.Validator:
+		return jsonSchemaToolValidator(s)
+	}
+	return nil
+}
+
+// jsonSchemaToolValidator returns v when it validates against a JSON Schema
+// (a *schema.JSONSchemaValidator, or an *schema.OrderedSchema, the TS
+// jsonSchema() analog), else nil. A struct-tag validator cannot validate the
+// decoded input map, so it is not used.
+func jsonSchemaToolValidator(v schema.Validator) schema.Validator {
+	switch val := v.(type) {
+	case *schema.JSONSchemaValidator:
+		if val != nil {
+			return val
+		}
+	case *schema.OrderedSchema:
+		if val != nil {
+			return val
 		}
 	}
 	return nil
@@ -369,12 +484,21 @@ func applyToolCallInputDefaults(args map[string]interface{}, validator schema.Va
 }
 
 func toolInputJSONSchema(tool *types.Tool) map[string]interface{} {
+	if isHintedParameters(tool.Parameters) {
+		if m, ok := schema.ParametersMap(tool.Parameters); ok {
+			return m
+		}
+	}
 	switch s := tool.Parameters.(type) {
 	case map[string]interface{}:
 		return s
 	case schema.Schema:
 		if s != nil {
 			return s.Validator().JSONSchema()
+		}
+	case schema.Validator:
+		if s != nil {
+			return s.JSONSchema()
 		}
 	}
 	return map[string]interface{}{"type": "object"}
@@ -390,20 +514,22 @@ func toolNames(tools []types.Tool) []string {
 
 // parseToolCalls parses every tool call of a step (TS Promise.all over
 // parseToolCall).
-func parseToolCalls(ctx context.Context, calls []types.ToolCall, opts ParseToolCallOptions) ([]types.ToolCall, error) {
+func parseToolCalls(ctx context.Context, calls []types.ToolCall, opts ParseToolCallOptions) (refined, preRefinement []types.ToolCall, err error) {
 	if len(calls) == 0 {
-		return calls, nil
+		return calls, calls, nil
 	}
-	parsed := make([]types.ToolCall, len(calls))
+	refined = make([]types.ToolCall, len(calls))
+	preRefinement = make([]types.ToolCall, len(calls))
 	for i, call := range calls {
 		opts.ToolCall = call
-		result, err := ParseToolCall(ctx, opts)
+		result, pre, err := parseAndRefineToolCall(ctx, opts)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		parsed[i] = result
+		refined[i] = result
+		preRefinement[i] = pre
 	}
-	return parsed, nil
+	return refined, preRefinement, nil
 }
 
 // invokeToolInputCallbacks calls OnInputStart and then OnInputAvailable for
@@ -415,32 +541,44 @@ func invokeToolInputCallbacks(ctx context.Context, calls []types.ToolCall, tools
 			continue
 		}
 		tool := findToolForCall(call, tools)
-		if tool == nil || (tool.OnInputStart == nil && tool.OnInputAvailable == nil) {
+		if tool == nil {
 			continue
 		}
-		toolContext, err := validateToolContextFor(tool, call.ToolName, toolsContext[call.ToolName])
-		if err != nil {
+		if err := invokeToolInputCallbacksFor(ctx, call, tool, messages, toolsContext); err != nil {
 			return err
 		}
-		if tool.OnInputStart != nil {
-			if err := tool.OnInputStart(ctx, types.OnInputStartOptions{
-				ToolCallID: call.ID,
-				Messages:   messages,
-				Context:    toolContext,
-			}); err != nil {
-				return err
-			}
+	}
+	return nil
+}
+
+// invokeToolInputCallbacksFor runs one valid call's OnInputStart and then
+// OnInputAvailable, validating the tool context first when either is set.
+func invokeToolInputCallbacksFor(ctx context.Context, call types.ToolCall, tool *types.Tool, messages []types.Message, toolsContext map[string]interface{}) error {
+	if tool.OnInputStart == nil && tool.OnInputAvailable == nil {
+		return nil
+	}
+	toolContext, err := validateToolContextFor(tool, call.ToolName, toolsContext[call.ToolName])
+	if err != nil {
+		return err
+	}
+	if tool.OnInputStart != nil {
+		if err := tool.OnInputStart(ctx, types.OnInputStartOptions{
+			ToolCallID: call.ID,
+			Messages:   messages,
+			Context:    toolContext,
+		}); err != nil {
+			return err
 		}
-		if tool.OnInputAvailable != nil {
-			if err := tool.OnInputAvailable(ctx, types.OnInputAvailableOptions{
-				Input:      call.Arguments,
-				Value:      call.Arguments, //nolint:staticcheck // deprecated alias of Input, kept for callbacks still reading it
-				ToolCallID: call.ID,
-				Messages:   messages,
-				Context:    toolContext,
-			}); err != nil {
-				return err
-			}
+	}
+	if tool.OnInputAvailable != nil {
+		if err := tool.OnInputAvailable(ctx, types.OnInputAvailableOptions{
+			Input:      call.Arguments,
+			Value:      call.Arguments, //nolint:staticcheck // deprecated alias of Input, kept for callbacks still reading it
+			ToolCallID: call.ID,
+			Messages:   messages,
+			Context:    toolContext,
+		}); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -585,4 +723,20 @@ func invalidToolCallResult(call types.ToolCall) types.ToolResult {
 		ProviderMetadata: call.ProviderMetadata,
 		ToolMetadata:     call.ToolMetadata,
 	}
+}
+
+// ErrorName is the TS error name, used where TS shows error.toString().
+func (e *NoSuchToolError) ErrorName() string { return "AI_NoSuchToolError" }
+
+// ErrorName is the TS error name, used where TS shows error.toString().
+func (e *ToolCallRepairError) ErrorName() string { return "AI_ToolCallRepairError" }
+
+// isHintedParameters reports whether a tool's Parameters is a
+// jsonorder.Hinted, in its value or pointer form.
+func isHintedParameters(p interface{}) bool {
+	switch p.(type) {
+	case jsonorder.Hinted, *jsonorder.Hinted:
+		return true
+	}
+	return false
 }

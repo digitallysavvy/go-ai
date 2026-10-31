@@ -50,16 +50,16 @@ func TestReplicateLanguageDoGenerateWithPolling(t *testing.T) {
 	p := newReplicateProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
 		if r.Method == http.MethodPost && r.URL.Path == "/predictions" {
 			_ = json.NewDecoder(r.Body).Decode(&postBody)
-			return replicateJSONResponse(200, `{"id":"pred1","status":"starting"}`), nil
+			return replicateJSONResponse(200, `{"id":"pred1","status":"starting","urls":{"get":"https://replicate.example/predictions/pred1"}}`), nil
 		}
 		if r.Method == http.MethodGet && r.URL.Path == "/predictions/pred1" {
-			return replicateJSONResponse(200, `{"id":"pred1","status":"succeeded","output":["hello ","world"]}`), nil
+			return replicateJSONResponse(200, `{"id":"pred1","status":"succeeded","output":["hello ","world"],"urls":{"get":"https://replicate.example/predictions/pred1"}}`), nil
 		}
 		return nil, errors.New("unexpected request")
 	})
 
 	lm := NewLanguageModel(p, "ver-1")
-	if lm.SpecificationVersion() != "v3" || lm.Provider() != "replicate" || lm.ModelID() != "ver-1" {
+	if lm.SpecificationVersion() != "v4" || lm.Provider() != "replicate" || lm.ModelID() != "ver-1" {
 		t.Fatalf("metadata mismatch")
 	}
 	if lm.SupportsTools() || lm.SupportsStructuredOutput() || lm.SupportsImageInput() {
@@ -77,15 +77,15 @@ func TestReplicateLanguageDoGenerateWithPolling(t *testing.T) {
 func TestReplicateImageDoGeneratePollingAndNoURLError(t *testing.T) {
 	p := newReplicateProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
 		if r.Method == http.MethodPost && r.URL.Path == "/predictions" {
-			return replicateJSONResponse(200, `{"id":"pred2","status":"processing"}`), nil
+			return replicateJSONResponse(200, `{"id":"pred2","status":"processing","urls":{"get":"https://replicate.example/predictions/pred2"}}`), nil
 		}
 		if r.Method == http.MethodGet && r.URL.Path == "/predictions/pred2" {
-			return replicateJSONResponse(200, `{"id":"pred2","status":"succeeded","output":[]}`), nil
+			return replicateJSONResponse(200, `{"id":"pred2","status":"succeeded","output":[],"urls":{"get":"https://replicate.example/predictions/pred2"}}`), nil
 		}
 		return nil, errors.New("unexpected request")
 	})
-	im := NewImageModel(p, "img-ver")
-	if im.SpecificationVersion() != "v4" || im.Provider() != "replicate" || im.ModelID() != "img-ver" {
+	im := NewImageModel(p, "img-ver:v1")
+	if im.SpecificationVersion() != "v4" || im.Provider() != "replicate" || im.ModelID() != "img-ver:v1" {
 		t.Fatalf("metadata mismatch")
 	}
 	_, err := im.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "cat"})
@@ -100,12 +100,12 @@ func TestReplicateVideoDoGeneratePollingNoVideo(t *testing.T) {
 			return replicateJSONResponse(200, `{"id":"pred3","status":"starting","urls":{"get":"https://replicate.example/predictions/pred3"}}`), nil
 		}
 		if r.Method == http.MethodGet && r.URL.Path == "/predictions/pred3" {
-			return replicateJSONResponse(200, `{"id":"pred3","status":"succeeded","output":[]}`), nil
+			return replicateJSONResponse(200, `{"id":"pred3","status":"succeeded","output":null,"urls":{"get":"https://replicate.example/predictions/pred3"}}`), nil
 		}
 		return nil, errors.New("unexpected request")
 	})
 	vm := NewVideoModel(p, "vid-ver:vid-version-id")
-	if vm.SpecificationVersion() != "v3" || vm.Provider() != "replicate" || vm.ModelID() != "vid-ver:vid-version-id" {
+	if vm.SpecificationVersion() != "v4" || vm.Provider() != "replicate.video" || vm.ModelID() != "vid-ver:vid-version-id" {
 		t.Fatalf("metadata mismatch")
 	}
 	if got := vm.MaxVideosPerCall(); got == nil || *got != 1 {
@@ -125,10 +125,10 @@ func TestReplicateVideoDoGeneratePollingNoVideo(t *testing.T) {
 func TestReplicatePollingFailuresAndStreamHelpers(t *testing.T) {
 	pFail := newReplicateProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
 		if r.Method == http.MethodPost && r.URL.Path == "/predictions" {
-			return replicateJSONResponse(200, `{"id":"pred4","status":"starting"}`), nil
+			return replicateJSONResponse(200, `{"id":"pred4","status":"starting","urls":{"get":"https://replicate.example/predictions/pred4"}}`), nil
 		}
 		if r.Method == http.MethodGet && r.URL.Path == "/predictions/pred4" {
-			return replicateJSONResponse(200, `{"id":"pred4","status":"failed","error":"bad"}`), nil
+			return replicateJSONResponse(200, `{"id":"pred4","status":"failed","error":"bad","urls":{"get":"https://replicate.example/predictions/pred4"}}`), nil
 		}
 		return nil, errors.New("unexpected request")
 	})
@@ -144,14 +144,14 @@ func TestReplicatePollingFailuresAndStreamHelpers(t *testing.T) {
 
 	pCancel := newReplicateProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
 		if r.Method == http.MethodPost && r.URL.Path == "/predictions" {
-			return replicateJSONResponse(200, `{"id":"pred5","status":"starting"}`), nil
+			return replicateJSONResponse(200, `{"id":"pred5","status":"starting","urls":{"get":"https://replicate.example/predictions/pred5"}}`), nil
 		}
 		if r.Method == http.MethodGet && r.URL.Path == "/predictions/pred5" {
-			return replicateJSONResponse(200, `{"id":"pred5","status":"canceled","error":"canceled"}`), nil
+			return replicateJSONResponse(200, `{"id":"pred5","status":"canceled","error":"canceled","urls":{"get":"https://replicate.example/predictions/pred5"}}`), nil
 		}
 		return nil, errors.New("unexpected request")
 	})
-	_, err = NewImageModel(pCancel, "img").DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
+	_, err = NewImageModel(pCancel, "img:v1").DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
 	if err == nil || !errors.As(err, &respErr) || !strings.Contains(err.Error(), "Replicate image generation canceled: canceled") {
 		t.Fatalf("expected InvalidResponseDataError with 'Replicate image generation canceled: canceled', got %v", err)
 	}
@@ -173,15 +173,15 @@ func TestReplicateImageDoGenerateWiresProviderOptionsIntoPolling(t *testing.T) {
 	var getCount int
 	p := newReplicateProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
 		if r.Method == http.MethodPost && r.URL.Path == "/predictions" {
-			return replicateJSONResponse(200, `{"id":"pred-wire","status":"starting"}`), nil
+			return replicateJSONResponse(200, `{"id":"pred-wire","status":"starting","urls":{"get":"https://replicate.example/predictions/pred-wire"}}`), nil
 		}
 		if r.Method == http.MethodGet && r.URL.Path == "/predictions/pred-wire" {
 			getCount++
-			return replicateJSONResponse(200, `{"id":"pred-wire","status":"processing"}`), nil
+			return replicateJSONResponse(200, `{"id":"pred-wire","status":"processing","urls":{"get":"https://replicate.example/predictions/pred-wire"}}`), nil
 		}
 		return nil, errors.New("unexpected request")
 	})
-	im := NewImageModel(p, "img-wire")
+	im := NewImageModel(p, "img-wire:v1")
 	_, err := im.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
 		Prompt: "cat",
 		ProviderOptions: map[string]interface{}{
@@ -191,7 +191,7 @@ func TestReplicateImageDoGenerateWiresProviderOptionsIntoPolling(t *testing.T) {
 			},
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "timed out after 3 attempts") {
+	if err == nil || !strings.Contains(err.Error(), "did not complete after 3 polling attempts") {
 		t.Fatalf("error = %v, want timeout after 3 attempts (ProviderOptions wired through)", err)
 	}
 	if getCount != 3 {
@@ -202,11 +202,11 @@ func TestReplicateImageDoGenerateWiresProviderOptionsIntoPolling(t *testing.T) {
 func TestReplicateImageNullOutputAfterCompletionReturnsInvalidResponseDataError(t *testing.T) {
 	p := newReplicateProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
 		if r.Method == http.MethodPost && r.URL.Path == "/predictions" {
-			return replicateJSONResponse(200, `{"id":"pred-null","status":"succeeded","output":null}`), nil
+			return replicateJSONResponse(200, `{"id":"pred-null","status":"succeeded","output":null,"urls":{"get":"https://replicate.example/predictions/pred-null"}}`), nil
 		}
 		return nil, errors.New("unexpected request")
 	})
-	im := NewImageModel(p, "img-ver")
+	im := NewImageModel(p, "img-ver:v1")
 	_, err := im.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "cat"})
 	if err == nil {
 		t.Fatal("expected InvalidResponseDataError for null output")
@@ -222,9 +222,9 @@ func TestReplicateImagePollingRespectsCustomPollOptions(t *testing.T) {
 		if r.Method == http.MethodGet && r.URL.Path == "/predictions/pred-poll" {
 			getCount++
 			if getCount < 3 {
-				return replicateJSONResponse(200, `{"id":"pred-poll","status":"processing"}`), nil
+				return replicateJSONResponse(200, `{"id":"pred-poll","status":"processing","urls":{"get":"https://replicate.example/predictions/pred-poll"}}`), nil
 			}
-			return replicateJSONResponse(200, `{"id":"pred-poll","status":"succeeded","output":["https://example.test/out.png"]}`), nil
+			return replicateJSONResponse(200, `{"id":"pred-poll","status":"succeeded","output":["https://example.test/out.png"],"urls":{"get":"https://replicate.example/predictions/pred-poll"}}`), nil
 		}
 		return nil, errors.New("unexpected request")
 	})
@@ -233,7 +233,7 @@ func TestReplicateImagePollingRespectsCustomPollOptions(t *testing.T) {
 	pollIntervalMillis := 5
 	maxPollAttempts := 10
 	start := time.Now()
-	prediction, err := im.pollImagePrediction(context.Background(), "pred-poll", ReplicateImagePollOptions{
+	prediction, err := im.pollImagePrediction(context.Background(), replicateImagePrediction{ID: "pred-poll", Status: "starting"}, nil, ReplicateImagePollOptions{
 		PollIntervalMillis: &pollIntervalMillis,
 		MaxPollAttempts:    &maxPollAttempts,
 	})
@@ -258,18 +258,18 @@ func TestReplicateImagePollingRespectsCustomPollOptions(t *testing.T) {
 func TestReplicateImagePollingRespectsMaxPollAttempts(t *testing.T) {
 	p := newReplicateProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
 		if r.Method == http.MethodGet && r.URL.Path == "/predictions/pred-timeout" {
-			return replicateJSONResponse(200, `{"id":"pred-timeout","status":"processing"}`), nil
+			return replicateJSONResponse(200, `{"id":"pred-timeout","status":"processing","urls":{"get":"https://replicate.example/predictions/pred-timeout"}}`), nil
 		}
 		return nil, errors.New("unexpected request")
 	})
 	im := NewImageModel(p, "img-timeout")
 	pollIntervalMillis := 1
 	maxPollAttempts := 2
-	_, err := im.pollImagePrediction(context.Background(), "pred-timeout", ReplicateImagePollOptions{
+	_, err := im.pollImagePrediction(context.Background(), replicateImagePrediction{ID: "pred-timeout", Status: "starting"}, nil, ReplicateImagePollOptions{
 		PollIntervalMillis: &pollIntervalMillis,
 		MaxPollAttempts:    &maxPollAttempts,
 	})
-	if err == nil || !strings.Contains(err.Error(), "timed out after 2 attempts") {
+	if err == nil || !strings.Contains(err.Error(), "did not complete after 2 polling attempts") {
 		t.Fatalf("error = %v, want timeout after 2 attempts", err)
 	}
 }
@@ -285,7 +285,7 @@ type replicateRoundTripper func(*http.Request) (*http.Response, error)
 func TestPollPrediction_RespondsPromptlyToContextCancellation(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"p1","status":"processing"}`))
+		_, _ = w.Write([]byte(`{"id":"p1","status":"processing","urls":{"get":"https://replicate.example/predictions/p1"}}`))
 	}))
 	defer srv.Close()
 
@@ -299,7 +299,7 @@ func TestPollPrediction_RespondsPromptlyToContextCancellation(t *testing.T) {
 	}()
 
 	start := time.Now()
-	_, err := m.pollPrediction(ctx, "p1")
+	_, err := m.pollPrediction(ctx, "p1", nil)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -315,7 +315,7 @@ func TestPollPrediction_RespondsPromptlyToContextCancellation(t *testing.T) {
 func TestPollImagePrediction_RespondsPromptlyToContextCancellation(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"p1","status":"processing"}`))
+		_, _ = w.Write([]byte(`{"id":"p1","status":"processing","urls":{"get":"https://replicate.example/predictions/p1"}}`))
 	}))
 	defer srv.Close()
 
@@ -329,7 +329,7 @@ func TestPollImagePrediction_RespondsPromptlyToContextCancellation(t *testing.T)
 	}()
 
 	start := time.Now()
-	_, err := m.pollImagePrediction(ctx, "p1", ReplicateImagePollOptions{})
+	_, err := m.pollImagePrediction(ctx, replicateImagePrediction{ID: "p1", Status: "starting"}, nil, ReplicateImagePollOptions{})
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -350,7 +350,7 @@ func newReplicateProviderWithTransport(t *testing.T, rt replicateRoundTripper) *
 	p.client = internalhttp.NewClient(internalhttp.Config{
 		BaseURL: "https://replicate.example",
 		Headers: map[string]string{
-			"Authorization": "Token k",
+			"Authorization": "Bearer k",
 			"Content-Type":  "application/json",
 		},
 		HTTPClient: &http.Client{Transport: rt},

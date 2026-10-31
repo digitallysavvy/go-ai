@@ -1021,3 +1021,185 @@ func TestBatch_DoGetBatchResults_ProviderExecutedToolCalls(t *testing.T) {
 		t.Errorf("Content = %+v, want tool-result/text/source parts", item.TextResult.Content)
 	}
 }
+
+// Every batch call sends the provider headers merged with the per-call headers
+// (TS combineHeaders(config.headers(), options.headers)).
+func TestBatch_SendsProviderAndCallHeaders(t *testing.T) {
+	server := newXAIBatchTestServer(t)
+	defer server.close()
+	server.filesBody = map[string]interface{}{"id": "file_123"}
+	server.createBody = xaiBatchResponseBody(nil)
+	server.statusBody = xaiBatchResponseBody(nil)
+	server.cancelBody = xaiBatchResponseBody(nil)
+	server.listBody = map[string]interface{}{"batches": []interface{}{}}
+	server.resultsBody = []map[string]interface{}{{"results": []interface{}{}}}
+
+	p := New(Config{APIKey: "test-api-key", BaseURL: server.ts.URL, Headers: map[string]string{"X-Provider": "p", "X-Both": "provider"}})
+	batch := NewBatch(p)
+	h := map[string]string{"X-Call": "c", "X-Both": "call"}
+	ctx := context.Background()
+	if _, err := batch.DoStartBatch(ctx, provider.BatchV4StartOptions{Requests: []provider.BatchV4Request{textBatchRequest("a", "grok-4.3", "hi")}, Headers: h}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := batch.DoGetBatchStatus(ctx, provider.BatchV4OperationOptions{BatchID: "batch_123", Headers: h}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := batch.DoCancelBatch(ctx, provider.BatchV4OperationOptions{BatchID: "batch_123", Headers: h}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := batch.DoListBatches(ctx, provider.BatchV4ListOptions{Headers: h}); err != nil {
+		t.Fatal(err)
+	}
+	stream, err := batch.DoGetBatchResults(ctx, provider.BatchV4OperationOptions{BatchID: "batch_123", Headers: h})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := stream.Next(); err != nil {
+			break
+		}
+	}
+	_ = stream.Close()
+
+	want := map[string]bool{"POST /files": false, "POST /batches": false, "GET /batches/batch_123": false, "POST /batches/batch_123:cancel": false, "GET /batches": false, "GET /batches/batch_123/results": false}
+	for i := 0; i < server.requestCount(); i++ {
+		r := server.request(i)
+		key := r.Method + " " + r.Path
+		if _, ok := want[key]; !ok {
+			continue
+		}
+		want[key] = true
+		if r.Headers.Get("Authorization") != "Bearer test-api-key" || r.Headers.Get("X-Provider") != "p" || r.Headers.Get("X-Call") != "c" || r.Headers.Get("X-Both") != "call" {
+			t.Errorf("%s headers = %v", key, r.Headers)
+		}
+	}
+	for key, seen := range want {
+		if !seen {
+			t.Errorf("no request %s", key)
+		}
+	}
+}
+
+// TS throws from the result generator when an image has neither data nor a
+// URL (InvalidArgumentError), which errors the whole result stream.
+func TestBatch_DoGetBatchResults_ImageWithoutDataErrorsStream(t *testing.T) {
+	server := newXAIBatchTestServer(t)
+	defer server.close()
+	server.statusBody = xaiBatchResponseBody(nil)
+	server.resultsBody = []map[string]interface{}{{
+		"results": []map[string]interface{}{{
+			"batch_request_id": "image-empty",
+			"batch_result": map[string]interface{}{"response": map[string]interface{}{
+				"image_generation": map[string]interface{}{"data": []map[string]interface{}{{"revised_prompt": "x"}}},
+			}},
+		}},
+	}}
+	batch := newTestXAIBatchProvider(server.ts.URL)
+	stream, err := batch.DoGetBatchResults(context.Background(), provider.BatchV4OperationOptions{BatchID: "batch_123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := stream.Next()
+	if err == nil || item != nil {
+		t.Fatalf("want a stream error, got item=%+v err=%v", item, err)
+	}
+	if stream.Err() == nil {
+		t.Fatal("Err() should report the failure")
+	}
+}
+
+// TS: `paginationToken = page.pagination_token ?? undefined; while (!= null)`
+// — an empty-string token keeps paging (only null/absent ends the loop).
+func TestBatch_DoGetBatchResults_EmptyPaginationTokenKeepsPaging(t *testing.T) {
+	server := newXAIBatchTestServer(t)
+	defer server.close()
+	server.statusBody = xaiBatchResponseBody(nil)
+	server.resultsBody = []map[string]interface{}{
+		{"results": []map[string]interface{}{successfulTextResultWire("a", "A")}, "pagination_token": ""},
+		{"results": []map[string]interface{}{successfulTextResultWire("b", "B")}, "pagination_token": nil},
+	}
+	batch := newTestXAIBatchProvider(server.ts.URL)
+	stream, err := batch.DoGetBatchResults(context.Background(), provider.BatchV4OperationOptions{BatchID: "batch_123"})
+	if err != nil {
+		t.Fatalf("DoGetBatchResults() error = %v", err)
+	}
+	results := drainXAIBatchResults(t, stream)
+	if len(results) != 2 || results[1].ID != "b" {
+		t.Fatalf("results = %+v, want a then b", results)
+	}
+	if got := server.request(2).Query["pagination_token"]; len(got) != 1 || got[0] != "" {
+		t.Errorf("second page pagination_token = %v, want [\"\"]", got)
+	}
+}
+
+// TS xaiBatchTextResponseSchema: a choice with an unknown role or a message
+// missing entirely makes the item an invalid_response failure.
+func TestBatch_DoGetBatchResults_TextSchemaRejectsBadRoleAndMissingUsageFields(t *testing.T) {
+	bodies := []map[string]interface{}{
+		{"choices": []map[string]interface{}{{"index": 0, "message": map[string]interface{}{"role": "user", "content": "x"}}}},
+		{"choices": []map[string]interface{}{{"index": 0, "message": map[string]interface{}{"role": "assistant", "content": "x"}}},
+			"usage": map[string]interface{}{"prompt_tokens": 1}},
+		{"choices": []map[string]interface{}{{"index": 0, "message": map[string]interface{}{"role": "assistant", "content": "x"}}},
+			"citations": []string{"not a url"}},
+	}
+	for i, body := range bodies {
+		server := newXAIBatchTestServer(t)
+		server.statusBody = xaiBatchResponseBody(nil)
+		server.resultsBody = []map[string]interface{}{{"results": []map[string]interface{}{{
+			"batch_request_id": "r",
+			"batch_result":     map[string]interface{}{"response": map[string]interface{}{"chat_get_completion": body}},
+		}}}}
+		batch := newTestXAIBatchProvider(server.ts.URL)
+		stream, err := batch.DoGetBatchResults(context.Background(), provider.BatchV4OperationOptions{BatchID: "batch_123"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		item, err := stream.Next()
+		server.close()
+		if err != nil || item.Status != provider.BatchItemFailed || item.Error == nil || item.Error.Code != "invalid_response" {
+			t.Fatalf("case %d: item=%+v err=%v, want invalid_response failure", i, item, err)
+		}
+	}
+}
+
+// TS decodes b64_json images and downloads only those without it when not
+// every image carries b64_json.
+func TestBatch_DoGetBatchResults_MixedBase64AndMissingURL(t *testing.T) {
+	server := newXAIBatchTestServer(t)
+	defer server.close()
+	server.statusBody = xaiBatchResponseBody(nil)
+	server.resultsBody = []map[string]interface{}{{"results": []map[string]interface{}{{
+		"batch_request_id": "r",
+		"batch_result": map[string]interface{}{"response": map[string]interface{}{"image_generation": map[string]interface{}{
+			"data": []map[string]interface{}{{"b64_json": "aGk="}, {"url": nil}},
+		}}},
+	}}}}
+	batch := newTestXAIBatchProvider(server.ts.URL)
+	stream, err := batch.DoGetBatchResults(context.Background(), provider.BatchV4OperationOptions{BatchID: "batch_123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = stream.Next()
+	var invalid *providererrors.InvalidArgumentError
+	if !errors.As(err, &invalid) || invalid.Field != "batchResult" {
+		t.Fatalf("err = %v, want InvalidArgumentError batchResult (the b64 image must not be treated as missing)", err)
+	}
+}
+
+// TS convertXaiBatchStatus treats any non-null cancel_time or
+// cancel_by_xai_message as cancelled, even an empty string.
+func TestConvertXAIBatchStatusEmptyCancelMarkersCountAsCancelled(t *testing.T) {
+	empty := ""
+	st := convertXAIBatchStatus(xaiBatchResponseWire{BatchID: "b1", CancelTime: &empty})
+	if st.Status != provider.BatchStatusFailed || st.Error == nil || st.Error.Code != "batch_cancelled" {
+		t.Fatalf("status = %#v", st)
+	}
+	st = convertXAIBatchStatus(xaiBatchResponseWire{BatchID: "b1", CancelByXAIMessage: &empty})
+	if st.Status != provider.BatchStatusFailed || st.Error == nil || st.Error.Message != "" {
+		t.Fatalf("status = %#v err=%#v", st, st.Error)
+	}
+	st = convertXAIBatchStatus(xaiBatchResponseWire{BatchID: "b1"})
+	if st.Status == provider.BatchStatusFailed {
+		t.Fatalf("absent markers must not cancel: %#v", st)
+	}
+}

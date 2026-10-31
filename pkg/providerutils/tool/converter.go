@@ -5,15 +5,22 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 // ToJSONSchema converts a Tool to JSON Schema format
 // This is used when sending tool definitions to AI providers
 func ToJSONSchema(tool types.Tool) map[string]interface{} {
 	functionDef := map[string]interface{}{
-		"name":        tool.Name,
-		"description": tool.Description,
+		"name": tool.Name,
+	}
+	// TS sends `description: tool.description`, which JSON.stringify drops
+	// when the tool has no description.
+	if tool.Description != "" {
+		functionDef["description"] = tool.Description
 	}
 
 	functionDef["parameters"] = defaultObjectSchema(tool.Parameters)
@@ -37,11 +44,24 @@ func ToJSONSchema(tool types.Tool) map[string]interface{} {
 }
 
 func defaultObjectSchema(parameters interface{}) interface{} {
+	// A schema.Schema marshals as {}; send its JSON Schema. An
+	// *schema.OrderedSchema is kept so its key order reaches the wire.
+	if resolved, ok := resolveParameters(parameters); ok {
+		parameters = resolved
+	}
 	if parameters == nil {
 		return map[string]interface{}{
 			"type":       "object",
 			"properties": map[string]interface{}{},
 		}
+	}
+	if ordered, ok := parameters.(*schema.OrderedSchema); ok {
+		// Keeps the source key order on the wire; a schema without a type
+		// gets the default object type like a map does.
+		if _, hasType := ordered.JSONSchema()["type"]; hasType {
+			return ordered
+		}
+		parameters = ordered.JSONSchema()
 	}
 	if schema, ok := parameters.(map[string]interface{}); ok {
 		if _, hasType := schema["type"]; !hasType {
@@ -82,10 +102,26 @@ func ToAnthropicFormat(tools []types.Tool) []map[string]interface{} {
 // sanitizer. It keeps the structural subset Anthropic accepts, sets object
 // schemas to additionalProperties=false, and moves unsupported validation
 // constraints into descriptions so model guidance is not lost.
-func SanitizeAnthropicSchema(schema interface{}) interface{} {
-	switch v := schema.(type) {
+//
+// A schema.Schema (what ai.GenerateObject passes) is resolved to its JSON
+// Schema first. Raw JSON (json.RawMessage or []byte) keeps its key order on the
+// wire, like the JS object TS sanitizes, so `properties` stay in the order the
+// caller wrote them.
+func SanitizeAnthropicSchema(in interface{}) interface{} {
+	switch v := in.(type) {
 	case map[string]interface{}:
 		return sanitizeAnthropicSchemaMap(v)
+	case json.RawMessage:
+		return sanitizeAnthropicRawSchema(v)
+	case []byte:
+		return sanitizeAnthropicRawSchema(v)
+	case *schema.OrderedSchema:
+		// Sanitize in source key order, like a raw JSON schema.
+		raw, err := v.MarshalJSON()
+		if err != nil {
+			return sanitizeAnthropicSchemaMap(v.JSONSchema())
+		}
+		return sanitizeAnthropicRawSchema(raw)
 	case []interface{}:
 		out := make([]interface{}, len(v))
 		for i, item := range v {
@@ -93,24 +129,39 @@ func SanitizeAnthropicSchema(schema interface{}) interface{} {
 		}
 		return out
 	default:
-		return schema
+		if resolved, ok := resolveParameters(in); ok {
+			return sanitizeAnthropicSchemaMap(resolved)
+		}
+		return in
 	}
 }
 
+func sanitizeAnthropicRawSchema(raw []byte) interface{} {
+	hint, ok := jsonorder.Parse(raw)
+	if !ok {
+		return json.RawMessage(raw)
+	}
+	var decoded interface{}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return json.RawMessage(raw)
+	}
+	return jsonorder.Hinted{V: SanitizeAnthropicSchema(decoded), Hint: hint}
+}
+
 func sanitizeAnthropicSchemaMap(schema map[string]interface{}) map[string]interface{} {
-	if ref, ok := schema["$ref"]; ok {
+	if ref, ok := schema["$ref"]; ok && ref != nil {
 		return map[string]interface{}{"$ref": ref}
 	}
 
 	out := map[string]interface{}{}
-	copyIfPresent(out, schema, "$schema")
-	copyIfPresent(out, schema, "$id")
-	copyIfPresent(out, schema, "title")
-	copyIfPresent(out, schema, "description")
+	copyIfNotNil(out, schema, "$schema")
+	copyIfNotNil(out, schema, "$id")
+	copyIfNotNil(out, schema, "title")
+	copyIfNotNil(out, schema, "description")
 	copyIfPresent(out, schema, "default")
 	copyIfPresent(out, schema, "const")
-	copyIfPresent(out, schema, "enum")
-	copyIfPresent(out, schema, "type")
+	copyIfNotNil(out, schema, "enum")
+	copyIfNotNil(out, schema, "type")
 
 	if anyOf, ok := sanitizeAnthropicSchemaList(schema["anyOf"]); ok {
 		out["anyOf"] = anyOf
@@ -132,7 +183,7 @@ func sanitizeAnthropicSchemaMap(schema map[string]interface{}) map[string]interf
 			out["properties"] = properties
 		}
 		out["additionalProperties"] = false
-		copyIfPresent(out, schema, "required")
+		copyIfNotNil(out, schema, "required")
 	}
 
 	if items, ok := schema["items"]; ok {
@@ -144,7 +195,9 @@ func sanitizeAnthropicSchemaMap(schema map[string]interface{}) map[string]interf
 	}
 
 	if desc := anthropicConstraintDescription(schema); desc != "" {
-		if existing, ok := out["description"].(string); ok && existing != "" {
+		// TS: result.description == null ? desc : `${description}\n${desc}`,
+		// so an empty description still gets the newline.
+		if existing, ok := out["description"].(string); ok {
 			out["description"] = existing + "\n" + desc
 		} else {
 			out["description"] = desc
@@ -152,6 +205,13 @@ func sanitizeAnthropicSchemaMap(schema map[string]interface{}) map[string]interf
 	}
 
 	return out
+}
+
+// copyIfNotNil mirrors TS `schema.key != null`: a JSON null is skipped.
+func copyIfNotNil(dst, src map[string]interface{}, key string) {
+	if value, ok := src[key]; ok && value != nil {
+		dst[key] = value
+	}
 }
 
 func copyIfPresent(dst, src map[string]interface{}, key string) {
@@ -236,7 +296,7 @@ func formatAnthropicConstraintValue(value interface{}) string {
 	if s, ok := value.(string); ok {
 		return s
 	}
-	data, err := json.Marshal(value)
+	data, err := jsonstr.Marshal(value)
 	if err != nil {
 		return fmt.Sprint(value)
 	}
@@ -360,4 +420,32 @@ func ConvertToolChoiceToGoogle(choice types.ToolChoice) string {
 	default:
 		return "AUTO"
 	}
+}
+
+// DropProviderDefinedTools removes provider-defined tools (Type "provider")
+// from tools for chat APIs that only take function tools and returns an
+// `unsupported` warning per dropped tool. TS prepareTools does this with
+// feature `provider-defined tool <tool.id>` (the OpenAI chat model uses
+// `tool type: provider`); label overrides the default feature text.
+func DropProviderDefinedTools(tools []types.Tool, label func(types.Tool) string) ([]types.Tool, []types.Warning) {
+	var kept []types.Tool
+	var warnings []types.Warning
+	for _, t := range tools {
+		if t.Type != "provider" {
+			kept = append(kept, t)
+			continue
+		}
+		feature := ""
+		if label != nil {
+			feature = label(t)
+		} else {
+			id := t.ProviderID
+			if id == "" {
+				id = t.Name
+			}
+			feature = "provider-defined tool " + id
+		}
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: feature})
+	}
+	return kept, warnings
 }

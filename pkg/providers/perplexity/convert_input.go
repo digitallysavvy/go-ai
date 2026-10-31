@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -34,9 +35,15 @@ func convertToPerplexityInput(messages []types.Message) ([]map[string]interface{
 			})
 
 		case types.RoleUser:
-			converted := make([]map[string]interface{}, 0, len(msg.Content))
+			// Legacy ImageContent parts are the TS image file parts; core
+			// normalizes them, but direct provider callers may not.
+			userParts, err := prompt.NormalizeContentParts(msg.Content)
+			if err != nil {
+				return nil, nil, err
+			}
+			converted := make([]map[string]interface{}, 0, len(userParts))
 			isTextOnly := true
-			for _, part := range msg.Content {
+			for _, part := range userParts {
 				item, err := convertPerplexityUserPart(part)
 				if err != nil {
 					return nil, nil, err
@@ -267,12 +274,14 @@ func perplexityToolCallArguments(part types.ToolCallContent) string {
 	} else if part.Input != "" {
 		var parsed interface{}
 		if err := json.Unmarshal([]byte(part.Input), &parsed); err == nil {
-			value = parsed
+			if parsed != nil { // JSON null falls back to {} like `input ?? {}`
+				value = parsed
+			}
 		} else {
 			value = part.Input
 		}
 	}
-	b, err := json.Marshal(value)
+	b, err := jsonstr.Marshal(value)
 	if err != nil {
 		return "{}"
 	}
@@ -353,7 +362,7 @@ func serializePerplexityToolOutput(p types.ToolResultContent) (string, error) {
 		if s, ok := out.value.(string); ok {
 			return s, nil
 		}
-		b, err := json.Marshal(out.value)
+		b, err := jsonstr.Marshal(out.value)
 		return string(b), err
 	case "execution-denied":
 		if out.reason != "" {
@@ -376,7 +385,7 @@ func serializePerplexityToolOutput(p types.ToolResultContent) (string, error) {
 		}
 		return b.String(), nil
 	default: // json, error-json
-		b, err := json.Marshal(out.value)
+		b, err := jsonstr.Marshal(out.value)
 		return string(b), err
 	}
 }

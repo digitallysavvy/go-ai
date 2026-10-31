@@ -2,6 +2,7 @@ package responses
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -365,7 +366,7 @@ func TestPrepareTools_ProviderDefinedDispatchesByProviderID(t *testing.T) {
 }
 
 func TestPrepareTools_WebSearchPreview(t *testing.T) {
-	result := PrepareTools([]types.Tool{openaitool.WebSearchPreview(openaitool.WebSearchPreviewConfig{
+	result := PrepareTools([]types.Tool{openaitool.WebSearchPreview(openaitool.WebSearchPreviewConfig{ //nolint:staticcheck // exercises the deprecated tool
 		SearchContextSize: "low",
 	})})
 	def, ok := result[0].(WebSearchPreviewToolDef)
@@ -949,7 +950,7 @@ func TestResolveAllowedTools_CanonicalAliasResolves(t *testing.T) {
 // its fixed ProviderID, mirroring the TS test helper `mcpTool(name,
 // serverLabel)` in openai-responses-prepare-tools.test.ts: two such tools
 // with different server labels both canonicalize to the alias "mcp" (see
-// canonicalAllowedToolName), which is exactly what makes the ambiguous case
+// openAIAllowedToolProviderName), which is exactly what makes the ambiguous case
 // below reachable.
 func mcpToolWithName(name, serverLabel string) types.Tool {
 	return types.Tool{
@@ -1054,5 +1055,71 @@ func TestResolveAllowedTools_DirectNameWinsOverAlias(t *testing.T) {
 	}
 	if len(choice.Tools) != 1 || choice.Tools[0].Type != "function" || choice.Tools[0].Name != "file_search" {
 		t.Fatalf("choice = %#v, want the direct function-tool match to win", choice)
+	}
+}
+
+// TS mapShellSkills sends version "latest" for a skill reference without a
+// version, and mapShellEnvironment sends type "local" for an untyped env.
+func TestPrepareTools_Shell_SkillReferenceDefaultsToLatestAndUntypedEnvIsLocal(t *testing.T) {
+	ref, id, pinned := "skill_reference", "skill_1", "7"
+	tool := NewShellTool(WithShellEnvironment(ShellEnvironment{
+		Type: "container_auto",
+		Skills: []ShellSkill{
+			{Type: &ref, SkillID: &id},
+			{Type: &ref, SkillID: &id, Version: &pinned},
+		},
+	}))
+	def := PrepareTools([]types.Tool{tool})[0].(ShellToolDef)
+	if v := def.Environment.Skills[0].Version; v == nil || *v != "latest" {
+		t.Fatalf("version = %v, want latest", v)
+	}
+	if v := def.Environment.Skills[1].Version; v == nil || *v != "7" {
+		t.Fatalf("pinned version = %v", v)
+	}
+
+	local := PrepareTools([]types.Tool{NewShellTool(WithShellEnvironment(ShellEnvironment{}))})[0].(ShellToolDef)
+	if local.Environment == nil || local.Environment.Type != "local" {
+		t.Fatalf("env = %#v", local.Environment)
+	}
+}
+
+// TS sends tool_search `execution` whenever the caller set it (including an
+// explicit "server") and omits it otherwise; an openai.mcp tool needs a
+// serverUrl or connectorId (mcpArgsSchema refinement).
+func TestPrepareTools_ToolSearchExplicitServerExecutionAndMCPRefinement(t *testing.T) {
+	explicit, err := PrepareToolsWithError([]types.Tool{openaitool.ToolSearch(openaitool.ToolSearchArgs{Execution: "server"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := explicit[0].(ToolSearchToolDef).Execution; got != "server" {
+		t.Errorf("explicit server execution = %q, want server", got)
+	}
+	implicit, _ := PrepareToolsWithError([]types.Tool{openaitool.ToolSearch(openaitool.ToolSearchArgs{})})
+	if got := implicit[0].(ToolSearchToolDef).Execution; got != "" {
+		t.Errorf("default execution = %q, want omitted", got)
+	}
+
+	if _, err := PrepareToolsWithError([]types.Tool{openaitool.MCP(openaitool.MCPConfig{ServerLabel: "x"})}); err == nil {
+		t.Error("mcp without serverUrl/connectorId must fail validation")
+	}
+	for _, cfg := range []openaitool.MCPConfig{
+		{ServerLabel: "x", ServerURL: "https://m"},
+		{ServerLabel: "x", ConnectorID: "connector_gmail"},
+	} {
+		if _, err := PrepareToolsWithError([]types.Tool{openaitool.MCP(cfg)}); err != nil {
+			t.Errorf("valid mcp config rejected: %v", err)
+		}
+	}
+}
+
+func TestPrepareTools_WebSearchEmptyDomainListsAreSent(t *testing.T) {
+	tool := openaitool.WebSearch(openaitool.WebSearchConfig{Filters: &openaitool.WebSearchFilters{AllowedDomains: []string{}}})
+	defs, err := PrepareToolsWithError([]types.Tool{tool})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(defs[0])
+	if !strings.Contains(string(b), `"allowed_domains":[]`) {
+		t.Fatalf("wire = %s, want allowed_domains: [] (TS keeps an empty array)", b)
 	}
 }

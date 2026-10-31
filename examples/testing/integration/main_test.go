@@ -21,7 +21,7 @@ func TestIntegrationGenerate(t *testing.T) {
 	}
 
 	p := openai.New(openai.Config{APIKey: apiKey})
-	model, err := p.LanguageModel("gpt-4")
+	model, err := p.LanguageModel(openai.ModelGPT41Mini)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestIntegrationWithTools(t *testing.T) {
 	}
 
 	p := openai.New(openai.Config{APIKey: apiKey})
-	model, _ := p.LanguageModel("gpt-4")
+	model, _ := p.LanguageModel(openai.ModelGPT41Mini)
 
 	// Define a simple tool
 	calcTool := mockCalculatorTool()

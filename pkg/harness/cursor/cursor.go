@@ -1,5 +1,5 @@
 // Package cursor is the Go port of the TypeScript `@ai-sdk/harness-cursor`
-// package (pinned to ai@7.0.113, hashes ac1384b).
+// package (pinned to ai@7.0.153, TS e64ed82f27).
 //
 // Cursor is one of the "ACP-derived" harness adapters (see
 // state/parity/sep_23_2026/harness.md §2): TS `createCursor()` is a thin
@@ -26,12 +26,12 @@ import (
 )
 
 // ClientAppName / ClientAppVersion are the ai-sdk client-app identity Cursor
-// requests are made with. VERSION mirrors the TS package's own version; the
-// Go SDK does not (yet) stamp a package version into adapter packages, so it
-// is fixed to "0.0.0-go" until a release process defines one.
+// requests are made with. ClientAppVersion is TS VERSION, the
+// @ai-sdk/harness-cursor package version at the TS release this SDK tracks
+// (e64ed82f27); bump it with the harness bridges.
 const (
-	ClientAppName    = "ai-sdk/harness-cursor"
-	ClientAppVersion = "0.0.0-go"
+	ClientAppName    = "ai-sdk-harness-cursor"
+	ClientAppVersion = "1.0.78"
 	HarnessID        = "cursor"
 )
 
@@ -91,6 +91,7 @@ func BuildConfig(settings Settings) acp.Settings {
 		WarnAuthenticationConfiguration(settings.Auth.Mode)
 	}
 	cfg := acp.Settings{
+		NonTextContentTypes:              []acp.NonTextContentType{acp.NonTextContentImage},
 		HarnessID:                        HarnessID,
 		ClientApp:                        acp.ClientApp{Name: ClientAppName, Version: ClientAppVersion},
 		Auth:                             settings.Auth,

@@ -42,7 +42,7 @@ func (m *TranscriptionModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *TranscriptionModel) Provider() string {
-	return "assemblyai"
+	return "assemblyai.transcription"
 }
 
 // ModelID returns the model ID
@@ -75,6 +75,12 @@ func extractOptions(providerOptions map[string]interface{}) *TranscriptionModelO
 func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOptions) (map[string]interface{}, []types.Warning) {
 	warnings := []types.Warning{}
 	aaiOpts := extractOptions(opts.ProviderOptions)
+	rawOpts := rawProviderOptions(opts.ProviderOptions)
+	setStr := func(dst map[string]interface{}, key string, path ...string) {
+		if v, ok := stringOpt(rawOpts, path...); ok {
+			dst[key] = v
+		}
+	}
 
 	body := map[string]interface{}{}
 
@@ -120,10 +126,10 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 		setOptional(body, "audio_start_from", aaiOpts.AudioStartFrom)
 		setOptional(body, "auto_chapters", aaiOpts.AutoChapters)
 		setOptional(body, "auto_highlights", aaiOpts.AutoHighlights)
-		setOptionalString(body, "boost_param", aaiOpts.BoostParam)
+		setStr(body, "boost_param", "boostParam")
 		setOptional(body, "content_safety", aaiOpts.ContentSafety)
 		setOptional(body, "content_safety_confidence", aaiOpts.ContentSafetyConfidence)
-		if len(aaiOpts.CustomSpelling) > 0 {
+		if aaiOpts.CustomSpelling != nil {
 			body["custom_spelling"] = aaiOpts.CustomSpelling
 		}
 		setOptional(body, "disfluencies", aaiOpts.Disfluencies)
@@ -131,44 +137,42 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 		setOptional(body, "filter_profanity", aaiOpts.FilterProfanity)
 		setOptional(body, "format_text", aaiOpts.FormatText)
 		setOptional(body, "iab_categories", aaiOpts.IabCategories)
-		if len(aaiOpts.KeytermsPrompt) > 0 {
+		if aaiOpts.KeytermsPrompt != nil {
 			body["keyterms_prompt"] = aaiOpts.KeytermsPrompt
 		}
-		if aaiOpts.LanguageCode != "" {
-			body["language_code"] = aaiOpts.LanguageCode
-		}
+		setStr(body, "language_code", "languageCode")
 		setOptional(body, "language_confidence_threshold", aaiOpts.LanguageConfidenceThreshold)
 		setOptional(body, "language_detection", aaiOpts.LanguageDetection)
 		setOptional(body, "multichannel", aaiOpts.Multichannel)
-		setOptionalString(body, "prompt", aaiOpts.Prompt)
+		setStr(body, "prompt", "prompt")
 		setOptional(body, "punctuate", aaiOpts.Punctuate)
 		setOptional(body, "redact_pii", aaiOpts.RedactPii)
 		setOptional(body, "redact_pii_audio", aaiOpts.RedactPiiAudio)
-		setOptionalString(body, "redact_pii_audio_quality", aaiOpts.RedactPiiAudioQuality)
-		if len(aaiOpts.RedactPiiPolicies) > 0 {
+		setStr(body, "redact_pii_audio_quality", "redactPiiAudioQuality")
+		if aaiOpts.RedactPiiPolicies != nil {
 			body["redact_pii_policies"] = aaiOpts.RedactPiiPolicies
 		}
 		setOptional(body, "redact_pii_return_unredacted", aaiOpts.RedactPiiReturnUnredacted)
-		setOptionalString(body, "redact_pii_sub", aaiOpts.RedactPiiSub)
-		if len(aaiOpts.RedactStaticEntities) > 0 {
+		setStr(body, "redact_pii_sub", "redactPiiSub")
+		if aaiOpts.RedactStaticEntities != nil {
 			body["redact_static_entities"] = aaiOpts.RedactStaticEntities
 		}
-		setOptionalString(body, "remove_audio_tags", aaiOpts.RemoveAudioTags)
+		setStr(body, "remove_audio_tags", "removeAudioTags")
 		setOptional(body, "sentiment_analysis", aaiOpts.SentimentAnalysis)
 		setOptional(body, "speaker_labels", aaiOpts.SpeakerLabels)
 		setOptional(body, "speakers_expected", aaiOpts.SpeakersExpected)
 		setOptional(body, "speech_threshold", aaiOpts.SpeechThreshold)
 		setOptional(body, "summarization", aaiOpts.Summarization)
-		setOptionalString(body, "summary_model", aaiOpts.SummaryModel)
-		setOptionalString(body, "summary_type", aaiOpts.SummaryType)
+		setStr(body, "summary_model", "summaryModel")
+		setStr(body, "summary_type", "summaryType")
 		setOptional(body, "temperature", aaiOpts.Temperature)
-		setOptionalString(body, "webhook_auth_header_name", aaiOpts.WebhookAuthHeaderName)
-		setOptionalString(body, "webhook_auth_header_value", aaiOpts.WebhookAuthHeaderValue)
-		setOptionalString(body, "webhook_url", aaiOpts.WebhookUrl)
-		if len(aaiOpts.WordBoost) > 0 {
+		setStr(body, "webhook_auth_header_name", "webhookAuthHeaderName")
+		setStr(body, "webhook_auth_header_value", "webhookAuthHeaderValue")
+		setStr(body, "webhook_url", "webhookUrl")
+		if aaiOpts.WordBoost != nil {
 			body["word_boost"] = aaiOpts.WordBoost
 		}
-		setOptionalString(body, "domain", aaiOpts.Domain)
+		setStr(body, "domain", "domain")
 
 		if aaiOpts.SpeakerOptions != nil {
 			speakerOptions := map[string]interface{}{}
@@ -179,10 +183,10 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 
 		if aaiOpts.LanguageDetectionOptions != nil {
 			ldo := map[string]interface{}{}
-			if len(aaiOpts.LanguageDetectionOptions.ExpectedLanguages) > 0 {
+			if aaiOpts.LanguageDetectionOptions.ExpectedLanguages != nil {
 				ldo["expected_languages"] = aaiOpts.LanguageDetectionOptions.ExpectedLanguages
 			}
-			setOptionalString(ldo, "fallback_language", aaiOpts.LanguageDetectionOptions.FallbackLanguage)
+			setStr(ldo, "fallback_language", "languageDetectionOptions", "fallbackLanguage")
 			setOptional(ldo, "code_switching", aaiOpts.LanguageDetectionOptions.CodeSwitching)
 			setOptional(ldo, "code_switching_confidence_threshold", aaiOpts.LanguageDetectionOptions.CodeSwitchingConfidenceThreshold)
 			body["language_detection_options"] = ldo
@@ -191,15 +195,15 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 		if aaiOpts.RedactPiiAudioOptions != nil {
 			rpao := map[string]interface{}{}
 			setOptional(rpao, "return_redacted_no_speech_audio", aaiOpts.RedactPiiAudioOptions.ReturnRedactedNoSpeechAudio)
-			setOptionalString(rpao, "override_audio_redaction_method", aaiOpts.RedactPiiAudioOptions.OverrideAudioRedactionMethod)
+			setStr(rpao, "override_audio_redaction_method", "redactPiiAudioOptions", "overrideAudioRedactionMethod")
 			body["redact_pii_audio_options"] = rpao
 		}
 
 		var deprecatedBoostOptions []string
-		if len(aaiOpts.WordBoost) > 0 {
+		if aaiOpts.WordBoost != nil {
 			deprecatedBoostOptions = append(deprecatedBoostOptions, "wordBoost")
 		}
-		if aaiOpts.BoostParam != "" {
+		if _, ok := stringOpt(rawOpts, "boostParam"); ok {
 			deprecatedBoostOptions = append(deprecatedBoostOptions, "boostParam")
 		}
 		if len(deprecatedBoostOptions) > 0 {
@@ -218,7 +222,7 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 		// option; without it AssemblyAI either rejects the request (400) or
 		// silently ignores the option. Warn rather than mutate user input.
 		redactPiiEnabled := aaiOpts.RedactPii != nil && *aaiOpts.RedactPii
-		if (aaiOpts.RedactPiiReturnUnredacted != nil || len(aaiOpts.RedactStaticEntities) > 0) && !redactPiiEnabled {
+		if (aaiOpts.RedactPiiReturnUnredacted != nil || aaiOpts.RedactStaticEntities != nil) && !redactPiiEnabled {
 			warnings = append(warnings, types.Warning{
 				Type:    "other",
 				Message: "'redactPiiReturnUnredacted' and 'redactStaticEntities' require 'redactPii' to be enabled; AssemblyAI rejects the request otherwise.",
@@ -232,7 +236,7 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 			})
 		}
 		languageDetectionEnabled := aaiOpts.LanguageDetection != nil && *aaiOpts.LanguageDetection
-		if aaiOpts.LanguageCode != "" && languageDetectionEnabled {
+		if _, ok := stringOpt(rawOpts, "languageCode"); ok && languageDetectionEnabled {
 			warnings = append(warnings, types.Warning{
 				Type:    "other",
 				Message: "'languageDetection' cannot be combined with an explicit 'languageCode'; AssemblyAI rejects requests that set both.",
@@ -243,15 +247,38 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 	return body, warnings
 }
 
+// rawProviderOptions returns the untyped "assemblyai" options so string
+// options set to "" (kept by TS `?? undefined`) can be told apart from absent.
+func rawProviderOptions(providerOptions map[string]interface{}) map[string]interface{} {
+	raw, _ := providerOptions["assemblyai"].(map[string]interface{})
+	if raw == nil {
+		if v, ok := providerOptions["assemblyai"]; ok && v != nil {
+			b, err := json.Marshal(v)
+			if err == nil {
+				_ = json.Unmarshal(b, &raw)
+			}
+		}
+	}
+	return raw
+}
+
+// stringOpt reports the string at raw[path...] and whether it is present.
+func stringOpt(raw map[string]interface{}, path ...string) (string, bool) {
+	var cur interface{} = raw
+	for _, k := range path {
+		m, ok := cur.(map[string]interface{})
+		if !ok {
+			return "", false
+		}
+		cur = m[k]
+	}
+	s, ok := cur.(string)
+	return s, ok
+}
+
 func setOptional[T any](body map[string]interface{}, key string, value *T) {
 	if value != nil {
 		body[key] = *value
-	}
-}
-
-func setOptionalString(body map[string]interface{}, key, value string) {
-	if value != "" {
-		body[key] = value
 	}
 }
 
@@ -266,18 +293,24 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		UploadURL string `json:"upload_url"`
 	}
 	_, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/upload",
-		Body:   opts.Audio,
-		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaAssemblyAIUpload),
+		Method:           http.MethodPost,
+		Path:             "/upload",
+		Body:             opts.Audio,
+		// TS: { 'Content-Type': ..., ...combineHeaders(config, options.headers) },
+		// so a caller header (any case matches in a map; exact key here) wins.
+		Headers: internalhttp.MergeHeaders(map[string]string{
 			"Content-Type": "application/octet-stream",
-		}),
+		}, opts.Headers),
 	}, &uploadResult)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 
 	// Step 2: Submit transcription job.
+	if err := validateOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	body, warnings := m.buildRequestBody(opts)
 	body["audio_url"] = uploadResult.UploadURL
 
@@ -286,10 +319,11 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		Status string `json:"status"`
 	}
 	_, err = m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/transcript",
-		Body:    body,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaAssemblyAISubmit),
+		Method:           http.MethodPost,
+		Path:             "/transcript",
+		Body:             body,
+		Headers:          opts.Headers,
 	}, &submitResult)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -317,9 +351,12 @@ func (m *TranscriptionModel) waitForCompletion(ctx context.Context, transcriptID
 
 		var raw map[string]interface{}
 		resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-			Method:  http.MethodGet,
-			Path:    "/transcript/" + transcriptID,
-			Headers: headers,
+			// TS parses the polled transcript with schema.parse: a mismatch is
+			// the validation error itself, not "Invalid JSON response".
+			ValidateResponse: providerutils.MediaSchemaParser(providerutils.SchemaAssemblyAITranscript),
+			Method:           http.MethodGet,
+			Path:             "/transcript/" + transcriptID,
+			Headers:          headers,
 		}, &raw)
 		if err != nil {
 			return nil, nil, m.handleError(err)
@@ -330,11 +367,13 @@ func (m *TranscriptionModel) waitForCompletion(ctx context.Context, transcriptID
 		case "completed":
 			return raw, resp, nil
 		case "error":
-			errMsg, _ := raw["error"].(string)
-			if errMsg == "" {
+			// TS `transcript.error ?? 'Unknown error'`: only null/absent falls
+			// back, an empty string is kept.
+			errMsg, ok := raw["error"].(string)
+			if !ok {
 				errMsg = "Unknown error"
 			}
-			return nil, nil, fmt.Errorf("assemblyai: transcription failed: %s", errMsg)
+			return nil, nil, fmt.Errorf("Transcription failed: %s", errMsg) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 
 		select {
@@ -438,24 +477,19 @@ func durationValue(duration *float64) float64 {
 // handleError converts an HTTP error into a ProviderError, parsing
 // AssemblyAI's `{"error":{"message","code"}}` error shape when present.
 func (m *TranscriptionModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		var payload struct {
-			Error struct {
-				Message string `json:"message"`
-				Code    int    `json:"code"`
-			} `json:"error"`
-		}
-		message := string(statusErr.Body)
-		code := ""
-		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil && payload.Error.Message != "" {
-			message = payload.Error.Message
-			code = fmt.Sprintf("%d", payload.Error.Code)
-		}
-		providerErr := providererrors.NewProviderError("assemblyai", statusErr.StatusCode, code, message, err)
-		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
-		providerErr.ResponseBody = string(statusErr.Body)
-		return providerErr
+		message, code := providerutils.NestedErrorMessage(statusErr.StatusCode, statusErr.Body)
+		return providererrors.NewProviderErrorFromResponse("assemblyai", 0, code, message, err)
 	}
-	return providererrors.NewProviderError("assemblyai", 0, "", err.Error(), err)
+	var validationErr *providererrors.ValidationError
+	if errors.As(err, &validationErr) {
+		return err // TS throws the schema.parse failure itself
+	}
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return err
 }

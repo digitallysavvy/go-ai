@@ -105,6 +105,7 @@ func (p *GoogleVertexAnthropicProvider) LanguageModelWithOptions(modelID string,
 			}
 			return fmt.Sprintf("/%s:%s", id, action)
 		},
+		TransformRequestHeaders: transformRequestHeaders,
 		TransformRequestBody: func(body map[string]interface{}, stream bool) map[string]interface{} {
 			out := make(map[string]interface{}, len(body)+1)
 			for k, v := range body {
@@ -142,7 +143,7 @@ func (p *GoogleVertexAnthropicProvider) Messages(modelID string) (provider.Langu
 }
 
 func (p *GoogleVertexAnthropicProvider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("google vertex anthropic does not support embedding models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // TextEmbeddingModel is a deprecated alias for EmbeddingModel.
@@ -153,24 +154,24 @@ func (p *GoogleVertexAnthropicProvider) TextEmbeddingModel(modelID string) (prov
 }
 
 func (p *GoogleVertexAnthropicProvider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("google vertex anthropic does not support image models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 func (p *GoogleVertexAnthropicProvider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("google vertex anthropic does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 func (p *GoogleVertexAnthropicProvider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("google vertex anthropic does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 func (p *GoogleVertexAnthropicProvider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("google vertex anthropic does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 func (p *GoogleVertexAnthropicProvider) baseURL() (string, error) {
 	if p.options.BaseURL != "" {
-		return strings.TrimRight(p.options.BaseURL, "/"), nil
+		return strings.TrimSuffix(p.options.BaseURL, "/"), nil
 	}
 
 	project := p.options.Project

@@ -48,12 +48,16 @@ func (p *Provider) MintRealtimeClientSecret(ctx context.Context, params MintReal
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range p.headers {
+	// TS createAuthHeaders: Authorization and the auth method come first and
+	// the provider's custom headers are spread after them, so a custom header
+	// of the same name wins.
+	for k, v := range mergeHeadersFold(map[string]string{
+		"Authorization":          fmt.Sprintf("Bearer %s", token),
+		"ai-gateway-auth-method": authMethod,
+	}, p.headers) {
 		req.Header.Set(k, v)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	req.Header.Set("ai-gateway-auth-method", authMethod)
 
 	httpClient := internalhttp.DefaultHTTPClient
 	if p.config.HTTPClient != nil {

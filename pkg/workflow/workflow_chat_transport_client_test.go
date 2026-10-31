@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -441,5 +443,203 @@ func TestWorkflowChatTransportReconnectAllowsDotSegmentChatIDWithCustomAPI(t *te
 	_, err := collectChunks(out, errs, 2*time.Second)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TS #22436: a reconnect stream that ends without any UI message chunks counts
+// against MaxConsecutiveErrors, so a 200 OK empty SSE response cannot make the
+// transport request the same cursor forever.
+func TestWorkflowChatTransportEmptyReconnectStreamsAreBounded(t *testing.T) {
+	cases := []struct {
+		name  string
+		limit int
+		want  int
+		body  string
+	}{
+		{"default limit", 0, 3, ""},
+		{"custom limit", 2, 2, ""},
+		{"keep-alive only", 1, 1, ": keep-alive\n\n"},
+		{"done without finish", 1, 1, "data: [DONE]\n\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			gets := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				gets++
+				n := gets
+				mu.Unlock()
+				if n > tc.want+1 {
+					http.Error(w, "exceeded reconnect request limit", http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			tr := NewWorkflowChatTransport(WorkflowChatTransportOptions{API: srv.URL, MaxConsecutiveErrors: tc.limit})
+			out, errs := tr.ReconnectToStream(context.Background(), ai.ChatTransportReconnectToStreamRequest{ChatID: "chat-empty"})
+			_, err := collectChunks(out, errs, 3*time.Second)
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("Failed to reconnect after %d consecutive errors", tc.want)) ||
+				!strings.Contains(err.Error(), "Last error: Error: Reconnect stream ended without receiving chunks.") {
+				t.Fatalf("error = %v, want reconnect failure after %d consecutive errors", err, tc.want)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if gets != tc.want {
+				t.Fatalf("GET requests = %d, want %d", gets, tc.want)
+			}
+		})
+	}
+}
+
+func TestWorkflowChatTransportEmptyReconnectAfterInterruptedPostIsBounded(t *testing.T) {
+	var mu sync.Mutex
+	posts, gets := 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		if r.Method == http.MethodPost {
+			posts++
+		} else {
+			gets++
+		}
+		over := gets > 3
+		mu.Unlock()
+		if over {
+			http.Error(w, "exceeded reconnect request limit", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("x-workflow-run-id", "run-empty")
+	}))
+	defer srv.Close()
+
+	tr := NewWorkflowChatTransport(WorkflowChatTransportOptions{API: srv.URL})
+	out, errs := tr.SendMessages(context.Background(), ai.ChatTransportSendMessagesRequest{ChatID: "chat-empty-post"})
+	_, err := collectChunks(out, errs, 3*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "Failed to reconnect after 3 consecutive errors") {
+		t.Fatalf("error = %v, want reconnect failure after 3 consecutive errors", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if posts != 1 || gets != 3 {
+		t.Fatalf("posts=%d gets=%d, want 1 and 3", posts, gets)
+	}
+}
+
+// Progress resets the error count: empty, chunk, empty, finish succeeds with a
+// limit of 2, and the cursor advances past the received chunk.
+func TestWorkflowChatTransportReconnectProgressResetsConsecutiveErrors(t *testing.T) {
+	var mu sync.Mutex
+	var starts []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		starts = append(starts, r.URL.Query().Get("startIndex"))
+		n := len(starts)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		sse := streaming.NewSSEWriter(w)
+		switch n {
+		case 2:
+			writeChunk(t, sse, map[string]interface{}{"type": "start-step"})
+		case 4:
+			writeChunk(t, sse, map[string]interface{}{"type": "finish"})
+		}
+	}))
+	defer srv.Close()
+
+	var end WorkflowChatTransportEndEvent
+	tr := NewWorkflowChatTransport(WorkflowChatTransportOptions{
+		API: srv.URL, MaxConsecutiveErrors: 2,
+		OnChatEnd: func(e WorkflowChatTransportEndEvent) error { end = e; return nil },
+	})
+	out, errs := tr.ReconnectToStream(context.Background(), ai.ChatTransportReconnectToStreamRequest{ChatID: "chat-progress"})
+	chunks, err := collectChunks(out, errs, 3*time.Second)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 2 || chunks[0]["type"] != "start-step" || chunks[1]["type"] != "finish" {
+		t.Fatalf("chunks = %+v", chunks)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got := strings.Join(starts, ","); got != "0,0,1,1" {
+		t.Fatalf("startIndex sequence = %s, want 0,0,1,1", got)
+	}
+	if end.ChunkIndex != 2 {
+		t.Fatalf("OnChatEnd chunk index = %d, want 2", end.ChunkIndex)
+	}
+}
+
+func TestEncodeURIComponentMatchesJS(t *testing.T) {
+	cases := map[string]string{
+		"wrun_01H":  "wrun_01H",
+		"a:b@c+d/e": "a%3Ab%40c%2Bd%2Fe",
+		"a b&c=d,e": "a%20b%26c%3Dd%2Ce",
+		"it's (ok)": "it's%20(ok)",
+		"é":         "%C3%A9",
+	}
+	for in, want := range cases {
+		if got := encodeURIComponent(in); got != want {
+			t.Errorf("encodeURIComponent(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TS posts `{ messages, ...options.body }` by default: chatId, messageId and
+// trigger are only available to prepareSendMessagesRequest.
+func TestWorkflowChatTransportDefaultPostBodyMatchesTS(t *testing.T) {
+	var got map[string]json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("x-workflow-run-id", "run-1")
+		sse := streaming.NewSSEWriter(w)
+		writeChunk(t, sse, map[string]interface{}{"type": "finish"})
+	}))
+	defer srv.Close()
+
+	tr := NewWorkflowChatTransport(WorkflowChatTransportOptions{API: srv.URL})
+	out, errs := tr.SendMessages(context.Background(), ai.ChatTransportSendMessagesRequest{
+		ChatID: "chat-1", MessageID: "m-1", Trigger: "submit-message",
+		Body:     map[string]interface{}{"extra": 1},
+		Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}},
+	})
+	if _, err := collectChunks(out, errs, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	keys := make([]string, 0, len(got))
+	for k := range got {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	if strings.Join(keys, ",") != "extra,messages" {
+		t.Fatalf("POST body keys = %v, want [extra messages]", keys)
+	}
+}
+
+// TS `maxConsecutiveErrors ?? 3`: an explicit 0 fails on the first error.
+func TestWorkflowChatTransportExplicitZeroMaxConsecutiveErrors(t *testing.T) {
+	var mu sync.Mutex
+	gets := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gets++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+	}))
+	defer srv.Close()
+	tr := NewWorkflowChatTransport(WorkflowChatTransportOptions{API: srv.URL, MaxConsecutiveErrorsSet: true})
+	out, errs := tr.ReconnectToStream(context.Background(), ai.ChatTransportReconnectToStreamRequest{ChatID: "z"})
+	_, err := collectChunks(out, errs, 3*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "Failed to reconnect after 0 consecutive errors") {
+		t.Fatalf("err = %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if gets != 1 {
+		t.Fatalf("gets = %d, want 1", gets)
 	}
 }

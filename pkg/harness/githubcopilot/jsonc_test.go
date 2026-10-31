@@ -76,3 +76,27 @@ func TestParseJSONC_Malformed(t *testing.T) {
 		t.Error("expected an error for malformed JSONC")
 	}
 }
+
+func TestParseJSONC_ScannerParity(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		ok   bool
+	}{
+		{"unterminated block comment", "{\"a\":1} /* oops", false},
+		{"unterminated block comment star", "{\"a\":1} /* oops *", false},
+		{"empty block comment", "{\"a\":1} /**/", true},
+		{"BOM", "\ufeff{\"a\":1}", true},
+		{"nbsp and form feed", "{\u00a0\"a\"\f:\u30001}", true},
+		{"CR ends line comment", "{\"a\":1 // c\r,\"b\":2}", true},
+		{"BOM inside string kept", "{\"a\":\"\ufeff\"}", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := ParseJSONC([]byte(c.in))
+			if (err == nil) != c.ok {
+				t.Fatalf("ParseJSONC(%q) err = %v, want ok=%v", c.in, err, c.ok)
+			}
+		})
+	}
+}

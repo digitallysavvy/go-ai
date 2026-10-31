@@ -17,7 +17,7 @@ func TestBuildConfig_Recipe(t *testing.T) {
 	if cfg.HarnessID != "cursor" {
 		t.Errorf("HarnessID = %q, want cursor", cfg.HarnessID)
 	}
-	if cfg.ClientApp.Name != "ai-sdk/harness-cursor" || cfg.ClientApp.Version != "0.0.0-go" {
+	if cfg.ClientApp.Name != "ai-sdk-harness-cursor" || cfg.ClientApp.Version != "1.0.78" {
 		t.Errorf("ClientApp = %+v", cfg.ClientApp)
 	}
 	if cfg.Executable != "agent" {
@@ -205,5 +205,27 @@ func TestCreateCursor(t *testing.T) {
 	}
 	if !harness.SupportsBuiltinToolApprovals(h) {
 		t.Error("expected SupportsBuiltinToolApprovals() to be true")
+	}
+}
+
+// TS #22367: Cursor accepts image tool model output.
+func TestBuildConfig_DeclaresImageContent(t *testing.T) {
+	if got := BuildConfig(Settings{}).NonTextContentTypes; !reflect.DeepEqual(got, []acp.NonTextContentType{acp.NonTextContentImage}) {
+		t.Errorf("NonTextContentTypes = %v, want [image]", got)
+	}
+}
+
+// TS declares `_toolName: z.literal(...)` (required) on updateTodos like the
+// other dynamic-shaped built-ins.
+func TestBuiltinToolsDiscriminatorRequired(t *testing.T) {
+	for _, name := range []string{"updateTodos", "createPlan", "task", "generateImage"} {
+		req, _ := BuiltinTools[name].Parameters.(map[string]any)["required"].([]string)
+		found := false
+		for _, r := range req {
+			found = found || r == "_toolName"
+		}
+		if !found {
+			t.Errorf("%s: _toolName must be required, got %v", name, req)
+		}
 	}
 }

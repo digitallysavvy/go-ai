@@ -4,7 +4,8 @@
 package fishaudio
 
 import (
-	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -19,6 +20,10 @@ type Config struct {
 
 	// BaseURL is the base URL for the Fish Audio API (optional).
 	BaseURL string
+
+	// Headers are custom HTTP headers sent with every request (TS provider
+	// settings `headers`).
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // Provider represents the Fish Audio provider.
@@ -29,6 +34,8 @@ type Provider struct {
 
 // New creates a new Fish Audio provider instance.
 func New(config Config) *Provider {
+	// TS options.baseURL?.replace(/\/$/, ''): a trailing "/" must not double up with request paths.
+	config.BaseURL = providerutils.WithoutTrailingSlash(config.BaseURL)
 	if config.BaseURL == "" {
 		config.BaseURL = "https://api.fish.audio"
 	}
@@ -38,9 +45,13 @@ func New(config Config) *Provider {
 
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: config.BaseURL,
-		Headers: version.WithUserAgentSuffix(map[string]string{
+		Headers: version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
 			"Authorization": "Bearer " + config.APIKey,
-		}, version.ProviderUserAgent("fish-audio")),
+		}, config.Headers), version.ProviderUserAgent("fish-audio")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(config.Headers, config.APIKey, "FISH_AUDIO_API_KEY", "Fish Audio", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{
@@ -61,17 +72,17 @@ func (p *Provider) Name() string {
 
 // LanguageModel returns a language model (not supported by Fish Audio).
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return nil, fmt.Errorf("fish-audio does not provide language models")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "languageModel", Message: "Fish Audio does not provide language models"}
 }
 
 // EmbeddingModel returns an embedding model (not supported by Fish Audio).
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("fish-audio does not provide embedding models")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "embeddingModel", Message: "Fish Audio does not provide embedding models"}
 }
 
 // ImageModel returns an image model (not supported by Fish Audio).
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("fish-audio does not provide image models")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "imageModel", Message: "Fish Audio does not provide image models"}
 }
 
 // SpeechModel returns a text-to-speech model.
@@ -91,5 +102,5 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 
 // RerankingModel returns a reranking model (not supported by Fish Audio).
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("fish-audio does not provide reranking models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }

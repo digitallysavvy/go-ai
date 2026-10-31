@@ -1,7 +1,8 @@
 package perplexity
 
 import (
-	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 	"strings"
 
@@ -52,6 +53,10 @@ func New(cfg Config) *Provider {
 			"Content-Type":       "application/json",
 			"X-Pplx-Integration": "vercel-ai-sdk",
 		}, cfg.Headers), version.ProviderUserAgent("perplexity")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, apiKey, "PERPLEXITY_API_KEY", "Perplexity", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{
@@ -92,25 +97,31 @@ func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, erro
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("perplexity does not support image generation")
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("perplexity does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("perplexity does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("perplexity does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client for making API requests
 func (p *Provider) Client() *http.Client {
 	return p.client
+}
+
+// DecisionModel returns an experimental decision model backed by the
+// Perplexity Decisions API. Mirrors TS PerplexityProvider.decisionModel.
+func (p *Provider) DecisionModel(modelID string) (provider.DecisionModel, error) {
+	return NewDecisionModel(p, modelID), nil
 }

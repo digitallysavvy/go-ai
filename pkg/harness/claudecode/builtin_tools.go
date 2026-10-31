@@ -30,6 +30,33 @@ func enumT(values ...string) map[string]any {
 	}
 	return map[string]any{"type": "string", "enum": anyValues}
 }
+
+// posInt mirrors zod `z.number().int().positive()`.
+func posInt() map[string]any {
+	return map[string]any{"type": "integer", "exclusiveMinimum": 0}
+}
+
+// maxLen mirrors zod `.max(n)` on a string.
+func maxLen(m map[string]any, n int) map[string]any {
+	m["maxLength"] = n
+	return m
+}
+
+// withMin sets a numeric bound keyword (minItems / maxItems) on an array schema.
+func withMin(m map[string]any, key string, n int) map[string]any {
+	m[key] = n
+	return m
+}
+
+// structuredTeamMessageSchema mirrors TS `structuredTeamMessageSchema`.
+func structuredTeamMessageSchema() map[string]any {
+	return map[string]any{"oneOf": []any{
+		obj(map[string]any{"type": enumT("shutdown_request"), "reason": str()}, "type"),
+		obj(map[string]any{"type": enumT("shutdown_response"), "request_id": str(), "approve": boolT(), "reason": str()}, "type", "request_id", "approve"),
+		obj(map[string]any{"type": enumT("plan_approval_response"), "request_id": str(), "approve": boolT(), "feedback": str()}, "type", "request_id", "approve"),
+	}}
+}
+
 func emptyObj() map[string]any {
 	return map[string]any{"type": "object", "properties": map[string]any{}}
 }
@@ -156,6 +183,11 @@ func builtinTools() map[string]harness.BuiltinTool {
 			"description": str(), "timeout_ms": num(), "persistent": boolT(), "command": str(),
 			"ws": obj(map[string]any{"url": str(), "protocols": arr(str())}, "url"),
 		}))
+	// TS #22383: the pinned runtime defines ListAgentsTool; registering it lets
+	// callers disable it via inactiveTools. channel/q are unavailable in the
+	// pinned build ("leave unset"); the TS schema is a strict object.
+	tools["ListAgents"] = plainTool("ListAgents", "List agents that can receive messages", harness.BuiltinToolUseKindReadonly,
+		listAgentsInputSchema())
 	tools["ListMcpResources"] = plainTool("ListMcpResources", "List resources available from MCP servers", harness.BuiltinToolUseKindReadonly, listMcpResourcesInputSchema)
 	tools["ListMcpResourcesTool"] = plainTool("ListMcpResourcesTool", "List resources available from MCP servers", harness.BuiltinToolUseKindReadonly, listMcpResourcesInputSchema)
 	tools["ReadMcpResource"] = plainTool("ReadMcpResource", "Read a specific MCP resource by URI", harness.BuiltinToolUseKindReadonly, readMcpResourceInputSchema)
@@ -195,7 +227,7 @@ func builtinTools() map[string]harness.BuiltinTool {
 		obj(map[string]any{
 			"operation": enumT("goToDefinition", "findReferences", "hover", "documentSymbol",
 				"workspaceSymbol", "goToImplementation", "prepareCallHierarchy", "incomingCalls", "outgoingCalls"),
-			"filePath": str(), "line": num(), "character": num(), "query": str(),
+			"filePath": str(), "line": posInt(), "character": posInt(), "query": str(),
 		}, "operation", "filePath", "line", "character"))
 	tools["PowerShell"] = plainTool("PowerShell", "Execute a PowerShell command, optionally in background", harness.BuiltinToolUseKindBash,
 		obj(map[string]any{
@@ -212,24 +244,24 @@ func builtinTools() map[string]harness.BuiltinTool {
 	tools["ReportFindings"] = plainTool("ReportFindings", "Return verified code-review findings", harness.BuiltinToolUseKindReadonly,
 		obj(map[string]any{
 			"level": enumT("low", "medium", "high", "xhigh", "max"),
-			"findings": arr(obj(map[string]any{
+			"findings": withMin(arr(obj(map[string]any{
 				"file": str(), "line": num(), "summary": str(), "short_summary": str(),
 				"failure_scenario": str(), "category": str(),
 				"verdict": enumT("CONFIRMED", "PLAUSIBLE"),
 				"outcome": enumT("fixed", "skipped", "no_change_needed"),
-			}, "file", "summary", "failure_scenario")),
+			}, "file", "summary", "failure_scenario")), "maxItems", 32),
 		}, "findings"))
 	tools["ScheduleWakeup"] = plainTool("ScheduleWakeup", "Schedule or stop the next iteration of a dynamic loop", harness.BuiltinToolUseKindEdit,
 		obj(map[string]any{"delaySeconds": num(), "reason": str(), "prompt": str(), "stop": boolT()}))
 	tools["SendMessage"] = plainTool("SendMessage", "Send a plain-text or protocol message to another agent", harness.BuiltinToolUseKindEdit,
-		obj(map[string]any{"to": str(), "summary": str(), "message": str()}, "to", "message"))
+		obj(map[string]any{"to": str(), "summary": maxLen(str(), 200), "message": map[string]any{"anyOf": []any{str(), structuredTeamMessageSchema()}}}, "to", "message"))
 	tools["SendUserFile"] = plainTool("SendUserFile", "Send one or more files to the user", harness.BuiltinToolUseKindReadonly,
 		obj(map[string]any{
-			"files": map[string]any{"anyOf": []any{str(), arr(str())}}, "caption": str(),
+			"files": map[string]any{"anyOf": []any{str(), withMin(arr(str()), "minItems", 1)}}, "caption": str(),
 			"status": enumT("normal", "proactive"), "display": enumT("render", "attach"),
 		}, "files", "status"))
 	tools["ShareOnboardingGuide"] = plainTool("ShareOnboardingGuide", "Create, update, inspect, or delete an onboarding guide", harness.BuiltinToolUseKindEdit,
-		obj(map[string]any{"mode": enumT("check", "update", "create", "delete"), "short_code": str()}))
+		obj(map[string]any{"mode": enumT("check", "update", "create", "delete"), "short_code": map[string]any{"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"}}))
 	tools["WaitForMcpServers"] = plainTool("WaitForMcpServers", "Wait for MCP servers that are still connecting", harness.BuiltinToolUseKindReadonly,
 		obj(map[string]any{"servers": arr(str())}))
 	tools["Workflow"] = plainTool("Workflow", "Run or resume a dynamic multi-agent workflow", harness.BuiltinToolUseKindEdit,
@@ -242,19 +274,19 @@ func builtinTools() map[string]harness.BuiltinTool {
 			"method": enumT("list_projects", "get_project", "list_files", "get_file", "finalize_plan",
 				"write_files", "delete_files", "register_assets", "unregister_assets", "create_project", "report_validate"),
 			"projectId": str(), "path": str(),
-			"writes":  arr(str()),
-			"deletes": arr(str()),
+			"writes":  withMin(arr(str()), "maxItems", 256),
+			"deletes": withMin(arr(str()), "maxItems", 256),
 			"planId":  str(),
-			"files": arr(obj(map[string]any{
+			"files": withMin(arr(obj(map[string]any{
 				"path": str(), "localPath": str(), "data": str(), "encoding": enumT("base64"), "mimeType": str(),
-			}, "path")),
-			"paths": arr(str()),
+			}, "path")), "maxItems", 256),
+			"paths": withMin(arr(str()), "maxItems", 256),
 			"name":  str(),
-			"assets": arr(obj(map[string]any{
+			"assets": withMin(arr(obj(map[string]any{
 				"name": str(), "path": str(), "subtitle": str(),
 				"viewport": obj(map[string]any{"width": num(), "height": num()}, "width"),
 				"group":    str(),
-			}, "name", "path")),
+			}, "name", "path")), "maxItems", 256),
 			"localDir": str(),
 			"counts": obj(map[string]any{
 				"total": num(), "bad": num(), "thin": num(), "variantsIdentical": num(), "iterations": num(),
@@ -262,4 +294,13 @@ func builtinTools() map[string]harness.BuiltinTool {
 		}, "method"))
 
 	return tools
+}
+
+func listAgentsInputSchema() map[string]any {
+	field := map[string]any{"type": "string", "maxLength": 256, "description": "Not available in this build; leave unset."}
+	return map[string]any{
+		"type":                 "object",
+		"properties":           map[string]any{"channel": field, "q": field},
+		"additionalProperties": false,
+	}
 }

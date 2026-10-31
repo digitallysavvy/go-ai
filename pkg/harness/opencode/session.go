@@ -5,14 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
-	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -64,12 +63,22 @@ type session struct {
 	// `resolveTurnDrain` (TS #21683: "stop aborted OpenCode turns before
 	// starting the next turn").
 	pendingTurnDrain chan struct{}
+	// abortedTurnDrain is the drain of the most recently aborted turn.
+	// DoContinueTurn waits only on this: a turn paused for a tool approval or
+	// tool result cannot finish before the continue answers it, so waiting on
+	// pendingTurnDrain would deadlock (TS #23331).
+	abortedTurnDrain chan struct{}
+	// destroyed is closed when the first DoDestroy finishes its teardown.
+	destroyed chan struct{}
+	// rerunContinue is the live copy of p.rerunContinue: true until the single
+	// recovery start has been sent. Mirrors TS `rerunContinue`.
+	rerunContinue bool
 }
 
 func newSession(p sessionParams) *session {
 	closedDrain := make(chan struct{})
 	close(closedDrain)
-	s := &session{p: p, latestOpenCodeSessionID: p.openCodeSessionID, pendingTurnDrain: closedDrain}
+	s := &session{p: p, latestOpenCodeSessionID: p.openCodeSessionID, pendingTurnDrain: closedDrain, abortedTurnDrain: closedDrain, rerunContinue: p.rerunContinue}
 	if p.seedResumeSessionOnFirstPrompt {
 		s.pendingResumeSessionID = p.openCodeSessionID
 	}
@@ -285,7 +294,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		forward(f.Part)
 		errPart, _ := f.Part.(*harness.ErrorPart)
 		if errPart != nil {
-			settleError(fmt.Errorf("%v", errPart.Error))
+			settleError(errPart.AsError())
 		} else {
 			settleError(errors.New("opencode: bridge reported an error"))
 		}
@@ -309,7 +318,13 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = s.p.channel.Send(bridge.AbortCommand{})
+			// Like TS `onAbort`, do nothing when the turn already settled: a
+			// late abort frame would hit the bridge's next turn.
+			select {
+			case <-c.done:
+				return
+			default:
+			}
 			turnMu.Lock()
 			if isSettled {
 				turnMu.Unlock()
@@ -318,7 +333,11 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 			isSettled = true
 			drainingAfterAbort = true
 			turnMu.Unlock()
-			err := ctx.Err()
+			_ = s.p.channel.Send(bridge.AbortCommand{})
+			s.mu.Lock()
+			s.abortedTurnDrain = turnDrain
+			s.mu.Unlock()
+			err := context.Cause(ctx)
 			if c.submitter != nil {
 				c.submitter.Close(err)
 			}
@@ -350,9 +369,10 @@ func (s *session) startBase(turnModel string) (StartMessage, error) {
 	defer s.mu.Unlock()
 	msg := StartMessage{
 		StartBase: bridge.StartBase{
-			Model: turnModel, PermissionMode: s.p.permissionMode, BuiltinToolFiltering: s.p.builtinToolFiltering,
+			Model: turnModel, PermissionMode: s.p.permissionMode,
 		},
-		Provider: s.p.provider, Variant: s.p.reasoningVariant, OpenCodeConfig: s.p.openCodeConfig,
+		InactiveBuiltinToolNames: resolveInactiveBuiltinToolNames(s.p.builtinToolFiltering),
+		Provider:                 s.p.provider, Variant: s.p.reasoningVariant, OpenCodeConfig: s.p.openCodeConfig,
 		MCPServers: s.p.mcpServers, Headers: s.p.headers,
 	}
 	switch {
@@ -367,14 +387,10 @@ func (s *session) startBase(turnModel string) (StartMessage, error) {
 	return msg, nil
 }
 
-// waitForPendingTurnDrain blocks until the previous turn (if any) has fully
-// finished — including, when that turn was aborted, OpenCode itself having
-// stopped generating — so a replacement turn never races the aborted one's
-// trailing events. Mirrors TS prepareTurn's `await pendingTurnDrain;` (TS
-// #21683).
-func (s *session) waitForPendingTurnDrain(ctx context.Context) error {
+// waitForTurnDrain blocks until the given drain is closed or ctx ends.
+func (s *session) waitForTurnDrain(ctx context.Context, which func() chan struct{}) error {
 	s.mu.Lock()
-	drain := s.pendingTurnDrain
+	drain := which()
 	s.mu.Unlock()
 	select {
 	case <-drain:
@@ -384,8 +400,11 @@ func (s *session) waitForPendingTurnDrain(ctx context.Context) error {
 	}
 }
 
+// prepareTurn waits for the drain selected by opts.drain first: prompts wait
+// for the previous turn (so an aborted turn's stale events never reach the
+// new turn's Emit, TS #21683), continues only for an aborted turn (TS #23331).
 func (s *session) prepareTurn(ctx context.Context, opts turnPrepareOptions) (*promptControl, *harnessutil.WriteSkillsResult, error) {
-	if err := s.waitForPendingTurnDrain(ctx); err != nil {
+	if err := s.waitForTurnDrain(ctx, opts.drain); err != nil {
 		return nil, nil, err
 	}
 	if opts.ResponseFormat != nil && opts.ResponseFormat.Type == harness.ResponseFormatJSON && opts.ResponseFormat.Schema == nil {
@@ -410,15 +429,18 @@ type turnPrepareOptions struct {
 	ResponseFormat *harness.ResponseFormat
 	Skills         []harness.Skill
 	Emit           harness.EmitFunc
+	// drain selects the drain channel to await; called with s.mu held.
+	drain func() chan struct{}
 }
 
 func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptions) (harness.PromptControl, error) {
-	control, skillResult, err := s.prepareTurn(ctx, turnPrepareOptions{ResponseFormat: opts.ResponseFormat, Skills: opts.Skills, Emit: opts.Emit})
+	control, skillResult, err := s.prepareTurn(ctx, turnPrepareOptions{ResponseFormat: opts.ResponseFormat, Skills: opts.Skills, Emit: opts.Emit, drain: func() chan struct{} { return s.pendingTurnDrain }})
 	if err != nil {
 		return nil, err
 	}
-	promptText, err := extractUserText(opts.Prompt)
+	content, err := harnessutil.ExtractPromptContent(opts.Prompt)
 	if err != nil {
+		control.settleError(err)
 		return nil, err
 	}
 	turnModel := opts.Model
@@ -432,29 +454,42 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 
 	msg, err := s.startBase(turnModel)
 	if err != nil {
+		control.settleError(err)
 		return nil, err
 	}
 	msg.Operation = OperationPrompt
-	msg.Prompt = promptText
+	msg.Prompt = content.Text
+	if !content.IsText() {
+		msg.PromptContent = &content
+	}
 	msg.Tools = opts.Tools
 	msg.ResponseFormat = opts.ResponseFormat
 	msg.Instructions = opts.Instructions
 	msg.SkillsChanged = skillResult.Changed
 	if err := s.p.channel.Send(msg); err != nil {
+		control.settleError(err)
 		return nil, err
 	}
 	s.mu.Lock()
 	s.pendingResumeSessionID = ""
+	// Recovery starts a native turn once. Later continuations attach to it.
+	s.rerunContinue = false
 	s.mu.Unlock()
 	return control, nil
 }
 
 func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnOptions) (harness.PromptControl, error) {
-	control, skillResult, err := s.prepareTurn(ctx, turnPrepareOptions{ResponseFormat: opts.ResponseFormat, Skills: opts.Skills, Emit: opts.Emit})
+	control, skillResult, err := s.prepareTurn(ctx, turnPrepareOptions{ResponseFormat: opts.ResponseFormat, Skills: opts.Skills, Emit: opts.Emit, drain: func() chan struct{} { return s.abortedTurnDrain }})
 	if err != nil {
 		return nil, err
 	}
-	if s.p.rerunContinue {
+	s.mu.Lock()
+	rerun := s.rerunContinue
+	if rerun {
+		s.rerunContinue = false
+	}
+	s.mu.Unlock()
+	if rerun {
 		turnModel := opts.Model
 		s.mu.Lock()
 		if turnModel == "" {
@@ -466,6 +501,7 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 
 		msg, err := s.startBase(turnModel)
 		if err != nil {
+			control.settleError(err)
 			return nil, err
 		}
 		msg.Operation = OperationPrompt
@@ -475,6 +511,7 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 		msg.Instructions = opts.Instructions
 		msg.SkillsChanged = skillResult.Changed
 		if err := s.p.channel.Send(msg); err != nil {
+			control.settleError(err)
 			return nil, err
 		}
 		s.mu.Lock()
@@ -485,7 +522,7 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 }
 
 func (s *session) DoCompact(ctx context.Context, customInstructions string) error {
-	if strings.TrimSpace(customInstructions) != "" {
+	if providerutils.JSTrim(customInstructions) != "" {
 		return harness.NewCapabilityUnsupportedError(
 			"Harness 'opencode' supports native manual compaction, but OpenCode does not expose custom compaction instructions through the supported API.", HarnessID, nil)
 	}
@@ -504,7 +541,13 @@ func (s *session) DoCompact(ctx context.Context, customInstructions string) erro
 	msg.Operation = OperationCompact
 	msg.Prompt = ""
 	msg.Tools = nil
-	return s.runCompactOperation(msg)
+	// TS `runCompactOperation` sends neither a reasoning variant nor a
+	// pending-seed resume id: only the latest OpenCode session id.
+	msg.Variant = ""
+	s.mu.Lock()
+	msg.ResumeSessionID = s.latestOpenCodeSessionID
+	s.mu.Unlock()
+	return s.runCompactOperation(ctx, msg)
 }
 
 func (s *session) currentModel() string {
@@ -513,7 +556,7 @@ func (s *session) currentModel() string {
 	return s.selectedModel
 }
 
-func (s *session) runCompactOperation(msg StartMessage) error {
+func (s *session) runCompactOperation(ctx context.Context, msg StartMessage) error {
 	done := make(chan error, 1)
 	var unsub []func()
 	settle := func(err error) {
@@ -536,7 +579,9 @@ func (s *session) runCompactOperation(msg StartMessage) error {
 	unsub = append(unsub, s.p.channel.On(harness.PartTypeError, func(e bridge.Event) {
 		if f, ok := e.Message.(bridge.StreamPartFrame); ok {
 			if ep, ok := f.Part.(*harness.ErrorPart); ok {
-				settle(fmt.Errorf("%v", ep.Error))
+				// TS rejects with the raw error value; a wire object keeps its
+				// wire key order and typed errors keep their type.
+				settle(ep.AsError())
 				return
 			}
 		}
@@ -545,7 +590,15 @@ func (s *session) runCompactOperation(msg StartMessage) error {
 	if err := s.p.channel.Send(msg); err != nil {
 		settle(err)
 	}
-	return <-done
+	// TS waits unconditionally; a Go caller needs a way out when the bridge
+	// never answers (the listeners are removed so they cannot leak).
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		settle(nil)
+		return context.Cause(ctx)
+	}
 }
 
 func (s *session) DoSuspendTurn(ctx context.Context) (*harness.ContinueTurnState, error) {
@@ -636,11 +689,24 @@ func (s *session) DoStop(ctx context.Context) (*harness.ResumeSessionState, erro
 func (s *session) DoDestroy(ctx context.Context) error {
 	s.mu.Lock()
 	if s.stopped {
+		// A second destroy awaits the first one's teardown (TS returns the
+		// same `stopPromise`). A destroy after stop/detach has nothing to do.
+		done := s.destroyed
 		s.mu.Unlock()
+		if done != nil {
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 		return nil
 	}
 	s.stopped = true
+	s.destroyed = make(chan struct{})
+	done := s.destroyed
 	s.mu.Unlock()
+	defer close(done)
 
 	s.p.channel.BeginClose()
 	if !s.p.channel.IsClosed() {
@@ -665,7 +731,7 @@ func teardownProc(proc providerutils.SandboxProcess) {
 }
 
 func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.SandboxSession, settings Settings, coords *bridgeCoords, isContinue bool, resumeSessionID string, helloTimeout time.Duration, onBridgeErr func(*harness.ErrorPart), onDiagnostic func(bridge.OutboundMessage), p sessionParams) (*session, bool) {
-	endpoint, err := resolveBridgeEndpoint(ctx, sandboxSession, settings.PortEndpoint, coords.Port)
+	endpoint, err := bridge.ResolveBridgeEndpointOrUnsupported(ctx, sandboxSession, settings.PortEndpoint, coords.Port, HarnessID)
 	if err != nil {
 		return nil, false
 	}
@@ -673,15 +739,11 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 	if err != nil {
 		return nil, false
 	}
-	var supportsUserMessageResponses bool
+	var supportsUserMessageResponses atomic.Bool
 	channel := bridge.NewChannel(bridge.ChannelOptions{
-		Connect: bridge.NewConnectFunc(endpoint, bridge.DialOptions{
-			Name: "OpenCode bridge", WaitForHello: true, HelloTimeout: helloTimeout,
-			OnHello: func(h *bridge.Hello) {
-				if h.Capabilities != nil && h.Capabilities.ExperimentalUserMessageResponses != nil {
-					supportsUserMessageResponses = *h.Capabilities.ExperimentalUserMessageResponses
-				}
-			},
+		Connect: bridge.NewBridgeConnectFunc(endpoint, bridge.BridgeConnectOptions{
+			Name:    "OpenCode bridge",
+			OnHello: trackUserMessageResponses(&supportsUserMessageResponses),
 		}),
 		InitialLastSeenEventID: coords.LastSeenEventID, OnBridgeError: onBridgeErr, OnDiagnostic: onDiagnostic, Reconnect: settings.Reconnect,
 	})
@@ -696,25 +758,6 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 	p.rerunContinue = false
 	p.bridgePort = coords.Port
 	p.bridgeToken = coords.Token
-	p.supportsUserMessageResponses = func() bool { return supportsUserMessageResponses }
+	p.supportsUserMessageResponses = supportsUserMessageResponses.Load
 	return newSession(p), true
-}
-
-// extractUserText reduces the prompt to plain user text; non-text parts are
-// unsupported. Mirrors TS `extractUserText`.
-func extractUserText(p harness.Prompt) (string, error) {
-	if p.Message == nil {
-		return p.Text, nil
-	}
-	var parts []string
-	for _, part := range p.Message.Content {
-		text, ok := part.(types.TextContent)
-		if !ok {
-			return "", harness.NewCapabilityUnsupportedError(
-				fmt.Sprintf("The OpenCode harness does not yet support user message parts of type '%s'. Pass a string or a user message whose content contains only text parts.", part.ContentType()),
-				HarnessID, nil)
-		}
-		parts = append(parts, text.Text)
-	}
-	return strings.Join(parts, "\n\n"), nil
 }

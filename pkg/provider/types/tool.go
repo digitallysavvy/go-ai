@@ -2,6 +2,7 @@ package types
 
 import (
 	"context"
+	"iter"
 
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
@@ -40,6 +41,14 @@ type Tool struct {
 
 	// Parameters schema for the tool input
 	Parameters interface{} `json:"parameters"`
+
+	// ParameterKeyOrder optionally carries the key order of Parameters when
+	// Parameters is a plain map (a Go map has no order). Tools built from a
+	// remote schema, such as MCP tools, set it so the schema reaches the model
+	// in the order the server sent it, as in the TypeScript SDK. The value is
+	// opaque: leave it nil when building tools by hand, and copy it along with
+	// Parameters when you copy a tool.
+	ParameterKeyOrder interface{} `json:"-"`
 
 	// OutputSchema is the schema for provider-executed tool output. It mirrors
 	// TypeScript provider tool outputSchema and is not sent as part of function
@@ -297,6 +306,49 @@ type ToolExecutionOptions struct {
 	// TypeScript's CodeModeToolExecutionOptions.codeModeInterrupt
 	// (code-mode/src/types.ts).
 	CodeModeInterrupt interface{}
+
+	// OnPreliminaryResult, when non-nil, receives each intermediate output a
+	// streaming tool (see StreamingExecutor) yields, as it is produced. The
+	// pipeline streams them as preliminary tool-result parts
+	// (tool-output-available with preliminary: true in UI streams); only the
+	// final output is recorded in the content, steps and response messages.
+	// It is nil for GenerateText and for callers that do not stream, and
+	// tools must treat it as optional. Mirrors TS onPreliminaryToolResult.
+	OnPreliminaryResult func(output interface{})
+}
+
+// StreamingExecutor adapts a generator-style tool body to a ToolExecutor, the
+// Go form of a TS `async *execute()` tool. Every value the sequence yields is
+// reported through ToolExecutionOptions.OnPreliminaryResult (when set); the
+// last yielded value becomes the tool's final output (nil when nothing is
+// yielded, as in TS). A non-nil error yielded by the sequence, or a cancelled
+// ctx, ends the execution as a tool error.
+//
+//	tool.Execute = types.StreamingExecutor(func(ctx context.Context, input map[string]interface{}, _ types.ToolExecutionOptions) iter.Seq2[interface{}, error] {
+//		return func(yield func(interface{}, error) bool) {
+//			if !yield(map[string]interface{}{"status": "loading"}, nil) {
+//				return
+//			}
+//			yield(map[string]interface{}{"status": "success"}, nil)
+//		}
+//	})
+func StreamingExecutor(fn func(ctx context.Context, input map[string]interface{}, options ToolExecutionOptions) iter.Seq2[interface{}, error]) ToolExecutor {
+	return func(ctx context.Context, input map[string]interface{}, options ToolExecutionOptions) (interface{}, error) {
+		var last interface{}
+		for output, err := range fn(ctx, input, options) {
+			if err != nil {
+				return nil, err
+			}
+			last = output
+			if options.OnPreliminaryResult != nil {
+				options.OnPreliminaryResult(output)
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+		}
+		return last, nil
+	}
 }
 
 // ToModelOutputFunc converts a tool result to model-readable output
@@ -447,6 +499,12 @@ type ToolCall struct {
 	// Title is a short, human-readable title for the tool call.
 	Title string `json:"title,omitempty"`
 
+	// InputEncoding is the encoding of the tool-input-delta chunks that follow
+	// a tool-input-start chunk: "json" (the default when empty) or "text".
+	// Text deltas concatenate to a raw string; the final tool call input is
+	// still JSON-encoded. Mirrors TS tool-input-start `inputEncoding`.
+	InputEncoding string `json:"inputEncoding,omitempty"`
+
 	// Arguments to pass to the tool
 	Arguments map[string]interface{} `json:"arguments"`
 
@@ -458,6 +516,12 @@ type ToolCall struct {
 	// ProviderExecuted indicates if this tool was executed by the provider (not locally).
 	// When true, the provider handled execution server-side (e.g., xAI file_search, web_search).
 	ProviderExecuted bool `json:"providerExecuted,omitempty"`
+
+	// ProviderExecutedSet marks ProviderExecuted as explicitly set, so an
+	// explicit false is kept where TS forwards `providerExecuted` whenever it
+	// is not undefined (for example the workflow UI chunk converter). A Go
+	// bool cannot tell false from unset. Never serialized.
+	ProviderExecutedSet bool `json:"-"`
 
 	// ProviderMetadata carries provider-specific metadata associated with this tool call.
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
@@ -509,6 +573,10 @@ type ToolResult struct {
 	// Error if tool execution failed
 	Error error `json:"error,omitempty"`
 
+	// IsError is the TS tool-result isError flag of a provider-executed
+	// result: nil when the provider did not say, true or false when it did.
+	IsError *bool `json:"isError,omitempty"`
+
 	// ApprovalStatus captures approval-driven outcomes such as denied or
 	// user-approval pending tool calls.
 	ApprovalStatus ToolApprovalStatus `json:"approvalStatus,omitempty"`
@@ -539,6 +607,14 @@ type ToolResult struct {
 	// When false or unset, the tool was executed locally by the client
 	// This affects error handling and validation behavior
 	ProviderExecuted bool `json:"providerExecuted,omitempty"`
+
+	// ProviderExecutedSet marks ProviderExecuted as explicitly set, so an
+	// explicit false is kept where TS forwards `providerExecuted` whenever it
+	// is not undefined: the UI tool-output chunks of a result without an
+	// approval, and the automatic approval response built from an approved
+	// or denied result (TS copies the tool call's providerExecuted). It
+	// follows ToolCall.ProviderExecutedSet. Never serialized.
+	ProviderExecutedSet bool `json:"-"`
 
 	// ProviderMetadata carries provider-specific metadata associated with this tool result.
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`

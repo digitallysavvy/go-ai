@@ -180,19 +180,18 @@ func TestLanguageModelDoGenerateAndDoStream(t *testing.T) {
 		t.Fatalf("first chunk type = %v, want stream-start", chunk.Type)
 	}
 	chunk, err = stream.Next()
-	if err != nil {
-		t.Fatalf("second stream chunk error = %v", err)
-	}
-	if chunk.Type != provider.ChunkTypeResponseMetadata {
-		t.Fatalf("second chunk type = %v, want response metadata", chunk.Type)
-	}
-	chunk, err = stream.Next()
 	if err != nil || chunk.Text != "hello " {
-		t.Fatalf("third stream chunk = %+v err=%v", chunk, err)
+		t.Fatalf("second stream chunk = %+v err=%v", chunk, err)
 	}
 	chunk, err = stream.Next()
 	if err != nil || chunk.Text != "world" {
-		t.Fatalf("fourth stream chunk = %+v err=%v", chunk, err)
+		t.Fatalf("third stream chunk = %+v err=%v", chunk, err)
+	}
+	// No event carries id/model/created (TS emits no response-metadata
+	// part), so the headers come in a headers-only metadata chunk at the end.
+	chunk, err = stream.Next()
+	if err != nil || chunk.Type != provider.ChunkTypeResponseMetadata || chunk.ResponseMetadata.Headers["Content-Type"] != "text/event-stream" {
+		t.Fatalf("metadata chunk = %+v err=%v", chunk, err)
 	}
 	chunk, err = stream.Next()
 	if err != nil || chunk.Type != provider.ChunkTypeFinish || chunk.FinishReason != types.FinishReasonStop {

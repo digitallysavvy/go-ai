@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -51,51 +53,153 @@ var (
 	warmUpErr  error
 )
 
-var (
-	maxWorkersMu  sync.Mutex
-	maxWorkers    int // 0 (the default) means unlimited.
-	activeWorkers int
+// Default worker cap, matching the TypeScript `run` package
+// (runtime/max-workers.js, run@2.1.8): when SetMaxWorkers has not been
+// called, the cap is floor(availableMemory / (memoryLimitBytes + 48 MiB)),
+// clamped to [1, 32], and each invocation also reserves that many bytes
+// against a memory budget taken when the first reservation is made.
+const (
+	defaultMaxWorkersCap       = 32
+	defaultWorkerOverheadBytes = 48 * 1024 * 1024
 )
 
-// SetMaxWorkers caps the number of code-mode sandbox invocations that may
-// run concurrently, process-wide. 0 (the default) means unlimited. An
-// invocation started while the cap is already reached fails immediately
-// with *ConcurrencyError rather than queuing. Mirrors TypeScript's
+var (
+	maxWorkersMu sync.Mutex
+	// maxWorkersSet reports whether SetMaxWorkers configured the cap (TS
+	// configuredMaxWorkers !== undefined). maxWorkers is that cap; 0 means
+	// unlimited.
+	maxWorkersSet bool
+	maxWorkers    int
+	activeWorkers int
+	// memoryBudgetBytes is TS memoryBudgetBytes (0 means unset);
+	// reservedMemoryBytes is TS reservedMemoryBytes.
+	memoryBudgetBytes   uint64
+	reservedMemoryBytes uint64
+	// availableMemory reports the memory Node's process.availableMemory()
+	// would (libuv uv_get_available_memory; available_memory_*.go). known is
+	// false on platforms where it is not implemented. Replaced in tests.
+	availableMemory = systemAvailableMemory
+)
+
+// SetMaxWorkers sets the number of code-mode sandbox invocations that may run
+// concurrently, process-wide, overriding the memory-based default. An
+// invocation started while the cap is reached fails immediately with
+// *ConcurrencyError rather than queuing. Mirrors TypeScript's
 // experimental_setMaxWorkers (from the `run` package, re-exported by
-// code-mode); note that TypeScript's cap bounds worker *threads*, while
-// this Go port has no worker threads (see the package doc), so it simply
-// bounds concurrent in-flight RunCodeMode/Run calls.
+// code-mode); TypeScript's cap bounds worker threads, while this Go port has
+// no worker threads (see the package doc), so it bounds concurrent in-flight
+// RunCodeMode/Run calls.
 //
-// Mirrors TypeScript's setMaxWorkers validation ("rejects invalid
-// maxWorkers values", code-mode/src/utils/options.test.ts) for negative
-// values; unlike TypeScript, n == 0 is accepted (it is Go's "unlimited"
-// sentinel here, not an unset/undefined value -- see the doc above and
-// resolveExecutionPolicy's doc comment for the same reasoning).
+// Without a SetMaxWorkers call the cap is TypeScript's default:
+// floor(available memory / (ExecutionPolicy.MemoryLimitBytes + 48 MiB)),
+// at least 1 and at most 32, and an invocation is also rejected when its
+// memory reservation does not fit the budget. ResetMaxWorkers restores that
+// default (TS setMaxWorkers(undefined)).
+//
+// A negative n fails with TypeScript's "maxWorkers must be a positive
+// integer." Unlike TypeScript, n == 0 is accepted and means unlimited (kept
+// from v0.5.2, where unlimited was the default).
 func SetMaxWorkers(n int) error {
 	if n < 0 {
-		return fmt.Errorf("codemode: maxWorkers must be a positive integer, got %d", n)
+		return runTypeError("maxWorkers must be a positive integer.") // TS run setMaxWorkers text
 	}
 	maxWorkersMu.Lock()
 	defer maxWorkersMu.Unlock()
+	maxWorkersSet = true
 	maxWorkers = n
 	return nil
 }
 
-// acquireWorkerSlot reserves a concurrency slot for one sandbox invocation,
-// returning a release function to call once the invocation completes (or a
-// *ConcurrencyError if the process-wide cap set by SetMaxWorkers is
-// already reached).
-func acquireWorkerSlot() (func(), error) {
+// ResetMaxWorkers restores the memory-based default cap described on
+// SetMaxWorkers, as TypeScript's setMaxWorkers(undefined) does.
+func ResetMaxWorkers() {
 	maxWorkersMu.Lock()
 	defer maxWorkersMu.Unlock()
-	if maxWorkers > 0 && activeWorkers >= maxWorkers {
-		return nil, NewConcurrencyError(maxWorkers)
+	maxWorkersSet = false
+	maxWorkers = 0
+}
+
+func estimatedWorkerBytes(memoryLimitBytes int) uint64 {
+	return uint64(memoryLimitBytes) + defaultWorkerOverheadBytes
+}
+
+// maxWorkersLocked is TS getMaxWorkers (code mode registers no synchronous
+// host functions or module loader, so TS additionalMemoryBytes is 0). 0
+// means unlimited (SetMaxWorkers(0)). Callers hold maxWorkersMu.
+func maxWorkersLocked(memoryLimitBytes int) int {
+	if maxWorkersSet {
+		return maxWorkers
+	}
+	bytes, known := availableMemory()
+	if !known {
+		return defaultMaxWorkersCap
+	}
+	n := bytes / estimatedWorkerBytes(memoryLimitBytes)
+	return int(max(1, min(defaultMaxWorkersCap, n)))
+}
+
+// reserveWorkerMemoryLocked is TS reserveWorkerMemory: ok is false when the
+// reservation does not fit the budget. Callers hold maxWorkersMu.
+func reserveWorkerMemoryLocked(memoryLimitBytes int) (reserved uint64, ok bool) {
+	if maxWorkersSet {
+		return 0, true
+	}
+	reservation := estimatedWorkerBytes(memoryLimitBytes)
+	if memoryBudgetBytes == 0 {
+		bytes, known := availableMemory()
+		if !known {
+			return 0, true
+		}
+		memoryBudgetBytes = max(reservation, bytes)
+	}
+	if reservedMemoryBytes+reservation > memoryBudgetBytes {
+		return 0, false
+	}
+	reservedMemoryBytes += reservation
+	return reservation, true
+}
+
+// releaseWorkerMemoryLocked is TS releaseWorkerMemory. Callers hold
+// maxWorkersMu.
+func releaseWorkerMemoryLocked(reserved uint64) {
+	if reserved == 0 {
+		return
+	}
+	if reserved > reservedMemoryBytes {
+		reservedMemoryBytes = 0
+	} else {
+		reservedMemoryBytes -= reserved
+	}
+	if reservedMemoryBytes == 0 {
+		memoryBudgetBytes = 0
+	}
+}
+
+// acquireWorkerSlot reserves a concurrency slot for one sandbox invocation
+// with the given ExecutionPolicy.MemoryLimitBytes, returning a release
+// function to call once the invocation completes, or a *ConcurrencyError
+// when the cap (see SetMaxWorkers) is reached or the memory reservation does
+// not fit, with TS run's admission order and maxWorkers detail.
+func acquireWorkerSlot(memoryLimitBytes int) (func(), error) {
+	maxWorkersMu.Lock()
+	defer maxWorkersMu.Unlock()
+	limit := maxWorkersLocked(memoryLimitBytes)
+	if limit > 0 && activeWorkers >= limit {
+		return nil, NewConcurrencyError(limit)
+	}
+	reserved, ok := reserveWorkerMemoryLocked(memoryLimitBytes)
+	if !ok {
+		return nil, NewConcurrencyError(max(1, activeWorkers))
 	}
 	activeWorkers++
+	var once sync.Once
 	return func() {
-		maxWorkersMu.Lock()
-		activeWorkers--
-		maxWorkersMu.Unlock()
+		once.Do(func() {
+			maxWorkersMu.Lock()
+			activeWorkers--
+			releaseWorkerMemoryLocked(reserved)
+			maxWorkersMu.Unlock()
+		})
 	}, nil
 }
 
@@ -162,7 +266,11 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 		return "", false, false, werr
 	}
 
-	release, werr := acquireWorkerSlot()
+	// TS run runManaged checks the abort signal before the worker cap.
+	if ctx.Err() != nil {
+		return "", false, false, NewAbortedError()
+	}
+	release, werr := acquireWorkerSlot(policy.MemoryLimitBytes)
 	if werr != nil {
 		return "", false, false, werr
 	}
@@ -172,12 +280,28 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// The CPU budget cancels the sandbox through its own context so it is
+	// told apart from the wall-clock timeout. RunCodeMode attaches the budget
+	// to ctx so the tool bridge can pause it around host calls.
+	budget := cpuBudgetFrom(ctx)
+	if budget == nil {
+		budget = newCPUBudget(policy.CPUTimeoutMs)
+	}
+	sandboxCtx, cancelSandbox := context.WithCancel(runCtx)
+	defer cancelSandbox()
+	defer budget.stop()
+
 	ch := make(chan sandboxOutcome, 1)
 	go func() {
+		// Pin the sandbox to one OS thread so the CPU budget can read that
+		// thread's CPU time (cpu_meter_linux.go, cpu_meter_darwin.go,
+		// cpu_meter_windows.go).
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
 		var out sandboxOutcome
 		defer func() {
 			if r := recover(); r != nil {
-				out = sandboxOutcome{err: classifySandboxFailure(fmt.Errorf("%v", r), ctx, policy)}
+				out = sandboxOutcome{err: classifySandboxFailure(fmt.Errorf("%v", r), ctx, policy, budget)}
 			}
 			select {
 			case ch <- out:
@@ -209,7 +333,7 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 			MemoryLimit:        policy.MemoryLimitBytes,
 			MaxStackSize:       policy.MaxStackSizeBytes,
 			MaxExecutionTime:   policy.TimeoutMs,
-			Context:            runCtx,
+			Context:            sandboxCtx,
 			CloseOnContextDone: true,
 			NoFSMount:          true,
 			DisableModules:     true,
@@ -217,7 +341,7 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 			Stderr:             consoleBudget.writer(),
 		})
 		if nerr != nil {
-			out.err = classifySandboxFailure(nerr, ctx, policy)
+			out.err = classifySandboxFailure(nerr, ctx, policy, budget)
 			return
 		}
 		defer func() {
@@ -240,12 +364,22 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 		// `await import('qjs:std')`/`'qjs:os'`/`'qjs:bjson'` reach the same
 		// host-escape primitives independently of the global object.
 		if herr := installRuntimeHardening(jsCtx); herr != nil {
-			out.err = classifySandboxFailure(herr, ctx, policy)
+			out.err = classifySandboxFailure(herr, ctx, policy, budget)
 			return
 		}
+		// Sandbox setup (WASM instantiation, hardening) is not sandboxed code:
+		// the CPU budget counts only the script's own execution.
+		budget.start(cancelSandbox)
 		rJSON, isUndef, interruptedResult, derr := drive(jsCtx)
 		if derr != nil {
-			out.err = classifySandboxFailure(derr, ctx, policy)
+			out.err = classifySandboxFailure(derr, ctx, policy, budget)
+			return
+		}
+		// A pending interruption never hides an exceeded budget: the
+		// invocation fails instead of returning a continuation (TS `run`
+		// cpuTimeoutMs).
+		if interruptedResult && budget.exceeded() {
+			out.err = NewCPUTimeoutError(policy.CPUTimeoutMs)
 			return
 		}
 		out.resultJSON = rJSON
@@ -257,6 +391,9 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 	case out := <-ch:
 		return out.resultJSON, out.isUndefined, out.interrupted, out.err
 	case <-time.After(timeout + sandboxTimeoutGrace):
+		if budget.hasExpired() {
+			return "", false, false, NewCPUTimeoutError(policy.CPUTimeoutMs)
+		}
 		return "", false, false, NewTimeoutError(policy.TimeoutMs)
 	}
 }
@@ -266,17 +403,30 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 // tool-thrown and script-thrown JavaScript errors as plain errors whose
 // message is preserved verbatim (RunCodeMode further prefers a preserved
 // *typed* CodeModeError captured by the tool bridge, when one caused the
-// failure; see toolBridge.lastCodeModeErr).
-func classifySandboxFailure(err error, outerCtx context.Context, policy resolvedPolicy) error {
+// failure; see toolBridge.preservedCodeModeErr).
+func classifySandboxFailure(err error, outerCtx context.Context, policy resolvedPolicy, budget *cpuBudget) error {
 	msg := err.Error()
 	if looksLikeContextCancellation(msg) {
 		if outerCtx.Err() != nil {
 			return NewAbortedError()
 		}
+		if budget != nil && budget.hasExpired() {
+			return NewCPUTimeoutError(policy.CPUTimeoutMs)
+		}
 		return NewTimeoutError(policy.TimeoutMs)
+	}
+	// A trap of the WASM engine itself (typically unbounded recursion running
+	// the engine's native stack off its end) is not a JavaScript error and its
+	// raw text carries the engine's internal trace; report the reason only.
+	if m := wasmTrapPattern.FindStringSubmatch(msg); m != nil {
+		return fmt.Errorf("InternalError: sandbox runtime trapped: %s", strings.TrimSpace(m[1]))
 	}
 	return err
 }
+
+// wasmTrapPattern extracts the trap reason from a wazero error
+// ("... wasm error: <reason>\nwasm stack trace: ...").
+var wasmTrapPattern = regexp.MustCompile(`wasm error: ([^\n]+)`)
 
 func looksLikeContextCancellation(msg string) bool {
 	return strings.Contains(msg, "context deadline exceeded") ||

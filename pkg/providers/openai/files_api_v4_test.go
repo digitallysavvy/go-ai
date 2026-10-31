@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"errors"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -254,7 +256,8 @@ func TestFilesAPI_GetFileMetadata_RejectsBlankFileID(t *testing.T) {
 		_, err := getter.GetFileMetadata(t.Context(), provider.FileMetadataOptions{
 			File: types.ProviderReference{"openai": id},
 		})
-		if err == nil || !strings.Contains(err.Error(), "file reference is missing an 'openai' file id.") {
+		var ia *providererrors.InvalidArgumentError
+		if !errors.As(err, &ia) || ia.Field != "file" || ia.Message != "file reference is missing an 'openai' file id." {
 			t.Fatalf("id %q: err = %v", id, err)
 		}
 	}
@@ -406,4 +409,44 @@ func (c *closeTrackingReader) Close() error {
 		c.onClose()
 	}
 	return nil
+}
+
+// Download errors are provider errors (status, message from the error body),
+// like every other Files API call -- not a raw transport status error.
+func TestFilesAPI_DownloadFile_ErrorIsProviderError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"No such file","type":"invalid_request_error"}}`))
+	}))
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	_, err := p.Files().(provider.FileDownloader).DownloadFile(t.Context(), provider.DownloadFileOptions{
+		File: types.ProviderReference{"openai": "file-missing"},
+	})
+	var perr *providererrors.ProviderError
+	if !errors.As(err, &perr) {
+		t.Fatalf("want *ProviderError, got %T: %v", err, err)
+	}
+	if !strings.Contains(err.Error(), "No such file") {
+		t.Fatalf("message lost: %v", err)
+	}
+}
+
+func TestParseOpenAIFilesOptionsLikeTS(t *testing.T) {
+	got, err := parseOpenAIFilesOptions(map[string]interface{}{"openai": map[string]interface{}{"purpose": "batch", "expiresAfter": 3600}})
+	if err != nil || got.purpose != "batch" || got.expiresAfter == nil || *got.expiresAfter != 3600 {
+		t.Fatalf("got %+v err %v", got, err)
+	}
+	for _, o := range []interface{}{
+		map[string]interface{}{"purpose": 3.0},
+		map[string]interface{}{"expiresAfter": "soon"},
+		"nope",
+	} {
+		_, err := parseOpenAIFilesOptions(map[string]interface{}{"openai": o})
+		var ia *providererrors.InvalidArgumentError
+		if !errors.As(err, &ia) || ia.Message != "invalid openai provider options" {
+			t.Errorf("%v: err = %v", o, err)
+		}
+	}
 }

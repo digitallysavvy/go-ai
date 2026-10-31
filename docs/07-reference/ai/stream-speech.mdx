@@ -1,0 +1,111 @@
+---
+title: ExperimentalStreamSpeech
+description: "API reference for ExperimentalStreamSpeech, the experimental Go AI SDK function that streams speech audio for text that arrives incrementally, with options, result accessors and stream part types."
+---
+
+# ExperimentalStreamSpeech
+
+Streams speech audio from a speech model that supports streaming. The text is a complete string or a stream of text deltas and parts that is synthesized as it arrives, so you can start playing audio while a language model is still writing.
+
+This API is experimental and may change in patch releases.
+
+## Signature
+
+```go
+func ExperimentalStreamSpeech(ctx context.Context, opts StreamSpeechOptions) (*StreamSpeechResult, error)
+```
+
+The model must also implement the optional `provider.SpeechStreamer` interface (`DoStreamSpeech`). The call returns an `UnsupportedFunctionalityError` for a model that does not. `provider.SpeechModel` itself is unchanged, so existing speech models keep working.
+
+## StreamSpeechOptions
+
+{/* gen:fields ai.StreamSpeechOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Model` | `provider.SpeechModel` | Model must implement provider.SpeechStreamer. |
+| `Text` | `string` | Text is the complete text to convert to speech. Set either Text or TextStream, not both. |
+| `TextStream` | `provider.SpeechTextStream` | TextStream is a stream of text deltas or text parts (for example the text of a language model stream) that is synthesized as it arrives. A text part can set its own Voice on providers that support several voices per stream. The SDK owns the stream once the call is made and cancels it on failure and cancellation. See NewChannelSpeechTextStream. |
+| `Voice` | `string` | Voice to use for speech generation. |
+| `OutputFormat` | `*provider.AudioFormat` | OutputFormat is the desired format of the output audio chunks, e.g. \{Type: "audio/pcm", Rate: &rate\}. Supported formats are provider-specific. |
+| `Instructions` | `string` | Instructions for the speech generation. |
+| `Speed` | `*float64` | Speed of the speech generation. |
+| `Language` | `string` | Language is an ISO 639-1 code (e.g. "en") or "auto". Provider support varies. |
+| `ProviderOptions` | `map[string]interface{}` | ProviderOptions contains additional provider-specific options. |
+| `Headers` | `map[string]string` | Headers are additional headers for the request, when supported by the provider. |
+| `IncludeRawChunks` | `bool` | IncludeRawChunks includes raw provider chunks in FullStream. |
+| `OnError` | `func(err error)` | OnError is called for each error part the provider reports. Error parts are not fatal: FullStream includes them and AudioStream skips them. It runs on its own goroutine, and a panic in it is ignored. Defaults to printing the error to standard error. |
+
+{/* /gen:fields */}
+
+## Text sources
+
+| Function | Description |
+| --- | --- |
+| `ai.NewChannelStringSpeechTextStream(deltas <-chan string, onCancel func(reason error)) provider.SpeechTextStream` | Wraps a channel of text deltas. The producer closes the channel at the end of the text. `onCancel` runs at most once if the SDK cancels the stream. |
+| `ai.NewChannelSpeechTextStream(parts <-chan ai.SpeechTextPart, onCancel func(reason error)) provider.SpeechTextStream` | Wraps a channel of text parts. A part can set `Voice` and `ProviderOptions`. |
+
+For a complete string, set `Text` instead.
+
+## StreamSpeechResult
+
+`AudioStream()` and `FullStream()` share one live stream. Only one of them can be accessed, and only once. Access it before any result accessor: an accessor such as `Usage()` consumes the stream internally, and `AudioStream()` and `FullStream()` return an error afterwards. The stream is not buffered, so the call advances as you read it. Cancel `ctx` or call `Close()` on the stream to stop early.
+
+| Method | Description |
+| --- | --- |
+| `AudioStream() (ai.SpeechAudioStream, error)` | Audio bytes in generation order. `Next()` returns `io.EOF` at the end. Error parts are skipped. |
+| `FullStream() (ai.SpeechStream, error)` | `audio`, `raw` and `error` parts. |
+| `Usage() (provider.SpeechStreamUsage, error)` | Usage reported for the call: `InputCharacters`, `InputTokens`, `OutputTokens` and `Raw`, all optional. Blocks until the stream finishes. |
+| `Warnings() ([]types.Warning, error)` | Warnings for the call. |
+| `Responses() ([]ai.SpeechModelResponseMetadata, error)` | Response metadata. |
+| `ProviderMetadata() (map[string]interface{}, error)` | Provider-specific metadata. |
+
+A stream that finishes or ends without any audio fails with `*ai.NoSpeechGeneratedError`. When the provider reported an error part first, it is the error's `Cause`. A stream that ends after audio without a finish part fails with the provider's last error, or a `*errors.StreamProviderError`.
+
+## SpeechStreamPart
+
+| Field | Description |
+| --- | --- |
+| `Type` | `"audio"`, `"raw"` or `"error"` |
+| `Audio` | Audio bytes for an `audio` part. A part is empty only when it carries `ProviderMetadata`, such as an end-of-turn marker. |
+| `AudioFormat` | Format of the audio chunk, for example `audio/mpeg` or `audio/pcm` with a rate |
+| `ID` | Optional provider identifier for the chunk |
+| `ProviderMetadata` | Provider metadata for the chunk |
+| `RawValue` | Raw provider chunk for a `raw` part |
+| `Err` | Error payload for an `error` part |
+
+## Example
+
+```go
+deltas := make(chan string)
+go func() {
+    defer close(deltas)
+    for _, d := range []string{"Hello, ", "this is ", "streamed speech."} {
+        deltas <- d
+    }
+}()
+
+result, err := ai.ExperimentalStreamSpeech(ctx, ai.StreamSpeechOptions{
+    Model:      speechModel,
+    TextStream: ai.NewChannelStringSpeechTextStream(deltas, nil),
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+audio, err := result.AudioStream()
+if err != nil {
+    log.Fatal(err)
+}
+defer audio.Close()
+for {
+    chunk, err := audio.Next()
+    if err == io.EOF {
+        break
+    }
+    if err != nil {
+        log.Fatal(err)
+    }
+    play(chunk)
+}
+```

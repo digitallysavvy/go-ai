@@ -1,7 +1,9 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -156,5 +158,55 @@ func TestServerInfoTitleRoundTrip(t *testing.T) {
 	}
 	if decoded.Title != "Filesystem Server" {
 		t.Fatalf("decoded title = %q", decoded.Title)
+	}
+}
+
+// Ports types.test.ts CallToolResultSchema rejections ("rejects results
+// without content, structuredContent, or toolResult", "accepts legacy
+// toolResult responses", "rejects malformed known content types") through the
+// client, which is where the schema is applied.
+func TestCallToolRejectsMalformedResults(t *testing.T) {
+	cases := []struct {
+		name    string
+		result  string
+		wantErr bool
+	}{
+		{"empty object", `{}`, true},
+		{"meta only", `{"_meta":{}}`, true},
+		{"unrelated field", `{"value":42}`, true},
+		{"legacy toolResult", `{"toolResult":{"value":42}}`, false},
+		{"text block without text", `{"content":[{"type":"text"}]}`, true},
+		{"image with invalid base64", `{"content":[{"type":"image","data":"not-base64","mimeType":"image/png"}]}`, true},
+		{"image without mimeType", `{"content":[{"type":"image","data":"aGk="}]}`, true},
+		{"valid image", `{"content":[{"type":"image","data":"aGk=","mimeType":"image/png"}]}`, false},
+		{"resource_link without name", `{"content":[{"type":"resource_link","uri":"file:///a"}]}`, true},
+		{"resource with neither text nor blob", `{"content":[{"type":"resource","resource":{"uri":"file:///a"}}]}`, true},
+		{"unknown block type", `{"content":[{"type":"audio","data":"x"}]}`, false},
+		{"content null", `{"content":null}`, true},
+		{"structured only", `{"structuredContent":{"a":1}}`, false},
+		{"structured null", `{"structuredContent":null}`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tr := newLifecycleTransport(ServerCapabilities{Tools: &ToolsCapability{}})
+			tr.onRequest = func(msg *MCPMessage) {
+				if msg.Method == "tools/call" {
+					tr.in <- &MCPMessage{JSONRpc: "2.0", ID: msg.ID, Result: json.RawMessage(c.result)}
+				}
+			}
+			client := NewMCPClient(tr, MCPClientConfig{})
+			if err := client.Connect(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close() //nolint:errcheck
+			_, err := client.CallTool(context.Background(), "t", nil)
+			if (err != nil) != c.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, c.wantErr)
+			}
+			var mcpErr *MCPClientError
+			if c.wantErr && (!errors.As(err, &mcpErr) || mcpErr.Message != "Failed to parse server response") {
+				t.Fatalf("err = %v, want Failed to parse server response", err)
+			}
+		})
 	}
 }

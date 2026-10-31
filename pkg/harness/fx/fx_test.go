@@ -2,6 +2,7 @@ package fx
 
 import (
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -15,13 +16,13 @@ import (
 func TestBuildConfig_Recipe(t *testing.T) {
 	cfg := BuildConfig(Settings{})
 
-	if cfg.HarnessID != "fx" || cfg.ClientApp.Name != "ai-sdk/harness-fx" {
+	if cfg.HarnessID != "fx" || cfg.ClientApp.Name != "ai-sdk-harness-fx" {
 		t.Errorf("harnessID/clientApp = %q/%q", cfg.HarnessID, cfg.ClientApp.Name)
 	}
 	if cfg.Executable != "fx" || !reflect.DeepEqual(cfg.Args, []string{"acp"}) {
 		t.Errorf("executable/args = %q/%v", cfg.Executable, cfg.Args)
 	}
-	if cfg.Source != (acp.Source{Type: acp.SourceInstallCommand, Command: "curl -fsSL https://fx.sh/setup.sh | bash"}) {
+	if cfg.Source != (acp.Source{Type: acp.SourceInstallCommand, Command: "curl -fsSL https://fx.sh/setup.sh | bash -s -- v" + fxVersion}) {
 		t.Errorf("source = %+v", cfg.Source)
 	}
 	wantCredentialEnv := []string{
@@ -50,16 +51,16 @@ func TestBuildConfig_Recipe(t *testing.T) {
 	if cfg.ProviderAuthentication == nil || !reflect.DeepEqual(cfg.ProviderAuthentication.GatewayEnv, wantGatewayEnv) {
 		t.Errorf("providerAuthentication = %+v", cfg.ProviderAuthentication)
 	}
-	if len(cfg.BuiltinTools) != 28 {
-		t.Errorf("BuiltinTools has %d entries, want 28", len(cfg.BuiltinTools))
+	if len(cfg.BuiltinTools) != 27 {
+		t.Errorf("BuiltinTools has %d entries, want 27", len(cfg.BuiltinTools))
 	}
 	glob, ok := cfg.BuiltinTools["glob"]
 	if !ok || glob.NativeName != "glob_files" || glob.CommonName != harness.BuiltinToolGlob {
 		t.Errorf("glob = %+v", glob)
 	}
-	terminal, ok := cfg.BuiltinTools["terminal"]
-	if !ok || terminal.ToolUseKind != harness.BuiltinToolUseKindBash {
-		t.Errorf("terminal = %+v", terminal)
+	// TS #22347: fx dropped its original `terminal` tool.
+	if _, ok := cfg.BuiltinTools["terminal"]; ok {
+		t.Error("terminal builtin tool must no longer be declared")
 	}
 	shell, ok := cfg.BuiltinTools["shell"]
 	if !ok || shell.ToolUseKind != harness.BuiltinToolUseKindBash {
@@ -217,6 +218,38 @@ func TestFxShellAndCapabilitySearchInputSchemas(t *testing.T) {
 	}
 }
 
+// TS #23138: the install command is pinned to a versioned fx release.
+func TestBuildConfig_InstallCommandIsVersionPinned(t *testing.T) {
+	cmd := BuildConfig(Settings{}).Source.Command
+	if !regexp.MustCompile(`^curl -fsSL https://fx\.sh/setup\.sh \| bash -s -- v\S+$`).MatchString(cmd) {
+		t.Errorf("install command = %q, want a versioned installer invocation", cmd)
+	}
+}
+
+// TS #22347: fx's skill tool takes `location` (required) and `resource`; the
+// legacy name/offset fields are no longer declared, and unknown fields pass.
+func TestFxSkillInputSchema(t *testing.T) {
+	schema, ok := BuildConfig(Settings{}).BuiltinTools["skill"].Parameters.(map[string]any)
+	if !ok {
+		t.Fatal("skill Parameters is not a map")
+	}
+	cases := []struct {
+		name  string
+		input map[string]any
+		want  bool
+	}{
+		{"location", map[string]any{"location": "skills/foo"}, true},
+		{"location and resource", map[string]any{"location": "skills/foo", "resource": "r.md"}, true},
+		{"legacy name only", map[string]any{"name": "foo"}, false},
+		{"unknown fields tolerated", map[string]any{"location": "x", "future": 1}, true},
+	}
+	for _, tc := range cases {
+		if got := schemaAccepts(schema, tc.input); got != tc.want {
+			t.Errorf("skill %s: schemaAccepts = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 // Mirrors "forwards user-configurable settings".
 func TestBuildConfig_ForwardsUserConfigurableSettings(t *testing.T) {
 	mintBridgeToken := func(sandboxID string) string { return "token-for-" + sandboxID }
@@ -303,7 +336,7 @@ func TestCredentialBrokering_AIGatewayOnly(t *testing.T) {
 	if tr.Transform.Headers["Authorization"] != "Bearer oidc-secret" {
 		t.Errorf("authorization = %q", tr.Transform.Headers["Authorization"])
 	}
-	if tr.Transform.Headers["x-client-app"] != "ai-sdk/harness-fx/0.0.0-go" {
+	if tr.Transform.Headers["x-client-app"] != "ai-sdk-harness-fx/0.0.0-go" {
 		t.Errorf("x-client-app = %q", tr.Transform.Headers["x-client-app"])
 	}
 	if tr.Transform.Headers["x-tenant"] != "acme" {
@@ -400,7 +433,7 @@ func TestBuildConfig_SuppliedAuthenticationEnvironmentGateway(t *testing.T) {
 	if tr.Transform.Headers["Authorization"] != "Bearer explicit-gateway-key" {
 		t.Errorf("authorization = %q", tr.Transform.Headers["Authorization"])
 	}
-	if tr.Transform.Headers["x-client-app"] != "ai-sdk/harness-fx/0.0.0-go" {
+	if tr.Transform.Headers["x-client-app"] != "ai-sdk-harness-fx/0.0.0-go" {
 		t.Errorf("x-client-app = %q", tr.Transform.Headers["x-client-app"])
 	}
 }
@@ -412,5 +445,38 @@ func TestCreateFx(t *testing.T) {
 	}
 	if h.HarnessID() != "fx" {
 		t.Errorf("HarnessID() = %q, want fx", h.HarnessID())
+	}
+}
+
+// TS createCredentialRequestTransformation throws on an invalid
+// AI_GATEWAY_BASE_URL; the Err form surfaces it while the original signature
+// keeps returning nothing.
+func TestCredentialBrokeringErrSurfacesInvalidGatewayURL(t *testing.T) {
+	env := map[string]string{"AI_GATEWAY_API_KEY": "host", "AI_GATEWAY_BASE_URL": "://not a url"}
+	sandboxEnv := map[string]string{"AI_GATEWAY_API_KEY": "sandbox"}
+	if _, err := CredentialBrokeringErr(env, sandboxEnv, nil, true); err == nil {
+		t.Fatal("expected an error for an invalid AI_GATEWAY_BASE_URL")
+	}
+	if got := CredentialBrokering(env, sandboxEnv, nil, true); got != nil {
+		t.Fatalf("CredentialBrokering = %v, want nil (error dropped)", got)
+	}
+	env["AI_GATEWAY_BASE_URL"] = "https://gateway.example/v1"
+	got, err := CredentialBrokeringErr(env, sandboxEnv, nil, true)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("valid url: %v %v", got, err)
+	}
+}
+
+// TS `env.AI_GATEWAY_BASE_URL ?? DEFAULT`: an explicitly empty value is kept
+// and fails URL parsing instead of silently using the default.
+func TestCredentialBrokeringEmptyGatewayBaseURLIsNotDefaulted(t *testing.T) {
+	env := map[string]string{"AI_GATEWAY_API_KEY": "host", "AI_GATEWAY_BASE_URL": ""}
+	sandboxEnv := map[string]string{"AI_GATEWAY_API_KEY": "sandbox"}
+	if _, err := CredentialBrokeringErr(env, sandboxEnv, nil, true); err == nil {
+		t.Fatal("expected Invalid URL for an empty AI_GATEWAY_BASE_URL")
+	}
+	delete(env, "AI_GATEWAY_BASE_URL")
+	if got, err := CredentialBrokeringErr(env, sandboxEnv, nil, true); err != nil || len(got) != 1 {
+		t.Fatalf("absent key: %v %v", got, err)
 	}
 }

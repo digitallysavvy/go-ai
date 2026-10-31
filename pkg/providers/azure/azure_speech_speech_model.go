@@ -4,7 +4,6 @@ import (
 	"context"
 	stdhttp "net/http"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -182,8 +181,8 @@ func (m *AzureSpeechSpeechModel) DoGenerate(ctx context.Context, opts *provider.
 		return nil, err
 	}
 
-	if resp.StatusCode != stdhttp.StatusOK {
-		return nil, azureSpeechAPIError(m.Provider(), resp.StatusCode, resp.Header, respBody)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, azureSpeechAPIError(m.Provider(), resp.StatusCode, resp.Header, respBody, true)
 	}
 
 	if warnings == nil {
@@ -247,12 +246,12 @@ type azureSSMLOptions struct {
 func buildAzureSSML(opts azureSSMLOptions) string {
 	content := azureEscapeXML(opts.text)
 	if opts.speed != nil {
-		content = `<prosody rate="` + strconv.FormatFloat(*opts.speed, 'g', -1, 64) + `">` + content + `</prosody>`
+		content = `<prosody rate="` + providerutils.JSNumberString(*opts.speed) + `">` + content + `</prosody>`
 	}
 	if opts.style != "" {
 		degree := ""
 		if opts.styleDegree != nil {
-			degree = ` styledegree="` + strconv.FormatFloat(*opts.styleDegree, 'g', -1, 64) + `"`
+			degree = ` styledegree="` + providerutils.JSNumberString(*opts.styleDegree) + `"`
 		}
 		content = `<mstts:express-as style="` + azureEscapeXML(opts.style) + `"` + degree + `>` + content + `</mstts:express-as>`
 	}

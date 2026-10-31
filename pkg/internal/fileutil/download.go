@@ -370,10 +370,12 @@ func originOf(u *neturl.URL) string {
 	port := u.Port()
 	if port == "" {
 		switch scheme {
-		case "http":
+		case "http", "ws":
 			port = "80"
-		case "https":
+		case "https", "wss":
 			port = "443"
+		case "ftp":
+			port = "21"
 		}
 	}
 	return scheme + "://" + strings.ToLower(u.Hostname()) + ":" + port
@@ -480,6 +482,10 @@ func downloadRequestError(raw string, err error) *providererrors.DownloadError {
 	return providererrors.NewDownloadError(raw, 0, "", "", err)
 }
 
+// decodeDataURL follows the fetch data: URL processor that TS download relies
+// on: the payload is percent-decoded ('+' stays '+'), and a base64 payload is
+// decoded with the forgiving-base64 rules (ASCII whitespace ignored, padding
+// optional).
 func decodeDataURL(raw string) ([]byte, error) {
 	comma := strings.IndexByte(raw, ',')
 	if comma < 0 {
@@ -487,28 +493,210 @@ func decodeDataURL(raw string) ([]byte, error) {
 	}
 	meta := raw[len("data:"):comma]
 	payload := raw[comma+1:]
-	if strings.HasSuffix(strings.ToLower(meta), ";base64") {
-		data, err := base64.StdEncoding.DecodeString(payload)
+	if i := strings.IndexByte(payload, '#'); i >= 0 {
+		payload = payload[:i] // a fragment is not part of the data
+	}
+	decoded := percentDecode(payload)
+	if isBase64DataURLMeta(meta) {
+		data, err := DecodeForgivingBase64(decoded)
 		if err != nil {
 			return nil, providererrors.NewDownloadError(raw, 0, "", "", err)
 		}
 		return data, nil
 	}
-	data, err := neturl.QueryUnescape(payload)
-	if err != nil {
-		return nil, providererrors.NewDownloadError(raw, 0, "", "", err)
-	}
-	return []byte(data), nil
+	return []byte(decoded), nil
 }
 
+// DecodeForgivingBase64 is the WHATWG forgiving-base64 decode behind JS atob:
+// ASCII whitespace is ignored, up to two trailing "=" are dropped when the
+// length is a multiple of 4, and any other "=" or a length of 1 mod 4 fails.
+func DecodeForgivingBase64(s string) ([]byte, error) {
+	compact := strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\t', '\n', '\f', '\r':
+			return -1
+		}
+		return r
+	}, s)
+	if len(compact)%4 == 0 {
+		if strings.HasSuffix(compact, "==") {
+			compact = compact[:len(compact)-2]
+		} else if strings.HasSuffix(compact, "=") {
+			compact = compact[:len(compact)-1]
+		}
+	}
+	if strings.Contains(compact, "=") || len(compact)%4 == 1 {
+		return nil, base64.CorruptInputError(0)
+	}
+	return base64.RawStdEncoding.DecodeString(compact)
+}
+
+// percentDecode is the URL standard's percent-decode: each valid %XX becomes
+// its byte and anything else (including a malformed escape) stays literal.
+func percentDecode(s string) string {
+	if !strings.Contains(s, "%") {
+		return s
+	}
+	hex := func(c byte) int {
+		switch {
+		case c >= '0' && c <= '9':
+			return int(c - '0')
+		case c >= 'a' && c <= 'f':
+			return int(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			return int(c-'A') + 10
+		}
+		return -1
+	}
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) && hex(s[i+1]) >= 0 && hex(s[i+2]) >= 0 {
+			out = append(out, byte(hex(s[i+1])<<4|hex(s[i+2])))
+			i += 2
+			continue
+		}
+		out = append(out, s[i])
+	}
+	return string(out)
+}
+
+func isBase64DataURLMeta(meta string) bool {
+	_, ok := stripBase64Marker(meta)
+	return ok
+}
+
+// stripBase64Marker removes the WHATWG data URL base64 marker (a ";", any
+// spaces, then "base64" in any case, at the end of the media type) and
+// reports whether it was there.
+func stripBase64Marker(meta string) (string, bool) {
+	trimmed := strings.Trim(meta, " \t\n\r\f")
+	if len(trimmed) < len("base64") || !strings.EqualFold(trimmed[len(trimmed)-len("base64"):], "base64") {
+		return meta, false
+	}
+	rest := strings.TrimRight(trimmed[:len(trimmed)-len("base64")], " ")
+	if !strings.HasSuffix(rest, ";") {
+		return meta, false
+	}
+	return strings.TrimRight(strings.TrimSuffix(rest, ";"), " "), true
+}
+
+// dataURLMediaType is the Content-Type fetch gives a data: URL response (the
+// WHATWG data: URL processor): the media type parsed and serialized, minus
+// the base64 marker; "text/plain" is prepended when it starts with ";", and an
+// absent or unparseable type is text/plain;charset=US-ASCII.
 func dataURLMediaType(raw string) string {
 	comma := strings.IndexByte(raw, ',')
 	if comma < 0 {
 		return ""
 	}
-	meta := raw[len("data:"):comma]
-	if semi := strings.IndexByte(meta, ';'); semi >= 0 {
-		meta = meta[:semi]
+	meta := strings.Trim(raw[len("data:"):comma], " \t\n\r\f")
+	if stripped, ok := stripBase64Marker(meta); ok {
+		meta = stripped
 	}
-	return meta
+	if strings.HasPrefix(meta, ";") {
+		meta = "text/plain" + meta
+	}
+	if mt, ok := parseWHATWGMediaType(meta); ok {
+		return mt
+	}
+	return "text/plain;charset=US-ASCII"
+}
+
+func isHTTPToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		case strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// parseWHATWGMediaType parses and serializes a MIME type like the MIME Sniffing
+// standard (parameters keep their order, the first of a repeated name wins).
+func parseWHATWGMediaType(input string) (string, bool) {
+	input = strings.Trim(input, " \t\n\r")
+	slash := strings.IndexByte(input, '/')
+	if slash < 0 {
+		return "", false
+	}
+	typ := input[:slash]
+	rest := input[slash+1:]
+	subtype, params, _ := strings.Cut(rest, ";")
+	subtype = strings.TrimRight(subtype, " \t\n\r")
+	if !isHTTPToken(typ) || !isHTTPToken(subtype) {
+		return "", false
+	}
+	var out strings.Builder
+	out.WriteString(strings.ToLower(typ) + "/" + strings.ToLower(subtype))
+	seen := map[string]bool{}
+	for params != "" {
+		params = strings.TrimLeft(params, " \t\n\r")
+		end := strings.IndexAny(params, ";=")
+		var name string
+		if end < 0 {
+			name, params = params, ""
+		} else {
+			name = params[:end]
+			if params[end] == ';' {
+				params = params[end+1:]
+				continue
+			}
+			params = params[end+1:]
+		}
+		name = strings.ToLower(name)
+		var value string
+		if strings.HasPrefix(params, `"`) {
+			var b strings.Builder
+			i := 1
+			for ; i < len(params); i++ {
+				c := params[i]
+				if c == '\\' && i+1 < len(params) {
+					i++
+					b.WriteByte(params[i])
+					continue
+				}
+				if c == '"' {
+					i++
+					break
+				}
+				b.WriteByte(c)
+			}
+			value = b.String()
+			rem := params[i:]
+			if k := strings.IndexByte(rem, ';'); k >= 0 {
+				params = rem[k+1:]
+			} else {
+				params = ""
+			}
+			if !isHTTPToken(name) || seen[name] {
+				continue
+			}
+		} else {
+			var v string
+			if k := strings.IndexByte(params, ';'); k >= 0 {
+				v, params = params[:k], params[k+1:]
+			} else {
+				v, params = params, ""
+			}
+			value = strings.TrimRight(v, " \t\n\r")
+			if value == "" || !isHTTPToken(name) || seen[name] {
+				continue
+			}
+		}
+		seen[name] = true
+		out.WriteString(";" + name + "=")
+		if isHTTPToken(value) {
+			out.WriteString(value)
+		} else {
+			out.WriteString(`"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value) + `"`)
+		}
+	}
+	return out.String(), true
 }

@@ -1,7 +1,6 @@
 package gemini
 
 import (
-	"bytes"
 	"context"
 	"regexp"
 	"strings"
@@ -22,7 +21,12 @@ func defaultToolResultDownload(ctx context.Context, url string, maxBytes int64) 
 	if err != nil {
 		return nil, "", err
 	}
-	return res.Data, res.ContentType, nil
+	contentType := res.ContentType
+	if contentType == "" && strings.HasPrefix(strings.ToLower(url), "data:") {
+		// fetch() reports the data: URL default media type.
+		contentType = "text/plain;charset=US-ASCII"
+	}
+	return res.Data, contentType, nil
 }
 
 // downloadToolResultFiles ports TS downloadToolResultFiles: Vertex function
@@ -129,13 +133,10 @@ func downloadContentBlocks(ctx context.Context, blocks []types.ToolResultContent
 		if err := fileutil.ValidateDownloadURL(url); err != nil {
 			return nil, false, err
 		}
-		if strings.HasPrefix(strings.ToLower(url), "data:") {
-			// Inline data URL: valid, but nothing to download over the
-			// network — leave the block as-is (mirrors TS, where a data: URL
-			// is always accepted by isUrlSupported/the provider directly and
-			// so never reaches downloadBlob in practice).
-			continue
-		}
+		// A data: URL is not "supported" by isUrlSupported (the supported
+		// patterns are gs:// only), so TS sends it through downloadBlob
+		// (fetch decodes it) and inlines the bytes, for base64 and
+		// non-base64 data URLs and for every Vertex model generation.
 		data, contentType, err := download(ctx, url, maxBytes)
 		if err != nil {
 			return nil, false, err
@@ -143,8 +144,8 @@ func downloadContentBlocks(ctx context.Context, blocks []types.ToolResultContent
 		mediaType := detectImageMediaType(data)
 		if mediaType == "" {
 			mediaType = fb.MediaType
-			if contentType != "" && !isFullMediaType(fb.MediaType) {
-				mediaType = strings.TrimSpace(strings.Split(contentType, ";")[0])
+			if blob := blobMediaType(contentType); blob != "" && !isFullMediaType(fb.MediaType) {
+				mediaType = blob
 			}
 		}
 		if !changed {
@@ -171,23 +172,18 @@ func isFullMediaType(mediaType string) bool {
 // detectImageMediaType mirrors TS detectMediaType({topLevelType:'image'}):
 // returns "" when no known image signature matches.
 func detectImageMediaType(data []byte) string {
-	switch {
-	case bytes.HasPrefix(data, []byte{0x89, 'P', 'N', 'G'}):
-		return "image/png"
-	case bytes.HasPrefix(data, []byte{0xFF, 0xD8}):
-		return "image/jpeg"
-	case bytes.HasPrefix(data, []byte("GIF")):
-		return "image/gif"
-	case len(data) >= 12 && bytes.HasPrefix(data, []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WEBP")):
-		return "image/webp"
-	case bytes.HasPrefix(data, []byte("BM")):
-		return "image/bmp"
-	case bytes.HasPrefix(data, []byte{0x49, 0x49, 0x2A, 0x00}), bytes.HasPrefix(data, []byte{0x4D, 0x4D, 0x00, 0x2A}):
-		return "image/tiff"
-	case len(data) >= 12 && bytes.Equal(data[4:12], []byte("ftypavif")):
-		return "image/avif"
-	case len(data) >= 12 && (bytes.Equal(data[4:12], []byte("ftypheic")) || bytes.Equal(data[4:12], []byte("ftypheix"))):
-		return "image/heic"
+	mediaType, _ := fileutil.DetectMediaTypeSignature(data, "image")
+	return mediaType
+}
+
+// blobMediaType mirrors the Blob constructor's `type` normalization used by
+// TS downloadBlob: the Content-Type is lowercased and kept whole (parameters
+// included), and a value with characters outside U+0020-U+007E becomes "".
+func blobMediaType(contentType string) string {
+	for i := 0; i < len(contentType); i++ {
+		if contentType[i] < 0x20 || contentType[i] > 0x7E {
+			return ""
+		}
 	}
-	return ""
+	return strings.ToLower(contentType)
 }

@@ -33,7 +33,7 @@ func TestCompletionModelDoGenerateMatchesTypeScriptRequestAndResponse(t *testing
 			"id":"cmpl_1",
 			"created":1711363706,
 			"model":"gpt-3.5-turbo-instruct",
-			"choices":[{"text":"Hello, World!","finish_reason":"stop","logprobs":{"tokens":["Hello"],"token_logprobs":[-0.1]}}],
+			"choices":[{"index":0,"text":"Hello, World!","finish_reason":"stop","logprobs":{"tokens":["Hello"],"token_logprobs":[-0.1]}}],
 			"usage":{"prompt_tokens":4,"completion_tokens":30,"total_tokens":34}
 		}`))
 	}))
@@ -134,6 +134,9 @@ func TestCompletionModelWarningsAndPromptErrorsMatchTypeScript(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unexpected system message error")
 	}
+	if !strings.Contains(err.Error(), "Unexpected system message in prompt: late") {
+		t.Fatalf("error should include system content, got %q", err.Error())
+	}
 
 	_, _, err = convertToCompletionPrompt(types.Prompt{
 		Messages: []types.Message{
@@ -161,8 +164,8 @@ func TestCompletionModelDoStreamMatchesTypeScriptChunkOrder(t *testing.T) {
 			t.Fatalf("stream_options missing: %#v", body)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, `data: {"id":"cmpl_1","created":1711363440,"model":"gpt-3.5-turbo-instruct","choices":[{"text":"Hello","index":0,"logprobs":null,"finish_reason":null}]}`+"\n\n")
-		_, _ = io.WriteString(w, `data: {"id":"cmpl_1","created":1711363440,"model":"gpt-3.5-turbo-instruct","choices":[{"text":" world","index":0,"logprobs":null,"finish_reason":"stop"}]}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"id":"cmpl_1","created":1711363440,"model":"gpt-3.5-turbo-instruct","choices":[{"index":0,"text":"Hello","index":0,"logprobs":null,"finish_reason":null}]}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"id":"cmpl_1","created":1711363440,"model":"gpt-3.5-turbo-instruct","choices":[{"index":0,"text":" world","index":0,"logprobs":null,"finish_reason":"stop"}]}`+"\n\n")
 		_, _ = io.WriteString(w, `data: {"id":"cmpl_1","created":1711363440,"model":"gpt-3.5-turbo-instruct","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":2,"total_tokens":4}}`+"\n\n")
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	}))
@@ -235,7 +238,7 @@ func TestCompletionModelDoStreamMatchesTypeScriptChunkOrder(t *testing.T) {
 
 func TestCompletionModelDoStreamFinishesWhenProviderClosesWithoutDone(t *testing.T) {
 	stream := newCompletionStream(io.NopCloser(strings.NewReader(
-		`data: {"id":"cmpl_1","model":"gpt-3.5-turbo-instruct","choices":[{"text":"hi","index":0,"finish_reason":"stop"}]}`+"\n\n",
+		`data: {"id":"cmpl_1","model":"gpt-3.5-turbo-instruct","choices":[{"index":0,"text":"hi","index":0,"finish_reason":"stop"}]}`+"\n\n",
 	)), false)
 	defer stream.Close() //nolint:errcheck
 
@@ -288,5 +291,99 @@ func TestCompletionModelDoStreamMetadataOnlyThenErrorIsStillEarly(t *testing.T) 
 	}
 	if providerErr.StatusCode != 429 || providerErr.Message != "rate limited" {
 		t.Fatalf("provider error = %#v", providerErr)
+	}
+}
+
+func TestCompletionModelDoStreamMidStreamErrorFrameCarriesStreamProviderError(t *testing.T) {
+	stream := newCompletionStream(io.NopCloser(strings.NewReader(
+		`data: {"id":"cmpl_1","model":"gpt-3.5-turbo-instruct","choices":[{"index":0,"text":"hi"}]}`+"\n\n"+
+			`data: {"error":{"message":"rate limited","type":"rate_limit_exceeded","param":null,"code":null}}`+"\n\n",
+	)), false)
+	defer stream.Close() //nolint:errcheck
+
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			t.Fatalf("no error chunk before end: %v", err)
+		}
+		if chunk.Type != provider.ChunkTypeError {
+			continue
+		}
+		var spe *providererrors.StreamProviderError
+		if !errors.As(chunk.Err, &spe) {
+			t.Fatalf("chunk.Err = %T %[1]v, want StreamProviderError", chunk.Err)
+		}
+		if spe.Message != "rate limited" {
+			t.Fatalf("message = %q", spe.Message)
+		}
+		return
+	}
+}
+
+// TS #23814: a completion stream that ends without finish_reason reports
+// interrupted.
+func TestCompletionStreamInterruptedWithoutFinishReason(t *testing.T) {
+	stream := newCompletionStream(io.NopCloser(strings.NewReader(
+		`data: {"id":"cmpl_1","model":"gpt-3.5-turbo-instruct","choices":[{"index":0,"text":"hi"}]}`+"\n\n",
+	)), false)
+	defer stream.Close() //nolint:errcheck
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			t.Fatalf("stream ended before finish: %v", err)
+		}
+		if chunk.Type == provider.ChunkTypeFinish {
+			if chunk.FinishReason != types.FinishReasonInterrupted {
+				t.Fatalf("finish reason = %q", chunk.FinishReason)
+			}
+			return
+		}
+	}
+}
+
+func TestConvertToCompletionPromptTypedErrors(t *testing.T) {
+	_, _, err := convertToCompletionPrompt(types.Prompt{Messages: []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "first"}}},
+		{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "late"}}},
+	}})
+	if !providererrors.IsInvalidPromptError(err) {
+		t.Fatalf("want InvalidPromptError, got %T %v", err, err)
+	}
+	_, _, err = convertToCompletionPrompt(types.Prompt{Messages: []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentPart{types.ToolCallContent{ToolCallID: "c", ToolName: "t"}}},
+	}})
+	if !providererrors.IsUnsupportedFunctionalityError(err) || err.Error() != "'tool-call messages' functionality not supported." {
+		t.Fatalf("got %T %v", err, err)
+	}
+	_, _, err = convertToCompletionPrompt(types.Prompt{Messages: []types.Message{{Role: types.RoleTool}}})
+	if !providererrors.IsUnsupportedFunctionalityError(err) {
+		t.Fatalf("got %T %v", err, err)
+	}
+}
+
+// TS opens the text block on the first valid chunk even when it carries no text.
+func TestCompletionStreamEmptyTextStillOpensTextBlock(t *testing.T) {
+	stream := newCompletionStream(io.NopCloser(strings.NewReader(
+		`data: {"id":"cmpl-1","created":1,"model":"m","choices":[{"text":"","finish_reason":"stop","index":0}]}
+
+data: [DONE]
+
+`)), false)
+	var types_ []provider.ChunkType
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			break
+		}
+		types_ = append(types_, c.Type)
+	}
+	want := []provider.ChunkType{provider.ChunkTypeResponseMetadata, provider.ChunkTypeTextStart, provider.ChunkTypeTextEnd, provider.ChunkTypeFinish}
+	if len(types_) != len(want) {
+		t.Fatalf("got %v want %v", types_, want)
+	}
+	for i := range want {
+		if types_[i] != want[i] {
+			t.Fatalf("got %v want %v", types_, want)
+		}
 	}
 }

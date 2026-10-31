@@ -2,6 +2,8 @@ package bytedance
 
 import (
 	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -39,15 +41,14 @@ type Config struct {
 
 // New creates a new ByteDance provider with the given configuration
 func New(cfg Config) (*Provider, error) {
+	// TS withoutTrailingSlash(baseURL): a trailing "/" must not double up with request paths.
+	cfg.BaseURL = providerutils.WithoutTrailingSlash(cfg.BaseURL)
 	apiKey := cfg.APIKey
 	if apiKey == "" {
 		apiKey = os.Getenv("BYTEDANCE_API_KEY")
 	}
 	if apiKey == "" {
 		apiKey = os.Getenv("ARK_API_KEY")
-	}
-	if apiKey == "" {
-		return nil, fmt.Errorf("ByteDance API key is required (set BYTEDANCE_API_KEY, ARK_API_KEY, or provide Config.APIKey)")
 	}
 
 	baseURL := cfg.BaseURL
@@ -59,8 +60,10 @@ func New(cfg Config) (*Provider, error) {
 	cfg.BaseURL = baseURL
 
 	headers := map[string]string{
-		"Authorization": "Bearer " + apiKey,
-		"Content-Type":  "application/json",
+		"Content-Type": "application/json",
+	}
+	if apiKey != "" {
+		headers["Authorization"] = "Bearer " + apiKey
 	}
 	for k, v := range cfg.Headers {
 		headers[k] = v
@@ -69,6 +72,15 @@ func New(cfg Config) (*Provider, error) {
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: baseURL,
 		Headers: headers,
+		// TS loadApiKey runs per request (ARK_API_KEY): a missing key is a
+		// LoadAPIKeyError, not a constructor error.
+		HeadersFunc: func() (map[string]string, error) {
+			key := apiKey
+			if key == "" {
+				key = providerutils.APIKeyOrEnv("", "BYTEDANCE_API_KEY")
+			}
+			return providerutils.RequestAuthHeader(cfg.Headers, key, "ARK_API_KEY", "ByteDance ModelArk", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{
@@ -85,12 +97,12 @@ func (p *Provider) Name() string {
 
 // LanguageModel returns a language model by ID
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return nil, fmt.Errorf("ByteDance provider does not support language models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "languageModel")
 }
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("ByteDance provider does not support embedding models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // ImageModel returns a Seedream image generation model by ID
@@ -111,15 +123,15 @@ func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("ByteDance provider does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("ByteDance provider does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("ByteDance provider does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }

@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -67,7 +66,10 @@ var (
 )
 
 func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
-	apiKey := m.googleRealtimeAPIKey()
+	apiKey, err := m.googleRealtimeAPIKey()
+	if err != nil {
+		return provider.ClientSecretResult{}, err
+	}
 	if apiKey == "" {
 		return provider.ClientSecretResult{}, fmt.Errorf("Google Generative AI API key is required for realtime token creation.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
@@ -124,12 +126,19 @@ func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 	}, nil
 }
 
-func (m *GoogleRealtimeModel) googleRealtimeAPIKey() string {
-	headers := map[string]string{"x-goog-api-key": m.provider.APIKey()}
-	for k, v := range m.provider.config.Headers {
+// googleRealtimeAPIKey mirrors TS `this.config.headers()['x-goog-api-key']`:
+// the provider's getHeaders loads the key (a missing key is a
+// LoadAPIKeyError), and a configured x-goog-api-key header wins.
+func (m *GoogleRealtimeModel) googleRealtimeAPIKey() (string, error) {
+	headers := m.provider.defaultHeaders()
+	extra, err := m.provider.apiKeyHeaders()
+	if err != nil {
+		return "", err
+	}
+	for k, v := range extra {
 		headers[k] = v
 	}
-	return headers["x-goog-api-key"]
+	return headers["x-goog-api-key"], nil
 }
 
 func (m *GoogleRealtimeModel) GetWebSocketConfig(token, wsURL string) provider.WebSocketConfig {
@@ -150,8 +159,12 @@ func isThinkingLiveModel(modelID string) bool {
 	return thinkingLiveModelRe.MatchString(name)
 }
 
+// BuildSessionConfig ports TS buildGoogleSessionConfig
+// (realtime/google-realtime-event-mapper.ts).
 func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSessionConfig) any {
 	setup := map[string]interface{}{"model": gemini.GetModelPath(m.modelID)}
+	googleOptions, _ := config.ProviderOptions["google"].(map[string]interface{})
+
 	generation := map[string]interface{}{}
 	if config.OutputModalities != nil {
 		modalities := make([]string, len(config.OutputModalities))
@@ -169,15 +182,6 @@ func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSession
 			},
 		}
 	}
-	if rawGeneration, ok := config.ProviderOptions["generationConfig"].(map[string]interface{}); ok {
-		for k, v := range rawGeneration {
-			generation[k] = v
-		}
-	}
-	googleOptions, _ := config.ProviderOptions["google"].(map[string]interface{})
-	if translationConfig, ok := googleOptions["translationConfig"].(map[string]interface{}); ok {
-		generation["translationConfig"] = translationConfig
-	}
 	setup["generationConfig"] = generation
 	if config.Instructions != nil {
 		setup["systemInstruction"] = map[string]interface{}{"parts": []map[string]interface{}{{"text": *config.Instructions}}}
@@ -186,12 +190,14 @@ func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSession
 	if len(config.Tools) > 0 {
 		decls := make([]map[string]interface{}, 0, len(config.Tools))
 		for _, tool := range config.Tools {
+			// TS sends the JSON Schema untouched as parametersJsonSchema (it no
+			// longer converts it to an OpenAPI schema).
 			decl := map[string]interface{}{"name": tool.Name}
-			if params := convertJSONSchemaToOpenAPISchema(tool.Parameters); params != nil {
-				decl["parameters"] = params
-			}
 			if tool.Description != nil {
 				decl["description"] = *tool.Description
+			}
+			if tool.Parameters != nil {
+				decl["parametersJsonSchema"] = tool.Parameters
 			}
 			if hasDefaultToolBehavior {
 				decl["behavior"] = defaultToolBehavior
@@ -232,16 +238,24 @@ func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSession
 	} else if hasGoogleThinkingConfig {
 		thinkingConfig = googleThinkingConfig
 	}
-	applyThinkingConfig := func() {
-		if thinkingConfig == nil {
-			return
-		}
+	// withGenerationField copies the effective generationConfig (the raw one
+	// that replaced the default when it is an object) before adding a field.
+	withGenerationField := func(key string, value interface{}) {
 		target, ok := setup["generationConfig"].(map[string]interface{})
 		if !ok {
 			target = generation
 		}
-		target["thinkingConfig"] = thinkingConfig
-		setup["generationConfig"] = target
+		next := make(map[string]interface{}, len(target)+1)
+		for k, v := range target {
+			next[k] = v
+		}
+		next[key] = value
+		setup["generationConfig"] = next
+	}
+	applyThinkingConfig := func() {
+		if thinkingConfig != nil {
+			withGenerationField("thinkingConfig", thinkingConfig)
+		}
 	}
 
 	if config.ProviderOptions == nil {
@@ -249,11 +263,18 @@ func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSession
 		return setup
 	}
 
+	// TS Object.assign(setup, restProviderOptions): every provider option
+	// except `google` replaces the setup key of the same name, so a raw
+	// generationConfig replaces the default one.
 	for k, v := range config.ProviderOptions {
-		if k == "google" || k == "generationConfig" {
+		if k == "google" {
 			continue
 		}
 		setup[k] = v
+	}
+
+	if translationConfig, ok := googleOptions["translationConfig"]; ok && translationConfig != nil {
+		withGenerationField("translationConfig", translationConfig)
 	}
 
 	applyThinkingConfig()
@@ -371,8 +392,7 @@ func (m *googleRealtimeEventMapper) parseServerEvent(raw json.RawMessage) []prov
 		events := make([]provider.RealtimeServerEvent, 0, len(calls)*2)
 		for _, rawCall := range calls {
 			call, _ := rawCall.(map[string]interface{})
-			argsBytes, _ := json.Marshal(valueOrEmptyMap(call["args"]))
-			args := string(argsBytes)
+			args := jsonStringify(valueOrEmptyMap(call["args"]))
 			id := googleString(call, "id")
 			name := googleString(call, "name")
 			events = append(events,
@@ -510,6 +530,8 @@ func (m *googleRealtimeEventMapper) serializeClientEvent(event provider.Realtime
 		}
 		setup := (&GoogleRealtimeModel{modelID: modelID}).BuildSessionConfig(event.Config)
 		out = map[string]interface{}{"setup": setup}
+	case "input-audio-commit":
+		out = map[string]interface{}{"realtimeInput": map[string]interface{}{"audioStreamEnd": true}}
 	case "input-audio-append":
 		out = map[string]interface{}{"realtimeInput": map[string]interface{}{"audio": map[string]interface{}{"data": event.Audio, "mimeType": fmt.Sprintf("audio/pcm;rate=%d", m.inputAudioRate)}}}
 	case "conversation-item-create":
@@ -528,7 +550,7 @@ func (m *googleRealtimeEventMapper) serializeClientEvent(event provider.Realtime
 		default:
 			out = nil
 		}
-	case "input-audio-commit", "input-audio-clear", "response-create", "response-cancel", "conversation-item-truncate":
+	case "input-audio-clear", "response-create", "response-cancel", "conversation-item-truncate":
 		out = nil
 	default:
 		out = nil
@@ -635,211 +657,4 @@ func valueOrZero(config *provider.RealtimeSessionConfig) provider.RealtimeSessio
 		return provider.RealtimeSessionConfig{}
 	}
 	return *config
-}
-
-func convertJSONSchemaToOpenAPISchema(schema map[string]interface{}) interface{} {
-	return convertJSONSchemaToOpenAPISchemaValue(schema, true)
-}
-
-func convertJSONSchemaToOpenAPISchemaValue(schema interface{}, isRoot bool) interface{} {
-	if schema == nil {
-		return nil
-	}
-	if isEmptyObjectSchema(schema) {
-		if isRoot {
-			return nil
-		}
-		if schemaMap, ok := schema.(map[string]interface{}); ok {
-			if description, ok := schemaMap["description"].(string); ok && description != "" {
-				return map[string]interface{}{"type": "object", "description": description}
-			}
-		}
-		return map[string]interface{}{"type": "object"}
-	}
-	if _, ok := schema.(bool); ok {
-		return map[string]interface{}{"type": "boolean", "properties": map[string]interface{}{}}
-	}
-	schemaMap, ok := schema.(map[string]interface{})
-	if !ok {
-		return schema
-	}
-	result := map[string]interface{}{}
-	if description, ok := schemaMap["description"].(string); ok && description != "" {
-		result["description"] = description
-	}
-	if required, ok := schemaMap["required"]; ok && required != nil {
-		result["required"] = required
-	}
-	if format, ok := schemaMap["format"].(string); ok && format != "" {
-		result["format"] = format
-	}
-	if constValue, ok := schemaMap["const"]; ok {
-		result["enum"] = []interface{}{constValue}
-	}
-	if rawType, ok := schemaMap["type"]; ok && rawType != nil {
-		if typeList, ok := stringList(rawType); ok {
-			hasNull := false
-			nonNull := make([]string, 0, len(typeList))
-			for _, t := range typeList {
-				if t == "null" {
-					hasNull = true
-				} else {
-					nonNull = append(nonNull, t)
-				}
-			}
-			switch len(nonNull) {
-			case 0:
-				result["type"] = "null"
-			default:
-				anyOf := make([]interface{}, 0, len(nonNull))
-				for _, t := range nonNull {
-					anyOf = append(anyOf, map[string]interface{}{"type": t})
-				}
-				result["anyOf"] = anyOf
-				if hasNull {
-					result["nullable"] = true
-				}
-			}
-		} else if typeString, ok := rawType.(string); ok && typeString != "" {
-			result["type"] = typeString
-		}
-	}
-	if enumValues, ok := schemaMap["enum"]; ok {
-		result["enum"] = enumValues
-	}
-	if properties, ok := schemaMap["properties"].(map[string]interface{}); ok {
-		converted := map[string]interface{}{}
-		for key, value := range properties {
-			converted[key] = convertJSONSchemaToOpenAPISchemaValue(value, false)
-		}
-		result["properties"] = converted
-	}
-	if items, ok := schemaMap["items"]; ok && items != nil {
-		if itemList, ok := schemaSlice(items); ok {
-			converted := make([]interface{}, 0, len(itemList))
-			for _, item := range itemList {
-				converted = append(converted, convertJSONSchemaToOpenAPISchemaValue(item, false))
-			}
-			result["items"] = converted
-		} else {
-			result["items"] = convertJSONSchemaToOpenAPISchemaValue(items, false)
-		}
-	}
-	if allOf, ok := schemaList(schemaMap["allOf"]); ok {
-		result["allOf"] = convertSchemaList(allOf)
-	}
-	if anyOf, ok := schemaList(schemaMap["anyOf"]); ok {
-		nonNull := make([]interface{}, 0, len(anyOf))
-		hasNull := false
-		for _, item := range anyOf {
-			if itemMap, ok := item.(map[string]interface{}); ok && itemMap["type"] == "null" {
-				hasNull = true
-			} else {
-				nonNull = append(nonNull, item)
-			}
-		}
-		if hasNull {
-			if len(nonNull) == 1 {
-				converted := convertJSONSchemaToOpenAPISchemaValue(nonNull[0], false)
-				if convertedMap, ok := converted.(map[string]interface{}); ok {
-					result["nullable"] = true
-					for key, value := range convertedMap {
-						result[key] = value
-					}
-				}
-			} else {
-				result["anyOf"] = convertSchemaList(nonNull)
-				result["nullable"] = true
-			}
-		} else {
-			result["anyOf"] = convertSchemaList(anyOf)
-		}
-	}
-	if oneOf, ok := schemaList(schemaMap["oneOf"]); ok {
-		result["oneOf"] = convertSchemaList(oneOf)
-	}
-	if minLength, ok := schemaMap["minLength"]; ok {
-		result["minLength"] = minLength
-	}
-	return result
-}
-
-func isEmptyObjectSchema(schema interface{}) bool {
-	schemaMap, ok := schema.(map[string]interface{})
-	if !ok || schemaMap == nil || schemaMap["type"] != "object" {
-		return false
-	}
-	if additional, ok := schemaMap["additionalProperties"]; ok && truthy(additional) {
-		return false
-	}
-	properties, ok := schemaMap["properties"]
-	if !ok || properties == nil {
-		return true
-	}
-	if propertyMap, ok := properties.(map[string]interface{}); ok {
-		return len(propertyMap) == 0
-	}
-	return false
-}
-
-func truthy(value interface{}) bool {
-	switch v := value.(type) {
-	case bool:
-		return v
-	case string:
-		return v != ""
-	case nil:
-		return false
-	default:
-		return true
-	}
-}
-
-func stringList(value interface{}) ([]string, bool) {
-	switch v := value.(type) {
-	case []string:
-		return v, true
-	case []interface{}:
-		out := make([]string, 0, len(v))
-		for _, item := range v {
-			s, ok := item.(string)
-			if !ok {
-				return nil, false
-			}
-			out = append(out, s)
-		}
-		return out, true
-	default:
-		return nil, false
-	}
-}
-
-func schemaList(value interface{}) ([]interface{}, bool) {
-	if value == nil {
-		return nil, false
-	}
-	if list, ok := value.([]interface{}); ok {
-		return list, true
-	}
-	return schemaSlice(value)
-}
-
-func schemaSlice(value interface{}) ([]interface{}, bool) {
-	rv := reflect.ValueOf(value)
-	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
-		return nil, false
-	}
-	out := make([]interface{}, 0, rv.Len())
-	for i := 0; i < rv.Len(); i++ {
-		out = append(out, rv.Index(i).Interface())
-	}
-	return out, true
-}
-
-func convertSchemaList(values []interface{}) []interface{} {
-	converted := make([]interface{}, 0, len(values))
-	for _, value := range values {
-		converted = append(converted, convertJSONSchemaToOpenAPISchemaValue(value, false))
-	}
-	return converted
 }

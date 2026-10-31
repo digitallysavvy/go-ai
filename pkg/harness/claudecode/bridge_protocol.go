@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
+	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 )
 
 // ThinkingConfig controls extended-thinking behavior. Mirrors TS
@@ -47,4 +48,21 @@ type StartFrame struct {
 	MCPServers             map[string]any    `json:"mcpServers,omitempty"`
 	Continue               bool              `json:"continue,omitempty"`
 	ResumeSessionID        string            `json:"resumeSessionId,omitempty"`
+
+	// PromptContent carries text plus inline images. When nil the prompt is
+	// the plain string StartBase.Prompt. Mirrors TS `harnessPromptContentSchema`.
+	PromptContent *harnessutil.PromptContent `json:"-"`
+}
+
+// MarshalJSON encodes PromptContent (when set) as the `prompt` field, in place
+// of the plain-string StartBase.Prompt.
+func (f StartFrame) MarshalJSON() ([]byte, error) {
+	type plain StartFrame
+	if f.PromptContent == nil {
+		return json.Marshal(plain(f))
+	}
+	return json.Marshal(struct {
+		plain
+		Prompt harnessutil.PromptContent `json:"prompt"`
+	}{plain(f), *f.PromptContent})
 }

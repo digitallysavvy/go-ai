@@ -266,8 +266,9 @@ func TestTranscriptionModel_DoStream_RequiresAPIKey(t *testing.T) {
 		Audio:            newChanAudioStream(),
 		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
 	})
-	if err == nil || !strings.Contains(err.Error(), "API key is required for streaming transcription") {
-		t.Fatalf("err = %v, want a missing-API-key message", err)
+	var loadErr *providererrors.LoadAPIKeyError
+	if !errors.As(err, &loadErr) {
+		t.Fatalf("err = %v, want LoadAPIKeyError (TS getHeaders loads the key first)", err)
 	}
 }
 
@@ -977,4 +978,76 @@ func googleComputeWebSocketAccept(key string) string {
 	h := sha1.New() //nolint:gosec // required by the WebSocket handshake spec, not for security
 	h.Write([]byte(key + magicGUID))
 	return base64.StdEncoding.EncodeToString(h.Sum(nil))
+}
+
+// TestTranscriptionModel_DoStream_AbortSurfacesCause: TS finishWithError
+// receives abortSignal.reason, so the stream error is the abort cause.
+func TestTranscriptionModel_DoStream_AbortSurfacesCause(t *testing.T) {
+	server := newLiveTranscriptionTestServer(t)
+	defer server.close()
+
+	model := newLiveTestModel(t, server.ts.URL)
+	abortCtx, abort := context.WithCancelCause(context.Background())
+	defer abort(nil)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newBlockingAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+		AbortSignal:      abortCtx,
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() (stream-start) error = %v", err)
+	}
+	cause := errors.New("user aborted")
+	abort(cause)
+	for {
+		_, err := result.Stream.Next()
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, cause) {
+			t.Fatalf("stream error = %v, want abort cause", err)
+		}
+		return
+	}
+}
+
+// TestTranscriptionModel_DoStream_CleanCloseRacingAudioEnded makes the clean
+// close win the select while the audio-ended signal is still pending (via the
+// testHideAudioEnded seam). TS processes them in order and finishes normally;
+// the stream must never report an error.
+func TestTranscriptionModel_DoStream_CleanCloseRacingAudioEnded(t *testing.T) {
+	testHideAudioEnded.Store(true)
+	t.Cleanup(func() { testHideAudioEnded.Store(false) })
+
+	server := newLiveTranscriptionTestServer(t)
+	defer server.close()
+	model := newLiveTestModel(t, server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanAudioStream([]byte{1, 2}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, time.Second)
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() error = %v", err)
+	}
+	server.toSend <- map[string]interface{}{"setupComplete": map[string]interface{}{}}
+	server.waitFor(t, hasRealtimeInputKey("audioStreamEnd"), time.Second)
+	time.Sleep(50 * time.Millisecond) // let the pump block on the audio-ended send
+	server.closeConnection()
+
+	parts, err := drainUntilFinishOrError(t, result.Stream)
+	if err != nil {
+		t.Fatalf("stream error = %v", err)
+	}
+	if last := parts[len(parts)-1]; last.Type != provider.TranscriptionStreamPartTypeFinish {
+		t.Fatalf("last part = %+v", last)
+	}
 }

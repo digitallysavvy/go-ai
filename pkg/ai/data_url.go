@@ -41,9 +41,11 @@ func GetTextFromDataURL(dataURL string) (string, error) {
 			Message: "Invalid data URL format",
 		}
 	}
-	base64Content := parts[1]
+	// TS: const [header, base64Content] = dataUrl.split(',') keeps only the
+	// segment between the first and second comma.
+	base64Content := strings.SplitN(parts[1], ",", 2)[0]
 
-	byteString, err := base64.StdEncoding.DecodeString(base64Content)
+	byteString, err := atob(base64Content)
 	if err != nil {
 		return "", &providererrors.InvalidArgumentError{
 			Field:   "dataUrl",
@@ -63,4 +65,31 @@ func GetTextFromDataURL(dataURL string) (string, error) {
 		}
 	}
 	return decoded, nil
+}
+
+// atob implements the WHATWG forgiving-base64 decode behind JavaScript's
+// atob: ASCII whitespace is ignored, one or two trailing "=" are accepted
+// when the length is a multiple of four, padding may otherwise be omitted,
+// and a length of 1 mod 4 or any non-alphabet byte is an error.
+func atob(s string) ([]byte, error) {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\t', '\n', '\f', '\r', ' ':
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	data := b.String()
+	if len(data)%4 == 0 {
+		if strings.HasSuffix(data, "==") {
+			data = data[:len(data)-2]
+		} else if strings.HasSuffix(data, "=") {
+			data = data[:len(data)-1]
+		}
+	}
+	if len(data)%4 == 1 {
+		return nil, base64.CorruptInputError(len(data))
+	}
+	return base64.RawStdEncoding.DecodeString(data)
 }

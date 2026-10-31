@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -13,6 +14,7 @@ import (
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // prodiaJobResponse represents the Prodia job API response metadata.
@@ -27,6 +29,31 @@ type prodiaJobResponse struct {
 	Metrics   *prodiaMetrics   `json:"metrics,omitempty"`
 	Price     *prodiaPrice     `json:"price,omitempty"`
 	ImageURL  string           `json:"imageUrl,omitempty"` // legacy field
+
+	// createdAtSet / updatedAtSet record that the wire carried the key (even
+	// as ""): TS spreads `created_at != null`, so an empty string is kept.
+	createdAtSet bool
+	updatedAtSet bool
+}
+
+// UnmarshalJSON decodes the job metadata and notes which optional string
+// fields were present.
+func (j *prodiaJobResponse) UnmarshalJSON(data []byte) error {
+	type plain prodiaJobResponse
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	var keys map[string]json.RawMessage
+	_ = json.Unmarshal(data, &keys)
+	isString := func(key string) bool {
+		raw, ok := keys[key]
+		return ok && len(raw) > 0 && raw[0] == '"'
+	}
+	p.createdAtSet = isString("created_at")
+	p.updatedAtSet = isString("updated_at")
+	*j = prodiaJobResponse(p)
+	return nil
 }
 
 // prodiaJobState is the state object returned by the Prodia API.
@@ -52,18 +79,33 @@ type prodiaPrice struct {
 	Dollars *float64 `json:"dollars,omitempty"`
 }
 
+// errMissingJobPart and errMissingBoundary carry the TS multipart handler's
+// error texts (prodia-image-model.ts and siblings).
+var errMissingJobPart = errors.New("Prodia multipart response missing job part") //nolint:staticcheck // matches TS SDK's exact error text
+
+func errMissingBoundary(contentType string) error {
+	return fmt.Errorf("Prodia response missing multipart boundary in content-type: %s", contentType) //nolint:staticcheck // matches TS SDK's exact error text
+}
+
 // parseMultipartResponse parses a multipart/form-data response from the Prodia API.
 // It extracts the "job" JSON metadata part and the "output" binary data part.
 // Returns the job metadata, output bytes, output MIME type, and any error.
 func parseMultipartResponse(contentType string, body []byte) (*prodiaJobResponse, []byte, string, error) {
+	return parseMultipartResponseFor(contentType, body, "video/")
+}
+
+// parseMultipartResponseFor is parseMultipartResponse with the media type
+// prefix that identifies an unnamed output part: TS accepts "video/" parts in
+// the video model's handler and "image/" parts in the image model's.
+func parseMultipartResponseFor(contentType string, body []byte, fallbackPrefix string) (*prodiaJobResponse, []byte, string, error) {
 	_, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("failed to parse response Content-Type %q: %w", contentType, err)
+		return nil, nil, "", errMissingBoundary(contentType)
 	}
 
 	boundary, ok := params["boundary"]
 	if !ok {
-		return nil, nil, "", fmt.Errorf("multipart response missing boundary in Content-Type %q", contentType)
+		return nil, nil, "", errMissingBoundary(contentType)
 	}
 
 	mr := multipart.NewReader(bytes.NewReader(body), boundary)
@@ -88,11 +130,11 @@ func parseMultipartResponse(contentType string, body []byte) (*prodiaJobResponse
 		partCT := part.Header.Get("Content-Type")
 		switch part.FormName() {
 		case "job":
-			var j prodiaJobResponse
-			if err := json.Unmarshal(partData, &j); err != nil {
-				return nil, nil, "", fmt.Errorf("failed to parse job metadata: %w", err)
+			j, err := parseJobPart(partData)
+			if err != nil {
+				return nil, nil, "", err
 			}
-			jobResp = &j
+			jobResp = j
 		case "output":
 			outputData = partData
 			if partCT != "" {
@@ -110,10 +152,12 @@ func parseMultipartResponse(contentType string, body []byte) (*prodiaJobResponse
 				}
 			}
 		default:
-			// Fallback: treat any part whose Content-Type starts with "video/" as output.
-			if outputData == nil && partCT != "" {
+			// Fallback: treat any part whose Content-Type starts with the
+			// output prefix as output; as in TS a later such part replaces an
+			// earlier output.
+			if partCT != "" {
 				if mt, _, err2 := mime.ParseMediaType(partCT); err2 == nil {
-					if len(mt) >= 6 && mt[:6] == "video/" {
+					if strings.HasPrefix(mt, fallbackPrefix) {
 						outputData = partData
 						outputMIME = mt
 					}
@@ -123,10 +167,24 @@ func parseMultipartResponse(contentType string, body []byte) (*prodiaJobResponse
 	}
 
 	if jobResp == nil {
-		return nil, nil, "", fmt.Errorf("multipart response missing 'job' part")
+		return nil, nil, "", errMissingJobPart
 	}
 
 	return jobResp, outputData, outputMIME, nil
+}
+
+// parseJobPart decodes the multipart "job" part, applying TS
+// prodiaJobResultSchema first: a body that does not match is the typed
+// validation (or JSON parse) error itself, as TS parseJSON({schema}) throws it.
+func parseJobPart(data []byte) (*prodiaJobResponse, error) {
+	if err := providerutils.MediaSchemaParser(providerutils.SchemaProdiaJob)(0, nil, data); err != nil {
+		return nil, err
+	}
+	var j prodiaJobResponse
+	if err := json.Unmarshal(data, &j); err != nil {
+		return nil, fmt.Errorf("failed to parse job metadata: %w", err)
+	}
+	return &j, nil
 }
 
 // buildProdiaProviderMetadata converts a prodiaJobResponse to a provider
@@ -151,16 +209,24 @@ func buildProdiaProviderMetadata(job *prodiaJobResponse) map[string]interface{} 
 			m["iterationsPerSecond"] = *job.Metrics.IPS
 		}
 	}
-	if job.CreatedAt != "" {
+	if job.CreatedAt != "" || job.createdAtSet {
 		m["createdAt"] = job.CreatedAt
 	}
-	if job.UpdatedAt != "" {
+	if job.UpdatedAt != "" || job.updatedAtSet {
 		m["updatedAt"] = job.UpdatedAt
 	}
 	if job.Price != nil && job.Price.Dollars != nil {
 		m["dollars"] = *job.Price.Dollars
 	}
 	return m
+}
+
+// prodiaJobBodyOrder is the key order of the TS job body literals
+// ({type, config: {prompt, seed, resolution}} for video and
+// {prompt, include_messages, aspect_ratio} for the language model).
+var prodiaJobBodyOrder = map[string][]string{
+	"":       {"type", "config"},
+	"config": {"prompt", "seed", "resolution", "include_messages", "aspect_ratio"},
 }
 
 // buildMultipartJobRequest creates a multipart/form-data request body with:
@@ -181,7 +247,9 @@ func buildMultipartJobRequest(jobBody interface{}, inputData []byte, inputMIME s
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create job part: %w", err)
 	}
-	if err := json.NewEncoder(jobPart).Encode(jobBody); err != nil {
+	// TS JSON.stringify(body): insertion key order, no HTML escaping and no
+	// trailing newline (json.Encoder adds one and escapes <, > and &).
+	if _, err := jobPart.Write([]byte(providerutils.StringifyOrdered(jobBody, prodiaJobBodyOrder))); err != nil {
 		return nil, "", fmt.Errorf("failed to encode job body: %w", err)
 	}
 
@@ -210,35 +278,29 @@ func buildMultipartJobRequest(jobBody interface{}, inputData []byte, inputMIME s
 	return &buf, mw.FormDataContentType(), nil
 }
 
-// postMultipartToProdia sends a multipart/form-data POST to the Prodia API.
+// postMultipartToProdia sends a multipart/form-data POST to /job?price=true
+// through the provider's HTTP client, so it carries the provider headers (the
+// bearer token, custom headers and the "ai-sdk-prodia/<version>" user agent,
+// TS getHeaders) and reports a transport failure like every other call.
 // acceptHeader is the value for the Accept request header (e.g.
 // "multipart/form-data" for the language model, or
 // "multipart/form-data; video/mp4" for the video model).
 // Returns the response body bytes, response headers, and any error.
-func postMultipartToProdia(ctx context.Context, reqURL, apiKey string, body *bytes.Buffer, contentType, acceptHeader string) ([]byte, http.Header, error) {
-	req, err := http.NewRequestWithContext(ctx, "POST", reqURL, body)
+func postMultipartToProdia(ctx context.Context, client *internalhttp.Client, body *bytes.Buffer, contentType, acceptHeader string, callHeaders map[string]string) ([]byte, http.Header, error) {
+	resp, err := client.Do(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "/job",
+		Query:   map[string]string{"price": "true"},
+		Body:    body,
+		Headers: internalhttp.MergeHeaders(callHeaders, map[string]string{"Content-Type": contentType, "Accept": acceptHeader}),
+	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create multipart request: %w", err)
+		return nil, nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("Accept", acceptHeader)
-
-	resp, err := internalhttp.DefaultHTTPClient.Do(req)
-	if err != nil {
-		return nil, nil, fmt.Errorf("HTTP request failed: %w", err)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, nil, newProdiaProviderError(resp.StatusCode, resp.Body, resp.Headers)
 	}
-	defer resp.Body.Close() //nolint:errcheck
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-	if resp.StatusCode != 200 {
-		return nil, nil, newProdiaProviderError(resp.StatusCode, respBody, resp.Header)
-	}
-
-	return respBody, resp.Header, nil
+	return resp.Body, resp.Headers, nil
 }
 
 // mediaTypeToExt returns the canonical file extension for a given MIME type.
@@ -257,4 +319,61 @@ func mediaTypeToExt(mimeType string) string {
 	default:
 		return ""
 	}
+}
+
+// prodiaOutput is one "output" part of a multipart job response.
+type prodiaOutput struct {
+	mediaType string
+	data      []byte
+	isText    bool
+}
+
+// parseMultipartOutputs reads every "output" part like the TS language model:
+// text parts (text/* or a .txt filename) and image parts are kept in order,
+// anything else is ignored.
+func parseMultipartOutputs(contentType string, body []byte) (*prodiaJobResponse, []prodiaOutput, error) {
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return nil, nil, errMissingBoundary(contentType)
+	}
+	boundary, ok := params["boundary"]
+	if !ok {
+		return nil, nil, errMissingBoundary(contentType)
+	}
+	mr := multipart.NewReader(bytes.NewReader(body), boundary)
+	var jobResp *prodiaJobResponse
+	var outputs []prodiaOutput
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to read multipart part: %w", err)
+		}
+		data, err := io.ReadAll(part)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to read multipart part data: %w", err)
+		}
+		partCT := part.Header.Get("Content-Type")
+		switch part.FormName() {
+		case "job":
+			j, err := parseJobPart(data)
+			if err != nil {
+				return nil, nil, err
+			}
+			jobResp = j
+		case "output":
+			switch {
+			case strings.HasPrefix(partCT, "text/") || strings.Contains(part.Header.Get("Content-Disposition"), ".txt"):
+				outputs = append(outputs, prodiaOutput{mediaType: partCT, data: data, isText: true})
+			case strings.HasPrefix(partCT, "image/"):
+				outputs = append(outputs, prodiaOutput{mediaType: partCT, data: data})
+			}
+		}
+	}
+	if jobResp == nil {
+		return nil, nil, errMissingJobPart
+	}
+	return jobResp, outputs, nil
 }

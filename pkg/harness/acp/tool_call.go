@@ -28,10 +28,14 @@ type ToolCall struct {
 	// locales/UI wording, unlike Title, and more specific than Kind), so
 	// classifiers that need to identify a specific tool should check it
 	// before falling back to Title/Kind-based heuristics.
-	Name      string             `json:"name,omitempty"`
-	Title     string             `json:"title"`
-	Kind      ToolKind           `json:"kind,omitempty"`
-	Status    ToolCallStatus     `json:"status,omitempty"`
+	Name   string         `json:"name,omitempty"`
+	Title  string         `json:"title"`
+	Kind   ToolKind       `json:"kind,omitempty"`
+	Status ToolCallStatus `json:"status,omitempty"`
+	// Content is the ACP tool call's `content` blocks (TS
+	// `ACPToolCall["content"]`: content, diff and terminal entries), kept as
+	// decoded JSON objects so callbacks see what the implementation reported.
+	Content   []map[string]any   `json:"content,omitempty"`
 	Locations []ToolCallLocation `json:"locations,omitempty"`
 	RawInput  any                `json:"rawInput,omitempty"`
 	RawOutput any                `json:"rawOutput,omitempty"`

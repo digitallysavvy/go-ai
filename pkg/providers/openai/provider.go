@@ -6,9 +6,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
@@ -26,18 +27,30 @@ type Provider struct {
 
 // Config contains configuration for the OpenAI provider
 type Config struct {
+	// BatchResultDownloads configures JSON Lines batch result downloads, e.g.
+	// the maximum bytes per result row (TS `batchResultDownloads`).
+	BatchResultDownloads providerutils.BatchResultDownloads
+
 	// APIKey is the OpenAI API key
 	APIKey string
 
-	// APIKeyEnvVar is the environment variable read when APIKey is empty.
-	// Defaults to OPENAI_API_KEY. Wrapper providers set their own variable so
-	// that an OpenAI key is never forwarded to another service.
+	// APIKeyEnvVar is the environment variable read per request when APIKey is
+	// empty (TS loadApiKey environmentVariableName). Defaults to
+	// OPENAI_API_KEY. Wrapper providers set their own variable so that an
+	// OpenAI key is never forwarded to another service.
 	APIKeyEnvVar string
 
+	// APIKeyDescription names the provider in the LoadAPIKeyError message
+	// (TS loadApiKey description). Defaults to "OpenAI".
+	APIKeyDescription string
+
 	// NoAPIKey marks a wrapper that authenticates through its own Headers or
-	// HTTP transport (such as Vertex MaaS): no API key is read from the
-	// environment.
+	// HTTP transport (Azure, Vertex MaaS): no API key is loaded or required.
 	NoAPIKey bool
+
+	// HeadersFunc, when set on a NoAPIKey wrapper, resolves its credential
+	// headers for every request (Azure api-key). An error fails the request.
+	HeadersFunc func() (map[string]string, error) `json:"-"`
 
 	// Name overrides the provider name returned by Provider.Name().
 	// Defaults to "openai".
@@ -61,6 +74,18 @@ type Config struct {
 	// ChatProviderName overrides the provider identifier returned by ChatModel.
 	// Defaults to "openai.chat".
 	ChatProviderName string
+
+	// ChatQuery contains query parameters added to Chat Completions requests
+	// (Azure api-version).
+	ChatQuery map[string]string
+
+	// AudioQuery contains query parameters added to speech and transcription
+	// requests (Azure api-version).
+	AudioQuery map[string]string
+
+	// ImageQuery contains query parameters added to image generation and edit
+	// requests (Azure api-version).
+	ImageQuery map[string]string
 
 	// CompletionProviderName overrides the provider identifier returned by
 	// CompletionModel. Defaults to "openai.completion".
@@ -114,6 +139,33 @@ type Config struct {
 	// as its OpenAI-compatible base (baseten, cerebras, deepinfra).
 	AllowVideo bool
 
+	// OpenAICompatible marks a wrapper whose TS counterpart is built on
+	// @ai-sdk/openai-compatible's OpenAICompatibleChatLanguageModel (baseten,
+	// cerebras, deepinfra, vertex MaaS) rather than OpenAI's own
+	// OpenAIChatLanguageModel. Chat requests then use the compatible
+	// converter's semantics: tool error outputs are sent verbatim (not
+	// wrapped as {"error": ...}), replayed tool-call arguments are not
+	// sanitized, no prompt_cache_breakpoint is forwarded, and file
+	// references resolve the wrapper's own provider key instead of "openai".
+	OpenAICompatible bool
+
+	// SupportsStructuredOutputs, for OpenAI-compatible hosts (TS
+	// supportsStructuredOutputs): nil keeps the legacy behavior (json_schema
+	// whenever a schema is present); an explicit value follows TS, where
+	// false (the TS default) sends json_object and drops the schema.
+	SupportsStructuredOutputs *bool
+
+	// SupportsMultiPartToolContent, for OpenAI-compatible hosts (TS
+	// supportsMultiPartToolContent): send tool results with file/image
+	// content as a content array instead of JSON text.
+	SupportsMultiPartToolContent bool
+
+	// IncludeUsage sends stream_options.include_usage on streaming chat
+	// requests for OpenAICompatible wrappers (TS openai-compatible
+	// `includeUsage`; baseten sets it). Native OpenAI chat always requests
+	// usage.
+	IncludeUsage bool
+
 	// UserAgentName selects the `ai-sdk-<name>/VERSION` User-Agent tag this
 	// provider construction adds (version.ProviderUserAgent). Every wrapper
 	// provider whose TS counterpart is its own distinct npm package (and
@@ -141,12 +193,12 @@ type Config struct {
 	// `request: { body }` does.
 	TransformRequestBody func(body map[string]interface{}) map[string]interface{} `json:"-"`
 
-	// OmitStreamUsage stops the Chat Completions model from sending
-	// stream_options.include_usage on streaming requests. TS
-	// OpenAIChatLanguageModel always sends it, but the OpenAI-compatible
-	// wrappers (cerebras, deepinfra, vercel, vertex MaaS) only send it when
-	// includeUsage is set, which they do not, so they set this.
-	OmitStreamUsage bool `json:"-"`
+	// TransformRequestBodyWithWarnings is like TransformRequestBody but can
+	// also report request transformations as warnings (TS #22045
+	// transformRequestBody(args, warnings)). It runs after
+	// TransformRequestBody; the returned warnings are appended to the call's
+	// warnings.
+	TransformRequestBodyWithWarnings func(body map[string]interface{}) (map[string]interface{}, []types.Warning) `json:"-"`
 }
 
 // New creates a new OpenAI provider with the given configuration
@@ -155,18 +207,27 @@ func New(cfg Config) *Provider {
 	if baseURL == "" {
 		baseURL = os.Getenv("OPENAI_BASE_URL")
 	}
+	// TS validateBaseURL(loadOptionalSetting(...)): a whitespace-only base
+	// URL (option or OPENAI_BASE_URL) is an InvalidArgumentError. TS throws
+	// from the constructor; New keeps returning a provider (v0.5.2 accepted
+	// these values) and every request fails with that error instead.
+	baseURLErr := providerutils.ValidateBaseURL(baseURL)
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 	cfg.BaseURL = baseURL
 
-	apiKeyEnv := cfg.APIKeyEnvVar
+	authManaged := cfg.NoAPIKey || cfg.Name == "azure"
+	apiKeyEnv, apiKeyDescription := cfg.APIKeyEnvVar, cfg.APIKeyDescription
 	if apiKeyEnv == "" {
 		apiKeyEnv = "OPENAI_API_KEY"
+		if apiKeyDescription == "" {
+			apiKeyDescription = "OpenAI"
+		}
 	}
 	apiKey := cfg.APIKey
-	if apiKey == "" && !cfg.NoAPIKey && cfg.Name != "azure" {
+	if apiKey == "" && !authManaged {
 		apiKey = os.Getenv(apiKeyEnv)
 	}
 	cfg.APIKey = apiKey
@@ -196,11 +257,24 @@ func New(cfg Config) *Provider {
 	}
 	mergedHeaders = version.WithUserAgentSuffix(mergedHeaders, uaSuffix)
 
-	client := http.NewClient(http.Config{
+	clientCfg := http.Config{
 		BaseURL:    baseURL,
 		Headers:    mergedHeaders,
 		HTTPClient: cfg.HTTPClient,
-	})
+	}
+	if authManaged {
+		clientCfg.HeadersFunc = cfg.HeadersFunc
+	} else {
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		userHeaders, userKey := cfg.Headers, cfg.APIKey
+		clientCfg.HeadersFunc = func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(userHeaders, userKey, apiKeyEnv, apiKeyDescription, "Authorization", "Bearer ")
+		}
+	}
+	if baseURLErr != nil {
+		clientCfg.HeadersFunc = func() (map[string]string, error) { return nil, baseURLErr }
+	}
+	client := http.NewClient(clientCfg)
 
 	return &Provider{
 		config: cfg,
@@ -286,6 +360,11 @@ func (p *Provider) completionProviderOptionsName() string {
 	if strings.Contains(p.completionProviderName(), "azure") {
 		return "azure"
 	}
+	if p.config.OpenAICompatible {
+		// TS OpenAICompatibleCompletionLanguageModel: provider.split('.')[0].
+		name, _, _ := strings.Cut(p.Name(), ".")
+		return strings.TrimSpace(name)
+	}
 	return "openai"
 }
 
@@ -365,7 +444,7 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
 	// OpenAI doesn't provide reranking models
-	return nil, fmt.Errorf("OpenAI does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // ResponsesModel returns a language model that uses the OpenAI Responses API
@@ -391,18 +470,20 @@ func (p *Provider) Skills() provider.SkillsAPI {
 	return &SkillsAPI{provider: p}
 }
 
-// EvaluationModel returns an experimental evaluation model backed by the
-// OpenAI Responses API language model. Mirrors TypeScript's
-// OpenAIProvider.evaluationModel: `provider.evaluationModel = (modelId) =>
-// new EvaluationLanguageModel({ model: createResponsesModel(modelId),
-// provider: providerName + '.evaluation' })`.
+// DecisionModel returns an experimental Choice/Score/Boolean decision model
+// backed by the OpenAI Decisions API (POST /decisions). Mirrors TypeScript's
+// OpenAIProvider.decisionModel, which uses DecisionOpenAIModel.
+func (p *Provider) DecisionModel(modelID string) (provider.DecisionModel, error) {
+	return NewDecisionModel(p, modelID), nil
+}
+
+// EvaluationModel is the deprecated form of DecisionModel.
+//
+// Deprecated: Use DecisionModel instead.
 func (p *Provider) EvaluationModel(modelID string) (provider.EvaluationModel, error) {
-	model, err := p.ResponsesModel(modelID)
+	model, err := p.DecisionModel(modelID)
 	if err != nil {
 		return nil, err
 	}
-	return ai.NewEvaluationLanguageModel(ai.EvaluationLanguageModelOptions{
-		Model:    model,
-		Provider: p.Name() + ".evaluation",
-	})
+	return provider.AsEvaluationModel(model), nil
 }

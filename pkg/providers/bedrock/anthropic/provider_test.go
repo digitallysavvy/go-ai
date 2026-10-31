@@ -254,12 +254,19 @@ func TestSigV4Authentication_MissingCredentialsErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error when no credentials are available")
 	}
+	if !strings.Contains(err.Error(), "\nOriginal error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable.") {
+		t.Fatalf("missing TS 'Original error' text: %v", err)
+	}
+	t.Setenv("AWS_ACCESS_KEY_ID", "akid")
+	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}})
+	if err == nil || !strings.Contains(err.Error(), "Please ensure both credentials are provided.\nOriginal error: AWS secret access key setting is missing. Pass it using the 'secretAccessKey' parameter or the AWS_SECRET_ACCESS_KEY environment variable.") {
+		t.Fatalf("secret error = %v", err)
+	}
 }
 
-// TestSessionTokenEnvFallback_OnlyWithoutExplicitKeys ports row 6732c16: the
-// ambient AWS_SESSION_TOKEN must not be picked up when the caller supplies
-// both an explicit access key and secret key.
-func TestSessionTokenEnvFallback_OnlyWithoutExplicitKeys(t *testing.T) {
+// TestSessionTokenEnvFallback_AlwaysFromEnv: TS bedrock-anthropic always
+// falls back to AWS_SESSION_TOKEN, even with explicit key and secret.
+func TestSessionTokenEnvFallback_AlwaysFromEnv(t *testing.T) {
 	t.Setenv("AWS_SESSION_TOKEN", "env-session-token")
 
 	p := New(Config{
@@ -273,8 +280,8 @@ func TestSessionTokenEnvFallback_OnlyWithoutExplicitKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveCredentials: %v", err)
 	}
-	if creds.SessionToken != "" {
-		t.Errorf("SessionToken = %q, want empty (explicit keys were provided without a session token)", creds.SessionToken)
+	if creds.SessionToken != "env-session-token" {
+		t.Errorf("SessionToken = %q, want env-session-token", creds.SessionToken)
 	}
 }
 

@@ -246,3 +246,24 @@ func TestSpeechModel_DoGenerate_StructuredErrorShape(t *testing.T) {
 		t.Errorf("error = %q, want to contain Invalid voice_id", err.Error())
 	}
 }
+
+// createBinaryResponseHandler has no raw value: the TS result carries no
+// response.body for raw audio, but always carries providerMetadata.xai.
+func TestSpeechModel_DoGenerate_BinaryHasNoBodyAndAlwaysXAIMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		_, _ = w.Write([]byte("fake-mp3-bytes"))
+	}))
+	defer server.Close()
+	model := NewSpeechModel(New(Config{APIKey: "k", BaseURL: server.URL}), "")
+	result, err := model.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Response.Body != nil {
+		t.Fatalf("response body for binary audio must be nil, got %T", result.Response.Body)
+	}
+	if _, ok := result.ProviderMetadata["xai"]; !ok {
+		t.Fatalf("providerMetadata.xai must always be present: %#v", result.ProviderMetadata)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -15,7 +16,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -58,6 +58,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if opts == nil {
 		opts = &provider.ImageGenerateOptions{}
 	}
+	if err := validateImageOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	currentDate := time.Now()
 	var warnings []types.Warning
 
@@ -85,6 +88,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 	if resp.StatusCode >= 400 {
 		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
+	}
+	if err := providerutils.MediaResponseValidator("topaz", providerutils.SchemaTopazSubmit)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
 	}
 
 	var submit topazImageSubmitResponse
@@ -204,7 +210,7 @@ func addImageUnsupportedWarnings(opts *provider.ImageGenerateOptions, warnings *
 // request (TS TopazImageModel#buildFormData).
 func (m *ImageModel) buildFormData(opts *provider.ImageGenerateOptions, topazOpts *ImageModelOptions, warnings *[]types.Warning) (io.Reader, string, error) {
 	if len(opts.Files) == 0 {
-		return nil, "", providererrors.NewValidationError("files",
+		return nil, "", invalidArgument("files",
 			"Topaz image models enhance an existing image. Pass the input image via `prompt.images`.", nil)
 	}
 
@@ -231,7 +237,7 @@ func (m *ImageModel) buildFormData(opts *provider.ImageGenerateOptions, topazOpt
 			return nil, "", err
 		}
 	} else {
-		part, err := writer.CreateFormFile("image", "image"+topazImageExtension(file.MediaType))
+		part, err := providerutils.CreateTypedFormFile(writer, "image", "image."+providerutils.MediaTypeToExtension(file.MediaType), file.MediaType)
 		if err != nil {
 			return nil, "", err
 		}
@@ -326,7 +332,7 @@ func writeFloatField(w *multipart.Writer, key string, value *float64) error {
 	if value == nil {
 		return nil
 	}
-	return w.WriteField(key, strconv.FormatFloat(*value, 'g', -1, 64))
+	return w.WriteField(key, providerutils.JSNumberString(*value))
 }
 
 // parseSize parses a "{width}x{height}" call option.
@@ -339,19 +345,6 @@ func parseSize(size string) (width, height *int) {
 		return nil, nil
 	}
 	return &w, &h
-}
-
-// topazImageExtension picks a file extension for the uploaded image part
-// from its media type. Topaz only processes JPEG, PNG and TIFF.
-func topazImageExtension(mediaType string) string {
-	switch strings.ToLower(mediaType) {
-	case "image/jpeg", "image/jpg":
-		return ".jpg"
-	case "image/tiff", "image/tif":
-		return ".tiff"
-	default:
-		return ".png"
-	}
 }
 
 // imageMimeType derives the result's MIME type from the status response's
@@ -381,13 +374,16 @@ func imageMimeType(outputFormat *string, data []byte) string {
 // is in flight.
 func (m *ImageModel) waitForCompletion(ctx context.Context, processID string, headers map[string]string, pollInterval, pollTimeout time.Duration) (*topazImageStatusResponse, error) {
 	deadline := time.Now().Add(pollTimeout)
-	lastStatus := "unknown"
+	var lastStatus string
 
 	for {
 		status, err := m.getStatus(ctx, processID, headers)
 		if err != nil {
 			return nil, err
 		}
+		// TS reports the current poll's `status ?? 'unknown'`, not the last
+		// non-empty one.
+		lastStatus = "unknown"
 		if status.Status != "" {
 			lastStatus = status.Status
 		}
@@ -426,6 +422,9 @@ func (m *ImageModel) getStatus(ctx context.Context, processID string, headers ma
 	if resp.StatusCode >= 400 {
 		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}
+	if err := providerutils.MediaResponseValidator("topaz", providerutils.SchemaTopazStatus)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var status topazImageStatusResponse
 	if err := json.Unmarshal(resp.Body, &status); err != nil {
 		return nil, fmt.Errorf("topaz: failed to decode status response: %w", err)
@@ -462,6 +461,9 @@ func (m *ImageModel) download(ctx context.Context, processID string, headers map
 		return nil, nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 
+	if err := providerutils.MediaResponseValidator("topaz", providerutils.SchemaTopazDownload)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, nil, err
+	}
 	var downloadResp topazImageDownloadResponse
 	if err := json.Unmarshal(resp.Body, &downloadResp); err != nil {
 		return nil, nil, fmt.Errorf("topaz: failed to decode download response: %w", err)

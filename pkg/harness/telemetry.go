@@ -1,6 +1,9 @@
 package harness
 
 import (
+	"fmt"
+
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
@@ -37,33 +40,50 @@ import (
 // ctx rather than a separate model-call ctx — see pkg/ai/generate.go's
 // identical pattern, which this mirrors exactly).
 
-// promptAsMessages converts a harness Prompt into the single-message slice
-// TS's turn-telemetry `messages` field uses
-// (`input.prompt == null ? [] : [{role:'user', content: promptToText(...)}]`).
-// A structured Prompt.Message is used as-is; a plain-text Prompt becomes one
-// user message; an empty Prompt (e.g. a "continue" turn, which carries no
-// fresh prompt) yields no messages.
-func promptAsMessages(p Prompt) []types.Message {
-	if p.Message != nil {
-		return []types.Message{*p.Message}
+// promptText is the best-effort plain text of a turn's prompt (TS
+// `promptToText`): the string itself, or the concatenated text parts of a
+// structured user message.
+func promptText(p Prompt) string {
+	if p.Message == nil {
+		return p.Text
 	}
-	if p.Text != "" {
-		return []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: p.Text}}}}
+	var text string
+	for _, part := range p.Message.Content {
+		switch c := part.(type) {
+		case types.TextContent:
+			text += c.Text
+		case *types.TextContent:
+			if c != nil {
+				text += c.Text
+			}
+		}
 	}
-	return nil
+	return text
+}
+
+// promptMessages is the turn's `messages` field in lifecycle callbacks and
+// telemetry (TS `input.prompt == null ? [] : [{role:'user', content:
+// promptToText(input.prompt)}]`): one user message with the prompt's plain
+// text, or an empty list (not nil: telemetry records `[]`) for a
+// continuation, which carries no fresh prompt.
+func (d *turnDriver) promptMessages() []types.Message {
+	if d.in.Mode == "continue" {
+		return []types.Message{}
+	}
+	return []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: promptText(d.in.Prompt)}}}}
 }
 
 // toolSpecsAsTypesTools projects harness ToolSpecs into the []types.Tool
 // shape telemetry.LanguageModelCallStartEvent.Tools/gen_ai.tool.definitions
-// expects (name/description only — the wire-format InputSchema isn't part
-// of that projection).
+// expects: TS `languageModelTools` carries name, description and inputSchema
+// (each only when set).
 func toolSpecsAsTypesTools(specs []ToolSpec) []types.Tool {
 	if len(specs) == 0 {
 		return nil
 	}
 	out := make([]types.Tool, len(specs))
 	for i, s := range specs {
-		out[i] = types.Tool{Name: s.Name, Description: s.Description}
+		out[i] = types.Tool{Name: s.Name, Description: s.Description, Parameters: s.InputSchema}
 	}
 	return out
 }
@@ -97,11 +117,11 @@ func telemetryUsageFromTypesUsage(u types.Usage) telemetry.TelemetryUsage {
 // ToolsContext), so the simpler map-only form is sufficient here.
 func filterIncludedContext(contextValue interface{}, include map[string]bool) map[string]interface{} {
 	if len(include) == 0 || contextValue == nil {
-		return nil
+		return map[string]interface{}{}
 	}
 	source, ok := contextValue.(map[string]interface{})
 	if !ok || len(source) == 0 {
-		return nil
+		return map[string]interface{}{}
 	}
 	out := make(map[string]interface{})
 	for key, enabled := range include {
@@ -117,43 +137,45 @@ func filterIncludedContext(contextValue interface{}, include map[string]bool) ma
 
 func telemetryRuntimeContext(settings *telemetry.Options, contextValue interface{}) map[string]interface{} {
 	if settings == nil {
-		return nil
+		return map[string]interface{}{}
 	}
 	return filterIncludedContext(contextValue, settings.IncludeRuntimeContext)
 }
 
 func telemetryToolsContext(settings *telemetry.Options, toolsContext map[string]interface{}) map[string]interface{} {
 	if settings == nil || len(settings.IncludeToolsContext) == 0 || len(toolsContext) == 0 {
-		return nil
+		return map[string]interface{}{}
 	}
 	out := make(map[string]interface{}, len(toolsContext))
 	for toolName, ctxValue := range toolsContext {
-		if filtered := filterIncludedContext(ctxValue, settings.IncludeToolsContext[toolName]); len(filtered) > 0 {
-			out[toolName] = filtered
-		}
+		// TS filterToolsContext keeps one entry per tool, empty when nothing
+		// is included for it.
+		out[toolName] = filterIncludedContext(ctxValue, settings.IncludeToolsContext[toolName])
 	}
 	return out
-}
-
-func telemetryToolContext(settings *telemetry.Options, toolName string, toolContext interface{}) map[string]interface{} {
-	if settings == nil {
-		return nil
-	}
-	return filterIncludedContext(toolContext, settings.IncludeToolsContext[toolName])
 }
 
 // telStart fires the turn-level ("ai.harness") telemetry start event once
 // per turn and records the returned root ctx for span nesting. Called from
 // ensureStarted, which already guards against firing more than once.
 func (d *turnDriver) telStart() {
+	// TS createTurnLifecycle: `telemetry == null` -> no dispatcher at all, so
+	// an agent without Telemetry settings fires nothing, even when an
+	// integration is registered globally.
+	if d.in.Telemetry == nil {
+		return
+	}
+	// TS start event: `maxRetries: 0` (a harness turn never retries).
+	maxRetries := 0
 	d.telCtx = telemetry.FireOnStart(d.ctx, telemetry.TelemetryStartEvent{
+		MaxRetries:     &maxRetries,
 		CallID:         d.telCallID,
 		OperationType:  "ai.harness",
 		Settings:       d.in.Telemetry,
 		ModelProvider:  "harness:" + d.in.Harness.HarnessID(),
-		ModelID:        d.in.Model,
+		ModelID:        d.modelID,
 		System:         d.in.Instructions,
-		Messages:       promptAsMessages(d.in.Prompt),
+		Messages:       d.promptMessages(),
 		RuntimeContext: telemetryRuntimeContext(d.in.Telemetry, d.in.RuntimeContext),
 		ToolsContext:   telemetryToolsContext(d.in.Telemetry, d.in.ToolsContext),
 	})
@@ -164,6 +186,10 @@ func (d *turnDriver) telStart() {
 // `ensureStepOpen`. Called from ensureStepOpen, which already guards against
 // firing more than once per step.
 func (d *turnDriver) telStepStart() {
+	d.telModelCallStartedAt = nowMs()
+	if d.in.Telemetry == nil {
+		return
+	}
 	provider := "harness:" + d.in.Harness.HarnessID()
 	d.telStepCtx = telemetry.FireOnStepStart(d.telCtx, telemetry.TelemetryStepStartEvent{
 		CallID:         d.telCallID,
@@ -171,7 +197,7 @@ func (d *turnDriver) telStepStart() {
 		Settings:       d.in.Telemetry,
 		StepNumber:     d.stepNumber,
 		ModelProvider:  provider,
-		ModelID:        d.in.Model,
+		ModelID:        d.modelID,
 		RuntimeContext: telemetryRuntimeContext(d.in.Telemetry, d.in.RuntimeContext),
 		ToolsContext:   telemetryToolsContext(d.in.Telemetry, d.in.ToolsContext),
 	})
@@ -190,9 +216,10 @@ func (d *turnDriver) telStepStart() {
 		Settings:      d.in.Telemetry,
 		CallID:        d.telCallID,
 		ModelProvider: provider,
-		ModelID:       d.in.Model,
+		ModelID:       d.modelID,
 		System:        d.in.Instructions,
-		Prompt:        types.Prompt{Messages: promptAsMessages(d.in.Prompt)},
+		Prompt:        types.Prompt{Messages: d.promptMessages()},
+		Messages:      d.promptMessages(),
 		Tools:         toolSpecsAsTypesTools(d.in.ToolSpecs),
 	})
 }
@@ -215,35 +242,76 @@ func (d *turnDriver) telStepContent() []types.ContentPart {
 	for _, tc := range d.stepToolCalls {
 		content = append(content, types.ToolCallContent{
 			ToolCallID: tc.ID, ToolName: tc.ToolName, Input: tc.RawArguments, Arguments: tc.Arguments,
+			ProviderExecuted: tc.ProviderExecuted,
 		})
+	}
+	for _, ar := range d.stepApprovalRequests {
+		content = append(content, ar)
+	}
+	// TS buildModelCallContent also carries the provider-executed tool
+	// results of the step. Host tool results are not part of the model call:
+	// TS ends the model call before publishing them.
+	for _, tr := range d.stepProviderToolResults {
+		part := types.ToolResultContent{ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, Input: tr.Input, Result: tr.Result}
+		if tr.Error != nil {
+			part.Error = tr.Error.Error()
+		}
+		content = append(content, part)
 	}
 	return content
 }
 
-// telLanguageModelCallEnd fires the language-model-call-end telemetry event
-// for the step about to close, ending the "chat" span telStepStart opened.
-// Called from completeStep, before the step's tool-result chunks are
-// flushed — mirrors TS `completeStep`'s `lifecycle.languageModelCallEnd`
-// call, which likewise precedes `publishToolExecutions`.
-func (d *turnDriver) telLanguageModelCallEnd(finishReason FinishReason, usage Usage) {
-	if d.telStepCtx == nil {
-		return
-	}
+// languageModelCallEnd fires the language-model-call-end callback and
+// telemetry event for the step about to close, ending the "chat" span
+// telStepStart opened. Called from completeStep, before the step's
+// tool-result chunks are flushed - mirrors TS `completeStep`'s
+// `lifecycle.languageModelCallEnd` call, which likewise precedes
+// `publishToolExecutions`. The event carries the step's content, the step's
+// harness metadata as provider metadata, and TS's `${callId}-${stepNumber}`
+// response id.
+func (d *turnDriver) languageModelCallEnd(finishReason FinishReason, usage Usage, metadata Metadata) {
+	// TS lifecycle.languageModelCallEnd opens the step first, so a step that
+	// closes without any content still reports its start events.
+	d.ensureStepOpen()
 	responseTimeMs := int64(0)
 	if d.telModelCallStartedAt > 0 {
 		if elapsed := nowMs() - d.telModelCallStartedAt; elapsed > 0 {
 			responseTimeMs = elapsed
 		}
 	}
+	provider := "harness:" + d.in.Harness.HarnessID()
+	typesUsage := harnessUsageToTypesUsageValue(usage)
+	content := d.telStepContent()
+	responseID := fmt.Sprintf("%s-%d", d.telCallID, d.stepNumber)
+	var providerMetadata map[string]interface{}
+	if len(metadata) > 0 {
+		providerMetadata = make(map[string]interface{}, len(metadata))
+		for k, v := range metadata {
+			providerMetadata[k] = v
+		}
+	}
+	if d.in.Callbacks.OnLanguageModelCallEnd != nil {
+		d.in.Callbacks.OnLanguageModelCallEnd(d.ctx, ai.LanguageModelCallEndEvent{
+			CallID: d.telCallID, Provider: provider, ModelID: d.modelID,
+			FinishReason: unifiedFinishReason(finishReason), Usage: typesUsage,
+			Content: content, ResponseID: responseID, ProviderMetadata: providerMetadata,
+			Performance: ai.LanguageModelCallPerformance{ResponseTimeMs: responseTimeMs},
+		})
+	}
+	if d.telStepCtx == nil {
+		return
+	}
 	telemetry.FireOnLanguageModelCallEnd(d.telStepCtx, telemetry.LanguageModelCallEndEvent{
-		Settings:      d.in.Telemetry,
-		CallID:        d.telCallID,
-		ModelProvider: "harness:" + d.in.Harness.HarnessID(),
-		ModelID:       d.in.Model,
-		FinishReason:  string(unifiedFinishReason(finishReason)),
-		Usage:         telemetryUsageFromTypesUsage(harnessUsageToTypesUsageValue(usage)),
-		Content:       d.telStepContent(),
-		Performance:   telemetry.LanguageModelCallPerformance{ResponseTimeMs: responseTimeMs},
+		Settings:         d.in.Telemetry,
+		CallID:           d.telCallID,
+		ModelProvider:    provider,
+		ModelID:          d.modelID,
+		FinishReason:     string(unifiedFinishReason(finishReason)),
+		Usage:            telemetryUsageFromTypesUsage(typesUsage),
+		Content:          content,
+		ResponseID:       responseID,
+		ProviderMetadata: providerMetadata,
+		Performance:      telemetry.LanguageModelCallPerformance{ResponseTimeMs: responseTimeMs},
 	})
 }
 
@@ -275,15 +343,16 @@ func (d *turnDriver) telToolExecutionEnd(call types.ToolCall, result types.ToolR
 		toolCtx = d.telStepCtx
 	}
 	telemetry.FireOnToolCallFinish(toolCtx, telemetry.TelemetryToolCallFinishEvent{
-		Settings:    d.in.Telemetry,
-		CallID:      d.telCallID,
-		ToolCallID:  call.ID,
-		ToolName:    call.ToolName,
-		Args:        call.Arguments,
-		Result:      result.Result,
-		Error:       result.Error,
-		DurationMs:  durationMs,
-		ToolContext: telemetryToolContext(d.in.Telemetry, call.ToolName, d.in.ToolsContext[call.ToolName]),
+		Settings:   d.in.Telemetry,
+		CallID:     d.telCallID,
+		ToolCallID: call.ID,
+		ToolName:   call.ToolName,
+		Args:       call.Arguments,
+		Result:     result.Result,
+		Error:      result.Error,
+		DurationMs: durationMs,
+		// TS publishToolExecutionEnd passes `toolContext: undefined`.
+		ToolContext: nil,
 	})
 }
 
@@ -298,44 +367,106 @@ func (d *turnDriver) telStepEnd(stepNumber int, step types.StepResult) {
 		return
 	}
 	telemetry.FireOnStepEnd(d.telStepCtx, telemetry.TelemetryStepEndEvent{
-		Settings:       d.in.Telemetry,
-		CallID:         d.telCallID,
-		StepNumber:     stepNumber,
-		FinishReason:   string(step.FinishReason),
-		Usage:          telemetryUsageFromTypesUsage(step.Usage),
-		Text:           step.Text,
-		Reasoning:      step.ReasoningText,
+		Settings:      d.in.Telemetry,
+		CallID:        d.telCallID,
+		OperationType: "ai.harness",
+		StepNumber:    stepNumber,
+		// TS stepEnd passes step.response ({callId}-{n}, timestamp, model),
+		// which the legacy step span records as ai.response.*.
+		ResponseID:        step.Response.ID,
+		ResponseModelID:   step.Response.ModelID,
+		ResponseTimestamp: step.Response.Timestamp,
+		FinishReason:      string(step.FinishReason),
+		Usage:             telemetryUsageFromTypesUsage(step.Usage),
+		Text:              step.Text,
+		// TS legacy ai.response.reasoning joins the parts with "\n".
+		Reasoning:      telemetry.JoinReasoning(step.Reasoning),
+		ReasoningParts: step.Reasoning,
+		ReasoningFiles: harnessReasoningFiles(step.Content),
 		ToolCalls:      step.ToolCalls,
-		RuntimeContext: telemetryRuntimeContext(d.in.Telemetry, d.in.RuntimeContext),
-		ToolsContext:   telemetryToolsContext(d.in.Telemetry, d.in.ToolsContext),
+		// The step's tool results with the failed calls: StepResult.ToolResults
+		// holds only TS tool-result parts, and TelemetryStepEndEvent has no
+		// content to carry the tool-error parts.
+		ToolResults:      harnessTelemetryToolResults(step.ToolResults, d.stepToolResults),
+		Files:            step.Files,
+		ProviderMetadata: step.ProviderMetadata,
+		RuntimeContext:   telemetryRuntimeContext(d.in.Telemetry, d.in.RuntimeContext),
+		ToolsContext:     telemetryToolsContext(d.in.Telemetry, d.in.ToolsContext),
 	})
 	d.telStepCtx = nil
 }
 
-// telEnd fires the turn-end telemetry event, ending the root span telStart
-// opened. Mirrors TS `lifecycle.end`: a no-op if the turn never started or
-// already ended (telError already fired), or if no step ever completed (TS:
-// `steps.length === 0`) — and reports the *final* completed step's
-// text/reasoning (TS a9a22e1), not a turn-wide re-accumulation, since a
-// multi-step turn's earlier steps' text isn't part of "the answer" the same
-// way the final one is.
+// telEnd ends the turn: it fires the Callbacks.OnEnd callback and the
+// turn-end telemetry event (ending the root span telStart opened). Mirrors TS
+// `lifecycle.end`: a no-op if the turn already ended (telError/telAbort
+// already fired) or if no step ever completed (TS: `steps.length === 0`).
+// Like TS, the event reports the *final* completed step's text/reasoning
+// (TS a9a22e1) rather than a turn-wide re-accumulation, and the tool calls,
+// tool results and files of every step.
 func (d *turnDriver) telEnd(steps []types.StepResult, totalUsage types.Usage) {
-	if d.telCtx == nil || d.telEnded || len(steps) == 0 {
+	// TS lifecycle.end starts the lifecycle first, then returns without
+	// ending when the turn has no steps.
+	d.ensureStarted()
+	if d.telEnded || len(steps) == 0 {
 		return
 	}
 	d.telEnded = true
 	finalStep := steps[len(steps)-1]
+	var toolCalls []types.ToolCall
+	var toolResults []types.ToolResult
+	var files []types.GeneratedFileContent
+	for _, st := range steps {
+		toolCalls = append(toolCalls, st.ToolCalls...)
+		toolResults = append(toolResults, st.ToolResults...)
+		files = append(files, st.Files...)
+	}
+	if d.in.Callbacks.OnEnd != nil {
+		event := ai.OnFinishEvent{
+			CallID: d.telCallID, StepNumber: finalStep.StepNumber, Model: finalStep.Model,
+			ModelProvider: finalStep.Model.Provider, ModelID: finalStep.Model.ModelID,
+			Text: finalStep.Text, Reasoning: finalStep.Reasoning, ReasoningText: finalStep.ReasoningText,
+			FinishReason: finalStep.FinishReason, RawFinishReason: finalStep.RawFinishReason,
+			Usage: totalUsage, TotalUsage: totalUsage, Steps: steps,
+			ProviderMetadata: finalStep.ProviderMetadata,
+			ResponseHeaders:  finalStep.Response.Headers,
+			Request:          ai.GenerateStepRequest{Body: finalStep.Request.Body, Messages: finalStep.Request.Messages},
+			Response: ai.GenerateStepResponse{
+				ID: finalStep.Response.ID, Timestamp: finalStep.Response.Timestamp, ModelID: finalStep.Response.ModelID,
+				Headers: finalStep.Response.Headers, Messages: finalStep.Response.Messages, Body: finalStep.Response.Body,
+			},
+			RuntimeContext: d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
+		}
+		var responseMessages []types.Message
+		for _, st := range steps {
+			responseMessages = append(responseMessages, st.Response.Messages...)
+		}
+		event.SetAggregatesFromSteps(steps, responseMessages)
+		event.Usage = totalUsage
+		d.in.Callbacks.OnEnd(d.ctx, event)
+	}
+	if d.telCtx == nil {
+		return
+	}
 	telemetry.FireOnEnd(d.telCtx, telemetry.TelemetryFinishEvent{
-		CallID:         d.telCallID,
-		FinishReason:   string(finalStep.FinishReason),
-		Usage:          telemetryUsageFromTypesUsage(totalUsage),
-		ModelProvider:  "harness:" + d.in.Harness.HarnessID(),
-		ModelID:        d.in.Model,
-		Text:           finalStep.Text,
-		Files:          finalStep.Files,
-		Settings:       d.in.Telemetry,
-		RuntimeContext: telemetryRuntimeContext(d.in.Telemetry, d.in.RuntimeContext),
-		ToolsContext:   telemetryToolsContext(d.in.Telemetry, d.in.ToolsContext),
+		CallID:        d.telCallID,
+		OperationType: "ai.harness",
+		FinishReason:  string(finalStep.FinishReason),
+		Usage:         telemetryUsageFromTypesUsage(totalUsage),
+		ModelProvider: "harness:" + d.in.Harness.HarnessID(),
+		ModelID:       d.modelID,
+		Text:          finalStep.Text,
+		Reasoning:     telemetry.JoinReasoning(finalStep.Reasoning),
+		ToolCalls:     toolCalls,
+		// TS passes toolResults of every step and finalStep.reasoning; the
+		// GenAI integration formats them into gen_ai.output.messages.
+		ToolResults:      toolResults,
+		ReasoningParts:   finalStep.Reasoning,
+		ReasoningFiles:   harnessReasoningFiles(finalStep.Content),
+		Files:            files,
+		ProviderMetadata: finalStep.ProviderMetadata,
+		Settings:         d.in.Telemetry,
+		RuntimeContext:   telemetryRuntimeContext(d.in.Telemetry, d.in.RuntimeContext),
+		ToolsContext:     telemetryToolsContext(d.in.Telemetry, d.in.ToolsContext),
 	})
 }
 
@@ -346,11 +477,16 @@ func (d *turnDriver) telEnd(steps []types.StepResult, totalUsage types.Usage) {
 // content existed), so the root span this reports the error on always
 // exists.
 func (d *turnDriver) telError(err error) {
+	// TS `lifecycle.error` starts the lifecycle (firing the onStart callback)
+	// and marks the turn ended whether or not telemetry is configured.
 	if d.telEnded {
 		return
 	}
 	d.ensureStarted()
 	d.telEnded = true
+	if d.in.Telemetry == nil {
+		return
+	}
 	// H5: CallID is now required so each registered integration can resolve
 	// ITS OWN root span by CallID instead of trace.SpanFromContext(ctx) —
 	// pkg/ai/generate.go's matching FireOnError call was updated the same way.
@@ -370,7 +506,64 @@ func (d *turnDriver) telAbort(err error) {
 	}
 	d.ensureStarted()
 	d.telEnded = true
+	if d.in.Telemetry == nil {
+		return
+	}
 	telemetry.FireOnAbort(d.telCtx, telemetry.TelemetryAbortEvent{
 		Settings: d.in.Telemetry, CallID: d.telCallID, Reason: err, Steps: d.completedSteps,
 	})
+}
+
+// harnessReasoningFiles returns the reasoning file parts of a step's content
+// (TS StepResult.reasoning holds them next to the reasoning parts).
+func harnessReasoningFiles(content []types.ContentPart) []types.ReasoningFileContent {
+	var out []types.ReasoningFileContent
+	for _, p := range content {
+		switch v := p.(type) {
+		case types.ReasoningFileContent:
+			out = append(out, v)
+		case *types.ReasoningFileContent:
+			if v != nil {
+				out = append(out, *v)
+			}
+		}
+	}
+	return out
+}
+
+// harnessTelemetryToolResults returns the step's public tool results with the
+// failed ones of the turn driver's own record put back in record order (TS
+// lifecycle.stepEnd passes the step, whose content keeps the tool-error parts).
+func harnessTelemetryToolResults(public, recorded []types.ToolResult) []types.ToolResult {
+	hasFailure := false
+	for _, tr := range recorded {
+		if tr.Error != nil {
+			hasFailure = true
+			break
+		}
+	}
+	if !hasFailure {
+		return public
+	}
+	byID := make(map[string]types.ToolResult, len(public))
+	for _, tr := range public {
+		byID[tr.ToolCallID] = tr
+	}
+	out := make([]types.ToolResult, 0, len(recorded))
+	seen := make(map[string]bool, len(recorded))
+	for _, tr := range recorded {
+		if tr.Error == nil {
+			if p, ok := byID[tr.ToolCallID]; ok {
+				tr = p
+			}
+		}
+		seen[tr.ToolCallID] = true
+		out = append(out, tr)
+	}
+	for _, tr := range public {
+		if !seen[tr.ToolCallID] {
+			out = append(out, tr)
+		}
+	}
+	return out
 }

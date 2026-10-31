@@ -17,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -51,17 +52,21 @@ func cartesiaEncodingFromInputAudioFormat(inputType string) (string, error) {
 }
 
 // buildCartesiaStreamingTranscriptionURL mirrors TS
-// buildCartesiaStreamingTranscriptionUrl.
-func buildCartesiaStreamingTranscriptionURL(baseURL, version, modelID, encoding string, sampleRate int, language *string, token string, useTurnDetection bool) (*url.URL, error) {
+// buildCartesiaStreamingTranscriptionUrl: the path is resolved against the
+// origin of baseURL (`new URL('/stt/websocket', baseURL)`), and the query
+// keeps TS's insertion order (model, encoding, sample_rate, cartesia_version,
+// access_token, language) because the request body echoes the URL.
+// withToken=false drops access_token (`searchParams.delete`).
+func buildCartesiaStreamingTranscriptionURL(baseURL, version, modelID, encoding string, sampleRate int, language *string, token string, useTurnDetection, withToken bool) (*url.URL, error) {
 	path := "/stt/websocket"
 	if useTurnDetection {
 		path = "/stt/turns/websocket"
 	}
-	full := strings.TrimRight(baseURL, "/") + path
-	u, err := url.Parse(full)
+	u, err := url.Parse(strings.TrimRight(baseURL, "/") + "/")
 	if err != nil {
 		return nil, err
 	}
+	u.Path, u.RawPath, u.RawQuery, u.Fragment = path, "", "", ""
 	switch u.Scheme {
 	case "https":
 		u.Scheme = "wss"
@@ -69,16 +74,23 @@ func buildCartesiaStreamingTranscriptionURL(baseURL, version, modelID, encoding 
 		u.Scheme = "ws"
 	}
 
-	q := url.Values{}
-	q.Set("model", modelID)
-	q.Set("encoding", encoding)
-	q.Set("sample_rate", strconv.Itoa(sampleRate))
-	q.Set("cartesia_version", version)
-	q.Set("access_token", token)
-	if !useTurnDetection && language != nil {
-		q.Set("language", *language)
+	pairs := [][2]string{
+		{"model", modelID},
+		{"encoding", encoding},
+		{"sample_rate", strconv.Itoa(sampleRate)},
+		{"cartesia_version", version},
 	}
-	u.RawQuery = q.Encode()
+	if withToken {
+		pairs = append(pairs, [2]string{"access_token", token})
+	}
+	if !useTurnDetection && language != nil {
+		pairs = append(pairs, [2]string{"language", *language})
+	}
+	parts := make([]string, 0, len(pairs))
+	for _, kv := range pairs {
+		parts = append(parts, url.QueryEscape(kv[0])+"="+url.QueryEscape(kv[1]))
+	}
+	u.RawQuery = strings.Join(parts, "&")
 	return u, nil
 }
 
@@ -90,10 +102,11 @@ func (m *TranscriptionModel) createStreamingAccessToken(ctx context.Context, hea
 		Token string `json:"token"`
 	}
 	if err := m.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/access-token",
-		Body:    map[string]interface{}{"grants": map[string]interface{}{"stt": true}},
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaCartesiaAccessToken),
+		Method:           http.MethodPost,
+		Path:             "/access-token",
+		Body:             map[string]interface{}{"grants": map[string]interface{}{"stt": true}},
+		Headers:          headers,
 	}, &resp); err != nil {
 		return "", handleError(err)
 	}
@@ -108,11 +121,14 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		opts = &provider.TranscriptionStreamOptions{}
 	}
 	if !isStreamingTranscriptionModelID(m.modelID) {
-		return nil, fmt.Errorf("%w: streaming transcription with %s", providererrors.ErrUnsupportedFeature, m.modelID)
+		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "streaming transcription with " + m.modelID}
 	}
 
 	currentDate := time.Now()
 	warnings := []types.Warning{}
+	if err := validateTranscriptionOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	cartesiaOpts := extractTranscriptionModelOptions(opts.ProviderOptions)
 
 	var language *string
@@ -127,7 +143,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		}
 	}
 
-	if cartesiaOpts != nil && len(cartesiaOpts.TimestampGranularities) > 0 {
+	if cartesiaOpts != nil && cartesiaOpts.TimestampGranularities != nil {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "providerOptions.cartesia.timestampGranularities",
@@ -190,17 +206,17 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		urlLanguage = language
 	}
 
-	wsURL, err := buildCartesiaStreamingTranscriptionURL(m.provider.config.BaseURL, version, m.modelID, encoding, sampleRate, urlLanguage, token, useTurnDetection)
+	wsURL, err := buildCartesiaStreamingTranscriptionURL(m.provider.config.BaseURL, version, m.modelID, encoding, sampleRate, urlLanguage, token, useTurnDetection, true)
 	if err != nil {
 		return nil, err
 	}
 
 	// The request body echoes the connection URL with the access token
 	// stripped, matching TS's `requestUrl.searchParams.delete('access_token')`.
-	requestURL := *wsURL
-	strippedQuery := requestURL.Query()
-	strippedQuery.Del("access_token")
-	requestURL.RawQuery = strippedQuery.Encode()
+	requestURL, err := buildCartesiaStreamingTranscriptionURL(m.provider.config.BaseURL, version, m.modelID, encoding, sampleRate, urlLanguage, token, useTurnDetection, false)
+	if err != nil {
+		return nil, err
+	}
 
 	resolvedLanguage := "en"
 	if language != nil {

@@ -36,7 +36,8 @@ func TestNewStreamTextResultFromParts_TwoSteps(t *testing.T) {
 		{Type: provider.ChunkTypeStreamStart},
 		{Type: provider.ChunkTypeText, Text: "The "},
 		{Type: provider.ChunkTypeText, Text: "answer."},
-		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: &types.Usage{InputTokens: &one, OutputTokens: &one, TotalTokens: &two}},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonStop, Usage: &types.Usage{InputTokens: &one, OutputTokens: &one, TotalTokens: &two}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
 	})
 
 	var finishedResult *StreamTextResult
@@ -103,6 +104,7 @@ func TestNewStreamTextResultFromParts_ToUIMessageStream(t *testing.T) {
 		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonToolCalls},
 		{Type: provider.ChunkTypeStreamStart},
 		{Type: provider.ChunkTypeText, Text: "Step two."},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonStop},
 		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
 	})
 
@@ -247,7 +249,7 @@ func TestNewStreamTextResultFromParts_TerminalFinishOverridesTotalUsage(t *testi
 	if err := result.Err(); err != nil {
 		t.Fatalf("Err() = %v, want nil", err)
 	}
-	if got, want := result.Text(), "hi there"; got != want {
+	if got, want := result.Text(), " there"; got != want {
 		t.Fatalf("Text() = %q, want %q", got, want)
 	}
 	steps := result.Steps()
@@ -453,6 +455,7 @@ func TestNewStreamTextResultFromParts_Output(t *testing.T) {
 		{Type: provider.ChunkTypeStreamStart},
 		{Type: provider.ChunkTypeText, Text: `{"greeting":`},
 		{Type: provider.ChunkTypeText, Text: `"hi"}`},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonStop},
 		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
 	})
 
@@ -494,6 +497,7 @@ func TestNewStreamTextResultFromParts_OutputIgnoredWhenUnset(t *testing.T) {
 	src := testutil.NewMockTextStream([]provider.StreamChunk{
 		{Type: provider.ChunkTypeStreamStart},
 		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonStop},
 		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
 	})
 
@@ -512,5 +516,259 @@ func TestNewStreamTextResultFromParts_OutputIgnoredWhenUnset(t *testing.T) {
 	}
 	if result.PartialOutput() != nil {
 		t.Fatalf("PartialOutput() = %#v, want nil", result.PartialOutput())
+	}
+}
+
+// The public full stream of an external result carries the TS part set only
+// (no stream-start / response-metadata markers), as StreamText's does, while
+// ToUIMessageStream still sees the stream-start step boundaries.
+func TestNewStreamTextResultFromParts_FullStreamOmitsInternalMarkers(t *testing.T) {
+	t.Parallel()
+
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: "one"},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonToolCalls},
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: "two"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{Provider: "harness", ModelID: "m"})
+	s := result.Stream()
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		if isInternalStreamMarker(c.Type) {
+			t.Fatalf("public stream exposes internal marker %q", c.Type)
+		}
+	}
+	uiChunks, _ := result.ToUIMessageStream(context.Background())
+	starts := 0
+	for c := range uiChunks {
+		if c["type"] == "start-step" {
+			starts++
+		}
+	}
+	if starts != 2 {
+		t.Fatalf("UI start-step count = %d, want 2", starts)
+	}
+}
+
+// TS HarnessStreamTextResult emits a 'start-step' part (carrying the step's
+// warnings) before the first part of every step, with or without the source's
+// stream-start. The turn-closing finish opens no step. The workflow harness
+// runner converts result.Stream() to UI chunks, so the public stream must
+// carry them (pkg/workflow harness tests assert the UI start-step parts).
+func TestNewStreamTextResultFromParts_PublicStreamHasStartStepPerStep(t *testing.T) {
+	t.Parallel()
+
+	for _, withStreamStart := range []bool{false, true} {
+		chunks := []provider.StreamChunk{}
+		if withStreamStart {
+			chunks = append(chunks, provider.StreamChunk{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{{Type: "other", Message: "w"}}})
+		}
+		chunks = append(chunks,
+			provider.StreamChunk{Type: provider.ChunkTypeText, Text: "one"},
+			provider.StreamChunk{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonToolCalls},
+			provider.StreamChunk{Type: provider.ChunkTypeText, Text: "two"},
+			provider.StreamChunk{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonStop},
+			provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+		)
+		result := NewStreamTextResultFromParts(context.Background(), testutil.NewMockTextStream(chunks), ExternalStreamOptions{Provider: "harness", ModelID: "m"})
+		var got []provider.ChunkType
+		var firstWarnings int
+		s := result.Stream()
+		for {
+			c, err := s.Next()
+			if err != nil {
+				break
+			}
+			if c.Type == provider.ChunkTypeStartStep && len(got) == 1 {
+				firstWarnings = len(c.Warnings)
+			}
+			got = append(got, c.Type)
+		}
+		want := []provider.ChunkType{
+			provider.ChunkTypeStart,
+			provider.ChunkTypeStartStep, provider.ChunkTypeText, provider.ChunkTypeFinishStep,
+			provider.ChunkTypeStartStep, provider.ChunkTypeText, provider.ChunkTypeFinishStep,
+			provider.ChunkTypeFinish,
+		}
+		if len(got) != len(want) {
+			t.Fatalf("withStreamStart=%v public chunk types = %v, want %v", withStreamStart, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("withStreamStart=%v public chunk types = %v, want %v", withStreamStart, got, want)
+			}
+		}
+		if withStreamStart && firstWarnings != 1 {
+			t.Fatalf("first start-step carries %d warnings, want 1", firstWarnings)
+		}
+	}
+}
+
+func TestNewStreamTextResultFromParts_TextIsFinalStepOnly(t *testing.T) {
+	t.Parallel()
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: "Let me check. "},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonToolCalls},
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: "Done."},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonStop},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{})
+	if got := result.Text(); got != "Done." {
+		t.Fatalf("Text() = %q, want final step only", got)
+	}
+}
+
+// TS HarnessStreamTextResult records text-end citations on the text part and
+// records an automatic tool-approval-response in the step content, while a
+// continuation response arriving between steps never opens or alters a step.
+func TestNewStreamTextResultFromParts_TextEndCitationsAndApprovalResponses(t *testing.T) {
+	t.Parallel()
+
+	call := types.ToolCall{ID: "call_1", ToolName: "rm", Arguments: map[string]interface{}{}}
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		// Continuation response before any step: not part of a step.
+		{Type: provider.ChunkTypeToolApprovalResponse, ToolApprovalResponse: &types.ToolApprovalResponseContent{ApprovalID: "old", ToolCallID: "old_call", Approved: true}},
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeTextStart, ID: "t1"},
+		{Type: provider.ChunkTypeText, ID: "t1", Text: "See Go."},
+		{Type: provider.ChunkTypeTextEnd, ID: "t1", Citations: testCitations()},
+		{Type: provider.ChunkTypeToolCall, ToolCall: &call},
+		{Type: provider.ChunkTypeToolApprovalRequest, ToolApprovalRequest: &types.ToolApprovalRequestContent{ApprovalID: "a1", ToolCallID: "call_1", ToolCall: call, IsAutomatic: true}},
+		{Type: provider.ChunkTypeToolApprovalResponse, ToolApprovalResponse: &types.ToolApprovalResponseContent{ApprovalID: "a1", ToolCallID: "call_1", ToolCall: call, Approved: false, Reason: "no"}},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonToolCalls},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+	})
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{Provider: "harness", ModelID: "m"})
+	if err := result.Err(); err != nil {
+		t.Fatalf("Err() = %v", err)
+	}
+	steps := result.Steps()
+	if len(steps) != 1 {
+		t.Fatalf("steps = %d, want 1", len(steps))
+	}
+	var citations, responses int
+	for _, part := range steps[0].Content {
+		switch p := part.(type) {
+		case types.TextContent:
+			citations += len(p.Citations)
+		case types.ToolApprovalResponseContent:
+			responses++
+			if p.ApprovalID != "a1" {
+				t.Errorf("unexpected approval response %q recorded in step content", p.ApprovalID)
+			}
+		}
+	}
+	if citations != 2 {
+		t.Errorf("text citations = %d, want 2", citations)
+	}
+	if responses != 1 {
+		t.Errorf("approval responses in step content = %d, want 1", responses)
+	}
+}
+
+// TS HarnessStreamTextResult.finish() fails a terminal finish that arrives
+// while the step still holds content no finish-step closed: the finish part
+// is not forwarded, an error part is, and the step is not recorded.
+func TestNewStreamTextResultFromParts_TerminalFinishWithUnclosedContentFails(t *testing.T) {
+	t.Parallel()
+
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{})
+
+	var sawFinish, sawError bool
+	for _, c := range drainFull(result) {
+		switch c.Type {
+		case provider.ChunkTypeFinish:
+			sawFinish = true
+		case provider.ChunkTypeError:
+			sawError = true
+		}
+	}
+	err := result.Err()
+	if err == nil || !strings.Contains(err.Error(), "received terminal finish with unclosed step content") {
+		t.Fatalf("Err() = %v, want the unclosed-step error", err)
+	}
+	if sawFinish || !sawError {
+		t.Fatalf("finish forwarded=%v error forwarded=%v, want false/true", sawFinish, sawError)
+	}
+	if n := len(result.Steps()); n != 0 {
+		t.Fatalf("len(Steps()) = %d, want 0", n)
+	}
+}
+
+// TS appendToCurrentStepContent ignores source and file parts, so they never
+// make a step "unclosed".
+func TestNewStreamTextResultFromParts_SourceAndFileDoNotCountAsUnclosedContent(t *testing.T) {
+	t.Parallel()
+
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "hi"},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonStop},
+		{Type: provider.ChunkTypeSource, SourceContent: &types.SourceContent{ID: "s1", URL: "https://example.com"}},
+		{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: "text/plain", Data: []byte("x")}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{})
+	drainFull(result)
+	if err := result.Err(); err != nil {
+		t.Fatalf("Err() = %v, want nil", err)
+	}
+	if n := len(result.Steps()); n != 1 {
+		t.Fatalf("len(Steps()) = %d, want 1", n)
+	}
+}
+
+// A discard marker drops the step in progress (TS discardCurrentStepContent)
+// so the terminal finish that follows is a plain turn boundary.
+func TestNewStreamTextResultFromParts_DiscardStepDropsReplayedContent(t *testing.T) {
+	t.Parallel()
+
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "replayed"},
+		{Type: provider.ChunkTypeDiscardStep},
+		{Type: provider.ChunkTypeText, Text: "answer"},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonStop},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{})
+	for _, c := range drainFull(result) {
+		if c.Type == provider.ChunkTypeDiscardStep {
+			t.Fatal("discard marker leaked into the public stream")
+		}
+	}
+	if err := result.Err(); err != nil {
+		t.Fatalf("Err() = %v", err)
+	}
+	if got := result.Text(); got != "answer" {
+		t.Fatalf("Text() = %q, want answer", got)
+	}
+	if n := len(result.Steps()); n != 1 {
+		t.Fatalf("len(Steps()) = %d, want 1", n)
+	}
+}
+
+// drainFull reads the public full stream to its end.
+func drainFull(r *StreamTextResult) []provider.StreamChunk {
+	var out []provider.StreamChunk
+	fs := r.FullStream()
+	for {
+		c, err := fs.Next()
+		if err != nil {
+			return out
+		}
+		out = append(out, *c)
 	}
 }

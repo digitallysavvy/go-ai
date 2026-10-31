@@ -118,8 +118,8 @@ type Config struct {
 	// do not use BaseURL or APIVersion.
 	SpeechBaseURL string
 
-	// MaiBaseURL is the URL prefix for MAI realtime APIs
-	// (MAI-Transcribe-2-Streaming). Defaults to
+	// MaiBaseURL is the URL prefix for MAI APIs (MAI-Image,
+	// MAI-Transcribe-2-Streaming). Defaults to
 	// "https://{ResourceName}.services.ai.azure.com/mai/v1".
 	MaiBaseURL string
 }
@@ -155,7 +155,7 @@ func New(cfg Config) (*Provider, error) {
 	}
 
 	headers := map[string]string{}
-	if cfg.ADTokenProvider == nil {
+	if cfg.ADTokenProvider == nil && cfg.APIKey != "" {
 		headers["api-key"] = cfg.APIKey
 	}
 	httpClient := azureHTTPClient(cfg.HTTPClient, cfg.ADTokenProvider)
@@ -164,6 +164,17 @@ func New(cfg Config) (*Provider, error) {
 		BaseURL:    baseURL,
 		Headers:    version.WithUserAgentSuffix(http.MergeHeaders(headers, cfg.Headers), version.ProviderUserAgent("azure")),
 		HTTPClient: httpClient,
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			// TS builds the URL (getResourceName) before the headers.
+			if cfg.BaseURL == "" && cfg.ResourceName == "" {
+				return nil, missingResourceNameError()
+			}
+			if cfg.ADTokenProvider != nil {
+				return nil, nil
+			}
+			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "AZURE_API_KEY", "Azure OpenAI", "api-key", "")
+		},
 	})
 
 	return &Provider{
@@ -231,9 +242,39 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 	return p.ResponsesModel(modelID)
 }
 
+// LanguageModelWithSettings is LanguageModel with optional settings (TS
+// azure(deploymentId, { modelId })).
+func (p *Provider) LanguageModelWithSettings(deploymentID string, settings *LanguageModelSettings) (provider.LanguageModel, error) {
+	return p.ResponsesModelWithSettings(deploymentID, settings)
+}
+
+// LanguageModelSettings are the optional per-model settings of the language
+// model factories (TS AzureOpenAILanguageModelSettings).
+type LanguageModelSettings struct {
+	// ModelID is the underlying model ID used for the reported identity
+	// (telemetry) and capability detection such as reasoning support. It
+	// defaults to the deployment ID. Requests always use the deployment ID.
+	ModelID string
+}
+
+func (s *LanguageModelSettings) modelID() string {
+	if s == nil {
+		return ""
+	}
+	return s.ModelID
+}
+
 // ChatModel returns a legacy deployment-based Chat Completions language model.
 func (p *Provider) ChatModel(modelID string) (provider.LanguageModel, error) {
-	return NewLanguageModel(p, modelID), nil
+	return p.ChatModelWithSettings(modelID, nil)
+}
+
+// ChatModelWithSettings is ChatModel with optional settings (TS
+// azure.chat(deploymentId, { modelId })).
+func (p *Provider) ChatModelWithSettings(deploymentID string, settings *LanguageModelSettings) (provider.LanguageModel, error) {
+	m := NewLanguageModel(p, deploymentID)
+	m.modelID = settings.modelID()
+	return m, nil
 }
 
 // Chat returns a legacy deployment-based Chat Completions language model.
@@ -254,6 +295,8 @@ func (p *Provider) DeepSeekModel(modelID string) (provider.LanguageModel, error)
 		BaseURL:                   p.responsesBaseURL(modelID),
 		Headers:                   p.staticAuthHeaders(),
 		Name:                      "azure.deepseek",
+		NoAPIKey:                  true,
+		HeadersFunc:               p.openaiHeadersFunc,
 		ProviderOptionsName:       "azure",
 		ChatCompletionsPath:       chatPath,
 		SupportsThinking:          &supportsThinking,
@@ -272,6 +315,16 @@ func (p *Provider) DeepSeek(modelID string) (provider.LanguageModel, error) {
 // CompletionModel returns an Azure OpenAI Completions API language model by
 // deployment ID, matching the TypeScript Azure provider's completion factory.
 func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, error) {
+	return p.CompletionModelWithSettings(modelID, nil)
+}
+
+// CompletionModelWithSettings is CompletionModel with optional settings (TS
+// azure.completion(deploymentId, { modelId })).
+func (p *Provider) CompletionModelWithSettings(modelID string, settings *LanguageModelSettings) (provider.LanguageModel, error) {
+	deploymentID := modelID
+	if id := settings.modelID(); id != "" {
+		modelID = id
+	}
 	headers := p.staticAuthHeaders()
 
 	var completionQuery map[string]string
@@ -280,7 +333,9 @@ func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, erro
 	}
 	completionProvider := openai.New(openai.Config{
 		Name:                          "azure",
-		BaseURL:                       p.responsesBaseURL(modelID),
+		NoAPIKey:                      true,
+		HeadersFunc:                   p.openaiHeadersFunc,
+		BaseURL:                       p.responsesBaseURL(deploymentID),
 		Headers:                       headers,
 		CompletionProviderName:        "azure.completion",
 		CompletionProviderOptionsName: "azure",
@@ -288,7 +343,7 @@ func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, erro
 		HTTPClient:                    p.httpClient,
 	})
 
-	return openai.NewCompletionModel(completionProvider, modelID), nil
+	return openai.NewCompletionModel(completionProvider, modelID).WithRequestModelID(deploymentID), nil
 }
 
 // Completion returns an Azure OpenAI Completions API language model.
@@ -300,6 +355,18 @@ func (p *Provider) Completion(modelID string) (provider.LanguageModel, error) {
 // deployment ID. Requests use /openai/v1/responses?api-version={version}, the
 // api-key header, and Azure's assistant- file ID compatibility prefix.
 func (p *Provider) ResponsesModel(modelID string) (provider.LanguageModel, error) {
+	return p.ResponsesModelWithSettings(modelID, nil)
+}
+
+// ResponsesModelWithSettings is ResponsesModel with optional settings (TS
+// azure.responses(deploymentId, { modelId })). The settings ModelID is the
+// reported model identity and drives capability detection; requests still use
+// the deployment ID.
+func (p *Provider) ResponsesModelWithSettings(modelID string, settings *LanguageModelSettings) (provider.LanguageModel, error) {
+	deploymentID := modelID
+	if id := settings.modelID(); id != "" {
+		modelID = id
+	}
 	headers := p.staticAuthHeaders()
 
 	var responsesQuery map[string]string
@@ -308,7 +375,8 @@ func (p *Provider) ResponsesModel(modelID string) (provider.LanguageModel, error
 	}
 	responsesProvider := openai.New(openai.Config{
 		Name:                         "azure",
-		BaseURL:                      p.responsesBaseURL(modelID),
+		HeadersFunc:                  p.openaiHeadersFunc,
+		BaseURL:                      p.responsesBaseURL(deploymentID),
 		Headers:                      headers,
 		ResponsesProviderName:        "azure.responses",
 		ResponsesProviderOptionsName: "azure",
@@ -318,12 +386,37 @@ func (p *Provider) ResponsesModel(modelID string) (provider.LanguageModel, error
 		HTTPClient:                   p.httpClient,
 	})
 
-	return openai.NewResponsesLanguageModel(responsesProvider, modelID), nil
+	return openai.NewResponsesLanguageModel(responsesProvider, modelID).WithRequestModelID(deploymentID), nil
 }
 
 // Responses returns an Azure OpenAI Responses API language model.
 func (p *Provider) Responses(modelID string) (provider.LanguageModel, error) {
 	return p.ResponsesModel(modelID)
+}
+
+// openaiDelegate builds an OpenAI provider configured for one Azure
+// deployment (base URL, api-key header / token transport, api-version query)
+// so Azure's image, speech and transcription models reuse the OpenAI
+// implementations exactly like the TS Azure provider does. Name "azure" also
+// stops openai.New from falling back to OPENAI_API_KEY.
+func (p *Provider) openaiDelegate(deploymentID string) *openai.Provider {
+	var query map[string]string
+	if p.includeAPIVersionQuery() {
+		query = map[string]string{"api-version": p.config.APIVersion}
+	}
+	httpClient := p.httpClient
+	if p.client != nil {
+		httpClient = p.client.HTTPClient()
+	}
+	return openai.New(openai.Config{
+		Name:        "azure",
+		HeadersFunc: p.openaiHeadersFunc,
+		BaseURL:     p.responsesBaseURL(deploymentID),
+		Headers:     p.staticAuthHeaders(),
+		AudioQuery:  query,
+		ImageQuery:  query,
+		HTTPClient:  httpClient,
+	})
 }
 
 // responsesBaseURL builds the base URL prefix used by the openai-package
@@ -376,9 +469,45 @@ func (p *Provider) endpointPath(modelID, apiPath string) string {
 	return path
 }
 
+// apiKeyHeaders loads the Azure credential header at request time like TS
+// getHeaders(api): loadApiKey (AZURE_API_KEY) for the api-key header, the
+// Ocp-Apim-Subscription-Key header for the speech API. Nothing is added when
+// a token provider authenticates the request; a missing key is a
+// LoadAPIKeyError.
+func (p *Provider) apiKeyHeaders(api string) (map[string]string, error) {
+	if p.config.ADTokenProvider != nil {
+		return nil, nil
+	}
+	header, description := "api-key", "Azure OpenAI"
+	switch api {
+	case "speech":
+		header, description = "Ocp-Apim-Subscription-Key", "Azure Speech"
+	case "mai":
+		description = "Azure MAI"
+	}
+	return providerutils.RequestAuthHeader(p.config.Headers, p.config.APIKey, "AZURE_API_KEY", description, header, "")
+}
+
+// openaiHeadersFunc is the per-request credential hook of the delegated
+// openai/deepseek providers.
+func (p *Provider) openaiHeadersFunc() (map[string]string, error) {
+	// TS url() calls getResourceName before the headers are built.
+	if p.config.BaseURL == "" && p.config.ResourceName == "" {
+		return nil, missingResourceNameError()
+	}
+	return p.apiKeyHeaders("openai")
+}
+
+// missingResourceNameError is TS getResourceName's loadSetting failure: no
+// baseURL and no resourceName / AZURE_RESOURCE_NAME. Like TS it is reported
+// when a request is made, never by New.
+func missingResourceNameError() error {
+	return providererrors.NewLoadSettingError("Azure OpenAI resource name", "resourceName", "AZURE_RESOURCE_NAME")
+}
+
 func (p *Provider) staticAuthHeaders() map[string]string {
 	headers := map[string]string{}
-	if p.config.ADTokenProvider == nil {
+	if p.config.ADTokenProvider == nil && p.config.APIKey != "" {
 		headers["api-key"] = p.config.APIKey
 	}
 	return version.WithUserAgentSuffix(http.MergeHeaders(headers, p.config.Headers), version.ProviderUserAgent("azure"))
@@ -408,19 +537,25 @@ func (p *Provider) speechBaseURL() (string, error) {
 	if p.config.SpeechBaseURL != "" {
 		return strings.TrimRight(p.config.SpeechBaseURL, "/"), nil
 	}
+	if p.config.ResourceName == "" {
+		return "", missingResourceNameError()
+	}
 	if err := validateAzureResourceName(p.config.ResourceName); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("https://%s.cognitiveservices.azure.com", p.config.ResourceName), nil
 }
 
-// maiBaseURL resolves the MAI realtime API endpoint prefix for
+// maiBaseURL resolves the MAI API endpoint prefix for MAI-Image and
 // MAI-Transcribe-2-Streaming, mirroring TS's maiBaseURL provider setting
 // default. ResourceName is only validated here, for the same reason as
 // speechBaseURL.
 func (p *Provider) maiBaseURL() (string, error) {
 	if p.config.MaiBaseURL != "" {
 		return strings.TrimRight(p.config.MaiBaseURL, "/"), nil
+	}
+	if p.config.ResourceName == "" {
+		return "", missingResourceNameError()
 	}
 	if err := validateAzureResourceName(p.config.ResourceName); err != nil {
 		return "", err
@@ -433,12 +568,12 @@ func (p *Provider) maiBaseURL() (string, error) {
 // through p.httpClient, whose azureTokenTransport already injects
 // "Authorization: Bearer <token>" when ADTokenProvider is set, so no key
 // header is added in that case.
-func (p *Provider) speechAPIHeaders() map[string]string {
-	headers := map[string]string{}
-	if p.config.ADTokenProvider == nil {
-		headers["Ocp-Apim-Subscription-Key"] = p.config.APIKey
+func (p *Provider) speechAPIHeaders() (map[string]string, error) {
+	headers, err := p.apiKeyHeaders("speech")
+	if err != nil {
+		return nil, err
 	}
-	return version.WithUserAgentSuffix(http.MergeHeaders(headers, p.config.Headers), version.ProviderUserAgent("azure"))
+	return version.WithUserAgentSuffix(http.MergeHeaders(headers, p.config.Headers), version.ProviderUserAgent("azure")), nil
 }
 
 // maiAPIHeaders builds headers for the MAI realtime WebSocket, mirroring TS
@@ -454,7 +589,11 @@ func (p *Provider) maiAPIHeaders(ctx context.Context) (map[string]string, error)
 		}
 		headers["authorization"] = "Bearer " + token
 	} else {
-		headers["api-key"] = p.config.APIKey
+		keyHeaders, err := p.apiKeyHeaders("mai")
+		if err != nil {
+			return nil, err
+		}
+		headers = http.MergeHeaders(headers, keyHeaders)
 	}
 	return version.WithUserAgentSuffix(http.MergeHeaders(headers, p.config.Headers), version.ProviderUserAgent("azure")), nil
 }
@@ -542,7 +681,7 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 				}
 				return base + "/tts/cognitiveservices/v1", nil
 			},
-			func(context.Context) (map[string]string, error) { return p.speechAPIHeaders(), nil },
+			func(context.Context) (map[string]string, error) { return p.speechAPIHeaders() },
 			p.speechHTTPClient(),
 		),
 	), nil
@@ -570,7 +709,7 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 				}
 				return base + "/speechtotext/transcriptions:transcribe?api-version=2025-10-15", nil
 			},
-			func(context.Context) (map[string]string, error) { return p.speechAPIHeaders(), nil },
+			func(context.Context) (map[string]string, error) { return p.speechAPIHeaders() },
 			p.speechHTTPClient(),
 		),
 		newAzureMaiTranscriptionModel(modelID,
@@ -594,7 +733,7 @@ func (p *Provider) Transcription(modelID string) (provider.TranscriptionModel, e
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
 	// Azure OpenAI doesn't provide reranking models
-	return nil, fmt.Errorf("azure OpenAI does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client for making API requests

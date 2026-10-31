@@ -120,21 +120,43 @@ func (s *AWSSigner) buildCanonicalQueryString(req *http.Request) string {
 		return ""
 	}
 
-	params := req.URL.Query()
-	keys := make([]string, 0, len(params))
-	for k := range params {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	var parts []string
-	for _, k := range keys {
-		for _, v := range params[k] {
-			parts = append(parts, fmt.Sprintf("%s=%s", k, v))
+	// SigV4: URI-encode every name and value (RFC 3986 unreserved characters
+	// pass through, everything else, '/' included, is escaped), then sort by
+	// encoded name and value.
+	type pair struct{ k, v string }
+	var pairs []pair
+	for k, vs := range req.URL.Query() {
+		for _, v := range vs {
+			pairs = append(pairs, pair{awsEncodeURIComponent(k), awsEncodeURIComponent(v)})
 		}
 	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].k != pairs[j].k {
+			return pairs[i].k < pairs[j].k
+		}
+		return pairs[i].v < pairs[j].v
+	})
 
+	parts := make([]string, len(pairs))
+	for i, p := range pairs {
+		parts[i] = p.k + "=" + p.v
+	}
 	return strings.Join(parts, "&")
+}
+
+// awsEncodeURIComponent percent-encodes everything but RFC 3986 unreserved
+// characters (A-Za-z0-9-_.~), including '/'.
+func awsEncodeURIComponent(raw string) string {
+	var b strings.Builder
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if isAWSURIUnreservedByte(c) {
+			b.WriteByte(c)
+		} else {
+			_, _ = fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
 }
 
 func (s *AWSSigner) buildCanonicalHeaders(req *http.Request) (string, string) {
@@ -144,7 +166,13 @@ func (s *AWSSigner) buildCanonicalHeaders(req *http.Request) (string, string) {
 			continue
 		}
 		lowerKey := strings.ToLower(k)
-		headers[lowerKey] = strings.TrimSpace(v[0])
+		// SigV4 canonical value: trimmed, runs of whitespace collapsed to one
+		// space; repeated headers are comma-joined.
+		values := make([]string, len(v))
+		for i, one := range v {
+			values[i] = strings.Join(strings.Fields(one), " ")
+		}
+		headers[lowerKey] = strings.Join(values, ",")
 	}
 
 	keys := make([]string, 0, len(headers))
@@ -291,10 +319,12 @@ func isAWSURIUnreservedByte(c byte) bool {
 // containing a non-Latin character) are neither signed nor listed in
 // SignedHeaders, but are still sent unsigned. Matches TS #22265.
 func isSignableHeader(values []string) bool {
-	if len(values) == 0 {
-		return true
+	for _, v := range values {
+		if !isASCII(v) {
+			return false
+		}
 	}
-	return isASCII(values[0])
+	return true
 }
 
 func isASCII(s string) bool {

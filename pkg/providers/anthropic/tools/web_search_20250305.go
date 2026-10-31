@@ -23,10 +23,10 @@ func (o *webSearch20250305Opts) ToAnthropicAPIMap() map[string]interface{} {
 	if o.Config.MaxUses != nil {
 		m["max_uses"] = *o.Config.MaxUses
 	}
-	if len(o.Config.AllowedDomains) > 0 {
+	if o.Config.AllowedDomains != nil {
 		m["allowed_domains"] = o.Config.AllowedDomains
 	}
-	if len(o.Config.BlockedDomains) > 0 {
+	if o.Config.BlockedDomains != nil {
 		m["blocked_domains"] = o.Config.BlockedDomains
 	}
 	if o.Config.UserLocation != nil {
@@ -62,8 +62,12 @@ func (o *webSearch20250305Opts) ToAnthropicAPIMap() map[string]interface{} {
 // Tool ID: "anthropic.web_search_20250305"
 func WebSearch20250305(config WebSearch20260209Config) types.Tool {
 	return types.Tool{
-		Name:        "anthropic.web_search_20250305",
-		Description: "Search the web for current information (Anthropic web search, version 2025-03-05). Executed by Anthropic's servers.",
+		Name:         "anthropic.web_search_20250305",
+		Type:         types.ToolTypeProviderDefined,
+		ProviderID:   "anthropic.web_search_20250305",
+		OutputSchema: toolOutputSchema("anthropic.web_search_20250305"),
+		ProviderArgs: webSearchProviderArgs(config),
+		Description:  "Search the web for current information (Anthropic web search, version 2025-03-05). Executed by Anthropic's servers.",
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{

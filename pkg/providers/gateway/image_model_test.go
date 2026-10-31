@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strings"
 	"testing"
@@ -19,7 +20,7 @@ func TestGatewayImageModelMetadataAndHeaders(t *testing.T) {
 	if m.SpecificationVersion() != "v4" || m.Provider() != "gateway" || m.ModelID() != "openai/gpt-image-1" {
 		t.Fatalf("metadata mismatch")
 	}
-	if m.MaxImagesPerCall() != 9007199254740991 {
+	if int64(m.MaxImagesPerCall()) != min(int64(9007199254740991), int64(math.MaxInt)) {
 		t.Fatalf("MaxImagesPerCall mismatch")
 	}
 	headers := m.getModelConfigHeaders()
@@ -96,7 +97,7 @@ func TestGatewayImageModelDoGenerate(t *testing.T) {
 	if seenBody["mask"].(map[string]interface{})["data"] != base64.StdEncoding.EncodeToString([]byte("bWFzaw==")) {
 		t.Fatalf("mask bytes should be base64-encoded like TS Uint8Array data: %#v", seenBody)
 	}
-	if result.Base64Image != "aW1n" || string(result.Image) != "aW1n" || len(result.Warnings) != 1 || result.Usage.InputTokens != 1 || result.Usage.OutputTokens != 2 || result.Usage.TotalTokens != 3 {
+	if result.Base64Image != "aW1n" || string(result.Image) != "img" || len(result.Warnings) != 1 || result.Usage.InputTokens != 1 || result.Usage.OutputTokens != 2 || result.Usage.TotalTokens != 3 {
 		t.Fatalf("result mismatch: %#v", result)
 	}
 	if result.Response == nil || result.Response.ModelID != "openai/gpt-image-1" || result.Response.Headers["X-Resp"] != "img" {
@@ -270,3 +271,37 @@ type gatewayTimeoutTestError struct{}
 func (gatewayTimeoutTestError) Error() string   { return "request timeout" }
 func (gatewayTimeoutTestError) Timeout() bool   { return true }
 func (gatewayTimeoutTestError) Temporary() bool { return false }
+
+func TestGatewayImageModelOmitsEmptyPromptForImageOnlyEdit(t *testing.T) {
+	var seenBody map[string]interface{}
+	serverURL, closeServer := newGatewayIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&seenBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"images":["aW1n"]}`))
+	}))
+	defer closeServer()
+	p, err := New(Config{APIKey: "k", BaseURL: serverURL + "/v4/ai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewImageModel(p, "openai/gpt-image-1").DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Files: []provider.ImageFile{{Type: "url", URL: "https://example.com/a.png"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := seenBody["prompt"]; ok {
+		t.Fatalf("image-only edit must omit prompt: %#v", seenBody)
+	}
+}
+
+// Unpadded / base64url image payloads decode like TS atob-based decoding
+// instead of being passed through as text.
+func TestGatewayImageConvertResponseLenientBase64(t *testing.T) {
+	raw := []byte{0xfb, 0xff, 0xfe, 0x01}
+	m := &ImageModel{}
+	res := m.convertResponse(gatewayImageResponse{Images: []string{base64.RawURLEncoding.EncodeToString(raw)}}, http.Header{})
+	if len(res.Images) != 1 || string(res.Images[0]) != string(raw) {
+		t.Fatalf("Images = %v, want %v", res.Images, raw)
+	}
+}

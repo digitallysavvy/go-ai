@@ -38,6 +38,11 @@ type Config struct {
 	// Headers are custom HTTP headers to include in requests
 	Headers map[string]string
 
+	// HeadersFunc, when set, resolves headers for every request (a lazily
+	// loaded API key, TS `headers: () => ...`); an error fails the request
+	// before it is sent. Used by wrappers such as QuiverAI.
+	HeadersFunc func() (map[string]string, error) `json:"-"`
+
 	// Name is the provider name for identification (default: "open-responses")
 	Name string
 
@@ -138,8 +143,9 @@ func New(cfg Config) *Provider {
 
 	// Create HTTP client
 	client := http.NewClient(http.Config{
-		BaseURL: cfg.BaseURL,
-		Headers: headers,
+		BaseURL:     cfg.BaseURL,
+		Headers:     headers,
+		HeadersFunc: cfg.HeadersFunc,
 	})
 
 	registry, err := NewExtensionRegistry(cfg.Extensions)
@@ -170,27 +176,27 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("%w: %s embeddingModel %q", providererrors.ErrModelNotFound, p.Name(), modelID)
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("%w: %s imageModel %q", providererrors.ErrModelNotFound, p.Name(), modelID)
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("open responses provider does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("Open Responses provider does not support transcription") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("Open Responses provider does not support reranking") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client for making API requests

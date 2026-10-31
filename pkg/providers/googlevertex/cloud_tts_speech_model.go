@@ -13,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -120,12 +121,18 @@ func (m *CloudTTSSpeechModel) DoGenerate(ctx context.Context, opts *provider.Spe
 		"audioConfig": audioConfig,
 	}
 
-	if m.prov.cloudTTSClient == nil {
+	var ttsClient *internalhttp.Client
+	if c, err := m.prov.clients(); err != nil {
+		return nil, err
+	} else {
+		ttsClient = c.cloudTTSClient
+	}
+	if ttsClient == nil {
 		return nil, providererrors.NewProviderError("google-vertex", 0, "",
 			"google Vertex Chirp speech models require standard Google Cloud credentials (Express Mode API keys are not supported)", nil)
 	}
 
-	resp, err := m.prov.cloudTTSClient.Do(ctx, internalhttp.Request{
+	resp, err := ttsClient.Do(ctx, internalhttp.Request{
 		Method:  "POST",
 		Headers: opts.Headers,
 		Body:    reqBody,
@@ -137,6 +144,10 @@ func (m *CloudTTSSpeechModel) DoGenerate(ctx context.Context, opts *provider.Spe
 		return nil, cloudTTSError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 
+	// TS createJsonResponseHandler(googleVertexCloudTTSResponseSchema).
+	if err := vertexValidator(m.Provider(), zVertexCloudTTS)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var parsed struct {
 		AudioContent string `json:"audioContent"`
 	}
@@ -173,31 +184,9 @@ func (m *CloudTTSSpeechModel) DoGenerate(ctx context.Context, opts *provider.Spe
 	}, nil
 }
 
-// cloudTTSErrorData mirrors TS googleVertexErrorDataSchema
-// (google-vertex-error.ts): {"error":{"code","message","status"}}.
-type cloudTTSErrorData struct {
-	Error struct {
-		Code    *int   `json:"code"`
-		Message string `json:"message"`
-		Status  string `json:"status"`
-	} `json:"error"`
-}
-
 // cloudTTSError builds a ProviderError from a failed Cloud Text-to-Speech
-// response, mirroring TS googleVertexFailedResponseHandler
-// (createJsonErrorResponseHandler with errorToMessage: data => data.error.message):
-// the message is the parsed Google error's `message` field alone, not the
-// raw response body, falling back to the raw body when it doesn't parse.
+// response, mirroring TS googleVertexFailedResponseHandler: error.message of a
+// Google error body, else the HTTP status text.
 func cloudTTSError(statusCode int, body []byte, headers http.Header) error {
-	message := string(body)
-	var data cloudTTSErrorData
-	if err := json.Unmarshal(body, &data); err == nil && data.Error.Message != "" {
-		message = data.Error.Message
-	}
-	perr := providererrors.NewProviderError("google-vertex", statusCode, data.Error.Status, message, nil)
-	perr.ResponseBody = string(body)
-	if len(headers) > 0 {
-		perr.ResponseHeaders = providerutils.ExtractHeaders(headers)
-	}
-	return perr
+	return gemini.GoogleHTTPError("google-vertex", statusCode, headers, body, nil)
 }

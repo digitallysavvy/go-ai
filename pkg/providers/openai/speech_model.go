@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -35,7 +36,7 @@ func (m *SpeechModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *SpeechModel) Provider() string {
-	return m.provider.Name()
+	return m.provider.Name() + ".speech"
 }
 
 // ModelID returns the model ID
@@ -45,12 +46,16 @@ func (m *SpeechModel) ModelID() string {
 
 // DoGenerate performs speech synthesis
 func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGenerateOptions) (*types.SpeechResult, error) {
-	reqBody, warnings := m.buildRequestBody(opts)
+	reqBody, warnings, err := m.buildRequestBodyChecked(opts)
+	if err != nil {
+		return nil, err
+	}
 	currentDate := time.Now()
 
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/audio/speech",
+		Query:   m.provider.config.AudioQuery,
 		Body:    reqBody,
 		Headers: opts.Headers,
 	})
@@ -58,8 +63,8 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}
 
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("OpenAI TTS API returned status %d: %s", resp.StatusCode, string(resp.Body))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, internalhttp.StatusProviderError("openai", resp.StatusCode, resp.Headers, resp.Body)
 	}
 	requestBytes, err := json.Marshal(reqBody)
 	if err != nil {
@@ -76,9 +81,55 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(resp.Headers),
-			Body:      resp.Body,
 		},
 	}, nil
+}
+
+// buildRequestBodyChecked is buildRequestBody plus TS parseProviderOptions
+// validation of providerOptions.openai (instructions: string|null,
+// speed: number in [0.25, 4]|null).
+func (m *SpeechModel) buildRequestBodyChecked(opts *provider.SpeechGenerateOptions) (map[string]interface{}, []types.Warning, error) {
+	if err := validateSpeechProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, nil, err
+	}
+	body, warnings := m.buildRequestBody(opts)
+	return body, warnings, nil
+}
+
+func validateSpeechProviderOptions(providerOptions map[string]interface{}) error {
+	raw, ok := providerOptions["openai"]
+	if !ok || raw == nil {
+		return nil
+	}
+	invalid := func(msg string) error {
+		return &providererrors.InvalidArgumentError{
+			Field:   "providerOptions",
+			Message: "invalid openai provider options",
+			Cause:   errors.New(msg),
+		}
+	}
+	m, ok := raw.(map[string]interface{})
+	if !ok {
+		return invalid("Invalid input: expected object")
+	}
+	if v, ok := m["instructions"]; ok && v != nil {
+		if _, isString := v.(string); !isString {
+			return invalid("Invalid input: expected string at instructions")
+		}
+	}
+	if v, ok := m["speed"]; ok && v != nil {
+		f, isNum := speechSpeedOption(v)
+		if !isNum {
+			return invalid("Invalid input: expected number at speed")
+		}
+		if f < 0.25 {
+			return invalid("Too small: expected number to be >=0.25 at speed")
+		}
+		if f > 4 {
+			return invalid("Too big: expected number to be <=4 at speed")
+		}
+	}
+	return nil
 }
 
 func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (map[string]interface{}, []types.Warning) {
@@ -118,7 +169,7 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 			if v, ok := speechSpeedOption(openaiOpts["speed"]); ok {
 				body["speed"] = v
 			}
-			if instructions, ok := openaiOpts["instructions"].(string); ok && instructions != "" {
+			if instructions, ok := openaiOpts["instructions"].(string); ok {
 				body["instructions"] = instructions
 			}
 		}

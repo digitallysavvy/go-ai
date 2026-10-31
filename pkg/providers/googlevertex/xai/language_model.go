@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -30,7 +29,7 @@ type LanguageModel struct {
 }
 
 // SpecificationVersion returns the specification version.
-func (m *LanguageModel) SpecificationVersion() string { return "v3" }
+func (m *LanguageModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name. Matches TS's `name: 'googleVertex.xai'`.
 func (m *LanguageModel) Provider() string { return "googleVertex.xai" }
@@ -63,39 +62,59 @@ func (m *LanguageModel) SupportedURLs() map[string][]string {
 	}
 }
 
+// vertexXaiProviderKey is the provider key used to resolve file references
+// (TS createOpenAICompatible name 'googleVertex.xai' -> 'googleVertex').
+const vertexXaiProviderKey = "googleVertex"
+
 // DoGenerate performs non-streaming text generation.
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, vertexXaiProviderKey); err != nil {
+		return nil, err
+	}
 	warnings := m.checkUnsupportedOptions(opts)
-	reqBody := m.buildRequestBody(opts, false)
+	reqBody, bodyWarnings := m.buildRequestBodyWithWarnings(opts, false)
+	warnings = append(bodyWarnings, warnings...)
 	var response vertexXaiResponse
-	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/chat/completions",
-		Body:   reqBody,
-	}, &response)
+	resp, err := m.provider.mustClient().DoJSONResponse(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "/chat/completions",
+		Body:    reqBody,
+		Headers: opts.Headers,
+		// TS createJsonResponseHandler(openai-compatible chat response schema).
+		ValidateResponse: providerutils.ChatResponseValidator(m.Provider(), providerutils.ResponseKindOpenAICompatible),
+	}, &streaming.OpenAICompatChatDecoder{Target: &response})
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 	result := m.convertResponse(response)
+	// TS openai-compatible doGenerate: content parts, reasoning, tool calls
+	// (generated ids, raw arguments), metadata under "googleVertex".
+	if err := streaming.ApplyOpenAICompatibleChatResponse(result, resp.Body, providerutils.ExtractHeaders(resp.Headers), vertexXaiProviderKey); err != nil {
+		return nil, err
+	}
+	providerutils.ApplyWireUsageRaw(result, resp.Body)
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
-	responseMetadata := providerutils.BuildResponseMetadata(response.ID, response.Model, response.Created)
-	responseMetadata.Headers = result.ResponseHeaders
-	result.ResponseMetadata = responseMetadata
+	result.RawRequest = reqBody
+	if len(resp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(resp.Body)
+	}
 	return result, nil
 }
 
 // DoStream performs streaming text generation.
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, vertexXaiProviderKey); err != nil {
+		return nil, err
+	}
 	warnings := m.checkUnsupportedOptions(opts)
-	reqBody := m.buildRequestBody(opts, true)
-	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/chat/completions",
-		Body:   reqBody,
-		Headers: map[string]string{
-			"Accept": "text/event-stream",
-		},
+	reqBody, bodyWarnings := m.buildRequestBodyWithWarnings(opts, true)
+	warnings = append(bodyWarnings, warnings...)
+	httpResp, err := m.provider.mustClient().DoStream(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "/chat/completions",
+		Body:    reqBody,
+		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
 	if err != nil {
 		return nil, m.handleError(err)
@@ -103,7 +122,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	inner := newVertexXaiStream(httpResp.Body)
 	inner.SetRequestBody(reqBody)
 	inner.IncludeRawChunks = opts.IncludeRawChunks
-	inner.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
+	inner.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Header)
 	return streaming.NewWarningsStream(inner, warnings), nil
 }
 
@@ -116,10 +135,18 @@ func (m *LanguageModel) checkUnsupportedOptions(opts *provider.GenerateOptions) 
 	if opts.TopK != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK"})
 	}
-	return warnings
+	// TS openai-compatible prepareTools: provider-defined tools are dropped
+	// with an unsupported warning.
+	_, dropped := tool.DropProviderDefinedTools(opts.Tools, nil)
+	return append(warnings, dropped...)
 }
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
+	body, _ := m.buildRequestBodyWithWarnings(opts, stream)
+	return body
+}
+
+func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning) {
 	body := map[string]interface{}{
 		"model": m.modelID,
 	}
@@ -130,9 +157,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["stream_options"] = map[string]interface{}{"include_usage": true}
 	}
 	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages)
+		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, prompt.ToOpenAIMessagesOptions{Provider: vertexXaiProviderKey, ReasoningKey: "reasoning_content", SpreadCompatMetadata: true, FileParts: prompt.FilePartsOpenAICompatible})
 	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
+		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), prompt.ToOpenAIMessagesOptions{Provider: vertexXaiProviderKey, ReasoningKey: "reasoning_content", SpreadCompatMetadata: true, FileParts: prompt.FilePartsOpenAICompatible})
 	}
 	if opts.Prompt.System != "" {
 		messages, _ := body["messages"].([]map[string]interface{})
@@ -151,43 +178,38 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if opts.TopP != nil {
 		body["top_p"] = *opts.TopP
 	}
-	if opts.FrequencyPenalty != nil {
-		body["frequency_penalty"] = *opts.FrequencyPenalty
-	}
-	if opts.PresencePenalty != nil {
-		body["presence_penalty"] = *opts.PresencePenalty
-	}
-	if len(opts.StopSequences) > 0 {
+	// TS sends stopSequences as given: an empty list is kept.
+	if opts.StopSequences != nil {
 		body["stop"] = opts.StopSequences
 	}
-	if opts.Seed != nil {
-		body["seed"] = *opts.Seed
-	}
 	if len(opts.Tools) > 0 {
-		body["tools"] = tool.ToOpenAIFormat(opts.Tools)
+		functionTools, _ := tool.DropProviderDefinedTools(opts.Tools, nil)
+		body["tools"] = tool.ToOpenAIFormat(functionTools)
 		if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
 	}
+	// providerOptions.googleVertex: the chat option fields (user,
+	// reasoningEffort, textVerbosity, strictJsonSchema) plus, as in TS
+	// getArgs, every other key spread straight into the request body.
+	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("googleVertex", opts.ProviderOptions)
+	warnings = append(warnings, applyDeprecatedXaiOptions(compatibleOptions, opts.ProviderOptions)...)
+	// topK is warned about in checkUnsupportedOptions.
+	_ = providerutils.ApplyOpenAICompatibleCallSettings(body, opts.FrequencyPenalty, opts.PresencePenalty, opts.Seed, nil, "googleVertex", opts.ProviderOptions)
+	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
 	responseFormat, _ := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
 		StructuredOutputs:         true,
+		StrictJSONSchema:          providerutils.BoolOption(compatibleOptions, "strictJsonSchema", true),
 		WarnWhenSchemaUnsupported: true,
 	})
 	if responseFormat != nil {
 		body["response_format"] = responseFormat
 	}
 
-	// Generic openai-compatible provider options
-	// (providerOptions.googleVertex / .xai), including reasoning_effort --
-	// which is then unconditionally stripped below, mirroring TS
+	// reasoning_effort is applied here and then stripped below, mirroring TS
 	// transformGoogleVertexXaiRequestBody exactly: Vertex's Grok MaaS
 	// endpoint rejects the field even though xAI's own API and the generic
 	// openai-compatible mapping both support it.
-	compatibleOptions, _ := providerutils.ResolveOpenAICompatibleProviderOptions("googleVertex", opts.ProviderOptions)
-	xaiOptions, _ := providerutils.ResolveOpenAICompatibleProviderOptions("xai", opts.ProviderOptions)
-	for k, v := range xaiOptions {
-		compatibleOptions[k] = v
-	}
 	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
 	if effort := reasoningEffortFromTopLevel(opts.Reasoning); effort != "" {
 		if _, alreadySet := body["reasoning_effort"]; !alreadySet {
@@ -195,7 +217,40 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		}
 	}
 
-	return stripReasoningEffort(body)
+	return stripReasoningEffort(body), warnings
+}
+
+// deprecatedXaiOptionKeys are the chat option fields that v0.5.2 read from
+// providerOptions["xai"].
+var deprecatedXaiOptionKeys = []string{
+	"user", "reasoningEffort", "reasoning_effort", "reasoning-effort",
+	"textVerbosity", "text_verbosity", "text-verbosity",
+}
+
+// applyDeprecatedXaiOptions keeps the Go-only providerOptions["xai"] key
+// working for v0.5.2 callers. TS reads only googleVertex (and openaiCompatible),
+// so the key is deprecated: its chat option fields fill in what those keys
+// leave unset, other keys are not spread into the body, and a deprecated
+// warning is returned.
+func applyDeprecatedXaiOptions(compatibleOptions map[string]interface{}, providerOptions map[string]interface{}) []types.Warning {
+	xaiOptions, ok := providerOptions["xai"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	for _, key := range deprecatedXaiOptionKeys {
+		if v, present := xaiOptions[key]; present {
+			if _, set := compatibleOptions[key]; !set {
+				compatibleOptions[key] = v
+			}
+		}
+	}
+	return []types.Warning{{
+		Type:    "deprecated",
+		Setting: "providerOptions key 'xai'",
+		Feature: "providerOptions key 'xai'",
+		Details: "Use 'googleVertex' instead.",
+		Message: "Use 'googleVertex' instead.",
+	}}
 }
 
 // reasoningEffortFromTopLevel maps the shared opts.Reasoning level to the
@@ -213,7 +268,7 @@ func reasoningEffortFromTopLevel(level *types.ReasoningLevel) string {
 	switch *level {
 	case types.ReasoningMinimal, types.ReasoningLow, types.ReasoningMedium:
 		return "low"
-	case types.ReasoningHigh, types.ReasoningXHigh:
+	case types.ReasoningHigh, types.ReasoningXHigh, types.ReasoningMax:
 		return "high"
 	}
 	return ""
@@ -260,6 +315,9 @@ func (m *LanguageModel) convertResponse(response vertexXaiResponse) *types.Gener
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
 	return providererrors.NewProviderError("googleVertex.xai", 0, "", err.Error(), err)
 }
 
@@ -268,7 +326,12 @@ func (m *LanguageModel) handleError(err error) error {
 // promptTokens - cacheReadTokens, unconditionally -- no inclusive/exclusive
 // branching), and reasoning tokens are *additional to* completion_tokens
 // (outputTokens.total = completionTokens + reasoningTokens).
-func convertVertexXaiUsage(usage vertexXaiUsage) types.Usage {
+func convertVertexXaiUsage(u *vertexXaiUsage) types.Usage {
+	if u == nil {
+		// TS: usage == null leaves every count undefined.
+		return types.Usage{}
+	}
+	usage := *u
 	promptTokens := usage.PromptTokens
 	completionTokens := usage.CompletionTokens
 	var cacheReadTokens int64
@@ -334,7 +397,7 @@ type vertexXaiResponse struct {
 			} `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
-	Usage vertexXaiUsage `json:"usage"`
+	Usage *vertexXaiUsage `json:"usage"`
 }
 
 // vertexXaiUsage mirrors TS GoogleVertexXaiUsage.
@@ -355,39 +418,26 @@ type vertexXaiUsage struct {
 // pkg/providers/together).
 type vertexXaiStream struct {
 	*streaming.OpenAICompatStream
-	responseHeaders         map[string]string
-	responseMetadataEmitted bool
 }
 
 func newVertexXaiStream(reader io.ReadCloser) *vertexXaiStream {
 	s := &vertexXaiStream{
 		OpenAICompatStream: streaming.NewOpenAICompatStream(reader, providerutils.MapOpenAIFinishReason),
 	}
-	s.OnBeforeDelta = func(data []byte) []*provider.StreamChunk {
-		var peek struct {
-			ID      string `json:"id"`
-			Model   string `json:"model"`
-			Created int64  `json:"created"`
-		}
-		if json.Unmarshal(data, &peek) != nil {
+	s.MetadataKey = vertexXaiProviderKey
+	s.ConvertUsage = func(wire map[string]interface{}) *types.Usage {
+		b, err := json.Marshal(wire)
+		if err != nil {
 			return nil
 		}
-		if s.responseMetadataEmitted || (peek.ID == "" && peek.Model == "" && peek.Created == 0 && len(s.responseHeaders) == 0) {
+		var u vertexXaiUsage
+		if json.Unmarshal(b, &u) != nil {
 			return nil
 		}
-		s.responseMetadataEmitted = true
-		meta := &provider.ResponseMetadata{
-			ID:      peek.ID,
-			ModelID: peek.Model,
-			Headers: s.responseHeaders,
-		}
-		if peek.Created != 0 {
-			meta.Timestamp = time.Unix(peek.Created, 0)
-		}
-		return []*provider.StreamChunk{{
-			Type:             provider.ChunkTypeResponseMetadata,
-			ResponseMetadata: meta,
-		}}
+		converted := convertVertexXaiUsage(&u)
+		// TS keeps the usage payload verbatim in usage.raw.
+		converted.Raw = wire
+		return &converted
 	}
 	return s
 }

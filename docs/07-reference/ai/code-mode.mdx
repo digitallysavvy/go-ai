@@ -79,6 +79,79 @@ tool catalog with `ToolDiscoveryConversation`) persist across steps in
 `GenerateText`, `StreamText` and `ToolLoopAgent`, and `PrepareStep`'s
 `InitialMessages` stays the raw prompt, as in TS.
 
+## Execution limits
+
+`Options.ExecutionPolicy` (`*ExecutionPolicy`) bounds each sandbox invocation.
+Two of its limits bound time, and they measure different things:
+
+| Field | Default | Measures | Error |
+| --- | --- | --- | --- |
+| `TimeoutMs` | `30_000` | Wall-clock time for the invocation, including time spent waiting on host tools. | `*TimeoutError` (`CODE_MODE_TIMEOUT`) |
+| `CPUTimeoutMs` | `10_000` | CPU time of the sandboxed code only. Time spent waiting on host tools does not count. | `*CPUTimeoutError` (`CODE_MODE_CPU_TIMEOUT`, details `cpuTimeoutMs`) |
+
+`CPUTimeoutMs` only takes effect when it is lower than `TimeoutMs`. Each
+continuation resume starts with a fresh CPU budget. A pending interruption
+never hides an exceeded budget: the run fails with `*CPUTimeoutError` instead
+of returning an `*Interrupt`. A zero field uses its default; a negative value is rejected.
+
+On Linux, macOS and Windows the sandbox goroutine is pinned to its OS thread
+and `CPUTimeoutMs` counts that thread's real CPU time, paused for the whole of
+each host tool call, like the TypeScript runner. Windows updates thread times
+at the system clock tick (about 15.6 ms by default), so the limit is enforced
+to that granularity there. On other platforms, or if the thread clock cannot be
+read, the Go port measures the wall time the sandbox spends running
+JavaScript, again paused during host tool calls; a heavily loaded machine can
+consume that budget faster than true CPU time would.
+
+<Note>
+  The `CPUTimeoutMs` default (10 seconds) also applies to callers upgrading
+  from v0.5.2, as it does in the TypeScript SDK: a script that spends more than
+  10 seconds in pure JavaScript, which previously ran up to `TimeoutMs`, now
+  fails with `*CPUTimeoutError`. Raise `CPUTimeoutMs` (and `TimeoutMs`) to keep
+  the old behavior.
+</Note>
+
+```go
+result, err := codemode.RunCodeMode(ctx, codemode.RunInput{
+    JS:    `return await tools.slowLookup({})`,
+    Tools: tools,
+    Options: &codemode.Options{ExecutionPolicy: &codemode.ExecutionPolicy{
+        TimeoutMs:    60_000, // allow long tool waits
+        CPUTimeoutMs: 2_000,  // but stop runaway sandbox loops quickly
+    }},
+})
+var cpuErr *codemode.CPUTimeoutError
+if errors.As(err, &cpuErr) {
+    // the script itself used too much CPU
+}
+```
+
+## Concurrent invocations
+
+Code mode limits how many sandbox invocations run at once in the process, as
+the TypeScript runner does. An invocation started over the limit fails right
+away with `*ConcurrencyError` (`CODE_MODE_CONCURRENCY_LIMIT`, message
+"Code mode maxWorkers limit reached (N).", details `maxWorkers`). It is not
+queued, so retry it or raise the limit.
+
+| Call | Limit |
+| --- | --- |
+| none (default) | floor(available memory / (`MemoryLimitBytes` + 48 MiB)), at least 1 and at most 32. Each invocation also reserves `MemoryLimitBytes` + 48 MiB against the memory available when the first running invocation started, and is rejected if that does not fit. |
+| `SetMaxWorkers(n)`, n > 0 | n, with no memory reservation. |
+| `SetMaxWorkers(0)` | Unlimited (the v0.5 behavior). TypeScript has no equivalent. |
+| `ResetMaxWorkers()` | Back to the default (TypeScript `experimental_setMaxWorkers(undefined)`). |
+
+Available memory is what Node's `process.availableMemory()` reports: on Linux
+the cgroup memory limit minus current usage, or `MemAvailable`; on macOS free,
+inactive and purgeable pages; on Windows available physical memory. On other
+platforms the default is 32.
+
+<Note>
+  Callers upgrading from v0.5.2 had no limit. Code that runs many scripts at
+  once can now get `*ConcurrencyError`. Call `codemode.SetMaxWorkers` with a
+  higher value, or 0 for no limit.
+</Note>
+
 ## TypeScript in model-written code
 
 Before running, code-mode strips TypeScript annotations from the source with
@@ -87,15 +160,20 @@ Node `stripTypeScriptTypes` semantics, as TS code-mode does:
 - type annotations, generics (including generic arrow functions such as
   `<T,>(x: T) => x`) and default type parameters
 - `as` and `satisfies` expressions, and non-null assertions (`x!`)
-- `interface` and `type` declarations, `import type` / `export type`
+- `interface` and `type` declarations
 - class modifiers (`public`, `private`, `protected`, `readonly`,
   `override`, `declare`, `abstract`), `declare` statements, and a
   function's `this` parameter
 
-Syntax that has no type-only erasure, such as `enum`, isn't rewritten. If
-stripping fails for any reason, the source runs unchanged, and the
-JavaScript engine reports a syntax error if it isn't valid JavaScript.
-Plain JavaScript is never modified.
+The erased text is replaced with spaces and keeps its line breaks, as in Node,
+so line and column numbers in errors point at the source the model wrote.
+
+Syntax that has no type-only erasure, such as `enum`, isn't rewritten. A
+static `import` or `export` (type-only forms too) and an angle-bracket
+assertion (`<T>x`) can't be stripped either: code-mode wraps the snippet in a
+function body, where Node rejects them. If stripping fails for any reason, the
+source runs unchanged, and the JavaScript engine reports a syntax error if it
+isn't valid JavaScript. Plain JavaScript is never modified.
 
 ## Tool catalog order
 

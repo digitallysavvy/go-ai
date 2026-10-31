@@ -1,8 +1,11 @@
 package responses
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -560,8 +563,8 @@ func TestNewLocalShellTool(t *testing.T) {
 	if tool.Name != "openai.local_shell" {
 		t.Errorf("Name: got %q, want %q", tool.Name, "openai.local_shell")
 	}
-	if !tool.ProviderExecuted {
-		t.Error("expected ProviderExecuted to be true")
+	if tool.ProviderExecuted || tool.Execute != nil {
+		t.Error("client-executed tool: ProviderExecuted must be false and Execute nil")
 	}
 }
 
@@ -596,7 +599,34 @@ func TestNewApplyPatchTool(t *testing.T) {
 	if tool.Name != "openai.apply_patch" {
 		t.Errorf("Name: got %q, want %q", tool.Name, "openai.apply_patch")
 	}
-	if !tool.ProviderExecuted {
-		t.Error("expected ProviderExecuted to be true")
+	if tool.ProviderExecuted || tool.Execute != nil {
+		t.Error("client-executed tool: ProviderExecuted must be false and Execute nil")
+	}
+}
+
+func TestClientExecutedToolsAndWithExecute(t *testing.T) {
+	for name, tool := range map[string]types.Tool{
+		"computer":    NewComputerTool(),
+		"local_shell": NewLocalShellTool(),
+		"shell":       NewShellTool(),
+		"apply_patch": NewApplyPatchTool(),
+	} {
+		if tool.ProviderExecuted || tool.Execute != nil {
+			t.Errorf("%s: want client-executed (ProviderExecuted=false, Execute=nil)", name)
+		}
+		called := false
+		w := WithExecute(tool, func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			called = true
+			return "ok", nil
+		})
+		if w.Execute == nil || w.ProviderExecuted || w.Name != tool.Name {
+			t.Errorf("%s: WithExecute result wrong", name)
+		}
+		if _, err := w.Execute(context.Background(), nil, types.ToolExecutionOptions{}); err != nil || !called {
+			t.Errorf("%s: execute not invoked", name)
+		}
+		if tool.Execute != nil {
+			t.Errorf("%s: WithExecute mutated the original", name)
+		}
 	}
 }

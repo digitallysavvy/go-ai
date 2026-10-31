@@ -46,12 +46,22 @@ func MCP(config MCPConfig) types.Tool {
 	if name == "" {
 		name = "openai.mcp"
 	}
-	return types.Tool{
+	return providerTool(types.Tool{
 		Name:             name,
-		ProviderID:       "openai.mcp",
 		Description:      config.ServerDescription,
 		ProviderExecuted: true,
 		ProviderOptions:  config,
-		Parameters:       map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Parameters:       schemaFromJSON(emptyObjectSchemaJSON),
+		OutputSchema:     schemaFromJSON(mcpOutputSchemaJSON),
+	}, "openai.mcp", mcpArgs(config))
+}
+
+// mcpArgs is providerArgs for MCPConfig: an empty ServerLabel is unset (TS
+// args without serverLabel, which the args schema rejects).
+func mcpArgs(config MCPConfig) map[string]interface{} {
+	args := providerArgs(config)
+	if config.ServerLabel == "" {
+		delete(args, "serverLabel")
 	}
+	return args
 }

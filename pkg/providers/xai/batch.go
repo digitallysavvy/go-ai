@@ -3,6 +3,7 @@ package xai
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,7 +11,6 @@ import (
 	"mime/multipart"
 	stdhttp "net/http"
 	"net/textproto"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -141,12 +141,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		if err != nil {
 			return nil, err
 		}
-		line, err := json.Marshal(map[string]interface{}{
-			"custom_id": req.RequestID(),
-			"method":    "POST",
-			"url":       endpoint,
-			"body":      body,
-		})
+		line, err := providerutils.BatchJSONLLine(req.RequestID(), "POST", endpoint, body)
 		if err != nil {
 			return nil, err
 		}
@@ -199,6 +194,9 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	if uploadResp.StatusCode >= 400 {
 		return nil, newXAIProviderError(b.Provider(), uploadResp.StatusCode, uploadResp.Body)
 	}
+	if err := providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaXAIFile)(uploadResp.StatusCode, uploadResp.Headers, uploadResp.Body); err != nil {
+		return nil, err
+	}
 	var uploadedFile xaiFileResponse
 	if err := json.Unmarshal(uploadResp.Body, &uploadedFile); err != nil {
 		return nil, err
@@ -206,10 +204,11 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 
 	var createResp xaiBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodPost,
-		Path:    "/batches",
-		Body:    map[string]interface{}{"name": xaiBatchName, "input_file_id": uploadedFile.ID},
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaXAIBatch),
+		Method:           stdhttp.MethodPost,
+		Path:             "/batches",
+		Body:             map[string]interface{}{"name": xaiBatchName, "input_file_id": uploadedFile.ID},
+		Headers:          headers,
 	}, &createResp); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -233,10 +232,13 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 func (b *Batch) prepareBatchRequest(req provider.BatchV4Request) (endpoint string, body map[string]interface{}, warnings []types.Warning, err error) {
 	if req.Type == provider.BatchRequestTypeText {
 		lm := NewResponsesLanguageModel(b.provider, req.Text.ModelID)
-		reqBody, reqWarnings, err := lm.buildRequestBody(&req.Text.Options, false)
+		reqBody, bodyWarnings, err := lm.buildRequestBody(&req.Text.Options, false)
 		if err != nil {
 			return "", nil, nil, err
 		}
+		// TS prepareRequest returns the full warning list: the unsupported
+		// penalty/stop settings first, then the body warnings.
+		reqWarnings := append(xaiResponsesWarnings(&req.Text.Options), bodyWarnings...)
 		// The batch sub-request URL already encodes the intent (a
 		// non-streaming Responses call); the wire body itself carries no
 		// `stream` key in TS.
@@ -277,10 +279,11 @@ func (b *Batch) DoGetBatchStatus(ctx context.Context, opts provider.BatchV4Opera
 func (b *Batch) DoCancelBatch(ctx context.Context, opts provider.BatchV4OperationOptions) (*provider.BatchV4CancelResult, error) {
 	var resp xaiBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodPost,
-		Path:    "/batches/" + providerutils.EncodePathSegment(opts.BatchID) + ":cancel",
-		Body:    map[string]interface{}{},
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaXAIBatch),
+		Method:           stdhttp.MethodPost,
+		Path:             "/batches/" + providerutils.EncodePathSegment(opts.BatchID) + ":cancel",
+		Body:             map[string]interface{}{},
+		Headers:          opts.Headers,
 	}, &resp); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -295,17 +298,16 @@ func (b *Batch) DoListBatches(ctx context.Context, opts provider.BatchV4ListOpti
 		query["limit"] = strconv.Itoa(*opts.Limit)
 	}
 	if opts.Cursor != "" {
-		// Pre-escaped: internalhttp.Client.Do concatenates query values
-		// verbatim without percent-encoding them.
-		query["pagination_token"] = url.QueryEscape(opts.Cursor)
+		query["pagination_token"] = opts.Cursor
 	}
 
 	var page xaiBatchListResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodGet,
-		Path:    "/batches",
-		Query:   query,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaXAIBatchList),
+		Method:           stdhttp.MethodGet,
+		Path:             "/batches",
+		Query:            query,
+		Headers:          opts.Headers,
 	}, &page); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -344,9 +346,10 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 func (b *Batch) retrieveBatch(ctx context.Context, batchID string, headers map[string]string) (*xaiBatchResponseWire, error) {
 	var resp xaiBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodGet,
-		Path:    "/batches/" + providerutils.EncodePathSegment(batchID),
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaXAIBatch),
+		Method:           stdhttp.MethodGet,
+		Path:             "/batches/" + providerutils.EncodePathSegment(batchID),
+		Headers:          headers,
 	}, &resp); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -354,6 +357,9 @@ func (b *Batch) retrieveBatch(ctx context.Context, batchID string, headers map[s
 }
 
 func (b *Batch) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		return newXAIProviderError(b.Provider(), statusErr.StatusCode, statusErr.Body)
@@ -402,7 +408,9 @@ func convertXAIBatchStatus(b xaiBatchResponseWire) provider.BatchV4Status {
 	}
 	counts := providerutils.NormalizeBatchRequestCounts(total, pending, completed, failed)
 
-	isCancelled := (b.CancelTime != nil && *b.CancelTime != "") || (b.CancelByXAIMessage != nil && *b.CancelByXAIMessage != "")
+	// TS: cancel_time != null || cancel_by_xai_message != null (an empty
+	// string still counts).
+	isCancelled := b.CancelTime != nil || b.CancelByXAIMessage != nil
 	isExpired := xaiIsPastDate(b.ExpireTime)
 
 	var status provider.BatchStatusValue
@@ -424,7 +432,7 @@ func convertXAIBatchStatus(b xaiBatchResponseWire) provider.BatchV4Status {
 	switch {
 	case isCancelled:
 		msg := fmt.Sprintf("xAI batch %q was cancelled.", b.BatchID)
-		if b.CancelByXAIMessage != nil && *b.CancelByXAIMessage != "" {
+		if b.CancelByXAIMessage != nil {
 			msg = *b.CancelByXAIMessage
 		}
 		result.Error = &provider.BatchError{Message: msg, Code: "batch_cancelled"}
@@ -496,7 +504,16 @@ func (s *xaiBatchResultsStream) Next() (*provider.BatchV4ItemResult, error) {
 		if s.idx < len(s.buffer) {
 			item := s.buffer[s.idx]
 			s.idx++
-			return s.batch.convertBatchResult(s.ctx, item), nil
+			result, err := s.batch.convertBatchResult(s.ctx, item)
+			if err != nil {
+				// TS throws from the result generator (image download or
+				// missing image data), which errors the whole stream.
+				s.err = err
+				s.done = true
+				s.buffer, s.idx = nil, 0
+				return nil, err
+			}
+			return result, nil
 		}
 		if s.done {
 			return nil, io.EOF
@@ -512,24 +529,25 @@ func (s *xaiBatchResultsStream) fetchPage() error {
 	s.started = true
 	query := map[string]string{"limit": strconv.Itoa(xaiBatchResultsPageSize)}
 	if s.nextToken != nil {
-		// Pre-escaped: internalhttp.Client.Do concatenates query values
-		// verbatim without percent-encoding them.
-		query["pagination_token"] = url.QueryEscape(*s.nextToken)
+		query["pagination_token"] = *s.nextToken
 	}
 
 	var page xaiBatchResultsPageWire
 	if err := s.batch.provider.client.DoJSON(s.ctx, internalhttp.Request{
-		Method:  stdhttp.MethodGet,
-		Path:    "/batches/" + providerutils.EncodePathSegment(s.batchID) + "/results",
-		Query:   query,
-		Headers: s.headers,
+		ValidateResponse: providerutils.MediaResponseValidator(s.batch.Provider(), providerutils.SchemaXAIBatchResults),
+		Method:           stdhttp.MethodGet,
+		Path:             "/batches/" + providerutils.EncodePathSegment(s.batchID) + "/results",
+		Query:            query,
+		Headers:          s.headers,
 	}, &page); err != nil {
 		return s.batch.handleError(err)
 	}
 
 	s.buffer = page.Results
 	s.idx = 0
-	if page.PaginationToken != nil && *page.PaginationToken != "" {
+	// TS: `paginationToken = page.pagination_token ?? undefined` — only a
+	// null/absent token ends the loop; an empty string keeps paging.
+	if page.PaginationToken != nil {
 		s.nextToken = page.PaginationToken
 	} else {
 		s.nextToken = nil
@@ -543,7 +561,7 @@ func (s *xaiBatchResultsStream) Err() error { return s.err }
 func (s *xaiBatchResultsStream) Close() error { return nil }
 
 // convertBatchResult mirrors TS XaiBatch#convertBatchResult.
-func (b *Batch) convertBatchResult(ctx context.Context, wire xaiBatchResultWire) *provider.BatchV4ItemResult {
+func (b *Batch) convertBatchResult(ctx context.Context, wire xaiBatchResultWire) (*provider.BatchV4ItemResult, error) {
 	var errWire *xaiBatchErrorWire
 	if wire.BatchResult != nil {
 		errWire = wire.BatchResult.Error
@@ -558,7 +576,7 @@ func (b *Batch) convertBatchResult(ctx context.Context, wire xaiBatchResultWire)
 			ID:     wire.BatchRequestID,
 			Status: status,
 			Error:  convertXAIBatchError(wire.ErrorMessage, errWire),
-		}
+		}, nil
 	}
 
 	var response *struct {
@@ -569,25 +587,31 @@ func (b *Batch) convertBatchResult(ctx context.Context, wire xaiBatchResultWire)
 		response = wire.BatchResult.Response
 	}
 	if response == nil {
-		return invalidXAIBatchTextResult(wire.BatchRequestID)
+		return invalidXAIBatchTextResult(wire.BatchRequestID), nil
 	}
 
 	if isPresentRawJSON(response.ChatGetCompletion) {
 		var textResp xaiBatchTextResponseWire
+		if err := providerutils.MediaSchemaParser(providerutils.SchemaXAIBatchText)(0, nil, response.ChatGetCompletion); err != nil {
+			return invalidXAIBatchTextResult(wire.BatchRequestID), nil
+		}
 		if err := json.Unmarshal(response.ChatGetCompletion, &textResp); err != nil {
-			return invalidXAIBatchTextResult(wire.BatchRequestID)
+			return invalidXAIBatchTextResult(wire.BatchRequestID), nil
 		}
 		genResult, convErr := convertXAIBatchTextResponse(textResp)
 		if convErr != nil {
-			return &provider.BatchV4ItemResult{Type: provider.BatchRequestTypeText, ID: wire.BatchRequestID, Status: provider.BatchItemFailed, Error: convErr}
+			return &provider.BatchV4ItemResult{Type: provider.BatchRequestTypeText, ID: wire.BatchRequestID, Status: provider.BatchItemFailed, Error: convErr}, nil
 		}
-		return &provider.BatchV4ItemResult{Type: provider.BatchRequestTypeText, ID: wire.BatchRequestID, Status: provider.BatchItemSucceeded, TextResult: genResult}
+		return &provider.BatchV4ItemResult{Type: provider.BatchRequestTypeText, ID: wire.BatchRequestID, Status: provider.BatchItemSucceeded, TextResult: genResult}, nil
 	}
 
 	if isPresentRawJSON(response.ImageGeneration) {
 		var imgResp xaiImageResponse
+		if err := providerutils.MediaSchemaParser(providerutils.SchemaXAIImage)(0, nil, response.ImageGeneration); err != nil {
+			return invalidXAIBatchImageResult(wire.BatchRequestID), nil
+		}
 		if err := json.Unmarshal(response.ImageGeneration, &imgResp); err != nil {
-			return invalidXAIBatchImageResult(wire.BatchRequestID)
+			return invalidXAIBatchImageResult(wire.BatchRequestID), nil
 		}
 		for _, d := range imgResp.Data {
 			if d.RespectModeration != nil && !*d.RespectModeration {
@@ -596,17 +620,17 @@ func (b *Batch) convertBatchResult(ctx context.Context, wire xaiBatchResultWire)
 					ID:     wire.BatchRequestID,
 					Status: provider.BatchItemFailed,
 					Error:  &provider.BatchError{Message: "Image generation was blocked due to a content policy violation."},
-				}
+				}, nil
 			}
 		}
 		imgResult, err := b.convertImageBatchResponse(ctx, imgResp)
 		if err != nil {
-			return invalidXAIBatchImageResult(wire.BatchRequestID)
+			return nil, err
 		}
-		return &provider.BatchV4ItemResult{Type: provider.BatchRequestTypeImage, ID: wire.BatchRequestID, Status: provider.BatchItemSucceeded, ImageResult: imgResult}
+		return &provider.BatchV4ItemResult{Type: provider.BatchRequestTypeImage, ID: wire.BatchRequestID, Status: provider.BatchItemSucceeded, ImageResult: imgResult}, nil
 	}
 
-	return invalidXAIBatchTextResult(wire.BatchRequestID)
+	return invalidXAIBatchTextResult(wire.BatchRequestID), nil
 }
 
 func isPresentRawJSON(raw json.RawMessage) bool {
@@ -736,6 +760,24 @@ type xaiBatchTextUsageWire struct {
 	CostInUsdTicks          *int64                    `json:"cost_in_usd_ticks,omitempty"`
 	PromptTokensDetails     *xaiBatchUsageDetailsWire `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *xaiBatchUsageDetailsWire `json:"completion_tokens_details,omitempty"`
+
+	// Raw is the complete usage object (TS `raw: usage`).
+	Raw map[string]interface{} `json:"-"`
+}
+
+// UnmarshalJSON decodes the typed fields and keeps the full object in Raw.
+func (u *xaiBatchTextUsageWire) UnmarshalJSON(data []byte) error {
+	type alias xaiBatchTextUsageWire
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*u = xaiBatchTextUsageWire(a)
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err == nil {
+		u.Raw = raw
+	}
+	return nil
 }
 
 type xaiBatchTextResponseWire struct {
@@ -802,6 +844,7 @@ func convertXAIBatchTextUsage(u xaiBatchTextUsageWire) types.Usage {
 			TextTokens:      &textOut,
 			ReasoningTokens: &reasoning,
 		},
+		Raw: u.Raw,
 	}
 }
 
@@ -927,9 +970,41 @@ func convertXAIBatchTextResponse(resp xaiBatchTextResponseWire) (*types.Generate
 // ImageModel.buildRequestBody).
 func (b *Batch) convertImageBatchResponse(ctx context.Context, resp xaiImageResponse) (*types.ImageResult, error) {
 	im := NewImageModel(b.provider, "")
-	images, base64Images, err := im.responseImages(ctx, resp.Data)
-	if err != nil {
-		return nil, err
+	// TS: when every image has b64_json they are used as-is; otherwise each
+	// image decodes its b64_json or, lacking it, downloads its url, and one
+	// with neither is an InvalidArgumentError.
+	var images [][]byte
+	var base64Images []string
+	allBase64 := true
+	for _, d := range resp.Data {
+		if d.B64JSON == "" {
+			allBase64 = false
+			break
+		}
+	}
+	for _, d := range resp.Data {
+		switch {
+		case d.B64JSON != "":
+			decoded, err := base64.StdEncoding.DecodeString(d.B64JSON)
+			if err != nil {
+				return nil, err
+			}
+			images = append(images, decoded)
+			if allBase64 {
+				base64Images = append(base64Images, d.B64JSON)
+			}
+		case d.URL == "":
+			return nil, &providererrors.InvalidArgumentError{
+				Field:   "batchResult",
+				Message: "xAI returned an image without data or a URL.",
+			}
+		default:
+			data, err := im.downloadImage(ctx, d.URL)
+			if err != nil {
+				return nil, err
+			}
+			images = append(images, data)
+		}
 	}
 
 	imagesMeta := make([]XAIImageItemMetadata, len(resp.Data))

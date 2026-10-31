@@ -2,8 +2,16 @@ package mcp
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
+	"sort"
+	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // ProtocolVersion is the legacy MCP protocol version this client advertises
@@ -92,8 +100,16 @@ type MCPTool struct {
 	OutputSchema map[string]interface{} `json:"outputSchema,omitempty"`
 	Annotations  map[string]interface{} `json:"annotations,omitempty"`
 	Meta         map[string]interface{} `json:"_meta,omitempty"`
+	// Extra holds keys the schema does not name (TS looseObject passthrough),
+	// e.g. icons or execution.
+	Extra map[string]interface{} `json:"-"`
 
 	titlePresent bool
+	// inputSchemaHint is the inputSchema as the server sent it, with its key
+	// order (a Go map has none). ToolFromMCP records it in
+	// Tool.ParameterKeyOrder, so the schema reaches the model in the
+	// server's key order, like TS (a JS object keeps insertion order).
+	inputSchemaHint interface{}
 }
 
 func (t *MCPTool) UnmarshalJSON(data []byte) error {
@@ -122,9 +138,22 @@ func (t *MCPTool) UnmarshalJSON(data []byte) error {
 		OutputSchema: out.OutputSchema,
 		Annotations:  out.Annotations,
 		Meta:         out.Meta,
+		Extra:        decodeLooseExtra(data, out),
 	}
 	_, t.titlePresent = raw["title"]
+	if rawSchema, ok := raw["inputSchema"]; ok {
+		if hint, ok := jsonorder.Parse(rawSchema); ok {
+			t.inputSchemaHint = hint
+		}
+	}
 	return nil
+}
+
+type mcpToolEncoding MCPTool
+
+// MarshalJSON encodes the tool followed by its Extra keys.
+func (t MCPTool) MarshalJSON() ([]byte, error) {
+	return marshalLoose(mcpToolEncoding(t), t.Extra)
 }
 
 // MCPResource represents a resource exposed via MCP
@@ -137,6 +166,9 @@ type MCPResource struct {
 	Size        *int64                 `json:"size,omitempty"`
 	Metadata    interface{}            `json:"metadata,omitempty"`
 	Meta        map[string]interface{} `json:"_meta,omitempty"`
+
+	// Extra holds keys the schema does not name (TS looseObject passthrough).
+	Extra map[string]interface{} `json:"-"`
 }
 
 // MCPPrompt represents a prompt template exposed via MCP
@@ -147,6 +179,9 @@ type MCPPrompt struct {
 	Arguments   []MCPPromptArgument    `json:"arguments,omitempty"`
 	Template    string                 `json:"template,omitempty"`
 	Metadata    map[string]interface{} `json:"metadata,omitempty"`
+
+	// Extra holds keys the schema does not name (TS looseObject passthrough).
+	Extra map[string]interface{} `json:"-"`
 }
 
 // MCPPromptArgument represents an argument to a prompt template
@@ -154,6 +189,10 @@ type MCPPromptArgument struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	Required    bool   `json:"required,omitempty"`
+
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
 }
 
 // InitializeParams represents parameters for the initialize request
@@ -178,10 +217,15 @@ type ClientCapabilities struct {
 	Roots        *RootsCapability       `json:"roots,omitempty"`
 	Sampling     *SamplingCapability    `json:"sampling,omitempty"`
 	Elicitation  map[string]interface{} `json:"elicitation,omitempty"`
+
+	// Extra holds keys the schema does not name (TS looseObject passthrough).
+	Extra map[string]interface{} `json:"-"`
 }
 
 // ServerCapabilities represents capabilities of the MCP server
 type ServerCapabilities struct {
+	// Events advertises support for the experimental events/* methods.
+	Events       *EventsCapability      `json:"events,omitempty"`
 	Experimental map[string]interface{} `json:"experimental,omitempty"`
 	Logging      *LoggingCapability     `json:"logging,omitempty"`
 	// Completions advertises support for the completion/complete method
@@ -190,42 +234,89 @@ type ServerCapabilities struct {
 	Prompts     *PromptsCapability     `json:"prompts,omitempty"`
 	Resources   *ResourcesCapability   `json:"resources,omitempty"`
 	Tools       *ToolsCapability       `json:"tools,omitempty"`
+	// Elicitation advertises support for elicitation requests (TS
+	// ServerCapabilities.elicitation, e.g. applyDefaults).
+	Elicitation map[string]interface{} `json:"elicitation,omitempty"`
+
+	// Extra holds keys the schema does not name (TS looseObject passthrough).
+	Extra map[string]interface{} `json:"-"`
+}
+
+// EventsCapability represents the experimental events capability.
+type EventsCapability struct {
+	ListChanged *bool `json:"listChanged,omitempty"`
+
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
 }
 
 // CompletionsCapability represents the completions capability.
-type CompletionsCapability struct{}
+type CompletionsCapability struct {
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
+}
 
 // RootsCapability represents the roots capability
 type RootsCapability struct {
 	ListChanged bool `json:"listChanged,omitempty"`
+
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
 }
 
 // SamplingCapability represents the sampling capability
-type SamplingCapability struct{}
+type SamplingCapability struct {
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
+}
 
 // LoggingCapability represents the logging capability
-type LoggingCapability struct{}
+type LoggingCapability struct {
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
+}
 
 // PromptsCapability represents the prompts capability
 type PromptsCapability struct {
 	ListChanged bool `json:"listChanged,omitempty"`
+
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
 }
 
 // ResourcesCapability represents the resources capability
 type ResourcesCapability struct {
 	Subscribe   bool `json:"subscribe,omitempty"`
 	ListChanged bool `json:"listChanged,omitempty"`
+
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
 }
 
 // ToolsCapability represents the tools capability
 type ToolsCapability struct {
 	ListChanged bool `json:"listChanged,omitempty"`
+
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
 }
 
 // ClientInfo represents information about the MCP client
 type ClientInfo struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
+
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
 }
 
 // ServerInfo represents information about the MCP server
@@ -233,6 +324,10 @@ type ServerInfo struct {
 	Name    string `json:"name"`
 	Title   string `json:"title,omitempty"`
 	Version string `json:"version"`
+
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
 }
 
 // ListToolsParams represents parameters for listing tools
@@ -318,13 +413,12 @@ func (r *CallToolResult) UnmarshalJSON(data []byte) error {
 	// default isError to false, tolerating any JSON-serializable value
 	// (object/array/string/number/boolean/null).
 	if !r.contentPresent && r.structuredContentPresent {
-		text, marshalErr := json.Marshal(out.StructuredContent)
-		if marshalErr != nil {
-			return fmt.Errorf("failed to synthesize text content from structuredContent: %w", marshalErr)
-		}
+		// JSON.stringify(result.structuredContent): the server's key order,
+		// no HTML escaping.
+		text := jsonStringifyRaw(raw["structuredContent"])
 		r.Content = []ToolResultContent{{
 			Type:              "text",
-			Text:              string(text),
+			Text:              text,
 			textPresent:       true,
 			textStringPresent: true,
 		}}
@@ -341,38 +435,54 @@ func (r CallToolResult) MarshalJSON() ([]byte, error) {
 	structuredContentPresent := r.structuredContentPresent || r.StructuredContent != nil
 	toolResultPresent := r.toolResultPresent || r.ToolResult != nil
 	metadataPresent := r.metadataPresent || r.Metadata != nil
-	var buf bytes.Buffer
-	buf.WriteByte('{')
-	emitted := map[string]bool{}
-	first := true
+	var w objectWriter
 	if contentPresent {
-		if err := appendJSONField(&buf, &first, emitted, "content", r.Content); err != nil {
+		if err := w.value("content", r.Content); err != nil {
 			return nil, err
 		}
 	}
 	if structuredContentPresent {
-		if err := appendJSONField(&buf, &first, emitted, "structuredContent", r.StructuredContent); err != nil {
+		if err := w.value("structuredContent", r.StructuredContent); err != nil {
 			return nil, err
 		}
 	}
 	if toolResultPresent {
-		if err := appendJSONField(&buf, &first, emitted, "toolResult", r.ToolResult); err != nil {
+		if err := w.value("toolResult", r.ToolResult); err != nil {
 			return nil, err
 		}
 	}
 	if r.IsError || r.isErrorPresent || contentPresent {
-		if err := appendJSONField(&buf, &first, emitted, "isError", r.IsError); err != nil {
+		if err := w.value("isError", r.IsError); err != nil {
 			return nil, err
 		}
 	}
 	if metadataPresent {
-		if err := appendJSONField(&buf, &first, emitted, "_meta", r.Metadata); err != nil {
+		if err := w.value("_meta", r.Metadata); err != nil {
 			return nil, err
 		}
 	}
-	appendRawFields(&buf, &first, emitted, r.rawFields, r.rawFieldOrder)
-	buf.WriteByte('}')
-	return buf.Bytes(), nil
+	w.raw(r.rawFields)
+	// zod emits the schema's keys first (ResultSchema's _meta and resultType,
+	// then the variant's), then the loose extras in wire order.
+	return w.bytes(callToolResultKeyOrder, r.rawFieldOrder), nil
+}
+
+var callToolResultKeyOrder = []string{"_meta", "resultType", "content", "structuredContent", "toolResult", "isError"}
+
+// toolResultContentKeyOrder is the key order of the zod schema of a content
+// block of the given type; the block's other keys follow in wire order.
+func toolResultContentKeyOrder(contentType string) []string {
+	switch contentType {
+	case "text":
+		return []string{"type", "text"}
+	case "image":
+		return []string{"type", "data", "mimeType"}
+	case "resource":
+		return []string{"type", "resource"}
+	case "resource_link":
+		return []string{"type", "uri", "name", "description", "mimeType"}
+	}
+	return []string{"type"}
 }
 
 // ToolResultContent represents content in a tool result
@@ -438,36 +548,32 @@ func (c *ToolResultContent) UnmarshalJSON(data []byte) error {
 }
 
 func (c ToolResultContent) MarshalJSON() ([]byte, error) {
-	var buf bytes.Buffer
-	buf.WriteByte('{')
-	emitted := map[string]bool{}
-	first := true
-	appendStringJSONField(&buf, &first, emitted, "type", c.Type, c.Type != "")
-	appendStringJSONField(&buf, &first, emitted, "text", c.Text, c.Text != "" || c.textStringPresent)
-	appendStringJSONField(&buf, &first, emitted, "data", c.Data, c.Data != "" || c.dataStringPresent)
-	appendStringJSONField(&buf, &first, emitted, "mimeType", c.MimeType, c.MimeType != "" || c.mimeTypeStringPresent)
-	appendStringJSONField(&buf, &first, emitted, "uri", c.URI, c.URI != "")
-	appendStringJSONField(&buf, &first, emitted, "name", c.Name, c.Name != "")
-	appendStringJSONField(&buf, &first, emitted, "title", c.Title, c.Title != "")
-	appendStringJSONField(&buf, &first, emitted, "description", c.Description, c.Description != "")
+	var w objectWriter
+	w.str("type", c.Type, c.Type != "")
+	w.str("text", c.Text, c.Text != "" || c.textStringPresent)
+	w.str("data", c.Data, c.Data != "" || c.dataStringPresent)
+	w.str("mimeType", c.MimeType, c.MimeType != "" || c.mimeTypeStringPresent)
+	w.str("uri", c.URI, c.URI != "")
+	w.str("name", c.Name, c.Name != "")
+	w.str("title", c.Title, c.Title != "")
+	w.str("description", c.Description, c.Description != "")
 	if c.Resource != nil {
-		if err := appendJSONField(&buf, &first, emitted, "resource", c.Resource); err != nil {
+		if err := w.value("resource", c.Resource); err != nil {
 			return nil, err
 		}
 	}
 	if c.Metadata != nil {
-		if err := appendJSONField(&buf, &first, emitted, "metadata", c.Metadata); err != nil {
+		if err := w.value("metadata", c.Metadata); err != nil {
 			return nil, err
 		}
 	}
 	if c.Meta != nil {
-		if err := appendJSONField(&buf, &first, emitted, "_meta", c.Meta); err != nil {
+		if err := w.value("_meta", c.Meta); err != nil {
 			return nil, err
 		}
 	}
-	appendRawFields(&buf, &first, emitted, c.rawFields, c.rawFieldOrder)
-	buf.WriteByte('}')
-	return buf.Bytes(), nil
+	w.raw(c.rawFields)
+	return w.bytes(toolResultContentKeyOrder(c.Type), c.rawFieldOrder), nil
 }
 
 func copyRawFields(raw map[string]json.RawMessage) map[string]json.RawMessage {
@@ -522,65 +628,132 @@ func unmarshalStringField(raw map[string]json.RawMessage, key string, target *st
 	return true, false
 }
 
-func appendStringJSONField(buf *bytes.Buffer, first *bool, emitted map[string]bool, key, value string, emit bool) {
+// objectWriter builds a JSON object from known fields and the raw fields the
+// wire message carried, the way a TS client holds it after zod parsed the
+// message: the schema's keys first (in schema order), then the other keys in
+// the sender's order; every value is written as JSON.stringify would.
+type objectWriter struct {
+	keys []string
+	vals map[string]string
+}
+
+func (w *objectWriter) set(key, val string) {
+	if w.vals == nil {
+		w.vals = map[string]string{}
+	}
+	if _, ok := w.vals[key]; !ok {
+		w.keys = append(w.keys, key)
+	}
+	w.vals[key] = val
+}
+
+func (w *objectWriter) str(key, value string, emit bool) {
 	if !emit {
 		return
 	}
-	keyJSON, _ := json.Marshal(key)
-	valueJSON, _ := json.Marshal(value)
-	if !*first {
-		buf.WriteByte(',')
-	}
-	*first = false
-	buf.Write(keyJSON)
-	buf.WriteByte(':')
-	buf.Write(valueJSON)
-	emitted[key] = true
+	b, _ := jsonstr.Marshal(value) //nolint:errcheck // strings always encode
+	w.set(key, string(b))
 }
 
-func appendJSONField(buf *bytes.Buffer, first *bool, emitted map[string]bool, key string, value interface{}) error {
-	valueJSON, err := json.Marshal(value)
+func (w *objectWriter) value(key string, value interface{}) error {
+	b, err := jsonstr.Marshal(value)
 	if err != nil {
 		return err
 	}
-	keyJSON, _ := json.Marshal(key)
-	if !*first {
-		buf.WriteByte(',')
-	}
-	*first = false
-	buf.Write(keyJSON)
-	buf.WriteByte(':')
-	buf.Write(valueJSON)
-	emitted[key] = true
+	w.set(key, string(b))
 	return nil
 }
 
-func appendRawFields(buf *bytes.Buffer, first *bool, emitted map[string]bool, rawFields map[string]json.RawMessage, rawFieldOrder []string) {
-	seen := map[string]bool{}
-	for _, key := range rawFieldOrder {
-		if _, ok := rawFields[key]; !ok || emitted[key] {
-			continue
+// raw adds the wire fields that no known field already wrote.
+func (w *objectWriter) raw(fields map[string]json.RawMessage) {
+	names := make([]string, 0, len(fields))
+	for key := range fields {
+		if _, ok := w.vals[key]; !ok {
+			names = append(names, key)
 		}
-		appendRawField(buf, first, key, rawFields[key])
-		seen[key] = true
 	}
-	for key, value := range rawFields {
-		if emitted[key] || seen[key] {
-			continue
-		}
-		appendRawField(buf, first, key, value)
+	sort.Strings(names)
+	for _, key := range names {
+		w.set(key, jsonStringifyRaw(fields[key]))
 	}
 }
 
-func appendRawField(buf *bytes.Buffer, first *bool, key string, value json.RawMessage) {
-	keyJSON, _ := json.Marshal(key)
-	if !*first {
-		buf.WriteByte(',')
+func (w *objectWriter) bytes(schemaOrder, wireOrder []string) []byte {
+	ordered := make([]string, 0, len(w.keys))
+	seen := make(map[string]bool, len(w.keys))
+	for _, key := range schemaOrder {
+		if _, ok := w.vals[key]; ok && !seen[key] {
+			seen[key] = true
+			ordered = append(ordered, key)
+		}
 	}
-	*first = false
-	buf.Write(keyJSON)
-	buf.WriteByte(':')
-	buf.Write(value)
+	for _, key := range wireOrder {
+		if _, ok := w.vals[key]; ok && !seen[key] {
+			seen[key] = true
+			ordered = append(ordered, key)
+		}
+	}
+	for _, key := range w.keys {
+		if !seen[key] {
+			ordered = append(ordered, key)
+		}
+	}
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	for i, key := range ordered {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		k, _ := jsonstr.Marshal(key) //nolint:errcheck // strings always encode
+		buf.Write(k)
+		buf.WriteByte(':')
+		buf.WriteString(w.vals[key])
+	}
+	buf.WriteByte('}')
+	return buf.Bytes()
+}
+
+// jsonStringifyRaw is JSON.stringify(JSON.parse(raw)): the text a TS client
+// holds after parsing the wire message. Object key order is kept, strings are
+// written without HTML escaping (and without the escapes the sender used) and
+// numbers in JavaScript notation. Text that does not parse is returned as is.
+func jsonStringifyRaw(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "null"
+	}
+	tree, ok := jsonorder.Parse(raw)
+	if !ok {
+		return string(raw)
+	}
+	return jsonorder.Stringify(jsNumbers(tree))
+}
+
+// jsNumbers returns the ordered tree with its numbers as float64, the form
+// JSON.parse gives them (a number outside the double range is Infinity, which
+// JSON.stringify writes as null).
+func jsNumbers(v interface{}) interface{} {
+	switch x := v.(type) {
+	case *jsonorder.Object:
+		out := jsonorder.New()
+		for _, k := range x.Keys() {
+			val, _ := x.Get(k)
+			out.Set(k, jsNumbers(val))
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(x))
+		for i, e := range x {
+			out[i] = jsNumbers(e)
+		}
+		return out
+	case json.Number:
+		f, err := x.Float64()
+		if err != nil || math.IsInf(f, 0) {
+			return nil
+		}
+		return f
+	}
+	return v
 }
 
 func (c ToolResultContent) hasTextField() bool {
@@ -625,6 +798,54 @@ type ResourceContent struct {
 	Text     string                 `json:"text,omitempty"`
 	Blob     string                 `json:"blob,omitempty"` // base64 encoded
 	Meta     map[string]interface{} `json:"_meta,omitempty"`
+	// Extra holds keys the schema does not name (TS looseObject passthrough).
+	Extra map[string]interface{} `json:"-"`
+
+	// textPresent / blobPresent record that the wire object carried the
+	// field as a string, so an empty "text" still wins over a blob the way
+	// the TS `typeof content.text === 'string'` check does.
+	textPresent bool
+	blobPresent bool
+}
+
+type resourceContentAlias ResourceContent
+
+// UnmarshalJSON decodes the content and records which of text/blob were
+// present as strings.
+func (r *ResourceContent) UnmarshalJSON(data []byte) error {
+	var alias resourceContentAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*r = ResourceContent(alias)
+	r.Extra = decodeLooseExtra(data, alias)
+	r.textPresent = isJSONString(raw["text"])
+	r.blobPresent = isJSONString(raw["blob"])
+	return nil
+}
+
+// MarshalJSON keeps an empty text/blob string that was present on the wire.
+func (r ResourceContent) MarshalJSON() ([]byte, error) {
+	out := struct {
+		URI      string                 `json:"uri"`
+		Name     string                 `json:"name,omitempty"`
+		Title    string                 `json:"title,omitempty"`
+		MimeType string                 `json:"mimeType,omitempty"`
+		Text     *string                `json:"text,omitempty"`
+		Blob     *string                `json:"blob,omitempty"`
+		Meta     map[string]interface{} `json:"_meta,omitempty"`
+	}{URI: r.URI, Name: r.Name, Title: r.Title, MimeType: r.MimeType, Meta: r.Meta}
+	if r.Text != "" || r.textPresent {
+		out.Text = &r.Text
+	}
+	if r.Blob != "" || r.blobPresent {
+		out.Blob = &r.Blob
+	}
+	return marshalLoose(out, r.Extra)
 }
 
 // MCPResourceTemplate represents a resource template exposed via MCP
@@ -637,6 +858,9 @@ type MCPResourceTemplate struct {
 	Description string                 `json:"description,omitempty"`
 	MimeType    string                 `json:"mimeType,omitempty"`
 	Meta        map[string]interface{} `json:"_meta,omitempty"`
+
+	// Extra holds keys the schema does not name (TS looseObject passthrough).
+	Extra map[string]interface{} `json:"-"`
 }
 
 // ListResourceTemplatesResult represents the result of listing resource
@@ -870,4 +1094,91 @@ type LoggingMessageNotification struct {
 	Level  LoggingLevel `json:"level"`
 	Logger string       `json:"logger,omitempty"`
 	Data   interface{}  `json:"data"`
+}
+
+// validateCallToolResult applies the TS CallToolResultSchema union to a
+// decoded result: it needs content (an array of valid blocks), structuredContent
+// or a legacy toolResult, and the known content types (text, image, resource,
+// resource_link) must match their schemas. Unknown block types pass.
+func validateCallToolResult(r *CallToolResult) error {
+	if !r.contentPresent && !r.structuredContentPresent && !r.toolResultPresent {
+		return errors.New("tool result needs content, structuredContent or toolResult")
+	}
+	raw, ok := r.rawFields["content"]
+	if !ok {
+		return nil
+	}
+	var blocks []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &blocks); err != nil || blocks == nil {
+		return errors.New("tool result content must be an array of objects")
+	}
+	for i, block := range blocks {
+		if err := validateToolContentBlock(block); err != nil {
+			return fmt.Errorf("invalid content[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func rawString(block map[string]json.RawMessage, key string) (string, bool) {
+	raw, ok := block[key]
+	if !ok {
+		return "", false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", false
+	}
+	return s, true
+}
+
+// isBase64String mirrors zod's z.base64(): standard alphabet with padding.
+// Go's decoder silently skips CR/LF, which zod rejects.
+func isBase64String(s string) bool {
+	if strings.ContainsAny(s, "\r\n") {
+		return false
+	}
+	_, err := base64.StdEncoding.DecodeString(s)
+	return err == nil
+}
+
+func validateToolContentBlock(block map[string]json.RawMessage) error {
+	typ, ok := rawString(block, "type")
+	if !ok {
+		return errors.New("type must be a string")
+	}
+	switch typ {
+	case "text":
+		if _, ok := rawString(block, "text"); !ok {
+			return errors.New("text content needs a text string")
+		}
+	case "image":
+		if data, ok := rawString(block, "data"); !ok || !isBase64String(data) {
+			return errors.New("image content needs base64 data")
+		}
+		if _, ok := rawString(block, "mimeType"); !ok {
+			return errors.New("image content needs a mimeType string")
+		}
+	case "resource_link":
+		if _, ok := rawString(block, "uri"); !ok {
+			return errors.New("resource_link content needs a uri string")
+		}
+		if _, ok := rawString(block, "name"); !ok {
+			return errors.New("resource_link content needs a name string")
+		}
+	case "resource":
+		var resource map[string]json.RawMessage
+		if err := json.Unmarshal(block["resource"], &resource); err != nil || resource == nil {
+			return errors.New("resource content needs a resource object")
+		}
+		if _, ok := rawString(resource, "uri"); !ok {
+			return errors.New("resource needs a uri string")
+		}
+		_, hasText := rawString(resource, "text")
+		blob, hasBlob := rawString(resource, "blob")
+		if !hasText && (!hasBlob || !isBase64String(blob)) {
+			return errors.New("resource needs text or base64 blob")
+		}
+	}
+	return nil
 }

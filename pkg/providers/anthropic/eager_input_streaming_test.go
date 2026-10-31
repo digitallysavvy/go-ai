@@ -62,21 +62,15 @@ func TestAnthropicEagerInputStreamingNotSetByDefault(t *testing.T) {
 	}
 }
 
-// TestAnthropicUnrecognizedProviderToolWarnAndSkip ports the real prepareTools
-// path for an "anthropic.*" + ProviderExecuted tool that carries none of the
-// per-instance config prepareTools needs to recognize it (no ProviderOptions,
-// so neither the builtin-type table nor the anthropicAPIMapper self-serializing
-// path matches): TS's prepareTools warns "provider-defined tool <id>" and
-// omits it from the wire tools array entirely (anthropic-prepare-tools.ts
-// default case in the provider-tool switch; see anthropic-prepare-tools.test.ts
-// "should add warnings for unsupported tools"). Replaces the old
-// TestAnthropicEagerInputStreamingNotAppliedToProviderTools, which exercised
-// the removed ToAnthropicFormatWithCache helper — that helper had no
-// warn-and-skip branch and instead silently fell through to regular function
-// tool serialization, which is not what the real request path does.
+// TestAnthropicUnrecognizedProviderToolWarnAndSkip: an "anthropic.*" tool
+// whose id TS prepareTools does not know is omitted with a "provider-defined
+// tool <id>" warning (the default case of the provider-tool switch;
+// anthropic-prepare-tools.test.ts "should add warnings for unsupported
+// tools"). A literal named after a known id without ProviderOptions is sent
+// with that id's empty args, as TS sends a provider tool with args {}.
 func TestAnthropicUnrecognizedProviderToolWarnAndSkip(t *testing.T) {
 	tool := types.Tool{
-		Name:             "anthropic.web_search_20260209",
+		Name:             "anthropic.unknown_tool_20990101",
 		ProviderExecuted: true,
 	}
 
@@ -92,12 +86,22 @@ func TestAnthropicUnrecognizedProviderToolWarnAndSkip(t *testing.T) {
 
 	found := false
 	for _, w := range req.warnings {
-		if w.Type == "unsupported" && w.Feature == "provider-defined tool anthropic.web_search_20260209" {
+		if w.Type == "unsupported" && w.Feature == "provider-defined tool anthropic.unknown_tool_20990101" {
 			found = true
 		}
 	}
 	if !found {
 		t.Errorf("warnings = %#v, want an 'unsupported' warning for the unrecognized provider tool", req.warnings)
+	}
+
+	known := types.Tool{Name: "anthropic.web_search_20260209", ProviderExecuted: true}
+	req, err = m.prepareRequest(&provider.GenerateOptions{Tools: []types.Tool{known}}, false)
+	if err != nil {
+		t.Fatalf("prepareRequest() error: %v", err)
+	}
+	wire, _ := req.body["tools"].([]map[string]interface{})
+	if len(wire) != 1 || wire[0]["type"] != "web_search_20260209" || wire[0]["name"] != "web_search" || len(req.warnings) != 0 {
+		t.Errorf("known id literal: tools = %#v, warnings = %#v", wire, req.warnings)
 	}
 }
 
@@ -273,9 +277,10 @@ func TestAnthropicToolInputStartEndWithPrePopulatedInput(t *testing.T) {
 	}
 }
 
-func TestAnthropicServerToolUseNoInputEvents(t *testing.T) {
-	// server_tool_use (provider-executed web_search, etc.) must NOT emit
-	// tool-input-start/delta/end — only tool-call at block stop.
+func TestAnthropicServerToolUseEmitsInputEvents(t *testing.T) {
+	// server_tool_use (provider-executed web_search, etc.) streams its input
+	// like any tool call in TS: tool-input-start (providerExecuted), one
+	// tool-input-delta per input_json_delta, tool-input-end, then tool-call.
 	body := io.NopCloser(strings.NewReader(
 		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5}}}\n\n" +
 			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"server_tool_use\",\"id\":\"srv_001\",\"name\":\"web_search\"}}\n\n" +
@@ -303,14 +308,15 @@ func TestAnthropicServerToolUseNoInputEvents(t *testing.T) {
 	endChunks := filterChunks(chunks, provider.ChunkTypeToolInputEnd)
 	callChunks := filterChunks(chunks, provider.ChunkTypeToolCall)
 
-	if len(startChunks) != 0 {
-		t.Errorf("server_tool_use must not emit tool-input-start, got %d", len(startChunks))
+	if len(startChunks) != 1 || startChunks[0].ToolCall == nil || !startChunks[0].ToolCall.ProviderExecuted ||
+		startChunks[0].ToolCall.ID != "srv_001" || startChunks[0].ToolCall.ToolName != "web_search" {
+		t.Errorf("server_tool_use must emit one provider-executed tool-input-start, got %#v", startChunks)
 	}
-	if len(deltaChunks) != 0 {
-		t.Errorf("server_tool_use must not emit tool-input-delta, got %d", len(deltaChunks))
+	if len(deltaChunks) != 1 || deltaChunks[0].ID != "srv_001" || deltaChunks[0].Text != `{"query":"test"}` {
+		t.Errorf("server_tool_use must emit tool-input-delta with the raw delta, got %#v", deltaChunks)
 	}
-	if len(endChunks) != 0 {
-		t.Errorf("server_tool_use must not emit tool-input-end, got %d", len(endChunks))
+	if len(endChunks) != 1 {
+		t.Errorf("server_tool_use must emit tool-input-end, got %d", len(endChunks))
 	}
 	// tool-call IS still emitted for server_tool_use
 	if len(callChunks) != 1 {

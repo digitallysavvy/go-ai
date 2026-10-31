@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -20,7 +21,7 @@ func TestXAISpeechModelRequestDefaultsAndProviderOptions(t *testing.T) {
 		if r.URL.Path != "/v1/tts" {
 			t.Fatalf("path = %s, want /v1/tts", r.URL.Path)
 		}
-		if r.Header.Get("Authorization") != "Bearer test-key" || r.Header.Get("X-Test") != "request" || !strings.HasPrefix(r.Header.Get("User-Agent"), "ai-sdk-xai/0.5.3 ") {
+		if r.Header.Get("Authorization") != "Bearer test-key" || r.Header.Get("X-Test") != "request" || !strings.HasPrefix(r.Header.Get("User-Agent"), "ai-sdk-xai/"+sdkversion.Version+" ") {
 			t.Fatalf("headers = %#v", r.Header)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
@@ -109,7 +110,7 @@ func TestXAISpeechRejectsInvalidProviderOptions(t *testing.T) {
 			"xai": map[string]interface{}{"sampleRate": 12345},
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "invalid argument for providerOptions: invalid xai provider options") {
+	if err == nil || !strings.Contains(err.Error(), "Invalid argument for parameter providerOptions: invalid xai provider options") {
 		t.Fatalf("buildRequestBody error = %v", err)
 	}
 }
@@ -140,7 +141,7 @@ func TestXAITranscriptionMultipartRequestAndResponse(t *testing.T) {
 		if r.URL.Path != "/v1/stt" {
 			t.Fatalf("path = %s, want /v1/stt", r.URL.Path)
 		}
-		if !strings.HasPrefix(r.Header.Get("User-Agent"), "ai-sdk-xai/0.5.3 ") {
+		if !strings.HasPrefix(r.Header.Get("User-Agent"), "ai-sdk-xai/"+sdkversion.Version+" ") {
 			t.Fatalf("User-Agent = %q", r.Header.Get("User-Agent"))
 		}
 		contentType = r.Header.Get("Content-Type")
@@ -209,7 +210,7 @@ func TestXAITranscriptionMultipartRequestAndResponse(t *testing.T) {
 			t.Fatalf("file part filename/content-type = %q/%q", part.FileName(), part.Header.Get("Content-Type"))
 		}
 	}
-	wantOrder := []string{"audio_format", "sample_rate", "language", "format", "multichannel", "channels", "diarize", "filler_words", "keyterm", "keyterm", "file"}
+	wantOrder := []string{"sample_rate", "language", "multichannel", "channels", "diarize", "filler_words", "keyterm", "keyterm", "audio_format", "format", "file"}
 	if strings.Join(order, ",") != strings.Join(wantOrder, ",") {
 		t.Fatalf("multipart order = %v, want %v", order, wantOrder)
 	}
@@ -251,7 +252,7 @@ func TestXAITranscriptionRejectsInvalidProviderOptions(t *testing.T) {
 			"xai": map[string]interface{}{"channels": 1},
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "invalid argument for providerOptions: invalid xai provider options") {
+	if err == nil || !strings.Contains(err.Error(), "Invalid argument for parameter providerOptions: invalid xai provider options") {
 		t.Fatalf("buildMultipartBody error = %v", err)
 	}
 }

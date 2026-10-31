@@ -1,8 +1,10 @@
 package gemini
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -13,8 +15,12 @@ type Candidate struct {
 		Parts []Part `json:"parts"`
 		Role  string `json:"role"`
 	} `json:"content"`
-	FinishReason       string          `json:"finishReason"`
-	FinishMessage      string          `json:"finishMessage,omitempty"`
+	FinishReason  string `json:"finishReason"`
+	FinishMessage string `json:"finishMessage,omitempty"`
+	// ContinuationToken is set on long-decode responses (Gemini 4): with
+	// finishReason CONTINUATION it resumes the response, with MAX_TOKENS it
+	// can be passed back to continue after raising maxOutputTokens.
+	ContinuationToken  string          `json:"continuationToken,omitempty"`
 	Index              int             `json:"index"`
 	GroundingMetadata  json.RawMessage `json:"groundingMetadata,omitempty"`
 	UrlContextMetadata json.RawMessage `json:"urlContextMetadata,omitempty"`
@@ -23,14 +29,35 @@ type Candidate struct {
 
 // Response represents the Gemini API response body.
 type Response struct {
+	// Error is an in-stream error frame (TS chunkSchema `error`): Google can
+	// send one mid-stream after partial content was already sent.
+	Error          *StreamError    `json:"error,omitempty"`
 	Candidates     []Candidate     `json:"candidates"`
 	UsageMetadata  *UsageMetadata  `json:"usageMetadata,omitempty"`
 	PromptFeedback json.RawMessage `json:"promptFeedback,omitempty"`
 	// ResponseID is the provider-assigned response ID (TS: response.responseId).
 	ResponseID string `json:"responseId,omitempty"`
-	// ServiceTier is kept for compatibility with older responses. Current
-	// Gemini API responses report it inside usageMetadata.
+	// ServiceTier is kept for compatibility. The API reports the service
+	// tier inside usageMetadata, and only that one reaches provider metadata
+	// (TS usageMetadata?.serviceTier).
 	ServiceTier string `json:"serviceTier,omitempty"`
+}
+
+// StreamError is the error object of an in-stream error frame
+// (TS getGoogleErrorSchema).
+type StreamError struct {
+	Code    *float64        `json:"code"`
+	Message string          `json:"message"`
+	Status  string          `json:"status"`
+	Details json.RawMessage `json:"details,omitempty"`
+}
+
+// GenerateResponse decodes a doGenerate body or batch result line (TS
+// responseSchema). That schema has no `error` key, so one of any shape is
+// ignored rather than decoded into Response.Error.
+type GenerateResponse struct {
+	Response
+	Error json.RawMessage `json:"error,omitempty"`
 }
 
 // tokenDetail is one entry of a *TokensDetails array (modality + token count).
@@ -55,6 +82,77 @@ type UsageMetadata struct {
 	CacheTokensDetails         []tokenDetail `json:"cacheTokensDetails,omitempty"`
 	CandidatesTokensDetails    []tokenDetail `json:"candidatesTokensDetails,omitempty"`
 	ToolUsePromptTokensDetails []tokenDetail `json:"toolUsePromptTokensDetails,omitempty"`
+
+	// raw is the usage object exactly as the API sent it. TS passes it
+	// through as usage.raw and providerMetadata.usageMetadata, so fields the
+	// SDK does not model survive.
+	raw map[string]interface{}
+
+	// summed is set when the counts combine several responses (long decode
+	// continuation); the typed fields then win over the wire object.
+	summed bool
+}
+
+type usageMetadataFields UsageMetadata
+
+// UnmarshalJSON decodes the typed fields and keeps the wire object.
+func (u *UsageMetadata) UnmarshalJSON(data []byte) error {
+	var fields struct {
+		usageMetadataFields
+	}
+	// TS counts are z.number(), so a fractional count is a valid frame; Go's
+	// typed fields are ints, so decode from an integer-coerced copy.
+	if err := json.Unmarshal(coerceUsageCounts(data), &fields.usageMetadataFields); err != nil {
+		return err
+	}
+	*u = UsageMetadata(fields.usageMetadataFields)
+	var raw map[string]interface{}
+	if json.Unmarshal(data, &raw) == nil {
+		u.raw = raw
+	}
+	return nil
+}
+
+// MarshalJSON reproduces the wire object when one was received, otherwise the
+// typed fields.
+func (u UsageMetadata) MarshalJSON() ([]byte, error) {
+	if u.raw != nil && !u.summed {
+		// Exactly what the API sent, including keys nested inside the
+		// token-detail entries that the typed fields do not model.
+		return json.Marshal(u.raw)
+	}
+	typed, err := json.Marshal(usageMetadataFields(u))
+	if err != nil || u.raw == nil {
+		return typed, err
+	}
+	merged := make(map[string]interface{}, len(u.raw))
+	for k, v := range u.raw {
+		merged[k] = v
+	}
+	// Typed fields win (they are the summed values after a continuation).
+	var overlay map[string]interface{}
+	if json.Unmarshal(typed, &overlay) == nil {
+		for k, v := range overlay {
+			merged[k] = v
+		}
+	}
+	return json.Marshal(merged)
+}
+
+// initialPromptTokens is TS `usage?.promptTokenCount` for the first request of
+// a continued response: nil when there is no usage object or it carries no
+// numeric promptTokenCount (a missing count is not a zero count).
+func initialPromptTokens(u *UsageMetadata) *int {
+	if u == nil {
+		return nil
+	}
+	if u.raw != nil {
+		if _, ok := u.raw["promptTokenCount"].(float64); !ok {
+			return nil
+		}
+	}
+	v := u.PromptTokenCount
+	return &v
 }
 
 // promptFeedbackBlockReason extracts the blockReason field from a raw
@@ -95,6 +193,9 @@ func isConfirmedPromptBlockReason(blockReason string) bool {
 type FunctionCall struct {
 	ID   string `json:"id,omitempty"`
 	Name string `json:"name,omitempty"`
+	// NameSet is true iff the wire JSON had a non-null "name" field. TS
+	// checks `name != null`, so an empty-string name still names a call.
+	NameSet bool `json:"-"`
 
 	// Args holds the parsed arguments object (order not significant — use
 	// ArgsRaw to reproduce the original wire key order). ArgsSet is true iff
@@ -122,12 +223,18 @@ type FunctionCall struct {
 	WillContinue *bool
 }
 
+// hasName reports TS `functionCall.name != null`: a decoded "name" field
+// (even "") or, for a value built in Go, a non-empty Name.
+func (f *FunctionCall) hasName() bool {
+	return f.NameSet || f.Name != ""
+}
+
 // UnmarshalJSON decodes a functionCall part, tracking field presence
 // (Args/PartialArgs "!= null") separately from Go's zero values.
 func (f *FunctionCall) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		ID           string          `json:"id"`
-		Name         string          `json:"name"`
+		Name         *string         `json:"name"`
 		Args         json.RawMessage `json:"args"`
 		PartialArgs  json.RawMessage `json:"partialArgs"`
 		WillContinue *bool           `json:"willContinue"`
@@ -136,7 +243,10 @@ func (f *FunctionCall) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	f.ID = raw.ID
-	f.Name = raw.Name
+	if raw.Name != nil {
+		f.Name = *raw.Name
+		f.NameSet = true
+	}
 	f.WillContinue = raw.WillContinue
 
 	if len(raw.Args) > 0 && string(raw.Args) != "null" {
@@ -167,6 +277,70 @@ func (f *FunctionCall) UnmarshalJSON(data []byte) error {
 		}
 	}
 	return nil
+}
+
+// UnmarshalJSON decodes the part and keeps the wire form of toolCall.args.
+func (p *Part) UnmarshalJSON(b []byte) error {
+	type plain Part
+	var v plain
+	if err := json.Unmarshal(lenientPart(b), &v); err != nil {
+		return err
+	}
+	*p = Part(v)
+	var aux struct {
+		Text     json.RawMessage `json:"text"`
+		ToolCall *struct {
+			Args json.RawMessage `json:"args"`
+		} `json:"toolCall"`
+	}
+	auxErr := json.Unmarshal(b, &aux)
+	// TS checks `'text' in part && part.text != null`: a part decoded without
+	// a text value takes no part in the empty-text/thoughtSignature handling.
+	p.textAbsent = auxErr == nil && (len(aux.Text) == 0 || string(aux.Text) == "null")
+	if auxErr == nil && aux.ToolCall != nil && len(aux.ToolCall.Args) > 0 && string(aux.ToolCall.Args) != "null" {
+		p.toolCallArgsRaw = string(aux.ToolCall.Args)
+	}
+	p.applyPartUnion(b)
+	return nil
+}
+
+// applyPartUnion keeps only the fields of the first TS content-part union
+// member the wire part matches (getContentSchema: functionCall, inlineData,
+// toolCall, toolResponse, then executableCode/codeExecutionResult/text). zod
+// strips the keys a member does not declare, so a functionCall part that also
+// carries text is only a function call, and a toolCall without a string id
+// (or an inlineData without mimeType/data) is the last member, which drops it.
+func (p *Part) applyPartUnion(b []byte) {
+	var keys map[string]json.RawMessage
+	if json.Unmarshal(b, &keys) != nil {
+		return
+	}
+	hasStrings := func(key string, fields ...string) bool {
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(keys[key], &obj) != nil || obj == nil {
+			return false
+		}
+		for _, f := range fields {
+			var s string
+			if json.Unmarshal(obj[f], &s) != nil || obj[f] == nil || string(obj[f]) == "null" {
+				return false
+			}
+		}
+		return true
+	}
+	sig := p.ThoughtSignature
+	switch {
+	case p.FunctionCall != nil:
+		*p = Part{FunctionCall: p.FunctionCall, ThoughtSignature: sig, textAbsent: true}
+	case p.InlineData != nil && hasStrings("inlineData", "mimeType", "data"):
+		*p = Part{InlineData: p.InlineData, Thought: p.Thought, ThoughtSignature: sig, textAbsent: true}
+	case p.ToolCall != nil && hasStrings("toolCall", "toolType", "id"):
+		*p = Part{ToolCall: p.ToolCall, toolCallArgsRaw: p.toolCallArgsRaw, ThoughtSignature: sig, textAbsent: true}
+	case p.ToolResponse != nil && hasStrings("toolResponse", "toolType", "id"):
+		*p = Part{ToolResponse: p.ToolResponse, ThoughtSignature: sig, textAbsent: true}
+	default:
+		p.InlineData, p.ToolCall, p.ToolResponse, p.toolCallArgsRaw = nil, nil, nil, ""
+	}
 }
 
 // Part represents a single part in a Gemini content block.
@@ -203,6 +377,13 @@ type Part struct {
 		Args     map[string]interface{} `json:"args,omitempty"`
 		ID       string                 `json:"id"`
 	} `json:"toolCall,omitempty"`
+	// toolCallArgsRaw is the wire text of ToolCall.Args, which keeps the key
+	// order JSON.stringify(part.toolCall.args) has in TS. A string (not
+	// json.RawMessage) keeps Part comparable with ==, as in v0.5.2.
+	toolCallArgsRaw string
+	// textAbsent is set when the part was decoded from JSON that had no
+	// (or a null) text value. A hand-built Part keeps the zero value.
+	textAbsent   bool
 	ToolResponse *struct {
 		ToolType string                 `json:"toolType"`
 		Response map[string]interface{} `json:"response,omitempty"`
@@ -279,4 +460,150 @@ func convertUsage(usage *UsageMetadata) types.Usage {
 	}
 
 	return result
+}
+
+// addUsageMetadata sums the usage metadata of two requests, e.g. the hops of
+// a long decode response that was continued automatically. Token counts and
+// per-modality details are added; non-numeric fields are taken from b when
+// set. Mirrors TS addGoogleUsageMetadata.
+func addUsageMetadata(a, b *UsageMetadata) *UsageMetadata {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	out := *b
+	out.summed = true
+	out.PromptTokenCount = a.PromptTokenCount + b.PromptTokenCount
+	out.CandidatesTokenCount = a.CandidatesTokenCount + b.CandidatesTokenCount
+	out.ToolUsePromptTokenCount = a.ToolUsePromptTokenCount + b.ToolUsePromptTokenCount
+	out.TotalTokenCount = a.TotalTokenCount + b.TotalTokenCount
+	out.CachedContentTokenCount = a.CachedContentTokenCount + b.CachedContentTokenCount
+	out.ThoughtsTokenCount = a.ThoughtsTokenCount + b.ThoughtsTokenCount
+	if out.TrafficType == "" {
+		out.TrafficType = a.TrafficType
+	}
+	if out.ServiceTier == "" {
+		out.ServiceTier = a.ServiceTier
+	}
+	if a.raw != nil || b.raw != nil {
+		merged := map[string]interface{}{}
+		for _, src := range []map[string]interface{}{a.raw, b.raw} {
+			for k, v := range src {
+				merged[k] = v
+			}
+		}
+		out.raw = merged
+	}
+	out.PromptTokensDetails = addTokenDetails(a.PromptTokensDetails, b.PromptTokensDetails)
+	out.CacheTokensDetails = addTokenDetails(a.CacheTokensDetails, b.CacheTokensDetails)
+	out.CandidatesTokensDetails = addTokenDetails(a.CandidatesTokensDetails, b.CandidatesTokensDetails)
+	out.ToolUsePromptTokensDetails = addTokenDetails(a.ToolUsePromptTokensDetails, b.ToolUsePromptTokensDetails)
+	return &out
+}
+
+func addTokenDetails(a, b []tokenDetail) []tokenDetail {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
+	var order []string
+	counts := map[string]int{}
+	for _, d := range append(append([]tokenDetail{}, a...), b...) {
+		if _, ok := counts[d.Modality]; !ok {
+			order = append(order, d.Modality)
+		}
+		counts[d.Modality] += d.TokenCount
+	}
+	out := make([]tokenDetail, 0, len(order))
+	for _, m := range order {
+		out = append(out, tokenDetail{Modality: m, TokenCount: counts[m]})
+	}
+	return out
+}
+
+// lenientPart drops the values whose TS schema is permissive (z.unknown() or
+// a fall-through union member) but whose Go field type is narrower, so that a
+// frame TS accepts is not rejected by the typed decode: toolCall.args and
+// toolResponse.response that are not objects (toolCall args keep their wire
+// text in toolCallArgsRaw), and a functionCall that is not an object.
+func lenientPart(b []byte) []byte {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(b, &m) != nil {
+		return b
+	}
+	changed := false
+	if raw, ok := m["functionCall"]; ok && !isJSONObject(raw) && string(raw) != "null" {
+		delete(m, "functionCall")
+		changed = true
+	}
+	for key, inner := range map[string]string{"toolCall": "args", "toolResponse": "response"} {
+		raw, ok := m[key]
+		if !ok || !isJSONObject(raw) {
+			continue
+		}
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(raw, &obj) != nil {
+			continue
+		}
+		if v, ok := obj[inner]; ok && !isJSONObject(v) {
+			delete(obj, inner)
+			if nb, err := json.Marshal(obj); err == nil {
+				m[key] = nb
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return b
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return b
+	}
+	return out
+}
+
+func isJSONObject(raw json.RawMessage) bool {
+	t := bytes.TrimSpace(raw)
+	return len(t) > 0 && t[0] == '{'
+}
+
+// coerceUsageCounts rewrites fractional token counts in a usageMetadata
+// object to integers (see UsageMetadata.UnmarshalJSON).
+func coerceUsageCounts(data []byte) []byte {
+	var m map[string]interface{}
+	if json.Unmarshal(data, &m) != nil {
+		return data
+	}
+	toInt := func(v interface{}) interface{} {
+		if f, ok := v.(float64); ok {
+			return int64(f)
+		}
+		return v
+	}
+	for k, v := range m {
+		switch k {
+		case "promptTokensDetails", "cacheTokensDetails", "candidatesTokensDetails", "toolUsePromptTokensDetails":
+			if arr, ok := v.([]interface{}); ok {
+				for _, e := range arr {
+					if em, ok := e.(map[string]interface{}); ok {
+						em["tokenCount"] = toInt(em["tokenCount"])
+					}
+				}
+			}
+		default:
+			if strings.HasSuffix(k, "TokenCount") {
+				m[k] = toInt(v)
+			}
+		}
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return data
+	}
+	return out
 }

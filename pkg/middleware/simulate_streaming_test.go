@@ -343,3 +343,79 @@ func TestSimulateStreamingMiddleware_PreservesTextPartMetadata(t *testing.T) {
 		t.Error("finish chunk did not carry the result's ProviderMetadata")
 	}
 }
+
+// TS #21797: citations survive simulated streaming on text-end, including a
+// citations-only text part with empty text.
+func TestSimulateStreamingMiddleware_PreservesCitations(t *testing.T) {
+	cites := []types.Citation{{Source: types.SourceContent{SourceType: "url", ID: "https://a.example/", URL: "https://a.example/"}}}
+	mockModel := &mockLanguageModel{
+		generateResult: &types.GenerateResult{
+			Content: []types.ContentPart{
+				types.TextContent{Text: "cited", Citations: cites},
+				types.TextContent{Text: "", Citations: cites},
+				types.TextContent{Text: ""},
+			},
+			FinishReason: types.FinishReasonStop,
+		},
+	}
+	wrapped := WrapLanguageModel(mockModel, []*LanguageModelMiddleware{SimulateStreamingMiddleware()}, nil, nil)
+	stream, err := wrapped.DoStream(context.Background(), &provider.GenerateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ends []*provider.StreamChunk
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			break
+		}
+		if c.Type == provider.ChunkTypeTextEnd {
+			ends = append(ends, c)
+		}
+	}
+	if len(ends) != 2 {
+		t.Fatalf("text-end chunks = %d, want 2 (the empty uncited part is skipped)", len(ends))
+	}
+	for _, e := range ends {
+		if len(e.Citations) != 1 || e.Citations[0].Source.URL != "https://a.example/" {
+			t.Fatalf("text-end citations = %#v", e.Citations)
+		}
+	}
+}
+
+func TestSimulateStreamingEmitsToolCallsInContentOrder(t *testing.T) {
+	res := &types.GenerateResult{
+		Content: []types.ContentPart{
+			types.TextContent{Text: "a"},
+			types.ToolCallContent{ToolCallID: "c1", ToolName: "t"},
+			types.SourceContent{ID: "s1"},
+		},
+		ToolCalls: []types.ToolCall{{ID: "c1", ToolName: "t"}},
+	}
+	m := &mockLanguageModel{generateResult: res}
+	w := WrapLanguageModel(m, []*LanguageModelMiddleware{SimulateStreamingMiddleware()}, nil, nil)
+	s, err := w.DoStream(context.Background(), &provider.GenerateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seq []provider.ChunkType
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		seq = append(seq, c.Type)
+	}
+	ci, si := -1, -1
+	for i, ty := range seq {
+		if ty == provider.ChunkTypeToolCall {
+			ci = i
+		}
+		if ty == provider.ChunkTypeSource {
+			si = i
+		}
+	}
+	if ci < 0 || si < 0 || ci > si {
+		t.Fatalf("tool-call must precede the later source: %v", seq)
+	}
+}

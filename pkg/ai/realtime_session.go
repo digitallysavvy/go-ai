@@ -178,6 +178,15 @@ func (s *RealtimeSession) Send(ctx context.Context, event provider.RealtimeClien
 	return s.conn.Send(ctx, raw)
 }
 
+// sendLocked writes a text frame under the session's send lock, so a
+// health-check response written from Read never overlaps a Send from another
+// goroutine (a RealtimeWebSocketConn is not required to be write-safe).
+func (s *RealtimeSession) sendLocked(ctx context.Context, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.conn.Send(ctx, data)
+}
+
 func (s *RealtimeSession) Read(ctx context.Context) ([]provider.RealtimeServerEvent, error) {
 	if s == nil || s.conn == nil {
 		return nil, errors.New("realtime session is not connected")
@@ -212,7 +221,7 @@ func (s *RealtimeSession) Read(ctx context.Context) ([]provider.RealtimeServerEv
 					if checker, ok := s.model.(provider.RealtimeHealthCheckResponder); ok {
 						response, ok := checker.GetHealthCheckResponse(raw)
 						if ok && len(response) > 0 && string(response) != "null" {
-							if err := s.conn.Send(ctx, response); err != nil {
+							if err := s.sendLocked(ctx, response); err != nil {
 								return nil, err
 							}
 						}
@@ -235,7 +244,7 @@ func (s *RealtimeSession) Read(ctx context.Context) ([]provider.RealtimeServerEv
 		if checker, ok := s.model.(provider.RealtimeHealthCheckResponder); ok {
 			response, ok := checker.GetHealthCheckResponse(raw)
 			if ok && len(response) > 0 && string(response) != "null" {
-				if err := s.conn.Send(ctx, response); err != nil {
+				if err := s.sendLocked(ctx, response); err != nil {
 					return nil, err
 				}
 			}
@@ -302,10 +311,16 @@ type xNetWebSocketConn struct {
 	// before the ctx select, so a stalled concurrent send could block a
 	// subsequent call's ctx cancellation indefinitely).
 	sendSem chan struct{}
+
+	// recvSem serializes receives; pending holds the single in-flight read
+	// started by a receive whose ctx ended first, so the frame it eventually
+	// reads goes to the next receive instead of being dropped.
+	recvSem chan struct{}
+	pending chan realtimeFrameResult
 }
 
 func newXNetWebSocketConn(conn *websocket.Conn) *xNetWebSocketConn {
-	return &xNetWebSocketConn{conn: conn, sendSem: make(chan struct{}, 1)}
+	return &xNetWebSocketConn{conn: conn, sendSem: make(chan struct{}, 1), recvSem: make(chan struct{}, 1)}
 }
 
 // lockSend acquires the send semaphore, respecting ctx cancellation while
@@ -337,14 +352,51 @@ func (c *xNetWebSocketConn) Send(ctx context.Context, message []byte) error {
 }
 
 func (c *xNetWebSocketConn) Receive(ctx context.Context) ([]byte, error) {
-	text, err := wsutil.Receive(ctx, c.conn)
+	frame, err := c.receiveFrame(ctx)
 	if err != nil {
-		if wsutil.IsCleanClose(err) {
+		if errors.Is(err, io.EOF) || wsutil.IsCleanClose(err) {
 			return nil, io.EOF
+		}
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			return nil, err
 		}
 		return nil, fmt.Errorf("realtime websocket receive failed: %w", err)
 	}
-	return []byte(text), nil
+	return frame.data, nil
+}
+
+type realtimeFrameResult struct {
+	frame realtimeFrame
+	err   error
+}
+
+// receiveFrame returns the next frame. The read runs on its own goroutine so
+// ctx can end the wait; when it does, that read stays pending and its frame
+// is handed to the next call (a second concurrent reader would race it and
+// drop or reorder frames).
+func (c *xNetWebSocketConn) receiveFrame(ctx context.Context) (realtimeFrame, error) {
+	select {
+	case c.recvSem <- struct{}{}:
+	case <-ctx.Done():
+		return realtimeFrame{}, ctx.Err()
+	}
+	defer func() { <-c.recvSem }()
+	if c.pending == nil {
+		ch := make(chan realtimeFrameResult, 1)
+		c.pending = ch
+		go func() {
+			var frame realtimeFrame
+			err := realtimeFrameTypeCodec.Receive(c.conn, &frame)
+			ch <- realtimeFrameResult{frame: frame, err: err}
+		}()
+	}
+	select {
+	case <-ctx.Done():
+		return realtimeFrame{}, ctx.Err()
+	case res := <-c.pending:
+		c.pending = nil
+		return res.frame, res.err
+	}
 }
 
 func (c *xNetWebSocketConn) Close() error {
@@ -409,26 +461,15 @@ type realtimeFrame struct {
 // ReceiveFrame implements RealtimeBinaryConn, reporting whether the received
 // frame was a binary (vs. text) WS frame.
 func (c *xNetWebSocketConn) ReceiveFrame(ctx context.Context) ([]byte, bool, error) {
-	type result struct {
-		frame realtimeFrame
-		err   error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		var frame realtimeFrame
-		err := realtimeFrameTypeCodec.Receive(c.conn, &frame)
-		ch <- result{frame: frame, err: err}
-	}()
-	select {
-	case <-ctx.Done():
-		return nil, false, ctx.Err()
-	case res := <-ch:
-		if res.err != nil {
-			if errors.Is(res.err, io.EOF) {
-				return nil, false, io.EOF
-			}
-			return nil, false, fmt.Errorf("realtime websocket receive failed: %w", res.err)
+	frame, err := c.receiveFrame(ctx)
+	if err != nil {
+		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			return nil, false, err
 		}
-		return res.frame.data, res.frame.binary, nil
+		if errors.Is(err, io.EOF) {
+			return nil, false, io.EOF
+		}
+		return nil, false, fmt.Errorf("realtime websocket receive failed: %w", err)
 	}
+	return frame.data, frame.binary, nil
 }

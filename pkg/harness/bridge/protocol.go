@@ -12,9 +12,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 )
 
 // Outbound transport/control frame discriminators.
@@ -133,6 +135,10 @@ func (s Stop) MarshalJSON() ([]byte, error) {
 // DecodeOutbound parses and validates one bridge->host frame. The optional
 // `seq` cursor is returned separately (zod strips it from the parsed value).
 func DecodeOutbound(data []byte) (msg OutboundMessage, seq *float64, err error) {
+	// safeParseJSON rejects a __proto__ key: no seq, and the frame fails validation.
+	if err := securejson.Check(data); err != nil {
+		return nil, nil, err
+	}
 	typ, fields, err := harness.ReadTagged(data)
 	if err != nil {
 		return nil, nil, err
@@ -176,6 +182,9 @@ func DecodeOutbound(data []byte) (msg OutboundMessage, seq *float64, err error) 
 	if err := harness.RequireKeys(typ, fields, required); err != nil {
 		return nil, seq, err
 	}
+	if err := harness.RejectNullKeys(typ, fields, controlFrameOptionalKeys[typ]); err != nil {
+		return nil, seq, err
+	}
 	if err := json.Unmarshal(data, target); err != nil {
 		return nil, seq, fmt.Errorf("harness bridge: invalid %s frame: %w", typ, err)
 	}
@@ -188,8 +197,24 @@ func DecodeOutbound(data []byte) (msg OutboundMessage, seq *float64, err error) 
 		if !m.Level.Valid() {
 			return nil, seq, fmt.Errorf("harness bridge: invalid debug-event level %q", m.Level)
 		}
-		if raw, ok := fields["error"]; ok && string(raw) != "null" {
-			if err := harness.RequireKeys("debug-event error", readObject(raw), []string{"message"}); err != nil {
+		if raw, ok := fields["error"]; ok {
+			obj := readObject(raw)
+			if err := harness.RequireKeys("debug-event error", obj, []string{"message"}); err != nil {
+				return nil, seq, err
+			}
+			if err := harness.RejectNullKeys("debug-event error", obj, []string{"name", "stack"}); err != nil {
+				return nil, seq, err
+			}
+		}
+	case *Hello:
+		if raw, ok := fields["capabilities"]; ok {
+			if err := harness.RejectNullKeys("bridge-hello capabilities", readObject(raw), []string{"experimental_userMessageResponses"}); err != nil {
+				return nil, seq, err
+			}
+		}
+	case *UserMessageResponse:
+		if raw, ok := fields["error"]; ok {
+			if err := harness.RequireKeys("user-message-response error", readObject(raw), []string{"message"}); err != nil {
 				return nil, seq, err
 			}
 		}
@@ -199,6 +224,14 @@ func DecodeOutbound(data []byte) (msg OutboundMessage, seq *float64, err error) 
 		}
 	}
 	return target, seq, nil
+}
+
+// controlFrameOptionalKeys lists the `.optional()` keys of the control frames
+// (absent is fine, explicit null is rejected by zod).
+var controlFrameOptionalKeys = map[string][]string{
+	TypeHello:               {"state", "lastSeq", "capabilities"},
+	TypeUserMessageResponse: {"error"},
+	TypeDebugEvent:          {"attrs", "error"},
 }
 
 // MarshalOutbound encodes a bridge->host frame (used by fake bridges in
@@ -289,7 +322,7 @@ func DecodeReady(line []byte) (*Ready, error) {
 		return nil, err
 	}
 	var r Ready
-	if err := json.Unmarshal(line, &r); err != nil {
+	if err := securejson.Unmarshal(line, &r); err != nil {
 		return nil, err
 	}
 	return &r, nil
@@ -311,9 +344,13 @@ type InboundCommand interface {
 // (`harnessV1BridgeStartBaseSchema`). Adapter start frames embed it and add
 // their runtime-specific fields; encoding/json flattens embedded structs so
 // the wire shape matches the TS `.extend(...)` schema.
+//
+// Every TS adapter sends `tools` as an array (`(opts.tools ?? []).map(...)`),
+// so an empty or nil Tools is sent as `[]`; MarshalInbound turns a nil slice
+// into an empty one.
 type StartBase struct {
 	Prompt               string                        `json:"prompt"`
-	Tools                []harness.ToolSpec            `json:"tools,omitempty"`
+	Tools                []harness.ToolSpec            `json:"tools"`
 	Model                string                        `json:"model,omitempty"`
 	Debug                *harness.DebugConfig          `json:"debug,omitempty"`
 	PermissionMode       harness.PermissionMode        `json:"permissionMode,omitempty"`
@@ -372,7 +409,40 @@ func (StopCommand) FrameType() string                 { return TypeStopCommand }
 // MarshalInbound encodes a host->bridge frame with its `type` first. Adapter
 // start frames (structs embedding StartBase) inherit FrameType "start".
 func MarshalInbound(cmd InboundCommand) ([]byte, error) {
-	return harness.MarshalTagged(cmd.FrameType(), cmd)
+	return harness.MarshalTagged(cmd.FrameType(), withNonNilStartTools(cmd))
+}
+
+// withNonNilStartTools returns cmd with a nil StartBase.Tools replaced by an
+// empty slice (on a copy), so the frame carries `"tools":[]` like TS rather
+// than `null`.
+func withNonNilStartTools(cmd InboundCommand) any {
+	if b, ok := cmd.(StartBase); ok {
+		if b.Tools == nil {
+			b.Tools = []harness.ToolSpec{}
+		}
+		return b
+	}
+	v := reflect.ValueOf(cmd)
+	if v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return cmd
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return cmd
+	}
+	f, ok := v.Type().FieldByName("StartBase")
+	if !ok || !f.Anonymous || f.Type != reflect.TypeOf(StartBase{}) || len(f.Index) != 1 {
+		return cmd
+	}
+	if !v.FieldByIndex(f.Index).FieldByName("Tools").IsNil() {
+		return cmd
+	}
+	c := reflect.New(v.Type()).Elem()
+	c.Set(v)
+	c.FieldByIndex(f.Index).FieldByName("Tools").Set(reflect.ValueOf([]harness.ToolSpec{}))
+	return c.Interface()
 }
 
 // ValidateExperimentalUserMessage mirrors

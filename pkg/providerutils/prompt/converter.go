@@ -6,7 +6,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ToOpenAIMessagesOptions controls provider-specific variations in
@@ -15,6 +19,12 @@ import (
 // @ai-sdk/openai-compatible's Together/Fireworks/Mistral/Ollama/..., Alibaba):
 // they all just JSON.stringify(part.input) with no sanitization.
 type ToOpenAIMessagesOptions struct {
+	// ThoughtSignatureKey enables Gemini thought signatures on replayed
+	// tool calls, as in TS openai-compatible: a tool call's
+	// providerOptions[key].thoughtSignature (or providerOptions.google's) is
+	// sent as extra_content.google.thought_signature. Empty disables it.
+	ThoughtSignatureKey string
+
 	// SanitizeReplayedToolCallArguments matches OpenAI's own
 	// serializeToolCallArguments (packages/openai/src/chat/convert-to-openai-chat-messages.ts):
 	// a replayed RawArguments string that doesn't parse to a JSON object is
@@ -36,6 +46,29 @@ type ToOpenAIMessagesOptions struct {
 	// Mistral/Ollama/etc. has no such option) -- callers other than OpenAI's
 	// and Azure's chat-completions models must leave this false.
 	IncludePromptCacheBreakpoint bool
+
+	// SpreadCompatMetadata merges providerOptions.openaiCompatible of each
+	// message, content part, tool call and tool result into the emitted wire
+	// object, as @ai-sdk/openai-compatible's getOpenAIMetadata does. Only
+	// OpenAI-compatible callers set it.
+	SpreadCompatMetadata bool
+
+	// ReasoningKey, when set, replays assistant reasoning parts as a
+	// top-level string field of that name on the assistant message:
+	// "reasoning_content" for @ai-sdk/openai-compatible (TS #12049) and
+	// "reasoning" for Groq, so multi-turn tool-call conversations keep their
+	// thinking. OpenAI's own chat converter ignores reasoning parts, so only
+	// callers whose TS converter replays them set this.
+	ReasoningKey string
+
+	// WrapToolErrorOutputs sends error-text and error-json tool outputs as
+	// JSON.stringify({error: value}) so the model can tell a failed tool
+	// execution from a successful result (TS #22209,
+	// convert-to-openai-chat-messages.ts). Unique to OpenAI's own
+	// chat-completions conversion; the shared @ai-sdk/openai-compatible
+	// converter keeps the verbatim behavior, so every other caller must leave
+	// this false.
+	WrapToolErrorOutputs bool
 
 	// AssistantToolCallContentMode selects what "content" an assistant
 	// message with tool calls emits, matching each TS converter's own
@@ -86,6 +119,69 @@ type ToOpenAIMessagesOptions struct {
 	// output's JSON-stringified string, the same as SupportsMultiPartToolContent
 	// being false.
 	SupportsMultiPartToolContent bool
+
+	// Provider is the provider name used to resolve file parts whose data is
+	// a provider reference (types.FileDataTypeReference) to the provider's
+	// own file ID, emitted as {"type":"file","file":{"file_id":...}} (TS
+	// #22466: @ai-sdk/openai-compatible resolves references via
+	// resolveProviderReference with the model's providerOptionsName, e.g.
+	// "together"). An empty Provider keeps the legacy behavior (only the
+	// single-string FileContent.Reference is honored). A reference with no ID
+	// for Provider is reported as *errors.NoSuchProviderReferenceError by
+	// ToOpenAIMessagesWithError; ToOpenAIMessages cannot return it and falls
+	// back to the legacy shape.
+	Provider string
+
+	// CompatFileValidation applies @ai-sdk/openai-compatible's strict file
+	// handling (convertToOpenAICompatibleContentPart) to user and tool-result
+	// content; it is shorthand for FileParts = FilePartsOpenAICompatible when
+	// FileParts is unset. A custom tool content block is also rejected.
+	// Violations are reported by ToOpenAIMessagesWithError as
+	// *errors.UnsupportedFunctionalityError; ToOpenAIMessages cannot return them
+	// and keeps the lenient file shape.
+	CompatFileValidation bool
+
+	// FileParts selects the user file-part conversion rules (see
+	// FilePartMode). Rejected files are reported by ToOpenAIMessagesWithError
+	// as *errors.UnsupportedFunctionalityError; ToOpenAIMessages cannot return
+	// the error and falls back to the legacy file part.
+	FileParts FilePartMode
+}
+
+// FilePartMode selects which TS converter's user file-part rules
+// ToOpenAIMessages follows. The zero value keeps the lenient legacy shapes.
+type FilePartMode int
+
+const (
+	// FilePartsLegacy emits a generic {"type":"file"} part for any file the
+	// strict modes would reject (cohere, alibaba and other direct callers).
+	FilePartsLegacy FilePartMode = iota
+	// FilePartsOpenAIChat follows convert-to-openai-chat-messages.ts: images,
+	// wav/mp3 audio and PDF data; everything else is an
+	// UnsupportedFunctionalityError.
+	FilePartsOpenAIChat
+	// FilePartsOpenAICompatible follows
+	// convert-to-openai-compatible-chat-messages.ts: images, video, wav/mp3
+	// audio, PDF data and text/* files (sent as text parts).
+	FilePartsOpenAICompatible
+	// FilePartsGroq follows convert-to-groq-chat-messages.ts: images only.
+	FilePartsGroq
+)
+
+// providerRefResolver resolves provider file references during conversion
+// and records the first conversion error.
+type providerRefResolver struct {
+	provider string
+	// strict is the openai-compatible mode: tool-result file parts follow
+	// the same rules and custom tool content blocks are rejected.
+	strict bool
+	err    error
+}
+
+func (r *providerRefResolver) fail(err error) {
+	if r != nil && r.err == nil {
+		r.err = err
+	}
 }
 
 // AssistantToolCallContentMode is documented on
@@ -110,10 +206,79 @@ const (
 // opts is variadic so existing call sites are unaffected; at most the first
 // element is used.
 func ToOpenAIMessages(messages []types.Message, opts ...ToOpenAIMessagesOptions) []map[string]interface{} {
+	result, _ := ToOpenAIMessagesWithError(messages, opts...)
+	return result
+}
+
+// ToOpenAIMessagesWithError is ToOpenAIMessages that also reports prompt
+// conversion errors, currently a file part whose provider reference has no
+// file ID for ToOpenAIMessagesOptions.Provider
+// (*errors.NoSuchProviderReferenceError). The returned messages are still
+// complete on error (the offending part is emitted in the legacy shape) so
+// callers that ignore the error behave as with ToOpenAIMessages.
+func ToOpenAIMessagesWithError(messages []types.Message, opts ...ToOpenAIMessagesOptions) ([]map[string]interface{}, error) {
 	var opt ToOpenAIMessagesOptions
 	if len(opts) > 0 {
 		opt = opts[0]
 	}
+	if opt.FileParts == FilePartsLegacy && opt.CompatFileValidation {
+		opt.FileParts = FilePartsOpenAICompatible
+	}
+	refs := &providerRefResolver{provider: opt.Provider, strict: opt.FileParts == FilePartsOpenAICompatible}
+	result := toOpenAIMessages(messages, opt, refs)
+	if refs.err != nil {
+		return result, refs.err
+	}
+	return result, nil
+}
+
+// ValidateProviderFileReferences reports the
+// *errors.NoSuchProviderReferenceError ToOpenAIMessagesWithError would
+// return for a file part whose provider reference has no file ID for
+// providerName. Providers whose request builders cannot return an error call
+// it before building the body.
+func ValidateProviderFileReferences(messages []types.Message, providerName string) error {
+	return ValidateOpenAIFileParts(messages, FilePartsOpenAICompatible, providerName)
+}
+
+// ValidateOpenAIFileParts reports the *errors.UnsupportedFunctionalityError (or
+// NoSuchProviderReferenceError) the TS converter for mode raises for a user
+// file part. Providers whose request builders cannot return an error call it
+// before building the body.
+func ValidateOpenAIFileParts(messages []types.Message, mode FilePartMode, providerName string) error {
+	_, err := ToOpenAIMessagesWithError(messages, ToOpenAIMessagesOptions{Provider: providerName, FileParts: mode})
+	return err
+}
+
+// RejectProviderReferenceFiles returns an *errors.UnsupportedFunctionalityError
+// ("file parts with provider references") when any message holds a file part
+// whose data is a provider reference. Providers with no file-ID API (Groq,
+// Mistral chat, Alibaba chat, Cohere, ...) call it before building a request,
+// matching their TS converters.
+func RejectProviderReferenceFiles(messages []types.Message) error {
+	for _, msg := range messages {
+		for _, part := range msg.Content {
+			var fc types.FileContent
+			switch p := part.(type) {
+			case types.FileContent:
+				fc = p
+			case *types.FileContent:
+				if p == nil {
+					continue
+				}
+				fc = *p
+			default:
+				continue
+			}
+			if fc.FileData.Type == types.FileDataTypeReference {
+				return &providererrors.UnsupportedFunctionalityError{Functionality: "file parts with provider references"}
+			}
+		}
+	}
+	return nil
+}
+
+func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, refs *providerRefResolver) []map[string]interface{} {
 	messages = MergeConsecutiveToolMessages(messages)
 	result := make([]map[string]interface{}, 0, len(messages))
 
@@ -129,23 +294,26 @@ func ToOpenAIMessages(messages []types.Message, opts ...ToOpenAIMessagesOptions)
 						"tool_call_id": p.ToolCallID,
 					}
 					if opt.SupportsMultiPartToolContent {
-						if parts, ok := openAIToolResultContentParts(p); ok {
+						if parts, ok := openAIToolResultContentParts(p, refs); ok {
 							toolMsg["content"] = parts
+							spreadCompatMetadata(toolMsg, p.ProviderOptions, opt.SpreadCompatMetadata)
 							result = append(result, toolMsg)
 							continue
 						}
 					}
-					text := openAIToolResultText(p)
+					text := openAIToolResultTextWithErrors(p, opt.WrapToolErrorOutputs)
 					if opt.IncludePromptCacheBreakpoint {
 						if bp, ok := openAIToolResultPromptCacheBreakpoint(p); ok {
 							toolMsg["content"] = []map[string]interface{}{
 								{"type": "text", "text": text, "prompt_cache_breakpoint": bp},
 							}
+							spreadCompatMetadata(toolMsg, p.ProviderOptions, opt.SpreadCompatMetadata)
 							result = append(result, toolMsg)
 							continue
 						}
 					}
 					toolMsg["content"] = text
+					spreadCompatMetadata(toolMsg, p.ProviderOptions, opt.SpreadCompatMetadata)
 					result = append(result, toolMsg)
 				}
 			}
@@ -183,15 +351,51 @@ func ToOpenAIMessages(messages []types.Message, opts ...ToOpenAIMessagesOptions)
 
 		// Assistant messages that made tool calls must carry the tool_calls array
 		// so that the subsequent tool role messages are considered valid by OpenAI.
+		if msg.Role == types.RoleAssistant && len(msg.ToolCalls) == 0 {
+			// TS-shaped assistant messages carry tool calls as content parts.
+			for _, part := range msg.Content {
+				var tc types.ToolCallContent
+				switch p := part.(type) {
+				case types.ToolCallContent:
+					tc = p
+				case *types.ToolCallContent:
+					if p == nil {
+						continue
+					}
+					tc = *p
+				default:
+					continue
+				}
+				msg.ToolCalls = append(msg.ToolCalls, types.ToolCall{ID: tc.ToolCallID, ToolName: tc.ToolName, Arguments: tc.Arguments, RawArguments: tc.Input})
+			}
+		}
 		if msg.Role == types.RoleAssistant && len(msg.ToolCalls) > 0 {
 			toolCalls := openAIToolCalls(msg.ToolCalls, opt.SanitizeReplayedToolCallArguments)
+			if opt.SpreadCompatMetadata {
+				for _, part := range msg.Content {
+					if tc, ok := part.(types.ToolCallContent); ok {
+						for _, c := range toolCalls {
+							if id, _ := c["id"].(string); id == tc.ToolCallID {
+								spreadCompatMetadata(c, tc.ProviderOptions, true)
+							}
+						}
+					}
+				}
+			}
+			if opt.ThoughtSignatureKey != "" {
+				applyThoughtSignatures(toolCalls, msg, opt.ThoughtSignatureKey)
+			}
 			openAIMsg["tool_calls"] = toolCalls
+			if reasoning := assistantReasoningContent(msg.Content); opt.ReasoningKey != "" && reasoning != "" {
+				openAIMsg[opt.ReasoningKey] = reasoning
+			}
 			if opt.IncludePromptCacheBreakpoint {
 				if textParts, hasBreakpoint := assistantTextPartsWithBreakpoint(msg.Content); hasBreakpoint {
 					openAIMsg["content"] = textParts
 					if msg.Name != "" {
 						openAIMsg["name"] = msg.Name
 					}
+					spreadCompatMetadata(openAIMsg, msg.ProviderOptions, opt.SpreadCompatMetadata)
 					result = append(result, openAIMsg)
 					continue
 				}
@@ -212,6 +416,32 @@ func ToOpenAIMessages(messages []types.Message, opts ...ToOpenAIMessagesOptions)
 			if msg.Name != "" {
 				openAIMsg["name"] = msg.Name
 			}
+			spreadCompatMetadata(openAIMsg, msg.ProviderOptions, opt.SpreadCompatMetadata)
+			result = append(result, openAIMsg)
+			continue
+		}
+
+		// Assistant messages without tool calls: TS concatenates every text
+		// part into one content string (an array of text parts only when a
+		// part carries a prompt cache breakpoint) and ignores every other part
+		// type. Messages holding provider-specific custom blocks keep the
+		// part-array form below.
+		if msg.Role == types.RoleAssistant && !hasOpenAICustomBlock(msg.Content) {
+			if opt.IncludePromptCacheBreakpoint {
+				if textParts, hasBreakpoint := assistantTextPartsWithBreakpoint(msg.Content); hasBreakpoint {
+					openAIMsg["content"] = textParts
+				}
+			}
+			if _, set := openAIMsg["content"]; !set {
+				openAIMsg["content"] = assistantTextContent(msg.Content)
+			}
+			if reasoning := assistantReasoningContent(msg.Content); opt.ReasoningKey != "" && reasoning != "" {
+				openAIMsg[opt.ReasoningKey] = reasoning
+			}
+			if msg.Name != "" {
+				openAIMsg["name"] = msg.Name
+			}
+			spreadCompatMetadata(openAIMsg, msg.ProviderOptions, opt.SpreadCompatMetadata)
 			result = append(result, openAIMsg)
 			continue
 		}
@@ -228,19 +458,26 @@ func ToOpenAIMessages(messages []types.Message, opts ...ToOpenAIMessagesOptions)
 				}
 			}
 		}
+		singleTextMetadata := false
 		if useSingleTextShortcut {
 			if textContent, ok := msg.Content[0].(types.TextContent); ok {
 				openAIMsg["content"] = textContent.Text
+				// TS spreads the lone text part's metadata, not the message's.
+				if msg.Role == types.RoleUser {
+					spreadCompatMetadata(openAIMsg, textContent.ProviderOptions, opt.SpreadCompatMetadata)
+					singleTextMetadata = true
+				}
 			}
 		} else if len(msg.Content) > 0 {
 			contentParts := make([]map[string]interface{}, 0, len(msg.Content))
-			for _, part := range msg.Content {
+			for partIndex, part := range msg.Content {
 				switch p := part.(type) {
 				case types.TextContent:
 					textPart := map[string]interface{}{
 						"type": "text",
 						"text": p.Text,
 					}
+					spreadCompatMetadata(textPart, p.ProviderOptions, opt.SpreadCompatMetadata)
 					if opt.IncludePromptCacheBreakpoint {
 						if bp, ok := openAIPromptCacheBreakpoint(p.ProviderOptions); ok {
 							textPart["prompt_cache_breakpoint"] = bp
@@ -265,6 +502,7 @@ func ToOpenAIMessages(messages []types.Message, opts ...ToOpenAIMessagesOptions)
 						"type":      "image_url",
 						"image_url": imageURL,
 					}
+					spreadCompatMetadata(imagePart, p.ProviderOptions, opt.SpreadCompatMetadata)
 					if opt.IncludePromptCacheBreakpoint {
 						if bp, ok := openAIPromptCacheBreakpoint(p.ProviderOptions); ok {
 							imagePart["prompt_cache_breakpoint"] = bp
@@ -272,7 +510,26 @@ func ToOpenAIMessages(messages []types.Message, opts ...ToOpenAIMessagesOptions)
 					}
 					contentParts = append(contentParts, imagePart)
 				case types.FileContent:
-					filePart := openAIFileContentPart(p, opt.AllowVideo)
+					var filePart map[string]interface{}
+					if opt.FileParts != FilePartsLegacy {
+						strict, err := openAIStrictFilePart(p, opt.FileParts, refs)
+						if err != nil {
+							if refs.err == nil {
+								refs.err = err
+							}
+						} else if strict != nil {
+							filePart = strict
+						}
+					}
+					if filePart == nil {
+						filePart = openAIFileContentPartResolving(p, opt.AllowVideo, refs)
+					}
+					if opt.SpreadCompatMetadata {
+						withDefaultPDFFilename(filePart, "document.pdf")
+					} else {
+						withDefaultPDFFilename(filePart, fmt.Sprintf("part-%d.pdf", partIndex))
+					}
+					spreadCompatMetadata(filePart, p.ProviderOptions, opt.SpreadCompatMetadata)
 					if opt.IncludePromptCacheBreakpoint {
 						if bp, ok := openAIPromptCacheBreakpoint(p.ProviderOptions); ok {
 							filePart["prompt_cache_breakpoint"] = bp
@@ -304,6 +561,9 @@ func ToOpenAIMessages(messages []types.Message, opts ...ToOpenAIMessagesOptions)
 		if msg.Name != "" {
 			openAIMsg["name"] = msg.Name
 		}
+		if !singleTextMetadata {
+			spreadCompatMetadata(openAIMsg, msg.ProviderOptions, opt.SpreadCompatMetadata)
+		}
 
 		result = append(result, openAIMsg)
 	}
@@ -333,7 +593,7 @@ func openAIToolCalls(toolCalls []types.ToolCall, sanitizeReplayedArguments bool)
 			if args == nil {
 				args = map[string]interface{}{}
 			}
-			argsJSON, _ := json.Marshal(args)
+			argsJSON, _ := jsonstr.Marshal(args)
 			arguments = string(argsJSON)
 		}
 		result = append(result, map[string]interface{}{
@@ -348,14 +608,61 @@ func openAIToolCalls(toolCalls []types.ToolCall, sanitizeReplayedArguments bool)
 	return result
 }
 
+// spreadCompatMetadata merges providerOptions.openaiCompatible into dst (TS
+// `...getOpenAIMetadata(x)`): metadata keys overwrite earlier wire keys.
+func spreadCompatMetadata(dst map[string]interface{}, providerOptions map[string]interface{}, enabled bool) {
+	if !enabled {
+		return
+	}
+	meta, _ := providerOptions["openaiCompatible"].(map[string]interface{})
+	for k, v := range meta {
+		dst[k] = v
+	}
+}
+
 func assistantTextContent(content []types.ContentPart) string {
 	var b strings.Builder
 	for _, part := range content {
-		if text, ok := part.(types.TextContent); ok {
+		switch text := part.(type) {
+		case types.TextContent:
 			b.WriteString(text.Text)
+		case *types.TextContent:
+			if text != nil {
+				b.WriteString(text.Text)
+			}
 		}
 	}
 	return b.String()
+}
+
+// assistantReasoningContent concatenates an assistant message's reasoning
+// parts (TS openai-compatible `reasoning += part.text`).
+func assistantReasoningContent(content []types.ContentPart) string {
+	var b strings.Builder
+	for _, part := range content {
+		switch r := part.(type) {
+		case types.ReasoningContent:
+			b.WriteString(r.Text)
+		case *types.ReasoningContent:
+			if r != nil {
+				b.WriteString(r.Text)
+			}
+		}
+	}
+	return b.String()
+}
+
+// hasOpenAICustomBlock reports whether content holds a CustomContent part
+// carrying openai-keyed provider options that must be forwarded verbatim.
+func hasOpenAICustomBlock(content []types.ContentPart) bool {
+	for _, part := range content {
+		if c, ok := part.(types.CustomContent); ok {
+			if _, ok := c.ProviderOptions["openai"].(map[string]interface{}); ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // assistantTextPartsWithBreakpoint builds the per-part "text" array TS emits
@@ -457,7 +764,17 @@ func openAIToolResultPromptCacheBreakpoint(p types.ToolResultContent) (interface
 // resolveToolOutput (shared with the Anthropic converter) also handles the
 // legacy Result/Error fields (P1-1 7259126).
 func openAIToolResultText(p types.ToolResultContent) string {
+	return openAIToolResultTextWithErrors(p, false)
+}
+
+// openAIToolResultTextWithErrors is openAIToolResultText with optional
+// {"error": value} wrapping of error-text / error-json outputs (OpenAI's own
+// chat converter only; see ToOpenAIMessagesOptions.WrapToolErrorOutputs).
+func openAIToolResultTextWithErrors(p types.ToolResultContent, wrapErrors bool) string {
 	out := resolveToolOutput(p)
+	if wrapErrors && (out.kind == "error-text" || out.kind == "error-json") {
+		return jsonStringify(map[string]interface{}{"error": out.value})
+	}
 	switch out.kind {
 	case "text", "error-text":
 		return stringValue(out.value)
@@ -493,7 +810,7 @@ func openAIToolResultText(p types.ToolResultContent) string {
 // to openAIToolResultText's JSON-stringified string, matching
 // SupportsMultiPartToolContent being false (see its doc comment for why
 // this differs from TS's throwing behavior).
-func openAIToolResultContentParts(p types.ToolResultContent) (parts []map[string]interface{}, ok bool) {
+func openAIToolResultContentParts(p types.ToolResultContent, refs *providerRefResolver) (parts []map[string]interface{}, ok bool) {
 	out := resolveToolOutput(p)
 	if out.kind != "content" {
 		return nil, false
@@ -507,7 +824,7 @@ func openAIToolResultContentParts(p types.ToolResultContent) (parts []map[string
 	}
 	parts = make([]map[string]interface{}, 0, len(blocks))
 	for _, block := range blocks {
-		part, ok := openAIToolResultContentBlockPart(block)
+		part, ok := openAIToolResultContentBlockPart(block, refs)
 		if !ok {
 			return nil, false
 		}
@@ -521,7 +838,7 @@ func openAIToolResultContentParts(p types.ToolResultContent) (parts []map[string
 // openAIFileContentPart's (lenient) file/image conversion. ok is false for a
 // block type with no representable shape here (e.g. a provider-specific
 // custom block), signaling the caller to fall back to the stringified form.
-func openAIToolResultContentBlockPart(block types.ToolResultContentBlock) (map[string]interface{}, bool) {
+func openAIToolResultContentBlockPart(block types.ToolResultContentBlock, refs *providerRefResolver) (map[string]interface{}, bool) {
 	switch b := block.(type) {
 	case types.TextContentBlock:
 		return map[string]interface{}{"type": "text", "text": b.Text}, true
@@ -538,16 +855,45 @@ func openAIToolResultContentBlockPart(block types.ToolResultContentBlock) (map[s
 		if !b.FileData.IsZero() {
 			fc.FileData = b.FileData
 		}
-		return openAIFileContentPart(fc, true), true
+		part := strictToolFilePart(fc, refs)
+		if part == nil {
+			part = openAIFileContentPartResolving(fc, true, refs)
+		}
+		withDefaultPDFFilename(part, "document.pdf")
+		return part, true
 	case types.ImageContentBlock:
-		return openAIFileContentPart(types.FileContent{
+		img := types.FileContent{
 			MediaType:       b.MediaType,
 			Data:            b.Data,
 			ProviderOptions: b.ProviderOptions,
-		}, true), true
+		}
+		if part := strictToolFilePart(img, refs); part != nil {
+			return part, true
+		}
+		return openAIFileContentPartResolving(img, true, refs), true
 	default:
+		if refs != nil && refs.strict && block != nil && block.ToolResultContentType() == "custom" {
+			refs.fail(&providererrors.UnsupportedFunctionalityError{Functionality: "custom tool content parts"})
+		}
 		return nil, false
 	}
+}
+
+// strictToolFilePart converts a tool-result file part with the
+// openai-compatible rules (TS convertToolContentPart uses
+// convertToOpenAICompatibleContentPart). It returns nil when the lenient path
+// should handle the part (not compat mode, a provider reference, or an error
+// already recorded on refs).
+func strictToolFilePart(file types.FileContent, refs *providerRefResolver) map[string]interface{} {
+	if refs == nil || !refs.strict {
+		return nil
+	}
+	part, err := openAIStrictFilePart(file, FilePartsOpenAICompatible, refs)
+	if err != nil {
+		refs.fail(err)
+		return nil
+	}
+	return part
 }
 
 // ExtractSystemMessage extracts the system message from a list of messages
@@ -564,11 +910,37 @@ func ExtractSystemMessage(messages []types.Message) string {
 }
 
 func openAIFileContentPart(file types.FileContent, allowVideo bool) map[string]interface{} {
+	return openAIFileContentPartResolving(file, allowVideo, nil)
+}
+
+func openAIFileContentPartResolving(file types.FileContent, allowVideo bool, refs *providerRefResolver) map[string]interface{} {
 	// The core builds file parts with the tagged FileData only (for example
-	// from UI messages); sync the legacy Data/URL fields this converter reads.
+	// from UI messages); sync the legacy Data/URL/Reference/Text fields this
+	// converter reads.
 	if !file.FileData.IsZero() {
 		if normalized, err := NormalizeFileContent(file); err == nil {
 			file = normalized
+		}
+	}
+	// A provider-reference file resolves to the provider's own file ID for
+	// any media type (TS #22466), keeping the part-level
+	// providerOptions.openaiCompatible metadata.
+	if refs != nil && refs.provider != "" && file.FileData.Type == types.FileDataTypeReference {
+		id, err := providerutils.ResolveProviderReference(file.FileData.Reference, refs.provider)
+		if err == nil {
+			part := map[string]interface{}{
+				"type": "file",
+				"file": map[string]interface{}{"file_id": id},
+			}
+			if meta, ok := file.ProviderOptions["openaiCompatible"].(map[string]interface{}); ok {
+				for k, v := range meta {
+					part[k] = v
+				}
+			}
+			return part
+		}
+		if refs.err == nil {
+			refs.err = err
 		}
 	}
 	mediaType := firstNonEmpty(file.MediaType, file.MimeType, file.FileData.MediaType)
@@ -628,6 +1000,19 @@ func openAIFileContentPart(file types.FileContent, allowVideo bool) map[string]i
 		}
 	}
 
+	// PDFs use the Chat Completions shape of both TS converters: a filename
+	// and file_data as a data URI. The filename default (part-<index>.pdf for
+	// OpenAI, document.pdf for OpenAI-compatible) is applied by the caller.
+	if len(file.Data) > 0 && file.Reference == "" && file.URL == "" && file.Text == "" && mediaType == "application/pdf" {
+		fileObject := map[string]interface{}{
+			"file_data": "data:application/pdf;base64," + base64.StdEncoding.EncodeToString(file.Data),
+		}
+		if file.Filename != "" {
+			fileObject["filename"] = file.Filename
+		}
+		return map[string]interface{}{"type": "file", "file": fileObject}
+	}
+
 	fileObject := map[string]interface{}{}
 	if file.Filename != "" {
 		fileObject["filename"] = file.Filename
@@ -648,6 +1033,21 @@ func openAIFileContentPart(file types.FileContent, allowVideo bool) map[string]i
 	return map[string]interface{}{
 		"type": "file",
 		"file": fileObject,
+	}
+}
+
+// withDefaultPDFFilename names a data-URI PDF file part that carries no
+// filename (TS `part.filename ?? name`).
+func withDefaultPDFFilename(part map[string]interface{}, name string) {
+	file, ok := part["file"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	if data, _ := file["file_data"].(string); !strings.HasPrefix(data, "data:application/pdf;base64,") {
+		return
+	}
+	if _, has := file["filename"]; !has {
+		file["filename"] = name
 	}
 }
 
@@ -736,4 +1136,50 @@ func ValidateMessages(messages []types.Message) error {
 	}
 
 	return nil
+}
+
+// applyThoughtSignatures adds extra_content.google.thought_signature to the
+// converted tool calls whose source carries a thought signature.
+func applyThoughtSignatures(toolCalls []map[string]interface{}, msg types.Message, key string) {
+	sigs := map[string]string{}
+	fromOptions := func(po map[string]interface{}) string {
+		for _, k := range []string{key, "google"} {
+			if m, ok := po[k].(map[string]interface{}); ok {
+				if v, ok := m["thoughtSignature"]; ok && v != nil && v != "" {
+					return fmt.Sprint(v)
+				}
+			}
+		}
+		return ""
+	}
+	for _, part := range msg.Content {
+		if tc, ok := part.(types.ToolCallContent); ok {
+			if sig := fromOptions(tc.ProviderOptions); sig != "" {
+				sigs[tc.ToolCallID] = sig
+			}
+		}
+	}
+	for _, tc := range msg.ToolCalls {
+		if sigs[tc.ID] != "" {
+			continue
+		}
+		if tc.ThoughtSignature != "" {
+			sigs[tc.ID] = tc.ThoughtSignature
+		} else if sig := fromOptions(tc.ProviderMetadata); sig != "" {
+			sigs[tc.ID] = sig
+		}
+	}
+	for _, c := range toolCalls {
+		if id, _ := c["id"].(string); sigs[id] != "" {
+			c["extra_content"] = map[string]interface{}{"google": map[string]interface{}{"thought_signature": sigs[id]}}
+		}
+	}
+}
+
+// ToolResultText returns the text a provider that sends tool results as plain
+// strings uses for a tool-result part: text and error-text verbatim, the
+// execution-denied reason (or "Tool call execution denied."), and
+// JSON.stringify of the value (the block array for content outputs) otherwise.
+func ToolResultText(p types.ToolResultContent) string {
+	return openAIToolResultText(p)
 }

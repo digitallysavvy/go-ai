@@ -3,10 +3,12 @@ package quiverai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -76,6 +78,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if opts == nil {
 		opts = &provider.ImageGenerateOptions{}
 	}
+	if err := validateImageOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	quiverOpts, err := parseQuiverAIImageModelOptions(quiverRawOptions(opts.ProviderOptions))
 	if err != nil {
 		return nil, err
@@ -90,16 +95,38 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 	var response svgGenerationResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    operationPath(operation),
-		Body:    body,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaQuiverSVG),
+		Method:           http.MethodPost,
+		Path:             operationPath(operation),
+		Body:             body,
+		Headers:          opts.Headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 	if len(response.Data) == 0 {
-		return nil, providererrors.NewProviderError("quiverai", 0, "", "no SVGs in response", nil)
+		// Unreachable for a conforming body: the TS schema requires data.min(1),
+		// so an empty array is "Invalid JSON response" before this point.
+		return &types.ImageResult{}, nil
+	}
+
+	// TS spreads loop_period_ms / opening_animation_ms when `!== undefined`, so
+	// an explicit null is reported as null; only an absent key is omitted.
+	var rawResponse struct {
+		Data []struct {
+			LoopPeriodMs       json.RawMessage `json:"loop_period_ms"`
+			OpeningAnimationMs json.RawMessage `json:"opening_animation_ms"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(resp.Body, &rawResponse)
+	nullable := func(raw json.RawMessage, v *int) (interface{}, bool) {
+		if raw == nil {
+			return nil, false
+		}
+		if v == nil {
+			return nil, true
+		}
+		return *v, true
 	}
 
 	images := make([][]byte, len(response.Data))
@@ -110,11 +137,13 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 			"index":    i,
 			"mimeType": image.MimeType,
 		}
-		if image.LoopPeriodMs != nil {
-			meta["loopPeriodMs"] = *image.LoopPeriodMs
-		}
-		if image.OpeningAnimationMs != nil {
-			meta["openingAnimationMs"] = *image.OpeningAnimationMs
+		if i < len(rawResponse.Data) {
+			if v, ok := nullable(rawResponse.Data[i].LoopPeriodMs, image.LoopPeriodMs); ok {
+				meta["loopPeriodMs"] = v
+			}
+			if v, ok := nullable(rawResponse.Data[i].OpeningAnimationMs, image.OpeningAnimationMs); ok {
+				meta["openingAnimationMs"] = v
+			}
 		}
 		imageMetadata[i] = meta
 	}
@@ -159,7 +188,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 
 func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, operation string, quiverOpts *QuiverAIImageModelOptions) (map[string]interface{}, error) {
 	if isArrow2Model(m.modelID) && quiverOpts.MaxOutputTokens != nil && *quiverOpts.MaxOutputTokens > maxArrow2OutputTokens {
-		return nil, invalidQuiverArgument("providerOptions.quiverai.maxOutputTokens", fmt.Sprintf("QuiverAI model %q supports at most %d output tokens.", m.modelID, maxArrow2OutputTokens))
+		return nil, invalidQuiverArgument("maxOutputTokens", fmt.Sprintf("QuiverAI model %q supports at most %d output tokens.", m.modelID, maxArrow2OutputTokens))
 	}
 
 	if operation != OperationEdit {
@@ -194,6 +223,8 @@ func buildSharedOptions(quiverOpts *QuiverAIImageModelOptions) map[string]interf
 	}
 	if quiverOpts.PresencePenalty != nil {
 		shared["presence_penalty"] = *quiverOpts.PresencePenalty
+	} else if quiverOpts.presencePenaltyNull {
+		shared["presence_penalty"] = nil
 	}
 	if quiverOpts.MaxOutputTokens != nil {
 		shared["max_output_tokens"] = *quiverOpts.MaxOutputTokens
@@ -221,7 +252,7 @@ func attributesToWire(attrs *QuiverAIAttributes) map[string]interface{} {
 }
 
 func (m *ImageModel) buildGenerateBody(opts *provider.ImageGenerateOptions, quiverOpts *QuiverAIImageModelOptions) (map[string]interface{}, error) {
-	if strings.TrimSpace(opts.Prompt) == "" {
+	if providerutils.JSTrim(opts.Prompt) == "" {
 		return nil, invalidQuiverArgument("prompt", "QuiverAI image generation requires a non-empty prompt for generateImage.")
 	}
 	maxReferences := getGenerateReferenceLimit(m.modelID)
@@ -281,10 +312,10 @@ func (m *ImageModel) buildEditBody(opts *provider.ImageGenerateOptions, quiverOp
 	if !isArrow2Model(m.modelID) {
 		return nil, invalidQuiverArgument("modelId", `QuiverAI SVG editing is supported by the "arrow-2" and "arrow-2-telos" models.`)
 	}
-	if strings.TrimSpace(opts.Prompt) == "" {
+	if providerutils.JSTrim(opts.Prompt) == "" {
 		return nil, invalidQuiverArgument("prompt", "QuiverAI SVG editing requires a non-empty instruction in generateImage prompt.text.")
 	}
-	if len(opts.Prompt) > 4000 {
+	if len(utf16.Encode([]rune(opts.Prompt))) > 4000 {
 		return nil, invalidQuiverArgument("prompt", "QuiverAI SVG editing instructions must contain at most 4000 characters.")
 	}
 	if len(opts.Files) == 0 {
@@ -387,7 +418,7 @@ func (m *ImageModel) buildAnimateBody(opts *provider.ImageGenerateOptions, quive
 	// opts.Prompt == "" is treated as "no animation instruction provided" (Go
 	// has no separate undefined/empty distinction here); whitespace-only text
 	// is rejected the same way the TS SDK rejects an explicitly blank prompt.
-	if opts.Prompt != "" && strings.TrimSpace(opts.Prompt) == "" {
+	if opts.Prompt != "" && providerutils.JSTrim(opts.Prompt) == "" {
 		return nil, invalidQuiverArgument("prompt", "QuiverAI animate requires a non-empty prompt when an animation instruction is provided.")
 	}
 
@@ -396,7 +427,7 @@ func (m *ImageModel) buildAnimateBody(opts *provider.ImageGenerateOptions, quive
 		return nil, invalidQuiverArgument("providerOptions.quiverai.instructions", "QuiverAI animate does not support providerOptions.quiverai.instructions.")
 	case quiverOpts.TopP != nil:
 		return nil, invalidQuiverArgument("providerOptions.quiverai.topP", "QuiverAI animate does not support providerOptions.quiverai.topP.")
-	case quiverOpts.PresencePenalty != nil:
+	case quiverOpts.PresencePenalty != nil || quiverOpts.presencePenaltyNull:
 		return nil, invalidQuiverArgument("providerOptions.quiverai.presencePenalty", "QuiverAI animate does not support providerOptions.quiverai.presencePenalty.")
 	case quiverOpts.Attributes != nil:
 		return nil, invalidQuiverArgument("providerOptions.quiverai.attributes", "QuiverAI animate does not support providerOptions.quiverai.attributes.")
@@ -478,8 +509,19 @@ func quiverRawOptions(providerOptions map[string]interface{}) map[string]interfa
 	if providerOptions == nil {
 		return nil
 	}
-	m, _ := providerOptions["quiverai"].(map[string]interface{})
-	return m
+	raw := providerOptions["quiverai"]
+	if m, ok := raw.(map[string]interface{}); ok {
+		// Nested Go-typed values ([]string, []map[string]string, ints) read
+		// like their JSON form, the form validateImageOptions checked.
+		if encoded, err := json.Marshal(m); err == nil {
+			var normalized map[string]interface{}
+			if json.Unmarshal(encoded, &normalized) == nil {
+				return normalized
+			}
+		}
+		return m
+	}
+	return nil
 }
 
 func quiverWarnings(opts *provider.ImageGenerateOptions) []types.Warning {
@@ -500,14 +542,23 @@ func quiverWarnings(opts *provider.ImageGenerateOptions) []types.Warning {
 }
 
 func (m *ImageModel) handleError(err error) error {
-	if statusErr, ok := err.(*internalhttp.HTTPStatusError); ok {
-		var apiErr quiverAPIError
-		if json.Unmarshal(statusErr.Body, &apiErr) == nil && apiErr.Message != "" {
-			return providererrors.NewProviderError("quiverai", statusErr.StatusCode, apiErr.Code, apiErr.Message, err)
-		}
-		return providererrors.NewProviderError("quiverai", statusErr.StatusCode, "", string(statusErr.Body), err)
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
 	}
-	return providererrors.NewProviderError("quiverai", http.StatusInternalServerError, "", err.Error(), err)
+	var statusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		code, message := "", http.StatusText(statusErr.StatusCode)
+		if apiErr, ok := parseQuiverAIErrorBody(statusErr.Body); ok {
+			code, message = apiErr.Code, apiErr.Message
+		}
+		perr := providererrors.NewProviderErrorFromResponse("quiverai", 0, code, message, err)
+		perr.Retryable = quiverAIRetryable(statusErr.StatusCode)
+		return perr
+	}
+	// Not an HTTP response (an abort, "Cannot connect to API", an invalid-JSON
+	// body already typed as an APICallError): TS lets these through unchanged,
+	// and a made-up 500 would make a cancelled call look retryable.
+	return err
 }
 
 type svgGenerationResponse struct {

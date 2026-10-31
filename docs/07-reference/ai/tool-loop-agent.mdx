@@ -73,7 +73,7 @@ func (a *ToolLoopAgent) Version() string
 | Field | Type | Description |
 |-------|------|-------------|
 | Text | string | Agent's final text output |
-| Output | interface{} | Parsed/structured output when an output strategy is configured |
+| Output | interface{} | Final output: the final text parsed with the output strategy, or the final text (a string) when none is configured; nil after a tool-calls finish or an empty non-stop finish |
 | Steps | []types.StepResult | All steps in the loop |
 | ToolResults | []types.ToolResult | All tool results from execution |
 | FinishReason | types.FinishReason | Final finish reason |
@@ -179,6 +179,7 @@ These tables are generated from the `agent.AgentConfig` and `agent.PrepareCallCo
 | `Tools` | `[]types.Tool` | Tools available to the agent |
 | `ActiveTools` | `[]string` | ActiveTools restricts the available tools by name before model calls. |
 | `ToolOrder` | `[]string` | ToolOrder controls the order tools are sent to providers. |
+| `ToolCallConcurrency` | `*int` | ToolCallConcurrency is the maximum number of tool calls that may execute concurrently within a step. Set to 1 to execute tool calls sequentially in the order they were generated. Must be &gt;= 1 when set. When unset, all tool calls of a step execute concurrently. Applies to Generate, Stream and the legacy Execute/GenerateAgent loop. Mirrors TS ToolLoopAgentSettings.toolCallConcurrency. |
 | `ExperimentalToolCallers` | `ai.ExperimentalToolCallers` | ExperimentalToolCallers configures which tools may call which other tools, and which tools stay hidden until discovered via ai.ToolSearch. Forwarded to the underlying GenerateText/StreamText call. Mirrors the TypeScript SDK's ToolLoopAgentSettings.experimental_toolCallers. |
 | `Skills` | `*SkillRegistry` | Skills are reusable agent behaviors Skills can be registered and executed by the agent |
 | `Subagents` | `*SubagentRegistry` | Subagents are specialized agents that can be delegated to The main agent can delegate tasks to subagents for specialized processing |
@@ -231,6 +232,9 @@ These tables are generated from the `agent.AgentConfig` and `agent.PrepareCallCo
 | `OnFinish` | `func(result *AgentResult)` |  |
 | `OnStart` | `func(ctx context.Context, e ai.OnStartEvent)` | OnStart is called once when agent execution begins. |
 | `OnStepStartEvent` | `func(ctx context.Context, e ai.OnStepStartEvent)` | OnStepStart is called at the beginning of each LLM step. |
+| `OnStepError` | `func(ctx context.Context, e ai.OnStepErrorEvent)` | OnStepError is called when a step that started fails before it produces a step result (the provider call fails or, in Stream, the model stream ends without output). OnStepEnd is not called for such a step. In Generate an abort or timeout also ends the step here; in Stream it ends with OnAbort. Config-only: it has no per-call counterpart (TS #23758). |
+| `ErrorHandler` | `func(ctx context.Context, err error)` | ErrorHandler is called when an error occurs. For Stream it receives the errors of the stream, for Generate it receives the error before it is returned. Aborts and timeouts are not reported. A per-call AgentStreamOptions.OnError fires after it. Config-only (TS onError). |
+| `AbortHandler` | `func(ctx context.Context, steps []types.StepResult)` | AbortHandler is called when Stream is aborted or times out. Generate does not call it: an aborted Generate call returns an error and its step ends with OnStepError. A per-call AgentStreamOptions.OnAbort fires after it. Config-only (TS onAbort). |
 | `OnToolExecutionStart` | `func(ctx context.Context, e ai.OnToolCallStartEvent)` | OnToolExecutionStart is called just before each tool's Execute function runs. |
 | `OnToolExecutionEnd` | `func(ctx context.Context, e ai.OnToolCallFinishEvent)` | OnToolExecutionEnd is called after each tool's Execute function returns. |
 | `OnToolCallStart` | `func(ctx context.Context, e ai.OnToolCallStartEvent)` | OnToolCallStart is the previous Go name for OnToolExecutionStart. Deprecated: use OnToolExecutionStart. |
@@ -272,6 +276,7 @@ These tables are generated from the `agent.AgentConfig` and `agent.PrepareCallCo
 | `ActiveTools` | `[]string` | ActiveTools restricts Tools by name before calling the model. |
 | `ToolChoice` | `types.ToolChoice` | ToolChoice controls how the model may call tools for this call. |
 | `ToolOrder` | `[]string` | ToolOrder controls the order tools are sent to providers for this call. |
+| `ToolCallConcurrency` | `*int` | ToolCallConcurrency is the maximum number of tool calls that may execute concurrently within a step for this call. |
 | `ExperimentalToolCallers` | `ai.ExperimentalToolCallers` | ExperimentalToolCallers configures which tools may call which other tools for this call. |
 | `ToolApproval` | `types.ToolApprovalConfig` | ToolApproval configures automatic approval handling for this call. |
 | `ExperimentalToolApprovalSecret` | `[]byte` | ExperimentalToolApprovalSecret overrides the approval signing secret for this call. |

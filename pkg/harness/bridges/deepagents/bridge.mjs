@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
+import path, { dirname } from "node:path";
 import { argv, env, pid, stdout } from "node:process";
-import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { rgPath } from "@vscode/ripgrep";
+import { appendFile, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { WebSocketServer } from "ws";
 import { ChatAnthropic } from "@langchain/anthropic";
@@ -10,9 +12,73 @@ import { MultiServerMCPClient } from "@langchain/mcp-adapters";
 import { LocalShellBackend, createDeepAgent } from "deepagents";
 import { createMiddleware, toolStrategy } from "langchain";
 import { z } from "zod/v4";
-import { dirname } from "node:path";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
 //#region ../harness/dist/bridge/index.js
+const name = "AI_HarnessBridgeCapabilityUnsupportedError";
+/**
+* Signals an unsupported capability discovered inside a sandbox bridge.
+* `isInstance` also recognizes the serialized error shape received by the
+* host, where it can be translated to `HarnessCapabilityUnsupportedError`.
+*/
+var HarnessBridgeCapabilityUnsupportedError = class extends Error {
+	constructor({ message, harnessId, cause }) {
+		super(message);
+		Object.defineProperty(this, "name", { value: name });
+		this.harnessId = harnessId;
+		this.cause = cause;
+	}
+	static isInstance(error) {
+		return error != null && typeof error === "object" && "name" in error && error.name === name && "message" in error && typeof error.message === "string";
+	}
+};
+function getNormalizedInlineImage(part) {
+	if (part.type === "file" && part.mediaType.startsWith("image/") && part.mediaType !== "image/*" && part.data.type === "data" && typeof part.data.data === "string") return {
+		data: part.data.data,
+		mediaType: part.mediaType
+	};
+}
+function convertHarnessToolModelOutput({ output }) {
+	switch (output.type) {
+		case "text":
+		case "error-text": return {
+			content: [{
+				type: "text",
+				text: output.value
+			}],
+			isError: output.type === "error-text"
+		};
+		case "json":
+		case "error-json": return {
+			content: [{
+				type: "text",
+				text: JSON.stringify(output.value)
+			}],
+			isError: output.type === "error-json"
+		};
+		case "execution-denied": return {
+			content: [{
+				type: "text",
+				text: output.reason ?? "Tool execution denied."
+			}],
+			isError: true
+		};
+		case "content": return {
+			content: output.value.map((part) => {
+				if (part.type === "text") return {
+					type: "text",
+					text: part.text
+				};
+				const image = getNormalizedInlineImage(part);
+				if (image != null) return {
+					type: "image",
+					...image
+				};
+				throw new HarnessBridgeCapabilityUnsupportedError({ message: `Harnesses support only text and inline images in tool model output; unsupported content '${part.type}'.` });
+			}),
+			isError: false
+		};
+	}
+}
 const DEBUG_LEVEL_WEIGHT = {
 	error: 0,
 	warn: 1,
@@ -647,7 +713,12 @@ function createDeepAgentsStreamEventState() {
 		pendingStep: void 0,
 		approvedToolQueue: /* @__PURE__ */ new Map(),
 		approvedRunIds: /* @__PURE__ */ new Map(),
-		dynamicToolRunIds: /* @__PURE__ */ new Set()
+		dynamicToolRunIds: /* @__PURE__ */ new Map(),
+		settledMcpRunIds: /* @__PURE__ */ new Set(),
+		unsettledStepToolCallCount: void 0,
+		observedStepHostInputCount: 0,
+		hostInputWaitingToolCallIds: /* @__PURE__ */ new Set(),
+		earlyFinishStepToolCallIds: /* @__PURE__ */ new Set()
 	};
 }
 const NATIVE_TO_COMMON = {
@@ -659,7 +730,7 @@ const NATIVE_TO_COMMON = {
 function toCommonName(nativeName) {
 	return NATIVE_TO_COMMON[nativeName] ?? nativeName;
 }
-function createEmitStreamEvent({ state, configuredModel, hostToolNames, mcpToolNames, structuredOutputToolNames = /* @__PURE__ */ new Set(), emit }) {
+function createEmitStreamEvent({ state, configuredModel, hostToolNames, mcpToolNames, structuredOutputToolNames = /* @__PURE__ */ new Set(), abortSignal, emit }) {
 	return (event) => {
 		const kind = event.event;
 		const data = event.data ?? {};
@@ -718,7 +789,8 @@ function createEmitStreamEvent({ state, configuredModel, hostToolNames, mcpToolN
 				state.streamedStepOutput = Math.max(state.streamedStepOutput, usage.output_tokens ?? 0);
 			}
 		} else if (kind === "on_chat_model_end") {
-			const usage = data.output?.usage_metadata;
+			const output = data.output;
+			const usage = output?.usage_metadata;
 			const stepInput = usage?.input_tokens ?? state.streamedStepInput;
 			const stepOutput = usage?.output_tokens ?? state.streamedStepOutput;
 			state.inputTokens += stepInput;
@@ -738,14 +810,29 @@ function createEmitStreamEvent({ state, configuredModel, hostToolNames, mcpToolN
 					input: stepInput,
 					output: stepOutput
 				};
+				state.unsettledStepToolCallCount = Array.isArray(output?.tool_calls) ? output.tool_calls.filter((toolCall) => !structuredOutputToolNames.has(toolCall?.name)).length : void 0;
+				emitEarlyFinishStepIfReady({
+					state,
+					emit
+				});
 			}
 		} else if (kind === "on_tool_start") {
 			const toolName = event.name ?? "unknown";
 			if (structuredOutputToolNames.has(toolName)) return;
 			const runId = event.run_id ?? "";
+			if (!nested && hostToolNames.has(toolName) && state.pendingStep) {
+				state.observedStepHostInputCount += 1;
+				emitEarlyFinishStepIfReady({
+					state,
+					emit
+				});
+			}
 			if (!nested && !hostToolNames.has(toolName)) {
 				const isMcpTool = mcpToolNames.has(toolName);
-				if (isMcpTool && runId) state.dynamicToolRunIds.add(runId);
+				if (isMcpTool && runId) {
+					if (state.dynamicToolRunIds.has(runId) || state.settledMcpRunIds.has(runId)) return;
+					state.dynamicToolRunIds.set(runId, toolName);
+				}
 				const queued = state.approvedToolQueue.get(toolName);
 				if (queued && queued.length > 0) {
 					const approvalId = queued.shift();
@@ -770,12 +857,36 @@ function createEmitStreamEvent({ state, configuredModel, hostToolNames, mcpToolN
 					});
 				}
 			}
+		} else if (kind === "on_tool_error") {
+			const toolName = event.name ?? "unknown";
+			const runId = event.run_id ?? "";
+			if (nested || hostToolNames.has(toolName) || structuredOutputToolNames.has(toolName) || abortSignal?.aborted || !runId || data.error === void 0 || state.dynamicToolRunIds.get(runId) !== toolName || state.settledMcpRunIds.has(runId)) return;
+			state.settledMcpRunIds.add(runId);
+			const error = data.error;
+			const message = error instanceof Error ? error.message : error && typeof error === "object" && "message" in error && typeof error.message === "string" ? error.message : String(error);
+			emit({
+				type: "tool-result",
+				toolCallId: state.approvedRunIds.get(runId) ?? runId,
+				toolName: toCommonName(toolName),
+				result: message,
+				isError: true,
+				dynamic: true
+			});
+			state.approvedRunIds.delete(runId);
+			settleStepToolCall({
+				state,
+				emit
+			});
 		} else if (kind === "on_tool_end") {
 			const toolName = event.name ?? "unknown";
 			if (structuredOutputToolNames.has(toolName)) return;
 			const runId = event.run_id ?? "";
 			if (!nested && !hostToolNames.has(toolName)) {
-				const dynamic = state.dynamicToolRunIds.delete(runId);
+				const nativeMcpName = state.dynamicToolRunIds.get(runId);
+				if (nativeMcpName !== void 0 ? nativeMcpName !== toolName || state.settledMcpRunIds.has(runId) : mcpToolNames.has(toolName)) return;
+				const dynamic = nativeMcpName !== void 0;
+				if (dynamic) state.settledMcpRunIds.add(runId);
+				const isError = dynamic && data.output !== null && typeof data.output === "object" && "status" in data.output && data.output.status === "error";
 				let output = data.output ?? "";
 				if (output && typeof output === "object" && "content" in output) output = output.content;
 				emit({
@@ -783,9 +894,14 @@ function createEmitStreamEvent({ state, configuredModel, hostToolNames, mcpToolN
 					toolCallId: state.approvedRunIds.get(runId) ?? runId,
 					toolName: toCommonName(toolName),
 					result: output ?? null,
+					...isError ? { isError: true } : {},
 					...dynamic ? { dynamic: true } : {}
 				});
 				state.approvedRunIds.delete(runId);
+				settleStepToolCall({
+					state,
+					emit
+				});
 			}
 		}
 	};
@@ -819,6 +935,65 @@ function flushStep({ state, emit }) {
 		}
 	});
 	state.pendingStep = void 0;
+	state.unsettledStepToolCallCount = void 0;
+	state.observedStepHostInputCount = 0;
+	state.earlyFinishStepToolCallIds = /* @__PURE__ */ new Set();
+}
+function markHostToolWaiting({ state, emit, toolCallId }) {
+	state.hostInputWaitingToolCallIds.add(toolCallId);
+	emitEarlyFinishStepIfReady({
+		state,
+		emit
+	});
+}
+function markApprovalsWaiting({ state, emit, approvalIds }) {
+	state.pendingStep ??= {
+		input: 0,
+		output: 0
+	};
+	state.observedStepHostInputCount += approvalIds.length;
+	for (const approvalId of approvalIds) state.hostInputWaitingToolCallIds.add(approvalId);
+	emitEarlyFinishStepIfReady({
+		state,
+		emit
+	});
+}
+function clearHostInputWaiting({ state, toolCallId }) {
+	state.hostInputWaitingToolCallIds.delete(toolCallId);
+}
+function settleHostToolCall({ state, emit, toolCallId }) {
+	state.hostInputWaitingToolCallIds.delete(toolCallId);
+	settleStepToolCall({
+		state,
+		emit
+	});
+}
+function settleStepToolCall({ state, emit }) {
+	if (state.unsettledStepToolCallCount != null) state.unsettledStepToolCallCount = Math.max(0, state.unsettledStepToolCallCount - 1);
+	emitEarlyFinishStepIfReady({
+		state,
+		emit
+	});
+}
+function emitEarlyFinishStepIfReady({ state, emit }) {
+	const waiting = state.hostInputWaitingToolCallIds;
+	if (!state.pendingStep || waiting.size === 0 || waiting.size > state.observedStepHostInputCount) return;
+	if (state.unsettledStepToolCallCount != null && state.unsettledStepToolCallCount > waiting.size) return;
+	const uncovered = [...waiting].filter((toolCallId) => !state.earlyFinishStepToolCallIds.has(toolCallId));
+	if (uncovered.length === 0) return;
+	for (const toolCallId of uncovered) state.earlyFinishStepToolCallIds.add(toolCallId);
+	emit({
+		type: "finish-step",
+		finishReason: {
+			unified: "tool-calls",
+			raw: "host-input"
+		},
+		usage: {
+			inputTokens: { total: 0 },
+			outputTokens: { total: 0 }
+		},
+		harnessMetadata: { deepagents: { inferredStep: true } }
+	});
 }
 function ensureTextBlock({ state, emit }) {
 	if (!state.textBlockId) {
@@ -931,6 +1106,28 @@ function createLocalShellBackend({ rootDir, env = process.env }) {
 	});
 }
 //#endregion
+//#region src/bridge/mcp-tool-errors.ts
+/** Keep native MCP failures in the tool loop without recovering aborts or host-tool exceptions. */
+function createMcpToolErrorMiddleware({ mcpToolNames, abortSignal }) {
+	return createMiddleware({
+		name: "harnessMcpToolErrors",
+		wrapToolCall: async (request, handler) => {
+			const signal = abortSignal();
+			try {
+				signal?.throwIfAborted();
+				return await handler(request);
+			} catch (error) {
+				if (!signal || signal.aborted || !mcpToolNames().has(request.toolCall.name) || !(error instanceof Error) || error.name !== "ToolException" || typeof request.toolCall.id !== "string" || !request.toolCall.id) throw error;
+				return new ToolMessage({
+					content: error.message,
+					tool_call_id: request.toolCall.id,
+					status: "error"
+				});
+			}
+		}
+	});
+}
+//#endregion
 //#region src/bridge/persistent-memory-saver.ts
 const SNAPSHOT_HEADER = "deepagents-memory-saver-v1";
 function encodeString(value) {
@@ -944,6 +1141,38 @@ function encodeBytes(value) {
 }
 function decodeBytes(value) {
 	return Buffer.from(value, "base64");
+}
+function getLatestCheckpointId(checkpoints) {
+	return Object.keys(checkpoints).sort((a, b) => b.localeCompare(a))[0];
+}
+function getCheckpointStorageKey({ threadId, namespace, checkpointId }) {
+	return JSON.stringify([
+		threadId,
+		namespace,
+		checkpointId
+	]);
+}
+function pruneMemorySaver({ saver }) {
+	const retainedCheckpointKeys = /* @__PURE__ */ new Set();
+	for (const [threadId, namespaces] of Object.entries(saver.storage)) {
+		for (const [namespace, checkpoints] of Object.entries(namespaces)) {
+			const latestCheckpointId = getLatestCheckpointId(checkpoints);
+			if (latestCheckpointId === void 0) {
+				delete namespaces[namespace];
+				continue;
+			}
+			for (const checkpointId of Object.keys(checkpoints)) if (checkpointId !== latestCheckpointId) delete checkpoints[checkpointId];
+			const latestCheckpoint = checkpoints[latestCheckpointId];
+			if (latestCheckpoint !== void 0) latestCheckpoint[2] = void 0;
+			retainedCheckpointKeys.add(getCheckpointStorageKey({
+				threadId,
+				namespace,
+				checkpointId: latestCheckpointId
+			}));
+		}
+		if (Object.keys(namespaces).length === 0) delete saver.storage[threadId];
+	}
+	for (const key of Object.keys(saver.writes)) if (!retainedCheckpointKeys.has(key)) delete saver.writes[key];
 }
 async function loadMemorySaver({ path, saver }) {
 	let snapshot;
@@ -990,30 +1219,57 @@ async function loadMemorySaver({ path, saver }) {
 	}
 	saver.storage = storage;
 	saver.writes = writes;
+	pruneMemorySaver({ saver });
 }
 async function saveMemorySaver({ path, saver }) {
-	const lines = [SNAPSHOT_HEADER];
-	for (const [threadId, namespaces] of Object.entries(saver.storage)) for (const [namespace, checkpoints] of Object.entries(namespaces)) for (const [checkpointId, [checkpoint, metadata, parentCheckpointId]] of Object.entries(checkpoints)) lines.push([
-		"S",
-		encodeString(threadId),
-		encodeString(namespace),
-		encodeString(checkpointId),
-		encodeBytes(checkpoint),
-		encodeBytes(metadata),
-		parentCheckpointId == null ? "" : encodeString(parentCheckpointId)
-	].join("	"));
-	for (const [key, indexedWrites] of Object.entries(saver.writes)) for (const [index, [taskId, channel, value]] of Object.entries(indexedWrites)) lines.push([
-		"W",
-		encodeString(key),
-		encodeString(index),
-		encodeString(taskId),
-		encodeString(channel),
-		encodeBytes(value)
-	].join("	"));
 	await mkdir(dirname(path), { recursive: true });
 	const temporaryPath = `${path}.${process.pid}.tmp`;
-	await writeFile(temporaryPath, `${lines.join("\n")}\n`, "utf8");
-	await rename(temporaryPath, path);
+	const retainedCheckpointKeys = /* @__PURE__ */ new Set();
+	try {
+		const file = await open(temporaryPath, "w");
+		try {
+			const writeLine = async (line) => {
+				await file.writeFile(`${line}\n`, "utf8");
+			};
+			await writeLine(SNAPSHOT_HEADER);
+			for (const [threadId, namespaces] of Object.entries(saver.storage)) for (const [namespace, checkpoints] of Object.entries(namespaces)) {
+				const checkpointId = getLatestCheckpointId(checkpoints);
+				if (checkpointId === void 0) continue;
+				retainedCheckpointKeys.add(getCheckpointStorageKey({
+					threadId,
+					namespace,
+					checkpointId
+				}));
+				const [checkpoint, metadata] = checkpoints[checkpointId];
+				await writeLine([
+					"S",
+					encodeString(threadId),
+					encodeString(namespace),
+					encodeString(checkpointId),
+					encodeBytes(checkpoint),
+					encodeBytes(metadata),
+					""
+				].join("	"));
+			}
+			for (const [key, indexedWrites] of Object.entries(saver.writes)) {
+				if (!retainedCheckpointKeys.has(key)) continue;
+				for (const [index, [taskId, channel, value]] of Object.entries(indexedWrites)) await writeLine([
+					"W",
+					encodeString(key),
+					encodeString(index),
+					encodeString(taskId),
+					encodeString(channel),
+					encodeBytes(value)
+				].join("	"));
+			}
+		} finally {
+			await file.close();
+		}
+		await rename(temporaryPath, path);
+	} catch (error) {
+		await rm(temporaryPath, { force: true }).catch(() => void 0);
+		throw error;
+	}
 }
 async function removeMemorySaverSnapshot(path) {
 	await rm(path, { force: true });
@@ -1093,6 +1349,7 @@ function createBuiltinToolFilteringMiddleware(input) {
 //#endregion
 //#region src/bridge/index.ts
 const HARNESS_CLIENT_APP = env.AI_SDK_HARNESS_CLIENT_APP;
+env.PATH = [env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", path.dirname(rgPath)].join(path.delimiter);
 function parseArgs(rawArgs) {
 	const out = {};
 	for (let i = 0; i < rawArgs.length; i++) {
@@ -1169,6 +1426,7 @@ if (!workdir || !bridgeStateDir) {
 const conversationCheckpointPath = `${bridgeStateDir}/conversation.checkpoint`;
 let agent;
 let currentTurn;
+let currentStreamEventState;
 let mcpClient;
 let mcpToolNames = /* @__PURE__ */ new Set();
 let currentResponseFormat;
@@ -1205,13 +1463,34 @@ function buildHostTools(toolSchemas) {
 			input: JSON.stringify(input),
 			providerExecuted: false
 		});
-		const { output, isError } = await turn.requestToolResult(toolCallId);
+		const streamEventState = currentStreamEventState;
+		const emit = (event) => turn.emit(event);
+		if (streamEventState != null) markHostToolWaiting({
+			state: streamEventState,
+			emit,
+			toolCallId
+		});
+		const { output, isError, toolResult } = await turn.requestToolResult(toolCallId).finally(() => {
+			if (streamEventState != null) clearHostInputWaiting({
+				state: streamEventState,
+				toolCallId
+			});
+		});
 		turn.emit({
 			type: "tool-result",
 			toolCallId,
 			toolName: schema.name,
 			result: output ?? null,
 			...isError !== void 0 ? { isError } : {}
+		});
+		if (streamEventState != null) settleHostToolCall({
+			state: streamEventState,
+			emit,
+			toolCallId
+		});
+		if (toolResult != null) return convertHarnessToolModelOutput({ output: toolResult.output }).content.map((part) => part.type === "text" ? part : {
+			type: "image_url",
+			image_url: { url: `data:${part.mediaType};base64,${part.data}` }
 		});
 		return typeof output === "string" ? output : JSON.stringify(output);
 	}, {
@@ -1252,6 +1531,10 @@ async function runTurn(start, turn) {
 			}
 		});
 		const middleware = [
+			createMcpToolErrorMiddleware({
+				mcpToolNames: () => mcpToolNames,
+				abortSignal: () => currentTurn?.abortSignal
+			}),
 			responseFormatMiddleware,
 			modelMiddleware,
 			...builtinToolFilteringMiddleware ? [builtinToolFilteringMiddleware] : []
@@ -1275,8 +1558,10 @@ async function runTurn(start, turn) {
 	if (activeAgent == null) throw new Error("Deep Agents runtime was not initialized");
 	const hostToolNames = new Set((start.tools ?? []).map((t) => t.name));
 	const streamEventState = createDeepAgentsStreamEventState();
+	currentStreamEventState = streamEventState;
 	const emitStreamEvent = createEmitStreamEvent({
 		state: streamEventState,
+		abortSignal: turn.abortSignal,
 		configuredModel: activeModel,
 		hostToolNames,
 		mcpToolNames,
@@ -1292,7 +1577,11 @@ async function runTurn(start, turn) {
 	};
 	let resumeInput = { messages: [{
 		role: "user",
-		content: start.prompt
+		content: typeof start.prompt === "string" ? start.prompt : start.prompt.map((part) => part.type === "text" ? part : {
+			type: "image",
+			mimeType: part.mediaType,
+			data: part.data
+		})
 	}] };
 	let emittedStructuredOutput = false;
 	while (true) {
@@ -1323,8 +1612,11 @@ async function runTurn(start, turn) {
 		const actionRequests = await readPendingApprovals();
 		if (actionRequests.length === 0) break;
 		const decisions = [];
-		for (const action of actionRequests) {
-			const approvalId = `approval-${randomUUID()}`;
+		const approvals = actionRequests.map((action) => ({
+			action,
+			approvalId: `approval-${randomUUID()}`
+		}));
+		for (const { action, approvalId } of approvals) {
 			endTextBlock({
 				state: streamEventState,
 				emit
@@ -1346,11 +1638,19 @@ async function runTurn(start, turn) {
 				approvalId,
 				toolCallId: approvalId
 			});
-			flushStep({
-				state: streamEventState,
-				emit
-			});
-			const decision = await turn.requestToolApproval(approvalId);
+		}
+		const decisionPromises = approvals.map(({ approvalId }) => turn.requestToolApproval(approvalId).finally(() => clearHostInputWaiting({
+			state: streamEventState,
+			toolCallId: approvalId
+		})));
+		markApprovalsWaiting({
+			state: streamEventState,
+			emit,
+			approvalIds: approvals.map(({ approvalId }) => approvalId)
+		});
+		const settledDecisions = await Promise.all(decisionPromises);
+		for (const [index, { action, approvalId }] of approvals.entries()) {
+			const decision = settledDecisions[index];
 			if (decision.approved) {
 				const queue = streamEventState.approvedToolQueue.get(action.name) ?? [];
 				queue.push(approvalId);
@@ -1362,6 +1662,11 @@ async function runTurn(start, turn) {
 					toolCallId: approvalId,
 					toolName: toCommonName(action.name),
 					result: decision.reason ?? "Rejected by user."
+				});
+				settleHostToolCall({
+					state: streamEventState,
+					emit,
+					toolCallId: approvalId
 				});
 				decisions.push({
 					type: "reject",
@@ -1395,7 +1700,13 @@ async function runTurn(start, turn) {
 await runBridge({
 	bridgeType: "deepagents",
 	bridgeStateDir,
-	onStart: runTurn,
+	onStart: async (start, turn) => {
+		try {
+			await runTurn(start, turn);
+		} finally {
+			pruneMemorySaver({ saver: checkpointer });
+		}
+	},
 	onStop: async () => {
 		await closeMcpClient();
 		await saveMemorySaver({

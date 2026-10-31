@@ -29,14 +29,12 @@ func newOpenAIStreamProviderError(providerName string, raw json.RawMessage, head
 		_ = json.Unmarshal(raw, &data)
 	}
 	if frame != nil {
-		if frame.Message != "" {
-			message = frame.Message
-		}
+		message = frame.Message
 		statusCode = openAIStreamErrorStatusCode(frame)
 		errorCode = openAIStreamErrorCodeString(frame.Code)
 	}
 
-	return &providererrors.ProviderError{
+	providerErr := &providererrors.ProviderError{
 		Provider:        providerName,
 		StatusCode:      statusCode,
 		ErrorCode:       errorCode,
@@ -45,6 +43,13 @@ func newOpenAIStreamProviderError(providerName string, raw json.RawMessage, head
 		ResponseBody:    string(raw),
 		Data:            data,
 	}
+	if frame != nil {
+		// TS APICallError isRetryable: streamError?.isRetryable -- an
+		// insufficient_quota frame is never retryable despite its 429.
+		retryable := openAIStreamErrorIsRetryable(frame, statusCode)
+		providerErr.Retryable = &retryable
+	}
+	return providerErr
 }
 
 func parseOpenAIStreamError(raw json.RawMessage) *openAIStreamErrorFrame {
@@ -56,8 +61,8 @@ func parseOpenAIStreamError(raw json.RawMessage) *openAIStreamErrorFrame {
 	if valueType, _ := value["type"].(string); valueType == "response.failed" {
 		response, _ := value["response"].(map[string]interface{})
 		responseError, _ := response["error"].(map[string]interface{})
-		message, _ := responseError["message"].(string)
-		if message == "" {
+		message, ok := responseError["message"].(string)
+		if !ok {
 			return nil
 		}
 		return &openAIStreamErrorFrame{
@@ -72,15 +77,15 @@ func parseOpenAIStreamError(raw json.RawMessage) *openAIStreamErrorFrame {
 	if errorValue == nil {
 		errorValue = value
 	}
-	message, _ := errorValue["message"].(string)
-	if message == "" {
+	message, ok := errorValue["message"].(string)
+	if !ok {
 		return nil
 	}
 	if _, hasNestedError := value["error"].(map[string]interface{}); !hasNestedError {
 		_, hasCode := errorValue["code"]
-		errorType, hasType := errorValue["type"].(string)
+		_, hasType := errorValue["type"].(string)
 		_, hasParam := errorValue["param"]
-		if !hasCode && !hasParam && (!hasType || errorType == "") {
+		if !hasCode && !hasParam && !hasType {
 			return nil
 		}
 	}
@@ -176,9 +181,7 @@ func newOpenAIStreamProviderErrorChunk(providerName string, raw json.RawMessage)
 		_ = json.Unmarshal(raw, &data)
 	}
 	if frame != nil {
-		if frame.Message != "" {
-			message = frame.Message
-		}
+		message = frame.Message
 		code = frame.Code
 		errType = frame.Type
 		statusCode = openAIStreamErrorStatusCode(frame)

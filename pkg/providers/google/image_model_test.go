@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -307,8 +308,12 @@ func TestImageModel_DoGenerate_Error_EmptyResponse(t *testing.T) {
 		Prompt: "Test",
 	})
 
-	assert.Error(t, err)
-	assert.Nil(t, result)
+	// TS returns an empty images array (not an error) so generateImage can
+	// retry or raise NoImageGeneratedError.
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Empty(t, result.Images)
+	assert.Nil(t, result.IsRetryable)
 }
 
 func TestImageModel_DoGenerate_Error_InvalidStatus(t *testing.T) {
@@ -773,14 +778,11 @@ func TestImageModel_DoGenerate_Gemini_WithFilesOptionsAndWarnings(t *testing.T) 
 		contents := reqBody["contents"].([]interface{})
 		content := contents[0].(map[string]interface{})
 		parts := content["parts"].([]interface{})
-		require.Len(t, parts, 3)
+		require.Len(t, parts, 2)
 		assert.Equal(t, "Edit these", parts[0].(map[string]interface{})["text"])
 		inline := parts[1].(map[string]interface{})["inlineData"].(map[string]interface{})
 		assert.Equal(t, "image/png", inline["mimeType"])
 		assert.Equal(t, "aW5saW5l", inline["data"])
-		fileData := parts[2].(map[string]interface{})["fileData"].(map[string]interface{})
-		assert.Equal(t, "https://example.com/ref.png", fileData["fileUri"])
-		assert.Equal(t, "image/*", fileData["mimeType"])
 
 		genConfig := reqBody["generationConfig"].(map[string]interface{})
 		imageConfig := genConfig["imageConfig"].(map[string]interface{})
@@ -833,7 +835,6 @@ func TestImageModel_DoGenerate_Gemini_WithFilesOptionsAndWarnings(t *testing.T) 
 		AspectRatio: "9:16",
 		Files: []provider.ImageFile{
 			{Type: "file", MediaType: "image/png", Data: []byte("inline")},
-			{Type: "url", URL: "https://example.com/ref.png"},
 		},
 		ProviderOptions: map[string]interface{}{
 			"google": map[string]interface{}{
@@ -906,4 +907,141 @@ func TestExtractGoogleStringOption(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func imageServer(t *testing.T, respond string, onBody func(map[string]interface{})) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if onBody != nil {
+			onBody(body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(respond))
+	}))
+}
+
+// TS returns every image part, merges the caller's imageConfig with the call's
+// aspectRatio and forces responseModalities to IMAGE.
+func TestImageModel_DoGenerate_MultipleImagesAndImageConfigMerge(t *testing.T) {
+	var gen map[string]interface{}
+	server := imageServer(t, `{"candidates":[{"finishReason":"STOP","content":{"parts":[
+		{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgo="}},
+		{"text":"caption"},
+		{"inlineData":{"mimeType":"image/png","data":"AAAA"}}]}}]}`, func(b map[string]interface{}) {
+		gen, _ = b["generationConfig"].(map[string]interface{})
+	})
+	defer server.Close()
+	model := NewImageModel(New(Config{APIKey: "k", BaseURL: server.URL}), "gemini-2.5-flash-image")
+	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt:      "x",
+		AspectRatio: "16:9",
+		ProviderOptions: map[string]interface{}{"google": map[string]interface{}{
+			"responseModalities": []string{"TEXT"},
+			"imageConfig":        map[string]interface{}{"imageSize": "2K"},
+		}},
+	})
+	require.NoError(t, err)
+	assert.Len(t, result.Images, 2)
+	assert.Len(t, result.Base64Images, 2)
+	assert.Equal(t, 2, result.Usage.ImageCount)
+	assert.Len(t, result.ProviderMetadata["google"].(map[string]interface{})["images"], 2)
+	assert.Equal(t, []interface{}{"IMAGE"}, gen["responseModalities"])
+	assert.Equal(t, map[string]interface{}{"imageSize": "2K", "aspectRatio": "16:9"}, gen["imageConfig"])
+}
+
+func TestImageModel_DoGenerate_ContentFilterIsTerminal(t *testing.T) {
+	server := imageServer(t, `{"candidates":[{"finishReason":"IMAGE_SAFETY","content":{"parts":[]}}]}`, nil)
+	defer server.Close()
+	model := NewImageModel(New(Config{APIKey: "k", BaseURL: server.URL}), "gemini-2.5-flash-image")
+	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
+	require.NoError(t, err)
+	assert.Empty(t, result.Images)
+	require.NotNil(t, result.IsRetryable)
+	assert.False(t, *result.IsRetryable)
+}
+
+// TS reports result.finishReason.raw: a prompt block without candidates
+// carries the block reason as the raw finish reason.
+func TestImageModel_PromptBlockReportsRawFinishReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"},"usageMetadata":{"promptTokenCount":9,"totalTokenCount":9}}`))
+	}))
+	defer server.Close()
+	model := NewImageModel(New(Config{APIKey: "k", BaseURL: server.URL}), "gemini-2.5-flash-image")
+	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "blocked"})
+	require.NoError(t, err)
+	meta, _ := result.ProviderMetadata["google"].(map[string]interface{})
+	assert.Equal(t, "PROHIBITED_CONTENT", meta["finishReason"])
+}
+
+// TS sends a URL input as a file part with media type "image/*", which the
+// Google prompt conversion cannot resolve without inline bytes, so editing
+// with a URL input throws (google-image-model.test.ts "should reject
+// unsupported URL editing input and masks").
+func TestImageModel_DoGenerate_Gemini_RejectsURLInput(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
+	defer server.Close()
+	model := NewImageModel(New(Config{APIKey: "k", BaseURL: server.URL}), "gemini-2.5-flash-image")
+
+	_, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "Add a hat to this cat",
+		Files:  []provider.ImageFile{{Type: "url", URL: "https://example.com/cat.png"}},
+	})
+	var unsupported *providererrors.UnsupportedFunctionalityError
+	require.ErrorAs(t, err, &unsupported)
+	assert.Regexp(t, `media type "image/\*".*not passed as inline bytes`, err.Error())
+	assert.False(t, called, "no request may be sent")
+}
+
+func TestBatchImageRequestRejectsURLInput(t *testing.T) {
+	b := &Batch{provider: New(Config{APIKey: "k"})}
+	_, _, err := b.prepareImageBatchRequest(&provider.ImageBatchV4Request{
+		ID: "1", ModelID: "gemini-2.5-flash-image",
+		Options: provider.ImageGenerateOptions{Prompt: "p", Files: []provider.ImageFile{{Type: "url", URL: "https://example.com/a.png"}}},
+	})
+	var unsupported *providererrors.UnsupportedFunctionalityError
+	require.ErrorAs(t, err, &unsupported)
+}
+
+// TS image response: {timestamp, modelId: this.modelId, headers} and
+// totalTokens = input + output (not the API's totalTokenCount).
+func TestImageModel_ResponseAndTotalTokensMatchTS(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Test", "yes")
+		_, _ = w.Write([]byte(`{"responseId":"resp-1","candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"AAEC"}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":5,"totalTokenCount":99}}`))
+	}))
+	defer server.Close()
+	model := NewImageModel(New(Config{APIKey: "k", BaseURL: server.URL}), "gemini-2.5-flash-image")
+	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
+	require.NoError(t, err)
+	require.NotNil(t, result.Response)
+	assert.Equal(t, "gemini-2.5-flash-image", result.Response.ModelID)
+	assert.Empty(t, result.Response.ID)
+	assert.False(t, result.Response.Timestamp.IsZero())
+	assert.Equal(t, "yes", result.Response.Headers["X-Test"])
+	assert.Equal(t, 8, result.Usage.TotalTokens)
+}
+
+// TS returns only the image model's own warnings; the inner language-model
+// call's warnings (here the Vertex-only sharedRequestType notice) are dropped.
+func TestImageModel_DoGenerate_DropsLanguageModelWarnings(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"aW5saW5l"}}]},"finishReason":"STOP"}]}`))
+	}))
+	defer server.Close()
+
+	model := NewImageModel(New(Config{APIKey: "k", BaseURL: server.URL}), "gemini-2.5-flash-image")
+	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "x",
+		ProviderOptions: map[string]interface{}{
+			"google": map[string]interface{}{"sharedRequestType": "priority"},
+		},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.Warnings)
 }

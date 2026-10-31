@@ -216,9 +216,10 @@ func TestCreateNetworkSandboxSessionWithTemplateDerivesReusableSnapshot(t *testi
 	}
 }
 
-// Ports utils.test.ts "prepares and publishes a named template once when a
-// cache is supplied": a template sandbox with no snapshot yet is stopped to
-// produce one, and the result is cached by template name.
+// Ports utils.test.ts "prepares and manually snapshots a named template once
+// when a cache is supplied" (TS #23529): the template is prepared in a
+// non-persistent builder, snapshotted manually after onCreate, and the result
+// is cached by template name.
 func TestEnsureTemplateSnapshotUsesStopFallbackAndCache(t *testing.T) {
 	f := newFakeServer()
 	defer f.Close()
@@ -252,6 +253,12 @@ func TestEnsureTemplateSnapshotUsesStopFallbackAndCache(t *testing.T) {
 	}
 	if len(f.createRequests) != 1 {
 		t.Fatalf("expected exactly one create request (cache skips the second GetOrCreate), got %d", len(f.createRequests))
+	}
+	if p := f.createRequests[0].Persistent; p == nil || *p {
+		t.Fatalf("template builder must be non-persistent, got %v", p)
+	}
+	if f.snapshotReqs != 1 {
+		t.Fatalf("expected one manual snapshot request, got %d", f.snapshotReqs)
 	}
 }
 
@@ -342,5 +349,34 @@ func TestDeriveTemplateNameIsDeterministicAndInjective(t *testing.T) {
 	}
 	if len(a) <= len("ai-sdk-harness-v2-") {
 		t.Fatalf("expected a hashed suffix, got %q", a)
+	}
+}
+
+func TestR25NilTemplatePrepareReturnsError(t *testing.T) {
+	f := newFakeServer()
+	defer f.Close()
+	_, err := CreateNetworkSandboxSession(context.Background(), CreateSessionOptions{
+		Credentials: testCreds(), BaseURL: f.URL(), Template: &Template{Identity: "x"},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// Values from node: "ai-sdk-harness-v2-" + sha256(JSON.stringify([2,
+// identity, selection])).subarray(0, 12).hex.
+func TestR42DeriveTemplateNameMatchesTS(t *testing.T) {
+	for _, tc := range []struct {
+		identity string
+		params   CreateParams
+		want     string
+	}{
+		{"recipe <a&b>", CreateParams{Runtime: "node24"}, "ai-sdk-harness-v2-1d251363f895133876030fe9"},
+		{"r x", CreateParams{Image: "img"}, "ai-sdk-harness-v2-75a03a17b61e2c2c3adc1eba"},
+		{"plain", CreateParams{Source: &SnapshotSource{Type: "snapshot", SnapshotID: "snap_1"}}, "ai-sdk-harness-v2-f1039cba3347d4dd00f66d27"},
+	} {
+		if got := deriveTemplateName(tc.identity, tc.params); got != tc.want {
+			t.Errorf("%q: %s, want %s", tc.identity, got, tc.want)
+		}
 	}
 }

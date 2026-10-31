@@ -29,11 +29,14 @@ OAuth helpers are in [MCP OAuth](./oauth.mdx). Message and capability types are 
 | `Name` | `string` | Name is a deprecated alias for ClientName. Deprecated: use ClientName. |
 | `ClientVersion` | `string` | ClientVersion is the version of the client |
 | `Capabilities` | `ClientCapabilities` | Capabilities are optional client capabilities advertised during initialize. |
-| `RequestTimeoutMS` | `int` | RequestTimeoutMS is the timeout for individual requests in milliseconds Default: 30000 (30 seconds) |
+| `RequestTimeoutMS` | `int` | RequestTimeoutMS is the timeout for individual requests in milliseconds. Default: 0, no timeout (TS has none; the call's context governs). |
+| `InitializationOptions` | `*RequestOptions` | InitializationOptions bounds Connect (TS initializationOptions): TimeoutMS / MaxTotalTimeoutMS limit the whole handshake, which then fails with "MCP client initialization timed out after &lt;n&gt;ms". A cancelled Connect context fails with "MCP client initialization was aborted". |
 | `EnableLogging` | `bool` | EnableLogging enables client-level logging |
 | `MaxRetries` | `int` | MaxRetries is the maximum number of times a failed "tools/call" request is retried with exponential backoff, matching TypeScript's MCPClient maxRetries option (TS prepareMaxRetries). Default: 0 (no retries). A negative value makes Connect return an error (TS throws MCPClientError "maxRetries must be &gt;= 0" from the constructor; Go has no fallible constructor, so the check runs at Connect instead). Only transient failures are retried: HTTP status 408/409/429/&gt;=500 and transport-level connection errors (refused/reset/timeout/broken pipe/ closed). JSON-RPC application errors (a non-zero MCPClientError.Code) and successful results with IsError=true are never retried. |
-| `ProtocolVersionDiscovery` | `*bool` | ProtocolVersionDiscovery controls whether the client probes the 2026-07-28 `server/discover` method before falling back to the legacy `initialize` handshake (hash e6a9927). Default true. Only takes effect when the transport implements ProtocolVersionDiscoveryTransport and reports support (only HTTPTransport does today). |
+| `ProtocolVersionDiscovery` | `*bool` | ProtocolVersionDiscovery controls whether the client probes the 2026-07-28 `server/discover` method before falling back to the legacy `initialize` handshake (hash e6a9927). Default true. Only takes effect when the transport implements ProtocolVersionDiscoveryTransport and reports support (HTTPTransport and StdioTransport). |
 | `OnError` | `func(error)` | OnError, when set, receives non-fatal diagnostics the client would otherwise drop silently: a tool skipped because its x-mcp-header annotation is invalid, a tool call whose header binding failed (hash 0c60a40), or a registered OnElicitationRequest handler that returned an error or an invalid ElicitResult (matching TS DefaultMCPClient.onRequestMessage's this.onError(error) call). |
+| `InitialInitializeResult` | `*InitializeResult` | InitialInitializeResult, when set, is reused as the server's initialize result from a previous MCP session: Connect starts the transport and applies it without sending an initialize request or the initialized notification (TS initialInitializeResult). |
+| `ExperimentalEvents` | `*MCPEventsConfig` | ExperimentalEvents configures experimental MCP events (webhook subscriptions with a Store, or managed subscriptions with an Adapter). Experimental: may change in any release. |
 
 {/* /gen:fields */}
 
@@ -48,10 +51,12 @@ OAuth helpers are in [MCP OAuth](./oauth.mdx). Message and capability types are 
 | `ListAllTools(ctx) ([]MCPTool, error)` | Lists every tool across pages. |
 | `GetSerializableTools(ctx) (*ListToolsResult, error)` | Returns the tool definitions in a form you can store, for example for [fingerprinting](../ai/tool-call-repair.mdx#tool-definition-fingerprints). |
 | `CallTool(ctx, name string, arguments map[string]interface{}) (*CallToolResult, error)` | Calls a tool. |
-| `ListResources(ctx) ([]MCPResource, error)` | Lists resources. |
+| `ListResources(ctx) ([]MCPResource, error)` | Lists the first page of resources. |
+| `ListResourcesWithCursor(ctx, cursor string) (*ListResourcesResult, error)` | Lists one page of resources from a cursor. |
 | `ListResourceTemplates(ctx) (*ListResourceTemplatesResult, error)` | Lists resource templates. |
 | `ReadResource(ctx, uri string) (*ReadResourceResult, error)` | Reads a resource. |
-| `ListPrompts(ctx) ([]MCPPrompt, error)` | Lists prompts. |
+| `ListPrompts(ctx) ([]MCPPrompt, error)` | Lists the first page of prompts. |
+| `ListPromptsWithCursor(ctx, cursor string) (*ListPromptsResult, error)` | Lists one page of prompts from a cursor. |
 | `GetPrompt(ctx, name string, arguments map[string]interface{}) (*GetPromptResult, error)` | Gets a prompt with arguments filled in. |
 | `Complete(ctx, params CompleteRequestParams) (*CompleteResult, error)` | Requests argument completions for a prompt or resource template. |
 | `OnElicitationRequest(handler func(context.Context, ElicitationRequest) (ElicitResult, error))` | Registers the handler for server-initiated elicitation requests. |
@@ -59,6 +64,10 @@ OAuth helpers are in [MCP OAuth](./oauth.mdx). Message and capability types are 
 | `ServerInfo() ServerInfo` | Server name and version. |
 | `ServerInstructions() string` | Instructions the server sent. |
 | `InitializeResult() InitializeResult` | The raw initialize result. |
+
+Requests for tools, resources or prompts fail with `Server does not support tools` (or `resources`, `prompts`) when the server did not advertise that capability during the handshake. A request on a closed client, or after the transport dropped, fails with `Attempted to send a request from a closed client`. A request that was in flight when the connection dropped fails with `Connection closed`. If the handshake fails, `Connect` closes the transport before returning.
+
+Set `MCPClientConfig.InitialInitializeResult` to reuse the initialize result of an earlier session: `Connect` starts the transport and applies it without sending `initialize`.
 
 `MaxRetries` retries only `tools/call` requests that fail with a transient error: HTTP 408, 409, 429 or 5xx, or a connection-level failure. JSON-RPC application errors and results with `IsError` set are never retried.
 
@@ -121,6 +130,10 @@ The child process does not inherit the whole parent environment. It gets `Env` p
 | `Env` | `[]string` | Env are additional environment variables to set, in "KEY=VALUE" form (the os.Environ()/exec.Cmd.Env convention). The child process does not inherit the full parent environment: only Env plus a small safe allowlist of inherited vars (PATH, HOME, etc. — see getEnvironment) are passed through, mirroring TS mcp-stdio/get-environment.ts. |
 | `WorkingDir` | `string` | WorkingDir is the working directory for the command |
 | `Config` | `TransportConfig` | Config is the base transport configuration |
+| `Shell` | `bool` | Shell runs the command through the platform shell (TS StdioConfig.shell = true): `sh -c` on Unix, ComSpec (`cmd.exe /d /s /c`) on Windows. This lets command shims and shell wrappers run, but Command and Args are joined with spaces and are NOT escaped, so never build them from untrusted input. Default false: the command is executed directly. |
+| `ShellPath` | `string` | ShellPath selects a specific shell executable (TS StdioConfig.shell = "&lt;path&gt;") and implies Shell. Unix shells are invoked as `<path> -c`. |
+| `Stderr` | `io.Writer` | Stderr receives the child's stderr (TS StdioConfig.stderr). Nil inherits the parent's stderr (os.Stderr), TS's default 'inherit'. Use io.Discard to drop it. When Config.EnableLogging is set and Stderr is nil, stderr lines are logged as "MCP stderr: ..." instead. |
+| `OnError` | `func(error)` | OnError, when set, receives non-fatal diagnostics such as a stdout line that is not a valid JSON-RPC message (TS onerror). Such lines are skipped instead of ending the connection. |
 
 {/* /gen:fields */}
 
@@ -133,11 +146,14 @@ The child process does not inherit the whole parent environment. It gets `Env` p
 | `URL` | `string` | URL is the URL of the MCP server |
 | `TimeoutMS` | `int` | Timeout is the HTTP request timeout |
 | `OAuth` | `*OAuthConfig` | OAuth configuration (optional) |
+| `AuthProvider` | `OAuthClientProvider` | AuthProvider enables the MCP OAuth flow: its tokens are sent as a bearer token, and a 401 response runs Auth once (shared by concurrent requests) before the request is retried. Matches TS HttpMCPTransport's authProvider. When Auth cannot complete without user interaction the request fails with \*UnauthorizedError (also reported through OnError). |
+| `AuthHTTPClient` | `*http.Client` | AuthHTTPClient is the HTTP client used for the OAuth discovery, registration and token requests Auth makes (TS passes the transport's fetch). Nil uses Auth's default client. |
 | `Config` | `TransportConfig` | Config is the base transport configuration |
-| `HTTPClient` | `*http.Client` | HTTPClient is an optional custom HTTP client used for all MCP HTTP requests. Useful for TLS customization, proxy settings, and custom dialers. |
+| `HTTPClient` | `*http.Client` | HTTPClient is an optional custom HTTP client used for all MCP HTTP requests. Useful for TLS customization, proxy settings, and custom dialers. The transport uses a copy of it, so the request timeout and redirect policy it applies do not change the client itself. |
 | `SSEClient` | `SSEClient` | SSEClient is an optional custom SSE-capable client used instead of HTTPClient when supplied. It lets callers provide custom event-stream transports, TLS settings, proxy behavior, or dialers. |
+| `InitialProtocolVersion` | `string` | InitialProtocolVersion is the MCP protocol version sent before the client negotiates one (TS initialProtocolVersion). Empty uses LatestProtocolVersion, as TS createMcpTransport does for an `http` transport: no standing inbound SSE GET is opened and no session id is sent until the handshake selects a legacy protocol version. |
 | `InitialSessionID` | `string` | InitialSessionID resumes a previously established streamable HTTP session (hash 241a8c5), sent as `mcp-session-id` on every request until the server issues a new one. |
-| `OnSessionIDChange` | `func(sessionID string)` | OnSessionIDChange is called whenever the server assigns or changes the session id (from an `mcp-session-id` response header). |
+| `OnSessionIDChange` | `func(sessionID string)` | OnSessionIDChange is called whenever the server assigns or changes the session id (from an `mcp-session-id` response header), and with "" when an expired session id is cleared (TS calls it with undefined). |
 | `OnSessionExpired` | `func(sessionID string)` | OnSessionExpired is called when the server responds 404 to a request carrying a session id, indicating that session is no longer valid. |
 | `TerminateSessionOnClose` | `*bool` | TerminateSessionOnClose sends a best-effort DELETE with the session id when Close is called. Default true. |
 | `OnError` | `func(error)` | OnError, when set, receives non-fatal diagnostics from the background inbound SSE listener (GET reconnect failures, malformed messages, etc.), the send()/POST path (non-2xx responses, fetch failures, OAuth refresh failures, session expiry), and the POST-response SSE reader (stream read failures, malformed messages), matching TS HttpMCPTransport's `onerror` callback. Optional. |
@@ -154,10 +170,19 @@ The child process does not inherit the whole parent environment. It gets `Env` p
 | `TimeoutMS` | `int` | TimeoutMS is the HTTP request timeout. |
 | `OAuth` | `*OAuthConfig` | OAuth configuration (optional). |
 | `Config` | `TransportConfig` | Config is the base transport configuration. |
-| `HTTPClient` | `*http.Client` | HTTPClient is an optional custom HTTP client used for GET and POST requests. |
+| `HTTPClient` | `*http.Client` | HTTPClient is an optional custom HTTP client used for GET and POST requests. The transport uses a copy of it, so the request timeout and redirect policy it applies do not change the client itself. |
 | `SSEClient` | `SSEClient` | SSEClient is an optional custom SSE-capable client used instead of HTTPClient when supplied. |
+| `AuthProvider` | `OAuthClientProvider` | AuthProvider enables the MCP OAuth flow: its tokens are sent as a bearer token, and a 401 response runs Auth once (shared by concurrent requests) before the request is retried. Matches TS SseMCPTransport's authProvider. When Auth cannot complete without user interaction the request fails with \*UnauthorizedError. |
+| `AuthHTTPClient` | `*http.Client` | AuthHTTPClient is the HTTP client used for the OAuth discovery, registration and token requests Auth makes (TS passes the transport's fetch). Nil uses Auth's default client. |
+| `OnError` | `func(error)` | OnError, when set, receives non-fatal diagnostics (TS onerror). |
 
 {/* /gen:fields */}
+
+### OAuth with an AuthProvider
+
+Set `AuthProvider` (an [`mcp.OAuthClientProvider`](./oauth.mdx)) on `HTTPTransportConfig` or `SSETransportConfig` to let the transport run the OAuth flow itself. Every request carries the provider's access token as a bearer token. On a 401 response the transport calls [`mcp.Auth`](./oauth.mdx) once, shared by all concurrent requests, and retries the request. If `Auth` returns `REDIRECT`, the provider's `RedirectToAuthorization` has been called and the request fails with `*mcp.UnauthorizedError`; finish the flow by calling `Auth` with the authorization code. `AuthHTTPClient` sets the HTTP client used for the discovery, registration and token requests.
+
+Event-stream bodies are not subject to `TimeoutMS`: the timeout bounds a POST until its response headers arrive (and the whole exchange for non-streamed responses), but a standing SSE stream or a streamed POST response stays open. The stdio transport keeps its child process alive after the context given to `Connect` is cancelled, inherits the parent's stderr (or writes it to `StdioTransportConfig.Stderr`, for example `io.Discard`), and skips stdout lines that are not JSON-RPC (reporting them through `StdioTransportConfig.OnError`).
 
 ### OAuthConfig
 
@@ -188,6 +213,7 @@ A transport can implement these interfaces. The client checks for them with a ty
 | `mcp.MCPToolParameterHeadersTransport` | Support binding tool arguments to HTTP headers (see below). |
 | `mcp.ProtocolVersionTransport` | Receive the protocol version negotiated during initialize. |
 | `mcp.ProtocolVersionDiscoveryTransport` | Support probing `server/discover` before falling back to `initialize`. Only `HTTPTransport` does. |
+| `mcp.ProtocolVersionDiscoveryWaiter` | Optional: a transport reporting `WaitsForProtocolVersionDiscovery() == true` is waited on (bounded by the `Connect` context) instead of falling back after the 1 s probe timeout. `HTTPTransport` does; stdio and custom transports keep the timeout. |
 | `mcp.SendOptionsTransport` | Accept `mcp.MCPTransportSendOptions` on each send. |
 | `mcp.SSEClient` | A custom SSE-capable client for the HTTP and SSE transports. |
 
@@ -221,7 +247,7 @@ A tool input schema can mark a property with `x-mcp-header`. The client then sen
 | `mcp.LatestLegacyProtocolVersion` | `"2025-11-25"`. Negotiated with `initialize`. |
 | `mcp.ProtocolVersion` | The legacy version the client sends in `initialize`. |
 | `mcp.SupportedProtocolVersions` | Every version the client understands, in order of preference. |
-| `mcp.DefaultProtocolDiscoveryTimeoutMS` | How long the client waits for a `server/discover` response before it falls back to `initialize`. |
+| `mcp.DefaultProtocolDiscoveryTimeoutMS` | How long the client waits for a `server/discover` response before it falls back to `initialize`. Not applied to transports that implement `mcp.ProtocolVersionDiscoveryWaiter` (Streamable HTTP). |
 | `mcp.ModernProtocolErrorCodes` | JSON-RPC error codes a server uses for a hard failure during modern-era discovery. |
 
 `mcp.DiscoverResult` is the result of `server/discover`. `mcp.DiscoverResultServerInfo(result)` extracts the server info from its metadata.
@@ -331,6 +357,7 @@ A server can change a tool definition after you reviewed it. Use `ai.Fingerprint
 | `Size` | `*int64` |  |
 | `Metadata` | `interface{}` |  |
 | `Meta` | `map[string]interface{}` |  |
+| `Extra` | `map[string]interface{}` | Extra holds keys the schema does not name (TS looseObject passthrough). |
 
 {/* /gen:fields */}
 
@@ -345,6 +372,7 @@ A server can change a tool definition after you reviewed it. Use `ai.Fingerprint
 | `Text` | `string` |  |
 | `Blob` | `string` | base64 encoded |
 | `Meta` | `map[string]interface{}` |  |
+| `Extra` | `map[string]interface{}` | Extra holds keys the schema does not name (TS looseObject passthrough). |
 
 {/* /gen:fields */}
 
@@ -370,6 +398,7 @@ A server can change a tool definition after you reviewed it. Use `ai.Fingerprint
 | `Arguments` | `[]MCPPromptArgument` |  |
 | `Template` | `string` |  |
 | `Metadata` | `map[string]interface{}` |  |
+| `Extra` | `map[string]interface{}` | Extra holds keys the schema does not name (TS looseObject passthrough). |
 
 {/* /gen:fields */}
 
@@ -474,16 +503,112 @@ MCP Apps let a tool attach an interactive HTML resource, served from a `ui://` U
 
 {/* /gen:fields */}
 
+## Events (experimental)
+
+Events let a client discover and subscribe to server events delivered by webhook. The API is experimental and may change in any release. Configure it with `MCPClientConfig.ExperimentalEvents`; the server must advertise the `events` capability, otherwise calls return `Server does not support events`.
+
+Set exactly one of `Store` or `Adapter`. Setting both makes `Connect` return an error before the transport starts.
+
+| Type | Description |
+| --- | --- |
+| `mcp.MCPEventsConfig` | `Store` (direct webhook subscriptions), `Adapter` (managed subscriptions) and `ValidateArguments` (optional, `Store` only). |
+| `(*MCPClient).ExperimentalEvents() *mcp.MCPEvents` | Direct API: `List`, `Subscribe`, `Refresh`, `Unsubscribe`. `List` works without a store; the others need `Store`. |
+| `(*MCPClient).ExperimentalManagedEvents() mcp.ManagedMCPEvents` | Managed API when an `Adapter` is set (nil otherwise): `List` over MCP, plus `Subscribe`, `GetSubscription`, `ListSubscriptions`, `Unsubscribe` delegated to the adapter. |
+| `mcp.MCPEventStore` | Durable, private storage for subscriptions, scoped to one server and principal. `Update` must atomically merge only the fields set in the `MCPEventSubscriptionPatch`. Records hold the signing secret, so never expose them to a browser. |
+| `mcp.MCPEventAdapter` | `CreateAdapter(MCPEventAdapterContext) (MCPEventOperations, error)` is called once from `NewMCPClient`, before the transport starts. The context holds the transport type (`http`, `sse`, `custom`) and its configured URL (empty for `custom`). Errors are returned by `Connect`. |
+| `mcp.ExperimentalCreateMCPEventWebhook(opts)` | Returns an `http.Handler` for webhook deliveries. Mount it at the callback URL before subscribing. |
+
+`Subscribe` requires an HTTPS callback URL without credentials or fragments (`AllowInsecureLocalhost` permits `http://127.0.0.1` and `http://[::1]` for development), follows catalog pagination, persists a `pending` record with the generated `whsec_` secret and a `mcp_event_subscription` routing parameter, and only then sends `events/subscribe`. `Refresh` and `Unsubscribe` accept an `MCPEventSubscriptionRef` with a server `ID` or the local `Key`. Optional TTLs use `mcp.Nullable`: leave it unset to omit `ttlMs`, or pass `mcp.NullableNull[int64]()` to request a non-expiring subscription.
+
+The webhook handler verifies the Standard Webhooks v1 signature over the exact body (5 minute tolerance, 256 KiB limit), echoes signed verification challenges, and responds 503 until the subscription is `active` so the server retries. `OnEvent`, `OnGap` and `OnTerminated` run before cursor, truncation or deletion state is saved; an error from a callback or the store becomes a 503. Deliveries can be duplicated or reordered, so deduplicate by subscription ID and event ID (or message ID).
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+	"net/http"
+
+	"github.com/digitallysavvy/go-ai/pkg/mcp"
+)
+
+func run(store mcp.MCPEventStore, transport mcp.Transport) error {
+	ctx := context.Background()
+
+	webhook, err := mcp.ExperimentalCreateMCPEventWebhook(mcp.MCPEventWebhookOptions{
+		Store: store,
+		OnEvent: func(ctx context.Context, args mcp.MCPEventWebhookEventArgs) error {
+			log.Printf("event %s for %s", args.Event.EventID, args.Subscription.Name)
+			return nil
+		},
+	})
+	if err != nil {
+		return err
+	}
+	go func() { _ = http.ListenAndServe(":8080", webhook) }()
+
+	client := mcp.NewMCPClient(transport, mcp.MCPClientConfig{
+		ExperimentalEvents: &mcp.MCPEventsConfig{Store: store},
+	})
+	if err := client.Connect(ctx); err != nil {
+		return err
+	}
+	defer client.Close()
+
+	_, err = client.ExperimentalEvents().Subscribe(ctx, mcp.SubscribeEventOptions{
+		Name:      "comment.created",
+		Arguments: map[string]interface{}{"document_id": "doc_1"},
+		Delivery:  mcp.MCPEventWebhookDelivery{URL: "https://app.example/events"},
+	})
+	return err
+}
+
+func main() {}
+```
+
+### Event types
+
+| Name | Description |
+| --- | --- |
+| `mcp.MCPEventDefinition` | One catalog entry: `Name`, `Description`, `Delivery`, `InputSchema`, `PayloadSchema`. Delivery modes are `mcp.MCPEventDeliveryWebhook`, `mcp.MCPEventDeliveryPoll` and `mcp.MCPEventDeliveryPush`. |
+| `mcp.ListEventsOptions`, `mcp.ListEventsResult` | Catalog paging input and result (`Events`, `NextCursor`). |
+| `mcp.SubscribeEventResult` | Result of subscribing: `ID`, `RefreshBefore`, `Cursor`, `Truncated`. It never contains the secret. |
+| `mcp.MCPEvent` | A delivered event envelope: `EventID`, `Name`, `Timestamp`, `Data`, `Cursor`, `HasCursor`. |
+| `mcp.MCPEventGap`, `mcp.MCPEventTermination`, `mcp.MCPEventTerminationError` | Signed control messages: a replay gap, or termination with an error. |
+| `mcp.MCPEventSubscription` | The stored record. `mcp.MCPEventSubscriptionStatus` is `mcp.MCPEventStatusPending` or `mcp.MCPEventStatusActive`. |
+| `mcp.MCPEventSubscriptionInfo` | The secret-free view passed to handlers. |
+| `mcp.MCPEventDelivery`, `mcp.MCPEventDeliveryInfo` | Delivery configuration with and without the secret. |
+| `mcp.MCPEventCallbackKey` | The `mcp_event_subscription` query parameter that routes a delivery to its record. |
+| `mcp.MCPEventWebhookGapArgs`, `mcp.MCPEventWebhookTerminatedArgs` | Arguments for `OnGap` and `OnTerminated`. |
+| `mcp.NullableOf(v)` | Builds a set `mcp.Nullable`; `mcp.NullableNull[T]()` builds an explicit null. |
+| `mcp.MCPEventAdapterTransport` | Transport metadata given to `CreateAdapter`; `Type` is `mcp.MCPEventTransportHTTP`, `mcp.MCPEventTransportSSE` or `mcp.MCPEventTransportCustom`. |
+| `mcp.ManagedSubscribeInput`, `mcp.ManagedSubscription` | Managed subscription input and record. `ManagedSubscribeInput.TTLMs` is a `mcp.Nullable[int64]`: a lifetime in milliseconds, or `mcp.NullableNull[int64]()` to watch until stopped. `ExpiresAt` appears only on the returned record. `mcp.ManagedSubscriptionStatus` is `mcp.ManagedSubscriptionPending`, `mcp.ManagedSubscriptionActive`, `mcp.ManagedSubscriptionNeedsAuth`, `mcp.ManagedSubscriptionStopped`, `mcp.ManagedSubscriptionExpired` or `mcp.ManagedSubscriptionFailed`. |
+| `mcp.ListManagedSubscriptionsInput`, `mcp.ListManagedSubscriptionsResult` | Managed listing input and result page. |
+
+Managed adapters receive a `context.Context` instead of TS request options: cancel it or set a deadline to bound a call. Cancelling does not cancel an already accepted remote subscription.
+
+## Request options
+
+`mcp.WithRequestOptions(ctx, mcp.RequestOptions{TimeoutMS, MaxTotalTimeoutMS})` puts per-request limits on a context. The client call made with it uses the smaller of the two as its timeout instead of `RequestTimeoutMS` (TS `RequestOptions`). Cancelling the context is the TS `signal`: the call fails with `Request was aborted`, and `errors.Is(err, context.Canceled)` still matches.
+
+`MCPClientConfig.InitializationOptions` bounds `Connect` the same way. It fails with `MCP client initialization timed out after <n>ms`, or `MCP client initialization was aborted` when the `Connect` context is cancelled.
+
+A response with no `id`, or with an `id` no request is waiting for, is reported to `MCPClientConfig.OnError` as `Protocol error: Received a response without a message ID: ...` (or `... for an unknown message ID: ...`).
+
 ## Errors
 
 | Type or value | Description |
 | --- | --- |
-| `*mcp.MCPClientError` | An error from the client. `Code` is the JSON-RPC error code. `StatusCode` is the HTTP status for transport failures. |
+| `*mcp.MCPClientError` | An error from the client. `Error()` is the server's message with no prefix, as in TS. `Code` is the JSON-RPC error code, `Data` its data, `Cause` the wrapped error. `StatusCode` is the HTTP status for transport failures. |
 | `mcp.NewMCPClientError(code, message, data, opts...)` | Creates one. |
 | `mcp.MCPClientErrorOption` | Option for `NewMCPClientError`: `mcp.WithMCPHTTPResponse`, `mcp.WithMCPHTTPResponseBody`, `mcp.WithMCPHTTPStatus`, `mcp.WithMCPHTTPURL`. |
 | `*mcp.MCPError` | A protocol error payload. |
-| `*mcp.TimeoutError`, `mcp.NewTimeoutError(operation)` | A request timed out. |
+| `*mcp.TimeoutError`, `mcp.NewTimeoutError(operation)` | A request timed out: `Request timed out after <n>ms`. |
+| `*mcp.UnauthorizedError` | The server answered 401 and the transport's `AuthProvider` could not obtain a token without user interaction. |
 | `*mcp.TransportError`, `mcp.NewTransportError(message, cause)` | A transport-level failure. |
 | `mcp.ErrParseError`, `mcp.ErrInvalidRequest`, `mcp.ErrMethodNotFound`, `mcp.ErrInvalidParams`, `mcp.ErrInternalError`, `mcp.ErrToolNotFound`, `mcp.ErrToolExecutionFail`, `mcp.ErrResourceNotFound`, `mcp.ErrUnauthorized` | Sentinel `*MCPClientError` values. |
+
+The legacy SSE transport returns an `*MCPClientError` with `MCP SSE Transport Error: Connection closed before endpoint event was received` from `Connect` when the stream ends before the `endpoint` event.
 
 The matching codes are `mcp.ErrorCodeParseError` (-32700), `mcp.ErrorCodeInvalidRequest`, `mcp.ErrorCodeMethodNotFound`, `mcp.ErrorCodeInvalidParams`, `mcp.ErrorCodeInternalError`, and the MCP-specific `mcp.ErrorCodeToolNotFound` (-32000), `mcp.ErrorCodeToolExecutionFail`, `mcp.ErrorCodeResourceNotFound` and `mcp.ErrorCodeUnauthorized`. OAuth errors are in [MCP OAuth](./oauth.mdx#errors).

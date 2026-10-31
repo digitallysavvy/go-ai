@@ -55,37 +55,8 @@ func parseMoonshotProviderError(err error) error {
 	}
 }
 
-// moonshotStreamErrorStatusCode mirrors TS getMoonshotAIStreamErrorMetadata:
-// it classifies a Moonshot error `type` string into an HTTP-like status code
-// so ProviderError.IsRetryable() reports the same retry behavior TS assigns
-// (rate limits and transient server errors are retryable).
-func moonshotStreamErrorStatusCode(errType string) int {
-	switch errType {
-	case "rate_limit_exceeded", "rate_limit_error":
-		return 429
-	case "server_error", "api_error", "internal_server_error":
-		return 500
-	case "overloaded_error", "service_unavailable":
-		return 503
-	case "timeout", "timeout_error":
-		return 504
-	case "authentication_error", "invalid_api_key":
-		return 401
-	case "permission_error":
-		return 403
-	case "not_found_error", "model_not_found":
-		return 404
-	case "bad_request", "context_length_exceeded", "invalid_request_error":
-		return 400
-	default:
-		return 500
-	}
-}
-
 // moonshotStreamErrorMetadata mirrors TS getMoonshotAIStreamErrorMetadata
-// exactly, returning both statusCode and isRetryable (unlike
-// moonshotStreamErrorStatusCode above, which only returns a status code and
-// defaults to 500 for ProviderError.StatusCode reporting). ok is false for
+// exactly, returning both statusCode and isRetryable. ok is false for
 // an unrecognized type (TS's `default: return {}`, both fields undefined),
 // signaling the caller should not override NewStreamProviderError's own
 // inference.
@@ -136,26 +107,4 @@ func newMoonshotStreamProviderErrorChunk(payload moonshotErrorPayload, raw json.
 		code = payload.Code
 	}
 	return providererrors.NewStreamProviderError(payload.Message, "moonshot", payload.Type, code, statusPtr, retryablePtr, data)
-}
-
-// newMoonshotStreamProviderError builds the ProviderError surfaced for an
-// {"error": {...}} envelope encountered mid-stream (a Moonshot Chat
-// Completions SSE error frame). Mirrors TS createMoonshotAIStreamError.
-func newMoonshotStreamProviderError(payload moonshotErrorPayload, raw json.RawMessage) error {
-	code := payload.Code
-	if code == "" {
-		code = payload.Type
-	}
-	var data interface{}
-	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &data)
-	}
-	return &providererrors.ProviderError{
-		Provider:     "moonshot",
-		StatusCode:   moonshotStreamErrorStatusCode(payload.Type),
-		ErrorCode:    code,
-		Message:      payload.Message,
-		ResponseBody: string(raw),
-		Data:         data,
-	}
 }

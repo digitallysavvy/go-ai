@@ -220,6 +220,31 @@ Embeddings are unaffected by the Agent API migration — see
 `perplexity.PerplexityEmbeddingModelID` (`pplx-embed-v1-0.6b`,
 `pplx-embed-v1-4b`).
 
+## Decisions (experimental)
+
+`Provider.DecisionModel(id)` returns a decision model backed by the Perplexity Decisions API (`POST /v1/decisions`) for [`ai.ExperimentalDecide`](../03-ai-sdk-core/32-decisions.mdx). The provider name is `perplexity.decision`; model IDs such as `pplx-decider-latest` and `pplx-decider-flash-latest` are forwarded unchanged.
+
+```go
+p := perplexity.New(perplexity.Config{APIKey: os.Getenv("PERPLEXITY_API_KEY")})
+model, err := p.DecisionModel("pplx-decider-latest")
+if err != nil {
+    log.Fatal(err)
+}
+result, err := ai.ExperimentalDecide(ctx, ai.DecideOptions{
+    Model: model,
+    State: map[string]interface{}{"review": "Great sound, but the battery broke."},
+    Questions: map[string]provider.DecisionQuestion{
+        "defect": {Type: "boolean", Instructions: "Does the review report a defect?"},
+    },
+})
+```
+
+- Supports choice (1 to 255 options), score (1 to 10 non-null levels, a single level is allowed) and boolean questions, 1 to 128 questions per request. Box questions are rejected.
+- `Instructions` may be omitted when the criteria define the judgment; a boolean question then needs at least one non-nil criterion.
+- State text and JSON are sent natively (not stringified). PNG, JPEG and WebP images (inline data, at most 8, including images nested in JSON as `image_url` objects) are supported.
+- Probabilities keep full precision (no rounding). Per-answer confidence is in `ProviderMetadata["perplexity"]["confidence"]` and score legends in `ProviderMetadata["perplexity"]["legend"]`.
+- Provider options are not supported and produce `unsupported` warnings.
+
 ## Migrating from the Chat Completions API
 
 If you were using the pre-migration Sonar Chat Completions provider, the

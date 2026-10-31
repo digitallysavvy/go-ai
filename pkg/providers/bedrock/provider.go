@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	stdhttp "net/http"
 	"os"
 	"path/filepath"
@@ -15,6 +14,8 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -27,6 +28,23 @@ type Provider struct {
 	creds     awsCredentials
 	credsFrom string
 	credExp   time.Time
+
+	// fileCreds caches the parsed shared credentials file, keyed by path,
+	// profile, modification time and size, so a request costs one stat
+	// unless the file was rewritten (rotation takes effect at once). The
+	// entry is also re-parsed after sharedFileCacheTTL, in case a rewrite
+	// kept the size within one coarse file-system timestamp tick.
+	fileCredsKey sharedFileKey
+	fileCreds    awsCredentials
+	fileCredsAt  time.Time
+}
+
+const sharedFileCacheTTL = time.Second
+
+type sharedFileKey struct {
+	path, profile string
+	mod           time.Time
+	size          int64
 }
 
 // Config contains configuration for the AWS Bedrock provider
@@ -86,14 +104,14 @@ func (c Credentials) valid() bool {
 
 // New creates a new AWS Bedrock provider with the given configuration
 func New(cfg Config) *Provider {
-	if cfg.Region == "" {
-		cfg.Region = os.Getenv("AWS_REGION")
-	}
-
-	// AWS Bedrock endpoint
+	// AWS_REGION is not copied into cfg: Region() reads it on every use like
+	// TS loadSetting, so a region exported (or changed) after New is honored.
+	// Requests resolve their URL per call (runtimeBaseURL); the client's base
+	// URL is only a default.
+	region := firstNonEmpty(cfg.Region, os.Getenv("AWS_REGION"))
 	baseURL := cfg.BaseURL
-	if baseURL == "" && cfg.Region != "" {
-		baseURL = fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com", cfg.Region)
+	if baseURL == "" && region != "" {
+		baseURL = fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com", region)
 	}
 
 	client := internalhttp.NewClient(internalhttp.Config{
@@ -167,19 +185,23 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 	// Bedrock doesn't provide TTS models directly
-	return nil, fmt.Errorf("AWS Bedrock does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
 	// Bedrock doesn't provide STT models directly
-	return nil, fmt.Errorf("AWS Bedrock does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
 	if modelID == "" {
 		return nil, fmt.Errorf("model ID is required for AWS Bedrock reranking")
+	}
+	// TS createRerankingModel loads the region when the model is created.
+	if p.Region() == "" {
+		return nil, errRegionMissing()
 	}
 	return NewRerankingModel(p, modelID), nil
 }
@@ -210,53 +232,58 @@ func (p *Provider) applyRequestHeaders(req *stdhttp.Request, overrides map[strin
 
 // Region returns the AWS region
 func (p *Provider) Region() string {
-	return p.config.Region
+	// TS loadSetting reads AWS_REGION on every use, so a region exported
+	// after the provider was created is still honored.
+	return firstNonEmpty(p.config.Region, os.Getenv("AWS_REGION"))
 }
 
 func (p *Provider) runtimeBaseURL() (string, error) {
-	if p.config.Region == "" && p.config.BaseURL == "" && os.Getenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME") == "" && os.Getenv("AWS_ENDPOINT_URL") == "" {
-		return "", fmt.Errorf("AWS region is required: set Region or AWS_REGION")
+	if p.Region() == "" && p.config.BaseURL == "" && os.Getenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME") == "" && os.Getenv("AWS_ENDPOINT_URL") == "" {
+		return "", errRegionMissing()
 	}
 	return ResolveAmazonBedrockBaseURL(ResolveBaseURLOptions{
 		BaseURL:                              p.config.BaseURL,
-		Region:                               p.config.Region,
+		Region:                               p.Region(),
 		Service:                              "bedrock-runtime",
 		ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
 	})
 }
 
 func (p *Provider) agentRuntimeBaseURL() (string, error) {
-	if p.config.Region == "" && p.config.BaseURL == "" && os.Getenv("AWS_ENDPOINT_URL_BEDROCK_AGENT_RUNTIME") == "" && os.Getenv("AWS_ENDPOINT_URL") == "" {
-		return "", fmt.Errorf("AWS region is required: set Region or AWS_REGION")
+	if p.Region() == "" && p.config.BaseURL == "" && os.Getenv("AWS_ENDPOINT_URL_BEDROCK_AGENT_RUNTIME") == "" && os.Getenv("AWS_ENDPOINT_URL") == "" {
+		return "", errRegionMissing()
 	}
 	return ResolveAmazonBedrockBaseURL(ResolveBaseURLOptions{
 		BaseURL:                              p.config.BaseURL,
-		Region:                               p.config.Region,
+		Region:                               p.Region(),
 		Service:                              "bedrock-agent-runtime",
 		ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_AGENT_RUNTIME",
 	})
 }
 
 func (p *Provider) authenticateRequest(ctx context.Context, req *stdhttp.Request, payload []byte) error {
-	apiKey := strings.TrimSpace(firstNonEmpty(p.config.APIKey, os.Getenv("AWS_BEARER_TOKEN_BEDROCK")))
+	apiKey := providerutils.JSTrim(firstNonEmpty(p.config.APIKey, os.Getenv("AWS_BEARER_TOKEN_BEDROCK")))
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 		return nil
 	}
 
+	// TS loads the region first (createSigV4FetchFunction's credentials
+	// callback), then the credentials.
+	region := p.Region()
+	if region == "" {
+		return errRegionMissing()
+	}
 	creds, err := p.resolveCredentials(ctx)
 	if err != nil {
 		return err
-	}
-	if p.config.Region == "" {
-		return fmt.Errorf("AWS region is required: set Region or AWS_REGION")
 	}
 
 	signer := NewAWSSigner(
 		creds.AccessKeyID,
 		creds.SecretAccessKey,
 		creds.SessionToken,
-		p.config.Region,
+		region,
 	)
 	if err := signer.SignRequest(req, payload); err != nil {
 		return fmt.Errorf("failed to sign request: %w", err)
@@ -280,11 +307,6 @@ func (p *Provider) resolveCredentials(ctx context.Context) (awsCredentials, erro
 		return creds, nil
 	}
 
-	now := time.Now()
-	if p.creds.valid() && (p.credExp.IsZero() || now.Before(p.credExp.Add(-5*time.Minute))) {
-		return p.creds, nil
-	}
-
 	if p.config.AWSAccessKeyID != "" || p.config.AWSSecretAccessKey != "" || p.config.SessionToken != "" {
 		creds := awsCredentials{
 			AccessKeyID:     firstNonEmpty(p.config.AWSAccessKeyID, os.Getenv("AWS_ACCESS_KEY_ID")),
@@ -295,27 +317,53 @@ func (p *Provider) resolveCredentials(ctx context.Context) (awsCredentials, erro
 			creds.SessionToken = os.Getenv("AWS_SESSION_TOKEN")
 		}
 		if !creds.valid() {
-			return awsCredentials{}, fmt.Errorf("incomplete AWS credentials in Bedrock config")
+			return awsCredentials{}, missingSigV4CredentialsError(creds.AccessKeyID, creds.SecretAccessKey)
 		}
-		p.creds, p.credsFrom, p.credExp = creds, "config", time.Time{}
+		p.credsFrom = "config"
 		return creds, nil
 	}
 	if creds := envCredentials(); creds.valid() {
-		p.creds, p.credsFrom, p.credExp = creds, "env", creds.Expiration
+		p.credsFrom = "env"
 		return creds, nil
 	}
-	if creds, err := sharedFileCredentials(p.config.SharedCredentialsFile, p.config.Profile); err == nil && creds.valid() {
-		p.creds, p.credsFrom, p.credExp = creds, "shared-credentials", creds.Expiration
+	if creds, err := p.cachedSharedFileCredentials(); err == nil && creds.valid() {
+		p.credsFrom = "shared-credentials"
 		return creds, nil
 	} else if err != nil && p.config.SharedCredentialsFile != "" {
 		return awsCredentials{}, err
+	}
+	// Environment and shared-file credentials are re-read on every request
+	// (TS loadSetting reads the environment per request), so rotated STS
+	// credentials are picked up. Only the instance-role lookup, a network
+	// round trip, is cached until shortly before it expires.
+	if p.credsFrom == "instance-role" && p.creds.valid() && time.Now().Before(p.credExp.Add(-5*time.Minute)) {
+		return p.creds, nil
 	}
 	if creds, err := instanceRoleCredentials(ctx); err == nil && creds.valid() {
 		p.creds, p.credsFrom, p.credExp = creds, "instance-role", creds.Expiration
 		return creds, nil
 	}
 
-	return awsCredentials{}, fmt.Errorf("AWS credentials not found: set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, Bedrock Config credentials, shared credentials file, or an instance role")
+	return awsCredentials{}, missingSigV4CredentialsError(os.Getenv("AWS_ACCESS_KEY_ID"), os.Getenv("AWS_SECRET_ACCESS_KEY"))
+}
+
+// errRegionMissing is TS loadSetting's error for the AWS region.
+func errRegionMissing() error {
+	return fmt.Errorf("AWS region setting is missing. Pass it using the 'region' parameter or the AWS_REGION environment variable.") //nolint:staticcheck // message text matches TS
+}
+
+// missingSigV4CredentialsError mirrors the TS createAmazonBedrock error when
+// the access key ID or the secret access key cannot be loaded.
+func missingSigV4CredentialsError(accessKeyID, secretAccessKey string) error {
+	if accessKeyID == "" {
+		return fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n" + //nolint:staticcheck // message text matches TS
+			"1. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables\n" +
+			"2. Provide accessKeyId and secretAccessKey in options\n" +
+			"3. Use a credentialProvider function\n" +
+			"4. Use API key authentication with AWS_BEARER_TOKEN_BEDROCK or apiKey option\n" +
+			"Original error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable.")
+	}
+	return fmt.Errorf("AWS SigV4 authentication requires both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Please ensure both credentials are provided.\nOriginal error: AWS secret access key setting is missing. Pass it using the 'secretAccessKey' parameter or the AWS_SECRET_ACCESS_KEY environment variable.") //nolint:staticcheck // message text matches TS
 }
 
 func envCredentials() awsCredentials {
@@ -333,6 +381,56 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// cachedSharedFileCredentials returns sharedFileCredentials for the
+// provider's file and profile, parsing the file again only when its
+// modification time or size changed. The caller holds credMu.
+func (p *Provider) cachedSharedFileCredentials() (awsCredentials, error) {
+	path, profile, err := sharedFileLocation(p.config.SharedCredentialsFile, p.config.Profile)
+	if err != nil {
+		return awsCredentials{}, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return awsCredentials{}, nil
+		}
+		return awsCredentials{}, err
+	}
+	key := sharedFileKey{path: path, profile: profile, mod: info.ModTime(), size: info.Size()}
+	if key == p.fileCredsKey && p.fileCreds.valid() && time.Since(p.fileCredsAt) < sharedFileCacheTTL {
+		return p.fileCreds, nil
+	}
+	creds, err := sharedFileCredentials(path, profile)
+	if err != nil {
+		return awsCredentials{}, err
+	}
+	p.fileCredsKey, p.fileCreds, p.fileCredsAt = key, creds, time.Now()
+	return creds, nil
+}
+
+// sharedFileLocation resolves the shared credentials file path and profile
+// (explicit values, then AWS_SHARED_CREDENTIALS_FILE / AWS_PROFILE, then
+// ~/.aws/credentials and "default").
+func sharedFileLocation(path, profile string) (string, string, error) {
+	if path == "" {
+		path = os.Getenv("AWS_SHARED_CREDENTIALS_FILE")
+	}
+	if path == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", "", err
+		}
+		path = filepath.Join(home, ".aws", "credentials")
+	}
+	if profile == "" {
+		profile = os.Getenv("AWS_PROFILE")
+	}
+	if profile == "" {
+		profile = "default"
+	}
+	return path, profile, nil
 }
 
 func sharedFileCredentials(path, profile string) (awsCredentials, error) {
@@ -476,5 +574,5 @@ func instanceRoleCredentials(ctx context.Context) (awsCredentials, error) {
 
 func readAndClose(resp *stdhttp.Response) ([]byte, error) {
 	defer resp.Body.Close() //nolint:errcheck
-	return io.ReadAll(resp.Body)
+	return readResponseBody(resp.Body)
 }

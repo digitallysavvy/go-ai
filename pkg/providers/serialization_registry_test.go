@@ -4,7 +4,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -40,6 +39,7 @@ import (
 	_ "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex"
 	_ "github.com/digitallysavvy/go-ai/pkg/providers/googlevertex/xai"
 	_ "github.com/digitallysavvy/go-ai/pkg/providers/groq"
+	_ "github.com/digitallysavvy/go-ai/pkg/providers/heygen"
 	_ "github.com/digitallysavvy/go-ai/pkg/providers/huggingface"
 	_ "github.com/digitallysavvy/go-ai/pkg/providers/hume"
 	_ "github.com/digitallysavvy/go-ai/pkg/providers/luma"
@@ -69,7 +69,8 @@ var registryConfigOverrides = map[string]map[string]interface{}{
 	// google-vertex's LanguageModel/EmbeddingModel/ImageModel: New() errors
 	// without project+location+an access token unless an Express Mode API
 	// key is set instead.
-	"google-vertex": {"project": "test-project", "location": "us-central1", "accessToken": "test-token"},
+	"google-vertex":      {"project": "test-project", "location": "us-central1", "accessToken": "test-token"},
+	"google.vertex.chat": {"project": "test-project", "location": "us-central1", "accessToken": "test-token"},
 	// google.vertex.transcription, google.vertex.speech and
 	// google.vertex.interactions all unconditionally reject an Express Mode
 	// API key for at least one of the model types they can route to (see
@@ -77,6 +78,8 @@ var registryConfigOverrides = map[string]map[string]interface{}{
 	// Provider.SpeechModel, in pkg/providers/googlevertex/provider.go), so
 	// only the project+location+accessToken form of auth works for every
 	// googlevertex-tagged key; use it everywhere for consistency.
+	"google.vertex.embedding":     {"project": "test-project", "location": "us-central1", "accessToken": "test-token"},
+	"google.vertex.image":         {"project": "test-project", "location": "us-central1", "accessToken": "test-token"},
 	"google.vertex.transcription": {"project": "test-project", "location": "us-central1", "accessToken": "test-token"},
 	"google.vertex.speech":        {"project": "test-project", "location": "us-central1", "accessToken": "test-token"},
 	"google.vertex.interactions":  {"project": "test-project", "location": "us-central1", "accessToken": "test-token"},
@@ -119,6 +122,33 @@ func modelIDFor(key string) string {
 // the test only asserts that deserialization succeeds; it does not require
 // Provider() == key.
 var registryAliasKeys = map[string]string{
+	// Pre-TS-parity provider ids: models serialized before Provider() followed
+	// TS config.provider (for example groq.chat) carry the bare name. The bare
+	// key stays registered so those payloads restore under the TS id.
+	"anthropic":     "pre-TS-parity serialization key, restores under the TS config.provider id (anthropic.messages)",
+	"google-vertex": "pre-TS-parity serialization key, restores under the TS config.provider id (google.vertex.chat/embedding/image)",
+	"groq":          "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"cerebras":      "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"fireworks":     "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"together":      "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"alibaba":       "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"deepinfra":     "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"moonshot":      "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"deepseek":      "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"gmicloud":      "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"zai":           "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"cohere":        "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"mistral":       "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"bfl":           "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"fal":           "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"deepgram":      "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"assemblyai":    "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"gladia":        "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"elevenlabs":    "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"bfl.video":     "pre-TS-parity serialization key, restores under the TS config.provider id",
+	// Payloads serialized before the evaluate -> decide rename carry the
+	// old TypeSafe provider tag; they restore as typesafe.decision.
+	"typesafe.evaluation": "pre-rename serialization key, restores as typesafe.decision",
 	// "google" is a short alias for the default provider name
 	// "google.generative-ai" (TS: providerName defaults to
 	// 'google.generative-ai', options.name lets callers override it to
@@ -390,18 +420,18 @@ func TestEmbeddingModelDeserializerRegistryKeysRoundTrip(t *testing.T) {
 	}
 }
 
-func TestEvaluationModelDeserializerRegistryKeysRoundTrip(t *testing.T) {
-	keys := provider.RegisteredEvaluationModelDeserializerKeys()
+func TestDecisionModelDeserializerRegistryKeysRoundTrip(t *testing.T) {
+	keys := provider.RegisteredDecisionModelDeserializerKeys()
 	for _, key := range keys {
 		key := key
 		t.Run(key, func(t *testing.T) {
-			restored, err := provider.DeserializeEvaluationModel(provider.SerializedModel{
+			restored, err := provider.DeserializeDecisionModel(provider.SerializedModel{
 				Provider: key,
 				ModelID:  modelIDFor(key),
 				Config:   configFor(key),
 			})
 			if err != nil {
-				t.Fatalf("DeserializeEvaluationModel(%q) error = %v", key, err)
+				t.Fatalf("DeserializeDecisionModel(%q) error = %v", key, err)
 			}
 			if reason, ok := registryAliasKeys[key]; ok {
 				t.Logf("alias key %q: %s (restored Provider() = %q)", key, reason, restored.Provider())
@@ -423,14 +453,17 @@ func TestEvaluationModelDeserializerRegistryKeysRoundTrip(t *testing.T) {
 // whatever ended up registered, so a missing import produces no failure on
 // its own, just quiet under-coverage.
 func TestBlankImportsCoverAllSerializationPackages(t *testing.T) {
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("could not determine this test file's path via runtime.Caller")
+	// go test runs with the package directory as the working directory, so
+	// "." is pkg/providers and the file name is relative to it (works with
+	// and without -trimpath, unlike runtime.Caller).
+	providersDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
 	}
-	providersDir := filepath.Dir(thisFile)
+	thisFile := filepath.Join(providersDir, "serialization_registry_test.go")
 
 	var withSerialization []string
-	err := filepath.WalkDir(providersDir, func(path string, d fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(providersDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}

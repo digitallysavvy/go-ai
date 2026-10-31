@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -124,13 +125,13 @@ func TestGoogleJSONAccumulator_FlatPaths(t *testing.T) {
 		assert.Equal(t, "", result.TextDelta)
 	})
 
-	t.Run("skip args with no resolvable value", func(t *testing.T) {
+	t.Run("treat a value-less arg for a new path as an empty object", func(t *testing.T) {
 		acc := NewGoogleJSONAccumulator()
 		result := acc.ProcessPartialArgs([]PartialArg{
 			{JSONPath: "$.something"},
 		})
-		assert.Equal(t, map[string]interface{}{}, result.CurrentJSON)
-		assert.Equal(t, "", result.TextDelta)
+		assert.Equal(t, map[string]interface{}{"something": map[string]interface{}{}}, result.CurrentJSON)
+		assert.Equal(t, `{"something":{`, result.TextDelta)
 	})
 
 	t.Run("empty textDelta for empty partialArgs slice", func(t *testing.T) {
@@ -440,5 +441,83 @@ func TestGoogleJSONAccumulator_ConcatenationInvariant(t *testing.T) {
 			joined += d
 		}
 		assert.Equal(t, finalJSON, joined)
+	})
+}
+
+func accumulateChunks(chunks [][]PartialArg) (text, finalJSON string) {
+	acc := NewGoogleJSONAccumulator()
+	var sb strings.Builder
+	for _, c := range chunks {
+		sb.WriteString(acc.ProcessPartialArgs(c).TextDelta)
+	}
+	final, closing := acc.Finalize()
+	sb.WriteString(closing)
+	return sb.String(), final
+}
+
+func TestGoogleJSONAccumulator_EmptyContainers(t *testing.T) {
+	t.Run("keep empty arrays, empty objects, and nested empty arrays", func(t *testing.T) {
+		text, final := accumulateChunks([][]PartialArg{
+			{{JSONPath: "$.id", StringValue: strPtr("x")}},
+			{{JSONPath: "$.emptyArr[]"}},
+			{{JSONPath: "$.emptyObj"}},
+			{{JSONPath: "$.emptyStr", StringValue: strPtr("")}},
+			{{JSONPath: "$.nested.tags[]"}},
+			{{JSONPath: "$.zero", NumberValue: numPtr(0)}},
+			{{JSONPath: "$.no", BoolValue: boolPtr(false)}},
+		})
+		want := `{"id":"x","emptyArr":[],"emptyObj":{},"emptyStr":"","nested":{"tags":[]},"zero":0,"no":false}`
+		assert.Equal(t, want, final)
+		assert.Equal(t, want, text)
+	})
+
+	t.Run("keep an empty container as the last argument", func(t *testing.T) {
+		text, final := accumulateChunks([][]PartialArg{
+			{{JSONPath: "$.id", StringValue: strPtr("x"), WillContinue: boolPtr(true)}},
+			{{JSONPath: "$.nested.tags[]"}},
+		})
+		assert.Equal(t, `{"id":"x","nested":{"tags":[]}}`, final)
+		assert.Equal(t, final, text)
+	})
+
+	t.Run("ignore an array terminator after the array elements", func(t *testing.T) {
+		text, final := accumulateChunks([][]PartialArg{
+			{{JSONPath: "$.tables[0]", StringValue: strPtr("orders"), WillContinue: boolPtr(true)}},
+			{{JSONPath: "$.tables[0]"}},
+			{{JSONPath: "$.tables[1]", StringValue: strPtr("customers")}},
+			{{JSONPath: "$.tables[]"}},
+		})
+		assert.Equal(t, `{"tables":["orders","customers"]}`, final)
+		assert.Equal(t, final, text)
+	})
+
+	t.Run("ignore a string terminator", func(t *testing.T) {
+		text, final := accumulateChunks([][]PartialArg{
+			{{JSONPath: "$.location", StringValue: strPtr("Boston"), WillContinue: boolPtr(true)}},
+			{{JSONPath: "$.location"}},
+		})
+		assert.Equal(t, `{"location":"Boston"}`, final)
+		assert.Equal(t, final, text)
+	})
+
+	t.Run("continue into an empty container when children follow", func(t *testing.T) {
+		text, final := accumulateChunks([][]PartialArg{
+			{{JSONPath: "$.recipe"}},
+			{{JSONPath: "$.recipe.name", StringValue: strPtr("Lasagna")}},
+			{{JSONPath: "$.recipe.steps[]"}},
+			{{JSONPath: "$.recipe.steps[0]", StringValue: strPtr("Cook.")}},
+		})
+		assert.Equal(t, `{"recipe":{"name":"Lasagna","steps":["Cook."]}}`, final)
+		assert.Equal(t, final, text)
+	})
+
+	t.Run("ignore value-less root paths", func(t *testing.T) {
+		text, final := accumulateChunks([][]PartialArg{
+			{{JSONPath: "$"}},
+			{{JSONPath: "$[]"}},
+			{{JSONPath: "$.id", StringValue: strPtr("x")}},
+		})
+		assert.Equal(t, `{"id":"x"}`, final)
+		assert.Equal(t, final, text)
 	})
 }

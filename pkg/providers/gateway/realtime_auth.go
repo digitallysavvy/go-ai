@@ -13,6 +13,11 @@ const (
 	// GatewayRealtimeSubprotocol), TS GATEWAY_TRANSCRIPTION_SUBPROTOCOL.
 	GatewayTranscriptionSubprotocol = "ai-gateway-transcription.v1"
 
+	// GatewaySpeechSubprotocol is offered on every streaming speech
+	// handshake (same negotiation purpose as GatewayRealtimeSubprotocol), TS
+	// GATEWAY_SPEECH_SUBPROTOCOL.
+	GatewaySpeechSubprotocol = "ai-gateway-speech.v1"
+
 	GatewayAuthSubprotocolPrefix = "ai-gateway-auth."
 	GatewayTeamSubprotocolPrefix = "ai-gateway-team."
 
@@ -49,6 +54,12 @@ func GetGatewayRealtimeProtocols(token string, teamIDOrSlug string) []string {
 // getGatewayTranscriptionProtocols).
 func GetGatewayTranscriptionProtocols(token string, teamIDOrSlug string) []string {
 	return buildGatewayProtocols(GatewayTranscriptionSubprotocol, token, teamIDOrSlug)
+}
+
+// GetGatewaySpeechProtocols is GetGatewayRealtimeProtocols with the streaming
+// speech marker subprotocol (TS getGatewaySpeechProtocols).
+func GetGatewaySpeechProtocols(token string, teamIDOrSlug string) []string {
+	return buildGatewayProtocols(GatewaySpeechSubprotocol, token, teamIDOrSlug)
 }
 
 func buildGatewayProtocols(marker, token, teamIDOrSlug string) []string {
@@ -97,6 +108,9 @@ func encodeSubprotocolValue(value string) string {
 }
 
 func decodeSubprotocolValue(value string) (string, error) {
+	// TS maps -/_ to +/ and pads before atob, so standard-alphabet characters
+	// and explicit padding decode as well.
+	value = strings.NewReplacer("+", "-", "/", "_").Replace(strings.TrimRight(value, "="))
 	decoded, err := base64.RawURLEncoding.DecodeString(value)
 	if err != nil {
 		return "", err

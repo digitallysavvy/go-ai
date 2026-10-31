@@ -1,11 +1,12 @@
-// Package typesafeai implements the TypeSafe AI provider (evaluation only).
+// Package typesafeai implements the TypeSafe AI provider (decision only).
 // Mirrors TypeScript's @ai-sdk/typesafe-ai package: the provider exposes only
-// the experimental EvaluationModel capability; languageModel/embeddingModel/
+// the experimental DecisionModel capability; languageModel/embeddingModel/
 // imageModel all report an unsupported-model error.
 package typesafeai
 
 import (
-	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	stdhttp "net/http"
 	"os"
 	"strings"
@@ -19,7 +20,7 @@ import (
 const DefaultBaseURL = "https://api.typesafe.ai/v1"
 
 // Provider implements provider.Provider (language/embedding/image factories
-// all report unsupported) and provider.EvaluationModelProvider for TypeSafe
+// all report unsupported) and provider.DecisionModelProvider for TypeSafe
 // AI. Mirrors TypeScript's TypeSafeAiProvider.
 type Provider struct {
 	config Config
@@ -33,8 +34,8 @@ type Config struct {
 	// TypeScript's lazy loadApiKey behavior).
 	APIKey string
 
-	// BaseURL overrides the API base URL (default: DefaultBaseURL). A
-	// trailing slash is stripped.
+	// BaseURL overrides the API base URL. Defaults to the TYPESAFE_AI_BASE_URL
+	// environment variable, then DefaultBaseURL. A trailing slash is stripped.
 	BaseURL string
 
 	// Headers are additional HTTP headers to send with every request.
@@ -46,7 +47,11 @@ type Config struct {
 
 // New creates a new TypeSafe AI provider.
 func New(cfg Config) *Provider {
-	baseURL := strings.TrimRight(cfg.BaseURL, "/")
+	baseURL := cfg.BaseURL
+	if baseURL == "" {
+		baseURL = os.Getenv("TYPESAFE_AI_BASE_URL")
+	}
+	baseURL = strings.TrimRight(baseURL, "/")
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
@@ -73,12 +78,9 @@ func (p *Provider) Name() string { return "typesafe" }
 // unset) plus any configured custom headers. Resolved per call, mirroring
 // TypeScript's lazy `loadApiKey` inside the provider's headers() closure.
 func (p *Provider) resolveHeaders() (map[string]string, error) {
-	apiKey := p.config.APIKey
-	if apiKey == "" {
-		apiKey = os.Getenv("TYPESAFE_AI_API_KEY")
-	}
-	if apiKey == "" {
-		return nil, fmt.Errorf("TypeSafe AI API key is missing. Pass it using the 'APIKey' config, or set the TYPESAFE_AI_API_KEY environment variable.") //nolint:staticcheck // matches TS SDK's exact error text
+	apiKey, err := providerutils.LoadAPIKey(p.config.APIKey, "TYPESAFE_AI_API_KEY", "TypeSafe")
+	if err != nil {
+		return nil, err
 	}
 
 	headers := map[string]string{"Authorization": "Bearer " + apiKey}
@@ -88,38 +90,49 @@ func (p *Provider) resolveHeaders() (map[string]string, error) {
 	return version.WithUserAgentSuffix(headers, version.ProviderUserAgent("typesafe-ai")), nil
 }
 
-// EvaluationModel returns an evaluation model by ID. Mirrors TypeScript's
-// TypeSafeAiProvider.evaluationModel.
-func (p *Provider) EvaluationModel(modelID string) (provider.EvaluationModel, error) {
-	return NewEvaluationModel(p, modelID), nil
+// DecisionModel returns a decision model by ID. Mirrors TypeScript's
+// TypeSafeAiProvider.decisionModel.
+func (p *Provider) DecisionModel(modelID string) (provider.DecisionModel, error) {
+	return NewDecisionModel(p, modelID), nil
 }
 
-// LanguageModel is unsupported; TypeSafe AI only implements EvaluationModel.
+// LanguageModel is unsupported; TypeSafe AI only implements DecisionModel.
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return nil, fmt.Errorf("typesafe: no such languageModel: %s", modelID)
+	return nil, providererrors.NewNoSuchModelError(modelID, "languageModel")
 }
 
-// EmbeddingModel is unsupported; TypeSafe AI only implements EvaluationModel.
+// EmbeddingModel is unsupported; TypeSafe AI only implements DecisionModel.
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("typesafe: no such embeddingModel: %s", modelID)
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
-// ImageModel is unsupported; TypeSafe AI only implements EvaluationModel.
+// ImageModel is unsupported; TypeSafe AI only implements DecisionModel.
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("typesafe: no such imageModel: %s", modelID)
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
-// SpeechModel is unsupported; TypeSafe AI only implements EvaluationModel.
+// SpeechModel is unsupported; TypeSafe AI only implements DecisionModel.
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("typesafe does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
-// TranscriptionModel is unsupported; TypeSafe AI only implements EvaluationModel.
+// TranscriptionModel is unsupported; TypeSafe AI only implements DecisionModel.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("typesafe does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
-// RerankingModel is unsupported; TypeSafe AI only implements EvaluationModel.
+// RerankingModel is unsupported; TypeSafe AI only implements DecisionModel.
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("typesafe does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
+}
+
+// EvaluationModel is the deprecated form of DecisionModel.
+//
+// Deprecated: Use DecisionModel instead.
+func (p *Provider) EvaluationModel(modelID string) (provider.EvaluationModel, error) {
+	model, err := p.DecisionModel(modelID)
+	if err != nil {
+		return nil, err
+	}
+	return provider.AsEvaluationModel(model), nil
 }

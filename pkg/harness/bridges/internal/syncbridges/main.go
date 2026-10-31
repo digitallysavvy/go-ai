@@ -31,8 +31,8 @@
 //	go run ./pkg/harness/bridges/internal/syncbridges \
 //	  -ts-dir /path/to/ai \
 //	  -out pkg/harness/bridges \
-//	  -tag ai@7.0.113 \
-//	  -commit 5c830d570e
+//	  -tag ai@7.0.153 \
+//	  -commit e64ed82f27
 package main
 
 import (
@@ -142,11 +142,17 @@ var adapterSpecs = []adapterSpec{
 
 type manifestFile = map[string]any
 
+// Defaults must match the tsTag/tsCommit recorded in VERSIONS.json.
+const (
+	defaultTag    = "ai@7.0.153"
+	defaultCommit = "e64ed82f27"
+)
+
 func main() {
 	tsDir := flag.String("ts-dir", os.Getenv("AI_SDK_TS_DIR"), "path to the ai-sdk TS monorepo checkout (or set AI_SDK_TS_DIR)")
 	outDir := flag.String("out", "pkg/harness/bridges", "output directory (the pkg/harness/bridges package)")
-	tag := flag.String("tag", "ai@7.0.113", "TS tag these assets are pinned to")
-	commit := flag.String("commit", "5c830d570e", "TS commit these assets are pinned to")
+	tag := flag.String("tag", defaultTag, "TS tag these assets are pinned to")
+	commit := flag.String("commit", defaultCommit, "TS commit these assets are pinned to")
 	flag.Parse()
 
 	if *tsDir == "" {

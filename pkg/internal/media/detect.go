@@ -2,6 +2,9 @@ package media
 
 // DetectVideoMediaType detects video format from binary data
 // Returns the MIME type based on file signature (magic numbers)
+//
+// Deprecated: has no non-test callers; use the shared signature detection in
+// pkg/providerutils instead.
 func DetectVideoMediaType(data []byte) string {
 	if len(data) < 4 {
 		// Default to MP4 if data is too short to detect

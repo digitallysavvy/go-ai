@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -42,12 +42,12 @@ func NewVideoModel(prov *Provider, modelID string) *VideoModel {
 
 // SpecificationVersion returns the specification version
 func (m *VideoModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
 func (m *VideoModel) Provider() string {
-	return "fal"
+	return "fal.video"
 }
 
 // ModelID returns the model ID
@@ -163,6 +163,9 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	currentDate := time.Now()
 	callOpts := &opts.VideoModelV3CallOptions
 
+	if err := validateVideoOptions(callOpts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	body, err := m.buildStartRequestBody(callOpts)
 	if err != nil {
 		return nil, err
@@ -171,15 +174,17 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	queuePath := fmt.Sprintf("%s/fal-ai/%s", m.prov.queueHost, m.normalizedModelID())
 	submitURL := queuePath
 	if opts.WebhookURL != "" {
-		submitURL = queuePath + "?fal_webhook=" + url.QueryEscape(opts.WebhookURL)
+		submitURL = queuePath + "?fal_webhook=" + providerutils.EncodeURIComponent(opts.WebhookURL)
 	}
 
 	var queueResp falVideoQueueResponse
-	httpResp, err := m.prov.absClient.DoJSONResponse(ctx, internalhttp.Request{
+	_, err = m.prov.absClient.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    submitURL,
 		Body:    body,
 		Headers: callOpts.Headers,
+		// TS createJsonResponseHandler(falJobResponseSchema).
+		ValidateResponse: validateVideoJob,
 	}, &queueResp)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -197,9 +202,20 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Response: provider.VideoModelV3ResponseInfo{
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
-			Headers:   convertHTTPHeaders(httpResp.Headers),
+			// TS doStart: `headers: undefined` (the queue response headers are
+			// not surfaced).
+			Headers: nil,
 		},
 	}, nil
+}
+
+// falStatusFallback is the message for a status poll failure whose body does
+// not match the fal error schema: TS uses the HTTP status text.
+func falStatusFallback(dlErr *providererrors.DownloadError) string {
+	if text := http.StatusText(dlErr.StatusCode); text != "" {
+		return text
+	}
+	return dlErr.Message
 }
 
 // falStillInProgressDetail is the special "not an error" body the fal.ai
@@ -230,10 +246,26 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	}
 
 	var statusResp falVideoStatusResponse
-	result, err := fileutil.PollJSON(ctx, op.ResponseURL, downloadOpts, &statusResp)
+	result, err := fileutil.PollJSON(ctx, op.ResponseURL, downloadOpts, nil)
+	if err == nil {
+		// TS createJsonResponseHandler(falVideoResponseSchema).
+		if verr := validateVideoStatus(http.StatusOK, headersOf(result.Headers), result.Data); verr != nil {
+			return nil, verr
+		}
+		if uerr := json.Unmarshal(result.Data, &statusResp); uerr != nil {
+			return nil, fmt.Errorf("fal: failed to decode status response: %w", uerr)
+		}
+	}
 	if err != nil {
 		var dlErr *providererrors.DownloadError
 		if errors.As(err, &dlErr) && dlErr.Body != nil {
+			// TS reads the failed body with `await response.clone().json()`
+			// and then `body.detail`: a body that is not JSON (or is the
+			// JSON null) makes that throw, which is not an APICallError, so
+			// doStatus rejects instead of reporting an error status.
+			if trimmed := strings.TrimSpace(string(dlErr.Body)); !json.Valid(dlErr.Body) || trimmed == "null" {
+				return nil, fmt.Errorf("fal: status response (HTTP %d) body is not a JSON object: %w", dlErr.StatusCode, err)
+			}
 			var detail struct {
 				Detail string `json:"detail"`
 			}
@@ -243,13 +275,13 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 					Response: provider.VideoModelV3ResponseInfo{
 						Timestamp: currentDate,
 						ModelID:   m.modelID,
-						Headers:   map[string]string{},
+						Headers:   nil, // TS: `headers: undefined`
 					},
 				}, nil
 			}
 			return &provider.VideoModelV3OperationStatusResult{
 				Status: provider.VideoOperationStatusError,
-				Error:  parseFalErrorMessage(dlErr.Body, dlErr.Message),
+				Error:  parseFalErrorMessage(dlErr.Body, falStatusFallback(dlErr)),
 				Response: provider.VideoModelV3ResponseInfo{
 					Timestamp: currentDate,
 					ModelID:   m.modelID,
@@ -275,26 +307,55 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		mediaType = "video/mp4"
 	}
 
+	// TS builds the metadata from the zod-parsed response: `seed !== undefined`
+	// keeps an explicit null, `timings` is an object stripped to its declared
+	// keys, and an absent content_type is undefined (nil), not "".
+	var rawTop map[string]json.RawMessage
+	_ = json.Unmarshal(result.Data, &rawTop)
+	isNull := func(raw json.RawMessage) bool { return strings.TrimSpace(string(raw)) == "null" }
+
+	var contentType interface{}
+	if statusResp.Video.ContentType != "" {
+		contentType = statusResp.Video.ContentType
+	}
 	falMeta := map[string]interface{}{
 		"videos": []map[string]interface{}{
 			{
 				"url":         statusResp.Video.URL,
-				"width":       statusResp.Video.Width,
-				"height":      statusResp.Video.Height,
+				"width":       falNumberPtr(statusResp.Video.Width),
+				"height":      falNumberPtr(statusResp.Video.Height),
 				"duration":    statusResp.Video.Duration,
 				"fps":         statusResp.Video.FPS,
-				"contentType": statusResp.Video.ContentType,
+				"contentType": contentType,
 			},
 		},
 	}
-	if statusResp.Seed != nil {
-		falMeta["seed"] = *statusResp.Seed
+	if raw, ok := rawTop["seed"]; ok {
+		if isNull(raw) || statusResp.Seed == nil {
+			falMeta["seed"] = nil
+		} else {
+			falMeta["seed"] = falNumber(*statusResp.Seed)
+		}
 	}
-	if statusResp.Timings != nil {
-		falMeta["timings"] = statusResp.Timings
+	if raw, ok := rawTop["timings"]; ok && !isNull(raw) {
+		timings := map[string]interface{}{}
+		var rawTimings map[string]json.RawMessage
+		_ = json.Unmarshal(raw, &rawTimings)
+		if inf, ok := rawTimings["inference"]; ok {
+			if isNull(inf) || statusResp.Timings == nil || statusResp.Timings.Inference == nil {
+				timings["inference"] = nil
+			} else {
+				timings["inference"] = *statusResp.Timings.Inference
+			}
+		}
+		falMeta["timings"] = timings
 	}
-	if statusResp.HasNSFWConcepts != nil {
-		falMeta["has_nsfw_concepts"] = statusResp.HasNSFWConcepts
+	if raw, ok := rawTop["has_nsfw_concepts"]; ok {
+		if isNull(raw) {
+			falMeta["has_nsfw_concepts"] = nil
+		} else {
+			falMeta["has_nsfw_concepts"] = statusResp.HasNSFWConcepts
+		}
 	}
 	if statusResp.Prompt != "" {
 		falMeta["prompt"] = statusResp.Prompt
@@ -394,21 +455,17 @@ func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling
 }
 
 func (m *VideoModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		message := parseFalErrorMessage(statusErr.Body, string(statusErr.Body))
-		providerErr := providererrors.NewProviderError(m.Provider(), statusErr.StatusCode, "", message, err)
-		providerErr.ResponseHeaders = flattenFalHTTPHeaders(statusErr.Headers)
-		return providerErr
+		message := parseFalErrorMessage(statusErr.Body, http.StatusText(statusErr.StatusCode))
+		return providererrors.NewProviderErrorFromResponse(m.Provider(), 0, "", message, err)
 	}
-	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
-}
-
-// convertHTTPHeaders flattens net/http.Header (map[string][]string) into the
-// map[string]string expected by VideoModelV3ResponseInfo.Headers, taking the
-// first value for each header key.
-func convertHTTPHeaders(h http.Header) map[string]string {
-	return flattenFalHTTPHeaders(h)
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return err
 }
 
 func flattenFalHTTPHeaders(h map[string][]string) map[string]string {
@@ -442,16 +499,43 @@ type falVideoQueueResponse struct {
 type falVideoStatusResponse struct {
 	Video *struct {
 		URL         string   `json:"url"`
-		Width       *int     `json:"width,omitempty"`
-		Height      *int     `json:"height,omitempty"`
+		Width       *float64 `json:"width,omitempty"`
+		Height      *float64 `json:"height,omitempty"`
 		Duration    *float64 `json:"duration,omitempty"`
 		FPS         *float64 `json:"fps,omitempty"`
 		ContentType string   `json:"content_type,omitempty"`
 	} `json:"video,omitempty"`
-	Seed    *int `json:"seed,omitempty"`
+	Seed    *float64 `json:"seed,omitempty"`
 	Timings *struct {
 		Inference *float64 `json:"inference,omitempty"`
 	} `json:"timings,omitempty"`
 	HasNSFWConcepts []bool `json:"has_nsfw_concepts,omitempty"`
 	Prompt          string `json:"prompt,omitempty"`
 }
+
+// falNumber keeps a whole JSON number an int (what v0.5.2 returned for the
+// integer-typed fields) and a fractional or huge one a float64: TS reads these
+// as z.number(), so 1280.5 or 1e21 must not fail the decode.
+func falNumber(f float64) interface{} {
+	if f == math.Trunc(f) && math.Abs(f) < 1e15 {
+		return int(f)
+	}
+	return f
+}
+
+// falNumberPtr is falNumber for an optional field: an absent value stays a
+// nil *int, a present one is a pointer to the int (or *float64) form.
+func falNumberPtr(f *float64) interface{} {
+	if f == nil {
+		return (*int)(nil)
+	}
+	switch n := falNumber(*f).(type) {
+	case int:
+		return &n
+	default:
+		return f
+	}
+}
+
+// headersOf converts fileutil's header map to http.Header.
+func headersOf(h map[string][]string) http.Header { return http.Header(h) }

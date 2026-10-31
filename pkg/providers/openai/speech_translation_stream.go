@@ -129,7 +129,7 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 				// TS does.
 				var failErr error
 				if wsutil.IsCleanClose(res.Err) {
-					failErr = errors.New("OpenAI realtime translation WebSocket closed unexpectedly before finishing.") //nolint:staticcheck // matches TS SDK's exact error text
+					failErr = errors.New("OpenAI realtime translation WebSocket closed unexpectedly before finishing (code unknown).") //nolint:staticcheck // TS SDK text (the close code is not exposed by the websocket library)
 				} else {
 					failErr = errors.New("OpenAI realtime translation error")
 				}
@@ -180,9 +180,11 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 				return
 
 			case "error":
+				// TS `raw.error?.message ?? 'OpenAI realtime error'`: only a
+				// missing (or null) message falls back; an empty one stays.
 				message := "OpenAI realtime error"
 				if errObj, ok := raw["error"].(map[string]interface{}); ok {
-					if m, ok := errObj["message"].(string); ok && m != "" {
+					if m, ok := errObj["message"].(string); ok {
 						message = m
 					}
 				}

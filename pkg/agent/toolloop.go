@@ -8,9 +8,12 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/internal/aibridge"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -18,6 +21,7 @@ import (
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	toolutil "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 	"github.com/google/uuid"
 )
@@ -125,6 +129,16 @@ func resolveAgentToolExecutionEnd(opts AgentGenerateOptions) func(context.Contex
 
 // mergeListener returns a single listener that calls both a and b in order.
 // If either is nil, returns the other. If both are nil, returns nil.
+// mergeErrorHandlers runs the config-level handler first, then the per-call one.
+func mergeErrorHandlers(a, b func(ctx context.Context, err error)) func(ctx context.Context, err error) {
+	return mergeListener(a, b)
+}
+
+// mergeAbortHandlers runs the config-level handler first, then the per-call one.
+func mergeAbortHandlers(a, b func(ctx context.Context, steps []types.StepResult)) func(ctx context.Context, steps []types.StepResult) {
+	return mergeListener(a, b)
+}
+
 func mergeListener[E any](a, b func(ctx context.Context, e E)) func(ctx context.Context, e E) {
 	if a == nil {
 		return b
@@ -132,10 +146,21 @@ func mergeListener[E any](a, b func(ctx context.Context, e E)) func(ctx context.
 	if b == nil {
 		return a
 	}
+	// TS mergeCallbacks awaits Promise.allSettled: a throwing callback does
+	// not stop the other one.
 	return func(ctx context.Context, e E) {
-		a(ctx, e)
-		b(ctx, e)
+		agentSafeCall(func() { a(ctx, e) })
+		agentSafeCall(func() { b(ctx, e) })
 	}
+}
+
+// agentSafeCall runs fn and discards a panic, as TS notify and
+// mergeCallbacks ignore a throwing callback.
+func agentSafeCall(fn func()) {
+	defer func() {
+		_ = recover()
+	}()
+	fn()
 }
 
 // Context keys for run tracking
@@ -182,7 +207,7 @@ func NewToolLoopAgent(config AgentConfig) *ToolLoopAgent {
 		})
 		config.MaxSteps = 0
 	} else {
-		config.StopWhen = []ai.StopCondition{ai.IsStepCount(20)}
+		config.StopWhen = []ai.StopCondition{createDefaultStopCondition(20)}
 		config.MaxSteps = 0
 	}
 
@@ -241,6 +266,27 @@ func agentHeaders(headers map[string]string) map[string]string {
 	return version.WithUserAgentSuffix(headers, "ai-sdk-agent/tool-loop")
 }
 
+// loopHeaders is the header set the legacy loop's model calls send: for a
+// direct call, agentHeaders plus the ai/<version> suffix GenerateText adds.
+// A caller that already tagged the request with its own agent segment
+// (WorkflowAgent's ai-sdk-agent/workflow; TS streamLanguageModelCall adds no
+// ai/<version>) keeps its headers as they are.
+func loopHeaders(headers map[string]string) map[string]string {
+	if hasAgentUserAgentSegment(headers) {
+		return headers
+	}
+	return version.WithUserAgentSuffix(agentHeaders(headers), version.UserAgent())
+}
+
+// loopStepHeaders is loopHeaders for a step's model call, unless the caller
+// asked for its headers to be sent as given (InternalOptions.HeadersAsGiven).
+func loopStepHeaders(internal *ai.InternalOptions, headers map[string]string) map[string]string {
+	if internal != nil && internal.HeadersAsGiven {
+		return headers
+	}
+	return loopHeaders(headers)
+}
+
 func hasAgentUserAgentSegment(headers map[string]string) bool {
 	for k, v := range headers {
 		if strings.EqualFold(k, "user-agent") {
@@ -268,7 +314,7 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 
 	messages := opts.Messages
 	prompt := opts.Prompt
-	callConfig := (&ToolLoopAgent{config: config}).prepareStepCallConfig(ctx, 0, prompt, messages, nil, types.Usage{}, nil)
+	callConfig := (&ToolLoopAgent{config: config}).prepareGenerateCallConfig(ctx, prompt, messages, opts.Timeout)
 	if len(callConfig.Messages) > 0 {
 		messages = callConfig.Messages
 		prompt = ""
@@ -283,7 +329,7 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		onStepFinish:     resolveAgentOnStepEnd(opts),
 		onFinish:         resolveAgentOnEnd(opts),
 	})
-	return ai.GenerateText(ctx, ai.GenerateTextOptions{
+	result, genErr := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model:                          callConfig.Model,
 		Prompt:                         prompt,
 		Messages:                       messages,
@@ -301,8 +347,9 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		Headers:                        agentHeaders(callConfig.Headers),
 		Tools:                          callConfig.Tools,
 		ActiveTools:                    callConfig.ActiveTools,
-		ToolChoice:                     defaultToolChoice(callConfig.ToolChoice),
+		ToolChoice:                     callConfig.ToolChoice,
 		ToolOrder:                      callConfig.ToolOrder,
+		ToolCallConcurrency:            callConfig.ToolCallConcurrency,
 		ExperimentalToolCallers:        callConfig.ExperimentalToolCallers,
 		ToolApproval:                   callConfig.ToolApproval,
 		ExperimentalToolApprovalSecret: callConfig.ExperimentalToolApprovalSecret,
@@ -331,11 +378,22 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		Internal:                       callConfig.Internal,
 		OnStart:                        cbs.onStart,
 		OnStepStart:                    cbs.onStepStart,
+		OnStepError:                    config.OnStepError,
+		ExperimentalSteering:           opts.ExperimentalSteering,
 		OnToolExecutionStart:           cbs.onToolCallStart,
 		OnToolExecutionEnd:             cbs.onToolCallFinish,
 		OnStepEndEvent:                 cbs.onStepFinish,
 		OnEndEvent:                     cbs.onFinish,
 	})
+	// GenerateText has no error callback, so report the error before it is
+	// returned. Aborts and timeouts are not reported, like in Stream.
+	if genErr != nil && config.ErrorHandler != nil && ctx.Err() == nil &&
+		!errors.Is(genErr, context.Canceled) && !errors.Is(genErr, context.DeadlineExceeded) {
+		// TS notify swallows a throwing onError and rethrows the generate
+		// error.
+		agentSafeCall(func() { config.ErrorHandler(ctx, genErr) })
+	}
+	return result, genErr
 }
 
 // GenerateAgent preserves the Go-specific AgentResult loop shape. Prefer
@@ -383,7 +441,7 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 	config.CallOptions = defaultedCallOptions
 	messages := opts.Messages
 	prompt := opts.Prompt
-	callConfig := (&ToolLoopAgent{config: config}).prepareStepCallConfig(ctx, 0, prompt, messages, nil, types.Usage{}, nil)
+	callConfig := (&ToolLoopAgent{config: config}).prepareGenerateCallConfig(ctx, prompt, messages, opts.Timeout)
 	if len(callConfig.Messages) > 0 {
 		messages = callConfig.Messages
 		prompt = ""
@@ -416,8 +474,9 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		Headers:                        agentHeaders(callConfig.Headers),
 		Tools:                          callConfig.Tools,
 		ActiveTools:                    callConfig.ActiveTools,
-		ToolChoice:                     defaultToolChoice(callConfig.ToolChoice),
+		ToolChoice:                     callConfig.ToolChoice,
 		ToolOrder:                      callConfig.ToolOrder,
+		ToolCallConcurrency:            callConfig.ToolCallConcurrency,
 		ExperimentalToolCallers:        callConfig.ExperimentalToolCallers,
 		ToolApproval:                   callConfig.ToolApproval,
 		ExperimentalToolApprovalSecret: callConfig.ExperimentalToolApprovalSecret,
@@ -447,8 +506,12 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		OnChunk:                        opts.OnChunk,
 		InitialStreamChunks:            opts.InitialStreamChunks,
 		ExperimentalTransform:          opts.ExperimentalTransform,
+		OnError:                        mergeErrorHandlers(config.ErrorHandler, opts.OnError),
+		OnAbortEvent:                   agentAbortEvent(mergeAbortHandlers(config.AbortHandler, opts.OnAbort)),
 		OnStart:                        cbs.onStart,
 		OnStepStart:                    cbs.onStepStart,
+		OnStepError:                    config.OnStepError,
+		ExperimentalSteering:           opts.ExperimentalSteering,
 		OnToolExecutionStart:           cbs.onToolCallStart,
 		OnToolExecutionEnd:             cbs.onToolCallFinish,
 		OnStepEndEvent:                 cbs.onStepFinish,
@@ -481,6 +544,25 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 	if a.config.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
+	// runLoop opens the telemetry root span (unless the caller already did)
+	// once the first step's PrepareCall has run, so the step, model-call and
+	// tool-call spans have a parent; see loop_telemetry.go.
+	baseCtx := ctx
+	var lt *loopTelemetry
+	result, err := a.runLoop(ctx, messages, callCallbacks, &lt)
+	if lt != nil {
+		// Telemetry gets the original error (TS telemetry onError).
+		a.endLoopTelemetry(baseCtx, lt, result, err)
+	}
+	if err != nil {
+		// TS ToolLoopAgent runs generateText, which rethrows every failure
+		// through wrapGatewayError.
+		return result, aibridge.WrapGatewayError(err)
+	}
+	return result, nil
+}
+
+func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, callCallbacks agentCallbacks, ltOut **loopTelemetry) (*AgentResult, error) {
 	if a.config.Model.SpecificationVersion() == "" || a.config.Model.Provider() == "" || a.config.Model.ModelID() == "" {
 		return nil, fmt.Errorf("model must implement provider.LanguageModel metadata methods")
 	}
@@ -507,6 +589,22 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 		ctx = context.WithValue(ctx, runIDKey, runID)
 	}
 
+	// The first step's PrepareCall runs before the root span opens, as TS
+	// ToolLoopAgent applies prepareCall before generateText reports its
+	// start: the root, the start event and the approval resumption use the
+	// prepared configuration, and step 0 runs with it (PrepareCall is not
+	// called again for it).
+	firstCallConfig := a.prepareCallConfig(ctx, 0, "", messages, nil, types.Usage{}, nil)
+	// TS generateText validates the prepared call's toolCallConcurrency
+	// first, before anything starts.
+	if err := validateToolCallConcurrency(firstCallConfig.ToolCallConcurrency); err != nil {
+		return nil, err
+	}
+	var lt *loopTelemetry
+	ctx, lt = a.beginLoopTelemetry(ctx, firstCallConfig)
+	ctx = context.WithValue(ctx, loopTelemetryKey{}, lt)
+	*ltOut = lt
+
 	// CB-T23: Merge settings-level callbacks with no per-call overrides.
 	// Per-call callback merging is used when ToolLoopAgent is called via
 	// dedicated generate/stream wrappers that accept per-call callbacks.
@@ -528,37 +626,55 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 		a.config.OnChainStart(input, messages)
 	}
 
-	// CB-T23: Emit OnStartEvent
+	// CB-T23: Emit OnStartEvent with the prepared call (TS generateText's
+	// start event reports the prepareCall result).
+	fc := firstCallConfig
+	loopCallID := ""
+	if lt != nil {
+		loopCallID = lt.callID
+	}
 	ai.Notify(ctx, ai.OnStartEvent{
-		Provider: a.config.Model.Provider(),
+		// TS ToolLoopAgent runs generateText, whose start event carries the
+		// call id, the operation and the call settings.
+		CallID:      loopCallID,
+		OperationID: "ai.generateText",
+		Provider:    fc.Model.Provider(),
 		// ModelProvider/System are deprecated aliases of Provider/Instructions;
 		// set for callbacks still reading the old fields (mirrors
 		// generate.go's OnStartEvent population).
-		ModelProvider:       a.config.Model.Provider(), //nolint:staticcheck
-		ModelID:             a.config.Model.ModelID(),
-		Instructions:        a.config.System,
-		System:              a.config.System, //nolint:staticcheck
-		Messages:            messages,
-		Tools:               a.config.Tools,
-		ToolChoice:          a.config.ToolChoice,
-		Temperature:         a.config.Temperature,
-		MaxTokens:           a.config.MaxTokens,
-		TopP:                a.config.TopP,
-		TopK:                a.config.TopK,
-		FrequencyPenalty:    a.config.FrequencyPenalty,
-		PresencePenalty:     a.config.PresencePenalty,
-		StopSequences:       a.config.StopSequences,
-		Seed:                a.config.Seed,
-		ProviderOptions:     a.config.ProviderOptions,
+		ModelProvider:       fc.Model.Provider(), //nolint:staticcheck
+		ModelID:             fc.Model.ModelID(),
+		Instructions:        fc.System,
+		InstructionMessages: fc.InstructionMessages,
+		System:              fc.System, //nolint:staticcheck
+		Messages:            fc.Messages,
+		Tools:               fc.Tools,
+		ActiveTools:         fc.ActiveTools,
+		ToolOrder:           fc.ToolOrder,
+		ToolChoice:          fc.ToolChoice,
+		Timeout:             fc.Timeout,
+		Reasoning:           fc.Reasoning,
+		MaxRetries:          ai.GatewayMaxRetries(fc.Model, fc.MaxRetries),
+		Headers:             loopStepHeaders(fc.Internal, fc.Headers),
+		Output:              fc.Output,
+		Temperature:         fc.Temperature,
+		MaxTokens:           fc.MaxTokens,
+		TopP:                fc.TopP,
+		TopK:                fc.TopK,
+		FrequencyPenalty:    fc.FrequencyPenalty,
+		PresencePenalty:     fc.PresencePenalty,
+		StopSequences:       fc.StopSequences,
+		Seed:                fc.Seed,
+		ProviderOptions:     fc.ProviderOptions,
 		ExperimentalContext: a.config.ExperimentalContext,
-		RuntimeContext:      a.runtimeContext(),
-		ToolsContext:        a.config.ToolsContext,
+		RuntimeContext:      fc.RuntimeContext,
+		ToolsContext:        fc.ToolsContext,
 	}, cbs.onStart)
 
-	// Apply total timeout if configured
+	// Apply total timeout if configured (TS `timeout ?? preparedCall.timeout`)
 	var cancel context.CancelFunc
-	if a.config.Timeout != nil && a.config.Timeout.HasTotal() {
-		ctx, cancel = a.config.Timeout.CreateTimeoutContext(ctx, "total")
+	if fc.Timeout != nil && fc.Timeout.HasTotal() {
+		ctx, cancel = fc.Timeout.CreateTimeoutContext(ctx, "total")
 		defer cancel()
 	}
 
@@ -570,28 +686,37 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 		Warnings:    append([]types.Warning{}, a.warnings...),
 	}
 
-	// Current conversation state
-	currentMessages := make([]types.Message, len(messages))
-	copy(currentMessages, messages)
+	// Current conversation state: the prepared call's messages.
+	currentMessages := make([]types.Message, len(fc.Messages))
+	copy(currentMessages, fc.Messages)
 
 	// Resume tool approvals from the input messages before the first step
 	// (review finding F5): this loop previously signed approval requests
 	// (see agentToolResultsToContentParts) but never resumed them, so a
 	// history ending in an approved tool-approval-response silently
 	// continued without executing the tool or verifying its signature.
-	resumed, resumeErr := ai.ResumeToolApprovals(ctx, ai.ResumeToolApprovalsOptions{
-		Messages:             currentMessages,
-		Tools:                a.config.Tools,
-		ToolApproval:         a.config.ToolApproval,
-		ToolsContext:         a.config.ToolsContext,
-		RuntimeContext:       a.runtimeContext(),
-		Secret:               a.config.ExperimentalToolApprovalSecret,
-		RefineToolInput:      a.config.ExperimentalRefineToolInput,
-		ModelProvider:        a.config.Model.Provider(),
-		ModelID:              a.config.Model.ModelID(),
-		OnToolExecutionStart: cbs.onToolCallStart,
-		OnToolExecutionEnd:   cbs.onToolCallFinish,
-	})
+	// TS generateText resumes them with the prepared call's tools, approval
+	// configuration and contexts.
+	// A caller that resumed the approvals itself (WorkflowAgent,
+	// InternalOptions.ApprovalsResumed) leaves nothing to resume here.
+	var resumed ai.ResumeToolApprovalsResult
+	var resumeErr error
+	if fc.Internal == nil || !fc.Internal.ApprovalsResumed {
+		resumed, resumeErr = ai.ResumeToolApprovals(ctx, ai.ResumeToolApprovalsOptions{
+			Messages:             currentMessages,
+			Tools:                fc.Tools,
+			ToolApproval:         fc.ToolApproval,
+			ToolsContext:         fc.ToolsContext,
+			RuntimeContext:       fc.RuntimeContext,
+			Secret:               fc.ExperimentalToolApprovalSecret,
+			RefineToolInput:      fc.ExperimentalRefineToolInput,
+			ToolCallConcurrency:  fc.ToolCallConcurrency,
+			ModelProvider:        fc.Model.Provider(),
+			ModelID:              fc.Model.ModelID(),
+			OnToolExecutionStart: cbs.onToolCallStart,
+			OnToolExecutionEnd:   cbs.onToolCallFinish,
+		})
+	}
 	if resumeErr != nil {
 		if a.config.OnChainError != nil {
 			a.config.OnChainError(resumeErr)
@@ -614,14 +739,16 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 	// per-step application ai.GenerateText/StreamText perform internally.
 	// Mirrors TS workflow/stream-text-iterator.ts's createToolSearchState +
 	// prepareToolSearch(filterActiveTools(...)).
-	resolvedToolCallers, err := ai.ResolveToolCallerConfiguration(a.config.Tools, a.config.ExperimentalToolCallers)
+	// TS generateText resolves them from the prepared call's tools and
+	// tool callers (ToolLoopAgent passes the prepareCall result).
+	resolvedToolCallers, err := ai.ResolveToolCallerConfiguration(fc.Tools, fc.ExperimentalToolCallers)
 	if err != nil {
 		if a.config.OnChainError != nil {
 			a.config.OnChainError(err)
 		}
 		return nil, err
 	}
-	toolSearchState, err := ai.NewToolSearchState(a.config.Tools, resolvedToolCallers)
+	toolSearchState, err := ai.NewToolSearchState(fc.Tools, resolvedToolCallers)
 	if err != nil {
 		if a.config.OnChainError != nil {
 			a.config.OnChainError(err)
@@ -629,10 +756,35 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 		return nil, err
 	}
 
+	// pendingDeferredToolCalls tracks provider-executed calls of tools with
+	// SupportsDeferredResults whose result has not arrived yet (TS
+	// pendingDeferredToolCalls): the loop keeps going until they resolve.
+	pendingDeferredToolCalls := map[string]string{}
+
 	// Execute agent loop
 	for stepNum := 1; a.config.MaxSteps <= 0 || stepNum <= a.config.MaxSteps; stepNum++ {
 		stepIndex := stepNum - 1
-		callConfig := a.prepareStepCallConfig(ctx, stepIndex, "", currentMessages, result.Steps, result.Usage, customData)
+		var callConfig PrepareCallConfig
+		// callTools is the step's prepared tool set before ActiveTools, tool
+		// search and tool-caller routing narrow it: TS generateText checks a
+		// response's provider results against the call's `tools`.
+		var callTools []types.Tool
+		if stepIndex == 0 {
+			// Step 0 runs with the configuration prepared before the root
+			// opened, plus any messages the approval resumption added.
+			callTools = fc.Tools
+			callConfig = a.finishStepCallConfig(ctx, stepIndex, fc)
+			callConfig.Messages = currentMessages
+		} else {
+			prepared := a.prepareCallConfig(ctx, stepIndex, "", currentMessages, result.Steps, result.Usage, customData)
+			callTools = prepared.Tools
+			callConfig = a.finishStepCallConfig(ctx, stepIndex, prepared)
+		}
+		// A PrepareCall override of the telemetry settings (TS prepareCall
+		// `telemetry`) applies to this and the following steps' spans.
+		if callConfig.Telemetry != nil && callConfig.Telemetry != a.config.Telemetry {
+			ctx = a.adoptPreparedTelemetry(ctx, lt, callConfig.Telemetry, callConfig)
+		}
 
 		// Apply deferred tool discovery (ai.ToolSearch / types.Tool.DeferLoading)
 		// and tool-caller routing (ExperimentalToolCallers) before the
@@ -646,8 +798,8 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 		// routed exclusively through a local/provider caller are hidden
 		// from the model (executionTools keeps the caller-bound Execute
 		// used below to actually run the call; callConfig.Tools becomes
-		// the model-visible set reported to OnStepStartEvent and sent to
-		// the model). A local caller's catalog-announcement message, if
+		// the model-visible set sent to the model, while OnStepStartEvent
+		// reports the call's tools, as TS stepStartEvent.tools). A local caller's catalog-announcement message, if
 		// any, is appended to callConfig.Messages below, and persists into
 		// currentMessages once this step's response messages are recorded
 		// (see the currentMessages assignment after executeTools/
@@ -662,8 +814,12 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 			callConfig.Messages = ai.AppendToolCallerMessages(callConfig.Messages, toolCallerMessages)
 		}
 
-		// CB-T23: Emit OnStepStartEvent
-		ai.Notify(ctx, ai.OnStepStartEvent{
+		// CB-T23: Emit OnStepStartEvent. It precedes the step's prompt
+		// conversion, as TS WorkflowAgent's onStepStart does (this loop runs
+		// WorkflowAgent.Generate); a step that fails after it ends with
+		// OnStepError (TS generateText onStepError).
+		stepStartEvent := ai.OnStepStartEvent{
+			CallID:     loopCallID,
 			StepNumber: stepIndex,
 			Provider:   callConfig.Model.Provider(),
 			// ModelProvider/System are deprecated aliases of Provider/
@@ -672,24 +828,62 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 			ModelProvider:       callConfig.Model.Provider(), //nolint:staticcheck
 			ModelID:             callConfig.Model.ModelID(),
 			Instructions:        callConfig.System,
+			InstructionMessages: callConfig.InstructionMessages,
 			System:              callConfig.System, //nolint:staticcheck
 			Messages:            callConfig.Messages,
-			Tools:               callConfig.Tools,
+			// TS stepStartEvent.tools: the call's tools, before ActiveTools,
+			// tool search and tool-caller routing narrow them.
+			Tools:               callTools,
+			ToolChoice:          callConfig.ToolChoice,
+			ActiveTools:         callConfig.ActiveTools,
+			ToolOrder:           callConfig.ToolOrder,
+			ProviderOptions:     callConfig.ProviderOptions,
+			Output:              callConfig.Output,
+			Steps:               result.Steps,
 			PreviousSteps:       result.Steps,
 			ExperimentalContext: a.config.ExperimentalContext,
 			RuntimeContext:      callConfig.RuntimeContext,
 			ToolsContext:        callConfig.ToolsContext,
-		}, cbs.onStepStart)
+		}
+		ai.Notify(ctx, stepStartEvent, cbs.onStepStart)
+		stepStartNotified := true
+		// failStep reports a failure of a step that started to OnStepError
+		// (TS notifies onStepError with wrapGatewayError(error)).
+		failStep := func(err error) {
+			if !stepStartNotified {
+				return
+			}
+			stepStartNotified = false
+			ai.Notify(ctx, ai.OnStepErrorEvent{OnStepStartEvent: stepStartEvent, Error: aibridge.WrapGatewayError(err)}, a.config.OnStepError)
+		}
 
 		// Call step start callback (legacy)
 		if a.config.OnStepStart != nil {
 			a.config.OnStepStart(stepIndex)
 		}
 
+		// Open the step telemetry span; tools and the model call run under it.
+		stepTel := a.startStepTelemetry(ctx, lt, stepIndex, callConfig)
+		// The per-step timeout (a PrepareCall override included) spans the
+		// model call and the step's tool execution, as TS generateText's
+		// step timeout aborts mergedAbortSignal, which executeTools uses.
+		stepCtx, cancelStepTimeout := a.stepTimeoutContext(stepTel.stepCtx, callConfig)
+
 		// Execute one step with custom data
-		stepResult, shouldContinue, newCustomData, _, err := a.executeStep(ctx, callConfig)
+		stepStarted := time.Now()
+		stepResult, shouldContinue, newCustomData, _, err := a.executeStep(stepCtx, callConfig, callTools, stepTel)
 		customData = newCustomData
+		if err == nil {
+			// TS generateText continues only for client (locally executed)
+			// tool calls or while a deferred-result provider tool is still
+			// pending; a step whose provider-executed calls all carry their
+			// results ends the run.
+			shouldContinue = agentStepContinues(stepResult, callConfig.Tools, pendingDeferredToolCalls)
+		}
 		if err != nil {
+			cancelStepTimeout()
+			failStep(err)
+			stepTel.fail(err)
 			// Call OnChainError callback
 			if a.config.OnChainError != nil {
 				a.config.OnChainError(err)
@@ -698,10 +892,41 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 		}
 
 		responseContent := append([]types.ContentPart(nil), stepResult.Content...)
+		// The model's own content, before any tool output is appended.
+		modelContent := responseContent
+		toolResultsBefore := len(result.ToolResults)
 
 		// If there are tool calls, execute them
 		var stepToolResults []types.ToolResult
-		if len(stepResult.ToolCalls) > 0 {
+		// WorkflowAgent: a step that finished with a reason other than stop or
+		// tool-calls ends the run; its tool calls are neither executed nor
+		// answered (TS modelCallIterator shouldProcessTools).
+		workflowBlocked := aibridge.WorkflowBlockedToolStep(callConfig.Internal != nil && callConfig.Internal.ContinueOnMissingProviderResult, stepResult.FinishReason, stepResult.Content)
+		if workflowBlocked {
+			shouldContinue = false
+		}
+		// Notify the tools that their calls are available and resolve each
+		// call's approval in the same pass, before any tool runs (TS
+		// generateText: per valid call, OnInputStart, OnInputAvailable, then
+		// resolveToolApproval; an error fails the run).
+		preApprovals, inputErr, approvalErr := a.notifyToolCallsAndResolveApprovals(stepCtx, stepResult.ToolCalls, executionTools, callConfig.Messages, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ToolApproval, len(stepResult.ToolCalls) > 0 && !workflowBlocked)
+		if inputErr != nil || approvalErr != nil {
+			cancelStepTimeout()
+			failErr := approvalErr
+			if inputErr != nil {
+				failErr = inputErr
+			}
+			failStep(failErr)
+			stepTel.fail(failErr)
+			if a.config.OnChainError != nil {
+				a.config.OnChainError(failErr)
+			}
+			if inputErr != nil {
+				return nil, fmt.Errorf("step %d failed: %w", stepNum, inputErr)
+			}
+			return nil, approvalErr
+		}
+		if len(stepResult.ToolCalls) > 0 && !workflowBlocked {
 			// Call OnAgentAction callback for each tool call
 			if a.config.OnAgentAction != nil {
 				// Extract run tracking from context
@@ -721,41 +946,178 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 					a.config.OnAgentAction(action)
 				}
 			}
-			if len(callConfig.ExperimentalRefineToolInput) > 0 {
-				refined, refineErr := ai.RefineToolCalls(ctx, stepResult.ToolCalls, callConfig.Tools, callConfig.ExperimentalRefineToolInput, callConfig.RuntimeContext, callConfig.ToolsContext)
-				if refineErr != nil {
-					return nil, fmt.Errorf("tool input refinement failed at step %d: %w", stepIndex, refineErr)
-				}
-				stepResult.ToolCalls = refined
-			}
 			// callConfig.Messages (this step's messages, including its own
 			// AppendToolCallerMessages announcement), not currentMessages,
 			// matches TS generate-text.ts's executeToolCall({ messages: stepMessages, ... }).
-			toolResults, err := a.executeTools(ctx, stepResult.ToolCalls, executionTools, callConfig.Messages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, cbs)
+			timings := &toolTimings{}
+			callTools := executionTools
+			if reason := stepResult.FinishReason; reason != "" && reason != types.FinishReasonStop && reason != types.FinishReasonToolCalls {
+				// A truncated, filtered or errored step never runs local
+				// tools (TS isToolExecutionAllowedFinishReason); approvals and
+				// error results for invalid calls still resolve.
+				callTools = make([]types.Tool, len(executionTools))
+				for i, tool := range executionTools {
+					if !tool.ProviderExecuted {
+						tool.Execute = nil
+					}
+					callTools[i] = tool
+				}
+			}
+			// A PrepareCall override of the step's tool-call concurrency (TS
+			// prepareCall toolCallConcurrency) bounds this step's calls.
+			stepAgent := a
+			if callConfig.ToolCallConcurrency != a.config.ToolCallConcurrency {
+				if err := validateToolCallConcurrency(callConfig.ToolCallConcurrency); err != nil {
+					cancelStepTimeout()
+					failStep(err)
+					stepTel.fail(err)
+					return nil, err
+				}
+				local := *a
+				local.config.ToolCallConcurrency = callConfig.ToolCallConcurrency
+				stepAgent = &local
+			}
+			// The tool timeouts come from the step's timeout (a PrepareCall
+			// override included), as the step timeout does (TS
+			// `timeout ?? preparedCall.timeout` reaches executeToolCall).
+			if callConfig.Timeout != nil && callConfig.Timeout != stepAgent.config.Timeout {
+				local := *stepAgent
+				local.config.Timeout = callConfig.Timeout
+				stepAgent = &local
+			}
+			// The tool-call events report the step's model (a PrepareCall model
+			// override), not the agent's configured one.
+			if callConfig.Model != nil && callConfig.Model != stepAgent.config.Model {
+				local := *stepAgent
+				local.config.Model = callConfig.Model
+				stepAgent = &local
+			}
+			toolResults, err := stepAgent.executeTools(stepCtx, stepResult.ToolCalls, callTools, callConfig.Messages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, preApprovals, cbs, result.Usage.Add(stepResult.Usage), timings)
 			if err != nil {
+				cancelStepTimeout()
+				var conversionErr *toolResultModelOutputError
+				if errors.As(err, &conversionErr) {
+					failStep(conversionErr.Unwrap())
+				} else {
+					failStep(err)
+				}
+				// TS notify([onStepError, telemetry.onStepError]): the user
+				// callback first.
+				stepTel.fail(err)
 				// Call OnChainError callback
 				if a.config.OnChainError != nil {
 					a.config.OnChainError(err)
 				}
-				var conversionErr *toolResultModelOutputError
-				if errors.As(err, &conversionErr) {
+				if conversionErr != nil {
 					return nil, conversionErr.Unwrap()
 				}
-				return nil, fmt.Errorf("tool execution failed at step %d: %w", stepNum, err)
+				return nil, err
 			}
 
+			// An approved local call that did not run (no Execute, or a finish
+			// reason that blocks execution) has no result, but TS still names
+			// its approval (in call order) and records the approval request
+			// and response.
+			approvalOnly := agentApprovedUnexecutedCalls(stepResult.ToolCalls, callTools, preApprovals, toolResults)
+			toolResults, approvalOnly = splitAgentApprovalOnly(mergeAgentApprovalOnly(toolResults, stepResult.ToolCalls, approvalOnly), callConfig.Internal)
+
+			// WorkflowAgent: a provider-executed call with no result gets an
+			// empty text result (TS resolveProviderToolResult) instead of the
+			// pending marker. Like TS modelCallIterator, the loop still ends
+			// after a step without client tool calls.
+			if callConfig.Internal != nil && callConfig.Internal.ContinueOnMissingProviderResult {
+				for _, synthetic := range aibridge.EmptyProviderResults(stepResult.ToolCalls, callConfig.Tools, stepResult.Content, stepResult.FinishReason, stepResult.Model.Provider, stepResult.Model.ModelID) {
+					for i := range toolResults {
+						if toolResults[i].ToolCallID == synthetic.ToolCallID && toolResults[i].ProviderExecuted && toolResults[i].Result == nil && toolResults[i].Error == nil {
+							toolResults[i].Result = synthetic.Result
+							toolResults[i].ModelOutput = synthetic.ModelOutput
+						}
+					}
+				}
+			}
 			stepToolResults = toolResults
-			stepResult.ToolResults = toolResults
-			stepResult.StaticToolResults = filterAgentStaticToolResults(toolResults)
-			stepResult.DynamicToolResults = filterAgentDynamicToolResults(toolResults)
-			stepResult.Content = append(stepResult.Content, agentToolResultsToContentParts(toolResults, callConfig.ExperimentalToolApprovalSecret)...)
+			stepResult.Performance.ToolExecutionMs = timings.snapshot()
+			// TS toolResults holds only tool-result content parts; approval
+			// bookkeeping entries stay in the content parts and response
+			// messages (built from the full list below).
+			publicResults := types.ResultsForPublicView(toolResults)
+			stepResult.ToolResults = publicResults
+			stepResult.StaticToolResults = filterAgentStaticToolResults(publicResults)
+			stepResult.DynamicToolResults = filterAgentDynamicToolResults(publicResults)
+			stepResult.Content = append(stepResult.Content, agentToolResultsToContentParts(mergeAgentApprovalOnly(toolResults, stepResult.ToolCalls, approvalOnly), callConfig.ExperimentalToolApprovalSecret)...)
 			responseContent = stepResult.Content
-			result.ToolResults = append(result.ToolResults, toolResults...)
+			result.ToolResults = append(result.ToolResults, publicResults...)
 			if len(toolResults) == 0 {
 				shouldContinue = false
 			}
+			// A tool call awaiting user approval pauses the loop, as in
+			// ai.GenerateText and TS WorkflowAgent: the next call resumes it
+			// with the approval response. Continuing would send the model a
+			// tool call that has no tool result.
+			for _, tr := range toolResults {
+				if tr.ApprovalStatus == types.ToolApprovalStatusUserApproval {
+					shouldContinue = false
+					break
+				}
+			}
+			// Continue only after every local tool call has a result (TS:
+			// clientToolOutputs + denied === clientToolCalls); a call left
+			// without one (a tool with no Execute) pauses the loop instead of
+			// sending the model a dangling tool call.
+			if hasUnresolvedLocalAgentToolCalls(stepResult.ToolCalls, executionTools, toolResults) {
+				shouldContinue = false
+			}
 		}
-		responseMessages := providerutils.ConvertToResponseMessages(stepResult.ToolCalls, responseContent, stepToolResults)
+		// Provider-executed results the model returned in this response are
+		// tool-result content parts, so TS step.toolResults has them (in
+		// content order, before the locally executed results), as
+		// GenerateText's step does.
+		if providerResults := aibridge.ProviderToolResultsFromContent(modelContent, stepToolResults); len(providerResults) > 0 {
+			stepResult.ToolResults = append(providerResults, stepResult.ToolResults...)
+			stepResult.StaticToolResults = filterAgentStaticToolResults(stepResult.ToolResults)
+			stepResult.DynamicToolResults = filterAgentDynamicToolResults(stepResult.ToolResults)
+			result.ToolResults = append(result.ToolResults[:toolResultsBefore:toolResultsBefore], stepResult.ToolResults...)
+		}
+		// TS toolResults holds only tool-result content parts: a failed call
+		// is a tool-error content part only (owner ruling r71). The telemetry
+		// step end keeps the failures.
+		if stepTel != nil {
+			stepTel.toolResults, stepTel.hasToolResults = stepResult.ToolResults, true
+		}
+		if successful := aibridge.SuccessfulToolResults(stepResult.ToolResults); len(successful) != len(stepResult.ToolResults) {
+			stepResult.ToolResults = successful
+			stepResult.StaticToolResults = filterAgentStaticToolResults(successful)
+			stepResult.DynamicToolResults = filterAgentDynamicToolResults(successful)
+			result.ToolResults = append(result.ToolResults[:toolResultsBefore:toolResultsBefore], successful...)
+		}
+		// A provider-executed call the provider gated behind its own
+		// tool-approval-request (MCP) pauses the loop until the caller
+		// answers; TS WorkflowAgent returns on providerApprovalRequests.
+		if agentHasProviderApprovalRequest(stepResult.Content) {
+			shouldContinue = false
+		}
+		// An interrupted step (provider stream ended without a completion
+		// signal) never continues the loop (TS #23778).
+		if stepResult.FinishReason == types.FinishReasonInterrupted {
+			shouldContinue = false
+		}
+		// A step timeout that expired while the tools ran aborts the rest of
+		// the run (checked below, once the step is recorded).
+		var stepTimeoutErr error
+		if errors.Is(stepCtx.Err(), context.DeadlineExceeded) {
+			stepTimeoutErr = stepCtx.Err()
+		}
+		cancelStepTimeout()
+		// TS stepTimeMs spans the model call and the tool execution.
+		if !stepTel.startedAt.IsZero() {
+			stepStarted = stepTel.startedAt
+		}
+		stepResult.Performance.StepTimeMs = time.Since(stepStarted).Milliseconds()
+		responseCalls := stepResult.ToolCalls
+		if workflowBlocked {
+			responseCalls, responseContent = aibridge.WorkflowBlockedResponse(responseCalls, responseContent)
+		}
+		responseMessages := providerutils.ConvertToResponseMessages(responseCalls, responseContent, stepToolResults)
 		stepResult.ResponseMessages = responseMessages
 		stepResult.Response.Messages = responseMessages
 		// Use callConfig.Messages (this step's messages after
@@ -778,19 +1140,52 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 
 		// CB-T23: Emit OnStepFinishEvent (after tool execution so ToolResults is populated)
 		ai.Notify(ctx, ai.OnStepFinishEvent{
-			StepNumber:          stepResult.StepNumber,
-			ModelProvider:       a.config.Model.Provider(),
-			ModelID:             a.config.Model.ModelID(),
-			Text:                stepResult.Text,
-			ToolCalls:           stepResult.ToolCalls,
-			ToolResults:         stepToolResults,
-			FinishReason:        stepResult.FinishReason,
-			Usage:               stepResult.Usage,
-			Warnings:            stepResult.Warnings,
+			CallID:           stepTel.callID(),
+			StepNumber:       stepResult.StepNumber,
+			Model:            stepResult.Model,
+			ModelProvider:    stepResult.Model.Provider,
+			ModelID:          stepResult.Model.ModelID,
+			Text:             stepResult.Text,
+			Content:          stepResult.Content,
+			Reasoning:        stepResult.Reasoning,
+			ReasoningText:    stepResult.ReasoningText,
+			ToolCalls:        stepResult.ToolCalls,
+			StaticToolCalls:  stepResult.StaticToolCalls,
+			DynamicToolCalls: stepResult.DynamicToolCalls,
+			// The public results, like StaticToolResults/DynamicToolResults
+			// and GenerateText's step event: approval requests and pending
+			// provider markers are content parts, not tool results.
+			ToolResults:        stepResult.ToolResults,
+			StaticToolResults:  stepResult.StaticToolResults,
+			DynamicToolResults: stepResult.DynamicToolResults,
+			FinishReason:       stepResult.FinishReason,
+			RawFinishReason:    stepResult.RawFinishReason,
+			Usage:              stepResult.Usage,
+			Performance:        stepResult.Performance,
+			Warnings:           stepResult.Warnings,
+			Sources:            stepResult.Sources,
+			Files:              stepResult.Files,
+			ProviderMetadata:   stepResult.ProviderMetadata,
+			ResponseHeaders:    stepResult.Response.Headers,
+			// TS onStepEnd receives the StepResult (content, performance,
+			// request.messages).
+			Request: ai.GenerateStepRequest{Body: stepResult.Request.Body, Messages: stepResult.Request.Messages},
+			Response: ai.GenerateStepResponse{
+				ID:        stepResult.Response.ID,
+				Timestamp: stepResult.Response.Timestamp,
+				ModelID:   stepResult.Response.ModelID,
+				Headers:   stepResult.Response.Headers,
+				Messages:  stepResult.ResponseMessages,
+				Body:      stepResult.Response.Body,
+			},
 			ExperimentalContext: a.config.ExperimentalContext,
 			RuntimeContext:      callConfig.RuntimeContext,
 			ToolsContext:        callConfig.ToolsContext,
 		}, cbs.onStepFinish)
+		// The telemetry step end follows the user callbacks (TS
+		// notify([onStepFinish, telemetry.onStepEnd]) starts the callback
+		// first).
+		stepTel.finish(stepResult, callConfig.RuntimeContext, callConfig.ToolsContext)
 
 		// Check if we should continue
 		if !shouldContinue {
@@ -891,15 +1286,94 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 			}
 			break
 		}
+
+		// TS generateText: the step timeout aborts the call's shared signal
+		// for good, so the next step rejects (a tool that swallowed the
+		// abort does not prevent it).
+		if stepTimeoutErr != nil && ctx.Err() == nil {
+			if a.config.OnChainError != nil {
+				a.config.OnChainError(stepTimeoutErr)
+			}
+			return nil, fmt.Errorf("step %d failed: %w", stepNum+1, stepTimeoutErr)
+		}
+		// TS generateText `if (steps.length > 0) mergedAbortSignal?.throwIfAborted()`:
+		// a run aborted after a step ended (e.g. while a tool that ignores
+		// ctx ran) fails before the next step's PrepareCall and step events.
+		if ctx.Err() != nil {
+			abortErr := context.Cause(ctx)
+			if a.config.OnChainError != nil {
+				a.config.OnChainError(abortErr)
+			}
+			return nil, fmt.Errorf("step %d failed: %w", stepNum+1, abortErr)
+		}
 	}
 
 	// Call OnChainEnd callback (successful completion)
 	if a.config.OnChainEnd != nil {
 		a.config.OnChainEnd(result)
 	}
-	if result.Output == nil {
-		output, err := parseAgentOutput(ctx, a.config.Output, result)
+	// CB-T23: the OnFinishEvent. Like the TS onEnd event, it aggregates
+	// content, tool calls, results, sources, files and warnings across steps.
+	emitFinishEvent := func() {
+		finishEvent := ai.OnFinishEvent{
+			Text:                result.Text,
+			FinishReason:        result.FinishReason,
+			Steps:               result.Steps,
+			TotalUsage:          result.Usage,
+			ExperimentalContext: a.config.ExperimentalContext,
+			RuntimeContext:      a.runtimeContext(),
+			ToolsContext:        a.config.ToolsContext,
+		}
+		if lt != nil {
+			finishEvent.CallID = lt.callID
+		}
+		// TS onEndEvent: the final step's number, model, reasoning, raw finish
+		// reason, provider metadata, request and response, and its runtime
+		// and tools context.
+		if n := len(result.Steps); n > 0 {
+			last := result.Steps[n-1]
+			finishEvent.StepNumber = last.StepNumber
+			finishEvent.Model = last.Model
+			finishEvent.ModelProvider = last.Model.Provider
+			finishEvent.ModelID = last.Model.ModelID
+			finishEvent.Reasoning = last.Reasoning
+			finishEvent.ReasoningText = last.ReasoningText
+			finishEvent.RawFinishReason = last.RawFinishReason
+			finishEvent.ProviderMetadata = last.ProviderMetadata
+			finishEvent.ResponseHeaders = last.Response.Headers
+			finishEvent.Request = ai.GenerateStepRequest{Body: last.Request.Body, Messages: last.Request.Messages}
+			finishEvent.Response = ai.GenerateStepResponse{
+				ID:        last.Response.ID,
+				Timestamp: last.Response.Timestamp,
+				ModelID:   last.Response.ModelID,
+				Headers:   last.Response.Headers,
+				Messages:  last.ResponseMessages,
+				Body:      last.Response.Body,
+			}
+			finishEvent.RuntimeContext = last.RuntimeContext
+			finishEvent.ToolsContext = last.ToolsContext
+		}
+		finishEvent.Output = result.Output
+		finishEvent.SetAggregatesFromSteps(result.Steps, append(append([]types.Message(nil), resumed.ResponseMessages...), responseMessagesOf(result.Steps)...))
+		if len(finishEvent.ToolResults) == 0 {
+			finishEvent.ToolResults = result.ToolResults
+		}
+		if len(finishEvent.Warnings) == 0 {
+			finishEvent.Warnings = result.Warnings
+		}
+		ai.Notify(ctx, finishEvent, cbs.onFinish)
+	}
+	// TS parses the output only for a stop finish, or a non-tool-calls finish
+	// that produced text, and only after onEnd has run: a parse failure
+	// rejects after the end event, and a tool-calls finish leaves the output
+	// unset instead of failing the call.
+	// The output is the prepared call's (TS ToolLoopAgent passes the
+	// prepareCall result to generateText); with no Output it is the text
+	// (TS `output ?? text()`), under the same finish-reason rule.
+	if result.Output == nil && shouldParseAgentOutput(result.FinishReason, result.Text) {
+		output, err := parseAgentOutput(ctx, fc.Output, result)
 		if err != nil {
+			emitFinishEvent()
 			if a.config.OnChainError != nil {
 				a.config.OnChainError(err)
 			}
@@ -913,30 +1387,14 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 		a.config.OnFinish(result)
 	}
 
-	// Aggregate all tool calls across steps for the finish event
-	var allToolCalls []types.ToolCall
-	for _, s := range result.Steps {
-		allToolCalls = append(allToolCalls, s.ToolCalls...)
-	}
-
-	// CB-T23: Emit OnFinishEvent
-	ai.Notify(ctx, ai.OnFinishEvent{
-		Text:                result.Text,
-		ToolCalls:           allToolCalls,
-		ToolResults:         result.ToolResults,
-		FinishReason:        result.FinishReason,
-		Steps:               result.Steps,
-		TotalUsage:          result.Usage,
-		Warnings:            result.Warnings,
-		ExperimentalContext: a.config.ExperimentalContext,
-		RuntimeContext:      a.runtimeContext(),
-		ToolsContext:        a.config.ToolsContext,
-	}, cbs.onFinish)
+	emitFinishEvent()
 
 	return result, nil
 }
 
-func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, prompt string, messages []types.Message, previousSteps []types.StepResult, accumulatedUsage types.Usage, customData interface{}) PrepareCallConfig {
+// prepareCallConfig builds the call configuration from the agent config and
+// runs PrepareCall on it (TS ToolLoopAgent.prepareCall).
+func (a *ToolLoopAgent) prepareCallConfig(ctx context.Context, stepNum int, prompt string, messages []types.Message, previousSteps []types.StepResult, accumulatedUsage types.Usage, customData interface{}) PrepareCallConfig {
 	callConfig := PrepareCallConfig{
 		StepNumber:                     stepNum,
 		Model:                          a.config.Model,
@@ -948,6 +1406,7 @@ func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, 
 		ActiveTools:                    a.config.ActiveTools,
 		ToolChoice:                     a.config.ToolChoice,
 		ToolOrder:                      a.config.ToolOrder,
+		ToolCallConcurrency:            a.config.ToolCallConcurrency,
 		ExperimentalToolCallers:        a.config.ExperimentalToolCallers,
 		ToolApproval:                   a.config.ToolApproval,
 		ExperimentalToolApprovalSecret: a.config.ExperimentalToolApprovalSecret,
@@ -991,20 +1450,61 @@ func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, 
 	if a.config.PrepareCall != nil {
 		callConfig = a.config.PrepareCall(ctx, callConfig)
 	}
+	if len(callConfig.InstructionMessages) > 0 {
+		// Instructions given as system messages replace the text
+		// instructions (TS instructions is one value), as GenerateText
+		// reports them: the start, step-start and model-call events carry
+		// the messages and no text instructions.
+		callConfig.System = ""
+	}
 	if callConfig.Model == nil {
 		callConfig.Model = a.config.Model
-	}
-	if len(callConfig.ActiveTools) > 0 {
-		callConfig.Tools = ai.FilterActiveTools(callConfig.Tools, callConfig.ActiveTools)
-	}
-	if a.config.FilterActiveTools != nil {
-		callConfig.Tools = a.config.FilterActiveTools(ctx, stepNum, callConfig.Tools)
 	}
 	if callConfig.RuntimeContext == nil {
 		callConfig.RuntimeContext = a.runtimeContext()
 	}
 	if callConfig.ToolsContext == nil {
 		callConfig.ToolsContext = a.config.ToolsContext
+	}
+	return callConfig
+}
+
+// prepareGenerateCallConfig is prepareCallConfig for Generate and Stream.
+// The Go-only FilterActiveTools callback runs once on the call's tool set;
+// GenerateText/StreamText then apply ActiveTools after PrepareStep. A
+// per-call timeout wins over the one PrepareCall returns (TS
+// `timeout ?? preparedCall.timeout`).
+func (a *ToolLoopAgent) prepareGenerateCallConfig(ctx context.Context, prompt string, messages []types.Message, callTimeout *ai.TimeoutConfig) PrepareCallConfig {
+	callConfig := a.prepareCallConfig(ctx, 0, prompt, messages, nil, types.Usage{}, nil)
+	if callTimeout != nil {
+		callConfig.Timeout = callTimeout
+	}
+	if a.config.FilterActiveTools != nil {
+		callConfig.Tools = a.config.FilterActiveTools(ctx, 0, callConfig.Tools)
+	}
+	return callConfig
+}
+
+// prepareStepCallConfig is prepareCallConfig plus the per-step tool
+// preparation the Go-only AgentResult loop needs: the tools are narrowed to
+// ActiveTools, their descriptions resolved and their order applied.
+// Generate and Stream use prepareCallConfig instead and leave this to
+// GenerateText/StreamText, which do it per step after PrepareStep (TS
+// ToolLoopAgent passes the full tool set and activeTools to generateText).
+func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, prompt string, messages []types.Message, previousSteps []types.StepResult, accumulatedUsage types.Usage, customData interface{}) PrepareCallConfig {
+	return a.finishStepCallConfig(ctx, stepNum, a.prepareCallConfig(ctx, stepNum, prompt, messages, previousSteps, accumulatedUsage, customData))
+}
+
+// finishStepCallConfig applies the per-step tool preparation of
+// prepareStepCallConfig to an already prepared configuration.
+func (a *ToolLoopAgent) finishStepCallConfig(ctx context.Context, stepNum int, callConfig PrepareCallConfig) PrepareCallConfig {
+	// TS filterActiveTools: an empty, non-nil ActiveTools leaves no tools
+	// active; only nil keeps them all.
+	if callConfig.ActiveTools != nil {
+		callConfig.Tools = ai.FilterActiveTools(callConfig.Tools, callConfig.ActiveTools)
+	}
+	if a.config.FilterActiveTools != nil {
+		callConfig.Tools = a.config.FilterActiveTools(ctx, stepNum, callConfig.Tools)
 	}
 	callConfig.Tools = resolveAgentStepTools(ctx, callConfig.Tools, callConfig.ToolsContext, callConfig.ExperimentalSandbox)
 	callConfig.Tools = orderAgentStepTools(callConfig.Tools, callConfig.ToolOrder)
@@ -1105,6 +1605,9 @@ func (c AgentConfig) withGenerateOptions(opts AgentGenerateOptions) AgentConfig 
 	if opts.ToolOrder != nil {
 		c.ToolOrder = opts.ToolOrder
 	}
+	if opts.ToolCallConcurrency != nil {
+		c.ToolCallConcurrency = opts.ToolCallConcurrency
+	}
 	if opts.ExperimentalToolCallers != nil {
 		c.ExperimentalToolCallers = opts.ExperimentalToolCallers
 	}
@@ -1169,6 +1672,9 @@ func (c AgentConfig) withGenerateOptions(opts AgentGenerateOptions) AgentConfig 
 	if opts.Include != nil {
 		c.Include = opts.Include
 	}
+	if opts.Timeout != nil {
+		c.Timeout = opts.Timeout
+	}
 	if opts.Internal != nil {
 		// Internal is per-call only and flows through PrepareCall.
 		c.Internal = opts.Internal
@@ -1226,11 +1732,16 @@ func validateAgentCallOptions(callOptionsSchema schema.Schema, callOptions inter
 	}
 	defaulted := schema.ApplyDefaults(callOptions, callOptionsSchema)
 	if err := callOptionsSchema.Validator().Validate(defaulted); err != nil {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "options",
-			Message: fmt.Sprintf("call options failed schema validation: %v", err),
-			Cause:   err,
-		}
+		// TS validateTypes throws TypeValidationError with context
+		// {field: 'options'}. The cause chain keeps the *InvalidArgumentError
+		// v0.5.2 returned, so errors.As on either type matches.
+		return nil, providererrors.NewValidationErrorWithContext(callOptions, err.Error(),
+			&providererrors.InvalidArgumentError{
+				Field:   "options",
+				Message: fmt.Sprintf("call options failed schema validation: %v", err),
+				Cause:   err,
+			},
+			&providererrors.ValidationContext{Field: "options"})
 	}
 	return defaulted, nil
 }
@@ -1260,9 +1771,16 @@ func resolveAgentStepTools(ctx context.Context, tools []types.Tool, toolsContext
 // here and calls to unknown tools or with schema-invalid input were never
 // marked Invalid. Mirrors ai.parseToolCalls (unexported; pkg/agent can only
 // reach the single-call ai.ParseToolCall).
-func parseAgentToolCalls(ctx context.Context, calls []types.ToolCall, callConfig PrepareCallConfig, messages []types.Message) ([]types.ToolCall, error) {
+func parseAgentToolCalls(ctx context.Context, calls []types.ToolCall, callConfig PrepareCallConfig, messages []types.Message, skipRepair bool) ([]types.ToolCall, error) {
 	if len(calls) == 0 {
 		return calls, nil
+	}
+	repair := callConfig.RepairToolCall
+	refine := callConfig.ExperimentalRefineToolInput
+	if skipRepair {
+		// With tool choice none every tool call is rejected, so the user's
+		// repair and refine callbacks must not process them (TS #23843).
+		repair, refine = nil, nil
 	}
 	parsed := make([]types.ToolCall, len(calls))
 	for i, call := range calls {
@@ -1277,10 +1795,16 @@ func parseAgentToolCalls(ctx context.Context, calls []types.ToolCall, callConfig
 		result, err := ai.ParseToolCall(ctx, ai.ParseToolCallOptions{
 			ToolCall:            call,
 			Tools:               callConfig.Tools,
-			RepairToolCall:      callConfig.RepairToolCall,
+			RepairToolCall:      repair,
 			Instructions:        callConfig.System,
 			InstructionMessages: callConfig.InstructionMessages,
 			Messages:            messages,
+			// The refiner runs inside the parse step (TS parseToolCall), so
+			// the language-model-call end event, the tool input callbacks
+			// and execution all see the refined input.
+			RefineToolInput: refine,
+			RuntimeContext:  callConfig.RuntimeContext,
+			ToolsContext:    callConfig.ToolsContext,
 		})
 		if err != nil {
 			// Only a context cancellation reaches here; ParseToolCall
@@ -1327,30 +1851,22 @@ func cloneAgentStringAnyMap(in map[string]interface{}) map[string]interface{} {
 }
 
 func validateAgentPromptOptions(prompt string, messages []types.Message) error {
-	if prompt != "" && len(messages) > 0 {
-		return providererrors.NewValidationErrorWithContext(
-			map[string]interface{}{"prompt": prompt, "messages": messages},
-			"agent call requires either prompt or messages, not both",
-			nil,
-			&providererrors.ValidationContext{Field: "prompt", EntityName: "agentCall"},
-		)
-	}
-	if prompt == "" && len(messages) == 0 {
-		return providererrors.NewValidationErrorWithContext(
-			nil,
-			"agent call requires either prompt or messages",
-			nil,
-			&providererrors.ValidationContext{Field: "prompt", EntityName: "agentCall"},
-		)
+	// TS hands the call to generateText/streamText, whose standardizePrompt
+	// throws InvalidPromptError. The cause keeps the *ValidationError that
+	// v0.5.2 returned, so errors.As on either type matches.
+	if err := promptutils.ValidatePromptInput(prompt, messages); err != nil {
+		var invalid *providererrors.InvalidPromptError
+		if errors.As(err, &invalid) {
+			invalid.Cause = providererrors.NewValidationErrorWithContext(
+				map[string]interface{}{"prompt": prompt, "messages": messages},
+				invalid.Message,
+				nil,
+				&providererrors.ValidationContext{Field: "prompt", EntityName: "agentCall"},
+			)
+		}
+		return err
 	}
 	return nil
-}
-
-func defaultToolChoice(choice types.ToolChoice) types.ToolChoice {
-	if choice.Type == "" {
-		return types.AutoToolChoice()
-	}
-	return choice
 }
 
 type responseFormatProvider interface {
@@ -1367,6 +1883,15 @@ func responseFormatForOutput(ctx context.Context, output interface{}) (*provider
 	return nil, nil
 }
 
+// shouldParseAgentOutput mirrors TS: parse on a stop finish, or on any other
+// finish except tool-calls when the final step produced text.
+func shouldParseAgentOutput(finishReason types.FinishReason, text string) bool {
+	if finishReason == types.FinishReasonStop {
+		return true
+	}
+	return finishReason != types.FinishReasonToolCalls && text != ""
+}
+
 func parseAgentOutput(ctx context.Context, output interface{}, result *AgentResult) (interface{}, error) {
 	if output == nil {
 		return result.Text, nil
@@ -1375,11 +1900,16 @@ func parseAgentOutput(ctx context.Context, output interface{}, result *AgentResu
 	if !method.IsValid() {
 		return result.Text, nil
 	}
+	// TS parseCompleteOutput gets the last step's usage, not the total.
+	var lastUsage types.Usage
+	if n := len(result.Steps); n > 0 {
+		lastUsage = result.Steps[n-1].Usage
+	}
 	args := []reflect.Value{
 		reflect.ValueOf(ctx),
 		reflect.ValueOf(ai.ParseCompleteOutputOptions{
 			Text:         result.Text,
-			Usage:        &result.Usage,
+			Usage:        &lastUsage,
 			FinishReason: result.FinishReason,
 		}),
 	}
@@ -1395,35 +1925,78 @@ func parseAgentOutput(ctx context.Context, output interface{}, result *AgentResu
 	return values[0].Interface(), nil
 }
 
-// executeStep executes a single agent step
-func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallConfig) (*types.StepResult, bool, interface{}, []types.Tool, error) {
-	// Apply per-step timeout if configured
-	stepCtx := ctx
-	var stepCancel context.CancelFunc
-	if a.config.Timeout != nil && a.config.Timeout.HasPerStep() {
-		stepCtx, stepCancel = a.config.Timeout.CreateTimeoutContext(ctx, "step")
-		defer stepCancel()
+// stepTimeoutContext applies the per-step timeout, a PrepareCall override
+// included (TS `timeout ?? preparedCall.timeout`; the config value is the
+// default). The returned cancel is never nil.
+func (a *ToolLoopAgent) stepTimeoutContext(ctx context.Context, callConfig PrepareCallConfig) (context.Context, context.CancelFunc) {
+	stepTimeout := callConfig.Timeout
+	if stepTimeout == nil {
+		stepTimeout = a.config.Timeout
 	}
+	if stepTimeout.HasPerStep() {
+		return stepTimeout.CreateTimeoutContext(ctx, "step")
+	}
+	return ctx, func() {}
+}
+
+// executeStep executes a single agent step
+func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallConfig, callTools []types.Tool, stepTel *loopStepTelemetry) (*types.StepResult, bool, interface{}, []types.Tool, error) {
+	// ctx carries the per-step timeout (see stepTimeoutContext); it also
+	// covers the step's tool execution, as TS mergedAbortSignal does.
+	stepCtx := ctx
 
 	toolChoice := callConfig.ToolChoice
 	if toolChoice.Type == "" {
 		toolChoice = types.AutoToolChoice()
 	}
 
-	responseFormat, err := responseFormatForOutput(stepCtx, callConfig.Output)
-	if err != nil {
-		return nil, false, callConfig.CustomData, callConfig.Tools, err
-	}
+	// TS awaits output.responseFormat inside doGenerate: a failure fails the
+	// model call, after the language model call start.
+	responseFormat, responseFormatErr := responseFormatForOutput(stepCtx, callConfig.Output)
 	stepModel := callConfig.Model
 	if stepModel == nil {
 		stepModel = a.config.Model
 	}
 
+	// Instructions given as system messages take precedence over System and
+	// keep each message's ProviderOptions (TS standardizePrompt: instructions
+	// may be SystemModelMessage[]).
+	promptSystem := callConfig.System
+	if len(callConfig.InstructionMessages) > 0 {
+		for _, m := range callConfig.InstructionMessages {
+			if m.Role != types.RoleSystem {
+				// TS standardizePrompt throws an InvalidPromptError; its Cause is
+				// the *InvalidArgumentError v0.5 returned (as ai.GenerateText).
+				const message = "instructions must be a string, SystemModelMessage, or array of SystemModelMessage"
+				return nil, false, callConfig.CustomData, callConfig.Tools, &providererrors.InvalidPromptError{
+					Message: message,
+					Cause:   &providererrors.InvalidArgumentError{Field: "instructions", Message: message},
+				}
+			}
+		}
+		promptSystem = ""
+	}
+	// Approval parts stay out of the model's prompt, except a
+	// provider-executed call's approval response (TS
+	// convertToLanguageModelPrompt, as GenerateText).
 	prompt, err := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
-		Messages: callConfig.Messages,
-		System:   callConfig.System,
+		Messages: aibridge.MessagesForModel(callConfig.Messages),
+		System:   promptSystem,
 	}, callConfig.AllowSystemInMessages, effectiveAgentDownload(callConfig.ExperimentalDownload), ai.SupportedURLCheckerForModel(stepModel))
 	if err != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, err
+	}
+	if len(callConfig.InstructionMessages) > 0 {
+		withInstructions := make([]types.Message, 0, len(callConfig.InstructionMessages)+len(prompt.Messages))
+		for _, m := range callConfig.InstructionMessages {
+			withInstructions = append(withInstructions, types.Message{Role: types.RoleSystem, Content: m.Content, ProviderOptions: m.ProviderOptions})
+		}
+		prompt.Messages = append(withInstructions, prompt.Messages...)
+	}
+
+	// Reject a prompt that leaves a tool call without a result, as
+	// GenerateText does (TS convertToLanguageModelPrompt, MissingToolResultsError).
+	if err := validateStepToolResults(prompt.Messages, callConfig.Tools); err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
 
@@ -1444,21 +2017,87 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		RuntimeContext:        callConfig.RuntimeContext,
 		ToolsContext:          callConfig.ToolsContext,
 		Seed:                  callConfig.Seed,
-		Headers:               callConfig.Headers,
-		Reasoning:             callConfig.Reasoning,
-		SendReasoning:         callConfig.SendReasoning,
-		ProviderOptions:       callConfig.ProviderOptions,
-		Telemetry:             callConfig.Telemetry,
-		ResponseFormat:        responseFormat,
+		// The same tags Generate sends: the agent segment, then GenerateText's
+		// ai/<version> (TS ToolLoopAgent always runs through generateText).
+		Headers:         loopStepHeaders(callConfig.Internal, callConfig.Headers),
+		Reasoning:       callConfig.Reasoning,
+		SendReasoning:   callConfig.SendReasoning,
+		ProviderOptions: callConfig.ProviderOptions,
+		Telemetry:       callConfig.Telemetry,
+		ResponseFormat:  responseFormat,
 	}
 
 	// Call the model with step context, retrying transient Gateway failures
-	// per callConfig.MaxRetries (WORKFLOW-AGENT-OPTIONS, e6064c5).
-	genResult, err := ai.DoGenerateWithGatewayRetry(stepCtx, stepModel, genOpts, callConfig.MaxRetries)
+	// per callConfig.MaxRetries (WORKFLOW-AGENT-OPTIONS, e6064c5). As TS
+	// doStreamStep, prepareRetries rejects an invalid maxRetries before the
+	// model call; ToolCallConcurrency was validated when the run started.
+	if err := validateAgentMaxRetries(callConfig.MaxRetries); err != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, err
+	}
+	// TS prepareLanguageModelCallOptions follows prepareRetries (generateText).
+	if err := validateAgentMaxOutputTokens(callConfig.MaxTokens); err != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, err
+	}
+	modelCallCtx := stepCtx
+	// TS generateText takes stepStartTimestampMs here, just before
+	// onLanguageModelCallStart, for both the response and the step time.
+	modelCallStarted := time.Now()
+	if stepTel != nil {
+		stepTel.startedAt = modelCallStarted
+	}
+	ai.Notify(stepCtx, ai.LanguageModelCallStartEvent{
+		CallID:              stepTel.callID(),
+		Provider:            stepModel.Provider(),
+		ModelID:             stepModel.ModelID(),
+		Instructions:        callConfig.System,
+		InstructionMessages: callConfig.InstructionMessages,
+		Messages:            callConfig.Messages,
+		Tools:               genOpts.Tools,
+		MaxOutputTokens:     genOpts.MaxTokens,
+		Temperature:         genOpts.Temperature,
+		TopP:                genOpts.TopP,
+		TopK:                genOpts.TopK,
+		PresencePenalty:     genOpts.PresencePenalty,
+		FrequencyPenalty:    genOpts.FrequencyPenalty,
+		StopSequences:       genOpts.StopSequences,
+		Seed:                genOpts.Seed,
+		Reasoning:           genOpts.Reasoning,
+	}, callConfig.OnLanguageModelCallStart)
+	if mc := stepTel.modelCallStart(callConfig, stepModel, prompt, callConfig.Tools); mc != nil {
+		// Run the provider call inside the model-call span so provider HTTP
+		// spans nest under it, while the step ctx stays unchanged.
+		modelCallCtx = mc
+		if stepCtx != stepTel.stepCtx {
+			// Keep the per-step deadline on the model-call ctx, so it expires
+			// with context.DeadlineExceeded like the step ctx (a plain cancel
+			// would surface as context.Canceled, an abort).
+			var cancel context.CancelFunc
+			if deadline, ok := stepCtx.Deadline(); ok {
+				modelCallCtx, cancel = context.WithDeadline(mc, deadline)
+			} else {
+				modelCallCtx, cancel = context.WithCancel(mc)
+			}
+			defer cancel()
+			stop := context.AfterFunc(stepCtx, func() {
+				// The deadline itself expires modelCallCtx above.
+				if !errors.Is(stepCtx.Err(), context.DeadlineExceeded) {
+					cancel()
+				}
+			})
+			defer stop()
+		}
+	}
+	var genResult *types.GenerateResult
+	err = responseFormatErr
+	if err == nil {
+		genResult, err = ai.DoGenerateWithGatewayRetry(modelCallCtx, stepModel, genOpts, callConfig.MaxRetries)
+	}
 	if err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
 
+	modelCallMs := time.Since(modelCallStarted).Milliseconds()
+	performance := ai.NonStreamingStepPerformance(time.Since(modelCallStarted).Milliseconds(), genResult.Usage)
 	rawFinishReason := genResult.RawFinishReason
 
 	// Create step result
@@ -1466,16 +2105,115 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	if callConfig.Include != nil {
 		include = *callConfig.Include
 	}
-	toolCalls, err := parseAgentToolCalls(stepCtx, genResult.ToolCalls, callConfig, prompt.Messages)
+	// The repair function gets the step's messages (TS stepMessages), not the
+	// converted prompt with the instruction messages prepended.
+	toolCalls, err := parseAgentToolCalls(stepCtx, genResult.ToolCalls, callConfig, callConfig.Messages, genOpts.ToolChoice.Type == types.ToolChoiceNone)
 	if err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
 	toolCalls = enrichAgentToolCallMetadata(toolCalls, callConfig.Tools)
+	// URL-backed generated files are downloaded once, before anything observes
+	// the content (TS convertLanguageModelContent).
+	if resolvedContent, resolveErr := aibridge.ResolveContentFiles(stepCtx, genResult.Content); resolveErr != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, resolveErr
+	} else if len(resolvedContent) > 0 {
+		resolvedResult := *genResult
+		resolvedResult.Content = resolvedContent
+		genResult = &resolvedResult
+	}
+	// A tool-result part must answer a tool call of the same response (TS
+	// convertLanguageModelContent: "Tool call <id> not found."). A deferred
+	// provider result is checked against the call's tools, not the step's
+	// active tools (TS convertLanguageModelContent gets `tools`).
+	if err := aibridge.ValidateToolResultParts(genResult.Content, toolCalls, callTools); err != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, err
+	}
+	if content, changed := agentDeferredToolResultMetadata(genResult.Content, toolCalls, callTools); changed {
+		withMetadata := *genResult
+		withMetadata.Content = content
+		genResult = &withMetadata
+	}
+	modelCallContent := contentFromGenerateResult(genResult, toolCalls)
+	// Sources, files and reasoning come from the content parts, as in
+	// GenerateText (TS DefaultStepResult getters).
+	var stepSources []types.SourceContent
+	var stepFiles []types.GeneratedFileContent
+	var stepReasoning []types.ReasoningContent
+	var stepReasoningTexts []string
+	for _, part := range genResult.Content {
+		switch v := part.(type) {
+		case types.SourceContent:
+			stepSources = append(stepSources, v)
+		case types.GeneratedFileContent:
+			stepFiles = append(stepFiles, v)
+		case types.ReasoningContent:
+			stepReasoning = append(stepReasoning, v)
+			if v.Text != "" {
+				stepReasoningTexts = append(stepReasoningTexts, v.Text)
+			}
+		}
+	}
+	stepResponse := types.StepResponse{
+		Timestamp: time.Now(),
+		ModelID:   stepModel.ModelID(),
+		Headers:   genResult.ResponseHeaders,
+		Body:      includeValue(include.ResponseBody, genResult.RawResponse),
+	}
+	if meta := genResult.ResponseMetadata; meta != nil {
+		stepResponse.ID = meta.ID
+		if !meta.Timestamp.IsZero() {
+			stepResponse.Timestamp = meta.Timestamp
+		}
+		if meta.ModelID != "" {
+			stepResponse.ModelID = meta.ModelID
+		}
+		if meta.Headers != nil {
+			stepResponse.Headers = meta.Headers
+		}
+	}
+	if stepResponse.ID == "" {
+		// TS `result.response?.id ?? generateId()`: the run's generator is
+		// called only for a response without an ID.
+		stepResponse.ID = agentGenerateID(callConfig.Internal)()
+	}
+	// The language-model-call end event follows the parsed response and
+	// precedes client-side tool execution (TS onLanguageModelCallEnd): its
+	// model id is the response model and its content includes the answer text.
+	ai.Notify(stepCtx, ai.LanguageModelCallEndEvent{
+		CallID:           stepTel.callID(),
+		Provider:         stepModel.Provider(),
+		ModelID:          stepResponse.ModelID,
+		FinishReason:     genResult.FinishReason,
+		Usage:            genResult.Usage,
+		Content:          modelCallContent,
+		ResponseID:       stepResponse.ID,
+		ProviderMetadata: genResult.ProviderMetadata,
+		Performance:      ai.NonStreamingModelCallPerformance(modelCallMs, genResult.Usage),
+	}, callConfig.OnLanguageModelCallEnd)
+	stepTel.modelCallEnd(stepModel, genResult, modelCallContent, stepResponse, modelCallMs)
+	// An enforced tool choice (required, or a named tool) must produce a tool
+	// call, as in GenerateText (TS ToolChoiceViolationError). TS checks the
+	// parsed calls (stepToolCalls), so a call repaired to the forced tool
+	// satisfies it; the error content is the raw response content.
+	if violation := aibridge.CheckToolChoiceViolation(genOpts.ToolChoice, toolCalls, genResult.FinishReason, stepModel.Provider(), stepModel.ModelID(), contentFromGenerateResult(genResult, genResult.ToolCalls)); violation != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, violation
+	}
+	// The tools are notified of their calls (and the approvals resolved) by
+	// the run loop, before any tool runs (see notifyToolCallsAndResolveApprovals).
+	// TS logs each step's model warnings just before the step is recorded.
+	ai.LogWarnings(ai.LogWarningsOptions{Warnings: genResult.Warnings, Provider: stepModel.Provider(), Model: stepModel.ModelID()})
 	stepResult := &types.StepResult{
+		// TS DefaultStepResult.callId: the run's call ID (generateText's
+		// callId; WorkflowAgent's run ID).
+		CallID:           stepTel.callID(),
 		StepNumber:       callConfig.StepNumber,
 		Model:            types.StepModel{Provider: stepModel.Provider(), ModelID: stepModel.ModelID()},
 		Text:             genResult.Text,
 		Content:          contentFromGenerateResult(genResult, toolCalls),
+		Reasoning:        stepReasoning,
+		ReasoningText:    strings.Join(stepReasoningTexts, ""),
+		Files:            stepFiles,
+		Sources:          stepSources,
 		ToolCalls:        toolCalls,
 		StaticToolCalls:  filterAgentStaticToolCalls(toolCalls),
 		DynamicToolCalls: filterAgentDynamicToolCalls(toolCalls),
@@ -1487,19 +2225,22 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		ProviderMetadata: genResult.ProviderMetadata,
 		Request: types.StepRequest{
 			Body:     includeValue(include.RequestBody, genResult.RawRequest),
-			Messages: includeAgentRequestMessages(include.RequestMessages, prompt.Messages),
+			Messages: includeAgentRequestMessages(include.RequestMessages, callConfig.Internal, callConfig.Messages, prompt),
 		},
-		Response: types.StepResponse{
-			Headers:  genResult.ResponseHeaders,
-			Messages: nil,
-			Body:     includeValue(include.ResponseBody, genResult.RawResponse),
-		},
+		Response:       stepResponse,
 		ToolsContext:   callConfig.ToolsContext,
 		RuntimeContext: callConfig.RuntimeContext,
+		Performance:    performance,
 	}
 
-	// Determine if we should continue
-	shouldContinue := genResult.FinishReason == types.FinishReasonToolCalls && len(toolCalls) > 0
+	// Determine if we should continue. TS generateText continues on the
+	// presence of client tool calls whatever the finish reason (a "stop"
+	// response that carries tool calls still runs them); the caller's later
+	// checks stop the loop when a call is left without a result, which is
+	// what happens for the finish reasons that never execute tools. The run
+	// loop refines this with agentStepContinues (client calls only, plus
+	// pending deferred provider results).
+	shouldContinue := len(toolCalls) > 0
 
 	return stepResult, shouldContinue, callConfig.CustomData, callConfig.Tools, nil
 }
@@ -1507,13 +2248,12 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 // executeTools executes a list of tool calls with optional approval
 // Updated in v6.0.57 to handle provider-executed (deferrable) tools
 // Updated in v6.1 (CB-T23) to fire structured OnToolCallStart/Finish events
-func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.ToolCall, tools []types.Tool, messages []types.Message, stepNum int, runtimeContext interface{}, toolsContext map[string]interface{}, experimentalSandbox interface{}, toolApproval types.ToolApprovalConfig, cbs agentCallbacks) ([]types.ToolResult, error) {
-	results := make([]types.ToolResult, 0, len(toolCalls))
+func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.ToolCall, tools []types.Tool, messages []types.Message, stepNum int, runtimeContext interface{}, toolsContext map[string]interface{}, experimentalSandbox interface{}, toolApproval types.ToolApprovalConfig, preApprovals map[string]types.ToolApprovalResult, cbs agentCallbacks, usage types.Usage, timings *toolTimings) ([]types.ToolResult, error) {
 	if toolsContext == nil {
 		toolsContext = map[string]interface{}{}
 	}
-
-	for _, call := range toolCalls {
+	runCall := func(call types.ToolCall, startGate agentToolStartGate) ([]types.ToolResult, error) {
+		results := make([]types.ToolResult, 0, 1)
 		// Call tool call callback
 		if a.config.OnToolCall != nil {
 			a.config.OnToolCall(call)
@@ -1525,7 +2265,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			// its own error on a subsequent response (TS 7bd6bdd, mirrored
 			// in ai.executeTools).
 			if call.ProviderExecuted {
-				continue
+				return results, nil
 			}
 			invalidErr := call.Error
 			if invalidErr == nil {
@@ -1542,7 +2282,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			if a.config.OnToolError != nil {
 				a.config.OnToolError(call, invalidErr)
 			}
-			continue
+			return results, nil
 		}
 
 		// Find the tool
@@ -1552,6 +2292,31 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				tool = &tools[j]
 				break
 			}
+		}
+
+		if tool == nil && call.ProviderExecuted {
+			// A provider-executed (dynamic) call of a tool not in the set is
+			// the provider's: TS parseToolCall keeps it and runs only client
+			// calls locally, so it gets no "tool not found" error result.
+			if a.config.OnToolStart != nil {
+				a.config.OnToolStart(call)
+			}
+			result := types.ToolResult{
+				ToolCallID:          call.ID,
+				ToolName:            call.ToolName,
+				Title:               call.Title,
+				Input:               call.Arguments,
+				ProviderExecuted:    true,
+				ProviderExecutedSet: true,
+				ProviderMetadata:    call.ProviderMetadata,
+				ToolMetadata:        call.ToolMetadata,
+				Dynamic:             call.Dynamic,
+			}
+			results = append(results, result)
+			if a.config.OnToolResult != nil {
+				a.config.OnToolResult(result)
+			}
+			return results, nil
 		}
 
 		if tool == nil {
@@ -1570,68 +2335,85 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			if a.config.OnToolError != nil {
 				a.config.OnToolError(call, notFoundErr)
 			}
-			continue
+			return results, nil
 		}
 
-		providerExecuted := tool.ProviderExecuted
+		// A call the provider marks as executed is never run locally, even
+		// when a local tool has its name (TS: client tool calls are the calls
+		// without providerExecuted).
+		providerExecuted := tool.ProviderExecuted || call.ProviderExecuted
 		providerMetadata := mergeProviderMetadataMaps(call.ProviderMetadata, tool.ProviderMetadata)
 
-		approval, approvalErr := a.resolveToolApproval(ctx, call, tools, messages, runtimeContext, toolsContext, toolApproval)
-		if approvalErr != nil {
-			results = append(results, types.ToolResult{
-				ToolCallID:       call.ID,
-				ToolName:         call.ToolName,
-				Title:            call.Title,
-				Input:            call.Arguments,
-				Error:            approvalErr,
-				ProviderExecuted: providerExecuted,
-				ProviderMetadata: providerMetadata,
-				ToolMetadata:     call.ToolMetadata,
-			})
-			continue
+		approval, resolved := preApprovals[call.ID]
+		var approvalErr error
+		if !resolved {
+			approval, approvalErr = a.resolveToolApproval(ctx, call, tools, messages, runtimeContext, toolsContext, toolApproval)
 		}
+		if approvalErr != nil {
+			// TS generateText: a tool approval that cannot be resolved
+			// throws and fails the run (no tool-error result).
+			return nil, approvalErr
+		}
+		approverDenied := false
 		if a.config.ToolApprovalRequired && a.config.ToolApprover != nil && approval.Status == types.ToolApprovalStatusNotApplicable {
 			if !a.config.ToolApprover(call) {
 				approval = types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied}
+				approverDenied = true
 			}
 		}
 		switch approval.Status {
 		case types.ToolApprovalStatusDenied:
+			// A ToolApproval denial without a reason leaves it unset, as
+			// GenerateText and TS do, so each provider converter applies its
+			// own default denial text. The Go-only ToolApprover names its
+			// policy.
+			policyText := fmt.Sprintf("Tool call to %s was denied by ToolApproval policy.", call.ToolName)
 			reason := approval.Reason
-			if reason == nil {
-				reason = strPtr(fmt.Sprintf("Tool call to %s was denied by ToolApproval policy.", call.ToolName))
+			if reason == nil && approverDenied {
+				reason = strPtr(policyText)
 			}
-			rejectionErr := fmt.Errorf("%s", *reason)
+			reasonText := ""
+			if reason != nil {
+				reasonText = *reason
+			}
+			errText := reasonText
+			if errText == "" {
+				errText = policyText
+			}
+			rejectionErr := errors.New(errText)
 			results = append(results, types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
 				Title:            call.Title,
 				Input:            call.Arguments,
 				Error:            rejectionErr,
-				Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: *reason},
+				Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: reasonText},
 				ApprovalStatus:   types.ToolApprovalStatusDenied,
 				ApprovalReason:   reason,
 				ProviderExecuted: providerExecuted,
-				ProviderMetadata: providerMetadata,
-				ToolMetadata:     call.ToolMetadata,
+				// TS approval parts carry toolCall.providerExecuted.
+				ProviderExecutedSet: call.ProviderExecutedSet,
+				ProviderMetadata:    providerMetadata,
+				ToolMetadata:        call.ToolMetadata,
 			})
 			if a.config.OnToolError != nil {
 				a.config.OnToolError(call, rejectionErr)
 			}
-			continue
+			return results, nil
 		case types.ToolApprovalStatusUserApproval:
 			results = append(results, types.ToolResult{
-				ToolCallID:       call.ID,
-				ToolName:         call.ToolName,
-				Title:            call.Title,
-				Input:            call.Arguments,
-				Result:           map[string]interface{}{"type": "tool-approval-request", "approvalId": call.ID, "toolCall": call},
-				ApprovalStatus:   types.ToolApprovalStatusUserApproval,
-				ProviderExecuted: providerExecuted,
-				ProviderMetadata: providerMetadata,
-				ToolMetadata:     call.ToolMetadata,
+				ToolCallID:          call.ID,
+				ToolName:            call.ToolName,
+				Title:               call.Title,
+				Input:               call.Arguments,
+				Result:              map[string]interface{}{"type": "tool-approval-request", "approvalId": call.ID, "toolCall": call},
+				ApprovalStatus:      types.ToolApprovalStatusUserApproval,
+				ProviderExecuted:    providerExecuted,
+				ProviderExecutedSet: call.ProviderExecutedSet,
+				ProviderMetadata:    providerMetadata,
+				ToolMetadata:        call.ToolMetadata,
 			})
-			continue
+			return results, nil
 		}
 
 		if providerExecuted {
@@ -1642,17 +2424,18 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			}
 
 			result := types.ToolResult{
-				ToolCallID:       call.ID,
-				ToolName:         call.ToolName,
-				Title:            call.Title,
-				Input:            call.Arguments,
-				Result:           nil,
-				Error:            nil,
-				ApprovalStatus:   approval.Status,
-				ApprovalReason:   approval.Reason,
-				ProviderExecuted: true,
-				ProviderMetadata: providerMetadata,
-				ToolMetadata:     call.ToolMetadata,
+				ToolCallID:          call.ID,
+				ToolName:            call.ToolName,
+				Title:               call.Title,
+				Input:               call.Arguments,
+				Result:              nil,
+				Error:               nil,
+				ApprovalStatus:      approval.Status,
+				ApprovalReason:      approval.Reason,
+				ProviderExecuted:    true,
+				ProviderExecutedSet: true,
+				ProviderMetadata:    providerMetadata,
+				ToolMetadata:        call.ToolMetadata,
 			}
 			results = append(results, result)
 
@@ -1667,34 +2450,36 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			}
 		} else {
 			if tool.Execute == nil {
-				continue
+				return results, nil
 			}
 
 			toolContext, err := validateAgentToolContext(tool, call.ToolName, toolsContext[call.ToolName])
 			if err != nil {
-				results = append(results, types.ToolResult{
-					ToolCallID:       call.ID,
-					ToolName:         call.ToolName,
-					Title:            call.Title,
-					Input:            call.Arguments,
-					Error:            err,
-					ProviderMetadata: providerMetadata,
-					ToolMetadata:     call.ToolMetadata,
-				})
-				continue
+				// TS executeToolCall validates the tool context outside its
+				// try: a failure fails the run, not a tool-error result.
+				return nil, err
 			}
 
-			// Locally-executed tool: execute now
+			// Locally-executed tool: execute now. Parallel calls fire their
+			// start callbacks in call order (TS executeTools).
+			startGate.wait(ctx)
 			// Call OnToolStart before execution (legacy)
 			if a.config.OnToolStart != nil {
 				a.config.OnToolStart(call)
 			}
 
 			// CB-T23: Emit OnToolCallStartEvent
+			eventCallID := ""
+			if lt, ok := ctx.Value(loopTelemetryKey{}).(*loopTelemetry); ok && lt != nil {
+				eventCallID = lt.callID
+			}
 			ai.Notify(ctx, ai.OnToolCallStartEvent{
-				ToolCallID: call.ID,
-				ToolName:   call.ToolName,
-				ToolCall:   call,
+				CallID:      eventCallID,
+				ToolContext: toolContext,
+				Messages:    messages,
+				ToolCallID:  call.ID,
+				ToolName:    call.ToolName,
+				ToolCall:    call,
 				// Args/StepNumber/ModelProvider are deprecated, JSON-excluded
 				// aliases kept for callbacks still reading the old fields
 				// (mirrors generate.go's OnToolCallStartEvent population);
@@ -1708,18 +2493,117 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				ToolsContext:        toolsContext,
 			}, cbs.onToolCallStart)
 
+			execUsage := usage // per-call copy: calls may run concurrently
 			execOptions := types.ToolExecutionOptions{
 				ToolCallID:          call.ID,
 				UserContext:         runtimeContext,
 				RuntimeContext:      runtimeContext,
 				ToolContext:         toolContext,
 				ToolMetadata:        call.ToolMetadata,
+				Messages:            messages,
+				Usage:               &execUsage,
+				Metadata:            make(map[string]interface{}),
 				ExperimentalSandbox: experimentalSandbox,
 			}
-			startMs := time.Now().UnixMilli()
-			toolResult, toolErr := tool.Execute(ctx, call.Arguments, execOptions)
-			durationMs := time.Now().UnixMilli() - startMs
-			var modelOutput *types.ToolResultOutput
+			// Dispatch tool-call telemetry: integrations open a child span of
+			// the step span in toolCtx and wrap the execution (loop_telemetry.go).
+			var tsettings *ai.TelemetrySettings
+			tcallID := ""
+			if lt, ok := ctx.Value(loopTelemetryKey{}).(*loopTelemetry); ok && lt != nil {
+				tsettings, tcallID = lt.settings, lt.callID
+			}
+			toolTelCtx := telemetry.FireOnToolCallStart(ctx, telemetry.TelemetryToolCallStartEvent{
+				Settings:    tsettings,
+				CallID:      tcallID,
+				ToolCallID:  call.ID,
+				ToolName:    call.ToolName,
+				Args:        call.Arguments,
+				ToolContext: telemetryToolContextFor(tsettings, call.ToolName, toolContext),
+			})
+			startGate.fired()
+			// Per-tool timeout (TS timeout.toolMs / tools[name]).
+			execCtx := toolTelCtx
+			execCancel := func() {}
+			toolTimeout := a.config.Timeout.GetToolTimeout(call.ToolName)
+			if toolTimeout != nil {
+				execCtx, execCancel = context.WithTimeout(toolTelCtx, *toolTimeout)
+			}
+			toolStarted := time.Now()
+			toolResult, toolErr := telemetry.FireExecuteToolWithSettings(execCtx, tsettings, call.ToolName, call.Arguments,
+				func(execCtx context.Context, args map[string]interface{}) (interface{}, error) {
+					return tool.Execute(execCtx, args, execOptions)
+				})
+			durationMs := time.Since(toolStarted).Milliseconds()
+			// Only the tool timeout's own deadline counts (see ai.executeToolsConfigured).
+			if toolTimeout != nil && errors.Is(execCtx.Err(), context.DeadlineExceeded) {
+				if toolErr == nil {
+					toolErr = context.DeadlineExceeded
+				}
+				toolErr = &ai.TimeoutError{Reason: ai.TimeoutReasonTool, Err: toolErr}
+			}
+			execCancel()
+			timings.record(call.ID, durationMs)
+			result := types.ToolResult{
+				ToolCallID:       call.ID,
+				ToolName:         call.ToolName,
+				Title:            call.Title,
+				Input:            call.Arguments,
+				Result:           toolResult,
+				Error:            toolErr,
+				ProviderExecuted: false,
+				ProviderMetadata: providerMetadata,
+				ToolMetadata:     call.ToolMetadata,
+			}
+			if approval.Status == types.ToolApprovalStatusApproved {
+				// An automatically approved call keeps its approval so its
+				// request/response parts are recorded, as in GenerateText.
+				result.ApprovalStatus = approval.Status
+				result.ApprovalReason = approval.Reason
+				result.ProviderExecutedSet = call.ProviderExecutedSet
+			}
+			// notifyToolEnd emits OnToolCallFinishEvent and then the telemetry
+			// tool end: TS notify([onToolExecutionEnd,
+			// telemetry.onToolExecutionEnd]) starts the user callback first.
+			notifyToolEnd := func(output types.ToolResult) {
+				// CB-T23: Emit OnToolCallFinishEvent
+				ai.Notify(ctx, ai.OnToolCallFinishEvent{
+					CallID:          eventCallID,
+					ToolContext:     toolContext,
+					Messages:        messages,
+					ToolCallID:      call.ID,
+					ToolName:        call.ToolName,
+					ToolCall:        call,
+					ToolOutput:      output,
+					ToolExecutionMs: durationMs,
+					// Args/Result/Error/DurationMs/StepNumber/ModelProvider are
+					// deprecated, JSON-excluded aliases kept for callbacks still
+					// reading the old fields (mirrors generate.go's
+					// OnToolCallFinishEvent population); ToolCall/ToolOutput/
+					// ToolExecutionMs above are the replacements.
+					Args:                call.Arguments,            //nolint:staticcheck
+					Result:              toolResult,                //nolint:staticcheck
+					Error:               toolErr,                   //nolint:staticcheck
+					DurationMs:          durationMs,                //nolint:staticcheck
+					StepNumber:          stepNum,                   //nolint:staticcheck
+					ModelProvider:       a.config.Model.Provider(), //nolint:staticcheck
+					ModelID:             a.config.Model.ModelID(),
+					ExperimentalContext: a.config.ExperimentalContext,
+					RuntimeContext:      runtimeContext,
+					ToolsContext:        toolsContext,
+				}, cbs.onToolCallFinish)
+				telemetry.FireOnToolCallFinish(toolTelCtx, telemetry.TelemetryToolCallFinishEvent{
+					Settings:    tsettings,
+					CallID:      tcallID,
+					ToolCallID:  call.ID,
+					ToolName:    call.ToolName,
+					Args:        call.Arguments,
+					Result:      toolResult,
+					Error:       toolErr,
+					DurationMs:  durationMs,
+					ToolContext: telemetryToolContextFor(tsettings, call.ToolName, toolContext),
+				})
+			}
+			callUsage := usage // per-call copy: calls may run concurrently
 			if toolErr == nil && tool.ToModelOutput != nil {
 				converted, convertErr := tool.ToModelOutput(ctx, types.ToModelOutputOptions{
 					ToolCallID: call.ID,
@@ -1729,59 +2613,28 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 					// ToModelOutput implementations still reading it.
 					Result: toolResult, //nolint:staticcheck
 					ToolCall: &types.ToolCall{
-						ID:               call.ID,
-						ToolName:         call.ToolName,
-						Title:            call.Title,
-						Arguments:        call.Arguments,
-						ProviderExecuted: call.ProviderExecuted,
-						ProviderMetadata: call.ProviderMetadata,
-						ToolMetadata:     call.ToolMetadata,
-						Dynamic:          call.Dynamic,
+						ID:                  call.ID,
+						ToolName:            call.ToolName,
+						Title:               call.Title,
+						Arguments:           call.Arguments,
+						ProviderExecuted:    call.ProviderExecuted,
+						ProviderExecutedSet: call.ProviderExecutedSet,
+						ProviderMetadata:    call.ProviderMetadata,
+						ToolMetadata:        call.ToolMetadata,
+						Dynamic:             call.Dynamic,
 					},
+					Usage: &callUsage,
 				})
 				if convertErr != nil {
+					// TS converts the output only after executeToolCall has
+					// notified onToolExecutionEnd.
+					notifyToolEnd(result)
 					return results, &toolResultModelOutputError{err: convertErr}
 				}
-				modelOutput = converted
-			}
-
-			result := types.ToolResult{
-				ToolCallID:       call.ID,
-				ToolName:         call.ToolName,
-				Title:            call.Title,
-				Input:            call.Arguments,
-				Result:           toolResult,
-				ModelOutput:      modelOutput,
-				Error:            toolErr,
-				ProviderExecuted: false,
-				ProviderMetadata: providerMetadata,
-				ToolMetadata:     call.ToolMetadata,
+				result.ModelOutput = converted
 			}
 			results = append(results, result)
-
-			// CB-T23: Emit OnToolCallFinishEvent
-			ai.Notify(ctx, ai.OnToolCallFinishEvent{
-				ToolCallID:      call.ID,
-				ToolName:        call.ToolName,
-				ToolCall:        call,
-				ToolOutput:      result,
-				ToolExecutionMs: durationMs,
-				// Args/Result/Error/DurationMs/StepNumber/ModelProvider are
-				// deprecated, JSON-excluded aliases kept for callbacks still
-				// reading the old fields (mirrors generate.go's
-				// OnToolCallFinishEvent population); ToolCall/ToolOutput/
-				// ToolExecutionMs above are the replacements.
-				Args:                call.Arguments,            //nolint:staticcheck
-				Result:              toolResult,                //nolint:staticcheck
-				Error:               toolErr,                   //nolint:staticcheck
-				DurationMs:          durationMs,                //nolint:staticcheck
-				StepNumber:          stepNum,                   //nolint:staticcheck
-				ModelProvider:       a.config.Model.Provider(), //nolint:staticcheck
-				ModelID:             a.config.Model.ModelID(),
-				ExperimentalContext: a.config.ExperimentalContext,
-				RuntimeContext:      runtimeContext,
-				ToolsContext:        toolsContext,
-			}, cbs.onToolCallFinish)
+			notifyToolEnd(result)
 
 			// Call tool result callback (legacy)
 			if a.config.OnToolResult != nil {
@@ -1799,9 +2652,11 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				}
 			}
 		}
+		return results, nil
 	}
-
-	return results, nil
+	results, err := a.runToolCalls(ctx, toolCalls, runCall)
+	aibridge.MarkDynamicToolResults(results, toolCalls)
+	return results, err
 }
 
 func (a *ToolLoopAgent) runtimeContext() interface{} {
@@ -1825,9 +2680,23 @@ func includeValue(include bool, value interface{}) interface{} {
 	return value
 }
 
-func includeAgentRequestMessages(include bool, messages []types.Message) []types.Message {
+// includeAgentRequestMessages is a step's request messages when
+// Include.RequestMessages is set: the step's messages as given to the model
+// call, before prompt conversion and without the instructions (TS
+// generateText cloneModelMessages(stepMessages)). With
+// InternalOptions.RequestMessagesAsPrompt (WorkflowAgent) it is the model
+// call's prompt, its system message first (TS WorkflowAgent
+// conversationPrompt).
+func includeAgentRequestMessages(include bool, internal *ai.InternalOptions, messages []types.Message, prompt types.Prompt) []types.Message {
 	if !include {
 		return nil
+	}
+	if internal != nil && internal.RequestMessagesAsPrompt {
+		out := make([]types.Message, 0, len(prompt.Messages)+1)
+		if prompt.System != "" {
+			out = append(out, types.Message{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: prompt.System}}})
+		}
+		return append(out, prompt.Messages...)
 	}
 	return append([]types.Message(nil), messages...)
 }
@@ -1838,11 +2707,31 @@ func contentFromGenerateResult(result *types.GenerateResult, toolCalls []types.T
 	}
 	parts := append([]types.ContentPart(nil), result.Content...)
 	if result.Text != "" && !agentContentHasText(parts) {
-		parts = append([]types.ContentPart{types.TextContent{Text: result.Text}}, parts...)
+		parts = types.InsertLeadText(parts, result.Text)
 	}
 	seenToolCalls := map[string]bool{}
 	for i, part := range parts {
 		switch p := part.(type) {
+		case types.ToolResultContent:
+			// TS convertLanguageModelContent: every tool-result or
+			// tool-error the model returns is provider-executed.
+			p.ProviderExecuted = true
+			parts[i] = p
+		case *types.ToolResultContent:
+			if p != nil {
+				c := *p
+				c.ProviderExecuted = true
+				parts[i] = c
+			}
+		case types.ToolErrorContent:
+			p.ProviderExecuted = true
+			parts[i] = p
+		case *types.ToolErrorContent:
+			if p != nil {
+				c := *p
+				c.ProviderExecuted = true
+				parts[i] = c
+			}
 		case types.ToolCallContent:
 			seenToolCalls[p.ToolCallID] = true
 			if call, ok := agentToolCallByID(toolCalls, p.ToolCallID); ok {
@@ -1855,6 +2744,12 @@ func contentFromGenerateResult(result *types.GenerateResult, toolCalls []types.T
 					parts[i] = agentContentPartFromToolCall(call)
 				}
 			}
+		case types.ToolApprovalRequestContent:
+			parts[i] = agentApprovalRequestWithToolCall(p, toolCalls)
+		case *types.ToolApprovalRequestContent:
+			if p != nil {
+				parts[i] = agentApprovalRequestWithToolCall(*p, toolCalls)
+			}
 		}
 	}
 	for _, call := range toolCalls {
@@ -1864,7 +2759,86 @@ func contentFromGenerateResult(result *types.GenerateResult, toolCalls []types.T
 		parts = append(parts, agentContentPartFromToolCall(call))
 	}
 	parts = replaceAgentToolResultContentParts(parts, toolCalls)
-	return parts
+	// TS convertLanguageModelContent: an isError provider result is a
+	// tool-error part.
+	return aibridge.ProviderErrorResultsAsToolErrors(parts)
+}
+
+// agentApprovalRequestWithToolCall gives a provider tool-approval-request part
+// (an MCP server asking for approval of its call) the parsed call it belongs
+// to, as TS convertLanguageModelContent does ({type, approvalId, toolCall}).
+func agentApprovalRequestWithToolCall(p types.ToolApprovalRequestContent, calls []types.ToolCall) types.ToolApprovalRequestContent {
+	if p.ToolCallID == "" {
+		p.ToolCallID = p.ToolCall.ID
+	}
+	if call, ok := agentToolCallByID(calls, p.ToolCallID); ok {
+		p.ToolCall = call
+	}
+	return p
+}
+
+// agentDeferredToolResultMetadata gives a deferred provider tool result (a
+// tool-result or tool-error part that answers no tool call of the response)
+// its tool definition's metadata (TS convertLanguageModelContent
+// `toolMetadata: tool.metadata`). content is not modified.
+func agentDeferredToolResultMetadata(content []types.ContentPart, calls []types.ToolCall, tools []types.Tool) (_ []types.ContentPart, changed bool) {
+	metadataFor := func(id, name string, current map[string]interface{}) map[string]interface{} {
+		if current != nil {
+			return nil
+		}
+		if _, ok := agentToolCallByID(calls, id); ok {
+			return nil
+		}
+		for i := range tools {
+			if tools[i].Name == name {
+				return tools[i].Metadata
+			}
+		}
+		return nil
+	}
+	var out []types.ContentPart
+	for i, part := range content {
+		var updated types.ContentPart
+		switch p := part.(type) {
+		case types.ToolResultContent:
+			if md := metadataFor(p.ToolCallID, p.ToolName, p.ToolMetadata); md != nil {
+				p.ToolMetadata = md
+				updated = p
+			}
+		case *types.ToolResultContent:
+			if p != nil {
+				if md := metadataFor(p.ToolCallID, p.ToolName, p.ToolMetadata); md != nil {
+					c := *p
+					c.ToolMetadata = md
+					updated = c
+				}
+			}
+		case types.ToolErrorContent:
+			if md := metadataFor(p.ToolCallID, p.ToolName, p.ToolMetadata); md != nil {
+				p.ToolMetadata = md
+				updated = p
+			}
+		case *types.ToolErrorContent:
+			if p != nil {
+				if md := metadataFor(p.ToolCallID, p.ToolName, p.ToolMetadata); md != nil {
+					c := *p
+					c.ToolMetadata = md
+					updated = c
+				}
+			}
+		}
+		if updated == nil {
+			continue
+		}
+		if out == nil {
+			out = append([]types.ContentPart(nil), content...)
+		}
+		out[i] = updated
+	}
+	if out == nil {
+		return content, false
+	}
+	return out, true
 }
 
 func agentToolCallByID(calls []types.ToolCall, id string) (types.ToolCall, bool) {
@@ -1980,37 +2954,189 @@ func agentContentHasText(parts []types.ContentPart) bool {
 	return false
 }
 
+// assignAgentApprovalIDs gives the approvals of a step's tool calls their IDs,
+// in call order: InternalOptions.ApprovalID when it is set (TS WorkflowAgent:
+// `approval-<toolCallId>`), else one ID per approval from the run's ID
+// generator, as TS ToolLoopAgent's generateText calls generateId() for each
+// call whose approval applies. Tool call IDs can repeat across steps with some
+// providers, so they do not name approvals.
+func assignAgentApprovalIDs(results []types.ToolResult, internal *ai.InternalOptions) {
+	approvalID := func(string) string { return agentGenerateID(internal)() }
+	if internal != nil && internal.ApprovalID != nil {
+		approvalID = internal.ApprovalID
+	}
+	for i := range results {
+		switch results[i].ApprovalStatus {
+		case types.ToolApprovalStatusUserApproval, types.ToolApprovalStatusApproved, types.ToolApprovalStatusDenied:
+		default:
+			continue
+		}
+		id := approvalID(results[i].ToolCallID)
+		results[i].ApprovalID = id
+		if request, ok := results[i].Result.(map[string]interface{}); ok && request["type"] == "tool-approval-request" {
+			copied := make(map[string]interface{}, len(request))
+			for k, v := range request {
+				copied[k] = v
+			}
+			copied["approvalId"] = id
+			results[i].Result = copied
+		}
+	}
+}
+
+// agentApprovedUnexecuted is the Result of an entry that carries only the
+// automatic approval of a local call that did not run (its tool has no
+// Execute, or the step's finish reason does not allow execution): TS records
+// the call's approval request and response, but no tool output.
+type agentApprovedUnexecuted struct{}
+
+// agentApprovedUnexecutedCalls returns, by call ID, an approval-only entry for
+// each valid local call whose approval was approved but that got no result.
+func agentApprovedUnexecutedCalls(calls []types.ToolCall, tools []types.Tool, approvals map[string]types.ToolApprovalResult, results []types.ToolResult) map[string]types.ToolResult {
+	answered := make(map[string]bool, len(results))
+	for _, r := range results {
+		answered[r.ToolCallID] = true
+	}
+	var out map[string]types.ToolResult
+	for _, call := range calls {
+		approval, ok := approvals[call.ID]
+		if !ok || call.Invalid || answered[call.ID] || approval.Status != types.ToolApprovalStatusApproved {
+			continue
+		}
+		tool := findAgentTool(call.ToolName, tools)
+		if tool == nil || tool.ProviderExecuted || call.ProviderExecuted {
+			continue
+		}
+		if out == nil {
+			out = map[string]types.ToolResult{}
+		}
+		out[call.ID] = types.ToolResult{
+			ToolCallID:          call.ID,
+			ToolName:            call.ToolName,
+			Title:               call.Title,
+			Input:               call.Arguments,
+			Result:              agentApprovedUnexecuted{},
+			ApprovalStatus:      types.ToolApprovalStatusApproved,
+			ApprovalReason:      approval.Reason,
+			ProviderExecutedSet: call.ProviderExecutedSet,
+			ProviderMetadata:    mergeProviderMetadataMaps(call.ProviderMetadata, tool.ProviderMetadata),
+			ToolMetadata:        call.ToolMetadata,
+			Dynamic:             call.Dynamic,
+		}
+	}
+	return out
+}
+
+// mergeAgentApprovalOnly inserts the approval-only entries into results (in
+// call order) at their calls' positions. results is returned as is when
+// there are none.
+func mergeAgentApprovalOnly(results []types.ToolResult, calls []types.ToolCall, approvalOnly map[string]types.ToolResult) []types.ToolResult {
+	if len(approvalOnly) == 0 {
+		return results
+	}
+	out := make([]types.ToolResult, 0, len(results)+len(approvalOnly))
+	j := 0
+	for _, call := range calls {
+		start := j
+		for j < len(results) && results[j].ToolCallID == call.ID {
+			j++
+		}
+		if j > start {
+			out = append(out, results[start:j]...)
+			continue
+		}
+		if entry, ok := approvalOnly[call.ID]; ok {
+			out = append(out, entry)
+		}
+	}
+	return append(out, results[j:]...)
+}
+
+// splitAgentApprovalOnly names the approvals of merged (assignAgentApprovalIDs)
+// and splits it back into the tool results and the approval-only entries.
+func splitAgentApprovalOnly(merged []types.ToolResult, internal *ai.InternalOptions) ([]types.ToolResult, map[string]types.ToolResult) {
+	assignAgentApprovalIDs(merged, internal)
+	var approvalOnly map[string]types.ToolResult
+	results := merged[:0:0]
+	for _, r := range merged {
+		if _, ok := r.Result.(agentApprovedUnexecuted); ok {
+			if approvalOnly == nil {
+				approvalOnly = map[string]types.ToolResult{}
+			}
+			approvalOnly[r.ToolCallID] = r
+			continue
+		}
+		results = append(results, r)
+	}
+	if approvalOnly == nil {
+		return merged, nil
+	}
+	return results, approvalOnly
+}
+
+// agentGenerateID is the run's ID generator: InternalOptions.GenerateID (TS
+// _internal.generateId), else TS generateText's default (`aitxt-` plus 24
+// characters).
+func agentGenerateID(internal *ai.InternalOptions) ai.IDGenerator {
+	if internal != nil && internal.GenerateID != nil {
+		return internal.GenerateID
+	}
+	return newTextResponseID
+}
+
+// agentApprovalID is a result's approval ID: the assigned one, else the
+// call's ID.
+func agentApprovalID(result types.ToolResult) string {
+	if result.ApprovalID != "" {
+		return result.ApprovalID
+	}
+	return result.ToolCallID
+}
+
 // agentToolResultsToContentParts converts tool results to content parts. When
 // secret is non-nil, approval requests are signed so they can be verified on
-// resume.
+// resume. The parts are ordered as TS convertLanguageModelContent (and
+// GenerateText) orders them: outputs without an approval response, the
+// approval requests, the approval responses, then the outputs with one.
 func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) []types.ContentPart {
 	if len(results) == 0 {
 		return nil
 	}
-	parts := make([]types.ContentPart, 0, len(results))
+	var withoutApproval, requests, responses, withApproval []types.ContentPart
 	for _, result := range results {
-		if result.ProviderExecuted && result.ApprovalStatus == "" {
+		parts := &withoutApproval
+		if result.ApprovalStatus == types.ToolApprovalStatusApproved || result.ApprovalStatus == types.ToolApprovalStatusDenied {
+			parts = &withApproval
+		}
+		hasApproval := result.ApprovalStatus == types.ToolApprovalStatusUserApproval ||
+			result.ApprovalStatus == types.ToolApprovalStatusApproved ||
+			result.ApprovalStatus == types.ToolApprovalStatusDenied
+		// A provider-executed call without an approval is the pending marker
+		// (its result, if any, is the provider's own content part), whatever
+		// its approval status ("" or not-applicable): it adds no content, as
+		// in GenerateText. Only the synthetic WorkflowAgent empty result
+		// (ContinueOnMissingProviderResult) carries an output.
+		if result.ProviderExecuted && !hasApproval && result.Result == nil && result.Error == nil && result.ModelOutput == nil {
 			continue
 		}
-		if result.ApprovalStatus == types.ToolApprovalStatusUserApproval ||
-			result.ApprovalStatus == types.ToolApprovalStatusApproved ||
-			result.ApprovalStatus == types.ToolApprovalStatusDenied {
+		if hasApproval {
 			toolCall := types.ToolCall{
-				ID:               result.ToolCallID,
-				ToolName:         result.ToolName,
-				Title:            result.Title,
-				Arguments:        result.Input,
-				ProviderExecuted: result.ProviderExecuted,
-				ProviderMetadata: result.ProviderMetadata,
-				ToolMetadata:     result.ToolMetadata,
-				Dynamic:          result.Dynamic,
+				ID:                  result.ToolCallID,
+				ToolName:            result.ToolName,
+				Title:               result.Title,
+				Arguments:           result.Input,
+				ProviderExecuted:    result.ProviderExecuted,
+				ProviderExecutedSet: result.ProviderExecutedSet,
+				ProviderMetadata:    result.ProviderMetadata,
+				ToolMetadata:        result.ToolMetadata,
+				Dynamic:             result.Dynamic,
 			}
 			signature := ""
 			if secret != nil {
-				signature, _ = ai.SignToolApproval(secret, result.ToolCallID, result.ToolCallID, result.ToolName, result.Input)
+				signature, _ = ai.SignToolApproval(secret, agentApprovalID(result), result.ToolCallID, result.ToolName, result.Input)
 			}
 			approvalRequest := types.ToolApprovalRequestContent{
-				ApprovalID:  result.ToolCallID,
+				ApprovalID:  agentApprovalID(result),
 				ToolCallID:  result.ToolCallID,
 				ToolCall:    toolCall,
 				Signature:   signature,
@@ -2022,7 +3148,7 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 			if result.ApprovalStatus == types.ToolApprovalStatusUserApproval && result.ApprovalReason != nil {
 				approvalRequest.Reason = *result.ApprovalReason
 			}
-			parts = append(parts, approvalRequest)
+			requests = append(requests, approvalRequest)
 			if result.ApprovalStatus == types.ToolApprovalStatusUserApproval {
 				continue
 			}
@@ -2030,24 +3156,31 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 			if result.ApprovalReason != nil {
 				reason = *result.ApprovalReason
 			}
-			parts = append(parts, types.ToolApprovalResponseContent{
-				ApprovalID:       result.ToolCallID,
+			responses = append(responses, types.ToolApprovalResponseContent{
+				ApprovalID:       agentApprovalID(result),
 				ToolCallID:       result.ToolCallID,
 				ToolCall:         toolCall,
 				Approved:         result.ApprovalStatus == types.ToolApprovalStatusApproved,
 				Reason:           reason,
 				ProviderExecuted: result.ProviderExecuted,
+				// TS: providerExecuted: toolCall.providerExecuted.
+				ProviderExecutedSet: result.ProviderExecutedSet,
 			})
 			if result.ProviderExecuted || result.ApprovalStatus == types.ToolApprovalStatusDenied {
 				continue
 			}
+			if _, approvalOnly := result.Result.(agentApprovedUnexecuted); approvalOnly {
+				continue
+			}
 		}
 		if result.Error != nil {
-			parts = append(parts, types.ToolErrorContent{
+			*parts = append(*parts, types.ToolErrorContent{
 				ToolCallID:       result.ToolCallID,
 				ToolName:         result.ToolName,
 				Input:            result.Input,
 				Error:            result.Error.Error(),
+				Err:              result.Error,
+				ErrorText:        providerutils.ToolErrorText(result.Error),
 				ProviderExecuted: result.ProviderExecuted,
 				ProviderMetadata: agentProviderMetadataRaw(result.ProviderMetadata),
 				ToolMetadata:     result.ToolMetadata,
@@ -2066,31 +3199,48 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 			Dynamic:          result.Dynamic,
 			Preliminary:      result.Preliminary,
 		}
+		// TS step content tool-result `output` is the raw tool output: Go
+		// keeps it in Result next to the model-facing Output (as
+		// ai.toolResultsToContentParts), unless the raw value is itself a
+		// ToolResultOutput.
+		switch result.Result.(type) {
+		case types.ToolResultOutput, *types.ToolResultOutput:
+			part.Result = nil
+		}
 		switch output := modelFacingToolResultOutput(result); output.Type {
 		case "":
 		case types.ToolResultOutputText, types.ToolResultOutputJSON, types.ToolResultOutputContent, types.ToolResultOutputError, types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON, types.ToolResultOutputExecutionDenied:
 			part.Output = &output
-			part.Result = nil
 		}
 		if part.Output == nil {
 			switch output := result.Result.(type) {
 			case types.ToolResultOutput:
 				part.Output = &output
-				part.Result = nil
 			case *types.ToolResultOutput:
 				part.Output = output
-				part.Result = nil
 			case string:
 				part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: output}
-				part.Result = nil
 			default:
-				part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: result.Result}
-				part.Result = nil
+				// TS createToolModelOutput: the output's JSON value
+				// (toJSONValue), not the Go value itself.
+				part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: agentToJSONValue(result.Result)}
 			}
 		}
-		parts = append(parts, part)
+		*parts = append(*parts, part)
 	}
-	return parts
+	out := make([]types.ContentPart, 0, len(withoutApproval)+len(requests)+len(responses)+len(withApproval))
+	out = append(out, withoutApproval...)
+	out = append(out, requests...)
+	out = append(out, responses...)
+	return append(out, withApproval...)
+}
+
+// agentToJSONValue round-trips value through JSON (TS toJSONValue:
+// JSON.parse(JSON.stringify(value)); a marshal failure gives null), keeping
+// the key order of a json.RawMessage or ordered object, as GenerateText's
+// tool model output does.
+func agentToJSONValue(value interface{}) interface{} {
+	return jsonorder.ToJSONValue(value)
 }
 
 func modelFacingToolResultOutput(result types.ToolResult) types.ToolResultOutput {
@@ -2140,136 +3290,40 @@ func filterAgentDynamicToolResults(results []types.ToolResult) []types.ToolResul
 	return out
 }
 
-// resolveToolApproval fails closed like ai.GenerateText: an unknown approval
-// status or an unsupported configuration value is an error (reported to the
-// model as a tool error) instead of letting the tool run unapproved.
+// notifyToolCallsAndResolveApprovals runs, for every valid call with a known
+// tool and in call order, the tool's OnInputStart and OnInputAvailable and
+// then (when resolve is set) the call's approval, as TS generateText's
+// tool-call notification loop does before any tool executes. inputErr is a
+// failed input callback (or tool context), approvalErr an approval that
+// could not be resolved.
+func (a *ToolLoopAgent) notifyToolCallsAndResolveApprovals(ctx context.Context, calls []types.ToolCall, tools []types.Tool, messages []types.Message, runtimeContext interface{}, toolsContext map[string]interface{}, toolApproval types.ToolApprovalConfig, resolve bool) (approvals map[string]types.ToolApprovalResult, inputErr, approvalErr error) {
+	if toolsContext == nil {
+		toolsContext = map[string]interface{}{}
+	}
+	approvals = map[string]types.ToolApprovalResult{}
+	for _, call := range calls {
+		if call.Invalid || findAgentTool(call.ToolName, tools) == nil {
+			continue
+		}
+		if err := aibridge.InvokeToolInputCallbacks(ctx, []types.ToolCall{call}, tools, messages, toolsContext); err != nil {
+			return nil, err, nil
+		}
+		if !resolve {
+			continue
+		}
+		approval, err := a.resolveToolApproval(ctx, call, tools, messages, runtimeContext, toolsContext, toolApproval)
+		if err != nil {
+			return nil, nil, err
+		}
+		approvals[call.ID] = approval
+	}
+	return approvals, nil, nil
+}
+
 func (a *ToolLoopAgent) resolveToolApproval(ctx context.Context, call types.ToolCall, tools []types.Tool, messages []types.Message, runtimeContext interface{}, toolsContext map[string]interface{}, toolApproval types.ToolApprovalConfig) (types.ToolApprovalResult, error) {
-	result, err := resolveAgentToolApprovalValue(ctx, call, tools, messages, runtimeContext, toolsContext, toolApproval)
-	if err != nil {
-		return types.ToolApprovalResult{}, err
-	}
-	switch result.Status {
-	case types.ToolApprovalStatusNotApplicable, types.ToolApprovalStatusApproved,
-		types.ToolApprovalStatusDenied, types.ToolApprovalStatusUserApproval:
-		return result, nil
-	}
-	return types.ToolApprovalResult{}, fmt.Errorf("tool %q: unknown tool approval status %q (want %q, %q, %q or %q)",
-		call.ToolName, result.Status, types.ToolApprovalStatusNotApplicable, types.ToolApprovalStatusApproved,
-		types.ToolApprovalStatusDenied, types.ToolApprovalStatusUserApproval)
-}
-
-func resolveAgentToolApprovalValue(ctx context.Context, call types.ToolCall, tools []types.Tool, messages []types.Message, runtimeContext interface{}, toolsContext map[string]interface{}, toolApproval types.ToolApprovalConfig) (types.ToolApprovalResult, error) {
-	tool := findAgentTool(call.ToolName, tools)
-	approval, err := normalizeAgentToolApproval(call, tool, tools, messages, toolApproval, runtimeContext, toolsContext)
-	if err != nil {
-		return types.ToolApprovalResult{}, err
-	}
-	if approval.Status != types.ToolApprovalStatusNotApplicable {
-		return approval, nil
-	}
-	if tool == nil {
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
-	}
-	setting := tool.ToolApproval
-	if setting == nil {
-		setting = tool.NeedsApproval
-	}
-	switch v := setting.(type) {
-	case nil:
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
-	case bool:
-		if v {
-			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}, nil
-		}
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
-	case types.ToolNeedsApprovalFunc:
-		toolCtx, err := validateAgentToolContext(tool, call.ToolName, toolsContext[tool.Name])
-		if err != nil {
-			return types.ToolApprovalResult{}, err
-		}
-		if v(ctx, call.Arguments, types.ToolNeedsApprovalOptions{
-			ToolCallID: call.ID,
-			Messages:   messages,
-			Context:    toolCtx,
-		}) {
-			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}, nil
-		}
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
-	case types.NeedsApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
-		if _, err := validateAgentToolContext(tool, call.ToolName, toolsContext[tool.Name]); err != nil {
-			return types.ToolApprovalResult{}, err
-		}
-		if v(ctx, call.Arguments) {
-			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}, nil
-		}
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
-	case types.ToolApprovalStatus:
-		return normalizeAgentApprovalValue(v), nil
-	case string:
-		return normalizeAgentApprovalValue(types.ToolApprovalStatus(v)), nil
-	}
-	return types.ToolApprovalResult{}, fmt.Errorf("tool %q: unsupported ToolApproval value of type %T: use a bool, a ToolApprovalStatus or a ToolNeedsApprovalFunc", call.ToolName, setting)
-}
-
-func normalizeAgentToolApproval(call types.ToolCall, tool *types.Tool, tools []types.Tool, messages []types.Message, cfg interface{}, runtimeCtx interface{}, toolsCtx map[string]interface{}) (types.ToolApprovalResult, error) {
-	switch v := cfg.(type) {
-	case nil:
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
-	case types.GenericToolApprovalFunc:
-		return normalizeAgentApprovalValue(v(types.ToolApprovalOptions{
-			ToolCall:       call,
-			Tools:          tools,
-			ToolsContext:   toolsCtx,
-			RuntimeContext: runtimeCtx,
-			Messages:       messages,
-		})), nil
-	case types.ToolApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
-		return normalizeAgentApprovalValue(v(call, tools, messages, runtimeCtx, toolsCtx)), nil
-	case map[string]interface{}:
-		return normalizeAgentToolApprovalValue(call, tool, tools, messages, v[call.ToolName], runtimeCtx, toolsCtx)
-	case map[string]types.ToolApprovalValue:
-		return normalizeAgentToolApprovalValue(call, tool, tools, messages, v[call.ToolName], runtimeCtx, toolsCtx)
-	default:
-		return normalizeAgentApprovalValueChecked(call, v)
-	}
-}
-
-func normalizeAgentToolApprovalValue(call types.ToolCall, tool *types.Tool, tools []types.Tool, messages []types.Message, value interface{}, runtimeCtx interface{}, toolsCtx map[string]interface{}) (types.ToolApprovalResult, error) {
-	switch fn := value.(type) {
-	case types.SingleToolApprovalFunc:
-		toolCtx, err := validateAgentToolContext(tool, call.ToolName, toolsCtx[call.ToolName])
-		if err != nil {
-			return types.ToolApprovalResult{}, err
-		}
-		return normalizeAgentApprovalValue(fn(call.Arguments, types.SingleToolApprovalOptions{
-			ToolContext:    toolCtx,
-			RuntimeContext: runtimeCtx,
-			ToolCallID:     call.ID,
-			Messages:       messages,
-		})), nil
-	case types.GenericToolApprovalFunc:
-		return normalizeAgentApprovalValue(fn(types.ToolApprovalOptions{
-			ToolCall:       call,
-			Tools:          tools,
-			ToolsContext:   toolsCtx,
-			RuntimeContext: runtimeCtx,
-			Messages:       messages,
-		})), nil
-	case types.ToolApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
-		return normalizeAgentApprovalValue(fn(call, tools, messages, runtimeCtx, toolsCtx)), nil
-	}
-	return normalizeAgentApprovalValueChecked(call, value)
-}
-
-// normalizeAgentApprovalValueChecked normalizes a configured approval value
-// and rejects value types it does not understand instead of treating them as
-// "no approval needed".
-func normalizeAgentApprovalValueChecked(call types.ToolCall, value interface{}) (types.ToolApprovalResult, error) {
-	switch value.(type) {
-	case nil, types.ToolApprovalResult, *types.ToolApprovalResult, types.ToolApprovalStatus, string:
-		return normalizeAgentApprovalValue(value), nil
-	}
-	return types.ToolApprovalResult{}, fmt.Errorf("tool %q: unsupported tool approval value of type %T", call.ToolName, value)
+	// Shared with ai.GenerateText so the loop fails closed the same way: an
+	// unknown status or unsupported configuration is an error, not a pass.
+	return aibridge.ResolveToolApproval(ctx, call, tools, messages, runtimeContext, toolsContext, toolApproval)
 }
 
 func findAgentTool(toolName string, tools []types.Tool) *types.Tool {
@@ -2281,49 +3335,8 @@ func findAgentTool(toolName string, tools []types.Tool) *types.Tool {
 	return nil
 }
 
-func normalizeAgentApprovalValue(value interface{}) types.ToolApprovalResult {
-	switch v := value.(type) {
-	case nil:
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
-	case types.ToolApprovalResult:
-		if v.Status == "" {
-			v.Status = types.ToolApprovalStatusNotApplicable
-		}
-		return v
-	case *types.ToolApprovalResult:
-		if v == nil {
-			return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
-		}
-		return normalizeAgentApprovalValue(*v)
-	case types.ToolApprovalStatus:
-		if v == "" {
-			v = types.ToolApprovalStatusNotApplicable
-		}
-		return types.ToolApprovalResult{Status: v}
-	case string:
-		if v == "" {
-			return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
-		}
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatus(v)}
-	default:
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
-	}
-}
-
 func validateAgentToolContext(tool *types.Tool, toolName string, ctxValue interface{}) (interface{}, error) {
-	if tool == nil || tool.ContextSchema == nil {
-		return ctxValue, nil
-	}
-	normalized := schema.ApplyDefaults(ctxValue, tool.ContextSchema)
-	if err := tool.ContextSchema.Validator().Validate(normalized); err != nil {
-		return nil, providererrors.NewValidationErrorWithContext(
-			normalized,
-			fmt.Sprintf("invalid tool context for %s: %v", toolName, err),
-			err,
-			&providererrors.ValidationContext{Field: "tool context", EntityName: toolName},
-		)
-	}
-	return normalized, nil
+	return aibridge.ValidateToolContext(tool, toolName, ctxValue)
 }
 
 func strPtr(s string) *string {
@@ -2520,4 +3533,138 @@ func GetParentRunID(ctx context.Context) string {
 func GetTags(ctx context.Context) []string {
 	tags, _ := ctx.Value(tagsKey).([]string)
 	return tags
+}
+
+// validateStepToolResults returns a *types.MissingToolResultsError when the
+// step prompt has a tool call without a tool result before later context or
+// the end of the conversation. Provider-executed tools are exempt.
+func validateStepToolResults(messages []types.Message, tools []types.Tool) error {
+	var providerTools []string
+	for _, tool := range tools {
+		if tool.ProviderExecuted {
+			providerTools = append(providerTools, tool.Name)
+		}
+	}
+	return promptutils.ValidateToolResults(messages, providerTools...)
+}
+
+// agentStepContinues applies the TS generateText continuation rule to a
+// step's model response (before client tools run): continue when the step has
+// a client tool call or a deferred provider result is still pending. It also
+// updates pending (TS pendingDeferredToolCalls): provider-executed calls of a
+// SupportsDeferredResults tool without an inline result are added, and every
+// tool-result part in the response resolves its entry.
+func agentStepContinues(step *types.StepResult, tools []types.Tool, pending map[string]string) bool {
+	hasResult := func(id string) bool {
+		for _, part := range step.Content {
+			if tr, ok := part.(types.ToolResultContent); ok && tr.ToolCallID == id {
+				return true
+			}
+		}
+		return false
+	}
+	hasClient := false
+	for _, call := range step.ToolCalls {
+		tool := findAgentTool(call.ToolName, tools)
+		if !call.ProviderExecuted && (tool == nil || !tool.ProviderExecuted) {
+			hasClient = true
+			continue
+		}
+		if tool != nil && tool.ProviderExecuted && tool.SupportsDeferredResults && !hasResult(call.ID) {
+			pending[call.ID] = call.ToolName
+		}
+	}
+	for _, part := range step.Content {
+		if tr, ok := part.(types.ToolResultContent); ok {
+			delete(pending, tr.ToolCallID)
+		}
+	}
+	return hasClient || len(pending) > 0
+}
+
+// hasUnresolvedLocalAgentToolCalls reports whether a locally executed tool call
+// of the step has no tool result (mirrors ai.hasUnresolvedLocalToolCalls).
+func hasUnresolvedLocalAgentToolCalls(calls []types.ToolCall, tools []types.Tool, results []types.ToolResult) bool {
+	resolved := make(map[string]bool, len(results))
+	for _, r := range results {
+		resolved[r.ToolCallID] = true
+	}
+	for _, call := range calls {
+		tool := findAgentTool(call.ToolName, tools)
+		if tool == nil || tool.ProviderExecuted {
+			continue
+		}
+		if !resolved[call.ID] {
+			return true
+		}
+	}
+	return false
+}
+
+// agentAbortEvent adapts AgentStreamOptions.OnAbort (completed steps only) to
+// the stable ai.StreamTextOptions.OnAbortEvent callback.
+func agentAbortEvent(onAbort func(ctx context.Context, steps []types.StepResult)) ai.OnAbortCallback {
+	if onAbort == nil {
+		return nil
+	}
+	return func(ctx context.Context, e ai.GenerateTextAbortEvent) { onAbort(ctx, e.Steps) }
+}
+
+// toolTimings collects per-tool-call execution times of one step (TS
+// performance.toolExecutionMs, keyed by tool call id). Tool calls may run
+// concurrently. A nil *toolTimings records nothing.
+type toolTimings struct {
+	mu sync.Mutex
+	ms map[string]int64
+}
+
+func (t *toolTimings) record(toolCallID string, ms int64) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.ms == nil {
+		t.ms = map[string]int64{}
+	}
+	t.ms[toolCallID] = ms
+}
+
+func (t *toolTimings) snapshot() map[string]int64 {
+	out := map[string]int64{}
+	if t == nil {
+		return out
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for k, v := range t.ms {
+		out[k] = v
+	}
+	return out
+}
+
+func responseMessagesOf(steps []types.StepResult) []types.Message {
+	var messages []types.Message
+	for _, step := range steps {
+		messages = append(messages, step.Response.Messages...)
+	}
+	return messages
+}
+
+// agentHasProviderApprovalRequest reports whether content holds a
+// non-automatic tool-approval-request for a provider-executed call.
+func agentHasProviderApprovalRequest(content []types.ContentPart) bool {
+	for _, part := range content {
+		switch p := part.(type) {
+		case types.ToolApprovalRequestContent:
+			if p.ToolCall.ProviderExecuted && !p.IsAutomatic {
+				return true
+			}
+		case *types.ToolApprovalRequestContent:
+			if p != nil && p.ToolCall.ProviderExecuted && !p.IsAutomatic {
+				return true
+			}
+		}
+	}
+	return false
 }

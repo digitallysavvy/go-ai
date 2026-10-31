@@ -77,10 +77,15 @@ func TestDecodeStreamPartIgnoresSeqAndRejectsInvalid(t *testing.T) {
 	invalid := []string{
 		`{"type":"text-delta","id":"t"}`,
 		`{"type":"text-delta","delta":"x"}`,
-		`{"type":"tool-call","toolCallId":"c","toolName":"n","input":"{}","stepToolCallCount":0}`,
 		`{"type":"tool-result","toolCallId":"c","toolName":"n"}`,
 		`{"type":"finish","finishReason":{"unified":"weird"},"totalUsage":{"inputTokens":{},"outputTokens":{}}}`,
 		`{"type":"finish","finishReason":{"unified":"stop"}}`,
+		// harnessV1UsageSchema requires inputTokens and outputTokens objects.
+		`{"type":"finish","finishReason":{"unified":"stop"},"totalUsage":{}}`,
+		`{"type":"finish","finishReason":{"unified":"stop"},"totalUsage":{"inputTokens":{}}}`,
+		`{"type":"finish","finishReason":{"unified":"stop"},"totalUsage":{"inputTokens":null,"outputTokens":{}}}`,
+		`{"type":"finish-step","finishReason":{"unified":"stop"},"usage":{"inputTokens":{},"outputTokens":[]}}`,
+		`{"type":"finish-step","finishReason":{"unified":"stop"},"usage":[]}`,
 		`{"type":"file-change","event":"rename","path":"a"}`,
 		`{"type":"compaction","trigger":"later","summary":"s"}`,
 		`{"type":"nope"}`,
@@ -337,5 +342,19 @@ func TestCallWarningVariants(t *testing.T) {
 	})
 	if string(out) != `[{"type":"unsupported-setting","setting":"temperature"},{"type":"other","message":"m"}]` {
 		t.Fatal(string(out))
+	}
+}
+
+// TS stripped stepToolCallCount from the tool-call schema (#23260): zod ignores
+// the key whatever its value, so an unusable count never rejects the frame.
+func TestDecodeToolCallIgnoresUnusableStepToolCallCount(t *testing.T) {
+	for _, count := range []string{`0`, `-1`, `"two"`, `1.5`, `null`} {
+		part, err := DecodeStreamPart([]byte(`{"type":"tool-call","toolCallId":"c","toolName":"n","input":"{}","stepToolCallCount":` + count + `}`))
+		if err != nil {
+			t.Fatalf("count %s: %v", count, err)
+		}
+		if tc := part.(*ToolCallPart); tc.StepToolCallCount != nil || tc.ToolCallID != "c" {
+			t.Fatalf("count %s: %+v", count, tc)
+		}
 	}
 }

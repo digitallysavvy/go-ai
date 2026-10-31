@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -28,6 +29,10 @@ type stream struct {
 	// reading the next SSE event, enabling one SSE event → many chunks.
 	chunkBuffer []*provider.StreamChunk
 
+	// includeRawChunks emits a ChunkTypeRaw chunk with the parsed SSE payload
+	// ahead of the chunks it produces (TS options.includeRawChunks).
+	includeRawChunks bool
+
 	// Block boundary state, tracked across SSE events.
 	// Mirrors currentTextBlockId / currentReasoningBlockId in the TS SDK.
 	currentTextBlockID      string
@@ -39,7 +44,6 @@ type stream struct {
 	hasToolCalls bool
 
 	// Code execution state. TS parses these parts for both Google and Vertex.
-	codeExecCount  int
 	lastCodeExecID string
 
 	// lastServerToolCallID associates a server-executed built-in tool's
@@ -48,14 +52,18 @@ type stream struct {
 	lastServerToolCallID string
 
 	// Metadata accumulated across SSE events, emitted on the finish chunk.
-	lastGroundingMetadata  json.RawMessage
-	lastUrlContextMetadata json.RawMessage
-	lastSafetyRatings      json.RawMessage
-	lastFinishMessage      string
-	lastPromptFeedback     json.RawMessage
-	lastUsageMetadata      *UsageMetadata
-	// lastServiceTier accumulates serviceTier across chunks; last non-empty value wins.
-	lastServiceTier string
+	lastGroundingMetadata json.RawMessage
+	// requestGroundingMetadata is the current request's grounding snapshot;
+	// groundingPerRequest collects the snapshots of the requests that were
+	// continued (TS groundingMetadataPerRequest).
+	requestGroundingMetadata json.RawMessage
+	groundingPerRequest      []json.RawMessage
+	emittedSourceURLs        map[string]bool
+	lastUrlContextMetadata   json.RawMessage
+	lastSafetyRatings        json.RawMessage
+	lastFinishMessage        string
+	lastPromptFeedback       json.RawMessage
+	lastUsageMetadata        *UsageMetadata
 
 	// activeStreamingToolCalls is a LIFO stack of in-progress streamed
 	// function calls, mirroring TS `activeStreamingToolCalls`. A continuation
@@ -63,6 +71,10 @@ type stream struct {
 	// top of the stack (TS: `activeStreamingToolCalls[length - 1]`).
 	activeStreamingToolCalls []*activeStreamingToolCall
 	drainedOnDone            bool
+	// deferredErr ends the stream with an error once chunkBuffer has drained
+	// (TS: an exception in the transform handler errors the stream after the
+	// chunks it already enqueued).
+	deferredErr error
 
 	// tnm maps provider tool names (e.g. "code_execution") to caller-chosen
 	// custom names, mirroring TS createToolNameMapping.
@@ -75,6 +87,7 @@ type stream struct {
 	httpHeaders             http.Header
 	modelID                 string
 	emittedResponseMetadata bool
+	emittedResponseID       bool
 
 	// finishReason/hasFinished hold the terminal finish reason. TS only
 	// enqueues the 'finish' chunk once, from the stream's flush handler, not
@@ -89,6 +102,18 @@ type stream struct {
 	// prompt block is terminal for generated content, but later chunks can
 	// still contribute usage and provider metadata.").
 	confirmedPromptBlockReason string
+
+	// Gemini 4 long decode. continueFn opens the follow-up stream for a
+	// CONTINUATION response (nil disables continuation). pendingContinuation
+	// is the token to resume with once the current stream ends.
+	// lastContinuationToken is surfaced on finish only when the response
+	// stopped early. continuedUsage banks the usage of completed requests.
+	continueFn              func(token string) (io.ReadCloser, error)
+	pendingContinuation     string
+	lastContinuationToken   string
+	continuedUsage          *UsageMetadata
+	initialPromptTokenCount *int
+	continuationErr         bool
 
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
@@ -125,7 +150,7 @@ func newStream(reader io.ReadCloser, cfg Config, tnm toolNameMapping, httpHeader
 		tnm:          tnm,
 		httpHeaders:  httpHeaders,
 		modelID:      modelID,
-		finishReason: types.FinishReasonOther,
+		finishReason: types.FinishReasonInterrupted,
 	}
 }
 
@@ -161,12 +186,20 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 			return chunk, nil
 		}
 
+		if s.deferredErr != nil {
+			s.err = s.deferredErr
+			continue
+		}
+
 		event, err := s.parser.Next()
 		if err != nil {
 			// The underlying reader can end without an explicit "[DONE]" SSE
 			// event (e.g. in tests, or providers that just close the connection).
 			// TS always calls its stream's flush() exactly once regardless of how
 			// the stream ends, so finalize here too.
+			if err == io.EOF && s.continueStream() {
+				continue
+			}
 			if err == io.EOF && s.finalizeOnce() {
 				continue
 			}
@@ -174,11 +207,35 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 			return nil, err
 		}
 		if streaming.IsStreamDone(event) {
+			if s.continueStream() {
+				continue
+			}
 			if s.finalizeOnce() {
 				continue
 			}
 			s.err = io.EOF
 			return nil, io.EOF
+		}
+
+		if s.includeRawChunks {
+			raw := streaming.RawChunkValue(event.Data)
+			s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw})
+		}
+
+		// TS validates each parsed frame against chunkSchema; a mismatch is a
+		// TypeValidationError `error` part and the stream keeps reading.
+		if message := chunkValidationMessage(event.Data); message != "" {
+			s.markParseError()
+			errChunk := &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: message,
+				Err:  providererrors.NewValidationErrorWithContext(compactJSONString(event.Data), validationIssueText(message), nil, &providererrors.ValidationContext{}),
+			}
+			if len(s.chunkBuffer) > 0 {
+				s.chunkBuffer = append(s.chunkBuffer, errChunk)
+				continue
+			}
+			return errChunk, nil
 		}
 
 		var chunkData Response
@@ -189,16 +246,78 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 			// chunk and the transform CONTINUES reading, it does not terminate
 			// the stream. Previously Go returned this as a terminal Next()
 			// error, ending the stream outright (P1-1c part 2).
-			message := fmt.Sprintf("failed to parse stream chunk: %v", err)
-			return &provider.StreamChunk{
+			s.markParseError()
+			var chunkErr error
+			if !json.Valid([]byte(event.Data)) {
+				var probe interface{}
+				chunkErr = providererrors.NewJSONParseError(event.Data, json.Unmarshal([]byte(event.Data), &probe))
+			} else {
+				chunkErr = providererrors.NewValidationErrorWithContext(compactJSONString(event.Data), fmt.Sprintf("failed to parse stream chunk: %v", err), err, &providererrors.ValidationContext{})
+			}
+			errChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: message,
-				Err:  providererrors.NewStreamProviderError(message, s.cfg.ProviderName, "", nil, nil, nil, nil),
-			}, nil
+				Text: chunkErr.Error(),
+				Err:  chunkErr,
+			}
+			if len(s.chunkBuffer) > 0 {
+				// A raw chunk precedes the error.
+				s.chunkBuffer = append(s.chunkBuffer, errChunk)
+				continue
+			}
+			return errChunk, nil
 		}
 
 		s.processSSEEvent(chunkData)
 	}
+}
+
+// markParseError records TS `finishReason = error` for an unparsable chunk,
+// unless the response already reported a finish reason (TS #23814).
+func (s *stream) markParseError() {
+	if !s.hasFinished {
+		s.finishReason, s.rawFinishReason, s.hasFinished = types.FinishReasonError, "", true
+	}
+}
+
+// continueStream opens the follow-up stream of an automatically continued
+// long decode response once the current stream has ended. Returns true when a
+// new stream was opened (the caller keeps reading). If the continuation
+// request fails, an error chunk is buffered, continuation stops, and the
+// caller finalizes: the finish chunk then carries the last continuation token
+// so the caller can resume. Mirrors TS continueGoogleStream.
+func (s *stream) continueStream() bool {
+	if s.pendingContinuation == "" || s.continueFn == nil || s.continuationErr {
+		return false
+	}
+	token := s.pendingContinuation
+	s.pendingContinuation = ""
+	next, err := s.continueFn(token)
+	if err != nil {
+		s.continuationErr = true
+		// TS enqueues the failure as a parse result with rawValue undefined,
+		// so includeRawChunks emits a raw part ahead of the error part.
+		if s.includeRawChunks {
+			s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{Type: provider.ChunkTypeRaw})
+		}
+		// TS emits the thrown error itself as the error part (so callers can
+		// match it by type, e.g. an APICallError); do not wrap it.
+		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
+			Type: provider.ChunkTypeError,
+			Text: err.Error(),
+			Err:  err,
+		})
+		return false
+	}
+	s.groundingPerRequest = append(s.groundingPerRequest, rawOrNull(s.requestGroundingMetadata))
+	s.requestGroundingMetadata = nil
+	_ = s.reader.Close()
+	s.reader = next
+	s.parser = streaming.NewSSEParser(next)
+	// The new response starts without a completion signal (TS resets in
+	// stream order via continuation-start, #23814): if it is empty or cut off,
+	// the stream reports interrupted rather than the prior response's reason.
+	s.finishReason, s.rawFinishReason, s.hasFinished = types.FinishReasonInterrupted, "", false
+	return true
 }
 
 // finalizeOnce closes any open blocks/tool inputs and appends the single
@@ -219,8 +338,27 @@ func (s *stream) finalizeOnce() bool {
 // s.chunkBuffer. Mirrors the TS SDK TransformStream transform handler; the
 // 'finish' chunk itself is only enqueued once, from flush (see Next/EOF).
 func (s *stream) processSSEEvent(chunkData Response) {
-	if !s.emittedResponseMetadata {
+	// An in-stream error frame (TS: value.error != null): surface it as a
+	// provider stream error and finish with reason "error".
+	if chunkData.Error != nil {
+		s.finishReason = types.FinishReasonError
+		s.rawFinishReason = ""
+		s.hasFinished = true
+		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
+			Type: provider.ChunkTypeError,
+			Text: chunkData.Error.Message,
+			Err:  s.newStreamError(chunkData.Error),
+		})
+		return
+	}
+
+	// TS emits response-metadata on the first chunk that carries a
+	// responseId. Go also emits one on the first chunk without an id (it
+	// carries the model id and headers), so a responseId that only shows up
+	// in a later chunk gets its own response-metadata chunk.
+	if !s.emittedResponseMetadata || (!s.emittedResponseID && chunkData.ResponseID != "") {
 		s.emittedResponseMetadata = true
+		s.emittedResponseID = chunkData.ResponseID != ""
 		headers := providerutils.ExtractHeaders(s.httpHeaders)
 		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 			Type: provider.ChunkTypeResponseMetadata,
@@ -235,11 +373,6 @@ func (s *stream) processSSEEvent(chunkData Response) {
 
 	if chunkData.UsageMetadata != nil {
 		s.lastUsageMetadata = chunkData.UsageMetadata
-		if chunkData.UsageMetadata.ServiceTier != "" {
-			s.lastServiceTier = chunkData.UsageMetadata.ServiceTier
-		}
-	} else if chunkData.ServiceTier != "" {
-		s.lastServiceTier = chunkData.ServiceTier
 	}
 
 	if chunkData.PromptFeedback != nil && s.confirmedPromptBlockReason == "" {
@@ -252,13 +385,19 @@ func (s *stream) processSSEEvent(chunkData Response) {
 		}
 	}
 
-	// A confirmed prompt block is terminal for generated content, but later
-	// chunks can still contribute usage and provider metadata (handled above).
-	if s.confirmedPromptBlockReason != "" || len(chunkData.Candidates) == 0 {
+	if len(chunkData.Candidates) > 0 && chunkData.Candidates[0].GroundingMetadata != nil {
+		s.requestGroundingMetadata = chunkData.Candidates[0].GroundingMetadata
+	}
+
+	if len(chunkData.Candidates) == 0 {
 		return
 	}
 	candidate := chunkData.Candidates[0]
 
+	// Candidate metadata is recorded even after a confirmed prompt block (TS
+	// updates it before the terminal check): a block is terminal for
+	// generated content only, later chunks can still contribute usage and
+	// provider metadata.
 	if candidate.GroundingMetadata != nil {
 		s.lastGroundingMetadata = candidate.GroundingMetadata
 	}
@@ -270,6 +409,30 @@ func (s *stream) processSSEEvent(chunkData Response) {
 	}
 	if candidate.FinishMessage != "" {
 		s.lastFinishMessage = candidate.FinishMessage
+	}
+	if candidate.ContinuationToken != "" {
+		s.lastContinuationToken = candidate.ContinuationToken
+		if candidate.FinishReason == "CONTINUATION" {
+			s.pendingContinuation = candidate.ContinuationToken
+		}
+	}
+
+	if s.confirmedPromptBlockReason != "" {
+		return
+	}
+
+	// Grounding chunks become url sources, each URL emitted once (TS
+	// emittedSourceUrls; document sources are not streamed).
+	for _, src := range extractSources(candidate.GroundingMetadata, s.generateID) {
+		if src.SourceType != "url" || s.emittedSourceURLs[src.URL] {
+			continue
+		}
+		if s.emittedSourceURLs == nil {
+			s.emittedSourceURLs = map[string]bool{}
+		}
+		s.emittedSourceURLs[src.URL] = true
+		src := src
+		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &src})
 	}
 
 	// Process parts: non-function-call parts first (text/thought/code/inline),
@@ -295,7 +458,7 @@ func (s *stream) processSSEEvent(chunkData Response) {
 			} else {
 				fr = types.FinishReasonStop
 			}
-		case "MAX_TOKENS":
+		case "MAX_TOKENS", "CONTINUATION":
 			fr = types.FinishReasonLength
 		case "IMAGE_SAFETY", "RECITATION", "SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII":
 			fr = types.FinishReasonContentFilter
@@ -308,6 +471,36 @@ func (s *stream) processSSEEvent(chunkData Response) {
 		s.rawFinishReason = candidate.FinishReason
 		s.hasFinished = true
 	}
+
+	if candidate.FinishReason == "CONTINUATION" {
+		// Usage metadata is per request. The next request reports its own
+		// usage, so bank the usage of this one.
+		if s.continuedUsage == nil {
+			s.initialPromptTokenCount = initialPromptTokens(s.lastUsageMetadata)
+		}
+		s.continuedUsage = addUsageMetadata(s.continuedUsage, s.lastUsageMetadata)
+		s.lastUsageMetadata = nil
+	}
+}
+
+// newStreamError mirrors TS createProviderStreamError for a Google in-stream
+// error: type is the Google status, code/statusCode the numeric code, and the
+// error is retryable for 408/409/429/5xx.
+func (s *stream) newStreamError(e *StreamError) *providererrors.StreamProviderError {
+	var code interface{}
+	var statusCode *int
+	retryable := false
+	if e.Code != nil {
+		c := int(*e.Code)
+		code = *e.Code
+		statusCode = &c
+		retryable = c == 408 || c == 409 || c == 429 || c >= 500
+	}
+	var data interface{}
+	if raw, err := json.Marshal(e); err == nil {
+		_ = json.Unmarshal(raw, &data)
+	}
+	return providererrors.NewStreamProviderError(e.Message, s.cfg.ProviderName, e.Status, code, statusCode, &retryable, data)
 }
 
 // buildFinishChunk builds the single 'finish' chunk emitted at end-of-stream
@@ -315,8 +508,12 @@ func (s *stream) processSSEEvent(chunkData Response) {
 func (s *stream) buildFinishChunk() *provider.StreamChunk {
 	fr := s.finishReason
 	if !s.hasFinished {
-		fr = types.FinishReasonOther
+		// A clean end without the provider's completion signal is
+		// interrupted (TS #23814).
+		fr = types.FinishReasonInterrupted
 	}
+	s.lastUsageMetadata = addUsageMetadata(s.continuedUsage, s.lastUsageMetadata)
+	s.continuedUsage = nil
 	usage := convertUsage(s.lastUsageMetadata)
 	return &provider.StreamChunk{
 		Type:             provider.ChunkTypeFinish,
@@ -418,6 +615,12 @@ func (s *stream) buildFinishMeta() json.RawMessage {
 		"urlContextMetadata": rawOrNull(s.lastUrlContextMetadata),
 		"safetyRatings":      rawOrNull(s.lastSafetyRatings),
 	}
+	if len(s.groundingPerRequest) > 0 {
+		per := append(append([]json.RawMessage{}, s.groundingPerRequest...), rawOrNull(s.requestGroundingMetadata))
+		if gp, err := json.Marshal(per); err == nil {
+			meta["groundingMetadataPerRequest"] = gp
+		}
+	}
 	if s.lastFinishMessage != "" {
 		fm, _ := json.Marshal(s.lastFinishMessage)
 		meta["finishMessage"] = fm
@@ -432,12 +635,29 @@ func (s *stream) buildFinishMeta() json.RawMessage {
 		meta["usageMetadata"] = json.RawMessage("null")
 	}
 	// serviceTier is always emitted (null when absent) to match TS SDK behavior.
-	if s.lastServiceTier != "" {
-		if st, err := json.Marshal(s.lastServiceTier); err == nil {
+	// TS: usage?.serviceTier of the final (merged) usage metadata. A
+	// top-level chunk serviceTier is not read.
+	serviceTier := ""
+	if s.lastUsageMetadata != nil {
+		serviceTier = s.lastUsageMetadata.ServiceTier
+	}
+	if serviceTier != "" {
+		if st, err := json.Marshal(serviceTier); err == nil {
 			meta["serviceTier"] = st
 		}
 	} else {
 		meta["serviceTier"] = json.RawMessage("null")
+	}
+	// Only surface the token when the response stopped early (budget used up,
+	// or continuing failed), not for the checkpoint tokens of a stream that
+	// finished normally.
+	if s.lastContinuationToken != "" && (s.rawFinishReason == "MAX_TOKENS" || s.rawFinishReason == "CONTINUATION") {
+		ct, _ := json.Marshal(s.lastContinuationToken)
+		meta["continuationToken"] = ct
+	}
+	if s.initialPromptTokenCount != nil {
+		ip, _ := json.Marshal(*s.initialPromptTokenCount)
+		meta["initialPromptTokenCount"] = ip
 	}
 	provMeta, _ := json.Marshal(s.cfg.wrapProviderMetadata(meta))
 	return provMeta
@@ -449,8 +669,9 @@ func (s *stream) processNonFuncPart(part Part) {
 	// Code execution. TS parses these for both Google and Vertex.
 	{
 		if part.ExecutableCode != nil && part.ExecutableCode.Code != "" {
-			s.codeExecCount++
-			toolCallID := fmt.Sprintf("code-exec-%d", s.codeExecCount)
+			// TS: generateId() -- a fixed counter would repeat the same id in
+			// every step of a multi-step run.
+			toolCallID := s.generateID()
 			s.lastCodeExecID = toolCallID
 			s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 				Type: provider.ChunkTypeToolCall,
@@ -458,12 +679,19 @@ func (s *stream) processNonFuncPart(part Part) {
 					ID:               toolCallID,
 					ToolName:         s.tnm.toCustomToolName("code_execution"),
 					Arguments:        map[string]interface{}{"code": part.ExecutableCode.Code, "language": part.ExecutableCode.Language},
+					RawArguments:     executableCodeInput(part.ExecutableCode.Language, part.ExecutableCode.Code),
 					ProviderExecuted: true,
 				},
 			})
 			return
 		}
-		if part.CodeExecutionResult != nil && s.lastCodeExecID != "" {
+		if part.CodeExecutionResult != nil {
+			// TS takes this branch for any codeExecutionResult part and only
+			// emits when an executable code part came first; it never falls
+			// through to the text branch.
+			if s.lastCodeExecID == "" {
+				return
+			}
 			// Do not clear lastCodeExecID: TS associates a result only with the
 			// most recently seen executable code part, but does not reset the
 			// pointer after emitting the result.
@@ -510,6 +738,7 @@ func (s *stream) processNonFuncPart(part Part) {
 				ID:               toolCallID,
 				ToolName:         "server:" + part.ToolCall.ToolType,
 				Arguments:        args,
+				RawArguments:     jsonorder.Text(json.RawMessage(part.toolCallArgsRaw), args),
 				ProviderExecuted: true,
 				Dynamic:          true,
 			},
@@ -555,21 +784,32 @@ func (s *stream) processNonFuncPart(part Part) {
 	if part.InlineData != nil {
 		s.closeOpenBlocks()
 		data := decodeInlineData(part.InlineData.Data)
+		// TS: providerMetadata carries the part's own thoughtSignature.
+		var fileMeta json.RawMessage
+		if part.ThoughtSignature != "" {
+			fileMeta, _ = json.Marshal(s.cfg.wrapProviderMetadata(map[string]interface{}{
+				"thoughtSignature": part.ThoughtSignature,
+			}))
+		}
 		if part.Thought {
 			s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 				Type: provider.ChunkTypeReasoningFile,
 				ReasoningFileContent: &types.ReasoningFileContent{
-					MediaType: part.InlineData.MimeType,
-					Data:      data,
+					MediaType:        part.InlineData.MimeType,
+					Data:             data,
+					ProviderMetadata: fileMeta,
 				},
+				ProviderMetadata: fileMeta,
 			})
 		} else {
 			s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 				Type: provider.ChunkTypeFile,
 				GeneratedFileContent: &types.GeneratedFileContent{
-					MediaType: part.InlineData.MimeType,
-					Data:      data,
+					MediaType:        part.InlineData.MimeType,
+					Data:             data,
+					ProviderMetadata: fileMeta,
 				},
+				ProviderMetadata: fileMeta,
 			})
 		}
 		return
@@ -584,7 +824,7 @@ func (s *stream) processNonFuncPart(part Part) {
 	}
 
 	// Empty text + thoughtSignature on an open text block → text-delta with metadata only.
-	if part.Text == "" && sigMeta != nil && s.currentTextBlockID != "" {
+	if part.Text == "" && !part.textAbsent && sigMeta != nil && s.currentTextBlockID != "" {
 		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 			Type:             provider.ChunkTypeText,
 			ID:               s.currentTextBlockID,
@@ -676,14 +916,15 @@ func (s *stream) processFuncCallPart(part Part) {
 
 	willContinueTrue := fc.WillContinue != nil && *fc.WillContinue
 
-	isStreamingChunk := fc.PartialArgsSet || (fc.Name != "" && willContinueTrue)
-	isTerminalChunk := fc.Name == "" && !fc.ArgsSet && !fc.PartialArgsSet && fc.WillContinue == nil
-	isCompleteCall := fc.Name != "" && fc.ArgsSet && !fc.PartialArgsSet
-	isNoArgsCompleteCall := fc.Name != "" && !fc.ArgsSet && !fc.PartialArgsSet && !willContinueTrue
+	hasName := fc.hasName()
+	isStreamingChunk := fc.PartialArgsSet || (hasName && willContinueTrue)
+	isTerminalChunk := !hasName && !fc.ArgsSet && !fc.PartialArgsSet && fc.WillContinue == nil
+	isCompleteCall := hasName && fc.ArgsSet && !fc.PartialArgsSet
+	isNoArgsCompleteCall := hasName && !fc.ArgsSet && !fc.PartialArgsSet && !willContinueTrue
 
 	switch {
 	case isStreamingChunk:
-		if fc.Name != "" {
+		if hasName {
 			toolCallID := fc.ID
 			if toolCallID == "" {
 				toolCallID = s.generateID()
@@ -815,7 +1056,7 @@ func (s *stream) processFuncCallPart(part Part) {
 // tool call when neither the functionCall-level willContinue nor any
 // individual partial arg's willContinue is true.
 func (s *stream) applyPartialArgsAndMaybeFinish(accumulator *GoogleJSONAccumulator, toolCallID string, partialArgs []PartialArg, functionCallWillContinue bool, sigMeta json.RawMessage) {
-	result := accumulator.ProcessPartialArgs(partialArgs)
+	result, accErr := accumulator.processPartialArgs(partialArgs)
 	if result.TextDelta != "" {
 		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 			Type:             provider.ChunkTypeToolInputDelta,
@@ -823,6 +1064,14 @@ func (s *stream) applyPartialArgsAndMaybeFinish(accumulator *GoogleJSONAccumulat
 			Text:             result.TextDelta,
 			ProviderMetadata: sigMeta,
 		})
+	}
+
+	if accErr != nil {
+		// TS would throw (or build arguments that JSON.stringify drops) for a
+		// path that conflicts with an earlier value; end the stream with an
+		// error instead of panicking or emitting a corrupt tool call.
+		s.deferredErr = providererrors.NewStreamProviderError("invalid function call partialArgs: "+accErr.Error(), s.cfg.ProviderName, "", nil, nil, nil, nil)
+		return
 	}
 
 	allArgsDone := true

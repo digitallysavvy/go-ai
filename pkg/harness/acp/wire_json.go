@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/harness"
 )
 
 // The ACP bridge validates the `start` frame (and the persisted
@@ -118,37 +121,80 @@ func (t *PermissionModeTarget) UnmarshalJSON(data []byte) error {
 }
 
 // MarshalJSON encodes `{ 'allow-reads', 'allow-edits', 'allow-all' }`; a nil
-// target is an explicit no-op and encodes as `null`.
+// target is an explicit no-op and encodes as `null`. Modes marked Unset<Mode> are left
+// out, like a TS record with an undefined entry.
 func (m PermissionModeMapping) MarshalJSON() ([]byte, error) {
-	return json.Marshal(struct {
-		AllowReads *PermissionModeTarget `json:"allow-reads"`
-		AllowEdits *PermissionModeTarget `json:"allow-edits"`
-		AllowAll   *PermissionModeTarget `json:"allow-all"`
-	}{m.AllowReads, m.AllowEdits, m.AllowAll})
-}
-
-// UnmarshalJSON decodes the TS shape (and the legacy Go-field-name shape).
-func (m *PermissionModeMapping) UnmarshalJSON(data []byte) error {
 	var w struct {
 		AllowReads *PermissionModeTarget `json:"allow-reads"`
 		AllowEdits *PermissionModeTarget `json:"allow-edits"`
 		AllowAll   *PermissionModeTarget `json:"allow-all"`
-		LegacyR    *PermissionModeTarget `json:"allowReads"`
-		LegacyE    *PermissionModeTarget `json:"allowEdits"`
-		LegacyA    *PermissionModeTarget `json:"allowAll"`
 	}
-	if err := json.Unmarshal(data, &w); err != nil {
-		return err
+	if m.IsComplete() {
+		w.AllowReads, w.AllowEdits, w.AllowAll = m.AllowReads, m.AllowEdits, m.AllowAll
+		return json.Marshal(w)
 	}
-	m.AllowReads, m.AllowEdits, m.AllowAll = firstTarget(w.AllowReads, w.LegacyR), firstTarget(w.AllowEdits, w.LegacyE), firstTarget(w.AllowAll, w.LegacyA)
-	return nil
+	var b bytes.Buffer
+	b.WriteByte('{')
+	first := true
+	for _, e := range []struct {
+		key  string
+		mode harness.PermissionMode
+		t    *PermissionModeTarget
+	}{{"allow-reads", harness.PermissionModeAllowReads, m.AllowReads}, {"allow-edits", harness.PermissionModeAllowEdits, m.AllowEdits}, {"allow-all", harness.PermissionModeAllowAll, m.AllowAll}} {
+		if m.isUnset(e.mode) {
+			continue
+		}
+		v, err := json.Marshal(e.t)
+		if err != nil {
+			return nil, err
+		}
+		if !first {
+			b.WriteByte(',')
+		}
+		first = false
+		fmt.Fprintf(&b, "%q:%s", e.key, v)
+	}
+	b.WriteByte('}')
+	return b.Bytes(), nil
 }
 
-func firstTarget(a, b *PermissionModeTarget) *PermissionModeTarget {
-	if a != nil {
-		return a
+// UnmarshalJSON decodes the TS shape (and the legacy Go-field-name shape). A
+// missing key sets the matching Unset<Mode> flag; an explicit null is a no-op target.
+func (m *PermissionModeMapping) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
 	}
-	return b
+	*m = PermissionModeMapping{}
+	for _, e := range []struct {
+		keys  []string
+		mode  harness.PermissionMode
+		dst   **PermissionModeTarget
+		unset *bool
+	}{
+		{[]string{"allow-reads", "allowReads"}, harness.PermissionModeAllowReads, &m.AllowReads, &m.UnsetAllowReads},
+		{[]string{"allow-edits", "allowEdits"}, harness.PermissionModeAllowEdits, &m.AllowEdits, &m.UnsetAllowEdits},
+		{[]string{"allow-all", "allowAll"}, harness.PermissionModeAllowAll, &m.AllowAll, &m.UnsetAllowAll},
+	} {
+		found := false
+		for _, k := range e.keys {
+			msg, ok := lookupFold(raw, k)
+			if !ok {
+				continue
+			}
+			found = true
+			if err := json.Unmarshal(msg, e.dst); err != nil {
+				return err
+			}
+			if *e.dst != nil {
+				break
+			}
+		}
+		if !found {
+			*e.unset = true
+		}
+	}
+	return nil
 }
 
 func nonNilStrings(v []string) []string {
@@ -156,4 +202,16 @@ func nonNilStrings(v []string) []string {
 		return []string{}
 	}
 	return v
+}
+
+func lookupFold(raw map[string]json.RawMessage, key string) (json.RawMessage, bool) {
+	if v, ok := raw[key]; ok {
+		return v, true
+	}
+	for k, v := range raw {
+		if strings.EqualFold(k, key) {
+			return v, true
+		}
+	}
+	return nil, false
 }

@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -60,6 +61,7 @@ func CreateOpenCode(settings ...Settings) (harness.Harness, error) {
 func (h *openCodeHarness) SpecificationVersion() string                 { return harness.SpecificationVersion }
 func (h *openCodeHarness) HarnessID() string                            { return HarnessID }
 func (h *openCodeHarness) SupportsBuiltinToolApprovals() bool           { return true }
+func (h *openCodeHarness) SupportsBuiltinToolFiltering() bool           { return true }
 func (h *openCodeHarness) BuiltinTools() map[string]harness.BuiltinTool { return BuiltinTools() }
 func (h *openCodeHarness) GetBootstrap(ctx context.Context) (*harness.Bootstrap, error) {
 	return GetBootstrap(ctx)
@@ -79,20 +81,14 @@ type bridgeCoords struct {
 }
 
 func (h *openCodeHarness) ValidateLifecycleStateData(data json.RawMessage) error {
-	if len(data) == 0 {
-		return nil
-	}
-	var v resumeStateData
-	return json.Unmarshal(data, &v)
-}
-
-func unsupported(capability string) error {
-	return harness.NewCapabilityUnsupportedError(
-		fmt.Sprintf("Harness 'opencode' does not support %s yet.", capability), HarnessID, nil)
+	return harnessutil.ValidateLifecycleStateObject(data, &resumeStateData{})
 }
 
 func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions) (harness.Session, error) {
 	settings := h.settings
+	if err := validateBuiltinToolFiltering(opts.BuiltinToolFiltering); err != nil {
+		return nil, err
+	}
 	sandboxSession := opts.SandboxSession
 	toolSafeSandboxSession := harness.GetRestrictedSandboxSession(sandboxSession)
 	networkSession, isNetwork := harness.AsNetworkSandboxSession(sandboxSession)
@@ -100,12 +96,8 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 	if isNetwork {
 		sandboxID = networkSession.ID()
 	}
-	if err := validateBasicSandboxSettings(sandboxSession, settings.Port, settings.PortEndpoint); err != nil {
+	if err := bridge.ValidateBridgeSandboxSettings(sandboxSession, sandboxID, settings.Port, settings.PortEndpoint, settings.MintBridgeToken, HarnessID); err != nil {
 		return nil, err
-	}
-	if settings.MintBridgeToken != nil && sandboxID == "" {
-		return nil, harness.NewCapabilityUnsupportedError(
-			"The OpenCode harness cannot use `mintBridgeToken` with a sandbox session that does not expose an id.", HarnessID, nil)
 	}
 
 	isContinue := opts.ContinueFrom != nil
@@ -200,9 +192,11 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 		return nil, err
 	}
 	stateDir := harness.StateDirectoryPath(sandboxHomeDir)
-	bootstrapDir := stateDir + "/" + BootstrapDir
+	bootstrapDir := posixpath.Resolve(stateDir, BootstrapDir)
 	workDir := opts.SessionWorkDir
-	skillsDir := sandboxHomeDir + "/.agents/skills"
+	// TS path.posix.join(sandboxHomeDir, '.agents', 'skills'): a HOME with a
+	// trailing slash yields no double slash.
+	skillsDir := posixpath.Join(sandboxHomeDir, ".agents", "skills")
 	sessionDataDir := harness.SessionDataDirectoryPath(stateDir, opts.SessionID)
 	bridgeStateDir := sessionDataDir + "/bridge"
 	timeout := settings.StartupTimeout
@@ -213,7 +207,7 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 	if helloTimeout > 5*time.Second {
 		helloTimeout = 5 * time.Second
 	}
-	onBridgeErr := func(*harness.ErrorPart) {}
+	onBridgeErr := bridge.CreateBridgeErrorHandler(HarnessID, opts.SessionID)
 	var onDiagnostic func(bridge.OutboundMessage)
 	if opts.Observability != nil {
 		onDiagnostic = bridge.ReportDiagnostic(opts.Observability.Report, opts.SessionID)
@@ -245,9 +239,9 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 		}
 	}
 
-	port, err := bridge.ResolveBridgePort(sandboxSession, settings.Port)
+	port, err := bridge.ResolveBridgePortOrUnsupported(sandboxSession, settings.Port, HarnessID)
 	if err != nil {
-		return nil, wrapPortError(err)
+		return nil, err
 	}
 	token := mintBridgeToken(settings.MintBridgeToken, sandboxID)
 
@@ -301,22 +295,18 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 		Command: command, Env: env, Port: port, Token: token, ReplayFromDisk: respawnStrategy == "replay",
 		BridgeStateDir: bridgeStateDir, BridgeType: HarnessID, StartupTimeout: timeout,
 		ResolveEndpoint: func(ctx context.Context, boundPort int) (harness.PortEndpoint, error) {
-			return resolveBridgeEndpoint(ctx, sandboxSession, settings.PortEndpoint, boundPort)
+			return bridge.ResolveBridgeEndpointOrUnsupported(ctx, sandboxSession, settings.PortEndpoint, boundPort, HarnessID)
 		},
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	var supportsUserMessageResponses bool
+	var supportsUserMessageResponses atomic.Bool
 	channelOpts := bridge.ChannelOptions{
-		Connect: bridge.NewConnectFunc(launched.Endpoint, bridge.DialOptions{
-			Name: "OpenCode bridge", WaitForHello: true, HelloTimeout: helloTimeout,
-			OnHello: func(h *bridge.Hello) {
-				if h.Capabilities != nil && h.Capabilities.ExperimentalUserMessageResponses != nil {
-					supportsUserMessageResponses = *h.Capabilities.ExperimentalUserMessageResponses
-				}
-			},
+		Connect: bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{
+			Name: "OpenCode bridge", OpenRetryTimeout: timeout, StartContext: ctx,
+			OnHello: trackUserMessageResponses(&supportsUserMessageResponses),
 		}),
 		Reconnect: settings.Reconnect, OnBridgeError: onBridgeErr, OnDiagnostic: onDiagnostic,
 	}
@@ -330,12 +320,12 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 
 	sessionArgs.channel = channel
 	sessionArgs.proc = launched.Proc
-	sessionArgs.bridgePort = port
+	sessionArgs.bridgePort = launched.Port
 	sessionArgs.bridgeToken = token
 	sessionArgs.isResume = respawnStrategy != ""
 	sessionArgs.seedResumeSessionOnFirstPrompt = respawnStrategy != ""
 	sessionArgs.rerunContinue = respawnStrategy == "rerun"
-	sessionArgs.supportsUserMessageResponses = func() bool { return supportsUserMessageResponses }
+	sessionArgs.supportsUserMessageResponses = supportsUserMessageResponses.Load
 	return newSession(sessionArgs), nil
 }
 
@@ -353,37 +343,37 @@ func mintBridgeToken(cb harness.MintBridgeTokenCallback, sandboxID string) strin
 	return cb(sandboxID)
 }
 
-func validateBasicSandboxSettings(sandboxSession providerutils.SandboxSession, port int, portEndpoint *harness.PortEndpoint) error {
-	if _, ok := harness.AsNetworkSandboxSession(sandboxSession); ok {
+// validateBuiltinToolFiltering mirrors TS `validateBuiltinToolFiltering`
+// (TS #23342): OpenCode implements `write` and `edit` through one native
+// permission, so they must be both active or both inactive.
+func validateBuiltinToolFiltering(filtering *harness.BuiltinToolFiltering) error {
+	if filtering == nil {
 		return nil
 	}
-	if port == 0 {
+	if harness.IsBuiltinToolIncluded("write", filtering) != harness.IsBuiltinToolIncluded("edit", filtering) {
 		return harness.NewCapabilityUnsupportedError(
-			"The OpenCode harness requires an explicit `port` when using a basic sandbox session.", HarnessID, nil)
-	}
-	if portEndpoint == nil {
-		return harness.NewCapabilityUnsupportedError(
-			"The OpenCode harness requires an explicit `portEndpoint` when using a basic sandbox session.", HarnessID, nil)
+			"OpenCode built-in filtering requires 'write' and 'edit' to either both be active or both be inactive.", HarnessID, nil)
 	}
 	return nil
 }
 
-func resolveBridgeEndpoint(ctx context.Context, sandboxSession providerutils.SandboxSession, override *harness.PortEndpoint, port int) (harness.PortEndpoint, error) {
-	if override != nil {
-		return *override, nil
+// resolveInactiveBuiltinToolNames mirrors TS `resolveInactiveBuiltinToolNames`.
+func resolveInactiveBuiltinToolNames(filtering *harness.BuiltinToolFiltering) *[]string {
+	if filtering == nil {
+		return nil
 	}
-	if n, ok := harness.AsNetworkSandboxSession(sandboxSession); ok {
-		return n.GetPortEndpoint(ctx, harness.PortEndpointOptions{Port: port, Protocol: harness.PortProtocolWS})
+	inactive := []string{}
+	for _, name := range builtinToolNames {
+		if !harness.IsBuiltinToolIncluded(name, filtering) {
+			inactive = append(inactive, name)
+		}
 	}
-	return harness.PortEndpoint{}, harness.NewCapabilityUnsupportedError(
-		"The OpenCode harness requires an explicit `portEndpoint` when using a basic sandbox session.", HarnessID, nil)
+	return &inactive
 }
 
-func wrapPortError(err error) error {
-	if err == bridge.ErrNoPort {
-		return harness.NewCapabilityUnsupportedError(
-			"The OpenCode harness needs a TCP port exposed by the sandbox. "+
-				"Create the sandbox with `ports: [<port>]` or pass `createOpenCode({ port })`.", HarnessID, err)
-	}
-	return err
+// trackUserMessageResponses records the capability of each bridge-hello,
+// including a later one without it. Mirrors TS `onHello`
+// (`supportsUserMessageResponses = hello.capabilities?.experimental_userMessageResponses === true`).
+func trackUserMessageResponses(supported *atomic.Bool) func(*bridge.Hello) {
+	return func(h *bridge.Hello) { supported.Store(h.SupportsUserMessageResponses()) }
 }

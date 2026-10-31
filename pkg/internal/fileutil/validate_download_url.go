@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 
+	"golang.org/x/net/idna"
+
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -29,11 +31,11 @@ func ValidateDownloadURL(raw string) error {
 	if err := validateURLPort(parsed); err != nil {
 		return providererrors.NewDownloadError(raw, 0, "", fmt.Sprintf("Invalid URL: %s", raw), err)
 	}
-	host := strings.ToLower(strings.TrimRight(parsed.Hostname(), "."))
+	host := NormalizeHostname(parsed.Hostname())
 	if host == "" {
 		return providererrors.NewDownloadError(raw, 0, "", "URL must have a hostname", nil)
 	}
-	if host == "localhost" || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".localhost") {
+	if host == "localhost" || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".internal") {
 		return providererrors.NewDownloadError(raw, 0, "", fmt.Sprintf("URL with hostname %s is not allowed", host), nil)
 	}
 	if strings.HasPrefix(parsed.Host, "[") && strings.Contains(parsed.Host, "]") {
@@ -52,6 +54,12 @@ func ValidateDownloadURL(raw string) error {
 	}
 	return nil
 }
+
+// NormalizeEscapedURLHost percent-decodes the host of an absolute URL the way
+// the WHATWG URL parser does (net/url rejects such hosts), so that
+// "http://%6c%6f%63%61%6c%68%6f%73%74/" is seen as "http://localhost/". It
+// returns an error when the decoded host holds a forbidden host code point.
+func NormalizeEscapedURLHost(raw string) (string, error) { return normalizeEscapedURLHost(raw) }
 
 func normalizeEscapedURLHost(raw string) (string, error) {
 	schemeEnd := strings.Index(raw, "://")
@@ -153,17 +161,20 @@ func parseWHATWGIPv4Host(host string) (net.IP, string, bool, bool) {
 	if len(parts) > 1 && parts[len(parts)-1] == "" {
 		parts = parts[:len(parts)-1]
 	}
-	if len(parts) == 0 || len(parts) > 4 {
-		return nil, "", false, numericLikeHost(host)
+	// WHATWG "ends in a number": only such hosts go through the IPv4 parser,
+	// and for them every parse failure makes the URL invalid ("foo.1",
+	// "1.2.3.4.5" and "09.1" throw in TS new URL).
+	if strings.Contains(host, ":") || len(parts) == 0 || !endsInIPv4Number(parts[len(parts)-1]) { // IPv6 literals are not IPv4 hosts
+		return nil, "", false, false
+	}
+	if len(parts) > 4 {
+		return nil, "", false, true
 	}
 	numbers := make([]uint64, len(parts))
 	for i, part := range parts {
 		n, ok := parseWHATWGIPv4Number(part)
 		if !ok {
-			if numericLikeHost(host) {
-				return nil, "", false, true
-			}
-			return nil, "", false, false
+			return nil, "", false, true
 		}
 		numbers[i] = n
 	}
@@ -204,21 +215,11 @@ func parseWHATWGIPv4Number(part string) (uint64, bool) {
 	return n, err == nil
 }
 
-func numericLikeHost(host string) bool {
-	if host == "" {
-		return false
-	}
-	for _, part := range strings.Split(host, ".") {
-		if !numericLikeIPv4Part(part) {
-			return false
-		}
-	}
-	return true
-}
-
-func numericLikeIPv4Part(part string) bool {
+// endsInIPv4Number is the WHATWG "ends in a number" test on the last host
+// label: all ASCII digits, or "0x"/"0X" followed by hex digits only.
+func endsInIPv4Number(part string) bool {
 	if part == "" {
-		return true
+		return false
 	}
 	if len(part) >= 2 && part[0] == '0' && (part[1] == 'x' || part[1] == 'X') {
 		for _, r := range part[2:] {
@@ -234,6 +235,26 @@ func numericLikeIPv4Part(part string) bool {
 		}
 	}
 	return true
+}
+
+// CanonicalIPHost returns the WHATWG serialization of an IP host: IPv4 in
+// any form the URL parser accepts ("127.1", "0x7f.0.0.1", "2130706433")
+// becomes dotted decimal, and a bracketed IPv6 literal is compressed and
+// lowercased. ok is false for a domain name; invalid is true for a host that
+// ends in a number but is not a valid IPv4 address, which TS new URL rejects.
+func CanonicalIPHost(host string) (canonical string, ok bool, invalid bool) {
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		ip := net.ParseIP(host[1 : len(host)-1])
+		if ip == nil || strings.Contains(host, "%") {
+			return "", false, true
+		}
+		return canonicalIPv6Hostname(ip), true, false
+	}
+	_, display, isIPv4, invalid := parseWHATWGIPv4Host(host)
+	if invalid {
+		return "", false, true
+	}
+	return display, isIPv4, false
 }
 
 // IsBlockedIP reports whether ip is in a private, loopback, link-local,
@@ -383,4 +404,17 @@ func canonicalIPv6Hostname(ip net.IP) string {
 	}
 	b.WriteByte(']')
 	return b.String()
+}
+
+// NormalizeHostname lowercases host, maps it through IDNA (UTS #46, as the
+// WHATWG URL parser and net/http do before dialing) and strips trailing dots,
+// so that fullwidth letters, ideographic full stops and trailing dots cannot
+// slip past string-based hostname blocklists. Hosts that fail IDNA mapping
+// are returned lowercased; net/http rejects them at dial time.
+func NormalizeHostname(host string) string {
+	host = strings.ToLower(host)
+	if ascii, err := idna.Lookup.ToASCII(host); err == nil {
+		host = ascii
+	}
+	return strings.TrimRight(strings.ToLower(host), ".")
 }

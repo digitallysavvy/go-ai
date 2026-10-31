@@ -11,12 +11,15 @@ func TestImageModelSupportsFileAndMaskInputs(t *testing.T) {
 		wantFileInputs *bool
 		wantMaskInputs *bool
 	}{
+		{"flux-3-image", "flux-3-image", boolPtr(true), boolPtr(false)},
 		{"flux-pro-1.0-fill", "flux-pro-1.0-fill", boolPtr(true), boolPtr(true)},
 		{"flux-kontext-pro", "flux-kontext-pro", boolPtr(true), boolPtr(false)},
 		{"flux-kontext-max", "flux-kontext-max", boolPtr(true), boolPtr(false)},
 		{"flux-pro-1.1-ultra", "flux-pro-1.1-ultra", boolPtr(false), boolPtr(false)},
 		{"flux-pro-1.1", "flux-pro-1.1", boolPtr(false), boolPtr(false)},
-		{"unknown model", "flux-unknown", nil, nil},
+		{"flux-3-image-klein", "flux-3-image-klein", boolPtr(true), boolPtr(false)},
+		{"unknown model defaults to the latest API", "flux-unknown", boolPtr(true), boolPtr(false)},
+		{"legacy flux-2-pro", "flux-2-pro", nil, nil},
 	}
 
 	for _, tt := range tests {

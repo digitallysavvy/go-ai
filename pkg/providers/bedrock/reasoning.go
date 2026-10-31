@@ -16,6 +16,7 @@ var reasoningBudgetPercentages = map[types.ReasoningLevel]float64{
 	types.ReasoningMedium:  0.3,
 	types.ReasoningHigh:    0.6,
 	types.ReasoningXHigh:   0.9,
+	types.ReasoningMax:     0.95,
 }
 
 // bedrockReasoningEffortMap mirrors TS amazonBedrockReasoningEffortMap.
@@ -25,6 +26,18 @@ var bedrockReasoningEffortMap = map[types.ReasoningLevel]string{
 	types.ReasoningMedium:  "medium",
 	types.ReasoningHigh:    "high",
 	types.ReasoningXHigh:   "max",
+	types.ReasoningMax:     "max",
+}
+
+// novaReasoningEffortMap mirrors TS amazonNovaReasoningEffortMap: Nova 2
+// supports low/medium/high, so xhigh and max map to high.
+var novaReasoningEffortMap = map[types.ReasoningLevel]string{
+	types.ReasoningMinimal: "low",
+	types.ReasoningLow:     "low",
+	types.ReasoningMedium:  "medium",
+	types.ReasoningHigh:    "high",
+	types.ReasoningXHigh:   "high",
+	types.ReasoningMax:     "high",
 }
 
 // mapReasoningToProviderBudget ports TS provider-utils
@@ -54,9 +67,9 @@ func mapReasoningToProviderBudget(reasoning types.ReasoningLevel, maxOutputToken
 }
 
 // mapReasoningToProviderEffort ports TS provider-utils
-// mapReasoningToProviderEffort using bedrockReasoningEffortMap.
-func mapReasoningToProviderEffort(reasoning types.ReasoningLevel, warnings *[]types.Warning) (string, bool) {
-	mapped, ok := bedrockReasoningEffortMap[reasoning]
+// mapReasoningToProviderEffort using the supplied effort map.
+func mapReasoningToProviderEffort(reasoning types.ReasoningLevel, effortMap map[types.ReasoningLevel]string, warnings *[]types.Warning) (string, bool) {
+	mapped, ok := effortMap[reasoning]
 	if !ok {
 		*warnings = append(*warnings, types.Warning{
 			Type:    "unsupported",
@@ -89,15 +102,17 @@ func isNovaReasoningModel(modelID string) bool {
 	return strings.Contains(modelID, "amazon.nova-2-lite-v1:0")
 }
 
-// resolveBedrockReasoningConfig ports TS
-// resolveAmazonBedrockReasoningConfig: it derives a reasoningConfig from the
-// top-level Reasoning call option and merges any explicit
-// amazonBedrock.reasoningConfig provider option over the derived defaults
-// (explicit provider options win, matching TS spread order). Portable
-// reasoning is only mapped to reasoningConfig for non-Anthropic models with
-// known reasoning support (OpenAI models, Nova 2 Lite); other models emit an
-// "unsupported" warning instead, unless the caller already supplied an
-// explicit amazonBedrock.reasoningConfig provider option.
+// resolveBedrockReasoningConfig ports TS resolveAmazonBedrockReasoningConfig:
+// it derives a reasoningConfig from the top-level Reasoning call option while
+// preserving any explicit amazonBedrock.reasoningConfig provider option on a
+// field-by-field basis (an explicit maxReasoningEffort, budgetTokens or type
+// always wins, and a field that is explicitly provided is never mapped, so it
+// produces no mapping warning). Portable reasoning is only mapped to
+// reasoningConfig for non-Anthropic models with known reasoning support
+// (OpenAI models, Nova 2 Lite) or when the caller already supplied an
+// explicit reasoningConfig; other models emit an "unsupported" warning. A
+// disabled provider-option reasoningConfig is preserved without deriving
+// effort or budget.
 func resolveBedrockReasoningConfig(reasoning *types.ReasoningLevel, existing *ReasoningConfig, isAnthropic bool, isOpenAIModel bool, modelID string, warnings *[]types.Warning) *ReasoningConfig {
 	if !isCustomReasoning(reasoning) {
 		return existing
@@ -108,47 +123,55 @@ func resolveBedrockReasoningConfig(reasoning *types.ReasoningLevel, existing *Re
 		*result = *existing
 	}
 
+	// Preserve disabled thinking without deriving settings or warnings that
+	// will not be sent.
+	if existing != nil && existing.Type == "disabled" {
+		result.MaxReasoningEffort = ""
+		result.BudgetTokens = nil
+		return result
+	}
+
 	level := *reasoning
 	hasPortableReasoning := level != types.ReasoningNone
-	hasExplicitReasoningConfig := existing != nil
 	isNovaReasoning := isNovaReasoningModel(modelID)
-	supportsPortableReasoning := isOpenAIModel || isNovaReasoning
+	supportsPortableReasoning := isOpenAIModel || isNovaReasoning || existing != nil
 
 	if isAnthropic {
 		caps := anthropic.GetModelCapabilities(modelID)
 		switch {
 		case level == types.ReasoningNone:
-			result.Type = "disabled"
+			result = &ReasoningConfig{Type: "disabled"}
 		case caps.SupportsAdaptiveThinking:
-			effort, ok := mapReasoningToProviderEffort(level, warnings)
-			result.Type = "adaptive"
-			if ok {
+			if existing == nil || existing.MaxReasoningEffort == "" {
+				effort, _ := mapReasoningToProviderEffort(level, bedrockReasoningEffortMap, warnings)
 				result.MaxReasoningEffort = effort
 			}
-			if existing != nil {
-				overlayReasoningConfigStruct(result, existing)
+			if result.Type == "" {
+				result.Type = "adaptive"
 			}
 		default:
-			budget, ok := mapReasoningToProviderBudget(level, caps.MaxOutputTokens, caps.MaxOutputTokens, warnings)
-			if ok {
-				result.Type = "enabled"
-				result.BudgetTokens = &budget
-				if existing != nil {
-					overlayReasoningConfigStruct(result, existing)
+			if existing == nil || existing.BudgetTokens == nil {
+				budget, ok := mapReasoningToProviderBudget(level, caps.MaxOutputTokens, caps.MaxOutputTokens, warnings)
+				if ok {
+					result.BudgetTokens = &budget
 				}
+			}
+			if result.BudgetTokens != nil && result.Type == "" {
+				result.Type = "enabled"
 			}
 		}
 	} else if hasPortableReasoning {
-		if supportsPortableReasoning || hasExplicitReasoningConfig {
-			effort, ok := mapReasoningToProviderEffort(level, warnings)
-			if isNovaReasoning {
-				result.Type = "enabled"
-			}
-			if ok {
+		if supportsPortableReasoning {
+			if existing == nil || existing.MaxReasoningEffort == "" {
+				effortMap := bedrockReasoningEffortMap
+				if isNovaReasoning {
+					effortMap = novaReasoningEffortMap
+				}
+				effort, _ := mapReasoningToProviderEffort(level, effortMap, warnings)
 				result.MaxReasoningEffort = effort
 			}
-			if existing != nil {
-				overlayReasoningConfigStruct(result, existing)
+			if isNovaReasoning && result.Type == "" {
+				result.Type = "enabled"
 			}
 		} else {
 			*warnings = append(*warnings, types.Warning{
@@ -159,32 +182,5 @@ func resolveBedrockReasoningConfig(reasoning *types.ReasoningLevel, existing *Re
 		}
 	}
 
-	// Mirror anthropic-messages-language-model.ts: when the merged type ends
-	// up 'disabled', strip derived effort/budget.
-	if result.Type == "disabled" {
-		result.MaxReasoningEffort = ""
-		result.BudgetTokens = nil
-	}
-
 	return result
-}
-
-// overlayReasoningConfigStruct overlays non-zero fields of override onto base
-// (override wins), mirroring the TS spread `{ ...derived, ...existing }`.
-func overlayReasoningConfigStruct(base *ReasoningConfig, override *ReasoningConfig) {
-	if override == nil {
-		return
-	}
-	if override.Type != "" {
-		base.Type = override.Type
-	}
-	if override.BudgetTokens != nil {
-		base.BudgetTokens = override.BudgetTokens
-	}
-	if override.MaxReasoningEffort != "" {
-		base.MaxReasoningEffort = override.MaxReasoningEffort
-	}
-	if override.Display != "" {
-		base.Display = override.Display
-	}
 }

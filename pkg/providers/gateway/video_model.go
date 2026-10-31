@@ -1,15 +1,14 @@
 package gateway
 
 import (
-	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
-	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -17,6 +16,8 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
 // VideoModel implements the provider.VideoModelV3 interface for AI Gateway
@@ -51,7 +52,8 @@ func (m *VideoModel) ModelID() string {
 // MaxVideosPerCall returns the maximum videos per call
 // Gateway sets a very large number to prevent client-side splitting
 func (m *VideoModel) MaxVideosPerCall() *int {
-	maxVideos := 9007199254740991 // JavaScript Number.MAX_SAFE_INTEGER
+	// JavaScript Number.MAX_SAFE_INTEGER, clamped so 32-bit builds compile.
+	maxVideos := min(9007199254740991, math.MaxInt)
 	return &maxVideos
 }
 
@@ -60,7 +62,11 @@ func (m *VideoModel) MaxVideosPerCall() *int {
 func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions) (map[string]interface{}, error) {
 	body := map[string]interface{}{}
 
-	body["prompt"] = opts.Prompt
+	// TS drops an undefined prompt (image-only generation); PromptSet carries
+	// the distinction between prompt: "" and an omitted prompt.
+	if opts.PromptSet || opts.Prompt != "" {
+		body["prompt"] = opts.Prompt
+	}
 	body["n"] = opts.N
 
 	if opts.AspectRatio != "" {
@@ -138,17 +144,8 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		return nil, err
 	}
 
-	// Build headers
-	headers := m.getModelConfigHeaders()
-
-	// Add observability headers if in Vercel environment
-	o11y := GetO11yHeaders(ctx)
-	AddO11yHeaders(headers, o11y)
-
-	// Add custom headers from options
-	for k, v := range opts.Headers {
-		headers[k] = v
-	}
+	// TS combineHeaders(config, options.headers, model headers, o11y, accept)
+	headers := gatewayRequestHeaders(ctx, opts.Headers, m.getModelConfigHeaders())
 
 	// Set Accept header to request SSE stream for video generation
 	headers["Accept"] = "text/event-stream"
@@ -212,18 +209,15 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		body["callbackUrl"] = opts.WebhookURL
 	}
 
-	headers := m.getModelConfigHeaders()
-	AddO11yHeaders(headers, GetO11yHeaders(ctx))
-	for k, v := range opts.Headers {
-		headers[k] = v
-	}
+	headers := gatewayRequestHeaders(ctx, opts.Headers, m.getModelConfigHeaders())
 
 	var response gatewayVideoStartResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/video-model/start",
-		Body:    body,
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayVideoStart),
+		Method:           http.MethodPost,
+		Path:             "/video-model/start",
+		Body:             body,
+		Headers:          headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleErrorWithContext(ctx, err)
@@ -244,18 +238,15 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 // DoStatus checks the status of an asynchronous video generation started
 // with DoStart via the Gateway's /video-model/status endpoint.
 func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
-	headers := m.getModelConfigHeaders()
-	AddO11yHeaders(headers, GetO11yHeaders(ctx))
-	for k, v := range opts.Headers {
-		headers[k] = v
-	}
+	headers := gatewayRequestHeaders(ctx, opts.Headers, m.getModelConfigHeaders())
 
 	var response gatewayVideoStatusResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/video-model/status",
-		Body:    map[string]interface{}{"operation": opts.Operation},
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayVideoStatus),
+		Method:           http.MethodPost,
+		Path:             "/video-model/status",
+		Body:             map[string]interface{}{"operation": opts.Operation},
+		Headers:          headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleErrorWithContext(ctx, err)
@@ -371,68 +362,94 @@ type SSEVideoEvent struct {
 // Like the TypeScript SDK parser, only result and error events are accepted.
 // Context cancellation is checked on each iteration to stop reading immediately.
 func (m *VideoModel) readSSEVideoResponse(ctx context.Context, body io.Reader) (*provider.VideoModelV3Response, error) {
-	scanner := bufio.NewScanner(body)
-	// A "result" event can carry an inline base64-encoded video, which is
-	// routinely well over bufio.Scanner's default 64 KiB token limit on a
-	// single unchunked `data: ` line. Raise it in line with the 64 KiB
-	// start / 32 MiB ceiling used for the shared SSEParser (R4-4) and the
-	// batch NDJSON scanners elsewhere in the codebase.
-	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
+	// The shared SSEParser is TS parseJsonEventStream's EventSourceParserStream:
+	// an event is its data lines joined once a blank line ends it, and the
+	// '[DONE]' event is skipped.
+	parser := streaming.NewSSEParser(body)
 
-	for scanner.Scan() {
-		// Check for context cancellation before processing each line
+	for {
+		// Check for context cancellation before processing each event
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
 		}
 
-		line := scanner.Text()
-
-		// SSE data lines begin with "data: "
-		if !strings.HasPrefix(line, "data: ") {
+		sseEvent, err := parser.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			// The parser stopped due to context cancellation or a read error
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+			return nil, fmt.Errorf("SSE stream read error: %w", err)
+		}
+		if sseEvent.Data == "[DONE]" {
 			continue
 		}
+		data := sseEvent.Data
 
-		data := strings.TrimPrefix(line, "data: ")
-
+		// TS parseJsonEventStream validates each event against
+		// gatewayVideoEventSchema; a malformed event (bad JSON, unknown
+		// type such as a heartbeat, a missing field) is an APICallError
+		// "Failed to parse video SSE event".
+		if bad := providerutils.MediaSchemaParser(providerutils.SchemaGatewayVideoEvent)(http.StatusOK, nil, []byte(data)); bad != nil {
+			return nil, m.sseAPICallError(ctx, http.StatusOK, "Failed to parse video SSE event", nil, bad)
+		}
 		var event SSEVideoEvent
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
-			return nil, fmt.Errorf("failed to parse video SSE event: %w", err)
+			return nil, m.sseAPICallError(ctx, http.StatusOK, "Failed to parse video SSE event", nil, err)
 		}
 
-		switch event.Type {
-		case "result":
-			// Current completion format from the gateway SSE spec
-			return m.buildResponseFromSSEEvent(&event)
-
-		case "error":
-			msg := event.Message
-			if msg == "" {
-				msg = "unknown gateway video generation error"
-			}
+		if event.Type == "error" {
+			// TS throws an APICallError carrying data.error {message, type,
+			// param}, which asGatewayError turns into the typed gateway error.
 			statusCode := 0
 			if event.StatusCode != nil {
 				statusCode = *event.StatusCode
 			}
-			return nil, providererrors.NewProviderError("gateway", statusCode, event.ErrorType, msg, nil)
-		default:
-			return nil, fmt.Errorf("failed to parse video SSE event: unsupported event type %q", event.Type)
+			errBody, _ := json.Marshal(map[string]interface{}{
+				"error": map[string]interface{}{"message": event.Message, "type": event.ErrorType, "param": event.Param},
+			})
+			return nil, m.sseAPICallError(ctx, statusCode, event.Message, errBody, nil, event.ErrorType)
 		}
-	}
-
-	// Check if the scanner stopped due to context cancellation or a read error
-	if err := scanner.Err(); err != nil {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-		return nil, fmt.Errorf("SSE stream read error: %w", err)
+		return m.buildResponseFromSSEEvent(&event)
 	}
 
 	// Stream ended without a result or error event
-	return nil, fmt.Errorf("SSE stream ended without a data event")
+	return nil, m.sseAPICallError(ctx, http.StatusOK, "SSE stream ended without a data event", nil, nil)
+}
+
+// sseAPICallError converts a failure of the video SSE stream the way TS
+// asGatewayError converts the APICallError its successfulResponseHandler
+// throws: the error's data (or `{}` when it has none) is read as a gateway
+// error response, so an error event becomes the typed gateway error for its
+// errorType and anything malformed becomes a GatewayResponseError with the
+// HTTP status of the stream.
+func (m *VideoModel) sseAPICallError(ctx context.Context, statusCode int, message string, body []byte, cause error, errorType ...string) error {
+	authMethod := ""
+	if m.provider.authResolver != nil {
+		_, authMethod, _ = m.provider.authResolver(ctx)
+	}
+	apiErr := &providererrors.ProviderError{Provider: "gateway", StatusCode: statusCode, Message: message}
+	if len(errorType) > 0 {
+		apiErr.ErrorCode = errorType[0]
+	}
+	if len(body) > 0 {
+		apiErr.ResponseBody = string(body)
+		apiErr.Data = gatewayErrorData(body)
+	}
+	if cause != nil {
+		apiErr.Cause = cause
+	}
+	if body == nil {
+		body = []byte("{}")
+	}
+	return gatewayerrors.CreateGatewayErrorFromResponse(body, statusCode, "Gateway request failed", apiErr, authMethod)
 }
 
 // buildResponseFromSSEEvent converts a result SSEVideoEvent into a VideoModelV3Response.

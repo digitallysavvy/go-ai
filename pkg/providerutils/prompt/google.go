@@ -4,11 +4,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"regexp"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // GoogleSkipThoughtSignatureValidator is the sentinel value Google documents
@@ -114,7 +117,7 @@ func ConvertToGoogleMessages(messages []types.Message, opts GoogleMessagesOption
 		switch msg.Role {
 		case types.RoleSystem:
 			if !systemMessagesAllowed {
-				return GooglePrompt{}, fmt.Errorf("unsupported functionality: system messages are only supported at the beginning of the conversation")
+				return GooglePrompt{}, googleUnsupported("system messages are only supported at the beginning of the conversation")
 			}
 			text := googleSystemText(msg)
 			systemParts = append(systemParts, map[string]interface{}{"text": text})
@@ -147,7 +150,9 @@ func ConvertToGoogleMessages(messages []types.Message, opts GoogleMessagesOption
 						continue
 					}
 				}
-				c.appendFunctionResponse(&parts, p)
+				if err := c.appendFunctionResponse(&parts, p); err != nil {
+					return GooglePrompt{}, err
+				}
 			}
 			contents = append(contents, map[string]interface{}{"role": "user", "parts": parts})
 
@@ -335,23 +340,35 @@ type googleFile struct {
 	mediaType string
 	url       string
 	reference string
-	text      string
-	hasText   bool
-	data      []byte
+	// referenceMap is the provider reference map (TS data.reference); the
+	// legacy single-id reference stays in reference.
+	referenceMap types.ProviderReference
+	text         string
+	hasText      bool
+	data         []byte
+	// raw is a base64 data string that does not decode (TS convertToBase64
+	// passes a string through unchanged); used only when data is empty.
+	raw string
+}
+
+// hasData reports whether the file carries inline data.
+func (f googleFile) hasData() bool { return len(f.data) > 0 || f.raw != "" }
+
+// base64Data is the inline data as base64 (the original string when it did
+// not decode).
+func (f googleFile) base64Data() string {
+	if len(f.data) > 0 {
+		return base64.StdEncoding.EncodeToString(f.data)
+	}
+	return f.raw
 }
 
 func (c *googleConverter) resolveFile(file types.FileContent) googleFile {
 	f := googleFile{mediaType: firstNonEmpty(file.MediaType, file.MimeType, file.FileData.MediaType)}
 	f.url = firstNonEmpty(file.URL, file.FileData.URL)
 	f.reference = file.Reference
-	if f.reference == "" && file.FileData.Reference != nil {
-		f.reference = file.FileData.Reference["google"]
-		if f.reference == "" {
-			for _, v := range file.FileData.Reference {
-				f.reference = v
-				break
-			}
-		}
+	if f.reference == "" && len(file.FileData.Reference) > 0 {
+		f.referenceMap = file.FileData.Reference
 	}
 	if file.Text != "" || file.FileData.Type == types.FileDataTypeText {
 		f.text = firstNonEmpty(file.Text, file.FileData.Text)
@@ -363,6 +380,8 @@ func (c *googleConverter) resolveFile(file types.FileContent) googleFile {
 		if len(f.data) == 0 && file.FileData.DataString != "" {
 			if decoded, err := base64.StdEncoding.DecodeString(file.FileData.DataString); err == nil {
 				f.data = decoded
+			} else {
+				f.raw = file.FileData.DataString
 			}
 		}
 	}
@@ -376,17 +395,28 @@ func (c *googleConverter) fileContentPart(file types.FileContent, assistant bool
 	switch {
 	case f.url != "":
 		if assistant {
-			return nil, fmt.Errorf("unsupported functionality: File data URLs in assistant messages are not supported")
+			return nil, googleUnsupported("File data URLs in assistant messages are not supported")
 		}
+		// TS resolveFullMediaType throws for a top-level-only media type on a
+		// URL; Go keeps completing it from the URL extension because the image
+		// model sends reference URLs as image/* (v0.5.2 behavior).
 		return map[string]interface{}{
 			"fileData": map[string]interface{}{"mimeType": googleFullMediaType(f.mediaType, f.url), "fileUri": f.url},
 		}, nil
-	case f.reference != "":
+	case f.reference != "" || len(f.referenceMap) > 0:
 		if c.isVertexLike {
-			return nil, fmt.Errorf("unsupported functionality: file parts with provider references")
+			return nil, googleUnsupported("file parts with provider references")
+		}
+		fileURI := f.reference
+		if len(f.referenceMap) > 0 {
+			id, err := providerutils.ResolveProviderReference(f.referenceMap, "google")
+			if err != nil {
+				return nil, err
+			}
+			fileURI = id
 		}
 		return map[string]interface{}{
-			"fileData": map[string]interface{}{"mimeType": f.mediaType, "fileUri": f.reference},
+			"fileData": map[string]interface{}{"mimeType": f.mediaType, "fileUri": fileURI},
 		}, nil
 	case f.hasText:
 		mimeType := "text/plain"
@@ -397,9 +427,41 @@ func (c *googleConverter) fileContentPart(file types.FileContent, assistant bool
 			"inlineData": map[string]interface{}{"mimeType": mimeType, "data": base64.StdEncoding.EncodeToString([]byte(f.text))},
 		}, nil
 	default:
+		mimeType := f.mediaType
+		if !assistant {
+			var err error
+			if mimeType, err = googleResolveFullMediaType(f.mediaType, f.data, true); err != nil {
+				return nil, err
+			}
+		}
 		return map[string]interface{}{
-			"inlineData": map[string]interface{}{"mimeType": f.mediaType, "data": base64.StdEncoding.EncodeToString(f.data)},
+			"inlineData": map[string]interface{}{"mimeType": mimeType, "data": f.base64Data()},
 		}, nil
+	}
+}
+
+// googleResolveFullMediaType ports TS resolveFullMediaType for a user file
+// part: a full media type is kept; a top-level type ("image", "image/*") is
+// completed by sniffing inline bytes, and fails otherwise.
+func googleResolveFullMediaType(mediaType string, data []byte, inline bool) (string, error) {
+	if isFullMediaType(mediaType) || mediaType == "" {
+		return mediaType, nil
+	}
+	if inline {
+		top, _, _ := strings.Cut(mediaType, "/")
+		if detected, ok := fileutil.DetectMediaTypeSignature(data, top); ok {
+			return detected, nil
+		}
+		return "", googleUnsupported(fmt.Sprintf("file of media type %q must specify subtype since it could not be auto-detected", mediaType))
+	}
+	return "", googleUnsupported(fmt.Sprintf("file of media type %q must specify subtype since it is not passed as inline bytes", mediaType))
+}
+
+// googleUnsupported is the UnsupportedFunctionalityError TS throws.
+func googleUnsupported(functionality string) error {
+	return &providererrors.UnsupportedFunctionalityError{
+		Functionality: functionality,
+		Message:       fmt.Sprintf("'%s' functionality not supported.", functionality),
 	}
 }
 
@@ -433,6 +495,7 @@ type googleToolCall struct {
 	id               string
 	toolName         string
 	input            interface{}
+	inputRaw         string // wire text of the input; gives the key order
 	providerExecuted bool
 	opts             map[string]interface{}
 	thoughtSignature string
@@ -478,7 +541,7 @@ func (c *googleConverter) toolCallFrom(part interface{}) (googleToolCall, bool) 
 			}
 		}
 		return googleToolCall{
-			id: p.ToolCallID, toolName: p.ToolName, input: input, providerExecuted: p.ProviderExecuted,
+			id: p.ToolCallID, toolName: p.ToolName, input: input, inputRaw: p.Input, providerExecuted: p.ProviderExecuted,
 			opts: c.readProviderOpts(p.ProviderOptions, p.ProviderMetadata), thoughtSignature: p.ThoughtSignature,
 		}, true
 	case types.ToolCall:
@@ -491,7 +554,7 @@ func (c *googleConverter) toolCallFrom(part interface{}) (googleToolCall, bool) 
 			}
 		}
 		return googleToolCall{
-			id: p.ID, toolName: p.ToolName, input: input, providerExecuted: p.ProviderExecuted,
+			id: p.ID, toolName: p.ToolName, input: input, inputRaw: p.RawArguments, providerExecuted: p.ProviderExecuted,
 			opts: c.readProviderOpts(nil, p.ProviderMetadata), thoughtSignature: p.ThoughtSignature,
 		}, true
 	}
@@ -530,7 +593,7 @@ func (c *googleConverter) convertAssistant(msg types.Message) ([]map[string]inte
 
 		case types.ReasoningFileContent:
 			if p.FileData.URL != "" {
-				return nil, fmt.Errorf("unsupported functionality: File data URLs in assistant messages are not supported")
+				return nil, googleUnsupported("File data URLs in assistant messages are not supported")
 			}
 			data := p.Data
 			if len(data) == 0 {
@@ -626,14 +689,14 @@ func (c *googleConverter) assistantToolCall(tc googleToolCall, hasSigned *bool) 
 	var part map[string]interface{}
 	if isServerToolCall {
 		part = map[string]interface{}{
-			"toolCall": map[string]interface{}{"toolType": serverToolType, "args": tc.input, "id": serverToolCallID},
+			"toolCall": map[string]interface{}{"toolType": serverToolType, "args": orderedInput(tc.input, tc.inputRaw), "id": serverToolCallID},
 		}
 	} else {
 		args := tc.input
 		if args == nil {
 			args = map[string]interface{}{}
 		}
-		fc := map[string]interface{}{"name": tc.toolName, "args": args}
+		fc := map[string]interface{}{"name": tc.toolName, "args": orderedInput(args, tc.inputRaw)}
 		if c.opts.IncludeFunctionCallIDs && tc.id != "" {
 			fc["id"] = tc.id
 		}
@@ -723,17 +786,16 @@ func resolveGoogleToolOutput(p types.ToolResultContent) googleToolOutput {
 	return out
 }
 
-func (c *googleConverter) appendFunctionResponse(parts *[]map[string]interface{}, p types.ToolResultContent) {
+func (c *googleConverter) appendFunctionResponse(parts *[]map[string]interface{}, p types.ToolResultContent) error {
 	out := resolveGoogleToolOutput(p)
 	if out.kind == "content" {
 		if c.opts.SupportsFunctionResponseParts {
-			c.appendToolResultParts(parts, p.ToolName, p.ToolCallID, out.content)
-		} else {
-			c.appendLegacyToolResultParts(parts, p.ToolName, p.ToolCallID, out.content)
+			return c.appendToolResultParts(parts, p.ToolName, p.ToolCallID, out.content)
 		}
-		return
+		return c.appendLegacyToolResultParts(parts, p.ToolName, p.ToolCallID, out.content)
 	}
 	var content interface{}
+	isError := out.kind == "error-text" || out.kind == "error-json" || out.kind == "execution-denied"
 	if out.kind == "execution-denied" {
 		content = "Tool call execution denied."
 		if out.reason != "" {
@@ -742,7 +804,11 @@ func (c *googleConverter) appendFunctionResponse(parts *[]map[string]interface{}
 	} else {
 		content = serializeFunctionResponseContent(out.value)
 	}
-	*parts = append(*parts, map[string]interface{}{"functionResponse": c.functionResponse(p.ToolName, p.ToolCallID, content)})
+	// Errors are sent under response.error and successful results under
+	// response.content so the model can tell a failed tool from a result
+	// (TS #22209).
+	*parts = append(*parts, map[string]interface{}{"functionResponse": c.functionResponseWithKey(p.ToolName, p.ToolCallID, content, isError)})
+	return nil
 }
 
 // containsJSONSchemaReference reports whether value (a decoded JSON value:
@@ -779,7 +845,7 @@ func serializeFunctionResponseContent(value interface{}) interface{} {
 	if !containsJSONSchemaReference(value) {
 		return value
 	}
-	encoded, err := json.Marshal(value)
+	encoded, err := jsonstr.Marshal(value)
 	if err != nil {
 		return value
 	}
@@ -787,9 +853,19 @@ func serializeFunctionResponseContent(value interface{}) interface{} {
 }
 
 func (c *googleConverter) functionResponse(toolName, toolCallID string, content interface{}) map[string]interface{} {
+	return c.functionResponseWithKey(toolName, toolCallID, content, false)
+}
+
+// functionResponseWithKey builds a functionResponse part whose payload is
+// response.error when isError, else response.content.
+func (c *googleConverter) functionResponseWithKey(toolName, toolCallID string, content interface{}, isError bool) map[string]interface{} {
+	key := "content"
+	if isError {
+		key = "error"
+	}
 	fr := map[string]interface{}{
 		"name":     toolName,
-		"response": map[string]interface{}{"name": toolName, "content": content},
+		"response": map[string]interface{}{"name": toolName, key: content},
 	}
 	if c.opts.IncludeFunctionCallIDs && toolCallID != "" {
 		fr["id"] = toolCallID
@@ -803,7 +879,7 @@ var googleDataURLRegex = regexp.MustCompile(`(?s)^data:([^;,]+);base64,(.+)$`)
 // directly as functionResponse.parts[].fileData for mediaType, per TS
 // isUrlSupported (provider-utils/src/is-url-supported.ts): a pattern under
 // the exact media type, its `type/*` prefix, or the wildcard "*"/"*/*" must
-// match the (lowercased) URL. The matching algorithm itself is shared with
+// match the URL (scheme and host lowercased, path and query case-sensitive). The matching algorithm itself is shared with
 // pkg/ai's SupportedURLCheckerFromPatterns via providerutils.MatchesSupportedURL
 // (pkg/ai cannot import this package without an import cycle, so the shared
 // logic lives in pkg/providerutils, which both already import).
@@ -813,7 +889,7 @@ func (c *googleConverter) isFunctionResponseURLSupported(mediaType, url string) 
 
 // appendToolResultParts implements the Gemini 3+ multimodal functionResponse
 // format: text goes into response.content, inline files into parts[].
-func (c *googleConverter) appendToolResultParts(parts *[]map[string]interface{}, toolName, toolCallID string, blocks []types.ToolResultContentBlock) {
+func (c *googleConverter) appendToolResultParts(parts *[]map[string]interface{}, toolName, toolCallID string, blocks []types.ToolResultContentBlock) error {
 	var textParts []string
 	var responseParts []map[string]interface{}
 
@@ -844,9 +920,15 @@ func (c *googleConverter) appendToolResultParts(parts *[]map[string]interface{},
 				} else {
 					textParts = append(textParts, googleJSONText(b))
 				}
-			case len(f.data) > 0:
+			case f.hasData():
+				// TS resolveFullMediaType: complete a top-level media type by
+				// sniffing the bytes; it throws when that fails.
+				mediaType, err := googleResolveFullMediaType(f.mediaType, f.data, true)
+				if err != nil {
+					return err
+				}
 				responseParts = append(responseParts, map[string]interface{}{
-					"inlineData": map[string]interface{}{"mimeType": f.mediaType, "data": base64.StdEncoding.EncodeToString(f.data)},
+					"inlineData": map[string]interface{}{"mimeType": mediaType, "data": f.base64Data()},
 				})
 			default:
 				textParts = append(textParts, googleJSONText(b))
@@ -865,20 +947,21 @@ func (c *googleConverter) appendToolResultParts(parts *[]map[string]interface{},
 		fr["parts"] = responseParts
 	}
 	*parts = append(*parts, map[string]interface{}{"functionResponse": fr})
+	return nil
 }
 
 // appendLegacyToolResultParts implements the pre-Gemini-3 fallback: text
 // becomes a functionResponse; inline files become top-level inlineData parts
 // followed by a descriptive text part.
-func (c *googleConverter) appendLegacyToolResultParts(parts *[]map[string]interface{}, toolName, toolCallID string, blocks []types.ToolResultContentBlock) {
-	appendInline := func(mediaType string, data []byte) {
+func (c *googleConverter) appendLegacyToolResultParts(parts *[]map[string]interface{}, toolName, toolCallID string, blocks []types.ToolResultContentBlock) error {
+	appendInline := func(mediaType, data string) {
 		kind := "file"
 		if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
 			kind = "image"
 		}
 		*parts = append(*parts,
 			map[string]interface{}{
-				"inlineData": map[string]interface{}{"mimeType": mediaType, "data": base64.StdEncoding.EncodeToString(data)},
+				"inlineData": map[string]interface{}{"mimeType": mediaType, "data": data},
 			},
 			map[string]interface{}{"text": "Tool executed successfully and returned this " + kind + " as a response"},
 		)
@@ -888,11 +971,15 @@ func (c *googleConverter) appendLegacyToolResultParts(parts *[]map[string]interf
 		case types.TextContentBlock:
 			*parts = append(*parts, map[string]interface{}{"functionResponse": c.functionResponse(toolName, toolCallID, b.Text)})
 		case types.ImageContentBlock:
-			appendInline(b.MediaType, b.Data)
+			appendInline(b.MediaType, base64.StdEncoding.EncodeToString(b.Data))
 		case types.FileContentBlock:
 			f := c.resolveFile(fileBlockToContent(b))
-			if f.url == "" && f.reference == "" && !f.hasText && len(f.data) > 0 {
-				appendInline(f.mediaType, f.data)
+			if f.url == "" && f.reference == "" && !f.hasText && f.hasData() {
+				mediaType, err := googleResolveFullMediaType(f.mediaType, f.data, true)
+				if err != nil {
+					return err
+				}
+				appendInline(mediaType, f.base64Data())
 			} else {
 				*parts = append(*parts, map[string]interface{}{"text": googleJSONText(b)})
 			}
@@ -900,6 +987,7 @@ func (c *googleConverter) appendLegacyToolResultParts(parts *[]map[string]interf
 			*parts = append(*parts, map[string]interface{}{"text": googleJSONText(block)})
 		}
 	}
+	return nil
 }
 
 func fileBlockToContent(b types.FileContentBlock) types.FileContent {
@@ -910,7 +998,7 @@ func fileBlockToContent(b types.FileContentBlock) types.FileContent {
 }
 
 func googleJSONText(v interface{}) string {
-	data, err := json.Marshal(v)
+	data, err := jsonstr.Marshal(v)
 	if err != nil {
 		return fmt.Sprint(v)
 	}

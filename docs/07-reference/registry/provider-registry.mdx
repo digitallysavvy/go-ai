@@ -30,8 +30,18 @@ func ResolveRerankingModel(model string) (provider.RerankingModel, error)
 func GetGlobalRegistry() *Registry
 ```
 
-`NoSuchProviderError` is returned when a provider ID can't be resolved or
-doesn't support the requested model type:
+`NoSuchProviderError` is returned when a provider ID can't be resolved, or
+when a provider has no `Files()` / `Skills()` (`Reason` is then set, and the
+error text is the TS text with the Go method name: `The provider "x" does not
+support file uploads. Make sure it exposes a Files() method.`). As in
+TS, `ModelID` is the provider ID that was looked up (also from `GetProvider`,
+whose `ModelType` is empty), and `errors.As` with a
+`*providererrors.NoSuchModelError` target (and `errors.Is` with
+`providererrors.ErrModelNotFound`) also matches an unknown-provider error. A
+registered provider with no factory for the model type (video,
+decision), or a factory that returns a nil model, is a
+`*providererrors.NoSuchModelError` whose `ModelID` is the full
+`"provider:model"` ID:
 
 ```go
 type NoSuchProviderError struct {

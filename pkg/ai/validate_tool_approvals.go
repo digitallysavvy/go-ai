@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
@@ -86,17 +87,18 @@ func ValidateApprovedToolApprovals(ctx context.Context, opts ValidateApprovedToo
 		tool := findToolForCall(call, opts.Tools)
 
 		if opts.ToolApprovalSecret != nil {
-			// TS only special-cases `approvalRequest.signature == null`
-			// (absent), which JS can distinguish from an explicit empty
-			// string. Go's Signature field is a plain string, so an absent
-			// signature and an empty one are the same zero value and cannot
-			// be told apart; treating "" as "missing" would also disagree
-			// with TS's reported reason for an explicit empty string, which
-			// falls through to verification and fails as "invalid
-			// signature". Always verifying (rather than special-casing "")
-			// matches that observable behavior for every input Go can
-			// represent, with no loss of safety: either way the call is
-			// rejected.
+			// TS reports "missing signature" for an absent (null/undefined)
+			// signature. Go's plain string field cannot tell absent from an
+			// explicit empty string, so "" is treated as absent: a stripped
+			// signature is the realistic case, and an explicit empty string
+			// is rejected either way (only the reason text differs).
+			if request.Signature == "" {
+				return ValidateApprovedToolApprovalsResult{}, &InvalidToolApprovalSignatureError{
+					ApprovalID: request.ApprovalID,
+					ToolCallID: call.ID,
+					Reason:     "missing signature",
+				}
+			}
 			valid, err := VerifyToolApprovalSignature(opts.ToolApprovalSecret, request.Signature, request.ApprovalID, call.ID, call.ToolName, approvalSignatureInput(call))
 			if err != nil || !valid {
 				return ValidateApprovedToolApprovalsResult{}, &InvalidToolApprovalSignatureError{
@@ -110,7 +112,7 @@ func ValidateApprovedToolApprovals(ctx context.Context, opts ValidateApprovedToo
 		if tool != nil && tool.Execute != nil {
 			if validator := toolInputValidator(tool); validator != nil {
 				if validationErr := revalidateApprovedInput(ctx, approval, tool, validator, opts); validationErr != nil {
-					inputJSON, _ := json.Marshal(call.Arguments)
+					inputJSON, _ := jsonstr.Marshal(call.Arguments)
 					result.InvalidToolApprovals = append(result.InvalidToolApprovals, InvalidToolApproval{
 						CollectedToolApproval: approval,
 						Error: &InvalidToolInputError{
@@ -163,6 +165,9 @@ func toolInputValidator(tool *types.Tool) schema.Validator {
 		}
 		return schema.NewSimpleJSONSchema(s).Validator()
 	default:
+		if m, ok := schema.ParametersMap(tool.Parameters); ok {
+			return schema.NewSimpleJSONSchema(m).Validator()
+		}
 		return nil
 	}
 }
@@ -243,3 +248,6 @@ func isDeepEqualJSONData(a, b interface{}) bool {
 	}
 	return bytes.Equal(ca, cb)
 }
+
+// ErrorName is the TS error name, used where TS shows error.toString().
+func (e *InvalidToolInputError) ErrorName() string { return "AI_InvalidToolInputError" }
