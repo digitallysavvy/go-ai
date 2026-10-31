@@ -71,15 +71,11 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 
 	// Anthropic provider-defined tools (bash, computer, text_editor,
 	// code_execution, memory, advisor, tool_search, web_search, web_fetch,
-	// computer_toolset) are represented in the Go SDK by a namespaced Name
-	// ("anthropic.<tool>_<version>") rather than Type ==
-	// types.ToolTypeProviderDefined (that convention is used by other
-	// providers, e.g. OpenAI/Google/Gateway — see
-	// pkg/providers/anthropic/tool_converter.go's anthropicBuiltinToolTypes,
-	// which also keys off Name). A tool with Type ==
-	// types.ToolTypeProviderDefined is included here too for forward
-	// compatibility with that convention, in case a caller constructs an
-	// Anthropic tool that way.
+	// computer_toolset) carry a namespaced Name ("anthropic.<tool>_<version>",
+	// equal to their ProviderID) and Type == types.ToolTypeProviderDefined,
+	// the TS provider tool identity. Any provider tool goes this way: one
+	// Bedrock cannot send (another provider's tool, or one used with a
+	// non-Anthropic model) gets an "unsupported" warning, as in TS.
 	isAnthropicProviderTool := func(t types.Tool) bool {
 		return strings.HasPrefix(t.Name, "anthropic.") || t.Type == types.ToolTypeProviderDefined
 	}
