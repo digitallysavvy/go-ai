@@ -98,3 +98,60 @@ func TestR74ProvbAllowedToolsAliasesAndUnknownProviderTools(t *testing.T) {
 		t.Fatalf("unknown provider tool: choice=%#v warnings=%#v", choice, warnings)
 	}
 }
+
+// TestR74ProvbExpandParallelToolCall ports expand-parallel-tool-call.test.ts,
+// plus the key order of a nested call's input: TS JSON.stringify(parameters)
+// keeps the model's key order.
+func TestR74ProvbExpandParallelToolCall(t *testing.T) {
+	tools := []types.Tool{
+		{Name: "weather", Parameters: map[string]interface{}{"type": "object"}},
+		{Name: "cityAttractions", Parameters: map[string]interface{}{"type": "object"}},
+	}
+	input := `{"tool_uses":[{"recipient_name":"functions.weather","parameters":{"location":"San Francisco"}},{"recipient_name":"functions.cityAttractions","parameters":{"city":"Rome"}}]}`
+	calls, ok := ExpandParallelToolCall("call_parallel", "parallel", input, "fc_parallel", tools, "openai")
+	if !ok || len(calls) != 2 {
+		t.Fatalf("expand = %v, %v", calls, ok)
+	}
+	b, _ := json.Marshal([]interface{}{
+		[]interface{}{calls[0].ID, calls[0].ToolName, calls[0].RawArguments, calls[0].ProviderMetadata},
+		[]interface{}{calls[1].ID, calls[1].ToolName, calls[1].RawArguments, calls[1].ProviderMetadata},
+	})
+	meta := func(i int) string {
+		return `{"openai":{"parallelToolCall":{"itemId":"fc_parallel","toolCallId":"call_parallel","toolName":"parallel","input":` + r74provbJSONString(input) + `,"index":` + string(rune('0'+i)) + `,"count":2}}}`
+	}
+	want := `[["call_parallel_0","weather","{\"location\":\"San Francisco\"}",` + meta(0) + `],["call_parallel_1","cityAttractions","{\"city\":\"Rome\"}",` + meta(1) + `]]`
+	var g, w interface{}
+	_ = json.Unmarshal(b, &g)
+	_ = json.Unmarshal([]byte(want), &w)
+	gb, _ := json.Marshal(g)
+	wb, _ := json.Marshal(w)
+	if string(gb) != string(wb) {
+		t.Fatalf("expanded =\n%s\nwant\n%s", gb, wb)
+	}
+
+	if _, ok := ExpandParallelToolCall("call_parallel", "parallel", `{"tool_uses":[{"recipient_name":"functions.weather","parameters":{"location":"Rome"}}]}`, "fc_parallel",
+		append(append([]types.Tool{}, tools...), types.Tool{Name: "parallel", Parameters: map[string]interface{}{"type": "object"}}), "openai"); ok {
+		t.Error("a declared tool named parallel was expanded")
+	}
+	for name, in := range map[string]string{
+		"invalid JSON":          "not JSON",
+		"an empty wrapper":      `{"tool_uses":[]}`,
+		"an unavailable tool":   `{"tool_uses":[{"recipient_name":"functions.unknown","parameters":{}}]}`,
+		"no functions prefix":   `{"tool_uses":[{"recipient_name":"weather","parameters":{}}]}`,
+		"non-object parameters": `{"tool_uses":[{"recipient_name":"functions.weather","parameters":null}]}`,
+	} {
+		if _, ok := ExpandParallelToolCall("call_parallel", "parallel", in, "fc_parallel", tools, "openai"); ok {
+			t.Errorf("does not expand %s: expanded", name)
+		}
+	}
+
+	calls, ok = ExpandParallelToolCall("c", "parallel", `{"tool_uses":[{"recipient_name":"functions.weather","parameters":{"zip":"1","city":"Rome","1":true}}]}`, "fc", tools, "openai")
+	if !ok || calls[0].RawArguments != `{"1":true,"zip":"1","city":"Rome"}` {
+		t.Fatalf("nested input = %q, want the model's key order (JS integer keys first)", calls[0].RawArguments)
+	}
+}
+
+func r74provbJSONString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}

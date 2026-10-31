@@ -14,10 +14,11 @@ package responses
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 const (
@@ -134,6 +135,17 @@ func ExpandParallelToolCall(toolCallID, toolName, input, itemID string, tools []
 		return nil, false
 	}
 
+	// TS JSON.stringify(parameters) keeps the model's key order; the ordered
+	// tree gives each nested call's input text.
+	var orderedUses []interface{}
+	if tree, ok := jsonorder.Parse([]byte(input)); ok {
+		if obj, ok := tree.(*jsonorder.Object); ok {
+			if uses, ok := obj.Get("tool_uses"); ok {
+				orderedUses, _ = uses.([]interface{})
+			}
+		}
+	}
+
 	availableToolNames := map[string]bool{}
 	for _, t := range tools {
 		if isFunctionTool(t) {
@@ -160,6 +172,13 @@ func ExpandParallelToolCall(toolCallID, toolName, input, itemID string, tools []
 			return nil, false
 		}
 		childInput, _ := jsonstr.Marshal(parameters)
+		if index < len(orderedUses) {
+			if use, ok := orderedUses[index].(*jsonorder.Object); ok {
+				if params, ok := use.Get("parameters"); ok {
+					childInput = []byte(jsonorder.Stringify(params))
+				}
+			}
+		}
 		expanded = append(expanded, types.ToolCall{
 			ID:           fmt.Sprintf("%s_%d", toolCallID, index),
 			ToolName:     childToolName,
