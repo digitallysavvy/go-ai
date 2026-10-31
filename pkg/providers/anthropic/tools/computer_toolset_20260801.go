@@ -1,6 +1,8 @@
 package tools
 
 import (
+	"fmt"
+
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -56,6 +58,28 @@ type computerToolset20260801Opts struct {
 	Config ComputerToolset20260801Config
 }
 
+// Validate mirrors computerToolset_20260801ArgsSchema: configs is a partial
+// record keyed by the member enum, so an unknown member is rejected.
+func (o *computerToolset20260801Opts) Validate() error {
+	for member := range o.Config.Configs {
+		if !isComputerToolset20260801Member(member) {
+			return fmt.Errorf("computer_toolset_20260801 configs: unknown member %q", string(member))
+		}
+	}
+	return nil
+}
+
+func isComputerToolset20260801Member(member ComputerToolset20260801Member) bool {
+	switch member {
+	case ComputerToolsetScreenshot, ComputerToolsetZoom, ComputerToolsetLeftClick, ComputerToolsetRightClick,
+		ComputerToolsetMiddleClick, ComputerToolsetDoubleClick, ComputerToolsetTripleClick, ComputerToolsetLeftClickDrag,
+		ComputerToolsetMouseMove, ComputerToolsetLeftMouseDown, ComputerToolsetLeftMouseUp, ComputerToolsetCursorPosition,
+		ComputerToolsetScroll, ComputerToolsetType, ComputerToolsetKey, ComputerToolsetHoldKey, ComputerToolsetWait:
+		return true
+	}
+	return false
+}
+
 // ToAnthropicAPIMap returns the Anthropic API representation of this tool.
 // Unlike other computer tools, computer_toolset_20260801 has no "name" field
 // (TS anthropic-prepare-tools.ts): {type:'computer_toolset_20260801', configs?}.
@@ -99,6 +123,9 @@ func (o *computerToolset20260801Opts) ToAnthropicAPIMap() map[string]interface{}
 func ComputerToolset20260801(config ComputerToolset20260801Config) types.Tool {
 	return types.Tool{
 		Name:            "anthropic.computer_toolset_20260801",
+		Type:            types.ToolTypeProviderDefined,
+		ProviderID:      "anthropic.computer_toolset_20260801",
+		ProviderArgs:    computerToolset20260801ProviderArgs(config),
 		Description:     "Computer use toolset (Anthropic, version 2026-08-01). Each member action is executed by the caller.",
 		Parameters:      buildComputerToolset20260801Schema(),
 		ProviderOptions: &computerToolset20260801Opts{Config: config},

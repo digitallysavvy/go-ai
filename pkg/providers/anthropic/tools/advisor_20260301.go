@@ -76,6 +76,10 @@ func Advisor20260301(args Advisor20260301Args) types.Tool {
 	}
 	return types.Tool{
 		Name:            "anthropic.advisor_20260301",
+		Type:            types.ToolTypeProviderDefined,
+		ProviderID:      "anthropic.advisor_20260301",
+		OutputSchema:    toolOutputSchema("anthropic.advisor_20260301"),
+		ProviderArgs:    advisor20260301ProviderArgs(args),
 		Description:     "Anthropic advisor tool for advisory sub-inference with optional per-request limits and caching.",
 		Parameters:      map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "additionalProperties": false},
 		ProviderOptions: advisor20260301Options(args),

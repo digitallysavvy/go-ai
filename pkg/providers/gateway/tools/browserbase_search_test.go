@@ -14,7 +14,7 @@ func TestNewBrowserbaseSearchSchemaAndProviderExecutedStub(t *testing.T) {
 	if tool.Name != "browserbase_search" {
 		t.Fatalf("name = %q", tool.Name)
 	}
-	if tool.Title != "Browserbase Search" || !tool.ProviderExecuted {
+	if tool.Title != "" || !tool.ProviderExecuted {
 		t.Fatalf("tool metadata = %#v", tool)
 	}
 	if tool.Type != types.ToolTypeProviderDefined || tool.ProviderID != "gateway.browserbase_search" {

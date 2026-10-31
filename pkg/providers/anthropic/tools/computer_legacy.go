@@ -56,6 +56,9 @@ func (o *computer20241022Opts) ToAnthropicAPIMap() map[string]interface{} {
 func Computer20241022(args Computer20241022Args) types.Tool {
 	return types.Tool{
 		Name:            "anthropic.computer_20241022",
+		Type:            types.ToolTypeProviderDefined,
+		ProviderID:      "anthropic.computer_20241022",
+		ProviderArgs:    computerLegacyProviderArgs(args),
 		Description:     buildLegacyComputerDescription(args.DisplayWidthPx, args.DisplayHeightPx, args.DisplayNumber),
 		Parameters:      buildLegacyComputerSchema(),
 		ProviderOptions: &computer20241022Opts{Args: args, APIType: "computer_20241022"},
@@ -81,6 +84,9 @@ func Computer20241022(args Computer20241022Args) types.Tool {
 func Computer20250124(args Computer20241022Args) types.Tool {
 	return types.Tool{
 		Name:            "anthropic.computer_20250124",
+		Type:            types.ToolTypeProviderDefined,
+		ProviderID:      "anthropic.computer_20250124",
+		ProviderArgs:    computerLegacyProviderArgs(args),
 		Description:     buildLegacyComputerDescription(args.DisplayWidthPx, args.DisplayHeightPx, args.DisplayNumber),
 		Parameters:      buildComputer20250124Schema(),
 		ProviderOptions: &computer20241022Opts{Args: args, APIType: "computer_20250124"},

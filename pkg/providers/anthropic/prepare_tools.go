@@ -129,6 +129,11 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 
 	wire := make([]map[string]interface{}, 0, len(o.tools))
 	for _, t := range o.tools {
+		t, err := restoreProviderToolOptions(t)
+		if err != nil {
+			out.err = err
+			return out
+		}
 		// Self-serializing provider tools carry their own args (advisor model,
 		// max_uses, ... ) and win over the plain builtin table entry.
 		if mapper, ok := t.ProviderOptions.(anthropicAPIMapper); ok && t.ProviderOptions != nil {

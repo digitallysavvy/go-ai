@@ -144,6 +144,9 @@ func (o *computer20251124Opts) ToAnthropicAPIMap() map[string]interface{} {
 func Computer20251124(args Computer20251124Args) types.Tool {
 	return types.Tool{
 		Name:            "anthropic.computer_20251124",
+		Type:            types.ToolTypeProviderDefined,
+		ProviderID:      "anthropic.computer_20251124",
+		ProviderArgs:    computer20251124ProviderArgs(args),
 		Description:     buildComputerDescription(args),
 		Parameters:      buildComputer20251124Schema(),
 		ProviderOptions: &computer20251124Opts{Args: args},

@@ -13,7 +13,7 @@ func TestNewTakoSearchSchemaAndProviderExecutedStub(t *testing.T) {
 	if tool.Name != "tako_search" {
 		t.Fatalf("name = %q", tool.Name)
 	}
-	if tool.Title != "Tako Search" || !tool.ProviderExecuted {
+	if tool.Title != "" || !tool.ProviderExecuted {
 		t.Fatalf("tool metadata = %#v", tool)
 	}
 	if tool.Type != types.ToolTypeProviderDefined || tool.ProviderID != "gateway.tako_search" {

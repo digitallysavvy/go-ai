@@ -145,6 +145,9 @@ Note: The undo_edit command is not supported in Claude 4 models.`
 
 	return types.Tool{
 		Name:            "anthropic.text_editor_20250728",
+		Type:            types.ToolTypeProviderDefined,
+		ProviderID:      "anthropic.text_editor_20250728",
+		ProviderArgs:    textEditor20250728ProviderArgs(args),
 		Description:     description,
 		Parameters:      parameters,
 		ProviderOptions: &textEditor20250728Opts{MaxCharacters: args.MaxCharacters},

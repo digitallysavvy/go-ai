@@ -44,7 +44,6 @@ func NewBrowserbaseSearch(config BrowserbaseSearchConfig) BrowserbaseSearchTool 
 	tool := types.Tool{
 		Name:             "browserbase_search",
 		Description:      "Search the web using Browserbase for current information.",
-		Title:            "Browserbase Search",
 		Parameters:       map[string]interface{}{"type": "object", "properties": properties, "required": []string{"query"}},
 		OutputSchema:     browserbaseSearchOutputSchema(),
 		ProviderExecuted: true,

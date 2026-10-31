@@ -98,7 +98,6 @@ func NewExaSearch(config ExaSearchConfig) ExaSearchTool {
 		Name: "exa_search",
 		Description: "Search the web using Exa for current information and token-efficient excerpts optimized for agent workflows. " +
 			"Supports search type, category, domain, date, location, and content extraction controls.",
-		Title:            "Exa Search",
 		Parameters:       map[string]interface{}{"type": "object", "properties": properties, "required": []string{"query"}},
 		OutputSchema:     exaSearchOutputSchema(),
 		ProviderExecuted: true,
@@ -307,10 +306,10 @@ func exaSearchArgs(config ExaSearchConfig) map[string]interface{} {
 	if config.UserLocation != "" {
 		args["userLocation"] = config.UserLocation
 	}
-	if len(config.IncludeDomains) > 0 {
+	if config.IncludeDomains != nil {
 		args["includeDomains"] = config.IncludeDomains
 	}
-	if len(config.ExcludeDomains) > 0 {
+	if config.ExcludeDomains != nil {
 		args["excludeDomains"] = config.ExcludeDomains
 	}
 	if config.StartPublishedDate != "" {

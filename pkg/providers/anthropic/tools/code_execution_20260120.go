@@ -360,9 +360,13 @@ func UnmarshalCodeExecutionResult(data []byte) (CodeExecutionResult, error) {
 //	tool := anthropicTools.CodeExecution20260120()
 func CodeExecution20260120() types.Tool {
 	return types.Tool{
-		Name:        codeExecution20260120ToolName,
-		Description: buildCodeExecution20260120Description(),
-		Parameters:  buildCodeExecution20260120Schema(),
+		Name:         codeExecution20260120ToolName,
+		Type:         types.ToolTypeProviderDefined,
+		ProviderID:   "anthropic.code_execution_20260120",
+		OutputSchema: toolOutputSchema("anthropic.code_execution_20260120"),
+		ProviderArgs: noProviderArgs(),
+		Description:  buildCodeExecution20260120Description(),
+		Parameters:   buildCodeExecution20260120Schema(),
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 			return nil, fmt.Errorf("code execution tool must be executed by the provider (Anthropic). Set ProviderExecuted: true")
 		},

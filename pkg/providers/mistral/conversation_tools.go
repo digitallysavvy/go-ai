@@ -144,7 +144,8 @@ func prepareConversationTools(tools []types.Tool, choice types.ToolChoice) (wire
 			wireTools = append(wireTools, map[string]interface{}{"type": mistralProviderToolNames[id]})
 			continue
 		}
-		if t.ProviderExecuted || t.ProviderID != "" {
+		// TS: every tool.type === "provider" tool that is not a Mistral one.
+		if t.Type == types.ToolTypeProviderDefined || t.ProviderExecuted || t.ProviderID != "" {
 			feature := t.ProviderID
 			if feature == "" {
 				feature = t.Name
