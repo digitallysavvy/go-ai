@@ -52,6 +52,9 @@ func PrepareToolsWithOptionsName(tools []types.Tool, providerOptionsName string)
 		if err := validateMCPToolArgs(t); err != nil {
 			return nil, err
 		}
+		if _, err := tsShapedShellEnvironment(t); err != nil {
+			return nil, err
+		}
 		def := convertTool(t)
 		if def != nil {
 			if functionDef, ok := def.(FunctionToolDef); ok {
@@ -98,8 +101,13 @@ func validateMCPToolArgs(t types.Tool) error {
 	if !toolConfig(t, &cfg) || cfg.ServerURL != "" || cfg.ConnectorID != "" {
 		return nil
 	}
-	return providererrors.NewValidationError("tools",
-		fmt.Sprintf("Type validation failed for %s: One of serverUrl or connectorId must be provided.", t.Name), nil)
+	var args interface{} = t.ProviderArgs
+	if t.ProviderArgs == nil {
+		args = cfg // a hand-built tool: its config holds the TS arg names
+	}
+	// zod's custom issue for the mcpArgsSchema refine, as ZodError.message
+	// renders it (JSON.stringify(issues, null, 2)).
+	return openAIToolArgsError(args, "[\n  {\n    \"code\": \"custom\",\n    \"path\": [],\n    \"message\": \"One of serverUrl or connectorId must be provided.\"\n  }\n]", nil)
 }
 
 // convertTool converts a single types.Tool to its Responses API representation.
@@ -510,7 +518,8 @@ func convertShellTool(t types.Tool) ShellToolDef {
 		env = &v
 	}
 	if env == nil && t.Type == types.ToolTypeProviderDefined {
-		env = shellEnvironmentFromArgs(t.ProviderArgs)
+		// PrepareToolsWithOptionsName already reported a mapping error.
+		env, _ = shellEnvironmentFromArgs(t.ProviderArgs)
 	}
 	if env == nil {
 		return def
@@ -840,30 +849,31 @@ func isSameAllowedTool(a, b allowedToolResolution) bool {
 	return false
 }
 
-// canonicalAllowedToolName returns the "provider tool name" a resolved
-// allowedTools entry would be known by on the wire, independent of the SDK
-// tool's own (possibly custom) Name -- mirrors TS's static
-// `providerToolNames` table (id -> fixed provider tool name, e.g.
-// "openai.mcp" -> "mcp") consulted through
-// `toolNameMapping.toProviderToolName`. This is deliberately just the
-// resolved entry's Type, NOT `allowedToolKey(entry)`: TS's canonical name for
-// every MCP tool is the single fixed string "mcp" regardless of
-// server_label (all "openai.mcp" tools share one entry in providerToolNames),
-// whereas allowedToolKey intentionally differentiates MCP entries by
-// server_label for the *equality* check in isSameAllowedTool. Reusing
-// allowedToolKey here would make the canonical key already unique per
-// server_label, so two different MCP servers could never collide on it --
-// silently making the "ambiguous" case below unreachable. Function/custom
-// tools have no separate wire identity distinct from their own name, so they
-// return "" (no alias is recorded for them, matching TS passing `undefined`
-// as canonicalName in the function-tool branch).
-func canonicalAllowedToolName(entry AllowedToolsToolEntry) string {
-	switch entry.Type {
-	case "function", "custom":
-		return ""
-	default:
-		return entry.Type
+// openAIAllowedToolProviderName returns the provider tool name TS records as
+// a tool's allowedTools alias (toolNameMapping.toProviderToolName, from the
+// providerToolNames table: "openai.tool_search" -> "tool_search", every
+// "openai.mcp" tool -> "mcp"), for supported and unsupported resolutions
+// alike; "" for function and custom tools (no alias). known is false for a
+// provider tool whose id prepareResponsesTools does not send.
+func openAIAllowedToolProviderName(t types.Tool) (name string, known bool) {
+	if isOpenAICustomTool(t) {
+		return "", true
 	}
+	toolID := t.ProviderID
+	if toolID == "" {
+		toolID = t.Name
+	}
+	switch toolID {
+	case "openai.code_interpreter", "openai.computer", "openai.file_search",
+		"openai.image_generation", "openai.local_shell", "openai.shell",
+		"openai.web_search", "openai.web_search_preview", "openai.mcp",
+		"openai.apply_patch", "openai.tool_search", "openai.programmatic_tool_calling":
+		return normalizeOpenAIToolName(toolID), true
+	}
+	if t.Type == types.ToolTypeProviderDefined {
+		return "", false
+	}
+	return "", true
 }
 
 // allowedToolAlias is either a resolved allowedToolResolution or the
@@ -897,7 +907,7 @@ type allowedToolAlias struct {
 //
 // This is reachable in Go the same way it is in TS: two different MCP tools
 // (distinct ProviderOptions.ServerLabel, and therefore distinct SDK Names)
-// both canonicalize to the fixed alias "mcp" (see canonicalAllowedToolName),
+// both canonicalize to the fixed alias "mcp" (see openAIAllowedToolProviderName),
 // so an allowedTools entry of "mcp" is genuinely ambiguous between them and
 // is dropped with a warning -- the caller must use each tool's own Name
 // instead.
@@ -919,13 +929,16 @@ func ResolveAllowedToolsWithOptionsName(tools []types.Tool, toolNames []string, 
 	resolutions := make(map[string]allowedToolResolution, len(tools))
 	aliases := make(map[string]allowedToolAlias)
 	for _, t := range tools {
+		canonical, known := openAIAllowedToolProviderName(t)
+		if !known {
+			// TS records only tools prepareResponsesTools sends: a provider
+			// tool with an unknown id is dropped from the request, so its
+			// name is "not part of the tools for this request".
+			continue
+		}
 		resolution := resolveAllowedToolForTool(t)
 		resolutions[t.Name] = resolution
 
-		canonical := ""
-		if resolution.supported {
-			canonical = canonicalAllowedToolName(resolution.entry)
-		}
 		if canonical == "" || canonical == t.Name {
 			continue
 		}

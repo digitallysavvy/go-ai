@@ -5,6 +5,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // toolConfig fills cfg (a pointer to an openaitool config struct) with the
@@ -268,11 +269,13 @@ const (
 
 // shellEnvironmentFromArgs maps the TS openai.shell `environment` arg of a
 // TS-shaped shell tool to the wire environment, as TS mapShellEnvironment
-// does. It returns nil when the args carry no environment.
-func shellEnvironmentFromArgs(args map[string]interface{}) *ShellEnvironment {
+// does. It returns nil when the args carry no environment, and TS's
+// NoSuchProviderReferenceError when a skillReference has no openai entry in
+// its providerReference (TS resolveProviderReference).
+func shellEnvironmentFromArgs(args map[string]interface{}) (*ShellEnvironment, error) {
 	envArgs, ok := args["environment"].(map[string]interface{})
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	str := func(m map[string]interface{}, key string) *string {
 		if s, ok := m[key].(string); ok {
@@ -309,12 +312,15 @@ func shellEnvironmentFromArgs(args map[string]interface{}) *ShellEnvironment {
 	envType, _ := envArgs["type"].(string)
 	switch envType {
 	case "containerReference":
-		return &ShellEnvironment{Type: "container_reference", ContainerID: str(envArgs, "containerId")}
+		return &ShellEnvironment{Type: "container_reference", ContainerID: str(envArgs, "containerId")}, nil
 	case "containerAuto":
 		env := &ShellEnvironment{Type: "container_auto", FileIDs: strs(envArgs["fileIds"]), MemoryLimit: str(envArgs, "memoryLimit")}
-		if policy, ok := envArgs["networkPolicy"].(map[string]interface{}); ok {
-			p := &ShellNetworkPolicy{AllowedDomains: strs(policy["allowedDomains"])}
-			p.Type, _ = policy["type"].(string)
+		if policy, ok := envArgs["networkPolicy"].(map[string]interface{}); ok && policy["type"] == "disabled" {
+			// TS: {type: 'disabled'} only.
+			env.NetworkPolicy = &ShellNetworkPolicy{Type: "disabled"}
+		} else if ok {
+			// TS: any other policy is sent as an allowlist.
+			p := &ShellNetworkPolicy{Type: "allowlist", AllowedDomains: strs(policy["allowedDomains"])}
 			for _, s := range maps(policy["domainSecrets"]) {
 				secret := ShellDomainSecret{}
 				secret.Domain, _ = s["domain"].(string)
@@ -326,9 +332,21 @@ func shellEnvironmentFromArgs(args map[string]interface{}) *ShellEnvironment {
 		}
 		for _, s := range maps(envArgs["skills"]) {
 			if s["type"] == "skillReference" {
-				ref, _ := s["providerReference"].(map[string]interface{})
+				ref := types.ProviderReference{}
+				if raw, ok := s["providerReference"].(map[string]interface{}); ok {
+					for k, v := range raw {
+						if id, ok := v.(string); ok {
+							ref[k] = id
+						}
+					}
+				}
+				skillID, err := providerutils.ResolveProviderReference(ref, "openai")
+				if err != nil {
+					return nil, err
+				}
 				skillType := "skill_reference"
-				env.Skills = append(env.Skills, ShellSkill{Type: &skillType, SkillID: str(ref, "openai"), Version: str(s, "version")})
+				// TS: version ?? 'latest' (convertShellTool defaults it).
+				env.Skills = append(env.Skills, ShellSkill{Type: &skillType, SkillID: &skillID, Version: str(s, "version")})
 				continue
 			}
 			skillType := "inline"
@@ -342,11 +360,25 @@ func shellEnvironmentFromArgs(args map[string]interface{}) *ShellEnvironment {
 			}
 			env.Skills = append(env.Skills, skill)
 		}
-		return env
+		return env, nil
 	}
 	env := &ShellEnvironment{Type: "local"}
 	for _, s := range maps(envArgs["skills"]) {
 		env.Skills = append(env.Skills, ShellSkill{Name: str(s, "name"), Description: str(s, "description"), Path: str(s, "path")})
 	}
-	return env
+	return env, nil
+}
+
+// tsShapedShellEnvironment returns the environment of a TS-shaped
+// openai.shell tool (no typed ShellEnvironment in ProviderOptions), mapped
+// from its args; nil for other tools.
+func tsShapedShellEnvironment(t types.Tool) (*ShellEnvironment, error) {
+	if t.Type != types.ToolTypeProviderDefined || t.ProviderID != "openai.shell" {
+		return nil, nil
+	}
+	switch t.ProviderOptions.(type) {
+	case ShellEnvironment, *ShellEnvironment:
+		return nil, nil
+	}
+	return shellEnvironmentFromArgs(t.ProviderArgs)
 }
