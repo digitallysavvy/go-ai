@@ -210,7 +210,7 @@ func responseMetadataFromGenerateResultWithID(model provider.LanguageModel, resu
 		return nil
 	}
 	meta := result.ResponseMetadata
-	if meta != nil && meta.ID != "" && !meta.Timestamp.IsZero() && meta.ModelID != "" {
+	if meta != nil && meta.ID != "" && !meta.Timestamp.IsZero() && meta.ModelID != "" && (meta.Headers != nil || result.ResponseHeaders == nil) {
 		return meta
 	}
 	if generateID == nil {
@@ -231,6 +231,12 @@ func responseMetadataFromGenerateResultWithID(model provider.LanguageModel, resu
 	}
 	if filled.ModelID == "" {
 		filled.ModelID = model.ModelID()
+	}
+	if filled.Headers == nil {
+		// TS response.headers: a provider that reports its HTTP headers
+		// only in ResponseHeaders (e.g. gmicloud, zai) still has them on
+		// the step and result response.
+		filled.Headers = result.ResponseHeaders
 	}
 	result.ResponseMetadata = &filled
 	return result.ResponseMetadata
@@ -278,7 +284,8 @@ func parseObjectResult(result *types.GenerateResult, mode ObjectOutputMode, s sc
 		return nil, nil, "", newNoObjectGeneratedError("No object generated.", nil, "", model, nil)
 	}
 	if result.Text == "" {
-		return nil, nil, "", newNoObjectGeneratedError("No object generated: could not parse the response.", io.ErrUnexpectedEOF, "", model, result)
+		// TS safeParseJSON('') fails with a JSONParseError.
+		return nil, nil, "", newNoObjectGeneratedError("No object generated: could not parse the response.", providererrors.NewJSONParseError("", io.ErrUnexpectedEOF), "", model, result)
 	}
 	obj, arr, enumValue, err := parseStreamFinal(mode, s, enumValues, result.Text)
 	if err != nil {
@@ -288,6 +295,10 @@ func parseObjectResult(result *types.GenerateResult, mode ObjectOutputMode, s sc
 		switch {
 		case errors.As(err, &syntaxErr), errors.As(err, &unmarshalTypeErr), errors.Is(err, io.ErrUnexpectedEOF):
 			message = "No object generated: could not parse the response."
+			// TS: the cause (and the error repairText gets) is a
+			// JSONParseError; the parser error stays reachable through
+			// Unwrap.
+			err = providererrors.NewJSONParseError(result.Text, err)
 		}
 		return nil, nil, "", newNoObjectGeneratedError(message, err, result.Text, model, result)
 	}
@@ -1943,6 +1954,9 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	// than from a provider error part (TS: a rejected stream rather than an
 	// 'error' chunk).
 	rawStreamErr := false
+	// sawFinish records a finish part (TS logs the warnings in its finish
+	// handler).
+	sawFinish := false
 
 	// Response metadata fields updated by ChunkTypeResponseMetadata chunks.
 	streamResMeta := GenerateStepResponse{
@@ -2023,6 +2037,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			}
 
 		case provider.ChunkTypeFinish:
+			sawFinish = true
 			// After an error part the finish reason stays "error" (TS
 			// `terminalError === undefined ? chunk.finishReason.unified :
 			// 'error'`); the finish part's usage is kept either way.
@@ -2082,10 +2097,14 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		finishReason = types.FinishReasonOther
 	}
 
-	// Log model warnings once per model call (TS stream-object.ts
-	// logWarnings, called once the stream's terminal chunk has been
-	// processed, regardless of whether it ended in an error).
-	logModelWarnings(streamWarnings, opts.Model.Provider(), opts.Model.ModelID())
+	// Log model warnings once per model call. TS stream-object.ts logs them
+	// in the finish part's handler (after an error part too), so a stream
+	// that fails without a finish part logs nothing. A stream that ends
+	// cleanly without one is still parsed here (known difference), so its
+	// warnings are logged as for a finished stream.
+	if sawFinish || streamErr == nil {
+		logModelWarnings(streamWarnings, opts.Model.Provider(), opts.Model.ModelID())
+	}
 
 	streamReqMeta := GenerateStepRequest{}
 
