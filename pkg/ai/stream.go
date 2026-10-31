@@ -3557,6 +3557,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			ModelProvider:      stepResult.Model.Provider,
 			ModelID:            stepResult.Model.ModelID,
 			Text:               stepResult.Text,
+			Content:            stepResult.Content,
 			Reasoning:          stepResult.Reasoning,
 			ReasoningText:      stepResult.ReasoningText,
 			ToolCalls:          stepResult.ToolCalls,
@@ -3568,12 +3569,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			FinishReason:       stepResult.FinishReason,
 			RawFinishReason:    stepResult.RawFinishReason,
 			Usage:              stepResult.Usage,
+			Performance:        stepResult.Performance,
 			Warnings:           stepWarnings,
 			Sources:            stepResult.Sources,
 			Files:              stepFiles,
 			ProviderMetadata:   stepResult.ProviderMetadata,
 			ResponseHeaders:    stepHeaders,
-			Request:            GenerateStepRequest{Body: stepResult.Request.Body},
+			Request:            GenerateStepRequest{Body: stepResult.Request.Body, Messages: stepResult.Request.Messages},
 			Response: GenerateStepResponse{
 				ID:        stepResult.Response.ID,
 				Timestamp: stepResult.Response.Timestamp,
@@ -4346,7 +4348,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		Files:              streamFiles,
 		ProviderMetadata:   lastStep.ProviderMetadata,
 		ResponseHeaders:    r.responseHeaders,
-		Request:            GenerateStepRequest{Body: lastStep.Request.Body},
+		Request:            GenerateStepRequest{Body: lastStep.Request.Body, Messages: lastStep.Request.Messages},
 		Response: GenerateStepResponse{
 			ID:        lastStep.Response.ID,
 			Timestamp: lastStep.Response.Timestamp,
@@ -4365,6 +4367,23 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	telemetry.FireOnEnd(r.telemetryCtx, endTelemetry)
 }
 
+// providerToolResultError is the error of a provider tool result flagged
+// isError: its text is the result value (a string as is, anything else as
+// JSON), which the tool-error part keeps as its error value.
+func providerToolResultError(value interface{}) error {
+	switch v := value.(type) {
+	case nil:
+		return errors.New("tool error")
+	case string:
+		return errors.New(v)
+	default:
+		if b, err := json.Marshal(v); err == nil {
+			return errors.New(string(b))
+		}
+		return fmt.Errorf("%v", v)
+	}
+}
+
 func enrichStreamedToolResultForModelOutput(ctx context.Context, result types.ToolResult, fromModel bool, toolCalls []types.ToolCall, toolsByName map[string]*types.Tool, usage *types.Usage) (types.ToolResult, error) {
 	call, hasCall := findToolCallByID(toolCalls, result.ToolCallID)
 	if hasCall {
@@ -4373,6 +4392,11 @@ func enrichStreamedToolResultForModelOutput(ctx context.Context, result types.To
 		}
 		if result.Input == nil {
 			result.Input = call.Arguments
+		}
+		// TS stream-language-model-call.ts: a streamed tool-result carries
+		// its call's toolMetadata.
+		if result.ToolMetadata == nil && call.ToolMetadata != nil {
+			result.ToolMetadata = call.ToolMetadata
 		}
 		if !result.ProviderExecuted {
 			if tool := toolsByName[call.ToolName]; tool != nil && tool.ProviderExecuted {
@@ -4386,6 +4410,14 @@ func enrichStreamedToolResultForModelOutput(ctx context.Context, result types.To
 	// is provider-executed, with or without a matching call.
 	if fromModel {
 		result.ProviderExecuted = true
+	}
+	// TS runToolsTransformation turns a provider tool-result with isError into
+	// a tool-error part whose error is the result value. Go marks a failed
+	// result by its Error, so a provider that sets only IsError still yields a
+	// tool-error (content, UI tool-output-error, not in ToolResults), as
+	// GenerateText's providerErrorResultsAsToolErrors does.
+	if result.Error == nil && result.ProviderExecuted && isTrue(result.IsError) {
+		result.Error = providerToolResultError(result.Result)
 	}
 	tool := toolsByName[result.ToolName]
 	if tool == nil || tool.ToModelOutput == nil || result.ModelOutput != nil || result.Error != nil {

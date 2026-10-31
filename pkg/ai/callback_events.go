@@ -14,6 +14,10 @@ import (
 type GenerateStepRequest struct {
 	// Body is the raw request body sent to the provider API (for debugging).
 	Body interface{} `json:"body,omitempty"`
+
+	// Messages are the step's request messages when the call includes them
+	// (TS request.messages, set with include.requestMessages).
+	Messages []types.Message `json:"messages,omitempty"`
 }
 
 // GenerateStepResponse contains additional information about the response
@@ -349,6 +353,11 @@ type OnStepFinishEvent struct {
 	// Text produced by the model in this step
 	Text string
 
+	// Content holds the step's content parts in order (TS step.content):
+	// text, reasoning, tool calls, tool results and errors, approvals,
+	// sources and files.
+	Content []types.ContentPart
+
 	// Reasoning holds reasoning/thinking content parts from this step.
 	Reasoning []types.ReasoningContent
 
@@ -379,6 +388,10 @@ type OnStepFinishEvent struct {
 
 	// Usage reports token consumption for this step
 	Usage types.Usage
+
+	// Performance holds the step's performance metrics (TS
+	// step.performance).
+	Performance types.StepPerformance
 
 	// Warnings emitted by the provider during this step
 	Warnings []types.Warning

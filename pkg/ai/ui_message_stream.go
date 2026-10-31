@@ -890,6 +890,13 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		// an earlier step's ChunkTypeFinishStep (see
 		// TestNewStreamTextResultFromParts_ToUIMessageStream).
 		sawStepFinishStep := false
+		// announcedApprovals holds the approval IDs whose tool-approval-request
+		// part the source already carried. StreamText sends the request and
+		// response parts itself, then the approved call's tool-result (which
+		// still records its ApprovalStatus); TS maps that result to the
+		// tool-output chunk only, so the result must not expand into a second
+		// request/response pair.
+		announcedApprovals := map[string]bool{}
 		// sawStartStepChunk marks a source that carries genuine
 		// ChunkTypeStartStep parts: a StreamText or NewStreamTextResultFromParts
 		// full stream, whose ChunkTypeFinish is always the TS call-level
@@ -1097,6 +1104,26 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				endedWithCallFinish = true
 			}
 			chunkForConversion := *chunk
+			if chunk.Type == provider.ChunkTypeToolApprovalRequest && chunk.ToolApprovalRequest != nil {
+				announcedApprovals[chunk.ToolApprovalRequest.ApprovalID] = true
+			}
+			if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil &&
+				chunk.ToolResult.ApprovalStatus == types.ToolApprovalStatusApproved {
+				approvalID := chunk.ToolResult.ApprovalID
+				if approvalID == "" {
+					approvalID = chunk.ToolResult.ToolCallID
+				}
+				if announcedApprovals[approvalID] {
+					result := *chunk.ToolResult
+					result.ApprovalStatus = ""
+					// The locally executed output of an approved call has no
+					// providerExecuted flag in TS (it came from the call).
+					if !result.ProviderExecuted {
+						result.ProviderExecutedSet = false
+					}
+					chunkForConversion.ToolResult = &result
+				}
+			}
 			switch chunk.Type {
 			case provider.ChunkTypeTextStart:
 				id := chunk.ID
