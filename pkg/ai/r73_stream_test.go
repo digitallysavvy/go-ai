@@ -16,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -1342,6 +1343,191 @@ func TestR73StreamProviderExecutedApprovalResume(t *testing.T) {
 			t.Errorf("finishReason = %q", r.FinishReason())
 		}
 	})
+}
+
+// TS 15323: onFinish exposes the deprecated AI SDK 6 final-step properties
+// (reasoning, reasoningText, request, response, providerMetadata) equal to
+// the final step's.
+func TestR73StreamOnEndFinalStepProperties(t *testing.T) {
+	model := r71streamModel(nil,
+		[]provider.StreamChunk{
+			{Type: provider.ChunkTypeReasoningStart, ID: "r"}, {Type: provider.ChunkTypeReasoning, ID: "r", Text: "thinking"}, {Type: provider.ChunkTypeReasoningEnd, ID: "r"},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "value"}, RawArguments: `{ "value": "value" }`}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r72streamTestUsage, ProviderMetadata: json.RawMessage(`{"p":{"step":0}}`)},
+		},
+		[]provider.StreamChunk{
+			{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-1", ModelID: "mock-model-id", Timestamp: time.Unix(10, 0)}},
+			{Type: provider.ChunkTypeReasoningStart, ID: "r"}, {Type: provider.ChunkTypeReasoning, ID: "r", Text: "final thought"}, {Type: provider.ChunkTypeReasoningEnd, ID: "r"},
+			{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Hello, world!"}, {Type: provider.ChunkTypeTextEnd, ID: "1"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage, ProviderMetadata: json.RawMessage(`{"p":{"step":1}}`)},
+		})
+	var end OnFinishEvent
+	r := r71streamRun(t, StreamTextOptions{Model: model, Prompt: "test-input", Tools: []types.Tool{r71streamTool1(true, nil, nil)}, StopWhen: []StopCondition{StepCountIs(3)},
+		Include:    &IncludeOptions{RequestMessages: true},
+		OnEndEvent: func(_ context.Context, e OnFinishEvent) { end = e }})
+	final := r.FinalStep()
+	if final.ReasoningText != "final thought" {
+		t.Fatalf("final step reasoning = %q", final.ReasoningText)
+	}
+	if !reflect.DeepEqual(end.Reasoning, final.Reasoning) || end.ReasoningText != final.ReasoningText {
+		t.Errorf("onEnd reasoning = %+v / %q", end.Reasoning, end.ReasoningText)
+	}
+	if !reflect.DeepEqual(end.Request.Messages, final.Request.Messages) || !reflect.DeepEqual(end.Request.Body, final.Request.Body) || len(end.Request.Messages) != 3 {
+		t.Errorf("onEnd request = %+v, final %+v", end.Request, final.Request)
+	}
+	if end.Response.ID != "id-1" || end.Response.ID != final.Response.ID || end.Response.ModelID != final.Response.ModelID || !end.Response.Timestamp.Equal(final.Response.Timestamp) {
+		t.Errorf("onEnd response = %+v, final %+v", end.Response, final.Response)
+	}
+	if !reflect.DeepEqual(end.ProviderMetadata, final.ProviderMetadata) || !reflect.DeepEqual(end.ProviderMetadata, map[string]interface{}{"p": map[string]interface{}{"step": float64(1)}}) {
+		t.Errorf("onEnd providerMetadata = %v, final %v", end.ProviderMetadata, final.ProviderMetadata)
+	}
+}
+
+// r73streamCtxRecorder records the runtime and tools context each telemetry
+// lifecycle event receives.
+type r73streamCtxRecorder struct {
+	telemetry.NoopTelemetryIntegration
+	mu      sync.Mutex
+	runtime []interface{}
+	tools   []interface{}
+}
+
+func (r *r73streamCtxRecorder) add(rt, tc map[string]interface{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.runtime = append(r.runtime, rt)
+	r.tools = append(r.tools, tc)
+}
+
+func (r *r73streamCtxRecorder) OnStart(ctx context.Context, e telemetry.TelemetryStartEvent) context.Context {
+	r.add(e.RuntimeContext, e.ToolsContext)
+	return ctx
+}
+
+func (r *r73streamCtxRecorder) OnStepStart(ctx context.Context, e telemetry.TelemetryStepStartEvent) context.Context {
+	r.add(e.RuntimeContext, e.ToolsContext)
+	return ctx
+}
+
+func (r *r73streamCtxRecorder) OnStepEnd(_ context.Context, e telemetry.TelemetryStepEndEvent) {
+	r.add(e.RuntimeContext, e.ToolsContext)
+}
+
+func (r *r73streamCtxRecorder) OnEnd(_ context.Context, e telemetry.TelemetryFinishEvent) {
+	r.add(e.RuntimeContext, e.ToolsContext)
+}
+
+// TS 9784 and the telemetry context cases after it: callbacks receive the
+// full runtimeContext, telemetry only the IncludeRuntimeContext /
+// IncludeToolsContext keys (nothing by default).
+func TestR73StreamRuntimeAndToolsContextInCallbacksAndTelemetry(t *testing.T) {
+	runtimeCtx := map[string]interface{}{"userId": "user-123", "requestId": "request-123"}
+	weather := types.Tool{Name: "weather", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"city": map[string]interface{}{"type": "string"}}},
+		ContextSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "properties": map[string]interface{}{"apiKey": map[string]interface{}{"type": "string"}, "region": map[string]interface{}{"type": "string"}}, "required": []interface{}{"apiKey", "region"}}),
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "sunny", nil
+		}}
+	toolsCtx := map[string]interface{}{"weather": map[string]interface{}{"apiKey": "secret-api-key", "region": "eu"}}
+	for _, tc := range []struct {
+		name        string
+		settings    TelemetrySettings
+		wantRuntime interface{}
+		wantTools   interface{}
+	}{
+		{"included keys", TelemetrySettings{IncludeRuntimeContext: map[string]bool{"requestId": true}, IncludeToolsContext: map[string]map[string]bool{"weather": {"region": true}}},
+			map[string]interface{}{"requestId": "request-123"}, map[string]interface{}{"weather": map[string]interface{}{"region": "eu"}}},
+		{"excluded by default", TelemetrySettings{}, map[string]interface{}{}, map[string]interface{}{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &r73streamCtxRecorder{}
+			settings := tc.settings
+			settings.Integrations = []telemetry.TelemetryIntegration{rec}
+			var mu sync.Mutex
+			var callbackCtxs []interface{}
+			push := func(v interface{}) {
+				mu.Lock()
+				callbackCtxs = append(callbackCtxs, v)
+				mu.Unlock()
+			}
+			r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, r71streamHelloWorld), Prompt: "test-input",
+				RuntimeContext: runtimeCtx, Tools: []types.Tool{weather}, ToolsContext: toolsCtx, Telemetry: &settings,
+				OnStart:           func(_ context.Context, e OnStartEvent) { push(e.RuntimeContext) },
+				OnStepStart:       func(_ context.Context, e OnStepStartEvent) { push(e.RuntimeContext) },
+				OnStepFinishEvent: func(_ context.Context, e OnStepFinishEvent) { push(e.RuntimeContext) },
+				OnEndEvent:        func(_ context.Context, e OnFinishEvent) { push(e.RuntimeContext) },
+			})
+			want := []interface{}{runtimeCtx, runtimeCtx, runtimeCtx, runtimeCtx}
+			if !reflect.DeepEqual(callbackCtxs, want) {
+				t.Errorf("callback runtime contexts = %v", callbackCtxs)
+			}
+			for i := range rec.runtime {
+				if !reflect.DeepEqual(r73streamJSONClone(t, rec.runtime[i]), r73streamJSONClone(t, tc.wantRuntime)) {
+					t.Errorf("telemetry runtime[%d] = %#v, want %#v", i, rec.runtime[i], tc.wantRuntime)
+				}
+				if !reflect.DeepEqual(r73streamJSONClone(t, rec.tools[i]), r73streamJSONClone(t, tc.wantTools)) {
+					t.Errorf("telemetry tools[%d] = %#v, want %#v", i, rec.tools[i], tc.wantTools)
+				}
+			}
+			if len(rec.runtime) != 4 {
+				t.Errorf("telemetry events = %d, want 4", len(rec.runtime))
+			}
+		})
+	}
+}
+
+// TS 10597 / 10803: onStepStart exposes providerOptions and runtimeContext,
+// and the toolsContext a prepareStep returns reaches later prepareStep calls,
+// both step-start events and the tool execution.
+func TestR73StreamStepStartContextsAndPrepareStepToolsContext(t *testing.T) {
+	label := func(v string) map[string]interface{} {
+		return map[string]interface{}{"tool1": map[string]interface{}{"label": v}}
+	}
+	var mu sync.Mutex
+	var prepared []map[string]interface{}
+	var starts []OnStepStartEvent
+	var recorded interface{}
+	tool := types.Tool{Name: "tool1", Parameters: r71streamValueSchema,
+		ContextSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "properties": map[string]interface{}{"label": map[string]interface{}{"type": "string"}}, "required": []interface{}{"label"}}),
+		Execute: func(_ context.Context, _ map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+			recorded = o.ToolContext
+			return "test-result", nil
+		}}
+	model := r71streamModel(nil, r71streamToolCallStep([2]string{"call-1", "test"}), r73streamTextStep("Done."))
+	r71streamRun(t, StreamTextOptions{Model: model, Prompt: "test-input", Tools: []types.Tool{tool}, ToolsContext: label("initial"), StopWhen: []StopCondition{StepCountIs(3)},
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"logprobs": true}},
+		RuntimeContext:  map[string]interface{}{"userId": "test-user"},
+		PrepareStep: func(_ context.Context, s PrepareStepOptions) PrepareStepOptions {
+			mu.Lock()
+			prepared = append(prepared, s.ToolsContext)
+			mu.Unlock()
+			if s.StepNumber == 0 {
+				return PrepareStepOptions{ToolsContext: label("updated")}
+			}
+			return PrepareStepOptions{}
+		},
+		OnStepStart: func(_ context.Context, e OnStepStartEvent) {
+			mu.Lock()
+			starts = append(starts, e)
+			mu.Unlock()
+		},
+	})
+	if !reflect.DeepEqual(prepared, []map[string]interface{}{label("initial"), label("updated")}) {
+		t.Errorf("prepareStep toolsContexts = %v", prepared)
+	}
+	if len(starts) != 2 {
+		t.Fatalf("step starts = %d", len(starts))
+	}
+	for i, e := range starts {
+		if !reflect.DeepEqual(e.ToolsContext, label("updated")) {
+			t.Errorf("step %d toolsContext = %v", i, e.ToolsContext)
+		}
+		if !reflect.DeepEqual(e.ProviderOptions, map[string]interface{}{"openai": map[string]interface{}{"logprobs": true}}) || !reflect.DeepEqual(e.RuntimeContext, map[string]interface{}{"userId": "test-user"}) {
+			t.Errorf("step %d providerOptions %v runtimeContext %v", i, e.ProviderOptions, e.RuntimeContext)
+		}
+	}
+	if !reflect.DeepEqual(recorded, map[string]interface{}{"label": "updated"}) {
+		t.Errorf("tool context = %v", recorded)
+	}
 }
 
 // r73streamPUICasesJSON was extracted from ai/packages/ai/src/ui/process-ui-message-stream.test.ts
