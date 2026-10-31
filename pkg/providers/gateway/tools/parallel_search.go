@@ -204,7 +204,6 @@ func NewParallelSearch(config ParallelSearchConfig) ParallelSearchTool {
 			"Takes a natural language objective and returns relevant excerpts, " +
 			"replacing multiple keyword searches with a single call for broad or complex queries. " +
 			"Supports different search types for depth vs breadth tradeoffs.",
-		Title:            "Parallel Search",
 		Parameters:       parameters,
 		OutputSchema:     parallelSearchOutputSchema(),
 		ProviderExecuted: true,
@@ -396,10 +395,10 @@ func parallelSearchArgs(config ParallelSearchConfig) map[string]interface{} {
 	}
 	if config.SourcePolicy != nil {
 		sourcePolicy := map[string]interface{}{}
-		if len(config.SourcePolicy.IncludeDomains) > 0 {
+		if config.SourcePolicy.IncludeDomains != nil {
 			sourcePolicy["includeDomains"] = config.SourcePolicy.IncludeDomains
 		}
-		if len(config.SourcePolicy.ExcludeDomains) > 0 {
+		if config.SourcePolicy.ExcludeDomains != nil {
 			sourcePolicy["excludeDomains"] = config.SourcePolicy.ExcludeDomains
 		}
 		if config.SourcePolicy.AfterDate != "" {

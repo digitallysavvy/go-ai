@@ -70,7 +70,6 @@ func NewBrowserbaseFetch(config BrowserbaseFetchConfig) BrowserbaseFetchTool {
 	tool := types.Tool{
 		Name:             "browserbase_fetch",
 		Description:      "Fetch a web page using Browserbase and return its content as raw, markdown, or structured JSON.",
-		Title:            "Browserbase Fetch",
 		Parameters:       map[string]interface{}{"type": "object", "properties": properties, "required": []string{"url"}},
 		OutputSchema:     browserbaseFetchOutputSchema(),
 		ProviderExecuted: true,

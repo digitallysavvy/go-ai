@@ -14,7 +14,7 @@ func TestNewBrowserbaseFetchSchemaAndProviderExecutedStub(t *testing.T) {
 	if tool.Name != "browserbase_fetch" {
 		t.Fatalf("name = %q", tool.Name)
 	}
-	if tool.Title != "Browserbase Fetch" || !tool.ProviderExecuted {
+	if tool.Title != "" || !tool.ProviderExecuted {
 		t.Fatalf("tool metadata = %#v", tool)
 	}
 	if tool.Type != types.ToolTypeProviderDefined || tool.ProviderID != "gateway.browserbase_fetch" {

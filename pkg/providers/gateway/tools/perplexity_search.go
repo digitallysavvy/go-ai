@@ -112,7 +112,6 @@ func NewPerplexitySearch(config PerplexitySearchConfig) PerplexitySearchTool {
 		Name: "perplexity_search",
 		Description: "Search the web using Perplexity's Search API for real-time information, news, research papers, and articles. " +
 			"Provides ranked search results with advanced filtering options including domain, language, date range, and recency filters.",
-		Title:            "Perplexity Search",
 		Parameters:       parameters,
 		OutputSchema:     perplexitySearchOutputSchema(),
 		ProviderExecuted: true,
@@ -225,10 +224,10 @@ func perplexitySearchArgs(config PerplexitySearchConfig) map[string]interface{} 
 	if config.Country != "" {
 		args["country"] = config.Country
 	}
-	if len(config.SearchDomainFilter) > 0 {
+	if config.SearchDomainFilter != nil {
 		args["searchDomainFilter"] = config.SearchDomainFilter
 	}
-	if len(config.SearchLanguageFilter) > 0 {
+	if config.SearchLanguageFilter != nil {
 		args["searchLanguageFilter"] = config.SearchLanguageFilter
 	}
 	if config.SearchRecencyFilter != "" {

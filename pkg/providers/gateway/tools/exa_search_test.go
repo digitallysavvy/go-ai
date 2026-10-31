@@ -12,7 +12,7 @@ func TestNewExaSearchSchemaAndProviderExecutedStub(t *testing.T) {
 	if tool.Name != "exa_search" {
 		t.Fatalf("name = %q", tool.Name)
 	}
-	if tool.Title != "Exa Search" || !tool.ProviderExecuted {
+	if tool.Title != "" || !tool.ProviderExecuted {
 		t.Fatalf("tool metadata = %#v", tool)
 	}
 	if tool.Type != types.ToolTypeProviderDefined || tool.ProviderID != "gateway.exa_search" {

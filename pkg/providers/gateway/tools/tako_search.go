@@ -144,7 +144,6 @@ func NewTakoSearch(config TakoSearchConfig) TakoSearchTool {
 		Name: "tako_search",
 		Description: "Search Tako's curated Data Graph and the web for entities, metrics, and time series, returning rendered " +
 			"data cards and web results. Supports search effort, source selection, data/web filtering, and localization controls.",
-		Title:            "Tako Search",
 		Parameters:       map[string]interface{}{"type": "object", "properties": properties, "required": []string{"query"}},
 		OutputSchema:     takoSearchOutputSchema(),
 		ProviderExecuted: true,
@@ -1542,7 +1541,7 @@ func takoDataSourceArgs(config TakoDataSourceConfig) map[string]interface{} {
 	if config.MaxRows != nil {
 		args["maxRows"] = *config.MaxRows
 	}
-	if len(config.NodeIDs) > 0 {
+	if config.NodeIDs != nil {
 		args["nodeIds"] = config.NodeIDs
 	}
 	if config.Strict != nil {
@@ -1562,10 +1561,10 @@ func takoWebSourceArgs(config TakoWebSourceConfig) map[string]interface{} {
 	if config.Category != "" {
 		args["category"] = config.Category
 	}
-	if len(config.IncludeDomains) > 0 {
+	if config.IncludeDomains != nil {
 		args["includeDomains"] = config.IncludeDomains
 	}
-	if len(config.ExcludeDomains) > 0 {
+	if config.ExcludeDomains != nil {
 		args["excludeDomains"] = config.ExcludeDomains
 	}
 	if config.SnippetMaxChars != nil {
