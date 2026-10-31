@@ -1530,6 +1530,162 @@ func TestR73StreamStepStartContextsAndPrepareStepToolsContext(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// ui-message-stream/*.test.ts ports (round 73).
+// ---------------------------------------------------------------------------
+
+// get-response-ui-message-id.test.ts: no original messages (no persistence)
+// gives no id, a last assistant message is continued, otherwise the
+// generator supplies the id.
+func TestR73StreamGetResponseUIMessageID(t *testing.T) {
+	gen := func() string { return "new-id" }
+	cases := []struct {
+		name     string
+		original []UIMessageChunk
+		want     string
+	}{
+		{"originalMessages null", nil, ""},
+		{"last assistant message", []UIMessageChunk{{"id": "msg-1", "role": "user", "parts": []interface{}{}}, {"id": "msg-2", "role": "assistant", "parts": []interface{}{}}}, "msg-2"},
+		{"last message from user", []UIMessageChunk{{"id": "msg-1", "role": "assistant", "parts": []interface{}{}}, {"id": "msg-2", "role": "user", "parts": []interface{}{}}}, "new-id"},
+		{"empty messages", []UIMessageChunk{}, "new-id"},
+	}
+	for _, c := range cases {
+		if got := responseUIMessageID(UIMessageStreamResultOptions{OriginalMessages: c.original, GenerateMessageID: gen}); got != c.want {
+			t.Errorf("%s: id = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// read-ui-message-stream.test.ts 259: a hydrated partial static tool call
+// without raw input accepts a delta and the final input.
+func TestR73StreamReadUIMessagesHydratedPartialToolCall(t *testing.T) {
+	msg := UIMessage{ID: "msg-123", Role: UIMessageRoleAssistant, Parts: []UIMessagePart{
+		ToolUIPart{Type: "tool-createDocument", ToolCallID: "tool-1", State: "input-streaming", Input: map[string]interface{}{"title": "Hel"}},
+	}}
+	src := make(chan UIMessageChunk, 2)
+	src <- UIMessageChunk{"type": "tool-input-delta", "toolCallId": "tool-1", "inputTextDelta": `lo"}`}
+	src <- UIMessageChunk{"type": "tool-input-available", "toolCallId": "tool-1", "toolName": "createDocument", "input": map[string]interface{}{"title": "Hello"}}
+	close(src)
+	out, errs := ReadUIMessages(context.Background(), ReadUIMessagesOptions{Message: &msg, Stream: src, TerminateOnError: true})
+	var last UIMessage
+	for m := range out {
+		last = m
+	}
+	for err := range errs {
+		t.Fatalf("error: %v", err)
+	}
+	parts := r73streamJSONClone(t, last).(map[string]interface{})["parts"].([]interface{})
+	if len(parts) != 1 {
+		t.Fatalf("parts = %v", parts)
+	}
+	p := parts[0].(map[string]interface{})
+	if p["type"] != "tool-createDocument" || p["toolCallId"] != "tool-1" || p["state"] != "input-available" || !reflect.DeepEqual(p["input"], map[string]interface{}{"title": "Hello"}) {
+		t.Fatalf("part = %v", p)
+	}
+}
+
+type r73streamErrAfter struct {
+	chunks []provider.StreamChunk
+	err    error
+}
+
+func (s *r73streamErrAfter) Next() (*provider.StreamChunk, error) {
+	if len(s.chunks) > 0 {
+		c := s.chunks[0]
+		s.chunks = s.chunks[1:]
+		return &c, nil
+	}
+	return nil, s.err
+}
+func (s *r73streamErrAfter) Err() error   { return s.err }
+func (s *r73streamErrAfter) Close() error { return nil }
+
+// to-ui-message-stream.test.ts 634: an earlier finish part does not hide a
+// source stream failure: onEnd runs once with a failed outcome carrying the
+// source error (Go writes a masked error chunk instead of erroring the
+// stream, owner ruling 2026-10-29).
+func TestR73StreamToUIFinishThenSourceFailure(t *testing.T) {
+	sourceErr := errors.New("source stream failed after finish")
+	var mu sync.Mutex
+	var ends []map[string]interface{}
+	ch, errs := ToUIMessageStream(context.Background(), &r73streamErrAfter{
+		chunks: []provider.StreamChunk{{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage}},
+		err:    sourceErr,
+	}, UIMessageStreamResultOptions{OnEnd: func(e map[string]interface{}) {
+		mu.Lock()
+		ends = append(ends, e)
+		mu.Unlock()
+	}})
+	for range ch {
+	}
+	for range errs {
+	}
+	if len(ends) != 1 {
+		t.Fatalf("onEnd calls = %d", len(ends))
+	}
+	outcome, _ := ends[0]["outcome"].(map[string]interface{})
+	if outcome["status"] != "failed" || outcome["error"] != sourceErr {
+		t.Fatalf("outcome = %#v", outcome)
+	}
+}
+
+// handle-ui-message-stream-finish.test.ts 22: without onFinish/onStepFinish
+// the chunks pass through unchanged (the start chunk already has an id).
+func TestR73StreamHandleFinishPassThrough(t *testing.T) {
+	input := r71streamUIChunks(t, `[{"type":"start","messageId":"msg-123"},{"type":"text-start","id":"text-1"},{"type":"text-delta","id":"text-1","delta":"Hello"},{"type":"text-delta","id":"text-1","delta":" World"},{"type":"text-end","id":"text-1"},{"type":"finish"}]`)
+	var errsSeen []error
+	got, err := r71streamCreate(t, input, UIMessageStreamOptions{OriginalMessages: []UIMessageChunk{}, OnError: func(e error) string { errsSeen = append(errsSeen, e); return "" }})
+	if err != nil || len(errsSeen) != 0 {
+		t.Fatalf("err %v, onError %v", err, errsSeen)
+	}
+	if !reflect.DeepEqual(r73streamJSONClone(t, got), r73streamJSONClone(t, input)) {
+		t.Fatalf("chunks = %v", got)
+	}
+}
+
+// create-ui-message-stream.test.ts 153: writes and two merged streams are
+// all forwarded; each source keeps its own order and the stream ends only
+// after every merged stream closed. (TS's exact interleaving follows its
+// microtask queue; Go merges concurrently.)
+func TestR73StreamCreateUIMergesStreamsAndWrites(t *testing.T) {
+	s1 := make(chan UIMessageChunk)
+	s2 := make(chan UIMessageChunk)
+	delta := func(id, d string) UIMessageChunk { return UIMessageChunk{"type": "text-delta", "id": id, "delta": d} }
+	chunks, errs := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{Execute: func(w UIMessageStreamWriter) {
+		w.Write(delta("1", "data-part-1"))
+		w.Merge(s1)
+		w.Write(delta("1", "data-part-2"))
+		w.Merge(s2)
+		w.Write(delta("1", "data-part-3"))
+	}})
+	go func() {
+		s1 <- delta("1", "1a")
+		s2 <- delta("2", "2a")
+		s1 <- delta("1", "1b")
+		s2 <- delta("2", "2b")
+		close(s2)
+		s1 <- delta("1", "1c")
+		close(s1)
+	}()
+	bySource := map[string][]string{}
+	var all []string
+	for c := range chunks {
+		d := c["delta"].(string)
+		all = append(all, d)
+		src := "write"
+		if !strings.HasPrefix(d, "data-part") {
+			src = c["id"].(string)
+		}
+		bySource[src] = append(bySource[src], d)
+	}
+	for range errs {
+	}
+	want := map[string][]string{"write": {"data-part-1", "data-part-2", "data-part-3"}, "1": {"1a", "1b", "1c"}, "2": {"2a", "2b"}}
+	if !reflect.DeepEqual(bySource, want) || len(all) != 8 {
+		t.Fatalf("chunks = %v", all)
+	}
+}
+
 // r73streamPUICasesJSON was extracted from ai/packages/ai/src/ui/process-ui-message-stream.test.ts
 // at e64ed82f27: per case the scripted chunks, the initial state and the
 // assertion values (vitest inline snapshots parsed, undefined dropped).
