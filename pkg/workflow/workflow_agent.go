@@ -582,6 +582,16 @@ func workflowTelemetryToolsContext(settings *ai.TelemetrySettings, toolsContext 
 	return out
 }
 
+// workflowTelemetryToolContext is the tool context a tool telemetry event
+// carries: only the keys IncludeToolsContext selects for the tool (TS
+// filterToolContext).
+func workflowTelemetryToolContext(settings *ai.TelemetrySettings, toolName string, toolContext interface{}) map[string]interface{} {
+	if settings == nil {
+		return map[string]interface{}{}
+	}
+	return workflowTelemetryRuntimeContext(&ai.TelemetrySettings{IncludeRuntimeContext: settings.IncludeToolsContext[toolName]}, toolContext)
+}
+
 // workflowRootOperation is the root's operationId. TS WorkflowAgent.generate
 // and stream share one execute path whose onStart always reports
 // 'ai.workflowAgent.stream'.
@@ -1098,12 +1108,16 @@ func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call typ
 			ToolsContext:        opts.toolsContext,
 		})
 	}
+	// TS telemetryDispatcher augments the tool events with the tool context,
+	// filtered by includeToolsContext (filterToolContext).
+	telToolContext := workflowTelemetryToolContext(opts.telemetrySettings, call.ToolName, toolContext)
 	toolCtx := telemetrypkg.FireOnToolCallStart(ctx, telemetrypkg.TelemetryToolCallStartEvent{
-		Settings:   opts.telemetrySettings,
-		CallID:     opts.telemetryCallID,
-		ToolCallID: call.ID,
-		ToolName:   call.ToolName,
-		Args:       call.Arguments,
+		Settings:    opts.telemetrySettings,
+		CallID:      opts.telemetryCallID,
+		ToolCallID:  call.ID,
+		ToolName:    call.ToolName,
+		Args:        call.Arguments,
+		ToolContext: telToolContext,
 	})
 	start := time.Now()
 	result, err := tool.Execute(toolCtx, call.Arguments, types.ToolExecutionOptions{
@@ -1149,14 +1163,15 @@ func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call typ
 	// TS executeToolWithCallbacks awaits the merged onToolExecutionEnd
 	// callback before telemetryDispatcher.onToolExecutionEnd.
 	telemetrypkg.FireOnToolCallFinish(toolCtx, telemetrypkg.TelemetryToolCallFinishEvent{
-		Settings:   opts.telemetrySettings,
-		CallID:     opts.telemetryCallID,
-		ToolCallID: call.ID,
-		ToolName:   call.ToolName,
-		Args:       call.Arguments,
-		Result:     result,
-		Error:      err,
-		DurationMs: toolExecutionMs,
+		Settings:    opts.telemetrySettings,
+		CallID:      opts.telemetryCallID,
+		ToolCallID:  call.ID,
+		ToolName:    call.ToolName,
+		Args:        call.Arguments,
+		Result:      result,
+		Error:       err,
+		DurationMs:  toolExecutionMs,
+		ToolContext: telToolContext,
 	})
 	return result, err
 }
