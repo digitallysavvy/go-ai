@@ -22,7 +22,10 @@ import (
 // assertions. Package-level identifiers are prefixed r74stream.
 
 // r74streamAssertJSON compares got and want by JSON value (object key order
-// ignored).
+// ignored). A content tool-result's raw "result" (kept next to the model
+// output once content parts carry the raw tool output, gen r74 CR-1) must
+// equal the text model output's value and is then left out of the
+// comparison, so the assertions hold with and without that change.
 func r74streamAssertJSON(t *testing.T, label string, got interface{}, want string) {
 	t.Helper()
 	b, err := json.Marshal(got)
@@ -33,6 +36,7 @@ func r74streamAssertJSON(t *testing.T, label string, got interface{}, want strin
 	if err := json.Unmarshal(b, &g); err != nil {
 		t.Fatalf("%s: %v", label, err)
 	}
+	r74streamDropRawResults(t, label, g)
 	if err := json.Unmarshal([]byte(want), &w); err != nil {
 		t.Fatalf("%s: bad want JSON: %v", label, err)
 	}
@@ -80,6 +84,29 @@ func r74streamReasoningSteps() []provider.StreamChunk {
 // to the step result (modelWithReasoning): each reasoning block is one
 // content part in start order with its latest provider metadata, and the
 // response message keeps every reasoning part (metadata as providerOptions).
+func r74streamDropRawResults(t *testing.T, label string, v interface{}) {
+	t.Helper()
+	switch x := v.(type) {
+	case []interface{}:
+		for _, e := range x {
+			r74streamDropRawResults(t, label, e)
+		}
+	case map[string]interface{}:
+		if x["type"] == "tool-result" {
+			if raw, ok := x["result"]; ok {
+				out, _ := x["output"].(map[string]interface{})
+				if out == nil || out["type"] != "text" || !reflect.DeepEqual(out["value"], raw) {
+					t.Fatalf("%s: tool-result raw result %v does not match its output %v", label, raw, x["output"])
+				}
+				delete(x, "result")
+			}
+		}
+		for _, e := range x {
+			r74streamDropRawResults(t, label, e)
+		}
+	}
+}
+
 func TestR74StreamStepReasoningContent(t *testing.T) {
 	r, _ := r73streamParts(t, StreamTextOptions{Model: r71streamModel(nil, r74streamReasoningSteps()), Prompt: "test-input", Internal: r72streamIDs()})
 	steps := r.Steps()
@@ -288,11 +315,10 @@ func r74streamTransformedRun(t *testing.T) (*StreamTextResult, OnFinishEvent, []
 	return r, end, stepEvents, stepResults
 }
 
-// The step content's tool result holds the model output in Output and no
-// raw Result (pkg/ai/content_parts.go clears Result when the tool result has
-// a ModelOutput); TS content has `output: 'RESULT1', dynamic: false`. See
-// change request cr-r74-stream-to-gen.md CR-1. Assistant messages also carry
-// Go's legacy tool_calls field.
+// The step content's tool result holds the model output in Output (and,
+// after gen r74 CR-1, the raw output in Result, which r74streamAssertJSON
+// checks and drops); TS content has `output: 'RESULT1', dynamic: false`.
+// Assistant messages also carry Go's legacy tool_calls field.
 const (
 	r74streamTransformedStep0Content = `[{"type":"reasoning","text":"thinking"},` +
 		`{"type":"tool-call","toolCallId":"call-1","toolName":"tool1","input":{"value":"value"}},` +
@@ -407,7 +433,7 @@ func r74streamUpperRun(t *testing.T) (OnFinishEvent, []OnStepFinishEvent, *Strea
 const (
 	// One text part at its text-start position (the tool call arrived in the
 	// middle of the text block); the transformed tool call and result. The
-	// tool result is in Go's content shape (see cr-r74-stream-to-gen.md CR-1).
+	// tool result is in Go's content shape (see r74streamAssertJSON).
 	r74streamUpperContent = `[{"type":"text","text":"HELLO, WORLD!"},` +
 		`{"type":"tool-call","toolCallId":"call-1","toolName":"tool1","input":{"value":"VALUE"}},` +
 		`{"type":"tool-result","toolCallId":"call-1","toolName":"tool1","input":{"value":"VALUE"},"output":{"type":"text","value":"VALUE-RESULT"}}]`
