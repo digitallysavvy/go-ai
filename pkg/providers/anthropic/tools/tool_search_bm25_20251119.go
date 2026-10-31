@@ -76,6 +76,7 @@ func ToolSearchBm2520251119() types.Tool {
 		Name:         "anthropic.tool_search_bm25_20251119",
 		Type:         types.ToolTypeProviderDefined,
 		ProviderID:   "anthropic.tool_search_bm25_20251119",
+		OutputSchema: toolOutputSchema("anthropic.tool_search_bm25_20251119"),
 		ProviderArgs: noProviderArgs(),
 		Description: `BM25 tool search for discovering tools using natural language queries.
 

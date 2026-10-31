@@ -63,6 +63,7 @@ func CodeExecution20250825() types.Tool {
 		Name:         "anthropic.code_execution_20250825",
 		Type:         types.ToolTypeProviderDefined,
 		ProviderID:   "anthropic.code_execution_20250825",
+		OutputSchema: toolOutputSchema("anthropic.code_execution_20250825"),
 		ProviderArgs: noProviderArgs(),
 		Description: `Code execution tool for running Python and Bash code in a secure, sandboxed environment.
 

@@ -128,6 +128,7 @@ func WebFetch20260318(config WebFetch20260318Config) types.Tool {
 		Name:         "anthropic.web_fetch_20260318",
 		Type:         types.ToolTypeProviderDefined,
 		ProviderID:   "anthropic.web_fetch_20260318",
+		OutputSchema: toolOutputSchema("anthropic.web_fetch_20260318"),
 		ProviderArgs: webFetch20260318ProviderArgs(config),
 		Description:  "Fetch and read content from a URL (Anthropic web fetch, version 2026-03-18). Returns PDF or plain text content. Executed by Anthropic's servers.",
 		Parameters: map[string]interface{}{

@@ -1,15 +1,18 @@
 package anthropic
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/workflow"
 )
 
@@ -183,5 +186,86 @@ func TestR73prova_BatchRejectsComputerToolsetConstructor(t *testing.T) {
 	_, err := p.ExperimentalBatch().DoStartBatch(t.Context(), provider.BatchV4StartOptions{Requests: []provider.BatchV4Request{req}})
 	if err == nil || !providererrors.IsUnsupportedFunctionalityError(err) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// For reviewers item 1: the TS outputSchema of the web search/fetch, code
+// execution, tool search and advisor tools. Every provider tool result Go
+// produces from the TS fixtures (the outputs TS records) passes the tool's
+// output schema as ValidateUIMessages applies it (JSON form, simple JSON
+// schema validator).
+func TestR73prova_ProviderToolResultsMatchOutputSchemas(t *testing.T) {
+	cases := []snapCase{{fixture: "anthropic-advisor-20260301.1", tools: []types.Tool{tools.Advisor20260301(tools.Advisor20260301Args{})}}}
+	for _, sc := range snapCases() {
+		if strings.HasPrefix(sc.name, "doGenerate") {
+			cases = append(cases, sc)
+		}
+	}
+	checked := map[string]bool{}
+	for _, sc := range cases {
+		byName := map[string]types.Tool{}
+		for _, tl := range sc.tools {
+			byName[tl.Name] = tl
+		}
+		m, closeFn := fixtureModel(t, serveJSONFixture(sc.fixture, t))
+		res, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, Tools: sc.tools})
+		closeFn()
+		if err != nil {
+			t.Fatalf("%s: %v", sc.fixture, err)
+		}
+		for _, part := range res.Content {
+			tr, ok := part.(types.ToolResultContent)
+			if !ok || (tr.IsError != nil && *tr.IsError) || tr.Error != "" {
+				continue
+			}
+			tl, ok := byName[tr.ToolName]
+			if !ok || tl.OutputSchema == nil {
+				continue
+			}
+			var output interface{}
+			if err := json.Unmarshal([]byte(r73provaJSON(t, tr.Result)), &output); err != nil {
+				t.Fatal(err)
+			}
+			if err := schema.NewSimpleJSONSchema(tl.OutputSchema.(map[string]interface{})).Validator().Validate(output); err != nil {
+				t.Errorf("%s: %s output %s fails its output schema: %v", sc.fixture, tr.ToolName, r73provaJSON(t, output), err)
+			}
+			checked[tr.ToolName] = true
+		}
+	}
+	for _, name := range []string{"anthropic.advisor_20260301", "anthropic.code_execution_20250825", "anthropic.code_execution_20260120",
+		"anthropic.tool_search_bm25_20251119", "anthropic.tool_search_regex_20251119", "anthropic.web_fetch_20250910",
+		"anthropic.web_fetch_20260209", "anthropic.web_search_20250305"} {
+		if !checked[name] {
+			t.Errorf("no %s result was checked", name)
+		}
+	}
+}
+
+// The TS output schemas reject outputs of the wrong shape (zod parse).
+func TestR73prova_OutputSchemasRejectWrongShapes(t *testing.T) {
+	bad := map[string]interface{}{
+		"anthropic.web_search_20260318":       []interface{}{map[string]interface{}{"url": "u", "type": "web_search_result"}},
+		"anthropic.web_fetch_20260318":        map[string]interface{}{"type": "web_fetch_result", "url": "u"},
+		"anthropic.advisor_20260301":          map[string]interface{}{"type": "nope"},
+		"anthropic.code_execution_20250522":   map[string]interface{}{"type": "code_execution_result", "stdout": 1},
+		"anthropic.tool_search_bm25_20251119": []interface{}{map[string]interface{}{"type": "tool_reference"}},
+	}
+	all := map[string]types.Tool{}
+	for _, tl := range r73provaAllTools() {
+		all[tl.Name] = tl
+	}
+	for id, output := range bad {
+		tl := all[id]
+		if tl.OutputSchema == nil {
+			t.Fatalf("%s has no output schema", id)
+		}
+		if err := schema.NewSimpleJSONSchema(tl.OutputSchema.(map[string]interface{})).Validator().Validate(output); err == nil {
+			t.Errorf("%s accepted %v", id, output)
+		}
+	}
+	for _, id := range []string{"anthropic.bash_20250124", "anthropic.memory_20250818", "anthropic.computer_20251124", "anthropic.text_editor_20250728"} {
+		if all[id].OutputSchema != nil {
+			t.Errorf("%s: TS declares no output schema", id)
+		}
 	}
 }

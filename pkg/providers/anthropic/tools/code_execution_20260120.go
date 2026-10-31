@@ -363,6 +363,7 @@ func CodeExecution20260120() types.Tool {
 		Name:         codeExecution20260120ToolName,
 		Type:         types.ToolTypeProviderDefined,
 		ProviderID:   "anthropic.code_execution_20260120",
+		OutputSchema: toolOutputSchema("anthropic.code_execution_20260120"),
 		ProviderArgs: noProviderArgs(),
 		Description:  buildCodeExecution20260120Description(),
 		Parameters:   buildCodeExecution20260120Schema(),

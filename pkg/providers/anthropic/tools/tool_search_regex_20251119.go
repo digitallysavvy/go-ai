@@ -77,6 +77,7 @@ func ToolSearchRegex20251119() types.Tool {
 		Name:         "anthropic.tool_search_regex_20251119",
 		Type:         types.ToolTypeProviderDefined,
 		ProviderID:   "anthropic.tool_search_regex_20251119",
+		OutputSchema: toolOutputSchema("anthropic.tool_search_regex_20251119"),
 		ProviderArgs: noProviderArgs(),
 		Description: `Regex tool search for discovering tools using regex patterns.
 
@@ -110,19 +111,6 @@ Best practices:
 - Consider case-insensitive patterns with (?i) prefix
 - Use OR patterns (|) for flexibility`,
 		Parameters: parameters,
-		// TS outputSchema: z.array(z.object({type: z.literal('tool_reference'),
-		// toolName: z.string()})) (ValidateUIMessages checks outputs).
-		OutputSchema: map[string]interface{}{
-			"type": "array",
-			"items": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"type":     map[string]interface{}{"type": "string", "const": "tool_reference"},
-					"toolName": map[string]interface{}{"type": "string"},
-				},
-				"required": []interface{}{"type", "toolName"},
-			},
-		},
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 			return nil, fmt.Errorf("tool search regex must be executed by the provider (Anthropic). Set ProviderExecuted: true")
 		},

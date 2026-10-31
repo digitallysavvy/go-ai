@@ -136,6 +136,7 @@ func WebSearch20260318(config WebSearch20260318Config) types.Tool {
 		Name:         "anthropic.web_search_20260318",
 		Type:         types.ToolTypeProviderDefined,
 		ProviderID:   "anthropic.web_search_20260318",
+		OutputSchema: toolOutputSchema("anthropic.web_search_20260318"),
 		ProviderArgs: webSearch20260318ProviderArgs(config),
 		Description:  "Search the web for current information (Anthropic web search, version 2026-03-18). Executed by Anthropic's servers.",
 		Parameters: map[string]interface{}{

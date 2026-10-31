@@ -12,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	anthropicTools "github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 )
 
 func r73provaIntPtr(v int) *int { return &v }
@@ -92,5 +93,24 @@ func TestR73prova_GatewaySendsAnthropicToolsAsProviderTools(t *testing.T) {
 	if !reflect.DeepEqual(body.Tools, want) {
 		got, _ := json.Marshal(body.Tools)
 		t.Fatalf("tools =\n%s", got)
+	}
+}
+
+// Google tools reach the gateway with a tool name (TS: the tools record key);
+// before the gemini constructors set Name the gateway got name "".
+func TestR73prova_GatewaySendsGoogleToolsWithName(t *testing.T) {
+	model := newTestGatewayLanguageModel("google/gemini-2.5-pro")
+	body, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		Tools:  []types.Tool{gemini.GoogleSearchTool(), gemini.CodeExecutionTool()},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := json.Marshal(body["tools"])
+	want := `[{"args":{},"id":"google.google_search","name":"google_search","type":"provider"},` +
+		`{"args":{},"id":"google.code_execution","name":"code_execution","type":"provider"}]`
+	if string(got) != want {
+		t.Fatalf("tools = %s", got)
 	}
 }
