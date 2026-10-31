@@ -1731,6 +1731,25 @@ func TestR73StreamCreateUIResponseErrorChunkAndConsumeFailure(t *testing.T) {
 	})
 }
 
+
+// TS onStepEnd receives the StepResult, including
+// experimental_steeringMessages: the StreamText step-end event carries the
+// steering messages delivered with the step.
+func TestR73StreamStepEndEventCarriesSteeringMessages(t *testing.T) {
+	steering := NewSteering()
+	steering.Steer("first")
+	var events []OnStepFinishEvent
+	r := r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, r71streamHelloWorld), Prompt: "hello", ExperimentalSteering: steering,
+		OnStepEndEvent: func(_ context.Context, e OnStepFinishEvent) { events = append(events, e) }})
+	steps := r.Steps()
+	if len(steps) != 1 || len(steps[0].ExperimentalSteeringMessages) != 1 {
+		t.Fatalf("step steering messages = %+v", steps)
+	}
+	if len(events) != 1 || !reflect.DeepEqual(events[0].ExperimentalSteeringMessages, steps[0].ExperimentalSteeringMessages) {
+		t.Fatalf("step-end event steering messages = %+v", events)
+	}
+}
+
 // r73streamPUICasesJSON was extracted from ai/packages/ai/src/ui/process-ui-message-stream.test.ts
 // at e64ed82f27: per case the scripted chunks, the initial state and the
 // assertion values (vitest inline snapshots parsed, undefined dropped).

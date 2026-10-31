@@ -3580,11 +3580,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Usage:              stepResult.Usage,
 			Performance:        stepResult.Performance,
 			Warnings:           stepWarnings,
-			Sources:            stepResult.Sources,
-			Files:              stepFiles,
-			ProviderMetadata:   stepResult.ProviderMetadata,
-			ResponseHeaders:    stepHeaders,
-			Request:            GenerateStepRequest{Body: stepResult.Request.Body, Messages: stepResult.Request.Messages},
+			// TS onStepEnd receives the StepResult, steering messages included.
+			ExperimentalSteeringMessages: stepResult.ExperimentalSteeringMessages,
+			Sources:                      stepResult.Sources,
+			Files:                        stepFiles,
+			ProviderMetadata:             stepResult.ProviderMetadata,
+			ResponseHeaders:              stepHeaders,
+			Request:                      GenerateStepRequest{Body: stepResult.Request.Body, Messages: stepResult.Request.Messages},
 			Response: GenerateStepResponse{
 				ID:        stepResult.Response.ID,
 				Timestamp: stepResult.Response.Timestamp,
