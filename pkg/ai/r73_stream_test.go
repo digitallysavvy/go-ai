@@ -929,6 +929,50 @@ func TestR73StreamJSONOutputNullAndEmptyString(t *testing.T) {
 	}
 }
 
+
+// TS 26308 (abort signal > abort during tool execution): the full stream ends
+// with start, start-step, the tool call and the abort part (no tool result,
+// no finish-step), onError is not called and onAbort has no steps.
+func TestR73StreamAbortDuringToolExecutionFullStream(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tool := types.Tool{Name: "tool1", Parameters: r71streamValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		cancel()
+		return "result1", nil
+	}}
+	var errs []error
+	var aborts []GenerateTextAbortEvent
+	r, err := StreamText(ctx, StreamTextOptions{
+		Model: r71streamModel(nil, r71streamToolCallStep([2]string{"call-1", "value"}), r71streamHelloWorld), Prompt: "test-input",
+		Tools: []types.Tool{tool}, StopWhen: []StopCondition{StepCountIs(3)}, Internal: r71streamInternal,
+		OnError:      func(_ context.Context, err error) { errs = append(errs, err) },
+		OnAbortEvent: func(_ context.Context, e GenerateTextAbortEvent) { aborts = append(aborts, e) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := r.FullStream()
+	var parts []provider.StreamChunk
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		parts = append(parts, *c)
+	}
+	got := r73streamNames(parts)
+	want := []string{"start", "start-step", "tool-call:call-1:tool1", "abort"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("parts = %v\nwant %v", got, want)
+	}
+	if len(errs) != 0 {
+		t.Errorf("onError calls = %v", errs)
+	}
+	if len(aborts) != 1 || aborts[0].CallID != "test-telemetry-call-id" || len(aborts[0].Steps) != 0 {
+		t.Errorf("onAbort = %+v", aborts)
+	}
+}
+
 // r73streamPUICasesJSON was extracted from ai/packages/ai/src/ui/process-ui-message-stream.test.ts
 // at e64ed82f27: per case the scripted chunks, the initial state and the
 // assertion values (vitest inline snapshots parsed, undefined dropped).

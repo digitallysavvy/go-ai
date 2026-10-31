@@ -3169,9 +3169,16 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			// The caller's context ended while tools ran: queued tool calls
 			// were not started, so the step is incomplete. Report the abort
-			// instead of finishing as if the model had stopped.
-			if toolsErr != nil && ctx.Err() != nil {
+			// instead of finishing as if the model had stopped. This holds
+			// even when every started tool returned normally: TS stops the
+			// stream when the signal fires, so results produced after it, the
+			// step's finish-step and the step record are dropped (TS
+			// stream-text.test.ts "abort during tool execution").
+			if ctx.Err() != nil {
 				abortErr := toolsErr
+				if abortErr == nil {
+					abortErr = ctx.Err()
+				}
 				if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
 					abortErr = wrapTimeoutError(TimeoutReasonTotal, abortErr)
 				}
