@@ -130,7 +130,7 @@ func NewCustomTool(opts ...CustomToolOption) CustomTool {
 //	    Tools: []types.Tool{sdkTool},
 //	})
 func (ct CustomTool) ToTool(name string) types.Tool {
-	return types.Tool{
+	return providerTool(types.Tool{
 		Name: name,
 		Description: func() string {
 			if ct.Description != nil {
@@ -141,5 +141,7 @@ func (ct CustomTool) ToTool(name string) types.Tool {
 		// Client-executed (TS createProviderDefinedToolFactory, not
 		// provider-executed): attach Execute to run it locally.
 		ProviderOptions: ct,
-	}
+		// TS openai.tools.customTool: id "openai.custom", args
+		// {description?, format?, async?}; the name is the caller's.
+	}, "openai.custom", providerArgs(ct))
 }

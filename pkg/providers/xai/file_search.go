@@ -43,7 +43,11 @@ func FileSearch(config FileSearchConfig) types.Tool {
 		"properties": map[string]interface{}{},
 	}
 
-	return types.Tool{
+	args := map[string]interface{}{"vectorStoreIds": config.VectorStoreIDs}
+	if config.MaxNumResults > 0 {
+		args["maxNumResults"] = config.MaxNumResults
+	}
+	return xaiProviderTool(types.Tool{
 		Name:        "xai.file_search",
 		Description: "Search vector stores for relevant information. Returns queries and results including file IDs, filenames, relevance scores, and matching text snippets.",
 		Title:       "File Search",
@@ -81,7 +85,7 @@ func FileSearch(config FileSearchConfig) types.Tool {
 		// This tool is executed by xAI's servers, not locally
 		ProviderExecuted: true,
 		Execute:          providerExecutedNoop("xai.file_search"),
-	}
+	}, args)
 }
 
 // FileSearchWithDefaults creates a FileSearch tool with default configuration

@@ -26,6 +26,10 @@ func isOpenAIShellProviderExecuted(tools []types.Tool) bool {
 		if env, ok := tool.ProviderOptions.(responses.ShellEnvironment); ok {
 			return env.Type == "container_auto" || env.Type == "container_reference"
 		}
+		// A TS-shaped tool: args.environment.type (TS names).
+		if env, ok := tool.ProviderArgs["environment"].(map[string]interface{}); ok {
+			return env["type"] == "containerAuto" || env["type"] == "containerReference"
+		}
 		return false
 	}
 	return false

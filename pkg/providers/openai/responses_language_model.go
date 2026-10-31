@@ -1050,7 +1050,7 @@ func convertResponsesToolChoice(tc types.ToolChoice, tools []types.Tool) interfa
 			return map[string]interface{}{"type": name}
 		}
 		if tool != nil {
-			if _, ok := tool.ProviderOptions.(openaitool.CustomTool); ok {
+			if isOpenAICustomSDKTool(*tool) {
 				return map[string]interface{}{"type": "custom", "name": name}
 			}
 		}
@@ -1189,7 +1189,7 @@ func customToolNames(tools []types.Tool) map[string]bool {
 	}
 	names := map[string]bool{}
 	for _, tool := range tools {
-		if _, ok := tool.ProviderOptions.(openaitool.CustomTool); ok {
+		if isOpenAICustomSDKTool(tool) {
 			names[tool.Name] = true
 		}
 	}
@@ -1221,7 +1221,9 @@ func responsesLogprobsRequested(providerOptions map[string]interface{}, provider
 func openAIProviderToolNames(tools []types.Tool) map[string]string {
 	var m map[string]string
 	for _, tool := range tools {
-		if tool.Name == "" || !strings.HasPrefix(tool.ProviderID, "openai.") {
+		// openai.custom is not in TS providerToolNames: a custom tool keeps
+		// its own name.
+		if tool.Name == "" || !strings.HasPrefix(tool.ProviderID, "openai.") || tool.ProviderID == "openai.custom" {
 			continue
 		}
 		if m == nil {
@@ -1281,11 +1283,35 @@ func openAIDeclaredToolName(tools []types.Tool, providerID, bareName string) str
 
 func openAIProviderToolDisplayName(tools []types.Tool, providerID, bareName string) string {
 	for _, tool := range tools {
-		if tool.ProviderID == providerID {
+		// The openaitool constructors name a hosted tool by its id
+		// (Name == ProviderID); such a tool keeps the bare name, as it did
+		// before the constructors set ProviderID.
+		if tool.ProviderID == providerID && tool.Name != providerID {
 			return tool.Name
 		}
 	}
 	return bareName
+}
+
+// openAIToolSearchDisplayName is the tool name of tool_search calls and
+// outputs: the declared tool_search tool's Name (TS
+// toolNameMapping.toCustomToolName), else "tool_search". Stream and generate
+// use the same name, and a client-mode call names a tool the SDK can run.
+func openAIToolSearchDisplayName(tools []types.Tool) string {
+	if name := toolSearchToolName(tools); name != "" {
+		return name
+	}
+	return "tool_search"
+}
+
+// isOpenAICustomSDKTool reports whether tool is an OpenAI custom tool: an
+// openaitool.CustomTool (CustomTool.ToTool) or a TS-shaped "openai.custom"
+// provider tool.
+func isOpenAICustomSDKTool(tool types.Tool) bool {
+	if _, ok := tool.ProviderOptions.(openaitool.CustomTool); ok {
+		return true
+	}
+	return tool.Type == types.ToolTypeProviderDefined && tool.ProviderID == "openai.custom"
 }
 
 // outputSchemaToolNames returns the set of function tool names that declared
@@ -1781,7 +1807,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if err := json.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
-			toolName := openAIProviderToolDisplayName(tools, "openai.tool_search", "tool_search")
+			toolName := openAIToolSearchDisplayName(tools)
 			isHosted := item.Execution == "server"
 			toolCallID := item.ID
 			if item.CallID != nil && *item.CallID != "" {
@@ -1826,7 +1852,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			}
 			result.Content = append(result.Content, types.ToolResultContent{
 				ToolCallID:       toolCallID,
-				ToolName:         openAIProviderToolDisplayName(tools, "openai.tool_search", "tool_search"),
+				ToolName:         openAIToolSearchDisplayName(tools),
 				Result:           map[string]interface{}{"tools": matchedTools},
 				ProviderMetadata: toRawMetadata(openAIResponsesToolCallMetadata(providerName, item.ID, "", nil, nil)),
 			})

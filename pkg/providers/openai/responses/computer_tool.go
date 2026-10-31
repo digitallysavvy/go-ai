@@ -146,8 +146,10 @@ func MapComputerActionToWire(action map[string]interface{}) map[string]interface
 //
 //	tool := responses.NewComputerTool()
 func NewComputerTool() types.Tool {
-	return types.Tool{
-		Name:        "openai.computer",
-		Description: "Control a computer's mouse, keyboard, and screen via batched UI actions",
-	}
+	return providerDefinedTool(types.Tool{
+		Name:         "openai.computer",
+		Description:  "Control a computer's mouse, keyboard, and screen via batched UI actions",
+		Parameters:   schemaFromJSON(computerInputSchemaJSON),
+		OutputSchema: schemaFromJSON(computerOutputSchemaJSON),
+	}, "openai.computer", map[string]interface{}{})
 }
