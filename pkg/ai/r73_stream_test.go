@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"reflect"
 	"strconv"
@@ -1684,6 +1685,50 @@ func TestR73StreamCreateUIMergesStreamsAndWrites(t *testing.T) {
 	if !reflect.DeepEqual(bySource, want) || len(all) != 8 {
 		t.Fatalf("chunks = %v", all)
 	}
+}
+
+func r73streamChunkChan(chunks ...UIMessageChunk) <-chan UIMessageChunk {
+	ch := make(chan UIMessageChunk, len(chunks))
+	for _, c := range chunks {
+		ch <- c
+	}
+	close(ch)
+	return ch
+}
+
+// create-ui-message-stream-response.test.ts 129 / 305: an error chunk is
+// written as an SSE event, and a failing consumeSseStream callback does not
+// break the response body.
+func TestR73StreamCreateUIResponseErrorChunkAndConsumeFailure(t *testing.T) {
+	t.Run("error chunk", func(t *testing.T) {
+		resp, err := CreateUIMessageChunksResponse(r73streamChunkChan(UIMessageChunk{"type": "error", "errorText": "Custom error message"}), &UIMessageStreamResponseInit{Status: 200})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("body read: %v", err)
+		}
+		r72streamAssertSSE(t, strings.Split(strings.TrimSuffix(string(body), "\n\n"), "\n\n"),
+			`data: {"type":"error","errorText":"Custom error message"}`, `data: [DONE]`)
+	})
+	t.Run("consumeSseStream error", func(t *testing.T) {
+		calls := 0
+		resp, err := CreateUIMessageChunksResponse(r73streamChunkChan(UIMessageChunk{"type": "text-delta", "id": "1", "delta": "error-test"}), &UIMessageStreamResponseInit{Status: 200,
+			ConsumeSSEStream: func(io.Reader) error { calls++; return errors.New("consumeSseStream error") }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("body read: %v (TS: the response still works when consumeSseStream fails)", err)
+		}
+		r72streamAssertSSE(t, strings.Split(strings.TrimSuffix(string(body), "\n\n"), "\n\n"),
+			`data: {"type":"text-delta","id":"1","delta":"error-test"}`, `data: [DONE]`)
+		if calls != 1 {
+			t.Errorf("consumeSseStream calls = %d", calls)
+		}
+	})
 }
 
 // r73streamPUICasesJSON was extracted from ai/packages/ai/src/ui/process-ui-message-stream.test.ts
