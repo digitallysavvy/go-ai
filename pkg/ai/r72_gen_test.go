@@ -836,3 +836,297 @@ func TestR72Gen_ResponseHeadersFromResponseHeadersField(t *testing.T) {
 		}
 	}
 }
+
+// Round 72 (gen) ports of ui/convert-to-model-messages.test.ts. Each result
+// is rendered in the TS ModelMessage shape (r72genTSMessages) and compared
+// with the TS inline snapshot (or the shape its snapshot file records).
+
+func r72genTSPart(t *testing.T, part types.ContentPart) map[string]interface{} {
+	t.Helper()
+	out := map[string]interface{}{}
+	set := func(k string, v interface{}, ok bool) {
+		if ok {
+			out[k] = v
+		}
+	}
+	switch p := part.(type) {
+	case types.TextContent:
+		out["type"], out["text"] = "text", p.Text
+		set("providerOptions", p.ProviderOptions, p.ProviderOptions != nil)
+	case types.ReasoningContent:
+		out["type"], out["text"] = "reasoning", p.Text
+		set("providerOptions", p.ProviderOptions, p.ProviderOptions != nil)
+	case types.FileContent:
+		out["type"], out["mediaType"] = "file", p.MediaType
+		set("filename", p.Filename, p.Filename != "")
+		switch p.FileData.Type {
+		case types.FileDataTypeReference:
+			out["data"] = map[string]interface{}{"type": "reference", "reference": map[string]string(p.FileData.Reference)}
+		default:
+			out["data"] = map[string]interface{}{"type": "url", "url": p.FileData.URL}
+		}
+		set("providerOptions", p.ProviderOptions, p.ProviderOptions != nil)
+	case types.ToolCallContent:
+		out["type"], out["toolCallId"], out["toolName"] = "tool-call", p.ToolCallID, p.ToolName
+		var input interface{}
+		if p.Arguments != nil {
+			input = p.Arguments
+		} else if p.Input != "" {
+			if err := json.Unmarshal([]byte(p.Input), &input); err != nil {
+				input = p.Input
+			}
+		}
+		out["input"] = input
+		set("providerExecuted", true, p.ProviderExecuted)
+		set("providerOptions", p.ProviderOptions, p.ProviderOptions != nil)
+	case types.ToolApprovalRequestContent:
+		out["type"], out["approvalId"], out["toolCallId"] = "tool-approval-request", p.ApprovalID, p.ToolCallID
+		set("isAutomatic", true, p.IsAutomatic)
+		set("reason", p.Reason, p.Reason != "")
+		set("signature", p.Signature, p.Signature != "")
+	case types.ToolApprovalResponseContent:
+		out["type"], out["approvalId"], out["approved"] = "tool-approval-response", p.ApprovalID, p.Approved
+		set("reason", p.Reason, p.Reason != "")
+		set("providerExecuted", true, p.ProviderExecuted)
+	case types.ToolResultContent:
+		out["type"], out["toolCallId"], out["toolName"] = "tool-result", p.ToolCallID, p.ToolName
+		if p.Output != nil {
+			o := map[string]interface{}{"type": string(p.Output.Type)}
+			set2 := func(k string, v interface{}, ok bool) {
+				if ok {
+					o[k] = v
+				}
+			}
+			set2("value", p.Output.Value, p.Output.Type != types.ToolResultOutputExecutionDenied)
+			set2("reason", p.Output.Reason, p.Output.Reason != "")
+			out["output"] = o
+		}
+		set("providerExecuted", true, p.ProviderExecuted)
+		set("providerOptions", p.ProviderOptions, p.ProviderOptions != nil)
+	default:
+		t.Fatalf("unexpected part %T", part)
+	}
+	return out
+}
+
+func r72genTSMessages(t *testing.T, msgs []types.Message) interface{} {
+	t.Helper()
+	var out []interface{}
+	for _, m := range msgs {
+		var content []interface{}
+		for _, p := range m.Content {
+			content = append(content, r72genTSPart(t, p))
+		}
+		msg := map[string]interface{}{"role": string(m.Role), "content": content}
+		if m.ProviderOptions != nil {
+			msg["providerOptions"] = m.ProviderOptions
+		}
+		out = append(out, msg)
+	}
+	return r72genJSON(t, out)
+}
+
+func r72genJSON(t *testing.T, v interface{}) interface{} {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out interface{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func r72genCheckMessages(t *testing.T, ui []UIMessage, wantJSON string, opts ...ConvertToModelMessagesOptions) {
+	t.Helper()
+	got, err := ConvertToModelMessages(context.Background(), ui, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want interface{}
+	if err := json.Unmarshal([]byte(wantJSON), &want); err != nil {
+		t.Fatal(err)
+	}
+	if g := r72genTSMessages(t, got); !reflect.DeepEqual(g, want) {
+		gj, _ := json.Marshal(g)
+		t.Fatalf("messages =\n%s\nwant\n%s", gj, wantJSON)
+	}
+}
+
+func r72genScreenshot(id, value, output string) *ToolUIPart {
+	return &ToolUIPart{Type: "tool-screenshot", State: ToolStateOutputAvailable, ToolCallID: id,
+		Input: map[string]interface{}{"value": value}, Output: output}
+}
+
+func r72genScreenshotStep(ids ...string) string {
+	calls, results := "", ""
+	for i, id := range ids {
+		if i > 0 {
+			calls += ","
+			results += ","
+		}
+		n := id[len("call-"):]
+		calls += `{"type":"tool-call","toolCallId":"` + id + `","toolName":"screenshot","input":{"value":"value-` + n + `"}}`
+		results += `{"type":"tool-result","toolCallId":"` + id + `","toolName":"screenshot","output":{"type":"text","value":"result-` + n + `"}}`
+	}
+	return calls + "|" + results
+}
+
+// 1399 'should handle conversation with multiple tool invocations that have
+// step information', 1443 'mix of tool invocations and text' and 1547
+// 'multiple tool invocations and user message at the end' (snapshot file):
+// every step-start closes a block of one assistant and one tool message.
+func TestR72GenConvert_StepBlocks(t *testing.T) {
+	split := func(s string) (string, string) {
+		for i := range s {
+			if s[i] == '|' {
+				return s[:i], s[i+1:]
+			}
+		}
+		return s, ""
+	}
+	c1, r1 := split(r72genScreenshotStep("call-1"))
+	c23, r23 := split(r72genScreenshotStep("call-2", "call-3"))
+	c4, r4 := split(r72genScreenshotStep("call-4"))
+
+	r72genCheckMessages(t, []UIMessage{{Role: UIMessageRoleAssistant, Parts: []UIMessagePart{
+		StepStartUIPart{}, TextUIPart{Text: "response"}, r72genScreenshot("call-1", "value-1", "result-1"),
+		StepStartUIPart{}, r72genScreenshot("call-2", "value-2", "result-2"), r72genScreenshot("call-3", "value-3", "result-3"),
+		StepStartUIPart{}, r72genScreenshot("call-4", "value-4", "result-4"),
+	}}}, `[
+		{"role":"assistant","content":[{"type":"text","text":"response"},`+c1+`]},
+		{"role":"tool","content":[`+r1+`]},
+		{"role":"assistant","content":[`+c23+`]},
+		{"role":"tool","content":[`+r23+`]},
+		{"role":"assistant","content":[`+c4+`]},
+		{"role":"tool","content":[`+r4+`]}]`)
+
+	r72genCheckMessages(t, []UIMessage{{Role: UIMessageRoleAssistant, Parts: []UIMessagePart{
+		StepStartUIPart{}, TextUIPart{Text: "i am gonna use tool1"}, r72genScreenshot("call-1", "value-1", "result-1"),
+		StepStartUIPart{}, TextUIPart{Text: "i am gonna use tool2 and tool3"}, r72genScreenshot("call-2", "value-2", "result-2"), r72genScreenshot("call-3", "value-3", "result-3"),
+		StepStartUIPart{}, r72genScreenshot("call-4", "value-4", "result-4"),
+		StepStartUIPart{}, TextUIPart{Text: "final response"},
+	}}}, `[
+		{"role":"assistant","content":[{"type":"text","text":"i am gonna use tool1"},`+c1+`]},
+		{"role":"tool","content":[`+r1+`]},
+		{"role":"assistant","content":[{"type":"text","text":"i am gonna use tool2 and tool3"},`+c23+`]},
+		{"role":"tool","content":[`+r23+`]},
+		{"role":"assistant","content":[`+c4+`]},
+		{"role":"tool","content":[`+r4+`]},
+		{"role":"assistant","content":[{"type":"text","text":"final response"}]}]`)
+
+	r72genCheckMessages(t, []UIMessage{
+		{Role: UIMessageRoleAssistant, Parts: []UIMessagePart{
+			StepStartUIPart{}, r72genScreenshot("call-1", "value-1", "result-1"),
+			StepStartUIPart{}, r72genScreenshot("call-2", "value-2", "result-2"), r72genScreenshot("call-3", "value-3", "result-3"),
+			StepStartUIPart{}, r72genScreenshot("call-4", "value-4", "result-4"),
+			StepStartUIPart{}, TextUIPart{Text: "response"},
+		}},
+		{Role: UIMessageRoleUser, Parts: []UIMessagePart{TextUIPart{Text: "Thanks!"}}},
+	}, `[
+		{"role":"assistant","content":[`+c1+`]},
+		{"role":"tool","content":[`+r1+`]},
+		{"role":"assistant","content":[`+c23+`]},
+		{"role":"tool","content":[`+r23+`]},
+		{"role":"assistant","content":[`+c4+`]},
+		{"role":"tool","content":[`+r4+`]},
+		{"role":"assistant","content":[{"type":"text","text":"response"}]},
+		{"role":"user","content":[{"type":"text","text":"Thanks!"}]}]`)
+}
+
+var r72genWeatherUser = UIMessage{Role: UIMessageRoleUser, Parts: []UIMessagePart{TextUIPart{Text: "What is the weather in Tokyo?"}}}
+
+const r72genWeatherUserJSON = `{"role":"user","content":[{"type":"text","text":"What is the weather in Tokyo?"}]}`
+const r72genWeatherCallJSON = `{"type":"tool-call","toolCallId":"call-1","toolName":"weather","input":{"city":"Tokyo"}}`
+
+// Approval round trips: 2381 'should preserve automatic approval metadata
+// for approved tool results', 2475 'should convert a denied tool approval
+// request and follow up text (static tool)', 2936 'tool output result with
+// approval and follow up text', 3245 'tool error result with approval and
+// follow up text' (inline snapshots).
+func TestR72GenConvert_ApprovalRoundTrips(t *testing.T) {
+	tokyo := map[string]interface{}{"city": "Tokyo"}
+	followUp := func(text string) []UIMessagePart {
+		return []UIMessagePart{StepStartUIPart{}, TextUIPart{Text: text}}
+	}
+
+	r72genCheckMessages(t, []UIMessage{r72genWeatherUser, {Role: UIMessageRoleAssistant, Parts: []UIMessagePart{
+		StepStartUIPart{},
+		&ToolUIPart{Type: "tool-weather", State: ToolStateOutputAvailable, ToolCallID: "call-1", Input: tokyo,
+			Output:   map[string]interface{}{"weather": "Sunny"},
+			Approval: &ToolUIPartApproval{ID: "approval-1", Approved: boolPtr(true), IsAutomatic: boolPtr(true), Reason: "trusted internal tool"}},
+	}}}, `[`+r72genWeatherUserJSON+`,
+		{"role":"assistant","content":[`+r72genWeatherCallJSON+`,{"type":"tool-approval-request","approvalId":"approval-1","isAutomatic":true,"toolCallId":"call-1"}]},
+		{"role":"tool","content":[{"type":"tool-approval-response","approvalId":"approval-1","approved":true,"reason":"trusted internal tool"},
+			{"type":"tool-result","toolCallId":"call-1","toolName":"weather","output":{"type":"json","value":{"weather":"Sunny"}}}]}]`)
+
+	r72genCheckMessages(t, []UIMessage{r72genWeatherUser, {Role: UIMessageRoleAssistant, Parts: append([]UIMessagePart{
+		StepStartUIPart{},
+		&ToolUIPart{Type: "tool-weather", State: ToolStateApprovalResponded, ToolCallID: "call-1", Input: tokyo,
+			Approval: &ToolUIPartApproval{ID: "approval-1", Approved: boolPtr(false), Reason: "I don't want to approve this"}},
+	}, followUp("I was not able to retrieve the weather.")...)}}, `[`+r72genWeatherUserJSON+`,
+		{"role":"assistant","content":[`+r72genWeatherCallJSON+`,{"type":"tool-approval-request","approvalId":"approval-1","toolCallId":"call-1"}]},
+		{"role":"tool","content":[{"type":"tool-approval-response","approvalId":"approval-1","approved":false,"reason":"I don't want to approve this"},
+			{"type":"tool-result","toolCallId":"call-1","toolName":"weather","output":{"type":"execution-denied","reason":"I don't want to approve this"}}]},
+		{"role":"assistant","content":[{"type":"text","text":"I was not able to retrieve the weather."}]}]`)
+
+	r72genCheckMessages(t, []UIMessage{r72genWeatherUser, {Role: UIMessageRoleAssistant, Parts: append([]UIMessagePart{
+		StepStartUIPart{},
+		&ToolUIPart{Type: "tool-weather", State: ToolStateOutputAvailable, ToolCallID: "call-1", Input: tokyo,
+			Output:   map[string]interface{}{"weather": "Sunny", "temperature": "20°C"},
+			Approval: &ToolUIPartApproval{ID: "approval-1", Approved: boolPtr(true)}},
+	}, followUp("The weather in Tokyo is sunny.")...)}}, `[`+r72genWeatherUserJSON+`,
+		{"role":"assistant","content":[`+r72genWeatherCallJSON+`,{"type":"tool-approval-request","approvalId":"approval-1","toolCallId":"call-1"}]},
+		{"role":"tool","content":[{"type":"tool-approval-response","approvalId":"approval-1","approved":true},
+			{"type":"tool-result","toolCallId":"call-1","toolName":"weather","output":{"type":"json","value":{"temperature":"20°C","weather":"Sunny"}}}]},
+		{"role":"assistant","content":[{"type":"text","text":"The weather in Tokyo is sunny."}]}]`)
+
+	r72genCheckMessages(t, []UIMessage{r72genWeatherUser, {Role: UIMessageRoleAssistant, Parts: append([]UIMessagePart{
+		StepStartUIPart{},
+		&ToolUIPart{Type: "tool-weather", State: ToolStateOutputError, ToolCallID: "call-1", Input: tokyo,
+			ErrorText: "Error: Fetching weather data failed",
+			Approval:  &ToolUIPartApproval{ID: "approval-1", Approved: boolPtr(true)}},
+	}, followUp("The weather in Tokyo is sunny.")...)}}, `[`+r72genWeatherUserJSON+`,
+		{"role":"assistant","content":[`+r72genWeatherCallJSON+`,{"type":"tool-approval-request","approvalId":"approval-1","toolCallId":"call-1"}]},
+		{"role":"tool","content":[{"type":"tool-approval-response","approvalId":"approval-1","approved":true},
+			{"type":"tool-result","toolCallId":"call-1","toolName":"weather","output":{"type":"error-text","value":"Error: Fetching weather data failed"}}]},
+		{"role":"assistant","content":[{"type":"text","text":"The weather in Tokyo is sunny."}]}]`)
+}
+
+// Provider metadata and file parts: 175 user text with provider metadata,
+// 242 user file with provider metadata, 347 no filename when not provided,
+// 431 assistant text with provider metadata, 569 / 600 / 633 / 670 assistant
+// file parts (plain, filename, provider metadata, providerReference) and 1227
+// 'should propagate provider metadata to provider-executed tool-result'.
+func TestR72GenConvert_ProviderMetadataAndFiles(t *testing.T) {
+	md := map[string]interface{}{"testProvider": map[string]interface{}{"signature": "1234567890"}}
+	r72genCheckMessages(t, []UIMessage{{Role: UIMessageRoleUser, Parts: []UIMessagePart{
+		TextUIPart{Text: "Hello, AI!", ProviderMetadata: md},
+		FileUIPart{MediaType: "image/png", URL: "https://example.com/image.png", ProviderMetadata: md},
+		FileUIPart{MediaType: "image/jpeg", URL: "https://example.com/image.jpg"},
+	}}}, `[{"role":"user","content":[
+		{"type":"text","text":"Hello, AI!","providerOptions":{"testProvider":{"signature":"1234567890"}}},
+		{"type":"file","mediaType":"image/png","data":{"type":"url","url":"https://example.com/image.png"},"providerOptions":{"testProvider":{"signature":"1234567890"}}},
+		{"type":"file","mediaType":"image/jpeg","data":{"type":"url","url":"https://example.com/image.jpg"}}]}]`)
+
+	r72genCheckMessages(t, []UIMessage{{Role: UIMessageRoleAssistant, Parts: []UIMessagePart{
+		TextUIPart{Text: "Hello, human!", ProviderMetadata: md},
+		FileUIPart{MediaType: "image/png", URL: "https://example.com/image.png"},
+		FileUIPart{MediaType: "image/png", URL: "https://example.com/image.png", Filename: "image.png", ProviderMetadata: md},
+		FileUIPart{MediaType: "image/png", ProviderReference: map[string]string{"openai": "file-abc"}},
+	}}}, `[{"role":"assistant","content":[
+		{"type":"text","text":"Hello, human!","providerOptions":{"testProvider":{"signature":"1234567890"}}},
+		{"type":"file","mediaType":"image/png","data":{"type":"url","url":"https://example.com/image.png"}},
+		{"type":"file","mediaType":"image/png","filename":"image.png","data":{"type":"url","url":"https://example.com/image.png"},"providerOptions":{"testProvider":{"signature":"1234567890"}}},
+		{"type":"file","mediaType":"image/png","data":{"type":"reference","reference":{"openai":"file-abc"}}}]}]`)
+
+	r72genCheckMessages(t, []UIMessage{{Role: UIMessageRoleAssistant, Parts: []UIMessagePart{
+		&ToolUIPart{Type: "tool-web_search", State: ToolStateOutputAvailable, ToolCallID: "call-1",
+			Input: map[string]interface{}{"query": "q"}, Output: map[string]interface{}{"r": 1},
+			ProviderExecuted: boolPtr(true), CallProviderMetadata: md},
+	}}}, `[{"role":"assistant","content":[
+		{"type":"tool-call","toolCallId":"call-1","toolName":"web_search","input":{"query":"q"},"providerExecuted":true,"providerOptions":{"testProvider":{"signature":"1234567890"}}},
+		{"type":"tool-result","toolCallId":"call-1","toolName":"web_search","output":{"type":"json","value":{"r":1}},"providerExecuted":true,"providerOptions":{"testProvider":{"signature":"1234567890"}}}]}]`)
+}
