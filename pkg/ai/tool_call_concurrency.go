@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/ordered"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -44,13 +45,31 @@ func executeToolsLimited(ctx context.Context, calls []types.ToolCall, tools []ty
 	perCallUsage := make([]types.Usage, len(calls))
 	perCallMs := make([]map[string]int64, len(calls))
 	errs := make([]error, len(calls))
+	// startGates[i] closes once call i has fired its start callbacks, or
+	// has returned without firing them (no local execution, a validation
+	// or approval outcome, an error). Call i+1 waits for it before firing
+	// its own, so start callbacks fire in call order as in TS; executions
+	// still overlap. ordered.Run claims calls in order, so every call a
+	// worker runs has all earlier calls claimed and running: no wait can
+	// deadlock.
+	startGates := make([]chan struct{}, len(calls))
+	startOnce := make([]sync.Once, len(calls))
+	for i := range startGates {
+		startGates[i] = make(chan struct{})
+	}
+	releaseStart := func(i int) { startOnce[i].Do(func() { close(startGates[i]) }) }
 
 	started := ordered.Run(ctx, len(calls), limit, func(i int) error {
+		defer releaseStart(i)
 		cb := callbacks
 		if callbacks.toolExecutionMs != nil {
 			perCallMs[i] = map[string]int64{}
 			cb.toolExecutionMs = perCallMs[i]
 		}
+		if i > 0 {
+			cb.startGate = startGates[i-1]
+		}
+		cb.startDone = func() { releaseStart(i) }
 		results, err := executeTools(ctx, []types.ToolCall{calls[i]}, tools, runtimeContext, toolsContext, toolApproval, &perCallUsage[i], cb)
 		perCallResults[i] = results
 		errs[i] = err
@@ -107,5 +126,21 @@ func markDynamicToolResults(results []types.ToolResult, calls []types.ToolCall) 
 				break
 			}
 		}
+	}
+}
+
+// waitToolStartGate blocks until gate is closed (the previous parallel call
+// fired its start callbacks) or ctx ends. A nil gate does not block.
+func waitToolStartGate(ctx context.Context, gate <-chan struct{}) {
+	if gate == nil {
+		return
+	}
+	var done <-chan struct{}
+	if ctx != nil {
+		done = ctx.Done()
+	}
+	select {
+	case <-gate:
+	case <-done:
 	}
 }

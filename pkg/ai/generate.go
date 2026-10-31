@@ -2404,6 +2404,14 @@ type toolCallEventCallbacks struct {
 	// stream was running (StreamText); executeTools reuses them instead of
 	// resolving the approval a second time.
 	preApprovals map[string]preResolvedApproval
+	// startGate, when set, is waited on before the call's start callbacks
+	// fire, and startDone is called once they have fired (user start
+	// callback, then telemetry tool start). executeToolsLimited chains them
+	// so parallel calls fire their start callbacks in call order, as TS
+	// executeTools does (each executeToolCall reaches notify after the same
+	// number of awaits), while the executions still overlap.
+	startGate <-chan struct{}
+	startDone func()
 }
 
 // newApprovalID returns an approval ID from the call's ID generator (TS
@@ -2805,6 +2813,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			if onToolStart == nil {
 				onToolStart = callbacks.fallbackStart
 			}
+			waitToolStartGate(ctx, callbacks.startGate)
 			Notify(ctx, startEvent, onToolStart)
 
 			// Fire telemetry OnToolCallStart — integrations may inject a child span.
@@ -2816,6 +2825,9 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				Args:        call.Arguments,
 				ToolContext: telemetryToolContext(callbacks.telemetrySettings, call.ToolName, toolContext),
 			})
+			if callbacks.startDone != nil {
+				callbacks.startDone()
+			}
 
 			// Locally-executed tool: execute now, wrapped by telemetry integrations
 			// so they can create nested spans.

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -593,10 +592,8 @@ func TestR73Gen_ToolExecutionCallbacksPerCall(t *testing.T) {
 	if len(starts) != 2 {
 		t.Fatalf("starts = %#v", starts)
 	}
-	// Go runs a step's tool calls in parallel goroutines, so the start
-	// callbacks fire in scheduling order; TS fires them in call order (open
-	// item in loop-r73-gen.md). Compare in call order.
-	sort.Slice(starts, func(i, j int) bool { return starts[i].ToolCall.ID < starts[j].ToolCall.ID })
+	// TS fires parallel calls' start callbacks in call order; Go chains
+	// them through executeToolsLimited's start gates (r73 integrator).
 	for i, id := range []string{"call-1", "call-2"} {
 		e := starts[i]
 		if e.ToolCall.ID != id || e.ToolCall.ToolName != "tool1" || e.ToolContext != nil || len(e.Messages) != 1 || e.Messages[0].Role != types.RoleUser {

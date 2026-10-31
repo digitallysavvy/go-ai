@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
@@ -78,3 +81,69 @@ func TestR73Integ_ElementStreamMaxItemsIsTypeValidationError(t *testing.T) {
 		t.Errorf("message = %q, want %q", tve.Error(), want)
 	}
 }
+
+// Coordinator ruling r73 (gen open item): parallel tool calls fire their
+// start callbacks in call order, as TS executeTools does (generate-text.test.ts
+// 4642), and their executions still overlap. call-1's start callback is slow,
+// so without the ordering call-2/call-3 would start first; call-1's Execute
+// waits until call-3's Execute runs, which deadlocks (test timeout) if the
+// executions were serialized.
+func TestR73Integ_ParallelToolStartCallbacksInCallOrder(t *testing.T) {
+	call3Running := make(chan struct{})
+	tool := types.Tool{
+		Name:       "tool1",
+		Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, args map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			switch opts.ToolCallID {
+			case "call-1":
+				select {
+				case <-call3Running:
+				case <-time.After(5 * time.Second):
+					return nil, errors.New("call-3 never ran while call-1 was executing")
+				}
+			case "call-3":
+				close(call3Running)
+			}
+			return "ok", nil
+		},
+	}
+	for _, concurrency := range []*int{nil, r73integIntPtr(3)} {
+		call3Running = make(chan struct{})
+		var mu sync.Mutex
+		var starts []string
+		res, err := GenerateText(context.Background(), GenerateTextOptions{
+			Model: r72genSeqModel(t,
+				r72genCalls(
+					types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{}},
+					types.ToolCall{ID: "call-2", ToolName: "tool1", Arguments: map[string]interface{}{}},
+					types.ToolCall{ID: "call-3", ToolName: "tool1", Arguments: map[string]interface{}{}}),
+				r72genText("done")),
+			Prompt:              "go",
+			Tools:               []types.Tool{tool},
+			StopWhen:            []StopCondition{StepCountIs(2)},
+			ToolCallConcurrency: concurrency,
+			OnToolExecutionStart: func(_ context.Context, e OnToolCallStartEvent) {
+				if e.ToolCall.ID == "call-1" {
+					time.Sleep(30 * time.Millisecond)
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				starts = append(starts, e.ToolCall.ID)
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mu.Lock()
+		got := strings.Join(starts, ",")
+		mu.Unlock()
+		if got != "call-1,call-2,call-3" {
+			t.Errorf("concurrency=%v: start order = %s, want call-1,call-2,call-3", concurrency, got)
+		}
+		if len(res.Steps) != 2 || len(res.Steps[0].ToolResults) != 3 {
+			t.Errorf("concurrency=%v: steps = %d, first step results = %+v", concurrency, len(res.Steps), res.Steps[0].ToolResults)
+		}
+	}
+}
+
+func r73integIntPtr(v int) *int { return &v }
