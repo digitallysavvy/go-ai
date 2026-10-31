@@ -2730,6 +2730,10 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	// for a failed run, then onEnd (only with steps) with the stream-mode
 	// total usage; an aborted run ends the root with onAbort here.
 	internal := *early.internalOptions(opts.Messages, opts.Prompt)
+	// TS model-call-iterator.ts stream mode leaves reasoning-file parts out
+	// of the assistant messages it adds to the conversation (the next
+	// step's prompt, step.response.messages and onEnd's messages).
+	internal.OmitReasoningFilesFromPrompt = true
 	rootCtx := ctx
 	aibridge.SetWorkflowStreamHooks(&internal, func(done aibridge.StreamDoneInfo) {
 		if done.Err != nil {

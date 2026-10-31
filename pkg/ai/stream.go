@@ -3538,11 +3538,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if workflowBlocked {
 			responseCalls, responseContent = workflowBlockedResponse(responseCalls, responseContent)
 		}
-		stepResponseMsgs := providerutils.ConvertToResponseMessages(
+		stepResponseMsgs := opts.Internal.omitReasoningFiles(providerutils.ConvertToResponseMessages(
 			responseCalls,
 			responseContent,
 			recordedToolResults,
-		)
+		))
 		// Copy before appending: currentMessages may share its backing array
 		// with a caller's slice (a PrepareStep result, the prompt messages).
 		currentMessages = append(append([]types.Message(nil), currentMessages...), stepResponseMsgs...)

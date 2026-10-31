@@ -58,6 +58,16 @@ type InternalOptions struct {
 	// final conversation, as TS's iterator returns it. Used by WorkflowAgent.
 	FailedEndMessages []types.Message
 
+	// OmitReasoningFilesFromPrompt makes StreamText leave reasoning-file
+	// parts out of each step's response messages: the step's
+	// Response.Messages, the messages appended to the next step's prompt and
+	// the conversation the end event reports. TS WorkflowAgent's stream mode
+	// builds the assistant message without them (model-call-iterator.ts
+	// getAssistantMessageContent: `case 'reasoning-file': if (mode !==
+	// 'generate') break;`); the step content keeps them. Used by
+	// WorkflowAgent's stream path.
+	OmitReasoningFilesFromPrompt bool
+
 	// streamModeUsage makes a StreamText run report TS WorkflowAgent's
 	// stream-mode total usage (aggregateExecutionUsage(steps, 'stream'), that
 	// is aggregateUsage): the steps' input and output tokens summed with
@@ -389,4 +399,41 @@ func workflowBlockedResponse(calls []types.ToolCall, content []types.ContentPart
 		outContent = append(outContent, part)
 	}
 	return outCalls, outContent
+}
+
+// omitReasoningFiles returns the messages without their reasoning-file parts
+// (InternalOptions.OmitReasoningFilesFromPrompt). A message left without
+// content is dropped, as TS pushes no assistant message with empty content.
+func (o *InternalOptions) omitReasoningFiles(messages []types.Message) []types.Message {
+	if o == nil || !o.OmitReasoningFilesFromPrompt {
+		return messages
+	}
+	out := make([]types.Message, 0, len(messages))
+	for _, message := range messages {
+		kept := make([]types.ContentPart, 0, len(message.Content))
+		removed := false
+		for _, part := range message.Content {
+			switch p := part.(type) {
+			case types.ReasoningFileContent:
+				removed = true
+				continue
+			case *types.ReasoningFileContent:
+				if p != nil {
+					removed = true
+					continue
+				}
+			}
+			kept = append(kept, part)
+		}
+		if !removed {
+			out = append(out, message)
+			continue
+		}
+		if len(kept) == 0 {
+			continue
+		}
+		message.Content = kept
+		out = append(out, message)
+	}
+	return out
 }
