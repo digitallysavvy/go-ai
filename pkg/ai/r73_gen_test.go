@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
@@ -1260,6 +1261,65 @@ func TestR73Gen_ApprovalSignatureRejects(t *testing.T) {
 		})
 		if err == nil || !strings.Contains(err.Error(), tc.want) || executed {
 			t.Fatalf("%s: err = %v, executed = %v", tc.want, err, executed)
+		}
+	}
+}
+
+// TS output.ts: an Output whose parsed value fails validation throws
+// NoObjectGeneratedError with a TypeValidationError cause holding the value
+// (object: safeValidateTypes; array: the wrapper check, the length check and
+// each element; choice: the wrapper/choice check).
+func TestR73Gen_OutputValidationCausesAreTypeValidationErrors(t *testing.T) {
+	ctx := context.Background()
+	valueSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}, "required": []interface{}{"value"}})
+	two := 2
+	cases := []struct {
+		name      string
+		parse     func(text string) error
+		text      string
+		wantValue string
+		wantMsg   string
+	}{
+		{"object", func(text string) error {
+			_, err := ObjectOutput[map[string]interface{}](ObjectOutputOptions{Schema: valueSchema}).ParseCompleteOutput(ctx, ParseCompleteOutputOptions{Text: text})
+			return err
+		}, `{"value":1}`, `{"value":1}`, ""},
+		{"array wrapper", func(text string) error {
+			_, err := ArrayOutput[map[string]interface{}](ArrayOutputOptions[map[string]interface{}]{ElementSchema: valueSchema}).ParseCompleteOutput(ctx, ParseCompleteOutputOptions{Text: text})
+			return err
+		}, `{"items":[]}`, `{"items":[]}`, "response must be an object with an elements array"},
+		{"array length", func(text string) error {
+			_, err := ArrayOutput[map[string]interface{}](ArrayOutputOptions[map[string]interface{}]{ElementSchema: valueSchema, MinItems: &two}).ParseCompleteOutput(ctx, ParseCompleteOutputOptions{Text: text})
+			return err
+		}, `{"elements":[{"value":"a"}]}`, `[{"value":"a"}]`, "elements array must contain at least 2 items"},
+		{"array element", func(text string) error {
+			_, err := ArrayOutput[map[string]interface{}](ArrayOutputOptions[map[string]interface{}]{ElementSchema: valueSchema}).ParseCompleteOutput(ctx, ParseCompleteOutputOptions{Text: text})
+			return err
+		}, `{"elements":[{"value":"a"},{"value":2}]}`, `{"value":2}`, ""},
+		{"choice", func(text string) error {
+			_, err := ChoiceOutput[string](ChoiceOutputOptions[string]{Options: []string{"sunny", "rainy"}}).ParseCompleteOutput(ctx, ParseCompleteOutputOptions{Text: text})
+			return err
+		}, `{"result":"snowy"}`, `{"result":"snowy"}`, "response must be an object that contains a choice value."},
+	}
+	for _, tc := range cases {
+		err := tc.parse(tc.text)
+		var nog *NoObjectGeneratedError
+		if !errors.As(err, &nog) || nog.Message != "No object generated: response did not match schema." || nog.Text != tc.text {
+			t.Fatalf("%s: err = %v", tc.name, err)
+		}
+		var tve *providererrors.TypeValidationError
+		if !errors.As(nog.Cause, &tve) {
+			t.Fatalf("%s: cause = %T %v, want a TypeValidationError", tc.name, nog.Cause, nog.Cause)
+		}
+		if b, _ := json.Marshal(tve.Value); string(b) != tc.wantValue {
+			t.Errorf("%s: cause value = %s, want %s", tc.name, b, tc.wantValue)
+		}
+		want := "Type validation failed: Value: " + tc.wantValue + "."
+		if !strings.HasPrefix(tve.Error(), want) {
+			t.Errorf("%s: cause text = %q, want prefix %q", tc.name, tve.Error(), want)
+		}
+		if tc.wantMsg != "" && tve.Error() != want+"\nError message: "+tc.wantMsg {
+			t.Errorf("%s: cause text = %q", tc.name, tve.Error())
 		}
 	}
 }
