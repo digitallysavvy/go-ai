@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"context"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -48,5 +49,20 @@ func TestR74Integ_LegacyReadUsageTotalTokensFilled(t *testing.T) {
 	}
 	if got := legacy.Usage().TotalTokens; got == nil || *got != 13 {
 		t.Fatalf("legacy usage total tokens = %v, want 13", got)
+	}
+}
+
+// r74 mutation survivor (gen fix 4): a StreamObject usage chunk (no usage on
+// the finish part) gets TotalTokens filled too.
+func TestR74Integ_StreamObjectUsageChunkTotalTokensFilled(t *testing.T) {
+	chunks := append(textChunks(`{ "content": "x" }`),
+		provider.StreamChunk{Type: provider.ChunkTypeUsage, Usage: r74genUsageNoTotal(3, 10)},
+		provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop})
+	res, err := StreamObject(context.Background(), StreamObjectOptions{Model: streamObjectModel(chunks...), Prompt: "p", Schema: contentSchema()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Usage.TotalTokens; got == nil || *got != 13 {
+		t.Fatalf("TotalTokens = %v, want 13", got)
 	}
 }
