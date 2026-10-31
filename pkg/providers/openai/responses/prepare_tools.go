@@ -46,6 +46,9 @@ func PrepareToolsWithOptionsName(tools []types.Tool, providerOptionsName string)
 	result := make([]interface{}, 0, len(tools))
 	namespaces := map[string]*NamespaceToolDef{}
 	for _, t := range tools {
+		if err := validateOpenAIToolArgsSchema(t); err != nil {
+			return nil, err
+		}
 		if err := validateMCPToolArgs(t); err != nil {
 			return nil, err
 		}

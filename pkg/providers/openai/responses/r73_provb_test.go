@@ -2,9 +2,12 @@ package responses
 
 import (
 	"encoding/json"
+	"errors"
 	"sort"
+	"strings"
 	"testing"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
@@ -240,5 +243,51 @@ func TestR73ProvbAllowedToolsToolSearch(t *testing.T) {
 	res := resolveAllowedToolForTool(openaitool.ToolSearch(openaitool.ToolSearchArgs{}))
 	if res.supported || res.reason != "OpenAI does not support tool_search tools in tool_choice.allowed_tools" {
 		t.Fatalf("tool_search resolution = %#v", res)
+	}
+}
+
+// TestR73ProvbToolArgsValidated: TS prepareResponsesTools validates every
+// provider tool's args (validateTypes) before the request, so invalid
+// config fails locally with a type validation error. v0.5 sent it to the
+// API.
+func TestR73ProvbToolArgsValidated(t *testing.T) {
+	bad := 200
+	partial := 5
+	syntax := "regex"
+	memory := "2g"
+	cases := map[string]types.Tool{
+		"searchContextSize enum": openaitool.WebSearch(openaitool.WebSearchConfig{SearchContextSize: "huge"}),
+		"preview enum":           openaitool.WebSearchPreview(openaitool.WebSearchPreviewConfig{SearchContextSize: "max"}), //nolint:staticcheck // the deprecated tool is still sent
+		"outputCompression max":  openaitool.ImageGeneration(openaitool.ImageGenerationConfig{OutputCompression: &bad}),
+		"partialImages max":      openaitool.ImageGeneration(openaitool.ImageGenerationConfig{PartialImages: &partial}),
+		"size pattern":           openaitool.ImageGeneration(openaitool.ImageGenerationConfig{Size: "big"}),
+		"quality enum":           openaitool.ImageGeneration(openaitool.ImageGenerationConfig{Quality: "ultra"}),
+		"vectorStoreIds missing": openaitool.FileSearch(openaitool.FileSearchConfig{}),
+		"grammar definition":     openaitool.NewCustomTool(openaitool.WithFormat(openaitool.CustomToolFormat{Type: "grammar", Syntax: &syntax})).ToTool("g"),
+		"tool_search execution":  openaitool.ToolSearch(openaitool.ToolSearchArgs{Execution: "both"}),
+		"shell memoryLimit":      NewShellTool(WithShellEnvironment(ShellEnvironment{Type: "container_auto", MemoryLimit: &memory})),
+		"mcp serverLabel":        {Name: "openai.mcp", Type: types.ToolTypeProviderDefined, ProviderID: "openai.mcp", ProviderArgs: map[string]interface{}{"serverUrl": "u"}},
+		"code_interpreter type":  {Name: "openai.code_interpreter", Type: types.ToolTypeProviderDefined, ProviderID: "openai.code_interpreter", ProviderArgs: map[string]interface{}{"container": 5}},
+	}
+	for name, tool := range cases {
+		_, err := PrepareToolsWithError([]types.Tool{tool})
+		var ve *providererrors.ValidationError
+		if !errors.As(err, &ve) || !strings.HasPrefix(ve.Message, "Type validation failed for "+tool.Name+": ") {
+			t.Errorf("%s: err = %v, want a type validation error for %s", name, err, tool.Name)
+		}
+	}
+	// Valid edge values pass: TS bounds are inclusive, size may be any WxH.
+	zero, hundred, three := 0, 100, 3
+	for _, tool := range []types.Tool{
+		openaitool.ImageGeneration(openaitool.ImageGenerationConfig{OutputCompression: &zero, PartialImages: &three, Size: "640x480", Quality: "max"}),
+		openaitool.ImageGeneration(openaitool.ImageGenerationConfig{OutputCompression: &hundred, Size: "auto"}),
+		openaitool.FileSearch(openaitool.FileSearchConfig{VectorStoreIDs: []string{}, Filters: map[string]interface{}{"type": "and", "filters": []interface{}{map[string]interface{}{"key": "a", "type": "in", "value": []interface{}{"x"}}}}}),
+		openaitool.NewCustomTool(openaitool.WithFormat(openaitool.CustomToolFormat{Type: "text"})).ToTool("txt"),
+		// Hand-built tools without TS args are not checked (v0.5 shape).
+		{Name: "openai.web_search", ProviderOptions: openaitool.WebSearchConfig{SearchContextSize: "huge"}},
+	} {
+		if _, err := PrepareToolsWithError([]types.Tool{tool}); err != nil {
+			t.Errorf("%s: unexpected error %v", tool.Name, err)
+		}
 	}
 }
