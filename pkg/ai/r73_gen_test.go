@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -1181,5 +1182,84 @@ func TestR73Gen_InvalidToolCallErrorResult(t *testing.T) {
 	tr := res.ResponseMessages[1].Content[0].(types.ToolResultContent)
 	if tr.ToolCallID != "call-1" || tr.Output == nil || tr.Output.Type != types.ToolResultOutputErrorText || tr.Output.Value != te.ErrorText {
 		t.Fatalf("tool result = %#v", tr)
+	}
+}
+
+// generate-text.test.ts 12113 'should surface the reason for user approval
+// requests'.
+func TestR73Gen_ApprovalRequestReason(t *testing.T) {
+	reason := "requires operator review"
+	tool := r72genValueTool("tool1")
+	tool.Execute = nil
+	// TS mockId({prefix: 'id'}) counts from 0: the response id takes id-0
+	// and the approval id-1.
+	n := -1
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r72genSeqModel(t, r73genCallStep("call-1", "value")), Prompt: "test-input", Tools: []types.Tool{tool},
+		ToolApproval: types.GenericToolApprovalFunc(func(types.ToolApprovalOptions) types.ToolApprovalResult {
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval, Reason: &reason}
+		}),
+		Internal: &InternalOptions{GenerateID: func() string { n++; return fmt.Sprintf("id-%d", n) }},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req *types.ToolApprovalRequestContent
+	for _, p := range res.Content {
+		if v, ok := p.(types.ToolApprovalRequestContent); ok {
+			req = &v
+		}
+	}
+	if req == nil || req.ApprovalID != "id-1" || req.Reason != reason {
+		t.Fatalf("approval request = %#v", req)
+	}
+	found := false
+	for _, p := range res.ResponseMessages[0].Content {
+		if v, ok := p.(types.ToolApprovalRequestContent); ok && v.ApprovalID == "id-1" && v.Reason == reason {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("response message content = %#v", res.ResponseMessages[0].Content)
+	}
+}
+
+// generate-text.test.ts 13042 / 13097: with ExperimentalToolApprovalSecret a
+// missing signature or tampered input rejects before any model call or
+// execution.
+func TestR73Gen_ApprovalSignatureRejects(t *testing.T) {
+	secret := []byte("test-secret-key-for-signing")
+	sig, err := SignToolApproval(secret, "approval-1", "call-1", "tool1", map[string]interface{}{"value": "original"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		sig, input, want string
+	}{{"", "test", "missing signature"}, {sig, "tampered", "invalid signature"}} {
+		executed := false
+		tool := r72genValueTool("tool1")
+		tool.ToolApproval = types.ToolApprovalStatusUserApproval
+		tool.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			executed = true
+			return "result1", nil
+		}
+		_, err := GenerateText(context.Background(), GenerateTextOptions{
+			Model: &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+				t.Error("model should not be called")
+				return nil, errors.New("model should not be called")
+			}},
+			Tools: []types.Tool{tool}, ExperimentalToolApprovalSecret: secret, StopWhen: []StopCondition{StepCountIs(3)},
+			Messages: []types.Message{
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "test"}}},
+				{Role: types.RoleAssistant, Content: []types.ContentPart{
+					types.ToolCallContent{ToolCallID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": tc.input}},
+					types.ToolApprovalRequestContent{ApprovalID: "approval-1", ToolCallID: "call-1", Signature: tc.sig},
+				}},
+				{Role: types.RoleTool, Content: []types.ContentPart{types.ToolApprovalResponseContent{ApprovalID: "approval-1", Approved: true}}},
+			},
+		})
+		if err == nil || !strings.Contains(err.Error(), tc.want) || executed {
+			t.Fatalf("%s: err = %v, executed = %v", tc.want, err, executed)
+		}
 	}
 }
