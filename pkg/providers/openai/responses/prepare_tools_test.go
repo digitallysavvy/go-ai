@@ -950,7 +950,7 @@ func TestResolveAllowedTools_CanonicalAliasResolves(t *testing.T) {
 // its fixed ProviderID, mirroring the TS test helper `mcpTool(name,
 // serverLabel)` in openai-responses-prepare-tools.test.ts: two such tools
 // with different server labels both canonicalize to the alias "mcp" (see
-// canonicalAllowedToolName), which is exactly what makes the ambiguous case
+// openAIAllowedToolProviderName), which is exactly what makes the ambiguous case
 // below reachable.
 func mcpToolWithName(name, serverLabel string) types.Tool {
 	return types.Tool{

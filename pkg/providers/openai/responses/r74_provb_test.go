@@ -69,3 +69,32 @@ func TestR74ProvbTSShapedShellEnvironment(t *testing.T) {
 		t.Fatalf("shell tool =\n%s\nwant\n%s", b, want)
 	}
 }
+
+// TestR74ProvbAllowedToolsAliasesAndUnknownProviderTools: TS records an
+// allowedTools alias for every provider tool it sends, from the
+// providerToolNames table and whether or not the tool can be allow-listed
+// (a tool_search tool named "my_search" is reachable as "tool_search" and
+// dropped as unsupported); a provider tool with an id TS does not send is not
+// recorded at all, so its name is "not part of the tools for this request".
+func TestR74ProvbAllowedToolsAliasesAndUnknownProviderTools(t *testing.T) {
+	fn := types.Tool{Name: "get_weather", Parameters: map[string]interface{}{"type": "object"}}
+	search := types.Tool{Name: "my_search", Type: types.ToolTypeProviderDefined, ProviderID: "openai.tool_search", ProviderArgs: map[string]interface{}{}}
+	choice, warnings, err := ResolveAllowedTools([]types.Tool{fn, search}, []string{"get_weather", "tool_search"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(choice.Tools) != 1 || choice.Tools[0].Name != "get_weather" || len(warnings) != 1 ||
+		warnings[0].Details != "OpenAI does not support tool_search tools in tool_choice.allowed_tools; the tool is removed from the allowed tools" {
+		t.Fatalf("alias: choice=%#v warnings=%#v", choice, warnings)
+	}
+
+	other := types.Tool{Name: "other.thing", Type: types.ToolTypeProviderDefined, ProviderID: "other.thing"}
+	choice, warnings, err = ResolveAllowedTools([]types.Tool{fn, other}, []string{"other.thing"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(choice.Tools) != 1 || choice.Tools[0].Type != "function" || choice.Tools[0].Name != "other.thing" || len(warnings) != 1 ||
+		warnings[0].Details != "the tool is not part of the tools for this request and is sent as a function tool" {
+		t.Fatalf("unknown provider tool: choice=%#v warnings=%#v", choice, warnings)
+	}
+}
