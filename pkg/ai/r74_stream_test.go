@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -362,5 +363,230 @@ func TestR74StreamTransformedToolResultOnStepFinish(t *testing.T) {
 	}
 	if len(e0.Reasoning) != 1 || e0.Reasoning[0].Text != "thinking" || e0.Text != "" || e1.Text != "Hello, world!" {
 		t.Fatalf("step 0 reasoning %#v, texts %q %q", e0.Reasoning, e0.Text, e1.Text)
+	}
+}
+
+// r74streamUpperRun is the TS "options.transform > with base transformation"
+// onFinish / onStepFinish setup: text interrupted by a tool call, the
+// finish part's testProvider metadata, and upperCaseTransform.
+func r74streamUpperRun(t *testing.T) (OnFinishEvent, []OnStepFinishEvent, *StreamTextResult) {
+	t.Helper()
+	steps := []provider.StreamChunk{
+		{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-0", ModelID: "mock-model-id"}},
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: ", "},
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", RawArguments: `{ "value": "value" }`}},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "world!"},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage, ProviderMetadata: json.RawMessage(`{"testProvider":{"testKey":"testValue"}}`)},
+	}
+	var mu sync.Mutex
+	var end OnFinishEvent
+	var stepEvents []OnStepFinishEvent
+	r := r71streamRun(t, StreamTextOptions{
+		Model: r71streamModel(nil, steps), Prompt: "test-input",
+		Tools:                 []types.Tool{r71streamTool1(true, nil, nil)},
+		ExperimentalTransform: []StreamTransformFunc{r72streamUpperTransform},
+		Internal:              &InternalOptions{GenerateID: func() string { return "test-call-id" }, GenerateCallID: func() string { return "test-telemetry-call-id" }},
+		OnEndEvent:            func(_ context.Context, e OnFinishEvent) { mu.Lock(); end = e; mu.Unlock() },
+		OnStepFinishEvent: func(_ context.Context, e OnStepFinishEvent) {
+			mu.Lock()
+			stepEvents = append(stepEvents, e)
+			mu.Unlock()
+		},
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	return end, stepEvents, r
+}
+
+const (
+	// One text part at its text-start position (the tool call arrived in the
+	// middle of the text block); the transformed tool call and result. The
+	// tool result is in Go's content shape (see cr-r74-stream-to-gen.md CR-1).
+	r74streamUpperContent = `[{"type":"text","text":"HELLO, WORLD!"},` +
+		`{"type":"tool-call","toolCallId":"call-1","toolName":"tool1","input":{"value":"VALUE"}},` +
+		`{"type":"tool-result","toolCallId":"call-1","toolName":"tool1","input":{"value":"VALUE"},"output":{"type":"text","value":"VALUE-RESULT"}}]`
+	r74streamUpperMessages = `[{"role":"assistant","content":[{"type":"text","text":"HELLO, WORLD!"},{"type":"tool-call","toolCallId":"call-1","toolName":"tool1","input":{"value":"VALUE"}}],` +
+		`"tool_calls":[{"arguments":{"value":"VALUE"},"id":"call-1","toolName":"tool1"}]},` +
+		`{"role":"tool","content":[{"type":"tool-result","toolCallId":"call-1","toolName":"tool1","output":{"type":"text","value":"VALUE-RESULT"}}]}]`
+)
+
+// TS 21473: options.transform > with base transformation > options.onFinish
+// should receive transformed data (snapshot).
+func TestR74StreamTransformOnEndReceivesTransformedData(t *testing.T) {
+	end, _, _ := r74streamUpperRun(t)
+	r74streamAssertJSON(t, "onEnd content", end.Content, r74streamUpperContent)
+	r74streamAssertJSON(t, "onEnd responseMessages", end.ResponseMessages, r74streamUpperMessages)
+	r74streamAssertJSON(t, "onEnd providerMetadata", end.ProviderMetadata, `{"testProvider":{"testKey":"TEST VALUE"}}`)
+	if end.CallID != "test-telemetry-call-id" || end.Text != "HELLO, WORLD!" || end.FinishReason != types.FinishReasonStop || end.StepNumber != 0 || len(end.Reasoning) != 0 || end.ReasoningText != "" {
+		t.Fatalf("onEnd = callId %q text %q finish %q step %d reasoning %v", end.CallID, end.Text, end.FinishReason, end.StepNumber, end.Reasoning)
+	}
+	if len(end.ToolCalls) != 1 || end.ToolCalls[0].Arguments["value"] != "VALUE" || len(end.StaticToolCalls) != 1 || len(end.DynamicToolCalls) != 0 {
+		t.Fatalf("onEnd tool calls = %#v / %#v", end.ToolCalls, end.StaticToolCalls)
+	}
+	if len(end.ToolResults) != 1 || end.ToolResults[0].Result != "VALUE-RESULT" || end.ToolResults[0].Input["value"] != "VALUE" || len(end.StaticToolResults) != 1 {
+		t.Fatalf("onEnd tool results = %#v", end.ToolResults)
+	}
+	if len(end.Steps) != 1 || end.FinalStep.Text != "HELLO, WORLD!" {
+		t.Fatalf("onEnd steps = %#v", end.Steps)
+	}
+	r74streamAssertJSON(t, "onEnd finalStep providerMetadata", end.FinalStep.ProviderMetadata, `{"testProvider":{"testKey":"TEST VALUE"}}`)
+	r74streamAssertJSON(t, "onEnd finalStep content", end.FinalStep.Content, r74streamUpperContent)
+	r74streamAssertJSON(t, "onEnd finalStep response messages", end.FinalStep.Response.Messages, r74streamUpperMessages)
+}
+
+// TS 22007: options.transform > with base transformation >
+// options.onStepFinish should receive transformed data (snapshot).
+func TestR74StreamTransformOnStepFinishReceivesTransformedData(t *testing.T) {
+	_, events, _ := r74streamUpperRun(t)
+	if len(events) != 1 {
+		t.Fatalf("step events = %d", len(events))
+	}
+	e := events[0]
+	r74streamAssertJSON(t, "step content", e.Content, r74streamUpperContent)
+	r74streamAssertJSON(t, "step response messages", e.Response.Messages, r74streamUpperMessages)
+	r74streamAssertJSON(t, "step providerMetadata", e.ProviderMetadata, `{"testProvider":{"testKey":"TEST VALUE"}}`)
+	if e.Text != "HELLO, WORLD!" || e.FinishReason != types.FinishReasonStop || e.RawFinishReason != "stop" || e.StepNumber != 0 || e.Response.ID != "id-0" || e.Response.ModelID != "mock-model-id" {
+		t.Fatalf("step event = %+v", e)
+	}
+	if len(e.ToolResults) != 1 || e.ToolResults[0].Result != "VALUE-RESULT" || len(e.ToolCalls) != 1 || e.ToolCalls[0].Arguments["value"] != "VALUE" {
+		t.Fatalf("step tool calls/results = %#v / %#v", e.ToolCalls, e.ToolResults)
+	}
+}
+
+// TS 22699: options.transform > with transformation that aborts stream >
+// options.onStepFinish should be called: the step comes from the
+// transform's own finish-step part (its response, null usage, performance
+// without the per-second and first-output figures), with the text produced
+// before the stop.
+func TestR74StreamTransformStopOnStepFinish(t *testing.T) {
+	stopWord := func(ctx context.Context, c provider.StreamChunk) []provider.StreamChunk {
+		if c.Type != provider.ChunkTypeText || !strings.Contains(c.Text, "STOP") {
+			return []provider.StreamChunk{c}
+		}
+		if stop, ok := StreamTransformStopFromContext(ctx); ok {
+			stop()
+		}
+		return []provider.StreamChunk{
+			{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonStop, Usage: &types.Usage{},
+				Performance: &types.StepPerformance{ToolExecutionMs: map[string]int64{}},
+				Response:    &types.StepResponse{ID: "response-id", ModelID: "mock-model-id", Timestamp: time.Unix(0, 0)}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: &types.Usage{}},
+		}
+	}
+	steps := []provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello, "},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "STOP"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: " World"},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+	}
+	var mu sync.Mutex
+	var got []types.StepResult
+	var events []OnStepFinishEvent
+	r71streamRun(t, StreamTextOptions{
+		Model: r71streamModel(nil, steps), Prompt: "test-input",
+		ExperimentalTransform: []StreamTransformFunc{stopWord},
+		Internal:              &InternalOptions{GenerateID: func() string { return "test-call-id" }, GenerateCallID: func() string { return "test-telemetry-call-id" }},
+		OnStepFinish: func(_ context.Context, s types.StepResult, _ interface{}) {
+			mu.Lock()
+			got = append(got, s)
+			mu.Unlock()
+		},
+		OnStepFinishEvent: func(_ context.Context, e OnStepFinishEvent) {
+			mu.Lock()
+			events = append(events, e)
+			mu.Unlock()
+		},
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 || len(events) != 1 {
+		t.Fatalf("onStepFinish calls = %d, step events = %d", len(got), len(events))
+	}
+	s := got[0]
+	r74streamAssertJSON(t, "step content", s.Content, `[{"type":"text","text":"Hello, "}]`)
+	r74streamAssertJSON(t, "step response messages", s.Response.Messages, `[{"role":"assistant","content":[{"type":"text","text":"Hello, "}]}]`)
+	r74streamAssertJSON(t, "step performance", s.Performance, `{"stepTimeMs":0,"responseTimeMs":0,"toolExecutionMs":{},"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0}`)
+	if s.CallID != "test-telemetry-call-id" || s.FinishReason != types.FinishReasonStop || s.RawFinishReason != "" || s.ProviderMetadata != nil || s.StepNumber != 0 ||
+		s.Model.Provider != "mock-provider" || s.Model.ModelID != "mock-model-id" || s.Response.ID != "response-id" || s.Response.ModelID != "mock-model-id" || !s.Response.Timestamp.Equal(time.Unix(0, 0)) || len(s.Warnings) != 0 {
+		t.Fatalf("step = %+v", s)
+	}
+	if s.Usage.InputTokens != nil || s.Usage.OutputTokens != nil || s.Usage.TotalTokens != nil {
+		t.Fatalf("step usage = %+v, want the transform's null usage", s.Usage)
+	}
+	if e := events[0]; e.Text != "Hello, " || e.Response.ID != "response-id" || !reflect.DeepEqual(e.Content, s.Content) {
+		t.Fatalf("step event = %+v", e)
+	}
+}
+
+// TS 30466 / 30472 / 30535 (automatically rejected) and 30737 / 30750 /
+// 30813 (automatically approved): the run continues to a second step; the
+// second model prompt holds the tool call and the tool result only (the
+// execution-denied output, or the tool's output), while the response
+// messages also keep the automatic approval request and response.
+func TestR74StreamAutomaticApprovalPromptAndResponseMessages(t *testing.T) {
+	for _, tc := range []struct {
+		status   types.ToolApprovalStatus
+		reason   string
+		approved bool
+		output   string
+		executed int
+	}{
+		{types.ToolApprovalStatusDenied, "blocked by policy", false, `{"type":"execution-denied","reason":"blocked by policy"}`, 0},
+		{types.ToolApprovalStatusApproved, "trusted internal tool", true, `{"type":"text","value":"result1"}`, 1},
+	} {
+		t.Run(string(tc.status), func(t *testing.T) {
+			var mu sync.Mutex
+			executed := 0
+			tool := types.Tool{Name: "tool1", Parameters: r71streamValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				mu.Lock()
+				executed++
+				mu.Unlock()
+				return "result1", nil
+			}}
+			var prompts [][]types.Message
+			call := []provider.StreamChunk{
+				{Type: provider.ChunkTypeStreamStart},
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", RawArguments: `{ "value": "value" }`}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r72streamTestUsage},
+			}
+			hello := []provider.StreamChunk{
+				{Type: provider.ChunkTypeStreamStart},
+				{Type: provider.ChunkTypeTextStart, ID: "1"},
+				{Type: provider.ChunkTypeText, ID: "1", Text: "Hello, world!"},
+				{Type: provider.ChunkTypeTextEnd, ID: "1"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+			}
+			reason := tc.reason
+			r := r71streamRun(t, StreamTextOptions{
+				Model: r73streamPromptModel(&prompts, call, hello), Prompt: "test-input",
+				StopWhen: []StopCondition{StepCountIs(3)}, Internal: r72streamIDs(), Tools: []types.Tool{tool},
+				ToolApproval: map[string]types.ToolApprovalValue{"tool1": types.ToolApprovalResult{Status: tc.status, Reason: &reason}},
+			})
+			mu.Lock()
+			if executed != tc.executed {
+				t.Errorf("execute calls = %d, want %d", executed, tc.executed)
+			}
+			mu.Unlock()
+			if r.Text() != "Hello, world!" || len(r.Steps()) != 2 {
+				t.Fatalf("text = %q, steps = %d", r.Text(), len(r.Steps()))
+			}
+			if len(prompts) != 2 {
+				t.Fatalf("model calls = %d", len(prompts))
+			}
+			user := `{"role":"user","content":[{"type":"text","text":"test-input"}]}`
+			r74streamAssertJSON(t, "step 1 prompt", prompts[0], `[`+user+`]`)
+			r74streamAssertJSON(t, "step 2 prompt", prompts[1], `[`+user+`,`+
+				`{"role":"assistant","content":[{"type":"tool-call","toolCallId":"call-1","toolName":"tool1","input":{"value":"value"}}],"tool_calls":[{"arguments":{"value":"value"},"id":"call-1","toolName":"tool1"}]},`+
+				`{"role":"tool","content":[{"type":"tool-result","toolCallId":"call-1","toolName":"tool1","output":`+tc.output+`}]}]`)
+			r74streamAssertJSON(t, "response messages", r.ResponseMessages(), `[`+
+				`{"role":"assistant","content":[{"type":"tool-call","toolCallId":"call-1","toolName":"tool1","input":{"value":"value"}},{"type":"tool-approval-request","approvalId":"id-1","toolCallId":"call-1","isAutomatic":true}],"tool_calls":[{"arguments":{"value":"value"},"id":"call-1","toolName":"tool1"}]},`+
+				`{"role":"tool","content":[{"type":"tool-approval-response","approvalId":"id-1","approved":`+strconv.FormatBool(tc.approved)+`,"reason":"`+tc.reason+`"},{"type":"tool-result","toolCallId":"call-1","toolName":"tool1","output":`+tc.output+`}]},`+
+				`{"role":"assistant","content":[{"type":"text","text":"Hello, world!"}]}]`)
+		})
 	}
 }
