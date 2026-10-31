@@ -765,7 +765,8 @@ type GenerateTextResult struct {
 	// Empty if the loop ended naturally (model stopped calling tools).
 	StopReason string `json:"stopReason,omitempty"`
 
-	// Token usage information (last step)
+	// Usage is the total token usage of all steps (the sum of the step
+	// usages), as TS result.usage. FinalStep.Usage is the last step's.
 	Usage types.Usage `json:"usage"`
 
 	// Context management information (Anthropic-specific)
@@ -1553,6 +1554,16 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			ToolsContext:        toolsContext,
 		})
 		if parseErr != nil {
+			// Parsing fails only when the call is aborted (a repair is
+			// abandoned): TS throwIfAborted() rethrows the abort reason, the
+			// step or total TimeoutError when that deadline fired.
+			if opts.Timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
+				parseErr = wrapTimeoutError(TimeoutReasonStep, parseErr)
+			} else if opts.Timeout.HasTotal() && deadlineFired(ctx, totalParent) {
+				parseErr = wrapTimeoutError(TimeoutReasonTotal, parseErr)
+			} else if cause := context.Cause(stepCtx); cause != nil && errors.Is(parseErr, context.Canceled) {
+				parseErr = cause
+			}
 			return nil, parseErr
 		}
 		genResult.ToolCalls = parsedToolCalls

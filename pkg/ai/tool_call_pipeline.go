@@ -444,8 +444,26 @@ func toolCallInputValidator(tool *types.Tool) schema.Validator {
 		if s == nil {
 			return nil
 		}
-		if v, ok := s.Validator().(*schema.JSONSchemaValidator); ok {
-			return v
+		return jsonSchemaToolValidator(s.Validator())
+	case schema.Validator:
+		return jsonSchemaToolValidator(s)
+	}
+	return nil
+}
+
+// jsonSchemaToolValidator returns v when it validates against a JSON Schema
+// (a *schema.JSONSchemaValidator, or an *schema.OrderedSchema, the TS
+// jsonSchema() analog), else nil. A struct-tag validator cannot validate the
+// decoded input map, so it is not used.
+func jsonSchemaToolValidator(v schema.Validator) schema.Validator {
+	switch val := v.(type) {
+	case *schema.JSONSchemaValidator:
+		if val != nil {
+			return val
+		}
+	case *schema.OrderedSchema:
+		if val != nil {
+			return val
 		}
 	}
 	return nil
@@ -477,6 +495,10 @@ func toolInputJSONSchema(tool *types.Tool) map[string]interface{} {
 	case schema.Schema:
 		if s != nil {
 			return s.Validator().JSONSchema()
+		}
+	case schema.Validator:
+		if s != nil {
+			return s.JSONSchema()
 		}
 	}
 	return map[string]interface{}{"type": "object"}

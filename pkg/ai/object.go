@@ -278,7 +278,8 @@ func parseObjectResult(result *types.GenerateResult, mode ObjectOutputMode, s sc
 		return nil, nil, "", newNoObjectGeneratedError("No object generated.", nil, "", model, nil)
 	}
 	if result.Text == "" {
-		return nil, nil, "", newNoObjectGeneratedError("No object generated: could not parse the response.", io.ErrUnexpectedEOF, "", model, result)
+		// TS safeParseJSON('') fails with a JSONParseError.
+		return nil, nil, "", newNoObjectGeneratedError("No object generated: could not parse the response.", providererrors.NewJSONParseError("", io.ErrUnexpectedEOF), "", model, result)
 	}
 	obj, arr, enumValue, err := parseStreamFinal(mode, s, enumValues, result.Text)
 	if err != nil {
@@ -288,6 +289,10 @@ func parseObjectResult(result *types.GenerateResult, mode ObjectOutputMode, s sc
 		switch {
 		case errors.As(err, &syntaxErr), errors.As(err, &unmarshalTypeErr), errors.Is(err, io.ErrUnexpectedEOF):
 			message = "No object generated: could not parse the response."
+			// TS: the cause (and the error repairText gets) is a
+			// JSONParseError; the parser error stays reachable through
+			// Unwrap.
+			err = providererrors.NewJSONParseError(result.Text, err)
 		}
 		return nil, nil, "", newNoObjectGeneratedError(message, err, result.Text, model, result)
 	}
