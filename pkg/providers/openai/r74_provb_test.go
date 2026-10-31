@@ -8,6 +8,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
 )
 
 // r74provbTSShapedTool builds a TS provider tool as is ({type: "provider",
@@ -98,4 +99,35 @@ func TestR74ProvbTSCasesPrepareTools(t *testing.T) {
 		"should apply the tool name mapping for a tool that is not part of the request": "the TS test passes an arbitrary toolNameMapping (my_tool -> mapped_tool); Go derives the mapping from the tools",
 		"should throw when a providerReference cannot be resolved for openai":           "the assertions read the caught error object (NoSuchProviderReferenceError.isInstance); covered by responses.TestR74ProvbTSShapedShellEnvironment",
 	})
+}
+
+// TestR74ProvbHostedToolSearchItemReferences ports
+// convert-to-openai-responses-input-tool-search.test.ts: with store, a hosted
+// tool_search call and its output replay as item references from their own
+// providerMetadata itemIds.
+func TestR74ProvbHostedToolSearchItemReferences(t *testing.T) {
+	msgs := []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+		types.ToolCallContent{
+			ToolCallID: "tsc_hosted_123", ToolName: "tool_search",
+			Input:            `{"arguments":{"paths":["get_weather"]},"call_id":null}`,
+			Arguments:        map[string]interface{}{"arguments": map[string]interface{}{"paths": []interface{}{"get_weather"}}, "call_id": nil},
+			ProviderExecuted: true,
+			ProviderMetadata: json.RawMessage(`{"openai":{"itemId":"tsc_hosted_123"}}`),
+		},
+		types.ToolResultContent{
+			ToolCallID: "tsc_hosted_123", ToolName: "tool_search",
+			Output:           &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{"tools": []interface{}{map[string]interface{}{"name": "get_weather", "type": "function"}}}},
+			ProviderMetadata: json.RawMessage(`{"openai":{"itemId":"tso_hosted_456"}}`),
+		},
+	}}}
+	input, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{Messages: msgs}, "system", responses.ConvertOptions{
+		Store: true, ProviderOptionsName: "openai", ToolSearchToolName: "tool_search",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(input)
+	if want := `[{"id":"tsc_hosted_123","type":"item_reference"},{"id":"tso_hosted_456","type":"item_reference"}]`; string(b) != want {
+		t.Fatalf("input =\n%s\nwant\n%s", b, want)
+	}
 }
