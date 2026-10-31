@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // TS WorkflowAgent.prepareInvocation hands prepareCall the constructor's
@@ -75,5 +76,36 @@ func TestR73Carry_PrepareCallSeesAgentGenerationSettings(t *testing.T) {
 				t.Errorf("model headers = %v, want the call's", got.Headers)
 			}
 		})
+	}
+}
+
+// r73 prova CR: TS serializable-schema resolve makes a `type: 'provider'` def
+// provider-executed only when `isProviderExecuted` is set, so a
+// client-executed provider tool (anthropic bash, computer, text editor,
+// memory) keeps running its Execute after a workflow round trip.
+func TestR73Carry_ResolveClientProviderToolNotProviderExecuted(t *testing.T) {
+	defs, err := SerializeToolSet([]types.Tool{
+		{Name: "bash", Type: types.ToolTypeProviderDefined, ProviderID: "anthropic.bash_20250124",
+			ProviderArgs: map[string]interface{}{}, Parameters: map[string]interface{}{"type": "object"}, SupportsDeferredResults: true},
+		{Name: "web", Type: types.ToolTypeProviderDefined, ProviderID: "anthropic.web_search_20250305",
+			ProviderArgs: map[string]interface{}{}, Parameters: map[string]interface{}{"type": "object"}, ProviderExecuted: true, SupportsDeferredResults: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]types.Tool{}
+	for _, tool := range ResolveSerializableTools(defs) {
+		got[tool.Name] = tool
+	}
+	bash := got["bash"]
+	if bash.ProviderExecuted || bash.SupportsDeferredResults {
+		t.Errorf("bash: providerExecuted=%v supportsDeferredResults=%v, want false/false", bash.ProviderExecuted, bash.SupportsDeferredResults)
+	}
+	if bash.Type != types.ToolTypeProviderDefined || bash.ProviderID != "anthropic.bash_20250124" {
+		t.Errorf("bash identity = %q %q", bash.Type, bash.ProviderID)
+	}
+	web := got["web"]
+	if !web.ProviderExecuted || !web.SupportsDeferredResults || web.ProviderID != "anthropic.web_search_20250305" {
+		t.Errorf("web: providerExecuted=%v supportsDeferredResults=%v id=%q", web.ProviderExecuted, web.SupportsDeferredResults, web.ProviderID)
 	}
 }
