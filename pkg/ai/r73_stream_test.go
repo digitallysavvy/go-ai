@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"reflect"
 	"strconv"
 	"strings"
@@ -1046,6 +1047,169 @@ func TestR73StreamLogWarningsPerStep(t *testing.T) {
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("logWarnings calls = %+v", calls)
 	}
+}
+
+// r73streamPromptModel answers every call with steps[i] (last repeats) and
+// records each call's prompt messages.
+func r73streamPromptModel(prompts *[][]types.Message, steps ...[]provider.StreamChunk) *testutil.MockLanguageModel {
+	var mu sync.Mutex
+	return &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id", DoStreamFunc: func(_ context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		i := len(*prompts)
+		*prompts = append(*prompts, o.Prompt.Messages)
+		if i >= len(steps) {
+			i = len(steps) - 1
+		}
+		return testutil.NewMockTextStream(steps[i]), nil
+	}}
+}
+
+func r73streamToolMessageOutput(t *testing.T, msgs []types.Message) *types.ToolResultOutput {
+	t.Helper()
+	for _, m := range msgs {
+		if m.Role != types.RoleTool {
+			continue
+		}
+		for _, c := range m.Content {
+			if tr, ok := c.(types.ToolResultContent); ok && tr.ToolCallID == "call-1" {
+				return tr.Output
+			}
+		}
+	}
+	t.Fatalf("no tool-result for call-1 in %#v", msgs)
+	return nil
+}
+
+// TS 31285: tool execution approval > when a single tool has a user-defined
+// approval function > should call the approval function with the correct
+// input and options (Go RuntimeContext stays nil, known difference).
+func TestR73StreamApprovalFunctionInputAndOptions(t *testing.T) {
+	steps := []provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "value-needs-approval"}, RawArguments: `{ "value": "value-needs-approval" }`}},
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-2", ToolName: "tool1", Arguments: map[string]interface{}{"value": "value-no-approval"}, RawArguments: `{ "value": "value-no-approval" }`}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r72streamTestUsage},
+	}
+	type call struct {
+		input map[string]interface{}
+		opts  types.SingleToolApprovalOptions
+	}
+	var mu sync.Mutex
+	var calls []call
+	approval := types.SingleToolApprovalFunc(func(args map[string]interface{}, o types.SingleToolApprovalOptions) types.ToolApprovalResult {
+		mu.Lock()
+		calls = append(calls, call{args, o})
+		mu.Unlock()
+		if args["value"] == "value-needs-approval" {
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}
+		}
+		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+	})
+	r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, steps), Prompt: "test-input", StopWhen: []StopCondition{StepCountIs(3)},
+		Internal: r72streamIDs(), Tools: []types.Tool{r71streamTool1(true, nil, nil)},
+		ToolApproval: map[string]types.ToolApprovalValue{"tool1": approval}})
+	if len(calls) != 2 {
+		t.Fatalf("approval calls = %d", len(calls))
+	}
+	for i, want := range []struct{ value, id string }{{"value-needs-approval", "call-1"}, {"value-no-approval", "call-2"}} {
+		c := calls[i]
+		if c.input["value"] != want.value || c.opts.ToolCallID != want.id || c.opts.ToolContext != nil || !reflect.DeepEqual(c.opts.Messages, r71streamUserMessages("test-input")) {
+			t.Errorf("call %d = %+v", i, c)
+		}
+	}
+}
+
+// TS 31432 / 31523 / 31839 / 31966 / 32017 / 32048: tool execution approval
+// > when a call that needs approval is approved (resume from messages).
+func TestR73StreamApprovedResume(t *testing.T) {
+	approval := map[string]types.ToolApprovalValue{"tool1": types.ToolApprovalStatusUserApproval}
+	t.Run("sandbox and options reach the executed tool (31432)", func(t *testing.T) {
+		sandbox := &struct{ name string }{"test sandbox"}
+		var got []types.ToolExecutionOptions
+		tool := types.Tool{Name: "tool1", Parameters: r71streamValueSchema, Execute: func(_ context.Context, args map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+			got = append(got, o)
+			return "result1", nil
+		}}
+		var prompts [][]types.Message
+		r71streamRun(t, StreamTextOptions{Model: r73streamPromptModel(&prompts, r72streamHelloStep), Messages: r71genApprovalHistory(true, ""),
+			StopWhen: []StopCondition{StepCountIs(3)}, Internal: r72streamIDs(), Tools: []types.Tool{tool}, ToolApproval: approval, ExperimentalSandbox: sandbox})
+		if len(got) != 1 || got[0].ToolCallID != "call-1" || got[0].ExperimentalSandbox != sandbox || len(got[0].Messages) == 0 {
+			t.Fatalf("execute options = %+v", got)
+		}
+	})
+	t.Run("prepareStep receives the initial tool result (31523)", func(t *testing.T) {
+		var seen [][]types.Message
+		var prompts [][]types.Message
+		r71streamRun(t, StreamTextOptions{Model: r73streamPromptModel(&prompts, r72streamHelloStep), Messages: r71genApprovalHistory(true, ""),
+			StopWhen: []StopCondition{StepCountIs(3)}, Tools: []types.Tool{r71streamTool1(true, nil, nil)}, ToolApproval: approval,
+			PrepareStep: func(_ context.Context, s PrepareStepOptions) PrepareStepOptions {
+				seen = append(seen, append([]types.Message(nil), s.ResponseMessages...))
+				return PrepareStepOptions{}
+			}})
+		if len(seen) != 1 || len(seen[0]) != 1 || seen[0][0].Role != types.RoleTool {
+			t.Fatalf("prepareStep responseMessages = %#v", seen)
+		}
+		out := r73streamToolMessageOutput(t, seen[0])
+		if out == nil || out.Type != types.ToolResultOutputText || out.Value != "value-result" {
+			t.Fatalf("tool-result output = %+v", out)
+		}
+	})
+	t.Run("a throwing tool is error-text in the continuation prompt (31839)", func(t *testing.T) {
+		var prompts [][]types.Message
+		r71streamRun(t, StreamTextOptions{Model: r73streamPromptModel(&prompts, r72streamHelloStep), Messages: r71genApprovalHistory(true, ""),
+			StopWhen: []StopCondition{StepCountIs(3)}, Internal: r72streamIDs(), ToolApproval: approval,
+			Tools: []types.Tool{r71streamTool1(true, errors.New("No valid token for plugin"), nil)}})
+		if len(prompts) != 1 || len(prompts[0]) != 3 {
+			t.Fatalf("prompts = %#v", prompts)
+		}
+		if a := prompts[0][1]; a.Role != types.RoleAssistant || len(a.Content) != 1 {
+			t.Fatalf("assistant message = %#v (the approval request is not sent to the model)", a)
+		}
+		out := r73streamToolMessageOutput(t, prompts[0])
+		if out == nil || out.Type != types.ToolResultOutputErrorText || out.Value != "Error: No valid token for plugin" {
+			t.Fatalf("tool-result output = %+v", out)
+		}
+	})
+	t.Run("preliminary results: prompt, response messages and full stream (31966/32017/32048)", func(t *testing.T) {
+		tool := types.Tool{Name: "tool1", Parameters: r71streamValueSchema, Execute: types.StreamingExecutor(func(context.Context, map[string]interface{}, types.ToolExecutionOptions) iter.Seq2[interface{}, error] {
+			return func(yield func(interface{}, error) bool) {
+				if !yield("preliminary-result", nil) {
+					return
+				}
+				yield("final-result", nil)
+			}
+		})}
+		var prompts [][]types.Message
+		r, parts := r73streamParts(t, StreamTextOptions{Model: r73streamPromptModel(&prompts, r72streamHelloStep), Messages: r71genApprovalHistory(true, ""),
+			StopWhen: []StopCondition{StepCountIs(3)}, Internal: r72streamIDs(), Tools: []types.Tool{tool}, ToolApproval: approval})
+		if len(prompts) != 1 || len(prompts[0]) != 3 {
+			t.Fatalf("prompts = %#v", prompts)
+		}
+		if out := r73streamToolMessageOutput(t, prompts[0]); out == nil || out.Type != types.ToolResultOutputText || out.Value != "final-result" {
+			t.Fatalf("prompt tool-result output = %+v", out)
+		}
+		rm := r.ResponseMessages()
+		if len(rm) != 2 || rm[0].Role != types.RoleTool || rm[1].Role != types.RoleAssistant {
+			t.Fatalf("response messages = %#v", rm)
+		}
+		if out := r73streamToolMessageOutput(t, rm[:1]); out == nil || out.Value != "final-result" {
+			t.Fatalf("response tool-result output = %+v", out)
+		}
+		var got []string
+		for _, p := range parts {
+			if p.Type == provider.ChunkTypeToolResult {
+				got = append(got, fmt.Sprintf("%v:%v", p.ToolResult.Result, p.ToolResult.Preliminary))
+			}
+		}
+		if want := []string{"preliminary-result:true", "final-result:true", "final-result:false"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("tool results = %v", got)
+		}
+		names := r73streamNames(parts)
+		if len(names) < 5 || names[0] != "start" || names[4] != "start-step" {
+			t.Fatalf("parts = %v (tool results come before the first start-step)", names)
+		}
+	})
 }
 
 // r73streamPUICasesJSON was extracted from ai/packages/ai/src/ui/process-ui-message-stream.test.ts
