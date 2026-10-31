@@ -177,7 +177,9 @@ func TestR73Carry_ProviderMetadataBecomesProviderOptions(t *testing.T) {
 		a, err := NewWorkflowAgent(WorkflowAgent{
 			Model: model,
 			Tools: []types.Tool{{Name: "testTool", Parameters: map[string]interface{}{"type": "object"},
-				Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }}},
+				Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+					return "ok", nil
+				}}},
 		})
 		if err != nil {
 			t.Fatal(err)
