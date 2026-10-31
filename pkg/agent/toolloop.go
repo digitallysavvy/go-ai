@@ -146,10 +146,21 @@ func mergeListener[E any](a, b func(ctx context.Context, e E)) func(ctx context.
 	if b == nil {
 		return a
 	}
+	// TS mergeCallbacks awaits Promise.allSettled: a throwing callback does
+	// not stop the other one.
 	return func(ctx context.Context, e E) {
-		a(ctx, e)
-		b(ctx, e)
+		agentSafeCall(func() { a(ctx, e) })
+		agentSafeCall(func() { b(ctx, e) })
 	}
+}
+
+// agentSafeCall runs fn and discards a panic, as TS notify and
+// mergeCallbacks ignore a throwing callback.
+func agentSafeCall(fn func()) {
+	defer func() {
+		_ = recover()
+	}()
+	fn()
 }
 
 // Context keys for run tracking
@@ -378,7 +389,9 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 	// returned. Aborts and timeouts are not reported, like in Stream.
 	if genErr != nil && config.ErrorHandler != nil && ctx.Err() == nil &&
 		!errors.Is(genErr, context.Canceled) && !errors.Is(genErr, context.DeadlineExceeded) {
-		config.ErrorHandler(ctx, genErr)
+		// TS notify swallows a throwing onError and rethrows the generate
+		// error.
+		agentSafeCall(func() { config.ErrorHandler(ctx, genErr) })
 	}
 	return result, genErr
 }

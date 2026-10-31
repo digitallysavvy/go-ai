@@ -3218,13 +3218,17 @@ func FireOnStepFinish(ctx context.Context, e TelemetryStepFinishEvent) {
 	}
 	PublishDiagnostic(ctx, DiagnosticEventOnStepEnd, e)
 	PublishDiagnostic(ctx, DiagnosticEventOnStepFinish, e)
-	for _, i := range snapshotFor(e.Settings) {
-		callIntegration(func() {
-			i.OnStepEnd(ctx, e)
-			if handler, ok := i.(deprecatedStepFinishHandler); ok {
-				handler.OnStepFinish(ctx, e)
-			}
-		})
+	// TS mergeCallbacks(onStepEnd, onStepFinish): every integration's
+	// OnStepEnd, then the deprecated OnStepFinish handlers, each callback
+	// isolated so a panicking OnStepEnd does not skip OnStepFinish.
+	integrations := snapshotFor(e.Settings)
+	for _, i := range integrations {
+		callIntegration(func() { i.OnStepEnd(ctx, e) })
+	}
+	for _, i := range integrations {
+		if handler, ok := i.(deprecatedStepFinishHandler); ok {
+			callIntegration(func() { handler.OnStepFinish(ctx, e) })
+		}
 	}
 }
 
