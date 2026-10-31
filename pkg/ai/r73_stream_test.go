@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -717,6 +718,215 @@ func TestR73StreamRequestMessagesRetention(t *testing.T) {
 	}
 	if got := r.Steps()[0].Request.Messages; !reflect.DeepEqual(got, want) {
 		t.Errorf("steps[0].Request.Messages = %#v", got)
+	}
+}
+
+
+func r73streamCounterIDs(prefix string) func() string {
+	var mu sync.Mutex
+	n := 0
+	return func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		id := prefix + "-" + strconv.Itoa(n)
+		n++
+		return id
+	}
+}
+
+func r73streamIDParts(parts []provider.StreamChunk, kinds ...provider.ChunkType) []string {
+	var out []string
+	for _, p := range parts {
+		for _, k := range kinds {
+			if p.Type == k {
+				out = append(out, string(p.Type)+":"+p.ID+":"+p.Text)
+			}
+		}
+	}
+	return out
+}
+
+// TS 18454 (and the remap case before it): multi-step part IDs. Unique
+// provider IDs are kept; a reasoning ID that repeats in a later step is
+// remapped to the next generated ID (TS mockId: id-0 and id-1 are the step
+// response ids, so the remapped id is id-2), and the step texts are kept.
+func TestR73StreamMultiStepPartIDs(t *testing.T) {
+	tool := types.Tool{Name: "tool1", Parameters: r71streamValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result1", nil }}
+	call := provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "test"}, RawArguments: `{ "value": "test" }`}}
+	t.Run("unique ids kept", func(t *testing.T) {
+		model := r71streamModel(nil,
+			[]provider.StreamChunk{
+				{Type: provider.ChunkTypeTextStart, ID: "0"}, {Type: provider.ChunkTypeText, ID: "0", Text: "Hello"}, {Type: provider.ChunkTypeTextEnd, ID: "0"},
+				call, {Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r72streamTestUsage}},
+			[]provider.StreamChunk{
+				{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "World"}, {Type: provider.ChunkTypeTextEnd, ID: "1"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage}})
+		_, parts := r73streamParts(t, StreamTextOptions{Model: model, Prompt: "test-input", Tools: []types.Tool{tool}, StopWhen: []StopCondition{StepCountIs(2)}})
+		got := r73streamIDParts(parts, provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd)
+		want := []string{"text-start:0:", "text:0:Hello", "text-end:0:", "text-start:1:", "text:1:World", "text-end:1:"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("text parts = %v\nwant %v", got, want)
+		}
+	})
+	t.Run("repeated reasoning id remapped", func(t *testing.T) {
+		model := r71streamModel(nil,
+			[]provider.StreamChunk{
+				{Type: provider.ChunkTypeReasoningStart, ID: "0"}, {Type: provider.ChunkTypeReasoning, ID: "0", Text: "thinking"}, {Type: provider.ChunkTypeReasoningEnd, ID: "0"},
+				call, {Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r72streamTestUsage}},
+			[]provider.StreamChunk{
+				{Type: provider.ChunkTypeReasoningStart, ID: "0"}, {Type: provider.ChunkTypeReasoning, ID: "0", Text: "thinking more"}, {Type: provider.ChunkTypeReasoningEnd, ID: "0"},
+				{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "It is sunny."}, {Type: provider.ChunkTypeTextEnd, ID: "1"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage}})
+		r, parts := r73streamParts(t, StreamTextOptions{Model: model, Prompt: "test-input", Tools: []types.Tool{tool}, StopWhen: []StopCondition{StepCountIs(2)},
+			Internal: &InternalOptions{GenerateID: r73streamCounterIDs("id")}})
+		for _, p := range parts {
+			if p.Type == provider.ChunkTypeError {
+				t.Fatalf("error part: %v", p.Err)
+			}
+		}
+		got := r73streamIDParts(parts, provider.ChunkTypeReasoningStart, provider.ChunkTypeReasoning, provider.ChunkTypeReasoningEnd)
+		want := []string{"reasoning-start:0:", "reasoning:0:thinking", "reasoning-end:0:", "reasoning-start:id-2:", "reasoning:id-2:thinking more", "reasoning-end:id-2:"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("reasoning parts = %v\nwant %v", got, want)
+		}
+		steps := r.Steps()
+		if len(steps) != 2 || steps[0].ReasoningText != "thinking" || steps[1].ReasoningText != "thinking more" {
+			t.Fatalf("steps reasoning = %+v", steps)
+		}
+	})
+}
+
+
+func r73streamDur(d time.Duration) *time.Duration { return &d }
+
+// TS 19961 / 20027 / 20232: step timeouts are cleared when a multi-step run
+// completes normally; totalMs, stepMs and chunkMs together run a normal
+// stream to completion with a deadline-bearing context.
+func TestR73StreamTimeoutsOnNormalCompletion(t *testing.T) {
+	t.Run("step timeout cleared in multi-step run", func(t *testing.T) {
+		var mu sync.Mutex
+		var ctxs []context.Context
+		steps := [][]provider.StreamChunk{
+			r71streamToolCallStep([2]string{"call-1", "test"}),
+			{{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Final response"}, {Type: provider.ChunkTypeTextEnd, ID: "1"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage}},
+		}
+		model := &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id", DoStreamFunc: func(ctx context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			ctxs = append(ctxs, ctx)
+			return testutil.NewMockTextStream(steps[len(ctxs)-1]), nil
+		}}
+		var errs []error
+		r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test-input",
+			Tools:    []types.Tool{r71streamTool1(true, nil, nil)},
+			Timeout:  &TimeoutConfig{PerStep: r73streamDur(50 * time.Millisecond)},
+			StopWhen: []StopCondition{StepCountIs(2)},
+			OnError:  func(_ context.Context, err error) { errs = append(errs, err) },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.ConsumeStream(); err != nil {
+			t.Fatalf("ConsumeStream: %v", err)
+		}
+		time.Sleep(100 * time.Millisecond)
+		if len(ctxs) != 2 || len(errs) != 0 || r.Text() != "Final response" || r.FinishReason() != types.FinishReasonStop {
+			t.Fatalf("calls %d errs %v text %q finish %q", len(ctxs), errs, r.Text(), r.FinishReason())
+		}
+		for i, c := range ctxs {
+			if errors.Is(c.Err(), context.DeadlineExceeded) || errors.Is(context.Cause(c), context.DeadlineExceeded) {
+				t.Errorf("step %d context timed out after completion: %v", i, context.Cause(c))
+			}
+		}
+	})
+	for _, cfg := range []struct {
+		name string
+		tc   TimeoutConfig
+	}{
+		{"total and step", TimeoutConfig{Total: r73streamDur(10 * time.Second), PerStep: r73streamDur(5 * time.Second)}},
+		{"chunk, total and step", TimeoutConfig{Total: r73streamDur(30 * time.Second), PerStep: r73streamDur(10 * time.Second), PerChunk: r73streamDur(5 * time.Second)}},
+	} {
+		cfg := cfg
+		t.Run(cfg.name, func(t *testing.T) {
+			var got context.Context
+			model := &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id", DoStreamFunc: func(ctx context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+				got = ctx
+				return testutil.NewMockTextStream(r71streamHelloWorld), nil
+			}}
+			r := r71streamRun(t, StreamTextOptions{Model: model, Prompt: "test-input", Timeout: &cfg.tc})
+			if got == nil || r.Text() != "Hello, world!" {
+				t.Fatalf("ctx %v text %q", got, r.Text())
+			}
+			if _, ok := got.Deadline(); !ok {
+				t.Errorf("doStream context has no deadline")
+			}
+		})
+	}
+}
+
+
+func r73streamTextStep(deltas ...string) []provider.StreamChunk {
+	out := []provider.StreamChunk{{Type: provider.ChunkTypeTextStart, ID: "1"}}
+	for _, d := range deltas {
+		out = append(out, provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: d})
+	}
+	return append(out, provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage})
+}
+
+var r73streamValueObjectSchema = schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}, "required": []interface{}{"value"}})
+
+// TS 23305 / 23345: object output > the parsed output is available while an
+// onEnd callback is still running (output is not delayed by onEnd), and onEnd
+// receives the same parsed value.
+func TestR73StreamOutputNotDelayedByOnEnd(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var callbackOutput interface{}
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r71streamModel(nil, r73streamTextStep(`{ "value": "Hello, world!" }`)), Prompt: "prompt",
+		Output: ObjectOutput[map[string]interface{}](ObjectOutputOptions{Schema: r73streamValueObjectSchema}),
+		OnEndEvent: func(_ context.Context, e OnFinishEvent) {
+			callbackOutput = e.Output
+			close(started)
+			<-release
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = r.ConsumeStream() }()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("onEnd not called")
+	}
+	want := map[string]interface{}{"value": "Hello, world!"}
+	if got := r.Output(); !reflect.DeepEqual(got, want) {
+		t.Errorf("Output() during onEnd = %#v", got)
+	}
+	close(release)
+	_ = r.ConsumeStream()
+	if !reflect.DeepEqual(callbackOutput, want) {
+		t.Errorf("onEnd output = %#v", callbackOutput)
+	}
+}
+
+// TS 24087: json output > should stream null and empty string values.
+func TestR73StreamJSONOutputNullAndEmptyString(t *testing.T) {
+	for _, value := range []interface{}{nil, ""} {
+		b, _ := json.Marshal(value)
+		r := r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, r73streamTextStep(string(b))), Prompt: "prompt", Output: JSONOutput(JSONOutputOptions{})})
+		if err := r.OutputErr(); err != nil {
+			t.Fatalf("%s: OutputErr = %v", b, err)
+		}
+		if got := r.Output(); !reflect.DeepEqual(got, value) {
+			t.Errorf("%s: Output() = %#v", b, got)
+		}
+		if got := r.PartialOutput(); !reflect.DeepEqual(got, value) {
+			t.Errorf("%s: PartialOutput() = %#v", b, got)
+		}
 	}
 }
 
