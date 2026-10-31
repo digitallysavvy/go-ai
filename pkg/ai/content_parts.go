@@ -622,6 +622,7 @@ func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []t
 				ToolName:         tr.ToolName,
 				Input:            tr.Input,
 				Error:            tr.Error.Error(),
+				Err:              tr.Error,
 				ErrorText:        providerutils.ToolErrorText(tr.Error),
 				ProviderExecuted: tr.ProviderExecuted,
 				ProviderMetadata: providerMetadataRaw(tr.ProviderMetadata),
@@ -652,6 +653,7 @@ func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []t
 				ToolName:         tr.ToolName,
 				Input:            tr.Input,
 				Error:            output.Error(),
+				Err:              output,
 				ErrorText:        providerutils.ToolErrorText(output),
 				ProviderExecuted: tr.ProviderExecuted,
 				ProviderMetadata: providerMetadataRaw(tr.ProviderMetadata),
@@ -710,10 +712,14 @@ func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart 
 		// Result next to the Error summary.
 		var errValue interface{} = result.Error.Error()
 		errorText := providerutils.ToolErrorText(result.Error)
+		typedErr := result.Error
 		if result.ProviderExecuted {
 			errorText = ""
 			if result.Result != nil {
+				// The provider's error is a structured value, not a Go
+				// error: Err stays nil.
 				errValue = result.Result
+				typedErr = nil
 			}
 		}
 		return types.ToolErrorContent{
@@ -721,6 +727,7 @@ func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart 
 			ToolName:         result.ToolName,
 			Input:            result.Input,
 			Error:            errValue,
+			Err:              typedErr,
 			ErrorText:        errorText,
 			ProviderExecuted: result.ProviderExecuted,
 			ProviderMetadata: providerMetadataRaw(result.ProviderMetadata),
@@ -761,6 +768,7 @@ func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart 
 			ToolName:         result.ToolName,
 			Input:            result.Input,
 			Error:            output.Error(),
+			Err:              output,
 			ErrorText:        providerutils.ToolErrorText(output),
 			ProviderExecuted: result.ProviderExecuted,
 			ProviderMetadata: providerMetadataRaw(result.ProviderMetadata),
@@ -894,6 +902,11 @@ func providerToolResultFromError(p types.ToolErrorContent) types.ToolResult {
 		err = e
 	case string:
 		err = errors.New(e)
+		if p.Err != nil {
+			// A provider that kept its Go error in Err: the tool result
+			// carries the typed error, as the content part does.
+			err = p.Err
+		}
 	default:
 		// A structured provider error (TS tool-error.error as an object)
 		// keeps its value in Result next to the Error summary, the shape
