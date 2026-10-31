@@ -1,10 +1,14 @@
 package xai
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -65,3 +69,42 @@ func TestR74ProvbToolArgsTypeValidationText(t *testing.T) {
 
 // r74provbIssues renders zod issue objects as ZodError.message lists them.
 func r74provbIssues(lines ...string) string { return "[\n" + strings.Join(lines, ",\n") + "\n]" }
+
+// TestR74ProvbTSCasesPrepareTools replays xai-responses-prepare-tools.test.ts
+// (TS prepareResponsesTools) through the whole xAI Responses request builder,
+// with the provider tools in TS shape ({type: "provider", id, name, args}).
+func TestR74ProvbTSCasesPrepareTools(t *testing.T) {
+	tsfixture.ProviderToolHook = func(id, name string, args map[string]interface{}) (types.Tool, bool) {
+		if args == nil {
+			args = map[string]interface{}{}
+		}
+		return types.Tool{Name: name, Type: types.ToolTypeProviderDefined, ProviderID: id, ProviderArgs: args}, true
+	}
+	defer func() { tsfixture.ProviderToolHook = nil }()
+	cases := tsfixture.LoadCases(t, "testdata/tscases/prepare_tools.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		in, _ := args[0].(map[string]interface{})
+		tools, why := tsfixture.BuildTools(in["tools"])
+		if why != "" {
+			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+		}
+		opts := &provider.GenerateOptions{Prompt: types.Prompt{Text: "Hello"}, Tools: tools}
+		if tc, ok := in["toolChoice"].(map[string]interface{}); ok && tc["__undef"] == nil {
+			opts.ToolChoice = tsfixture.BuildToolChoice(tc)
+		}
+		body, warnings, err := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "grok-4").buildRequestBody(opts, false)
+		if err != nil {
+			return nil, nil, err
+		}
+		out := map[string]interface{}{"toolWarnings": tsfixture.WarningsToTS(warnings)}
+		for key, field := range map[string]string{"tools": "tools", "tool_choice": "toolChoice"} {
+			if v, ok := body[key]; ok {
+				b, _ := json.Marshal(v)
+				var g interface{}
+				_ = json.Unmarshal(b, &g)
+				out[field] = g
+			}
+		}
+		return out, nil, nil
+	}, nil)
+}
