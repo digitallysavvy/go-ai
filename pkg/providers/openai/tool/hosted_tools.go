@@ -68,7 +68,13 @@ func CodeInterpreter(config CodeInterpreterConfig) types.Tool {
 // FileSearch creates an OpenAI provider-executed file_search tool (TS
 // openai.tools.fileSearch, id "openai.file_search").
 func FileSearch(config FileSearchConfig) types.Tool {
-	tool := providerExecutedHostedTool("openai.file_search", config, providerArgs(config))
+	args := providerArgs(config)
+	if config.VectorStoreIDs == nil {
+		// TS fileSearch({vectorStoreIds: undefined}) has no vectorStoreIds
+		// arg (JSON drops undefined); an empty list is kept.
+		delete(args, "vectorStoreIds")
+	}
+	tool := providerExecutedHostedTool("openai.file_search", config, args)
 	tool.OutputSchema = schemaFromJSON(fileSearchOutputSchemaJSON)
 	return tool
 }
