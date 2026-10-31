@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1129,4 +1130,204 @@ func TestR72GenConvert_ProviderMetadataAndFiles(t *testing.T) {
 	}}}, `[{"role":"assistant","content":[
 		{"type":"tool-call","toolCallId":"call-1","toolName":"web_search","input":{"query":"q"},"providerExecuted":true,"providerOptions":{"testProvider":{"signature":"1234567890"}}},
 		{"type":"tool-result","toolCallId":"call-1","toolName":"web_search","output":{"type":"json","value":{"r":1}},"providerExecuted":true,"providerOptions":{"testProvider":{"signature":"1234567890"}}}]}]`)
+}
+
+// generate-text.test.ts 7135 '2 steps: initial, tool-result with prepareStep
+// > doGenerate should be called with the correct arguments': prepareStep's
+// model, tool choice, instructions, messages and active tools apply to their
+// step only; step 2 gets the outer (unset, so auto) tool choice and no tools.
+func TestR72Gen_PrepareStepDoGenerateArguments(t *testing.T) {
+	trueModel := r72genSeqModel(t,
+		&types.GenerateResult{ToolCalls: []types.ToolCall{{ID: "call-1", ToolName: "tool1", RawArguments: `{ "value": "value" }`}}, FinishReason: types.FinishReasonToolCalls, Usage: *usage(10, 5)},
+		r72genText("Hello, world!"))
+	newInput := []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "new input from prepareStep"}}}}
+	tool := r72genValueTool("tool1")
+	var toolMessages []types.Message
+	tool.Execute = func(_ context.Context, args map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+		toolMessages = o.Messages
+		return "result1", nil
+	}
+	var runtimeContexts []interface{}
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r72genSeqModel(t), Prompt: "test-input", Tools: []types.Tool{tool},
+		RuntimeContext: map[string]interface{}{"context": "state1"},
+		StopWhen:       []StopCondition{StepCountIs(3)},
+		PrepareStep: func(_ context.Context, s PrepareStepOptions) PrepareStepOptions {
+			runtimeContexts = append(runtimeContexts, s.RuntimeContext)
+			switch s.StepNumber {
+			case 0:
+				if len(s.Steps) != 0 {
+					t.Errorf("step 0 steps = %d", len(s.Steps))
+				}
+				sys := "system-message-0"
+				return PrepareStepOptions{Model: trueModel, ToolChoice: types.ToolChoice{Type: types.ToolChoiceTool, ToolName: "tool1"},
+					Instructions: &sys, Messages: newInput, RuntimeContext: map[string]interface{}{"context": "state2"}}
+			case 1:
+				if len(s.Steps) != 1 {
+					t.Errorf("step 1 steps = %d", len(s.Steps))
+				}
+				sys := "system-message-1"
+				return PrepareStepOptions{Model: trueModel, ActiveTools: []string{}, Instructions: &sys, RuntimeContext: map[string]interface{}{"context": "state3"}}
+			}
+			return PrepareStepOptions{}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text != "Hello, world!" {
+		t.Fatalf("text = %q", res.Text)
+	}
+	if !reflect.DeepEqual(runtimeContexts, []interface{}{map[string]interface{}{"context": "state1"}, map[string]interface{}{"context": "state2"}}) {
+		t.Fatalf("prepareStep runtime contexts = %#v", runtimeContexts)
+	}
+	if !reflect.DeepEqual(r72genJSON(t, toolMessages), r72genJSON(t, newInput)) {
+		t.Fatalf("tool messages = %#v", toolMessages)
+	}
+	calls := trueModel.GenerateCalls
+	if len(calls) != 2 {
+		t.Fatalf("model calls = %d", len(calls))
+	}
+	first, second := calls[0], calls[1]
+	if first.Prompt.System != "system-message-0" || !reflect.DeepEqual(r72genJSON(t, first.Prompt.Messages), r72genJSON(t, newInput)) {
+		t.Fatalf("step 1 prompt = %+v", first.Prompt)
+	}
+	if first.ToolChoice.Type != types.ToolChoiceTool || first.ToolChoice.ToolName != "tool1" || len(first.Tools) != 1 || first.Tools[0].Name != "tool1" {
+		t.Fatalf("step 1 tools = %+v, choice = %+v", first.Tools, first.ToolChoice)
+	}
+	if second.Prompt.System != "system-message-1" || second.ToolChoice.Type != types.ToolChoiceAuto || len(second.Tools) != 0 {
+		t.Fatalf("step 2 system = %q, choice = %+v, tools = %+v", second.Prompt.System, second.ToolChoice, second.Tools)
+	}
+	msgs := second.Prompt.Messages
+	if len(msgs) != 3 || msgs[0].Role != types.RoleUser || msgs[1].Role != types.RoleAssistant || msgs[2].Role != types.RoleTool {
+		t.Fatalf("step 2 messages = %+v", msgs)
+	}
+	call, ok := msgs[1].Content[0].(types.ToolCallContent)
+	if !ok || call.ToolCallID != "call-1" || call.ToolName != "tool1" || !reflect.DeepEqual(call.Arguments, map[string]interface{}{"value": "value"}) || call.ProviderExecuted {
+		t.Fatalf("step 2 assistant = %#v", msgs[1].Content)
+	}
+	result, ok := msgs[2].Content[0].(types.ToolResultContent)
+	if !ok || result.ToolCallID != "call-1" || result.ToolName != "tool1" || result.Output == nil || result.Output.Type != types.ToolResultOutputText || result.Output.Value != "result1" {
+		t.Fatalf("step 2 tool = %#v", msgs[2].Content)
+	}
+}
+
+func r72genNoopTool(name string) types.Tool {
+	return types.Tool{Name: name, Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return nil, nil
+		}}
+}
+
+func r72genToolNames(tools []types.Tool) []string {
+	var out []string
+	for _, tl := range tools {
+		out = append(out, tl.Name)
+	}
+	return out
+}
+
+// generate-text.test.ts tool callers: 580 're-announces a caller message when
+// the catalog reverts', 714 'distinguishes the direct marker from a caller
+// named direct' and 771 'rejects caller names that are not caller-capable
+// tools'.
+func TestR72Gen_ToolCallers(t *testing.T) {
+	// 580: the announcement follows the step's active tools; a catalog that
+	// changes back is announced again.
+	codeMode := r72genNoopTool("code_mode")
+	codeMode.ExperimentalToolCaller = &types.ToolCallerDefinition{
+		Type: types.ToolCallerTypeLocal,
+		Bind: func([]types.Tool) types.Tool { return r72genNoopTool("bound") },
+		PrepareModelMessage: func(tools []types.Tool) *string {
+			names := r72genToolNames(tools)
+			s := "Available caller tools: "
+			for i, n := range names {
+				if i > 0 {
+					s += ", "
+				}
+				s += n
+			}
+			s += "."
+			return &s
+		},
+	}
+	var mu sync.Mutex
+	var lastUser []string
+	model := &testutil.MockLanguageModel{DoGenerateFunc: func(_ context.Context, o *provider.GenerateOptions) (*types.GenerateResult, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		last := ""
+		for _, m := range o.Prompt.Messages {
+			if m.Role == types.RoleUser {
+				last = m.Content[0].(types.TextContent).Text
+			}
+		}
+		lastUser = append(lastUser, last)
+		if n := len(lastUser); n < 3 {
+			return &types.GenerateResult{ToolCalls: []types.ToolCall{{ID: "call-" + string(rune('0'+n)), ToolName: "code_mode", RawArguments: `{}`}}, FinishReason: types.FinishReasonToolCalls}, nil
+		}
+		return &types.GenerateResult{Text: "Done.", FinishReason: types.FinishReasonStop}, nil
+	}}
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model, Prompt: "Use the available tool.",
+		Tools:                   []types.Tool{codeMode, r72genNoopTool("toolA"), r72genNoopTool("toolB")},
+		ExperimentalToolCallers: ExperimentalToolCallers{"toolA": {"code_mode"}, "toolB": {"code_mode"}},
+		StopWhen:                []StopCondition{StepCountIs(3)},
+		PrepareStep: func(_ context.Context, s PrepareStepOptions) PrepareStepOptions {
+			if s.StepNumber == 1 {
+				return PrepareStepOptions{ActiveTools: []string{"code_mode", "toolB"}}
+			}
+			return PrepareStepOptions{ActiveTools: []string{"code_mode", "toolA"}}
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"Available caller tools: toolA.", "Available caller tools: toolB.", "Available caller tools: toolA."}; !reflect.DeepEqual(lastUser, want) {
+		t.Fatalf("last user messages = %q, want %q", lastUser, want)
+	}
+
+	// 714: "direct" is a caller tool name; DirectToolCall is the marker.
+	direct := r72genNoopTool("direct")
+	direct.ExperimentalToolCaller = &types.ToolCallerDefinition{
+		Type: types.ToolCallerTypeLocal,
+		Bind: func(tools []types.Tool) types.Tool {
+			names := r72genToolNames(tools)
+			return types.Tool{Parameters: map[string]interface{}{"type": "object"}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return names, nil
+			}}
+		},
+	}
+	var modelTools []string
+	dmodel := &testutil.MockLanguageModel{DoGenerateFunc: func(_ context.Context, o *provider.GenerateOptions) (*types.GenerateResult, error) {
+		for _, tl := range o.Tools {
+			modelTools = append(modelTools, tl.Name)
+		}
+		return &types.GenerateResult{ToolCalls: []types.ToolCall{{ID: "call-1", ToolName: "direct", RawArguments: `{}`}}, FinishReason: types.FinishReasonToolCalls}, nil
+	}}
+	inventory := types.Tool{Name: "getInventory", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"sku": map[string]interface{}{"type": "string"}}, "required": []interface{}{"sku"}},
+		Execute: func(_ context.Context, a map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			return a, nil
+		}}
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: dmodel, Prompt: "Check inventory.", Tools: []types.Tool{direct, inventory},
+		ExperimentalToolCallers: ExperimentalToolCallers{"getInventory": {"direct", DirectToolCall}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(modelTools, []string{"direct", "getInventory"}) {
+		t.Fatalf("model tools = %v", modelTools)
+	}
+	if len(res.ToolResults) != 1 || !reflect.DeepEqual(res.ToolResults[0].Result, []string{"getInventory"}) {
+		t.Fatalf("tool results = %+v", res.ToolResults)
+	}
+
+	// 771
+	_, err = GenerateText(context.Background(), GenerateTextOptions{
+		Model: r72genSeqModel(t), Prompt: "Check inventory.", Tools: []types.Tool{r72genNoopTool("getInventory")},
+		ExperimentalToolCallers: ExperimentalToolCallers{"getInventory": {"getInventory"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), `tool "getInventory" contains an invalid caller.`) {
+		t.Fatalf("err = %v", err)
+	}
 }
