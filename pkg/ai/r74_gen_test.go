@@ -4,14 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -756,5 +759,190 @@ func TestR74Gen_StepContentToolResultKeepsRawOutput(t *testing.T) {
 				t.Fatalf("response message tool result keeps Result: %+v", tr)
 			}
 		}
+	}
+}
+
+// generate-text.test.ts 9780 'should stop for client tool approval while a
+// provider tool result is deferred'.
+func TestR74Gen_ApprovalWhileProviderResultDeferred(t *testing.T) {
+	executed := 0
+	modelCalls := 0
+	model := &testutil.MockLanguageModel{
+		ProviderName: "mock-provider", ModelName: "mock-model-id",
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			modelCalls++
+			return &types.GenerateResult{
+				ToolCalls: []types.ToolCall{
+					{ID: "program-call", ToolName: "program", RawArguments: `{"code":"getHours()"}`, ProviderExecuted: true},
+					{ID: "get-hours-call", ToolName: "getHours", RawArguments: `{"member":"Ada"}`},
+				},
+				FinishReason: types.FinishReasonToolCalls, Usage: *usage(3, 10),
+			}, nil
+		},
+	}
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "Get Ada hours with a program.",
+		Tools: []types.Tool{
+			{Name: "program", Type: "provider", ProviderID: "test.program", ProviderArgs: map[string]interface{}{}, ProviderExecuted: true, SupportsDeferredResults: true,
+				Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"code": map[string]interface{}{"type": "string"}}, "required": []interface{}{"code"}}},
+			{Name: "getHours", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"member": map[string]interface{}{"type": "string"}}, "required": []interface{}{"member"}},
+				Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+					executed++
+					return nil, nil
+				}},
+		},
+		ToolApproval: map[string]types.ToolApprovalValue{"getHours": types.ToolApprovalStatusUserApproval},
+		StopWhen:     []StopCondition{IsStepCount(3)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modelCalls != 1 || executed != 0 || len(res.Steps) != 1 {
+		t.Fatalf("modelCalls=%d executed=%d steps=%d, want 1/0/1", modelCalls, executed, len(res.Steps))
+	}
+	var requests []string
+	for _, p := range res.Content {
+		if r, ok := p.(types.ToolApprovalRequestContent); ok {
+			requests = append(requests, r.ToolCall.ID+":"+r.ToolCall.ToolName)
+		}
+	}
+	if !reflect.DeepEqual(requests, []string{"get-hours-call:getHours"}) {
+		t.Fatalf("approval requests = %v", requests)
+	}
+}
+
+// generate-text.test.ts 1216 'should include custom parts in content'.
+func TestR74Gen_CustomPartsInContent(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Content: []types.ContentPart{
+					types.TextContent{Text: "Hello"},
+					types.CustomContent{Kind: "openai.compaction", ProviderMetadata: json.RawMessage(`{"openai":{"itemId":"cmp_123"}}`)},
+					types.CustomContent{Kind: "openai.other"},
+				},
+				FinishReason: types.FinishReasonStop, Usage: *usage(3, 10),
+			}, nil
+		},
+	}
+	res, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "prompt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []types.ContentPart{
+		types.TextContent{Text: "Hello"},
+		types.CustomContent{Kind: "openai.compaction", ProviderMetadata: json.RawMessage(`{"openai":{"itemId":"cmp_123"}}`)},
+		types.CustomContent{Kind: "openai.other"},
+	}
+	if !reflect.DeepEqual(res.Content, want) {
+		t.Fatalf("content = %#v\nwant %#v", res.Content, want)
+	}
+}
+
+// generate-text.test.ts 1578 'should download URL-backed %s parts once', the
+// reasoning-file case (the file case is
+// TestGeneratedFileDownload_GenerateEmitsDownloadedContent).
+func TestR74Gen_ReasoningFileURLDownloadedOnce(t *testing.T) {
+	var hits atomic.Int32
+	url := fileServer(t, http.StatusOK, &hits)
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Content:      []types.ContentPart{types.ReasoningFileContent{MediaType: "text/plain", FileData: types.FileData{Type: types.FileDataTypeURL, URL: url}}},
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+	res, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "prompt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, p := range res.Content {
+		if f, ok := p.(types.ReasoningFileContent); ok {
+			found = true
+			if string(f.Data) != "Hello World" {
+				t.Fatalf("reasoning file = %+v, want the downloaded bytes", f)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("content = %#v, want a reasoning file", res.Content)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("downloads = %d, want 1", hits.Load())
+	}
+}
+
+type r74genLMCallTelemetry struct {
+	telemetry.NoopTelemetryIntegration
+	mu     sync.Mutex
+	starts int
+	ends   []telemetry.LanguageModelCallEndEvent
+}
+
+func (r *r74genLMCallTelemetry) OnLanguageModelCallStart(ctx context.Context, _ telemetry.LanguageModelCallStartEvent) context.Context {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.starts++
+	return ctx
+}
+
+func (r *r74genLMCallTelemetry) OnLanguageModelCallEnd(_ context.Context, e telemetry.LanguageModelCallEndEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ends = append(r.ends, e)
+}
+
+// generate-text.test.ts 2141 'should report the completed model call before
+// rejecting a tool choice violation'.
+func TestR74Gen_ModelCallEndBeforeToolChoiceViolation(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		ProviderName: "mock-provider", ModelName: "mock-model-id",
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Content:          []types.ContentPart{types.TextContent{Text: "No tool call."}},
+				FinishReason:     types.FinishReasonStop,
+				Usage:            *usage(3, 10),
+				ProviderMetadata: map[string]interface{}{"testProvider": map[string]interface{}{"requestId": "request-1"}},
+				ResponseMetadata: &types.ResponseMetadata{ID: "response-1", Timestamp: time.Unix(0, 0), ModelID: "response-model-id"},
+			}, nil
+		},
+	}
+	tel := &r74genLMCallTelemetry{}
+	var starts int
+	var ends []LanguageModelCallEndEvent
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:      model,
+		Tools:      []types.Tool{{Name: "tool1", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}, "required": []interface{}{"value"}}}},
+		ToolChoice: types.RequiredToolChoice(),
+		Prompt:     "test-input",
+		OnLanguageModelCallStart: func(context.Context, LanguageModelCallStartEvent) {
+			starts++
+		},
+		OnLanguageModelCallEnd: func(_ context.Context, e LanguageModelCallEndEvent) {
+			ends = append(ends, e)
+		},
+		Telemetry: &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{tel}},
+	})
+	var violation *ToolChoiceViolationError
+	if !errors.As(err, &violation) {
+		t.Fatalf("err = %v, want ToolChoiceViolationError", err)
+	}
+	if starts != 1 || len(ends) != 1 || tel.starts != 1 || len(tel.ends) != 1 {
+		t.Fatalf("starts=%d ends=%d telemetry starts=%d ends=%d, want 1 each", starts, len(ends), tel.starts, len(tel.ends))
+	}
+	e := ends[0]
+	if e.CallID == "" || e.Provider != "mock-provider" || e.ModelID != "response-model-id" || e.FinishReason != types.FinishReasonStop ||
+		e.ResponseID != "response-1" || !reflect.DeepEqual(e.ProviderMetadata, map[string]interface{}{"testProvider": map[string]interface{}{"requestId": "request-1"}}) ||
+		!reflect.DeepEqual(e.Content, []types.ContentPart{types.TextContent{Text: "No tool call."}}) ||
+		e.Usage.InputTokens == nil || *e.Usage.InputTokens != 3 || *e.Usage.OutputTokens != 10 || *e.Usage.TotalTokens != 13 {
+		t.Fatalf("model call end = %+v", e)
+	}
+	te := tel.ends[0]
+	if te.CallID != e.CallID || te.ModelProvider != "mock-provider" || te.ModelID != "response-model-id" || te.FinishReason != "stop" ||
+		te.ResponseID != "response-1" || te.Usage.TotalTokens == nil || *te.Usage.TotalTokens != 13 {
+		t.Fatalf("telemetry model call end = %+v", te)
 	}
 }
