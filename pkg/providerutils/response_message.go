@@ -619,7 +619,7 @@ func responseToolApprovalRequestContent(part types.ToolApprovalRequestContent) t
 	// TS adds inputSchemaInput only when it differs from the approved call
 	// input (isDeepEqualData).
 	inputSchemaInput := part.InputSchemaInput
-	if inputSchemaInput != nil && reflect.DeepEqual(toJSONValue(inputSchemaInput), toJSONValue(part.ToolCall.Arguments)) {
+	if inputSchemaInput != nil && reflect.DeepEqual(jsonorder.Plain(toJSONValue(inputSchemaInput)), jsonorder.Plain(toJSONValue(part.ToolCall.Arguments))) {
 		inputSchemaInput = nil
 	}
 	return types.ToolApprovalRequestContent{

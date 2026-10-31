@@ -396,3 +396,20 @@ func TestR72ProvToResponseMessages_ProviderToolErrorJSONIsToJSONValue(t *testing
 		t.Errorf("nil provider error: output %#v, want error-json null (TS toJSONValue(undefined))", out)
 	}
 }
+
+// The inputSchemaInput comparison is on JSON data: a raw JSON form equal to
+// the call input is dropped too, and a different one is kept.
+func TestR72ProvToResponseMessages_ApprovalInputSchemaInputRawJSON(t *testing.T) {
+	args := map[string]interface{}{"b": float64(2), "a": "x"}
+	for _, c := range []struct {
+		raw  string
+		keep bool
+	}{{`{"a":"x","b":2.0}`, false}, {`{"a":"x","b":"2"}`, true}} {
+		request := types.ToolApprovalRequestContent{ApprovalID: "ap", ToolCall: types.ToolCall{ID: "c1", ToolName: "t", Arguments: args}, InputSchemaInput: json.RawMessage(c.raw)}
+		got := ConvertToResponseMessages(nil, []types.ContentPart{r72provCall("c1", "t", args), request}, nil)
+		kept := got[0].Content[1].(types.ToolApprovalRequestContent).InputSchemaInput != nil
+		if kept != c.keep {
+			t.Errorf("%s: inputSchemaInput kept=%v, want %v", c.raw, kept, c.keep)
+		}
+	}
+}
