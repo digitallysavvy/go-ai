@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"iter"
+	"net/http/httptest"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -456,4 +458,225 @@ func TestR72StreamUIApprovedResumeToolResult(t *testing.T) {
 		`+tc.outputs+r72streamHelloUI)
 		})
 	}
+}
+
+// r72streamPipe runs StreamText, pipes its UI message stream to an
+// httptest recorder, and returns the SSE events (data lines) in order.
+func r72streamPipe(t *testing.T, opts StreamTextOptions, uiOpts ...UIMessageStreamResultOptions) []string {
+	t.Helper()
+	if opts.OnError == nil {
+		opts.OnError = func(context.Context, error) {}
+	}
+	r, err := StreamText(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("StreamText: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	if err := r.PipeUIMessageStreamToResponse(context.Background(), rec, uiOpts...); err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	if rec.Code != 200 {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	for k, v := range map[string]string{"Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no", "X-Vercel-Ai-Ui-Message-Stream": "v1"} {
+		if got := rec.Header().Get(k); got != v {
+			t.Fatalf("header %s = %q, want %q", k, got, v)
+		}
+	}
+	var events []string
+	for _, block := range strings.Split(rec.Body.String(), "\n\n") {
+		if block != "" {
+			events = append(events, block)
+		}
+	}
+	return events
+}
+
+// r72streamAssertSSE compares SSE events with the TS snapshot's, comparing
+// each JSON payload by value (Go writes object keys sorted).
+func r72streamAssertSSE(t *testing.T, got []string, want ...string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("events = %d, want %d:\n%s", len(got), len(want), strings.Join(got, "\n"))
+	}
+	for i := range want {
+		g, w := strings.TrimPrefix(got[i], "data: "), strings.TrimPrefix(want[i], "data: ")
+		if w == "[DONE]" {
+			if g != w {
+				t.Fatalf("event %d = %q, want [DONE]", i, got[i])
+			}
+			continue
+		}
+		var gv, wv interface{}
+		if err := json.Unmarshal([]byte(g), &gv); err != nil {
+			t.Fatalf("event %d %q: %v", i, got[i], err)
+		}
+		if err := json.Unmarshal([]byte(w), &wv); err != nil {
+			t.Fatalf("bad want %d: %v", i, err)
+		}
+		if !reflect.DeepEqual(gv, wv) {
+			t.Fatalf("event %d:\n got  %s\n want %s", i, got[i], want[i])
+		}
+	}
+}
+
+// TS 5277 and 5301: result.pipeUIMessageStreamToResponse > should mask error
+// messages by default / should support custom error messages (snapshots).
+func TestR72StreamPipeErrorMessages(t *testing.T) {
+	for _, custom := range []bool{false, true} {
+		var uiOpts []UIMessageStreamResultOptions
+		text := "An error occurred."
+		if custom {
+			uiOpts = append(uiOpts, UIMessageStreamResultOptions{OnError: func(err error) string { return "custom error message: " + err.Error() }})
+			text = "custom error message: error"
+		}
+		steps := []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: errors.New("error"), Text: "error"}}
+		got := r72streamPipe(t, StreamTextOptions{Model: r71streamModel(nil, steps), Prompt: "test-input", Internal: r72streamIDs()}, uiOpts...)
+		r72streamAssertSSE(t, got,
+			`data: {"type":"start"}`,
+			`data: {"type":"start-step"}`,
+			`data: {"type":"error","errorText":"`+text+`"}`,
+			`data: {"type":"finish-step"}`,
+			`data: {"type":"finish","finishReason":"error"}`,
+			`data: [DONE]`)
+	}
+}
+
+// TS 5327: should omit message finish event (d:) when sendFinish is false.
+func TestR72StreamPipeSendFinishFalse(t *testing.T) {
+	steps := []provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello, World!"},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+	}
+	no := false
+	got := r72streamPipe(t, StreamTextOptions{Model: r71streamModel(nil, steps), Prompt: "test-input", Internal: r72streamIDs()}, UIMessageStreamResultOptions{SendFinish: &no})
+	r72streamAssertSSE(t, got,
+		`data: {"type":"start"}`,
+		`data: {"type":"start-step"}`,
+		`data: {"type":"text-start","id":"1"}`,
+		`data: {"type":"text-delta","id":"1","delta":"Hello, World!"}`,
+		`data: {"type":"text-end","id":"1"}`,
+		`data: {"type":"finish-step"}`,
+		`data: [DONE]`)
+}
+
+func r72streamRawMD(s string) json.RawMessage { return json.RawMessage(s) }
+
+// TS 5377: should write reasoning content to a Node.js response-like object
+// (modelWithReasoning, sendReasoning true).
+func TestR72StreamPipeReasoning(t *testing.T) {
+	sig1 := r72streamRawMD(`{"testProvider":{"signature":"1234567890"}}`)
+	sig2 := r72streamRawMD(`{"testProvider":{"signature":"0987654321"}}`)
+	steps := []provider.StreamChunk{
+		{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-0", ModelID: "mock-model-id"}},
+		{Type: provider.ChunkTypeReasoningStart, ID: "1"},
+		{Type: provider.ChunkTypeReasoning, ID: "1", Reasoning: "I will open the conversation"},
+		{Type: provider.ChunkTypeReasoning, ID: "1", Reasoning: " with witty banter."},
+		{Type: provider.ChunkTypeReasoning, ID: "1", ProviderMetadata: sig1},
+		{Type: provider.ChunkTypeReasoningEnd, ID: "1"},
+		{Type: provider.ChunkTypeReasoningStart, ID: "2", ProviderMetadata: r72streamRawMD(`{"testProvider":{"redactedData":"redacted-reasoning-data"}}`)},
+		{Type: provider.ChunkTypeReasoningEnd, ID: "2"},
+		{Type: provider.ChunkTypeReasoningStart, ID: "3"},
+		{Type: provider.ChunkTypeReasoning, ID: "3", Reasoning: " Once the user has relaxed,"},
+		{Type: provider.ChunkTypeReasoning, ID: "3", Reasoning: " I will pry for valuable information."},
+		{Type: provider.ChunkTypeReasoningEnd, ID: "3", ProviderMetadata: sig1},
+		{Type: provider.ChunkTypeReasoningStart, ID: "4", ProviderMetadata: sig1},
+		{Type: provider.ChunkTypeReasoning, ID: "4", Reasoning: " I need to think about"},
+		{Type: provider.ChunkTypeReasoning, ID: "4", Reasoning: " this problem carefully."},
+		{Type: provider.ChunkTypeReasoningStart, ID: "5", ProviderMetadata: sig1},
+		{Type: provider.ChunkTypeReasoning, ID: "5", Reasoning: " The best solution"},
+		{Type: provider.ChunkTypeReasoning, ID: "5", Reasoning: " requires careful"},
+		{Type: provider.ChunkTypeReasoning, ID: "5", Reasoning: " consideration of all factors."},
+		{Type: provider.ChunkTypeReasoningEnd, ID: "4", ProviderMetadata: sig2},
+		{Type: provider.ChunkTypeReasoningEnd, ID: "5", ProviderMetadata: sig2},
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hi"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: " there!"},
+		{Type: provider.ChunkTypeTextEnd, ID: "1", ProviderMetadata: sig2},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+	}
+	yes := true
+	got := r72streamPipe(t, StreamTextOptions{Model: r71streamModel(nil, steps), Prompt: "test-input", Internal: r72streamIDs()}, UIMessageStreamResultOptions{SendReasoning: &yes})
+	r72streamAssertSSE(t, got,
+		`data: {"type":"start"}`,
+		`data: {"type":"start-step"}`,
+		`data: {"type":"reasoning-start","id":"1"}`,
+		`data: {"type":"reasoning-delta","id":"1","delta":"I will open the conversation"}`,
+		`data: {"type":"reasoning-delta","id":"1","delta":" with witty banter."}`,
+		`data: {"type":"reasoning-delta","id":"1","delta":"","providerMetadata":{"testProvider":{"signature":"1234567890"}}}`,
+		`data: {"type":"reasoning-end","id":"1"}`,
+		`data: {"type":"reasoning-start","id":"2","providerMetadata":{"testProvider":{"redactedData":"redacted-reasoning-data"}}}`,
+		`data: {"type":"reasoning-end","id":"2"}`,
+		`data: {"type":"reasoning-start","id":"3"}`,
+		`data: {"type":"reasoning-delta","id":"3","delta":" Once the user has relaxed,"}`,
+		`data: {"type":"reasoning-delta","id":"3","delta":" I will pry for valuable information."}`,
+		`data: {"type":"reasoning-end","id":"3","providerMetadata":{"testProvider":{"signature":"1234567890"}}}`,
+		`data: {"type":"reasoning-start","id":"4","providerMetadata":{"testProvider":{"signature":"1234567890"}}}`,
+		`data: {"type":"reasoning-delta","id":"4","delta":" I need to think about"}`,
+		`data: {"type":"reasoning-delta","id":"4","delta":" this problem carefully."}`,
+		`data: {"type":"reasoning-start","id":"5","providerMetadata":{"testProvider":{"signature":"1234567890"}}}`,
+		`data: {"type":"reasoning-delta","id":"5","delta":" The best solution"}`,
+		`data: {"type":"reasoning-delta","id":"5","delta":" requires careful"}`,
+		`data: {"type":"reasoning-delta","id":"5","delta":" consideration of all factors."}`,
+		`data: {"type":"reasoning-end","id":"4","providerMetadata":{"testProvider":{"signature":"0987654321"}}}`,
+		`data: {"type":"reasoning-end","id":"5","providerMetadata":{"testProvider":{"signature":"0987654321"}}}`,
+		`data: {"type":"text-start","id":"1"}`,
+		`data: {"type":"text-delta","id":"1","delta":"Hi"}`,
+		`data: {"type":"text-delta","id":"1","delta":" there!"}`,
+		`data: {"type":"text-end","id":"1","providerMetadata":{"testProvider":{"signature":"0987654321"}}}`,
+		`data: {"type":"finish-step"}`,
+		`data: {"type":"finish","finishReason":"stop"}`,
+		`data: [DONE]`)
+}
+
+// TS 5494: should write source content (modelWithSources, sendSources true).
+func TestR72StreamPipeSources(t *testing.T) {
+	steps := []provider.StreamChunk{
+		{Type: provider.ChunkTypeSource, SourceContent: &types.SourceContent{SourceType: "url", ID: "123", URL: "https://example.com", Title: "Example", ProviderMetadata: r72streamRawMD(`{"provider":{"custom":"value"}}`)}},
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello!"},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeSource, SourceContent: &types.SourceContent{SourceType: "url", ID: "456", URL: "https://example.com/2", Title: "Example 2", ProviderMetadata: r72streamRawMD(`{"provider":{"custom":"value2"}}`)}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+	}
+	yes := true
+	got := r72streamPipe(t, StreamTextOptions{Model: r71streamModel(nil, steps), Prompt: "test-input", Internal: r72streamIDs()}, UIMessageStreamResultOptions{SendSources: &yes})
+	r72streamAssertSSE(t, got,
+		`data: {"type":"start"}`,
+		`data: {"type":"start-step"}`,
+		`data: {"type":"source-url","sourceId":"123","url":"https://example.com","title":"Example","providerMetadata":{"provider":{"custom":"value"}}}`,
+		`data: {"type":"text-start","id":"1"}`,
+		`data: {"type":"text-delta","id":"1","delta":"Hello!"}`,
+		`data: {"type":"text-end","id":"1"}`,
+		`data: {"type":"source-url","sourceId":"456","url":"https://example.com/2","title":"Example 2","providerMetadata":{"provider":{"custom":"value2"}}}`,
+		`data: {"type":"finish-step"}`,
+		`data: {"type":"finish","finishReason":"stop"}`,
+		`data: [DONE]`)
+}
+
+// TS 5554: should write file content (modelWithFiles; the base64 data is
+// written as given).
+func TestR72StreamPipeFiles(t *testing.T) {
+	steps := []provider.StreamChunk{
+		{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: "text/plain", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "Hello World"}}},
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello!"},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: "image/jpeg", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "QkFVRw=="}}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+	}
+	got := r72streamPipe(t, StreamTextOptions{Model: r71streamModel(nil, steps), Prompt: "test-input", Internal: r72streamIDs()})
+	r72streamAssertSSE(t, got,
+		`data: {"type":"start"}`,
+		`data: {"type":"start-step"}`,
+		`data: {"type":"file","mediaType":"text/plain","url":"data:text/plain;base64,Hello World"}`,
+		`data: {"type":"text-start","id":"1"}`,
+		`data: {"type":"text-delta","id":"1","delta":"Hello!"}`,
+		`data: {"type":"text-end","id":"1"}`,
+		`data: {"type":"file","mediaType":"image/jpeg","url":"data:image/jpeg;base64,QkFVRw=="}`,
+		`data: {"type":"finish-step"}`,
+		`data: {"type":"finish","finishReason":"stop"}`,
+		`data: [DONE]`)
 }
