@@ -1423,6 +1423,17 @@ func (r *prepareCallRunner) runHook(ctx context.Context, c agent.PrepareCallConf
 		opts.Messages = []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: c.Prompt}}}}
 	}
 	r.st.baseMessages = len(opts.Messages)
+	// TS hands prepareCall the constructor's generation settings
+	// (`effectiveGenerationSettings = {...this.generationSettings}`); the
+	// call's own settings are merged over the hook's result afterwards
+	// (reapplyCall), so the hook never sees them. Timeout stays the call's:
+	// it stands in for TS's separate `timeout` option, not a generation
+	// setting.
+	w := r.w
+	opts.Temperature, opts.MaxTokens, opts.TopP, opts.TopK = w.Temperature, w.MaxTokens, w.TopP, w.TopK
+	opts.FrequencyPenalty, opts.PresencePenalty, opts.StopSequences, opts.Seed = w.FrequencyPenalty, w.PresencePenalty, w.StopSequences, w.Seed
+	opts.MaxRetries, opts.Reasoning = w.MaxRetries, w.Reasoning
+	opts.Headers, opts.ProviderOptions = maps.Clone(w.Headers), maps.Clone(w.ProviderOptions)
 	mutated, err := r.w.PrepareCall(ctx, opts)
 	if err != nil {
 		return opts, err
