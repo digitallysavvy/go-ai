@@ -1,12 +1,20 @@
 package ai
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 // r73streamPUICase is one `it` case of ui/process-ui-message-stream.test.ts:
@@ -319,6 +327,396 @@ func TestR73StreamProcessUIMessageStreamTSCases(t *testing.T) {
 	}
 	if checked < 85 {
 		t.Fatalf("only %d assertions evaluated", checked)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// stream-text.test.ts ports (round 73).
+// ---------------------------------------------------------------------------
+
+// r73streamParts runs StreamText and returns the full stream parts.
+func r73streamParts(t *testing.T, opts StreamTextOptions) (*StreamTextResult, []provider.StreamChunk) {
+	t.Helper()
+	if opts.OnError == nil {
+		opts.OnError = func(context.Context, error) {}
+	}
+	r, err := StreamText(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("StreamText: %v", err)
+	}
+	s := r.FullStream()
+	var parts []provider.StreamChunk
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		parts = append(parts, *c)
+	}
+	return r, parts
+}
+
+func r73streamNames(parts []provider.StreamChunk) []string {
+	var out []string
+	for i := range parts {
+		if n := tsPartName(&parts[i]); n != "" {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// TS 2144: tool choice enforcement > should surface an error when a different
+// tool is called instead of the required tool.
+func TestR73StreamToolChoiceDifferentToolCalled(t *testing.T) {
+	var errs []error
+	var mu sync.Mutex
+	executed := false
+	tool2 := r71streamTool1(true, nil, nil)
+	tool2.Name = "tool2"
+	exec := tool2.Execute
+	tool2.Execute = func(ctx context.Context, a map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+		executed = true
+		return exec(ctx, a, o)
+	}
+	step := []provider.StreamChunk{
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool2", Arguments: map[string]interface{}{"value": "value"}, RawArguments: `{ "value": "value" }`}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, RawFinishReason: "tool_calls", Usage: r72streamTestUsage},
+	}
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r71streamModel(nil, step), Prompt: "test-input",
+		Tools:      []types.Tool{r71streamTool1(false, nil, nil), tool2},
+		ToolChoice: types.SpecificToolChoice("tool1"),
+		OnError: func(_ context.Context, err error) {
+			mu.Lock()
+			errs = append(errs, err)
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	if len(errs) != 1 {
+		t.Fatalf("onError calls = %d (%v), want 1", len(errs), errs)
+	}
+	var v *ToolChoiceViolationError
+	if !errors.As(errs[0], &v) {
+		t.Fatalf("onError error = %T %v, want ToolChoiceViolationError", errs[0], errs[0])
+	}
+	if v.Error() != "Model response did not contain a call to the required tool 'tool1'." {
+		t.Errorf("message = %q", v.Error())
+	}
+	if v.ToolChoice.Type != types.ToolChoiceTool || v.ToolChoice.ToolName != "tool1" || v.FinishReason != types.FinishReasonToolCalls {
+		t.Errorf("violation = %+v", v)
+	}
+	if len(v.Content) != 1 {
+		t.Fatalf("content = %#v", v.Content)
+	}
+	if call, ok := v.Content[0].(types.ToolCallContent); !ok || call.ToolCallID != "call-1" || call.ToolName != "tool2" {
+		// TS: { type: 'tool-call', toolCallId: 'call-1', toolName: 'tool2', input }
+		t.Errorf("content[0] = %#v", v.Content[0])
+	}
+	if r.FinishReason() != types.FinishReasonError {
+		t.Errorf("finishReason = %q, want error", r.FinishReason())
+	}
+	if executed {
+		t.Error("tool2 was executed")
+	}
+}
+
+// TS 2205: tool choice enforcement > should enforce the tool choice returned
+// by prepareStep.
+func TestR73StreamToolChoiceFromPrepareStepEnforced(t *testing.T) {
+	var errs []error
+	step := []provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "No tool call."},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+	}
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r71streamModel(nil, step), Prompt: "test-input",
+		Tools:      []types.Tool{r71streamTool1(false, nil, nil)},
+		ToolChoice: types.AutoToolChoice(),
+		PrepareStep: func(_ context.Context, s PrepareStepOptions) PrepareStepOptions {
+			s.ToolChoice = types.RequiredToolChoice()
+			return s
+		},
+		OnError: func(_ context.Context, err error) { errs = append(errs, err) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	if len(errs) != 1 {
+		t.Fatalf("onError calls = %d (%v), want 1", len(errs), errs)
+	}
+	var v *ToolChoiceViolationError
+	if !errors.As(errs[0], &v) || v.ToolChoice.Type != types.ToolChoiceRequired {
+		t.Fatalf("onError error = %#v, want required ToolChoiceViolationError", errs[0])
+	}
+}
+
+// TS 2673: result.stream > should send delayed asynchronous tool results
+// (snapshot): the tool result is sent before the step's finish-step part.
+func TestR73StreamDelayedAsyncToolResult(t *testing.T) {
+	tool := r71streamTool1(true, nil, nil)
+	exec := tool.Execute
+	tool.Title = "Tool 1"
+	tool.Execute = func(ctx context.Context, a map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+		time.Sleep(50 * time.Millisecond)
+		return exec(ctx, a, o)
+	}
+	step := []provider.StreamChunk{
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "value"}, RawArguments: `{ "value": "value" }`}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+	}
+	_, parts := r73streamParts(t, StreamTextOptions{Model: r71streamModel(nil, step), Prompt: "test-input", Tools: []types.Tool{tool}})
+	got := r73streamNames(parts)
+	want := []string{"start", "start-step", "tool-call:call-1:tool1", "tool-result:call-1:value-result", "finish-step:stop", "finish:stop"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parts = %v\nwant %v", got, want)
+	}
+	for _, p := range parts {
+		if p.Type == provider.ChunkTypeToolCall && p.ToolCall.Title != "Tool 1" {
+			t.Errorf("tool-call title = %q, want Tool 1", p.ToolCall.Title)
+		}
+	}
+}
+
+// TS 2569: result.stream > should pass through providerMetadata on
+// tool-input-start.
+func TestR73StreamToolInputStartProviderMetadata(t *testing.T) {
+	pmd := json.RawMessage(`{"testProvider":{"someKey":"someValue"}}`)
+	step := []provider.StreamChunk{
+		{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "test-tool"}, ProviderMetadata: pmd},
+		{Type: provider.ChunkTypeToolInputDelta, ID: "call-1", Text: `{"value":"test"}`},
+		{Type: provider.ChunkTypeToolInputEnd, ToolCall: &types.ToolCall{ID: "call-1"}},
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "test-tool", Arguments: map[string]interface{}{"value": "test"}, RawArguments: `{"value":"test"}`}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+	}
+	_, parts := r73streamParts(t, StreamTextOptions{Model: r71streamModel(nil, step), Prompt: "test-input"})
+	found := false
+	for _, p := range parts {
+		if p.Type == provider.ChunkTypeToolInputStart {
+			found = true
+			if string(p.ProviderMetadata) != string(pmd) {
+				t.Errorf("tool-input-start providerMetadata = %s", p.ProviderMetadata)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no tool-input-start part")
+	}
+}
+
+// TS 1591: result.stream > should use fallback response metadata when
+// response metadata is not provided: finish-step response id comes from the
+// id generator and the model id from the model.
+func TestR73StreamFallbackResponseMetadata(t *testing.T) {
+	_, parts := r73streamParts(t, StreamTextOptions{
+		Model: r71streamModel(nil, r71streamHelloWorld), Prompt: "test-input",
+		Internal: &InternalOptions{GenerateID: func() string { return "id-2000" }, GenerateCallID: func() string { return "test-telemetry-call-id" }},
+	})
+	for _, p := range parts {
+		if p.Type == provider.ChunkTypeFinishStep {
+			if p.Response == nil || p.Response.ID != "id-2000" || p.Response.ModelID != "mock-model-id" || p.Response.Timestamp.IsZero() {
+				t.Fatalf("finish-step response = %+v", p.Response)
+			}
+			return
+		}
+	}
+	t.Fatal("no finish-step part")
+}
+
+// TS 1408: result.stream > should send files with providerMetadata.
+func TestR73StreamFilesWithProviderMetadata(t *testing.T) {
+	step := []provider.StreamChunk{
+		{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: "text/plain", Data: []byte("Hello World"), ProviderMetadata: json.RawMessage(`{"testProvider":{"signature":"sig-1"}}`)}},
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello!"},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: "image/jpeg", Data: []byte("BAUG")}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+	}
+	r, parts := r73streamParts(t, StreamTextOptions{Model: r71streamModel(nil, step), Prompt: "test-input"})
+	var files []*types.GeneratedFileContent
+	for _, p := range parts {
+		if p.Type == provider.ChunkTypeFile {
+			files = append(files, p.GeneratedFileContent)
+		}
+	}
+	if len(files) != 2 || files[0].MediaType != "text/plain" || string(files[0].ProviderMetadata) != `{"testProvider":{"signature":"sig-1"}}` ||
+		files[1].MediaType != "image/jpeg" || files[1].ProviderMetadata != nil {
+		t.Fatalf("file parts = %+v", files)
+	}
+	if got := r.Files(); len(got) != 2 || string(got[0].ProviderMetadata) != `{"testProvider":{"signature":"sig-1"}}` {
+		t.Fatalf("Files() = %+v", got)
+	}
+}
+
+var r73streamWarning0 = types.Warning{Type: "other", Message: "step 0 warning"}
+var r73streamWarning1 = types.Warning{Type: "other", Message: "step 1 warning"}
+
+func r73streamWarningSteps() *testutil.MockLanguageModel {
+	return r71streamModel(nil,
+		[]provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{r73streamWarning0}},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{}, RawArguments: "{}"}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r72streamTestUsage},
+		},
+		[]provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{r73streamWarning1}},
+			{Type: provider.ChunkTypeTextStart, ID: "1"},
+			{Type: provider.ChunkTypeText, ID: "1", Text: "Done."},
+			{Type: provider.ChunkTypeTextEnd, ID: "1"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+		})
+}
+
+var r73streamEmptyTool = types.Tool{Name: "tool1", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+	Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "result1", nil
+	}}
+
+// TS 7720 / 7785: result.warnings and onFinish warnings span all steps; the
+// final step keeps its own warnings.
+func TestR73StreamWarningsFromAllSteps(t *testing.T) {
+	var end OnFinishEvent
+	r := r71streamRun(t, StreamTextOptions{
+		Model: r73streamWarningSteps(), Prompt: "test-input",
+		Tools: []types.Tool{r73streamEmptyTool}, StopWhen: []StopCondition{StepCountIs(3)},
+		OnEndEvent: func(_ context.Context, e OnFinishEvent) { end = e },
+	})
+	all := []types.Warning{r73streamWarning0, r73streamWarning1}
+	if got := r.Warnings(); !reflect.DeepEqual(got, all) {
+		t.Errorf("Warnings() = %+v", got)
+	}
+	if got := r.FinalStep().Warnings; !reflect.DeepEqual(got, []types.Warning{r73streamWarning1}) {
+		t.Errorf("FinalStep().Warnings = %+v", got)
+	}
+	if !reflect.DeepEqual(end.Warnings, all) {
+		t.Errorf("onEnd warnings = %+v", end.Warnings)
+	}
+	if len(end.Steps) != 2 || !reflect.DeepEqual(end.Steps[1].Warnings, []types.Warning{r73streamWarning1}) {
+		t.Errorf("onEnd steps = %d, last warnings %+v", len(end.Steps), end.Steps)
+	}
+}
+
+// TS 7917: result.providerMetadata resolves with the finish part's metadata.
+func TestR73StreamProviderMetadataAccessor(t *testing.T) {
+	step := []provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage, ProviderMetadata: json.RawMessage(`{"testProvider":{"testKey":"testValue"}}`)},
+	}
+	r := r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, step), Prompt: "test-input"})
+	var got interface{}
+	if err := json.Unmarshal(r.ProviderMetadata(), &got); err != nil {
+		t.Fatalf("ProviderMetadata() = %s: %v", r.ProviderMetadata(), err)
+	}
+	if !reflect.DeepEqual(got, map[string]interface{}{"testProvider": map[string]interface{}{"testKey": "testValue"}}) {
+		t.Fatalf("ProviderMetadata() = %v", got)
+	}
+}
+
+// TS 8375 / 8384: result.sources holds the sources of every step, in order,
+// with their provider metadata.
+func TestR73StreamSourcesFromAllSteps(t *testing.T) {
+	src := func(id, url, title string) provider.StreamChunk {
+		return provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &types.SourceContent{SourceType: "url", ID: id, URL: url, Title: title, ProviderMetadata: json.RawMessage(`{"provider":{"custom":"` + id + `"}}`)}}
+	}
+	model := r71streamModel(nil,
+		[]provider.StreamChunk{
+			src("source-0", "https://example.com/0", "Source 0"),
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{}, RawArguments: "{}"}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r72streamTestUsage},
+		},
+		[]provider.StreamChunk{
+			src("source-1", "https://example.com/1", "Source 1"),
+			{Type: provider.ChunkTypeTextStart, ID: "1"},
+			{Type: provider.ChunkTypeText, ID: "1", Text: "Done."},
+			{Type: provider.ChunkTypeTextEnd, ID: "1"},
+			src("source-2", "https://example.com/2", "Source 2"),
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+		})
+	var end OnFinishEvent
+	r := r71streamRun(t, StreamTextOptions{Model: model, Prompt: "test-input", Tools: []types.Tool{r73streamEmptyTool}, StopWhen: []StopCondition{StepCountIs(3)},
+		OnEndEvent: func(_ context.Context, e OnFinishEvent) { end = e }})
+	var ids []string
+	for _, s := range r.Sources() {
+		ids = append(ids, s.ID+"|"+s.URL+"|"+s.Title+"|"+string(s.ProviderMetadata))
+	}
+	want := []string{
+		`source-0|https://example.com/0|Source 0|{"provider":{"custom":"source-0"}}`,
+		`source-1|https://example.com/1|Source 1|{"provider":{"custom":"source-1"}}`,
+		`source-2|https://example.com/2|Source 2|{"provider":{"custom":"source-2"}}`,
+	}
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("Sources() = %v", ids)
+	}
+	if len(end.Sources) != 3 || len(r.Steps()) != 2 || len(r.Steps()[0].Sources) != 1 || len(r.Steps()[1].Sources) != 2 {
+		t.Fatalf("onEnd sources %d, step sources %+v", len(end.Sources), r.Steps())
+	}
+}
+
+// TS 8563 / 9015 / 13557: files from all steps reach onFinish and the steps.
+func TestR73StreamFilesFromAllStepsToOnFinish(t *testing.T) {
+	file := func(data, mt string) provider.StreamChunk {
+		return provider.StreamChunk{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: mt, Data: []byte(data)}}
+	}
+	model := r71streamModel(nil,
+		[]provider.StreamChunk{
+			file("Step 0 file", "text/plain"),
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{}, RawArguments: "{}"}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r72streamTestUsage},
+		},
+		[]provider.StreamChunk{
+			file("Step 1 file", "text/plain"),
+			{Type: provider.ChunkTypeTextStart, ID: "1"},
+			{Type: provider.ChunkTypeText, ID: "1", Text: "Done."},
+			{Type: provider.ChunkTypeTextEnd, ID: "1"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+		})
+	var end OnFinishEvent
+	r := r71streamRun(t, StreamTextOptions{Model: model, Prompt: "test-input", Tools: []types.Tool{r73streamEmptyTool}, StopWhen: []StopCondition{StepCountIs(3)},
+		OnEndEvent: func(_ context.Context, e OnFinishEvent) { end = e }})
+	if len(end.Files) != 2 || string(end.Files[0].Data) != "Step 0 file" || string(end.Files[1].Data) != "Step 1 file" {
+		t.Fatalf("onEnd files = %+v", end.Files)
+	}
+	steps := r.Steps()
+	if len(steps) != 2 || len(steps[0].Files) != 1 || len(steps[1].Files) != 1 || string(steps[1].Files[0].Data) != "Step 1 file" {
+		t.Fatalf("step files = %+v", steps)
+	}
+	// TS result.files flattens the files of every step.
+	if got := r.Files(); len(got) != 2 || string(got[1].Data) != "Step 1 file" {
+		t.Fatalf("Files() = %+v", got)
+	}
+}
+
+// TS 9571: toolCallConcurrency > should reject invalid concurrency
+// synchronously.
+func TestR73StreamInvalidToolCallConcurrency(t *testing.T) {
+	zero := 0
+	_, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, r71streamHelloWorld), Prompt: "test-input", ToolCallConcurrency: &zero})
+	if err == nil || err.Error() != "Invalid argument for parameter toolCallConcurrency: toolCallConcurrency must be >= 1" {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// TS 8141: result.request includes the request messages when
+// include.requestMessages is set (TS ModelMessage prompt, not the converted
+// provider prompt).
+func TestR73StreamRequestMessagesRetention(t *testing.T) {
+	r := r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, r71streamHelloWorld), Prompt: "test-input", Include: &IncludeOptions{RequestBody: true, RequestMessages: true}})
+	want := r71streamUserMessages("test-input")
+	if got := r.Request().Messages; !reflect.DeepEqual(got, want) {
+		t.Errorf("Request().Messages = %#v", got)
+	}
+	if got := r.Steps()[0].Request.Messages; !reflect.DeepEqual(got, want) {
+		t.Errorf("steps[0].Request.Messages = %#v", got)
 	}
 }
 
