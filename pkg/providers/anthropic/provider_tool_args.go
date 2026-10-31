@@ -115,6 +115,14 @@ func restoreProviderToolOptions(t types.Tool) (types.Tool, error) {
 		}
 		rebuilt = tools.TextEditor20250728(c)
 	case "anthropic.advisor_20260301":
+		// advisor_20260301ArgsSchema: model is a required string (the
+		// constructor's default model is a Go convenience of the constructor).
+		if _, ok := t.ProviderArgs["model"].(string); !ok {
+			return t, &providererrors.TypeValidationError{
+				Field:   "args.model",
+				Message: fmt.Sprintf("invalid args for provider tool %s: model must be a string", id),
+			}
+		}
 		var c tools.Advisor20260301Args
 		if err := decode(&c); err != nil {
 			return t, err

@@ -3,6 +3,7 @@ package anthropic
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -130,5 +131,71 @@ func TestR74prova_RenamedProviderToolRoundTrip(t *testing.T) {
 	}
 	if len(res.ToolCalls) != 1 || res.ToolCalls[0].ToolName != "shell" {
 		t.Fatalf("tool calls = %+v, want one call named shell", res.ToolCalls)
+	}
+}
+
+// Replays anthropic-prepare-tools.test.ts with the provider tools exactly as
+// TS passes them (custom names, id and args; no typed options).
+func TestR74prova_TSCasesPrepareToolsWithTSShapedTools(t *testing.T) {
+	tsfixture.ProviderToolHook = r74provaTSShapedTool
+	defer func() { tsfixture.ProviderToolHook = nil }()
+	cases := tsfixture.LoadCases(t, "testdata/tscases/prepare_tools.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		in, _ := args[0].(map[string]interface{})
+		o := prepareToolsOptions{
+			supportsStructuredOutput: in["supportsStructuredOutput"] == true,
+			supportsStrictTools:      in["supportsStrictTools"] == true,
+			rejectsForcedToolUse:     in["rejectsForcedToolUse"] == true,
+		}
+		if tools, ok := in["tools"]; ok {
+			ts, why := tsfixture.BuildTools(tools)
+			if why != "" {
+				return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+			}
+			o.tools = ts
+		}
+		if tc, ok := in["toolChoice"].(map[string]interface{}); ok {
+			choice := tsfixture.BuildToolChoice(tc)
+			o.toolChoice = &choice
+		}
+		if v, ok := in["disableParallelToolUse"].(bool); ok {
+			o.disableParallelToolUse = &v
+		}
+		out := prepareTools(o)
+		if out.err != nil {
+			return nil, nil, out.err
+		}
+		betas := out.betas
+		if betas == nil {
+			betas = []string{}
+		}
+		return map[string]interface{}{
+			"tools":        out.tools,
+			"tool_choice":  out.toolChoice,
+			"toolChoice":   out.toolChoice,
+			"toolWarnings": tsfixture.WarningsToTS(out.warnings),
+			"betas":        map[string]interface{}{"__set": betas},
+		}, nil, nil
+	}, map[string]string{
+		"should correctly prepare computer_20251124 tool with enableZoom false": "enableZoom is a Go bool: explicit false is omitted like unset (same API default false)",
+	})
+}
+
+// advisor_20260301ArgsSchema requires model: a TS-shaped advisor tool
+// without it fails like validateTypes instead of taking the constructor's
+// default model.
+func TestR74prova_TSShapedAdvisorRequiresModel(t *testing.T) {
+	for _, args := range []map[string]interface{}{{}, {"model": 3}} {
+		tl := types.Tool{Name: "advisor", Type: types.ToolTypeProviderDefined, ProviderID: "anthropic.advisor_20260301", ProviderArgs: args}
+		got := prepareTools(prepareToolsOptions{tools: []types.Tool{tl}})
+		var tv *providererrors.TypeValidationError
+		if !errors.As(got.err, &tv) {
+			t.Errorf("args %v: err = %v, want a TypeValidationError", args, got.err)
+		}
+	}
+	ok := types.Tool{Name: "advisor", Type: types.ToolTypeProviderDefined, ProviderID: "anthropic.advisor_20260301", ProviderArgs: map[string]interface{}{"model": "claude-opus-4-8"}}
+	got := prepareTools(prepareToolsOptions{tools: []types.Tool{ok}})
+	if got.err != nil || len(got.tools) != 1 || got.tools[0]["model"] != "claude-opus-4-8" {
+		t.Fatalf("valid advisor: err %v tools %v", got.err, got.tools)
 	}
 }
