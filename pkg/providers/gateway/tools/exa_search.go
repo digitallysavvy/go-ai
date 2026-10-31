@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -116,52 +117,180 @@ func NewExaSearch(config ExaSearchConfig) ExaSearchTool {
 	return ExaSearchTool(tool)
 }
 
-func exaSearchOutputSchema() map[string]interface{} {
-	resultProperties := map[string]interface{}{
-		"title":           map[string]interface{}{"type": "string"},
-		"url":             map[string]interface{}{"type": "string"},
-		"id":              map[string]interface{}{"type": "string"},
-		"publishedDate":   map[string]interface{}{"type": "string", "nullable": true},
-		"author":          map[string]interface{}{"type": "string", "nullable": true},
-		"image":           map[string]interface{}{"type": "string", "nullable": true},
-		"favicon":         map[string]interface{}{"type": "string", "nullable": true},
-		"text":            map[string]interface{}{"type": "string"},
-		"highlights":      map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
-		"highlightScores": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "number"}},
-		"summary":         map[string]interface{}{"type": "string"},
-		"subpages":        map[string]interface{}{"type": "array", "items": map[string]interface{}{}},
-		"extras":          map[string]interface{}{"type": "object", "properties": map[string]interface{}{"links": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}}, "imageLinks": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}}}},
-	}
-	return map[string]interface{}{
-		"oneOf": []interface{}{
-			map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"requestId":          map[string]interface{}{"type": "string"},
-					"searchType":         map[string]interface{}{"type": "string"},
-					"resolvedSearchType": map[string]interface{}{"type": "string"},
-					"results":            map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object", "properties": resultProperties}},
-					"costDollars": map[string]interface{}{"type": "object", "properties": map[string]interface{}{
-						"total":  map[string]interface{}{"type": "number"},
-						"search": map[string]interface{}{"type": "object", "additionalProperties": map[string]interface{}{"type": "number"}},
-					}},
+// exaSearchOutputSchemaJSON is the TS output schema (packages/gateway/src/tool/exa-search.ts) as zod's
+// toJSONSchema renders it (draft-07, io "input"). ValidateUIMessages checks
+// tool outputs against it, so nullable fields are anyOf [T, null] and the
+// required lists match zod's non-optional fields.
+const exaSearchOutputSchemaJSON = `{
+	"anyOf": [
+		{
+			"type": "object",
+			"properties": {
+				"requestId": {
+					"type": "string"
 				},
+				"searchType": {
+					"type": "string"
+				},
+				"resolvedSearchType": {
+					"type": "string"
+				},
+				"results": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"title": {
+								"type": "string"
+							},
+							"url": {
+								"type": "string"
+							},
+							"id": {
+								"type": "string"
+							},
+							"publishedDate": {
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"author": {
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"image": {
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"favicon": {
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"text": {
+								"type": "string"
+							},
+							"highlights": {
+								"type": "array",
+								"items": {
+									"type": "string"
+								}
+							},
+							"highlightScores": {
+								"type": "array",
+								"items": {
+									"type": "number"
+								}
+							},
+							"summary": {
+								"type": "string"
+							},
+							"subpages": {
+								"type": "array",
+								"items": {}
+							},
+							"extras": {
+								"type": "object",
+								"properties": {
+									"links": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									},
+									"imageLinks": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									}
+								}
+							}
+						},
+						"required": [
+							"title",
+							"url",
+							"id"
+						]
+					}
+				},
+				"costDollars": {
+					"type": "object",
+					"properties": {
+						"total": {
+							"type": "number"
+						},
+						"search": {
+							"type": "object",
+							"propertyNames": {
+								"type": "string"
+							},
+							"additionalProperties": {
+								"type": "number"
+							}
+						}
+					}
+				}
 			},
-			searchErrorSchema([]string{"api_error", "rate_limit", "timeout", "invalid_input", "configuration_error", "execution_error", "unknown"}),
+			"required": [
+				"requestId",
+				"results"
+			]
 		},
-	}
-}
+		{
+			"type": "object",
+			"properties": {
+				"error": {
+					"type": "string",
+					"enum": [
+						"api_error",
+						"rate_limit",
+						"timeout",
+						"invalid_input",
+						"configuration_error",
+						"execution_error",
+						"unknown"
+					]
+				},
+				"statusCode": {
+					"type": "number"
+				},
+				"message": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"error",
+				"message"
+			]
+		}
+	]
+}`
 
-func searchErrorSchema(errorValues []string) map[string]interface{} {
-	return map[string]interface{}{
-		"type":     "object",
-		"required": []string{"error", "message"},
-		"properties": map[string]interface{}{
-			"error":      map[string]interface{}{"type": "string", "enum": errorValues},
-			"statusCode": map[string]interface{}{"type": "number"},
-			"message":    map[string]interface{}{"type": "string"},
-		},
-	}
+func exaSearchOutputSchema() map[string]interface{} {
+	return mustDecodeToolSchema(exaSearchOutputSchemaJSON)
 }
 
 func exaSearchArgs(config ExaSearchConfig) map[string]interface{} {
@@ -236,7 +365,7 @@ func exaContentsSchema() map[string]interface{} {
 		"description": "Controls extracted page content and freshness.",
 		"properties": map[string]interface{}{
 			"text": map[string]interface{}{
-				"oneOf": []interface{}{
+				"anyOf": []interface{}{
 					map[string]interface{}{"type": "boolean"},
 					map[string]interface{}{
 						"type": "object",
@@ -251,7 +380,7 @@ func exaContentsSchema() map[string]interface{} {
 				},
 			},
 			"highlights": map[string]interface{}{
-				"oneOf": []interface{}{
+				"anyOf": []interface{}{
 					map[string]interface{}{"type": "boolean"},
 					map[string]interface{}{"type": "object", "properties": map[string]interface{}{"query": map[string]interface{}{"type": "string"}, "max_characters": map[string]interface{}{"type": "number"}}},
 				},
@@ -259,7 +388,7 @@ func exaContentsSchema() map[string]interface{} {
 			"max_age_hours":     map[string]interface{}{"type": "number"},
 			"livecrawl_timeout": map[string]interface{}{"type": "number"},
 			"subpages":          map[string]interface{}{"type": "number"},
-			"subpage_target":    map[string]interface{}{"oneOf": []interface{}{map[string]interface{}{"type": "string"}, map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}}}},
+			"subpage_target":    map[string]interface{}{"anyOf": []interface{}{map[string]interface{}{"type": "string"}, map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}}}},
 			"extras":            map[string]interface{}{"type": "object", "properties": map[string]interface{}{"links": map[string]interface{}{"type": "number"}, "image_links": map[string]interface{}{"type": "number"}}},
 		},
 	}
@@ -267,4 +396,14 @@ func exaContentsSchema() map[string]interface{} {
 
 func (t ExaSearchTool) ToTool() types.Tool {
 	return types.Tool(t)
+}
+
+// mustDecodeToolSchema decodes a JSON schema constant into a fresh map, so
+// callers that change one tool's schema do not affect another tool's.
+func mustDecodeToolSchema(src string) map[string]interface{} {
+	var out map[string]interface{}
+	if err := json.Unmarshal([]byte(src), &out); err != nil {
+		panic("gateway tools: invalid schema constant: " + err.Error())
+	}
+	return out
 }

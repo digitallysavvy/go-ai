@@ -22,12 +22,12 @@ func TestNewExaSearchSchemaAndProviderExecutedStub(t *testing.T) {
 	if !ok {
 		t.Fatalf("output schema type = %T", tool.OutputSchema)
 	}
-	variantCount, ok := output["oneOf"].([]interface{})
+	variantCount, ok := output["anyOf"].([]interface{})
 	if !ok || len(variantCount) != 2 {
 		t.Fatalf("output schema should match TS success/error union: %#v", output)
 	}
 	errorSchema := variantCount[1].(map[string]interface{})["properties"].(map[string]interface{})
-	errorEnum := errorSchema["error"].(map[string]interface{})["enum"].([]string)
+	errorEnum := r72provStrings(errorSchema["error"].(map[string]interface{})["enum"])
 	if !containsString(errorEnum, "execution_error") {
 		t.Fatalf("output error enum missing TS execution_error: %#v", errorEnum)
 	}

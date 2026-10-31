@@ -45,9 +45,9 @@ func NewPerplexitySearch(config PerplexitySearchConfig) PerplexitySearchTool {
 	properties := map[string]interface{}{
 		"query": map[string]interface{}{
 			"description": "Search query (string) or multiple queries (array of up to 5 strings). Multi-query searches return combined results from all queries.",
-			"oneOf": []map[string]interface{}{
-				{"type": "string"},
-				{
+			"anyOf": []interface{}{
+				map[string]interface{}{"type": "string"},
+				map[string]interface{}{
 					"type":  "array",
 					"items": map[string]interface{}{"type": "string"},
 				},
@@ -133,31 +133,82 @@ func NewPerplexitySearch(config PerplexitySearchConfig) PerplexitySearchTool {
 	return PerplexitySearchTool(tool)
 }
 
-func perplexitySearchOutputSchema() map[string]interface{} {
-	return map[string]interface{}{
-		"oneOf": []interface{}{
-			map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"results": map[string]interface{}{
-						"type": "array",
-						"items": map[string]interface{}{
-							"type": "object",
-							"properties": map[string]interface{}{
-								"title":       map[string]interface{}{"type": "string"},
-								"url":         map[string]interface{}{"type": "string"},
-								"snippet":     map[string]interface{}{"type": "string"},
-								"date":        map[string]interface{}{"type": "string"},
-								"lastUpdated": map[string]interface{}{"type": "string"},
+// perplexitySearchOutputSchemaJSON is the TS output schema (packages/gateway/src/tool/perplexity-search.ts) as zod's
+// toJSONSchema renders it (draft-07, io "input"). ValidateUIMessages checks
+// tool outputs against it, so nullable fields are anyOf [T, null] and the
+// required lists match zod's non-optional fields.
+const perplexitySearchOutputSchemaJSON = `{
+	"anyOf": [
+		{
+			"type": "object",
+			"properties": {
+				"results": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"title": {
+								"type": "string"
 							},
+							"url": {
+								"type": "string"
+							},
+							"snippet": {
+								"type": "string"
+							},
+							"date": {
+								"type": "string"
+							},
+							"lastUpdated": {
+								"type": "string"
+							}
 						},
-					},
-					"id": map[string]interface{}{"type": "string"},
+						"required": [
+							"title",
+							"url",
+							"snippet"
+						]
+					}
 				},
+				"id": {
+					"type": "string"
+				}
 			},
-			searchErrorSchema([]string{"api_error", "rate_limit", "timeout", "invalid_input", "unknown"}),
+			"required": [
+				"results",
+				"id"
+			]
 		},
-	}
+		{
+			"type": "object",
+			"properties": {
+				"error": {
+					"type": "string",
+					"enum": [
+						"api_error",
+						"rate_limit",
+						"timeout",
+						"invalid_input",
+						"unknown"
+					]
+				},
+				"statusCode": {
+					"type": "number"
+				},
+				"message": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"error",
+				"message"
+			]
+		}
+	]
+}`
+
+func perplexitySearchOutputSchema() map[string]interface{} {
+	return mustDecodeToolSchema(perplexitySearchOutputSchemaJSON)
 }
 
 func perplexitySearchArgs(config PerplexitySearchConfig) map[string]interface{} {

@@ -27,10 +27,11 @@ func BrowserSearchTool() types.Tool {
 			"type":       "object",
 			"properties": map[string]interface{}{},
 		},
+		// TS outputSchema z.object({}) is not strict either: ValidateUIMessages
+		// must accept any object output.
 		OutputSchema: map[string]interface{}{
-			"type":                 "object",
-			"properties":           map[string]interface{}{},
-			"additionalProperties": false,
+			"type":       "object",
+			"properties": map[string]interface{}{},
 		},
 	}
 }

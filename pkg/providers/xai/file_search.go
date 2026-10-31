@@ -48,6 +48,33 @@ func FileSearch(config FileSearchConfig) types.Tool {
 		Description: "Search vector stores for relevant information. Returns queries and results including file IDs, filenames, relevance scores, and matching text snippets.",
 		Title:       "File Search",
 		Parameters:  parameters,
+		// TS outputSchema: {queries: string[], results: {fileId, filename,
+		// score (0-1), text}[] | null} (ValidateUIMessages checks outputs).
+		OutputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"queries": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+				"results": map[string]interface{}{
+					"anyOf": []interface{}{
+						map[string]interface{}{
+							"type": "array",
+							"items": map[string]interface{}{
+								"type": "object",
+								"properties": map[string]interface{}{
+									"fileId":   map[string]interface{}{"type": "string"},
+									"filename": map[string]interface{}{"type": "string"},
+									"score":    map[string]interface{}{"type": "number", "minimum": 0, "maximum": 1},
+									"text":     map[string]interface{}{"type": "string"},
+								},
+								"required": []interface{}{"fileId", "filename", "score", "text"},
+							},
+						},
+						map[string]interface{}{"type": "null"},
+					},
+				},
+			},
+			"required": []interface{}{"queries", "results"},
+		},
 		// ProviderOptions carries the typed config for API serialization by prepareXAIResponsesTools.
 		// max_num_results is sent only when set (TS sends it only if given).
 		ProviderOptions: FileSearchOptions(config),

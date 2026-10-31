@@ -2,6 +2,7 @@ package providerutils
 
 import (
 	"encoding/json"
+	"reflect"
 	"sort"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
@@ -313,21 +314,44 @@ func ToolErrorText(err error) string {
 	return name + ": " + err.Error()
 }
 
+// normalizeToolErrorContent replays a tool-error part as a tool-result part
+// (TS createToolModelOutput): errorMode 'json' (a provider-executed error in
+// the assistant message) is toJSONValue(error); errorMode 'text' (a local
+// error in the tool message) is getErrorMessage(error), with ErrorText (the
+// TS error.toString() of a local failure) taking precedence.
 func normalizeToolErrorContent(part types.ToolErrorContent, providerExecuted bool) types.ToolResultContent {
-	outputType := types.ToolResultOutputErrorText
-	value := part.Error
-	if part.ErrorText != "" {
-		value = part.ErrorText
-	}
+	output := &types.ToolResultOutput{Type: types.ToolResultOutputErrorText, Value: toolErrorMessage(part)}
 	if providerExecuted {
-		outputType = types.ToolResultOutputErrorJSON
+		output = &types.ToolResultOutput{Type: types.ToolResultOutputErrorJSON, Value: toJSONValue(part.Error)}
 	}
 	return types.ToolResultContent{
 		ToolCallID:      part.ToolCallID,
 		ToolName:        part.ToolName,
-		Output:          &types.ToolResultOutput{Type: outputType, Value: value},
+		Output:          output,
 		ProviderOptions: providerMetadataOptions(part.ProviderMetadata),
 	}
+}
+
+// toolErrorMessage is TS getErrorMessage(part.error): the ErrorText of a
+// local failure when set, otherwise the string itself, "unknown error" for
+// nil, error.toString() for an error and the JSON text of anything else.
+func toolErrorMessage(part types.ToolErrorContent) string {
+	if part.ErrorText != "" {
+		return part.ErrorText
+	}
+	switch e := part.Error.(type) {
+	case nil:
+		return "unknown error"
+	case string:
+		return e
+	case error:
+		return ToolErrorText(e)
+	}
+	b, err := json.Marshal(part.Error)
+	if err != nil {
+		return "unknown error"
+	}
+	return string(b)
 }
 
 func responseMessageHasContent(msg types.Message) bool {
@@ -592,13 +616,19 @@ func responseToolApprovalRequestContent(part types.ToolApprovalRequestContent) t
 	if toolCallID == "" {
 		toolCallID = part.ToolCall.ID
 	}
+	// TS adds inputSchemaInput only when it differs from the approved call
+	// input (isDeepEqualData).
+	inputSchemaInput := part.InputSchemaInput
+	if inputSchemaInput != nil && reflect.DeepEqual(jsonorder.Plain(toJSONValue(inputSchemaInput)), jsonorder.Plain(toJSONValue(part.ToolCall.Arguments))) {
+		inputSchemaInput = nil
+	}
 	return types.ToolApprovalRequestContent{
 		ApprovalID:       part.ApprovalID,
 		ToolCallID:       toolCallID,
 		Reason:           part.Reason,
 		Signature:        part.Signature,
 		IsAutomatic:      part.IsAutomatic,
-		InputSchemaInput: part.InputSchemaInput,
+		InputSchemaInput: inputSchemaInput,
 	}
 }
 

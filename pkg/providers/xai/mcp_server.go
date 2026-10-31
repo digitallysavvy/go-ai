@@ -71,6 +71,17 @@ func MCPServer(config MCPServerConfig) types.Tool {
 		Description: "Connect to remote MCP (Model Context Protocol) server and execute tools. Enables integration with external services and APIs through MCP-compatible servers.",
 		Title:       "MCP Server",
 		Parameters:  parameters,
+		// TS outputSchema z.object({name: z.string(), arguments: z.string(),
+		// result: z.unknown()}) (ValidateUIMessages checks outputs with it).
+		OutputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"name":      map[string]interface{}{"type": "string"},
+				"arguments": map[string]interface{}{"type": "string"},
+				"result":    map[string]interface{}{},
+			},
+			"required": []interface{}{"name", "arguments", "result"},
+		},
 		// ProviderOptions carries the typed config for API serialization by prepareXAIResponsesTools.
 		ProviderOptions: MCPServerOptions(config),
 		// This tool is executed by xAI's servers, not locally

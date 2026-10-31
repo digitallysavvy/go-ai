@@ -225,60 +225,165 @@ func NewParallelSearch(config ParallelSearchConfig) ParallelSearchTool {
 	return ParallelSearchTool(tool)
 }
 
-func parallelSearchOutputSchema() map[string]interface{} {
-	nullableString := map[string]interface{}{"type": []interface{}{"string", "null"}}
-	return map[string]interface{}{
-		"oneOf": []interface{}{
-			map[string]interface{}{
-				"type":     "object",
-				"required": []string{"search_id", "results"},
-				"properties": map[string]interface{}{
-					"search_id": map[string]interface{}{"type": "string"},
-					"results": map[string]interface{}{
-						"type": "array",
-						"items": map[string]interface{}{
-							"type":     "object",
-							"required": []string{"url", "excerpts"},
-							"properties": map[string]interface{}{
-								"url":          map[string]interface{}{"type": "string"},
-								"title":        nullableString,
-								"publish_date": nullableString,
-								"excerpts": map[string]interface{}{
-									"type":  "array",
-									"items": map[string]interface{}{"type": "string"},
-								},
-							},
-						},
-					},
-					"warnings": map[string]interface{}{
-						"type": []interface{}{"array", "null"},
-						"items": map[string]interface{}{
-							"type":     "object",
-							"required": []string{"type", "message"},
-							"properties": map[string]interface{}{
-								"type":    map[string]interface{}{"type": "string"},
-								"message": map[string]interface{}{"type": "string"},
-								"detail":  map[string]interface{}{"type": []interface{}{"object", "null"}},
-							},
-						},
-					},
-					"usage": map[string]interface{}{
-						"type": []interface{}{"array", "null"},
-						"items": map[string]interface{}{
-							"type":     "object",
-							"required": []string{"name"},
-							"properties": map[string]interface{}{
-								"name":  map[string]interface{}{"type": "string"},
-								"count": map[string]interface{}{"type": "number"},
-							},
-						},
-					},
-					"session_id": map[string]interface{}{"type": "string"},
+// parallelSearchOutputSchemaJSON is the TS output schema (packages/gateway/src/tool/parallel-search.ts) as zod's
+// toJSONSchema renders it (draft-07, io "input"). ValidateUIMessages checks
+// tool outputs against it, so nullable fields are anyOf [T, null] and the
+// required lists match zod's non-optional fields.
+const parallelSearchOutputSchemaJSON = `{
+	"anyOf": [
+		{
+			"type": "object",
+			"properties": {
+				"search_id": {
+					"type": "string"
 				},
+				"results": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"url": {
+								"type": "string"
+							},
+							"title": {
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"publish_date": {
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"excerpts": {
+								"type": "array",
+								"items": {
+									"type": "string"
+								}
+							}
+						},
+						"required": [
+							"url",
+							"excerpts"
+						]
+					}
+				},
+				"warnings": {
+					"anyOf": [
+						{
+							"type": "array",
+							"items": {
+								"type": "object",
+								"properties": {
+									"type": {
+										"type": "string"
+									},
+									"message": {
+										"type": "string"
+									},
+									"detail": {
+										"anyOf": [
+											{
+												"type": "object",
+												"propertyNames": {
+													"type": "string"
+												},
+												"additionalProperties": {}
+											},
+											{
+												"type": "null"
+											}
+										]
+									}
+								},
+								"required": [
+									"type",
+									"message"
+								]
+							}
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"usage": {
+					"anyOf": [
+						{
+							"type": "array",
+							"items": {
+								"type": "object",
+								"properties": {
+									"name": {
+										"type": "string"
+									},
+									"count": {
+										"type": "number"
+									}
+								},
+								"required": [
+									"name"
+								]
+							}
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"session_id": {
+					"type": "string"
+				}
 			},
-			searchErrorSchema([]string{"api_error", "configuration_error", "execution_error", "gateway_rate_limit", "invalid_input", "rate_limit", "timeout", "unknown", "unknown_tool"}),
+			"required": [
+				"search_id",
+				"results"
+			]
 		},
-	}
+		{
+			"type": "object",
+			"properties": {
+				"error": {
+					"type": "string",
+					"enum": [
+						"api_error",
+						"configuration_error",
+						"execution_error",
+						"gateway_rate_limit",
+						"invalid_input",
+						"rate_limit",
+						"timeout",
+						"unknown",
+						"unknown_tool"
+					]
+				},
+				"statusCode": {
+					"type": "number"
+				},
+				"message": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"error",
+				"message"
+			]
+		}
+	]
+}`
+
+func parallelSearchOutputSchema() map[string]interface{} {
+	return mustDecodeToolSchema(parallelSearchOutputSchemaJSON)
 }
 
 func parallelSearchArgs(config ParallelSearchConfig) map[string]interface{} {

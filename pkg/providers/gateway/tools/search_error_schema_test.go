@@ -21,7 +21,7 @@ func TestSearchErrorVariantRequiresErrorAndMessage(t *testing.T) {
 	}
 	for name, tool := range tools {
 		t.Run(name, func(t *testing.T) {
-			variants := tool.OutputSchema.(map[string]interface{})["oneOf"].([]interface{})
+			variants := tool.OutputSchema.(map[string]interface{})["anyOf"].([]interface{})
 			var errVariant map[string]interface{}
 			for _, v := range variants {
 				m := v.(map[string]interface{})
