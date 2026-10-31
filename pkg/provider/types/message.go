@@ -669,6 +669,15 @@ type ToolErrorContent struct {
 	ProviderMetadata json.RawMessage        `json:"providerMetadata,omitempty"`
 	ToolMetadata     map[string]interface{} `json:"toolMetadata,omitempty"`
 	Dynamic          bool                   `json:"dynamic,omitempty"`
+
+	// Err is the typed error behind a failed tool call: the error the tool's
+	// Execute returned, or the SDK's own error (an InvalidToolInputError, a
+	// NoSuchToolError, ...), as TS keeps the thrown value as the tool-error
+	// part's error. Error stays its text, so match the type with
+	// errors.As(part.Err, &target). Err is nil for parts decoded from JSON and
+	// for provider-executed failures whose error is not a Go error (a
+	// structured provider error value). It is never serialized.
+	Err error `json:"-"`
 }
 
 func (t ToolErrorContent) ContentType() string {

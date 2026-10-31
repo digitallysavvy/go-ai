@@ -312,11 +312,12 @@ func (o *objectOutput[T]) ParseCompleteOutput(ctx context.Context, options Parse
 
 	result = schema.ApplyDefaults(result, o.schema)
 
-	// Validate against schema
+	// Validate against schema (TS safeValidateTypes: the cause is a
+	// TypeValidationError holding the value).
 	if err := o.schema.Validator().Validate(result); err != nil {
 		return zero, &NoObjectGeneratedError{
 			Message:      "No object generated: response did not match schema.",
-			Cause:        err,
+			Cause:        objectTypeValidationError(result, err.Error(), err),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -592,7 +593,7 @@ func (o *arrayOutput[ELEMENT]) ParseCompleteOutput(ctx context.Context, options 
 	if !ok {
 		return nil, &NoObjectGeneratedError{
 			Message:      "No object generated: response did not match schema.",
-			Cause:        fmt.Errorf("response must be an object with an elements array"),
+			Cause:        objectTypeValidationError(outerValue, "response must be an object with an elements array", nil),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -604,7 +605,7 @@ func (o *arrayOutput[ELEMENT]) ParseCompleteOutput(ctx context.Context, options 
 	if !ok {
 		return nil, &NoObjectGeneratedError{
 			Message:      "No object generated: response did not match schema.",
-			Cause:        fmt.Errorf("response must be an object with an elements array"),
+			Cause:        objectTypeValidationError(outerValue, "response must be an object with an elements array", nil),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -615,7 +616,7 @@ func (o *arrayOutput[ELEMENT]) ParseCompleteOutput(ctx context.Context, options 
 	if !ok {
 		return nil, &NoObjectGeneratedError{
 			Message:      "No object generated: response did not match schema.",
-			Cause:        fmt.Errorf("response must be an object with an elements array"),
+			Cause:        objectTypeValidationError(outerValue, "response must be an object with an elements array", nil),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -626,7 +627,7 @@ func (o *arrayOutput[ELEMENT]) ParseCompleteOutput(ctx context.Context, options 
 	if lengthErr := arrayLengthValidationError(len(elementsArray), o.minItems, o.maxItems); lengthErr != nil {
 		return nil, &NoObjectGeneratedError{
 			Message:      "No object generated: response did not match schema.",
-			Cause:        lengthErr,
+			Cause:        objectTypeValidationError(elementsArray, lengthErr.Error(), lengthErr),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -642,7 +643,7 @@ func (o *arrayOutput[ELEMENT]) ParseCompleteOutput(ctx context.Context, options 
 		if err := o.elementSchema.Validator().Validate(elem); err != nil {
 			return nil, &NoObjectGeneratedError{
 				Message:      "No object generated: response did not match schema.",
-				Cause:        err,
+				Cause:        objectTypeValidationError(elem, err.Error(), err),
 				Text:         options.Text,
 				Response:     options.Response,
 				Usage:        options.Usage,
@@ -858,7 +859,7 @@ func (o *choiceOutput[CHOICE]) ParseCompleteOutput(ctx context.Context, options 
 	if !ok {
 		return zero, &NoObjectGeneratedError{
 			Message:      "No object generated: response did not match schema.",
-			Cause:        fmt.Errorf("response must be an object that contains a choice value"),
+			Cause:        objectTypeValidationError(outerValue, "response must be an object that contains a choice value.", nil),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -869,7 +870,7 @@ func (o *choiceOutput[CHOICE]) ParseCompleteOutput(ctx context.Context, options 
 	if !ok {
 		return zero, &NoObjectGeneratedError{
 			Message:      "No object generated: response did not match schema.",
-			Cause:        fmt.Errorf("response must be an object that contains a choice value"),
+			Cause:        objectTypeValidationError(outerValue, "response must be an object that contains a choice value.", nil),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -880,7 +881,7 @@ func (o *choiceOutput[CHOICE]) ParseCompleteOutput(ctx context.Context, options 
 	if !ok {
 		return zero, &NoObjectGeneratedError{
 			Message:      "No object generated: response did not match schema.",
-			Cause:        fmt.Errorf("response must be an object that contains a choice value"),
+			Cause:        objectTypeValidationError(outerValue, "response must be an object that contains a choice value.", nil),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,
@@ -900,7 +901,7 @@ func (o *choiceOutput[CHOICE]) ParseCompleteOutput(ctx context.Context, options 
 	if !found {
 		return zero, &NoObjectGeneratedError{
 			Message:      "No object generated: response did not match schema.",
-			Cause:        fmt.Errorf("response must be an object that contains a choice value"),
+			Cause:        objectTypeValidationError(outerValue, "response must be an object that contains a choice value.", nil),
 			Text:         options.Text,
 			Response:     options.Response,
 			Usage:        options.Usage,

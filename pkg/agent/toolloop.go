@@ -3176,6 +3176,7 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 				ToolName:         result.ToolName,
 				Input:            result.Input,
 				Error:            result.Error.Error(),
+				Err:              result.Error,
 				ErrorText:        providerutils.ToolErrorText(result.Error),
 				ProviderExecuted: result.ProviderExecuted,
 				ProviderMetadata: agentProviderMetadataRaw(result.ProviderMetadata),

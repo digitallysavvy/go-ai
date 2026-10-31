@@ -2038,6 +2038,17 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 
 		case provider.ChunkTypeFinish:
 			sawFinish = true
+			// The call's provider metadata is the finish part's (TS
+			// stream-object.ts `providerMetadata = chunk.providerMetadata`
+			// in 'finish', as StreamText's step metadata); metadata on
+			// other chunks belongs to their parts.
+			streamProviderMetadata = nil
+			if len(chunk.ProviderMetadata) > 0 {
+				var pm map[string]interface{}
+				if jsonErr := json.Unmarshal(chunk.ProviderMetadata, &pm); jsonErr == nil {
+					streamProviderMetadata = pm
+				}
+			}
 			// After an error part the finish reason stays "error" (TS
 			// `terminalError === undefined ? chunk.finishReason.unified :
 			// 'error'`); the finish part's usage is kept either way.
@@ -2077,15 +2088,6 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 				if chunk.ResponseMetadata.ModelID != "" {
 					streamResMeta.ModelID = chunk.ResponseMetadata.ModelID
 				}
-			}
-		}
-
-		// Accumulate provider metadata from any chunk that carries it
-		// (Gemini emits it on ChunkTypeFinish; mirrors stream.go behaviour).
-		if len(chunk.ProviderMetadata) > 0 {
-			var pm map[string]interface{}
-			if jsonErr := json.Unmarshal(chunk.ProviderMetadata, &pm); jsonErr == nil {
-				streamProviderMetadata = pm
 			}
 		}
 	}
