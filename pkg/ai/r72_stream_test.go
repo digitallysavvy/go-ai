@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -1106,5 +1107,62 @@ func TestR72StreamOnStepEndPreferredOverOnStepFinish(t *testing.T) {
 	defer mu.Unlock()
 	if want := []string{"onStepEnd", "onStepEndEvent"}; !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %v, want %v", calls, want)
+	}
+}
+
+// r72streamStartOrder records the user and telemetry start events in order.
+type r72streamStartOrder struct {
+	telemetry.NoopTelemetryIntegration
+	order r71streamOrder
+}
+
+func (o *r72streamStartOrder) OnStart(ctx context.Context, _ telemetry.TelemetryStartEvent) context.Context {
+	o.order.add("tel:onStart")
+	return ctx
+}
+
+func (o *r72streamStartOrder) OnStepStart(ctx context.Context, _ telemetry.TelemetryStepStartEvent) context.Context {
+	o.order.add("tel:onStepStart")
+	return ctx
+}
+
+// The telemetry OnStart runs before the user OnStart (known difference
+// "Telemetry start before the start callbacks"), but OnStepStart runs the
+// user callback first, as TS notify([onStepStart, telemetry.onStepStart]),
+// in StreamText and GenerateText, for the first and later steps.
+func TestR72StreamStartAndStepStartOrder(t *testing.T) {
+	tool := types.Tool{Name: "tool1", Parameters: r71streamValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "result1", nil
+	}}
+	want := []string{"tel:onStart", "onStart", "onStepStart", "tel:onStepStart", "onStepStart", "tel:onStepStart"}
+	rec := &r72streamStartOrder{}
+	r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, r72streamToolCallStep, r72streamHelloStep), Prompt: "test-input",
+		Tools: []types.Tool{tool}, StopWhen: []StopCondition{StepCountIs(3)},
+		Telemetry:   &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{rec}},
+		OnStart:     func(context.Context, OnStartEvent) { rec.order.add("onStart") },
+		OnStepStart: func(context.Context, OnStepStartEvent) { rec.order.add("onStepStart") },
+	})
+	if got := rec.order.get(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("streamText order = %v, want %v", got, want)
+	}
+	gen := &r72streamStartOrder{}
+	calls := 0
+	model := &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+		calls++
+		if calls == 1 {
+			return &types.GenerateResult{ToolCalls: []types.ToolCall{{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "value"}}}, FinishReason: types.FinishReasonToolCalls}, nil
+		}
+		return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+	}}
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "test-input",
+		Tools: []types.Tool{tool}, StopWhen: []StopCondition{StepCountIs(3)},
+		Telemetry:   &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{gen}},
+		OnStart:     func(context.Context, OnStartEvent) { gen.order.add("onStart") },
+		OnStepStart: func(context.Context, OnStepStartEvent) { gen.order.add("onStepStart") },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := gen.order.get(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("generateText order = %v, want %v", got, want)
 	}
 }
