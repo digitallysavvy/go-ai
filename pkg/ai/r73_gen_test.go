@@ -233,3 +233,38 @@ func TestR73Gen_StepReasoningFiles(t *testing.T) {
 		t.Fatalf("empty ReasoningFiles = %#v, want nil", got)
 	}
 }
+
+// TS stream-object.ts: providerMetadata is the finish part's
+// (`providerMetadata = chunk.providerMetadata` in 'finish'); metadata on
+// text parts (an OpenAI Responses itemId) is not the call's (carry-in
+// item 3).
+func TestR73Gen_StreamObjectProviderMetadataFromFinishOnly(t *testing.T) {
+	itemMD := json.RawMessage(`{"openai":{"itemId":"msg-1"}}`)
+	text := textChunks(`{ "content": "x" }`)
+	for i := range text {
+		text[i].ProviderMetadata = itemMD
+	}
+	finish := finishChunk()
+	finish.ProviderMetadata = json.RawMessage(`{"testProvider":{"key":"value"}}`)
+	res, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model: streamObjectModel(append(append([]provider.StreamChunk(nil), text...), finish)...), Prompt: "prompt", Schema: contentSchema(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]interface{}{"testProvider": map[string]interface{}{"key": "value"}}
+	if b, _ := json.Marshal(res.ProviderMetadata); string(b) != `{"testProvider":{"key":"value"}}` {
+		t.Fatalf("ProviderMetadata = %#v, want %#v", res.ProviderMetadata, want)
+	}
+
+	// A finish part without metadata: TS providerMetadata is undefined.
+	res, err = StreamObject(context.Background(), StreamObjectOptions{
+		Model: streamObjectModel(append(append([]provider.StreamChunk(nil), text...), finishChunk())...), Prompt: "prompt", Schema: contentSchema(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ProviderMetadata != nil {
+		t.Fatalf("ProviderMetadata = %#v, want nil", res.ProviderMetadata)
+	}
+}
