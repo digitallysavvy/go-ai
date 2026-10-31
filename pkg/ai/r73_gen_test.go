@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -908,5 +909,277 @@ func TestR73Gen_MCPApprovalResponseSentOnce(t *testing.T) {
 			}
 		}
 		mu.Unlock()
+	}
+}
+
+// r73genRecordID marshals as a plain string (TS toJSON on an ObjectId-like
+// value).
+type r73genRecordID struct{}
+
+func (r73genRecordID) MarshalJSON() ([]byte, error) { return []byte(`"507f1f77bcf86cd799439011"`), nil }
+
+// generate-text.test.ts 6375 'result.responseMessages should JSON serialize
+// object tool outputs'.
+func TestR73Gen_ResponseMessagesJSONSerializeToolOutputs(t *testing.T) {
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r72genSeqModel(t, r72genCalls(types.ToolCall{ID: "call-1", ToolName: "lookupRecord", Arguments: map[string]interface{}{}, RawArguments: "{}"}), r72genText("done")),
+		Tools: []types.Tool{{Name: "lookupRecord", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return map[string]interface{}{"id": r73genRecordID{}}, nil
+			}}},
+		Prompt:   "look up the record",
+		StopWhen: []StopCondition{StepCountIs(2)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"role":"assistant","content":[{"type":"tool-call","toolCallId":"call-1","toolName":"lookupRecord","input":{}}]},
+		{"role":"tool","content":[{"type":"tool-result","toolCallId":"call-1","toolName":"lookupRecord","output":{"type":"json","value":{"id":"507f1f77bcf86cd799439011"}}}]},
+		{"role":"assistant","content":[{"type":"text","text":"done"}]}]`
+	var w interface{}
+	if err := json.Unmarshal([]byte(want), &w); err != nil {
+		t.Fatal(err)
+	}
+	if g := r72genTSMessages(t, res.ResponseMessages); !reflect.DeepEqual(g, w) {
+		gj, _ := json.Marshal(g)
+		t.Fatalf("response messages =\n%s\nwant\n%s", gj, want)
+	}
+	// The output value is plain JSON data (TS toJSONValue), not the Go value.
+	out := res.ResponseMessages[1].Content[0].(types.ToolResultContent).Output
+	if v, ok := out.Value.(map[string]interface{}); !ok || v["id"] != "507f1f77bcf86cd799439011" {
+		t.Fatalf("output value = %#v, want JSON data", out.Value)
+	}
+}
+
+// generate-text.test.ts 6535 'onFinishResult should expose deprecated AI SDK
+// 6 final-step properties'.
+func TestR73Gen_OnEndFinalStepProperties(t *testing.T) {
+	s0 := r73genCallStep("call-1", "value")
+	s0.ProviderMetadata = map[string]interface{}{"p": map[string]interface{}{"step": 0}}
+	s0.ResponseMetadata = &types.ResponseMetadata{ID: "id-0", ModelID: "m-0", Timestamp: time.Unix(0, 0).UTC()}
+	s0.RawRequest = map[string]interface{}{"step": 0}
+	s1 := r72genText("Hello, world!")
+	s1.Content = []types.ContentPart{types.ReasoningContent{Text: "I will open the conversation"}, types.TextContent{Text: "Hello, world!"}}
+	s1.ProviderMetadata = map[string]interface{}{"p": map[string]interface{}{"step": 1}}
+	s1.ResponseMetadata = &types.ResponseMetadata{ID: "id-1", ModelID: "m-1", Timestamp: time.Unix(10, 0).UTC(), Headers: map[string]string{"h": "v"}}
+	s1.RawRequest = map[string]interface{}{"step": 1}
+	var mu sync.Mutex
+	var end OnFinishEvent
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r72genSeqModel(t, s0, s1), Prompt: "test-input", Tools: []types.Tool{r72genValueTool("tool1")},
+		StopWhen:   []StopCondition{StepCountIs(3)},
+		Include:    &IncludeOptions{RequestMessages: true},
+		OnEndEvent: func(_ context.Context, e OnFinishEvent) { mu.Lock(); end = e; mu.Unlock() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	fs := res.FinalStep
+	if len(fs.Reasoning) != 1 || !reflect.DeepEqual(end.Reasoning, fs.Reasoning) || end.ReasoningText != fs.ReasoningText || fs.ReasoningText != "I will open the conversation" {
+		t.Fatalf("reasoning = %#v / %q, final step %#v / %q", end.Reasoning, end.ReasoningText, fs.Reasoning, fs.ReasoningText)
+	}
+	if !reflect.DeepEqual(end.Request.Body, fs.Request.Body) || !reflect.DeepEqual(end.Request.Messages, fs.Request.Messages) || len(fs.Request.Messages) == 0 {
+		t.Fatalf("request = %#v, final step %#v", end.Request, fs.Request)
+	}
+	if end.Response.ID != fs.Response.ID || !end.Response.Timestamp.Equal(fs.Response.Timestamp) || end.Response.ModelID != fs.Response.ModelID ||
+		!reflect.DeepEqual(end.Response.Headers, fs.Response.Headers) || !reflect.DeepEqual(end.Response.Messages, fs.Response.Messages) || fs.Response.ID != "id-1" {
+		t.Fatalf("response = %#v, final step %#v", end.Response, fs.Response)
+	}
+	if !reflect.DeepEqual(end.ProviderMetadata, fs.ProviderMetadata) || !reflect.DeepEqual(fs.ProviderMetadata, s1.ProviderMetadata) {
+		t.Fatalf("provider metadata = %#v, final step %#v", end.ProviderMetadata, fs.ProviderMetadata)
+	}
+}
+
+// generate-text.test.ts 7459 / 7463 (2 stop conditions): every condition is
+// called with the steps; the run stops after the first step.
+func TestR73Gen_TwoStopConditions(t *testing.T) {
+	type call struct {
+		number int
+		steps  int
+	}
+	var calls []call
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r72genSeqModel(t, r73genCallStep("call-1", "value")), Prompt: "test-input", Tools: []types.Tool{r72genValueTool("tool1")},
+		StopWhen: []StopCondition{
+			func(s StopConditionState) string { calls = append(calls, call{0, len(s.Steps)}); return "" },
+			func(s StopConditionState) string { calls = append(calls, call{1, len(s.Steps)}); return "stop" },
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Steps) != 1 {
+		t.Fatalf("steps = %d, want 1", len(res.Steps))
+	}
+	if !reflect.DeepEqual(calls, []call{{0, 1}, {1, 1}}) {
+		t.Fatalf("stop condition calls = %#v", calls)
+	}
+}
+
+// generate-text.test.ts 3020: the start event has no telemetry fields
+// (isEnabled, functionId) whichever telemetry option is set.
+func TestR73Gen_StartEventHasNoTelemetryFields(t *testing.T) {
+	typ := reflect.TypeOf(OnStartEvent{})
+	for _, name := range []string{"IsEnabled", "FunctionID", "FunctionId", "Telemetry", "ExperimentalTelemetry"} {
+		if _, ok := typ.FieldByName(name); ok {
+			t.Errorf("OnStartEvent has field %s", name)
+		}
+	}
+}
+
+// generate-text.test.ts 911 'should not execute tools when the finish reason
+// is %s' (every non-tool-calls finish reason TS lists).
+func TestR73Gen_NoToolExecutionForUnsafeFinishReasons(t *testing.T) {
+	for _, reason := range []types.FinishReason{types.FinishReasonLength, types.FinishReasonError, types.FinishReasonContentFilter, "interrupted", types.FinishReasonOther} {
+		executed := false
+		tool := r72genValueTool("testTool")
+		tool.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			executed = true
+			return "tool-result", nil
+		}
+		step := r72genCalls(types.ToolCall{ID: "call-1", ToolName: "testTool", Arguments: map[string]interface{}{"value": "test"}, RawArguments: `{"value":"test"}`})
+		step.FinishReason, step.RawFinishReason = reason, string(reason)
+		res, err := GenerateText(context.Background(), GenerateTextOptions{Model: r72genSeqModel(t, step), Prompt: "test-input", Tools: []types.Tool{tool}})
+		if err != nil {
+			t.Fatalf("%s: %v", reason, err)
+		}
+		if len(res.ToolCalls) != 1 || executed {
+			t.Errorf("%s: tool calls = %d, executed = %v", reason, len(res.ToolCalls), executed)
+		}
+	}
+}
+
+// generate-text.test.ts 1256 'should include reasoning-file in content and
+// exclude from files'.
+func TestR73Gen_ReasoningFileInContentNotFiles(t *testing.T) {
+	sig := json.RawMessage(`{"google":{"thoughtSignature":"sig123"}}`)
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r72genSeqModel(t, &types.GenerateResult{
+			FinishReason: types.FinishReasonStop,
+			Content: []types.ContentPart{
+				types.TextContent{Text: "Here is a thought image:"},
+				types.ReasoningFileContent{FileData: types.FileData{Type: types.FileDataTypeData, Data: []byte{10, 20, 30}}, MediaType: "image/png", ProviderMetadata: sig},
+				types.GeneratedFileContent{FileData: types.FileData{Type: types.FileDataTypeData, Data: []byte{40, 50, 60}}, MediaType: "image/jpeg"},
+			},
+		}),
+		Prompt: "prompt",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Content) != 3 {
+		t.Fatalf("content = %#v", res.Content)
+	}
+	if tc, ok := res.Content[0].(types.TextContent); !ok || tc.Text != "Here is a thought image:" {
+		t.Fatalf("content[0] = %#v", res.Content[0])
+	}
+	rf, ok := res.Content[1].(types.ReasoningFileContent)
+	if !ok || rf.MediaType != "image/png" || string(rf.ProviderMetadata) != string(sig) {
+		t.Fatalf("content[1] = %#v", res.Content[1])
+	}
+	gf, ok := res.Content[2].(types.GeneratedFileContent)
+	if !ok || gf.MediaType != "image/jpeg" {
+		t.Fatalf("content[2] = %#v", res.Content[2])
+	}
+	if len(res.Files) != 1 || res.Files[0].MediaType != "image/jpeg" {
+		t.Fatalf("files = %#v, want only the jpeg", res.Files)
+	}
+	if got := res.FinalStep.ReasoningFiles(); len(got) != 1 || got[0].MediaType != "image/png" {
+		t.Fatalf("ReasoningFiles = %#v", got)
+	}
+}
+
+// generate-text.test.ts 4416 'should provide parsed tool calls on model-call
+// end'.
+func TestR73Gen_ModelCallEndParsedToolCalls(t *testing.T) {
+	step := r72genCalls(types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "test-arg"}, RawArguments: `{ "value": "test-arg" }`})
+	step.Content = []types.ContentPart{
+		types.TextContent{Text: "Before tool."},
+		types.ToolCallContent{ToolCallID: "call-1", ToolName: "tool1", Input: `{ "value": "test-arg" }`},
+	}
+	step.RawFinishReason = "tool-calls"
+	step.ResponseMetadata = &types.ResponseMetadata{ID: "response-1", ModelID: "mock-response-model", Timestamp: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC), Headers: map[string]string{"x-test": "true"}}
+	var mu sync.Mutex
+	var ends []LanguageModelCallEndEvent
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r72genSeqModel(t, step), Prompt: "prompt", Tools: []types.Tool{r72genValueTool("tool1")},
+		Internal:               &InternalOptions{GenerateCallID: func() string { return "test-telemetry-call-id" }},
+		OnLanguageModelCallEnd: func(_ context.Context, e LanguageModelCallEndEvent) { mu.Lock(); ends = append(ends, e); mu.Unlock() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ends) != 1 {
+		t.Fatalf("model call ends = %d", len(ends))
+	}
+	e := ends[0]
+	if e.CallID != "test-telemetry-call-id" || e.Provider != "mock-provider" || e.ModelID != "mock-response-model" || e.ResponseID != "response-1" ||
+		e.FinishReason != types.FinishReasonToolCalls || e.Usage.InputTokens == nil || *e.Usage.InputTokens != 3 || *e.Usage.OutputTokens != 10 || *e.Usage.TotalTokens != 13 {
+		t.Fatalf("event = %#v", e)
+	}
+	if len(e.Content) != 2 {
+		t.Fatalf("content = %#v", e.Content)
+	}
+	if tc, ok := e.Content[0].(types.TextContent); !ok || tc.Text != "Before tool." {
+		t.Fatalf("content[0] = %#v", e.Content[0])
+	}
+	call, ok := e.Content[1].(types.ToolCallContent)
+	if !ok || call.ToolCallID != "call-1" || call.ToolName != "tool1" || !reflect.DeepEqual(call.Arguments, map[string]interface{}{"value": "test-arg"}) || call.ProviderExecuted || call.Title != "" {
+		t.Fatalf("content[1] = %#v, want the parsed call", e.Content[1])
+	}
+}
+
+// generate-text.test.ts 11672 / 11680 / 11731 (single invalid tool call with
+// user approval): no approval request, no execution, a dynamic tool-error
+// part (TS error = getErrorMessage = the toString text, Go ErrorText; Err the
+// typed error) and an error-text tool result in the response messages.
+func TestR73Gen_InvalidToolCallErrorResult(t *testing.T) {
+	executed := false
+	tool := types.Tool{Name: "cityAttractions", ToolApproval: types.ToolApprovalStatusUserApproval,
+		Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"city": map[string]interface{}{"type": "string"}}, "required": []interface{}{"city"}},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			executed = true
+			return nil, nil
+		}}
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  r72genSeqModel(t, r72genCalls(types.ToolCall{ID: "call-1", ToolName: "cityAttractions", RawArguments: `{ "cities": "San Francisco" }`})),
+		Tools:  []types.Tool{tool},
+		Prompt: "What are the tourist attractions in San Francisco?",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed {
+		t.Fatal("invalid call executed")
+	}
+	if len(res.Content) != 2 {
+		t.Fatalf("content = %#v", res.Content)
+	}
+	call, ok := res.Content[0].(types.ToolCallContent)
+	if !ok || !call.Invalid || !call.Dynamic || call.ToolCallID != "call-1" || !reflect.DeepEqual(call.Arguments, map[string]interface{}{"cities": "San Francisco"}) {
+		t.Fatalf("content[0] = %#v", res.Content[0])
+	}
+	te, ok := res.Content[1].(types.ToolErrorContent)
+	if !ok || !te.Dynamic || te.ProviderExecuted || !reflect.DeepEqual(te.Input, map[string]interface{}{"cities": "San Francisco"}) {
+		t.Fatalf("content[1] = %#v", res.Content[1])
+	}
+	var target *InvalidToolInputError
+	if !errors.As(te.Err, &target) {
+		t.Fatalf("Err = %#v", te.Err)
+	}
+	prefix := "AI_InvalidToolInputError: Invalid input for tool cityAttractions: "
+	if !strings.HasPrefix(te.ErrorText, prefix) {
+		t.Fatalf("ErrorText = %q", te.ErrorText)
+	}
+	if len(res.ResponseMessages) != 2 || res.ResponseMessages[1].Role != types.RoleTool {
+		t.Fatalf("response messages = %#v", res.ResponseMessages)
+	}
+	tr := res.ResponseMessages[1].Content[0].(types.ToolResultContent)
+	if tr.ToolCallID != "call-1" || tr.Output == nil || tr.Output.Type != types.ToolResultOutputErrorText || tr.Output.Value != te.ErrorText {
+		t.Fatalf("tool result = %#v", tr)
 	}
 }
