@@ -1083,3 +1083,28 @@ func TestR72StreamTwoStopConditions(t *testing.T) {
 		}
 	}
 }
+
+// TS 22669: options.onStepEnd should be preferred over deprecated
+// onStepFinish (both the event and the StepResult callback forms).
+func TestR72StreamOnStepEndPreferredOverOnStepFinish(t *testing.T) {
+	steps := []provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello, "},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+	}
+	var mu sync.Mutex
+	var calls []string
+	add := func(s string) { mu.Lock(); calls = append(calls, s); mu.Unlock() }
+	r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, steps), Prompt: "test-input",
+		OnStepEndEvent:    func(context.Context, OnStepFinishEvent) { add("onStepEndEvent") },
+		OnStepFinishEvent: func(context.Context, OnStepFinishEvent) { add("onStepFinishEvent") },
+		OnStepEnd:         func(context.Context, types.StepResult, interface{}) { add("onStepEnd") },
+		OnStepFinish:      func(context.Context, types.StepResult, interface{}) { add("onStepFinish") },
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"onStepEnd", "onStepEndEvent"}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls = %v, want %v", calls, want)
+	}
+}
