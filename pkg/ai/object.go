@@ -144,6 +144,9 @@ func doGenerateWithRetry(ctx context.Context, model provider.LanguageModel, opts
 		return nil, fmt.Errorf("language model %s/%s returned no result", model.Provider(), model.ModelID())
 	}
 	normalizeGenerateResultText(result)
+	if result != nil {
+		result.Usage = completeUsageTotal(result.Usage)
+	}
 	return result, err
 }
 
@@ -2033,7 +2036,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			// The latest usage wins (TS: usage comes from the finish part,
 			// never summed; StreamText assigns the same way).
 			if chunk.Usage != nil {
-				usage = *chunk.Usage
+				usage = completeUsageTotal(*chunk.Usage)
 			}
 
 		case provider.ChunkTypeFinish:
@@ -2056,7 +2059,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 				finishReason = chunk.FinishReason
 			}
 			if chunk.Usage != nil {
-				usage = *chunk.Usage
+				usage = completeUsageTotal(*chunk.Usage)
 			}
 
 		case provider.ChunkTypeError:

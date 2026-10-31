@@ -153,6 +153,9 @@ func doGenerateWithGatewayRetry(ctx context.Context, model provider.LanguageMode
 		return nil, fmt.Errorf("language model %s/%s returned no result", model.Provider(), model.ModelID())
 	}
 	normalizeGenerateResultText(result)
+	if result != nil {
+		result.Usage = completeUsageTotal(result.Usage)
+	}
 	return result, err
 }
 

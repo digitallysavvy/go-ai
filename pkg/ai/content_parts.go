@@ -811,6 +811,25 @@ func setTrailingTextEnd(parts []types.ContentPart, metadata json.RawMessage, cit
 // Content when a provider returned its text only there. TS derives text from
 // the text parts of content (extractTextContent), so core accepts both shapes:
 // text in Text with the remaining parts in Content, or every part in Content.
+// completeUsageTotal fills TotalTokens with InputTokens + OutputTokens when
+// the model left it unset and reported either count (TS asLanguageModelUsage:
+// totalTokens = addTokenCounts(inputTokens.total, outputTokens.total), which
+// is undefined only when both are).
+func completeUsageTotal(u types.Usage) types.Usage {
+	if u.TotalTokens != nil || (u.InputTokens == nil && u.OutputTokens == nil) {
+		return u
+	}
+	var total int64
+	if u.InputTokens != nil {
+		total += *u.InputTokens
+	}
+	if u.OutputTokens != nil {
+		total += *u.OutputTokens
+	}
+	u.TotalTokens = &total
+	return u
+}
+
 func normalizeGenerateResultText(result *types.GenerateResult) {
 	if result == nil || result.Text != "" {
 		return
