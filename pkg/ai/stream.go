@@ -656,7 +656,6 @@ type StreamTextResult struct {
 	cbMeta                map[string]any
 	cbModelProvider       string
 	cbModelID             string
-	cbExperimentalCtx     interface{}
 	cbRuntimeCtx          interface{}
 	cbSensitiveRuntimeCtx bool
 	cbToolsCtx            map[string]interface{}
@@ -1559,7 +1558,6 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	r.cbMeta = cbMeta
 	r.cbModelProvider = stepModel.Provider()
 	r.cbModelID = stepModel.ModelID()
-	r.cbExperimentalCtx = runtimeContext
 	r.cbRuntimeCtx = runtimeContext
 	r.cbSensitiveRuntimeCtx = opts.SensitiveRuntimeContext
 	r.cbToolsCtx = toolsContext
@@ -3118,7 +3116,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				modelProvider:       stepProvider,
 				modelID:             stepModelID,
 				messages:            currentMessages,
-				experimentalContext: r.cbExperimentalCtx,
+				experimentalContext: r.cbRuntimeCtx,
 				runtimeContext:      r.cbRuntimeCtx,
 				toolsContext:        r.cbToolsCtx,
 				functionID:          r.cbFuncID,
@@ -3608,7 +3606,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				Messages:  stepResult.ResponseMessages,
 				Body:      stepResult.Response.Body,
 			},
-			ExperimentalContext: r.cbExperimentalCtx,
+			ExperimentalContext: r.cbRuntimeCtx,
 			RuntimeContext:      r.cbRuntimeCtx,
 			ToolsContext:        r.cbToolsCtx,
 		}, r.cbOnStepFinishEvent)
@@ -3904,7 +3902,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Output:              opts.Output,
 			Steps:               allSteps,
 			PreviousSteps:       allSteps,
-			ExperimentalContext: r.cbExperimentalCtx,
+			ExperimentalContext: r.cbRuntimeCtx,
 			RuntimeContext:      r.cbRuntimeCtx,
 			ToolsContext:        r.cbToolsCtx,
 		}
@@ -4250,6 +4248,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	}
 	r.mu.Unlock()
 	endProvider, endModelID := finalStepModel(allSteps, r.cbModelProvider, r.cbModelID)
+	// TS onEnd takes runtimeContext and toolsContext from the final step: a
+	// PrepareStep of a later step that failed to open does not reach it.
+	endRuntimeCtx, endToolsCtx := r.cbRuntimeCtx, r.cbToolsCtx
+	if n := len(allSteps); n > 0 {
+		endRuntimeCtx, endToolsCtx = allSteps[n-1].RuntimeContext, allSteps[n-1].ToolsContext
+	}
 	// TS onEnd (callback and telemetry) carries the final step's finish
 	// reason (finalStep.finishReason); the result's FinishReason is the
 	// recorded call-level one, "other" when no finish part was recorded.
@@ -4275,8 +4279,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		Files:            streamFiles,
 		ProviderMetadata: streamProviderMeta,
 		Settings:         r.telemetrySettings,
-		RuntimeContext:   telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
-		ToolsContext:     telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
+		RuntimeContext:   telemetryRuntimeContextWithSensitivity(r.telemetrySettings, endRuntimeCtx, r.cbSensitiveRuntimeCtx),
+		ToolsContext:     telemetryToolsContext(r.telemetrySettings, endToolsCtx),
 	}
 
 	// Mark stream as done before firing callbacks so callers that check
@@ -4388,9 +4392,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Messages:  lastStep.ResponseMessages,
 			Body:      lastStep.Response.Body,
 		},
-		ExperimentalContext: r.cbExperimentalCtx,
-		RuntimeContext:      r.cbRuntimeCtx,
-		ToolsContext:        r.cbToolsCtx,
+		ExperimentalContext: endRuntimeCtx,
+		RuntimeContext:      endRuntimeCtx,
+		ToolsContext:        endToolsCtx,
 		Output:              r.outputResult,
 	}
 	finishEvent.SetAggregatesFromSteps(stepsForEvent, responseMessagesWithInitial(r.initialResponseMessages, stepsForEvent))
@@ -5450,7 +5454,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 			Messages: step.ResponseMessages,
 			Body:     step.Response.Body,
 		},
-		ExperimentalContext: r.cbExperimentalCtx,
+		ExperimentalContext: r.cbRuntimeCtx,
 		RuntimeContext:      r.cbRuntimeCtx,
 		ToolsContext:        r.cbToolsCtx,
 		Output:              r.outputResult,

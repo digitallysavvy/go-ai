@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
@@ -764,5 +765,81 @@ func TestR74StreamOnEndFinishReasonIsFinalStepAfterContinuationFailure(t *testin
 	defer tel.mu.Unlock()
 	if len(tel.ends) != 1 || tel.ends[0].FinishReason != string(types.FinishReasonToolCalls) {
 		t.Fatalf("telemetry onEnd = %+v, want finish reason tool-calls", tel.ends)
+	}
+}
+
+// TS onEnd takes runtimeContext and toolsContext from the final recorded step
+// (finalStep.runtimeContext / finalStep.toolsContext): a PrepareStep that set
+// new contexts for a continuation step that then failed to open does not
+// reach onEnd or the telemetry end.
+func TestR74StreamOnEndContextsAreFinalStepsAfterContinuationFailure(t *testing.T) {
+	tel := &r74streamEndTelemetry{}
+	var mu sync.Mutex
+	var ends []OnFinishEvent
+	zero := 0
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		OnError: func(context.Context, error) {},
+		Model:   r70ToolCallModelThen(func() (provider.TextStream, error) { return nil, errors.New("provider failure") }),
+		Prompt:  "test-input", Tools: []types.Tool{r70Tool("tool1", nil)}, MaxRetries: &zero, StopWhen: []StopCondition{StepCountIs(3)},
+		RuntimeContext: map[string]interface{}{"state": "initial"},
+		ToolsContext:   map[string]interface{}{"tool1": map[string]interface{}{"k": "initial"}},
+		PrepareStep: func(_ context.Context, s PrepareStepOptions) PrepareStepOptions {
+			if s.StepNumber == 1 {
+				s.RuntimeContext = map[string]interface{}{"state": "step-2"}
+				s.ToolsContext = map[string]interface{}{"tool1": map[string]interface{}{"k": "step-2"}}
+			}
+			return s
+		},
+		Telemetry:  &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{tel}, IncludeRuntimeContext: map[string]bool{"state": true}},
+		OnEndEvent: func(_ context.Context, e OnFinishEvent) { mu.Lock(); ends = append(ends, e); mu.Unlock() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	mu.Lock()
+	defer mu.Unlock()
+	want := map[string]interface{}{"state": "initial"}
+	wantTools := map[string]interface{}{"tool1": map[string]interface{}{"k": "initial"}}
+	if len(ends) != 1 || !reflect.DeepEqual(ends[0].RuntimeContext, want) || !reflect.DeepEqual(ends[0].ExperimentalContext, want) || !reflect.DeepEqual(ends[0].ToolsContext, wantTools) {
+		t.Fatalf("onEnd contexts = %+v", ends)
+	}
+	tel.mu.Lock()
+	defer tel.mu.Unlock()
+	if len(tel.ends) != 1 || !reflect.DeepEqual(tel.ends[0].RuntimeContext, want) {
+		t.Fatalf("telemetry onEnd runtime context = %+v", tel.ends)
+	}
+}
+
+// The deprecated ExperimentalContext alias carries the same runtime context
+// as RuntimeContext on every StreamText event, also after a PrepareStep
+// replaced it (as GenerateText does): step start, tool execution, step end
+// and end.
+func TestR74StreamExperimentalContextFollowsPreparedRuntimeContext(t *testing.T) {
+	var mu sync.Mutex
+	var pairs [][2]interface{}
+	record := func(exp, rt interface{}) { mu.Lock(); pairs = append(pairs, [2]interface{}{exp, rt}); mu.Unlock() }
+	r71streamRun(t, StreamTextOptions{
+		Model: r71streamModel(nil, r72streamToolCallStep, r72streamToolCallStep, r72streamHelloStep), Prompt: "test-input",
+		Tools: []types.Tool{r71streamTool1(true, nil, nil)}, StopWhen: []StopCondition{StepCountIs(3)},
+		RuntimeContext: map[string]interface{}{"state": "initial"},
+		PrepareStep: func(_ context.Context, s PrepareStepOptions) PrepareStepOptions {
+			s.RuntimeContext = map[string]interface{}{"state": fmt.Sprintf("step-%d", s.StepNumber)}
+			return s
+		},
+		OnStepStart:          func(_ context.Context, e OnStepStartEvent) { record(e.ExperimentalContext, e.RuntimeContext) },
+		OnToolExecutionStart: func(_ context.Context, e OnToolCallStartEvent) { record(e.ExperimentalContext, e.RuntimeContext) },
+		OnStepFinishEvent:    func(_ context.Context, e OnStepFinishEvent) { record(e.ExperimentalContext, e.RuntimeContext) },
+		OnEndEvent:           func(_ context.Context, e OnFinishEvent) { record(e.ExperimentalContext, e.RuntimeContext) },
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(pairs) < 9 {
+		t.Fatalf("events = %d", len(pairs))
+	}
+	for i, p := range pairs {
+		if !reflect.DeepEqual(p[0], p[1]) {
+			t.Errorf("event %d: ExperimentalContext %v, RuntimeContext %v", i, p[0], p[1])
+		}
 	}
 }
