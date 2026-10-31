@@ -553,3 +553,50 @@ func TestR72Gen_ObjectParseFailureIsJSONParseError(t *testing.T) {
 		t.Fatalf("object = %#v", res.Object)
 	}
 }
+
+// stream-object.test.ts 2057 'should call logWarnings with the correct
+// warnings': TS logs in the finish part's handler, also after an error part,
+// so a stream that fails without a finish part logs nothing.
+func TestR72Gen_StreamObjectLogsWarningsOnFinishPart(t *testing.T) {
+	var mu sync.Mutex
+	var calls []LogWarningsOptions
+	SetLogWarnings(func(o LogWarningsOptions) {
+		if o.Model != "r72gen-so-warn" {
+			return
+		}
+		mu.Lock()
+		calls = append(calls, o)
+		mu.Unlock()
+	})
+	defer SetLogWarnings(nil)
+
+	warning := types.Warning{Type: "other", Message: "w"}
+	start := provider.StreamChunk{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{warning}}
+	errPart := provider.StreamChunk{Type: provider.ChunkTypeError, Err: errors.New("boom")}
+	run := func(chunks ...provider.StreamChunk) {
+		t.Helper()
+		model := streamObjectModel(chunks...)
+		model.ModelName = "r72gen-so-warn"
+		_, _ = StreamObject(context.Background(), StreamObjectOptions{Model: model, Prompt: "prompt", Schema: contentSchema()})
+	}
+	count := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		n := len(calls)
+		calls = nil
+		return n
+	}
+
+	run(append(append([]provider.StreamChunk{start}, textChunks(`{ "content": "x" }`)...), finishChunk())...)
+	if n := count(); n != 1 {
+		t.Fatalf("finished stream: %d logWarnings calls, want 1", n)
+	}
+	run(start, errPart, finishChunk())
+	if n := count(); n != 1 {
+		t.Fatalf("error part then finish: %d logWarnings calls, want 1", n)
+	}
+	run(start, errPart)
+	if n := count(); n != 0 {
+		t.Fatalf("error part without finish: %d logWarnings calls, want 0", n)
+	}
+}

@@ -1948,6 +1948,9 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	// than from a provider error part (TS: a rejected stream rather than an
 	// 'error' chunk).
 	rawStreamErr := false
+	// sawFinish records a finish part (TS logs the warnings in its finish
+	// handler).
+	sawFinish := false
 
 	// Response metadata fields updated by ChunkTypeResponseMetadata chunks.
 	streamResMeta := GenerateStepResponse{
@@ -2028,6 +2031,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			}
 
 		case provider.ChunkTypeFinish:
+			sawFinish = true
 			// After an error part the finish reason stays "error" (TS
 			// `terminalError === undefined ? chunk.finishReason.unified :
 			// 'error'`); the finish part's usage is kept either way.
@@ -2087,10 +2091,14 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		finishReason = types.FinishReasonOther
 	}
 
-	// Log model warnings once per model call (TS stream-object.ts
-	// logWarnings, called once the stream's terminal chunk has been
-	// processed, regardless of whether it ended in an error).
-	logModelWarnings(streamWarnings, opts.Model.Provider(), opts.Model.ModelID())
+	// Log model warnings once per model call. TS stream-object.ts logs them
+	// in the finish part's handler (after an error part too), so a stream
+	// that fails without a finish part logs nothing. A stream that ends
+	// cleanly without one is still parsed here (known difference), so its
+	// warnings are logged as for a finished stream.
+	if sawFinish || streamErr == nil {
+		logModelWarnings(streamWarnings, opts.Model.Provider(), opts.Model.ModelID())
+	}
 
 	streamReqMeta := GenerateStepRequest{}
 
