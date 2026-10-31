@@ -1731,7 +1731,6 @@ func TestR73StreamCreateUIResponseErrorChunkAndConsumeFailure(t *testing.T) {
 	})
 }
 
-
 // TS onStepEnd receives the StepResult, including
 // experimental_steeringMessages: the StreamText step-end event carries the
 // steering messages delivered with the step.
