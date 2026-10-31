@@ -127,10 +127,12 @@ type OnStepFinishEvent struct {
     CallID       string
     StepNumber   int // 0-indexed
     Text         string
+    Content      []types.ContentPart // the step's content parts in order
     ToolCalls    []types.ToolCall
     ToolResults  []types.ToolResult
     FinishReason types.FinishReason
     Usage        types.Usage
+    Performance  types.StepPerformance
     Warnings     []types.Warning
     // ... Reasoning, Sources, Files, ProviderMetadata, Request, Response, etc.
 }
@@ -140,10 +142,12 @@ type OnStepFinishEvent struct {
 |-------|-------------|
 | StepNumber | 0-indexed step counter |
 | Text | LLM text output for this step |
+| Content | The step's content parts in order (text, reasoning, tool calls, results and errors, approvals, sources, files) |
 | ToolCalls | Tool calls made during this step |
 | ToolResults | Results from tool executions in this step |
 | FinishReason | Why the LLM stopped (e.g., `ToolCalls`, `Stop`) |
 | Usage | Token usage for this step |
+| Performance | The step's performance metrics |
 
 ---
 

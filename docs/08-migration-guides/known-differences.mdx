@@ -370,12 +370,11 @@ forwards the delta alone (review round 71).
 ## Telemetry start before the start callbacks
 
 `GenerateText`, `StreamText` and the legacy `ToolLoopAgent` call the
-telemetry `OnStart` (and, for `GenerateText` and `StreamText`,
-`OnStepStart`) before the user `OnStart` / `OnStepStart`, so the callbacks
-run inside the integration's span context (the context they receive is the
-one the integration returns). TS starts the callback first. End, step-end,
-step-error, tool and `ExperimentalDecide` events run the callbacks first, as
-in TS (review round 71).
+telemetry `OnStart` before the user `OnStart`, so the callback runs inside
+the integration's span context (the context it receives is the one the
+integration returns). TS starts the callback first. `OnStepStart`, end,
+step-end, step-error, tool and `ExperimentalDecide` events run the callbacks
+first, as in TS (review rounds 71 and 72).
 
 ## RuntimeContext defaults to nil
 
@@ -385,6 +384,48 @@ caller sets none. Go leaves `RuntimeContext` (and the deprecated
 `ExperimentalContext`) nil: a nil `interface{}` is the idiomatic "not set",
 and v0.5.x callers check it with `== nil` (owner preference, review round
 71). `ToolsContext` defaults to an empty map, as in TS.
+
+## EmbedMany waits for sibling batch calls
+
+A parallel `EmbedMany` group that fails returns the first failure in time,
+as TS does, but only after the other calls of that group finish. TS rejects
+at once and lets them run on. Go waits so that no provider call outlives
+`EmbedMany` (review round 72).
+
+## Abort keeps the parts produced before it
+
+When the caller cancels while a step is streaming, Go's full stream and UI
+stream keep every part the model produced before the abort (the step's
+`start-step` and deltas), then the `abort` part. TS drops parts that were
+still queued inside its stream pipeline when the signal fired, so its
+snapshot for an abort in the second step shows the first step and the
+`abort` part only. Which parts TS drops depends on its stream queue timing,
+not on a rule; `OnAbort`, the recorded steps and the result are the same
+(review round 72).
+
+## Tool call input keeps undeclared keys
+
+TS zod object schemas strip keys they do not declare from the parsed tool
+input, so the tool-call part and `execute` never see them (an xai MCP call's
+arguments become `{}` in TS). Go validates the input with JSON Schema and
+passes it through unchanged (review round 72).
+
+## Reasoning lists hold reasoning text only
+
+TS `StepResult.reasoning` and the result's `reasoning` are
+`Array<ReasoningPart | ReasoningFilePart>`. Go's `Reasoning` fields are
+`[]types.ReasoningContent` and cannot hold `types.ReasoningFileContent`;
+reasoning file parts are in `Content` (and in the telemetry
+`ReasoningFiles`) (review round 72).
+
+## Provider tool output schemas
+
+TS declares an `outputSchema` for every built-in provider tool, and
+`validateUIMessages` checks tool outputs against it. In Go only the AI
+Gateway tools, `groq.BrowserSearchTool`, the mistral web search tools,
+`xai.MCPServer`, `xai.FileSearch` and the Anthropic regex tool search carry
+TS's `OutputSchema`, so `ValidateUIMessages` does not check the outputs of
+the other built-in provider tools (looser than TS) (review round 72).
 
 ## Vertex Gemini image model: URL input images
 
