@@ -907,3 +907,231 @@ func TestR74StreamUIEmptyTextDeltaWithProviderMetadata(t *testing.T) {
 	}
 	r74streamAssertJSON(t, "ui message parts", r71streamParts(ends[0]), `[{"type":"step-start"},{"type":"text","text":"Hello","state":"done","providerMetadata":{"google":{"thoughtSignature":"sig-1"}}}]`)
 }
+
+// TS 29810: tool execution approval > should settle automatically denied tool
+// calls in the UI message stream: the request (isAutomatic), response and
+// output-denied chunks, and readUIMessageStream's last message holds the
+// tool part in output-denied with the automatic denial.
+func TestR74StreamUIAutomaticDenialSettlesToolPart(t *testing.T) {
+	var mu sync.Mutex
+	executed := 0
+	tool := types.Tool{Name: "tool1", Parameters: r71streamValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		mu.Lock()
+		executed++
+		mu.Unlock()
+		return "result1", nil
+	}}
+	reason := "blocked by policy"
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r71streamModel(nil, r72streamToolCallStep), Prompt: "test-input", Internal: r72streamIDs(), Tools: []types.Tool{tool},
+		ToolApproval: map[string]types.ToolApprovalValue{"tool1": types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied, Reason: &reason}},
+		OnError:      func(context.Context, error) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src, _ := r.ToUIMessageStream(context.Background())
+	var chunks []UIMessageChunk
+	tee := make(chan UIMessageChunk)
+	go func() {
+		defer close(tee)
+		for c := range src {
+			chunks = append(chunks, c)
+			tee <- c
+		}
+	}()
+	msgs, errs := ReadUIMessages(context.Background(), ReadUIMessagesOptions{Stream: tee})
+	var last UIMessage
+	for m := range msgs {
+		last = m
+	}
+	for e := range errs {
+		t.Fatalf("read error: %v", e)
+	}
+	var approvals []UIMessageChunk
+	for _, c := range chunks {
+		switch c["type"] {
+		case "tool-approval-request", "tool-approval-response", "tool-output-denied":
+			approvals = append(approvals, c)
+		}
+	}
+	r74streamAssertJSON(t, "approval chunks", approvals, `[
+		{"type":"tool-approval-request","approvalId":"id-1","toolCallId":"call-1","isAutomatic":true},
+		{"type":"tool-approval-response","approvalId":"id-1","approved":false,"reason":"blocked by policy"},
+		{"type":"tool-output-denied","toolCallId":"call-1"}]`)
+	var toolPart map[string]interface{}
+	b, _ := json.Marshal(last)
+	var decoded map[string]interface{}
+	_ = json.Unmarshal(b, &decoded)
+	parts, _ := decoded["parts"].([]interface{})
+	for _, p := range parts {
+		if m, _ := p.(map[string]interface{}); m != nil && m["type"] == "tool-tool1" {
+			toolPart = m
+		}
+	}
+	if toolPart == nil {
+		t.Fatalf("last message = %s", b)
+	}
+	approval, _ := toolPart["approval"].(map[string]interface{})
+	if toolPart["toolCallId"] != "call-1" || toolPart["state"] != "output-denied" || !reflect.DeepEqual(toolPart["input"], map[string]interface{}{"value": "value"}) ||
+		approval["id"] != "id-1" || approval["approved"] != false || approval["reason"] != "blocked by policy" || approval["isAutomatic"] != true {
+		t.Fatalf("tool part = %v", toolPart)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if executed != 0 {
+		t.Fatalf("execute calls = %d", executed)
+	}
+}
+
+// TS "should surface the reason for streamed user approval requests": a
+// user-approval with a reason carries it on the content's approval request,
+// the UI tool-approval-request chunk and the response message's request.
+func TestR74StreamUserApprovalReasonSurfaced(t *testing.T) {
+	reason := "requires operator review"
+	tool := types.Tool{Name: "tool1", Parameters: r71streamValueSchema}
+	opts := StreamTextOptions{
+		Model: r71streamModel(nil, r72streamToolCallStep), Prompt: "test-input", Internal: r72streamIDs(), Tools: []types.Tool{tool},
+		ToolApproval: map[string]types.ToolApprovalValue{"tool1": types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval, Reason: &reason}},
+	}
+	r := r71streamRun(t, opts)
+	var found bool
+	for _, part := range r.Content() {
+		if req, ok := part.(types.ToolApprovalRequestContent); ok {
+			found = true
+			if req.ApprovalID != "id-1" || req.Reason != reason {
+				t.Fatalf("content approval request = %+v", req)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("content = %#v", r.Content())
+	}
+	msgs := r.ResponseMessages()
+	var inMessage bool
+	for _, part := range msgs[0].Content {
+		if req, ok := part.(types.ToolApprovalRequestContent); ok && req.ApprovalID == "id-1" && req.Reason == reason {
+			inMessage = true
+		}
+	}
+	if !inMessage {
+		t.Fatalf("response message = %#v", msgs[0].Content)
+	}
+	opts.Internal = r72streamIDs()
+	got, err := r72streamUI(t, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]interface{}{"type": "tool-approval-request", "approvalId": "id-1", "toolCallId": "call-1", "reason": reason}
+	for _, c := range got {
+		if reflect.DeepEqual(c, want) {
+			return
+		}
+	}
+	t.Fatalf("ui chunks = %v, want %v among them", got, want)
+}
+
+// TS "should execute transformed approved input after a persisted UI message
+// round trip": the approved call's transformed input (Go: refined by
+// ExperimentalRefineToolInput, TS: a schema transform) survives readUIMessages,
+// a JSON round trip, ValidateUIMessages and ConvertToModelMessages, and the
+// resumed run executes the tool once with the transformed input.
+func TestR74StreamTransformedApprovedInputPersistedRoundTrip(t *testing.T) {
+	var mu sync.Mutex
+	var executed []map[string]interface{}
+	countTool := types.Tool{
+		Name: "count",
+		Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"count": map[string]interface{}{"type": "string"}},
+			"required": []interface{}{"count"}},
+		Execute: func(_ context.Context, args map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			mu.Lock()
+			executed = append(executed, args)
+			mu.Unlock()
+			return args["count"], nil
+		},
+	}
+	refine := map[string]ToolInputRefiner{"count": func(_ context.Context, o ToolInputRefinementOptions) (map[string]interface{}, error) {
+		in := o.ToolCall.Arguments
+		if s, ok := in["count"].(string); ok {
+			n, err := strconv.Atoi(s)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]interface{}{"count": float64(n)}, nil
+		}
+		return in, nil
+	}}
+	tools := []types.Tool{countTool}
+	approval := map[string]types.ToolApprovalValue{"count": types.ToolApprovalStatusUserApproval}
+	first, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r71streamModel(nil, []provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "count-call", ToolName: "count", RawArguments: `{"count":"3"}`}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r72streamTestUsage},
+		}),
+		Prompt: "Count three items.", Tools: tools, ToolApproval: approval, ExperimentalRefineToolInput: refine,
+		Internal: r72streamIDs(), OnError: func(context.Context, error) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui, _ := first.ToUIMessageStream(context.Background())
+	msgs, errs := ReadUIMessages(context.Background(), ReadUIMessagesOptions{Stream: ui})
+	var last UIMessage
+	for m := range msgs {
+		last = m
+	}
+	for e := range errs {
+		t.Fatalf("read: %v", e)
+	}
+	raw, err := json.Marshal(last)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted map[string]interface{}
+	if err := json.Unmarshal(raw, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	var toolPart map[string]interface{}
+	for _, p := range persisted["parts"].([]interface{}) {
+		if m := p.(map[string]interface{}); m["type"] == "tool-count" {
+			toolPart = m
+		}
+	}
+	if toolPart == nil || toolPart["state"] != "approval-requested" {
+		t.Fatalf("persisted message = %s", raw)
+	}
+	toolPart["state"] = "approval-responded"
+	toolPart["approval"].(map[string]interface{})["approved"] = true
+	validated, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{Messages: []interface{}{persisted}, Tools: tools, ExperimentalRefineToolInput: refine})
+	if err != nil {
+		t.Fatalf("ValidateUIMessages: %v", err)
+	}
+	modelMessages, err := ConvertToModelMessages(context.Background(), validated, ConvertToModelMessagesOptions{Tools: tools})
+	if err != nil {
+		t.Fatalf("ConvertToModelMessages: %v", err)
+	}
+	second, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r71streamModel(nil, []provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart},
+			{Type: provider.ChunkTypeTextStart, ID: "1"},
+			{Type: provider.ChunkTypeText, ID: "1", Text: "Done"},
+			{Type: provider.ChunkTypeTextEnd, ID: "1"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+		}),
+		Messages: append([]types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Count three items."}}}}, modelMessages...),
+		Tools:    tools, ToolApproval: approval, ExperimentalRefineToolInput: refine,
+		OnError: func(_ context.Context, err error) { t.Errorf("onError: %v", err) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := second.Text(); text != "Done" {
+		t.Fatalf("text = %q (err %v)", text, second.Err())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(executed) != 1 || !reflect.DeepEqual(executed[0], map[string]interface{}{"count": float64(3)}) {
+		t.Fatalf("execute calls = %v, want one with count 3", executed)
+	}
+}
