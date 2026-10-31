@@ -1986,6 +1986,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Files:              stepResult.Files,
 			ProviderMetadata:   stepResult.ProviderMetadata,
 			ResponseHeaders:    genResult.ResponseHeaders,
+			// TS GenerateTextStepEndEvent = StepResult, which carries
+			// experimental_steeringMessages (step-result.ts).
+			ExperimentalSteeringMessages: stepResult.ExperimentalSteeringMessages,
 			// The step's request/response, so the bodies follow Include as
 			// in TS (the step-end event is the StepResult).
 			Request: GenerateStepRequest{Body: stepResult.Request.Body, Messages: stepResult.Request.Messages},

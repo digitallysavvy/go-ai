@@ -81,7 +81,7 @@ func ElementStream[ELEMENT any](result *StreamTextResult, opts ElementStreamOpti
 			}
 		}()
 		closed := result.closedSignal()
-		err := streamArrayElements(result, arr.ParsePartialOutput, arr.maxItems, arr.minItems, func(elem ElementStreamResult[ELEMENT]) bool {
+		err := streamArrayElements(result, arr.ParsePartialOutput, arr.maxItems, func(elem ElementStreamResult[ELEMENT]) bool {
 			if !sendUnlessClosed(ch, elem, closed) {
 				return false
 			}
@@ -105,7 +105,7 @@ func ElementStream[ELEMENT any](result *StreamTextResult, opts ElementStreamOpti
 func streamArrayElements[ELEMENT any](
 	result *StreamTextResult,
 	parsePartial func(context.Context, ParsePartialOutputOptions) (*PartialOutput[[]ELEMENT], error),
-	maxItems, minItems *int,
+	maxItems *int,
 	emit func(ElementStreamResult[ELEMENT]) bool,
 ) error {
 	ctx := context.Background()
@@ -139,7 +139,12 @@ func streamArrayElements[ELEMENT any](
 			}
 			for ; published < len(partial.Partial); published++ {
 				if maxItems != nil && published >= *maxItems {
-					return arrayLengthValidationError(len(partial.Partial), minItems, maxItems)
+					// TS createElementStreamTransform errors with
+					// getArrayLengthValidationError({value: partialOutput,
+					// maxItems}): a TypeValidationError holding the partial
+					// array (maxItems only).
+					lengthErr := arrayLengthValidationError(len(partial.Partial), nil, maxItems)
+					return objectTypeValidationError(partial.Partial, lengthErr.Error(), lengthErr)
 				}
 				if !emit(ElementStreamResult[ELEMENT]{Element: partial.Partial[published], Index: published}) {
 					return nil // consumer abandoned the stream (result closed)
@@ -181,15 +186,15 @@ func streamArrayElements[ELEMENT any](
 func ElementStreamWithOutput[ELEMENT any](result *StreamTextResult, output Output[[]ELEMENT, []ELEMENT]) <-chan ElementStreamResult[ELEMENT] {
 	ch := make(chan ElementStreamResult[ELEMENT], 10)
 
-	var maxItems, minItems *int
+	var maxItems *int
 	if arr, ok := output.(*arrayOutput[ELEMENT]); ok {
-		maxItems, minItems = arr.maxItems, arr.minItems
+		maxItems = arr.maxItems
 	}
 
 	go func() {
 		defer close(ch)
 		closed := result.closedSignal()
-		_ = streamArrayElements(result, output.ParsePartialOutput, maxItems, minItems, func(elem ElementStreamResult[ELEMENT]) bool {
+		_ = streamArrayElements(result, output.ParsePartialOutput, maxItems, func(elem ElementStreamResult[ELEMENT]) bool {
 			return sendUnlessClosed(ch, elem, closed)
 		})
 	}()

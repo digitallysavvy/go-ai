@@ -266,13 +266,20 @@ func messagesForModel(messages []types.Message) []types.Message {
 			}
 		}
 	}
-	keepResponse := func(response types.ToolApprovalResponseContent) (types.ToolApprovalResponseContent, bool) {
-		if response.ProviderExecuted {
-			return response, true
+	// A kept response reaches the model as TS's LanguageModelV4
+	// tool-approval-response part: {approvalId, approved, reason}, without
+	// providerExecuted or the tool call (TS convert-to-language-model-prompt.ts
+	// maps the kept part to exactly these fields).
+	modelResponse := func(response types.ToolApprovalResponseContent) types.ToolApprovalResponseContent {
+		return types.ToolApprovalResponseContent{
+			ApprovalID: response.ApprovalID,
+			Approved:   response.Approved,
+			Reason:     response.Reason,
 		}
-		if providerExecutedCalls[approvalToolCall[response.ApprovalID]] || response.ToolCall.ProviderExecuted {
-			response.ProviderExecuted = true
-			return response, true
+	}
+	keepResponse := func(response types.ToolApprovalResponseContent) (types.ToolApprovalResponseContent, bool) {
+		if response.ProviderExecuted || providerExecutedCalls[approvalToolCall[response.ApprovalID]] || response.ToolCall.ProviderExecuted {
+			return modelResponse(response), true
 		}
 		return response, false
 	}

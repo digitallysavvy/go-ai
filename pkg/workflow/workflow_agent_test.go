@@ -514,7 +514,8 @@ func TestWorkflowForwardsApprovedProviderExecutedApprovalOnResume(t *testing.T) 
 	}
 	responses := collectWorkflowApprovalResponses(model.opts[0].Prompt.Messages)
 	response, ok := approvalResponseByID(responses, "approval-call-1")
-	if !ok || !response.Approved || !response.ProviderExecuted {
+	// TS prompt part {approvalId, approved, reason}: no providerExecuted (r73 gen CR-1).
+	if !ok || !response.Approved || response.ProviderExecuted {
 		t.Fatalf("provider approval response = %+v, ok=%v; want forwarded approved provider-executed response", response, ok)
 	}
 }
@@ -547,7 +548,7 @@ func TestWorkflowForwardsDeniedProviderExecutedApprovalOnResume(t *testing.T) {
 	}
 	responses := collectWorkflowApprovalResponses(model.opts[0].Prompt.Messages)
 	response, ok := approvalResponseByID(responses, "approval-call-1")
-	if !ok || response.Approved || !response.ProviderExecuted {
+	if !ok || response.Approved || response.ProviderExecuted {
 		t.Fatalf("provider approval response = %+v, ok=%v; want forwarded denied provider-executed response", response, ok)
 	}
 }
@@ -599,7 +600,7 @@ func TestWorkflowExecutesLocalApprovalAndForwardsProviderExecutedApprovalOnResum
 		t.Fatal("expected provider call")
 	}
 	responses := collectWorkflowApprovalResponses(model.opts[0].Prompt.Messages)
-	if response, ok := approvalResponseByID(responses, "approval-provider-1"); !ok || !response.Approved || !response.ProviderExecuted {
+	if response, ok := approvalResponseByID(responses, "approval-provider-1"); !ok || !response.Approved || response.ProviderExecuted {
 		t.Fatalf("provider approval response = %+v, ok=%v; want forwarded provider-executed response", response, ok)
 	}
 	if response, ok := approvalResponseByID(responses, "approval-local-1"); ok {

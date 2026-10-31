@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
@@ -217,7 +219,9 @@ func TestTSReplay_ElementStream_MaxItems(t *testing.T) {
 	if !reflect.DeepEqual(got, []string{"element 1", "element 2"}) {
 		t.Fatalf("elements = %#v", got)
 	}
-	if streamErr == nil || streamErr.Error() != "elements array must contain at most 2 items" {
+	// TS: TypeValidationError whose message contains the length reason.
+	var tve *providererrors.TypeValidationError
+	if !errors.As(streamErr, &tve) || !strings.Contains(streamErr.Error(), "elements array must contain at most 2 items") {
 		t.Fatalf("error = %v", streamErr)
 	}
 }

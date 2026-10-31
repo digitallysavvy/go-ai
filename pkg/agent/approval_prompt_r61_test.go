@@ -96,7 +96,8 @@ func TestR61GenerateAgentPromptKeepsProviderApprovalResponse(t *testing.T) {
 			case types.ToolApprovalRequestContent:
 				t.Fatalf("approval request reached the model prompt: %+v", am.options[0].Prompt.Messages)
 			case types.ToolApprovalResponseContent:
-				if p.ApprovalID != "a1" || !p.Approved || !p.ProviderExecuted {
+				// TS prompt part {approvalId, approved, reason} (r73 gen CR-1).
+				if p.ApprovalID != "a1" || !p.Approved || p.ProviderExecuted {
 					t.Fatalf("approval response = %+v", p)
 				}
 				responses++

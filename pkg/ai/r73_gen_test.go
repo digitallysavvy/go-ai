@@ -895,16 +895,6 @@ func TestR73Gen_MCPApprovalResponseSentOnce(t *testing.T) {
 		}
 		mu.Lock()
 		g := r72genTSMessages(t, prompts[0])
-		// r73 gen CR-1 to the integrator: TS LanguageModelV4 approval
-		// responses have no providerExecuted (convert-to-language-model-
-		// prompt.ts {type, approvalId, approved, reason}); Go's
-		// tool_approval_resume.go keepResponse sets it. Remove this
-		// normalization once the CR lands.
-		for _, part := range g.([]interface{})[2].(map[string]interface{})["content"].([]interface{}) {
-			if m := part.(map[string]interface{}); m["type"] == "tool-approval-response" {
-				delete(m, "providerExecuted")
-			}
-		}
 		if !reflect.DeepEqual(g, w) {
 			gj, _ := json.Marshal(g)
 			t.Fatalf("approved=%v prompt =\n%s\nwant\n%s", approved, gj, want)

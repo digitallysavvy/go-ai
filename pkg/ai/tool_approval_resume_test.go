@@ -1099,7 +1099,9 @@ func TestMessagesForModelStripsApprovalParts(t *testing.T) {
 		t.Fatalf("tool message = %+v", got[1])
 	}
 	resp, ok := got[1].Content[0].(types.ToolApprovalResponseContent)
-	if !ok || resp.ApprovalID != "a2" || !resp.ProviderExecuted {
+	// TS LanguageModelV4 tool-approval-response: {approvalId, approved,
+	// reason}, no providerExecuted (r73 gen CR-1).
+	if !ok || resp.ApprovalID != "a2" || resp.ProviderExecuted {
 		t.Fatalf("provider-executed approval response = %+v", got[1].Content[0])
 	}
 	// Input is not mutated.
