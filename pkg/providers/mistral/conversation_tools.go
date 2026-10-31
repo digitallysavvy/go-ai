@@ -42,6 +42,36 @@ func mistralProviderTool(id, description string) types.Tool {
 			"properties": map[string]interface{}{"arguments": map[string]interface{}{"type": "string"}},
 			"required":   []string{"arguments"},
 		},
+		// TS outputSchema z.object({info: z.record(z.string(), z.json())
+		// .optional()}) as zod's toJSONSchema renders it (ValidateUIMessages
+		// checks outputs with it).
+		OutputSchema: mistralWebSearchOutputSchema(),
+	}
+}
+
+func mistralWebSearchOutputSchema() map[string]interface{} {
+	jsonRecord := func() map[string]interface{} {
+		return map[string]interface{}{
+			"type":                 "object",
+			"propertyNames":        map[string]interface{}{"type": "string"},
+			"additionalProperties": map[string]interface{}{"$ref": "#/definitions/__schema0"},
+		}
+	}
+	return map[string]interface{}{
+		"type":       "object",
+		"properties": map[string]interface{}{"info": jsonRecord()},
+		"definitions": map[string]interface{}{
+			"__schema0": map[string]interface{}{
+				"anyOf": []interface{}{
+					map[string]interface{}{"type": "string"},
+					map[string]interface{}{"type": "number"},
+					map[string]interface{}{"type": "boolean"},
+					map[string]interface{}{"type": "null"},
+					map[string]interface{}{"type": "array", "items": map[string]interface{}{"$ref": "#/definitions/__schema0"}},
+					jsonRecord(),
+				},
+			},
+		},
 	}
 }
 
