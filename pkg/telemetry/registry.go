@@ -2146,7 +2146,7 @@ func (i LegacyOpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCall
 	entry.span.SetAttributes(attribute.String("ai.ranking.type", e.DocumentsType))
 	if e.Settings.ShouldRecordOutputs() {
 		if len(e.Ranking) > 0 {
-			entry.span.SetAttributes(attribute.StringSlice("ai.ranking", jsonStringifyEach(e.Ranking)))
+			entry.span.SetAttributes(attribute.StringSlice("ai.ranking", rankingJSONEach(e.Ranking)))
 		}
 	}
 	entry.span.End()
@@ -2312,6 +2312,22 @@ func legacyToolCallsJSON(toolCalls []types.ToolCall) (string, bool) {
 		return "", false
 	}
 	return string(b), true
+}
+
+// rankingJSONEach JSON-encodes each ranking entry as TS
+// `event.ranking.map(r => JSON.stringify(r))`, whose entries are
+// `{index, relevanceScore}`. types.RerankItem has no JSON tags, so marshaling
+// it directly would write {"Index":..,"RelevanceScore":..}.
+func rankingJSONEach(ranking []types.RerankItem) []string {
+	type rankingEntry struct {
+		Index          int     `json:"index"`
+		RelevanceScore float64 `json:"relevanceScore"`
+	}
+	entries := make([]rankingEntry, len(ranking))
+	for i, r := range ranking {
+		entries[i] = rankingEntry{Index: r.Index, RelevanceScore: r.RelevanceScore}
+	}
+	return jsonStringifyEach(entries)
 }
 
 // legacyFilesJSON JSON-encodes generated files as TS's

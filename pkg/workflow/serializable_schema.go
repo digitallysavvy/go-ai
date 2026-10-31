@@ -299,14 +299,17 @@ func ResolveSerializableTools(defs map[string]SerializableToolDef) []types.Tool 
 		}
 		providerOptions := def.ProviderOptions
 		resolved := types.Tool{
-			Name:                    toolName,
-			Description:             def.Description,
-			Title:                   def.Title,
-			Parameters:              parameters,
-			ParameterKeyOrder:       keyOrder,
-			Strict:                  def.Strict,
-			ProviderExecuted:        def.ProviderExecuted || def.IsProviderExecuted || def.Type == "provider",
-			SupportsDeferredResults: def.SupportsDeferredResults,
+			Name:              toolName,
+			Description:       def.Description,
+			Title:             def.Title,
+			Parameters:        parameters,
+			ParameterKeyOrder: keyOrder,
+			Strict:            def.Strict,
+			// TS resolve: only isProviderExecuted makes a tool provider-executed
+			// (a client-executed provider tool keeps type "provider"), and
+			// supportsDeferredResults is kept only for a provider-executed one.
+			ProviderExecuted:        def.ProviderExecuted || def.IsProviderExecuted,
+			SupportsDeferredResults: def.SupportsDeferredResults && (def.ProviderExecuted || def.IsProviderExecuted),
 			InputExamples:           def.InputExamples,
 			ProviderMetadata:        def.ProviderMetadata,
 			Metadata:                def.Metadata,
