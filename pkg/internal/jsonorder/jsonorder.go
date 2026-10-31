@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -430,5 +431,45 @@ func nullNonFinite(v interface{}) interface{} {
 		}
 		return out
 	}
-	return v
+	return nullNonFiniteReflect(reflect.ValueOf(v), v)
+}
+
+// nullNonFiniteReflect covers the typed containers the switch above does not
+// name (map[string]float64, []float32, [][]float64, pointers to them, named
+// float types): string-keyed maps, slices and arrays become plain maps and
+// slices with their non-finite numbers set to nil. Byte slices, structs and
+// every other value are returned as orig (a struct holding NaN still fails to
+// marshal).
+func nullNonFiniteReflect(rv reflect.Value, orig interface{}) interface{} {
+	switch rv.Kind() {
+	case reflect.Float32, reflect.Float64:
+		if f := rv.Float(); math.IsNaN(f) || math.IsInf(f, 0) {
+			return nil
+		}
+	case reflect.Pointer, reflect.Interface:
+		if rv.IsNil() {
+			return orig
+		}
+		return nullNonFinite(rv.Elem().Interface())
+	case reflect.Map:
+		if rv.Type().Key().Kind() != reflect.String || rv.IsNil() {
+			return orig
+		}
+		out := make(map[string]interface{}, rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			out[iter.Key().String()] = nullNonFinite(iter.Value().Interface())
+		}
+		return out
+	case reflect.Slice, reflect.Array:
+		if rv.Type().Elem().Kind() == reflect.Uint8 || (rv.Kind() == reflect.Slice && rv.IsNil()) {
+			return orig
+		}
+		out := make([]interface{}, rv.Len())
+		for i := range out {
+			out[i] = nullNonFinite(rv.Index(i).Interface())
+		}
+		return out
+	}
+	return orig
 }
