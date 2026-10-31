@@ -152,3 +152,32 @@ func TestR74Carry_ApprovedToolStartGateReleasedOnEarlyReturn(t *testing.T) {
 		t.Errorf("call-1 result = %+v, want error-text", tr.Output)
 	}
 }
+
+// TS serializable-schema.ts resolveSerializableTools builds a dynamic tool
+// with dynamicTool({description, inputExamples, providerOptions,
+// inputSchema}): title, metadata and strict do not survive, while a function
+// tool keeps them.
+func TestR74Carry_ResolveDynamicToolDropsTitleMetadataStrict(t *testing.T) {
+	strict := true
+	defs := map[string]SerializableToolDef{
+		"dyn": {Name: "dyn", Type: "dynamic", Title: "Dyn", Description: "d", Strict: &strict,
+			Metadata: map[string]interface{}{"k": "v"}, InputSchema: map[string]interface{}{"type": "object"},
+			InputExamples: []types.ToolInputExample{{Input: map[string]interface{}{"a": 1}}}},
+		"fn": {Name: "fn", Title: "Fn", Description: "f", Strict: &strict,
+			Metadata: map[string]interface{}{"k": "v"}, InputSchema: map[string]interface{}{"type": "object"}},
+	}
+	tools := ResolveSerializableTools(defs)
+	if len(tools) != 2 {
+		t.Fatalf("tools = %d", len(tools))
+	}
+	dyn, fn := tools[0], tools[1]
+	if dyn.Type != "dynamic" || dyn.Title != "" || dyn.Metadata != nil || dyn.Strict != nil {
+		t.Errorf("dynamic tool = type %q title %q metadata %v strict %v, want dynamic with no title/metadata/strict", dyn.Type, dyn.Title, dyn.Metadata, dyn.Strict)
+	}
+	if dyn.Description != "d" || len(dyn.InputExamples) != 1 {
+		t.Errorf("dynamic tool lost description/inputExamples: %+v", dyn)
+	}
+	if fn.Title != "Fn" || fn.Metadata == nil || fn.Strict == nil || !*fn.Strict {
+		t.Errorf("function tool = %+v, want title, metadata and strict kept", fn)
+	}
+}

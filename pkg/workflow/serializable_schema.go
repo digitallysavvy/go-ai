@@ -323,7 +323,13 @@ func ResolveSerializableTools(defs map[string]SerializableToolDef) []types.Tool 
 				resolved.ProviderOptions = providerOptions
 			}
 		case def.Type == "dynamic":
+			// TS resolve builds dynamicTool({description, inputExamples,
+			// providerOptions, inputSchema}): a resolved dynamic tool has no
+			// title, metadata or strict flag.
 			resolved.Type = "dynamic"
+			resolved.Title = ""
+			resolved.Metadata = nil
+			resolved.Strict = nil
 			resolved.ProviderOptions = optionsOrArgs(providerOptions, def.Args)
 		default:
 			resolved.ProviderOptions = optionsOrArgs(providerOptions, def.Args)
