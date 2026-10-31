@@ -294,7 +294,8 @@ A durable run cannot persist a Go function. These helpers carry the tool definit
 
 | Function | Description |
 | --- | --- |
-| `workflow.SerializeToolSet(tools []types.Tool) (map[string]SerializableToolDef, error)` | Converts tools to a JSON-safe map keyed by name. |
+| `workflow.SerializeToolSet(tools []types.Tool) (map[string]SerializableToolDef, error)` | Converts tools to a JSON-safe map keyed by name. A tool's `DescriptionFunc` is resolved with no tools context and no sandbox. |
+| `workflow.SerializeToolSetWithOptions(ctx context.Context, tools []types.Tool, opts SerializeToolSetOptions) (map[string]SerializableToolDef, error)` | Like `SerializeToolSet`, resolving each `DescriptionFunc` with `opts.ToolsContext[name]` and `opts.ExperimentalSandbox`. |
 | `workflow.ResolveSerializableTools(defs map[string]SerializableToolDef) []types.Tool` | Rebuilds non-executable tool descriptors. |
 | `workflow.ValidateSerializableToolInput(def SerializableToolDef, input interface{}) (interface{}, error)` | Validates input against the serialized schema. It applies schema defaults first, and returns the defaulted value. Pass that value to the tool, not the raw input. |
 | `workflow.MarshalSchema(schema interface{}) (map[string]interface{}, error)` | Converts a JSON-serializable schema to a map. |

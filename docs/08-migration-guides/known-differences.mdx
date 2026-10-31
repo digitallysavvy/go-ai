@@ -457,7 +457,18 @@ A provider-executed tool result flagged `IsError` with a nil result gets the
 error text `tool error`. TS `JSON.stringify(undefined)` leaves `errorText`
 undefined (review round 73).
 
-## Vertex Gemini image model: URL input images
+## OpenAI tool args issue text
+
+When an OpenAI provider tool's args fail the TS args schema, the Responses
+model throws TS's `TypeValidationError` text ("Type validation failed: Value:
+<args JSON>.\nError message: ..."), with the same prefix, value and error
+type. After "Error message:" Go lists the Go JSON Schema validator's issues
+(for example `$.searchContextSize: enum: value huge is not one of [low medium
+high]`); TS lists zod's issue JSON (`[{"code": "invalid_value", "values":
+[...], ...}]`). The mcp "One of serverUrl or connectorId must be provided."
+refinement and the xAI tool args use zod's exact issue list (review
+round 74).
+
 
 The Vertex Gemini image model accepts URL and `gs://` input images
 (`ImageGenerateOptions.Files` entries of type `url`). Go sends each one as

@@ -50,6 +50,7 @@ already, you can skip them.
 | `PartialOutput()` on a `StreamText` result without `Output` | The step's text so far instead of nil | silent behavior change | Check `opts.Output` before treating it as structured | [PartialOutput default](#partial-output-default-text) |
 | `OnFinish:` reading `Usage`, `ToolCalls`, `ToolResults` | Aggregated across steps | silent behavior change | Read `FinalStep` for the last step | [OnFinishEvent totals](#on-finish-aggregates) |
 | `.TotalTokens` | Input + output tokens | silent behavior change | Read `Usage.Raw` for the wire value | [TotalTokens](#total-tokens) |
+| `ToolResultContent.Result` in step content | The raw tool output, next to `Output` | silent behavior change | None | [Raw tool output in content](#step-content-tool-result-raw-output) |
 | `ReasoningText` | Parts joined with no separator (was a newline) | silent behavior change | Join reasoning parts with a newline yourself | [ReasoningText](#reasoning-text) |
 | `OnError:` in `StreamTextOptions` | Called for error parts only | silent behavior change | Handle fatal errors from `Err()` / `OnStepError` | [StreamText OnError](#streamtext-onerror) |
 | `PrepareStep:` returning `Model` in `StreamTextOptions` | Override applies to one step | silent behavior change | Return the model from every call | [StreamText PrepareStep model](#streamtext-preparestep-model) |
@@ -182,14 +183,25 @@ already, you can skip them.
 | `WorkflowAgent.Stream` with reasoning files | Left out of the prompt and response messages | silent behavior change | Read `StepResult.ReasoningFiles()` | [Workflow stream reasoning files](#workflow-stream-reasoning-files) |
 | `CreateUIMessageChunksResponse` body with a failing `ConsumeSSEStream` | Ends normally | silent behavior change | Handle the error in the callback | [ConsumeSSEStream errors](#ui-consume-sse-error-body) |
 | `ai.ranking` span attribute | TS `index`/`relevanceScore` keys | silent behavior change | Read the camelCase keys | [Rerank telemetry ranking keys](#telemetry-ranking-keys) |
+| StreamText event `ExperimentalContext` after `PrepareStep` | Equals `RuntimeContext` | silent behavior change | Read `RuntimeContext` | [ExperimentalContext](#stream-experimental-context-prepared) |
 | `NoObjectGeneratedError.Cause` from an `Output` validation failure | `*providererrors.TypeValidationError` | silent behavior change | Use `errors.As` | [Output validation cause](#output-type-validation-cause) |
 | anthropic/openai/xai provider tools on a gateway model | Sent as provider tools | wire/protocol change | No action | [Gateway provider tools](#gateway-provider-tools) |
 | `gateway/tools` constructors' `Title`; empty list args | No title; empty lists sent | silent behavior change | Set `Title` yourself | [AI Gateway tools have no title](#gateway-tool-title) |
 | OpenAI provider tools on a Chat Completions model | Dropped with a "tool type: provider" warning | silent behavior change | Use the Responses model | [Chat drops provider tools](#openai-chat-drops-provider-tools) |
 | OpenAI tool_search call / result names | The declared tool's name (`openai.tool_search`) | silent behavior change | Match the tool's `Name` | [tool_search tool name](#openai-tool-search-tool-name) |
 | `responses.NewShellTool` with a hosted container environment | Shell calls are provider-executed | silent behavior change | No action | [Hosted shell calls](#openai-shell-container-provider-executed) |
-| Invalid `openaitool` / `responses` tool config | `ValidationError` before the request | silent behavior change | Fix the config | [Tool config validation](#openai-tool-args-validation) |
+| Invalid `openaitool` / `responses` tool config | `TypeValidationError` before the request | silent behavior change | Fix the config | [Tool config validation](#openai-tool-args-validation) |
 | Reading `Parameters` of `openaitool.ToolSearch` | TS call input schema; search schema in `ToolSearchOptions.Parameters` | silent behavior change | Read `ToolSearchOptions.Parameters` | [ToolSearch parameters](#openai-tool-search-parameters) |
+| `workflow.SerializeToolSet` with `DescriptionFunc` | Function description is resolved | silent behavior change | Use `SerializeToolSetWithOptions` to pass context | [SerializeToolSet descriptions](#workflow-serialize-description-func) |
+| `ResolveSerializableTools` dynamic defs | No title, metadata or strict | silent behavior change | Set them on the resolved tool | [Resolved dynamic tools](#workflow-resolve-dynamic-tools) |
+| UI `text-delta` with empty `delta` | Sent when it carries `providerMetadata` | wire/protocol change | None | [Empty text deltas](#ui-empty-text-delta-metadata) |
+| GenAI embeddings span `gen_ai.operation.name` | `embeddings` instead of `ai.embed.doEmbed` | silent behavior change | Match `embeddings` | [Embeddings operation name](#telemetry-embeddings-operation-name) |
+| `StopSequences: []string{}` on gateway / groq / mistral / vertex xai | Sent as `[]` | wire/protocol change | Pass nil to omit | [Empty stop sequences are sent](#empty-stop-sequences) |
+| Gateway tool results with a nil value | `value: null` sent | wire/protocol change | No action | [Gateway tool outputs without a value](#gateway-tool-output-null) |
+| Anthropic provider tools under a custom `Name`; `anthropic.*` literals | Matched by id, sent | silent behavior change | No action | [Anthropic provider tools are matched by id](#anthropic-provider-tool-id) |
+| Anthropic provider tools on Bedrock | Validated; calls named after the tool | silent behavior change | Match `Tool.Name` | [Anthropic provider tools on Bedrock](#bedrock-anthropic-provider-tools) |
+| `RawArguments` of expanded OpenAI parallel tool calls | Model key order | silent behavior change | Compare `Arguments` | [Parallel call input order](#openai-parallel-call-input-order) |
+| Invalid xai tool config (domains > 5, handles > 20, image action, file search without IDs, MCP without URL) | `TypeValidationError` before the request | silent behavior change | Fix the config | [xAI tool config validation](#xai-tool-args-validation) |
 | Cohere `BaseURL` or `DefaultBaseURL` (v0.5.3) | v2 API | wire/protocol change | Check custom base URLs | [Cohere v2](#v053-cohere-v2) |
 | `MaxRetries` unset on non-Gateway providers (v0.5.3) | Every provider retries | silent behavior change | Set `MaxRetries: &zero` to disable | [Retries](#v053-retries) |
 | Reliance on the 60 s default HTTP client timeout (v0.5.3) | No whole-request timeout | silent behavior change | Bound calls with `ctx` | [HTTP client timeout](#v053-http-timeout) |
@@ -409,11 +421,32 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **What to do:** read `event.FinalStep` for the last step only.
 - **Kind:** silent behavior change
 
+### Step content tool results keep the raw tool output {#step-content-tool-result-raw-output}
+
+- **What changed:** a `types.ToolResultContent` in `StepResult.Content`,
+  `GenerateTextResult.Content`, `StreamTextResult.Content()` and the step and
+  end events keeps the tool's raw output in `Result` next to the
+  model-facing `Output`. v0.5 cleared `Result` whenever it set `Output`, so
+  the raw value of a `ToModelOutput` tool was not in the content at all. TS
+  step content `tool-result.output` is the raw output; the model output is
+  built only for the response messages (review round 74). Response messages
+  and the next prompt are unchanged: their tool results carry `Output` only.
+- **Am I affected?** Code that reads `ToolResultContent.Result` from step or
+  result content expecting nil, or that marshals step content to JSON (the
+  part gains `"result"`).
+- **What to do:** no action unless you relied on `Result` being nil. Read
+  `Output` for what the model saw and `Result` for the tool's own value.
+- **Kind:** silent behavior change
+
 ### Usage.TotalTokens is input + output {#total-tokens}
 
 - **What changed:** `Usage.TotalTokens` is input tokens plus output tokens
   for every provider, as TS computes it. v0.5 copied the provider's wire
-  `total_tokens`, which some providers compute differently.
+  `total_tokens`, which some providers compute differently. A model that
+  leaves `TotalTokens` unset (a custom `LanguageModel`) gets it filled from
+  input + output when either count is set, in `GenerateText`,
+  `GenerateObject`, `StreamObject`, `StreamText` and the legacy
+  `ToolLoopAgent` loop (TS `asLanguageModelUsage`; review round 74).
 - **Am I affected?** Billing or metrics code that reads `.TotalTokens`.
 - **What to do:** no action unless you need the provider's own total. Read
   it from the usage's raw provider data.
@@ -955,6 +988,21 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   `OnAbortEvent` `Steps`, or `tool-result`/`finish-step` parts after the
   cancellation.
 - **What to do:** no action unless you relied on the late result.
+- **Kind:** silent behavior change
+
+### StreamText ExperimentalContext follows a PrepareStep runtime context {#stream-experimental-context-prepared}
+
+- **What changed:** the deprecated `ExperimentalContext` field of the
+  `StreamText` step-start, tool execution, step-end and end events now carries
+  the same value as `RuntimeContext`, also after a `PrepareStep` replaced the
+  runtime context, as `GenerateText` already did. v0.5 kept the call's initial
+  context in `ExperimentalContext` on every later event. TS has one
+  `runtimeContext` (review round 74).
+- **Am I affected?** Code that reads `ExperimentalContext` on `OnStepStartEvent`,
+  `OnToolCallStartEvent`, `OnToolCallFinishEvent`, `OnStepFinishEvent` or
+  `OnFinishEvent` from `StreamText` and sets `PrepareStepOptions.RuntimeContext`.
+- **What to do:** no action unless you relied on the initial value; read
+  `RuntimeContext`.
 - **Kind:** silent behavior change
 
 ## Prompts and validation {#prompts-and-validation}
@@ -1933,6 +1981,34 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 - **What to do:** read reasoning files from `StepResult.ReasoningFiles()`.
 - **Kind:** silent behavior change
 
+#### SerializeToolSet resolves DescriptionFunc {#workflow-serialize-description-func}
+
+- **What changed:** v0.5 `workflow.SerializeToolSet` wrote a tool's static
+  `Description` and ignored `DescriptionFunc`; v0.6 calls `DescriptionFunc`
+  (with no tools context and no sandbox) and writes its result, as TS
+  `serializeToolSet` resolves a function description. The new
+  `SerializeToolSetWithOptions(ctx, tools, SerializeToolSetOptions{ToolsContext, ExperimentalSandbox})`
+  passes the tool's context entry and the sandbox (review round 74).
+- **Am I affected?** Tools with a `DescriptionFunc` passed to
+  `SerializeToolSet`.
+- **What to do:** no action unless the function needs its context; then call
+  `SerializeToolSetWithOptions`.
+- **Kind:** silent behavior change
+
+#### Resolved dynamic tools carry no title, metadata or strict {#workflow-resolve-dynamic-tools}
+
+- **What changed:** v0.5 `ResolveSerializableTools` resolved a
+  `Type: "dynamic"` def as a plain tool with its `Title` and `Strict`; v0.6
+  resolves it as a dynamic tool (`Type: "dynamic"`) with only its
+  description, input examples, provider options and schema, as TS
+  `resolveSerializableTools` builds `dynamicTool({...})`. Function tools keep
+  title, metadata and strict (review round 74).
+- **Am I affected?** `SerializableToolDef` values with `Type: "dynamic"` that
+  set `Title`, `Metadata` or `Strict`.
+- **What to do:** no action unless you relied on those fields; set them on
+  the resolved tool yourself.
+- **Kind:** silent behavior change
+
 ## UI message streams {#ui-message-streams}
 
 ### UI message streams fail on an out-of-sequence chunk {#ui-out-of-sequence}
@@ -2204,6 +2280,19 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   instead.
 - **Kind:** silent behavior change
 
+### UI message streams keep empty text deltas with provider metadata {#ui-empty-text-delta-metadata}
+
+- **What changed:** `ToUIMessageStream` (and the `StreamTextResult` UI helpers)
+  now write a `text-delta` chunk with an empty `delta` when the stream part
+  carries provider metadata, such as a Gemini thought signature, and the UI
+  message's text part gets that `providerMetadata`, as TS `toUIMessageChunk`
+  does. v0.5 dropped every empty text delta (review round 74).
+- **Am I affected?** Clients or tests that read UI message stream chunks and
+  assume every `text-delta` has a non-empty `delta`, or compare the UI text
+  part's `providerMetadata`.
+- **What to do:** no action unless you assumed non-empty deltas.
+- **Kind:** wire/protocol change
+
 ## Telemetry and events {#telemetry-and-events}
 
 The [telemetry recording change](#telemetry-record-pointers) is listed under
@@ -2419,6 +2508,18 @@ compile-time changes.
 - **Am I affected?** Dashboards or tests that parse the `ai.ranking` span
   attribute.
 - **What to do:** read `index` and `relevanceScore`.
+- **Kind:** silent behavior change
+
+### GenAI embeddings span operation name is `embeddings` {#telemetry-embeddings-operation-name}
+
+- **What changed:** v0.5 set `gen_ai.operation.name` on the OpenTelemetry
+  (GenAI) `embeddings <model>` child span of `Embed` / `EmbedMany` to
+  `ai.embed.doEmbed` / `ai.embedMany.doEmbed`; v0.6 sets `embeddings`, as TS
+  `open-telemetry.ts` `onEmbedStart` does (review round 74). The span name
+  and the root span are unchanged.
+- **Am I affected?** Dashboards, queries or tests that filter the GenAI
+  `embeddings` span by `gen_ai.operation.name`.
+- **What to do:** match `gen_ai.operation.name = "embeddings"`.
 - **Kind:** silent behavior change
 
 ## Errors {#errors}
@@ -2638,6 +2739,18 @@ compile-time changes.
 - **What to do:** switch on each part's type instead of its position.
 - **Kind:** silent behavior change
 
+#### Empty stop sequences are sent {#empty-stop-sequences}
+
+- **What changed:** an explicitly empty `StopSequences` (`[]string{}`) is now
+  sent as an empty list by the AI Gateway (`stopSequences: []`), Groq,
+  Mistral (chat and conversations) and Vertex xAI (`stop: []`), as TS
+  forwards `stopSequences` as given. nil stays absent (review round 74).
+- **Am I affected?** Callers that pass a non-nil empty `StopSequences` to
+  those providers.
+- **What to do:** no action unless an API rejects the empty list; pass nil
+  instead.
+- **Kind:** wire/protocol change
+
 ### AI Gateway
 
 #### Provider tools reach the AI Gateway as provider tools {#gateway-provider-tools}
@@ -2721,6 +2834,96 @@ compile-time changes.
 
 - **Kind:** silent behavior change
 
+#### Gateway tool outputs without a value {#gateway-tool-output-null}
+
+- **What changed:** a tool result whose output value is nil (a tool that
+  returned nothing: `{Type: "json", Value: nil}`) reaches the AI Gateway as
+  `{type: "json", value: null}`, as TS; an empty `content` output is sent with
+  `value: []`. v0.5 omitted `value`, which the gateway's prompt schema
+  requires (review round 74).
+- **Am I affected?** Gateway models with tools that return nil, or `content`
+  tool outputs without parts.
+- **What to do:** no action.
+- **Kind:** wire/protocol change
+
+### Anthropic
+
+#### Anthropic provider tools are matched by id {#anthropic-provider-tool-id}
+
+- **What changed:** the Anthropic provider now selects provider tools by
+  their id (`Tool.ProviderID` for `Type: "provider"` tools, else `Tool.Name`),
+  as TS does with `tool.id`, and treats `Tool.Name` as the caller's tool name
+  (TS: the tools record key). A provider tool under a custom name (a
+  constructor tool with `Name` changed, or a TS-shaped
+  `types.Tool{Type: "provider", ProviderID: "anthropic.web_search_20260318", Name: "research", ProviderArgs: ...}`)
+  is sent; v0.5 dropped it with an `unsupported` "provider-defined tool"
+  warning. Its calls and results come back under the custom name. A tool
+  literal named after a known Anthropic id without options
+  (`types.Tool{Name: "anthropic.web_search_20260209"}`) is now sent with empty
+  args instead of dropped; only unknown ids warn. A TS-shaped advisor tool
+  without a `model` string fails with `*TypeValidationError`. The "code
+  execution tool is required when using skills" warning checks the tool id.
+  `ExperimentalBatch` rejects a provider tool whose custom name differs from
+  its Anthropic wire name (`UnsupportedFunctionalityError`, "aliased provider
+  tool names in batches"), as TS; tools keeping the constructor's id as their
+  name are still accepted. `prompt.AnthropicToolsetNames` finds a renamed
+  computer toolset by id too (review round 74).
+- **Am I affected?** Code that changes `Name` on a
+  `pkg/providers/anthropic/tools` constructor result, builds provider tools
+  as `types.Tool{Type: "provider", ProviderID: "anthropic.…"}` or as
+  `types.Tool{Name: "anthropic.…"}` literals, uses container skills, or sends
+  renamed provider tools in `ExperimentalBatch`.
+- **What to do:** no action. To use TS-style names:
+
+  ```go
+  package main
+
+  import (
+  	"fmt"
+
+  	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+  	anthropictools "github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
+  )
+
+  func renamedBash() types.Tool {
+  	shell := anthropictools.Bash20250124()
+  	shell.Name = "shell"
+  	return shell
+  }
+
+  func main() {
+  	fmt.Println(renamedBash().Name)
+  }
+  ```
+
+- **Kind:** silent behavior change
+
+### Amazon Bedrock
+
+#### Anthropic provider tools on Bedrock {#bedrock-anthropic-provider-tools}
+
+- **What changed:** Bedrock now runs the Anthropic tool preparation over
+  Anthropic provider tools, as TS: invalid tool args (for example advisor
+  `MaxTokens` below 1024) fail the call with `*TypeValidationError` before the
+  request; an unknown provider tool gets the Anthropic
+  `provider-defined tool <id>` warning before Bedrock's `tool <id>` warning,
+  and a rejected forced tool choice warning comes before the per-tool
+  warnings. Tools are matched by id. A tool keeping the constructor's id as
+  its name (`tools.Bash20250124()`) is still declared as `bash`, but the
+  model's `bash` calls now come back named `anthropic.bash_20250124` (v0.5
+  returned `bash`, which GenerateText could not match to the tool), and
+  history calls of the tool are sent as `bash` (v0.5 sent
+  `anthropicbash_20250124`). A provider tool with a custom name is declared
+  under that name (TS `tool.name`). Warning features for unsupported tools
+  use the tool id (review round 74).
+- **Am I affected?** Anthropic provider tools
+  (`pkg/providers/anthropic/tools`) with Bedrock models: code that reads
+  `ToolCall.ToolName` of their calls, matches warnings, or relied on invalid
+  tool args reaching the API.
+- **What to do:** no action unless you matched the wire name (`"bash"`) in
+  tool call names; match the tool's `Name` instead.
+- **Kind:** silent behavior change
+
 ### OpenAI
 
 #### OpenAI Responses promptCacheOptions is validated {#openai-prompt-cache-options}
@@ -2767,7 +2970,12 @@ compile-time changes.
   which matched no tool: a client-mode call could not run and a replayed call
   was not recognized. `ToolChoice` `AllowedTools` naming
   `openai.tool_search` is dropped with an `unsupported` warning (TS); v0.5
-  sent a function entry (review round 73).
+  sent a function entry (review round 73). `AllowedTools` naming
+  `tool_search` (the provider tool name) reaches a tool_search tool declared
+  under another name and is dropped the same way; a name of a provider tool
+  the Responses model does not send (another provider's tool) is sent as a
+  function entry with the TS "not part of the tools for this request"
+  warning (v0.5 dropped it; review round 74).
 - **Am I affected?** Code matching `ToolName == "tool_search"` on tool calls,
   results or stream chunks.
 - **What to do:** match `"openai.tool_search"` (or your tool's `Name`).
@@ -2792,14 +3000,19 @@ compile-time changes.
   args (web_search, web_search_preview, code_interpreter, file_search,
   image_generation, mcp, custom, tool_search, shell) against the TS args
   schema, as TS `validateTypes` does, and fails with a
-  `*providererrors.ValidationError` ("Type validation failed for <tool>:
-  ...") before sending. v0.5 sent invalid config to OpenAI (review round 73).
+  `*providererrors.TypeValidationError` (an alias of `ValidationError`)
+  whose text is TS's "Type validation failed: Value: <args JSON>.\nError
+  message: <issues>" before sending. v0.5 sent invalid config to OpenAI
+  (review rounds 73 and 74). The issue list is the Go JSON Schema
+  validator's text, not zod's (see
+  [OpenAI tool args issue text](./known-differences.mdx)).
 - **Am I affected?** `openaitool.` configs with values outside the TS enums
   or ranges (`SearchContextSize`, `Quality`, `OutputCompression` > 100,
   `PartialImages` > 3, `Size` not `WxH`), `FileSearchConfig` without
   `VectorStoreIDs`, grammar `CustomToolFormat` without `Syntax` /
   `Definition`, `ToolSearchArgs.Execution` other than server / client, shell
-  `MemoryLimit` outside 1g / 4g / 16g / 64g.
+  `MemoryLimit` outside 1g / 4g / 16g / 64g; `openaitool.MCP` without
+  `ServerLabel`; `openaitool.MCP` without `ServerURL` and `ConnectorID`.
 - **What to do:** fix the config; handle the `*providererrors.ValidationError`
   with `errors.As` if you surface it.
 - **Kind:** silent behavior change
@@ -2827,6 +3040,40 @@ compile-time changes.
   }
   ```
 
+- **Kind:** silent behavior change
+
+#### Expanded OpenAI parallel tool calls keep the model's key order {#openai-parallel-call-input-order}
+
+- **What changed:** when the Responses model expands the internal `parallel`
+  wrapper call, each nested tool call's `RawArguments` is TS's
+  `JSON.stringify(parameters)`: the model's key order (JS integer-like keys
+  first). v0.5 sorted the keys (review round 74).
+- **Am I affected?** Code comparing `ToolCall.RawArguments` text of calls
+  expanded from a `parallel` wrapper (`providerMetadata.openai.parallelToolCall`
+  set).
+- **What to do:** no action unless you compare the raw text; compare
+  `Arguments` instead.
+- **Kind:** silent behavior change
+
+### xAI
+
+#### xAI provider tool config is validated before the request {#xai-tool-args-validation}
+
+- **What changed:** the xAI Responses model validates the args of
+  `xai.WebSearch`, `xai.XSearch`, `xai.ImageGeneration`, `xai.FileSearch` and
+  `xai.MCPServer` against the TS args schemas, as TS `prepareResponsesTools`
+  does with `validateTypes`, and fails with a
+  `*providererrors.TypeValidationError` ("Type validation failed: Value:
+  <args JSON>.\nError message: <zod issues>", zod's exact issue list) before
+  sending. v0.5 sent invalid config to xAI (review round 74).
+- **Am I affected?** `xai.WebSearchConfig` with more than 5 `AllowedDomains` /
+  `ExcludedDomains`; `xai.XSearchConfig` with more than 20 `AllowedXHandles` /
+  `ExcludedXHandles`; `xai.ImageGenerationConfig.Action` other than auto /
+  generate / edit; `xai.FileSearchConfig` without `VectorStoreIDs`;
+  `xai.MCPServerConfig` without `ServerURL`; hand-built `Type: "provider"`
+  xai tools whose `ProviderArgs` have the wrong types.
+- **What to do:** fix the config; handle `errors.As(err, &tve)` with
+  `var tve *providererrors.TypeValidationError` if you surface it.
 - **Kind:** silent behavior change
 
 ### Wrapper providers
@@ -3245,6 +3492,9 @@ after upgrading:
 - **A provider tool error with no result value has the error text
   `tool error`**; TS leaves `errorText` undefined. See
   [Provider tool error without a value](./known-differences.mdx).
+- **OpenAI provider tool args validation errors list the Go JSON Schema
+  validator's issues** after "Error message:"; TS lists zod's issue JSON. See
+  [OpenAI tool args issue text](./known-differences.mdx).
 
 ## For coding agents {#for-coding-agents}
 

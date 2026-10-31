@@ -94,6 +94,8 @@ Also new:
 - **`StepResult.ReasoningFiles()` returns the step's reasoning file parts** (TS `StepResult.reasoning` holds reasoning-file parts).
 - **`OnStepFinishEvent.ExperimentalSteeringMessages`** carries the step's steering messages (TS `onStepEnd` StepResult).
 - **`openaitool.ToolSearchOptions.Parameters`** holds the client-mode search schema (TS `args.parameters`).
+- **`workflow.SerializeToolSetWithOptions`** passes the tools context and sandbox to each tool's `DescriptionFunc` (TS `serializeToolSet(tools, {toolsContext, experimental_sandbox})`).
+- **`anthropic.ProviderToolID`, `anthropic.PrepareProviderTools` and `anthropic.PreparedProviderTools`** select Anthropic provider tools by id and run the Anthropic tool preparation for a host API such as Bedrock (TS `tool.id`, `prepareAnthropicTools`).
 - OpenAI Responses: `promptCacheOptions` 12h TTL and prewarm, shell tool
   `timeoutMs`/`maxOutputLength`, `additionalTools` and
   `omitFromRequestTools`. Azure `ToolSearch` and per-deployment model
@@ -188,6 +190,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Output is the text when no Output option is set** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#output-default-text)
 - **PartialOutput is the step's text when no Output option is set** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#partial-output-default-text)
 - **OnFinishEvent aggregates across steps** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#on-finish-aggregates)
+- **Step content tool results keep the raw tool output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#step-content-tool-result-raw-output)
 - **Usage.TotalTokens is input + output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#total-tokens)
 - **ReasoningText joins parts with no separator** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#reasoning-text)
 - **StreamText OnError sees error parts only** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-onerror)
@@ -220,6 +223,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **StreamObject provider metadata comes from the finish part** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamobject-finish-provider-metadata)
 - **StreamText steps carry their warnings** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-step-warnings)
 - **A cancellation during tool execution aborts the StreamText step** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-abort-during-tools)
+- **StreamText ExperimentalContext follows a PrepareStep runtime context** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-experimental-context-prepared)
 
 #### Prompts and validation
 
@@ -280,6 +284,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **WorkflowAgent `PrepareCall` sees the agent's generation settings** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-preparecall-agent-settings)
 - **Resolved provider tools are provider-executed only when marked** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-resolve-provider-executed)
 - **WorkflowAgent Stream leaves reasoning files out of the conversation** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-stream-reasoning-files)
+- **SerializeToolSet resolves DescriptionFunc** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-serialize-description-func)
+- **Resolved dynamic tools carry no title, metadata or strict** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-resolve-dynamic-tools)
 
 #### UI message streams
 
@@ -294,6 +300,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **UI custom, approval and single-part chunks follow TS** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-custom-chunk-metadata)
 - **Approved tool calls send one approval pair in UI streams** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-auto-approval-no-duplicate)
 - **A failing ConsumeSSEStream no longer breaks CreateUIMessageChunksResponse** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-consume-sse-error-body)
+- **UI message streams keep empty text deltas with provider metadata** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-empty-text-delta-metadata)
 
 #### Telemetry and events
 
@@ -307,6 +314,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Telemetry step-end, end, tool-end, error and abort run after the callbacks** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-callback-order)
 - **Telemetry step end runs every OnStepEnd before the deprecated OnStepFinish** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-step-finish-fanout)
 - **Rerank telemetry `ai.ranking` uses TS keys** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-ranking-keys)
+- **GenAI embeddings span operation name is `embeddings`** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-embeddings-operation-name)
 
 #### Errors
 
@@ -324,8 +332,12 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Responses and stream chunks are validated** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#response-validation)
 - **Invalid provider options fail the call** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provider-options-validation)
 - **Anthropic, Bedrock and Google content is in response order** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#result-content-order)
+- **Empty stop sequences are sent** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#empty-stop-sequences)
 - **Provider tools reach the AI Gateway as provider tools** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gateway-provider-tools)
 - **AI Gateway tools have no title** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gateway-tool-title)
+- **Gateway tool outputs without a value** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gateway-tool-output-null)
+- **Anthropic provider tools are matched by id** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-provider-tool-id)
+- **Anthropic provider tools on Bedrock** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#bedrock-anthropic-provider-tools)
 - **OpenAI Responses promptCacheOptions is validated** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-prompt-cache-options)
 - **OpenAI chat streams fail the call on an error before output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-chat-stream-error)
 - **OpenAI provider tools are dropped by the Chat Completions model** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-chat-drops-provider-tools)
@@ -333,6 +345,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **OpenAI shell calls in a hosted container are provider-executed** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-shell-container-provider-executed)
 - **OpenAI provider tool config is validated before the request** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-tool-args-validation)
 - **openaitool.ToolSearch keeps the search schema in its options** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-tool-search-parameters)
+- **Expanded OpenAI parallel tool calls keep the model's key order** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-parallel-call-input-order)
+- **xAI provider tool config is validated before the request** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#xai-tool-args-validation)
 - **Wrapper providers read only their own API key** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#wrapper-api-keys)
 - **Failed generated-media downloads return ProviderError** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#media-download-errors)
 - **KlingAI VideoModel() accepts any model ID** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#klingai-video-model)
@@ -1301,6 +1315,7 @@ Notable ones:
 - **ConsumeStream returns the error**: `StreamTextResult.ConsumeStream()` returns the stream error; TS `consumeStream()` swallows it (round 73).
 - **Merged UI message stream order**: chunks of merged UI stream sources interleave by goroutine scheduling, each source in order; TS follows its microtask queue (round 73).
 - **Provider tool error without a value**: a provider tool result flagged `IsError` with no value has the error text `tool error`; TS leaves `errorText` undefined (round 73).
+- **OpenAI tool args issue text**: OpenAI provider tool args validation errors list the Go JSON Schema validator's issues after "Error message:"; TS lists zod's issue JSON (round 74).
 - The Vertex Gemini image model accepts URL and `gs://` input images and
   sends them as `fileData` with the caller's media type, else one inferred
   from the URL path extension (query string and fragment ignored), else
