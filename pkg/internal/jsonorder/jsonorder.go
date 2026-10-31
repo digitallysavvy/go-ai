@@ -361,7 +361,12 @@ func ToJSONValue(value interface{}) interface{} {
 	}
 	data, err := json.Marshal(value)
 	if err != nil {
-		return nil
+		// JSON.stringify writes NaN and Infinity as null; encoding/json
+		// rejects the whole value. Retry with them replaced in plain trees.
+		data, err = json.Marshal(nullNonFinite(value))
+		if err != nil {
+			return nil
+		}
 	}
 	var out interface{}
 	if err := json.Unmarshal(data, &out); err != nil {
@@ -391,4 +396,39 @@ func Normalize(v interface{}) (interface{}, bool) {
 		return Plain(tree), true
 	}
 	return nil, false
+}
+
+// nullNonFinite returns a copy of a plain JSON tree (maps, slices, scalars)
+// with NaN and ±Inf numbers replaced by nil, as JSON.stringify writes them.
+// Other values are returned unchanged.
+func nullNonFinite(v interface{}) interface{} {
+	switch x := v.(type) {
+	case float64:
+		if math.IsNaN(x) || math.IsInf(x, 0) {
+			return nil
+		}
+	case float32:
+		if f := float64(x); math.IsNaN(f) || math.IsInf(f, 0) {
+			return nil
+		}
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(x))
+		for k, e := range x {
+			out[k] = nullNonFinite(e)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(x))
+		for i, e := range x {
+			out[i] = nullNonFinite(e)
+		}
+		return out
+	case []float64:
+		out := make([]interface{}, len(x))
+		for i, e := range x {
+			out[i] = nullNonFinite(e)
+		}
+		return out
+	}
+	return v
 }
