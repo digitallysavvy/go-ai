@@ -1135,3 +1135,68 @@ func TestR74StreamTransformedApprovedInputPersistedRoundTrip(t *testing.T) {
 		t.Fatalf("execute calls = %v, want one with count 3", executed)
 	}
 }
+
+// TS 18733: provider-executed tools > single provider-executed tool call and
+// result > should include provider-executed tool call and result in the full
+// stream (field by field): the provider result is a tool-result part, the
+// isError result a tool-error part with the result value as its error, and
+// the step ends with finish-step and finish (stop).
+func TestR74StreamProviderExecutedFullStream(t *testing.T) {
+	_, parts := r73streamParts(t, StreamTextOptions{Model: r71streamModel(nil, r72streamProviderExecutedSteps()), Prompt: "test-input",
+		Tools: []types.Tool{r72streamWebSearch}, StopWhen: []StopCondition{StepCountIs(4)}, Internal: r72streamIDs()})
+	var kinds []string
+	for _, p := range parts {
+		switch p.Type {
+		case provider.ChunkTypeToolInputStart:
+			kinds = append(kinds, "tool-input-start")
+			if c := p.ToolCall; c.ID != "call-1" || c.ToolName != "web_search" || !c.ProviderExecuted || c.Dynamic || c.Title != "" {
+				t.Errorf("tool-input-start = %+v", c)
+			}
+		case provider.ChunkTypeToolInputDelta:
+			kinds = append(kinds, "tool-input-delta")
+			if p.ID != "call-1" || p.Text != `{ "value": "value" }` {
+				t.Errorf("tool-input-delta = %+v", p)
+			}
+		case provider.ChunkTypeToolInputEnd:
+			kinds = append(kinds, "tool-input-end")
+		case provider.ChunkTypeToolCall:
+			c := p.ToolCall
+			kinds = append(kinds, "tool-call:"+c.ID)
+			if c.ToolName != "web_search" || !c.ProviderExecuted || !reflect.DeepEqual(c.Arguments, map[string]interface{}{"value": "value"}) || c.ProviderMetadata != nil || c.Title != "" {
+				t.Errorf("tool-call = %+v", c)
+			}
+		case provider.ChunkTypeToolResult:
+			tr := p.ToolResult
+			if tr.Error != nil {
+				kinds = append(kinds, "tool-error:"+tr.ToolCallID)
+				if tr.ToolCallID != "call-2" || tr.Error.Error() != "ERROR" || !tr.ProviderExecuted || tr.Dynamic ||
+					!reflect.DeepEqual(tr.Input, map[string]interface{}{"value": "value"}) || !reflect.DeepEqual(tr.ProviderMetadata, r72streamPMD("error-1")) {
+					t.Errorf("tool-error = %+v", tr)
+				}
+				continue
+			}
+			kinds = append(kinds, "tool-result:"+tr.ToolCallID)
+			if tr.ToolCallID != "call-1" || tr.Result != `{ "value": "result1" }` || !tr.ProviderExecuted || tr.Dynamic ||
+				!reflect.DeepEqual(tr.Input, map[string]interface{}{"value": "value"}) || !reflect.DeepEqual(tr.ProviderMetadata, r72streamPMD("result-1")) {
+				t.Errorf("tool-result = %+v", tr)
+			}
+		case provider.ChunkTypeFinishStep:
+			kinds = append(kinds, "finish-step")
+			if p.FinishReason != types.FinishReasonStop || p.RawFinishReason != "stop" || p.ProviderMetadata != nil || p.Response.ID != "id-0" || p.Response.ModelID != "mock-model-id" || p.Usage.GetTotalTokens() != 13 {
+				t.Errorf("finish-step = %+v", p)
+			}
+		case provider.ChunkTypeFinish:
+			kinds = append(kinds, "finish")
+			if p.FinishReason != types.FinishReasonStop || p.RawFinishReason != "stop" || p.Usage.GetTotalTokens() != 13 {
+				t.Errorf("finish = %+v", p)
+			}
+		default:
+			kinds = append(kinds, string(p.Type))
+		}
+	}
+	want := []string{"start", "start-step", "tool-input-start", "tool-input-delta", "tool-input-end", "tool-call:call-1", "tool-result:call-1",
+		"tool-call:call-2", "tool-error:call-2", "finish-step", "finish"}
+	if !reflect.DeepEqual(kinds, want) {
+		t.Fatalf("parts = %v\nwant %v", kinds, want)
+	}
+}
