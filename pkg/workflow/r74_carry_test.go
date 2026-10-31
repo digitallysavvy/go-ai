@@ -181,3 +181,35 @@ func TestR74Carry_ResolveDynamicToolDropsTitleMetadataStrict(t *testing.T) {
 		t.Errorf("function tool = %+v, want title, metadata and strict kept", fn)
 	}
 }
+
+// TS serializeToolSet resolves a function description with the tool's
+// toolsContext entry and the sandbox (resolveToolDescription).
+func TestR74Carry_SerializeToolSetResolvesDescriptionFunc(t *testing.T) {
+	tool := types.Tool{
+		Name:        "search",
+		Description: "static",
+		DescriptionFunc: func(_ context.Context, o types.ToolDescriptionOptions) string {
+			c, _ := o.Context.(string)
+			s, _ := o.ExperimentalSandbox.(string)
+			return "search " + c + "/" + s
+		},
+		Parameters: map[string]interface{}{"type": "object"},
+	}
+	defs, err := SerializeToolSetWithOptions(context.Background(), []types.Tool{tool}, SerializeToolSetOptions{
+		ToolsContext:        map[string]interface{}{"search": "docs"},
+		ExperimentalSandbox: "box",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := defs["search"].Description; got != "search docs/box" {
+		t.Errorf("description = %q, want %q", got, "search docs/box")
+	}
+	defs, err = SerializeToolSet([]types.Tool{tool})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := defs["search"].Description; got != "search /" {
+		t.Errorf("SerializeToolSet description = %q, want %q (no context, no sandbox)", got, "search /")
+	}
+}
