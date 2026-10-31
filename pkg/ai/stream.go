@@ -4365,6 +4365,23 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	telemetry.FireOnEnd(r.telemetryCtx, endTelemetry)
 }
 
+// providerToolResultError is the error of a provider tool result flagged
+// isError: its text is the result value (a string as is, anything else as
+// JSON), which the tool-error part keeps as its error value.
+func providerToolResultError(value interface{}) error {
+	switch v := value.(type) {
+	case nil:
+		return errors.New("tool error")
+	case string:
+		return errors.New(v)
+	default:
+		if b, err := json.Marshal(v); err == nil {
+			return errors.New(string(b))
+		}
+		return fmt.Errorf("%v", v)
+	}
+}
+
 func enrichStreamedToolResultForModelOutput(ctx context.Context, result types.ToolResult, fromModel bool, toolCalls []types.ToolCall, toolsByName map[string]*types.Tool, usage *types.Usage) (types.ToolResult, error) {
 	call, hasCall := findToolCallByID(toolCalls, result.ToolCallID)
 	if hasCall {
@@ -4386,6 +4403,14 @@ func enrichStreamedToolResultForModelOutput(ctx context.Context, result types.To
 	// is provider-executed, with or without a matching call.
 	if fromModel {
 		result.ProviderExecuted = true
+	}
+	// TS runToolsTransformation turns a provider tool-result with isError into
+	// a tool-error part whose error is the result value. Go marks a failed
+	// result by its Error, so a provider that sets only IsError still yields a
+	// tool-error (content, UI tool-output-error, not in ToolResults), as
+	// GenerateText's providerErrorResultsAsToolErrors does.
+	if result.Error == nil && result.ProviderExecuted && isTrue(result.IsError) {
+		result.Error = providerToolResultError(result.Result)
 	}
 	tool := toolsByName[result.ToolName]
 	if tool == nil || tool.ToModelOutput == nil || result.ModelOutput != nil || result.Error != nil {
