@@ -206,7 +206,7 @@ Called when the entire generation completes (all steps finished). Includes aggre
 | `Text` | `string` | The full generated text. |
 | `ToolCalls` | `[]types.ToolCall` | Tool calls aggregated across all steps. |
 | `ToolResults` | `[]types.ToolResult` | Results of the successful tool calls, aggregated across all steps. Failed calls are `types.ToolErrorContent` parts. |
-| `FinishReason` | `types.FinishReason` | Why the final step finished. |
+| `FinishReason` | `types.FinishReason` | Why the final step finished (TS `finalStep.finishReason`). For `StreamText` this can differ from `StreamTextResult.FinishReason()`, the call-level reason, when a continuation step fails to open. |
 | `Steps` | `[]types.StepResult` | Results from all steps in the generation. |
 | `TotalUsage` | `types.Usage` | Aggregated token usage across all steps. |
 | `Warnings` | `[]types.Warning` | Warnings aggregated across all steps. |

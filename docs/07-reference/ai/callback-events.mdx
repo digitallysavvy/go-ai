@@ -178,7 +178,7 @@ type OnFinishEvent struct {
 |-------|-------------|
 | Text | Final generated text |
 | ToolResults | Tool results from the final step |
-| FinishReason | Final finish reason |
+| FinishReason | The final step's finish reason (TS `finalStep.finishReason`); `StreamTextResult.FinishReason()` is the call-level reason, `other` when no finish part was recorded |
 | Steps | All steps taken during generation |
 | TotalUsage | Aggregated token usage across all steps |
 

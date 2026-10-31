@@ -65,10 +65,12 @@ var anthropicProviderToolNames = map[string]string{
 	"anthropic.advisor_20260301":           "advisor",
 }
 
-// AnthropicProviderToolName maps a Go SDK tool name to the Anthropic wire tool
-// name. In the Go SDK provider tools are named by their provider ID (for
-// example "anthropic.web_search_20250305"), so the ID doubles as the custom
-// tool name. Unknown names are returned unchanged, like TS
+// AnthropicProviderToolName maps an Anthropic provider tool id (for example
+// "anthropic.web_search_20250305", the Name the Go constructors give their
+// tools) to the Anthropic wire tool name. The Anthropic provider maps the
+// request's custom tool names by tool id first
+// (AnthropicPromptOptions.ToProviderToolName) and falls back to this table.
+// Unknown names are returned unchanged, like TS
 // ToolNameMapping.toProviderToolName.
 func AnthropicProviderToolName(toolName string) string {
 	if providerName, ok := anthropicProviderToolNames[toolName]; ok {
@@ -78,11 +80,18 @@ func AnthropicProviderToolName(toolName string) string {
 }
 
 // AnthropicToolsetNames returns the toolset_name for toolset tools passed to
-// the request. Mirrors getAnthropicToolsetNames in anthropic-language-model.ts.
+// the request, keyed by tool name. Mirrors getAnthropicToolsetNames in
+// anthropic-language-model.ts, which selects the tools by id (ProviderID for
+// a provider tool, else the Name the Go constructors give it), so a renamed
+// computer toolset is found too.
 func AnthropicToolsetNames(tools []types.Tool) map[string]string {
 	out := map[string]string{}
 	for _, t := range tools {
-		if t.Name == "anthropic.computer_toolset_20260801" {
+		id := t.Name
+		if t.Type == types.ToolTypeProviderDefined && t.ProviderID != "" {
+			id = t.ProviderID
+		}
+		if id == "anthropic.computer_toolset_20260801" {
 			out[t.Name] = "computer"
 		}
 	}

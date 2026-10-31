@@ -139,10 +139,9 @@ func TestStreamReadAllProviderInlineToolResultUsesToModelOutputAndPreservesRawRe
 	if !found {
 		t.Fatalf("missing tool result content in step: %#v", steps[0].Content)
 	}
-	// The content keeps the model output in Output; the raw provider result
-	// is in Result once content parts carry it (TS content output is the raw
-	// result; gen r74 CR-1), nil before.
-	if (contentResult.Result != nil && !reflect.DeepEqual(contentResult.Result, raw)) || contentResult.Output == nil || contentResult.Output.Type != types.ToolResultOutputText || contentResult.Output.Value != "model sees: provider result" {
+	// The content keeps the model output in Output and the raw provider
+	// result in Result (TS content output is the raw result; gen r74 CR-1).
+	if !reflect.DeepEqual(contentResult.Result, raw) || contentResult.Output == nil || contentResult.Output.Type != types.ToolResultOutputText || contentResult.Output.Value != "model sees: provider result" {
 		t.Fatalf("tool result content = %+v, want converted model output", contentResult)
 	}
 }

@@ -2587,7 +2587,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 
 			if chunk.Usage != nil {
-				stepUsage = *chunk.Usage
+				// TS asLanguageModelUsage: totalTokens = input + output
+				// when the model left it unset.
+				stepUsage = completeUsageTotal(*chunk.Usage)
 			}
 
 			// Update finish reason and context management
@@ -5237,7 +5239,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 			}
 		}
 		if chunk.Usage != nil {
-			r.usage = *chunk.Usage
+			r.usage = completeUsageTotal(*chunk.Usage)
 		}
 
 		// Accumulate provider metadata.
