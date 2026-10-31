@@ -1,6 +1,8 @@
 package tools
 
 import (
+	"fmt"
+
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -54,6 +56,28 @@ type ComputerToolset20260801Config struct {
 // ToAnthropicAPIMap for the Anthropic tool converter.
 type computerToolset20260801Opts struct {
 	Config ComputerToolset20260801Config
+}
+
+// Validate mirrors computerToolset_20260801ArgsSchema: configs is a partial
+// record keyed by the member enum, so an unknown member is rejected.
+func (o *computerToolset20260801Opts) Validate() error {
+	for member := range o.Config.Configs {
+		if !isComputerToolset20260801Member(member) {
+			return fmt.Errorf("computer_toolset_20260801 configs: unknown member %q", string(member))
+		}
+	}
+	return nil
+}
+
+func isComputerToolset20260801Member(member ComputerToolset20260801Member) bool {
+	switch member {
+	case ComputerToolsetScreenshot, ComputerToolsetZoom, ComputerToolsetLeftClick, ComputerToolsetRightClick,
+		ComputerToolsetMiddleClick, ComputerToolsetDoubleClick, ComputerToolsetTripleClick, ComputerToolsetLeftClickDrag,
+		ComputerToolsetMouseMove, ComputerToolsetLeftMouseDown, ComputerToolsetLeftMouseUp, ComputerToolsetCursorPosition,
+		ComputerToolsetScroll, ComputerToolsetType, ComputerToolsetKey, ComputerToolsetHoldKey, ComputerToolsetWait:
+		return true
+	}
+	return false
 }
 
 // ToAnthropicAPIMap returns the Anthropic API representation of this tool.

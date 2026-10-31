@@ -269,3 +269,23 @@ func TestR73prova_OutputSchemasRejectWrongShapes(t *testing.T) {
 		}
 	}
 }
+
+// TS validateTypes(computerToolset_20260801ArgsSchema): configs is
+// z.partialRecord(z.enum(members), ...), so an unknown member fails.
+func TestR73prova_ComputerToolsetRejectsUnknownMember(t *testing.T) {
+	on := true
+	bad := tools.ComputerToolset20260801(tools.ComputerToolset20260801Config{Configs: map[tools.ComputerToolset20260801Member]tools.ComputerToolset20260801MemberConfig{
+		"teleport": {Enabled: &on},
+	}})
+	got := prepareTools(prepareToolsOptions{tools: []types.Tool{bad}})
+	var tv *providererrors.TypeValidationError
+	if !errors.As(got.err, &tv) {
+		t.Fatalf("err = %v, want a TypeValidationError", got.err)
+	}
+	ok := tools.ComputerToolset20260801(tools.ComputerToolset20260801Config{Configs: map[tools.ComputerToolset20260801Member]tools.ComputerToolset20260801MemberConfig{
+		tools.ComputerToolsetHoldKey: {Enabled: &on},
+	}})
+	if got := prepareTools(prepareToolsOptions{tools: []types.Tool{ok}}); got.err != nil {
+		t.Fatalf("valid member rejected: %v", got.err)
+	}
+}
