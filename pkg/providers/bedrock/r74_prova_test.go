@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -159,4 +161,86 @@ func TestR74prova_BedrockRunsAnthropicToolPreparation(t *testing.T) {
 			t.Fatalf("warnings = %v, want %v", features, want)
 		}
 	}
+}
+
+func r74provaTSShapedTool(id, name string, args map[string]interface{}) (types.Tool, bool) {
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	return types.Tool{Name: name, Type: types.ToolTypeProviderDefined, ProviderID: id, ProviderArgs: args}, true
+}
+
+// Replays amazon-bedrock-chat-language-model.test.ts with the provider tools
+// exactly as TS passes them (custom names, id, args) and no name aliases.
+func TestR74prova_TSCasesChatWithTSShapedTools(t *testing.T) {
+	tsfixture.ProviderToolHook = r74provaTSShapedTool
+	tsfixture.StreamBodyEncoder = encodeTSStream
+	defer func() { tsfixture.ProviderToolHook, tsfixture.StreamBodyEncoder = nil, nil }()
+	cases := tsfixture.LoadCases(t, "testdata/tscases/chat.json.gz")
+	tsfixture.EvalPathSnapshots(t)
+	tsfixture.Run(t, cases, func(base, id string) provider.LanguageModel {
+		if id == "" {
+			id = "anthropic.claude-3-haiku-20240307-v1:0"
+		}
+		m, err := New(Config{APIKey: "k", Region: "us-east-1", BaseURL: base}).LanguageModel(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}, map[string]string{
+		"should expose the raw response headers":         "the TS mock server answers with text/event-stream headers; Go reads the AWS event stream",
+		"should include response headers in rawResponse": "the TS mock server answers with text/event-stream headers; Go reads the AWS event stream",
+		"should handle Anthropic provider-defined tools": "the TS test mocks the Anthropic prepareTools result (tool_choice, betas, schema)",
+	})
+}
+
+// Replays amazon-bedrock-prepare-tools.test.ts with TS-shaped provider tools.
+func TestR74prova_TSCasesPrepareToolsWithTSShapedTools(t *testing.T) {
+	tsfixture.ProviderToolHook = r74provaTSShapedTool
+	defer func() { tsfixture.ProviderToolHook = nil }()
+	cases := tsfixture.LoadCases(t, "testdata/tscases/prepare_tools.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		in, _ := args[0].(map[string]interface{})
+		ts, why := tsfixture.BuildTools(in["tools"])
+		if why != "" {
+			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+		}
+		var choice types.ToolChoice
+		hasChoice := false
+		if tc, ok := in["toolChoice"].(map[string]interface{}); ok {
+			choice, hasChoice = tsfixture.BuildToolChoice(tc), true
+		}
+		modelID, _ := in["modelId"].(string)
+		family, _ := in["modelFamily"].(string)
+		var budget *int
+		if v, ok := in["reasoningBudgetTokens"].(float64); ok {
+			n := int(v)
+			budget = &n
+		}
+		var disable *bool
+		if v, ok := in["disableParallelToolUse"].(bool); ok {
+			disable = &v
+		}
+		out := prepareBedrockTools(ts, choice, hasChoice, modelID, family, budget, disable, in["rejectsForcedToolUse"] == true)
+		if out.Err != nil {
+			return nil, nil, out.Err
+		}
+		toolConfig := map[string]interface{}{}
+		if len(out.ToolConfig.Tools) > 0 {
+			toolConfig["tools"] = out.ToolConfig.Tools
+			if out.ToolConfig.ToolChoice != nil {
+				toolConfig["toolChoice"] = out.ToolConfig.ToolChoice
+			}
+		}
+		betas := out.Betas
+		if betas == nil {
+			betas = []string{}
+		}
+		return map[string]interface{}{
+			"toolConfig":      toolConfig,
+			"additionalTools": out.AdditionalTools,
+			"betas":           map[string]interface{}{"__set": betas},
+			"toolWarnings":    tsfixture.WarningsToTS(out.Warnings),
+		}, nil, nil
+	}, nil)
 }
