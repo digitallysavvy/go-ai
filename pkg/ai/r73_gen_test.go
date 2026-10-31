@@ -172,3 +172,64 @@ func TestR73Gen_ProviderToolErrorErr(t *testing.T) {
 		t.Fatalf("tool result error = %#v, want the part's Err", tr.Error)
 	}
 }
+
+// TS StepResult.reasoning = content.filter(reasoning | reasoning-file): the
+// reasoning file parts are StepResult.ReasoningFiles() in GenerateText and
+// StreamText (carry-in item 2).
+func TestR73Gen_StepReasoningFiles(t *testing.T) {
+	f := types.ReasoningFileContent{MediaType: "image/png", Data: []byte{1, 2}}
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r72genSeqModel(t, &types.GenerateResult{
+			Content: []types.ContentPart{
+				types.ReasoningContent{Text: "think"},
+				f,
+				types.TextContent{Text: "done"},
+			},
+			Text: "done", FinishReason: types.FinishReasonStop,
+		}),
+		Prompt: "test-input",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := res.FinalStep.ReasoningFiles()
+	if len(got) != 1 || got[0].MediaType != "image/png" || string(got[0].Data) != "\x01\x02" {
+		t.Fatalf("GenerateText ReasoningFiles = %#v", got)
+	}
+	if len(res.FinalStep.Reasoning) != 1 || res.FinalStep.Reasoning[0].Text != "think" {
+		t.Fatalf("Reasoning = %#v", res.FinalStep.Reasoning)
+	}
+
+	sres, err := StreamText(context.Background(), StreamTextOptions{
+		Model: &testutil.MockLanguageModel{
+			DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+				fc := f
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeReasoning, Reasoning: "think"},
+					{Type: provider.ChunkTypeReasoningFile, ReasoningFileContent: &fc},
+					{Type: provider.ChunkTypeText, Text: "done"},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+				}), nil
+			},
+		},
+		Prompt: "test-input",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sres.ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+	got = sres.FinalStep().ReasoningFiles()
+	if len(got) != 1 || got[0].MediaType != "image/png" {
+		t.Fatalf("StreamText ReasoningFiles = %#v", got)
+	}
+	// Pointer parts count too; other parts do not.
+	step := types.StepResult{Content: []types.ContentPart{&f, (*types.ReasoningFileContent)(nil), types.FileContent{MediaType: "image/png"}}}
+	if got := step.ReasoningFiles(); len(got) != 1 {
+		t.Fatalf("pointer ReasoningFiles = %#v", got)
+	}
+	if got := (types.StepResult{}).ReasoningFiles(); got != nil {
+		t.Fatalf("empty ReasoningFiles = %#v, want nil", got)
+	}
+}

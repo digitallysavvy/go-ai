@@ -468,6 +468,25 @@ type StepResult struct {
 	RuntimeContext interface{} `json:"runtimeContext,omitempty"`
 }
 
+// ReasoningFiles returns the reasoning file parts of the step's Content in
+// order. TS StepResult.reasoning is Array<ReasoningPart | ReasoningFilePart>;
+// Go's Reasoning field holds the reasoning parts and this method the
+// reasoning file parts.
+func (s StepResult) ReasoningFiles() []ReasoningFileContent {
+	var out []ReasoningFileContent
+	for _, p := range s.Content {
+		switch v := p.(type) {
+		case ReasoningFileContent:
+			out = append(out, v)
+		case *ReasoningFileContent:
+			if v != nil {
+				out = append(out, *v)
+			}
+		}
+	}
+	return out
+}
+
 // InsertLeadText returns parts with a TextContent{Text: text} inserted after the
 // leading run of reasoning parts, or at the front when there are none.
 //
