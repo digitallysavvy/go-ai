@@ -929,7 +929,6 @@ func TestR73StreamJSONOutputNullAndEmptyString(t *testing.T) {
 	}
 }
 
-
 // TS 26308 (abort signal > abort during tool execution): the full stream ends
 // with start, start-step, the tool call and the abort part (no tool result,
 // no finish-step), onError is not called and onAbort has no steps.
