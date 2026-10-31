@@ -3169,9 +3169,16 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			// The caller's context ended while tools ran: queued tool calls
 			// were not started, so the step is incomplete. Report the abort
-			// instead of finishing as if the model had stopped.
-			if toolsErr != nil && ctx.Err() != nil {
+			// instead of finishing as if the model had stopped. This holds
+			// even when every started tool returned normally: TS stops the
+			// stream when the signal fires, so results produced after it, the
+			// step's finish-step and the step record are dropped (TS
+			// stream-text.test.ts "abort during tool execution").
+			if ctx.Err() != nil {
 				abortErr := toolsErr
+				if abortErr == nil {
+					abortErr = ctx.Err()
+				}
 				if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
 					abortErr = wrapTimeoutError(TimeoutReasonTotal, abortErr)
 				}
@@ -3373,8 +3380,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			RawFinishReason:              stepRawFinishReason,
 			Usage:                        stepUsage,
 			Performance:                  performance,
-			Sources:                      stepSources,
-			Files:                        stepFiles,
+			// TS step.warnings: the warnings of this step's model call.
+			Warnings: append([]types.Warning(nil), r.warnings[stepWarningsStart:]...),
+			Sources:  stepSources,
+			Files:    stepFiles,
 			Request: types.StepRequest{
 				Body:     includedRequestBody(r.cbInclude.RequestBody, r.currentStream()),
 				Messages: includedRequestMessages(r.cbInclude.RequestMessages, currentMessages),
@@ -3571,11 +3580,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Usage:              stepResult.Usage,
 			Performance:        stepResult.Performance,
 			Warnings:           stepWarnings,
-			Sources:            stepResult.Sources,
-			Files:              stepFiles,
-			ProviderMetadata:   stepResult.ProviderMetadata,
-			ResponseHeaders:    stepHeaders,
-			Request:            GenerateStepRequest{Body: stepResult.Request.Body, Messages: stepResult.Request.Messages},
+			// TS onStepEnd receives the StepResult, steering messages included.
+			ExperimentalSteeringMessages: stepResult.ExperimentalSteeringMessages,
+			Sources:                      stepResult.Sources,
+			Files:                        stepFiles,
+			ProviderMetadata:             stepResult.ProviderMetadata,
+			ResponseHeaders:              stepHeaders,
+			Request:                      GenerateStepRequest{Body: stepResult.Request.Body, Messages: stepResult.Request.Messages},
 			Response: GenerateStepResponse{
 				ID:        stepResult.Response.ID,
 				Timestamp: stepResult.Response.Timestamp,
@@ -5288,6 +5299,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		FinishReason:       r.finishReason,
 		Usage:              r.usage,
 		Performance:        stepPerformance(stepStart, r.usage, firstTokenAt, outputChunkGapsMs),
+		Warnings:           append([]types.Warning(nil), r.warnings...),
 		Sources:            r.sources,
 		Files:              r.files,
 		Request: types.StepRequest{

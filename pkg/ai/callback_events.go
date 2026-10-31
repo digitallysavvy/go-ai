@@ -393,6 +393,10 @@ type OnStepFinishEvent struct {
 	// step.performance).
 	Performance types.StepPerformance
 
+	// ExperimentalSteeringMessages are the steering user messages sent with
+	// this step (TS step.experimental_steeringMessages). Experimental.
+	ExperimentalSteeringMessages []types.Message
+
 	// Warnings emitted by the provider during this step
 	Warnings []types.Warning
 

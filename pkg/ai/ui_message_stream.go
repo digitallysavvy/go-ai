@@ -2493,7 +2493,10 @@ func CreateUIMessageChunksResponse(chunks <-chan UIMessageChunk, init *UIMessage
 	status, statusText, headers := uiMessageStreamResponseHead(init)
 	pr, pw := io.Pipe()
 	go func() {
-		err := PipeUIMessageChunksToResponse(chunks, pw, init)
+		// A failing ConsumeSSEStream callback does not affect the response
+		// body (TS tees the stream and does not await consumeSseStream);
+		// only a write failure ends the body with an error.
+		_, err := writeUIMessageChunksSSE(chunks, pw, init)
 		_ = pw.CloseWithError(err)
 	}()
 	return &http.Response{
