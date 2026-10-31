@@ -29,32 +29,19 @@ func NewMissingToolResultsError(toolCallIDs []string) *types.MissingToolResultsE
 // that is not resolved by a tool result before later context is rejected.
 // Provider-executed tool calls are exempt, as are calls to a tool in
 // providerExecutedTools (tool names whose definition is provider-executed;
-// Go providers do not always flag every tool call part).
+// Go providers do not always flag every tool call part). As in TS, only the
+// call decides: a provider-executed approval response does not exempt the
+// call it answers.
 func ValidateToolResults(messages []types.Message, providerExecutedTools ...string) error {
-	exempt := map[string]bool{}
 	exemptTool := map[string]bool{}
 	for _, name := range providerExecutedTools {
 		exemptTool[name] = true
-	}
-	for _, message := range messages {
-		for _, part := range message.Content {
-			switch p := part.(type) {
-			case types.ToolApprovalResponseContent:
-				if p.ProviderExecuted {
-					exempt[p.ToolCallID] = true
-				}
-			case *types.ToolApprovalResponseContent:
-				if p != nil && p.ProviderExecuted {
-					exempt[p.ToolCallID] = true
-				}
-			}
-		}
 	}
 
 	var pending []string
 	pendingSet := map[string]bool{}
 	add := func(id string) {
-		if id == "" || exempt[id] || pendingSet[id] {
+		if id == "" || pendingSet[id] {
 			return
 		}
 		pendingSet[id] = true
