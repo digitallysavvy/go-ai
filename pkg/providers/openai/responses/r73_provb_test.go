@@ -272,7 +272,8 @@ func TestR73ProvbToolArgsValidated(t *testing.T) {
 	for name, tool := range cases {
 		_, err := PrepareToolsWithError([]types.Tool{tool})
 		var ve *providererrors.ValidationError
-		if !errors.As(err, &ve) || !strings.HasPrefix(ve.Message, "Type validation failed for "+tool.Name+": ") {
+		// r74: the TS validateTypes text, "Type validation failed: Value: <args>.\nError message: ...".
+		if !errors.As(err, &ve) || !strings.HasPrefix(err.Error(), "Type validation failed: Value: {") || !strings.Contains(err.Error(), "}.\nError message: ") {
 			t.Errorf("%s: err = %v, want a type validation error for %s", name, err, tool.Name)
 		}
 	}

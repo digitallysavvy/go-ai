@@ -6,6 +6,7 @@ import (
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	jsonschema "github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
@@ -26,16 +27,35 @@ func validateOpenAIToolArgsSchema(t types.Tool) error {
 	}
 	b, err := json.Marshal(t.ProviderArgs)
 	if err != nil {
-		return providererrors.NewValidationError("tools", fmt.Sprintf("Type validation failed for %s: %v", t.Name, err), err)
+		return openAIToolArgsError(t.ProviderArgs, err.Error(), err)
 	}
 	var args interface{}
 	if err := json.Unmarshal(b, &args); err != nil {
-		return providererrors.NewValidationError("tools", fmt.Sprintf("Type validation failed for %s: %v", t.Name, err), err)
+		return openAIToolArgsError(t.ProviderArgs, err.Error(), err)
 	}
 	if err := jsonschema.NewSimpleJSONSchema(schemaFromJSON(schemaJSON)).Validator().Validate(args); err != nil {
-		return providererrors.NewValidationError("tools", fmt.Sprintf("Type validation failed for %s: %v", t.Name, err), err)
+		return openAIToolArgsError(args, err.Error(), err)
 	}
 	return nil
+}
+
+// openAIToolArgsError is the TypeValidationError TS validateTypes throws
+// without a context: "Type validation failed: Value: <JSON.stringify(args)>.
+// \nError message: <issues>". The issues are the Go JSON Schema validator's
+// text (zod renders its issue list there).
+func openAIToolArgsError(args interface{}, issues string, cause error) error {
+	value := ""
+	if b, err := jsonstr.Marshal(args); err == nil {
+		value = string(b)
+	} else {
+		value = fmt.Sprintf("%v", args)
+	}
+	return &providererrors.TypeValidationError{
+		Context: &providererrors.ValidationContext{},
+		Value:   value,
+		Message: issues,
+		Cause:   cause,
+	}
 }
 
 // openAIToolArgsSchemas are the TS args schemas (packages/openai/src/tool/*.ts

@@ -98,8 +98,13 @@ func validateMCPToolArgs(t types.Tool) error {
 	if !toolConfig(t, &cfg) || cfg.ServerURL != "" || cfg.ConnectorID != "" {
 		return nil
 	}
-	return providererrors.NewValidationError("tools",
-		fmt.Sprintf("Type validation failed for %s: One of serverUrl or connectorId must be provided.", t.Name), nil)
+	var args interface{} = t.ProviderArgs
+	if t.ProviderArgs == nil {
+		args = cfg // a hand-built tool: its config holds the TS arg names
+	}
+	// zod's custom issue for the mcpArgsSchema refine, as ZodError.message
+	// renders it (JSON.stringify(issues, null, 2)).
+	return openAIToolArgsError(args, "[\n  {\n    \"code\": \"custom\",\n    \"path\": [],\n    \"message\": \"One of serverUrl or connectorId must be provided.\"\n  }\n]", nil)
 }
 
 // convertTool converts a single types.Tool to its Responses API representation.
