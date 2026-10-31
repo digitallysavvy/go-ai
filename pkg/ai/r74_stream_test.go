@@ -648,3 +648,69 @@ func TestR74StreamTransformedStepFiles(t *testing.T) {
 		t.Fatalf("step content = %#v", r.Steps()[0].Content)
 	}
 }
+
+// TS records a step's warnings and request from the start-step part that
+// leaves the experimental_transform chain (recordedWarnings = part.warnings,
+// recordedRequest = part.request): a transform that rewrites the start-step
+// warnings changes the step's warnings, the result's warnings, the step and
+// end events and the logged warnings.
+func TestR74StreamTransformedStartStepWarnings(t *testing.T) {
+	setupLogWarnings(t)
+	var logMu sync.Mutex
+	var logged []LogWarningsOptions
+	SetLogWarnings(func(o LogWarningsOptions) {
+		logMu.Lock()
+		logged = append(logged, o)
+		logMu.Unlock()
+	})
+	raw := types.Warning{Type: "other", Message: "raw warning"}
+	replaced := types.Warning{Type: "other", Message: "transformed warning"}
+	steps := []provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{raw}},
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello!"},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+	}
+	rewrite := func(_ context.Context, c provider.StreamChunk) []provider.StreamChunk {
+		if c.Type == provider.ChunkTypeStartStep {
+			c.Warnings = []types.Warning{replaced}
+			c.Request = &types.StepRequest{Body: "transformed body"}
+		}
+		return []provider.StreamChunk{c}
+	}
+	var mu sync.Mutex
+	var end OnFinishEvent
+	var stepEvents []OnStepFinishEvent
+	r := r71streamRun(t, StreamTextOptions{
+		Model: r71streamModel(nil, steps), Prompt: "test-input",
+		ExperimentalTransform: []StreamTransformFunc{rewrite},
+		OnEndEvent:            func(_ context.Context, e OnFinishEvent) { mu.Lock(); end = e; mu.Unlock() },
+		OnStepFinishEvent: func(_ context.Context, e OnStepFinishEvent) {
+			mu.Lock()
+			stepEvents = append(stepEvents, e)
+			mu.Unlock()
+		},
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	want := []types.Warning{replaced}
+	for label, got := range map[string][]types.Warning{
+		"Steps()[0].Warnings": r.Steps()[0].Warnings,
+		"Warnings()":          r.Warnings(),
+		"step event Warnings": stepEvents[0].Warnings,
+		"onEnd Warnings":      end.Warnings,
+	} {
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s = %+v, want %+v", label, got, want)
+		}
+	}
+	if body := r.Steps()[0].Request.Body; body != "transformed body" {
+		t.Errorf("step request body = %#v, want the transformed start-step's", body)
+	}
+	logMu.Lock()
+	defer logMu.Unlock()
+	if len(logged) != 1 || !reflect.DeepEqual(logged[0].Warnings, want) {
+		t.Errorf("logged warnings = %+v", logged)
+	}
+}

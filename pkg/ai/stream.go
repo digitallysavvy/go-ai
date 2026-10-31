@@ -2887,10 +2887,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					outputTracker.reset()
 					if rec != nil {
 						// TS eventProcessor retry boundary: the recorded
-						// content restarts (the step's start part stays).
-						startStep := rec.startStep
+						// content restarts, and the step's request and
+						// warnings are the retry's (recordedRequest /
+						// recordedWarnings from the boundary, not from the
+						// transformed start-step part).
 						rec.resetStep()
-						rec.startStep = startStep
 					}
 					stepToolCalls = nil
 					eagerApprovals = make(map[string]preResolvedApproval)
@@ -3475,10 +3476,21 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					stepResult.ProviderMetadata = meta
 				}
 			}
+			// TS recordedWarnings / recordedRequest come from the
+			// transformed start-step part (unless a stream retry replaced
+			// them, which clears rec.startStep).
+			if ss := rec.startStep; ss != nil {
+				stepResult.Warnings = append([]types.Warning(nil), ss.Warnings...)
+				stepResult.Request.Body = nil
+				if ss.Request != nil {
+					stepResult.Request.Body = ss.Request.Body
+				}
+			}
 			stepUsage = stepResult.Usage
 			stepHeaders = stepResult.Response.Headers
 			performance = stepResult.Performance
 			r.mu.Lock()
+			r.warnings = append(r.warnings[:stepWarningsStart:stepWarningsStart], stepResult.Warnings...)
 			r.toolCalls = append(r.toolCalls[:aggToolCallsLen:aggToolCallsLen], stepResult.ToolCalls...)
 			r.toolResults = append(r.toolResults[:aggToolResultsLen:aggToolResultsLen], publicStepToolResults...)
 			r.usage = aggUsageBefore.Add(stepResult.Usage)
@@ -3549,7 +3561,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		currentMessages = append(append([]types.Message(nil), currentMessages...), stepResponseMsgs...)
 		allSteps[len(allSteps)-1].ResponseMessages = stepResponseMsgs
 		allSteps[len(allSteps)-1].Response.Messages = stepResponseMsgs
-		stepWarnings := append([]types.Warning(nil), r.warnings[stepWarningsStart:]...)
+		stepWarnings := append([]types.Warning(nil), stepResult.Warnings...)
 		stepResult = allSteps[len(allSteps)-1]
 		r.mu.Lock()
 		r.cbSteps = append([]types.StepResult(nil), allSteps...)
