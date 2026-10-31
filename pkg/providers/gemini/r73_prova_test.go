@@ -80,3 +80,17 @@ func TestR73prova_CodeExecutionResultMatchesOutputSchema(t *testing.T) {
 		t.Fatal("no tool result")
 	}
 }
+
+// TS google tools come from createProviderExecutedToolFactory with
+// z.object({}) inputs (code execution: {language, code}).
+func TestR73prova_GoogleToolsProviderExecutedWithInputSchema(t *testing.T) {
+	for _, tl := range []types.Tool{GoogleSearchTool(), EnterpriseWebSearchTool(), GoogleMapsTool(), UrlContextTool(), FileSearchTool(), CodeExecutionTool(), VertexRagStoreTool("c")} {
+		if !tl.ProviderExecuted {
+			t.Errorf("%s: not provider-executed", tl.Name)
+		}
+		p, ok := tl.Parameters.(map[string]interface{})
+		if !ok || p["type"] != "object" {
+			t.Errorf("%s: Parameters = %v", tl.Name, tl.Parameters)
+		}
+	}
+}

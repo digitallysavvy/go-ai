@@ -15,11 +15,13 @@ func GoogleSearchTool(args ...map[string]interface{}) types.Tool {
 		providerArgs = args[0]
 	}
 	return types.Tool{
-		Name:         "google_search",
-		Type:         "provider",
-		ProviderID:   "google.google_search",
-		OutputSchema: emptyObjectOutputSchema(),
-		ProviderArgs: providerArgs,
+		Name:             "google_search",
+		Type:             "provider",
+		ProviderExecuted: true,
+		ProviderID:       "google.google_search",
+		OutputSchema:     emptyObjectOutputSchema(),
+		Parameters:       emptyObjectInputSchema(),
+		ProviderArgs:     providerArgs,
 	}
 }
 
@@ -27,10 +29,12 @@ func GoogleSearchTool(args ...map[string]interface{}) types.Tool {
 // highly-regulated industries. Requires Gemini 2.0 or newer.
 func EnterpriseWebSearchTool() types.Tool {
 	return types.Tool{
-		Name:         "enterprise_web_search",
-		Type:         "provider",
-		ProviderID:   "google.enterprise_web_search",
-		OutputSchema: emptyObjectOutputSchema(),
+		Name:             "enterprise_web_search",
+		Type:             "provider",
+		ProviderExecuted: true,
+		ProviderID:       "google.enterprise_web_search",
+		OutputSchema:     emptyObjectOutputSchema(),
+		Parameters:       emptyObjectInputSchema(),
 	}
 }
 
@@ -38,10 +42,12 @@ func EnterpriseWebSearchTool() types.Tool {
 // Requires Gemini 2.0 or newer.
 func GoogleMapsTool() types.Tool {
 	return types.Tool{
-		Name:         "google_maps",
-		Type:         "provider",
-		ProviderID:   "google.google_maps",
-		OutputSchema: emptyObjectOutputSchema(),
+		Name:             "google_maps",
+		Type:             "provider",
+		ProviderExecuted: true,
+		ProviderID:       "google.google_maps",
+		OutputSchema:     emptyObjectOutputSchema(),
+		Parameters:       emptyObjectInputSchema(),
 	}
 }
 
@@ -49,10 +55,12 @@ func GoogleMapsTool() types.Tool {
 // Requires Gemini 2.0 or newer.
 func UrlContextTool() types.Tool {
 	return types.Tool{
-		Name:         "url_context",
-		Type:         "provider",
-		ProviderID:   "google.url_context",
-		OutputSchema: emptyObjectOutputSchema(),
+		Name:             "url_context",
+		Type:             "provider",
+		ProviderExecuted: true,
+		ProviderID:       "google.url_context",
+		OutputSchema:     emptyObjectOutputSchema(),
+		Parameters:       emptyObjectInputSchema(),
 	}
 }
 
@@ -64,11 +72,13 @@ func FileSearchTool(args ...map[string]interface{}) types.Tool {
 		providerArgs = args[0]
 	}
 	return types.Tool{
-		Name:         "file_search",
-		Type:         "provider",
-		ProviderID:   "google.file_search",
-		OutputSchema: emptyObjectOutputSchema(),
-		ProviderArgs: providerArgs,
+		Name:             "file_search",
+		Type:             "provider",
+		ProviderExecuted: true,
+		ProviderID:       "google.file_search",
+		OutputSchema:     emptyObjectOutputSchema(),
+		Parameters:       emptyObjectInputSchema(),
+		ProviderArgs:     providerArgs,
 	}
 }
 
@@ -76,10 +86,11 @@ func FileSearchTool(args ...map[string]interface{}) types.Tool {
 // Requires Gemini 2.0 or newer.
 func CodeExecutionTool() types.Tool {
 	return types.Tool{
-		Name:         "code_execution",
-		Type:         "provider",
-		ProviderID:   "google.code_execution",
-		OutputSchema: codeExecutionOutputSchema(),
+		Name:             "code_execution",
+		Type:             "provider",
+		ProviderExecuted: true,
+		ProviderID:       "google.code_execution",
+		OutputSchema:     codeExecutionOutputSchema(),
 		// TS codeExecutionInputSchema.
 		Parameters: map[string]interface{}{
 			"type": "object",
@@ -101,11 +112,13 @@ func VertexRagStoreTool(ragCorpus string, topK ...int) types.Tool {
 		args["topK"] = topK[0]
 	}
 	return types.Tool{
-		Name:         "vertex_rag_store",
-		Type:         "provider",
-		ProviderID:   "google.vertex_rag_store",
-		OutputSchema: emptyObjectOutputSchema(),
-		ProviderArgs: args,
+		Name:             "vertex_rag_store",
+		Type:             "provider",
+		ProviderExecuted: true,
+		ProviderID:       "google.vertex_rag_store",
+		OutputSchema:     emptyObjectOutputSchema(),
+		Parameters:       emptyObjectInputSchema(),
+		ProviderArgs:     args,
 	}
 }
 
@@ -171,4 +184,10 @@ func codeExecutionOutputSchema() map[string]interface{} {
 		},
 		"required": []interface{}{"outcome", "output"},
 	}
+}
+
+// emptyObjectInputSchema is zod's toJSONSchema of the z.object({})
+// inputSchema of the same tools (not strict: extra keys pass).
+func emptyObjectInputSchema() map[string]interface{} {
+	return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
 }
