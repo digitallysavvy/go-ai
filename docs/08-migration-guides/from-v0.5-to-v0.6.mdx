@@ -92,7 +92,7 @@ already, you can skip them.
 | `ToolResults` entries for pending approvals or denied calls | Bookkeeping entries removed | silent behavior change | Read approval parts in `Content` | [ToolResults entries](#tool-results-bookkeeping) |
 | Provider tools (`ProviderExecuted: true`, `Type: "provider"`) whose `Parameters` are not the call input; `Parameters` of `xai.MCPServer` / `xai.FileSearch` | Provider tool input validated; invalid calls marked `Invalid` and `Dynamic` | silent behavior change | Give the tool its input schema | [Provider tool input validation](#provider-tool-input-validation) |
 | Tools whose `Parameters` is `*schema.OrderedSchema` or `schema.NewJSONSchema(...)` | Their calls are validated like map schemas | silent behavior change | Make the schema match the calls, or repair them | [OrderedSchema validation](#tool-input-ordered-schema-validation) |
-| `ValidateUIMessages` with gateway / groq / mistral / xai / regex tool outputs; reading their `OutputSchema` | TS zod output schemas | silent behavior change | Read `anyOf` | [Provider tool output schemas](#provider-tool-output-schemas) |
+| `ValidateUIMessages` with gateway / groq / mistral / anthropic / google / openai / xai tool outputs; reading their `OutputSchema` | TS zod output schemas | silent behavior change | Read `anyOf` | [Provider tool output schemas](#provider-tool-output-schemas) |
 | `types.ToolResultContent` with `IsError` in `Content` or response messages | A `ToolErrorContent` part, replayed as `error-json` | silent behavior change | Read `ToolErrorContent` | [Provider error results](#provider-tool-error-results) |
 | `StreamText` provider-executed results: `ToolResult.ToolMetadata`, UI `"toolMetadata"` | Set from the call's tool metadata | silent behavior change | None | [Provider result metadata](#stream-provider-result-tool-metadata) |
 | Replayed tool error `Output.Value`, `InputSchemaInput` in `ResponseMessages`, NaN in tool outputs | TS `getErrorMessage` / `toJSONValue` / `isDeepEqualData` | silent behavior change | No action | [Response tool error replay](#response-tool-error-replay) |
@@ -172,6 +172,24 @@ already, you can skip them.
 | `"terminal"` in fx tool lists or `inactiveTools` | Tool removed | silent behavior change | Remove it | [fx terminal tool](#fx-terminal-removed) |
 | `fx.Settings{Runtime:` | Opt-in libfx runtime | silent behavior change | No action unless you opt in | [fx libfx runtime](#fx-libfx-opt-in) |
 | OPA HTTP policies that rely on "no match means deny" | Missing `result` is not-applicable | silent behavior change | Add an explicit deny | [OPA result](#opa-undefined-result) |
+| `StreamObject` result `ProviderMetadata` | The finish part's metadata only | silent behavior change | None | [StreamObject provider metadata](#streamobject-finish-provider-metadata) |
+| StreamText `StepResult.Warnings` | The step's model call warnings | silent behavior change | None | [Stream step warnings](#stream-step-warnings) |
+| StreamText cancelled while tools run | Step aborted, late results dropped | silent behavior change | None | [Abort during tools](#stream-abort-during-tools) |
+| Tool output with NaN/Inf in typed containers | Kept, non-finite numbers null | silent behavior change | No action | [Tool output non-finite numbers](#tool-output-non-finite-typed) |
+| A custom `LanguageModel` reading `ProviderExecuted` / `ToolCall` of prompt `ToolApprovalResponseContent` | `ApprovalID`, `Approved`, `Reason` only | silent behavior change | Match by `ApprovalID` | [Approval responses in the prompt](#approval-response-prompt-shape) |
+| `WorkflowAgent.PrepareCall` input settings | The agent's, per-call ones applied after | silent behavior change | No action unless the hook read per-call values | [PrepareCall agent settings](#workflow-preparecall-agent-settings) |
+| `ResolveSerializableTools` provider defs | Provider-executed only with `isProviderExecuted` | silent behavior change | Set `IsProviderExecuted` on hand-built defs | [Resolved provider tools](#workflow-resolve-provider-executed) |
+| `WorkflowAgent.Stream` with reasoning files | Left out of the prompt and response messages | silent behavior change | Read `StepResult.ReasoningFiles()` | [Workflow stream reasoning files](#workflow-stream-reasoning-files) |
+| `CreateUIMessageChunksResponse` body with a failing `ConsumeSSEStream` | Ends normally | silent behavior change | Handle the error in the callback | [ConsumeSSEStream errors](#ui-consume-sse-error-body) |
+| `ai.ranking` span attribute | TS `index`/`relevanceScore` keys | silent behavior change | Read the camelCase keys | [Rerank telemetry ranking keys](#telemetry-ranking-keys) |
+| `NoObjectGeneratedError.Cause` from an `Output` validation failure | `*providererrors.TypeValidationError` | silent behavior change | Use `errors.As` | [Output validation cause](#output-type-validation-cause) |
+| anthropic/openai/xai provider tools on a gateway model | Sent as provider tools | wire/protocol change | No action | [Gateway provider tools](#gateway-provider-tools) |
+| `gateway/tools` constructors' `Title`; empty list args | No title; empty lists sent | silent behavior change | Set `Title` yourself | [AI Gateway tools have no title](#gateway-tool-title) |
+| OpenAI provider tools on a Chat Completions model | Dropped with a "tool type: provider" warning | silent behavior change | Use the Responses model | [Chat drops provider tools](#openai-chat-drops-provider-tools) |
+| OpenAI tool_search call / result names | The declared tool's name (`openai.tool_search`) | silent behavior change | Match the tool's `Name` | [tool_search tool name](#openai-tool-search-tool-name) |
+| `responses.NewShellTool` with a hosted container environment | Shell calls are provider-executed | silent behavior change | No action | [Hosted shell calls](#openai-shell-container-provider-executed) |
+| Invalid `openaitool` / `responses` tool config | `ValidationError` before the request | silent behavior change | Fix the config | [Tool config validation](#openai-tool-args-validation) |
+| Reading `Parameters` of `openaitool.ToolSearch` | TS call input schema; search schema in `ToolSearchOptions.Parameters` | silent behavior change | Read `ToolSearchOptions.Parameters` | [ToolSearch parameters](#openai-tool-search-parameters) |
 | Cohere `BaseURL` or `DefaultBaseURL` (v0.5.3) | v2 API | wire/protocol change | Check custom base URLs | [Cohere v2](#v053-cohere-v2) |
 | `MaxRetries` unset on non-Gateway providers (v0.5.3) | Every provider retries | silent behavior change | Set `MaxRetries: &zero` to disable | [Retries](#v053-retries) |
 | Reliance on the 60 s default HTTP client timeout (v0.5.3) | No whole-request timeout | silent behavior change | Bound calls with `ctx` | [HTTP client timeout](#v053-http-timeout) |
@@ -895,6 +913,50 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **What to do:** no action.
 - **Kind:** silent behavior change
 
+### StreamObject provider metadata comes from the finish part {#streamobject-finish-provider-metadata}
+
+- **What changed:** `StreamObject`'s result `ProviderMetadata` (and the
+  telemetry end events) is the provider metadata of the stream's finish part,
+  or nil when the finish part has none. v0.5 used the last metadata of any
+  chunk, so text-part metadata such as an OpenAI Responses `itemId` could
+  become the call's metadata. TS stream-object.ts assigns `providerMetadata`
+  in its finish handler (review round 73).
+- **Am I affected?** Code that reads `StreamObjectResult.ProviderMetadata`
+  with providers that put metadata on text chunks and none on the finish part.
+- **What to do:** no action.
+- **Kind:** silent behavior change
+
+### StreamText steps carry their warnings {#stream-step-warnings}
+
+- **What changed:** each `StreamText` step result now carries the warnings of
+  its model call (`types.StepResult.Warnings`), as TS `step.warnings` does,
+  so `Steps()[i].Warnings`, `FinalStep().Warnings`, the step-end callbacks'
+  `StepResult` and the end event's `Steps` show them. v0.5 left
+  `StepResult.Warnings` empty for `StreamText` (`Warnings()` and the end
+  event's `Warnings` were already filled) (review round 73).
+- **Am I affected?** Code that reads `Warnings` on `StreamText` step results
+  (`Steps()`, `FinalStep()`, `OnStepEnd`, `OnEndEvent`'s `Steps`/`FinalStep`)
+  and expects it empty.
+- **What to do:** no action unless you relied on the empty field.
+- **Kind:** silent behavior change
+
+### A cancellation during tool execution aborts the StreamText step {#stream-abort-during-tools}
+
+- **What changed:** when the caller's context ends while `StreamText` runs a
+  step's tools, the step is aborted even if every started tool returns: the
+  full and UI streams end with the `abort` part right after the tool call,
+  without the late tool result or a `finish-step`, the step is not recorded,
+  and `OnAbortEvent` gets only the steps completed before it. This is TS's
+  behavior (its stream stops when the abort signal fires). v0.5 emitted the
+  tool result and `finish-step`, recorded the step, and then sent `abort`
+  (review round 73).
+- **Am I affected?** `StreamText` callers that cancel their context from a
+  tool (or while tools run) and read `ToolResults()`, `Steps()`,
+  `OnAbortEvent` `Steps`, or `tool-result`/`finish-step` parts after the
+  cancellation.
+- **What to do:** no action unless you relied on the late result.
+- **Kind:** silent behavior change
+
 ## Prompts and validation {#prompts-and-validation}
 
 ### Prompt validation matches TS {#prompt-validation}
@@ -1144,7 +1206,13 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   2026-01-20) accept `file_text: null` and the Anthropic memory tool accepts
   non-integer `view_range` / `insert_line` numbers, as TS does. The Google
   code execution and OpenAI code interpreter tools now carry their TS input
-  schemas (review round 72).
+  schemas (review round 72). The google tools are now `ProviderExecuted` and
+  carry TS's input schemas (`{}` objects; code execution `{language, code}`),
+  and the OpenAI local shell, shell, apply patch, computer and programmatic
+  tool calling tools, file search and image generation (`{}`), and the xai
+  web search, X search, code execution, view image, view X video and image
+  generation tools now carry their TS input schemas, so their calls are
+  validated like other provider tool calls (review round 73).
 - **Am I affected?** Provider tools you define yourself with
   `ProviderExecuted: true` or `Type: "provider"` whose `Parameters` do not
   describe the call input; code that reads `Parameters` of `xai.MCPServer(`
@@ -1152,7 +1220,9 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   `tools.NewBrowserbaseSearch(` and `tools.NewBrowserbaseFetch(` calls with
   out-of-range input; provider-executed `google.CodeExecutionTool()` or
   `openaiTool.CodeInterpreter(` calls whose input lacks `code` / `language`
-  or `containerId`.
+  or `containerId`; `responses.NewLocalShellTool()`, `NewShellTool(`,
+  `NewApplyPatchTool()`, `NewComputerTool()` calls whose input does not match
+  TS's shape.
 - **What to do:** no action unless your provider tool's `Parameters` are not
   its input schema. Give it the input schema, or none:
 
@@ -1200,7 +1270,13 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   `xai.FileSearch`, the mistral web search tools and the Anthropic regex tool
   search now have TS's output schemas (v0.5 had none). `ai.ValidateUIMessages`
   checks tool outputs against these, as TS `validateUIMessages` does (review
-  round 72).
+  round 72). Review round 73 adds them for the Anthropic web search, web
+  fetch, code execution, BM25 tool search and advisor tools, every google
+  tool (`GoogleSearchTool`, `EnterpriseWebSearchTool`, `GoogleMapsTool`,
+  `UrlContextTool`, `FileSearchTool`, `CodeExecutionTool`,
+  `VertexRagStoreTool`), every OpenAI tool constructor (the custom tool has
+  none in TS) and every xai tool, so every built-in provider tool now carries
+  TS's output schema.
 - **Am I affected?** `ValidateUIMessages` with these tools in `Tools`; code
   that reads `OutputSchema` of these tools (`["oneOf"]`, `"nullable"`,
   `[]string` required lists, which are now `[]interface{}`).
@@ -1362,6 +1438,20 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **What to do:** give each one an `Execute` that performs the action.
 - **Kind:** silent behavior change
 
+### Tool output NaN and Infinity become null in typed containers {#tool-output-non-finite-typed}
+
+- **What changed:** a tool output whose typed map, slice or array
+  (`map[string]float64`, `[]float32`, `[2]float64`, a pointer to one, a named
+  float slice) held NaN or ±Inf became a `null` model output. v0.6 keeps the
+  value with those numbers as `null`, as TS
+  `JSON.parse(JSON.stringify(output))` does (review round 73). A struct field
+  holding NaN still makes the whole output `null` (see the known difference
+  "Tool output structs holding NaN").
+- **Am I affected?** Tools returning float containers that can hold NaN or
+  Inf.
+- **What to do:** no action.
+- **Kind:** silent behavior change
+
 ## Agents and approvals {#agents-and-approvals}
 
 ### A panicking ToolLoopAgent callback does not skip the other one {#agent-callback-panic-isolation}
@@ -1381,6 +1471,23 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   of `Generate`.
 - **What to do:** no action unless you panic in callbacks to signal failure.
   Record the failure instead and check it after the call.
+- **Kind:** silent behavior change
+
+### Kept approval responses reach the model without providerExecuted {#approval-response-prompt-shape}
+
+- **What changed:** a tool approval response for a provider-executed call,
+  which `GenerateText`, `StreamText` and the agents keep in the model prompt,
+  now reaches the model as TS's LanguageModelV4 `tool-approval-response`
+  part: `ApprovalID`, `Approved` and `Reason` only. v0.5 passed the response
+  with `ProviderExecuted: true` and the caller's `ToolCallID` / `ToolCall`
+  (TS convert-to-language-model-prompt.ts maps the kept part to
+  `{approvalId, approved, reason}`; review round 73). The SDK's providers
+  read only the approval ID and decision, so their requests are unchanged.
+- **Am I affected?** A custom `provider.LanguageModel` that reads
+  `ProviderExecuted`, `ToolCallID` or `ToolCall` of a
+  `types.ToolApprovalResponseContent` in `opts.Prompt.Messages`.
+- **What to do:** look the call up by `ApprovalID` from the assistant
+  message's `types.ToolApprovalRequestContent`.
 - **Kind:** silent behavior change
 
 ### Legacy ToolLoopAgent
@@ -1778,6 +1885,54 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 - **What to do:** no action.
 - **Kind:** silent behavior change
 
+#### WorkflowAgent `PrepareCall` sees the agent's generation settings {#workflow-preparecall-agent-settings}
+
+- **What changed:** v0.5 handed `PrepareCall` the call's `MaxRetries` when
+  the call set one; v0.6 hands it the agent's generation settings
+  (`Temperature`, `MaxTokens`, `TopP`, `TopK`, penalties, `StopSequences`,
+  `Seed`, `MaxRetries`, `Reasoning`, `Headers`, `ProviderOptions`), as TS
+  prepareInvocation does (`{...this.generationSettings}`). Settings given on
+  the call still win over the hook's result for the model call (review
+  round 73).
+- **Am I affected?** `WorkflowAgent.PrepareCall` hooks that read
+  `LanguageModelCallOptions.MaxRetries` (or the other settings) while also
+  passing them per call in `WorkflowGenerateOptions` / `WorkflowStreamOptions`.
+- **What to do:** no action unless the hook relied on seeing the per-call
+  value; read it from your own call options.
+- **Kind:** silent behavior change
+
+#### Resolved provider tools are provider-executed only when marked {#workflow-resolve-provider-executed}
+
+- **What changed:** v0.5 `ResolveSerializableTools` made every
+  `type: "provider"` def provider-executed; v0.6 does so only when the def
+  has `isProviderExecuted` / `providerExecuted`, and keeps
+  `SupportsDeferredResults` only for those, as TS `serializable-schema.ts`
+  resolve does. A client-executed provider tool (for example Anthropic bash,
+  computer, text editor or memory) keeps running its `Execute` after a
+  workflow round trip (review round 73).
+- **Am I affected?** `SerializableToolDef` values with `Type: "provider"` and
+  no `IsProviderExecuted`, including v0.5 defs serialized from tools whose
+  `ProviderOptions` carried `"type": "provider"`.
+- **What to do:** set `IsProviderExecuted: true` on defs of provider-executed
+  tools you build by hand (`SerializeToolSet` already does).
+- **Kind:** silent behavior change
+
+#### WorkflowAgent Stream leaves reasoning files out of the conversation {#workflow-stream-reasoning-files}
+
+- **What changed:** in `WorkflowAgent.Stream` / `StreamWithOptions`, a step's
+  reasoning-file parts are no longer in the step's `Response.Messages`, the
+  next step's prompt or the `OnEnd` event's `Messages`; the step's `Content`
+  and `ReasoningFiles()` keep them. TS WorkflowAgent's stream mode builds the
+  assistant message without them (model-call-iterator.ts:
+  `case 'reasoning-file': if (mode !== 'generate') break;`). v0.5 sent them
+  to the model again. `Generate` keeps them, as TS's generate mode does
+  (review round 73).
+- **Am I affected?** `WorkflowAgent` stream runs with models that emit
+  reasoning files (`ChunkTypeReasoningFile`), and code that reads them from
+  step `Response.Messages` or `OnEnd` `Messages`.
+- **What to do:** read reasoning files from `StepResult.ReasoningFiles()`.
+- **Kind:** silent behavior change
+
 ## UI message streams {#ui-message-streams}
 
 ### UI message streams fail on an out-of-sequence chunk {#ui-out-of-sequence}
@@ -2033,6 +2188,22 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 - **What to do:** no action unless you relied on the second pair.
 - **Kind:** wire/protocol change
 
+### A failing ConsumeSSEStream no longer breaks CreateUIMessageChunksResponse {#ui-consume-sse-error-body}
+
+- **What changed:** the body of the `*http.Response` returned by
+  `CreateUIMessageChunksResponse` now ends normally after `data: [DONE]`
+  when the `UIMessageStreamResponseInit.ConsumeSSEStream` callback returns
+  an error, as TS `createUIMessageStreamResponse` does (it does not await
+  `consumeSseStream`). v0.5 ended the body with the callback's error.
+  `PipeUIMessageChunksToResponse` still returns that error to its caller
+  (review round 73).
+- **Am I affected?** Code that reads the body of
+  `CreateUIMessageChunksResponse` (or `agent` helpers built on it) and checks
+  for the `ConsumeSSEStream` error there.
+- **What to do:** check the error inside your `ConsumeSSEStream` callback
+  instead.
+- **Kind:** silent behavior change
+
 ## Telemetry and events {#telemetry-and-events}
 
 The [telemetry recording change](#telemetry-record-pointers) is listed under
@@ -2238,6 +2409,18 @@ compile-time changes.
   `OnStepEnd` only.
 - **Kind:** silent behavior change
 
+### Rerank telemetry `ai.ranking` uses TS keys {#telemetry-ranking-keys}
+
+- **What changed:** v0.5 wrote each `ai.ranking` entry on the
+  `ai.rerank.doRerank` span as `{"Index":2,"RelevanceScore":0.9}`; v0.6
+  writes `{"index":2,"relevanceScore":0.9}`, as TS
+  `JSON.stringify(ranking entry)` does (LegacyOpenTelemetry, and
+  OpenTelemetry with `Reranking`) (review round 73).
+- **Am I affected?** Dashboards or tests that parse the `ai.ranking` span
+  attribute.
+- **What to do:** read `index` and `relevanceScore`.
+- **Kind:** silent behavior change
+
 ## Errors {#errors}
 
 ### Errors are returned without Go prefixes {#errors-unprefixed}
@@ -2376,6 +2559,31 @@ compile-time changes.
 
 - **Kind:** silent behavior change
 
+### Output validation failures have a TypeValidationError cause {#output-type-validation-cause}
+
+- **What changed:** when the value an `ObjectOutput`, `ArrayOutput` or
+  `ChoiceOutput` parsed fails validation (schema, missing `elements` or
+  `result`, array length, an element, or a choice not in the options), the
+  `NoObjectGeneratedError.Cause` is a `*providererrors.TypeValidationError`
+  holding the value, as in TS. Its text is `Type validation failed: Value:
+  <json>.\nError message: <reason>`. v0.5 used the validator's error or a
+  plain error, and the choice reason now ends with a period, as in TS. The
+  validator's error is still the cause's `Unwrap()` (review round 73).
+- **Am I affected?** Code that type-asserts or compares
+  `NoObjectGeneratedError.Cause` from `GenerateText` / `StreamText` with an
+  `Output`, or matches its text.
+- **What to do:** match with `errors.As`:
+
+  ```go
+  func isInvalidOutput(err error) bool {
+  	var nog *ai.NoObjectGeneratedError
+  	var tve *providererrors.TypeValidationError
+  	return errors.As(err, &nog) && errors.As(nog.Cause, &tve)
+  }
+  ```
+
+- **Kind:** silent behavior change
+
 ## Providers {#providers}
 
 ### All providers
@@ -2430,6 +2638,89 @@ compile-time changes.
 - **What to do:** switch on each part's type instead of its position.
 - **Kind:** silent behavior change
 
+### AI Gateway
+
+#### Provider tools reach the AI Gateway as provider tools {#gateway-provider-tools}
+
+- **What changed:** the Anthropic provider tools (`pkg/providers/anthropic/tools`,
+  all 23 constructors), the OpenAI tools (`openaitool.*`, `CustomTool.ToTool`,
+  `responses.NewLocalShellTool`, `NewShellTool`, `NewApplyPatchTool`,
+  `NewComputerTool`, `NewProgrammaticToolCallingTool`) and the xai tools
+  (`xai.WebSearch`, `XSearch`, `CodeExecution`, `ViewImage`, `ViewXVideo`,
+  `ImageGeneration`, `FileSearch`, `MCPServer`) now carry the TS provider tool
+  identity: `Type: types.ToolTypeProviderDefined` (`"provider"`),
+  `ProviderID` (the TS id, equal to the tool `Name`, for example
+  `anthropic.web_search_20250305`) and `ProviderArgs` (the TS camelCase args,
+  for example `{"maxUses": 3, "allowedDomains": ["example.com"]}`; `{}` for
+  tools without config). A gateway model sends them as provider tools
+  (`{type: "provider", id, name, args}`) as TS does; v0.5 sent them as
+  function tools named `anthropic.*` / `openai.*` / `xai.*`, which the routed
+  model treated as client functions. The xai MCP args include
+  `authorization`, as TS sends it. The google tools (`GoogleSearchTool`,
+  `CodeExecutionTool`, ...) now have a `Name` (`google_search`,
+  `code_execution`, ...), so the gateway gets a non-empty tool name, and are
+  `ProviderExecuted` with TS's input schemas. Other effects, all as in TS:
+  chat models of other providers (and Bedrock, for non-Anthropic provider
+  tools) drop these tools with an `unsupported` `provider-defined tool <id>`
+  warning instead of sending them as functions; the Mistral conversation
+  model drops every non-Mistral provider tool; realtime tool definitions skip
+  them; telemetry tool definitions (`gen_ai.tool.definitions`) record
+  `{type: "provider", name, id, args}`; an Anthropic Message Batch that
+  contains `ComputerToolset20260801()` fails with
+  `UnsupportedFunctionalityError` (its calls come back named `computer`);
+  `ComputerToolset20260801` rejects an unknown member in its configs with a
+  `TypeValidationError`; an Anthropic, OpenAI or xai provider tool given only
+  `Type` / `ProviderID` / `ProviderArgs` (for example after
+  `workflow.ResolveSerializableTools`) is now sent with its configuration
+  instead of dropped as unsupported or sent bare. Direct Anthropic, OpenAI
+  Responses and xai requests are unchanged (review round 73).
+- **Am I affected?** Gateway models with `anthropic/tools`, `openai/tool`,
+  `responses.New*Tool()` or `xai` tool constructors or the google tools; code
+  that reads `Tool.Type`, `ProviderID`, `ProviderArgs`, `Name` or
+  `ProviderExecuted` of those tools (`Tool.Type == "provider"` checks);
+  these tools passed to other providers or to realtime models;
+  `ExperimentalBatch` requests with `ComputerToolset20260801`.
+- **What to do:** no action.
+- **Kind:** wire/protocol change
+
+#### AI Gateway tools have no title {#gateway-tool-title}
+
+- **What changed:** `tools.NewExaSearch`, `NewParallelSearch`,
+  `NewPerplexitySearch`, `NewTakoSearch`, `NewBrowserbaseSearch` and
+  `NewBrowserbaseFetch` (`pkg/providers/gateway/tools`) no longer set
+  `Tool.Title` ("Exa Search", ...). TS gateway tools have no title, so their
+  tool calls, results and UI message parts carry none; v0.5 sent `title` on
+  them. Their args also keep an explicitly empty list
+  (`IncludeDomains: []string{}` sends `includeDomains: []`), as TS sends the
+  config object (review round 73).
+- **Am I affected?** Code that reads `Title` of these tools or
+  `ToolCall.Title` / the UI part `title` of their calls; callers that pass
+  empty, non-nil domain or filter slices.
+- **What to do:** no action unless you display the title. Set it yourself:
+
+  ```go
+  package main
+
+  import (
+  	"fmt"
+
+  	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+  	gatewaytools "github.com/digitallysavvy/go-ai/pkg/providers/gateway/tools"
+  )
+
+  func exaSearchWithTitle() types.Tool {
+  	search := gatewaytools.NewExaSearch(gatewaytools.ExaSearchConfig{})
+  	search.Title = "Exa Search"
+  	return search
+  }
+
+  func main() {
+  	fmt.Println(exaSearchWithTitle().Title)
+  }
+  ```
+
+- **Kind:** silent behavior change
+
 ### OpenAI
 
 #### OpenAI Responses promptCacheOptions is validated {#openai-prompt-cache-options}
@@ -2450,6 +2741,92 @@ compile-time changes.
   streaming an error part. OpenAI-compatible chat models are unchanged.
 - **Am I affected?** Code that handles these failures as an `error` part.
 - **What to do:** handle the error from the call (or `Err()`).
+- **Kind:** silent behavior change
+
+#### OpenAI provider tools are dropped by the Chat Completions model {#openai-chat-drops-provider-tools}
+
+- **What changed:** `openaitool.*` tools, `CustomTool.ToTool` and the
+  `responses.New*Tool()` tools are provider tools (`Type: "provider"`), so
+  the OpenAI Chat Completions model drops them with an `unsupported` warning
+  `tool type: provider`, as TS `prepareChatTools` does. v0.5 sent them as
+  function tools named `openai.web_search`, `openai.code_interpreter`, a
+  custom tool's name, etc. (review round 73).
+- **Am I affected?** `ChatModel(` / `openai.NewLanguageModel(` (Chat
+  Completions) models called with `openaitool.` or `responses.New` tools.
+- **What to do:** no action unless you relied on those function tools; use
+  the Responses model (`LanguageModel(` / `ResponsesModel(`) for OpenAI
+  provider tools.
+- **Kind:** silent behavior change
+
+#### OpenAI tool_search calls are named after the tool {#openai-tool-search-tool-name}
+
+- **What changed:** tool_search calls and outputs from the Responses model
+  carry the declared tool's name (`openai.tool_search` for
+  `openaitool.ToolSearch`) in generate and stream, as TS
+  `toolNameMapping.toCustomToolName` does. v0.5 named them `tool_search`,
+  which matched no tool: a client-mode call could not run and a replayed call
+  was not recognized. `ToolChoice` `AllowedTools` naming
+  `openai.tool_search` is dropped with an `unsupported` warning (TS); v0.5
+  sent a function entry (review round 73).
+- **Am I affected?** Code matching `ToolName == "tool_search"` on tool calls,
+  results or stream chunks.
+- **What to do:** match `"openai.tool_search"` (or your tool's `Name`).
+- **Kind:** silent behavior change
+
+#### OpenAI shell calls in a hosted container are provider-executed {#openai-shell-container-provider-executed}
+
+- **What changed:** a `shell_call` for a `responses.NewShellTool(...)` with a
+  `container_auto` or `container_reference` environment is
+  `ProviderExecuted`, as TS `isShellProviderExecuted`; the SDK does not run
+  it locally. v0.5 never matched the Go constructor and reported these calls
+  client-executed (review round 73).
+- **Am I affected?** `responses.NewShellTool(responses.WithShellEnvironment(`
+  with `Type: "container_auto"` or `"container_reference"`, especially with
+  an `Execute` set.
+- **What to do:** no action; OpenAI runs these commands.
+- **Kind:** silent behavior change
+
+#### OpenAI provider tool config is validated before the request {#openai-tool-args-validation}
+
+- **What changed:** the Responses model validates each OpenAI provider tool's
+  args (web_search, web_search_preview, code_interpreter, file_search,
+  image_generation, mcp, custom, tool_search, shell) against the TS args
+  schema, as TS `validateTypes` does, and fails with a
+  `*providererrors.ValidationError` ("Type validation failed for <tool>:
+  ...") before sending. v0.5 sent invalid config to OpenAI (review round 73).
+- **Am I affected?** `openaitool.` configs with values outside the TS enums
+  or ranges (`SearchContextSize`, `Quality`, `OutputCompression` > 100,
+  `PartialImages` > 3, `Size` not `WxH`), `FileSearchConfig` without
+  `VectorStoreIDs`, grammar `CustomToolFormat` without `Syntax` /
+  `Definition`, `ToolSearchArgs.Execution` other than server / client, shell
+  `MemoryLimit` outside 1g / 4g / 16g / 64g.
+- **What to do:** fix the config; handle the `*providererrors.ValidationError`
+  with `errors.As` if you surface it.
+- **Kind:** silent behavior change
+
+#### openaitool.ToolSearch keeps the search schema in its options {#openai-tool-search-parameters}
+
+- **What changed:** `openaitool.ToolSearch(...)` sets the tool's
+  `Parameters` to TS's call input schema (`{arguments, call_id}`), so client
+  calls are validated against the input they carry; the search-arguments
+  schema (`ToolSearchArgs.Parameters`) is in the new
+  `ToolSearchOptions.Parameters` and `ProviderArgs["parameters"]`, and is
+  still sent as `parameters`. v0.5 put it in `Parameters`, so a schema with
+  `required` rejected every client call (TS `toolSearchInputSchema`,
+  `args.parameters`; review round 73). The client `Execute` input is the
+  call input `{arguments, call_id}`, as before.
+- **Am I affected?** Code that reads `Parameters` of the tool
+  `openaitool.ToolSearch(` returns.
+- **What to do:** read the search schema from the options:
+
+  ```go
+  func searchSchema(tool types.Tool) map[string]interface{} {
+  	// v0.5: tool.Parameters.(map[string]interface{})
+  	opts, _ := tool.ProviderOptions.(openaitool.ToolSearchOptions)
+  	return opts.Parameters
+  }
+  ```
+
 - **Kind:** silent behavior change
 
 ### Wrapper providers
@@ -2851,12 +3228,23 @@ after upgrading:
 - **Tool call input keeps keys the schema does not declare**; TS zod object
   schemas strip them. See
   [Tool call input keeps undeclared keys](./known-differences.mdx).
-- **`Reasoning` lists hold reasoning text only**; reasoning file parts are in
-  `Content`. See
+- **`Reasoning` lists hold reasoning text only**; reasoning file parts are
+  returned by `StepResult.ReasoningFiles()`. See
   [Reasoning lists hold reasoning text only](./known-differences.mdx).
-- **`ValidateUIMessages` does not check the outputs of most built-in
-  provider tools**, which have no `OutputSchema` in Go yet. See
-  [Provider tool output schemas](./known-differences.mdx).
+- **A tool output struct holding NaN or ±Inf becomes `null` as a whole**;
+  typed maps, slices and arrays null only those numbers, as TS. See
+  [Tool output structs holding NaN](./known-differences.mdx).
+- **`WorkflowAgent.Stream`'s root span gets end attributes**; both TS OTel
+  integrations throw while building them. See
+  [WorkflowAgent root telemetry end](./known-differences.mdx).
+- **`ConsumeStream` returns the stream's error**; TS `consumeStream()`
+  swallows it. See [ConsumeStream returns the error](./known-differences.mdx).
+- **Merged UI message streams interleave by goroutine scheduling**; each
+  source keeps its order. See
+  [Merged UI message stream order](./known-differences.mdx).
+- **A provider tool error with no result value has the error text
+  `tool error`**; TS leaves `errorText` undefined. See
+  [Provider tool error without a value](./known-differences.mdx).
 
 ## For coding agents {#for-coding-agents}
 
@@ -2893,7 +3281,9 @@ next one.
      -e 'promptCacheOptions|OPENAI_API_KEY|DEEPSEEK_API_KEY|DownloadError|klingai|perplexity|Issuer|RequestTimeoutMS|TimeoutMS' \
      -e 'codemode\.|wazero|acp\.|ClientAppName|AgentSettings|"terminal"|fx\.Settings|policy\.|cohere' \
      -e 'OnStepStart|PrepareCall:|ParseCompleteOutput|StreamTranscri|no such (evaluation|decision)Model|finishReason|is not allowed' \
-     -e 'ToUIMessageChunk|event\.Ranking|ToolErrorContent|IsError|RepairText|NewStreamTextResultFromParts|xai\.(MCPServer|FileSearch)' .
+     -e 'ToUIMessageChunk|event\.Ranking|ToolErrorContent|IsError|RepairText|NewStreamTextResultFromParts|xai\.(MCPServer|FileSearch)' \
+     -e 'ai\.ranking|SerializableToolDef|ToolApprovalResponseContent|ConsumeSSEStream|NoObjectGeneratedError|ProviderMetadata|ReasoningFile' \
+     -e 'openaitool\.|anthropic/tools|gateway/tools|providers/xai|\.Title|tool_search|NewShellTool|ProviderArgs|Warnings' .
    ```
 
 4. For each match, open the entry the table links to. Apply **What to do**.

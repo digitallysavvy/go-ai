@@ -134,6 +134,9 @@ type OnStepFinishEvent struct {
     Usage        types.Usage
     Performance  types.StepPerformance
     Warnings     []types.Warning
+    // ExperimentalSteeringMessages are the steering user messages sent
+    // with this step (experimental).
+    ExperimentalSteeringMessages []types.Message
     // ... Reasoning, Sources, Files, ProviderMetadata, Request, Response, etc.
 }
 ```
@@ -148,6 +151,7 @@ type OnStepFinishEvent struct {
 | FinishReason | Why the LLM stopped (e.g., `ToolCalls`, `Stop`) |
 | Usage | Token usage for this step |
 | Performance | The step's performance metrics |
+| ExperimentalSteeringMessages | Steering user messages sent with this step (experimental) |
 
 ---
 

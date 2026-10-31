@@ -414,18 +414,48 @@ passes it through unchanged (review round 72).
 
 TS `StepResult.reasoning` and the result's `reasoning` are
 `Array<ReasoningPart | ReasoningFilePart>`. Go's `Reasoning` fields are
-`[]types.ReasoningContent` and cannot hold `types.ReasoningFileContent`;
-reasoning file parts are in `Content` (and in the telemetry
-`ReasoningFiles`) (review round 72).
+`[]types.ReasoningContent` and hold the reasoning parts. The reasoning file
+parts are returned by `StepResult.ReasoningFiles()` (from `Content`) and are
+in the telemetry `ReasoningFiles` (review rounds 72, 73).
 
-## Provider tool output schemas
+## Tool output structs holding NaN
 
-TS declares an `outputSchema` for every built-in provider tool, and
-`validateUIMessages` checks tool outputs against it. In Go only the AI
-Gateway tools, `groq.BrowserSearchTool`, the mistral web search tools,
-`xai.MCPServer`, `xai.FileSearch` and the Anthropic regex tool search carry
-TS's `OutputSchema`, so `ValidateUIMessages` does not check the outputs of
-the other built-in provider tools (looser than TS) (review round 72).
+`ToJSONValue` (tool model output, response messages) nulls NaN and ±Inf
+inside maps, slices, arrays and pointers in place, as TS
+`JSON.parse(JSON.stringify(v))` does. It cannot null one held in a struct
+field without reimplementing encoding/json's struct rules, so such an output
+still becomes `null` as a whole. TS has no structs; a plain object with NaN
+keeps its other fields (review round 73).
+
+## WorkflowAgent root telemetry end
+
+TS `WorkflowAgent` sends its root `onEnd` the last step's fields plus
+`steps` / `usage`, with no `finalStep`. Both TS OTel integrations read
+`event.finalStep.providerMetadata` while building the root end attributes
+and throw there, so TS records no root end attributes (and onEnd does not
+end the root span). Go's `ai.workflowAgent.stream` root gets the
+generate-shaped end attributes (finish reason, text, usage) and ends
+(review round 73).
+
+## ConsumeStream returns the error
+
+TS `consumeStream()` swallows stream errors (it calls `onError` when given
+one). Go's `StreamTextResult.ConsumeStream() error` returns the error, the Go
+form of `onError`; ignore the return value for TS's behavior (review
+round 73).
+
+## Merged UI message stream order
+
+When `CreateUIMessageStream` merges several sources (`writer.Merge`), TS's
+exact interleaving follows its microtask queue. Go forwards every chunk and
+keeps each source's own order, but chunks of different sources interleave
+by goroutine scheduling (review round 73).
+
+## Provider tool error without a value
+
+A provider-executed tool result flagged `IsError` with a nil result gets the
+error text `tool error`. TS `JSON.stringify(undefined)` leaves `errorText`
+undefined (review round 73).
 
 ## Vertex Gemini image model: URL input images
 

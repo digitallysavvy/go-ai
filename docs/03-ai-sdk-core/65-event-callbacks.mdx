@@ -194,6 +194,7 @@ Called after each step (LLM call) completes.
 | `Usage` | `types.Usage` | Token usage for this step. |
 | `Performance` | `types.StepPerformance` | The step's performance metrics. |
 | `Warnings` | `[]types.Warning` | Warnings from the provider. |
+| `ExperimentalSteeringMessages` | `[]types.Message` | Steering user messages sent with this step (experimental). |
 | `ExperimentalContext` | `interface{}` | User-defined context object. |
 
 #### OnFinishEvent
