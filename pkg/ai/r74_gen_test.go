@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
@@ -944,5 +945,100 @@ func TestR74Gen_ModelCallEndBeforeToolChoiceViolation(t *testing.T) {
 	if te.CallID != e.CallID || te.ModelProvider != "mock-provider" || te.ModelID != "response-model-id" || te.FinishReason != "stop" ||
 		te.ResponseID != "response-1" || te.Usage.TotalTokens == nil || *te.Usage.TotalTokens != 13 {
 		t.Fatalf("telemetry model call end = %+v", te)
+	}
+}
+
+// generate-text.test.ts 4086 'should be called with the timeout error when
+// the %s timeout is reached' (total and step).
+func TestR74Gen_OnStepErrorTimeout(t *testing.T) {
+	ms := 20 * time.Millisecond
+	for name, cfg := range map[string]*TimeoutConfig{"total": {Total: &ms}, "step": {PerStep: &ms}} {
+		t.Run(name, func(t *testing.T) {
+			model := &testutil.MockLanguageModel{
+				DoGenerateFunc: func(ctx context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+					<-ctx.Done()
+					return nil, ctx.Err()
+				},
+			}
+			var mu sync.Mutex
+			var events []OnStepErrorEvent
+			zero := 0
+			_, err := GenerateText(context.Background(), GenerateTextOptions{
+				Model: model, Prompt: "test-input", MaxRetries: &zero, Timeout: cfg,
+				OnStepError: func(_ context.Context, e OnStepErrorEvent) {
+					mu.Lock()
+					defer mu.Unlock()
+					events = append(events, e)
+				},
+			})
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(events) != 1 {
+				t.Fatalf("onStepError calls = %d, want 1", len(events))
+			}
+			var te *TimeoutError
+			if events[0].StepNumber != 0 || !errors.As(events[0].Error, &te) {
+				t.Fatalf("event = step %d error %T %v, want step 0 TimeoutError", events[0].StepNumber, events[0].Error, events[0].Error)
+			}
+		})
+	}
+}
+
+// generate-text.test.ts 8481 'should invoke callbacks in the correct order
+// with the step tool context': onInputStart then onInputAvailable (no delta in
+// generateText), each with the prepareStep tool context and the step messages.
+func TestR74Gen_ToolInputCallbacksStepToolContext(t *testing.T) {
+	var mu sync.Mutex
+	var calls []map[string]interface{}
+	tool := types.Tool{
+		Name: "test-tool",
+		Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}},
+			"required": []interface{}{"value"}, "additionalProperties": false},
+		ContextSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "properties": map[string]interface{}{"prefix": map[string]interface{}{"type": "string"}}, "required": []interface{}{"prefix"}}),
+		OnInputStart: func(_ context.Context, o types.OnInputStartOptions) error {
+			mu.Lock()
+			defer mu.Unlock()
+			calls = append(calls, map[string]interface{}{"type": "onInputStart", "toolCallId": o.ToolCallID, "context": o.Context, "messages": len(o.Messages)})
+			return nil
+		},
+		OnInputDelta: func(_ context.Context, o types.OnInputDeltaOptions) error {
+			mu.Lock()
+			defer mu.Unlock()
+			calls = append(calls, map[string]interface{}{"type": "onInputDelta"})
+			return nil
+		},
+		OnInputAvailable: func(_ context.Context, o types.OnInputAvailableOptions) error {
+			mu.Lock()
+			defer mu.Unlock()
+			calls = append(calls, map[string]interface{}{"type": "onInputAvailable", "toolCallId": o.ToolCallID, "context": o.Context, "input": o.Input, "messages": len(o.Messages)})
+			return nil
+		},
+	}
+	call := r72genCalls(types.ToolCall{ID: "call-1", ToolName: "test-tool", RawArguments: `{ "value": "value" }`})
+	call.FinishReason = types.FinishReasonStop
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:          r72genSeqModel(t, call),
+		Tools:          []types.Tool{tool},
+		RuntimeContext: map[string]interface{}{"prefix": "runtime-context"},
+		ToolsContext:   map[string]interface{}{"test-tool": map[string]interface{}{"prefix": "initial-tool-context"}},
+		PrepareStep: func(_ context.Context, s PrepareStepOptions) PrepareStepOptions {
+			return PrepareStepOptions{ToolsContext: map[string]interface{}{"test-tool": map[string]interface{}{"prefix": "step-tool-context"}}}
+		},
+		ToolChoice: types.RequiredToolChoice(),
+		Prompt:     "test-input",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepCtx := map[string]interface{}{"prefix": "step-tool-context"}
+	want := []map[string]interface{}{
+		{"type": "onInputStart", "toolCallId": "call-1", "context": stepCtx, "messages": 1},
+		{"type": "onInputAvailable", "toolCallId": "call-1", "context": stepCtx, "input": map[string]interface{}{"value": "value"}, "messages": 1},
+	}
+	if !reflect.DeepEqual(r72genJSON(t, calls), r72genJSON(t, want)) {
+		t.Fatalf("calls = %v\nwant %v", calls, want)
 	}
 }
