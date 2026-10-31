@@ -680,3 +680,121 @@ func TestR72StreamPipeFiles(t *testing.T) {
 		`data: {"type":"finish","finishReason":"stop"}`,
 		`data: [DONE]`)
 }
+
+// TS 16382 / 17723 (and 16491 responseMessages): options.stopWhen > 2 steps:
+// initial, tool-result with transformed tool results. The transform
+// upper-cases each static tool-result's output and input; the UI stream,
+// the recorded tool results, the response messages and the next step's
+// prompt all carry the transformed result, while the tool call keeps its
+// input.
+func TestR72StreamTransformedToolResultTwoSteps(t *testing.T) {
+	var mu sync.Mutex
+	var prompts [][]types.Message
+	call := 0
+	model := &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id",
+		DoStreamFunc: func(_ context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+			mu.Lock()
+			prompts = append(prompts, o.Prompt.Messages)
+			n := call
+			call++
+			mu.Unlock()
+			if n == 0 {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-0", ModelID: "mock-model-id"}},
+					{Type: provider.ChunkTypeReasoningStart, ID: "id-0"},
+					{Type: provider.ChunkTypeReasoning, ID: "id-0", Reasoning: "thinking"},
+					{Type: provider.ChunkTypeReasoningEnd, ID: "id-0"},
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "value"}, RawArguments: `{ "value": "value" }`}},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r72streamTestUsage},
+				}), nil
+			}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-1", ModelID: "mock-model-id"}},
+				{Type: provider.ChunkTypeTextStart, ID: "1"},
+				{Type: provider.ChunkTypeText, ID: "1", Text: "Hello, "},
+				{Type: provider.ChunkTypeText, ID: "1", Text: "world!"},
+				{Type: provider.ChunkTypeTextEnd, ID: "1"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+			}), nil
+		}}
+	upper := func(_ context.Context, c provider.StreamChunk) []provider.StreamChunk {
+		if c.Type == provider.ChunkTypeToolResult && c.ToolResult != nil && !c.ToolResult.Dynamic {
+			tr := *c.ToolResult
+			if s, ok := tr.Result.(string); ok {
+				tr.Result = strings.ToUpper(s)
+			}
+			input := map[string]interface{}{}
+			for k, v := range tr.Input {
+				input[k] = v
+			}
+			if s, ok := input["value"].(string); ok {
+				input["value"] = strings.ToUpper(s)
+			}
+			tr.Input = input
+			c.ToolResult = &tr
+		}
+		return []provider.StreamChunk{c}
+	}
+	tool := types.Tool{Name: "tool1", Parameters: r71streamValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "result1", nil
+	}}
+	opts := StreamTextOptions{Model: model, Prompt: "test-input", Tools: []types.Tool{tool}, ExperimentalTransform: []StreamTransformFunc{upper},
+		StopWhen: []StopCondition{StepCountIs(3)}, Internal: r72streamIDs(), OnError: func(context.Context, error) {}}
+	r, err := StreamText(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, errs := r.ToUIMessageStream(context.Background())
+	var got []UIMessageChunk
+	for c := range ch {
+		got = append(got, c)
+	}
+	for e := range errs {
+		t.Fatalf("ui error: %v", e)
+	}
+	r71streamAssertJSON(t, "ui chunks", got, `[
+		{"type":"start"},
+		{"type":"start-step"},
+		{"id":"id-0","type":"reasoning-start"},
+		{"delta":"thinking","id":"id-0","type":"reasoning-delta"},
+		{"id":"id-0","type":"reasoning-end"},
+		{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-input-available"},
+		{"output":"RESULT1","toolCallId":"call-1","type":"tool-output-available"},
+		{"type":"finish-step"},
+		{"type":"start-step"},
+		{"id":"1","type":"text-start"},
+		{"delta":"Hello, ","id":"1","type":"text-delta"},
+		{"delta":"world!","id":"1","type":"text-delta"},
+		{"id":"1","type":"text-end"},
+		{"type":"finish-step"},
+		{"finishReason":"stop","type":"finish"}]`)
+
+	steps := r.Steps()
+	if len(steps) != 2 {
+		t.Fatalf("steps = %d", len(steps))
+	}
+	if tc := steps[0].ToolCalls; len(tc) != 1 || tc[0].Arguments["value"] != "value" {
+		t.Fatalf("step 0 tool calls = %+v, want the untransformed input", tc)
+	}
+	if tr := steps[0].ToolResults; len(tr) != 1 || tr[0].Result != "RESULT1" || tr[0].Input["value"] != "VALUE" {
+		t.Fatalf("step 0 tool results = %+v", tr)
+	}
+	msgs := r.ResponseMessages()
+	if len(msgs) != 3 || msgs[0].Role != types.RoleAssistant || msgs[1].Role != types.RoleTool || msgs[2].Role != types.RoleAssistant {
+		t.Fatalf("response messages = %+v", msgs)
+	}
+	toolPart, ok := msgs[1].Content[0].(types.ToolResultContent)
+	if !ok || toolPart.ToolCallID != "call-1" || toolPart.Output == nil || toolPart.Output.Type != types.ToolResultOutputText || toolPart.Output.Value != "RESULT1" {
+		t.Fatalf("tool message part = %#v, want text output RESULT1", msgs[1].Content[0])
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(prompts) != 2 {
+		t.Fatalf("model calls = %d", len(prompts))
+	}
+	last := prompts[1][len(prompts[1])-1]
+	sent, ok := last.Content[0].(types.ToolResultContent)
+	if last.Role != types.RoleTool || !ok || sent.Output == nil || sent.Output.Value != "RESULT1" {
+		t.Fatalf("step 2 prompt tool message = %#v, want RESULT1", last)
+	}
+}
