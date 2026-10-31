@@ -134,7 +134,8 @@ func (m *ConversationLanguageModel) buildRequest(opts *provider.GenerateOptions)
 	if opts.PresencePenalty != nil {
 		completion["presence_penalty"] = *opts.PresencePenalty
 	}
-	if len(opts.StopSequences) > 0 {
+	// TS sends stopSequences as given: an empty list is kept.
+	if opts.StopSequences != nil {
 		completion["stop"] = opts.StopSequences
 	}
 	if opts.Seed != nil {

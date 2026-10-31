@@ -650,7 +650,8 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, streami
 	}
 
 	// Add stop sequences
-	if len(opts.StopSequences) > 0 {
+	// TS forwards the call options as given: an empty list is sent.
+	if opts.StopSequences != nil {
 		body["stopSequences"] = opts.StopSequences
 	}
 
@@ -1024,7 +1025,17 @@ func gatewayToolResultMap(part types.ToolResultContent) (map[string]interface{},
 
 func gatewayToolResultOutputMap(output types.ToolResultOutput) (map[string]interface{}, error) {
 	result := map[string]interface{}{"type": string(output.Type)}
-	if output.Value != nil {
+	switch output.Type {
+	case types.ToolResultOutputExecutionDenied, types.ToolResultOutputContent:
+		// execution-denied is {type, reason?}; content is set below.
+		if output.Value != nil {
+			result["value"] = output.Value
+		}
+	default:
+		// TS text/json/error-text/error-json outputs always carry value; a
+		// tool that returned nothing is {type: "json", value: null}
+		// (createToolModelOutput toJSONValue(undefined)), which the gateway
+		// schema requires.
 		result["value"] = output.Value
 	}
 	if output.Reason != "" {
@@ -1032,7 +1043,8 @@ func gatewayToolResultOutputMap(output types.ToolResultOutput) (map[string]inter
 	}
 	addProviderOptions(result, output.ProviderOptions)
 
-	if len(output.Content) > 0 {
+	// A content output's value is its part array, [] when empty (TS).
+	if len(output.Content) > 0 || (output.Type == types.ToolResultOutputContent && output.Value == nil) {
 		content := make([]map[string]interface{}, 0, len(output.Content))
 		for _, block := range output.Content {
 			converted, err := gatewayToolResultContentBlockMap(block)

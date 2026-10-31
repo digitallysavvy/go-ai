@@ -62,21 +62,15 @@ func TestAnthropicEagerInputStreamingNotSetByDefault(t *testing.T) {
 	}
 }
 
-// TestAnthropicUnrecognizedProviderToolWarnAndSkip ports the real prepareTools
-// path for an "anthropic.*" + ProviderExecuted tool that carries none of the
-// per-instance config prepareTools needs to recognize it (no ProviderOptions,
-// so neither the builtin-type table nor the anthropicAPIMapper self-serializing
-// path matches): TS's prepareTools warns "provider-defined tool <id>" and
-// omits it from the wire tools array entirely (anthropic-prepare-tools.ts
-// default case in the provider-tool switch; see anthropic-prepare-tools.test.ts
-// "should add warnings for unsupported tools"). Replaces the old
-// TestAnthropicEagerInputStreamingNotAppliedToProviderTools, which exercised
-// the removed ToAnthropicFormatWithCache helper — that helper had no
-// warn-and-skip branch and instead silently fell through to regular function
-// tool serialization, which is not what the real request path does.
+// TestAnthropicUnrecognizedProviderToolWarnAndSkip: an "anthropic.*" tool
+// whose id TS prepareTools does not know is omitted with a "provider-defined
+// tool <id>" warning (the default case of the provider-tool switch;
+// anthropic-prepare-tools.test.ts "should add warnings for unsupported
+// tools"). A literal named after a known id without ProviderOptions is sent
+// with that id's empty args, as TS sends a provider tool with args {}.
 func TestAnthropicUnrecognizedProviderToolWarnAndSkip(t *testing.T) {
 	tool := types.Tool{
-		Name:             "anthropic.web_search_20260209",
+		Name:             "anthropic.unknown_tool_20990101",
 		ProviderExecuted: true,
 	}
 
@@ -92,12 +86,22 @@ func TestAnthropicUnrecognizedProviderToolWarnAndSkip(t *testing.T) {
 
 	found := false
 	for _, w := range req.warnings {
-		if w.Type == "unsupported" && w.Feature == "provider-defined tool anthropic.web_search_20260209" {
+		if w.Type == "unsupported" && w.Feature == "provider-defined tool anthropic.unknown_tool_20990101" {
 			found = true
 		}
 	}
 	if !found {
 		t.Errorf("warnings = %#v, want an 'unsupported' warning for the unrecognized provider tool", req.warnings)
+	}
+
+	known := types.Tool{Name: "anthropic.web_search_20260209", ProviderExecuted: true}
+	req, err = m.prepareRequest(&provider.GenerateOptions{Tools: []types.Tool{known}}, false)
+	if err != nil {
+		t.Fatalf("prepareRequest() error: %v", err)
+	}
+	wire, _ := req.body["tools"].([]map[string]interface{})
+	if len(wire) != 1 || wire[0]["type"] != "web_search_20260209" || wire[0]["name"] != "web_search" || len(req.warnings) != 0 {
+		t.Errorf("known id literal: tools = %#v, warnings = %#v", wire, req.warnings)
 	}
 }
 

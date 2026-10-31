@@ -304,7 +304,8 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if opts.PresencePenalty != nil {
 		body["presence_penalty"] = *opts.PresencePenalty
 	}
-	if len(opts.StopSequences) > 0 {
+	// TS sends stopSequences as given: an empty list is kept.
+	if opts.StopSequences != nil {
 		body["stop"] = opts.StopSequences
 	}
 	if opts.Seed != nil {

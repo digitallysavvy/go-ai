@@ -300,9 +300,11 @@ func (m *LanguageModel) transformRequestBody(body map[string]interface{}, betas 
 // ConvertPrompt converts a call prompt (system prompt, messages or text) with
 // the Anthropic prompt converter (TS convertToAnthropicPrompt).
 func ConvertPrompt(opts *provider.GenerateOptions, sendReasoning *bool) (*prompt.AnthropicPrompt, error) {
+	names := newAnthropicToolNames(opts.Tools)
 	return convertCallPrompt(opts, prompt.AnthropicPromptOptions{
-		SendReasoning: sendReasoning,
-		ToolsetNames:  prompt.AnthropicToolsetNames(opts.Tools),
+		SendReasoning:      sendReasoning,
+		ToolsetNames:       names.toolsets,
+		ToProviderToolName: names.providerName,
 	})
 }
 
@@ -836,17 +838,10 @@ func providerToolResultName(resultType string) string {
 	}
 }
 
+// anthropicProviderToolNameMap maps Anthropic wire tool names back to the
+// caller's tool names (TS toolNameMapping.toCustomToolName), by tool id.
 func anthropicProviderToolNameMap(tools []types.Tool) map[string]string {
-	out := map[string]string{}
-	for _, t := range tools {
-		if providerName := prompt.AnthropicProviderToolName(t.Name); providerName != t.Name {
-			out[providerName] = t.Name
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
+	return newAnthropicToolNames(tools).customNames()
 }
 
 func mapAnthropicToolName(name string, providerToSDK map[string]string) string {
@@ -1176,7 +1171,8 @@ func (m *LanguageModel) detectSkillsWarning(opts *provider.GenerateOptions) *typ
 	}
 	if opts != nil {
 		for _, t := range opts.Tools {
-			if t.Name == codeExecution20250825ToolName || t.Name == codeExecution20260120ToolName {
+			// TS checks tool.id; the tool's name is the caller's choice.
+			if id := ProviderToolID(t); id == codeExecution20250825ToolName || id == codeExecution20260120ToolName {
 				return nil
 			}
 		}

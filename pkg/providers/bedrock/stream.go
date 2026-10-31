@@ -56,7 +56,9 @@ type bedrockConverseStream struct {
 
 	isMistral            bool
 	usesJSONResponseTool bool
-	extractor            *jsonObjectTextExtractor
+	// toolNames maps toolSpec names back to tool names.
+	toolNames map[string]string
+	extractor *jsonObjectTextExtractor
 
 	warnings          []types.Warning
 	modelID           string
@@ -380,6 +382,9 @@ func (s *bedrockConverseStream) handleContentBlockStart(value map[string]interfa
 	toolUseID, _ := toolUse["toolUseId"].(string)
 	name, _ := toolUse["name"].(string)
 	isJSONResponseTool := s.usesJSONResponseTool && name == "json"
+	if !isJSONResponseTool {
+		name = bedrockToolName(name, s.toolNames)
+	}
 	normalizedID := normalizeToolCallID(toolUseID, s.isMistral)
 
 	s.contentBlocks[idx] = &bedrockStreamContentBlock{

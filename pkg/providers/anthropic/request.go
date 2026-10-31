@@ -210,7 +210,8 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 
 	// Shared cache control validator across the prompt and tool definitions.
 	validator := prompt.NewAnthropicCacheControlValidatorFor(m.provider.config.CacheControlProviderOptionsName)
-	toolsetNames := prompt.AnthropicToolsetNames(opts.Tools)
+	toolNames := newAnthropicToolNames(opts.Tools)
+	toolsetNames := toolNames.toolsets
 	sendReasoning := o.SendReasoning
 	if sendReasoning == nil {
 		sendReasoning = opts.SendReasoning
@@ -218,6 +219,7 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 	promptInfo, err := convertCallPrompt(opts, prompt.AnthropicPromptOptions{
 		SendReasoning:         sendReasoning,
 		ToolsetNames:          toolsetNames,
+		ToProviderToolName:    toolNames.providerName,
 		CacheControlValidator: validator,
 		ConvertMediaPart:      m.provider.config.ConvertMediaPart,
 	})
