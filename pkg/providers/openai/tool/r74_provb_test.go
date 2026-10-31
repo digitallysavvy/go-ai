@@ -14,3 +14,15 @@ func TestR74ProvbFileSearchArgsWithoutIDs(t *testing.T) {
 		t.Errorf("empty IDs arg = %#v, want []", ids)
 	}
 }
+
+// TestR74ProvbMCPArgsWithoutServerLabel: an unset ServerLabel is absent from
+// the TS args (mcp({serverUrl}) without serverLabel), so the args schema
+// rejects it as TS does; Go sent serverLabel "".
+func TestR74ProvbMCPArgsWithoutServerLabel(t *testing.T) {
+	if _, ok := MCP(MCPConfig{ServerURL: "https://m"}).ProviderArgs["serverLabel"]; ok {
+		t.Error("MCP without ServerLabel sets a serverLabel arg")
+	}
+	if got := MCP(MCPConfig{ServerLabel: "x", ServerURL: "https://m"}).ProviderArgs["serverLabel"]; got != "x" {
+		t.Errorf("serverLabel arg = %v", got)
+	}
+}
