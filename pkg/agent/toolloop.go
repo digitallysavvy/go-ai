@@ -2252,7 +2252,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 	if toolsContext == nil {
 		toolsContext = map[string]interface{}{}
 	}
-	runCall := func(call types.ToolCall) ([]types.ToolResult, error) {
+	runCall := func(call types.ToolCall, startGate agentToolStartGate) ([]types.ToolResult, error) {
 		results := make([]types.ToolResult, 0, 1)
 		// Call tool call callback
 		if a.config.OnToolCall != nil {
@@ -2460,7 +2460,9 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				return nil, err
 			}
 
-			// Locally-executed tool: execute now
+			// Locally-executed tool: execute now. Parallel calls fire their
+			// start callbacks in call order (TS executeTools).
+			startGate.wait(ctx)
 			// Call OnToolStart before execution (legacy)
 			if a.config.OnToolStart != nil {
 				a.config.OnToolStart(call)
@@ -2518,6 +2520,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				Args:        call.Arguments,
 				ToolContext: telemetryToolContextFor(tsettings, call.ToolName, toolContext),
 			})
+			startGate.fired()
 			// Per-tool timeout (TS timeout.toolMs / tools[name]).
 			execCtx := toolTelCtx
 			execCancel := func() {}

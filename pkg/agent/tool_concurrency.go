@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/ordered"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -50,7 +51,7 @@ func validateAgentMaxOutputTokens(n *int) error {
 // sequential execution. Results are returned in call order regardless of
 // completion order, and once a call fails or ctx is cancelled no further queued
 // call is started.
-func (a *ToolLoopAgent) runToolCalls(ctx context.Context, toolCalls []types.ToolCall, runCall func(types.ToolCall) ([]types.ToolResult, error)) ([]types.ToolResult, error) {
+func (a *ToolLoopAgent) runToolCalls(ctx context.Context, toolCalls []types.ToolCall, runCall func(types.ToolCall, agentToolStartGate) ([]types.ToolResult, error)) ([]types.ToolResult, error) {
 	results := make([]types.ToolResult, 0, len(toolCalls))
 	limit := 0 // unlimited
 	if a.config.ToolCallConcurrency != nil {
@@ -58,7 +59,7 @@ func (a *ToolLoopAgent) runToolCalls(ctx context.Context, toolCalls []types.Tool
 	}
 	if len(toolCalls) <= 1 {
 		for _, call := range toolCalls {
-			res, err := runCall(call)
+			res, err := runCall(call, agentToolStartGate{})
 			results = append(results, res...)
 			if err != nil {
 				return results, err
@@ -68,8 +69,27 @@ func (a *ToolLoopAgent) runToolCalls(ctx context.Context, toolCalls []types.Tool
 	}
 	perCall := make([][]types.ToolResult, len(toolCalls))
 	errs := make([]error, len(toolCalls))
+	// Start callbacks fire in call order, as in ai.executeToolsLimited: call
+	// i waits for gate i-1 before firing its own and closes gate i once it
+	// has fired them, or on return (after gate i-1, so the chain stays
+	// transitive when a call never reaches its start). ordered.Run claims
+	// calls in order, so every earlier call is running: no wait deadlocks.
+	gates := make([]chan struct{}, len(toolCalls))
+	once := make([]sync.Once, len(toolCalls))
+	for i := range gates {
+		gates[i] = make(chan struct{})
+	}
+	release := func(i int) { once[i].Do(func() { close(gates[i]) }) }
 	started := ordered.Run(ctx, len(toolCalls), limit, func(i int) error {
-		perCall[i], errs[i] = runCall(toolCalls[i])
+		gate := agentToolStartGate{done: func() { release(i) }}
+		if i > 0 {
+			gate.prev = gates[i-1]
+		}
+		defer func() {
+			gate.wait(ctx)
+			release(i)
+		}()
+		perCall[i], errs[i] = runCall(toolCalls[i], gate)
 		return errs[i]
 	})
 	notStarted := false
@@ -89,4 +109,34 @@ func (a *ToolLoopAgent) runToolCalls(ctx context.Context, toolCalls []types.Tool
 		return results, ctx.Err()
 	}
 	return results, nil
+}
+
+// agentToolStartGate orders the start callbacks of a step's parallel tool
+// calls. The zero value does not block.
+type agentToolStartGate struct {
+	prev <-chan struct{}
+	done func()
+}
+
+// wait blocks until the previous call has fired its start callbacks (or
+// returned) or ctx ends.
+func (g agentToolStartGate) wait(ctx context.Context) {
+	if g.prev == nil {
+		return
+	}
+	var ctxDone <-chan struct{}
+	if ctx != nil {
+		ctxDone = ctx.Done()
+	}
+	select {
+	case <-g.prev:
+	case <-ctxDone:
+	}
+}
+
+// fired reports that this call has fired its start callbacks.
+func (g agentToolStartGate) fired() {
+	if g.done != nil {
+		g.done()
+	}
 }
