@@ -334,10 +334,12 @@ const (
 //	    Tools: []types.Tool{tool},
 //	})
 func NewLocalShellTool() types.Tool {
-	return types.Tool{
-		Name:        "openai.local_shell",
-		Description: "Run commands in the local shell environment",
-	}
+	return providerDefinedTool(types.Tool{
+		Name:         "openai.local_shell",
+		Description:  "Run commands in the local shell environment",
+		Parameters:   schemaFromJSON(localShellInputSchemaJSON),
+		OutputSchema: schemaFromJSON(localShellOutputSchemaJSON),
+	}, "openai.local_shell", map[string]interface{}{})
 }
 
 // ShellToolOption is a functional option for configuring a shell tool.
@@ -373,16 +375,20 @@ func NewShellTool(opts ...ShellToolOption) types.Tool {
 		opt(cfg)
 	}
 
+	args := map[string]interface{}{}
 	t := types.Tool{
-		Name:        "openai.shell",
-		Description: "Run commands in a sandboxed shell container",
+		Name:         "openai.shell",
+		Description:  "Run commands in a sandboxed shell container",
+		Parameters:   schemaFromJSON(shellInputSchemaJSON),
+		OutputSchema: schemaFromJSON(shellOutputSchemaJSON),
 	}
 
 	if cfg.environment != nil {
 		t.ProviderOptions = cfg.environment
+		args["environment"] = shellEnvironmentArgs(*cfg.environment)
 	}
 
-	return t
+	return providerDefinedTool(t, "openai.shell", args)
 }
 
 // NewApplyPatchTool creates a types.Tool that enables the apply_patch tool
@@ -395,10 +401,12 @@ func NewShellTool(opts ...ShellToolOption) types.Tool {
 //
 //	tool := responses.NewApplyPatchTool()
 func NewApplyPatchTool() types.Tool {
-	return types.Tool{
-		Name:        "openai.apply_patch",
-		Description: "Apply unified diff patches to files",
-	}
+	return providerDefinedTool(types.Tool{
+		Name:         "openai.apply_patch",
+		Description:  "Apply unified diff patches to files",
+		Parameters:   schemaFromJSON(applyPatchInputSchemaJSON),
+		OutputSchema: schemaFromJSON(applyPatchOutputSchemaJSON),
+	}, "openai.apply_patch", map[string]interface{}{})
 }
 
 // WithExecute returns a copy of a client-executed OpenAI Responses tool

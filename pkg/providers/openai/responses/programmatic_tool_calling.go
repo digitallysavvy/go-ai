@@ -29,9 +29,11 @@ import (
 //
 //	tool := responses.NewProgrammaticToolCallingTool()
 func NewProgrammaticToolCallingTool() types.Tool {
-	return types.Tool{
+	return providerDefinedTool(types.Tool{
 		Name:             "openai.programmatic_tool_calling",
 		Description:      "Generate and execute JavaScript that calls declared function tools programmatically",
+		Parameters:       schemaFromJSON(programmaticToolCallingInputSchemaJSON),
+		OutputSchema:     schemaFromJSON(programmaticToolCallingOutputSchemaJSON),
 		ProviderExecuted: true,
 		// TS supportsDeferredResults: true.
 		SupportsDeferredResults: true,
@@ -86,5 +88,5 @@ func NewProgrammaticToolCallingTool() types.Tool {
 				return out
 			},
 		},
-	}
+	}, "openai.programmatic_tool_calling", map[string]interface{}{})
 }

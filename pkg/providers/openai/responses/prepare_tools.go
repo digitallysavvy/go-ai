@@ -91,8 +91,8 @@ func validateMCPToolArgs(t types.Tool) error {
 	if toolID != "openai.mcp" {
 		return nil
 	}
-	cfg, ok := t.ProviderOptions.(openaitool.MCPConfig)
-	if !ok || cfg.ServerURL != "" || cfg.ConnectorID != "" {
+	var cfg openaitool.MCPConfig
+	if !toolConfig(t, &cfg) || cfg.ServerURL != "" || cfg.ConnectorID != "" {
 		return nil
 	}
 	return providererrors.NewValidationError("tools",
@@ -103,7 +103,7 @@ func validateMCPToolArgs(t types.Tool) error {
 func convertTool(t types.Tool) interface{} {
 	// Custom tools are detected by ProviderOptions type since t.Name holds the
 	// caller-assigned tool name (not the "openai.custom" sentinel).
-	if _, ok := t.ProviderOptions.(openaitool.CustomTool); ok {
+	if _, ok := openAICustomToolConfig(t); ok {
 		return convertCustomTool(t)
 	}
 	toolID := t.ProviderID
@@ -155,7 +155,7 @@ func convertTool(t types.Tool) interface{} {
 func convertCustomTool(t types.Tool) CustomToolDef {
 	def := CustomToolDef{Type: "custom", Name: t.Name}
 
-	ct, ok := t.ProviderOptions.(openaitool.CustomTool)
+	ct, ok := openAICustomToolConfig(t)
 	if !ok {
 		return def
 	}
@@ -181,7 +181,8 @@ func convertCustomTool(t types.Tool) CustomToolDef {
 
 func convertCodeInterpreterTool(t types.Tool) map[string]interface{} {
 	def := map[string]interface{}{"type": "code_interpreter"}
-	cfg, _ := t.ProviderOptions.(openaitool.CodeInterpreterConfig)
+	var cfg openaitool.CodeInterpreterConfig
+	toolConfig(t, &cfg)
 	switch container := cfg.Container.(type) {
 	case string:
 		// TS forwards any string container id as is, including "".
@@ -198,6 +199,13 @@ func convertCodeInterpreterTool(t types.Tool) map[string]interface{} {
 			containerDef["file_ids"] = container.FileIDs
 		}
 		def["container"] = containerDef
+	case map[string]interface{}:
+		// TS args form {fileIds?: string[]} (ProviderArgs).
+		containerDef := map[string]interface{}{"type": "auto"}
+		if fileIDs, ok := container["fileIds"]; ok && fileIDs != nil {
+			containerDef["file_ids"] = fileIDs
+		}
+		def["container"] = containerDef
 	default:
 		def["container"] = map[string]interface{}{"type": "auto"}
 	}
@@ -206,7 +214,8 @@ func convertCodeInterpreterTool(t types.Tool) map[string]interface{} {
 
 func convertFileSearchTool(t types.Tool) map[string]interface{} {
 	def := map[string]interface{}{"type": "file_search"}
-	cfg, _ := t.ProviderOptions.(openaitool.FileSearchConfig)
+	var cfg openaitool.FileSearchConfig
+	toolConfig(t, &cfg)
 	def["vector_store_ids"] = cfg.VectorStoreIDs
 	if cfg.MaxNumResults != nil {
 		def["max_num_results"] = *cfg.MaxNumResults
@@ -229,7 +238,8 @@ func convertFileSearchTool(t types.Tool) map[string]interface{} {
 
 func convertImageGenerationTool(t types.Tool) map[string]interface{} {
 	def := map[string]interface{}{"type": "image_generation"}
-	cfg, _ := t.ProviderOptions.(openaitool.ImageGenerationConfig)
+	var cfg openaitool.ImageGenerationConfig
+	toolConfig(t, &cfg)
 	if cfg.Action != "" {
 		def["action"] = cfg.Action
 	}
@@ -275,7 +285,8 @@ func convertImageGenerationTool(t types.Tool) map[string]interface{} {
 
 func convertWebSearchTool(t types.Tool) WebSearchToolDef {
 	def := WebSearchToolDef{Type: "web_search"}
-	cfg, _ := t.ProviderOptions.(openaitool.WebSearchConfig)
+	var cfg openaitool.WebSearchConfig
+	toolConfig(t, &cfg)
 	// TS: `filters != null ? {allowed_domains, blocked_domains} : undefined`,
 	// so a present filters object is sent (undefined members dropped).
 	if cfg.Filters != nil {
@@ -296,14 +307,16 @@ func convertWebSearchTool(t types.Tool) WebSearchToolDef {
 
 func convertWebSearchPreviewTool(t types.Tool) WebSearchPreviewToolDef {
 	def := WebSearchPreviewToolDef{Type: "web_search_preview"}
-	cfg, _ := t.ProviderOptions.(openaitool.WebSearchPreviewConfig)
+	var cfg openaitool.WebSearchPreviewConfig
+	toolConfig(t, &cfg)
 	def.SearchContextSize = cfg.SearchContextSize
 	def.UserLocation = webSearchLocation(cfg.UserLocation)
 	return def
 }
 
 func convertMCPTool(t types.Tool) map[string]interface{} {
-	cfg, _ := t.ProviderOptions.(openaitool.MCPConfig)
+	var cfg openaitool.MCPConfig
+	toolConfig(t, &cfg)
 	def := map[string]interface{}{
 		"type":             "mcp",
 		"server_label":     cfg.ServerLabel,
@@ -352,6 +365,16 @@ func mcpAllowedTools(value interface{}) interface{} {
 			return nil
 		}
 		return mcpAllowedTools(*v)
+	case map[string]interface{}:
+		// TS args form {readOnly?, toolNames?} (ProviderArgs).
+		out := map[string]interface{}{}
+		if readOnly, ok := v["readOnly"]; ok && readOnly != nil {
+			out["read_only"] = readOnly
+		}
+		if toolNames, ok := v["toolNames"]; ok && toolNames != nil {
+			out["tool_names"] = toolNames
+		}
+		return out
 	default:
 		return v
 	}
@@ -376,6 +399,17 @@ func mcpRequireApproval(value interface{}) interface{} {
 			return "never"
 		}
 		return mcpRequireApproval(*v)
+	case map[string]interface{}:
+		// TS args form {never?: {toolNames?}} (ProviderArgs).
+		never, _ := v["never"].(map[string]interface{})
+		if never == nil {
+			return "never"
+		}
+		neverOut := map[string]interface{}{}
+		if toolNames, ok := never["toolNames"]; ok && toolNames != nil {
+			neverOut["tool_names"] = toolNames
+		}
+		return map[string]interface{}{"never": neverOut}
 	default:
 		return v
 	}
@@ -420,8 +454,33 @@ func convertToolSearchTool(t types.Tool) ToolSearchToolDef {
 		def.Description = t.Description
 	}
 
-	if t.Parameters != nil {
-		parameters := t.Parameters
+	// The search arguments schema: openaitool.ToolSearch keeps it in
+	// ToolSearchOptions.Parameters (the tool's Parameters is the TS call
+	// input schema); a TS-shaped tool carries it in ProviderArgs; a
+	// hand-built tool in Parameters.
+	var parameters interface{}
+	switch {
+	case ok:
+		if opts.Parameters != nil {
+			parameters = opts.Parameters
+		}
+	case t.Type == types.ToolTypeProviderDefined && t.ProviderArgs != nil:
+		if execution, isString := t.ProviderArgs["execution"].(string); isString {
+			def.Execution = execution
+		}
+		if description, isString := t.ProviderArgs["description"].(string); isString && def.Description == "" {
+			def.Description = description
+		}
+		if p, present := t.ProviderArgs["parameters"]; present && p != nil {
+			parameters = p
+		}
+	default:
+		if t.Parameters != nil {
+			parameters = t.Parameters
+		}
+	}
+
+	if parameters != nil {
 		if ordered, ok := jsonschema.OrderedParameters(parameters); ok {
 			parameters = ordered
 		}
@@ -440,16 +499,15 @@ func convertToolSearchTool(t types.Tool) ToolSearchToolDef {
 func convertShellTool(t types.Tool) ShellToolDef {
 	def := ShellToolDef{Type: "shell"}
 
-	if t.ProviderOptions == nil {
-		return def
-	}
-
 	var env *ShellEnvironment
 	switch v := t.ProviderOptions.(type) {
 	case *ShellEnvironment:
 		env = v
 	case ShellEnvironment:
 		env = &v
+	}
+	if env == nil && t.Type == types.ToolTypeProviderDefined {
+		env = shellEnvironmentFromArgs(t.ProviderArgs)
 	}
 	if env == nil {
 		return def
@@ -562,7 +620,7 @@ func CheckOmittedToolChoice(tools []types.Tool, toolChoice types.ToolChoice) err
 		if t.Name != toolChoice.ToolName || t.Type == types.ToolTypeProviderDefined {
 			continue
 		}
-		if _, isCustom := t.ProviderOptions.(openaitool.CustomTool); isCustom {
+		if isOpenAICustomTool(t) {
 			continue
 		}
 		if functionToolOmitFromRequestTools(t.ProviderOptions) {
@@ -708,7 +766,7 @@ type allowedToolResolution struct {
 // shape for a single SDK tool, mirroring TS `toAllowedToolResolution` plus
 // the "custom" and "function" cases from `openai-responses-prepare-tools.ts`.
 func resolveAllowedToolForTool(t types.Tool) allowedToolResolution {
-	if _, ok := t.ProviderOptions.(openaitool.CustomTool); ok {
+	if isOpenAICustomTool(t) {
 		return allowedToolResolution{supported: true, entry: AllowedToolsToolEntry{Type: "custom", Name: t.Name}}
 	}
 	toolID := t.ProviderID
@@ -717,7 +775,8 @@ func resolveAllowedToolForTool(t types.Tool) allowedToolResolution {
 	}
 	switch toolID {
 	case "openai.mcp":
-		cfg, _ := t.ProviderOptions.(openaitool.MCPConfig)
+		var cfg openaitool.MCPConfig
+		toolConfig(t, &cfg)
 		return allowedToolResolution{supported: true, entry: AllowedToolsToolEntry{Type: "mcp", ServerLabel: cfg.ServerLabel}}
 	case "openai.file_search", "openai.web_search", "openai.web_search_preview",
 		"openai.image_generation", "openai.code_interpreter", "openai.computer",

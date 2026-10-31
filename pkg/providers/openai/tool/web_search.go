@@ -31,15 +31,17 @@ type WebSearchPreviewConfig struct {
 	UserLocation      *WebSearchLocation `json:"userLocation,omitempty"`
 }
 
-// WebSearch creates an OpenAI provider-executed web_search tool.
+// WebSearch creates an OpenAI provider-executed web_search tool (TS
+// openai.tools.webSearch, id "openai.web_search").
 func WebSearch(config WebSearchConfig) types.Tool {
-	return types.Tool{
+	return providerTool(types.Tool{
 		Name:             "openai.web_search",
 		Description:      "Search the web using OpenAI Responses.",
 		ProviderExecuted: true,
 		ProviderOptions:  config,
-		Parameters:       map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
-	}
+		Parameters:       schemaFromJSON(emptyObjectSchemaJSON),
+		OutputSchema:     schemaFromJSON(webSearchOutputSchemaJSON),
+	}, "openai.web_search", webSearchArgs(config))
 }
 
 // WebSearchPreview creates an OpenAI provider-executed web_search_preview tool.
@@ -47,11 +49,12 @@ func WebSearch(config WebSearchConfig) types.Tool {
 // Deprecated: Use WebSearch instead. The searchContextSize and userLocation
 // options are supported by both tools.
 func WebSearchPreview(config WebSearchPreviewConfig) types.Tool {
-	return types.Tool{
+	return providerTool(types.Tool{
 		Name:             "openai.web_search_preview",
 		Description:      "Search the web using OpenAI Responses preview.",
 		ProviderExecuted: true,
 		ProviderOptions:  config,
-		Parameters:       map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
-	}
+		Parameters:       schemaFromJSON(emptyObjectSchemaJSON),
+		OutputSchema:     schemaFromJSON(webSearchPreviewOutputSchemaJSON),
+	}, "openai.web_search_preview", webSearchArgs(config))
 }
