@@ -2252,7 +2252,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 	if toolsContext == nil {
 		toolsContext = map[string]interface{}{}
 	}
-	runCall := func(call types.ToolCall) ([]types.ToolResult, error) {
+	runCall := func(call types.ToolCall, startGate agentToolStartGate) ([]types.ToolResult, error) {
 		results := make([]types.ToolResult, 0, 1)
 		// Call tool call callback
 		if a.config.OnToolCall != nil {
@@ -2460,7 +2460,9 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				return nil, err
 			}
 
-			// Locally-executed tool: execute now
+			// Locally-executed tool: execute now. Parallel calls fire their
+			// start callbacks in call order (TS executeTools).
+			startGate.wait(ctx)
 			// Call OnToolStart before execution (legacy)
 			if a.config.OnToolStart != nil {
 				a.config.OnToolStart(call)
@@ -2518,6 +2520,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				Args:        call.Arguments,
 				ToolContext: telemetryToolContextFor(tsettings, call.ToolName, toolContext),
 			})
+			startGate.fired()
 			// Per-tool timeout (TS timeout.toolMs / tools[name]).
 			execCtx := toolTelCtx
 			execCancel := func() {}
@@ -3196,28 +3199,31 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 			Dynamic:          result.Dynamic,
 			Preliminary:      result.Preliminary,
 		}
+		// TS step content tool-result `output` is the raw tool output: Go
+		// keeps it in Result next to the model-facing Output (as
+		// ai.toolResultsToContentParts), unless the raw value is itself a
+		// ToolResultOutput.
+		switch result.Result.(type) {
+		case types.ToolResultOutput, *types.ToolResultOutput:
+			part.Result = nil
+		}
 		switch output := modelFacingToolResultOutput(result); output.Type {
 		case "":
 		case types.ToolResultOutputText, types.ToolResultOutputJSON, types.ToolResultOutputContent, types.ToolResultOutputError, types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON, types.ToolResultOutputExecutionDenied:
 			part.Output = &output
-			part.Result = nil
 		}
 		if part.Output == nil {
 			switch output := result.Result.(type) {
 			case types.ToolResultOutput:
 				part.Output = &output
-				part.Result = nil
 			case *types.ToolResultOutput:
 				part.Output = output
-				part.Result = nil
 			case string:
 				part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: output}
-				part.Result = nil
 			default:
 				// TS createToolModelOutput: the output's JSON value
 				// (toJSONValue), not the Go value itself.
 				part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: agentToJSONValue(result.Result)}
-				part.Result = nil
 			}
 		}
 		*parts = append(*parts, part)

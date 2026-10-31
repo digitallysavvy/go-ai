@@ -55,10 +55,25 @@ func TestValidateToolResults(t *testing.T) {
 				types.ToolApprovalRequestContent{ApprovalID: "x", ToolCallID: "a"}}},
 			{Role: types.RoleTool, Content: []types.ContentPart{types.ToolApprovalResponseContent{ApprovalID: "x", ToolCallID: "a", Approved: true}}},
 		}, []string{"a"}, ""},
-		{"provider-executed approval response exempt", []types.Message{
+		// TS exempts a call only by providerExecuted on the call itself; a
+		// provider-executed approval response does not exempt the call it
+		// answers (r74 coordinator ruling).
+		{"provider-executed approval response does not exempt the call", []types.Message{
 			{Role: types.RoleAssistant, Content: []types.ContentPart{types.ToolCallContent{ToolCallID: "a", ToolName: "t"}}},
 			{Role: types.RoleTool, Content: []types.ContentPart{types.ToolApprovalResponseContent{ApprovalID: "x", ToolCallID: "a", Approved: true, ProviderExecuted: true}}},
 			userMsg(),
+		}, []string{"a"}, "Tool result is missing for tool call a."},
+		{"provider-executed approval response does not exempt the call (end)", []types.Message{
+			{Role: types.RoleAssistant, Content: []types.ContentPart{types.ToolCallContent{ToolCallID: "a", ToolName: "t"}}},
+			{Role: types.RoleTool, Content: []types.ContentPart{&types.ToolApprovalResponseContent{ApprovalID: "x", ToolCallID: "a", Approved: true, ProviderExecuted: true}}},
+		}, []string{"a"}, ""},
+		// TS validation.test.ts "should preserve provider-executed
+		// tool-approval-response": the provider-executed call is exempt.
+		{"provider-executed call with provider-executed approval response", []types.Message{
+			{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "call_provider_executed", ToolName: "mcp_tool", ProviderExecuted: true},
+				types.ToolApprovalRequestContent{ApprovalID: "approval_provider", ToolCallID: "call_provider_executed"}}},
+			{Role: types.RoleTool, Content: []types.ContentPart{types.ToolApprovalResponseContent{ApprovalID: "approval_provider", Approved: true, ProviderExecuted: true}}},
 		}, nil, ""},
 		{"top-level ToolCalls field", []types.Message{{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{{ID: "a", ToolName: "t"}}}, userMsg()}, []string{"a"}, ""},
 	}

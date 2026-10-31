@@ -47,9 +47,12 @@ func executeToolsLimited(ctx context.Context, calls []types.ToolCall, tools []ty
 	errs := make([]error, len(calls))
 	// startGates[i] closes once call i has fired its start callbacks, or
 	// has returned without firing them (no local execution, a validation
-	// or approval outcome, an error). Call i+1 waits for it before firing
-	// its own, so start callbacks fire in call order as in TS; executions
-	// still overlap. ordered.Run claims calls in order, so every call a
+	// or approval outcome, an error, a panic). Call i+1 waits for it before
+	// firing its own, so start callbacks fire in call order as in TS;
+	// executions still overlap. A call that returns without firing waits
+	// for gate i-1 before closing its own, so the chain stays transitive: a
+	// later call never fires before an earlier call that is still on its
+	// way to its start. ordered.Run claims calls in order, so every call a
 	// worker runs has all earlier calls claimed and running: no wait can
 	// deadlock.
 	startGates := make([]chan struct{}, len(calls))
@@ -60,7 +63,12 @@ func executeToolsLimited(ctx context.Context, calls []types.ToolCall, tools []ty
 	releaseStart := func(i int) { startOnce[i].Do(func() { close(startGates[i]) }) }
 
 	started := ordered.Run(ctx, len(calls), limit, func(i int) error {
-		defer releaseStart(i)
+		defer func() {
+			if i > 0 {
+				waitToolStartGate(ctx, startGates[i-1])
+			}
+			releaseStart(i)
+		}()
 		cb := callbacks
 		if callbacks.toolExecutionMs != nil {
 			perCallMs[i] = map[string]int64{}
