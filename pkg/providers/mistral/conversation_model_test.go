@@ -96,7 +96,7 @@ func TestConversationGenerateContentToolExecutionAndSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := result.Content[0].(types.ToolCallContent)
-	if call.ToolCallID != "te_1" || call.ToolName != "web_search" || !call.ProviderExecuted || call.Input != `{"arguments":"{\"query\":\"x\"}"}` {
+	if call.ToolCallID != "te_1" || call.ToolName != ToolIDWebSearch || !call.ProviderExecuted || call.Input != `{"arguments":"{\"query\":\"x\"}"}` {
 		t.Errorf("call = %#v", call)
 	}
 	if !strings.Contains(string(call.ProviderMetadata), `"function":"search"`) {
@@ -188,7 +188,7 @@ func TestConversationStream(t *testing.T) {
 	if chunks[3].Text != `{"arguments":"{\"q\":1}"}` {
 		t.Errorf("tool input delta = %q", chunks[3].Text)
 	}
-	if chunks[5].ToolCall.ToolName != "web_search" || !chunks[5].ToolCall.ProviderExecuted {
+	if chunks[5].ToolCall.ToolName != ToolIDWebSearch || !chunks[5].ToolCall.ProviderExecuted {
 		t.Errorf("tool call = %#v", chunks[5].ToolCall)
 	}
 	last := chunks[len(chunks)-1]

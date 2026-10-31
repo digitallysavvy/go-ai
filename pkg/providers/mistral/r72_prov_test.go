@@ -10,6 +10,7 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
@@ -154,5 +155,32 @@ func TestR72ProvWebSearchIsProviderTool(t *testing.T) {
 	wire, _, warnings := prepareConversationTools([]types.Tool{WebSearch(), WebSearchPremium()}, types.ToolChoice{})
 	if len(warnings) != 0 || len(wire) != 2 || wire[0]["type"] != "web_search" || wire[1]["type"] != "web_search_premium" {
 		t.Errorf("conversation tools = %v, warnings %v", wire, warnings)
+	}
+}
+
+// A built-in tool execution comes back under the tool's Name (TS: the tool's
+// key), so GenerateText finds the tool. With the default Name the call came
+// back as "web_search" and was an invalid call to an unavailable tool.
+func TestR72ProvWebSearchCallKeepsToolName(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"conversation_id":"c","outputs":[{"type":"tool.execution","id":"te_1","name":"web_search","arguments":"{\"query\":\"x\"}","info":{"k":"v"}},{"type":"message.output","content":"Answer","model":"m"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`))
+	}))
+	defer srv.Close()
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	renamed := WebSearch()
+	renamed.Name = "search"
+	for _, tool := range []types.Tool{WebSearch(), renamed} {
+		res, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{Model: p.ConversationModel("mistral-medium-latest"), Prompt: "q", Tools: []types.Tool{tool}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		call := res.Content[0].(types.ToolCallContent)
+		if call.ToolName != tool.Name || call.Invalid || call.Dynamic || call.Error != nil {
+			t.Errorf("%s: call = %+v, want a valid call named %q", tool.Name, call, tool.Name)
+		}
+		if len(res.ToolResults) != 1 || res.ToolResults[0].ToolName != tool.Name {
+			t.Errorf("%s: tool results = %+v", tool.Name, res.ToolResults)
+		}
 	}
 }

@@ -105,8 +105,11 @@ func newConversationToolNames(tools []types.Tool) conversationToolNames {
 			continue
 		}
 		wire := mistralProviderToolNames[id]
+		// The custom name is the tool's Name (TS: the tool's key), the default
+		// "mistral.web_search" included: a call must come back under the name
+		// GenerateText knows the tool by, or it is an unavailable tool.
 		custom := t.Name
-		if custom == "" || custom == id {
+		if custom == "" {
 			custom = wire
 		}
 		m.toCustom[wire] = custom
