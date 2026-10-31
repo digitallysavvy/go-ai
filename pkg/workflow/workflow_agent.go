@@ -804,6 +804,13 @@ type workflowApprovalResumeOptions struct {
 	// resumed approvals' results (TS initialResponseMessages), so generate can
 	// report it as the first response message.
 	initialResponse *[]types.Message
+	// startGate, when set, is waited on before an approved call's start
+	// callbacks fire, and startDone is called once they have fired (user
+	// start, then telemetry tool start), so parallel approved calls fire
+	// their start callbacks in call order as TS mapWithConcurrency does.
+	// Set per call by processWorkflowApprovalResume.
+	startGate <-chan struct{}
+	startDone func()
 }
 
 // processWorkflowApprovalResume resolves tool approvals from the last tool
@@ -853,7 +860,7 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 		chunk  *provider.StreamChunk
 		err    error
 	}
-	runApproved := func(approval ai.CollectedToolApproval) approvedOutcome {
+	runApproved := func(approval ai.CollectedToolApproval, callOpts workflowApprovalResumeOptions) approvedOutcome {
 		call := approval.ToolCall
 		if call.ProviderExecuted {
 			return approvedOutcome{}
@@ -893,7 +900,7 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 			return approvedOutcome{result: errorTextResult(call, revalidationReason)}
 		}
 
-		result, execErr := executeWorkflowApprovedTool(ctx, tool, call, opts)
+		result, execErr := executeWorkflowApprovedTool(ctx, tool, call, callOpts)
 		var ctxErr *workflowToolContextError
 		if errors.As(execErr, &ctxErr) {
 			return approvedOutcome{err: ctxErr.err}
@@ -959,8 +966,28 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 	// Calls are claimed in model order; once ctx is cancelled or a call
 	// fails, no further queued call is started (TS mapWithConcurrency). Calls
 	// that were never started produce no result.
+	//
+	// startGates[i] closes once call i has fired its start callbacks or has
+	// returned without firing them (provider-executed, no execute function,
+	// revalidation failure, tool context error); call i+1 waits for it before
+	// firing its own, so start callbacks fire in call order as in TS while
+	// executions still overlap. ordered.Run claims calls in order, so every
+	// earlier call is already claimed and running: no wait can deadlock.
+	startGates := make([]chan struct{}, len(outcomes))
+	startOnce := make([]sync.Once, len(outcomes))
+	for i := range startGates {
+		startGates[i] = make(chan struct{})
+	}
+	releaseStart := func(i int) { startOnce[i].Do(func() { close(startGates[i]) }) }
 	ordered.Run(ctx, len(outcomes), opts.toolCallConcurrency, func(i int) error {
-		outcomes[i] = runApproved(collected.ApprovedToolApprovals[i])
+		defer releaseStart(i)
+		callOpts := opts
+		callOpts.startGate = nil
+		if i > 0 {
+			callOpts.startGate = startGates[i-1]
+		}
+		callOpts.startDone = func() { releaseStart(i) }
+		outcomes[i] = runApproved(collected.ApprovedToolApprovals[i], callOpts)
 		return outcomes[i].err
 	})
 	for _, o := range outcomes {
@@ -1091,6 +1118,7 @@ func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call typ
 	if ctxErr != nil {
 		return nil, &workflowToolContextError{err: ctxErr}
 	}
+	waitWorkflowToolStartGate(ctx, opts.startGate)
 	if opts.onToolStart != nil {
 		opts.onToolStart(ctx, ai.OnToolCallStartEvent{
 			ToolCallID:  call.ID,
@@ -1119,6 +1147,9 @@ func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call typ
 		Args:        call.Arguments,
 		ToolContext: telToolContext,
 	})
+	if opts.startDone != nil {
+		opts.startDone()
+	}
 	start := time.Now()
 	result, err := tool.Execute(toolCtx, call.Arguments, types.ToolExecutionOptions{
 		ToolCallID:          call.ID,
@@ -1174,6 +1205,23 @@ func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call typ
 		ToolContext: telToolContext,
 	})
 	return result, err
+}
+
+// waitWorkflowToolStartGate blocks until gate is closed (the previous
+// approved call fired its start callbacks) or ctx ends. A nil gate does not
+// block.
+func waitWorkflowToolStartGate(ctx context.Context, gate <-chan struct{}) {
+	if gate == nil {
+		return
+	}
+	var done <-chan struct{}
+	if ctx != nil {
+		done = ctx.Done()
+	}
+	select {
+	case <-gate:
+	case <-done:
+	}
 }
 
 // mergeSafe is TS mergeCallbacks: every callback runs for the event and one

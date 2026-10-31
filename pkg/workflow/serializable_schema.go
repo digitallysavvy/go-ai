@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -177,10 +178,33 @@ func toolParametersHint(tool types.Tool) interface{} {
 	return parseOrderHint(raw)
 }
 
-// SerializeToolSet converts tools to a JSON-safe map keyed by tool name.
+// SerializeToolSetOptions configures SerializeToolSetWithOptions (TS
+// serializeToolSet's second argument).
+type SerializeToolSetOptions struct {
+	// ToolsContext holds the per-tool context values keyed by tool name. A
+	// tool's DescriptionFunc receives its entry.
+	ToolsContext map[string]interface{}
+	// ExperimentalSandbox is passed to each tool's DescriptionFunc.
+	ExperimentalSandbox interface{}
+}
+
+// SerializeToolSet converts tools to a JSON-safe map keyed by tool name. A
+// tool's DescriptionFunc is resolved with no tools context and no sandbox;
+// use SerializeToolSetWithOptions to supply them.
 func SerializeToolSet(tools []types.Tool) (map[string]SerializableToolDef, error) {
+	return SerializeToolSetWithOptions(context.Background(), tools, SerializeToolSetOptions{})
+}
+
+// SerializeToolSetWithOptions converts tools to a JSON-safe map keyed by tool
+// name, resolving each DescriptionFunc with the tool's ToolsContext entry and
+// the sandbox, as TS serializeToolSet(tools, {toolsContext,
+// experimental_sandbox}) resolves a function description.
+func SerializeToolSetWithOptions(ctx context.Context, tools []types.Tool, opts SerializeToolSetOptions) (map[string]SerializableToolDef, error) {
 	if len(tools) == 0 {
 		return nil, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	out := make(map[string]SerializableToolDef, len(tools))
 	for _, tool := range tools {
@@ -189,9 +213,20 @@ func SerializeToolSet(tools []types.Tool) (map[string]SerializableToolDef, error
 			return nil, err
 		}
 		hint := toolParametersHint(tool)
+		description := tool.Description
+		if tool.DescriptionFunc != nil {
+			var toolContext interface{}
+			if opts.ToolsContext != nil {
+				toolContext = opts.ToolsContext[tool.Name]
+			}
+			description = tool.DescriptionFunc(ctx, types.ToolDescriptionOptions{
+				Context:             toolContext,
+				ExperimentalSandbox: opts.ExperimentalSandbox,
+			})
+		}
 		def := SerializableToolDef{
 			Name:                    tool.Name,
-			Description:             tool.Description,
+			Description:             description,
 			Title:                   tool.Title,
 			Parameters:              params,
 			InputSchema:             params,
@@ -323,7 +358,13 @@ func ResolveSerializableTools(defs map[string]SerializableToolDef) []types.Tool 
 				resolved.ProviderOptions = providerOptions
 			}
 		case def.Type == "dynamic":
+			// TS resolve builds dynamicTool({description, inputExamples,
+			// providerOptions, inputSchema}): a resolved dynamic tool has no
+			// title, metadata or strict flag.
 			resolved.Type = "dynamic"
+			resolved.Title = ""
+			resolved.Metadata = nil
+			resolved.Strict = nil
 			resolved.ProviderOptions = optionsOrArgs(providerOptions, def.Args)
 		default:
 			resolved.ProviderOptions = optionsOrArgs(providerOptions, def.Args)

@@ -1114,8 +1114,11 @@ func (i OpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelCallSta
 	if attrs := i.customAttrs(ctx, e.Settings, i.childEnrichOptions(SpanTypeEmbedding, e.CallID)); len(attrs) > 0 {
 		span.SetAttributes(attrs...)
 	}
+	// TS onEmbedStart: 'gen_ai.operation.name': 'embeddings' for embed and
+	// embedMany alike (the event's "ai.embed.doEmbed" operation ID is not a
+	// GenAI operation name).
 	span.SetAttributes(
-		attribute.String("gen_ai.operation.name", mapOperationName(e.OperationID)),
+		attribute.String("gen_ai.operation.name", "embeddings"),
 		attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)),
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
