@@ -32,7 +32,11 @@ func WebSearchPremium() types.Tool {
 
 func mistralProviderTool(id, description string) types.Tool {
 	return types.Tool{
-		Name:             id,
+		Name: id,
+		// TS createProviderExecutedToolFactory: a provider tool. The chat
+		// model drops it with an unsupported warning and the gateway sends it
+		// as a provider tool (without Type it went out as a function tool).
+		Type:             types.ToolTypeProviderDefined,
 		ProviderID:       id,
 		Description:      description,
 		ProviderExecuted: true,

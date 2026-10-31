@@ -1,11 +1,16 @@
 package mistral
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"sort"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
@@ -102,5 +107,52 @@ func TestR72ProvWebSearchOutputSchema(t *testing.T) {
 		if err := r72provValidate(t, out, bad); err == nil {
 			t.Errorf("%s accepted, want invalid", bad)
 		}
+	}
+}
+
+// The web search tools are provider tools (TS type 'provider'): the chat
+// model drops them with TS's unsupported warning instead of sending a
+// function tool named mistral.web_search (tools: [] like TS), and the conversation model still
+// maps them to its built-in tools.
+func TestR72ProvWebSearchIsProviderTool(t *testing.T) {
+	if WebSearch().Type != types.ToolTypeProviderDefined || WebSearchPremium().Type != types.ToolTypeProviderDefined {
+		t.Fatalf("Type = %q / %q, want %q", WebSearch().Type, WebSearchPremium().Type, types.ToolTypeProviderDefined)
+	}
+	var body map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","model":"mistral-small-latest","choices":[{"index":0,"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer srv.Close()
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	model, err := p.LanguageModel("mistral-small-latest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hello"}}}}},
+		Tools:  []types.Tool{WebSearch()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// TS prepareTools returns the (empty) mistralTools list: tools: [].
+	if tools, ok := body["tools"].([]interface{}); !ok || len(tools) != 0 {
+		t.Errorf("chat request tools = %v, want [] (no function tool)", body["tools"])
+	}
+	found := false
+	for _, w := range result.Warnings {
+		if w.Type == "unsupported" && w.Feature == "provider-defined tool mistral.web_search" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("warnings = %+v, want the unsupported provider tool warning", result.Warnings)
+	}
+	wire, _, warnings := prepareConversationTools([]types.Tool{WebSearch(), WebSearchPremium()}, types.ToolChoice{})
+	if len(warnings) != 0 || len(wire) != 2 || wire[0]["type"] != "web_search" || wire[1]["type"] != "web_search_premium" {
+		t.Errorf("conversation tools = %v, warnings %v", wire, warnings)
 	}
 }
