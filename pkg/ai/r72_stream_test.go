@@ -430,7 +430,9 @@ func TestR72StreamUIApprovedResumeToolResult(t *testing.T) {
 		execute types.ToolExecutor
 		outputs string
 	}{
-		{"plain", func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result1", nil },
+		{"plain", func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "result1", nil
+		},
 			`{"output":"result1","toolCallId":"call-1","type":"tool-output-available"},`},
 		{"preliminary", types.StreamingExecutor(func(context.Context, map[string]interface{}, types.ToolExecutionOptions) iter.Seq2[interface{}, error] {
 			return func(yield func(interface{}, error) bool) {
