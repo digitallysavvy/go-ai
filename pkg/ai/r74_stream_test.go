@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -712,5 +714,55 @@ func TestR74StreamTransformedStartStepWarnings(t *testing.T) {
 	defer logMu.Unlock()
 	if len(logged) != 1 || !reflect.DeepEqual(logged[0].Warnings, want) {
 		t.Errorf("logged warnings = %+v", logged)
+	}
+}
+
+// r74streamEndTelemetry records the telemetry end event.
+type r74streamEndTelemetry struct {
+	telemetry.NoopTelemetryIntegration
+	mu   sync.Mutex
+	ends []telemetry.TelemetryFinishEvent
+}
+
+func (r *r74streamEndTelemetry) OnFinish(_ context.Context, e telemetry.TelemetryFinishEvent) {
+	r.mu.Lock()
+	r.ends = append(r.ends, e)
+	r.mu.Unlock()
+}
+
+// TS onEnd (and the telemetry onEnd, the same event) reports the final
+// step's finish reason (`finishReason: finalStep.finishReason`), while
+// result.finishReason is the recorded call-level one (`recordedFinishReason
+// ?? 'other'`). After a continuation step that fails to open (TS 4358: no
+// `finish` part) the result says "other" and onEnd says the recorded step's
+// "tool-calls".
+func TestR74StreamOnEndFinishReasonIsFinalStepAfterContinuationFailure(t *testing.T) {
+	tel := &r74streamEndTelemetry{}
+	var mu sync.Mutex
+	var ends []OnFinishEvent
+	zero := 0
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		OnError: func(context.Context, error) {},
+		Model:   r70ToolCallModelThen(func() (provider.TextStream, error) { return nil, errors.New("provider failure") }),
+		Prompt:  "test-input", Tools: []types.Tool{r70Tool("tool1", nil)}, MaxRetries: &zero, StopWhen: []StopCondition{StepCountIs(3)},
+		Telemetry:  &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{tel}},
+		OnEndEvent: func(_ context.Context, e OnFinishEvent) { mu.Lock(); ends = append(ends, e); mu.Unlock() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	if r.FinishReason() != types.FinishReasonOther {
+		t.Fatalf("FinishReason() = %q, want other", r.FinishReason())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ends) != 1 || ends[0].FinishReason != types.FinishReasonToolCalls {
+		t.Fatalf("onEnd = %+v, want finish reason tool-calls", ends)
+	}
+	tel.mu.Lock()
+	defer tel.mu.Unlock()
+	if len(tel.ends) != 1 || tel.ends[0].FinishReason != string(types.FinishReasonToolCalls) {
+		t.Fatalf("telemetry onEnd = %+v, want finish reason tool-calls", tel.ends)
 	}
 }

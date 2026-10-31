@@ -4250,12 +4250,19 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	}
 	r.mu.Unlock()
 	endProvider, endModelID := finalStepModel(allSteps, r.cbModelProvider, r.cbModelID)
+	// TS onEnd (callback and telemetry) carries the final step's finish
+	// reason (finalStep.finishReason); the result's FinishReason is the
+	// recorded call-level one, "other" when no finish part was recorded.
+	endFinishReason := r.finishReason
+	if len(allSteps) > 0 {
+		endFinishReason = allSteps[len(allSteps)-1].FinishReason
+	}
 	// The telemetry onEnd runs after the end callbacks: TS notify([onEnd,
 	// telemetry.onEnd]) starts the callback first.
 	endTelemetry := telemetry.TelemetryFinishEvent{
 		CallID:           r.cbCallID,
 		OperationType:    "ai.streamText",
-		FinishReason:     string(r.finishReason),
+		FinishReason:     string(endFinishReason),
 		Usage:            streamTelUsage,
 		ModelProvider:    endProvider,
 		ModelID:          endModelID,
@@ -4362,7 +4369,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		ToolResults:        lastStep.ToolResults,
 		StaticToolResults:  lastStep.StaticToolResults,
 		DynamicToolResults: lastStep.DynamicToolResults,
-		FinishReason:       r.finishReason,
+		FinishReason:       endFinishReason,
 		RawFinishReason:    lastStep.RawFinishReason,
 		Usage:              lastStep.Usage,
 		Steps:              stepsForEvent,
