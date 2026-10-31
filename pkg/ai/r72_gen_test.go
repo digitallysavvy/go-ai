@@ -600,3 +600,239 @@ func TestR72Gen_StreamObjectLogsWarningsOnFinishPart(t *testing.T) {
 		t.Fatalf("error part without finish: %d logWarnings calls, want 0", n)
 	}
 }
+
+// generate-object.test.ts callbacks: 1438 'should provide the raw objectText
+// and usage', 1472 / 1559 reasoning in the step finish and finish events, 1526
+// 'should provide the parsed object and metadata', 1586 ordering
+// onStart -> onStepStart -> doGenerate -> onStepFinish -> onFinish and 1628
+// one callId for all events; result.response 320 and the structured-output
+// case 65 (reasoning, response body, raw objectText).
+func TestR72Gen_GenerateObjectCallbackEvents(t *testing.T) {
+	var order []string
+	finalAnswer := `{"content":"final"}`
+	draft := `{"content":"draft"}`
+	body := map[string]interface{}{"output": []interface{}{draft, finalAnswer}}
+	model := &testutil.MockLanguageModel{
+		ProviderName: "test-provider", ModelName: "test-model", StructuredSupport: true,
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			order = append(order, "doGenerate")
+			return &types.GenerateResult{
+				Content: []types.ContentPart{
+					types.ReasoningContent{Text: "Checking both answers."},
+					types.TextContent{Text: draft}, types.TextContent{Text: finalAnswer},
+				},
+				StructuredOutputText: &finalAnswer,
+				FinishReason:         types.FinishReasonStop,
+				Usage:                *usage(3, 10),
+				ProviderMetadata:     map[string]interface{}{"test": map[string]interface{}{"key": "value"}},
+				ResponseMetadata:     &types.ResponseMetadata{ID: "id-0", ModelID: "mock-model-id", Timestamp: time.Unix(0, 0)},
+				ResponseHeaders:      map[string]string{"x-h": "v"},
+				RawResponse:          body,
+			}, nil
+		},
+	}
+	var callIDs []string
+	var step ObjectOnStepFinishEvent
+	var end ObjectOnFinishEvent
+	res, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model: model, Prompt: "prompt", Schema: contentSchema(),
+		OnStart: func(_ context.Context, e ObjectOnStartEvent) {
+			order = append(order, "onStart")
+			callIDs = append(callIDs, e.CallID)
+		},
+		OnStepStart: func(_ context.Context, e ObjectOnStepStartEvent) {
+			order = append(order, "onStepStart")
+			callIDs = append(callIDs, e.CallID)
+		},
+		OnStepFinish: func(_ context.Context, e ObjectOnStepFinishEvent) {
+			order = append(order, "onStepFinish")
+			callIDs = append(callIDs, e.CallID)
+			step = e
+		},
+		OnFinishEvent: func(_ context.Context, e ObjectOnFinishEvent) {
+			order = append(order, "onFinish")
+			callIDs = append(callIDs, e.CallID)
+			end = e
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"onStart", "onStepStart", "doGenerate", "onStepFinish", "onFinish"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("order = %v, want %v", order, want)
+	}
+	if len(callIDs) != 4 || callIDs[0] == "" || callIDs[1] != callIDs[0] || callIDs[2] != callIDs[0] || callIDs[3] != callIDs[0] {
+		t.Fatalf("call ids = %v", callIDs)
+	}
+	wantObject := map[string]interface{}{"content": "final"}
+	if !reflect.DeepEqual(res.Object, wantObject) || res.Reasoning != "Checking both answers." || !reflect.DeepEqual(res.Response.Body, body) ||
+		res.Response.ID != "id-0" || res.Response.ModelID != "mock-model-id" || !res.Response.Timestamp.Equal(time.Unix(0, 0)) ||
+		!reflect.DeepEqual(res.Response.Headers, map[string]string{"x-h": "v"}) || *res.Usage.InputTokens != 3 || *res.Usage.OutputTokens != 10 {
+		t.Fatalf("result = %+v", res)
+	}
+	if step.StepNumber != 0 || step.Provider != "test-provider" || step.ModelID != "test-model" || step.ObjectText != draft+finalAnswer ||
+		step.FinishReason != types.FinishReasonStop || step.Reasoning != "Checking both answers." || !reflect.DeepEqual(step.Usage, res.Usage) ||
+		!reflect.DeepEqual(step.Response, res.Response) {
+		t.Fatalf("step finish = %+v", step)
+	}
+	if !reflect.DeepEqual(end.Object, wantObject) || end.Error != nil || end.FinishReason != types.FinishReasonStop || end.Reasoning != "Checking both answers." ||
+		!reflect.DeepEqual(end.Usage, res.Usage) || !reflect.DeepEqual(end.ProviderMetadata, map[string]interface{}{"test": map[string]interface{}{"key": "value"}}) ||
+		!reflect.DeepEqual(end.Response, res.Response) {
+		t.Fatalf("finish = %+v", end)
+	}
+}
+
+// stream-object.test.ts options.onFinish 643 (valid object) and 692 (object
+// that does not match the schema) snapshots, 2410 callback ordering and 2462
+// one callId.
+func TestR72Gen_StreamObjectOnFinishSnapshots(t *testing.T) {
+	meta := provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-0", ModelID: "mock-model-id", Timestamp: time.Unix(0, 0)}}
+	finish := finishChunk()
+	finish.ProviderMetadata = json.RawMessage(`{"testProvider":{"testKey":"testValue"}}`)
+
+	var order, callIDs []string
+	var end ObjectOnFinishEvent
+	model := streamObjectModel(append(append([]provider.StreamChunk{meta}, textChunks(`{ "content": "Hello, world!" }`)...), finish)...)
+	_, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model: model, Prompt: "prompt", Schema: contentSchema(),
+		OnStart: func(_ context.Context, e ObjectOnStartEvent) {
+			order = append(order, "onStart")
+			callIDs = append(callIDs, e.CallID)
+		},
+		OnStepStart: func(_ context.Context, e ObjectOnStepStartEvent) {
+			order = append(order, "onStepStart")
+			callIDs = append(callIDs, e.CallID)
+		},
+		OnStepEnd: func(_ context.Context, e ObjectOnStepFinishEvent) {
+			order = append(order, "onStepFinish")
+			callIDs = append(callIDs, e.CallID)
+		},
+		OnEnd: func(_ context.Context, e ObjectOnFinishEvent) {
+			order = append(order, "onFinish")
+			callIDs = append(callIDs, e.CallID)
+			end = e
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"onStart", "onStepStart", "onStepFinish", "onFinish"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("order = %v", order)
+	}
+	if len(callIDs) != 4 || callIDs[0] == "" || callIDs[3] != callIDs[0] || callIDs[1] != callIDs[0] || callIDs[2] != callIDs[0] {
+		t.Fatalf("call ids = %v", callIDs)
+	}
+	wantResponse := GenerateStepResponse{ID: "id-0", ModelID: "mock-model-id", Timestamp: time.Unix(0, 0)}
+	if !reflect.DeepEqual(end.Object, map[string]interface{}{"content": "Hello, world!"}) || end.Error != nil || end.FinishReason != types.FinishReasonStop ||
+		!reflect.DeepEqual(end.ProviderMetadata, map[string]interface{}{"testProvider": map[string]interface{}{"testKey": "testValue"}}) ||
+		end.Reasoning != "" || !reflect.DeepEqual(end.Request, GenerateStepRequest{}) || !reflect.DeepEqual(end.Response, wantResponse) ||
+		*end.Usage.InputTokens != 3 || *end.Usage.OutputTokens != 10 || *end.Usage.TotalTokens != 13 || end.Warnings != nil {
+		t.Fatalf("valid onFinish = %+v", end)
+	}
+
+	end = ObjectOnFinishEvent{}
+	model = streamObjectModel(append(append([]provider.StreamChunk{meta}, textChunks(`{ `, `"invalid": `, `"Hello, `, `world`, `!"`, ` }`)...), finishChunk())...)
+	_, err = StreamObject(context.Background(), StreamObjectOptions{
+		Model: model, Prompt: "prompt", Schema: contentSchema(),
+		OnEnd: func(_ context.Context, e ObjectOnFinishEvent) { end = e },
+	})
+	var nog *NoObjectGeneratedError
+	if !errors.As(err, &nog) || nog.Message != "No object generated: response did not match schema." {
+		t.Fatalf("err = %v", err)
+	}
+	if end.Object != nil || end.Error == nil || end.Error.Error() != "No object generated: response did not match schema." || end.FinishReason != types.FinishReasonStop ||
+		end.ProviderMetadata != nil || !reflect.DeepEqual(end.Response, wantResponse) || *end.Usage.TotalTokens != 13 || end.Warnings != nil {
+		t.Fatalf("invalid onFinish = %+v", end)
+	}
+}
+
+// stream-object.test.ts output = "enum": 1501 'should not stream incorrect
+// values', 1534 'should handle ambiguous values', 1568 'should handle
+// non-ambiguous values'; output = "array" 1355 two elements in one chunk.
+func TestR72Gen_StreamObjectEnumAndArrayPartials(t *testing.T) {
+	enumDeltas := textChunks(`{ `, `"result": `, `"foo`, `bar`, `"`, ` }`)
+	cases := []struct {
+		name    string
+		values  []string
+		want    []interface{}
+		wantErr bool
+	}{
+		{"incorrect", []string{"sunny", "rainy", "snowy"}, nil, true},
+		{"ambiguous", []string{"foobar", "foobar2"}, []interface{}{"foo", "foobar"}, false},
+		{"non-ambiguous", []string{"foobar", "barfoo"}, []interface{}{"foobar"}, false},
+	}
+	for _, c := range cases {
+		var partials []interface{}
+		res, err := StreamObject(context.Background(), StreamObjectOptions{
+			Model: streamObjectModel(append(append([]provider.StreamChunk(nil), enumDeltas...), finishChunk())...), Prompt: "prompt",
+			OutputMode: ObjectModeEnum, EnumValues: c.values,
+			OnChunk: func(p interface{}) { partials = append(partials, p) },
+		})
+		if !reflect.DeepEqual(partials, c.want) {
+			t.Fatalf("%s: partials = %#v, want %#v", c.name, partials, c.want)
+		}
+		if c.wantErr {
+			if err == nil {
+				t.Fatalf("%s: want an error for a value outside the enum", c.name)
+			}
+			continue
+		}
+		if err != nil || res.EnumValue != "foobar" || res.Object != "foobar" {
+			t.Fatalf("%s: result = %+v, %v", c.name, res, err)
+		}
+	}
+
+	var partials []interface{}
+	var end ObjectOnFinishEvent
+	elementSchema := contentSchema()
+	res, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:  streamObjectModel(append(textChunks(`{"elements":[{"content":"element 1"},{"content":"element 2"}]}`), finishChunk())...),
+		Prompt: "prompt", Schema: elementSchema, OutputMode: ObjectModeArray,
+		OnChunk: func(p interface{}) { partials = append(partials, p) },
+		OnEnd:   func(_ context.Context, e ObjectOnFinishEvent) { end = e },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []interface{}{map[string]interface{}{"content": "element 1"}, map[string]interface{}{"content": "element 2"}}
+	if !reflect.DeepEqual(partials, []interface{}{want}) {
+		t.Fatalf("array partials = %#v", partials)
+	}
+	if !reflect.DeepEqual(res.Array, want) || !reflect.DeepEqual(res.Object, want) || !reflect.DeepEqual(end.Object, want) {
+		t.Fatalf("array result = %#v / %#v, onFinish = %#v", res.Array, res.Object, end.Object)
+	}
+}
+
+// TS step and result response.headers are the model response's headers. A
+// provider that reports them only in GenerateResult.ResponseHeaders next to a
+// ResponseMetadata without Headers (gmicloud, zai) still has them on the
+// response (generate-text.test.ts 2940 'should contain response body and
+// headers').
+func TestR72Gen_ResponseHeadersFromResponseHeadersField(t *testing.T) {
+	headers := map[string]string{"custom-response-header": "response-header-value"}
+	full := r72genText("Hello")
+	full.ResponseMetadata = &types.ResponseMetadata{ID: "id-0", ModelID: "m", Timestamp: time.Unix(0, 0)}
+	full.ResponseHeaders = headers
+	partial := r72genText("Hello")
+	partial.ResponseMetadata = &types.ResponseMetadata{ID: "id-0", ModelID: "m"}
+	partial.ResponseHeaders = headers
+	for name, r := range map[string]*types.GenerateResult{"complete metadata": full, "partial metadata": partial} {
+		res, err := GenerateText(context.Background(), GenerateTextOptions{Model: r72genSeqModel(t, r), Prompt: "p"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(res.Response.Headers, headers) || !reflect.DeepEqual(res.FinalStep.Response.Headers, headers) || res.Response.ID != "id-0" {
+			t.Fatalf("%s: response = %+v", name, res.Response)
+		}
+		obj, err := GenerateObject(context.Background(), GenerateObjectOptions{
+			Model:  r72genSeqModel(t, &types.GenerateResult{Text: `{"content":"x"}`, FinishReason: types.FinishReasonStop, ResponseMetadata: r.ResponseMetadata, ResponseHeaders: headers}),
+			Prompt: "p", Schema: contentSchema(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(obj.Response.Headers, headers) {
+			t.Fatalf("%s: object response = %+v", name, obj.Response)
+		}
+	}
+}

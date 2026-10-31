@@ -210,7 +210,7 @@ func responseMetadataFromGenerateResultWithID(model provider.LanguageModel, resu
 		return nil
 	}
 	meta := result.ResponseMetadata
-	if meta != nil && meta.ID != "" && !meta.Timestamp.IsZero() && meta.ModelID != "" {
+	if meta != nil && meta.ID != "" && !meta.Timestamp.IsZero() && meta.ModelID != "" && (meta.Headers != nil || result.ResponseHeaders == nil) {
 		return meta
 	}
 	if generateID == nil {
@@ -231,6 +231,12 @@ func responseMetadataFromGenerateResultWithID(model provider.LanguageModel, resu
 	}
 	if filled.ModelID == "" {
 		filled.ModelID = model.ModelID()
+	}
+	if filled.Headers == nil {
+		// TS response.headers: a provider that reports its HTTP headers
+		// only in ResponseHeaders (e.g. gmicloud, zai) still has them on
+		// the step and result response.
+		filled.Headers = result.ResponseHeaders
 	}
 	result.ResponseMetadata = &filled
 	return result.ResponseMetadata
