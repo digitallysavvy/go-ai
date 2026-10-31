@@ -1067,7 +1067,11 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			if isModelOutputChunkType(chunk.Type) {
 				sawOutput = true
 			}
-			if chunk.Type == provider.ChunkTypeText && chunk.Text == "" {
+			// An empty text delta is a UI text-delta only when it carries
+			// provider metadata (e.g. a Gemini thought signature): StreamText
+			// forwards just those, and TS toUIMessageChunk maps every
+			// text-delta with its providerMetadata.
+			if chunk.Type == provider.ChunkTypeText && chunk.Text == "" && len(chunk.ProviderMetadata) == 0 {
 				continue
 			}
 			if oneToOne && chunk.Type == provider.ChunkTypeStart {
