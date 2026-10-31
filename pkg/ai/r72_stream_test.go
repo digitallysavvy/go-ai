@@ -798,3 +798,49 @@ func TestR72StreamTransformedToolResultTwoSteps(t *testing.T) {
 		t.Fatalf("step 2 prompt tool message = %#v, want RESULT1", last)
 	}
 }
+
+// TS onStepFinish / onStepEnd receive the StepResult: its content,
+// performance and request (with include.requestMessages) are on the event,
+// equal to the recorded step; onEnd's request is the final step's.
+func TestR72StreamStepFinishEventCarriesContentPerformanceRequest(t *testing.T) {
+	var mu sync.Mutex
+	var events []OnStepFinishEvent
+	var end OnFinishEvent
+	tool := types.Tool{Name: "tool1", Parameters: r71streamValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "result1", nil
+	}}
+	r := r71streamRun(t, StreamTextOptions{
+		Model: r71streamModel(nil, r72streamToolCallStep, r72streamHelloStep), Prompt: "test-input",
+		Tools: []types.Tool{tool}, StopWhen: []StopCondition{StepCountIs(3)}, Internal: r72streamIDs(),
+		Include: &IncludeOptions{RequestMessages: true},
+		OnStepFinishEvent: func(_ context.Context, e OnStepFinishEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, e)
+		},
+		OnEndEvent: func(_ context.Context, e OnFinishEvent) { end = e },
+	})
+	steps := r.Steps()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 2 || len(steps) != 2 {
+		t.Fatalf("events = %d, steps = %d", len(events), len(steps))
+	}
+	for i, e := range events {
+		if !reflect.DeepEqual(e.Content, steps[i].Content) || len(e.Content) == 0 {
+			t.Fatalf("event %d content = %#v, want %#v", i, e.Content, steps[i].Content)
+		}
+		if !reflect.DeepEqual(e.Performance, steps[i].Performance) {
+			t.Fatalf("event %d performance = %#v, want %#v", i, e.Performance, steps[i].Performance)
+		}
+		if len(e.Request.Messages) == 0 || !reflect.DeepEqual(e.Request.Messages, steps[i].Request.Messages) {
+			t.Fatalf("event %d request messages = %#v, want %#v", i, e.Request.Messages, steps[i].Request.Messages)
+		}
+	}
+	if _, ok := events[0].Content[1].(types.ToolResultContent); !ok {
+		t.Fatalf("step 0 content = %#v, want a tool result", events[0].Content)
+	}
+	if !reflect.DeepEqual(end.Request.Messages, steps[1].Request.Messages) {
+		t.Fatalf("onEnd request messages = %#v", end.Request.Messages)
+	}
+}
