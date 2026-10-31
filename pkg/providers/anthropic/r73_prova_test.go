@@ -45,7 +45,7 @@ func r73provaAllTools() []types.Tool {
 		tools.Bash20241022(),
 		tools.TextEditor20241022(),
 		tools.TextEditor20250124(),
-		tools.TextEditor20250429(),
+		tools.TextEditor20250429(), //nolint:staticcheck // every constructor is covered, the deprecated one too
 		tools.CodeExecution20250522(),
 		tools.WebSearch20250305(tools.WebSearch20260209Config{MaxUses: r73provaIntPtr(5)}),
 		tools.WebFetch20250910(tools.WebFetch20260209Config{BlockedDomains: []string{"b.com"}}),
