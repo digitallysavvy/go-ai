@@ -854,7 +854,9 @@ func TestR72StreamUIToolMetadata(t *testing.T) {
 		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, RawFinishReason: "tool-calls", Usage: r72streamTestUsage},
 	}
 	tool := types.Tool{Name: "test-tool", Type: types.ToolTypeDynamic, Metadata: map[string]interface{}{"clientName": "MyMCPClient"}, Parameters: r71streamValueSchema,
-		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result", nil }}
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "result", nil
+		}}
 	r72streamAssertUI(t, StreamTextOptions{Model: r71streamModel(nil, steps), Prompt: "test-input", Tools: []types.Tool{tool}}, `[
 		{"type":"start"},
 		{"type":"start-step"},
