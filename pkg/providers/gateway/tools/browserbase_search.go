@@ -23,13 +23,20 @@ type BrowserbaseSearchTool types.Tool
 // browserbaseSearch/browserbaseSearchToolFactory
 // (packages/gateway/src/tool/browserbase-search.ts).
 func NewBrowserbaseSearch(config BrowserbaseSearchConfig) BrowserbaseSearchTool {
+	// The input schema is TS's z.object({query: z.string().min(1).max(200),
+	// num_results: z.number().int().min(1).max(25).optional()}) as zod's
+	// toJSONSchema renders it. Provider tool calls are validated against it.
 	properties := map[string]interface{}{
 		"query": map[string]interface{}{
 			"type":        "string",
+			"minLength":   1,
+			"maxLength":   200,
 			"description": "Web search query. Must be between 1 and 200 characters.",
 		},
 		"num_results": map[string]interface{}{
-			"type":        "number",
+			"type":        "integer",
+			"minimum":     1,
+			"maximum":     25,
 			"description": "Maximum number of results to return (1-25, default: 10).",
 		},
 	}
@@ -56,30 +63,94 @@ func NewBrowserbaseSearch(config BrowserbaseSearchConfig) BrowserbaseSearchTool 
 	return BrowserbaseSearchTool(tool)
 }
 
-func browserbaseSearchOutputSchema() map[string]interface{} {
-	resultProperties := map[string]interface{}{
-		"id":            map[string]interface{}{"type": "string"},
-		"title":         map[string]interface{}{"type": "string"},
-		"url":           map[string]interface{}{"type": "string"},
-		"author":        map[string]interface{}{"type": "string"},
-		"favicon":       map[string]interface{}{"type": "string"},
-		"image":         map[string]interface{}{"type": "string"},
-		"publishedDate": map[string]interface{}{"type": "string"},
-	}
-	return map[string]interface{}{
-		"oneOf": []interface{}{
-			map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"query":     map[string]interface{}{"type": "string"},
-					"requestId": map[string]interface{}{"type": "string"},
-					"results":   map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object", "properties": resultProperties}},
+// browserbaseSearchOutputSchemaJSON is the TS output schema (packages/gateway/src/tool/browserbase-search.ts) as zod's
+// toJSONSchema renders it (draft-07, io "input"). ValidateUIMessages checks
+// tool outputs against it, so nullable fields are anyOf [T, null] and the
+// required lists match zod's non-optional fields.
+const browserbaseSearchOutputSchemaJSON = `{
+	"anyOf": [
+		{
+			"type": "object",
+			"properties": {
+				"query": {
+					"type": "string"
 				},
-				"required": []string{"query", "requestId", "results"},
+				"requestId": {
+					"type": "string"
+				},
+				"results": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"id": {
+								"type": "string"
+							},
+							"title": {
+								"type": "string"
+							},
+							"url": {
+								"type": "string"
+							},
+							"author": {
+								"type": "string"
+							},
+							"favicon": {
+								"type": "string"
+							},
+							"image": {
+								"type": "string"
+							},
+							"publishedDate": {
+								"type": "string"
+							}
+						},
+						"required": [
+							"id",
+							"title",
+							"url"
+						]
+					}
+				}
 			},
-			searchErrorSchema([]string{"api_error", "configuration_error", "execution_error", "invalid_input", "rate_limit", "timeout", "unknown"}),
+			"required": [
+				"query",
+				"requestId",
+				"results"
+			]
 		},
-	}
+		{
+			"type": "object",
+			"properties": {
+				"error": {
+					"type": "string",
+					"enum": [
+						"api_error",
+						"configuration_error",
+						"execution_error",
+						"invalid_input",
+						"rate_limit",
+						"timeout",
+						"unknown"
+					]
+				},
+				"statusCode": {
+					"type": "number"
+				},
+				"message": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"error",
+				"message"
+			]
+		}
+	]
+}`
+
+func browserbaseSearchOutputSchema() map[string]interface{} {
+	return mustDecodeToolSchema(browserbaseSearchOutputSchemaJSON)
 }
 
 func browserbaseSearchArgs(config BrowserbaseSearchConfig) map[string]interface{} {

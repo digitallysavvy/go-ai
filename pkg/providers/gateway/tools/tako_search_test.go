@@ -89,12 +89,12 @@ func TestTakoSearchOutputSchemaOmitsInternalFields(t *testing.T) {
 func TestTakoSearchOutputSchemaErrorEnumIncludesUnknownTool(t *testing.T) {
 	tool := NewTakoSearch(TakoSearchConfig{}).ToTool()
 	output := tool.OutputSchema.(map[string]interface{})
-	variants := output["oneOf"].([]interface{})
+	variants := output["anyOf"].([]interface{})
 	if len(variants) != 2 {
 		t.Fatalf("output schema should match TS success/error union: %#v", output)
 	}
 	errorSchema := variants[1].(map[string]interface{})["properties"].(map[string]interface{})
-	errorEnum := errorSchema["error"].(map[string]interface{})["enum"].([]string)
+	errorEnum := r72provStrings(errorSchema["error"].(map[string]interface{})["enum"])
 	if !containsString(errorEnum, "unknown_tool") {
 		t.Fatalf("output error enum missing unknown_tool: %#v", errorEnum)
 	}

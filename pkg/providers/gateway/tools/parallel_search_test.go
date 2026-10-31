@@ -206,7 +206,7 @@ func TestParallelSearchSchemaMatchesTSOptionalFields(t *testing.T) {
 		t.Fatalf("fetch_policy schema = %#v", fetchPolicy)
 	}
 	output := tool.OutputSchema.(map[string]interface{})
-	variants := output["oneOf"].([]interface{})
+	variants := output["anyOf"].([]interface{})
 	if len(variants) != 2 {
 		t.Fatalf("output schema should match TS success/error union: %#v", output)
 	}

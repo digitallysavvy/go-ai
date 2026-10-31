@@ -183,18 +183,19 @@ func TestPerplexitySearchSchemaMatchesTSNumericFields(t *testing.T) {
 		}
 	}
 	query := properties["query"].(map[string]interface{})
-	for _, option := range query["oneOf"].([]map[string]interface{}) {
+	for _, raw := range query["anyOf"].([]interface{}) {
+		option := raw.(map[string]interface{})
 		if _, ok := option["maxItems"]; ok {
 			t.Fatalf("query schema should not include non-TS maxItems: %#v", query)
 		}
 	}
 	output := tool.OutputSchema.(map[string]interface{})
-	variants := output["oneOf"].([]interface{})
+	variants := output["anyOf"].([]interface{})
 	if len(variants) != 2 {
 		t.Fatalf("output schema should match TS success/error union: %#v", output)
 	}
 	errorProperties := variants[1].(map[string]interface{})["properties"].(map[string]interface{})
-	errorEnum := errorProperties["error"].(map[string]interface{})["enum"].([]string)
+	errorEnum := r72provStrings(errorProperties["error"].(map[string]interface{})["enum"])
 	if containsString(errorEnum, "configuration_error") {
 		t.Fatalf("perplexity output error enum should match TS: %#v", errorEnum)
 	}
