@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -147,3 +148,22 @@ func TestR73Integ_ParallelToolStartCallbacksInCallOrder(t *testing.T) {
 }
 
 func r73integIntPtr(v int) *int { return &v }
+
+// r73 integrator survivor test (gen fix 3): each finish part replaces the
+// call's provider metadata (TS stream-object.ts assigns
+// `providerMetadata = chunk.providerMetadata` in every 'finish'), so a later
+// finish part without metadata leaves none.
+func TestR73Integ_StreamObjectLastFinishPartMetadata(t *testing.T) {
+	first := finishChunk()
+	first.ProviderMetadata = json.RawMessage(`{"testProvider":{"key":"value"}}`)
+	chunks := append(textChunks(`{ "content": "x" }`), first, finishChunk())
+	res, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model: streamObjectModel(chunks...), Prompt: "prompt", Schema: contentSchema(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ProviderMetadata != nil {
+		t.Fatalf("ProviderMetadata = %#v, want nil (the last finish part has none)", res.ProviderMetadata)
+	}
+}
