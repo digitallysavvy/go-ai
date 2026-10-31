@@ -63,6 +63,9 @@ type converseArgs struct {
 	Warnings             []types.Warning
 	UsesJSONInstruction  bool
 	UsesJSONResponseTool bool
+	// ToolNames maps toolSpec names back to tool names (see
+	// preparedTools.ToolNames).
+	ToolNames map[string]string
 }
 
 // getArgs ports TS amazon-bedrock-chat-language-model.ts#getArgs.
@@ -235,6 +238,9 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 		toolsReasoningBudgetTokens = nil
 	}
 	prepared := prepareBedrockTools(toolsForPrep, toolChoiceForPrep, hasToolChoice, m.modelID, m.modelFamily(), toolsReasoningBudgetTokens, disableParallelToolUse, caps.RejectsForcedToolUse)
+	if prepared.Err != nil {
+		return nil, prepared.Err
+	}
 	warnings = append(warnings, prepared.Warnings...)
 	for k, v := range prepared.AdditionalTools {
 		additionalModelRequestFields[k] = v
@@ -471,6 +477,8 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 		filteredMessages = injectBedrockJSONInstruction(filteredMessages, providerutils.ResponseFormatJSONSchemaOrdered(opts.ResponseFormat.Schema))
 	}
 
+	filteredMessages = renameBedrockToolCalls(filteredMessages, prepared.ToolNames)
+
 	isMistral := isMistralModel(m.modelID)
 	system, messages, err := convertToBedrockChatMessages(filteredMessages, isMistral)
 	if err != nil {
@@ -525,7 +533,70 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 		Warnings:             warnings,
 		UsesJSONInstruction:  useJSONInstructionForStructuredOutput,
 		UsesJSONResponseTool: jsonResponseTool != nil,
+		ToolNames:            prepared.ToolNames,
 	}, nil
+}
+
+// renameBedrockToolCalls sends the history's calls of an Anthropic provider
+// tool under the toolSpec name the request declares for it (toolNames maps
+// toolSpec name -> tool name). Messages are copied, never modified in place.
+func renameBedrockToolCalls(messages []types.Message, toolNames map[string]string) []types.Message {
+	if len(toolNames) == 0 {
+		return messages
+	}
+	specName := make(map[string]string, len(toolNames))
+	for spec, name := range toolNames {
+		specName[name] = spec
+	}
+	out := make([]types.Message, len(messages))
+	for i, msg := range messages {
+		out[i] = msg
+		if msg.Role != types.RoleAssistant {
+			continue
+		}
+		var content []types.ContentPart
+		for j, part := range msg.Content {
+			tc, ok := part.(types.ToolCallContent)
+			if !ok {
+				continue
+			}
+			spec, ok := specName[tc.ToolName]
+			if !ok {
+				continue
+			}
+			if content == nil {
+				content = append([]types.ContentPart(nil), msg.Content...)
+			}
+			tc.ToolName = spec
+			content[j] = tc
+		}
+		if content != nil {
+			out[i].Content = content
+		}
+		if len(msg.ToolCalls) > 0 {
+			var calls []types.ToolCall
+			for j, call := range msg.ToolCalls {
+				if spec, ok := specName[call.ToolName]; ok {
+					if calls == nil {
+						calls = append([]types.ToolCall(nil), msg.ToolCalls...)
+					}
+					calls[j].ToolName = spec
+				}
+			}
+			if calls != nil {
+				out[i].ToolCalls = calls
+			}
+		}
+	}
+	return out
+}
+
+// bedrockToolName maps a toolSpec name the model called back to the tool name.
+func bedrockToolName(name string, toolNames map[string]string) string {
+	if mapped, ok := toolNames[name]; ok {
+		return mapped
+	}
+	return name
 }
 
 var openAIModelIDPattern = regexp.MustCompile(`^(?:[^.]+\.)?(openai\..+)$`)
@@ -847,6 +918,17 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	result, err := m.convertConverseResponse(respBody, args.UsesJSONInstruction, args.UsesJSONResponseTool)
 	if err != nil {
 		return nil, err
+	}
+	if len(args.ToolNames) > 0 {
+		for i := range result.ToolCalls {
+			result.ToolCalls[i].ToolName = bedrockToolName(result.ToolCalls[i].ToolName, args.ToolNames)
+		}
+		for i, part := range result.Content {
+			if tc, ok := part.(types.ToolCallContent); ok {
+				tc.ToolName = bedrockToolName(tc.ToolName, args.ToolNames)
+				result.Content[i] = tc
+			}
+		}
 	}
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Header)
 	result.RawRequest = args.Body
@@ -1220,6 +1302,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		finishReason:         types.FinishReasonInterrupted,
 		requestBody:          args.Body,
 		includeRawChunks:     opts.IncludeRawChunks,
+		toolNames:            args.ToolNames,
 	}
 	if dateHeader := resp.Header.Get("date"); dateHeader != "" {
 		if ts, err := time.Parse(time.RFC1123, dateHeader); err == nil {

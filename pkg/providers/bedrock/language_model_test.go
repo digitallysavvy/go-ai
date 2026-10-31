@@ -1192,26 +1192,30 @@ func TestPrepareTools_BuiltinToolsForwarded(t *testing.T) {
 	}
 }
 
-// TestPrepareTools_UnrecognizedAnthropicToolWarns verifies an Anthropic
-// provider tool built as a raw types.Tool literal (no ProviderOptions, e.g. a
-// caller-constructed value rather than one of the
-// pkg/providers/anthropic/tools constructors) produces an "unsupported"
-// warning naming the tool, instead of being silently dropped or sent with a
-// broken wire shape. Real self-serializing tools (see
-// TestPrepareTools_SelfSerializingAnthropicToolsForwarded) carry ProviderOptions
-// that implement anthropicAPIMapper and ARE forwarded — this test's tool
-// intentionally omits ProviderOptions to exercise the "can't derive a wire
-// name at all" fallback.
+// TestPrepareTools_UnrecognizedAnthropicToolWarns: a provider tool id
+// without an Anthropic tool factory is dropped with the Anthropic
+// prepareTools warning and the Bedrock "tool <id>" warning, as TS. A raw
+// literal named after a known id (no ProviderOptions) is sent like the
+// constructor's tool: TS finds its factory by id.
 func TestPrepareTools_UnrecognizedAnthropicToolWarns(t *testing.T) {
 	tools := []types.Tool{
-		{Name: "anthropic.computer_toolset_20260801", ProviderExecuted: true},
+		{Name: "anthropic.unknown_tool_20990101", ProviderExecuted: true},
 	}
 	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil, false)
 	if len(result.ToolConfig.Tools) != 0 {
 		t.Fatalf("expected the unrecognized tool to be dropped, got %#v", result.ToolConfig.Tools)
 	}
-	if len(result.Warnings) != 1 || result.Warnings[0].Feature != "tool anthropic.computer_toolset_20260801" {
-		t.Fatalf("warnings = %#v, want a single 'tool anthropic.computer_toolset_20260801' warning", result.Warnings)
+	if len(result.Warnings) != 2 || result.Warnings[0].Feature != "provider-defined tool anthropic.unknown_tool_20990101" ||
+		result.Warnings[1].Feature != "tool anthropic.unknown_tool_20990101" {
+		t.Fatalf("warnings = %#v, want the provider-defined tool and tool warnings", result.Warnings)
+	}
+
+	literal := prepareBedrockTools([]types.Tool{{Name: "anthropic.computer_toolset_20260801", ProviderExecuted: true}}, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil, false)
+	if len(literal.Warnings) != 0 || len(literal.ToolConfig.Tools) != 1 {
+		t.Fatalf("literal toolset: tools %#v warnings %#v", literal.ToolConfig.Tools, literal.Warnings)
+	}
+	if name := literal.ToolConfig.Tools[0]["toolSpec"].(map[string]interface{})["name"]; name != "computer" {
+		t.Fatalf("literal toolset name = %v, want computer", name)
 	}
 }
 
