@@ -1212,6 +1212,138 @@ func TestR73StreamApprovedResume(t *testing.T) {
 	})
 }
 
+// TS 32527: tool execution approval > should emit denied output without
+// duplicating an existing execution-denied result.
+func TestR73StreamDeniedWithExistingExecutionDeniedResult(t *testing.T) {
+	executed := false
+	tool := r71streamTool1(true, nil, nil)
+	tool.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		executed = true
+		return nil, nil
+	}
+	history := r71genApprovalHistory(false, "User denied the request", types.ToolResultContent{ToolCallID: "call-1", ToolName: "tool1",
+		Output: &types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: "User denied the request"}})
+	var prompts [][]types.Message
+	opts := StreamTextOptions{Model: r73streamPromptModel(&prompts, r72streamHelloStep), Messages: history,
+		StopWhen: []StopCondition{StepCountIs(3)}, Internal: r72streamIDs(), Tools: []types.Tool{tool},
+		ToolApproval: map[string]types.ToolApprovalValue{"tool1": types.ToolApprovalStatusUserApproval}, OnError: func(context.Context, error) {}}
+	r, err := StreamText(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, errs := r.ToUIMessageStream(context.Background())
+	var denied []UIMessageChunk
+	for c := range ch {
+		if c["type"] == "tool-output-denied" {
+			denied = append(denied, c)
+		}
+	}
+	for range errs {
+	}
+	if len(denied) != 1 || denied[0]["toolCallId"] != "call-1" || len(denied[0]) != 2 {
+		t.Errorf("denied chunks = %v", denied)
+	}
+	pb, _ := json.Marshal(prompts)
+	if n := strings.Count(string(pb), "execution-denied"); n != 1 {
+		t.Errorf("execution-denied in prompts = %d, want 1: %s", n, pb)
+	}
+	rb, _ := json.Marshal(r.ResponseMessages())
+	if n := strings.Count(string(rb), "execution-denied"); n != 0 {
+		t.Errorf("execution-denied in response messages = %d, want 0: %s", n, rb)
+	}
+	if executed {
+		t.Error("denied tool was executed")
+	}
+}
+
+// TS 32986 / 33032 / 33157 / 33203 / 33215: provider-executed tool (MCP)
+// approval resumed from messages: the approval response reaches the model
+// exactly once (the request is not sent), and the content holds the provider
+// result (approved) or only the model's text (denied).
+func TestR73StreamProviderExecutedApprovalResume(t *testing.T) {
+	mcp := types.Tool{Name: "mcp_tool", Type: types.ToolTypeProviderDefined, ProviderID: "test.mcp_tool", ProviderExecuted: true,
+		Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"query": map[string]interface{}{"type": "string"}}, "required": []interface{}{"query"}}}
+	history := func(approved bool, reason string) []types.Message {
+		return []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Shorten this URL: https://example.com"}}},
+			{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "mcp-call-1", ToolName: "mcp_tool", Arguments: map[string]interface{}{"query": "test"}, ProviderExecuted: true},
+				types.ToolApprovalRequestContent{ApprovalID: "mcp-approval-1", ToolCallID: "mcp-call-1"},
+			}},
+			{Role: types.RoleTool, Content: []types.ContentPart{types.ToolApprovalResponseContent{ApprovalID: "mcp-approval-1", Approved: approved, Reason: reason, ProviderExecuted: true, ProviderExecutedSet: true}}},
+		}
+	}
+	checkPrompt := func(t *testing.T, prompt []types.Message, approved bool, reason string) {
+		t.Helper()
+		if len(prompt) != 3 {
+			t.Fatalf("prompt = %#v", prompt)
+		}
+		if a := prompt[1]; a.Role != types.RoleAssistant || len(a.Content) != 1 {
+			t.Fatalf("assistant message = %#v, want only the tool call", a)
+		} else if c, ok := a.Content[0].(types.ToolCallContent); !ok || c.ToolCallID != "mcp-call-1" || !c.ProviderExecuted {
+			t.Fatalf("assistant content = %#v", a.Content[0])
+		}
+		tm := prompt[2]
+		if tm.Role != types.RoleTool || len(tm.Content) != 1 {
+			t.Fatalf("tool message = %#v, want exactly one approval response", tm)
+		}
+		resp, ok := tm.Content[0].(types.ToolApprovalResponseContent)
+		if !ok || resp.ApprovalID != "mcp-approval-1" || resp.Approved != approved || resp.Reason != reason {
+			t.Fatalf("tool content = %#v", tm.Content[0])
+		}
+	}
+	t.Run("approved", func(t *testing.T) {
+		step := []provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "mcp-call-1", ToolName: "mcp_tool", Arguments: map[string]interface{}{"query": "test"}, RawArguments: `{ "query": "test" }`, ProviderExecuted: true, ProviderExecutedSet: true}},
+			{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "mcp-call-1", ToolName: "mcp_tool", Result: map[string]interface{}{"shortened_url": "https://short.url/abc"}, ProviderExecuted: true, ProviderExecutedSet: true}},
+			{Type: provider.ChunkTypeTextStart, ID: "1"},
+			{Type: provider.ChunkTypeText, ID: "1", Text: "Here is your shortened URL: https://short.url/abc"},
+			{Type: provider.ChunkTypeTextEnd, ID: "1"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+		}
+		var prompts [][]types.Message
+		r := r71streamRun(t, StreamTextOptions{Model: r73streamPromptModel(&prompts, step), Messages: history(true, ""), Tools: []types.Tool{mcp}, Internal: r72streamIDs()})
+		if len(prompts) != 1 {
+			t.Fatalf("model calls = %d", len(prompts))
+		}
+		checkPrompt(t, prompts[0], true, "")
+		content := r.Content()
+		if len(content) != 3 {
+			t.Fatalf("content = %#v", content)
+		}
+		if c, ok := content[0].(types.ToolCallContent); !ok || c.ToolCallID != "mcp-call-1" || !c.ProviderExecuted || !reflect.DeepEqual(c.Arguments, map[string]interface{}{"query": "test"}) {
+			t.Errorf("content[0] = %#v", content[0])
+		}
+		if c, ok := content[1].(types.ToolResultContent); !ok || c.ToolCallID != "mcp-call-1" || !c.ProviderExecuted || c.Output == nil ||
+			!reflect.DeepEqual(c.Output.Value, map[string]interface{}{"shortened_url": "https://short.url/abc"}) || !reflect.DeepEqual(c.Input, map[string]interface{}{"query": "test"}) {
+			t.Errorf("content[1] = %#v", content[1])
+		}
+		if c, ok := content[2].(types.TextContent); !ok || c.Text != "Here is your shortened URL: https://short.url/abc" {
+			t.Errorf("content[2] = %#v", content[2])
+		}
+	})
+	t.Run("denied", func(t *testing.T) {
+		step := r73streamTextStep("I understand. The tool execution was not approved.")
+		var prompts [][]types.Message
+		r := r71streamRun(t, StreamTextOptions{Model: r73streamPromptModel(&prompts, step), Messages: history(false, "User denied the request"), Tools: []types.Tool{mcp}, Internal: r72streamIDs()})
+		if len(prompts) != 1 {
+			t.Fatalf("model calls = %d", len(prompts))
+		}
+		checkPrompt(t, prompts[0], false, "User denied the request")
+		content := r.Content()
+		if len(content) != 1 {
+			t.Fatalf("content = %#v", content)
+		}
+		if c, ok := content[0].(types.TextContent); !ok || c.Text != "I understand. The tool execution was not approved." {
+			t.Errorf("content[0] = %#v", content[0])
+		}
+		if r.FinishReason() != types.FinishReasonStop {
+			t.Errorf("finishReason = %q", r.FinishReason())
+		}
+	})
+}
+
 // r73streamPUICasesJSON was extracted from ai/packages/ai/src/ui/process-ui-message-stream.test.ts
 // at e64ed82f27: per case the scripted chunks, the initial state and the
 // assertion values (vitest inline snapshots parsed, undefined dropped).
