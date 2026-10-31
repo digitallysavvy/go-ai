@@ -181,7 +181,10 @@ searchTool := openaitool.ToolSearch(openaitool.ToolSearchArgs{
         "required": []string{"query"},
     },
     Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
-        query, _ := input["query"].(string)
+        // The call input is {arguments, call_id}; arguments match Parameters.
+        args, _ := input["arguments"].(map[string]interface{})
+        query, _ := args["query"].(string)
+        _ = query
         // Return tool names matching the query
         return []string{"get_weather", "search_web"}, nil
     },

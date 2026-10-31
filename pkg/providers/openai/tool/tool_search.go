@@ -74,7 +74,11 @@ type ToolSearchOptions struct {
 //	        },
 //	    },
 //	    Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
-//	        query, _ := input["query"].(string)
+//	        // The call input is {arguments, call_id} (TS toolSearchInputSchema);
+//	        // the search arguments match Parameters.
+//	        args, _ := input["arguments"].(map[string]interface{})
+//	        query, _ := args["query"].(string)
+//	        _ = query
 //	        return []string{"get_weather", "search_web"}, nil
 //	    },
 //	})
