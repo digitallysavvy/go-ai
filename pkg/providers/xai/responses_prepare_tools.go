@@ -1,8 +1,6 @@
 package xai
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -15,17 +13,18 @@ import (
 // xaiToolArgsNodes are the TS args schemas prepareResponsesTools validates
 // with validateTypes (xai/src/tool/*.ts: webSearchArgsSchema,
 // xSearchArgsSchema, imageGenerationArgsSchema, fileSearchArgsSchema,
-// mcpServerArgsSchema), minus the array length limits in xaiToolArgsMaxItems.
+// mcpServerArgsSchema), with the .max(n) limits: at most 5 web search
+// domains and 20 X handles (#22225).
 var xaiToolArgsNodes = map[string]zodlite.Node{
 	"xai.web_search": zodlite.Object(
-		zodlite.F("allowedDomains", zodlite.Optional(zodlite.Array(zodlite.String))),
-		zodlite.F("excludedDomains", zodlite.Optional(zodlite.Array(zodlite.String))),
+		zodlite.F("allowedDomains", zodlite.Optional(zodlite.MaxItems(zodlite.Array(zodlite.String), 5))),
+		zodlite.F("excludedDomains", zodlite.Optional(zodlite.MaxItems(zodlite.Array(zodlite.String), 5))),
 		zodlite.F("enableImageSearch", zodlite.Optional(zodlite.Boolean)),
 		zodlite.F("enableImageUnderstanding", zodlite.Optional(zodlite.Boolean)),
 	),
 	"xai.x_search": zodlite.Object(
-		zodlite.F("allowedXHandles", zodlite.Optional(zodlite.Array(zodlite.String))),
-		zodlite.F("excludedXHandles", zodlite.Optional(zodlite.Array(zodlite.String))),
+		zodlite.F("allowedXHandles", zodlite.Optional(zodlite.MaxItems(zodlite.Array(zodlite.String), 20))),
+		zodlite.F("excludedXHandles", zodlite.Optional(zodlite.MaxItems(zodlite.Array(zodlite.String), 20))),
 		zodlite.F("fromDate", zodlite.Optional(zodlite.String)),
 		zodlite.F("toDate", zodlite.Optional(zodlite.String)),
 		zodlite.F("enableImageUnderstanding", zodlite.Optional(zodlite.Boolean)),
@@ -46,16 +45,6 @@ var xaiToolArgsNodes = map[string]zodlite.Node{
 		zodlite.F("headers", zodlite.Optional(zodlite.RecordOf(zodlite.String))),
 		zodlite.F("authorization", zodlite.Optional(zodlite.String)),
 	),
-}
-
-// xaiToolArgsMaxItems are the .max(n) limits of the TS args schemas, in
-// schema order: at most 5 web search domains and 20 X handles (#22225).
-var xaiToolArgsMaxItems = map[string][]struct {
-	key string
-	max int
-}{
-	"xai.web_search": {{"allowedDomains", 5}, {"excludedDomains", 5}},
-	"xai.x_search":   {{"allowedXHandles", 20}, {"excludedXHandles", 20}},
 }
 
 // validateXAIResponsesToolArgs mirrors the validateTypes call TS
@@ -79,9 +68,6 @@ func validateXAIResponsesToolArgs(tools []types.Tool) error {
 		}
 		msg := zodlite.ValidationMessage(node, string(data))
 		if msg == "" {
-			msg = xaiMaxItemsMessage(id, data)
-		}
-		if msg == "" {
 			continue
 		}
 		valueText := ""
@@ -95,33 +81,6 @@ func validateXAIResponsesToolArgs(tools []types.Tool) error {
 		}
 	}
 	return nil
-}
-
-// xaiMaxItemsMessage renders the TS TypeValidationError for args whose
-// arrays exceed the schema's .max(n): one zod v4 too_big issue per array, as
-// ZodError.message (JSON.stringify(issues, null, 2)) lists them. It returns
-// "" when every array is within its limit.
-func xaiMaxItemsMessage(id string, data []byte) string {
-	var args map[string]interface{}
-	if err := json.Unmarshal(data, &args); err != nil {
-		return ""
-	}
-	var issues []string
-	for _, limit := range xaiToolArgsMaxItems[id] {
-		list, ok := args[limit.key].([]interface{})
-		if !ok || len(list) <= limit.max {
-			continue
-		}
-		issues = append(issues, fmt.Sprintf(`{"origin":"array","code":"too_big","maximum":%d,"inclusive":true,"path":[%q],"message":"Too big: expected array to have <=%d items"}`, limit.max, limit.key, limit.max))
-	}
-	if len(issues) == 0 {
-		return ""
-	}
-	var pretty bytes.Buffer
-	if err := json.Indent(&pretty, []byte("["+strings.Join(issues, ",")+"]"), "", "  "); err != nil {
-		return ""
-	}
-	return "Type validation failed: Value: " + string(data) + ".\nError message: " + pretty.String()
 }
 
 // xaiToolArgs returns the TS args of an xAI provider tool: the typed Go

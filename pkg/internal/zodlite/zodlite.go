@@ -31,6 +31,10 @@ type Issue struct {
 	Discriminator string
 	// Keys is the unrecognized_keys "keys" list (a strict object).
 	Keys []string
+	// Origin and Maximum shape a too_big issue ({origin, code, maximum,
+	// inclusive: true}).
+	Origin  string
+	Maximum int
 	// Errors holds, for a plain invalid_union issue, each member's first
 	// issue with paths relative to the union value (zod v4 nested `errors`).
 	Errors [][]*Issue
@@ -90,6 +94,8 @@ func (i *Issue) json() []byte {
 		parts = append(parts, `"code":`+enc(i.Code), `"values":`+enc(vals))
 	case i.Code == "unrecognized_keys":
 		parts = append(parts, `"code":`+enc(i.Code), `"keys":`+enc(i.Keys))
+	case i.Code == "too_big":
+		parts = append(parts, `"origin":`+enc(i.Origin), `"code":`+enc(i.Code), `"maximum":`+strconv.Itoa(i.Maximum), `"inclusive":true`)
 	case i.Discriminator != "":
 		parts = append(parts, `"code":`+enc(i.Code), `"errors":[]`, `"note":"No matching discriminator"`, `"discriminator":`+enc(i.Discriminator))
 	case i.Code == "invalid_union":
@@ -263,6 +269,21 @@ func Array(n Node) Node {
 			bad = append(bad, n(e, true, append(append([]interface{}{}, path...), i)))
 		}
 		return join(bad)
+	}
+}
+
+// MaxItems is n (an array schema) with .max(max). Like zod v4, the element
+// issues come first and a too_big issue follows when the array is longer
+// than max, so both are reported.
+func MaxItems(n Node, max int) Node {
+	return func(v interface{}, present bool, path []interface{}) *Issue {
+		bad := n(v, present, path)
+		a, ok := v.([]interface{})
+		if !ok || len(a) <= max {
+			return bad
+		}
+		tooBig := &Issue{Path: path, Code: "too_big", Origin: "array", Maximum: max, Message: "Too big: expected array to have <=" + strconv.Itoa(max) + " items"}
+		return join([]*Issue{bad, tooBig})
 	}
 }
 
