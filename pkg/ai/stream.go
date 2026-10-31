@@ -3454,6 +3454,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			stepResult.DynamicToolResults = filterDynamicToolResults(publicStepToolResults)
 			stepResult.Sources = append([]types.SourceContent(nil), rec.sources...)
 			stepFiles = append([]types.GeneratedFileContent(nil), rec.files...)
+			stepResult.Files = stepFiles
 			stepResult.FinishReason = fs.FinishReason
 			stepResult.RawFinishReason = fs.RawFinishReason
 			if fs.Usage != nil {

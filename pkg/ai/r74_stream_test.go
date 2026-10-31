@@ -590,3 +590,61 @@ func TestR74StreamAutomaticApprovalPromptAndResponseMessages(t *testing.T) {
 		})
 	}
 }
+
+// With experimental_transform the recorded step follows the transformed
+// stream (TS eventProcessor records after the transforms), its files
+// included: a transform that drops a file part leaves it out of the step's
+// Files as well as its content, the result's Files() and the end event.
+func TestR74StreamTransformedStepFiles(t *testing.T) {
+	steps := []provider.StreamChunk{
+		{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: "text/plain", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "SGVsbG8="}}},
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello!"},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: "image/jpeg", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "QkFVRw=="}}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+	}
+	dropText := func(_ context.Context, c provider.StreamChunk) []provider.StreamChunk {
+		if c.Type == provider.ChunkTypeFile && c.GeneratedFileContent != nil && c.GeneratedFileContent.MediaType == "text/plain" {
+			return nil
+		}
+		return []provider.StreamChunk{c}
+	}
+	var mu sync.Mutex
+	var end OnFinishEvent
+	var stepEvents []OnStepFinishEvent
+	var stepResults []types.StepResult
+	r := r71streamRun(t, StreamTextOptions{
+		Model: r71streamModel(nil, steps), Prompt: "test-input",
+		ExperimentalTransform: []StreamTransformFunc{dropText},
+		OnEndEvent:            func(_ context.Context, e OnFinishEvent) { mu.Lock(); end = e; mu.Unlock() },
+		OnStepFinishEvent: func(_ context.Context, e OnStepFinishEvent) {
+			mu.Lock()
+			stepEvents = append(stepEvents, e)
+			mu.Unlock()
+		},
+		OnStepFinish: func(_ context.Context, s types.StepResult, _ interface{}) {
+			mu.Lock()
+			stepResults = append(stepResults, s)
+			mu.Unlock()
+		},
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	only := func(label string, files []types.GeneratedFileContent) {
+		t.Helper()
+		if len(files) != 1 || files[0].MediaType != "image/jpeg" {
+			t.Fatalf("%s = %+v, want only the image/jpeg file", label, files)
+		}
+	}
+	only("Steps()[0].Files", r.Steps()[0].Files)
+	only("FinalStep().Files", r.FinalStep().Files)
+	only("Files()", r.Files())
+	only("onStepFinish step Files", stepResults[0].Files)
+	only("step event Files", stepEvents[0].Files)
+	only("onEnd Files", end.Files)
+	only("onEnd Steps[0].Files", end.Steps[0].Files)
+	if kinds := len(r.Steps()[0].Content); kinds != 2 {
+		t.Fatalf("step content = %#v", r.Steps()[0].Content)
+	}
+}
