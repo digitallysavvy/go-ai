@@ -1292,7 +1292,7 @@ func (i OpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCallEndEve
 			entry.span.SetAttributes(attribute.String("ai.ranking.type", e.DocumentsType))
 		}
 		if e.Settings.ShouldRecordOutputs() && len(e.Ranking) > 0 {
-			entry.span.SetAttributes(attribute.StringSlice("ai.ranking", jsonStringifyEach(e.Ranking)))
+			entry.span.SetAttributes(attribute.StringSlice("ai.ranking", rankingJSONEach(e.Ranking)))
 		}
 	}
 	entry.span.End()
