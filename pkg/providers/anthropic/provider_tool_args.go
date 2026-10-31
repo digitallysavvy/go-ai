@@ -7,6 +7,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // restoreProviderToolOptions mirrors TS prepareTools, which builds each
@@ -15,10 +16,11 @@ import (
 // it (for example one rebuilt from its serialized form by
 // workflow.ResolveSerializableTools, which keeps only id and args) gets it
 // back from ProviderArgs, so it is sent like the constructor's tool instead of
-// being dropped as unsupported. Tools that already carry Anthropic options,
-// tools named differently from their id, and unknown ids are returned as is.
+// being dropped as unsupported. Tools that already carry Anthropic options and
+// unknown ids are returned as is. The tool's Name (TS: its key in the tools
+// record) may differ from its id.
 func restoreProviderToolOptions(t types.Tool) (types.Tool, error) {
-	if t.Type != types.ToolTypeProviderDefined || t.ProviderID == "" || t.Name != t.ProviderID {
+	if t.Type != types.ToolTypeProviderDefined || t.ProviderID == "" {
 		return t, nil
 	}
 	if _, ok := t.ProviderOptions.(anthropicAPIMapper); ok {
@@ -119,4 +121,61 @@ func restoreProviderToolOptions(t types.Tool) (types.Tool, error) {
 	}
 	t.ProviderOptions = rebuilt.ProviderOptions
 	return t, nil
+}
+
+// ProviderToolID returns the TS tool id that selects an Anthropic provider
+// tool: ProviderID for a provider tool (Type "provider"), otherwise the tool
+// Name, since the constructors in pkg/providers/anthropic/tools name each tool
+// after its id ("anthropic.bash_20250124"). TS switches on tool.id and lets
+// the caller choose the name (the tools record key), so a provider tool
+// renamed to, for example, "bash" is still that provider tool.
+func ProviderToolID(t types.Tool) string {
+	if t.Type == types.ToolTypeProviderDefined && t.ProviderID != "" {
+		return t.ProviderID
+	}
+	return t.Name
+}
+
+// anthropicToolNames mirrors the TS createToolNameMapping with the Anthropic
+// providerToolNames table, plus getAnthropicToolsetNames: custom tool names
+// (the tool Name) of the provider tools in the request map to and from their
+// Anthropic wire names, found by tool id.
+type anthropicToolNames struct {
+	toProvider map[string]string
+	toCustom   map[string]string
+	toolsets   map[string]string
+}
+
+func newAnthropicToolNames(tools []types.Tool) anthropicToolNames {
+	n := anthropicToolNames{toProvider: map[string]string{}, toCustom: map[string]string{}, toolsets: map[string]string{}}
+	for _, t := range tools {
+		id := ProviderToolID(t)
+		if id == "anthropic.computer_toolset_20260801" {
+			n.toolsets[t.Name] = "computer"
+		}
+		if wire := prompt.AnthropicProviderToolName(id); wire != id {
+			n.toProvider[t.Name] = wire
+			n.toCustom[wire] = t.Name
+		}
+	}
+	return n
+}
+
+// providerName maps a custom tool name to its Anthropic wire name. Names of
+// tools not in the request fall back to the id table, so history that names
+// a provider tool by its id ("anthropic.bash_20250124") still converts.
+func (n anthropicToolNames) providerName(name string) string {
+	if wire, ok := n.toProvider[name]; ok {
+		return wire
+	}
+	return prompt.AnthropicProviderToolName(name)
+}
+
+// customNames is the wire name -> custom name map the response parsers use
+// (nil when no provider tool is mapped).
+func (n anthropicToolNames) customNames() map[string]string {
+	if len(n.toCustom) == 0 {
+		return nil
+	}
+	return n.toCustom
 }

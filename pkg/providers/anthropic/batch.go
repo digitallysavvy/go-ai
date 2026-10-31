@@ -19,6 +19,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // Batch implements provider.BatchV4 for the Anthropic Message Batches API
@@ -526,6 +527,15 @@ func findAliasedAnthropicProviderTool(tools []types.Tool, toolsetNames map[strin
 		}
 		if mapped, ok := toolsetNames[t.Name]; ok && mapped != t.Name {
 			return t.Name
+		}
+		// A provider tool renamed from its id (TS: a tools record key that
+		// differs from the wire name, e.g. "search" for web_search) cannot be
+		// restored either. Tools keeping the constructor's id as their name
+		// stay accepted: their batch results carry the wire name.
+		if id := ProviderToolID(t); id != t.Name {
+			if wire := prompt.AnthropicProviderToolName(id); wire != id && wire != t.Name {
+				return t.Name
+			}
 		}
 	}
 	return ""

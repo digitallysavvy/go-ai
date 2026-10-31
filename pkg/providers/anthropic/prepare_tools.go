@@ -134,10 +134,12 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 			out.err = err
 			return out
 		}
+		// TS selects provider tools by id; the Name is the caller's choice.
+		id := ProviderToolID(t)
 		// Self-serializing provider tools carry their own args (advisor model,
 		// max_uses, ... ) and win over the plain builtin table entry.
 		if mapper, ok := t.ProviderOptions.(anthropicAPIMapper); ok && t.ProviderOptions != nil {
-			if _, builtin := anthropicBuiltinToolTypes[t.Name]; builtin {
+			if _, builtin := anthropicBuiltinToolTypes[id]; builtin {
 				if v, ok := t.ProviderOptions.(interface{ Validate() error }); ok {
 					if err := v.Validate(); err != nil {
 						out.err = &providererrors.TypeValidationError{Field: "args", Message: err.Error(), Cause: err}
@@ -145,14 +147,14 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 					}
 				}
 				wire = append(wire, mapper.ToAnthropicAPIMap())
-				if b, ok := providerToolBetas[t.Name]; ok {
+				if b, ok := providerToolBetas[id]; ok {
 					addBeta(b)
 				}
 				continue
 			}
 		}
 		// Simple builtin provider tools.
-		if def, ok := anthropicBuiltinToolTypes[t.Name]; ok {
+		if def, ok := anthropicBuiltinToolTypes[id]; ok {
 			m := map[string]interface{}{"type": def.apiType}
 			if def.name != "" {
 				m["name"] = def.name
@@ -160,7 +162,7 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 			if cc := validator.GetCacheControl(toolCacheControlOptions(t), "tool definition", true); cc != nil {
 				m["cache_control"] = cc
 			}
-			if b, ok := providerToolBetas[t.Name]; ok {
+			if b, ok := providerToolBetas[id]; ok {
 				addBeta(b)
 			}
 			wire = append(wire, m)
@@ -175,7 +177,7 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 				}
 			}
 			wire = append(wire, mapper.ToAnthropicAPIMap())
-			if b, ok := providerToolBetas[t.Name]; ok {
+			if b, ok := providerToolBetas[id]; ok {
 				addBeta(b)
 			}
 			continue
@@ -184,10 +186,6 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 			// Anthropic function names cannot contain ".", so an
 			// "anthropic.*" name is always a provider tool id; unknown ids
 			// get exactly one warning, as in TS.
-			id := t.ProviderID
-			if id == "" {
-				id = t.Name
-			}
 			out.warnings = append(out.warnings, types.Warning{Type: "unsupported", Feature: "provider-defined tool " + id})
 			continue
 		}
