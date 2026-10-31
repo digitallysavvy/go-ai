@@ -162,3 +162,27 @@ func TestR72agentDispatcherAddsAIVersion(t *testing.T) {
 		t.Fatalf("starts = %+v", rec.starts)
 	}
 }
+
+type r72agentStepFinishIntegration struct {
+	r72agentIntegration
+}
+
+func (i *r72agentStepFinishIntegration) OnStepFinish(ctx context.Context, e TelemetryStepFinishEvent) {
+	i.rec.add(i.name + ":stepFinish")
+}
+
+// TS "fans out step-end events to deprecated onStepFinish integrations":
+// the dispatcher's onStepEnd is mergeCallbacks(onStepEnd, onStepFinish), so
+// every integration's OnStepEnd runs before the deprecated OnStepFinish
+// handlers, and a panicking OnStepEnd does not skip its OnStepFinish.
+func TestR72agentDispatcherStepEndFansOutToDeprecatedStepFinish(t *testing.T) {
+	r72agentWithGlobals(t)
+	rec := &r72agentRec{}
+	a := &r72agentStepFinishIntegration{r72agentIntegration{name: "a", rec: rec, panics: true}}
+	b := &r72agentIntegration{name: "b", rec: rec}
+	FireOnStepEnd(context.Background(), TelemetryStepEndEvent{CallID: "c", Settings: &Settings{Integrations: []TelemetryIntegration{a, b}}})
+	want := []string{"a:stepEnd", "b:stepEnd", "a:stepFinish"}
+	if got := rec.get(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %v", got)
+	}
+}
