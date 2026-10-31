@@ -3199,28 +3199,31 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 			Dynamic:          result.Dynamic,
 			Preliminary:      result.Preliminary,
 		}
+		// TS step content tool-result `output` is the raw tool output: Go
+		// keeps it in Result next to the model-facing Output (as
+		// ai.toolResultsToContentParts), unless the raw value is itself a
+		// ToolResultOutput.
+		switch result.Result.(type) {
+		case types.ToolResultOutput, *types.ToolResultOutput:
+			part.Result = nil
+		}
 		switch output := modelFacingToolResultOutput(result); output.Type {
 		case "":
 		case types.ToolResultOutputText, types.ToolResultOutputJSON, types.ToolResultOutputContent, types.ToolResultOutputError, types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON, types.ToolResultOutputExecutionDenied:
 			part.Output = &output
-			part.Result = nil
 		}
 		if part.Output == nil {
 			switch output := result.Result.(type) {
 			case types.ToolResultOutput:
 				part.Output = &output
-				part.Result = nil
 			case *types.ToolResultOutput:
 				part.Output = output
-				part.Result = nil
 			case string:
 				part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: output}
-				part.Result = nil
 			default:
 				// TS createToolModelOutput: the output's JSON value
 				// (toJSONValue), not the Go value itself.
 				part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: agentToJSONValue(result.Result)}
-				part.Result = nil
 			}
 		}
 		*parts = append(*parts, part)

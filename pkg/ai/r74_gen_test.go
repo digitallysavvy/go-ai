@@ -708,3 +708,53 @@ func TestR74Gen_UsageTotalTokensFilled(t *testing.T) {
 		wantTotal(t, "object", res.Usage, 13)
 	})
 }
+
+// stream CR-1 (r74): TS step content tool-result `output` is the raw tool
+// output, whatever toModelOutput returns; the model output is only in the
+// response messages. Go keeps the raw value in Result next to Output.
+func TestR74Gen_StepContentToolResultKeepsRawOutput(t *testing.T) {
+	tool := types.Tool{
+		Name:       "tool1",
+		Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return map[string]interface{}{"public": "p", "secret": "s"}, nil
+		},
+		ToModelOutput: func(_ context.Context, o types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
+			return &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "model sees p"}, nil
+		},
+	}
+	plain := r72genValueTool("tool2")
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r72genSeqModel(t,
+			r72genCalls(
+				types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{}},
+				types.ToolCall{ID: "call-2", ToolName: "tool2", Arguments: map[string]interface{}{"value": "v"}}),
+			r72genText("done")),
+		Prompt:   "go",
+		Tools:    []types.Tool{tool, plain},
+		StopWhen: []StopCondition{StepCountIs(2)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]types.ToolResultContent{}
+	for _, p := range res.Steps[0].Content {
+		if tr, ok := p.(types.ToolResultContent); ok {
+			got[tr.ToolCallID] = tr
+		}
+	}
+	if tr := got["call-1"]; !reflect.DeepEqual(tr.Result, map[string]interface{}{"public": "p", "secret": "s"}) || tr.Output == nil || tr.Output.Value != "model sees p" {
+		t.Fatalf("call-1 content = %+v", tr)
+	}
+	if tr := got["call-2"]; tr.Result != "v-result" || tr.Output == nil || tr.Output.Type != types.ToolResultOutputText || tr.Output.Value != "v-result" {
+		t.Fatalf("call-2 content = %+v", tr)
+	}
+	// The response messages (and so the next prompt) carry the model output only.
+	for _, m := range res.ResponseMessages {
+		for _, p := range m.Content {
+			if tr, ok := p.(types.ToolResultContent); ok && tr.Result != nil {
+				t.Fatalf("response message tool result keeps Result: %+v", tr)
+			}
+		}
+	}
+}

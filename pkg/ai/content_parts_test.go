@@ -294,7 +294,8 @@ func TestToolResultsToContentPartsOrdersAutomaticApprovalBeforeResult(t *testing
 	if tr.ToolCallID != "call-1" {
 		t.Fatalf("unexpected tool result: %+v", tr)
 	}
-	if tr.Result != nil || tr.Output == nil || tr.Output.Type != types.ToolResultOutputText || tr.Output.Value != "sunny" {
+	// TS step content keeps the raw output; Output is the model output.
+	if tr.Result != "sunny" || tr.Output == nil || tr.Output.Type != types.ToolResultOutputText || tr.Output.Value != "sunny" {
 		t.Fatalf("unexpected model output: result=%#v output=%+v", tr.Result, tr.Output)
 	}
 	if len(tr.ProviderMetadata) == 0 {
@@ -497,8 +498,10 @@ func TestExecuteToolsAppliesToModelOutputWithTSShapedOptions(t *testing.T) {
 	if !ok {
 		t.Fatalf("parts[0] = %T, want ToolResultContent", parts[0])
 	}
-	if toolResult.Result != nil || toolResult.Output == nil || toolResult.Output.Value != "model sees: visible" {
-		t.Fatalf("tool result content = %+v, want converted model output only", toolResult)
+	// TS step content `output` is the raw tool output; the converted model
+	// output is Go's Output (r74: stream CR-1).
+	if !reflect.DeepEqual(toolResult.Result, raw) || toolResult.Output == nil || toolResult.Output.Value != "model sees: visible" {
+		t.Fatalf("tool result content = %+v, want the raw result and the converted model output", toolResult)
 	}
 }
 

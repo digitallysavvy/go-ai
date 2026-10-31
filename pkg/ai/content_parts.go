@@ -612,9 +612,11 @@ func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []t
 			Dynamic:          tr.Dynamic,
 			Preliminary:      tr.Preliminary,
 		}
+		// TS step content tool-result `output` is the raw tool output; the
+		// model output is derived only for the response messages. Go keeps
+		// the raw value in Result next to the model-facing Output.
 		if tr.ModelOutput != nil {
 			part.Output = tr.ModelOutput
-			part.Result = nil
 		}
 		if tr.Error != nil {
 			errPart := types.ToolErrorContent{
@@ -674,7 +676,6 @@ func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []t
 		default:
 			if part.Output == nil {
 				part.Output = toolResultModelOutput(tr.Result)
-				part.Result = nil
 			}
 		}
 		if tr.ApprovalStatus == types.ToolApprovalStatusApproved || tr.ApprovalStatus == types.ToolApprovalStatusDenied {
@@ -747,9 +748,9 @@ func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart 
 		Dynamic:          result.Dynamic,
 		Preliminary:      result.Preliminary,
 	}
+	// The raw tool output stays in Result (TS content `output`).
 	if result.ModelOutput != nil {
 		part.Output = result.ModelOutput
-		part.Result = nil
 	}
 	switch output := result.Result.(type) {
 	case types.ToolResultOutput:
@@ -778,7 +779,6 @@ func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart 
 	default:
 		if part.Output == nil {
 			part.Output = toolResultModelOutput(result.Result)
-			part.Result = nil
 		}
 	}
 	return part

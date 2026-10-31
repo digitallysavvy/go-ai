@@ -71,3 +71,29 @@ func TestR74GenAgentParallelToolStartOrder(t *testing.T) {
 		}
 	}
 }
+
+// Legacy loop twin of ai's step content raw output (r74 stream CR-1).
+func TestR74GenAgentStepContentToolResultKeepsRawOutput(t *testing.T) {
+	a := NewToolLoopAgent(AgentConfig{
+		Model: r72agentToolModel(),
+		Tools: []types.Tool{{Name: "t", Parameters: map[string]interface{}{"type": "object"}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return map[string]interface{}{"n": 1}, nil
+		}}},
+	})
+	res, err := a.Execute(context.Background(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tr *types.ToolResultContent
+	for _, p := range res.Steps[0].Content {
+		if v, ok := p.(types.ToolResultContent); ok {
+			tr = &v
+		}
+	}
+	if tr == nil || tr.Output == nil || tr.Output.Type != types.ToolResultOutputJSON {
+		t.Fatalf("content = %#v", res.Steps[0].Content)
+	}
+	if m, ok := tr.Result.(map[string]interface{}); !ok || m["n"] != 1 {
+		t.Fatalf("Result = %#v, want the raw tool output", tr.Result)
+	}
+}
