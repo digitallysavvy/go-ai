@@ -1,85 +1,163 @@
 package xai
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
-// validateXAIResponsesToolArgs mirrors the zod checks TS runs on provider tool
-// args with validateTypes before building the request: web search takes at
-// most 5 allowed and 5 excluded domains, X search at most 20 allowed and 20
-// excluded handles, and image generation `action` is auto, generate or edit.
+// xaiToolArgsNodes are the TS args schemas prepareResponsesTools validates
+// with validateTypes (xai/src/tool/*.ts: webSearchArgsSchema,
+// xSearchArgsSchema, imageGenerationArgsSchema, fileSearchArgsSchema,
+// mcpServerArgsSchema), minus the array length limits in xaiToolArgsMaxItems.
+var xaiToolArgsNodes = map[string]zodlite.Node{
+	"xai.web_search": zodlite.Object(
+		zodlite.F("allowedDomains", zodlite.Optional(zodlite.Array(zodlite.String))),
+		zodlite.F("excludedDomains", zodlite.Optional(zodlite.Array(zodlite.String))),
+		zodlite.F("enableImageSearch", zodlite.Optional(zodlite.Boolean)),
+		zodlite.F("enableImageUnderstanding", zodlite.Optional(zodlite.Boolean)),
+	),
+	"xai.x_search": zodlite.Object(
+		zodlite.F("allowedXHandles", zodlite.Optional(zodlite.Array(zodlite.String))),
+		zodlite.F("excludedXHandles", zodlite.Optional(zodlite.Array(zodlite.String))),
+		zodlite.F("fromDate", zodlite.Optional(zodlite.String)),
+		zodlite.F("toDate", zodlite.Optional(zodlite.String)),
+		zodlite.F("enableImageUnderstanding", zodlite.Optional(zodlite.Boolean)),
+		zodlite.F("enableVideoUnderstanding", zodlite.Optional(zodlite.Boolean)),
+	),
+	"xai.image_generation": zodlite.Object(
+		zodlite.F("action", zodlite.Optional(zodlite.Enum("auto", "generate", "edit"))),
+	),
+	"xai.file_search": zodlite.Object(
+		zodlite.F("vectorStoreIds", zodlite.Array(zodlite.String)),
+		zodlite.F("maxNumResults", zodlite.Optional(zodlite.Number)),
+	),
+	"xai.mcp": zodlite.Object(
+		zodlite.F("serverUrl", zodlite.String),
+		zodlite.F("serverLabel", zodlite.Optional(zodlite.String)),
+		zodlite.F("serverDescription", zodlite.Optional(zodlite.String)),
+		zodlite.F("allowedTools", zodlite.Optional(zodlite.Array(zodlite.String))),
+		zodlite.F("headers", zodlite.Optional(zodlite.RecordOf(zodlite.String))),
+		zodlite.F("authorization", zodlite.Optional(zodlite.String)),
+	),
+}
+
+// xaiToolArgsMaxItems are the .max(n) limits of the TS args schemas, in
+// schema order: at most 5 web search domains and 20 X handles (#22225).
+var xaiToolArgsMaxItems = map[string][]struct {
+	key string
+	max int
+}{
+	"xai.web_search": {{"allowedDomains", 5}, {"excludedDomains", 5}},
+	"xai.x_search":   {{"allowedXHandles", 20}, {"excludedXHandles", 20}},
+}
+
+// validateXAIResponsesToolArgs mirrors the validateTypes call TS
+// prepareResponsesTools makes on the args of the web search, X search, image
+// generation, file search and MCP tools: invalid args throw TypeValidationError
+// "Type validation failed: Value: <JSON.stringify(args)>.\nError message:
+// <zod issues>" before the request is built.
 func validateXAIResponsesToolArgs(tools []types.Tool) error {
-	tooBig := func(tool, field string, limit int) error {
-		return providererrors.NewValidationError("tools",
-			fmt.Sprintf("Type validation failed for %s: %s: Too big: expected array to have <=%d items", tool, field, limit), nil)
-	}
 	for _, t := range tools {
 		id, isProvider := xaiProviderToolID(t)
 		if !isProvider {
 			continue
 		}
-		switch id {
-		case "xai.web_search":
-			cfg := xaiWebSearchArgs(t)
-			if len(cfg.AllowedDomains) > 5 {
-				return tooBig(t.Name, "allowedDomains", 5)
-			}
-			if len(cfg.ExcludedDomains) > 5 {
-				return tooBig(t.Name, "excludedDomains", 5)
-			}
-		case "xai.x_search":
-			cfg := xaiXSearchArgs(t)
-			if len(cfg.AllowedXHandles) > 20 {
-				return tooBig(t.Name, "allowedXHandles", 20)
-			}
-			if len(cfg.ExcludedXHandles) > 20 {
-				return tooBig(t.Name, "excludedXHandles", 20)
-			}
-		case "xai.image_generation":
-			cfg := xaiImageGenerationArgs(t)
-			switch cfg.Action {
-			case "", "auto", "generate", "edit":
-			default:
-				return providererrors.NewValidationError("tools",
-					fmt.Sprintf("Type validation failed for %s: action: Invalid option: expected one of \"auto\"|\"generate\"|\"edit\"", t.Name), nil)
-			}
-		case "xai.file_search":
-			// fileSearchArgsSchema: vectorStoreIds is a required array of
-			// strings (an empty array is valid); maxNumResults an optional
-			// number.
-			if msg := validateXAIArgs(t, []xaiArgRule{
-				{key: "vectorStoreIds", kind: xaiArgStringArray, required: true},
-				{key: "maxNumResults", kind: xaiArgNumber},
-			}); msg != "" {
-				return providererrors.NewValidationError("tools",
-					fmt.Sprintf("Type validation failed for %s: %s", t.Name, msg), nil)
-			}
-			if _, typed := xaiTypedFileSearch(t); typed && xaiFileSearchArgs(t).VectorStoreIDs == nil {
-				return providererrors.NewValidationError("tools",
-					fmt.Sprintf("Type validation failed for %s: vectorStoreIds: Invalid input: expected array, received undefined", t.Name), nil)
-			}
-		case "xai.mcp":
-			// mcpServerArgsSchema: serverUrl is a required string; the other
-			// fields are optional strings, a string array and a string
-			// record.
-			if msg := validateXAIArgs(t, []xaiArgRule{
-				{key: "serverUrl", kind: xaiArgString, required: true},
-				{key: "serverLabel", kind: xaiArgString},
-				{key: "serverDescription", kind: xaiArgString},
-				{key: "allowedTools", kind: xaiArgStringArray},
-				{key: "headers", kind: xaiArgStringRecord},
-				{key: "authorization", kind: xaiArgString},
-			}); msg != "" {
-				return providererrors.NewValidationError("tools",
-					fmt.Sprintf("Type validation failed for %s: %s", t.Name, msg), nil)
-			}
+		node, ok := xaiToolArgsNodes[id]
+		if !ok {
+			continue
+		}
+		data, err := jsonstr.Marshal(xaiToolArgs(t, id))
+		if err != nil {
+			return &providererrors.TypeValidationError{Context: &providererrors.ValidationContext{}, Message: err.Error(), Cause: err}
+		}
+		msg := zodlite.ValidationMessage(node, string(data))
+		if msg == "" {
+			msg = xaiMaxItemsMessage(id, data)
+		}
+		if msg == "" {
+			continue
+		}
+		valueText := ""
+		if _, after, ok := strings.Cut(msg, "Value: "); ok {
+			valueText, _, _ = strings.Cut(after, ".\nError message: ")
+		}
+		return &providererrors.TypeValidationError{
+			Context: &providererrors.ValidationContext{},
+			Value:   valueText,
+			Message: zodlite.IssueText(msg),
 		}
 	}
 	return nil
+}
+
+// xaiMaxItemsMessage renders the TS TypeValidationError for args whose
+// arrays exceed the schema's .max(n): one zod v4 too_big issue per array, as
+// ZodError.message (JSON.stringify(issues, null, 2)) lists them. It returns
+// "" when every array is within its limit.
+func xaiMaxItemsMessage(id string, data []byte) string {
+	var args map[string]interface{}
+	if err := json.Unmarshal(data, &args); err != nil {
+		return ""
+	}
+	var issues []string
+	for _, limit := range xaiToolArgsMaxItems[id] {
+		list, ok := args[limit.key].([]interface{})
+		if !ok || len(list) <= limit.max {
+			continue
+		}
+		issues = append(issues, fmt.Sprintf(`{"origin":"array","code":"too_big","maximum":%d,"inclusive":true,"path":[%q],"message":"Too big: expected array to have <=%d items"}`, limit.max, limit.key, limit.max))
+	}
+	if len(issues) == 0 {
+		return ""
+	}
+	var pretty bytes.Buffer
+	if err := json.Indent(&pretty, []byte("["+strings.Join(issues, ",")+"]"), "", "  "); err != nil {
+		return ""
+	}
+	return "Type validation failed: Value: " + string(data) + ".\nError message: " + pretty.String()
+}
+
+// xaiToolArgs returns the TS args of an xAI provider tool: the typed Go
+// config rendered as the constructor's args (the config is what the request
+// sends), else the ProviderArgs of a TS-shaped tool.
+func xaiToolArgs(t types.Tool, id string) map[string]interface{} {
+	var built types.Tool
+	switch cfg := t.ProviderOptions.(type) {
+	case WebSearchConfig:
+		built = WebSearch(cfg)
+	case XSearchConfig:
+		built = XSearch(cfg)
+	case ImageGenerationConfig:
+		built = ImageGeneration(cfg)
+	case FileSearchOptions:
+		built = FileSearch(FileSearchConfig(cfg))
+	case FileSearchConfig:
+		built = FileSearch(cfg)
+	case MCPServerOptions:
+		built = MCPServer(MCPServerConfig(cfg))
+	case MCPServerConfig:
+		built = MCPServer(cfg)
+	default:
+		if t.ProviderArgs == nil {
+			return map[string]interface{}{}
+		}
+		return t.ProviderArgs
+	}
+	if built.ProviderID != id {
+		// A typed config of another tool: validate the tool's own args.
+		if t.ProviderArgs == nil {
+			return map[string]interface{}{}
+		}
+		return t.ProviderArgs
+	}
+	return built.ProviderArgs
 }
 
 // xaiProviderToolID reports whether t is an xAI provider-defined tool and its
@@ -387,122 +465,4 @@ func convertXAIResponsesTool(t types.Tool) interface{} {
 		}
 		return m
 	}
-}
-
-type xaiArgKind int
-
-const (
-	xaiArgString xaiArgKind = iota
-	xaiArgNumber
-	xaiArgStringArray
-	xaiArgStringRecord
-)
-
-type xaiArgRule struct {
-	key      string
-	kind     xaiArgKind
-	required bool
-}
-
-// xaiTypedFileSearch reports whether the tool carries a typed Go config.
-func xaiTypedFileSearch(t types.Tool) (FileSearchOptions, bool) {
-	switch cfg := t.ProviderOptions.(type) {
-	case FileSearchOptions:
-		return cfg, true
-	case FileSearchConfig:
-		return FileSearchOptions(cfg), true
-	}
-	return FileSearchOptions{}, false
-}
-
-// validateXAIArgs applies zod-style type checks to the TS-shaped ProviderArgs
-// of a provider tool (typed Go configs are already well-typed and skip this).
-// It returns the first failure as `<path>: Invalid input: expected X,
-// received Y`, or "" when the args are valid.
-func validateXAIArgs(t types.Tool, rules []xaiArgRule) string {
-	switch t.ProviderOptions.(type) {
-	case FileSearchOptions, FileSearchConfig, MCPServerOptions, MCPServerConfig:
-		return ""
-	}
-	for _, r := range rules {
-		v, present := t.ProviderArgs[r.key]
-		if !present || v == nil {
-			if r.required {
-				want := "string"
-				switch r.kind {
-				case xaiArgStringArray:
-					want = "array"
-				case xaiArgNumber:
-					want = "number"
-				case xaiArgStringRecord:
-					want = "record"
-				}
-				recv := "undefined"
-				if present {
-					recv = "null"
-				}
-				return fmt.Sprintf("%s: Invalid input: expected %s, received %s", r.key, want, recv)
-			}
-			if present {
-				return fmt.Sprintf("%s: Invalid input: received null", r.key)
-			}
-			continue
-		}
-		switch r.kind {
-		case xaiArgString:
-			if _, ok := v.(string); !ok {
-				return fmt.Sprintf("%s: Invalid input: expected string, received %s", r.key, xaiJSType(v))
-			}
-		case xaiArgNumber:
-			switch v.(type) {
-			case int, int32, int64, float32, float64:
-			default:
-				return fmt.Sprintf("%s: Invalid input: expected number, received %s", r.key, xaiJSType(v))
-			}
-		case xaiArgStringArray:
-			switch arr := v.(type) {
-			case []string:
-			case []interface{}:
-				for i, e := range arr {
-					if _, ok := e.(string); !ok {
-						return fmt.Sprintf("%s[%d]: Invalid input: expected string, received %s", r.key, i, xaiJSType(e))
-					}
-				}
-			default:
-				return fmt.Sprintf("%s: Invalid input: expected array, received %s", r.key, xaiJSType(v))
-			}
-		case xaiArgStringRecord:
-			switch m := v.(type) {
-			case map[string]string:
-			case map[string]interface{}:
-				for k, e := range m {
-					if _, ok := e.(string); !ok {
-						return fmt.Sprintf("%s.%s: Invalid input: expected string, received %s", r.key, k, xaiJSType(e))
-					}
-				}
-			default:
-				return fmt.Sprintf("%s: Invalid input: expected record, received %s", r.key, xaiJSType(v))
-			}
-		}
-	}
-	return ""
-}
-
-// xaiJSType names a Go value the way zod names the JS value it would be.
-func xaiJSType(v interface{}) string {
-	switch v.(type) {
-	case nil:
-		return "null"
-	case string:
-		return "string"
-	case bool:
-		return "boolean"
-	case int, int32, int64, float32, float64:
-		return "number"
-	case []interface{}, []string:
-		return "array"
-	case map[string]interface{}, map[string]string:
-		return "object"
-	}
-	return fmt.Sprintf("%T", v)
 }

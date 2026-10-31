@@ -43,7 +43,12 @@ func FileSearch(config FileSearchConfig) types.Tool {
 		"properties": map[string]interface{}{},
 	}
 
-	args := map[string]interface{}{"vectorStoreIds": config.VectorStoreIDs}
+	// TS fileSearch({vectorStoreIds: undefined}) has no vectorStoreIds arg
+	// (JSON drops undefined); an empty list is kept.
+	args := map[string]interface{}{}
+	if config.VectorStoreIDs != nil {
+		args["vectorStoreIds"] = config.VectorStoreIDs
+	}
 	if config.MaxNumResults > 0 {
 		args["maxNumResults"] = config.MaxNumResults
 	}
