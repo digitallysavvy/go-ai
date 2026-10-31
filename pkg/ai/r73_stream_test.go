@@ -721,7 +721,6 @@ func TestR73StreamRequestMessagesRetention(t *testing.T) {
 	}
 }
 
-
 func r73streamCounterIDs(prefix string) func() string {
 	var mu sync.Mutex
 	n := 0
@@ -751,7 +750,9 @@ func r73streamIDParts(parts []provider.StreamChunk, kinds ...provider.ChunkType)
 // remapped to the next generated ID (TS mockId: id-0 and id-1 are the step
 // response ids, so the remapped id is id-2), and the step texts are kept.
 func TestR73StreamMultiStepPartIDs(t *testing.T) {
-	tool := types.Tool{Name: "tool1", Parameters: r71streamValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result1", nil }}
+	tool := types.Tool{Name: "tool1", Parameters: r71streamValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "result1", nil
+	}}
 	call := provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "test"}, RawArguments: `{ "value": "test" }`}}
 	t.Run("unique ids kept", func(t *testing.T) {
 		model := r71streamModel(nil,
@@ -795,7 +796,6 @@ func TestR73StreamMultiStepPartIDs(t *testing.T) {
 		}
 	})
 }
-
 
 func r73streamDur(d time.Duration) *time.Duration { return &d }
 
@@ -864,7 +864,6 @@ func TestR73StreamTimeoutsOnNormalCompletion(t *testing.T) {
 		})
 	}
 }
-
 
 func r73streamTextStep(deltas ...string) []provider.StreamChunk {
 	out := []provider.StreamChunk{{Type: provider.ChunkTypeTextStart, ID: "1"}}
