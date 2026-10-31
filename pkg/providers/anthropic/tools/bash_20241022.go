@@ -22,7 +22,10 @@ import (
 //	tool := anthropicTools.Bash20241022()
 func Bash20241022() types.Tool {
 	return types.Tool{
-		Name: "anthropic.bash_20241022",
+		Name:         "anthropic.bash_20241022",
+		Type:         types.ToolTypeProviderDefined,
+		ProviderID:   "anthropic.bash_20241022",
+		ProviderArgs: noProviderArgs(),
 		Description: `Bash tool for executing shell commands in a persistent bash session.
 
 This enables:

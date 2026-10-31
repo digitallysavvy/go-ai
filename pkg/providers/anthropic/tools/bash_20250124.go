@@ -79,7 +79,10 @@ func Bash20250124() types.Tool {
 	}
 
 	tool := types.Tool{
-		Name: "anthropic.bash_20250124",
+		Name:         "anthropic.bash_20250124",
+		Type:         types.ToolTypeProviderDefined,
+		ProviderID:   "anthropic.bash_20250124",
+		ProviderArgs: noProviderArgs(),
 		Description: `Bash tool for executing shell commands in a persistent bash session.
 
 This enables:

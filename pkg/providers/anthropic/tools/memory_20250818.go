@@ -20,7 +20,10 @@ import (
 //	tool := anthropicTools.Memory20250818()
 func Memory20250818() types.Tool {
 	return types.Tool{
-		Name: "anthropic.memory_20250818",
+		Name:         "anthropic.memory_20250818",
+		Type:         types.ToolTypeProviderDefined,
+		ProviderID:   "anthropic.memory_20250818",
+		ProviderArgs: noProviderArgs(),
 		Description: `Memory tool for storing and retrieving information across conversations.
 
 Supported commands:

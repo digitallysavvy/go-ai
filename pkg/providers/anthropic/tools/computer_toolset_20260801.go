@@ -99,6 +99,9 @@ func (o *computerToolset20260801Opts) ToAnthropicAPIMap() map[string]interface{}
 func ComputerToolset20260801(config ComputerToolset20260801Config) types.Tool {
 	return types.Tool{
 		Name:            "anthropic.computer_toolset_20260801",
+		Type:            types.ToolTypeProviderDefined,
+		ProviderID:      "anthropic.computer_toolset_20260801",
+		ProviderArgs:    computerToolset20260801ProviderArgs(config),
 		Description:     "Computer use toolset (Anthropic, version 2026-08-01). Each member action is executed by the caller.",
 		Parameters:      buildComputerToolset20260801Schema(),
 		ProviderOptions: &computerToolset20260801Opts{Config: config},

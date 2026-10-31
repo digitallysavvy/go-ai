@@ -74,7 +74,10 @@ func ToolSearchRegex20251119() types.Tool {
 	}
 
 	tool := types.Tool{
-		Name: "anthropic.tool_search_regex_20251119",
+		Name:         "anthropic.tool_search_regex_20251119",
+		Type:         types.ToolTypeProviderDefined,
+		ProviderID:   "anthropic.tool_search_regex_20251119",
+		ProviderArgs: noProviderArgs(),
 		Description: `Regex tool search for discovering tools using regex patterns.
 
 This tool enables Claude to work with large tool catalogs (hundreds or thousands of tools)
