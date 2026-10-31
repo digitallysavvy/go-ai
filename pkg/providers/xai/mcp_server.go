@@ -66,7 +66,24 @@ func MCPServer(config MCPServerConfig) types.Tool {
 		"properties": map[string]interface{}{},
 	}
 
-	return types.Tool{
+	args := map[string]interface{}{"serverUrl": config.ServerURL}
+	if config.ServerLabel != "" {
+		args["serverLabel"] = config.ServerLabel
+	}
+	if config.ServerDescription != "" {
+		args["serverDescription"] = config.ServerDescription
+	}
+	if config.AllowedTools != nil {
+		args["allowedTools"] = config.AllowedTools
+	}
+	if config.Headers != nil {
+		args["headers"] = config.Headers
+	}
+	if config.Authorization != "" {
+		// TS sends authorization in the args (also to the AI Gateway).
+		args["authorization"] = config.Authorization
+	}
+	return xaiProviderTool(types.Tool{
 		Name:        "xai.mcp",
 		Description: "Connect to remote MCP (Model Context Protocol) server and execute tools. Enables integration with external services and APIs through MCP-compatible servers.",
 		Title:       "MCP Server",
@@ -87,7 +104,7 @@ func MCPServer(config MCPServerConfig) types.Tool {
 		// This tool is executed by xAI's servers, not locally
 		ProviderExecuted: true,
 		Execute:          providerExecutedNoop("xai.mcp"),
-	}
+	}, args)
 }
 
 // MCPServerSimple creates an MCP Server tool with minimal configuration
