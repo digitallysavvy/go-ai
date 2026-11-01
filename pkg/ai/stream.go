@@ -769,9 +769,14 @@ type StreamTextResult struct {
 
 	// onStreamDone is InternalOptions.onStreamDone, run once before
 	// processingDone closes; streamDoneOnce guards it.
-	onStreamDone    func(aibridge.StreamDoneInfo)
-	streamModeUsage bool
-	streamDoneOnce  sync.Once
+	onStreamDone func(aibridge.StreamDoneInfo)
+	// callerOwnsTelemetryRoot: a WorkflowAgent stream run (onStreamDone
+	// set) reports no telemetry root start/end/error/abort of its own; the
+	// workflow's ai.workflowAgent.stream root is the only root, as TS
+	// WorkflowAgent.stream dispatches one root per run.
+	callerOwnsTelemetryRoot bool
+	streamModeUsage         bool
+	streamDoneOnce          sync.Once
 
 	// cancelBootstrap cancels bootstrapAndStream's context. It lets Close()
 	// interrupt in-flight bootstrap work (resuming approved tool calls, or
@@ -876,6 +881,7 @@ func streamTextInternal(ctx context.Context, opts StreamTextOptions, steeringRun
 	if opts.Internal != nil {
 		result.onStreamDone = opts.Internal.onStreamDone
 		result.streamModeUsage = opts.Internal.streamModeUsage
+		result.callerOwnsTelemetryRoot = opts.Internal.onStreamDone != nil
 	}
 
 	go result.bootstrapAndStream(bootstrapCtx, opts, instructionMessages)
@@ -964,7 +970,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		telMessages = buildPrompt(opts.Prompt, opts.Messages, "").Messages
 	}
 	streamTextMaxRetries := preparedMaxRetries(opts.MaxRetries)
-	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+	ctx = r.fireRootStart(ctx, telemetry.TelemetryStartEvent{
 		CallID:              callID,
 		OperationType:       "ai.streamText",
 		ModelProvider:       opts.Model.Provider(),
@@ -1105,7 +1111,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		// stream error rather than a synchronous StreamText() error — the
 		// caller already has this *StreamTextResult and reads the error via
 		// Err()/ReadAll()/Stream(), matching review finding F6.
-		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: resumeErr})
+		r.fireRootError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: resumeErr})
 		r.failBeforeStream(ctx, opts, preStreamCall{callID: callID, telemetryCtx: telemetryCtx, telemetrySettings: telemetrySettings}, resumeErr)
 		return
 	}
@@ -1191,7 +1197,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 				if stepCancel != nil {
 					stepCancel()
 				}
-				telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
+				r.fireRootError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 				r.failBeforeStream(ctx, opts, preStreamCall{callID: callID, telemetryCtx: telemetryCtx, telemetrySettings: telemetrySettings}, err)
 				return
 			}
@@ -1285,7 +1291,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		if stepCancel != nil {
 			stepCancel()
 		}
-		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
+		r.fireRootError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		r.failBeforeStream(ctx, opts, preStreamCall{callID: callID, telemetryCtx: telemetryCtx, telemetrySettings: telemetrySettings}, err)
 		return
 	}
@@ -1310,7 +1316,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		if stepCancel != nil {
 			stepCancel()
 		}
-		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: normErr})
+		r.fireRootError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: normErr})
 		r.failBeforeStream(ctx, opts, preStreamCall{callID: callID, telemetryCtx: telemetryCtx, telemetrySettings: telemetrySettings}, normErr)
 		return
 	}
@@ -1318,7 +1324,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		if stepCancel != nil {
 			stepCancel()
 		}
-		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: toolResultsErr})
+		r.fireRootError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: toolResultsErr})
 		r.failBeforeStream(ctx, opts, preStreamCall{callID: callID, telemetryCtx: telemetryCtx, telemetrySettings: telemetrySettings}, toolResultsErr)
 		return
 	}
@@ -1487,7 +1493,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			// which reports telemetry onError before the outer stream turns
 			// its error part into abort(): `start`, onAbort (callback and
 			// telemetry) and an `abort` part.
-			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
+			r.fireRootError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 			r.abortBeforeStream(stepCtx, opts, preStreamCall{callID: callID, telemetryCtx: telemetryCtx, telemetrySettings: telemetrySettings}, err)
 		} else {
 			// TS notifyStepError(wrapGatewayError(error)) feeds both onStepError
@@ -1497,7 +1503,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 				r.notifyStepError(ctx, opts.OnStepError, wrapGatewayError(err))
 				telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: wrapGatewayError(err)})
 			}
-			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
+			r.fireRootError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		}
 		// TS reports the doStream failure itself, without wrapper text, after
 		// wrapGatewayError (stream-text.ts error parts).
@@ -1774,7 +1780,7 @@ func (r *StreamTextResult) abortBeforeStream(ctx context.Context, opts StreamTex
 		safeInvoke(func() { onAbort(ctx, GenerateTextAbortEvent{CallID: call.callID, Reason: reason}) })
 	}
 	if call.telemetryCtx != nil {
-		telemetry.FireOnAbort(call.telemetryCtx, telemetry.TelemetryAbortEvent{Settings: call.telemetrySettings, CallID: call.callID, Reason: reason})
+		r.fireRootAbort(call.telemetryCtx, telemetry.TelemetryAbortEvent{Settings: call.telemetrySettings, CallID: call.callID, Reason: reason})
 	}
 	for ; i < len(parts); i++ {
 		r.deliverPreStreamPart(ctx, opts, parts[i])
@@ -1946,7 +1952,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			safeInvoke(func() { onAbort(ctx, abortEvent) })
 		}
-		telemetry.FireOnAbort(r.telemetryCtx, telemetry.TelemetryAbortEvent{
+		r.fireRootAbort(r.telemetryCtx, telemetry.TelemetryAbortEvent{
 			Settings: r.telemetrySettings,
 			CallID:   r.cbCallID,
 			Reason:   reason,
@@ -4178,7 +4184,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			notifyFailedEnd(ctx, opts.Internal, r.cbOnEndEvent, r.cbCallID, r.cbRuntimeCtx, r.cbToolsCtx, r.initialResponseMessages, allSteps, r.err)
 		}
 		if !isAbortErr(ctx, r.err) {
-			telemetry.FireOnError(r.telemetryCtx, telemetry.TelemetryErrorEvent{
+			r.fireRootError(r.telemetryCtx, telemetry.TelemetryErrorEvent{
 				Settings: r.telemetrySettings,
 				CallID:   r.cbCallID,
 				Error:    r.err,
@@ -4401,7 +4407,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	}
 	finishEvent.SetAggregatesFromSteps(stepsForEvent, responseMessagesWithInitial(r.initialResponseMessages, stepsForEvent))
 	Notify(ctx, finishEvent, r.cbOnEndEvent)
-	telemetry.FireOnEnd(r.telemetryCtx, endTelemetry)
+	r.fireRootEnd(r.telemetryCtx, endTelemetry)
 }
 
 // providerToolResultError is the error of a provider tool result flagged
@@ -5097,7 +5103,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 			}
 			r.err = err
 			if isAbortErr(ctx, err) {
-				telemetry.FireOnAbort(r.telemetryCtx, telemetry.TelemetryAbortEvent{
+				r.fireRootAbort(r.telemetryCtx, telemetry.TelemetryAbortEvent{
 					Settings: r.telemetrySettings,
 					CallID:   r.cbCallID,
 					Reason:   abortReason(ctx, err),
@@ -5463,7 +5469,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 	}
 	finishEvent.SetAggregatesFromSteps(finishEvent.Steps, responseMessagesWithInitial(r.initialResponseMessages, finishEvent.Steps))
 	Notify(ctx, finishEvent, r.cbOnEndEvent)
-	telemetry.FireOnEnd(r.telemetryCtx, endTelemetry)
+	r.fireRootEnd(r.telemetryCtx, endTelemetry)
 
 	return r.text, nil
 }
@@ -5931,4 +5937,33 @@ func removeID(ids []string, id string) []string {
 		}
 	}
 	return ids
+}
+
+// fireRootStart, fireRootEnd, fireRootError and fireRootAbort report the
+// run's telemetry root events, unless the caller owns the root
+// (callerOwnsTelemetryRoot): then the step, model-call and tool events are
+// reported under the caller's root and call ID only.
+func (r *StreamTextResult) fireRootStart(ctx context.Context, e telemetry.TelemetryStartEvent) context.Context {
+	if r.callerOwnsTelemetryRoot {
+		return ctx
+	}
+	return telemetry.FireOnStart(ctx, e)
+}
+
+func (r *StreamTextResult) fireRootEnd(ctx context.Context, e telemetry.TelemetryFinishEvent) {
+	if !r.callerOwnsTelemetryRoot {
+		telemetry.FireOnEnd(ctx, e)
+	}
+}
+
+func (r *StreamTextResult) fireRootError(ctx context.Context, e telemetry.TelemetryErrorEvent) {
+	if !r.callerOwnsTelemetryRoot {
+		telemetry.FireOnError(ctx, e)
+	}
+}
+
+func (r *StreamTextResult) fireRootAbort(ctx context.Context, e telemetry.TelemetryAbortEvent) {
+	if !r.callerOwnsTelemetryRoot {
+		telemetry.FireOnAbort(ctx, e)
+	}
 }

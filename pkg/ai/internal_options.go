@@ -81,7 +81,10 @@ type InternalOptions struct {
 	// (completed, failed or aborted), after its end callbacks and before
 	// ReadAll, Err and the full stream return. TS WorkflowAgent reports its
 	// root telemetry end (onError, onEnd with the total usage) when the run's
-	// loop ends, not when the stream opens.
+	// loop ends, not when the stream opens. With onStreamDone set the caller
+	// owns the telemetry root: the run reports no root start/end/error/abort
+	// events of its own, only its step, model-call and tool events (under
+	// GenerateCallID's id), as TS WorkflowAgent.stream has one root per run.
 	//
 	// Both are set by WorkflowAgent's stream path through
 	// aibridge.SetWorkflowStreamHooks; they are not public API.

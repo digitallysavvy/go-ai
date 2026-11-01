@@ -8,8 +8,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/aibridge"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -949,4 +951,91 @@ func TestR75StreamToUIMessageStreamStartIDEdgeCases(t *testing.T) {
 		}
 		r75streamAssertJSON(t, "start", chunks[0], `{"type":"start","messageId":"a-1"}`)
 	})
+}
+
+// r75streamTelRecorder records telemetry lifecycle event names and call IDs.
+type r75streamTelRecorder struct {
+	telemetry.NoopTelemetryIntegration
+	mu     sync.Mutex
+	events []string
+}
+
+func (r *r75streamTelRecorder) add(name, callID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, name+":"+callID)
+}
+
+func (r *r75streamTelRecorder) OnStart(ctx context.Context, e telemetry.TelemetryStartEvent) context.Context {
+	r.add("onStart", e.CallID)
+	return ctx
+}
+
+func (r *r75streamTelRecorder) OnStepStart(ctx context.Context, e telemetry.TelemetryStepStartEvent) context.Context {
+	r.add("onStepStart", e.CallID)
+	return ctx
+}
+
+func (r *r75streamTelRecorder) OnToolExecutionStart(ctx context.Context, e telemetry.TelemetryToolCallStartEvent) context.Context {
+	r.add("onToolExecutionStart", e.CallID)
+	return ctx
+}
+
+func (r *r75streamTelRecorder) OnToolExecutionEnd(_ context.Context, e telemetry.TelemetryToolCallFinishEvent) {
+	r.add("onToolExecutionEnd", e.CallID)
+}
+
+func (r *r75streamTelRecorder) OnStepEnd(_ context.Context, e telemetry.TelemetryStepEndEvent) {
+	r.add("onStepEnd", e.CallID)
+}
+
+func (r *r75streamTelRecorder) OnEnd(_ context.Context, e telemetry.TelemetryFinishEvent) {
+	r.add("onEnd", e.CallID)
+}
+
+func (r *r75streamTelRecorder) OnError(_ context.Context, e telemetry.TelemetryErrorEvent) {
+	r.add("onError", e.CallID)
+}
+
+func (r *r75streamTelRecorder) OnAbort(_ context.Context, e telemetry.TelemetryAbortEvent) {
+	r.add("onAbort", e.CallID)
+}
+
+func (r *r75streamTelRecorder) get() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.events...)
+}
+
+// TS WorkflowAgent.stream dispatches one telemetry root per run (onStart /
+// onEnd with operationId ai.workflowAgent.stream) and reports the steps and
+// tools under that call id; it does not run streamText. A StreamText run
+// with the workflow stream hooks reports no root events of its own and its
+// step/tool events carry the caller's call id (carry CR r75).
+func TestR75StreamWorkflowRunHasNoTelemetryRoot(t *testing.T) {
+	run := func(t *testing.T, hooks bool) []string {
+		rec := &r75streamTelRecorder{}
+		internal := &InternalOptions{GenerateID: func() string { return "id" }, GenerateCallID: func() string { return "root-call" }}
+		if hooks {
+			aibridge.SetWorkflowStreamHooks(internal, func(aibridge.StreamDoneInfo) {})
+		}
+		r71streamRun(t, StreamTextOptions{
+			Model:     r71streamModel(nil, r71streamToolCallStep([2]string{"call-1", "value"}), r71streamHelloWorld),
+			Prompt:    "test-input",
+			Tools:     []types.Tool{r71streamTool1(true, nil, nil)},
+			StopWhen:  []StopCondition{StepCountIs(3)},
+			Internal:  internal,
+			Telemetry: &TelemetrySettings{Integrations: []telemetry.TelemetryIntegration{rec}},
+		})
+		return rec.get()
+	}
+	want := []string{"onStepStart:root-call", "onToolExecutionStart:root-call", "onToolExecutionEnd:root-call", "onStepEnd:root-call", "onStepStart:root-call", "onStepEnd:root-call"}
+	if got := run(t, true); !reflect.DeepEqual(got, want) {
+		t.Fatalf("workflow run telemetry = %q, want %q", got, want)
+	}
+	// Plain StreamText keeps its own root.
+	plain := run(t, false)
+	if len(plain) != len(want)+2 || plain[0] != "onStart:root-call" || plain[len(plain)-1] != "onEnd:root-call" {
+		t.Fatalf("plain run telemetry = %q", plain)
+	}
 }
