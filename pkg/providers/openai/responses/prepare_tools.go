@@ -101,6 +101,9 @@ func validateMCPToolArgs(t types.Tool) error {
 	if !toolConfig(t, &cfg) || cfg.ServerURL != "" || cfg.ConnectorID != "" {
 		return nil
 	}
+	if a := tsShapedToolArgs(t, &openaitool.MCPConfig{}); a != nil && (a["serverUrl"] != nil || a["connectorId"] != nil) {
+		return nil // TS `v.serverUrl != null`: an empty string passes
+	}
 	var args interface{} = t.ProviderArgs
 	if t.ProviderArgs == nil {
 		args = cfg // a hand-built tool: its config holds the TS arg names
@@ -239,6 +242,10 @@ func convertFileSearchTool(t types.Tool) map[string]interface{} {
 		if cfg.Ranking.ScoreThreshold != nil {
 			ranking["score_threshold"] = *cfg.Ranking.ScoreThreshold
 		}
+		if a := tsShapedToolArgs(t, &openaitool.FileSearchConfig{}); a != nil {
+			r, _ := a["ranking"].(map[string]interface{})
+			keepEmptyStrings(ranking, r, [2]string{"ranker", "ranker"})
+		}
 		def["ranking_options"] = ranking
 	}
 	if cfg.Filters != nil {
@@ -268,6 +275,10 @@ func convertImageGenerationTool(t types.Tool) map[string]interface{} {
 		if cfg.InputImageMask.ImageURL != "" {
 			mask["image_url"] = cfg.InputImageMask.ImageURL
 		}
+		if a := tsShapedToolArgs(t, &openaitool.ImageGenerationConfig{}); a != nil {
+			m, _ := a["inputImageMask"].(map[string]interface{})
+			keepEmptyStrings(mask, m, [2]string{"fileId", "file_id"}, [2]string{"imageUrl", "image_url"})
+		}
 		def["input_image_mask"] = mask
 	}
 	if cfg.Model != "" {
@@ -291,6 +302,7 @@ func convertImageGenerationTool(t types.Tool) map[string]interface{} {
 	if cfg.Size != "" {
 		def["size"] = cfg.Size
 	}
+	keepEmptyStrings(def, tsShapedToolArgs(t, &openaitool.ImageGenerationConfig{}), [2]string{"model", "model"})
 	return def
 }
 
@@ -312,7 +324,7 @@ func convertWebSearchTool(t types.Tool) WebSearchToolDef {
 	}
 	def.ExternalWebAccess = cfg.ExternalWebAccess
 	def.SearchContextSize = cfg.SearchContextSize
-	def.UserLocation = webSearchLocation(cfg.UserLocation)
+	def.UserLocation = webSearchLocation(cfg.UserLocation, tsShapedToolArgs(t, &openaitool.WebSearchConfig{}))
 	return def
 }
 
@@ -321,7 +333,7 @@ func convertWebSearchPreviewTool(t types.Tool) WebSearchPreviewToolDef {
 	var cfg openaitool.WebSearchPreviewConfig
 	toolConfig(t, &cfg)
 	def.SearchContextSize = cfg.SearchContextSize
-	def.UserLocation = webSearchLocation(cfg.UserLocation)
+	def.UserLocation = webSearchLocation(cfg.UserLocation, tsShapedToolArgs(t, &openaitool.WebSearchPreviewConfig{}))
 	return def
 }
 
@@ -355,7 +367,31 @@ func convertMCPTool(t types.Tool) map[string]interface{} {
 	if cfg.ServerURL != "" {
 		def["server_url"] = cfg.ServerURL
 	}
+	keepEmptyStrings(def, tsShapedToolArgs(t, &openaitool.MCPConfig{}),
+		[2]string{"authorization", "authorization"}, [2]string{"connectorId", "connector_id"},
+		[2]string{"serverDescription", "server_description"}, [2]string{"serverUrl", "server_url"})
 	return def
+}
+
+// tsShapedToolArgs returns the TS args of a TS-shaped provider tool (one
+// whose ProviderOptions is not the typed config cfg points to, e.g. restored
+// from a workflow), else nil.
+func tsShapedToolArgs(t types.Tool, cfg interface{}) map[string]interface{} {
+	if t.Type != types.ToolTypeProviderDefined || setTypedConfig(t.ProviderOptions, cfg) {
+		return nil
+	}
+	return t.ProviderArgs
+}
+
+// keepEmptyStrings sets def[wire] = "" for each {arg, wire} pair whose arg
+// is an empty string in args: TS copies the validated arg as given, while
+// the typed config (omitempty) treats "" as unset.
+func keepEmptyStrings(def, args map[string]interface{}, keys ...[2]string) {
+	for _, k := range keys {
+		if s, ok := args[k[0]].(string); ok && s == "" {
+			def[k[1]] = ""
+		}
+	}
 }
 
 func mcpAllowedTools(value interface{}) interface{} {
@@ -426,7 +462,7 @@ func mcpRequireApproval(value interface{}) interface{} {
 	}
 }
 
-func webSearchLocation(loc *openaitool.WebSearchLocation) interface{} {
+func webSearchLocation(loc *openaitool.WebSearchLocation, tsArgs map[string]interface{}) interface{} {
 	if loc == nil {
 		return nil
 	}
@@ -447,6 +483,9 @@ func webSearchLocation(loc *openaitool.WebSearchLocation) interface{} {
 	if loc.Timezone != "" {
 		out["timezone"] = loc.Timezone
 	}
+	tsLoc, _ := tsArgs["userLocation"].(map[string]interface{})
+	keepEmptyStrings(out, tsLoc, [2]string{"country", "country"}, [2]string{"city", "city"},
+		[2]string{"region", "region"}, [2]string{"timezone", "timezone"})
 	return out
 }
 
@@ -533,7 +572,8 @@ func convertShellTool(t types.Tool) ShellToolDef {
 	}
 	toolEnv := &ShellToolDefEnvironment{Type: envType}
 
-	if len(env.FileIDs) > 0 {
+	// TS forwards file_ids and skills as given, an empty list included.
+	if env.FileIDs != nil {
 		toolEnv.FileIDs = env.FileIDs
 	}
 	if env.MemoryLimit != nil {
@@ -542,7 +582,7 @@ func convertShellTool(t types.Tool) ShellToolDef {
 	if env.NetworkPolicy != nil {
 		toolEnv.NetworkPolicy = env.NetworkPolicy
 	}
-	if len(env.Skills) > 0 {
+	if env.Skills != nil {
 		// TS mapShellSkills: a skill reference without a version is sent
 		// as version "latest".
 		skills := make([]ShellSkill, len(env.Skills))
@@ -664,9 +704,14 @@ func functionToolAllowedCallers(providerOptions interface{}) ([]string, bool) {
 	if !ok {
 		return nil, false
 	}
+	// TS: `options?.allowedCallers != null ? {allowed_callers} : {}`, so an
+	// empty list is sent too.
 	switch v := raw.(type) {
 	case []string:
-		return v, len(v) > 0
+		if v == nil {
+			return nil, false
+		}
+		return v, true
 	case []interface{}:
 		out := make([]string, 0, len(v))
 		for _, item := range v {
@@ -674,7 +719,7 @@ func functionToolAllowedCallers(providerOptions interface{}) ([]string, bool) {
 				out = append(out, s)
 			}
 		}
-		return out, len(out) > 0
+		return out, true
 	default:
 		return nil, false
 	}

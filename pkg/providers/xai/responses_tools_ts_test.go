@@ -40,7 +40,7 @@ func TestXAIResponsesFileSearchRequiresVectorStoreIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := prepareXAIResponsesTools([]types.Tool{ts})[0].(map[string]interface{})
-	if m["type"] != "file_search" || m["max_num_results"] != 3 {
+	if m["type"] != "file_search" || m["max_num_results"] != 3.0 { // the arg as given (TS)
 		t.Fatalf("wire = %#v", m)
 	}
 }

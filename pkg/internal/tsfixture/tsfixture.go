@@ -146,6 +146,9 @@ func (c Case) handler() http.HandlerFunc {
 	}
 }
 
+// runMaxRequests caps the requests one Run case may make (see Run).
+const runMaxRequests = 20
+
 // Run executes every simple case against the model built by mk and compares
 // with the TS snapshot. Cases listed in skip (by test name) are logged only.
 func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.LanguageModel, skip map[string]string) {
@@ -181,6 +184,15 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 				reqs = append(reqs, rq)
 				if len(reqs) == 1 {
 					reqBody = rq.body
+				}
+				if len(reqs) > runMaxRequests {
+					// A TS case serving an array of responses is extracted with
+					// its first response only; a model that keeps requesting
+					// (a continued stream) would replay it forever. Fail
+					// instead of hanging.
+					t.Errorf("more than %d requests: the case replays one recorded response (skip it, e.g. multiResponse)", runMaxRequests)
+					w.WriteHeader(http.StatusInternalServerError)
+					return
 				}
 				h(w, r)
 			}))
@@ -937,7 +949,9 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 		for _, pv := range m["content"].([]interface{}) {
 			p := pv.(map[string]interface{})
 			po, _ := p["providerOptions"].(map[string]interface{})
-			// Parts replayed from a model result carry providerMetadata.
+			// Parts replayed from a model result carry providerMetadata (TS
+			// tests cast it onto tool-call and tool-result parts, and the
+			// converters read providerMetadata[name].itemId from both).
 			var pm json.RawMessage
 			if m, ok := p["providerMetadata"].(map[string]interface{}); ok {
 				pm, _ = json.Marshal(m)
@@ -963,7 +977,7 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 				}
 				msg.Content = append(msg.Content, tc)
 			case "tool-result":
-				tr := types.ToolResultContent{ToolCallID: p["toolCallId"].(string), ToolName: promptToolName(p["toolName"].(string)), ProviderOptions: po}
+				tr := types.ToolResultContent{ToolCallID: p["toolCallId"].(string), ToolName: promptToolName(p["toolName"].(string)), ProviderOptions: po, ProviderMetadata: pm}
 				if out, ok := p["output"].(map[string]interface{}); ok {
 					// Most outputs decode from their TS JSON form (keeps providerOptions).
 					// Content outputs are built explicitly so recorded Uint8Array file

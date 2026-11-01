@@ -1100,7 +1100,10 @@ func normalizeResponsesToolSchemas(tools []interface{}, supportsAsync bool) ([]t
 }
 
 func normalizeResponsesFunctionToolDef(fn responses.FunctionToolDef, supportsAsync bool) (responses.FunctionToolDef, []types.Warning, error) {
-	var warnings []types.Warning
+	// TS order: the async warning (resolveAsyncToolOption runs as an
+	// argument of prepareFunctionTool), then the input schema's, then the
+	// output schema's normalization warnings.
+	warnings := gateResponsesToolAsync(&fn.Async, fn.Name, supportsAsync)
 	if fn.Parameters != nil {
 		normalized, schemaWarnings, err := NormalizeOpenAISchemaValue(fn.Parameters)
 		if err != nil {
@@ -1109,7 +1112,15 @@ func normalizeResponsesFunctionToolDef(fn responses.FunctionToolDef, supportsAsy
 		fn.Parameters = normalized
 		warnings = append(warnings, schemaWarnings...)
 	}
-	warnings = append(warnings, gateResponsesToolAsync(&fn.Async, fn.Name, supportsAsync)...)
+	// TS prepareFunctionTool normalizes options.outputSchema the same way.
+	if fn.OutputSchema != nil {
+		normalized, schemaWarnings, err := NormalizeOpenAISchemaValue(fn.OutputSchema)
+		if err != nil {
+			return fn, nil, err
+		}
+		fn.OutputSchema = normalized
+		warnings = append(warnings, schemaWarnings...)
+	}
 	return fn, warnings, nil
 }
 

@@ -230,6 +230,9 @@ func xaiMCPArgs(t types.Tool) MCPServerOptions {
 	if cfg, ok := t.ProviderOptions.(MCPServerOptions); ok {
 		return cfg
 	}
+	if cfg, ok := t.ProviderOptions.(MCPServerConfig); ok {
+		return MCPServerOptions(cfg)
+	}
 	a := t.ProviderArgs
 	cfg := MCPServerOptions{
 		ServerURL:         argString(a, "serverUrl"),
@@ -314,7 +317,67 @@ func resolveXAIResponsesToolChoice(tc types.ToolChoice, tools []types.Tool) (int
 	return nil, nil
 }
 
+// xaiTSArgWireKeys lists, per xAI provider tool with args, the wire type and
+// the TS arg -> wire key pairs TS prepareResponsesTools copies from the
+// validated args (an undefined arg is dropped; any other value, including ""
+// or 0, is sent as given).
+var xaiTSArgWireKeys = map[string]struct {
+	wireType string
+	keys     [][2]string
+}{
+	"xai.web_search":       {"web_search", [][2]string{{"allowedDomains", "allowed_domains"}, {"excludedDomains", "excluded_domains"}, {"enableImageSearch", "enable_image_search"}, {"enableImageUnderstanding", "enable_image_understanding"}}},
+	"xai.x_search":         {"x_search", [][2]string{{"allowedXHandles", "allowed_x_handles"}, {"excludedXHandles", "excluded_x_handles"}, {"fromDate", "from_date"}, {"toDate", "to_date"}, {"enableImageUnderstanding", "enable_image_understanding"}, {"enableVideoUnderstanding", "enable_video_understanding"}}},
+	"xai.image_generation": {"image_generation", [][2]string{{"action", "action"}}},
+	"xai.file_search":      {"file_search", [][2]string{{"vectorStoreIds", "vector_store_ids"}, {"maxNumResults", "max_num_results"}}},
+	"xai.mcp":              {"mcp", [][2]string{{"serverUrl", "server_url"}, {"serverLabel", "server_label"}, {"serverDescription", "server_description"}, {"allowedTools", "allowed_tools"}, {"headers", "headers"}, {"authorization", "authorization"}}},
+}
+
+// xaiTypedConfig reports whether t carries the typed Go config of tool id
+// (the Go constructors and hand-built tools); the request is then built from
+// that config.
+func xaiTypedConfig(t types.Tool, id string) bool {
+	switch t.ProviderOptions.(type) {
+	case WebSearchConfig:
+		return id == "xai.web_search"
+	case XSearchConfig:
+		return id == "xai.x_search"
+	case ImageGenerationConfig:
+		return id == "xai.image_generation"
+	case FileSearchOptions, FileSearchConfig:
+		return id == "xai.file_search"
+	case MCPServerOptions, MCPServerConfig:
+		return id == "xai.mcp"
+	}
+	return false
+}
+
+// xaiTSShapedWire builds the wire tool of a TS-shaped provider tool (args in
+// ProviderArgs, no typed config) as TS does: each present arg is copied to
+// its wire key unchanged, so maxNumResults 0 or an empty serverLabel is sent
+// as given (the typed config treats zero values as unset).
+func xaiTSShapedWire(t types.Tool) (map[string]interface{}, bool) {
+	spec, ok := xaiTSArgWireKeys[t.Name]
+	if !ok || t.ProviderArgs == nil || xaiTypedConfig(t, t.Name) {
+		return nil, false
+	}
+	m := map[string]interface{}{"type": spec.wireType}
+	for _, k := range spec.keys {
+		v, present := t.ProviderArgs[k[0]]
+		if !present || v == nil {
+			continue
+		}
+		if _, isList := v.([]interface{}); isList {
+			v = argStrings(t.ProviderArgs, k[0]) // validated: every element is a string
+		}
+		m[k[1]] = v
+	}
+	return m, true
+}
+
 func convertXAIResponsesTool(t types.Tool) interface{} {
+	if wire, ok := xaiTSShapedWire(t); ok {
+		return wire
+	}
 	switch t.Name {
 	case "xai.web_search":
 		cfg := xaiWebSearchArgs(t)
