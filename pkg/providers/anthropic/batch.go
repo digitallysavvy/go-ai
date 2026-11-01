@@ -9,6 +9,7 @@ import (
 	"io"
 	stdhttp "net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -83,7 +84,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	}
 
 	preparedRequests := make([]map[string]interface{}, 0, len(opts.Requests))
-	var requestToolNames map[string]map[string]string
+	toolNames := newBatchToolNamesBuilder(len(opts.Requests))
 	for _, req := range opts.Requests {
 		textReq := req.Text
 
@@ -125,12 +126,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 			}
 		}
 
-		if names := batchCustomToolNames(textReq.Options.Tools); names != nil {
-			if requestToolNames == nil {
-				requestToolNames = map[string]map[string]string{}
-			}
-			requestToolNames[textReq.ID] = names
-		}
+		toolNames.add(textReq.ID, batchCustomToolNames(textReq.Options.Tools))
 
 		body := lm.transformRequestBody(prepared.body, prepared.betas, false)
 		if err := validateAnthropicBatchBody(body, textReq.ID); err != nil {
@@ -159,7 +155,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	}, &response); err != nil {
 		return nil, b.handleError(err)
 	}
-	b.provider.batchToolNames.put(response.ID, requestToolNames)
+	b.provider.batchToolNames.put(response.ID, toolNames.build())
 
 	return &provider.BatchV4StartResult{
 		BatchV4Status: response.toStatus(),
@@ -572,31 +568,100 @@ func batchCustomToolNames(tools []types.Tool) map[string]string {
 	return out
 }
 
+// batchToolNames is the custom tool names of one batch: when every request
+// declares the same id-named provider tools (the common case) one shared
+// map serves them all; otherwise each request that has such tools keeps its
+// own map, and requests with identical tool sets share one map value.
+type batchToolNames struct {
+	all       map[string]string
+	byRequest map[string]map[string]string
+}
+
+// forRequest returns the wire name -> tool Name map for custom_id, or nil.
+func (n *batchToolNames) forRequest(customID string) map[string]string {
+	if n == nil {
+		return nil
+	}
+	if n.all != nil {
+		return n.all
+	}
+	return n.byRequest[customID]
+}
+
+// batchToolNamesBuilder collects the custom tool names of a batch's
+// requests in DoStartBatch.
+type batchToolNamesBuilder struct {
+	requests  int
+	byRequest map[string]map[string]string
+	interned  map[string]map[string]string
+}
+
+func newBatchToolNamesBuilder(requests int) *batchToolNamesBuilder {
+	return &batchToolNamesBuilder{requests: requests}
+}
+
+func (b *batchToolNamesBuilder) add(customID string, names map[string]string) {
+	if len(names) == 0 {
+		return
+	}
+	pairs := make([]string, 0, len(names))
+	for wire, name := range names {
+		pairs = append(pairs, strconv.Quote(wire)+":"+strconv.Quote(name))
+	}
+	sort.Strings(pairs)
+	key := strings.Join(pairs, ",")
+	if b.interned == nil {
+		b.interned = map[string]map[string]string{}
+		b.byRequest = map[string]map[string]string{}
+	}
+	if shared, ok := b.interned[key]; ok {
+		names = shared
+	} else {
+		b.interned[key] = names
+	}
+	b.byRequest[customID] = names
+}
+
+// build returns the batch's names, or nil when no request has id-named
+// provider tools.
+func (b *batchToolNamesBuilder) build() *batchToolNames {
+	if len(b.byRequest) == 0 {
+		return nil
+	}
+	if len(b.interned) == 1 && len(b.byRequest) == b.requests {
+		for _, names := range b.interned {
+			return &batchToolNames{all: names}
+		}
+	}
+	return &batchToolNames{byRequest: b.byRequest}
+}
+
 // maxRememberedBatchToolNames bounds batchToolNameStore.
 const maxRememberedBatchToolNames = 1024
 
 // batchToolNameStore remembers the custom tool names of batches started by a
-// Provider (batch ID -> custom_id -> wire name -> tool Name), so
-// DoGetBatchResults on the same Provider returns calls of id-named provider
-// tools under the tool's Name, as DoGenerate does. TS never needs this: its
-// provider tools are named by the caller (normally the wire name), and it
-// rejects names it cannot restore. Results read by another Provider or
-// process carry the wire names. Only batches with such tools are stored, and
-// at most maxRememberedBatchToolNames of them (oldest dropped first).
+// Provider (batch ID -> batchToolNames), so DoGetBatchResults on the same
+// Provider returns calls of id-named provider tools under the tool's Name,
+// as DoGenerate does. TS never needs this: its provider tools are named by
+// the caller (normally the wire name), and it rejects names it cannot
+// restore. Results read by another Provider or process carry the wire names.
+// Only batches with such tools are stored, and at most
+// maxRememberedBatchToolNames of them (oldest dropped first). A nil store
+// remembers nothing. Stored values are never mutated, so readers share them.
 type batchToolNameStore struct {
 	mu    sync.Mutex
-	names map[string]map[string]map[string]string
+	names map[string]*batchToolNames
 	order []string
 }
 
-func (s *batchToolNameStore) put(batchID string, names map[string]map[string]string) {
-	if batchID == "" || len(names) == 0 {
+func (s *batchToolNameStore) put(batchID string, names *batchToolNames) {
+	if s == nil || batchID == "" || names == nil {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.names == nil {
-		s.names = map[string]map[string]map[string]string{}
+		s.names = map[string]*batchToolNames{}
 	}
 	if _, ok := s.names[batchID]; !ok {
 		s.order = append(s.order, batchID)
@@ -604,11 +669,15 @@ func (s *batchToolNameStore) put(batchID string, names map[string]map[string]str
 	s.names[batchID] = names
 	for len(s.order) > maxRememberedBatchToolNames {
 		delete(s.names, s.order[0])
+		s.order[0] = ""
 		s.order = s.order[1:]
 	}
 }
 
-func (s *batchToolNameStore) get(batchID string) map[string]map[string]string {
+func (s *batchToolNameStore) get(batchID string) *batchToolNames {
+	if s == nil {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.names[batchID]
@@ -705,9 +774,9 @@ type anthropicBatchResultsStream struct {
 	url          string
 	maxLineBytes int
 	err          error
-	// toolNames maps custom_id -> wire name -> tool Name for the id-named
+	// toolNames holds the wire name -> tool Name maps of the id-named
 	// provider tools of a batch this provider started (nil otherwise).
-	toolNames map[string]map[string]string
+	toolNames *batchToolNames
 }
 
 func newAnthropicBatchResultsStream(body io.ReadCloser, p *Provider, url string, maxLineBytes int) *anthropicBatchResultsStream {
@@ -816,7 +885,7 @@ func (s *anthropicBatchResultsStream) convertResult(wire anthropicBatchResultLin
 			rawBatchCitations: true,
 			// Id-named provider tools of a batch this provider started come
 			// back under the tool's Name, as in DoGenerate.
-			customToolNames: s.toolNames[wire.CustomID],
+			customToolNames: s.toolNames.forRequest(wire.CustomID),
 		})
 		return &provider.BatchV4ItemResult{
 			Type:       provider.BatchRequestTypeText,

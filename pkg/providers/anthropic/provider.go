@@ -38,7 +38,7 @@ type Provider struct {
 	// batchToolNames keeps, for batches this provider started, the custom
 	// names of id-named provider tools so their batch results come back
 	// under the tool's Name (see batchToolNameStore).
-	batchToolNames batchToolNameStore
+	batchToolNames *batchToolNameStore
 }
 
 // Config contains configuration for the Anthropic provider
@@ -243,8 +243,9 @@ func New(cfg Config) *Provider {
 	})
 
 	return &Provider{
-		config: cfg,
-		client: client,
+		config:         cfg,
+		client:         client,
+		batchToolNames: &batchToolNameStore{},
 	}
 }
 

@@ -172,13 +172,14 @@ func TestR75prova_BatchResultsUseIDNamedToolName(t *testing.T) {
 
 func TestR75prova_BatchToolNameStoreBounded(t *testing.T) {
 	var s batchToolNameStore
-	s.put("", map[string]map[string]string{"r": {"bash": "x"}})
+	entry := &batchToolNames{all: map[string]string{"bash": "x"}}
+	s.put("", entry)
 	s.put("empty", nil)
 	if len(s.names) != 0 {
 		t.Fatalf("stored %v", s.names)
 	}
 	for i := 0; i <= maxRememberedBatchToolNames; i++ {
-		s.put(string(rune('a'+i%26))+string(rune(i)), map[string]map[string]string{"r": {"bash": "x"}})
+		s.put(string(rune('a'+i%26))+string(rune(i)), entry)
 	}
 	if len(s.names) != maxRememberedBatchToolNames || len(s.order) != maxRememberedBatchToolNames {
 		t.Fatalf("len = %d/%d", len(s.names), len(s.order))
