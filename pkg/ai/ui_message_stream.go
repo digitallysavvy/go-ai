@@ -618,10 +618,18 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		sendFinish := boolOption(options.SendFinish, true)
 		sendReasoning := boolOption(options.SendReasoning, true)
 
-		streamMessageID := responseUIMessageID(options)
-		callbackMessageID := streamMessageID
-		if callbackMessageID == "" && options.GenerateMessageID != nil {
-			callbackMessageID = options.GenerateMessageID()
+		// TS toUIMessageStream: the start chunk carries responseMessageId
+		// when it is defined; handleUIMessageStreamFinish's messageId is
+		// `responseMessageId ?? generateMessageId?.()`, replaced by the
+		// continued assistant message's id (undefined when it has none), and
+		// is injected into a start chunk without one.
+		streamMessageID, hasStreamMessageID := responseUIMessageIDOK(options)
+		callbackMessageID, hasCallbackMessageID := streamMessageID, hasStreamMessageID
+		if !hasCallbackMessageID && options.GenerateMessageID != nil {
+			callbackMessageID, hasCallbackMessageID = options.GenerateMessageID(), true
+		}
+		if last, ok := lastAssistantUIMessage(options.OriginalMessages); ok {
+			callbackMessageID, hasCallbackMessageID = last["id"].(string)
 		}
 
 		uiState := newUIMessageCallbackState(options.OriginalMessages, callbackMessageID)
@@ -795,9 +803,9 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			}
 		}
 
-		startMessageID := streamMessageID
-		if startMessageID == "" && options.GenerateMessageID != nil {
-			startMessageID = callbackMessageID
+		startMessageID, hasStartMessageID := streamMessageID, hasStreamMessageID
+		if !hasStartMessageID {
+			startMessageID, hasStartMessageID = callbackMessageID, hasCallbackMessageID
 		}
 		// writeStart writes the UI "start" chunk for a start part (TS
 		// toUIMessageChunk 'start': messageMetadata, then messageId), calling
@@ -813,7 +821,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			startEvent := map[string]interface{}{
 				"type": "start",
 			}
-			if startMessageID != "" {
+			if hasStartMessageID {
 				startEvent["messageId"] = startMessageID
 			}
 			if startMetadata != nil {
@@ -1405,23 +1413,44 @@ func toUIMessageChunks(part provider.StreamChunk, opts UIMessageStreamResultOpti
 }
 
 func responseUIMessageID(options UIMessageStreamResultOptions) string {
+	id, _ := responseUIMessageIDOK(options)
+	return id
+}
+
+// responseUIMessageIDOK is TS getResponseUIMessageId as toUIMessageStream
+// calls it (only when generateMessageId is set; the Go-only
+// ResponseMessageID wins): no original messages give no id, a last
+// assistant message gives its id (none when it has no id), otherwise the
+// generator's id. ok is false where TS has undefined, so an empty id is
+// still an id.
+func responseUIMessageIDOK(options UIMessageStreamResultOptions) (string, bool) {
 	if options.ResponseMessageID != "" {
-		return options.ResponseMessageID
+		return options.ResponseMessageID, true
 	}
 	if options.OriginalMessages == nil {
-		return ""
+		return "", false
 	}
-	if len(options.OriginalMessages) > 0 {
-		last := options.OriginalMessages[len(options.OriginalMessages)-1]
-		if role, _ := last["role"].(string); role == "assistant" {
-			id, _ := last["id"].(string)
-			return id
-		}
+	if last, ok := lastAssistantUIMessage(options.OriginalMessages); ok {
+		id, hasID := last["id"].(string)
+		return id, hasID
 	}
 	if options.GenerateMessageID != nil {
-		return options.GenerateMessageID()
+		return options.GenerateMessageID(), true
 	}
-	return ""
+	return "", false
+}
+
+// lastAssistantUIMessage returns the last original message when it is an
+// assistant message (the one a response continues).
+func lastAssistantUIMessage(original []UIMessageChunk) (UIMessageChunk, bool) {
+	if len(original) == 0 {
+		return nil, false
+	}
+	last := original[len(original)-1]
+	if role, _ := last["role"].(string); role == "assistant" {
+		return last, true
+	}
+	return nil, false
 }
 
 type uiMessageCallbackState struct {

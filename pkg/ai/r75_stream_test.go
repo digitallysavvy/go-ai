@@ -887,3 +887,66 @@ func TestR75StreamCreateUIStreamInjectsEmptyGeneratedID(t *testing.T) {
 	})
 	r75streamAssertJSON(t, "continued message id", got, `[{"type":"start","messageId":"assistant-1"},{"type":"finish"}]`)
 }
+
+// TS toUIMessageStream: responseMessageId = getResponseUIMessageId(...) when
+// generateMessageId is set (the start chunk carries it when not undefined,
+// even if empty), and handleUIMessageStreamFinish's messageId is
+// `responseMessageId ?? generateMessageId?.()`, replaced by the continued
+// assistant message's id (undefined when it has none).
+func TestR75StreamToUIMessageStreamStartIDEdgeCases(t *testing.T) {
+	parts := []provider.StreamChunk{
+		{Type: provider.ChunkTypeStart},
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hi"},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	}
+	t.Run("empty generated id is sent and generated once", func(t *testing.T) {
+		calls := 0
+		var endID interface{}
+		chunks, err := r71streamCollect(t, parts, UIMessageStreamResultOptions{
+			OriginalMessages:  []UIMessageChunk{{"id": "user-1", "role": "user", "parts": []interface{}{}}},
+			GenerateMessageID: func() string { calls++; return "" },
+			OnEnd:             func(e map[string]interface{}) { endID = e["responseMessage"].(UIMessageChunk)["id"] },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r75streamAssertJSON(t, "start", chunks[0], `{"type":"start","messageId":""}`)
+		if calls != 1 {
+			t.Fatalf("GenerateMessageID calls = %d, want 1", calls)
+		}
+		if endID != "" {
+			t.Fatalf("onEnd responseMessage.id = %#v", endID)
+		}
+	})
+	t.Run("continued assistant message without id", func(t *testing.T) {
+		chunks, err := r71streamCollect(t, parts, UIMessageStreamResultOptions{
+			OriginalMessages:  []UIMessageChunk{{"role": "assistant", "parts": []interface{}{}}},
+			GenerateMessageID: func() string { return "gen-1" },
+			OnEnd:             func(map[string]interface{}) {},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r75streamAssertJSON(t, "start", chunks[0], `{"type":"start"}`)
+	})
+	t.Run("no original messages injects the generated id", func(t *testing.T) {
+		chunks, err := r71streamCollect(t, parts, UIMessageStreamResultOptions{
+			GenerateMessageID: func() string { return "gen-1" },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r75streamAssertJSON(t, "start", chunks[0], `{"type":"start","messageId":"gen-1"}`)
+	})
+	t.Run("continued assistant id without a generator", func(t *testing.T) {
+		chunks, err := r71streamCollect(t, parts, UIMessageStreamResultOptions{
+			OriginalMessages: []UIMessageChunk{{"id": "a-1", "role": "assistant", "parts": []interface{}{}}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r75streamAssertJSON(t, "start", chunks[0], `{"type":"start","messageId":"a-1"}`)
+	})
+}
