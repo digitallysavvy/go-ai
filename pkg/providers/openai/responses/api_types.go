@@ -317,6 +317,20 @@ type FunctionToolDef struct {
 	OutputSchema interface{} `json:"output_schema,omitempty"`
 }
 
+// MarshalJSON sends an empty, non-nil AllowedCallers as "allowed_callers":
+// [] (TS forwards `options.allowedCallers` whenever it is not null); nil is
+// omitted.
+func (d FunctionToolDef) MarshalJSON() ([]byte, error) {
+	type plain FunctionToolDef
+	if d.AllowedCallers == nil || len(d.AllowedCallers) > 0 {
+		return json.Marshal(plain(d))
+	}
+	return json.Marshal(struct {
+		plain
+		AllowedCallers []string `json:"allowed_callers"`
+	}{plain(d), d.AllowedCallers})
+}
+
 // NamespaceToolDef groups function tools under an OpenAI Responses namespace.
 type NamespaceToolDef struct {
 	Type        string            `json:"type"`

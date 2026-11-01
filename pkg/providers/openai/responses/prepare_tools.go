@@ -703,9 +703,14 @@ func functionToolAllowedCallers(providerOptions interface{}) ([]string, bool) {
 	if !ok {
 		return nil, false
 	}
+	// TS: `options?.allowedCallers != null ? {allowed_callers} : {}`, so an
+	// empty list is sent too.
 	switch v := raw.(type) {
 	case []string:
-		return v, len(v) > 0
+		if v == nil {
+			return nil, false
+		}
+		return v, true
 	case []interface{}:
 		out := make([]string, 0, len(v))
 		for _, item := range v {
@@ -713,7 +718,7 @@ func functionToolAllowedCallers(providerOptions interface{}) ([]string, bool) {
 				out = append(out, s)
 			}
 		}
-		return out, len(out) > 0
+		return out, true
 	default:
 		return nil, false
 	}

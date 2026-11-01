@@ -101,3 +101,26 @@ func TestR75ProvbTSShapedEmptyStringArgs(t *testing.T) {
 		t.Error("TS-shaped mcp without serverUrl/connectorId must fail the refine")
 	}
 }
+
+// TestR75ProvbEmptyAllowedCallers: TS sends `allowed_callers` whenever
+// providerOptions.openai.allowedCallers is not null, so an empty list is
+// sent as []; absent stays absent.
+func TestR75ProvbEmptyAllowedCallers(t *testing.T) {
+	fn := func(opts map[string]interface{}) string {
+		got, err := PrepareToolsWithError([]types.Tool{{Name: "f", ProviderOptions: map[string]interface{}{"openai": opts}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := json.Marshal(got[0])
+		return string(b)
+	}
+	if got := fn(map[string]interface{}{"allowedCallers": []interface{}{}}); got != `{"type":"function","name":"f","parameters":{"properties":{},"type":"object"},"strict":false,"allowed_callers":[]}` {
+		t.Errorf("empty allowedCallers = %s", got)
+	}
+	if got := fn(map[string]interface{}{"allowedCallers": []string{"programmatic"}}); got != `{"type":"function","name":"f","parameters":{"properties":{},"type":"object"},"strict":false,"allowed_callers":["programmatic"]}` {
+		t.Errorf("allowedCallers = %s", got)
+	}
+	if got := fn(map[string]interface{}{}); got != `{"type":"function","name":"f","parameters":{"properties":{},"type":"object"},"strict":false}` {
+		t.Errorf("no allowedCallers = %s", got)
+	}
+}
