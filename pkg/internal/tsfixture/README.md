@@ -15,7 +15,9 @@ The files are committed gzipped as `*.json.gz` to keep the repository small.
 fails if an uncompressed `*.json` lands in a `testdata/tscases` directory.
 
 The cases were extracted from the TS AI SDK at commit `b658e8503c`
-(ai@7.0.140 plus main).
+(ai@7.0.140 plus main); the anthropic language/convert-prompt, bedrock
+prepare-tools, google language, gemini JSON accumulator and groq chat cases
+were re-extracted at `e64ed82f27` (ai@7.0.153+16).
 
 ## Regenerating
 

@@ -32,12 +32,12 @@ func TestR74Integ_StreamUsageTotalTokensFilled(t *testing.T) {
 		t.Fatalf("usage total tokens = %v, want 13", got)
 	}
 
-	// A provider-set total is kept.
+	// A provider-set total is replaced by input + output (TS asLanguageModelUsage).
 	steps := r74integUsageSteps()
 	steps[len(steps)-1].Usage.TotalTokens = r71streamInt64(20)
 	r = r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, steps), Prompt: "test-input"})
-	if got := r.TotalUsage().TotalTokens; got == nil || *got != 20 {
-		t.Fatalf("provider total tokens = %v, want 20", got)
+	if got := r.TotalUsage().TotalTokens; got == nil || *got != 13 {
+		t.Fatalf("provider total tokens = %v, want 13", got)
 	}
 }
 

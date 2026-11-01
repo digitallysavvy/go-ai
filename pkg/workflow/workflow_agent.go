@@ -2755,9 +2755,11 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	early.setConversation(prepared, opts.Messages, opts.Prompt)
 	// The root opens after the approved history tools ran, with the cleaned
 	// messages, as in GenerateWithOptions (TS onStart order). The streaming
-	// happens as the caller drains WorkflowStreamResult, under the child span
-	// the delegated ai.StreamText call creates for itself; the root ends when
-	// that run ends (see the stream hooks below).
+	// happens as the caller drains WorkflowStreamResult; the delegated
+	// ai.StreamText run opens no root of its own and reports its steps, model
+	// calls and tools under this root's call ID (TS WorkflowAgent.stream has
+	// one root per run). The root ends when that run ends (see the stream
+	// hooks below).
 	cancelled := ctx != nil && ctx.Err() != nil
 	if cancelled {
 		fireWorkflowStartBeforeAbort(ctx, mergeStart(w.OnStart, opts.OnStart), model, opts.Messages, opts.Prompt, runtimeContext, toolsContext)
@@ -2787,6 +2789,10 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	// for a failed run, then onEnd (only with steps) with the stream-mode
 	// total usage; an aborted run ends the root with onAbort here.
 	internal := *early.internalOptions(opts.Messages, opts.Prompt)
+	// The delegated stream reports its step, model-call and tool events under
+	// the root's call ID, so each integration finds the workflow root (TS
+	// model-call-iterator uses the workflow's telemetryDispatcher and callId).
+	internal.GenerateCallID = func() string { return callID }
 	// TS model-call-iterator.ts stream mode leaves reasoning-file parts out
 	// of the assistant messages it adds to the conversation (the next
 	// step's prompt, step.response.messages and onEnd's messages).

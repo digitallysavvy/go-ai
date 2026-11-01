@@ -950,6 +950,25 @@ type legacyCallState struct {
 	baseAttrs       []attribute.KeyValue
 	settings        legacySettings
 	runtimeCtxAttrs []attribute.KeyValue
+	// operationType is the root's operation (TS state.operationId), which
+	// names and shapes the step spans: a WorkflowAgent stream run reports
+	// its steps from the delegated stream ("ai.streamText") under the
+	// "ai.workflowAgent.stream" root.
+	operationType string
+}
+
+// legacyStepOperation returns the operation that shapes a step span: the
+// root's (TS state.operationId) when the call has a root, else the event's.
+func legacyStepOperation(key, eventOperation string) string {
+	if st := legacyLoadedState(key); st != nil {
+		st.mu.Lock()
+		op := st.operationType
+		st.mu.Unlock()
+		if op != "" {
+			return op
+		}
+	}
+	return eventOperation
 }
 
 var legacyCallStates sync.Map // map[string]*legacyCallState, keyed by CallID
@@ -1521,6 +1540,7 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 		st.tracer = tracer
 		st.baseAttrs = baseAttrs
 		st.settings = settings
+		st.operationType = e.OperationType
 		st.mu.Unlock()
 	}
 
@@ -1821,7 +1841,7 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 	// span, so it nests correctly under LegacyOpenTelemetry's root even if
 	// ctx's ambient "current span" belongs to another registered integration.
 	ctx = trace.ContextWithSpan(ctx, rootSpan)
-	opType := e.OperationType
+	opType := legacyStepOperation(i.stateKey(e.CallID), e.OperationType)
 	if opType == "" {
 		opType = "ai.step"
 	}
@@ -1867,7 +1887,7 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 				stepSpan.SetAttributes(kv)
 			}
 		}
-		if opType == "ai.generateText" || opType == "ai.streamText" {
+		if legacyGenerateStartOperation(opType) {
 			if len(settings.StopSequences) > 0 {
 				stepSpan.SetAttributes(attribute.StringSlice("gen_ai.request.stop_sequences", settings.StopSequences))
 			}
@@ -2446,7 +2466,9 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 
 	stepSpan.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
 
-	if isLegacyObjectOperation(e.OperationType) {
+	// TS onStepEnd shapes the span by the root's operation (state.operationId).
+	stepOp := legacyStepOperation(i.stateKey(e.CallID), e.OperationType)
+	if isLegacyObjectOperation(stepOp) {
 		// onObjectStepEnd: ai.response.object (re-parsed/re-stringified JSON
 		// text, falling back to the raw text on parse failure, mirroring TS's
 		// try/catch), no reasoning/toolCalls/files. Empty text is recorded as
@@ -2498,7 +2520,7 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 		// like the msTo* fields above, are plain values in TS's
 		// selectAttributes call, not {output: ...} — so they're never gated
 		// by recordOutputs.
-		isStreamText := e.OperationType == "ai.streamText"
+		isStreamText := stepOp == "ai.streamText"
 		if isStreamText {
 			if e.Performance.TimeToFirstOutputMs != nil {
 				ms := *e.Performance.TimeToFirstOutputMs
@@ -2552,7 +2574,7 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 		stepSpan.SetAttributes(attribute.Int64("gen_ai.usage.output_tokens", *e.Usage.OutputTokens))
 	}
 
-	if isLegacyObjectOperation(e.OperationType) {
+	if isLegacyObjectOperation(stepOp) {
 		stepSpan.SetAttributes(legacyObjectUsageAttrs(e.Usage)...)
 	} else {
 		stepSpan.SetAttributes(legacyFullUsageAttrs(e.Usage)...)

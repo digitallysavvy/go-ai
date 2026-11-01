@@ -15,16 +15,32 @@ import (
 
 type r68EndUsageCapture struct {
 	telemetry.NoopTelemetryIntegration
-	mu   sync.Mutex
-	ends []telemetry.TelemetryUsage
+	mu         sync.Mutex
+	ends       []telemetry.TelemetryUsage
+	innerEnds  int
+	innerStart int
 }
 
+func (c *r68EndUsageCapture) OnStart(ctx context.Context, e telemetry.TelemetryStartEvent) context.Context {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e.OperationType == "ai.streamText" {
+		c.innerStart++
+	}
+	return ctx
+}
+
+// OnFinish records the root's end usage. The delegated ai.StreamText run
+// opens no root of its own (TS WorkflowAgent.stream has one root per run),
+// so an ai.streamText end is counted separately and must not occur.
 func (c *r68EndUsageCapture) OnFinish(_ context.Context, e telemetry.TelemetryFinishEvent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if e.OperationType == "ai.streamText" {
-		c.ends = append(c.ends, e.Usage)
+		c.innerEnds++
+		return
 	}
+	c.ends = append(c.ends, e.Usage)
 }
 
 func r68Int(v int64) *int64 { return &v }
@@ -117,6 +133,9 @@ func TestR68WorkflowStreamEndUsageIsAggregateUsage(t *testing.T) {
 			r68WantCounts(t, "result usage", u.InputTokens, u.OutputTokens, u.TotalTokens, 10, 5)
 			capture.mu.Lock()
 			defer capture.mu.Unlock()
+			if capture.innerStart != 0 || capture.innerEnds != 0 {
+				t.Fatalf("ai.streamText root start/end = %d/%d, want none (one workflow root)", capture.innerStart, capture.innerEnds)
+			}
 			if len(capture.ends) != 1 {
 				t.Fatalf("telemetry ends = %d, want 1", len(capture.ends))
 			}
@@ -220,7 +239,9 @@ func (c *r68RootCapture) OnError(_ context.Context, _ telemetry.TelemetryErrorEv
 
 // TS WorkflowAgent stream mode fires the root's telemetry onEnd when the
 // loop ends (notifyEnd), with the last step's data and aggregateUsage, and
-// for a failed run onError first; with no steps there is no onEnd.
+// for a failed run onError first; with no steps there is no onEnd. The
+// delegated stream opens no root of its own, so there is no inner end and
+// each error is reported once (review round 75).
 func TestR68WorkflowStreamRootTelemetryEndsWithRun(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -228,11 +249,11 @@ func TestR68WorkflowStreamRootTelemetryEndsWithRun(t *testing.T) {
 		wantEvents string
 		wantOut    int64
 	}{
-		{"completed", r68UsageModel(false), "inner-end,root-end", 5},
-		{"failed", r68UsageModel(true), "error,error,root-end", 0},
+		{"completed", r68UsageModel(false), "root-end", 5},
+		{"failed", r68UsageModel(true), "error,root-end", 0},
 		{"failed without steps", &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
 			return nil, errors.New("boom")
-		}}, "error,error", 0},
+		}}, "error", 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -335,8 +356,8 @@ func TestR68WorkflowStreamRootTelemetryAbortMidStream(t *testing.T) {
 	_, _ = res.ReadAll()
 	capture.mu.Lock()
 	defer capture.mu.Unlock()
-	if capture.aborts < 2 { // the delegated ai.streamText call and the root
-		t.Fatalf("aborts = %d, want the root to abort too (events %v)", capture.aborts, capture.events)
+	if capture.aborts != 1 { // the root only: the delegated stream opens no root
+		t.Fatalf("aborts = %d, want 1 (the root; events %v)", capture.aborts, capture.events)
 	}
 	for _, e := range capture.events {
 		if e == "root-end" {
