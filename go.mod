@@ -7,7 +7,7 @@ require (
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/go-chi/cors v1.2.2
 	github.com/go-playground/validator/v10 v10.30.5
-	github.com/gofiber/fiber/v2 v2.52.15
+	github.com/gofiber/fiber/v2 v2.52.16
 	github.com/google/uuid v1.6.0
 	github.com/labstack/echo/v4 v4.16.0
 	github.com/rivo/uniseg v0.4.7
