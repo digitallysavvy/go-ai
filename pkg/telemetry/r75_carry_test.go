@@ -16,7 +16,7 @@ func r75carryRootAttrs(t *testing.T, rec *tracetest.SpanRecorder) map[string]str
 		}
 		out := map[string]string{}
 		for _, kv := range s.Attributes() {
-			out[string(kv.Key)] = kv.Value.Emit()
+			out[string(kv.Key)] = kv.Value.String()
 		}
 		return out
 	}
