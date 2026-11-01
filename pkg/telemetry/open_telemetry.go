@@ -497,7 +497,9 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 			attribute.String("gen_ai.output.type", outputType),
 			attribute.Bool("gen_ai.request.stream", e.OperationType == "ai.streamTranscribe"),
 		)
-		if recordInputs && e.Text != "" {
+		// TS: text == null ? undefined : ... — generateSpeech always has a
+		// text (an empty one is recorded too); transcription events have none.
+		if recordInputs && (e.Text != "" || e.OperationType == "ai.generateSpeech") {
 			span.SetAttributes(attribute.String("ai.request.text", e.Text))
 			if b, err := jsonstr.Marshal([]semConvInputMessage{{
 				Role:  "user",

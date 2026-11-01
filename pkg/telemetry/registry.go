@@ -1555,7 +1555,9 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 		// ai.request.audio.size/mediaType (transcribe/streamTranscribe), all
 		// input-gated. No ai.prompt/ai.settings.* attributes for audio
 		// operations.
-		if recordInputs && e.Text != "" {
+		// TS: text == null ? undefined : ... — generateSpeech always has a
+		// text (an empty one is recorded too); transcription events have none.
+		if recordInputs && (e.Text != "" || e.OperationType == "ai.generateSpeech") {
 			span.SetAttributes(attribute.String("ai.request.text", e.Text))
 		}
 		if recordInputs && e.AudioByteLength != nil {
