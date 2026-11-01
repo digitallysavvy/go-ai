@@ -35,6 +35,10 @@ const (
 type Provider struct {
 	config Config
 	client *http.Client
+	// batchToolNames keeps, for batches this provider started, the custom
+	// names of id-named provider tools so their batch results come back
+	// under the tool's Name (see batchToolNameStore).
+	batchToolNames batchToolNameStore
 }
 
 // Config contains configuration for the Anthropic provider

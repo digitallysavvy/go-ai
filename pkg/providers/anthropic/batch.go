@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -82,6 +83,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	}
 
 	preparedRequests := make([]map[string]interface{}, 0, len(opts.Requests))
+	var requestToolNames map[string]map[string]string
 	for _, req := range opts.Requests {
 		textReq := req.Text
 
@@ -123,6 +125,13 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 			}
 		}
 
+		if names := batchCustomToolNames(textReq.Options.Tools); names != nil {
+			if requestToolNames == nil {
+				requestToolNames = map[string]map[string]string{}
+			}
+			requestToolNames[textReq.ID] = names
+		}
+
 		body := lm.transformRequestBody(prepared.body, prepared.betas, false)
 		if err := validateAnthropicBatchBody(body, textReq.ID); err != nil {
 			return nil, err
@@ -150,6 +159,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	}, &response); err != nil {
 		return nil, b.handleError(err)
 	}
+	b.provider.batchToolNames.put(response.ID, requestToolNames)
 
 	return &provider.BatchV4StartResult{
 		BatchV4Status: response.toStatus(),
@@ -294,7 +304,9 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: httpResp.StatusCode, Headers: httpResp.Header, Body: body})
 	}
 
-	return newAnthropicBatchResultsStream(httpResp.Body, b.provider, resultsURL, maxLineBytes), nil
+	stream := newAnthropicBatchResultsStream(httpResp.Body, b.provider, resultsURL, maxLineBytes)
+	stream.toolNames = b.provider.batchToolNames.get(opts.BatchID)
+	return stream, nil
 }
 
 // retrieveBatch fetches one batch's current representation
@@ -541,6 +553,67 @@ func findAliasedAnthropicProviderTool(tools []types.Tool, toolsetNames map[strin
 	return ""
 }
 
+// batchCustomToolNames returns the wire name -> tool Name map of the
+// provider tools in a batch request whose Name differs from their Anthropic
+// wire name, or nil. findAliasedAnthropicProviderTool has rejected renamed
+// tools, so these are Go tools that keep the constructor's id as their Name
+// ("anthropic.bash_20250124" sent as "bash").
+func batchCustomToolNames(tools []types.Tool) map[string]string {
+	var out map[string]string
+	for wire, name := range newAnthropicToolNames(tools).toCustom {
+		if wire == name {
+			continue
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[wire] = name
+	}
+	return out
+}
+
+// maxRememberedBatchToolNames bounds batchToolNameStore.
+const maxRememberedBatchToolNames = 1024
+
+// batchToolNameStore remembers the custom tool names of batches started by a
+// Provider (batch ID -> custom_id -> wire name -> tool Name), so
+// DoGetBatchResults on the same Provider returns calls of id-named provider
+// tools under the tool's Name, as DoGenerate does. TS never needs this: its
+// provider tools are named by the caller (normally the wire name), and it
+// rejects names it cannot restore. Results read by another Provider or
+// process carry the wire names. Only batches with such tools are stored, and
+// at most maxRememberedBatchToolNames of them (oldest dropped first).
+type batchToolNameStore struct {
+	mu    sync.Mutex
+	names map[string]map[string]map[string]string
+	order []string
+}
+
+func (s *batchToolNameStore) put(batchID string, names map[string]map[string]string) {
+	if batchID == "" || len(names) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.names == nil {
+		s.names = map[string]map[string]map[string]string{}
+	}
+	if _, ok := s.names[batchID]; !ok {
+		s.order = append(s.order, batchID)
+	}
+	s.names[batchID] = names
+	for len(s.order) > maxRememberedBatchToolNames {
+		delete(s.names, s.order[0])
+		s.order = s.order[1:]
+	}
+}
+
+func (s *batchToolNameStore) get(batchID string) map[string]map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.names[batchID]
+}
+
 // --- Wire types -------------------------------------------------------
 
 type anthropicBatchRequestCountsWire struct {
@@ -632,6 +705,9 @@ type anthropicBatchResultsStream struct {
 	url          string
 	maxLineBytes int
 	err          error
+	// toolNames maps custom_id -> wire name -> tool Name for the id-named
+	// provider tools of a batch this provider started (nil otherwise).
+	toolNames map[string]map[string]string
 }
 
 func newAnthropicBatchResultsStream(body io.ReadCloser, p *Provider, url string, maxLineBytes int) *anthropicBatchResultsStream {
@@ -738,6 +814,9 @@ func (s *anthropicBatchResultsStream) convertResult(wire anthropicBatchResultLin
 			// rawBatchCitations doc comment), matching TS
 			// convertAnthropicBatchResponse.
 			rawBatchCitations: true,
+			// Id-named provider tools of a batch this provider started come
+			// back under the tool's Name, as in DoGenerate.
+			customToolNames: s.toolNames[wire.CustomID],
 		})
 		return &provider.BatchV4ItemResult{
 			Type:       provider.BatchRequestTypeText,

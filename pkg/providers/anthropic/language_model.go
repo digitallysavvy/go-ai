@@ -389,6 +389,10 @@ type convertOptions struct {
 	// document ordering to normalize page_location/char_location citations
 	// against (citationDocuments is left empty in that case).
 	rawBatchCitations bool
+	// customToolNames, when set, is the wire name -> custom tool name map
+	// used instead of the one derived from tools (batch results, which have
+	// no tool list; see batchToolNameStore).
+	customToolNames map[string]string
 }
 
 func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, co convertOptions) *types.GenerateResult {
@@ -402,6 +406,9 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 		result.ResponseMetadata = &types.ResponseMetadata{ID: response.ID, ModelID: response.Model}
 	}
 	toolNameMap := anthropicProviderToolNameMap(tools)
+	if co.customToolNames != nil {
+		toolNameMap = co.customToolNames
+	}
 
 	// byBlock collects the content parts each response block produced, so the
 	// final result.Content follows the order the model emitted them (TS builds
