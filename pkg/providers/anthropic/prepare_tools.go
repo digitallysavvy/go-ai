@@ -284,6 +284,7 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 		// (TS #22440).
 		out.toolChoice = map[string]interface{}{"type": "none"}
 	case types.ToolChoiceTool:
+		choiceName := forcedToolWireName(o.tools, o.toolChoice.ToolName)
 		if o.rejectsForcedToolUse {
 			out.warnings = append(out.warnings, types.Warning{
 				Type:    "unsupported",
@@ -294,17 +295,35 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 			})
 			var filtered []map[string]interface{}
 			for _, w := range out.tools {
-				if w["name"] == o.toolChoice.ToolName {
+				if w["name"] == choiceName {
 					filtered = append(filtered, w)
 				}
 			}
 			out.tools = filtered
 			out.toolChoice = withDisable(map[string]interface{}{"type": "auto"})
 		} else {
-			out.toolChoice = withDisable(map[string]interface{}{"type": "tool", "name": o.toolChoice.ToolName})
+			out.toolChoice = withDisable(map[string]interface{}{"type": "tool", "name": choiceName})
 		}
 	default:
 		out.toolChoice = withDisable(map[string]interface{}{"type": "auto"})
 	}
 	return out
+}
+
+// forcedToolWireName returns the tool_choice name for a forced tool choice.
+// TS sends toolChoice.toolName as given, which is the tools record key and,
+// for a provider tool, normally its wire name ("bash"). A Go provider tool
+// that keeps the constructor's id as its Name ("anthropic.bash_20250124") is
+// sent under its Anthropic wire name, so forcing it by that Name sends the
+// wire name; any other name is sent unchanged.
+func forcedToolWireName(tools []types.Tool, name string) string {
+	for _, t := range tools {
+		if t.Name != name || ProviderToolID(t) != name {
+			continue
+		}
+		if wire := prompt.AnthropicProviderToolName(name); wire != name {
+			return wire
+		}
+	}
+	return name
 }
