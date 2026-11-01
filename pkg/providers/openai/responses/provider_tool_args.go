@@ -321,6 +321,9 @@ func shellEnvironmentFromArgs(args map[string]interface{}) (*ShellEnvironment, e
 		} else if ok {
 			// TS: any other policy is sent as an allowlist.
 			p := &ShellNetworkPolicy{Type: "allowlist", AllowedDomains: strs(policy["allowedDomains"])}
+			if _, isList := policy["domainSecrets"].([]interface{}); isList {
+				p.DomainSecrets = []ShellDomainSecret{} // TS sends domain_secrets as given
+			}
 			for _, s := range maps(policy["domainSecrets"]) {
 				secret := ShellDomainSecret{}
 				secret.Domain, _ = s["domain"].(string)
@@ -329,6 +332,9 @@ func shellEnvironmentFromArgs(args map[string]interface{}) (*ShellEnvironment, e
 				p.DomainSecrets = append(p.DomainSecrets, secret)
 			}
 			env.NetworkPolicy = p
+		}
+		if _, isList := envArgs["skills"].([]interface{}); isList {
+			env.Skills = []ShellSkill{} // TS sends skills as given, [] included
 		}
 		for _, s := range maps(envArgs["skills"]) {
 			if s["type"] == "skillReference" {
@@ -363,6 +369,9 @@ func shellEnvironmentFromArgs(args map[string]interface{}) (*ShellEnvironment, e
 		return env, nil
 	}
 	env := &ShellEnvironment{Type: "local"}
+	if _, isList := envArgs["skills"].([]interface{}); isList {
+		env.Skills = []ShellSkill{}
+	}
 	for _, s := range maps(envArgs["skills"]) {
 		env.Skills = append(env.Skills, ShellSkill{Name: str(s, "name"), Description: str(s, "description"), Path: str(s, "path")})
 	}

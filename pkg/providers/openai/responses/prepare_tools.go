@@ -572,7 +572,8 @@ func convertShellTool(t types.Tool) ShellToolDef {
 	}
 	toolEnv := &ShellToolDefEnvironment{Type: envType}
 
-	if len(env.FileIDs) > 0 {
+	// TS forwards file_ids and skills as given, an empty list included.
+	if env.FileIDs != nil {
 		toolEnv.FileIDs = env.FileIDs
 	}
 	if env.MemoryLimit != nil {
@@ -581,7 +582,7 @@ func convertShellTool(t types.Tool) ShellToolDef {
 	if env.NetworkPolicy != nil {
 		toolEnv.NetworkPolicy = env.NetworkPolicy
 	}
-	if len(env.Skills) > 0 {
+	if env.Skills != nil {
 		// TS mapShellSkills: a skill reference without a version is sent
 		// as version "latest".
 		skills := make([]ShellSkill, len(env.Skills))

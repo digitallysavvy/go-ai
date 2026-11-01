@@ -398,6 +398,47 @@ type ShellToolDefEnvironment struct {
 	ContainerID *string `json:"container_id,omitempty"`
 }
 
+// MarshalJSON keeps an empty, non-nil FileIDs or Skills list as [] (TS
+// mapShellEnvironment forwards file_ids and skills as given); nil is
+// omitted.
+func (e ShellToolDefEnvironment) MarshalJSON() ([]byte, error) {
+	type plain ShellToolDefEnvironment
+	return marshalKeepingEmpty(plain(e), map[string]bool{
+		"file_ids": e.FileIDs != nil && len(e.FileIDs) == 0,
+		"skills":   e.Skills != nil && len(e.Skills) == 0,
+	})
+}
+
+// MarshalJSON keeps an empty, non-nil AllowedDomains or DomainSecrets list
+// as [] (TS sends allowed_domains and domain_secrets as given); nil is
+// omitted.
+func (p ShellNetworkPolicy) MarshalJSON() ([]byte, error) {
+	type plain ShellNetworkPolicy
+	return marshalKeepingEmpty(plain(p), map[string]bool{
+		"allowed_domains": p.AllowedDomains != nil && len(p.AllowedDomains) == 0,
+		"domain_secrets":  p.DomainSecrets != nil && len(p.DomainSecrets) == 0,
+	})
+}
+
+// marshalKeepingEmpty marshals v and, for each key marked true in keep,
+// adds the empty list omitempty dropped (appended after v's own keys).
+func marshalKeepingEmpty(v interface{}, keep map[string]bool) ([]byte, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	for _, k := range []string{"file_ids", "skills", "allowed_domains", "domain_secrets"} {
+		if keep[k] && len(b) >= 2 && b[len(b)-1] == '}' {
+			sep := ","
+			if len(b) == 2 {
+				sep = ""
+			}
+			b = append(b[:len(b)-1], []byte(sep+`"`+k+`":[]}`)...)
+		}
+	}
+	return b, nil
+}
+
 // CustomToolDef represents a custom tool in an API request.
 type CustomToolDef struct {
 	// Type is always "custom".
