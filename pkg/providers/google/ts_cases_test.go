@@ -34,6 +34,7 @@ func TestTSCasesLanguage(t *testing.T) {
 		"should finish with the last continuation token when continuing the stream fails":                                    multiResponse,
 		"should resend the same request with the continuation token on CONTINUATION":                                         multiResponse,
 		"should return the continuation token when the budget is used up after continuing":                                   multiResponse,
+		"reports interruption when an automatically continued stream ends without a finish reason":                           multiResponse + "; covered by gemini TestStreamContinuationResetsFinishReason",
 		"should pass penalty settings for Vertex Gemini 2.5 models":                                                          "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
 		"should pass imageConfig.personGeneration, imageConfig.prominentPeople and imageConfig.imageOutputOptions on Vertex": "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
 		"merges async config headers with sync request headers":                                                              asyncHeaders,

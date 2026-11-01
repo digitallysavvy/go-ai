@@ -65,3 +65,19 @@ func TestR75prova_BedrockForcedToolChoiceRequestBody(t *testing.T) {
 		t.Fatalf("tool calls = %+v", res.ToolCalls)
 	}
 }
+
+// amazon-bedrock-prepare-tools.test.ts "should warn for unknown
+// provider-defined tools on anthropic models" (TS #24073: the feature names
+// the tool id), with the real Anthropic preparation, whose own
+// "provider-defined tool" warning comes first (TS pushes the Anthropic
+// warnings before the Bedrock toolSpec loop).
+func TestR75prova_BedrockUnknownAnthropicToolWarnings(t *testing.T) {
+	unknown := types.Tool{Type: types.ToolTypeProviderDefined, ProviderID: "anthropic.unknown_tool", Name: "unknown_tool", ProviderArgs: map[string]interface{}{}}
+	out := prepareBedrockTools([]types.Tool{unknown}, types.ToolChoice{}, false, "anthropic.claude-sonnet-4-5-20250929-v1:0", "", nil, nil, false)
+	if out.Err != nil || len(out.ToolConfig.Tools) != 0 {
+		t.Fatalf("out = %+v", out)
+	}
+	if len(out.Warnings) != 2 || out.Warnings[0].Feature != "provider-defined tool anthropic.unknown_tool" || out.Warnings[1].Feature != "tool anthropic.unknown_tool" {
+		t.Fatalf("warnings = %+v", out.Warnings)
+	}
+}

@@ -242,5 +242,12 @@ func TestR74prova_TSCasesPrepareToolsWithTSShapedTools(t *testing.T) {
 			"betas":           map[string]interface{}{"__set": betas},
 			"toolWarnings":    tsfixture.WarningsToTS(out.Warnings),
 		}, nil, nil
-	}, nil)
+	}, map[string]string{
+		// The TS test file mocks prepareAnthropicTools to return no
+		// warnings; the real TS function also warns "provider-defined tool
+		// anthropic.unknown_tool" (anthropic-prepare-tools.ts default case),
+		// as Go does. The Bedrock warning is checked by
+		// TestR75prova_BedrockUnknownAnthropicToolWarnings.
+		"should warn for unknown provider-defined tools on anthropic models": "the TS test mocks prepareAnthropicTools (no Anthropic warnings)",
+	})
 }
