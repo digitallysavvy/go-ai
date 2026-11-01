@@ -96,6 +96,7 @@ Also new:
 - **`openaitool.ToolSearchOptions.Parameters`** holds the client-mode search schema (TS `args.parameters`).
 - **`workflow.SerializeToolSetWithOptions`** passes the tools context and sandbox to each tool's `DescriptionFunc` (TS `serializeToolSet(tools, {toolsContext, experimental_sandbox})`).
 - **`anthropic.ProviderToolID`, `anthropic.PrepareProviderTools` and `anthropic.PreparedProviderTools`** select Anthropic provider tools by id and run the Anthropic tool preparation for a host API such as Bedrock (TS `tool.id`, `prepareAnthropicTools`).
+- **`responses.FunctionToolDef`, `responses.ShellToolDefEnvironment` and `responses.ShellNetworkPolicy` `MarshalJSON` methods** send an empty, non-nil `AllowedCallers`, `FileIDs`, `Skills`, `AllowedDomains` or `DomainSecrets` list as `[]`; nil is still omitted (TS forwards these lists as given).
 - OpenAI Responses: `promptCacheOptions` 12h TTL and prewarm, shell tool
   `timeoutMs`/`maxOutputLength`, `additionalTools` and
   `omitFromRequestTools`. Azure `ToolSearch` and per-deployment model
@@ -286,6 +287,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **WorkflowAgent Stream leaves reasoning files out of the conversation** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-stream-reasoning-files)
 - **SerializeToolSet resolves DescriptionFunc** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-serialize-description-func)
 - **Resolved dynamic tools carry no title, metadata or strict** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-resolve-dynamic-tools)
+- **WorkflowAgent stream opens one telemetry root** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-stream-single-telemetry-root)
 
 #### UI message streams
 
@@ -301,6 +303,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Approved tool calls send one approval pair in UI streams** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-auto-approval-no-duplicate)
 - **A failing ConsumeSSEStream no longer breaks CreateUIMessageChunksResponse** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-consume-sse-error-body)
 - **UI message streams keep empty text deltas with provider metadata** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-empty-text-delta-metadata)
+- **UI start chunks carry the response message id as TS does** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-start-message-id)
+- **UI message metadata keeps an object over a number or boolean** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-metadata-merge-scalar)
 
 #### Telemetry and events
 
@@ -315,6 +319,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Telemetry step end runs every OnStepEnd before the deprecated OnStepFinish** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-step-finish-fanout)
 - **Rerank telemetry `ai.ranking` uses TS keys** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-ranking-keys)
 - **GenAI embeddings span operation name is `embeddings`** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-embeddings-operation-name)
+- **generateSpeech records an empty text** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-speech-empty-text)
 
 #### Errors
 
@@ -346,6 +351,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **OpenAI provider tool config is validated before the request** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-tool-args-validation)
 - **openaitool.ToolSearch keeps the search schema in its options** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-tool-search-parameters)
 - **Expanded OpenAI parallel tool calls keep the model's key order** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-parallel-call-input-order)
+- **OpenAI Responses function and shell tool wire details follow TS** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-responses-tool-wire-r75)
 - **xAI provider tool config is validated before the request** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#xai-tool-args-validation)
 - **Wrapper providers read only their own API key** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#wrapper-api-keys)
 - **Failed generated-media downloads return ProviderError** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#media-download-errors)
@@ -1299,11 +1305,11 @@ Notable ones:
 - **ToUIMessageStream on a raw provider stream** is framed (start,
   finish-step, finish, incomplete-stream error); start-led sources map one to
   one as in TS (owner ruling 2026-10-30, round 71).
-- The telemetry `OnStart` of `GenerateText`, `StreamText` and the legacy
-  `ToolLoopAgent` runs before the user `OnStart`, so the callback runs in the
-  integration's span context; TS starts the callback first. Step-start, end,
-  step-end, step-error and tool events run the callbacks first, as in TS
-  (rounds 71-72).
+- The telemetry `OnStart` of `GenerateText`, `StreamText`, the legacy
+  `ToolLoopAgent` and the `WorkflowAgent` root (both modes) runs before the
+  user `OnStart`, so the callback runs in the integration's span context; TS
+  starts the callback first. Step-start, end, step-end, step-error and tool
+  events run the callbacks first, as in TS (rounds 71-72, 75).
 - `RuntimeContext` stays nil when the caller sets none; TS defaults it to
   `{}` (owner preference for idiomatic Go, round 71).
 - **EmbedMany waits for sibling batch calls**: a failing parallel `EmbedMany` group returns the first failure in time, as TS, but only after the group's other calls finish; TS rejects at once and lets them run on (round 72).
@@ -1315,7 +1321,8 @@ Notable ones:
 - **ConsumeStream returns the error**: `StreamTextResult.ConsumeStream()` returns the stream error; TS `consumeStream()` swallows it (round 73).
 - **Merged UI message stream order**: chunks of merged UI stream sources interleave by goroutine scheduling, each source in order; TS follows its microtask queue (round 73).
 - **Provider tool error without a value**: a provider tool result flagged `IsError` with no value has the error text `tool error`; TS leaves `errorText` undefined (round 73).
-- **OpenAI tool args issue text**: OpenAI provider tool args validation errors list the Go JSON Schema validator's issues after "Error message:"; TS lists zod's issue JSON (round 74).
+- **Message metadata merge with non-object values**: UI message metadata followed by a string or array (or a non-object followed by any value) is replaced; TS `mergeObjects` merges the value's index keys into a copy of the existing value. A number or boolean after an object keeps the object, as TS (coordinator ruling, round 75).
+- **Anthropic batch results of id-named provider tools across processes**: `ExperimentalBatch` restores the `Name` of a provider tool that keeps its constructor id (`anthropic.bash_20250124`) only when the results are read through the Provider that started the batch; results read by another Provider value or process report the wire name (`bash`). Name the tool after its wire name to get the same name everywhere (round 75).
 - The Vertex Gemini image model accepts URL and `gs://` input images and
   sends them as `fileData` with the caller's media type, else one inferred
   from the URL path extension (query string and fragment ignored), else

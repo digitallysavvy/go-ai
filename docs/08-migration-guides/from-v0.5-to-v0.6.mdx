@@ -202,6 +202,11 @@ already, you can skip them.
 | Anthropic provider tools on Bedrock | Validated; calls named after the tool | silent behavior change | Match `Tool.Name` | [Anthropic provider tools on Bedrock](#bedrock-anthropic-provider-tools) |
 | `RawArguments` of expanded OpenAI parallel tool calls | Model key order | silent behavior change | Compare `Arguments` | [Parallel call input order](#openai-parallel-call-input-order) |
 | Invalid xai tool config (domains > 5, handles > 20, image action, file search without IDs, MCP without URL) | `TypeValidationError` before the request | silent behavior change | Fix the config | [xAI tool config validation](#xai-tool-args-validation) |
+| GenerateSpeech span with empty text | records `ai.request.text: ""` (and GenAI input messages) | silent behavior change | None | [Speech empty text](#telemetry-speech-empty-text) |
+| WorkflowAgent stream telemetry | one root (`ai.workflowAgent.stream`), no inner `ai.streamText` root | silent behavior change | Read the workflow root | [Single telemetry root](#workflow-stream-single-telemetry-root) |
+| UI start chunk messageId | Injected by CreateUIMessageStreamWithOptions; empty ids kept | wire/protocol change | None | [Start message id](#ui-start-message-id) |
+| Number or boolean `messageMetadata` after object metadata | Object kept | silent behavior change | Send an object to change it | [Metadata merge](#ui-metadata-merge-scalar) |
+| OpenAI function output_schema, empty allowedCallers / shell lists | Normalized schema with warnings; [] sent | wire/protocol change | None, or use nil slices | [Responses tool wire details](#openai-responses-tool-wire-r75) |
 | Cohere `BaseURL` or `DefaultBaseURL` (v0.5.3) | v2 API | wire/protocol change | Check custom base URLs | [Cohere v2](#v053-cohere-v2) |
 | `MaxRetries` unset on non-Gateway providers (v0.5.3) | Every provider retries | silent behavior change | Set `MaxRetries: &zero` to disable | [Retries](#v053-retries) |
 | Reliance on the 60 s default HTTP client timeout (v0.5.3) | No whole-request timeout | silent behavior change | Bound calls with `ctx` | [HTTP client timeout](#v053-http-timeout) |
@@ -442,11 +447,13 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 
 - **What changed:** `Usage.TotalTokens` is input tokens plus output tokens
   for every provider, as TS computes it. v0.5 copied the provider's wire
-  `total_tokens`, which some providers compute differently. A model that
-  leaves `TotalTokens` unset (a custom `LanguageModel`) gets it filled from
-  input + output when either count is set, in `GenerateText`,
-  `GenerateObject`, `StreamObject`, `StreamText` and the legacy
-  `ToolLoopAgent` loop (TS `asLanguageModelUsage`; review round 74).
+  `total_tokens`, which some providers compute differently. Core sets it
+  from input + output whenever either count is reported, replacing a total
+  the model itself set (a custom `LanguageModel`, or a provider that passes
+  its wire total through), in `GenerateText`, `GenerateObject`,
+  `StreamObject`, `StreamText` and the legacy `ToolLoopAgent` loop (TS
+  `asLanguageModelUsage`, whose model usage has no total of its own; review
+  rounds 74-75). A total reported with neither count is kept.
 - **Am I affected?** Billing or metrics code that reads `.TotalTokens`.
 - **What to do:** no action unless you need the provider's own total. Read
   it from the usage's raw provider data.
@@ -2009,6 +2016,27 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   the resolved tool yourself.
 - **Kind:** silent behavior change
 
+#### WorkflowAgent stream opens one telemetry root {#workflow-stream-single-telemetry-root}
+
+- **What changed:** v0.5 `WorkflowAgent.Stream` / `StreamWithOptions`
+  opened the `ai.workflowAgent.stream` root and then a second root,
+  `ai.streamText`, for the delegated stream, so integrations received two
+  `OnStart`/`OnFinish` (and two `OnError`/`OnAbort`) per run and the
+  OpenTelemetry step spans nested under the inner root. v0.6 opens only the
+  workflow root and reports the steps, model calls and tools under its call
+  ID, as TS `WorkflowAgent.stream` does. `LegacyOpenTelemetry` names the
+  step spans after the root operation, as TS `state.operationId`:
+  `ai.generateText.doGenerate` under the workflow root (v0.5:
+  `ai.streamText.doStream` under the inner root), without the
+  `ai.response.msToFirstChunk` stream timing (review round 75).
+- **Am I affected?** Telemetry integrations or span queries that read the
+  `ai.streamText` root of a WorkflowAgent stream run, count `OnStart` /
+  `OnFinish` events per run, or match `ai.streamText.doStream` step spans of
+  a WorkflowAgent stream run.
+- **What to do:** read the `ai.workflowAgent.stream` root and its
+  `ai.generateText.doGenerate` step spans instead.
+- **Kind:** silent behavior change
+
 ## UI message streams {#ui-message-streams}
 
 ### UI message streams fail on an out-of-sequence chunk {#ui-out-of-sequence}
@@ -2293,6 +2321,43 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 - **What to do:** no action unless you assumed non-empty deltas.
 - **Kind:** wire/protocol change
 
+### UI start chunks carry the response message id as TS does {#ui-start-message-id}
+
+- **What changed:** `CreateUIMessageStreamWithOptions` now adds the response
+  message id to a `start` chunk written without a `messageId`: the continued
+  assistant message's id when the last `OriginalMessages` entry is an
+  assistant message, else the `GenerateMessageID` result (the built-in
+  generator by default), also when that is empty. v0.5 forwarded the start
+  chunk unchanged. `ToUIMessageStream` and the `StreamTextResult` UI helpers
+  now send an empty generated id as `"messageId":""` instead of none, call
+  `GenerateMessageID` once instead of twice when it returns an empty id, and
+  send no `messageId` when the continued assistant message has no `id` (v0.5
+  sent a generated one). TS `handleUIMessageStreamFinish` injects the id
+  whenever it is not null or undefined (review round 75).
+- **Am I affected?** `CreateUIMessageStreamWithOptions` callers whose
+  `Execute` writes `{"type": "start"}` without `messageId`; a
+  `GenerateMessageID` that returns `""`; `OriginalMessages` whose last
+  assistant message has no `id`.
+- **What to do:** no action unless you compare the exact start chunk. Write
+  your own `messageId` on the start chunk to choose the id.
+- **Kind:** wire/protocol change
+
+### UI message metadata keeps an object over a number or boolean {#ui-metadata-merge-scalar}
+
+- **What changed:** when a `start`, `finish` or `message-metadata` chunk
+  carries a number or boolean `messageMetadata` after object metadata, the
+  UI message that `OnEnd` / `OnFinish` and `ReadUIMessageStream` build keeps
+  the object, as TS `processUIMessageStream` merges metadata with
+  `mergeObjects`. v0.5 replaced the object with the number or boolean. A
+  string or array value still replaces it (see
+  [Message metadata merge with non-object values](./known-differences.mdx))
+  (review round 75).
+- **Am I affected?** `MessageMetadata` callbacks or `Execute` writers that
+  send a number or boolean `messageMetadata` after object metadata.
+- **What to do:** no action unless you relied on the replacement; send an
+  object (`{"value": 5}`) to change the metadata.
+- **Kind:** silent behavior change
+
 ## Telemetry and events {#telemetry-and-events}
 
 The [telemetry recording change](#telemetry-record-pointers) is listed under
@@ -2520,6 +2585,19 @@ compile-time changes.
 - **Am I affected?** Dashboards, queries or tests that filter the GenAI
   `embeddings` span by `gen_ai.operation.name`.
 - **What to do:** match `gen_ai.operation.name = "embeddings"`.
+- **Kind:** silent behavior change
+
+### generateSpeech records an empty text {#telemetry-speech-empty-text}
+
+- **What changed:** v0.5 left `ai.request.text` (both OpenTelemetry
+  integrations) and the GenAI `gen_ai.input.messages` off the
+  `GenerateSpeech` root span when the text was empty; v0.6 records them
+  with the empty text, as TS `onAudioOperationStart` records any text that
+  is present (review round 75). Transcription spans are unchanged.
+- **Am I affected?** Span queries that test for the presence of
+  `ai.request.text` / `gen_ai.input.messages` on `ai.generateSpeech` spans.
+- **What to do:** no action unless you relied on the attribute being absent
+  for an empty text.
 - **Kind:** silent behavior change
 
 ## Errors {#errors}
@@ -2867,13 +2945,25 @@ compile-time changes.
   its Anthropic wire name (`UnsupportedFunctionalityError`, "aliased provider
   tool names in batches"), as TS; tools keeping the constructor's id as their
   name are still accepted. `prompt.AnthropicToolsetNames` finds a renamed
-  computer toolset by id too (review round 74).
+  computer toolset by id too (review round 74). A forced
+  `ToolChoice{Type: types.ToolChoiceTool, ToolName: ...}` that names a
+  provider tool keeping its constructor id (`"anthropic.bash_20250124"`) now
+  sends the tool's Anthropic wire name (`tool_choice.name: "bash"`), the name
+  the request declares it under; v0.5 sent the id, which matched no tool.
+  Batch results (`ExperimentalGetBatchResults`) of such tools come back under
+  the tool's `Name`, as `DoGenerate` returns them, when read through the
+  Provider that started the batch; v0.5 reported the wire name (review round
+  75).
 - **Am I affected?** Code that changes `Name` on a
   `pkg/providers/anthropic/tools` constructor result, builds provider tools
   as `types.Tool{Type: "provider", ProviderID: "anthropic.…"}` or as
   `types.Tool{Name: "anthropic.…"}` literals, uses container skills, or sends
-  renamed provider tools in `ExperimentalBatch`.
-- **What to do:** no action. To use TS-style names:
+  renamed provider tools in `ExperimentalBatch`; `ToolChoiceTool` with an
+  `anthropic.*` tool name; `ExperimentalBatch` with tools from
+  `pkg/providers/anthropic/tools` and code that matches batch tool calls by
+  `"bash"`, `"web_search"`, ...
+- **What to do:** no action unless you match batch result tool calls by the
+  wire name; match the tool's `Name` instead. To use TS-style names:
 
   ```go
   package main
@@ -2915,7 +3005,10 @@ compile-time changes.
   history calls of the tool are sent as `bash` (v0.5 sent
   `anthropicbash_20250124`). A provider tool with a custom name is declared
   under that name (TS `tool.name`). Warning features for unsupported tools
-  use the tool id (review round 74).
+  use the tool id (review round 74). Forcing such a tool
+  (`ToolChoice{Type: types.ToolChoiceTool, ToolName: "anthropic.bash_20250124"}`)
+  sends `additionalModelRequestFields.tool_choice.name: "bash"`, the toolSpec
+  name (review round 75).
 - **Am I affected?** Anthropic provider tools
   (`pkg/providers/anthropic/tools`) with Bedrock models: code that reads
   `ToolCall.ToolName` of their calls, matches warnings, or relied on invalid
@@ -3003,9 +3096,8 @@ compile-time changes.
   `*providererrors.TypeValidationError` (an alias of `ValidationError`)
   whose text is TS's "Type validation failed: Value: <args JSON>.\nError
   message: <issues>" before sending. v0.5 sent invalid config to OpenAI
-  (review rounds 73 and 74). The issue list is the Go JSON Schema
-  validator's text, not zod's (see
-  [OpenAI tool args issue text](./known-differences.mdx)).
+  (review rounds 73 and 74). The issue list after "Error message:" is zod's
+  issue JSON, as TS (review round 75).
 - **Am I affected?** `openaitool.` configs with values outside the TS enums
   or ranges (`SearchContextSize`, `Quality`, `OutputCompression` > 100,
   `PartialImages` > 3, `Size` not `WxH`), `FileSearchConfig` without
@@ -3055,6 +3147,31 @@ compile-time changes.
   `Arguments` instead.
 - **Kind:** silent behavior change
 
+#### OpenAI Responses function and shell tool wire details follow TS {#openai-responses-tool-wire-r75}
+
+- **What changed:** (1) a function tool's `providerOptions.openai.outputSchema`
+  is normalized like its input schema before sending (TS
+  `prepareFunctionTool` → `normalizeOpenAIJsonSchema`): `propertyNames` and
+  regex-lookaround `pattern`s are removed, each with the TS `compatibility`
+  warning. (2) Per tool, the async warning comes before the schema warnings,
+  as TS. (3) An explicitly empty `allowedCallers` list is sent as
+  `allowed_callers: []` (TS forwards it whenever it is not null). (4) A shell
+  environment's explicitly empty `FileIDs`, `Skills`,
+  `NetworkPolicy.AllowedDomains` or `NetworkPolicy.DomainSecrets` is sent as
+  `[]` (TS `mapShellEnvironment`). v0.5 sent the output schema raw and
+  dropped empty lists (review round 75).
+- **Am I affected?** Function tools with `providerOptions.openai.outputSchema`
+  that use `propertyNames` or lookaround patterns; code that asserts the
+  order of tool `Warnings`; `allowedCallers: []`;
+  `responses.ShellEnvironment` / `ShellNetworkPolicy` with empty non-nil
+  slices; code that marshals `responses.FunctionToolDef`,
+  `ShellToolDefEnvironment` or `ShellNetworkPolicy` (new `MarshalJSON`
+  methods, additive).
+- **What to do:** no action unless you relied on the raw output schema, the
+  warning order or the omitted empty lists. Use nil instead of an empty
+  slice to keep a field out of the request.
+- **Kind:** wire/protocol change
+
 ### xAI
 
 #### xAI provider tool config is validated before the request {#xai-tool-args-validation}
@@ -3065,13 +3182,19 @@ compile-time changes.
   does with `validateTypes`, and fails with a
   `*providererrors.TypeValidationError` ("Type validation failed: Value:
   <args JSON>.\nError message: <zod issues>", zod's exact issue list) before
-  sending. v0.5 sent invalid config to xAI (review round 74).
+  sending. v0.5 sent invalid config to xAI (review round 74). A hand-built
+  `xai.mcp` tool whose `ProviderOptions` is an `xai.MCPServerConfig` now
+  sends its config (v0.5 sent `server_url: ""` and dropped the rest). The
+  args of TS-shaped xAI tools (`ProviderArgs` only) are sent as given, so
+  `maxNumResults: 0` or an empty `serverLabel` reaches the wire (review round
+  75).
 - **Am I affected?** `xai.WebSearchConfig` with more than 5 `AllowedDomains` /
   `ExcludedDomains`; `xai.XSearchConfig` with more than 20 `AllowedXHandles` /
   `ExcludedXHandles`; `xai.ImageGenerationConfig.Action` other than auto /
   generate / edit; `xai.FileSearchConfig` without `VectorStoreIDs`;
   `xai.MCPServerConfig` without `ServerURL`; hand-built `Type: "provider"`
-  xai tools whose `ProviderArgs` have the wrong types.
+  xai tools whose `ProviderArgs` have the wrong types;
+  `types.Tool{Name: "xai.mcp", ProviderOptions: xai.MCPServerConfig{...}}`.
 - **What to do:** fix the config; handle `errors.As(err, &tve)` with
   `var tve *providererrors.TypeValidationError` if you surface it.
 - **Kind:** silent behavior change
@@ -3459,8 +3582,8 @@ after upgrading:
   finish, incomplete-stream error); start-led sources (`StreamText`, harness
   streams) map one to one as in TS. See
   [ToUIMessageStream on a raw provider stream](./known-differences.mdx).
-- **The telemetry `OnStart` runs before the user `OnStart`**, so the
-  callback runs in the integration's span context. TS starts the callback
+- **The telemetry `OnStart` runs before the user `OnStart`** (also for the
+  `WorkflowAgent` root), so the callback runs in the integration's span context. TS starts the callback
   first; step-start and end events run the callbacks first, as TS. See
   [Telemetry start before the start callbacks](./known-differences.mdx).
 - **`RuntimeContext` stays nil when unset**; TS defaults it to `{}`. See
@@ -3492,9 +3615,14 @@ after upgrading:
 - **A provider tool error with no result value has the error text
   `tool error`**; TS leaves `errorText` undefined. See
   [Provider tool error without a value](./known-differences.mdx).
-- **OpenAI provider tool args validation errors list the Go JSON Schema
-  validator's issues** after "Error message:"; TS lists zod's issue JSON. See
-  [OpenAI tool args issue text](./known-differences.mdx).
+- **UI message metadata followed by a string or array is replaced**; TS
+  merges the value's index keys into the object (a number or boolean keeps
+  the object, as TS). See
+  [Message metadata merge with non-object values](./known-differences.mdx).
+- **Anthropic batch results name id-named provider tools after the tool only
+  when read through the Provider that started the batch**; elsewhere they
+  carry the wire name (`bash`). See
+  [Anthropic batch results of id-named provider tools across processes](./known-differences.mdx).
 
 ## For coding agents {#for-coding-agents}
 
