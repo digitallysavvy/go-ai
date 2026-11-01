@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -277,4 +278,149 @@ func TestR75Carry_ContinuationPromptFilesTextSources(t *testing.T) {
 			t.Errorf("text=%q: step sources = %+v, want the source", tc.text, steps)
 		}
 	}
+}
+
+func r75carryProviderTool(name string) types.Tool {
+	return types.Tool{Name: name, Type: "provider", ProviderID: "test." + name, ProviderExecuted: true, Parameters: map[string]interface{}{"type": "object"}}
+}
+
+func r75carryPartIDs(parts []types.ContentPart) string {
+	var out []string
+	for _, p := range parts {
+		switch v := p.(type) {
+		case types.ToolCallContent:
+			out = append(out, "tool-call:"+v.ToolCallID)
+		case types.ToolResultContent:
+			out = append(out, "tool-result:"+v.ToolCallID)
+		case types.ToolErrorContent:
+			out = append(out, "tool-error:"+v.ToolCallID)
+		case types.TextContent:
+			out = append(out, "text")
+		default:
+			out = append(out, fmt.Sprintf("%T", p))
+		}
+	}
+	return strings.Join(out, ",")
+}
+
+// TS workflow-agent-compat.test.ts "completed step tool results": a provider
+// isError result is a tool-error (not a tool result); terminal provider
+// results keep stream order with their metadata; a deferred provider result
+// from a later response lands in that step; a client tool without execute
+// pauses the loop with provider results kept in order.
+func TestR75Carry_CompletedStepProviderToolResults(t *testing.T) {
+	t.Run("provider failure", func(t *testing.T) {
+		isErr := true
+		model, calls := r75carryScripted([]provider.StreamChunk{
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "webSearch", Arguments: map[string]interface{}{"query": "test"}, ProviderExecuted: true}},
+			{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-1", ToolName: "webSearch", Result: "provider failed", IsError: &isErr, ProviderExecuted: true}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+		})
+		agent, _ := NewWorkflowAgent(WorkflowAgent{Model: model, Tools: []types.Tool{r75carryProviderTool("webSearch")}})
+		steps := r75carryRunStream(t, agent)
+		if len(*calls) != 1 || len(steps) != 1 {
+			t.Fatalf("calls=%d steps=%d", len(*calls), len(steps))
+		}
+		if got := r75carryPartIDs(steps[0].Content); got != "tool-call:call-1,tool-error:call-1" {
+			t.Errorf("content = %s", got)
+		}
+		var te types.ToolErrorContent
+		for _, p := range steps[0].Content {
+			if v, ok := p.(types.ToolErrorContent); ok {
+				te = v
+			}
+		}
+		if te.Error != "provider failed" || !te.ProviderExecuted || !reflect.DeepEqual(te.Input, map[string]interface{}{"query": "test"}) {
+			t.Errorf("tool-error = %+v", te)
+		}
+		if len(steps[0].ToolResults) != 0 {
+			t.Errorf("toolResults = %+v, want none", steps[0].ToolResults)
+		}
+	})
+	t.Run("terminal order", func(t *testing.T) {
+		model, calls := r75carryScripted([]provider.StreamChunk{
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-a", ToolName: "providerA", Arguments: map[string]interface{}{}, ProviderExecuted: true}},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-b", ToolName: "providerB", Arguments: map[string]interface{}{}, ProviderExecuted: true}},
+			{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-a", ToolName: "providerA", Result: map[string]interface{}{"value": "a"}, ProviderExecuted: true, ProviderMetadata: map[string]interface{}{"testProvider": map[string]interface{}{"resultId": "result-a"}}}},
+			{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-b", ToolName: "providerB", Result: map[string]interface{}{"value": "b"}, ProviderExecuted: true}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+		})
+		agent, _ := NewWorkflowAgent(WorkflowAgent{Model: model, Tools: []types.Tool{r75carryProviderTool("providerA"), r75carryProviderTool("providerB")}})
+		steps := r75carryRunStream(t, agent)
+		want := "tool-call:call-a,tool-call:call-b,tool-result:call-a,tool-result:call-b"
+		if len(*calls) != 1 || r75carryPartIDs(steps[0].Content) != want {
+			t.Fatalf("calls=%d content=%s", len(*calls), r75carryPartIDs(steps[0].Content))
+		}
+		if len(steps[0].Response.Messages) != 1 || r75carryPartIDs(steps[0].Response.Messages[0].Content) != want {
+			t.Errorf("response messages = %+v", steps[0].Response.Messages)
+		}
+		tr := steps[0].ToolResults
+		if len(tr) != 2 || tr[0].ToolCallID != "call-a" || !tr[0].ProviderExecuted || !reflect.DeepEqual(tr[0].Result, map[string]interface{}{"value": "a"}) ||
+			!reflect.DeepEqual(tr[0].ProviderMetadata, map[string]interface{}{"testProvider": map[string]interface{}{"resultId": "result-a"}}) {
+			t.Errorf("toolResults = %+v", tr)
+		}
+	})
+	t.Run("deferred result in a later response", func(t *testing.T) {
+		model, calls := r75carryScripted([]provider.StreamChunk{
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "program-call", ToolName: "program", Arguments: map[string]interface{}{"code": "run()"}, ProviderExecuted: true}},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "client-call", ToolName: "clientTool", Arguments: map[string]interface{}{}}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+		}, []provider.StreamChunk{
+			{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "program-call", ToolName: "program", Result: map[string]interface{}{"status": "done"}, ProviderExecuted: true, ProviderMetadata: map[string]interface{}{"testProvider": map[string]interface{}{"resultId": "deferred-result"}}}},
+			{Type: provider.ChunkTypeTextStart, ID: "text-1"},
+			{Type: provider.ChunkTypeText, ID: "text-1", Text: "Done."},
+			{Type: provider.ChunkTypeTextEnd, ID: "text-1"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+		})
+		prog := r75carryProviderTool("program")
+		prog.SupportsDeferredResults = true
+		agent, _ := NewWorkflowAgent(WorkflowAgent{Model: model, Tools: []types.Tool{prog, {Name: "clientTool", Parameters: map[string]interface{}{"type": "object"}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "client result", nil
+		}}}})
+		steps := r75carryRunStream(t, agent)
+		if len(*calls) != 2 || len(steps) != 2 {
+			t.Fatalf("calls=%d steps=%d", len(*calls), len(steps))
+		}
+		if got := r75carryPartIDs(steps[1].Content); got != "tool-result:program-call,text" {
+			t.Errorf("step 2 content = %s", got)
+		}
+		tr := steps[1].ToolResults
+		if len(tr) != 1 || tr[0].ToolCallID != "program-call" || tr[0].Input != nil || !tr[0].ProviderExecuted ||
+			!reflect.DeepEqual(tr[0].ProviderMetadata, map[string]interface{}{"testProvider": map[string]interface{}{"resultId": "deferred-result"}}) {
+			t.Errorf("step 2 toolResults = %+v", tr)
+		}
+		if len(steps[1].Response.Messages) != 1 || r75carryPartIDs(steps[1].Response.Messages[0].Content) != "tool-result:program-call,text" {
+			t.Errorf("step 2 response = %+v", steps[1].Response.Messages)
+		}
+	})
+	t.Run("client tool pauses the loop", func(t *testing.T) {
+		model, calls := r75carryScripted([]provider.StreamChunk{
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "provider-call", ToolName: "providerTool", Arguments: map[string]interface{}{}, ProviderExecuted: true}},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "client-call", ToolName: "clientTool", Arguments: map[string]interface{}{}}},
+			{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "provider-call", ToolName: "providerTool", Result: map[string]interface{}{"value": "provider result"}, ProviderExecuted: true}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+		})
+		agent, _ := NewWorkflowAgent(WorkflowAgent{Model: model, Tools: []types.Tool{r75carryProviderTool("providerTool"), {Name: "clientTool", Parameters: map[string]interface{}{"type": "object"}}}})
+		stream, err := agent.StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		steps := stream.Steps()
+		if len(*calls) != 1 {
+			t.Fatalf("calls = %d", len(*calls))
+		}
+		var callIDs, resultIDs []string
+		for _, c := range stream.ToolCalls() {
+			callIDs = append(callIDs, c.ID)
+		}
+		for _, r := range stream.ToolResults() {
+			resultIDs = append(resultIDs, r.ToolCallID)
+		}
+		if strings.Join(callIDs, ",") != "provider-call,client-call" || strings.Join(resultIDs, ",") != "provider-call" {
+			t.Errorf("toolCalls=%v toolResults=%v", callIDs, resultIDs)
+		}
+		if len(steps[0].Response.Messages) != 1 || r75carryPartIDs(steps[0].Response.Messages[0].Content) != "tool-call:provider-call,tool-call:client-call,tool-result:provider-call" {
+			t.Errorf("response = %+v", steps[0].Response.Messages)
+		}
+	})
 }
