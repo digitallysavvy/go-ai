@@ -679,11 +679,24 @@ func TestR74Gen_UsageTotalTokensFilled(t *testing.T) {
 			t.Fatalf("TotalTokens = %v, want nil", *res.Steps[0].Usage.TotalTokens)
 		}
 	})
-	t.Run("provider total kept", func(t *testing.T) {
+	// r75: TS asLanguageModelUsage always derives the total from input +
+	// output (LanguageModelV4Usage has no total), so a model's own total is
+	// replaced; a total without either count is kept.
+	t.Run("provider total replaced", func(t *testing.T) {
 		u := *r74genUsageNoTotal(3, 10)
 		total := int64(20)
 		u.TotalTokens = &total
 		step := &types.GenerateResult{Text: "hi", FinishReason: types.FinishReasonStop, Usage: u}
+		res, err := GenerateText(context.Background(), GenerateTextOptions{Model: r72genSeqModel(t, step), Prompt: "p"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantTotal(t, "step", res.Steps[0].Usage, 13)
+		wantTotal(t, "total", res.TotalUsage, 13)
+	})
+	t.Run("total without counts kept", func(t *testing.T) {
+		total := int64(20)
+		step := &types.GenerateResult{Text: "hi", FinishReason: types.FinishReasonStop, Usage: types.Usage{TotalTokens: &total}}
 		res, err := GenerateText(context.Background(), GenerateTextOptions{Model: r72genSeqModel(t, step), Prompt: "p"})
 		if err != nil {
 			t.Fatal(err)

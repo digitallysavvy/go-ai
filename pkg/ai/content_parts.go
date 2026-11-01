@@ -807,16 +807,13 @@ func setTrailingTextEnd(parts []types.ContentPart, metadata json.RawMessage, cit
 	return parts
 }
 
-// normalizeGenerateResultText fills GenerateResult.Text from the text parts of
-// Content when a provider returned its text only there. TS derives text from
-// the text parts of content (extractTextContent), so core accepts both shapes:
-// text in Text with the remaining parts in Content, or every part in Content.
-// completeUsageTotal fills TotalTokens with InputTokens + OutputTokens when
-// the model left it unset and reported either count (TS asLanguageModelUsage:
-// totalTokens = addTokenCounts(inputTokens.total, outputTokens.total), which
-// is undefined only when both are).
+// completeUsageTotal sets TotalTokens to InputTokens + OutputTokens when the
+// model reported either count, replacing any total the model set (TS
+// asLanguageModelUsage: totalTokens = addTokenCounts(inputTokens.total,
+// outputTokens.total); LanguageModelV4Usage has no total of its own). A total
+// reported without either count is kept: a TS model cannot express it.
 func completeUsageTotal(u types.Usage) types.Usage {
-	if u.TotalTokens != nil || (u.InputTokens == nil && u.OutputTokens == nil) {
+	if u.InputTokens == nil && u.OutputTokens == nil {
 		return u
 	}
 	var total int64
@@ -830,6 +827,10 @@ func completeUsageTotal(u types.Usage) types.Usage {
 	return u
 }
 
+// normalizeGenerateResultText fills GenerateResult.Text from the text parts of
+// Content when a provider returned its text only there. TS derives text from
+// the text parts of content (extractTextContent), so core accepts both shapes:
+// text in Text with the remaining parts in Content, or every part in Content.
 func normalizeGenerateResultText(result *types.GenerateResult) {
 	if result == nil || result.Text != "" {
 		return
