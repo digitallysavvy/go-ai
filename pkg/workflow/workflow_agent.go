@@ -971,8 +971,12 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 	// returned without firing them (provider-executed, no execute function,
 	// revalidation failure, tool context error); call i+1 waits for it before
 	// firing its own, so start callbacks fire in call order as in TS while
-	// executions still overlap. ordered.Run claims calls in order, so every
-	// earlier call is already claimed and running: no wait can deadlock.
+	// executions still overlap. A call that returns without firing waits for
+	// gate i-1 before closing its own, so the chain stays transitive (as in
+	// pkg/ai executeToolsLimited): a later call never fires before an earlier
+	// call still on its way to its start. ordered.Run claims calls in order,
+	// so every earlier call is already claimed and running: no wait can
+	// deadlock.
 	startGates := make([]chan struct{}, len(outcomes))
 	startOnce := make([]sync.Once, len(outcomes))
 	for i := range startGates {
@@ -980,7 +984,12 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 	}
 	releaseStart := func(i int) { startOnce[i].Do(func() { close(startGates[i]) }) }
 	ordered.Run(ctx, len(outcomes), opts.toolCallConcurrency, func(i int) error {
-		defer releaseStart(i)
+		defer func() {
+			if i > 0 {
+				waitWorkflowToolStartGate(ctx, startGates[i-1])
+			}
+			releaseStart(i)
+		}()
 		callOpts := opts
 		callOpts.startGate = nil
 		if i > 0 {
