@@ -861,3 +861,29 @@ func TestR75StreamDeniedApprovalFullStreamPart(t *testing.T) {
 		t.Fatalf("tool-output-denied part = %#v", denied)
 	}
 }
+
+// TS createUIMessageStream passes `messageId: generateId()` to
+// handleUIMessageStreamFinish, which injects it into a start chunk without a
+// messageId whenever it is not null/undefined, so an empty generated id is
+// injected too. A continued assistant message without an id injects nothing.
+func TestR75StreamCreateUIStreamInjectsEmptyGeneratedID(t *testing.T) {
+	got, errs := r75streamRunUIChunks(t, []UIMessageChunk{{"type": "start"}, {"type": "finish"}}, UIMessageStreamOptions{
+		GenerateMessageID: r75streamIDGen(""),
+	})
+	if len(errs) != 0 {
+		t.Fatalf("errors: %v", errs)
+	}
+	r75streamAssertJSON(t, "empty generated id", got, `[{"type":"start","messageId":""},{"type":"finish"}]`)
+
+	got, _ = r75streamRunUIChunks(t, []UIMessageChunk{{"type": "start"}, {"type": "finish"}}, UIMessageStreamOptions{
+		GenerateMessageID: r75streamIDGen("gen-1"),
+		OriginalMessages:  []UIMessageChunk{{"role": "assistant", "parts": []interface{}{}}},
+	})
+	r75streamAssertJSON(t, "continued message without id", got, `[{"type":"start"},{"type":"finish"}]`)
+
+	got, _ = r75streamRunUIChunks(t, []UIMessageChunk{{"type": "start"}, {"type": "finish"}}, UIMessageStreamOptions{
+		GenerateMessageID: r75streamIDGen("gen-1"),
+		OriginalMessages:  []UIMessageChunk{{"id": "assistant-1", "role": "assistant", "parts": []interface{}{}}},
+	})
+	r75streamAssertJSON(t, "continued message id", got, `[{"type":"start","messageId":"assistant-1"},{"type":"finish"}]`)
+}

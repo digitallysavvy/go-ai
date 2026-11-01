@@ -303,8 +303,10 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 		uiState := newUIMessageCallbackState(options.OriginalMessages, generateID())
 		// TS handleUIMessageStreamFinish fixes the injected id up front: the
 		// continued assistant message's id, else the generated one. A start
-		// chunk that carries its own id does not change it.
-		responseMessageID := stringValue(uiState.message["id"])
+		// chunk that carries its own id does not change it. The generated id
+		// is always defined (even when empty); a continued message without an
+		// id has none (TS `messageId != null`).
+		responseMessageID, hasResponseMessageID := uiState.message["id"].(string)
 
 		onEnd := resolveUIMessageStreamOnEnd(options.OnEnd, options.OnFinish)
 		// processingErr is the first chunk the callback state could not apply
@@ -386,7 +388,7 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			// assistant message's id, else the generated one).
 			if part["type"] == "start" {
 				// TS: `startChunk.messageId == null && messageId != null`.
-				if part["messageId"] == nil && responseMessageID != "" {
+				if part["messageId"] == nil && hasResponseMessageID {
 					injected := make(UIMessageChunk, len(part)+1)
 					for k, v := range part {
 						injected[k] = v
