@@ -937,7 +937,9 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 		for _, pv := range m["content"].([]interface{}) {
 			p := pv.(map[string]interface{})
 			po, _ := p["providerOptions"].(map[string]interface{})
-			// Parts replayed from a model result carry providerMetadata.
+			// Parts replayed from a model result carry providerMetadata (TS
+			// tests cast it onto tool-call and tool-result parts, and the
+			// converters read providerMetadata[name].itemId from both).
 			var pm json.RawMessage
 			if m, ok := p["providerMetadata"].(map[string]interface{}); ok {
 				pm, _ = json.Marshal(m)
@@ -963,7 +965,7 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 				}
 				msg.Content = append(msg.Content, tc)
 			case "tool-result":
-				tr := types.ToolResultContent{ToolCallID: p["toolCallId"].(string), ToolName: promptToolName(p["toolName"].(string)), ProviderOptions: po}
+				tr := types.ToolResultContent{ToolCallID: p["toolCallId"].(string), ToolName: promptToolName(p["toolName"].(string)), ProviderOptions: po, ProviderMetadata: pm}
 				if out, ok := p["output"].(map[string]interface{}); ok {
 					// Most outputs decode from their TS JSON form (keeps providerOptions).
 					// Content outputs are built explicitly so recorded Uint8Array file
