@@ -1870,8 +1870,25 @@ func (s *uiMessageCallbackState) mergeMetadata(metadata interface{}) {
 			s.message["metadata"] = mergeUIMaps(existing, incoming)
 			return
 		}
+		// TS mergeObjects(existing, incoming) copies the existing object and
+		// finds no own keys on a number or boolean, so the object is kept.
+		// A string or array incoming value replaces it (Go-only: TS would
+		// merge its index keys; see known differences).
+		if isUIScalarNumberOrBool(metadata) {
+			return
+		}
 	}
 	s.message["metadata"] = cloneUIValue(metadata)
+}
+
+// isUIScalarNumberOrBool reports whether v is a JSON number or boolean.
+func isUIScalarNumberOrBool(v interface{}) bool {
+	switch v.(type) {
+	case bool, float64, float32, int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64, json.Number:
+		return true
+	}
+	return false
 }
 
 func (s *uiMessageCallbackState) appendPart(part UIMessageChunk) {
