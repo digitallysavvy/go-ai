@@ -3193,6 +3193,7 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 			ToolName:         result.ToolName,
 			Input:            result.Input,
 			Result:           result.Result,
+			IsError:          result.IsError,
 			ProviderExecuted: result.ProviderExecuted,
 			ProviderMetadata: agentProviderMetadataRaw(result.ProviderMetadata),
 			ToolMetadata:     result.ToolMetadata,
@@ -3201,11 +3202,14 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 		}
 		// TS step content tool-result `output` is the raw tool output: Go
 		// keeps it in Result next to the model-facing Output (as
-		// ai.toolResultsToContentParts), unless the raw value is itself a
-		// ToolResultOutput.
-		switch result.Result.(type) {
-		case types.ToolResultOutput, *types.ToolResultOutput:
-			part.Result = nil
+		// ai.toolResultsToContentParts). A raw value that is itself a
+		// ToolResultOutput moves to Output only when there is no model
+		// output; with a model output it stays in Result.
+		if result.ModelOutput == nil {
+			switch result.Result.(type) {
+			case types.ToolResultOutput, *types.ToolResultOutput:
+				part.Result = nil
+			}
 		}
 		switch output := modelFacingToolResultOutput(result); output.Type {
 		case "":
