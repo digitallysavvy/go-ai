@@ -2,6 +2,7 @@ package groq
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 func r78provagroqServer(t *testing.T, body string, sse bool) string {
@@ -135,4 +137,73 @@ func TestR78prova_TSCasesChatAsserts(t *testing.T) {
 		"should handle structured outputs with Kimi K2 model": "model id comes from a custom provider call in the TS test",
 		"should pass headers":                                 r78provaTSHeaders,
 	})
+}
+
+// TestR78prova_TSCasesConvertMessages replays convert-to-groq-chat-messages.test.ts.
+func TestR78prova_TSCasesConvertMessages(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/convert_messages.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		msgs, why := tsfixture.BuildPromptMessages(args[0])
+		if why != "" {
+			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+		}
+		// DoGenerate/DoStream run these checks before building the body.
+		if err := prompt.RejectProviderReferenceFiles(msgs); err != nil {
+			return nil, nil, err
+		}
+		if err := prompt.ValidateOpenAIFileParts(msgs, prompt.FilePartsGroq, ""); err != nil {
+			return nil, nil, err
+		}
+		m := NewLanguageModel(makeTestGroqProvider(), "gemma2-9b-it")
+		body, _ := m.buildRequestBodyWithWarnings(&provider.GenerateOptions{Prompt: types.Prompt{Messages: msgs}}, false)
+		return body["messages"], nil, nil
+	}, nil)
+}
+
+// TestR78prova_TSCasesPrepareTools replays groq-prepare-tools.test.ts.
+func TestR78prova_TSCasesPrepareTools(t *testing.T) {
+	tsfixture.ProviderToolHook = func(id, name string, args map[string]interface{}) (types.Tool, bool) {
+		if id == "groq.browser_search" {
+			return BrowserSearchTool(), true
+		}
+		return types.Tool{Name: name, Type: "provider", ProviderID: id, ProviderArgs: args}, true
+	}
+	defer func() { tsfixture.ProviderToolHook = nil }()
+	cases := tsfixture.LoadCases(t, "testdata/tscases/prepare_tools.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		in, _ := args[0].(map[string]interface{})
+		ts, why := tsfixture.BuildTools(in["tools"])
+		if why != "" {
+			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+		}
+		var choice types.ToolChoice
+		if tc, ok := in["toolChoice"].(map[string]interface{}); ok {
+			choice = tsfixture.BuildToolChoice(tc)
+		}
+		modelID, _ := in["modelId"].(string)
+		tools, toolChoice, warnings := prepareTools(modelID, ts, choice)
+		out := map[string]interface{}{"toolWarnings": tsfixture.WarningsToTS(warnings)}
+		if tools != nil {
+			out["tools"] = tools
+		}
+		if toolChoice != nil {
+			out["toolChoice"] = toolChoice
+		}
+		return out, nil, nil
+	}, nil)
+}
+
+// TestR78prova_TSCasesConvertUsage replays convert-groq-usage.test.ts.
+func TestR78prova_TSCasesConvertUsage(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/convert_usage.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		var u *groqUsage
+		if m, ok := args[0].(map[string]interface{}); ok && m["__undef"] == nil {
+			raw, _ := json.Marshal(args[0])
+			if err := json.Unmarshal(raw, &u); err != nil {
+				return nil, nil, err
+			}
+		}
+		return tsfixture.UsageToTS(convertGroqUsagePtr(u)), nil, nil
+	}, nil)
 }
