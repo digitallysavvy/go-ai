@@ -10,8 +10,11 @@ import (
 
 // Owner ruling 2026-11-02 (option b). TS amazon-bedrock-embedding-model.ts
 // always returns `usage: { tokens }`: Titan inputTextTokenCount, Nova
-// inputTokenCount ?? 0, Cohere Number(x-amzn-bedrock-input-token-count)
-// (NaN when the header is missing, which telemetry drops). DoEmbedMany sums
+// inputTokenCount when the body has it, otherwise (and for Cohere)
+// Number(x-amzn-bedrock-input-token-count), NaN when the header is missing,
+// which telemetry drops. Round 81: zod leaves an absent optional
+// inputTokenCount out of the parsed Nova value, so `'inputTokenCount' in
+// response` is false and TS reads the header. DoEmbedMany sums
 // the batches as TS embedMany does, so a NaN batch leaves the total
 // unreported (the integral Tokens keeps its v0.5 value).
 func TestR80carryEmbeddingUsageReported(t *testing.T) {
@@ -25,7 +28,7 @@ func TestR80carryEmbeddingUsageReported(t *testing.T) {
 		wantManyReported bool
 	}{
 		{"titan count 0", "amazon.titan-embed-text-v2:0", `{"embedding":[1],"inputTextTokenCount":0}`, "", true, false, true},
-		{"nova count absent", "amazon.nova-2-multimodal-embeddings-v1:0", `{"embeddings":[{"embeddingType":"TEXT","embedding":[1]}]}`, "", true, false, true},
+		{"nova count absent", "amazon.nova-2-multimodal-embeddings-v1:0", `{"embeddings":[{"embeddingType":"TEXT","embedding":[1]}]}`, "", true, true, false},
 		{"cohere header 0", "cohere.embed-v4:0", `{"embeddings":{"float":[[1]]}}`, "0", true, false, true},
 		{"cohere header absent", "cohere.embed-v4:0", `{"embeddings":{"float":[[1]]}}`, "", true, true, false},
 	}
