@@ -74,6 +74,14 @@ type PrepareStepHook func(ctx context.Context, opts LanguageModelCallOptions) (L
 type FilterActiveToolsHook func(ctx context.Context, stepNumber int, tools []types.Tool) []types.Tool
 
 // LanguageModelCallOptions mirrors the per-step call config used by ToolLoopAgent.
+//
+// A PrepareCall or PrepareStep hook that returns a field as nil (or a zero
+// ToolChoice) leaves that field's current value, as a TS prepareCall or
+// prepareStep result key left undefined does: Model, Messages, the
+// generation settings, Headers, Reasoning, SendReasoning, ProviderOptions,
+// MaxRetries, Timeout, RuntimeContext, ToolsContext, ActiveTools, StopWhen,
+// ExperimentalDownload, ToolCallConcurrency and Telemetry. An empty
+// non-nil slice or map is a value (an empty ActiveTools sends no tools).
 type LanguageModelCallOptions struct {
 	StepNumber int
 	// Model is the language model for the call (TS prepareCall/prepareStep
@@ -1495,7 +1503,7 @@ func (r *prepareCallRunner) runHook(ctx context.Context, c agent.PrepareCallConf
 	if err != nil {
 		return opts, err
 	}
-	opts = mutated
+	opts = keepUnsetHookFields(opts, mutated)
 	if r.pctx.reapplyCall != nil {
 		r.pctx.reapplyCall(&opts)
 	}
@@ -1591,6 +1599,7 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 			if err != nil {
 				return failStep(err)
 			}
+			mutated = keepUnsetHookFields(opts, mutated)
 			headersOverridden = persist.record(opts, mutated, inHeaders)
 			opts = mutated
 		}
@@ -1654,6 +1663,87 @@ func workflowStepHeaders(headers map[string]string, overridden bool) map[string]
 		return headers
 	}
 	return version.WithUserAgentSuffix(headers, "ai-sdk-agent/workflow")
+}
+
+// keepUnsetHookFields returns a hook's result with every field it left nil
+// (or a zero ToolChoice) set back to the value the hook was given: TS
+// prepareCall (`if (prepared.x !== undefined)`) and prepareStep
+// (mergePrepareStepGenerationSettings and the `!== undefined` checks in
+// model-call-iterator.ts) only apply the keys a hook defined.
+func keepUnsetHookFields(in, out LanguageModelCallOptions) LanguageModelCallOptions {
+	if out.Model == nil {
+		out.Model = in.Model
+	}
+	if out.Messages == nil {
+		out.Messages = in.Messages
+	}
+	if out.ToolChoice == (types.ToolChoice{}) {
+		out.ToolChoice = in.ToolChoice
+	}
+	if out.Temperature == nil {
+		out.Temperature = in.Temperature
+	}
+	if out.MaxTokens == nil {
+		out.MaxTokens = in.MaxTokens
+	}
+	if out.TopP == nil {
+		out.TopP = in.TopP
+	}
+	if out.TopK == nil {
+		out.TopK = in.TopK
+	}
+	if out.FrequencyPenalty == nil {
+		out.FrequencyPenalty = in.FrequencyPenalty
+	}
+	if out.PresencePenalty == nil {
+		out.PresencePenalty = in.PresencePenalty
+	}
+	if out.StopSequences == nil {
+		out.StopSequences = in.StopSequences
+	}
+	if out.Seed == nil {
+		out.Seed = in.Seed
+	}
+	if out.Headers == nil {
+		out.Headers = in.Headers
+	}
+	if out.Reasoning == nil {
+		out.Reasoning = in.Reasoning
+	}
+	if out.SendReasoning == nil {
+		out.SendReasoning = in.SendReasoning
+	}
+	if out.ProviderOptions == nil {
+		out.ProviderOptions = in.ProviderOptions
+	}
+	if out.RuntimeContext == nil {
+		out.RuntimeContext = in.RuntimeContext
+	}
+	if out.ToolsContext == nil {
+		out.ToolsContext = in.ToolsContext
+	}
+	if out.ActiveTools == nil {
+		out.ActiveTools = in.ActiveTools
+	}
+	if out.StopWhen == nil {
+		out.StopWhen = in.StopWhen
+	}
+	if out.ExperimentalDownload == nil {
+		out.ExperimentalDownload = in.ExperimentalDownload
+	}
+	if out.MaxRetries == nil {
+		out.MaxRetries = in.MaxRetries
+	}
+	if out.Timeout == nil {
+		out.Timeout = in.Timeout
+	}
+	if out.ToolCallConcurrency == nil {
+		out.ToolCallConcurrency = in.ToolCallConcurrency
+	}
+	if out.Telemetry == nil {
+		out.Telemetry = in.Telemetry
+	}
+	return out
 }
 
 // apply overlays the previous hook result onto a later step's options.
@@ -1783,6 +1873,7 @@ func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []type
 			o.Model = &hookFailedModel{LanguageModel: base, err: err}
 			return o
 		}
+		mutated = keepUnsetHookFields(opts, mutated)
 		overridden := persist.record(opts, mutated, inHeaders)
 		settings.put(workflowStepHeaders(mutated.Headers, overridden), mutated.MaxRetries)
 		if mutated.Model != nil {
@@ -1810,8 +1901,11 @@ func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []type
 	}
 }
 
+// sameStrings reports whether a and b hold the same names in order. An empty
+// list and nil differ: an empty ActiveTools sends no tools (TS
+// `activeTools: []`), nil keeps them all.
 func sameStrings(a, b []string) bool {
-	if len(a) != len(b) {
+	if (a == nil) != (b == nil) || len(a) != len(b) {
 		return false
 	}
 	for i := range a {
