@@ -1981,8 +1981,10 @@ func TestPipeUIMessageStreamToResponse_WithConsumeSSEStream(t *testing.T) {
 
 	buf := &bytes.Buffer{}
 	var consumeBuf bytes.Buffer
+	consumeDone := make(chan struct{})
 	httpRes, err := CreateUIMessageStreamResponseWithInit(context.Background(), res, &UIMessageStreamResponseInit{
 		ConsumeSSEStream: func(r io.Reader) error {
+			defer close(consumeDone)
 			_, err := io.Copy(&consumeBuf, r)
 			return err
 		},
@@ -2001,6 +2003,9 @@ func TestPipeUIMessageStreamToResponse_WithConsumeSSEStream(t *testing.T) {
 	if got := buf.Len(); got == 0 {
 		t.Fatalf("response body is empty")
 	}
+	// The body does not wait for the consumer (TS does not await
+	// consumeSseStream).
+	<-consumeDone
 	if got := consumeBuf.Len(); got == 0 {
 		t.Fatalf("consume stream body is empty")
 	}
