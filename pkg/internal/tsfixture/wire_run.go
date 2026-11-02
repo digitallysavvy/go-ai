@@ -403,8 +403,14 @@ func CompareWireResult(srv *WireServer, s WireSuite, c WireCall, got map[string]
 	if c.Result == nil {
 		return nil // the recorder captured no result for this call
 	}
-	if WireKind(c) == "language" && ((!s.LanguageResults && os.Getenv("TSWIRE_LMRESULTS") == "") || c.Method == "doStream") {
+	if WireKind(c) == "language" && !s.LanguageResults && os.Getenv("TSWIRE_LMRESULTS") == "" {
 		return nil
+	}
+	if c.Method == "doStream" {
+		if WireKind(c) != "language" {
+			return nil
+		}
+		return compareWireStream(c, got)
 	}
 	want, _ := c.Result.(map[string]interface{})
 	want = wirePruneWant(want)
@@ -444,6 +450,25 @@ func CompareWireResult(srv *WireServer, s WireSuite, c WireCall, got map[string]
 	gotN, _ := srv.NormalizeOrigins(wireNormalizeParts(g)).(map[string]interface{})
 	if d := DiffValues(wantN, gotN); d != "" {
 		return []string{"result (- TS, + Go):\n" + d}
+	}
+	return nil
+}
+
+// compareWireStream diffs the Go stream parts against the parts the TS test
+// read (only when it read them all, or the stream failed), with the stream
+// conventions of the case replay (CanonStream, Normalize).
+func compareWireStream(c WireCall, got map[string]interface{}) []string {
+	if c.Parts == nil || (!c.StreamDone && c.StreamError == nil) {
+		return nil // no recorded parts (older recording) or a partial read
+	}
+	want, _ := WireUnwrap(c.Parts).([]interface{})
+	if c.StreamError != nil {
+		want = append(want, map[string]interface{}{"type": "error"})
+	}
+	g, _ := jsonRound(got["stream"]).([]interface{})
+	wireAlignInvalidBase64(want, g)
+	if d := Diff("", Normalize(CanonStream(want)), Normalize(CanonStream(g))); d != "" {
+		return []string{"stream (- TS, + Go):\n" + d}
 	}
 	return nil
 }
@@ -1031,6 +1056,7 @@ func wireLanguage(ctx context.Context, s WireSuite, m provider.LanguageModel, c 
 		// output; Go surfaces that from the stream before the first output.
 		defer st.Close() //nolint:errcheck
 		output := false
+		var chunks []*provider.StreamChunk
 		for {
 			ch, err := st.Next()
 			if errors.Is(err, io.EOF) {
@@ -1040,8 +1066,10 @@ func wireLanguage(ctx context.Context, s WireSuite, m provider.LanguageModel, c 
 				if !output {
 					return nil, err
 				}
+				chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error(), Err: err})
 				break
 			}
+			chunks = append(chunks, ch)
 			switch ch.Type {
 			case provider.ChunkTypeStreamStart, provider.ChunkTypeResponseMetadata, provider.ChunkTypeRaw:
 			case provider.ChunkTypeError:
@@ -1051,7 +1079,13 @@ func wireLanguage(ctx context.Context, s WireSuite, m provider.LanguageModel, c 
 				output = true
 			}
 		}
-		return map[string]interface{}{}, nil
+		parts := StreamToTS(chunks)
+		for i, ch := range chunks {
+			if ch.Type == provider.ChunkTypeStreamStart {
+				parts[i].(map[string]interface{})["warnings"] = WireWarnings(ch.Warnings) // as generate results
+			}
+		}
+		return map[string]interface{}{"stream": parts}, nil
 	}
 	res, err := m.DoGenerate(ctx, opts)
 	if err != nil {

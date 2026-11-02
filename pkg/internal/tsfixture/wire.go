@@ -65,6 +65,12 @@ type WireCall struct {
 	Result   interface{}   `json:"result"`
 	Error    interface{}   `json:"error"`
 	Streamed bool          `json:"streamed"`
+	// Parts are the stream parts the TS test read from a doStream result;
+	// StreamDone is set when it read them all, StreamError when the stream
+	// failed (recordings made since review round 81).
+	Parts       []interface{} `json:"parts"`
+	StreamDone  bool          `json:"streamDone"`
+	StreamError interface{}   `json:"streamError"`
 
 	// argsRaw is the call arguments as recorded, keeping the key order of
 	// the TS objects (Args holds Go maps, which sort keys).

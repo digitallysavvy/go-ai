@@ -793,7 +793,9 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 	return out
 }
 
-var generatedID = regexp.MustCompile(`^(id-\d+|test-id(-\d+)?|call_[0-9a-f]{16})$`)
+// generatedID matches the ids a test's mock or the TS default generateId
+// (16 alphanumerics) produces and the Go generated call ids.
+var generatedID = regexp.MustCompile(`^(id-\d+|test-id(-\d+)?|call_[0-9a-f]{16}|[A-Za-z0-9]{16})$`)
 
 // generatedSourceID matches the source ids Go providers generate (random
 // alphanumerics or a UUID) where TS uses its mock generateId; a wire id
@@ -986,7 +988,7 @@ func CanonStream(parts []interface{}) []interface{} {
 		switch m["type"] {
 		case "reasoning-start", "reasoning-end":
 			// generated block ids differ (mockId vs "reasoning-0")
-			if id, _ := m["id"].(string); strings.HasPrefix(id, "id-") || strings.HasPrefix(id, "reasoning-") || (id != "" && strings.Trim(id, "0123456789") == "") {
+			if id, _ := m["id"].(string); strings.HasPrefix(id, "id-") || strings.HasPrefix(id, "reasoning-") || strings.HasPrefix(id, "test-") || (id != "" && strings.Trim(id, "0123456789") == "") {
 				delete(m, "id")
 			}
 		case "text-start", "text-end":

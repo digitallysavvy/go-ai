@@ -156,7 +156,26 @@ for (const n of names) {
       try { r = this[n](...args); } catch (e) { rec.error = ser(e); throw e; }
       if (r && typeof r.then === 'function') {
         return r.then(v => {
-          if (v && typeof v === 'object' && v.stream) { const { stream, ...rest } = v; rec.result = ser(rest); rec.streamed = true; }
+          if (v && typeof v === 'object' && v.stream) {
+            const { stream, ...rest } = v; rec.result = ser(rest); rec.streamed = true;
+            // Record the parts the test reads (streamDone once it read them
+            // all, streamError when the stream failed).
+            if (typeof ReadableStream !== 'undefined' && stream instanceof ReadableStream) {
+              rec.parts = [];
+              const reader = stream.getReader();
+              v.stream = new ReadableStream({
+                async pull(ctl) {
+                  try {
+                    const { done, value } = await reader.read();
+                    if (done) { rec.streamDone = true; ctl.close(); return; }
+                    rec.parts.push(ser(value) ?? null);
+                    ctl.enqueue(value);
+                  } catch (e) { rec.streamError = ser(e); ctl.error(e); }
+                },
+                cancel(reason) { return reader.cancel(reason); },
+              });
+            }
+          }
           else rec.result = ser(v);
           return v;
         }, e => { rec.error = ser(e); throw e; });

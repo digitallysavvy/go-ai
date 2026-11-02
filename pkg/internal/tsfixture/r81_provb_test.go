@@ -80,3 +80,42 @@ func TestR81provbWireMissingResultNotCompared(t *testing.T) {
 		t.Fatalf("diffs = %v", d)
 	}
 }
+
+// Recordings made since round 81 carry the stream parts the TS test read;
+// the replay compares them with the stream conventions of the case replay
+// (TS mock / default generateId ids, canonical text deltas), and only when the
+// test read the whole stream or the stream failed.
+func TestR81provbWireStreamCompared(t *testing.T) {
+	ts := []interface{}{
+		map[string]interface{}{"type": "stream-start", "warnings": []interface{}{}},
+		map[string]interface{}{"type": "reasoning-start", "id": "test-reasoning-id"},
+		map[string]interface{}{"type": "reasoning-delta", "id": "test-reasoning-id", "delta": "r"},
+		map[string]interface{}{"type": "reasoning-end", "id": "test-reasoning-id"},
+		map[string]interface{}{"type": "tool-call", "toolCallId": "1ZjReqfZKp5MOeFU", "toolName": "t", "input": "{}"},
+		map[string]interface{}{"type": "finish", "finishReason": map[string]interface{}{"unified": "stop"}},
+	}
+	goParts := []interface{}{
+		map[string]interface{}{"type": "reasoning-start", "id": "reasoning-0"},
+		map[string]interface{}{"type": "reasoning-delta", "id": "reasoning-0", "delta": "r"},
+		map[string]interface{}{"type": "reasoning-end", "id": "reasoning-0"},
+		map[string]interface{}{"type": "tool-call", "toolCallId": "call_0123456789abcdef", "toolName": "t", "input": "{}"},
+		map[string]interface{}{"type": "finish", "finishReason": map[string]interface{}{"unified": "stop"}},
+	}
+	c := WireCall{Method: "doStream", Parts: ts, StreamDone: true}
+	if d := compareWireStream(c, map[string]interface{}{"stream": goParts}); d != nil {
+		t.Fatalf("diffs = %v", d)
+	}
+	// a missing finish is a difference
+	if d := compareWireStream(c, map[string]interface{}{"stream": goParts[:4]}); d == nil {
+		t.Fatal("missing finish not reported")
+	}
+	// a failed TS stream ends with an error part
+	failed := WireCall{Method: "doStream", Parts: ts[:1], StreamError: map[string]interface{}{"$error": map[string]interface{}{"message": "x"}}}
+	if d := compareWireStream(failed, map[string]interface{}{"stream": []interface{}{map[string]interface{}{"type": "error", "error": "x"}}}); d != nil {
+		t.Fatalf("failed stream diffs = %v", d)
+	}
+	// a partial read is not compared
+	if d := compareWireStream(WireCall{Method: "doStream", Parts: ts[:2]}, map[string]interface{}{"stream": goParts}); d != nil {
+		t.Fatalf("partial read compared: %v", d)
+	}
+}

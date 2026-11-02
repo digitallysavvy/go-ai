@@ -41,6 +41,7 @@ func TestTSWire(t *testing.T) {
 			} {
 				out["OpenAIResponsesLanguageModel > doGenerate > compaction > "+n] = why
 			}
+			out["OpenAIResponsesLanguageModel > mixed citation types > compaction > should stream compaction output item from real fixture"] = why
 			return out
 		}(),
 		Skip: map[string]string{
