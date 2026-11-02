@@ -131,3 +131,33 @@ func TestR81streamCreateUIMessageStreamCancelledChunkNotProcessed(t *testing.T) 
 		}
 	}
 }
+
+// ReadUIMessages with a cancelled ctx and chunks already waiting on the
+// stream: no snapshot is written (the ctx wins over a ready chunk and over a
+// ready reader). Before, Go's select picked between the ready chunk and the
+// done ctx at random, so a cancelled consumer still got snapshots.
+func TestR81streamReadUIMessagesCancelledCtxWins(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		stream := make(chan UIMessageChunk, 8)
+		stream <- UIMessageChunk{"type": "start", "messageId": "m1"}
+		stream <- UIMessageChunk{"type": "text-start", "id": "t"}
+		for j := 0; j < 5; j++ {
+			stream <- UIMessageChunk{"type": "text-delta", "id": "t", "delta": "x"}
+		}
+		stream <- UIMessageChunk{"type": "text-end", "id": "t"}
+		close(stream)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		out, errCh := ReadUIMessages(ctx, ReadUIMessagesOptions{Stream: stream})
+		n := 0
+		for range out {
+			n++
+		}
+		if err := <-errCh; err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if n != 0 {
+			t.Fatalf("run %d: %d snapshots after the ctx was cancelled, want 0", i, n)
+		}
+	}
+}
