@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -55,6 +56,15 @@ type Response struct {
 	Error  string          `json:"error"`
 	// Headers the TS test server sent with the response.
 	Headers map[string]string `json:"headers"`
+	// Status and Text are the status code and body of an "error" response
+	// (and the status of an "empty" one) in a queue.
+	Status int    `json:"status"`
+	Text   string `json:"text"`
+	// Next are the responses a TS test queued after this one
+	// (`.response = [first, ...next]`): the test server serves the n-th
+	// queued response to the n-th request and 404 {"error":"Not Found"} after
+	// the last. Without Next, every request gets this response.
+	Next []*Response `json:"next"`
 }
 
 // Expectation is one snapshot assertion.
@@ -99,50 +109,78 @@ func EvalPathSnapshots(t *testing.T) {
 // stream is not SSE (Amazon Bedrock's AWS event stream) set it.
 var StreamBodyEncoder func(lines []string) (contentType string, body []byte)
 
-func (c Case) handler() http.HandlerFunc {
+// serve writes the response the case's test server sends to its call-th
+// request (0-based).
+func (c Case) serve(w http.ResponseWriter, call int) {
 	r := c.Response
-	return func(w http.ResponseWriter, req *http.Request) {
-		for k, v := range r.Headers {
-			w.Header().Set(k, v)
-		}
-		if StreamBodyEncoder != nil && (r.Kind == "chunks" || r.Kind == "fixture-chunks") {
-			var lines []string
-			src := r.chunkStrings()
-			if r.Kind == "fixture-chunks" {
-				src = strings.Split(r.Raw, "\n")
-			}
-			for _, l := range src {
-				if l = strings.TrimSpace(l); l != "" {
-					lines = append(lines, l)
-				}
-			}
-			ct, body := StreamBodyEncoder(lines)
-			w.Header().Set("Content-Type", ct)
-			_, _ = w.Write(body)
+	if len(r.Next) > 0 && call > 0 {
+		if call > len(r.Next) {
+			// TS test server: no queued response left
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":"Not Found"}`)
 			return
 		}
-		switch r.Kind {
-		case "json":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(r.Body)
-		case "fixture-json":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, r.Raw)
-		case "fixture-chunks":
-			w.Header().Set("Content-Type", "text/event-stream")
-			for _, l := range strings.Split(r.Raw, "\n") {
-				if strings.TrimSpace(l) == "" {
-					continue
-				}
-				_, _ = fmt.Fprintf(w, "data: %s\n\n", l)
-			}
-			_, _ = io.WriteString(w, "data: [DONE]\n\n")
-		case "chunks":
-			w.Header().Set("Content-Type", "text/event-stream")
-			for _, ch := range r.chunkStrings() {
-				_, _ = io.WriteString(w, ch)
+		r = r.Next[call-1]
+	}
+	r.serve(w)
+}
+
+func (r *Response) serve(w http.ResponseWriter) {
+	for k, v := range r.Headers {
+		w.Header().Set(k, v)
+	}
+	if StreamBodyEncoder != nil && (r.Kind == "chunks" || r.Kind == "fixture-chunks") {
+		var lines []string
+		src := r.chunkStrings()
+		if r.Kind == "fixture-chunks" {
+			src = strings.Split(r.Raw, "\n")
+		}
+		for _, l := range src {
+			if l = strings.TrimSpace(l); l != "" {
+				lines = append(lines, l)
 			}
 		}
+		ct, body := StreamBodyEncoder(lines)
+		w.Header().Set("Content-Type", ct)
+		_, _ = w.Write(body)
+		return
+	}
+	switch r.Kind {
+	case "json":
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(r.Body)
+	case "fixture-json":
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, r.Raw)
+	case "fixture-chunks":
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, l := range strings.Split(r.Raw, "\n") {
+			if strings.TrimSpace(l) == "" {
+				continue
+			}
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", l)
+		}
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	case "chunks":
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, ch := range r.chunkStrings() {
+			_, _ = io.WriteString(w, ch)
+		}
+	case "error":
+		status := r.Status
+		if status == 0 {
+			status = http.StatusInternalServerError
+		}
+		w.Header().Set("Content-Type", "text/plain;charset=UTF-8")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, r.Text)
+	case "empty":
+		status := r.Status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		w.WriteHeader(status)
 	}
 }
 
@@ -175,26 +213,26 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 			if why, ok := skip[c.Test]; ok && occurrence > 0 {
 				t.Skip(why)
 			}
-			var reqBody interface{}
+			// the handler runs on the server's goroutines: a model may send
+			// requests concurrently, so reqs is guarded
+			var reqsMu sync.Mutex
 			var reqs []request
-			h := c.handler()
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				b, _ := io.ReadAll(r.Body)
 				rq := newRequest(b, r.Header, "http://"+r.Host+r.URL.RequestURI(), r.Method)
+				reqsMu.Lock()
+				call := len(reqs)
 				reqs = append(reqs, rq)
-				if len(reqs) == 1 {
-					reqBody = rq.body
-				}
-				if len(reqs) > runMaxRequests {
-					// A TS case serving an array of responses is extracted with
-					// its first response only; a model that keeps requesting
-					// (a continued stream) would replay it forever. Fail
-					// instead of hanging.
-					t.Errorf("more than %d requests: the case replays one recorded response (skip it, e.g. multiResponse)", runMaxRequests)
+				reqsMu.Unlock()
+				if call >= runMaxRequests {
+					// A case without a response queue serves one response to
+					// every request; a model that keeps requesting (a continued
+					// stream) would replay it forever. Fail instead of hanging.
+					t.Errorf("more than %d requests: the case serves one recorded response to every request", runMaxRequests)
 					w.WriteHeader(http.StatusInternalServerError)
 					return
 				}
-				h(w, r)
+				c.serve(w, call)
 			}))
 			defer srv.Close()
 			m := mk(srv.URL, c.ModelID)
@@ -260,9 +298,16 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 				}
 				resultMap["response"] = resp
 			}
+			reqsMu.Lock()
+			calls := append([]request(nil), reqs...)
+			reqsMu.Unlock()
+			var reqBody interface{}
+			if len(calls) > 0 {
+				reqBody = calls[0].body
+			}
 			roots := map[string]interface{}{
 				"result": resultMap,
-				"server": map[string]interface{}{"calls": reqs},
+				"server": map[string]interface{}{"calls": calls},
 			}
 			for _, e := range c.Exps {
 				var got interface{}
@@ -271,6 +316,8 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 					got = content
 				case (e.Expr == "await convertReadableStreamToArray(stream)" || e.Expr == "await convertReadableStreamToArray(result.stream)") && stream != nil:
 					got = stream
+				case c.Aliases[e.Expr] == "result.stream" && stream != nil:
+					got = stream // `const parts = await convertReadableStreamToArray(stream)`
 				case strings.HasSuffix(e.Expr, ".at(-1)") && stream != nil:
 					got = stream[len(stream)-1]
 					if want, ok := e.Snap.(map[string]interface{}); ok {
@@ -460,6 +507,24 @@ func GenerateContentToTS(res *types.GenerateResult) interface{} {
 	return parts
 }
 
+// generatedFileDataToTS renders a streamed file's data in the TS
+// SharedV4FileData shape ({type:'data', data:<base64>} or {type:'url', url}).
+func generatedFileDataToTS(f *types.GeneratedFileContent) interface{} {
+	switch {
+	case f.FileData.Type == types.FileDataTypeURL:
+		return map[string]interface{}{"type": "url", "url": f.FileData.URL}
+	case f.FileData.Type == types.FileDataTypeData && f.FileData.DataString != "":
+		return map[string]interface{}{"type": "data", "data": f.FileData.DataString}
+	case f.FileData.Type == types.FileDataTypeData && len(f.FileData.Data) > 0:
+		return map[string]interface{}{"type": "data", "data": base64.StdEncoding.EncodeToString(f.FileData.Data)}
+	case len(f.Data) > 0:
+		return map[string]interface{}{"type": "data", "data": base64.StdEncoding.EncodeToString(f.Data)}
+	case f.URL != "":
+		return map[string]interface{}{"type": "url", "url": f.URL}
+	}
+	return nil
+}
+
 // StreamToTS renders chunks as TS stream parts.
 func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 	var out []interface{}
@@ -471,14 +536,7 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 		}
 		switch c.Type {
 		case provider.ChunkTypeStreamStart:
-			ws := []interface{}{}
-			for _, w := range c.Warnings {
-				b, _ := json.Marshal(w)
-				var v interface{}
-				_ = json.Unmarshal(b, &v)
-				ws = append(ws, v)
-			}
-			o["warnings"] = ws
+			o["warnings"] = WarningsToTS(c.Warnings)
 		case provider.ChunkTypeResponseMetadata:
 			if m := c.ResponseMetadata; m != nil {
 				if m.ID != "" {
@@ -573,6 +631,9 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 		case provider.ChunkTypeFile:
 			if f := c.GeneratedFileContent; f != nil {
 				o["mediaType"] = f.MediaType
+				if d := generatedFileDataToTS(f); d != nil {
+					o["data"] = d
+				}
 			}
 		case provider.ChunkTypeFinish:
 			o["finishReason"] = map[string]interface{}{"raw": nilIfEmpty(c.RawFinishReason), "unified": string(c.FinishReason)}
