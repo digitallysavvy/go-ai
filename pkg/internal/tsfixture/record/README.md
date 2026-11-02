@@ -5,7 +5,10 @@ tests actually do. The recorder runs the real TS tests (`vitest`) with two
 hooks and writes one JSON line per test:
 
 - every `model.do*()` call: the arguments, the result (or error) and the model
-  (class, id, provider name, plain config settings);
+  (class, id, provider name, plain config settings); for `doStream`, also the
+  stream parts the test read (`parts`, with `streamDone` once it read them all
+  or `streamError` when the stream failed; recordings made since review round
+  81);
 - every HTTP request the test server saw (method, URL, headers, body) and the
   response it served, and, for tests that inject a mock `fetch` into the model
   config (or the language model a decision model wraps), the exchange that
@@ -22,7 +25,7 @@ multi-request flows (async image/video, polling), multipart and binary bodies.
 ## Recording
 
 ```sh
-pkg/internal/tsfixture/record/prepare.sh <ai repo at b658e8503c> /tmp/ts-scratch
+pkg/internal/tsfixture/record/prepare.sh <ai repo at the target commit> /tmp/ts-scratch
 cd /tmp/ts-scratch && ./rec/run.sh openai groq mistral ...      # -> rec/out/<pkg>.jsonl
 python3 <go-ai>/pkg/internal/tsfixture/record/finish.py rec/out <go-ai>/pkg/providers/testdata/tswire
 ```
@@ -73,7 +76,12 @@ Packages whose Go provider needs package-private setup replay in-package:
   (name, filename, content type, bytes; JSON text values compare as JSON);
 - results: embeddings, rerank ranking, images/audio/transcripts, warnings,
   provider metadata, response headers/body/model id, language-model content,
-  usage and finish reason (`WireSuite.LanguageResults`), video operations.
+  usage and finish reason (`WireSuite.LanguageResults`), video operations;
+- stream parts (with `LanguageResults`, when the recording carries them): the
+  TS parts against the Go stream under the case-replay stream conventions
+  (`CanonStream`, `Normalize`; a Go response timestamp or model id TS does not
+  report is ignored). `WireSuite.SkipResults` keeps a test's request
+  comparison while leaving its result out.
 
 Known harness limits (tests are skipped or the field ignored, each with the
 reason in `Skip` or in `wire_run.go`): operations are opaque, TS calls that pass
