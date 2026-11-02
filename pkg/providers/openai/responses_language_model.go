@@ -231,6 +231,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	truncation := ""
 	includeFields := []string(nil)
 	includeExplicit := false
+	includeCleared := false
 	var metadata interface{}
 	var topLogprobs interface{}
 	var contextManagement []map[string]interface{}
@@ -363,6 +364,12 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				allowedToolsMode, _ = raw["mode"].(string)
 			}
 		}
+	}
+
+	// TS parseProviderOptions validates the whole options object (the
+	// members read above report their own TS errors first).
+	if err := validateResponsesProviderOptions(opts.ProviderOptions, providerOptionsName); err != nil {
+		return nil, store, nil, err
 	}
 
 	var warnings []types.Warning
@@ -735,8 +742,10 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			}
 			includeFields = filtered
 			if len(filtered) == 0 {
-				// TS: an emptied include list becomes undefined.
+				// TS: an emptied include list becomes undefined (omitted,
+				// even when the option was an explicit null).
 				includeExplicit = false
+				includeCleared = true
 			}
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
@@ -812,7 +821,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 
 	if len(includeFields) > 0 {
 		body["include"] = includeFields
-	} else if hasNilProviderOption(openaiOpts, "include") {
+	} else if hasNilProviderOption(openaiOpts, "include") && !includeCleared {
 		body["include"] = nil
 	} else if includeExplicit {
 		body["include"] = []string{}
@@ -1687,6 +1696,8 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				Input:            rawArgs,
 				Arguments:        args,
 				ProviderExecuted: true,
+				// TS: providerMetadata {[providerOptionsName]: {itemId}}.
+				ProviderMetadata: marshalOrNil(tc.ProviderMetadata),
 			})
 
 		case "program_output":
@@ -1700,7 +1711,8 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ToolName:   openAIDeclaredToolName(tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
 				Result:     map[string]interface{}{"result": item.Result, "status": item.Status},
 				// TS never sets providerExecuted on this tool-result, only
-				// on the tool-call.
+				// on the tool-call; it carries the output item's id.
+				ProviderMetadata: toRawMetadata(openAIResponsesToolCallMetadata(providerName, item.ID, "", nil, nil)),
 			})
 
 		case "web_search_call":
@@ -2524,9 +2536,9 @@ func mapWebSearchOutput(action *WebSearchAction) map[string]interface{} {
 
 // responsesItemIsFunctionCall reports whether a Responses output item is a
 // client-side tool call, which TS counts as hasFunctionCall. A computer_call
-// without a call_id is executed server-side and does not count; streaming
-// only counts an apply_patch_call once its status is "completed" (doGenerate
-// counts every apply_patch_call).
+// without a call_id is executed server-side and does not count; doGenerate
+// counts every apply_patch_call, while the stream counts one in its
+// output_item.done handler (completed and announced by output_item.added).
 func responsesItemIsFunctionCall(itemType string, raw json.RawMessage, streaming bool) bool {
 	switch itemType {
 	case "function_call", "custom_tool_call":
@@ -2537,13 +2549,10 @@ func responsesItemIsFunctionCall(itemType string, raw json.RawMessage, streaming
 		}
 		return json.Unmarshal(raw, &item) == nil && item.CallID != nil
 	case "apply_patch_call":
-		if !streaming {
-			return true
-		}
-		var item struct {
-			Status string `json:"status"`
-		}
-		return json.Unmarshal(raw, &item) == nil && item.Status == "completed"
+		// Streaming: decided by the output_item.done handler, which counts
+		// only a completed call announced by output_item.added (TS sets
+		// hasFunctionCall next to the tool-call it emits).
+		return !streaming
 	}
 	return false
 }
@@ -2698,11 +2707,12 @@ type responsesStream struct {
 	reasoningAccum map[string]*responsesReasoningAccum
 	// Item type by output_index, set on output_item.added.
 	itemTypes map[int]string
-	// firstItemIDByOutputIndex records the item id first seen for a given
-	// output_index (row 73d48d0): OpenAI can rotate/reuse item ids across
-	// events sharing the same output_index mid-stream, so the id observed at
-	// output_item.added -- not whatever the later done event reports -- is
-	// used consistently for reasoning-end ids and itemId metadata.
+	// firstItemIDByOutputIndex records the id of the message or reasoning
+	// item added at an output_index (row 73d48d0, TS activeOutputItemIds):
+	// OpenAI can rotate/reuse item ids across events sharing the same
+	// output_index mid-stream, so the id observed at output_item.added --
+	// not whatever the later delta or done events report -- is used
+	// consistently for text/reasoning ids and itemId metadata.
 	firstItemIDByOutputIndex map[int]string
 	// Chunks ready to emit without reading more SSE events.
 	flushQueue        []*provider.StreamChunk
@@ -2728,9 +2738,19 @@ type responsesStream struct {
 	// instead of whatever response.completed/incomplete would otherwise
 	// report, so callers don't see a false "stop"/"length" outcome.
 	hadDecodeError bool
-	// sawErrorEvent records a provider "error" event (TS sets the finish
-	// reason's raw value to 'error' for it).
-	sawErrorEvent bool
+
+	// The finish part is enqueued when the stream ends (TS flush()), from
+	// the state the events leave: finishReason (zero = interrupted, TS's
+	// initial value for a stream without a completion signal) and
+	// rawFinishReason follow TS's finishReason variable, finishUsage the
+	// last response.completed/incomplete/failed usage, serviceTier and
+	// reasoningContext the last reported values. A response.completed does
+	// not end the stream: TS keeps transforming the events after it.
+	finishReason     types.FinishReason
+	rawFinishReason  string
+	finishUsage      *responses.ResponsesAPIUsage
+	serviceTier      string
+	reasoningContext string
 
 	// tools holds the request's declared tools, used to expand an internal
 	// "parallel" tool call wrapper into its nested recipients (row 6be0f51).
@@ -2882,7 +2902,7 @@ func (s *responsesStream) resolveOutputItemID(outputIndex int, itemID string) st
 // (nil, false) when the caller should continue its Next() loop instead (see
 // emitParsedChunk below for why this no longer recurses into Next()).
 func (s *responsesStream) emitDecodeError(eventType string, err error) (*provider.StreamChunk, bool) {
-	s.hadDecodeError = true
+	s.markStreamError("")
 	// The frame is valid JSON with a string `type` but a member that does not
 	// fit that event's typed decode: TS's chunk schema rejects it as a
 	// TypeValidationError.
@@ -2957,29 +2977,41 @@ func (s *responsesStream) queueEOFFinish() {
 	// TS hands the stream out when its early-error peek reaches the end.
 	s.markOutputStarted()
 	s.queueFallbackSources()
-	finishReason := types.FinishReasonInterrupted
-	if s.hadDecodeError {
-		finishReason = types.FinishReasonError
+	finishReason := s.finishReason
+	if finishReason == "" {
+		finishReason = types.FinishReasonInterrupted
 	}
-	// TS always reports responseId (null until response.created arrives).
+	// TS: { responseId (null until response.created arrives), logprobs?,
+	// serviceTier?, reasoningContext? }.
 	fields := map[string]interface{}{"responseId": nonEmptyOrNil(s.responseID)}
 	if len(s.logprobs) > 0 {
 		fields["logprobs"] = s.logprobs
 	}
-	meta, _ := json.Marshal(map[string]interface{}{s.providerName: fields})
-	usage := convertResponsesUsage(nil)
-	rawFinishReason := ""
-	if s.sawErrorEvent {
-		rawFinishReason = "error"
+	if s.serviceTier != "" {
+		fields["serviceTier"] = s.serviceTier
 	}
+	if s.reasoningContext != "" {
+		fields["reasoningContext"] = s.reasoningContext
+	}
+	meta, _ := json.Marshal(map[string]interface{}{s.providerName: fields})
+	usage := convertResponsesUsage(s.finishUsage)
 	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 		Type:             provider.ChunkTypeFinish,
 		FinishReason:     finishReason,
-		RawFinishReason:  rawFinishReason,
+		RawFinishReason:  s.rawFinishReason,
 		Usage:            &usage,
 		ProviderMetadata: meta,
 	})
 	s.err = io.EOF
+}
+
+// markStreamError is TS's handling of a chunk that fails to parse (raw "")
+// or an error event (raw "error"): encounteredStreamError is set, so a later
+// response.completed keeps the error finish reason.
+func (s *responsesStream) markStreamError(raw string) {
+	s.hadDecodeError = true
+	s.finishReason = types.FinishReasonError
+	s.rawFinishReason = raw
 }
 
 func (s *responsesStream) queueFallbackSources() {
@@ -3089,6 +3121,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		if err := json.Unmarshal([]byte(event.Data), &peek); err != nil {
 			s.markOutputStarted() // TS hands the stream out on a chunk that fails to parse
 			s.queueRawChunk(event.Data)
+			s.markStreamError("")
 			msg, perr := providerutils.ChunkParseFailure(event.Data, err)
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeError,
@@ -3118,7 +3151,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				mismatch.Retryable = &notRetryable
 				s.markOutputStarted()
 				s.queueRawChunk(event.Data)
-				s.hadDecodeError = true
+				s.markStreamError("")
 				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 					Type: provider.ChunkTypeError,
 					Text: chatCompletionsMismatchMessage,
@@ -3137,7 +3170,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		if msg, perr := providerutils.CheckResponsesChunk(event.Data); perr != nil {
 			s.markOutputStarted()
 			s.queueRawChunk(event.Data)
-			s.hadDecodeError = true
+			s.markStreamError("")
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: msg,
@@ -3210,10 +3243,12 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.itemTypes[e.OutputIndex] = e.Item.Type
-			if e.Item.ID != "" {
-				if _, seen := s.firstItemIDByOutputIndex[e.OutputIndex]; !seen {
-					s.firstItemIDByOutputIndex[e.OutputIndex] = e.Item.ID
-				}
+			// TS activeOutputItemIds: a message or reasoning item's id is the
+			// id for its output_index until that item is done (a later item,
+			// such as the next response in the same stream, replaces it);
+			// other item types are not recorded.
+			if (e.Item.Type == "message" || e.Item.Type == "reasoning") && e.Item.ID != "" {
+				s.firstItemIDByOutputIndex[e.OutputIndex] = e.Item.ID
 			}
 			// TS isResponseOutputChunk: an item type the chunk schema does not
 			// model is an unknown_chunk, which does not end the early-error peek.
@@ -3840,53 +3875,25 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				}
 				continue
 			}
-			usage := convertResponsesUsage(e.Response.Usage)
-			finishReason := mapResponsesFinishReason(e.Response.IncompleteDetails, s.hasFunctionCall)
-			rawFinishReason := ""
-			if e.Response.IncompleteDetails != nil {
-				rawFinishReason = e.Response.IncompleteDetails.Reason
-			}
-			// Row eee6200: an earlier known-event decode failure forces the
-			// finish reason to "error", regardless of what this event reports.
-			if s.hadDecodeError {
-				finishReason = types.FinishReasonError
-				rawFinishReason = ""
-				if s.sawErrorEvent {
-					rawFinishReason = "error" // TS: raw 'error' after an error event
+			// TS records the finish state and keeps transforming: the
+			// finish part is enqueued when the stream ends (flush()). An
+			// earlier parse failure or error event keeps the error finish
+			// reason (encounteredStreamError); the usage is still updated.
+			if !s.hadDecodeError {
+				s.finishReason = mapResponsesFinishReason(e.Response.IncompleteDetails, s.hasFunctionCall)
+				s.rawFinishReason = ""
+				if e.Response.IncompleteDetails != nil {
+					s.rawFinishReason = e.Response.IncompleteDetails.Reason
 				}
+			}
+			s.finishUsage = e.Response.Usage
+			if e.Response.ServiceTier != "" {
+				s.serviceTier = e.Response.ServiceTier
+			}
+			if e.Response.Reasoning != nil && e.Response.Reasoning.Context != "" {
+				s.reasoningContext = e.Response.Reasoning.Context
 			}
 			s.markOutputStarted()
-
-			var meta json.RawMessage
-			// TS reports the id from response.created only (null when it never arrived).
-			responseID := s.responseID
-			{
-				// TS: { responseId, logprobs?, serviceTier?, reasoningContext? }.
-				fields := map[string]interface{}{"responseId": nonEmptyOrNil(responseID)}
-				if len(s.logprobs) > 0 {
-					fields["logprobs"] = s.logprobs
-				}
-				if e.Response.ServiceTier != "" {
-					fields["serviceTier"] = e.Response.ServiceTier
-				}
-				if e.Response.Reasoning != nil && e.Response.Reasoning.Context != "" {
-					fields["reasoningContext"] = e.Response.Reasoning.Context
-				}
-				meta, _ = json.Marshal(map[string]interface{}{s.providerName: fields})
-			}
-
-			s.err = io.EOF
-			s.queueFallbackSources()
-			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
-				Type:             provider.ChunkTypeFinish,
-				FinishReason:     finishReason,
-				RawFinishReason:  rawFinishReason,
-				Usage:            &usage,
-				ProviderMetadata: meta,
-			})
-			if ok {
-				return chunk, nil
-			}
 			continue
 
 		case "response.failed":
@@ -3907,33 +3914,22 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			if eventRawChunk != nil {
 				s.flushQueue = append(s.flushQueue, eventRawChunk)
 			}
-			usage := convertResponsesUsage(e.Response.Usage)
-			finishReason := types.FinishReason("error")
-			rawFinishReason := "error"
+			s.finishReason = types.FinishReasonError
+			s.rawFinishReason = "error"
 			if e.Response.IncompleteDetails != nil && e.Response.IncompleteDetails.Reason != "" {
-				finishReason = mapResponsesFinishReason(e.Response.IncompleteDetails, s.hasFunctionCall)
-				rawFinishReason = e.Response.IncompleteDetails.Reason
+				s.finishReason = mapResponsesFinishReason(e.Response.IncompleteDetails, s.hasFunctionCall)
+				s.rawFinishReason = e.Response.IncompleteDetails.Reason
 			}
-
-			// TS reports the id from response.created only (null when it never arrived).
-			responseID := s.responseID
-			metaMap := map[string]interface{}{"responseId": nonEmptyOrNil(responseID)}
-			if len(s.logprobs) > 0 {
-				metaMap["logprobs"] = s.logprobs
-			}
+			s.finishUsage = e.Response.Usage
 			if e.Response.Reasoning != nil && e.Response.Reasoning.Context != "" {
-				metaMap["reasoningContext"] = e.Response.Reasoning.Context
+				s.reasoningContext = e.Response.Reasoning.Context
 			}
-			meta, _ := json.Marshal(map[string]interface{}{s.providerName: metaMap})
 
-			// Output already started (encounteredStreamError branch, TS
-			// openai-responses-language-model.ts ~line 2737): a response.failed
-			// with a response.error surfaces as a ChunkTypeError chunk (built via
-			// createOpenAIProviderStreamError from the same synthetic
-			// {type:'response.failed', response:{error,...}} frame TS
-			// constructs), enqueued before the terminal finish chunk. Previously
-			// Go only emitted the finish chunk here and silently dropped the
-			// error entirely (P1-1c part 2).
+			// Output already started (TS encounteredStreamError branch): a
+			// response.failed with a response.error surfaces as an error part
+			// (createOpenAIProviderStreamError of the synthetic
+			// {type:'response.failed', response:{error,...}} frame TS builds).
+			// The finish part follows when the stream ends.
 			if e.Response.Error != nil && !s.hadDecodeError {
 				s.hadDecodeError = true
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
@@ -3941,19 +3937,6 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 					Text: e.Response.Error.Message,
 					Err:  newOpenAIStreamProviderErrorChunk(s.providerName, json.RawMessage(event.Data)),
 				})
-			}
-
-			s.err = io.EOF
-			s.queueFallbackSources()
-			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
-				Type:             provider.ChunkTypeFinish,
-				FinishReason:     finishReason,
-				RawFinishReason:  rawFinishReason,
-				Usage:            &usage,
-				ProviderMetadata: meta,
-			})
-			if ok {
-				return chunk, nil
 			}
 			continue
 
@@ -3970,8 +3953,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			// TS encounteredStreamError: a later response.completed must not
 			// replace the error finish reason.
-			s.hadDecodeError = true
-			s.sawErrorEvent = true
+			s.markStreamError("error")
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: e.Message,
@@ -4313,6 +4295,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		if toolCall == nil || item.Status != "completed" {
 			return nil, false
 		}
+		s.hasFunctionCall = true
 		rawArgs := marshalNoEscape(map[string]interface{}{
 			"callId":    item.CallID,
 			"operation": item.Operation,
@@ -4485,9 +4468,10 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolResult,
 			ToolResult: &types.ToolResult{
-				ToolCallID: item.CallID,
-				ToolName:   openAIDeclaredToolName(s.tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
-				Result:     map[string]interface{}{"result": item.Result, "status": item.Status},
+				ToolCallID:       item.CallID,
+				ToolName:         openAIDeclaredToolName(s.tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
+				Result:           map[string]interface{}{"result": item.Result, "status": item.Status},
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", nil, nil),
 			},
 		})
 
@@ -4790,9 +4774,8 @@ func validateResponsesPromptCacheOptions(value interface{}, providerOptionsName 
 		}
 		return &providererrors.InvalidArgumentError{Field: field, Message: message}
 	}
-	if value == nil {
-		return nil
-	}
+	// The key is present: TS's schema is .optional(), so null is rejected
+	// like any other non-object.
 	m, ok := value.(map[string]interface{})
 	if !ok {
 		return invalid("", "must be an object")

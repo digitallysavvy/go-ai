@@ -74,10 +74,54 @@ func (r request) value(field string) (interface{}, bool) {
 
 var pathToken = regexp.MustCompile(`^(?:\??\.([A-Za-z_$][\w$]*)|\[(\d+)\]|\['([^']*)'\]|\["([^"]*)"\])`)
 
+// arrayCall matches `.filter(p => p.f === 'v')`, `.some(p => p.f === 'v')` and
+// `.map(p => p.f)` over an array (the stream-part filters TS tests write).
+var arrayCall = regexp.MustCompile(`^\.(filter|some|map)\(\s*\(?([A-Za-z_$][\w$]*)\)?\s*=>\s*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)(?:\s*===\s*'([^']*)')?\s*\)`)
+
+// lineBreak joins an expression vitest formatting split over lines.
+var lineBreak = regexp.MustCompile(`\s*\n\s*`)
+
+// applyArrayCall evaluates one arrayCall match over cur.
+func applyArrayCall(cur interface{}, m []string) (interface{}, bool) {
+	op, param, obj, field, val := m[1], m[2], m[3], m[4], m[5]
+	hasCompare := strings.Contains(m[0], "===")
+	if param != obj || (op == "map") == hasCompare {
+		return nil, false
+	}
+	items, ok := jsonValue(cur).([]interface{})
+	if !ok {
+		return nil, false
+	}
+	switch op {
+	case "map":
+		out := make([]interface{}, 0, len(items))
+		for _, it := range items {
+			out = append(out, member(it, field))
+		}
+		return out, true
+	case "filter":
+		out := []interface{}{}
+		for _, it := range items {
+			if member(it, field) == val {
+				out = append(out, it)
+			}
+		}
+		return out, true
+	default: // some
+		for _, it := range items {
+			if member(it, field) == val {
+				return true, true
+			}
+		}
+		return false, true
+	}
+}
+
 // evalPath resolves a simple TS access expression (identifiers, ., ?., [n],
 // ['key'], .length) against roots. ok is false for anything else.
 func evalPath(roots map[string]interface{}, aliases map[string]string, expr string) (interface{}, bool) {
 	expr = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(expr), "await "))
+	expr = strings.TrimSuffix(lineBreak.ReplaceAllString(expr, ""), ",")
 	root := regexp.MustCompile(`^[A-Za-z_$][\w$]*`).FindString(expr)
 	if root == "" {
 		return nil, false
@@ -91,6 +135,15 @@ func evalPath(roots map[string]interface{}, aliases map[string]string, expr stri
 		return nil, false
 	}
 	for rest != "" {
+		if m := arrayCall.FindStringSubmatch(rest); m != nil {
+			v, ok := applyArrayCall(cur, m)
+			if !ok {
+				return nil, false
+			}
+			cur = v
+			rest = rest[len(m[0]):]
+			continue
+		}
 		m := pathToken.FindStringSubmatch(rest)
 		if m == nil {
 			return nil, false
@@ -105,6 +158,9 @@ func evalPath(roots map[string]interface{}, aliases map[string]string, expr stri
 					continue
 				case string:
 					cur = float64(len([]rune(x)))
+					continue
+				case []request:
+					cur = float64(len(x))
 					continue
 				}
 			}
@@ -141,6 +197,12 @@ func member(v interface{}, key string) interface{} {
 	case request:
 		val, _ := x.value(key)
 		return val
+	case nil:
+		return nil
+	}
+	// a Go value (struct, typed map, json.RawMessage) is read in its JSON form
+	if m, ok := jsonValue(v).(map[string]interface{}); ok {
+		return m[key]
 	}
 	return nil
 }

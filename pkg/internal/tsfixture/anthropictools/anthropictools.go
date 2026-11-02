@@ -83,7 +83,15 @@ func ProviderTool(id string, args map[string]interface{}) (types.Tool, bool) {
 		ok := decode(&c)
 		return tools.TextEditor20250728(c), ok
 	case "anthropic.computer_toolset_20260801":
-		return tools.ComputerToolset20260801(tools.ComputerToolset20260801Config{}), len(args) == 0
+		t := tools.ComputerToolset20260801(tools.ComputerToolset20260801Config{})
+		if len(args) > 0 {
+			// The TS args ({configs: {<member>: {enabled?, deferLoading?}}})
+			// go to the provider as given; prepareTools validates and maps
+			// them (anthropic provider_tool_args.go).
+			t.ProviderOptions = nil
+			t.ProviderArgs = args
+		}
+		return t, true
 	}
 	return types.Tool{}, false
 }

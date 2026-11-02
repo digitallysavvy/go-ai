@@ -425,6 +425,36 @@ for (let i = 0; i < starts.length; i++) {
           }
         }
       }
+      // a test that queues several responses (`.response = [ ... ]`) gets
+      // them all, in order: the test server serves the n-th to the n-th
+      // request (and a 404 after the last); the first stays in `response`,
+      // the rest go to `response.next`
+      const arr = /\.response\s*=\s*\[/g;
+      let am;
+      while ((am = arr.exec(body))) {
+        const as = am.index + am[0].length - 1;
+        const ae = balanced(body, as);
+        if (ae < 0 || as > r.index || ae < r.index) continue;
+        let items = null;
+        try { items = evalExpr(body.slice(as, ae)); } catch (err) { items = null; }
+        if (!Array.isArray(items) || items.length < 2) break;
+        const conv = it => {
+          if (!it || typeof it !== 'object') return { kind: 'unknown', error: 'not an object' };
+          let o;
+          if (it.type === 'json-value') o = { kind: 'json', body: it.body };
+          else if (it.type === 'stream-chunks') o = { kind: 'chunks', chunks: it.chunks };
+          else if (it.type === 'error') o = { kind: 'error', status: it.status ?? 500, text: it.body ?? 'Error' };
+          else if (it.type === 'empty') o = { kind: 'empty', status: it.status ?? 200 };
+          else return { kind: String(it.type), error: 'unsupported response type' };
+          if (wantAsserts && it.headers && typeof it.headers === 'object') o.headers = JSON.parse(JSON.stringify(it.headers));
+          return o;
+        };
+        const all = items.map(conv);
+        response = all[0];
+        response.next = all.slice(1);
+        if (all.some(x => x.error)) response.error = 'unsupported response in the queue';
+        break;
+      }
     }
   }
 
@@ -574,6 +604,9 @@ for (let i = 0; i < starts.length; i++) {
   if (wantAsserts) {
     for (const am of body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*await\s+(server\.calls\[\d+\]\.\w+)\s*;/g)) aliases[am[1]] = am[2];
     for (const am of body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*(result\.[\w.\[\]?']+)\s*;/g)) aliases[am[1]] = am[2];
+    // the stream parts of a doStream call (`const parts = await
+    // convertReadableStreamToArray(stream)`)
+    for (const am of body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*await\s+convertReadableStreamToArray\(\s*(?:result\.)?stream\s*\)\s*;/g)) aliases[am[1]] = 'result.stream';
     const reE = /\bexpect\(/g;
     let em;
     while ((em = reE.exec(body))) {

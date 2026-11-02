@@ -59,8 +59,8 @@ type Issue struct {
 	// a refinement) that does not abort the value; a union whose only
 	// non-aborted member failed with such issues reports them directly.
 	Continue bool
-	// Errors holds, for a plain invalid_union issue, each member's first
-	// issue with paths relative to the union value (zod v4 nested `errors`).
+	// Errors holds, for a plain invalid_union issue, each member's issue
+	// list with paths relative to the union value (zod v4 nested `errors`).
 	Errors [][]*Issue
 	// rest are further issues found in the same value (zod reports all of an
 	// object's failing fields, not just the first).

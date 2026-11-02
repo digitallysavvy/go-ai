@@ -112,7 +112,6 @@ func TestTSCasesResponses(t *testing.T) {
 		}
 		return m
 	}, map[string]string{
-		"should parse compaction output item from real fixture":             "Go keeps the v0.5.2 flat compaction metadata keys next to the TS providerMetadata.openai object",
-		"should stream with encrypted content include reasoning-delta part": "TS fixture concatenates several responses into one stream; Go finishes at the first response.completed",
+		"should parse compaction output item from real fixture": "Go keeps the v0.5.2 flat compaction metadata keys next to the TS providerMetadata.openai object",
 	})
 }

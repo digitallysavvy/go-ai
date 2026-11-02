@@ -474,10 +474,14 @@ func convertXAIResponsesTool(t types.Tool) interface{} {
 		// xAI's upstream removal of the additionalProperties flag was itself
 		// reverted, so the SDK must stop stripping it).
 		m := map[string]interface{}{
-			"type":        "function",
-			"name":        t.Name,
-			"description": t.Description,
-			"parameters":  t.Parameters,
+			"type":       "function",
+			"name":       t.Name,
+			"parameters": t.Parameters,
+		}
+		// TS `description: tool.description`: an unset description is
+		// undefined and left out of the request.
+		if t.Description != "" {
+			m["description"] = t.Description
 		}
 		// TS xai-responses-prepare-tools.ts: `...(tool.strict != null ?
 		// {strict: tool.strict} : {})` — forward the explicit value,

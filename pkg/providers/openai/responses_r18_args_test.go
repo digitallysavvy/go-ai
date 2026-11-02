@@ -2,12 +2,14 @@ package openai
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
 )
@@ -64,19 +66,16 @@ func TestResponsesIncludeOrderMatchesTS(t *testing.T) {
 
 // logprobs: 0 is sent as top_logprobs 0 but, being falsy in TS, adds no include.
 func TestResponsesZeroLogprobsSentWithoutInclude(t *testing.T) {
+	// TS logprobs is z.union([z.boolean(), z.number().min(1).max(20)]):
+	// parseProviderOptions rejects 0 before the request is built.
 	m := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "gpt-4o")
-	body, _, _, err := m.buildRequest(&provider.GenerateOptions{
+	_, _, _, err := m.buildRequest(&provider.GenerateOptions{
 		Prompt:          types.Prompt{Text: "hi"},
 		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"logprobs": 0}},
 	}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if v, ok := body["top_logprobs"]; !ok || v != 0 {
-		t.Fatalf("top_logprobs = %v (present=%v), want 0", v, ok)
-	}
-	if _, ok := body["include"]; ok {
-		t.Fatalf("include must be absent, got %v", body["include"])
+	var invalid *providererrors.InvalidArgumentError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %v, want InvalidArgumentError", err)
 	}
 }
 

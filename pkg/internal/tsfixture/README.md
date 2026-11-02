@@ -33,6 +33,16 @@ Use `gzip -9n` (no file name, no timestamp) so regenerating unchanged cases
 produces identical bytes. Then run the provider's `ts_cases` tests and update
 the Go skip lists for any case that changed.
 
+## Response queues
+
+A TS test that queues several responses (`server.urls[url].response =
+[first, second, ...]`) is extracted with all of them: the first stays in
+`response` and the rest go to `response.next` (`json`, `chunks`, `error` with
+`status`/`text`, and `empty` entries). `Run` serves them in order, one per
+request, and `404 {"error":"Not Found"}` after the last, as the TS test server
+does. A case without a queue serves its one response to every request (and
+fails after 20 requests instead of looping forever).
+
 ## Plain assertions and function-level tests
 
 `extract.mjs` has two more modes. Neither changes the output of the default
@@ -44,8 +54,10 @@ mode, so existing case files regenerate byte for byte.
   id of the `model` variable a test calls, and snapshots whose `expect(...)`
   argument spans lines. `Run` evaluates simple access expressions over
   `result`, `server.calls[n].requestBodyJson|requestHeaders|requestUserAgent`
-  and `requestBody` aliases (`asserts.go`); anything else is counted as "not
-  evaluated" in the test log.
+  and `requestBody` aliases (`asserts.go`), plus the stream-part filters TS
+  tests write over `const parts = await convertReadableStreamToArray(stream)`
+  (`.filter(p => p.f === 'v')`, `.some(p => p.f === 'v')`, `.map(p => p.f)`);
+  anything else is counted as "not evaluated" in the test log.
 - `--fn=NAME` extracts function-level tests (`expect(NAME(args))` or
   `const result = NAME(args)`), for converters, `prepareTools`, usage and
   schema helpers. Tests that call `NAME` more than once outside their
