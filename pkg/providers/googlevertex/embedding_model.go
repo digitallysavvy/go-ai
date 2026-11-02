@@ -180,11 +180,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		totalTokens += pred.Embeddings.Statistics.TokenCount
 	}
 
-	respEntry := types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: rawEmbeddingBody(httpResp.Body, response)}
-	responses := make([]types.EmbeddingResponse, len(inputs))
-	for i := range inputs {
-		responses[i] = respEntry
-	}
+	// One response per model call, as TS doEmbed returns one `response`
+	// (embedMany pushes one per call), not one per input.
+	responses := []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: rawEmbeddingBody(httpResp.Body, response)}}
 
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
