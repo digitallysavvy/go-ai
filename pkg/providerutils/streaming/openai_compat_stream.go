@@ -80,7 +80,7 @@ type OpenAICompatStream struct {
 
 	// finishPending is set once a finish_reason has been observed. The actual
 	// ChunkTypeFinish chunk is not enqueued until the SSE stream truly ends
-	// ([DONE] or EOF), so that a trailing choices-less usage event (the
+	// (EOF; a [DONE] frame is skipped), so that a trailing choices-less usage event (the
 	// stream_options.include_usage tail chunk) can be merged into it. This
 	// matches TS openai-compatible, whose TransformStream only enqueues
 	// `finish` in flush(), after every chunk (including a trailing usage-only
@@ -203,8 +203,10 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 				return nil, err
 			}
 
+			// TS parseJsonEventStream drops the [DONE] frame and keeps
+			// reading; flush() runs at the end of the body.
 			if IsStreamDone(event) {
-				return s.endStream(io.EOF)
+				continue
 			}
 
 			eventData = event.Data
@@ -485,8 +487,8 @@ func (s *OpenAICompatStream) recordFinish(finishReason string) {
 	s.pendingFinishReason = finishReason
 }
 
-// endStream is called when the underlying SSE stream is exhausted ([DONE] or
-// a genuine EOF from the reader). If a finish_reason was already observed, it
+// endStream is called when the underlying SSE stream is exhausted (a
+// genuine EOF from the reader; [DONE] frames are skipped). If a finish_reason was already observed, it
 // synthesizes the deferred finish chunk (merging in any usage seen since),
 // matching TS's flush()-time `finish` enqueue.
 //

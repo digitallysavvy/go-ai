@@ -127,6 +127,8 @@ data: [DONE]
 	}
 
 	// Should have: reasoning-start + reasoning + reasoning + reasoning-end + text + finish
+	// TS isFirstChunk: the first valid chunk always yields response-metadata.
+	chunks = r78provbDropMetadata(t, chunks)
 	require.Len(t, chunks, 6)
 
 	// Reasoning start
@@ -263,6 +265,8 @@ data: [DONE]
 	}
 
 	// Should have: text + finish
+	// TS isFirstChunk: the first valid chunk always yields response-metadata.
+	chunks = r78provbDropMetadata(t, chunks)
 	require.Len(t, chunks, 2)
 
 	// Text chunk
@@ -304,6 +308,8 @@ data: [DONE]
 	}
 
 	// Should skip empty chunks and have: text + finish
+	// TS isFirstChunk: the first valid chunk always yields response-metadata.
+	chunks = r78provbDropMetadata(t, chunks)
 	require.Len(t, chunks, 2)
 
 	assert.Equal(t, provider.ChunkTypeText, chunks[0].Type)
@@ -340,6 +346,8 @@ data: [DONE]
 	}
 
 	// Should have: error + text + finish
+	// TS isFirstChunk: the first valid chunk always yields response-metadata.
+	chunks = r78provbDropMetadata(t, chunks)
 	require.Len(t, chunks, 3)
 
 	assert.Equal(t, provider.ChunkTypeError, chunks[0].Type)
@@ -460,6 +468,8 @@ data: [DONE]
 	}
 
 	// Should have: reasoning-start + reasoning + reasoning-end + 2 text + finish
+	// TS isFirstChunk: the first valid chunk always yields response-metadata.
+	chunks = r78provbDropMetadata(t, chunks)
 	require.Len(t, chunks, 6)
 
 	assert.Equal(t, provider.ChunkTypeReasoningStart, chunks[0].Type)

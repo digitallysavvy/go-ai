@@ -373,11 +373,28 @@ function extractRoutes(body, aliasesOut) {
 // createTestServer(...)`): assertions over them read as server.*
 const serverVars = [...new Set([...src.matchAll(/\b(?:const|let)\s+(\w+)\s*=\s*createTestServer\(/g)].map(m => m[1]))].filter(n => n !== 'server');
 // `(p as { delta: string }).delta` reads as `p.delta`, `(x[0]!.content as
-// unknown[])[0]` as `x[0].content[0]`
+// unknown[])[0]` as `x[0].content[0]`, `(result.raw as { a: { b?: string } })
+// .a.b` as `result.raw.a.b`
 function dropCasts(s) {
-  return s.replace(/\(\s*(\w+)\s+as\s+\{[^}]*\}\s*\)/g, '$1')
+  return dropObjectCasts(s.replace(/\(\s*(\w+)\s+as\s+\{[^}]*\}\s*\)/g, '$1'))
     .replace(/!(?=[.\[])/g, '')
     .replace(/\(\s*([\w$.\[\]]+)\s+as\s+[\w$.<>\[\]| ]+\)/g, '$1');
+}
+// dropObjectCasts drops `(expr as { ... })` casts whose object type nests
+// braces, which the single-level pattern above cannot match.
+function dropObjectCasts(s) {
+  const re = /\(\s*([\w$.\[\]]+)\s+as\s+(?=\{)/g;
+  let out = '', last = 0, m;
+  while ((m = re.exec(s))) {
+    const typeEnd = balanced(s, m.index + m[0].length);
+    if (typeEnd < 0) continue;
+    const close = /^\s*\)/.exec(s.slice(typeEnd));
+    if (!close) continue;
+    out += s.slice(last, m.index) + m[1];
+    last = typeEnd + close[0].length;
+    re.lastIndex = last;
+  }
+  return out + s.slice(last);
 }
 
 function topDescribeOf(idx) {

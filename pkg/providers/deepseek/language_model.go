@@ -106,7 +106,11 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if len(resp.Body) > 0 {
 		result.RawResponse = providerutils.RawJSONBody(resp.Body)
 	}
-	responseMetadata := providerutils.BuildResponseMetadata(response.ID, response.Model, response.Created)
+	responseMetadata := providerutils.BuildResponseMetadata(response.ID, response.Model, 0)
+	if response.Created != nil {
+		// TS createLanguageModelResponseMetadata: created != null, so 0 is the epoch.
+		responseMetadata.Timestamp = time.Unix(*response.Created, 0)
+	}
 	responseMetadata.Headers = result.ResponseHeaders
 	result.ResponseMetadata = responseMetadata
 	return result, nil
@@ -634,7 +638,7 @@ func convertDeepseekUsage(raw json.RawMessage) types.Usage {
 type deepseekResponse struct {
 	ID                string `json:"id"`
 	Object            string `json:"object"`
-	Created           int64  `json:"created"`
+	Created           *int64 `json:"created"`
 	Model             string `json:"model"`
 	SystemFingerprint string `json:"system_fingerprint"`
 	Choices           []struct {
@@ -699,7 +703,7 @@ type deepseekUsage struct {
 type deepseekStreamChunk struct {
 	ID                string          `json:"id"`
 	Object            string          `json:"object"`
-	Created           int64           `json:"created"`
+	Created           *int64          `json:"created"`
 	Model             string          `json:"model"`
 	SystemFingerprint string          `json:"system_fingerprint"`
 	Error             json.RawMessage `json:"error,omitempty"`
@@ -737,8 +741,8 @@ type deepseekStream struct {
 	metadataEmitted     bool
 	providerOptionsName string
 
-	// The Finish chunk is only built when the stream ends (the [DONE] marker
-	// or EOF) so a trailing usage-only chunk (stream_options.include_usage)
+	// The Finish chunk is only built when the body ends (a [DONE] frame is skipped,
+	// as in TS) so a trailing usage-only chunk (stream_options.include_usage)
 	// is attached to it. finishRaw is the last finish_reason seen; finishErrored is set by a
 	// parse/error chunk after it; endQueued guards queueEnd.
 	finishRaw     string
@@ -812,12 +816,10 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 			s.err = err
 			return nil, err
 		}
+		// TS parseJsonEventStream drops the [DONE] frame and keeps reading;
+		// flush() runs at the end of the body (the io.EOF branch above).
 		if streaming.IsStreamDone(event) {
-			if s.queueEnd() {
-				continue
-			}
-			s.err = io.EOF
-			return nil, io.EOF
+			continue
 		}
 		rawQueued := false
 		if s.includeRawChunks {
@@ -875,14 +877,15 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 		if chunkData.SystemFingerprint != "" {
 			s.systemFingerprint = chunkData.SystemFingerprint
 		}
-		if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0 || len(s.responseHeaders) > 0) {
+		// TS isFirstChunk: the first valid chunk always yields response-metadata.
+		if !s.metadataEmitted {
 			metadata := &provider.ResponseMetadata{
 				ID:      chunkData.ID,
 				ModelID: chunkData.Model,
 				Headers: s.responseHeaders,
 			}
-			if chunkData.Created != 0 {
-				metadata.Timestamp = time.Unix(chunkData.Created, 0)
+			if chunkData.Created != nil { // TS created != null: 0 is the epoch
+				metadata.Timestamp = time.Unix(*chunkData.Created, 0)
 			}
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type:             provider.ChunkTypeResponseMetadata,

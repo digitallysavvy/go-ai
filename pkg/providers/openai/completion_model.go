@@ -487,8 +487,9 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 			s.err = err
 			return nil, err
 		}
+		// TS parseJsonEventStream drops the [DONE] frame and keeps reading;
+		// flush() runs at the end of the body (the io.EOF branch above).
 		if streaming.IsStreamDone(event) {
-			s.finish()
 			continue
 		}
 		var chunk openAICompletionChunk

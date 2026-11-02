@@ -54,6 +54,13 @@ type Config struct {
 	// support this; the upstream DeepSeek API does not. Defaults to false.
 	SupportsStructuredOutputs *bool
 
+	// UncheckedStrictToolCalls skips the strict tool call checks (a
+	// `strict: true` tool needing a /beta base URL, and no mixing of strict
+	// and non-strict tools), as TS DeepSeekChatLanguageModel does when its
+	// supportsStrictToolCalls config is unset (Azure-hosted DeepSeek).
+	// createDeepSeek derives it from the base URL, as New does by default.
+	UncheckedStrictToolCalls bool
+
 	// HTTPClient overrides the HTTP client used for requests.
 	HTTPClient *stdhttp.Client `json:"-"`
 

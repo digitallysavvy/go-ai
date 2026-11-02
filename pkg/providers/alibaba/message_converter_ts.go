@@ -191,5 +191,12 @@ func alibabaImageURL(fc types.FileContent) (string, error) {
 	if normalized.FileData.Type == types.FileDataTypeURL {
 		return normalized.FileData.URL, nil
 	}
-	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(normalized.FileData.Data), nil
+	// TS formatImageUrl: data:${resolveFullMediaType({ part })}, so a
+	// top-level-only or wildcard type ("image", "image/*") is sniffed from
+	// the bytes.
+	resolved, err := prompt.ResolveFullMediaType(mediaType, normalized.FileData.Data, true)
+	if err != nil {
+		return "", err
+	}
+	return "data:" + resolved + ";base64," + base64.StdEncoding.EncodeToString(normalized.FileData.Data), nil
 }

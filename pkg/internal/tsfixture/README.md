@@ -25,6 +25,19 @@ function-level cases added in review round 77 are extracted at
 `--asserts` too. The Chat Completions frame of the Responses case "should
 return helpful error when Chat Completions stream is received" is one TS
 rejects on purpose; `providerutils.TestTSFixtureFramesAccepted` lists it.
+Round 78 (prova) added, all extracted at `e64ed82f27`: `groq/.../chat_asserts.json.gz`,
+`mistral/.../chat_asserts.json.gz`, `mistral/.../conversation.json.gz` and
+`gateway/.../language.json.gz` with `--asserts`; `groq/.../convert_messages`,
+`prepare_tools`, `convert_usage` and `mistral/.../convert_messages`, `prepare_tools`,
+`convert_usage`, `finish_reason`, `conversation_inputs`, `conversation_tools` with
+`--expand-each --fn=NAME`. The gateway case test supplies the default responses of the
+TS `prepareJsonResponse` / `prepareStreamResponse` helpers, and the google
+convert-messages case test restores `supportedFunctionResponseUrls` RegExp patterns from
+the TS argument source (a RegExp evaluates to `{}` in the case JSON).
+Round 78 (provb) added, extracted at `e64ed82f27` with `--expand-each --fn=NAME`:
+`deepseek/.../convert_messages`, `prepare_tools`, `usage`; `alibaba/.../convert_messages`,
+`prepare_tools`, `usage`; `moonshot/.../convert_messages`, `usage`,
+`normalize_json_schema`.
 
 ## Regenerating
 
@@ -86,9 +99,9 @@ mode, so existing case files regenerate byte for byte.
   `.find(p => p.f === 'v')`, `.map(p => p.f)`), aliases of such calls
   (`const types = parts.map(p => p.type)`), `const calls = server.calls`,
   `new URL(x).searchParams.get('k')`, and `expect.objectContaining` /
-  `expect.arrayContaining` arguments. Assertions over another test-server
+  `expect.arrayContaining` arguments, and `.at(n)`. Assertions over another test-server
   variable (`pollServer.calls`) read as `server.*`, and TS casts
-  (`(p as { delta: string }).delta`) are dropped. Anything else is counted
+  (`(p as { delta: string }).delta`, nested object types included) are dropped. Anything else is counted
   as "not evaluated" in the test log.
 - `--fn=NAME` extracts function-level tests (`expect(NAME(args))` or
   `const result = NAME(args)`), for converters, `prepareTools`, usage and
@@ -148,4 +161,5 @@ accepts text, reasoning, tool-call, tool-result, file, reasoning-file, custom
 and tool-approval-response parts. File data is built by `fileDataFromTS`
 (base64 strings, recorded `Uint8Array` bytes, URLs with a gs: `originalUrl`,
 provider references and text). Tool-result outputs decode from their TS JSON
-form; content outputs are built block by block so recorded bytes survive.
+form; content outputs are built block by block so recorded bytes survive. Provider option keys a TS literal sets to `undefined` are dropped (TS
+option schemas read them as absent).

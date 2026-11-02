@@ -117,8 +117,8 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		ModelID: response.Model,
 		Headers: result.ResponseHeaders,
 	}
-	if response.Created != 0 {
-		responseMetadata.Timestamp = time.Unix(response.Created, 0)
+	if response.Created != nil { // TS created != null: 0 is the epoch
+		responseMetadata.Timestamp = time.Unix(*response.Created, 0)
 	}
 	result.ResponseMetadata = responseMetadata
 	return result, nil
@@ -638,7 +638,7 @@ func (m *LanguageModel) handleError(err error) error {
 type moonshotResponse struct {
 	ID      string           `json:"id"`
 	Object  string           `json:"object"`
-	Created int64            `json:"created"`
+	Created *int64           `json:"created"`
 	Model   string           `json:"model"`
 	Choices []moonshotChoice `json:"choices"`
 	Usage   json.RawMessage  `json:"usage"`
@@ -683,7 +683,7 @@ type moonshotToolCallFunction struct {
 type moonshotStreamChunk struct {
 	ID      string                 `json:"id"`
 	Object  string                 `json:"object"`
-	Created int64                  `json:"created"`
+	Created *int64                 `json:"created"`
 	Model   string                 `json:"model"`
 	Choices []moonshotStreamChoice `json:"choices"`
 	Usage   json.RawMessage        `json:"usage"`
@@ -804,9 +804,9 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 			return nil, err
 		}
 
+		// TS parseJsonEventStream drops the [DONE] frame and keeps reading;
+		// flush() runs at the end of the body (the io.EOF branch above).
 		if streaming.IsStreamDone(event) {
-			s.done = true
-			s.flushQueue = s.buildFlushChunks()
 			continue
 		}
 
@@ -859,8 +859,8 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 		if s.isFirstChunk {
 			s.isFirstChunk = false
 			meta := &provider.ResponseMetadata{ID: chunk.ID, ModelID: chunk.Model}
-			if chunk.Created != 0 {
-				meta.Timestamp = time.Unix(chunk.Created, 0)
+			if chunk.Created != nil { // TS created != null: 0 is the epoch
+				meta.Timestamp = time.Unix(*chunk.Created, 0)
 			}
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: meta})
 		}

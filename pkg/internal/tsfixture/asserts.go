@@ -80,6 +80,9 @@ var pathToken = regexp.MustCompile(`^(?:\??\.([A-Za-z_$][\w$]*)|\[(\d+)\]|\['([^
 // stream-part filters TS tests write).
 var arrayCall = regexp.MustCompile(`^\.(filter|some|find|map)\(\s*\(?([A-Za-z_$][\w$]*)\)?\s*=>\s*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)(?:\s*===\s*'([^']*)')?\s*\)`)
 
+// atCall matches `.at(n)` (n may be negative).
+var atCall = regexp.MustCompile(`^\.at\((-?\d+)\)`)
+
 // lineBreak joins an expression vitest formatting split over lines.
 var lineBreak = regexp.MustCompile(`\s*\n\s*`)
 
@@ -178,6 +181,23 @@ func evalPath(roots map[string]interface{}, aliases map[string]string, expr stri
 				return nil, false
 			}
 			cur = v
+			rest = rest[len(m[0]):]
+			continue
+		}
+		if m := atCall.FindStringSubmatch(rest); m != nil {
+			// Array.prototype.at: a negative index counts from the end
+			x, isArr := cur.([]interface{})
+			if !isArr {
+				return nil, false
+			}
+			n, _ := strconv.Atoi(m[1])
+			if n < 0 {
+				n += len(x)
+			}
+			cur = nil // undefined out of range
+			if n >= 0 && n < len(x) {
+				cur = x[n]
+			}
 			rest = rest[len(m[0]):]
 			continue
 		}
