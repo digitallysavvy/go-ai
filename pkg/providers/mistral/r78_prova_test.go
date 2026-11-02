@@ -467,3 +467,122 @@ func TestR78prova_ConversationGenerateHandPorts(t *testing.T) {
 		}
 	})
 }
+
+// TestR78prova_TSCasesConvertMessages replays convert-to-mistral-chat-messages.test.ts.
+func TestR78prova_TSCasesConvertMessages(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/convert_messages.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		msgs, why := tsfixture.BuildPromptMessages(args[0])
+		if why != "" {
+			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+		}
+		out, err := ConvertToMistralChatMessagesWithError(msgs)
+		if err != nil {
+			return nil, nil, err
+		}
+		return out, nil, nil
+	}, nil)
+}
+
+// TestR78prova_TSCasesPrepareTools replays mistral-prepare-tools.test.ts
+// through the request body (Go builds the tools inline).
+func TestR78prova_TSCasesPrepareTools(t *testing.T) {
+	tsfixture.ProviderToolHook = func(id, name string, args map[string]interface{}) (types.Tool, bool) {
+		return types.Tool{Name: name, Type: "provider", ProviderID: id, ProviderArgs: args}, true
+	}
+	defer func() { tsfixture.ProviderToolHook = nil }()
+	cases := tsfixture.LoadCases(t, "testdata/tscases/prepare_tools.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		in, _ := args[0].(map[string]interface{})
+		ts, why := tsfixture.BuildTools(in["tools"])
+		if why != "" {
+			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+		}
+		opts := &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, Tools: ts}
+		if tc, ok := in["toolChoice"].(map[string]interface{}); ok {
+			opts.ToolChoice = tsfixture.BuildToolChoice(tc)
+		}
+		m := NewLanguageModel(New(Config{APIKey: "k"}), "mistral-small-latest")
+		body := m.buildRequestBody(opts, false)
+		out := map[string]interface{}{"toolWarnings": tsfixture.WarningsToTS(m.checkReasoningWarnings(opts))}
+		if v, ok := body["tools"]; ok {
+			out["tools"] = v
+		}
+		if v, ok := body["tool_choice"]; ok {
+			out["toolChoice"] = v
+		}
+		return out, nil, nil
+	}, nil)
+}
+
+// TestR78prova_TSCasesConvertUsage replays convert-mistral-usage.test.ts.
+func TestR78prova_TSCasesConvertUsage(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/convert_usage.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		var raw []byte
+		if m, ok := args[0].(map[string]interface{}); !ok || m["__undef"] == nil {
+			raw, _ = json.Marshal(args[0])
+		}
+		return tsfixture.UsageToTS(convertMistralUsage(raw)), nil, nil
+	}, nil)
+}
+
+// TestR78prova_TSCasesFinishReason replays map-mistral-finish-reason.test.ts.
+func TestR78prova_TSCasesFinishReason(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/finish_reason.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		reason, _ := args[0].(string)
+		return string(mapMistralFinishReason(reason)), nil, nil
+	}, nil)
+}
+
+// TestR78prova_TSCasesConversationInputs replays
+// convert-to-mistral-conversation-inputs.test.ts (its tool name mapping is
+// the renamed premium search tool "news").
+func TestR78prova_TSCasesConversationInputs(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/conversation_inputs.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		msgs, why := tsfixture.BuildPromptMessages(args[0])
+		if why != "" {
+			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+		}
+		inputs, instructions, err := convertToMistralConversationInputs(msgs, premiumNames())
+		if err != nil {
+			return nil, nil, err
+		}
+		out := map[string]interface{}{"inputs": inputs}
+		if instructions != "" {
+			out["instructions"] = instructions
+		}
+		return out, map[string]interface{}{"inputs": inputs}, nil
+	}, nil)
+}
+
+// TestR78prova_TSCasesConversationTools replays mistral-conversation-prepare-tools.test.ts.
+func TestR78prova_TSCasesConversationTools(t *testing.T) {
+	tsfixture.ProviderToolHook = func(id, name string, args map[string]interface{}) (types.Tool, bool) {
+		return types.Tool{Name: name, Type: "provider", ProviderID: id, ProviderArgs: args}, true
+	}
+	defer func() { tsfixture.ProviderToolHook = nil }()
+	cases := tsfixture.LoadCases(t, "testdata/tscases/conversation_tools.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		in, _ := args[0].(map[string]interface{})
+		ts, why := tsfixture.BuildTools(in["tools"])
+		if why != "" {
+			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+		}
+		var choice types.ToolChoice
+		if tc, ok := in["toolChoice"].(map[string]interface{}); ok {
+			choice = tsfixture.BuildToolChoice(tc)
+		}
+		tools, toolChoice, warnings := prepareConversationTools(ts, choice)
+		out := map[string]interface{}{"toolWarnings": tsfixture.WarningsToTS(warnings)}
+		if tools != nil {
+			out["tools"] = tools
+		}
+		if toolChoice != nil {
+			out["toolChoice"] = toolChoice
+		}
+		return out, nil, nil
+	}, nil)
+}
