@@ -44,10 +44,18 @@ func (s *spanSet) take(key string) trace.Span {
 // drain removes every span and returns them in insertion order (TS
 // `map.values()` followed by `map.clear()`).
 func (s *spanSet) drain() []trace.Span {
-	out := make([]trace.Span, 0, len(s.keys))
-	for _, k := range s.keys {
+	_, out := s.drainKeyed()
+	return out
+}
+
+// drainKeyed is drain that also returns each span's key, in the same order,
+// so the caller can drop the per-call entries it stored under those keys.
+func (s *spanSet) drainKeyed() ([]string, []trace.Span) {
+	keys := s.keys
+	out := make([]trace.Span, 0, len(keys))
+	for _, k := range keys {
 		out = append(out, s.spans[k])
 	}
 	s.keys, s.spans = nil, nil
-	return out
+	return keys, out
 }

@@ -1772,14 +1772,22 @@ func (i OpenTelemetry) closeOpenChildSpans(callID string, err error) {
 	}
 	var stepSpan, rerankSpan trace.Span
 	var toolSpans, embedSpans []trace.Span
+	var embedKeys []string
 	if st := genAILoadedState(key); st != nil {
 		st.mu.Lock()
 		stepSpan, st.stepSpan = st.stepSpan, nil
 		rerankSpan, st.rerankSpan = st.rerankSpan, nil
 		toolSpans = st.toolSpans.drain()
-		embedSpans = st.embedSpans.drain()
+		embedKeys, embedSpans = st.embedSpans.drainKeyed()
 		st.mu.Unlock()
 	}
+	// The embedding and rerank spans are also stored in genAICallSpans
+	// (OnEmbedStart/OnRerankStart); drop those entries with them so a call
+	// whose OnEmbedEnd/OnRerankEnd never fires leaves nothing behind.
+	for _, embedCallID := range embedKeys {
+		genAICallSpans.Delete(genAISpanKey("embedding", i.stateKey(modelCallID(embedCallID, callID))))
+	}
+	genAICallSpans.Delete(genAISpanKey("reranking", key))
 	for _, span := range toolSpans {
 		end(span)
 	}

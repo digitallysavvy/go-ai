@@ -420,7 +420,7 @@ func TestLegacyOpenTelemetryNestedEmbedRerankSpans(t *testing.T) {
 	} else if got := v.([]string); len(got) != 1 || got[0] != `[0.1,0.2]` {
 		t.Errorf("ai.embeddings = %v, want [[0.1,0.2]]", got)
 	}
-	if v, ok := attrValue(doEmbedSpan, "ai.usage.tokens"); !ok || v.(float64) != 5 {
+	if v, ok := attrValue(doEmbedSpan, "ai.usage.tokens"); !ok || v.(int64) != 5 {
 		t.Errorf("ai.usage.tokens = %v (ok=%v), want 5", v, ok)
 	}
 	for _, key := range []string{"gen_ai.operation.name", "gen_ai.system", "gen_ai.request.model"} {

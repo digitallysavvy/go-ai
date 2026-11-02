@@ -73,7 +73,7 @@ func TestLegacyOpenTelemetryEmbedUsageTokens(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		usage  types.EmbeddingUsage
-		want   float64
+		want   int64
 		wantOK bool
 	}{
 		{"tokens", types.EmbeddingUsage{Tokens: 7}, 7, true},
@@ -95,7 +95,7 @@ func TestLegacyOpenTelemetryEmbedUsageTokens(t *testing.T) {
 				t.Fatal("no span")
 			}
 			v, ok := attrValue(span, "ai.usage.tokens")
-			if ok != tc.wantOK || (ok && v.(float64) != tc.want) {
+			if ok != tc.wantOK || (ok && v.(int64) != tc.want) {
 				t.Fatalf("got %v ok=%v, want %v ok=%v", v, ok, tc.want, tc.wantOK)
 			}
 		})
