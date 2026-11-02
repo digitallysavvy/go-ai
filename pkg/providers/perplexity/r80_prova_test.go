@@ -23,11 +23,6 @@ func TestR80provaTSCasesLanguage(t *testing.T) {
 	}
 	var plain, headers []tsfixture.Case
 	for _, c := range cases {
-		if !r80provaHarnessKeepsRawValues() {
-			for i := range c.Asserts {
-				c.Asserts[i].Arg = r80provaHarnessCanon(c.Asserts[i].Arg)
-			}
-		}
 		if c.Test == "passes request and provider headers and exposes response headers" {
 			headers = append(headers, c)
 			continue
@@ -52,55 +47,7 @@ func TestR80provaTSCasesLanguage(t *testing.T) {
 	run(headers, "custom-key", map[string]string{"custom-provider-header": "provider-value"})
 }
 
-// r80provaHarnessKeepsRawValues reports whether the harness compares plain
-// assertions against the raw Go stream (provb r80 tsfixture change: a
-// StreamProviderError's Data is written as the error part's error, ids are
-// kept). Older harnesses canonicalize the Go side only, so the TS argument is
-// rewritten the same way (r80provaHarnessCanon).
-func r80provaHarnessKeepsRawValues() bool {
-	parts := tsfixture.StreamToTS([]*provider.StreamChunk{{
-		Type: provider.ChunkTypeError,
-		Text: "m",
-		Err:  providererrors.NewStreamProviderError("m", "perplexity", "t", nil, nil, nil, map[string]interface{}{"message": "m"}),
-	}})
-	m, _ := parts[0].(map[string]interface{})
-	_, isObject := m["error"].(map[string]interface{})
-	return isObject
-}
-
-// r80provaHarnessCanon applies to the TS expectation what the harness applies
-// to the Go side of an assertion (CanonStream and Normalize): reasoning block
-// ids and source ids are dropped, and a stream error part carries the error
-// message (the Go error chunk's Text). TestR80provaStreamIDsAndErrorObject
-// checks those values directly.
-func r80provaHarnessCanon(v interface{}) interface{} {
-	switch x := v.(type) {
-	case map[string]interface{}:
-		switch x["type"] {
-		case "reasoning-start", "reasoning-end", "source":
-			delete(x, "id")
-		case "error":
-			if e, ok := x["error"].(map[string]interface{}); ok {
-				x["error"] = e["message"]
-			}
-		}
-		if inner, ok := x["__objectContaining"].(map[string]interface{}); ok {
-			if _, isSource := inner["providerMetadata"]; isSource && inner["id"] != nil && inner["type"] == nil {
-				delete(inner, "id")
-			}
-		}
-		for k, e := range x {
-			x[k] = r80provaHarnessCanon(e)
-		}
-	case []interface{}:
-		for i, e := range x {
-			x[i] = r80provaHarnessCanon(e)
-		}
-	}
-	return v
-}
-
-// The values r80provaHarnessCanon drops from the TS expectations: reasoning
+// The values the TS expectations compare against the raw Go stream: reasoning
 // block ids "reasoning-<sequence_number>", a search result source's id
 // String(result.id), and the stream error object (message and type).
 func TestR80provaStreamIDsAndErrorObject(t *testing.T) {
