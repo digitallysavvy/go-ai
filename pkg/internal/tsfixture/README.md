@@ -38,6 +38,9 @@ Round 78 (provb) added, extracted at `e64ed82f27` with `--expand-each --fn=NAME`
 `deepseek/.../convert_messages`, `prepare_tools`, `usage`; `alibaba/.../convert_messages`,
 `prepare_tools`, `usage`; `moonshot/.../convert_messages`, `usage`,
 `normalize_json_schema`.
+Round 79 (provb) added, extracted at `e64ed82f27` with `--expand-each --fn=NAME`:
+`openresponses/.../convert_input` (convertToOpenResponsesInput) and `finish_reason`
+(mapOpenResponsesFinishReason).
 
 ## Regenerating
 

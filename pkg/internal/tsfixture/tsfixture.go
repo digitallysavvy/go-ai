@@ -1052,10 +1052,14 @@ func BuildOptions(call map[string]interface{}) (*provider.GenerateOptions, strin
 		case "headers":
 			o.Headers = map[string]string{}
 			for hk, hv := range v.(map[string]interface{}) {
+				if isUndefMarker(hv) {
+					continue // TS combineHeaders drops undefined values
+				}
 				o.Headers[hk], _ = hv.(string)
 			}
 		case "providerOptions":
-			o.ProviderOptions, _ = v.(map[string]interface{})
+			po, _ := v.(map[string]interface{})
+			o.ProviderOptions = withoutUndefined(po)
 		case "reasoning":
 			r := types.ReasoningLevel(v.(string))
 			o.Reasoning = &r
