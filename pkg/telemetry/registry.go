@@ -2074,10 +2074,11 @@ func (i LegacyOpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallE
 	}
 	// ai.usage.tokens is a plain value in TS (not {output: ...}), so it is
 	// never gated by recordOutputs; sanitizeAttributeValue drops it when
-	// usage.tokens is NaN (provider returned no usage), which
-	// setFiniteFloat64 mirrors.
+	// usage.tokens is NaN (provider returned no usage). The count is an
+	// integer, which OpenTelemetry JS exports as an int value, so it is an
+	// Int64 like the root span's copy.
 	if tokens, ok := embeddingUsageTokens(e.Usage); ok {
-		entry.span.SetAttributes(attribute.Float64("ai.usage.tokens", float64(tokens)))
+		entry.span.SetAttributes(attribute.Int64("ai.usage.tokens", tokens))
 	}
 	entry.span.End()
 }

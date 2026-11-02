@@ -69,7 +69,7 @@ func TestR80carryLegacyOpenTelemetryEmbedUsageReported(t *testing.T) {
 				t.Fatal("no span")
 			}
 			v, ok := attrValue(span, "ai.usage.tokens")
-			if ok != tc.wantOK || (ok && v.(float64) != float64(tc.want)) {
+			if ok != tc.wantOK || (ok && v.(int64) != tc.want) {
 				t.Fatalf("got %v ok=%v, want %d ok=%v", v, ok, tc.want, tc.wantOK)
 			}
 		})
