@@ -43,3 +43,23 @@ func TestR81provaMistralFileDataStringPayload(t *testing.T) {
 		}
 	}
 }
+
+// TS "should redact reference audio": request.body is
+// JSON.stringify({model, input, ref_audio: '[redacted]', response_format,
+// stream}) in the literal's key order; Go marshaled a map (sorted keys).
+func TestR81provaMistralSpeechRequestBodyKeyOrder(t *testing.T) {
+	p := newMistralProviderWithTransport(t, func(*http.Request) (*http.Response, error) {
+		return mistralJSONResponse(`{"audio_data":"AQID"}`), nil
+	})
+	res, err := NewSpeechModel(p, "voxtral-mini-tts-latest").DoGenerate(context.Background(), &provider.SpeechGenerateOptions{
+		Text:            "Hello from the AI SDK!",
+		ProviderOptions: map[string]interface{}{"mistral": map[string]interface{}{"refAudio": "sensitive-reference-audio"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"model":"voxtral-mini-tts-latest","input":"Hello from the AI SDK!","ref_audio":"[redacted]","response_format":"mp3","stream":false}`
+	if res.Request == nil || res.Request.Body != want {
+		t.Fatalf("request body = %+v, want %s", res.Request, want)
+	}
+}

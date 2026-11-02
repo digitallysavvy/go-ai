@@ -78,7 +78,9 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, fmt.Errorf("mistral: failed to decode audio_data: %w", err)
 	}
 
-	requestBytes, err := json.Marshal(redactedSpeechRequestBody(reqBody))
+	// TS request.body is JSON.stringify(requestBodyValues): the literal's key
+	// order, not Go's sorted map order.
+	requestBytes, err := json.Marshal(providerutils.OrderedMap{Keys: mistralSpeechBodyKeys, Vals: redactedSpeechRequestBody(reqBody)})
 	if err != nil {
 		return nil, fmt.Errorf("mistral: failed to marshal speech request metadata: %w", err)
 	}
@@ -112,6 +114,9 @@ var mistralSpeechOptionsSchema = providerutils.OptionSchema{
 		return nil
 	}, providerutils.OptArray(providerutils.OptStringLen(1, -1), 1, -1)),
 }
+
+// mistralSpeechBodyKeys is the key order of the TS requestBody literal.
+var mistralSpeechBodyKeys = []string{"model", "input", "voice_id", "ref_audio", "expressiveness", "phoneme_hints", "response_format", "stream"}
 
 // redactedSpeechRequestBody returns a shallow copy of body with ref_audio
 // replaced by a redaction marker, matching TS mistral-speech-model.ts's

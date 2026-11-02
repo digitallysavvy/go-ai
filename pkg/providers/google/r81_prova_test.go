@@ -2,6 +2,8 @@ package google
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -59,5 +61,28 @@ func TestR81provaSpeechTranslationUndecodableAudioIsActivity(t *testing.T) {
 	}
 	if audioParts != 3 || parts[len(parts)-1].Type != provider.SpeechTranslationStreamPartTypeFinish {
 		t.Fatalf("audio parts before finish = %d, want 3 (parts %+v)", audioParts, parts)
+	}
+}
+
+// TS request.body is JSON.stringify(requestBody), which keeps the literal's
+// key order; Go marshaled maps, which sort keys (parts before role,
+// responseFormat first, speaker before style).
+func TestR81provaGoogleSpeechRequestBodyKeyOrder(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"audio/wav","data":"AQID"}}]}}]}`))
+	}))
+	defer server.Close()
+	model := NewSpeechModel(New(Config{APIKey: "k", BaseURL: server.URL}), "gemini-3.8-flash-tts-preview")
+	res, err := model.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{
+		Text: "Hi", Voice: "Kore", Instructions: "calm", OutputFormat: "wav",
+		ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"speechMetadata": map[string]interface{}{"speaker": "Joe"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"contents":[{"role":"user","parts":[{"text":"Hi","speechMetadata":{"style":"calm","speaker":"Joe"}}]}],"generationConfig":{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Kore"}}},"responseFormat":{"audio":{"mimeType":"AUDIO_WAV"}}}}`
+	if res.Request == nil || res.Request.Body != want {
+		t.Fatalf("request body = %+v\nwant %s", res.Request, want)
 	}
 }
