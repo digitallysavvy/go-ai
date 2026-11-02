@@ -469,7 +469,7 @@ func (m *azureMaiImageModel) call(ctx context.Context, extra map[string]string, 
 		return azureMaiImageCallResult{}, err
 	}
 	var parsed azureMaiImageResponse
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
+	if err := providerutils.UnmarshalChunk(respBody, &parsed); err != nil {
 		return azureMaiImageCallResult{}, providererrors.NewProviderError("azure.image", resp.StatusCode, "", "Invalid JSON response", err)
 	}
 	return azureMaiImageCallResult{response: parsed, headers: headers}, nil

@@ -208,7 +208,7 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, expire
 		return nil, err
 	}
 	var out openAIFilesResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := providerutils.UnmarshalChunk(resp.Body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -592,7 +592,7 @@ func (s *openAIBatchResultsStream) Next() (*provider.BatchV4ItemResult, error) {
 			continue
 		}
 		var wire openAIBatchResultLineWire
-		if err := json.Unmarshal(line, &wire); err != nil {
+		if err := providerutils.UnmarshalChunk(line, &wire); err != nil {
 			s.err = err
 			return nil, err
 		}
@@ -666,7 +666,7 @@ func convertOpenAIBatchErrorResponse(body json.RawMessage, statusCode int) *prov
 // is safe here — there is no original request context for a batch result).
 func convertOpenAIBatchResponseBodyBytes(body json.RawMessage) (*types.GenerateResult, *provider.BatchError) {
 	var resp openAIBatchResponseBody
-	if err := json.Unmarshal(body, &resp); err != nil {
+	if err := providerutils.UnmarshalChunk(body, &resp); err != nil {
 		return nil, &provider.BatchError{Message: "OpenAI returned an invalid Responses batch result.", Code: "invalid_response"}
 	}
 	resp.ResponsesAPIResponse.CreatedAt = responsesWholeSeconds(resp.CreatedAt)

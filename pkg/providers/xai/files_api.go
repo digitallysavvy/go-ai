@@ -139,7 +139,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, err
 	}
 	var out xaiFileResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := providerutils.UnmarshalChunk(resp.Body, &out); err != nil {
 		return nil, err
 	}
 
@@ -197,7 +197,7 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 		return nil, err
 	}
 	var out xaiFileResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := providerutils.UnmarshalChunk(resp.Body, &out); err != nil {
 		return nil, err
 	}
 

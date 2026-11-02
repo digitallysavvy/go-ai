@@ -198,7 +198,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		return nil, err
 	}
 	var uploadedFile xaiFileResponse
-	if err := json.Unmarshal(uploadResp.Body, &uploadedFile); err != nil {
+	if err := providerutils.UnmarshalChunk(uploadResp.Body, &uploadedFile); err != nil {
 		return nil, err
 	}
 
@@ -595,7 +595,7 @@ func (b *Batch) convertBatchResult(ctx context.Context, wire xaiBatchResultWire)
 		if err := providerutils.MediaSchemaParser(providerutils.SchemaXAIBatchText)(0, nil, response.ChatGetCompletion); err != nil {
 			return invalidXAIBatchTextResult(wire.BatchRequestID), nil
 		}
-		if err := json.Unmarshal(response.ChatGetCompletion, &textResp); err != nil {
+		if err := providerutils.UnmarshalChunk(response.ChatGetCompletion, &textResp); err != nil {
 			return invalidXAIBatchTextResult(wire.BatchRequestID), nil
 		}
 		genResult, convErr := convertXAIBatchTextResponse(textResp)
@@ -610,7 +610,7 @@ func (b *Batch) convertBatchResult(ctx context.Context, wire xaiBatchResultWire)
 		if err := providerutils.MediaSchemaParser(providerutils.SchemaXAIImage)(0, nil, response.ImageGeneration); err != nil {
 			return invalidXAIBatchImageResult(wire.BatchRequestID), nil
 		}
-		if err := json.Unmarshal(response.ImageGeneration, &imgResp); err != nil {
+		if err := providerutils.UnmarshalChunk(response.ImageGeneration, &imgResp); err != nil {
 			return invalidXAIBatchImageResult(wire.BatchRequestID), nil
 		}
 		for _, d := range imgResp.Data {
