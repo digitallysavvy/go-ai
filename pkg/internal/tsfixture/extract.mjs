@@ -15,7 +15,44 @@ import path from 'path';
 const testFile = process.argv[2];
 const wantAsserts = process.argv.includes('--asserts') || process.argv.some(a => a.startsWith('--fn='));
 const fnName = (process.argv.find(a => a.startsWith('--fn=')) || '').slice(5) || null;
-const src = fs.readFileSync(testFile, 'utf8');
+// --expand-each: each row of an `it.each([...])('name %s', (a, b) => { ... })`
+// table becomes its own test (`it('name <row>', () => { const a = ...; const
+// b = ...; ... })`), so table tests extract like plain ones
+const expandEach = process.argv.includes('--expand-each');
+const src = expandEach ? expandEachTests(fs.readFileSync(testFile, 'utf8')) : fs.readFileSync(testFile, 'utf8');
+function expandEachTests(text) {
+  const re = /(\n[ \t]*)(it|test)\.each\(/g;
+  let out = '', last = 0, m;
+  while ((m = re.exec(text))) {
+    const open = m.index + m[0].length - 1;
+    const tEnd = balanced(text, open);
+    if (tEnd < 0 || text[tEnd] !== '(') continue;
+    const cEnd = balanced(text, tEnd);
+    if (cEnd < 0) continue;
+    const call = text.slice(tEnd + 1, cEnd - 1);
+    const nm = /^\s*(['"`])((?:\\.|(?!\1).)*)\1\s*,\s*(async\s*)?\(([^)]*)\)\s*=>\s*\{/.exec(call);
+    if (!nm) continue;
+    let rows;
+    try { rows = vm.runInNewContext('(' + text.slice(open + 1, tEnd - 1) + ')'); } catch (e) { continue; }
+    if (!Array.isArray(rows)) continue;
+    const params = nm[4].split(',').map(p => p.trim().replace(/\s*:.*$/, '')).filter(Boolean);
+    if (params.some(p => !/^[A-Za-z_$][\w$]*$/.test(p))) continue;
+    const body = call.slice(nm[0].length);
+    let gen = '';
+    for (const row of rows) {
+      const vals = Array.isArray(row) ? row : [row];
+      let k = 0;
+      // vitest's printf-style name formatting
+      const name = nm[2].replace(/%[sdifjo%]/g, f => f === '%%' ? '%' : (k < vals.length ? (f === '%j' || f === '%o' ? JSON.stringify(vals[k++]) : String(vals[k++])) : f));
+      const decls = params.map((p, i) => `const ${p} = ${JSON.stringify(vals[i])};`).join(' ');
+      gen += `${m[1]}${m[2]}(${JSON.stringify(name)}, ${nm[3] || ''}() => { ${decls}${body})`;
+    }
+    out += text.slice(last, m.index) + gen;
+    last = cEnd;
+    re.lastIndex = cEnd;
+  }
+  return out + text.slice(last);
+}
 const snapPath = path.join(path.dirname(testFile), '__snapshots__', path.basename(testFile) + '.snap');
 let extSnaps = {};
 if (fs.existsSync(snapPath)) {
