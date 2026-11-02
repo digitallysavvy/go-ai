@@ -101,6 +101,9 @@ Also new:
 - **`anthropic/tools.BashSandboxOutput`** is the default result of `Bash20250124()` / `Bash20241022()` when they run through the call's `providerutils.SandboxSession` (TS `sandbox.run()` result, `{exitCode, stdout, stderr}`).
 - **`deepseek.Config.UncheckedStrictToolCalls`** skips the DeepSeek strict tool call checks, as TS leaves `supportsStrictToolCalls` unset; Azure DeepSeek models set it (TS `createDeepSeekModel`).
 - **`types.ToolResult.InvalidToolCall`** (`json:"-"`) marks the tool error the SDK synthesizes for an invalid client tool call; StreamText gives that tool-error part the call's title (TS `streamLanguageModelCall`).
+- **`types.EmbeddingUsage.Reported`** (`json:"-"`): set by an embedding provider when the response carried a usage object; telemetry then records a reported 0 (TS `usage.tokens: 0`).
+- **`telemetry.DiagnosticEventOnStepError`** (`"onStepError"`): the diagnostic message `FireOnStepError` publishes (TS `onStepError`).
+- **`types.ToolApprovalRequestContent.InputSchemaInputSet`** (`json:"-"`): marks a nil `InputSchemaInput` as a present JSON null (TS `hasOwnProperty`), set by `ConvertToModelMessages` and honored by approval revalidation.
 - OpenAI Responses: `promptCacheOptions` 12h TTL and prewarm, shell tool
   `timeoutMs`/`maxOutputLength`, `additionalTools` and
   `omitFromRequestTools`. Azure `ToolSearch` and per-deployment model
@@ -229,6 +232,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **StreamText steps carry their warnings** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-step-warnings)
 - **A cancellation during tool execution aborts the StreamText step** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-abort-during-tools)
 - **StreamText ExperimentalContext follows a PrepareStep runtime context** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-experimental-context-prepared)
+- **Embed rejects only a missing embedding, with InvalidResponseDataError** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#embed-no-embeddings-invalid-response)
 
 #### Prompts and validation
 
@@ -237,6 +241,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Invalid instructions are an InvalidPromptError** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#invalid-instructions)
 - **Tool calls without results fail the prompt** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#missing-tool-results)
 - **The JSON Schema validator enforces more keywords** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#json-schema-validator)
+- **Struct-tag schemas validate the decoded value** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#struct-schema-validates-decoded-value)
 
 #### Tools
 
@@ -265,6 +270,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **An invalid tool call's error follows the call in the stream** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-invalid-tool-error-position)
 - **ToolCallRepairError messages show the cause as TS does** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-call-repair-error-message)
 - **InvalidToolInputError shows its cause as TS does** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#invalid-tool-input-error-cause)
+- **GenerateText resolves a deferred provider call from any tool-result or tool-error part** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#deferred-result-any-result-part)
+- **RepairToolCall InputSchema of a tool without Parameters is the TS empty object schema** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#repair-input-schema-empty-object)
 
 #### Agents and approvals
 
@@ -310,6 +317,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **The legacy loop stops waiting for a deferred provider tool on its error result** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#agent-deferred-provider-error-result)
 - **WorkflowAgent tool input callbacks get the conversation prompt** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-input-callbacks-conversation-prompt)
 - **The legacy loop's invalid tool call errors carry no tool metadata** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#agent-invalid-tool-error-no-tool-metadata)
+- **Approved calls of struct-schema tools are revalidated as they were parsed** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#approval-struct-schema-revalidation)
 
 #### UI message streams
 
@@ -333,6 +341,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **ValidateUIMessages rejects a data part without data** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-validate-data-part-requires-data)
 - **ConsumeSSEStream keeps its copy after a client disconnect** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-consume-sse-outlives-disconnect)
 - **A failed UI conversion ends the SSE stream without [DONE]** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-failed-stream-no-done)
+- **A null inputSchemaInput or tool input is kept** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-null-input-kept)
 
 #### Telemetry and events
 
@@ -353,6 +362,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **OpenTelemetry span names keep the space for an empty model ID** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#otel-empty-model-id-span-names)
 - **OpenTelemetry ends open spans in TS order on abort or error** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#otel-abort-error-span-end-order)
 - **The legacy embed root span records InputTokens usage** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#embed-root-usage-tokens-input-tokens)
+- **A provider-reported 0 embedding token count is recorded** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#embedding-usage-zero-reported)
+- **FireOnStepError publishes an onStepError diagnostic message** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#diagnostic-on-step-error)
 
 #### Errors
 
@@ -416,6 +427,11 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Cohere sends empty stop sequences** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#cohere-empty-stop-sequences)
 - **openresponses custom tool inputs keep HTML characters literal** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openresponses-custom-tool-input-literal)
 - **Perplexity stream ids format numbers like JavaScript** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#perplexity-stream-ids-js-numbers)
+- **Google decodes unpadded and URL-safe base64 payloads** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-base64-forgiving-decode)
+- **gmicloud and ollama report unknown usage for a response without usage** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#compat-missing-usage-null)
+- **OpenAI-compatible generate results keep the TS reasoning and content order** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#compat-generate-content-order)
+- **A Cohere file part is an image only for the image top-level media type** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#cohere-image-top-level-media-type)
+- **Mistral: an empty choices array is an error** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mistral-empty-choices-error)
 
 #### MCP
 
@@ -1071,6 +1087,9 @@ in v0.5.3.
   questions, max retries, headers), as TS `{ ...startEvent, ...result }`,
   and `DecisionRefusalError` quotes question IDs as `JSON.stringify` (no
   `\u003c` or U+2028 escaping) (review round 67).
+- A struct-tag schema (`schema.NewSimpleStructSchema`, `schema.NewStructSchema`) validates the decoded JSON value: `ObjectOutput`, `ElementOutput`, `ArrayOutput` and `GenerateObject` with a struct schema, and code-mode tools with a struct `Parameters`, always failed in v0.5.2 with `validator: (nil map[string]interface {})` (review round 80).
+- When one ctx drives `StreamText` and a UI helper, a cancellation no longer writes the abort chunk at random: once the helper ctx is cancelled nothing more is written (review round 80).
+- Google inline data, Interactions files and TTS audio decode unpadded and URL-safe base64 like TS `convertBase64ToUint8Array` (review round 80).
 
 ### Providers
 
@@ -1389,6 +1408,9 @@ Notable ones:
 - **Invalid tool call input that is not a JSON object**: the raw text is kept in `ToolCall.RawArguments` / `ToolCallContent.Input` only (`Arguments`, `ToolResult.Input`, `ToolErrorContent.Input` are maps), JSON that is not an object is invalid also without `Parameters`, and validator / parser messages are Go's (round 79).
 - **Unknown tool choice types**: a custom `ToolChoice.Type` is sent as auto by OpenAI, xAI Responses, Alibaba, Moonshot and Hugging Face; TS cannot construct one (round 79).
 - **Tool output JSON key order in replayed prompts**: serialized tool output JSON keeps Go map key order (three openresponses TS replays skipped) (round 79).
+- **Embedding usage across EmbedMany batches**: a positive token sum is recorded when some batches reported no usage; TS sums to NaN and drops it (round 80).
+- **Legacy telemetry tool spans on error**: Go's legacy `OnError` ends still-open tool spans with the error status; TS never ends them (round 80).
+- **Executed tool results carry the tool title**: `ToolResult.Title` of a locally executed tool is the call's title, as in v0.5.2; TS client tool results have no `title` (round 80).
 - The Vertex Gemini image model accepts URL and `gs://` input images and
   sends them as `fileData` with the caller's media type, else one inferred
   from the URL path extension (query string and fragment ignored), else

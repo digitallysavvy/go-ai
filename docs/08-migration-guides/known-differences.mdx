@@ -628,6 +628,34 @@ json output", "should convert user - assistant (tool call) - tool message
 chain" and "should convert a tool roundtrip with follow-up assistant
 message" (openresponses) are skipped on it (review round 79).
 
+## Embedding usage across EmbedMany batches
+
+When an `EmbedMany` call is split into batches and some batches return
+usage while others do not, Go records the token sum of the reporting
+batches (`EmbeddingUsage.Reported` is false, the positive `Tokens` is
+recorded as in v0.5); TS sums `usage.tokens` with NaN for a batch without
+usage, so its result is NaN and the telemetry attribute is dropped. A sum of
+0 with an unreported batch is not recorded, as in TS, and a call split into
+no batches records 0, as in TS (review round 80).
+
+## Legacy telemetry tool spans on error
+
+TS `LegacyOpenTelemetry.onError` does not end tool spans that are still
+open and then deletes the call state, so those spans are never ended or
+exported. Go's `LegacyOpenTelemetry.OnError` ends them with the error status
+before the step and root spans, so they are exported. Matching TS would leak
+spans (review round 80).
+
+## Executed tool results carry the tool title
+
+Go's executor copies the tool call's `Title` onto the `types.ToolResult` of a
+locally executed tool (the `ChunkTypeToolResult` stream part and the tool
+execution end events), as v0.5.2 did. TS builds a client tool's
+`tool-result` and `tool-error` without `title`. Step content, response
+messages and the UI message stream match TS. Dropping the field would
+silently remove a value v0.5.2 callers read, with no TS-observable gain
+(review round 80).
+
 ## Features that are TypeScript-only (not ported)
 
 - **OpenAI Live over WebRTC** — the browser transport for OpenAI's realtime
