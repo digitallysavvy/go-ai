@@ -632,7 +632,8 @@ func TestBedrockImageModelHelpers(t *testing.T) {
 		t.Fatalf("base64 image should pass through without double encoding: %#v", body)
 	}
 	img, err := model.convertResponse([]byte(`{"id":"img_1","images":["abc","def"]}`), http.Header{"X-Req": []string{"img"}}, warnings)
-	if err != nil || string(img.Image) != "abc" || len(img.Images) != 2 || img.Base64Image != "abc" || img.Response.ModelID != "amazon.nova-canvas-v1:0" || img.Response.Headers["X-Req"] != "img" || len(img.Warnings) != 1 {
+	// "abc" is valid unpadded base64 for TS convertBase64ToUint8Array.
+	if err != nil || string(img.Image) != "\x69\xb7" || len(img.Images) != 2 || img.Base64Image != "abc" || img.Response.ModelID != "amazon.nova-canvas-v1:0" || img.Response.Headers["X-Req"] != "img" || len(img.Warnings) != 1 {
 		t.Fatalf("convertResponse mismatch result=%#v err=%v", img, err)
 	}
 	if _, err := model.convertResponse([]byte(`{"images":[],"status":"Done"}`), nil, nil); err == nil {
@@ -775,7 +776,7 @@ func TestBedrockImageAndLanguageDoGenerateAndStream(t *testing.T) {
 
 	imageModel, _ := p.ImageModel("amazon.nova-canvas-v1:0")
 	img, err := imageModel.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "cat"})
-	if err != nil || string(img.Image) != "imgdata" {
+	if err != nil || img.Base64Image != "imgdata" || string(img.Image) != "\x8a\x68\x1d\x6a\xd6" {
 		t.Fatalf("image DoGenerate mismatch result=%#v err=%v", img, err)
 	}
 

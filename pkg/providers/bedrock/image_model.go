@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -309,7 +310,9 @@ func (m *ImageModel) convertResponse(body []byte, headers http.Header, warnings 
 	images := make([][]byte, 0, len(response.Images))
 	for _, image := range response.Images {
 		// Image/Images carry decoded bytes; Base64Images keeps the wire strings.
-		data, err := base64.StdEncoding.DecodeString(image)
+		// TS returns the strings; core decodes them with
+		// convertBase64ToUint8Array (base64url, optional padding).
+		data, err := fileutil.ConvertBase64ToBytes(image)
 		if err != nil {
 			data = []byte(image) // not valid base64: keep the wire text as-is
 		}

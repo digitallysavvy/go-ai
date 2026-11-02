@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -120,5 +121,21 @@ func TestR81provaBedrockEmbeddingTokenCount(t *testing.T) {
 				t.Fatalf("InputTokens = %d, want %d", res.Usage.InputTokens, int(tc.want))
 			}
 		})
+	}
+}
+
+// TS returns the image strings and core decodes them with
+// convertBase64ToUint8Array; Image/Images carry the decoded bytes, which Go
+// built with base64.StdEncoding (an unpadded payload kept the wire text).
+func TestR81provaBedrockImageForgivingBase64(t *testing.T) {
+	srv := httptest.NewServer(r81provaJSON(`{"images":["-_8"]}`, nil))
+	defer srv.Close()
+	m := NewImageModel(New(Config{Region: "us-east-1", AWSAccessKeyID: "a", AWSSecretAccessKey: "b", BaseURL: srv.URL}), "amazon.nova-canvas-v1:0")
+	res, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
+	if err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+	if string(res.Image) != "\xfb\xff" || res.Base64Images[0] != "-_8" {
+		t.Fatalf("image = %x base64 = %v", res.Image, res.Base64Images)
 	}
 }
