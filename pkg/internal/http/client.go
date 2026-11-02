@@ -467,16 +467,24 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 // the strict decode fails on such a number, the body is decoded again with
 // providerutils.UnmarshalChunk, which truncates only the numbers under the
 // member names the decoder reported. A body that decodes strictly is
-// unchanged, and when the retry also fails the strict decode's error is
-// returned.
+// unchanged. When the retry also fails on a number (a number where the
+// schema wants another type), the strict decode's error is returned, so it
+// names the value as sent; when the retry fails on anything else, that
+// error is returned, since it is the real schema violation the strict
+// decode did not reach (Go reports only the first type error).
 func decodeJSONBody(body []byte, result interface{}) error {
 	err := json.Unmarshal(body, result)
 	var typeErr *json.UnmarshalTypeError
 	if err == nil || !errors.As(err, &typeErr) || !strings.HasPrefix(typeErr.Value, "number") {
 		return err
 	}
-	if providerutils.UnmarshalChunk(body, result) == nil {
+	retryErr := providerutils.UnmarshalChunk(body, result)
+	if retryErr == nil {
 		return nil
+	}
+	var retryTypeErr *json.UnmarshalTypeError
+	if errors.As(retryErr, &retryTypeErr) && !strings.HasPrefix(retryTypeErr.Value, "number") {
+		return retryErr
 	}
 	return err
 }
