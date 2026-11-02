@@ -144,19 +144,26 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		result.ResponseMetadata.Timestamp = ts // TS new Date(created_at * 1000), also for 0
 	}
 	result.ResponseMetadata.Headers = result.ResponseHeaders
-	// TS reports serviceTier when `typeof service_tier === 'string'` and
-	// reasoningContext when `reasoning.context != null`: a present empty
-	// string counts.
-	if pm, ok := result.ProviderMetadata[m.provider.responsesProviderOptionsName()].(map[string]interface{}); ok {
-		serviceTier, reasoningContext := responsesEchoes(httpResp.Body, false)
-		if serviceTier != nil {
-			pm["serviceTier"] = *serviceTier
-		}
-		if reasoningContext != nil {
-			pm["reasoningContext"] = *reasoningContext
-		}
-	}
+	applyResponsesBodyEchoes(result, httpResp.Body, m.provider.responsesProviderOptionsName())
 	return result, nil
+}
+
+// applyResponsesBodyEchoes adds the body's serviceTier and reasoningContext
+// to result.ProviderMetadata[key]: TS reports serviceTier when `typeof
+// service_tier === 'string'` and reasoningContext when `reasoning.context !=
+// null`, so a present empty string counts (generate and batch results).
+func applyResponsesBodyEchoes(result *types.GenerateResult, body []byte, key string) {
+	pm, ok := result.ProviderMetadata[key].(map[string]interface{})
+	if !ok {
+		return
+	}
+	serviceTier, reasoningContext := responsesEchoes(body, false)
+	if serviceTier != nil {
+		pm["serviceTier"] = *serviceTier
+	}
+	if reasoningContext != nil {
+		pm["reasoningContext"] = *reasoningContext
+	}
 }
 
 // responsesEchoes reads service_tier and reasoning.context (of the body, or

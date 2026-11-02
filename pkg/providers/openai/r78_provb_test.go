@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -200,4 +201,20 @@ func TestR78provbImageMetadataPresentZeroValues(t *testing.T) {
 			t.Fatalf("images[0][%q] = %#v (present %v), want %#v; %v", k, got, ok, w, images[0])
 		}
 	}
+}
+
+// TS openai-batch.ts convertOpenAIBatchResult: timestamp is `created_at !=
+// null ? new Date(created_at * 1000)` (0 is the epoch) and serviceTier /
+// reasoningContext follow typeof === 'string' / != null.
+func TestR78provbBatchResultCreatedZeroAndEmptyEchoes(t *testing.T) {
+	body := json.RawMessage(`{"id":"resp_1","object":"response","created_at":0,"status":"completed","model":"gpt-4o","service_tier":"","reasoning":{"context":""},"output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hi","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
+	r, berr := convertOpenAIBatchResponseBodyBytes(body)
+	if berr != nil {
+		t.Fatal(berr)
+	}
+	if r.ResponseMetadata == nil || r.ResponseMetadata.Timestamp.IsZero() || !r.ResponseMetadata.Timestamp.Equal(time.Unix(0, 0)) {
+		t.Fatalf("response metadata = %+v, want the epoch timestamp", r.ResponseMetadata)
+	}
+	pm, _ := r.ProviderMetadata["openai"].(map[string]interface{})
+	r78provbCheckEchoes(t, pm, "", "")
 }

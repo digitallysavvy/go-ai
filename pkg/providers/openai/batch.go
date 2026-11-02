@@ -706,6 +706,10 @@ func convertOpenAIBatchResponseBodyBytes(body json.RawMessage) (*types.GenerateR
 		return nil, &provider.BatchError{Message: err.Error(), Code: "invalid_response"}
 	}
 	shapeOpenAIBatchResult(genResult, resp.ResponsesAPIResponse)
+	applyResponsesBodyEchoes(genResult, body, "openai")
+	if ts, ok := responsesCreatedAt(body, false); ok {
+		genResult.ResponseMetadata.Timestamp = ts // TS created_at != null: 0 is the epoch
+	}
 	return genResult, nil
 }
 
