@@ -1781,8 +1781,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			}
 
 			// TS generateText builds an invalid call's tool-error without the
-			// call's toolMetadata ("insert error tool outputs for invalid tool
-			// calls"; streamLanguageModelCall keeps it).
+			// call's toolMetadata and title ("insert error tool outputs for
+			// invalid tool calls"; streamLanguageModelCall keeps both).
 			withoutInvalidCallToolMetadata(toolResults, toolsToExecute)
 
 			// Validate tool results (v6.0.57)
@@ -2436,7 +2436,8 @@ type toolCallEventCallbacks struct {
 }
 
 // withoutInvalidCallToolMetadata clears the tool metadata of the tool errors
-// synthesized for invalid client calls.
+// synthesized for invalid client calls, and their InvalidToolCall marker so
+// the tool-error content part gets no title (TS generateText).
 func withoutInvalidCallToolMetadata(results []types.ToolResult, calls []types.ToolCall) {
 	invalid := map[string]bool{}
 	for _, call := range calls {
@@ -2450,6 +2451,7 @@ func withoutInvalidCallToolMetadata(results []types.ToolResult, calls []types.To
 	for i := range results {
 		if invalid[results[i].ToolCallID] && results[i].Error != nil {
 			results[i].ToolMetadata = nil
+			results[i].InvalidToolCall = false
 		}
 	}
 }

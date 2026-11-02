@@ -2327,13 +2327,16 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			if invalidErr == nil {
 				invalidErr = fmt.Errorf("invalid tool call for %s", call.ToolName)
 			}
+			// TS ToolLoopAgent.generate is generateText: the invalid call's
+			// tool-error is dynamic and has no toolMetadata ("insert error
+			// tool outputs for invalid tool calls").
 			results = append(results, types.ToolResult{
-				ToolCallID:   call.ID,
-				ToolName:     call.ToolName,
-				Title:        call.Title,
-				Input:        call.Arguments,
-				Error:        invalidErr,
-				ToolMetadata: call.ToolMetadata,
+				ToolCallID: call.ID,
+				ToolName:   call.ToolName,
+				Title:      call.Title,
+				Input:      call.Arguments,
+				Error:      invalidErr,
+				Dynamic:    true,
 			})
 			if a.config.OnToolError != nil {
 				a.config.OnToolError(call, invalidErr)

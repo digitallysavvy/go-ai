@@ -49,12 +49,11 @@ type ToolCallRepairError struct {
 	OriginalError error
 }
 
+// Error is TS `Error repairing tool call: ${getErrorMessage(cause)}`, where
+// getErrorMessage is the cause's toString() ("Error: <message>", or the TS
+// error name for SDK errors) and "unknown error" without a cause.
 func (e *ToolCallRepairError) Error() string {
-	msg := "unknown error"
-	if e.Cause != nil {
-		msg = e.Cause.Error()
-	}
-	return "Error repairing tool call: " + msg
+	return "Error repairing tool call: " + providerutils.ToolErrorText(e.Cause)
 }
 
 func (e *ToolCallRepairError) Unwrap() error { return e.Cause }
@@ -780,6 +779,8 @@ func invalidToolCallResult(call types.ToolCall) types.ToolResult {
 		Error:        err,
 		Dynamic:      true,
 		ToolMetadata: call.ToolMetadata,
+		// TS streamLanguageModelCall gives this tool-error the call's title.
+		InvalidToolCall: true,
 	}
 }
 

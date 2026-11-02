@@ -292,7 +292,9 @@ type ToolExecutionOptions struct {
 	// Metadata contains additional metadata
 	Metadata map[string]interface{}
 
-	// ToolMetadata contains metadata attached to the tool call by the provider.
+	// ToolMetadata is the tool's Metadata as carried on the tool call
+	// (ToolCall.ToolMetadata). Go-only: TS tool execute options have no
+	// tool metadata.
 	ToolMetadata map[string]interface{}
 
 	// Messages are the model messages sent to the language model to initiate
@@ -629,6 +631,14 @@ type ToolResult struct {
 
 	// ToolMetadata carries tool-specific metadata associated with this tool result.
 	ToolMetadata map[string]interface{} `json:"toolMetadata,omitempty"`
+
+	// InvalidToolCall marks the tool error the SDK synthesizes for an invalid
+	// client tool call (unknown tool, input that fails the schema, a failed
+	// repair), as opposed to a tool whose execution failed. StreamText keeps
+	// the call's Title on that tool-error content part (TS
+	// streamLanguageModelCall `title: toolCall.title`); an executed failure
+	// has none. Set by the SDK; never serialized.
+	InvalidToolCall bool `json:"-"`
 }
 
 // ToolChoice specifies how the model should choose tools
