@@ -104,10 +104,9 @@ type AgentSpanNameOptions struct {
 // only invoke_agent spans are configurable; other operations, such as
 // embeddings, keep "{operation} {modelId}".
 func (i OpenTelemetry) agentSpanName(operationName, modelID, functionID string) (name string) {
-	defaultName := operationName
-	if modelID != "" {
-		defaultName += " " + modelID
-	}
+	// TS `${operationName} ${modelId}` keeps the space for an empty model
+	// ID (a harness turn without a model, or a model whose ModelID() is "").
+	defaultName := operationName + " " + modelID
 	if operationName != "invoke_agent" {
 		return defaultName
 	}
@@ -743,10 +742,8 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 		return ctx
 	}
 	tracer := genAIChildTracer(i.stateKey(e.CallID), parent)
-	spanName := "chat"
-	if e.ModelID != "" {
-		spanName += " " + e.ModelID
-	}
+	// TS `chat ${modelId}`: the space is kept for an empty model ID.
+	spanName := "chat " + e.ModelID
 	ctx, span := tracer.Start(trace.ContextWithSpan(ctx, parent), spanName, trace.WithSpanKind(trace.SpanKindClient))
 	if attrs := i.customAttrs(ctx, e.Settings, i.childEnrichOptions(SpanTypeLanguageModel, e.CallID)); len(attrs) > 0 {
 		span.SetAttributes(attrs...)
@@ -956,9 +953,10 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 	if e.ResponseID != "" {
 		attrs = append(attrs, attribute.String("gen_ai.response.id", e.ResponseID))
 	}
-	if e.ModelID != "" {
-		attrs = append(attrs, attribute.String("gen_ai.response.model", e.ModelID))
-	}
+	// TS `'gen_ai.response.model': event.modelId` records an empty model ID
+	// too (a harness turn without a model); callers fill it with the request
+	// model when the response names none.
+	attrs = append(attrs, attribute.String("gen_ai.response.model", e.ModelID))
 	attrs = append(attrs, baseUsageAttrs(e.Usage, !isObject)...)
 	if i.opts.Usage {
 		attrs = append(attrs, detailedUsageAttrs(e.Usage)...)
@@ -1119,10 +1117,8 @@ func (i OpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelCallSta
 	}
 	callID := modelCallID(e.EmbedCallID, e.CallID, e.OperationID)
 	tracer := genAIChildTracer(i.stateKey(e.CallID), parent)
-	spanName := "embeddings"
-	if e.ModelID != "" {
-		spanName += " " + e.ModelID
-	}
+	// TS `embeddings ${modelId}`: the space is kept for an empty model ID.
+	spanName := "embeddings " + e.ModelID
 	_, span := tracer.Start(trace.ContextWithSpan(ctx, parent), spanName, trace.WithSpanKind(trace.SpanKindClient))
 	if attrs := i.customAttrs(ctx, e.Settings, i.childEnrichOptions(SpanTypeEmbedding, e.CallID)); len(attrs) > 0 {
 		span.SetAttributes(attrs...)
@@ -1238,10 +1234,8 @@ func (i OpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModelCallSt
 	}
 	callID := modelCallID(e.CallID, e.OperationID)
 	tracer := genAIChildTracer(i.stateKey(e.CallID), parent)
-	spanName := "rerank"
-	if e.ModelID != "" {
-		spanName += " " + e.ModelID
-	}
+	// TS `rerank ${modelId}`: the space is kept for an empty model ID.
+	spanName := "rerank " + e.ModelID
 	_, span := tracer.Start(trace.ContextWithSpan(ctx, parent), spanName, trace.WithSpanKind(trace.SpanKindClient))
 	if attrs := i.customAttrs(ctx, e.Settings, i.childEnrichOptions(SpanTypeReranking, e.CallID)); len(attrs) > 0 {
 		span.SetAttributes(attrs...)

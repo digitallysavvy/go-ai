@@ -230,9 +230,9 @@ func TestOpenTelemetryEmbeddingUsageNotDoubleCounted(t *testing.T) {
 	})
 
 	// Root span name is "${mapOperationName(operationId)} ${modelId}"; no
-	// ModelID is set on the start event here, so it's just "embeddings"
-	// (H3 follow-up 5).
-	rootSpan := findSpan(rec, "embeddings")
+	// ModelID is set on the start event here, so it's "embeddings " with
+	// TS's trailing space (H3 follow-up 5, r78 ruling d).
+	rootSpan := findSpan(rec, "embeddings ")
 	embedSpan := findSpan(rec, "embeddings text-embedding-3")
 	if rootSpan == nil || embedSpan == nil {
 		t.Fatalf("expected both spans, root=%v embed=%v", rootSpan, embedSpan)
@@ -334,8 +334,9 @@ func TestOpenTelemetryOnStartUsesSystemNotPrompt(t *testing.T) {
 	})
 	trace.SpanFromContext(ctx).End()
 
-	// No ModelID is set, so the span name is just the mapped operation name.
-	span := findSpan(rec, "invoke_agent")
+	// No ModelID is set, so the span name is the mapped operation name and
+	// TS's trailing space.
+	span := findSpan(rec, "invoke_agent ")
 	v, ok := attrValue(span, "gen_ai.system_instructions")
 	if !ok {
 		t.Fatal("expected gen_ai.system_instructions to be set")
@@ -364,8 +365,9 @@ func TestOpenTelemetryOnStartInputMessages(t *testing.T) {
 	})
 	trace.SpanFromContext(ctx).End()
 
-	// No ModelID is set, so the span name is just the mapped operation name.
-	span := findSpan(rec, "invoke_agent")
+	// No ModelID is set, so the span name is the mapped operation name and
+	// TS's trailing space.
+	span := findSpan(rec, "invoke_agent ")
 	v, ok := attrValue(span, "gen_ai.input.messages")
 	if !ok {
 		t.Fatal("expected gen_ai.input.messages to be set")
