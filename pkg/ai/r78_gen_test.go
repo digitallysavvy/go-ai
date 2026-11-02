@@ -3,11 +3,15 @@ package ai
 import (
 	"context"
 	"errors"
+	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -134,4 +138,130 @@ func TestR78Gen_ToolCallRepairErrorMessage(t *testing.T) {
 	if text := providerutils.ToolErrorText(got.Error); text != "AI_ToolCallRepairError: Error repairing tool call: Error: test error" {
 		t.Fatalf("model-facing text = %q", text)
 	}
+}
+
+// r78genToolCallModel returns a generate model whose first call returns the
+// given t1 calls (finish tool-calls) and later calls "done".
+func r78genToolCallModel(inputs ...string) *testutil.MockLanguageModel {
+	n := 0
+	return &testutil.MockLanguageModel{ToolSupport: true, DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+		n++
+		if n > len(inputs) {
+			return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+		}
+		return &types.GenerateResult{FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{{ID: "call-" + strconv.Itoa(n), ToolName: "t1", RawArguments: inputs[n-1]}}}, nil
+	}}
+}
+
+type r78genSandbox struct{ name string }
+
+// Ports of generate-text.test.ts "context" (11129-11365) and options.output
+// text (8932), the partial rows of ts-test-port-coverage.md Appendix A.
+func TestR78Gen_GenerateContextPorts(t *testing.T) {
+	ctx := context.Background()
+	valueParams := map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}, "required": []interface{}{"value"}}
+	t.Run("should send context to tool execution", func(t *testing.T) {
+		var recorded interface{}
+		tool := types.Tool{Name: "t1", Parameters: valueParams,
+			ContextSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "properties": map[string]interface{}{"context": map[string]interface{}{"type": "string"}}, "required": []interface{}{"context"}}),
+			Execute: func(_ context.Context, _ map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+				recorded = o.ToolContext
+				return map[string]interface{}{"value": "test-result"}, nil
+			}}
+		if _, err := GenerateText(ctx, GenerateTextOptions{Model: r78genToolCallModel(`{ "value": "test" }`), Tools: []types.Tool{tool}, ToolsContext: map[string]interface{}{"t1": map[string]interface{}{"context": "test"}}, Prompt: "test-input"}); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(recorded, map[string]interface{}{"context": "test"}) {
+			t.Fatalf("context = %#v", recorded)
+		}
+	})
+	t.Run("should pass sandbox to tool execution and prepareStep", func(t *testing.T) {
+		sandbox := &r78genSandbox{name: "test sandbox"}
+		var toolSandbox, prepareSandbox interface{}
+		tool := types.Tool{Name: "t1", Parameters: valueParams, Execute: func(_ context.Context, in map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+			toolSandbox = o.ExperimentalSandbox
+			return in, nil
+		}}
+		_, err := GenerateText(ctx, GenerateTextOptions{Model: r78genToolCallModel(`{ "value": "test" }`), Tools: []types.Tool{tool}, ExperimentalSandbox: sandbox, Prompt: "test-input",
+			PrepareStep: func(_ context.Context, s PrepareStepOptions) PrepareStepOptions {
+				prepareSandbox = s.ExperimentalSandbox
+				return PrepareStepOptions{}
+			}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if toolSandbox != sandbox || prepareSandbox != sandbox {
+			t.Fatalf("tool sandbox %v, prepareStep sandbox %v", toolSandbox, prepareSandbox)
+		}
+	})
+	t.Run("should use sandbox returned from prepareStep for that step only", func(t *testing.T) {
+		sandbox, stepSandbox := &r78genSandbox{name: "default"}, &r78genSandbox{name: "step"}
+		var recorded []interface{}
+		tool := types.Tool{Name: "t1", Parameters: valueParams, Execute: func(_ context.Context, in map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+			recorded = append(recorded, o.ExperimentalSandbox)
+			return in, nil
+		}}
+		_, err := GenerateText(ctx, GenerateTextOptions{Model: r78genToolCallModel(`{ "value": "first" }`, `{ "value": "second" }`), Tools: []types.Tool{tool}, ExperimentalSandbox: sandbox, Prompt: "test-input",
+			StopWhen: []StopCondition{StepCountIs(3)},
+			PrepareStep: func(_ context.Context, s PrepareStepOptions) PrepareStepOptions {
+				if s.StepNumber == 0 {
+					return PrepareStepOptions{ExperimentalSandbox: stepSandbox}
+				}
+				return PrepareStepOptions{}
+			}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(recorded) != 2 || recorded[0] != stepSandbox || recorded[1] != sandbox {
+			t.Fatalf("sandboxes = %v", recorded)
+		}
+	})
+	t.Run("should pass runtimeContext to prepareStep and onFinish", func(t *testing.T) {
+		var prepareCtx, finishCtx, endEventCtx interface{}
+		model := &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: "Hello, world!", FinishReason: types.FinishReasonStop, RawFinishReason: "stop"}, nil
+		}}
+		_, err := GenerateText(ctx, GenerateTextOptions{Model: model, Prompt: "test", RuntimeContext: map[string]interface{}{"myData": "test-value"},
+			PrepareStep: func(_ context.Context, s PrepareStepOptions) PrepareStepOptions {
+				prepareCtx = s.RuntimeContext
+				return PrepareStepOptions{}
+			},
+			OnFinish:   func(_ context.Context, _ *GenerateTextResult, rc interface{}) { finishCtx = rc },
+			OnEndEvent: func(_ context.Context, e OnFinishEvent) { endEventCtx = e.RuntimeContext },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]interface{}{"myData": "test-value"}
+		if !reflect.DeepEqual(prepareCtx, want) || !reflect.DeepEqual(finishCtx, want) || !reflect.DeepEqual(endEventCtx, want) {
+			t.Fatalf("prepareStep %v, onFinish %v, end event %v", prepareCtx, finishCtx, endEventCtx)
+		}
+	})
+	t.Run("text output sets responseFormat text and keeps the prompt", func(t *testing.T) {
+		var got *provider.GenerateOptions
+		model := &testutil.MockLanguageModel{DoGenerateFunc: func(_ context.Context, o *provider.GenerateOptions) (*types.GenerateResult, error) {
+			got = o
+			return &types.GenerateResult{Text: "Hello, world!", FinishReason: types.FinishReasonStop}, nil
+		}}
+		res, err := GenerateText(ctx, GenerateTextOptions{Model: model, Prompt: "prompt", Output: TextOutput()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ResponseFormat == nil || got.ResponseFormat.Type != "text" || got.ResponseFormat.Schema != nil {
+			t.Fatalf("responseFormat = %#v", got.ResponseFormat)
+		}
+		msgs := got.Prompt.Messages
+		if got.Prompt.System != "" || len(msgs) != 1 || msgs[0].Role != types.RoleUser || len(msgs[0].Content) != 1 {
+			t.Fatalf("prompt = %#v", got.Prompt)
+		}
+		if tc, ok := msgs[0].Content[0].(types.TextContent); !ok || tc.Text != "prompt" {
+			t.Fatalf("prompt content = %#v", msgs[0].Content)
+		}
+		if got.Headers["user-agent"] == "" || !strings.HasPrefix(got.Headers["user-agent"], "ai/") {
+			t.Fatalf("headers = %#v", got.Headers)
+		}
+		if res.Output != "Hello, world!" {
+			t.Fatalf("output = %#v", res.Output)
+		}
+	})
 }
