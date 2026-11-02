@@ -8,8 +8,8 @@ import (
 )
 
 // TS #22175: File Search customMetadata on retrievedContext grounding chunks
-// is preserved verbatim in providerMetadata.google.groundingMetadata. Go
-// passes the grounding metadata through as raw JSON, so nothing is stripped.
+// is preserved in providerMetadata.google.groundingMetadata: customMetadata is
+// a declared key of retrievedContext (metadata_schema.go keeps declared keys).
 const fileSearchGrounding = `{"groundingChunks":[{"retrievedContext":{"title":"I, Claudius","text":"A historical novel.","fileSearchStore":"fileSearchStores/test-store","customMetadata":[{"key":"author","stringValue":"Robert Graves"},{"key":"year","numericValue":1934},{"key":"genres","stringListValue":{"values":["historical fiction","novel"]}},{"key":"page","numericValue":0},{"key":"description","stringValue":""},{"key":"tags","stringListValue":{"values":[]}}]}}]}`
 
 func TestFileSearchCustomMetadataPreservedNonStreaming(t *testing.T) {

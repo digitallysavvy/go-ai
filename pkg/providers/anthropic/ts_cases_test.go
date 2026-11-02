@@ -116,7 +116,7 @@ func TestTSCasesLanguage(t *testing.T) {
 	defer func() {
 		tsfixture.ToolNameAlias, tsfixture.PromptToolNameAlias, tsfixture.DropResponseTimestamp = nil, nil, false
 	}()
-	cases := tsfixture.LoadCases(t, "testdata/tscases/language.json.gz")
+	cases := r79provaGoVersion(tsfixture.LoadCases(t, "testdata/tscases/language.json.gz"))
 	tsfixture.EvalPathSnapshots(t)
 	tsfixture.Run(t, cases, func(base, id string) provider.LanguageModel {
 		if id == "" {
@@ -130,8 +130,8 @@ func TestTSCasesLanguage(t *testing.T) {
 	}, map[string]string{
 		"should send the model id and settings":                                                      "TS passes topK 0.1; Go TopK is an int",
 		"should not strip temperature / topP / topK when thinking is disabled":                       "TS passes topK 0.1; Go TopK is an int",
-		"should pass headers":                                                                        "the TS test sets provider-level headers on createAnthropic; the harness builds a default provider",
-		"should merge custom anthropic-beta headers without legacy fine-grained-tool-streaming beta": "the TS test sets provider-level headers on createAnthropic; the harness builds a default provider",
+		"should pass headers":                                                                        "the TS test sets provider-level headers on createAnthropic; replayed by TestR79prova_TSCasesProviderHeaders",
+		"should merge custom anthropic-beta headers without legacy fine-grained-tool-streaming beta": "the TS test sets provider-level headers on createAnthropic; replayed by TestR79prova_TSCasesProviderHeaders",
 		"should stream the text output":                                                              longSnapshot,
 		"should stream code execution tool results":                                                  longSnapshot,
 		"should stream code execution tool results without beta header":                              longSnapshot,

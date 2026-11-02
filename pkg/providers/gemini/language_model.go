@@ -111,7 +111,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	for {
 		var token string
 		if len(response.Candidates) > 0 {
-			groundingPerRequest = append(groundingPerRequest, rawOrNull(response.Candidates[0].GroundingMetadata))
+			groundingPerRequest = append(groundingPerRequest, rawOrNull(stripMetadata(response.Candidates[0].GroundingMetadata, metaGrounding)))
 			if response.Candidates[0].FinishReason == "CONTINUATION" {
 				token = response.Candidates[0].ContinuationToken
 			}
@@ -688,15 +688,16 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 	// match TS GoogleProviderMetadata, and is written under every configured
 	// metadata key (Vertex writes both "googleVertex" and "vertex").
 	meta := map[string]json.RawMessage{}
-	meta["promptFeedback"] = rawOrNull(response.PromptFeedback)
-	meta["groundingMetadata"] = rawOrNull(candidate.GroundingMetadata)
+	// TS zod strips undeclared keys from these values (metadata_schema.go).
+	meta["promptFeedback"] = rawOrNull(stripMetadata(response.PromptFeedback, metaPromptFeedback))
+	meta["groundingMetadata"] = rawOrNull(stripMetadata(candidate.GroundingMetadata, metaGrounding))
 	if groundingPerRequest != nil {
 		if gp, err := json.Marshal(groundingPerRequest); err == nil {
 			meta["groundingMetadataPerRequest"] = gp
 		}
 	}
-	meta["urlContextMetadata"] = rawOrNull(candidate.UrlContextMetadata)
-	meta["safetyRatings"] = rawOrNull(candidate.SafetyRatings)
+	meta["urlContextMetadata"] = rawOrNull(stripMetadata(candidate.UrlContextMetadata, metaURLContext))
+	meta["safetyRatings"] = rawOrNull(stripMetadata(candidate.SafetyRatings, metaSafetyRatings))
 	if candidate.FinishMessage != "" {
 		fm, _ := json.Marshal(candidate.FinishMessage)
 		meta["finishMessage"] = fm

@@ -318,10 +318,12 @@ restart:
 			s.err = err
 			return nil, err
 		}
-		s.receivedEvent = true
+		// TS parseJsonEventStream drops [DONE] before the reconnect loop sees
+		// it, so the frame does not count as an event of this attempt.
 		if streaming.IsStreamDone(event) {
 			continue
 		}
+		s.receivedEvent = true
 		if s.includeRawChunks {
 			raw := streaming.RawChunkValue(event.Data)
 			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw})
