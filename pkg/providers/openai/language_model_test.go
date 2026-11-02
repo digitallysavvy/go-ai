@@ -619,11 +619,9 @@ func TestDoStreamFinishReasonMapping(t *testing.T) {
 				t.Errorf("expected text chunk 'Hi', got type=%q text=%q", chunk.Type, chunk.Text)
 			}
 
-			// Read finish chunk
-			chunk, err = stream.Next()
-			if err != nil {
-				t.Fatalf("stream.Next (finish) failed: %v", err)
-			}
+			// Read finish chunk (a stream whose chunks carry no response
+			// metadata reports the HTTP headers just before it).
+			chunk = nextNonMeta(t, stream)
 			if chunk.Type != provider.ChunkTypeFinish {
 				t.Fatalf("expected finish chunk, got type=%q", chunk.Type)
 			}

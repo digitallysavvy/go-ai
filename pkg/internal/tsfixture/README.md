@@ -16,8 +16,9 @@ fails if an uncompressed `*.json` lands in a `testdata/tscases` directory.
 
 The cases were extracted from the TS AI SDK at commit `b658e8503c`
 (ai@7.0.140 plus main); the anthropic language/convert-prompt, bedrock
-prepare-tools, google language, gemini JSON accumulator and groq chat cases
-were re-extracted at `e64ed82f27` (ai@7.0.153+16). The OpenAI chat and
+prepare-tools, google language and gemini JSON accumulator cases were
+re-extracted at `e64ed82f27` (ai@7.0.153+16); the groq chat cases are
+`groq/.../chat_asserts.json.gz` (below). The OpenAI chat and
 Responses, xAI Responses and Azure provider cases and the OpenAI/xAI
 function-level cases added in review round 77 are extracted at
 `e64ed82f27` with `--asserts` (function-level ones with
@@ -38,6 +39,24 @@ Round 78 (provb) added, extracted at `e64ed82f27` with `--expand-each --fn=NAME`
 `deepseek/.../convert_messages`, `prepare_tools`, `usage`; `alibaba/.../convert_messages`,
 `prepare_tools`, `usage`; `moonshot/.../convert_messages`, `usage`,
 `normalize_json_schema`.
+Round 79 (provb) added, extracted at `e64ed82f27` with `--expand-each --fn=NAME`:
+`openresponses/.../convert_input` (convertToOpenResponsesInput) and `finish_reason`
+(mapOpenResponsesFinishReason).
+Round 79 (prova) added, all extracted at `e64ed82f27`: `cohere/.../chat_asserts.json.gz`
+with `--asserts`; `cohere/.../convert_messages`, `prepare_tools` and
+`perplexity/.../convert_input`, `convert_usage`, `decision_state` with
+`--expand-each --fn=NAME`; the empty `perplexity/.../chat.json.gz` was removed.
+
+The extractor serializes a `Buffer.from(...)` through `Buffer.prototype.toJSON`
+(`{"type": "Buffer", "data": [...]}`); `WireBytes` reads that form as bytes
+like the `__bytes` marker. Since round 79 it also records `const NAME =
+server.calls[n].x;` (with or without `await`), `const { a, b } = await
+model.doGenerate(...)` (each name is `result.<name>`) and `const NAME =
+BASE.path;` over `result` or a known alias (casts dropped) as aliases, and a
+`() => fn(args)` toThrow callback carries its own `callArgs` (an assertion
+whose arguments do not evaluate is dropped instead of replayed against the
+test's first call). `Run` logs how many snapshots a suite without
+`EvalPathSnapshots` skipped.
 
 ## Regenerating
 

@@ -59,13 +59,13 @@ func (s *SkillsAPI) UploadSkill(ctx context.Context, opts types.UploadSkillOptio
 		return nil, err
 	}
 	var out struct {
-		ID             string `json:"id"`
-		Name           string `json:"name"`
-		Description    string `json:"description"`
-		DefaultVersion string `json:"default_version"`
-		LatestVersion  string `json:"latest_version"`
-		CreatedAt      *int64 `json:"created_at"`
-		UpdatedAt      *int64 `json:"updated_at"`
+		ID             string   `json:"id"`
+		Name           string   `json:"name"`
+		Description    string   `json:"description"`
+		DefaultVersion string   `json:"default_version"`
+		LatestVersion  string   `json:"latest_version"`
+		CreatedAt      *float64 `json:"created_at"`
+		UpdatedAt      *float64 `json:"updated_at"`
 	}
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		return nil, err
@@ -76,10 +76,10 @@ func (s *SkillsAPI) UploadSkill(ctx context.Context, opts types.UploadSkillOptio
 		meta["defaultVersion"] = out.DefaultVersion
 	}
 	if out.CreatedAt != nil {
-		meta["createdAt"] = *out.CreatedAt
+		meta["createdAt"] = unixSecondsMetadataValue(*out.CreatedAt)
 	}
 	if out.UpdatedAt != nil {
-		meta["updatedAt"] = *out.UpdatedAt
+		meta["updatedAt"] = unixSecondsMetadataValue(*out.UpdatedAt)
 	}
 
 	return &types.UploadSkillResult{

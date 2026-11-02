@@ -82,7 +82,7 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 	}
 	webSearchToolName := responsesWebSearchToolName(opts.Tools)
 
-	var resp responses.ResponsesAPIResponse
+	var wire responsesResponseWire
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/responses",
@@ -91,10 +91,11 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		Headers: opts.Headers,
 		// TS createJsonResponseHandler(openaiResponsesResponseSchema).
 		ValidateResponse: providerutils.ResponsesResponseValidator(m.Provider()),
-	}, &resp)
+	}, &wire)
 	if err != nil {
 		return nil, m.wrapErr(err)
 	}
+	resp := wire.response()
 
 	// Row 75f86f4: a 200 response with an embedded error object maps to a
 	// 400 ProviderError.
@@ -193,6 +194,43 @@ func responsesEchoes(data []byte, event bool) (serviceTier, reasoningContext *st
 	return e.ServiceTier, reasoningContext
 }
 
+// responsesResponseWire decodes a Responses body as TS's schema does:
+// created_at is z.number(), so a fractional value is accepted (the exported
+// int64 ResponsesAPIResponse.CreatedAt gets whole seconds; the timestamp is
+// read from the body with milliseconds). A wrapper, not an UnmarshalJSON on
+// the exported type, so structs that embed ResponsesAPIResponse keep
+// decoding their own fields.
+type responsesResponseWire struct {
+	responses.ResponsesAPIResponse
+	CreatedAt *float64 `json:"created_at"`
+}
+
+func (w *responsesResponseWire) response() responses.ResponsesAPIResponse {
+	r := w.ResponsesAPIResponse
+	r.CreatedAt = responsesWholeSeconds(w.CreatedAt)
+	return r
+}
+
+// responsesCreatedEventWire is responses.ResponseCreatedEvent with a z.number()
+// created_at (see responsesResponseWire).
+type responsesCreatedEventWire struct {
+	Type     string `json:"type"`
+	Response struct {
+		ID        string   `json:"id"`
+		CreatedAt *float64 `json:"created_at"`
+		Model     string   `json:"model"`
+	} `json:"response"`
+}
+
+// responsesWholeSeconds truncates a wire unix-seconds number toward zero; nil,
+// NaN, ±Inf or out of the int64 range is 0.
+func responsesWholeSeconds(v *float64) int64 {
+	if v == nil || math.IsNaN(*v) || math.IsInf(*v, 0) || math.Abs(*v) > 9e18 {
+		return 0
+	}
+	return int64(*v)
+}
+
 // responsesCreatedAt reads created_at (of the body, or of its response
 // member for a stream event) as TS's new Date(created_at * 1000): a present
 // value, 0 included, is a timestamp; an absent or null one is none.
@@ -210,7 +248,8 @@ func responsesCreatedAt(data []byte, event bool) (time.Time, bool) {
 	if event {
 		c = v.Response.CreatedAt
 	}
-	if c == nil || math.IsNaN(*c) || math.IsInf(*c, 0) {
+	// TS TimeClip: |t| > 8.64e15 ms is an Invalid Date.
+	if c == nil || math.IsNaN(*c) || math.IsInf(*c, 0) || math.Abs(*c*1000) > 8.64e15 {
 		return time.Time{}, false
 	}
 	return time.UnixMilli(int64(*c * 1000)), true
@@ -3280,7 +3319,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		switch peek.Type {
 
 		case "response.created":
-			var e responses.ResponseCreatedEvent
+			var e responsesCreatedEventWire
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 				chunk, ok := s.emitDecodeError(peek.Type, err)
 				if ok {

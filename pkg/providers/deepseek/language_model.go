@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
+	"math"
 	"net/http"
 	"regexp"
 	"sort"
@@ -109,7 +110,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	responseMetadata := providerutils.BuildResponseMetadata(response.ID, response.Model, 0)
 	if response.Created != nil {
 		// TS createLanguageModelResponseMetadata: created != null, so 0 is the epoch.
-		responseMetadata.Timestamp = time.Unix(*response.Created, 0)
+		responseMetadata.Timestamp = deepseekCreatedTimestamp(*response.Created)
 	}
 	responseMetadata.Headers = result.ResponseHeaders
 	result.ResponseMetadata = responseMetadata
@@ -636,11 +637,11 @@ func convertDeepseekUsage(raw json.RawMessage) types.Usage {
 }
 
 type deepseekResponse struct {
-	ID                string `json:"id"`
-	Object            string `json:"object"`
-	Created           *int64 `json:"created"`
-	Model             string `json:"model"`
-	SystemFingerprint string `json:"system_fingerprint"`
+	ID                string   `json:"id"`
+	Object            string   `json:"object"`
+	Created           *float64 `json:"created"`
+	Model             string   `json:"model"`
+	SystemFingerprint string   `json:"system_fingerprint"`
 	Choices           []struct {
 		Index        *int   `json:"index"`
 		FinishReason string `json:"finish_reason"`
@@ -703,13 +704,13 @@ type deepseekUsage struct {
 type deepseekStreamChunk struct {
 	ID                string          `json:"id"`
 	Object            string          `json:"object"`
-	Created           *int64          `json:"created"`
+	Created           *float64        `json:"created"`
 	Model             string          `json:"model"`
 	SystemFingerprint string          `json:"system_fingerprint"`
 	Error             json.RawMessage `json:"error,omitempty"`
 	Choices           []struct {
-		Index        *int   `json:"index"`
-		FinishReason string `json:"finish_reason"`
+		Index        *int    `json:"index"`
+		FinishReason *string `json:"finish_reason"`
 		Delta        struct {
 			Role             string `json:"role"`
 			Content          string `json:"content"`
@@ -746,6 +747,7 @@ type deepseekStream struct {
 	// is attached to it. finishRaw is the last finish_reason seen; finishErrored is set by a
 	// parse/error chunk after it; endQueued guards queueEnd.
 	finishRaw     string
+	finishSeen    bool // a non-null finish_reason arrived (TS != null: "" counts)
 	finishErrored bool
 	endQueued     bool
 
@@ -885,7 +887,7 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 				Headers: s.responseHeaders,
 			}
 			if chunkData.Created != nil { // TS created != null: 0 is the epoch
-				metadata.Timestamp = time.Unix(*chunkData.Created, 0)
+				metadata.Timestamp = deepseekCreatedTimestamp(*chunkData.Created)
 			}
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type:             provider.ChunkTypeResponseMetadata,
@@ -914,8 +916,8 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 			}
 
 			// TS records finish_reason before inspecting the delta.
-			if choice.FinishReason != "" {
-				s.finishRaw = choice.FinishReason
+			if choice.FinishReason != nil {
+				s.finishRaw, s.finishSeen = *choice.FinishReason, true
 				s.finishErrored = false
 			}
 
@@ -992,7 +994,7 @@ func (s *deepseekStream) queueEnd() bool {
 		s.flushQueue = append(s.flushQueue, &c)
 	}
 	finish := &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonInterrupted}
-	if s.finishRaw != "" {
+	if s.finishSeen {
 		finish.FinishReason = mapDeepSeekFinishReason(s.finishRaw)
 		finish.RawFinishReason = s.finishRaw
 	}
@@ -1091,4 +1093,16 @@ func mapDeepSeekFinishReason(reason string) types.FinishReason {
 	default:
 		return types.FinishReasonOther
 	}
+}
+
+// deepseekCreatedTimestamp converts a response's `created` (unix seconds, TS z.number()) as
+// TS createLanguageModelResponseMetadata does: new Date(created * 1000), so a
+// fractional value keeps its milliseconds (truncated) and 0 is the epoch. A
+// value outside the JS Date range is an Invalid Date in TS: no timestamp.
+func deepseekCreatedTimestamp(created float64) time.Time {
+	ms := created * 1000
+	if math.IsNaN(ms) || math.IsInf(ms, 0) || math.Abs(ms) > 8.64e15 {
+		return time.Time{}
+	}
+	return time.UnixMilli(int64(ms))
 }

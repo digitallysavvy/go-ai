@@ -2,7 +2,6 @@ package alibaba
 
 import (
 	"io"
-	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -17,8 +16,10 @@ type alibabaStream struct {
 	err    error
 
 	toolCallTracker *streaming.StreamingToolCallTracker
-	// Finish reason captured from final chunk
+	// Finish reason captured from final chunk; finishSeen records a
+	// non-null finish_reason (TS `!= null`, so "" counts).
 	finishReason string
+	finishSeen   bool
 	// finishErrored mirrors TS finishReason={unified:"error"} after a parse
 	// error chunk (TS #23814); a later finish_reason overrides it.
 	finishErrored bool
@@ -120,7 +121,7 @@ func (s *alibabaStream) Next() (*provider.StreamChunk, error) {
 			}
 		}
 		if perr != nil {
-			s.finishReason = ""
+			s.finishReason, s.finishSeen = "", false
 			s.finishErrored = true
 			errorChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
@@ -141,7 +142,7 @@ func (s *alibabaStream) Next() (*provider.StreamChunk, error) {
 				Headers: s.responseHeaders,
 			}
 			if chunk.Created != nil { // TS created != null: 0 is the epoch
-				metadata.Timestamp = time.Unix(*chunk.Created, 0)
+				metadata.Timestamp = alibabaCreatedTimestamp(*chunk.Created)
 			}
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type:             provider.ChunkTypeResponseMetadata,
@@ -176,8 +177,8 @@ func (s *alibabaStream) processChunk(chunk *alibabaStreamChunk) (*provider.Strea
 	delta := choice.Delta
 
 	// Capture finish reason if present
-	if choice.FinishReason != "" {
-		s.finishReason = choice.FinishReason
+	if choice.FinishReason != nil {
+		s.finishReason, s.finishSeen = *choice.FinishReason, true
 		s.finishErrored = false
 	}
 
@@ -253,8 +254,8 @@ func (s *alibabaStream) buildFinishChunk() *provider.StreamChunk {
 	// A clean end without the provider's completion signal is interrupted
 	// (TS #23814).
 	reason := types.FinishReasonInterrupted
-	if s.finishReason != "" {
-		reason = providerutils.MapOpenAIFinishReason(s.finishReason)
+	if s.finishSeen {
+		reason = providerutils.MapOpenAIFinishReason(s.finishReason) // TS mapAlibabaFinishReason
 	} else if s.finishErrored {
 		reason = types.FinishReasonError
 	}
@@ -278,7 +279,7 @@ func (s *alibabaStream) Err() error {
 type alibabaStreamChunk struct {
 	ID      string                `json:"id,omitempty"`
 	Object  string                `json:"object,omitempty"`
-	Created *int64                `json:"created,omitempty"`
+	Created *float64              `json:"created,omitempty"`
 	Model   string                `json:"model,omitempty"`
 	Choices []alibabaStreamChoice `json:"choices"`
 	Usage   *AlibabaUsage         `json:"usage,omitempty"`
@@ -288,7 +289,7 @@ type alibabaStreamChunk struct {
 type alibabaStreamChoice struct {
 	Index        int                `json:"index"`
 	Delta        alibabaStreamDelta `json:"delta"`
-	FinishReason string             `json:"finish_reason,omitempty"`
+	FinishReason *string            `json:"finish_reason,omitempty"`
 }
 
 // alibabaStreamDelta represents the delta content in a stream chunk

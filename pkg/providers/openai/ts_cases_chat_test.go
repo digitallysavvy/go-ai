@@ -139,7 +139,8 @@ func TestTSCasesResponses(t *testing.T) {
 		}
 		return m
 	}, map[string]string{
-		"should parse compaction output item from real fixture":  "Go keeps the v0.5.2 flat compaction metadata keys next to the TS providerMetadata.openai object",
-		"should stream compaction output item from real fixture": "Go keeps the v0.5.2 flat compaction metadata keys next to the TS providerMetadata.openai object",
+		"should parse compaction output item from real fixture":                     "Go keeps the v0.5.2 flat compaction metadata keys next to the TS providerMetadata.openai object",
+		"should stream compaction output item from real fixture":                    "Go keeps the v0.5.2 flat compaction metadata keys next to the TS providerMetadata.openai object",
+		`should use "azure" as providerMetadata key when provider includes "azure"`: "the TS test builds an azure.responses model; the harness builds a default openai provider (the azure key is covered by the azure provider cases)",
 	})
 }

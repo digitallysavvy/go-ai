@@ -514,7 +514,7 @@ func (m *ImageModel) convertResponse(response openaiImageResponse) (*types.Image
 			item["revisedPrompt"] = d.RevisedPrompt
 		}
 		if response.Created != nil {
-			item["created"] = *response.Created
+			item["created"] = unixSecondsMetadataValue(*response.Created)
 		}
 		if response.Size != nil {
 			item["size"] = *response.Size
@@ -553,11 +553,11 @@ func distributeTokens(totalTokens, index, count int) int {
 type openaiImageResponse struct {
 	// Pointers: TS reports each as `response.x ?? undefined`, so a present
 	// 0 or "" is reported and only an absent/null one is left out.
-	Created      *int64  `json:"created"`
-	Size         *string `json:"size"`
-	Quality      *string `json:"quality"`
-	Background   *string `json:"background"`
-	OutputFormat *string `json:"output_format"`
+	Created      *float64 `json:"created"`
+	Size         *string  `json:"size"`
+	Quality      *string  `json:"quality"`
+	Background   *string  `json:"background"`
+	OutputFormat *string  `json:"output_format"`
 	Data         []struct {
 		B64JSON       string `json:"b64_json"`
 		URL           string `json:"url"`

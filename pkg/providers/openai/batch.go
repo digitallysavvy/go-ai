@@ -161,8 +161,9 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	}
 
 	metadata := map[string]interface{}{"inputFileId": uploadedFile.ID}
-	if uploadedFile.ExpiresAt != nil {
-		metadata["inputFileExpiresAt"] = unixSecondsToTime(uploadedFile.ExpiresAt).UTC().Format("2006-01-02T15:04:05.000Z")
+	// TS convertUnixTimestamp: an Invalid Date is left out.
+	if t := unixSecondsToTime(uploadedFile.ExpiresAt); t != nil {
+		metadata["inputFileExpiresAt"] = t.UTC().Format("2006-01-02T15:04:05.000Z")
 	}
 
 	status := batchResp.toStatus()
@@ -423,8 +424,8 @@ type openAIBatchResponseWire struct {
 	Status        string                        `json:"status"`
 	OutputFileID  *string                       `json:"output_file_id"`
 	ErrorFileID   *string                       `json:"error_file_id"`
-	CreatedAt     *int64                        `json:"created_at"`
-	ExpiresAt     *int64                        `json:"expires_at"`
+	CreatedAt     *float64                      `json:"created_at"`
+	ExpiresAt     *float64                      `json:"expires_at"`
 	RequestCounts *openAIBatchRequestCountsWire `json:"request_counts"`
 	Errors        *struct {
 		Data []openAIBatchErrorDataWire `json:"data"`
@@ -504,7 +505,10 @@ type openAIBatchResultLineWire struct {
 // API can include that responses.ResponsesAPIResponse doesn't model).
 type openAIBatchResponseBody struct {
 	responses.ResponsesAPIResponse
-	Error *struct {
+	// CreatedAt shadows the embedded int64: TS z.number() accepts a
+	// fractional created_at (the timestamp is read from the body).
+	CreatedAt *float64 `json:"created_at"`
+	Error     *struct {
 		Message string      `json:"message"`
 		Type    string      `json:"type,omitempty"`
 		Code    interface{} `json:"code,omitempty"`
@@ -665,6 +669,7 @@ func convertOpenAIBatchResponseBodyBytes(body json.RawMessage) (*types.GenerateR
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, &provider.BatchError{Message: "OpenAI returned an invalid Responses batch result.", Code: "invalid_response"}
 	}
+	resp.ResponsesAPIResponse.CreatedAt = responsesWholeSeconds(resp.CreatedAt)
 	if resp.Error != nil {
 		code := ""
 		if resp.Error.Code != nil {

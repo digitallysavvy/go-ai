@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"time"
 
@@ -100,7 +101,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	// createLanguageModelResponseMetadata (created != null: 0 is the epoch).
 	result.ResponseMetadata = providerutils.BuildResponseMetadata(response.ID, response.Model, 0)
 	if response.Created != nil {
-		result.ResponseMetadata.Timestamp = time.Unix(*response.Created, 0)
+		result.ResponseMetadata.Timestamp = alibabaCreatedTimestamp(*response.Created)
 	}
 	result.ResponseMetadata.Headers = result.ResponseHeaders
 	return result, nil
@@ -229,6 +230,10 @@ func (m *LanguageModel) buildRequestBodyChecked(opts *provider.GenerateOptions, 
 	}
 	if opts.Prompt.IsMessages() {
 		promptMessages = append(promptMessages, opts.Prompt.Messages...)
+	} else if opts.Prompt.IsSimple() {
+		// A text prompt is one user text message (the TS standardized
+		// prompt); with a system prompt it used to be dropped.
+		promptMessages = append(promptMessages, prompt.SimpleTextToMessages(opts.Prompt.Text)...)
 	}
 
 	if useJsonObject && responseSchema != nil {
@@ -265,10 +270,6 @@ func (m *LanguageModel) buildRequestBodyChecked(opts *provider.GenerateOptions, 
 			}
 			allMessages = append(allMessages, converted...)
 		}
-	} else if opts.Prompt.IsSimple() {
-		allMessages = append(allMessages,
-			prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))...,
-		)
 	}
 
 	body["messages"] = allMessages
@@ -492,7 +493,7 @@ func (m *LanguageModel) handleError(err error) error {
 type alibabaResponse struct {
 	ID                string          `json:"id"`
 	Object            string          `json:"object"`
-	Created           *int64          `json:"created"`
+	Created           *float64        `json:"created"`
 	Model             string          `json:"model"`
 	SystemFingerprint string          `json:"system_fingerprint,omitempty"`
 	Choices           []alibabaChoice `json:"choices"`
@@ -525,4 +526,16 @@ type alibabaToolCall struct {
 type alibabaToolCallFunction struct {
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
+}
+
+// alibabaCreatedTimestamp converts a response's `created` (unix seconds, TS z.number()) as
+// TS createLanguageModelResponseMetadata does: new Date(created * 1000), so a
+// fractional value keeps its milliseconds (truncated) and 0 is the epoch. A
+// value outside the JS Date range is an Invalid Date in TS: no timestamp.
+func alibabaCreatedTimestamp(created float64) time.Time {
+	ms := created * 1000
+	if math.IsNaN(ms) || math.IsInf(ms, 0) || math.Abs(ms) > 8.64e15 {
+		return time.Time{}
+	}
+	return time.UnixMilli(int64(ms))
 }

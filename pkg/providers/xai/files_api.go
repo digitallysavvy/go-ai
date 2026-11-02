@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	stdhttp "net/http"
 	"strconv"
 	"strings"
@@ -299,14 +300,14 @@ func xaiFileID(ref types.ProviderReference) (string, error) {
 
 // xaiFileResponse mirrors TS xaiFilesResponseSchema.
 type xaiFileResponse struct {
-	ID        string `json:"id"`
-	Object    string `json:"object,omitempty"`
-	Bytes     *int64 `json:"bytes,omitempty"`
-	CreatedAt *int64 `json:"created_at,omitempty"`
-	ExpiresAt *int64 `json:"expires_at,omitempty"`
-	Filename  string `json:"filename,omitempty"`
-	Purpose   string `json:"purpose,omitempty"`
-	Status    string `json:"status,omitempty"`
+	ID        string   `json:"id"`
+	Object    string   `json:"object,omitempty"`
+	Bytes     *int64   `json:"bytes,omitempty"`
+	CreatedAt *float64 `json:"created_at,omitempty"`
+	ExpiresAt *float64 `json:"expires_at,omitempty"`
+	Filename  string   `json:"filename,omitempty"`
+	Purpose   string   `json:"purpose,omitempty"`
+	Status    string   `json:"status,omitempty"`
 }
 
 // xaiFileMetadata mirrors TS XaiFiles#toFileMetadata.
@@ -322,23 +323,41 @@ func xaiFileMetadata(r xaiFileResponse) map[string]interface{} {
 		meta["bytes"] = *r.Bytes
 	}
 	if r.CreatedAt != nil {
-		meta["createdAt"] = *r.CreatedAt
+		meta["createdAt"] = xaiUnixSecondsMetadataValue(*r.CreatedAt)
 	}
 	if r.Status != "" {
 		meta["status"] = r.Status
 	}
 	if r.ExpiresAt != nil {
-		meta["expiresAt"] = *r.ExpiresAt
+		meta["expiresAt"] = xaiUnixSecondsMetadataValue(*r.ExpiresAt)
 	}
 	return meta
 }
 
-func xaiUnixSecondsToTime(sec *int64) *time.Time {
+// xaiUnixSecondsToTime converts a wire timestamp in unix seconds (TS
+// z.number(), so it may be fractional) as TS new Date(seconds * 1000):
+// milliseconds are kept (truncated). Nil, or outside the JS Date range (an
+// Invalid Date in TS), is nil.
+func xaiUnixSecondsToTime(sec *float64) *time.Time {
 	if sec == nil {
 		return nil
 	}
-	t := time.Unix(*sec, 0).UTC()
+	ms := *sec * 1000
+	if math.IsNaN(ms) || math.IsInf(ms, 0) || math.Abs(ms) > 8.64e15 {
+		return nil
+	}
+	t := time.UnixMilli(int64(ms)).UTC()
 	return &t
+}
+
+// xaiUnixSecondsMetadataValue reports a wire number in provider metadata: an
+// integral value stays an int64 (as v0.5 reported it), a fractional one
+// (TS z.number() accepts it) is the float64 TS reports.
+func xaiUnixSecondsMetadataValue(v float64) interface{} {
+	if v == math.Trunc(v) && math.Abs(v) < 1<<53 {
+		return int64(v)
+	}
+	return v
 }
 
 func inlineFileBytes(data types.FileData) ([]byte, error) {

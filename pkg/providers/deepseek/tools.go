@@ -62,5 +62,15 @@ func (m *LanguageModel) prepareDeepSeekTools(tools []types.Tool, toolChoice type
 		return deepseekTools, nil, warnings, nil
 	}
 
-	return deepseekTools, tool.ConvertToolChoiceToOpenAI(toolChoice), warnings, nil
+	switch toolChoice.Type {
+	case types.ToolChoiceAuto, types.ToolChoiceNone, types.ToolChoiceRequired, types.ToolChoiceTool:
+		return deepseekTools, tool.ConvertToolChoiceToOpenAI(toolChoice), warnings, nil
+	default:
+		// TS default branch: no tool_choice and an unsupported warning (other
+		// providers' ConvertToolChoiceToOpenAI falls back to "auto").
+		return deepseekTools, nil, append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: fmt.Sprintf("tool choice type: %s", toolChoice.Type),
+		}), nil
+	}
 }

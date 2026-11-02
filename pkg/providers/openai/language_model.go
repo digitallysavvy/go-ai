@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -174,7 +173,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	// TS getResponseMetadata: `created || undefined` -- a missing/zero
 	// timestamp stays unset instead of becoming the Unix epoch.
 	if response.Created != 0 {
-		result.ResponseMetadata.Timestamp = time.Unix(response.Created, 0).UTC()
+		if t, ok := unixSecondsTime(response.Created); ok {
+			result.ResponseMetadata.Timestamp = t.UTC()
+		}
 	}
 	return result, nil
 }
@@ -1084,10 +1085,10 @@ func (m *LanguageModel) handleError(err error) error {
 // openAIResponse represents the OpenAI API response
 // Updated in v6.0 to support detailed token usage
 type openAIResponse struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	Model   string `json:"model"`
+	ID      string  `json:"id"`
+	Object  string  `json:"object"`
+	Created float64 `json:"created"`
+	Model   string  `json:"model"`
 	Choices []struct {
 		Index        int           `json:"index"`
 		Message      openAIMessage `json:"message"`
@@ -1393,9 +1394,9 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 		// Tool call deltas carry an "index" field not present in non-streaming responses,
 		// so we use an inline struct here instead of the shared openAIToolCall type.
 		var chunkData struct {
-			ID      string `json:"id"`
-			Model   string `json:"model"`
-			Created int64  `json:"created"`
+			ID      string  `json:"id"`
+			Model   string  `json:"model"`
+			Created float64 `json:"created"`
 			Choices []struct {
 				Delta struct {
 					Content          json.RawMessage `json:"content"`
@@ -1479,9 +1480,12 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			metadata := &provider.ResponseMetadata{
 				ID:      chunkData.ID,
 				ModelID: chunkData.Model,
+				// TS doStream returns response: { headers }; Go carries them
+				// on the response-metadata part.
+				Headers: s.headerMap(),
 			}
 			if chunkData.Created != 0 {
-				metadata.Timestamp = time.Unix(chunkData.Created, 0)
+				metadata.Timestamp, _ = unixSecondsTime(chunkData.Created)
 			}
 			s.pendingMetadata = &provider.StreamChunk{
 				Type:             provider.ChunkTypeResponseMetadata,
@@ -1647,6 +1651,14 @@ func (s *openAIStream) settleHeld() {
 	}
 }
 
+// headerMap is the HTTP response headers as a map, nil when there are none.
+func (s *openAIStream) headerMap() map[string]string {
+	if len(s.responseHeaders) == 0 {
+		return nil
+	}
+	return providerutils.ExtractHeaders(s.responseHeaders)
+}
+
 func (s *openAIStream) flushPendingMetadata() {
 	if len(s.pendingRaw) > 0 {
 		s.flushQueue = append(s.flushQueue, s.pendingRaw...)
@@ -1715,6 +1727,17 @@ func (s *openAIStream) endStream() {
 	if !s.finished {
 		s.finished = true
 		s.flushPendingMetadata()
+		if !s.metadataEmitted {
+			// No chunk carried response metadata: the headers still reach the
+			// caller (TS doStream response.headers).
+			if h := s.headerMap(); len(h) > 0 {
+				s.metadataEmitted = true
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type:             provider.ChunkTypeResponseMetadata,
+					ResponseMetadata: &provider.ResponseMetadata{Headers: h},
+				})
+			}
+		}
 		s.closeBlocksAndToolCalls()
 		if s.compat && !s.finishSeen && !s.finishErrored {
 			// TS OpenAICompatibleChatLanguageModel flush(): a stream that

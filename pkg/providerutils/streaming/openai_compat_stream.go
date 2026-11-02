@@ -3,6 +3,7 @@ package streaming
 import (
 	"encoding/json"
 	"io"
+	"math"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -247,7 +248,7 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 			Usage   *openAICompatStreamUsage `json:"usage,omitempty"`
 			ID      string                   `json:"id"`
 			Model   string                   `json:"model"`
-			Created int64                    `json:"created"`
+			Created float64                  `json:"created"`
 		}
 
 		// TS chunkBaseSchema (a union with the provider's error schema): invalid
@@ -290,8 +291,10 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 		if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0) {
 			s.metadataEmitted = true
 			meta := &provider.ResponseMetadata{ID: chunkData.ID, ModelID: chunkData.Model, Headers: s.ResponseHeaders}
-			if chunkData.Created != 0 {
-				meta.Timestamp = time.Unix(chunkData.Created, 0)
+			// TS created: z.number(), new Date(created * 1000): a fractional
+			// value keeps its milliseconds; outside the JS Date range is none.
+			if ms := chunkData.Created * 1000; chunkData.Created != 0 && math.Abs(ms) <= 8.64e15 {
+				meta.Timestamp = time.UnixMilli(int64(ms))
 			}
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: meta})
 		}

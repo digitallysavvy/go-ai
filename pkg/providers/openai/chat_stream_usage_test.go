@@ -102,7 +102,8 @@ func TestChatStreamCompatReasoningAndUsageOptIn(t *testing.T) {
 	}
 	var kinds []provider.ChunkType
 	for _, c := range chunks {
-		if c.Type != provider.ChunkTypeStreamStart {
+		// response-metadata carries the HTTP headers (no chunk had an id)
+		if c.Type != provider.ChunkTypeStreamStart && c.Type != provider.ChunkTypeResponseMetadata {
 			kinds = append(kinds, c.Type)
 		}
 	}
