@@ -224,16 +224,15 @@ These details differ:
   reported as no `NextCursor`, where TS returns `nextCursor: ""`. An empty
   `metadata.state` and `responsesFile` are kept as values, like TS, but
   `BatchV4Status.RawStatus` cannot tell `""` from absent.
-- **Perplexity fractional counts.** TS `z.number()` accepts counts such as
-  `12.5`. Go accepts them too and truncates usage counts toward zero, because
-  `types.Usage` holds integers. `providerMetadata.perplexity.usage` and
-  `toolCalls` invocation counts are truncated the same way.
+- **Fractional counts.** TS `z.number()` accepts counts such as `12.5`. Go
+  accepts them too (in streams and, since review round 79, in every
+  non-stream JSON response) and truncates integer counts toward zero,
+  because `types.Usage` and the providers' response structs hold integers.
+  `providerMetadata.perplexity.usage` and `toolCalls` invocation counts are
+  truncated the same way.
 
 ## Gemini and Perplexity streaming
 
-- **`[DONE]` marker.** Gemini and Perplexity streams stop reading at a `[DONE]`
-  SSE marker. TS `parseJsonEventStream` skips the marker and keeps reading, so
-  events after it reach TS callers but not Go callers.
 - **Accept header.** Streaming requests send `Accept: text/event-stream`, an
   SDK-wide Go convention. TS sends no `Accept` header.
 - **Google usage metadata merge.** When a long-decode response spans several
@@ -495,6 +494,11 @@ raw `DoStream` consumer sees one extra part (review round 78). The TS gateway
 cases "should not modify response-metadata chunks without timestamp" and
 "should handle null timestamp values gracefully" are skipped on it.
 
+The OpenAI chat and completion streams carry the headers on their first
+`response-metadata` part instead; when no chunk carries an id, model or
+created, they add a headers-only `response-metadata` part just before the
+finish part, where TS emits none (review round 79).
+
 ## Anthropic batch results of id-named provider tools across processes
 
 `ExperimentalBatch` restores the `Name` of a provider tool that keeps its
@@ -567,6 +571,62 @@ The stream fallback follows TS: a step without an `id` is named
 `<interactionId>:<index>`, and `interaction:<index>` when the response has
 no interaction id (`store: false`). Under `store: false` that fallback can
 repeat across steps.
+
+## UI chunk-channel helpers cannot see a stream failure
+
+`PipeUIMessageChunksToResponse` and `CreateUIMessageChunksResponse` take a
+bare `<-chan UIMessageChunk`, so they cannot tell a closed channel from a
+failed stream and always end with `data: [DONE]`. TS
+`pipeUIMessageStreamToResponse` and `createUIMessageStreamResponse` end an
+errored stream without it. The `StreamTextResult` helpers
+(`PipeUIMessageStreamToResponse(WithInit)`,
+`CreateUIMessageStreamResponseWithInit`, `ToUIMessageStreamResponse`) see
+the UI conversion's failure and match TS (review round 79).
+
+## StreamText reads the provider stream without a reader
+
+`StreamText` reads the model's stream into its buffer whether or not anyone
+reads the result, so callbacks such as `OnFinish` run without a reader, as in
+v0.5. A TS `streamText` stream that nobody reads stalls the model call
+under backpressure. So after a client disconnect, and after a
+`ConsumeSSEStream` callback returns, the Go model call keeps running until
+the `StreamText` ctx ends. Pass `r.Context()` (or another ctx you cancel) to
+stop it, or use `StreamTextLowMemory` for a bounded buffer with
+backpressure (review round 79).
+
+## Invalid tool call input that is not a JSON object
+
+TS keeps the model's raw text as the `input` of an invalid tool call, and of
+its tool-error, when the text does not parse as JSON (`'invalid json'`; `''`
+for empty input). Go keeps the raw text in `ToolCall.RawArguments` and
+`ToolCallContent.Input`, and the tool-call part's JSON `input` is that text,
+but `ToolCall.Arguments`, `ToolResult.Input` and `ToolErrorContent.Input` are
+maps: the invalid call's tool-error has no `input`, and an empty input is
+`{}`. Valid JSON that is not an object (`[1,2]`, `"text"`) is an invalid call
+in Go also for a tool without `Parameters`, where TS (no schema validation)
+accepts it. The validator text inside a `TypeValidationError` is Go's
+(`$.city: required: property is missing`), not zod's issue list, and a
+`JSONParseError` carries Go's parser message, not the JavaScript
+`SyntaxError` text (review round 79).
+
+## Unknown tool choice types
+
+`types.ToolChoiceType` is a string, so a caller can build a `ToolChoice`
+whose `Type` is not auto, none, required or tool. OpenAI (chat and
+Responses), xAI Responses, Alibaba, Moonshot and Hugging Face send it as
+auto (or ignore it); TypeScript cannot construct one (its exhaustive switch
+would throw `UnsupportedFunctionalityError`). DeepSeek follows its TS
+warning branch (review round 79).
+
+## Tool output JSON key order in replayed prompts
+
+A tool result's JSON output that the SDK serializes into the request text
+(openresponses `function_call_output`, the OpenAI-compatible prompt
+converters) keeps Go's map key order, not the TS object's insertion order.
+The values are the same. The TS replays "should convert tool message with
+json output", "should convert user - assistant (tool call) - tool message
+chain" and "should convert a tool roundtrip with follow-up assistant
+message" (openresponses) are skipped on it (review round 79).
 
 ## Features that are TypeScript-only (not ported)
 

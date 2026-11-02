@@ -245,6 +245,23 @@ already, you can skip them.
 | Two xAI provider tools with the same id | The first one's name labels the output | silent behavior change | One tool per id | [xAI provider tool name](#xai-provider-tool-name-first) |
 | Azure DeepSeek tools with `Strict` | Sent; no `/beta` check | silent behavior change | None | [Azure DeepSeek strict tools](#azure-deepseek-strict-tools) |
 | Alibaba inline images with media type `image` or `image/*` | Subtype sniffed from the bytes | wire/protocol change | Give the full media type | [Alibaba image media type](#alibaba-image-media-type-sniffed) |
+| `InvalidToolInputError` message and `Cause` | TS `getErrorMessage` form; `TypeValidationError` / `JSONParseError` cause | error text only | Use `errors.As` | [Invalid tool input cause](#invalid-tool-input-error-cause) |
+| `ConsumeSSEStream` after a client disconnect | The copy and the UI stream keep running until the copy ends or the callback returns | silent behavior change | None, or cancel the `StreamText` ctx | [ConsumeSSEStream outlives a disconnect](#ui-consume-sse-outlives-disconnect) |
+| UI stream failure (`data: [DONE]`, body read error) | No `[DONE]`; the response body and `ConsumeSSEStream` copy end with the error | wire/protocol change | Handle the read error | [Failed stream without [DONE]](#ui-failed-stream-no-done) |
+| `SpanRecorder.Ended()` indexes after an abort or error | Child spans end in TS order (tools and embeddings in start order) | silent behavior change | Look spans up by name | [Span end order on abort/error](#otel-abort-error-span-end-order) |
+| `ai.usage.tokens` on `ai.embed` / `ai.embedMany` roots with only `EmbeddingUsage.InputTokens` | Recorded, as on the doEmbed span | silent behavior change | None | [Embed root usage tokens](#embed-root-usage-tokens-input-tokens) |
+| `failed to decode JSON response` with a fractional count | The response decodes; integer counts are truncated | silent behavior change | None | [Fractional numbers](#json-response-fractional-numbers) |
+| `FinishReasonInterrupted` on deepseek / alibaba / moonshot streams | `finish_reason: ""` maps to `other` | silent behavior change | None | [Empty finish_reason](#stream-empty-finish-reason) |
+| `ProviderMetadata["google"]` / `["vertex"]` `groundingMetadata`, `safetyRatings`, `promptFeedback`, `urlContextMetadata` keys (`googleMapsWidgetContextToken`, `sdkBlob`, `web.domain`) | Only TS-declared keys, in schema order | silent behavior change | Read other keys from the raw response | [Google metadata keys](#google-metadata-declared-keys) |
+| `ResponseHeaders()` / `ResponseMetadata.Headers` on OpenAI chat and completion streams | Filled; a headers-only metadata part when no chunk has metadata | silent behavior change | None | [OpenAI stream headers](#openai-stream-response-headers) |
+| `ResponseMetadata == nil` on xAI batch results | Always set | silent behavior change | Check the fields | [xAI batch metadata](#xai-batch-response-metadata-always) |
+| deepseek `types.ToolChoice{Type: "<custom>"}` | No `tool_choice`, plus an unsupported warning | silent behavior change | Use a standard tool choice | [DeepSeek unknown tool choice](#deepseek-unknown-tool-choice) |
+| alibaba `types.Prompt{Text: ...}` (with or without `System`) | One user content-part message; kept next to the system prompt | wire/protocol change | None | [Alibaba text prompt](#alibaba-text-prompt-messages) |
+| cohere `GenerateResult.Content` with reasoning | One `TextContent` per text item, in wire order | silent behavior change | None | [Cohere text parts order](#cohere-generate-text-parts-in-order) |
+| cohere `DoStream` `ChunkTypeResponseMetadata` count; `text` + `thinking` deltas | Every `message-start` emits metadata; fractional numbers parse; `text` wins | silent behavior change | None | [Cohere stream parsing](#cohere-stream-chunk-parsing) |
+| cohere `StopSequences: []string{}` | `stop_sequences: []` sent | wire/protocol change | Pass nil | [Cohere empty stop sequences](#cohere-empty-stop-sequences) |
+| openresponses custom tool `RawArguments` text with `<`, `>`, `&` | Not escaped | silent behavior change | Compare the decoded value | [openresponses custom tool input](#openresponses-custom-tool-input-literal) |
+| Perplexity stream part / source ids for exponent-range numbers | JS `String(number)` text | silent behavior change | None | [Perplexity stream ids](#perplexity-stream-ids-js-numbers) |
 | Cohere `BaseURL` or `DefaultBaseURL` (v0.5.3) | v2 API | wire/protocol change | Check custom base URLs | [Cohere v2](#v053-cohere-v2) |
 | `MaxRetries` unset on non-Gateway providers (v0.5.3) | Every provider retries | silent behavior change | Set `MaxRetries: &zero` to disable | [Retries](#v053-retries) |
 | Reliance on the 60 s default HTTP client timeout (v0.5.3) | No whole-request timeout | silent behavior change | Bound calls with `ctx` | [HTTP client timeout](#v053-http-timeout) |
@@ -1673,6 +1690,41 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   ```
 - **Kind:** error text only
 
+### InvalidToolInputError shows its cause as TS does {#invalid-tool-input-error-cause}
+
+- **What changed:** v0.5 `InvalidToolInputError.Error()` was
+  `Invalid input for tool <name>: <cause.Error()>`, with the raw validator or
+  JSON parser message for a tool's `Parameters` schema. v0.6 shows the cause
+  as TS `getErrorMessage` (its `toString()`): a `Parameters` schema failure
+  is `AI_TypeValidationError: Type validation failed: Value: <input
+  JSON>.\nError message: Error: <validator message>`, input that is not JSON
+  is `AI_JSONParseError: JSON parsing failed: Text: <input>.\nError message:
+  <parser message>`, and other causes (the approved-input mismatch, refiner
+  errors) get an `Error: ` prefix (`Invalid input for tool deleteFile:
+  Error: Approved tool input does not match the validated schema output.`).
+  A `nil` cause is `unknown error`, as before. The cause is now a
+  `*providererrors.TypeValidationError` or `*providererrors.JSONParseError`
+  (the validator error or `*json.SyntaxError` stays reachable with
+  `errors.As`). The tool-error text the model sees changes the same way.
+  Tools with `ValidateInput` already had the TS text (review round 79).
+- **Am I affected?** Code comparing `InvalidToolInputError` messages, the
+  `Error` / `ErrorText` of an invalid call's `ToolCallContent` or
+  `ToolErrorContent`, or `InvalidToolApproval.Error.Error()`; code that
+  type-asserts `InvalidToolInputError.Cause` to a validator error or
+  `*json.SyntaxError`.
+- **What to do:** match with `errors.As` instead of the text:
+
+  ```go
+  // Before
+  if strings.Contains(err.Error(), "Invalid input for tool weather: $.city") { /* ... */ }
+
+  // After
+  var invalid *ai.InvalidToolInputError
+  var typeErr *providererrors.TypeValidationError
+  if errors.As(err, &invalid) && invalid.ToolName == "weather" && errors.As(invalid.Cause, &typeErr) { /* ... */ }
+  ```
+- **Kind:** error text only
+
 ## Agents and approvals {#agents-and-approvals}
 
 ### A panicking ToolLoopAgent callback does not skip the other one {#agent-callback-panic-isolation}
@@ -2842,6 +2894,48 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   null` (or the value) when you build them.
 - **Kind:** silent behavior change
 
+### ConsumeSSEStream keeps its copy after a client disconnect {#ui-consume-sse-outlives-disconnect}
+
+- **What changed:** when the response write fails (the client disconnected)
+  while a `UIMessageStreamResponseInit.ConsumeSSEStream` callback is still
+  reading, the callback's copy keeps receiving every SSE event through
+  `data: [DONE]`, including the event whose write failed. The UI message
+  stream keeps running until the copy ends or the callback returns, as a TS
+  `tee()` cancels its source only when both branches are cancelled. In v0.5
+  the copy ended at the failed write and the UI stream was cancelled. The
+  Pipe helpers still return the write error right away. The model call
+  itself runs until the `StreamText` ctx ends, as in v0.5 (review round 79).
+- **Am I affected?** Code that passes `ConsumeSSEStream` to
+  `PipeUIMessageStreamToResponse(WithInit)`, `PipeUIMessageChunksToResponse`,
+  `CreateUIMessageStreamResponseWithInit`, `CreateUIMessageChunksResponse`
+  or `StreamTextResult.ToUIMessageStreamResponse`, and relies on a
+  disconnect truncating the copy.
+- **What to do:** no action unless you relied on that. To stop the run on a
+  disconnect, cancel the `ctx` you passed to `StreamText` (for example
+  `r.Context()`), or return from the callback.
+- **Kind:** silent behavior change
+
+### A failed UI conversion ends the SSE stream without [DONE] {#ui-failed-stream-no-done}
+
+- **What changed:** when the UI conversion of a `StreamTextResult` fails (a
+  callback such as `MessageMetadata`, `OnError` or `OnEnd` panics, or a
+  chunk cannot be applied to the message state), the SSE stream ends
+  without `data: [DONE]`, as TS's errored stream never reaches
+  `JsonToSseTransformStream`'s flush. The `*http.Response` body from
+  `CreateUIMessageStreamResponseWithInit` / `ToUIMessageStreamResponse`
+  ends with that error instead of EOF, and a `ConsumeSSEStream` copy's
+  `Read` returns it. `PipeUIMessageStreamToResponse(WithInit)` returns it as
+  before. v0.5 wrote `data: [DONE]` and ended the body and the copy
+  normally. The chunk-channel helpers (`PipeUIMessageChunksToResponse`,
+  `CreateUIMessageChunksResponse`) cannot see a failure and still end with
+  `[DONE]` (review round 79).
+- **Am I affected?** Clients or tests that expect `data: [DONE]` after a
+  failed stream, or that treat a body read error as a transport failure;
+  `ConsumeSSEStream` callbacks that treat any `Read` error as fatal.
+- **What to do:** no action unless you relied on that; handle the read
+  error as the stream's failure.
+- **Kind:** wire/protocol change
+
 ## Telemetry and events {#telemetry-and-events}
 
 The [telemetry recording change](#telemetry-record-pointers) is listed under
@@ -3137,6 +3231,44 @@ compile-time changes.
   prefix.
 - **Kind:** silent behavior change
 
+### OpenTelemetry ends open spans in TS order on abort or error {#otel-abort-error-span-end-order}
+
+- **What changed:** v0.5 `OpenTelemetry.OnAbort` / `OnError` ended the open
+  decision and chat spans first, then the step span, then the tool spans,
+  then the embedding and rerank spans, and ended parallel tool spans and
+  `EmbedMany` batch spans in random (map) order. `LegacyOpenTelemetry` did
+  the same without the chat span. v0.6 ends them in TS order: GenAI ends the
+  tool spans (in start order), then chat, step, the embedding spans (in
+  start order), rerank, decision and the root; legacy ends tool spans, step,
+  embeddings, rerank, decision and the root. TS holds these spans in
+  insertion-ordered `Map`s and ends children before their parents (review
+  round 79).
+- **Am I affected?** Only if you depend on the order in which spans reach
+  your exporter or `SpanProcessor.OnEnd` (for example
+  `tracetest.SpanRecorder.Ended()` indexes) after an aborted or failed call,
+  with `telemetry.NewOpenTelemetry` or `telemetry.NewLegacyOpenTelemetry`
+  registered.
+- **What to do:** no action unless you index ended spans by position after
+  an abort or error; look spans up by name or span ID instead.
+- **Kind:** silent behavior change
+
+### The legacy embed root span records InputTokens usage {#embed-root-usage-tokens-input-tokens}
+
+- **What changed:** in v0.5 the legacy `ai.embed` / `ai.embedMany` root span
+  had no `ai.usage.tokens` when the embedding model reported only
+  `types.EmbeddingUsage.InputTokens` (`Tokens` and `TotalTokens` 0), even
+  though its `ai.embed.doEmbed` span recorded that count. v0.6 reads the same
+  counters on the root as on the doEmbed span (`Tokens`, then
+  `InputTokens`, then `TotalTokens`), as in TS, where both record
+  `usage.tokens` (review round 79).
+- **Am I affected?** A custom `provider.EmbeddingModel` that sets only
+  `EmbeddingUsage.InputTokens`, with `telemetry.LegacyOpenTelemetry`
+  reading `ai.usage.tokens` on the root span. The built-in providers set
+  `Tokens`.
+- **What to do:** no action unless you relied on the root span having no
+  `ai.usage.tokens` for such a model.
+- **Kind:** silent behavior change
+
 ## Errors {#errors}
 
 ### Errors are returned without Go prefixes {#errors-unprefixed}
@@ -3409,12 +3541,20 @@ compile-time changes.
   `[DONE]` and its `flush()` runs at the end of the body (review round 78;
   the OpenAI, Azure and xAI Responses streams changed in round 77, see
   [Responses [DONE] and created_at](#responses-stream-done-created-at)).
+  Google Interactions background streams (`Interactions(...)` with
+  `background: true`) no longer count a `data: [DONE]` frame as an event of
+  a resume attempt, so a server that sends only `[DONE]` makes the stream
+  fail after 3 attempts with `google.interactions: SSE stream closed without
+  producing any events.` instead of reconnecting forever, as TS
+  `streamGoogleInteractionEvents` (review round 79).
 - **Am I affected?** Only if a server sends SSE frames after `data: [DONE]`,
   or keeps the connection open after it: `DoStream` on `openai.ChatModel`,
   `openai.CompletionModel`, `deepseek`, `alibaba`, `moonshot`, `groq`,
   `mistral` (`LanguageModel`, `ConversationModel`), `gateway`,
   `google`/`googlevertex`, `perplexity`, `huggingface`, `cohere`,
-  `openresponses`, and providers built on `streaming.NewOpenAICompatStream`.
+  `openresponses`, and providers built on `streaming.NewOpenAICompatStream`;
+  `google` Interactions background streams against a server that sends
+  only `[DONE]`.
 - **What to do:** no action unless your server keeps the body open after
   `[DONE]`; close the response body (or cancel the context) when the stream
   is done.
@@ -3438,14 +3578,60 @@ compile-time changes.
   `response.x ?? undefined`). OpenAI Chat and OpenAI-compatible chat keep
   treating `created: 0` as absent (TS `created || undefined`), and
   `providerutils.BuildResponseMetadata` still treats 0 as absent (review
-  round 78).
+  round 78). A fractional `created` / `created_at` (TS `z.number()`) no
+  longer fails the call or the stream chunk: deepseek, alibaba, moonshot,
+  OpenAI chat / completion / image / Responses / batch / files / skills, xAI
+  Responses / batch / files, Hugging Face, openresponses, the
+  OpenAI-compatible stream and the gmicloud, together, fireworks, zai,
+  ollama and Vertex xAI generate paths decode it as a float and set
+  `Timestamp` to `new Date(created * 1000)` (milliseconds kept). The
+  OpenAI-compatible generate paths keep `created: 0` as no timestamp (TS
+  `created || undefined`). openresponses `created_at: null` is the epoch;
+  an absent Hugging Face stream `created_at` is no timestamp (was the
+  epoch). The exported `OpenResponsesResponse.CreatedAt`,
+  `responses.ResponsesAPIResponse.CreatedAt` and `ResponseCreatedEvent`
+  fields keep their `int64` type (whole seconds). Provider metadata
+  `createdAt`, `expiresAt`, `updatedAt` and `created` stay `int64` for whole
+  seconds and are `float64` for a fractional value (review round 79).
 - **Am I affected?** Code that checks `ResponseMetadata.Timestamp.IsZero()`
   on these providers, counts `ChunkTypeResponseMetadata` stream parts, reads
   `GenerateResult.ResponseMetadata` from alibaba (was nil), or reads
   `ProviderMetadata["openai"]["images"]` entries' `created`, `size`,
-  `quality`, `background` or `outputFormat` keys.
+  `quality`, `background` or `outputFormat` keys; code that type-asserts
+  `ProviderMetadata["openai"]["images"][i]["created"]` or the `createdAt`,
+  `expiresAt`, `updatedAt` metadata values to `int64` (a fractional wire
+  value is a `float64`).
 - **What to do:** no action unless you relied on the missing timestamp,
-  metadata part or keys.
+  metadata part or keys, or on a fractional `created` failing the call.
+- **Kind:** silent behavior change
+
+#### Non-stream responses accept fractional numbers {#json-response-fractional-numbers}
+
+- **What changed:** v0.5 failed `DoGenerate` (and other non-stream calls)
+  with `failed to decode JSON response: json: cannot unmarshal number 1.5
+  into Go struct field ... of type int` when a count or other integer field
+  of the response held a fractional or exponent number. TS response schemas
+  use `z.number()`, which accepts them. v0.6 decodes such a body again with
+  the numbers under the reported fields truncated toward zero (as the
+  streams already did), so the call succeeds; integer counts keep their
+  integer part, and float fields keep their exact value. A body that decodes
+  as before is unchanged (review round 79).
+- **Am I affected?** Only if you relied on such a response failing the
+  call, for example with an OpenAI-compatible server that sends
+  `"prompt_tokens": 1.5`.
+- **What to do:** no action unless you relied on the decode error.
+- **Kind:** silent behavior change
+
+#### An empty finish_reason is a finish reason in deepseek, alibaba and moonshot streams {#stream-empty-finish-reason}
+
+- **What changed:** v0.5 deepseek, alibaba and moonshot streams treated
+  `"finish_reason": ""` as no finish reason (in v0.6 a stream without one
+  finishes with `FinishReasonInterrupted`). v0.6 records it, as TS
+  `finish_reason != null`: the finish part has `FinishReasonOther` and
+  `RawFinishReason: ""` (review round 79).
+- **Am I affected?** Code that checks `FinishReasonInterrupted` on these
+  providers' streams when the server sends an empty `finish_reason`.
+- **What to do:** no action unless you relied on that.
 - **Kind:** silent behavior change
 
 ### AI Gateway
@@ -3714,6 +3900,48 @@ compile-time changes.
 - **What to do:** no action unless you assert on the exact warnings list.
 - **Kind:** silent behavior change
 
+### Google and Vertex
+
+#### Google provider metadata keeps only the keys TS declares {#google-metadata-declared-keys}
+
+- **What changed:** v0.5 copied `promptFeedback`, `groundingMetadata` (and
+  each `groundingMetadataPerRequest` entry), `urlContextMetadata` and
+  `safetyRatings` into `ProviderMetadata["google"]` (and `"vertex"` /
+  `"googleVertex"`) exactly as the API sent them. v0.6 keeps only the keys
+  the TS zod schemas declare, in schema order, in `DoGenerate` results and
+  the stream finish part, as TS parsing strips undeclared keys (review
+  round 79). The declared keys are:
+  - `promptFeedback`: `blockReason`, `safetyRatings`;
+  - `safetyRatings[]`: `category`, `probability`, `probabilityScore`,
+    `severity`, `severityScore`, `blocked`;
+  - `groundingMetadata`: `webSearchQueries`, `imageSearchQueries`,
+    `retrievalQueries`, `searchEntryPoint.renderedContent`,
+    `groundingChunks[]` (`web.{uri,title}`,
+    `image.{sourceUri,imageUri,title,domain}`,
+    `retrievedContext.{uri,title,text,fileSearchStore,customMetadata}`,
+    `maps.{uri,title,text,placeId}`), `groundingSupports[]`
+    (`segment.{startIndex,endIndex,text}`, `segment_text`,
+    `groundingChunkIndices`, `supportChunkIndices`, `confidenceScores`,
+    `confidenceScore`), and `retrievalMetadata` (`{webDynamicRetrievalScore}`
+    when that is a number, otherwise `{}`);
+  - `urlContextMetadata`: `urlMetadata[].{retrievedUrl,urlRetrievalStatus}`.
+
+  Keys v0.5 callers could read that are now dropped include
+  `groundingMetadata.googleMapsWidgetContextToken`,
+  `groundingMetadata.searchEntryPoint.sdkBlob`,
+  `groundingChunks[].web.domain`, `groundingChunks[].retrievedContext.ragChunk`,
+  `groundingChunks[].maps.placeAnswerSources`,
+  `promptFeedback.blockReasonMessage` and any `retrievalMetadata` key other
+  than `webDynamicRetrievalScore`. `usageMetadata` is unchanged (loose in
+  TS).
+- **Am I affected?** Code that reads any other key from those values of
+  `ProviderMetadata["google"]`, `["vertex"]` or `["googleVertex"]` for
+  `google` or `googlevertex` Gemini models.
+- **What to do:** read such a key from the raw response instead:
+  `GenerateResult.RawResponse` for `DoGenerate`, or `ChunkTypeRaw` parts
+  with `IncludeRawChunks` for streams.
+- **Kind:** silent behavior change
+
 ### OpenAI
 
 #### OpenAI Responses promptCacheOptions is validated {#openai-prompt-cache-options}
@@ -3945,6 +4173,23 @@ compile-time changes.
   `[DONE]`.
 - **Kind:** silent behavior change
 
+#### OpenAI chat and completion streams report the response headers {#openai-stream-response-headers}
+
+- **What changed:** v0.5 OpenAI chat and completion `DoStream` never put the
+  HTTP response headers on a stream part, so `StreamTextResult.ResponseHeaders()`
+  and the step response headers were empty for these models. v0.6 puts them
+  on the first `ChunkTypeResponseMetadata` part (TS `doStream` returns
+  `response.headers`); a stream whose chunks carry no id, model or created
+  gets a headers-only response-metadata part just before the finish part
+  (review round 79).
+- **Am I affected?** `DoStream` callers of `openai` chat and completion
+  models (and wrappers built on them) that count or position
+  `ChunkTypeResponseMetadata` parts, or that expect `ResponseMetadata.Headers`
+  to be nil.
+- **What to do:** no action unless you assume exactly one response-metadata
+  part with an id, or none.
+- **Kind:** silent behavior change
+
 ### xAI
 
 #### xAI provider tool config is validated before the request {#xai-tool-args-validation}
@@ -3994,6 +4239,16 @@ compile-time changes.
 - **What to do:** no action; pass one tool per id.
 - **Kind:** silent behavior change
 
+#### xAI batch results always carry response metadata {#xai-batch-response-metadata-always}
+
+- **What changed:** v0.5 left an xAI batch text result's `ResponseMetadata`
+  nil when the response had no id, model or created. v0.6 always sets it, as
+  TS `getResponseMetadata` always returns an object (review round 79).
+- **Am I affected?** `result.ResponseMetadata == nil` checks on xAI batch
+  results.
+- **What to do:** check the fields (`ID`, `ModelID`, `Timestamp`) instead.
+- **Kind:** silent behavior change
+
 ### Azure, DeepSeek and Alibaba
 
 #### Azure DeepSeek models send strict tools {#azure-deepseek-strict-tools}
@@ -4022,6 +4277,96 @@ compile-time changes.
   media type `"image"` or `"image/*"` and inline bytes.
 - **What to do:** no action, or give the full media type.
 - **Kind:** wire/protocol change
+
+#### DeepSeek warns on an unknown tool choice type {#deepseek-unknown-tool-choice}
+
+- **What changed:** v0.5 deepseek sent `"tool_choice": "auto"` for a
+  `types.ToolChoice` whose `Type` is not auto, none, required or tool. v0.6
+  sends no `tool_choice` and adds the warning `{Type: "unsupported",
+  Feature: "tool choice type: <type>"}`, as the TS `prepareTools` default
+  branch (review round 79).
+- **Am I affected?** deepseek or Azure DeepSeek callers that build
+  `types.ToolChoice{Type: ...}` with a custom string.
+- **What to do:** no action unless you pass such a type; use a standard
+  `ToolChoice`.
+- **Kind:** silent behavior change
+
+#### Alibaba sends a text prompt as a user message {#alibaba-text-prompt-messages}
+
+- **What changed:** v0.5 alibaba sent `types.Prompt{Text: ...}` as a user
+  message with string content, skipped JSON-mode instruction injection for
+  it, and dropped the text entirely for `Prompt{System, Text}`. v0.6 sends
+  the text as one user message with `content: [{"type": "text", "text":
+  ...}]`, converted like any other message (JSON-mode instruction and cache
+  markers apply), next to the system message. TS has only the standardized
+  message prompt (review round 79).
+- **Am I affected?** Direct `alibaba` `DoGenerate` / `DoStream` callers that
+  set `types.Prompt.Text`. `ai.GenerateText` and `ai.StreamText` send
+  messages and are not affected.
+- **What to do:** no action.
+- **Kind:** wire/protocol change
+
+### Cohere
+
+#### Cohere generate content lists text parts in wire order {#cohere-generate-text-parts-in-order}
+
+- **What changed:** v0.5 put Cohere's response text only in
+  `GenerateResult.Text`, so `GenerateText` content listed it after every
+  reasoning part. v0.6 also adds one `types.TextContent` per non-empty text
+  item to `GenerateResult.Content`, in wire order with the reasoning parts,
+  as TS `doGenerate` pushes each item as its own part. `Text` is still the
+  concatenation (review round 79).
+- **Am I affected?** Code that reads `cohere` `DoGenerate` results'
+  `Content` and expects no `types.TextContent`, or that relies on the text
+  following all reasoning in `GenerateText` content.
+- **What to do:** no action unless you range over `Content` from a Cohere
+  model and skip or count parts by type.
+- **Kind:** silent behavior change
+
+#### Cohere stream chunks are parsed like TS {#cohere-stream-chunk-parsing}
+
+- **What changed:** v0.5 turned a Cohere stream chunk with a fractional
+  `index` or token count into an error part (finish reason `error`) and
+  failed `DoGenerate` on a fractional citation offset or token count; it
+  emitted `ChunkTypeResponseMetadata` on `message-start` only when the frame
+  had an `id`; and a `content-delta` with both `text` and `thinking` became
+  reasoning. v0.6 follows TS `cohereChatChunkSchema`: numbers may be
+  fractional (part ids are the JS text, `"0.5"`; usage keeps the integer
+  part), every `message-start` emits response metadata, and a string `text`
+  wins over `thinking` (review round 79).
+- **Am I affected?** Raw `cohere` `DoStream` consumers that count
+  `ChunkTypeResponseMetadata` parts or match error parts for fractional
+  numbers.
+- **What to do:** no action unless you consume Cohere `DoStream` parts
+  directly.
+- **Kind:** silent behavior change
+
+#### Cohere sends empty stop sequences {#cohere-empty-stop-sequences}
+
+- **What changed:** v0.5 left `stop_sequences` out for
+  `StopSequences: []string{}`; v0.6 sends `"stop_sequences": []`, as TS
+  `stop_sequences: stopSequences` (see also
+  [Empty stop sequences are sent](#empty-stop-sequences)). A nil slice is
+  still omitted (review round 79).
+- **Am I affected?** Cohere calls that pass a non-nil empty
+  `StopSequences`.
+- **What to do:** no action unless the API rejects the empty list; pass nil
+  instead.
+- **Kind:** wire/protocol change
+
+### Open Responses
+
+#### openresponses custom tool inputs keep HTML characters literal {#openresponses-custom-tool-input-literal}
+
+- **What changed:** v0.5 openresponses `custom_tool_call` results escaped
+  `<`, `>` and `&` in `ToolCall.RawArguments` (`<`, `>`,
+  `&`). v0.6 keeps them literal, as TS `JSON.stringify(input)` (review
+  round 79). Both are the same JSON string.
+- **Am I affected?** Code that compares `ToolCall.RawArguments` or
+  `ToolCallContent.Input` of openresponses custom tool calls as text.
+- **What to do:** no action unless you compare the escaped text; compare the
+  decoded value.
+- **Kind:** silent behavior change
 
 ### Wrapper providers
 
@@ -4083,6 +4428,20 @@ compile-time changes.
   truncated a fractional `dimensions` and ignored or sent other values.
 - **Am I affected?** Perplexity embedding provider options.
 - **What to do:** pass a positive integer and a supported format.
+- **Kind:** silent behavior change
+
+#### Perplexity stream ids format numbers like JavaScript {#perplexity-stream-ids-js-numbers}
+
+- **What changed:** v0.5 Perplexity agent streams built text, reasoning and
+  search-result source ids with Go's fixed-notation float text (`1e21` as
+  `1000000000000000000000`, `-0` as `-0`). v0.6 uses JS `String(number)`, as
+  TS `getTextId` / `reasoning-${sequence_number}` / `String(result.id)`:
+  `1e+21`, `0`, `1e-7` (review round 79). Integer ids such as `0` or `12`
+  are unchanged.
+- **Am I affected?** Only with unusual numeric indices or ids (exponent
+  range, `-0`) in `ChunkTypeTextStart` / `ChunkTypeReasoningStart` ids or
+  source ids.
+- **What to do:** no action.
 - **Kind:** silent behavior change
 
 ## MCP {#mcp}
@@ -4458,8 +4817,22 @@ after upgrading:
   part.** Streams wrapped by `providerutils.WithResponseMetadata`
   (Anthropic, AI Gateway, Cohere, Moonshot, openresponses) carry the HTTP
   response headers in an extra leading part, kept from v0.5; TS returns the
-  headers on the `doStream` result. See
+  headers on the `doStream` result; OpenAI chat and completion streams add
+  a headers-only part before the finish when no chunk has metadata. See
   [Provider stream header metadata part](./known-differences.mdx).
+- **The UI chunk-channel helpers always end with `data: [DONE]`**, as they
+  cannot see a stream failure; the `StreamTextResult` helpers match TS. See
+  [UI chunk-channel helpers cannot see a stream failure](./known-differences.mdx).
+- **`StreamText` reads the model's stream without a reader**, so the model
+  call runs until its ctx ends; TS stalls an unread stream. See
+  [StreamText reads the provider stream without a reader](./known-differences.mdx).
+- **An invalid tool call's unparsable input is kept only as raw text**
+  (`RawArguments`, `ToolCallContent.Input`); the tool-error has no `input`.
+  See [Invalid tool call input that is not a JSON object](./known-differences.mdx).
+- **An unknown `ToolChoice.Type` is sent as auto** by most providers; TS
+  cannot construct one. See [Unknown tool choice types](./known-differences.mdx).
+- **Tool output JSON in replayed prompts keeps Go map key order.** See
+  [Tool output JSON key order in replayed prompts](./known-differences.mdx).
 
 ## For coding agents {#for-coding-agents}
 
@@ -4501,7 +4874,8 @@ next one.
      -e 'openaitool\.|anthropic/tools|gateway/tools|providers/xai|\.Title|tool_search|NewShellTool|ProviderArgs|Warnings' \
      -e 'ResolveSerializableTools|Bash202|Sandbox is not available|return [A-Za-z]*[Ee]rr(or)?(\(.*\))?, nil|OnInput(Start|Delta|Available)|logprobs' \
      -e 'InputSchemaInput|ExperimentalRefineToolInput|SupportsDeferredResults|UIMessageStreamResponseInit|reasoningEncryptedContent|budgetTokens|redactedData|ExperimentalSandbox|CustomData|Timestamp\.IsZero' \
-     -e 'ToolCallRepairError|InvalidToolCall|ValidateUIMessages|UncheckedStrictToolCalls|serviceTier|safetyIdentifier|promptCacheKey|\[DONE\]|"data-' .
+     -e 'ToolCallRepairError|InvalidToolCall|ValidateUIMessages|UncheckedStrictToolCalls|serviceTier|safetyIdentifier|promptCacheKey|\[DONE\]|"data-' \
+     -e 'InvalidToolInputError|SpanRecorder|Ended\(\)|groundingMetadata|safetyRatings|promptFeedback|urlContextMetadata|StopSequences|RawArguments|ResponseHeaders|FinishReasonInterrupted|Prompt\{|ToolChoice\{Type|InputTokens' .
    ```
 
 4. For each match, open the entry the table links to. Apply **What to do**.

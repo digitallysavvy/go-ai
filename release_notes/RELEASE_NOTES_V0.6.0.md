@@ -264,6 +264,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **StreamText invalid tool call errors carry the tool's title** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-invalid-tool-error-title)
 - **An invalid tool call's error follows the call in the stream** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-invalid-tool-error-position)
 - **ToolCallRepairError messages show the cause as TS does** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-call-repair-error-message)
+- **InvalidToolInputError shows its cause as TS does** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#invalid-tool-input-error-cause)
 
 #### Agents and approvals
 
@@ -330,6 +331,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **ConsumeSSEStream no longer holds up the response** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-consume-sse-not-awaited)
 - **Pipe helpers do not wait for ConsumeSSEStream** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-pipe-consume-sse-not-awaited)
 - **ValidateUIMessages rejects a data part without data** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-validate-data-part-requires-data)
+- **ConsumeSSEStream keeps its copy after a client disconnect** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-consume-sse-outlives-disconnect)
+- **A failed UI conversion ends the SSE stream without [DONE]** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-failed-stream-no-done)
 
 #### Telemetry and events
 
@@ -348,6 +351,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **ai.prompt.toolChoice and ai.schema honor RecordInputs** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#otel-input-gated-toolchoice-schema)
 - **An unset finish reason is not recorded on spans** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#otel-unset-finish-reason)
 - **OpenTelemetry span names keep the space for an empty model ID** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#otel-empty-model-id-span-names)
+- **OpenTelemetry ends open spans in TS order on abort or error** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#otel-abort-error-span-end-order)
+- **The legacy embed root span records InputTokens usage** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#embed-root-usage-tokens-input-tokens)
 
 #### Errors
 
@@ -399,6 +404,18 @@ search for and ends with a checklist for coding agents. Entries marked
 - **The first xAI provider tool with an id names its output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#xai-provider-tool-name-first)
 - **Azure DeepSeek models send strict tools** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#azure-deepseek-strict-tools)
 - **Alibaba resolves a top-level or wildcard image media type** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#alibaba-image-media-type-sniffed)
+- **Non-stream responses accept fractional numbers** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#json-response-fractional-numbers)
+- **An empty finish_reason is a finish reason in deepseek, alibaba and moonshot streams** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-empty-finish-reason)
+- **Google provider metadata keeps only the keys TS declares** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-metadata-declared-keys)
+- **OpenAI chat and completion streams report the response headers** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-stream-response-headers)
+- **xAI batch results always carry response metadata** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#xai-batch-response-metadata-always)
+- **DeepSeek warns on an unknown tool choice type** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#deepseek-unknown-tool-choice)
+- **Alibaba sends a text prompt as a user message** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#alibaba-text-prompt-messages)
+- **Cohere generate content lists text parts in wire order** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#cohere-generate-text-parts-in-order)
+- **Cohere stream chunks are parsed like TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#cohere-stream-chunk-parsing)
+- **Cohere sends empty stop sequences** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#cohere-empty-stop-sequences)
+- **openresponses custom tool inputs keep HTML characters literal** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openresponses-custom-tool-input-literal)
+- **Perplexity stream ids format numbers like JavaScript** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#perplexity-stream-ids-js-numbers)
 
 #### MCP
 
@@ -1366,7 +1383,12 @@ Notable ones:
 - **Message metadata merge with non-object values**: UI message metadata followed by a string or array (or a non-object followed by any value) is replaced; TS `mergeObjects` merges the value's index keys into a copy of the existing value. A number or boolean after an object keeps the object, as TS (coordinator ruling, round 75).
 - **Anthropic batch results of id-named provider tools across processes**: `ExperimentalBatch` restores the `Name` of a provider tool that keeps its constructor id (`anthropic.bash_20250124`) only when the results are read through the Provider that started the batch; results read by another Provider value or process report the wire name (`bash`). Name the tool after its wire name to get the same name everywhere (round 75).
 - **UI message stream end event finish reason**: the `OnEnd`/`OnFinish` event of `CreateUIMessageStreamWithOptions` reports the last finish chunk's `finishReason` as written (normally a `string`) or `nil`, and `ToUIMessageStream` a `types.FinishReason` (`""` when unset), the v0.5 shapes; TS reports the chunk's string or `undefined` in both (round 77).
-- **Provider stream header metadata part**: streams wrapped by `providerutils.WithResponseMetadata` (Anthropic, AI Gateway, Cohere, Moonshot, openresponses) start with a `response-metadata` part carrying the HTTP response headers, kept from v0.5 (`TextStream` has no other channel for them); TS returns the headers on the `doStream` result (round 78).
+- **Provider stream header metadata part**: streams wrapped by `providerutils.WithResponseMetadata` (Anthropic, AI Gateway, Cohere, Moonshot, openresponses) start with a `response-metadata` part carrying the HTTP response headers, kept from v0.5 (`TextStream` has no other channel for them); TS returns the headers on the `doStream` result (round 78). OpenAI chat and completion streams add a headers-only part before the finish when no chunk has metadata (round 79).
+- **UI chunk-channel helpers cannot see a stream failure**: `PipeUIMessageChunksToResponse` and `CreateUIMessageChunksResponse` take a bare `<-chan UIMessageChunk` and always end with `data: [DONE]`; TS ends an errored stream without it. The `StreamTextResult` helpers match TS (round 79).
+- **StreamText reads the provider stream without a reader**: the model call runs until the `StreamText` ctx ends, also after a client disconnect or after a `ConsumeSSEStream` callback returns, as in v0.5; a TS stream nobody reads stalls under backpressure. Pass `r.Context()` or use `StreamTextLowMemory` (round 79).
+- **Invalid tool call input that is not a JSON object**: the raw text is kept in `ToolCall.RawArguments` / `ToolCallContent.Input` only (`Arguments`, `ToolResult.Input`, `ToolErrorContent.Input` are maps), JSON that is not an object is invalid also without `Parameters`, and validator / parser messages are Go's (round 79).
+- **Unknown tool choice types**: a custom `ToolChoice.Type` is sent as auto by OpenAI, xAI Responses, Alibaba, Moonshot and Hugging Face; TS cannot construct one (round 79).
+- **Tool output JSON key order in replayed prompts**: serialized tool output JSON keeps Go map key order (three openresponses TS replays skipped) (round 79).
 - The Vertex Gemini image model accepts URL and `gs://` input images and
   sends them as `fileData` with the caller's media type, else one inferred
   from the URL path extension (query string and fragment ignored), else
