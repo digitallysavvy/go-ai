@@ -552,6 +552,7 @@ func GenerateContentToTS(res *types.GenerateResult) interface{} {
 			if m, ok := v.(map[string]interface{}); ok {
 				delete(m, "signature")
 				delete(m, "redacted_data")
+				delete(m, "encrypted_content")
 			}
 		case types.ToolResultContent:
 			// TS marks a failed result isError; Go carries the error text.
@@ -781,7 +782,7 @@ func Normalize(v interface{}) interface{} {
 		o := map[string]interface{}{}
 		for k, e := range x {
 			// Go-only replay fields; TS has providerMetadata for the same data.
-			if k == "providerOptions" || k == "encrypted_content" {
+			if k == "providerOptions" {
 				continue
 			}
 			if k == "id" && x["type"] == "source" {
