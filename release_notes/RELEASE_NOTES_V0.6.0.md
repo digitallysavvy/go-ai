@@ -104,6 +104,7 @@ Also new:
 - **`types.EmbeddingUsage.Reported`** (`json:"-"`): set by an embedding provider when the response carried a usage object; telemetry then records a reported 0 (TS `usage.tokens: 0`).
 - **`telemetry.DiagnosticEventOnStepError`** (`"onStepError"`): the diagnostic message `FireOnStepError` publishes (TS `onStepError`).
 - **`types.ToolApprovalRequestContent.InputSchemaInputSet`** (`json:"-"`): marks a nil `InputSchemaInput` as a present JSON null (TS `hasOwnProperty`), set by `ConvertToModelMessages` and honored by approval revalidation.
+- **`streaming.StreamingToolCallTracker.Failed`** reports that a delta raised the error TS throws from `processDelta` (a nameless or mistyped new call); callers end the stream there. **`BufferNamelessIndexedCalls`** makes indexed nameless deltas wait for their name, as TS openai-compatible `pendingToolCalls` (review round 81).
 - OpenAI Responses: `promptCacheOptions` 12h TTL and prewarm, shell tool
   `timeoutMs`/`maxOutputLength`, `additionalTools` and
   `omitFromRequestTools`. Azure `ToolSearch` and per-deployment model
@@ -364,6 +365,10 @@ search for and ends with a checklist for coding agents. Entries marked
 - **The legacy embed root span records InputTokens usage** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#embed-root-usage-tokens-input-tokens)
 - **A provider-reported 0 embedding token count is recorded** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#embedding-usage-zero-reported)
 - **FireOnStepError publishes an onStepError diagnostic message** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#diagnostic-on-step-error)
+- **Tool input is validated with every input schema** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-input-every-schema-validated)
+- **Legacy doEmbed span `ai.usage.tokens` is an integer** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-embed-usage-tokens-int)
+- **A cancelled UI ctx stops message processing** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-cancel-stops-processing)
+- **ExperimentalStreamTranslate reports the TS cancel reasons** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-translate-cancel-reason)
 
 #### Errors
 
@@ -428,10 +433,21 @@ search for and ends with a checklist for coding agents. Entries marked
 - **openresponses custom tool inputs keep HTML characters literal** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openresponses-custom-tool-input-literal)
 - **Perplexity stream ids format numbers like JavaScript** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#perplexity-stream-ids-js-numbers)
 - **Google decodes unpadded and URL-safe base64 payloads** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-base64-forgiving-decode)
-- **gmicloud and ollama report unknown usage for a response without usage** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#compat-missing-usage-null)
+- **gmicloud, ollama and alibaba report unknown usage for a response without usage** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#compat-missing-usage-null)
 - **OpenAI-compatible generate results keep the TS reasoning and content order** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#compat-generate-content-order)
 - **A Cohere file part is an image only for the image top-level media type** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#cohere-image-top-level-media-type)
 - **Mistral: an empty choices array is an error** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mistral-empty-choices-error)
+- **Amazon Bedrock: embedding token counts follow TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#bedrock-embedding-token-count)
+- **Google Vertex: one embedding response per call** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vertex-embedding-one-response)
+- **Google Live transcription and translation streams** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-live-close-and-silence)
+- **Base64 string file payloads are forwarded as given** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#file-data-string-forwarded)
+- **Speech request.body keeps the TS key order** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#speech-request-body-key-order)
+- **Alibaba, Moonshot and OpenAI completion: an empty choices array is an error** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#chat-empty-choices-typeerror)
+- **A streamed tool call without a function name ends the stream** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#chat-stream-missing-tool-name-no-finish)
+- **OpenAI computer tool input follows TS mapComputerAction** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-computer-input-order)
+- **OpenAI-compatible completion results drop an empty text part** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#compat-completion-empty-text)
+- **OpenAI-compatible streams keep tool call thought signatures** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#compat-stream-tool-thought-signature)
+- **Cerebras reports the request body it sends** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#cerebras-request-body-extras)
 
 #### MCP
 
@@ -443,6 +459,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Code mode has a default 10 s CPU limit** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codemode-cpu-limit)
 - **Code mode caps concurrent scripts** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codemode-max-workers)
 - **wazero is v1.12.0** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#wazero-version)
+- **Code mode validates a bare schema.Validator Parameters** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codemode-bare-validator-validated)
 
 #### Harness, ACP and fx
 
@@ -453,6 +470,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Harness usage is the turn total, and a failed OAuth refresh fails start** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#harness-usage-oauth)
 - **fx: the built-in terminal tool is removed** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#fx-terminal-removed)
 - **fx has an opt-in libfx runtime** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#fx-libfx-opt-in)
+- **Harness continuations accept pointer content parts** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#harness-continuation-pointer-parts)
 
 #### Policy
 
@@ -1090,6 +1108,11 @@ in v0.5.3.
 - A struct-tag schema (`schema.NewSimpleStructSchema`, `schema.NewStructSchema`) validates the decoded JSON value: `ObjectOutput`, `ElementOutput`, `ArrayOutput` and `GenerateObject` with a struct schema, and code-mode tools with a struct `Parameters`, always failed in v0.5.2 with `validator: (nil map[string]interface {})` (review round 80).
 - When one ctx drives `StreamText` and a UI helper, a cancellation no longer writes the abort chunk at random: once the helper ctx is cancelled nothing more is written (review round 80).
 - Google inline data, Interactions files and TTS audio decode unpadded and URL-safe base64 like TS `convertBase64ToUint8Array` (review round 80).
+- `CreateUIMessageStreamWithOptions` no longer panics ("WaitGroup is reused before previous Wait has returned") when a `writer.Merge` from another goroutine races the end of the last merged stream (review round 81).
+- `ChunksContext` with a cancelled ctx returns the chunk to the shared cursor instead of sending it (review round 81).
+- The telemetry integrations drop the embed and rerank span map entries on `OnError` / `OnAbort`, so a call without `OnEmbedEnd` / `OnRerankEnd` no longer leaks one entry per span (review round 81).
+- Perplexity embeddings: `DoEmbed` no longer panics on a response without embeddings (review round 81).
+- Perplexity decisions: an `image/` media type is sniffed from the data (review round 81).
 
 ### Providers
 
@@ -1411,6 +1434,8 @@ Notable ones:
 - **Embedding usage across EmbedMany batches**: a positive token sum is recorded when some batches reported no usage; TS sums to NaN and drops it (round 80).
 - **Legacy telemetry tool spans on error**: Go's legacy `OnError` ends still-open tool spans with the error status; TS never ends them (round 80).
 - **Executed tool results carry the tool title**: `ToolResult.Title` of a locally executed tool is the call's title, as in v0.5.2; TS client tool results have no `title` (round 80).
+- **Live WebSocket close code**: Google/Vertex Live and OpenAI realtime translation close errors say `(code unknown)`; `golang.org/x/net/websocket` does not expose the close code, and v0.5.2 exports its `*websocket.Conn` (round 81).
+- **OpenAI compaction metadata keeps the v0.5 keys**: `openai.compaction` parts carry the TS `providerMetadata.openai` object and the v0.5.2 top-level keys (round 81).
 - The Vertex Gemini image model accepts URL and `gs://` input images and
   sends them as `fileData` with the caller's media type, else one inferred
   from the URL path extension (query string and fragment ignored), else

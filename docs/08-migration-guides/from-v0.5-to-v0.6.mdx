@@ -266,15 +266,32 @@ already, you can skip them.
 | `schema.NewSimpleStructSchema`, `schema.NewStructSchema` with `ObjectOutput`, `ElementOutput`, `ArrayOutput`, `GenerateObject` or code-mode tools | The decoded value is validated against the struct; no longer always fails | silent behavior change | Check `validate:` tags | [Struct-tag schemas](#struct-schema-validates-decoded-value) |
 | Custom model `ToolErrorContent` / pointer parts for a deferred provider call (`SupportsDeferredResults`) | Resolve the pending call | silent behavior change | No action unless you relied on the extra model call | [Deferred result parts](#deferred-result-any-result-part) |
 | `ToolCallRepairOptions.InputSchema` for a tool without `Parameters` | `{"type":"object","properties":{},"additionalProperties":false}` | silent behavior change | No action unless you compare the schema | [Repair input schema](#repair-input-schema-empty-object) |
-| Approved calls of tools with `Parameters: schema.NewSimpleStructSchema(...)`; `ValidateUIMessages` with such tools | Revalidated as parsed; no longer always invalid | silent behavior change | None | [Struct schema revalidation](#approval-struct-schema-revalidation) |
+| Approved calls of tools with `Parameters: schema.NewSimpleStructSchema(...)`; `ValidateUIMessages` with such tools | Revalidated with the struct schema as parsed; valid input no longer always invalid | silent behavior change | None | [Struct schema revalidation](#approval-struct-schema-revalidation) |
 | UI JSON `"inputSchemaInput": null`, tool part `"input": null`; `ToolUIPart` / `ToolUIPartApproval` positional literals or `reflect.DeepEqual` of decoded parts | Kept and validated as null (an output-error part may become `dynamic-tool`) | wire/protocol change | None | [Null inputs kept](#ui-null-input-kept) |
 | `gen_ai.usage.input_tokens` / `ai.usage.tokens` on embedding spans; `types.EmbeddingUsage` compared whole (`==`, `reflect.DeepEqual`, `assert.Equal`); `testutil.MockEmbeddingModel` usage | A reported 0 is recorded; new `EmbeddingUsage.Reported` | silent behavior change | Compare the counters, or add `Reported: true` | [Embedding usage 0](#embedding-usage-zero-reported) |
 | `telemetry.SubscribeDiagnostic` handlers that switch on `DiagnosticMessage.Type` | New `DiagnosticEventOnStepError` (`"onStepError"`) messages | silent behavior change | Handle or ignore the type | [onStepError diagnostic](#diagnostic-on-step-error) |
 | Google / Vertex generated files (`GeneratedFileContent.Data`), Interactions image/video data, Gemini TTS, speech translation and Vertex Cloud TTS audio with unpadded or URL-safe base64 | Decoded; no longer an empty file or a failed call | silent behavior change | None | [Google base64](#google-base64-forgiving-decode) |
-| gmicloud / ollama `DoGenerate` `Usage.InputTokens`, `OutputTokens`, `TotalTokens`, `Usage.Raw` without a nil check | nil (unknown) for a response without `usage`, not pointers to 0 | silent behavior change | nil-check the `Usage` pointers | [Missing usage](#compat-missing-usage-null) |
+| gmicloud / ollama / alibaba `DoGenerate` `Usage.InputTokens`, `OutputTokens`, `TotalTokens`, `Usage.Raw` without a nil check | nil (unknown) for a response without `usage`, not pointers to 0 | silent behavior change | nil-check the `Usage` pointers | [Missing usage](#compat-missing-usage-null) |
 | `DoGenerate` `GenerateResult.Content` of gmicloud, together, fireworks, zai, ollama, Vertex xAI with thinking parts | `reasoning_content` first; text and thinking parts in wire order | silent behavior change | None | [Content order](#compat-generate-content-order) |
 | cohere file parts whose media type starts with `image` but whose top-level type is not `image` (`imagery/plain`) | Sent as a document | silent behavior change | None | [Cohere image media type](#cohere-image-top-level-media-type) |
 | mistral chat `DoGenerate` / `DoStream` with `"choices": []` | Error like the TS TypeError | silent behavior change | None | [Mistral empty choices](#mistral-empty-choices-error) |
+| Tools with `Parameters: schema.NewSimpleStructSchema(...)`, `schema.NewStructSchema(...)` or a custom `schema.Schema` / `schema.Validator`; `validate:` tags | Tool input validated when parsed (invalid call, tool error) and on revalidation | silent behavior change | Check `validate:` tags / validator | [Every input schema](#tool-input-every-schema-validated) |
+| `ai.usage.tokens` on the legacy `ai.embed.doEmbed` / `ai.embedMany.doEmbed` span | Int64, as on the root span | silent behavior change | Read it as an integer | [Legacy doEmbed usage tokens](#legacy-embed-usage-tokens-int) |
+| `harness.CollectToolApprovalContinuations` / `CollectToolResultContinuations` with pointer parts | Pointer parts are collected | silent behavior change | None unless you relied on them being ignored | [Harness continuation pointer parts](#harness-continuation-pointer-parts) |
+| UI `OnEnd` after a cancelled UI ctx; `ReadUIMessages` / `ChunksContext` after cancel | isCancelled/unknown, never an unwritten abort; nothing sent after cancel | silent behavior change | None | [Cancelled UI ctx](#ui-cancel-stops-processing) |
+| `StreamTranslationResult` errors after `Close` / ctx cancel | TS text after Close; ctx cause after ctx | error text only | Check text or `errors.Is` | [Translate cancel reasons](#stream-translate-cancel-reason) |
+| bedrock Nova embedding without `inputTokenCount`; token-count header values | Header read as JS Number; NaN when missing | silent behavior change | None | [Bedrock embedding token counts](#bedrock-embedding-token-count) |
+| googlevertex `DoEmbedMany` / `EmbedMany` `Responses` | One entry per request | silent behavior change | Index by request | [Vertex embedding responses](#vertex-embedding-one-response) |
+| google / googlevertex Live transcription and translation close errors | "... (code unknown)." | error text only | Match by prefix | [Google Live streams](#google-live-close-and-silence) |
+| `FileData.DataString` file parts (anthropic, google, googlevertex, mistral, cohere, perplexity) | Sent unchanged | wire/protocol change | None | [Base64 string payloads](#file-data-string-forwarded) |
+| `SpeechResult.Request.Body` (google, googlevertex, mistral) | TS key order | silent behavior change | Compare parsed JSON | [Speech request body order](#speech-request-body-key-order) |
+| alibaba / moonshot chat, openai completion `DoGenerate` with `"choices": []` | Error like the TS TypeError | silent behavior change | None | [Empty choices](#chat-empty-choices-typeerror) |
+| openai / groq / alibaba / deepseek / moonshot / mistral streams with a tool call delta without `function.name` (or with a wrong `type`) | The error chunk ends the stream; no later parts, no finish | silent behavior change | Treat the error as the end | [Nameless tool call](#chat-stream-missing-tool-name-no-finish) |
+| OpenAI `computer` tool input (`RawArguments`, `Arguments["actions"]`) | TS key order, null keys and extra keys dropped | silent behavior change | None | [Computer input](#openai-computer-input-order) |
+| OpenAI-compatible completion with empty text, `result.Content[0]` | No text content part | silent behavior change | Read `Text` | [Empty completion text](#compat-completion-empty-text) |
+| OpenAI-compatible stream tool calls with a thought signature | Signature in tool call `ProviderMetadata` | silent behavior change | None | [Stream thought signature](#compat-stream-tool-thought-signature) |
+| cerebras `RawRequest` / `RequestBody()` with `providerOptions.cerebras` | Carries the fields sent on the wire | silent behavior change | None | [Cerebras request body](#cerebras-request-body-extras) |
+| Code-mode tools with `Parameters: schema.NewJSONSchema(...)` or another bare `schema.Validator` | Input validated | silent behavior change | None | [Code mode bare validator](#codemode-bare-validator-validated) |
 | Cohere `BaseURL` or `DefaultBaseURL` (v0.5.3) | v2 API | wire/protocol change | Check custom base URLs | [Cohere v2](#v053-cohere-v2) |
 | `MaxRetries` unset on non-Gateway providers (v0.5.3) | Every provider retries | silent behavior change | Set `MaxRetries: &zero` to disable | [Retries](#v053-retries) |
 | Reliance on the 60 s default HTTP client timeout (v0.5.3) | No whole-request timeout | silent behavior change | Bound calls with `ctx` | [HTTP client timeout](#v053-http-timeout) |
@@ -909,6 +926,27 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 
 - **Kind:** silent behavior change
 
+### ExperimentalStreamTranslate reports the TS cancel reasons {#stream-translate-cancel-reason}
+
+- **What changed:** after `FullStream().Close()`, the
+  `StreamTranslationResult` accessors return `Translation stream was
+  cancelled.` also while the provider is still reading (v0.5 returned the
+  provider's `context canceled` there). When your own `ctx` is cancelled they
+  return the ctx's cause, also while a send was blocked (v0.5 returned the
+  Close text there), as `ExperimentalStreamTranscribe` does. After your ctx is
+  cancelled, a part the provider still returns goes to a `FullStream` reader
+  that is waiting for it (TS passes `abortSignal` only to the model); after
+  `Close` no further part is written. The same holds for transcription.
+  v0.5 picked either at random (review round 81).
+- **Am I affected?** `"Translation stream was cancelled."` or
+  `errors.Is(err, context.Canceled)` checks on `StreamTranslationResult`
+  accessor errors; FullStream readers that stop at the first part after
+  cancelling their ctx.
+- **What to do:** match the text after `Close`, or cancel your own context
+  and check `errors.Is(err, context.Canceled)`. Stop reading after you
+  cancel if you do not want the provider's last parts.
+- **Kind:** error text only
+
 ### Stop conditions run only when the loop would continue {#stop-conditions-only-when-continue}
 
 - **What changed:** `StopWhen` conditions are evaluated only when the loop
@@ -1013,10 +1051,19 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   empty vector is returned as the result, and Google returns the embeddings
   as sent (`EmbedMany` still rejects a count mismatch with
   `*providererrors.InvalidResponseDataError`
-  `Expected N embeddings, but received M.`) (review round 80).
+  `Expected N embeddings, but received M.`) (review round 80). Amazon
+  Bedrock and Perplexity now follow the same rule (review round 81): a
+  response without embeddings makes `DoEmbed` return
+  `*providererrors.InvalidResponseDataError` "No embedding generated."
+  (Bedrock returned `no embeddings in response`; Perplexity panicked), and
+  Bedrock `DoEmbedMany` returns the embeddings as sent, so `EmbedMany`
+  reports "Expected N embeddings, but received M." instead of Bedrock's own
+  `bedrock cohere embedding batch returned ...` error.
 - **Am I affected?** Code that matches those error strings, calls
   `DoEmbed`/`DoEmbedMany` directly and relies on them, or relies on `Embed`
-  failing for an empty vector.
+  failing for an empty vector; `bedrock` and `perplexity` embedding models;
+  error strings `no embeddings in response`, `bedrock cohere embedding batch
+  returned`.
 - **What to do:**
 
   ```go
@@ -1433,6 +1480,35 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   match that schema.
 - **What to do:** no action unless such a tool relied on receiving input its
   schema rejects; loosen the schema or repair the call in `RepairToolCall`.
+- **Kind:** silent behavior change
+
+### Tool input is validated with every input schema {#tool-input-every-schema-validated}
+
+- **What changed:** v0.5 (v0.5.2 included) validated a tool call's input
+  only when the tool's `Parameters` was a JSON-schema map or a
+  `*schema.JSONSchemaValidator`. A struct-tag schema
+  (`schema.NewSimpleStructSchema`, `schema.NewStructSchema`) or your own
+  `schema.Schema` / `schema.Validator` was skipped when the call was
+  parsed, so input that broke it reached `Execute`. v0.6 validates with
+  every input schema, as TS `parseToolCall` validates with the tool's
+  `inputSchema`. A struct-tag schema decodes the input into the struct and
+  now enforces its `validate:` tags on tool input; a value that does not
+  decode, such as a string for an `int` field, fails. A custom validator's
+  `Validate` runs. A failing call becomes an invalid tool call
+  (`*ai.InvalidToolInputError`): dynamic, answered with a tool error and
+  passed to `RepairToolCall`. Approval revalidation
+  (`ValidateApprovedToolApprovals`) and `ValidateUIMessages` use the same
+  validator, so they reject the same input. A nil schema or a typed nil
+  pointer (`(*schema.SimpleStructSchema)(nil)`) is no schema; v0.5 panicked
+  in `Validator()` there (review round 81).
+- **Am I affected?** Tools with `Parameters: schema.NewSimpleStructSchema(...)`,
+  `schema.NewStructSchema(...)`, or a value of your own `schema.Schema` /
+  `schema.Validator` type, used with `GenerateText`, `StreamText`,
+  `ParseToolCall`, `ToolLoopAgent`, `ValidateApprovedToolApprovals` or
+  `ValidateUIMessages`; struct fields with `validate:` tags.
+- **What to do:** no action unless you relied on `Execute` receiving input
+  that the struct's `validate:` tags or your validator reject. In that
+  case, relax the tags or validator, or set `Tool.ValidateInput`.
 - **Kind:** silent behavior change
 
 ### Provider tool output schemas match TS {#provider-tool-output-schemas}
@@ -1907,8 +1983,10 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   error, never executed) and `ValidateUIMessages` rejected the message. v0.6
   revalidates with the validator the call was parsed with, as TS
   revalidates with the schema the call was parsed with, so a struct-tag
-  schema is skipped there as it is when the call is parsed, and the approved
-  call executes (review round 80).
+  schema validates the approved input as it validates the parsed call (see
+  [every input schema](#tool-input-every-schema-validated)): a valid
+  approved call executes, and one that breaks the struct's `validate:` tags
+  is an invalid approval (review rounds 80 and 81).
 - **Am I affected?** Tools with `Parameters: schema.NewSimpleStructSchema(...)`
   (or another `schema.Schema` whose validator is a `*schema.StructValidator`)
   together with `ToolApproval`, `ValidateUIMessages` or
@@ -3078,6 +3156,29 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   or on the part input being validated instead.
 - **Kind:** wire/protocol change
 
+### A cancelled UI ctx stops message processing {#ui-cancel-stops-processing}
+
+- **What changed:** once the ctx passed to `ToUIMessageStream`,
+  `CreateUIMessageStream(WithOptions)` or a Pipe/Response helper is
+  cancelled, no further chunk updates the message state. A part read while
+  the cancellation happened (StreamText's abort part when the same ctx, or
+  an abort in the same moment, ends the run) is dropped, so `OnEnd` reports
+  `isCancelled: true` with outcome `unknown` instead of `isAborted: true`
+  with outcome `aborted` for an abort chunk that was never written. TS
+  cancels the pipeline, and `handleUIMessageStreamFinish` calls `onEnd`
+  without processing another chunk (review round 81). `ReadUIMessages`
+  likewise sends no snapshot once its ctx is cancelled, and
+  `StreamTextResult.ChunksContext` sends no chunk after its ctx is cancelled
+  (the chunk stays on the shared `Stream()` cursor).
+- **Am I affected?** `OnEnd` handlers that read `isAborted`, `isCancelled`
+  or `outcome` when the request ctx (or a ctx cancelled with the StreamText
+  ctx) is passed to the UI helper; `ReadUIMessages` or `ChunksContext`
+  consumers that keep reading after cancelling.
+- **What to do:** no action unless you relied on `isAborted` there. To
+  always see the abort, pass the UI helper a ctx that is not cancelled with
+  the StreamText ctx (for example `context.WithoutCancel(r.Context())`).
+- **Kind:** silent behavior change
+
 ## Telemetry and events {#telemetry-and-events}
 
 The [telemetry recording change](#telemetry-record-pointers) is listed under
@@ -3305,6 +3406,20 @@ compile-time changes.
 - **Am I affected?** Dashboards, queries or tests that filter the GenAI
   `embeddings` span by `gen_ai.operation.name`.
 - **What to do:** match `gen_ai.operation.name = "embeddings"`.
+- **Kind:** silent behavior change
+
+### Legacy doEmbed span `ai.usage.tokens` is an integer {#legacy-embed-usage-tokens-int}
+
+- **What changed:** v0.5 recorded `ai.usage.tokens` on the
+  LegacyOpenTelemetry `ai.embed.doEmbed` / `ai.embedMany.doEmbed` span as a
+  float attribute (`attribute.Float64`); v0.6 records it as an integer
+  (`attribute.Int64`), like the root `ai.embed` / `ai.embedMany` span. TS
+  records the same integer `usage.tokens` on both spans, which OpenTelemetry
+  JS exports as an int value (review round 81).
+- **Am I affected?** Exporters, span processors or tests that read
+  `ai.usage.tokens` on the `ai.embed.doEmbed` / `ai.embedMany.doEmbed` span
+  as a float (`Value.AsFloat64()`, `.(float64)`, a `doubleValue` query).
+- **What to do:** read it as an integer (`Value.AsInt64()`, `.(int64)`).
 - **Kind:** silent behavior change
 
 ### generateSpeech records an empty text {#telemetry-speech-empty-text}
@@ -3830,6 +3945,82 @@ compile-time changes.
 - **What to do:** no action unless you relied on that.
 - **Kind:** silent behavior change
 
+#### Base64 string file payloads are forwarded as given {#file-data-string-forwarded}
+
+- **What changed:** for a file part with `FileData{Type: FileDataTypeData,
+  DataString: ...}`, v0.5 Anthropic (and Bedrock Anthropic / Vertex Anthropic)
+  decoded the string with `base64.StdEncoding` and re-encoded it (a string
+  that is not standard base64 failed the call, base64url was rewritten),
+  Google and Vertex Gemini re-encoded a string `base64.StdEncoding` accepted
+  (a newline was dropped) and could not detect a bare media type (`image`,
+  `image/*`) from an unpadded or base64url string, and Mistral, Cohere image
+  parts and Perplexity image input sent an empty data URL because they read
+  only `FileData.Data`. v0.6 forwards the string unchanged, as TS
+  `convertToBase64` does, and decodes it like TS `convertBase64ToUint8Array`
+  only where the bytes are needed (Anthropic text/plain documents and media
+  type detection) (review round 81).
+- **Am I affected?** `FileData.DataString` file parts sent to `anthropic`,
+  `bedrock` (Anthropic models), `googlevertex/anthropic`, `google`,
+  `googlevertex`, `mistral`, `cohere` or `perplexity`.
+- **What to do:** no action unless you relied on the old error for a string
+  that is not base64.
+- **Kind:** wire/protocol change
+
+#### Speech request.body keeps the TS key order {#speech-request-body-key-order}
+
+- **What changed:** `SpeechResult.Request.Body` for Google Gemini TTS, Google
+  Vertex Chirp 3: HD (Cloud TTS) and Mistral speech was marshaled from Go
+  maps, which sort keys. v0.6 keeps the key order of the TS request literal
+  (`JSON.stringify(requestBody)`) (review round 81).
+- **Am I affected?** code that compares `SpeechResult.Request.Body` as a
+  string for `google`, `googlevertex` or `mistral` speech models.
+- **What to do:** compare the parsed JSON instead of the string.
+- **Kind:** silent behavior change
+
+#### Alibaba, Moonshot and OpenAI completion: an empty choices array is an error {#chat-empty-choices-typeerror}
+
+- **What changed:** v0.5 returned an empty result (finish reason `other`, no
+  usage) from `DoGenerate` when the response had `"choices": []`. v0.6
+  follows TS, which reads `choices[0]` without a guard: Alibaba and Moonshot
+  return the error `Cannot read properties of undefined (reading 'message')`,
+  OpenAI completion `... (reading 'logprobs')` and OpenAI-compatible
+  completion `... (reading 'text')` (review round 81). Mistral already did
+  this ([Mistral empty choices](#mistral-empty-choices-error)); OpenAI chat,
+  DeepSeek and the OpenAI-compatible chat providers return
+  `InvalidResponseDataError` "Response did not contain any choices." as TS
+  does.
+- **Am I affected?** `alibaba` / `moonshot` chat `DoGenerate`, or `openai`
+  `CompletionModel` (`OpenAICompatible` or not) `DoGenerate`, against an
+  endpoint that can answer `"choices": []`.
+- **What to do:** no action unless you relied on the empty result; treat the
+  error as a malformed response.
+- **Kind:** silent behavior change
+
+#### A streamed tool call without a function name ends the stream {#chat-stream-missing-tool-name-no-finish}
+
+- **What changed:** v0.5 deferred a streamed tool call whose first delta had
+  no `function.name`: the OpenAI, Groq, Alibaba, DeepSeek, Moonshot and
+  Mistral (chat and Conversations) streams kept emitting parts, promoted the
+  call when a later delta named it, and otherwise emitted the error chunk
+  `Expected 'function.name' to be a string.` when the stream ended (OpenAI
+  chat followed it with a finish chunk). v0.6 follows TS, whose
+  `StreamingToolCallTracker` throws `InvalidResponseDataError` from
+  `processDelta` as soon as such a call starts: the stream ends with that
+  error chunk (`Err` is a `*providererrors.InvalidResponseDataError`), with
+  no later part, tool call or finish chunk. A new call whose `type` fails
+  the OpenAI / Groq check (`Expected 'function' type.`) ends the stream the
+  same way. OpenAI-compatible streams (`openai.Config{OpenAICompatible:
+  true}` and the providers built on `streaming.OpenAICompatStream`) keep TS
+  `pendingToolCalls`: a nameless delta with an `index` waits for its name,
+  and a call never named ends the stream with the error and no finish chunk;
+  a nameless delta without an `index` ends it at once (review round 81).
+- **Am I affected?** Stream consumers of those providers that expect a
+  finish chunk, or later parts, after that error, or that relied on a
+  native (not OpenAI-compatible) provider naming a call after its first
+  delta.
+- **What to do:** treat the error chunk as the end of the stream.
+- **Kind:** silent behavior change
+
 ### AI Gateway
 
 #### Provider tools reach the AI Gateway as provider tools {#gateway-provider-tools}
@@ -4096,6 +4287,21 @@ compile-time changes.
 - **What to do:** no action unless you assert on the exact warnings list.
 - **Kind:** silent behavior change
 
+#### Amazon Bedrock: embedding token counts follow TS {#bedrock-embedding-token-count}
+
+- **What changed:** v0.5 read a Nova response without `inputTokenCount` as 0
+  tokens and parsed the `x-amzn-bedrock-input-token-count` header with
+  `strconv.Atoi`. v0.6 follows TS `amazon-bedrock-embedding-model.ts`: a Nova
+  body without `inputTokenCount` reads the header, the header is parsed like JS
+  `Number()` (missing is NaN, empty is 0, fractions and `0x` hex kept), and
+  Titan and Nova body counts keep fractions in `Tokens` (review round 81).
+- **Am I affected?** `bedrock` embedding `EmbeddingUsage.Tokens` /
+  `InputTokens` for Nova models, or Cohere models whose responses carry an
+  unusual token-count header.
+- **What to do:** no action unless you read `Usage.Tokens` without checking
+  `math.IsNaN`; a NaN count marshals as `null` and is left out of telemetry.
+- **Kind:** silent behavior change
+
 ### Google and Vertex
 
 #### Google provider metadata keeps only the keys TS declares {#google-metadata-declared-keys}
@@ -4146,11 +4352,45 @@ compile-time changes.
   (`-`, `_`) payload became an empty generated file or failed the speech
   call. v0.6 decodes them like TS `convertBase64ToUint8Array` (URL-safe
   characters mapped to the standard alphabet, padding optional, whitespace
-  ignored) (review round 80).
+  ignored) (review round 80). Round 81 applies the same TS
+  `convertBase64ToUint8Array` decode to Mistral speech `audio_data`, Amazon
+  Bedrock image bytes (`Image`/`Images`; `Base64Images` keeps the wire
+  strings), Perplexity decision image sniffing and Bedrock Converse media
+  type sniffing.
 - **Am I affected?** Only if you relied on such payloads producing an empty
-  file or an error.
+  file or an error: Google / Vertex, `mistral` speech `DoGenerate`, `bedrock`
+  image `DoGenerate` `Image`/`Images`, `perplexity` decisions with a bare
+  image media type.
 - **What to do:** no action.
 - **Kind:** silent behavior change
+
+#### Google Vertex: one embedding response per call {#vertex-embedding-one-response}
+
+- **What changed:** v0.5 `DoEmbedMany` on the `:predict` endpoint returned the
+  HTTP response once per input, so `EmbedMany` `Responses` had one entry per
+  value. v0.6 returns one response per request, as TS doEmbed and embedMany do
+  (review round 81).
+- **Am I affected?** `googlevertex` text embedding models (not
+  gemini-embedding-2) and code that indexes `EmbeddingsResult.Responses` or
+  `EmbedManyResult.Responses` by input position.
+- **What to do:** index `Responses` by request (one per `MaxEmbeddingsPerCall`
+  batch), not by value.
+- **Kind:** silent behavior change
+
+#### Google Live transcription and translation streams {#google-live-close-and-silence}
+
+- **What changed:** the close-before-finish error now ends with
+  " (code unknown)." as TS does when no close code is known
+  ("Google Live transcription WebSocket closed unexpectedly before finishing
+  (code unknown).", same for "Google Live translation" and "Vertex Live
+  transcription"). In speech translation, an audio part that is not base64
+  now counts as turn activity, and a -32768 PCM sample is no longer treated
+  as silence (review round 81).
+- **Am I affected?** code that matches these error strings exactly, or
+  depends on when a Live translation stream finishes after audio ends.
+- **What to do:** match with `strings.HasPrefix(err.Error(), "... closed
+  unexpectedly before finishing")`.
+- **Kind:** error text only
 
 ### OpenAI
 
@@ -4400,6 +4640,22 @@ compile-time changes.
   part with an id, or none.
 - **Kind:** silent behavior change
 
+#### OpenAI computer tool input follows TS mapComputerAction {#openai-computer-input-order}
+
+- **What changed:** the OpenAI Responses `computer` tool call input
+  (`ToolCall.RawArguments`, `Arguments`) follows TS `mapComputerAction`: each
+  action's declared keys in TS order (`click`: type, button, x, y, keys),
+  `keys` only when not null (keypress keeps it), undeclared action keys
+  dropped, `scroll_x`/`scroll_y` as `scrollX`/`scrollY`, pending safety
+  checks `{id, code?, message?}`. v0.5 passed every wire key through with
+  sorted keys (`"keys": null` kept). `Arguments["actions"]` is still
+  `[]map[string]interface{}` (review round 81).
+- **Am I affected?** Code that compares the computer tool input text, or
+  reads `keys` (null) or undeclared keys from `Arguments["actions"]`.
+- **What to do:** no action unless you read those keys; a missing `keys`
+  means none.
+- **Kind:** silent behavior change
+
 ### xAI
 
 #### xAI provider tool config is validated before the request {#xai-tool-args-validation}
@@ -4518,7 +4774,7 @@ compile-time changes.
 
 ### OpenAI-compatible providers
 
-#### gmicloud and ollama report unknown usage for a response without usage {#compat-missing-usage-null}
+#### gmicloud, ollama and alibaba report unknown usage for a response without usage {#compat-missing-usage-null}
 
 - **What changed:** v0.5 gmicloud and ollama `DoGenerate` returned, for a
   response without a `usage` object (or with `usage: null`),
@@ -4528,7 +4784,9 @@ compile-time changes.
   nil, `Raw` nil), as TS `convertOpenAICompatibleChatUsage(undefined)`
   returns `createNullLanguageModelUsage()`; together, fireworks and zai
   already did this. A `usage` object is mapped as before (review round 80).
-- **Am I affected?** gmicloud / ollama callers that dereference
+  Since review round 81 Alibaba `DoGenerate` does the same (TS
+  `convertAlibabaUsage(undefined | null)`).
+- **Am I affected?** gmicloud / ollama / alibaba callers that dereference
   `result.Usage.InputTokens` (or `OutputTokens`, `TotalTokens`) or read
   `Usage.Raw` without a nil check.
 - **What to do:**
@@ -4558,6 +4816,44 @@ compile-time changes.
   thinking parts are sent.
 - **What to do:** no action unless you assume `Content` has no
   `TextContent`.
+- **Kind:** silent behavior change
+
+#### OpenAI-compatible completion results drop an empty text part {#compat-completion-empty-text}
+
+- **What changed:** an OpenAI-compatible completion `DoGenerate` result
+  (`openai.Config{OpenAICompatible: true}` `CompletionModel`) whose `text` is
+  empty has no `TextContent` in `Content` (TS `choice.text.length > 0`); v0.5
+  always added one. Native OpenAI completion keeps the part (TS always
+  pushes it). `Text` is unchanged (review round 81).
+- **Am I affected?** Direct `DoGenerate` callers of an OpenAI-compatible
+  completion model that index `result.Content[0]`.
+- **What to do:** no action unless you index `Content`; read `Text`.
+- **Kind:** silent behavior change
+
+#### OpenAI-compatible streams keep tool call thought signatures {#compat-stream-tool-thought-signature}
+
+- **What changed:** an OpenAI-compatible chat stream (`openai.Config{OpenAICompatible:
+  true}`) puts a tool call delta's `extra_content.google.thought_signature`
+  on the `tool-call` chunk as
+  `ToolCall.ProviderMetadata[<provider options key>].thoughtSignature`, as
+  TS `extractMetadata` does and as `DoGenerate` already did; v0.5 dropped it
+  in streams (review round 81).
+- **Am I affected?** Streams from Gemini behind an OpenAI-compatible
+  endpoint where you inspect tool call provider metadata.
+- **What to do:** no action.
+- **Kind:** silent behavior change
+
+#### Cerebras reports the request body it sends {#cerebras-request-body-extras}
+
+- **What changed:** v0.5 merged the `providerOptions.cerebras` fields
+  `parallel_tool_calls`, `top_logprobs`, `logit_bias`, `service_tier`,
+  `reasoning_format` and `prompt_cache_key` into the request only at the
+  HTTP transport, so `GenerateResult.RawRequest` and the stream's
+  `RequestBody()` lacked them. v0.6 reports the body that was sent, as TS
+  `request.body` is the transformed body (review round 81).
+- **Am I affected?** Code that reads or compares `cerebras`
+  `GenerateResult.RawRequest` or `provider.StreamRequestBody.RequestBody()`.
+- **What to do:** no action unless you compare the reported body.
 - **Kind:** silent behavior change
 
 ### Cohere
@@ -4793,6 +5089,21 @@ compile-time changes.
 
 - **Kind:** silent behavior change
 
+### Code mode validates a bare schema.Validator Parameters {#codemode-bare-validator-validated}
+
+- **What changed:** v0.5 code mode validated a tool's input only when
+  `Parameters` was a JSON-schema map or a `schema.Schema`; a bare
+  `schema.Validator` (for example `schema.NewJSONSchema(...)`) was skipped,
+  and a nil `*schema.SimpleStructSchema` panicked. v0.6 validates with every
+  schema, as TS code mode validates with `asSchema(tool.inputSchema)`, and a
+  nil schema pointer is no schema. Input the validator rejects fails the
+  tool call with `Invalid input for tool "<name>": ...` (review round 81).
+- **Am I affected?** Code-mode tools with `Parameters:
+  schema.NewJSONSchema(...)` or another bare `schema.Validator`.
+- **What to do:** no action unless your scripts pass input that the
+  validator rejects.
+- **Kind:** silent behavior change
+
 ### wazero is v1.12.0 {#wazero-version}
 
 - **What changed:** wazero moved from v1.9.0 to v1.12.0. Code mode's sandbox
@@ -4860,6 +5171,21 @@ compile-time changes.
 - **Am I affected?** Code that reads `Usage` as the last step's, or that
   expects start to fall back when a refresh fails.
 - **What to do:** read per-step usage from the steps; handle the start error.
+- **Kind:** silent behavior change
+
+### Harness continuations accept pointer content parts {#harness-continuation-pointer-parts}
+
+- **What changed:** v0.5 `harness.CollectToolApprovalContinuations` and
+  `harness.CollectToolResultContinuations` ignored pointer content parts
+  (`*types.ToolApprovalResponseContent`, `*types.ToolResultContent`,
+  `*types.ToolCallContent`, `*types.ToolApprovalRequestContent`), so a
+  trailing tool message built with pointers continued nothing. v0.6 accepts
+  values and non-nil pointers, as `ai.CollectToolApprovals` and the core
+  approval resume do (review round 81).
+- **Am I affected?** Code that builds harness continuation messages with
+  pointer parts, or relies on such a message not resuming a paused turn.
+- **What to do:** No action unless you relied on pointer parts being
+  ignored; remove those parts from the trailing tool message instead.
 - **Kind:** silent behavior change
 
 ### fx: the built-in terminal tool is removed {#fx-terminal-removed}
@@ -5123,6 +5449,12 @@ after upgrading:
   [Legacy telemetry tool spans on error](./known-differences.mdx).
 - **Executed tool results carry the tool title** (`ToolResult.Title`, as in v0.5.2); TS client tool results have none. See
   [Executed tool results carry the tool title](./known-differences.mdx).
+- **Live WebSocket close errors say `(code unknown)`**: the Go websocket
+  library does not expose the close code or reason. See
+  [Live WebSocket close code](./known-differences.mdx).
+- **OpenAI compaction parts keep the v0.5 top-level metadata keys** next to
+  the TS `providerMetadata.openai` object. See
+  [OpenAI compaction metadata keeps the v0.5 keys](./known-differences.mdx).
 
 ## For coding agents {#for-coding-agents}
 
@@ -5166,7 +5498,8 @@ next one.
      -e 'InputSchemaInput|ExperimentalRefineToolInput|SupportsDeferredResults|UIMessageStreamResponseInit|reasoningEncryptedContent|budgetTokens|redactedData|ExperimentalSandbox|CustomData|Timestamp\.IsZero' \
      -e 'ToolCallRepairError|InvalidToolCall|ValidateUIMessages|UncheckedStrictToolCalls|serviceTier|safetyIdentifier|promptCacheKey|\[DONE\]|"data-' \
      -e 'EmbeddingUsage|DoEmbed|SubscribeDiagnostic|NewSimpleStructSchema|NewStructSchema|inputSchemaInput|InputSchema\(|gmicloud|ollama|mistral|no embedding|ToolUIPart\{' \
-     -e 'InvalidToolInputError|SpanRecorder|Ended\(\)|groundingMetadata|safetyRatings|promptFeedback|urlContextMetadata|StopSequences|RawArguments|ResponseHeaders|FinishReasonInterrupted|Prompt\{|ToolChoice\{Type|InputTokens' .
+     -e 'InvalidToolInputError|SpanRecorder|Ended\(\)|groundingMetadata|safetyRatings|promptFeedback|urlContextMetadata|StopSequences|RawArguments|ResponseHeaders|FinishReasonInterrupted|Prompt\{|ToolChoice\{Type|InputTokens' \
+     -e 'validate:"|ai\.usage\.tokens|Collect(ToolApproval|ToolResult)Continuations|isAborted|isCancelled|ReadUIMessages|ChunksContext|StreamTranslat|DataString|Request\.Body|RawRequest|RequestBody\(\)|alibaba|moonshot|CompletionModel|computer|thoughtSignature|cerebras|bedrock|googlevertex|closed unexpectedly' .
    ```
 
 4. For each match, open the entry the table links to. Apply **What to do**.

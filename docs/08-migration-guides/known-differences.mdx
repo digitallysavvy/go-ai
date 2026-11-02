@@ -656,6 +656,27 @@ messages and the UI message stream match TS. Dropping the field would
 silently remove a value v0.5.2 callers read, with no TS-observable gain
 (review round 80).
 
+## Live WebSocket close code
+
+Google and Vertex Live transcription and speech translation, and OpenAI
+realtime translation, end a WebSocket that closes before the stream
+finished with "... closed unexpectedly before finishing (code unknown).".
+TS includes the close code and reason (`(code 1011, reason: ...)`). Go uses
+`golang.org/x/net/websocket`, which discards the close frame's payload, and
+v0.5.2 exports that library's `*websocket.Conn` from
+`providerutils/websocket` (`Dial`, `Session.SetConn`, `ReceiveLoop`,
+`Receive`), so switching libraries would break v0.5.2 callers (review
+round 81).
+
+## OpenAI compaction metadata keeps the v0.5 keys
+
+An `openai.compaction` custom content part (generate and stream) carries
+`providerMetadata.openai = {type, itemId, encryptedContent}` like TS, and
+also the same three keys at the top level of `providerMetadata`, which
+v0.5.2 callers read. TS has only the provider-keyed object. The openai wire
+suite lists the 7 compaction tests under `SkipResults` for it (review
+round 81).
+
 ## Features that are TypeScript-only (not ported)
 
 - **OpenAI Live over WebRTC** — the browser transport for OpenAI's realtime
