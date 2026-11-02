@@ -1,8 +1,14 @@
 package ai
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -50,5 +56,139 @@ func TestR79StreamRetryDropsInlineInvalidToolError(t *testing.T) {
 	}
 	if r.FinishReason() != types.FinishReasonStop {
 		t.Fatalf("finish reason = %s, want stop", r.FinishReason())
+	}
+}
+
+// r79streamBigDelta is larger than a bufio.Writer's buffer, so writing its
+// event goes straight to the failing writer.
+var r79streamBigDelta = strings.Repeat("x", 5000)
+
+// r79streamFailWriter accepts ok writes, then fails every later one (a client
+// that disconnected).
+type r79streamFailWriter struct {
+	mu sync.Mutex
+	ok int
+}
+
+func (w *r79streamFailWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.ok == 0 {
+		return 0, errors.New("client disconnected")
+	}
+	w.ok--
+	return len(p), nil
+}
+
+// TS pipeUIMessageStreamToResponse / createUIMessageStreamResponse tee the
+// SSE stream for consumeSseStream. A client disconnect cancels only the
+// response branch (writeToServerResponse reader.cancel), and a tee cancels
+// its source only when both branches are cancelled, so the consumeSseStream
+// copy still gets every event through [DONE] (the TS stopping-streams docs
+// pass consumeStream for exactly this). Go closed the copy and cancelled the
+// source at the first failed write.
+func TestR79StreamConsumeSSEStreamOutlivesClientDisconnect(t *testing.T) {
+	chunks := make(chan UIMessageChunk)
+	go func() {
+		defer close(chunks)
+		for _, c := range []UIMessageChunk{{"type": "start"}, {"type": "text-start", "id": "1"}, {"type": "text-delta", "id": "1", "delta": r79streamBigDelta}, {"type": "text-end", "id": "1"}, {"type": "finish"}} {
+			chunks <- c
+		}
+	}()
+	copied := make(chan string, 1)
+	err := PipeUIMessageChunksToResponse(chunks, &r79streamFailWriter{ok: 2}, &UIMessageStreamResponseInit{
+		ConsumeSSEStream: func(r io.Reader) error {
+			b, err := io.ReadAll(r)
+			copied <- string(b)
+			return err
+		},
+	})
+	if err == nil || err.Error() != "client disconnected" {
+		t.Fatalf("Pipe error = %v, want the write error", err)
+	}
+	want := "data: {\"type\":\"start\"}\n\n" +
+		"data: {\"id\":\"1\",\"type\":\"text-start\"}\n\n" +
+		"data: {\"delta\":\"" + r79streamBigDelta + "\",\"id\":\"1\",\"type\":\"text-delta\"}\n\n" +
+		"data: {\"id\":\"1\",\"type\":\"text-end\"}\n\n" +
+		"data: {\"type\":\"finish\"}\n\n" +
+		"data: [DONE]\n\n"
+	select {
+	case got := <-copied:
+		if got != want {
+			t.Fatalf("consumer copy = %q\nwant %q", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the consumer copy never ended")
+	}
+}
+
+// The StreamTextResult helpers keep the model stream running for the
+// consumer's copy after the response fails: its copy ends with the finish
+// chunk and [DONE], and the UI stream's onEnd sees a completed stream rather
+// than a cancelled one.
+func TestR79StreamResultConsumeSSEStreamOutlivesClientDisconnect(t *testing.T) {
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, r71streamHelloWorld), Prompt: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	copied := make(chan string, 1)
+	ended := make(chan map[string]interface{}, 1)
+	err = PipeUIMessageStreamToResponseWithInit(context.Background(), r, &r79streamFailWriter{}, &UIMessageStreamResponseInit{
+		ConsumeSSEStream: func(rd io.Reader) error {
+			b, err := io.ReadAll(rd)
+			copied <- string(b)
+			return err
+		},
+	}, UIMessageStreamResultOptions{OnEnd: func(e map[string]interface{}) { ended <- e }})
+	if err == nil {
+		t.Fatal("Pipe error = nil, want the write error")
+	}
+	select {
+	case got := <-copied:
+		if !strings.Contains(got, "data: {\"delta\":\"world!\",\"id\":\"1\",\"type\":\"text-delta\"}\n\n") || !strings.HasSuffix(got, "data: {\"finishReason\":\"stop\",\"type\":\"finish\"}\n\ndata: [DONE]\n\n") {
+			t.Fatalf("consumer copy = %q", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the consumer copy never ended")
+	}
+	select {
+	case e := <-ended:
+		if _, cancelled := e["isCancelled"]; cancelled || fmt.Sprint(e["outcome"]) != "map[status:completed]" {
+			t.Fatalf("onEnd = cancelled %v outcome %v, want completed", e["isCancelled"], e["outcome"])
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("onEnd never ran")
+	}
+}
+
+// Once the consumer returns as well, both tee branches are gone: the drain
+// stops reading chunks.
+func TestR79StreamDrainStopsWhenConsumerReturns(t *testing.T) {
+	chunks := make(chan UIMessageChunk)
+	consumerDone := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		chunks <- UIMessageChunk{"type": "start"}
+		<-release
+	}()
+	err := PipeUIMessageChunksToResponse(chunks, &r79streamFailWriter{}, &UIMessageStreamResponseInit{
+		ConsumeSSEStream: func(r io.Reader) error {
+			defer close(consumerDone)
+			buf := make([]byte, 64)
+			_, err := r.Read(buf)
+			return err
+		},
+	})
+	if err == nil {
+		t.Fatal("Pipe error = nil, want the write error")
+	}
+	close(release)
+	<-consumerDone
+	// Give the drain a moment to observe the stop.
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case chunks <- UIMessageChunk{"type": "finish"}:
+		t.Fatal("chunks still read after the consumer returned")
+	case <-time.After(100 * time.Millisecond):
 	}
 }

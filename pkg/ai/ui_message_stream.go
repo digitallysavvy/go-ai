@@ -2507,20 +2507,26 @@ func PipeUIMessageStreamToResponse(ctx context.Context, result *StreamTextResult
 // writeUIMessageSSEChunk JSON-encodes and writes a single UI message chunk
 // as one SSE "data: ...\n\n" event, then flushes it.
 func writeUIMessageSSEChunk(bw *bufio.Writer, flush func() error, chunk UIMessageChunk) error {
-	b, err := jsonstr.Marshal(chunk)
+	event, err := uiSSEEventBytes(chunk)
 	if err != nil {
 		return err
 	}
-	if _, err := bw.WriteString("data: "); err != nil {
-		return err
-	}
-	if _, err := bw.Write(b); err != nil {
-		return err
-	}
-	if _, err := bw.WriteString("\n\n"); err != nil {
+	if _, err := bw.Write(event); err != nil {
 		return err
 	}
 	return flush()
+}
+
+// uiSSEEventBytes is the SSE data event of one UI message chunk.
+func uiSSEEventBytes(chunk UIMessageChunk) ([]byte, error) {
+	b, err := jsonstr.Marshal(chunk)
+	if err != nil {
+		return nil, err
+	}
+	event := make([]byte, 0, len(b)+8)
+	event = append(event, "data: "...)
+	event = append(event, b...)
+	return append(event, "\n\n"...), nil
 }
 
 // PipeUIMessageStreamToResponseWithInit supports optional SSE side-channel consumption.
@@ -2531,7 +2537,11 @@ func writeUIMessageSSEChunk(bw *bufio.Writer, flush func() error, chunk UIMessag
 // released instead of leaking (blocked forever trying to send a chunk to a
 // reader that has stopped listening). Mirrors TS
 // write-to-server-response.ts's client-disconnect handling, which cancels
-// the ReadableStream's reader on a premature close (TS #21578).
+// the ReadableStream's reader on a premature close (TS #21578). With an
+// init.ConsumeSSEStream callback that is still reading, the source keeps
+// running for the callback's copy instead (TS cancels only the response
+// branch of the tee) and is cancelled once the copy ends or the callback
+// returns.
 //
 // It returns once the response is written, without waiting for an
 // init.ConsumeSSEStream callback (TS pipeUIMessageStreamToResponse does not
@@ -2548,17 +2558,17 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 		return err
 	}
 
-	// streamCtx is cancelled on any write/flush failure (the deferred cancel
-	// runs as soon as writing stops) so the CreateUIMessageStream producer
-	// goroutine stops promptly instead of relying solely on the caller's ctx,
-	// which may never be cancelled.
+	// streamCtx is cancelled once the chunks are no longer read: when the
+	// writes end, or after a write failure once a ConsumeSSEStream callback
+	// stops reading its copy. So the CreateUIMessageStream producer
+	// goroutine stops promptly instead of relying solely on the caller's
+	// ctx, which may never be cancelled.
 	streamCtx, cancelStream := context.WithCancel(ctx)
-	defer cancelStream()
 
 	chunks, errCh := CreateUIMessageStream(streamCtx, result, opts...)
 	status, _, headers := uiMessageStreamResponseHead(init)
 	writeResponseHead(w, status, headers)
-	if err := writeUIMessageChunksSSE(chunks, w, init); err != nil {
+	if err := writeUIMessageChunksSSE(chunks, w, init, cancelStream); err != nil {
 		return err
 	}
 	select {
@@ -2583,7 +2593,10 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 // If writing fails, PipeUIMessageChunksToResponse returns without draining
 // chunks. Create the stream with a ctx you cancel when this returns (an
 // http.Request's context is cancelled when the client disconnects) so its
-// producer stops instead of blocking.
+// producer stops instead of blocking. With an init.ConsumeSSEStream callback
+// that is still reading, chunks are drained into the callback's copy in the
+// background until they end or the callback returns (TS cancels only the
+// response branch of the tee).
 //
 // It returns once the response is written, without waiting for an
 // init.ConsumeSSEStream callback (TS does not await consumeSseStream), and
@@ -2600,7 +2613,7 @@ func PipeUIMessageChunksToResponse(chunks <-chan UIMessageChunk, w io.Writer, in
 	}
 	status, _, headers := uiMessageStreamResponseHead(init)
 	writeResponseHead(w, status, headers)
-	return writeUIMessageChunksSSE(chunks, w, init)
+	return writeUIMessageChunksSSE(chunks, w, init, nil)
 }
 
 // CreateUIMessageChunksResponse returns an *http.Response that streams any
@@ -2621,7 +2634,7 @@ func CreateUIMessageChunksResponse(chunks <-chan UIMessageChunk, init *UIMessage
 		// response body (TS tees the stream and does not await
 		// consumeSseStream): the body ends after the last SSE event, and
 		// only a write failure ends it with an error.
-		_ = pw.CloseWithError(writeUIMessageChunksSSE(chunks, pw, init))
+		_ = pw.CloseWithError(writeUIMessageChunksSSE(chunks, pw, init, nil))
 	}()
 	return &http.Response{
 		StatusCode: status,
@@ -2642,10 +2655,12 @@ type uiSSETeeBuffer struct {
 	buf     []byte
 	closed  bool
 	discard bool
+	// done is closed by stop.
+	done chan struct{}
 }
 
 func newUISSETeeBuffer() *uiSSETeeBuffer {
-	b := &uiSSETeeBuffer{}
+	b := &uiSSETeeBuffer{done: make(chan struct{})}
 	b.cond = sync.NewCond(&b.mu)
 	return b
 }
@@ -2688,26 +2703,42 @@ func (b *uiSSETeeBuffer) Close() {
 // stop drops the queued bytes and every later write (the consumer returned).
 func (b *uiSSETeeBuffer) stop() {
 	b.mu.Lock()
-	b.discard = true
+	if !b.discard {
+		b.discard = true
+		close(b.done)
+	}
 	b.buf = nil
 	b.mu.Unlock()
+}
+
+// stopped reports whether the consumer returned.
+func (b *uiSSETeeBuffer) stopped() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.discard
 }
 
 // writeUIMessageChunksSSE is the shared SSE writer behind the Pipe* and
 // response helpers and returns the first write error. A ConsumeSSEStream
 // callback runs in its own goroutine on a buffered copy (uiSSETeeBuffer);
 // nothing waits for it (TS calls consumeSseStream without awaiting it). Only
-// this function writes to w, so the callback never touches it; the copy is
-// closed when the writes end, and the goroutine ends when the callback
-// returns.
-func writeUIMessageChunksSSE(chunks <-chan UIMessageChunk, w io.Writer, init *UIMessageStreamResponseInit) error {
-	var (
-		teeWriter  = w
-		sideWriter *uiSSETeeBuffer
-	)
+// this function and the drain it starts write to w or the copy, so the
+// callback never touches w.
+//
+// The copy gets each SSE event before w does. When a write to w fails (the
+// client disconnected) while the callback is still reading, the function
+// returns the write error but keeps reading chunks into the copy in the
+// background until they end or the callback returns: TS tees the SSE stream,
+// and cancelling the response branch does not cancel the source while the
+// consumeSseStream branch still reads it. release is called once chunks are
+// no longer read (at return, or when that drain ends); it may be nil.
+func writeUIMessageChunksSSE(chunks <-chan UIMessageChunk, w io.Writer, init *UIMessageStreamResponseInit, release func()) error {
+	if release == nil {
+		release = func() {}
+	}
+	var side *uiSSETeeBuffer
 	if init != nil && init.ConsumeSSEStream != nil {
-		side := newUISSETeeBuffer()
-		sideWriter = side
+		side = newUISSETeeBuffer()
 		consume := init.ConsumeSSEStream
 		go func() {
 			// The callback's error is not returned (TS does not await it).
@@ -2716,26 +2747,28 @@ func writeUIMessageChunksSSE(chunks <-chan UIMessageChunk, w io.Writer, init *UI
 			// of the response queued.
 			side.stop()
 		}()
-		defer side.Close()
-		teeWriter = io.MultiWriter(w, side)
 	}
 
-	var keepAliveDuration time.Duration
-	keepAliveEnabled := false
+	var keepAlive time.Duration
 	if init != nil && init.KeepAliveMs != nil {
-		keepAliveDuration = *init.KeepAliveMs
-		keepAliveEnabled = true
+		keepAlive = *init.KeepAliveMs
 	}
 
-	bw := bufio.NewWriter(teeWriter)
-	// flush surfaces the bufio flush error instead of discarding it (TS
+	bw := bufio.NewWriter(w)
+	// The flush error is returned instead of discarded (TS
 	// write-to-server-response.ts's pipe helpers return a promise that
-	// rejects on a write/flush failure), and additionally calls the
-	// underlying writer's Flush when it implements http.Flusher so an SSE
-	// consumer receives each event immediately instead of in ~4KiB batches
-	// (audit rows #56/#76).
+	// rejects on a write/flush failure), and the underlying writer's Flush
+	// is called when it implements http.Flusher so an SSE consumer receives
+	// each event immediately instead of in ~4KiB batches (audit rows
+	// #56/#76).
 	flusher, _ := w.(http.Flusher)
-	flush := func() error {
+	emit := func(event []byte) error {
+		if side != nil {
+			_, _ = side.Write(event)
+		}
+		if _, err := bw.Write(event); err != nil {
+			return err
+		}
 		if err := bw.Flush(); err != nil {
 			return err
 		}
@@ -2744,61 +2777,76 @@ func writeUIMessageChunksSSE(chunks <-chan UIMessageChunk, w io.Writer, init *UI
 		}
 		return nil
 	}
-	writeComment := func(comment string) error {
-		if _, err := bw.WriteString(comment); err != nil {
-			return err
-		}
-		return flush()
-	}
 
-	if keepAliveEnabled {
+	writeFailed, err := writeUISSEEvents(chunks, keepAlive, true, nil, emit)
+	if !writeFailed || side == nil || side.stopped() {
+		if side != nil {
+			side.Close()
+		}
+		release()
+		return err
+	}
+	go func() {
+		defer release()
+		defer side.Close()
+		_, _ = writeUISSEEvents(chunks, keepAlive, false, side.done, func(event []byte) error {
+			_, _ = side.Write(event)
+			return nil
+		})
+	}()
+	return err
+}
+
+// writeUISSEEvents emits the SSE events of chunks: the opening comment (when
+// open and keep-alive is on), one data event per chunk, keep-alive comments
+// after keepAlive without a chunk (0 turns them off), and "data: [DONE]"
+// once chunks closes. It stops early when stop closes. writeFailed reports
+// whether err came from emit rather than from encoding a chunk.
+func writeUISSEEvents(chunks <-chan UIMessageChunk, keepAlive time.Duration, open bool, stop <-chan struct{}, emit func([]byte) error) (writeFailed bool, err error) {
+	if keepAlive > 0 && open {
 		// Flush an opening comment immediately, before the first real chunk
 		// is available, so a reverse proxy sees the response start right
 		// away instead of timing out an idle connection. Mirrors TS
 		// createSseStreamWithKeepAlive's STREAM_OPEN_COMMENT.
-		if err := writeComment(sseStreamOpenComment); err != nil {
-			return err
+		if err := emit([]byte(sseStreamOpenComment)); err != nil {
+			return true, err
 		}
 	}
-
-	if !keepAliveEnabled {
-		for chunk := range chunks {
-			if err := writeUIMessageSSEChunk(bw, flush, chunk); err != nil {
-				return err
-			}
-		}
-	} else {
-		timer := time.NewTimer(keepAliveDuration)
+	var tick <-chan time.Time
+	var timer *time.Timer
+	if keepAlive > 0 {
+		timer = time.NewTimer(keepAlive)
 		defer timer.Stop()
-	loop:
-		for {
-			select {
-			case chunk, ok := <-chunks:
-				if !ok {
-					break loop
+		tick = timer.C
+	}
+	for {
+		select {
+		case chunk, ok := <-chunks:
+			if !ok {
+				if err := emit([]byte("data: [DONE]\n\n")); err != nil {
+					return true, err
 				}
-				if err := writeUIMessageSSEChunk(bw, flush, chunk); err != nil {
-					return err
-				}
-				timer.Reset(keepAliveDuration)
-			case <-timer.C:
-				if err := writeComment(sseKeepAliveComment); err != nil {
-					return err
-				}
-				timer.Reset(keepAliveDuration)
+				return false, nil
 			}
+			event, err := uiSSEEventBytes(chunk)
+			if err != nil {
+				return false, err
+			}
+			if err := emit(event); err != nil {
+				return true, err
+			}
+			if timer != nil {
+				timer.Reset(keepAlive)
+			}
+		case <-tick:
+			if err := emit([]byte(sseKeepAliveComment)); err != nil {
+				return true, err
+			}
+			timer.Reset(keepAlive)
+		case <-stop:
+			return false, nil
 		}
 	}
-	if _, err := bw.WriteString("data: [DONE]\n\n"); err != nil {
-		return err
-	}
-	if err := flush(); err != nil {
-		return err
-	}
-	if sideWriter != nil {
-		sideWriter.Close()
-	}
-	return nil
 }
 
 // ReadUIMessageStream reads SSE data lines containing JSON UI chunks.
