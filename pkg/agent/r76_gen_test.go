@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -67,4 +68,57 @@ func TestR76GenAgentToolValidateInput(t *testing.T) {
 		}
 	}
 	t.Fatalf("no tool error in %#v", r.Steps[0].Content)
+}
+
+// Carry/stream CR item C (legacy loop, WorkflowAgent.Generate): with
+// toolMessagesAsConversationPrompt, Execute and the approval function get the
+// step's model prompt (system first) plus the step's assistant message, and
+// the tool start event the prompt alone (TS executeToolWithCallbacks
+// iterMessages / getToolCallbackMessages); without it, the step messages.
+func TestR76GenAgentToolMessagesAsConversationPrompt(t *testing.T) {
+	var execGot, approvalGot, startGot []types.Message
+	tool := types.Tool{Name: "search", Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(_ context.Context, _ map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+			execGot = o.Messages
+			return "ok", nil
+		}}
+	call := types.ToolCall{ID: "search-1", ToolName: "search", Arguments: map[string]interface{}{}}
+	for _, on := range []bool{false, true} {
+		a := NewToolLoopAgent(AgentConfig{Model: r52ToolCallModel(call), Tools: []types.Tool{tool}, System: "sys",
+			ToolApproval: types.GenericToolApprovalFunc(func(o types.ToolApprovalOptions) types.ToolApprovalResult {
+				approvalGot = o.Messages
+				return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+			})})
+		user := []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "test"}}}}
+		_, err := a.executeWithMessages(context.Background(), user, agentCallbacks{
+			toolMessagesAsConversationPrompt: on,
+			onToolCallStart:                  func(_ context.Context, e ai.OnToolCallStartEvent) { startGot = e.Messages },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !on {
+			if len(execGot) != 1 || len(approvalGot) != 1 || len(startGot) != 1 || execGot[0].Role != types.RoleUser {
+				t.Fatalf("off: exec %d approval %d start %d", len(execGot), len(approvalGot), len(startGot))
+			}
+			continue
+		}
+		roles := func(ms []types.Message) []types.MessageRole {
+			var out []types.MessageRole
+			for _, m := range ms {
+				out = append(out, m.Role)
+			}
+			return out
+		}
+		want := []types.MessageRole{types.RoleSystem, types.RoleUser, types.RoleAssistant}
+		if !reflect.DeepEqual(roles(execGot), want) || !reflect.DeepEqual(roles(approvalGot), want) {
+			t.Fatalf("on: exec %v approval %v, want %v", roles(execGot), roles(approvalGot), want)
+		}
+		if !reflect.DeepEqual(roles(startGot), want[:2]) {
+			t.Fatalf("on: start %v, want %v", roles(startGot), want[:2])
+		}
+		if len(execGot[2].ToolCalls) != 1 || execGot[2].ToolCalls[0].ID != "search-1" {
+			t.Fatalf("assistant message = %#v", execGot[2])
+		}
+	}
 }
