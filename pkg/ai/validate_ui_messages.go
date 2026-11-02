@@ -502,7 +502,17 @@ func uiPartIssue(raw interface{}) string {
 	case partType == "step-start":
 		return ""
 	case strings.HasPrefix(partType, "data-"):
-		return optionalString(part, "id")
+		// TS `data: z.unknown()` is required under zod 4 (owner ruling
+		// 2026-11-02, pending decision 1 option b): a data part without a
+		// `data` key fails with zod 4.4.3's invalid_type issue
+		// ("expected nonoptional, received undefined"); any value, null
+		// included, satisfies it.
+		return checks(optStr("id"), func() string {
+			if _, exists := part["data"]; !exists {
+				return "Invalid input: expected nonoptional, received undefined for data"
+			}
+			return ""
+		})
 	case partType == "dynamic-tool":
 		return checks(str("toolName"), func() string {
 			// TS z.literal(false).optional(): a present null is rejected too.
