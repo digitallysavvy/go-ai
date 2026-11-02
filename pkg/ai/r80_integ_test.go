@@ -201,13 +201,17 @@ func r80integAbortRun(t *testing.T, shared bool) ([]string, error) {
 // abort chunk StreamText produces after the cancellation is never written.
 // Before, Go's select picked the abort send or the ctx at random.
 func TestR80integSharedCtxAbortIsDeterministic(t *testing.T) {
-	types, err := r80integAbortRun(t, true)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("UI error = %v, want context.Canceled", err)
-	}
-	for _, typ := range types {
-		if typ == "abort" {
-			t.Fatalf("chunks = %v: the abort chunk was written after the UI ctx was cancelled", types)
+	// The old race lost the abort chunk only in some runs; repeat the run so
+	// a regression shows up in one test invocation.
+	for i := 0; i < 200; i++ {
+		types, err := r80integAbortRun(t, true)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("run %d: UI error = %v, want context.Canceled", i, err)
+		}
+		for _, typ := range types {
+			if typ == "abort" {
+				t.Fatalf("run %d: chunks = %v: the abort chunk was written after the UI ctx was cancelled", i, types)
+			}
 		}
 	}
 }
