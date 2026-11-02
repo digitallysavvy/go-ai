@@ -8,7 +8,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -433,11 +432,12 @@ func convertCohereUsage(raw json.RawMessage) types.Usage {
 	}
 
 	var usage struct {
+		// TS z.number(): a fractional count parses (Go keeps the integer part).
 		Tokens struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
+			InputTokens  float64 `json:"input_tokens"`
+			OutputTokens float64 `json:"output_tokens"`
 		} `json:"tokens"`
-		CachedTokens *int `json:"cached_tokens"`
+		CachedTokens *float64 `json:"cached_tokens"`
 	}
 	if err := json.Unmarshal(raw, &usage); err != nil {
 		return types.Usage{}
@@ -472,10 +472,16 @@ func (m *LanguageModel) convertV2Response(resp cohereV2Response) (*types.Generat
 		RawResponse:     resp,
 	}
 	result.Usage = convertCohereUsage(resp.Usage)
+	// TS pushes each non-empty text and thinking item as its own part, in
+	// wire order; the text parts go into Content too so core keeps that
+	// order (Text stays the concatenation).
 	for _, item := range resp.Message.Content {
 		switch item.Type {
 		case "text":
-			result.Text += item.Text
+			if item.Text != "" {
+				result.Text += item.Text
+				result.Content = append(result.Content, types.TextContent{Text: item.Text})
+			}
 		case "thinking":
 			if item.Thinking != "" {
 				result.Content = append(result.Content, types.ReasoningContent{Text: item.Thinking})
@@ -593,8 +599,9 @@ type cohereV2Response struct {
 // cohere-chat-language-model.ts's inline citation type used in the
 // `cohereChatResponseSchema.message.citations` field.
 type cohereCitation struct {
-	Start   int                    `json:"start"`
-	End     int                    `json:"end"`
+	// TS z.number(): a fractional offset parses and is kept as is.
+	Start   float64                `json:"start"`
+	End     float64                `json:"end"`
 	Text    string                 `json:"text"`
 	Sources []cohereCitationSource `json:"sources"`
 	Type    string                 `json:"type,omitempty"`
@@ -723,9 +730,11 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 		}
 
 		// Cohere v2 SSE: each event has a type field plus a delta field.
+		// TS index is z.number() and the part ids are String(value.index),
+		// so a fractional index parses and keeps its JS text.
 		var ev struct {
 			Type  string          `json:"type"`
-			Index int             `json:"index"`
+			Index float64         `json:"index"`
 			Delta json.RawMessage `json:"delta"`
 		}
 		if err := json.Unmarshal([]byte(event.Data), &ev); err != nil {
@@ -761,15 +770,13 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 			var start struct {
 				ID *string `json:"id"`
 			}
-			// TS: response-metadata { id: value.id ?? undefined } -- an
-			// empty-string id is still forwarded.
+			// TS: response-metadata { id: value.id ?? undefined } on every
+			// message-start, with or without an id.
+			meta := &provider.ResponseMetadata{}
 			if json.Unmarshal([]byte(event.Data), &start) == nil && start.ID != nil {
-				return &provider.StreamChunk{
-					Type:             provider.ChunkTypeResponseMetadata,
-					ResponseMetadata: &provider.ResponseMetadata{ID: *start.ID},
-				}, nil
+				meta.ID = *start.ID
 			}
-			continue
+			return &provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: meta}, nil
 
 		case "content-start":
 			var delta struct {
@@ -787,10 +794,10 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 				s.isActiveReasoning = true
 				return &provider.StreamChunk{
 					Type: provider.ChunkTypeReasoningStart,
-					ID:   strconv.Itoa(ev.Index),
+					ID:   providerutils.JSNumberString(ev.Index),
 				}, nil
 			}
-			return &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: strconv.Itoa(ev.Index)}, nil
+			return &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: providerutils.JSNumberString(ev.Index)}, nil
 
 		case "content-delta":
 			// TS decides by key (`'thinking' in content`), not by the type the
@@ -803,21 +810,21 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 			if err := json.Unmarshal(ev.Delta, &delta); err != nil {
 				continue
 			}
-			if raw, ok := delta.Message.Content["thinking"]; ok {
-				var thinking string
-				if json.Unmarshal(raw, &thinking) == nil {
-					return &provider.StreamChunk{
-						Type:      provider.ChunkTypeReasoning,
-						Reasoning: thinking,
-						ID:        strconv.Itoa(ev.Index),
-					}, nil
-				}
-				continue
-			}
+			// The content is z.union([{text}, {thinking}]): the first member
+			// that parses wins and strips the other key, so a string text
+			// makes a text-delta even next to a thinking key. TS emits the
+			// text-delta even when the delta is empty.
 			var text string
-			// TS emits the text-delta even when the delta is empty.
-			if json.Unmarshal(delta.Message.Content["text"], &text) == nil {
-				return &provider.StreamChunk{Type: provider.ChunkTypeText, ID: strconv.Itoa(ev.Index), Text: text}, nil
+			if raw, ok := delta.Message.Content["text"]; ok && json.Unmarshal(raw, &text) == nil && string(raw) != "null" {
+				return &provider.StreamChunk{Type: provider.ChunkTypeText, ID: providerutils.JSNumberString(ev.Index), Text: text}, nil
+			}
+			var thinking string
+			if raw, ok := delta.Message.Content["thinking"]; ok && json.Unmarshal(raw, &thinking) == nil && string(raw) != "null" {
+				return &provider.StreamChunk{
+					Type:      provider.ChunkTypeReasoning,
+					Reasoning: thinking,
+					ID:        providerutils.JSNumberString(ev.Index),
+				}, nil
 			}
 			continue
 
@@ -828,10 +835,10 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 				s.isActiveReasoning = false
 				return &provider.StreamChunk{
 					Type: provider.ChunkTypeReasoningEnd,
-					ID:   strconv.Itoa(ev.Index),
+					ID:   providerutils.JSNumberString(ev.Index),
 				}, nil
 			}
-			return &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: strconv.Itoa(ev.Index)}, nil
+			return &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: providerutils.JSNumberString(ev.Index)}, nil
 
 		case "tool-call-start":
 			var delta struct {

@@ -20,7 +20,8 @@ import (
 // bound, eventually crashing the process with an unrecoverable `fatal
 // error: stack overflow` -- not a panic, not recover()-able.
 //
-// This feeds 300,000 "message-start" keep-alive-style events, then a real
+// This feeds 300,000 "citation-start" events (no part each; message-start
+// now emits response-metadata like TS), then a real
 // content-start/content-delta pair producing a text chunk, in a subprocess
 // with debug.SetMaxStack lowered so a regression would crash
 // deterministically well within the test's 2s budget instead of needing
@@ -47,7 +48,7 @@ func runCohereStreamRecursionChild() {
 	var sb strings.Builder
 	sb.Grow(n*48 + 256)
 	for i := 0; i < n; i++ {
-		sb.WriteString(`event: message-start` + "\n" + `data: {"type":"message-start"}` + "\n\n")
+		sb.WriteString(`event: citation-start` + "\n" + `data: {"type":"citation-start"}` + "\n\n")
 	}
 	sb.WriteString(`event: content-start` + "\n" +
 		`data: {"type":"content-start","index":0,"delta":{"message":{"content":{"type":"text","text":""}}}}` + "\n\n")
@@ -55,7 +56,7 @@ func runCohereStreamRecursionChild() {
 		`data: {"type":"content-delta","index":0,"delta":{"message":{"content":{"text":"hello"}}}}` + "\n\n")
 
 	s := newCohereV2Stream(io.NopCloser(strings.NewReader(sb.String())))
-	// This call used to recurse once per "message-start" event -- 300,000
+	// This call used to recurse once per "citation-start" event -- 300,000
 	// deep -- before reaching the real text chunk.
 	chunk, err := s.Next()
 	if err == nil && chunk != nil && chunk.Type == provider.ChunkTypeTextStart {
