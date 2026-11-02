@@ -751,3 +751,56 @@ func TestR76StreamDeferToolInputCallbacks(t *testing.T) {
 		})
 	}
 }
+
+// TS WorkflowAgent resolveProviderToolResult: the empty result for a
+// provider-executed call that got no result has no providerOptions (only a
+// streamed result carries its own metadata). Go copied the call's provider
+// metadata onto it, so the step content and the response tool message
+// carried it.
+func TestR76StreamMissingProviderResultHasNoCallMetadata(t *testing.T) {
+	meta := map[string]interface{}{"anthropic": map[string]interface{}{"serverName": "srv"}}
+	step := []provider.StreamChunk{
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "web_search", Arguments: map[string]interface{}{}, ProviderExecuted: true, ProviderExecutedSet: true, ProviderMetadata: meta}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+	}
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model:    r71streamModel(nil, step),
+		Prompt:   "p",
+		Tools:    []types.Tool{{Name: "web_search", ProviderExecuted: true}},
+		Internal: &InternalOptions{ContinueOnMissingProviderResult: true},
+		OnError:  func(context.Context, error) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	steps := r.Steps()
+	if len(steps) != 1 {
+		t.Fatalf("steps = %d", len(steps))
+	}
+	found := false
+	for _, part := range steps[0].Content {
+		if res, ok := part.(types.ToolResultContent); ok && res.ToolCallID == "call-1" {
+			found = true
+			if len(res.ProviderMetadata) != 0 {
+				t.Errorf("content tool result providerMetadata = %s, want none", res.ProviderMetadata)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no tool result content: %#v", steps[0].Content)
+	}
+	b := r76streamMustJSON(t, steps[0].ResponseMessages)
+	var msgs []map[string]interface{}
+	_ = json.Unmarshal(b, &msgs)
+	for _, m := range msgs {
+		parts, _ := m["content"].([]interface{})
+		for _, p := range parts {
+			if pm, _ := p.(map[string]interface{}); pm["toolCallId"] == "call-1" && pm["type"] == "tool-result" && pm["providerOptions"] != nil {
+				t.Errorf("response tool-result providerOptions = %v, want none", pm["providerOptions"])
+			}
+		}
+	}
+}

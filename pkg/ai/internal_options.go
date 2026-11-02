@@ -285,7 +285,8 @@ func missingProviderResultCalls(calls []types.ToolCall, toolsByName map[string]*
 }
 
 // emptyProviderResult is the synthetic result TS WorkflowAgent sends for a
-// provider-executed call the provider never answered: an empty text output.
+// provider-executed call the provider never answered: an empty text output,
+// without the call's provider metadata.
 func emptyProviderResult(call types.ToolCall, provider, model string) types.ToolResult {
 	LogWarnings(LogWarningsOptions{
 		Warnings: []types.Warning{{
@@ -304,9 +305,10 @@ func emptyProviderResult(call types.ToolCall, provider, model string) types.Tool
 		Result:           "",
 		ModelOutput:      &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: ""},
 		ProviderExecuted: true,
-		ProviderMetadata: call.ProviderMetadata,
-		ToolMetadata:     call.ToolMetadata,
-		Dynamic:          call.Dynamic,
+		// TS sends the synthetic result without providerOptions (it has no
+		// stream result whose metadata it could carry).
+		ToolMetadata: call.ToolMetadata,
+		Dynamic:      call.Dynamic,
 	}
 }
 
