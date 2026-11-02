@@ -70,6 +70,11 @@ func init() {
 			}
 			return p.LanguageModel(id)
 		},
+		// Google provider tools keep their TS args as given (the Go
+		// converters read the TS-shaped ProviderArgs).
+		ProviderTool: func(id, name string, args map[string]interface{}) (types.Tool, bool) {
+			return types.Tool{Name: name, Type: types.ToolTypeProviderDefined, ProviderID: id, ProviderArgs: args}, true
+		},
 	}
 	wireSuites["amazon-bedrock"] = tsfixture.WireSuite{
 		RawSchemas:      true,

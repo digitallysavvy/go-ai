@@ -933,6 +933,13 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		// call's approval in the same pass, before any tool runs (TS
 		// generateText: per valid call, OnInputStart, OnInputAvailable, then
 		// resolveToolApproval; an error fails the run).
+		// WorkflowAgent.Generate: client tool results without the call's
+		// provider metadata, and the step's conversation prompt as the tool
+		// messages (TS WorkflowAgent executeTool / executeToolWithCallbacks).
+		if callConfig.Internal != nil {
+			cbs.withoutCallMetadata = cbs.withoutCallMetadata || callConfig.Internal.ClientToolResultsWithoutCallMetadata
+			cbs.toolMessagesAsConversationPrompt = cbs.toolMessagesAsConversationPrompt || callConfig.Internal.ToolMessagesAsConversationPrompt
+		}
 		toolEventMessages, stepCbs := callConfig.Messages, cbs
 		stepCbs.executeMessages = nil
 		if cbs.toolMessagesAsConversationPrompt && stepTel != nil {

@@ -2887,6 +2887,9 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	// the root's call ID, so each integration finds the workflow root (TS
 	// model-call-iterator uses the workflow's telemetryDispatcher and callId).
 	internal.GenerateCallID = func() string { return callID }
+	// TS model-call-iterator.ts replays the step's tool input lifecycle
+	// callbacks after the model step returned (invokeToolInputLifecycleCallbacks).
+	internal.DeferToolInputCallbacks = true
 	// TS model-call-iterator.ts stream mode leaves reasoning-file parts out
 	// of the assistant messages it adds to the conversation (the next
 	// step's prompt, step.response.messages and onEnd's messages).
@@ -2951,7 +2954,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 
 // workflowInternalOptions answers a provider-executed tool call with no
 // result (TS WorkflowAgent warns and sends an empty result).
-var workflowInternalOptions = &ai.InternalOptions{ContinueOnMissingProviderResult: true, StopOnStreamError: true, EndOnError: true, HeadersAsGiven: true, ApprovalID: workflowApprovalID, RequestMessagesAsPrompt: true, DeferApprovalRequests: true, ApprovalsResumed: true}
+var workflowInternalOptions = &ai.InternalOptions{ContinueOnMissingProviderResult: true, StopOnStreamError: true, EndOnError: true, HeadersAsGiven: true, ApprovalID: workflowApprovalID, RequestMessagesAsPrompt: true, DeferApprovalRequests: true, ApprovalsResumed: true, ClientToolResultsWithoutCallMetadata: true, ToolMessagesAsConversationPrompt: true}
 
 // workflowApprovalID is TS WorkflowAgent's approval ID for a tool call:
 // `approval-${toolCallId}`, in generate and stream mode.

@@ -110,7 +110,9 @@ func ValidateApprovedToolApprovals(ctx context.Context, opts ValidateApprovedToo
 		}
 
 		if tool != nil && tool.Execute != nil {
-			if validator := toolInputValidator(tool); validator != nil {
+			// A tool's own ValidateInput replaces the schema check (TS
+			// safeValidateTypes runs the jsonSchema validate function).
+			if validator := toolInputValidator(tool); validator != nil || tool.ValidateInput != nil {
 				if validationErr := revalidateApprovedInput(ctx, approval, tool, validator, opts); validationErr != nil {
 					inputJSON, _ := jsonstr.Marshal(call.Arguments)
 					result.InvalidToolApprovals = append(result.InvalidToolApprovals, InvalidToolApproval{
@@ -188,9 +190,31 @@ func revalidateApprovedInput(ctx context.Context, approval CollectedToolApproval
 	// and the approved-input equality check below. Apply defaults before
 	// validating (not after), and use the defaulted value throughout, to
 	// match (see validate-tool-approvals.ts's use of `validation.value`).
-	value = applyDefaultsForValidator(value, validator)
-	if err := validator.Validate(value); err != nil {
-		return err
+	if tool.ValidateInput != nil {
+		// TS jsonSchema(schema, {validate}): the tool's validator decides, its
+		// value feeds the refiner and the equality check, and a failure is a
+		// TypeValidationError (as when the call was parsed).
+		validated, err := tool.ValidateInput(value)
+		if err != nil {
+			args, _ := value.(map[string]interface{})
+			if args == nil {
+				args = map[string]interface{}{}
+			}
+			typeCall := call
+			typeCall.RawArguments = ""
+			if _, ok := value.(map[string]interface{}); !ok {
+				if raw, mErr := jsonstr.Marshal(value); mErr == nil {
+					typeCall.RawArguments = string(raw)
+				}
+			}
+			return newToolInputTypeValidationError(typeCall, args, err)
+		}
+		value = validated
+	} else {
+		value = applyDefaultsForValidator(value, validator)
+		if err := validator.Validate(value); err != nil {
+			return err
+		}
 	}
 
 	revalidated := value

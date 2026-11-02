@@ -3164,6 +3164,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				approvalID:          internalApprovalID(opts.Internal, remapGenerateID),
 				executionBlocked:    !isToolExecutionAllowedFinishReason(r.finishReason),
 				preApprovals:        eagerApprovals,
+				withoutCallMetadata: opts.Internal != nil && opts.Internal.ClientToolResultsWithoutCallMetadata,
 				onPreliminary: func(result types.ToolResult) {
 					// Tools may run concurrently; the transform chain is not
 					// concurrency-safe.
@@ -3178,10 +3179,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				assistant := opts.Internal.omitReasoningFiles(providerutils.ConvertToResponseMessages(stepToolCalls, stepContent, nil))
 				if callbackMessages, executeMessages, ok := workflowToolMessages(opts.Internal, r.stepReopenGenOpts.Prompt, assistant); ok {
 					toolCallbacks.messages = callbackMessages
-					// The Execute/approval messages need gen's executor field
-					// (cr-r76-stream-to-gen.md item C); until then they are
-					// the callback messages.
-					_ = executeMessages
+					toolCallbacks.executeMessages = executeMessages
 				}
 			}
 			usageForTools := r.usage.Add(stepUsage)

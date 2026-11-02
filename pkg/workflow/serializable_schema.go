@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -369,9 +370,37 @@ func ResolveSerializableTools(defs map[string]SerializableToolDef) []types.Tool 
 		default:
 			resolved.ProviderOptions = optionsOrArgs(providerOptions, def.Args)
 		}
+		resolved.ValidateInput = serializableInputValidator(resolved.Type == "provider", def, toolName)
 		tools = append(tools, resolved)
 	}
 	return tools
+}
+
+// serializableInputValidator is the Tool.ValidateInput of a tool rebuilt by
+// ResolveSerializableTools (TS resolveSerializableTools,
+// serializable-schema.ts:173-215). A function or dynamic tool without its own
+// validator gets the Ajv validator: its failure is `new Error(errors
+// .map(formatAjvError).join(', '))`, and its success value is the input
+// itself (Ajv runs without useDefaults, so schema defaults are not filled and
+// a missing required property with a default still fails). A tool with its
+// own validator, and every provider tool, gets jsonSchema() without a
+// validator, so its input passes unvalidated. Parameters stays the map.
+func serializableInputValidator(providerTool bool, def SerializableToolDef, toolName string) func(interface{}) (interface{}, error) {
+	if providerTool || def.HasOwnValidator {
+		return func(input interface{}) (interface{}, error) { return input, nil }
+	}
+	validated := def
+	validated.Name = toolName
+	return func(input interface{}) (interface{}, error) {
+		_, issues, err := validateSerializableInputWith(validated, input, false)
+		if err != nil {
+			return nil, err
+		}
+		if issues != "" {
+			return nil, errors.New(issues)
+		}
+		return input, nil
+	}
 }
 
 // ValidateSerializableToolInput validates a tool input against its serialized
@@ -385,6 +414,12 @@ func ResolveSerializableTools(defs map[string]SerializableToolDef) []types.Tool 
 // go on to pass to the resolved tool's Execute, so the schema's defaults
 // actually reach the tool (mirrors TS's validateTypes/safeValidateTypes,
 // whose defaulted parse result is always what downstream code consumes).
+//
+// This differs from the validator ResolveSerializableTools puts on each tool
+// (Tool.ValidateInput), which matches TS Ajv (allErrors, strict: false,
+// validateFormats: false, no useDefaults): that one validates the input as
+// given, without filling defaults, and returns it unchanged. This function
+// keeps its v0.5.2 behavior for direct callers.
 func ValidateSerializableToolInput(def SerializableToolDef, input interface{}) (interface{}, error) {
 	value, issues, err := validateSerializableInput(def, input)
 	if err != nil {
@@ -406,6 +441,12 @@ func ValidateSerializableToolInput(def SerializableToolDef, input interface{}) (
 // .join(', ')`, the message of the Error its jsonSchema validator returns).
 // err reports a schema that cannot be normalized.
 func validateSerializableInput(def SerializableToolDef, input interface{}) (interface{}, string, error) {
+	return validateSerializableInputWith(def, input, true)
+}
+
+// validateSerializableInputWith is validateSerializableInput, filling the
+// schema's defaults before validating only when applyDefaults is set.
+func validateSerializableInputWith(def SerializableToolDef, input interface{}, applyDefaults bool) (interface{}, string, error) {
 	if def.HasOwnValidator {
 		// The original schema validates after the durable boundary, where it
 		// is available; the JSON Schema copy here cannot reproduce it.
@@ -428,8 +469,10 @@ func validateSerializableInput(def SerializableToolDef, input interface{}) (inte
 		return nil, "", fmt.Errorf("workflow: invalid schema for %s: %w", def.Name, err)
 	}
 	params = stripSchemaFormats(normalized).(map[string]interface{})
-	s := schema.NewSimpleJSONSchema(params)
-	defaulted := schema.ApplyDefaults(input, s)
+	defaulted := input
+	if applyDefaults {
+		defaulted = schema.ApplyDefaults(input, schema.NewSimpleJSONSchema(params))
+	}
 	// The Ajv-ordered walk is the validator: it knows the keywords Ajv does and
 	// words the errors like it. A second, generic validator would reject input
 	// Ajv accepts (`required` on a null where the type allows null) and word

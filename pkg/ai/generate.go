@@ -1757,6 +1757,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				generateID:          generateID,
 				approvalID:          approvalIDs.approvalID,
 				executionBlocked:    !isToolExecutionAllowedFinishReason(genResult.FinishReason),
+				withoutCallMetadata: opts.Internal != nil && opts.Internal.ClientToolResultsWithoutCallMetadata,
 			}
 			toolCallbacks.preApprovals = preApprovals
 			// Tools run inside the step context: the TS step timeout aborts the

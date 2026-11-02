@@ -8,6 +8,7 @@ import (
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
@@ -216,7 +217,20 @@ func safeValidateUIMessagesInternal(ctx context.Context, opts ValidateUIMessages
 func validateUIToolInput(ctx context.Context, tool *types.Tool, toolPart *ToolUIPart, value interface{}, hasInputSchemaInput bool, refine ToolInputRefiner, field string) error {
 	toolName := GetStaticToolName(toolPart)
 	parsed := value
-	if validator := toolInputValidator(tool); validator != nil {
+	if tool.ValidateInput != nil {
+		// TS safeValidateTypes runs the jsonSchema validate function: the
+		// tool's validator replaces the schema check, and its error shows as
+		// getErrorMessage(cause) ("Error: <message>").
+		validated, err := tool.ValidateInput(value)
+		if err != nil {
+			return providererrors.NewValidationErrorWithContext(value, providerutils.ToolErrorText(err), err, &providererrors.ValidationContext{
+				Field:      field,
+				EntityName: toolName,
+				EntityID:   toolPart.ToolCallID,
+			})
+		}
+		parsed = validated
+	} else if validator := toolInputValidator(tool); validator != nil {
 		// Apply defaults before validating (see the metadata handling in
 		// SafeValidateUIMessages for why): a missing field with a default
 		// must not fail validation, and the defaulted value is what gets
