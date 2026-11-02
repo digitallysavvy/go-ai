@@ -274,7 +274,9 @@ func (m *LanguageModel) toCohereMessages(src []types.Message) ([]map[string]inte
 				if err != nil {
 					return nil, nil, err
 				}
-				if strings.HasPrefix(normalized.FileData.MediaType, "image") {
+				// TS getTopLevelMediaType(mediaType) === 'image': the text
+				// before the first slash, not a prefix match.
+				if cohereTopLevelMediaType(normalized.FileData.MediaType) == "image" {
 					url, err := fileDataToImageURL(normalized)
 					if err != nil {
 						return nil, nil, err
@@ -319,6 +321,15 @@ func (m *LanguageModel) toCohereMessages(src []types.Message) ([]map[string]inte
 		out = append(out, map[string]interface{}{"role": "user", "content": b.String()})
 	}
 	return out, documents, nil
+}
+
+// cohereTopLevelMediaType mirrors TS getTopLevelMediaType: the media type up
+// to its first slash (the whole value when there is none).
+func cohereTopLevelMediaType(mediaType string) string {
+	if idx := strings.Index(mediaType, "/"); idx >= 0 {
+		return mediaType[:idx]
+	}
+	return mediaType
 }
 
 func fileDataToImageURL(file types.FileContent) (string, error) {
