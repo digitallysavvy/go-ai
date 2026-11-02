@@ -153,6 +153,7 @@ if (wantAsserts) {
     var createToolNameMapping = (o) => ({ __toolNameMapping: { tools: (o && o.tools) || [], providerToolNames: (o && o.providerToolNames) || {} } });
     var CacheControlValidator = function () { return { __cacheControlValidator: true }; };
     var structuredClone = (v) => JSON.parse(JSON.stringify(v));
+    var expect = { arrayContaining: (a) => ({ __arrayContaining: a }), objectContaining: (o) => ({ __objectContaining: o }) };
   `, ctx);
 }
 {
@@ -251,6 +252,86 @@ function splitTopLevelArgs(inner) {
 function evalArgsJSON(srcs) {
   return srcs.map(a => JSON.parse(JSON.stringify(evalExpr(a), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (Object.prototype.toString.call(v) === '[object Set]' ? { __set: [...v] } : (v === undefined ? { __undef: true } : v)))));
 }
+
+// one test-server response value (`{ type: 'json-value', ... }`) in the
+// extracted form
+function convResponse(it) {
+  if (!it || typeof it !== 'object') return { kind: 'unknown', error: 'not an object' };
+  let o;
+  if (it.type === 'json-value') o = { kind: 'json', body: it.body };
+  else if (it.type === 'stream-chunks') o = { kind: 'chunks', chunks: it.chunks };
+  else if (it.type === 'error') o = { kind: 'error', status: it.status ?? 500, text: it.body ?? 'Error' };
+  else if (it.type === 'empty') o = { kind: 'empty', status: it.status ?? 200 };
+  else return { kind: String(it.type), error: 'unsupported response type' };
+  if (wantAsserts && it.headers && typeof it.headers === 'object') o.headers = JSON.parse(JSON.stringify(it.headers));
+  return o;
+}
+
+// --asserts: the routes of a test that sets the responses of several URLs of
+// its test server (`server.urls[A].response = ...; server.urls[B].response =
+// ...`) or a response function (`.response = () => { ... }`). Each route is
+// keyed by the URL path; the last assignment to a URL wins. A response
+// function is called in order with the counters the test declares before it
+// (`let n = 0;`), up to 6 times: its results become the route's queue, the
+// last one repeated (repeat: true), as the TS server calls the function for
+// every request. Such a counter becomes an alias of the route's request
+// count (server.hits['<path>']).
+function extractRoutes(body, aliasesOut) {
+  const reU = /\b\w+\.urls\[([^\]]+)\]\.response\s*=\s*/g;
+  const routes = new Map();
+  let fnResp = false, um;
+  while ((um = reU.exec(body))) {
+    let url = null;
+    try { url = evalExpr(um[1]); } catch (e) { url = null; }
+    if (url === null && /^\w+$/.test(um[1])) {
+      // a describe-level const the declaration pass did not evaluate
+      // (`const POST_URL =\n  '...'`)
+      const dm = new RegExp('\\b(?:const|let)\\s+' + um[1] + '\\s*=\\s*([\'"`])([^\'"`]*)\\1').exec(src);
+      if (dm) url = dm[2];
+    }
+    if (typeof url !== 'string') return null;
+    let path;
+    try { path = new URL(url).pathname; } catch (e) { return null; }
+    const vs = um.index + um[0].length;
+    const ve = stmtEnd(body, vs);
+    if (ve < 0) return null;
+    const vsrc = body.slice(vs, ve);
+    let r;
+    if (/^(?:async\s*)?\(\s*\)\s*=>/.test(vsrc)) {
+      fnResp = true;
+      const counters = [...body.slice(0, um.index).matchAll(/\blet\s+(\w+)\s*=\s*(\d+)\s*;/g)];
+      const saved = {};
+      for (const c of counters) { if (!(c[1] in saved)) saved[c[1]] = ctx[c[1]]; vm.runInContext(`var ${c[1]} = ${c[2]}`, ctx); }
+      const all = [];
+      try {
+        const f = evalExpr(vsrc);
+        for (let k = 0; k < 6; k++) all.push(convResponse(f()));
+      } catch (e) { all.length = 0; all.push({ kind: 'function', error: e.message }); }
+      for (const n of Object.keys(saved)) { if (saved[n] === undefined) delete ctx[n]; else ctx[n] = saved[n]; }
+      while (all.length > 1 && JSON.stringify(all[all.length - 1]) === JSON.stringify(all[all.length - 2])) all.pop();
+      r = all[0];
+      r.next = all.slice(1);
+      r.repeat = true;
+      if (all.some(x => x.error)) r.error = 'unsupported response in the queue';
+      for (const c of counters) if (new RegExp('\\b' + c[1] + '\\s*\\+\\+').test(vsrc)) aliasesOut[c[1]] = `server.hits['${path}']`;
+    } else {
+      let v = null;
+      try { v = evalExpr(vsrc); } catch (e) { v = null; }
+      if (Array.isArray(v)) { const all = v.map(convResponse); r = all[0] || { kind: 'empty', error: 'empty queue' }; r.next = all.slice(1); if (all.some(x => x.error)) r.error = 'unsupported response in the queue'; }
+      else if (v) r = convResponse(v);
+      else r = { kind: 'unknown', error: 'not evaluable' };
+    }
+    routes.set(path, r);
+  }
+  if (routes.size < 2 && !fnResp) return null;
+  return [...routes].map(([path, response]) => ({ path, response }));
+}
+
+// the test-server variables of the file (`const pollServer =
+// createTestServer(...)`): assertions over them read as server.*
+const serverVars = [...new Set([...src.matchAll(/\b(?:const|let)\s+(\w+)\s*=\s*createTestServer\(/g)].map(m => m[1]))].filter(n => n !== 'server');
+// `(p as { delta: string }).delta` reads as `p.delta`
+function dropCasts(s) { return s.replace(/\(\s*(\w+)\s+as\s+\{[^}]*\}\s*\)/g, '$1'); }
 
 function topDescribeOf(idx) {
   const ms = [...src.slice(0, idx).matchAll(/^describe\(\s*(['"`])(.*?)\1/gm)];
@@ -438,18 +519,7 @@ for (let i = 0; i < starts.length; i++) {
         let items = null;
         try { items = evalExpr(body.slice(as, ae)); } catch (err) { items = null; }
         if (!Array.isArray(items) || items.length < 2) break;
-        const conv = it => {
-          if (!it || typeof it !== 'object') return { kind: 'unknown', error: 'not an object' };
-          let o;
-          if (it.type === 'json-value') o = { kind: 'json', body: it.body };
-          else if (it.type === 'stream-chunks') o = { kind: 'chunks', chunks: it.chunks };
-          else if (it.type === 'error') o = { kind: 'error', status: it.status ?? 500, text: it.body ?? 'Error' };
-          else if (it.type === 'empty') o = { kind: 'empty', status: it.status ?? 200 };
-          else return { kind: String(it.type), error: 'unsupported response type' };
-          if (wantAsserts && it.headers && typeof it.headers === 'object') o.headers = JSON.parse(JSON.stringify(it.headers));
-          return o;
-        };
-        const all = items.map(conv);
+        const all = items.map(convResponse);
         response = all[0];
         response.next = all.slice(1);
         if (all.some(x => x.error)) response.error = 'unsupported response in the queue';
@@ -457,6 +527,10 @@ for (let i = 0; i < starts.length; i++) {
       }
     }
   }
+
+  const routeAliases = {};
+  const routes = wantAsserts ? extractRoutes(body, routeAliases) : null;
+  if (routes && response && routes.some(r => r.response.error)) response.error = 'unsupported route response';
 
   // response headers the test server sends (--asserts only: they feed
   // result.response.headers and the response id/timestamp)
@@ -509,9 +583,15 @@ for (let i = 0; i < starts.length; i++) {
           // new Model(modelIdConst, { ... }): the first argument is a const string
           const am = /\bnew\s+\w+\(\s*([A-Za-z_$][\w$]*)\s*[,)]/.exec(last);
           if (am) { try { const v = vm.runInContext(am[1], ctx); if (typeof v === 'string') midVar = v; } catch (e) { /* unresolved */ } }
+          // provider.interactions({ agent: NAME }): the Go test builds the
+          // agent model from "agent:NAME" ("managedAgent:ID")
+          const ag = /\.interactions\(\s*\{\s*(agent|managedAgent)\s*:\s*([^,}]+?)\s*,?\s*\}\s*\)/.exec(last);
+          if (ag) { try { const v = evalExpr(ag[2]); if (typeof v === 'string') midVar = ag[1] + ':' + v; } catch (e) { /* unresolved */ } }
         }
       }
     }
+    // provider\n  .interactions('id')\n  .doGenerate(...)
+    if (wantAsserts && !midVar) { const ci = /\.interactions\(\s*['"]([^'"]+)['"]\s*\)\s*\.do(?:Generate|Stream)\(/.exec(body0); if (ci) midVar = ci[1]; }
   }
   let callArgs = null, callKind = null, callObj = null;
   if (call) {
@@ -607,6 +687,13 @@ for (let i = 0; i < starts.length; i++) {
     // the stream parts of a doStream call (`const parts = await
     // convertReadableStreamToArray(stream)`)
     for (const am of body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*await\s+convertReadableStreamToArray\(\s*(?:result\.)?stream\s*\)\s*;/g)) aliases[am[1]] = 'result.stream';
+    {
+      Object.assign(aliases, routeAliases);
+      // `const calls = pollServer.calls;`
+      for (const am of body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*(\w+)\.calls\s*;/g)) if (am[2] === 'server' || serverVars.includes(am[2])) aliases[am[1]] = 'server.calls';
+      // array calls over an alias (`const types = parts.map(p => p.type);`)
+      for (const am of body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*(\w+)(\s*\.(?:filter|map|find|some)\([^;]*\))\s*;/g)) if (aliases[am[2]] !== undefined) aliases[am[1]] = am[2] + dropCasts(am[3]).replace(/\s*\n\s*/g, '');
+    }
     const reE = /\bexpect\(/g;
     let em;
     while ((em = reE.exec(body))) {
@@ -614,6 +701,10 @@ for (let i = 0; i < starts.length; i++) {
       const e = balanced(body, st);
       if (e < 0) continue;
       let expr = body.slice(st + 1, e - 1).trim().replace(/^await\s+/, '');
+      {
+        expr = dropCasts(expr).replace(/,\s*$/, '');
+        for (const sv of serverVars) if (expr.startsWith(sv + '.')) expr = 'server' + expr.slice(sv.length);
+      }
       let k = e;
       let not = false;
       if (body.startsWith('.not', k)) { not = true; k += 4; }
@@ -622,7 +713,8 @@ for (let i = 0; i < starts.length; i++) {
       const as = k + mm3[0].length - 1;
       const ae = balanced(body, as);
       if (ae < 0) continue;
-      const argSrc = body.slice(as + 1, ae - 1).trim();
+      let argSrc = body.slice(as + 1, ae - 1).trim();
+      argSrc = argSrc.replace(/,\s*$/, ''); // `.toBe(\n  'x',\n)`
       let arg = null, ok = true;
       if (argSrc !== '') {
         try { arg = JSON.parse(JSON.stringify(evalExpr(argSrc), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (Object.prototype.toString.call(v) === '[object Set]' ? { __set: [...v] } : (v === undefined ? { __undef: true } : v)))); } catch (err) { ok = false; }
@@ -632,6 +724,6 @@ for (let i = 0; i < starts.length; i++) {
     }
   }
   for (const n of Object.keys(saved)) { if (saved[n] === undefined) delete ctx[n]; else ctx[n] = saved[n]; }
-  if (exps.length || asserts.length) out.push({ test: name, response, callKind, callArgs, call: callObj, modelId: midVar || (mid ? mid[1] : null), suspect, topDescribe, exps, ...(wantAsserts ? { asserts, aliases } : {}) });
+  if (exps.length || asserts.length) out.push({ test: name, response, callKind, callArgs, call: callObj, modelId: midVar || (mid ? mid[1] : null), suspect, topDescribe, exps, ...(wantAsserts ? { asserts, aliases } : {}), ...(routes ? { routes } : {}) });
 }
 console.log(JSON.stringify(out));

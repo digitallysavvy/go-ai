@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -74,9 +75,10 @@ func (r request) value(field string) (interface{}, bool) {
 
 var pathToken = regexp.MustCompile(`^(?:\??\.([A-Za-z_$][\w$]*)|\[(\d+)\]|\['([^']*)'\]|\["([^"]*)"\])`)
 
-// arrayCall matches `.filter(p => p.f === 'v')`, `.some(p => p.f === 'v')` and
-// `.map(p => p.f)` over an array (the stream-part filters TS tests write).
-var arrayCall = regexp.MustCompile(`^\.(filter|some|map)\(\s*\(?([A-Za-z_$][\w$]*)\)?\s*=>\s*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)(?:\s*===\s*'([^']*)')?\s*\)`)
+// arrayCall matches `.filter(p => p.f === 'v')`, `.some(p => p.f === 'v')`,
+// `.find(p => p.f === 'v')` and `.map(p => p.f)` over an array (the
+// stream-part filters TS tests write).
+var arrayCall = regexp.MustCompile(`^\.(filter|some|find|map)\(\s*\(?([A-Za-z_$][\w$]*)\)?\s*=>\s*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)(?:\s*===\s*'([^']*)')?\s*\)`)
 
 // lineBreak joins an expression vitest formatting split over lines.
 var lineBreak = regexp.MustCompile(`\s*\n\s*`)
@@ -107,6 +109,13 @@ func applyArrayCall(cur interface{}, m []string) (interface{}, bool) {
 			}
 		}
 		return out, true
+	case "find":
+		for _, it := range items {
+			if member(it, field) == val {
+				return it, true
+			}
+		}
+		return nil, true // undefined
 	default: // some
 		for _, it := range items {
 			if member(it, field) == val {
@@ -117,18 +126,46 @@ func applyArrayCall(cur interface{}, m []string) (interface{}, bool) {
 	}
 }
 
+// searchParam matches `new URL(expr).searchParams.get('key')`.
+var searchParam = regexp.MustCompile(`^new URL\((.+)\)\.searchParams\.get\('([^']*)'\)$`)
+
 // evalPath resolves a simple TS access expression (identifiers, ., ?., [n],
-// ['key'], .length) against roots. ok is false for anything else.
+// ['key'], .length, the array calls of arrayCall and
+// `new URL(x).searchParams.get('k')`) against roots. An alias may refer to
+// another alias. ok is false for anything else.
 func evalPath(roots map[string]interface{}, aliases map[string]string, expr string) (interface{}, bool) {
 	expr = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(expr), "await "))
 	expr = strings.TrimSuffix(lineBreak.ReplaceAllString(expr, ""), ",")
+	if m := searchParam.FindStringSubmatch(expr); m != nil {
+		v, ok := evalPath(roots, aliases, m[1])
+		s, isStr := v.(string)
+		if !ok || !isStr {
+			return nil, false
+		}
+		u, err := url.Parse(s)
+		if err != nil {
+			return nil, false
+		}
+		q := u.Query()
+		if !q.Has(m[2]) {
+			return nil, true // URLSearchParams.get returns null
+		}
+		return q.Get(m[2]), true
+	}
 	root := regexp.MustCompile(`^[A-Za-z_$][\w$]*`).FindString(expr)
 	if root == "" {
 		return nil, false
 	}
 	rest := expr[len(root):]
 	if a, ok := aliases[root]; ok {
-		return evalPath(roots, nil, a+rest)
+		// an alias resolves without itself, so a cycle ends
+		inner := make(map[string]string, len(aliases))
+		for k, v := range aliases {
+			if k != root {
+				inner[k] = v
+			}
+		}
+		return evalPath(roots, inner, a+rest)
 	}
 	cur, ok := roots[root]
 	if !ok {
@@ -283,6 +320,17 @@ func (a Assertion) check(roots map[string]interface{}, aliases map[string]string
 		}
 	}
 	var pass bool
+	if hasAsymmetric(a.Arg) {
+		switch a.Matcher {
+		case "toEqual", "toStrictEqual":
+			pass = asymmetricMatch(Normalize(a.Arg), Normalize(got), false)
+		case "toMatchObject":
+			pass = asymmetricMatch(Normalize(a.Arg), Normalize(got), true)
+		default:
+			return "", true
+		}
+		return a.failure(pass, got), false
+	}
 	switch a.Matcher {
 	case "toEqual", "toStrictEqual":
 		if w, ok := a.Arg.([]interface{}); ok && len(w) == 0 && got == nil {
@@ -335,14 +383,134 @@ func (a Assertion) check(roots map[string]interface{}, aliases map[string]string
 	default:
 		return "", true
 	}
-	if pass == a.Not {
-		neg := ""
-		if a.Not {
-			neg = ".not"
-		}
-		return fmt.Sprintf("expect(%s)%s.%s(%s)\n  got:  %s", a.Expr, neg, a.Matcher, trunc(jsonString(a.Arg)), trunc(jsonString(got))), false
+	return a.failure(pass, got), false
+}
+
+// failure is the message of an assertion that evaluated to pass, "" when it
+// holds.
+func (a Assertion) failure(pass bool, got interface{}) string {
+	if pass != a.Not {
+		return ""
 	}
-	return "", false
+	neg := ""
+	if a.Not {
+		neg = ".not"
+	}
+	return fmt.Sprintf("expect(%s)%s.%s(%s)\n  got:  %s", a.Expr, neg, a.Matcher, trunc(jsonString(a.Arg)), trunc(jsonString(got)))
+}
+
+// asymmetric matcher markers the extractor writes for expect.objectContaining
+// and expect.arrayContaining
+const (
+	objectContaining = "__objectContaining"
+	arrayContaining  = "__arrayContaining"
+)
+
+func asymmetricMarker(v interface{}) (string, interface{}, bool) {
+	m, ok := v.(map[string]interface{})
+	if !ok || len(m) != 1 {
+		return "", nil, false
+	}
+	for _, k := range []string{objectContaining, arrayContaining} {
+		if inner, ok := m[k]; ok {
+			return k, inner, true
+		}
+	}
+	return "", nil, false
+}
+
+func hasAsymmetric(v interface{}) bool {
+	if _, _, ok := asymmetricMarker(v); ok {
+		return true
+	}
+	switch x := v.(type) {
+	case map[string]interface{}:
+		for _, e := range x {
+			if hasAsymmetric(e) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, e := range x {
+			if hasAsymmetric(e) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// asymmetricMatch compares normalized want and got as vitest equals does
+// with asymmetric matchers: expect.objectContaining(o) matches an object
+// that has every property of o (each compared fully),
+// expect.arrayContaining(a) an array holding an element equal to each
+// element of a. partial is toMatchObject: objects match by want's keys.
+func asymmetricMatch(want, got interface{}, partial bool) bool {
+	if kind, inner, ok := asymmetricMarker(want); ok {
+		if kind == objectContaining {
+			w, _ := inner.(map[string]interface{})
+			g, isMap := got.(map[string]interface{})
+			if !isMap {
+				return false
+			}
+			for k, wv := range w {
+				if !asymmetricMatch(wv, g[k], false) {
+					return false
+				}
+			}
+			return true
+		}
+		ws, _ := inner.([]interface{})
+		gs, isArr := got.([]interface{})
+		if !isArr {
+			return false
+		}
+		for _, we := range ws {
+			found := false
+			for _, ge := range gs {
+				if asymmetricMatch(we, ge, false) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return false
+			}
+		}
+		return true
+	}
+	switch w := want.(type) {
+	case map[string]interface{}:
+		g, ok := got.(map[string]interface{})
+		if !ok {
+			return false
+		}
+		for k, wv := range w {
+			if !asymmetricMatch(wv, g[k], partial) {
+				return false
+			}
+		}
+		if !partial {
+			for k, gv := range g {
+				if _, has := w[k]; !has && gv != nil {
+					return false
+				}
+			}
+		}
+		return true
+	case []interface{}:
+		g, ok := got.([]interface{})
+		if !ok || len(g) != len(w) {
+			return false
+		}
+		for i := range w {
+			if !asymmetricMatch(w[i], g[i], partial) {
+				return false
+			}
+		}
+		return true
+	}
+	return reflect.DeepEqual(want, got)
 }
 
 func jsonString(v interface{}) string {
