@@ -28,7 +28,7 @@ func r78provbSSE(t *testing.T, frames ...string) *httptest.Server {
 
 func r78provbDrain(t *testing.T, s provider.TextStream) (string, []*provider.StreamChunk) {
 	t.Helper()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	var text strings.Builder
 	var finishes []*provider.StreamChunk
 	var last *provider.StreamChunk
@@ -98,7 +98,7 @@ func TestR78provbCompletionReadsPastDone(t *testing.T) {
 
 func r78provbFinishMeta(t *testing.T, s provider.TextStream, key string) map[string]interface{} {
 	t.Helper()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	var meta map[string]map[string]interface{}
 	for {
 		c, err := s.Next()

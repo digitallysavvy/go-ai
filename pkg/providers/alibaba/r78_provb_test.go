@@ -39,7 +39,7 @@ func TestR78provbAlibabaReadsPastDone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	var text strings.Builder
 	var finishes []*provider.StreamChunk
 	var last *provider.StreamChunk
@@ -137,7 +137,7 @@ func TestR78provbAlibabaCreatedZeroIsEpoch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 			var meta *provider.ResponseMetadata
 			for {
 				c, err := s.Next()

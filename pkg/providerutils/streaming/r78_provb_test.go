@@ -25,7 +25,7 @@ const r78provbDoneBody = `data: {"id":"c1","object":"chat.completion.chunk","cre
 
 func r78provbCheckDone(t *testing.T, s provider.TextStream) {
 	t.Helper()
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	var text strings.Builder
 	var finishes []*provider.StreamChunk
 	var last *provider.StreamChunk
