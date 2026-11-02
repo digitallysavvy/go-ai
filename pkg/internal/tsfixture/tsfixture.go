@@ -1116,7 +1116,7 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 				if str, ok := in.(string); ok {
 					tc.Input = str
 					_ = json.Unmarshal([]byte(str), &tc.Arguments)
-				} else if mm, ok := in.(map[string]interface{}); ok {
+				} else if mm, ok := in.(map[string]interface{}); ok && !isUndef(in) { // `input: undefined` is a missing input
 					tc.Arguments = mm
 					b, _ := json.Marshal(mm)
 					tc.Input = string(b)

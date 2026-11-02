@@ -168,9 +168,14 @@ if (wantAsserts) {
     let e2 = end;
     while (e2 < src.length && src[e2] !== ';' && src[e2] !== '\n') e2++;
     if (wantAsserts) { const se = stmtEnd(src, j); if (se > 0) e2 = se; }
-    try { vm.runInContext(`var ${m[1]} = (${stripTS(trimSemi(src.slice(k, e2)))})`, ctx); } catch (e) { /* skip */ }
+    try { vm.runInContext(`var ${m[1]} = (${stripTS(trimSemi(src.slice(k, e2)))})`, ctx); } catch (e) {
+      // --asserts: retry without the type annotations of arrow-function
+      // parameters (`(name: string) => name`)
+      if (wantAsserts) { try { vm.runInContext(`var ${m[1]} = (${dropParamTypes(stripTS(trimSemi(src.slice(k, e2))))})`, ctx); } catch (e2) { /* skip */ } }
+    }
   }
 }
+function dropParamTypes(s) { return s.replace(/\((\s*[A-Za-z_$][\w$]*)\s*:\s*[\w$.<>\[\]| ]+\)\s*=>/g, '($1) =>'); }
 // strip TS-only syntax so the literal evaluates as JS
 function stripTS(s) { return s.replace(/\s+satisfies\s+[\w.]+(<[^>]*>)?/g, '').replace(/\s+as\s+const\b/g, ''); }
 // end of the statement that starts at j: the next ';' outside brackets/strings
