@@ -497,6 +497,8 @@ func TestR81streamTSSameTickAbortAndCancel(t *testing.T) {
 			}}
 			abortCtx, abort := context.WithCancel(context.Background())
 			uiCtx, cancelUI := context.WithCancel(context.Background())
+			defer abort()
+			defer cancelUI()
 			aborted := make(chan struct{})
 			r, err := StreamText(abortCtx, StreamTextOptions{Model: model, Prompt: "Hello",
 				OnAbortEvent: func(context.Context, GenerateTextAbortEvent) { close(aborted) }})
@@ -845,7 +847,7 @@ func TestR81streamTSChunksResponseErrorsAndConsumeFailure(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b, err := io.ReadAll(resp.Body)
 		if err != nil {
 			t.Fatal(err)
@@ -918,10 +920,10 @@ func TestR81streamTSMergeMultipleStreams(t *testing.T) {
 		n++
 		d := c["delta"].(string)
 		src := "direct"
-		switch {
-		case d == "1a" || d == "1b" || d == "1c" || d == "1d" || d == "1e":
+		switch d {
+		case "1a", "1b", "1c", "1d", "1e":
 			src = "s1"
-		case d == "2a" || d == "2b":
+		case "2a", "2b":
 			src = "s2"
 		}
 		bySource[src] = append(bySource[src], d)
