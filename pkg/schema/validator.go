@@ -99,8 +99,32 @@ func (v *StructValidator) Validate(data interface{}) error {
 		if got != want && got.Kind() != reflect.Map {
 			return fmt.Errorf("$: expected %s, got %s", want, got)
 		}
+		if got != want {
+			// The decoded JSON value (a map) every caller passes: decode it
+			// into the target type and validate that, as TS validates the
+			// parsed value with the schema. A value that does not decode
+			// into the type fails validation.
+			return validateDecodedIntoStruct(data, want)
+		}
 	}
 	return playground.New().Struct(data)
+}
+
+// validateDecodedIntoStruct round-trips data through JSON into a new value of
+// target and runs the struct-tag validation on it.
+func validateDecodedIntoStruct(data interface{}, target reflect.Type) error {
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("$: %w", err)
+	}
+	value := reflect.New(target)
+	if err := json.Unmarshal(raw, value.Interface()); err != nil {
+		return fmt.Errorf("$: %w", err)
+	}
+	if target.Kind() != reflect.Struct {
+		return nil
+	}
+	return playground.New().Struct(value.Interface())
 }
 
 // JSONSchema generates a JSON Schema from the struct type
