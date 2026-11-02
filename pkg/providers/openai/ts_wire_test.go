@@ -25,6 +25,24 @@ func TestTSWire(t *testing.T) {
 	suite := tsfixture.WireSuite{
 		ProviderTool: tsProviderTool,
 		BatchPrefix:  "/v1", // batch objects carry no URL config in the recording
+		// Language results (content, usage, finish reason, metadata) are
+		// compared too, since review round 81.
+		LanguageResults: true,
+		SkipResults: func() map[string]string {
+			why := "Go keeps the flat v0.5.2 compaction metadata keys (type, itemId, encryptedContent) beside the provider-keyed ones"
+			out := map[string]string{}
+			for _, n := range []string{
+				"should append an explicit compaction trigger as the final input item",
+				"should not append a compaction trigger when disabled",
+				"should parse compaction output item from real fixture",
+				"should send context_management in request body",
+				"should include compaction item with encrypted content in content",
+				"should extract usage from compaction response",
+			} {
+				out["OpenAIResponsesLanguageModel > doGenerate > compaction > "+n] = why
+			}
+			return out
+		}(),
 		Skip: map[string]string{
 			"OpenAI batch service > creates a Responses batch from prepared JSONL requests":                                                           "provider headers are not captured in the batch recording config; JSONL line key order is semantically irrelevant (covered by batch unit tests)",
 			"OpenAI batch service > warns when a provider tool can return unsupported batch output":                                                   "typed Go hosted tools are named by their id, so the warning feature text differs from the TS tool name; covered by TestBatchWarnsForUnsupportedHostedTool",

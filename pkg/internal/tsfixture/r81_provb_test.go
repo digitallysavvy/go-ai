@@ -70,3 +70,13 @@ func TestR81provbWireNormalizeGoOnlyPartFields(t *testing.T) {
 		t.Fatalf("(- want, + got):\n%s", d)
 	}
 }
+
+// A call the recorder captured no result for (no result, no error) is not
+// compared: the openai "phase" tests read the result through a helper and
+// record none, which made every Go result a difference.
+func TestR81provbWireMissingResultNotCompared(t *testing.T) {
+	c := WireCall{Method: "doGenerate"}
+	if d := CompareWireResult(nil, WireSuite{LanguageResults: true}, c, map[string]interface{}{"content": []interface{}{}}, nil); d != nil {
+		t.Fatalf("diffs = %v", d)
+	}
+}

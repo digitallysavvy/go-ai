@@ -72,6 +72,9 @@ type WireSuite struct {
 	// usage, finish reason, warnings, provider metadata); otherwise only the
 	// requests they send are compared.
 	LanguageResults bool
+	// SkipResults lists tests (by name) whose results are not compared, with
+	// the reason; their requests still are.
+	SkipResults map[string]string
 	// BatchPrefix is the Go base-URL path prefix for batch objects, whose
 	// recordings carry no URL config (for example "/v1").
 	BatchPrefix string
@@ -226,6 +229,10 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 			t.Logf("call %d (%s) err=%v got=%s", i, c.Method, err, trim(string(b)))
 		}
 		ds := CompareWireResult(srv, s, c, got, err)
+		if why, ok := s.SkipResults[w.Test]; ok && len(ds) > 0 && c.Error == nil && err == nil {
+			t.Logf("call %d (%s): result not compared: %s", i, c.Method, why)
+			ds = nil
+		}
 		if len(w.HTTP) == 0 && len(ds) == 0 && err != nil {
 			// A replayed no-HTTP error case (ReplayNoHTTPErrors) is pure Go
 			// validation: the error text must match TS, so an unrelated Go
@@ -392,6 +399,9 @@ func CompareWireResult(srv *WireServer, s WireSuite, c WireCall, got map[string]
 	}
 	if c.Method == "doGetBatchResults" {
 		return nil
+	}
+	if c.Result == nil {
+		return nil // the recorder captured no result for this call
 	}
 	if WireKind(c) == "language" && ((!s.LanguageResults && os.Getenv("TSWIRE_LMRESULTS") == "") || c.Method == "doStream") {
 		return nil
