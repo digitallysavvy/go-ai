@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -61,5 +62,25 @@ func TestR77ProvbStreamSkipsDoneMarker(t *testing.T) {
 	}
 	if len(finishes) != 1 || finishes[0].FinishReason != types.FinishReasonStop {
 		t.Fatalf("finishes = %+v, want one stop finish at the end", finishes)
+	}
+}
+
+// TestR77ProvbCreatedAtZeroIsEpoch: TS getResponseMetadata passes created_at
+// through createLanguageModelResponseMetadata, so 0 is the epoch (null or
+// absent: no timestamp); Go treated 0 as missing.
+func TestR77ProvbCreatedAtZeroIsEpoch(t *testing.T) {
+	if ts, ok := xaiResponsesCreatedAt([]byte(`{"created_at":0}`), false); !ok || !ts.Equal(time.UnixMilli(0)) {
+		t.Errorf("created_at 0 = %v, %v", ts, ok)
+	}
+	if _, ok := xaiResponsesCreatedAt([]byte(`{"response":{"created_at":null}}`), true); ok {
+		t.Error("null created_at has a timestamp")
+	}
+	s := newXAIResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.created","response":{"id":"resp_1","object":"response","output":[],"created_at":0,"model":"grok-4"}}` + "\n\n")))
+	c, err := s.Next()
+	for err == nil && c.Type != provider.ChunkTypeResponseMetadata {
+		c, err = s.Next()
+	}
+	if err != nil || c.ResponseMetadata == nil || c.ResponseMetadata.Timestamp.IsZero() || !c.ResponseMetadata.Timestamp.Equal(time.UnixMilli(0)) {
+		t.Fatalf("response metadata = %+v, %v; want the epoch timestamp", c, err)
 	}
 }

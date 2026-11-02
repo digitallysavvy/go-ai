@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"slices"
 	"sort"
@@ -139,8 +140,34 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 	}
 	result.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Headers)
 	result.ResponseMetadata = providerutils.BuildResponseMetadata(resp.ID, resp.Model, resp.CreatedAt)
+	if ts, ok := responsesCreatedAt(httpResp.Body, false); ok {
+		result.ResponseMetadata.Timestamp = ts // TS new Date(created_at * 1000), also for 0
+	}
 	result.ResponseMetadata.Headers = result.ResponseHeaders
 	return result, nil
+}
+
+// responsesCreatedAt reads created_at (of the body, or of its response
+// member for a stream event) as TS's new Date(created_at * 1000): a present
+// value, 0 included, is a timestamp; an absent or null one is none.
+func responsesCreatedAt(data []byte, event bool) (time.Time, bool) {
+	var v struct {
+		CreatedAt *float64 `json:"created_at"`
+		Response  struct {
+			CreatedAt *float64 `json:"created_at"`
+		} `json:"response"`
+	}
+	if json.Unmarshal(data, &v) != nil {
+		return time.Time{}, false
+	}
+	c := v.CreatedAt
+	if event {
+		c = v.Response.CreatedAt
+	}
+	if c == nil || math.IsNaN(*c) || math.IsInf(*c, 0) {
+		return time.Time{}, false
+	}
+	return time.UnixMilli(int64(*c * 1000)), true
 }
 
 // DoStream performs streaming generation via POST /v1/responses with stream=true.
@@ -3223,8 +3250,8 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				ModelID: e.Response.Model,
 				Headers: providerutils.ExtractHeaders(s.responseHeaders),
 			}
-			if e.Response.CreatedAt != 0 {
-				metadata.Timestamp = time.Unix(e.Response.CreatedAt, 0)
+			if ts, ok := responsesCreatedAt([]byte(event.Data), true); ok {
+				metadata.Timestamp = ts
 			}
 			metadataChunk := &provider.StreamChunk{
 				Type:             provider.ChunkTypeResponseMetadata,
