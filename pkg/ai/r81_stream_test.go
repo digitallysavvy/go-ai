@@ -507,7 +507,11 @@ func TestR81streamTSSameTickAbortAndCancel(t *testing.T) {
 			}
 			var event map[string]interface{}
 			chunks, errCh := r.ToUIMessageStream(uiCtx, UIMessageStreamResultOptions{OnEnd: func(e map[string]interface{}) { event = e }})
+			abortWritten := false
 			for c := range chunks {
+				if c["type"] == "abort" {
+					abortWritten = true
+				}
 				if c["type"] == "text-delta" {
 					if order == "abort-first" {
 						abort()
@@ -525,8 +529,23 @@ func TestR81streamTSSameTickAbortAndCancel(t *testing.T) {
 				t.Fatalf("%s run %d: onAbort not called", order, i)
 			}
 			got := fmt.Sprintf("isAborted=%v isCancelled=%v outcome=%v", event["isAborted"], event["isCancelled"], event["outcome"])
-			if want := "isAborted=false isCancelled=true outcome=map[status:unknown]"; got != want {
-				t.Fatalf("%s run %d: OnEnd %s, want %s", order, i, got, want)
+			want := "isAborted=false isCancelled=true outcome=map[status:unknown]"
+			if abortWritten && order != "abort-first" {
+				t.Fatalf("%s run %d: abort chunk written after the UI ctx was cancelled", order, i)
+			}
+			if order == "abort-first" && got != want {
+				// Integrator r81: with two separate contexts, abort() then
+				// cancelUI() is a real Go race (Go has no "same tick"): the
+				// abort part can be read and processed before cancelUI runs
+				// (about 1 in 2000 runs), and then OnEnd reports the abort,
+				// whether or not its write beat the cancellation. TS does the
+				// same when the reader cancels after the abort chunk passed
+				// the finish transform (isAborted is set there, before the
+				// chunk reaches the reader). Only these two outcomes are valid.
+				want = "isAborted=true isCancelled=<nil> outcome=map[status:aborted]"
+			}
+			if got != want {
+				t.Fatalf("%s run %d: OnEnd %s, want %s (abort written: %v)", order, i, got, want, abortWritten)
 			}
 		}
 	}
