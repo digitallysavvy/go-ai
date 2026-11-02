@@ -50,8 +50,9 @@ Round 80 (prova) filled the responses that TS test helpers build (google `langua
 `interactions`, `structured_output_with_tools`; bedrock `chat`; anthropic `language`) and
 added `perplexity/.../language_asserts.json.gz` (`--asserts`), by running each TS test
 file with stub vitest, test server and model that record the response each test prepared
-before its model call. That capture script is not committed: re-extracting these files
-with `extract.mjs` alone loses those responses (`response: null`).
+before its model call. Since round 81 that script is committed as `capture.mjs`: re-extracting
+these files with `extract.mjs` alone loses those responses (`response: null`), so run the
+extractor and then the capture (see Regenerating).
 
 The extractor serializes a `Buffer.from(...)` through `Buffer.prototype.toJSON`
 (`{"type": "Buffer", "data": [...]}`); `WireBytes` reads that form as bytes
@@ -73,6 +74,24 @@ cd <ai repo>/packages
 node <go-ai repo>/pkg/internal/tsfixture/extract.mjs <path/to/provider test.ts> \
   | gzip -9n > <go-ai repo>/pkg/providers/<provider>/testdata/tscases/<name>.json.gz
 ```
+
+For a test file whose responses come from helpers the extractor cannot
+evaluate (`prepareJsonResponse`, `prepareStream(...)`, fixtures read by a
+helper), fill them by running the TS test file under Node 24 with stub vitest,
+test server and model (`capture.mjs`); it records, per test, the response the
+test prepared before each model call and fills only cases whose `response` is
+null:
+
+```sh
+cd <ai repo>/packages
+node <go-ai repo>/pkg/internal/tsfixture/extract.mjs <path/to/test.ts> --asserts > /tmp/cases.json
+node <go-ai repo>/pkg/internal/tsfixture/capture.mjs <path/to/test.ts> <ModelClassName> /tmp/cases.json \
+  | gzip -9n > <go-ai repo>/pkg/providers/<provider>/testdata/tscases/<name>.json.gz
+```
+
+It reports on stderr the cases it could not fill (a custom `fetch`, an error
+response of a `rejects` test, no model call). Round 81 checked that it
+reproduces `perplexity/.../language_asserts.json.gz` byte for byte.
 
 Use `gzip -9n` (no file name, no timestamp) so regenerating unchanged cases
 produces identical bytes. Then run the provider's `ts_cases` tests and update
