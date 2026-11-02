@@ -96,3 +96,62 @@ func (m *EmbeddingModel) validateEmbeddingProviderOptions(providerOptions map[st
 	name, _, _ := strings.Cut(m.provider.Name(), ".")
 	return providerutils.ValidateOpenAICompatibleEmbeddingOptions(providerOptions, name)
 }
+
+// openAIResponsesOptionsSchema is openaiLanguageModelResponsesOptionsSchema
+// (openai-responses-language-model-options.ts). nullish members accept null;
+// optional members reject it. promptCacheOptions has its own validator
+// (validateResponsesPromptCacheOptions), and metadata is z.any().
+var openAIResponsesOptionsSchema = providerutils.OptionSchema{
+	"conversation": providerutils.OptNullable(providerutils.OptString),
+	"include": providerutils.OptNullable(providerutils.OptArray(providerutils.OptEnum(
+		"reasoning.encrypted_content", "file_search_call.results", "web_search_call.results", "message.output_text.logprobs"), 0, -1)),
+	"includeWebSearchSources": providerutils.OptBool,
+	"instructions":            providerutils.OptNullable(providerutils.OptString),
+	// z.union([z.boolean(), z.number().min(1).max(TOP_LOGPROBS_MAX)])
+	"logprobs": func(path string, v interface{}) error {
+		if _, ok := v.(bool); ok {
+			return nil
+		}
+		return providerutils.OptRange(1, 20)(path, v)
+	},
+	"maxToolCalls":                providerutils.OptNullable(providerutils.OptNumber),
+	"parallelToolCalls":           providerutils.OptNullable(providerutils.OptBool),
+	"previousResponseId":          providerutils.OptNullable(providerutils.OptString),
+	"promptCacheKey":              providerutils.OptNullable(providerutils.OptString),
+	"promptCacheRetention":        providerutils.OptNullable(providerutils.OptEnum("in_memory", "24h")),
+	"reasoningEffort":             providerutils.OptNullable(providerutils.OptString),
+	"reasoningEffortUpdate":       providerutils.OptEnum("none", "low", "medium", "high", "xhigh", "max"),
+	"reasoningMode":               providerutils.OptEnum("standard", "pro"),
+	"reasoningContext":            providerutils.OptEnum("auto", "current_turn", "all_turns"),
+	"reasoningSummary":            providerutils.OptNullable(providerutils.OptString),
+	"safetyIdentifier":            providerutils.OptNullable(providerutils.OptString),
+	"serviceTier":                 providerutils.OptNullable(providerutils.OptEnum("auto", "flex", "priority", "fast", "ultrafast", "default")),
+	"store":                       providerutils.OptNullable(providerutils.OptBool),
+	"passThroughUnsupportedFiles": providerutils.OptBool,
+	"strictJsonSchema":            providerutils.OptNullable(providerutils.OptBool),
+	"textVerbosity":               providerutils.OptNullable(providerutils.OptEnum("low", "medium", "high")),
+	"truncation":                  providerutils.OptNullable(providerutils.OptEnum("auto", "disabled")),
+	"user":                        providerutils.OptNullable(providerutils.OptString),
+	"systemMessageMode":           providerutils.OptEnum("system", "developer", "remove"),
+	"forceReasoning":              providerutils.OptBool,
+	"contextManagement": providerutils.OptNullable(providerutils.OptArray(providerutils.OptObjectWith(providerutils.OptionSchema{
+		"type":             providerutils.OptLiteral("compaction"),
+		"compactThreshold": providerutils.OptNumber,
+	}, "type", "compactThreshold"), 0, -1)),
+	"compactionTrigger": providerutils.OptBool,
+	"allowedTools": providerutils.OptObjectWith(providerutils.OptionSchema{
+		"toolNames": providerutils.OptArray(providerutils.OptString, 1, -1),
+		"mode":      providerutils.OptEnum("auto", "required"),
+	}, "toolNames"),
+}
+
+// validateResponsesProviderOptions mirrors the Responses model's
+// parseProviderOptions calls: providerOptions[providerOptionsName], and
+// providerOptions.openai when that is absent or null and the name is not
+// "openai" (Azure). Typed option values are valid by construction.
+func validateResponsesProviderOptions(providerOptions map[string]interface{}, providerOptionsName string) error {
+	if raw, ok := providerOptions[providerOptionsName]; (ok && raw != nil) || providerOptionsName == "openai" {
+		return providerutils.ValidateMapProviderOptions(providerOptionsName, providerOptions, openAIResponsesOptionsSchema)
+	}
+	return providerutils.ValidateMapProviderOptions("openai", providerOptions, openAIResponsesOptionsSchema)
+}

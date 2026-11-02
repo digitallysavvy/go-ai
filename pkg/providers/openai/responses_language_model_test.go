@@ -1957,7 +1957,7 @@ func TestResponsesLanguageModel_ResponsesRequestParityOptions(t *testing.T) {
 						"parallelToolCalls":  nil,
 						"maxToolCalls":       0,
 						"logprobs":           5,
-						"contextManagement":  []interface{}{map[string]interface{}{"type": "auto", "compactThreshold": 0.75}},
+						"contextManagement":  []interface{}{map[string]interface{}{"type": "compaction", "compactThreshold": 0.75}},
 					},
 				},
 			},

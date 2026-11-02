@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -218,5 +220,52 @@ func TestR76ProvbPromptCacheOptionsNullRejected(t *testing.T) {
 	}, false)
 	if err == nil || !strings.Contains(err.Error(), "promptCacheOptions") {
 		t.Fatalf("err = %v, want a promptCacheOptions validation error", err)
+	}
+}
+
+// TestR76ProvbResponsesProviderOptionsValidated: the Responses model parses
+// its provider options with openaiLanguageModelResponsesOptionsSchema (TS
+// parseProviderOptions), so a wrong type or an unknown enum value fails the
+// call with an InvalidArgumentError instead of being sent or ignored. Azure
+// validates providerOptions.azure, or providerOptions.openai when azure is
+// absent or null.
+func TestR76ProvbResponsesProviderOptionsValidated(t *testing.T) {
+	build := func(po map[string]interface{}) error {
+		m := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "gpt-5")
+		_, _, err := m.buildRequestBody(&provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, ProviderOptions: po}, false)
+		return err
+	}
+	for name, opts := range map[string]map[string]interface{}{
+		"serviceTier enum":          {"serviceTier": "bogus"},
+		"store type":                {"store": "yes"},
+		"include enum":              {"include": []interface{}{"code_interpreter_call.outputs"}},
+		"logprobs above max":        {"logprobs": 21},
+		"reasoningMode null":        {"reasoningMode": nil},
+		"allowedTools empty":        {"allowedTools": map[string]interface{}{"toolNames": []interface{}{}}},
+		"contextManagement literal": {"contextManagement": []interface{}{map[string]interface{}{"type": "auto", "compactThreshold": 1}}},
+		"truncation enum":           {"truncation": "sometimes"},
+	} {
+		err := build(map[string]interface{}{"openai": opts})
+		var invalid *providererrors.InvalidArgumentError
+		if !errors.As(err, &invalid) {
+			t.Errorf("%s: err = %v, want InvalidArgumentError", name, err)
+		}
+	}
+	valid := map[string]interface{}{
+		"conversation": nil, "store": false, "serviceTier": "flex", "logprobs": true,
+		"include":           []string{"file_search_call.results"},
+		"metadata":          map[string]interface{}{"k": 1},
+		"reasoningEffort":   "anything",
+		"contextManagement": []interface{}{map[string]interface{}{"type": "compaction", "compactThreshold": 0.5}},
+		"allowedTools":      map[string]interface{}{"toolNames": []string{"f"}, "mode": "required"},
+	}
+	if err := build(map[string]interface{}{"openai": valid}); err != nil {
+		t.Errorf("valid options: %v", err)
+	}
+	if err := validateResponsesProviderOptions(map[string]interface{}{"azure": nil, "openai": map[string]interface{}{"store": 1}}, "azure"); err == nil {
+		t.Error("azure: null azure options must fall back to validating openai")
+	}
+	if err := validateResponsesProviderOptions(map[string]interface{}{"azure": map[string]interface{}{"store": true}, "openai": map[string]interface{}{"store": 1}}, "azure"); err != nil {
+		t.Errorf("azure: openai options must be ignored when azure is set: %v", err)
 	}
 }

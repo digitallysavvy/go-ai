@@ -366,6 +366,12 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		}
 	}
 
+	// TS parseProviderOptions validates the whole options object (the
+	// members read above report their own TS errors first).
+	if err := validateResponsesProviderOptions(opts.ProviderOptions, providerOptionsName); err != nil {
+		return nil, store, nil, err
+	}
+
 	var warnings []types.Warning
 	if opts.TopK != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK"})
