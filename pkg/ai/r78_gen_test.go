@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -103,4 +104,34 @@ func TestR78Gen_InvalidToolErrorTitle(t *testing.T) {
 			t.Fatalf("executed failure = %#v, want no title", fail)
 		}
 	})
+}
+
+// Port of parse-tool-call.test.ts 680-710 "should return invalid tool call
+// with ToolCallRepairError when repair throws": the message is TS
+// `Error repairing tool call: ${getErrorMessage(cause)}`, the cause's
+// toString() ("Error: test error").
+func TestR78Gen_ToolCallRepairErrorMessage(t *testing.T) {
+	got, err := ParseToolCall(context.Background(), ParseToolCallOptions{
+		ToolCall: types.ToolCall{ID: "123", ToolName: "testTool", RawArguments: "invalid json"},
+		Tools: []types.Tool{{Name: "testTool", Parameters: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{"param1": map[string]interface{}{"type": "string"}, "param2": map[string]interface{}{"type": "number"}},
+			"required":   []interface{}{"param1", "param2"},
+		}}},
+		RepairToolCall: func(context.Context, ToolCallRepairOptions) (*types.ToolCall, error) {
+			return nil, errors.New("test error")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Invalid || !got.Dynamic || got.RawArguments != "invalid json" || !IsToolCallRepairError(got.Error) {
+		t.Fatalf("got %#v", got)
+	}
+	if msg := got.Error.Error(); msg != "Error repairing tool call: Error: test error" {
+		t.Fatalf("message = %q", msg)
+	}
+	if text := providerutils.ToolErrorText(got.Error); text != "AI_ToolCallRepairError: Error repairing tool call: Error: test error" {
+		t.Fatalf("model-facing text = %q", text)
+	}
 }

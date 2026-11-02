@@ -188,7 +188,7 @@ func TestParseToolCallRepair(t *testing.T) {
 		if !got.Invalid || !errors.As(got.Error, &repairErr) || !IsInvalidToolInputError(repairErr.OriginalError) {
 			t.Fatalf("got %+v", got)
 		}
-		if got.Error.Error() != "Error repairing tool call: boom" {
+		if got.Error.Error() != "Error repairing tool call: Error: boom" {
 			t.Fatalf("message = %q", got.Error.Error())
 		}
 	})
