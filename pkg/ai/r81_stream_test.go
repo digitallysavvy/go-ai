@@ -876,3 +876,58 @@ func TestR81streamTSChunksResponseErrorsAndConsumeFailure(t *testing.T) {
 		}
 	}
 }
+
+// TS create-ui-message-stream.test.ts 153: direct writes and two merged
+// streams. The TS snapshot's interleaving follows JS microtask order; Go
+// merges on goroutines, so the port checks what holds in both: every chunk
+// arrives once, and each source keeps its own order.
+func TestR81streamTSMergeMultipleStreams(t *testing.T) {
+	delta := func(id, d string) UIMessageChunk { return UIMessageChunk{"type": "text-delta", "id": id, "delta": d} }
+	s1 := make(chan UIMessageChunk, 5)
+	s2 := make(chan UIMessageChunk, 2)
+	executed := make(chan struct{})
+	out, errCh := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(w UIMessageStreamWriter) {
+			w.Write(delta("1", "data-part-1"))
+			w.Merge(s1)
+			s1 <- delta("1", "1a")
+			w.Write(delta("1", "data-part-2"))
+			s1 <- delta("1", "1b")
+			w.Merge(s2)
+			w.Write(delta("1", "data-part-3"))
+			close(executed)
+		},
+	})
+	go func() {
+		// TS: the test enqueues after createUIMessageStream returns, and
+		// execute runs synchronously; Go's Execute runs on its own goroutine.
+		<-executed
+		s2 <- delta("2", "2a")
+		s1 <- delta("1", "1c")
+		s2 <- delta("2", "2b")
+		close(s2)
+		s1 <- delta("1", "1d")
+		s1 <- delta("1", "1e")
+		close(s1)
+	}()
+	bySource := map[string][]string{}
+	n := 0
+	for c := range out {
+		n++
+		d := c["delta"].(string)
+		src := "direct"
+		switch {
+		case d == "1a" || d == "1b" || d == "1c" || d == "1d" || d == "1e":
+			src = "s1"
+		case d == "2a" || d == "2b":
+			src = "s2"
+		}
+		bySource[src] = append(bySource[src], d)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	if n != 10 || fmt.Sprint(bySource) != "map[direct:[data-part-1 data-part-2 data-part-3] s1:[1a 1b 1c 1d 1e] s2:[2a 2b]]" {
+		t.Fatalf("got %d chunks: %v", n, bySource)
+	}
+}
