@@ -779,7 +779,9 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 		if len(chunkData.Usage) > 0 && string(chunkData.Usage) != "null" {
 			s.pendingUsage = chunkData.Usage
 		}
-		if !s.responseMetadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != nil || len(s.responseHeaders) > 0) {
+		// TS emits response-metadata on the first valid chunk, even when it has
+		// no id, model or created.
+		if !s.responseMetadataEmitted {
 			s.responseMetadataEmitted = true
 			meta := &provider.ResponseMetadata{
 				ID:      chunkData.ID,

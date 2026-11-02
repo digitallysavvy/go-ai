@@ -726,7 +726,9 @@ func (s *groqStream) Next() (*provider.StreamChunk, error) {
 			}
 			continue
 		}
-		if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != nil || len(s.responseHeaders) > 0) {
+		// TS emits response-metadata on the first valid chunk, even when it has
+		// no id, model or created.
+		if !s.metadataEmitted {
 			metadata := &provider.ResponseMetadata{
 				ID:      chunkData.ID,
 				ModelID: chunkData.Model,
