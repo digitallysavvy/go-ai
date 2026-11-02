@@ -2966,13 +2966,13 @@ func (s *responsesStream) Err() error {
 	return s.err
 }
 
-// queueFallbackSources enqueues citation-derived sources for url_citation /
-// file_citation annotations once the stream's complete source set is known,
-// skipping those superseded by retrieval data (TS flush()).
-// queueEOFFinish is TS flush() for a stream that ended without a terminal
-// response event: the source fallbacks, then `finish` with the default
-// finish reason (interrupted, or error after a decode failure) and responseId
-// metadata, and the end of the stream.
+// queueEOFFinish is TS flush(), run when the SSE stream ends: the source
+// fallbacks and suppressed tool inputs, then the one `finish` part with the
+// state the events left (finish reason and raw value of the last
+// response.completed/incomplete/failed, or interrupted when none arrived, or
+// error after a parse failure or error event; the last usage, serviceTier and
+// reasoningContext; responseId and logprobs metadata), and the end of the
+// stream.
 func (s *responsesStream) queueEOFFinish() {
 	// TS hands the stream out when its early-error peek reaches the end.
 	s.markOutputStarted()
@@ -3014,6 +3014,10 @@ func (s *responsesStream) markStreamError(raw string) {
 	s.rawFinishReason = raw
 }
 
+// queueFallbackSources enqueues citation-derived sources for url_citation /
+// file_citation annotations once the stream's complete source set is known,
+// skipping those superseded by retrieval data, then the buffered input of
+// suppressed tool calls (TS flush()).
 func (s *responsesStream) queueFallbackSources() {
 	for _, ann := range s.fallbackAnnotations {
 		if openAIAnnotationHasRetrievedSource(ann, s.hasWebSearchActionSources, s.hasFileSearchResults) {
@@ -3109,10 +3113,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			return nil, err
 		}
 
-		// Standard [DONE] terminator (some OpenAI SSE streams still send it);
-		// TS skips it and flush() runs at the end of the stream.
+		// Standard [DONE] terminator (some OpenAI SSE streams still send it):
+		// TS parseJsonEventStream skips it, and flush() runs at the end of
+		// the stream, after any later events.
 		if streaming.IsStreamDone(event) {
-			s.queueEOFFinish()
 			continue
 		}
 		// Parse the "type" discriminator.
