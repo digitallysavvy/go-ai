@@ -237,3 +237,27 @@ func TestR77Gen_ValidateApprovedToolApprovalsToolWithoutParameters(t *testing.T)
 		t.Fatalf("error = %q", msg)
 	}
 }
+
+// The TypeValidationError value of a ValidateInput failure is TS
+// JSON.stringify(JSON.parse(input)): array-index keys first, a repeated key
+// at its first position with its last value, strings re-encoded.
+func TestR77Gen_ValidateInputErrorValueIsJSStringify(t *testing.T) {
+	tool := types.Tool{
+		Name:       "tool1",
+		Parameters: map[string]interface{}{"type": "object"},
+		ValidateInput: func(interface{}) (interface{}, error) {
+			return nil, errors.New("nope")
+		},
+	}
+	got, err := ParseToolCall(context.Background(), ParseToolCallOptions{
+		ToolCall: types.ToolCall{ID: "c1", ToolName: "tool1", RawArguments: `{"b": 1, "a": "é", "b": 2, "1": true}`},
+		Tools:    []types.Tool{tool},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Invalid input for tool tool1: AI_TypeValidationError: Type validation failed: Value: {\"1\":true,\"b\":2,\"a\":\"é\"}.\nError message: Error: nope"
+	if !got.Invalid || got.Error == nil || got.Error.Error() != want {
+		t.Fatalf("error = %v\nwant %q", got.Error, want)
+	}
+}

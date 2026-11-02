@@ -1,7 +1,6 @@
 package ai
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -402,13 +401,13 @@ func (e *toolInputTypeValidationError) Error() string {
 func (e *toolInputTypeValidationError) Unwrap() error { return e.ValidationError }
 
 func newToolInputTypeValidationError(call types.ToolCall, args map[string]interface{}, err error) error {
-	// TS JSON.stringify(value) keeps the input's key order: use the
-	// compacted raw input text when there is one.
+	// TS JSON.stringify(value) of the parsed input: the raw input's keys in
+	// JS enumeration order (array-index keys first, a repeated key at its
+	// first position with its last value), strings re-encoded.
 	var value interface{} = args
 	if raw := call.RawArguments; providerutils.JSTrim(raw) != "" {
-		var buf bytes.Buffer
-		if json.Compact(&buf, []byte(raw)) == nil {
-			value = buf.String()
+		if v, ok := jsonorder.Parse([]byte(raw)); ok {
+			value = jsonorder.Stringify(v)
 		}
 	}
 	return &toolInputTypeValidationError{providererrors.NewValidationErrorWithContext(value, providerutils.ToolErrorText(err), err, &providererrors.ValidationContext{})}
