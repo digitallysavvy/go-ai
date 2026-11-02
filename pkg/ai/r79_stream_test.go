@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 // Reviewer item 4 (r79): the inline invalid tool errors reset at a stream
@@ -298,5 +299,136 @@ func TestR79StreamMultiStepTextIDRemapped(t *testing.T) {
 	}
 	if steps := r.Steps(); len(steps) != 2 || steps[0].Text != "Let me check." || steps[1].Text != "It is sunny." {
 		t.Fatalf("steps = %+v", steps)
+	}
+}
+
+// stream-text.test.ts 4162: without stream retries an error part reaches
+// onChunk before onError.
+func TestR79StreamOnChunkBeforeOnErrorWithoutRetries(t *testing.T) {
+	var mu sync.Mutex
+	var order []string
+	add := func(s string) { mu.Lock(); order = append(order, s); mu.Unlock() }
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  r71streamModel(nil, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: errors.New("provider error"), Text: "provider error"}}),
+		Prompt: "test-input",
+		OnChunk: func(c provider.StreamChunk) {
+			if c.Type == provider.ChunkTypeError {
+				add("onChunk")
+			}
+		},
+		OnError: func(context.Context, error) { add("onError") },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	mu.Lock()
+	defer mu.Unlock()
+	if got := fmt.Sprint(order); got != "[onChunk onError]" {
+		t.Fatalf("order = %s, want [onChunk onError]", got)
+	}
+}
+
+// stream-text.test.ts 4189: with streamRetries 1 the model is called twice,
+// onError fires for both errors, the full stream carries the last one and
+// the finish reason is error.
+func TestR79StreamFinalErrorAfterRetriesExhausted(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		e := fmt.Errorf("provider error %d", n)
+		return testutil.NewMockTextStream([]provider.StreamChunk{{Type: provider.ChunkTypeError, Err: e, Text: e.Error()}}), nil
+	}}
+	retries := 1
+	var errs []string
+	r, parts := r73streamParts(t, StreamTextOptions{Model: model, Prompt: "test-input", StreamRetries: &retries, OnError: func(_ context.Context, err error) {
+		mu.Lock()
+		errs = append(errs, err.Error())
+		mu.Unlock()
+	}})
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if got := fmt.Sprint(errs); got != "[provider error 1 provider error 2]" {
+		t.Fatalf("onError = %s", got)
+	}
+	var streamErrs []string
+	for _, p := range parts {
+		if p.Type == provider.ChunkTypeError {
+			streamErrs = append(streamErrs, p.Err.Error())
+		}
+	}
+	if got := fmt.Sprint(streamErrs); got != "[provider error 2]" {
+		t.Fatalf("stream errors = %s, want [provider error 2]", got)
+	}
+	if r.FinishReason() != types.FinishReasonError {
+		t.Fatalf("finish reason = %s, want error", r.FinishReason())
+	}
+}
+
+// stream-text.test.ts 12611 (Go form: OnError panics): the error part is
+// still in the full stream, the finish reason is error, one step is recorded
+// and the step/finish callbacks each run once.
+func TestR79StreamOnErrorPanicKeepsErrorAndFinish(t *testing.T) {
+	providerErr := errors.New("provider error")
+	step := []provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+		{Type: provider.ChunkTypeError, Err: providerErr, Text: providerErr.Error()},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonError, RawFinishReason: "error", Usage: r72streamTestUsage},
+	}
+	var mu sync.Mutex
+	stepFinish, finish := 0, 0
+	r, parts := r73streamParts(t, StreamTextOptions{
+		Model:        r71streamModel(nil, step),
+		Prompt:       "test-input",
+		OnError:      func(context.Context, error) { panic("callback error") },
+		OnStepFinish: func(context.Context, types.StepResult, interface{}) { mu.Lock(); stepFinish++; mu.Unlock() },
+		OnFinish:     func(*StreamTextResult) { mu.Lock(); finish++; mu.Unlock() },
+	})
+	found := false
+	for _, p := range parts {
+		if p.Type == provider.ChunkTypeError && errors.Is(p.Err, providerErr) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("full stream has no provider error part: %v", r73streamNames(parts))
+	}
+	if r.FinishReason() != types.FinishReasonError {
+		t.Fatalf("finish reason = %s, want error", r.FinishReason())
+	}
+	if n := len(r.Steps()); n != 1 {
+		t.Fatalf("steps = %d, want 1", n)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if stepFinish != 1 || finish != 1 {
+		t.Fatalf("onStepFinish = %d, onFinish = %d, want 1 each", stepFinish, finish)
+	}
+}
+
+// stream-text.test.ts 22669: onStepEnd is preferred over the deprecated
+// onStepFinish (only onStepEnd runs).
+func TestR79StreamOnStepEndPreferredOverOnStepFinish(t *testing.T) {
+	var mu sync.Mutex
+	var calls []string
+	r, _ := r73streamParts(t, StreamTextOptions{
+		Model:        r71streamModel(nil, r71streamHelloWorld),
+		Prompt:       "test-input",
+		OnStepEnd:    func(context.Context, types.StepResult, interface{}) { mu.Lock(); calls = append(calls, "onStepEnd"); mu.Unlock() },
+		OnStepFinish: func(context.Context, types.StepResult, interface{}) { mu.Lock(); calls = append(calls, "onStepFinish"); mu.Unlock() },
+	})
+	_ = r.ConsumeStream()
+	mu.Lock()
+	defer mu.Unlock()
+	if got := fmt.Sprint(calls); got != "[onStepEnd]" {
+		t.Fatalf("calls = %s, want [onStepEnd]", got)
 	}
 }
