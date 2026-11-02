@@ -15,6 +15,18 @@ import (
 // tsProviderTool maps a TS provider tool to the Go tool. Go identifies
 // provider tools by their TS id in Name.
 func tsProviderTool(id, name string, args map[string]interface{}) (types.Tool, bool) {
+	t, ok := tsTypedProviderTool(id, args)
+	if !ok {
+		// Args the typed constructors cannot express, and unknown ids, go
+		// through the serialized form (id and args, no typed options), which
+		// prepareTools rebuilds or rejects (restoreProviderToolOptions).
+		t, ok = types.Tool{Name: name, ProviderID: id, Type: "provider", ProviderArgs: args}, true
+	}
+	tsfixture.ToolNameAlias[id], tsfixture.PromptToolNameAlias[name] = name, id
+	return t, ok
+}
+
+func tsTypedProviderTool(id string, args map[string]interface{}) (types.Tool, bool) {
 	raw, _ := json.Marshal(args)
 	decode := func(v interface{}) bool { return len(args) == 0 || json.Unmarshal(raw, v) == nil }
 	var t types.Tool
@@ -94,7 +106,6 @@ func tsProviderTool(id, name string, args map[string]interface{}) (types.Tool, b
 		}
 		t = types.Tool{Name: id, ProviderID: id, Type: "provider"}
 	}
-	tsfixture.ToolNameAlias[id], tsfixture.PromptToolNameAlias[name] = name, id
 	return t, true
 }
 

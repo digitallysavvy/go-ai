@@ -13,7 +13,11 @@ import (
 // TestTSCasesPrepareTools replays amazon-bedrock-prepare-tools.test.ts.
 func TestTSCasesPrepareTools(t *testing.T) {
 	tsfixture.ProviderToolHook = func(id, name string, args map[string]interface{}) (types.Tool, bool) {
-		return anthropictools.ProviderTool(id, args)
+		if t, ok := anthropictools.ProviderTool(id, args); ok {
+			return t, true
+		}
+		// Other ids go through the serialized form (id and args).
+		return types.Tool{Name: name, ProviderID: id, Type: "provider", ProviderArgs: args}, true
 	}
 	defer func() { tsfixture.ProviderToolHook = nil }()
 	cases := tsfixture.LoadCases(t, "testdata/tscases/prepare_tools.json.gz")
@@ -58,7 +62,9 @@ func TestTSCasesPrepareTools(t *testing.T) {
 			"betas":           map[string]interface{}{"__set": betas},
 			"toolWarnings":    warnings,
 		}, nil, nil
-	}, nil)
+	}, map[string]string{
+		"should warn for unknown provider-defined tools on anthropic models": "the TS test mocks the Anthropic prepareTools result (no warnings); the real one adds \"provider-defined tool anthropic.unknown_tool\", as Go does",
+	})
 }
 
 // TestTSCasesConvertUsage replays convert-amazon-bedrock-usage.test.ts.
