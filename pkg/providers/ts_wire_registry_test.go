@@ -95,7 +95,9 @@ func wireHeaders(m tsfixture.WireModel) map[string]string {
 // wireSuites maps a TS package (testdata/tswire/<pkg>.jsonl.gz) to the Go
 // provider replayed against it.
 var wireSuites = map[string]tsfixture.WireSuite{
-	"openai-compatible": {LanguageResults: true, Skip: map[string]string{
+	"openai-compatible": {LanguageResults: true, SkipResults: map[string]string{
+		"metadata extraction > should process metadata from streaming response": "the metadataExtractor is code in the TS test; Go has no metadata extractor hook",
+	}, Skip: map[string]string{
 		"metadata extraction > should process metadata from complete response":             "the metadataExtractor is code in the TS test; Go has no metadata extractor hook",
 		"doGenerate > should generate distinct IDs for parallel tool calls with empty IDs": "TS generateId is random; distinct Go ids are checked in pkg/providerutils/streaming",
 		"~transformRequestBody": "the transform is code in the TS test; Go has Config.TransformRequestBody",
@@ -175,7 +177,7 @@ var wireSuites = map[string]tsfixture.WireSuite{
 	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return topaz.New(topaz.Config{APIKey: k, BaseURL: b, Headers: h, VideoPollIntervalMillis: 1, VideoPollTimeoutMillis: 5000})
 	})},
-	"xai": {ProviderTool: xaiProviderTool, BatchPrefix: "/v1", Skip: map[string]string{
+	"xai": {LanguageResults: true, ProviderTool: xaiProviderTool, BatchPrefix: "/v1", Skip: map[string]string{
 		"xAI batch > uploads prepared JSONL requests and creates a file-backed batch": "provider headers are not captured in the batch recording config; JSONL line key order is semantically irrelevant (covered by xai batch unit tests)",
 	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return xai.New(xai.Config{APIKey: k, BaseURL: b, Headers: h})
@@ -218,12 +220,12 @@ var wireSuites = map[string]tsfixture.WireSuite{
 	"revai": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return revai.New(revai.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
-	"alibaba": {Skip: map[string]string{
+	"alibaba": {LanguageResults: true, Skip: map[string]string{
 		"~injects the schema for other models": "the injected schema text keeps TS object key order, which a Go map cannot",
 	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return alibaba.New(alibaba.Config{APIKey: k, BaseURL: b, VideoBaseURL: b, EmbeddingBaseURL: b, Headers: h})
 	})},
-	"deepseek": {Skip: map[string]string{
+	"deepseek": {LanguageResults: true, Skip: map[string]string{
 		"DeepSeekChatLanguageModel > doGenerate > tool call > json response format > should send correct request body with schema": "the injected schema text keeps TS object key order, which a Go map cannot",
 	}, Provider: func(b string, m tsfixture.WireModel) (provider.Provider, error) {
 		cfg := deepseek.Config{APIKey: wireAPIKey(m), BaseURL: b, Headers: wireHeaders(m)}
@@ -235,11 +237,11 @@ var wireSuites = map[string]tsfixture.WireSuite{
 		}
 		return deepseek.New(cfg), nil
 	}},
-	"moonshotai": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"moonshotai": {LanguageResults: true, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return moonshot.New(moonshot.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
 	// Open Responses takes the full endpoint URL as its base URL.
-	"open-responses": {Skip: map[string]string{
+	"open-responses": {LanguageResults: true, Skip: map[string]string{
 		"~losslessly replay": "the TS test registers a hosted-tool extension in code, which the recording does not carry",
 		"~extension":         "the TS test registers an extension in code, which the recording does not carry",
 		"~multi-turn tool conversation > should send correct request body": "tool output JSON text keeps TS object key order, which a Go map cannot",
@@ -252,7 +254,7 @@ var wireSuites = map[string]tsfixture.WireSuite{
 		}
 		return openresponses.New(openresponses.Config{Name: strings.SplitN(m.Provider, ".", 2)[0], APIKey: wireAPIKey(m), BaseURL: endpoint, Headers: wireHeaders(m)}), nil
 	}},
-	"huggingface": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"huggingface": {LanguageResults: true, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return huggingface.New(huggingface.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
 	"cerebras": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
@@ -362,7 +364,8 @@ func xaiProviderTool(id, name string, args map[string]interface{}) (types.Tool, 
 	default:
 		return t, false
 	}
-	// xai tools are matched by their fixed Name ("xai.web_search", ...), so the
-	// TS name the caller chose is not applied.
+	// The tool name the TS test registered: Go xai sends the tool by its
+	// provider id and reports results under the declared name, as TS does.
+	t.Name = name
 	return t, true
 }
