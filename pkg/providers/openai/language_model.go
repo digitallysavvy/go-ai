@@ -1410,6 +1410,13 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 							Name      streaming.WireName `json:"name"`
 							Arguments *string            `json:"arguments"`
 						} `json:"function"`
+						// ExtraContent carries a Gemini thought signature on
+						// OpenAI-compatible endpoints.
+						ExtraContent *struct {
+							Google *struct {
+								ThoughtSignature *string `json:"thought_signature"`
+							} `json:"google"`
+						} `json:"extra_content,omitempty"`
 					} `json:"tool_calls,omitempty"`
 					Annotations []openAIAnnotation `json:"annotations,omitempty"`
 				} `json:"delta"`
@@ -1581,7 +1588,21 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 				if !s.compat && tc.Type != nil {
 					toolCallType = *tc.Type
 				}
-				for _, chunk := range s.toolCallTracker.TrackWireWithTypePtr(tc.Index, tc.ID, tc.Function.Name, toolCallType, tc.Function.Arguments) {
+				d := streaming.ToolCallDelta{Index: tc.Index, ID: tc.ID, Name: tc.Function.Name.Value, Type: toolCallType}
+				if tc.Function.Arguments != nil {
+					d.ArgumentsDelta, d.ArgumentsPresent = *tc.Function.Arguments, true
+				}
+				if providerutils.JSTrim(tc.Function.Name.Value) == "" {
+					d.NameBlank, d.NameAbsent = tc.Function.Name.Present, !tc.Function.Name.Present
+				}
+				// TS openai-compatible extractMetadata: the delta's
+				// extra_content.google.thought_signature becomes the tool
+				// call's providerMetadata[providerOptionsName].
+				if s.compat && tc.ExtraContent != nil && tc.ExtraContent.Google != nil &&
+					tc.ExtraContent.Google.ThoughtSignature != nil && *tc.ExtraContent.Google.ThoughtSignature != "" {
+					d.ProviderMetadata = map[string]interface{}{s.metaKey: map[string]interface{}{"thoughtSignature": *tc.ExtraContent.Google.ThoughtSignature}}
+				}
+				for _, chunk := range s.toolCallTracker.TrackDelta(d) {
 					c := chunk
 					emit(&c)
 				}
@@ -1708,7 +1729,10 @@ func (s *openAIStream) Err() error {
 
 // closeBlocksAndToolCalls ends an open reasoning block and emits the finalized
 // tool calls (TS flush(): tool-call parts are emitted when the stream ends).
-func (s *openAIStream) closeBlocksAndToolCalls() {
+// It reports whether the tracker failed (a tool call whose function.name
+// never arrived): TS toolCallTracker.flush() throws there, so flush() never
+// reaches its finish part.
+func (s *openAIStream) closeBlocksAndToolCalls() (toolCallErrored bool) {
 	if s.isActiveReasoning {
 		s.isActiveReasoning = false
 		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
@@ -1716,7 +1740,11 @@ func (s *openAIStream) closeBlocksAndToolCalls() {
 	for _, chunk := range s.toolCallTracker.Flush() {
 		c := chunk
 		s.flushQueue = append(s.flushQueue, &c)
+		if c.Type == provider.ChunkTypeError {
+			toolCallErrored = true
+		}
 	}
+	return toolCallErrored
 }
 
 // endStream queues the terminal finish chunk (usage, provider metadata) once
@@ -1738,7 +1766,10 @@ func (s *openAIStream) endStream() {
 				})
 			}
 		}
-		s.closeBlocksAndToolCalls()
+		if s.closeBlocksAndToolCalls() {
+			s.err = io.EOF
+			return
+		}
 		if s.compat && !s.finishSeen && !s.finishErrored {
 			// TS OpenAICompatibleChatLanguageModel flush(): a stream that
 			// ends without any finish_reason is an invalid response.

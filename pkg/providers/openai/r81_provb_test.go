@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -95,5 +96,67 @@ func TestR81provbComputerCallInputTSOrder(t *testing.T) {
 	}
 	if _, has := actions[1]["keys"]; has {
 		t.Fatalf("double_click keeps a null keys: %#v", actions[1])
+	}
+}
+
+// TS openai-compatible extractMetadata: a streamed tool call delta's
+// extra_content.google.thought_signature becomes the tool-call part's
+// providerMetadata[providerOptionsName] (openai-compatible "should stream
+// tool call with thought signature from extra_content", replayed with stream
+// parts). Generate already did this; the stream dropped it.
+func TestR81provbCompatStreamToolCallThoughtSignature(t *testing.T) {
+	sse := `data: {"id":"c","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"fc-1","type":"function","function":{"name":"check","arguments":""},"extra_content":{"google":{"thought_signature":"<Sig>"}}}]},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"c","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"c","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}` + "\n\ndata: [DONE]\n\n"
+	chunks, _ := collectChat(t, sse, Config{OpenAICompatible: true, Name: "acme"})
+	var call *provider.StreamChunk
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeToolCall {
+			call = c
+		}
+	}
+	if call == nil || call.ToolCall == nil {
+		t.Fatalf("no tool call in %v", chunks)
+	}
+	var got interface{}
+	b, _ := json.Marshal(call.ToolCall.ProviderMetadata)
+	_ = json.Unmarshal(b, &got)
+	want := map[string]interface{}{"acme": map[string]interface{}{"thoughtSignature": "<Sig>"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("providerMetadata = %s, want %v", b, want)
+	}
+	// native OpenAI chat has no extra_content
+	chunks, _ = collectChat(t, sse, Config{})
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeToolCall && c.ToolCall != nil && c.ToolCall.ProviderMetadata != nil {
+			t.Fatalf("openai tool call metadata = %v", c.ToolCall.ProviderMetadata)
+		}
+	}
+}
+
+// A streamed tool call whose function.name never arrives makes TS
+// toolCallTracker.flush() throw, so flush() emits no finish part
+// (openai-compatible "should error when streamed tool call never receives a
+// function.name"). Go emitted the error and then a finish.
+func TestR81provbStreamMissingToolNameNoFinish(t *testing.T) {
+	sse := `data: {"id":"c","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":null},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"c","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_missing","type":"function","function":{"arguments":"{}"}}]},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"c","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}` + "\n\ndata: [DONE]\n\n"
+	for name, cfg := range map[string]Config{"openai-compatible": {OpenAICompatible: true, Name: "acme"}, "openai": {}} {
+		t.Run(name, func(t *testing.T) {
+			chunks, _ := collectChat(t, sse, cfg)
+			sawError := false
+			for _, c := range chunks {
+				switch c.Type {
+				case provider.ChunkTypeError:
+					sawError = true
+				case provider.ChunkTypeFinish:
+					t.Fatalf("finish after the tool call error: %+v", c)
+				}
+			}
+			if !sawError {
+				t.Fatalf("no error part in %v", chunks)
+			}
+		})
 	}
 }
