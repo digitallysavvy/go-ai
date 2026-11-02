@@ -3,6 +3,7 @@ package alibaba
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -87,6 +88,11 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
+	}
+	if len(response.Choices) == 0 {
+		// TS doGenerate reads response.choices[0].message without a guard: an
+		// empty choices array is a TypeError.
+		return nil, errors.New("Cannot read properties of undefined (reading 'message')") //nolint:staticcheck // ST1005: TypeError text from TS
 	}
 	result := m.convertResponse(response)
 	result.Warnings = append(warnings, result.Warnings...)
@@ -418,20 +424,18 @@ func (m *LanguageModel) buildRequestBodyChecked(opts *provider.GenerateOptions, 
 
 // convertResponse converts Alibaba API response to SDK format
 func (m *LanguageModel) convertResponse(resp alibabaResponse) *types.GenerateResult {
-	if len(resp.Choices) == 0 {
-		return &types.GenerateResult{
-			Text:         "",
-			FinishReason: types.FinishReasonOther,
-			Usage:        types.Usage{},
-		}
-	}
-
 	choice := resp.Choices[0]
+	// TS convertAlibabaUsage: a missing or null usage object is the null
+	// usage (unknown counts), not zero tokens.
+	var usage types.Usage
+	if resp.Usage != nil {
+		usage = ConvertAlibabaUsage(*resp.Usage)
+	}
 	result := &types.GenerateResult{
 		Text:            choice.Message.Content,
 		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
 		RawFinishReason: choice.FinishReason,
-		Usage:           ConvertAlibabaUsage(resp.Usage),
+		Usage:           usage,
 		RawResponse:     resp,
 	}
 	if choice.Message.ReasoningContent != "" {
@@ -497,7 +501,7 @@ type alibabaResponse struct {
 	Model             string          `json:"model"`
 	SystemFingerprint string          `json:"system_fingerprint,omitempty"`
 	Choices           []alibabaChoice `json:"choices"`
-	Usage             AlibabaUsage    `json:"usage"`
+	Usage             *AlibabaUsage   `json:"usage"`
 }
 
 // alibabaChoice represents a choice in the chat response
