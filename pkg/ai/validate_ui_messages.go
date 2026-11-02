@@ -169,7 +169,7 @@ func safeValidateUIMessagesInternal(ctx context.Context, opts ValidateUIMessages
 				return fail(uiValidationError(toolPart.Input, fmt.Errorf("No tool schema found for tool part %s", toolName), inputField, toolName, toolPart.ToolCallID)) //nolint:staticcheck // matches TS SDK's exact error text
 			}
 
-			hasInputSchemaInput := toolPart.Approval != nil && toolPart.Approval.InputSchemaInput != nil
+			hasInputSchemaInput := toolPart.Approval.hasInputSchemaInput()
 			inputToValidate := toolPart.Input
 			if hasInputSchemaInput {
 				inputToValidate = toolPart.Approval.InputSchemaInput

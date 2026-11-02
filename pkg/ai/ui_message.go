@@ -157,6 +157,18 @@ type ToolUIPartApproval struct {
 	// InputSchemaInput is the tool input before schema parsing and input
 	// refinement (present only when it differs from Input).
 	InputSchemaInput interface{}
+
+	// inputSchemaInputNull records a decoded `"inputSchemaInput": null`
+	// (TS keeps the own property, so a null schema input is validated and
+	// serialized). Unexported so the struct's exported shape is unchanged.
+	inputSchemaInputNull bool
+}
+
+// hasInputSchemaInput reports whether the approval carries an
+// inputSchemaInput, including a JSON null (TS
+// `Object.prototype.hasOwnProperty.call(approval, 'inputSchemaInput')`).
+func (a *ToolUIPartApproval) hasInputSchemaInput() bool {
+	return a != nil && (a.InputSchemaInput != nil || a.inputSchemaInputNull)
 }
 
 // ToolUIPart is a tool invocation part. It represents both static tool parts
@@ -704,7 +716,7 @@ func (a ToolUIPartApproval) MarshalJSON() ([]byte, error) {
 		o.field("isAutomatic", *a.IsAutomatic)
 	}
 	o.str("signature", a.Signature)
-	if a.InputSchemaInput != nil {
+	if a.hasInputSchemaInput() {
 		o.field("inputSchemaInput", a.InputSchemaInput)
 	}
 	return o.bytes()
@@ -712,19 +724,33 @@ func (a ToolUIPartApproval) MarshalJSON() ([]byte, error) {
 
 func (a *ToolUIPartApproval) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		ID               string      `json:"id"`
-		Approved         *bool       `json:"approved"`
-		Descriptor       interface{} `json:"descriptor"`
-		RequestReason    string      `json:"requestReason"`
-		Reason           string      `json:"reason"`
-		IsAutomatic      *bool       `json:"isAutomatic"`
-		Signature        string      `json:"signature"`
-		InputSchemaInput interface{} `json:"inputSchemaInput"`
+		ID               string          `json:"id"`
+		Approved         *bool           `json:"approved"`
+		Descriptor       interface{}     `json:"descriptor"`
+		RequestReason    string          `json:"requestReason"`
+		Reason           string          `json:"reason"`
+		IsAutomatic      *bool           `json:"isAutomatic"`
+		Signature        string          `json:"signature"`
+		InputSchemaInput json.RawMessage `json:"inputSchemaInput"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	*a = ToolUIPartApproval(raw)
+	*a = ToolUIPartApproval{
+		ID:            raw.ID,
+		Approved:      raw.Approved,
+		Descriptor:    raw.Descriptor,
+		RequestReason: raw.RequestReason,
+		Reason:        raw.Reason,
+		IsAutomatic:   raw.IsAutomatic,
+		Signature:     raw.Signature,
+	}
+	if raw.InputSchemaInput != nil {
+		if err := json.Unmarshal(raw.InputSchemaInput, &a.InputSchemaInput); err != nil {
+			return err
+		}
+		a.inputSchemaInputNull = a.InputSchemaInput == nil
+	}
 	return nil
 }
 
