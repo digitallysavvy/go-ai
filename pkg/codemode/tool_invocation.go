@@ -3,6 +3,7 @@ package codemode
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 	"sync"
 
@@ -533,12 +534,36 @@ func toolInputValidator(tool types.Tool) schema.Validator {
 		}
 		return schema.NewJSONSchema(s)
 	case schema.Schema:
-		if s == nil {
+		if isNilSchemaValue(s) {
 			return nil
 		}
-		return s.Validator()
+		if v := s.Validator(); !isNilSchemaValue(v) {
+			return v
+		}
+		return nil
+	case schema.Validator:
+		// A bare validator as Parameters (accepted by pkg/ai too): TS code
+		// mode validates with asSchema(tool.inputSchema) for every schema.
+		if isNilSchemaValue(s) {
+			return nil
+		}
+		return s
 	}
 	return nil
+}
+
+// isNilSchemaValue reports whether v is nil or holds a nil pointer (a typed
+// nil *schema.SimpleStructSchema panics in Validator()).
+func isNilSchemaValue(v interface{}) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Interface:
+		return rv.IsNil()
+	}
+	return false
 }
 
 // raceAgainstAbort runs fn in its own goroutine and returns its result,
