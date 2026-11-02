@@ -99,7 +99,7 @@ func TestTSFixtureFramesAccepted(t *testing.T) {
 		{"alibaba/testdata/tscases/chat.json.gz", chat(ChatChunkShape{Kind: ChunkKindAlibaba}), nil},
 		{"testdata/tscases/compat_chat.json.gz", chat(ChatChunkShape{Kind: ChunkKindOpenAICompatible}), unparsable},
 		{"cerebras/testdata/tscases/chat.json.gz", chat(ChatChunkShape{Kind: ChunkKindOpenAICompatible, Error: ChunkErrorCerebras}), nil},
-		{"openai/testdata/tscases/responses.json.gz", func(d string) error { return ValidateResponsesChunk([]byte(d)) }, nil},
+		{"openai/testdata/tscases/responses.json.gz", func(d string) error { return ValidateResponsesChunk([]byte(d)) }, map[string]bool{"should return helpful error when Chat Completions stream is received": true}},
 		{"xai/testdata/tscases/responses.json.gz", func(d string) error { return ValidateXAIResponsesChunk([]byte(d)) }, nil},
 	}
 	for _, s := range suites {

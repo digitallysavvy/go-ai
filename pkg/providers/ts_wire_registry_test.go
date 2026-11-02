@@ -347,6 +347,12 @@ func xaiProviderTool(id, name string, args map[string]interface{}) (types.Tool, 
 		t = xai.MCPServer(c)
 	case "xai.code_execution":
 		t = xai.CodeExecution()
+	case "xai.image_generation":
+		var c xai.ImageGenerationConfig
+		if !decode(&c) {
+			return t, false
+		}
+		t = xai.ImageGeneration(c)
 	case "xai.view_image":
 		t = xai.ViewImage()
 	case "xai.view_x_video":

@@ -21,11 +21,10 @@ were re-extracted at `e64ed82f27` (ai@7.0.153+16). The OpenAI chat and
 Responses, xAI Responses and Azure provider cases and the OpenAI/xAI
 function-level cases added in review round 77 are extracted at
 `e64ed82f27` with `--asserts` (function-level ones with
-`--expand-each --fn=NAME`); `openai/.../completion.json.gz` is still the
-`b658e8503c` default-mode extraction. `openai/.../responses.json.gz`
-leaves out "should return helpful error when Chat Completions stream is
-received" (its Chat Completions frame is one TS rejects on purpose, which
-`providerutils.TestTSFixtureFramesAccepted` does not list yet).
+`--expand-each --fn=NAME`); `openai/.../completion.json.gz` is extracted at `e64ed82f27` with
+`--asserts` too. The Chat Completions frame of the Responses case "should
+return helpful error when Chat Completions stream is received" is one TS
+rejects on purpose; `providerutils.TestTSFixtureFramesAccepted` lists it.
 
 ## Regenerating
 

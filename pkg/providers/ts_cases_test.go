@@ -69,7 +69,9 @@ func TestProviderTSCases(t *testing.T) {
 		}, "kimi-k2", nil},
 		{"openai-completion", "openai/testdata/tscases/completion.json.gz", func(b, id string) (provider.LanguageModel, error) {
 			return openai.New(openai.Config{APIKey: "k", BaseURL: b}).CompletionModel(id)
-		}, "gpt-3.5-turbo-instruct", nil},
+		}, "gpt-3.5-turbo-instruct", map[string]string{
+			"should pass headers": "the TS test builds a provider with organization, project and headers and checks the TS test user agent; the harness builds a default provider",
+		}},
 	}
 	for _, s := range suites {
 		s := s
