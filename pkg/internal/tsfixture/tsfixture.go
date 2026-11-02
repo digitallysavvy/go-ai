@@ -355,15 +355,9 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 				resultMap["content"] = content
 				resultMap["usage"] = UsageToTS(res.Usage)
 				resultMap["finishReason"] = map[string]interface{}{"raw": nilIfEmpty(res.RawFinishReason), "unified": string(res.FinishReason)}
-				warnings := make([]interface{}, 0, len(res.Warnings))
-				for _, w := range res.Warnings {
-					v := jsonValue(w)
-					if m, ok := v.(map[string]interface{}); ok && m["type"] != "other" {
-						delete(m, "message") // Go also mirrors details there for old callers
-					}
-					warnings = append(warnings, v)
-				}
-				resultMap["warnings"] = warnings
+				// Go also mirrors details into message (and message into
+				// details) for old callers
+				resultMap["warnings"] = WarningsToTS(res.Warnings)
 				resultMap["providerMetadata"] = res.ProviderMetadata
 				resultMap["request"] = map[string]interface{}{"body": res.RawRequest}
 				resp := map[string]interface{}{"headers": lowerHeaders(res.ResponseHeaders)}

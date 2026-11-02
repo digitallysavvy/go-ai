@@ -78,7 +78,7 @@ func tsProviderTool(id, name string, args map[string]interface{}) (types.Tool, b
 		}
 		t = c.ToTool(name)
 	case "openai.computer_use":
-		t = types.Tool{} // an id the TS provider does not know (an unsupported tool)
+		t = types.Tool{Type: "provider"} // an id the TS provider does not know (an unsupported tool)
 	case "openai.shell":
 		env, _ := args["environment"].(map[string]interface{})
 		if len(args) == 0 {
@@ -114,8 +114,16 @@ func TestTSCasesChat(t *testing.T) {
 			t.Fatal(err)
 		}
 		return m
-	}, nil)
+	}, map[string]string{
+		"should pass headers": tsProviderHeaders,
+		"should stream text after Azure content filter chunks": "Go chat text parts carry no block id (TS id '0'); CanonStream ignores text ids by design",
+	})
 }
+
+// tsProviderHeaders is the skip reason of the TS tests that build their own
+// provider (organization, project, provider headers) and check the TS test
+// user agent.
+const tsProviderHeaders = "the TS test builds a provider with organization, project and headers and checks the TS test user agent (ai-sdk-openai/0.0.0-test); the harness builds a default provider"
 
 func TestTSCasesResponses(t *testing.T) {
 	tsfixture.ProviderToolHook = tsProviderTool
