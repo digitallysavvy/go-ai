@@ -164,7 +164,56 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		result.ResponseMetadata.Timestamp = ts // TS getResponseMetadata: created_at 0 is the epoch
 	}
 	result.ResponseMetadata.Headers = result.ResponseHeaders
+	// TS reports service_tier, prompt_cache_key and safety_identifier when
+	// `!= null`, so a present empty string is reported too.
+	if echoes := xaiResponseEchoes(httpResp.Body, false); len(echoes) > 0 {
+		if result.ProviderMetadata == nil {
+			result.ProviderMetadata = map[string]interface{}{}
+		}
+		xaiMeta, _ := result.ProviderMetadata["xai"].(map[string]interface{})
+		if xaiMeta == nil {
+			xaiMeta = map[string]interface{}{}
+			result.ProviderMetadata["xai"] = xaiMeta
+		}
+		for k, v := range echoes {
+			xaiMeta[k] = v
+		}
+	}
 	return result, nil
+}
+
+// xaiResponseEchoes reads service_tier, prompt_cache_key and
+// safety_identifier (of the body, or of its response member for a stream
+// event) as TS's `!= null`: each present string, "" included, is returned
+// under its providerMetadata key; an absent or null one is left out.
+func xaiResponseEchoes(data []byte, event bool) map[string]string {
+	type echoes struct {
+		ServiceTier      *string `json:"service_tier"`
+		PromptCacheKey   *string `json:"prompt_cache_key"`
+		SafetyIdentifier *string `json:"safety_identifier"`
+	}
+	var v struct {
+		echoes
+		Response echoes `json:"response"`
+	}
+	if json.Unmarshal(data, &v) != nil {
+		return nil
+	}
+	e := v.echoes
+	if event {
+		e = v.Response
+	}
+	out := map[string]string{}
+	if e.ServiceTier != nil {
+		out["serviceTier"] = *e.ServiceTier
+	}
+	if e.PromptCacheKey != nil {
+		out["promptCacheKey"] = *e.PromptCacheKey
+	}
+	if e.SafetyIdentifier != nil {
+		out["safetyIdentifier"] = *e.SafetyIdentifier
+	}
+	return out
 }
 
 // xaiResponsesCreatedAt reads created_at (of the body, or of its response
@@ -1558,7 +1607,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 				// The terminal event arrived, but supplied no recognized reason.
 				s.finishReason, s.rawFinishReason = types.FinishReasonOther, ""
 			}
-			s.recordMetadata(e.Response.Usage, e.Response.ServiceTier, e.Response.PromptCacheKey, e.Response.SafetyIdentifier)
+			s.recordMetadata(e.Response.Usage, xaiResponseEchoes([]byte(event.Data), true))
 			continue
 
 		case "response.incomplete":
@@ -1582,7 +1631,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			if e.Response.IncompleteDetails != nil && e.Response.IncompleteDetails.Reason != "" {
 				s.rawFinishReason = e.Response.IncompleteDetails.Reason
 			}
-			s.recordMetadata(e.Response.Usage, e.Response.ServiceTier, e.Response.PromptCacheKey, e.Response.SafetyIdentifier)
+			s.recordMetadata(e.Response.Usage, xaiResponseEchoes([]byte(event.Data), true))
 			continue
 
 		case "response.failed":
@@ -1717,7 +1766,10 @@ func (s *xaiResponsesStream) recordUsage(u *responses.ResponsesAPIUsage) {
 	s.finishUsage = &usage
 }
 
-func (s *xaiResponsesStream) recordMetadata(u *responses.ResponsesAPIUsage, serviceTier, promptCacheKey, safetyIdentifier string) {
+// recordMetadata keeps the terminal event's metadata; echoes holds the
+// service_tier / prompt_cache_key / safety_identifier the event carried
+// (xaiResponseEchoes: TS `?? undefined`, so a present "" is reported).
+func (s *xaiResponsesStream) recordMetadata(u *responses.ResponsesAPIUsage, echoes map[string]string) {
 	if u != nil {
 		s.usageMeta = map[string]interface{}{}
 		if u.CostInUsdTicks != nil {
@@ -1738,14 +1790,8 @@ func (s *xaiResponsesStream) recordMetadata(u *responses.ResponsesAPIUsage, serv
 	for k, v := range s.usageMeta {
 		xaiMeta[k] = v
 	}
-	if serviceTier != "" {
-		xaiMeta["serviceTier"] = serviceTier
-	}
-	if promptCacheKey != "" {
-		xaiMeta["promptCacheKey"] = promptCacheKey
-	}
-	if safetyIdentifier != "" {
-		xaiMeta["safetyIdentifier"] = safetyIdentifier
+	for k, v := range echoes {
+		xaiMeta[k] = v
 	}
 	if len(xaiMeta) == 0 {
 		s.finishMeta = nil
