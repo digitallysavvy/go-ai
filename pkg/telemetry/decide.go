@@ -421,10 +421,8 @@ func (i OpenTelemetry) OnDecideStart(ctx context.Context, e DecideStartEvent) co
 		return ctx
 	}
 	tracer := i.tracerFor(e.Settings)
-	spanName := "decide"
-	if e.ModelID != "" {
-		spanName += " " + e.ModelID
-	}
+	// TS `decide ${modelId}`: the space is kept for an empty model ID.
+	spanName := "decide " + e.ModelID
 	ctx, span := tracer.Start(ctx, spanName, trace.WithSpanKind(trace.SpanKindClient))
 	if attrs := i.customAttrs(ctx, e.Settings, EnrichSpanOptions{
 		SpanType:       SpanTypeOperation,
@@ -506,10 +504,8 @@ func (i OpenTelemetry) OnDecisionModelCallStart(ctx context.Context, e DecisionM
 		return
 	}
 	tracer := genAIChildTracer(i.stateKey(e.CallID), parent)
-	spanName := "decide"
-	if e.ModelID != "" {
-		spanName += " " + e.ModelID
-	}
+	// TS `decide ${modelId}`: the space is kept for an empty model ID.
+	spanName := "decide " + e.ModelID
 	_, span := tracer.Start(trace.ContextWithSpan(ctx, parent), spanName, trace.WithSpanKind(trace.SpanKindClient))
 	// TS: operationId: event.operationId, runtimeContext: state.runtimeContext.
 	enrichOpts := i.childEnrichOptions(SpanTypeDecision, e.CallID)

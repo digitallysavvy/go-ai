@@ -383,7 +383,7 @@ func TestAgent_TelemetryEndsOnPause(t *testing.T) {
 		t.Fatal("session should have an unfinished (awaiting-approval) turn")
 	}
 
-	turnSpans := spansNamed(rec, "ai.harness")
+	turnSpans := spansNamed(rec, "ai.harness ")
 	if len(turnSpans) != 1 {
 		t.Fatalf("ai.harness spans = %d, want 1 (root span must end even on a pause)", len(turnSpans))
 	}
@@ -432,7 +432,7 @@ func TestAgent_TelemetryWireErrorRecordsSpanStatus(t *testing.T) {
 		t.Fatal("Err() = nil, want the wire-level error")
 	}
 
-	turnSpans := spansNamed(rec, "ai.harness")
+	turnSpans := spansNamed(rec, "ai.harness ")
 	if len(turnSpans) != 1 {
 		t.Fatalf("ai.harness spans = %d, want 1", len(turnSpans))
 	}
@@ -488,7 +488,7 @@ func TestAgent_TelemetryAbortDoesNotRecordErrorStatus(t *testing.T) {
 		t.Fatal("Err() = nil, want a non-nil error")
 	}
 
-	turnSpans := spansNamed(rec, "ai.harness")
+	turnSpans := spansNamed(rec, "ai.harness ")
 	if len(turnSpans) != 1 {
 		t.Fatalf("ai.harness spans = %d, want 1", len(turnSpans))
 	}
