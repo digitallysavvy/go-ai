@@ -61,3 +61,38 @@ func TestR77Carry_ToolChoiceAndSchemaAreInputGated(t *testing.T) {
 		}
 	}
 }
+
+// TS open-telemetry.test.ts "omits malformed finish reason arrays on the chat
+// span": an undefined finish reason makes `[undefined]`, which
+// sanitizeAttributeValue drops. Go's unset finish reason is "": no
+// gen_ai.response.finish_reasons on the chat span, the step span (legacy) or
+// the roots, and no legacy ai.response.finishReason.
+func TestR77Carry_UnsetFinishReasonIsOmitted(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	settings := &Settings{IsEnabled: Bool(true)}
+	for _, integration := range []TelemetryIntegration{
+		NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai")}),
+		NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("legacy")}),
+	} {
+		ctx := integration.OnStart(context.Background(), TelemetryStartEvent{CallID: "r77-fr", OperationType: "ai.generateText", ModelID: "m", Settings: settings})
+		stepCtx := integration.OnStepStart(ctx, TelemetryStepStartEvent{CallID: "r77-fr", OperationType: "ai.generateText", ModelID: "m", Settings: settings})
+		if h, ok := integration.(languageModelCallStartHandler); ok {
+			callCtx := h.OnLanguageModelCallStart(stepCtx, LanguageModelCallStartEvent{CallID: "r77-fr", ModelID: "m", Settings: settings})
+			integration.(languageModelCallEndHandler).OnLanguageModelCallEnd(callCtx, LanguageModelCallEndEvent{CallID: "r77-fr", ModelID: "m", Settings: settings})
+		}
+		integration.OnStepEnd(stepCtx, TelemetryStepEndEvent{CallID: "r77-fr", OperationType: "ai.generateText", Settings: settings})
+		integration.OnFinish(ctx, TelemetryFinishEvent{CallID: "r77-fr", OperationType: "ai.generateText", Settings: settings})
+	}
+	_ = tp.Shutdown(context.Background())
+	if len(rec.Ended()) != 5 { // GenAI root, step, chat; legacy root, step
+		t.Fatalf("ended spans = %d, want 5", len(rec.Ended()))
+	}
+	for _, s := range rec.Ended() {
+		for _, k := range []string{"gen_ai.response.finish_reasons", "ai.response.finishReason"} {
+			if v, ok := attrValue(s, k); ok {
+				t.Errorf("span %q: %s = %v, want none for an unset finish reason", s.Name(), k, v)
+			}
+		}
+	}
+}
