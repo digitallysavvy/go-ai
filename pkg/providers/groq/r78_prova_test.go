@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -111,4 +112,27 @@ func TestR78prova_groqReadsPastDone(t *testing.T) {
 	if text != "ab" || finishes != 1 || last != provider.ChunkTypeFinish {
 		t.Fatalf("text %q, finishes %d, last %s; want \"ab\", 1 finish last", text, finishes, last)
 	}
+}
+
+const r78provaTSHeaders = "the TS test builds a provider with headers and checks the TS test user agent (ai-sdk-groq/0.0.0-test); the harness builds a default provider"
+
+// TestR78prova_TSCasesChatAsserts replays groq-chat-language-model.test.ts
+// extracted at e64ed82f27 with --asserts (plain assertions as well as
+// snapshots).
+func TestR78prova_TSCasesChatAsserts(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/chat_asserts.json.gz")
+	tsfixture.Run(t, cases, func(base, id string) provider.LanguageModel {
+		if id == "" {
+			id = "gemma2-9b-it"
+		}
+		m, err := New(Config{APIKey: "k", BaseURL: base}).LanguageModel(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}, map[string]string{
+		"should send request body":                            "TS groq returns request.body as a JSON string; Go keeps the object",
+		"should handle structured outputs with Kimi K2 model": "model id comes from a custom provider call in the TS test",
+		"should pass headers":                                 r78provaTSHeaders,
+	})
 }
