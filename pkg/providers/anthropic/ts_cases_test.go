@@ -122,7 +122,7 @@ func TestTSCasesLanguage(t *testing.T) {
 		if id == "" {
 			id = "claude-3-haiku-20240307"
 		}
-		m, err := New(Config{APIKey: "test-api-key", BaseURL: base}).LanguageModel(id)
+		m, err := r80provaAnthropicCaseModel(base, id)
 		if err != nil {
 			t.Fatal(err)
 		}
