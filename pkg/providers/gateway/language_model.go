@@ -201,16 +201,27 @@ type gatewayStreamErrorPayload struct {
 // UnmarshalJSON decodes the error object. TS passes the stream part through
 // whatever its `error` holds, so a non-object error (a string such as
 // "Internal error", or a number) becomes the message instead of failing
-// the whole chunk.
+// the whole chunk, and an object field of an unexpected type (a numeric
+// message, a string statusCode) is left unset rather than failing it.
 func (p *gatewayStreamErrorPayload) UnmarshalJSON(b []byte) error {
 	trimmed := strings.TrimSpace(string(b))
 	if strings.HasPrefix(trimmed, "{") {
 		type plain gatewayStreamErrorPayload
 		var v plain
-		if err := json.Unmarshal(b, &v); err != nil {
+		if err := json.Unmarshal(b, &v); err == nil {
+			*p = gatewayStreamErrorPayload(v)
+			return nil
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(b, &fields); err != nil {
 			return err
 		}
-		*p = gatewayStreamErrorPayload(v)
+		*p = gatewayStreamErrorPayload{Code: fields["code"]}
+		_ = json.Unmarshal(fields["message"], &p.Message)
+		_ = json.Unmarshal(fields["type"], &p.Type)
+		_ = json.Unmarshal(fields["statusCode"], &p.StatusCode)
+		_ = json.Unmarshal(fields["isRetryable"], &p.IsRetryable)
+		_ = json.Unmarshal(fields["data"], &p.Data)
 		return nil
 	}
 	var s string
