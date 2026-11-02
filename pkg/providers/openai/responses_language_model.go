@@ -144,7 +144,46 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		result.ResponseMetadata.Timestamp = ts // TS new Date(created_at * 1000), also for 0
 	}
 	result.ResponseMetadata.Headers = result.ResponseHeaders
+	// TS reports serviceTier when `typeof service_tier === 'string'` and
+	// reasoningContext when `reasoning.context != null`: a present empty
+	// string counts.
+	if pm, ok := result.ProviderMetadata[m.provider.responsesProviderOptionsName()].(map[string]interface{}); ok {
+		serviceTier, reasoningContext := responsesEchoes(httpResp.Body, false)
+		if serviceTier != nil {
+			pm["serviceTier"] = *serviceTier
+		}
+		if reasoningContext != nil {
+			pm["reasoningContext"] = *reasoningContext
+		}
+	}
 	return result, nil
+}
+
+// responsesEchoes reads service_tier and reasoning.context (of the body, or
+// of its response member for a stream event): a present string, "" included,
+// is returned (TS typeof === 'string' / != null); an absent or null one is nil.
+func responsesEchoes(data []byte, event bool) (serviceTier, reasoningContext *string) {
+	type echoes struct {
+		ServiceTier *string `json:"service_tier"`
+		Reasoning   *struct {
+			Context *string `json:"context"`
+		} `json:"reasoning"`
+	}
+	var v struct {
+		echoes
+		Response echoes `json:"response"`
+	}
+	if json.Unmarshal(data, &v) != nil {
+		return nil, nil
+	}
+	e := v.echoes
+	if event {
+		e = v.Response
+	}
+	if e.Reasoning != nil {
+		reasoningContext = e.Reasoning.Context
+	}
+	return e.ServiceTier, reasoningContext
 }
 
 // responsesCreatedAt reads created_at (of the body, or of its response
@@ -2776,8 +2815,8 @@ type responsesStream struct {
 	finishReason     types.FinishReason
 	rawFinishReason  string
 	finishUsage      *responses.ResponsesAPIUsage
-	serviceTier      string
-	reasoningContext string
+	serviceTier      *string
+	reasoningContext *string
 
 	// tools holds the request's declared tools, used to expand an internal
 	// "parallel" tool call wrapper into its nested recipients (row 6be0f51).
@@ -3014,11 +3053,11 @@ func (s *responsesStream) queueEOFFinish() {
 	if len(s.logprobs) > 0 {
 		fields["logprobs"] = s.logprobs
 	}
-	if s.serviceTier != "" {
-		fields["serviceTier"] = s.serviceTier
+	if s.serviceTier != nil {
+		fields["serviceTier"] = *s.serviceTier
 	}
-	if s.reasoningContext != "" {
-		fields["reasoningContext"] = s.reasoningContext
+	if s.reasoningContext != nil {
+		fields["reasoningContext"] = *s.reasoningContext
 	}
 	meta, _ := json.Marshal(map[string]interface{}{s.providerName: fields})
 	usage := convertResponsesUsage(s.finishUsage)
@@ -3918,11 +3957,14 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				}
 			}
 			s.finishUsage = e.Response.Usage
-			if e.Response.ServiceTier != "" {
-				s.serviceTier = e.Response.ServiceTier
+			// TS typeof service_tier === 'string' / reasoning.context != null:
+			// a present "" is reported; an absent one keeps the last value.
+			tier, ctx := responsesEchoes([]byte(event.Data), true)
+			if tier != nil {
+				s.serviceTier = tier
 			}
-			if e.Response.Reasoning != nil && e.Response.Reasoning.Context != "" {
-				s.reasoningContext = e.Response.Reasoning.Context
+			if ctx != nil {
+				s.reasoningContext = ctx
 			}
 			s.markOutputStarted()
 			continue
@@ -3952,8 +3994,8 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				s.rawFinishReason = e.Response.IncompleteDetails.Reason
 			}
 			s.finishUsage = e.Response.Usage
-			if e.Response.Reasoning != nil && e.Response.Reasoning.Context != "" {
-				s.reasoningContext = e.Response.Reasoning.Context
+			if _, ctx := responsesEchoes([]byte(event.Data), true); ctx != nil {
+				s.reasoningContext = ctx // TS reasoning.context != null
 			}
 
 			// Output already started (TS encounteredStreamError branch): a

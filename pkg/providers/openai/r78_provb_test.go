@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -91,5 +92,89 @@ func TestR78provbCompletionReadsPastDone(t *testing.T) {
 	text, fin := r78provbDrain(t, s)
 	if text != "Hello world" || fin[0].FinishReason != types.FinishReasonStop {
 		t.Fatalf("text %q finish %q, want %q stop", text, fin[0].FinishReason, "Hello world")
+	}
+}
+
+func r78provbFinishMeta(t *testing.T, s provider.TextStream, key string) map[string]interface{} {
+	t.Helper()
+	defer s.Close()
+	var meta map[string]map[string]interface{}
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		if c.Type == provider.ChunkTypeFinish {
+			if err := json.Unmarshal(c.ProviderMetadata, &meta); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if meta == nil {
+		t.Fatal("no finish part")
+	}
+	return meta[key]
+}
+
+// Ruling r78 b: TS reports serviceTier when `typeof service_tier ===
+// 'string'` and reasoningContext when `reasoning.context != null`, so a
+// present empty string is reported; null is not.
+func TestR78provbResponsesEmptyServiceTierReported(t *testing.T) {
+	cases := map[string]struct {
+		body     string
+		wantTier interface{}
+		wantCtx  interface{}
+	}{
+		"empty": {`"service_tier":"","reasoning":{"context":""}`, "", ""},
+		"null":  {`"service_tier":null,"reasoning":{"context":null}`, nil, nil},
+	}
+	for name, tc := range cases {
+		t.Run("generate/"+name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"gpt-4o",` + tc.body + `,"output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hi","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+			}))
+			defer srv.Close()
+			m, err := New(Config{APIKey: "k", BaseURL: srv.URL}).ResponsesModel("gpt-4o")
+			if err != nil {
+				t.Fatal(err)
+			}
+			r, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "x"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			pm, _ := r.ProviderMetadata["openai"].(map[string]interface{})
+			r78provbCheckEchoes(t, pm, tc.wantTier, tc.wantCtx)
+		})
+		t.Run("stream/"+name, func(t *testing.T) {
+			srv := r78provbSSE(t,
+				`{"type":"response.created","sequence_number":0,"response":{"id":"resp_1","object":"response","created_at":1,"status":"in_progress","model":"gpt-4o","output":[]}}`,
+				`{"type":"response.completed","sequence_number":1,"response":{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"gpt-4o",`+tc.body+`,"output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`,
+			)
+			m, err := New(Config{APIKey: "k", BaseURL: srv.URL}).ResponsesModel("gpt-4o")
+			if err != nil {
+				t.Fatal(err)
+			}
+			s, err := m.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "x"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r78provbCheckEchoes(t, r78provbFinishMeta(t, s, "openai"), tc.wantTier, tc.wantCtx)
+		})
+	}
+}
+
+func r78provbCheckEchoes(t *testing.T, pm map[string]interface{}, wantTier, wantCtx interface{}) {
+	t.Helper()
+	if pm == nil {
+		t.Fatal("no openai provider metadata")
+	}
+	tier, hasTier := pm["serviceTier"]
+	ctx, hasCtx := pm["reasoningContext"]
+	if hasTier != (wantTier != nil) || (wantTier != nil && tier != wantTier) {
+		t.Fatalf("serviceTier = %v (present %v), want %v", tier, hasTier, wantTier)
+	}
+	if hasCtx != (wantCtx != nil) || (wantCtx != nil && ctx != wantCtx) {
+		t.Fatalf("reasoningContext = %v (present %v), want %v", ctx, hasCtx, wantCtx)
 	}
 }
