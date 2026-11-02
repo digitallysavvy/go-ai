@@ -149,3 +149,63 @@ func TestR77Carry_ValidateInputAcceptsGoTypedJSONValues(t *testing.T) {
 		t.Errorf("ValidateInput([]int tags) err = %v, want data/tags/0 must be string", err)
 	}
 }
+
+// TS serializable-schema.test.ts "reports actionable details for every
+// validation error" and "accepts tool schemas with formats, annotations,
+// unions, and JSON Schema 2020-12", through the resolved tools' validator
+// (TS asSchema(tool.inputSchema).validate).
+func TestR77Carry_ResolvedValidatorActionableDetails(t *testing.T) {
+	tools := ResolveSerializableTools(map[string]SerializableToolDef{
+		"interaction": {InputSchema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{"action": map[string]interface{}{"enum": []interface{}{"click", "type", "scroll"}}},
+			"required":   []interface{}{"action"},
+		}},
+		"edit": {InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{"edits": map[string]interface{}{
+				"type": "array",
+				"items": map[string]interface{}{
+					"type": "object", "additionalProperties": false,
+					"properties": map[string]interface{}{"oldText": map[string]interface{}{"type": "string"}, "newText": map[string]interface{}{"type": "string"}},
+					"required":   []interface{}{"oldText", "newText"},
+				},
+			}},
+			"required": []interface{}{"edits"},
+		}},
+		"modern": {InputSchema: map[string]interface{}{
+			"$schema":           "https://json-schema.org/draft/2020-12/schema",
+			"type":              "object",
+			"properties":        map[string]interface{}{"creditCard": map[string]interface{}{"type": "number"}, "billingAddress": map[string]interface{}{"type": "string"}},
+			"dependentRequired": map[string]interface{}{"creditCard": []interface{}{"billingAddress"}},
+		}},
+		"annotated": {InputSchema: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{"value": map[string]interface{}{"type": []interface{}{"string", "number"}, "example": "example", "x-order": 1}},
+		}},
+	})
+	byName := map[string]types.Tool{}
+	for _, tl := range tools {
+		byName[tl.Name] = tl
+	}
+	check := func(name string, in interface{}, want string) {
+		t.Helper()
+		_, err := byName[name].ValidateInput(in)
+		got := ""
+		if err != nil {
+			got = err.Error()
+		}
+		if got != want {
+			t.Errorf("%s: err = %q, want %q", name, got, want)
+		}
+	}
+	check("interaction", map[string]interface{}{"action": "press"}, `data/action must be one of "click", "type", "scroll"`)
+	check("edit", map[string]interface{}{"edits": []interface{}{
+		map[string]interface{}{"oldText": "a", "newText": "b", "path": "a.ts"},
+		map[string]interface{}{"oldText": "c", "newText": "d", "path": "b.ts"},
+	}}, `data/edits/0 has unexpected property "path", data/edits/1 has unexpected property "path"`)
+	if _, err := byName["modern"].ValidateInput(map[string]interface{}{"creditCard": 1234}); err == nil {
+		t.Error("modern: dependentRequired not enforced")
+	}
+	check("annotated", map[string]interface{}{"value": 3}, "")
+}
