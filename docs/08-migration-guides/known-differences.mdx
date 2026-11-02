@@ -469,6 +469,17 @@ copies the incoming value's index keys into it (`{...base, 0: "a", 1: "b"}`
 for `"ab"`), a JavaScript object-spread artifact Go does not reproduce
 (coordinator ruling, review round 75).
 
+## UI message stream end event finish reason
+
+The end event (`OnEnd`/`OnFinish`) of a UI message stream reports
+`finishReason` in the shape v0.5 used. `CreateUIMessageStreamWithOptions`
+gives the `finishReason` of the last `finish` chunk as written (normally a
+`string`), or `nil` when no chunk set one. `ToUIMessageStream` (and the
+`StreamTextResult` UI helpers) give a `types.FinishReason`, `""` when there is
+none. TS reports `state.finishReason` in both: the chunk's string or
+`undefined`. Compare with `== nil` / `== ""` per helper, or convert both with
+`fmt.Sprint` (review round 77).
+
 ## Anthropic batch results of id-named provider tools across processes
 
 `ExperimentalBatch` restores the `Name` of a provider tool that keeps its

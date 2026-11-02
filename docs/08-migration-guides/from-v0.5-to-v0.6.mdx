@@ -218,6 +218,18 @@ already, you can skip them.
 | `Bash20250124()` / `Bash20241022()` default execute; `"Sandbox is not available"` | Runs `SandboxSession.Run`; TS error text | silent behavior change | Match the new error text | [Anthropic bash sandbox session](#anthropic-bash-sandbox-session) |
 | OpenAI Responses stream after `response.completed`, malformed frames, program parts, `promptCacheOptions: nil` | Read to the end; error finish; itemId metadata; nil rejected | silent behavior change | None, or omit nil `promptCacheOptions` | [Responses stream to the end](#openai-responses-stream-r76) |
 | xAI Responses function tool without `Description` | No `description` key sent | wire/protocol change | None | [xAI tool description](#xai-function-tool-description) |
+| `ToolApprovalRequestContent.InputSchemaInput`, UI approval `inputSchemaInput` | Pre-schema input whenever it differs | wire/protocol change | None unless compared | [Approval schema input](#approval-input-schema-input-raw) |
+| `ValidateApprovedToolApprovals` with a tool without `Parameters` | Refiner and equality check run | silent behavior change | Make the refiner idempotent | [Revalidation without Parameters](#approval-revalidation-without-parameters) |
+| `ToolErrorContent.ToolMetadata` of a `GenerateText` invalid tool call | Omitted | wire/protocol change | Read it from the tool-call part | [Invalid tool error metadata](#generate-invalid-tool-error-no-tool-metadata) |
+| Legacy agent loop with `SupportsDeferredResults` provider tools | An error result ends the wait | silent behavior change | None | [Deferred error result](#agent-deferred-provider-error-result) |
+| `Tool.OnInputStart` / `OnInputDelta` / `OnInputAvailable` `Messages` under `WorkflowAgent` | Conversation prompt, system message first | silent behavior change | Skip a leading system message | [Workflow input callbacks](#workflow-input-callbacks-conversation-prompt) |
+| `UIMessageStreamResponseInit{Header: ...}` with a default header name | The caller's header replaces the default | wire/protocol change | None | [UI stream header override](#ui-stream-response-header-override) |
+| `OpenTelemetryOptions.ToolChoice` / `Schema` with `RecordInputs: telemetry.Bool(false)` | `ai.prompt.toolChoice` / `ai.schema` omitted | silent behavior change | Record inputs to keep them | [Input-gated attributes](#otel-input-gated-toolchoice-schema) |
+| `gen_ai.response.finish_reasons`, `ai.response.finishReason` with `FinishReason: ""` | Not recorded | silent behavior change | Treat a missing attribute as unset | [Unset finish reason](#otel-unset-finish-reason) |
+| `ReasoningContent` with `anthropic` `signature: ""` / `redactedData: ""` | Sent as thinking / redacted_thinking | wire/protocol change | None | [Anthropic empty reasoning signature](#anthropic-empty-reasoning-signature) |
+| `reasoningConfig.budgetTokens` on a non-Anthropic Bedrock model | `budgetTokens` warning whatever the thinking type | silent behavior change | Expect the warning | [Bedrock budgetTokens warning](#bedrock-budget-tokens-warning) |
+| OpenAI Responses replayed reasoning with `store: false` | `encrypted_content` read from provider options / metadata | silent behavior change | None | [Encrypted reasoning replay](#openai-reasoning-encrypted-content-provider-options) |
+| OpenAI / Azure / xAI Responses stream `[DONE]`, `created_at: 0` | Marker skipped; epoch timestamp | silent behavior change | None | [Responses [DONE] and created_at](#responses-stream-done-created-at) |
 | Cohere `BaseURL` or `DefaultBaseURL` (v0.5.3) | v2 API | wire/protocol change | Check custom base URLs | [Cohere v2](#v053-cohere-v2) |
 | `MaxRetries` unset on non-Gateway providers (v0.5.3) | Every provider retries | silent behavior change | Set `MaxRetries: &zero` to disable | [Retries](#v053-retries) |
 | Reliance on the 60 s default HTTP client timeout (v0.5.3) | No whole-request timeout | silent behavior change | Bound calls with `ctx` | [HTTP client timeout](#v053-http-timeout) |
@@ -1567,6 +1579,21 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   tool call part (`ToolCallContent.ProviderMetadata`).
 - **Kind:** wire/protocol change
 
+### GenerateText invalid tool call errors carry no tool metadata {#generate-invalid-tool-error-no-tool-metadata}
+
+- **What changed:** v0.5 `GenerateText`'s tool-error for an invalid tool call
+  carried the tool's metadata (`ToolErrorContent.ToolMetadata`, UI
+  `tool-output-error` `toolMetadata`). v0.6 leaves it off, as TS
+  `generateText` builds that error with only the call ID, tool name, input
+  and error; `StreamText` keeps it, as TS `streamText`. The invalid
+  tool-call part keeps it in both (review round 77).
+- **Am I affected?** `types.Tool.Metadata` read from
+  `ToolErrorContent.ToolMetadata` of `GenerateText` (or
+  `ToolLoopAgent.Generate`) step content, or from the UI chunk built from it.
+- **What to do:** read the metadata from the invalid `ToolCallContent` part
+  instead.
+- **Kind:** wire/protocol change
+
 ## Agents and approvals {#agents-and-approvals}
 
 ### A panicking ToolLoopAgent callback does not skip the other one {#agent-callback-panic-isolation}
@@ -1603,6 +1630,45 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   `types.ToolApprovalResponseContent` in `opts.Prompt.Messages`.
 - **What to do:** look the call up by `ApprovalID` from the assistant
   message's `types.ToolApprovalRequestContent`.
+- **Kind:** silent behavior change
+
+### Tool-approval requests carry the pre-schema input {#approval-input-schema-input-raw}
+
+- **What changed:** v0.5 put no `inputSchemaInput` on a tool-approval
+  request unless `ExperimentalRefineToolInput` changed the input, and then
+  used the post-schema input. v0.6 sets it to the input the schema received
+  (the JSON-parsed model input, before defaults, `Tool.ValidateInput` or the
+  refiner) whenever that differs from the call's final input, as TS
+  `parseToolCall` stores `parseResult.rawValue` as the approval's
+  `inputSchemaInput`. This holds for `GenerateText`, `StreamText`,
+  `ToolLoopAgent.Generate` / `Stream`, the legacy loop
+  (`ToolLoopAgent.GenerateAgent` / `Execute` / `ExecuteWithMessages`) and
+  `WorkflowAgent.Generate` (review round 77).
+- **Am I affected?** Tools with `ToolApproval` / `NeedsApproval` whose
+  `Parameters` declare `default` values, or that set `ValidateInput` or
+  `ExperimentalRefineToolInput`; code reading
+  `ToolApprovalRequestContent.InputSchemaInput`, the UI
+  `tool-approval-request` chunk's `inputSchemaInput`, or a `UIMessage` tool
+  part's `approval.inputSchemaInput`.
+- **What to do:** no action unless you compare `InputSchemaInput` with the
+  call input: it is now the pre-schema input (for a default-filling schema,
+  the input without the defaults).
+- **Kind:** wire/protocol change
+
+### Approval revalidation runs for tools without Parameters {#approval-revalidation-without-parameters}
+
+- **What changed:** v0.5 `ValidateApprovedToolApprovals` (and approval
+  resumption) skipped tools without `Parameters`. v0.6 still revalidates
+  them: `ExperimentalRefineToolInput` runs on the approved input, and an
+  approval whose refined input differs from it is invalid ("Approved tool
+  input does not match the validated schema output."). TS revalidates every
+  executable tool (review round 77).
+- **Am I affected?** `ExperimentalRefineToolInput` entries for a tool with
+  `Execute` and nil `Parameters`, resumed through
+  `ValidateApprovedToolApprovals`, `ResumeToolApprovals`, or `GenerateText`
+  / `StreamText` / `ToolLoopAgent` approval resumption.
+- **What to do:** no action unless such a refiner is not idempotent; make it
+  return the approved input unchanged.
 - **Kind:** silent behavior change
 
 ### Legacy ToolLoopAgent
@@ -1796,6 +1862,19 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   `tool not found:` for provider-executed (`ProviderExecuted: true`) calls.
 - **What to do:** no action unless you relied on that error.
 
+- **Kind:** silent behavior change
+
+#### The legacy loop stops waiting for a deferred provider tool on its error result {#agent-deferred-provider-error-result}
+
+- **What changed:** v0.5 `ToolLoopAgent.GenerateAgent` / `Execute` /
+  `ExecuteWithMessages` (and `WorkflowAgent.Generate`) kept a deferred
+  provider tool call pending when its result was an error, and kept calling
+  the model until the step limit. v0.6 ends the wait on any provider result,
+  as TS `pendingDeferredToolCalls` reads the raw model response, where an
+  error result is a tool-result too (review round 77).
+- **Am I affected?** Provider tools with `SupportsDeferredResults` (for
+  example Anthropic code execution) whose results report `IsError`.
+- **What to do:** no action.
 - **Kind:** silent behavior change
 
 #### AI Gateway authentication errors are wrapped {#gateway-auth-error}
@@ -2107,10 +2186,16 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   v0.6: a nil field keeps its current value and an empty non-nil
   `ActiveTools` sends no tools, as TS prepareCall / prepareStep apply only
   defined keys (`mergePrepareStepGenerationSettings`) and filter by
-  `activeTools: []` (review round 76).
+  `activeTools: []` (review round 76). `Tools`, `ExperimentalSandbox`,
+  `CallOptions` and `CustomData` follow the same rule: a hook that returns
+  them as nil keeps the current tools, sandbox, call options and custom data
+  (TS prepareCall / prepareStep have no `tools` key; prepareStep applies
+  `experimental_sandbox ?? sandbox`). Return an empty, non-nil `Tools` slice
+  to send no tools (review round 77).
 - **Am I affected?** `WorkflowAgent.PrepareCall`, `WorkflowAgent.PrepareStep`,
   `WorkflowStreamOptions.PrepareStep`, `WorkflowGenerateOptions.PrepareStep`
-  hooks that set a `LanguageModelCallOptions` field to nil to clear it, or
+  hooks that set a `LanguageModelCallOptions` field to nil to clear it
+  (including `Tools`, `ExperimentalSandbox`, `CallOptions`, `CustomData`), or
   return `ActiveTools: []string{}`.
 - **What to do:** no action unless a hook clears a setting with nil. To drop
   a setting now, give it an explicit value (for example
@@ -2135,7 +2220,9 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   a validator). `Parameters` stays the map, and the exported
   `ValidateSerializableToolInput` keeps its v0.5 behavior (defaults filled,
   `workflow: invalid input for ...` text) (owner decision 2026-11-01,
-  review round 76).
+  review round 76). A definition with `Type: "provider"` and no `ID` (rebuilt
+  as a function tool) also passes `ValidateInput` unvalidated, as TS skips
+  validation for every provider definition (review round 77).
 - **Am I affected?** Callers of `ResolveSerializableTools` that match tool
   error text, rely on schema defaults reaching `Execute`, or rely on core
   rejecting input for `HasOwnValidator` or provider defs.
@@ -2171,7 +2258,11 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   replays its recorded tool input lifecycle
   (`invokeToolInputLifecycleCallbacks`). v0.5 fired them while the stream was
   read. The UI and full-stream chunks keep their timing, and plain
-  `StreamText` is unchanged (review round 76).
+  `StreamText` is unchanged (review round 76). The callbacks' `Messages` are
+  the step's model prompt with the system message first (TS
+  `stepInputMessages`); v0.5 gave the step's input messages without the
+  system message (review round 77; see
+  [WorkflowAgent tool input callbacks](#workflow-input-callbacks-conversation-prompt)).
 - **Am I affected?** Tool input callbacks under `WorkflowAgent.Stream` that
   rely on running mid-stream, or on `OnInputAvailable` for calls streamed
   without a `tool-input-start`.
@@ -2193,6 +2284,22 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   tool execution callbacks that count messages.
 - **What to do:** no action unless you index into `Messages`; find messages
   by role instead.
+- **Kind:** silent behavior change
+
+#### WorkflowAgent tool input callbacks get the conversation prompt {#workflow-input-callbacks-conversation-prompt}
+
+- **What changed:** v0.5 `WorkflowAgent` (both modes) passed the step
+  messages (no system message) to `Tool.OnInputStart`, `OnInputDelta` and
+  `OnInputAvailable`. v0.6 passes the step's conversation prompt, system
+  message first, as the tool start event gets, as TS WorkflowAgent
+  `invokeToolInputLifecycleCallbacks({messages: stepInputMessages})`.
+  `GenerateText`, `StreamText` and `ToolLoopAgent` are unchanged (review
+  round 77).
+- **Am I affected?** `types.Tool.OnInputStart`, `OnInputDelta`,
+  `OnInputAvailable` reading `Messages` under `WorkflowAgent.Generate` or
+  `WorkflowAgent.Stream` with instructions.
+- **What to do:** no action unless you index into `Messages`; skip a leading
+  `RoleSystem` message.
 - **Kind:** silent behavior change
 
 #### WorkflowAgent empty provider results carry no provider metadata {#workflow-empty-provider-result-metadata}
@@ -2527,15 +2634,39 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   a typed map such as `map[string]string`, `json.RawMessage`, a pointer to a
   struct) are now merged like a `map[string]interface{}`, at the top level
   and nested; v0.5 replaced the existing metadata with them. The merged
-  value is a `map[string]interface{}` (review round 76).
+  value is a `map[string]interface{}` (review round 76). A metadata value
+  that encodes as JSON null (a nil pointer or map, `json.RawMessage("null")`)
+  is ignored, as TS ignores `messageMetadata: null`; v0.5 set the message
+  metadata to it (review round 77).
 - **Am I affected?** `MessageMetadata` callbacks or `Execute` writers that
   send a number or boolean `messageMetadata` after object metadata;
   `OriginalMessages` whose last assistant message has typed `metadata`, or
   chunks written with typed `messageMetadata`, read back from `OnEnd` /
-  `OnFinish` / `ReadUIMessages`.
+  `OnFinish` / `ReadUIMessages`; chunks written with a nil-pointer, nil-map
+  or `null` `messageMetadata`.
 - **What to do:** no action unless you relied on the replacement; send an
   object (`{"value": 5}`) to change the metadata.
 - **Kind:** silent behavior change
+
+### A caller header replaces the UI stream default header {#ui-stream-response-header-override}
+
+- **What changed:** the UI message stream response and pipe helpers set
+  their default headers (`Content-Type`, `Cache-Control`, `Connection`,
+  `X-Vercel-AI-UI-Message-Stream`, `X-Accel-Buffering`) only when the caller
+  did not set that header, as TS `prepareHeaders` does. v0.5 added the
+  values of `UIMessageStreamResponseInit.Header` next to the default, so for
+  example `Cache-Control` was sent twice (`no-cache` and the caller's value).
+  `UIMessageStreamResponseInit.Headers` already replaced the default (review
+  round 77).
+- **Am I affected?** `UIMessageStreamResponseInit{Header: ...}` with one of
+  the default header names, passed to
+  `CreateUIMessageStreamResponseWithInit`,
+  `PipeUIMessageStreamToResponseWithInit`, `PipeUIMessageChunksToResponse`,
+  `CreateUIMessageChunksResponse` or
+  `StreamTextResult.ToUIMessageStreamResponse`.
+- **What to do:** no action unless you relied on the default value being
+  sent as well.
+- **Kind:** wire/protocol change
 
 ## Telemetry and events {#telemetry-and-events}
 
@@ -2777,6 +2908,39 @@ compile-time changes.
   `ai.request.text` / `gen_ai.input.messages` on `ai.generateSpeech` spans.
 - **What to do:** no action unless you relied on the attribute being absent
   for an empty text.
+- **Kind:** silent behavior change
+
+### ai.prompt.toolChoice and ai.schema honor RecordInputs {#otel-input-gated-toolchoice-schema}
+
+- **What changed:** v0.5 `OpenTelemetry` (GenAI) recorded
+  `ai.prompt.toolChoice` (with `OpenTelemetryOptions.ToolChoice`) and
+  `ai.schema` (with `OpenTelemetryOptions.Schema`) even when `RecordInputs`
+  was false. v0.6 treats both as input attributes and omits them when
+  `RecordInputs` is false, as TS (`{input: () => ...}` in open-telemetry.ts).
+  `ai.schema.name`, `ai.schema.description` and `ai.settings.output` are
+  unchanged; `LegacyOpenTelemetry` already gated both (review round 77).
+- **Am I affected?** `OpenTelemetryOptions{ToolChoice: true}` or
+  `OpenTelemetryOptions{Schema: true}` together with
+  `RecordInputs: telemetry.Bool(false)`; dashboards reading
+  `ai.prompt.toolChoice` or `ai.schema`.
+- **What to do:** no action unless you relied on those attributes while not
+  recording inputs; set `RecordInputs` to true (or leave it unset) to keep
+  them.
+- **Kind:** silent behavior change
+
+### An unset finish reason is not recorded on spans {#otel-unset-finish-reason}
+
+- **What changed:** v0.5: an event with an empty `FinishReason` recorded
+  `gen_ai.response.finish_reasons` as `[""]` (GenAI chat span and roots,
+  legacy step span) and `ai.response.finishReason` as `""` (legacy step and
+  root spans). v0.6 records neither attribute for an empty finish reason, as
+  TS drops `[undefined]` (`sanitizeAttributeValue`) and undefined values
+  (`selectAttributes`) (review round 77).
+- **Am I affected?** custom `TelemetryIntegration` callers or models that
+  report `FinishReason: ""`; queries on `gen_ai.response.finish_reasons` /
+  `ai.response.finishReason` expecting an empty value.
+- **What to do:** no action unless you query for an empty finish reason;
+  treat a missing attribute as unset.
 - **Kind:** silent behavior change
 
 ## Errors {#errors}
@@ -3130,7 +3294,10 @@ compile-time changes.
   requires (review round 74). A tool's empty `InputExamples` list (non-nil)
   is sent as `inputExamples: []`. A stream `error` part whose `error` is a
   string or number is an error part carrying that text; v0.5 failed the
-  stream with a parse error (review round 76).
+  stream with a parse error (review round 76). A stream `error` part whose
+  error object has a field of an unexpected type (for example a string
+  `statusCode`) is still an error part, with that field left unset; v0.5
+  failed the stream with a parse error (review round 77).
 - **Am I affected?** Gateway models with tools that return nil, or `content`
   tool outputs without parts.
 - **What to do:** no action.
@@ -3217,12 +3384,27 @@ compile-time changes.
   `Execute(ctx, command, opts)` method or a `RuntimeContext` with
   `ExecuteCommand`; those still work. Without any sandbox the error text is
   TS's `Sandbox session is not available` (v0.5: `Sandbox is not available`)
-  (review round 76).
+  (review round 76). A nil pointer (or other nil value) held in
+  `ExperimentalSandbox` or `RuntimeContext` counts as no sandbox, as TS
+  `!sandbox`; its methods are never called on the nil receiver (review round
+  77).
 - **Am I affected?** `Bash20250124()` / `Bash20241022()` without your own
   `Execute`; code matching `"Sandbox is not available"`.
 - **What to do:** no action unless you match the error text; match
   `"Sandbox session is not available"`.
 - **Kind:** silent behavior change
+
+#### Anthropic reasoning parts with an empty signature are replayed {#anthropic-empty-reasoning-signature}
+
+- **What changed:** an assistant reasoning part whose
+  `providerOptions.anthropic.signature` (or provider metadata) is present but
+  empty is sent as a `thinking` block, and one with an empty `redactedData`
+  as a `redacted_thinking` block, as TS (`!= null`). v0.5 dropped them with
+  the `unsupported reasoning metadata` warning (review round 77).
+- **Am I affected?** Prompts that replay `ReasoningContent` with
+  `"signature": ""` or `"redactedData": ""` under the `anthropic` key.
+- **What to do:** no action unless you relied on those parts being dropped.
+- **Kind:** wire/protocol change
 
 ### Amazon Bedrock
 
@@ -3251,6 +3433,20 @@ compile-time changes.
   tool args reaching the API.
 - **What to do:** no action unless you matched the wire name (`"bash"`) in
   tool call names; match the tool's `Name` instead.
+- **Kind:** silent behavior change
+
+#### Bedrock budgetTokens warning for non-Anthropic models {#bedrock-budget-tokens-warning}
+
+- **What changed:** for a non-Anthropic Bedrock model, the
+  `budgetTokens applies only to Anthropic models on Bedrock and will be
+  ignored for this model.` warning is reported whenever
+  `providerOptions.amazonBedrock.reasoningConfig.budgetTokens` (or
+  `ModelOptions.ReasoningConfig.BudgetTokens`) is set, as TS. v0.5 only
+  reported it for `type: "enabled"` (review round 77).
+- **Am I affected?** Code that counts or matches `Warnings` with
+  `Feature == "budgetTokens"` on non-Anthropic Bedrock models with a
+  disabled or untyped `reasoningConfig`.
+- **What to do:** no action unless you assert on the exact warnings list.
 - **Kind:** silent behavior change
 
 ### OpenAI
@@ -3432,6 +3628,38 @@ compile-time changes.
 - **What to do:** no action unless you relied on the stream ending at
   `response.completed` or passed `promptCacheOptions: nil` (omit the key
   instead).
+- **Kind:** silent behavior change
+
+#### OpenAI Responses replays encrypted reasoning from provider options {#openai-reasoning-encrypted-content-provider-options}
+
+- **What changed:** v0.5 sent a replayed reasoning part's `encrypted_content`
+  only from the Go `ReasoningContent.EncryptedContent` field. v0.6 reads
+  `ProviderOptions["openai"]["reasoningEncryptedContent"]` (the key the
+  Responses result metadata reports, which response messages and UI messages
+  carry), then the part's `ProviderMetadata`, then the field, as TS
+  `convertToOpenAIResponsesInput`. With `store: false`, multi-step calls now
+  keep the previous step's reasoning instead of dropping it with the
+  "Reasoning parts without encrypted content are not supported when store is
+  false" warning. Azure reads its `azure` key (review round 77).
+- **Am I affected?** `ResponsesModel` / Azure calls with `"store": false` and
+  `"include": []string{"reasoning.encrypted_content"}` over several steps or
+  replayed history; code expecting that warning.
+- **What to do:** no action.
+- **Kind:** silent behavior change
+
+#### Responses streams skip [DONE]; created_at 0 is a timestamp {#responses-stream-done-created-at}
+
+- **What changed:** the OpenAI, Azure and xAI Responses streams no longer end
+  at a `data: [DONE]` frame: like TS `parseJsonEventStream`, the marker is
+  skipped and the finish part comes when the body ends, after any later
+  events. A `created_at` of `0` now gives `ResponseMetadata.Timestamp` = the
+  Unix epoch (TS `new Date(0)`), in generate and stream; v0.5 left it zero.
+  A fractional `created_at` keeps its milliseconds (review round 77).
+- **Am I affected?** Servers or proxies that send events after `[DONE]` or
+  keep the body open after it; code testing
+  `ResponseMetadata.Timestamp.IsZero()` for these models.
+- **What to do:** no action unless you relied on the stream ending at
+  `[DONE]`.
 - **Kind:** silent behavior change
 
 ### xAI
@@ -3896,6 +4124,12 @@ after upgrading:
   when read through the Provider that started the batch**; elsewhere they
   carry the wire name (`bash`). See
   [Anthropic batch results of id-named provider tools across processes](./known-differences.mdx).
+- **The UI message stream end event reports `finishReason` in the v0.5
+  shape per helper**: `nil` (or the finish chunk's string) from
+  `CreateUIMessageStreamWithOptions`, a `types.FinishReason` (`""` when
+  unset) from `ToUIMessageStream`; TS reports the chunk's string or
+  `undefined` in both. See
+  [UI message stream end event finish reason](./known-differences.mdx).
 
 ## For coding agents {#for-coding-agents}
 
@@ -3935,7 +4169,8 @@ next one.
      -e 'ToUIMessageChunk|event\.Ranking|ToolErrorContent|IsError|RepairText|NewStreamTextResultFromParts|xai\.(MCPServer|FileSearch)' \
      -e 'ai\.ranking|SerializableToolDef|ToolApprovalResponseContent|ConsumeSSEStream|NoObjectGeneratedError|ProviderMetadata|ReasoningFile' \
      -e 'openaitool\.|anthropic/tools|gateway/tools|providers/xai|\.Title|tool_search|NewShellTool|ProviderArgs|Warnings' \
-     -e 'ResolveSerializableTools|Bash202|Sandbox is not available|return [A-Za-z]*[Ee]rr(or)?(\(.*\))?, nil|OnInput(Start|Delta|Available)|logprobs' .
+     -e 'ResolveSerializableTools|Bash202|Sandbox is not available|return [A-Za-z]*[Ee]rr(or)?(\(.*\))?, nil|OnInput(Start|Delta|Available)|logprobs' \
+     -e 'InputSchemaInput|ExperimentalRefineToolInput|SupportsDeferredResults|UIMessageStreamResponseInit|reasoningEncryptedContent|budgetTokens|redactedData|ExperimentalSandbox|CustomData|Timestamp\.IsZero' .
    ```
 
 4. For each match, open the entry the table links to. Apply **What to do**.

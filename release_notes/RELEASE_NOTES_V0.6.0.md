@@ -258,6 +258,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Tool output NaN and Infinity become null in typed containers** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-output-non-finite-typed)
 - **A tool that returns an error value is a tool result** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-error-value-result)
 - **Invalid tool call errors carry no provider metadata** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#invalid-tool-call-no-provider-metadata)
+- **GenerateText invalid tool call errors carry no tool metadata** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#generate-invalid-tool-error-no-tool-metadata)
 
 #### Agents and approvals
 
@@ -298,6 +299,10 @@ search for and ends with a checklist for coding agents. Entries marked
 - **WorkflowAgent stream runs tool input callbacks after the model step** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-stream-tool-input-callbacks)
 - **WorkflowAgent tools see the conversation prompt** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-tool-messages-conversation-prompt)
 - **WorkflowAgent empty provider results carry no provider metadata** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-empty-provider-result-metadata)
+- **Tool-approval requests carry the pre-schema input** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#approval-input-schema-input-raw)
+- **Approval revalidation runs for tools without Parameters** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#approval-revalidation-without-parameters)
+- **The legacy loop stops waiting for a deferred provider tool on its error result** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#agent-deferred-provider-error-result)
+- **WorkflowAgent tool input callbacks get the conversation prompt** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-input-callbacks-conversation-prompt)
 
 #### UI message streams
 
@@ -315,6 +320,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **UI message streams keep empty text deltas with provider metadata** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-empty-text-delta-metadata)
 - **UI start chunks carry the response message id as TS does** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-start-message-id)
 - **UI message metadata keeps an object over a number or boolean** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-metadata-merge-scalar)
+- **A caller header replaces the UI stream default header** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-stream-response-header-override)
 
 #### Telemetry and events
 
@@ -330,6 +336,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Rerank telemetry `ai.ranking` uses TS keys** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-ranking-keys)
 - **GenAI embeddings span operation name is `embeddings`** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-embeddings-operation-name)
 - **generateSpeech records an empty text** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-speech-empty-text)
+- **ai.prompt.toolChoice and ai.schema honor RecordInputs** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#otel-input-gated-toolchoice-schema)
+- **An unset finish reason is not recorded on spans** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#otel-unset-finish-reason)
 
 #### Errors
 
@@ -370,6 +378,10 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Failed generated-media downloads return ProviderError** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#media-download-errors)
 - **KlingAI VideoModel() accepts any model ID** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#klingai-video-model)
 - **Perplexity embedding provider options are validated** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#perplexity-embedding-options)
+- **Anthropic reasoning parts with an empty signature are replayed** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-empty-reasoning-signature)
+- **Bedrock budgetTokens warning for non-Anthropic models** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#bedrock-budget-tokens-warning)
+- **OpenAI Responses replays encrypted reasoning from provider options** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-reasoning-encrypted-content-provider-options)
+- **Responses streams skip [DONE]; created_at 0 is a timestamp** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#responses-stream-done-created-at)
 
 #### MCP
 
@@ -1336,6 +1348,7 @@ Notable ones:
 - **Provider tool error without a value**: a provider tool result flagged `IsError` with no value has the error text `tool error`; TS leaves `errorText` undefined (round 73).
 - **Message metadata merge with non-object values**: UI message metadata followed by a string or array (or a non-object followed by any value) is replaced; TS `mergeObjects` merges the value's index keys into a copy of the existing value. A number or boolean after an object keeps the object, as TS (coordinator ruling, round 75).
 - **Anthropic batch results of id-named provider tools across processes**: `ExperimentalBatch` restores the `Name` of a provider tool that keeps its constructor id (`anthropic.bash_20250124`) only when the results are read through the Provider that started the batch; results read by another Provider value or process report the wire name (`bash`). Name the tool after its wire name to get the same name everywhere (round 75).
+- **UI message stream end event finish reason**: the `OnEnd`/`OnFinish` event of `CreateUIMessageStreamWithOptions` reports the last finish chunk's `finishReason` as written (normally a `string`) or `nil`, and `ToUIMessageStream` a `types.FinishReason` (`""` when unset), the v0.5 shapes; TS reports the chunk's string or `undefined` in both (round 77).
 - The Vertex Gemini image model accepts URL and `gs://` input images and
   sends them as `fileData` with the caller's media type, else one inferred
   from the URL path extension (query string and fragment ignored), else
