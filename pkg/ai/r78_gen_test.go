@@ -265,3 +265,58 @@ func TestR78Gen_GenerateContextPorts(t *testing.T) {
 		}
 	})
 }
+
+// Ports of parse-tool-call.test.ts 89, 202, 233, 716-1005 (refiner lookup by
+// own name, empty input, dynamic, title and tool metadata propagation).
+func TestR78Gen_ParseToolCallPorts(t *testing.T) {
+	ctx := context.Background()
+	emptySchema := map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+	weather := types.Tool{Name: "weather", Type: "dynamic", Title: "Weather", Metadata: map[string]interface{}{"clientName": "MyMCPClient"},
+		Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"location": map[string]interface{}{"type": "string"}}, "required": []interface{}{"location"}, "additionalProperties": false}}
+	t.Run("refiner registered for another tool is not used", func(t *testing.T) {
+		got, err := ParseToolCall(ctx, ParseToolCallOptions{
+			ToolCall: types.ToolCall{ID: "123", ToolName: "toString", RawArguments: `{"value": "raw"}`},
+			Tools:    []types.Tool{{Name: "toString", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}}}},
+			RefineToolInput: map[string]ToolInputRefiner{"testTool": func(context.Context, ToolInputRefinementOptions) (map[string]interface{}, error) {
+				return map[string]interface{}{"value": "refined"}, nil
+			}},
+		})
+		if err != nil || got.Invalid || !reflect.DeepEqual(got.Arguments, map[string]interface{}{"value": "raw"}) {
+			t.Fatalf("got %#v, %v", got, err)
+		}
+	})
+	for _, input := range []string{"", "{}"} {
+		t.Run("empty input "+strconv.Quote(input), func(t *testing.T) {
+			got, err := ParseToolCall(ctx, ParseToolCallOptions{ToolCall: types.ToolCall{ID: "123", ToolName: "testTool", RawArguments: input}, Tools: []types.Tool{{Name: "testTool", Parameters: emptySchema}}})
+			if err != nil || got.Invalid || got.Dynamic || got.Title != "" || !reflect.DeepEqual(got.Arguments, map[string]interface{}{}) {
+				t.Fatalf("got %#v, %v", got, err)
+			}
+		})
+	}
+	t.Run("dynamic tool, title and metadata kept apart from provider metadata", func(t *testing.T) {
+		got, err := ParseToolCall(ctx, ParseToolCallOptions{
+			ToolCall: types.ToolCall{ID: "call-3", ToolName: "weather", RawArguments: `{"location":"Paris"}`, ProviderMetadata: map[string]interface{}{"anthropic": map[string]interface{}{"cacheControl": map[string]interface{}{"type": "ephemeral"}}}},
+			Tools:    []types.Tool{weather},
+		})
+		if err != nil || got.Invalid || !got.Dynamic || got.Title != "Weather" {
+			t.Fatalf("got %#v, %v", got, err)
+		}
+		if !reflect.DeepEqual(got.ToolMetadata, map[string]interface{}{"clientName": "MyMCPClient"}) || !reflect.DeepEqual(got.ProviderMetadata, map[string]interface{}{"anthropic": map[string]interface{}{"cacheControl": map[string]interface{}{"type": "ephemeral"}}}) {
+			t.Fatalf("metadata: tool %#v provider %#v", got.ToolMetadata, got.ProviderMetadata)
+		}
+	})
+	t.Run("static tool title and metadata", func(t *testing.T) {
+		static := weather
+		static.Type = ""
+		got, err := ParseToolCall(ctx, ParseToolCallOptions{ToolCall: types.ToolCall{ID: "call-2", ToolName: "weather", RawArguments: `{"location":"Paris"}`}, Tools: []types.Tool{static}})
+		if err != nil || got.Invalid || got.Dynamic || got.Title != "Weather" || got.ToolMetadata["clientName"] != "MyMCPClient" {
+			t.Fatalf("got %#v, %v", got, err)
+		}
+	})
+	t.Run("invalid tool call keeps title and metadata", func(t *testing.T) {
+		got, err := ParseToolCall(ctx, ParseToolCallOptions{ToolCall: types.ToolCall{ID: "call-4", ToolName: "weather", RawArguments: "invalid json"}, Tools: []types.Tool{weather}})
+		if err != nil || !got.Invalid || !got.Dynamic || got.Title != "Weather" || got.ToolMetadata["clientName"] != "MyMCPClient" || !IsInvalidToolInputError(got.Error) {
+			t.Fatalf("got %#v, %v", got, err)
+		}
+	})
+}
