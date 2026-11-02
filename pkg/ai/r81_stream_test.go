@@ -446,3 +446,36 @@ func TestR81streamLateMergeAtEndIsSafe(t *testing.T) {
 		}
 	}
 }
+
+// ChunksContext with a ctx that is already cancelled delivers nothing and
+// leaves the shared cursor at the start: the ctx wins over a ready buffer
+// slot (Go's select picked between them at random, so some chunks were taken
+// from the cursor and sent to a consumer that had already cancelled).
+func TestR81streamChunksContextCancelledCtxWins(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		res := manyChunkResult(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		n := 0
+		for range res.ChunksContext(ctx) {
+			n++
+		}
+		if n != 0 {
+			t.Fatalf("run %d: %d chunks after the ctx was cancelled, want 0", i, n)
+		}
+		text := 0
+		st := res.Stream()
+		for {
+			c, err := st.Next()
+			if err != nil {
+				break
+			}
+			if c.Type == provider.ChunkTypeText {
+				text++
+			}
+		}
+		if text != 100 {
+			t.Fatalf("run %d: Stream() then read %d text chunks, want 100", i, text)
+		}
+	}
+}
