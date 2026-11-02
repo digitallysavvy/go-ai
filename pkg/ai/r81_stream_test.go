@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"runtime"
 	"strings"
 	"testing"
@@ -796,4 +797,82 @@ func TestR81streamTSHandleFinishCancelOutcomes(t *testing.T) {
 			t.Fatalf("event: isAborted %v, isCancelled %v, outcome %v", e["isAborted"], e["isCancelled"], e["outcome"])
 		}
 	})
+}
+
+// TS to-ui-message-stream.test.ts 634: a source that fails after its finish
+// part ends failed with the source error (the earlier finish does not hide
+// it), and onEnd runs once. Go form: a StreamText-shaped source (start
+// first), and the errored source writes the masked error chunk (owner
+// ruling 2026-10-29, known difference).
+func TestR81streamTSFinishThenSourceFailure(t *testing.T) {
+	sourceErr := errors.New("source stream failed after finish")
+	var ends r71streamCalls
+	src := &r71streamPartsThenErr{parts: []provider.StreamChunk{
+		{Type: provider.ChunkTypeStart},
+		{Type: provider.ChunkTypeFinish, FinishReason: "stop", RawFinishReason: "stop"},
+	}, err: sourceErr}
+	got, err := r71streamCollectFrom(t, context.Background(), src, UIMessageStreamResultOptions{OnEnd: ends.record})
+	if !errors.Is(err, sourceErr) {
+		t.Fatalf("err = %v, want %v", err, sourceErr)
+	}
+	r71streamAssertJSON(t, "chunks", got, `[{"type":"start"},{"type":"finish","finishReason":"stop"},{"type":"error","errorText":"An error occurred."}]`)
+	events := ends.all()
+	if len(events) != 1 {
+		t.Fatalf("onEnd calls = %d", len(events))
+	}
+	outcome := events[0]["outcome"].(map[string]interface{})
+	if len(outcome) != 2 || outcome["status"] != "failed" || outcome["error"] != sourceErr {
+		t.Fatalf("outcome = %v", outcome)
+	}
+}
+
+// TS create-ui-message-stream-response.test.ts 129 and 305: an error chunk
+// is written as a data event before [DONE], and a ConsumeSSEStream callback
+// that fails (Go: returns an error; TS: an async callback that rejects) does
+// not affect the response.
+// Keys are sorted (known difference "UI message stream JSON key order").
+func TestR81streamTSChunksResponseErrorsAndConsumeFailure(t *testing.T) {
+	read := func(t *testing.T, chunks []UIMessageChunk, init *UIMessageStreamResponseInit) string {
+		t.Helper()
+		ch := make(chan UIMessageChunk, len(chunks))
+		for _, c := range chunks {
+			ch <- c
+		}
+		close(ch)
+		resp, err := CreateUIMessageChunksResponse(ch, init)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("status = %d", resp.StatusCode)
+		}
+		return string(b)
+	}
+	if got, want := read(t, []UIMessageChunk{{"type": "error", "errorText": "Custom error message"}}, &UIMessageStreamResponseInit{Status: 200}),
+		"data: {\"errorText\":\"Custom error message\",\"type\":\"error\"}\n\ndata: [DONE]\n\n"; got != want {
+		t.Fatalf("129 body = %q, want %q", got, want)
+	}
+	for name, consume := range map[string]func(io.Reader) error{
+		"error": func(io.Reader) error { return errors.New("consumeSseStream error") },
+	} {
+		calls := make(chan struct{}, 2)
+		got := read(t, []UIMessageChunk{{"type": "text-delta", "id": "1", "delta": "error-test"}}, &UIMessageStreamResponseInit{Status: 200,
+			ConsumeSSEStream: func(r io.Reader) error { calls <- struct{}{}; return consume(r) }})
+		if want := "data: {\"delta\":\"error-test\",\"id\":\"1\",\"type\":\"text-delta\"}\n\ndata: [DONE]\n\n"; got != want {
+			t.Fatalf("305 %s body = %q, want %q", name, got, want)
+		}
+		select {
+		case <-calls:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("305 %s: consumeSseStream not called", name)
+		}
+		if len(calls) != 0 {
+			t.Fatalf("305 %s: consumeSseStream called more than once", name)
+		}
+	}
 }
