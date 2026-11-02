@@ -953,9 +953,10 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 	if e.ResponseID != "" {
 		attrs = append(attrs, attribute.String("gen_ai.response.id", e.ResponseID))
 	}
-	if e.ModelID != "" {
-		attrs = append(attrs, attribute.String("gen_ai.response.model", e.ModelID))
-	}
+	// TS `'gen_ai.response.model': event.modelId` records an empty model ID
+	// too (a harness turn without a model); callers fill it with the request
+	// model when the response names none.
+	attrs = append(attrs, attribute.String("gen_ai.response.model", e.ModelID))
 	attrs = append(attrs, baseUsageAttrs(e.Usage, !isObject)...)
 	if i.opts.Usage {
 		attrs = append(attrs, detailedUsageAttrs(e.Usage)...)

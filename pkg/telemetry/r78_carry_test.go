@@ -48,3 +48,25 @@ func TestR78Carry_EmptyModelIDSpanNamesKeepTrailingSpace(t *testing.T) {
 		}
 	}
 }
+
+// Round 78 carry: TS onLanguageModelCallEnd records `'gen_ai.response.model':
+// event.modelId` without an empty check, so a harness turn without a model
+// (an empty modelId) reports an empty response model on its chat span.
+func TestR78Carry_ChatSpanEmptyResponseModelIsRecorded(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	ot := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai")})
+	settings := &Settings{IsEnabled: Bool(true)}
+	const callID = "r78carry-chat-end"
+	ctx := ot.OnStart(context.Background(), TelemetryStartEvent{CallID: callID, OperationType: "ai.harness", Settings: settings})
+	stepCtx := ot.OnStepStart(ctx, TelemetryStepStartEvent{CallID: callID, Settings: settings})
+	callCtx := ot.OnLanguageModelCallStart(stepCtx, LanguageModelCallStartEvent{CallID: callID, Settings: settings})
+	ot.OnLanguageModelCallEnd(callCtx, LanguageModelCallEndEvent{CallID: callID, Settings: settings, FinishReason: "stop", ResponseID: "r1"})
+	span := findSpan(rec, "chat ")
+	if span == nil {
+		t.Fatal("chat span not ended")
+	}
+	if v, ok := attrValue(span, "gen_ai.response.model"); !ok || v.(string) != "" {
+		t.Fatalf("gen_ai.response.model = %v (set %v), want \"\"", v, ok)
+	}
+}
