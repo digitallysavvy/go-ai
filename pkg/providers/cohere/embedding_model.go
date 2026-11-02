@@ -175,6 +175,8 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			Tokens:      float64(response.Meta.BilledUnits.InputTokens),
 			InputTokens: response.Meta.BilledUnits.InputTokens,
 			TotalTokens: response.Meta.BilledUnits.InputTokens,
+			// TS always returns `usage: { tokens: meta.billed_units.input_tokens }`.
+			Reported: true,
 		},
 		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: rawBody}},
 	}, nil

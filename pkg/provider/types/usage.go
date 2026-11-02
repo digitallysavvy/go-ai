@@ -208,6 +208,15 @@ type EmbeddingUsage struct {
 
 	// Total tokens
 	TotalTokens int `json:"totalTokens"`
+
+	// Reported is set by a provider when the response carried a usage object
+	// (TS EmbeddingModelV4 `usage` present). Telemetry then records the token
+	// count even when it is 0, as TS records `usage.tokens: 0`. When it is
+	// false (no usage on the wire, or a provider that predates the field),
+	// a zero count is treated as unset and left out of telemetry, as TS
+	// drops the NaN it substitutes for an absent usage. It is not part of
+	// the JSON shape.
+	Reported bool `json:"-"`
 }
 
 func (u EmbeddingUsage) MarshalJSON() ([]byte, error) {

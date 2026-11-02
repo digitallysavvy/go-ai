@@ -151,12 +151,8 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	result := &types.EmbeddingsResult{
 		Embeddings: embeddings,
 		Warnings:   warnings,
-		Usage: types.EmbeddingUsage{
-			Tokens:      float64(response.Usage.PromptTokens),
-			InputTokens: response.Usage.PromptTokens,
-			TotalTokens: response.Usage.TotalTokens,
-		},
-		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: rawBody}},
+		Usage:      response.embeddingUsage(),
+		Responses:  []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: rawBody}},
 	}
 	if m.provider.config.OpenAICompatible && len(response.ProviderMetadata) > 0 {
 		// OpenAICompatibleEmbeddingModel passes the response providerMetadata through.
@@ -204,11 +200,26 @@ type openAIEmbeddingResponse struct {
 		Embedding []float64 `json:"embedding"`
 	} `json:"data"`
 	Model string `json:"model"`
-	Usage struct {
+	Usage *struct {
 		PromptTokens int `json:"prompt_tokens"`
 		TotalTokens  int `json:"total_tokens"`
 	} `json:"usage"`
 	ProviderMetadata map[string]map[string]interface{} `json:"providerMetadata"`
+}
+
+// embeddingUsage maps the wire usage as TS `response.usage ? { tokens:
+// response.usage.prompt_tokens } : undefined`: Reported only when the
+// response carried a usage object.
+func (r openAIEmbeddingResponse) embeddingUsage() types.EmbeddingUsage {
+	if r.Usage == nil {
+		return types.EmbeddingUsage{}
+	}
+	return types.EmbeddingUsage{
+		Tokens:      float64(r.Usage.PromptTokens),
+		InputTokens: r.Usage.PromptTokens,
+		TotalTokens: r.Usage.TotalTokens,
+		Reported:    true,
+	}
 }
 
 // applyDimensions sets the request's dimensions and user. Native OpenAI reads

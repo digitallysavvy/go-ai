@@ -127,9 +127,13 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		}
 	}
 
+	// TS `response.usage ? { tokens: response.usage.total_tokens } :
+	// undefined`: Reported only when the response carried usage.
 	var inputTokens int
+	usageReported := false
 	if response.Usage != nil {
 		inputTokens = response.Usage.TotalTokens
+		usageReported = true
 	}
 	var providerMetadata map[string]interface{}
 	if len(sparse) > 0 {
@@ -144,6 +148,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			Tokens:      float64(inputTokens),
 			InputTokens: inputTokens,
 			TotalTokens: inputTokens,
+			Reported:    usageReported,
 		},
 		Responses: []types.EmbeddingResponse{{
 			Headers: providerutils.ExtractHeaders(httpResp.Headers),

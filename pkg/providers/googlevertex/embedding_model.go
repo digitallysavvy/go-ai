@@ -192,6 +192,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			Tokens:      float64(totalTokens),
 			InputTokens: totalTokens,
 			TotalTokens: totalTokens,
+			// TS always returns usage for :predict (the summed
+			// statistics.token_count).
+			Reported: true,
 		},
 		Responses: responses,
 	}, nil
@@ -244,13 +247,16 @@ func (m *EmbeddingModel) doEmbedContent(ctx context.Context, value string, vopts
 		return nil, vertexEmbeddingError(m.Provider(), err)
 	}
 
+	// TS `usageMetadata?.promptTokenCount == null ? undefined : { tokens }`:
+	// Reported only when the response carried a prompt token count.
 	usage := types.EmbeddingUsage{}
-	if response.UsageMetadata != nil {
-		tokens := float64(response.UsageMetadata.PromptTokenCount)
+	if response.UsageMetadata != nil && response.UsageMetadata.PromptTokenCount != nil {
+		count := *response.UsageMetadata.PromptTokenCount
 		usage = types.EmbeddingUsage{
-			Tokens:      tokens,
-			InputTokens: response.UsageMetadata.PromptTokenCount,
-			TotalTokens: response.UsageMetadata.PromptTokenCount,
+			Tokens:      float64(count),
+			InputTokens: count,
+			TotalTokens: count,
+			Reported:    true,
 		}
 	}
 
@@ -271,7 +277,7 @@ type vertexEmbedContentResponse struct {
 		Values []float64 `json:"values"`
 	} `json:"embedding"`
 	UsageMetadata *struct {
-		PromptTokenCount int `json:"promptTokenCount"`
+		PromptTokenCount *int `json:"promptTokenCount"`
 	} `json:"usageMetadata,omitempty"`
 }
 

@@ -110,8 +110,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
-		Usage:      types.EmbeddingUsage{Tokens: float64(tokens), InputTokens: tokens, TotalTokens: tokens},
-		Responses:  []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: providerutils.RawJSONBody(httpResp.Body)}},
+		// TS always returns `usage: { tokens: response.usage?.total_tokens ?? 0 }`.
+		Usage:     types.EmbeddingUsage{Tokens: float64(tokens), InputTokens: tokens, TotalTokens: tokens, Reported: true},
+		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: providerutils.RawJSONBody(httpResp.Body)}},
 	}, nil
 }
 

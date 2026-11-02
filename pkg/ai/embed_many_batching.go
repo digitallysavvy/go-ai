@@ -218,6 +218,9 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 			out.Usage.Tokens += result.Usage.Tokens
 			out.Usage.InputTokens += result.Usage.InputTokens
 			out.Usage.TotalTokens += result.Usage.TotalTokens
+			// Reported when any batch carried a usage object (owner
+			// ruling 2026-11-02).
+			out.Usage.Reported = out.Usage.Reported || result.Usage.Reported
 			out.ProviderMetadata = mergeEmbeddingProviderMetadata(out.ProviderMetadata, result.ProviderMetadata)
 		}
 	}

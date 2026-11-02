@@ -1204,9 +1204,11 @@ func (i OpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallEndEven
 
 // embeddingUsageTokens is TS usage.tokens for an embedding call: the
 // TS-shaped Tokens field when the provider reported one, else the Go
-// InputTokens/TotalTokens counters. A NaN (provider reported nothing) is
-// dropped; a reported 0 is indistinguishable from the zero value and is
-// dropped too (open item).
+// InputTokens/TotalTokens counters. A NaN (TS substitutes it for an absent
+// usage, and sanitizeAttributeValue drops it) is dropped. A count of 0 is
+// recorded only when the provider marked the usage Reported (TS
+// `usage: { tokens: 0 }`); otherwise it is indistinguishable from the zero
+// value of a provider that reported nothing and is dropped.
 func embeddingUsageTokens(u types.EmbeddingUsage) (int64, bool) {
 	tokens := u.Tokens
 	if math.IsNaN(tokens) || math.IsInf(tokens, 0) || tokens <= 0 {
@@ -1216,6 +1218,9 @@ func embeddingUsageTokens(u types.EmbeddingUsage) (int64, bool) {
 		}
 	}
 	if tokens <= 0 {
+		if u.Reported && !math.IsNaN(u.Tokens) && !math.IsInf(u.Tokens, 0) {
+			return 0, true
+		}
 		return 0, false
 	}
 	return int64(tokens), true
