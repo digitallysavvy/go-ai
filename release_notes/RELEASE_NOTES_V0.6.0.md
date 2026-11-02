@@ -99,6 +99,8 @@ Also new:
 - **`responses.FunctionToolDef`, `responses.ShellToolDefEnvironment` and `responses.ShellNetworkPolicy` `MarshalJSON` methods** send an empty, non-nil `AllowedCallers`, `FileIDs`, `Skills`, `AllowedDomains` or `DomainSecrets` list as `[]`; nil is still omitted (TS forwards these lists as given).
 - **`types.Tool.ValidateInput`**: a tool can validate its parsed input with its own function in place of the JSON Schema in `Parameters` (TS `jsonSchema(schema, {validate})`); a failure makes the call invalid, with the TS `TypeValidationError` wording in the tool error. GenerateText, StreamText, the legacy loop, the repair path, approval revalidation and `ValidateUIMessages` use it. Tools rebuilt by `workflow.ResolveSerializableTools` carry the Ajv-worded validator TS attaches.
 - **`anthropic/tools.BashSandboxOutput`** is the default result of `Bash20250124()` / `Bash20241022()` when they run through the call's `providerutils.SandboxSession` (TS `sandbox.run()` result, `{exitCode, stdout, stderr}`).
+- **`deepseek.Config.UncheckedStrictToolCalls`** skips the DeepSeek strict tool call checks, as TS leaves `supportsStrictToolCalls` unset; Azure DeepSeek models set it (TS `createDeepSeekModel`).
+- **`types.ToolResult.InvalidToolCall`** (`json:"-"`) marks the tool error the SDK synthesizes for an invalid client tool call; StreamText gives that tool-error part the call's title (TS `streamLanguageModelCall`).
 - OpenAI Responses: `promptCacheOptions` 12h TTL and prewarm, shell tool
   `timeoutMs`/`maxOutputLength`, `additionalTools` and
   `omitFromRequestTools`. Azure `ToolSearch` and per-deployment model
@@ -259,6 +261,9 @@ search for and ends with a checklist for coding agents. Entries marked
 - **A tool that returns an error value is a tool result** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-error-value-result)
 - **Invalid tool call errors carry no provider metadata** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#invalid-tool-call-no-provider-metadata)
 - **GenerateText invalid tool call errors carry no tool metadata** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#generate-invalid-tool-error-no-tool-metadata)
+- **StreamText invalid tool call errors carry the tool's title** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-invalid-tool-error-title)
+- **An invalid tool call's error follows the call in the stream** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-invalid-tool-error-position)
+- **ToolCallRepairError messages show the cause as TS does** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-call-repair-error-message)
 
 #### Agents and approvals
 
@@ -303,6 +308,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Approval revalidation runs for tools without Parameters** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#approval-revalidation-without-parameters)
 - **The legacy loop stops waiting for a deferred provider tool on its error result** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#agent-deferred-provider-error-result)
 - **WorkflowAgent tool input callbacks get the conversation prompt** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-input-callbacks-conversation-prompt)
+- **The legacy loop's invalid tool call errors carry no tool metadata** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#agent-invalid-tool-error-no-tool-metadata)
 
 #### UI message streams
 
@@ -321,6 +327,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **UI start chunks carry the response message id as TS does** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-start-message-id)
 - **UI message metadata keeps an object over a number or boolean** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-metadata-merge-scalar)
 - **A caller header replaces the UI stream default header** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-stream-response-header-override)
+- **ConsumeSSEStream no longer holds up the response** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-consume-sse-not-awaited)
+- **ValidateUIMessages rejects a data part without data** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-validate-data-part-requires-data)
 
 #### Telemetry and events
 
@@ -338,6 +346,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **generateSpeech records an empty text** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-speech-empty-text)
 - **ai.prompt.toolChoice and ai.schema honor RecordInputs** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#otel-input-gated-toolchoice-schema)
 - **An unset finish reason is not recorded on spans** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#otel-unset-finish-reason)
+- **OpenTelemetry span names keep the space for an empty model ID** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#otel-empty-model-id-span-names)
 
 #### Errors
 
@@ -382,6 +391,13 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Bedrock budgetTokens warning for non-Anthropic models** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#bedrock-budget-tokens-warning)
 - **OpenAI Responses replays encrypted reasoning from provider options** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-reasoning-encrypted-content-provider-options)
 - **Responses streams skip [DONE]; created_at 0 is a timestamp** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#responses-stream-done-created-at)
+- **Chat, completion and OpenAI-compatible streams read past [DONE]** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#sse-read-past-done)
+- **created: 0 is the epoch, and first-chunk response metadata** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#chat-created-zero-epoch)
+- **Anthropic reasoning provider options are validated** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-reasoning-options-validated)
+- **Empty serviceTier and echo fields are reported** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#empty-service-tier-reported)
+- **The first xAI provider tool with an id names its output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#xai-provider-tool-name-first)
+- **Azure DeepSeek models send strict tools** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#azure-deepseek-strict-tools)
+- **Alibaba resolves a top-level or wildcard image media type** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#alibaba-image-media-type-sniffed)
 
 #### MCP
 
@@ -1349,6 +1365,7 @@ Notable ones:
 - **Message metadata merge with non-object values**: UI message metadata followed by a string or array (or a non-object followed by any value) is replaced; TS `mergeObjects` merges the value's index keys into a copy of the existing value. A number or boolean after an object keeps the object, as TS (coordinator ruling, round 75).
 - **Anthropic batch results of id-named provider tools across processes**: `ExperimentalBatch` restores the `Name` of a provider tool that keeps its constructor id (`anthropic.bash_20250124`) only when the results are read through the Provider that started the batch; results read by another Provider value or process report the wire name (`bash`). Name the tool after its wire name to get the same name everywhere (round 75).
 - **UI message stream end event finish reason**: the `OnEnd`/`OnFinish` event of `CreateUIMessageStreamWithOptions` reports the last finish chunk's `finishReason` as written (normally a `string`) or `nil`, and `ToUIMessageStream` a `types.FinishReason` (`""` when unset), the v0.5 shapes; TS reports the chunk's string or `undefined` in both (round 77).
+- **Provider stream header metadata part**: streams wrapped by `providerutils.WithResponseMetadata` (Anthropic, AI Gateway, Cohere, Moonshot, openresponses) start with a `response-metadata` part carrying the HTTP response headers, kept from v0.5 (`TextStream` has no other channel for them); TS returns the headers on the `doStream` result (round 78).
 - The Vertex Gemini image model accepts URL and `gs://` input images and
   sends them as `fileData` with the caller's media type, else one inferred
   from the URL path extension (query string and fragment ignored), else

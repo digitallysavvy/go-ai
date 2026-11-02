@@ -480,6 +480,21 @@ none. TS reports `state.finishReason` in both: the chunk's string or
 `undefined`. Compare with `== nil` / `== ""` per helper, or convert both with
 `fmt.Sprint` (review round 77).
 
+## Provider stream header metadata part
+
+Streams wrapped by `providerutils.WithResponseMetadata` (the Anthropic, AI
+Gateway, Cohere, Moonshot and openresponses language models) start with a
+`ChunkTypeResponseMetadata` part that carries the HTTP response headers (plus
+the model ID and the time the stream opened), after a leading `stream-start`.
+TS has no such part: `doStream` returns the headers on its result
+(`response.headers`) and the stream carries only the provider's own
+`response-metadata` parts. `provider.TextStream` has no other channel for the
+headers, and v0.5 callers of `DoStream` read them from this part, so it stays.
+`StreamText` and the UI helpers merge it into the step response as before; a
+raw `DoStream` consumer sees one extra part (review round 78). The TS gateway
+cases "should not modify response-metadata chunks without timestamp" and
+"should handle null timestamp values gracefully" are skipped on it.
+
 ## Anthropic batch results of id-named provider tools across processes
 
 `ExperimentalBatch` restores the `Name` of a provider tool that keeps its

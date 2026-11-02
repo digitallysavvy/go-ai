@@ -230,6 +230,20 @@ already, you can skip them.
 | `reasoningConfig.budgetTokens` on a non-Anthropic Bedrock model | `budgetTokens` warning whatever the thinking type | silent behavior change | Expect the warning | [Bedrock budgetTokens warning](#bedrock-budget-tokens-warning) |
 | OpenAI Responses replayed reasoning with `store: false` | `encrypted_content` read from provider options / metadata | silent behavior change | None | [Encrypted reasoning replay](#openai-reasoning-encrypted-content-provider-options) |
 | OpenAI / Azure / xAI Responses stream `[DONE]`, `created_at: 0` | Marker skipped; epoch timestamp | silent behavior change | None | [Responses [DONE] and created_at](#responses-stream-done-created-at) |
+| StreamText `ToolErrorContent.Title` for invalid tool calls | The tool's title | silent behavior change | Check `ToolCallContent.Invalid` | [Invalid tool error title](#stream-invalid-tool-error-title) |
+| StreamText `ChunkTypeToolResult` with `Error` for an `Invalid` call | Follows the call in stream position, also before a tool choice violation | silent behavior change | Match parts by `ToolCallID` | [Invalid tool error position](#stream-invalid-tool-error-position) |
+| `ToolCallRepairError` message text | `Error repairing tool call: Error: <msg>` | error text only | Use `errors.As` and `Cause` | [Repair error message](#tool-call-repair-error-message) |
+| Legacy agent `ToolErrorContent.ToolMetadata` of an invalid call | Omitted | silent behavior change | Read it from the tool-call part | [Agent invalid tool error](#agent-invalid-tool-error-no-tool-metadata) |
+| `UIMessageStreamResponseInit.ConsumeSSEStream` | The response does not wait for the callback | silent behavior change | Wait for the callback yourself | [ConsumeSSEStream not awaited](#ui-consume-sse-not-awaited) |
+| `ValidateUIMessages` with `data-*` parts that have no `data` key | Rejected | silent behavior change | Write `"data": null` | [Data part requires data](#ui-validate-data-part-requires-data) |
+| GenAI span names / `gen_ai.response.model` with an empty model ID | `chat `, `ai.harness ` (trailing space); `""` recorded | silent behavior change | Trim the name | [Empty model ID span names](#otel-empty-model-id-span-names) |
+| SSE servers that send frames after `data: [DONE]` (chat, completion, OpenAI-compatible, gateway, Gemini and others) | `[DONE]` skipped; finish at end of body | wire/protocol change | Close the body after `[DONE]` | [Read past [DONE]](#sse-read-past-done) |
+| `ResponseMetadata.Timestamp.IsZero()` with `created: 0`; counting `ChunkTypeResponseMetadata`; alibaba `ResponseMetadata` | Epoch timestamp; first-chunk metadata part; alibaba metadata set | silent behavior change | None | [created: 0](#chat-created-zero-epoch) |
+| `ReasoningContent` `ProviderOptions["anthropic"]` with a non-string `signature` / `redactedData` | `InvalidArgumentError` | silent behavior change | Pass strings or leave the key out | [Anthropic reasoning options](#anthropic-reasoning-options-validated) |
+| `serviceTier`, `reasoningContext`, `promptCacheKey`, `safetyIdentifier` metadata key presence | Present `""` reported | silent behavior change | Compare the value | [Empty serviceTier](#empty-service-tier-reported) |
+| Two xAI provider tools with the same id | The first one's name labels the output | silent behavior change | One tool per id | [xAI provider tool name](#xai-provider-tool-name-first) |
+| Azure DeepSeek tools with `Strict` | Sent; no `/beta` check | silent behavior change | None | [Azure DeepSeek strict tools](#azure-deepseek-strict-tools) |
+| Alibaba inline images with media type `image` or `image/*` | Subtype sniffed from the bytes | wire/protocol change | Give the full media type | [Alibaba image media type](#alibaba-image-media-type-sniffed) |
 | Cohere `BaseURL` or `DefaultBaseURL` (v0.5.3) | v2 API | wire/protocol change | Check custom base URLs | [Cohere v2](#v053-cohere-v2) |
 | `MaxRetries` unset on non-Gateway providers (v0.5.3) | Every provider retries | silent behavior change | Set `MaxRetries: &zero` to disable | [Retries](#v053-retries) |
 | Reliance on the 60 s default HTTP client timeout (v0.5.3) | No whole-request timeout | silent behavior change | Bound calls with `ctx` | [HTTP client timeout](#v053-http-timeout) |
@@ -1594,6 +1608,70 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   instead.
 - **Kind:** wire/protocol change
 
+### StreamText invalid tool call errors carry the tool's title {#stream-invalid-tool-error-title}
+
+- **What changed:** v0.5 `StreamText`'s tool-error content part for an
+  invalid tool call (unknown tool, input that fails the schema, a failed
+  repair) had an empty `Title`. v0.6 sets it to the tool's title, as TS
+  `streamLanguageModelCall` (`title: toolCall.title`). `GenerateText` and
+  executed tool failures still have no title. The SDK marks these results
+  with the new internal field `types.ToolResult.InvalidToolCall`
+  (`json:"-"`) (review round 78).
+- **Am I affected?** Code reading `types.ToolErrorContent.Title` (or the
+  `title` key of a `tool-error` part) from `StreamText` /
+  `ToolLoopAgent.Stream` step content.
+- **What to do:** no action unless you treat a non-empty `Title` on a
+  tool-error as an executed tool's error; check the matching
+  `ToolCallContent.Invalid` instead.
+- **Kind:** silent behavior change
+
+### An invalid tool call's error follows the call in the stream {#stream-invalid-tool-error-position}
+
+- **What changed:** `StreamText` emits the tool error of an invalid client
+  tool call (unknown tool, input that fails validation) right after its
+  tool-call part, before the model's later parts, as TS
+  `streamLanguageModelCall` does. v0.5 emitted it after the model stream
+  ended, together with the executed tool results, so a later tool call or
+  text came first. The step content follows the same order. With an
+  enforced `ToolChoice` (a specific tool or required) that the step
+  violates, the invalid call now gets its tool error before the violation
+  error part; v0.5 emitted none. Tool choice none still withholds both. A
+  `WorkflowAgent` step that is blocked or ends with a stream error streams
+  the tool error but adds no tool message for it (TS model-call-iterator)
+  (review round 78).
+- **Am I affected?** Code that depends on the position of
+  `ChunkTypeToolResult` parts with an `Error` for `Invalid` tool calls in
+  `FullStream`/`NewStream`, `OnChunk` or the UI message stream
+  (`tool-output-error`), or on the order of `ToolErrorContent` in
+  `StepResult.Content`; code that expects no tool error after a
+  `ToolChoiceViolationError`.
+- **What to do:** no action unless you relied on that order; match parts by
+  `ToolCallID`.
+- **Kind:** silent behavior change
+
+### ToolCallRepairError messages show the cause as TS does {#tool-call-repair-error-message}
+
+- **What changed:** v0.5 `ToolCallRepairError.Error()` was
+  `Error repairing tool call: <message>`. v0.6 is
+  `Error repairing tool call: Error: <message>`: the cause's TS `toString()`
+  (an SDK error cause shows its `AI_` name), as TS
+  `getErrorMessage(cause)`. The tool-error text the model sees for a call
+  whose repair failed changes the same way (review round 78).
+- **Am I affected?** Code comparing `ToolCallRepairError` messages or the
+  `ErrorText` of an invalid call whose `RepairToolCall` returned an error.
+- **What to do:** match with `errors.As` and read `Cause` instead of the
+  text:
+
+  ```go
+  // Before
+  if strings.HasPrefix(err.Error(), "Error repairing tool call: boom") { /* ... */ }
+
+  // After
+  var repairErr *ai.ToolCallRepairError
+  if errors.As(err, &repairErr) && repairErr.Cause != nil && repairErr.Cause.Error() == "boom" { /* ... */ }
+  ```
+- **Kind:** error text only
+
 ## Agents and approvals {#agents-and-approvals}
 
 ### A panicking ToolLoopAgent callback does not skip the other one {#agent-callback-panic-isolation}
@@ -1875,6 +1953,20 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 - **Am I affected?** Provider tools with `SupportsDeferredResults` (for
   example Anthropic code execution) whose results report `IsError`.
 - **What to do:** no action.
+- **Kind:** silent behavior change
+
+#### The legacy loop's invalid tool call errors carry no tool metadata {#agent-invalid-tool-error-no-tool-metadata}
+
+- **What changed:** v0.5 `ToolLoopAgent.GenerateAgent`/`Execute`/
+  `ExecuteWithMessages` gave the tool-error for an invalid tool call the
+  tool's metadata. v0.6 leaves it off, as TS `ToolLoopAgent.generate`
+  (which is `generateText`); the error is dynamic. The invalid tool-call part
+  keeps the metadata (review round 78).
+- **Am I affected?** `types.Tool.Metadata` read from
+  `ToolErrorContent.ToolMetadata` (or `ToolResult.ToolMetadata` of an invalid
+  call) in legacy agent step content or results.
+- **What to do:** read the metadata from the invalid `ToolCallContent` part
+  instead.
 - **Kind:** silent behavior change
 
 #### AI Gateway authentication errors are wrapped {#gateway-auth-error}
@@ -2668,6 +2760,42 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   sent as well.
 - **Kind:** wire/protocol change
 
+### ConsumeSSEStream no longer holds up the response {#ui-consume-sse-not-awaited}
+
+- **What changed:** the `UIMessageStreamResponseInit.ConsumeSSEStream`
+  callback gets a buffered copy of the SSE stream, as TS tees the stream and
+  does not await `consumeSseStream`. A callback that reads slowly or late no
+  longer blocks the response writes, and the body of the `*http.Response`
+  from `CreateUIMessageStreamResponseWithInit`,
+  `StreamTextResult.ToUIMessageStreamResponse` or
+  `CreateUIMessageChunksResponse` ends after `data: [DONE]` without waiting
+  for the callback to return. In v0.5 the body ended only after the callback
+  returned. The copy is dropped once the callback returns.
+  `PipeUIMessageStreamToResponse(WithInit)` and
+  `PipeUIMessageChunksToResponse` still return after the callback, with its
+  error (review round 78).
+- **Am I affected?** Code that reads a response body to EOF and then expects
+  `ConsumeSSEStream` to have finished (for example, it reads a buffer the
+  callback filled).
+- **What to do:** signal completion from the callback (close a channel) and
+  wait for it.
+- **Kind:** silent behavior change
+
+### ValidateUIMessages rejects a data part without data {#ui-validate-data-part-requires-data}
+
+- **What changed:** v0.5 `ValidateUIMessages` (and `SafeValidateUIMessages`,
+  `ValidateUIMessagesForAgent`) accepted a `data-*` part with no `data` key.
+  v0.6 rejects it with `Invalid input: expected nonoptional, received
+  undefined for data` (in the `Type validation failed` error), as TS
+  `uiMessagesSchema` (`data: z.unknown()`) under zod 4 (owner ruling
+  2026-11-02). Any present value, `null` included, passes. Tool parts keep
+  their v0.5 required `input`/`output` checks (review round 78).
+- **Am I affected?** Stored or client-sent UI messages with
+  `{"type": "data-...", ...}` parts that have no `data` key.
+- **What to do:** no action unless you store such parts; write `"data":
+  null` (or the value) when you build them.
+- **Kind:** silent behavior change
+
 ## Telemetry and events {#telemetry-and-events}
 
 The [telemetry recording change](#telemetry-record-pointers) is listed under
@@ -2943,6 +3071,26 @@ compile-time changes.
   treat a missing attribute as unset.
 - **Kind:** silent behavior change
 
+### OpenTelemetry span names keep the space for an empty model ID {#otel-empty-model-id-span-names}
+
+- **What changed:** v0.5: a GenAI `OpenTelemetry` span for a model with an
+  empty model ID was named after the operation alone (`invoke_agent`,
+  `chat`, `embeddings`, `rerank`, `decide`, `ai.harness`), and the chat span
+  had no `gen_ai.response.model`. v0.6 keeps TS's
+  `` `${operationName} ${modelId}` `` form, including the trailing space
+  (`invoke_agent `, `chat `, `ai.harness `), and the chat span records
+  `gen_ai.response.model: ""`. This happens for a harness turn without a
+  model (TS `modelId ''`) or a model whose `ModelID()` returns `""` (review
+  round 78).
+- **Am I affected?** You filter or alert on GenAI span names, or on
+  `gen_ai.response.model`, for calls whose model ID is empty:
+  `telemetry.NewOpenTelemetry`, `harness.Agent` with no `Model`, a custom
+  `provider.LanguageModel` with `ModelID() == ""`.
+- **What to do:** no action unless you match these span names exactly. If you
+  do, trim the name (`strings.TrimSpace(span.Name())`) or match the `"chat "`
+  prefix.
+- **Kind:** silent behavior change
+
 ## Errors {#errors}
 
 ### Errors are returned without Go prefixes {#errors-unprefixed}
@@ -3202,6 +3350,58 @@ compile-time changes.
   instead.
 - **Kind:** wire/protocol change
 
+#### Chat, completion and OpenAI-compatible streams read past [DONE] {#sse-read-past-done}
+
+- **What changed:** v0.5: OpenAI Chat and completion streams, every
+  `OpenAICompatStream` provider (fireworks, together, zai, gmicloud, ollama,
+  Vertex xAI), deepseek, alibaba, moonshot, groq, mistral (chat and
+  Conversations), the AI Gateway language model, Google and Vertex Gemini,
+  Perplexity, Hugging Face, Cohere and openresponses ended (or flushed and
+  finished) the stream at a `data: [DONE]` frame. v0.6 skips the frame and
+  keeps reading; the finish part comes once, when the response body ends, so
+  frames after `[DONE]` are processed. TS `parseJsonEventStream` drops
+  `[DONE]` and its `flush()` runs at the end of the body (review round 78;
+  the OpenAI, Azure and xAI Responses streams changed in round 77, see
+  [Responses [DONE] and created_at](#responses-stream-done-created-at)).
+- **Am I affected?** Only if a server sends SSE frames after `data: [DONE]`,
+  or keeps the connection open after it: `DoStream` on `openai.ChatModel`,
+  `openai.CompletionModel`, `deepseek`, `alibaba`, `moonshot`, `groq`,
+  `mistral` (`LanguageModel`, `ConversationModel`), `gateway`,
+  `google`/`googlevertex`, `perplexity`, `huggingface`, `cohere`,
+  `openresponses`, and providers built on `streaming.NewOpenAICompatStream`.
+- **What to do:** no action unless your server keeps the body open after
+  `[DONE]`; close the response body (or cancel the context) when the stream
+  is done.
+- **Kind:** wire/protocol change
+
+#### created: 0 is the epoch, and first-chunk response metadata {#chat-created-zero-epoch}
+
+- **What changed:** v0.5 gave no `ResponseMetadata.Timestamp` when a
+  deepseek, alibaba, moonshot, groq or mistral response (generate or stream)
+  carried `created: 0`, when an OpenAI Responses batch result had
+  `created_at: 0`, or when an openresponses result had `created_at: 0`.
+  v0.6 reports the Unix epoch, as TS `createLanguageModelResponseMetadata`
+  (`created != null`) and open-responses `new Date(created_at * 1000)`. groq
+  and mistral also accept a fractional `created` with millisecond precision
+  (v0.5 failed the response). deepseek, alibaba, groq and mistral streams
+  now emit their `ChunkTypeResponseMetadata` part on the first valid chunk
+  even when it has no id, model or created (TS `isFirstChunk`). Alibaba
+  `DoGenerate` now returns `ResponseMetadata` (id, model ID, timestamp,
+  headers); v0.5 returned none. OpenAI image provider metadata keeps
+  `created: 0` and empty `size`/`quality`/`background`/`outputFormat` (TS
+  `response.x ?? undefined`). OpenAI Chat and OpenAI-compatible chat keep
+  treating `created: 0` as absent (TS `created || undefined`), and
+  `providerutils.BuildResponseMetadata` still treats 0 as absent (review
+  round 78).
+- **Am I affected?** Code that checks `ResponseMetadata.Timestamp.IsZero()`
+  on these providers, counts `ChunkTypeResponseMetadata` stream parts, reads
+  `GenerateResult.ResponseMetadata` from alibaba (was nil), or reads
+  `ProviderMetadata["openai"]["images"]` entries' `created`, `size`,
+  `quality`, `background` or `outputFormat` keys.
+- **What to do:** no action unless you relied on the missing timestamp,
+  metadata part or keys.
+- **Kind:** silent behavior change
+
 ### AI Gateway
 
 #### Provider tools reach the AI Gateway as provider tools {#gateway-provider-tools}
@@ -3405,6 +3605,25 @@ compile-time changes.
   `"signature": ""` or `"redactedData": ""` under the `anthropic` key.
 - **What to do:** no action unless you relied on those parts being dropped.
 - **Kind:** wire/protocol change
+
+#### Anthropic reasoning provider options are validated {#anthropic-reasoning-options-validated}
+
+- **What changed:** v0.5 dropped a reasoning part whose
+  `ProviderOptions["anthropic"]` had a non-string `signature`/`redactedData`
+  (`null` included) or was not an object, with the warning "unsupported
+  reasoning metadata". v0.6 returns `*errors.InvalidArgumentError`
+  ("invalid anthropic provider options"), as TS
+  `parseProviderOptions(anthropicReasoningMetadataSchema)` throws. A typed
+  map such as `map[string]string` is now read through its JSON form (v0.5
+  ignored it). Applies to the Anthropic, Bedrock Anthropic and Vertex
+  Anthropic prompt conversion (review round 78).
+- **Am I affected?** `types.ReasoningContent` with
+  `ProviderOptions: {"anthropic": ...}` holding `"signature": nil`, a number,
+  or a non-map value; code matching the "unsupported reasoning metadata"
+  warning for those parts.
+- **What to do:** no action unless you build reasoning parts by hand; pass
+  the signature as a string or leave the key out.
+- **Kind:** silent behavior change
 
 ### Amazon Bedrock
 
@@ -3640,11 +3859,29 @@ compile-time changes.
   `convertToOpenAIResponsesInput`. With `store: false`, multi-step calls now
   keep the previous step's reasoning instead of dropping it with the
   "Reasoning parts without encrypted content are not supported when store is
-  false" warning. Azure reads its `azure` key (review round 77).
+  false" warning. Azure reads its `azure` key (review round 77). A
+  `reasoningEncryptedContent` of `""` is replayed as `encrypted_content: ""`
+  (TS `!= null`); before round 78 Go treated it as absent.
 - **Am I affected?** `ResponsesModel` / Azure calls with `"store": false` and
   `"include": []string{"reasoning.encrypted_content"}` over several steps or
   replayed history; code expecting that warning.
 - **What to do:** no action.
+- **Kind:** silent behavior change
+
+#### Empty serviceTier and echo fields are reported {#empty-service-tier-reported}
+
+- **What changed:** v0.5 left an empty `service_tier` (and an empty
+  `reasoning.context`, `prompt_cache_key`, `safety_identifier`) out of
+  provider metadata. v0.6 reports a present empty string, as TS
+  (`typeof === 'string'` for OpenAI, `!= null` for xAI). Null or absent
+  values are still left out (review round 78).
+- **Am I affected?** Code reading `ProviderMetadata["openai"]["serviceTier"]`
+  / `["reasoningContext"]` (OpenAI and Azure Responses generate, stream
+  finish, batch results) or
+  `ProviderMetadata["xai"]["serviceTier" | "promptCacheKey" | "safetyIdentifier"]`
+  (xAI Responses and batch) that treats key presence as "set".
+- **What to do:** no action unless you check key presence; compare the value
+  instead.
 - **Kind:** silent behavior change
 
 #### Responses streams skip [DONE]; created_at 0 is a timestamp {#responses-stream-done-created-at}
@@ -3698,6 +3935,46 @@ compile-time changes.
 - **Am I affected?** xAI Responses requests with function tools that have
   no `Description`.
 - **What to do:** no action.
+- **Kind:** wire/protocol change
+
+#### The first xAI provider tool with an id names its output {#xai-provider-tool-name-first}
+
+- **What changed:** when two provider tools share an id (for example two
+  `xai.web_search` tools), v0.5 labeled the provider-executed output items
+  with the last one's `Name`. v0.6 uses the first one's, as TS resolves
+  `webSearchToolName` and the others with `tools.find` (review round 78).
+- **Am I affected?** xAI Responses calls with more than one provider tool of
+  the same id under different names.
+- **What to do:** no action; pass one tool per id.
+- **Kind:** silent behavior change
+
+### Azure, DeepSeek and Alibaba
+
+#### Azure DeepSeek models send strict tools {#azure-deepseek-strict-tools}
+
+- **What changed:** v0.5: an Azure DeepSeek model
+  (`azure.Provider.DeepSeekModel`) rejected `strict: true` tools with
+  "DeepSeek strict tool calls require a beta base URL ending in `/beta`."
+  (and rejected mixing strict and non-strict tools). v0.6 sends them, as TS
+  `createDeepSeekModel`, which leaves `supportsStrictToolCalls` unset so
+  `prepareTools` runs neither check. The new field
+  `deepseek.Config.UncheckedStrictToolCalls` does this; Azure sets it, and
+  the deepseek provider keeps its `/beta` checks (review round 78).
+- **Am I affected?** Azure DeepSeek calls with `types.Tool{Strict: &strict}`.
+- **What to do:** no action.
+- **Kind:** silent behavior change
+
+#### Alibaba resolves a top-level or wildcard image media type {#alibaba-image-media-type-sniffed}
+
+- **What changed:** v0.5 sent alibaba inline image data with a top-level or
+  wildcard media type as `data:image;base64,...` or
+  `data:image/*;base64,...`. v0.6 resolves the subtype from the bytes
+  (`data:image/png;base64,...`), as TS `formatImageUrl`
+  (`resolveFullMediaType`), and returns an error when it cannot (review
+  round 78).
+- **Am I affected?** alibaba calls with `types.FileContent` / `ImageContent`
+  media type `"image"` or `"image/*"` and inline bytes.
+- **What to do:** no action, or give the full media type.
 - **Kind:** wire/protocol change
 
 ### Wrapper providers
@@ -4131,6 +4408,13 @@ after upgrading:
   `undefined` in both. See
   [UI message stream end event finish reason](./known-differences.mdx).
 
+- **Some provider streams start with a header-only `response-metadata`
+  part.** Streams wrapped by `providerutils.WithResponseMetadata`
+  (Anthropic, AI Gateway, Cohere, Moonshot, openresponses) carry the HTTP
+  response headers in an extra leading part, kept from v0.5; TS returns the
+  headers on the `doStream` result. See
+  [Provider stream header metadata part](./known-differences.mdx).
+
 ## For coding agents {#for-coding-agents}
 
 Follow these steps in order. Do each step completely before you start the
@@ -4170,7 +4454,8 @@ next one.
      -e 'ai\.ranking|SerializableToolDef|ToolApprovalResponseContent|ConsumeSSEStream|NoObjectGeneratedError|ProviderMetadata|ReasoningFile' \
      -e 'openaitool\.|anthropic/tools|gateway/tools|providers/xai|\.Title|tool_search|NewShellTool|ProviderArgs|Warnings' \
      -e 'ResolveSerializableTools|Bash202|Sandbox is not available|return [A-Za-z]*[Ee]rr(or)?(\(.*\))?, nil|OnInput(Start|Delta|Available)|logprobs' \
-     -e 'InputSchemaInput|ExperimentalRefineToolInput|SupportsDeferredResults|UIMessageStreamResponseInit|reasoningEncryptedContent|budgetTokens|redactedData|ExperimentalSandbox|CustomData|Timestamp\.IsZero' .
+     -e 'InputSchemaInput|ExperimentalRefineToolInput|SupportsDeferredResults|UIMessageStreamResponseInit|reasoningEncryptedContent|budgetTokens|redactedData|ExperimentalSandbox|CustomData|Timestamp\.IsZero' \
+     -e 'ToolCallRepairError|InvalidToolCall|ValidateUIMessages|UncheckedStrictToolCalls|serviceTier|safetyIdentifier|promptCacheKey|\[DONE\]|"data-' .
    ```
 
 4. For each match, open the entry the table links to. Apply **What to do**.
