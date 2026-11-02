@@ -399,7 +399,10 @@ func serializableInputValidator(providerTool bool, def SerializableToolDef, tool
 	validated := def
 	validated.Name = toolName
 	return func(input interface{}) (interface{}, error) {
-		_, issues, err := validateSerializableInputWith(validated, input, false)
+		// Ajv sees JSON values; a Go caller's input may hold typed slices and
+		// maps ([]string, map[string]string), so validate its JSON form. The
+		// input itself is returned unchanged.
+		_, issues, err := validateSerializableInputWith(validated, jsonValueOf(input), false)
 		if err != nil {
 			return nil, err
 		}
@@ -408,6 +411,20 @@ func serializableInputValidator(providerTool bool, def SerializableToolDef, tool
 		}
 		return input, nil
 	}
+}
+
+// jsonValueOf returns v as the generic JSON value it encodes to (maps,
+// []interface{}, float64, ...), or v itself when it does not round-trip.
+func jsonValueOf(v interface{}) interface{} {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return v
+	}
+	var out interface{}
+	if json.Unmarshal(b, &out) != nil {
+		return v
+	}
+	return out
 }
 
 // ValidateSerializableToolInput validates a tool input against its serialized

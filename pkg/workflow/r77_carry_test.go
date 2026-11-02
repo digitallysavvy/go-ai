@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -122,5 +123,29 @@ func TestR77Carry_ProviderDefWithoutIDIsNotValidated(t *testing.T) {
 	}
 	if _, err := byName["f"].ValidateInput(in); err == nil || err.Error() != `data is missing required property "x"` {
 		t.Errorf("function def: err = %v, want the Ajv missing-property error", err)
+	}
+}
+
+// TS Ajv validates JSON values. A Go caller's tool input (for example one
+// revalidated from an approval message it built) can hold typed slices and
+// maps; the resolved tool's ValidateInput accepts them as the arrays and
+// objects they encode to, and returns the input unchanged.
+func TestR77Carry_ValidateInputAcceptsGoTypedJSONValues(t *testing.T) {
+	schema := map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+		"tags": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+		"n":    map[string]interface{}{"type": "integer"},
+		"o":    map[string]interface{}{"type": "object", "required": []interface{}{"a"}},
+	}}
+	tools := ResolveSerializableTools(map[string]SerializableToolDef{"f": {InputSchema: schema}})
+	in := map[string]interface{}{"tags": []string{"a"}, "n": 3, "o": map[string]string{"a": "b"}}
+	got, err := tools[0].ValidateInput(in)
+	if err != nil {
+		t.Fatalf("ValidateInput(Go-typed input) = %v, want nil", err)
+	}
+	if !reflect.DeepEqual(got, in) {
+		t.Errorf("ValidateInput returned %#v, want the input unchanged", got)
+	}
+	if _, err := tools[0].ValidateInput(map[string]interface{}{"tags": []int{1}}); err == nil || err.Error() != "data/tags/0 must be string" {
+		t.Errorf("ValidateInput([]int tags) err = %v, want data/tags/0 must be string", err)
 	}
 }
