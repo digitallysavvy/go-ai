@@ -435,3 +435,106 @@ func TestR76Carry_EmptyActiveToolsEverywhereSendsNoTools(t *testing.T) {
 		}
 	}
 }
+
+func r76carryF(v float64) *float64 { return &v }
+
+// TS model-call-iterator.test.ts "generation settings > merges defined
+// prepareStep overrides": a setting the hook leaves undefined keeps the
+// current value (mergePrepareStepGenerationSettings copies defined keys
+// only). Go's nil is TS undefined. Both modes.
+func TestR76Carry_PrepareStepMergesDefinedSettingsOnly(t *testing.T) {
+	for _, mode := range []string{"stream", "generate"} {
+		t.Run(mode, func(t *testing.T) {
+			model, calls := r76carryTextModel(nil)
+			a, err := NewWorkflowAgent(WorkflowAgent{
+				Model: model, Temperature: r76carryF(0.2), TopP: r76carryF(0.5),
+				PrepareStep: func(_ context.Context, o LanguageModelCallOptions) (LanguageModelCallOptions, error) {
+					o.Temperature = nil
+					o.TopP = r76carryF(0.9)
+					n := 256
+					o.MaxTokens = &n
+					return o, nil
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r76carryRun(t, a, mode)
+			c := (*calls)[0]
+			if c.Temperature == nil || *c.Temperature != 0.2 || c.TopP == nil || *c.TopP != 0.9 || c.MaxTokens == nil || *c.MaxTokens != 256 {
+				t.Errorf("model settings temperature=%v topP=%v maxTokens=%v, want 0.2, 0.9, 256", c.Temperature, c.TopP, c.MaxTokens)
+			}
+		})
+	}
+}
+
+// TS model-call-iterator.ts prepareStep: every key the hook leaves undefined
+// keeps the current value (mergePrepareStepGenerationSettings for the
+// generation settings; `!== undefined` checks for runtimeContext,
+// toolsContext, activeTools and toolChoice). A Go hook that clears a field
+// to nil leaves the model call's value as it was. Both modes.
+func TestR76Carry_PrepareStepNilFieldsKeepCurrent(t *testing.T) {
+	clear := func(_ context.Context, o LanguageModelCallOptions) (LanguageModelCallOptions, error) {
+		o.Temperature, o.TopP, o.TopK, o.MaxTokens = nil, nil, nil, nil
+		o.PresencePenalty, o.FrequencyPenalty, o.StopSequences, o.Seed = nil, nil, nil, nil
+		o.Headers, o.Reasoning, o.ProviderOptions = nil, nil, nil
+		o.RuntimeContext, o.ActiveTools, o.Messages = nil, nil, nil
+		return o, nil
+	}
+	for _, hookKind := range []string{"prepareStep", "prepareCall"} {
+		for _, mode := range []string{"stream", "generate"} {
+			t.Run(hookKind+"/"+mode, func(t *testing.T) {
+				model, calls := r76carryTextModel(nil)
+				topK, maxTokens, seed := 4, 100, 7
+				reasoning := types.ReasoningLevel("high")
+				cfg := WorkflowAgent{
+					Model: model,
+					Tools: []types.Tool{
+						{Name: "a", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}},
+						{Name: "b", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}},
+					},
+					ActiveTools: []string{"a"},
+					Temperature: r76carryF(0.2), TopP: r76carryF(0.5), TopK: &topK, MaxTokens: &maxTokens,
+					PresencePenalty: r76carryF(0.1), FrequencyPenalty: r76carryF(0.3), StopSequences: []string{"STOP"}, Seed: &seed,
+					Headers: map[string]string{"x-test": "1"}, Reasoning: &reasoning,
+					ProviderOptions: map[string]interface{}{"mock": map[string]interface{}{"k": "v"}},
+					RuntimeContext:  map[string]interface{}{"requestId": "r1"},
+				}
+				if hookKind == "prepareStep" {
+					cfg.PrepareStep = clear
+				} else {
+					cfg.PrepareCall = clear
+				}
+				a, err := NewWorkflowAgent(cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				r76carryRun(t, a, mode)
+				c := (*calls)[0]
+				var problems []string
+				check := func(name string, ok bool) {
+					if !ok {
+						problems = append(problems, name)
+					}
+				}
+				check("temperature", c.Temperature != nil && *c.Temperature == 0.2)
+				check("topP", c.TopP != nil && *c.TopP == 0.5)
+				check("topK", c.TopK != nil && *c.TopK == 4)
+				check("maxTokens", c.MaxTokens != nil && *c.MaxTokens == 100)
+				check("presencePenalty", c.PresencePenalty != nil && *c.PresencePenalty == 0.1)
+				check("frequencyPenalty", c.FrequencyPenalty != nil && *c.FrequencyPenalty == 0.3)
+				check("stopSequences", reflect.DeepEqual(c.StopSequences, []string{"STOP"}))
+				check("seed", c.Seed != nil && *c.Seed == 7)
+				check("headers", c.Headers["x-test"] == "1")
+				check("reasoning", c.Reasoning != nil && *c.Reasoning == reasoning)
+				check("providerOptions", reflect.DeepEqual(c.ProviderOptions, map[string]interface{}{"mock": map[string]interface{}{"k": "v"}}))
+				check("runtimeContext", reflect.DeepEqual(c.RuntimeContext, map[string]interface{}{"requestId": "r1"}))
+				check("activeTools", len(c.Tools) == 1 && c.Tools[0].Name == "a")
+				check("messages", len(c.Prompt.Messages) == 1)
+				if len(problems) > 0 {
+					t.Errorf("a nil %s field dropped the current value of: %v", hookKind, problems)
+				}
+			})
+		}
+	}
+}
