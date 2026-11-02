@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -732,8 +733,12 @@ func wireEmbed(ctx context.Context, m provider.EmbeddingModel, arg map[string]in
 		"warnings":         WireWarnings(res.Warnings),
 		"providerMetadata": res.ProviderMetadata,
 	}
-	if res.Usage.Tokens != 0 {
-		out["usage"] = map[string]interface{}{"tokens": res.Usage.Tokens}
+	if res.Usage.Reported {
+		var tokens interface{} = res.Usage.Tokens
+		if math.IsNaN(res.Usage.Tokens) || math.IsInf(res.Usage.Tokens, 0) {
+			tokens = nil // TS JSON-serializes NaN as null
+		}
+		out["usage"] = map[string]interface{}{"tokens": tokens}
 	}
 	if len(res.Responses) > 0 {
 		out["response"] = map[string]interface{}{"headers": wirePruneHeaders(res.Responses[0].Headers), "body": res.Responses[0].Body}

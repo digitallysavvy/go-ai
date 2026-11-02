@@ -95,7 +95,9 @@ func wireHeaders(m tsfixture.WireModel) map[string]string {
 // wireSuites maps a TS package (testdata/tswire/<pkg>.jsonl.gz) to the Go
 // provider replayed against it.
 var wireSuites = map[string]tsfixture.WireSuite{
-	"openai-compatible": {Skip: map[string]string{
+	"openai-compatible": {LanguageResults: true, Skip: map[string]string{
+		"metadata extraction > should process metadata from complete response":             "the metadataExtractor is code in the TS test; Go has no metadata extractor hook",
+		"doGenerate > should generate distinct IDs for parallel tool calls with empty IDs": "TS generateId is random; distinct Go ids are checked in pkg/providerutils/streaming",
 		"~transformRequestBody": "the transform is code in the TS test; Go has Config.TransformRequestBody",
 		"doEmbed > should not emit deprecated warning when camelCase provider name key is used": "TS embedding reads only the raw provider-name key; Go also honours the camelCase key",
 		"~should handle error stream parts":                                                     "TS emits stream errors as parts; Go ends the stream with the same error from Next",
@@ -145,7 +147,7 @@ var wireSuites = map[string]tsfixture.WireSuite{
 	"baseten": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return baseten.New(baseten.Config{APIKey: k, ModelURL: b, Headers: h})
 	})},
-	"togetherai": {GoAdds: "/v1", RootBase: true, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"togetherai": {LanguageResults: true, GoAdds: "/v1", RootBase: true, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return together.New(together.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
 	"deepinfra": {GoAdds: "/inference", GoPrefix: func(p string) string {
@@ -156,7 +158,7 @@ var wireSuites = map[string]tsfixture.WireSuite{
 	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return deepinfra.New(deepinfra.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
-	"fireworks": {GoAdds: "/inference/v1", GoPrefix: func(string) string { return "/inference" }, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"fireworks": {LanguageResults: true, GoAdds: "/inference/v1", GoPrefix: func(string) string { return "/inference" }, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return fireworks.New(fireworks.Config{APIKey: k, BaseURL: b, Headers: h, ImagePollIntervalMs: 1, ImagePollTimeoutMs: 5000})
 	})},
 	"luma": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
@@ -256,10 +258,10 @@ var wireSuites = map[string]tsfixture.WireSuite{
 	"cerebras": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return cerebras.New(cerebras.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
-	"gmicloud": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"gmicloud": {LanguageResults: true, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return gmicloud.New(gmicloud.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
-	"zai": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"zai": {LanguageResults: true, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return zai.New(zai.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
 	"klingai": {Provider: func(b string, m tsfixture.WireModel) (provider.Provider, error) {
