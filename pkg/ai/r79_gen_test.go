@@ -163,3 +163,58 @@ func TestR79Gen_ApprovalRevalidationCauseText(t *testing.T) {
 		}
 	})
 }
+
+// Ports of parse-tool-call.test.ts 603 ("should observe the repair
+// rejection": the repair aborts the call and throws) and 637 ("should reject
+// when aborted during repaired input validation"): the call rejects with the
+// abort reason, through GenerateText.
+func TestR79Gen_RepairAbortRejectsWithCause(t *testing.T) {
+	cancellation := errors.New("cancelled")
+	schemaTool := func(validate func(interface{}) (interface{}, error)) types.Tool {
+		return types.Tool{
+			Name:          "t1",
+			Parameters:    map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}, "required": []interface{}{"value"}},
+			ValidateInput: validate,
+			Execute: func(ctx context.Context, in map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+				return "ok", nil
+			},
+		}
+	}
+	t.Run("repair rejection after cancellation", func(t *testing.T) {
+		ctx, cancel := context.WithCancelCause(context.Background())
+		defer cancel(nil)
+		_, err := GenerateText(ctx, GenerateTextOptions{
+			Model:  r78genToolCallModel("invalid json"),
+			Prompt: "x",
+			Tools:  []types.Tool{schemaTool(nil)},
+			RepairToolCall: func(ctx context.Context, o ToolCallRepairOptions) (*types.ToolCall, error) {
+				cancel(cancellation)
+				return nil, errors.New("repair failed")
+			},
+		})
+		if err != cancellation {
+			t.Fatalf("err = %v, want the abort reason", err)
+		}
+	})
+	t.Run("aborted during repaired input validation", func(t *testing.T) {
+		ctx, cancel := context.WithCancelCause(context.Background())
+		defer cancel(nil)
+		validate := func(v interface{}) (interface{}, error) {
+			cancel(cancellation)
+			return v, nil
+		}
+		_, err := GenerateText(ctx, GenerateTextOptions{
+			Model:  r78genToolCallModel("invalid json"),
+			Prompt: "x",
+			Tools:  []types.Tool{schemaTool(validate)},
+			RepairToolCall: func(ctx context.Context, o ToolCallRepairOptions) (*types.ToolCall, error) {
+				repaired := o.ToolCall
+				repaired.RawArguments = `{"value":"repaired"}`
+				return &repaired, nil
+			},
+		})
+		if err != cancellation {
+			t.Fatalf("err = %v, want the abort reason", err)
+		}
+	})
+}
