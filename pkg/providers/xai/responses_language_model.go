@@ -1211,8 +1211,9 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			return nil, err
 		}
 
+		// TS parseJsonEventStream skips a [DONE] frame; flush() runs when the
+		// stream ends, after any later events.
 		if streaming.IsStreamDone(event) {
-			s.queueFlush()
 			continue
 		}
 		if s.includeRawChunks {
