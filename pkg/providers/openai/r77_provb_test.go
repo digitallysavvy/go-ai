@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // TestR77ProvbTSCasesCapabilities replays openai-language-model-capabilities.test.ts
@@ -66,5 +68,45 @@ func TestR77ProvbTSCasesNormalizeJSONSchema(t *testing.T) {
 			return nil, nil, err
 		}
 		return map[string]interface{}{"schema": schema, "warnings": tsfixture.WarningsToTS(warnings)}, nil, nil
+	}, nil)
+}
+
+// TestR77ProvbTSCasesChatPrepareTools replays openai-chat-prepare-tools.test.ts
+// (TS prepareChatTools) through the chat request builder: tools,
+// tool_choice and the tool warnings.
+func TestR77ProvbTSCasesChatPrepareTools(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/chat_prepare_tools.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		in, _ := args[0].(map[string]interface{})
+		tools, why := tsfixture.BuildTools(in["tools"])
+		if why != "" {
+			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+		}
+		opts := &provider.GenerateOptions{Prompt: types.Prompt{Text: "Hello"}, Tools: tools}
+		if tc, ok := in["toolChoice"].(map[string]interface{}); ok && tc["__undef"] == nil {
+			opts.ToolChoice = tsfixture.BuildToolChoice(tc)
+		}
+		m, err := New(Config{APIKey: "k"}).ChatModel("gpt-4o")
+		if err != nil {
+			return nil, nil, err
+		}
+		lm, ok := m.(*LanguageModel)
+		if !ok {
+			return nil, nil, fmt.Errorf("%w: chat model is %T", tsfixture.ErrUnsupported, m)
+		}
+		body, warnings, err := lm.buildRequestBodyWithWarnings(opts, false)
+		if err != nil {
+			return nil, nil, err
+		}
+		out := map[string]interface{}{"toolWarnings": tsfixture.WarningsToTS(warnings)}
+		for key, field := range map[string]string{"tools": "tools", "tool_choice": "toolChoice"} {
+			if v, ok := body[key]; ok {
+				b, _ := json.Marshal(v)
+				var g interface{}
+				_ = json.Unmarshal(b, &g)
+				out[field] = g
+			}
+		}
+		return out, nil, nil
 	}, nil)
 }
