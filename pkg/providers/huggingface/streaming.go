@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -176,7 +175,7 @@ func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 				Type: provider.ChunkTypeResponseMetadata,
 				ResponseMetadata: &provider.ResponseMetadata{
 					ID:        event.Response.ID,
-					Timestamp: time.Unix(event.Response.CreatedAt, 0).UTC(),
+					Timestamp: hfCreatedTimestamp(event.Response.CreatedAt),
 					ModelID:   event.Response.Model,
 					Headers:   s.responseHeaders,
 				},

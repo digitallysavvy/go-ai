@@ -374,14 +374,16 @@ func convertOpenAICompletionUsage(usage *openAICompletionUsage) types.Usage {
 	}
 }
 
-func completionResponseMetadata(id string, created *int64, model string, headers map[string]string) *types.ResponseMetadata {
+func completionResponseMetadata(id string, created *float64, model string, headers map[string]string) *types.ResponseMetadata {
 	metadata := &types.ResponseMetadata{
 		ID:      id,
 		ModelID: model,
 		Headers: headers,
 	}
 	if created != nil {
-		metadata.Timestamp = time.Unix(*created, 0).UTC()
+		if t, ok := unixSecondsTime(*created); ok {
+			metadata.Timestamp = t.UTC()
+		}
 	}
 	return metadata
 }
@@ -398,7 +400,7 @@ func (m *CompletionModel) handleError(err error) error {
 
 type openAICompletionResponse struct {
 	ID      string                   `json:"id"`
-	Created *int64                   `json:"created"`
+	Created *float64                 `json:"created"`
 	Model   string                   `json:"model"`
 	Choices []openAICompletionChoice `json:"choices"`
 	Usage   *openAICompletionUsage   `json:"usage"`
@@ -646,11 +648,14 @@ func mustMarshalCompletionProviderMetadata(metadata map[string]interface{}) json
 	return raw
 }
 
-func completionStreamTimestamp(created *int64) time.Time {
+func completionStreamTimestamp(created *float64) time.Time {
 	if created == nil {
 		return time.Time{}
 	}
-	return time.Unix(*created, 0).UTC()
+	if t, ok := unixSecondsTime(*created); ok {
+		return t.UTC()
+	}
+	return time.Time{}
 }
 
 func (s *completionStream) Err() error {
@@ -666,7 +671,7 @@ func (s *completionStream) Close() error {
 
 type openAICompletionChunk struct {
 	ID      string                        `json:"id"`
-	Created *int64                        `json:"created"`
+	Created *float64                      `json:"created"`
 	Model   string                        `json:"model"`
 	Choices []openAICompletionChunkChoice `json:"choices"`
 	Usage   *openAICompletionUsage        `json:"usage"`

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -28,14 +29,14 @@ type FilesAPI struct {
 // openAIFilesResponse is the wire shape of a file resource, shared by
 // uploadFile and getFileMetadata.
 type openAIFilesResponse struct {
-	ID        string `json:"id"`
-	Object    string `json:"object"`
-	Bytes     *int64 `json:"bytes"`
-	CreatedAt *int64 `json:"created_at"`
-	Filename  string `json:"filename"`
-	Purpose   string `json:"purpose"`
-	Status    string `json:"status"`
-	ExpiresAt *int64 `json:"expires_at"`
+	ID        string   `json:"id"`
+	Object    string   `json:"object"`
+	Bytes     *int64   `json:"bytes"`
+	CreatedAt *float64 `json:"created_at"`
+	Filename  string   `json:"filename"`
+	Purpose   string   `json:"purpose"`
+	Status    string   `json:"status"`
+	ExpiresAt *float64 `json:"expires_at"`
 }
 
 func (r openAIFilesResponse) toMetadata() map[string]interface{} {
@@ -50,23 +51,49 @@ func (r openAIFilesResponse) toMetadata() map[string]interface{} {
 		meta["bytes"] = *r.Bytes
 	}
 	if r.CreatedAt != nil {
-		meta["createdAt"] = *r.CreatedAt
+		meta["createdAt"] = unixSecondsMetadataValue(*r.CreatedAt)
 	}
 	if r.Status != "" {
 		meta["status"] = r.Status
 	}
 	if r.ExpiresAt != nil {
-		meta["expiresAt"] = *r.ExpiresAt
+		meta["expiresAt"] = unixSecondsMetadataValue(*r.ExpiresAt)
 	}
 	return meta
 }
 
-func unixSecondsToTime(v *int64) *time.Time {
+// unixSecondsToTime converts a wire timestamp in unix seconds (TS
+// z.number(), so it may be fractional) as TS new Date(seconds * 1000):
+// milliseconds are kept (truncated). Nil, or outside the JS Date range (an
+// Invalid Date in TS), is nil.
+func unixSecondsToTime(v *float64) *time.Time {
 	if v == nil {
 		return nil
 	}
-	t := time.Unix(*v, 0)
+	t, ok := unixSecondsTime(*v)
+	if !ok {
+		return nil
+	}
 	return &t
+}
+
+// unixSecondsTime is new Date(sec * 1000); false outside the JS Date range.
+func unixSecondsTime(sec float64) (time.Time, bool) {
+	ms := sec * 1000
+	if math.IsNaN(ms) || math.IsInf(ms, 0) || math.Abs(ms) > 8.64e15 {
+		return time.Time{}, false
+	}
+	return time.UnixMilli(int64(ms)), true
+}
+
+// unixSecondsMetadataValue reports a wire number in provider metadata: an
+// integral value stays an int64 (as v0.5 reported it), a fractional one
+// (TS z.number() accepts it) is the float64 TS reports.
+func unixSecondsMetadataValue(v float64) interface{} {
+	if v == math.Trunc(v) && math.Abs(v) < 1<<53 {
+		return int64(v)
+	}
+	return v
 }
 
 // UploadFile uploads a file to OpenAI's Files API (`POST /files`). Both

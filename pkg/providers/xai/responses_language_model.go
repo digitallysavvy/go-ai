@@ -132,7 +132,7 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		return nil, err
 	}
 
-	var resp responses.ResponsesAPIResponse
+	var wire xaiResponseWire
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/responses",
@@ -140,10 +140,11 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		Headers: opts.Headers,
 		// TS createJsonResponseHandler(xaiResponsesResponseSchema).
 		ValidateResponse: providerutils.XAIResponsesResponseValidator("xai.responses"),
-	}, &resp)
+	}, &wire)
 	if err != nil {
 		return nil, m.wrapErr(err)
 	}
+	resp := wire.response()
 
 	result, err := m.convertResponse(resp, opts.Tools)
 	if err != nil {
@@ -216,6 +217,43 @@ func xaiResponseEchoes(data []byte, event bool) map[string]string {
 	return out
 }
 
+// xaiResponseWire decodes a Responses body as TS's schema does:
+// created_at is z.number(), so a fractional value is accepted (the exported
+// int64 ResponsesAPIResponse.CreatedAt gets whole seconds; the timestamp is
+// read from the body with milliseconds). A wrapper, not an UnmarshalJSON on
+// the exported type, so structs that embed ResponsesAPIResponse keep
+// decoding their own fields.
+type xaiResponseWire struct {
+	responses.ResponsesAPIResponse
+	CreatedAt *float64 `json:"created_at"`
+}
+
+func (w *xaiResponseWire) response() responses.ResponsesAPIResponse {
+	r := w.ResponsesAPIResponse
+	r.CreatedAt = xaiWholeSeconds(w.CreatedAt)
+	return r
+}
+
+// xaiCreatedEventWire is responses.ResponseCreatedEvent with a z.number()
+// created_at (see xaiResponseWire).
+type xaiCreatedEventWire struct {
+	Type     string `json:"type"`
+	Response struct {
+		ID        string   `json:"id"`
+		CreatedAt *float64 `json:"created_at"`
+		Model     string   `json:"model"`
+	} `json:"response"`
+}
+
+// xaiWholeSeconds truncates a wire unix-seconds number toward zero; nil,
+// NaN, ±Inf or out of the int64 range is 0.
+func xaiWholeSeconds(v *float64) int64 {
+	if v == nil || math.IsNaN(*v) || math.IsInf(*v, 0) || math.Abs(*v) > 9e18 {
+		return 0
+	}
+	return int64(*v)
+}
+
 // xaiResponsesCreatedAt reads created_at (of the body, or of its response
 // member for a stream event) as TS getResponseMetadata /
 // createLanguageModelResponseMetadata: a present value, 0 included, is
@@ -234,7 +272,8 @@ func xaiResponsesCreatedAt(data []byte, event bool) (time.Time, bool) {
 	if event {
 		c = v.Response.CreatedAt
 	}
-	if c == nil || math.IsNaN(*c) || math.IsInf(*c, 0) {
+	// TS TimeClip: |t| > 8.64e15 ms is an Invalid Date.
+	if c == nil || math.IsNaN(*c) || math.IsInf(*c, 0) || math.Abs(*c*1000) > 8.64e15 {
 		return time.Time{}, false
 	}
 	return time.UnixMilli(int64(*c * 1000)), true
@@ -1337,7 +1376,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 
 		switch peek.Type {
 		case "response.created", "response.in_progress":
-			var e responses.ResponseCreatedEvent
+			var e xaiCreatedEventWire
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}

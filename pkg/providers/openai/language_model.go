@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -174,7 +173,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	// TS getResponseMetadata: `created || undefined` -- a missing/zero
 	// timestamp stays unset instead of becoming the Unix epoch.
 	if response.Created != 0 {
-		result.ResponseMetadata.Timestamp = time.Unix(response.Created, 0).UTC()
+		if t, ok := unixSecondsTime(response.Created); ok {
+			result.ResponseMetadata.Timestamp = t.UTC()
+		}
 	}
 	return result, nil
 }
@@ -1084,10 +1085,10 @@ func (m *LanguageModel) handleError(err error) error {
 // openAIResponse represents the OpenAI API response
 // Updated in v6.0 to support detailed token usage
 type openAIResponse struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	Model   string `json:"model"`
+	ID      string  `json:"id"`
+	Object  string  `json:"object"`
+	Created float64 `json:"created"`
+	Model   string  `json:"model"`
 	Choices []struct {
 		Index        int           `json:"index"`
 		Message      openAIMessage `json:"message"`
@@ -1393,9 +1394,9 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 		// Tool call deltas carry an "index" field not present in non-streaming responses,
 		// so we use an inline struct here instead of the shared openAIToolCall type.
 		var chunkData struct {
-			ID      string `json:"id"`
-			Model   string `json:"model"`
-			Created int64  `json:"created"`
+			ID      string  `json:"id"`
+			Model   string  `json:"model"`
+			Created float64 `json:"created"`
 			Choices []struct {
 				Delta struct {
 					Content          json.RawMessage `json:"content"`
@@ -1481,7 +1482,7 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 				ModelID: chunkData.Model,
 			}
 			if chunkData.Created != 0 {
-				metadata.Timestamp = time.Unix(chunkData.Created, 0)
+				metadata.Timestamp, _ = unixSecondsTime(chunkData.Created)
 			}
 			s.pendingMetadata = &provider.StreamChunk{
 				Type:             provider.ChunkTypeResponseMetadata,

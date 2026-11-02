@@ -65,7 +65,7 @@ type hfOutputItem struct {
 type hfResponse struct {
 	ID                string               `json:"id"`
 	Model             string               `json:"model"`
-	CreatedAt         int64                `json:"created_at"`
+	CreatedAt         float64              `json:"created_at"`
 	Error             *hfResponseError     `json:"error"`
 	IncompleteDetails *hfIncompleteDetails `json:"incomplete_details"`
 	Usage             *hfUsage             `json:"usage"`
@@ -90,7 +90,7 @@ type hfStreamItem struct {
 type hfStreamResponse struct {
 	ID                string               `json:"id"`
 	Model             string               `json:"model"`
-	CreatedAt         int64                `json:"created_at"`
+	CreatedAt         float64              `json:"created_at"`
 	IncompleteDetails *hfIncompleteDetails `json:"incomplete_details"`
 	Usage             *hfUsage             `json:"usage"`
 }

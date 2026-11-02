@@ -3,6 +3,7 @@ package huggingface
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -211,7 +212,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	result.ResponseHeaders = responseHeaders
 	result.ResponseMetadata = &types.ResponseMetadata{
 		ID:        resp.ID,
-		Timestamp: time.Unix(resp.CreatedAt, 0).UTC(),
+		Timestamp: hfCreatedTimestamp(resp.CreatedAt),
 		ModelID:   resp.Model,
 		Headers:   responseHeaders,
 		Body:      json.RawMessage(httpResp.Body),
@@ -396,4 +397,15 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 // .provider`).
 func (p *Provider) responsesProviderName() string {
 	return "huggingface.responses"
+}
+
+// hfCreatedTimestamp is TS new Date(created_at * 1000) for a z.number()
+// created_at (unix seconds, possibly fractional): milliseconds are kept
+// (truncated); outside the JS Date range (an Invalid Date) is no timestamp.
+func hfCreatedTimestamp(createdAt float64) time.Time {
+	ms := createdAt * 1000
+	if math.IsNaN(ms) || math.IsInf(ms, 0) || math.Abs(ms) > 8.64e15 {
+		return time.Time{}
+	}
+	return time.UnixMilli(int64(ms)).UTC()
 }

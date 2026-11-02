@@ -215,8 +215,8 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 
 	status := convertXAIBatchStatus(createResp)
 	meta := map[string]interface{}{"inputFileId": uploadedFile.ID}
-	if uploadedFile.ExpiresAt != nil {
-		meta["inputFileExpiresAt"] = time.Unix(*uploadedFile.ExpiresAt, 0).UTC().Format("2006-01-02T15:04:05.000Z")
+	if t := xaiUnixSecondsToTime(uploadedFile.ExpiresAt); t != nil {
+		meta["inputFileExpiresAt"] = t.Format("2006-01-02T15:04:05.000Z")
 	}
 	status.ProviderMetadata = map[string]interface{}{"xai": meta}
 
@@ -782,7 +782,7 @@ func (u *xaiBatchTextUsageWire) UnmarshalJSON(data []byte) error {
 
 type xaiBatchTextResponseWire struct {
 	ID          string                 `json:"id"`
-	Created     *int64                 `json:"created"`
+	Created     *float64               `json:"created"`
 	Model       string                 `json:"model"`
 	Choices     []xaiBatchChoiceWire   `json:"choices"`
 	Usage       *xaiBatchTextUsageWire `json:"usage"`
@@ -936,13 +936,13 @@ func convertXAIBatchTextResponse(resp xaiBatchTextResponseWire) (*types.Generate
 	if resp.Usage != nil {
 		result.Usage = convertXAIBatchTextUsage(*resp.Usage)
 	}
-	if resp.ID != "" || resp.Model != "" || resp.Created != nil {
-		rm := &types.ResponseMetadata{ID: resp.ID, ModelID: resp.Model}
-		if resp.Created != nil {
-			rm.Timestamp = time.Unix(*resp.Created, 0).UTC()
-		}
-		result.ResponseMetadata = rm
+	// TS response: getResponseMetadata(response), always an object (its
+	// fields undefined when absent).
+	rm := &types.ResponseMetadata{ID: resp.ID, ModelID: resp.Model}
+	if t := xaiUnixSecondsToTime(resp.Created); t != nil {
+		rm.Timestamp = *t
 	}
+	result.ResponseMetadata = rm
 	if (resp.Usage != nil && resp.Usage.CostInUsdTicks != nil) || resp.ServiceTier != nil {
 		meta := map[string]interface{}{}
 		if resp.Usage != nil && resp.Usage.CostInUsdTicks != nil {
