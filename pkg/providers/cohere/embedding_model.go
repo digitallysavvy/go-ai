@@ -68,10 +68,13 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		return nil, err
 	}
 	if len(result.Embeddings) == 0 {
-		return nil, fmt.Errorf("no embedding data in response")
+		// TS embed() rejects a response without embeddings with
+		// InvalidResponseDataError("No embedding generated.", data: []).
+		return nil, providererrors.NewInvalidResponseDataError([][]float64{}, "No embedding generated.")
 	}
+	embedding := result.Embeddings[0]
 	r := &types.EmbeddingResult{
-		Embedding: result.Embeddings[0],
+		Embedding: embedding,
 		Usage:     result.Usage,
 	}
 	if len(result.Responses) > 0 {
@@ -175,6 +178,8 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			Tokens:      float64(response.Meta.BilledUnits.InputTokens),
 			InputTokens: response.Meta.BilledUnits.InputTokens,
 			TotalTokens: response.Meta.BilledUnits.InputTokens,
+			// TS always returns `usage: { tokens: meta.billed_units.input_tokens }`.
+			Reported: true,
 		},
 		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: rawBody}},
 	}, nil

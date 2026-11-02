@@ -2,7 +2,6 @@ package together
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -59,10 +58,13 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		return nil, err
 	}
 	if len(result.Embeddings) == 0 {
-		return nil, fmt.Errorf("no embedding data in response")
+		// TS embed() rejects a response without embeddings with
+		// InvalidResponseDataError("No embedding generated.", data: []).
+		return nil, providererrors.NewInvalidResponseDataError([][]float64{}, "No embedding generated.")
 	}
+	embedding := result.Embeddings[0]
 	r := &types.EmbeddingResult{
-		Embedding:        result.Embeddings[0],
+		Embedding:        embedding,
 		Usage:            result.Usage,
 		Warnings:         result.Warnings,
 		ProviderMetadata: result.ProviderMetadata,
@@ -115,12 +117,8 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	result := &types.EmbeddingsResult{
 		Embeddings: embeddings,
 		Warnings:   warnings,
-		Usage: types.EmbeddingUsage{
-			Tokens:      float64(response.Usage.PromptTokens),
-			InputTokens: response.Usage.PromptTokens,
-			TotalTokens: response.Usage.TotalTokens,
-		},
-		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: providerutils.RawJSONBody(httpResp.Body)}},
+		Usage:      response.embeddingUsage(),
+		Responses:  []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: providerutils.RawJSONBody(httpResp.Body)}},
 	}
 	if len(response.ProviderMetadata) > 0 {
 		result.ProviderMetadata = map[string]interface{}{}
@@ -147,12 +145,27 @@ type togetherEmbedResponse struct {
 		Index     int       `json:"index"`
 	} `json:"data"`
 	Model string `json:"model"`
-	Usage struct {
+	Usage *struct {
 		PromptTokens int `json:"prompt_tokens"`
 		TotalTokens  int `json:"total_tokens"`
 	} `json:"usage"`
 	// ProviderMetadata is passed through like TS OpenAICompatibleEmbeddingModel.
 	ProviderMetadata map[string]map[string]interface{} `json:"providerMetadata"`
+}
+
+// embeddingUsage maps the wire usage as TS `response.usage ? { tokens:
+// response.usage.prompt_tokens } : undefined`: Reported only when the
+// response carried a usage object.
+func (r togetherEmbedResponse) embeddingUsage() types.EmbeddingUsage {
+	if r.Usage == nil {
+		return types.EmbeddingUsage{}
+	}
+	return types.EmbeddingUsage{
+		Tokens:      float64(r.Usage.PromptTokens),
+		InputTokens: r.Usage.PromptTokens,
+		TotalTokens: r.Usage.TotalTokens,
+		Reported:    true,
+	}
 }
 
 // applyEmbeddingDimensions sets the request's dimensions: the provider option

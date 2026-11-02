@@ -336,11 +336,13 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 			})
 			return callErr
 		}
+		// TS `modelResponse.embeddings[0] == null`: only a missing embedding
+		// is rejected; an empty vector is returned as is.
 		embeddings := [][]float64{}
 		var usage types.EmbeddingUsage
 		if res != nil {
 			usage = res.Usage
-			if len(res.Embedding) > 0 {
+			if res.Embedding != nil {
 				embeddings = [][]float64{res.Embedding}
 			}
 		}
@@ -355,7 +357,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 			Embeddings:    embeddings,
 			Usage:         usage,
 		})
-		if res == nil || len(res.Embedding) == 0 {
+		if res == nil || res.Embedding == nil {
 			// TS 27f6d7a: reject embedding responses with no embeddings.
 			return providererrors.NewInvalidResponseDataError(embeddings, "No embedding generated.")
 		}
@@ -661,7 +663,8 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 // telemetryUsageFromEmbeddingUsage carries the embedding token count the legacy
 // root span records as ai.usage.tokens (TS usage.tokens). A provider that
 // reports no usage (TS NaN, Go zero) leaves it unset, like TS dropping the NaN
-// attribute. It reads the same counters, in the same order, as the nested
+// attribute; a 0 the provider marked Reported (TS `usage: { tokens: 0 }`) is
+// recorded. It reads the same counters, in the same order, as the nested
 // doEmbed span (telemetry embeddingUsageTokens: Tokens, then InputTokens, then
 // TotalTokens), so the root and the provider-call span record the same count
 // as in TS, where both are usage.tokens.
@@ -674,6 +677,10 @@ func telemetryUsageFromEmbeddingUsage(usage types.EmbeddingUsage) telemetry.Tele
 		}
 	}
 	if tokens <= 0 {
+		if usage.Reported && !math.IsNaN(usage.Tokens) && !math.IsInf(usage.Tokens, 0) {
+			zero := int64(0)
+			return telemetry.TelemetryUsage{TotalTokens: &zero}
+		}
 		return telemetry.TelemetryUsage{}
 	}
 	total := int64(tokens)

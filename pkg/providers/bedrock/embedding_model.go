@@ -313,10 +313,13 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 
 	return &types.EmbeddingResult{
 		Embedding: embedding,
+		// TS always returns `usage: { tokens }` (NaN when the token-count
+		// header is missing), so the usage is always Reported.
 		Usage: types.EmbeddingUsage{
 			Tokens:      tokens,
 			InputTokens: inputTokens,
 			TotalTokens: inputTokens,
+			Reported:    true,
 		},
 		Warnings: []types.Warning{},
 		Response: types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(resp.Header)},
@@ -448,6 +451,10 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		max := m.MaxEmbeddingsPerCall()
 		var embeddings [][]float64
 		var totalTokens int
+		// TS sums usage.tokens, so a NaN (missing token-count header) in any
+		// batch makes the total NaN, which telemetry drops. Tokens keeps the
+		// v0.5 integral sum; a NaN batch leaves the usage unreported instead.
+		reported := true
 		responses := make([]types.EmbeddingResponse, 0, (len(inputs)+max-1)/max)
 		for start := 0; start < len(inputs); start += max {
 			end := start + max
@@ -460,6 +467,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			}
 			embeddings = append(embeddings, result.Embeddings...)
 			totalTokens += result.Usage.InputTokens
+			if math.IsNaN(result.Usage.Tokens) {
+				reported = false
+			}
 			responses = append(responses, result.Responses...)
 		}
 		return &types.EmbeddingsResult{
@@ -468,6 +478,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 				Tokens:      float64(totalTokens),
 				InputTokens: totalTokens,
 				TotalTokens: totalTokens,
+				Reported:    reported,
 			},
 			Warnings:  []types.Warning{},
 			Responses: responses,
@@ -476,6 +487,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 
 	var embeddings [][]float64
 	var totalTokens int
+	reported := true // see the Cohere branch above
 	responses := make([]types.EmbeddingResponse, 0, len(inputs))
 
 	// Titan and Nova models only accept 1 embedding per call.
@@ -487,6 +499,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 
 		embeddings = append(embeddings, result.Embedding)
 		totalTokens += result.Usage.InputTokens
+		if math.IsNaN(result.Usage.Tokens) {
+			reported = false
+		}
 		responses = append(responses, result.Response)
 	}
 
@@ -496,6 +511,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			Tokens:      float64(totalTokens),
 			InputTokens: totalTokens,
 			TotalTokens: totalTokens,
+			Reported:    reported,
 		},
 		Warnings:  []types.Warning{},
 		Responses: responses,
@@ -624,6 +640,7 @@ func (m *EmbeddingModel) doEmbedCohereBatch(ctx context.Context, inputs []string
 			Tokens:      tokens,
 			InputTokens: inputTokens,
 			TotalTokens: inputTokens,
+			Reported:    true,
 		},
 		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(resp.Header)}},
 	}, nil

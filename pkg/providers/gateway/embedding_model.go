@@ -81,7 +81,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 	}
 	rawBody := rawJSONBody(httpResp.Body)
 	result := &types.EmbeddingResult{
-		Usage:            response.Usage,
+		Usage:            response.embeddingUsage(),
 		Warnings:         warningsOrEmpty(response.Warnings),
 		ProviderMetadata: response.ProviderMetadata,
 		Response: types.EmbeddingResponse{
@@ -127,7 +127,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}
 	result := &types.EmbeddingsResult{
 		Embeddings:       response.Embeddings,
-		Usage:            response.Usage,
+		Usage:            response.embeddingUsage(),
 		Warnings:         warningsOrEmpty(response.Warnings),
 		ProviderMetadata: response.ProviderMetadata,
 		Responses:        []types.EmbeddingResponse{{Headers: flattenHeaders(httpResp.Headers), Body: rawJSONBody(httpResp.Body)}},
@@ -146,9 +146,20 @@ func (m *EmbeddingModel) getModelConfigHeaders() map[string]string {
 
 type gatewayEmbeddingResponse struct {
 	Embeddings       [][]float64            `json:"embeddings"`
-	Usage            types.EmbeddingUsage   `json:"usage"`
+	Usage            *types.EmbeddingUsage  `json:"usage"`
 	Warnings         []types.Warning        `json:"warnings,omitempty"`
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
+}
+
+// embeddingUsage is TS `responseBody.usage ?? undefined`: Reported only when
+// the response carried a usage object.
+func (r gatewayEmbeddingResponse) embeddingUsage() types.EmbeddingUsage {
+	if r.Usage == nil {
+		return types.EmbeddingUsage{}
+	}
+	usage := *r.Usage
+	usage.Reported = true
+	return usage
 }
 
 func warningsOrEmpty(warnings []types.Warning) []types.Warning {

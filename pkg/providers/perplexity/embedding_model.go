@@ -168,6 +168,8 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			Tokens:      float64(response.Usage.PromptTokens),
 			InputTokens: int(response.Usage.PromptTokens),
 			TotalTokens: int(response.Usage.PromptTokens),
+			// TS `response.usage ? { tokens: ... } : undefined`.
+			Reported: true,
 		}
 		if response.Usage.Cost != nil {
 			var inputCost, totalCost interface{}

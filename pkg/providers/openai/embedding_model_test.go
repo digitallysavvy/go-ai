@@ -88,8 +88,11 @@ func TestEmbeddingModelDoEmbedManyValidationPaths(t *testing.T) {
 		t.Fatalf("empty input should return empty result, got result=%#v err=%v", res, err)
 	}
 
-	if _, err := m.DoEmbed(context.Background(), "x", nil); err == nil || !strings.Contains(err.Error(), "no embedding data") {
-		t.Fatalf("expected no embedding data error, got %v", err)
+	// TS embed() rejects a response without embeddings with
+	// InvalidResponseDataError "No embedding generated.".
+	var invalid *providererrors.InvalidResponseDataError
+	if _, err := m.DoEmbed(context.Background(), "x", nil); !errors.As(err, &invalid) || err.Error() != "No embedding generated." {
+		t.Fatalf("expected InvalidResponseDataError, got %v", err)
 	}
 
 	// TS maps response.data in order and checks neither the count nor the index.

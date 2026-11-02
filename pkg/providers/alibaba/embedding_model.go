@@ -41,10 +41,13 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		return nil, err
 	}
 	if len(result.Embeddings) == 0 {
-		return nil, fmt.Errorf("no embedding returned from Alibaba")
+		// TS embed() rejects a response without embeddings with
+		// InvalidResponseDataError("No embedding generated.", data: []).
+		return nil, providererrors.NewInvalidResponseDataError([][]float64{}, "No embedding generated.")
 	}
+	embedding := result.Embeddings[0]
 	out := &types.EmbeddingResult{
-		Embedding:        result.Embeddings[0],
+		Embedding:        embedding,
 		Usage:            result.Usage,
 		Warnings:         result.Warnings,
 		ProviderMetadata: result.ProviderMetadata,
@@ -127,9 +130,13 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		}
 	}
 
+	// TS `response.usage ? { tokens: response.usage.total_tokens } :
+	// undefined`: Reported only when the response carried usage.
 	var inputTokens int
+	usageReported := false
 	if response.Usage != nil {
 		inputTokens = response.Usage.TotalTokens
+		usageReported = true
 	}
 	var providerMetadata map[string]interface{}
 	if len(sparse) > 0 {
@@ -144,6 +151,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			Tokens:      float64(inputTokens),
 			InputTokens: inputTokens,
 			TotalTokens: inputTokens,
+			Reported:    usageReported,
 		},
 		Responses: []types.EmbeddingResponse{{
 			Headers: providerutils.ExtractHeaders(httpResp.Headers),

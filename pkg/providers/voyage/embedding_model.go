@@ -2,7 +2,6 @@ package voyage
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"sort"
 
@@ -34,9 +33,12 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		return nil, err
 	}
 	if len(out.Embeddings) == 0 {
-		return nil, fmt.Errorf("no embedding data in response")
+		// TS embed() rejects a response without embeddings with
+		// InvalidResponseDataError("No embedding generated.", data: []).
+		return nil, providererrors.NewInvalidResponseDataError([][]float64{}, "No embedding generated.")
 	}
-	res := &types.EmbeddingResult{Embedding: out.Embeddings[0], Usage: out.Usage, Warnings: out.Warnings}
+	embedding := out.Embeddings[0]
+	res := &types.EmbeddingResult{Embedding: embedding, Usage: out.Usage, Warnings: out.Warnings}
 	if len(out.Responses) > 0 {
 		res.Response = out.Responses[0]
 	}
@@ -110,8 +112,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
-		Usage:      types.EmbeddingUsage{Tokens: float64(tokens), InputTokens: tokens, TotalTokens: tokens},
-		Responses:  []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: providerutils.RawJSONBody(httpResp.Body)}},
+		// TS always returns `usage: { tokens: response.usage?.total_tokens ?? 0 }`.
+		Usage:     types.EmbeddingUsage{Tokens: float64(tokens), InputTokens: tokens, TotalTokens: tokens, Reported: true},
+		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: providerutils.RawJSONBody(httpResp.Body)}},
 	}, nil
 }
 
