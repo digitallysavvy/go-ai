@@ -280,6 +280,9 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			defer func() {
 				_ = recover()
 			}()
+			if ctx.Err() != nil {
+				return // a cancelled consumer wins over a ready reader
+			}
 			select {
 			case out <- part:
 			case <-ctx.Done():
@@ -442,7 +445,7 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 		sendChunk := func(part UIMessageChunk) {
 			chunkMu.RLock()
 			defer chunkMu.RUnlock()
-			if chunkClosed {
+			if chunkClosed || ctx.Err() != nil {
 				return
 			}
 			select {
@@ -744,6 +747,16 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		}
 
 		safeEnqueue := func(part UIMessageChunk) {
+			// A cancelled ctx wins over a ready reader (non-blocking check
+			// first, as the CreateUIMessageStream merge does): once the
+			// consumer is cancelled nothing more is written, so a part the
+			// source produced after the cancellation (StreamText's abort part
+			// when the same ctx drives both) is never written, instead of Go's
+			// select picking between the two ready cases at random. TS: a
+			// cancelled reader receives no further value.
+			if ctx.Err() != nil {
+				return
+			}
 			select {
 			case <-ctx.Done():
 				return

@@ -163,3 +163,67 @@ func TestR80integNullApprovalInputSchemaInputValidated(t *testing.T) {
 		})
 	}
 }
+
+// r80integAbortRun streams through StreamText with a model that blocks until
+// its ctx ends, reads the UI chunks from ToUIMessageStream(uiCtx), cancels the
+// StreamText ctx after the first text delta, and returns the chunk types and
+// the UI error.
+func r80integAbortRun(t *testing.T, shared bool) ([]string, error) {
+	t.Helper()
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(ctx context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+		return &r79integBlockingStream{ctx: ctx, cancelled: make(chan struct{})}, nil
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r, err := StreamText(ctx, StreamTextOptions{Model: model, Prompt: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	uiCtx := context.Background()
+	if shared {
+		uiCtx = ctx
+	}
+	chunks, errCh := r.ToUIMessageStream(uiCtx)
+	var types []string
+	for c := range chunks {
+		typ, _ := c["type"].(string)
+		types = append(types, typ)
+		if typ == "text-delta" {
+			cancel()
+		}
+	}
+	return types, <-errCh
+}
+
+// One ctx drives both StreamText and the UI helper: once it is cancelled the
+// UI conversion writes nothing more (a cancelled TS reader receives no
+// further value, as the createUIMessageStream merge already does), so the
+// abort chunk StreamText produces after the cancellation is never written.
+// Before, Go's select picked the abort send or the ctx at random.
+func TestR80integSharedCtxAbortIsDeterministic(t *testing.T) {
+	types, err := r80integAbortRun(t, true)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("UI error = %v, want context.Canceled", err)
+	}
+	for _, typ := range types {
+		if typ == "abort" {
+			t.Fatalf("chunks = %v: the abort chunk was written after the UI ctx was cancelled", types)
+		}
+	}
+}
+
+// A separate UI ctx (TS: the UI helpers take no abort signal) always gets
+// the abort chunk.
+func TestR80integSeparateCtxAbortChunk(t *testing.T) {
+	types, err := r80integAbortRun(t, false)
+	if err != nil {
+		t.Fatalf("UI error = %v", err)
+	}
+	found := false
+	for _, typ := range types {
+		found = found || typ == "abort"
+	}
+	if !found {
+		t.Fatalf("chunks = %v, want an abort chunk", types)
+	}
+}
