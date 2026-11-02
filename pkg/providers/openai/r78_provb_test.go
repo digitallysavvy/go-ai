@@ -178,3 +178,26 @@ func r78provbCheckEchoes(t *testing.T, pm map[string]interface{}, wantTier, want
 		t.Fatalf("reasoningContext = %v (present %v), want %v", ctx, hasCtx, wantCtx)
 	}
 }
+
+// TS openai-image-model.ts: images[i] carries `created: response.created ??
+// undefined` (and size/quality/background/outputFormat likewise), so a
+// present 0 or "" is reported; absent ones are left out.
+func TestR78provbImageMetadataPresentZeroValues(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":0,"size":"","quality":"","background":"","output_format":"","data":[{"b64_json":"aGVsbG8="}]}`))
+	}))
+	defer srv.Close()
+	m := NewImageModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "gpt-image-1")
+	r, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	images := r.ProviderMetadata["openai"].(map[string]interface{})["images"].([]map[string]interface{})
+	want := map[string]interface{}{"created": int64(0), "size": "", "quality": "", "background": "", "outputFormat": ""}
+	for k, w := range want {
+		if got, ok := images[0][k]; !ok || got != w {
+			t.Fatalf("images[0][%q] = %#v (present %v), want %#v; %v", k, got, ok, w, images[0])
+		}
+	}
+}

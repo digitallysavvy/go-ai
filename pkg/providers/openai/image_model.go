@@ -513,20 +513,20 @@ func (m *ImageModel) convertResponse(response openaiImageResponse) (*types.Image
 		if d.RevisedPrompt != "" {
 			item["revisedPrompt"] = d.RevisedPrompt
 		}
-		if response.Created != 0 {
-			item["created"] = response.Created
+		if response.Created != nil {
+			item["created"] = *response.Created
 		}
-		if response.Size != "" {
-			item["size"] = response.Size
+		if response.Size != nil {
+			item["size"] = *response.Size
 		}
-		if response.Quality != "" {
-			item["quality"] = response.Quality
+		if response.Quality != nil {
+			item["quality"] = *response.Quality
 		}
-		if response.Background != "" {
-			item["background"] = response.Background
+		if response.Background != nil {
+			item["background"] = *response.Background
 		}
-		if response.OutputFormat != "" {
-			item["outputFormat"] = response.OutputFormat
+		if response.OutputFormat != nil {
+			item["outputFormat"] = *response.OutputFormat
 		}
 		if det := response.Usage; det != nil && det.InputTokensDetails != nil {
 			if det.InputTokensDetails.ImageTokens != nil {
@@ -551,11 +551,13 @@ func distributeTokens(totalTokens, index, count int) int {
 }
 
 type openaiImageResponse struct {
-	Created      int64  `json:"created"`
-	Size         string `json:"size"`
-	Quality      string `json:"quality"`
-	Background   string `json:"background"`
-	OutputFormat string `json:"output_format"`
+	// Pointers: TS reports each as `response.x ?? undefined`, so a present
+	// 0 or "" is reported and only an absent/null one is left out.
+	Created      *int64  `json:"created"`
+	Size         *string `json:"size"`
+	Quality      *string `json:"quality"`
+	Background   *string `json:"background"`
+	OutputFormat *string `json:"output_format"`
 	Data         []struct {
 		B64JSON       string `json:"b64_json"`
 		URL           string `json:"url"`
