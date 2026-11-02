@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"strconv"
 	"sync/atomic"
 	"testing"
 
@@ -87,4 +89,54 @@ func TestR77GenAgentDeferredProviderErrorResultResolves(t *testing.T) {
 	if n := calls.Load(); n != 1 || len(r.Steps) != 1 {
 		t.Fatalf("model calls = %d, steps = %d, want 1 (the deferred call was answered)", n, len(r.Steps))
 	}
+}
+
+// TS ToolLoopAgent runs generateText, whose approval request carries the
+// input the schema received (inputSchemaInput, TS parseResult.rawValue)
+// when the schema transformed it. Approving it revalidates from that input
+// and runs the tool with the transformed one; without it the approval was
+// rejected as invalid input.
+func TestR77GenAgentApprovalInputSchemaInputIsRawInput(t *testing.T) {
+	var executed map[string]interface{}
+	tool := types.Tool{Name: "tool1", Parameters: map[string]interface{}{"type": "object"},
+		ValidateInput: func(v interface{}) (interface{}, error) {
+			m, _ := v.(map[string]interface{})
+			s, ok := m["count"].(string)
+			if !ok {
+				return nil, errors.New("count must be a string")
+			}
+			n, _ := strconv.Atoi(s)
+			return map[string]interface{}{"count": float64(n)}, nil
+		},
+		ToolApproval: types.ToolApprovalStatusUserApproval,
+		Execute: func(_ context.Context, in map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			executed = in
+			return "ok", nil
+		}}
+	a := NewToolLoopAgent(AgentConfig{Model: r52ToolCallModel(types.ToolCall{ID: "c1", ToolName: "tool1", RawArguments: `{"count":"3"}`}), Tools: []types.Tool{tool}})
+	r, err := a.Execute(context.Background(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range r.Steps[0].Content {
+		if req, ok := p.(types.ToolApprovalRequestContent); ok {
+			if want := map[string]interface{}{"count": "3"}; !reflect.DeepEqual(req.InputSchemaInput, want) {
+				t.Fatalf("InputSchemaInput = %#v, want %#v", req.InputSchemaInput, want)
+			}
+			history := []types.Message{
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "go"}}},
+				{Role: types.RoleAssistant, Content: r.Steps[0].Content},
+				{Role: types.RoleTool, Content: []types.ContentPart{types.ToolApprovalResponseContent{ApprovalID: req.ApprovalID, Approved: true}}},
+			}
+			b := NewToolLoopAgent(AgentConfig{Model: r52ToolCallModel(), Tools: []types.Tool{tool}})
+			if _, err := b.ExecuteWithMessages(context.Background(), history); err != nil {
+				t.Fatal(err)
+			}
+			if executed["count"] != float64(3) {
+				t.Fatalf("executed with %#v, want count 3", executed)
+			}
+			return
+		}
+	}
+	t.Fatalf("no approval request in %#v", r.Steps[0].Content)
 }

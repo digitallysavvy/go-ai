@@ -1084,7 +1084,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			stepResult.ToolResults = publicResults
 			stepResult.StaticToolResults = filterAgentStaticToolResults(publicResults)
 			stepResult.DynamicToolResults = filterAgentDynamicToolResults(publicResults)
-			stepResult.Content = append(stepResult.Content, agentToolResultsToContentParts(mergeAgentApprovalOnly(toolResults, stepResult.ToolCalls, approvalOnly), callConfig.ExperimentalToolApprovalSecret)...)
+			stepResult.Content = append(stepResult.Content, withAgentInputSchemaInputs(agentToolResultsToContentParts(mergeAgentApprovalOnly(toolResults, stepResult.ToolCalls, approvalOnly), callConfig.ExperimentalToolApprovalSecret), stepTel.schemaInputs())...)
 			responseContent = stepResult.Content
 			result.ToolResults = append(result.ToolResults, publicResults...)
 			if len(toolResults) == 0 {
@@ -1811,9 +1811,13 @@ func resolveAgentStepTools(ctx context.Context, tools []types.Tool, toolsContext
 // here and calls to unknown tools or with schema-invalid input were never
 // marked Invalid. Mirrors ai.parseToolCalls (unexported; pkg/agent can only
 // reach the single-call ai.ParseToolCall).
-func parseAgentToolCalls(ctx context.Context, calls []types.ToolCall, callConfig PrepareCallConfig, messages []types.Message, skipRepair bool) ([]types.ToolCall, error) {
+//
+// schemaInputs maps a call ID to its approval inputSchemaInput, the input
+// its schema received when that differs from the parsed input (TS
+// setToolCallInputSchemaInput(toolCall, parseResult.rawValue)).
+func parseAgentToolCalls(ctx context.Context, calls []types.ToolCall, callConfig PrepareCallConfig, messages []types.Message, skipRepair bool) (parsedCalls []types.ToolCall, schemaInputs map[string]interface{}, err error) {
 	if len(calls) == 0 {
-		return calls, nil
+		return calls, nil, nil
 	}
 	repair := callConfig.RepairToolCall
 	refine := callConfig.ExperimentalRefineToolInput
@@ -1832,7 +1836,7 @@ func parseAgentToolCalls(ctx context.Context, calls []types.ToolCall, callConfig
 			parsed[i] = call
 			continue
 		}
-		result, err := ai.ParseToolCall(ctx, ai.ParseToolCallOptions{
+		result, schemaInput, err := aibridge.ParseToolCallWithInputSchemaInput(ctx, ai.ParseToolCallOptions{
 			ToolCall:            call,
 			Tools:               callConfig.Tools,
 			RepairToolCall:      repair,
@@ -1849,11 +1853,17 @@ func parseAgentToolCalls(ctx context.Context, calls []types.ToolCall, callConfig
 		if err != nil {
 			// Only a context cancellation reaches here; ParseToolCall
 			// otherwise returns an Invalid call rather than an error.
-			return nil, err
+			return nil, nil, err
 		}
 		parsed[i] = result
+		if schemaInput != nil {
+			if schemaInputs == nil {
+				schemaInputs = map[string]interface{}{}
+			}
+			schemaInputs[result.ID] = schemaInput
+		}
 	}
-	return parsed, nil
+	return parsed, schemaInputs, nil
 }
 
 func enrichAgentToolCallMetadata(calls []types.ToolCall, tools []types.Tool) []types.ToolCall {
@@ -2147,9 +2157,12 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	}
 	// The repair function gets the step's messages (TS stepMessages), not the
 	// converted prompt with the instruction messages prepended.
-	toolCalls, err := parseAgentToolCalls(stepCtx, genResult.ToolCalls, callConfig, callConfig.Messages, genOpts.ToolChoice.Type == types.ToolChoiceNone)
+	toolCalls, schemaInputs, err := parseAgentToolCalls(stepCtx, genResult.ToolCalls, callConfig, callConfig.Messages, genOpts.ToolChoice.Type == types.ToolChoiceNone)
 	if err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
+	}
+	if stepTel != nil {
+		stepTel.inputSchemaInputs = schemaInputs
 	}
 	toolCalls = enrichAgentToolCallMetadata(toolCalls, callConfig.Tools)
 	// URL-backed generated files are downloaded once, before anything observes
@@ -3137,6 +3150,24 @@ func agentApprovalID(result types.ToolResult) string {
 		return result.ApprovalID
 	}
 	return result.ToolCallID
+}
+
+// withAgentInputSchemaInputs sets each approval request's inputSchemaInput
+// from the step's parse (TS toResponseMessages: only when it differs from the
+// call's input).
+func withAgentInputSchemaInputs(parts []types.ContentPart, schemaInputs map[string]interface{}) []types.ContentPart {
+	if len(schemaInputs) == 0 {
+		return parts
+	}
+	for i, part := range parts {
+		if request, ok := part.(types.ToolApprovalRequestContent); ok {
+			if input, ok := schemaInputs[request.ToolCallID]; ok {
+				request.InputSchemaInput = input
+				parts[i] = request
+			}
+		}
+	}
+	return parts
 }
 
 // agentToolResultsToContentParts converts tool results to content parts. When

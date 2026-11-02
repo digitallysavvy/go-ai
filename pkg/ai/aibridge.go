@@ -1,6 +1,8 @@
 package ai
 
 import (
+	"context"
+
 	"github.com/digitallysavvy/go-ai/pkg/internal/aibridge"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -24,6 +26,13 @@ func init() {
 	aibridge.InvokeToolInputCallbacks = invokeToolInputCallbacks
 	aibridge.MarkDynamicToolResults = markDynamicToolResults
 	aibridge.InvalidToolCallInput = invalidToolCallInput
+	aibridge.ParseToolCallWithInputSchemaInput = func(ctx context.Context, opts interface{}) (types.ToolCall, interface{}, error) {
+		refined, pre, err := parseAndRefineToolCall(ctx, opts.(ParseToolCallOptions))
+		if err != nil {
+			return refined, nil, err
+		}
+		return refined, inputSchemaInputs([]types.ToolCall{pre}, []types.ToolCall{refined})[refined.ID], nil
+	}
 	aibridge.ValidateToolContext = validateToolContext
 	aibridge.ResolveToolApproval = resolveToolApproval
 	aibridge.WrapGatewayError = wrapGatewayError

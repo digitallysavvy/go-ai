@@ -69,6 +69,12 @@ var (
 	// it in a tool-input-error chunk.
 	InvalidToolCallInput func(call types.ToolCall) interface{}
 
+	// ParseToolCallWithInputSchemaInput is ai.ParseToolCall (opts is an
+	// ai.ParseToolCallOptions) that also returns the approval
+	// inputSchemaInput: the input the call's schema received (TS
+	// parseResult.rawValue), or nil when it equals the call's final input.
+	ParseToolCallWithInputSchemaInput func(ctx context.Context, opts interface{}) (types.ToolCall, interface{}, error)
+
 	// ValidateToolContext is TS resolveToolContext for one tool.
 	ValidateToolContext func(tool *types.Tool, toolName string, ctxValue interface{}) (interface{}, error)
 

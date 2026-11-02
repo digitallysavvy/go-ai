@@ -470,6 +470,14 @@ func loopReasoningFiles(content []types.ContentPart) []types.ReasoningFileConten
 	return out
 }
 
+// schemaInputs returns the step's approval inputSchemaInputs (nil-safe).
+func (t *loopStepTelemetry) schemaInputs() map[string]interface{} {
+	if t == nil {
+		return nil
+	}
+	return t.inputSchemaInputs
+}
+
 // loopStepTelemetry tracks the open step (and model-call) span of one step.
 type loopStepTelemetry struct {
 	lt *loopTelemetry
@@ -477,7 +485,10 @@ type loopStepTelemetry struct {
 	// instructions first, then the conversation), recorded by executeStep for
 	// the WorkflowAgent tool messages (TS conversationPrompt).
 	modelPrompt []types.Message
-	stepCtx     context.Context
+	// inputSchemaInputs are the step's approval inputSchemaInputs by call ID
+	// (see parseAgentToolCalls), recorded by executeStep.
+	inputSchemaInputs map[string]interface{}
+	stepCtx           context.Context
 	// errCtx is the context failures are reported under: the model-call ctx
 	// while a provider call is in flight (so the nested "chat" span closes
 	// too), the step ctx otherwise.
