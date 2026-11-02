@@ -801,7 +801,7 @@ func (s *streamToolInputCallbacks) handle(ctx context.Context, chunk provider.St
 	return nil
 }
 
-// invalidToolCallError returns the error tool result synthesized for an
+// invalidToolCallResult returns the error tool result synthesized for an
 // invalid client tool call (TS "insert error tool outputs for invalid tool
 // calls"). Invalid provider-executed calls never get a client tool error.
 // The tool error has no provider metadata: TS builds it without the call's
