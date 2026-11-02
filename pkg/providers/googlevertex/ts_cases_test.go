@@ -20,7 +20,7 @@ func TestTSCasesVertexLanguage(t *testing.T) {
 	var cases []tsfixture.Case
 	for _, c := range all {
 		// the Gemini API variants of these tests run in the google package
-		if strings.Contains(c.Test, "for Vertex") || strings.HasSuffix(c.Test, "on Vertex") {
+		if r80provaVertexOnlyCase(c.Test) {
 			cases = append(cases, c)
 		}
 	}
@@ -42,4 +42,10 @@ func TestTSCasesVertexLanguage(t *testing.T) {
 		}
 		return m
 	}, nil)
+}
+
+// r80provaVertexOnlyCase reports whether a google language case builds a
+// `google.vertex.chat` model (the google package skips these).
+func r80provaVertexOnlyCase(name string) bool {
+	return strings.Contains(name, "for Vertex") || strings.HasSuffix(name, "on Vertex") || strings.Contains(name, "from Vertex requests")
 }
