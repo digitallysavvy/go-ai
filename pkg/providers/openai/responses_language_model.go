@@ -231,6 +231,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	truncation := ""
 	includeFields := []string(nil)
 	includeExplicit := false
+	includeCleared := false
 	var metadata interface{}
 	var topLogprobs interface{}
 	var contextManagement []map[string]interface{}
@@ -735,8 +736,10 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			}
 			includeFields = filtered
 			if len(filtered) == 0 {
-				// TS: an emptied include list becomes undefined.
+				// TS: an emptied include list becomes undefined (omitted,
+				// even when the option was an explicit null).
 				includeExplicit = false
+				includeCleared = true
 			}
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
@@ -812,7 +815,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 
 	if len(includeFields) > 0 {
 		body["include"] = includeFields
-	} else if hasNilProviderOption(openaiOpts, "include") {
+	} else if hasNilProviderOption(openaiOpts, "include") && !includeCleared {
 		body["include"] = nil
 	} else if includeExplicit {
 		body["include"] = []string{}
@@ -4765,9 +4768,8 @@ func validateResponsesPromptCacheOptions(value interface{}, providerOptionsName 
 		}
 		return &providererrors.InvalidArgumentError{Field: field, Message: message}
 	}
-	if value == nil {
-		return nil
-	}
+	// The key is present: TS's schema is .optional(), so null is rejected
+	// like any other non-object.
 	m, ok := value.(map[string]interface{})
 	if !ok {
 		return invalid("", "must be an object")

@@ -185,3 +185,38 @@ func TestR76ProvbStreamApplyPatchWithoutAddedIsNotAToolCall(t *testing.T) {
 		t.Errorf("finish reason = %q, want stop", f.FinishReason)
 	}
 }
+
+// TestR76ProvbIncludeNullClearedByLogprobsFilter: with include: null and
+// logprobs on a GPT-6 reasoning model, TS adds the logprobs include, then
+// removes it (logprobs unsupported) and an emptied include list becomes
+// undefined, so the request has no include key. Go sent include: null.
+func TestR76ProvbIncludeNullClearedByLogprobsFilter(t *testing.T) {
+	model := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "gpt-6-astra")
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt:          types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"include": nil, "logprobs": true}},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := body["include"]; ok {
+		t.Errorf("include = %#v, want no include key", v)
+	}
+	if _, ok := body["top_logprobs"]; ok {
+		t.Errorf("top_logprobs sent")
+	}
+}
+
+// TestR76ProvbPromptCacheOptionsNullRejected: TS promptCacheOptions is
+// z.object(...).optional(), so an explicit null fails provider option
+// validation. Go accepted it silently.
+func TestR76ProvbPromptCacheOptionsNullRejected(t *testing.T) {
+	model := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "gpt-5")
+	_, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt:          types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"promptCacheOptions": nil}},
+	}, false)
+	if err == nil || !strings.Contains(err.Error(), "promptCacheOptions") {
+		t.Fatalf("err = %v, want a promptCacheOptions validation error", err)
+	}
+}
