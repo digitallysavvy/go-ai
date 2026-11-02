@@ -43,6 +43,25 @@ request, and `404 {"error":"Not Found"}` after the last, as the TS test server
 does. A case without a queue serves its one response to every request (and
 fails after 20 requests instead of looping forever).
 
+## Routes and response functions
+
+With `--asserts`, a TS test that sets the responses of several URLs of its
+test server (`server.urls[POST_URL].response = ...; server.urls[POLL_URL]
+.response = ...`), or a response function (`.response = () => { ... }`), is
+extracted with `routes`: one `{path, response}` per URL path, the last
+assignment winning. A response function is called up to six times with the
+counters the test declares before it (`let getCallCount = 0;`); its results
+become the route's queue with `repeat: true` (the last one is served to every
+later request, as the TS server calls the function per request), and each
+counter becomes an alias of `server.hits['<path>']`, the number of requests
+the route served. `Run` sends each request to the route whose TS path equals
+or ends with the request path (the Go base URL replaces the TS one, so Go
+`/interactions` matches TS `/v1beta/interactions`), the longest match
+winning, and answers `404 {"error":"Not Found"}` when none matches. A test
+that calls `provider.interactions({ agent: NAME })` gets the model id
+`agent:NAME` (`managedAgent:ID` for `{ managedAgent }`); the Go test maps it
+to the agent model.
+
 ## Plain assertions and function-level tests
 
 `extract.mjs` has two more modes. Neither changes the output of the default
@@ -56,8 +75,14 @@ mode, so existing case files regenerate byte for byte.
   `result`, `server.calls[n].requestBodyJson|requestHeaders|requestUserAgent`
   and `requestBody` aliases (`asserts.go`), plus the stream-part filters TS
   tests write over `const parts = await convertReadableStreamToArray(stream)`
-  (`.filter(p => p.f === 'v')`, `.some(p => p.f === 'v')`, `.map(p => p.f)`);
-  anything else is counted as "not evaluated" in the test log.
+  (`.filter(p => p.f === 'v')`, `.some(p => p.f === 'v')`,
+  `.find(p => p.f === 'v')`, `.map(p => p.f)`), aliases of such calls
+  (`const types = parts.map(p => p.type)`), `const calls = server.calls`,
+  `new URL(x).searchParams.get('k')`, and `expect.objectContaining` /
+  `expect.arrayContaining` arguments. Assertions over another test-server
+  variable (`pollServer.calls`) read as `server.*`, and TS casts
+  (`(p as { delta: string }).delta`) are dropped. Anything else is counted
+  as "not evaluated" in the test log.
 - `--fn=NAME` extracts function-level tests (`expect(NAME(args))` or
   `const result = NAME(args)`), for converters, `prepareTools`, usage and
   schema helpers. Tests that call `NAME` more than once outside their
