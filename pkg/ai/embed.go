@@ -336,11 +336,13 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 			})
 			return callErr
 		}
+		// TS `modelResponse.embeddings[0] == null`: only a missing embedding
+		// is rejected; an empty vector is returned as is.
 		embeddings := [][]float64{}
 		var usage types.EmbeddingUsage
 		if res != nil {
 			usage = res.Usage
-			if len(res.Embedding) > 0 {
+			if res.Embedding != nil {
 				embeddings = [][]float64{res.Embedding}
 			}
 		}
@@ -355,7 +357,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 			Embeddings:    embeddings,
 			Usage:         usage,
 		})
-		if res == nil || len(res.Embedding) == 0 {
+		if res == nil || res.Embedding == nil {
 			// TS 27f6d7a: reject embedding responses with no embeddings.
 			return providererrors.NewInvalidResponseDataError(embeddings, "No embedding generated.")
 		}

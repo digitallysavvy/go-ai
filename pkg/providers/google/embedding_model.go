@@ -224,18 +224,21 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		return nil, m.handleError(err)
 	}
 
-	if response.Embedding == nil || len(response.Embedding.Values) == 0 {
-		return nil, fmt.Errorf("no embedding data in response")
+	// TS returns `embeddings: [response.embedding.values]` (the schema
+	// requires the values array; an empty one is returned as is) and
+	// `usage: undefined`.
+	var embedding []float64
+	if response.Embedding != nil {
+		embedding = response.Embedding.Values
+		if embedding == nil {
+			embedding = []float64{}
+		}
 	}
 
 	return &types.EmbeddingResult{
-		Embedding: response.Embedding.Values,
-		Usage: types.EmbeddingUsage{
-			// Google doesn't return token counts for embeddings
-			InputTokens: 0,
-			TotalTokens: 0,
-		},
-		Response: types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: json.RawMessage(httpResp.Body)},
+		Embedding: embedding,
+		Usage:     types.EmbeddingUsage{},
+		Response:  types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: json.RawMessage(httpResp.Body)},
 	}, nil
 }
 
@@ -300,26 +303,21 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	// TS sends an empty batch for zero values and returns whatever the API
-	// answers; only non-empty batches are checked for count alignment.
-	if len(inputs) > 0 && len(response.Embeddings) != len(inputs) {
-		return nil, fmt.Errorf("google embedding response count %d does not match input count %d", len(response.Embeddings), len(inputs))
-	}
+	// TS maps `response.embeddings.map(item => item.values)` without
+	// checking the count or the values (embedMany compares the count with
+	// the values) and returns `usage: undefined`.
 	embeddings := make([][]float64, len(response.Embeddings))
 	for i, item := range response.Embeddings {
-		if len(item.Values) == 0 {
-			return nil, fmt.Errorf("no embedding data in response for input %d", i)
-		}
 		embeddings[i] = item.Values
+		if embeddings[i] == nil {
+			embeddings[i] = []float64{}
+		}
 	}
 
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
-		Usage: types.EmbeddingUsage{
-			InputTokens: 0,
-			TotalTokens: 0,
-		},
-		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: json.RawMessage(httpResp.Body)}},
+		Usage:      types.EmbeddingUsage{},
+		Responses:  []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: json.RawMessage(httpResp.Body)}},
 	}, nil
 }
 

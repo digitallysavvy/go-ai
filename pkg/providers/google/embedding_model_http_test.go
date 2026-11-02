@@ -104,7 +104,9 @@ func TestEmbeddingModel_DoEmbed_ErrorPaths(t *testing.T) {
 		}
 	})
 
-	t.Run("empty embedding response", func(t *testing.T) {
+	t.Run("empty embedding values are returned as is", func(t *testing.T) {
+		// TS returns `embeddings: [response.embedding.values]`; embed()
+		// rejects only a missing embedding, not an empty vector.
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(`{"embedding":{"values":[]}}`))
 		}))
@@ -112,9 +114,9 @@ func TestEmbeddingModel_DoEmbed_ErrorPaths(t *testing.T) {
 
 		p := New(Config{APIKey: "test-key", BaseURL: server.URL})
 		m := NewEmbeddingModel(p, EmbeddingModelGeminiEmbedding001)
-		_, err := m.DoEmbed(context.Background(), "x", nil)
-		if err == nil || !strings.Contains(err.Error(), "no embedding data in response") {
-			t.Fatalf("expected no embedding data error, got %v", err)
+		res, err := m.DoEmbed(context.Background(), "x", nil)
+		if err != nil || res.Embedding == nil || len(res.Embedding) != 0 {
+			t.Fatalf("got %+v, %v; want an empty non-nil embedding", res, err)
 		}
 	})
 }

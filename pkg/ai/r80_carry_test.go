@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"math"
 	"testing"
 
@@ -9,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
@@ -131,5 +133,46 @@ func TestR80carryTelemetryUsageFromEmbeddingUsageReported(t *testing.T) {
 	}
 	if u := telemetryUsageFromEmbeddingUsage(types.EmbeddingUsage{Tokens: math.Inf(1), Reported: true}); u.TotalTokens != nil {
 		t.Fatalf("reported Inf: %+v", u)
+	}
+}
+
+// TS embed() rejects only `modelResponse.embeddings[0] == null`: an empty
+// vector is a result, a missing embedding is InvalidResponseDataError.
+func TestR80carryEmbedAcceptsEmptyVector(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		embedding []float64
+		wantErr   bool
+	}{
+		{"empty vector", []float64{}, false},
+		{"missing", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &testutil.MockEmbeddingModel{
+				DoEmbedFunc: func(context.Context, string, *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
+					return &types.EmbeddingResult{Embedding: tc.embedding}, nil
+				},
+			}
+			capture := &telemetryCapture{}
+			res, err := Embed(context.Background(), EmbedOptions{Model: model, Input: "x",
+				Telemetry: &TelemetrySettings{IsEnabled: telemetry.Bool(true), Integrations: []telemetry.TelemetryIntegration{capture}}})
+			capture.mu.Lock()
+			ends := capture.embedFinishes
+			capture.mu.Unlock()
+			// TS onEmbedEnd embeddings: modelResponse.embeddings ([[]] or []).
+			if len(ends) != 1 || len(ends[0].Embeddings) != map[bool]int{true: 0, false: 1}[tc.wantErr] {
+				t.Fatalf("doEmbed end events = %+v", ends)
+			}
+			if tc.wantErr {
+				var invalid *providererrors.InvalidResponseDataError
+				if !errors.As(err, &invalid) || invalid.Error() != "No embedding generated." {
+					t.Fatalf("got %v, want InvalidResponseDataError", err)
+				}
+				return
+			}
+			if err != nil || res.Embedding == nil || len(res.Embedding) != 0 {
+				t.Fatalf("got %+v, %v; want the empty vector", res, err)
+			}
+		})
 	}
 }

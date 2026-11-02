@@ -44,3 +44,18 @@ func TestR80carryEmbeddingUsageReported(t *testing.T) {
 		})
 	}
 }
+
+// TS maps `response.embeddings.map(item => item.values)` without checking
+// the count or the values (embedMany compares the count with the values).
+func TestR80carryDoEmbedManyMapsEmbeddingsAsIs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"embeddings":[{"values":[]},{"values":[1]},{"values":[2]}]}`))
+	}))
+	defer srv.Close()
+	m := NewEmbeddingModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "gemini-embedding-001")
+	res, err := m.DoEmbedMany(context.Background(), []string{"a", "b"}, nil)
+	if err != nil || len(res.Embeddings) != 3 || res.Embeddings[0] == nil || len(res.Embeddings[0]) != 0 {
+		t.Fatalf("got %+v, %v; want the three embeddings as sent", res, err)
+	}
+}

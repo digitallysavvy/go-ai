@@ -3,7 +3,6 @@ package openai
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -70,10 +69,13 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		return nil, err
 	}
 	if len(many.Embeddings) == 0 {
-		return nil, fmt.Errorf("no embedding data in response")
+		// TS embed() rejects a response without embeddings with
+		// InvalidResponseDataError("No embedding generated.", data: []).
+		return nil, providererrors.NewInvalidResponseDataError([][]float64{}, "No embedding generated.")
 	}
+	embedding := many.Embeddings[0]
 	result := &types.EmbeddingResult{
-		Embedding:        many.Embeddings[0],
+		Embedding:        embedding,
 		Usage:            many.Usage,
 		Warnings:         many.Warnings,
 		ProviderMetadata: many.ProviderMetadata,

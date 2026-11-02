@@ -2,7 +2,6 @@ package azure
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -67,9 +66,12 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		return nil, err
 	}
 	if len(many.Embeddings) == 0 {
-		return nil, fmt.Errorf("no embedding returned from Azure OpenAI")
+		// TS embed() rejects a response without embeddings with
+		// InvalidResponseDataError("No embedding generated.", data: []).
+		return nil, providererrors.NewInvalidResponseDataError([][]float64{}, "No embedding generated.")
 	}
-	result := &types.EmbeddingResult{Embedding: many.Embeddings[0], Usage: many.Usage, Warnings: many.Warnings}
+	embedding := many.Embeddings[0]
+	result := &types.EmbeddingResult{Embedding: embedding, Usage: many.Usage, Warnings: many.Warnings}
 	if len(many.Responses) > 0 {
 		result.Response = many.Responses[0]
 	}

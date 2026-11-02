@@ -2,9 +2,12 @@ package openai
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // Owner ruling 2026-11-02 (option b): EmbeddingUsage.Reported is set only
@@ -44,5 +47,21 @@ func TestR80carryEmbeddingUsageReported(t *testing.T) {
 				t.Fatalf("DoEmbed usage = %+v, want Reported=%v", one.Usage, tc.wantReported)
 			}
 		})
+	}
+}
+
+// TS embed() rejects a response without embeddings with
+// InvalidResponseDataError("No embedding generated.", data: []).
+func TestR80carryDoEmbedNoEmbeddings(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[],"model":"m","usage":{"prompt_tokens":1,"total_tokens":1}}`))
+	}))
+	defer srv.Close()
+	m := NewEmbeddingModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "text-embedding-3-small")
+	_, err := m.DoEmbed(context.Background(), "a", nil)
+	var invalid *providererrors.InvalidResponseDataError
+	if !errors.As(err, &invalid) || err.Error() != "No embedding generated." {
+		t.Fatalf("got %v, want InvalidResponseDataError", err)
 	}
 }
