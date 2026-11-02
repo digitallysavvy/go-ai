@@ -8,6 +8,7 @@ import (
 	"io"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1052,5 +1053,246 @@ func TestR81streamTSReadUIMessagesHydratedPartialToolCall(t *testing.T) {
 	}
 	if got, want := string(b), `[{"type":"tool-createDocument","toolCallId":"tool-1","state":"input-available","input":{"title":"Hello"}}]`; got != want {
 		t.Fatalf("parts = %s, want %s", got, want)
+	}
+}
+
+const (
+	r81streamCodeExecID  = "srvtoolu_01MzSrFWsmzBdcoQkGWLyRjK"
+	r81streamContainerID = "container_011CWHPPTDTn1XufeRB9uHeH"
+	r81streamDiceIntro   = "I'll help you simulate this game between two players where one is using a loaded die."
+	r81streamDiceStdout  = "=== DICE GAME: First to 3 Wins ===\n\n--- Round 1 ---\nPlayer 1 rolls: 5\nPlayer 2 rolls: 6\nPlayer 2 wins this round!\n"
+	r81streamDiceFinal   = "## Game Results\n\n**Player 2 wins the game 3-2!** 🏆"
+)
+
+// The stream fixture's rollDie calls, one per step for steps 1-4.
+var r81streamDiceRolls = [][2]string{
+	{"toolu_019jKkXz4jAdwHweHBw92CVY", "player1"},
+	{"toolu_015dGLMbwBKv1ZRQr6KdJzeH", "player2"},
+	{"toolu_01YYqBNq5mk1wMtv3PAqY44m", "player1"},
+	{"toolu_018WxjDkQG8h7i63poySGT2x", "player2"},
+}
+
+// r81streamDiceSteps is the five model streams of stream-text.test.ts
+// 'programmatic tool calling' > 'dice game fixture'. The stdout and final
+// text are shortened (the assertions only compare them whole or check
+// "Game Results"); the code_execution input is {"code": ...}, as in the gen
+// port (the TS zod schema strips the extra "type" key).
+func r81streamDiceSteps() [][]provider.StreamChunk {
+	i64 := func(v int64) *int64 { return &v }
+	use := func(in, out int64) *types.Usage {
+		return &types.Usage{InputTokens: i64(in), InputDetails: &types.InputTokenDetails{NoCacheTokens: i64(in)}, OutputTokens: i64(out), OutputDetails: &types.OutputTokenDetails{TextTokens: i64(out)}, TotalTokens: i64(in + out)}
+	}
+	meta := json.RawMessage(`{"anthropic":{"container":{"id":"` + r81streamContainerID + `"}}}`)
+	ids := []string{"msg_01ERcBqAvLTHWQDk9c9qJLWC", "msg_01KSVw3xmXbMNJPNMt46BC5W", "msg_016fLapHzDx8DG2SUcsGKyPA", "msg_01MQHz6AzmwmZoTry5nk5EQC", "msg_01CfmDducyrt61n4Q7QS8VFK"}
+	rm := func(n int) provider.StreamChunk {
+		return provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: ids[n], ModelID: "claude-sonnet-4-5-20250929", Timestamp: time.UnixMilli(int64(n) * 1000)}}
+	}
+	var steps [][]provider.StreamChunk
+	for n, roll := range r81streamDiceRolls {
+		step := []provider.StreamChunk{rm(n)}
+		usage := use(0, 0)
+		if n == 0 {
+			usage = use(3369, 725)
+			step = append(step,
+				provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "1"},
+				provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: r81streamDiceIntro},
+				provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "1"},
+				provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: r81streamCodeExecID, ToolName: "code_execution", Arguments: map[string]interface{}{"code": "game_loop()"}, RawArguments: `{"code":"game_loop()"}`, ProviderExecuted: true}})
+		}
+		raw := `{ "player": "` + roll[1] + `" }`
+		step = append(step,
+			provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: roll[0], ToolName: "rollDie", Arguments: map[string]interface{}{"player": roll[1]}, RawArguments: raw}},
+			provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: usage, ProviderMetadata: meta})
+		steps = append(steps, step)
+	}
+	steps = append(steps, []provider.StreamChunk{
+		rm(4),
+		{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: r81streamCodeExecID, ToolName: "code_execution", ProviderExecuted: true,
+			Result: map[string]interface{}{"type": "code_execution_result", "stdout": r81streamDiceStdout, "stderr": "", "return_code": float64(0), "content": []interface{}{}}}},
+		{Type: provider.ChunkTypeTextStart, ID: "2"},
+		{Type: provider.ChunkTypeText, ID: "2", Text: r81streamDiceFinal},
+		{Type: provider.ChunkTypeTextEnd, ID: "2"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: use(4551, 197)},
+	})
+	return steps
+}
+
+// stream-text.test.ts 'programmatic tool calling' > '5 steps: code_execution
+// triggers client tool across multiple turns (dice game fixture)': step
+// inputs (tools, prompt growth, container forwarding), toolCalls /
+// toolResults, tool execution, steps, text, finishReason, totalUsage,
+// prepareStep calls, onStepFinish and onFinish.
+func TestR81streamTSProgrammaticToolCallingDiceGame(t *testing.T) {
+	steps := r81streamDiceSteps()
+	var mu sync.Mutex
+	var calls []*provider.GenerateOptions
+	model := &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id",
+		DoStreamFunc: func(_ context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			calls = append(calls, o)
+			return testutil.NewMockTextStream(steps[len(calls)-1]), nil
+		}}
+	type prepareCall struct {
+		modelID    string
+		stepNumber int
+		steps      int
+		messages   int
+	}
+	var prepareCalls []prepareCall
+	var rolls []string
+	var stepEvents []OnStepFinishEvent
+	var endEvent OnFinishEvent
+	rollDieOptions := map[string]interface{}{"anthropic": map[string]interface{}{"allowedCallers": []interface{}{"code_execution_20250825"}}}
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "Play a dice game between two players.",
+		Tools: []types.Tool{
+			{Name: "code_execution", ProviderExecuted: true, SupportsDeferredResults: true,
+				Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"code": map[string]interface{}{"type": "string"}}, "required": []interface{}{"code"}}},
+			{Name: "rollDie", Description: "Roll a die and return the result.",
+				Parameters:      map[string]interface{}{"type": "object", "properties": map[string]interface{}{"player": map[string]interface{}{"type": "string", "enum": []interface{}{"player1", "player2"}}}, "required": []interface{}{"player"}, "additionalProperties": false},
+				ProviderOptions: rollDieOptions,
+				Execute: func(_ context.Context, in map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+					p, _ := in["player"].(string)
+					mu.Lock()
+					rolls = append(rolls, p)
+					mu.Unlock()
+					if p == "player1" {
+						return 6, nil
+					}
+					return 3, nil
+				}},
+		},
+		StopWhen: []StopCondition{IsStepCount(10)},
+		PrepareStep: func(_ context.Context, s PrepareStepOptions) PrepareStepOptions {
+			mu.Lock()
+			prepareCalls = append(prepareCalls, prepareCall{modelID: s.Model.ModelID(), stepNumber: s.StepNumber, steps: len(s.Steps), messages: len(s.Messages)})
+			mu.Unlock()
+			if s.StepNumber > 0 && len(s.Steps) > 0 {
+				last := s.Steps[len(s.Steps)-1]
+				if a, ok := last.ProviderMetadata["anthropic"].(map[string]interface{}); ok {
+					if c, ok := a["container"].(map[string]interface{}); ok && c["id"] != nil {
+						s.ProviderOptions = map[string]interface{}{"anthropic": map[string]interface{}{"container": map[string]interface{}{"id": c["id"]}}}
+					}
+				}
+			}
+			return s
+		},
+		OnStepEndEvent: func(_ context.Context, e OnStepFinishEvent) { stepEvents = append(stepEvents, e) },
+		OnEndEvent:     func(_ context.Context, e OnFinishEvent) { endEvent = e },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+
+	// step inputs
+	if len(calls) != 5 {
+		t.Fatalf("model calls = %d, want 5", len(calls))
+	}
+	tools := calls[0].Tools
+	if len(tools) != 2 || tools[0].Name != "code_execution" || !tools[0].ProviderExecuted || tools[1].Name != "rollDie" ||
+		tools[1].Description != "Roll a die and return the result." || r81streamJSON(t, tools[1].ProviderOptions) != r81streamJSON(t, rollDieOptions) {
+		t.Errorf("step 1 tools = %+v", tools)
+	}
+	wantOpts := `{"anthropic":{"container":{"id":"` + r81streamContainerID + `"}}}`
+	if calls[0].ProviderOptions != nil {
+		t.Errorf("step 1 providerOptions = %v, want none", calls[0].ProviderOptions)
+	}
+	for n := 1; n < 5; n++ {
+		if got := r81streamJSON(t, calls[n].ProviderOptions); got != wantOpts {
+			t.Errorf("step %d providerOptions = %s, want %s", n+1, got, wantOpts)
+		}
+		// Each step's prompt is the user message plus 2 messages per
+		// earlier step (assistant, tool).
+		if got := len(calls[n].Prompt.Messages); got != 1+2*n {
+			t.Errorf("step %d prompt messages = %d, want %d", n+1, got, 1+2*n)
+		}
+	}
+
+	// result.toolCalls and result.toolResults
+	var callIDs, resultIDs []string
+	for _, c := range r.ToolCalls() {
+		callIDs = append(callIDs, c.ID)
+	}
+	for _, tr := range r.ToolResults() {
+		resultIDs = append(resultIDs, tr.ToolCallID)
+	}
+	wantCalls := []string{r81streamCodeExecID}
+	var wantResults []string
+	for _, roll := range r81streamDiceRolls {
+		wantCalls = append(wantCalls, roll[0])
+		wantResults = append(wantResults, roll[0])
+	}
+	wantResults = append(wantResults, r81streamCodeExecID)
+	if fmt.Sprint(callIDs) != fmt.Sprint(wantCalls) {
+		t.Errorf("toolCalls = %v, want %v", callIDs, wantCalls)
+	}
+	if fmt.Sprint(resultIDs) != fmt.Sprint(wantResults) {
+		t.Errorf("toolResults = %v, want %v", resultIDs, wantResults)
+	}
+	final := r.FinalStep()
+	if len(final.ToolCalls) != 0 {
+		t.Errorf("finalStep.toolCalls = %v, want []", final.ToolCalls)
+	}
+	if fr := final.ToolResults; len(fr) != 1 || fr[0].ToolCallID != r81streamCodeExecID || fr[0].ToolName != "code_execution" ||
+		!fr[0].ProviderExecuted || fr[0].Input != nil || fr[0].Dynamic || fr[0].Error != nil ||
+		r81streamJSON(t, fr[0].Result) != r81streamJSON(t, map[string]interface{}{"type": "code_execution_result", "stdout": r81streamDiceStdout, "stderr": "", "return_code": 0, "content": []interface{}{}}) {
+		t.Errorf("finalStep.toolResults = %+v", fr)
+	}
+
+	// tool execution
+	if fmt.Sprint(rolls) != "[player1 player2 player1 player2]" {
+		t.Errorf("rollDie executions = %v", rolls)
+	}
+
+	// result.steps, text, finishReason
+	wantReasons := "[tool-calls tool-calls tool-calls tool-calls stop]"
+	var reasons []types.FinishReason
+	for _, s := range r.Steps() {
+		reasons = append(reasons, s.FinishReason)
+	}
+	if fmt.Sprint(reasons) != wantReasons {
+		t.Errorf("step finish reasons = %v", reasons)
+	}
+	if !strings.Contains(r.Text(), "Game Results") || r.FinishReason() != types.FinishReasonStop {
+		t.Errorf("text = %q, finishReason = %q", r.Text(), r.FinishReason())
+	}
+
+	// result.totalUsage / onFinish usage
+	wantUsage := `{"inputTokens":7920,"inputTokenDetails":{"noCacheTokens":7920},"outputTokens":922,"outputTokenDetails":{"textTokens":922},"totalTokens":8842}`
+	if got := r81streamJSON(t, r.Usage()); got != wantUsage {
+		t.Errorf("totalUsage = %s, want %s", got, wantUsage)
+	}
+
+	// prepareStep calls
+	wantPrepare := []prepareCall{{"mock-model-id", 0, 0, 1}, {"mock-model-id", 1, 1, 3}, {"mock-model-id", 2, 2, 5}, {"mock-model-id", 3, 3, 7}, {"mock-model-id", 4, 4, 9}}
+	if fmt.Sprint(prepareCalls) != fmt.Sprint(wantPrepare) {
+		t.Errorf("prepareStep calls = %+v, want %+v", prepareCalls, wantPrepare)
+	}
+
+	// onStepFinish
+	reasons = nil
+	for _, e := range stepEvents {
+		reasons = append(reasons, e.FinishReason)
+	}
+	if fmt.Sprint(reasons) != wantReasons {
+		t.Errorf("onStepFinish finish reasons = %v", reasons)
+	}
+	for n := 0; n < 2 && n < len(stepEvents); n++ {
+		if got := r81streamJSON(t, stepEvents[n].ProviderMetadata); got != wantOpts {
+			t.Errorf("onStepFinish[%d].providerMetadata = %s, want %s", n, got, wantOpts)
+		}
+	}
+
+	// onFinish
+	if !strings.Contains(endEvent.Text, "Game Results") || endEvent.FinishReason != types.FinishReasonStop || len(endEvent.Steps) != 5 || len(endEvent.ResponseMessages) != 9 {
+		t.Errorf("onFinish text=%q finishReason=%q steps=%d responseMessages=%d", endEvent.Text, endEvent.FinishReason, len(endEvent.Steps), len(endEvent.ResponseMessages))
+	}
+	if got := r81streamJSON(t, endEvent.Usage); got != wantUsage {
+		t.Errorf("onFinish usage = %s, want %s", got, wantUsage)
 	}
 }
