@@ -288,11 +288,7 @@ func waitForRepair(ctx context.Context, opts ParseToolCallOptions, parseErr erro
 			if tool == nil {
 				// TS asSchema(getOwn(tools, toolName)?.inputSchema): an
 				// unknown tool has the empty object schema, not an error.
-				return map[string]interface{}{
-					"type":                 "object",
-					"properties":           map[string]interface{}{},
-					"additionalProperties": false,
-				}, nil
+				return emptyToolInputJSONSchema(), nil
 			}
 			return toolInputJSONSchema(tool), nil
 		},
@@ -584,7 +580,17 @@ func toolInputJSONSchema(tool *types.Tool) map[string]interface{} {
 			return s.JSONSchema()
 		}
 	}
-	return map[string]interface{}{"type": "object"}
+	return emptyToolInputJSONSchema()
+}
+
+// emptyToolInputJSONSchema is TS asSchema(undefined).jsonSchema, the schema
+// of a tool without an input schema (or of an unknown tool).
+func emptyToolInputJSONSchema() map[string]interface{} {
+	return map[string]interface{}{
+		"type":                 "object",
+		"properties":           map[string]interface{}{},
+		"additionalProperties": false,
+	}
 }
 
 func toolNames(tools []types.Tool) []string {

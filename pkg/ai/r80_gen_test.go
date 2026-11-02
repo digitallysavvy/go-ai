@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -57,5 +58,32 @@ func TestR80GenDeferredCallResolvedByAnyResultPart(t *testing.T) {
 				t.Fatalf("model calls = %d, steps = %d, want 1 and 1", calls, len(result.Steps))
 			}
 		})
+	}
+}
+
+// TS repair inputSchema is asSchema(getOwn(tools, toolName)?.inputSchema)
+// .jsonSchema: a tool without an input schema has the empty object schema
+// {type: object, properties: {}, additionalProperties: false}, as an unknown
+// tool does. Go returned {"type":"object"} for a tool without Parameters.
+func TestR80GenRepairInputSchemaWithoutParameters(t *testing.T) {
+	want := map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "additionalProperties": false}
+	var got, unknown map[string]interface{}
+	_, err := ParseToolCall(context.Background(), ParseToolCallOptions{
+		ToolCall: types.ToolCall{ID: "c1", ToolName: "t", RawArguments: "invalid json"},
+		Tools:    []types.Tool{{Name: "t"}},
+		RepairToolCall: func(ctx context.Context, o ToolCallRepairOptions) (*types.ToolCall, error) {
+			var err error
+			if got, err = o.InputSchema("t"); err != nil {
+				return nil, err
+			}
+			unknown, err = o.InputSchema("missing")
+			return nil, err
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) || !reflect.DeepEqual(unknown, want) {
+		t.Fatalf("input schema = %v, unknown tool = %v, want %v", got, unknown, want)
 	}
 }
