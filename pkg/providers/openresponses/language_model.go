@@ -16,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -949,7 +950,7 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 			// literal for RawArguments/ContentPart.Input, distinct from
 			// Arguments (a synthetic {"input": ...} map used only internally).
 			hasToolCalls = true
-			rawArgs, _ := json.Marshal(item.Input) //nolint:errcheck
+			rawArgs, _ := jsonstr.Marshal(item.Input) //nolint:errcheck // TS JSON.stringify: <, > and & stay literal
 			pushOpenResponsesCall(&toolCalls, &result.Content, types.ToolCall{
 				ID:               item.CallID,
 				ToolName:         item.Name,
@@ -1527,7 +1528,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 				}
 			}
 			delete(s.customToolCallsByItemID, event.Item.ID)
-			rawArgs, _ := json.Marshal(input) //nolint:errcheck
+			rawArgs, _ := jsonstr.Marshal(input) //nolint:errcheck // TS JSON.stringify: <, > and & stay literal
 			// TS enqueues tool-input-end then tool-call as two separate parts;
 			// queue the tool-call chunk for the next Next() call and return
 			// tool-input-end first, mirroring that ordering.

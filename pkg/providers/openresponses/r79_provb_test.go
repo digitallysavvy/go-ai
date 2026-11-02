@@ -94,3 +94,43 @@ func TestR79provbOpenResponsesStreamFractionalCreatedAt(t *testing.T) {
 		t.Fatalf("finish = %+v", finish)
 	}
 }
+
+// TS custom_tool_call input: JSON.stringify(input), which keeps <, > and &
+// literal (Go's json.Marshal escapes them as < etc.).
+func TestR79provbOpenResponsesCustomToolInputNotHTMLEscaped(t *testing.T) {
+	const want = `"a<b && c>d"`
+	t.Run("generate", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"resp_1","created_at":1,"model":"m","output":[{"type":"custom_tool_call","id":"ct_1","call_id":"call_1","name":"grammar","input":"a<b && c>d"}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}`))
+		}))
+		defer srv.Close()
+		m := NewLanguageModel(New(Config{BaseURL: srv.URL, Name: "open-responses"}), "m")
+		res, err := m.DoGenerate(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.ToolCalls) != 1 || res.ToolCalls[0].RawArguments != want {
+			t.Fatalf("tool calls = %+v", res.ToolCalls)
+		}
+	})
+	t.Run("stream", func(t *testing.T) {
+		body := `data: {"type":"response.output_item.added","item":{"type":"custom_tool_call","id":"ct_1","call_id":"call_1","name":"grammar","input":""}}` + "\n\n" +
+			`data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","id":"ct_1","call_id":"call_1","name":"grammar","input":"a<b && c>d"}}` + "\n\n"
+		s := newOpenResponsesStream(io.NopCloser(strings.NewReader(body)), nil)
+		defer func() { _ = s.Close() }()
+		var call *types.ToolCall
+		for i := 0; i < 100; i++ {
+			c, err := s.Next()
+			if err != nil {
+				break
+			}
+			if c.Type == provider.ChunkTypeToolCall {
+				call = c.ToolCall
+			}
+		}
+		if call == nil || call.RawArguments != want {
+			t.Fatalf("tool call = %+v", call)
+		}
+	})
+}
