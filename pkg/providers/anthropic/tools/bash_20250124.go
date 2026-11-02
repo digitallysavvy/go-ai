@@ -2,23 +2,70 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
+
+// BashSandboxOutput is the default output of the Anthropic bash tools when
+// they run through a providerutils.SandboxSession (TS: the result of
+// `sandbox.run({command, abortSignal})`, `{exitCode, stdout, stderr}`).
+type BashSandboxOutput struct {
+	ExitCode int    `json:"exitCode"`
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+}
+
+// executeBash is the default execute of the Anthropic bash tools. As TS, it
+// runs the command through the call's sandbox session
+// (ToolExecutionOptions.ExperimentalSandbox, a providerutils.SandboxSession)
+// and fails with "Sandbox session is not available" without one. Sandboxes
+// with a v0.5 `Execute(ctx, command, opts)` method and a RuntimeContext with
+// ExecuteCommand are still used.
+func executeBash(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
+	command, _ := input["command"].(string)
+	if session, ok := options.ExperimentalSandbox.(providerutils.SandboxSession); ok && session != nil {
+		result, err := session.Run(ctx, providerutils.SandboxProcessOptions{Command: command})
+		if err != nil {
+			return nil, err
+		}
+		return BashSandboxOutput{ExitCode: result.ExitCode, Stdout: result.Stdout, Stderr: result.Stderr}, nil
+	}
+	_, legacySandbox := options.RuntimeContext.(bashCommandSandbox)
+	if hasLegacyExecute(options.ExperimentalSandbox) || legacySandbox {
+		if command == "" {
+			return nil, fmt.Errorf("command is required")
+		}
+	}
+	if result, ok, err := executeWithSandbox(ctx, options.ExperimentalSandbox, command); ok {
+		return result, err
+	}
+	if sandbox, ok := options.RuntimeContext.(bashCommandSandbox); ok {
+		restart := false
+		if v, ok := input["restart"].(bool); ok {
+			restart = v
+		}
+		return sandbox.ExecuteCommand(ctx, command, restart)
+	}
+	return nil, errors.New("Sandbox session is not available") //nolint:staticcheck // matches TS SDK's exact error text
+}
 
 type bashCommandSandbox interface {
 	ExecuteCommand(ctx context.Context, command string, restart bool) (interface{}, error)
 }
 
-func executeWithSandbox(ctx context.Context, sandbox interface{}, command string) (interface{}, bool, error) {
+// legacyExecuteMethod returns sandbox's v0.5 `Execute(ctx, command, opts)`
+// method, if it has one.
+func legacyExecuteMethod(sandbox interface{}) (reflect.Value, bool) {
 	if sandbox == nil {
-		return nil, false, nil
+		return reflect.Value{}, false
 	}
 	method := reflect.ValueOf(sandbox).MethodByName("Execute")
 	if !method.IsValid() {
-		return nil, false, nil
+		return reflect.Value{}, false
 	}
 	mt := method.Type()
 	errorType := reflect.TypeOf((*error)(nil)).Elem()
@@ -27,8 +74,22 @@ func executeWithSandbox(ctx context.Context, sandbox interface{}, command string
 		!mt.In(0).Implements(contextType) ||
 		mt.In(1).Kind() != reflect.String ||
 		!mt.Out(1).Implements(errorType) {
+		return reflect.Value{}, false
+	}
+	return method, true
+}
+
+func hasLegacyExecute(sandbox interface{}) bool {
+	_, ok := legacyExecuteMethod(sandbox)
+	return ok
+}
+
+func executeWithSandbox(ctx context.Context, sandbox interface{}, command string) (interface{}, bool, error) {
+	method, ok := legacyExecuteMethod(sandbox)
+	if !ok {
 		return nil, false, nil
 	}
+	mt := method.Type()
 	out := method.Call([]reflect.Value{
 		reflect.ValueOf(ctx),
 		reflect.ValueOf(command),
@@ -97,23 +158,7 @@ Image results are supported - commands that generate images can return them as p
 
 By default this tool executes through the configured ExperimentalSandbox.`,
 		Parameters: parameters,
-		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
-			command, _ := input["command"].(string)
-			if command == "" {
-				return nil, fmt.Errorf("command is required")
-			}
-			if result, ok, err := executeWithSandbox(ctx, options.ExperimentalSandbox, command); ok {
-				return result, err
-			}
-			if sandbox, ok := options.RuntimeContext.(bashCommandSandbox); ok {
-				restart := false
-				if v, ok := input["restart"].(bool); ok {
-					restart = v
-				}
-				return sandbox.ExecuteCommand(ctx, command, restart)
-			}
-			return nil, fmt.Errorf("Sandbox is not available") //nolint:staticcheck // matches TS SDK's exact error text
-		},
+		Execute:    executeBash,
 	}
 
 	return tool
