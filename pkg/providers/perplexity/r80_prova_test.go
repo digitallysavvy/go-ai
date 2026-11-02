@@ -23,8 +23,10 @@ func TestR80provaTSCasesLanguage(t *testing.T) {
 	}
 	var plain, headers []tsfixture.Case
 	for _, c := range cases {
-		for i := range c.Asserts {
-			c.Asserts[i].Arg = r80provaHarnessCanon(c.Asserts[i].Arg)
+		if !r80provaHarnessKeepsRawValues() {
+			for i := range c.Asserts {
+				c.Asserts[i].Arg = r80provaHarnessCanon(c.Asserts[i].Arg)
+			}
 		}
 		if c.Test == "passes request and provider headers and exposes response headers" {
 			headers = append(headers, c)
@@ -48,6 +50,22 @@ func TestR80provaTSCasesLanguage(t *testing.T) {
 	// new PerplexityLanguageModel('fast', {headers: () => ({authorization:
 	// 'Bearer custom-key', 'custom-provider-header': 'provider-value'})})
 	run(headers, "custom-key", map[string]string{"custom-provider-header": "provider-value"})
+}
+
+// r80provaHarnessKeepsRawValues reports whether the harness compares plain
+// assertions against the raw Go stream (provb r80 tsfixture change: a
+// StreamProviderError's Data is written as the error part's error, ids are
+// kept). Older harnesses canonicalize the Go side only, so the TS argument is
+// rewritten the same way (r80provaHarnessCanon).
+func r80provaHarnessKeepsRawValues() bool {
+	parts := tsfixture.StreamToTS([]*provider.StreamChunk{{
+		Type: provider.ChunkTypeError,
+		Text: "m",
+		Err:  providererrors.NewStreamProviderError("m", "perplexity", "t", nil, nil, nil, map[string]interface{}{"message": "m"}),
+	}})
+	m, _ := parts[0].(map[string]interface{})
+	_, isObject := m["error"].(map[string]interface{})
+	return isObject
 }
 
 // r80provaHarnessCanon applies to the TS expectation what the harness applies
