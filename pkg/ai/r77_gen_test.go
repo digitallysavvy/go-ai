@@ -261,3 +261,50 @@ func TestR77Gen_ValidateInputErrorValueIsJSStringify(t *testing.T) {
 		t.Fatalf("error = %v\nwant %q", got.Error, want)
 	}
 }
+
+// TS generateText builds the tool-error of an invalid call without the
+// call's toolMetadata, while the invalid tool-call part keeps it
+// (parseToolCall). streamText keeps it on both (streamLanguageModelCall).
+func TestR77Gen_InvalidToolCallErrorWithoutToolMetadata(t *testing.T) {
+	tool := types.Tool{
+		Name:       "tool1",
+		Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}, "required": []interface{}{"value"}},
+		Metadata:   map[string]interface{}{"owner": "team"},
+		Execute: func(ctx context.Context, in map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		},
+	}
+	calls := 0
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls++
+			if calls > 1 {
+				return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+			}
+			return &types.GenerateResult{FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{{ID: "c1", ToolName: "tool1", RawArguments: `{}`}}}, nil
+		},
+	}
+	res, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "go", Tools: []types.Tool{tool}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawCall, sawErr bool
+	for _, part := range res.Steps[0].Content {
+		switch p := part.(type) {
+		case types.ToolCallContent:
+			sawCall = true
+			if !p.Invalid || p.ToolMetadata["owner"] != "team" {
+				t.Fatalf("tool call = %#v, want invalid with tool metadata", p)
+			}
+		case types.ToolErrorContent:
+			sawErr = true
+			if p.ToolMetadata != nil {
+				t.Fatalf("tool error ToolMetadata = %#v, want none", p.ToolMetadata)
+			}
+		}
+	}
+	if !sawCall || !sawErr {
+		t.Fatalf("content = %#v", res.Steps[0].Content)
+	}
+}

@@ -1780,6 +1780,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				return nil, err
 			}
 
+			// TS generateText builds an invalid call's tool-error without the
+			// call's toolMetadata ("insert error tool outputs for invalid tool
+			// calls"; streamLanguageModelCall keeps it).
+			withoutInvalidCallToolMetadata(toolResults, toolsToExecute)
+
 			// Validate tool results (v6.0.57)
 			// This ensures provider-executed tools have proper results
 			if err := validateToolResults(toolResults); err != nil {
@@ -2428,6 +2433,25 @@ type toolCallEventCallbacks struct {
 	// (prompt plus the step's assistant message) to needsApproval and
 	// execute, and getToolCallbackMessages(iterMessages) to the events.
 	executeMessages []types.Message
+}
+
+// withoutInvalidCallToolMetadata clears the tool metadata of the tool errors
+// synthesized for invalid client calls.
+func withoutInvalidCallToolMetadata(results []types.ToolResult, calls []types.ToolCall) {
+	invalid := map[string]bool{}
+	for _, call := range calls {
+		if call.Invalid && !call.ProviderExecuted {
+			invalid[call.ID] = true
+		}
+	}
+	if len(invalid) == 0 {
+		return
+	}
+	for i := range results {
+		if invalid[results[i].ToolCallID] && results[i].Error != nil {
+			results[i].ToolMetadata = nil
+		}
+	}
 }
 
 // toolMessages are the messages a tool's Execute and approval function get.
