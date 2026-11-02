@@ -97,6 +97,8 @@ Also new:
 - **`workflow.SerializeToolSetWithOptions`** passes the tools context and sandbox to each tool's `DescriptionFunc` (TS `serializeToolSet(tools, {toolsContext, experimental_sandbox})`).
 - **`anthropic.ProviderToolID`, `anthropic.PrepareProviderTools` and `anthropic.PreparedProviderTools`** select Anthropic provider tools by id and run the Anthropic tool preparation for a host API such as Bedrock (TS `tool.id`, `prepareAnthropicTools`).
 - **`responses.FunctionToolDef`, `responses.ShellToolDefEnvironment` and `responses.ShellNetworkPolicy` `MarshalJSON` methods** send an empty, non-nil `AllowedCallers`, `FileIDs`, `Skills`, `AllowedDomains` or `DomainSecrets` list as `[]`; nil is still omitted (TS forwards these lists as given).
+- **`types.Tool.ValidateInput`**: a tool can validate its parsed input with its own function in place of the JSON Schema in `Parameters` (TS `jsonSchema(schema, {validate})`); a failure makes the call invalid, with the TS `TypeValidationError` wording in the tool error. GenerateText, StreamText, the legacy loop, the repair path, approval revalidation and `ValidateUIMessages` use it. Tools rebuilt by `workflow.ResolveSerializableTools` carry the Ajv-worded validator TS attaches.
+- **`anthropic/tools.BashSandboxOutput`** is the default result of `Bash20250124()` / `Bash20241022()` when they run through the call's `providerutils.SandboxSession` (TS `sandbox.run()` result, `{exitCode, stdout, stderr}`).
 - OpenAI Responses: `promptCacheOptions` 12h TTL and prewarm, shell tool
   `timeoutMs`/`maxOutputLength`, `additionalTools` and
   `omitFromRequestTools`. Azure `ToolSearch` and per-deployment model
@@ -254,6 +256,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **PrepareStep ActiveTools and ProviderOptions are applied** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#preparestep-active-tools)
 - **Some provider tools are client-executed** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#client-executed-provider-tools)
 - **Tool output NaN and Infinity become null in typed containers** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-output-non-finite-typed)
+- **A tool that returns an error value is a tool result** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-error-value-result)
+- **Invalid tool call errors carry no provider metadata** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#invalid-tool-call-no-provider-metadata)
 
 #### Agents and approvals
 
@@ -288,6 +292,12 @@ search for and ends with a checklist for coding agents. Entries marked
 - **SerializeToolSet resolves DescriptionFunc** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-serialize-description-func)
 - **Resolved dynamic tools carry no title, metadata or strict** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-resolve-dynamic-tools)
 - **WorkflowAgent stream opens one telemetry root** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-stream-single-telemetry-root)
+- **WorkflowAgent hook fields left nil keep their value** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-prepare-hook-nil-fields)
+- **Rebuilt workflow tools validate their input like TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-resolved-tool-input-errors)
+- **WorkflowAgent client tool results carry no provider metadata** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-client-tool-result-metadata)
+- **WorkflowAgent stream runs tool input callbacks after the model step** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-stream-tool-input-callbacks)
+- **WorkflowAgent tools see the conversation prompt** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-tool-messages-conversation-prompt)
+- **WorkflowAgent empty provider results carry no provider metadata** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-empty-provider-result-metadata)
 
 #### UI message streams
 
@@ -342,6 +352,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **AI Gateway tools have no title** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gateway-tool-title)
 - **Gateway tool outputs without a value** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gateway-tool-output-null)
 - **Anthropic provider tools are matched by id** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-provider-tool-id)
+- **Anthropic bash tools run through the sandbox session** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-bash-sandbox-session)
 - **Anthropic provider tools on Bedrock** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#bedrock-anthropic-provider-tools)
 - **OpenAI Responses promptCacheOptions is validated** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-prompt-cache-options)
 - **OpenAI chat streams fail the call on an error before output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-chat-stream-error)
@@ -352,7 +363,9 @@ search for and ends with a checklist for coding agents. Entries marked
 - **openaitool.ToolSearch keeps the search schema in its options** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-tool-search-parameters)
 - **Expanded OpenAI parallel tool calls keep the model's key order** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-parallel-call-input-order)
 - **OpenAI Responses function and shell tool wire details follow TS** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-responses-tool-wire-r75)
+- **OpenAI Responses stream reads to the end of the stream** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-responses-stream-r76)
 - **xAI provider tool config is validated before the request** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#xai-tool-args-validation)
+- **xAI Responses function tools without a description omit the key** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#xai-function-tool-description)
 - **Wrapper providers read only their own API key** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#wrapper-api-keys)
 - **Failed generated-media downloads return ProviderError** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#media-download-errors)
 - **KlingAI VideoModel() accepts any model ID** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#klingai-video-model)

@@ -207,6 +207,17 @@ already, you can skip them.
 | UI start chunk messageId | Injected by CreateUIMessageStreamWithOptions; empty ids kept | wire/protocol change | None | [Start message id](#ui-start-message-id) |
 | Number or boolean `messageMetadata` after object metadata | Object kept | silent behavior change | Send an object to change it | [Metadata merge](#ui-metadata-merge-scalar) |
 | OpenAI function output_schema, empty allowedCallers / shell lists | Normalized schema with warnings; [] sent | wire/protocol change | None, or use nil slices | [Responses tool wire details](#openai-responses-tool-wire-r75) |
+| `PrepareCall` / `PrepareStep` hooks returning nil fields or `ActiveTools: []string{}` | Nil keeps the value; empty `ActiveTools` sends no tools | silent behavior change | Set an explicit value to drop a setting | [Hook nil fields](#workflow-prepare-hook-nil-fields) |
+| `ResolveSerializableTools` tools; tool error text `required: property is missing` | Ajv-worded errors, no schema defaults, own-validator and provider tools unvalidated | silent behavior change | Match the Ajv text; pass defaults yourself | [Rebuilt workflow tool input](#workflow-resolved-tool-input-errors) |
+| `ProviderMetadata` on WorkflowAgent client tool results | None (the tool call keeps it) | silent behavior change | Read it from the tool call | [Client tool result metadata](#workflow-client-tool-result-metadata) |
+| `OnInputStart` / `OnInputDelta` / `OnInputAvailable` under `WorkflowAgent.Stream` | Run after the step's model stream | silent behavior change | None | [Stream tool input callbacks](#workflow-stream-tool-input-callbacks) |
+| `ToolExecutionOptions.Messages`, `OnToolExecutionStart` / `End` `Messages` under WorkflowAgent | The step's conversation prompt (system first) | silent behavior change | Do not index into `Messages` | [Tool messages](#workflow-tool-messages-conversation-prompt) |
+| WorkflowAgent empty provider result metadata | No call provider metadata on the synthetic result | silent behavior change | None | [Empty provider result](#workflow-empty-provider-result-metadata) |
+| Tool `Execute` returning `(err, nil)`; `error` in `ToolResult.Result` | A tool result with the error's JSON value | silent behavior change | Return the error as the second value | [Tool returning an error value](#tool-error-value-result) |
+| `ProviderMetadata` on the tool error of an invalid tool call | Not copied; no `providerOptions` on the tool message | wire/protocol change | Read it from the tool call | [Invalid tool call metadata](#invalid-tool-call-no-provider-metadata) |
+| `Bash20250124()` / `Bash20241022()` default execute; `"Sandbox is not available"` | Runs `SandboxSession.Run`; TS error text | silent behavior change | Match the new error text | [Anthropic bash sandbox session](#anthropic-bash-sandbox-session) |
+| OpenAI Responses stream after `response.completed`, malformed frames, program parts, `promptCacheOptions: nil` | Read to the end; error finish; itemId metadata; nil rejected | silent behavior change | None, or omit nil `promptCacheOptions` | [Responses stream to the end](#openai-responses-stream-r76) |
+| xAI Responses function tool without `Description` | No `description` key sent | wire/protocol change | None | [xAI tool description](#xai-function-tool-description) |
 | Cohere `BaseURL` or `DefaultBaseURL` (v0.5.3) | v2 API | wire/protocol change | Check custom base URLs | [Cohere v2](#v053-cohere-v2) |
 | `MaxRetries` unset on non-Gateway providers (v0.5.3) | Every provider retries | silent behavior change | Set `MaxRetries: &zero` to disable | [Retries](#v053-retries) |
 | Reliance on the 60 s default HTTP client timeout (v0.5.3) | No whole-request timeout | silent behavior change | Bound calls with `ctx` | [HTTP client timeout](#v053-http-timeout) |
@@ -1507,6 +1518,55 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **What to do:** no action.
 - **Kind:** silent behavior change
 
+### A tool that returns an error value is a tool result {#tool-error-value-result}
+
+- **What changed:** v0.5 treated a tool whose `Execute` returns a Go `error`
+  as its result value (`return err, nil`) as a failed call in step content:
+  the step got a `types.ToolErrorContent` part and the model got
+  `error-text` ("Error: boom"), yet the call still counted in `ToolResults`.
+  v0.6 matches TS, where an execute that returns an Error object is a tool
+  result: the step content is a `types.ToolResultContent` whose `Result` is
+  the error and whose `Output` is its JSON value (`{}` for `errors.New`),
+  and that JSON value is what the model gets (TS `createToolModelOutput`).
+  `providerutils.ConvertToResponseMessages` also replays an error-valued
+  `ToolResult.Result` or `ToolResultContent.Result` as JSON and keeps a set
+  `ModelOutput`. Only the second return value (`ToolResult.Error`) makes a
+  tool error (review round 76).
+- **Am I affected?** Tools whose `Execute` returns `(someErr, nil)`, and
+  callers that put an `error` in `types.ToolResult.Result` /
+  `types.ToolResultContent.Result` and pass it to
+  `ConvertToResponseMessages`.
+- **What to do:** return the failure as the error:
+
+  ```go
+  // Before (v0.5 showed the model "Error: boom")
+  func lookupBefore(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+  	return errors.New("boom"), nil
+  }
+
+  // After
+  func lookupAfter(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+  	return nil, errors.New("boom")
+  }
+  ```
+
+- **Kind:** silent behavior change
+
+### Invalid tool call errors carry no provider metadata {#invalid-tool-call-no-provider-metadata}
+
+- **What changed:** v0.5 copied an invalid tool call's `ProviderMetadata`
+  (unknown tool, invalid input, failed repair) onto the tool error it
+  synthesized: the step's `ToolErrorContent.ProviderMetadata` had it, and
+  the tool-result part of the next request carried it as `providerOptions`.
+  v0.6 leaves it off, as TS generateText and streamText do. The tool call
+  part itself keeps its metadata (review round 76).
+- **Am I affected?** Code that reads `ToolErrorContent.ProviderMetadata` or
+  `ToolResult.ProviderMetadata` of an invalid call (`ToolCall.Invalid`), or
+  that depends on provider options on the tool message that answers it.
+- **What to do:** no action unless you read that metadata; read it from the
+  tool call part (`ToolCallContent.ProviderMetadata`).
+- **Kind:** wire/protocol change
+
 ## Agents and approvals {#agents-and-approvals}
 
 ### A panicking ToolLoopAgent callback does not skip the other one {#agent-callback-panic-isolation}
@@ -2037,6 +2097,118 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   `ai.generateText.doGenerate` step spans instead.
 - **Kind:** silent behavior change
 
+#### WorkflowAgent hook fields left nil keep their value {#workflow-prepare-hook-nil-fields}
+
+- **What changed:** v0.5: a `PrepareCall` / `PrepareStep` hook that returned
+  a field as nil cleared it in generate mode (temperature, topP, topK,
+  maxTokens, penalties, stop sequences, seed, headers, reasoning, provider
+  options), and both modes dropped nil headers; in stream mode a
+  `PrepareStep` returning `ActiveTools: []string{}` still sent every tool.
+  v0.6: a nil field keeps its current value and an empty non-nil
+  `ActiveTools` sends no tools, as TS prepareCall / prepareStep apply only
+  defined keys (`mergePrepareStepGenerationSettings`) and filter by
+  `activeTools: []` (review round 76).
+- **Am I affected?** `WorkflowAgent.PrepareCall`, `WorkflowAgent.PrepareStep`,
+  `WorkflowStreamOptions.PrepareStep`, `WorkflowGenerateOptions.PrepareStep`
+  hooks that set a `LanguageModelCallOptions` field to nil to clear it, or
+  return `ActiveTools: []string{}`.
+- **What to do:** no action unless a hook clears a setting with nil. To drop
+  a setting now, give it an explicit value (for example
+  `o.Temperature = &zero`); to send no tools, set
+  `o.ActiveTools = []string{}`.
+- **Kind:** silent behavior change
+
+#### Rebuilt workflow tools validate their input like TS {#workflow-resolved-tool-input-errors}
+
+- **What changed:** v0.5: core validated a tool from
+  `ResolveSerializableTools` against its `Parameters` map with core's
+  validator: it filled schema defaults first (so `Execute` got them) and
+  worded failures like `$.city: required: property is missing`. v0.6: the
+  tool carries `ValidateInput` (new `types.Tool` field) set to the Ajv-worded
+  validator TS `resolveSerializableTools` attaches, so the tool error reads
+  like TS (`data is missing required property "city", data has unexpected
+  property "town"`, wrapped as `InvalidToolInputError` with a
+  `TypeValidationError` cause). Like TS Ajv (no `useDefaults`), it fills no
+  defaults: a missing required property with a schema default fails, and
+  `Execute` gets the input as the model sent it. Provider tools and defs
+  with `HasOwnValidator` are not validated there (TS `jsonSchema()` without
+  a validator). `Parameters` stays the map, and the exported
+  `ValidateSerializableToolInput` keeps its v0.5 behavior (defaults filled,
+  `workflow: invalid input for ...` text) (owner decision 2026-11-01,
+  review round 76).
+- **Am I affected?** Callers of `ResolveSerializableTools` that match tool
+  error text, rely on schema defaults reaching `Execute`, or rely on core
+  rejecting input for `HasOwnValidator` or provider defs.
+- **What to do:** no action unless one of those applies. Match the Ajv text
+  or use `errors.As` with `*ai.InvalidToolInputError`; apply defaults in the
+  tool, or call `workflow.ValidateSerializableToolInput` yourself in
+  `Execute`.
+- **Kind:** silent behavior change
+
+#### WorkflowAgent client tool results carry no provider metadata {#workflow-client-tool-result-metadata}
+
+- **What changed:** v0.5 `WorkflowAgent` (both modes) copied a client tool
+  call's provider metadata onto its result: the step `Content` tool-result /
+  tool-error `ProviderMetadata`, `ToolResults[i].ProviderMetadata` and the
+  next prompt's tool-result `ProviderOptions`. v0.6 leaves them empty for
+  client (not provider-executed) tools, as TS WorkflowAgent `executeTool`
+  builds results without `providerOptions`. The tool call keeps its
+  metadata, and `GenerateText` / `StreamText` still copy it, as TS core
+  (review round 76).
+- **Am I affected?** Code that reads those fields on results of a
+  `WorkflowAgent` run.
+- **What to do:** no action unless you read them; read the tool call's
+  `ProviderMetadata` instead.
+- **Kind:** silent behavior change
+
+#### WorkflowAgent stream runs tool input callbacks after the model step {#workflow-stream-tool-input-callbacks}
+
+- **What changed:** under `WorkflowAgent.Stream` / `StreamWithOptions`,
+  `Tool.OnInputStart`, `OnInputDelta` and `OnInputAvailable` fire after the
+  step's model stream ended, in arrival order, before approvals and tool
+  execution, and only for calls whose stream had a `tool-input-start`
+  (`OnInputAvailable` is skipped for an invalid call), as TS WorkflowAgent
+  replays its recorded tool input lifecycle
+  (`invokeToolInputLifecycleCallbacks`). v0.5 fired them while the stream was
+  read. The UI and full-stream chunks keep their timing, and plain
+  `StreamText` is unchanged (review round 76).
+- **Am I affected?** Tool input callbacks under `WorkflowAgent.Stream` that
+  rely on running mid-stream, or on `OnInputAvailable` for calls streamed
+  without a `tool-input-start`.
+- **What to do:** no action unless a callback relied on that timing.
+- **Kind:** silent behavior change
+
+#### WorkflowAgent tools see the conversation prompt {#workflow-tool-messages-conversation-prompt}
+
+- **What changed:** under `WorkflowAgent` (both modes),
+  `ToolExecutionOptions.Messages` and the approval function's messages are
+  the step's model prompt (the instructions as a system message first) plus
+  the step's assistant message, and `OnToolExecutionStart` /
+  `OnToolExecutionEnd` `Messages` are that prompt without the assistant
+  message, as TS WorkflowAgent `executeToolWithCallbacks(iterMessages)` /
+  `getToolCallbackMessages`. v0.5 passed the step's input messages
+  (`[user]`), as `GenerateText` / `StreamText` still do (review round 76).
+- **Am I affected?** WorkflowAgent tools or approval functions that index
+  into `Messages` (for example `Messages[0]` as the user message), and
+  tool execution callbacks that count messages.
+- **What to do:** no action unless you index into `Messages`; find messages
+  by role instead.
+- **Kind:** silent behavior change
+
+#### WorkflowAgent empty provider results carry no provider metadata {#workflow-empty-provider-result-metadata}
+
+- **What changed:** when a provider-executed tool call gets no result from
+  the stream, `WorkflowAgent` answers it with an empty text result (as TS
+  does). v0.5 copied the call's provider metadata onto that result, so the
+  step content, the stream's tool-result part and the tool message sent
+  back to the model carried it as `providerOptions`. v0.6 sends it without
+  metadata, as TS `resolveProviderToolResult` (review round 76).
+- **Am I affected?** `WorkflowAgent` runs with provider-executed tools
+  (`types.Tool.ProviderExecuted`) whose results can be missing, if you read
+  `ProviderMetadata` on those results or depend on it in the next request.
+- **What to do:** no action unless you relied on the copied metadata.
+- **Kind:** silent behavior change
+
 ## UI message streams {#ui-message-streams}
 
 ### UI message streams fail on an out-of-sequence chunk {#ui-out-of-sequence}
@@ -2351,9 +2523,16 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   `mergeObjects`. v0.5 replaced the object with the number or boolean. A
   string or array value still replaces it (see
   [Message metadata merge with non-object values](./known-differences.mdx))
-  (review round 75).
+  (review round 75). Metadata values that encode as a JSON object (a struct,
+  a typed map such as `map[string]string`, `json.RawMessage`, a pointer to a
+  struct) are now merged like a `map[string]interface{}`, at the top level
+  and nested; v0.5 replaced the existing metadata with them. The merged
+  value is a `map[string]interface{}` (review round 76).
 - **Am I affected?** `MessageMetadata` callbacks or `Execute` writers that
-  send a number or boolean `messageMetadata` after object metadata.
+  send a number or boolean `messageMetadata` after object metadata;
+  `OriginalMessages` whose last assistant message has typed `metadata`, or
+  chunks written with typed `messageMetadata`, read back from `OnEnd` /
+  `OnFinish` / `ReadUIMessages`.
 - **What to do:** no action unless you relied on the replacement; send an
   object (`{"value": 5}`) to change the metadata.
 - **Kind:** silent behavior change
@@ -2803,9 +2982,39 @@ compile-time changes.
   `*InvalidArgumentError` across chat, embedding, media and transcription
   providers, as TS `parseProviderOptions`. A missing API key fails at request
   time with `LoadAPIKeyError`, and unsupported model types return
-  `*NoSuchModelError` with the TS text.
+  `*NoSuchModelError` with the TS text. The OpenAI and Azure Responses
+  models (the default OpenAI language model) validate their provider options
+  against the TS Responses options schema; these now fail with
+  `*InvalidArgumentError` (review round 76):
+  - a wrong value type for any documented option (for example a number for
+    `store`, a string for `parallelToolCalls`);
+  - an unknown enum value for `serviceTier` (`auto`, `flex`, `priority`,
+    `fast`, `ultrafast`, `default`), `truncation` (`auto`, `disabled`),
+    `textVerbosity` (`low`, `medium`, `high`), `promptCacheRetention`
+    (`in_memory`, `24h`), `systemMessageMode` (`system`, `developer`,
+    `remove`), `reasoningEffortUpdate` (`none` to `max`), `reasoningMode`
+    (`standard`, `pro`) and `reasoningContext` (`auto`, `current_turn`,
+    `all_turns`);
+  - an `include` entry other than `reasoning.encrypted_content`,
+    `file_search_call.results`, `web_search_call.results` and
+    `message.output_text.logprobs`;
+  - `logprobs` other than `true`, `false` or a number from 1 to 20 (v0.5
+    sent `logprobs: 0` as `top_logprobs: 0`);
+  - `allowedTools` without `toolNames`, with an empty `toolNames`, or with a
+    `mode` other than `auto` / `required`;
+  - a `contextManagement` entry that is not
+    `{type: "compaction", compactThreshold: <number>}`;
+  - `nil` for `includeWebSearchSources`, `logprobs`, `reasoningEffortUpdate`,
+    `reasoningMode`, `reasoningContext`, `passThroughUnsupportedFiles`,
+    `systemMessageMode`, `forceReasoning`, `compactionTrigger` or
+    `allowedTools` (TS `.optional()` members; the `.nullish()` ones still
+    accept `nil`).
+  Azure validates `providerOptions["azure"]`, or `providerOptions["openai"]`
+  when `azure` is absent or `nil`. Unknown keys are still ignored.
 - **Am I affected?** `ProviderOptions:` with wrong value types or values the
-  provider does not accept.
+  provider does not accept; `providerOptions["openai"]` /
+  `providerOptions["azure"]` maps passed to `ResponsesModel` /
+  `LanguageModel`, including `"logprobs": 0`.
 - **What to do:** fix the options; match these errors with `errors.As`.
 - **Kind:** silent behavior change
 
@@ -2918,7 +3127,10 @@ compile-time changes.
   returned nothing: `{Type: "json", Value: nil}`) reaches the AI Gateway as
   `{type: "json", value: null}`, as TS; an empty `content` output is sent with
   `value: []`. v0.5 omitted `value`, which the gateway's prompt schema
-  requires (review round 74).
+  requires (review round 74). A tool's empty `InputExamples` list (non-nil)
+  is sent as `inputExamples: []`. A stream `error` part whose `error` is a
+  string or number is an error part carrying that text; v0.5 failed the
+  stream with a parse error (review round 76).
 - **Am I affected?** Gateway models with tools that return nil, or `content`
   tool outputs without parts.
 - **What to do:** no action.
@@ -2953,7 +3165,10 @@ compile-time changes.
   Batch results (`ExperimentalGetBatchResults`) of such tools come back under
   the tool's `Name`, as `DoGenerate` returns them, when read through the
   Provider that started the batch; v0.5 reported the wire name (review round
-  75).
+  75). An empty (non-nil) `allowedCallers` provider option or `InputExamples`
+  list is sent (`allowed_callers: []`, `input_examples: []`) with the
+  `advanced-tool-use-2025-11-20` beta, as TS (`!= null`); v0.5 dropped empty
+  lists (review round 76).
 - **Am I affected?** Code that changes `Name` on a
   `pkg/providers/anthropic/tools` constructor result, builds provider tools
   as `types.Tool{Type: "provider", ProviderID: "anthropic.…"}` or as
@@ -2961,7 +3176,9 @@ compile-time changes.
   renamed provider tools in `ExperimentalBatch`; `ToolChoiceTool` with an
   `anthropic.*` tool name; `ExperimentalBatch` with tools from
   `pkg/providers/anthropic/tools` and code that matches batch tool calls by
-  `"bash"`, `"web_search"`, ...
+  `"bash"`, `"web_search"`, ...; `allowedCallers: []` /
+  `ToolOptions{AllowedCallers: []string{}}`,
+  `InputExamples: []types.ToolInputExample{}`.
 - **What to do:** no action unless you match batch result tool calls by the
   wire name; match the tool's `Name` instead. To use TS-style names:
 
@@ -2986,6 +3203,25 @@ compile-time changes.
   }
   ```
 
+- **Kind:** silent behavior change
+
+#### Anthropic bash tools run through the sandbox session {#anthropic-bash-sandbox-session}
+
+- **What changed:** the default execute of `tools.Bash20250124()` and
+  `tools.Bash20241022()` runs the command through the call's sandbox session
+  (`ToolExecutionOptions.ExperimentalSandbox` holding a
+  `providerutils.SandboxSession`) with `Run`, and returns
+  `tools.BashSandboxOutput` (`{"exitCode", "stdout", "stderr"}`), as TS
+  `sandbox.run({command, abortSignal})`. It never runs a command on the
+  host. v0.5 ignored a `SandboxSession` and only used a sandbox with an
+  `Execute(ctx, command, opts)` method or a `RuntimeContext` with
+  `ExecuteCommand`; those still work. Without any sandbox the error text is
+  TS's `Sandbox session is not available` (v0.5: `Sandbox is not available`)
+  (review round 76).
+- **Am I affected?** `Bash20250124()` / `Bash20241022()` without your own
+  `Execute`; code matching `"Sandbox is not available"`.
+- **What to do:** no action unless you match the error text; match
+  `"Sandbox session is not available"`.
 - **Kind:** silent behavior change
 
 ### Amazon Bedrock
@@ -3172,6 +3408,32 @@ compile-time changes.
   slice to keep a field out of the request.
 - **Kind:** wire/protocol change
 
+#### OpenAI Responses stream reads to the end of the stream {#openai-responses-stream-r76}
+
+- **What changed:** the Responses stream no longer stops at the first
+  `response.completed` / `response.incomplete` / `response.failed`: like TS
+  it keeps reading later events and emits the one finish part when the
+  stream ends, with the last reported usage, service tier and reasoning
+  context. A frame that is not JSON finishes the stream with finish reason
+  `error` (as a schema failure already did). Text and reasoning ids follow
+  the message or reasoning item added at each output index. A streamed
+  `apply_patch_call` counts toward the `tool-calls` finish reason only when
+  its tool call is emitted. The programmatic tool calling `program`
+  tool-call (generate) and `program_output` tool-result parts (generate and
+  stream) carry `providerMetadata.openai.itemId`. With `include: nil` and
+  logprobs on a GPT-6 reasoning model, the request has no `include` key;
+  `promptCacheOptions: nil` fails with `*InvalidArgumentError`. v0.5 stopped
+  reading at the terminal event and had none of the rest (review round 76).
+- **Am I affected?** Responses streams whose server sends events after
+  `response.completed`; code that waited for the finish chunk before the
+  body ended; finish reason checks after a malformed frame;
+  `program` / `program_output` content metadata; `"include": nil` with
+  `"logprobs"`; `"promptCacheOptions": nil`.
+- **What to do:** no action unless you relied on the stream ending at
+  `response.completed` or passed `promptCacheOptions: nil` (omit the key
+  instead).
+- **Kind:** silent behavior change
+
 ### xAI
 
 #### xAI provider tool config is validated before the request {#xai-tool-args-validation}
@@ -3198,6 +3460,17 @@ compile-time changes.
 - **What to do:** fix the config; handle `errors.As(err, &tve)` with
   `var tve *providererrors.TypeValidationError` if you surface it.
 - **Kind:** silent behavior change
+
+#### xAI Responses function tools without a description omit the key {#xai-function-tool-description}
+
+- **What changed:** a function tool with an empty `Description` is sent to
+  the xAI Responses API without a `description` key (TS
+  `description: tool.description` is undefined); v0.5 sent
+  `"description": ""` (review round 76).
+- **Am I affected?** xAI Responses requests with function tools that have
+  no `Description`.
+- **What to do:** no action.
+- **Kind:** wire/protocol change
 
 ### Wrapper providers
 
@@ -3661,7 +3934,8 @@ next one.
      -e 'OnStepStart|PrepareCall:|ParseCompleteOutput|StreamTranscri|no such (evaluation|decision)Model|finishReason|is not allowed' \
      -e 'ToUIMessageChunk|event\.Ranking|ToolErrorContent|IsError|RepairText|NewStreamTextResultFromParts|xai\.(MCPServer|FileSearch)' \
      -e 'ai\.ranking|SerializableToolDef|ToolApprovalResponseContent|ConsumeSSEStream|NoObjectGeneratedError|ProviderMetadata|ReasoningFile' \
-     -e 'openaitool\.|anthropic/tools|gateway/tools|providers/xai|\.Title|tool_search|NewShellTool|ProviderArgs|Warnings' .
+     -e 'openaitool\.|anthropic/tools|gateway/tools|providers/xai|\.Title|tool_search|NewShellTool|ProviderArgs|Warnings' \
+     -e 'ResolveSerializableTools|Bash202|Sandbox is not available|return [A-Za-z]*[Ee]rr(or)?(\(.*\))?, nil|OnInput(Start|Delta|Available)|logprobs' .
    ```
 
 4. For each match, open the entry the table links to. Apply **What to do**.
