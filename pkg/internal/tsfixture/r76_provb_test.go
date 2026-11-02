@@ -3,6 +3,7 @@ package tsfixture
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -164,16 +165,19 @@ func TestR76ProvbEvalPathArrayCalls(t *testing.T) {
 
 // TestR76ProvbStreamToTSFileAndWarnings: a streamed file part carries its
 // data in the TS SharedV4FileData shape, and stream-start warnings render
-// as TS reports them (Go mirrors details into message for old callers).
+// as TS reports them (Go mirrors details into message for old callers); a
+// tool result carrying a Go error is isError, as TS marks a failed result.
 func TestR76ProvbStreamToTSFileAndWarnings(t *testing.T) {
 	parts := StreamToTS([]*provider.StreamChunk{
 		{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{{Type: "other", Message: "m"}, {Type: "unsupported", Feature: "f", Details: "d", Message: "d"}}},
 		{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: "text/plain", Data: []byte{0xb5, 0xeb, 0x2d}}},
 		{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: "image/png", FileData: types.FileData{Type: types.FileDataTypeURL, URL: "https://x/y.png"}}},
+		{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "ws", ToolName: "web_search", Result: map[string]interface{}{"status": "failed"}, Error: errors.New("failed")}},
 	})
 	want := `[{"type":"stream-start","warnings":[{"message":"m","type":"other"},{"details":"d","feature":"f","type":"unsupported"}]},` +
 		`{"data":{"data":"test","type":"data"},"mediaType":"text/plain","type":"file"},` +
-		`{"data":{"type":"url","url":"https://x/y.png"},"mediaType":"image/png","type":"file"}]`
+		`{"data":{"type":"url","url":"https://x/y.png"},"mediaType":"image/png","type":"file"},` +
+		`{"isError":true,"result":{"status":"failed"},"toolCallId":"ws","toolName":"web_search","type":"tool-result"}]`
 	if got := jsonString(jsonValue(parts)); got != want {
 		t.Errorf("parts =\n%s\nwant\n%s", got, want)
 	}

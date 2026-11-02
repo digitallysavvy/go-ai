@@ -608,6 +608,8 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 				o["toolCallId"], o["toolName"], o["result"] = tr.ToolCallID, tr.ToolName, tr.Result
 				if tr.IsError != nil {
 					o["isError"] = *tr.IsError
+				} else if tr.Error != nil {
+					o["isError"] = true // TS marks a failed result isError; Go carries the error
 				}
 				if tr.Dynamic {
 					o["dynamic"] = true
