@@ -342,3 +342,118 @@ func TestR76StreamConsumeStreamReturnsStreamError(t *testing.T) {
 		t.Fatalf("ConsumeStream error = %v, want Some error", err)
 	}
 }
+
+func r76streamTextChunks(delta string) []UIMessageChunk {
+	return []UIMessageChunk{
+		{"type": "text-start", "id": "1"},
+		{"type": "text-delta", "id": "1", "delta": delta},
+		{"type": "text-end", "id": "1"},
+	}
+}
+
+// create-ui-message-stream.test.ts 492 / 551: onFinish and onEnd without
+// original messages: one call with the generated response message id, the
+// done text part, no continuation, no abort, outcome unknown and no finish
+// reason (Go: nil).
+func TestR76StreamCreateUIStreamOnFinishWithoutOriginalMessages(t *testing.T) {
+	const want = `[{"finishReason":null,"isAborted":false,"isContinuation":false,` +
+		`"messages":[{"id":"response-message-id","parts":[{"state":"done","text":"1a","type":"text"}],"role":"assistant"}],` +
+		`"outcome":{"status":"unknown"},` +
+		`"responseMessage":{"id":"response-message-id","parts":[{"state":"done","text":"1a","type":"text"}],"role":"assistant"}}]`
+	for _, useOnEnd := range []bool{false, true} {
+		var mu sync.Mutex
+		var recorded []map[string]interface{}
+		record := func(e map[string]interface{}) {
+			mu.Lock()
+			defer mu.Unlock()
+			recorded = append(recorded, e)
+		}
+		opts := UIMessageStreamOptions{GenerateMessageID: r75streamIDGen("response-message-id")}
+		if useOnEnd {
+			opts.OnEnd = record
+		} else {
+			opts.OnFinish = record
+		}
+		_, errs := r75streamRunUIChunks(t, r76streamTextChunks("1a"), opts)
+		if len(errs) != 0 {
+			t.Fatalf("errors: %v", errs)
+		}
+		mu.Lock()
+		r75streamAssertJSON(t, "recorded", recorded, want)
+		mu.Unlock()
+	}
+}
+
+// create-ui-message-stream.test.ts 611: onFinish with original messages
+// continues the last assistant message: the new text part is appended to it,
+// isContinuation is true and the response message keeps id "1".
+func TestR76StreamCreateUIStreamOnFinishWithMessages(t *testing.T) {
+	var mu sync.Mutex
+	var recorded []map[string]interface{}
+	_, errs := r75streamRunUIChunks(t, r76streamTextChunks("1b"), UIMessageStreamOptions{
+		OriginalMessages: []UIMessageChunk{
+			{"id": "0", "role": "user", "parts": []interface{}{map[string]interface{}{"type": "text", "text": "0a"}}},
+			{"id": "1", "role": "assistant", "parts": []interface{}{map[string]interface{}{"type": "text", "text": "1a", "state": "done"}}},
+		},
+		OnFinish: func(e map[string]interface{}) {
+			mu.Lock()
+			defer mu.Unlock()
+			recorded = append(recorded, e)
+		},
+	})
+	if len(errs) != 0 {
+		t.Fatalf("errors: %v", errs)
+	}
+	assistant := `{"id":"1","parts":[{"state":"done","text":"1a","type":"text"},{"state":"done","text":"1b","type":"text"}],"role":"assistant"}`
+	mu.Lock()
+	defer mu.Unlock()
+	r75streamAssertJSON(t, "recorded", recorded, `[{"finishReason":null,"isAborted":false,"isContinuation":true,`+
+		`"messages":[{"id":"0","parts":[{"text":"0a","type":"text"}],"role":"user"},`+assistant+`],`+
+		`"outcome":{"status":"unknown"},"responseMessage":`+assistant+`}]`)
+}
+
+// create-ui-message-stream.test.ts 586: the consumer cancels after the start
+// chunk, before an outcome is declared: onEnd runs once with isCancelled
+// true, isAborted false and outcome unknown.
+func TestR76StreamCreateUIStreamConsumerCancelBeforeOutcome(t *testing.T) {
+	release := make(chan struct{})
+	done := make(chan struct{})
+	var mu sync.Mutex
+	var ends []map[string]interface{}
+	ctx, cancel := context.WithCancel(context.Background())
+	out, errCh := CreateUIMessageStreamWithOptions(ctx, UIMessageStreamOptions{
+		Execute: func(w UIMessageStreamWriter) {
+			w.Write(UIMessageChunk{"type": "start"})
+			<-release
+		},
+		OnEnd: func(e map[string]interface{}) {
+			mu.Lock()
+			defer mu.Unlock()
+			ends = append(ends, e)
+		},
+		GenerateMessageID: r75streamIDGen("response-message-id"),
+	})
+	go func() {
+		defer close(done)
+		for range errCh {
+		}
+	}()
+	if _, ok := <-out; !ok {
+		t.Fatal("no start chunk")
+	}
+	cancel()
+	close(release)
+	for range out {
+	}
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ends) != 1 {
+		t.Fatalf("onEnd calls = %d, want 1", len(ends))
+	}
+	e := ends[0]
+	if e["isAborted"] != false || e["isCancelled"] != true {
+		t.Fatalf("isAborted = %v, isCancelled = %v; want false, true", e["isAborted"], e["isCancelled"])
+	}
+	r75streamAssertJSON(t, "outcome", e["outcome"], `{"status":"unknown"}`)
+}
