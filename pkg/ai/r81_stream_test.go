@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -476,6 +477,106 @@ func TestR81streamChunksContextCancelledCtxWins(t *testing.T) {
 		}
 		if text != 100 {
 			t.Fatalf("run %d: Stream() then read %d text chunks, want 100", i, text)
+		}
+	}
+}
+
+// TS ui-message-stream-cancellation.node.test.ts 207 (both orders): the
+// StreamText abort and the UI reader's cancellation in the same tick. The
+// UI helper has its own ctx (TS: toUIMessageStream takes no abort signal).
+// OnEnd: isAborted false, isCancelled true, outcome unknown; onAbort fired.
+func TestR81streamTSSameTickAbortAndCancel(t *testing.T) {
+	for _, order := range []string{"abort-first", "cancel-first"} {
+		for i := 0; i < 200; i++ {
+			model := &testutil.MockLanguageModel{DoStreamFunc: func(ctx context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+				return &r79integBlockingStream{ctx: ctx, cancelled: make(chan struct{})}, nil
+			}}
+			abortCtx, abort := context.WithCancel(context.Background())
+			uiCtx, cancelUI := context.WithCancel(context.Background())
+			aborted := make(chan struct{})
+			r, err := StreamText(abortCtx, StreamTextOptions{Model: model, Prompt: "Hello",
+				OnAbortEvent: func(context.Context, GenerateTextAbortEvent) { close(aborted) }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var event map[string]interface{}
+			chunks, errCh := r.ToUIMessageStream(uiCtx, UIMessageStreamResultOptions{OnEnd: func(e map[string]interface{}) { event = e }})
+			for c := range chunks {
+				if c["type"] == "text-delta" {
+					if order == "abort-first" {
+						abort()
+						cancelUI()
+					} else {
+						cancelUI()
+						abort()
+					}
+				}
+			}
+			<-errCh
+			select {
+			case <-aborted:
+			case <-time.After(2 * time.Second):
+				t.Fatalf("%s run %d: onAbort not called", order, i)
+			}
+			got := fmt.Sprintf("isAborted=%v isCancelled=%v outcome=%v", event["isAborted"], event["isCancelled"], event["outcome"])
+			if want := "isAborted=false isCancelled=true outcome=map[status:unknown]"; got != want {
+				t.Fatalf("%s run %d: OnEnd %s, want %s", order, i, got, want)
+			}
+		}
+	}
+}
+
+// r81streamDisconnectWriter fails the write that carries the text delta
+// and aborts the StreamText ctx first (TS: response 'close' aborts the
+// request and cancels the response reader in the same tick).
+type r81streamDisconnectWriter struct{ abort func() }
+
+func (w r81streamDisconnectWriter) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), "text-delta") {
+		w.abort()
+		return 0, errors.New("client disconnected")
+	}
+	return len(p), nil
+}
+
+// TS ui-message-stream-cancellation.node.test.ts 244: a client disconnect
+// without consumeSseStream aborts the request and cancels the response in
+// the same tick. OnEnd: isAborted false, isCancelled true, outcome unknown;
+// onAbort fired. Go form: the handler passes the request ctx (cancelled on
+// the disconnect) to both StreamText and the Pipe helper; Go has no "same
+// tick" for two separate contexts.
+func TestR81streamTSDisconnectReportsCancellation(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		model := &testutil.MockLanguageModel{DoStreamFunc: func(ctx context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+			return &r79integBlockingStream{ctx: ctx, cancelled: make(chan struct{})}, nil
+		}}
+		abortCtx, abort := context.WithCancel(context.Background())
+		aborted := make(chan struct{})
+		r, err := StreamText(abortCtx, StreamTextOptions{Model: model, Prompt: "Hello",
+			OnAbortEvent: func(context.Context, GenerateTextAbortEvent) { close(aborted) }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ended := make(chan map[string]interface{}, 1)
+		err = PipeUIMessageStreamToResponseWithInit(abortCtx, r, r81streamDisconnectWriter{abort: abort}, nil,
+			UIMessageStreamResultOptions{OnEnd: func(e map[string]interface{}) { ended <- e }})
+		if err == nil || err.Error() != "client disconnected" {
+			t.Fatalf("run %d: pipe error = %v", i, err)
+		}
+		var event map[string]interface{}
+		select {
+		case event = <-ended:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("run %d: onEnd not called", i)
+		}
+		select {
+		case <-aborted:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("run %d: onAbort not called", i)
+		}
+		got := fmt.Sprintf("isAborted=%v isCancelled=%v outcome=%v", event["isAborted"], event["isCancelled"], event["outcome"])
+		if want := "isAborted=false isCancelled=true outcome=map[status:unknown]"; got != want {
+			t.Fatalf("run %d: OnEnd %s, want %s", i, got, want)
 		}
 	}
 }
