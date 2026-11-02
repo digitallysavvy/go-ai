@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"testing"
 	"time"
 
@@ -400,6 +401,48 @@ func TestR81streamSpeechCancelledCtxWinsOverReader(t *testing.T) {
 		})
 		if part != "" || !errors.Is(err, context.Canceled) {
 			t.Fatalf("run %d: part = %q, err = %v; want no part and context.Canceled", i, part, err)
+		}
+	}
+}
+
+// A writer.Merge called from another goroutine as the last merged stream
+// ends (TS: merging while a merged stream is still open extends the stream;
+// after the end the merge is dropped). Each run either forwards the late
+// stream or drops it, and never misuses the stream's wait group (the race
+// detector reports an Add at zero concurrent with Wait).
+func TestR81streamLateMergeAtEndIsSafe(t *testing.T) {
+	for i := 0; i < 300; i++ {
+		late := make(chan UIMessageChunk, 1)
+		late <- UIMessageChunk{"type": "text-start", "id": "late"}
+		close(late)
+		out, errCh := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+			Execute: func(w UIMessageStreamWriter) {
+				first := make(chan UIMessageChunk)
+				w.Merge(first)
+				go func() {
+					first <- UIMessageChunk{"type": "start"}
+					close(first)
+					for j := 0; j < i%7; j++ {
+						runtime.Gosched()
+					}
+					w.Merge(late)
+				}()
+			},
+		})
+		var got []string
+		for c := range out {
+			got = append(got, c["type"].(string))
+		}
+		if err := <-errCh; err != nil {
+			t.Fatal(err)
+		}
+		// The two merged streams interleave in any order.
+		hasStart := false
+		for _, typ := range got {
+			hasStart = hasStart || typ == "start"
+		}
+		if !hasStart || len(got) > 2 {
+			t.Fatalf("run %d: chunks = %v", i, got)
 		}
 	}
 }

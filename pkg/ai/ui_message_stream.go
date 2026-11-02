@@ -479,21 +479,40 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			appendErrorChunk(onError, sendChunk, err)
 		}
 
-		var wg sync.WaitGroup
+		// activeMerges counts the running merge goroutines. The stream ends
+		// once Execute has returned and the count is zero (TS waits for
+		// every ongoing merge, so one merged while another is still open
+		// extends the stream); a later merge is dropped. The count and the
+		// end are guarded by one mutex, so a Merge from another goroutine as
+		// the last merge ends either registers before the end or is
+		// dropped (a sync.WaitGroup Add at zero concurrent with Wait is a
+		// misuse that panics).
+		var mergeMu sync.Mutex
+		mergeIdle := sync.NewCond(&mergeMu)
+		activeMerges := 0
+		mergesEnded := false
+		mergeDone := func() {
+			mergeMu.Lock()
+			activeMerges--
+			if activeMerges == 0 {
+				mergeIdle.Broadcast()
+			}
+			mergeMu.Unlock()
+		}
 		merge := func(stream <-chan UIMessageChunk) {
 			if stream == nil {
 				enqueueError(errors.New("merge stream is nil"))
 				return
 			}
-			chunkMu.RLock()
-			lateMerge := chunkClosed
-			chunkMu.RUnlock()
-			if lateMerge {
+			mergeMu.Lock()
+			if mergesEnded {
+				mergeMu.Unlock()
 				return
 			}
-			wg.Add(1)
+			activeMerges++
+			mergeMu.Unlock()
 			go func() {
-				defer wg.Done()
+				defer mergeDone()
 				defer func() {
 					if r := recover(); r != nil {
 						if err, ok := r.(error); ok {
@@ -552,7 +571,12 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			options.Execute(writer)
 		}()
 
-		wg.Wait()
+		mergeMu.Lock()
+		for activeMerges > 0 {
+			mergeIdle.Wait()
+		}
+		mergesEnded = true
+		mergeMu.Unlock()
 		chunkMu.Lock()
 		chunkClosed = true
 		close(chunkCh)
