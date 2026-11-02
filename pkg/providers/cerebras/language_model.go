@@ -29,6 +29,12 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err != nil || result == nil {
 		return result, parseCerebrasProviderError(err)
 	}
+	// TS request.body is the transformed body (transformRequestBody), so
+	// the per-call extras cerebrasTransformTransport merged on the wire are
+	// in the reported request too.
+	if extras, ok := ctx.Value(cerebrasOptionsContextKey{}).(cerebrasRequestExtras); ok {
+		applyCerebrasRequestExtras(result.RawRequest, extras)
+	}
 	result.Warnings = append(warnings, result.Warnings...)
 	if cerebrasJSONMode(opts) && result.Text != "" && result.FinishReason == types.FinishReasonToolCalls {
 		result.ToolCalls = nil
@@ -42,6 +48,11 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	stream, err := m.base.DoStream(ctx, opts)
 	if err != nil {
 		return nil, parseCerebrasProviderError(err)
+	}
+	if extras, ok := ctx.Value(cerebrasOptionsContextKey{}).(cerebrasRequestExtras); ok {
+		if rb, ok := stream.(provider.StreamRequestBody); ok {
+			applyCerebrasRequestExtras(rb.RequestBody(), extras)
+		}
 	}
 	if !cerebrasJSONMode(opts) {
 		return stream, nil
