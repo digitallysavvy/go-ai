@@ -1565,17 +1565,19 @@ func (c *anthropicConverter) convertReasoning(content *[]map[string]interface{},
 	if opts == nil {
 		opts = anthropicOptions(rawMetadataMap(p.ProviderMetadata))
 	}
-	signature := p.Signature
-	if signature == "" {
-		signature, _ = opts["signature"].(string)
+	// TS anthropicReasoningMetadataSchema: a present signature (even "") is a
+	// thinking block, then a present redactedData a redacted one.
+	signature, hasSignature := p.Signature, p.Signature != ""
+	if !hasSignature {
+		signature, hasSignature = opts["signature"].(string)
 	}
-	redactedData := p.RedactedData
-	if redactedData == "" {
-		redactedData, _ = opts["redactedData"].(string)
+	redactedData, hasRedactedData := p.RedactedData, p.RedactedData != ""
+	if !hasRedactedData {
+		redactedData, hasRedactedData = opts["redactedData"].(string)
 	}
 
 	switch {
-	case signature != "":
+	case hasSignature:
 		// Thinking blocks cannot carry cache_control; validate for the warning.
 		c.validator.GetCacheControl(p.ProviderOptions, "thinking block", false)
 		*content = append(*content, map[string]interface{}{
@@ -1583,7 +1585,7 @@ func (c *anthropicConverter) convertReasoning(content *[]map[string]interface{},
 			"thinking":  p.Text,
 			"signature": signature,
 		})
-	case redactedData != "":
+	case hasRedactedData:
 		c.validator.GetCacheControl(p.ProviderOptions, "redacted thinking block", false)
 		*content = append(*content, map[string]interface{}{
 			"type": "redacted_thinking",
