@@ -2,6 +2,7 @@ package alibaba
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -39,5 +40,20 @@ func TestR79provbAlibabaEmptyFinishReason(t *testing.T) {
 	}
 	if finish == nil || finish.FinishReason != types.FinishReasonOther || finish.RawFinishReason != "" {
 		t.Fatalf("finish = %+v", finish)
+	}
+}
+
+// A text prompt with a system prompt keeps both messages: the user text used
+// to be dropped whenever System was set.
+func TestR79provbAlibabaSystemAndTextPrompt(t *testing.T) {
+	m := NewLanguageModel(New(Config{APIKey: "k"}), "qwen-plus")
+	body, _, err := m.buildRequestBodyChecked(&provider.GenerateOptions{Prompt: types.Prompt{System: "be brief", Text: "hi"}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(body["messages"])
+	const want = `[{"content":"be brief","role":"system"},{"content":[{"text":"hi","type":"text"}],"role":"user"}]`
+	if string(b) != want {
+		t.Fatalf("messages = %s, want %s", b, want)
 	}
 }

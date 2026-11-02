@@ -230,6 +230,10 @@ func (m *LanguageModel) buildRequestBodyChecked(opts *provider.GenerateOptions, 
 	}
 	if opts.Prompt.IsMessages() {
 		promptMessages = append(promptMessages, opts.Prompt.Messages...)
+	} else if opts.Prompt.IsSimple() {
+		// A text prompt is one user text message (the TS standardized
+		// prompt); with a system prompt it used to be dropped.
+		promptMessages = append(promptMessages, prompt.SimpleTextToMessages(opts.Prompt.Text)...)
 	}
 
 	if useJsonObject && responseSchema != nil {
@@ -266,10 +270,6 @@ func (m *LanguageModel) buildRequestBodyChecked(opts *provider.GenerateOptions, 
 			}
 			allMessages = append(allMessages, converted...)
 		}
-	} else if opts.Prompt.IsSimple() {
-		allMessages = append(allMessages,
-			prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))...,
-		)
 	}
 
 	body["messages"] = allMessages
