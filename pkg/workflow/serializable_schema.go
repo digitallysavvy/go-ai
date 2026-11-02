@@ -370,7 +370,9 @@ func ResolveSerializableTools(defs map[string]SerializableToolDef) []types.Tool 
 		default:
 			resolved.ProviderOptions = optionsOrArgs(providerOptions, def.Args)
 		}
-		resolved.ValidateInput = serializableInputValidator(resolved.Type == "provider", def, toolName)
+		// TS resolve skips validation for every `type: 'provider'` def, with
+		// or without an id.
+		resolved.ValidateInput = serializableInputValidator(def.Type == "provider", def, toolName)
 		tools = append(tools, resolved)
 	}
 	return tools
@@ -385,6 +387,11 @@ func ResolveSerializableTools(defs map[string]SerializableToolDef) []types.Tool 
 // a missing required property with a default still fails). A tool with its
 // own validator, and every provider tool, gets jsonSchema() without a
 // validator, so its input passes unvalidated. Parameters stays the map.
+//
+// The HasOwnValidator check is deliberately explicit although
+// validateSerializableInputWith also returns early for it: it is TS
+// createInputSchema's branch, and it keeps this validator from depending on
+// that helper's ValidateSerializableToolInput behavior.
 func serializableInputValidator(providerTool bool, def SerializableToolDef, toolName string) func(interface{}) (interface{}, error) {
 	if providerTool || def.HasOwnValidator {
 		return func(input interface{}) (interface{}, error) { return input, nil }

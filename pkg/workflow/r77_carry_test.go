@@ -101,3 +101,26 @@ func TestR77Carry_HookNilToolsAndSandboxKeepCurrent(t *testing.T) {
 		}
 	}
 }
+
+// TS resolveSerializableTools: a `type: 'provider'` def gets jsonSchema()
+// without a validator even when it has no id (Go rebuilds it as a function
+// tool, but its input still passes unvalidated). A plain function def with
+// the same schema still fails.
+func TestR77Carry_ProviderDefWithoutIDIsNotValidated(t *testing.T) {
+	schema := map[string]interface{}{"type": "object", "properties": map[string]interface{}{"x": map[string]interface{}{"type": "string"}}, "required": []interface{}{"x"}}
+	tools := ResolveSerializableTools(map[string]SerializableToolDef{
+		"p": {Type: "provider", InputSchema: schema},
+		"f": {InputSchema: schema},
+	})
+	byName := map[string]types.Tool{}
+	for _, tl := range tools {
+		byName[tl.Name] = tl
+	}
+	in := map[string]interface{}{}
+	if got, err := byName["p"].ValidateInput(in); err != nil || got == nil {
+		t.Errorf("provider def without id: ValidateInput = %v, %v; want the input unchanged", got, err)
+	}
+	if _, err := byName["f"].ValidateInput(in); err == nil || err.Error() != `data is missing required property "x"` {
+		t.Errorf("function def: err = %v, want the Ajv missing-property error", err)
+	}
+}
