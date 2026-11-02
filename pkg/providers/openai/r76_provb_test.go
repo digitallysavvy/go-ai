@@ -165,3 +165,23 @@ func TestR76ProvbStreamItemIDPerMessage(t *testing.T) {
 		t.Errorf("text parts = %s\nwant %s", got, want)
 	}
 }
+
+// TestR76ProvbStreamApplyPatchWithoutAddedIsNotAToolCall: TS counts an
+// apply_patch_call toward the tool-calls finish reason only where it emits
+// its tool-call: a completed item announced by output_item.added. Go also
+// counted a completed done item that was never announced (and emitted no
+// tool call for it), finishing with tool-calls.
+func TestR76ProvbStreamApplyPatchWithoutAddedIsNotAToolCall(t *testing.T) {
+	ev := func(s string) string { return "data: " + s + "\n\n" }
+	sse := ev(`{"type":"response.output_item.done","output_index":0,"sequence_number":1,"item":{"type":"apply_patch_call","id":"ap_1","call_id":"call_ap","status":"completed","operation":{"type":"delete_file","path":"a.txt"}}}`) +
+		ev(`{"type":"response.completed","sequence_number":2,"response":{"id":"r","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`)
+	chunks := r76provbDrain(t, newResponsesStream(io.NopCloser(strings.NewReader(sse)), false))
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeToolCall {
+			t.Fatalf("unexpected tool call %+v", c.ToolCall)
+		}
+	}
+	if f := chunks[len(chunks)-1]; f.FinishReason != types.FinishReasonStop {
+		t.Errorf("finish reason = %q, want stop", f.FinishReason)
+	}
+}

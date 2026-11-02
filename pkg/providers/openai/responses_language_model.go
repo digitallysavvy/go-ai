@@ -2527,9 +2527,9 @@ func mapWebSearchOutput(action *WebSearchAction) map[string]interface{} {
 
 // responsesItemIsFunctionCall reports whether a Responses output item is a
 // client-side tool call, which TS counts as hasFunctionCall. A computer_call
-// without a call_id is executed server-side and does not count; streaming
-// only counts an apply_patch_call once its status is "completed" (doGenerate
-// counts every apply_patch_call).
+// without a call_id is executed server-side and does not count; doGenerate
+// counts every apply_patch_call, while the stream counts one in its
+// output_item.done handler (completed and announced by output_item.added).
 func responsesItemIsFunctionCall(itemType string, raw json.RawMessage, streaming bool) bool {
 	switch itemType {
 	case "function_call", "custom_tool_call":
@@ -2540,13 +2540,10 @@ func responsesItemIsFunctionCall(itemType string, raw json.RawMessage, streaming
 		}
 		return json.Unmarshal(raw, &item) == nil && item.CallID != nil
 	case "apply_patch_call":
-		if !streaming {
-			return true
-		}
-		var item struct {
-			Status string `json:"status"`
-		}
-		return json.Unmarshal(raw, &item) == nil && item.Status == "completed"
+		// Streaming: decided by the output_item.done handler, which counts
+		// only a completed call announced by output_item.added (TS sets
+		// hasFunctionCall next to the tool-call it emits).
+		return !streaming
 	}
 	return false
 }
@@ -4289,6 +4286,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		if toolCall == nil || item.Status != "completed" {
 			return nil, false
 		}
+		s.hasFunctionCall = true
 		rawArgs := marshalNoEscape(map[string]interface{}{
 			"callId":    item.CallID,
 			"operation": item.Operation,
