@@ -60,3 +60,13 @@ func TestR81provaPerplexityImageDataStringPayload(t *testing.T) {
 		}
 	}
 }
+
+// TS isFullMediaType: "image/" (empty subtype) is not a full media type, so
+// the type is sniffed from the data; Go only sniffed a type without "/" or
+// ending in "/*" and rejected "image/".
+func TestR81provaPerplexityDecisionEmptySubtypeIsSniffed(t *testing.T) {
+	got, err := convertToPerplexityDecisionState([]provider.DecisionStatePart{imageState("image/", "iVBORw==")})
+	if err != nil || !reflect.DeepEqual(got, pngImage) {
+		t.Fatalf("got %#v, %v", got, err)
+	}
+}

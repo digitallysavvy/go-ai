@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"regexp"
-	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -97,7 +96,9 @@ func perplexityDecisionImage(part provider.DecisionStatePart) (map[string]interf
 	}
 
 	mediaType := declared
-	if !strings.Contains(mediaType, "/") || strings.HasSuffix(mediaType, "/*") {
+	// TS isFullMediaType: a non-empty subtype other than "*" ("image/" is not
+	// full either).
+	if !isFullMediaType(mediaType) {
 		// Direct DoDecide calls can bypass core's media type detection.
 		detectable := raw
 		if detectable == nil {
