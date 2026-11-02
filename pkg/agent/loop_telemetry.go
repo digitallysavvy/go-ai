@@ -74,6 +74,10 @@ type loopTelemetry struct {
 	// that a PrepareCall override switched away from. Each is ended with its
 	// own settings and call id.
 	otherRoots []loopRoot
+	// sensitiveRuntimeContext is set once any of the run's prepared calls
+	// set SensitiveRuntimeContext: the end events then omit the runtime
+	// context, as every GenerateText event does for the option.
+	sensitiveRuntimeContext bool
 }
 
 // loopRoot is a root span the legacy loop opened: the settings it was
@@ -287,7 +291,7 @@ func (a *ToolLoopAgent) loopStartEvent(callID string, settings *ai.TelemetrySett
 		StopSequences:       c.StopSequences,
 		Seed:                c.Seed,
 		MaxRetries:          &maxRetries,
-		RuntimeContext:      telemetryRuntimeContextFor(settings, c.RuntimeContext),
+		RuntimeContext:      telemetryRuntimeContextFor(settings, c.RuntimeContext, c.SensitiveRuntimeContext),
 		ToolsContext:        telemetryToolsContextFor(settings, c.ToolsContext),
 	}
 }
@@ -322,8 +326,11 @@ func telemetryContextMap(include map[string]bool, v interface{}) map[string]inte
 	return out
 }
 
-func telemetryRuntimeContextFor(s *ai.TelemetrySettings, rc interface{}) map[string]interface{} {
-	if s == nil {
+// telemetryRuntimeContextFor is the runtime context a telemetry event
+// records: the IncludeRuntimeContext keys, or none when the call set
+// SensitiveRuntimeContext (as GenerateText's events).
+func telemetryRuntimeContextFor(s *ai.TelemetrySettings, rc interface{}, sensitive bool) map[string]interface{} {
+	if s == nil || sensitive {
 		return map[string]interface{}{}
 	}
 	return telemetryContextMap(s.IncludeRuntimeContext, rc)
@@ -364,12 +371,12 @@ func (a *ToolLoopAgent) beginLoopTelemetry(ctx context.Context, c PrepareCallCon
 	if id, ok := ctx.Value(telemetryCallIDKey{}).(string); ok && id != "" {
 		// The caller's root was opened under the configured settings; a
 		// PrepareCall override opens a root of its own (adoptPreparedTelemetry).
-		return ctx, &loopTelemetry{settings: settings, callID: id}
+		return ctx, &loopTelemetry{settings: settings, callID: id, sensitiveRuntimeContext: c.SensitiveRuntimeContext}
 	}
 	if c.Telemetry != nil {
 		settings = c.Telemetry
 	}
-	lt := &loopTelemetry{settings: settings, rootSettings: settings, callID: newTelemetryCallID(), ownsRoot: true, baseCtx: ctx}
+	lt := &loopTelemetry{settings: settings, rootSettings: settings, callID: newTelemetryCallID(), ownsRoot: true, baseCtx: ctx, sensitiveRuntimeContext: c.SensitiveRuntimeContext}
 	ctx = telemetry.FireOnStart(ctx, a.loopStartEvent(lt.callID, settings, c))
 	if telemetry.Enabled(settings) {
 		lt.rootCtx = ctx
@@ -386,19 +393,19 @@ func (a *ToolLoopAgent) endLoopTelemetry(ctx context.Context, lt *loopTelemetry,
 	if lt.rootCtx != nil {
 		rootCtx = lt.rootCtx
 	}
-	a.endLoopRoot(rootCtx, loopRoot{settings: lt.rootSettings, callID: lt.callID}, result, err)
+	a.endLoopRoot(rootCtx, loopRoot{settings: lt.rootSettings, callID: lt.callID}, result, err, lt.sensitiveRuntimeContext)
 	for i := len(lt.otherRoots) - 1; i >= 0; i-- {
 		r := lt.otherRoots[i]
 		if r.ctx == nil {
 			r.ctx = ctx
 		}
-		a.endLoopRoot(r.ctx, r, result, err)
+		a.endLoopRoot(r.ctx, r, result, err, lt.sensitiveRuntimeContext)
 	}
 }
 
 // endLoopRoot ends one root span the loop opened with its own settings and
 // call id.
-func (a *ToolLoopAgent) endLoopRoot(ctx context.Context, root loopRoot, result *AgentResult, err error) {
+func (a *ToolLoopAgent) endLoopRoot(ctx context.Context, root loopRoot, result *AgentResult, err error, sensitiveRuntimeContext bool) {
 	if err != nil {
 		// The loop runs as generateText does in TS, which has no abort
 		// telemetry: an abort or timeout is reported through onError.
@@ -448,7 +455,7 @@ func (a *ToolLoopAgent) endLoopRoot(ctx context.Context, root loopRoot, result *
 		Files:            allFiles,
 		ProviderMetadata: last.ProviderMetadata,
 		Settings:         root.settings,
-		RuntimeContext:   telemetryRuntimeContextFor(root.settings, runtimeContext),
+		RuntimeContext:   telemetryRuntimeContextFor(root.settings, runtimeContext, sensitiveRuntimeContext),
 		ToolsContext:     telemetryToolsContextFor(root.settings, toolsContext),
 	})
 }
@@ -503,6 +510,8 @@ type loopStepTelemetry struct {
 	// out (TS toolResults holds only tool-result parts).
 	toolResults    []types.ToolResult
 	hasToolResults bool
+	// sensitiveRuntimeContext is the step's SensitiveRuntimeContext.
+	sensitiveRuntimeContext bool
 }
 
 func (a *ToolLoopAgent) startStepTelemetry(ctx context.Context, lt *loopTelemetry, stepIndex int, c PrepareCallConfig) *loopStepTelemetry {
@@ -516,10 +525,13 @@ func (a *ToolLoopAgent) startStepTelemetry(ctx context.Context, lt *loopTelemetr
 		ToolChoice:     c.ToolChoice,
 		PromptMessages: loopPromptMessages(c),
 		StepTools:      c.Tools,
-		RuntimeContext: telemetryRuntimeContextFor(lt.settings, c.RuntimeContext),
+		RuntimeContext: telemetryRuntimeContextFor(lt.settings, c.RuntimeContext, c.SensitiveRuntimeContext),
 		ToolsContext:   telemetryToolsContextFor(lt.settings, c.ToolsContext),
 	})
-	return &loopStepTelemetry{lt: lt, stepCtx: stepCtx, errCtx: stepCtx}
+	if c.SensitiveRuntimeContext {
+		lt.sensitiveRuntimeContext = true
+	}
+	return &loopStepTelemetry{lt: lt, stepCtx: stepCtx, errCtx: stepCtx, sensitiveRuntimeContext: c.SensitiveRuntimeContext}
 }
 
 // loopPromptMessages is the step's prompt messages for the step span (TS
@@ -578,7 +590,7 @@ func (s *loopStepTelemetry) finish(step *types.StepResult, rc interface{}, tc ma
 		// The model call's performance, as GenerateText's step end event.
 		Performance:    ai.NonStreamingModelCallPerformance(step.Performance.ResponseTimeMs, step.Usage),
 		Settings:       s.lt.settings,
-		RuntimeContext: telemetryRuntimeContextFor(s.lt.settings, rc),
+		RuntimeContext: telemetryRuntimeContextFor(s.lt.settings, rc, s.sensitiveRuntimeContext),
 		ToolsContext:   telemetryToolsContextFor(s.lt.settings, tc),
 	})
 }
