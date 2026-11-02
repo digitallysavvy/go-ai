@@ -46,6 +46,12 @@ Round 79 (prova) added, all extracted at `e64ed82f27`: `cohere/.../chat_asserts.
 with `--asserts`; `cohere/.../convert_messages`, `prepare_tools` and
 `perplexity/.../convert_input`, `convert_usage`, `decision_state` with
 `--expand-each --fn=NAME`; the empty `perplexity/.../chat.json.gz` was removed.
+Round 80 (prova) filled the responses that TS test helpers build (google `language`,
+`interactions`, `structured_output_with_tools`; bedrock `chat`; anthropic `language`) and
+added `perplexity/.../language_asserts.json.gz` (`--asserts`), by running each TS test
+file with stub vitest, test server and model that record the response each test prepared
+before its model call. That capture script is not committed: re-extracting these files
+with `extract.mjs` alone loses those responses (`response: null`).
 
 The extractor serializes a `Buffer.from(...)` through `Buffer.prototype.toJSON`
 (`{"type": "Buffer", "data": [...]}`); `WireBytes` reads that form as bytes
@@ -118,7 +124,9 @@ mode, so existing case files regenerate byte for byte.
   `.find(p => p.f === 'v')`, `.map(p => p.f)`), aliases of such calls
   (`const types = parts.map(p => p.type)`), `const calls = server.calls`,
   `new URL(x).searchParams.get('k')`, and `expect.objectContaining` /
-  `expect.arrayContaining` arguments, and `.at(n)`. Assertions over another test-server
+  `expect.arrayContaining` arguments, and `.at(n)`. Plain assertions compare the raw Go stream (block and wire
+  source ids kept, a `StreamProviderError` object as the error part's `error`); a snapshot of
+  a path over the stream is canonicalized with `CanonStream` on both sides. Assertions over another test-server
   variable (`pollServer.calls`) read as `server.*`, and TS casts
   (`(p as { delta: string }).delta`, nested object types included) are dropped. Anything else is counted
   as "not evaluated" in the test log.
