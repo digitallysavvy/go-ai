@@ -804,9 +804,9 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 			return nil, err
 		}
 
+		// TS parseJsonEventStream drops the [DONE] frame and keeps reading;
+		// flush() runs at the end of the body (the io.EOF branch above).
 		if streaming.IsStreamDone(event) {
-			s.done = true
-			s.flushQueue = s.buildFlushChunks()
 			continue
 		}
 

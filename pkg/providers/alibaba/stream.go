@@ -93,13 +93,10 @@ func (s *alibabaStream) Next() (*provider.StreamChunk, error) {
 			return nil, err
 		}
 
-		// Check for stream completion
+		// TS parseJsonEventStream drops the [DONE] frame and keeps reading;
+		// flush() runs at the end of the body (the io.EOF branch above).
 		if streaming.IsStreamDone(event) {
-			if s.queueEnd() {
-				continue
-			}
-			s.err = io.EOF
-			return nil, io.EOF
+			continue
 		}
 		rawQueued := false
 		if s.includeRawChunks {

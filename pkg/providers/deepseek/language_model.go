@@ -737,8 +737,8 @@ type deepseekStream struct {
 	metadataEmitted     bool
 	providerOptionsName string
 
-	// The Finish chunk is only built when the stream ends (the [DONE] marker
-	// or EOF) so a trailing usage-only chunk (stream_options.include_usage)
+	// The Finish chunk is only built when the body ends (a [DONE] frame is skipped,
+	// as in TS) so a trailing usage-only chunk (stream_options.include_usage)
 	// is attached to it. finishRaw is the last finish_reason seen; finishErrored is set by a
 	// parse/error chunk after it; endQueued guards queueEnd.
 	finishRaw     string
@@ -812,12 +812,10 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 			s.err = err
 			return nil, err
 		}
+		// TS parseJsonEventStream drops the [DONE] frame and keeps reading;
+		// flush() runs at the end of the body (the io.EOF branch above).
 		if streaming.IsStreamDone(event) {
-			if s.queueEnd() {
-				continue
-			}
-			s.err = io.EOF
-			return nil, io.EOF
+			continue
 		}
 		rawQueued := false
 		if s.includeRawChunks {
