@@ -347,3 +347,50 @@ func TestR80StreamFullStreamToolResults(t *testing.T) {
 		t.Fatalf("steps = %d", n)
 	}
 }
+
+// validate-ui-messages.ts: an output-error part with `"input": null` has an
+// input (TS `toolPart.input !== undefined`), so null is validated against
+// the tool input schema; the failed check keeps the part loadable as a
+// dynamic tool part. The null input survives serialization; an absent input
+// stays absent and is not validated.
+func TestR80StreamOutputErrorNullInput(t *testing.T) {
+	countTool := types.Tool{Name: "count", Parameters: map[string]interface{}{
+		"type":       "object",
+		"properties": map[string]interface{}{"count": map[string]interface{}{"type": "string"}},
+		"required":   []interface{}{"count"},
+	}}
+	run := func(input string) UIMessagePart {
+		t.Helper()
+		msgs, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
+			Messages: json.RawMessage(`[{"id":"1","role":"assistant","parts":[
+				{"type":"tool-count","toolCallId":"call-1","state":"output-error"` + input + `,"errorText":"boom"}]}]`),
+			Tools: []types.Tool{countTool},
+		})
+		if err != nil {
+			t.Fatalf("input %q: %v", input, err)
+		}
+		return msgs[0].Parts[0]
+	}
+	part := run(`,"input":null`)
+	if part.UIPartType() != "dynamic-tool" {
+		t.Fatalf("null input: part type = %s, want dynamic-tool", part.UIPartType())
+	}
+	b, _ := json.Marshal(part)
+	if !strings.Contains(string(b), `"input":null`) {
+		t.Fatalf("null input dropped: %s", b)
+	}
+	if part = run(``); part.UIPartType() != "tool-count" {
+		t.Fatalf("absent input: part type = %s", part.UIPartType())
+	}
+	if b, _ = json.Marshal(part); strings.Contains(string(b), `"input"`) {
+		t.Fatalf("absent input serialized: %s", b)
+	}
+	// input-streaming keeps a null input too.
+	var p ToolUIPart
+	if err := json.Unmarshal([]byte(`{"type":"tool-count","toolCallId":"c","state":"input-streaming","input":null}`), &p); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ = json.Marshal(p); string(b) != `{"type":"tool-count","toolCallId":"c","state":"input-streaming","input":null}` {
+		t.Fatalf("input-streaming round trip: %s", b)
+	}
+}

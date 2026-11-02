@@ -177,7 +177,7 @@ func safeValidateUIMessagesInternal(ctx context.Context, opts ValidateUIMessages
 			convertToDynamic := false
 
 			if toolPart.State != ToolStateInputStreaming &&
-				(toolPart.State != ToolStateOutputError || hasInputSchemaInput || toolPart.Input != nil) {
+				(toolPart.State != ToolStateOutputError || hasInputSchemaInput || toolPart.hasInput()) {
 				inputErr := validateUIToolInput(ctx, tool, toolPart, inputToValidate, hasInputSchemaInput, opts.ExperimentalRefineToolInput[toolName], inputField)
 				if inputErr != nil {
 					// Failed calls and empty terminal inputs must remain

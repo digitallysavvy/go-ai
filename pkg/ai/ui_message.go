@@ -212,6 +212,17 @@ type ToolUIPart struct {
 	CallProviderMetadata   map[string]interface{}
 	ResultProviderMetadata map[string]interface{}
 	Approval               *ToolUIPartApproval
+
+	// inputNull records a decoded `"input": null` on a state where a nil
+	// Input otherwise means absent (input-streaming, output-error): TS keeps
+	// the null, validates it and serializes it.
+	inputNull bool
+}
+
+// hasInput reports whether the part carries an input, including a JSON null
+// (TS `toolPart.input !== undefined`).
+func (p *ToolUIPart) hasInput() bool {
+	return p.Input != nil || p.inputNull
 }
 
 // DynamicToolUIPart is the TS name for a ToolUIPart whose Type is
@@ -778,7 +789,7 @@ func (p ToolUIPart) MarshalJSON() ([]byte, error) {
 	o.field("state", p.State)
 	o.str("title", p.Title)
 	o.mapField("toolMetadata", p.ToolMetadata)
-	if p.Input != nil || toolStateRequiresInput(p.State) {
+	if p.hasInput() || toolStateRequiresInput(p.State) {
 		o.field("input", p.Input)
 	}
 	if p.Output != nil || p.State == ToolStateOutputAvailable {
@@ -817,7 +828,7 @@ func (p *ToolUIPart) UnmarshalJSON(data []byte) error {
 		Title                  string                 `json:"title"`
 		ToolMetadata           map[string]interface{} `json:"toolMetadata"`
 		ProviderExecuted       *bool                  `json:"providerExecuted"`
-		Input                  interface{}            `json:"input"`
+		Input                  json.RawMessage        `json:"input"`
 		Output                 interface{}            `json:"output"`
 		RawInput               interface{}            `json:"rawInput"`
 		InputEncoding          string                 `json:"inputEncoding"`
@@ -839,7 +850,6 @@ func (p *ToolUIPart) UnmarshalJSON(data []byte) error {
 		Title:                  raw.Title,
 		ToolMetadata:           raw.ToolMetadata,
 		ProviderExecuted:       raw.ProviderExecuted,
-		Input:                  raw.Input,
 		Output:                 raw.Output,
 		RawInput:               raw.RawInput,
 		InputEncoding:          raw.InputEncoding,
@@ -848,6 +858,12 @@ func (p *ToolUIPart) UnmarshalJSON(data []byte) error {
 		CallProviderMetadata:   raw.CallProviderMetadata,
 		ResultProviderMetadata: raw.ResultProviderMetadata,
 		Approval:               raw.Approval,
+	}
+	if raw.Input != nil {
+		if err := json.Unmarshal(raw.Input, &p.Input); err != nil {
+			return err
+		}
+		p.inputNull = p.Input == nil
 	}
 	if p.Type != "dynamic-tool" {
 		p.ToolName = ""
