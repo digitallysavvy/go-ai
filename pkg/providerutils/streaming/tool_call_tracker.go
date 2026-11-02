@@ -54,9 +54,10 @@ type ToolCallDelta struct {
 
 	// NameAbsent reports that the wire delta had no function name at all
 	// (missing or null). TS throws "Expected 'function.name' to be a string."
-	// when such a delta would start a new call, regardless of sibling calls.
-	// Callers that cannot tell blank from absent leave both false and get the
-	// legacy deferred behavior (see Flush).
+	// when such a delta would start a new call, regardless of sibling calls:
+	// TrackDelta returns that error chunk and the tracker fails (see
+	// Failed). Callers that cannot tell blank from absent leave both false
+	// and get the legacy deferred behavior (see Flush).
 	NameAbsent bool
 }
 
@@ -188,8 +189,10 @@ type trackedToolCall struct {
 	inputStarted   bool
 	metadata       map[string]interface{}
 	// strictAbsent is set when the creating delta was known to have no
-	// function name at all (ToolCallDelta.NameAbsent): TS throws for such a
-	// call whatever else is in flight, so Flush never drops it silently.
+	// function name at all (ToolCallDelta.NameAbsent) and was buffered
+	// (BufferNamelessIndexedCalls): TS forwards such a still-pending call
+	// to the tracker at flush, which throws whatever else is in flight, so
+	// Flush never drops it silently.
 	strictAbsent bool
 }
 
@@ -227,6 +230,36 @@ type StreamingToolCallTracker struct {
 	nextGeneratedIDSuffixes map[string]int
 	generateIDFunc          func() string
 	typeValidation          TypeValidation
+	// failed is set once a delta raised an error TS throws from
+	// processDelta (a new call with an unexpected type, or with no
+	// function.name at all). The TS stream errors at that point, so the
+	// tracker accepts no further delta and Flush emits nothing.
+	failed bool
+	// bufferNamelessIndexed: see BufferNamelessIndexedCalls.
+	bufferNamelessIndexed bool
+}
+
+// BufferNamelessIndexedCalls makes a new call whose delta has an index but
+// no function name (ToolCallDelta.NameAbsent) wait for its name instead of
+// failing the tracker: TS openai-compatible buffers such deltas by index
+// (pendingToolCalls) and forwards them once function.name arrives; a call
+// still nameless at Flush is reported as an error there (TS forwards it to
+// the tracker in flush(), which throws). A nameless delta without an index
+// still fails at once, as TS passes it to the tracker directly.
+func (t *StreamingToolCallTracker) BufferNamelessIndexedCalls() {
+	if t != nil {
+		t.bufferNamelessIndexed = true
+	}
+}
+
+// Failed reports whether a delta raised an error that TS throws from
+// processDelta: a new call whose type fails the TypeValidation mode, or
+// whose function name is absent (ToolCallDelta.NameAbsent). TS's transform
+// throws there, so the stream ends with that error: callers end the stream
+// after the returned error chunk without reading further events, flushing
+// tool calls or emitting a finish chunk.
+func (t *StreamingToolCallTracker) Failed() bool {
+	return t != nil && t.failed
 }
 
 // NewStreamingToolCallTracker creates a tracker with the default ID generator.
@@ -268,7 +301,7 @@ func (t *StreamingToolCallTracker) Track(index *int, id, name, delta string) []T
 // and ports its correlation precedence for unreliable ones (see
 // resolveToolCall).
 func (t *StreamingToolCallTracker) TrackDelta(delta ToolCallDelta) []ToolCallChunk {
-	if t == nil {
+	if t == nil || t.failed {
 		return nil
 	}
 
@@ -295,6 +328,20 @@ func (t *StreamingToolCallTracker) TrackDelta(delta ToolCallDelta) []ToolCallChu
 		if (t.typeValidation == TypeValidationRequired && delta.Type != "function") ||
 			(t.typeValidation == TypeValidationIfPresent && delta.Type != "" && delta.Type != "function") {
 			const message = "Expected 'function' type."
+			t.failed = true
+			return []ToolCallChunk{{
+				Type: provider.ChunkTypeError,
+				Text: message,
+				Err:  providererrors.NewInvalidResponseDataError(delta, message),
+			}}
+		}
+		bufferAbsent := t.bufferNamelessIndexed && index != nil
+		if name == "" && delta.NameAbsent && !bufferAbsent {
+			// TS processNewToolCall throws InvalidResponseDataError
+			// ({data: toolCallDelta}) at once for a missing function.name;
+			// no later delta can name the call.
+			const message = "Expected 'function.name' to be a string."
+			t.failed = true
 			return []ToolCallChunk{{
 				Type: provider.ChunkTypeError,
 				Text: message,
@@ -306,15 +353,14 @@ func (t *StreamingToolCallTracker) TrackDelta(delta ToolCallDelta) []ToolCallChu
 		if name != "" {
 			chunks = t.startChunksForNewCall(call)
 		}
-		// A blank, whitespace-only, or entirely missing function name cannot
-		// start a usable call. TS ignores a present-but-blank name here and
-		// throws synchronously for an entirely absent one (a distinction Go
-		// cannot represent, since a plain string can't tell "absent" from
-		// "blank" apart); Track/TrackDelta never returns an error, so both
-		// are handled the same deferred way: the call is buffered without
-		// emitting input-start/delta chunks, and either gets promoted once a
-		// correlated delta supplies a name (see processExistingToolCall), or
-		// is reported as an error chunk from Flush if one never arrives.
+		// A call started without a name (a caller that cannot tell blank
+		// from absent, so neither NameBlank nor NameAbsent is set) is
+		// buffered without emitting input-start/delta chunks: it is
+		// promoted once a correlated delta supplies a name (see
+		// processExistingToolCall), or reported as an error chunk from
+		// Flush if one never arrives. A known-absent name failed above, as
+		// TS throws there, unless BufferNamelessIndexedCalls buffers it
+		// (then it is promoted the same way, and Flush always reports it).
 	} else {
 		call = res.call
 		if wireID != "" {
@@ -333,7 +379,7 @@ func (t *StreamingToolCallTracker) TrackDelta(delta ToolCallDelta) []ToolCallChu
 // Flush finalizes any unfinished tool calls. Should be called during the
 // stream's flush handler to ensure all tool calls are properly completed.
 func (t *StreamingToolCallTracker) Flush() []ToolCallChunk {
-	if t == nil || len(t.toolCalls) == 0 {
+	if t == nil || t.failed || len(t.toolCalls) == 0 {
 		return nil
 	}
 

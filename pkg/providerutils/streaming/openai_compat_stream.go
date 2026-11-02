@@ -126,10 +126,14 @@ type OpenAICompatStream struct {
 // custom function for providers that extend the standard set (e.g. Mistral's
 // "model_length").
 func NewOpenAICompatStream(reader io.ReadCloser, mapper func(string) types.FinishReason) *OpenAICompatStream {
+	tracker := NewStreamingToolCallTracker()
+	// TS openai-compatible pendingToolCalls: indexed deltas wait for their
+	// function.name.
+	tracker.BufferNamelessIndexedCalls()
 	return &OpenAICompatStream{
 		reader:             reader,
 		parser:             NewSSEParser(reader),
-		toolCallTracker:    NewStreamingToolCallTracker(),
+		toolCallTracker:    tracker,
 		finishReasonMapper: mapper,
 	}
 }
@@ -428,6 +432,14 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 					}
 					chunks := s.toolCallTracker.TrackDelta(delta)
 					s.enqueueChunks(chunks)
+					if s.toolCallTracker.Failed() {
+						// TS processDelta threw: the stream ends with the
+						// error chunk (no further events, tool calls or
+						// finish).
+						s.toolCallErrored = true
+						s.err = io.EOF
+						break
+					}
 				}
 			}
 

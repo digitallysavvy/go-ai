@@ -612,6 +612,11 @@ func (s *conversationStream) handle(data string) {
 			cc := c
 			s.queue = append(s.queue, &cc)
 		}
+		if s.tracker.Failed() {
+			// TS processDelta threw: the stream ends with the error (no
+			// later part, tool call or finish).
+			s.err = io.EOF
+		}
 	case "tool.execution.started", "tool.execution.delta":
 		s.closeContent()
 		if ex, ok := s.executions[ev.ID]; !ok {

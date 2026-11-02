@@ -889,6 +889,12 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 					c := chunk
 					s.flushQueue = append(s.flushQueue, &c)
 				}
+				if s.toolCallTracker.Failed() {
+					// TS processDelta threw: the stream ends with the error
+					// (no later part, tool call or finish).
+					s.err = io.EOF
+					break
+				}
 			}
 		}
 

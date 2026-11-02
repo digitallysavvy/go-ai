@@ -216,6 +216,12 @@ func (s *alibabaStream) processChunk(chunk *alibabaStreamChunk) (*provider.Strea
 		}
 		for _, tc := range delta.ToolCalls {
 			s.accumulateToolCall(tc)
+			if s.toolCallTracker.Failed() {
+				// TS processDelta threw: the stream ends with the error (no
+				// later part, tool call or finish).
+				s.err = io.EOF
+				break
+			}
 		}
 	}
 	return nil, false

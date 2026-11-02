@@ -205,6 +205,9 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	inner.compat = m.provider.config.OpenAICompatible
 	if inner.compat {
 		inner.metaKey = providerutils.ResolveOpenAICompatibleMetadataKey(m.compatName(), opts.ProviderOptions)
+		// TS openai-compatible pendingToolCalls: indexed tool call deltas
+		// wait for their function.name (native OpenAI throws at once).
+		inner.toolCallTracker.BufferNamelessIndexedCalls()
 	}
 	return streaming.NewWarningsStream(inner, warnings), nil
 }
@@ -1606,6 +1609,19 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 					c := chunk
 					emit(&c)
 				}
+				if s.toolCallTracker.Failed() {
+					break
+				}
+			}
+			if s.toolCallTracker.Failed() {
+				// TS toolCallTracker.processDelta threw ("Expected
+				// 'function.name' to be a string." or "Expected 'function'
+				// type."): the parts before it and the error end the stream;
+				// no later part, tool call or finish follows.
+				s.outputStarted = true
+				s.finished = true
+				s.err = io.EOF
+				continue
 			}
 
 			// url_citation annotations become url sources (native chat only).
