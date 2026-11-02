@@ -311,3 +311,19 @@ func TestR79prova_GenerateContentOrder(t *testing.T) {
 		t.Fatalf("content = %v, text = %q", got, res.Text)
 	}
 }
+
+// TS getArgs sets stop_sequences: stopSequences, so an empty array is sent.
+func TestR79prova_EmptyStopSequencesSent(t *testing.T) {
+	m := &LanguageModel{modelID: "command-r-plus"}
+	body, _, err := m.buildRequestBodyWithWarnings(&provider.GenerateOptions{Prompt: types.Prompt{Text: "x"}, StopSequences: []string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := body["stop_sequences"].([]string); !ok || len(v) != 0 {
+		t.Fatalf("stop_sequences = %#v (present %v)", body["stop_sequences"], ok)
+	}
+	body, _, _ = m.buildRequestBodyWithWarnings(&provider.GenerateOptions{Prompt: types.Prompt{Text: "x"}})
+	if _, ok := body["stop_sequences"]; ok {
+		t.Fatal("nil stop sequences sent")
+	}
+}

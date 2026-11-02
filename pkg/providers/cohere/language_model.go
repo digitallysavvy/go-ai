@@ -195,7 +195,8 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if opts.Seed != nil {
 		body["seed"] = *opts.Seed
 	}
-	if len(opts.StopSequences) > 0 {
+	// TS stop_sequences: stopSequences -- an empty array is sent as is.
+	if opts.StopSequences != nil {
 		body["stop_sequences"] = opts.StopSequences
 	}
 
