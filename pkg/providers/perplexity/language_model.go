@@ -8,7 +8,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -484,7 +483,7 @@ type perplexityFetchedSourceMeta struct {
 func perplexitySearchResultSource(result perplexitySearchResult) types.SourceContent {
 	id := streaming.GenerateID()
 	if result.ID != nil {
-		id = strconv.FormatFloat(*result.ID, 'f', -1, 64)
+		id = providerutils.JSNumberString(*result.ID) // TS String(result.id)
 	}
 	meta, _ := json.Marshal(map[string]interface{}{
 		"perplexity": perplexitySearchSourceMeta{
@@ -540,10 +539,9 @@ func perplexityToolCallMetadataMap(item perplexityOutputItem) map[string]interfa
 	return map[string]interface{}{"perplexity": inner}
 }
 
-// formatPplxNumber renders n like JS String(number) for the values that occur
-// here: integers without a fraction part, fractions in shortest form.
+// formatPplxNumber renders n like JS String(number) ("1e+21", "0" for -0).
 func formatPplxNumber(n pplxNumber) string {
-	return strconv.FormatFloat(float64(n), 'f', -1, 64)
+	return providerutils.JSNumberString(float64(n))
 }
 
 // perplexityTextID mirrors TS getTextId: a text block's identity is the
