@@ -1020,3 +1020,37 @@ func TestR81streamTSToUIMessageChunkApprovalSchemaInputAndUndefined(t *testing.T
 		}
 	}
 }
+
+// TS read-ui-message-stream.test.ts 259: a hydrated input-streaming static
+// tool part without raw input accepts a later input delta and the final
+// tool-input-available.
+func TestR81streamTSReadUIMessagesHydratedPartialToolCall(t *testing.T) {
+	var message UIMessage
+	if err := json.Unmarshal([]byte(`{"id":"msg-123","role":"assistant","parts":[{"type":"tool-createDocument","toolCallId":"tool-1","state":"input-streaming","input":{"title":"Hel"}}]}`), &message); err != nil {
+		t.Fatal(err)
+	}
+	stream := make(chan UIMessageChunk, 2)
+	stream <- UIMessageChunk{"type": "tool-input-delta", "toolCallId": "tool-1", "inputTextDelta": `lo"}`}
+	stream <- UIMessageChunk{"type": "tool-input-available", "toolCallId": "tool-1", "toolName": "createDocument", "input": map[string]interface{}{"title": "Hello"}}
+	close(stream)
+	out, errCh := ReadUIMessages(context.Background(), ReadUIMessagesOptions{Message: &message, Stream: stream, TerminateOnError: true})
+	var last UIMessage
+	n := 0
+	for m := range out {
+		last = m
+		n++
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if n == 0 {
+		t.Fatal("no snapshots")
+	}
+	b, err := json.Marshal(last.Parts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(b), `[{"type":"tool-createDocument","toolCallId":"tool-1","state":"input-available","input":{"title":"Hello"}}]`; got != want {
+		t.Fatalf("parts = %s, want %s", got, want)
+	}
+}
