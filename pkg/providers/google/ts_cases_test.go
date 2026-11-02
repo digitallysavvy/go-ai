@@ -2,6 +2,7 @@ package google
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
@@ -10,8 +11,6 @@ import (
 )
 
 const asyncHeaders = "the TS test sets async provider-level headers on the model config; the harness builds a default provider"
-
-const multiResponse = "the TS test queues several responses; the harness serves one canned response (covered by long_decode_test.go)"
 
 func TestTSCasesLanguage(t *testing.T) {
 	tsfixture.DropResponseTimestamp, tsfixture.DropResponseModelID = true, true
@@ -98,19 +97,24 @@ func TestTSCasesInteractions(t *testing.T) {
 	cases := tsfixture.LoadCases(t, "testdata/tscases/interactions.json.gz")
 	tsfixture.EvalPathSnapshots(t)
 	tsfixture.Run(t, cases, func(base, id string) provider.LanguageModel {
-		if id == "" {
-			id = "gemini-2.5-flash"
+		p := New(Config{APIKey: "test-api-key", BaseURL: base})
+		var m provider.LanguageModel
+		var err error
+		if agent, ok := strings.CutPrefix(id, "agent:"); ok {
+			m, err = p.InteractionsAgent(agent) // provider.interactions({ agent })
+		} else if managed, ok := strings.CutPrefix(id, "managedAgent:"); ok {
+			m, err = p.InteractionsManagedAgent(managed) // provider.interactions({ managedAgent })
+		} else {
+			if id == "" {
+				id = "gemini-2.5-flash"
+			}
+			m, err = p.Interactions(id)
 		}
-		m, err := New(Config{APIKey: "test-api-key", BaseURL: base}).Interactions(id)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return m
 	}, map[string]string{
-		"polls doGenerate until terminal for model calls with background: true":                           multiResponse,
-		"returns the polled terminal response from doGenerate when POST returns in_progress":              multiResponse,
-		"opens GET /interactions/{id}?stream=true and pipes SSE events through when POST is non-terminal": multiResponse,
-		"reconnects to GET stream with last_event_id when the SSE connection drops":                       multiResponse,
 		"round-trips an assistant tool-call + tool-result message pair through the request body (step 2)": "tool result JSON arrives as a Go map, which has no key order",
 	})
 }
