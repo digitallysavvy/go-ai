@@ -432,3 +432,82 @@ func TestR79StreamOnStepEndPreferredOverOnStepFinish(t *testing.T) {
 		t.Fatalf("calls = %s, want [onStepEnd]", got)
 	}
 }
+
+// r79streamAbortableStream streams text-start and a delta, then blocks until
+// its ctx is done (TS createAbortableModel errors the stream on abort).
+type r79streamAbortableStream struct {
+	ctx  context.Context
+	sent int
+}
+
+func (s *r79streamAbortableStream) Next() (*provider.StreamChunk, error) {
+	s.sent++
+	switch s.sent {
+	case 1:
+		return &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "text-1"}, nil
+	case 2:
+		return &provider.StreamChunk{Type: provider.ChunkTypeText, ID: "text-1", Text: "Hello"}, nil
+	}
+	<-s.ctx.Done()
+	return nil, s.ctx.Err()
+}
+func (s *r79streamAbortableStream) Close() error { return nil }
+func (s *r79streamAbortableStream) Err() error   { return nil }
+
+// ui-message-stream-cancellation.node.test.ts 254: the client disconnects
+// after the first text delta and the run is aborted. With a ConsumeSSEStream
+// callback that keeps reading its copy, the UI stream still sees the abort:
+// onEnd reports isAborted with outcome aborted and no isCancelled.
+func TestR79StreamObservedAbortWhenConsumeSSEStreamKeepsSourceFlowing(t *testing.T) {
+	abortCtx, abort := context.WithCancel(context.Background())
+	defer abort()
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(ctx context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+		return &r79streamAbortableStream{ctx: ctx}, nil
+	}}
+	var mu sync.Mutex
+	aborted := false
+	r, err := StreamText(abortCtx, StreamTextOptions{Model: model, Prompt: "Hello", OnError: func(context.Context, error) {}, OnAbort: func(context.Context, []types.StepResult) {
+		mu.Lock()
+		aborted = true
+		mu.Unlock()
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ended := make(chan map[string]interface{}, 1)
+	resp, err := CreateUIMessageStreamResponseWithInit(context.Background(), r, &UIMessageStreamResponseInit{
+		ConsumeSSEStream: func(rd io.Reader) error {
+			_, err := io.Copy(io.Discard, rd)
+			return err
+		},
+	}, UIMessageStreamResultOptions{OnEnd: func(e map[string]interface{}) { ended <- e }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 4096)
+	var seen strings.Builder
+	for !strings.Contains(seen.String(), "text-delta") {
+		n, err := resp.Body.Read(buf)
+		seen.Write(buf[:n])
+		if err != nil {
+			t.Fatalf("body ended before a text delta: %v (%q)", err, seen.String())
+		}
+	}
+	// The client disconnects: the server aborts the run and cancels the
+	// response reader.
+	abort()
+	_ = resp.Body.Close()
+	select {
+	case e := <-ended:
+		if _, ok := e["isCancelled"]; ok || e["isAborted"] != true || fmt.Sprint(e["outcome"]) != "map[status:aborted]" {
+			t.Fatalf("onEnd = isAborted %v isCancelled %v outcome %v, want aborted", e["isAborted"], e["isCancelled"], e["outcome"])
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("onEnd never ran")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !aborted {
+		t.Fatal("onAbort did not fire")
+	}
+}
