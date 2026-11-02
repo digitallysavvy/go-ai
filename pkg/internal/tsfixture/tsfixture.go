@@ -433,6 +433,10 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 					got = jsonValue(v)
 				}
 				snap := e.Snap
+				// TS passes a mock file data string that is not valid base64
+				// through; Go decodes what it can (as the wire replay).
+				got = jsonValue(got)
+				wireAlignInvalidBase64(snap, got)
 				if m, ok := snap.(map[string]interface{}); ok && m["__err"] != nil {
 					t.Logf("%s: TS snapshot not extractable (%v)", e.Expr, m["__err"])
 					continue
@@ -565,6 +569,19 @@ func GenerateContentToTS(res *types.GenerateResult) interface{} {
 			}
 			if m, ok := v.(map[string]interface{}); ok {
 				m["input"] = in
+				// Go-only field; TS carries the signature in providerMetadata.
+				delete(m, "thoughtSignature")
+			}
+		case types.ReasoningFileContent:
+			// TS wraps the bytes as SharedV4FileData; Go renders the
+			// struct (base64 data and an empty fileData).
+			if m, ok := v.(map[string]interface{}); ok {
+				m["type"] = "reasoning-file"
+				delete(m, "fileData")
+				gf := types.GeneratedFileContent{MediaType: x.MediaType, FileData: x.FileData, Data: x.Data}
+				if d := generatedFileDataToTS(&gf); d != nil {
+					m["data"] = d
+				}
 			}
 		case types.ReasoningContent:
 			// TS carries the signature and redacted data in providerMetadata
@@ -604,6 +621,9 @@ func GenerateContentToTS(res *types.GenerateResult) interface{} {
 		if !have[tc.ID] {
 			parts = append(parts, callPart(tc))
 		}
+	}
+	if parts == nil {
+		return []interface{}{} // TS content is always an array
 	}
 	return parts
 }
@@ -773,7 +793,9 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 	return out
 }
 
-var generatedID = regexp.MustCompile(`^(id-\d+|test-id(-\d+)?|call_[0-9a-f]{16})$`)
+// generatedID matches the ids a test's mock or the TS default generateId
+// (16 alphanumerics) produces and the Go generated call ids.
+var generatedID = regexp.MustCompile(`^(id-\d+|test-id(-\d+)?|call_[0-9a-f]{16}|[A-Za-z0-9]{16})$`)
 
 // generatedSourceID matches the source ids Go providers generate (random
 // alphanumerics or a UUID) where TS uses its mock generateId; a wire id
@@ -966,7 +988,7 @@ func CanonStream(parts []interface{}) []interface{} {
 		switch m["type"] {
 		case "reasoning-start", "reasoning-end":
 			// generated block ids differ (mockId vs "reasoning-0")
-			if id, _ := m["id"].(string); strings.HasPrefix(id, "id-") || strings.HasPrefix(id, "reasoning-") || (id != "" && strings.Trim(id, "0123456789") == "") {
+			if id, _ := m["id"].(string); strings.HasPrefix(id, "id-") || strings.HasPrefix(id, "reasoning-") || strings.HasPrefix(id, "test-") || (id != "" && strings.Trim(id, "0123456789") == "") {
 				delete(m, "id")
 			}
 		case "text-start", "text-end":

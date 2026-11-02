@@ -75,6 +75,16 @@ func (m *CompletionModel) DoGenerate(ctx context.Context, opts *provider.Generat
 		return nil, m.handleError(err)
 	}
 
+	if len(response.Choices) == 0 {
+		// TS doGenerate reads response.choices[0] without a guard: the first
+		// property read (openai choice.logprobs, openai-compatible choice.text)
+		// is a TypeError.
+		field := "logprobs"
+		if m.provider.config.OpenAICompatible {
+			field = "text"
+		}
+		return nil, fmt.Errorf("Cannot read properties of undefined (reading '%s')", field) //nolint:staticcheck // ST1005: TypeError text from TS
+	}
 	result := m.convertCompletionResponse(response, warnings)
 	result.RawRequest = body
 	if len(resp.Body) > 0 {
@@ -335,7 +345,11 @@ func (m *CompletionModel) convertCompletionResponse(response openAICompletionRes
 
 	choice := response.Choices[0]
 	result.Text = choice.Text
-	result.Content = []types.ContentPart{types.TextContent{Text: choice.Text}}
+	// TS openai always returns the text part; openai-compatible only a
+	// non-empty one.
+	if choice.Text != "" || !m.provider.config.OpenAICompatible {
+		result.Content = []types.ContentPart{types.TextContent{Text: choice.Text}}
+	}
 	result.FinishReason = providerutils.MapOpenAIFinishReason(choice.FinishReason)
 	result.RawFinishReason = choice.FinishReason
 	if len(choice.Logprobs) > 0 && string(choice.Logprobs) != "null" {

@@ -72,6 +72,9 @@ type WireSuite struct {
 	// usage, finish reason, warnings, provider metadata); otherwise only the
 	// requests they send are compared.
 	LanguageResults bool
+	// SkipResults lists tests (by name) whose results are not compared, with
+	// the reason; their requests still are.
+	SkipResults map[string]string
 	// BatchPrefix is the Go base-URL path prefix for batch objects, whose
 	// recordings carry no URL config (for example "/v1").
 	BatchPrefix string
@@ -226,6 +229,10 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 			t.Logf("call %d (%s) err=%v got=%s", i, c.Method, err, trim(string(b)))
 		}
 		ds := CompareWireResult(srv, s, c, got, err)
+		if why, ok := s.SkipResults[w.Test]; ok && len(ds) > 0 && c.Error == nil && err == nil {
+			t.Logf("call %d (%s): result not compared: %s", i, c.Method, why)
+			ds = nil
+		}
 		if len(w.HTTP) == 0 && len(ds) == 0 && err != nil {
 			// A replayed no-HTTP error case (ReplayNoHTTPErrors) is pure Go
 			// validation: the error text must match TS, so an unrelated Go
@@ -393,8 +400,17 @@ func CompareWireResult(srv *WireServer, s WireSuite, c WireCall, got map[string]
 	if c.Method == "doGetBatchResults" {
 		return nil
 	}
-	if WireKind(c) == "language" && ((!s.LanguageResults && os.Getenv("TSWIRE_LMRESULTS") == "") || c.Method == "doStream") {
+	if c.Result == nil {
+		return nil // the recorder captured no result for this call
+	}
+	if WireKind(c) == "language" && !s.LanguageResults && os.Getenv("TSWIRE_LMRESULTS") == "" {
 		return nil
+	}
+	if c.Method == "doStream" {
+		if WireKind(c) != "language" {
+			return nil
+		}
+		return compareWireStream(c, got)
 	}
 	want, _ := c.Result.(map[string]interface{})
 	want = wirePruneWant(want)
@@ -438,6 +454,43 @@ func CompareWireResult(srv *WireServer, s WireSuite, c WireCall, got map[string]
 	return nil
 }
 
+// compareWireStream diffs the Go stream parts against the parts the TS test
+// read (only when it read them all, or the stream failed), with the stream
+// conventions of the case replay (CanonStream, Normalize).
+func compareWireStream(c WireCall, got map[string]interface{}) []string {
+	if c.Parts == nil || (!c.StreamDone && c.StreamError == nil) {
+		return nil // no recorded parts (older recording) or a partial read
+	}
+	want, _ := WireUnwrap(c.Parts).([]interface{})
+	if c.StreamError != nil {
+		want = append(want, map[string]interface{}{"type": "error"})
+	}
+	g, _ := jsonRound(got["stream"]).([]interface{})
+	// Go reports a response-metadata timestamp / model id where TS reports
+	// none (the case replay's DropResponseTimestamp / DropResponseModelID).
+	for _, key := range []string{"timestamp", "modelId"} {
+		tsHas := false
+		for _, p := range want {
+			if m, ok := p.(map[string]interface{}); ok && m["type"] == "response-metadata" && m[key] != nil {
+				tsHas = true
+			}
+		}
+		if tsHas {
+			continue
+		}
+		for _, p := range g {
+			if m, ok := p.(map[string]interface{}); ok && m["type"] == "response-metadata" {
+				delete(m, key)
+			}
+		}
+	}
+	wireAlignInvalidBase64(want, g)
+	if d := Diff("", Normalize(CanonStream(want)), Normalize(CanonStream(g))); d != "" {
+		return []string{"stream (- TS, + Go):\n" + d}
+	}
+	return nil
+}
+
 // wireNormalizeParts applies the conventions the case replay already uses to
 // language-model content: provider tools are named by id in Go (ToolNameAlias),
 // generated source ids differ, and an explicit isError false is unset.
@@ -459,6 +512,10 @@ func wireNormalizeParts(v interface{}) interface{} {
 				continue // an absent count is zero (image usage)
 			case k == "thoughtSignature" && x["type"] == "tool-call":
 				continue // Go-only field; TS carries it in providerMetadata
+			case k == "providerOptions" && x["type"] != nil:
+				continue // Go-only replay field on output parts; TS has providerMetadata
+			case k == "input" && x["type"] == "tool-call" && (e == "" || e == "{}"):
+				continue // empty tool input and {} are the same call (TS '' is pruned)
 			case k == "toolCallId":
 				if id, _ := e.(string); generatedWireID.MatchString(id) {
 					e = "<generated>"
@@ -1017,6 +1074,7 @@ func wireLanguage(ctx context.Context, s WireSuite, m provider.LanguageModel, c 
 		// output; Go surfaces that from the stream before the first output.
 		defer st.Close() //nolint:errcheck
 		output := false
+		var chunks []*provider.StreamChunk
 		for {
 			ch, err := st.Next()
 			if errors.Is(err, io.EOF) {
@@ -1026,8 +1084,10 @@ func wireLanguage(ctx context.Context, s WireSuite, m provider.LanguageModel, c 
 				if !output {
 					return nil, err
 				}
+				chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error(), Err: err})
 				break
 			}
+			chunks = append(chunks, ch)
 			switch ch.Type {
 			case provider.ChunkTypeStreamStart, provider.ChunkTypeResponseMetadata, provider.ChunkTypeRaw:
 			case provider.ChunkTypeError:
@@ -1037,7 +1097,13 @@ func wireLanguage(ctx context.Context, s WireSuite, m provider.LanguageModel, c 
 				output = true
 			}
 		}
-		return map[string]interface{}{}, nil
+		parts := StreamToTS(chunks)
+		for i, ch := range chunks {
+			if ch.Type == provider.ChunkTypeStreamStart {
+				parts[i].(map[string]interface{})["warnings"] = WireWarnings(ch.Warnings) // as generate results
+			}
+		}
+		return map[string]interface{}{"stream": parts}, nil
 	}
 	res, err := m.DoGenerate(ctx, opts)
 	if err != nil {

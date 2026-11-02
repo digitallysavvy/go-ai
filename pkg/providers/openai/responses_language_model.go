@@ -15,6 +15,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -2295,18 +2296,19 @@ func computerCallArguments(item responses.ComputerCall) (map[string]interface{},
 	if len(rawActions) == 0 && item.Action != nil {
 		rawActions = []map[string]interface{}{item.Action}
 	}
-	actions := make([]map[string]interface{}, 0, len(rawActions))
+	actions := make([]interface{}, 0, len(rawActions))
 	for _, action := range rawActions {
-		actions = append(actions, responses.MapComputerActionToSDK(action))
+		actions = append(actions, computerActionToSDK(action))
 	}
-	checks := make([]map[string]interface{}, 0, len(item.PendingSafetyChecks))
+	checks := make([]interface{}, 0, len(item.PendingSafetyChecks))
 	for _, c := range item.PendingSafetyChecks {
-		check := map[string]interface{}{"id": c.ID}
+		check := jsonorder.New()
+		check.Set("id", c.ID)
 		if c.Code != "" {
-			check["code"] = c.Code
+			check.Set("code", c.Code)
 		}
 		if c.Message != "" {
-			check["message"] = c.Message
+			check.Set("message", c.Message)
 		}
 		checks = append(checks, check)
 	}
@@ -2314,13 +2316,70 @@ func computerCallArguments(item responses.ComputerCall) (map[string]interface{},
 	if status == "" {
 		status = "completed"
 	}
+	input := jsonorder.New()
+	input.Set("actions", actions)
+	input.Set("pendingSafetyChecks", checks)
+	input.Set("status", status)
+	// Arguments keep their v0.5 Go types ([]map[string]interface{}).
 	args := map[string]interface{}{
-		"actions":             actions,
-		"pendingSafetyChecks": checks,
+		"actions":             plainMaps(actions),
+		"pendingSafetyChecks": plainMaps(checks),
 		"status":              status,
 	}
-	raw := marshalNoEscape(args)
-	return args, string(raw)
+	return args, input.String()
+}
+
+func plainMaps(list []interface{}) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(list))
+	for _, v := range list {
+		if m, ok := jsonorder.Plain(v).(map[string]interface{}); ok {
+			out = append(out, m)
+		} else if m, ok := v.(map[string]interface{}); ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// computerActionFields are the keys TS mapComputerAction writes for each
+// action type, in its order, as {sdk key, wire key}; the zod schema strips
+// any other key.
+var computerActionFields = map[string][][2]string{
+	"click":        {{"button", "button"}, {"x", "x"}, {"y", "y"}},
+	"double_click": {{"x", "x"}, {"y", "y"}},
+	"drag":         {{"path", "path"}},
+	"keypress":     {{"keys", "keys"}},
+	"move":         {{"x", "x"}, {"y", "y"}},
+	"screenshot":   {},
+	"scroll":       {{"x", "x"}, {"y", "y"}, {"scrollX", "scroll_x"}, {"scrollY", "scroll_y"}},
+	"type":         {{"text", "text"}},
+	"wait":         {},
+}
+
+// computerActionToSDK is TS mapComputerAction over the parsed action: the
+// declared keys in TS order, `keys` only when it is not null (except on
+// keypress, where it is required), scroll_x/scroll_y as scrollX/scrollY. An
+// action type TS does not know is passed through (TS fails the response).
+func computerActionToSDK(action map[string]interface{}) interface{} {
+	typ, _ := action["type"].(string)
+	fields, known := computerActionFields[typ]
+	if !known {
+		return responses.MapComputerActionToSDK(action)
+	}
+	o := jsonorder.New()
+	o.Set("type", typ)
+	for _, f := range fields {
+		if v, ok := action[f[1]]; ok {
+			o.Set(f[0], v)
+		}
+	}
+	switch typ {
+	case "click", "double_click", "drag", "move", "scroll":
+		if v := action["keys"]; v != nil {
+			o.Set("keys", v)
+		}
+	}
+	return o
 }
 
 func openAIResponsesToolCallMetadata(providerName, itemID, namespace string, async *bool, caller *responses.ToolCaller) map[string]interface{} {

@@ -65,6 +65,12 @@ type WireCall struct {
 	Result   interface{}   `json:"result"`
 	Error    interface{}   `json:"error"`
 	Streamed bool          `json:"streamed"`
+	// Parts are the stream parts the TS test read from a doStream result;
+	// StreamDone is set when it read them all, StreamError when the stream
+	// failed (recordings made since review round 81).
+	Parts       []interface{} `json:"parts"`
+	StreamDone  bool          `json:"streamDone"`
+	StreamError interface{}   `json:"streamError"`
 
 	// argsRaw is the call arguments as recorded, keeping the key order of
 	// the TS objects (Args holds Go maps, which sort keys).
@@ -162,6 +168,10 @@ type WireHTTP struct {
 	Headers  map[string]string `json:"headers"`
 	BodyB64  string            `json:"bodyB64"`
 	Response *WireResponse     `json:"response"`
+	// MockFetch marks an exchange recorded from a mock fetch the test
+	// injected (not the test server): its response headers are exactly the
+	// recorded ones.
+	MockFetch bool `json:"mockFetch"`
 }
 
 // WireResponse is the served response.
@@ -426,7 +436,15 @@ func (s *WireServer) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := s.test.HTTP[idx].Response
+	mockFetch := s.test.HTTP[idx].MockFetch
 	setH := func(def map[string]string) {
+		if mockFetch {
+			// A mock fetch Response carries only the headers it was built
+			// with: no test-server defaults, and no content type Go would
+			// sniff when none was recorded.
+			def = nil
+			w.Header()["Content-Type"] = nil
+		}
 		for k, v := range def {
 			w.Header().Set(k, v)
 		}
