@@ -116,7 +116,7 @@ func TestR78prova_groqReadsPastDone(t *testing.T) {
 	}
 }
 
-const r78provaTSHeaders = "the TS test builds a provider with headers and checks the TS test user agent (ai-sdk-groq/0.0.0-test); the harness builds a default provider"
+const r78provaTSHeaders = "needs the provider the TS test builds (API key and provider headers); replayed by TestR79prova_TSCasesPassHeaders"
 
 // TestR78prova_TSCasesChatAsserts replays groq-chat-language-model.test.ts
 // extracted at e64ed82f27 with --asserts (plain assertions as well as
