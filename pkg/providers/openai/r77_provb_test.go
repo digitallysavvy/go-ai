@@ -110,3 +110,37 @@ func TestR77ProvbTSCasesChatPrepareTools(t *testing.T) {
 		return out, nil, nil
 	}, nil)
 }
+
+// TestR77ProvbTSCasesChatConvertMessages replays
+// convert-to-openai-chat-messages.test.ts (TS convertToOpenAIChatMessages)
+// through the chat request builder: the request messages and warnings, with
+// systemMessageMode passed as providerOptions.openai.systemMessageMode.
+func TestR77ProvbTSCasesChatConvertMessages(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/chat_convert_messages.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		in, _ := args[0].(map[string]interface{})
+		msgs, why := tsfixture.BuildPromptMessages(in["prompt"])
+		if why != "" {
+			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+		}
+		opts := &provider.GenerateOptions{Prompt: types.Prompt{Messages: msgs}}
+		if mode, ok := in["systemMessageMode"].(string); ok {
+			opts.ProviderOptions = map[string]interface{}{"openai": map[string]interface{}{"systemMessageMode": mode}}
+		}
+		m, err := New(Config{APIKey: "k"}).ChatModel("gpt-4o")
+		if err != nil {
+			return nil, nil, err
+		}
+		body, warnings, err := m.(*LanguageModel).buildRequestBodyWithWarnings(opts, false)
+		if err != nil {
+			return nil, nil, err
+		}
+		b, _ := json.Marshal(body["messages"])
+		var messages interface{}
+		_ = json.Unmarshal(b, &messages)
+		if messages == nil {
+			messages = []interface{}{}
+		}
+		return map[string]interface{}{"messages": messages, "warnings": tsfixture.WarningsToTS(warnings)}, nil, nil
+	}, nil)
+}

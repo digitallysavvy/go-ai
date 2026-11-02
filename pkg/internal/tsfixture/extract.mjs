@@ -372,8 +372,13 @@ function extractRoutes(body, aliasesOut) {
 // the test-server variables of the file (`const pollServer =
 // createTestServer(...)`): assertions over them read as server.*
 const serverVars = [...new Set([...src.matchAll(/\b(?:const|let)\s+(\w+)\s*=\s*createTestServer\(/g)].map(m => m[1]))].filter(n => n !== 'server');
-// `(p as { delta: string }).delta` reads as `p.delta`
-function dropCasts(s) { return s.replace(/\(\s*(\w+)\s+as\s+\{[^}]*\}\s*\)/g, '$1'); }
+// `(p as { delta: string }).delta` reads as `p.delta`, `(x[0]!.content as
+// unknown[])[0]` as `x[0].content[0]`
+function dropCasts(s) {
+  return s.replace(/\(\s*(\w+)\s+as\s+\{[^}]*\}\s*\)/g, '$1')
+    .replace(/!(?=[.\[])/g, '')
+    .replace(/\(\s*([\w$.\[\]]+)\s+as\s+[\w$.<>\[\]| ]+\)/g, '$1');
+}
 
 function topDescribeOf(idx) {
   const ms = [...src.slice(0, idx).matchAll(/^describe\(\s*(['"`])(.*?)\1/gm)];
@@ -463,7 +468,7 @@ for (let i = 0; i < starts.length; i++) {
       const st = em2.index + 'expect'.length;
       const e = balanced(body0, st);
       if (e < 0) continue;
-      const expr = body0.slice(st + 1, e - 1).trim().replace(/^await\s+/, '');
+      const expr = dropCasts(body0.slice(st + 1, e - 1).trim().replace(/^await\s+/, ''));
       let k = e;
       let not = false;
       let rejects = false;
