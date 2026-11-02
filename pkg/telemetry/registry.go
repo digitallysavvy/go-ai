@@ -3302,6 +3302,7 @@ func FireOnStepError(ctx context.Context, e TelemetryErrorEvent) {
 	if telemetryDisabled(e.Settings) {
 		return
 	}
+	PublishDiagnostic(ctx, DiagnosticEventOnStepError, e)
 	for _, i := range snapshotFor(e.Settings) {
 		if h, ok := i.(stepErrorHandler); ok {
 			callIntegration(func() { h.OnStepError(ctx, e) })

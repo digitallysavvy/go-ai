@@ -2,7 +2,9 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"math"
+	"sync"
 	"testing"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -71,5 +73,31 @@ func TestR80carryLegacyOpenTelemetryEmbedUsageReported(t *testing.T) {
 				t.Fatalf("got %v ok=%v, want %d ok=%v", v, ok, tc.want, tc.wantOK)
 			}
 		})
+	}
+}
+
+// Reviewer item 4 (r80): FireOnStepError publishes a diagnostic message like
+// every other Fire* (TS dispatches onStepError through the same telemetry
+// dispatcher as the other lifecycle events); disabled telemetry publishes
+// nothing.
+func TestR80carryFireOnStepErrorPublishesDiagnostic(t *testing.T) {
+	var mu sync.Mutex
+	var got []TelemetryErrorEvent
+	unsubscribe := SubscribeDiagnosticTyped(DiagnosticEventOnStepError, func(_ context.Context, e TelemetryErrorEvent) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if e.CallID == "r80carry-step-error" || e.CallID == "r80carry-step-error-off" {
+			got = append(got, e)
+		}
+		return nil
+	})
+	defer unsubscribe()
+	boom := errors.New("boom")
+	FireOnStepError(context.Background(), TelemetryErrorEvent{Settings: &Settings{IsEnabled: Bool(true)}, CallID: "r80carry-step-error", Error: boom})
+	FireOnStepError(context.Background(), TelemetryErrorEvent{Settings: &Settings{IsEnabled: Bool(false)}, CallID: "r80carry-step-error-off", Error: boom})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 || got[0].CallID != "r80carry-step-error" || !errors.Is(got[0].Error, boom) || got[0].AIVersion == "" {
+		t.Fatalf("published = %+v, want one enabled event with the error and AIVersion", got)
 	}
 }

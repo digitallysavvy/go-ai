@@ -23,6 +23,10 @@ const (
 	DiagnosticEventOnChunk                  DiagnosticEventType = "onChunk"
 	DiagnosticEventOnStepEnd                DiagnosticEventType = "onStepEnd"
 	DiagnosticEventOnStepFinish             DiagnosticEventType = "onStepFinish"
+	// DiagnosticEventOnStepError is published by FireOnStepError (TS
+	// onStepError: a started step failed or was aborted before it produced
+	// a result).
+	DiagnosticEventOnStepError              DiagnosticEventType = "onStepError"
 	DiagnosticEventOnObjectStepStart        DiagnosticEventType = "onObjectStepStart"
 	DiagnosticEventOnObjectStepFinish       DiagnosticEventType = "onObjectStepFinish"
 	DiagnosticEventOnEmbedStart             DiagnosticEventType = "onEmbedStart"
