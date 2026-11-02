@@ -1087,6 +1087,7 @@ func convertAssistantTextItem(part types.TextContent, opts ConvertOptions, hasPr
 
 func convertReasoningItem(part types.ReasoningContent, opts ConvertOptions, reasoningItems map[string]map[string]interface{}) (interface{}, []types.Warning) {
 	itemID := openAIReasoningItemID(part, openAIProviderOptionsName(opts))
+	encryptedContent := openAIReasoningEncryptedContent(part, openAIProviderOptionsName(opts))
 	if (opts.HasPreviousResponseID || opts.HasConversation) && itemID != "" {
 		return nil, nil
 	}
@@ -1119,8 +1120,8 @@ func convertReasoningItem(part types.ReasoningContent, opts ConvertOptions, reas
 					Message: fmt.Sprintf("Cannot append empty reasoning part to existing reasoning sequence. Skipping reasoning part: %s.", raw),
 				})
 			}
-			if part.EncryptedContent != "" {
-				existing["encrypted_content"] = part.EncryptedContent
+			if encryptedContent != "" {
+				existing["encrypted_content"] = encryptedContent
 			}
 			return nil, warnings
 		}
@@ -1129,13 +1130,13 @@ func convertReasoningItem(part types.ReasoningContent, opts ConvertOptions, reas
 			"id":      itemID,
 			"summary": summaryParts,
 		}
-		if part.EncryptedContent != "" {
-			item["encrypted_content"] = part.EncryptedContent
+		if encryptedContent != "" {
+			item["encrypted_content"] = encryptedContent
 		}
 		reasoningItems[itemID] = item
 		return item, nil
 	}
-	if part.EncryptedContent == "" {
+	if encryptedContent == "" {
 		// Row (P1-5c item 7): a reasoning part with neither an itemId nor
 		// encrypted_content didn't originate from this provider and cannot
 		// be replayed; TS warns instead of silently dropping it.
@@ -1147,7 +1148,7 @@ func convertReasoningItem(part types.ReasoningContent, opts ConvertOptions, reas
 	}
 
 	item := map[string]interface{}{"type": "reasoning"}
-	item["encrypted_content"] = part.EncryptedContent
+	item["encrypted_content"] = encryptedContent
 	item["summary"] = summaryParts
 	return item, nil
 }
@@ -1334,6 +1335,33 @@ func openAIReasoningItemID(part types.ReasoningContent, providerName string) str
 		return ""
 	}
 	return openAIItemID(metadata, providerName)
+}
+
+// openAIReasoningEncryptedContent is the encrypted reasoning a replayed
+// reasoning part carries: TS reads providerOptions[provider].
+// reasoningEncryptedContent (the providerMetadata a Responses result or
+// stream reports, which response messages and UI messages turn into
+// providerOptions). Go also reads it from ProviderMetadata, like the item id,
+// and falls back to the Go-only EncryptedContent field.
+func openAIReasoningEncryptedContent(part types.ReasoningContent, providerName string) string {
+	if enc := openAIReasoningEncryptedFrom(part.ProviderOptions, providerName); enc != "" {
+		return enc
+	}
+	if len(part.ProviderMetadata) > 0 {
+		var metadata map[string]interface{}
+		if err := json.Unmarshal(part.ProviderMetadata, &metadata); err == nil {
+			if enc := openAIReasoningEncryptedFrom(metadata, providerName); enc != "" {
+				return enc
+			}
+		}
+	}
+	return part.EncryptedContent
+}
+
+func openAIReasoningEncryptedFrom(metadata map[string]interface{}, providerName string) string {
+	m, _ := metadata[providerName].(map[string]interface{})
+	enc, _ := m["reasoningEncryptedContent"].(string) // null (nullish) is absent
+	return enc
 }
 
 func openAIToolResultItemID(part types.ToolResultContent, providerName string) string {
