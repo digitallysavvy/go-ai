@@ -14,11 +14,12 @@ import (
 //
 // created == 0 is treated as "absent", leaving Timestamp at its zero value.
 // TS checks `created != null`, so a present 0 is the epoch there: an int64
-// cannot tell the two apart, so callers whose wire value may be 0 pass 0 here
-// and set Timestamp themselves from the decoded `*int64`/`*float64` (groq,
-// mistral, deepseek, alibaba, moonshot, the OpenAI/xAI Responses models and
-// openresponses do). Headers is set by the caller (it isn't part of the
-// shared TS helper's input).
+// cannot tell the two apart (nor hold a fractional TS z.number() value), so
+// callers whose wire value may be 0 or fractional pass 0 here and set
+// Timestamp themselves from the decoded `*float64` or raw body as `new
+// Date(created * 1000)` (groq, mistral, deepseek, alibaba, moonshot, the
+// OpenAI/xAI Responses models and openresponses do). Headers is set by the
+// caller (it isn't part of the shared TS helper's input).
 func BuildResponseMetadata(id, modelID string, created int64) *types.ResponseMetadata {
 	meta := &types.ResponseMetadata{
 		ID:      id,
