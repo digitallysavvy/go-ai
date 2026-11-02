@@ -3046,7 +3046,15 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 		// WorkflowAgent: replay the step's tool input callbacks now that the
 		// model stream ended and its tool calls are parsed, before approvals and
-		// tool execution (TS invokeToolInputLifecycleCallbacks).
+		// tool execution (TS invokeToolInputLifecycleCallbacks). With
+		// ToolMessagesAsConversationPrompt the callbacks get the step's prompt,
+		// system message first (TS passes stepInputMessages, the
+		// conversationPrompt the model step was called with).
+		if len(deferredToolInputs) > 0 && r.stepReopenGenOpts != nil {
+			if callbackMessages, _, ok := workflowToolMessages(opts.Internal, r.stepReopenGenOpts.Prompt, nil); ok {
+				toolInputCallbacks.messages = callbackMessages
+			}
+		}
 		for _, c := range deferredToolInputs {
 			if err := toolInputCallbacks.handle(stepCtx, c); err != nil {
 				r.err = err
