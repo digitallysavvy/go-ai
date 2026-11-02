@@ -93,15 +93,17 @@ func TestR78provbAlibabaCreatedZeroIsEpoch(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		created string
-		want    bool
-	}{{"zero", `"created":0,`, true}, {"absent", ``, false}} {
+		want    time.Time
+	}{
+		{"zero", `"created":0,`, time.Unix(0, 0)},
+		{"absent", ``, time.Time{}},
+		// r79 provb: TS z.number() accepts a fractional created; new Date(created * 1000).
+		{"fractional", `"created":1700000000.25,`, time.UnixMilli(1700000000250)},
+	} {
 		check := func(t *testing.T, ts time.Time) {
 			t.Helper()
-			if tc.want && (ts.IsZero() || !ts.Equal(time.Unix(0, 0))) {
-				t.Fatalf("timestamp = %v, want the epoch", ts)
-			}
-			if !tc.want && !ts.IsZero() {
-				t.Fatalf("timestamp = %v, want none", ts)
+			if ts.IsZero() != tc.want.IsZero() || !ts.Equal(tc.want) {
+				t.Fatalf("timestamp = %v, want %v", ts, tc.want)
 			}
 		}
 		t.Run("generate/"+tc.name, func(t *testing.T) {

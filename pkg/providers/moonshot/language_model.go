@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -118,7 +119,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		Headers: result.ResponseHeaders,
 	}
 	if response.Created != nil { // TS created != null: 0 is the epoch
-		responseMetadata.Timestamp = time.Unix(*response.Created, 0)
+		responseMetadata.Timestamp = moonshotCreatedTimestamp(*response.Created)
 	}
 	result.ResponseMetadata = responseMetadata
 	return result, nil
@@ -638,7 +639,7 @@ func (m *LanguageModel) handleError(err error) error {
 type moonshotResponse struct {
 	ID      string           `json:"id"`
 	Object  string           `json:"object"`
-	Created *int64           `json:"created"`
+	Created *float64         `json:"created"`
 	Model   string           `json:"model"`
 	Choices []moonshotChoice `json:"choices"`
 	Usage   json.RawMessage  `json:"usage"`
@@ -683,7 +684,7 @@ type moonshotToolCallFunction struct {
 type moonshotStreamChunk struct {
 	ID      string                 `json:"id"`
 	Object  string                 `json:"object"`
-	Created *int64                 `json:"created"`
+	Created *float64               `json:"created"`
 	Model   string                 `json:"model"`
 	Choices []moonshotStreamChoice `json:"choices"`
 	Usage   json.RawMessage        `json:"usage"`
@@ -860,7 +861,7 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 			s.isFirstChunk = false
 			meta := &provider.ResponseMetadata{ID: chunk.ID, ModelID: chunk.Model}
 			if chunk.Created != nil { // TS created != null: 0 is the epoch
-				meta.Timestamp = time.Unix(*chunk.Created, 0)
+				meta.Timestamp = moonshotCreatedTimestamp(*chunk.Created)
 			}
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: meta})
 		}
@@ -1093,4 +1094,16 @@ func (s *moonshotStream) Err() error {
 		return nil
 	}
 	return s.err
+}
+
+// moonshotCreatedTimestamp converts a response's `created` (unix seconds, TS z.number()) as
+// TS createLanguageModelResponseMetadata does: new Date(created * 1000), so a
+// fractional value keeps its milliseconds (truncated) and 0 is the epoch. A
+// value outside the JS Date range is an Invalid Date in TS: no timestamp.
+func moonshotCreatedTimestamp(created float64) time.Time {
+	ms := created * 1000
+	if math.IsNaN(ms) || math.IsInf(ms, 0) || math.Abs(ms) > 8.64e15 {
+		return time.Time{}
+	}
+	return time.UnixMilli(int64(ms))
 }
