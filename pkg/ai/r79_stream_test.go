@@ -511,3 +511,62 @@ func TestR79StreamObservedAbortWhenConsumeSSEStreamKeepsSourceFlowing(t *testing
 		t.Fatal("onAbort did not fire")
 	}
 }
+
+func r79streamFailingConversion() (*StreamTextResult, UIMessageStreamResultOptions) {
+	res := &StreamTextResult{stream: testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinish},
+	})}
+	return res, UIMessageStreamResultOptions{
+		MessageMetadata: func(map[string]interface{}) map[string]interface{} { panic("metadata boom") },
+	}
+}
+
+// TS JsonToSseTransformStream writes "data: [DONE]" in flush, which an
+// errored UI message stream never reaches: a failed UI conversion (here a
+// panicking MessageMetadata) ends the SSE stream without [DONE]. The pipe
+// helper returns the failure, the response body ends with it, and the
+// ConsumeSSEStream copy's reader gets it (the tee's second branch errors
+// too). Go wrote [DONE] and ended the body and the copy normally.
+func TestR79StreamFailedConversionEndsWithoutDone(t *testing.T) {
+	t.Run("pipe", func(t *testing.T) {
+		res, opts := r79streamFailingConversion()
+		var body strings.Builder
+		copyErr := make(chan error, 1)
+		err := PipeUIMessageStreamToResponseWithInit(context.Background(), res, &body, &UIMessageStreamResponseInit{
+			ConsumeSSEStream: func(r io.Reader) error {
+				_, err := io.ReadAll(r)
+				copyErr <- err
+				return err
+			},
+		}, opts)
+		if err == nil || !strings.Contains(err.Error(), "metadata boom") {
+			t.Fatalf("Pipe = %v, want the conversion failure", err)
+		}
+		if strings.Contains(body.String(), "[DONE]") {
+			t.Fatalf("body = %q, want no [DONE]", body.String())
+		}
+		select {
+		case err := <-copyErr:
+			if err == nil || !strings.Contains(err.Error(), "metadata boom") {
+				t.Fatalf("copy read error = %v, want the conversion failure", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the consumer copy never ended")
+		}
+	})
+	t.Run("response", func(t *testing.T) {
+		res, opts := r79streamFailingConversion()
+		resp, err := CreateUIMessageStreamResponseWithInit(context.Background(), res, nil, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := io.ReadAll(resp.Body)
+		if err == nil || !strings.Contains(err.Error(), "metadata boom") {
+			t.Fatalf("body read error = %v, want the conversion failure", err)
+		}
+		if strings.Contains(string(b), "[DONE]") {
+			t.Fatalf("body = %q, want no [DONE]", b)
+		}
+	})
+}

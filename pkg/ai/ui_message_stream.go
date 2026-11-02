@@ -2471,7 +2471,8 @@ func uiMessageStreamResponseHead(init *UIMessageStreamResponseInit) (int, string
 }
 
 // CreateUIMessageStreamResponseWithInit writes UI chunks as SSE to an HTTP response
-// with optional status/statusText/headers.
+// with optional status/statusText/headers. A failed UI conversion ends the
+// body with that error, without "data: [DONE]" (TS: the body stream errors).
 func CreateUIMessageStreamResponseWithInit(ctx context.Context, result *StreamTextResult, init *UIMessageStreamResponseInit, opts ...UIMessageStreamResultOptions) (*http.Response, error) {
 	if result == nil {
 		return nil, fmt.Errorf("result is required")
@@ -2484,10 +2485,11 @@ func CreateUIMessageStreamResponseWithInit(ctx context.Context, result *StreamTe
 
 	pr, pw := io.Pipe()
 	go func() {
-		defer func() { _ = pw.Close() }()
 		// The body ends after the last SSE event, without waiting for a
-		// ConsumeSSEStream callback (TS does not await consumeSseStream).
-		_ = PipeUIMessageStreamToResponseWithInit(ctx, result, pw, init, opts...)
+		// ConsumeSSEStream callback (TS does not await consumeSseStream). A
+		// failed UI conversion ends it with that error, without
+		// "data: [DONE]" (TS: the response body stream errors).
+		_ = pw.CloseWithError(PipeUIMessageStreamToResponseWithInit(ctx, result, pw, init, opts...))
 	}()
 	return &http.Response{
 		StatusCode: status,
@@ -2547,6 +2549,11 @@ func uiSSEEventBytes(chunk UIMessageChunk) ([]byte, error) {
 // init.ConsumeSSEStream callback (TS pipeUIMessageStreamToResponse does not
 // await consumeSseStream); the callback keeps reading its buffered copy in its
 // own goroutine, and its error is not returned.
+//
+// A failed UI conversion (for example a callback that panics) ends the SSE
+// stream without "data: [DONE]" and is returned; the callback's copy ends
+// with that error too. TS's errored stream never reaches the
+// JsonToSseTransformStream flush that writes [DONE].
 func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTextResult, w io.Writer, init *UIMessageStreamResponseInit, opts ...UIMessageStreamResultOptions) error {
 	if result == nil {
 		return fmt.Errorf("result is required")
@@ -2568,15 +2575,19 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 	chunks, errCh := CreateUIMessageStream(streamCtx, result, opts...)
 	status, _, headers := uiMessageStreamResponseHead(init)
 	writeResponseHead(w, status, headers)
-	if err := writeUIMessageChunksSSE(chunks, w, init, cancelStream); err != nil {
-		return err
+	// The UI conversion's failure is in errCh by the time chunks closes.
+	var failureOnce sync.Once
+	var conversionErr error
+	failure := func() error {
+		failureOnce.Do(func() {
+			select {
+			case conversionErr = <-errCh:
+			default:
+			}
+		})
+		return conversionErr
 	}
-	select {
-	case err := <-errCh:
-		return err
-	default:
-		return nil
-	}
+	return writeUIMessageChunksSSE(chunks, w, init, cancelStream, failure)
 }
 
 // PipeUIMessageChunksToResponse writes any stream of UI message chunks to w
@@ -2613,7 +2624,7 @@ func PipeUIMessageChunksToResponse(chunks <-chan UIMessageChunk, w io.Writer, in
 	}
 	status, _, headers := uiMessageStreamResponseHead(init)
 	writeResponseHead(w, status, headers)
-	return writeUIMessageChunksSSE(chunks, w, init, nil)
+	return writeUIMessageChunksSSE(chunks, w, init, nil, nil)
 }
 
 // CreateUIMessageChunksResponse returns an *http.Response that streams any
@@ -2634,7 +2645,7 @@ func CreateUIMessageChunksResponse(chunks <-chan UIMessageChunk, init *UIMessage
 		// response body (TS tees the stream and does not await
 		// consumeSseStream): the body ends after the last SSE event, and
 		// only a write failure ends it with an error.
-		_ = pw.CloseWithError(writeUIMessageChunksSSE(chunks, pw, init, nil))
+		_ = pw.CloseWithError(writeUIMessageChunksSSE(chunks, pw, init, nil, nil))
 	}()
 	return &http.Response{
 		StatusCode: status,
@@ -2655,6 +2666,8 @@ type uiSSETeeBuffer struct {
 	buf     []byte
 	closed  bool
 	discard bool
+	// err ends the consumer's stream instead of io.EOF (the source failed).
+	err error
 	// done is closed by stop.
 	done chan struct{}
 }
@@ -2682,6 +2695,9 @@ func (b *uiSSETeeBuffer) Read(p []byte) (int, error) {
 		b.cond.Wait()
 	}
 	if len(b.buf) == 0 {
+		if b.err != nil {
+			return 0, b.err
+		}
 		return 0, io.EOF
 	}
 	n := copy(p, b.buf)
@@ -2694,8 +2710,17 @@ func (b *uiSSETeeBuffer) Read(p []byte) (int, error) {
 
 // Close ends the consumer's stream after the bytes already queued.
 func (b *uiSSETeeBuffer) Close() {
+	b.closeWithError(nil)
+}
+
+// closeWithError ends the consumer's stream after the bytes already queued;
+// a non-nil err is what its next Read returns instead of io.EOF.
+func (b *uiSSETeeBuffer) closeWithError(err error) {
 	b.mu.Lock()
-	b.closed = true
+	if !b.closed {
+		b.closed = true
+		b.err = err
+	}
 	b.cond.Broadcast()
 	b.mu.Unlock()
 }
@@ -2732,7 +2757,12 @@ func (b *uiSSETeeBuffer) stopped() bool {
 // and cancelling the response branch does not cancel the source while the
 // consumeSseStream branch still reads it. release is called once chunks are
 // no longer read (at return, or when that drain ends); it may be nil.
-func writeUIMessageChunksSSE(chunks <-chan UIMessageChunk, w io.Writer, init *UIMessageStreamResponseInit, release func()) error {
+//
+// failure, when set, reports whether the source of chunks failed once chunks
+// closes. A failed source ends the SSE stream without "data: [DONE]" (TS
+// JsonToSseTransformStream writes it only in flush, which an errored stream
+// skips), the copy's reader gets that error, and it is returned.
+func writeUIMessageChunksSSE(chunks <-chan UIMessageChunk, w io.Writer, init *UIMessageStreamResponseInit, release func(), failure func() error) error {
 	if release == nil {
 		release = func() {}
 	}
@@ -2778,21 +2808,25 @@ func writeUIMessageChunksSSE(chunks <-chan UIMessageChunk, w io.Writer, init *UI
 		return nil
 	}
 
-	writeFailed, err := writeUISSEEvents(chunks, keepAlive, true, nil, emit)
+	writeFailed, err := writeUISSEEvents(chunks, keepAlive, true, nil, failure, emit)
 	if !writeFailed || side == nil || side.stopped() {
 		if side != nil {
-			side.Close()
+			if writeFailed {
+				side.Close()
+			} else {
+				side.closeWithError(err)
+			}
 		}
 		release()
 		return err
 	}
 	go func() {
 		defer release()
-		defer side.Close()
-		_, _ = writeUISSEEvents(chunks, keepAlive, false, side.done, func(event []byte) error {
+		_, drainErr := writeUISSEEvents(chunks, keepAlive, false, side.done, failure, func(event []byte) error {
 			_, _ = side.Write(event)
 			return nil
 		})
+		side.closeWithError(drainErr)
 	}()
 	return err
 }
@@ -2800,9 +2834,11 @@ func writeUIMessageChunksSSE(chunks <-chan UIMessageChunk, w io.Writer, init *UI
 // writeUISSEEvents emits the SSE events of chunks: the opening comment (when
 // open and keep-alive is on), one data event per chunk, keep-alive comments
 // after keepAlive without a chunk (0 turns them off), and "data: [DONE]"
-// once chunks closes. It stops early when stop closes. writeFailed reports
-// whether err came from emit rather than from encoding a chunk.
-func writeUISSEEvents(chunks <-chan UIMessageChunk, keepAlive time.Duration, open bool, stop <-chan struct{}, emit func([]byte) error) (writeFailed bool, err error) {
+// once chunks closes, unless failure reports that their source failed (that
+// error is returned instead). It stops early when stop closes. writeFailed
+// reports whether err came from emit rather than from the source or from
+// encoding a chunk.
+func writeUISSEEvents(chunks <-chan UIMessageChunk, keepAlive time.Duration, open bool, stop <-chan struct{}, failure func() error, emit func([]byte) error) (writeFailed bool, err error) {
 	if keepAlive > 0 && open {
 		// Flush an opening comment immediately, before the first real chunk
 		// is available, so a reverse proxy sees the response start right
@@ -2823,6 +2859,11 @@ func writeUISSEEvents(chunks <-chan UIMessageChunk, keepAlive time.Duration, ope
 		select {
 		case chunk, ok := <-chunks:
 			if !ok {
+				if failure != nil {
+					if err := failure(); err != nil {
+						return false, err
+					}
+				}
 				if err := emit([]byte("data: [DONE]\n\n")); err != nil {
 					return true, err
 				}
