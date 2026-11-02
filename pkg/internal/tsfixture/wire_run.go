@@ -466,6 +466,24 @@ func compareWireStream(c WireCall, got map[string]interface{}) []string {
 		want = append(want, map[string]interface{}{"type": "error"})
 	}
 	g, _ := jsonRound(got["stream"]).([]interface{})
+	// Go reports a response-metadata timestamp / model id where TS reports
+	// none (the case replay's DropResponseTimestamp / DropResponseModelID).
+	for _, key := range []string{"timestamp", "modelId"} {
+		tsHas := false
+		for _, p := range want {
+			if m, ok := p.(map[string]interface{}); ok && m["type"] == "response-metadata" && m[key] != nil {
+				tsHas = true
+			}
+		}
+		if tsHas {
+			continue
+		}
+		for _, p := range g {
+			if m, ok := p.(map[string]interface{}); ok && m["type"] == "response-metadata" {
+				delete(m, key)
+			}
+		}
+	}
 	wireAlignInvalidBase64(want, g)
 	if d := Diff("", Normalize(CanonStream(want)), Normalize(CanonStream(g))); d != "" {
 		return []string{"stream (- TS, + Go):\n" + d}

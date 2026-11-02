@@ -88,6 +88,7 @@ func TestR81provbWireMissingResultNotCompared(t *testing.T) {
 func TestR81provbWireStreamCompared(t *testing.T) {
 	ts := []interface{}{
 		map[string]interface{}{"type": "stream-start", "warnings": []interface{}{}},
+		map[string]interface{}{"type": "response-metadata", "id": "msg_1"},
 		map[string]interface{}{"type": "reasoning-start", "id": "test-reasoning-id"},
 		map[string]interface{}{"type": "reasoning-delta", "id": "test-reasoning-id", "delta": "r"},
 		map[string]interface{}{"type": "reasoning-end", "id": "test-reasoning-id"},
@@ -95,6 +96,8 @@ func TestR81provbWireStreamCompared(t *testing.T) {
 		map[string]interface{}{"type": "finish", "finishReason": map[string]interface{}{"unified": "stop"}},
 	}
 	goParts := []interface{}{
+		// Go reports a timestamp and model id where TS reports none
+		map[string]interface{}{"type": "response-metadata", "id": "msg_1", "modelId": "m", "timestamp": "2026-01-01T00:00:00.000Z"},
 		map[string]interface{}{"type": "reasoning-start", "id": "reasoning-0"},
 		map[string]interface{}{"type": "reasoning-delta", "id": "reasoning-0", "delta": "r"},
 		map[string]interface{}{"type": "reasoning-end", "id": "reasoning-0"},
@@ -106,7 +109,7 @@ func TestR81provbWireStreamCompared(t *testing.T) {
 		t.Fatalf("diffs = %v", d)
 	}
 	// a missing finish is a difference
-	if d := compareWireStream(c, map[string]interface{}{"stream": goParts[:4]}); d == nil {
+	if d := compareWireStream(c, map[string]interface{}{"stream": goParts[:5]}); d == nil {
 		t.Fatal("missing finish not reported")
 	}
 	// a failed TS stream ends with an error part
