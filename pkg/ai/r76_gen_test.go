@@ -100,8 +100,8 @@ func TestR76Gen_ToolReturningErrorValueIsToolResult(t *testing.T) {
 
 // R76 item 2 (carry CR cr-r76-carry-to-gen.md): with withoutCallMetadata
 // (set from InternalOptions.ClientToolResultsWithoutCallMetadata for
-// WorkflowAgent), executed, failed and invalid client tool results carry no
-// provider metadata (TS WorkflowAgent executeTool/createInvalidToolResult);
+// WorkflowAgent), executed and failed client tool results carry no provider
+// metadata (TS WorkflowAgent executeTool);
 // without it the call's metadata is copied (TS core execute-tool-call.ts).
 func TestR76Gen_ClientToolResultsWithoutCallMetadata(t *testing.T) {
 	md := map[string]interface{}{"google": map[string]interface{}{"thoughtSignature": "sig"}}
@@ -131,9 +131,67 @@ func TestR76Gen_ClientToolResultsWithoutCallMetadata(t *testing.T) {
 			if without && r.ProviderMetadata != nil {
 				t.Errorf("without: %s ProviderMetadata = %v, want nil", r.ToolCallID, r.ProviderMetadata)
 			}
+			if r.ToolCallID == "c3" {
+				// Invalid calls never carry it (TestR76Gen_InvalidToolCallErrorWithoutCallMetadata).
+				if r.ProviderMetadata != nil {
+					t.Errorf("invalid call ProviderMetadata = %v, want nil", r.ProviderMetadata)
+				}
+				continue
+			}
 			if !without && !reflect.DeepEqual(r.ProviderMetadata, md) {
 				t.Errorf("default: %s ProviderMetadata = %v, want the call's", r.ToolCallID, r.ProviderMetadata)
 			}
 		}
 	}
+}
+
+// An invalid client tool call's tool error carries no provider metadata: TS
+// generateText ("insert error tool outputs for invalid tool calls") and
+// streamLanguageModelCall build the tool-error without the call's
+// providerMetadata, so the tool message has no providerOptions.
+func TestR76Gen_InvalidToolCallErrorWithoutCallMetadata(t *testing.T) {
+	md := map[string]interface{}{"google": map[string]interface{}{"thoughtSignature": "sig"}}
+	call := types.ToolCall{ID: "call-1", ToolName: "unknownTool", Arguments: map[string]interface{}{}, ProviderMetadata: md}
+	check := func(t *testing.T, step types.StepResult) {
+		t.Helper()
+		var found bool
+		for _, part := range step.Content {
+			if p, ok := part.(types.ToolErrorContent); ok {
+				found = true
+				if len(p.ProviderMetadata) != 0 {
+					t.Fatalf("tool-error ProviderMetadata = %s, want none", p.ProviderMetadata)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("no tool-error in %#v", step.Content)
+		}
+		msgs := step.Response.Messages
+		tr, ok := msgs[len(msgs)-1].Content[0].(types.ToolResultContent)
+		if !ok || tr.ProviderOptions != nil {
+			t.Fatalf("tool message part %#v, want no ProviderOptions", msgs[len(msgs)-1].Content[0])
+		}
+	}
+	tools := []types.Tool{{Name: "tool1", Parameters: map[string]interface{}{"type": "object"}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "ok", nil
+	}}}
+	t.Run("generate", func(t *testing.T) {
+		var n atomic.Int32
+		model := &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			if n.Add(1) == 1 {
+				return &types.GenerateResult{ToolCalls: []types.ToolCall{call}, FinishReason: types.FinishReasonToolCalls}, nil
+			}
+			return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+		}}
+		res, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "test-input", Tools: tools})
+		if err != nil {
+			t.Fatal(err)
+		}
+		check(t, res.Steps[0])
+	})
+	t.Run("stream", func(t *testing.T) {
+		step1 := []provider.StreamChunk{{Type: provider.ChunkTypeToolCall, ToolCall: &call}, {Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls}}
+		r := r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, step1), Prompt: "test-input", Tools: tools})
+		check(t, r.Steps()[0])
+	})
 }

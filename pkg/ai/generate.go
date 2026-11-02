@@ -2416,9 +2416,9 @@ type toolCallEventCallbacks struct {
 	startGate <-chan struct{}
 	startDone func()
 	// withoutCallMetadata leaves the call's provider metadata off the
-	// results of client calls (executed, failed and invalid calls; approval
-	// placeholders keep it). WorkflowAgent sets it: TS WorkflowAgent's
-	// executeTool and createInvalidToolResult build tool results without
+	// results of executed client calls, succeeded or failed (approval
+	// placeholders keep it; invalid calls never carry it). WorkflowAgent
+	// sets it: TS WorkflowAgent's executeTool builds tool results without
 	// providerOptions, while TS core copies toolCall.providerMetadata.
 	withoutCallMetadata bool
 }
@@ -2666,9 +2666,6 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 		if call.Invalid {
 			if !call.ProviderExecuted {
 				results[i] = invalidToolCallResult(call)
-				if callbacks.withoutCallMetadata {
-					results[i].ProviderMetadata = nil
-				}
 			}
 			continue
 		}

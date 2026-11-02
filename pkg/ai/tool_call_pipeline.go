@@ -708,20 +708,22 @@ func (s *streamToolInputCallbacks) handle(ctx context.Context, chunk provider.St
 // invalidToolCallError returns the error tool result synthesized for an
 // invalid client tool call (TS "insert error tool outputs for invalid tool
 // calls"). Invalid provider-executed calls never get a client tool error.
+// The tool error has no provider metadata: TS builds it without the call's
+// providerMetadata (generateText and streamLanguageModelCall), so the tool
+// message carries no providerOptions.
 func invalidToolCallResult(call types.ToolCall) types.ToolResult {
 	err := call.Error
 	if err == nil {
 		err = fmt.Errorf("invalid tool call")
 	}
 	return types.ToolResult{
-		ToolCallID:       call.ID,
-		ToolName:         call.ToolName,
-		Title:            call.Title,
-		Input:            call.Arguments,
-		Error:            err,
-		Dynamic:          true,
-		ProviderMetadata: call.ProviderMetadata,
-		ToolMetadata:     call.ToolMetadata,
+		ToolCallID:   call.ID,
+		ToolName:     call.ToolName,
+		Title:        call.Title,
+		Input:        call.Arguments,
+		Error:        err,
+		Dynamic:      true,
+		ToolMetadata: call.ToolMetadata,
 	}
 }
 
