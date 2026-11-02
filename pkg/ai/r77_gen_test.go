@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strconv"
@@ -306,5 +307,96 @@ func TestR77Gen_InvalidToolCallErrorWithoutToolMetadata(t *testing.T) {
 	}
 	if !sawCall || !sawErr {
 		t.Fatalf("content = %#v", res.Steps[0].Content)
+	}
+}
+
+// Port of stream-text.test.ts 29959 "should execute transformed approved
+// input after a persisted UI message round trip" with the TS schema
+// transform as Tool.ValidateInput (z.string().transform(Number)), no refiner:
+// the approval request carries the raw input as inputSchemaInput, which
+// survives the UI stream, a JSON round trip, ValidateUIMessages and
+// ConvertToModelMessages, and the resumed run executes once with count 3.
+func TestR77Gen_TransformedApprovedInputPersistedRoundTrip(t *testing.T) {
+	var executed []map[string]interface{}
+	countTool := r77genCountTool(nil)
+	countTool.Name = "count"
+	countTool.ToolApproval = nil
+	countTool.Execute = func(_ context.Context, args map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+		executed = append(executed, args)
+		return args["count"], nil
+	}
+	tools := []types.Tool{countTool}
+	approval := map[string]types.ToolApprovalValue{"count": types.ToolApprovalStatusUserApproval}
+	first, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r71streamModel(nil, []provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "count-call", ToolName: "count", RawArguments: `{"count":"3"}`}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r72streamTestUsage},
+		}),
+		Prompt: "Count three items.", Tools: tools, ToolApproval: approval,
+		Internal: r72streamIDs(), OnError: func(context.Context, error) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui, _ := first.ToUIMessageStream(context.Background())
+	msgs, errs := ReadUIMessages(context.Background(), ReadUIMessagesOptions{Stream: ui})
+	var last UIMessage
+	for m := range msgs {
+		last = m
+	}
+	for e := range errs {
+		t.Fatalf("read: %v", e)
+	}
+	raw, err := json.Marshal(last)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted map[string]interface{}
+	if err := json.Unmarshal(raw, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	var toolPart map[string]interface{}
+	for _, p := range persisted["parts"].([]interface{}) {
+		if m := p.(map[string]interface{}); m["type"] == "tool-count" {
+			toolPart = m
+		}
+	}
+	if toolPart == nil || toolPart["state"] != "approval-requested" {
+		t.Fatalf("persisted message = %s", raw)
+	}
+	if got := toolPart["approval"].(map[string]interface{})["inputSchemaInput"]; !reflect.DeepEqual(got, map[string]interface{}{"count": "3"}) {
+		t.Fatalf("approval.inputSchemaInput = %#v, want the raw input", got)
+	}
+	toolPart["state"] = "approval-responded"
+	toolPart["approval"].(map[string]interface{})["approved"] = true
+	validated, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{Messages: []interface{}{persisted}, Tools: tools})
+	if err != nil {
+		t.Fatalf("ValidateUIMessages: %v", err)
+	}
+	modelMessages, err := ConvertToModelMessages(context.Background(), validated, ConvertToModelMessagesOptions{Tools: tools})
+	if err != nil {
+		t.Fatalf("ConvertToModelMessages: %v", err)
+	}
+	second, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r71streamModel(nil, []provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart},
+			{Type: provider.ChunkTypeTextStart, ID: "1"},
+			{Type: provider.ChunkTypeText, ID: "1", Text: "Done"},
+			{Type: provider.ChunkTypeTextEnd, ID: "1"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+		}),
+		Messages: append([]types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Count three items."}}}}, modelMessages...),
+		Tools:    tools, ToolApproval: approval,
+		OnError: func(_ context.Context, err error) { t.Errorf("onError: %v", err) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := second.Text(); text != "Done" {
+		t.Fatalf("text = %q (err %v)", text, second.Err())
+	}
+	if len(executed) != 1 || !reflect.DeepEqual(executed[0], map[string]interface{}{"count": float64(3)}) {
+		t.Fatalf("execute calls = %v, want one with count 3", executed)
 	}
 }
