@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"math"
 	stdhttp "net/http"
-	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -290,56 +288,20 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	return body, warnings, nil
 }
 
+// convertResponse maps the Z.AI finish reason and usage. Everything else
+// (text and thinking parts, reasoning, tool calls, response metadata) comes
+// from streaming.ApplyOpenAICompatibleChatResponse, the one source of truth
+// for the shared TS openai-compatible doGenerate.
 func (m *LanguageModel) convertResponse(response zaiResponse) *types.GenerateResult {
 	if len(response.Choices) == 0 {
-		return &types.GenerateResult{
-			Text:         "",
-			FinishReason: types.FinishReasonOther,
-		}
+		return &types.GenerateResult{FinishReason: types.FinishReasonOther}
 	}
 	choice := response.Choices[0]
-	result := &types.GenerateResult{
-		Text:            choice.Message.Content,
+	return &types.GenerateResult{
 		FinishReason:    mapZaiFinishReason(choice.FinishReason),
 		RawFinishReason: choice.FinishReason,
 		Usage:           convertZaiUsagePtr(response.Usage),
-		RawResponse:     response,
 	}
-	if choice.Message.ReasoningContent != "" {
-		result.Content = append(result.Content, types.ReasoningContent{Text: choice.Message.ReasoningContent})
-	}
-	if len(choice.Message.ToolCalls) > 0 {
-		result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
-		for i, tc := range choice.Message.ToolCalls {
-			var args map[string]interface{}
-			if tc.Function.Arguments != "" {
-				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
-			}
-			// TS openai-compatible chat: `toolCall.id || generateId()`.
-			id := tc.ID
-			if id == "" {
-				id = streaming.GenerateID()
-			}
-			result.ToolCalls[i] = types.ToolCall{
-				ID:        id,
-				ToolName:  tc.Function.Name,
-				Arguments: args,
-				// Wire text keeps the key order TS keeps (JSON.stringify of the parsed input).
-				RawArguments: tc.Function.Arguments,
-			}
-		}
-	}
-	if response.ID != "" || response.Model != "" || response.Created != 0 {
-		meta := &types.ResponseMetadata{ID: response.ID, ModelID: response.Model}
-		// TS created || undefined, then new Date(created * 1000): a
-		// fractional value keeps its milliseconds; outside the JS Date range
-		// is no timestamp.
-		if ms := response.Created * 1000; response.Created != 0 && math.Abs(ms) <= 8.64e15 {
-			meta.Timestamp = time.UnixMilli(int64(ms)).UTC()
-		}
-		result.ResponseMetadata = meta
-	}
-	return result
 }
 
 func (m *LanguageModel) handleError(err error) error {
@@ -432,26 +394,8 @@ func convertZaiUsage(usage zaiUsage) types.Usage {
 }
 
 type zaiResponse struct {
-	ID      string  `json:"id"`
-	Object  string  `json:"object"`
-	Created float64 `json:"created"` // TS z.number()
-	Model   string  `json:"model"`
 	Choices []struct {
-		Index        int    `json:"index"`
 		FinishReason string `json:"finish_reason"`
-		Message      struct {
-			Role             string `json:"role"`
-			Content          string `json:"content"`
-			ReasoningContent string `json:"reasoning_content"`
-			ToolCalls        []struct {
-				ID       string `json:"id"`
-				Type     string `json:"type"`
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls"`
-		} `json:"message"`
 	} `json:"choices"`
 	Usage *zaiUsage `json:"usage"`
 }

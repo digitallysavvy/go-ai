@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -438,6 +439,11 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 				}
 				if l, ok := snap.([]interface{}); ok && stream != nil && !strings.HasSuffix(e.Expr, ".at(-1)") {
 					snap = CanonStream(l)
+					// A path over the stream (`events.filter(...)`) is read
+					// from the raw Go stream: canonicalize it the same way.
+					if gl, ok := got.([]interface{}); ok {
+						got = CanonStream(gl)
+					}
 				}
 				if d := Diff("", Normalize(snap), Normalize(got)); d != "" {
 					t.Errorf("%s: mismatch vs TS snapshot (- TS, + Go):\n%s", e.Expr, d)
@@ -518,8 +524,11 @@ func GenerateContentToTS(res *types.GenerateResult) interface{} {
 			hasText = true
 		}
 	}
+	content := res.Content
 	if !hasText && res.Text != "" {
-		parts = append(parts, map[string]interface{}{"type": "text", "text": res.Text})
+		// As pkg/ai generateResultContentParts: the text goes after the
+		// leading reasoning parts.
+		content = types.InsertLeadText(append([]types.ContentPart(nil), content...), res.Text)
 	}
 	have := map[string]bool{}
 	callPart := func(tc types.ToolCall) map[string]interface{} {
@@ -537,12 +546,12 @@ func GenerateContentToTS(res *types.GenerateResult) interface{} {
 		}
 		return part
 	}
-	for _, p := range res.Content {
+	for _, p := range content {
 		if tc, ok := p.(types.ToolCallContent); ok {
 			have[tc.ToolCallID] = true
 		}
 	}
-	for _, p := range res.Content {
+	for _, p := range content {
 		b, _ := json.Marshal(p)
 		var v interface{}
 		_ = json.Unmarshal(b, &v)
@@ -748,6 +757,14 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 			}
 		case provider.ChunkTypeError:
 			o["error"] = c.Text
+			// A provider error object (TS `error: chunk.error`) is the
+			// error part's value; the message alone otherwise.
+			var spe *providererrors.StreamProviderError
+			if errors.As(c.Err, &spe) {
+				if data, ok := jsonValue(spe.Data).(map[string]interface{}); ok {
+					o["error"] = data
+				}
+			}
 		case provider.ChunkTypeRaw:
 			o["rawValue"] = c.Raw
 		}
@@ -757,6 +774,11 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 }
 
 var generatedID = regexp.MustCompile(`^(id-\d+|test-id(-\d+)?|call_[0-9a-f]{16})$`)
+
+// generatedSourceID matches the source ids Go providers generate (random
+// alphanumerics or a UUID) where TS uses its mock generateId; a wire id
+// (perplexity "7") is compared.
+var generatedSourceID = regexp.MustCompile(`^([A-Za-z0-9_-]{16,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$`)
 
 // MetadataKeyAlias renames provider-metadata keys of the TS snapshot (e.g. the
 // tests' "test-provider") to the key the Go provider under test reports.
@@ -797,7 +819,9 @@ func Normalize(v interface{}) interface{} {
 				continue
 			}
 			if k == "id" && x["type"] == "source" {
-				continue // generated ids differ
+				if id, _ := e.(string); generatedID.MatchString(id) || generatedSourceID.MatchString(id) {
+					continue // generated ids differ
+				}
 			}
 			if k == "toolCallId" || (k == "id" && strings.HasPrefix(fmt.Sprint(x["type"]), "tool-input")) {
 				if id, _ := e.(string); generatedID.MatchString(id) {
@@ -928,10 +952,16 @@ func trunc(s string) string {
 func CanonStream(parts []interface{}) []interface{} {
 	var out []interface{}
 	for _, p := range parts {
-		m, ok := p.(map[string]interface{})
+		orig, ok := p.(map[string]interface{})
 		if !ok {
 			out = append(out, p)
 			continue
+		}
+		// Work on a copy: the caller's parts (the raw Go stream that plain
+		// assertions read) keep their ids.
+		m := make(map[string]interface{}, len(orig))
+		for k, v := range orig {
+			m[k] = v
 		}
 		switch m["type"] {
 		case "reasoning-start", "reasoning-end":

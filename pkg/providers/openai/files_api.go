@@ -3,7 +3,6 @@ package openai
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -180,7 +179,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, err
 	}
 	var out openAIFilesResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := providerutils.UnmarshalChunk(resp.Body, &out); err != nil {
 		return nil, err
 	}
 
@@ -226,7 +225,7 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 		return nil, err
 	}
 	var out openAIFilesResponse
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := providerutils.UnmarshalChunk(resp.Body, &out); err != nil {
 		return nil, err
 	}
 
@@ -304,7 +303,7 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 		Object  string `json:"object"`
 		Deleted bool   `json:"deleted"`
 	}
-	if err := json.Unmarshal(resp.Body, &out); err != nil {
+	if err := providerutils.UnmarshalChunk(resp.Body, &out); err != nil {
 		return nil, err
 	}
 

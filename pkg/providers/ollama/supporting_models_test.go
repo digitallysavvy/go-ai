@@ -141,7 +141,7 @@ func TestOllamaLanguageModelBuildConvertAndUsage(t *testing.T) {
 				},
 			},
 		},
-		Usage: ollamaUsage{PromptTokens: 5, CompletionTokens: 4, TotalTokens: 9},
+		Usage: &ollamaUsage{PromptTokens: 5, CompletionTokens: 4, TotalTokens: 9},
 	}
 	out := m.convertResponse(resp)
 	if out.Text != "done" || len(out.ToolCalls) != 1 || out.ToolCalls[0].ToolName != "lookup" {

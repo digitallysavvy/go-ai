@@ -203,7 +203,7 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 		return nil, err
 	}
 	var parsed azureSpeechTranscribeResponse
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
+	if err := providerutils.UnmarshalChunk(respBody, &parsed); err != nil {
 		return nil, providererrors.NewProviderError(m.Provider(), resp.StatusCode, "", "failed to parse Azure Speech transcription response: "+err.Error(), err)
 	}
 

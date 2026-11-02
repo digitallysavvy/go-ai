@@ -189,7 +189,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	var response decisionResponseWire
 	var rawBody interface{}
 	_ = json.Unmarshal(raw, &rawBody)
-	if err := json.Unmarshal(raw, &response); err != nil {
+	if err := providerutils.UnmarshalChunk(raw, &response); err != nil {
 		return nil, providererrors.NewInvalidResponseDataError(rawBody, "Invalid response from the OpenAI Decisions API: "+err.Error())
 	}
 	if err := response.validate(); err != nil {

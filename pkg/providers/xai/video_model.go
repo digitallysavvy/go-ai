@@ -492,7 +492,7 @@ func (m *VideoModel) checkVideoStatus(ctx context.Context, requestID string, hea
 		}
 
 		var status xaiVideoStatusResponse
-		if err := json.Unmarshal(limited, &status); err != nil {
+		if err := providerutils.UnmarshalChunk(limited, &status); err != nil {
 			return &xaiVideoStatusResponse{Status: "pending"}, respHeaders, nil
 		}
 		if status.Status == "" && (status.Video == nil || status.Video.URL == "") {
@@ -511,7 +511,7 @@ func (m *VideoModel) checkVideoStatus(ctx context.Context, requestID string, hea
 		return nil, nil, err
 	}
 	var status xaiVideoStatusResponse
-	if err := json.Unmarshal(resp.Body, &status); err != nil {
+	if err := providerutils.UnmarshalChunk(resp.Body, &status); err != nil {
 		return nil, nil, fmt.Errorf("failed to decode JSON response: %w", err)
 	}
 	return &status, respHeaders, nil

@@ -10,6 +10,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 type OpenAIRealtimeModel struct {
@@ -145,7 +146,7 @@ func (m *OpenAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 		Value     string `json:"value"`
 		ExpiresAt *int64 `json:"expires_at"`
 	}
-	if err := json.Unmarshal(resp.Body, &data); err != nil {
+	if err := providerutils.UnmarshalChunk(resp.Body, &data); err != nil {
 		return provider.ClientSecretResult{}, err
 	}
 	base := m.provider.config.BaseURL
