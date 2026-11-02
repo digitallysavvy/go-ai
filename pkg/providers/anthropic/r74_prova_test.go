@@ -56,8 +56,6 @@ func TestR74prova_TSCasesLanguageWithTSToolNames(t *testing.T) {
 		"should stream code execution tool results without beta header":                              longSnapshot,
 		"should include file id list in code execution tool call result.":                            longSnapshot,
 		"should throw an api error when the first stream chunk is an overloaded error":               "the TS test expects DoStream to fail; covered by TestStreamOverloadedFirstEvent",
-		"should process PDF citation responses":                                                      "the TS test's 'base64PDFdata' is not valid base64; Go decodes file data",
-		"should process PDF citation responses in streaming":                                         "the TS test's 'base64PDFdata' is not valid base64; Go decodes file data",
 	})
 }
 
