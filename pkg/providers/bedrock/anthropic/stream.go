@@ -1,14 +1,13 @@
 package anthropic
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock/eventstream"
 )
 
@@ -189,23 +188,7 @@ func jsTruthy(v interface{}) bool {
 // with the WHATWG forgiving-base64 rules of atob (ASCII whitespace ignored,
 // padding optional, length 1 mod 4 or any non-alphabet byte is an error).
 func convertBase64ToBytes(s string) ([]byte, error) {
-	s = strings.NewReplacer("-", "+", "_", "/").Replace(s)
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '\t', '\n', '\f', '\r', ' ':
-			continue
-		}
-		b.WriteByte(s[i])
-	}
-	data := b.String()
-	if len(data)%4 == 0 {
-		data = strings.TrimSuffix(strings.TrimSuffix(data, "="), "=")
-	}
-	if len(data)%4 == 1 {
-		return nil, base64.CorruptInputError(len(data))
-	}
-	return base64.RawStdEncoding.DecodeString(data)
+	return fileutil.ConvertBase64ToBytes(s)
 }
 
 // bedrockStreamErrorMetadata ports TS getAmazonBedrockStreamErrorMetadata.

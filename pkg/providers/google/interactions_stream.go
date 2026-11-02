@@ -2,7 +2,6 @@ package google
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -937,7 +937,7 @@ func (s *interactionsStream) emitFile(data, uri, mimeType, defaultMime string) {
 	mediaType := firstNonEmpty(mimeType, defaultMime)
 	switch {
 	case data != "":
-		decoded, _ := base64.StdEncoding.DecodeString(data)
+		decoded, _ := fileutil.ConvertBase64ToBytes(data)
 		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: mediaType, Data: decoded, ProviderMetadata: meta}, ProviderMetadata: meta})
 	case uri != "":
 		fileData := types.FileData{Type: types.FileDataTypeURL, URL: uri, MediaType: mediaType}

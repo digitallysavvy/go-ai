@@ -507,6 +507,15 @@ func decodeDataURL(raw string) ([]byte, error) {
 	return []byte(decoded), nil
 }
 
+// ConvertBase64ToBytes ports TS provider-utils convertBase64ToUint8Array:
+// base64url characters ('-', '_') are mapped to the standard alphabet and the
+// result is decoded with the forgiving rules of atob (ASCII whitespace
+// ignored, padding optional; a length of 1 mod 4 or a non-alphabet byte is an
+// error).
+func ConvertBase64ToBytes(s string) ([]byte, error) {
+	return DecodeForgivingBase64(strings.NewReplacer("-", "+", "_", "/").Replace(s))
+}
+
 // DecodeForgivingBase64 is the WHATWG forgiving-base64 decode behind JS atob:
 // ASCII whitespace is ignored, up to two trailing "=" are dropped when the
 // length is a multiple of 4, and any other "=" or a length of 1 mod 4 fails.

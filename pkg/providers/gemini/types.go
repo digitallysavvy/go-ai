@@ -2,10 +2,10 @@ package gemini
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -396,7 +396,7 @@ type Part struct {
 // nil bytes, which propagates as an empty content block rather than a hard failure.
 // The Gemini API guarantees valid base64 for inlineData fields.
 func decodeInlineData(encoded string) []byte {
-	data, _ := base64.StdEncoding.DecodeString(encoded)
+	data, _ := fileutil.ConvertBase64ToBytes(encoded)
 	return data
 }
 

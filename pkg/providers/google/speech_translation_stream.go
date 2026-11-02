@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
@@ -164,7 +165,7 @@ func intOrZero(v *int) int {
 // milliseconds at googleLiveOutputAudioRate. Mirrors TS
 // getPcm16SilenceDurationMs.
 func pcm16SilenceDurationMs(base64Audio string) (float64, bool) {
-	raw, err := base64.StdEncoding.DecodeString(base64Audio)
+	raw, err := fileutil.ConvertBase64ToBytes(base64Audio)
 	if err != nil {
 		return 0, false
 	}
@@ -455,7 +456,7 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 					if part.InlineData == nil || part.InlineData.Data == "" {
 						continue
 					}
-					audioBytes, decodeErr := base64.StdEncoding.DecodeString(part.InlineData.Data)
+					audioBytes, decodeErr := fileutil.ConvertBase64ToBytes(part.InlineData.Data)
 					if decodeErr != nil {
 						continue
 					}

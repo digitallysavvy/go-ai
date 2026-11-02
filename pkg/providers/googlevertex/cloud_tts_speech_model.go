@@ -2,13 +2,13 @@ package googlevertex
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -159,7 +159,7 @@ func (m *CloudTTSSpeechModel) DoGenerate(ctx context.Context, opts *provider.Spe
 	// NoSpeechGeneratedError.
 	audio := []byte{}
 	if parsed.AudioContent != "" {
-		decoded, err := base64.StdEncoding.DecodeString(parsed.AudioContent)
+		decoded, err := fileutil.ConvertBase64ToBytes(parsed.AudioContent)
 		if err != nil {
 			return nil, providererrors.NewProviderError("google-vertex", 0, "", "failed to decode audio: "+err.Error(), err)
 		}

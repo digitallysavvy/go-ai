@@ -4,9 +4,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
+
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
-	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
@@ -527,7 +528,7 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 					content = append(content, annotationsToSources(inner.Annotations, gen)...)
 				case "image":
 					if inner.Data != "" {
-						data, _ := base64.StdEncoding.DecodeString(inner.Data)
+						data, _ := fileutil.ConvertBase64ToBytes(inner.Data)
 						content = append(content, types.GeneratedFileContent{MediaType: firstNonEmpty(inner.MimeType, "image/png"), Data: data, ProviderMetadata: meta})
 					} else if inner.URI != "" {
 						mediaType := firstNonEmpty(inner.MimeType, "image/png")
@@ -535,7 +536,7 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 					}
 				case "video":
 					if inner.Data != "" {
-						data, _ := base64.StdEncoding.DecodeString(inner.Data)
+						data, _ := fileutil.ConvertBase64ToBytes(inner.Data)
 						content = append(content, types.GeneratedFileContent{MediaType: firstNonEmpty(inner.MimeType, "video/mp4"), Data: data, ProviderMetadata: meta})
 					} else if inner.URI != "" {
 						mediaType := firstNonEmpty(inner.MimeType, "video/mp4")
@@ -1043,7 +1044,7 @@ func resolveInteractionMediaType(mediaType string, data []byte, dataString strin
 		return mediaType, nil
 	}
 	if len(data) == 0 && dataString != "" {
-		data, _ = base64.StdEncoding.DecodeString(dataString)
+		data, _ = fileutil.ConvertBase64ToBytes(dataString)
 	}
 	top, _, _ := strings.Cut(mediaType, "/")
 	if detected, ok := fileutil.DetectMediaTypeSignature(data, top); ok {

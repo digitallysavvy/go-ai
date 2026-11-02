@@ -3,7 +3,6 @@ package perplexity
 import (
 	"context"
 	"net/http"
-	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -251,7 +250,7 @@ func decodePerplexityEmbedding(encoded string, encodingFormat string) ([]float64
 	// TS convertBase64ToUint8Array: base64url characters map to the standard
 	// alphabet and atob's forgiving decode applies (padding optional,
 	// whitespace ignored).
-	bytes, err := fileutil.DecodeForgivingBase64(strings.NewReplacer("-", "+", "_", "/").Replace(encoded))
+	bytes, err := fileutil.ConvertBase64ToBytes(encoded)
 	if err != nil {
 		return nil, err
 	}

@@ -935,7 +935,7 @@ func ParseDataURL(value string) (types.FileData, error) {
 	if i := strings.IndexByte(body, ','); i >= 0 {
 		body = body[:i]
 	}
-	decoded, err := fileutil.DecodeForgivingBase64(strings.NewReplacer("-", "+", "_", "/").Replace(body))
+	decoded, err := fileutil.ConvertBase64ToBytes(body)
 	if err != nil {
 		return types.FileData{}, &InvalidInlineDataURLError{Value: value, Cause: err}
 	}

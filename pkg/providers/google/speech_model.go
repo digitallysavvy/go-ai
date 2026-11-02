@@ -2,7 +2,6 @@ package google
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -14,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -119,7 +119,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	base64Audio, mimeType := firstGoogleSpeechAudio(response)
 	pcm := []byte{}
 	if base64Audio != "" {
-		pcm, err = base64.StdEncoding.DecodeString(base64Audio)
+		pcm, err = fileutil.ConvertBase64ToBytes(base64Audio)
 		if err != nil {
 			return nil, fmt.Errorf("failed to decode Gemini TTS audio: %w", err)
 		}
