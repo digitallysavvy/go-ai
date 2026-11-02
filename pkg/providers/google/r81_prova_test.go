@@ -86,3 +86,16 @@ func TestR81provaGoogleSpeechRequestBodyKeyOrder(t *testing.T) {
 		t.Fatalf("request body = %+v\nwant %s", res.Request, want)
 	}
 }
+
+// TS Math.abs(getInt16(...)) of -32768 is 32768, far above the silence
+// threshold; Go negated the int16, which overflows back to -32768, so a
+// full-scale negative sample read as silence.
+func TestR81provaPCM16SilenceMinSampleIsNotSilence(t *testing.T) {
+	if _, silent := pcm16SilenceDurationMs("AIAAgA=="); silent { // two samples of 0x8000
+		t.Fatal("-32768 samples were treated as silence")
+	}
+	// 0x0080 = 128 and 0xff80 = -128 are at the threshold: silence.
+	if _, silent := pcm16SilenceDurationMs("gACA/w=="); !silent {
+		t.Fatal("samples at the threshold were not silence")
+	}
+}
