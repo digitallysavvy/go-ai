@@ -303,7 +303,7 @@ func (s *stream) continueStream() bool {
 		})
 		return false
 	}
-	s.groundingPerRequest = append(s.groundingPerRequest, rawOrNull(s.requestGroundingMetadata))
+	s.groundingPerRequest = append(s.groundingPerRequest, rawOrNull(stripMetadata(s.requestGroundingMetadata, metaGrounding)))
 	s.requestGroundingMetadata = nil
 	_ = s.reader.Close()
 	s.reader = next
@@ -605,13 +605,14 @@ func (s *stream) closeOpenBlocks() {
 // GoogleProviderMetadata, and written under every configured metadata key.
 func (s *stream) buildFinishMeta() json.RawMessage {
 	meta := map[string]json.RawMessage{
-		"promptFeedback":     rawOrNull(s.lastPromptFeedback),
-		"groundingMetadata":  rawOrNull(s.lastGroundingMetadata),
-		"urlContextMetadata": rawOrNull(s.lastUrlContextMetadata),
-		"safetyRatings":      rawOrNull(s.lastSafetyRatings),
+		// TS zod strips undeclared keys from these values (metadata_schema.go).
+		"promptFeedback":     rawOrNull(stripMetadata(s.lastPromptFeedback, metaPromptFeedback)),
+		"groundingMetadata":  rawOrNull(stripMetadata(s.lastGroundingMetadata, metaGrounding)),
+		"urlContextMetadata": rawOrNull(stripMetadata(s.lastUrlContextMetadata, metaURLContext)),
+		"safetyRatings":      rawOrNull(stripMetadata(s.lastSafetyRatings, metaSafetyRatings)),
 	}
 	if len(s.groundingPerRequest) > 0 {
-		per := append(append([]json.RawMessage{}, s.groundingPerRequest...), rawOrNull(s.requestGroundingMetadata))
+		per := append(append([]json.RawMessage{}, s.groundingPerRequest...), rawOrNull(stripMetadata(s.requestGroundingMetadata, metaGrounding)))
 		if gp, err := json.Marshal(per); err == nil {
 			meta["groundingMetadataPerRequest"] = gp
 		}
