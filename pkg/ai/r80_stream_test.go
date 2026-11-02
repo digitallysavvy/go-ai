@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -208,4 +209,141 @@ func TestR80StreamFullStreamToolCalls(t *testing.T) {
 	r75streamAssertJSON(t, "parts", r80streamPartsJSON(parts), `[{"type":"start"},{"type":"start-step"},
 		{"type":"tool-call","toolCallId":"call-1","toolName":"tool1","input":{"value":"value"},"title":"Tool 1","providerMetadata":{"testProvider":{"signature":"sig"}}},
 		`+strings.Replace(r80streamFinishParts, "%s", "false", 1)+`]`)
+}
+
+// stream-text.test.ts 2281: result.stream > should refine tool input before
+// tool execution, stream parts, and callbacks (the refined input reaches
+// Execute, the tool-call and tool-result parts, the model-call-end content
+// and the tool execution start event).
+func TestR80StreamRefineToolInputEverywhere(t *testing.T) {
+	var (
+		mu        sync.Mutex
+		execInput map[string]interface{}
+		endEvents []LanguageModelCallEndEvent
+		starts    []OnToolCallStartEvent
+	)
+	tool := types.Tool{Name: "tool1", Parameters: r71streamValueSchema, Execute: func(_ context.Context, args map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+		mu.Lock()
+		execInput = args
+		mu.Unlock()
+		return "result:" + args["value"].(string), nil
+	}}
+	r, parts := r73streamParts(t, StreamTextOptions{
+		Model: r71streamModel(nil, []provider.StreamChunk{
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", RawArguments: `{ "value": " raw " }`}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r72streamTestUsage},
+		}, r71streamHelloWorld),
+		Prompt: "test-input",
+		Tools:  []types.Tool{tool},
+		ExperimentalRefineToolInput: map[string]ToolInputRefiner{"tool1": func(_ context.Context, o ToolInputRefinementOptions) (map[string]interface{}, error) {
+			return map[string]interface{}{"value": strings.TrimSpace(o.ToolCall.Arguments["value"].(string))}, nil
+		}},
+		OnLanguageModelCallEnd: func(_ context.Context, e LanguageModelCallEndEvent) {
+			mu.Lock()
+			endEvents = append(endEvents, e)
+			mu.Unlock()
+		},
+		OnToolExecutionStart: func(_ context.Context, e OnToolCallStartEvent) {
+			mu.Lock()
+			starts = append(starts, e)
+			mu.Unlock()
+		},
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	want := map[string]interface{}{"value": "raw"}
+	if !reflect.DeepEqual(execInput, want) {
+		t.Fatalf("execute input = %v", execInput)
+	}
+	var sawCall, sawResult bool
+	for _, p := range parts {
+		switch p.Type {
+		case provider.ChunkTypeToolCall:
+			sawCall = p.ToolCall.ID == "call-1" && p.ToolCall.ToolName == "tool1" && reflect.DeepEqual(p.ToolCall.Arguments, want)
+		case provider.ChunkTypeToolResult:
+			sawResult = p.ToolResult.ToolCallID == "call-1" && p.ToolResult.ToolName == "tool1" && reflect.DeepEqual(p.ToolResult.Input, want) && p.ToolResult.Result == "result:raw"
+		}
+	}
+	if !sawCall || !sawResult {
+		t.Fatalf("tool-call refined = %v, tool-result refined = %v; parts = %v", sawCall, sawResult, r73streamNames(parts))
+	}
+	if len(endEvents) == 0 || len(endEvents[0].Content) == 0 {
+		t.Fatalf("model call end events = %+v", endEvents)
+	}
+	call, ok := endEvents[0].Content[0].(types.ToolCallContent)
+	if !ok {
+		if p, isPtr := endEvents[0].Content[0].(*types.ToolCallContent); isPtr {
+			call, ok = *p, true
+		}
+	}
+	if !ok || !reflect.DeepEqual(call.Arguments, want) {
+		t.Fatalf("model call end content[0] = %#v", endEvents[0].Content[0])
+	}
+	if len(starts) != 1 || !reflect.DeepEqual(starts[0].ToolCall.Arguments, want) {
+		t.Fatalf("tool execution start = %+v", starts)
+	}
+	// The next prompt's assistant tool call carries the refined input.
+	msgs := r.ResponseMessages()
+	if len(msgs) == 0 || len(msgs[0].Content) == 0 {
+		t.Fatalf("response messages = %+v", msgs)
+	}
+	if rc, ok := msgs[0].Content[0].(types.ToolCallContent); !ok || !reflect.DeepEqual(rc.Arguments, want) {
+		t.Fatalf("response tool call = %#v", msgs[0].Content[0])
+	}
+}
+
+// stream-text.test.ts 2629: result.stream > should send tool results (the
+// execute options carry the prompt messages; tool-result has the input and
+// output and dynamic false; finish-step reports the call's tool
+// execution time; finish reason stop ends the run after one step).
+func TestR80StreamFullStreamToolResults(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		execMsgs []types.Message
+	)
+	tool := types.Tool{Name: "tool1", Title: "Tool 1", Parameters: r71streamValueSchema, Execute: func(_ context.Context, args map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+		mu.Lock()
+		execMsgs = o.Messages
+		mu.Unlock()
+		return args["value"].(string) + "-result", nil
+	}}
+	r, parts := r73streamParts(t, StreamTextOptions{
+		Model: r71streamModel(nil, []provider.StreamChunk{
+			{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-0", ModelID: "mock-model-id"}},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", RawArguments: `{ "value": "value" }`}},
+			r77streamFinishStop(),
+		}),
+		Prompt: "test-input",
+		Tools:  []types.Tool{tool},
+	})
+	mu.Lock()
+	r75streamAssertJSON(t, "execute messages", r76streamRoleText(execMsgs), `[{"role":"user","content":[{"type":"text","text":"test-input"}]}]`)
+	mu.Unlock()
+	out := r80streamPartsJSON(parts)
+	var perf *types.StepPerformance
+	for i, p := range parts {
+		switch p.Type {
+		case provider.ChunkTypeToolResult:
+			res := p.ToolResult
+			// Title is not compared: TS executeToolCall builds the result
+			// without the call's title, while Go's executor copies it
+			// (gen's executeTools; cr-r80-stream-to-gen.md).
+			out[i]["toolCallId"], out[i]["toolName"], out[i]["input"], out[i]["output"], out[i]["dynamic"] = res.ToolCallID, res.ToolName, res.Input, res.Result, res.Dynamic
+		case provider.ChunkTypeFinishStep:
+			perf = p.Performance
+		}
+	}
+	r75streamAssertJSON(t, "parts", out, `[{"type":"start"},{"type":"start-step"},
+		{"type":"tool-call","toolCallId":"call-1","toolName":"tool1","input":{"value":"value"},"title":"Tool 1"},
+		{"type":"tool-result","toolCallId":"call-1","toolName":"tool1","input":{"value":"value"},"output":"value-result","dynamic":false},
+		`+strings.Replace(r80streamFinishParts, "%s", "false", 1)+`]`)
+	if perf == nil {
+		t.Fatal("finish-step has no performance")
+	}
+	if _, ok := perf.ToolExecutionMs["call-1"]; !ok || len(perf.ToolExecutionMs) != 1 {
+		t.Fatalf("toolExecutionMs = %v", perf.ToolExecutionMs)
+	}
+	if n := len(r.Steps()); n != 1 {
+		t.Fatalf("steps = %d", n)
+	}
 }
