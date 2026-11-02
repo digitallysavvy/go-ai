@@ -1862,7 +1862,10 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 }
 
 func (s *uiMessageCallbackState) mergeMetadata(metadata interface{}) {
-	if metadata == nil {
+	// TS updateMessageMetadata skips `metadata == null`: a Go value that
+	// encodes as JSON null (a nil map or pointer, json.RawMessage("null")) is
+	// null too.
+	if isUIJSONNull(metadata) {
 		return
 	}
 	// A Go value that encodes as a JSON object (a struct, a typed map,
@@ -1882,6 +1885,25 @@ func (s *uiMessageCallbackState) mergeMetadata(metadata interface{}) {
 		}
 	}
 	s.message["metadata"] = cloneUIValue(metadata)
+}
+
+// isUIJSONNull reports whether v is nil or a Go value that encodes as JSON
+// null.
+func isUIJSONNull(v interface{}) bool {
+	switch x := v.(type) {
+	case nil:
+		return true
+	case map[string]interface{}:
+		return x == nil
+	case UIMessageChunk:
+		return x == nil
+	case []interface{}:
+		return x == nil
+	case string, bool, float64, json.Number:
+		return false
+	}
+	b, err := json.Marshal(v)
+	return err == nil && string(b) == "null"
 }
 
 // isUIScalarNumberOrBool reports whether v is a JSON number or boolean.
@@ -2411,11 +2433,13 @@ func validateUIMessageStreamKeepAlive(init *UIMessageStreamResponseInit) error {
 }
 
 // uiMessageStreamResponseHead resolves the status and headers for a UI
-// message stream response from the defaults and init.
+// message stream response from the defaults and init. As TS prepareHeaders, a
+// header the caller sets (in Headers or Header) replaces the default of the
+// same name, and the defaults fill only the names the caller left unset.
 func uiMessageStreamResponseHead(init *UIMessageStreamResponseInit) (int, string, http.Header) {
 	status := http.StatusOK
 	statusText := ""
-	headers := UIMessageStreamHeaders()
+	headers := http.Header{}
 	if init != nil {
 		if init.Status != 0 {
 			status = init.Status
@@ -2428,6 +2452,11 @@ func uiMessageStreamResponseHead(init *UIMessageStreamResponseInit) (int, string
 			for _, value := range values {
 				headers.Add(key, value)
 			}
+		}
+	}
+	for key, values := range UIMessageStreamHeaders() {
+		if len(headers.Values(key)) == 0 {
+			headers[key] = values
 		}
 	}
 	return status, statusText, headers
