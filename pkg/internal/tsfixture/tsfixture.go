@@ -438,6 +438,11 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 				}
 				if l, ok := snap.([]interface{}); ok && stream != nil && !strings.HasSuffix(e.Expr, ".at(-1)") {
 					snap = CanonStream(l)
+					// A path over the stream (`events.filter(...)`) is read
+					// from the raw Go stream: canonicalize it the same way.
+					if gl, ok := got.([]interface{}); ok {
+						got = CanonStream(gl)
+					}
 				}
 				if d := Diff("", Normalize(snap), Normalize(got)); d != "" {
 					t.Errorf("%s: mismatch vs TS snapshot (- TS, + Go):\n%s", e.Expr, d)
@@ -518,8 +523,11 @@ func GenerateContentToTS(res *types.GenerateResult) interface{} {
 			hasText = true
 		}
 	}
+	content := res.Content
 	if !hasText && res.Text != "" {
-		parts = append(parts, map[string]interface{}{"type": "text", "text": res.Text})
+		// As pkg/ai generateResultContentParts: the text goes after the
+		// leading reasoning parts.
+		content = types.InsertLeadText(append([]types.ContentPart(nil), content...), res.Text)
 	}
 	have := map[string]bool{}
 	callPart := func(tc types.ToolCall) map[string]interface{} {
@@ -537,12 +545,12 @@ func GenerateContentToTS(res *types.GenerateResult) interface{} {
 		}
 		return part
 	}
-	for _, p := range res.Content {
+	for _, p := range content {
 		if tc, ok := p.(types.ToolCallContent); ok {
 			have[tc.ToolCallID] = true
 		}
 	}
-	for _, p := range res.Content {
+	for _, p := range content {
 		b, _ := json.Marshal(p)
 		var v interface{}
 		_ = json.Unmarshal(b, &v)
