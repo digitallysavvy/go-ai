@@ -931,3 +931,32 @@ func TestR81streamTSMergeMultipleStreams(t *testing.T) {
 		t.Fatalf("got %d chunks: %v", n, bySource)
 	}
 }
+
+// TS get-response-ui-message-id.test.ts 8, 16, 28, 40, 48.
+func TestR81streamTSGetResponseUIMessageID(t *testing.T) {
+	gen := func() string { return "new-id" }
+	msgs := func(roles ...string) []UIMessageChunk {
+		out := []UIMessageChunk{}
+		for i, r := range roles {
+			out = append(out, UIMessageChunk{"id": fmt.Sprintf("msg-%d", i+1), "role": r, "parts": []interface{}{}})
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name   string
+		opts   UIMessageStreamResultOptions
+		want   string
+		wantOK bool
+	}{
+		{"8 no original messages", UIMessageStreamResultOptions{GenerateMessageID: gen}, "", false},
+		{"16 last assistant", UIMessageStreamResultOptions{OriginalMessages: msgs("user", "assistant"), GenerateMessageID: gen}, "msg-2", true},
+		{"28 last user", UIMessageStreamResultOptions{OriginalMessages: msgs("assistant", "user"), GenerateMessageID: gen}, "new-id", true},
+		{"40 empty", UIMessageStreamResultOptions{OriginalMessages: msgs(), GenerateMessageID: gen}, "new-id", true},
+		{"48 string id", UIMessageStreamResultOptions{OriginalMessages: msgs(), ResponseMessageID: "response-id"}, "response-id", true},
+	} {
+		got, ok := responseUIMessageIDOK(tc.opts)
+		if got != tc.want || ok != tc.wantOK {
+			t.Errorf("%s: got %q, %v; want %q, %v", tc.name, got, ok, tc.want, tc.wantOK)
+		}
+	}
+}
