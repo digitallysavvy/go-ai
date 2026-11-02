@@ -3,6 +3,7 @@ package mistral
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -175,6 +176,12 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
+	}
+	if len(response.Choices) == 0 {
+		// TS doGenerate reads response.choices[0].message without a guard: an
+		// empty choices array passes mistralChatResponseSchema and then throws
+		// a TypeError.
+		return nil, errors.New("Cannot read properties of undefined (reading 'message')") //nolint:staticcheck // ST1005: TypeError text from TS
 	}
 	result := m.convertResponse(response)
 	result.RawRequest = reqBody
@@ -796,6 +803,12 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 		}
 
 		if len(chunkData.Choices) == 0 {
+			// TS reads value.choices[0].delta without a guard: an empty choices
+			// array passes mistralChatChunkSchema and then throws a TypeError
+			// that errors the whole stream (no error part, no finish part). The
+			// parts this chunk already queued (raw, response-metadata) are
+			// delivered first.
+			s.err = errors.New("Cannot read properties of undefined (reading 'delta')") //nolint:staticcheck // ST1005: TypeError text from TS
 			continue
 		}
 		choice := chunkData.Choices[0]

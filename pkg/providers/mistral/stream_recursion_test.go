@@ -46,9 +46,9 @@ func runMistralStreamRecursionChild() {
 	var sb strings.Builder
 	sb.Grow(n*12 + 128)
 	for i := 0; i < n; i++ {
-		// No "choices" field: hits `if len(chunkData.Choices) == 0 { ...
-		// continue }`.
-		sb.WriteString(`data: {"choices":[]}` + "\n\n")
+		// A [DONE] frame is dropped and the loop keeps reading (an empty
+		// choices array now errors the stream, as TS).
+		sb.WriteString("data: [DONE]\n\n")
 	}
 	sb.WriteString(`data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}` + "\n\n")
 
