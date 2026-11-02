@@ -386,10 +386,30 @@ func ResolveSerializableTools(defs map[string]SerializableToolDef) []types.Tool 
 // actually reach the tool (mirrors TS's validateTypes/safeValidateTypes,
 // whose defaulted parse result is always what downstream code consumes).
 func ValidateSerializableToolInput(def SerializableToolDef, input interface{}) (interface{}, error) {
+	value, issues, err := validateSerializableInput(def, input)
+	if err != nil {
+		return nil, err
+	}
+	if issues != "" {
+		name := def.Name
+		if name == "" {
+			name = "tool"
+		}
+		return nil, fmt.Errorf("workflow: invalid input for %s: %s", name, issues)
+	}
+	return value, nil
+}
+
+// validateSerializableInput is ValidateSerializableToolInput without the
+// error wrapping: the defaulted value, or the Ajv-worded issues joined with
+// ", " (TS resolveSerializableTools: `validateFn.errors.map(formatAjvError)
+// .join(', ')`, the message of the Error its jsonSchema validator returns).
+// err reports a schema that cannot be normalized.
+func validateSerializableInput(def SerializableToolDef, input interface{}) (interface{}, string, error) {
 	if def.HasOwnValidator {
 		// The original schema validates after the durable boundary, where it
 		// is available; the JSON Schema copy here cannot reproduce it.
-		return input, nil
+		return input, "", nil
 	}
 	params := def.InputSchema
 	hint := def.inputSchemaHint
@@ -398,31 +418,26 @@ func ValidateSerializableToolInput(def SerializableToolDef, input interface{}) (
 		hint = def.parametersHint
 	}
 	if params == nil {
-		return input, nil
+		return input, "", nil
 	}
 	// Formats are annotations here, not assertions, and unknown keywords and
 	// formats never reject a schema (TS #22080 validates with Ajv
 	// validateFormats: false).
 	normalized, err := MarshalSchema(params) // normalizes []string etc. to JSON shapes
 	if err != nil {
-		return nil, fmt.Errorf("workflow: invalid schema for %s: %w", def.Name, err)
+		return nil, "", fmt.Errorf("workflow: invalid schema for %s: %w", def.Name, err)
 	}
 	params = stripSchemaFormats(normalized).(map[string]interface{})
 	s := schema.NewSimpleJSONSchema(params)
 	defaulted := schema.ApplyDefaults(input, s)
-	name := def.Name
-	if name == "" {
-		name = "tool"
-	}
 	// The Ajv-ordered walk is the validator: it knows the keywords Ajv does and
 	// words the errors like it. A second, generic validator would reject input
 	// Ajv accepts (`required` on a null where the type allows null) and word
 	// errors differently.
-	details := collectActionableErrors(defaulted, params, hint, "data")
-	if len(details) > 0 {
-		return nil, fmt.Errorf("workflow: invalid input for %s: %s", name, strings.Join(details, ", "))
+	if details := collectActionableErrors(defaulted, params, hint, "data"); len(details) > 0 {
+		return nil, strings.Join(details, ", "), nil
 	}
-	return defaulted, nil
+	return defaulted, "", nil
 }
 
 // stripSchemaFormats returns a deep copy of a JSON Schema value with string
