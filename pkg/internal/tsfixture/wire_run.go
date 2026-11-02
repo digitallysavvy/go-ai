@@ -459,6 +459,10 @@ func wireNormalizeParts(v interface{}) interface{} {
 				continue // an absent count is zero (image usage)
 			case k == "thoughtSignature" && x["type"] == "tool-call":
 				continue // Go-only field; TS carries it in providerMetadata
+			case k == "providerOptions" && x["type"] != nil:
+				continue // Go-only replay field on output parts; TS has providerMetadata
+			case k == "input" && x["type"] == "tool-call" && (e == "" || e == "{}"):
+				continue // empty tool input and {} are the same call (TS '' is pruned)
 			case k == "toolCallId":
 				if id, _ := e.(string); generatedWireID.MatchString(id) {
 					e = "<generated>"

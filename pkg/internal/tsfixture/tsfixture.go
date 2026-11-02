@@ -433,6 +433,10 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 					got = jsonValue(v)
 				}
 				snap := e.Snap
+				// TS passes a mock file data string that is not valid base64
+				// through; Go decodes what it can (as the wire replay).
+				got = jsonValue(got)
+				wireAlignInvalidBase64(snap, got)
 				if m, ok := snap.(map[string]interface{}); ok && m["__err"] != nil {
 					t.Logf("%s: TS snapshot not extractable (%v)", e.Expr, m["__err"])
 					continue
@@ -565,6 +569,19 @@ func GenerateContentToTS(res *types.GenerateResult) interface{} {
 			}
 			if m, ok := v.(map[string]interface{}); ok {
 				m["input"] = in
+				// Go-only field; TS carries the signature in providerMetadata.
+				delete(m, "thoughtSignature")
+			}
+		case types.ReasoningFileContent:
+			// TS wraps the bytes as SharedV4FileData; Go renders the
+			// struct (base64 data and an empty fileData).
+			if m, ok := v.(map[string]interface{}); ok {
+				m["type"] = "reasoning-file"
+				delete(m, "fileData")
+				gf := types.GeneratedFileContent{MediaType: x.MediaType, FileData: x.FileData, Data: x.Data}
+				if d := generatedFileDataToTS(&gf); d != nil {
+					m["data"] = d
+				}
 			}
 		case types.ReasoningContent:
 			// TS carries the signature and redacted data in providerMetadata
@@ -604,6 +621,9 @@ func GenerateContentToTS(res *types.GenerateResult) interface{} {
 		if !have[tc.ID] {
 			parts = append(parts, callPart(tc))
 		}
+	}
+	if parts == nil {
+		return []interface{}{} // TS content is always an array
 	}
 	return parts
 }
