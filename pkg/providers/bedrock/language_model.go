@@ -323,7 +323,8 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 			additionalModelRequestFields["thinking"] = thinking
 		}
 	} else if !isAnthropic {
-		if thinkingBudget != nil {
+		// TS warns on reasoningConfig.budgetTokens whatever the thinking type.
+		if resolvedReasoningConfig != nil && resolvedReasoningConfig.BudgetTokens != nil {
 			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "budgetTokens", Details: "budgetTokens applies only to Anthropic models on Bedrock and will be ignored for this model."})
 		}
 		if thinkingType == "adaptive" {
