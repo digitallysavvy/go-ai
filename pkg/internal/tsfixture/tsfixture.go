@@ -658,6 +658,9 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 				if c.ToolCall.Dynamic {
 					o["dynamic"] = true
 				}
+				if c.ToolCall.InputEncoding != "" {
+					o["inputEncoding"] = c.ToolCall.InputEncoding
+				}
 			}
 		case provider.ChunkTypeToolInputDelta:
 			o["id"], o["delta"] = id, c.Text
@@ -699,6 +702,9 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 				}
 				if tr.Dynamic {
 					o["dynamic"] = true
+				}
+				if tr.Preliminary {
+					o["preliminary"] = true
 				}
 				if len(tr.ProviderMetadata) > 0 {
 					o["providerMetadata"] = tr.ProviderMetadata

@@ -17,7 +17,10 @@ fails if an uncompressed `*.json` lands in a `testdata/tscases` directory.
 The cases were extracted from the TS AI SDK at commit `b658e8503c`
 (ai@7.0.140 plus main); the anthropic language/convert-prompt, bedrock
 prepare-tools, google language, gemini JSON accumulator and groq chat cases
-were re-extracted at `e64ed82f27` (ai@7.0.153+16).
+were re-extracted at `e64ed82f27` (ai@7.0.153+16). The OpenAI and xAI
+cases, the Azure provider cases and the OpenAI/xAI function-level cases
+added in review round 77 are extracted at `e64ed82f27` with `--asserts`
+(function-level ones with `--expand-each --fn=NAME`).
 
 ## Regenerating
 
@@ -127,6 +130,9 @@ every base64 JPEG run of 100,000 characters or more is replaced by a 1x1
 JPEG, and every other run that long (thought signatures) by its first 64
 characters, everywhere it occurs (response bodies and snapshots alike). Apply
 the same rule after regenerating, before gzipping, so no file passes 1 MB.
+`openai/testdata/tscases/responses.json.gz` replaces every run of 20,000 or
+more base64 characters (the compaction fixtures' encrypted content) by its
+first 64 characters the same way.
 A test whose point is the size itself cannot be shrunk: the two Google batch
 tests that build a 20 MB creation body (`reaches 20 MB` and the file-input
 variant) are left out of `testdata/tswire/google.jsonl.gz`.

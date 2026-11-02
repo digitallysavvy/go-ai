@@ -61,6 +61,24 @@ func tsProviderTool(id, name string, args map[string]interface{}) (types.Tool, b
 		t = types.Tool{ProviderExecuted: false}
 	case "openai.programmatic_tool_calling":
 		t = types.Tool{ProviderExecuted: true}
+	case "openai.tool_search":
+		var c struct {
+			Execution   string                 `json:"execution"`
+			Description string                 `json:"description"`
+			Parameters  map[string]interface{} `json:"parameters"`
+		}
+		if !decode(&c) {
+			return t, false
+		}
+		t = openaitool.ToolSearch(openaitool.ToolSearchArgs{Execution: c.Execution, Description: c.Description, Parameters: c.Parameters})
+	case "openai.custom":
+		var c openaitool.CustomTool
+		if !decode(&c) {
+			return t, false
+		}
+		t = c.ToTool(name)
+	case "openai.computer_use":
+		t = types.Tool{} // an id the TS provider does not know (an unsupported tool)
 	case "openai.shell":
 		env, _ := args["environment"].(map[string]interface{})
 		if len(args) == 0 {
@@ -102,6 +120,7 @@ func TestTSCasesChat(t *testing.T) {
 func TestTSCasesResponses(t *testing.T) {
 	tsfixture.ProviderToolHook = tsProviderTool
 	cases := tsfixture.LoadCases(t, "testdata/tscases/responses.json.gz")
+	tsfixture.EvalPathSnapshots(t)
 	tsfixture.Run(t, cases, func(base, id string) provider.LanguageModel {
 		if id == "" {
 			id = "gpt-4o"
@@ -112,6 +131,7 @@ func TestTSCasesResponses(t *testing.T) {
 		}
 		return m
 	}, map[string]string{
-		"should parse compaction output item from real fixture": "Go keeps the v0.5.2 flat compaction metadata keys next to the TS providerMetadata.openai object",
+		"should parse compaction output item from real fixture":  "Go keeps the v0.5.2 flat compaction metadata keys next to the TS providerMetadata.openai object",
+		"should stream compaction output item from real fixture": "Go keeps the v0.5.2 flat compaction metadata keys next to the TS providerMetadata.openai object",
 	})
 }
