@@ -521,7 +521,9 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 		}
 	}
 	if i.opts.Schema {
-		if len(e.Schema) > 0 {
+		// TS `'ai.schema': {input: ...}`: an input attribute; the name,
+		// description and output are plain values.
+		if len(e.Schema) > 0 && recordInputs {
 			if b, err := jsonstr.Marshal(e.Schema); err == nil {
 				span.SetAttributes(attribute.String("ai.schema", string(b)))
 			}
@@ -689,7 +691,8 @@ func (i OpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepStartEven
 	}
 	stepSpan.SetAttributes(attribute.String("gen_ai.operation.name", "agent_step"))
 	stepSpan.SetAttributes(genAIBaseSupplemental(i.stateKey(e.CallID))...)
-	if i.opts.ToolChoice && e.ToolChoice.Type != "" {
+	// TS `'ai.prompt.toolChoice': {input: ...}`: input-gated.
+	if i.opts.ToolChoice && e.ToolChoice.Type != "" && e.Settings.ShouldRecordInputs() {
 		if b, err := jsonstr.Marshal(e.ToolChoice); err == nil {
 			stepSpan.SetAttributes(attribute.String("ai.prompt.toolChoice", string(b)))
 		}
