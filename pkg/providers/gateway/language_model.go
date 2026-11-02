@@ -198,6 +198,30 @@ type gatewayStreamErrorPayload struct {
 	Data        interface{}     `json:"data"`
 }
 
+// UnmarshalJSON decodes the error object. TS passes the stream part through
+// whatever its `error` holds, so a non-object error (a string such as
+// "Internal error", or a number) becomes the message instead of failing
+// the whole chunk.
+func (p *gatewayStreamErrorPayload) UnmarshalJSON(b []byte) error {
+	trimmed := strings.TrimSpace(string(b))
+	if strings.HasPrefix(trimmed, "{") {
+		type plain gatewayStreamErrorPayload
+		var v plain
+		if err := json.Unmarshal(b, &v); err != nil {
+			return err
+		}
+		*p = gatewayStreamErrorPayload(v)
+		return nil
+	}
+	var s string
+	if json.Unmarshal(b, &s) == nil {
+		*p = gatewayStreamErrorPayload{Message: s}
+		return nil
+	}
+	*p = gatewayStreamErrorPayload{Message: trimmed}
+	return nil
+}
+
 // gatewayStreamChunk represents a chunk from the Gateway streaming API
 // This follows the LanguageModelV3StreamPart format
 type gatewayStreamChunk struct {
@@ -706,7 +730,8 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, streami
 			if tool.Strict != nil {
 				toolMap["strict"] = *tool.Strict
 			}
-			if len(tool.InputExamples) > 0 {
+			// TS passes the tool as given: an empty list is sent too.
+			if tool.InputExamples != nil {
 				toolMap["inputExamples"] = tool.InputExamples
 			}
 			// LanguageModelV4FunctionTool.providerOptions: TS sends the

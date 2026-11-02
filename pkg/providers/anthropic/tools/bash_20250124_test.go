@@ -106,5 +106,5 @@ func TestBash20250124_NoSandbox(t *testing.T) {
 	tool := Bash20250124()
 
 	_, err := tool.Execute(t.Context(), map[string]interface{}{"command": "echo hi"}, types.ToolExecutionOptions{})
-	require.EqualError(t, err, "Sandbox is not available")
+	require.EqualError(t, err, "Sandbox session is not available")
 }

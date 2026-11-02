@@ -96,6 +96,8 @@ func toolOptionsOf(t types.Tool) *ToolOptions {
 			out.DeferLoading = &v
 		}
 		if v, ok := anth["allowedCallers"].([]interface{}); ok {
+			// A present list, even empty, is sent (TS allowedCallers != null).
+			out.AllowedCallers = make([]string, 0, len(v))
 			for _, c := range v {
 				if s, ok := c.(string); ok {
 					out.AllowedCallers = append(out.AllowedCallers, s)
@@ -228,11 +230,13 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 				m["defer_loading"] = *toolOpts.DeferLoading
 			}
 			allowedCallers = toolOpts.AllowedCallers
-			if len(allowedCallers) > 0 {
+			// TS sends allowed_callers and input_examples whenever they are
+			// given (!= null), an empty list included.
+			if allowedCallers != nil {
 				m["allowed_callers"] = allowedCallers
 			}
 		}
-		if len(t.InputExamples) > 0 {
+		if t.InputExamples != nil {
 			examples := make([]interface{}, len(t.InputExamples))
 			for j, ex := range t.InputExamples {
 				examples[j] = ex.Input
@@ -243,7 +247,7 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 		if o.supportsStructuredOutput {
 			addBeta(BetaHeaderStructuredOutputs)
 		}
-		if len(t.InputExamples) > 0 || len(allowedCallers) > 0 {
+		if t.InputExamples != nil || allowedCallers != nil {
 			addBeta(BetaHeaderAdvancedToolUse)
 		}
 	}
