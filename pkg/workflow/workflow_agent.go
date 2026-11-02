@@ -77,10 +77,11 @@ type FilterActiveToolsHook func(ctx context.Context, stepNumber int, tools []typ
 //
 // A PrepareCall or PrepareStep hook that returns a field as nil (or a zero
 // ToolChoice) leaves that field's current value, as a TS prepareCall or
-// prepareStep result key left undefined does: Model, Messages, the
-// generation settings, Headers, Reasoning, SendReasoning, ProviderOptions,
-// MaxRetries, Timeout, RuntimeContext, ToolsContext, ActiveTools, StopWhen,
-// ExperimentalDownload, ToolCallConcurrency and Telemetry. An empty
+// prepareStep result key left undefined does: Model, Messages, Tools,
+// ExperimentalSandbox, CallOptions, CustomData, the generation settings,
+// Headers, Reasoning, SendReasoning, ProviderOptions, MaxRetries, Timeout,
+// RuntimeContext, ToolsContext, ActiveTools, StopWhen, ExperimentalDownload,
+// ToolCallConcurrency and Telemetry. An empty
 // non-nil slice or map is a value (an empty ActiveTools sends no tools).
 type LanguageModelCallOptions struct {
 	StepNumber int
@@ -1676,6 +1677,20 @@ func keepUnsetHookFields(in, out LanguageModelCallOptions) LanguageModelCallOpti
 	}
 	if out.Messages == nil {
 		out.Messages = in.Messages
+	}
+	// TS prepareCall and prepareStep have no `tools` key, and prepareStep
+	// applies `experimental_sandbox ?? sandbox`: nil keeps both.
+	if out.Tools == nil {
+		out.Tools = in.Tools
+	}
+	if out.ExperimentalSandbox == nil {
+		out.ExperimentalSandbox = in.ExperimentalSandbox
+	}
+	if out.CallOptions == nil {
+		out.CallOptions = in.CallOptions
+	}
+	if out.CustomData == nil {
+		out.CustomData = in.CustomData
 	}
 	if out.ToolChoice == (types.ToolChoice{}) {
 		out.ToolChoice = in.ToolChoice

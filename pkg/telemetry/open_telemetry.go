@@ -521,7 +521,9 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 		}
 	}
 	if i.opts.Schema {
-		if len(e.Schema) > 0 {
+		// TS `'ai.schema': {input: ...}`: an input attribute; the name,
+		// description and output are plain values.
+		if len(e.Schema) > 0 && recordInputs {
 			if b, err := jsonstr.Marshal(e.Schema); err == nil {
 				span.SetAttributes(attribute.String("ai.schema", string(b)))
 			}
@@ -689,7 +691,8 @@ func (i OpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepStartEven
 	}
 	stepSpan.SetAttributes(attribute.String("gen_ai.operation.name", "agent_step"))
 	stepSpan.SetAttributes(genAIBaseSupplemental(i.stateKey(e.CallID))...)
-	if i.opts.ToolChoice && e.ToolChoice.Type != "" {
+	// TS `'ai.prompt.toolChoice': {input: ...}`: input-gated.
+	if i.opts.ToolChoice && e.ToolChoice.Type != "" && e.Settings.ShouldRecordInputs() {
 		if b, err := jsonstr.Marshal(e.ToolChoice); err == nil {
 			stepSpan.SetAttributes(attribute.String("ai.prompt.toolChoice", string(b)))
 		}
@@ -944,9 +947,7 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 	// no provider re-record, cache-creation tokens or client performance
 	// attributes, and the object text as the output message.
 	isObject := genAIIsObjectCall(i.stateKey(e.CallID))
-	attrs := []attribute.KeyValue{
-		attribute.StringSlice("gen_ai.response.finish_reasons", []string{e.FinishReason}),
-	}
+	attrs := finishReasonsAttrs(e.FinishReason)
 	// TS re-records the provider on the chat span at call end, since the
 	// responding provider can differ from the requested one.
 	if e.ModelProvider != "" && !isObject {
@@ -1058,6 +1059,16 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 	}
 
 	entry.span.End()
+}
+
+// finishReasonsAttrs is gen_ai.response.finish_reasons ([finishReason]), or
+// nothing for an unset finish reason: TS sanitizeAttributeValue drops
+// `[undefined]`, an array without a primitive.
+func finishReasonsAttrs(finishReason string) []attribute.KeyValue {
+	if finishReason == "" {
+		return nil
+	}
+	return []attribute.KeyValue{attribute.StringSlice("gen_ai.response.finish_reasons", []string{finishReason})}
 }
 
 // baseUsageAttrs returns the GenAI SemConv usage attributes. cacheCreation
@@ -1529,9 +1540,7 @@ func (i OpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) {
 // reason, token usage, gen_ai.output.messages, and the supplemental
 // providerMetadata/usage details.
 func (i OpenTelemetry) onGenerateEnd(span trace.Span, e TelemetryFinishEvent, recordOutputs bool) {
-	attrs := []attribute.KeyValue{
-		attribute.StringSlice("gen_ai.response.finish_reasons", []string{e.FinishReason}),
-	}
+	attrs := finishReasonsAttrs(e.FinishReason)
 	attrs = append(attrs, baseUsageAttrs(e.Usage, true)...)
 	if recordOutputs {
 		if b, err := jsonstr.Marshal(formatOutputMessagesFromFinish(e)); err == nil {
@@ -1546,9 +1555,7 @@ func (i OpenTelemetry) onGenerateEnd(span trace.Span, e TelemetryFinishEvent, re
 // streamObject): like onGenerateEnd without the cache-creation tokens, and
 // gen_ai.output.messages carrying the serialized object when there is one.
 func (i OpenTelemetry) onObjectOperationEnd(span trace.Span, e TelemetryFinishEvent, recordOutputs bool) {
-	attrs := []attribute.KeyValue{
-		attribute.StringSlice("gen_ai.response.finish_reasons", []string{e.FinishReason}),
-	}
+	attrs := finishReasonsAttrs(e.FinishReason)
 	attrs = append(attrs, baseUsageAttrs(e.Usage, false)...)
 	if recordOutputs && e.Object != nil {
 		if objectJSON, err := jsonstr.Marshal(e.Object); err == nil {

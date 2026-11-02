@@ -2464,7 +2464,10 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 	}
 	recordOutputs := e.Settings.ShouldRecordOutputs()
 
-	stepSpan.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
+	// TS drops an undefined finish reason (selectAttributes).
+	if e.FinishReason != "" {
+		stepSpan.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
+	}
 
 	// TS onStepEnd shapes the span by the root's operation (state.operationId).
 	stepOp := legacyStepOperation(i.stateKey(e.CallID), e.OperationType)
@@ -2566,7 +2569,7 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 		}
 	}
 
-	stepSpan.SetAttributes(attribute.StringSlice("gen_ai.response.finish_reasons", []string{e.FinishReason}))
+	stepSpan.SetAttributes(finishReasonsAttrs(e.FinishReason)...)
 	if e.Usage.InputTokens != nil {
 		stepSpan.SetAttributes(attribute.Int64("gen_ai.usage.input_tokens", *e.Usage.InputTokens))
 	}
@@ -2736,7 +2739,9 @@ func JoinReasoning(parts []types.ReasoningContent) string {
 
 // legacyOnGenerateEnd mirrors TS's onGenerateEnd (generateText/streamText).
 func (i LegacyOpenTelemetry) legacyOnGenerateEnd(span trace.Span, e TelemetryFinishEvent, recordOutputs bool) {
-	span.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
+	if e.FinishReason != "" {
+		span.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
+	}
 	if recordOutputs {
 		// Empty text is recorded too (TS `event.text ?? undefined`).
 		span.SetAttributes(attribute.String("ai.response.text", e.Text))
@@ -2763,7 +2768,9 @@ func (i LegacyOpenTelemetry) legacyOnGenerateEnd(span trace.Span, e TelemetryFin
 // (generateObject/streamObject): ai.response.object instead of text, and the
 // smaller legacyObjectUsageAttrs usage set.
 func (i LegacyOpenTelemetry) legacyOnObjectOperationEnd(span trace.Span, e TelemetryFinishEvent, recordOutputs bool) {
-	span.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
+	if e.FinishReason != "" {
+		span.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
+	}
 	if recordOutputs && e.Object != nil {
 		if b, err := jsonstr.Marshal(e.Object); err == nil {
 			span.SetAttributes(attribute.String("ai.response.object", string(b)))
