@@ -1438,10 +1438,14 @@ func (c *anthropicConverter) convertAssistantBlock(block anthropicBlock, isLastB
 
 			case *types.ReasoningContent:
 				if p != nil {
-					c.convertReasoning(&content, *p, sendReasoning)
+					if err := c.convertReasoning(&content, *p, sendReasoning); err != nil {
+						return nil, err
+					}
 				}
 			case types.ReasoningContent:
-				c.convertReasoning(&content, p, sendReasoning)
+				if err := c.convertReasoning(&content, p, sendReasoning); err != nil {
+					return nil, err
+				}
 
 			case types.ToolCallContent:
 				tc := toolCallFromContent(p)
@@ -1556,12 +1560,15 @@ func (c *anthropicConverter) convertAssistantText(content *[]map[string]interfac
 	*content = append(*content, block)
 }
 
-func (c *anthropicConverter) convertReasoning(content *[]map[string]interface{}, p types.ReasoningContent, sendReasoning bool) {
+func (c *anthropicConverter) convertReasoning(content *[]map[string]interface{}, p types.ReasoningContent, sendReasoning bool) error {
 	if !sendReasoning {
 		c.warn("sending reasoning content is disabled for this model")
-		return
+		return nil
 	}
-	opts := anthropicOptions(p.ProviderOptions)
+	opts, err := anthropicReasoningOptions(p.ProviderOptions)
+	if err != nil {
+		return err
+	}
 	if opts == nil {
 		opts = anthropicOptions(rawMetadataMap(p.ProviderMetadata))
 	}
@@ -1594,6 +1601,43 @@ func (c *anthropicConverter) convertReasoning(content *[]map[string]interface{},
 	default:
 		c.warn("unsupported reasoning metadata")
 	}
+	return nil
+}
+
+// anthropicReasoningOptions mirrors TS parseProviderOptions with
+// anthropicReasoningMetadataSchema ({signature?: string, redactedData?:
+// string}): a non-null providerOptions.anthropic that is not an object, or a
+// present signature/redactedData that is not a string (null included), is an
+// InvalidArgumentError. A typed Go map is read through its JSON form.
+func anthropicReasoningOptions(options map[string]interface{}) (map[string]interface{}, error) {
+	raw, ok := options["anthropic"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	invalid := func(format string, args ...interface{}) error {
+		return &providererrors.InvalidArgumentError{
+			Field:   "providerOptions",
+			Message: "invalid anthropic provider options",
+			Cause:   fmt.Errorf(format, args...),
+		}
+	}
+	opts, isObject := raw.(map[string]interface{})
+	if !isObject {
+		if encoded, err := json.Marshal(raw); err == nil {
+			_ = json.Unmarshal(encoded, &opts)
+		}
+		if opts == nil {
+			return nil, invalid("invalid input: expected object")
+		}
+	}
+	for _, key := range []string{"signature", "redactedData"} {
+		if v, present := opts[key]; present {
+			if _, isString := v.(string); !isString {
+				return nil, invalid("%s: invalid input, expected string", key)
+			}
+		}
+	}
+	return opts, nil
 }
 
 func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, part anthropicToolCall, cacheControl interface{}, mcpToolUseIDs map[string]bool) {
