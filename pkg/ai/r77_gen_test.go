@@ -400,3 +400,77 @@ func TestR77Gen_TransformedApprovedInputPersistedRoundTrip(t *testing.T) {
 		t.Fatalf("execute calls = %v, want one with count 3", executed)
 	}
 }
+
+// Port of validate-tool-approvals.test.ts 431 (it.each) and 540: a signed
+// approval of a tool whose schema transforms its input (count + 1) is kept
+// when its inputSchemaInput reproduces the approved input, and the approval
+// policy then sees the approved input; without inputSchemaInput the signed
+// input would be transformed again, so the approval is invalid and the
+// policy is not called.
+func TestR77Gen_SignedTransformedApprovalInput(t *testing.T) {
+	secret := []byte("test-secret-for-signature")
+	plusOne := types.Tool{
+		Name:       "tool1",
+		Parameters: map[string]interface{}{"type": "object"},
+		ValidateInput: func(v interface{}) (interface{}, error) {
+			m, _ := v.(map[string]interface{})
+			n, ok := m["count"].(float64)
+			if !ok {
+				return nil, errors.New("count must be a number")
+			}
+			return map[string]interface{}{"count": n + 1}, nil
+		},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		},
+	}
+	for _, hasInputSchemaInput := range []bool{true, false} {
+		t.Run(strconv.FormatBool(hasInputSchemaInput), func(t *testing.T) {
+			var schemaInput map[string]interface{}
+			if hasInputSchemaInput {
+				schemaInput = map[string]interface{}{"count": float64(1)}
+			}
+			approval := r77genApproval(map[string]interface{}{"count": float64(2)}, schemaInput)
+			sig, err := SignToolApproval(secret, approval.ApprovalRequest.ApprovalID, "call-1", "tool1", approval.ToolCall.Arguments)
+			if err != nil {
+				t.Fatal(err)
+			}
+			approval.ApprovalRequest.Signature = sig
+			var policyInputs []map[string]interface{}
+			policy := types.SingleToolApprovalFunc(func(args map[string]interface{}, _ types.SingleToolApprovalOptions) types.ToolApprovalResult {
+				policyInputs = append(policyInputs, args)
+				return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}
+			})
+			res, err := ValidateApprovedToolApprovals(context.Background(), ValidateApprovedToolApprovalsOptions{
+				ApprovedToolApprovals: []CollectedToolApproval{approval},
+				Tools:                 []types.Tool{plusOne},
+				ToolApproval:          map[string]types.ToolApprovalValue{"tool1": policy},
+				ToolApprovalSecret:    secret,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(approval.ToolCall.Arguments, map[string]interface{}{"count": float64(2)}) {
+				t.Fatalf("approved input changed: %#v", approval.ToolCall.Arguments)
+			}
+			if hasInputSchemaInput {
+				if len(res.ApprovedToolApprovals) != 1 || len(res.InvalidToolApprovals) != 0 {
+					t.Fatalf("approved=%d invalid=%+v, want 1 approved", len(res.ApprovedToolApprovals), res.InvalidToolApprovals)
+				}
+				if len(policyInputs) != 1 || !reflect.DeepEqual(policyInputs[0], map[string]interface{}{"count": float64(2)}) {
+					t.Fatalf("policy inputs = %v, want one call with count 2", policyInputs)
+				}
+				return
+			}
+			if len(res.ApprovedToolApprovals) != 0 || len(res.InvalidToolApprovals) != 1 {
+				t.Fatalf("approved=%d invalid=%d, want 1 invalid", len(res.ApprovedToolApprovals), len(res.InvalidToolApprovals))
+			}
+			if msg := res.InvalidToolApprovals[0].Error.Error(); !strings.Contains(msg, "does not match the validated schema output") {
+				t.Fatalf("error = %q", msg)
+			}
+			if len(policyInputs) != 0 {
+				t.Fatalf("policy called with %v", policyInputs)
+			}
+		})
+	}
+}
