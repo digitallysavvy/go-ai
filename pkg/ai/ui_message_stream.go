@@ -394,6 +394,14 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 				// TS: the processing failure errored the stream.
 				return
 			}
+			if ctx.Err() != nil {
+				// A cancelled consumer: TS discards the queued chunks and
+				// handleUIMessageStreamFinish's cancel calls onEnd without
+				// processing another one, so a chunk that reached chunkCh as
+				// the ctx was cancelled (an abort chunk from a source on the
+				// same ctx) does not change the message state or the outcome.
+				return
+			}
 			// TS handleUIMessageStreamFinish: a start chunk without a
 			// messageId gets the response message id (the continued
 			// assistant message's id, else the generated one).
@@ -771,6 +779,11 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			if processingErr != nil {
 				return
 			}
+			if ctx.Err() != nil {
+				// A cancelled consumer: TS processes no further chunk (the
+				// message state and step callbacks stop with the stream).
+				return
+			}
 			if processing {
 				if err := applyUIStateChunk(uiState, chunk, onError); err != nil {
 					processingErr = err
@@ -1019,6 +1032,18 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				hasPeeked, peeked, peekedErr = false, nil, nil
 			} else {
 				chunk, err = stream.Next()
+			}
+			if ctx.Err() != nil {
+				// The consumer was cancelled while the read was in flight:
+				// the part it returned (StreamText's abort part, or the ctx
+				// error of a source on the same ctx) is not processed, so
+				// OnEnd always reports the cancellation (isCancelled), not an
+				// abort that was never written. TS: a cancelled reader
+				// cancels the pipeline, and handleUIMessageStreamFinish's
+				// cancel calls onEnd without processing another chunk.
+				sendUIStreamErr(errCh, ctx.Err())
+				callOnEnd()
+				return
 			}
 			if err != nil {
 				if err == io.EOF {
