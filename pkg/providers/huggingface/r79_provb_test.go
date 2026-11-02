@@ -56,3 +56,36 @@ func TestR79provbHuggingFaceFractionalCreatedAt(t *testing.T) {
 		}
 	})
 }
+
+// TS response.created timestamp: new Date(value.response.created_at * 1000)
+// with no validation (the chunk union's loose fallback): absent is an
+// Invalid Date (none), null is the epoch.
+func TestR79provbHuggingFaceStreamCreatedAtPresence(t *testing.T) {
+	for _, tc := range []struct {
+		name, field string
+		want        time.Time
+	}{
+		{"absent", ``, time.Time{}},
+		{"null", `,"created_at":null`, time.UnixMilli(0)},
+		{"zero", `,"created_at":0`, time.UnixMilli(0)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `data: {"type":"response.created","response":{"id":"resp_1","model":"m"` + tc.field + `}}` + "\n\n"
+			s := newHFStream(io.NopCloser(strings.NewReader(body)), nil, "huggingface")
+			defer func() { _ = s.Close() }()
+			var meta *provider.ResponseMetadata
+			for {
+				c, err := s.Next()
+				if err != nil {
+					break
+				}
+				if c.Type == provider.ChunkTypeResponseMetadata {
+					meta = c.ResponseMetadata
+				}
+			}
+			if meta == nil || meta.Timestamp.IsZero() != tc.want.IsZero() || !meta.Timestamp.Equal(tc.want) {
+				t.Fatalf("metadata = %+v, want timestamp %v", meta, tc.want)
+			}
+		})
+	}
+}

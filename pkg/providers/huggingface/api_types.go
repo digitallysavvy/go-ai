@@ -1,5 +1,7 @@
 package huggingface
 
+import "encoding/json"
+
 // hfUsage mirrors TS HuggingFaceResponsesUsage.
 type hfUsage struct {
 	InputTokens        int64 `json:"input_tokens"`
@@ -90,7 +92,7 @@ type hfStreamItem struct {
 type hfStreamResponse struct {
 	ID                string               `json:"id"`
 	Model             string               `json:"model"`
-	CreatedAt         float64              `json:"created_at"`
+	CreatedAt         json.RawMessage      `json:"created_at"`
 	IncompleteDetails *hfIncompleteDetails `json:"incomplete_details"`
 	Usage             *hfUsage             `json:"usage"`
 }

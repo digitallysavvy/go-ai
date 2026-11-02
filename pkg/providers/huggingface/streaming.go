@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -175,7 +176,7 @@ func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 				Type: provider.ChunkTypeResponseMetadata,
 				ResponseMetadata: &provider.ResponseMetadata{
 					ID:        event.Response.ID,
-					Timestamp: hfCreatedTimestamp(event.Response.CreatedAt),
+					Timestamp: hfStreamCreatedTimestamp(event.Response.CreatedAt),
 					ModelID:   event.Response.Model,
 					Headers:   s.responseHeaders,
 				},
@@ -349,4 +350,23 @@ func createHFStreamError(raw map[string]interface{}, providerName string) *provi
 	}
 
 	return providererrors.NewStreamProviderError(message, providerName, outerType, code, nil, nil, raw)
+}
+
+// hfStreamCreatedTimestamp is TS new Date(value.response.created_at * 1000)
+// for a response.created chunk. The chunk union ends in a loose fallback, so
+// the value is not validated: a number is the timestamp, null is the epoch
+// (null * 1000 is 0), and an absent or non-numeric one is an Invalid Date
+// (no timestamp).
+func hfStreamCreatedTimestamp(raw json.RawMessage) time.Time {
+	if len(raw) == 0 {
+		return time.Time{}
+	}
+	var v *float64
+	if json.Unmarshal(raw, &v) != nil {
+		return time.Time{}
+	}
+	if v == nil {
+		return time.UnixMilli(0).UTC()
+	}
+	return hfCreatedTimestamp(*v)
 }
