@@ -2,12 +2,15 @@ package deepseek
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -131,4 +134,44 @@ func TestR78provbDeepseekCreatedZeroIsEpoch(t *testing.T) {
 			check(t, meta.Timestamp)
 		})
 	}
+}
+
+// TestR78provbTSCasesConvertMessages replays
+// convert-to-deepseek-chat-messages.test.ts (TS convertToDeepSeekChatMessages,
+// extracted at e64ed82f27 with --expand-each --fn) through convertMessages.
+func TestR78provbTSCasesConvertMessages(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/convert_messages.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		in, _ := args[0].(map[string]interface{})
+		if rf, ok := in["responseFormat"].(map[string]interface{}); ok && rf["__undef"] == nil {
+			return nil, nil, fmt.Errorf("%w: responseFormat", tsfixture.ErrUnsupported)
+		}
+		msgs, why := tsfixture.BuildPromptMessages(in["prompt"])
+		if why != "" {
+			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+		}
+		cfg := Config{APIKey: "k"}
+		if name, ok := in["providerOptionsName"].(string); ok {
+			cfg.Name, cfg.ProviderOptionsName = name, name
+		}
+		if v, _ := in["supportsAssistantPrefixCompletion"].(bool); v {
+			cfg.BaseURL = "https://api.deepseek.com/beta"
+		}
+		if v, ok := in["supportsStructuredOutputs"].(bool); ok {
+			cfg.SupportsStructuredOutputs = &v
+		}
+		modelID, _ := in["modelId"].(string)
+		lm, err := New(cfg).LanguageModel(modelID)
+		if err != nil {
+			return nil, nil, err
+		}
+		messages, warnings, err := lm.(*LanguageModel).convertMessages(msgs)
+		if err != nil {
+			return nil, nil, err
+		}
+		b, _ := json.Marshal(messages)
+		var out interface{}
+		_ = json.Unmarshal(b, &out)
+		return map[string]interface{}{"messages": out, "warnings": tsfixture.WarningsToTS(warnings)}, nil, nil
+	}, nil)
 }
