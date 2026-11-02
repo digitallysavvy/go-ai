@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -59,5 +60,75 @@ func TestR78provbDeepseekReadsPastDone(t *testing.T) {
 	}
 	if text.String() != "Hello world" || finishes[0].FinishReason != types.FinishReasonStop {
 		t.Fatalf("text %q finish %q, want %q stop", text.String(), finishes[0].FinishReason, "Hello world")
+	}
+}
+
+// Reviewer item 3 (r78): TS createLanguageModelResponseMetadata uses
+// `created != null ? new Date(created * 1000)`, so created 0 is the epoch in
+// generate and in the stream's response-metadata; an absent created is none.
+func TestR78provbDeepseekCreatedZeroIsEpoch(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		created string
+		want    bool
+	}{{"zero", `"created":0,`, true}, {"absent", ``, false}} {
+		check := func(t *testing.T, ts time.Time) {
+			t.Helper()
+			if tc.want && (ts.IsZero() || !ts.Equal(time.Unix(0, 0))) {
+				t.Fatalf("timestamp = %v, want the epoch", ts)
+			}
+			if !tc.want && !ts.IsZero() {
+				t.Fatalf("timestamp = %v, want none", ts)
+			}
+		}
+		t.Run("generate/"+tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion",` + tc.created + `"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+			}))
+			defer srv.Close()
+			m, err := New(Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("deepseek-chat")
+			if err != nil {
+				t.Fatal(err)
+			}
+			r, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "x"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.ResponseMetadata == nil {
+				t.Fatal("no response metadata")
+			}
+			check(t, r.ResponseMetadata.Timestamp)
+		})
+		t.Run("stream/"+tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte(`data: {"id":"c1","object":"chat.completion.chunk",` + tc.created + `"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}` + "\n\ndata: [DONE]\n\n"))
+			}))
+			defer srv.Close()
+			m, err := New(Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("deepseek-chat")
+			if err != nil {
+				t.Fatal(err)
+			}
+			s, err := m.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "x"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			var meta *provider.ResponseMetadata
+			for {
+				c, err := s.Next()
+				if err != nil {
+					break
+				}
+				if c.Type == provider.ChunkTypeResponseMetadata && c.ResponseMetadata != nil && c.ResponseMetadata.ID == "c1" {
+					meta = c.ResponseMetadata
+				}
+			}
+			if meta == nil {
+				t.Fatal("no response-metadata part")
+			}
+			check(t, meta.Timestamp)
+		})
 	}
 }

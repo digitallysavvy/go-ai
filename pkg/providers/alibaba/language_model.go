@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -95,6 +96,13 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if len(resp.Body) > 0 {
 		result.RawResponse = providerutils.RawJSONBody(resp.Body)
 	}
+	// TS response: { ...getResponseMetadata(response), headers } with
+	// createLanguageModelResponseMetadata (created != null: 0 is the epoch).
+	result.ResponseMetadata = providerutils.BuildResponseMetadata(response.ID, response.Model, 0)
+	if response.Created != nil {
+		result.ResponseMetadata.Timestamp = time.Unix(*response.Created, 0)
+	}
+	result.ResponseMetadata.Headers = result.ResponseHeaders
 	return result, nil
 }
 
@@ -484,7 +492,7 @@ func (m *LanguageModel) handleError(err error) error {
 type alibabaResponse struct {
 	ID                string          `json:"id"`
 	Object            string          `json:"object"`
-	Created           int64           `json:"created"`
+	Created           *int64          `json:"created"`
 	Model             string          `json:"model"`
 	SystemFingerprint string          `json:"system_fingerprint,omitempty"`
 	Choices           []alibabaChoice `json:"choices"`

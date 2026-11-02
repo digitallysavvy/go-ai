@@ -133,14 +133,15 @@ func (s *alibabaStream) Next() (*provider.StreamChunk, error) {
 			}
 			return errorChunk, nil
 		}
-		if !s.metadataEmitted && (chunk.ID != "" || chunk.Model != "" || chunk.Created != 0 || len(s.responseHeaders) > 0) {
+		// TS isFirstChunk: the first valid chunk always yields response-metadata.
+		if !s.metadataEmitted {
 			metadata := &provider.ResponseMetadata{
 				ID:      chunk.ID,
 				ModelID: chunk.Model,
 				Headers: s.responseHeaders,
 			}
-			if chunk.Created != 0 {
-				metadata.Timestamp = time.Unix(chunk.Created, 0)
+			if chunk.Created != nil { // TS created != null: 0 is the epoch
+				metadata.Timestamp = time.Unix(*chunk.Created, 0)
 			}
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type:             provider.ChunkTypeResponseMetadata,
@@ -277,7 +278,7 @@ func (s *alibabaStream) Err() error {
 type alibabaStreamChunk struct {
 	ID      string                `json:"id,omitempty"`
 	Object  string                `json:"object,omitempty"`
-	Created int64                 `json:"created,omitempty"`
+	Created *int64                `json:"created,omitempty"`
 	Model   string                `json:"model,omitempty"`
 	Choices []alibabaStreamChoice `json:"choices"`
 	Usage   *AlibabaUsage         `json:"usage,omitempty"`
