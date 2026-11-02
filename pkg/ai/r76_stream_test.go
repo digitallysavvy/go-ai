@@ -550,3 +550,103 @@ func r76streamDataOf(t *testing.T, p UIMessagePart) map[string]interface{} {
 	}
 	return m
 }
+
+// handle-ui-message-stream-finish.test.ts 74 / 117 / 144 (through
+// CreateUIMessageStreamWithOptions, TS createUIMessageStream's
+// handleUIMessageStreamFinish): the chunks pass through unchanged (the start
+// chunk already has its id); onEnd, preferred over onFinish, runs once with
+// a new response message after the original user message; the outcome the
+// stream owner declared reaches onEnd.
+func TestR76StreamHandleFinishProcessesStream(t *testing.T) {
+	input := []UIMessageChunk{
+		{"type": "start", "messageId": "msg-456"},
+		{"type": "text-start", "id": "text-1"},
+		{"type": "text-delta", "id": "text-1", "delta": "Hello"},
+		{"type": "text-delta", "id": "text-1", "delta": " World"},
+		{"type": "text-end", "id": "text-1"},
+		{"type": "finish"},
+	}
+	user := UIMessageChunk{"id": "user-msg-1", "role": "user", "parts": []interface{}{map[string]interface{}{"type": "text", "text": "Hello"}}}
+	var mu sync.Mutex
+	var ends, finishes []map[string]interface{}
+	out, errs := r75streamRunUIChunks(t, input, UIMessageStreamOptions{
+		OriginalMessages:  []UIMessageChunk{user},
+		GenerateMessageID: r75streamIDGen("msg-456"),
+		OnEnd: func(e map[string]interface{}) {
+			mu.Lock()
+			defer mu.Unlock()
+			ends = append(ends, e)
+		},
+		OnFinish: func(e map[string]interface{}) {
+			mu.Lock()
+			defer mu.Unlock()
+			finishes = append(finishes, e)
+		},
+	})
+	if len(errs) != 0 {
+		t.Fatalf("errors: %v", errs)
+	}
+	r75streamAssertJSON(t, "output", out, string(r76streamMustJSON(t, input)))
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ends) != 1 || len(finishes) != 0 {
+		t.Fatalf("onEnd calls = %d, onFinish calls = %d; want 1, 0", len(ends), len(finishes))
+	}
+	e := ends[0]
+	if e["isContinuation"] != false {
+		t.Errorf("isContinuation = %v", e["isContinuation"])
+	}
+	resp, _ := e["responseMessage"].(UIMessageChunk)
+	if resp == nil || resp["id"] != "msg-456" || resp["role"] != "assistant" {
+		t.Fatalf("responseMessage = %#v", e["responseMessage"])
+	}
+	messages, _ := e["messages"].([]UIMessageChunk)
+	if len(messages) != 2 {
+		t.Fatalf("messages = %#v, want 2", e["messages"])
+	}
+	r75streamAssertJSON(t, "messages[0]", messages[0], string(r76streamMustJSON(t, user)))
+	r75streamAssertJSON(t, "messages[1]", messages[1], string(r76streamMustJSON(t, resp)))
+}
+
+// handle-ui-message-stream-finish.test.ts 144: the outcome the stream owner
+// declared (TS getOutcome; Go writer.SetOutcome) reaches onEnd with isAborted
+// false.
+func TestR76StreamHandleFinishDeclaredOutcome(t *testing.T) {
+	failure := errors.New("stream failed")
+	var mu sync.Mutex
+	var outcome map[string]interface{}
+	var aborted interface{}
+	outCh, errCh := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		GenerateMessageID: r75streamIDGen("msg-456"),
+		OnError:           func(error) string { return "masked error" },
+		OnEnd: func(e map[string]interface{}) {
+			mu.Lock()
+			defer mu.Unlock()
+			outcome, _ = e["outcome"].(map[string]interface{})
+			aborted = e["isAborted"]
+		},
+		Execute: func(w UIMessageStreamWriter) {
+			w.SetOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: failure})
+			w.Write(UIMessageChunk{"type": "start", "messageId": "msg-456"})
+			w.Write(UIMessageChunk{"type": "error", "errorText": "masked error"})
+		},
+	})
+	for range outCh {
+	}
+	for range errCh {
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if aborted != false || outcome["status"] != "failed" || outcome["error"] != failure {
+		t.Fatalf("onEnd isAborted = %v, outcome = %#v; want false, failed with the declared error", aborted, outcome)
+	}
+}
+
+func r76streamMustJSON(t *testing.T, v interface{}) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
