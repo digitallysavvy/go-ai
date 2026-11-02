@@ -25,9 +25,19 @@ type BashSandboxOutput struct {
 // and fails with "Sandbox session is not available" without one. Sandboxes
 // with a v0.5 `Execute(ctx, command, opts)` method and a RuntimeContext with
 // ExecuteCommand are still used.
+//
+// A nil pointer (or other nil value) held in ExperimentalSandbox or
+// RuntimeContext counts as no sandbox, as TS `!sandbox` treats null and
+// undefined: its methods are never called on the nil receiver.
 func executeBash(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 	command, _ := input["command"].(string)
-	if session, ok := options.ExperimentalSandbox.(providerutils.SandboxSession); ok && session != nil {
+	if isNilSandbox(options.ExperimentalSandbox) {
+		options.ExperimentalSandbox = nil
+	}
+	if isNilSandbox(options.RuntimeContext) {
+		options.RuntimeContext = nil
+	}
+	if session, ok := options.ExperimentalSandbox.(providerutils.SandboxSession); ok {
 		result, err := session.Run(ctx, providerutils.SandboxProcessOptions{Command: command})
 		if err != nil {
 			return nil, err
@@ -51,6 +61,20 @@ func executeBash(ctx context.Context, input map[string]interface{}, options type
 		return sandbox.ExecuteCommand(ctx, command, restart)
 	}
 	return nil, errors.New("Sandbox session is not available") //nolint:staticcheck // matches TS SDK's exact error text
+}
+
+// isNilSandbox reports whether v is nil or an interface holding a nil
+// pointer, map, slice, func, chan or interface value.
+func isNilSandbox(v interface{}) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
+		return rv.IsNil()
+	}
+	return false
 }
 
 type bashCommandSandbox interface {
