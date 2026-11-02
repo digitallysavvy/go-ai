@@ -458,6 +458,12 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 					}
 					audioBytes, decodeErr := fileutil.ConvertBase64ToBytes(part.InlineData.Data)
 					if decodeErr != nil {
+						// TS enqueues the string as is and, as
+						// getPcm16SilenceDurationMs returns undefined for
+						// it, counts it as turn activity. Go audio parts
+						// carry bytes, so the part is dropped, but the
+						// activity is kept.
+						onTurnActivity()
 						continue
 					}
 					if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeAudio, ID: itemID(), AudioData: audioBytes}) {
