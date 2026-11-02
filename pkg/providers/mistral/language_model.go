@@ -184,7 +184,8 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if len(resp.Body) > 0 {
 		result.RawResponse = providerutils.RawJSONBody(resp.Body)
 	}
-	responseMetadata := providerutils.BuildResponseMetadata(response.ID, response.Model, response.Created)
+	responseMetadata := providerutils.BuildResponseMetadata(response.ID, response.Model, 0)
+	responseMetadata.Timestamp = mistralCreatedTimestamp(response.Created)
 	responseMetadata.Headers = result.ResponseHeaders
 	result.ResponseMetadata = responseMetadata
 	return result, nil
@@ -534,10 +535,10 @@ func mapMistralFinishReason(reason string) types.FinishReason {
 }
 
 type mistralResponse struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	Model   string `json:"model"`
+	ID      string   `json:"id"`
+	Object  string   `json:"object"`
+	Created *float64 `json:"created"`
+	Model   string   `json:"model"`
 	Choices []struct {
 		Index        int    `json:"index"`
 		FinishReason string `json:"finish_reason"`
@@ -732,7 +733,7 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 		var chunkData struct {
 			ID      string          `json:"id"`
 			Model   string          `json:"model"`
-			Created int64           `json:"created"`
+			Created *float64        `json:"created"`
 			Usage   json.RawMessage `json:"usage"`
 			Choices []struct {
 				FinishReason string `json:"finish_reason"`
@@ -780,16 +781,14 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 		if len(chunkData.Usage) > 0 && string(chunkData.Usage) != "null" {
 			s.pendingUsage = chunkData.Usage
 		}
-		if !s.responseMetadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0 || len(s.responseHeaders) > 0) {
+		if !s.responseMetadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != nil || len(s.responseHeaders) > 0) {
 			s.responseMetadataEmitted = true
 			meta := &provider.ResponseMetadata{
 				ID:      chunkData.ID,
 				ModelID: chunkData.Model,
 				Headers: s.responseHeaders,
 			}
-			if chunkData.Created != 0 {
-				meta.Timestamp = time.Unix(chunkData.Created, 0)
-			}
+			meta.Timestamp = mistralCreatedTimestamp(chunkData.Created)
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type:             provider.ChunkTypeResponseMetadata,
 				ResponseMetadata: meta,
@@ -980,4 +979,15 @@ func mistralOptionNumber(v interface{}) (float64, bool) {
 		return f, err == nil
 	}
 	return 0, false
+}
+
+// mistralCreatedTimestamp converts a response's `created` (unix seconds) as TS
+// createLanguageModelResponseMetadata does: a present value, 0 included, is
+// new Date(created * 1000) (milliseconds truncated); an absent or null one is
+// no timestamp.
+func mistralCreatedTimestamp(created *float64) time.Time {
+	if created == nil {
+		return time.Time{}
+	}
+	return time.UnixMilli(int64(*created * 1000))
 }
