@@ -1,10 +1,12 @@
 package anthropic
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // TestR79prova_TSCasesProviderHeaders replays the anthropic-language-model
@@ -38,4 +40,19 @@ func TestR79prova_TSCasesProviderHeaders(t *testing.T) {
 			return m
 		}, nil)
 	}
+}
+
+// r79provaGoVersion rewrites the TS test package VERSION ('0.0.0-test',
+// mocked in the TS tests) in plain assertion arguments to the Go SDK
+// version, so the user-agent assertions check the Go user agent
+// (ai-sdk-<provider>/<version>).
+func r79provaGoVersion(cases []tsfixture.Case) []tsfixture.Case {
+	for ci := range cases {
+		for i, a := range cases[ci].Asserts {
+			if s, ok := a.Arg.(string); ok {
+				cases[ci].Asserts[i].Arg = strings.ReplaceAll(s, "0.0.0-test", version.Version)
+			}
+		}
+	}
+	return cases
 }

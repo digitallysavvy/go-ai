@@ -21,7 +21,7 @@ func TestTSCasesLanguage(t *testing.T) {
 	defer func() { tsfixture.MetadataKeyAlias = nil }()
 	tsfixture.ProviderToolHook = r78provaProviderTool
 	defer func() { tsfixture.ProviderToolHook = nil }()
-	cases := tsfixture.LoadCases(t, "testdata/tscases/language.json.gz")
+	cases := r79provaGoVersion(tsfixture.LoadCases(t, "testdata/tscases/language.json.gz"))
 	tsfixture.EvalPathSnapshots(t)
 	tsfixture.Run(t, cases, func(base, id string) provider.LanguageModel {
 		if id == "" {
@@ -38,6 +38,10 @@ func TestTSCasesLanguage(t *testing.T) {
 		"merges async config headers with sync request headers":                                                              asyncHeaders,
 		"handles Promise-based headers":                                                                                      asyncHeaders,
 		"handles async function headers from config":                                                                         asyncHeaders,
+		// harness: the TS snapshot of `events.filter(e => e.type === 'text-delta')`
+		// is canonicalized as a stream (ids dropped) but the Go value is not;
+		// Go's text-delta id is "0" like the TS snapshot (cr-r79-prova-to-provb.md 6).
+		"should stream server-side toolCall and toolResponse parts (tool combination)": "harness canonicalizes the TS stream-filter snapshot but not the Go value",
 	})
 }
 

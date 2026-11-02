@@ -35,7 +35,7 @@ func TestR74prova_TSCasesLanguageWithTSToolNames(t *testing.T) {
 	defer func() {
 		tsfixture.ProviderToolHook, tsfixture.DropResponseTimestamp = nil, false
 	}()
-	cases := tsfixture.LoadCases(t, "testdata/tscases/language.json.gz")
+	cases := r79provaGoVersion(tsfixture.LoadCases(t, "testdata/tscases/language.json.gz"))
 	tsfixture.EvalPathSnapshots(t)
 	tsfixture.Run(t, cases, func(base, id string) provider.LanguageModel {
 		if id == "" {

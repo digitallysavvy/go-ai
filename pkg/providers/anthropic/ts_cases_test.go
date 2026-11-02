@@ -116,7 +116,7 @@ func TestTSCasesLanguage(t *testing.T) {
 	defer func() {
 		tsfixture.ToolNameAlias, tsfixture.PromptToolNameAlias, tsfixture.DropResponseTimestamp = nil, nil, false
 	}()
-	cases := tsfixture.LoadCases(t, "testdata/tscases/language.json.gz")
+	cases := r79provaGoVersion(tsfixture.LoadCases(t, "testdata/tscases/language.json.gz"))
 	tsfixture.EvalPathSnapshots(t)
 	tsfixture.Run(t, cases, func(base, id string) provider.LanguageModel {
 		if id == "" {

@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // TS streamGoogleInteractionEvents reads parseJsonEventStream output, which
@@ -37,4 +40,19 @@ func TestR79prova_InteractionsDoneOnlyConnectionsCountAsEmpty(t *testing.T) {
 	if n := srv.getCount(); n != 3 {
 		t.Fatalf("GET requests = %d, want 3", n)
 	}
+}
+
+// r79provaGoVersion rewrites the TS test package VERSION ('0.0.0-test',
+// mocked in the TS tests) in plain assertion arguments to the Go SDK
+// version, so the user-agent assertions check the Go user agent
+// (ai-sdk-<provider>/<version>).
+func r79provaGoVersion(cases []tsfixture.Case) []tsfixture.Case {
+	for ci := range cases {
+		for i, a := range cases[ci].Asserts {
+			if s, ok := a.Arg.(string); ok {
+				cases[ci].Asserts[i].Arg = strings.ReplaceAll(s, "0.0.0-test", version.Version)
+			}
+		}
+	}
+	return cases
 }
