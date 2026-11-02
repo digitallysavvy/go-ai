@@ -2164,6 +2164,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// resolves them in the stream, right after the call part).
 		eagerApprovals := make(map[string]preResolvedApproval)
 		var pendingApprovalChunks []provider.StreamChunk
+		// inlineInvalidResults: the tool errors of invalid client calls,
+		// emitted right after their tool-call part (TS
+		// stream-language-model-call follows an invalid call with its
+		// tool-error in stream position). pendingInvalidToolErrors holds the
+		// parts still to forward after the current chunk.
+		var inlineInvalidResults []types.ToolResult
+		var pendingInvalidToolErrors []provider.StreamChunk
 		var stepContent []types.ContentPart
 		var stepBlocks blockContent
 		var stepReasoningBuilder strings.Builder
@@ -2542,6 +2549,16 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				chunk.ToolCall = &refined
 				stepToolCalls = append(stepToolCalls, refined)
 				stepContent = append(stepContent, toolCallContentOf(refined))
+				// An invalid client call is answered with its tool error
+				// right away, before any later part of the model call (a
+				// tool choice violation included). With tool choice none
+				// the call is withheld and gets none.
+				if refined.Invalid && !refined.ProviderExecuted && !withholdToolParts {
+					invalidResult := invalidToolCallResult(refined)
+					inlineInvalidResults = append(inlineInvalidResults, invalidResult)
+					stepContent = append(stepContent, toolResultsToContentParts([]types.ToolResult{invalidResult}, opts.ExperimentalToolApprovalSecret)...)
+					pendingInvalidToolErrors = append(pendingInvalidToolErrors, provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &invalidResult})
+				}
 				// With tool choice none the call is rejected at the end of the
 				// model call, so no approval is requested for it.
 				if !withholdToolParts && !deferApprovalRequests(opts.Internal) {
@@ -2910,6 +2927,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					stepToolCalls = nil
 					eagerApprovals = make(map[string]preResolvedApproval)
 					pendingApprovalChunks = nil
+					inlineInvalidResults = nil
+					pendingInvalidToolErrors = nil
 					stepContent = nil
 					stepBlocks.reset()
 					stepReasoningBuilder.Reset()
@@ -2977,6 +2996,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					openReasoningIDs = removeID(openReasoningIDs, chunk.ID)
 				}
 				forwardThroughTransformChain(0, []provider.StreamChunk{*chunk})
+			}
+			if len(pendingInvalidToolErrors) > 0 {
+				invalidChunks := pendingInvalidToolErrors
+				pendingInvalidToolErrors = nil
+				forwardThroughTransformChain(0, invalidChunks)
 			}
 			if len(pendingApprovalChunks) > 0 {
 				approvalChunks := pendingApprovalChunks
@@ -3193,7 +3217,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			usageForTools := r.usage.Add(stepUsage)
 			stepToolCallConcurrency, _ := prepareToolCallConcurrency(opts.ToolCallConcurrency)
 			var toolsErr error
-			stepToolResults, toolsErr = executeToolsConfigured(stepCtx, callsToExecute, stepExecutionTools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &usageForTools, toolCallbacks, stepToolCallConcurrency)
+			stepToolResults, toolsErr = executeToolsConfigured(stepCtx, withoutAnsweredToolCalls(callsToExecute, inlineInvalidResults), stepExecutionTools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &usageForTools, toolCallbacks, stepToolCallConcurrency)
 			// A failing ToModelOutput conversion is a stream error (as in
 			// GenerateText); cancellation errors are handled by the
 			// abort/timeout checks below.
@@ -3334,6 +3358,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			})
 		}
 		stepContent = append(stepContent, attachInputSchemaInputs(withoutInlineApprovalParts(toolResultsToContentParts(stepToolResults, opts.ExperimentalToolApprovalSecret), eagerApprovals), stepInputSchemaInputs)...)
+		// The invalid calls' tool errors (already emitted and in the content)
+		// join the step's tool results in call order. A blocked WorkflowAgent
+		// step answers no call (TS shouldProcessTools is false: no tool
+		// message).
+		if !workflowBlocked {
+			stepToolResults = withInlineToolResults(stepToolCalls, inlineInvalidResults, stepToolResults)
+		}
 
 		// Deferred provider tool tracking, mirroring the TS SDK pendingDeferredToolCalls map.
 		// Add tool calls whose results haven't arrived yet.
@@ -6050,4 +6081,57 @@ func recordDeferredToolInput(deferred []provider.StreamChunk, started map[string
 		return append(deferred, chunk)
 	}
 	return deferred
+}
+
+// withoutAnsweredToolCalls drops the calls that already have a result in
+// answered.
+func withoutAnsweredToolCalls(calls []types.ToolCall, answered []types.ToolResult) []types.ToolCall {
+	if len(answered) == 0 {
+		return calls
+	}
+	ids := make(map[string]bool, len(answered))
+	for _, tr := range answered {
+		ids[tr.ToolCallID] = true
+	}
+	out := make([]types.ToolCall, 0, len(calls))
+	for _, call := range calls {
+		if !ids[call.ID] {
+			out = append(out, call)
+		}
+	}
+	return out
+}
+
+// withInlineToolResults merges the results answered in stream position
+// (inline) with the executed ones, in the order of calls. Executed results
+// are in the order of their calls; any not matched to a call keep their place
+// at the end.
+func withInlineToolResults(calls []types.ToolCall, inline, executed []types.ToolResult) []types.ToolResult {
+	if len(inline) == 0 {
+		return executed
+	}
+	byID := make(map[string]types.ToolResult, len(inline))
+	for _, tr := range inline {
+		byID[tr.ToolCallID] = tr
+	}
+	out := make([]types.ToolResult, 0, len(inline)+len(executed))
+	next := 0
+	for _, call := range calls {
+		if tr, ok := byID[call.ID]; ok {
+			out = append(out, tr)
+			delete(byID, call.ID)
+			continue
+		}
+		if next < len(executed) && executed[next].ToolCallID == call.ID {
+			out = append(out, executed[next])
+			next++
+		}
+	}
+	out = append(out, executed[next:]...)
+	for _, tr := range inline {
+		if _, ok := byID[tr.ToolCallID]; ok {
+			out = append(out, tr)
+		}
+	}
+	return out
 }
