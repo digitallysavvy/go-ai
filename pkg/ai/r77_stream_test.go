@@ -166,12 +166,14 @@ func TestR77StreamCreateUIMessageChunksResponseErrorsAndConsumeFailure(t *testin
 
 	var mu sync.Mutex
 	calls := 0
+	consumeDone := make(chan struct{})
 	resp, err = CreateUIMessageChunksResponse(r76streamChan(UIMessageChunk{"type": "text-delta", "id": "1", "delta": "error-test"}), &UIMessageStreamResponseInit{
 		Status: 200,
 		ConsumeSSEStream: func(io.Reader) error {
 			mu.Lock()
 			calls++
 			mu.Unlock()
+			close(consumeDone)
 			return errors.New("consumeSseStream error")
 		},
 	})
@@ -186,6 +188,9 @@ func TestR77StreamCreateUIMessageChunksResponseErrorsAndConsumeFailure(t *testin
 	if got, want := string(body), "data: {\"delta\":\"error-test\",\"id\":\"1\",\"type\":\"text-delta\"}\n\ndata: [DONE]\n\n"; got != want {
 		t.Fatalf("body = %q\nwant %q", got, want)
 	}
+	// The body does not wait for the callback (r78: TS does not await
+	// consumeSseStream).
+	<-consumeDone
 	mu.Lock()
 	defer mu.Unlock()
 	if calls != 1 {

@@ -324,17 +324,13 @@ func TestStreamTextInstructionMessagesProviderOptionsReachPrompt(t *testing.T) {
 
 // TestStreamTextInvalidToolCallErrorChunkOrder pins down the exact chunk
 // order for an invalid (unrepairable — no RepairToolCall configured) tool
-// call streamed alongside a valid one, per review MUST-CHECK item 1: TS's
-// run-tools-transformation forwards every tool-call part as it streams
-// (invalid ones included, since the client needs to render them), then
-// executes/synthesizes results for the whole step only once that step's
-// provider stream ends — never after later steps' chunks. This asserts Go
-// matches that: both tool-call chunks arrive first, then both tool-result
-// chunks (the invalid call's synthesized error and the valid call's real
-// result, still within step 1), then step 1's own finish-step chunk (mirrors
-// TS's finish-step being enqueued in flush(), after every other part of the
-// step, stream-text.ts:3020-3033), and only then does step 2's own output
-// begin.
+// call streamed alongside a valid one. TS stream-language-model-call follows
+// an invalid client call with its tool-error right away, in stream position
+// (r78), while valid calls run when the model call ends (TS
+// executeToolsFromStream on model-call-end). So: the invalid call, its
+// error, the valid call, its result, then step 1's own finish-step chunk
+// (TS's finish-step is enqueued in flush(), after every other part of the
+// step), and only then does step 2's own output begin.
 func TestStreamTextInvalidToolCallErrorChunkOrder(t *testing.T) {
 	t.Parallel()
 
@@ -424,8 +420,8 @@ func TestStreamTextInvalidToolCallErrorChunkOrder(t *testing.T) {
 	if bogusCall < 0 || validCall < 0 || toolCallsFinish < 0 || bogusResult < 0 || validResult < 0 || step2Text < 0 {
 		t.Fatalf("missing expected chunk(s), got order = %+v", order)
 	}
-	if bogusCall >= validCall || validCall >= bogusResult {
-		t.Fatalf("expected both tool-call chunks before the tool-result chunks, got order = %+v", order)
+	if bogusCall+1 != bogusResult || bogusResult >= validCall || validCall >= validResult {
+		t.Fatalf("expected the invalid call, its error right after it, then the valid call and its result, got order = %+v", order)
 	}
 	if !order[bogusResult].hasError {
 		t.Fatalf("expected the invalid call's tool-result chunk to carry an error, got %+v", order[bogusResult])

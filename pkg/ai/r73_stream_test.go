@@ -1713,9 +1713,9 @@ func TestR73StreamCreateUIResponseErrorChunkAndConsumeFailure(t *testing.T) {
 			`data: {"type":"error","errorText":"Custom error message"}`, `data: [DONE]`)
 	})
 	t.Run("consumeSseStream error", func(t *testing.T) {
-		calls := 0
+		called := make(chan struct{}, 2)
 		resp, err := CreateUIMessageChunksResponse(r73streamChunkChan(UIMessageChunk{"type": "text-delta", "id": "1", "delta": "error-test"}), &UIMessageStreamResponseInit{Status: 200,
-			ConsumeSSEStream: func(io.Reader) error { calls++; return errors.New("consumeSseStream error") }})
+			ConsumeSSEStream: func(io.Reader) error { called <- struct{}{}; return errors.New("consumeSseStream error") }})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1725,8 +1725,15 @@ func TestR73StreamCreateUIResponseErrorChunkAndConsumeFailure(t *testing.T) {
 		}
 		r72streamAssertSSE(t, strings.Split(strings.TrimSuffix(string(body), "\n\n"), "\n\n"),
 			`data: {"type":"text-delta","id":"1","delta":"error-test"}`, `data: [DONE]`)
-		if calls != 1 {
-			t.Errorf("consumeSseStream calls = %d", calls)
+		// The callback runs in its own goroutine; the body does not wait
+		// for it (TS does not await consumeSseStream).
+		select {
+		case <-called:
+		case <-time.After(5 * time.Second):
+			t.Fatal("consumeSseStream was not called")
+		}
+		if len(called) != 0 {
+			t.Errorf("consumeSseStream called more than once")
 		}
 	})
 }
