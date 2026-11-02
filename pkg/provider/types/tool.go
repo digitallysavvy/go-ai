@@ -292,7 +292,9 @@ type ToolExecutionOptions struct {
 	// Metadata contains additional metadata
 	Metadata map[string]interface{}
 
-	// ToolMetadata contains metadata attached to the tool call by the provider.
+	// ToolMetadata is the tool's Metadata as carried on the tool call
+	// (ToolCall.ToolMetadata). Go-only: TS tool execute options have no
+	// tool metadata.
 	ToolMetadata map[string]interface{}
 
 	// Messages are the model messages sent to the language model to initiate
