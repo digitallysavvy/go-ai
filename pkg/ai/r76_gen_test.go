@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
@@ -193,5 +195,99 @@ func TestR76Gen_InvalidToolCallErrorWithoutCallMetadata(t *testing.T) {
 		step1 := []provider.StreamChunk{{Type: provider.ChunkTypeToolCall, ToolCall: &call}, {Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls}}
 		r := r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, step1), Prompt: "test-input", Tools: tools})
 		check(t, r.Steps()[0])
+	})
+}
+
+// Owner ruling 2026-11-01 (decision 1, option c): a tool's ValidateInput
+// replaces the Parameters check (TS jsonSchema(schema, {validate})). A failure
+// is an InvalidToolInputError whose cause is the TypeValidationError TS
+// safeValidateTypes builds, so the tool error text is TS getErrorMessage of
+// it; a success supplies the input the tool runs with.
+func r76genValidatingTool(executed *[]map[string]interface{}) types.Tool {
+	return types.Tool{
+		Name:       "tool1",
+		Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}},
+		ValidateInput: func(input interface{}) (interface{}, error) {
+			m, _ := input.(map[string]interface{})
+			if _, ok := m["value"].(string); !ok {
+				return nil, errors.New("data must have required property 'value'")
+			}
+			return map[string]interface{}{"value": m["value"], "defaulted": true}, nil
+		},
+		Execute: func(_ context.Context, in map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			*executed = append(*executed, in)
+			return "ok", nil
+		},
+	}
+}
+
+const r76genValidateErrorText = "AI_InvalidToolInputError: Invalid input for tool tool1: AI_TypeValidationError: Type validation failed: Value: {\"b\":1,\"a\":2}.\nError message: Error: data must have required property 'value'"
+
+func TestR76Gen_ToolValidateInput(t *testing.T) {
+	model := func(raw string) *testutil.MockLanguageModel {
+		var n atomic.Int32
+		return &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			if n.Add(1) == 1 {
+				return &types.GenerateResult{ToolCalls: []types.ToolCall{{ID: "call-1", ToolName: "tool1", RawArguments: raw}}, FinishReason: types.FinishReasonToolCalls}, nil
+			}
+			return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+		}}
+	}
+	t.Run("failure", func(t *testing.T) {
+		var executed []map[string]interface{}
+		res, err := GenerateText(context.Background(), GenerateTextOptions{Model: model(`{ "b": 1, "a": 2 }`), Prompt: "x", Tools: []types.Tool{r76genValidatingTool(&executed)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(executed) != 0 {
+			t.Fatal("invalid call executed")
+		}
+		te, ok := res.Steps[0].Content[1].(types.ToolErrorContent)
+		if !ok || te.ErrorText != r76genValidateErrorText {
+			t.Fatalf("tool error = %#v\nwant ErrorText %q", res.Steps[0].Content[1], r76genValidateErrorText)
+		}
+		var ve *providererrors.ValidationError
+		if !errors.As(te.Err, &ve) || ve.Error() != "Type validation failed: Value: {\"b\":1,\"a\":2}.\nError message: Error: data must have required property 'value'" {
+			t.Fatalf("cause = %v", ve)
+		}
+	})
+	t.Run("success", func(t *testing.T) {
+		var executed []map[string]interface{}
+		// "value" is valid for ValidateInput; the Parameters schema is not
+		// consulted, so an extra key it would not mind is irrelevant.
+		if _, err := GenerateText(context.Background(), GenerateTextOptions{Model: model(`{"value":"v"}`), Prompt: "x", Tools: []types.Tool{r76genValidatingTool(&executed)}}); err != nil {
+			t.Fatal(err)
+		}
+		if len(executed) != 1 || !reflect.DeepEqual(executed[0], map[string]interface{}{"value": "v", "defaulted": true}) {
+			t.Fatalf("executed with %#v", executed)
+		}
+	})
+	t.Run("without ValidateInput unchanged", func(t *testing.T) {
+		var executed []map[string]interface{}
+		tool := r76genValidatingTool(&executed)
+		tool.ValidateInput = nil
+		tool.Parameters = map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}, "required": []interface{}{"value"}}
+		res, err := GenerateText(context.Background(), GenerateTextOptions{Model: model(`{"b":1}`), Prompt: "x", Tools: []types.Tool{tool}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		te, ok := res.Steps[0].Content[1].(types.ToolErrorContent)
+		if !ok || strings.Contains(te.ErrorText, "AI_TypeValidationError") || !strings.HasPrefix(te.ErrorText, "AI_InvalidToolInputError: Invalid input for tool tool1: ") {
+			t.Fatalf("tool error = %#v", res.Steps[0].Content[1])
+		}
+	})
+	t.Run("stream", func(t *testing.T) {
+		var executed []map[string]interface{}
+		step1 := []provider.StreamChunk{{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", RawArguments: `{ "b": 1, "a": 2 }`}}, {Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls}}
+		r := r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, step1), Prompt: "x", Tools: []types.Tool{r76genValidatingTool(&executed)}})
+		var te types.ToolErrorContent
+		for _, p := range r.Steps()[0].Content {
+			if v, ok := p.(types.ToolErrorContent); ok {
+				te = v
+			}
+		}
+		if te.ErrorText != r76genValidateErrorText || len(executed) != 0 {
+			t.Fatalf("stream tool error = %#v", te)
+		}
 	})
 }

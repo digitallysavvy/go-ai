@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -33,4 +34,37 @@ func TestR76GenAgentClientToolResultsWithoutCallMetadata(t *testing.T) {
 			t.Fatalf("default: ProviderMetadata = %v, want the call's", got)
 		}
 	}
+}
+
+// Owner ruling 2026-11-01 (decision 1, option c): the legacy loop validates a
+// tool with ValidateInput through it (ai.ParseToolCall), with the TS
+// TypeValidationError wording in the tool error.
+func TestR76GenAgentToolValidateInput(t *testing.T) {
+	executed := 0
+	tool := types.Tool{Name: "tool1", Parameters: map[string]interface{}{"type": "object"},
+		ValidateInput: func(input interface{}) (interface{}, error) {
+			return nil, errors.New("data must have required property 'value'")
+		},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			executed++
+			return "ok", nil
+		}}
+	a := NewToolLoopAgent(AgentConfig{Model: r52ToolCallModel(types.ToolCall{ID: "c1", ToolName: "tool1", RawArguments: `{"a":1}`}), Tools: []types.Tool{tool}})
+	r, err := a.Execute(context.Background(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed != 0 {
+		t.Fatal("invalid call executed")
+	}
+	want := "AI_InvalidToolInputError: Invalid input for tool tool1: AI_TypeValidationError: Type validation failed: Value: {\"a\":1}.\nError message: Error: data must have required property 'value'"
+	for _, p := range r.Steps[0].Content {
+		if te, ok := p.(types.ToolErrorContent); ok {
+			if te.ErrorText != want {
+				t.Fatalf("ErrorText = %q\nwant %q", te.ErrorText, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("no tool error in %#v", r.Steps[0].Content)
 }
