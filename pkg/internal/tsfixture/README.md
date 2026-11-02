@@ -17,10 +17,15 @@ fails if an uncompressed `*.json` lands in a `testdata/tscases` directory.
 The cases were extracted from the TS AI SDK at commit `b658e8503c`
 (ai@7.0.140 plus main); the anthropic language/convert-prompt, bedrock
 prepare-tools, google language, gemini JSON accumulator and groq chat cases
-were re-extracted at `e64ed82f27` (ai@7.0.153+16). The OpenAI and xAI
-cases, the Azure provider cases and the OpenAI/xAI function-level cases
-added in review round 77 are extracted at `e64ed82f27` with `--asserts`
-(function-level ones with `--expand-each --fn=NAME`).
+were re-extracted at `e64ed82f27` (ai@7.0.153+16). The OpenAI chat and
+Responses, xAI Responses and Azure provider cases and the OpenAI/xAI
+function-level cases added in review round 77 are extracted at
+`e64ed82f27` with `--asserts` (function-level ones with
+`--expand-each --fn=NAME`); `openai/.../completion.json.gz` is still the
+`b658e8503c` default-mode extraction. `openai/.../responses.json.gz`
+leaves out "should return helpful error when Chat Completions stream is
+received" (its Chat Completions frame is one TS rejects on purpose, which
+`providerutils.TestTSFixtureFramesAccepted` does not list yet).
 
 ## Regenerating
 
