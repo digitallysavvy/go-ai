@@ -121,6 +121,39 @@ type InternalOptions struct {
 	// WorkflowAgent.
 	DeferApprovalRequests bool
 
+	// ClientToolResultsWithoutCallMetadata makes the loop leave a client
+	// (not provider-executed) tool call's provider metadata off the tool
+	// results it builds for that call: executed, failed and invalid-call
+	// results carry no ProviderMetadata, so the step content, ToolResults,
+	// response messages and the next step's prompt have none. TS
+	// WorkflowAgent's executeTool / createInvalidToolResult build results
+	// without providerOptions, where generateText and streamText copy
+	// toolCall.providerMetadata. Provider-executed results keep their own
+	// metadata. Used by WorkflowAgent.
+	ClientToolResultsWithoutCallMetadata bool
+
+	// DeferToolInputCallbacks makes StreamText buffer each step's tool input
+	// lifecycle callbacks (OnInputStart, OnInputDelta, OnInputAvailable)
+	// while the model stream is read and run them, in arrival order, after
+	// the stream ended and the step's tool calls were parsed, before
+	// approvals, tool execution and the step end. Only calls whose stream had
+	// a tool-input-start are replayed; OnInputAvailable is skipped for an
+	// invalid call. The stream parts keep their timing. TS WorkflowAgent
+	// records toolInputLifecycleEvents in its model step and replays them
+	// (invokeToolInputLifecycleCallbacks); plain StreamText fires them as the
+	// chunks arrive, as TS streamText. Used by WorkflowAgent's stream path.
+	DeferToolInputCallbacks bool
+
+	// ToolMessagesAsConversationPrompt makes a step's tool execution use the
+	// step's language model prompt (its system message first) as the
+	// messages: tool Execute options and approval checks get that prompt
+	// followed by the step's assistant message; the tool execution start and
+	// end events (and their telemetry) get the prompt without it. TS
+	// WorkflowAgent executeToolWithCallbacks / getToolCallbackMessages, where
+	// generateText and streamText pass the step's input messages. Used by
+	// WorkflowAgent.
+	ToolMessagesAsConversationPrompt bool
+
 	// ApprovalsResumed tells the legacy agent loop (pkg/agent GenerateAgent)
 	// that the caller already resumed the tool approvals of the input
 	// messages, so the loop does not resume them again: TS WorkflowAgent
@@ -262,7 +295,8 @@ func missingProviderResultCalls(calls []types.ToolCall, toolsByName map[string]*
 }
 
 // emptyProviderResult is the synthetic result TS WorkflowAgent sends for a
-// provider-executed call the provider never answered: an empty text output.
+// provider-executed call the provider never answered: an empty text output,
+// without the call's provider metadata.
 func emptyProviderResult(call types.ToolCall, provider, model string) types.ToolResult {
 	LogWarnings(LogWarningsOptions{
 		Warnings: []types.Warning{{
@@ -281,9 +315,10 @@ func emptyProviderResult(call types.ToolCall, provider, model string) types.Tool
 		Result:           "",
 		ModelOutput:      &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: ""},
 		ProviderExecuted: true,
-		ProviderMetadata: call.ProviderMetadata,
-		ToolMetadata:     call.ToolMetadata,
-		Dynamic:          call.Dynamic,
+		// TS sends the synthetic result without providerOptions (it has no
+		// stream result whose metadata it could carry).
+		ToolMetadata: call.ToolMetadata,
+		Dynamic:      call.Dynamic,
 	}
 }
 
@@ -439,4 +474,32 @@ func (o *InternalOptions) omitReasoningFiles(messages []types.Message) []types.M
 		out = append(out, message)
 	}
 	return out
+}
+
+// conversationPromptMessages is a model call's prompt as messages, its system
+// message first (TS WorkflowAgent conversationPrompt).
+func conversationPromptMessages(prompt types.Prompt) []types.Message {
+	out := make([]types.Message, 0, len(prompt.Messages)+1)
+	if prompt.System != "" {
+		out = append(out, types.Message{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: prompt.System}}})
+	}
+	return append(out, prompt.Messages...)
+}
+
+// workflowToolMessages returns the messages of a step's tool execution under
+// InternalOptions.ToolMessagesAsConversationPrompt: the start/end event
+// messages (the step's prompt) and the Execute/approval messages (the prompt
+// followed by the step's assistant message). ok is false without the option.
+func workflowToolMessages(internal *InternalOptions, prompt types.Prompt, responseMessages []types.Message) (callbackMessages, executeMessages []types.Message, ok bool) {
+	if internal == nil || !internal.ToolMessagesAsConversationPrompt {
+		return nil, nil, false
+	}
+	callbackMessages = conversationPromptMessages(prompt)
+	executeMessages = append([]types.Message(nil), callbackMessages...)
+	for _, m := range responseMessages {
+		if m.Role == types.RoleAssistant {
+			executeMessages = append(executeMessages, m)
+		}
+	}
+	return callbackMessages, executeMessages, true
 }

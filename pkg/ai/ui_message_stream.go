@@ -1865,8 +1865,11 @@ func (s *uiMessageCallbackState) mergeMetadata(metadata interface{}) {
 	if metadata == nil {
 		return
 	}
-	if existing, ok := asUIMap(s.message["metadata"]); ok {
-		if incoming, ok := asUIMap(metadata); ok {
+	// A Go value that encodes as a JSON object (a struct, a typed map,
+	// json.RawMessage) is an object to TS mergeObjects, like a
+	// map[string]interface{}.
+	if existing, ok := uiJSONObject(s.message["metadata"]); ok {
+		if incoming, ok := uiJSONObject(metadata); ok {
 			s.message["metadata"] = mergeUIMaps(existing, incoming)
 			return
 		}
@@ -1884,11 +1887,40 @@ func (s *uiMessageCallbackState) mergeMetadata(metadata interface{}) {
 // isUIScalarNumberOrBool reports whether v is a JSON number or boolean.
 func isUIScalarNumberOrBool(v interface{}) bool {
 	switch v.(type) {
+	case nil, string, map[string]interface{}, UIMessageChunk, []interface{}:
+		return false
 	case bool, float64, float32, int, int8, int16, int32, int64,
 		uint, uint8, uint16, uint32, uint64, json.Number:
 		return true
 	}
-	return false
+	b, err := json.Marshal(v)
+	if err != nil || len(b) == 0 {
+		return false
+	}
+	return b[0] == 't' || b[0] == 'f' || b[0] == '-' || (b[0] >= '0' && b[0] <= '9')
+}
+
+// uiJSONObject returns v as a map when it encodes as a JSON object: a
+// map[string]interface{} or UIMessageChunk as is, any other Go value (a
+// struct, a typed map, json.RawMessage, a pointer to one of them) through
+// its JSON encoding. TS mergeObjects treats every such value as an object.
+func uiJSONObject(v interface{}) (map[string]interface{}, bool) {
+	if m, ok := asUIMap(v); ok {
+		return m, true
+	}
+	switch v.(type) {
+	case nil, string, bool, float64, json.Number, []interface{}, []UIMessageChunk:
+		return nil, false
+	}
+	b, err := json.Marshal(v)
+	if err != nil || len(b) == 0 || b[0] != '{' {
+		return nil, false
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, false
+	}
+	return m, true
 }
 
 func (s *uiMessageCallbackState) appendPart(part UIMessageChunk) {
@@ -2332,8 +2364,8 @@ func mergeUIMaps(base, incoming map[string]interface{}) map[string]interface{} {
 		if key == "__proto__" || key == "constructor" || key == "prototype" {
 			continue
 		}
-		if existing, ok := asUIMap(out[key]); ok {
-			if next, ok := asUIMap(value); ok {
+		if existing, ok := uiJSONObject(out[key]); ok {
+			if next, ok := uiJSONObject(value); ok {
 				out[key] = mergeUIMaps(existing, next)
 				continue
 			}
