@@ -346,7 +346,7 @@ func doParseToolCall(call types.ToolCall, tools []types.Tool) (types.ToolCall, m
 
 	args, err := toolCallInputArguments(call)
 	if err != nil {
-		return types.ToolCall{}, nil, &InvalidToolInputError{ToolName: call.ToolName, ToolInput: toolCallInputText(call), Cause: err}
+		return types.ToolCall{}, nil, &InvalidToolInputError{ToolName: call.ToolName, ToolInput: toolCallInputText(call), Cause: toolInputParseError(call, err)}
 	}
 	// The validator may fill or transform values in place: keep a copy.
 	rawArgs := cloneSchemaMap(args)
@@ -367,7 +367,9 @@ func doParseToolCall(call types.ToolCall, tools []types.Tool) (types.ToolCall, m
 		// doesn't fill defaults, so apply them first -- matching Object.
 		args = applyToolCallInputDefaults(args, validator)
 		if err := validator.Validate(args); err != nil {
-			return types.ToolCall{}, nil, &InvalidToolInputError{ToolName: call.ToolName, ToolInput: toolCallInputText(call), Cause: err}
+			// TS safeParseJSON({text, schema}) reports a schema failure as a
+			// TypeValidationError of the parsed (pre-default) value.
+			return types.ToolCall{}, nil, &InvalidToolInputError{ToolName: call.ToolName, ToolInput: toolCallInputText(call), Cause: newToolInputTypeValidationError(call, rawArgs, err)}
 		}
 	}
 
@@ -384,8 +386,9 @@ func doParseToolCall(call types.ToolCall, tools []types.Tool) (types.ToolCall, m
 }
 
 // toolInputTypeValidationError is the cause of an InvalidToolInputError for a
-// Tool.ValidateInput failure: TS safeValidateTypes wraps the validate error in
-// a TypeValidationError, and InvalidToolInputError shows it with
+// schema failure (Tool.ValidateInput or the Parameters schema): TS
+// safeValidateTypes / safeParseJSON wrap the validation error in a
+// TypeValidationError, and InvalidToolInputError shows it with
 // getErrorMessage (its toString, "AI_TypeValidationError: Type validation
 // failed: Value: <input>.\nError message: Error: <message>"). The embedded
 // *ValidationError holds the TS message text; errors.As reaches it.
@@ -393,11 +396,36 @@ type toolInputTypeValidationError struct {
 	*providererrors.ValidationError
 }
 
-func (e *toolInputTypeValidationError) Error() string {
-	return "AI_TypeValidationError: " + e.ValidationError.Error()
+func (e *toolInputTypeValidationError) Unwrap() error { return e.ValidationError }
+
+// ErrorName is the TS error name, used where TS shows error.toString().
+func (e *toolInputTypeValidationError) ErrorName() string { return "AI_TypeValidationError" }
+
+// toolInputJSONParseError is the cause of an InvalidToolInputError for tool
+// input that is not JSON (TS safeParseJSON: a JSONParseError, shown as
+// "AI_JSONParseError: JSON parsing failed: Text: <input>.\nError message:
+// <parser error>"). errors.As reaches the embedded *JSONParseError.
+type toolInputJSONParseError struct {
+	*providererrors.JSONParseError
 }
 
-func (e *toolInputTypeValidationError) Unwrap() error { return e.ValidationError }
+func (e *toolInputJSONParseError) Unwrap() error { return e.JSONParseError }
+
+// ErrorName is the TS error name, used where TS shows error.toString().
+func (e *toolInputJSONParseError) ErrorName() string { return "AI_JSONParseError" }
+
+// toolInputParseError types a toolCallInputArguments failure: text that is
+// not JSON is a JSONParseError; JSON that is not an object fails the input
+// schema (a TypeValidationError of the parsed value).
+func toolInputParseError(call types.ToolCall, err error) error {
+	if errors.Is(err, errToolInputNotObject) {
+		return newToolInputTypeValidationError(call, nil, err)
+	}
+	return &toolInputJSONParseError{providererrors.NewJSONParseError(call.RawArguments, err)}
+}
+
+// errToolInputNotObject marks tool input that is JSON but not an object.
+var errToolInputNotObject = errors.New("tool input must be a JSON object")
 
 func newToolInputTypeValidationError(call types.ToolCall, args map[string]interface{}, err error) error {
 	// TS JSON.stringify(value) of the parsed input: the raw input's keys in
@@ -415,7 +443,7 @@ func newToolInputTypeValidationError(call types.ToolCall, args map[string]interf
 func parseProviderExecutedDynamicToolCall(call types.ToolCall) (types.ToolCall, error) {
 	args, err := toolCallInputArguments(call)
 	if err != nil {
-		return types.ToolCall{}, &InvalidToolInputError{ToolName: call.ToolName, ToolInput: toolCallInputText(call), Cause: err}
+		return types.ToolCall{}, &InvalidToolInputError{ToolName: call.ToolName, ToolInput: toolCallInputText(call), Cause: toolInputParseError(call, err)}
 	}
 	parsed := call
 	parsed.Arguments = args
@@ -453,9 +481,9 @@ func toolCallInputArguments(call types.ToolCall) (map[string]interface{}, error)
 		if call.Arguments != nil {
 			return call.Arguments, nil
 		}
-		return nil, fmt.Errorf("tool input must be a JSON object, got %T", value)
+		return nil, fmt.Errorf("%w, got %T", errToolInputNotObject, value)
 	default:
-		return nil, fmt.Errorf("tool input must be a JSON object, got %T", value)
+		return nil, fmt.Errorf("%w, got %T", errToolInputNotObject, value)
 	}
 }
 

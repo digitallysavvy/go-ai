@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"reflect"
-	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -262,7 +261,7 @@ func TestR76Gen_ToolValidateInput(t *testing.T) {
 			t.Fatalf("executed with %#v", executed)
 		}
 	})
-	t.Run("without ValidateInput unchanged", func(t *testing.T) {
+	t.Run("without ValidateInput the Parameters schema", func(t *testing.T) {
 		var executed []map[string]interface{}
 		tool := r76genValidatingTool(&executed)
 		tool.ValidateInput = nil
@@ -272,7 +271,10 @@ func TestR76Gen_ToolValidateInput(t *testing.T) {
 			t.Fatal(err)
 		}
 		te, ok := res.Steps[0].Content[1].(types.ToolErrorContent)
-		if !ok || strings.Contains(te.ErrorText, "AI_TypeValidationError") || !strings.HasPrefix(te.ErrorText, "AI_InvalidToolInputError: Invalid input for tool tool1: ") {
+		// r79: the Parameters failure is a TypeValidationError too (TS
+		// safeParseJSON with a schema); the message is Go's validator text.
+		want := "AI_InvalidToolInputError: Invalid input for tool tool1: AI_TypeValidationError: Type validation failed: Value: {\"b\":1}.\nError message: Error: $.value: required: property is missing"
+		if !ok || te.ErrorText != want {
 			t.Fatalf("tool error = %#v", res.Steps[0].Content[1])
 		}
 	})
