@@ -3,6 +3,7 @@ package moonshot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -529,11 +530,9 @@ func moonshotThinkingTypeFromReasoning(requestedThinking *moonshotThinkingOption
 // convertResponse converts Moonshot API response to SDK format
 func (m *LanguageModel) convertResponse(resp moonshotResponse) (*types.GenerateResult, error) {
 	if len(resp.Choices) == 0 {
-		return &types.GenerateResult{
-			Text:         "",
-			FinishReason: types.FinishReasonOther,
-			Usage:        types.Usage{},
-		}, nil
+		// TS doGenerate reads responseBody.choices[0].message without a
+		// guard: an empty choices array is a TypeError.
+		return nil, errors.New("Cannot read properties of undefined (reading 'message')") //nolint:staticcheck // ST1005: TypeError text from TS
 	}
 
 	choice := resp.Choices[0]
