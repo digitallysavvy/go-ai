@@ -881,10 +881,13 @@ func resolveProviderToolNames(tools []types.Tool) map[string]string {
 	for _, t := range tools {
 		// TS-shaped tools are identified by ProviderID and carry their own
 		// SDK name; Go-style tools use the canonical id as Name.
-		if knownIDs[t.ProviderID] {
-			names[t.ProviderID] = t.Name
-		} else if knownIDs[t.Name] {
-			names[t.Name] = t.Name
+		id := t.ProviderID
+		if !knownIDs[id] {
+			id = t.Name
+		}
+		// TS tools.find: the first tool with the id names it.
+		if _, seen := names[id]; knownIDs[id] && !seen {
+			names[id] = t.Name
 		}
 	}
 	return names

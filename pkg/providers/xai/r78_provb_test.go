@@ -100,3 +100,15 @@ func TestR78provbXAIBatchEmptyServiceTier(t *testing.T) {
 		t.Fatalf("serviceTier = %#v (present %v), want \"\"", got, ok)
 	}
 }
+
+// TS resolves a provider tool's name with tools.find, so the first tool
+// with the id names its output items.
+func TestR78provbXAIProviderToolNameFirstWins(t *testing.T) {
+	names := resolveProviderToolNames([]types.Tool{
+		{Type: "provider", ProviderID: "xai.web_search", Name: "first"},
+		{Type: "provider", ProviderID: "xai.web_search", Name: "second"},
+	})
+	if names["xai.web_search"] != "first" {
+		t.Fatalf("names = %v, want the first tool's name", names)
+	}
+}
