@@ -9,6 +9,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // r79carryIntegration is the subset of both OpenTelemetry integrations the
@@ -174,5 +176,53 @@ func TestR79Carry_SpanSetKeepsInsertionOrder(t *testing.T) {
 	}
 	if rest := s.drain(); len(rest) != 0 {
 		t.Fatalf("second drain = %v, want empty", rest)
+	}
+}
+
+// TS open-telemetry.test.ts "keeps deferred provider tool calls visible
+// before their result arrives": a provider-executed call without a result
+// gets its execute_tool span (no result) in step 1; the result arriving in
+// step 2 opens no second tool span and is reported as a tool_call_response
+// in the second chat span's output messages.
+func TestR79Carry_DeferredProviderToolCallVisibleBeforeResult(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	ot := NewOpenTelemetry(OpenTelemetryOptions{Tracer: sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)).Tracer("r79carry")})
+	settings := &Settings{IsEnabled: Bool(true)}
+	const callID = "r79carry-deferred"
+	ctx := ot.OnStart(context.Background(), TelemetryStartEvent{CallID: callID, OperationType: "ai.generateText", ModelID: "m", Settings: settings})
+
+	step1 := ot.OnStepStart(ctx, TelemetryStepStartEvent{CallID: callID, ModelID: "m", Settings: settings})
+	call1 := ot.OnLanguageModelCallStart(step1, LanguageModelCallStartEvent{CallID: callID, ModelID: "m", Settings: settings})
+	ot.OnLanguageModelCallEnd(call1, LanguageModelCallEndEvent{CallID: callID, ModelID: "m", Settings: settings, FinishReason: "stop",
+		Content: []types.ContentPart{types.ToolCallContent{ToolCallID: "tc1", ToolName: "code_execution", Input: `{"code":"1 + 1"}`, ProviderExecuted: true}},
+	})
+	tools := findSpans(rec, "execute_tool code_execution")
+	if len(tools) != 1 {
+		t.Fatalf("execute_tool spans after step 1 = %d, want 1", len(tools))
+	}
+	if tools[0].EndTime().IsZero() {
+		t.Fatal("execute_tool span not ended")
+	}
+	if _, ok := attrValue(tools[0], "gen_ai.tool.call.result"); ok {
+		t.Fatal("deferred call recorded a gen_ai.tool.call.result")
+	}
+	ot.OnStepEnd(step1, TelemetryStepEndEvent{CallID: callID, Settings: settings, FinishReason: "tool-calls"})
+
+	step2 := ot.OnStepStart(ctx, TelemetryStepStartEvent{CallID: callID, ModelID: "m", StepNumber: 1, Settings: settings})
+	call2 := ot.OnLanguageModelCallStart(step2, LanguageModelCallStartEvent{CallID: callID, ModelID: "m", Settings: settings})
+	ot.OnLanguageModelCallEnd(call2, LanguageModelCallEndEvent{CallID: callID, ModelID: "m", Settings: settings, FinishReason: "stop",
+		Content: []types.ContentPart{types.ToolResultContent{ToolCallID: "tc1", ToolName: "code_execution", Input: map[string]interface{}{"code": "1 + 1"}, Result: map[string]interface{}{"value": 2}, ProviderExecuted: true}},
+	})
+	if n := len(findSpans(rec, "execute_tool code_execution")); n != 1 {
+		t.Fatalf("execute_tool spans after step 2 = %d, want 1", n)
+	}
+	chats := findSpans(rec, "chat m")
+	if len(chats) != 2 {
+		t.Fatalf("chat spans = %d, want 2", len(chats))
+	}
+	v, _ := attrValue(chats[1], "gen_ai.output.messages")
+	const want = `[{"role":"assistant","parts":[{"type":"tool_call_response","id":"tc1","response":{"value":2}}],"finish_reason":"stop"}]`
+	if v != want {
+		t.Fatalf("step 2 gen_ai.output.messages = %v\nwant %s", v, want)
 	}
 }
