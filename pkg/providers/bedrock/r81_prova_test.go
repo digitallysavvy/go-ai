@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 func r81provaEmbeddingModel(t *testing.T, modelID string, handler http.HandlerFunc) *EmbeddingModel {
@@ -137,5 +138,17 @@ func TestR81provaBedrockImageForgivingBase64(t *testing.T) {
 	}
 	if string(res.Image) != "\xfb\xff" || res.Base64Images[0] != "-_8" {
 		t.Fatalf("image = %x base64 = %v", res.Image, res.Base64Images)
+	}
+}
+
+// A bare image type on a base64 string payload is sniffed from its bytes;
+// TS detectMediaType decodes the string with convertBase64ToUint8Array, which
+// ignores ASCII whitespace such as a space (types.DecodeFileDataString
+// rejected it).
+func TestR81provaBedrockDataStringSniffIgnoresWhitespace(t *testing.T) {
+	payload := fileContentPayload(types.FileContent{FileData: types.FileData{Type: types.FileDataTypeData, DataString: "iVBO Rw=="}})
+	got, err := resolveBedrockDataMediaType("image", payload)
+	if err != nil || got != "image/png" || payload.bytes != "iVBO Rw==" {
+		t.Fatalf("media type = %q, %v; bytes %q", got, err, payload.bytes)
 	}
 }

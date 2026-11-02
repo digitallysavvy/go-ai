@@ -252,7 +252,7 @@ func fileContentPayload(file types.FileContent) bedrockFilePayload {
 	case types.FileDataTypeData:
 		if file.FileData.DataString != "" {
 			payload := bedrockFilePayload{bytes: file.FileData.DataString, hasData: true}
-			if decoded, err := types.DecodeFileDataString(file.FileData.DataString); err == nil {
+			if decoded, err := fileutil.ConvertBase64ToBytes(file.FileData.DataString); err == nil {
 				payload.raw = decoded
 				payload.hasRawBytes = true
 			}
@@ -302,7 +302,7 @@ func toolResultFileContentPayload(block types.FileContentBlock) (string, bedrock
 	if block.FileData.Type == types.FileDataTypeData {
 		if block.FileData.DataString != "" {
 			payload := bedrockFilePayload{bytes: block.FileData.DataString, hasData: true}
-			if decoded, err := types.DecodeFileDataString(block.FileData.DataString); err == nil {
+			if decoded, err := fileutil.ConvertBase64ToBytes(block.FileData.DataString); err == nil {
 				payload.raw = decoded
 				payload.hasRawBytes = true
 			}
