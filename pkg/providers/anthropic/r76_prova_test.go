@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -75,5 +76,30 @@ func TestR76prova_EmptyAllowedCallersAndInputExamplesSent(t *testing.T) {
 	}
 	if _, ok := absent.tools[0]["input_examples"]; ok || len(absent.betas) != 0 {
 		t.Fatalf("absent options sent: %#v %v", absent.tools[0], absent.betas)
+	}
+}
+
+// Concurrent batch starts and result reads share the store and the stored
+// maps (read-only); run with -race.
+func TestR76prova_BatchToolNameStoreConcurrent(t *testing.T) {
+	var s batchToolNameStore
+	shared := r76provaMixedNames(4)
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				id := "b-" + strconv.Itoa(g) + "-" + strconv.Itoa(i)
+				s.put(id, shared)
+				if names := s.get(id).forRequest("req-1"); names != nil && names["bash"] != "anthropic.bash_20250124" {
+					t.Errorf("names = %v", names)
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	if len(s.names) != maxRememberedBatchToolNames || len(s.order) != maxRememberedBatchToolNames {
+		t.Fatalf("len = %d/%d", len(s.names), len(s.order))
 	}
 }
