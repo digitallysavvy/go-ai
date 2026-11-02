@@ -9,6 +9,7 @@ import (
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // OpenAICompatContent is a chat message `content` that is a string, null, or an
@@ -139,7 +140,8 @@ func ApplyOpenAICompatibleChatResponse(result *types.GenerateResult, body []byte
 			} `json:"completion_tokens_details"`
 		} `json:"usage"`
 	}
-	if err := json.Unmarshal(body, &wire); err != nil {
+	// TS z.number(): a fractional count is accepted (Go truncates it).
+	if err := providerutils.UnmarshalChunk(body, &wire); err != nil {
 		return providererrors.NewInvalidResponseDataError(nil, err.Error())
 	}
 	if len(wire.Choices) == 0 {
@@ -149,25 +151,39 @@ func ApplyOpenAICompatibleChatResponse(result *types.GenerateResult, body []byte
 	}
 	choice := wire.Choices[0]
 
+	// TS order: reasoning_content ?? reasoning first, then the content parts
+	// (text and thinking) in wire order.
 	var text strings.Builder
 	var content []types.ContentPart
-	parts, err := OpenAICompatContentParts(choice.Message.Content)
-	if err != nil {
-		return providererrors.NewInvalidResponseDataError(nil, err.Error())
-	}
-	for _, p := range parts {
-		if p.Reasoning {
-			content = append(content, types.ReasoningContent{Text: p.Text})
-		} else {
-			text.WriteString(p.Text)
-		}
-	}
 	reasoning := choice.Message.ReasoningContent
 	if reasoning == nil {
 		reasoning = choice.Message.Reasoning
 	}
 	if reasoning != nil && *reasoning != "" {
 		content = append(content, types.ReasoningContent{Text: *reasoning})
+	}
+	parts, err := OpenAICompatContentParts(choice.Message.Content)
+	if err != nil {
+		return providererrors.NewInvalidResponseDataError(nil, err.Error())
+	}
+	// Text parts stay in Text alone (pkg/ai places it after the leading
+	// reasoning) unless a reasoning part follows text: then every text part
+	// is a TextContent in Content, keeping the wire order.
+	interleaved, seenText := false, false
+	for _, p := range parts {
+		interleaved = interleaved || (p.Reasoning && seenText)
+		seenText = seenText || !p.Reasoning
+	}
+	for _, p := range parts {
+		switch {
+		case p.Reasoning:
+			content = append(content, types.ReasoningContent{Text: p.Text})
+		case interleaved:
+			text.WriteString(p.Text)
+			content = append(content, types.TextContent{Text: p.Text})
+		default:
+			text.WriteString(p.Text)
+		}
 	}
 	result.Text = text.String()
 	result.Content = content
