@@ -472,8 +472,12 @@ func loopReasoningFiles(content []types.ContentPart) []types.ReasoningFileConten
 
 // loopStepTelemetry tracks the open step (and model-call) span of one step.
 type loopStepTelemetry struct {
-	lt      *loopTelemetry
-	stepCtx context.Context
+	lt *loopTelemetry
+	// modelPrompt is the step's language model prompt as messages (system
+	// instructions first, then the conversation), recorded by executeStep for
+	// the WorkflowAgent tool messages (TS conversationPrompt).
+	modelPrompt []types.Message
+	stepCtx     context.Context
 	// errCtx is the context failures are reported under: the model-call ctx
 	// while a provider call is in flight (so the nested "chat" span closes
 	// too), the step ctx otherwise.

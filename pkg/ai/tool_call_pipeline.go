@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
@@ -334,7 +336,17 @@ func doParseToolCall(call types.ToolCall, tools []types.Tool) (types.ToolCall, e
 	if err != nil {
 		return types.ToolCall{}, &InvalidToolInputError{ToolName: call.ToolName, ToolInput: toolCallInputText(call), Cause: err}
 	}
-	if validator := toolCallInputValidator(tool); validator != nil {
+	if tool.ValidateInput != nil {
+		// TS jsonSchema(schema, {validate}): the tool's own validator replaces
+		// the schema check, and its value is the input the call carries.
+		validated, err := tool.ValidateInput(args)
+		if err != nil {
+			return types.ToolCall{}, &InvalidToolInputError{ToolName: call.ToolName, ToolInput: toolCallInputText(call), Cause: newToolInputTypeValidationError(call, args, err)}
+		}
+		if m, ok := validated.(map[string]interface{}); ok {
+			args = m
+		}
+	} else if validator := toolCallInputValidator(tool); validator != nil {
 		// TS's safeParseJSON({text, schema}) validates through zod, whose
 		// .parse() fills any .default() values before the caller (and, in
 		// turn, tool.execute) ever sees the input. schema.Validate alone
@@ -355,6 +367,35 @@ func doParseToolCall(call types.ToolCall, tools []types.Tool) (types.ToolCall, e
 	}
 	parsed.Dynamic = tool.Type == "dynamic"
 	return parsed, nil
+}
+
+// toolInputTypeValidationError is the cause of an InvalidToolInputError for a
+// Tool.ValidateInput failure: TS safeValidateTypes wraps the validate error in
+// a TypeValidationError, and InvalidToolInputError shows it with
+// getErrorMessage (its toString, "AI_TypeValidationError: Type validation
+// failed: Value: <input>.\nError message: Error: <message>"). The embedded
+// *ValidationError holds the TS message text; errors.As reaches it.
+type toolInputTypeValidationError struct {
+	*providererrors.ValidationError
+}
+
+func (e *toolInputTypeValidationError) Error() string {
+	return "AI_TypeValidationError: " + e.ValidationError.Error()
+}
+
+func (e *toolInputTypeValidationError) Unwrap() error { return e.ValidationError }
+
+func newToolInputTypeValidationError(call types.ToolCall, args map[string]interface{}, err error) error {
+	// TS JSON.stringify(value) keeps the input's key order: use the
+	// compacted raw input text when there is one.
+	var value interface{} = args
+	if raw := call.RawArguments; providerutils.JSTrim(raw) != "" {
+		var buf bytes.Buffer
+		if json.Compact(&buf, []byte(raw)) == nil {
+			value = buf.String()
+		}
+	}
+	return &toolInputTypeValidationError{providererrors.NewValidationErrorWithContext(value, providerutils.ToolErrorText(err), err, &providererrors.ValidationContext{})}
 }
 
 func parseProviderExecutedDynamicToolCall(call types.ToolCall) (types.ToolCall, error) {
@@ -708,20 +749,22 @@ func (s *streamToolInputCallbacks) handle(ctx context.Context, chunk provider.St
 // invalidToolCallError returns the error tool result synthesized for an
 // invalid client tool call (TS "insert error tool outputs for invalid tool
 // calls"). Invalid provider-executed calls never get a client tool error.
+// The tool error has no provider metadata: TS builds it without the call's
+// providerMetadata (generateText and streamLanguageModelCall), so the tool
+// message carries no providerOptions.
 func invalidToolCallResult(call types.ToolCall) types.ToolResult {
 	err := call.Error
 	if err == nil {
 		err = fmt.Errorf("invalid tool call")
 	}
 	return types.ToolResult{
-		ToolCallID:       call.ID,
-		ToolName:         call.ToolName,
-		Title:            call.Title,
-		Input:            call.Arguments,
-		Error:            err,
-		Dynamic:          true,
-		ProviderMetadata: call.ProviderMetadata,
-		ToolMetadata:     call.ToolMetadata,
+		ToolCallID:   call.ID,
+		ToolName:     call.ToolName,
+		Title:        call.Title,
+		Input:        call.Arguments,
+		Error:        err,
+		Dynamic:      true,
+		ToolMetadata: call.ToolMetadata,
 	}
 }
 

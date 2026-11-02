@@ -2415,6 +2415,26 @@ type toolCallEventCallbacks struct {
 	// number of awaits), while the executions still overlap.
 	startGate <-chan struct{}
 	startDone func()
+	// withoutCallMetadata leaves the call's provider metadata off the
+	// results of executed client calls, succeeded or failed (approval
+	// placeholders keep it; invalid calls never carry it). WorkflowAgent
+	// sets it: TS WorkflowAgent's executeTool builds tool results without
+	// providerOptions, while TS core copies toolCall.providerMetadata.
+	withoutCallMetadata bool
+	// executeMessages, when non-nil, are the messages the tool's Execute
+	// and its approval function get, while the start/end events keep
+	// messages. WorkflowAgent sets it: TS passes the full iteration messages
+	// (prompt plus the step's assistant message) to needsApproval and
+	// execute, and getToolCallbackMessages(iterMessages) to the events.
+	executeMessages []types.Message
+}
+
+// toolMessages are the messages a tool's Execute and approval function get.
+func (c toolCallEventCallbacks) toolMessages() []types.Message {
+	if c.executeMessages != nil {
+		return c.executeMessages
+	}
+	return c.messages
 }
 
 // newApprovalID returns an approval ID from the call's ID generator (TS
@@ -2702,7 +2722,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 		if pre, ok := callbacks.preApprovals[call.ID]; ok {
 			approval, approvalErr, approvalID = pre.approval, pre.err, pre.id
 		} else {
-			approval, approvalErr = resolveToolApproval(ctx, call, availableTools, callbacks.messages, runtimeContext, toolsContext, toolApproval)
+			approval, approvalErr = resolveToolApproval(ctx, call, availableTools, callbacks.toolMessages(), runtimeContext, toolsContext, toolApproval)
 			if approval.Status == types.ToolApprovalStatusUserApproval ||
 				approval.Status == types.ToolApprovalStatusApproved ||
 				approval.Status == types.ToolApprovalStatusDenied {
@@ -2785,6 +2805,10 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			}
 			approvalStatus := approval.Status
 			approvalReason := approval.Reason
+			resultMetadata := providerMetadata
+			if callbacks.withoutCallMetadata {
+				resultMetadata = nil
+			}
 
 			toolContext, err := validateToolContextFor(tool, call.ToolName, toolsContext[call.ToolName])
 			if err != nil {
@@ -2842,7 +2866,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				Usage:               usage,
 				Metadata:            make(map[string]interface{}),
 				ToolMetadata:        call.ToolMetadata,
-				Messages:            callbacks.messages,
+				Messages:            callbacks.toolMessages(),
 				ExperimentalSandbox: callbacks.experimentalSandbox,
 			}
 			if callbacks.onPreliminary != nil {
@@ -2854,7 +2878,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 						Input:            call.Arguments,
 						Result:           output,
 						Preliminary:      true,
-						ProviderMetadata: providerMetadata,
+						ProviderMetadata: resultMetadata,
 						ToolMetadata:     call.ToolMetadata,
 						Dynamic:          call.Dynamic,
 					})
@@ -2912,7 +2936,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				// Only the automatic approval response reads the call's
 				// explicit false; the local output has no providerExecuted.
 				ProviderExecutedSet: call.ProviderExecutedSet && approvalStatus == types.ToolApprovalStatusApproved,
-				ProviderMetadata:    providerMetadata,
+				ProviderMetadata:    resultMetadata,
 				ToolMetadata:        call.ToolMetadata,
 			}
 			// notifyToolEnd emits OnToolCallFinishEvent (whether the execution

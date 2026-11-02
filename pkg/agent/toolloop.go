@@ -40,6 +40,27 @@ type agentCallbacks struct {
 	onToolCallFinish func(ctx context.Context, e ai.OnToolCallFinishEvent)
 	onStepFinish     func(ctx context.Context, e ai.OnStepFinishEvent)
 	onFinish         func(ctx context.Context, e ai.OnFinishEvent)
+	// withoutCallMetadata leaves the call's provider metadata off executed
+	// client tool results (WorkflowAgent.Generate: TS WorkflowAgent's
+	// executeTool builds results without providerOptions, while TS core
+	// copies toolCall.providerMetadata).
+	withoutCallMetadata bool
+	// toolMessagesAsConversationPrompt gives tool Execute and approval
+	// functions the step's model prompt followed by the step's assistant
+	// message, and the tool start/end events the prompt alone
+	// (WorkflowAgent.Generate: TS executeToolWithCallbacks(iterMessages) and
+	// getToolCallbackMessages). executeMessages is that per-step list.
+	toolMessagesAsConversationPrompt bool
+	executeMessages                  []types.Message
+}
+
+// toolMessages are the messages a tool's Execute and approval function get:
+// executeMessages when set, else the step's messages.
+func (c agentCallbacks) toolMessages(messages []types.Message) []types.Message {
+	if c.executeMessages != nil {
+		return c.executeMessages
+	}
+	return messages
 }
 
 type toolResultModelOutputError struct {
@@ -87,6 +108,9 @@ func mergeCallbacks(settings AgentConfig, callOpts agentCallbacks) agentCallback
 		onToolCallFinish: mergeListener(settingsToolFinish, callOpts.onToolCallFinish),
 		onStepFinish:     mergeListener(settingsStepEnd, callOpts.onStepFinish),
 		onFinish:         mergeListener(settingsEnd, callOpts.onFinish),
+		// The call's tool-result switches pass through unchanged.
+		withoutCallMetadata:              callOpts.withoutCallMetadata,
+		toolMessagesAsConversationPrompt: callOpts.toolMessagesAsConversationPrompt,
 	}
 }
 
@@ -909,7 +933,13 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		// call's approval in the same pass, before any tool runs (TS
 		// generateText: per valid call, OnInputStart, OnInputAvailable, then
 		// resolveToolApproval; an error fails the run).
-		preApprovals, inputErr, approvalErr := a.notifyToolCallsAndResolveApprovals(stepCtx, stepResult.ToolCalls, executionTools, callConfig.Messages, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ToolApproval, len(stepResult.ToolCalls) > 0 && !workflowBlocked)
+		toolEventMessages, stepCbs := callConfig.Messages, cbs
+		stepCbs.executeMessages = nil
+		if cbs.toolMessagesAsConversationPrompt && stepTel != nil {
+			toolEventMessages = stepTel.modelPrompt
+			stepCbs.executeMessages = append(append([]types.Message(nil), stepTel.modelPrompt...), providerutils.ConvertToResponseMessage(stepResult.ToolCalls, modelContent))
+		}
+		preApprovals, inputErr, approvalErr := a.notifyToolCallsAndResolveApprovals(stepCtx, stepResult.ToolCalls, executionTools, callConfig.Messages, stepCbs.executeMessages, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ToolApproval, len(stepResult.ToolCalls) > 0 && !workflowBlocked)
 		if inputErr != nil || approvalErr != nil {
 			cancelStepTimeout()
 			failErr := approvalErr
@@ -992,7 +1022,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 				local.config.Model = callConfig.Model
 				stepAgent = &local
 			}
-			toolResults, err := stepAgent.executeTools(stepCtx, stepResult.ToolCalls, callTools, callConfig.Messages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, preApprovals, cbs, result.Usage.Add(stepResult.Usage), timings)
+			toolResults, err := stepAgent.executeTools(stepCtx, stepResult.ToolCalls, callTools, toolEventMessages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, preApprovals, stepCbs, result.Usage.Add(stepResult.Usage), timings)
 			if err != nil {
 				cancelStepTimeout()
 				var conversionErr *toolResultModelOutputError
@@ -2202,6 +2232,9 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	// the run loop, before any tool runs (see notifyToolCallsAndResolveApprovals).
 	// TS logs each step's model warnings just before the step is recorded.
 	ai.LogWarnings(ai.LogWarningsOptions{Warnings: genResult.Warnings, Provider: stepModel.Provider(), Model: stepModel.ModelID()})
+	if stepTel != nil {
+		stepTel.modelPrompt = includeAgentRequestMessages(true, &ai.InternalOptions{RequestMessagesAsPrompt: true}, nil, prompt)
+	}
 	stepResult := &types.StepResult{
 		// TS DefaultStepResult.callId: the run's call ID (generateText's
 		// callId; WorkflowAgent's run ID).
@@ -2347,7 +2380,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 		approval, resolved := preApprovals[call.ID]
 		var approvalErr error
 		if !resolved {
-			approval, approvalErr = a.resolveToolApproval(ctx, call, tools, messages, runtimeContext, toolsContext, toolApproval)
+			approval, approvalErr = a.resolveToolApproval(ctx, call, tools, cbs.toolMessages(messages), runtimeContext, toolsContext, toolApproval)
 		}
 		if approvalErr != nil {
 			// TS generateText: a tool approval that cannot be resolved
@@ -2500,7 +2533,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				RuntimeContext:      runtimeContext,
 				ToolContext:         toolContext,
 				ToolMetadata:        call.ToolMetadata,
-				Messages:            messages,
+				Messages:            cbs.toolMessages(messages),
 				Usage:               &execUsage,
 				Metadata:            make(map[string]interface{}),
 				ExperimentalSandbox: experimentalSandbox,
@@ -2553,6 +2586,9 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				ProviderExecuted: false,
 				ProviderMetadata: providerMetadata,
 				ToolMetadata:     call.ToolMetadata,
+			}
+			if cbs.withoutCallMetadata {
+				result.ProviderMetadata = nil
 			}
 			if approval.Status == types.ToolApprovalStatusApproved {
 				// An automatically approved call keeps its approval so its
@@ -3300,7 +3336,7 @@ func filterAgentDynamicToolResults(results []types.ToolResult) []types.ToolResul
 // tool-call notification loop does before any tool executes. inputErr is a
 // failed input callback (or tool context), approvalErr an approval that
 // could not be resolved.
-func (a *ToolLoopAgent) notifyToolCallsAndResolveApprovals(ctx context.Context, calls []types.ToolCall, tools []types.Tool, messages []types.Message, runtimeContext interface{}, toolsContext map[string]interface{}, toolApproval types.ToolApprovalConfig, resolve bool) (approvals map[string]types.ToolApprovalResult, inputErr, approvalErr error) {
+func (a *ToolLoopAgent) notifyToolCallsAndResolveApprovals(ctx context.Context, calls []types.ToolCall, tools []types.Tool, messages, approvalMessages []types.Message, runtimeContext interface{}, toolsContext map[string]interface{}, toolApproval types.ToolApprovalConfig, resolve bool) (approvals map[string]types.ToolApprovalResult, inputErr, approvalErr error) {
 	if toolsContext == nil {
 		toolsContext = map[string]interface{}{}
 	}
@@ -3315,7 +3351,10 @@ func (a *ToolLoopAgent) notifyToolCallsAndResolveApprovals(ctx context.Context, 
 		if !resolve {
 			continue
 		}
-		approval, err := a.resolveToolApproval(ctx, call, tools, messages, runtimeContext, toolsContext, toolApproval)
+		if approvalMessages == nil {
+			approvalMessages = messages
+		}
+		approval, err := a.resolveToolApproval(ctx, call, tools, approvalMessages, runtimeContext, toolsContext, toolApproval)
 		if err != nil {
 			return nil, nil, err
 		}

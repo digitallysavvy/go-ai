@@ -59,6 +59,12 @@ type Tool struct {
 	// This is not serialized to JSON
 	Execute ToolExecutor `json:"-"`
 
+	// ValidateInput, when set, validates a parsed tool call input in place of
+	// the JSON Schema in Parameters (the TS jsonSchema(schema, {validate})
+	// analog): it returns the input to use, or an error that makes the call
+	// invalid. Parameters is still what the model is sent. Not serialized.
+	ValidateInput func(input interface{}) (interface{}, error) `json:"-"`
+
 	// ========================================================================
 	// NEW v6.0 Features
 	// ========================================================================

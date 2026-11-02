@@ -638,6 +638,10 @@ func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []t
 			}
 			continue
 		}
+		// A raw value that is a Go error is still a tool result (TS: an
+		// execute that returns an Error object is a tool-result whose output
+		// is that object; its model output is toJSONValue of it). Only
+		// tr.Error makes a tool-error.
 		switch output := tr.Result.(type) {
 		case types.ToolResultOutput:
 			if part.Output == nil {
@@ -649,25 +653,6 @@ func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []t
 				part.Output = output
 				part.Result = nil
 			}
-		case error:
-			errPart := types.ToolErrorContent{
-				ToolCallID:       tr.ToolCallID,
-				ToolName:         tr.ToolName,
-				Input:            tr.Input,
-				Error:            output.Error(),
-				Err:              output,
-				ErrorText:        providerutils.ToolErrorText(output),
-				ProviderExecuted: tr.ProviderExecuted,
-				ProviderMetadata: providerMetadataRaw(tr.ProviderMetadata),
-				ToolMetadata:     tr.ToolMetadata,
-				Dynamic:          tr.Dynamic,
-			}
-			if tr.ApprovalStatus == types.ToolApprovalStatusApproved {
-				toolOutputsWithApproval = append(toolOutputsWithApproval, errPart)
-			} else {
-				toolOutputsWithoutApproval = append(toolOutputsWithoutApproval, errPart)
-			}
-			continue
 		case nil:
 			if part.Output == nil && tr.Error == nil {
 				part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: nil}
@@ -748,7 +733,8 @@ func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart 
 		Dynamic:          result.Dynamic,
 		Preliminary:      result.Preliminary,
 	}
-	// The raw tool output stays in Result (TS content `output`).
+	// The raw tool output stays in Result (TS content `output`). A raw
+	// value that is a Go error is a tool result, as in toolResultsToContentParts.
 	if result.ModelOutput != nil {
 		part.Output = result.ModelOutput
 	}
@@ -762,19 +748,6 @@ func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart 
 		if part.Output == nil {
 			part.Output = output
 			part.Result = nil
-		}
-	case error:
-		return types.ToolErrorContent{
-			ToolCallID:       result.ToolCallID,
-			ToolName:         result.ToolName,
-			Input:            result.Input,
-			Error:            output.Error(),
-			Err:              output,
-			ErrorText:        providerutils.ToolErrorText(output),
-			ProviderExecuted: result.ProviderExecuted,
-			ProviderMetadata: providerMetadataRaw(result.ProviderMetadata),
-			ToolMetadata:     result.ToolMetadata,
-			Dynamic:          result.Dynamic,
 		}
 	default:
 		if part.Output == nil {

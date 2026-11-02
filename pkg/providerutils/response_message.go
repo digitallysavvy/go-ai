@@ -215,6 +215,9 @@ func toolResultContentFromResult(result types.ToolResult) types.ToolResultConten
 			Dynamic:          result.Dynamic,
 		}, false)
 	}
+	// Only result.Error makes a tool error: a raw value that is a Go error
+	// is a tool result whose model output is its JSON value (TS
+	// createToolModelOutput: an execute that returns an Error object).
 	switch output := result.Result.(type) {
 	case types.ToolResultOutput:
 		if part.Output == nil {
@@ -226,19 +229,6 @@ func toolResultContentFromResult(result types.ToolResult) types.ToolResultConten
 			part.Output = output
 			part.Result = nil
 		}
-	case error:
-		return normalizeToolErrorContent(types.ToolErrorContent{
-			ToolCallID:       result.ToolCallID,
-			ToolName:         result.ToolName,
-			Title:            result.Title,
-			Input:            result.Input,
-			Error:            output.Error(),
-			ErrorText:        ToolErrorText(output),
-			ProviderExecuted: result.ProviderExecuted,
-			ProviderMetadata: providerMetadataRaw(result.ProviderMetadata),
-			ToolMetadata:     result.ToolMetadata,
-			Dynamic:          result.Dynamic,
-		}, result.ProviderExecuted)
 	case string:
 		if part.Output == nil {
 			part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: output}
@@ -277,10 +267,6 @@ func normalizeToolResultContent(part types.ToolResultContent) types.ToolResultCo
 		part.Result = nil
 	case *types.ToolResultOutput:
 		part.Output = result
-		part.Result = nil
-	case error:
-		part.Error = result.Error()
-		part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputErrorText, Value: result.Error()}
 		part.Result = nil
 	case string:
 		part.Output = &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: result}
