@@ -98,3 +98,42 @@ func TestR76Gen_ToolReturningErrorValueIsToolResult(t *testing.T) {
 	})
 }
 
+// R76 item 2 (carry CR cr-r76-carry-to-gen.md): with withoutCallMetadata
+// (set from InternalOptions.ClientToolResultsWithoutCallMetadata for
+// WorkflowAgent), executed, failed and invalid client tool results carry no
+// provider metadata (TS WorkflowAgent executeTool/createInvalidToolResult);
+// without it the call's metadata is copied (TS core execute-tool-call.ts).
+func TestR76Gen_ClientToolResultsWithoutCallMetadata(t *testing.T) {
+	md := map[string]interface{}{"google": map[string]interface{}{"thoughtSignature": "sig"}}
+	exec := func(out interface{}, err error) types.ToolExecutor {
+		return func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return out, err
+		}
+	}
+	tools := []types.Tool{
+		{Name: "ok", Parameters: map[string]interface{}{"type": "object"}, Execute: exec("ok", nil)},
+		{Name: "fail", Parameters: map[string]interface{}{"type": "object"}, Execute: exec(nil, errors.New("boom"))},
+	}
+	calls := []types.ToolCall{
+		{ID: "c1", ToolName: "ok", Arguments: map[string]interface{}{}, ProviderMetadata: md},
+		{ID: "c2", ToolName: "fail", Arguments: map[string]interface{}{}, ProviderMetadata: md},
+		{ID: "c3", ToolName: "ok", Invalid: true, Error: errors.New("bad input"), ProviderMetadata: md},
+	}
+	for _, without := range []bool{false, true} {
+		results, err := executeTools(context.Background(), calls, tools, nil, nil, nil, &types.Usage{}, toolCallEventCallbacks{withoutCallMetadata: without})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 3 {
+			t.Fatalf("%d results", len(results))
+		}
+		for _, r := range results {
+			if without && r.ProviderMetadata != nil {
+				t.Errorf("without: %s ProviderMetadata = %v, want nil", r.ToolCallID, r.ProviderMetadata)
+			}
+			if !without && !reflect.DeepEqual(r.ProviderMetadata, md) {
+				t.Errorf("default: %s ProviderMetadata = %v, want the call's", r.ToolCallID, r.ProviderMetadata)
+			}
+		}
+	}
+}

@@ -2415,6 +2415,12 @@ type toolCallEventCallbacks struct {
 	// number of awaits), while the executions still overlap.
 	startGate <-chan struct{}
 	startDone func()
+	// withoutCallMetadata leaves the call's provider metadata off the
+	// results of client calls (executed, failed and invalid calls; approval
+	// placeholders keep it). WorkflowAgent sets it: TS WorkflowAgent's
+	// executeTool and createInvalidToolResult build tool results without
+	// providerOptions, while TS core copies toolCall.providerMetadata.
+	withoutCallMetadata bool
 }
 
 // newApprovalID returns an approval ID from the call's ID generator (TS
@@ -2660,6 +2666,9 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 		if call.Invalid {
 			if !call.ProviderExecuted {
 				results[i] = invalidToolCallResult(call)
+				if callbacks.withoutCallMetadata {
+					results[i].ProviderMetadata = nil
+				}
 			}
 			continue
 		}
@@ -2785,6 +2794,10 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			}
 			approvalStatus := approval.Status
 			approvalReason := approval.Reason
+			resultMetadata := providerMetadata
+			if callbacks.withoutCallMetadata {
+				resultMetadata = nil
+			}
 
 			toolContext, err := validateToolContextFor(tool, call.ToolName, toolsContext[call.ToolName])
 			if err != nil {
@@ -2854,7 +2867,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 						Input:            call.Arguments,
 						Result:           output,
 						Preliminary:      true,
-						ProviderMetadata: providerMetadata,
+						ProviderMetadata: resultMetadata,
 						ToolMetadata:     call.ToolMetadata,
 						Dynamic:          call.Dynamic,
 					})
@@ -2912,7 +2925,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				// Only the automatic approval response reads the call's
 				// explicit false; the local output has no providerExecuted.
 				ProviderExecutedSet: call.ProviderExecutedSet && approvalStatus == types.ToolApprovalStatusApproved,
-				ProviderMetadata:    providerMetadata,
+				ProviderMetadata:    resultMetadata,
 				ToolMetadata:        call.ToolMetadata,
 			}
 			// notifyToolEnd emits OnToolCallFinishEvent (whether the execution

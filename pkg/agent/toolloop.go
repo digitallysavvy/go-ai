@@ -40,6 +40,11 @@ type agentCallbacks struct {
 	onToolCallFinish func(ctx context.Context, e ai.OnToolCallFinishEvent)
 	onStepFinish     func(ctx context.Context, e ai.OnStepFinishEvent)
 	onFinish         func(ctx context.Context, e ai.OnFinishEvent)
+	// withoutCallMetadata leaves the call's provider metadata off executed
+	// client tool results (WorkflowAgent.Generate: TS WorkflowAgent's
+	// executeTool builds results without providerOptions, while TS core
+	// copies toolCall.providerMetadata).
+	withoutCallMetadata bool
 }
 
 type toolResultModelOutputError struct {
@@ -2553,6 +2558,9 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				ProviderExecuted: false,
 				ProviderMetadata: providerMetadata,
 				ToolMetadata:     call.ToolMetadata,
+			}
+			if cbs.withoutCallMetadata {
+				result.ProviderMetadata = nil
 			}
 			if approval.Status == types.ToolApprovalStatusApproved {
 				// An automatically approved call keeps its approval so its
