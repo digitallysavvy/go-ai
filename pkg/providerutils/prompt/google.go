@@ -345,22 +345,25 @@ type googleFile struct {
 	referenceMap types.ProviderReference
 	text         string
 	hasText      bool
-	data         []byte
-	// raw is a base64 data string that does not decode (TS convertToBase64
-	// passes a string through unchanged); used only when data is empty.
+	// data is the inline bytes; for a base64 string payload (raw) it is the
+	// string decoded with TS convertBase64ToUint8Array, used only for media
+	// type detection (nil when it does not decode).
+	data []byte
+	// raw is a base64 string payload (FileData.DataString), sent unchanged
+	// (TS convertToBase64 returns a string as is).
 	raw string
 }
 
 // hasData reports whether the file carries inline data.
 func (f googleFile) hasData() bool { return len(f.data) > 0 || f.raw != "" }
 
-// base64Data is the inline data as base64 (the original string when it did
-// not decode).
+// base64Data is TS convertToBase64(part.data.data): a string payload as is,
+// bytes encoded.
 func (f googleFile) base64Data() string {
-	if len(f.data) > 0 {
-		return base64.StdEncoding.EncodeToString(f.data)
+	if f.raw != "" {
+		return f.raw
 	}
-	return f.raw
+	return base64.StdEncoding.EncodeToString(f.data)
 }
 
 func (c *googleConverter) resolveFile(file types.FileContent) googleFile {
@@ -378,11 +381,8 @@ func (c *googleConverter) resolveFile(file types.FileContent) googleFile {
 	if len(f.data) == 0 {
 		f.data = file.FileData.Data
 		if len(f.data) == 0 && file.FileData.DataString != "" {
-			if decoded, err := base64.StdEncoding.DecodeString(file.FileData.DataString); err == nil {
-				f.data = decoded
-			} else {
-				f.raw = file.FileData.DataString
-			}
+			f.raw = file.FileData.DataString
+			f.data, _ = fileutil.ConvertBase64ToBytes(file.FileData.DataString)
 		}
 	}
 	return f
