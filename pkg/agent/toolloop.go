@@ -2159,6 +2159,12 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	// converted prompt with the instruction messages prepended.
 	toolCalls, schemaInputs, err := parseAgentToolCalls(stepCtx, genResult.ToolCalls, callConfig, callConfig.Messages, genOpts.ToolChoice.Type == types.ToolChoiceNone)
 	if err != nil {
+		// Parsing fails only when the call is aborted (a repair is
+		// abandoned): TS throwIfAborted() rethrows the abort reason, as
+		// GenerateText and the between-step abort report it.
+		if cause := context.Cause(stepCtx); cause != nil && errors.Is(err, context.Canceled) {
+			err = cause
+		}
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
 	if stepTel != nil {
