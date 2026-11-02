@@ -2,12 +2,14 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
 )
 
 func r81provbCompletionGenerate(t *testing.T, cfg Config, body string) (*types.GenerateResult, error) {
@@ -63,5 +65,35 @@ func TestR81provbCompletionEmptyTextContent(t *testing.T) {
 	}
 	if len(res.Content) != 1 {
 		t.Fatalf("openai content = %#v, want one empty text part", res.Content)
+	}
+}
+
+// TS mapComputerAction writes the declared keys in its own order, drops a null
+// `keys`, and the zod schema strips undeclared keys; the tool input text is
+// JSON.stringify of that object (OpenAI Responses computer tool "decodes
+// batched actions in non-streaming responses", replayed with results).
+func TestR81provbComputerCallInputTSOrder(t *testing.T) {
+	var item responses.ComputerCall
+	if err := json.Unmarshal([]byte(`{"type":"computer_call","id":"cu_1","call_id":"call_1","status":"completed",
+		"actions":[
+			{"x":100,"y":200,"button":"left","keys":["CTRL"],"type":"click"},
+			{"y":210,"x":110,"keys":null,"type":"double_click"},
+			{"scroll_y":-5,"scroll_x":0,"y":2,"x":1,"type":"scroll","extra":true},
+			{"keys":["CTRL","L"],"type":"keypress"}
+		],
+		"pending_safety_checks":[{"message":"m","code":"c","id":"sc_1"}]}`), &item); err != nil {
+		t.Fatal(err)
+	}
+	args, raw := computerCallArguments(item)
+	want := `{"actions":[{"type":"click","button":"left","x":100,"y":200,"keys":["CTRL"]},{"type":"double_click","x":110,"y":210},{"type":"scroll","x":1,"y":2,"scrollX":0,"scrollY":-5},{"type":"keypress","keys":["CTRL","L"]}],"pendingSafetyChecks":[{"id":"sc_1","code":"c","message":"m"}],"status":"completed"}`
+	if raw != want {
+		t.Fatalf("input =\n%s\nwant\n%s", raw, want)
+	}
+	actions, ok := args["actions"].([]map[string]interface{})
+	if !ok || len(actions) != 4 {
+		t.Fatalf("actions = %#v", args["actions"])
+	}
+	if _, has := actions[1]["keys"]; has {
+		t.Fatalf("double_click keeps a null keys: %#v", actions[1])
 	}
 }
