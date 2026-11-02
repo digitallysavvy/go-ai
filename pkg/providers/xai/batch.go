@@ -787,7 +787,7 @@ type xaiBatchTextResponseWire struct {
 	Choices     []xaiBatchChoiceWire   `json:"choices"`
 	Usage       *xaiBatchTextUsageWire `json:"usage"`
 	Citations   []string               `json:"citations"`
-	ServiceTier string                 `json:"service_tier"`
+	ServiceTier *string                `json:"service_tier"` // TS != null: a present "" is reported
 	Code        string                 `json:"code"`
 	Error       string                 `json:"error"`
 }
@@ -943,13 +943,13 @@ func convertXAIBatchTextResponse(resp xaiBatchTextResponseWire) (*types.Generate
 		}
 		result.ResponseMetadata = rm
 	}
-	if (resp.Usage != nil && resp.Usage.CostInUsdTicks != nil) || resp.ServiceTier != "" {
+	if (resp.Usage != nil && resp.Usage.CostInUsdTicks != nil) || resp.ServiceTier != nil {
 		meta := map[string]interface{}{}
 		if resp.Usage != nil && resp.Usage.CostInUsdTicks != nil {
 			meta["costInUsdTicks"] = *resp.Usage.CostInUsdTicks
 		}
-		if resp.ServiceTier != "" {
-			meta["serviceTier"] = resp.ServiceTier
+		if resp.ServiceTier != nil {
+			meta["serviceTier"] = *resp.ServiceTier
 		}
 		result.ProviderMetadata = map[string]interface{}{"xai": meta}
 	}

@@ -83,3 +83,20 @@ func TestR78provbXAIResponsesEmptyEchoesReported(t *testing.T) {
 		})
 	}
 }
+
+// TS xai-batch.ts convertTextBatchResponse: serviceTier when
+// `response.service_tier != null`, so a present "" is reported.
+func TestR78provbXAIBatchEmptyServiceTier(t *testing.T) {
+	var resp xaiBatchTextResponseWire
+	if err := json.Unmarshal([]byte(`{"id":"b1","created":1,"model":"grok-4","service_tier":"","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	r, berr := convertXAIBatchTextResponse(resp)
+	if berr != nil {
+		t.Fatal(berr)
+	}
+	pm, _ := r.ProviderMetadata["xai"].(map[string]interface{})
+	if got, ok := pm["serviceTier"]; !ok || got != "" {
+		t.Fatalf("serviceTier = %#v (present %v), want \"\"", got, ok)
+	}
+}
