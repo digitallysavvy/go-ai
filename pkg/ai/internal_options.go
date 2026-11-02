@@ -132,6 +132,18 @@ type InternalOptions struct {
 	// metadata. Used by WorkflowAgent.
 	ClientToolResultsWithoutCallMetadata bool
 
+	// DeferToolInputCallbacks makes StreamText buffer each step's tool input
+	// lifecycle callbacks (OnInputStart, OnInputDelta, OnInputAvailable)
+	// while the model stream is read and run them, in arrival order, after
+	// the stream ended and the step's tool calls were parsed, before
+	// approvals, tool execution and the step end. Only calls whose stream had
+	// a tool-input-start are replayed; OnInputAvailable is skipped for an
+	// invalid call. The stream parts keep their timing. TS WorkflowAgent
+	// records toolInputLifecycleEvents in its model step and replays them
+	// (invokeToolInputLifecycleCallbacks); plain StreamText fires them as the
+	// chunks arrive, as TS streamText. Used by WorkflowAgent's stream path.
+	DeferToolInputCallbacks bool
+
 	// ApprovalsResumed tells the legacy agent loop (pkg/agent GenerateAgent)
 	// that the caller already resumed the tool approvals of the input
 	// messages, so the loop does not resume them again: TS WorkflowAgent

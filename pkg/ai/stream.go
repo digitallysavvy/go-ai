@@ -2111,6 +2111,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// (not stepModelTools), so a caller-only callee's callbacks still
 		// fire even though it's hidden from the model. Reset for every step.
 		toolInputCallbacks := newStreamToolInputCallbacks(stepExecutionTools, currentMessages, r.cbToolsCtx)
+		// deferredToolInputs holds the step's tool input lifecycle chunks when
+		// InternalOptions.DeferToolInputCallbacks is set, replayed after the
+		// model stream ended (TS WorkflowAgent toolInputLifecycleEvents);
+		// startedToolInputs maps a call ID to its tool-input-start tool name.
+		var deferredToolInputs []provider.StreamChunk
+		startedToolInputs := map[string]string{}
 		// preRefinementCalls mirrors stepToolCalls before ExperimentalRefineToolInput
 		// runs, for the approval inputSchemaInput diff.
 		var preRefinementCalls []types.ToolCall
@@ -2887,6 +2893,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					stepDefaultResponseID = remapGenerateID()
 					stepResponseTimestamp = time.Now()
 					toolInputCallbacks = newStreamToolInputCallbacks(stepExecutionTools, currentMessages, r.cbToolsCtx)
+					deferredToolInputs = nil
+					startedToolInputs = map[string]string{}
 					preRefinementCalls = nil
 					stepTextParts = nil
 					stepPartialTracker.reset()
@@ -2985,7 +2993,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 				continue
 			}
-			if err := toolInputCallbacks.handle(stepCtx, *chunk); err != nil {
+			if deferToolInputCallbacks(opts.Internal) {
+				deferredToolInputs = recordDeferredToolInput(deferredToolInputs, startedToolInputs, *chunk)
+			} else if err := toolInputCallbacks.handle(stepCtx, *chunk); err != nil {
 				r.err = err
 				if isAbortErr(ctx, err) {
 					fireAbort(err)
@@ -3033,6 +3043,23 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				break
 			}
 			r.finishReason = types.FinishReasonOther
+		}
+		// WorkflowAgent: replay the step's tool input callbacks now that the
+		// model stream ended and its tool calls are parsed, before approvals and
+		// tool execution (TS invokeToolInputLifecycleCallbacks).
+		for _, c := range deferredToolInputs {
+			if err := toolInputCallbacks.handle(stepCtx, c); err != nil {
+				r.err = err
+				break
+			}
+		}
+		deferredToolInputs = nil
+		if r.err != nil {
+			if isAbortErr(ctx, r.err) {
+				fireAbort(r.err)
+			}
+			cancelStep()
+			break
 		}
 		// WorkflowAgent: answer provider-executed calls that got no result with
 		// an empty text result, as if the provider had streamed it (TS
@@ -5966,4 +5993,43 @@ func (r *StreamTextResult) fireRootAbort(ctx context.Context, e telemetry.Teleme
 	if !r.callerOwnsTelemetryRoot {
 		telemetry.FireOnAbort(ctx, e)
 	}
+}
+
+// deferToolInputCallbacks reports InternalOptions.DeferToolInputCallbacks.
+func deferToolInputCallbacks(internal *InternalOptions) bool {
+	return internal != nil && internal.DeferToolInputCallbacks
+}
+
+// recordDeferredToolInput records a tool input lifecycle chunk for replay
+// after the model stream, as TS WorkflowAgent's model step records
+// toolInputLifecycleEvents: a start, a delta after its start, and a tool call
+// whose stream had a start (its tool looked up by the start's tool name).
+func recordDeferredToolInput(deferred []provider.StreamChunk, started map[string]string, chunk provider.StreamChunk) []provider.StreamChunk {
+	switch chunk.Type {
+	case provider.ChunkTypeToolInputStart:
+		toolName := ""
+		if chunk.ToolCall != nil {
+			toolName = chunk.ToolCall.ToolName
+		}
+		started[streamChunkToolCallID(chunk)] = toolName
+		return append(deferred, chunk)
+	case provider.ChunkTypeToolInputDelta:
+		if _, ok := started[streamChunkToolCallID(chunk)]; ok {
+			return append(deferred, chunk)
+		}
+	case provider.ChunkTypeToolCall:
+		if chunk.ToolCall == nil {
+			return deferred
+		}
+		toolName, ok := started[chunk.ToolCall.ID]
+		if !ok {
+			return deferred
+		}
+		delete(started, chunk.ToolCall.ID)
+		call := *chunk.ToolCall
+		call.ToolName = toolName
+		chunk.ToolCall = &call
+		return append(deferred, chunk)
+	}
+	return deferred
 }

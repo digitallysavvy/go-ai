@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
@@ -649,4 +652,102 @@ func r76streamMustJSON(t *testing.T, v interface{}) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// r76streamEOFStream serves chunks and records "model-step-finished" when it
+// returns io.EOF (the model stream ended).
+type r76streamEOFStream struct {
+	chunks []provider.StreamChunk
+	i      int
+	log    func(string)
+}
+
+func (s *r76streamEOFStream) Next() (*provider.StreamChunk, error) {
+	if s.i < len(s.chunks) {
+		c := s.chunks[s.i]
+		s.i++
+		return &c, nil
+	}
+	if s.i == len(s.chunks) {
+		s.i++
+		s.log("model-step-finished")
+	}
+	return nil, io.EOF
+}
+func (s *r76streamEOFStream) Err() error   { return nil }
+func (s *r76streamEOFStream) Close() error { return nil }
+
+// cr-r76-carry-to-stream.md item B: with InternalOptions.DeferToolInputCallbacks
+// the tool input callbacks run after the model stream ended (TS WorkflowAgent
+// replays toolInputLifecycleEvents after its model step); without it they run
+// as the chunks arrive (TS streamText). An input the schema rejects gets no
+// OnInputAvailable.
+func TestR76StreamDeferToolInputCallbacks(t *testing.T) {
+	run := func(t *testing.T, deferred bool, input string) []string {
+		var mu sync.Mutex
+		var log []string
+		add := func(s string) {
+			mu.Lock()
+			defer mu.Unlock()
+			log = append(log, s)
+		}
+		tool := types.Tool{
+			Name:       "search",
+			Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"query": map[string]interface{}{"type": "string"}}, "required": []interface{}{"query"}},
+			OnInputStart: func(_ context.Context, o types.OnInputStartOptions) error {
+				add("start:" + o.ToolCallID)
+				return nil
+			},
+			OnInputDelta: func(_ context.Context, o types.OnInputDeltaOptions) error {
+				add("delta:" + o.InputTextDelta)
+				return nil
+			},
+			OnInputAvailable: func(_ context.Context, o types.OnInputAvailableOptions) error {
+				b, _ := json.Marshal(o.Input)
+				add("available:" + string(b))
+				return nil
+			},
+		}
+		var args map[string]interface{}
+		_ = json.Unmarshal([]byte(input), &args)
+		chunks := []provider.StreamChunk{
+			{Type: provider.ChunkTypeToolInputStart, ID: "request-1", ToolCall: &types.ToolCall{ID: "request-1", ToolName: "search"}},
+			{Type: provider.ChunkTypeToolInputDelta, ID: "request-1", Text: input},
+			{Type: provider.ChunkTypeToolInputEnd, ID: "request-1"},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "request-1", ToolName: "search", Arguments: args, RawArguments: input}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+		}
+		model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return &r76streamEOFStream{chunks: chunks, log: add}, nil
+		}}
+		opts := StreamTextOptions{Model: model, Prompt: "p", Tools: []types.Tool{tool}, OnError: func(context.Context, error) {}}
+		if deferred {
+			opts.Internal = &InternalOptions{DeferToolInputCallbacks: true}
+		}
+		r, err := StreamText(context.Background(), opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = r.ConsumeStream()
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), log...)
+	}
+	valid := `{"query":"docs"}`
+	for _, c := range []struct {
+		name     string
+		deferred bool
+		input    string
+		want     []string
+	}{
+		{"deferred", true, valid, []string{"model-step-finished", "start:request-1", `delta:{"query":"docs"}`, `available:{"query":"docs"}`}},
+		{"inline", false, valid, []string{"start:request-1", `delta:{"query":"docs"}`, `available:{"query":"docs"}`, "model-step-finished"}},
+		{"deferred invalid", true, `{"query":1}`, []string{"model-step-finished", "start:request-1", `delta:{"query":1}`}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := run(t, c.deferred, c.input); !reflect.DeepEqual(got, c.want) {
+				t.Fatalf("order = %q\nwant    %q", got, c.want)
+			}
+		})
+	}
 }
