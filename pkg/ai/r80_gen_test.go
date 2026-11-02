@@ -94,8 +94,7 @@ type r80genStructInput struct {
 }
 
 // An approved call of a tool whose Parameters is a struct-tag schema was
-// parsed as valid (a struct validator cannot validate the decoded map, so the
-// parse skips it), but revalidation ran the struct validator on the map and
+// parsed as valid, but revalidation ran the struct validator on the map and
 // always failed (`validator: (nil map[string]interface {})`): the approved
 // call became a tool error. ValidateUIMessages failed the same part. TS
 // revalidates with the schema the call was parsed with.
