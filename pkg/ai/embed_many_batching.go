@@ -148,6 +148,13 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 		Warnings:   []types.Warning{},
 		Responses:  []types.EmbeddingResponse{},
 	}
+	// TS sums usage.tokens over the chunks, with NaN for a chunk without
+	// usage, so a reported 0 survives only when every chunk reported usage,
+	// and zero chunks give 0. Reported is therefore an AND, true for zero
+	// chunks. A positive sum with an unreported batch is still recorded (the
+	// v0.5 reading; TS NaN drops it): known difference "Embedding usage
+	// across EmbedMany batches".
+	out.Usage.Reported = true
 
 	nextStartIndex := 0
 	for groupStart := 0; groupStart < len(valueChunks); groupStart += parallelism {
@@ -218,9 +225,7 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 			out.Usage.Tokens += result.Usage.Tokens
 			out.Usage.InputTokens += result.Usage.InputTokens
 			out.Usage.TotalTokens += result.Usage.TotalTokens
-			// Reported when any batch carried a usage object (owner
-			// ruling 2026-11-02).
-			out.Usage.Reported = out.Usage.Reported || result.Usage.Reported
+			out.Usage.Reported = out.Usage.Reported && result.Usage.Reported
 			out.ProviderMetadata = mergeEmbeddingProviderMetadata(out.ProviderMetadata, result.ProviderMetadata)
 		}
 	}

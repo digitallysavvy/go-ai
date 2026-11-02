@@ -82,17 +82,18 @@ func TestR80carryEmbedRecordsReportedZeroUsage(t *testing.T) {
 	}
 }
 
-// EmbedMany batching ORs Reported across batches (owner ruling 2026-11-02),
-// and the legacy root records the reported 0.
-func TestR80carryEmbedManyBatchesOrReported(t *testing.T) {
+// EmbedMany batching ANDs Reported across batches (coordinator correction
+// 2026-11-02: TS sums usage.tokens with NaN for a batch without usage), and
+// the legacy root records the reported 0 only when every batch reported.
+func TestR80carryEmbedManyBatchesAndReported(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		reported []bool
 		want     bool
 	}{
 		{"none", []bool{false, false}, false},
-		{"first", []bool{true, false}, true},
-		{"second", []bool{false, true}, true},
+		{"first", []bool{true, false}, false},
+		{"second", []bool{false, true}, false},
 		{"both", []bool{true, true}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -121,6 +122,67 @@ func TestR80carryEmbedManyBatchesOrReported(t *testing.T) {
 				t.Fatalf("root ai.usage.tokens = %v (set %v), want set=%v; all: %v", v, ok, tc.want, got)
 			}
 		})
+	}
+}
+
+// Zero chunks (empty values with a limited model): TS sums nothing and
+// records usage.tokens 0; Go reports the usage (empty AND is true).
+func TestR80carryEmbedManyZeroChunksRecordsZero(t *testing.T) {
+	model := &testutil.MockEmbeddingModel{
+		MaxEmbeddings: 1,
+		DoEmbedManyFunc: func(context.Context, []string, *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+			t.Fatal("no model call expected for zero chunks")
+			return nil, nil
+		},
+	}
+	var res *EmbedManyResult
+	got := r80carryUsageAttrs(t, func(settings *TelemetrySettings) {
+		var err error
+		res, err = EmbedMany(context.Background(), EmbedManyOptions{Model: model, Inputs: []string{}, Telemetry: settings})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !res.Usage.Reported || res.Usage.Tokens != 0 {
+		t.Fatalf("Usage = %+v, want reported 0", res.Usage)
+	}
+	if v, ok := got["ai.embedMany ai.usage.tokens"]; !ok || !r80carryIsZero(v) {
+		t.Fatalf("root ai.usage.tokens = %v (set %v), want 0; all: %v", v, ok, got)
+	}
+}
+
+// A positive sum with an unreported batch keeps the v0.5 reading: the sum is
+// recorded although Reported is false (TS: NaN, dropped; known difference
+// "Embedding usage across EmbedMany batches").
+func TestR80carryEmbedManyPositiveSumWithUnreportedBatch(t *testing.T) {
+	call := 0
+	model := &testutil.MockEmbeddingModel{
+		MaxEmbeddings: 1,
+		DoEmbedManyFunc: func(context.Context, []string, *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+			call++
+			if call == 1 {
+				return &types.EmbeddingsResult{Embeddings: [][]float64{{0.1}}, Usage: types.EmbeddingUsage{Tokens: 3, Reported: true}}, nil
+			}
+			return &types.EmbeddingsResult{Embeddings: [][]float64{{0.1}}}, nil
+		},
+	}
+	var res *EmbedManyResult
+	got := r80carryUsageAttrs(t, func(settings *TelemetrySettings) {
+		var err error
+		res, err = EmbedMany(context.Background(), EmbedManyOptions{Model: model, Inputs: []string{"a", "b"}, Telemetry: settings})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	if res.Usage.Reported || res.Usage.Tokens != 3 {
+		t.Fatalf("Usage = %+v, want unreported with 3 tokens", res.Usage)
+	}
+	v, ok := got["ai.embedMany ai.usage.tokens"]
+	if !ok {
+		t.Fatalf("root ai.usage.tokens not set; all: %v", got)
+	}
+	if n, _ := v.(int64); n != 3 {
+		t.Fatalf("root ai.usage.tokens = %v, want 3", v)
 	}
 }
 
