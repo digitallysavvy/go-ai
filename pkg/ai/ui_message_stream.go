@@ -394,6 +394,14 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 				// TS: the processing failure errored the stream.
 				return
 			}
+			if ctx.Err() != nil {
+				// A cancelled consumer: TS discards the queued chunks and
+				// handleUIMessageStreamFinish's cancel calls onEnd without
+				// processing another one, so a chunk that reached chunkCh as
+				// the ctx was cancelled (an abort chunk from a source on the
+				// same ctx) does not change the message state or the outcome.
+				return
+			}
 			// TS handleUIMessageStreamFinish: a start chunk without a
 			// messageId gets the response message id (the continued
 			// assistant message's id, else the generated one).
@@ -471,21 +479,40 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			appendErrorChunk(onError, sendChunk, err)
 		}
 
-		var wg sync.WaitGroup
+		// activeMerges counts the running merge goroutines. The stream ends
+		// once Execute has returned and the count is zero (TS waits for
+		// every ongoing merge, so one merged while another is still open
+		// extends the stream); a later merge is dropped. The count and the
+		// end are guarded by one mutex, so a Merge from another goroutine as
+		// the last merge ends either registers before the end or is
+		// dropped (a sync.WaitGroup Add at zero concurrent with Wait is a
+		// misuse that panics).
+		var mergeMu sync.Mutex
+		mergeIdle := sync.NewCond(&mergeMu)
+		activeMerges := 0
+		mergesEnded := false
+		mergeDone := func() {
+			mergeMu.Lock()
+			activeMerges--
+			if activeMerges == 0 {
+				mergeIdle.Broadcast()
+			}
+			mergeMu.Unlock()
+		}
 		merge := func(stream <-chan UIMessageChunk) {
 			if stream == nil {
 				enqueueError(errors.New("merge stream is nil"))
 				return
 			}
-			chunkMu.RLock()
-			lateMerge := chunkClosed
-			chunkMu.RUnlock()
-			if lateMerge {
+			mergeMu.Lock()
+			if mergesEnded {
+				mergeMu.Unlock()
 				return
 			}
-			wg.Add(1)
+			activeMerges++
+			mergeMu.Unlock()
 			go func() {
-				defer wg.Done()
+				defer mergeDone()
 				defer func() {
 					if r := recover(); r != nil {
 						if err, ok := r.(error); ok {
@@ -544,7 +571,12 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			options.Execute(writer)
 		}()
 
-		wg.Wait()
+		mergeMu.Lock()
+		for activeMerges > 0 {
+			mergeIdle.Wait()
+		}
+		mergesEnded = true
+		mergeMu.Unlock()
 		chunkMu.Lock()
 		chunkClosed = true
 		close(chunkCh)
@@ -769,6 +801,11 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		processing := onEnd != nil || onStepEnd != nil
 		processChunk := func(chunk UIMessageChunk) {
 			if processingErr != nil {
+				return
+			}
+			if ctx.Err() != nil {
+				// A cancelled consumer: TS processes no further chunk (the
+				// message state and step callbacks stop with the stream).
 				return
 			}
 			if processing {
@@ -1019,6 +1056,18 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				hasPeeked, peeked, peekedErr = false, nil, nil
 			} else {
 				chunk, err = stream.Next()
+			}
+			if ctx.Err() != nil {
+				// The consumer was cancelled while the read was in flight:
+				// the part it returned (StreamText's abort part, or the ctx
+				// error of a source on the same ctx) is not processed, so
+				// OnEnd always reports the cancellation (isCancelled), not an
+				// abort that was never written. TS: a cancelled reader
+				// cancels the pipeline, and handleUIMessageStreamFinish's
+				// cancel calls onEnd without processing another chunk.
+				sendUIStreamErr(errCh, ctx.Err())
+				callOnEnd()
+				return
 			}
 			if err != nil {
 				if err == io.EOF {

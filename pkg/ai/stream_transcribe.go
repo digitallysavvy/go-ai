@@ -491,7 +491,26 @@ func transcriptionPartFromProvider(part *provider.TranscriptionStreamPart) Trans
 // sendTranscriptionPart sends part on ch, honoring cancellation of ctx so a
 // blocked send unblocks (instead of leaking) when FullStream is closed.
 // Returns false when ctx was cancelled before the send completed.
+//
+// The two cancellations differ as in TS. After FullStream.Close (TS
+// pipeTo's signal) no further part is written, even to a waiting reader.
+// The caller's ctx (TS abortSignal, passed only to the model) does not stop
+// the pipe: a part the provider still returns goes to a reader that is
+// waiting for it, and only a reader that stopped reading ends the pipe.
+// Without these checks Go's select picked between a ready reader and the
+// done ctx at random.
 func sendTranscriptionPart(ctx context.Context, ch chan<- TranscriptionStreamPart, part TranscriptionStreamPart) bool {
+	if ctx.Err() != nil {
+		if errors.Is(context.Cause(ctx), errTranscriptionStreamCancelled) {
+			return false
+		}
+		select {
+		case ch <- part:
+			return true
+		default:
+			return false
+		}
+	}
 	select {
 	case ch <- part:
 		return true

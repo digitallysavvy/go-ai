@@ -62,6 +62,13 @@ func ReadUIMessages(ctx context.Context, opts ReadUIMessagesOptions) (<-chan UIM
 		state.resetOnMessageIDChange = true
 
 		for {
+			// A cancelled ctx wins over a ready chunk (non-blocking check
+			// first, as ToUIMessageStream and the CreateUIMessageStream merge
+			// do), instead of Go's select picking between the two ready cases
+			// at random. TS: a cancelled reader receives no further value.
+			if ctx.Err() != nil {
+				return
+			}
 			select {
 			case <-ctx.Done():
 				return
@@ -101,6 +108,9 @@ func ReadUIMessages(ctx context.Context, opts ReadUIMessagesOptions) (<-chan UIM
 				snapshot, err := UIMessageFromChunk(state.responseMessage())
 				if err != nil {
 					errCh <- err
+					return
+				}
+				if ctx.Err() != nil {
 					return
 				}
 				select {

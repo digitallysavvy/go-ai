@@ -122,7 +122,7 @@ type StreamTranslationResult struct {
 	mu          sync.Mutex
 	streamOwner string
 	ch          chan TranslationStreamPart
-	cancel      context.CancelFunc
+	cancel      context.CancelCauseFunc
 	finalErr    *error
 	finalErrMu  sync.Mutex
 }
@@ -227,6 +227,10 @@ func (r *StreamTranslationResult) FullStream() (TranslationStream, error) {
 	return &translationFullStream{result: r}, nil
 }
 
+// errTranslationStreamCancelled is the reason FullStream.Close aborts the
+// pipe with (TS Transformer.cancel's default reason).
+var errTranslationStreamCancelled = errors.New("Translation stream was cancelled.") //nolint:staticcheck // matches TS SDK's exact error text
+
 type translationFullStream struct {
 	result    *StreamTranslationResult
 	err       error
@@ -249,7 +253,7 @@ func (s *translationFullStream) Err() error { return s.err }
 
 func (s *translationFullStream) Close() error {
 	s.closeOnce.Do(func() {
-		s.result.cancel()
+		s.result.cancel(errTranslationStreamCancelled)
 	})
 	return nil
 }
@@ -266,7 +270,7 @@ func ExperimentalStreamTranslate(ctx context.Context, opts StreamTranslateOption
 		return nil, fmt.Errorf("model is required")
 	}
 
-	pipeCtx, cancel := context.WithCancel(ctx)
+	pipeCtx, cancel := context.WithCancelCause(ctx)
 
 	result := &StreamTranslationResult{
 		sourceTextP:       newStreamPromise[string](),
@@ -299,6 +303,16 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 		result.rejectAll(err)
 		opts.Audio.Cancel(err)
 	}
+	// abortReason reports a failure caused by cancellation with the abort
+	// reason, as TS pipeTo rejects with the signal's reason: Close gives
+	// "Translation stream was cancelled.", a cancelled ctx its cause (as
+	// runTranscriptionStreamPipe does).
+	abortReason := func(err error) error {
+		if pipeCtx.Err() != nil {
+			return context.Cause(pipeCtx)
+		}
+		return err
+	}
 
 	streamResult, err := opts.Model.DoStream(pipeCtx, &provider.SpeechTranslationStreamOptions{
 		Audio:             opts.Audio,
@@ -312,7 +326,7 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 		IncludeRawChunks:  opts.IncludeRawChunks,
 	})
 	if err != nil {
-		fail(err)
+		fail(abortReason(err))
 		return
 	}
 	if streamResult.Response != nil {
@@ -339,7 +353,7 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 			break
 		}
 		if nextErr != nil {
-			fail(nextErr)
+			fail(abortReason(nextErr))
 			return
 		}
 
@@ -369,7 +383,7 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 				// pending send that loses to pipeCtx cancellation must still
 				// reject the result promises and cancel the caller's audio,
 				// mirroring TS stream-translate.ts's Transformer.cancel/catch.
-				fail(errors.New("Translation stream was cancelled.")) //nolint:staticcheck // matches TS SDK's exact error text
+				fail(context.Cause(pipeCtx))
 				return
 			}
 
@@ -381,7 +395,7 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 			provider.SpeechTranslationStreamPartTypeRaw,
 			provider.SpeechTranslationStreamPartTypeError:
 			if !sendTranslationPart(pipeCtx, result.ch, translationPartFromProvider(part)) {
-				fail(errors.New("Translation stream was cancelled.")) //nolint:staticcheck // matches TS SDK's exact error text
+				fail(context.Cause(pipeCtx))
 				return
 			}
 
@@ -434,7 +448,22 @@ func translationPartFromProvider(part *provider.SpeechTranslationStreamPart) Tra
 	}
 }
 
+// sendTranslationPart sends part on ch, honoring cancellation of ctx; see
+// sendTranscriptionPart for the two cancellations (after FullStream.Close
+// nothing more is written; after the caller's ctx a waiting reader still gets
+// the part).
 func sendTranslationPart(ctx context.Context, ch chan<- TranslationStreamPart, part TranslationStreamPart) bool {
+	if ctx.Err() != nil {
+		if errors.Is(context.Cause(ctx), errTranslationStreamCancelled) {
+			return false
+		}
+		select {
+		case ch <- part:
+			return true
+		default:
+			return false
+		}
+	}
 	select {
 	case ch <- part:
 		return true

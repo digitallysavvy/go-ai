@@ -5957,6 +5957,16 @@ func (r *StreamTextResult) ChunksContext(ctx context.Context) <-chan provider.St
 			if err != nil {
 				return
 			}
+			// A cancelled ctx wins over a free buffer slot, so a chunk taken
+			// after the cancellation goes back to the shared cursor instead
+			// of to a consumer that stopped (Go's select would pick between
+			// the two ready cases at random).
+			if ctx.Err() != nil {
+				if buf != nil {
+					buf.unread()
+				}
+				return
+			}
 			select {
 			case ch <- *chunk:
 			case <-ctx.Done():
