@@ -188,7 +188,7 @@ func (m *LanguageModel) convertResponse(response ollamaResponse) *types.Generate
 		Text:            choice.Message.Content,
 		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
 		RawFinishReason: choice.FinishReason,
-		Usage:           convertOllamaUsage(response.Usage),
+		Usage:           convertOllamaUsagePtr(response.Usage),
 		RawResponse:     response,
 	}
 	if len(choice.Message.ToolCalls) > 0 {
@@ -214,6 +214,16 @@ func (m *LanguageModel) handleError(err error) error {
 		return err // TS throws LoadAPIKeyError unwrapped
 	}
 	return providererrors.NewProviderError("ollama", 0, "", err.Error(), err)
+}
+
+// convertOllamaUsagePtr is TS convertOpenAICompatibleChatUsage of a possibly
+// missing wire usage: an absent or null usage object is the null usage
+// (unknown token counts), not zero tokens.
+func convertOllamaUsagePtr(usage *ollamaUsage) types.Usage {
+	if usage == nil {
+		return types.Usage{}
+	}
+	return convertOllamaUsage(*usage)
 }
 
 func convertOllamaUsage(usage ollamaUsage) types.Usage {
@@ -286,7 +296,7 @@ type ollamaResponse struct {
 			} `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
-	Usage ollamaUsage `json:"usage"`
+	Usage *ollamaUsage `json:"usage"`
 }
 
 type ollamaUsage struct {

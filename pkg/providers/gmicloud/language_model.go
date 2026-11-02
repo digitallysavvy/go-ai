@@ -205,49 +205,20 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	return body, append(warnings, toolWarnings...)
 }
 
+// convertResponse maps the finish reason and usage. Everything else (text
+// and thinking parts, reasoning, tool calls, response metadata) comes from
+// streaming.ApplyOpenAICompatibleChatResponse (TS openai-compatible
+// doGenerate).
 func (m *LanguageModel) convertResponse(response gmicloudResponse) *types.GenerateResult {
 	if len(response.Choices) == 0 {
-		return &types.GenerateResult{
-			Text:         "",
-			FinishReason: types.FinishReasonOther,
-		}
+		return &types.GenerateResult{FinishReason: types.FinishReasonOther}
 	}
 	choice := response.Choices[0]
-	result := &types.GenerateResult{
-		Text:            choice.Message.Content,
+	return &types.GenerateResult{
 		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
 		RawFinishReason: choice.FinishReason,
-		Usage:           convertGmicloudUsage(response.Usage),
-		RawResponse:     response,
+		Usage:           convertGmicloudUsagePtr(response.Usage),
 	}
-	if choice.Message.ReasoningContent != "" {
-		result.Content = append(result.Content, types.ReasoningContent{Text: choice.Message.ReasoningContent})
-	}
-	if len(choice.Message.ToolCalls) > 0 {
-		result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
-		for i, tc := range choice.Message.ToolCalls {
-			var args map[string]interface{}
-			if tc.Function.Arguments != "" {
-				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
-			}
-			// TS openai-compatible chat: `toolCall.id || generateId()`.
-			id := tc.ID
-			if id == "" {
-				id = streaming.GenerateID()
-			}
-			result.ToolCalls[i] = types.ToolCall{
-				ID:        id,
-				ToolName:  tc.Function.Name,
-				Arguments: args,
-				// Wire text keeps the key order TS keeps (JSON.stringify of the parsed input).
-				RawArguments: tc.Function.Arguments,
-			}
-		}
-	}
-	if response.ID != "" || response.Model != "" {
-		result.ResponseMetadata = &types.ResponseMetadata{ID: response.ID, ModelID: response.Model}
-	}
-	return result
 }
 
 func (m *LanguageModel) handleError(err error) error {
@@ -263,6 +234,16 @@ func (m *LanguageModel) handleError(err error) error {
 	// Not an HTTP response: TS postJsonToApi lets a transport failure
 	// propagate unchanged.
 	return err
+}
+
+// convertGmicloudUsagePtr is TS convertOpenAICompatibleChatUsage of a possibly
+// missing wire usage: an absent or null usage object is the null usage
+// (unknown token counts), not zero tokens.
+func convertGmicloudUsagePtr(usage *gmicloudUsage) types.Usage {
+	if usage == nil {
+		return types.Usage{}
+	}
+	return convertGmicloudUsage(*usage)
 }
 
 func convertGmicloudUsage(usage gmicloudUsage) types.Usage {
@@ -308,28 +289,10 @@ func convertGmicloudUsage(usage gmicloudUsage) types.Usage {
 }
 
 type gmicloudResponse struct {
-	ID      string  `json:"id"`
-	Object  string  `json:"object"`
-	Created float64 `json:"created"` // TS z.number()
-	Model   string  `json:"model"`
 	Choices []struct {
-		Index        int    `json:"index"`
 		FinishReason string `json:"finish_reason"`
-		Message      struct {
-			Role             string `json:"role"`
-			Content          string `json:"content"`
-			ReasoningContent string `json:"reasoning_content"`
-			ToolCalls        []struct {
-				ID       string `json:"id"`
-				Type     string `json:"type"`
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls"`
-		} `json:"message"`
 	} `json:"choices"`
-	Usage gmicloudUsage `json:"usage"`
+	Usage *gmicloudUsage `json:"usage"`
 }
 
 type gmicloudUsage struct {
