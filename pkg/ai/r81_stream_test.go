@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime"
@@ -579,4 +580,220 @@ func TestR81streamTSDisconnectReportsCancellation(t *testing.T) {
 			t.Fatalf("run %d: OnEnd %s, want %s", i, got, want)
 		}
 	}
+}
+
+// r81streamFinishChunks parses a JSON array of UI chunks.
+func r81streamFinishChunks(t *testing.T, s string) []UIMessageChunk {
+	t.Helper()
+	var chunks []UIMessageChunk
+	if err := json.Unmarshal([]byte(s), &chunks); err != nil {
+		t.Fatal(err)
+	}
+	return chunks
+}
+
+// r81streamFinishRun writes chunks through CreateUIMessageStreamWithOptions
+// (TS handleUIMessageStreamFinish over createUIMessageStream) and returns the
+// output as JSON.
+func r81streamFinishRun(t *testing.T, chunks []UIMessageChunk, opts UIMessageStreamOptions) string {
+	t.Helper()
+	opts.Execute = func(w UIMessageStreamWriter) {
+		for _, c := range chunks {
+			w.Write(c)
+		}
+	}
+	out, errCh := CreateUIMessageStreamWithOptions(context.Background(), opts)
+	var got []UIMessageChunk
+	for c := range out {
+		got = append(got, c)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// r81streamCanon re-encodes a JSON array of chunks with sorted keys.
+func r81streamCanon(t *testing.T, s string) string {
+	t.Helper()
+	b, err := json.Marshal(r81streamFinishChunks(t, s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func r81streamJSON(t *testing.T, v interface{}) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// TS handle-ui-message-stream-finish.test.ts 392, 456, 481, 703, 752, 820,
+// 864, 903: pass-through and callback cases.
+func TestR81streamTSHandleFinishPassThroughAndSteps(t *testing.T) {
+	t.Run("392 abort reason", func(t *testing.T) {
+		in := `[{"type":"start","messageId":"msg-abort-reason"},{"type":"text-start","id":"text-1"},{"type":"text-delta","id":"text-1","delta":"Starting text"},{"type":"abort","reason":"manual abort"},{"type":"finish"}]`
+		calls := 0
+		got := r81streamFinishRun(t, r81streamFinishChunks(t, in), UIMessageStreamOptions{OnEnd: func(map[string]interface{}) { calls++ }})
+		if got != r81streamCanon(t, in) || calls != 1 {
+			t.Fatalf("got %s (onEnd %d), want %s once", got, calls, in)
+		}
+	})
+	t.Run("456 abort pass-through without onEnd", func(t *testing.T) {
+		in := `[{"type":"start","messageId":"msg-abort-passthrough"},{"type":"text-start","id":"text-1"},{"type":"text-delta","id":"text-1","delta":"Text before abort"},{"type":"abort"},{"type":"finish"}]`
+		errs := 0
+		got := r81streamFinishRun(t, r81streamFinishChunks(t, in), UIMessageStreamOptions{OnError: func(error) string { errs++; return "" }})
+		if got != r81streamCanon(t, in) || errs != 0 {
+			t.Fatalf("got %s (onError %d), want %s", got, errs, in)
+		}
+	})
+	t.Run("481 multiple aborts", func(t *testing.T) {
+		in := `[{"type":"start","messageId":"msg-multiple-abort"},{"type":"text-start","id":"text-1"},{"type":"abort"},{"type":"text-delta","id":"text-1","delta":"Some text"},{"type":"abort"},{"type":"finish"}]`
+		var events []map[string]interface{}
+		got := r81streamFinishRun(t, r81streamFinishChunks(t, in), UIMessageStreamOptions{OnEnd: func(e map[string]interface{}) { events = append(events, e) }})
+		if got != r81streamCanon(t, in) || len(events) != 1 || events[0]["isAborted"] != true {
+			t.Fatalf("got %s, events %v", got, events)
+		}
+	})
+	t.Run("703 multiple steps", func(t *testing.T) {
+		in := `[{"type":"start","messageId":"msg-multi-step"},
+			{"type":"text-start","id":"text-1"},{"type":"text-delta","id":"text-1","delta":"Step 1"},{"type":"text-end","id":"text-1"},{"type":"finish-step"},
+			{"type":"start-step"},{"type":"text-start","id":"text-2"},{"type":"text-delta","id":"text-2","delta":"Step 2"},{"type":"text-end","id":"text-2"},{"type":"finish-step"},
+			{"type":"start-step"},{"type":"text-start","id":"text-3"},{"type":"text-delta","id":"text-3","delta":"Step 3"},{"type":"text-end","id":"text-3"},{"type":"finish-step"},
+			{"type":"finish"}]`
+		var lengths []int
+		r81streamFinishRun(t, r81streamFinishChunks(t, in), UIMessageStreamOptions{OnStepEnd: func(e map[string]interface{}) {
+			lengths = append(lengths, len(uiParts(e["responseMessage"].(UIMessageChunk))))
+		}})
+		if fmt.Sprint(lengths) != "[1 3 5]" {
+			t.Fatalf("step part counts = %v, want [1 3 5]", lengths)
+		}
+	})
+	t.Run("752 both callbacks", func(t *testing.T) {
+		in := `[{"type":"start","messageId":"msg-both"},{"type":"text-start","id":"text-1"},{"type":"text-delta","id":"text-1","delta":"Hello"},{"type":"text-end","id":"text-1"},{"type":"finish-step"},{"type":"finish"}]`
+		steps, ends := 0, 0
+		r81streamFinishRun(t, r81streamFinishChunks(t, in), UIMessageStreamOptions{
+			OnStepEnd: func(map[string]interface{}) { steps++ },
+			OnEnd:     func(map[string]interface{}) { ends++ },
+		})
+		if steps != 1 || ends != 1 {
+			t.Fatalf("onStepEnd %d, onEnd %d, want 1 and 1", steps, ends)
+		}
+	})
+	t.Run("820 continuation with onStepEnd", func(t *testing.T) {
+		in := `[{"type":"start","messageId":"assistant-msg-1"},{"type":"text-start","id":"text-1"},{"type":"text-delta","id":"text-1","delta":" continued"},{"type":"text-end","id":"text-1"},{"type":"finish-step"},{"type":"finish"}]`
+		original := r81streamFinishChunks(t, `[{"id":"user-msg-1","role":"user","parts":[{"type":"text","text":"Continue this"}]},{"id":"assistant-msg-1","role":"assistant","parts":[{"type":"text","text":"This is"}]}]`)
+		var events []map[string]interface{}
+		r81streamFinishRun(t, r81streamFinishChunks(t, in), UIMessageStreamOptions{
+			OriginalMessages:  original,
+			GenerateMessageID: func() string { return "msg-999" },
+			OnStepEnd:         func(e map[string]interface{}) { events = append(events, e) },
+		})
+		if len(events) != 1 {
+			t.Fatalf("onStepEnd calls = %d", len(events))
+		}
+		e := events[0]
+		if e["isContinuation"] != true || e["responseMessage"].(UIMessageChunk)["id"] != "assistant-msg-1" || len(e["messages"].([]UIMessageChunk)) != 2 {
+			t.Fatalf("step event = %s", r81streamJSON(t, e))
+		}
+	})
+	t.Run("864 step messages are copies", func(t *testing.T) {
+		in := `[{"type":"start","messageId":"msg-clone"},{"type":"text-start","id":"text-1"},{"type":"text-delta","id":"text-1","delta":"Hello"},{"type":"text-end","id":"text-1"},{"type":"finish-step"},{"type":"finish"}]`
+		var stepParts, endParts int
+		r81streamFinishRun(t, r81streamFinishChunks(t, in), UIMessageStreamOptions{
+			OnStepEnd: func(e map[string]interface{}) {
+				msg := e["responseMessage"].(UIMessageChunk)
+				parts := uiParts(msg)
+				if len(parts) > 0 {
+					if p, ok := parts[0].(map[string]interface{}); ok {
+						p["text"] = "MUTATION!"
+					}
+				}
+				msg["parts"] = append(parts, map[string]interface{}{"type": "text", "text": "MUTATION!"})
+				stepParts = len(uiParts(msg))
+			},
+			OnEnd: func(e map[string]interface{}) {
+				msg := e["responseMessage"].(UIMessageChunk)
+				endParts = len(uiParts(msg))
+				if r81streamJSON(t, uiParts(msg)) != `[{"state":"done","text":"Hello","type":"text"}]` {
+					t.Errorf("onEnd parts = %s", r81streamJSON(t, uiParts(msg)))
+				}
+			},
+		})
+		if stepParts != 2 || endParts != 1 {
+			t.Fatalf("step parts %d, end parts %d, want 2 and 1", stepParts, endParts)
+		}
+	})
+	t.Run("903 no callbacks", func(t *testing.T) {
+		in := `[{"type":"start","messageId":"msg-passthrough"},{"type":"text-start","id":"text-1"},{"type":"text-delta","id":"text-1","delta":"Test"},{"type":"text-end","id":"text-1"},{"type":"finish-step"},{"type":"finish"}]`
+		errs := 0
+		got := r81streamFinishRun(t, r81streamFinishChunks(t, in), UIMessageStreamOptions{OnError: func(error) string { errs++; return "" }})
+		if got != r81streamCanon(t, in) || errs != 0 {
+			t.Fatalf("got %s (onError %d), want %s", got, errs, in)
+		}
+	})
+}
+
+// TS handle-ui-message-stream-finish.test.ts 546 (completed, failed,
+// aborted) and 579: a declared outcome survives a reader cancellation
+// (no isCancelled), and an abort chunk read before the cancellation wins.
+func TestR81streamTSHandleFinishCancelOutcomes(t *testing.T) {
+	run := func(t *testing.T, chunks []UIMessageChunk, declared *UIMessageStreamOutcome) map[string]interface{} {
+		t.Helper()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		var event map[string]interface{}
+		out, errCh := CreateUIMessageStreamWithOptions(ctx, UIMessageStreamOptions{
+			Execute: func(w UIMessageStreamWriter) {
+				for _, c := range chunks {
+					w.Write(c)
+				}
+				if declared != nil {
+					w.SetOutcome(*declared)
+				}
+				<-ctx.Done()
+			},
+			OnEnd: func(e map[string]interface{}) { event = e },
+		})
+		for range chunks {
+			<-out
+		}
+		cancel()
+		for range out {
+		}
+		<-errCh
+		return event
+	}
+	failErr := errors.New("stream failed")
+	for _, declared := range []UIMessageStreamOutcome{
+		{Status: UIMessageStreamOutcomeCompleted},
+		{Status: UIMessageStreamOutcomeFailed, Error: failErr},
+		{Status: UIMessageStreamOutcomeAborted},
+	} {
+		t.Run("546 "+string(declared.Status), func(t *testing.T) {
+			d := declared
+			e := run(t, []UIMessageChunk{{"type": "start", "messageId": "msg-1"}}, &d)
+			if _, ok := e["isCancelled"]; ok {
+				t.Fatalf("isCancelled set: %v", e)
+			}
+			want := uiMessageStreamOutcomeMap(declared)
+			if fmt.Sprint(e["outcome"]) != fmt.Sprint(want) {
+				t.Fatalf("outcome = %v, want %v", e["outcome"], want)
+			}
+		})
+	}
+	t.Run("579 observed abort", func(t *testing.T) {
+		e := run(t, []UIMessageChunk{{"type": "start", "messageId": "msg-1"}, {"type": "abort"}}, nil)
+		if _, ok := e["isCancelled"]; ok || e["isAborted"] != true || fmt.Sprint(e["outcome"]) != "map[status:aborted]" {
+			t.Fatalf("event: isAborted %v, isCancelled %v, outcome %v", e["isAborted"], e["isCancelled"], e["outcome"])
+		}
+	})
 }
