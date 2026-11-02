@@ -131,3 +131,25 @@ func TestR77ProvbReasoningEncryptedContentFromProviderOptions(t *testing.T) {
 		}
 	}
 }
+
+// TestR77ProvbTSCasesXAIConvertInput replays xai
+// convert-to-xai-responses-input.test.ts (TS convertToXaiResponsesInput)
+// through ConvertPromptToXAIInput, compared on input and inputWarnings.
+func TestR77ProvbTSCasesXAIConvertInput(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/xai_convert_input.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		in, _ := args[0].(map[string]interface{})
+		msgs, why := tsfixture.BuildPromptMessages(in["prompt"])
+		if why != "" {
+			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+		}
+		input, warnings, err := ConvertPromptToXAIInput(types.Prompt{Messages: msgs})
+		if err != nil {
+			return nil, nil, err
+		}
+		if input == nil {
+			input = []interface{}{}
+		}
+		return map[string]interface{}{"input": input, "inputWarnings": tsfixture.WarningsToTS(warnings)}, nil, nil
+	}, nil)
+}
