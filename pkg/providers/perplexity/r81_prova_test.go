@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // A 2xx embeddings response with `data: []` indexed [0] unchecked in DoEmbed
@@ -42,5 +43,20 @@ func TestR81provaPerplexityDecisionSniffsUnpaddedBase64(t *testing.T) {
 	want := map[string]interface{}{"type": "image_url", "image_url": map[string]interface{}{"url": "data:image/png;base64,iVBORw"}}
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v, %v", got, err)
+	}
+}
+
+// TS input_image embeds convertToBase64(part.data.data), which returns a
+// base64 string payload as is; Go read only the bytes, so a DataString image
+// became an empty data URL.
+func TestR81provaPerplexityImageDataStringPayload(t *testing.T) {
+	for _, tc := range []struct{ mediaType, data, want string }{
+		{"image/png", "-_8", "data:image/png;base64,-_8"},
+		{"image/*", "iVBORw", "data:image/png;base64,iVBORw"},
+	} {
+		got, err := convertPerplexityUserPart(types.FileContent{MediaType: tc.mediaType, FileData: types.FileData{Type: types.FileDataTypeData, DataString: tc.data}})
+		if err != nil || got["image_url"] != tc.want {
+			t.Fatalf("%s: part = %v, %v, want image_url %s", tc.mediaType, got, err, tc.want)
+		}
 	}
 }

@@ -204,11 +204,18 @@ func convertPerplexityUserPart(part types.ContentPart) (map[string]interface{}, 
 		case types.FileDataTypeURL:
 			return map[string]interface{}{"type": "input_image", "image_url": normalized.FileData.URL}, nil
 		case types.FileDataTypeData:
-			fullMediaType, err := resolvePerplexityImageMediaType(declaredMediaType, normalized.Data)
+			// TS convertToBase64(part.data.data): a base64 string payload
+			// (DataString) is embedded as is; detection reads its bytes.
+			payload, sniff := base64.StdEncoding.EncodeToString(normalized.Data), normalized.Data
+			if len(normalized.Data) == 0 && normalized.FileData.DataString != "" {
+				payload = normalized.FileData.DataString
+				sniff, _ = fileutil.ConvertBase64ToBytes(normalized.FileData.DataString)
+			}
+			fullMediaType, err := resolvePerplexityImageMediaType(declaredMediaType, sniff)
 			if err != nil {
 				return nil, err
 			}
-			url := fmt.Sprintf("data:%s;base64,%s", fullMediaType, base64.StdEncoding.EncodeToString(normalized.Data))
+			url := fmt.Sprintf("data:%s;base64,%s", fullMediaType, payload)
 			return map[string]interface{}{"type": "input_image", "image_url": url}, nil
 		case types.FileDataTypeReference:
 			return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "file parts with provider references"}
