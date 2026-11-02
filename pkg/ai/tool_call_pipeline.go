@@ -1,7 +1,6 @@
 package ai
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -140,8 +139,9 @@ func ParseToolCall(ctx context.Context, opts ParseToolCallOptions) (types.ToolCa
 	return refined, err
 }
 
-// parseAndRefineToolCall is ParseToolCall that also returns the call as it
-// was parsed, before RefineToolInput ran (the approval inputSchemaInput).
+// parseAndRefineToolCall is ParseToolCall that also returns the call with
+// the input the schema received, before validation and RefineToolInput (the
+// approval inputSchemaInput, TS parseResult.rawValue).
 func parseAndRefineToolCall(ctx context.Context, opts ParseToolCallOptions) (types.ToolCall, types.ToolCall, error) {
 	call := opts.ToolCall
 	parsed, pre, err := parseToolCallWithRepair(ctx, opts)
@@ -199,9 +199,18 @@ func refineParsedToolCall(ctx context.Context, parsed types.ToolCall, opts Parse
 
 func parseToolCallWithRepair(ctx context.Context, opts ParseToolCallOptions) (types.ToolCall, types.ToolCall, error) {
 	call := opts.ToolCall
-	refine := func(parsed types.ToolCall) (types.ToolCall, types.ToolCall, error) {
+	// refine returns the refined call and the call as the schema received
+	// it (rawArgs, the JSON-parsed input before validation): TS
+	// setToolCallInputSchemaInput(toolCall, parseResult.rawValue), which
+	// feeds the approval request's inputSchemaInput. A nil rawArgs keeps the
+	// parsed input (provider-executed dynamic calls have no schema input).
+	refine := func(parsed types.ToolCall, rawArgs map[string]interface{}) (types.ToolCall, types.ToolCall, error) {
 		refined, err := refineParsedToolCall(ctx, parsed, opts)
-		return refined, parsed, err
+		pre := parsed
+		if rawArgs != nil {
+			pre.Arguments = rawArgs
+		}
+		return refined, pre, err
 	}
 	// TS `tools == null`: a nil slice means no tools at all, while an empty,
 	// non-nil set (ActiveTools filtering every tool out) still goes through
@@ -218,24 +227,24 @@ func parseToolCallWithRepair(ctx context.Context, opts ParseToolCallOptions) (ty
 			if err != nil {
 				return types.ToolCall{}, types.ToolCall{}, err
 			}
-			return refine(parsed)
+			return refine(parsed, nil)
 		}
 		return types.ToolCall{}, types.ToolCall{}, &NoSuchToolError{ToolName: call.ToolName}
 	}
 
-	parsed, err := doParseToolCall(call, opts.Tools)
+	parsed, rawArgs, err := doParseToolCall(call, opts.Tools)
 	if err == nil {
 		// The refiner runs inside the same try block as the parse (TS), so
 		// its NoSuchTool/InvalidToolInput errors are repaired too.
 		var refined, pre types.ToolCall
-		if refined, pre, err = refine(parsed); err == nil {
+		if refined, pre, err = refine(parsed, rawArgs); err == nil {
 			return refined, pre, nil
 		}
 	}
 	return repairParsedToolCall(ctx, opts, err, refine)
 }
 
-func repairParsedToolCall(ctx context.Context, opts ParseToolCallOptions, err error, refine func(types.ToolCall) (types.ToolCall, types.ToolCall, error)) (types.ToolCall, types.ToolCall, error) {
+func repairParsedToolCall(ctx context.Context, opts ParseToolCallOptions, err error, refine func(types.ToolCall, map[string]interface{}) (types.ToolCall, types.ToolCall, error)) (types.ToolCall, types.ToolCall, error) {
 	if opts.RepairToolCall == nil || (!IsNoSuchToolError(err) && !IsInvalidToolInputError(err)) {
 		return types.ToolCall{}, types.ToolCall{}, err
 	}
@@ -253,11 +262,11 @@ func repairParsedToolCall(ctx context.Context, opts ParseToolCallOptions, err er
 	if repaired == nil {
 		return types.ToolCall{}, types.ToolCall{}, err
 	}
-	parsedRepaired, err := doParseToolCall(*repaired, opts.Tools)
+	parsedRepaired, rawRepaired, err := doParseToolCall(*repaired, opts.Tools)
 	if err != nil {
 		return types.ToolCall{}, types.ToolCall{}, err
 	}
-	refinedRepaired, pre, err := refine(parsedRepaired)
+	refinedRepaired, pre, err := refine(parsedRepaired, rawRepaired)
 	if err != nil {
 		return types.ToolCall{}, types.ToolCall{}, err
 	}
@@ -319,7 +328,10 @@ func waitForRepair(ctx context.Context, opts ParseToolCallOptions, parseErr erro
 	}
 }
 
-func doParseToolCall(call types.ToolCall, tools []types.Tool) (types.ToolCall, error) {
+// doParseToolCall also returns the JSON-parsed input before schema
+// validation (TS parseResult.rawValue), nil for a provider-executed dynamic
+// call.
+func doParseToolCall(call types.ToolCall, tools []types.Tool) (types.ToolCall, map[string]interface{}, error) {
 	tool := findToolForCall(call, tools)
 	if tool == nil {
 		// Provider-executed dynamic tools are not part of the tool list (TS:
@@ -327,21 +339,24 @@ func doParseToolCall(call types.ToolCall, tools []types.Tool) (types.ToolCall, e
 		// providerExecuted but not dynamic still raises NoSuchToolError when
 		// unmatched, matching TS doParseToolCall exactly.
 		if call.ProviderExecuted && call.Dynamic {
-			return parseProviderExecutedDynamicToolCall(call)
+			parsed, err := parseProviderExecutedDynamicToolCall(call)
+			return parsed, nil, err
 		}
-		return types.ToolCall{}, &NoSuchToolError{ToolName: call.ToolName, AvailableTools: toolNames(tools)}
+		return types.ToolCall{}, nil, &NoSuchToolError{ToolName: call.ToolName, AvailableTools: toolNames(tools)}
 	}
 
 	args, err := toolCallInputArguments(call)
 	if err != nil {
-		return types.ToolCall{}, &InvalidToolInputError{ToolName: call.ToolName, ToolInput: toolCallInputText(call), Cause: err}
+		return types.ToolCall{}, nil, &InvalidToolInputError{ToolName: call.ToolName, ToolInput: toolCallInputText(call), Cause: err}
 	}
+	// The validator may fill or transform values in place: keep a copy.
+	rawArgs := cloneSchemaMap(args)
 	if tool.ValidateInput != nil {
 		// TS jsonSchema(schema, {validate}): the tool's own validator replaces
 		// the schema check, and its value is the input the call carries.
 		validated, err := tool.ValidateInput(args)
 		if err != nil {
-			return types.ToolCall{}, &InvalidToolInputError{ToolName: call.ToolName, ToolInput: toolCallInputText(call), Cause: newToolInputTypeValidationError(call, args, err)}
+			return types.ToolCall{}, nil, &InvalidToolInputError{ToolName: call.ToolName, ToolInput: toolCallInputText(call), Cause: newToolInputTypeValidationError(call, args, err)}
 		}
 		if m, ok := validated.(map[string]interface{}); ok {
 			args = m
@@ -353,7 +368,7 @@ func doParseToolCall(call types.ToolCall, tools []types.Tool) (types.ToolCall, e
 		// doesn't fill defaults, so apply them first -- matching Object.
 		args = applyToolCallInputDefaults(args, validator)
 		if err := validator.Validate(args); err != nil {
-			return types.ToolCall{}, &InvalidToolInputError{ToolName: call.ToolName, ToolInput: toolCallInputText(call), Cause: err}
+			return types.ToolCall{}, nil, &InvalidToolInputError{ToolName: call.ToolName, ToolInput: toolCallInputText(call), Cause: err}
 		}
 	}
 
@@ -366,7 +381,7 @@ func doParseToolCall(call types.ToolCall, tools []types.Tool) (types.ToolCall, e
 		parsed.ToolMetadata = cloneStringAnyMap(tool.Metadata)
 	}
 	parsed.Dynamic = tool.Type == "dynamic"
-	return parsed, nil
+	return parsed, rawArgs, nil
 }
 
 // toolInputTypeValidationError is the cause of an InvalidToolInputError for a
@@ -386,13 +401,13 @@ func (e *toolInputTypeValidationError) Error() string {
 func (e *toolInputTypeValidationError) Unwrap() error { return e.ValidationError }
 
 func newToolInputTypeValidationError(call types.ToolCall, args map[string]interface{}, err error) error {
-	// TS JSON.stringify(value) keeps the input's key order: use the
-	// compacted raw input text when there is one.
+	// TS JSON.stringify(value) of the parsed input: the raw input's keys in
+	// JS enumeration order (array-index keys first, a repeated key at its
+	// first position with its last value), strings re-encoded.
 	var value interface{} = args
 	if raw := call.RawArguments; providerutils.JSTrim(raw) != "" {
-		var buf bytes.Buffer
-		if json.Compact(&buf, []byte(raw)) == nil {
-			value = buf.String()
+		if v, ok := jsonorder.Parse([]byte(raw)); ok {
+			value = jsonorder.Stringify(v)
 		}
 	}
 	return &toolInputTypeValidationError{providererrors.NewValidationErrorWithContext(value, providerutils.ToolErrorText(err), err, &providererrors.ValidationContext{})}

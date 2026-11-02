@@ -946,7 +946,10 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			toolEventMessages = stepTel.modelPrompt
 			stepCbs.executeMessages = append(append([]types.Message(nil), stepTel.modelPrompt...), providerutils.ConvertToResponseMessage(stepResult.ToolCalls, modelContent))
 		}
-		preApprovals, inputErr, approvalErr := a.notifyToolCallsAndResolveApprovals(stepCtx, stepResult.ToolCalls, executionTools, callConfig.Messages, stepCbs.executeMessages, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ToolApproval, len(stepResult.ToolCalls) > 0 && !workflowBlocked)
+		// The tool input callbacks get the same messages as the tool start
+		// event (TS WorkflowAgent invokeToolInputLifecycleCallbacks with
+		// stepInputMessages, the conversation prompt).
+		preApprovals, inputErr, approvalErr := a.notifyToolCallsAndResolveApprovals(stepCtx, stepResult.ToolCalls, executionTools, toolEventMessages, stepCbs.executeMessages, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ToolApproval, len(stepResult.ToolCalls) > 0 && !workflowBlocked)
 		if inputErr != nil || approvalErr != nil {
 			cancelStepTimeout()
 			failErr := approvalErr
@@ -3604,15 +3607,31 @@ func validateStepToolResults(messages []types.Message, tools []types.Tool) error
 // updates pending (TS pendingDeferredToolCalls): provider-executed calls of a
 // SupportsDeferredResults tool without an inline result are added, and every
 // tool-result part in the response resolves its entry.
+//
+// TS reads the raw model response, where every provider result is a
+// tool-result part; the step content already turned an isError one into a
+// tool-error part, so both answer a call.
 func agentStepContinues(step *types.StepResult, tools []types.Tool, pending map[string]string) bool {
-	hasResult := func(id string) bool {
-		for _, part := range step.Content {
-			if tr, ok := part.(types.ToolResultContent); ok && tr.ToolCallID == id {
-				return true
+	resultIDs := map[string]bool{}
+	for _, part := range step.Content {
+		switch p := part.(type) {
+		case types.ToolResultContent:
+			resultIDs[p.ToolCallID] = true
+		case *types.ToolResultContent:
+			if p != nil {
+				resultIDs[p.ToolCallID] = true
+			}
+		case types.ToolErrorContent:
+			if p.ProviderExecuted {
+				resultIDs[p.ToolCallID] = true
+			}
+		case *types.ToolErrorContent:
+			if p != nil && p.ProviderExecuted {
+				resultIDs[p.ToolCallID] = true
 			}
 		}
-		return false
 	}
+	hasResult := func(id string) bool { return resultIDs[id] }
 	hasClient := false
 	for _, call := range step.ToolCalls {
 		tool := findAgentTool(call.ToolName, tools)
@@ -3624,10 +3643,8 @@ func agentStepContinues(step *types.StepResult, tools []types.Tool, pending map[
 			pending[call.ID] = call.ToolName
 		}
 	}
-	for _, part := range step.Content {
-		if tr, ok := part.(types.ToolResultContent); ok {
-			delete(pending, tr.ToolCallID)
-		}
+	for id := range resultIDs {
+		delete(pending, id)
 	}
 	return hasClient || len(pending) > 0
 }
