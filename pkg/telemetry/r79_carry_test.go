@@ -49,12 +49,12 @@ func r79carryStartTextCall(t *testing.T, rec *tracetest.SpanRecorder, it r79carr
 	var root, step, chat trace.SpanID
 	var tools []trace.SpanID
 	for _, s := range started {
-		switch name := s.Name(); {
-		case name == "invoke_agent m" || name == "ai.generateText":
+		switch s.Name() {
+		case "invoke_agent m", "ai.generateText":
 			root = s.SpanContext().SpanID()
-		case name == "step 1" || name == "ai.generateText.doGenerate":
+		case "step 1", "ai.generateText.doGenerate":
 			step = s.SpanContext().SpanID()
-		case name == "chat m":
+		case "chat m":
 			chat = s.SpanContext().SpanID()
 		default:
 			tools = append(tools, s.SpanContext().SpanID())
