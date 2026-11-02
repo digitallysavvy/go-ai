@@ -62,7 +62,9 @@ type Tool struct {
 	// ValidateInput, when set, validates a parsed tool call input in place of
 	// the JSON Schema in Parameters (the TS jsonSchema(schema, {validate})
 	// analog): it returns the input to use, or an error that makes the call
-	// invalid. Parameters is still what the model is sent. Not serialized.
+	// invalid. A returned value that is not a map[string]interface{} keeps
+	// the parsed input. Parameters is still what the model is sent. Not
+	// serialized.
 	ValidateInput func(input interface{}) (interface{}, error) `json:"-"`
 
 	// ========================================================================
