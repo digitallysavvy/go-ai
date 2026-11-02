@@ -3,13 +3,17 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
@@ -586,5 +590,202 @@ func TestR76Carry_PrepareStepInitialInputsAndStepContexts(t *testing.T) {
 				t.Errorf("step = %+v, want step 0 with the runtime and tools contexts", steps)
 			}
 		})
+	}
+}
+
+// r76carryToolCallModel streams one call to testTool with input, then "done"
+// (TS workflow-agent-compat.test.ts createToolCallStreamMockModel).
+func r76carryToolCallModel(input map[string]interface{}) (*testutil.MockLanguageModel, *[]*provider.GenerateOptions) {
+	return r75carryScripted([]provider.StreamChunk{
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "testTool", Arguments: input}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+	})
+}
+
+func r76carryValueTool(dynamic bool, fail bool) types.Tool {
+	toolType := ""
+	if dynamic {
+		toolType = types.ToolTypeDynamic
+	}
+	return types.Tool{
+		Name:       "testTool",
+		Type:       toolType,
+		Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}, "required": []interface{}{"value"}},
+		Execute: func(_ context.Context, in map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			if fail {
+				return nil, errors.New("tool failed")
+			}
+			return fmt.Sprintf("%v-result", in["value"]), nil
+		},
+	}
+}
+
+func r76carryResultIDs(rs []types.ToolResult) string {
+	var out []string
+	for _, r := range rs {
+		out = append(out, fmt.Sprintf("%s:%s:%v:dyn=%v", r.ToolCallID, r.ToolName, r.Result, r.Dynamic))
+	}
+	return strings.Join(out, ",")
+}
+
+// TS workflow-agent-compat.test.ts "completed step tool results": "exposes
+// static tool results to step consumers" (PrepareStep's previous steps, the
+// step end callback and the result), "makes tool outputs available to stop
+// conditions", "classifies dynamic tool results on the completed step" and
+// "exposes local tool failures as errors without successful results".
+func TestR76Carry_CompletedStepToolResults(t *testing.T) {
+	in := map[string]interface{}{"value": "test"}
+	t.Run("static", func(t *testing.T) {
+		model, _ := r76carryToolCallModel(in)
+		var prepared, ended []string
+		a, err := NewWorkflowAgent(WorkflowAgent{
+			Model: model, Tools: []types.Tool{r76carryValueTool(false, false)},
+			PrepareStep: func(_ context.Context, o LanguageModelCallOptions) (LanguageModelCallOptions, error) {
+				if o.StepNumber > 0 {
+					prepared = append(prepared, r76carryResultIDs(o.PreviousSteps[0].StaticToolResults))
+				}
+				return o, nil
+			},
+			OnStepEnd: func(_ context.Context, e ai.OnStepFinishEvent) {
+				ended = append(ended, r76carryResultIDs(e.StaticToolResults))
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		steps := r75carryRunStream(t, a)
+		want := "call-1:testTool:test-result:dyn=false"
+		if strings.Join(prepared, "|") != want || len(ended) == 0 || ended[0] != want {
+			t.Errorf("prepareStep = %v, onStepEnd = %v, want %s", prepared, ended, want)
+		}
+		if r76carryResultIDs(steps[0].ToolResults) != want || r76carryResultIDs(steps[0].StaticToolResults) != want || len(steps[0].DynamicToolResults) != 0 {
+			t.Errorf("step results = %s / %s / %s", r76carryResultIDs(steps[0].ToolResults), r76carryResultIDs(steps[0].StaticToolResults), r76carryResultIDs(steps[0].DynamicToolResults))
+		}
+		if !reflect.DeepEqual(steps[0].ToolResults[0].Input, in) {
+			t.Errorf("tool result input = %v, want %v", steps[0].ToolResults[0].Input, in)
+		}
+	})
+	t.Run("stop condition", func(t *testing.T) {
+		model, calls := r76carryToolCallModel(in)
+		a, err := NewWorkflowAgent(WorkflowAgent{
+			Model: model, Tools: []types.Tool{r76carryValueTool(false, false)},
+			StopWhen: []ai.StopCondition{func(s ai.StopConditionState) string {
+				last := s.Steps[len(s.Steps)-1]
+				for _, r := range last.ToolResults {
+					if r.Result == "test-result" {
+						return "found"
+					}
+				}
+				return ""
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		steps := r75carryRunStream(t, a)
+		if len(steps) != 1 || len(*calls) != 1 || steps[0].ToolResults[0].Result != "test-result" {
+			t.Errorf("steps = %d, calls = %d, want 1 step with test-result", len(steps), len(*calls))
+		}
+	})
+	t.Run("dynamic", func(t *testing.T) {
+		model, _ := r76carryToolCallModel(in)
+		a, err := NewWorkflowAgent(WorkflowAgent{Model: model, Tools: []types.Tool{r76carryValueTool(true, false)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		steps := r75carryRunStream(t, a)
+		if len(steps[0].StaticToolResults) != 0 || r76carryResultIDs(steps[0].DynamicToolResults) != "call-1:testTool:test-result:dyn=true" {
+			t.Errorf("static = %s, dynamic = %s", r76carryResultIDs(steps[0].StaticToolResults), r76carryResultIDs(steps[0].DynamicToolResults))
+		}
+	})
+	t.Run("local failure", func(t *testing.T) {
+		model, _ := r76carryToolCallModel(in)
+		a, err := NewWorkflowAgent(WorkflowAgent{
+			Model: model, Tools: []types.Tool{r76carryValueTool(false, true)},
+			StopWhen: []ai.StopCondition{func(s ai.StopConditionState) string {
+				for _, p := range s.Steps[len(s.Steps)-1].Content {
+					if p.ContentType() == "tool-error" {
+						return "error"
+					}
+				}
+				return ""
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		steps := r75carryRunStream(t, a)
+		if len(steps) != 1 {
+			t.Fatalf("steps = %d, want 1", len(steps))
+		}
+		var te *types.ToolErrorContent
+		for _, p := range steps[0].Content {
+			if c, ok := p.(types.ToolErrorContent); ok {
+				te = &c
+			}
+		}
+		if te == nil || te.ToolCallID != "call-1" || te.ToolName != "testTool" || !reflect.DeepEqual(te.Input, in) || te.ErrorText != "Error: tool failed" {
+			t.Errorf("tool error = %+v, want call-1 testTool with Error: tool failed", te)
+		}
+		if len(steps[0].ToolResults) != 0 || len(steps[0].StaticToolResults) != 0 || len(steps[0].DynamicToolResults) != 0 {
+			t.Errorf("results = %d/%d/%d, want none", len(steps[0].ToolResults), len(steps[0].StaticToolResults), len(steps[0].DynamicToolResults))
+		}
+	})
+}
+
+// TS workflow-agent-compat.test.ts "completed step tool results > discovers
+// and executes deferred tools": a toolSearch call loads the deferred tool for
+// the next steps, and both steps expose their tool results.
+func TestR76Carry_DiscoversAndExecutesDeferredTools(t *testing.T) {
+	model, calls := r75carryScripted(
+		[]provider.StreamChunk{
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "search-call", ToolName: ai.ToolSearchDefaultName, Arguments: map[string]interface{}{"query": "weather forecast"}}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+		},
+		[]provider.StreamChunk{
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "weather-call", ToolName: "weather", Arguments: map[string]interface{}{"city": "London"}}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+		},
+	)
+	a, err := NewWorkflowAgent(WorkflowAgent{Model: model, Tools: []types.Tool{
+		ai.ToolSearch(),
+		{
+			Name: "weather", DeferLoading: true, Description: "Get the weather forecast for a city.",
+			Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"city": map[string]interface{}{"type": "string"}}, "required": []interface{}{"city"}},
+			Execute: func(_ context.Context, in map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+				return map[string]interface{}{"city": in["city"], "forecast": "rain"}, nil
+			},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := r75carryRunStream(t, a)
+	var toolNames []string
+	for _, c := range *calls {
+		var names []string
+		for _, tl := range c.Tools {
+			names = append(names, tl.Name)
+		}
+		toolNames = append(toolNames, strings.Join(names, ","))
+	}
+	if want := []string{"toolSearch", "toolSearch,weather", "toolSearch,weather"}; !reflect.DeepEqual(toolNames, want) {
+		t.Errorf("model tools per call = %v, want %v", toolNames, want)
+	}
+	if len(steps) != 3 {
+		t.Fatalf("steps = %d, want 3", len(steps))
+	}
+	same := func(v interface{}, want string) bool {
+		b, _ := json.Marshal(v)
+		var g, w interface{}
+		_ = json.Unmarshal(b, &g)
+		_ = json.Unmarshal([]byte(want), &w)
+		return reflect.DeepEqual(g, w)
+	}
+	if r := steps[0].ToolResults[0]; r.ToolCallID != "search-call" || !same(r.Result, `{"tools":[{"name":"weather","description":"Get the weather forecast for a city."}]}`) {
+		t.Errorf("search result = %s %v", r.ToolCallID, r.Result)
+	}
+	if r := steps[1].ToolResults[0]; r.ToolCallID != "weather-call" || !same(r.Result, `{"city":"London","forecast":"rain"}`) {
+		t.Errorf("weather result = %s %v", r.ToolCallID, r.Result)
 	}
 }
