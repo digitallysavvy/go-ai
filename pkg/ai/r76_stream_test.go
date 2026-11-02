@@ -457,3 +457,96 @@ func TestR76StreamCreateUIStreamConsumerCancelBeforeOutcome(t *testing.T) {
 	}
 	r75streamAssertJSON(t, "outcome", e["outcome"], `{"status":"unknown"}`)
 }
+
+func r76streamChan(chunks ...UIMessageChunk) <-chan UIMessageChunk {
+	ch := make(chan UIMessageChunk, len(chunks))
+	for _, c := range chunks {
+		ch <- c
+	}
+	close(ch)
+	return ch
+}
+
+// read-ui-message-stream.test.ts 647: with terminateOnError an `error` chunk
+// ends reading with its text as the error.
+func TestR76StreamReadUIMessagesTerminateOnError(t *testing.T) {
+	msgs, errs := ReadUIMessages(context.Background(), ReadUIMessagesOptions{
+		Stream: r76streamChan(
+			UIMessageChunk{"type": "start", "messageId": "msg-123"},
+			UIMessageChunk{"type": "text-start", "id": "text-1"},
+			UIMessageChunk{"type": "text-delta", "id": "text-1", "delta": "Hello"},
+			UIMessageChunk{"type": "error", "errorText": "Test error message"},
+		),
+		TerminateOnError: true,
+	})
+	for range msgs {
+	}
+	var got []error
+	for err := range errs {
+		got = append(got, err)
+	}
+	if len(got) != 1 || got[0].Error() != "Test error message" {
+		t.Fatalf("errors = %v, want [Test error message]", got)
+	}
+}
+
+// read-ui-message-stream.test.ts 578 (Go form): snapshots do not share nested
+// values with each other or with the inputs. Changing the first snapshot's
+// metadata and data parts leaves the second snapshot, the seed message and
+// the chunk data as they were.
+func TestR76StreamReadUIMessagesSnapshotIsolation(t *testing.T) {
+	metadata := map[string]interface{}{"custom": map[string]interface{}{"value": "custom"}}
+	seedData := map[string]interface{}{"value": "seed"}
+	chunkData := map[string]interface{}{"value": "chunk"}
+	msgs, errs := ReadUIMessages(context.Background(), ReadUIMessagesOptions{
+		Message: &UIMessage{ID: "msg-123", Role: "assistant", Metadata: metadata, Parts: []UIMessagePart{DataUIPart{Type: "data-test", Data: seedData}}},
+		Stream: r76streamChan(
+			UIMessageChunk{"type": "data-test", "data": chunkData},
+			UIMessageChunk{"type": "text-start", "id": "text-1"},
+		),
+	})
+	var snapshots []UIMessage
+	for m := range msgs {
+		snapshots = append(snapshots, m)
+	}
+	for err := range errs {
+		t.Fatalf("error: %v", err)
+	}
+	if len(snapshots) != 2 {
+		t.Fatalf("snapshots = %d, want 2", len(snapshots))
+	}
+	first := snapshots[0]
+	first.Metadata.(map[string]interface{})["custom"].(map[string]interface{})["value"] = "changed"
+	for _, p := range first.Parts[:2] {
+		r76streamDataOf(t, p)["value"] = "changed"
+	}
+	r75streamAssertJSON(t, "second metadata", snapshots[1].Metadata, `{"custom":{"value":"custom"}}`)
+	if got := r76streamDataOf(t, snapshots[1].Parts[0])["value"]; got != "seed" {
+		t.Errorf("second seed part data = %v", got)
+	}
+	if got := r76streamDataOf(t, snapshots[1].Parts[1])["value"]; got != "chunk" {
+		t.Errorf("second chunk part data = %v", got)
+	}
+	r75streamAssertJSON(t, "input metadata", metadata, `{"custom":{"value":"custom"}}`)
+	if seedData["value"] != "seed" || chunkData["value"] != "chunk" {
+		t.Errorf("inputs changed: seed %v, chunk %v", seedData, chunkData)
+	}
+}
+
+func r76streamDataOf(t *testing.T, p UIMessagePart) map[string]interface{} {
+	t.Helper()
+	var data interface{}
+	switch v := p.(type) {
+	case DataUIPart:
+		data = v.Data
+	case *DataUIPart:
+		data = v.Data
+	default:
+		t.Fatalf("part is %T, want a data part", p)
+	}
+	m, ok := data.(map[string]interface{})
+	if !ok {
+		t.Fatalf("data is %T", data)
+	}
+	return m
+}
