@@ -179,6 +179,13 @@ func matchRoute(routes []Route, path string) int {
 }
 
 func (r *Response) serve(w http.ResponseWriter) {
+	if r.Kind == "chunks" || r.Kind == "fixture-chunks" {
+		// TS createTestServer stream-chunks: these defaults, then the case's
+		// own headers over them.
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+	}
 	for k, v := range r.Headers {
 		w.Header().Set(k, v)
 	}
@@ -206,7 +213,6 @@ func (r *Response) serve(w http.ResponseWriter) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, r.Raw)
 	case "fixture-chunks":
-		w.Header().Set("Content-Type", "text/event-stream")
 		for _, l := range strings.Split(r.Raw, "\n") {
 			if strings.TrimSpace(l) == "" {
 				continue
@@ -215,7 +221,6 @@ func (r *Response) serve(w http.ResponseWriter) {
 		}
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	case "chunks":
-		w.Header().Set("Content-Type", "text/event-stream")
 		for _, ch := range r.chunkStrings() {
 			_, _ = io.WriteString(w, ch)
 		}
@@ -389,6 +394,7 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 				"result": resultMap,
 				"server": map[string]interface{}{"calls": calls, "hits": hitsByPath},
 			}
+			pathSnapshotsOff := 0
 			for _, e := range c.Exps {
 				var got interface{}
 				switch {
@@ -416,6 +422,7 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 						continue // whole-result snapshots include wire details Go does not expose
 					}
 					if !evalPathSnapshots {
+						pathSnapshotsOff++
 						continue
 					}
 					v, ok := evalPath(roots, c.Aliases, e.Expr)
@@ -435,6 +442,10 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 				if d := Diff("", Normalize(snap), Normalize(got)); d != "" {
 					t.Errorf("%s: mismatch vs TS snapshot (- TS, + Go):\n%s", e.Expr, d)
 				}
+			}
+			if pathSnapshotsOff > 0 {
+				// a suite that does not opt in checks nothing for these
+				t.Logf("%d of %d snapshots not evaluated (path snapshots off)", pathSnapshotsOff, len(c.Exps))
 			}
 			runAsserts(t, c, roots)
 		})

@@ -380,6 +380,39 @@ function dropCasts(s) {
     .replace(/!(?=[.\[])/g, '')
     .replace(/\(\s*([\w$.\[\]]+)\s+as\s+[\w$.<>\[\]| ]+\)/g, '$1');
 }
+// pathAliases records `const NAME = BASE.path;` (also `BASE[0]`, with casts
+// such as `(BASE.content as Array<unknown>)[0] as { ... }` dropped) when BASE
+// is `result` or an alias already known, so assertions over NAME evaluate.
+function pathAliases(body, aliases) {
+  const re = /(?:const|let)\s+(\w+)\s*=\s*/g;
+  let m;
+  while ((m = re.exec(body))) {
+    if (aliases[m[1]] !== undefined) continue;
+    const i = m.index + m[0].length;
+    let depth = 0, j = i;
+    for (; j < body.length; j++) {
+      const ch = body[j];
+      if ('([{'.includes(ch)) depth++;
+      else if (')]}'.includes(ch)) { if (depth === 0) break; depth--; }
+      else if (ch === ';' && depth === 0) break;
+      // a line break ends the statement unless the next line continues the
+      // chain (`.filter(...)` on its own line)
+      else if (ch === '\n' && depth === 0 && !/^\s*[.?]/.test(body.slice(j + 1))) break;
+    }
+    let rhs = body.slice(i, j).trim();
+    // a trailing top-level `as Type` cast
+    depth = 0;
+    for (let k = 0; k < rhs.length; k++) {
+      const ch = rhs[k];
+      if ('([{<'.includes(ch)) depth++;
+      else if (')]}>'.includes(ch)) depth--;
+      else if (depth === 0 && /\s/.test(ch) && rhs.startsWith('as ', k + 1)) { rhs = rhs.slice(0, k).trim(); break; }
+    }
+    rhs = dropCasts(rhs).replace(/\s*\n\s*/g, '');
+    const pm = /^(\w+)((?:\??\.\w+|\[\d+\])+)$/.exec(rhs);
+    if (pm && (pm[1] === 'result' || aliases[pm[1]] !== undefined)) aliases[m[1]] = pm[1] + pm[2];
+  }
+}
 // dropObjectCasts drops `(expr as { ... })` casts whose object type nests
 // braces, which the single-level pattern above cannot match.
 function dropObjectCasts(s) {
@@ -478,6 +511,7 @@ for (let i = 0; i < starts.length; i++) {
     if (dstr) for (const nm of dstr[1].split(',')) { const n = nm.trim().split(':').pop().trim(); if (n) aliases2[n] = 'result.' + nm.trim().split(':')[0].trim(); }
     const rv = new RegExp('(?:const|let)\\s+(\\w+)\\s*=\\s*await\\s+' + fnName + '\\(').exec(body0);
     if (rv) aliases2[rv[1]] = 'result';
+    pathAliases(body0, aliases2);
     const asserts2 = [];
     const reE2 = /\bexpect\(/g;
     let em2;
@@ -508,6 +542,20 @@ for (let i = 0; i < starts.length; i++) {
           a2.callArgs = evalArgsJSON(splitTopLevelArgs(expr.slice(open + 1, balanced(expr, open) - 1)));
           a2.callSuffix = expr.slice(balanced(expr, open)).replace(/[,\s]+$/, '');
         } catch (err) { continue; }
+      } else {
+        // `() => fn(args)` (a toThrow callback): its own arguments, unless
+        // they are the test's first call's; arguments that do not evaluate
+        // (a spread of a test-local const) leave the assertion unevaluated
+        // rather than replaying it against the first call's arguments.
+        const arrow = new RegExp('^(?:async\\s*)?\\(\\s*\\)\\s*=>\\s*(?:\\{\\s*(?:return\\s+)?)?(?:await\\s+)?' + fnName + '\\(').exec(expr);
+        if (arrow) {
+          const open = arrow.index + arrow[0].length - 1;
+          const argsSrc = expr.slice(open + 1, balanced(expr, open) - 1);
+          const norm = x => x.replace(/\s+/g, '');
+          if (!(fnArgSrc && norm(fnArgSrc.join(',')) === norm(argsSrc))) {
+            try { a2.callArgs = evalArgsJSON(splitTopLevelArgs(argsSrc)); a2.callSuffix = ''; } catch (err) { continue; }
+          }
+        }
       }
       asserts2.push(a2);
     }
@@ -746,7 +794,15 @@ for (let i = 0; i < starts.length; i++) {
   const asserts = [];
   const aliases = {};
   if (wantAsserts) {
-    for (const am of body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*await\s+(server\.calls\[\d+\]\.\w+)\s*;/g)) aliases[am[1]] = am[2];
+    for (const am of body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*(?:await\s+)?(server\.calls\[\d+\]\.\w+)\s*;/g)) aliases[am[1]] = am[2];
+    // `const { usage, response } = await model.doGenerate(...)`: each name is
+    // that member of the call result
+    for (const am of body.matchAll(/(?:const|let)\s*\{([^}]*)\}\s*=\s*await\s+[\w.]+\.do(?:Generate|Stream)\(/g)) {
+      for (const nm of am[1].split(',')) {
+        const key = nm.trim().split(':')[0].trim(), n = nm.trim().split(':').pop().trim();
+        if (n && /^\w+$/.test(key) && aliases[n] === undefined && n !== 'stream') aliases[n] = 'result.' + key;
+      }
+    }
     for (const am of body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*(result\.[\w.\[\]?']+)\s*;/g)) aliases[am[1]] = am[2];
     // the stream parts of a doStream call (`const parts = await
     // convertReadableStreamToArray(stream)`)
@@ -757,6 +813,7 @@ for (let i = 0; i < starts.length; i++) {
       for (const am of body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*(\w+)\.calls\s*;/g)) if (am[2] === 'server' || serverVars.includes(am[2])) aliases[am[1]] = 'server.calls';
       // array calls over an alias (`const types = parts.map(p => p.type);`)
       for (const am of body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*(\w+)(\s*\.(?:filter|map|find|some)\([^;]*\))\s*;/g)) if (aliases[am[2]] !== undefined) aliases[am[1]] = am[2] + dropCasts(am[3]).replace(/\s*\n\s*/g, '');
+      pathAliases(body, aliases);
     }
     const reE = /\bexpect\(/g;
     let em;

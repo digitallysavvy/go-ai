@@ -269,6 +269,9 @@ func WireBytes(v interface{}) ([]byte, bool) {
 	if !ok {
 		return nil, false
 	}
+	if b, ok := nodeBufferBytes(m); ok {
+		return b, true
+	}
 	s, ok := m["$bytes"].(string)
 	if !ok {
 		// the case extractor (extract.mjs) marks Uint8Array values __bytes
@@ -279,6 +282,28 @@ func WireBytes(v interface{}) ([]byte, bool) {
 	}
 	b, err := base64.StdEncoding.DecodeString(s)
 	return b, err == nil
+}
+
+// nodeBufferBytes reads a Node Buffer in its JSON form (Buffer.prototype.toJSON,
+// which the extractor's JSON.stringify of a `Buffer.from(...)` produces):
+// exactly {type: "Buffer", data: [0-255 integers]}.
+func nodeBufferBytes(m map[string]interface{}) ([]byte, bool) {
+	if len(m) != 2 || m["type"] != "Buffer" {
+		return nil, false
+	}
+	data, ok := m["data"].([]interface{})
+	if !ok {
+		return nil, false
+	}
+	out := make([]byte, len(data))
+	for i, e := range data {
+		f, ok := e.(float64)
+		if !ok || f < 0 || f > 255 || f != float64(int(f)) {
+			return nil, false
+		}
+		out[i] = byte(f)
+	}
+	return out, true
 }
 
 // WireUnwrap converts the recorder's markers to plain values: $url becomes
