@@ -2,12 +2,15 @@ package alibaba
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -151,4 +154,106 @@ func TestR78provbAlibabaCreatedZeroIsEpoch(t *testing.T) {
 			check(t, meta.Timestamp)
 		})
 	}
+}
+
+func r78provbJSON(v interface{}) interface{} {
+	b, _ := json.Marshal(v)
+	var out interface{}
+	_ = json.Unmarshal(b, &out)
+	return out
+}
+
+// TestR78provbTSCasesConvertMessages replays
+// convert-to-alibaba-chat-messages.test.ts (TS convertToAlibabaChatMessages,
+// extracted at e64ed82f27 with --expand-each --fn).
+func TestR78provbTSCasesConvertMessages(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/convert_messages.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		in, _ := args[0].(map[string]interface{})
+		msgs, why := tsfixture.BuildPromptMessages(in["prompt"])
+		if why != "" {
+			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+		}
+		var validator *CacheControlValidator
+		if v, ok := in["cacheControlValidator"]; ok && v != nil {
+			validator = NewCacheControlValidator()
+		}
+		preserve, _ := in["preserveThinking"].(bool)
+		out, err := ConvertToAlibabaChatMessagesWithError(msgs, validator, preserve)
+		if err != nil {
+			return nil, nil, err
+		}
+		if out == nil {
+			return []interface{}{}, nil, nil
+		}
+		return r78provbJSON(out), nil, nil
+	}, r78provbKeyOrderSkips)
+}
+
+// r78provbKeyOrderSkips: these TS tests stringify a json tool output
+// ({temperature, condition}) in insertion order; the case file decodes it into
+// a Go map, which marshals its keys sorted (a Go caller's struct value keeps
+// its field order).
+var r78provbKeyOrderSkips = map[string]string{
+	"should convert tool results":                                                            r78provbKeyOrder,
+	"should inject cache control into single-part tool message":                              r78provbKeyOrder,
+	"should use part-level cache control for single-part tool message":                       r78provbKeyOrder,
+	"should prefer part-level over message-level cache control for single-part tool message": r78provbKeyOrder,
+	"should apply message-level cache control to last part of multi-part tool message":       r78provbKeyOrder,
+	"should use part-level cache control for multi-part tool message":                        r78provbKeyOrder,
+}
+
+const r78provbKeyOrder = "TS JSON.stringify keeps the json tool output's insertion order; the case file decodes it into a Go map, which marshals sorted"
+
+// TestR78provbTSCasesUsage replays convert-alibaba-usage.test.ts.
+func TestR78provbTSCasesUsage(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/usage.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		if len(args) == 0 || args[0] == nil {
+			return tsfixture.UsageToTS(types.Usage{}), nil, nil
+		}
+		if m, ok := args[0].(map[string]interface{}); ok && m["__undef"] != nil {
+			return r78provbNullUsage(), nil, nil
+		}
+		b, _ := json.Marshal(args[0])
+		var u AlibabaUsage
+		if err := json.Unmarshal(b, &u); err != nil {
+			return nil, nil, err
+		}
+		return tsfixture.UsageToTS(ConvertAlibabaUsage(u)), nil, nil
+	}, nil)
+}
+
+// r78provbNullUsage is TS createNullLanguageModelUsage().
+func r78provbNullUsage() map[string]interface{} {
+	return map[string]interface{}{
+		"inputTokens":  map[string]interface{}{"total": nil, "noCache": nil, "cacheRead": nil, "cacheWrite": nil},
+		"outputTokens": map[string]interface{}{"total": nil, "text": nil, "reasoning": nil},
+	}
+}
+
+// TestR78provbTSCasesPrepareTools replays alibaba-prepare-tools.test.ts
+// through the request builder (tools, tool_choice and the tool warnings).
+func TestR78provbTSCasesPrepareTools(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/prepare_tools.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		in, _ := args[0].(map[string]interface{})
+		tools, why := tsfixture.BuildTools(in["tools"])
+		if why != "" {
+			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+		}
+		opts := &provider.GenerateOptions{Prompt: types.Prompt{Text: "x"}, Tools: tools}
+		if tc, ok := in["toolChoice"]; ok {
+			opts.ToolChoice = tsfixture.BuildToolChoice(tc)
+		}
+		lm, err := New(Config{APIKey: "k"}).LanguageModel("qwen-plus")
+		if err != nil {
+			return nil, nil, err
+		}
+		body, warnings, err := lm.(*LanguageModel).buildRequestBodyChecked(opts, false)
+		if err != nil {
+			return nil, nil, err
+		}
+		return map[string]interface{}{"tools": r78provbJSON(body["tools"]), "toolChoice": r78provbJSON(body["tool_choice"]), "toolWarnings": tsfixture.WarningsToTS(warnings)}, nil, nil
+	}, nil)
 }
