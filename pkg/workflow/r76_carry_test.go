@@ -538,3 +538,53 @@ func TestR76Carry_PrepareStepNilFieldsKeepCurrent(t *testing.T) {
 		}
 	}
 }
+
+// TS model-call-iterator.test.ts "conversation prompt > passes initial
+// instructions and messages to prepareStep" and "runtimeContext and
+// toolsContext > applies current contexts to the reconstructed step". Both
+// modes.
+func TestR76Carry_PrepareStepInitialInputsAndStepContexts(t *testing.T) {
+	for _, mode := range []string{"stream", "generate"} {
+		t.Run(mode, func(t *testing.T) {
+			model, _ := r76carryTextModel(nil)
+			var seen []LanguageModelCallOptions
+			runtimeContext := map[string]interface{}{"tenantId": "tenant_123"}
+			toolsContext := map[string]interface{}{"weather": map[string]interface{}{"unit": "celsius"}}
+			a, err := NewWorkflowAgent(WorkflowAgent{
+				Model: model, Instructions: "initial instructions",
+				RuntimeContext: runtimeContext, ToolsContext: toolsContext,
+				PrepareStep: func(_ context.Context, o LanguageModelCallOptions) (LanguageModelCallOptions, error) {
+					seen = append(seen, o)
+					return o, nil
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			msgs := []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "initial message"}}}}
+			var steps []types.StepResult
+			if mode == "generate" {
+				res, err := a.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Messages: msgs})
+				if err != nil {
+					t.Fatal(err)
+				}
+				steps = res.Steps
+			} else {
+				st, err := a.StreamWithOptions(context.Background(), WorkflowStreamOptions{Messages: msgs})
+				if err != nil {
+					t.Fatal(err)
+				}
+				steps = st.Steps()
+			}
+			if len(seen) != 1 || seen[0].InitialInstructions != "initial instructions" || len(seen[0].InitialMessages) != 1 {
+				t.Fatalf("PrepareStep inputs = %+v, want initial instructions and the one initial message", seen)
+			}
+			if tc, ok := seen[0].InitialMessages[0].Content[0].(types.TextContent); !ok || tc.Text != "initial message" {
+				t.Errorf("InitialMessages = %+v", seen[0].InitialMessages)
+			}
+			if len(steps) != 1 || steps[0].StepNumber != 0 || !reflect.DeepEqual(steps[0].RuntimeContext, runtimeContext) || !reflect.DeepEqual(steps[0].ToolsContext, toolsContext) {
+				t.Errorf("step = %+v, want step 0 with the runtime and tools contexts", steps)
+			}
+		})
+	}
+}
