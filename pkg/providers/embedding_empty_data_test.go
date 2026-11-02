@@ -2,11 +2,13 @@ package providers_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/cohere"
 	"github.com/digitallysavvy/go-ai/pkg/providers/fireworks"
 	"github.com/digitallysavvy/go-ai/pkg/providers/mistral"
@@ -16,7 +18,7 @@ import (
 )
 
 // A 2xx embedding response with no embeddings must not panic DoEmbed (it
-// indexed [0] unchecked); it returns an error instead.
+// indexed [0] unchecked); it returns the TS embed() error instead.
 func TestDoEmbedEmptyEmbeddingsDoesNotPanic(t *testing.T) {
 	const compat = `{"object":"list","data":[],"model":"m","usage":{"prompt_tokens":1,"total_tokens":1}}`
 	cases := map[string]struct {
@@ -58,8 +60,11 @@ func TestDoEmbedEmptyEmbeddingsDoesNotPanic(t *testing.T) {
 					t.Fatalf("DoEmbed panicked: %v", r)
 				}
 			}()
-			if _, err := m.DoEmbed(context.Background(), "hi", nil); err == nil {
-				t.Fatal("DoEmbed with no embeddings returned no error")
+			_, err = m.DoEmbed(context.Background(), "hi", nil)
+			// TS embed(): InvalidResponseDataError "No embedding generated."
+			var invalid *providererrors.InvalidResponseDataError
+			if !errors.As(err, &invalid) || invalid.Message != "No embedding generated." {
+				t.Fatalf("DoEmbed with no embeddings: err = %T %v, want InvalidResponseDataError \"No embedding generated.\"", err, err)
 			}
 		})
 	}
