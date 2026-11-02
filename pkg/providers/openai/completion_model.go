@@ -545,6 +545,9 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 					ID:        chunk.ID,
 					ModelID:   chunk.Model,
 					Timestamp: completionStreamTimestamp(chunk.Created),
+					// TS doStream returns response: { headers }; Go carries
+					// them on the response-metadata part.
+					Headers: s.headerMap(),
 				},
 			}
 		}
@@ -593,6 +596,16 @@ func (s *completionStream) finish() {
 	}
 	s.finished = true
 	s.flushPendingMetadata()
+	if !s.metadataEmitted {
+		// No valid chunk carried response metadata: the headers still reach
+		// the caller (TS doStream response.headers).
+		if h := s.headerMap(); len(h) > 0 {
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type:             provider.ChunkTypeResponseMetadata,
+				ResponseMetadata: &provider.ResponseMetadata{Headers: h},
+			})
+		}
+	}
 	// TS opens the text block on the first valid chunk, whether or not it
 	// carries text, and closes it in flush().
 	if s.metadataEmitted && !s.textStarted {
@@ -613,6 +626,14 @@ func (s *completionStream) finish() {
 	}
 	s.flushQueue = append(s.flushQueue, finish)
 	s.err = io.EOF
+}
+
+// headerMap is the HTTP response headers as a map, nil when there are none.
+func (s *completionStream) headerMap() map[string]string {
+	if len(s.responseHeaders) == 0 {
+		return nil
+	}
+	return providerutils.ExtractHeaders(s.responseHeaders)
 }
 
 func (s *completionStream) flushPendingMetadata() {

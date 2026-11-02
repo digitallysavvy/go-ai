@@ -207,3 +207,60 @@ func TestR79provbImageFilesBatchFractionalTimes(t *testing.T) {
 		}
 	})
 }
+
+// TS doStream returns response: { headers } for chat and completion streams;
+// Go reports them on the response-metadata part, also when no chunk carries
+// an id, model or created.
+func TestR79provbChatCompletionStreamHeaders(t *testing.T) {
+	serve := func(frame string) *httptest.Server {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("X-Test", "v")
+			_, _ = w.Write([]byte("data: " + frame + "\n\ndata: [DONE]\n\n"))
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	headersOf := func(t *testing.T, s provider.TextStream) map[string]string {
+		t.Helper()
+		defer func() { _ = s.Close() }()
+		var h map[string]string
+		for {
+			c, err := s.Next()
+			if err != nil {
+				break
+			}
+			if c.Type == provider.ChunkTypeResponseMetadata && c.ResponseMetadata != nil && len(c.ResponseMetadata.Headers) > 0 && h == nil {
+				h = c.ResponseMetadata.Headers
+			}
+		}
+		return h
+	}
+	for _, tc := range []struct{ name, frame string }{
+		{"chat/with-id", `{"id":"c1","object":"chat.completion.chunk","created":1,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}`},
+		{"chat/no-id", `{"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}`},
+		{"completion/with-id", `{"id":"c1","object":"text_completion","created":1,"model":"m","choices":[{"index":0,"text":"hi","finish_reason":"stop"}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := serve(tc.frame)
+			p := New(Config{APIKey: "k", BaseURL: srv.URL})
+			var m provider.LanguageModel
+			var err error
+			if tc.name[:4] == "chat" {
+				m, err = p.ChatModel("gpt-4o")
+			} else {
+				m, err = p.CompletionModel("gpt-3.5-turbo-instruct")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			s, err := m.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "x"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if h := headersOf(t, s); h["x-test"] != "v" && h["X-Test"] != "v" {
+				t.Fatalf("headers = %v", h)
+			}
+		})
+	}
+}

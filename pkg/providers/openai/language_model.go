@@ -1480,6 +1480,9 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			metadata := &provider.ResponseMetadata{
 				ID:      chunkData.ID,
 				ModelID: chunkData.Model,
+				// TS doStream returns response: { headers }; Go carries them
+				// on the response-metadata part.
+				Headers: s.headerMap(),
 			}
 			if chunkData.Created != 0 {
 				metadata.Timestamp, _ = unixSecondsTime(chunkData.Created)
@@ -1648,6 +1651,14 @@ func (s *openAIStream) settleHeld() {
 	}
 }
 
+// headerMap is the HTTP response headers as a map, nil when there are none.
+func (s *openAIStream) headerMap() map[string]string {
+	if len(s.responseHeaders) == 0 {
+		return nil
+	}
+	return providerutils.ExtractHeaders(s.responseHeaders)
+}
+
 func (s *openAIStream) flushPendingMetadata() {
 	if len(s.pendingRaw) > 0 {
 		s.flushQueue = append(s.flushQueue, s.pendingRaw...)
@@ -1716,6 +1727,17 @@ func (s *openAIStream) endStream() {
 	if !s.finished {
 		s.finished = true
 		s.flushPendingMetadata()
+		if !s.metadataEmitted {
+			// No chunk carried response metadata: the headers still reach the
+			// caller (TS doStream response.headers).
+			if h := s.headerMap(); len(h) > 0 {
+				s.metadataEmitted = true
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type:             provider.ChunkTypeResponseMetadata,
+					ResponseMetadata: &provider.ResponseMetadata{Headers: h},
+				})
+			}
+		}
 		s.closeBlocksAndToolCalls()
 		if s.compat && !s.finishSeen && !s.finishErrored {
 			// TS OpenAICompatibleChatLanguageModel flush(): a stream that
