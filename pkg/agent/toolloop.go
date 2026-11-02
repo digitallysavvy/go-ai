@@ -946,7 +946,10 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			toolEventMessages = stepTel.modelPrompt
 			stepCbs.executeMessages = append(append([]types.Message(nil), stepTel.modelPrompt...), providerutils.ConvertToResponseMessage(stepResult.ToolCalls, modelContent))
 		}
-		preApprovals, inputErr, approvalErr := a.notifyToolCallsAndResolveApprovals(stepCtx, stepResult.ToolCalls, executionTools, callConfig.Messages, stepCbs.executeMessages, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ToolApproval, len(stepResult.ToolCalls) > 0 && !workflowBlocked)
+		// The tool input callbacks get the same messages as the tool start
+		// event (TS WorkflowAgent invokeToolInputLifecycleCallbacks with
+		// stepInputMessages, the conversation prompt).
+		preApprovals, inputErr, approvalErr := a.notifyToolCallsAndResolveApprovals(stepCtx, stepResult.ToolCalls, executionTools, toolEventMessages, stepCbs.executeMessages, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ToolApproval, len(stepResult.ToolCalls) > 0 && !workflowBlocked)
 		if inputErr != nil || approvalErr != nil {
 			cancelStepTimeout()
 			failErr := approvalErr
