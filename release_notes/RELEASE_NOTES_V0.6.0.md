@@ -328,6 +328,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **UI message metadata keeps an object over a number or boolean** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-metadata-merge-scalar)
 - **A caller header replaces the UI stream default header** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-stream-response-header-override)
 - **ConsumeSSEStream no longer holds up the response** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-consume-sse-not-awaited)
+- **Pipe helpers do not wait for ConsumeSSEStream** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-pipe-consume-sse-not-awaited)
 - **ValidateUIMessages rejects a data part without data** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-validate-data-part-requires-data)
 
 #### Telemetry and events

@@ -235,6 +235,7 @@ already, you can skip them.
 | `ToolCallRepairError` message text | `Error repairing tool call: Error: <msg>` | error text only | Use `errors.As` and `Cause` | [Repair error message](#tool-call-repair-error-message) |
 | Legacy agent `ToolErrorContent.ToolMetadata` of an invalid call | Omitted | silent behavior change | Read it from the tool-call part | [Agent invalid tool error](#agent-invalid-tool-error-no-tool-metadata) |
 | `UIMessageStreamResponseInit.ConsumeSSEStream` | The response does not wait for the callback | silent behavior change | Wait for the callback yourself | [ConsumeSSEStream not awaited](#ui-consume-sse-not-awaited) |
+| `Pipe*ToResponse` with `ConsumeSSEStream` (its error, its completion, `r.Context()` inside it) | Returns once written; the callback's error is not returned | silent behavior change | Handle the error in the callback; `context.WithoutCancel` | [Pipe helpers](#ui-pipe-consume-sse-not-awaited) |
 | `ValidateUIMessages` with `data-*` parts that have no `data` key | Rejected | silent behavior change | Write `"data": null` | [Data part requires data](#ui-validate-data-part-requires-data) |
 | GenAI span names / `gen_ai.response.model` with an empty model ID | `chat `, `ai.harness ` (trailing space); `""` recorded | silent behavior change | Trim the name | [Empty model ID span names](#otel-empty-model-id-span-names) |
 | SSE servers that send frames after `data: [DONE]` (chat, completion, OpenAI-compatible, gateway, Gemini and others) | `[DONE]` skipped; finish at end of body | wire/protocol change | Close the body after `[DONE]` | [Read past [DONE]](#sse-read-past-done) |
@@ -2770,15 +2771,60 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   `StreamTextResult.ToUIMessageStreamResponse` or
   `CreateUIMessageChunksResponse` ends after `data: [DONE]` without waiting
   for the callback to return. In v0.5 the body ended only after the callback
-  returned. The copy is dropped once the callback returns.
-  `PipeUIMessageStreamToResponse(WithInit)` and
-  `PipeUIMessageChunksToResponse` still return after the callback, with its
-  error (review round 78).
+  returned. The copy is dropped once the callback returns. The `Pipe*`
+  helpers no longer wait for it either: see
+  [Pipe helpers do not wait for ConsumeSSEStream](#ui-pipe-consume-sse-not-awaited)
+  (review round 78).
 - **Am I affected?** Code that reads a response body to EOF and then expects
   `ConsumeSSEStream` to have finished (for example, it reads a buffer the
   callback filled).
 - **What to do:** signal completion from the callback (close a channel) and
   wait for it.
+- **Kind:** silent behavior change
+
+### Pipe helpers do not wait for ConsumeSSEStream {#ui-pipe-consume-sse-not-awaited}
+
+- **What changed:** v0.5 `PipeUIMessageStreamToResponse`,
+  `PipeUIMessageStreamToResponseWithInit` (and
+  `StreamTextResult.PipeUIMessageStreamToResponse`) and
+  `PipeUIMessageChunksToResponse` returned only after the
+  `UIMessageStreamResponseInit.ConsumeSSEStream` callback returned, and
+  returned its error. v0.6 returns once the response is written (after
+  `data: [DONE]`), as TS `pipeUIMessageStreamToResponse` does not await
+  `consumeSseStream`, and returns only write errors. The callback keeps
+  reading its buffered copy in its own goroutine and never touches the
+  response writer (owner ruling 2026-11-02, review round 78).
+- **Am I affected?** Code that checks the error a `Pipe*` helper returns for
+  the `ConsumeSSEStream` failure, expects the callback to have finished when
+  the helper returns, or uses the request's context (`r.Context()`) or the
+  `http.ResponseWriter` inside the callback: the callback can outlive the
+  handler, and the request context is cancelled when the handler returns.
+- **What to do:** handle the error inside the callback, and give it a
+  context that outlives the request:
+
+  ```go
+  // Before
+  err := ai.PipeUIMessageStreamToResponseWithInit(r.Context(), result, w, &ai.UIMessageStreamResponseInit{
+  	ConsumeSSEStream: func(sse io.Reader) error { return saveStream(r.Context(), sse) },
+  })
+  if err != nil {
+  	log.Printf("pipe or save failed: %v", err)
+  }
+
+  // After
+  saveCtx := context.WithoutCancel(r.Context())
+  err := ai.PipeUIMessageStreamToResponseWithInit(r.Context(), result, w, &ai.UIMessageStreamResponseInit{
+  	ConsumeSSEStream: func(sse io.Reader) error {
+  		if err := saveStream(saveCtx, sse); err != nil {
+  			log.Printf("save failed: %v", err)
+  		}
+  		return nil
+  	},
+  })
+  if err != nil {
+  	log.Printf("pipe failed: %v", err)
+  }
+  ```
 - **Kind:** silent behavior change
 
 ### ValidateUIMessages rejects a data part without data {#ui-validate-data-part-requires-data}
