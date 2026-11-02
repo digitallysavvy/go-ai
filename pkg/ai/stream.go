@@ -3359,10 +3359,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 		stepContent = append(stepContent, attachInputSchemaInputs(withoutInlineApprovalParts(toolResultsToContentParts(stepToolResults, opts.ExperimentalToolApprovalSecret), eagerApprovals), stepInputSchemaInputs)...)
 		// The invalid calls' tool errors (already emitted and in the content)
-		// join the step's tool results in call order. A blocked WorkflowAgent
-		// step answers no call (TS shouldProcessTools is false: no tool
-		// message).
-		if !workflowBlocked {
+		// join the step's tool results in call order. A WorkflowAgent step
+		// that is blocked or ended with a stream error processes no tools (TS
+		// model-call-iterator `!hasTerminalError && shouldProcessTools`), so
+		// it adds no tool message for them.
+		if !skipStepTools || violation != nil {
 			stepToolResults = withInlineToolResults(stepToolCalls, inlineInvalidResults, stepToolResults)
 		}
 
