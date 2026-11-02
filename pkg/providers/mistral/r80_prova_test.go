@@ -54,7 +54,7 @@ func TestR80provaMistralStreamEmptyChoicesErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	var kinds []provider.ChunkType
 	var streamErr error
 	for {
