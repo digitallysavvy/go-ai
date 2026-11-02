@@ -157,6 +157,18 @@ type ToolUIPartApproval struct {
 	// InputSchemaInput is the tool input before schema parsing and input
 	// refinement (present only when it differs from Input).
 	InputSchemaInput interface{}
+
+	// inputSchemaInputNull records a decoded `"inputSchemaInput": null`
+	// (TS keeps the own property, so a null schema input is validated and
+	// serialized). Unexported so the struct's exported shape is unchanged.
+	inputSchemaInputNull bool
+}
+
+// hasInputSchemaInput reports whether the approval carries an
+// inputSchemaInput, including a JSON null (TS
+// `Object.prototype.hasOwnProperty.call(approval, 'inputSchemaInput')`).
+func (a *ToolUIPartApproval) hasInputSchemaInput() bool {
+	return a != nil && (a.InputSchemaInput != nil || a.inputSchemaInputNull)
 }
 
 // ToolUIPart is a tool invocation part. It represents both static tool parts
@@ -200,6 +212,17 @@ type ToolUIPart struct {
 	CallProviderMetadata   map[string]interface{}
 	ResultProviderMetadata map[string]interface{}
 	Approval               *ToolUIPartApproval
+
+	// inputNull records a decoded `"input": null` on a state where a nil
+	// Input otherwise means absent (input-streaming, output-error): TS keeps
+	// the null, validates it and serializes it.
+	inputNull bool
+}
+
+// hasInput reports whether the part carries an input, including a JSON null
+// (TS `toolPart.input !== undefined`).
+func (p *ToolUIPart) hasInput() bool {
+	return p.Input != nil || p.inputNull
 }
 
 // DynamicToolUIPart is the TS name for a ToolUIPart whose Type is
@@ -704,7 +727,7 @@ func (a ToolUIPartApproval) MarshalJSON() ([]byte, error) {
 		o.field("isAutomatic", *a.IsAutomatic)
 	}
 	o.str("signature", a.Signature)
-	if a.InputSchemaInput != nil {
+	if a.hasInputSchemaInput() {
 		o.field("inputSchemaInput", a.InputSchemaInput)
 	}
 	return o.bytes()
@@ -712,19 +735,33 @@ func (a ToolUIPartApproval) MarshalJSON() ([]byte, error) {
 
 func (a *ToolUIPartApproval) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		ID               string      `json:"id"`
-		Approved         *bool       `json:"approved"`
-		Descriptor       interface{} `json:"descriptor"`
-		RequestReason    string      `json:"requestReason"`
-		Reason           string      `json:"reason"`
-		IsAutomatic      *bool       `json:"isAutomatic"`
-		Signature        string      `json:"signature"`
-		InputSchemaInput interface{} `json:"inputSchemaInput"`
+		ID               string          `json:"id"`
+		Approved         *bool           `json:"approved"`
+		Descriptor       interface{}     `json:"descriptor"`
+		RequestReason    string          `json:"requestReason"`
+		Reason           string          `json:"reason"`
+		IsAutomatic      *bool           `json:"isAutomatic"`
+		Signature        string          `json:"signature"`
+		InputSchemaInput json.RawMessage `json:"inputSchemaInput"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	*a = ToolUIPartApproval(raw)
+	*a = ToolUIPartApproval{
+		ID:            raw.ID,
+		Approved:      raw.Approved,
+		Descriptor:    raw.Descriptor,
+		RequestReason: raw.RequestReason,
+		Reason:        raw.Reason,
+		IsAutomatic:   raw.IsAutomatic,
+		Signature:     raw.Signature,
+	}
+	if raw.InputSchemaInput != nil {
+		if err := json.Unmarshal(raw.InputSchemaInput, &a.InputSchemaInput); err != nil {
+			return err
+		}
+		a.inputSchemaInputNull = a.InputSchemaInput == nil
+	}
 	return nil
 }
 
@@ -752,7 +789,7 @@ func (p ToolUIPart) MarshalJSON() ([]byte, error) {
 	o.field("state", p.State)
 	o.str("title", p.Title)
 	o.mapField("toolMetadata", p.ToolMetadata)
-	if p.Input != nil || toolStateRequiresInput(p.State) {
+	if p.hasInput() || toolStateRequiresInput(p.State) {
 		o.field("input", p.Input)
 	}
 	if p.Output != nil || p.State == ToolStateOutputAvailable {
@@ -791,7 +828,7 @@ func (p *ToolUIPart) UnmarshalJSON(data []byte) error {
 		Title                  string                 `json:"title"`
 		ToolMetadata           map[string]interface{} `json:"toolMetadata"`
 		ProviderExecuted       *bool                  `json:"providerExecuted"`
-		Input                  interface{}            `json:"input"`
+		Input                  json.RawMessage        `json:"input"`
 		Output                 interface{}            `json:"output"`
 		RawInput               interface{}            `json:"rawInput"`
 		InputEncoding          string                 `json:"inputEncoding"`
@@ -813,7 +850,6 @@ func (p *ToolUIPart) UnmarshalJSON(data []byte) error {
 		Title:                  raw.Title,
 		ToolMetadata:           raw.ToolMetadata,
 		ProviderExecuted:       raw.ProviderExecuted,
-		Input:                  raw.Input,
 		Output:                 raw.Output,
 		RawInput:               raw.RawInput,
 		InputEncoding:          raw.InputEncoding,
@@ -822,6 +858,12 @@ func (p *ToolUIPart) UnmarshalJSON(data []byte) error {
 		CallProviderMetadata:   raw.CallProviderMetadata,
 		ResultProviderMetadata: raw.ResultProviderMetadata,
 		Approval:               raw.Approval,
+	}
+	if raw.Input != nil {
+		if err := json.Unmarshal(raw.Input, &p.Input); err != nil {
+			return err
+		}
+		p.inputNull = p.Input == nil
 	}
 	if p.Type != "dynamic-tool" {
 		p.ToolName = ""
