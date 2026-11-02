@@ -302,7 +302,9 @@ func (p *Provider) DeepSeekModel(modelID string) (provider.LanguageModel, error)
 		SupportsThinking:          &supportsThinking,
 		SupportsPenaltySampling:   &supportsPenaltySampling,
 		SupportsStructuredOutputs: &supportsStructuredOutputs,
-		HTTPClient:                p.httpClient,
+		// TS createDeepSeekModel leaves supportsStrictToolCalls unset.
+		UncheckedStrictToolCalls: true,
+		HTTPClient:               p.httpClient,
 	})
 	return deepseek.NewLanguageModel(deepseekProvider, modelID), nil
 }

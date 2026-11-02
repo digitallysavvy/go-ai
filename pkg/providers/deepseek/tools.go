@@ -40,13 +40,16 @@ func (m *LanguageModel) prepareDeepSeekTools(tools []types.Tool, toolChoice type
 		}
 	}
 
-	if hasStrict && !m.provider.supportsBeta() {
+	// TS supportsStrictToolCalls: createDeepSeek sets it from the base URL;
+	// left unset (Azure), neither check runs.
+	checked := !m.provider.config.UncheckedStrictToolCalls
+	if checked && hasStrict && !m.provider.supportsBeta() {
 		return nil, nil, nil, &providererrors.UnsupportedFunctionalityError{
 			Functionality: "DeepSeek strict tool calls",
 			Message:       "DeepSeek strict tool calls require a beta base URL ending in `/beta`.",
 		}
 	}
-	if hasStrict && hasNonStrict {
+	if checked && hasStrict && hasNonStrict {
 		return nil, nil, nil, &providererrors.UnsupportedFunctionalityError{
 			Functionality: "mixed DeepSeek strict and non-strict tool calls",
 			Message:       "DeepSeek strict mode requires every function tool in the request to set `strict: true`.",

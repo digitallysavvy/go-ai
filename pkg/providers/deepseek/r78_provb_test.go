@@ -175,3 +175,51 @@ func TestR78provbTSCasesConvertMessages(t *testing.T) {
 		return map[string]interface{}{"messages": out, "warnings": tsfixture.WarningsToTS(warnings)}, nil, nil
 	}, nil)
 }
+
+// TestR78provbTSCasesUsage replays convert-to-deepseek-usage.test.ts.
+func TestR78provbTSCasesUsage(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/usage.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		b, _ := json.Marshal(args[0])
+		return tsfixture.UsageToTS(convertDeepseekUsage(b)), nil, nil
+	}, nil)
+}
+
+// TestR78provbTSCasesPrepareTools replays deepseek-prepare-tools.test.ts:
+// supportsStrictToolCalls true is a /beta base URL, false the default one,
+// and unset (Azure) UncheckedStrictToolCalls.
+func TestR78provbTSCasesPrepareTools(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/prepare_tools.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		in, _ := args[0].(map[string]interface{})
+		tools, why := tsfixture.BuildTools(in["tools"])
+		if why != "" {
+			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+		}
+		cfg := Config{APIKey: "k"}
+		switch v, ok := in["supportsStrictToolCalls"].(bool); {
+		case !ok:
+			cfg.UncheckedStrictToolCalls = true
+		case v:
+			cfg.BaseURL = "https://api.deepseek.com/beta"
+		}
+		var choice types.ToolChoice
+		if tc, ok := in["toolChoice"]; ok {
+			choice = tsfixture.BuildToolChoice(tc)
+		}
+		lm, err := New(cfg).LanguageModel("deepseek-chat")
+		if err != nil {
+			return nil, nil, err
+		}
+		dsTools, toolChoice, warnings, err := lm.(*LanguageModel).prepareDeepSeekTools(tools, choice)
+		if err != nil {
+			return nil, nil, err
+		}
+		var toolsOut interface{}
+		if dsTools != nil {
+			b, _ := json.Marshal(dsTools)
+			_ = json.Unmarshal(b, &toolsOut)
+		}
+		return map[string]interface{}{"tools": toolsOut, "toolChoice": toolChoice, "toolWarnings": tsfixture.WarningsToTS(warnings)}, nil, nil
+	}, nil)
+}

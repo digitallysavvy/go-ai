@@ -2,6 +2,7 @@ package azure
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -63,5 +64,41 @@ func TestR78provbAzureChatReadsPastDone(t *testing.T) {
 	}
 	if text.String() != "Hello world" || finishes[0].FinishReason != types.FinishReasonStop {
 		t.Fatalf("text %q finish %q, want %q stop", text.String(), finishes[0].FinishReason, "Hello world")
+	}
+}
+
+// TS createDeepSeekModel (azure-openai-provider.ts) leaves
+// supportsStrictToolCalls unset, so DeepSeekChatLanguageModel sends strict
+// tools without the /beta base URL check that createDeepSeek has.
+func TestR78provbAzureDeepSeekStrictTools(t *testing.T) {
+	var body map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+	p, err := New(Config{APIKey: "k", BaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := p.DeepSeek("dep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	strict := true
+	_, err = m.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "x"},
+		Tools: []types.Tool{
+			{Name: "a", Parameters: map[string]interface{}{"type": "object"}, Strict: &strict},
+			{Name: "b", Parameters: map[string]interface{}{"type": "object"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+	tools, _ := body["tools"].([]interface{})
+	if len(tools) != 2 {
+		t.Fatalf("tools = %v", body["tools"])
 	}
 }
