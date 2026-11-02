@@ -97,16 +97,17 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 
 	// Make API request
-	var response OpenResponsesResponse
+	var wire openResponsesResponseWire
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "",
 		Body:    reqBody,
 		Headers: opts.Headers,
-	}, &response)
+	}, &wire)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
+	response := wire.response()
 
 	// Row 75f86f4: a 200 response with an embedded error object maps to a
 	// ProviderError, classified via Config.GetResponseErrorMetadata when set
@@ -1942,19 +1943,30 @@ var openResponsesOptionsSchema = providerutils.OptionSchema{
 	"reasoningSummary": providerutils.OptNullable(providerutils.OptEnum("concise", "detailed", "auto")),
 }
 
-// openResponsesCreatedAt reads a present `created_at` (unix seconds) from the
-// raw response body, as TS `new Date(response.created_at * 1000)`: 0 is the
+// openResponsesCreatedAt reads `created_at` (unix seconds) from the raw
+// response body, as TS `new Date(response.created_at * 1000)`: 0 is the
 // epoch, which the int64 OpenResponsesResponse.CreatedAt cannot tell from an
-// absent value.
+// absent value, and null is the epoch too (null * 1000 is 0 in JS). An
+// absent, non-numeric or out-of-range value is an Invalid Date in TS: no
+// timestamp.
 func openResponsesCreatedAt(body []byte) (time.Time, bool) {
 	var v struct {
-		CreatedAt *float64 `json:"created_at"`
+		CreatedAt json.RawMessage `json:"created_at"`
 	}
-	if len(body) == 0 || json.Unmarshal(body, &v) != nil || v.CreatedAt == nil {
+	if len(body) == 0 || json.Unmarshal(body, &v) != nil || len(v.CreatedAt) == 0 {
 		return time.Time{}, false
 	}
-	if math.IsNaN(*v.CreatedAt) || math.IsInf(*v.CreatedAt, 0) {
+	var f *float64
+	if json.Unmarshal(v.CreatedAt, &f) != nil {
 		return time.Time{}, false
 	}
-	return time.UnixMilli(int64(*v.CreatedAt * 1000)), true
+	if f == nil {
+		return time.UnixMilli(0), true
+	}
+	ms := *f * 1000
+	// TS TimeClip: NaN, ±Inf and |t| > 8.64e15 ms are an Invalid Date.
+	if math.IsNaN(ms) || math.IsInf(ms, 0) || math.Abs(ms) > 8.64e15 {
+		return time.Time{}, false
+	}
+	return time.UnixMilli(int64(ms)), true
 }

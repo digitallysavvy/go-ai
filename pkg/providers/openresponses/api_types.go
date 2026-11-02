@@ -1,6 +1,9 @@
 package openresponses
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"math"
+)
 
 // OpenResponsesRequestBody represents the request body for the Open Responses API
 type OpenResponsesRequestBody struct {
@@ -270,6 +273,49 @@ type OpenResponsesResponse struct {
 	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
 }
 
+// openResponsesResponseWire decodes a response body as TS does: the body is
+// not validated (jsonSchema<OpenResponsesResponseBody> in doGenerate, z.any()
+// in doStream only apply types), so a fractional `created_at` or
+// `completed_at` (unix seconds) is truncated to whole seconds instead of
+// failing the whole decode, and a non-numeric one is left at its zero value.
+// It is a wrapper rather than an UnmarshalJSON method on the exported
+// OpenResponsesResponse so that a caller's struct embedding that type keeps
+// decoding its own fields.
+type openResponsesResponseWire struct {
+	OpenResponsesResponse
+	CreatedAt   json.RawMessage `json:"created_at"`
+	CompletedAt json.RawMessage `json:"completed_at,omitempty"`
+}
+
+// response returns the decoded OpenResponsesResponse.
+func (w *openResponsesResponseWire) response() OpenResponsesResponse {
+	r := w.OpenResponsesResponse
+	if v, ok := openResponsesUnixSeconds(w.CreatedAt); ok {
+		r.CreatedAt = v
+	}
+	if v, ok := openResponsesUnixSeconds(w.CompletedAt); ok {
+		r.CompletedAt = &v
+	}
+	return r
+}
+
+// openResponsesUnixSeconds reads a JSON number as whole unix seconds
+// (truncated toward zero); null, absent, non-numeric or out-of-range values
+// report false.
+func openResponsesUnixSeconds(raw json.RawMessage) (int64, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	var f *float64
+	if json.Unmarshal(raw, &f) != nil || f == nil {
+		return 0, false
+	}
+	if math.IsNaN(*f) || math.IsInf(*f, 0) || math.Abs(*f) > 8.64e12 {
+		return 0, false
+	}
+	return int64(*f), true
+}
+
 // OutputItem represents an item in the response output
 type OutputItem struct {
 	Type    string        `json:"type"`
@@ -444,13 +490,24 @@ type StreamEvent struct {
 // UnmarshalJSON decodes the known StreamEvent fields via a type alias (so
 // the default struct-tag-driven decoding still applies), then separately
 // preserves the event's original bytes in Raw.
+//
+// The embedded response decodes as openResponsesResponseWire: TS doStream
+// parses events with z.any(), so a fractional created_at does not fail the
+// event.
 func (e *StreamEvent) UnmarshalJSON(data []byte) error {
 	type streamEventAlias StreamEvent
-	var alias streamEventAlias
-	if err := json.Unmarshal(data, &alias); err != nil {
+	var aux struct {
+		streamEventAlias
+		Response *openResponsesResponseWire `json:"response,omitempty"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-	*e = StreamEvent(alias)
+	*e = StreamEvent(aux.streamEventAlias)
+	if aux.Response != nil {
+		r := aux.Response.response()
+		e.Response = &r
+	}
 	e.Raw = append(json.RawMessage(nil), data...)
 	return nil
 }
