@@ -59,8 +59,8 @@ func TestR76Integ_GenerateTextClientToolResultsWithoutCallMetadata(t *testing.T)
 // r76integRejectingTool is a tool whose ValidateInput rejects every input.
 func r76integRejectingTool(executed *bool) types.Tool {
 	return types.Tool{
-		Name:       "weather",
-		Parameters: map[string]interface{}{"type": "object"},
+		Name: "weather",
+		// No Parameters: ValidateInput alone makes the tool validated.
 		ValidateInput: func(interface{}) (interface{}, error) {
 			return nil, errors.New("city is required")
 		},
@@ -128,5 +128,46 @@ func TestR76Integ_UIMessageToolInputUsesValidateInput(t *testing.T) {
 	accepting.ValidateInput = func(v interface{}) (interface{}, error) { return v, nil }
 	if res := SafeValidateUIMessages(context.Background(), ValidateUIMessagesOptions{Messages: msgs, Tools: []types.Tool{accepting}}); !res.Success {
 		t.Fatalf("accepting validator: err = %v (the Parameters schema must not be checked)", res.Error)
+	}
+}
+
+// Mutation survivor (stream fix 2): TS do-stream-step records 'available'
+// only for a call whose tool-call part follows a tool-input-start for its id,
+// so under DeferToolInputCallbacks a call streamed without a
+// tool-input-start fires no OnInputAvailable; plain StreamText (TS
+// streamText) fires it for every valid call.
+func TestR76Integ_DeferredToolInputSkipsCallWithoutStart(t *testing.T) {
+	for _, deferred := range []bool{false, true} {
+		var available int32
+		tool := types.Tool{
+			Name:       "search",
+			Parameters: map[string]interface{}{"type": "object"},
+			OnInputAvailable: func(context.Context, types.OnInputAvailableOptions) error {
+				available++
+				return nil
+			},
+		}
+		model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "search", Arguments: map[string]interface{}{}, RawArguments: "{}"}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+			}), nil
+		}}
+		opts := StreamTextOptions{Model: model, Prompt: "p", Tools: []types.Tool{tool}, OnError: func(context.Context, error) {}}
+		if deferred {
+			opts.Internal = &InternalOptions{DeferToolInputCallbacks: true}
+		}
+		r, err := StreamText(context.Background(), opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = r.ConsumeStream()
+		want := int32(1)
+		if deferred {
+			want = 0
+		}
+		if available != want {
+			t.Errorf("deferred=%v: OnInputAvailable ran %d times, want %d", deferred, available, want)
+		}
 	}
 }
