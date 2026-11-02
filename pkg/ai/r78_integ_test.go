@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,28 +46,33 @@ func TestR78integValidateUIMessagesDataPartRequiresData(t *testing.T) {
 	}
 }
 
-// PipeUIMessageStreamToResponseWithInit keeps its v0.5 contract (pending
-// owner decision on the Pipe* helpers): it returns after ConsumeSSEStream,
-// with its error.
-func TestR78integPipeStreamWaitsForConsumeSSEStream(t *testing.T) {
+// PipeUIMessageStreamToResponseWithInit returns once the response is
+// written, without waiting for ConsumeSSEStream or returning its error (owner
+// ruling 2026-11-02, TS pipeUIMessageStreamToResponse); the callback still
+// reads the whole stream.
+func TestR78integPipeStreamDoesNotWaitForConsumeSSEStream(t *testing.T) {
 	res := &StreamTextResult{stream: testutil.NewMockTextStream([]provider.StreamChunk{
 		{Type: provider.ChunkTypeText, Text: "hello"},
 		{Type: provider.ChunkTypeFinish},
 	})}
-	var finished atomic.Bool
-	err := PipeUIMessageStreamToResponseWithInit(context.Background(), res, &bytes.Buffer{}, &UIMessageStreamResponseInit{
+	release := make(chan struct{})
+	done := make(chan string, 1)
+	var out bytes.Buffer
+	err := PipeUIMessageStreamToResponseWithInit(context.Background(), res, &out, &UIMessageStreamResponseInit{
 		ConsumeSSEStream: func(r io.Reader) error {
-			_, _ = io.Copy(io.Discard, r)
-			time.Sleep(20 * time.Millisecond)
-			finished.Store(true)
+			<-release
+			b, _ := io.ReadAll(r)
+			done <- string(b)
 			return errors.New("consume failed")
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "consume failed") {
-		t.Fatalf("PipeUIMessageStreamToResponseWithInit() = %v, want the consumer error", err)
+	if err != nil {
+		t.Fatalf("PipeUIMessageStreamToResponseWithInit() = %v, want nil", err)
 	}
-	if !finished.Load() {
-		t.Fatal("returned before ConsumeSSEStream finished")
+	written := out.String()
+	close(release)
+	if got := <-done; got != written || !strings.HasSuffix(got, "data: [DONE]\n\n") {
+		t.Fatalf("consumer read %q, response %q", got, written)
 	}
 }
 
@@ -76,7 +80,7 @@ func TestR78integPipeStreamWaitsForConsumeSSEStream(t *testing.T) {
 // writes are not kept (no unbounded growth for a consumer that stopped
 // early).
 func TestR78integConsumeSSEStreamCopyDroppedAfterReturn(t *testing.T) {
-	var side *uiSSETeeBuffer
+	sideCh := make(chan *uiSSETeeBuffer, 1)
 	chunks := make(chan UIMessageChunk, 64)
 	for i := 0; i < 64; i++ {
 		chunks <- UIMessageChunk{"type": "text-delta", "id": "1", "delta": strings.Repeat("x", 128)}
@@ -84,20 +88,40 @@ func TestR78integConsumeSSEStreamCopyDroppedAfterReturn(t *testing.T) {
 	close(chunks)
 	err := PipeUIMessageChunksToResponse(chunks, &bytes.Buffer{}, &UIMessageStreamResponseInit{
 		ConsumeSSEStream: func(r io.Reader) error {
-			side, _ = r.(*uiSSETeeBuffer)
+			sideCh <- r.(*uiSSETeeBuffer)
 			return nil
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if side == nil {
-		t.Fatal("ConsumeSSEStream did not get the tee buffer")
+	side := <-sideCh
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		side.mu.Lock()
+		n, discarded := len(side.buf), side.discard
+		side.mu.Unlock()
+		if discarded && n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("tee buffer keeps %d bytes after the consumer returned", n)
+		}
+		time.Sleep(time.Millisecond)
 	}
-	side.mu.Lock()
-	n := len(side.buf)
-	side.mu.Unlock()
-	if n != 0 {
-		t.Fatalf("tee buffer keeps %d bytes after the consumer returned", n)
+}
+
+// The Pipe helper still returns the UI conversion's own failure (a panicking
+// MessageMetadata callback fails the stream).
+func TestR78integPipeStreamReturnsConversionError(t *testing.T) {
+	res := &StreamTextResult{stream: testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "hello"},
+		{Type: provider.ChunkTypeFinish},
+	})}
+	err := PipeUIMessageStreamToResponseWithInit(context.Background(), res, &bytes.Buffer{}, nil, UIMessageStreamResultOptions{
+		MessageMetadata: func(map[string]interface{}) map[string]interface{} { panic("metadata boom") },
+	})
+	if err == nil || !strings.Contains(err.Error(), "metadata boom") {
+		t.Fatalf("PipeUIMessageStreamToResponseWithInit() = %v, want the conversion failure", err)
 	}
 }

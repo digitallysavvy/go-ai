@@ -173,8 +173,10 @@ func TestR78StreamResultResponseDoesNotWaitForConsumeSSEStream(t *testing.T) {
 }
 
 // The Pipe* helpers write the whole stream without waiting for a consumer
-// that has not read yet (TS tee), and then return its error (Go-only return
-// value, as in v0.5).
+// that has not read yet (TS tee), and return once the response is written,
+// without waiting for the consumer or returning its error (owner ruling
+// 2026-11-02: TS pipeUIMessageStreamToResponse does not await
+// consumeSseStream).
 func TestR78StreamPipeWritesBeforeSlowConsumer(t *testing.T) {
 	const want = "data: {\"delta\":\"a\",\"id\":\"1\",\"type\":\"text-delta\"}\n\ndata: [DONE]\n\n"
 	w := &r78streamSignalWriter{done: make(chan struct{})}
@@ -197,20 +199,20 @@ func TestR78StreamPipeWritesBeforeSlowConsumer(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the response writes waited for ConsumeSSEStream to read")
 	}
-	if got := w.String(); got != want {
-		t.Fatalf("response = %q, want %q", got, want)
-	}
 	select {
 	case err := <-errCh:
-		t.Fatalf("PipeUIMessageChunksToResponse returned %v before ConsumeSSEStream finished", err)
-	default:
+		if err != nil {
+			t.Fatalf("PipeUIMessageChunksToResponse() = %v, want nil (the consumer error is not returned)", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("PipeUIMessageChunksToResponse waited for ConsumeSSEStream")
+	}
+	if got := w.String(); got != want {
+		t.Fatalf("response = %q, want %q", got, want)
 	}
 	close(release)
 	if got := <-consumed; got != want {
 		t.Fatalf("consumed = %q, want %q", got, want)
-	}
-	if err := <-errCh; err == nil || err.Error() != "consume failed" {
-		t.Fatalf("PipeUIMessageChunksToResponse() = %v, want the consumer error", err)
 	}
 }
 

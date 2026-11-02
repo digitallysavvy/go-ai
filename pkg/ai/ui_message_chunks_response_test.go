@@ -42,13 +42,18 @@ func TestPipeUIMessageChunksToResponse_KeepAliveAndConsume(t *testing.T) {
 	keepAlive := time.Hour
 	var side bytes.Buffer
 	var buf bytes.Buffer
+	consumed := make(chan struct{})
 	err := PipeUIMessageChunksToResponse(customChunkStream(context.Background()), &buf, &UIMessageStreamResponseInit{
 		KeepAliveMs: &keepAlive,
 		ConsumeSSEStream: func(r io.Reader) error {
+			defer close(consumed)
 			_, err := io.Copy(&side, r)
 			return err
 		},
 	})
+	// The helper does not wait for the callback (TS does not await
+	// consumeSseStream).
+	<-consumed
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
 	}
