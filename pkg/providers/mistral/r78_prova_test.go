@@ -79,3 +79,53 @@ func TestR78prova_mistralCreatedTimestamp(t *testing.T) {
 		}
 	}
 }
+
+func r78provamistralDrain(t *testing.T, stream provider.TextStream) (string, int, provider.ChunkType) {
+	t.Helper()
+	defer stream.Close() //nolint:errcheck
+	text, finishes, last := "", 0, provider.ChunkType("")
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			break
+		}
+		if c.Type == provider.ChunkTypeText {
+			text += c.Text
+		}
+		if c.Type == provider.ChunkTypeFinish {
+			finishes++
+		}
+		last = c.Type
+	}
+	return text, finishes, last
+}
+
+// TS parseJsonEventStream drops `data: [DONE]` and keeps reading: frames
+// after it are processed and the finish comes at the end of the body.
+func TestR78prova_mistralReadsPastDone(t *testing.T) {
+	sse := "data: " + `{"id":"x","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"a"},"finish_reason":null}]}` + "\n\ndata: [DONE]\n\n" +
+		"data: " + `{"id":"x","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"b"},"finish_reason":"stop"}]}` + "\n\n"
+	m, err := New(Config{APIKey: "k", BaseURL: r78provamistralServer(t, sse, true)}).LanguageModel("m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := m.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text, finishes, last := r78provamistralDrain(t, stream); text != "ab" || finishes != 1 || last != provider.ChunkTypeFinish {
+		t.Fatalf("chat: text %q, finishes %d, last %s; want \"ab\", 1 finish last", text, finishes, last)
+	}
+
+	p := conversationServer(t, "text/event-stream",
+		"data: "+`{"type":"message.output.delta","id":"m1","content_index":0,"content":"a","model":"mistral-medium-latest"}`+"\n\ndata: [DONE]\n\n"+
+			"data: "+`{"type":"message.output.delta","id":"m1","content_index":0,"content":"b"}`+"\n\n"+
+			"data: "+`{"type":"conversation.response.done","usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`+"\n\n", nil)
+	cstream, err := p.ConversationModel("mistral-medium-latest").DoStream(context.Background(), &provider.GenerateOptions{Prompt: userPrompt("hi")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text, finishes, last := r78provamistralDrain(t, cstream); text != "ab" || finishes != 1 || last != provider.ChunkTypeFinish {
+		t.Fatalf("conversation: text %q, finishes %d, last %s; want \"ab\", 1 finish last", text, finishes, last)
+	}
+}

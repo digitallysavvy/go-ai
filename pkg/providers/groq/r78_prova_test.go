@@ -79,3 +79,36 @@ func TestR78prova_groqCreatedTimestamp(t *testing.T) {
 		}
 	}
 }
+
+// TS parseJsonEventStream drops `data: [DONE]` and keeps reading: frames
+// after it are processed and the finish comes at the end of the body.
+func TestR78prova_groqReadsPastDone(t *testing.T) {
+	sse := "data: " + `{"id":"x","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"a"},"finish_reason":null}]}` + "\n\ndata: [DONE]\n\n" +
+		"data: " + `{"id":"x","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"b"},"finish_reason":"stop"}]}` + "\n\n"
+	m, err := New(Config{APIKey: "k", BaseURL: r78provagroqServer(t, sse, true)}).LanguageModel("m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := m.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close() //nolint:errcheck
+	text, finishes, last := "", 0, provider.ChunkType("")
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			break
+		}
+		if c.Type == provider.ChunkTypeText {
+			text += c.Text
+		}
+		if c.Type == provider.ChunkTypeFinish {
+			finishes++
+		}
+		last = c.Type
+	}
+	if text != "ab" || finishes != 1 || last != provider.ChunkTypeFinish {
+		t.Fatalf("text %q, finishes %d, last %s; want \"ab\", 1 finish last", text, finishes, last)
+	}
+}

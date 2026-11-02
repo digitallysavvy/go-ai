@@ -676,11 +676,9 @@ func (s *groqStream) Next() (*provider.StreamChunk, error) {
 			return nil, err
 		}
 		if streaming.IsStreamDone(event) {
-			if s.queueFinishAtEnd() {
-				continue
-			}
-			s.err = io.EOF
-			return nil, io.EOF
+			// TS parseJsonEventStream drops the [DONE] frame and keeps reading;
+			// the end-of-body branch above does the end work.
+			continue
 		}
 		rawQueued := false
 		if s.includeRawChunks {

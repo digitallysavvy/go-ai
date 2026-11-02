@@ -487,7 +487,8 @@ func (s *conversationStream) Next() (*provider.StreamChunk, error) {
 			return nil, err
 		}
 		if streaming.IsStreamDone(event) {
-			s.flush()
+			// TS parseJsonEventStream drops the [DONE] frame and keeps reading;
+			// the end-of-body branch above does the end work.
 			continue
 		}
 		if s.includeRawChunks {

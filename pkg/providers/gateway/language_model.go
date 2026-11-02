@@ -328,10 +328,10 @@ func (s *gatewayTextStream) Next() (*provider.StreamChunk, error) {
 			return nil, err
 		}
 
-		// Check for stream completion
 		if streaming.IsStreamDone(event) {
-			s.err = io.EOF
-			return nil, io.EOF
+			// TS parseJsonEventStream drops the [DONE] frame and keeps reading;
+			// the end-of-body branch above does the end work.
+			continue
 		}
 
 		// Parse the JSON data from the SSE event
