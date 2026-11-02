@@ -192,3 +192,111 @@ func TestR79StreamDrainStopsWhenConsumerReturns(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 }
+
+func r79streamDeferredTool() types.Tool {
+	return types.Tool{Name: "deferred_tool", Parameters: r71streamValueSchema, ProviderExecuted: true, SupportsDeferredResults: true}
+}
+
+func r79streamDeferredError() provider.StreamChunk {
+	isErr := true
+	return provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-1", ToolName: "deferred_tool", Result: "ERROR", IsError: &isErr, ProviderExecuted: true}}
+}
+
+func r79streamDescribe(content []types.ContentPart) string {
+	var out []string
+	for _, c := range content {
+		switch p := c.(type) {
+		case types.ToolCallContent:
+			out = append(out, fmt.Sprintf("tool-call %s %s input=%v providerExecuted=%v dynamic=%v", p.ToolCallID, p.ToolName, p.Arguments, p.ProviderExecuted, p.Dynamic))
+		case types.ToolErrorContent:
+			input := fmt.Sprint(p.Input)
+			if p.Input == nil {
+				input = "<nil>"
+			}
+			out = append(out, fmt.Sprintf("tool-error %s %s input=%s error=%v providerExecuted=%v dynamic=%v", p.ToolCallID, p.ToolName, input, p.Error, p.ProviderExecuted, p.Dynamic))
+		case types.TextContent:
+			out = append(out, "text "+p.Text)
+		default:
+			out = append(out, fmt.Sprintf("%T", c))
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// stream-text.test.ts 29421: a provider-executed deferred call answered by a
+// tool-error in the same step resolves the call; the run ends after one step.
+func TestR79StreamDeferredToolErrorSameStep(t *testing.T) {
+	step := []provider.StreamChunk{
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "deferred_tool", Arguments: map[string]interface{}{"value": "test"}, RawArguments: `{ "value": "test" }`, ProviderExecuted: true}},
+		r79streamDeferredError(),
+		{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Final response"}, {Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+	}
+	r, _ := r73streamParts(t, StreamTextOptions{Model: r71streamModel(nil, step), Prompt: "p", Tools: []types.Tool{r79streamDeferredTool()}, StopWhen: []StopCondition{StepCountIs(2)}})
+	if n := len(r.Steps()); n != 1 {
+		t.Fatalf("steps = %d, want 1", n)
+	}
+	want := "tool-call call-1 deferred_tool input=map[value:test] providerExecuted=true dynamic=false\n" +
+		"tool-error call-1 deferred_tool input=map[value:test] error=ERROR providerExecuted=true dynamic=false\n" +
+		"text Final response"
+	if got := r79streamDescribe(r.Content()); got != want {
+		t.Fatalf("content =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// stream-text.test.ts 29526: the deferred call's tool-error arrives in the
+// next step and resolves it; the run ends after two steps. The final step's
+// content has the call (from the step it was made in) before its error,
+// whose input is undefined.
+func TestR79StreamDeferredToolErrorLaterStep(t *testing.T) {
+	first := []provider.StreamChunk{
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "deferred_tool", Arguments: map[string]interface{}{"value": "test"}, RawArguments: `{ "value": "test" }`, ProviderExecuted: true}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r72streamTestUsage},
+	}
+	second := []provider.StreamChunk{
+		r79streamDeferredError(),
+		{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Final response"}, {Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage},
+	}
+	r, _ := r73streamParts(t, StreamTextOptions{Model: r71streamModel(nil, first, second), Prompt: "p", Tools: []types.Tool{r79streamDeferredTool()}, StopWhen: []StopCondition{StepCountIs(3)}})
+	if n := len(r.Steps()); n != 2 {
+		t.Fatalf("steps = %d, want 2", n)
+	}
+	want := "tool-call call-1 deferred_tool input=map[value:test] providerExecuted=true dynamic=false\n" +
+		"tool-error call-1 deferred_tool input=<nil> error=ERROR providerExecuted=true dynamic=false\n" +
+		"text Final response"
+	if got := r79streamDescribe(r.Content()); got != want {
+		t.Fatalf("content =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// stream-text.test.ts 18225: a text part id that repeats in a later step is
+// remapped to the next generated id (id-0 and id-1 are the step response
+// ids), the first one is kept, and the step texts are unchanged.
+func TestR79StreamMultiStepTextIDRemapped(t *testing.T) {
+	tool := types.Tool{Name: "tool1", Parameters: r71streamValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "result1", nil
+	}}
+	model := r71streamModel(nil,
+		[]provider.StreamChunk{
+			{Type: provider.ChunkTypeTextStart, ID: "0"}, {Type: provider.ChunkTypeText, ID: "0", Text: "Let me check."}, {Type: provider.ChunkTypeTextEnd, ID: "0"},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "test"}, RawArguments: `{ "value": "test" }`}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r72streamTestUsage}},
+		[]provider.StreamChunk{
+			{Type: provider.ChunkTypeTextStart, ID: "0"}, {Type: provider.ChunkTypeText, ID: "0", Text: "It is sunny."}, {Type: provider.ChunkTypeTextEnd, ID: "0"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r72streamTestUsage}})
+	r, parts := r73streamParts(t, StreamTextOptions{Model: model, Prompt: "test-input", Tools: []types.Tool{tool}, StopWhen: []StopCondition{StepCountIs(2)},
+		Internal: &InternalOptions{GenerateID: r73streamCounterIDs("id")}})
+	for _, p := range parts {
+		if p.Type == provider.ChunkTypeError {
+			t.Fatalf("error part: %v", p.Err)
+		}
+	}
+	got := fmt.Sprint(r73streamIDParts(parts, provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd))
+	if want := "[text-start:0: text:0:Let me check. text-end:0: text-start:id-2: text:id-2:It is sunny. text-end:id-2:]"; got != want {
+		t.Fatalf("text parts = %s\nwant %s", got, want)
+	}
+	if steps := r.Steps(); len(steps) != 2 || steps[0].Text != "Let me check." || steps[1].Text != "It is sunny." {
+		t.Fatalf("steps = %+v", steps)
+	}
+}
