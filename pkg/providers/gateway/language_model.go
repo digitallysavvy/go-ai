@@ -730,7 +730,8 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, streami
 			if tool.Strict != nil {
 				toolMap["strict"] = *tool.Strict
 			}
-			if len(tool.InputExamples) > 0 {
+			// TS passes the tool as given: an empty list is sent too.
+			if tool.InputExamples != nil {
 				toolMap["inputExamples"] = tool.InputExamples
 			}
 			// LanguageModelV4FunctionTool.providerOptions: TS sends the
