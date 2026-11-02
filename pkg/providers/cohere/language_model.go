@@ -274,7 +274,9 @@ func (m *LanguageModel) toCohereMessages(src []types.Message) ([]map[string]inte
 				if err != nil {
 					return nil, nil, err
 				}
-				if strings.HasPrefix(normalized.FileData.MediaType, "image") {
+				// TS getTopLevelMediaType(mediaType) === 'image': the text
+				// before the first slash, not a prefix match.
+				if cohereTopLevelMediaType(normalized.FileData.MediaType) == "image" {
 					url, err := fileDataToImageURL(normalized)
 					if err != nil {
 						return nil, nil, err
@@ -319,6 +321,15 @@ func (m *LanguageModel) toCohereMessages(src []types.Message) ([]map[string]inte
 		out = append(out, map[string]interface{}{"role": "user", "content": b.String()})
 	}
 	return out, documents, nil
+}
+
+// cohereTopLevelMediaType mirrors TS getTopLevelMediaType: the media type up
+// to its first slash (the whole value when there is none).
+func cohereTopLevelMediaType(mediaType string) string {
+	if idx := strings.Index(mediaType, "/"); idx >= 0 {
+		return mediaType[:idx]
+	}
+	return mediaType
 }
 
 func fileDataToImageURL(file types.FileContent) (string, error) {
@@ -732,39 +743,34 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 
 		// Cohere v2 SSE: each event has a type field plus a delta field.
 		// TS index is z.number() and the part ids are String(value.index),
-		// so a fractional index parses and keeps its JS text.
+		// so a fractional index parses and keeps its JS text. The schema is
+		// checked first: only the content members declare index, so an
+		// index of another type on any other member is stripped, not an
+		// error.
+		if err := validateCohereChunk([]byte(event.Data)); err != nil {
+			// TS: a chunk that fails parsing becomes an error part, and
+			// finishReason is last-writer-wins: a bad chunk after
+			// message-end replaces the finish reason with "error".
+			s.finishSeen = false
+			s.finishErrored = true
+			msg, perr := providerutils.ChunkParseFailure(event.Data, err)
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: msg,
+				Err:  perr,
+			}, nil
+		}
 		var ev struct {
 			Type  string          `json:"type"`
-			Index float64         `json:"index"`
 			Delta json.RawMessage `json:"delta"`
 		}
-		if err := json.Unmarshal([]byte(event.Data), &ev); err != nil {
-			// TS: a chunk that fails parsing becomes an error part and the
-			// finish reason turns to "error".
-			// TS finishReason is last-writer-wins: a bad chunk after
-			// message-end replaces the finish reason with "error".
-			s.finishSeen = false
-			s.finishErrored = true
-			msg, perr := providerutils.ChunkParseFailure(event.Data, err)
-			return &provider.StreamChunk{
-				Type: provider.ChunkTypeError,
-				Text: msg,
-				Err:  perr,
-			}, nil
+		_ = json.Unmarshal([]byte(event.Data), &ev) //nolint:errcheck // validated above
+		var indexed struct {
+			Index float64 `json:"index"`
 		}
-
-		if err := validateCohereChunk([]byte(event.Data)); err != nil {
-			// TS finishReason is last-writer-wins: a bad chunk after
-			// message-end replaces the finish reason with "error".
-			s.finishSeen = false
-			s.finishErrored = true
-			msg, perr := providerutils.ChunkParseFailure(event.Data, err)
-			return &provider.StreamChunk{
-				Type: provider.ChunkTypeError,
-				Text: msg,
-				Err:  perr,
-			}, nil
-		}
+		// A number on every member that reads it (validated above).
+		_ = json.Unmarshal([]byte(event.Data), &indexed) //nolint:errcheck // see above
+		index := indexed.Index
 
 		switch ev.Type {
 		case "message-start":
@@ -795,10 +801,10 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 				s.isActiveReasoning = true
 				return &provider.StreamChunk{
 					Type: provider.ChunkTypeReasoningStart,
-					ID:   providerutils.JSNumberString(ev.Index),
+					ID:   providerutils.JSNumberString(index),
 				}, nil
 			}
-			return &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: providerutils.JSNumberString(ev.Index)}, nil
+			return &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: providerutils.JSNumberString(index)}, nil
 
 		case "content-delta":
 			// TS decides by key (`'thinking' in content`), not by the type the
@@ -817,14 +823,14 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 			// text-delta even when the delta is empty.
 			var text string
 			if raw, ok := delta.Message.Content["text"]; ok && json.Unmarshal(raw, &text) == nil && string(raw) != "null" {
-				return &provider.StreamChunk{Type: provider.ChunkTypeText, ID: providerutils.JSNumberString(ev.Index), Text: text}, nil
+				return &provider.StreamChunk{Type: provider.ChunkTypeText, ID: providerutils.JSNumberString(index), Text: text}, nil
 			}
 			var thinking string
 			if raw, ok := delta.Message.Content["thinking"]; ok && json.Unmarshal(raw, &thinking) == nil && string(raw) != "null" {
 				return &provider.StreamChunk{
 					Type:      provider.ChunkTypeReasoning,
 					Reasoning: thinking,
-					ID:        providerutils.JSNumberString(ev.Index),
+					ID:        providerutils.JSNumberString(index),
 				}, nil
 			}
 			continue
@@ -836,10 +842,10 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 				s.isActiveReasoning = false
 				return &provider.StreamChunk{
 					Type: provider.ChunkTypeReasoningEnd,
-					ID:   providerutils.JSNumberString(ev.Index),
+					ID:   providerutils.JSNumberString(index),
 				}, nil
 			}
-			return &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: providerutils.JSNumberString(ev.Index)}, nil
+			return &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: providerutils.JSNumberString(index)}, nil
 
 		case "tool-call-start":
 			var delta struct {
