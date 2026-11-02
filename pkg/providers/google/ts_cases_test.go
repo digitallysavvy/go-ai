@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
@@ -94,6 +95,15 @@ func TestTSCasesConvertMessages(t *testing.T) {
 func TestTSCasesInteractions(t *testing.T) {
 	tsfixture.DropResponseTimestamp = true
 	defer func() { tsfixture.DropResponseTimestamp = false }()
+	// Provider tool args replay through the typed Go constructors.
+	tsfixture.ProviderToolHook = func(id, name string, args map[string]interface{}) (types.Tool, bool) {
+		switch id {
+		case "google.file_search":
+			return FileSearchTool(args), true
+		}
+		return types.Tool{Name: name, Type: "provider", ProviderID: id, ProviderArgs: args}, true
+	}
+	defer func() { tsfixture.ProviderToolHook = nil }()
 	cases := tsfixture.LoadCases(t, "testdata/tscases/interactions.json.gz")
 	tsfixture.EvalPathSnapshots(t)
 	tsfixture.Run(t, cases, func(base, id string) provider.LanguageModel {
