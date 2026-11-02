@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
@@ -21,11 +22,10 @@ type InvalidToolInputError struct {
 }
 
 func (e *InvalidToolInputError) Error() string {
-	cause := "unknown error"
-	if e.Cause != nil {
-		cause = e.Cause.Error()
-	}
-	return fmt.Sprintf("Invalid input for tool %s: %s", e.ToolName, cause)
+	// TS: `Invalid input for tool ${toolName}: ${getErrorMessage(cause)}`,
+	// the cause's toString ("Error: <message>" for a plain error,
+	// "AI_TypeValidationError: ..." for a schema failure).
+	return fmt.Sprintf("Invalid input for tool %s: %s", e.ToolName, providerutils.ToolErrorText(e.Cause))
 }
 
 func (e *InvalidToolInputError) Unwrap() error { return e.Cause }
@@ -197,24 +197,16 @@ func revalidateApprovedInput(ctx context.Context, approval CollectedToolApproval
 		// TypeValidationError (as when the call was parsed).
 		validated, err := tool.ValidateInput(value)
 		if err != nil {
-			args, _ := value.(map[string]interface{})
-			if args == nil {
-				args = map[string]interface{}{}
-			}
-			typeCall := call
-			typeCall.RawArguments = ""
-			if _, ok := value.(map[string]interface{}); !ok {
-				if raw, mErr := jsonstr.Marshal(value); mErr == nil {
-					typeCall.RawArguments = string(raw)
-				}
-			}
-			return newToolInputTypeValidationError(typeCall, args, err)
+			return approvalInputTypeValidationError(call, value, err)
 		}
 		value = validated
 	} else if validator != nil {
+		// TS safeValidateTypes: a TypeValidationError of the value before
+		// defaults.
+		original := value
 		value = applyDefaultsForValidator(value, validator)
 		if err := validator.Validate(value); err != nil {
-			return err
+			return approvalInputTypeValidationError(call, original, err)
 		}
 	}
 
@@ -245,6 +237,23 @@ func revalidateApprovedInput(ctx context.Context, approval CollectedToolApproval
 		return errors.New("Approved tool input does not match the validated schema output.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return nil
+}
+
+// approvalInputTypeValidationError is the TypeValidationError (TS
+// safeValidateTypes) of an approved input value that fails revalidation.
+func approvalInputTypeValidationError(call types.ToolCall, value interface{}, err error) error {
+	args, _ := value.(map[string]interface{})
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	typeCall := call
+	typeCall.RawArguments = ""
+	if _, ok := value.(map[string]interface{}); !ok {
+		if raw, mErr := jsonstr.Marshal(value); mErr == nil {
+			typeCall.RawArguments = string(raw)
+		}
+	}
+	return newToolInputTypeValidationError(typeCall, args, err)
 }
 
 func toArgumentsMap(value interface{}) (map[string]interface{}, error) {

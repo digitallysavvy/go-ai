@@ -234,7 +234,7 @@ func TestR77Gen_ValidateApprovedToolApprovalsToolWithoutParameters(t *testing.T)
 	if len(res.ApprovedToolApprovals) != 0 || len(res.InvalidToolApprovals) != 1 {
 		t.Fatalf("approved=%d invalid=%d, want 1 invalid", len(res.ApprovedToolApprovals), len(res.InvalidToolApprovals))
 	}
-	if msg := res.InvalidToolApprovals[0].Error.Error(); msg != "Invalid input for tool tool1: Approved tool input does not match the validated schema output." {
+	if msg := res.InvalidToolApprovals[0].Error.Error(); msg != "Invalid input for tool tool1: Error: Approved tool input does not match the validated schema output." {
 		t.Fatalf("error = %q", msg)
 	}
 }
