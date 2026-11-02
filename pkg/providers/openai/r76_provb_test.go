@@ -140,3 +140,28 @@ func TestR76ProvbStreamInvalidJSONFinishesWithError(t *testing.T) {
 		t.Errorf("usage = %+v, want response.completed's", f.Usage)
 	}
 }
+
+// TestR76ProvbStreamItemIDPerMessage: TS activeOutputItemIds holds the id of
+// the message or reasoning item added at an output_index, replaced by the
+// next one there; other items are not recorded. Go kept the first id ever
+// seen at the index (any item type), so a message following a function call
+// at the same output_index (the next response of the stream) streamed its
+// text under the function call's item id.
+func TestR76ProvbStreamItemIDPerMessage(t *testing.T) {
+	ev := func(s string) string { return "data: " + s + "\n\n" }
+	sse := ev(`{"type":"response.output_item.added","output_index":0,"sequence_number":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"f","arguments":"","status":"in_progress"}}`) +
+		ev(`{"type":"response.output_item.done","output_index":0,"sequence_number":2,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"f","arguments":"{}","status":"completed"}}`) +
+		ev(`{"type":"response.output_item.added","output_index":0,"sequence_number":3,"item":{"type":"message","id":"msg_2","role":"assistant","status":"in_progress","content":[]}}`) +
+		ev(`{"type":"response.output_text.delta","item_id":"msg_2_rotated","output_index":0,"content_index":0,"delta":"hi","sequence_number":4}`) +
+		ev(`{"type":"response.output_item.done","output_index":0,"sequence_number":5,"item":{"type":"message","id":"msg_2_rotated","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hi","annotations":[]}]}}`)
+	var ids []string
+	for _, c := range r76provbDrain(t, newResponsesStream(io.NopCloser(strings.NewReader(sse)), false)) {
+		switch c.Type {
+		case provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd:
+			ids = append(ids, string(c.Type)+":"+c.ID)
+		}
+	}
+	if got, want := strings.Join(ids, " "), "text-start:msg_2 text:msg_2 text-end:msg_2"; got != want {
+		t.Errorf("text parts = %s\nwant %s", got, want)
+	}
+}

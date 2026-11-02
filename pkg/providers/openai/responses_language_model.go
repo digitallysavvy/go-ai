@@ -2701,11 +2701,12 @@ type responsesStream struct {
 	reasoningAccum map[string]*responsesReasoningAccum
 	// Item type by output_index, set on output_item.added.
 	itemTypes map[int]string
-	// firstItemIDByOutputIndex records the item id first seen for a given
-	// output_index (row 73d48d0): OpenAI can rotate/reuse item ids across
-	// events sharing the same output_index mid-stream, so the id observed at
-	// output_item.added -- not whatever the later done event reports -- is
-	// used consistently for reasoning-end ids and itemId metadata.
+	// firstItemIDByOutputIndex records the id of the message or reasoning
+	// item added at an output_index (row 73d48d0, TS activeOutputItemIds):
+	// OpenAI can rotate/reuse item ids across events sharing the same
+	// output_index mid-stream, so the id observed at output_item.added --
+	// not whatever the later delta or done events report -- is used
+	// consistently for text/reasoning ids and itemId metadata.
 	firstItemIDByOutputIndex map[int]string
 	// Chunks ready to emit without reading more SSE events.
 	flushQueue        []*provider.StreamChunk
@@ -3236,10 +3237,12 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.itemTypes[e.OutputIndex] = e.Item.Type
-			if e.Item.ID != "" {
-				if _, seen := s.firstItemIDByOutputIndex[e.OutputIndex]; !seen {
-					s.firstItemIDByOutputIndex[e.OutputIndex] = e.Item.ID
-				}
+			// TS activeOutputItemIds: a message or reasoning item's id is the
+			// id for its output_index until that item is done (a later item,
+			// such as the next response in the same stream, replaces it);
+			// other item types are not recorded.
+			if (e.Item.Type == "message" || e.Item.Type == "reasoning") && e.Item.ID != "" {
+				s.firstItemIDByOutputIndex[e.OutputIndex] = e.Item.ID
 			}
 			// TS isResponseOutputChunk: an item type the chunk schema does not
 			// model is an unknown_chunk, which does not end the early-error peek.
