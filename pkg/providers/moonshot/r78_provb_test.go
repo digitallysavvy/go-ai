@@ -2,12 +2,15 @@ package moonshot
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -131,4 +134,76 @@ func TestR78provbMoonshotCreatedZeroIsEpoch(t *testing.T) {
 			check(t, meta.Timestamp)
 		})
 	}
+}
+
+func r78provbJSON(v interface{}) interface{} {
+	b, _ := json.Marshal(v)
+	var out interface{}
+	_ = json.Unmarshal(b, &out)
+	return out
+}
+
+// TestR78provbTSCasesConvertMessages replays
+// convert-to-moonshotai-chat-messages.test.ts (TS
+// convertToMoonshotAIChatMessages, extracted at e64ed82f27 with --fn).
+func TestR78provbTSCasesConvertMessages(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/convert_messages.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		in, _ := args[0].(map[string]interface{})
+		if name, ok := in["providerOptionsName"].(string); ok && name != "moonshotai" {
+			// the Go provider always reads providerOptions.moonshotai (TS
+			// createMoonshotAI's provider name)
+			return nil, nil, fmt.Errorf("%w: providerOptionsName %s", tsfixture.ErrUnsupported, name)
+		}
+		msgs, why := tsfixture.BuildPromptMessages(in["prompt"])
+		if why != "" {
+			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+		}
+		modelID, _ := in["modelId"].(string)
+		rfType := ""
+		if rf, ok := in["responseFormat"].(map[string]interface{}); ok {
+			rfType, _ = rf["type"].(string)
+		}
+		messages, warnings, err := convertToMoonshotChatMessages(modelID, msgs, rfType)
+		if err != nil {
+			return nil, nil, err
+		}
+		return map[string]interface{}{"messages": r78provbJSON(messages), "warnings": tsfixture.WarningsToTS(warnings)}, nil, nil
+	}, nil)
+}
+
+// TestR78provbTSCasesUsage replays convert-moonshotai-chat-usage.test.ts.
+func TestR78provbTSCasesUsage(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/usage.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		var raw []byte
+		if m, ok := args[0].(map[string]interface{}); !ok || m["__undef"] == nil {
+			raw, _ = json.Marshal(args[0])
+		}
+		u, err := ConvertMoonshotUsageRaw(raw)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(raw) == 0 || string(raw) == "null" {
+			// TS createNullLanguageModelUsage()
+			return map[string]interface{}{
+				"inputTokens":  map[string]interface{}{"total": nil, "noCache": nil, "cacheRead": nil, "cacheWrite": nil},
+				"outputTokens": map[string]interface{}{"total": nil, "text": nil, "reasoning": nil},
+			}, nil, nil
+		}
+		return tsfixture.UsageToTS(u), nil, nil
+	}, nil)
+}
+
+// TestR78provbTSCasesNormalizeJSONSchema replays
+// normalize-json-schema-for-mfjs.test.ts.
+func TestR78provbTSCasesNormalizeJSONSchema(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/normalize_json_schema.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		out, err := NormalizeJSONSchemaForMFJS(args[0])
+		if err != nil {
+			return nil, nil, err
+		}
+		return r78provbJSON(out), nil, nil
+	}, nil)
 }

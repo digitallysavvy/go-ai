@@ -1082,6 +1082,46 @@ func BuildOptions(call map[string]interface{}) (*provider.GenerateOptions, strin
 	return o, ""
 }
 
+// withoutUndefined drops the keys a TS literal set to undefined (the
+// extractor's {__undef: true} marker) from provider options, at any depth:
+// TS option schemas read an undefined property as absent. A nil map stays
+// nil.
+func withoutUndefined(m map[string]interface{}) map[string]interface{} {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		if isUndefMarker(v) {
+			continue
+		}
+		out[k] = withoutUndefinedValue(v)
+	}
+	return out
+}
+
+func withoutUndefinedValue(v interface{}) interface{} {
+	switch x := v.(type) {
+	case map[string]interface{}:
+		return withoutUndefined(x)
+	case []interface{}:
+		out := make([]interface{}, len(x))
+		for i, e := range x {
+			if isUndefMarker(e) {
+				continue // an undefined array element serializes as null
+			}
+			out[i] = withoutUndefinedValue(e)
+		}
+		return out
+	}
+	return v
+}
+
+func isUndefMarker(v interface{}) bool {
+	m, ok := v.(map[string]interface{})
+	return ok && len(m) == 1 && m["__undef"] != nil
+}
+
 func buildPrompt(v interface{}) ([]types.Message, string) {
 	var out []types.Message
 	for _, mv := range v.([]interface{}) {
@@ -1089,7 +1129,7 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 		role, _ := m["role"].(string)
 		msg := types.Message{Role: types.MessageRole(role)}
 		if po, ok := m["providerOptions"].(map[string]interface{}); ok {
-			msg.ProviderOptions = po
+			msg.ProviderOptions = withoutUndefined(po)
 		}
 		if s, ok := m["content"].(string); ok {
 			msg.Content = []types.ContentPart{types.TextContent{Text: s}}
@@ -1099,6 +1139,7 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 		for _, pv := range m["content"].([]interface{}) {
 			p := pv.(map[string]interface{})
 			po, _ := p["providerOptions"].(map[string]interface{})
+			po = withoutUndefined(po)
 			// Parts replayed from a model result carry providerMetadata (TS
 			// tests cast it onto tool-call and tool-result parts, and the
 			// converters read providerMetadata[name].itemId from both).
@@ -1146,6 +1187,7 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 							for _, bv := range blocks {
 								bm, _ := bv.(map[string]interface{})
 								bpo, _ := bm["providerOptions"].(map[string]interface{})
+								bpo = withoutUndefined(bpo)
 								switch bm["type"] {
 								case "text":
 									txt, _ := bm["text"].(string)
@@ -1169,6 +1211,7 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 							return nil, "tool-result output " + string(o.Type)
 						}
 						o.ProviderOptions, _ = out["providerOptions"].(map[string]interface{})
+						o.ProviderOptions = withoutUndefined(o.ProviderOptions)
 					}
 					tr.Output = o
 				}
@@ -1293,7 +1336,7 @@ func BuildTools(v interface{}) ([]types.Tool, string) {
 				tool.Strict = &sv
 			}
 			if po, ok := m["providerOptions"].(map[string]interface{}); ok {
-				tool.ProviderOptions = po
+				tool.ProviderOptions = withoutUndefined(po)
 			}
 			if exs, ok := m["inputExamples"].([]interface{}); ok {
 				for _, ev := range exs {
