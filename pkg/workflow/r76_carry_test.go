@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -142,5 +143,116 @@ func r76carryGenAISpans(t *testing.T, mode string) {
 	}
 	if counts["step"] != 2 || counts["chat"] != 2 || counts["tool"] != 1 {
 		t.Errorf("span counts = %v, want 2 steps, 2 chats, 1 tool", counts)
+	}
+}
+
+// TS model-call-iterator.test.ts "providerMetadata to providerOptions
+// mapping": "should preserve providerMetadata for multiple parallel tool
+// calls", "preserves OpenAI itemId in tool-call provider metadata",
+// "preserves all OpenAI tool-call provider metadata fields" and "preserves
+// mixed provider metadata on tool calls". Each client tool call in the next
+// step's assistant message carries its own metadata as providerOptions,
+// unchanged (toAssistantToolCallContent). Both modes.
+func TestR76Carry_ToolCallProviderMetadataMapping(t *testing.T) {
+	type call struct {
+		id, tool string
+		meta     map[string]interface{}
+	}
+	cases := []struct {
+		name  string
+		calls []call
+	}{
+		{"parallel", []call{
+			{"call-1", "weatherTool", map[string]interface{}{"google": map[string]interface{}{"thoughtSignature": "sig_weather_123"}}},
+			{"call-2", "newsTool", map[string]interface{}{"google": map[string]interface{}{"thoughtSignature": "sig_news_456"}}},
+		}},
+		{"openai itemId", []call{
+			{"call-1", "testTool", map[string]interface{}{"openai": map[string]interface{}{"itemId": "fc_0402bf2d292dd7ed00697a35fb10e0819ab0098545c4d0d7f5"}}},
+		}},
+		{"all openai fields", []call{
+			{"call-1", "testTool", map[string]interface{}{"openai": map[string]interface{}{"itemId": "fc_0402bf2d292dd7ed00697a35fb10e0819ab0098545c4d0d7f5", "someOtherField": "should-be-preserved"}}},
+		}},
+		{"mixed providers", []call{
+			{"call-1", "testTool", map[string]interface{}{"google": map[string]interface{}{"thoughtSignature": "sig_gemini_preserved"}, "openai": map[string]interface{}{"itemId": "fc_should_be_preserved"}}},
+		}},
+	}
+	tool := func(name string) types.Tool {
+		return types.Tool{Name: name, Description: "d", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return map[string]interface{}{"result": "success"}, nil
+		}}
+	}
+	for _, tc := range cases {
+		var toolCalls []types.ToolCall
+		var tools []types.Tool
+		seen := map[string]bool{}
+		for _, c := range tc.calls {
+			toolCalls = append(toolCalls, types.ToolCall{ID: c.id, ToolName: c.tool, Arguments: map[string]interface{}{"query": "test"}, ProviderMetadata: c.meta})
+			if !seen[c.tool] {
+				seen[c.tool] = true
+				tools = append(tools, tool(c.tool))
+			}
+		}
+		for _, mode := range []string{"stream", "generate"} {
+			t.Run(tc.name+"/"+mode, func(t *testing.T) {
+				var prompt []types.Message
+				if mode == "stream" {
+					var chunks []provider.StreamChunk
+					for i := range toolCalls {
+						tcCopy := toolCalls[i]
+						chunks = append(chunks, provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &tcCopy})
+					}
+					chunks = append(chunks, provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls})
+					model, calls := r75carryScripted(chunks)
+					agent, err := NewWorkflowAgent(WorkflowAgent{Model: model, Tools: tools})
+					if err != nil {
+						t.Fatal(err)
+					}
+					_ = r75carryRunStream(t, agent)
+					if len(*calls) != 2 {
+						t.Fatalf("model calls = %d, want 2", len(*calls))
+					}
+					prompt = (*calls)[1].Prompt.Messages
+				} else {
+					var gcalls []*provider.GenerateOptions
+					gm := &testutil.MockLanguageModel{ProviderName: "mock", ModelName: "m", ToolSupport: true, DoGenerateFunc: func(_ context.Context, o *provider.GenerateOptions) (*types.GenerateResult, error) {
+						gcalls = append(gcalls, o)
+						if len(gcalls) == 1 {
+							return &types.GenerateResult{ToolCalls: toolCalls, FinishReason: types.FinishReasonToolCalls}, nil
+						}
+						return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+					}}
+					agent, err := NewWorkflowAgent(WorkflowAgent{Model: gm, Tools: tools})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := agent.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "test"}); err != nil {
+						t.Fatal(err)
+					}
+					if len(gcalls) != 2 {
+						t.Fatalf("model calls = %d, want 2", len(gcalls))
+					}
+					prompt = gcalls[1].Prompt.Messages
+				}
+				got := map[string]map[string]interface{}{}
+				for _, m := range prompt {
+					if m.Role != types.RoleAssistant {
+						continue
+					}
+					for _, p := range m.Content {
+						if c, ok := p.(types.ToolCallContent); ok {
+							got[c.ToolCallID] = c.ProviderOptions
+						}
+					}
+				}
+				if len(got) != len(tc.calls) {
+					t.Fatalf("assistant tool calls = %v, want %d", got, len(tc.calls))
+				}
+				for _, c := range tc.calls {
+					if !reflect.DeepEqual(got[c.id], c.meta) {
+						t.Errorf("%s providerOptions = %v, want %v", c.id, got[c.id], c.meta)
+					}
+				}
+			})
+		}
 	}
 }
