@@ -110,21 +110,22 @@ func ValidateApprovedToolApprovals(ctx context.Context, opts ValidateApprovedToo
 		}
 
 		if tool != nil && tool.Execute != nil {
-			// A tool's own ValidateInput replaces the schema check (TS
+			// TS revalidates every executable tool (inputSchema is required
+			// there): a tool without Parameters accepts any input, but the
+			// refiner and the approved-input comparison still run. A tool's
+			// own ValidateInput replaces the schema check (TS
 			// safeValidateTypes runs the jsonSchema validate function).
-			if validator := toolInputValidator(tool); validator != nil || tool.ValidateInput != nil {
-				if validationErr := revalidateApprovedInput(ctx, approval, tool, validator, opts); validationErr != nil {
-					inputJSON, _ := jsonstr.Marshal(call.Arguments)
-					result.InvalidToolApprovals = append(result.InvalidToolApprovals, InvalidToolApproval{
-						CollectedToolApproval: approval,
-						Error: &InvalidToolInputError{
-							ToolName:  call.ToolName,
-							ToolInput: string(inputJSON),
-							Cause:     validationErr,
-						},
-					})
-					continue
-				}
+			if validationErr := revalidateApprovedInput(ctx, approval, tool, toolInputValidator(tool), opts); validationErr != nil {
+				inputJSON, _ := jsonstr.Marshal(call.Arguments)
+				result.InvalidToolApprovals = append(result.InvalidToolApprovals, InvalidToolApproval{
+					CollectedToolApproval: approval,
+					Error: &InvalidToolInputError{
+						ToolName:  call.ToolName,
+						ToolInput: string(inputJSON),
+						Cause:     validationErr,
+					},
+				})
+				continue
 			}
 		}
 
@@ -210,7 +211,7 @@ func revalidateApprovedInput(ctx context.Context, approval CollectedToolApproval
 			return newToolInputTypeValidationError(typeCall, args, err)
 		}
 		value = validated
-	} else {
+	} else if validator != nil {
 		value = applyDefaultsForValidator(value, validator)
 		if err := validator.Validate(value); err != nil {
 			return err

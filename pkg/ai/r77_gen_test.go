@@ -195,3 +195,45 @@ func TestR77Gen_ApprovalInputSchemaInputIsRawInput(t *testing.T) {
 		}
 	})
 }
+
+// TS revalidates every executable tool, since inputSchema is required: a
+// tool without Parameters still runs the input refiner and the
+// approved-input comparison, so a refiner that changes the approved input
+// makes the approval invalid.
+func TestR77Gen_ValidateApprovedToolApprovalsToolWithoutParameters(t *testing.T) {
+	tool := types.Tool{
+		Name: "tool1",
+		Execute: func(ctx context.Context, in map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		},
+	}
+	approval := r77genApproval(map[string]interface{}{"value": "a"}, nil)
+	res, err := ValidateApprovedToolApprovals(context.Background(), ValidateApprovedToolApprovalsOptions{
+		ApprovedToolApprovals: []CollectedToolApproval{approval},
+		Tools:                 []types.Tool{tool},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.ApprovedToolApprovals) != 1 {
+		t.Fatalf("without a refiner: approved=%d invalid=%+v, want 1 approved", len(res.ApprovedToolApprovals), res.InvalidToolApprovals)
+	}
+	res, err = ValidateApprovedToolApprovals(context.Background(), ValidateApprovedToolApprovalsOptions{
+		ApprovedToolApprovals: []CollectedToolApproval{approval},
+		Tools:                 []types.Tool{tool},
+		RefineToolInput: map[string]ToolInputRefiner{
+			"tool1": func(ctx context.Context, opts ToolInputRefinementOptions) (map[string]interface{}, error) {
+				return map[string]interface{}{"value": opts.ToolCall.Arguments["value"].(string) + "!"}, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.ApprovedToolApprovals) != 0 || len(res.InvalidToolApprovals) != 1 {
+		t.Fatalf("approved=%d invalid=%d, want 1 invalid", len(res.ApprovedToolApprovals), len(res.InvalidToolApprovals))
+	}
+	if msg := res.InvalidToolApprovals[0].Error.Error(); msg != "Invalid input for tool tool1: Approved tool input does not match the validated schema output." {
+		t.Fatalf("error = %q", msg)
+	}
+}
