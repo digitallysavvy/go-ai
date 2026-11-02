@@ -291,3 +291,41 @@ func TestR76Gen_ToolValidateInput(t *testing.T) {
 		}
 	})
 }
+
+// Stream CR item C (cr-r76-stream-to-gen.md): with executeMessages set
+// (WorkflowAgent), Execute and the approval function get them while the
+// start/end events keep messages (TS workflow-agent.ts: needsApproval and
+// execute get iterMessages, the events getToolCallbackMessages(iterMessages)).
+func TestR76Gen_ExecuteMessagesForToolAndApproval(t *testing.T) {
+	cbMsgs := []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "prompt"}}}}
+	execMsgs := append(append([]types.Message(nil), cbMsgs...), types.Message{Role: types.RoleAssistant, Content: []types.ContentPart{types.TextContent{Text: "assistant"}}})
+	var execGot, approvalGot, startGot, endGot []types.Message
+	tool := types.Tool{Name: "t", Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(_ context.Context, _ map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+			execGot = o.Messages
+			return "ok", nil
+		}}
+	approval := types.GenericToolApprovalFunc(func(o types.ToolApprovalOptions) types.ToolApprovalResult {
+		approvalGot = o.Messages
+		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+	})
+	for _, withExec := range []bool{false, true} {
+		cb := toolCallEventCallbacks{messages: cbMsgs,
+			onStart:  func(_ context.Context, e OnToolCallStartEvent) { startGot = e.Messages },
+			onFinish: func(_ context.Context, e OnToolCallFinishEvent) { endGot = e.Messages }}
+		want := cbMsgs
+		if withExec {
+			cb.executeMessages = execMsgs
+			want = execMsgs
+		}
+		if _, err := executeTools(context.Background(), []types.ToolCall{{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}}}, []types.Tool{tool}, nil, nil, approval, &types.Usage{}, cb); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(execGot, want) || !reflect.DeepEqual(approvalGot, want) {
+			t.Fatalf("withExec=%v: execute %d msgs, approval %d msgs, want %d", withExec, len(execGot), len(approvalGot), len(want))
+		}
+		if !reflect.DeepEqual(startGot, cbMsgs) || !reflect.DeepEqual(endGot, cbMsgs) {
+			t.Fatalf("withExec=%v: events got %d/%d msgs, want %d", withExec, len(startGot), len(endGot), len(cbMsgs))
+		}
+	}
+}

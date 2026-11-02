@@ -2421,6 +2421,20 @@ type toolCallEventCallbacks struct {
 	// sets it: TS WorkflowAgent's executeTool builds tool results without
 	// providerOptions, while TS core copies toolCall.providerMetadata.
 	withoutCallMetadata bool
+	// executeMessages, when non-nil, are the messages the tool's Execute
+	// and its approval function get, while the start/end events keep
+	// messages. WorkflowAgent sets it: TS passes the full iteration messages
+	// (prompt plus the step's assistant message) to needsApproval and
+	// execute, and getToolCallbackMessages(iterMessages) to the events.
+	executeMessages []types.Message
+}
+
+// toolMessages are the messages a tool's Execute and approval function get.
+func (c toolCallEventCallbacks) toolMessages() []types.Message {
+	if c.executeMessages != nil {
+		return c.executeMessages
+	}
+	return c.messages
 }
 
 // newApprovalID returns an approval ID from the call's ID generator (TS
@@ -2708,7 +2722,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 		if pre, ok := callbacks.preApprovals[call.ID]; ok {
 			approval, approvalErr, approvalID = pre.approval, pre.err, pre.id
 		} else {
-			approval, approvalErr = resolveToolApproval(ctx, call, availableTools, callbacks.messages, runtimeContext, toolsContext, toolApproval)
+			approval, approvalErr = resolveToolApproval(ctx, call, availableTools, callbacks.toolMessages(), runtimeContext, toolsContext, toolApproval)
 			if approval.Status == types.ToolApprovalStatusUserApproval ||
 				approval.Status == types.ToolApprovalStatusApproved ||
 				approval.Status == types.ToolApprovalStatusDenied {
@@ -2852,7 +2866,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				Usage:               usage,
 				Metadata:            make(map[string]interface{}),
 				ToolMetadata:        call.ToolMetadata,
-				Messages:            callbacks.messages,
+				Messages:            callbacks.toolMessages(),
 				ExperimentalSandbox: callbacks.experimentalSandbox,
 			}
 			if callbacks.onPreliminary != nil {
