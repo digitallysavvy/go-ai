@@ -510,7 +510,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 					// consistency across the two Live API streams).
 					finish()
 				} else {
-					fail(fmt.Errorf("Google Live transcription WebSocket closed unexpectedly before finishing")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+					fail(errors.New("Google Live transcription WebSocket closed unexpectedly before finishing (code unknown).")) //nolint:staticcheck // TS text; the websocket library does not expose the close code or reason
 				}
 				return
 			}

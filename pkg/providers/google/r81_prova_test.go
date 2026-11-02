@@ -99,3 +99,30 @@ func TestR81provaPCM16SilenceMinSampleIsNotSilence(t *testing.T) {
 		t.Fatal("samples at the threshold were not silence")
 	}
 }
+
+// TS onClose before the finish condition: "Google Live transcription WebSocket
+// closed unexpectedly before finishing (code ${code ?? 'unknown'}...)."; Go
+// cannot read the close code, so it reports "(code unknown)." as TS does
+// without one.
+func TestR81provaTranscriptionCloseBeforeFinishingText(t *testing.T) {
+	server := newLiveTranscriptionTestServer(t)
+	defer server.close()
+	model := newLiveTestModel(t, server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newBlockingAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatal(err)
+	}
+	server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, time.Second)
+	server.closeConnection()
+	_, err = drainUntilFinishOrError(t, result.Stream)
+	if want := "Google Live transcription WebSocket closed unexpectedly before finishing (code unknown)."; err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}

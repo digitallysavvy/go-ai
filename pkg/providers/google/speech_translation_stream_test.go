@@ -512,8 +512,10 @@ func TestSpeechTranslationModel_DoStream_ErrorsOnCloseBeforeFinishing(t *testing
 	server.closeConnection()
 
 	_, err = drainUntilTranslationFinishOrError(t, result.Stream)
-	if err == nil || !strings.Contains(err.Error(), "closed unexpectedly before finishing") {
-		t.Fatalf("err = %v, want a close-diagnostics message", err)
+	// TS appends " (code ${code ?? 'unknown'}...)." ; the close code is not
+	// exposed by the Go websocket library.
+	if want := "Google Live translation WebSocket closed unexpectedly before finishing (code unknown)."; err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
 	}
 }
 

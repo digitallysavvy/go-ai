@@ -542,8 +542,10 @@ func TestGeminiTranscriptionModel_DoStream_ErrorTextsMatchTS(t *testing.T) {
 		server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, time.Second)
 		server.closeConnection()
 		_, err = drainUntilFinishOrError(t, result.Stream)
-		if err == nil || !strings.HasPrefix(err.Error(), "Vertex Live transcription") {
-			t.Fatalf("err = %v, want a \"Vertex Live transcription ...\" error", err)
+		// TS appends " (code ${code ?? 'unknown'}...)." ; the close code is
+		// not exposed by the Go websocket library.
+		if want := "Vertex Live transcription WebSocket closed unexpectedly before finishing (code unknown)."; err == nil || err.Error() != want {
+			t.Fatalf("err = %v, want %q", err, want)
 		}
 	})
 }

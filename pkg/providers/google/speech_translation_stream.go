@@ -395,7 +395,7 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 					// `finishTimer != null` branch).
 					finish()
 				} else {
-					fail(errors.New("Google Live translation WebSocket closed unexpectedly before finishing.")) //nolint:staticcheck // matches TS SDK's exact error text
+					fail(errors.New("Google Live translation WebSocket closed unexpectedly before finishing (code unknown).")) //nolint:staticcheck // TS text; the websocket library does not expose the close code or reason
 				}
 				return
 			}
