@@ -341,10 +341,10 @@ func convertTogetherUsage(usage togetherUsage) types.Usage {
 }
 
 type togetherResponse struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	Model   string `json:"model"`
+	ID      string  `json:"id"`
+	Object  string  `json:"object"`
+	Created float64 `json:"created"` // TS z.number()
+	Model   string  `json:"model"`
 	Choices []struct {
 		Index        int    `json:"index"`
 		FinishReason string `json:"finish_reason"`

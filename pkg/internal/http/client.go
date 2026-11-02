@@ -427,7 +427,7 @@ func (c *Client) DoJSON(ctx context.Context, req Request, result interface{}) er
 	}
 
 	// Decode JSON response
-	if err := json.Unmarshal(resp.Body, result); err != nil {
+	if err := decodeJSONBody(resp.Body, result); err != nil {
 		return fmt.Errorf("failed to decode JSON response: %w", err)
 	}
 
@@ -455,10 +455,30 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 			return nil, err
 		}
 	}
-	if err := json.Unmarshal(resp.Body, result); err != nil {
+	if err := decodeJSONBody(resp.Body, result); err != nil {
 		return nil, fmt.Errorf("failed to decode JSON response: %w", err)
 	}
 	return resp, nil
+}
+
+// decodeJSONBody decodes a response body into result. TS response schemas
+// declare counts and timestamps as z.number(), which accepts fractional and
+// exponent forms (1.5, 2.0, 1e9) that Go's integer struct fields reject; when
+// the strict decode fails on such a number, the body is decoded again with
+// providerutils.UnmarshalChunk, which truncates only the numbers under the
+// member names the decoder reported. A body that decodes strictly is
+// unchanged, and when the retry also fails the strict decode's error is
+// returned.
+func decodeJSONBody(body []byte, result interface{}) error {
+	err := json.Unmarshal(body, result)
+	var typeErr *json.UnmarshalTypeError
+	if err == nil || !errors.As(err, &typeErr) || !strings.HasPrefix(typeErr.Value, "number") {
+		return err
+	}
+	if providerutils.UnmarshalChunk(body, result) == nil {
+		return nil
+	}
+	return err
 }
 
 // streamClient returns the client used for streaming requests. The shared

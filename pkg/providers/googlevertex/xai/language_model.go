@@ -377,10 +377,10 @@ func convertVertexXaiUsage(u *vertexXaiUsage) types.Usage {
 // vertexXaiResponse is the Vertex MaaS Chat Completions response shape
 // (standard OpenAI-compatible Chat Completions).
 type vertexXaiResponse struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	Model   string `json:"model"`
+	ID      string  `json:"id"`
+	Object  string  `json:"object"`
+	Created float64 `json:"created"` // TS z.number()
+	Model   string  `json:"model"`
 	Choices []struct {
 		Index        int    `json:"index"`
 		FinishReason string `json:"finish_reason"`

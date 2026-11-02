@@ -3,6 +3,7 @@ package streaming
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"strings"
 	"time"
 
@@ -108,9 +109,9 @@ func compatContentParts(raw []byte) (string, []CompatContentPart, error) {
 // (providers map their own finish reasons).
 func ApplyOpenAICompatibleChatResponse(result *types.GenerateResult, body []byte, headers map[string]string, metadataKey string) error {
 	var wire struct {
-		ID      string `json:"id"`
-		Created *int64 `json:"created"`
-		Model   string `json:"model"`
+		ID      string   `json:"id"`
+		Created *float64 `json:"created"`
+		Model   string   `json:"model"`
 		Choices []struct {
 			FinishReason *string `json:"finish_reason"`
 			Message      struct {
@@ -210,8 +211,13 @@ func ApplyOpenAICompatibleChatResponse(result *types.GenerateResult, body []byte
 	result.ProviderMetadata = map[string]interface{}{metadataKey: meta}
 
 	rm := &types.ResponseMetadata{ID: wire.ID, ModelID: wire.Model, Headers: headers}
-	if wire.Created != nil {
-		rm.Timestamp = time.Unix(*wire.Created, 0).UTC()
+	// TS openai-compatible getResponseMetadata: created || undefined, then
+	// new Date(created * 1000) (created: z.number(), so a fractional value
+	// keeps its milliseconds; outside the JS Date range is no timestamp).
+	if wire.Created != nil && *wire.Created != 0 {
+		if ms := *wire.Created * 1000; math.Abs(ms) <= 8.64e15 {
+			rm.Timestamp = time.UnixMilli(int64(ms)).UTC()
+		}
 	}
 	result.ResponseMetadata = rm
 	return nil

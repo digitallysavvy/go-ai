@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	stdhttp "net/http"
 	"time"
 
@@ -330,8 +331,11 @@ func (m *LanguageModel) convertResponse(response zaiResponse) *types.GenerateRes
 	}
 	if response.ID != "" || response.Model != "" || response.Created != 0 {
 		meta := &types.ResponseMetadata{ID: response.ID, ModelID: response.Model}
-		if response.Created != 0 {
-			meta.Timestamp = time.Unix(response.Created, 0).UTC()
+		// TS created || undefined, then new Date(created * 1000): a
+		// fractional value keeps its milliseconds; outside the JS Date range
+		// is no timestamp.
+		if ms := response.Created * 1000; response.Created != 0 && math.Abs(ms) <= 8.64e15 {
+			meta.Timestamp = time.UnixMilli(int64(ms)).UTC()
 		}
 		result.ResponseMetadata = meta
 	}
@@ -428,10 +432,10 @@ func convertZaiUsage(usage zaiUsage) types.Usage {
 }
 
 type zaiResponse struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	Model   string `json:"model"`
+	ID      string  `json:"id"`
+	Object  string  `json:"object"`
+	Created float64 `json:"created"` // TS z.number()
+	Model   string  `json:"model"`
 	Choices []struct {
 		Index        int    `json:"index"`
 		FinishReason string `json:"finish_reason"`
