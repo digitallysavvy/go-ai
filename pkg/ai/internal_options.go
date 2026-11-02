@@ -144,6 +144,16 @@ type InternalOptions struct {
 	// chunks arrive, as TS streamText. Used by WorkflowAgent's stream path.
 	DeferToolInputCallbacks bool
 
+	// ToolMessagesAsConversationPrompt makes a step's tool execution use the
+	// step's language model prompt (its system message first) as the
+	// messages: tool Execute options and approval checks get that prompt
+	// followed by the step's assistant message; the tool execution start and
+	// end events (and their telemetry) get the prompt without it. TS
+	// WorkflowAgent executeToolWithCallbacks / getToolCallbackMessages, where
+	// generateText and streamText pass the step's input messages. Used by
+	// WorkflowAgent.
+	ToolMessagesAsConversationPrompt bool
+
 	// ApprovalsResumed tells the legacy agent loop (pkg/agent GenerateAgent)
 	// that the caller already resumed the tool approvals of the input
 	// messages, so the loop does not resume them again: TS WorkflowAgent
@@ -464,4 +474,32 @@ func (o *InternalOptions) omitReasoningFiles(messages []types.Message) []types.M
 		out = append(out, message)
 	}
 	return out
+}
+
+// conversationPromptMessages is a model call's prompt as messages, its system
+// message first (TS WorkflowAgent conversationPrompt).
+func conversationPromptMessages(prompt types.Prompt) []types.Message {
+	out := make([]types.Message, 0, len(prompt.Messages)+1)
+	if prompt.System != "" {
+		out = append(out, types.Message{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: prompt.System}}})
+	}
+	return append(out, prompt.Messages...)
+}
+
+// workflowToolMessages returns the messages of a step's tool execution under
+// InternalOptions.ToolMessagesAsConversationPrompt: the start/end event
+// messages (the step's prompt) and the Execute/approval messages (the prompt
+// followed by the step's assistant message). ok is false without the option.
+func workflowToolMessages(internal *InternalOptions, prompt types.Prompt, responseMessages []types.Message) (callbackMessages, executeMessages []types.Message, ok bool) {
+	if internal == nil || !internal.ToolMessagesAsConversationPrompt {
+		return nil, nil, false
+	}
+	callbackMessages = conversationPromptMessages(prompt)
+	executeMessages = append([]types.Message(nil), callbackMessages...)
+	for _, m := range responseMessages {
+		if m.Role == types.RoleAssistant {
+			executeMessages = append(executeMessages, m)
+		}
+	}
+	return callbackMessages, executeMessages, true
 }

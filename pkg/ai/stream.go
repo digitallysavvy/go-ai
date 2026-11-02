@@ -3172,6 +3172,18 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeToolResult, ToolResult: &result}})
 				},
 			}
+			// WorkflowAgent: the step's prompt (and its assistant message) as
+			// the tool messages (TS executeToolWithCallbacks iterMessages).
+			if r.stepReopenGenOpts != nil {
+				assistant := opts.Internal.omitReasoningFiles(providerutils.ConvertToResponseMessages(stepToolCalls, stepContent, nil))
+				if callbackMessages, executeMessages, ok := workflowToolMessages(opts.Internal, r.stepReopenGenOpts.Prompt, assistant); ok {
+					toolCallbacks.messages = callbackMessages
+					// The Execute/approval messages need gen's executor field
+					// (cr-r76-stream-to-gen.md item C); until then they are
+					// the callback messages.
+					_ = executeMessages
+				}
+			}
 			usageForTools := r.usage.Add(stepUsage)
 			stepToolCallConcurrency, _ := prepareToolCallConcurrency(opts.ToolCallConcurrency)
 			var toolsErr error

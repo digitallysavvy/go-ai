@@ -804,3 +804,75 @@ func TestR76StreamMissingProviderResultHasNoCallMetadata(t *testing.T) {
 		}
 	}
 }
+
+// cr-r76-carry-to-stream.md item C: with
+// InternalOptions.ToolMessagesAsConversationPrompt the tool execution
+// start/end events get the step's prompt, system message first (TS
+// WorkflowAgent getToolCallbackMessages(iterMessages)); Execute gets it
+// followed by the step's assistant message (workflowToolMessages; the
+// executor wiring is gen's). Without the option: the step's input messages
+// (TS streamText).
+func TestR76StreamToolMessagesAsConversationPrompt(t *testing.T) {
+	step := []provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "t"},
+		{Type: provider.ChunkTypeText, ID: "t", Text: "let me search"},
+		{Type: provider.ChunkTypeTextEnd, ID: "t"},
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "search-1", ToolName: "search", Arguments: map[string]interface{}{}, RawArguments: "{}"}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+	}
+	run := func(internal *InternalOptions) (start, end []types.Message) {
+		var mu sync.Mutex
+		tool := types.Tool{Name: "search", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		}}
+		r, err := StreamText(context.Background(), StreamTextOptions{
+			Model: r71streamModel(nil, step, r71streamHelloWorld), System: "sys", Prompt: "test", Tools: []types.Tool{tool},
+			Internal: internal, OnError: func(context.Context, error) {},
+			OnToolExecutionStart: func(_ context.Context, e OnToolCallStartEvent) {
+				mu.Lock()
+				defer mu.Unlock()
+				start = e.Messages
+			},
+			OnToolExecutionEnd: func(_ context.Context, e OnToolCallFinishEvent) {
+				mu.Lock()
+				defer mu.Unlock()
+				end = e.Messages
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = r.ConsumeStream()
+		mu.Lock()
+		defer mu.Unlock()
+		return start, end
+	}
+	start, end := run(&InternalOptions{ToolMessagesAsConversationPrompt: true})
+	want := `[{"role":"system","content":[{"type":"text","text":"sys"}]},{"role":"user","content":[{"type":"text","text":"test"}]}]`
+	r75streamAssertJSON(t, "start messages", r76streamRoleText(start), want)
+	r75streamAssertJSON(t, "end messages", r76streamRoleText(end), want)
+	start, _ = run(nil)
+	r75streamAssertJSON(t, "plain start messages", r76streamRoleText(start), `[{"role":"user","content":[{"type":"text","text":"test"}]}]`)
+
+	_, exec, ok := workflowToolMessages(&InternalOptions{ToolMessagesAsConversationPrompt: true},
+		types.Prompt{System: "sys", Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "test"}}}}},
+		[]types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{types.TextContent{Text: "let me search"}}}, {Role: types.RoleTool}})
+	if !ok || len(exec) != 3 || exec[0].Role != types.RoleSystem || exec[2].Role != types.RoleAssistant {
+		t.Fatalf("execute messages = %+v, want [system, user, assistant]", exec)
+	}
+}
+
+// r76streamRoleText reduces messages to role and text parts for comparison.
+func r76streamRoleText(msgs []types.Message) []map[string]interface{} {
+	out := []map[string]interface{}{}
+	for _, m := range msgs {
+		var content []map[string]interface{}
+		for _, p := range m.Content {
+			if tc, ok := p.(types.TextContent); ok {
+				content = append(content, map[string]interface{}{"type": "text", "text": tc.Text})
+			}
+		}
+		out = append(out, map[string]interface{}{"role": string(m.Role), "content": content})
+	}
+	return out
+}
