@@ -2,12 +2,12 @@ package mistral
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -70,7 +70,10 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	if err := json.Unmarshal(resp.Body, &response); err != nil {
 		return nil, fmt.Errorf("mistral: failed to decode speech response: %w", err)
 	}
-	audio, err := base64.StdEncoding.DecodeString(response.AudioData)
+	// TS returns audio_data as the base64 string, which generateSpeech
+	// decodes with convertBase64ToUint8Array (base64url and unpadded input
+	// accepted).
+	audio, err := fileutil.ConvertBase64ToBytes(response.AudioData)
 	if err != nil {
 		return nil, fmt.Errorf("mistral: failed to decode audio_data: %w", err)
 	}
