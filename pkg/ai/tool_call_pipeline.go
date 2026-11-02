@@ -780,6 +780,8 @@ func invalidToolCallResult(call types.ToolCall) types.ToolResult {
 		Error:        err,
 		Dynamic:      true,
 		ToolMetadata: call.ToolMetadata,
+		// TS streamLanguageModelCall gives this tool-error the call's title.
+		InvalidToolCall: true,
 	}
 }
 

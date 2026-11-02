@@ -631,6 +631,9 @@ func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []t
 				ToolMetadata:     tr.ToolMetadata,
 				Dynamic:          tr.Dynamic,
 			}
+			if tr.InvalidToolCall {
+				errPart.Title = tr.Title
+			}
 			if tr.ApprovalStatus == types.ToolApprovalStatusApproved {
 				toolOutputsWithApproval = append(toolOutputsWithApproval, errPart)
 			} else {
@@ -708,9 +711,16 @@ func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart 
 				typedErr = nil
 			}
 		}
+		// Only the tool-error of an invalid call carries the call's title
+		// (TS streamLanguageModelCall); an executed failure has none.
+		title := ""
+		if result.InvalidToolCall {
+			title = result.Title
+		}
 		return types.ToolErrorContent{
 			ToolCallID:       result.ToolCallID,
 			ToolName:         result.ToolName,
+			Title:            title,
 			Input:            result.Input,
 			Error:            errValue,
 			Err:              typedErr,
