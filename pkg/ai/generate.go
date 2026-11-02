@@ -1924,27 +1924,22 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// step loop continues even when FinishReason is not ToolCalls.
 		// Note: we check tool.ProviderExecuted on the definition (not call.ProviderExecuted)
 		// because some providers (e.g. Anthropic) do not set ProviderExecuted on ToolCalls.
+		// Every tool-result or tool-error part the model returns is a
+		// provider result (TS convertLanguageModelContent), so each one, by
+		// value or pointer, answers its call, as in the legacy loop.
+		resultIDs := modelToolResultIDs(genResult.Content)
 		for _, call := range genResult.ToolCalls {
 			tool := toolsByName[call.ToolName]
 			if tool == nil || !tool.ProviderExecuted || !tool.SupportsDeferredResults {
 				continue
 			}
-			hasResult := false
-			for _, part := range genResult.Content {
-				if tr, ok := part.(types.ToolResultContent); ok && tr.ToolCallID == call.ID {
-					hasResult = true
-					break
-				}
-			}
-			if !hasResult {
+			if !resultIDs[call.ID] {
 				pendingDeferredToolCalls[call.ID] = call.ToolName
 			}
 		}
 		// Remove entries resolved by tool-result parts in the current response.
-		for _, part := range genResult.Content {
-			if tr, ok := part.(types.ToolResultContent); ok {
-				delete(pendingDeferredToolCalls, tr.ToolCallID)
-			}
+		for id := range resultIDs {
+			delete(pendingDeferredToolCalls, id)
 		}
 
 		// Log this step's model warnings once per model call (TS
@@ -3243,4 +3238,27 @@ func filterDynamicToolResults(results []types.ToolResult) []types.ToolResult {
 		}
 	}
 	return out
+}
+
+// modelToolResultIDs returns the call IDs answered by the tool-result and
+// tool-error parts (value or pointer) of a model response.
+func modelToolResultIDs(content []types.ContentPart) map[string]bool {
+	ids := map[string]bool{}
+	for _, part := range content {
+		switch p := part.(type) {
+		case types.ToolResultContent:
+			ids[p.ToolCallID] = true
+		case *types.ToolResultContent:
+			if p != nil {
+				ids[p.ToolCallID] = true
+			}
+		case types.ToolErrorContent:
+			ids[p.ToolCallID] = true
+		case *types.ToolErrorContent:
+			if p != nil {
+				ids[p.ToolCallID] = true
+			}
+		}
+	}
+	return ids
 }

@@ -89,3 +89,52 @@ func TestR80GenLegacyLoopRepairAbortReturnsCause(t *testing.T) {
 		}
 	}
 }
+
+// Generate (GenerateText) and the legacy loop agree that any tool-result or
+// tool-error part (value or pointer) answers a deferred provider call: the
+// run ends after one step.
+func TestR80GenDeferredCallResolvedByAnyResultPart(t *testing.T) {
+	parts := map[string]types.ContentPart{
+		"tool-result":         types.ToolResultContent{ToolCallID: "call-1", ToolName: "code_execution", Result: "ok"},
+		"tool-result pointer": &types.ToolResultContent{ToolCallID: "call-1", ToolName: "code_execution", Result: "ok"},
+		"tool-error":          types.ToolErrorContent{ToolCallID: "call-1", ToolName: "code_execution", Error: "failed"},
+		"tool-error pointer":  &types.ToolErrorContent{ToolCallID: "call-1", ToolName: "code_execution", Error: "failed"},
+	}
+	for name, part := range parts {
+		for _, mode := range []string{"Generate", "GenerateAgent"} {
+			t.Run(name+"/"+mode, func(t *testing.T) {
+				calls := 0
+				model := &testutil.MockLanguageModel{
+					DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+						calls++
+						return &types.GenerateResult{
+							ToolCalls: []types.ToolCall{{ID: "call-1", ToolName: "code_execution", Arguments: map[string]interface{}{}, ProviderExecuted: true}},
+							Content: []types.ContentPart{
+								types.ToolCallContent{ToolCallID: "call-1", ToolName: "code_execution", Input: "{}", ProviderExecuted: true},
+								part,
+							},
+							FinishReason: types.FinishReasonStop,
+						}, nil
+					},
+				}
+				a := NewToolLoopAgent(AgentConfig{
+					Model:    model,
+					Tools:    []types.Tool{{Name: "code_execution", ProviderExecuted: true, SupportsDeferredResults: true}},
+					MaxSteps: 3,
+				})
+				var err error
+				if mode == "Generate" {
+					_, err = a.Generate(context.Background(), AgentGenerateOptions{Prompt: "x"})
+				} else {
+					_, err = a.GenerateAgent(context.Background(), AgentGenerateOptions{Prompt: "x"})
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if calls != 1 {
+					t.Fatalf("model calls = %d, want 1", calls)
+				}
+			})
+		}
+	}
+}
