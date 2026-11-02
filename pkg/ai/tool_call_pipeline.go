@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
@@ -497,12 +498,15 @@ func toolCallInputText(call types.ToolCall) string {
 	return string(data)
 }
 
-// toolCallInputValidator returns a JSON-schema validator for the tool input,
-// or nil when the tool has no JSON schema that can validate a decoded map.
-// Provider tools (provider-executed or not) are validated too: TS
-// parseToolCall checks every tool's inputSchema, and an invalid
-// provider-executed call becomes invalid and dynamic without a client tool
-// error. Provider tools without Parameters are not validated.
+// toolCallInputValidator returns the validator for the tool input, or nil
+// when the tool has no input schema. TS parseToolCall validates the input
+// with the tool's inputSchema whatever kind of schema it is, so every
+// schema.Schema / schema.Validator is used: JSON Schema, OrderedSchema,
+// struct-tag schemas (which decode the input map into the struct and check
+// its validate: tags) and custom validators. Provider tools (provider-executed
+// or not) are validated too: an invalid provider-executed call becomes invalid
+// and dynamic without a client tool error. Provider tools without Parameters
+// are not validated.
 func toolCallInputValidator(tool *types.Tool) schema.Validator {
 	if tool == nil {
 		return nil
@@ -520,32 +524,35 @@ func toolCallInputValidator(tool *types.Tool) schema.Validator {
 		}
 		return schema.NewJSONSchema(s)
 	case schema.Schema:
-		if s == nil {
+		if isNilInterfaceValue(s) {
 			return nil
 		}
-		return jsonSchemaToolValidator(s.Validator())
+		return toolSchemaValidator(s.Validator())
 	case schema.Validator:
-		return jsonSchemaToolValidator(s)
+		return toolSchemaValidator(s)
 	}
 	return nil
 }
 
-// jsonSchemaToolValidator returns v when it validates against a JSON Schema
-// (a *schema.JSONSchemaValidator, or an *schema.OrderedSchema, the TS
-// jsonSchema() analog), else nil. A struct-tag validator cannot validate the
-// decoded input map, so it is not used.
-func jsonSchemaToolValidator(v schema.Validator) schema.Validator {
-	switch val := v.(type) {
-	case *schema.JSONSchemaValidator:
-		if val != nil {
-			return val
-		}
-	case *schema.OrderedSchema:
-		if val != nil {
-			return val
-		}
+// toolSchemaValidator returns v, or nil when v is nil or a typed nil pointer.
+func toolSchemaValidator(v schema.Validator) schema.Validator {
+	if isNilInterfaceValue(v) {
+		return nil
 	}
-	return nil
+	return v
+}
+
+// isNilInterfaceValue reports whether v is nil or holds a nil pointer.
+func isNilInterfaceValue(v interface{}) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Interface:
+		return rv.IsNil()
+	}
+	return false
 }
 
 // applyToolCallInputDefaults fills any JSON-Schema "default" values missing
@@ -794,7 +801,7 @@ func (s *streamToolInputCallbacks) handle(ctx context.Context, chunk provider.St
 	return nil
 }
 
-// invalidToolCallError returns the error tool result synthesized for an
+// invalidToolCallResult returns the error tool result synthesized for an
 // invalid client tool call (TS "insert error tool outputs for invalid tool
 // calls"). Invalid provider-executed calls never get a client tool error.
 // The tool error has no provider metadata: TS builds it without the call's

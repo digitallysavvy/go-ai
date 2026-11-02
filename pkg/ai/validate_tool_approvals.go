@@ -154,10 +154,10 @@ func approvalSignatureInput(call types.ToolCall) interface{} {
 }
 
 // toolInputValidator returns the validator for a tool's input schema, or nil
-// when the tool has no schema that can validate the decoded input. It is the
-// validator the call was parsed with (toolCallInputValidator), so an approved
-// input or a UI message part is revalidated the way the call was validated:
-// a struct-tag schema cannot validate a decoded map and is skipped there too.
+// when the tool has no input schema. It is the validator the call was parsed
+// with (toolCallInputValidator), so an approved input or a UI message part is
+// revalidated the way the call was validated, as TS revalidates with the
+// tool's inputSchema.
 func toolInputValidator(tool *types.Tool) schema.Validator {
 	return toolCallInputValidator(tool)
 }
