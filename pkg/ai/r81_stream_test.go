@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -957,6 +958,65 @@ func TestR81streamTSGetResponseUIMessageID(t *testing.T) {
 		got, ok := responseUIMessageIDOK(tc.opts)
 		if got != tc.want || ok != tc.wantOK {
 			t.Errorf("%s: got %q, %v; want %q, %v", tc.name, got, ok, tc.want, tc.wantOK)
+		}
+	}
+}
+
+// TS to-ui-message-chunk.test.ts 212: custom and lifecycle parts.
+func TestR81streamTSToUIMessageChunkCustomAndLifecycle(t *testing.T) {
+	meta := json.RawMessage(`{"testProvider":{"signature":"sig-1"}}`)
+	metadata := func(map[string]interface{}) map[string]interface{} {
+		return map[string]interface{}{"model": "test-model"}
+	}
+	f := false
+	for _, tc := range []struct {
+		name string
+		part provider.StreamChunk
+		opts UIMessageStreamResultOptions
+		want string // "" = undefined
+	}{
+		{"custom", provider.StreamChunk{Type: provider.ChunkTypeCustom, CustomContent: &types.CustomContent{Kind: "openai.compaction"}, ProviderMetadata: meta}, UIMessageStreamResultOptions{},
+			`{"kind":"openai.compaction","providerMetadata":{"testProvider":{"signature":"sig-1"}},"type":"custom"}`},
+		{"start", provider.StreamChunk{Type: provider.ChunkTypeStart}, UIMessageStreamResultOptions{MessageMetadata: metadata, ResponseMessageID: "msg-1"},
+			`{"messageId":"msg-1","messageMetadata":{"model":"test-model"},"type":"start"}`},
+		{"start sendStart false", provider.StreamChunk{Type: provider.ChunkTypeStart}, UIMessageStreamResultOptions{SendStart: &f}, ""},
+		{"finish", provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: "stop", RawFinishReason: "stop"}, UIMessageStreamResultOptions{MessageMetadata: metadata},
+			`{"finishReason":"stop","messageMetadata":{"model":"test-model"},"type":"finish"}`},
+		{"finish sendFinish false", provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: "stop"}, UIMessageStreamResultOptions{SendFinish: &f}, ""},
+		{"start-step", provider.StreamChunk{Type: provider.ChunkTypeStartStep}, UIMessageStreamResultOptions{}, `{"type":"start-step"}`},
+		{"finish-step", provider.StreamChunk{Type: provider.ChunkTypeFinishStep, FinishReason: "stop", RawFinishReason: "stop", ProviderMetadata: meta}, UIMessageStreamResultOptions{}, `{"type":"finish-step"}`},
+		{"abort", provider.StreamChunk{Type: provider.ChunkTypeAbort, AbortReason: "user"}, UIMessageStreamResultOptions{}, `{"reason":"user","type":"abort"}`},
+	} {
+		chunk, ok := ToUIMessageChunk(tc.part, tc.opts)
+		if tc.want == "" {
+			if ok || chunk != nil {
+				t.Errorf("%s: got %v, want undefined", tc.name, chunk)
+			}
+			continue
+		}
+		if got := r81streamJSON(t, chunk); !ok || got != tc.want {
+			t.Errorf("%s: got %s (%v), want %s", tc.name, got, ok, tc.want)
+		}
+	}
+}
+
+// TS to-ui-message-chunk.test.ts 475 (schema input of a transformed
+// approval request) and 679 (parts without a UI chunk).
+func TestR81streamTSToUIMessageChunkApprovalSchemaInputAndUndefined(t *testing.T) {
+	chunk, ok := ToUIMessageChunk(provider.StreamChunk{Type: provider.ChunkTypeToolApprovalRequest, ToolApprovalRequest: &types.ToolApprovalRequestContent{
+		ApprovalID:       "approval-1",
+		ToolCall:         types.ToolCall{ID: "call-1", ToolName: "staticTool", Arguments: map[string]interface{}{"value": "trimmed"}},
+		InputSchemaInput: map[string]interface{}{"value": " trimmed "},
+	}}, UIMessageStreamResultOptions{})
+	if got, want := r81streamJSON(t, chunk), `{"approvalId":"approval-1","inputSchemaInput":{"value":" trimmed "},"toolCallId":"call-1","type":"tool-approval-request"}`; !ok || got != want {
+		t.Fatalf("475: got %s (%v), want %s", got, ok, want)
+	}
+	for _, part := range []provider.StreamChunk{
+		{Type: provider.ChunkTypeToolInputEnd, ID: "call-1"},
+		{Type: provider.ChunkTypeRaw, Raw: json.RawMessage(`{"provider":"raw"}`)},
+	} {
+		if chunk, ok := ToUIMessageChunk(part, UIMessageStreamResultOptions{}); ok || chunk != nil {
+			t.Errorf("679 %s: got %v, want undefined", part.Type, chunk)
 		}
 	}
 }
