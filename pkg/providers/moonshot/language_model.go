@@ -884,7 +884,7 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 		if choice.Index != nil {
 			s.choiceIndex = choice.Index
 		}
-		if choice.FinishReason != nil && *choice.FinishReason != "" {
+		if choice.FinishReason != nil { // TS != null: "" maps to other
 			s.finishReason = providerutils.MapOpenAIFinishReason(*choice.FinishReason)
 			s.rawFinishReason = *choice.FinishReason
 		}

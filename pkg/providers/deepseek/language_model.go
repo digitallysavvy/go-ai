@@ -709,8 +709,8 @@ type deepseekStreamChunk struct {
 	SystemFingerprint string          `json:"system_fingerprint"`
 	Error             json.RawMessage `json:"error,omitempty"`
 	Choices           []struct {
-		Index        *int   `json:"index"`
-		FinishReason string `json:"finish_reason"`
+		Index        *int    `json:"index"`
+		FinishReason *string `json:"finish_reason"`
 		Delta        struct {
 			Role             string `json:"role"`
 			Content          string `json:"content"`
@@ -747,6 +747,7 @@ type deepseekStream struct {
 	// is attached to it. finishRaw is the last finish_reason seen; finishErrored is set by a
 	// parse/error chunk after it; endQueued guards queueEnd.
 	finishRaw     string
+	finishSeen    bool // a non-null finish_reason arrived (TS != null: "" counts)
 	finishErrored bool
 	endQueued     bool
 
@@ -915,8 +916,8 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 			}
 
 			// TS records finish_reason before inspecting the delta.
-			if choice.FinishReason != "" {
-				s.finishRaw = choice.FinishReason
+			if choice.FinishReason != nil {
+				s.finishRaw, s.finishSeen = *choice.FinishReason, true
 				s.finishErrored = false
 			}
 
@@ -993,7 +994,7 @@ func (s *deepseekStream) queueEnd() bool {
 		s.flushQueue = append(s.flushQueue, &c)
 	}
 	finish := &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonInterrupted}
-	if s.finishRaw != "" {
+	if s.finishSeen {
 		finish.FinishReason = mapDeepSeekFinishReason(s.finishRaw)
 		finish.RawFinishReason = s.finishRaw
 	}
