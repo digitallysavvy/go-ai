@@ -67,7 +67,9 @@ func TestR78Gen_InvalidToolErrorTitle(t *testing.T) {
 			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "fail", ToolName: "tool1", RawArguments: `{"value":"boom"}`}},
 			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
 		}
-		identity := func(_ context.Context, c provider.StreamChunk) []provider.StreamChunk { return []provider.StreamChunk{c} }
+		identity := func(_ context.Context, c provider.StreamChunk) []provider.StreamChunk {
+			return []provider.StreamChunk{c}
+		}
 		r := r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, step1, r71streamHelloWorld), Prompt: "x", Tools: []types.Tool{r78genTitledTool()}, ExperimentalTransform: []StreamTransformFunc{identity}})
 		errs := r78genToolErrors(r.Steps()[0].Content)
 		if bad := errs["bad"]; bad.Title != "Tool One" {
