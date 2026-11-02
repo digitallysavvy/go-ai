@@ -92,10 +92,10 @@ func TestTSFixtureFramesAccepted(t *testing.T) {
 	}{
 		{"openai/testdata/tscases/chat.json.gz", chat(ChatChunkShape{Kind: ChunkKindOpenAI}), unparsable},
 		{"openai/testdata/tscases/completion.json.gz", chat(ChatChunkShape{Kind: ChunkKindOpenAICompletion}), unparsable},
-		{"groq/testdata/tscases/chat.json.gz", chat(ChatChunkShape{Kind: ChunkKindGroq}), unparsable},
+		{"groq/testdata/tscases/chat_asserts.json.gz", chat(ChatChunkShape{Kind: ChunkKindGroq}), unparsable},
 		{"deepseek/testdata/tscases/chat.json.gz", chat(ChatChunkShape{Kind: ChunkKindDeepSeek}), nil},
 		{"moonshot/testdata/tscases/chat.json.gz", chat(ChatChunkShape{Kind: ChunkKindMoonshot}), nil},
-		{"mistral/testdata/tscases/chat.json.gz", chat(ChatChunkShape{Kind: ChunkKindMistral}), nil},
+		{"mistral/testdata/tscases/chat_asserts.json.gz", chat(ChatChunkShape{Kind: ChunkKindMistral}), nil},
 		{"alibaba/testdata/tscases/chat.json.gz", chat(ChatChunkShape{Kind: ChunkKindAlibaba}), nil},
 		{"testdata/tscases/compat_chat.json.gz", chat(ChatChunkShape{Kind: ChunkKindOpenAICompatible}), unparsable},
 		{"cerebras/testdata/tscases/chat.json.gz", chat(ChatChunkShape{Kind: ChunkKindOpenAICompatible, Error: ChunkErrorCerebras}), nil},

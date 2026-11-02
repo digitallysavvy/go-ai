@@ -6,9 +6,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providers/alibaba"
-	"github.com/digitallysavvy/go-ai/pkg/providers/cohere"
 	"github.com/digitallysavvy/go-ai/pkg/providers/deepseek"
-	"github.com/digitallysavvy/go-ai/pkg/providers/groq"
 	"github.com/digitallysavvy/go-ai/pkg/providers/huggingface"
 	"github.com/digitallysavvy/go-ai/pkg/providers/moonshot"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
@@ -26,16 +24,8 @@ func TestProviderTSCases(t *testing.T) {
 		skip       map[string]string
 	}
 	suites := []tc{
-		// groq: kept while pkg/providers/groq TestR78prova_TSCasesChatAsserts
-		// skips "should pass headers" (its --asserts form also checks the TS
-		// test user agent); this older extraction replays that case's header
-		// snapshot.
-		{"groq", "groq/testdata/tscases/chat.json.gz", func(b, id string) (provider.LanguageModel, error) {
-			return groq.New(groq.Config{APIKey: "k", BaseURL: b}).LanguageModel(id)
-		}, "gemma2-9b-it", map[string]string{
-			"should send request body":                            "TS groq returns request.body as a JSON string; Go keeps the object",
-			"should handle structured outputs with Kimi K2 model": "model id comes from a custom provider call in the TS test",
-		}},
+		// groq: replayed by pkg/providers/groq TestR78prova_TSCasesChatAsserts
+		// and TestR79prova_TSCasesPassHeaders (chat_asserts.json.gz).
 		// mistral: replayed by pkg/providers/mistral TestR78prova_TSCasesChatAsserts
 		// (chat_asserts.json.gz, 47 cases, a superset of the old chat.json.gz's 24).
 		{"deepseek", "deepseek/testdata/tscases/chat.json.gz", func(b, id string) (provider.LanguageModel, error) {
@@ -50,9 +40,8 @@ func TestProviderTSCases(t *testing.T) {
 			"should include x_search tool call with real response":         "provider-executed call has no result part, so its position among content cannot be compared",
 			"should include code_interpreter tool call with real response": "provider-executed call has no result part, so its position among content cannot be compared",
 		}},
-		{"cohere", "cohere/testdata/tscases/chat.json.gz", func(b, id string) (provider.LanguageModel, error) {
-			return cohere.New(cohere.Config{APIKey: "k", BaseURL: b}).LanguageModel(id)
-		}, "command-r-plus", nil},
+		// cohere: replayed by pkg/providers/cohere TestR79prova_TSCasesChatAsserts
+		// (chat_asserts.json.gz, 36 cases, a superset of the old chat.json.gz's 26).
 		{"huggingface", "huggingface/testdata/tscases/responses.json.gz", func(b, id string) (provider.LanguageModel, error) {
 			return huggingface.New(huggingface.Config{APIKey: "k", BaseURL: b}).LanguageModel(id)
 		}, "moonshotai/Kimi-K2-Instruct", map[string]string{
