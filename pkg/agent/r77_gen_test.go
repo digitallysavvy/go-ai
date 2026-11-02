@@ -3,9 +3,12 @@ package agent
 import (
 	"context"
 	"reflect"
+	"sync/atomic"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 // TS WorkflowAgent (generate) replays the tool input callbacks with
@@ -49,5 +52,39 @@ func TestR77GenAgentInputCallbacksGetConversationPrompt(t *testing.T) {
 		if !reflect.DeepEqual(roles(startGot), want) || !reflect.DeepEqual(roles(availableGot), want) {
 			t.Fatalf("on=%v: start %v available %v, want %v", on, roles(startGot), roles(availableGot), want)
 		}
+	}
+}
+
+// TS generateText resolves a pending deferred provider call on any
+// tool-result part of the model response, an isError one included
+// (pendingDeferredToolCalls reads the raw response content). The legacy loop
+// read the step content, where an isError result is already a tool-error
+// part, so a deferred call answered with an error kept the run going.
+func TestR77GenAgentDeferredProviderErrorResultResolves(t *testing.T) {
+	isErr := true
+	var calls atomic.Int32
+	model := &testutil.MockLanguageModel{
+		ProviderName: "p", ModelName: "m",
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls.Add(1)
+			call := types.ToolCall{ID: "srv-1", ToolName: "code_execution", Arguments: map[string]interface{}{}, ProviderExecuted: true, ProviderExecutedSet: true}
+			return &types.GenerateResult{
+				ToolCalls: []types.ToolCall{call},
+				Content: []types.ContentPart{
+					types.ToolCallContent{ToolCallID: "srv-1", ToolName: "code_execution", Arguments: map[string]interface{}{}, ProviderExecuted: true},
+					types.ToolResultContent{ToolCallID: "srv-1", ToolName: "code_execution", Result: map[string]interface{}{"error": "boom"}, IsError: &isErr, ProviderExecuted: true},
+				},
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+	tool := types.Tool{Name: "code_execution", Type: types.ToolTypeProviderDefined, ProviderExecuted: true, SupportsDeferredResults: true}
+	a := NewToolLoopAgent(AgentConfig{Model: model, Tools: []types.Tool{tool}})
+	r, err := a.Execute(context.Background(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := calls.Load(); n != 1 || len(r.Steps) != 1 {
+		t.Fatalf("model calls = %d, steps = %d, want 1 (the deferred call was answered)", n, len(r.Steps))
 	}
 }
