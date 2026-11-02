@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
@@ -136,5 +138,151 @@ func TestR80GenDeferredCallResolvedByAnyResultPart(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// r80genLoopModel calls tool "test_tool" on every step, or answers "done" on
+// step finishAt (TS default-stop-condition.test.ts response(step)), for both
+// generate and stream.
+func r80genLoopModel(finishAt int) *testutil.MockLanguageModel {
+	var mu sync.Mutex
+	calls := 0
+	next := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		return calls
+	}
+	usage := types.Usage{InputTokens: intPtr(1), OutputTokens: intPtr(1), TotalTokens: intPtr(2)}
+	return &testutil.MockLanguageModel{
+		ProviderName: "mock-provider",
+		ModelName:    "mock-model-id",
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			step := next()
+			if step == finishAt {
+				return &types.GenerateResult{Text: "done", Content: []types.ContentPart{types.TextContent{Text: "done"}}, FinishReason: types.FinishReasonStop, Usage: usage}, nil
+			}
+			id := fmt.Sprintf("call-%d", step)
+			return &types.GenerateResult{
+				ToolCalls:    []types.ToolCall{{ID: id, ToolName: "test_tool", RawArguments: "{}"}},
+				Content:      []types.ContentPart{types.ToolCallContent{ToolCallID: id, ToolName: "test_tool", Input: "{}"}},
+				FinishReason: types.FinishReasonToolCalls,
+				Usage:        usage,
+			}, nil
+		},
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			step := next()
+			u := usage
+			if step == finishAt {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeText, Text: "done"},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: &u},
+				}), nil
+			}
+			call := types.ToolCall{ID: fmt.Sprintf("call-%d", step), ToolName: "test_tool", RawArguments: "{}"}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &call},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: &u},
+			}), nil
+		},
+	}
+}
+
+// Ports the agent cases of TS default-stop-condition.test.ts not covered by
+// default_stop_condition_test.go: no warning for a tool without execute, for
+// a tool that needs approval, for a custom condition (evaluated once per
+// step), with warning logging disabled, or when prepareCall replaces the
+// default limit; the warning survives a prepareCall that keeps it. Each runs
+// through Generate, Stream and the legacy GenerateAgent.
+func TestR80GenDefaultStopConditionCases(t *testing.T) {
+	execTool := types.Tool{Name: "test_tool", Parameters: map[string]interface{}{"type": "object"}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "result", nil
+	}}
+	run := func(t *testing.T, mode string, cfg AgentConfig) int {
+		t.Helper()
+		cfg.Model = r80genLoopModel(0)
+		a := NewToolLoopAgent(cfg)
+		switch mode {
+		case "Generate":
+			r, err := a.Generate(context.Background(), AgentGenerateOptions{Prompt: "Call the test tool."})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return len(r.Steps)
+		case "Stream":
+			r, err := a.Stream(context.Background(), AgentStreamOptions{AgentGenerateOptions: AgentGenerateOptions{Prompt: "Call the test tool."}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := r.ConsumeStream(); err != nil {
+				t.Fatal(err)
+			}
+			return len(r.Steps())
+		default:
+			r, err := a.GenerateAgent(context.Background(), AgentGenerateOptions{Prompt: "Call the test tool."})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return len(r.Steps)
+		}
+	}
+	for _, mode := range []string{"Generate", "Stream", "GenerateAgent"} {
+		t.Run(mode+"/tool without execute", func(t *testing.T) {
+			warnings := captureWarnings(t)
+			noExec := types.Tool{Name: "test_tool", Parameters: map[string]interface{}{"type": "object"}, OutputSchema: map[string]interface{}{"type": "string"}}
+			if n := run(t, mode, AgentConfig{Tools: []types.Tool{noExec}}); n != 1 || len(warnings()) != 0 {
+				t.Fatalf("steps = %d, warnings = %v", n, warnings())
+			}
+		})
+		t.Run(mode+"/tool needs approval", func(t *testing.T) {
+			warnings := captureWarnings(t)
+			approval := execTool
+			approval.ToolApproval = true
+			if n := run(t, mode, AgentConfig{Tools: []types.Tool{approval}}); n != 1 || len(warnings()) != 0 {
+				t.Fatalf("steps = %d, warnings = %v", n, warnings())
+			}
+		})
+		t.Run(mode+"/custom condition once per step", func(t *testing.T) {
+			warnings := captureWarnings(t)
+			var mu sync.Mutex
+			evaluations := 0
+			limit := ai.IsStepCount(2)
+			stop := func(s ai.StopConditionState) string {
+				mu.Lock()
+				evaluations++
+				mu.Unlock()
+				return limit(s)
+			}
+			n := run(t, mode, AgentConfig{Tools: []types.Tool{execTool}, StopWhen: []ai.StopCondition{stop}})
+			mu.Lock()
+			defer mu.Unlock()
+			if n != 2 || evaluations != 2 || len(warnings()) != 0 {
+				t.Fatalf("steps = %d, evaluations = %d, warnings = %v", n, evaluations, warnings())
+			}
+		})
+		t.Run(mode+"/disabled warning logging", func(t *testing.T) {
+			warnings := captureWarnings(t)
+			t.Setenv("AI_SDK_LOG_WARNINGS", "false")
+			if n := run(t, mode, AgentConfig{Tools: []types.Tool{execTool}}); n != 20 || len(warnings()) != 0 {
+				t.Fatalf("steps = %d, warnings = %v", n, warnings())
+			}
+		})
+		t.Run(mode+"/prepareCall replaces the default limit", func(t *testing.T) {
+			warnings := captureWarnings(t)
+			prepare := func(ctx context.Context, c PrepareCallConfig) PrepareCallConfig {
+				c.StopWhen = []ai.StopCondition{ai.IsStepCount(20)}
+				return c
+			}
+			if n := run(t, mode, AgentConfig{Tools: []types.Tool{execTool}, PrepareCall: prepare}); n != 20 || len(warnings()) != 0 {
+				t.Fatalf("steps = %d, warnings = %v", n, warnings())
+			}
+		})
+		t.Run(mode+"/prepareCall keeps the default warning", func(t *testing.T) {
+			warnings := captureWarnings(t)
+			prepare := func(ctx context.Context, c PrepareCallConfig) PrepareCallConfig { return c }
+			if n := run(t, mode, AgentConfig{Tools: []types.Tool{execTool}, PrepareCall: prepare}); n != 20 || len(warnings()) != 1 {
+				t.Fatalf("steps = %d, warnings = %v", n, warnings())
+			}
+		})
 	}
 }
