@@ -2,8 +2,10 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -78,5 +80,86 @@ func TestR80integGenerateObjectStructSchema(t *testing.T) {
 		Schema: schema.NewSimpleStructSchema(reflect.TypeOf(r80integEmailSummary{})),
 	}); err == nil {
 		t.Fatal("missing required priority: want an error")
+	}
+}
+
+// r80integApprovalMessages decodes a UI conversation whose last assistant
+// message holds an approved tool part with the given approval JSON, and
+// converts it to model messages.
+func r80integApprovalMessages(t *testing.T, approval string) []types.Message {
+	t.Helper()
+	var msgs []UIMessage
+	raw := `[{"id":"u1","role":"user","parts":[{"type":"text","text":"go"}]},` +
+		`{"id":"a1","role":"assistant","parts":[{"type":"tool-tool1","toolCallId":"call-1","state":"approval-responded","input":{"value":"v"},"approval":` + approval + `}]}]`
+	if err := json.Unmarshal([]byte(raw), &msgs); err != nil {
+		t.Fatal(err)
+	}
+	model, err := ConvertToModelMessages(context.Background(), msgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return model
+}
+
+// stream CR 2 r80: a UI approval's "inputSchemaInput": null reaches the model
+// messages and tool approval validation validates null (TS hasOwnProperty in
+// convert-to-model-messages.ts and validate-tool-approvals.ts).
+func TestR80integNullApprovalInputSchemaInputValidated(t *testing.T) {
+	tool := types.Tool{
+		Name: "tool1",
+		Parameters: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}},
+			"required":   []interface{}{"value"},
+		},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		},
+	}
+	for _, tc := range []struct {
+		name     string
+		approval string
+		invalid  bool
+		wantJSON string
+	}{
+		{"null", `{"id":"ap-1","approved":true,"inputSchemaInput":null}`, true, `"inputSchemaInput":null`},
+		{"absent", `{"id":"ap-1","approved":true}`, false, ""},
+		{"object", `{"id":"ap-1","approved":true,"inputSchemaInput":{"value":"v"}}`, false, `"inputSchemaInput":{"value":"v"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			msgs := r80integApprovalMessages(t, tc.approval)
+			var request *types.ToolApprovalRequestContent
+			for _, m := range msgs {
+				for _, c := range m.Content {
+					if r, ok := c.(types.ToolApprovalRequestContent); ok {
+						request = &r
+					}
+				}
+			}
+			if request == nil {
+				t.Fatalf("no approval request in %#v", msgs)
+			}
+			b, err := json.Marshal(*request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantJSON == "" && strings.Contains(string(b), "inputSchemaInput") || tc.wantJSON != "" && !strings.Contains(string(b), tc.wantJSON) {
+				t.Fatalf("request JSON = %s, want %q", b, tc.wantJSON)
+			}
+			collected, err := CollectToolApprovals(msgs)
+			if err != nil || len(collected.ApprovedToolApprovals) != 1 {
+				t.Fatalf("collected %+v, %v", collected, err)
+			}
+			res, err := ValidateApprovedToolApprovals(context.Background(), ValidateApprovedToolApprovalsOptions{
+				ApprovedToolApprovals: collected.ApprovedToolApprovals,
+				Tools:                 []types.Tool{tool},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := len(res.InvalidToolApprovals) == 1; got != tc.invalid {
+				t.Fatalf("invalid = %v (%+v), want %v", got, res, tc.invalid)
+			}
+		})
 	}
 }

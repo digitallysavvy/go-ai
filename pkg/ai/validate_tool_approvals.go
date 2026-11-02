@@ -169,7 +169,9 @@ func revalidateApprovedInput(ctx context.Context, approval CollectedToolApproval
 		approvedInput = map[string]interface{}{}
 	}
 	var value interface{} = approvedInput
-	if approval.ApprovalRequest.InputSchemaInput != nil {
+	// TS hasOwnProperty(approvalRequest, 'inputSchemaInput'): a null schema
+	// input is validated as null.
+	if approval.ApprovalRequest.InputSchemaInput != nil || approval.ApprovalRequest.InputSchemaInputSet {
 		value = approval.ApprovalRequest.InputSchemaInput
 	}
 	// TS's safeValidateTypes performs a zod/standard-schema parse, which

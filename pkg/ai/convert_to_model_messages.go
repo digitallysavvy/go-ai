@@ -275,7 +275,10 @@ func convertUIAssistantBlock(ctx context.Context, message UIMessage, block []UIM
 					IsAutomatic:      isTrue(p.Approval.IsAutomatic),
 					Reason:           p.Approval.RequestReason,
 					InputSchemaInput: p.Approval.InputSchemaInput,
-					Signature:        p.Approval.Signature,
+					// TS forwards inputSchemaInput when the approval has
+					// the own property, a null included.
+					InputSchemaInputSet: p.Approval.hasInputSchemaInput(),
+					Signature:           p.Approval.Signature,
 				})
 			}
 

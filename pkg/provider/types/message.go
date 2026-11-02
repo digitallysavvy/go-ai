@@ -715,6 +715,19 @@ type ToolApprovalRequestContent struct {
 	// Approval revalidation re-validates and re-refines this value and
 	// requires the result to equal the approved input.
 	InputSchemaInput interface{} `json:"inputSchemaInput,omitempty"`
+
+	// InputSchemaInputSet marks InputSchemaInput as present even when it is
+	// nil: a JSON null schema input from a UI approval (TS keeps the own
+	// property, so approval revalidation validates null and the part
+	// serializes `"inputSchemaInput": null`). A non-nil InputSchemaInput is
+	// present without it.
+	InputSchemaInputSet bool `json:"-"`
+}
+
+// hasInputSchemaInput reports whether the request carries an inputSchemaInput,
+// including a JSON null (TS hasOwnProperty).
+func (t ToolApprovalRequestContent) hasInputSchemaInput() bool {
+	return t.InputSchemaInput != nil || t.InputSchemaInputSet
 }
 
 func (t ToolApprovalRequestContent) ContentType() string {
@@ -732,15 +745,21 @@ func (t ToolApprovalRequestContent) MarshalJSON() ([]byte, error) {
 		Reason           string           `json:"reason,omitempty"`
 		Signature        string           `json:"signature,omitempty"`
 		IsAutomatic      bool             `json:"isAutomatic,omitempty"`
-		InputSchemaInput interface{}      `json:"inputSchemaInput,omitempty"`
+		InputSchemaInput json.RawMessage  `json:"inputSchemaInput,omitempty"`
 	}
 	out := toolApprovalRequestContentJSON{
-		Type:             t.ContentType(),
-		ApprovalID:       t.ApprovalID,
-		Reason:           t.Reason,
-		Signature:        t.Signature,
-		IsAutomatic:      t.IsAutomatic,
-		InputSchemaInput: t.InputSchemaInput,
+		Type:        t.ContentType(),
+		ApprovalID:  t.ApprovalID,
+		Reason:      t.Reason,
+		Signature:   t.Signature,
+		IsAutomatic: t.IsAutomatic,
+	}
+	if t.hasInputSchemaInput() {
+		raw, err := json.Marshal(t.InputSchemaInput)
+		if err != nil {
+			return nil, err
+		}
+		out.InputSchemaInput = raw
 	}
 	if !toolCallIsZero(t.ToolCall) {
 		toolCall := toolCallContentFromToolCall(t.ToolCall)
