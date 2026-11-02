@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
+	"math"
 	"net/http"
 	"strings"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -154,6 +156,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		result.RawResponse = providerutils.RawJSONBody(httpResp.Body)
 	}
 	result.ResponseMetadata = providerutils.BuildResponseMetadata(response.ID, response.Model, response.CreatedAt)
+	if ts, ok := openResponsesCreatedAt(httpResp.Body); ok {
+		// TS new Date(response.created_at * 1000): a present 0 is the epoch.
+		result.ResponseMetadata.Timestamp = ts
+	}
 	result.ResponseMetadata.Headers = result.ResponseHeaders
 
 	return result, nil
@@ -1260,9 +1266,10 @@ func (s *openResponsesStream) Next() (*provider.StreamChunk, error) {
 				return nil, err
 			}
 
-			// TS only skips the [DONE] marker; flush() runs when the stream ends.
+			// TS parseJsonEventStream drops the [DONE] frame and keeps
+			// reading; flush() runs at the end of the body (the io.EOF branch
+			// above).
 			if streaming.IsStreamDone(event) {
-				s.queueFlush()
 				continue
 			}
 			eventData = event.Data
@@ -1933,4 +1940,21 @@ func wireNumberPresent(raw map[string]interface{}, object, key string) bool {
 var openResponsesOptionsSchema = providerutils.OptionSchema{
 	"reasoningEffort":  providerutils.OptNullable(providerutils.OptString),
 	"reasoningSummary": providerutils.OptNullable(providerutils.OptEnum("concise", "detailed", "auto")),
+}
+
+// openResponsesCreatedAt reads a present `created_at` (unix seconds) from the
+// raw response body, as TS `new Date(response.created_at * 1000)`: 0 is the
+// epoch, which the int64 OpenResponsesResponse.CreatedAt cannot tell from an
+// absent value.
+func openResponsesCreatedAt(body []byte) (time.Time, bool) {
+	var v struct {
+		CreatedAt *float64 `json:"created_at"`
+	}
+	if len(body) == 0 || json.Unmarshal(body, &v) != nil || v.CreatedAt == nil {
+		return time.Time{}, false
+	}
+	if math.IsNaN(*v.CreatedAt) || math.IsInf(*v.CreatedAt, 0) {
+		return time.Time{}, false
+	}
+	return time.UnixMilli(int64(*v.CreatedAt * 1000)), true
 }

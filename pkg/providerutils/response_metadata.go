@@ -12,9 +12,13 @@ import (
 // which deepseek/groq/mistral (93b2acd) all re-export as their own
 // get-response-metadata module.
 //
-// created == 0 is treated as "absent" (TS: created != null), leaving
-// Timestamp at its zero value. Headers is set by the caller (it isn't part
-// of the shared TS helper's input).
+// created == 0 is treated as "absent", leaving Timestamp at its zero value.
+// TS checks `created != null`, so a present 0 is the epoch there: an int64
+// cannot tell the two apart, so callers whose wire value may be 0 pass 0 here
+// and set Timestamp themselves from the decoded `*int64`/`*float64` (groq,
+// mistral, deepseek, alibaba, moonshot, the OpenAI/xAI Responses models and
+// openresponses do). Headers is set by the caller (it isn't part of the
+// shared TS helper's input).
 func BuildResponseMetadata(id, modelID string, created int64) *types.ResponseMetadata {
 	meta := &types.ResponseMetadata{
 		ID:      id,

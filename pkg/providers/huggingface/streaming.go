@@ -99,8 +99,10 @@ func (s *hfStream) Next() (*provider.StreamChunk, error) {
 			return nil, err
 		}
 		if streaming.IsStreamDone(event) {
-			s.finished = true
-			return s.buildFinishChunk(), nil
+			// TS parseJsonEventStream drops the [DONE] frame and keeps reading;
+			// the finish part comes at the end of the body (the io.EOF branch
+			// above).
+			continue
 		}
 
 		chunk, err := s.handleEvent(event.Data)

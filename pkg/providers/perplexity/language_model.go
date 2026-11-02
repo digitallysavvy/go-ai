@@ -657,8 +657,8 @@ func (s *perplexityAgentStream) Next() (*provider.StreamChunk, error) {
 			continue
 		}
 		if streaming.IsStreamDone(event) {
-			s.done = true
-			s.flush()
+			// TS parseJsonEventStream drops the [DONE] frame and keeps reading;
+			// flush() runs at the end of the body (the io.EOF branch above).
 			continue
 		}
 		s.processEvent(event.Data)
