@@ -121,6 +121,17 @@ type InternalOptions struct {
 	// WorkflowAgent.
 	DeferApprovalRequests bool
 
+	// ClientToolResultsWithoutCallMetadata makes the loop leave a client
+	// (not provider-executed) tool call's provider metadata off the tool
+	// results it builds for that call: executed, failed and invalid-call
+	// results carry no ProviderMetadata, so the step content, ToolResults,
+	// response messages and the next step's prompt have none. TS
+	// WorkflowAgent's executeTool / createInvalidToolResult build results
+	// without providerOptions, where generateText and streamText copy
+	// toolCall.providerMetadata. Provider-executed results keep their own
+	// metadata. Used by WorkflowAgent.
+	ClientToolResultsWithoutCallMetadata bool
+
 	// ApprovalsResumed tells the legacy agent loop (pkg/agent GenerateAgent)
 	// that the caller already resumed the tool approvals of the input
 	// messages, so the loop does not resume them again: TS WorkflowAgent

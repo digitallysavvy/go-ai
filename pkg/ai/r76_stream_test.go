@@ -75,3 +75,12 @@ func TestR76StreamMetadataMergeTypedObjects(t *testing.T) {
 	}
 	r75streamAssertJSON(t, "onEnd metadata", msg["metadata"], `{"createdAt":"t0","model":"m","tokens":7}`)
 }
+
+// cr-r76-carry-to-stream.md: the WorkflowAgent option exists (honored by gen's
+// tool executor and the legacy agent loop; behavior tests are gen's/carry's).
+func TestR76StreamInternalClientToolResultsWithoutCallMetadataField(t *testing.T) {
+	opts := InternalOptions{ClientToolResultsWithoutCallMetadata: true}
+	if !opts.ClientToolResultsWithoutCallMetadata {
+		t.Fatal("field not set")
+	}
+}
