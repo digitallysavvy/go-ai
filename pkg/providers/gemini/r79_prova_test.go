@@ -77,10 +77,10 @@ func TestR79prova_MetadataStripsUndeclaredKeysStream(t *testing.T) {
 // a null score falls through to the {} member.
 func TestR79prova_RetrievalMetadataUnion(t *testing.T) {
 	for in, want := range map[string]string{
-		`{"retrievalMetadata":{"webDynamicRetrievalScore":0.96,"x":1}}`:  `{"retrievalMetadata":{"webDynamicRetrievalScore":0.96}}`,
+		`{"retrievalMetadata":{"webDynamicRetrievalScore":0.96,"x":1}}`: `{"retrievalMetadata":{"webDynamicRetrievalScore":0.96}}`,
 		`{"retrievalMetadata":{"webDynamicRetrievalScore":null,"x":1}}`: `{"retrievalMetadata":{}}`,
-		`{"retrievalMetadata":null}`:                                     `{"retrievalMetadata":null}`,
-		`null`:                                                           `null`,
+		`{"retrievalMetadata":null}`:                                    `{"retrievalMetadata":null}`,
+		`null`:                                                          `null`,
 	} {
 		if got := string(stripMetadata(json.RawMessage(in), metaGrounding)); got != want {
 			t.Errorf("%s: got %s, want %s", in, got, want)
