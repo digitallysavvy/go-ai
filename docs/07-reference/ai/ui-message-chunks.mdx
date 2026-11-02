@@ -346,7 +346,7 @@ Options for the response helpers that take an init value.
 | `StatusText` | `string` |  |
 | `Headers` | `map[string]string` | Headers sets a single value per header key. Use Header instead when a header (e.g. Set-Cookie) needs multiple values. |
 | `Header` | `http.Header` | Header carries repeated header values (e.g. multiple Set-Cookie entries), which map[string]string cannot represent. Values here are added in addition to Headers, so both can be set together. |
-| `ConsumeSSEStream` | `func(io.Reader) error` |  |
+| `ConsumeSSEStream` | `func(io.Reader) error` | ConsumeSSEStream, when set, gets a copy of the SSE stream in its own goroutine. The response never waits for it: its copy is buffered, and a response body ends after the last event. The Pipe\* helpers return after it does, with its error. |
 | `KeepAliveMs` | `*time.Duration` | KeepAliveMs, when set, makes the SSE pipeline flush an opening ": stream-open\n\n" comment immediately (so headers reach the client right away even if the first real chunk is slow) and send a ": keep-alive\n\n" comment whenever this duration elapses without any other write, resetting on every chunk. Must be a positive duration; zero, a negative duration or one above 2147483647ms is an error, as in TS createSseStreamWithKeepAlive's `keepAliveMs` option (TS #21672). |
 
 {/* /gen:fields */}
