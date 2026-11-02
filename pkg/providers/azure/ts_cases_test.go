@@ -45,6 +45,7 @@ func TestTSCases(t *testing.T) {
 				return m
 			}, map[string]string{
 				"should handle file_citation annotations without optional fields in streaming": "TS leaves responseId unset without response.created; Go falls back to response.completed id",
+				"should pass headers": "the TS test checks the TS test user agent (ai-sdk-azure/0.0.0-test); Go reports its own version",
 			})
 		})
 	}

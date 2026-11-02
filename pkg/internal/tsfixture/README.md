@@ -17,7 +17,15 @@ fails if an uncompressed `*.json` lands in a `testdata/tscases` directory.
 The cases were extracted from the TS AI SDK at commit `b658e8503c`
 (ai@7.0.140 plus main); the anthropic language/convert-prompt, bedrock
 prepare-tools, google language, gemini JSON accumulator and groq chat cases
-were re-extracted at `e64ed82f27` (ai@7.0.153+16).
+were re-extracted at `e64ed82f27` (ai@7.0.153+16). The OpenAI chat and
+Responses, xAI Responses and Azure provider cases and the OpenAI/xAI
+function-level cases added in review round 77 are extracted at
+`e64ed82f27` with `--asserts` (function-level ones with
+`--expand-each --fn=NAME`); `openai/.../completion.json.gz` is still the
+`b658e8503c` default-mode extraction. `openai/.../responses.json.gz`
+leaves out "should return helpful error when Chat Completions stream is
+received" (its Chat Completions frame is one TS rejects on purpose, which
+`providerutils.TestTSFixtureFramesAccepted` does not list yet).
 
 ## Regenerating
 
@@ -43,6 +51,25 @@ request, and `404 {"error":"Not Found"}` after the last, as the TS test server
 does. A case without a queue serves its one response to every request (and
 fails after 20 requests instead of looping forever).
 
+## Routes and response functions
+
+With `--asserts`, a TS test that sets the responses of several URLs of its
+test server (`server.urls[POST_URL].response = ...; server.urls[POLL_URL]
+.response = ...`), or a response function (`.response = () => { ... }`), is
+extracted with `routes`: one `{path, response}` per URL path, the last
+assignment winning. A response function is called up to six times with the
+counters the test declares before it (`let getCallCount = 0;`); its results
+become the route's queue with `repeat: true` (the last one is served to every
+later request, as the TS server calls the function per request), and each
+counter becomes an alias of `server.hits['<path>']`, the number of requests
+the route served. `Run` sends each request to the route whose TS path equals
+or ends with the request path (the Go base URL replaces the TS one, so Go
+`/interactions` matches TS `/v1beta/interactions`), the longest match
+winning, and answers `404 {"error":"Not Found"}` when none matches. A test
+that calls `provider.interactions({ agent: NAME })` gets the model id
+`agent:NAME` (`managedAgent:ID` for `{ managedAgent }`); the Go test maps it
+to the agent model.
+
 ## Plain assertions and function-level tests
 
 `extract.mjs` has two more modes. Neither changes the output of the default
@@ -56,8 +83,14 @@ mode, so existing case files regenerate byte for byte.
   `result`, `server.calls[n].requestBodyJson|requestHeaders|requestUserAgent`
   and `requestBody` aliases (`asserts.go`), plus the stream-part filters TS
   tests write over `const parts = await convertReadableStreamToArray(stream)`
-  (`.filter(p => p.f === 'v')`, `.some(p => p.f === 'v')`, `.map(p => p.f)`);
-  anything else is counted as "not evaluated" in the test log.
+  (`.filter(p => p.f === 'v')`, `.some(p => p.f === 'v')`,
+  `.find(p => p.f === 'v')`, `.map(p => p.f)`), aliases of such calls
+  (`const types = parts.map(p => p.type)`), `const calls = server.calls`,
+  `new URL(x).searchParams.get('k')`, and `expect.objectContaining` /
+  `expect.arrayContaining` arguments. Assertions over another test-server
+  variable (`pollServer.calls`) read as `server.*`, and TS casts
+  (`(p as { delta: string }).delta`) are dropped. Anything else is counted
+  as "not evaluated" in the test log.
 - `--fn=NAME` extracts function-level tests (`expect(NAME(args))` or
   `const result = NAME(args)`), for converters, `prepareTools`, usage and
   schema helpers. Tests that call `NAME` more than once outside their
@@ -102,6 +135,9 @@ every base64 JPEG run of 100,000 characters or more is replaced by a 1x1
 JPEG, and every other run that long (thought signatures) by its first 64
 characters, everywhere it occurs (response bodies and snapshots alike). Apply
 the same rule after regenerating, before gzipping, so no file passes 1 MB.
+`openai/testdata/tscases/responses.json.gz` replaces every run of 20,000 or
+more base64 characters (the compaction fixtures' encrypted content) by its
+first 64 characters the same way.
 A test whose point is the size itself cannot be shrunk: the two Google batch
 tests that build a 20 MB creation body (`reaches 20 MB` and the file-input
 variant) are left out of `testdata/tswire/google.jsonl.gz`.

@@ -44,6 +44,21 @@ type Case struct {
 	FnArgs   []interface{}     `json:"fnArgs"`
 	FnArgSrc []string          `json:"fnArgSrc"`
 	Aliases  map[string]string `json:"aliases"`
+	// Routes are the responses of a TS test that sets several URLs of its
+	// test server, or a response function (extractor --asserts). When set,
+	// Run serves each request the response of the route whose path matches
+	// the request path (see matchRoute), counting requests per route, and
+	// Response is not served.
+	Routes []Route `json:"routes"`
+}
+
+// Route is the response a TS test set for one URL of its test server
+// (`server.urls[URL].response = ...`).
+type Route struct {
+	// Path is the URL path of the TS test (for example
+	// /v1beta/interactions/v1_poll-test).
+	Path     string    `json:"path"`
+	Response *Response `json:"response"`
 }
 
 // Response is the canned wire response.
@@ -65,6 +80,10 @@ type Response struct {
 	// queued response to the n-th request and 404 {"error":"Not Found"} after
 	// the last. Without Next, every request gets this response.
 	Next []*Response `json:"next"`
+	// Repeat serves the last response of the queue to every later request
+	// instead of the 404: the results of a TS response function
+	// (`.response = () => ...`), which the test server calls per request.
+	Repeat bool `json:"repeat"`
 }
 
 // Expectation is one snapshot assertion.
@@ -112,18 +131,51 @@ var StreamBodyEncoder func(lines []string) (contentType string, body []byte)
 // serve writes the response the case's test server sends to its call-th
 // request (0-based).
 func (c Case) serve(w http.ResponseWriter, call int) {
-	r := c.Response
+	c.Response.serveNth(w, call)
+}
+
+// serveNth writes the response of the queue headed by r for its call-th
+// request (0-based).
+func (r *Response) serveNth(w http.ResponseWriter, call int) {
 	if len(r.Next) > 0 && call > 0 {
-		if call > len(r.Next) {
-			// TS test server: no queued response left
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = io.WriteString(w, `{"error":"Not Found"}`)
+		switch {
+		case call <= len(r.Next):
+			r = r.Next[call-1]
+		case r.Repeat:
+			r = r.Next[len(r.Next)-1]
+		default:
+			notFound(w) // TS test server: no queued response left
 			return
 		}
-		r = r.Next[call-1]
 	}
 	r.serve(w)
+}
+
+func notFound(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = io.WriteString(w, `{"error":"Not Found"}`)
+}
+
+// matchRoute returns the index of the route a request for path goes to, or
+// -1. The Go provider's base URL replaces the TS one, so a path matches a
+// route whose TS path equals it or ends with it (TS /v1beta/interactions,
+// Go /interactions), or that it ends with; the longest such route wins.
+func matchRoute(routes []Route, path string) int {
+	best, bestLen := -1, -1
+	for i, r := range routes {
+		if r.Response == nil {
+			continue
+		}
+		// both paths start with "/", so a suffix match is segment aligned
+		ok := r.Path == path ||
+			(len(path) > 1 && strings.HasSuffix(r.Path, path)) ||
+			(len(r.Path) > 1 && strings.HasSuffix(path, r.Path))
+		if ok && len(r.Path) > bestLen {
+			best, bestLen = i, len(r.Path)
+		}
+	}
+	return best
 }
 
 func (r *Response) serve(w http.ResponseWriter) {
@@ -184,6 +236,16 @@ func (r *Response) serve(w http.ResponseWriter) {
 	}
 }
 
+// routeError reports whether a route's response could not be extracted.
+func routeError(routes []Route) bool {
+	for _, r := range routes {
+		if r.Response == nil || r.Response.Error != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // runMaxRequests caps the requests one Run case may make (see Run).
 const runMaxRequests = 20
 
@@ -195,6 +257,9 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 	for _, c := range cases {
 		c := c
 		if c.Response == nil || c.Response.Error != "" || c.Call == nil || c.Suspect {
+			continue
+		}
+		if routeError(c.Routes) {
 			continue
 		}
 		// repeated test names get the "#01", "#02" suffix t.Run gives them; a
@@ -217,12 +282,22 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 			// requests concurrently, so reqs is guarded
 			var reqsMu sync.Mutex
 			var reqs []request
+			hits := make([]int, len(c.Routes))
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				b, _ := io.ReadAll(r.Body)
 				rq := newRequest(b, r.Header, "http://"+r.Host+r.URL.RequestURI(), r.Method)
+				route := -1
+				if len(c.Routes) > 0 {
+					route = matchRoute(c.Routes, r.URL.Path)
+				}
 				reqsMu.Lock()
 				call := len(reqs)
 				reqs = append(reqs, rq)
+				routeCall := 0
+				if route >= 0 {
+					routeCall = hits[route]
+					hits[route]++
+				}
 				reqsMu.Unlock()
 				if call >= runMaxRequests {
 					// A case without a response queue serves one response to
@@ -232,7 +307,14 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 					w.WriteHeader(http.StatusInternalServerError)
 					return
 				}
-				c.serve(w, call)
+				switch {
+				case len(c.Routes) == 0:
+					c.serve(w, call)
+				case route < 0:
+					notFound(w)
+				default:
+					c.Routes[route].Response.serveNth(w, routeCall)
+				}
 			}))
 			defer srv.Close()
 			m := mk(srv.URL, c.ModelID)
@@ -273,15 +355,9 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 				resultMap["content"] = content
 				resultMap["usage"] = UsageToTS(res.Usage)
 				resultMap["finishReason"] = map[string]interface{}{"raw": nilIfEmpty(res.RawFinishReason), "unified": string(res.FinishReason)}
-				warnings := make([]interface{}, 0, len(res.Warnings))
-				for _, w := range res.Warnings {
-					v := jsonValue(w)
-					if m, ok := v.(map[string]interface{}); ok && m["type"] != "other" {
-						delete(m, "message") // Go also mirrors details there for old callers
-					}
-					warnings = append(warnings, v)
-				}
-				resultMap["warnings"] = warnings
+				// Go also mirrors details into message (and message into
+				// details) for old callers
+				resultMap["warnings"] = WarningsToTS(res.Warnings)
 				resultMap["providerMetadata"] = res.ProviderMetadata
 				resultMap["request"] = map[string]interface{}{"body": res.RawRequest}
 				resp := map[string]interface{}{"headers": lowerHeaders(res.ResponseHeaders)}
@@ -300,6 +376,10 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 			}
 			reqsMu.Lock()
 			calls := append([]request(nil), reqs...)
+			hitsByPath := map[string]interface{}{}
+			for i, r := range c.Routes {
+				hitsByPath[r.Path] = float64(hits[i])
+			}
 			reqsMu.Unlock()
 			var reqBody interface{}
 			if len(calls) > 0 {
@@ -307,7 +387,7 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 			}
 			roots := map[string]interface{}{
 				"result": resultMap,
-				"server": map[string]interface{}{"calls": calls},
+				"server": map[string]interface{}{"calls": calls, "hits": hitsByPath},
 			}
 			for _, e := range c.Exps {
 				var got interface{}
@@ -572,6 +652,9 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 				if c.ToolCall.Dynamic {
 					o["dynamic"] = true
 				}
+				if c.ToolCall.InputEncoding != "" {
+					o["inputEncoding"] = c.ToolCall.InputEncoding
+				}
 			}
 		case provider.ChunkTypeToolInputDelta:
 			o["id"], o["delta"] = id, c.Text
@@ -613,6 +696,9 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 				}
 				if tr.Dynamic {
 					o["dynamic"] = true
+				}
+				if tr.Preliminary {
+					o["preliminary"] = true
 				}
 				if len(tr.ProviderMetadata) > 0 {
 					o["providerMetadata"] = tr.ProviderMetadata
@@ -1030,7 +1116,7 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 				if str, ok := in.(string); ok {
 					tc.Input = str
 					_ = json.Unmarshal([]byte(str), &tc.Arguments)
-				} else if mm, ok := in.(map[string]interface{}); ok {
+				} else if mm, ok := in.(map[string]interface{}); ok && !isUndef(in) { // `input: undefined` is a missing input
 					tc.Arguments = mm
 					b, _ := json.Marshal(mm)
 					tc.Input = string(b)
