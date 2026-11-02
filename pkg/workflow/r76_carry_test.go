@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"sync"
 	"testing"
@@ -251,6 +252,184 @@ func TestR76Carry_ToolCallProviderMetadataMapping(t *testing.T) {
 					if !reflect.DeepEqual(got[c.id], c.meta) {
 						t.Errorf("%s providerOptions = %v, want %v", c.id, got[c.id], c.meta)
 					}
+				}
+			})
+		}
+	}
+}
+
+type r76carryTelemetryRecorder struct {
+	telemetry.NoopTelemetryIntegration
+	mu           sync.Mutex
+	stepContexts []map[string]interface{}
+	callEndMeta  []map[string]interface{}
+}
+
+func (r *r76carryTelemetryRecorder) OnStepStart(ctx context.Context, e telemetry.TelemetryStepStartEvent) context.Context {
+	r.mu.Lock()
+	r.stepContexts = append(r.stepContexts, e.RuntimeContext)
+	r.mu.Unlock()
+	return ctx
+}
+
+func (r *r76carryTelemetryRecorder) OnLanguageModelCallEnd(_ context.Context, e telemetry.LanguageModelCallEndEvent) {
+	r.mu.Lock()
+	r.callEndMeta = append(r.callEndMeta, e.ProviderMetadata)
+	r.mu.Unlock()
+}
+
+func r76carryRun(t *testing.T, a *WorkflowAgent, mode string) {
+	t.Helper()
+	if mode == "generate" {
+		if _, err := a.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "test"}); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	st, err := a.StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// r76carryTextModel answers every call with "done" and the given finish
+// provider metadata, recording each call's options.
+func r76carryTextModel(meta map[string]interface{}) (*testutil.MockLanguageModel, *[]*provider.GenerateOptions) {
+	var mu sync.Mutex
+	var calls []*provider.GenerateOptions
+	raw, _ := json.Marshal(meta)
+	m := &testutil.MockLanguageModel{ProviderName: "mock", ModelName: "m", ToolSupport: true}
+	m.DoGenerateFunc = func(_ context.Context, o *provider.GenerateOptions) (*types.GenerateResult, error) {
+		mu.Lock()
+		calls = append(calls, o)
+		mu.Unlock()
+		return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop, ProviderMetadata: meta}, nil
+	}
+	m.DoStreamFunc = func(_ context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+		mu.Lock()
+		calls = append(calls, o)
+		mu.Unlock()
+		finish := provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop}
+		if meta != nil {
+			finish.ProviderMetadata = raw
+		}
+		return testutil.NewMockTextStream([]provider.StreamChunk{{Type: provider.ChunkTypeText, Text: "done"}, finish}), nil
+	}
+	return m, &calls
+}
+
+// TS model-call-iterator.test.ts "telemetry": "uses runtime context updated
+// by prepareStep for model-step telemetry" (the step telemetry sees the
+// PrepareStep runtime context, filtered by IncludeRuntimeContext) and "should
+// expose provider metadata on model-call end". Both modes.
+func TestR76Carry_StepTelemetryRuntimeContextAndModelCallEndMetadata(t *testing.T) {
+	meta := map[string]interface{}{"gateway": map[string]interface{}{"generationId": "generation-id"}}
+	for _, mode := range []string{"stream", "generate"} {
+		t.Run(mode, func(t *testing.T) {
+			model, _ := r76carryTextModel(meta)
+			rec := &r76carryTelemetryRecorder{}
+			a, err := NewWorkflowAgent(WorkflowAgent{
+				Model:          model,
+				RuntimeContext: map[string]interface{}{"requestId": "initial"},
+				PrepareStep: func(_ context.Context, o LanguageModelCallOptions) (LanguageModelCallOptions, error) {
+					o.RuntimeContext = map[string]interface{}{"requestId": "updated", "secret": "private"}
+					return o, nil
+				},
+				Telemetry: &telemetry.Options{
+					IsEnabled:             telemetry.Bool(true),
+					IncludeRuntimeContext: map[string]bool{"requestId": true},
+					Integrations:          []telemetry.TelemetryIntegration{rec},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r76carryRun(t, a, mode)
+			rec.mu.Lock()
+			defer rec.mu.Unlock()
+			if len(rec.stepContexts) != 1 || !reflect.DeepEqual(rec.stepContexts[0], map[string]interface{}{"requestId": "updated"}) {
+				t.Errorf("step start runtime contexts = %v, want [{requestId: updated}]", rec.stepContexts)
+			}
+			if len(rec.callEndMeta) != 1 || !reflect.DeepEqual(rec.callEndMeta[0], meta) {
+				t.Errorf("model-call end provider metadata = %v, want [%v]", rec.callEndMeta, meta)
+			}
+		})
+	}
+}
+
+// TS model-call-iterator.test.ts "activeTools > passes no tools to the model
+// when prepareStep returns an empty list". Both modes.
+func TestR76Carry_PrepareStepEmptyActiveToolsSendsNoTools(t *testing.T) {
+	for _, mode := range []string{"stream", "generate"} {
+		t.Run(mode, func(t *testing.T) {
+			model, calls := r76carryTextModel(nil)
+			a, err := NewWorkflowAgent(WorkflowAgent{
+				Model: model,
+				Tools: []types.Tool{{Name: "hidden", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}}},
+				PrepareStep: func(_ context.Context, o LanguageModelCallOptions) (LanguageModelCallOptions, error) {
+					o.ActiveTools = []string{}
+					return o, nil
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r76carryRun(t, a, mode)
+			if len(*calls) != 1 {
+				t.Fatalf("model calls = %d, want 1", len(*calls))
+			}
+			if got := (*calls)[0].Tools; len(got) != 0 {
+				t.Errorf("model tools = %v, want none", got)
+			}
+		})
+	}
+}
+
+// An explicitly empty ActiveTools (agent, call, PrepareCall) sends no tools
+// in both modes, as TS filterActiveTools with `activeTools: []`.
+func TestR76Carry_EmptyActiveToolsEverywhereSendsNoTools(t *testing.T) {
+	hidden := []types.Tool{{Name: "hidden", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}}}
+	type setup struct {
+		name  string
+		agent func(m provider.LanguageModel) WorkflowAgent
+		call  []string
+	}
+	setups := []setup{
+		{"agent", func(m provider.LanguageModel) WorkflowAgent {
+			return WorkflowAgent{Model: m, Tools: hidden, ActiveTools: []string{}}
+		}, nil},
+		{"call", func(m provider.LanguageModel) WorkflowAgent { return WorkflowAgent{Model: m, Tools: hidden} }, []string{}},
+		{"prepareCall", func(m provider.LanguageModel) WorkflowAgent {
+			return WorkflowAgent{Model: m, Tools: hidden, PrepareCall: func(_ context.Context, o LanguageModelCallOptions) (LanguageModelCallOptions, error) {
+				o.ActiveTools = []string{}
+				return o, nil
+			}}
+		}, nil},
+	}
+	for _, s := range setups {
+		for _, mode := range []string{"stream", "generate"} {
+			t.Run(s.name+"/"+mode, func(t *testing.T) {
+				model, calls := r76carryTextModel(nil)
+				a, err := NewWorkflowAgent(s.agent(model))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if mode == "generate" {
+					_, err = a.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "test", ActiveTools: s.call})
+				} else {
+					var st *WorkflowStreamResult
+					if st, err = a.StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "test", ActiveTools: s.call}); err == nil {
+						_, err = st.ReadAll()
+					}
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(*calls) != 1 || len((*calls)[0].Tools) != 0 {
+					t.Errorf("model calls = %d, tools = %v, want 1 call without tools", len(*calls), (*calls)[0].Tools)
 				}
 			})
 		}

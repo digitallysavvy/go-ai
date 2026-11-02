@@ -1810,8 +1810,11 @@ func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []type
 	}
 }
 
+// sameStrings reports whether a and b hold the same names in order. An empty
+// list and nil differ: an empty ActiveTools sends no tools (TS
+// `activeTools: []`), nil keeps them all.
 func sameStrings(a, b []string) bool {
-	if len(a) != len(b) {
+	if (a == nil) != (b == nil) || len(a) != len(b) {
 		return false
 	}
 	for i := range a {
