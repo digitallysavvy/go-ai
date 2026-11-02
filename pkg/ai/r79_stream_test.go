@@ -420,10 +420,18 @@ func TestR79StreamOnStepEndPreferredOverOnStepFinish(t *testing.T) {
 	var mu sync.Mutex
 	var calls []string
 	r, _ := r73streamParts(t, StreamTextOptions{
-		Model:        r71streamModel(nil, r71streamHelloWorld),
-		Prompt:       "test-input",
-		OnStepEnd:    func(context.Context, types.StepResult, interface{}) { mu.Lock(); calls = append(calls, "onStepEnd"); mu.Unlock() },
-		OnStepFinish: func(context.Context, types.StepResult, interface{}) { mu.Lock(); calls = append(calls, "onStepFinish"); mu.Unlock() },
+		Model:  r71streamModel(nil, r71streamHelloWorld),
+		Prompt: "test-input",
+		OnStepEnd: func(context.Context, types.StepResult, interface{}) {
+			mu.Lock()
+			calls = append(calls, "onStepEnd")
+			mu.Unlock()
+		},
+		OnStepFinish: func(context.Context, types.StepResult, interface{}) {
+			mu.Lock()
+			calls = append(calls, "onStepFinish")
+			mu.Unlock()
+		},
 	})
 	_ = r.ConsumeStream()
 	mu.Lock()
