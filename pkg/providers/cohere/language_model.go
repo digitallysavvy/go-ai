@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
@@ -343,11 +344,18 @@ func fileDataToImageURL(file types.FileContent) (string, error) {
 		}
 		// TS buildImageUrl: resolveFullMediaType sniffs a bare or wildcard
 		// type (image, image/*) from the inline bytes.
-		media, err := prompt.ResolveFullMediaType(media, file.FileData.Data, true)
+		// TS convertToBase64(part.data.data): a base64 string payload
+		// (DataString) is embedded as is; detection reads its bytes.
+		payload, sniff := base64.StdEncoding.EncodeToString(file.FileData.Data), file.FileData.Data
+		if len(file.FileData.Data) == 0 && file.FileData.DataString != "" {
+			payload = file.FileData.DataString
+			sniff, _ = fileutil.ConvertBase64ToBytes(file.FileData.DataString)
+		}
+		media, err := prompt.ResolveFullMediaType(media, sniff, true)
 		if err != nil {
 			return "", err
 		}
-		return "data:" + media + ";base64," + base64.StdEncoding.EncodeToString(file.FileData.Data), nil
+		return "data:" + media + ";base64," + payload, nil
 	case types.FileDataTypeReference:
 		return "", &providererrors.UnsupportedFunctionalityError{Functionality: "image file parts with provider references"}
 	default:

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -91,8 +90,28 @@ func (m *EmbeddingModel) SupportsParallelCalls() bool {
 
 // DoEmbed performs embedding for a single input
 func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
-	// Determine model type and construct request body accordingly
-	var reqBody map[string]interface{}
+	result, err := m.embedValues(ctx, []string{input}, opts)
+	if err != nil {
+		return nil, err
+	}
+	if len(result.Embeddings) == 0 {
+		// TS embed() rejects a response without embeddings with
+		// InvalidResponseDataError("No embedding generated.", data: []).
+		return nil, providererrors.NewInvalidResponseDataError([][]float64{}, "No embedding generated.")
+	}
+	return &types.EmbeddingResult{
+		Embedding: result.Embeddings[0],
+		Usage:     result.Usage,
+		Warnings:  []types.Warning{},
+		Response:  result.Responses[0],
+	}, nil
+}
+
+// embedValues is TS AmazonBedrockEmbeddingModel.doEmbed: one InvokeModel
+// call for values (a single value for Titan and Nova, up to 96 for Cohere).
+// The embeddings are returned as the response carries them, without
+// comparing their number with the values (embed/embedMany check that).
+func (m *EmbeddingModel) embedValues(ctx context.Context, values []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
 	embeddingOptions := m.options
 	if opts != nil {
 		if err := validateEmbeddingProviderOptions(opts.ProviderOptions); err != nil {
@@ -101,9 +120,8 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		embeddingOptions = mergeEmbeddingOptions(embeddingOptions, bedrockEmbeddingOptions(opts.ProviderOptions))
 	}
 
-	family := m.modelFamily()
-
-	switch family {
+	var reqBody map[string]interface{}
+	switch m.modelFamily() {
 	case EmbeddingModelFamilyNova:
 		novaOpts := NovaEmbeddingOptions{}
 		if embeddingOptions != nil && embeddingOptions.NovaOptions != nil {
@@ -134,50 +152,41 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 				"embeddingDimension": embeddingDimension,
 				"text": map[string]interface{}{
 					"truncationMode": truncate,
-					"value":          input,
+					"value":          values[0],
 				},
 			},
 		}
 	case EmbeddingModelFamilyCohere:
-		// Validate Cohere options if provided
 		if embeddingOptions != nil && embeddingOptions.CohereOptions != nil {
 			if err := embeddingOptions.CohereOptions.Validate(); err != nil {
 				return nil, err
 			}
 		}
-
-		// Build Cohere request
 		cohereOpts := DefaultCohereEmbeddingOptions()
 		if embeddingOptions != nil && embeddingOptions.CohereOptions != nil {
 			cohereOpts = *embeddingOptions.CohereOptions
 		}
-
 		reqBody = map[string]interface{}{
-			"texts":      []string{input},
+			"texts":      values,
 			"input_type": string(cohereOpts.InputType),
 		}
-
 		if cohereOpts.OutputDimension != nil {
 			reqBody["output_dimension"] = int(*cohereOpts.OutputDimension)
 		} else if opts != nil && opts.Dimensions != nil {
 			reqBody["output_dimension"] = *opts.Dimensions
 		}
-
 		if cohereOpts.Truncate != "" {
 			reqBody["truncate"] = string(cohereOpts.Truncate)
 		}
 	default:
 		// Titan or other models
 		reqBody = map[string]interface{}{
-			"inputText": input,
+			"inputText": values[0],
 		}
-
 		if opts != nil && opts.Dimensions != nil {
 			// Top-level dimensions (TS #22338); the Titan option below wins.
 			reqBody["dimensions"] = *opts.Dimensions
 		}
-
-		// Add Titan-specific options if provided
 		if embeddingOptions != nil && embeddingOptions.TitanOptions != nil {
 			if embeddingOptions.TitanOptions.Dimensions != nil {
 				reqBody["dimensions"] = *embeddingOptions.TitanOptions.Dimensions
@@ -244,86 +253,125 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		return nil, err
 	}
 
-	// Parse response based on model type
-	var embedding []float64
-	var inputTokens int
-	// TS picks the token count by response shape: Titan and Nova report it in
-	// the body, the Cohere shapes only in the x-amzn-bedrock-input-token-count
-	// header.
-	tokensFromHeader := false
-
-	var parsed struct {
-		Embedding           []float64       `json:"embedding"`
-		InputTextTokenCount *int            `json:"inputTextTokenCount"`
-		InputTokenCount     *int            `json:"inputTokenCount"`
-		Embeddings          json.RawMessage `json:"embeddings"`
+	embeddings, tokens, err := parseBedrockEmbeddingResponse(respBody, resp.Header)
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return nil, fmt.Errorf("failed to decode embedding response: %w", err)
-	}
-
-	switch {
-	case parsed.Embedding != nil:
-		// Titan response.
-		embedding = parsed.Embedding
-		if parsed.InputTextTokenCount != nil {
-			inputTokens = *parsed.InputTextTokenCount
-		}
-	case len(parsed.Embeddings) > 0:
-		var nova []struct {
-			EmbeddingType string    `json:"embeddingType"`
-			Embedding     []float64 `json:"embedding"`
-		}
-		if err := json.Unmarshal(parsed.Embeddings, &nova); err == nil && len(nova) > 0 && nova[0].EmbeddingType != "" {
-			embedding = nova[0].Embedding
-			if parsed.InputTokenCount != nil {
-				inputTokens = *parsed.InputTokenCount
-			}
-			break
-		}
-
-		var cohereV3 [][]float64
-		if err := json.Unmarshal(parsed.Embeddings, &cohereV3); err == nil && len(cohereV3) > 0 {
-			embedding = cohereV3[0]
-			tokensFromHeader = true
-			break
-		}
-
-		var cohereV4 struct {
-			Float [][]float64 `json:"float"`
-		}
-		if err := json.Unmarshal(parsed.Embeddings, &cohereV4); err == nil && len(cohereV4.Float) > 0 {
-			embedding = cohereV4.Float[0]
-			tokensFromHeader = true
-			break
-		}
-	}
-	if embedding == nil {
-		return nil, fmt.Errorf("no embeddings in response")
-	}
-	tokens := float64(inputTokens)
-	if tokensFromHeader {
-		if headerTokens, err := strconv.Atoi(resp.Header.Get("x-amzn-bedrock-input-token-count")); err == nil {
-			inputTokens = headerTokens
-			tokens = float64(headerTokens)
-		} else {
-			tokens = math.NaN()
-		}
-	}
-
-	return &types.EmbeddingResult{
-		Embedding: embedding,
-		// TS always returns `usage: { tokens }` (NaN when the token-count
-		// header is missing), so the usage is always Reported.
+	count := bedrockEmbeddingTokenCount(tokens)
+	return &types.EmbeddingsResult{
+		Embeddings: embeddings,
+		// TS always returns `usage: { tokens }` (NaN when the token count
+		// comes from a missing header), so the usage is always Reported.
 		Usage: types.EmbeddingUsage{
 			Tokens:      tokens,
-			InputTokens: inputTokens,
-			TotalTokens: inputTokens,
+			InputTokens: count,
+			TotalTokens: count,
 			Reported:    true,
 		},
-		Warnings: []types.Warning{},
-		Response: types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(resp.Header)},
+		Warnings:  []types.Warning{},
+		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(resp.Header)}},
 	}, nil
+}
+
+// parseBedrockEmbeddingResponse maps a body that passed zbEmbedding as TS
+// does after AmazonBedrockEmbeddingResponseSchema (a union whose first
+// matching member wins and strips the other keys):
+//   - Titan ({embedding, inputTextTokenCount}): one embedding, the body count.
+//   - Nova (an `embeddings` array of {embeddingType, embedding} objects, which
+//     includes an empty array): the first embedding (none for an empty
+//     array) and inputTokenCount when the body has it.
+//   - Cohere v3 (an array of arrays) and v4 ({float}): every embedding.
+//
+// Without a body count the tokens are TS
+// Number(responseHeaders['x-amzn-bedrock-input-token-count']): NaN when the
+// header is missing or not a number.
+func parseBedrockEmbeddingResponse(body []byte, header http.Header) ([][]float64, float64, error) {
+	var parsed struct {
+		Embedding           []float64       `json:"embedding"`
+		InputTextTokenCount *float64        `json:"inputTextTokenCount"`
+		InputTokenCount     *float64        `json:"inputTokenCount"`
+		Embeddings          json.RawMessage `json:"embeddings"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, 0, fmt.Errorf("failed to decode embedding response: %w", err)
+	}
+	if parsed.Embedding != nil && parsed.InputTextTokenCount != nil {
+		return [][]float64{parsed.Embedding}, *parsed.InputTextTokenCount, nil
+	}
+	raw := bytes.TrimSpace(parsed.Embeddings)
+	if len(raw) > 0 && raw[0] == '[' {
+		var items []json.RawMessage
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return nil, 0, fmt.Errorf("failed to decode embedding response: %w", err)
+		}
+		if len(items) == 0 || bytes.HasPrefix(bytes.TrimSpace(items[0]), []byte("{")) {
+			// Nova member.
+			embeddings := [][]float64{}
+			if len(items) > 0 {
+				var first struct {
+					Embedding []float64 `json:"embedding"`
+				}
+				if err := json.Unmarshal(items[0], &first); err != nil {
+					return nil, 0, fmt.Errorf("failed to decode embedding response: %w", err)
+				}
+				embeddings = [][]float64{first.Embedding}
+			}
+			if parsed.InputTokenCount != nil {
+				return embeddings, *parsed.InputTokenCount, nil
+			}
+			return embeddings, bedrockHeaderTokenCount(header), nil
+		}
+		var cohereV3 [][]float64
+		if err := json.Unmarshal(raw, &cohereV3); err != nil {
+			return nil, 0, fmt.Errorf("failed to decode embedding response: %w", err)
+		}
+		return cohereV3, bedrockHeaderTokenCount(header), nil
+	}
+	var cohereV4 struct {
+		Float [][]float64 `json:"float"`
+	}
+	if err := json.Unmarshal(raw, &cohereV4); err != nil {
+		return nil, 0, fmt.Errorf("failed to decode embedding response: %w", err)
+	}
+	embeddings := cohereV4.Float
+	if embeddings == nil {
+		embeddings = [][]float64{}
+	}
+	return embeddings, bedrockHeaderTokenCount(header), nil
+}
+
+// bedrockHeaderTokenCount is TS Number(responseHeaders[
+// 'x-amzn-bedrock-input-token-count']): NaN for a missing header (Number of
+// undefined) or a value that is not a JS number, 0 for an empty value.
+func bedrockHeaderTokenCount(header http.Header) float64 {
+	values := header.Values("x-amzn-bedrock-input-token-count")
+	if len(values) == 0 {
+		return math.NaN()
+	}
+	// fetch Headers.get joins repeated values with ", ".
+	n, ok := providerutils.JSNumber(strings.Join(values, ", "))
+	if !ok {
+		return math.NaN()
+	}
+	return n
+}
+
+// bedrockEmbeddingTokenCount is the integral InputTokens/TotalTokens for a
+// token count: fractions truncate, NaN and infinities are 0.
+func bedrockEmbeddingTokenCount(tokens float64) int {
+	switch {
+	case math.IsNaN(tokens), math.IsInf(tokens, 0):
+		return 0
+	case tokens >= math.MaxInt32:
+		if tokens >= float64(math.MaxInt) {
+			return math.MaxInt
+		}
+	case tokens <= math.MinInt32:
+		if tokens <= float64(math.MinInt) {
+			return math.MinInt
+		}
+	}
+	return int(tokens)
 }
 
 func bedrockEmbeddingOptions(providerOptions map[string]interface{}) *EmbeddingOptions {
@@ -442,69 +490,35 @@ func bedrockIsCohereEmbeddingModel(modelID string) bool {
 // DoEmbedMany performs embedding for multiple inputs in a batch
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
 	// Cohere embedding models on Bedrock accept up to 96 texts in a single
-	// `texts: [...]` request. Ports TS amazon-bedrock-embedding-model.ts,
-	// which relies on the max embeddings per call to send one batched
-	// request; Go's ai.EmbedMany does not itself chunk calls, so DoEmbedMany
-	// chunks internally to still get the batching benefit for arbitrary input
-	// sizes.
-	if m.modelFamily() == EmbeddingModelFamilyCohere {
-		max := m.MaxEmbeddingsPerCall()
-		var embeddings [][]float64
-		var totalTokens int
-		// TS sums usage.tokens, so a NaN (missing token-count header) in any
-		// batch makes the total NaN, which telemetry drops. Tokens keeps the
-		// v0.5 integral sum; a NaN batch leaves the usage unreported instead.
-		reported := true
-		responses := make([]types.EmbeddingResponse, 0, (len(inputs)+max-1)/max)
-		for start := 0; start < len(inputs); start += max {
-			end := start + max
-			if end > len(inputs) {
-				end = len(inputs)
-			}
-			result, err := m.doEmbedCohereBatch(ctx, inputs[start:end], opts)
-			if err != nil {
-				return nil, err
-			}
-			embeddings = append(embeddings, result.Embeddings...)
-			totalTokens += result.Usage.InputTokens
-			if math.IsNaN(result.Usage.Tokens) {
-				reported = false
-			}
-			responses = append(responses, result.Responses...)
-		}
-		return &types.EmbeddingsResult{
-			Embeddings: embeddings,
-			Usage: types.EmbeddingUsage{
-				Tokens:      float64(totalTokens),
-				InputTokens: totalTokens,
-				TotalTokens: totalTokens,
-				Reported:    reported,
-			},
-			Warnings:  []types.Warning{},
-			Responses: responses,
-		}, nil
-	}
-
-	var embeddings [][]float64
+	// `texts: [...]` request; Titan and Nova models one. ai.EmbedMany splits
+	// the values by MaxEmbeddingsPerCall; DoEmbedMany also chunks so a direct
+	// call with more values than one request takes still works.
+	max := m.MaxEmbeddingsPerCall()
+	embeddings := [][]float64{}
 	var totalTokens int
-	reported := true // see the Cohere branch above
-	responses := make([]types.EmbeddingResponse, 0, len(inputs))
-
-	// Titan and Nova models only accept 1 embedding per call.
-	for _, input := range inputs {
-		result, err := m.DoEmbed(ctx, input, opts)
+	// TS sums usage.tokens, so a NaN (missing token-count header) in any
+	// batch makes the total NaN, which telemetry drops. Tokens keeps the
+	// v0.5 integral sum; a NaN batch leaves the usage unreported instead.
+	reported := true
+	responses := make([]types.EmbeddingResponse, 0, (len(inputs)+max-1)/max)
+	for start := 0; start < len(inputs); start += max {
+		end := start + max
+		if end > len(inputs) {
+			end = len(inputs)
+		}
+		result, err := m.embedValues(ctx, inputs[start:end], opts)
 		if err != nil {
 			return nil, err
 		}
-
-		embeddings = append(embeddings, result.Embedding)
+		// The embeddings are kept as sent; EmbedMany compares their number
+		// with the values (TS "Expected N embeddings, but received M.").
+		embeddings = append(embeddings, result.Embeddings...)
 		totalTokens += result.Usage.InputTokens
 		if math.IsNaN(result.Usage.Tokens) {
 			reported = false
 		}
-		responses = append(responses, result.Response)
+		responses = append(responses, result.Responses...)
 	}
-
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
 		Usage: types.EmbeddingUsage{
@@ -515,133 +529,5 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		},
 		Warnings:  []types.Warning{},
 		Responses: responses,
-	}, nil
-}
-
-// doEmbedCohereBatch sends a single Cohere `texts: [...]` embedding request
-// (at most MaxEmbeddingsPerCall inputs) and parses the batched response.
-func (m *EmbeddingModel) doEmbedCohereBatch(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
-	embeddingOptions := m.options
-	if opts != nil {
-		if err := validateEmbeddingProviderOptions(opts.ProviderOptions); err != nil {
-			return nil, err
-		}
-		embeddingOptions = mergeEmbeddingOptions(embeddingOptions, bedrockEmbeddingOptions(opts.ProviderOptions))
-	}
-	if embeddingOptions != nil && embeddingOptions.CohereOptions != nil {
-		if err := embeddingOptions.CohereOptions.Validate(); err != nil {
-			return nil, err
-		}
-	}
-	cohereOpts := DefaultCohereEmbeddingOptions()
-	if embeddingOptions != nil && embeddingOptions.CohereOptions != nil {
-		cohereOpts = *embeddingOptions.CohereOptions
-	}
-
-	reqBody := map[string]interface{}{
-		"texts":      inputs,
-		"input_type": string(cohereOpts.InputType),
-	}
-	if cohereOpts.OutputDimension != nil {
-		reqBody["output_dimension"] = int(*cohereOpts.OutputDimension)
-	} else if opts != nil && opts.Dimensions != nil {
-		reqBody["output_dimension"] = *opts.Dimensions
-	}
-	if cohereOpts.Truncate != "" {
-		reqBody["truncate"] = string(cohereOpts.Truncate)
-	}
-
-	bodyBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	baseURL, err := m.provider.runtimeBaseURL()
-	if err != nil {
-		return nil, err
-	}
-	req, err := http.NewRequestWithContext(ctx, "POST", baseURL, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, err
-	}
-	invokeURL, _, err := bedrockModelURL(baseURL, m.modelID, "/invoke")
-	if err != nil {
-		return nil, err
-	}
-	req.URL = invokeURL
-	req.Host = invokeURL.Host
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	requestHeaders := map[string]string{}
-	if opts != nil {
-		for k, v := range opts.Headers {
-			requestHeaders[k] = v
-		}
-	}
-	m.provider.applyRequestHeaders(req, requestHeaders)
-	if err := m.provider.authenticateRequest(ctx, req, bodyBytes); err != nil {
-		return nil, err
-	}
-
-	resp, err := m.provider.Client().HTTPClient().Do(req)
-	if err != nil {
-		return nil, providererrors.NewProviderError("amazon-bedrock", 0, "", err.Error(), err)
-	}
-	defer resp.Body.Close() //nolint:errcheck
-
-	respBody, err := readResponseBody(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
-	}
-
-	if err := bedrockValidator(zbEmbedding)(resp.StatusCode, resp.Header, respBody); err != nil {
-		return nil, err
-	}
-	var parsed struct {
-		Embeddings json.RawMessage `json:"embeddings"`
-	}
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return nil, fmt.Errorf("failed to decode embedding response: %w", err)
-	}
-
-	var embeddings [][]float64
-	var cohereV3 [][]float64
-	if err := json.Unmarshal(parsed.Embeddings, &cohereV3); err == nil && len(cohereV3) > 0 {
-		embeddings = cohereV3
-	} else {
-		var cohereV4 struct {
-			Float [][]float64 `json:"float"`
-		}
-		if err := json.Unmarshal(parsed.Embeddings, &cohereV4); err == nil {
-			embeddings = cohereV4.Float
-		}
-	}
-	if len(embeddings) != len(inputs) {
-		return nil, fmt.Errorf("bedrock cohere embedding batch returned %d embeddings for %d inputs", len(embeddings), len(inputs))
-	}
-
-	tokens := 0.0
-	if headerTokens, err := strconv.Atoi(resp.Header.Get("x-amzn-bedrock-input-token-count")); err == nil {
-		tokens = float64(headerTokens)
-	} else {
-		tokens = math.NaN()
-	}
-	inputTokens := 0
-	if !math.IsNaN(tokens) {
-		inputTokens = int(tokens)
-	}
-
-	return &types.EmbeddingsResult{
-		Embeddings: embeddings,
-		Usage: types.EmbeddingUsage{
-			Tokens:      tokens,
-			InputTokens: inputTokens,
-			TotalTokens: inputTokens,
-			Reported:    true,
-		},
-		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(resp.Header)}},
 	}, nil
 }

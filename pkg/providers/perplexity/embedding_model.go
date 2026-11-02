@@ -80,6 +80,11 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 	if err != nil {
 		return nil, err
 	}
+	if len(result.Embeddings) == 0 {
+		// TS embed() rejects a response without embeddings with
+		// InvalidResponseDataError("No embedding generated.", data: []).
+		return nil, providererrors.NewInvalidResponseDataError([][]float64{}, "No embedding generated.")
+	}
 	r := &types.EmbeddingResult{
 		Embedding:        result.Embeddings[0],
 		Usage:            result.Usage,

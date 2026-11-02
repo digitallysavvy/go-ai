@@ -166,8 +166,9 @@ func TestVertexEmbeddingModel_DoEmbedMany(t *testing.T) {
 		if res.Usage.TotalTokens != 5 || res.Usage.InputTokens != 5 {
 			t.Fatalf("usage tokens = %+v, want 5", res.Usage)
 		}
-		if len(res.Responses) != 2 {
-			t.Fatalf("responses len = %d, want 2", len(res.Responses))
+		// One response per call (TS doEmbed `response`), not one per input.
+		if len(res.Responses) != 1 {
+			t.Fatalf("responses len = %d, want 1", len(res.Responses))
 		}
 	})
 

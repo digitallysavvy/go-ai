@@ -2,12 +2,12 @@ package mistral
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -70,12 +70,17 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	if err := json.Unmarshal(resp.Body, &response); err != nil {
 		return nil, fmt.Errorf("mistral: failed to decode speech response: %w", err)
 	}
-	audio, err := base64.StdEncoding.DecodeString(response.AudioData)
+	// TS returns audio_data as the base64 string, which generateSpeech
+	// decodes with convertBase64ToUint8Array (base64url and unpadded input
+	// accepted).
+	audio, err := fileutil.ConvertBase64ToBytes(response.AudioData)
 	if err != nil {
 		return nil, fmt.Errorf("mistral: failed to decode audio_data: %w", err)
 	}
 
-	requestBytes, err := json.Marshal(redactedSpeechRequestBody(reqBody))
+	// TS request.body is JSON.stringify(requestBodyValues): the literal's key
+	// order, not Go's sorted map order.
+	requestBytes, err := json.Marshal(providerutils.OrderedMap{Keys: mistralSpeechBodyKeys, Vals: redactedSpeechRequestBody(reqBody)})
 	if err != nil {
 		return nil, fmt.Errorf("mistral: failed to marshal speech request metadata: %w", err)
 	}
@@ -109,6 +114,9 @@ var mistralSpeechOptionsSchema = providerutils.OptionSchema{
 		return nil
 	}, providerutils.OptArray(providerutils.OptStringLen(1, -1), 1, -1)),
 }
+
+// mistralSpeechBodyKeys is the key order of the TS requestBody literal.
+var mistralSpeechBodyKeys = []string{"model", "input", "voice_id", "ref_audio", "expressiveness", "phoneme_hints", "response_format", "stream"}
 
 // redactedSpeechRequestBody returns a shallow copy of body with ref_audio
 // replaced by a redaction marker, matching TS mistral-speech-model.ts's

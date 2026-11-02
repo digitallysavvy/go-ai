@@ -71,7 +71,7 @@ func TestVertexEmbeddingPredictFixture(t *testing.T) {
 	if res.Usage.Tokens != 11 {
 		t.Fatalf("usage = %+v, want 5+6 tokens", res.Usage)
 	}
-	if len(res.Responses) != 2 || res.Responses[0].Headers["Content-Type"] != "application/json" {
+	if len(res.Responses) != 1 || res.Responses[0].Headers["Content-Type"] != "application/json" {
 		t.Fatalf("responses = %+v", res.Responses)
 	}
 	if rawBody, ok := res.Responses[0].Body.(json.RawMessage); !ok || !strings.Contains(string(rawBody), "billableCharacterCount") {

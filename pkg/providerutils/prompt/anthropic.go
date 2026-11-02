@@ -746,6 +746,22 @@ type anthropicFile struct {
 	text      string
 	mediaType string
 	filename  string
+	// b64 is a base64 string payload (FileData.DataString). TS forwards it
+	// as is to base64 sources (convertToBase64 returns a string unchanged)
+	// and decodes it with convertBase64ToUint8Array only where it needs the
+	// bytes (text documents, media type detection); decodeErr is that
+	// decode's failure, reported only there.
+	b64       string
+	decodeErr error
+}
+
+// base64Data is TS convertToBase64(part.data.data): a string payload as is,
+// bytes encoded.
+func (f anthropicFile) base64Data() string {
+	if f.b64 != "" {
+		return f.b64
+	}
+	return base64.StdEncoding.EncodeToString(f.data)
 }
 
 func resolveAnthropicFile(fileData types.FileData, data []byte, url, reference, text, mediaType, filename string) (anthropicFile, error) {
@@ -758,11 +774,8 @@ func resolveAnthropicFile(fileData types.FileData, data []byte, url, reference, 
 		f.kind = fileData.Type
 		f.data = fileData.Data
 		if len(f.data) == 0 && fileData.DataString != "" {
-			decoded, err := types.DecodeFileDataString(fileData.DataString)
-			if err != nil {
-				return f, err
-			}
-			f.data = decoded
+			f.b64 = fileData.DataString
+			f.data, f.decodeErr = fileutil.ConvertBase64ToBytes(fileData.DataString)
 		}
 		f.url = fileData.URL
 		f.reference = fileData.Reference
@@ -820,6 +833,11 @@ type AnthropicFilePart struct {
 // fields, tagged FileData, data: URLs) into an AnthropicFilePart.
 func ResolveAnthropicFilePart(p types.FileContent) (AnthropicFilePart, error) {
 	f, err := resolveAnthropicFile(p.FileData, p.Data, p.URL, p.Reference, p.Text, firstNonEmpty(p.MediaType, p.MimeType), p.Filename)
+	if err == nil {
+		// Data holds bytes, so a string payload that does not decode is an
+		// error here (the built-in conversion forwards it as TS does).
+		err = f.decodeErr
+	}
 	if err != nil {
 		return AnthropicFilePart{}, err
 	}
@@ -857,6 +875,10 @@ func (f anthropicFile) resolveFullMediaType() (string, error) {
 		return f.mediaType, nil
 	}
 	if f.kind == types.FileDataTypeData {
+		if f.decodeErr != nil {
+			// TS detectMediaType decodes the string (atob throws).
+			return "", f.decodeErr
+		}
 		if detected := detectAnthropicMediaType(f.data, topLevelMediaType(f.mediaType)); detected != "" {
 			return detected, nil
 		}
@@ -1008,7 +1030,7 @@ func (c *anthropicConverter) convertUserFile(p types.FileContent, cacheControl i
 				source = map[string]interface{}{
 					"type":       "base64",
 					"media_type": mediaType,
-					"data":       base64.StdEncoding.EncodeToString(f.data),
+					"data":       f.base64Data(),
 				}
 			}
 			block = map[string]interface{}{"type": "image", "source": source}
@@ -1022,7 +1044,7 @@ func (c *anthropicConverter) convertUserFile(p types.FileContent, cacheControl i
 				source = map[string]interface{}{
 					"type":       "base64",
 					"media_type": "application/pdf",
-					"data":       base64.StdEncoding.EncodeToString(f.data),
+					"data":       f.base64Data(),
 				}
 			}
 			block = map[string]interface{}{"type": "document", "source": source}
@@ -1035,6 +1057,12 @@ func (c *anthropicConverter) convertUserFile(p types.FileContent, cacheControl i
 			if isURL {
 				source = map[string]interface{}{"type": "url", "url": f.url}
 			} else {
+				// TS convertBytesDataToString: a string payload is decoded
+				// with convertBase64ToUint8Array (atob throws when it is
+				// not base64).
+				if f.decodeErr != nil {
+					return nil, f.decodeErr
+				}
 				source = map[string]interface{}{
 					"type":       "text",
 					"media_type": "text/plain",
@@ -1289,7 +1317,7 @@ func (c *anthropicConverter) convertToolResultFile(f anthropicFile) (map[string]
 			return map[string]interface{}{"type": "image", "source": map[string]interface{}{
 				"type":       "base64",
 				"media_type": mediaType,
-				"data":       base64.StdEncoding.EncodeToString(f.data),
+				"data":       f.base64Data(),
 			}}, nil
 		}
 		mediaType, err := f.resolveFullMediaType()
@@ -1301,7 +1329,7 @@ func (c *anthropicConverter) convertToolResultFile(f anthropicFile) (map[string]
 			return map[string]interface{}{"type": "document", "source": map[string]interface{}{
 				"type":       "base64",
 				"media_type": "application/pdf",
-				"data":       base64.StdEncoding.EncodeToString(f.data),
+				"data":       f.base64Data(),
 			}}, nil
 		}
 		c.warn(fmt.Sprintf("unsupported tool content part type: file with media type: %s", f.mediaType))

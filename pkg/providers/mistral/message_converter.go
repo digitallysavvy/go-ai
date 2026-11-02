@@ -3,6 +3,7 @@ package mistral
 import (
 	"encoding/base64"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
 
@@ -133,17 +134,25 @@ func convertMistralFilePart(fc types.FileContent) (map[string]interface{}, error
 	}
 	mediaType := n.MediaType
 	isData := n.FileData.Type == types.FileDataTypeData
+	// TS convertToBase64(part.data.data): a base64 string payload
+	// (DataString) is embedded as is, bytes are encoded; detection reads the
+	// string's decoded bytes.
+	payload, sniff := base64.StdEncoding.EncodeToString(n.FileData.Data), n.FileData.Data
+	if len(n.FileData.Data) == 0 && n.FileData.DataString != "" {
+		payload = n.FileData.DataString
+		sniff, _ = fileutil.ConvertBase64ToBytes(n.FileData.DataString)
+	}
 	// TS formatFileUrl: urls pass through; inline bytes embed the media type
 	// resolved by resolveFullMediaType (signature-sniffed, error if unknown).
 	formatURL := func() (string, error) {
 		if !isData {
 			return n.FileData.URL, nil
 		}
-		full, err := prompt.ResolveFullMediaType(mediaType, n.FileData.Data, true)
+		full, err := prompt.ResolveFullMediaType(mediaType, sniff, true)
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("data:%s;base64,%s", full, base64.StdEncoding.EncodeToString(n.FileData.Data)), nil
+		return fmt.Sprintf("data:%s;base64,%s", full, payload), nil
 	}
 	if mediaType == "image" || strings.HasPrefix(mediaType, "image/") {
 		u, err := formatURL()
@@ -154,7 +163,7 @@ func convertMistralFilePart(fc types.FileContent) (map[string]interface{}, error
 	}
 	checked := mediaType
 	if isData {
-		full, err := prompt.ResolveFullMediaType(mediaType, n.FileData.Data, true)
+		full, err := prompt.ResolveFullMediaType(mediaType, sniff, true)
 		if err != nil {
 			return nil, err
 		}

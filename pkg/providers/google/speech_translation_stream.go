@@ -175,18 +175,20 @@ func pcm16SilenceDurationMs(base64Audio string) (float64, bool) {
 	sampleCount := len(raw) / 2
 	for i := 0; i < sampleCount; i++ {
 		sample := int16(binary.LittleEndian.Uint16(raw[i*2 : i*2+2]))
-		if abs16(sample) > pcm16SilenceAmplitudeThreshold {
+		if absPCM16(sample) > pcm16SilenceAmplitudeThreshold {
 			return 0, false
 		}
 	}
 	return float64(sampleCount) / float64(googleLiveOutputAudioRate) * 1000, true
 }
 
-func abs16(v int16) int16 {
+// absPCM16 is Math.abs of a sample, widened so -32768 is 32768 (negating it
+// as an int16 overflows back to -32768, which read as silence).
+func absPCM16(v int16) int {
 	if v < 0 {
-		return -v
+		return -int(v)
 	}
-	return v
+	return int(v)
 }
 
 // run drives the Live API WebSocket session: dial, send the setup message,
@@ -393,7 +395,7 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 					// `finishTimer != null` branch).
 					finish()
 				} else {
-					fail(errors.New("Google Live translation WebSocket closed unexpectedly before finishing.")) //nolint:staticcheck // matches TS SDK's exact error text
+					fail(errors.New("Google Live translation WebSocket closed unexpectedly before finishing (code unknown).")) //nolint:staticcheck // TS text; the websocket library does not expose the close code or reason
 				}
 				return
 			}
@@ -458,6 +460,12 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 					}
 					audioBytes, decodeErr := fileutil.ConvertBase64ToBytes(part.InlineData.Data)
 					if decodeErr != nil {
+						// TS enqueues the string as is and, as
+						// getPcm16SilenceDurationMs returns undefined for
+						// it, counts it as turn activity. Go audio parts
+						// carry bytes, so the part is dropped, but the
+						// activity is kept.
+						onTurnActivity()
 						continue
 					}
 					if !s.Emit(provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeAudio, ID: itemID(), AudioData: audioBytes}) {

@@ -137,12 +137,8 @@ func TestTSCasesLanguage(t *testing.T) {
 		"should stream code execution tool results without beta header":                              longSnapshot,
 		"should include file id list in code execution tool call result.":                            longSnapshot,
 		"should throw an api error when the first stream chunk is an overloaded error":               "the TS test expects DoStream to fail; covered by TestStreamOverloadedFirstEvent",
-		"should process PDF citation responses":                                                      "the TS test's 'base64PDFdata' is not valid base64; Go decodes file data",
-		"should process PDF citation responses in streaming":                                         "the TS test's 'base64PDFdata' is not valid base64; Go decodes file data",
 	})
 }
-
-const invalidBase64 = "the TS test passes strings like 'base64PDFdata' that are not valid base64; Go decodes file data"
 
 const longSnapshot = "the .snap file stores very long strings with elisions the extractor cannot parse back; the shorter fixtures of the same tools are replayed"
 
@@ -205,13 +201,7 @@ func TestTSCasesConvertPrompt(t *testing.T) {
 			"prompt": map[string]interface{}{"system": system, "messages": messages},
 			"betas":  map[string]interface{}{"__set": betas},
 		}, map[string]interface{}{"warnings": warnings}, nil
-	}, map[string]string{
-		"should add PDF file parts for base64 PDFs":                          invalidBase64,
-		"should not include citations by default":                            invalidBase64,
-		"should include citations when enabled on file part":                 invalidBase64,
-		"should include custom title and context when provided":              invalidBase64,
-		"should handle multiple documents with consistent citation settings": invalidBase64,
-	})
+	}, map[string]string{})
 }
 
 // TestTSCasesPrepareTools replays anthropic-prepare-tools.test.ts.

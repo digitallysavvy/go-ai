@@ -143,7 +143,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		})
 	}
 
-	requestBytes, err := json.Marshal(requestBody)
+	requestBytes, err := json.Marshal(googleSpeechOrderedBody(requestBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal Gemini TTS request metadata: %w", err)
 	}
@@ -373,6 +373,40 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 		},
 		"generationConfig": generationConfig,
 	}, formats[resolved], usesStructured, warnings, nil
+}
+
+// googleSpeechOrderedBody gives request.body the key order of the TS
+// requestBody literal ({contents: [{role, parts: [{text, speechMetadata:
+// {style, speaker}}]}], generationConfig: {responseModalities, speechConfig,
+// responseFormat}}), which JSON.stringify keeps and a Go map sorts.
+func googleSpeechOrderedBody(body map[string]interface{}) interface{} {
+	ordered := func(m map[string]interface{}, keys ...string) interface{} {
+		if m == nil {
+			return nil
+		}
+		return providerutils.OrderedMap{Keys: keys, Vals: m}
+	}
+	contents, _ := body["contents"].([]interface{})
+	orderedContents := make([]interface{}, len(contents))
+	for i, c := range contents {
+		content, _ := c.(map[string]interface{})
+		parts, _ := content["parts"].([]interface{})
+		orderedParts := make([]interface{}, len(parts))
+		for j, raw := range parts {
+			part, _ := raw.(map[string]interface{})
+			vals := map[string]interface{}{"text": part["text"]}
+			if meta, ok := part["speechMetadata"].(map[string]interface{}); ok {
+				vals["speechMetadata"] = ordered(meta, "style", "speaker")
+			}
+			orderedParts[j] = ordered(vals, "text", "speechMetadata")
+		}
+		orderedContents[i] = ordered(map[string]interface{}{"role": content["role"], "parts": orderedParts}, "role", "parts")
+	}
+	generationConfig, _ := body["generationConfig"].(map[string]interface{})
+	return ordered(map[string]interface{}{
+		"contents":         orderedContents,
+		"generationConfig": ordered(generationConfig, "responseModalities", "speechConfig", "responseFormat"),
+	}, "contents", "generationConfig")
 }
 
 // googleSpeechHasSpeaker reports whether speaker names one of the configured

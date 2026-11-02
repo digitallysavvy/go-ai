@@ -115,10 +115,15 @@ func (m *CloudTTSSpeechModel) DoGenerate(ctx context.Context, opts *provider.Spe
 	if opts.Speed != nil {
 		audioConfig["speakingRate"] = *opts.Speed
 	}
-	reqBody := map[string]interface{}{
-		"input":       map[string]interface{}{"text": opts.Text},
-		"voice":       map[string]interface{}{"languageCode": languageCode, "name": voiceName},
-		"audioConfig": audioConfig,
+	// TS JSON.stringify(requestBody) keeps the literal's key order
+	// (input, voice, audioConfig) in request.body.
+	reqBody := providerutils.OrderedMap{
+		Keys: []string{"input", "voice", "audioConfig"},
+		Vals: map[string]interface{}{
+			"input":       map[string]interface{}{"text": opts.Text},
+			"voice":       map[string]interface{}{"languageCode": languageCode, "name": voiceName},
+			"audioConfig": audioConfig,
+		},
 	}
 
 	var ttsClient *internalhttp.Client

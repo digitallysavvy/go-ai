@@ -440,7 +440,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 				} else if drainAudioEnded() || audioEnded {
 					finish()
 				} else {
-					fail(fmt.Errorf("Vertex Live transcription WebSocket closed unexpectedly before finishing")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+					fail(errors.New("Vertex Live transcription WebSocket closed unexpectedly before finishing (code unknown).")) //nolint:staticcheck // TS text; the websocket library does not expose the close code or reason
 				}
 				return
 			}
