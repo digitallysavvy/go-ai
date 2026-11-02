@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -85,5 +86,47 @@ func TestR80GenRepairInputSchemaWithoutParameters(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) || !reflect.DeepEqual(unknown, want) {
 		t.Fatalf("input schema = %v, unknown tool = %v, want %v", got, unknown, want)
+	}
+}
+
+type r80genStructInput struct {
+	City string `json:"city" validate:"required"`
+}
+
+// An approved call of a tool whose Parameters is a struct-tag schema was
+// parsed as valid (a struct validator cannot validate the decoded map, so the
+// parse skips it), but revalidation ran the struct validator on the map and
+// always failed (`validator: (nil map[string]interface {})`): the approved
+// call became a tool error. ValidateUIMessages failed the same part. TS
+// revalidates with the schema the call was parsed with.
+func TestR80GenStructSchemaApprovalRevalidation(t *testing.T) {
+	tool := types.Tool{
+		Name:       "weather",
+		Parameters: schema.NewSimpleStructSchema(reflect.TypeOf(r80genStructInput{})),
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		},
+	}
+	call := types.ToolCall{ID: "call-1", ToolName: "weather", Arguments: map[string]interface{}{"city": "Berlin"}}
+	parsed, err := ParseToolCall(context.Background(), ParseToolCallOptions{ToolCall: call, Tools: []types.Tool{tool}})
+	if err != nil || parsed.Invalid {
+		t.Fatalf("parse: invalid=%v err=%v %v", parsed.Invalid, parsed.Error, err)
+	}
+	res, err := ValidateApprovedToolApprovals(context.Background(), ValidateApprovedToolApprovalsOptions{
+		ApprovedToolApprovals: []CollectedToolApproval{{ToolCall: call}},
+		Tools:                 []types.Tool{tool},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.ApprovedToolApprovals) != 1 || len(res.InvalidToolApprovals) != 0 {
+		for _, inv := range res.InvalidToolApprovals {
+			t.Logf("invalid: %v", inv.Error)
+		}
+		t.Fatalf("approved = %d, invalid = %d, want 1 and 0", len(res.ApprovedToolApprovals), len(res.InvalidToolApprovals))
+	}
+	msgs := `[{"id":"m1","role":"assistant","parts":[{"type":"tool-weather","toolCallId":"call-1","state":"input-available","input":{"city":"Berlin"}}]}]`
+	if _, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{Messages: msgs, Tools: []types.Tool{tool}}); err != nil {
+		t.Fatalf("ValidateUIMessages: %v", err)
 	}
 }
