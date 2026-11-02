@@ -188,14 +188,15 @@ func (s *gatewayTextStream) RequestBody() interface{} { return s.requestBody }
 // gatewayStreamErrorPayload is the wire shape of a Gateway `error` stream
 // part's `error` field: a ProviderStreamError forwarded verbatim from the
 // origin provider (already normalized server-side), mirroring
-// pkg/provider/errors.StreamProviderError's fields.
+// pkg/provider/errors.StreamProviderError's fields. Its nested `data` is not
+// decoded: the error part's Data is the whole raw error object (see the
+// "error" case in convertChunk).
 type gatewayStreamErrorPayload struct {
 	Message     string          `json:"message"`
 	Type        string          `json:"type"`
 	Code        json.RawMessage `json:"code"`
 	StatusCode  *int            `json:"statusCode"`
 	IsRetryable *bool           `json:"isRetryable"`
-	Data        interface{}     `json:"data"`
 }
 
 // UnmarshalJSON decodes the error object. TS passes the stream part through
@@ -221,7 +222,6 @@ func (p *gatewayStreamErrorPayload) UnmarshalJSON(b []byte) error {
 		_ = json.Unmarshal(fields["type"], &p.Type)
 		_ = json.Unmarshal(fields["statusCode"], &p.StatusCode)
 		_ = json.Unmarshal(fields["isRetryable"], &p.IsRetryable)
-		_ = json.Unmarshal(fields["data"], &p.Data)
 		return nil
 	}
 	var s string
@@ -328,10 +328,10 @@ func (s *gatewayTextStream) Next() (*provider.StreamChunk, error) {
 			return nil, err
 		}
 
-		// Check for stream completion
 		if streaming.IsStreamDone(event) {
-			s.err = io.EOF
-			return nil, io.EOF
+			// TS parseJsonEventStream drops the [DONE] frame and keeps reading;
+			// the end-of-body branch above does the end work.
+			continue
 		}
 
 		// Parse the JSON data from the SSE event
@@ -618,7 +618,7 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 		// normalize-stream-provider-error.ts's `data: providerStreamError ?
 		// error.data : error` and the "preserves provider type and code as
 		// separate discriminators" test. Use the raw decoded map for parity
-		// rather than chunk.Error.Data alone.
+		// rather than its nested data field alone.
 		var rawErr interface{} = chunk.Error
 		if m, ok := chunk.raw["error"]; ok {
 			rawErr = m

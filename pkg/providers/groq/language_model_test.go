@@ -44,9 +44,12 @@ data: [DONE]
 		chunks = append(chunks, chunk)
 	}
 
-	if len(chunks) != 3 {
-		t.Fatalf("expected 3 chunks, got %d", len(chunks))
+	// TS emits response-metadata on the first valid chunk, even without
+	// id/model/created.
+	if len(chunks) != 4 || chunks[0].Type != provider.ChunkTypeResponseMetadata {
+		t.Fatalf("expected response-metadata + 3 chunks, got %d", len(chunks))
 	}
+	chunks = chunks[1:]
 	if chunks[0].Type != provider.ChunkTypeText || chunks[0].Text != "Hello" {
 		t.Errorf("chunk[0]: got type=%v text=%q", chunks[0].Type, chunks[0].Text)
 	}

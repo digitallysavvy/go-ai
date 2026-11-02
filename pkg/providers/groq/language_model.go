@@ -103,7 +103,8 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if len(resp.Body) > 0 {
 		result.RawResponse = providerutils.RawJSONBody(resp.Body)
 	}
-	responseMetadata := providerutils.BuildResponseMetadata(response.ID, response.Model, response.Created)
+	responseMetadata := providerutils.BuildResponseMetadata(response.ID, response.Model, 0)
+	responseMetadata.Timestamp = groqCreatedTimestamp(response.Created)
 	responseMetadata.Headers = result.ResponseHeaders
 	result.ResponseMetadata = responseMetadata
 	return result, nil
@@ -484,10 +485,10 @@ func (m *LanguageModel) handleError(err error) error {
 }
 
 type groqResponse struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	Model   string `json:"model"`
+	ID      string   `json:"id"`
+	Object  string   `json:"object"`
+	Created *float64 `json:"created"`
+	Model   string   `json:"model"`
 	Choices []struct {
 		Index        int    `json:"index"`
 		FinishReason string `json:"finish_reason"`
@@ -578,7 +579,7 @@ func filterGroqUsageRaw(raw map[string]interface{}) map[string]interface{} {
 type groqStreamChunk struct {
 	ID      string          `json:"id"`
 	Object  string          `json:"object"`
-	Created int64           `json:"created"`
+	Created *float64        `json:"created"`
 	Model   string          `json:"model"`
 	Error   json.RawMessage `json:"error,omitempty"`
 	Choices []struct {
@@ -675,11 +676,9 @@ func (s *groqStream) Next() (*provider.StreamChunk, error) {
 			return nil, err
 		}
 		if streaming.IsStreamDone(event) {
-			if s.queueFinishAtEnd() {
-				continue
-			}
-			s.err = io.EOF
-			return nil, io.EOF
+			// TS parseJsonEventStream drops the [DONE] frame and keeps reading;
+			// the end-of-body branch above does the end work.
+			continue
 		}
 		rawQueued := false
 		if s.includeRawChunks {
@@ -727,15 +726,15 @@ func (s *groqStream) Next() (*provider.StreamChunk, error) {
 			}
 			continue
 		}
-		if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0 || len(s.responseHeaders) > 0) {
+		// TS emits response-metadata on the first valid chunk, even when it has
+		// no id, model or created.
+		if !s.metadataEmitted {
 			metadata := &provider.ResponseMetadata{
 				ID:      chunkData.ID,
 				ModelID: chunkData.Model,
 				Headers: s.responseHeaders,
 			}
-			if chunkData.Created != 0 {
-				metadata.Timestamp = time.Unix(chunkData.Created, 0)
-			}
+			metadata.Timestamp = groqCreatedTimestamp(chunkData.Created)
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type:             provider.ChunkTypeResponseMetadata,
 				ResponseMetadata: metadata,
@@ -863,4 +862,15 @@ func newGroqToolCallTracker() *streaming.StreamingToolCallTracker {
 	t := streaming.NewStreamingToolCallTracker()
 	t.SetTypeValidation(streaming.TypeValidationRequired)
 	return t
+}
+
+// groqCreatedTimestamp converts a response's `created` (unix seconds) as TS
+// createLanguageModelResponseMetadata does: a present value, 0 included, is
+// new Date(created * 1000) (milliseconds truncated); an absent or null one is
+// no timestamp.
+func groqCreatedTimestamp(created *float64) time.Time {
+	if created == nil {
+		return time.Time{}
+	}
+	return time.UnixMilli(int64(*created * 1000))
 }

@@ -137,6 +137,7 @@ data: [DONE]
 	}
 
 	want := []provider.ChunkType{
+		provider.ChunkTypeResponseMetadata, // TS: on the first valid chunk
 		provider.ChunkTypeToolInputStart,
 		provider.ChunkTypeToolInputDelta,
 		provider.ChunkTypeToolInputDelta,
