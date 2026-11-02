@@ -789,3 +789,86 @@ func TestR76Carry_DiscoversAndExecutesDeferredTools(t *testing.T) {
 		t.Errorf("weather result = %s %v", r.ToolCallID, r.Result)
 	}
 }
+
+// TS workflow-agent-compat.test.ts "exposes provider tool failures as errors
+// without successful results" and "preserves terminal provider tool results
+// in stream order".
+func TestR76Carry_ProviderToolResultsOnCompletedStep(t *testing.T) {
+	t.Run("provider failure", func(t *testing.T) {
+		isErr := true
+		model, _ := r75carryScripted([]provider.StreamChunk{
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "webSearch", Arguments: map[string]interface{}{"query": "test"}, ProviderExecuted: true}},
+			{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-1", ToolName: "webSearch", Result: "provider failed", IsError: &isErr, ProviderExecuted: true}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+		})
+		a, err := NewWorkflowAgent(WorkflowAgent{
+			Model: model,
+			Tools: []types.Tool{r75carryProviderTool("webSearch")},
+			StopWhen: []ai.StopCondition{func(s ai.StopConditionState) string {
+				for _, p := range s.Steps[len(s.Steps)-1].Content {
+					if p.ContentType() == "tool-error" {
+						return "error"
+					}
+				}
+				return ""
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		steps := r75carryRunStream(t, a)
+		if len(steps) != 1 {
+			t.Fatalf("steps = %d, want 1", len(steps))
+		}
+		var te *types.ToolErrorContent
+		for _, p := range steps[0].Content {
+			if c, ok := p.(types.ToolErrorContent); ok {
+				te = &c
+			}
+		}
+		if te == nil || te.ToolCallID != "call-1" || !te.ProviderExecuted || !reflect.DeepEqual(te.Input, map[string]interface{}{"query": "test"}) || te.Error != "provider failed" {
+			t.Errorf("tool error = %+v, want provider-executed call-1 with provider failed", te)
+		}
+		if len(steps[0].ToolResults) != 0 || len(steps[0].StaticToolResults) != 0 || len(steps[0].DynamicToolResults) != 0 {
+			t.Errorf("results = %d/%d/%d, want none", len(steps[0].ToolResults), len(steps[0].StaticToolResults), len(steps[0].DynamicToolResults))
+		}
+	})
+	t.Run("terminal provider results in stream order", func(t *testing.T) {
+		model, calls := r75carryScripted([]provider.StreamChunk{
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-a", ToolName: "providerA", Arguments: map[string]interface{}{}, ProviderExecuted: true}},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-b", ToolName: "providerB", Arguments: map[string]interface{}{}, ProviderExecuted: true}},
+			{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-a", ToolName: "providerA", Result: map[string]interface{}{"value": "a"}, ProviderExecuted: true, ProviderMetadata: map[string]interface{}{"testProvider": map[string]interface{}{"resultId": "result-a"}}}},
+			{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-b", ToolName: "providerB", Result: map[string]interface{}{"value": "b"}, ProviderExecuted: true}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+		})
+		a, err := NewWorkflowAgent(WorkflowAgent{Model: model, Tools: []types.Tool{r75carryProviderTool("providerA"), r75carryProviderTool("providerB")}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		steps := r75carryRunStream(t, a)
+		if len(*calls) != 1 || len(steps) != 1 {
+			t.Fatalf("calls = %d, steps = %d, want 1, 1", len(*calls), len(steps))
+		}
+		want := "tool-call:call-a,tool-call:call-b,tool-result:call-a,tool-result:call-b"
+		if got := r75carryPartIDs(steps[0].Content); got != want {
+			t.Errorf("step content = %s, want %s", got, want)
+		}
+		var ra *types.ToolResult
+		for i := range steps[0].ToolResults {
+			if steps[0].ToolResults[i].ToolCallID == "call-a" {
+				ra = &steps[0].ToolResults[i]
+			}
+		}
+		if ra == nil || !ra.ProviderExecuted || !reflect.DeepEqual(ra.Result, map[string]interface{}{"value": "a"}) ||
+			!reflect.DeepEqual(ra.ProviderMetadata, map[string]interface{}{"testProvider": map[string]interface{}{"resultId": "result-a"}}) {
+			t.Errorf("call-a tool result = %+v", ra)
+		}
+		msgs := steps[0].Response.Messages
+		if len(msgs) != 1 || msgs[0].Role != types.RoleAssistant {
+			t.Fatalf("response messages = %+v, want one assistant message", msgs)
+		}
+		if got := r75carryPartIDs(msgs[0].Content); got != want {
+			t.Errorf("assistant message = %s, want %s", got, want)
+		}
+	})
+}
