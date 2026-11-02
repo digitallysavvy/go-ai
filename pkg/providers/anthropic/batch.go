@@ -636,8 +636,15 @@ func (b *batchToolNamesBuilder) build() *batchToolNames {
 	return &batchToolNames{byRequest: b.byRequest}
 }
 
-// maxRememberedBatchToolNames bounds batchToolNameStore.
+// maxRememberedBatchToolNames bounds the number of batches in
+// batchToolNameStore.
 const maxRememberedBatchToolNames = 1024
+
+// maxRememberedBatchToolNameRequests bounds the per-request entries
+// (batchToolNames.byRequest) kept across all batches in batchToolNameStore,
+// so many large mixed batches cannot pin unbounded memory. The newest batch
+// is always kept.
+const maxRememberedBatchToolNameRequests = 1 << 18
 
 // batchToolNameStore remembers the custom tool names of batches started by a
 // Provider (batch ID -> batchToolNames), so DoGetBatchResults on the same
@@ -645,13 +652,24 @@ const maxRememberedBatchToolNames = 1024
 // as DoGenerate does. TS never needs this: its provider tools are named by
 // the caller (normally the wire name), and it rejects names it cannot
 // restore. Results read by another Provider or process carry the wire names.
-// Only batches with such tools are stored, and at most
-// maxRememberedBatchToolNames of them (oldest dropped first). A nil store
+// Only batches with such tools are stored, at most
+// maxRememberedBatchToolNames of them and maxRememberedBatchToolNameRequests
+// per-request entries in all (oldest batches dropped first). A nil store
 // remembers nothing. Stored values are never mutated, so readers share them.
 type batchToolNameStore struct {
-	mu    sync.Mutex
-	names map[string]*batchToolNames
-	order []string
+	mu       sync.Mutex
+	names    map[string]*batchToolNames
+	order    []string
+	requests int
+}
+
+// size is the number of per-request entries n holds (a shared map counts
+// as one).
+func (n *batchToolNames) size() int {
+	if n.all != nil {
+		return 1
+	}
+	return len(n.byRequest)
 }
 
 func (s *batchToolNameStore) put(batchID string, names *batchToolNames) {
@@ -663,11 +681,15 @@ func (s *batchToolNameStore) put(batchID string, names *batchToolNames) {
 	if s.names == nil {
 		s.names = map[string]*batchToolNames{}
 	}
-	if _, ok := s.names[batchID]; !ok {
+	if old, ok := s.names[batchID]; ok {
+		s.requests -= old.size()
+	} else {
 		s.order = append(s.order, batchID)
 	}
 	s.names[batchID] = names
-	for len(s.order) > maxRememberedBatchToolNames {
+	s.requests += names.size()
+	for len(s.order) > 1 && (len(s.order) > maxRememberedBatchToolNames || s.requests > maxRememberedBatchToolNameRequests) {
+		s.requests -= s.names[s.order[0]].size()
 		delete(s.names, s.order[0])
 		s.order[0] = ""
 		s.order = s.order[1:]
