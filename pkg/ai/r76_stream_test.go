@@ -1,9 +1,16 @@
 package ai
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
+	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 // r76streamMeta is a typed message metadata value, as a Go caller writes it
@@ -82,5 +89,256 @@ func TestR76StreamInternalClientToolResultsWithoutCallMetadataField(t *testing.T
 	opts := InternalOptions{ClientToolResultsWithoutCallMetadata: true}
 	if !opts.ClientToolResultsWithoutCallMetadata {
 		t.Fatal("field not set")
+	}
+}
+
+// r76streamPullStream serves chunks, then runs fail and returns its error
+// (TS ReadableStream pull that aborts and errors the controller).
+type r76streamPullStream struct {
+	chunks []provider.StreamChunk
+	fail   func() error
+	i      int
+}
+
+func (s *r76streamPullStream) Next() (*provider.StreamChunk, error) {
+	if s.i < len(s.chunks) {
+		c := s.chunks[s.i]
+		s.i++
+		return &c, nil
+	}
+	return nil, s.fail()
+}
+func (s *r76streamPullStream) Err() error   { return nil }
+func (s *r76streamPullStream) Close() error { return nil }
+
+type r76streamRootTelemetry struct {
+	telemetry.NoopTelemetryIntegration
+	mu    sync.Mutex
+	calls []string
+	steps []int
+}
+
+func (r *r76streamRootTelemetry) OnAbort(_ context.Context, e telemetry.TelemetryAbortEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, "onAbort")
+	r.steps = append(r.steps, len(e.Steps))
+}
+
+func (r *r76streamRootTelemetry) OnEnd(context.Context, telemetry.TelemetryFinishEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, "onEnd")
+}
+
+func (r *r76streamRootTelemetry) OnError(context.Context, telemetry.TelemetryErrorEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, "onError")
+}
+
+// stream-text.test.ts 25660 / 25665 / 25678 (abort signal > basic abort):
+// the signal fires while the model stream is read. onError is not called;
+// onAbort gets {callId, reason, steps: []}; the telemetry integration gets
+// onAbort with no steps and neither onEnd nor onError. (The full-stream and
+// UI snapshots of that block depend on JS stream timing: TS skips them on
+// newer Node versions.)
+func TestR76StreamBasicAbort(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tel := &r76streamRootTelemetry{}
+	var mu sync.Mutex
+	var onErrors []error
+	var aborts []GenerateTextAbortEvent
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		return &r76streamPullStream{
+			chunks: []provider.StreamChunk{
+				{Type: provider.ChunkTypeStreamStart},
+				{Type: provider.ChunkTypeTextStart, ID: "1"},
+				{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+			},
+			fail: func() error { cancel(); return context.Canceled },
+		}, nil
+	}}
+	r, err := StreamText(ctx, StreamTextOptions{
+		Model:  model,
+		Prompt: "test-input",
+		OnError: func(_ context.Context, err error) {
+			mu.Lock()
+			defer mu.Unlock()
+			onErrors = append(onErrors, err)
+		},
+		OnAbortEvent: func(_ context.Context, e GenerateTextAbortEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			aborts = append(aborts, e)
+		},
+		Telemetry: &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{tel}},
+		Internal:  &InternalOptions{GenerateCallID: func() string { return "test-telemetry-call-id" }},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ConsumeStream error = %v, want context.Canceled", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(onErrors) != 0 {
+		t.Errorf("onError calls = %v, want none", onErrors)
+	}
+	if len(aborts) != 1 || aborts[0].CallID != "test-telemetry-call-id" || len(aborts[0].Steps) != 0 || !errors.Is(aborts[0].Reason, context.Canceled) {
+		t.Errorf("onAbort = %+v, want one {callId test-telemetry-call-id, steps [], reason canceled}", aborts)
+	}
+	tel.mu.Lock()
+	defer tel.mu.Unlock()
+	if len(tel.calls) != 1 || tel.calls[0] != "onAbort" || tel.steps[0] != 0 {
+		t.Errorf("telemetry = %v (steps %v), want [onAbort] with no steps", tel.calls, tel.steps)
+	}
+}
+
+// stream-text.test.ts 25742 (abort signal > basic abort > should include
+// abort reason when provided): the signal fires with a reason right after
+// stream-start. The full stream is start then abort with the reason (no
+// start-step: stream-start opens none), and so is the UI message stream.
+func TestR76StreamAbortReasonAfterStreamStart(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		return &r76streamPullStream{
+			chunks: []provider.StreamChunk{{Type: provider.ChunkTypeStreamStart}},
+			fail:   func() error { cancel(errors.New("manual abort")); return context.Canceled },
+		}, nil
+	}}
+	r, err := StreamText(ctx, StreamTextOptions{Model: model, Prompt: "test-input", OnError: func(context.Context, error) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parts []provider.StreamChunk
+	s := r.NewStream()
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		parts = append(parts, *c)
+	}
+	if len(parts) != 2 || parts[0].Type != provider.ChunkTypeStart || parts[1].Type != provider.ChunkTypeAbort || parts[1].AbortReason != "manual abort" {
+		t.Fatalf("full stream = %+v, want [start, abort(manual abort)]", parts)
+	}
+	ch, errs := r.ToUIMessageStream(context.Background())
+	var ui []UIMessageChunk
+	for c := range ch {
+		ui = append(ui, c)
+	}
+	for e := range errs {
+		t.Fatalf("ui stream error: %v", e)
+	}
+	r75streamAssertJSON(t, "ui chunks", ui, `[{"type":"start"},{"type":"abort","reason":"manual abort"}]`)
+}
+
+const r76streamHelloUI = `[{"type":"start"},{"type":"start-step"},{"type":"text-start","id":"1"},` +
+	`{"type":"text-delta","id":"1","delta":"Hello"},{"type":"text-delta","id":"1","delta":", "},` +
+	`{"type":"text-delta","id":"1","delta":"world!"},{"type":"text-end","id":"1"},` +
+	`{"type":"finish-step"},{"type":"finish","finishReason":"stop"}]`
+
+// stream-text.test.ts 6767: an onFinish without generateMessageId adds no
+// message id to the start chunk (handleUIMessageStreamFinish's messageId is
+// responseMessageId ?? generateMessageId?.(), undefined here).
+func TestR76StreamUIOnFinishWithoutGenerateMessageID(t *testing.T) {
+	r72streamAssertUI(t, StreamTextOptions{Model: r71streamModel(nil, r71streamHelloWorld), Prompt: "prompt"},
+		r76streamHelloUI, UIMessageStreamResultOptions{OnFinish: func(map[string]interface{}) {}})
+}
+
+// stream-text.test.ts 6820: generateMessageId gives the start chunk its id.
+func TestR76StreamUIGenerateMessageID(t *testing.T) {
+	n := 0
+	want := `[{"type":"start","messageId":"message-0"}` + r76streamHelloUI[len(`[{"type":"start"}`):]
+	r72streamAssertUI(t, StreamTextOptions{Model: r71streamModel(nil, r71streamHelloWorld), Prompt: "prompt"},
+		want, UIMessageStreamResultOptions{GenerateMessageID: func() string {
+			id := "message-" + string(rune('0'+n))
+			n++
+			return id
+		}})
+}
+
+// stream-text.test.ts 6874 (Go form: the consumer cancels its context after
+// four chunks instead of reader.cancel()): onFinish runs once with the
+// partial assistant message, its text part still streaming, isAborted false.
+func TestR76StreamUIOnFinishWhenConsumerCancels(t *testing.T) {
+	gate := make(chan struct{})
+	step := []provider.StreamChunk{
+		{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "msg-2", ModelID: "test-model"}},
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Streaming"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: " content"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: " that"},
+	}
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		return &r76streamPullStream{chunks: step, fail: func() error { <-gate; return errors.New("released") }}, nil
+	}}
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "Generate content", OnError: func(context.Context, error) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { close(gate); _ = r.Close() }()
+	var mu sync.Mutex
+	var finishes []map[string]interface{}
+	ctx, cancel := context.WithCancel(context.Background())
+	ch, errs := r.ToUIMessageStream(ctx, UIMessageStreamResultOptions{OnFinish: func(e map[string]interface{}) {
+		mu.Lock()
+		defer mu.Unlock()
+		finishes = append(finishes, e)
+	}})
+	for i := 0; i < 4; i++ {
+		if _, ok := <-ch; !ok {
+			t.Fatalf("stream ended after %d chunks", i)
+		}
+	}
+	cancel()
+	for range ch {
+	}
+	for range errs {
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(finishes) != 1 {
+		t.Fatalf("onFinish calls = %d, want 1", len(finishes))
+	}
+	e := finishes[0]
+	msg, _ := e["responseMessage"].(UIMessageChunk)
+	if msg == nil || msg["role"] != "assistant" {
+		t.Fatalf("responseMessage = %#v", e["responseMessage"])
+	}
+	var text UIMessageChunk
+	for _, p := range uiParts(msg) {
+		if part := asUIPartChunk(p); part["type"] == "text" {
+			text = part
+		}
+	}
+	if text == nil || !strings.Contains(stringValue(text["text"]), "Streaming") || text["state"] != "streaming" {
+		t.Fatalf("text part = %#v, want partial streaming text", text)
+	}
+	if e["isAborted"] != false {
+		t.Fatalf("isAborted = %v, want false", e["isAborted"])
+	}
+}
+
+// stream-text.test.ts 7466 / 7489 (Go form, known difference "ConsumeStream
+// returns the error"): a stream error during consumption does not panic; Go's
+// ConsumeStream returns it (TS swallows it and passes it to onError).
+func TestR76StreamConsumeStreamReturnsStreamError(t *testing.T) {
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		return &r76streamPullStream{
+			chunks: []provider.StreamChunk{{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Hello"}},
+			fail:   func() error { return errors.New("Some error") },
+		}, nil
+	}}
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test-input", OnError: func(context.Context, error) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); err == nil || err.Error() != "Some error" {
+		t.Fatalf("ConsumeStream error = %v, want Some error", err)
 	}
 }
