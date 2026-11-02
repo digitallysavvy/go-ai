@@ -101,7 +101,9 @@ func perplexityDecisionImage(part provider.DecisionStatePart) (map[string]interf
 		// Direct DoDecide calls can bypass core's media type detection.
 		detectable := raw
 		if detectable == nil {
-			detectable, _ = base64.StdEncoding.DecodeString(encoded)
+			// TS detectMediaType decodes the string with
+			// convertBase64ToUint8Array (base64url, optional padding).
+			detectable, _ = fileutil.ConvertBase64ToBytes(encoded)
 		}
 		mediaType = ""
 		if detected, ok := fileutil.DetectMediaTypeSignature(detectable, "image"); ok {
