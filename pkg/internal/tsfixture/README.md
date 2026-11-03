@@ -157,6 +157,14 @@ mode, so existing case files regenerate byte for byte.
   result; `ErrUnsupported` skips a case. `WarningsToTS` renders warnings the TS
   way (Go also mirrors `details` into `message`).
 
+Since round 82, `--asserts` also records `providerSettings`: the
+JSON-serializable settings of a provider a test creates and calls itself
+(`const provider = createGoogle({ headers: ... })`); `Run` exposes them as
+`CaseProviderSettings` while the test's model factory runs. A `fixture-json`
+response is served compacted, as `JSON.stringify` of the parsed fixture (the
+TS `prepareJsonFixtureResponse`), with its `content-length`; response headers
+keep `content-length` only in a case whose expectations show it.
+
 Test hooks used by the provider tests: `ProviderToolHook` (and
 `anthropictools.ProviderTool` for Anthropic tools), `ToolNameAlias` /
 `PromptToolNameAlias` (Go names provider tools by id), `MetadataKeyAlias`,

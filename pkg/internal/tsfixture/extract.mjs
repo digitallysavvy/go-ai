@@ -705,6 +705,17 @@ for (let i = 0; i < starts.length; i++) {
     // provider\n  .interactions('id')\n  .doGenerate(...)
     if (wantAsserts && !midVar) { const ci = /\.interactions\(\s*['"]([^'"]+)['"]\s*\)\s*\.do(?:Generate|Stream)\(/.exec(body0); if (ci) midVar = ci[1]; }
   }
+  // const provider = createX({ ... }) inside the test, called by the test:
+  // its JSON-serializable settings (functions dropped).
+  let providerSettings = null;
+  if (wantAsserts) {
+    const pm = /\b(?:const|let)\s+(\w+)\s*=\s*create\w+\(\s*\{/.exec(body0);
+    if (pm && new RegExp('\\b' + pm[1] + '\\s*[.(]').test(body0.slice(pm.index + pm[0].length))) {
+      const os = pm.index + pm[0].length - 1;
+      const oe = balanced(body0, os);
+      if (oe > os) { try { const v = JSON.parse(JSON.stringify(evalExpr(body0.slice(os, oe)))); if (v && typeof v === 'object' && Object.keys(v).length) providerSettings = v; } catch (e) { /* not evaluable */ } }
+    }
+  }
   let callArgs = null, callKind = null, callObj = null;
   if (call) {
     callKind = call[1].toLowerCase();
@@ -845,6 +856,6 @@ for (let i = 0; i < starts.length; i++) {
     }
   }
   for (const n of Object.keys(saved)) { if (saved[n] === undefined) delete ctx[n]; else ctx[n] = saved[n]; }
-  if (exps.length || asserts.length) out.push({ test: name, response, callKind, callArgs, call: callObj, modelId: midVar || (mid ? mid[1] : null), suspect, topDescribe, exps, ...(wantAsserts ? { asserts, aliases } : {}), ...(routes ? { routes } : {}) });
+  if (exps.length || asserts.length) out.push({ test: name, response, callKind, callArgs, call: callObj, modelId: midVar || (mid ? mid[1] : null), suspect, topDescribe, exps, ...(wantAsserts ? { asserts, aliases } : {}), ...(routes ? { routes } : {}), ...(providerSettings ? { providerSettings } : {}) });
 }
 console.log(JSON.stringify(out));

@@ -5,6 +5,7 @@
 package tsfixture
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/base64"
@@ -18,6 +19,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -51,7 +53,17 @@ type Case struct {
 	// the request path (see matchRoute), counting requests per route, and
 	// Response is not served.
 	Routes []Route `json:"routes"`
+	// ProviderSettings are the JSON-serializable settings of a provider the
+	// TS test creates itself (`const provider = createX({...})`) and calls
+	// (extractor --asserts); see CaseProviderSettings.
+	ProviderSettings map[string]interface{} `json:"providerSettings,omitempty"`
 }
+
+// CaseProviderSettings holds, while Run builds a case's model, the
+// ProviderSettings of that case (nil when the TS test uses the file's
+// shared model), so the test's model factory can apply them (for example
+// provider-level headers).
+var CaseProviderSettings map[string]interface{}
 
 // Route is the response a TS test set for one URL of its test server
 // (`server.urls[URL].response = ...`).
@@ -211,7 +223,15 @@ func (r *Response) serve(w http.ResponseWriter) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(r.Body)
 	case "fixture-json":
+		// TS prepareJsonFixtureResponse serves JSON.stringify(JSON.parse(
+		// fixture)): the compact text (and its content-length).
 		w.Header().Set("Content-Type", "application/json")
+		var compact bytes.Buffer
+		if json.Compact(&compact, []byte(r.Raw)) == nil {
+			w.Header().Set("Content-Length", strconv.Itoa(compact.Len()))
+			_, _ = w.Write(compact.Bytes())
+			return
+		}
 		_, _ = io.WriteString(w, r.Raw)
 	case "fixture-chunks":
 		for _, l := range strings.Split(r.Raw, "\n") {
@@ -277,6 +297,11 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 		if occurrence > 0 {
 			suffixed = fmt.Sprintf("%s#%02d", c.Test, occurrence)
 		}
+		// The TS test server sends content-length on a JSON response; Go
+		// reports it only for a case whose expectations show it (a Go
+		// stream may carry one where TS has none).
+		expsJSON, _ := json.Marshal(c.Exps)
+		keepContentLength := bytes.Contains(expsJSON, []byte(`"content-length"`))
 		t.Run(c.Test, func(t *testing.T) {
 			if why, ok := skip[suffixed]; ok {
 				t.Skip(why)
@@ -323,7 +348,9 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 				}
 			}))
 			defer srv.Close()
+			CaseProviderSettings = c.ProviderSettings
 			m := mk(srv.URL, c.ModelID)
+			CaseProviderSettings = nil
 			opts, why := BuildOptions(c.Call)
 			if opts == nil {
 				t.Skipf("unsupported call options: %s", why)
@@ -347,7 +374,7 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 				}
 				for _, ch := range chunks {
 					if ch.Type == provider.ChunkTypeResponseMetadata && ch.ResponseMetadata != nil && len(ch.ResponseMetadata.Headers) > 0 {
-						resultMap["response"] = map[string]interface{}{"headers": lowerHeaders(ch.ResponseMetadata.Headers)}
+						resultMap["response"] = map[string]interface{}{"headers": lowerHeaders(ch.ResponseMetadata.Headers, keepContentLength)}
 						break
 					}
 				}
@@ -366,7 +393,7 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 				resultMap["warnings"] = WarningsToTS(res.Warnings)
 				resultMap["providerMetadata"] = res.ProviderMetadata
 				resultMap["request"] = map[string]interface{}{"body": res.RawRequest}
-				resp := map[string]interface{}{"headers": lowerHeaders(res.ResponseHeaders)}
+				resp := map[string]interface{}{"headers": lowerHeaders(res.ResponseHeaders, keepContentLength)}
 				if m := res.ResponseMetadata; m != nil {
 					if m.ID != "" {
 						resp["id"] = m.ID
@@ -1339,11 +1366,11 @@ func readCaseFile(path string) ([]byte, error) {
 	return b, err
 }
 
-func lowerHeaders(h map[string]string) map[string]interface{} {
+func lowerHeaders(h map[string]string, keepContentLength bool) map[string]interface{} {
 	out := map[string]interface{}{}
 	for k, v := range h {
 		lk := strings.ToLower(k)
-		if lk == "date" || lk == "content-length" {
+		if lk == "date" || (lk == "content-length" && !keepContentLength) {
 			continue // added by the Go test server / transport, not by the TS mock
 		}
 		out[lk] = v
