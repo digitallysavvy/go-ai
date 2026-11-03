@@ -12,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -131,6 +132,13 @@ func toBedrockToolInput(input string, arguments map[string]interface{}) map[stri
 	if err := json.Unmarshal([]byte(input), &decoded); err == nil {
 		if m, ok := decoded.(map[string]interface{}); ok {
 			return m
+		}
+		// TS 4ae6986cd8: a string input whose text is a JSON object is sent
+		// as that object.
+		if _, v, ok := prompt.JSONStringToolInput(input); ok {
+			if m, ok := v.(map[string]interface{}); ok {
+				return m
+			}
 		}
 		return map[string]interface{}{"rawInvalidInput": decoded}
 	}
@@ -819,7 +827,7 @@ func convertToBedrockChatMessages(messages []types.Message, isMistral bool) (sys
 							"toolUse": map[string]interface{}{
 								"toolUseId": normalizeToolCallID(p.ToolCallID, isMistral),
 								"name":      sanitizeToolName(p.ToolName),
-								"input":     orderedToolInput(toBedrockToolInput(p.Input, p.Arguments), p.Input),
+								"input":     orderedToolInput(toBedrockToolInput(p.Input, p.Arguments), bedrockToolInputOrderHint(p.Input)),
 							},
 						})
 					case types.ToolResultContent:
@@ -1155,6 +1163,15 @@ func bedrockUnsupported(functionality, message string) error {
 // orderedToolInput returns v so that it marshals with the key order of raw, the
 // wire text of the tool input (TS keeps the parsed input, so a replayed tool
 // call keeps the key order the model produced). Go maps have no order.
+// bedrockToolInputOrderHint is the text whose key order a tool input keeps:
+// the input itself, or the JSON a string input holds (TS 4ae6986cd8).
+func bedrockToolInputOrderHint(input string) string {
+	if text, _, ok := prompt.JSONStringToolInput(input); ok {
+		return text
+	}
+	return input
+}
+
 func orderedToolInput(v map[string]interface{}, raw string) interface{} {
 	if raw == "" {
 		return v

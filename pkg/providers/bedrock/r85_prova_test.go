@@ -308,3 +308,17 @@ func TestR85provaBedrockConverseClaude5StructuredOutput(t *testing.T) {
 		}
 	}
 }
+
+// TS 4ae6986cd8: a string tool input holding a JSON object is sent as that
+// object (key order kept); other strings are wrapped as rawInvalidInput.
+func TestR85provaBedrockStringToolInput(t *testing.T) {
+	if got := toBedrockToolInput(`"{\"b\":2,\"a\":1}"`, nil); fmt.Sprint(got) != "map[a:1 b:2]" {
+		t.Errorf("object text: %v", got)
+	}
+	if got := toBedrockToolInput(`"[1]"`, nil); fmt.Sprint(got) != "map[rawInvalidInput:[1]]" {
+		t.Errorf("array text: %v", got)
+	}
+	if got := bedrockToolInputOrderHint(`"{\"b\":2,\"a\":1}"`); got != `{"b":2,"a":1}` {
+		t.Errorf("hint = %q", got)
+	}
+}

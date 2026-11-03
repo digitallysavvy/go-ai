@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"regexp"
 	"strings"
@@ -417,9 +419,73 @@ func (c *googleConverter) resolveFile(file types.FileContent) googleFile {
 	return f
 }
 
+// googleVideoFPS is z.number().gt(0).max(24) (TS googleVideoMetadataSchema
+// fps).
+func googleVideoFPS(v interface{}, present bool, path []interface{}) *zodlite.Issue {
+	if bad := zodlite.Max(zodlite.Number, 24)(v, present, path); bad != nil {
+		return bad
+	}
+	if f, ok := v.(float64); ok && f <= 0 {
+		return &zodlite.Issue{Path: path, Code: "too_small", Origin: "number", Minimum: 0, Continue: true, Message: "Too small: expected number to be >0"}
+	}
+	return nil
+}
+
+// googleVideoMetadataSchema mirrors TS googleVideoMetadataSchema
+// (google-prompt.ts): z.object({startOffset, endOffset, fps}).
+var googleVideoMetadataSchema = zodlite.Object(
+	zodlite.F("startOffset", zodlite.Optional(zodlite.String)),
+	zodlite.F("endOffset", zodlite.Optional(zodlite.String)),
+	zodlite.F("fps", zodlite.Optional(googleVideoFPS)),
+)
+
+// googleVideoMetadata parses a user file part's
+// providerOptions.<google>.videoMetadata (TS b1bcea13b8). It returns nil when
+// the option is absent or null. Like TS googleVideoMetadataSchema.parse, only
+// the known keys are kept, in schema order, and an invalid value is an error
+// (TS throws the ZodError; Go returns a validation error with its issues).
+func (c *googleConverter) googleVideoMetadata(providerOptions map[string]interface{}) (interface{}, error) {
+	raw, ok := c.readProviderOpts(providerOptions, nil)["videoMetadata"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	data := jsonStringify(raw)
+	if message := zodlite.ValidationMessage(googleVideoMetadataSchema, data); message != "" {
+		return nil, providererrors.NewValidationErrorWithContext(zodlite.CompactJSON(data), zodlite.IssueText(message), nil, &providererrors.ValidationContext{})
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(data), &parsed); err != nil {
+		return nil, err
+	}
+	out := jsonorder.New()
+	for _, key := range []string{"startOffset", "endOffset", "fps"} {
+		if v, ok := parsed[key]; ok {
+			out.Set(key, v)
+		}
+	}
+	return out, nil
+}
+
 // fileContentPart converts a file part. assistant=true applies the TS
 // assistant-side rules (URLs rejected, thought flag honored).
 func (c *googleConverter) fileContentPart(file types.FileContent, assistant bool) (map[string]interface{}, error) {
+	if !assistant {
+		videoMetadata, err := c.googleVideoMetadata(file.ProviderOptions)
+		if err != nil {
+			return nil, err
+		}
+		part, err := c.fileContentPartData(file, assistant)
+		if err == nil && videoMetadata != nil {
+			// TS spreads videoMetadata next to fileData / inlineData in all
+			// four user file branches.
+			part["videoMetadata"] = videoMetadata
+		}
+		return part, err
+	}
+	return c.fileContentPartData(file, assistant)
+}
+
+func (c *googleConverter) fileContentPartData(file types.FileContent, assistant bool) (map[string]interface{}, error) {
 	f := c.resolveFile(file)
 	switch {
 	case f.url != "":
@@ -683,13 +749,17 @@ func (c *googleConverter) convertAssistant(msg types.Message) ([]map[string]inte
 			if !ok {
 				continue
 			}
-			parts = append(parts, c.assistantToolCall(tc, &modelResponseHasSignedFunctionCall))
+			part, err := c.assistantToolCall(tc, &modelResponseHasSignedFunctionCall)
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, part)
 		}
 	}
 	return parts, nil
 }
 
-func (c *googleConverter) assistantToolCall(tc googleToolCall, hasSigned *bool) map[string]interface{} {
+func (c *googleConverter) assistantToolCall(tc googleToolCall, hasSigned *bool) (map[string]interface{}, error) {
 	if tc.providerExecuted && tc.toolName == "code_execution" {
 		input, _ := tc.input.(map[string]interface{})
 		if s, ok := tc.input.(string); ok {
@@ -700,7 +770,7 @@ func (c *googleConverter) assistantToolCall(tc googleToolCall, hasSigned *bool) 
 				"language": stringOpt(input, "language"),
 				"code":     stringOpt(input, "code"),
 			},
-		}
+		}, nil
 	}
 
 	// TS `!= null` checks: a present empty string counts (no sentinel for
@@ -726,15 +796,32 @@ func (c *googleConverter) assistantToolCall(tc googleToolCall, hasSigned *bool) 
 
 	var part map[string]interface{}
 	if isServerToolCall {
+		// TS: a string input is secureJsonParse'd, which throws for text
+		// that is not JSON.
+		args, argsRaw := tc.input, tc.inputRaw
+		if s, ok := args.(string); ok {
+			v, ok := SecureJSONParse(s)
+			if !ok {
+				return nil, &providererrors.JSONParseError{Text: s, Cause: fmt.Errorf("invalid JSON in server tool call input")}
+			}
+			args, argsRaw = v, s
+		}
 		part = map[string]interface{}{
-			"toolCall": map[string]interface{}{"toolType": serverToolType, "args": orderedInput(tc.input, tc.inputRaw), "id": serverToolCallID},
+			"toolCall": map[string]interface{}{"toolType": serverToolType, "args": orderedInput(args, argsRaw), "id": serverToolCallID},
 		}
 	} else {
-		args := tc.input
+		// TS 4ae6986cd8 parseToolCallInput: a string input that is valid
+		// JSON is sent as the value it holds.
+		args, argsRaw := tc.input, tc.inputRaw
+		if s, ok := args.(string); ok {
+			if v, ok := SecureJSONParse(s); ok {
+				args, argsRaw = v, s
+			}
+		}
 		if args == nil {
 			args = map[string]interface{}{}
 		}
-		fc := map[string]interface{}{"name": tc.toolName, "args": orderedInput(args, tc.inputRaw)}
+		fc := map[string]interface{}{"name": tc.toolName, "args": orderedInput(args, argsRaw)}
 		if c.opts.IncludeFunctionCallIDs && tc.id != "" {
 			fc["id"] = tc.id
 		}
@@ -743,7 +830,7 @@ func (c *googleConverter) assistantToolCall(tc googleToolCall, hasSigned *bool) 
 	if hasEffective {
 		part["thoughtSignature"] = effective
 	}
-	return part
+	return part, nil
 }
 
 func (c *googleConverter) assistantToolResult(p types.ToolResultContent) map[string]interface{} {
