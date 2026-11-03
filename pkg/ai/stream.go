@@ -2353,6 +2353,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if chunk.Type == provider.ChunkTypeFile && chunk.GeneratedFileContent != nil {
 				resolved, resolveErr := resolveGeneratedFile(stepCtx, *chunk.GeneratedFileContent)
 				if resolveErr != nil {
+					resolveErr = r.classifyStepTimeout(stepCtx, ctx, resolveErr)
 					r.err = resolveErr
 					if isAbortErr(ctx, resolveErr) {
 						fireAbort(resolveErr)
@@ -2364,6 +2365,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if chunk.Type == provider.ChunkTypeReasoningFile && chunk.ReasoningFileContent != nil {
 				resolved, resolveErr := resolveReasoningFile(stepCtx, *chunk.ReasoningFileContent)
 				if resolveErr != nil {
+					resolveErr = r.classifyStepTimeout(stepCtx, ctx, resolveErr)
 					r.err = resolveErr
 					if isAbortErr(ctx, resolveErr) {
 						fireAbort(resolveErr)
@@ -2555,6 +2557,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				if parseErr != nil {
 					// Only a context cancellation reaches here (ParseToolCall
 					// otherwise returns an Invalid call rather than an error).
+					parseErr = r.classifyStepTimeout(stepCtx, ctx, parseErr)
 					r.err = parseErr
 					if isAbortErr(ctx, parseErr) {
 						fireAbort(parseErr)
@@ -2582,6 +2585,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 						if pre.err != nil {
 							// TS resolveToolApproval throws inside the
 							// stream transform: the stream errors.
+							pre.err = r.classifyStepTimeout(stepCtx, ctx, pre.err)
 							r.err = pre.err
 							if isAbortErr(ctx, pre.err) {
 								fireAbort(pre.err)
@@ -3055,6 +3059,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if deferToolInputCallbacks(opts.Internal) {
 				deferredToolInputs = recordDeferredToolInput(deferredToolInputs, startedToolInputs, *chunk)
 			} else if err := toolInputCallbacks.handle(stepCtx, *chunk); err != nil {
+				err = r.classifyStepTimeout(stepCtx, ctx, err)
 				r.err = err
 				if isAbortErr(ctx, err) {
 					fireAbort(err)
@@ -3116,7 +3121,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 		for _, c := range deferredToolInputs {
 			if err := toolInputCallbacks.handle(stepCtx, c); err != nil {
-				r.err = err
+				r.err = r.classifyStepTimeout(stepCtx, ctx, err)
 				break
 			}
 		}
@@ -5723,6 +5728,26 @@ func streamRequestBody(s provider.TextStream) interface{} {
 		return brb.RequestBody()
 	}
 	return nil
+}
+
+// classifyStepTimeout reports err as the step or total TimeoutError when
+// that deadline is what ended it (TS: the stepMs / totalMs abort reason
+// rejects whatever was waiting on the signal), else returns err unchanged.
+func (r *StreamTextResult) classifyStepTimeout(stepCtx, ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	var timeoutErr *TimeoutError
+	if errors.As(err, &timeoutErr) {
+		return err
+	}
+	if r.timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
+		return r.timeout.timeoutError(TimeoutReasonStep, stepCtx.Err())
+	}
+	if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
+		return r.timeout.timeoutError(TimeoutReasonTotal, err)
+	}
+	return err
 }
 
 func isAbortErr(ctx context.Context, err error) bool {

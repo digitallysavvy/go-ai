@@ -599,6 +599,40 @@ func TestR84streamStepTimeoutCumulativeAcrossRetries(t *testing.T) {
 	}
 }
 
+// A step timeout that ends a tool input callback waiting on the step's
+// context is the step TimeoutError, with the TS abort reason text (TS: the
+// stepMs abort rejects whatever waits on the merged signal; the outer stream
+// turns it into abort()).
+func TestR84streamStepTimeoutInToolInputCallback(t *testing.T) {
+	tool := types.Tool{Name: "tool1", Parameters: r71streamValueSchema,
+		OnInputStart: func(ctx context.Context, _ types.OnInputStartOptions) error {
+			<-ctx.Done()
+			return ctx.Err()
+		}}
+	model := r71streamModel(nil, []provider.StreamChunk{
+		{Type: provider.ChunkTypeToolInputStart, ID: "call-1", ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1"}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r71streamUsage},
+	})
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test", Tools: []types.Tool{tool},
+		Timeout: &TimeoutConfig{PerStep: r82streamDur(50)}, OnError: func(context.Context, error) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui, errs := r.ToUIMessageStream(context.Background())
+	var last UIMessageChunk
+	for c := range ui {
+		last = c
+	}
+	<-errs
+	var te *TimeoutError
+	if !errors.As(r.Err(), &te) || te.Reason != TimeoutReasonStep || r.Err().Error() != "Step timeout of 50ms exceeded" {
+		t.Fatalf("Err() = %v (%T)", r.Err(), r.Err())
+	}
+	if last["type"] != "abort" || last["reason"] != "Step timeout of 50ms exceeded" {
+		t.Fatalf("last UI chunk = %v", last)
+	}
+}
+
 // r84streamProcessUIFixture is the gzip -9 + base64 JSON fixture (see
 // r84streamProcessUIRun).
 const r84streamProcessUIFixture = `
