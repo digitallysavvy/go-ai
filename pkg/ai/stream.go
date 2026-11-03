@@ -2097,6 +2097,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		var stepResponseID string
 		stepDefaultResponseID := remapGenerateID()
 		stepResponseTimestamp := time.Now()
+		// TS finish-step response.headers is the step's own doStream
+		// response headers, so a step (or a recovered attempt, below) whose
+		// stream reports none has none: an earlier step's do not carry over.
+		r.mu.Lock()
+		r.responseHeaders = nil
+		r.mu.Unlock()
 		stepInstructions := r.cbSystem
 		stepInstructionMessages := r.cbInstructionMessages
 		stepTools := append([]types.Tool(nil), currentTools...)
@@ -2693,7 +2699,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// Mirrors TS SDK's 'response-metadata' chunk handling in stream-text.ts.
 			if chunk.Type == provider.ChunkTypeResponseMetadata && chunk.ResponseMetadata != nil {
 				if chunk.ResponseMetadata.Headers != nil {
+					r.mu.Lock()
 					r.responseHeaders = chunk.ResponseMetadata.Headers
+					r.mu.Unlock()
 				}
 				if chunk.ResponseMetadata.ModelID != "" {
 					stepResponseModelID = chunk.ResponseMetadata.ModelID
@@ -2909,6 +2917,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					stepResponseID = ""
 					stepDefaultResponseID = remapGenerateID()
 					stepResponseTimestamp = time.Now()
+					r.mu.Lock()
+					r.responseHeaders = nil
+					r.mu.Unlock()
 					toolInputCallbacks = newStreamToolInputCallbacks(stepExecutionTools, currentMessages, r.cbToolsCtx)
 					deferredToolInputs = nil
 					startedToolInputs = map[string]string{}
