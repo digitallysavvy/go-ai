@@ -2075,7 +2075,8 @@ func (s *uiMessageCallbackState) updateExistingToolPart(part UIMessageChunk, too
 var uiOmitField = struct{}{}
 
 func (s *uiMessageCallbackState) applyToolPartUpdate(part UIMessageChunk, toolCallID, toolName string, dynamic bool, update UIMessageChunk, source UIMessageChunk) {
-	if part == nil {
+	created := part == nil
+	if created {
 		if dynamic {
 			part = UIMessageChunk{"type": "dynamic-tool", "toolName": toolName, "toolCallId": toolCallID}
 		} else {
@@ -2108,6 +2109,11 @@ func (s *uiMessageCallbackState) applyToolPartUpdate(part UIMessageChunk, toolCa
 			continue
 		}
 		part[key] = value
+	}
+	if created && part["type"] == "dynamic-tool" {
+		// TS updateDynamicToolPart pushes a new part without rawInput (only
+		// an existing part is assigned it); updateToolPart includes it.
+		delete(part, "rawInput")
 	}
 	copyIfPresent(part, source, "providerExecuted", "providerExecuted")
 	copyIfPresent(part, source, "title", "title")

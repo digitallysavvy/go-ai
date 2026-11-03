@@ -227,6 +227,12 @@ type ToolUIPart struct {
 	// Input otherwise means absent (input-streaming, output-error): TS keeps
 	// the null, validates it and serializes it.
 	inputNull bool
+	// inputAbsent records a decoded part without an "input" key on a state
+	// where a nil Input is otherwise serialized as null: TS keeps the key
+	// absent (a part that got its output or approval request before any
+	// input), so a decode/encode round trip and ReadUIMessages snapshots
+	// leave it out too.
+	inputAbsent bool
 }
 
 // hasInput reports whether the part carries an input, including a JSON null
@@ -803,7 +809,7 @@ func (p ToolUIPart) MarshalJSON() ([]byte, error) {
 	o.field("state", p.State)
 	o.str("title", p.Title)
 	o.mapField("toolMetadata", p.ToolMetadata)
-	if p.hasInput() || toolStateRequiresInput(p.State) {
+	if p.hasInput() || (toolStateRequiresInput(p.State) && !p.inputAbsent) {
 		o.field("input", p.Input)
 	}
 	if p.Output != nil || p.State == ToolStateOutputAvailable {
@@ -878,6 +884,8 @@ func (p *ToolUIPart) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		p.inputNull = p.Input == nil
+	} else {
+		p.inputAbsent = true
 	}
 	if p.Type != "dynamic-tool" {
 		p.ToolName = ""

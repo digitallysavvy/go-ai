@@ -330,3 +330,79 @@ func TestR85streamReadUIMessagesUnknownChunkNoSnapshot(t *testing.T) {
 		t.Errorf("snapshots = %q, want %q", got, want)
 	}
 }
+
+// r85streamReadUISnapshots runs chunks through ReadUIMessages and returns
+// each snapshot's parts as JSON.
+func r85streamReadUISnapshots(t *testing.T, chunks []UIMessageChunk) string {
+	t.Helper()
+	in := make(chan UIMessageChunk, len(chunks))
+	for _, c := range chunks {
+		in <- c
+	}
+	close(in)
+	out, errCh := ReadUIMessages(context.Background(), ReadUIMessagesOptions{Stream: in})
+	var parts []interface{}
+	for m := range out {
+		b, _ := json.Marshal(m.Parts)
+		var v interface{}
+		_ = json.Unmarshal(b, &v)
+		parts = append(parts, v)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(parts)
+	return string(b)
+}
+
+func r85streamJSONEqual(t *testing.T, got, want string) {
+	t.Helper()
+	var g, w interface{}
+	if err := json.Unmarshal([]byte(got), &g); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(want), &w); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(g, w) {
+		t.Errorf("got  %s\nwant %s", got, want)
+	}
+}
+
+// Snapshots recorded from TS readUIMessageStream (Node v24, packages/ai dist).
+// A tool part that gets its output (and approval request) before any input
+// keeps the input key absent instead of null.
+func TestR85streamReadUIToolPartWithoutInput(t *testing.T) {
+	got := r85streamReadUISnapshots(t, []UIMessageChunk{
+		{"type": "tool-input-start", "toolCallId": "c1", "toolName": "t1"},
+		{"type": "tool-output-available", "toolCallId": "c1", "output": map[string]interface{}{"r": 1}},
+		{"type": "tool-approval-request", "toolCallId": "c1", "approvalId": "ap1"},
+	})
+	r85streamJSONEqual(t, got, `[[{"type":"tool-t1","toolCallId":"c1","state":"input-streaming"}],[{"type":"tool-t1","toolCallId":"c1","state":"output-available","output":{"r":1}}],[{"type":"tool-t1","toolCallId":"c1","state":"approval-requested","output":{"r":1},"approval":{"id":"ap1"}}]]`)
+
+	// A decode/encode round trip of such a part keeps the key absent, and a
+	// Go-built part with a nil Input still encodes input: null.
+	var p ToolUIPart
+	if err := json.Unmarshal([]byte(`{"type":"tool-t1","toolCallId":"c1","state":"output-available","output":1}`), &p); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := json.Marshal(p); strings.Contains(string(b), `"input"`) {
+		t.Errorf("round trip added input: %s", b)
+	}
+	if b, _ := json.Marshal(ToolUIPart{Type: "tool-t1", ToolCallID: "c1", State: ToolStateOutputAvailable, Output: 1}); !strings.Contains(string(b), `"input":null`) {
+		t.Errorf("Go-built part lost input null: %s", b)
+	}
+}
+
+// TS updateDynamicToolPart pushes a new dynamic part without rawInput and
+// assigns rawInput only to an existing one.
+func TestR85streamReadUINewDynamicPartWithoutRawInput(t *testing.T) {
+	got := r85streamReadUISnapshots(t, []UIMessageChunk{
+		{"type": "tool-input-start", "toolCallId": "c2", "toolName": "t2", "dynamic": true},
+		{"type": "tool-output-error", "toolCallId": "c2", "errorText": "boom"},
+		{"type": "start-step"},
+		{"type": "tool-input-delta", "toolCallId": "c2", "inputTextDelta": `{"a":1`},
+		{"type": "tool-input-delta", "toolCallId": "c2", "inputTextDelta": `}`},
+	})
+	r85streamJSONEqual(t, got, `[[{"type":"dynamic-tool","toolName":"t2","toolCallId":"c2","state":"input-streaming"}],[{"type":"dynamic-tool","toolName":"t2","toolCallId":"c2","state":"output-error","errorText":"boom"}],[{"type":"dynamic-tool","toolName":"t2","toolCallId":"c2","state":"output-error","errorText":"boom"},{"type":"step-start"},{"type":"dynamic-tool","toolName":"t2","toolCallId":"c2","state":"input-streaming","input":{"a":1}}],[{"type":"dynamic-tool","toolName":"t2","toolCallId":"c2","state":"output-error","errorText":"boom"},{"type":"step-start"},{"type":"dynamic-tool","toolName":"t2","toolCallId":"c2","state":"input-streaming","input":{"a":1},"rawInput":"{\"a\":1}"}]]`)
+}
