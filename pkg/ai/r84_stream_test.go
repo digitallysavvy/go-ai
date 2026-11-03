@@ -518,7 +518,7 @@ func TestR84streamFirstChunkTimeoutRearmedPerStep(t *testing.T) {
 
 // stream-text-timeout.test.ts 613: a stream retry and an OnErrorRetry retry
 // each get a fresh firstChunkMs budget (40ms + 40ms of waiting is no 50ms
-// timeout).
+// timeout; scaled to 100ms waits and a 150ms budget for real timers).
 func TestR84streamRetryGetsFreshFirstChunkBudget(t *testing.T) {
 	for _, kind := range []string{"stream", "callback"} {
 		t.Run(kind, func(t *testing.T) {
@@ -530,16 +530,16 @@ func TestR84streamRetryGetsFreshFirstChunkBudget(t *testing.T) {
 				n := attempts
 				mu.Unlock()
 				if n == 1 {
-					return &r84streamEOFStream{ctx: ctx, chunks: []delayedChunk{{delay: 40 * time.Millisecond, chunk: provider.StreamChunk{Type: provider.ChunkTypeError, Err: errors.New("retryable stream error")}}}}, nil
+					return &r84streamEOFStream{ctx: ctx, chunks: []delayedChunk{{delay: 100 * time.Millisecond, chunk: provider.StreamChunk{Type: provider.ChunkTypeError, Err: errors.New("retryable stream error")}}}}, nil
 				}
-				chunks := []delayedChunk{{delay: 40 * time.Millisecond, chunk: r84streamTextChunks[0]}}
+				chunks := []delayedChunk{{delay: 100 * time.Millisecond, chunk: r84streamTextChunks[0]}}
 				for _, c := range r84streamTextChunks[1:] {
 					chunks = append(chunks, delayedChunk{chunk: c})
 				}
 				return &r84streamEOFStream{ctx: ctx, chunks: chunks}, nil
 			}}
 			retries := 0
-			opts := StreamTextOptions{Model: model, Prompt: "test", Timeout: &TimeoutConfig{FirstChunk: r82streamDur(50), PerChunk: r82streamDur(50)}, StreamRetries: &retries}
+			opts := StreamTextOptions{Model: model, Prompt: "test", Timeout: &TimeoutConfig{FirstChunk: r82streamDur(150), PerChunk: r82streamDur(150)}, StreamRetries: &retries}
 			if kind == "stream" {
 				retries = 1
 			} else {
@@ -554,7 +554,8 @@ func TestR84streamRetryGetsFreshFirstChunkBudget(t *testing.T) {
 }
 
 // stream-text-timeout.test.ts 772: stepMs is cumulative across request
-// (maxRetries) and stream retries: 40ms + 40ms exceeds a 60ms step.
+// (maxRetries) and stream retries: 40ms + 40ms exceeds a 60ms step (scaled
+// to 100ms + 100ms and a 150ms step for real timers).
 func TestR84streamStepTimeoutCumulativeAcrossRetries(t *testing.T) {
 	for _, kind := range []string{"request", "stream"} {
 		t.Run(kind, func(t *testing.T) {
@@ -567,7 +568,7 @@ func TestR84streamStepTimeoutCumulativeAcrossRetries(t *testing.T) {
 				n := attempts
 				mu.Unlock()
 				select {
-				case <-time.After(40 * time.Millisecond):
+				case <-time.After(100 * time.Millisecond):
 				case <-ctx.Done():
 					return nil, context.Cause(ctx)
 				}
@@ -585,13 +586,13 @@ func TestR84streamStepTimeoutCumulativeAcrossRetries(t *testing.T) {
 			}
 			maxRetries := 1
 			r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test", MaxRetries: &maxRetries, StreamRetries: &retries,
-				Timeout: &TimeoutConfig{PerStep: r82streamDur(60), FirstChunk: r82streamDur(50)}, OnError: func(context.Context, error) {}})
+				Timeout: &TimeoutConfig{PerStep: r82streamDur(150), FirstChunk: r82streamDur(120)}, OnError: func(context.Context, error) {}})
 			if err != nil {
 				t.Fatal(err)
 			}
 			_ = r.ConsumeStream()
 			var te *TimeoutError
-			if attempts != 2 || !errors.As(r.Err(), &te) || te.Reason != TimeoutReasonStep || r.Err().Error() != "Step timeout of 60ms exceeded" {
+			if attempts != 2 || !errors.As(r.Err(), &te) || te.Reason != TimeoutReasonStep || r.Err().Error() != "Step timeout of 150ms exceeded" {
 				t.Fatalf("attempts = %d, Err() = %v", attempts, r.Err())
 			}
 		})
