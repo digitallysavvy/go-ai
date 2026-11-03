@@ -87,6 +87,13 @@ type r84carryEventRecorder struct {
 	starts     []telemetry.TelemetryStartEvent
 	stepStarts []telemetry.TelemetryStepStartEvent
 	callStarts []telemetry.LanguageModelCallStartEvent
+	ends       []telemetry.TelemetryFinishEvent
+}
+
+func (r *r84carryEventRecorder) OnEnd(_ context.Context, e telemetry.TelemetryFinishEvent) {
+	r.mu.Lock()
+	r.ends = append(r.ends, e)
+	r.mu.Unlock()
 }
 
 func (r *r84carryEventRecorder) OnStart(ctx context.Context, e telemetry.TelemetryStartEvent) context.Context {
@@ -217,5 +224,49 @@ func TestR84carryHarnessFreshTurnSettingsInTelemetry(t *testing.T) {
 	}
 	if len(defs) != 2 || defs[0] != want[0] || defs[1] != want[1] {
 		t.Fatalf("tool definitions =\n%v\nwant\n%v", defs, want)
+	}
+}
+
+// TS telemetry-integration.test.ts 595 "uses final-step text and reasoning
+// on the telemetry end event": the end event's text and reasoning are the
+// final step's, not the whole turn's.
+func TestR84carryHarnessTelemetryEndUsesFinalStep(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&TextStartPart{ID: "t1"}, &TextDeltaPart{ID: "t1", Delta: "draft"}, &TextEndPart{ID: "t1"},
+				&ReasoningStartPart{ID: "r1"}, &ReasoningDeltaPart{ID: "r1", Delta: "first thought"}, &ReasoningEndPart{ID: "r1"},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls, Raw: "tool_calls"}, Usage: stringUsage(1, 1)},
+				&TextStartPart{ID: "t2"}, &TextDeltaPart{ID: "t2", Delta: "final"}, &TextEndPart{ID: "t2"},
+				&ReasoningStartPart{ID: "r2"}, &ReasoningDeltaPart{ID: "r2", Delta: "final thought"}, &ReasoningEndPart{ID: "r2"},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop, Raw: "stop"}, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop, Raw: "stop"}, TotalUsage: stringUsage(2, 2)},
+			}
+		},
+	})
+	rec := &r84carryEventRecorder{}
+	a, err := NewAgent(AgentSettings{Harness: mock.harness, Telemetry: &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{rec}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: testSandbox()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Generate(context.Background(), agent.AgentGenerateOptions{Prompt: "go", HarnessSession: session}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.ends) != 1 {
+		t.Fatalf("end events = %d", len(rec.ends))
+	}
+	end := rec.ends[0]
+	if end.Text != "final" {
+		t.Errorf("end text = %q, want final", end.Text)
+	}
+	if len(end.ReasoningParts) != 1 || end.ReasoningParts[0].Text != "final thought" || end.Reasoning != "final thought" {
+		t.Errorf("end reasoning = %q %+v, want the final step's", end.Reasoning, end.ReasoningParts)
 	}
 }
