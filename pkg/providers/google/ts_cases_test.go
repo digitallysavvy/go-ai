@@ -41,7 +41,7 @@ func TestTSCasesLanguage(t *testing.T) {
 		`should use "vertex" as providerMetadata key in thoughtSignature content when provider includes "vertex"`:            "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
 		`should use "vertex" as providerMetadata key in tool call content when provider includes "vertex"`:                   "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
 		"should expose the raw response headers":                                                                             "the TS snapshot has the TS test server's content-length (549); the Go replay server sets no content-length",
-		"should pass headers":                                                                                                "the TS test builds the model with provider-level headers the case model does not carry; Go header merging is covered by TestTSWire",
+		"should pass headers":                                                                                                "the TS test builds the model with provider-level headers; replayed with them by TestR82provaTSCaseProviderHeaders",
 		"merges async config headers with sync request headers":                                                              asyncHeaders,
 		"handles Promise-based headers":                                                                                      asyncHeaders,
 		"handles async function headers from config":                                                                         asyncHeaders,

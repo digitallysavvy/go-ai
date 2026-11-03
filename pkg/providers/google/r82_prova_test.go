@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -73,4 +75,38 @@ func TestR82provaInteractionsEmptySignatureKept(t *testing.T) {
 			t.Fatalf("step %d = %v, want signature \"\"", i, step)
 		}
 	}
+}
+
+// TS "should pass headers" builds the provider with provider-level headers
+// (createGoogle({headers})); replayed here with the same provider config
+// (the main case suite builds a default provider and skips it).
+func TestR82provaTSCaseProviderHeaders(t *testing.T) {
+	var cases []tsfixture.Case
+	for _, c := range tsfixture.LoadCases(t, "testdata/tscases/language.json.gz") {
+		if c.Test == "should pass headers" {
+			// The user agent assertion checks the TS test version
+			// (ai-sdk-google/0.0.0-test); Go reports its own version, so it
+			// becomes a prefix check.
+			var asserts []tsfixture.Assertion
+			for _, a := range c.Asserts {
+				if a.Expr == "server.calls[0].requestUserAgent" && a.Arg == "ai-sdk-google/0.0.0-test" {
+					a.Arg = "ai-sdk-google/"
+				}
+				asserts = append(asserts, a)
+			}
+			c.Asserts = asserts
+			cases = append(cases, c)
+		}
+	}
+	if len(cases) != 1 {
+		t.Fatalf("found %d cases", len(cases))
+	}
+	tsfixture.EvalPathSnapshots(t)
+	tsfixture.Run(t, cases, func(base, id string) provider.LanguageModel {
+		m, err := New(Config{APIKey: "test-api-key", BaseURL: base, Headers: map[string]string{"Custom-Provider-Header": "provider-header-value"}}).LanguageModel("gemini-pro")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}, nil)
 }
