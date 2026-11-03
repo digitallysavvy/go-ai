@@ -2104,8 +2104,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		}
 		if !hasLocalToolCalls && !hasPendingDeferred {
 			// A waiting steering message keeps the loop going for another
-			// step, unless the step failed.
-			if !steeringRun.hasPendingMessages() {
+			// step, unless the step failed. A queued message waits for a
+			// task that was not cut off (TS generate-text.ts 984-992).
+			isTruncated := genResult.FinishReason == types.FinishReasonLength || genResult.FinishReason == types.FinishReasonContentFilter
+			if !steeringRun.hasPendingMessages() && (isTruncated || !steeringRun.promoteQueuedMessage()) {
 				break
 			}
 			if genResult.FinishReason == types.FinishReasonError {

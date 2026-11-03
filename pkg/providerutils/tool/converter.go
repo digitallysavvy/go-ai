@@ -179,7 +179,11 @@ func sanitizeAnthropicRawSchema(raw []byte) interface{} {
 
 func sanitizeAnthropicSchemaMap(schema map[string]interface{}) map[string]interface{} {
 	if ref, ok := schema["$ref"]; ok && ref != nil {
-		return map[string]interface{}{"$ref": ref}
+		// TS f4c5f1e959: keep the definitions next to a $ref so a top-level
+		// reference still resolves (sanitize-json-schema.ts 57-60).
+		out := map[string]interface{}{"$ref": ref}
+		sanitizeAnthropicSchemaDefinitionsInto(out, schema)
+		return out
 	}
 
 	out := map[string]interface{}{}
@@ -200,12 +204,7 @@ func sanitizeAnthropicSchemaMap(schema map[string]interface{}) map[string]interf
 	if allOf, ok := sanitizeAnthropicSchemaList(schema["allOf"]); ok {
 		out["allOf"] = allOf
 	}
-	if definitions, ok := sanitizeAnthropicSchemaDefinitions(schema["definitions"]); ok {
-		out["definitions"] = definitions
-	}
-	if defs, ok := sanitizeAnthropicSchemaDefinitions(schema["$defs"]); ok {
-		out["$defs"] = defs
-	}
+	sanitizeAnthropicSchemaDefinitionsInto(out, schema)
 
 	if schemaType, _ := schema["type"].(string); schemaType == "object" || schema["properties"] != nil {
 		if properties, ok := sanitizeAnthropicSchemaDefinitions(schema["properties"]); ok {
@@ -235,6 +234,17 @@ func sanitizeAnthropicSchemaMap(schema map[string]interface{}) map[string]interf
 	}
 
 	return out
+}
+
+// sanitizeAnthropicSchemaDefinitionsInto sets the sanitized definitions and
+// $defs of schema on out (TS sanitizeSchemaDefinitions).
+func sanitizeAnthropicSchemaDefinitionsInto(out, schema map[string]interface{}) {
+	if definitions, ok := sanitizeAnthropicSchemaDefinitions(schema["definitions"]); ok {
+		out["definitions"] = definitions
+	}
+	if defs, ok := sanitizeAnthropicSchemaDefinitions(schema["$defs"]); ok {
+		out["$defs"] = defs
+	}
 }
 
 // copyIfNotNil mirrors TS `schema.key != null`: a JSON null is skipped.

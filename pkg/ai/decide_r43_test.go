@@ -3,7 +3,6 @@ package ai
 import (
 	"context"
 	"errors"
-	"math"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -15,7 +14,10 @@ import (
 // looks at any description, so the error does not depend on map order.
 func TestValidateDecisionInput_BooleanCriteriaKeysCheckedBeforeDescriptions(t *testing.T) {
 	questions := map[string]provider.DecisionQuestion{
-		"q": {Type: "boolean", Instructions: "Is it?", Criteria: map[string]interface{}{"true": math.NaN(), "maybe": "x"}},
+		// A non-finite number is rejected before any of these checks (TS
+		// b6b9dcaec7, TestR85genDecisionSerializableJSONTexts), so the
+		// description here is a Go-only structural failure.
+		"q": {Type: "boolean", Instructions: "Is it?", Criteria: map[string]interface{}{"true": 42, "maybe": "x"}},
 	}
 	for i := 0; i < 50; i++ {
 		err := validateDecisionInput("state", questions, nil)

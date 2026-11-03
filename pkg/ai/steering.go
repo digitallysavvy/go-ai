@@ -18,6 +18,13 @@ import (
 // running tools are never interrupted. A message that is waiting when the model
 // finishes its answer keeps the loop going for another step unless a stop
 // condition is met.
+//
+// Queue (TS steering.queue(), #24209) adds a message once the model has
+// finished its current task, that is when it gives a final answer without
+// tool calls; the loop then continues with it unless a stop condition is met.
+// Queued messages are delivered one per task, in order, after any waiting
+// steering messages, and never after a response cut off by the length limit
+// or a content filter.
 
 // SteeringNotDeliveredReason says why a steering message was not delivered.
 type SteeringNotDeliveredReason string
@@ -115,6 +122,7 @@ type Steering struct {
 	mu       sync.Mutex
 	state    steeringState
 	pending  []pendingSteer
+	queued   []pendingSteer
 	taken    []pendingSteer
 	outcomes map[string]*SteerHandle
 }
@@ -136,6 +144,30 @@ func (s *Steering) Steer(text string, opts ...SteerOption) *SteerHandle {
 // SteerMessage is Steer for a full user message. It returns an
 // InvalidArgumentError for any other role.
 func (s *Steering) SteerMessage(message types.Message, opts ...SteerOption) (*SteerHandle, error) {
+	return s.add(message, false, opts)
+}
+
+// Queue adds a user message with the given text to the run once the model has
+// finished its current task (a final answer without tool calls). The run then
+// continues with the message unless a stop condition is met. Queued messages
+// are delivered one per task, in order, after any waiting steering messages;
+// messages queued before the run wait until the prompt is answered. Ids are
+// shared with Steer: a message with an id that was already sent returns the
+// handle of the first message. Mirrors TS steering.queue().
+func (s *Steering) Queue(text string, opts ...SteerOption) *SteerHandle {
+	h, _ := s.QueueMessage(types.Message{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: text}}}, opts...)
+	return h
+}
+
+// QueueMessage is Queue for a full user message. It returns an
+// InvalidArgumentError for any other role.
+func (s *Steering) QueueMessage(message types.Message, opts ...SteerOption) (*SteerHandle, error) {
+	return s.add(message, true, opts)
+}
+
+// add registers a steered (queued=false) or queued message (TS
+// DefaultSteering.add).
+func (s *Steering) add(message types.Message, queued bool, opts []SteerOption) (*SteerHandle, error) {
 	var cfg steerConfig
 	for _, o := range opts {
 		o(&cfg)
@@ -159,7 +191,12 @@ func (s *Steering) SteerMessage(message types.Message, opts ...SteerOption) (*St
 		h.resolve(SteeringOutcome{ID: id, Message: message, Reason: SteeringFinished})
 		return h, nil
 	}
-	s.pending = append(s.pending, pendingSteer{id: id, message: message, handle: h})
+	p := pendingSteer{id: id, message: message, handle: h}
+	if queued {
+		s.queued = append(s.queued, p)
+	} else {
+		s.pending = append(s.pending, p)
+	}
 	return h, nil
 }
 
@@ -191,6 +228,24 @@ func (r *steeringRun) hasPendingMessages() bool {
 	r.s.mu.Lock()
 	defer r.s.mu.Unlock()
 	return r.s.state == steeringRunning && len(r.s.pending) > 0
+}
+
+// promoteQueuedMessage moves the oldest queued message to the waiting
+// messages for the next step. It returns false when nothing is queued, the
+// run is not running, or r is nil (TS steering.ts 213-221).
+func (r *steeringRun) promoteQueuedMessage() bool {
+	if r == nil {
+		return false
+	}
+	r.s.mu.Lock()
+	defer r.s.mu.Unlock()
+	if r.s.state != steeringRunning || len(r.s.queued) == 0 {
+		return false
+	}
+	next := r.s.queued[0]
+	r.s.queued = r.s.queued[1:]
+	r.s.pending = append(r.s.pending, next)
+	return true
 }
 
 // takeMessages takes the waiting messages for the next step; they are resolved
@@ -246,8 +301,8 @@ func (r *steeringRun) end(reason SteeringNotDeliveredReason) {
 		r.s.mu.Unlock()
 		return
 	}
-	notDelivered := append(append([]pendingSteer(nil), r.s.taken...), r.s.pending...)
-	r.s.taken, r.s.pending = nil, nil
+	notDelivered := append(append(append([]pendingSteer(nil), r.s.taken...), r.s.pending...), r.s.queued...)
+	r.s.taken, r.s.pending, r.s.queued = nil, nil, nil
 	r.s.state = steeringEnded
 	r.s.mu.Unlock()
 	for _, p := range notDelivered {

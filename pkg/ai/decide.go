@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"reflect"
 	"strconv"
 	"time"
 
@@ -509,6 +510,84 @@ func isJSONCompatible(value interface{}) bool {
 	}
 }
 
+// isSerializableDecisionJSON reports whether value has only finite numbers
+// and no cycles (TS isSerializableJSON, validate-decision.ts 19-38: the JSON
+// constraints types cannot express). Go values have no array holes. Values
+// that are referenced more than once without forming a cycle are allowed.
+// Other value kinds are left to the structural checks below.
+func isSerializableDecisionJSON(value interface{}) bool {
+	return serializableDecisionJSON(value, map[decisionJSONRef]bool{})
+}
+
+// decisionJSONRef identifies a map or slice value on the ancestor path. A
+// slice is identified by its first element and length, so a shorter view of
+// the same array is a different value.
+type decisionJSONRef struct {
+	ptr uintptr
+	len int
+}
+
+func serializableDecisionJSON(value interface{}, ancestors map[decisionJSONRef]bool) bool {
+	switch v := value.(type) {
+	case float32:
+		return !math.IsNaN(float64(v)) && !math.IsInf(float64(v), 0)
+	case float64:
+		return !math.IsNaN(v) && !math.IsInf(v, 0)
+	case []interface{}:
+		if len(v) == 0 {
+			return true
+		}
+		key := decisionJSONRef{ptr: reflect.ValueOf(v).Pointer(), len: len(v)}
+		if ancestors[key] {
+			return false
+		}
+		ancestors[key] = true
+		defer delete(ancestors, key)
+		for _, item := range v {
+			if !serializableDecisionJSON(item, ancestors) {
+				return false
+			}
+		}
+	case map[string]interface{}:
+		if v == nil {
+			return true
+		}
+		key := decisionJSONRef{ptr: reflect.ValueOf(v).Pointer(), len: -1}
+		if ancestors[key] {
+			return false
+		}
+		ancestors[key] = true
+		defer delete(ancestors, key)
+		for _, item := range v {
+			if !serializableDecisionJSON(item, ancestors) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// decisionStateJSON is the JSON content of a decision state: the values of
+// its json parts, or the state itself (TS validateDecisionInput stateJSON).
+func decisionStateJSON(state interface{}) interface{} {
+	parts, ok := state.([]provider.DecisionStatePart)
+	if !ok {
+		return state
+	}
+	values := make([]interface{}, 0, len(parts))
+	for _, part := range parts {
+		if part.Type == "json" {
+			values = append(values, part.Value)
+		}
+	}
+	return values
+}
+
+const (
+	invalidDecisionStateJSONMessage    = "JSON content must not contain non-finite numbers, cycles, or array holes"
+	invalidDecisionQuestionJSONMessage = "instructions and criteria must not contain non-finite numbers, cycles, or array holes"
+)
+
 // isDecisionInput reports whether value is a JSON-compatible string,
 // map[string]interface{}, or []interface{} (mirrors TypeScript's isInput).
 func isDecisionInput(value interface{}) bool {
@@ -527,7 +606,15 @@ func invalidDecisionInput(field string, message string) error {
 }
 
 // validateDecisionInput mirrors TypeScript's validateDecisionInput.
+//
+// TS b6b9dcaec7 dropped the input checks its types guarantee; Go types do
+// not guarantee them, so Go keeps them (with their texts) after the
+// serializable-JSON checks TS kept, which run first and so also keep the
+// structural checks from recursing into a cycle.
 func validateDecisionInput(state interface{}, questions map[string]provider.DecisionQuestion, order []string) error {
+	if !isSerializableDecisionJSON(decisionStateJSON(state)) {
+		return invalidDecisionInput("state", invalidDecisionStateJSONMessage)
+	}
 	if err := validateDecisionState(state); err != nil {
 		return err
 	}
@@ -538,6 +625,9 @@ func validateDecisionInput(state interface{}, questions map[string]provider.Deci
 	for _, id := range orderedQuestionIDs(questions, order) {
 		q := questions[id]
 		field := fmt.Sprintf("questions.%s", id)
+		if !isSerializableDecisionJSON(q.Instructions) || !isSerializableDecisionJSON(q.Criteria) {
+			return invalidDecisionInput(field, invalidDecisionQuestionJSONMessage)
+		}
 		// Instructions may be omitted (nil) for choice, score and boolean
 		// questions when the provider supports criteria-only questions; a box
 		// question always needs them (TS #23470).

@@ -93,9 +93,9 @@ func TestR71Gen_ApprovedToolCallResume(t *testing.T) {
 	r71genCheckJSON(t, "prepareStep responseMessages", prepareResponse, []interface{}{[]interface{}{toolResult}})
 }
 
-// 'when a call from a single tool that needs approval is approved and the tool
-// throws' > 'should serialize the tool error as error-text in the
-// continuation prompt'.
+// generate-text.test.ts 13288 (13305 at 30548ee7f9): 'when a call from a
+// single tool that needs approval is approved and the tool throws' > 'should
+// serialize the tool error as error-text in the continuation prompt'.
 func TestR71Gen_ApprovedToolThrowsErrorTextInPrompt(t *testing.T) {
 	var prompts [][]types.Message
 	_, err := GenerateText(context.Background(), GenerateTextOptions{

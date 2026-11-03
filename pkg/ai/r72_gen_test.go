@@ -1226,10 +1226,10 @@ func r72genToolNames(tools []types.Tool) []string {
 	return out
 }
 
-// generate-text.test.ts tool callers: 580 're-announces a caller message when
-// the catalog reverts', 714 'distinguishes the direct marker from a caller
-// named direct' and 771 'rejects caller names that are not caller-capable
-// tools'.
+// generate-text.test.ts 580, 714 and 771 (tool callers): 're-announces a
+// caller message when the catalog reverts', 'distinguishes the direct marker
+// from a caller named direct' and 'rejects caller names that are not
+// caller-capable tools'.
 func TestR72Gen_ToolCallers(t *testing.T) {
 	// 580: the announcement follows the step's active tools; a catalog that
 	// changes back is announced again.
