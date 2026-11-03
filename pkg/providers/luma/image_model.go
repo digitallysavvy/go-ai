@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	stdhttp "net/http"
 	"time"
 
@@ -138,7 +139,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, err
 	}
 	var genResp lumaGenerationResponse
-	if err := json.Unmarshal(resp.Body, &genResp); err != nil {
+	if err := json.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &genResp); err != nil {
 		return nil, fmt.Errorf("luma: failed to decode generation response: %w", err)
 	}
 
@@ -229,7 +230,7 @@ func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, h
 			return "", err
 		}
 		var status lumaGenerationResponse
-		if err := json.Unmarshal(resp.Body, &status); err != nil {
+		if err := json.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &status); err != nil {
 			return "", fmt.Errorf("luma: failed to parse status response: %w", err)
 		}
 
@@ -384,7 +385,7 @@ func (m *ImageModel) parseErrorResponseWithHeaders(body []byte, statusCode int, 
 	// schema (or is empty) gives the HTTP status text as the message.
 	msg := stdhttp.StatusText(statusCode)
 	var errResp lumaErrorResponse
-	if err := json.Unmarshal(body, &errResp); err == nil && errResp.valid() {
+	if err := json.Unmarshal([]byte(textdecode.UTF8(body)), &errResp); err == nil && errResp.valid() {
 		// detail[0].msg is a required string, so `?? 'Unknown error'` never
 		// applies; an empty detail array makes errorToMessage throw, which
 		// the handler also turns into the status text.

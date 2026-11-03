@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"math"
 	"net/http"
@@ -495,7 +496,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, providerutils.InvalidJSONResponseError("bfl", resp.StatusCode, resp.Headers, resp.Body, err)
 	}
 	var submit bflVideoSubmitResponse
-	if err := json.Unmarshal(resp.Body, &submit); err != nil {
+	if err := json.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &submit); err != nil {
 		return nil, fmt.Errorf("failed to decode submit response: %w", err)
 	}
 
@@ -661,10 +662,11 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	headers := mergeStringMaps(m.provider.config.Headers, opts.Headers)
 
-	pollBody, respHeaders, err := m.fetchStatusJSON(ctx, pollURL, headers)
+	rawPollBody, respHeaders, err := m.fetchStatusJSON(ctx, pollURL, headers)
 	if err != nil {
 		return nil, m.handleVideoPollError(err)
 	}
+	pollBody := []byte(textdecode.UTF8(rawPollBody))
 	// TS createJsonResponseHandler(bflVideoPollSchema).
 	if err := validateBFLVideoPollBody(pollBody); err != nil {
 		return nil, providerutils.InvalidJSONResponseError("bfl", http.StatusOK, http.Header(respHeaders), pollBody, err)

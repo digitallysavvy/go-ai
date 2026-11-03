@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"regexp"
 	"strings"
@@ -225,7 +226,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, err
 	}
 
-	result, err := m.convertBody(ctx, resp.Body)
+	result, err := m.convertBody(ctx, []byte(textdecode.UTF8(resp.Body)))
 	if err != nil {
 		return nil, err
 	}
@@ -255,7 +256,7 @@ func falImageErrorMessage(status int, body []byte) string {
 	// Decode field by field: a mistyped `detail` (a string) must not hide a
 	// valid `message`, which the second union branch still accepts.
 	var top map[string]json.RawMessage
-	if json.Unmarshal(body, &top) != nil || top == nil {
+	if json.Unmarshal([]byte(textdecode.UTF8(body)), &top) != nil || top == nil {
 		return http.StatusText(status)
 	}
 	var detail []json.RawMessage

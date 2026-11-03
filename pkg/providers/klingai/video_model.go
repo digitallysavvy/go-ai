@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"strconv"
 	"strings"
@@ -132,7 +133,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, err
 	}
 	var createResp createTaskResponse
-	if err := json.Unmarshal(submitResp.Body, &createResp); err != nil {
+	if err := json.Unmarshal([]byte(textdecode.UTF8(submitResp.Body)), &createResp); err != nil {
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to parse response: %v", err))
 	}
 	// TS has no `code != 0` check on a 2xx response; a missing task_id is
@@ -190,7 +191,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		return nil, err
 	}
 	var statusResp taskStatusResponse
-	if err := json.Unmarshal(downloaded.Data, &statusResp); err != nil {
+	if err := json.Unmarshal([]byte(textdecode.UTF8(downloaded.Data)), &statusResp); err != nil {
 		return nil, fmt.Errorf("klingai: failed to decode status response: %w", err)
 	}
 	result := downloaded
@@ -360,7 +361,7 @@ func parseKlingAIErrorBody(statusCode int, body []byte) error {
 		Code    *float64 `json:"code"`
 		Message *string  `json:"message"`
 	}
-	if jsonErr := json.Unmarshal(body, &envelope); jsonErr == nil && envelope.Code != nil && envelope.Message != nil {
+	if jsonErr := json.Unmarshal([]byte(textdecode.UTF8(body)), &envelope); jsonErr == nil && envelope.Code != nil && envelope.Message != nil {
 		e := NewError(int(*envelope.Code), *envelope.Message, "")
 		e.httpStatus, e.httpBody = statusCode, body
 		return e

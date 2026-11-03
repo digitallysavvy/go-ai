@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -130,7 +131,7 @@ func (m *RealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.
 	var data struct {
 		Token interface{} `json:"token"`
 	}
-	_ = json.Unmarshal(resp.Body, &data)
+	_ = json.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &data)
 	token, _ := data.Token.(string)
 	if token == "" {
 		return provider.ClientSecretResult{}, fmt.Errorf("Cartesia realtime client secret response did not include a token.") //nolint:staticcheck // matches TS SDK's exact error text

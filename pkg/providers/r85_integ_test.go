@@ -30,6 +30,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/openresponses"
 	"github.com/digitallysavvy/go-ai/pkg/providers/perplexity"
 	"github.com/digitallysavvy/go-ai/pkg/providers/quiverai"
+	"github.com/digitallysavvy/go-ai/pkg/providers/replicate"
 	"github.com/digitallysavvy/go-ai/pkg/providers/together"
 	"github.com/digitallysavvy/go-ai/pkg/providers/xai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/zai"
@@ -164,5 +165,27 @@ func TestR85integAPIKeyFuncGetsCallerContext(t *testing.T) {
 				t.Fatalf("server got %d requests, want none", n)
 			}
 		})
+	}
+}
+
+// provb CR r85 4 (class sweep): JSON bodies a provider reads without DoJSON
+// are decoded like TS response.text() before JSON.parse, so a leading BOM
+// no longer fails the parse.
+func TestR85integDirectJSONBodyWithBOM(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("\xEF\xBB\xBF" + `{"id":"p1","status":"succeeded","output":["hi"]}`))
+	}))
+	defer srv.Close()
+	model, err := replicate.New(replicate.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("owner/model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+	if result.Text != "hi" {
+		t.Fatalf("text = %q", result.Text)
 	}
 }

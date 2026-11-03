@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 	"math"
 	"net/http"
@@ -138,7 +139,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, providerutils.InvalidJSONResponseError("bfl", resp.StatusCode, resp.Headers, resp.Body, err)
 	}
 	var createResp bflCreateResponse
-	if err := json.Unmarshal(resp.Body, &createResp); err != nil {
+	if err := json.Unmarshal([]byte(textdecode.UTF8(resp.Body)), &createResp); err != nil {
 		return nil, fmt.Errorf("failed to decode create response: %w", err)
 	}
 
@@ -578,7 +579,8 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 	defer timer.Stop()
 
 	for {
-		body, err := m.getPollBody(pollCtx, pollURL, headers)
+		rawBody, err := m.getPollBody(pollCtx, pollURL, headers)
+		body := []byte(textdecode.UTF8(rawBody))
 		if err != nil {
 			if timedOut.Load() {
 				return bflResult{}, fmt.Errorf("Black Forest Labs generation timed out.") //nolint:staticcheck // matches TS SDK's exact error text
