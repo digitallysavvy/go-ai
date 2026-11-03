@@ -269,6 +269,9 @@ func mapElevenLabsOutputFormat(outputFormat string) string {
 			return "ulaw_8000"
 		}
 		return outputFormat
+	case "wav":
+		// TS 3e5a12334b: ElevenLabs rejects a bare "wav".
+		return "wav_44100"
 	default:
 		return outputFormat
 	}
