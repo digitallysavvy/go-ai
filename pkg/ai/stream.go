@@ -1394,19 +1394,20 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// span parent yet. telemetryStepCtx is saved on r so the processStream
 	// loop iteration that consumes this step's stream reads it back instead
 	// of calling FireOnStepStart a second time.
-	telemetryStepCtx := telemetry.FireOnStepStart(stepCtx, telemetry.TelemetryStepStartEvent{
-		CallID:         callID,
-		OperationType:  "ai.streamText",
-		Settings:       telemetrySettings,
-		StepNumber:     0,
-		ModelProvider:  stepModel.Provider(),
-		ModelID:        stepModel.ModelID(),
-		ToolChoice:     stepToolChoice,
+	telemetryStepCtx := telemetry.FireOnStepStart(stepCtx, stepStartTelemetryPrompt(opts.Internal, telemetry.TelemetryStepStartEvent{
+		CallID:        callID,
+		OperationType: "ai.streamText",
+		Settings:      telemetrySettings,
+		StepNumber:    0,
+		ModelProvider: stepModel.Provider(),
+		ModelID:       stepModel.ModelID(),
+		// TS stepToolChoice is prepareToolChoice(...): auto when unset.
+		ToolChoice:     preparedToolChoice(stepToolChoice),
 		PromptMessages: genOpts.Prompt.Messages,
 		StepTools:      stepTools,
 		RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 		ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
-	})
+	}))
 	r.stepReopenTelemetryStepCtx = telemetryStepCtx
 
 	// startModelCall fires the model call's start (callback and telemetry)
@@ -4034,19 +4035,19 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// 1). nextTelemetryStepCtx is saved on r so the top of the following
 		// loop iteration — which processes the stream DoStream returns here —
 		// reads it back instead of firing FireOnStepStart again.
-		nextTelemetryStepCtx := telemetry.FireOnStepStart(nextStepCtx, telemetry.TelemetryStepStartEvent{
+		nextTelemetryStepCtx := telemetry.FireOnStepStart(nextStepCtx, stepStartTelemetryPrompt(opts.Internal, telemetry.TelemetryStepStartEvent{
 			CallID:         r.cbCallID,
 			OperationType:  "ai.streamText",
 			Settings:       r.telemetrySettings,
 			StepNumber:     stepNum,
 			ModelProvider:  nextModel.Provider(),
 			ModelID:        nextModel.ModelID(),
-			ToolChoice:     nextToolChoice,
+			ToolChoice:     preparedToolChoice(nextToolChoice),
 			PromptMessages: nextGenOpts.Prompt.Messages,
 			StepTools:      nextTools,
 			RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
 			ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
-		})
+		}))
 		r.stepReopenTelemetryStepCtx = nextTelemetryStepCtx
 		// As for the first step: a retried DoStream open is a new model call.
 		var nextModelCallCtx context.Context
@@ -5789,6 +5790,20 @@ func (r *StreamTextResult) nextChunk(ctx context.Context) (*provider.StreamChunk
 	case <-chunkCtx.Done():
 		return nil, wrapTimeoutError(TimeoutReasonChunk, chunkCtx.Err())
 	}
+}
+
+// stepStartTelemetryPrompt clears the step prompt, tools and tool choice of
+// a telemetry step-start event for a WorkflowAgent run
+// (InternalOptions.OmitStepPromptTelemetry): TS WorkflowAgent's model-call
+// iterator dispatches onStepStart without promptMessages, stepTools or
+// stepToolChoice.
+func stepStartTelemetryPrompt(internal *InternalOptions, e telemetry.TelemetryStepStartEvent) telemetry.TelemetryStepStartEvent {
+	if internal != nil && internal.OmitStepPromptTelemetry {
+		e.ToolChoice = types.ToolChoice{}
+		e.PromptMessages = nil
+		e.StepTools = nil
+	}
+	return e
 }
 
 // readChunk reads the next chunk, returning ctx's error once ctx is done.

@@ -15,7 +15,10 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 var r82streamValueSchema = map[string]interface{}{
@@ -1560,5 +1563,65 @@ func TestR82streamChunkTimeoutProviderExecutedTool(t *testing.T) {
 	}
 	if el := time.Since(start); el > 85*time.Millisecond {
 		t.Fatalf("timed out after %v: the provider tool result reset chunkMs", el)
+	}
+}
+
+// r82streamStepToolChoices runs StreamText with per-call legacy OTel and
+// returns the ai.prompt.toolChoice / ai.prompt.messages / ai.prompt.tools
+// attributes of each ai.streamText.doStream span ("-" when absent).
+func r82streamStepToolChoices(t *testing.T, opts StreamTextOptions) [][3]string {
+	t.Helper()
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	opts.Telemetry = &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{
+		telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")}),
+	}}
+	r := r71streamRun(t, opts)
+	_ = r.Text()
+	var out [][3]string
+	for _, s := range rec.Ended() {
+		if s.Name() != "ai.streamText.doStream" {
+			continue
+		}
+		got := [3]string{"-", "-", "-"}
+		for _, kv := range s.Attributes() {
+			switch kv.Key {
+			case "ai.prompt.toolChoice":
+				got[0] = kv.Value.AsString()
+			case "ai.prompt.messages":
+				got[1] = "set"
+			case "ai.prompt.tools":
+				got[2] = "set"
+			}
+		}
+		out = append(out, got)
+	}
+	return out
+}
+
+// CR r82 carry->stream item 1: TS stepToolChoice is prepareToolChoice(...)
+// ({type: auto} when unset), recorded as ai.prompt.toolChoice on every step
+// span (legacy-open-telemetry.test.ts.snap "streamText > should record
+// telemetry data when enabled"). Item 2: a WorkflowAgent run
+// (OmitStepPromptTelemetry) records no step prompt, tools or tool choice
+// (TS model-call-iterator.ts onStepStart).
+func TestR82streamTelemetryStepToolChoiceDefaultsToAuto(t *testing.T) {
+	got := r82streamStepToolChoices(t, StreamTextOptions{Model: &testutil.MockLanguageModel{}, Prompt: "hi"})
+	if fmt.Sprint(got) != `[[{"type":"auto"} set -]]` {
+		t.Fatalf("one step: %v", got)
+	}
+	twoSteps := func(internal *InternalOptions) StreamTextOptions {
+		return StreamTextOptions{Prompt: "hi", Internal: internal, StopWhen: []StopCondition{IsStepCount(2)},
+			Model: r71streamModel(nil, r82streamSteerToolCall(), r82streamSteerText("done")),
+			Tools: []types.Tool{r82streamWeather(func() string { return "sunny" })}}
+	}
+	got = r82streamStepToolChoices(t, twoSteps(nil))
+	if fmt.Sprint(got) != `[[{"type":"auto"} set set] [{"type":"auto"} set set]]` {
+		t.Fatalf("two steps: %v", got)
+	}
+	got = r82streamStepToolChoices(t, twoSteps(&InternalOptions{OmitStepPromptTelemetry: true}))
+	if fmt.Sprint(got) != `[[- - -] [- - -]]` {
+		t.Fatalf("workflow steps: %v", got)
 	}
 }
