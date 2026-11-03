@@ -128,3 +128,12 @@ func TestR86provaAuthTokenFuncTSCases(t *testing.T) {
 		t.Fatalf("auth headers = %v", requests[0])
 	}
 }
+
+// cr-r86-provb-to-prova item 2: a []string allowedCallers is read like its
+// JSON form.
+func TestR86provaTypedAllowedCallers(t *testing.T) {
+	o := toolOptionsOf(types.Tool{ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"allowedCallers": []string{"code_execution_20260120"}}}})
+	if o == nil || len(o.AllowedCallers) != 1 || o.AllowedCallers[0] != "code_execution_20260120" {
+		t.Fatalf("%+v", o)
+	}
+}

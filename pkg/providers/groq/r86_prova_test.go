@@ -16,3 +16,15 @@ func TestR86provaGroqErrorBodyBOM(t *testing.T) {
 		t.Fatalf("%#v", err)
 	}
 }
+
+// cr-r86-provb-to-prova item 1: a []string timestampGranularities is read
+// like its JSON form.
+func TestR86provaGroqTypedTimestampGranularities(t *testing.T) {
+	po := map[string]interface{}{"groq": map[string]interface{}{"timestampGranularities": []string{"word"}}}
+	if err := validateGroqTranscriptionOptions(po); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveGroqTranscriptionOptions(po).TimestampGranularities; len(got) != 1 || got[0] != "word" {
+		t.Fatalf("got %v", got)
+	}
+}

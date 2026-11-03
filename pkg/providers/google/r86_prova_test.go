@@ -88,3 +88,20 @@ func TestR86provaAuthHeadersKeyFuncOnceWithCtx(t *testing.T) {
 		t.Fatalf("calls = %d, without the caller ctx = %d", calls, withoutCtx)
 	}
 }
+
+// cr-r86-provb-to-prova item 3: a []map[string]interface{} responseFormat
+// is read like its JSON form.
+func TestR86provaInteractionsTypedResponseFormat(t *testing.T) {
+	entry := map[string]interface{}{"type": "text"}
+	typed, err := parseInteractionsProviderOptions(map[string]interface{}{"google": map[string]interface{}{"responseFormat": []map[string]interface{}{entry}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := parseInteractionsProviderOptions(map[string]interface{}{"google": map[string]interface{}{"responseFormat": []interface{}{entry}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(typed.ResponseFormat) != 1 || len(plain.ResponseFormat) != 1 {
+		t.Fatalf("typed %v, plain %v", typed.ResponseFormat, plain.ResponseFormat)
+	}
+}
