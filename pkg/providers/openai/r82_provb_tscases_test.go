@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
@@ -49,4 +51,41 @@ func TestR82provbTSCasesCompatConvertMessages(t *testing.T) {
 		}
 		return v, nil, nil
 	}, map[string]string{})
+}
+
+// TestR82provbTSCasesCompatPrepareTools replays
+// openai-compatible-prepare-tools.test.ts (TS prepareTools, --expand-each
+// --fn=prepareTools at e64ed82f27) through the OpenAI-compatible chat
+// request builder (Config.OpenAICompatible).
+func TestR82provbTSCasesCompatPrepareTools(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/compat_prepare_tools.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		in, _ := args[0].(map[string]interface{})
+		tools, why := tsfixture.BuildTools(in["tools"])
+		if why != "" {
+			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+		}
+		opts := &provider.GenerateOptions{Prompt: types.Prompt{Text: "Hello"}, Tools: tools}
+		if tc, ok := in["toolChoice"].(map[string]interface{}); ok && tc["__undef"] == nil {
+			opts.ToolChoice = tsfixture.BuildToolChoice(tc)
+		}
+		m, err := New(Config{APIKey: "k", OpenAICompatible: true, Name: "test-provider"}).ChatModel("m")
+		if err != nil {
+			return nil, nil, err
+		}
+		body, warnings, err := m.(*LanguageModel).buildRequestBodyWithWarnings(opts, false)
+		if err != nil {
+			return nil, nil, err
+		}
+		out := map[string]interface{}{"toolWarnings": tsfixture.WarningsToTS(warnings)}
+		for key, field := range map[string]string{"tools": "tools", "tool_choice": "toolChoice"} {
+			if v, ok := body[key]; ok {
+				b, _ := json.Marshal(v)
+				var g interface{}
+				_ = json.Unmarshal(b, &g)
+				out[field] = g
+			}
+		}
+		return out, nil, nil
+	}, nil)
 }
