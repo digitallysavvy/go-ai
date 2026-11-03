@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // TS countImages reads the JSON object form of the state, so an image_url
@@ -35,5 +36,29 @@ func TestR83provaDecisionStateTypedImageURLObject(t *testing.T) {
 	var invalid *providererrors.InvalidArgumentError
 	if _, err := convertToPerplexityDecisionState([]provider.DecisionStatePart{provider.DecisionJSONPart(nine)}); !errors.As(err, &invalid) {
 		t.Fatalf("9 typed images: err = %v, want InvalidArgumentError", err)
+	}
+}
+
+// TS getThoughtSignature forwards any string, "" included
+// (`typeof thoughtSignature === 'string'`), on function_call and
+// function_call_output items.
+func TestR83provaInputEmptyThoughtSignatureForwarded(t *testing.T) {
+	opts := map[string]interface{}{"perplexity": map[string]interface{}{"thoughtSignature": ""}}
+	msgs := []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentPart{
+			types.ToolCallContent{ToolCallID: "c1", ToolName: "f", Input: "{}", ProviderOptions: opts},
+		}},
+		{Role: types.RoleTool, Content: []types.ContentPart{
+			types.ToolResultContent{ToolCallID: "c1", ToolName: "f", Result: "ok", ProviderOptions: opts},
+		}},
+	}
+	input, _, err := convertToPerplexityInput(msgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, item := range input {
+		if sig, ok := item["thought_signature"]; !ok || sig != "" {
+			t.Errorf("input[%d].thought_signature = %v (present %v), TS sends \"\"", i, sig, ok)
+		}
 	}
 }
