@@ -281,7 +281,7 @@ func TestR85toolsInputRequiredStopsWhileAwaitingInput(t *testing.T) {
 			case err := <-errCh:
 				want := map[string]string{"abort": "Request was aborted", "close": "Connection closed", "timeout": "Request timed out after 100ms"}[stop]
 				// The timeout is the remaining total in whole ms (TS Date.now()).
-				if err == nil || (err.Error() != want && !(stop == "timeout" && strings.HasPrefix(err.Error(), "Request timed out after 9"))) {
+				if err == nil || (err.Error() != want && (stop != "timeout" || !strings.HasPrefix(err.Error(), "Request timed out after 9"))) {
 					t.Fatalf("err = %v, want %q", err, want)
 				}
 			case <-time.After(3 * time.Second):
@@ -309,7 +309,7 @@ func TestR85toolsInputRequiredLegacyText(t *testing.T) {
 // initialization" / "should preserve a version error with $name"
 // (ade2a33f55).
 func TestR85toolsDiscoveryLegacyVersionGuidance(t *testing.T) {
-	connect := func(data string) (error, *r85toolsMRTRTransport) {
+	connect := func(data string) (*r85toolsMRTRTransport, error) {
 		errObj := `{"code":-32022,"message":"Unsupported protocol version"`
 		if data != "" {
 			errObj += `,"data":` + data
@@ -318,10 +318,10 @@ func TestR85toolsDiscoveryLegacyVersionGuidance(t *testing.T) {
 		c := NewMCPClient(tr, MCPClientConfig{})
 		err := c.Connect(context.Background())
 		_ = c.Close()
-		return err, tr
+		return tr, err
 	}
 	for _, supported := range []string{`["2025-11-25","2025-06-18"]`, `["2025-06-18"]`} {
-		err, tr := connect(`{"requested":"2026-07-28","supported":` + supported + `}`)
+		tr, err := connect(`{"requested":"2026-07-28","supported":` + supported + `}`)
 		var mcpErr *MCPClientError
 		if !errors.As(err, &mcpErr) || mcpErr.Code != -32022 {
 			t.Fatalf("%s: err = %#v", supported, err)
@@ -344,7 +344,7 @@ func TestR85toolsDiscoveryLegacyVersionGuidance(t *testing.T) {
 		}
 	}
 	for _, data := range []string{"", "null", "{}", `{"supported":"2025-06-18"}`, `{"supported":["2025-06-18",null]}`, `{"supported":[]}`, `{"supported":["2099-01-01"]}`, `{"supported":["2026-07-28","2025-06-18"]}`} {
-		err, _ := connect(data)
+		_, err := connect(data)
 		var mcpErr *MCPClientError
 		if !errors.As(err, &mcpErr) || mcpErr.Message != "Unsupported protocol version" {
 			t.Fatalf("data %s: err = %v, want the original error", data, err)

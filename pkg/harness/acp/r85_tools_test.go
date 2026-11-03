@@ -17,7 +17,7 @@ import (
 // r85toolsRunResolution runs one turn whose bridge sends the given
 // resolution requests, then finishes; it returns the tool-result frames the
 // host sent and the turn error.
-func r85toolsRunResolution(t *testing.T, resolver ResolveHostToolCallFunc, requests ...map[string]any) ([]map[string]any, error, []harness.StreamPart) {
+func r85toolsRunResolution(t *testing.T, resolver ResolveHostToolCallFunc, requests ...map[string]any) ([]map[string]any, []harness.StreamPart, error) {
 	t.Helper()
 	const token = "r85-resolve-token"
 	var mu sync.Mutex
@@ -74,7 +74,7 @@ func r85toolsRunResolution(t *testing.T, resolver ResolveHostToolCallFunc, reque
 	time.Sleep(20 * time.Millisecond)
 	mu.Lock()
 	defer mu.Unlock()
-	return append([]map[string]any(nil), results...), control.Err(), append([]harness.StreamPart(nil), parts...)
+	return append([]map[string]any(nil), results...), append([]harness.StreamPart(nil), parts...), control.Err()
 }
 
 func r85toolsResolutionRequest(id string, toolCall map[string]any) map[string]any {
@@ -102,7 +102,7 @@ func TestR85toolsResolvesHostToolCallsThroughResolver(t *testing.T) {
 		}
 		return nil
 	}
-	results, turnErr, _ := r85toolsRunResolution(t, resolver,
+	results, _, turnErr := r85toolsRunResolution(t, resolver,
 		r85toolsResolutionRequest("resolution-1", map[string]any{
 			"toolCallId": "call-1", "title": "mcp.ai-sdk-harness-tools.weather",
 			"rawInput": map[string]any{"server": "ai-sdk-harness-tools", "tool": "weather", "arguments": map[string]any{"city": "Lima"}},
@@ -141,7 +141,7 @@ func TestR85toolsResolverFailureFailsTurn(t *testing.T) {
 		"thrown error": func(ResolveHostToolCallOptions) *ResolvedHostToolCall { panic(sentinel) },
 	} {
 		t.Run(name, func(t *testing.T) {
-			results, turnErr, parts := r85toolsRunResolution(t, resolver,
+			results, parts, turnErr := r85toolsRunResolution(t, resolver,
 				r85toolsResolutionRequest("resolution-1", map[string]any{"toolCallId": "call-1", "title": "Weather", "rawInput": map[string]any{}}))
 			if turnErr == nil {
 				t.Fatal("turn succeeded; want the resolver error")
