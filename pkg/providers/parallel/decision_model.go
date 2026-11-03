@@ -121,14 +121,16 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		return nil, err
 	}
 
-	state, err := toParallelState(provider.DecisionStateParts(opts.State))
+	// TS evaluates the postJsonToApi headers (loadApiKey) before the body
+	// (toParallelState), so a missing key wins over a file part.
+	apiKey, err := providerutils.ResolveAPIKey(ctx, providerutils.ResolveAPIKeyOptions{
+		APIKey: m.provider.config.APIKey, EnvVar: apiKeyEnvVar, Description: "Parallel",
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	apiKey, err := providerutils.ResolveAPIKey(ctx, providerutils.ResolveAPIKeyOptions{
-		APIKey: m.provider.config.APIKey, EnvVar: apiKeyEnvVar, Description: "Parallel",
-	})
+	state, err := toParallelState(provider.DecisionStateParts(opts.State))
 	if err != nil {
 		return nil, err
 	}
