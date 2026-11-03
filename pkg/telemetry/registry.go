@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 	"math"
 	"reflect"
@@ -875,7 +876,7 @@ type otelSpanEntry struct {
 	// languageModel span entries: the declared tool definitions captured at
 	// OnLanguageModelCallStart, merged with provider-executed tool calls
 	// observed at OnLanguageModelCallEnd (5ad6abf).
-	toolDefs []map[string]interface{}
+	toolDefs []*jsonorder.Object
 }
 
 var otelModelCallSpans sync.Map
@@ -1937,9 +1938,11 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 			}
 		}
 		if len(e.StepTools) > 0 {
+			// TS: event.stepTools.map(tool => JSON.stringify(tool)), the
+			// prepared language-model tools.
 			tools := make([]string, 0, len(e.StepTools))
 			for _, t := range e.StepTools {
-				if b, err := jsonstr.Marshal(t); err == nil {
+				if b, err := jsonstr.Marshal(languageModelToolDefinition(t)); err == nil {
 					tools = append(tools, string(b))
 				}
 			}

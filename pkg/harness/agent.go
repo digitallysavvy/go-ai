@@ -873,12 +873,9 @@ func (a *Agent) ExecuteWithMessages(ctx context.Context, messages []types.Messag
 	return &agent.AgentResult{
 		Text: result.Text, Output: result.Output, Steps: result.Steps, ToolResults: result.ToolResults,
 		FinishReason: result.FinishReason, StopReason: result.StopReason,
-		// result.TotalUsage (not result.Usage) is the authoritative total
-		// here: streamResultToGenerateResult below sets this harness
-		// GenerateTextResult's Usage to the *final step's* usage and
-		// TotalUsage to the real cross-step/server-overridden total, unlike
-		// pkg/ai's own GenerateTextResult construction where the two are
-		// always equal.
+		// streamResultToGenerateResult sets Usage and its deprecated alias
+		// TotalUsage to the same turn total (across all steps, or the
+		// bridge's own total when it reports one).
 		Usage:    result.TotalUsage, //nolint:staticcheck
 		Warnings: result.Warnings,
 	}, nil

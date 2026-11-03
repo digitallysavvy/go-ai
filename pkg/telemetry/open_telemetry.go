@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
@@ -802,7 +803,7 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 			}
 		}
 	}
-	toolDefs := toolDefinitionsList(e.Tools)
+	toolDefs := toolDefinitionsList(e.Tools, isHarnessProvider(e.ModelProvider))
 	if recordInputs && len(toolDefs) > 0 {
 		if b, err := jsonstr.Marshal(toolDefs); err == nil {
 			attrs = append(attrs, attribute.String("gen_ai.tool.definitions", string(b)))
@@ -823,67 +824,38 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 // declared for this call. TS stringifies the prepared language-model tools
 // (prepareTools), so function tools carry {type:"function", name,
 // inputSchema, description?, inputExamples?, providerOptions?, strict?} and
-// provider tools {type:"provider", name, id, args}. The returned slice is
-// also retained on the span entry so OnLanguageModelCallEnd can append
-// provider-executed tools observed only in the response (5ad6abf).
-func toolDefinitionsList(tools interface{}) []map[string]interface{} {
+// provider tools {type:"provider", name, id, args}, in that key order. A
+// harness turn's tools are TS turn telemetry's {type:"function", name,
+// description?, inputSchema?}. The returned slice is also retained on the
+// span entry so OnLanguageModelCallEnd can append provider-executed tools
+// observed only in the response (5ad6abf).
+func toolDefinitionsList(tools interface{}, harness bool) []*jsonorder.Object {
 	list, ok := tools.([]types.Tool)
 	if !ok || len(list) == 0 {
 		return nil
 	}
-	defs := make([]map[string]interface{}, 0, len(list))
+	defs := make([]*jsonorder.Object, 0, len(list))
 	for _, t := range list {
-		if t.Type == "provider" {
-			def := map[string]interface{}{"type": "provider", "name": t.Name, "id": t.ProviderID}
-			if t.ProviderArgs != nil {
-				def["args"] = t.ProviderArgs
-			} else {
-				def["args"] = map[string]interface{}{}
-			}
-			defs = append(defs, def)
+		if harness {
+			defs = append(defs, harnessToolDefinition(t))
 			continue
 		}
-		def := map[string]interface{}{"type": "function", "name": t.Name, "inputSchema": toolInputSchema(t.Parameters)}
-		if t.Description != "" {
-			def["description"] = t.Description
-		}
-		if len(t.InputExamples) > 0 {
-			examples := make([]map[string]interface{}, 0, len(t.InputExamples))
-			for _, ex := range t.InputExamples {
-				examples = append(examples, map[string]interface{}{"input": ex.Input})
-			}
-			def["inputExamples"] = examples
-		}
-		if t.ProviderOptions != nil {
-			def["providerOptions"] = t.ProviderOptions
-		}
-		if t.Strict != nil {
-			def["strict"] = *t.Strict
-		}
-		defs = append(defs, def)
+		defs = append(defs, languageModelToolDefinition(t))
 	}
 	return defs
-}
-
-// toolInputSchema returns the JSON Schema of a function tool for the tool
-// definitions attribute, falling back to the empty object schema TS uses for
-// a tool without input.
-func toolInputSchema(parameters interface{}) interface{} {
-	if parameters == nil {
-		return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
-	}
-	return parameters
 }
 
 // mergeProviderExecutedToolDefs appends {type:"extension", name} entries for
 // any provider-executed tool call in content whose name isn't already in
 // existing, mirroring TS's onLanguageModelCallEnd toolDefinitions merge
 // (5ad6abf). Returns the (possibly extended) list and whether it changed.
-func mergeProviderExecutedToolDefs(existing []map[string]interface{}, content []types.ContentPart) ([]map[string]interface{}, bool) {
+func mergeProviderExecutedToolDefs(existing []*jsonorder.Object, content []types.ContentPart) ([]*jsonorder.Object, bool) {
 	names := make(map[string]bool, len(existing))
 	for _, d := range existing {
-		if n, ok := d["name"].(string); ok {
-			names[n] = true
+		if n, ok := d.Get("name"); ok {
+			if name, isString := n.(string); isString {
+				names[name] = true
+			}
 		}
 	}
 	merged := existing
@@ -893,7 +865,10 @@ func mergeProviderExecutedToolDefs(existing []map[string]interface{}, content []
 		if !ok || !tc.ProviderExecuted || names[tc.ToolName] {
 			continue
 		}
-		merged = append(merged, map[string]interface{}{"type": "extension", "name": tc.ToolName})
+		def := jsonorder.New()
+		def.Set("type", "extension")
+		def.Set("name", tc.ToolName)
+		merged = append(merged, def)
 		names[tc.ToolName] = true
 		changed = true
 	}
