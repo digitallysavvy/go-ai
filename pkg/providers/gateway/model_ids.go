@@ -88,7 +88,6 @@ const (
 	GatewayLanguageModelAnthropicClaudeSonnet5Batch      GatewayLanguageModelID = "anthropic/claude-sonnet-5-batch"
 	GatewayLanguageModelAnthropicClaudeSonnet55          GatewayLanguageModelID = "anthropic/claude-sonnet-5.5"
 	GatewayLanguageModelAnthropicClaudeSonnet55Batch     GatewayLanguageModelID = "anthropic/claude-sonnet-5.5-batch"
-	GatewayLanguageModelArceeAiTrinityLargeThinking      GatewayLanguageModelID = "arcee-ai/trinity-large-thinking"
 	GatewayLanguageModelBytedanceSeed16                  GatewayLanguageModelID = "bytedance/seed-1.6"
 	GatewayLanguageModelBytedanceSeed18                  GatewayLanguageModelID = "bytedance/seed-1.8"
 	GatewayLanguageModelBytedanceSeed21Turbo             GatewayLanguageModelID = "bytedance/seed-2.1-turbo"
@@ -149,11 +148,12 @@ const (
 	GatewayLanguageModelInclusionaiLing30FlashSante      GatewayLanguageModelID = "inclusionai/ling-3.0-flash-sante"
 	GatewayLanguageModelInclusionaiLing30FlashVl         GatewayLanguageModelID = "inclusionai/ling-3.0-flash-vl"
 	GatewayLanguageModelInclusionaiLing31Flash           GatewayLanguageModelID = "inclusionai/ling-3.1-flash"
+	GatewayLanguageModelInclusionaiLing31Flash1019       GatewayLanguageModelID = "inclusionai/ling-3.1-flash-1019"
 	GatewayLanguageModelInferenceNetSchematronV2Small    GatewayLanguageModelID = "inference-net/schematron-v2-small"
 	GatewayLanguageModelInferenceNetSchematronV2Turbo    GatewayLanguageModelID = "inference-net/schematron-v2-turbo"
 	GatewayLanguageModelInterfazeInterfazeBeta           GatewayLanguageModelID = "interfaze/interfaze-beta"
 	GatewayLanguageModelLiquidLfm2524bA2b                GatewayLanguageModelID = "liquid/lfm2.5-24b-a2b"
-	GatewayLanguageModelMeituanLongcat25Preview          GatewayLanguageModelID = "meituan/longcat-2.5-preview"
+	GatewayLanguageModelMeituanLongcat25                 GatewayLanguageModelID = "meituan/longcat-2.5"
 	GatewayLanguageModelMetaLlama3170b                   GatewayLanguageModelID = "meta/llama-3.1-70b"
 	GatewayLanguageModelMetaLlama318b                    GatewayLanguageModelID = "meta/llama-3.1-8b"
 	GatewayLanguageModelMetaLlama3370b                   GatewayLanguageModelID = "meta/llama-3.3-70b"
@@ -276,6 +276,8 @@ const (
 	GatewayLanguageModelOpenaiGpt61Sol                   GatewayLanguageModelID = "openai/gpt-6.1-sol"
 	GatewayLanguageModelOpenaiGpt61SolBatch              GatewayLanguageModelID = "openai/gpt-6.1-sol-batch"
 	GatewayLanguageModelOpenaiGpt61SolFast               GatewayLanguageModelID = "openai/gpt-6.1-sol-fast"
+	GatewayLanguageModelOpenaiGpt61Terra                 GatewayLanguageModelID = "openai/gpt-6.1-terra"
+	GatewayLanguageModelOpenaiGpt61TerraFast             GatewayLanguageModelID = "openai/gpt-6.1-terra-fast"
 	GatewayLanguageModelOpenaiGptOss120b                 GatewayLanguageModelID = "openai/gpt-oss-120b"
 	GatewayLanguageModelOpenaiGptOss20b                  GatewayLanguageModelID = "openai/gpt-oss-20b"
 	GatewayLanguageModelOpenaiGptOssSafeguard120b        GatewayLanguageModelID = "openai/gpt-oss-safeguard-120b"
@@ -286,9 +288,9 @@ const (
 	GatewayLanguageModelOpenaiO3Mini                     GatewayLanguageModelID = "openai/o3-mini"
 	GatewayLanguageModelOpenaiO3Pro                      GatewayLanguageModelID = "openai/o3-pro"
 	GatewayLanguageModelOpenaiO4Mini                     GatewayLanguageModelID = "openai/o4-mini"
+	GatewayLanguageModelParticleParticle1                GatewayLanguageModelID = "particle/particle-1"
 	GatewayLanguageModelPerplexitySonar                  GatewayLanguageModelID = "perplexity/sonar"
 	GatewayLanguageModelPoolsideLagunaS21                GatewayLanguageModelID = "poolside/laguna-s-2.1"
-	GatewayLanguageModelPoolsideLagunaS21Free            GatewayLanguageModelID = "poolside/laguna-s-2.1-free"
 	GatewayLanguageModelQuiveraiArrow2                   GatewayLanguageModelID = "quiverai/arrow-2"
 	GatewayLanguageModelQuiveraiArrow2Telos              GatewayLanguageModelID = "quiverai/arrow-2-telos"
 	GatewayLanguageModelReflectionBeam                   GatewayLanguageModelID = "reflection/beam"
@@ -345,6 +347,7 @@ const (
 	GatewayLanguageModelZaiGlm53Fast                     GatewayLanguageModelID = "zai/glm-5.3-fast"
 	GatewayLanguageModelZaiGlm53Flash                    GatewayLanguageModelID = "zai/glm-5.3-flash"
 	GatewayLanguageModelZaiGlm53Flashx                   GatewayLanguageModelID = "zai/glm-5.3-flashx"
+	GatewayLanguageModelZaiGlm53FlashxLegal              GatewayLanguageModelID = "zai/glm-5.3-flashx-legal"
 	GatewayLanguageModelZaiGlm5vTurbo                    GatewayLanguageModelID = "zai/glm-5v-turbo"
 )
 
@@ -479,24 +482,36 @@ const (
 
 // GatewaySpeechModelID constants mirror gateway-speech-model-settings.ts.
 const (
-	GatewaySpeechModelFishAudioDrama3            GatewaySpeechModelID = "fish-audio/drama-3"
-	GatewaySpeechModelFishAudioS1                GatewaySpeechModelID = "fish-audio/s1"
-	GatewaySpeechModelFishAudioS2Pro             GatewaySpeechModelID = "fish-audio/s2-pro"
-	GatewaySpeechModelFishAudioS21Pro            GatewaySpeechModelID = "fish-audio/s2.1-pro"
-	GatewaySpeechModelGoogleGemini38FlashLiteTts GatewaySpeechModelID = "google/gemini-3.8-flash-lite-tts"
-	GatewaySpeechModelGoogleGemini38FlashTts     GatewaySpeechModelID = "google/gemini-3.8-flash-tts"
-	GatewaySpeechModelMicrosoftMaiVoice2         GatewaySpeechModelID = "microsoft/mai-voice-2"
-	GatewaySpeechModelMicrosoftMaiVoice2Flash    GatewaySpeechModelID = "microsoft/mai-voice-2-flash"
-	GatewaySpeechModelMicrosoftMaiVoice21        GatewaySpeechModelID = "microsoft/mai-voice-2.1"
-	GatewaySpeechModelMicrosoftMaiVoice21Flash   GatewaySpeechModelID = "microsoft/mai-voice-2.1-flash"
-	GatewaySpeechModelMistralVoxtralMiniTts3     GatewaySpeechModelID = "mistral/voxtral-mini-tts-3"
-	GatewaySpeechModelOpenaiTts1                 GatewaySpeechModelID = "openai/tts-1"
-	GatewaySpeechModelOpenaiTts1Hd               GatewaySpeechModelID = "openai/tts-1-hd"
-	GatewaySpeechModelSpacexaiGrokTts            GatewaySpeechModelID = "spacexai/grok-tts"
+	GatewaySpeechModelElevenlabsElevenFlashV2          GatewaySpeechModelID = "elevenlabs/eleven-flash-v2"
+	GatewaySpeechModelElevenlabsElevenFlashV25         GatewaySpeechModelID = "elevenlabs/eleven-flash-v2.5"
+	GatewaySpeechModelElevenlabsElevenMultilingualV2   GatewaySpeechModelID = "elevenlabs/eleven-multilingual-v2"
+	GatewaySpeechModelElevenlabsElevenV3               GatewaySpeechModelID = "elevenlabs/eleven-v3"
+	GatewaySpeechModelElevenlabsElevenV3Conversational GatewaySpeechModelID = "elevenlabs/eleven-v3-conversational"
+	GatewaySpeechModelElevenlabsElevenV4               GatewaySpeechModelID = "elevenlabs/eleven-v4"
+	GatewaySpeechModelElevenlabsElevenV4Turbo          GatewaySpeechModelID = "elevenlabs/eleven-v4-turbo"
+	GatewaySpeechModelElevenlabsMusicV2                GatewaySpeechModelID = "elevenlabs/music-v2"
+	GatewaySpeechModelElevenlabsMusicV25               GatewaySpeechModelID = "elevenlabs/music-v2.5"
+	GatewaySpeechModelElevenlabsSoundEffectsV2         GatewaySpeechModelID = "elevenlabs/sound-effects-v2"
+	GatewaySpeechModelFishAudioDrama3                  GatewaySpeechModelID = "fish-audio/drama-3"
+	GatewaySpeechModelFishAudioS1                      GatewaySpeechModelID = "fish-audio/s1"
+	GatewaySpeechModelFishAudioS2Pro                   GatewaySpeechModelID = "fish-audio/s2-pro"
+	GatewaySpeechModelFishAudioS21Pro                  GatewaySpeechModelID = "fish-audio/s2.1-pro"
+	GatewaySpeechModelGoogleGemini38FlashLiteTts       GatewaySpeechModelID = "google/gemini-3.8-flash-lite-tts"
+	GatewaySpeechModelGoogleGemini38FlashTts           GatewaySpeechModelID = "google/gemini-3.8-flash-tts"
+	GatewaySpeechModelMicrosoftMaiVoice2               GatewaySpeechModelID = "microsoft/mai-voice-2"
+	GatewaySpeechModelMicrosoftMaiVoice2Flash          GatewaySpeechModelID = "microsoft/mai-voice-2-flash"
+	GatewaySpeechModelMicrosoftMaiVoice21              GatewaySpeechModelID = "microsoft/mai-voice-2.1"
+	GatewaySpeechModelMicrosoftMaiVoice21Flash         GatewaySpeechModelID = "microsoft/mai-voice-2.1-flash"
+	GatewaySpeechModelMistralVoxtralMiniTts3           GatewaySpeechModelID = "mistral/voxtral-mini-tts-3"
+	GatewaySpeechModelOpenaiTts1                       GatewaySpeechModelID = "openai/tts-1"
+	GatewaySpeechModelOpenaiTts1Hd                     GatewaySpeechModelID = "openai/tts-1-hd"
+	GatewaySpeechModelSpacexaiGrokTts                  GatewaySpeechModelID = "spacexai/grok-tts"
 )
 
 // GatewayTranscriptionModelID constants mirror gateway-transcription-model-settings.ts.
 const (
+	GatewayTranscriptionModelElevenlabsScribeV2               GatewayTranscriptionModelID = "elevenlabs/scribe-v2"
+	GatewayTranscriptionModelElevenlabsScribeV2Realtime       GatewayTranscriptionModelID = "elevenlabs/scribe-v2-realtime"
 	GatewayTranscriptionModelFishAudioTranscribe1             GatewayTranscriptionModelID = "fish-audio/transcribe-1"
 	GatewayTranscriptionModelGoogleGemini35Transcribe         GatewayTranscriptionModelID = "google/gemini-3.5-transcribe"
 	GatewayTranscriptionModelGoogleGemini35TranscribeLive     GatewayTranscriptionModelID = "google/gemini-3.5-transcribe-live"
@@ -506,13 +521,17 @@ const (
 	GatewayTranscriptionModelMistralVoxtralSmallTranscribe3   GatewayTranscriptionModelID = "mistral/voxtral-small-transcribe-3"
 	GatewayTranscriptionModelOpenaiGpt4oMiniTranscribe        GatewayTranscriptionModelID = "openai/gpt-4o-mini-transcribe"
 	GatewayTranscriptionModelOpenaiGpt4oTranscribe            GatewayTranscriptionModelID = "openai/gpt-4o-transcribe"
+	GatewayTranscriptionModelOpenaiGptLiveTranscribe          GatewayTranscriptionModelID = "openai/gpt-live-transcribe"
 	GatewayTranscriptionModelOpenaiGptRealtimeWhisper         GatewayTranscriptionModelID = "openai/gpt-realtime-whisper"
+	GatewayTranscriptionModelOpenaiGptTranscribe              GatewayTranscriptionModelID = "openai/gpt-transcribe"
 	GatewayTranscriptionModelOpenaiWhisper1                   GatewayTranscriptionModelID = "openai/whisper-1"
 	GatewayTranscriptionModelSpacexaiGrokStt                  GatewayTranscriptionModelID = "spacexai/grok-stt"
 )
 
 // GatewayRealtimeModelID constants mirror gateway-realtime-model-settings.ts.
 const (
+	GatewayRealtimeModelElevenlabsElevenRealtimeV1Max      GatewayRealtimeModelID = "elevenlabs/eleven-realtime-v1-max"
+	GatewayRealtimeModelElevenlabsElevenRealtimeV1Mini     GatewayRealtimeModelID = "elevenlabs/eleven-realtime-v1-mini"
 	GatewayRealtimeModelGoogleGemini38Live                 GatewayRealtimeModelID = "google/gemini-3.8-live"
 	GatewayRealtimeModelGoogleGemini38LiveExtendedThinking GatewayRealtimeModelID = "google/gemini-3.8-live-extended-thinking"
 	GatewayRealtimeModelOpenaiGptLive1                     GatewayRealtimeModelID = "openai/gpt-live-1"
@@ -527,9 +546,9 @@ const (
 // GatewayDecisionModelID constants mirror gateway-decision-model-settings.ts.
 const (
 	GatewayDecisionModelBasetenElephant1              GatewayDecisionModelID = "baseten/elephant-1"
+	GatewayDecisionModelBasetenJoey1                  GatewayDecisionModelID = "baseten/joey-1"
 	GatewayDecisionModelBasetenMammoth1               GatewayDecisionModelID = "baseten/mammoth-1"
 	GatewayDecisionModelConvaiinnovationsLaya         GatewayDecisionModelID = "convaiinnovations/laya"
-	GatewayDecisionModelConvaiinnovationsLayaFree     GatewayDecisionModelID = "convaiinnovations/laya-free"
 	GatewayDecisionModelLiquidD1                      GatewayDecisionModelID = "liquid/d1"
 	GatewayDecisionModelLiquidD1Ultra                 GatewayDecisionModelID = "liquid/d1-ultra"
 	GatewayDecisionModelMicrosoftMicrosoftDecision1   GatewayDecisionModelID = "microsoft/microsoft-decision-1"
@@ -604,7 +623,6 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelAnthropicClaudeSonnet5Batch,
 	GatewayLanguageModelAnthropicClaudeSonnet55,
 	GatewayLanguageModelAnthropicClaudeSonnet55Batch,
-	GatewayLanguageModelArceeAiTrinityLargeThinking,
 	GatewayLanguageModelBytedanceSeed16,
 	GatewayLanguageModelBytedanceSeed18,
 	GatewayLanguageModelBytedanceSeed21Turbo,
@@ -665,11 +683,12 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelInclusionaiLing30FlashSante,
 	GatewayLanguageModelInclusionaiLing30FlashVl,
 	GatewayLanguageModelInclusionaiLing31Flash,
+	GatewayLanguageModelInclusionaiLing31Flash1019,
 	GatewayLanguageModelInferenceNetSchematronV2Small,
 	GatewayLanguageModelInferenceNetSchematronV2Turbo,
 	GatewayLanguageModelInterfazeInterfazeBeta,
 	GatewayLanguageModelLiquidLfm2524bA2b,
-	GatewayLanguageModelMeituanLongcat25Preview,
+	GatewayLanguageModelMeituanLongcat25,
 	GatewayLanguageModelMetaLlama3170b,
 	GatewayLanguageModelMetaLlama318b,
 	GatewayLanguageModelMetaLlama3370b,
@@ -792,6 +811,8 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelOpenaiGpt61Sol,
 	GatewayLanguageModelOpenaiGpt61SolBatch,
 	GatewayLanguageModelOpenaiGpt61SolFast,
+	GatewayLanguageModelOpenaiGpt61Terra,
+	GatewayLanguageModelOpenaiGpt61TerraFast,
 	GatewayLanguageModelOpenaiGptOss120b,
 	GatewayLanguageModelOpenaiGptOss20b,
 	GatewayLanguageModelOpenaiGptOssSafeguard120b,
@@ -802,9 +823,9 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelOpenaiO3Mini,
 	GatewayLanguageModelOpenaiO3Pro,
 	GatewayLanguageModelOpenaiO4Mini,
+	GatewayLanguageModelParticleParticle1,
 	GatewayLanguageModelPerplexitySonar,
 	GatewayLanguageModelPoolsideLagunaS21,
-	GatewayLanguageModelPoolsideLagunaS21Free,
 	GatewayLanguageModelQuiveraiArrow2,
 	GatewayLanguageModelQuiveraiArrow2Telos,
 	GatewayLanguageModelReflectionBeam,
@@ -861,6 +882,7 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelZaiGlm53Fast,
 	GatewayLanguageModelZaiGlm53Flash,
 	GatewayLanguageModelZaiGlm53Flashx,
+	GatewayLanguageModelZaiGlm53FlashxLegal,
 	GatewayLanguageModelZaiGlm5vTurbo,
 }
 
@@ -995,6 +1017,16 @@ var GatewayRerankingModelIDs = []GatewayRerankingModelID{
 
 // GatewaySpeechModelIDs lists the suggested gateway speech model IDs from gateway-speech-model-settings.ts.
 var GatewaySpeechModelIDs = []GatewaySpeechModelID{
+	GatewaySpeechModelElevenlabsElevenFlashV2,
+	GatewaySpeechModelElevenlabsElevenFlashV25,
+	GatewaySpeechModelElevenlabsElevenMultilingualV2,
+	GatewaySpeechModelElevenlabsElevenV3,
+	GatewaySpeechModelElevenlabsElevenV3Conversational,
+	GatewaySpeechModelElevenlabsElevenV4,
+	GatewaySpeechModelElevenlabsElevenV4Turbo,
+	GatewaySpeechModelElevenlabsMusicV2,
+	GatewaySpeechModelElevenlabsMusicV25,
+	GatewaySpeechModelElevenlabsSoundEffectsV2,
 	GatewaySpeechModelFishAudioDrama3,
 	GatewaySpeechModelFishAudioS1,
 	GatewaySpeechModelFishAudioS2Pro,
@@ -1013,6 +1045,8 @@ var GatewaySpeechModelIDs = []GatewaySpeechModelID{
 
 // GatewayTranscriptionModelIDs lists the suggested gateway transcription model IDs from gateway-transcription-model-settings.ts.
 var GatewayTranscriptionModelIDs = []GatewayTranscriptionModelID{
+	GatewayTranscriptionModelElevenlabsScribeV2,
+	GatewayTranscriptionModelElevenlabsScribeV2Realtime,
 	GatewayTranscriptionModelFishAudioTranscribe1,
 	GatewayTranscriptionModelGoogleGemini35Transcribe,
 	GatewayTranscriptionModelGoogleGemini35TranscribeLive,
@@ -1022,13 +1056,17 @@ var GatewayTranscriptionModelIDs = []GatewayTranscriptionModelID{
 	GatewayTranscriptionModelMistralVoxtralSmallTranscribe3,
 	GatewayTranscriptionModelOpenaiGpt4oMiniTranscribe,
 	GatewayTranscriptionModelOpenaiGpt4oTranscribe,
+	GatewayTranscriptionModelOpenaiGptLiveTranscribe,
 	GatewayTranscriptionModelOpenaiGptRealtimeWhisper,
+	GatewayTranscriptionModelOpenaiGptTranscribe,
 	GatewayTranscriptionModelOpenaiWhisper1,
 	GatewayTranscriptionModelSpacexaiGrokStt,
 }
 
 // GatewayRealtimeModelIDs lists the suggested gateway realtime model IDs from gateway-realtime-model-settings.ts.
 var GatewayRealtimeModelIDs = []GatewayRealtimeModelID{
+	GatewayRealtimeModelElevenlabsElevenRealtimeV1Max,
+	GatewayRealtimeModelElevenlabsElevenRealtimeV1Mini,
 	GatewayRealtimeModelGoogleGemini38Live,
 	GatewayRealtimeModelGoogleGemini38LiveExtendedThinking,
 	GatewayRealtimeModelOpenaiGptLive1,
@@ -1043,9 +1081,9 @@ var GatewayRealtimeModelIDs = []GatewayRealtimeModelID{
 // GatewayDecisionModelIDs lists the suggested gateway decision model IDs from gateway-decision-model-settings.ts.
 var GatewayDecisionModelIDs = []GatewayDecisionModelID{
 	GatewayDecisionModelBasetenElephant1,
+	GatewayDecisionModelBasetenJoey1,
 	GatewayDecisionModelBasetenMammoth1,
 	GatewayDecisionModelConvaiinnovationsLaya,
-	GatewayDecisionModelConvaiinnovationsLayaFree,
 	GatewayDecisionModelLiquidD1,
 	GatewayDecisionModelLiquidD1Ultra,
 	GatewayDecisionModelMicrosoftMicrosoftDecision1,

@@ -133,4 +133,24 @@ const (
 	//
 	// Deprecated: removed from the suggested Gateway model IDs.
 	GatewayRealtimeModelSpacexaiGrokVoiceThinkFast10 GatewayRealtimeModelID = "spacexai/grok-voice-think-fast-1.0"
+
+	// GatewayLanguageModelArceeAiTrinityLargeThinking is no longer in the TS Gateway model ID union (TS d05ff62360).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelArceeAiTrinityLargeThinking GatewayLanguageModelID = "arcee-ai/trinity-large-thinking"
+
+	// GatewayLanguageModelMeituanLongcat25Preview is no longer in the TS Gateway model ID union (TS d05ff62360).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelMeituanLongcat25Preview GatewayLanguageModelID = "meituan/longcat-2.5-preview"
+
+	// GatewayLanguageModelPoolsideLagunaS21Free is no longer in the TS Gateway model ID union (TS d05ff62360).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelPoolsideLagunaS21Free GatewayLanguageModelID = "poolside/laguna-s-2.1-free"
+
+	// GatewayDecisionModelConvaiinnovationsLayaFree is no longer in the TS Gateway model ID union (TS d05ff62360).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayDecisionModelConvaiinnovationsLayaFree GatewayDecisionModelID = "convaiinnovations/laya-free"
 )
