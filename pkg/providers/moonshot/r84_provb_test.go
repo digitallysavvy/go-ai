@@ -2,10 +2,10 @@ package moonshot
 
 import (
 	"encoding/json"
-	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"reflect"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )

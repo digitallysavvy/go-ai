@@ -156,7 +156,7 @@ func (m *OpenAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 	u, _ := url.Parse(base)
 	return provider.ClientSecretResult{
 		Token:     data.Value,
-		URL:       fmt.Sprintf("wss://%s/v1/realtime?model=%s", u.Host, url.QueryEscape(m.modelID)),
+		URL:       fmt.Sprintf("wss://%s/v1/realtime?model=%s", u.Host, providerutils.EncodeURIComponent(m.modelID)), // TS encodeURIComponent
 		ExpiresAt: data.ExpiresAt,
 	}, nil
 }

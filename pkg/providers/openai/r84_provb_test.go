@@ -1,11 +1,14 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
-	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
@@ -48,5 +51,23 @@ func TestR84provbResponsesSchemaValueParametersNormalized(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("warnings = %#v, want the lookaround compatibility warning", warnings)
+	}
+}
+
+// TS doCreateClientSecret builds the WebSocket URL with
+// encodeURIComponent(modelId): a space is %20 and ! ' ( ) * stay literal
+// (url.QueryEscape wrote + and %21...).
+func TestR84provbRealtimeURLUsesEncodeURIComponent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"value": "secret"})
+	}))
+	defer srv.Close()
+	model := NewRealtimeModel(New(Config{APIKey: "k", BaseURL: srv.URL + "/v1"}), "my model(1)!")
+	secret, err := model.DoCreateClientSecret(context.Background(), provider.ClientSecretOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "wss://" + strings.TrimPrefix(srv.URL, "http://") + "/v1/realtime?model=my%20model(1)!"; secret.URL != want {
+		t.Fatalf("url = %q, want %q", secret.URL, want)
 	}
 }

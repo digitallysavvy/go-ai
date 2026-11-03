@@ -3,7 +3,6 @@ package openai
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
@@ -88,12 +87,9 @@ func realtimeSpeechTranslationWebSocketURL(baseURL, modelID string) string {
 	return wsBase + "/realtime/translations?model=" + encodeURIComponent(modelID)
 }
 
-// encodeURIComponent mirrors ECMAScript encodeURIComponent (TS encodes the
-// model id with it): a space is %20 and ! ' ( ) * stay literal.
-func encodeURIComponent(s string) string {
-	r := strings.NewReplacer("+", "%20", "%21", "!", "%27", "'", "%28", "(", "%29", ")", "%2A", "*")
-	return r.Replace(url.QueryEscape(s))
-}
+// encodeURIComponent is ECMAScript encodeURIComponent (TS encodes the model
+// id with it).
+func encodeURIComponent(s string) string { return providerutils.EncodeURIComponent(s) }
 
 // baseSpeechTranslationWSHeaders rebuilds the provider's default headers
 // (Authorization, organization, project, custom config headers) for the

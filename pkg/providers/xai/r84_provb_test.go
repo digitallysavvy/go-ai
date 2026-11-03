@@ -3,12 +3,12 @@ package xai
 import (
 	"context"
 	"encoding/json"
-	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
@@ -160,5 +160,22 @@ func TestR84provbBatchImageEmptyBase64IsData(t *testing.T) {
 	}
 	if len(res.Base64Images) != 1 || res.Base64Images[0] != "" {
 		t.Fatalf("base64 images = %#v", res.Base64Images)
+	}
+}
+
+// TS XaiRealtimeModel.doCreateClientSecret: ?model=${encodeURIComponent(modelId)}.
+func TestR84provbRealtimeURLUsesEncodeURIComponent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"value": "secret"})
+	}))
+	defer srv.Close()
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	model := NewRealtimeModel(p, "grok voice*")
+	secret, err := model.DoCreateClientSecret(context.Background(), provider.ClientSecretOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(secret.URL, "/v1/realtime?model=grok%20voice*") {
+		t.Fatalf("url = %q", secret.URL)
 	}
 }
