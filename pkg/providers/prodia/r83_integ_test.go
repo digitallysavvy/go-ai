@@ -28,3 +28,22 @@ func TestR83integProdiaTextOutputUsesTextDecoder(t *testing.T) {
 		t.Fatalf("text = %q, want %q", result.Text, want)
 	}
 }
+
+// TestR83integProdiaJobPartWithBOM: TS decodes the job part with new
+// TextDecoder().decode before parseJSON, so a leading BOM is dropped.
+func TestR83integProdiaJobPartWithBOM(t *testing.T) {
+	body, ct := buildTestMultipartBody("\xEF\xBB\xBF"+`{"id":"job-bom"}`, []byte("hi"), "text/plain")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", ct)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	model := NewLanguageModel(New(Config{APIKey: "k", BaseURL: srv.URL}), LanguageModelNanoBananaImgToImgV2)
+	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "a cat"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "hi" {
+		t.Fatalf("text = %q", result.Text)
+	}
+}

@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 const mcpEventMaxBodyBytes = 256 * 1024
@@ -151,6 +153,10 @@ func (h *mcpEventWebhook) handle(w http.ResponseWriter, r *http.Request) (int, [
 	if !verified {
 		return http.StatusUnauthorized, nil
 	}
+	// TS safeParseJSON({text: new TextDecoder().decode(body)}): the signature
+	// covers the raw bytes, the JSON is read from the decoded text (a leading
+	// BOM dropped, invalid UTF-8 replaced).
+	body = []byte(prompt.DecodeUTF8Text(body))
 
 	var value interface{}
 	if err := unmarshalSafeJSON(body, &value); err != nil || len(strings.TrimSpace(string(body))) == 0 {

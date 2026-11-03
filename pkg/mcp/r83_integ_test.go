@@ -3,6 +3,7 @@ package mcp
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -79,5 +80,18 @@ func TestR83integExplicitInputSchemaKeptAsGiven(t *testing.T) {
 	}
 	if _, ok := tools[0].Parameters.(map[string]interface{}); !ok {
 		t.Fatalf("map InputSchema: Parameters = %T", tools[0].Parameters)
+	}
+}
+
+// TestR83integWebhookBodyDecodedLikeTextDecoder: TS mcp-event-webhook.ts
+// parses safeParseJSON({text: new TextDecoder().decode(body)}), so a signed
+// body with a UTF-8 BOM is a valid event (Go's JSON decoder rejects the BOM).
+func TestR83integWebhookBodyDecodedLikeTextDecoder(t *testing.T) {
+	h := newWebhookHarness(t)
+	raw, _ := json.Marshal(testEvent)
+	body := append([]byte{0xEF, 0xBB, 0xBF}, raw...)
+	r := signedEventRequestBody(h.sub, body, "evt_1", fmt.Sprint(mcpEventNow().Unix()), h.sub.Delivery.Secret)
+	if code := h.do(r); code != 204 || h.events != 1 {
+		t.Fatalf("code=%d events=%d, want 204 and one event", code, h.events)
 	}
 }

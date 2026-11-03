@@ -4260,10 +4260,13 @@ compile-time changes.
   ollama, Vertex xai) and Moonshot, Anthropic `text/plain` document sources
   (TS `convertBytesDataToString`), Cohere document text, Prodia text outputs
   and the web fetch tool's UTF-8 bodies (a truncated sequence is one U+FFFD,
-  as TS) (review round 83).
+  as TS). The MCP event webhook and Prodia job metadata parse their JSON from
+  the decoded text, as TS, so a body with a leading BOM is accepted (it was
+  a 400 / parse error) (review round 83).
 - **Am I affected?** `types.FileContent` / `FileData` byte data with a
   `text/...` media type whose bytes start with `EF BB BF` or are not valid
-  UTF-8; `toolwebfetch` results of non-UTF-8 bodies.
+  UTF-8; `toolwebfetch` results of non-UTF-8 bodies;
+  `ExperimentalCreateMCPEventWebhook` senders that prefix a BOM.
 - **What to do:** No action unless you relied on the BOM or the raw bytes
   reaching the model.
 - **Kind:** silent behavior change

@@ -15,6 +15,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	promptutil "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // prodiaJobResponse represents the Prodia job API response metadata.
@@ -177,6 +178,8 @@ func parseMultipartResponseFor(contentType string, body []byte, fallbackPrefix s
 // prodiaJobResultSchema first: a body that does not match is the typed
 // validation (or JSON parse) error itself, as TS parseJSON({schema}) throws it.
 func parseJobPart(data []byte) (*prodiaJobResponse, error) {
+	// TS new TextDecoder().decode(part.body) before parseJSON.
+	data = []byte(promptutil.DecodeUTF8Text(data))
 	if err := providerutils.MediaSchemaParser(providerutils.SchemaProdiaJob)(0, nil, data); err != nil {
 		return nil, err
 	}
