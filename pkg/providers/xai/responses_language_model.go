@@ -92,6 +92,19 @@ func supportsReasoningEffort(modelID string) bool {
 	return !modelsWithoutReasoningEffortRe.MatchString(modelID)
 }
 
+// modelsWithoutNoneReasoningEffortRe matches Grok 4.5 and later, which
+// always reason and reject reasoning effort "none" (TS xai-model-catalog.ts
+// modelsWithoutNoneReasoningEffort,
+// /^grok-(?:4\.[5-9](?!\d)|(?:[5-9]|[1-9]\d+)(?:[.-]|$))/; the lookahead is
+// written as "a non-digit or the end"). 4.20 predates 4.5 despite its
+// version number.
+var modelsWithoutNoneReasoningEffortRe = regexp.MustCompile(`^grok-(?:4\.[5-9](?:[^0-9]|$)|(?:[5-9]|[1-9][0-9]+)(?:[.-]|$))`)
+
+// supportsNoneReasoningEffort ports TS supportsNoneReasoningEffort.
+func supportsNoneReasoningEffort(modelID string) bool {
+	return !modelsWithoutNoneReasoningEffortRe.MatchString(modelID)
+}
+
 // ResponsesLanguageModel implements provider.LanguageModel using xAI's Responses API
 // (/v1/responses). The Responses API is the default language model path for xAI.
 type ResponsesLanguageModel struct {
@@ -494,19 +507,16 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 		}
 	}
 
-	// TS resolves reasoning after the input and tool warnings.
-	// Reasoning effort: provider option takes precedence over top-level
-	// opts.Reasoning. Effort map mirrors TS: {minimal:'low', low:'low',
-	// medium:'medium', high:'high', xhigh: grok-4.6 ? 'xhigh' : 'high'}.
-	// Row 8e006de: grok-4.20-(non-)reasoning models reject the reasoning
-	// effort parameter entirely (including "none"); reasoning:"none" maps to
-	// effort "none" (not omitted) on models that do support it.
+	// TS resolves reasoning after the input and tool warnings. A provider
+	// option effort is sent unchanged; otherwise the top-level reasoning is
+	// mapped (TS 61a315e333) onto {none (models that accept it), low,
+	// medium, high, xhigh (grok-4.6 only)} with
+	// providerutils.MapReasoningToProviderEffort: Grok 4.5+ map "none" to
+	// "low" with a compatibility warning instead of sending a value they
+	// reject. grok-4.20-(non-)reasoning models reject the reasoning effort
+	// parameter entirely (row 8e006de).
 	effort := xaiOpts.ReasoningEffort
-	// TS gates this whole branch on isCustomReasoning(reasoning), which
-	// excludes the "provider-default" sentinel (types.ReasoningDefault):
-	// requesting the provider's own default reasoning is never "custom"
-	// reasoning and must never trigger the unsupported-model warning below.
-	if effort == "" && opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
+	if effort == "" && providerutils.IsCustomReasoning(opts.Reasoning) {
 		if !supportsReasoningEffort(m.modelID) {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
@@ -514,19 +524,16 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 				Details: fmt.Sprintf("reasoning %q is not supported by this model.", string(*opts.Reasoning)),
 			})
 		} else {
-			if *opts.Reasoning == types.ReasoningNone {
-				effort = "none"
-			} else {
-				xhigh := "high"
-				if m.modelID == "grok-4.6" {
-					xhigh = "xhigh"
-				}
-				effort, _ = providerutils.MapReasoningToProviderEffort(opts.Reasoning, map[types.ReasoningLevel]string{
-					types.ReasoningMinimal: "low", types.ReasoningLow: "low",
-					types.ReasoningMedium: "medium", types.ReasoningHigh: "high",
-					types.ReasoningXHigh: xhigh, types.ReasoningMax: xhigh,
-				}, nil, &warnings)
+			effortMap := map[types.ReasoningLevel]string{
+				types.ReasoningLow: "low", types.ReasoningMedium: "medium", types.ReasoningHigh: "high",
 			}
+			if supportsNoneReasoningEffort(m.modelID) {
+				effortMap[types.ReasoningNone] = "none"
+			}
+			if m.modelID == "grok-4.6" {
+				effortMap[types.ReasoningXHigh] = "xhigh"
+			}
+			effort, _ = providerutils.MapReasoningToProviderEffort(opts.Reasoning, effortMap, nil, &warnings)
 		}
 	}
 
@@ -886,12 +893,18 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	// Mirrors TS SDK xai-responses-language-model.ts hasFunctionCall logic.
 	if hasFunctionCall {
 		result.FinishReason = types.FinishReasonToolCalls
-	} else {
-		// TS doGenerate maps response.status alone: an "incomplete" status is
-		// "other" here (incomplete_details only drives the streaming path).
-		result.FinishReason = mapXAIResponsesFinishReason(resp.Status, nil)
 	}
-	result.RawFinishReason = resp.Status
+	// TS 3d6ac0ae11: finishRaw = incomplete_details?.reason ?? status, used
+	// for both the unified and the raw finish reason, so a
+	// max_output_tokens cut is "length".
+	finishRaw := resp.Status
+	if resp.IncompleteDetails != nil && resp.IncompleteDetails.Reason != "" {
+		finishRaw = resp.IncompleteDetails.Reason
+	}
+	if !hasFunctionCall {
+		result.FinishReason = mapXAIResponsesFinishReason(finishRaw, nil)
+	}
+	result.RawFinishReason = finishRaw
 
 	return result, nil
 }
@@ -1779,7 +1792,10 @@ func (s *xaiResponsesStream) startTextBlock(blockID string) {
 
 // queueMessageItem mirrors the TS `message` output item branch: text that was
 // not already streamed through output_text.delta is emitted whole, and each
-// url_citation annotation becomes a source (on every added/done event, as TS).
+// url_citation annotation becomes a source unless the item's text block was
+// already streamed (TS 0eb8de60dc: `streamed` is computed once before the
+// content loop, so the citations of an output_item.done message whose text
+// was streamed are not emitted again).
 func (s *xaiResponsesStream) queueMessageItem(raw json.RawMessage) {
 	var item struct {
 		ID      string `json:"id"`
@@ -1792,10 +1808,14 @@ func (s *xaiResponsesStream) queueMessageItem(raw json.RawMessage) {
 		return
 	}
 	blockID := "text-" + item.ID
+	streamed := s.textSeen[blockID]
 	for _, part := range item.Content {
 		if part.Text != "" && !s.textSeen[blockID] {
 			s.startTextBlock(blockID)
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, ID: blockID, Text: part.Text})
+		}
+		if streamed {
+			continue
 		}
 		for _, ann := range part.Annotations {
 			if source := xaiURLCitationSource(ann); source != nil {

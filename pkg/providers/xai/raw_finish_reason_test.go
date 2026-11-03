@@ -43,13 +43,12 @@ func TestXAIResponsesDoGenerateRawFinishReason(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGenerate() error: %v", err)
 	}
-	// TS doGenerate maps response.status alone, and "incomplete" is "other"
-	// (incomplete_details only drives the streaming response.incomplete path).
-	if result.FinishReason != types.FinishReasonOther {
-		t.Fatalf("FinishReason = %v, want other", result.FinishReason)
+	// TS 3d6ac0ae11: finishRaw = incomplete_details?.reason ?? status.
+	if result.FinishReason != types.FinishReasonLength {
+		t.Fatalf("FinishReason = %v, want length", result.FinishReason)
 	}
-	if result.RawFinishReason != "incomplete" {
-		t.Fatalf("RawFinishReason = %q, want %q", result.RawFinishReason, "incomplete")
+	if result.RawFinishReason != "max_output_tokens" {
+		t.Fatalf("RawFinishReason = %q, want %q", result.RawFinishReason, "max_output_tokens")
 	}
 }
 
