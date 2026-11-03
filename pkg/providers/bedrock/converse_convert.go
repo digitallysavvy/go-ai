@@ -236,6 +236,10 @@ type bedrockFilePayload struct {
 	// s3URI is set when the file references an s3:// URL rather than inline
 	// bytes.
 	s3URI string
+	// b64 is a base64 string payload (FileData.DataString): sent as is in
+	// bytes, and only its sniffed prefix is decoded for media type
+	// detection (TS detectMediaType decodePrefix).
+	b64 string
 }
 
 func fileContentPayload(file types.FileContent) bedrockFilePayload {
@@ -251,11 +255,7 @@ func fileContentPayload(file types.FileContent) bedrockFilePayload {
 	switch file.FileData.Type {
 	case types.FileDataTypeData:
 		if file.FileData.DataString != "" {
-			payload := bedrockFilePayload{bytes: file.FileData.DataString, hasData: true}
-			if decoded, err := fileutil.ConvertBase64ToBytes(file.FileData.DataString); err == nil {
-				payload.raw = decoded
-				payload.hasRawBytes = true
-			}
+			payload := bedrockFilePayload{bytes: file.FileData.DataString, b64: file.FileData.DataString, hasData: true}
 			return payload
 		}
 		if file.FileData.Data != nil {
@@ -301,11 +301,7 @@ func toolResultFileContentPayload(block types.FileContentBlock) (string, bedrock
 	}
 	if block.FileData.Type == types.FileDataTypeData {
 		if block.FileData.DataString != "" {
-			payload := bedrockFilePayload{bytes: block.FileData.DataString, hasData: true}
-			if decoded, err := fileutil.ConvertBase64ToBytes(block.FileData.DataString); err == nil {
-				payload.raw = decoded
-				payload.hasRawBytes = true
-			}
+			payload := bedrockFilePayload{bytes: block.FileData.DataString, b64: block.FileData.DataString, hasData: true}
 			return mediaType, payload, nil
 		}
 		if block.FileData.Data != nil {
@@ -325,7 +321,17 @@ func resolveBedrockDataMediaType(mediaType string, payload bedrockFilePayload) (
 	}
 	// TS resolveFullMediaType: sniff the subtype from inline bytes with the
 	// signature table of the top-level type.
-	if payload.hasRawBytes {
+	switch {
+	case payload.b64 != "":
+		// A prefix that is not base64 throws in TS (atob).
+		detected, ok, err := fileutil.DetectMediaTypeSignatureBase64(payload.b64, topLevelMediaType(mediaType))
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			return detected, nil
+		}
+	case payload.hasRawBytes:
 		if detected, ok := fileutil.DetectMediaTypeSignature(payload.raw, topLevelMediaType(mediaType)); ok {
 			return detected, nil
 		}
