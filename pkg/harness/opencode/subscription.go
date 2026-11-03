@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"net/url"
 	"os"
@@ -330,6 +331,7 @@ func requestOpenCodeGitLabDirectAccess(ctx context.Context, httpClient *http.Cli
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, fmt.Errorf("OpenCode GitLab direct access request failed with status %d.", resp.StatusCode) //nolint:staticcheck // matches TS SDK's exact error text
 	}
+	respBody = []byte(textdecode.UTF8(respBody)) // TS response.json() decodes the text first
 	var parsed map[string]any
 	if err := securejson.Unmarshal(respBody, &parsed); err != nil {
 		return nil, errors.New("OpenCode GitLab direct access returned invalid JSON.") //nolint:staticcheck // matches TS SDK's exact error text

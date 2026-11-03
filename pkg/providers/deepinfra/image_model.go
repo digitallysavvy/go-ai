@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -130,6 +131,9 @@ func (m *ImageModel) doGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if err != nil {
 		return nil, providererrors.NewProviderError("deepinfra", 0, "", err.Error(), err)
 	}
+	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
+	// replaced (WHATWG TextDecoder) before the body is parsed.
+	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if resp.StatusCode >= 400 {
 		return nil, m.parseGenerateError(resp)
 	}
@@ -212,6 +216,9 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 	if err != nil {
 		return nil, providererrors.NewProviderError("deepinfra", 0, "", err.Error(), err)
 	}
+	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
+	// replaced (WHATWG TextDecoder) before the body is parsed.
+	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if resp.StatusCode >= 400 {
 		return nil, m.parseEditError(resp)
 	}

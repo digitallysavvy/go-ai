@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"math"
 	"net/http"
 	"strings"
@@ -206,6 +207,9 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	if err != nil {
 		return nil, err
 	}
+	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
+	// replaced (WHATWG TextDecoder) before the body is parsed.
+	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if resp.StatusCode >= 400 {
 		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}
@@ -280,6 +284,9 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	if err != nil {
 		return nil, err
 	}
+	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
+	// replaced (WHATWG TextDecoder) before the body is parsed.
+	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if resp.StatusCode >= 400 {
 		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}

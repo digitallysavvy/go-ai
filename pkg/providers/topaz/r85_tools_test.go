@@ -69,3 +69,14 @@ func TestR85toolsUploadRejectsRedirect(t *testing.T) {
 		})
 	}
 }
+
+// TS response.json() decodes the body text first, dropping a UTF-8 BOM
+// (provb CR r85 1, class sweep).
+func TestR85toolsJSONBodyWithBOM(t *testing.T) {
+	ts := newVideoTestServer(t)
+	defer ts.server.Close()
+	ts.expressBody = "\ufeff" + fmt.Sprintf(`{"requestId":%q,"uploadUrls":[%q]}`, videoRequestID, ts.server.URL+"/upload/part-1")
+	if _, err := ts.model().DoStart(context.Background(), defaultStartOptions()); err != nil {
+		t.Fatalf("DoStart with a BOM-prefixed body: %v", err)
+	}
+}
