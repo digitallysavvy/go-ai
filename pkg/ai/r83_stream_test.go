@@ -233,3 +233,26 @@ func TestR83streamToolTimeoutAfterModelFinish(t *testing.T) {
 		t.Errorf("parts = %v, want the last to be finish", parts)
 	}
 }
+
+// stream-translate.ts default branch: an unknown part type fails the stream
+// with TS's error text, `Unsupported part type: ${part}` for a part object.
+func TestR83streamTranslateUnsupportedPartTypeErrorText(t *testing.T) {
+	model := &mockSpeechTranslationModel{
+		doStreamFn: func(context.Context, *provider.SpeechTranslationStreamOptions) (*provider.SpeechTranslationStreamResult, error) {
+			return translationSliceResult(
+				provider.SpeechTranslationStreamPart{Type: provider.SpeechTranslationStreamPartTypeStreamStart},
+				provider.SpeechTranslationStreamPart{Type: "not-a-real-type"},
+			), nil
+		},
+	}
+	result, err := ExperimentalStreamTranslate(context.Background(), StreamTranslateOptions{
+		Model: model, Audio: newMockChanAudioStream(), TargetLanguage: "es",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = result.TranslationText()
+	if err == nil || err.Error() != "Unsupported part type: [object Object]" {
+		t.Fatalf("TranslationText() error = %v, want %q", err, "Unsupported part type: [object Object]")
+	}
+}

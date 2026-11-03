@@ -425,8 +425,10 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 		default:
 			// Mirrors TS stream-translate.ts's exhaustive-check default
 			// branch: an unrecognized part type from the provider is a hard
-			// error rather than a silently dropped chunk.
-			fail(fmt.Errorf("unsupported part type: %s", part.Type))
+			// error rather than a silently dropped chunk. TS formats the
+			// part object itself into the message (`${_exhaustiveCheck}`),
+			// which JS renders as "[object Object]".
+			fail(errors.New("Unsupported part type: [object Object]")) //nolint:staticcheck // matches TS SDK's exact error text
 			return
 		}
 	}
