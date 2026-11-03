@@ -199,3 +199,21 @@ func TestR85toolsAPIShapedPolicyDecode(t *testing.T) {
 		t.Fatalf("unmapped member: err = %v, updates = %d", err, sb.callCount())
 	}
 }
+
+// Ports TS utils.test.ts "keeps persistent: false on the live sandbox so
+// stopping it writes no snapshot" (ea39523ce9).
+func TestR85toolsLiveSandboxKeepsPersistentFalse(t *testing.T) {
+	f := newFakeServer()
+	defer f.Close()
+	persistent := false
+	if _, err := createLiveSandboxFromSnapshot(context.Background(), NewAPIClient(f.URL(), testCreds()), CreateParams{Runtime: "node24", TimeoutMs: 60_000, Persistent: &persistent}, "snap_derived", ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.createRequests) != 1 {
+		t.Fatalf("create requests = %d", len(f.createRequests))
+	}
+	body, _ := json.Marshal(f.createRequests[0])
+	if !strings.Contains(string(body), `"persistent":false`) || strings.Contains(string(body), `"runtime"`) {
+		t.Fatalf("create body = %s", body)
+	}
+}

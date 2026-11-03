@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"sync"
 	"time"
 
@@ -214,9 +215,15 @@ func SessionFromNativeSandbox(sandbox *Sandbox) providerutils.SandboxSession {
 	return NewSession(sandbox)
 }
 
+// templateVersion is TS TEMPLATE_VERSION (vercel-sandbox.ts): bumped to 3
+// by 177291adce so templates built before the bridge and snapshot changes
+// are not reused (a stale template made session creation time out).
+const templateVersion = 3
+
 // deriveTemplateName computes the stable, content-addressed template
 // snapshot name for (identity, environment selection). Mirrors TS's
-// `ai-sdk-harness-v2-${sha256(material).slice(0,12).hex}` derivation in
+// `ai-sdk-harness-v${TEMPLATE_VERSION}-${sha256(material).slice(0,12).hex}`
+// derivation in
 // `createVercelNetworkSandboxSession`. The material is encoded like
 // JSON.stringify (no HTML escaping, U+2028/U+2029 raw), so Go and TS hosts
 // sharing a Vercel project resolve the same template snapshot.
@@ -230,9 +237,9 @@ func deriveTemplateName(identity string, baseParams CreateParams) string {
 	default:
 		selection = map[string]string{"runtime": baseParams.Runtime}
 	}
-	material, _ := jsstr.Marshal([]interface{}{2, identity, selection})
+	material, _ := jsstr.Marshal([]interface{}{templateVersion, identity, selection})
 	digest := sha256.Sum256(material)
-	return "ai-sdk-harness-v2-" + hex.EncodeToString(digest[:12])
+	return "ai-sdk-harness-v" + strconv.Itoa(templateVersion) + "-" + hex.EncodeToString(digest[:12])
 }
 
 // snapshotCache is a small in-process identity -> snapshotID cache, mirroring
@@ -362,14 +369,14 @@ func isSandboxNameConflictError(err error) bool {
 }
 
 // createLiveSandboxFromSnapshot forks a live sandbox from a prepared
-// snapshot. Mirrors TS `createLiveSandboxFromSnapshot`: runtime, image,
-// source, and persistent are stripped from baseParams (the snapshot's own
-// values apply), and liveName overrides the sandbox name when given.
+// snapshot. Mirrors TS `createLiveSandboxFromSnapshot`: runtime, image and
+// source are stripped from baseParams (the snapshot's own values apply);
+// persistent is passed through to the live sandbox (TS ea39523ce9); and
+// liveName overrides the sandbox name when given.
 func createLiveSandboxFromSnapshot(ctx context.Context, client *APIClient, baseParams CreateParams, snapshotID, liveName string) (*Sandbox, error) {
 	forkParams := baseParams
 	forkParams.Runtime = ""
 	forkParams.Image = ""
-	forkParams.Persistent = nil
 	forkParams.Source = &SnapshotSource{Type: "snapshot", SnapshotID: snapshotID}
 	if liveName != "" {
 		forkParams.Name = liveName
