@@ -1441,7 +1441,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		}
 
 		// Fire step-start telemetry. OTel implementations create a child step span
-		// and embed it in the returned context so OnStepFinish can end it.
+		// and embed it in the returned context so OnStepFinish can end it. The
+		// tool choice is TS stepToolChoice (prepareToolChoice: unset is auto).
 		stepCtx = telemetry.FireOnStepStart(stepCtx, telemetry.TelemetryStepStartEvent{
 			CallID:         callID,
 			OperationType:  "ai.generateText",
@@ -1449,7 +1450,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			StepNumber:     stepIndex,
 			ModelProvider:  stepModel.Provider(),
 			ModelID:        stepModel.ModelID(),
-			ToolChoice:     stepToolChoice,
+			ToolChoice:     preparedToolChoice(stepToolChoice),
 			PromptMessages: genOpts.Prompt.Messages,
 			StepTools:      stepTools,
 			RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),

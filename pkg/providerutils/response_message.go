@@ -527,9 +527,13 @@ func providerMetadataRaw(metadata map[string]interface{}) json.RawMessage {
 	return raw
 }
 
+// responseTextContent is TS toResponseMessages' text part: {type, text,
+// providerOptions: part.providerMetadata}. The citations stay on the content
+// part (result.content); a model message text part has none.
 func responseTextContent(part types.TextContent) types.TextContent {
 	part.ProviderOptions = providerMetadataOptions(part.ProviderMetadata)
 	part.ProviderMetadata = nil
+	part.Citations = nil
 	return part
 }
 
