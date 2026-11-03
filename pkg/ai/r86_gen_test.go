@@ -2,7 +2,9 @@ package ai
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -106,6 +108,123 @@ func TestR86genImageDeprecationFollowsStepMessages(t *testing.T) {
 		// Step 1: the prompt's message. Step 2: only PrepareStep's message.
 		if got := *batches; len(got) != 2 || got[0] != 1 || got[1] != 3 {
 			t.Fatalf("batches = %v, want [1 3]", got)
+		}
+	})
+}
+
+// r86genResumeHistory: assistant calls a (tool slow) and b (tool fast), each
+// with an approval request, and a tool message approving both.
+func r86genResumeHistory() []types.Message {
+	return []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "go"}}},
+		{Role: types.RoleAssistant, Content: []types.ContentPart{
+			types.ToolCallContent{ToolCallID: "a", ToolName: "slow", Arguments: map[string]interface{}{}},
+			types.ToolApprovalRequestContent{ApprovalID: "ap-a", ToolCallID: "a"},
+			types.ToolCallContent{ToolCallID: "b", ToolName: "fast", Arguments: map[string]interface{}{}},
+			types.ToolApprovalRequestContent{ApprovalID: "ap-b", ToolCallID: "b"},
+		}},
+		{Role: types.RoleTool, Content: []types.ContentPart{
+			types.ToolApprovalResponseContent{ApprovalID: "ap-a", Approved: true},
+			types.ToolApprovalResponseContent{ApprovalID: "ap-b", Approved: true},
+		}},
+	}
+}
+
+func r86genResumeTools() []types.Tool {
+	return []types.Tool{
+		{Name: "slow", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			time.Sleep(100 * time.Millisecond)
+			return "slow", nil
+		}},
+		{Name: "fast", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "fast", nil
+		}},
+	}
+}
+
+func r86genToolMessageIDs(messages []types.Message) []string {
+	var ids []string
+	for _, m := range messages {
+		if m.Role != types.RoleTool {
+			continue
+		}
+		for _, p := range m.Content {
+			if r, ok := p.(types.ToolResultContent); ok {
+				ids = append(ids, r.ToolCallID)
+			}
+		}
+		break
+	}
+	return ids
+}
+
+// cr-r86-stream-to-gen: StreamText's approval resume reports each approved
+// tool's result as it settles (TS stream-text.ts 2341-2372, recorded with
+// Node v24 streamText: tool parts b, a; responseMessages tool message b, a;
+// the model prompt's tool message b, a). With ToolCallConcurrency 1 the
+// calls run in order. GenerateText keeps call order (TS executeTools).
+func TestR86genResumeApprovedToolsCompletionOrder(t *testing.T) {
+	approval := map[string]types.ToolApprovalValue{"slow": types.ToolApprovalStatusUserApproval, "fast": types.ToolApprovalStatusUserApproval}
+	run := func(t *testing.T, concurrency *int) (parts, response, prompt []string) {
+		var mu sync.Mutex
+		var prompts [][]types.Message
+		model := &testutil.MockLanguageModel{DoStreamFunc: func(_ context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+			mu.Lock()
+			prompts = append(prompts, o.Prompt.Messages)
+			mu.Unlock()
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "ok"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		}}
+		res, err := StreamText(context.Background(), StreamTextOptions{
+			Model: model, Messages: r86genResumeHistory(), Tools: r86genResumeTools(),
+			ToolApproval: approval, ToolCallConcurrency: concurrency,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for chunk := range res.Chunks() {
+			if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil {
+				parts = append(parts, chunk.ToolResult.ToolCallID)
+			}
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(prompts) == 0 {
+			t.Fatal("model not called")
+		}
+		return parts, r86genToolMessageIDs(res.ResponseMessages()), r86genToolMessageIDs(prompts[0])
+	}
+	t.Run("concurrent", func(t *testing.T) {
+		parts, response, prompt := run(t, nil)
+		for name, got := range map[string][]string{"stream parts": parts, "responseMessages": response, "prompt": prompt} {
+			if len(got) != 2 || got[0] != "b" || got[1] != "a" {
+				t.Errorf("%s = %v, want [b a]", name, got)
+			}
+		}
+	})
+	t.Run("concurrency 1", func(t *testing.T) {
+		one := 1
+		parts, response, prompt := run(t, &one)
+		for name, got := range map[string][]string{"stream parts": parts, "responseMessages": response, "prompt": prompt} {
+			if len(got) != 2 || got[0] != "a" || got[1] != "b" {
+				t.Errorf("%s = %v, want [a b]", name, got)
+			}
+		}
+	})
+	t.Run("generate keeps call order", func(t *testing.T) {
+		model := &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		}}
+		res, err := GenerateText(context.Background(), GenerateTextOptions{
+			Model: model, Messages: r86genResumeHistory(), Tools: r86genResumeTools(), ToolApproval: approval,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := r86genToolMessageIDs(res.ResponseMessages); len(got) != 2 || got[0] != "a" || got[1] != "b" {
+			t.Errorf("responseMessages = %v, want [a b]", got)
 		}
 	})
 }
