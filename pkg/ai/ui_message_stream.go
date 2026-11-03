@@ -624,6 +624,25 @@ func (r *StreamTextResult) uiOptionsWithRequestTools(opts []UIMessageStreamResul
 	return append([]UIMessageStreamResultOptions{options}, opts[min(len(opts), 1):]...)
 }
 
+// uiConsumerCtxKey carries the context a UI stream's consumer was created
+// from, when the converter runs on a context derived from it (see
+// PipeUIMessageStreamToResponseWithInit).
+type uiConsumerCtxKey struct{}
+
+// uiConsumerErr is ctx.Err(), or the error of the consumer context ctx was
+// derived from: a cancelled context sets its error before it cancels its
+// children, so the consumer's cancellation is seen even while ctx itself is
+// still being cancelled.
+func uiConsumerErr(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if parent, ok := ctx.Value(uiConsumerCtxKey{}).(context.Context); ok {
+		return parent.Err()
+	}
+	return nil
+}
+
 // ToUIMessageStream converts a text stream into UI message chunks. A source
 // whose first part is ChunkTypeStart (StreamText-shaped parts) maps one to one
 // as TS toUIMessageStream; a raw provider stream is framed with start,
@@ -729,7 +748,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			// the source stream itself declared an outcome; isAborted reflects
 			// the source stream's own abort part. Mirrors CreateUIMessageStream
 			// above and TS to-ui-message-stream.ts (audit row #10/#103).
-			isCancelled := ctx.Err() != nil && sourceOutcome.Status == UIMessageStreamOutcomeUnknown
+			isCancelled := uiConsumerErr(ctx) != nil && sourceOutcome.Status == UIMessageStreamOutcomeUnknown
 			finishEvent := map[string]interface{}{
 				"isContinuation":  uiState.continuation(),
 				"isAborted":       uiState.isAborted || sourceOutcome.Status == UIMessageStreamOutcomeAborted,
@@ -1060,7 +1079,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			} else {
 				chunk, err = stream.Next()
 			}
-			if ctx.Err() != nil {
+			if consumerErr := uiConsumerErr(ctx); consumerErr != nil {
 				// The consumer was cancelled while the read was in flight:
 				// the part it returned (StreamText's abort part, or the ctx
 				// error of a source on the same ctx) is not processed, so
@@ -1068,7 +1087,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				// abort that was never written. TS: a cancelled reader
 				// cancels the pipeline, and handleUIMessageStreamFinish's
 				// cancel calls onEnd without processing another chunk.
-				sendUIStreamErr(errCh, ctx.Err())
+				sendUIStreamErr(errCh, consumerErr)
 				callOnEnd()
 				return
 			}
@@ -2642,8 +2661,13 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 	// goroutine stops promptly instead of relying solely on the caller's
 	// ctx, which may never be cancelled.
 	streamCtx, cancelStream := context.WithCancel(ctx)
-
-	chunks, errCh := CreateUIMessageStream(streamCtx, result, opts...)
+	// The converter also checks ctx itself (uiConsumerErr): when ctx is
+	// cancelled, Go closes its Done channel before it cancels the derived
+	// contexts, in map order, so StreamText's own child of ctx can deliver
+	// its abort part while streamCtx still looks live. TS cancels the reader
+	// and aborts the request in the same tick, so the abort part is never
+	// read and OnEnd reports isCancelled.
+	chunks, errCh := CreateUIMessageStream(context.WithValue(streamCtx, uiConsumerCtxKey{}, ctx), result, opts...)
 	status, _, headers := uiMessageStreamResponseHead(init)
 	writeResponseHead(w, status, headers)
 	// The UI conversion's failure is in errCh by the time chunks closes.
