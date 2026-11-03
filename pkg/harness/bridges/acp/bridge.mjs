@@ -1,4 +1,4 @@
-import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, realpath, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { argv, env, execPath, pid, stdout } from "node:process";
@@ -13,6 +13,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError, isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { fileURLToPath } from "node:url";
+import path from "node:path";
 //#region ../harness/dist/bridge/index.js
 const name = "AI_HarnessBridgeCapabilityUnsupportedError";
 /**
@@ -1621,81 +1622,22 @@ function mergeObservedToolCall({ previous, update }) {
 	};
 }
 //#endregion
-//#region src/v1/bridge/resolve-host-tool-call.ts
-function classifyHostToolInputEnvelope({ rawInput }) {
-	const isDeferredToolEnvelope = "tool_name" in rawInput;
-	const isProviderToolEnvelope = "providerIdentifier" in rawInput && "toolName" in rawInput && "args" in rawInput;
-	const isOriginOperationEnvelope = "origin" in rawInput && "operation" in rawInput && "arguments" in rawInput;
-	const isServerToolEnvelope = "server" in rawInput && "tool" in rawInput && "arguments" in rawInput;
-	if ([
-		isDeferredToolEnvelope,
-		isProviderToolEnvelope,
-		isOriginOperationEnvelope,
-		isServerToolEnvelope
-	].filter(Boolean).length > 1) return "ambiguous";
-	if (isDeferredToolEnvelope) return "deferred-tool";
-	if (isProviderToolEnvelope) return "provider-tool";
-	if (isOriginOperationEnvelope) return "origin-operation";
-	if (isServerToolEnvelope) return "server-tool";
-	return "none";
-}
-function isQualifiedHostToolName({ name, serverName, toolName }) {
-	return name === `mcp__${serverName}__${toolName}` || name === `${serverName}__${toolName}` || name === `mcp_${serverName}_${toolName}`;
-}
-function resolveHostToolCall({ toolCall, serverName, toolNames }) {
-	const rawInput = toolCall.rawInput;
-	if (!isRecord$5(rawInput)) return void 0;
-	const envelopeKind = classifyHostToolInputEnvelope({ rawInput });
-	if (envelopeKind === "ambiguous") return void 0;
-	const matches = [];
-	for (const toolName of toolNames) {
-		const isQualified = (value) => isQualifiedHostToolName({
-			name: value,
-			serverName,
-			toolName
-		});
-		const isDirect = toolCall.name === toolName && isRecord$5(toolCall._meta) && toolCall._meta.serverName === serverName;
-		if (envelopeKind === "deferred-tool" && isQualified(rawInput.tool_name) && isRecord$5(rawInput.tool_input) && (toolCall.name == null || toolCall.name === "use_tool" || isQualified(toolCall.name))) matches.push({
-			toolName,
-			input: rawInput.tool_input
-		});
-		else if (envelopeKind === "provider-tool" && rawInput.providerIdentifier === serverName && rawInput.toolName === toolName && isRecord$5(rawInput.args) && (toolCall.name == null || isQualified(toolCall.name))) matches.push({
-			toolName,
-			input: rawInput.args
-		});
-		else if (envelopeKind === "server-tool" && rawInput.server === serverName && rawInput.tool === toolName && isRecord$5(rawInput.arguments) && (toolCall.name == null || isQualified(toolCall.name))) matches.push({
-			toolName,
-			input: rawInput.arguments
-		});
-		else if (envelopeKind === "origin-operation" && rawInput.origin === serverName && rawInput.operation === toolName && isRecord$5(rawInput.arguments) && (toolCall.name == null || toolCall.name === toolName || isQualified(toolCall.name))) matches.push({
-			toolName,
-			input: rawInput.arguments
-		});
-		else if (envelopeKind === "none" && (isDirect || isQualified(toolCall.name) || toolCall.name == null && (isQualified(toolCall.title) || toolCall.title === `${serverName}-${toolName}`))) matches.push({
-			toolName,
-			input: rawInput
-		});
-	}
-	return matches.length === 1 ? matches[0] : void 0;
-}
-function isRecord$5(value) {
-	return value != null && typeof value === "object" && !Array.isArray(value);
-}
-//#endregion
 //#region src/v1/bridge/host-tool-correlation.ts
 const CORRELATION_WINDOW_MS = 1e3;
 const MAX_BUFFERED_UPDATES = 128;
-function createHostToolCorrelation({ emitSemanticUpdate, emitRawUpdate, hostToolServerName, hostTools }) {
+function createHostToolCorrelation({ emitSemanticUpdate, emitRawUpdate, hostToolServerName, hostTools, hostToolCallResolver }) {
 	const invocations = /* @__PURE__ */ new Map();
 	const candidates = /* @__PURE__ */ new Map();
 	const suppressedToolCallIds = /* @__PURE__ */ new Set();
 	const releasedToolCallIds = /* @__PURE__ */ new Set();
 	const observedToolCalls = /* @__PURE__ */ new Map();
-	const hostToolNames = hostTools.map((tool) => tool.name);
 	let nextCandidateOrder = 0;
 	let buffered = [];
 	let flushTimer;
+	let flushHolds = 0;
+	let flushPending = false;
 	const flush = () => {
+		flushPending = false;
 		if (flushTimer != null) {
 			clearTimeout(flushTimer);
 			flushTimer = void 0;
@@ -1713,7 +1655,14 @@ function createHostToolCorrelation({ emitSemanticUpdate, emitRawUpdate, hostTool
 	};
 	const scheduleFlush = () => {
 		if (flushTimer != null) return;
-		flushTimer = setTimeout(flush, CORRELATION_WINDOW_MS);
+		flushTimer = setTimeout(() => {
+			flushTimer = void 0;
+			if (flushHolds > 0) {
+				flushPending = true;
+				return;
+			}
+			flush();
+		}, CORRELATION_WINDOW_MS);
 		flushTimer.unref?.();
 	};
 	const suppressBufferedToolCall = ({ toolCallId }) => {
@@ -1750,7 +1699,7 @@ function createHostToolCorrelation({ emitSemanticUpdate, emitRawUpdate, hostTool
 		if (candidates.size === 0) flush();
 	};
 	return {
-		update: ({ message, rawUpdate }) => {
+		update: ({ message, rawUpdate, hostToolCall }) => {
 			const preservedUpdate = rawUpdate === void 0 ? message.update : rawUpdate;
 			emitRawUpdate({ rawUpdate: preservedUpdate });
 			if (!isToolUpdate(message)) {
@@ -1772,11 +1721,7 @@ function createHostToolCorrelation({ emitSemanticUpdate, emitRawUpdate, hostTool
 				previous: observedToolCalls.get(toolCallId),
 				update: message.update
 			}));
-			if (!releasedToolCallIds.has(toolCallId) && resolveHostToolCall({
-				toolCall: observedToolCalls.get(toolCallId),
-				serverName: hostToolServerName,
-				toolNames: hostToolNames
-			}) != null) suppressToolCallUpdate({ toolCallId });
+			if (!releasedToolCallIds.has(toolCallId) && hostToolCall != null) suppressToolCallUpdate({ toolCallId });
 			if (suppressedToolCallIds.has(toolCallId)) {
 				if (isTerminalToolUpdate(message)) {
 					suppressedToolCallIds.delete(toolCallId);
@@ -1842,53 +1787,64 @@ function createHostToolCorrelation({ emitSemanticUpdate, emitRawUpdate, hostTool
 			});
 			reconcile();
 		},
-		claimHostToolPermission: ({ toolCall }) => {
+		applyHostToolCall: ({ toolCallId, hostToolCall }) => {
+			if (hostToolCall == null || releasedToolCallIds.has(toolCallId)) return;
+			if (suppressedToolCallIds.has(toolCallId)) return;
+			suppressToolCallUpdate({ toolCallId });
+		},
+		claimHostToolPermission: async ({ toolCall }) => {
+			const observedBeforeResolution = observedToolCalls.get(toolCall.toolCallId);
+			if (toolCall.status === "completed" || toolCall.status === "failed" || observedBeforeResolution?.status === "completed" || observedBeforeResolution?.status === "failed" || observedBeforeResolution?.rawInput === null) return;
+			const [observedHostCall, permissionCall] = await Promise.all([hostToolCallResolver.getResolution({ toolCallId: toolCall.toolCallId }), hostToolCallResolver.resolveToolCall({ toolCall })]);
 			const candidate = candidates.get(toolCall.toolCallId);
 			const observed = observedToolCalls.get(toolCall.toolCallId);
-			if (toolCall.status === "completed" || toolCall.status === "failed" || observed?.status === "completed" || observed?.status === "failed" || observed?.rawInput === null) return;
-			const observedHostCall = observed == null ? void 0 : resolveHostToolCall({
-				toolCall: observed,
-				serverName: hostToolServerName,
-				toolNames: hostToolNames
-			});
 			if (observed != null && observedHostCall != null) {
 				if (hasConflictingHostToolPermission({
 					toolCall,
 					observed,
 					call: observedHostCall,
+					permissionCall,
 					serverName: hostToolServerName
 				})) return;
 				suppressToolCallUpdate({ toolCallId: toolCall.toolCallId });
 				return observedHostCall;
 			}
 			const matches = [];
-			for (const { name } of hostTools) {
-				const permission = resolvePermissionHostTool({
-					toolCall,
+			for (const permission of resolvePermissionHostToolCandidates({
+				toolCall,
+				permissionCall,
+				serverName: hostToolServerName,
+				toolNames: hostTools.map((tool) => tool.name)
+			})) if (candidate == null ? permission.hasRequestIdentity : hasPortableEvidence({
+				candidate,
+				invocation: {
+					token: "",
 					serverName: hostToolServerName,
-					toolName: name
-				});
-				if (permission == null) continue;
-				if (candidate == null ? permission.hasRequestIdentity : hasPortableEvidence({
-					candidate,
-					invocation: {
-						token: "",
-						serverName: hostToolServerName,
-						toolName: name,
-						inputFingerprint: canonicalFingerprint({ value: permission.input }),
-						order: 0
-					}
-				})) matches.push({
-					toolName: name,
-					input: permission.input
-				});
-			}
+					toolName: permission.toolName,
+					inputFingerprint: canonicalFingerprint({ value: permission.input }),
+					order: 0
+				}
+			})) matches.push({
+				toolName: permission.toolName,
+				input: permission.input
+			});
 			if (matches.length !== 1) return void 0;
 			suppressToolCallUpdate({ toolCallId: toolCall.toolCallId });
 			return matches[0];
 		},
 		suppressToolCall: suppressToolCallUpdate,
 		getToolCall: ({ toolCallId }) => observedToolCalls.get(toolCallId),
+		isToolCallReleased: ({ toolCallId }) => releasedToolCallIds.has(toolCallId),
+		deferFlush: () => {
+			flushHolds += 1;
+			let released = false;
+			return { release: () => {
+				if (released) return;
+				released = true;
+				flushHolds -= 1;
+				if (flushHolds === 0 && flushPending) flush();
+			} };
+		},
 		flush,
 		removeInvocation: ({ token }) => {
 			deleteInvocation({
@@ -1907,41 +1863,23 @@ function createHostToolCorrelation({ emitSemanticUpdate, emitRawUpdate, hostTool
 		}
 	};
 }
-function hasConflictingHostToolPermission({ toolCall, observed, call, serverName }) {
-	if (toolCall.name != null && toolCall.name !== call.toolName && !isQualifiedHostToolName({
-		name: toolCall.name,
+function hasConflictingHostToolPermission({ toolCall, observed, call, permissionCall, serverName }) {
+	if (permissionCall != null) return permissionCall.toolName !== call.toolName || canonicalFingerprint({ value: permissionCall.input }) !== canonicalFingerprint({ value: call.input });
+	if (toolCall.name != null && toolCall.name !== observed.name && toolCall.name !== call.toolName && !hasDelimitedPair({
+		value: toolCall.name,
 		serverName,
 		toolName: call.toolName
-	}) && !(toolCall.name === "use_tool" && isRecord$4(observed.rawInput) && classifyHostToolInputEnvelope({ rawInput: observed.rawInput }) === "deferred-tool")) return true;
+	})) return true;
 	if (toolCall.rawInput === void 0) return false;
-	if (!isRecord$4(toolCall.rawInput)) return true;
+	if (!isRecord$5(toolCall.rawInput)) return true;
 	const fingerprint = canonicalFingerprint({ value: toolCall.rawInput });
-	const inputFingerprint = canonicalFingerprint({ value: call.input });
-	if (fingerprint === canonicalFingerprint({ value: observed.rawInput }) || fingerprint === inputFingerprint) return false;
-	if (classifyHostToolInputEnvelope({ rawInput: toolCall.rawInput }) === "none") return true;
-	const permissionCall = resolveHostToolCall({
-		toolCall: {
-			toolCallId: toolCall.toolCallId,
-			rawInput: toolCall.rawInput
-		},
-		serverName,
-		toolNames: [call.toolName]
-	});
-	return permissionCall == null || canonicalFingerprint({ value: permissionCall.input }) !== inputFingerprint;
+	return fingerprint !== canonicalFingerprint({ value: observed.rawInput }) && fingerprint !== canonicalFingerprint({ value: call.input });
 }
 function hasPortableEvidence({ candidate, invocation }) {
 	let hasServerIdentity = false;
 	let hasToolName = false;
 	let hasInput = false;
 	for (const evidence of candidate.evidence) {
-		if (isRecord$4(evidence) && typeof evidence.toolCallId === "string") {
-			const call = resolveHostToolCall({
-				toolCall: evidence,
-				serverName: invocation.serverName,
-				toolNames: [invocation.toolName]
-			});
-			if (call != null && canonicalFingerprint({ value: call.input }) === invocation.inputFingerprint) return true;
-		}
 		const metadata = getProperty({
 			value: evidence,
 			property: "_meta"
@@ -1955,14 +1893,6 @@ function hasPortableEvidence({ candidate, invocation }) {
 			property: "name"
 		});
 		if (programmaticName === invocation.toolName) hasToolName = true;
-		const deferredToolName = getProperty({
-			value: rawInput,
-			property: "tool_name"
-		});
-		const deferredToolInput = getProperty({
-			value: rawInput,
-			property: "tool_input"
-		});
 		if (containsCombinedIdentity({
 			value: [metadata, programmaticName],
 			serverName: invocation.serverName,
@@ -1970,15 +1900,6 @@ function hasPortableEvidence({ candidate, invocation }) {
 		})) {
 			hasServerIdentity = true;
 			hasToolName = true;
-		}
-		if (typeof deferredToolName === "string" && isRecord$4(deferredToolInput) && hasDelimitedPair({
-			value: deferredToolName,
-			serverName: invocation.serverName,
-			toolName: invocation.toolName
-		})) {
-			hasServerIdentity = true;
-			hasToolName = true;
-			if (canonicalFingerprint({ value: deferredToolInput }) === invocation.inputFingerprint) hasInput = true;
 		}
 		if (containsExactValue({
 			value: [metadata, rawInput],
@@ -1995,20 +1916,16 @@ function hasPortableEvidence({ candidate, invocation }) {
 	}
 	return hasServerIdentity && hasToolName && hasInput;
 }
-function resolvePermissionHostTool({ toolCall, serverName, toolName }) {
-	if (!isRecord$4(toolCall.rawInput)) return void 0;
-	const call = resolveHostToolCall({
-		toolCall,
-		serverName,
-		toolNames: [toolName]
-	});
-	if (call != null) return {
-		input: call.input,
+function resolvePermissionHostToolCandidates({ toolCall, permissionCall, serverName, toolNames }) {
+	if (permissionCall != null) return [{
+		...permissionCall,
 		hasRequestIdentity: true
-	};
-	if (classifyHostToolInputEnvelope({ rawInput: toolCall.rawInput }) !== "none") return void 0;
-	return {
-		input: toolCall.rawInput,
+	}];
+	const rawInput = toolCall.rawInput;
+	if (!isRecord$5(rawInput)) return [];
+	return toolNames.map((toolName) => ({
+		toolName,
+		input: rawInput,
 		hasRequestIdentity: containsCombinedIdentity({
 			value: [
 				getProperty({
@@ -2027,7 +1944,7 @@ function resolvePermissionHostTool({ toolCall, serverName, toolName }) {
 			serverName,
 			toolName
 		})
-	};
+	}));
 }
 function containsCombinedIdentity({ value, serverName, toolName }) {
 	return containsString({
@@ -2113,7 +2030,7 @@ function getProperty({ value, property }) {
 	if (value == null || typeof value !== "object" || Array.isArray(value)) return;
 	return Reflect.get(value, property);
 }
-function isRecord$4(value) {
+function isRecord$5(value) {
 	return value != null && typeof value === "object" && !Array.isArray(value);
 }
 function isTerminalToolUpdate(message) {
@@ -2121,7 +2038,7 @@ function isTerminalToolUpdate(message) {
 }
 //#endregion
 //#region src/v1/bridge/create-emit-stream-event.ts
-function createEmitStreamEvent({ emit, emitToolCallCandidate, builtinTools, hostToolServerName, hostTools }) {
+function createEmitStreamEvent({ emit, emitToolCallCandidate, builtinTools, hostToolServerName, hostTools, hostToolCallResolver }) {
 	const translator = createACPStreamTranslator({
 		emit,
 		emitToolCallCandidate,
@@ -2139,10 +2056,11 @@ function createEmitStreamEvent({ emit, emitToolCallCandidate, builtinTools, host
 			translator.raw({ rawValue: rawUpdate });
 		},
 		hostToolServerName,
-		hostTools
+		hostTools,
+		hostToolCallResolver
 	});
 	return {
-		message: ({ message, rawUpdate }) => {
+		message: ({ message, rawUpdate, hostToolCall }) => {
 			if (message.kind === "stop") {
 				correlation.close();
 				translator.finish(message.response);
@@ -2150,7 +2068,8 @@ function createEmitStreamEvent({ emit, emitToolCallCandidate, builtinTools, host
 			}
 			correlation.update({
 				message,
-				rawUpdate
+				rawUpdate,
+				hostToolCall
 			});
 			return false;
 		},
@@ -2162,17 +2081,96 @@ function createEmitStreamEvent({ emit, emitToolCallCandidate, builtinTools, host
 		permissionToolCall: ({ toolCall }) => {
 			translator.permissionToolCall({ toolCall: {
 				sessionUpdate: "tool_call_update",
-				...toolCall
+				...toolCall,
+				rawInput: toolCall.rawInput === void 0 ? correlation.getToolCall({ toolCallId: toolCall.toolCallId })?.rawInput : toolCall.rawInput
 			} });
 		},
 		claimHostToolPermission: correlation.claimHostToolPermission,
+		applyHostToolCall: correlation.applyHostToolCall,
 		hostToolCall: translator.hostToolCall,
 		hostToolResult: translator.hostToolResult,
 		registerHostToolCorrelationInvocation: correlation.registerInvocation,
 		removeHostToolCorrelationInvocation: correlation.removeInvocation,
 		suppressToolCall: correlation.suppressToolCall,
-		getToolCall: ({ toolCallId }) => correlation.getToolCall({ toolCallId }) ?? translator.getToolCall({ toolCallId })
+		getToolCall: ({ toolCallId }) => correlation.getToolCall({ toolCallId }) ?? translator.getToolCall({ toolCallId }),
+		isToolCallReleased: correlation.isToolCallReleased,
+		deferFlush: correlation.deferFlush
 	};
+}
+//#endregion
+//#region src/v1/bridge/host-tool-call-resolver.ts
+function createHostToolCallResolver({ turn, serverName, toolNames }) {
+	const snapshots = /* @__PURE__ */ new Map();
+	const resolutions = /* @__PURE__ */ new Map();
+	let closed = false;
+	let resolveClosed;
+	const closedPromise = new Promise((resolve) => {
+		resolveClosed = () => resolve(void 0);
+	});
+	const abortedPromise = abortPromise({ abortSignal: turn.abortSignal });
+	const request = async ({ toolCall }) => {
+		if (closed || turn.abortSignal.aborted) return void 0;
+		const requestId = crypto.randomUUID();
+		turn.emit({
+			type: "acp-host-tool-call-resolution-request",
+			requestId,
+			toolCall,
+			serverName,
+			toolNames: [...toolNames]
+		});
+		const result = await Promise.race([
+			turn.requestToolResult(requestId),
+			closedPromise,
+			abortedPromise
+		]);
+		if (result == null || closed) return void 0;
+		return parseHostToolCall({
+			output: result.output,
+			toolNames
+		});
+	};
+	return {
+		resolveUpdate: ({ update }) => {
+			const toolCall = mergeObservedToolCall({
+				previous: snapshots.get(update.toolCallId),
+				update
+			});
+			snapshots.set(update.toolCallId, toolCall);
+			const resolution = request({ toolCall });
+			resolutions.set(update.toolCallId, resolution);
+			return resolution;
+		},
+		resolveToolCall: ({ toolCall }) => request({ toolCall: mergeObservedToolCall({
+			previous: void 0,
+			update: toolCall
+		}) }),
+		getResolution: async ({ toolCallId }) => resolutions.get(toolCallId),
+		close: () => {
+			if (closed) return;
+			closed = true;
+			resolveClosed();
+			snapshots.clear();
+			resolutions.clear();
+		}
+	};
+}
+function abortPromise({ abortSignal }) {
+	if (abortSignal.aborted) return Promise.resolve(void 0);
+	return new Promise((resolve) => {
+		abortSignal.addEventListener("abort", () => resolve(void 0), { once: true });
+	});
+}
+function parseHostToolCall({ output, toolNames }) {
+	if (!isRecord$4(output)) return void 0;
+	const hostToolCall = output.hostToolCall;
+	if (!isRecord$4(hostToolCall) || typeof hostToolCall.toolName !== "string" || !toolNames.includes(hostToolCall.toolName) || !isRecord$4(hostToolCall.input)) return;
+	return {
+		toolName: hostToolCall.toolName,
+		input: hostToolCall.input
+	};
+}
+function isRecord$4(value) {
+	return value != null && typeof value === "object" && !Array.isArray(value);
 }
 //#endregion
 //#region src/v1/bridge/instruction-mapping.ts
@@ -2247,7 +2245,7 @@ function isRecord$3(value) {
 }
 //#endregion
 //#region src/v1/bridge/host-tool-mcp-server.ts
-const VERSION = "1.0.103";
+const VERSION = "1.0.113";
 function createHostToolMCPServer({ tools, revision = 1, invoke, onListTools }) {
 	let catalog = createCatalog({
 		revision,
@@ -2820,7 +2818,7 @@ var RelayRequestError = class extends Error {
 //#endregion
 //#region src/v1/bridge/host-tool-relay-authorization.ts
 const DEFAULT_AUTHORIZATION_WAIT_MS = 1e4;
-function createHostToolRelayAuthorization({ serverName, toolNames, ttlMs = DEFAULT_AUTHORIZATION_WAIT_MS }) {
+function createHostToolRelayAuthorization({ ttlMs = DEFAULT_AUTHORIZATION_WAIT_MS } = {}) {
 	const observedCalls = /* @__PURE__ */ new Map();
 	const authorizations = /* @__PURE__ */ new Map();
 	const pendingRequests = [];
@@ -2837,7 +2835,7 @@ function createHostToolRelayAuthorization({ serverName, toolNames, ttlMs = DEFAU
 			pending.resolve(true);
 		}
 	};
-	const observe = ({ toolCall }) => {
+	const observe = ({ toolCall, hostToolCall }) => {
 		if (closed) return;
 		const previous = observedCalls.get(toolCall.toolCallId);
 		if (previous?.consumed || previous?.terminal) return;
@@ -2857,11 +2855,7 @@ function createHostToolRelayAuthorization({ serverName, toolNames, ttlMs = DEFAU
 			authorizations.delete(toolCall.toolCallId);
 			return;
 		}
-		const call = permissionCall ?? resolveHostToolCall({
-			toolCall: merged,
-			serverName,
-			toolNames
-		});
+		const call = permissionCall ?? hostToolCall;
 		if (call == null) {
 			authorizations.delete(toolCall.toolCallId);
 			return;
@@ -2873,8 +2867,11 @@ function createHostToolRelayAuthorization({ serverName, toolNames, ttlMs = DEFAU
 		});
 	};
 	return {
-		observeUpdate: ({ update }) => {
-			if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") observe({ toolCall: update });
+		observeUpdate: ({ update, hostToolCall }) => {
+			if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") observe({
+				toolCall: update,
+				hostToolCall
+			});
 		},
 		authorizePermission: ({ toolCallId, call }) => {
 			if (closed) return;
@@ -2994,10 +2991,52 @@ async function refreshHostToolCatalog({ relay, tools, harnessId, timeoutMs }) {
 	});
 }
 //#endregion
+//#region src/v1/bridge/permission-locations.ts
+async function areACPToolLocationsTrusted({ toolCall, workDir }) {
+	const locations = toolCall.locations;
+	if (locations == null || locations.length === 0) return toolCall.kind === "think" || toolCall.kind === "fetch";
+	try {
+		const canonicalWorkDir = await realpath(workDir);
+		for (const location of locations) {
+			if (typeof location.path !== "string" || location.path.trim().length === 0) return false;
+			if (!isInsidePath(canonicalWorkDir, await resolvePermissionPath(path.posix.isAbsolute(location.path) ? location.path : `${workDir}/${location.path}`))) return false;
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}
+async function resolvePermissionPath(inputPath) {
+	let existingPath = inputPath;
+	const missingSegments = [];
+	while (!await entryExists(existingPath)) {
+		const parent = path.posix.dirname(existingPath);
+		const segment = path.posix.basename(existingPath);
+		if (parent === existingPath || segment === ".." || segment === ".") throw new Error(`Unable to resolve path ${JSON.stringify(inputPath)}.`);
+		missingSegments.unshift(segment);
+		existingPath = parent;
+	}
+	return path.posix.join(await realpath(existingPath), ...missingSegments);
+}
+async function entryExists(entryPath) {
+	try {
+		await lstat(entryPath);
+		return true;
+	} catch (error) {
+		if (error != null && typeof error === "object" && "code" in error && error.code === "ENOENT") return false;
+		throw error;
+	}
+}
+function isInsidePath(parent, candidate) {
+	const relative = path.posix.relative(parent, candidate);
+	return relative === "" || relative !== ".." && !relative.startsWith("../") && !path.posix.isAbsolute(relative);
+}
+//#endregion
 //#region src/v1/bridge/permission-controller.ts
 let permissionRequestCounter = 0;
-function createACPPermissionController({ turn, sessionId, permissionMode, hasPermissionModeMapping, emitToolCall, claimHostToolPermission, onHostToolPermissionAllowed }) {
+function createACPPermissionController({ turn, sessionId, workDir, permissionMode, hasPermissionModeMapping, emitToolCall, claimHostToolPermission, onHostToolPermissionAllowed }) {
 	const pendingPermissions = /* @__PURE__ */ new Map();
+	let cancellationGeneration = 0;
 	return {
 		async requestPermission(request) {
 			if (request.sessionId !== sessionId) {
@@ -3011,7 +3050,9 @@ function createACPPermissionController({ turn, sessionId, permissionMode, hasPer
 				turn.emitWarning({ message: `ACP permission request for tool call ${JSON.stringify(request.toolCall.toolCallId)} was cancelled because it did not advertise ${missing.join(" and ")}.` });
 				return cancelled();
 			}
-			const call = claimHostToolPermission({ toolCall: request.toolCall });
+			const generation = cancellationGeneration;
+			const call = await claimHostToolPermission({ toolCall: request.toolCall });
+			if (generation !== cancellationGeneration) return cancelled();
 			if (call != null) {
 				onHostToolPermissionAllowed?.({
 					toolCallId: request.toolCall.toolCallId,
@@ -3022,10 +3063,15 @@ function createACPPermissionController({ turn, sessionId, permissionMode, hasPer
 					optionId: allowOnce.optionId
 				} };
 			}
-			if (!hasPermissionModeMapping && shouldAutoApprove({
+			const autoApprove = !hasPermissionModeMapping && shouldAutoApprove({
 				permissionMode,
 				kind: request.toolCall.kind
-			})) return { outcome: {
+			}) && (permissionMode === "allow-all" || await areACPToolLocationsTrusted({
+				toolCall: request.toolCall,
+				workDir
+			}));
+			if (generation !== cancellationGeneration) return cancelled();
+			if (autoApprove) return { outcome: {
 				outcome: "selected",
 				optionId: allowOnce.optionId
 			} };
@@ -3063,6 +3109,7 @@ function createACPPermissionController({ turn, sessionId, permissionMode, hasPer
 			}
 		},
 		cancelAll() {
+			cancellationGeneration += 1;
 			for (const pending of pendingPermissions.values()) pending.cancel();
 			pendingPermissions.clear();
 		}
@@ -3517,7 +3564,9 @@ async function runTurn(start, turn) {
 	cancellationFailure.catch(() => {});
 	let cancellationRequested = false;
 	let cancellationFailureError;
-	const hostToolAuthorization = createHostToolRelayAuthorization({
+	const hostToolAuthorization = createHostToolRelayAuthorization();
+	const hostToolCallResolver = createHostToolCallResolver({
+		turn,
 		serverName: HOST_TOOL_MCP_SERVER_NAME,
 		toolNames: (start.tools ?? []).map((tool) => tool.name)
 	});
@@ -3525,6 +3574,7 @@ async function runTurn(start, turn) {
 		if (cancellationRequested) return;
 		cancellationRequested = true;
 		hostToolAuthorization.close();
+		hostToolCallResolver.close();
 		activePermissionController?.cancelAll();
 		try {
 			if (connection == null) throw new Error("ACP connection closed before cancellation.");
@@ -3557,7 +3607,8 @@ async function runTurn(start, turn) {
 		},
 		builtinTools: start.builtinTools,
 		hostToolServerName: HOST_TOOL_MCP_SERVER_NAME,
-		hostTools: start.tools ?? []
+		hostTools: start.tools ?? [],
+		hostToolCallResolver
 	});
 	if (bridgeConfiguration.askUserQuestionsRequestMethod != null) activeQuestionRequest = {
 		method: bridgeConfiguration.askUserQuestionsRequestMethod,
@@ -3567,6 +3618,7 @@ async function runTurn(start, turn) {
 	const permissionController = createACPPermissionController({
 		turn,
 		sessionId: activeSession.sessionId,
+		workDir,
 		permissionMode: start.permissionMode ?? "allow-all",
 		hasPermissionModeMapping: start.permissionModeMapping != null,
 		emitToolCall: emitStreamEvent.permissionToolCall,
@@ -3608,6 +3660,7 @@ async function runTurn(start, turn) {
 		else startPrompt();
 		if (turn.abortSignal.aborted) await cancel();
 		else turn.abortSignal.addEventListener("abort", () => void cancel(), { once: true });
+		let pendingHostToolResolutions = Promise.resolve();
 		for (;;) {
 			let message;
 			try {
@@ -3631,19 +3684,42 @@ async function runTurn(start, turn) {
 					modelMapping: start.modelMapping
 				}) ?? currentModelId;
 				const captured = streamCapture?.takeForUpdate({ update: message.update });
-				hostToolAuthorization.observeUpdate({ update: message.update });
+				const update = message.update;
+				const isToolUpdate = update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update";
 				for (const rawValue of captured?.precedingRawValues ?? []) emitStreamEvent.raw({ rawValue });
+				if (!isToolUpdate) {
+					hostToolAuthorization.observeUpdate({ update });
+					emitStreamEvent.message({
+						message,
+						rawUpdate: captured?.rawUpdate
+					});
+					continue;
+				}
+				const flushHold = emitStreamEvent.deferFlush();
+				const resolution = hostToolCallResolver.resolveUpdate({ update });
 				emitStreamEvent.message({
 					message,
 					rawUpdate: captured?.rawUpdate
 				});
+				pendingHostToolResolutions = pendingHostToolResolutions.then(() => resolution).catch(() => void 0).then((hostToolCall) => {
+					hostToolAuthorization.observeUpdate({
+						update,
+						hostToolCall
+					});
+					emitStreamEvent.applyHostToolCall({
+						toolCallId: update.toolCallId,
+						hostToolCall
+					});
+				}).finally(() => flushHold.release());
 				continue;
 			}
+			await pendingHostToolResolutions;
 			for (const rawValue of streamCapture?.drainRawValues() ?? []) emitStreamEvent.raw({ rawValue });
 			if (emitStreamEvent.message({ message })) return;
 		}
 	} finally {
 		hostToolAuthorization.close();
+		hostToolCallResolver.close();
 		if (activeQuestionRequest?.turn === turn) activeQuestionRequest = void 0;
 		permissionController.cancelAll();
 		activePermissionController = void 0;

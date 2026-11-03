@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -259,6 +260,7 @@ func discoverTokenEndpoint(ctx context.Context, issuer string, client *http.Clie
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return "", fmt.Errorf("Grok OAuth discovery failed with status %d.", resp.StatusCode) //nolint:staticcheck // matches TS SDK's exact error text
 	}
+	body = []byte(textdecode.UTF8(body)) // TS response.json() decodes the text first
 	var parsed map[string]any
 	if err := securejson.Unmarshal(body, &parsed); err != nil {
 		return "", fmt.Errorf("Grok OAuth discovery returned no token endpoint.") //nolint:staticcheck // matches TS SDK's exact error text

@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	providerrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // normalizeHostname lowercases, maps IDN to punycode and strips trailing dots
@@ -19,7 +20,7 @@ func normalizeHostname(hostname string) string {
 func normalizeDomains(parameter string, domains []string) ([]string, error) {
 	out := make([]string, 0, len(domains))
 	for _, domain := range domains {
-		trimmed := strings.TrimSpace(domain)
+		trimmed := providerutils.JSTrim(domain) // TS domain.trim()
 		if trimmed == "" || strings.ContainsAny(trimmed, " \t\r\n\f\v/\\:*@?#[]") {
 			return nil, &providerrors.InvalidArgumentError{
 				Field:   parameter,

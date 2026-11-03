@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"regexp"
 	"strings"
-	"unicode"
 
 	"golang.org/x/text/encoding/htmlindex"
 
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
@@ -36,7 +36,8 @@ var textMediaTypes = map[string]bool{
 // "" when absent.
 func getMediaType(contentType string) string {
 	mediaType, _, _ := strings.Cut(contentType, ";")
-	return strings.ToLower(strings.TrimSpace(mediaType))
+	// JS trim (not Go TrimSpace: U+0085 is not JS whitespace, U+FEFF is).
+	return strings.ToLower(providerutils.JSTrim(mediaType))
 }
 
 func looksLikeHTML(body []byte) bool {
@@ -44,7 +45,7 @@ func looksLikeHTML(body []byte) bool {
 	if len(head) > 512 {
 		head = head[:512]
 	}
-	start := strings.ToLower(strings.TrimLeftFunc(prompt.DecodeUTF8Text(head), isJSWhitespace))
+	start := strings.ToLower(providerutils.JSTrimStart(prompt.DecodeUTF8Text(head)))
 	return strings.HasPrefix(start, "<!doctype html") || strings.HasPrefix(start, "<html")
 }
 
@@ -138,6 +139,3 @@ func decodeText(body []byte, contentType string, isHTML bool) string {
 	}
 	return string(decoded)
 }
-
-// isJSWhitespace is the set JavaScript's String.prototype.trimStart removes.
-func isJSWhitespace(r rune) bool { return unicode.IsSpace(r) || r == 0xFEFF }

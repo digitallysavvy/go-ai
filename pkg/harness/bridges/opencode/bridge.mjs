@@ -1,8 +1,9 @@
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, globSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { argv, env, pid, stdout } from "node:process";
 import { WebSocketServer } from "ws";
+import { homedir } from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { createOpencodeClient, createOpencodeServer } from "@opencode-ai/sdk/v2";
@@ -1573,6 +1574,30 @@ function configureOpenCodePath({ bootstrapDir, env }) {
 	].join(path.delimiter);
 }
 //#endregion
+//#region src/bridge/opencode-project-isolation.ts
+const GLOB_CHARACTERS = /[*?[\]{}]/;
+function resolveOpenCodeInstructions({ workdir, hostInstructions }) {
+	if (hostInstructions !== void 0 && !(Array.isArray(hostInstructions) && hostInstructions.every((entry) => typeof entry === "string"))) return;
+	const directory = resolveRealPath(workdir);
+	return [path.join(directory, "AGENTS.md"), ...(hostInstructions ?? []).flatMap((entry) => {
+		if (entry.startsWith("http://") || entry.startsWith("https://") || entry.startsWith("~/") || path.isAbsolute(entry)) return [entry];
+		if (!GLOB_CHARACTERS.test(path.dirname(entry))) return [path.join(directory, entry)];
+		return globSync(entry, {
+			cwd: directory,
+			withFileTypes: true
+		}).filter((match) => match.isFile()).map((match) => path.join(match.parentPath, match.name)).sort();
+	})];
+}
+function resolveRealPath(file) {
+	const resolved = path.resolve(file);
+	try {
+		return realpathSync(resolved);
+	} catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") return resolved;
+		throw error;
+	}
+}
+//#endregion
 //#region src/bridge/opencode-server-auth.ts
 function configureOpenCodeServerAuth({ env }) {
 	const username = env.OPENCODE_SERVER_USERNAME ?? "opencode";
@@ -1846,6 +1871,7 @@ const TOOL_KIND = {
 	skill: "edit",
 	todowrite: "edit"
 };
+const APPROVAL_TOOL_CALL_WAIT_MS = 5e3;
 const HARNESS_CLIENT_APP = env.AI_SDK_HARNESS_CLIENT_APP;
 const args = parseArgs(argv.slice(2));
 const workdir = args.workdir ?? emitFatal("Missing --workdir argument.");
@@ -1862,6 +1888,7 @@ configureOpenCodePath({
 	bootstrapDir,
 	env
 });
+env.OPENCODE_DISABLE_PROJECT_CONFIG = "1";
 await runBridge({
 	bridgeType: "opencode",
 	bridgeStateDir,
@@ -1933,6 +1960,8 @@ async function ensureRuntime({ start }) {
 	if (runtime.client && isDeepStrictEqual(runtime.openCodeConfig, start.openCodeConfig) && isDeepStrictEqual(runtime.inactiveBuiltinToolNames, start.inactiveBuiltinToolNames)) return;
 	closeRuntime();
 	try {
+		const homeDirectory = homedir();
+		for (const protectedPath of [homeDirectory, path.join(env.XDG_CONFIG_HOME || path.join(homeDirectory, ".config"), "opencode")]) if (isPathInsideOrEqual(protectedPath, workdir)) throw new Error(`OpenCode session working directory "${workdir}" must not be or contain the sandbox home directory or OpenCode's global config directory, because OpenCode always loads configuration from those locations.`);
 		if (start.tools && start.tools.length > 0) {
 			runtime.toolNames = new Set(start.tools.map((tool) => tool.name));
 			runtime.relay = await startToolRelay({ tools: start.tools });
@@ -1994,6 +2023,11 @@ function buildOpenCodeConfig({ start, relayPort, toolSchemasPath }) {
 			question: "allow"
 		}
 	};
+	const instructions = resolveOpenCodeInstructions({
+		workdir,
+		hostInstructions: start.openCodeConfig?.instructions
+	});
+	if (instructions) config.instructions = instructions;
 	if (start.model) config.model = start.model;
 	if (skillsDir) config.skills = { paths: [skillsDir] };
 	const permission = config.permission;
@@ -2480,9 +2514,31 @@ async function consumeEvents({ client, sessionId, permissionMode, inactiveBuilti
 	const registerSubagentSession = (sourceSessionId) => function register({ parentSessionId, sessionId: subagentSessionId }) {
 		if (parentSessionId === sourceSessionId && taskSessionIds.has(sourceSessionId)) taskSessionIds.add(subagentSessionId);
 	};
+	const sentToolCallIds = /* @__PURE__ */ new Set();
+	const approvalsAwaitingToolCall = /* @__PURE__ */ new Map();
+	const emitToHost = (message) => {
+		emit(message);
+		if (message.type !== "tool-call") return;
+		const toolCallId = String(message.toolCallId);
+		sentToolCallIds.add(toolCallId);
+		approvalsAwaitingToolCall.get(toolCallId)?.();
+	};
+	const emitApprovalRequest = async (message) => {
+		const toolCallId = String(message.toolCallId);
+		if (!sentToolCallIds.has(toolCallId)) {
+			let timeout;
+			await new Promise((resolve) => {
+				timeout = setTimeout(resolve, APPROVAL_TOOL_CALL_WAIT_MS);
+				approvalsAwaitingToolCall.set(toolCallId, resolve);
+			});
+			clearTimeout(timeout);
+			approvalsAwaitingToolCall.delete(toolCallId);
+		}
+		emit(message);
+	};
 	const emitStreamEvent = createEmitStreamEvent({
 		state,
-		emit,
+		emit: emitToHost,
 		emitWarning: turn.emitWarning,
 		emitError: turn.emitError,
 		toWireToolName,
@@ -2596,6 +2652,7 @@ async function consumeEvents({ client, sessionId, permissionMode, inactiveBuilti
 			if (consumeEvent(next.value)) break;
 		}
 	} finally {
+		for (const release of approvalsAwaitingToolCall.values()) release();
 		iterator.return?.();
 	}
 	function consumeEvent(rawEvent) {
@@ -2624,7 +2681,7 @@ async function consumeEvents({ client, sessionId, permissionMode, inactiveBuilti
 			permissionMode,
 			inactiveBuiltinToolNames,
 			turn,
-			emit,
+			emit: isDescendant ? emit : emitApprovalRequest,
 			event,
 			waitFor
 		}));
@@ -2634,7 +2691,7 @@ async function consumeEvents({ client, sessionId, permissionMode, inactiveBuilti
 			permissionMode,
 			inactiveBuiltinToolNames,
 			turn,
-			emit,
+			emit: isDescendant ? emit : emitApprovalRequest,
 			event,
 			waitFor
 		}));
@@ -2754,7 +2811,7 @@ async function selectPermissionReply({ action, resources, requestID, toolCallId,
 		toolName,
 		inactiveBuiltinToolNames
 	})) {
-		emit({
+		await emit({
 			type: "tool-approval-request",
 			approvalId: requestID,
 			toolCallId
@@ -2772,7 +2829,7 @@ async function selectPermissionReply({ action, resources, requestID, toolCallId,
 	};
 	const kind = TOOL_KIND[toolName] ?? "bash";
 	if (permissionMode === "allow-edits" ? kind === "readonly" || kind === "edit" : kind === "readonly") return { reply: "always" };
-	emit({
+	await emit({
 		type: "tool-approval-request",
 		approvalId: requestID,
 		toolCallId

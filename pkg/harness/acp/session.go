@@ -33,6 +33,7 @@ type sessionParams struct {
 	permissionModeMapping        *PermissionModeMapping
 	mcpServers                   map[string]any
 	isMcpToolCall                func(ToolCall) bool
+	resolveHostToolCall          ResolveHostToolCallFunc
 	sandbox                      providerutils.SandboxSession
 	homePath                     string
 	skillsDir                    string
@@ -335,7 +336,31 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 	c.checkpoint = bridge.NewCheckpointRecorder(s.p.channel)
 
 	var openBlockType, openBlockID string
+	// Handlers can fire (a replayed terminal event) while later ones are
+	// still being registered, so the subscription list is guarded and a
+	// handler registered after the turn settled is removed at once.
+	var unsubMu sync.Mutex
 	var unsub []func()
+	unsubscribed := false
+	addUnsub := func(u func()) {
+		unsubMu.Lock()
+		if unsubscribed {
+			unsubMu.Unlock()
+			u()
+			return
+		}
+		unsub = append(unsub, u)
+		unsubMu.Unlock()
+	}
+	unsubscribeAll := func() {
+		unsubMu.Lock()
+		list := unsub
+		unsub, unsubscribed = nil, true
+		unsubMu.Unlock()
+		for _, u := range list {
+			u()
+		}
+	}
 	forward := func(part harness.StreamPart) {
 		switch p := part.(type) {
 		case *harness.TextStartPart:
@@ -381,13 +406,11 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 	}
 
 	settle := func(err error) {
-		for _, u := range unsub {
-			u()
-		}
+		unsubscribeAll()
 		c.settle(err)
 	}
 
-	unsub = append(unsub, s.p.channel.On(TypeToolCallCandidate, func(e bridge.Event) {
+	addUnsub(s.p.channel.On(TypeToolCallCandidate, func(e bridge.Event) {
 		f, ok := e.Message.(ToolCallCandidateFrame)
 		if !ok {
 			return
@@ -414,7 +437,29 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: map[string]any{"suppress": suppress}})
 	}))
 
-	unsub = append(unsub, s.p.channel.On(TypeQuestionRequest, func(e bridge.Event) {
+	// The bridge asks the host to resolve a native tool call to a host tool
+	// (TS 03dac28304, acp-v1-harness.ts 1229-1274). A resolver error (or a
+	// result naming an unknown tool or lacking an object input) answers
+	// `{hostToolCall: null}`, then fails the turn with an error part and an
+	// abort command.
+	addUnsub(s.p.channel.On(TypeHostToolCallResolutionRequest, func(e bridge.Event) {
+		f, ok := e.Message.(HostToolCallResolutionRequestFrame)
+		if !ok {
+			return
+		}
+		resolved, err := resolveHostToolCall(s.p.harnessID, s.p.resolveHostToolCall, f)
+		if err != nil {
+			_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: hostToolCallResolutionOutput(nil)})
+			closeForwardedBlock()
+			forward(&harness.ErrorPart{Error: err})
+			_ = s.p.channel.Send(bridge.AbortCommand{})
+			settle(err)
+			return
+		}
+		_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: hostToolCallResolutionOutput(resolved)})
+	}))
+
+	addUnsub(s.p.channel.On(TypeQuestionRequest, func(e bridge.Event) {
 		f, ok := e.Message.(QuestionRequestFrame)
 		if !ok {
 			return
@@ -492,7 +537,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		}
 	}))
 
-	unsub = append(unsub, s.p.channel.On(TypeQuestionResolved, func(e bridge.Event) {
+	addUnsub(s.p.channel.On(TypeQuestionResolved, func(e bridge.Event) {
 		f, ok := e.Message.(QuestionResolvedFrame)
 		if !ok {
 			return
@@ -505,7 +550,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		c.mu.Unlock()
 	}))
 
-	unsub = append(unsub, s.p.channel.On(harness.PartTypeToolCall, func(e bridge.Event) {
+	addUnsub(s.p.channel.On(harness.PartTypeToolCall, func(e bridge.Event) {
 		f, ok := e.Message.(bridge.StreamPartFrame)
 		if !ok {
 			return
@@ -533,7 +578,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		}
 		forward(tc)
 	}))
-	unsub = append(unsub, s.p.channel.On(harness.PartTypeToolResult, func(e bridge.Event) {
+	addUnsub(s.p.channel.On(harness.PartTypeToolResult, func(e bridge.Event) {
 		f, ok := e.Message.(bridge.StreamPartFrame)
 		if !ok {
 			return
@@ -558,7 +603,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 
 	for _, t := range acpEventTypes {
 		t := t
-		unsub = append(unsub, s.p.channel.On(t, func(e bridge.Event) {
+		addUnsub(s.p.channel.On(t, func(e bridge.Event) {
 			if t == harness.PartTypeFinishStep {
 				c.checkpoint.Record(e)
 			}
@@ -567,7 +612,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 			}
 		}))
 	}
-	unsub = append(unsub, s.p.channel.On(harness.PartTypeFinish, func(e bridge.Event) {
+	addUnsub(s.p.channel.On(harness.PartTypeFinish, func(e bridge.Event) {
 		s.mu.Lock()
 		s.turnInFlight = false
 		s.mu.Unlock()
@@ -581,7 +626,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		}
 		settle(nil)
 	}))
-	unsub = append(unsub, s.p.channel.On(harness.PartTypeError, func(e bridge.Event) {
+	addUnsub(s.p.channel.On(harness.PartTypeError, func(e bridge.Event) {
 		s.mu.Lock()
 		s.turnInFlight = false
 		s.mu.Unlock()
@@ -626,9 +671,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 	})
 
 	if err := start(); err != nil {
-		for _, u := range unsub {
-			u()
-		}
+		unsubscribeAll()
 		return nil, err
 	}
 
@@ -1045,13 +1088,27 @@ func restoreColdACPSession(ctx context.Context, channel *bridge.Channel, harness
 			return
 		}
 		settled = true
+		list := unsub
+		unsub = nil
 		mu.Unlock()
-		for _, u := range unsub {
+		for _, u := range list {
 			u()
 		}
 		done <- o
 	}
-	unsub = append(unsub, channel.On(harness.PartTypeRaw, func(e bridge.Event) {
+	// add registers a subscription under mu; once settled (a replayed
+	// terminal event during registration) it is removed at once.
+	add := func(u func()) {
+		mu.Lock()
+		if settled {
+			mu.Unlock()
+			u()
+			return
+		}
+		unsub = append(unsub, u)
+		mu.Unlock()
+	}
+	add(channel.On(harness.PartTypeRaw, func(e bridge.Event) {
 		f, ok := e.Message.(bridge.StreamPartFrame)
 		if !ok {
 			return
@@ -1072,13 +1129,13 @@ func restoreColdACPSession(ctx context.Context, channel *bridge.Channel, harness
 			mu.Unlock()
 		}
 	}))
-	unsub = append(unsub, channel.On(harness.PartTypeFinish, func(bridge.Event) {
+	add(channel.On(harness.PartTypeFinish, func(bridge.Event) {
 		mu.Lock()
 		m := method
 		mu.Unlock()
 		settle(outcome{method: m})
 	}))
-	unsub = append(unsub, channel.On(harness.PartTypeError, func(e bridge.Event) {
+	add(channel.On(harness.PartTypeError, func(e bridge.Event) {
 		f, _ := e.Message.(bridge.StreamPartFrame)
 		var errPart *harness.ErrorPart
 		if f.Part != nil {

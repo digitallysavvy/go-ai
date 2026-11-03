@@ -16,10 +16,6 @@ import (
 
 const maxRedirects = 5
 
-// errInvalidRedirectURL is the TypeError TS new URL throws for a Location it
-// cannot parse. Like TS, it fails the tool call.
-var errInvalidRedirectURL = errors.New("Invalid URL") //nolint:staticcheck // TS error text
-
 type errorCode string
 
 const (
@@ -87,9 +83,8 @@ func formatErrno(err error) string {
 // domain filter and the private-address guard before it is requested. The
 // default transport additionally validates and pins DNS results at connect
 // time; a custom transport must provide equivalent validation. A returned
-// error is a context error (timeout or cancellation) or errInvalidRedirectURL
-// for a Location TS new URL rejects; everything else is reported in the
-// result.
+// error is a context error (timeout or cancellation); everything else,
+// including a Location TS new URL rejects, is reported in the result.
 func fetchWebResource(ctx context.Context, rawURL string, headers map[string]string, maxBytes int64, transport http.RoundTripper, filter domainFilter) (fetchResult, error) {
 	// Requests go straight to the transport: http.Client would parse every
 	// Location header itself and fail on hosts net/url cannot parse (for
@@ -146,9 +141,9 @@ func fetchWebResource(ctx context.Context, rawURL string, headers map[string]str
 			drainAndClose(resp)
 			next, ok := resolveRedirect(currentURL, location)
 			if !ok {
-				// TS `new URL(location, currentUrl)` throws outside any
-				// try, so the tool call fails instead of returning a result.
-				return fetchResult{}, errInvalidRedirectURL
+				// TS dffe4053c1: an unparseable Location is a structured
+				// network_error result, not a failed tool call.
+				return fetchResult{errCode: errNetwork, message: "The server returned an invalid redirect location."}, nil
 			}
 			current = next.String()
 			continue

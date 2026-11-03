@@ -2,6 +2,7 @@ package vercel
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 )
 
@@ -68,6 +69,9 @@ type Sandbox struct {
 	cwd           string
 	routes        []sandboxRouteWire
 	networkPolicy NetworkPolicy // current session's network policy (zero value = unset)
+	// networkPolicyMetadata is the session's networkPolicy as the API last
+	// returned it (see PolicySessionInspector).
+	networkPolicyMetadata json.RawMessage
 }
 
 func newSandboxFromResponse(client *APIClient, resp *sandboxAndSessionResponse) *Sandbox {
@@ -83,6 +87,7 @@ func newSandboxFromResponse(client *APIClient, resp *sandboxAndSessionResponse) 
 	if resp.Session.NetworkPolicy != nil {
 		s.networkPolicy = *resp.Session.NetworkPolicy
 	}
+	s.networkPolicyMetadata = resp.Session.RawNetworkPolicy
 	return s
 }
 
@@ -191,6 +196,16 @@ func (s *Sandbox) CurrentNetworkPolicy() NetworkPolicy {
 	return s.networkPolicy
 }
 
+// CurrentSessionNetworkPolicyMetadata implements PolicySessionInspector: the
+// running session's networkPolicy as the API last returned it, or nil when
+// the session response carried none.
+func (s *Sandbox) CurrentSessionNetworkPolicyMetadata(context.Context) (json.RawMessage, error) {
+	if len(s.networkPolicyMetadata) == 0 {
+		return nil, nil
+	}
+	return append(json.RawMessage(nil), s.networkPolicyMetadata...), nil
+}
+
 // UpdateNetworkPolicy implements PolicySandbox via the full Sandbox.update
 // path (matches TS `VercelNetworkPolicyManager` calling `sandbox.update`, not
 // the session-only endpoint).
@@ -230,6 +245,7 @@ func (s *Sandbox) Update(ctx context.Context, params UpdateParams) error {
 		} else {
 			s.networkPolicy = *params.NetworkPolicy
 		}
+		s.networkPolicyMetadata = sessResp.Session.RawNetworkPolicy
 	}
 	return nil
 }

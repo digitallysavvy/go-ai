@@ -64,6 +64,8 @@ type fakeServer struct {
 	commands     map[string]*fakeCommand
 	nextID       int
 	nextSnapshot int
+	// kills counts POST .../cmd/{id}/kill requests.
+	kills int
 
 	// CommandFn answers every command run against any session; nil defaults
 	// to `{exitCode:0}` with no output. Tests set this to script specific
@@ -431,6 +433,9 @@ func (f *fakeServer) handleCommandSubpath(w http.ResponseWriter, r *http.Request
 			flusher.Flush()
 		}
 	case len(parts) == 2 && parts[1] == "kill" && r.Method == http.MethodPost:
+		f.mu.Lock()
+		f.kills++
+		f.mu.Unlock()
 		writeJSON(w, 200, commandResponse{Command: commandWire{ID: cmd.id, SessionID: state.sessionID}})
 	default:
 		writeAPIError(w, 404, "not_found", "unknown command endpoint")

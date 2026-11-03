@@ -147,8 +147,11 @@ func BuildConfig(settings Settings) acp.Settings {
 			}
 			return false
 		},
-		MintBridgeToken: settings.MintBridgeToken,
-		BuiltinTools:    BuiltinTools,
+		// The bridge no longer resolves host tools itself (TS 03dac28304); fx's
+		// sandbox-ACP runtime keeps the v0.5 bridge matching.
+		ResolveHostToolCall: acp.LegacyResolveHostToolCall,
+		MintBridgeToken:     settings.MintBridgeToken,
+		BuiltinTools:        BuiltinTools,
 		Source: acp.Source{
 			Type:    acp.SourceInstallCommand,
 			Command: "curl -fsSL https://fx.sh/setup.sh | bash -s -- v" + fxVersion,

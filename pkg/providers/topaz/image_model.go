@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"mime/multipart"
@@ -86,6 +87,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if err != nil {
 		return nil, err
 	}
+	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
+	// replaced (WHATWG TextDecoder) before the body is parsed.
+	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if resp.StatusCode >= 400 {
 		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}
@@ -419,6 +423,9 @@ func (m *ImageModel) getStatus(ctx context.Context, processID string, headers ma
 	if err != nil {
 		return nil, err
 	}
+	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
+	// replaced (WHATWG TextDecoder) before the body is parsed.
+	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if resp.StatusCode >= 400 {
 		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}
@@ -457,6 +464,9 @@ func (m *ImageModel) download(ctx context.Context, processID string, headers map
 	if err != nil {
 		return nil, nil, err
 	}
+	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
+	// replaced (WHATWG TextDecoder) before the body is parsed.
+	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if resp.StatusCode >= 400 {
 		return nil, nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}

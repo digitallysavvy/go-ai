@@ -785,9 +785,10 @@ func TestDoubleEncodedHostIsNotFetched(t *testing.T) {
 		t.Fatalf("initial: requests = %d, out = %v", ft.count(), out)
 	}
 	rt := fixed(307, "", "Location", target)
-	// The decoded host keeps a "%", so TS new URL throws: the call fails.
-	_, err := newTool(t, Options{Transport: rt}).Execute(context.Background(), map[string]interface{}{"url": "https://example.com/"}, types.ToolExecutionOptions{ToolCallID: "c"})
-	if err == nil || rt.count() != 1 {
+	// The decoded host keeps a "%", so TS new URL throws, which TS
+	// dffe4053c1 reports as a network_error result.
+	out, err := newTool(t, Options{Transport: rt}).Execute(context.Background(), map[string]interface{}{"url": "https://example.com/"}, types.ToolExecutionOptions{ToolCallID: "c"})
+	if e, ok := out.(ErrorOutput); err != nil || !ok || e.ErrorCode != "network_error" || rt.count() != 1 {
 		t.Fatalf("redirect: requests = %d, want 1 (the target must not be requested)", rt.count())
 	}
 }

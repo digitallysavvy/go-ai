@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"math"
 	"net/http"
 	"strings"
@@ -206,6 +207,9 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	if err != nil {
 		return nil, err
 	}
+	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
+	// replaced (WHATWG TextDecoder) before the body is parsed.
+	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if resp.StatusCode >= 400 {
 		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}
@@ -280,6 +284,9 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	if err != nil {
 		return nil, err
 	}
+	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
+	// replaced (WHATWG TextDecoder) before the body is parsed.
+	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if resp.StatusCode >= 400 {
 		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}
@@ -877,7 +884,14 @@ func (m *VideoModel) uploadVideo(ctx context.Context, requestID string, data []b
 		return err
 	}
 
-	client := fileutil.NewDownloadClient(uploadURL, opts)
+	// TS fetchWithValidatedEndpoint (c66402d340) uploads with
+	// redirect: 'error': net/http would replay the PUT body (a bytes.Reader
+	// sets GetBody) on a 307/308, sending the whole input video to the
+	// redirect target, so any redirect fails the upload.
+	client := &http.Client{Transport: opts.Transport, Timeout: opts.Timeout}
+	client.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+		return fmt.Errorf("topaz: the input video upload was redirected to %s; redirects are rejected", req.URL.Redacted())
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, bytes.NewReader(data))
 	if err != nil {
 		return err

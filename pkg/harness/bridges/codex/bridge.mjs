@@ -2114,6 +2114,7 @@ const bridgeStateDir = requireArg({
 	name: "--bridge-state-dir"
 });
 const HARNESS_CLIENT_APP = env.AI_SDK_HARNESS_CLIENT_APP;
+const STANDALONE_WEB_SEARCH_BASE_URLS = /* @__PURE__ */ new Set(["https://api.openai.com/v1", "https://chatgpt.com/backend-api/codex"]);
 const threadState = { id: void 0 };
 const appServer = createCodexAppServerRuntime();
 await runBridge({
@@ -2191,6 +2192,7 @@ function resolveCodexRuntime({ start }) {
 			env_key: "CODEX_API_KEY",
 			wire_api: "responses",
 			supports_websockets: false,
+			...STANDALONE_WEB_SEARCH_BASE_URLS.has(apiBaseUrl.replace(/\/+$/, "")) ? { supports_standalone_web_search: true } : {},
 			...start.headers != null || hasGatewayAuth && HARNESS_CLIENT_APP ? { http_headers: {
 				...start.headers,
 				...hasGatewayAuth && HARNESS_CLIENT_APP ? {

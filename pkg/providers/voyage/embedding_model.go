@@ -85,10 +85,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	var response struct {
 		Data []struct {
 			Embedding []float64 `json:"embedding"`
-			Index     int       `json:"index"`
+			// z.number(): an index or token count may be fractional.
+			Index float64 `json:"index"`
 		} `json:"data"`
 		Usage *struct {
-			TotalTokens int `json:"total_tokens"`
+			TotalTokens float64 `json:"total_tokens"`
 		} `json:"usage,omitempty"`
 	}
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
@@ -101,19 +102,20 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	if err != nil {
 		return nil, handleError(err)
 	}
-	sort.Slice(response.Data, func(i, j int) bool { return response.Data[i].Index < response.Data[j].Index })
+	// JS Array.prototype.sort is stable.
+	sort.SliceStable(response.Data, func(i, j int) bool { return response.Data[i].Index < response.Data[j].Index })
 	embeddings := make([][]float64, 0, len(response.Data))
 	for _, item := range response.Data {
 		embeddings = append(embeddings, item.Embedding)
 	}
-	tokens := 0
+	var tokens float64
 	if response.Usage != nil {
 		tokens = response.Usage.TotalTokens
 	}
 	return &types.EmbeddingsResult{
 		Embeddings: embeddings,
 		// TS always returns `usage: { tokens: response.usage?.total_tokens ?? 0 }`.
-		Usage:     types.EmbeddingUsage{Tokens: float64(tokens), InputTokens: tokens, TotalTokens: tokens, Reported: true},
+		Usage:     types.EmbeddingUsage{Tokens: tokens, InputTokens: int(tokens), TotalTokens: int(tokens), Reported: true},
 		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: providerutils.RawJSONBody(httpResp.Body)}},
 	}, nil
 }

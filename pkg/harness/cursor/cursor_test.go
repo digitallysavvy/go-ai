@@ -48,7 +48,7 @@ func TestBuildConfig_Recipe(t *testing.T) {
 
 	wantNames := []string{
 		"bash", "delete", "glob", "grep", "read", "updateTodos", "readTodos",
-		"edit", "ls", "readLints", "semanticSearch", "createPlan", "webSearch",
+		"edit", "write", "ls", "readLints", "semanticSearch", "createPlan", "webSearch",
 		"task", "listMcpResources", "readMcpResource", "applyAgentDiff",
 		"fetch", "switchMode", "generateImage", "recordScreen", "computerUse",
 		"writeShellStdin", "reflect", "setupVmEnvironment", "replaceEnv",

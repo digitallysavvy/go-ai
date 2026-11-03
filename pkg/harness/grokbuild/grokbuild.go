@@ -29,7 +29,7 @@ import (
 
 const (
 	ClientAppName    = "ai-sdk-harness-grok-build"
-	ClientAppVersion = "1.0.102" // TS VERSION: the bridge manifest's source version
+	ClientAppVersion = "1.0.112" // TS VERSION: the bridge manifest's source version
 	HarnessID        = "grok-build"
 )
 
@@ -140,8 +140,9 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 			namespace, _ := meta["namespace"].(string)
 			return namespace == "mcp"
 		},
-		PortEndpoint:    settings.PortEndpoint,
-		MintBridgeToken: settings.MintBridgeToken,
+		ResolveHostToolCall: ResolveHostToolCall,
+		PortEndpoint:        settings.PortEndpoint,
+		MintBridgeToken:     settings.MintBridgeToken,
 	}
 	if settings.Port != nil {
 		cfg.Port = *settings.Port
@@ -198,4 +199,27 @@ func CredentialBrokeringErr(env, sandboxEnv, headers map[string]string) ([]harne
 		return nil, err
 	}
 	return []harness.RequestTransformation{tr}, nil
+}
+
+// ResolveHostToolCall resolves a Grok Build ACP tool call to a host tool.
+// Grok Build calls MCP tools through its `use_tool` meta-tool, with a
+// `{tool_name, tool_input}` raw input where tool_name is
+// `<serverName>__<toolName>`. Mirrors TS `resolveGrokBuildHostToolCall`
+// (grok-build-harness.ts, 03dac28304).
+func ResolveHostToolCall(opts acp.ResolveHostToolCallOptions) *acp.ResolvedHostToolCall {
+	raw, ok := opts.ToolCall.RawInput.(map[string]any)
+	if !ok || raw == nil {
+		return nil
+	}
+	input, ok := raw["tool_input"].(map[string]any)
+	if !ok || input == nil {
+		return nil
+	}
+	toolName, _ := raw["tool_name"].(string)
+	for _, name := range opts.ToolNames {
+		if toolName == opts.ServerName+"__"+name {
+			return &acp.ResolvedHostToolCall{ToolName: name, Input: input}
+		}
+	}
+	return nil
 }

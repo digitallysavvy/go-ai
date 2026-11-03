@@ -35,8 +35,8 @@
 //	go run ./pkg/harness/bridges/internal/syncbridges \
 //	  -ts-dir /path/to/ai \
 //	  -out pkg/harness/bridges \
-//	  -tag ai@7.0.153 \
-//	  -commit e64ed82f27
+//	  -tag ai@7.0.162 \
+//	  -commit 30548ee7f9
 package main
 
 import (
@@ -149,8 +149,8 @@ type manifestFile = map[string]any
 
 // Defaults must match the tsTag/tsCommit recorded in VERSIONS.json.
 const (
-	defaultTag    = "ai@7.0.153"
-	defaultCommit = "e64ed82f27"
+	defaultTag    = "ai@7.0.162"
+	defaultCommit = "30548ee7f9"
 )
 
 func main() {

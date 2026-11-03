@@ -100,6 +100,7 @@ func BuildConfig(settings Settings) acp.Settings {
 		PortEndpoint:                     settings.PortEndpoint,
 		MCPServers:                       settings.MCPServers,
 		IsMcpToolCall:                    IsMCPToolCall,
+		ResolveHostToolCall:              ResolveHostToolCall,
 		MintBridgeToken:                  settings.MintBridgeToken,
 		BuiltinTools:                     BuiltinTools,
 		Source: acp.Source{
@@ -149,6 +150,38 @@ func IsMCPToolCall(call acp.ToolCall) bool {
 	}
 	_, ok = raw["args"].(map[string]any)
 	return ok
+}
+
+// ResolveHostToolCall resolves a Cursor ACP tool call to a host tool. Cursor
+// reports host tool calls with a `{providerIdentifier, toolName, args}` raw
+// input, where providerIdentifier is the MCP server name. Mirrors TS
+// `resolveCursorHostToolCall` (cursor-harness.ts, 03dac28304).
+func ResolveHostToolCall(opts acp.ResolveHostToolCallOptions) *acp.ResolvedHostToolCall {
+	raw, ok := opts.ToolCall.RawInput.(map[string]any)
+	if !ok || raw == nil {
+		return nil
+	}
+	if provider, ok := raw["providerIdentifier"].(string); !ok || provider != opts.ServerName {
+		return nil
+	}
+	toolName, ok := raw["toolName"].(string)
+	if !ok || !containsString(opts.ToolNames, toolName) {
+		return nil
+	}
+	args, ok := raw["args"].(map[string]any)
+	if !ok || args == nil {
+		return nil
+	}
+	return &acp.ResolvedHostToolCall{ToolName: toolName, Input: args}
+}
+
+func containsString(list []string, v string) bool {
+	for _, s := range list {
+		if s == v {
+			return true
+		}
+	}
+	return false
 }
 
 // WarnAuthenticationConfiguration logs the TS

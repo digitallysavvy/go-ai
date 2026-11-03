@@ -416,6 +416,9 @@ func (c *MCPClient) tryProtocolDiscovery(ctx context.Context) (bool, error) {
 	if err := c.call(discoverCtx, "server/discover", map[string]interface{}{}, &result); err != nil {
 		var mcpErr *MCPClientError
 		if errors.As(err, &mcpErr) && intSliceContains(ModernProtocolErrorCodes, mcpErr.Code) {
+			if guided := c.legacyVersionGuidanceError(mcpErr); guided != nil {
+				return false, guided
+			}
 			return false, err
 		}
 		return false, nil
@@ -425,6 +428,57 @@ func (c *MCPClient) tryProtocolDiscovery(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	return true, nil
+}
+
+// legacyVersionGuidanceError is TS ade2a33f55: a -32022 discovery error
+// whose `data.supported` (all strings) excludes the requested version but
+// names a supported legacy version becomes an error that explains why the
+// client does not fall back to initialize, keeping the original code, data,
+// status, URL and body, with the original error as cause.
+func (c *MCPClient) legacyVersionGuidanceError(err *MCPClientError) *MCPClientError {
+	if err.Code != -32022 {
+		return nil
+	}
+	data, ok := err.Data.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	list, ok := data["supported"].([]interface{})
+	if !ok {
+		return nil
+	}
+	supported := make([]string, 0, len(list))
+	for _, v := range list {
+		version, ok := v.(string)
+		if !ok {
+			return nil
+		}
+		supported = append(supported, version)
+	}
+	hasLegacy := false
+	for _, version := range supported {
+		if version == c.protocolVersion {
+			return nil
+		}
+		if version <= LatestLegacyProtocolVersion && isSupportedProtocolVersion(version) {
+			hasLegacy = true
+		}
+	}
+	if !hasLegacy {
+		return nil
+	}
+	return &MCPClientError{
+		Message: "MCP server rejected protocol version " + c.protocolVersion + " during discovery. " +
+			"Server-supported versions: " + strings.Join(supported, ", ") + ". " +
+			"The client does not automatically switch to legacy initialization after this error. " +
+			"If this is a known legacy server, set protocolVersionDiscovery: false to use initialize.",
+		Code:         err.Code,
+		Data:         err.Data,
+		StatusCode:   err.StatusCode,
+		URL:          err.URL,
+		ResponseBody: err.ResponseBody,
+		Cause:        err,
+	}
 }
 
 // applyDiscoverResult validates and applies a `server/discover` result,
@@ -602,6 +656,9 @@ func (c *MCPClient) prepareToolDefinitions(result *ListToolsResult, resetHeaderB
 func (c *MCPClient) toolCallHeaders(method string, params interface{}) (map[string]string, error) {
 	if c.protocolEra != "modern" || method != "tools/call" {
 		return nil, nil
+	}
+	if retry, ok := params.(inputRequiredRetryParams); ok {
+		params = retry.base
 	}
 	callParams, ok := params.(CallToolParams)
 	if !ok {
@@ -877,7 +934,8 @@ func (c *MCPClient) ListPrompts(ctx context.Context) ([]MCPPrompt, error) {
 
 // ListPromptsWithCursor lists one page of prompts, honoring an explicit
 // pagination cursor (empty requests the first page), and returns the full
-// result including NextCursor (TS experimental_listPrompts({ params })).
+// result including NextCursor (TS listPrompts({ params }); the experimental_
+// name is a deprecated alias since 1afa510dcd).
 func (c *MCPClient) ListPromptsWithCursor(ctx context.Context, cursor string) (*ListPromptsResult, error) {
 	if !c.initialized {
 		return nil, errClosedClient()
@@ -967,8 +1025,29 @@ func errClosedClient() *MCPClientError {
 	return NewMCPClientError(0, "Attempted to send a request from a closed client", nil)
 }
 
-// call makes a JSON-RPC call and waits for the response
+// call makes a JSON-RPC call and waits for the response. A modern-era
+// tools/call, prompts/get or resources/read goes through the multi-round-trip
+// loop (TS request(), c3af430640).
 func (c *MCPClient) call(ctx context.Context, method string, params interface{}, result interface{}) error {
+	if c.protocolEra == "modern" && (method == "tools/call" || method == "prompts/get" || method == "resources/read") {
+		return c.callWithInputRequired(ctx, method, params, result)
+	}
+	return c.callOnce(ctx, method, params, result, callOnceOptions{})
+}
+
+// callOnceOptions adjusts one JSON-RPC round trip.
+type callOnceOptions struct {
+	// allowInputRequired lets an `input_required` result through (TS
+	// requestOnce allowInputRequired).
+	allowInputRequired bool
+	// timeoutSet replaces the request timeout with timeout (0: none); the
+	// multi-round-trip loop bounds each round itself.
+	timeoutSet bool
+	timeout    time.Duration
+}
+
+// callOnce is one JSON-RPC request/response (TS requestOnce).
+func (c *MCPClient) callOnce(ctx context.Context, method string, params interface{}, result interface{}, opts callOnceOptions) error {
 	select {
 	case <-c.ctx.Done():
 		return errClosedClient()
@@ -1010,10 +1089,13 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 	// (TS arms its timer and passes the timeout signal to transport.send), so
 	// a server that holds the POST open cannot outlast it.
 	timeout := time.Duration(c.config.RequestTimeoutMS) * time.Millisecond
-	if opts, ok := requestOptionsFrom(ctx); ok {
-		if t := opts.effectiveTimeout(); t > 0 {
+	if ro, ok := requestOptionsFrom(ctx); ok {
+		if t := ro.effectiveTimeout(); t > 0 {
 			timeout = t
 		}
+	}
+	if opts.timeoutSet {
+		timeout = opts.timeout
 	}
 	sendCtx := ctx
 	if timeout > 0 {
@@ -1047,7 +1129,18 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 		}
 
 		if err := c.validateModernResult(method, response.Result); err != nil {
-			return err
+			if !opts.allowInputRequired || !isInputRequiredResult(response.Result) {
+				return err
+			}
+			if raw, ok := result.(*json.RawMessage); ok {
+				*raw = append(json.RawMessage(nil), response.Result...)
+			}
+			return nil
+		}
+		if raw, ok := result.(*json.RawMessage); ok && opts.allowInputRequired {
+			// The multi-round-trip loop validates the final result itself.
+			*raw = append(json.RawMessage(nil), response.Result...)
+			return nil
 		}
 		if err := validateMCPResultShape(method, response.Result); err != nil {
 			return err
@@ -1379,9 +1472,10 @@ func (c *MCPClient) prepareRequestParams(method string, params interface{}) (int
 }
 
 // validateModernResult enforces the modern-era result invariant: every
-// result must carry a `resultType`, and `input_required` is rejected because
-// multi-round-trip requests are not yet supported. Matches TS's generic
-// response handler (mcp-client.ts, hash e6a9927).
+// result must carry a `resultType`, and `input_required` is rejected outside
+// the multi-round-trip loop (tools/call, prompts/get, resources/read in the
+// modern era). Matches TS's generic response handler (mcp-client.ts, hash
+// e6a9927, c3af430640).
 func (c *MCPClient) validateModernResult(method string, rawResult json.RawMessage) error {
 	var probe struct {
 		ResultType *string `json:"resultType"`
@@ -1398,9 +1492,16 @@ func (c *MCPClient) validateModernResult(method string, rawResult json.RawMessag
 		return NewMCPClientError(0, "Modern MCP result is missing resultType", nil)
 	}
 	if *probe.ResultType == "input_required" {
-		return NewMCPClientError(0, "Server requested additional input, but multi round-trip requests are not supported yet", nil)
+		return NewMCPClientError(0, fmt.Sprintf("Input-required results are not supported for %s on protocol %s", method, c.protocolVersion), nil)
 	}
 	return nil
+}
+
+func isInputRequiredResult(raw json.RawMessage) bool {
+	var probe struct {
+		ResultType *string `json:"resultType"`
+	}
+	return json.Unmarshal(raw, &probe) == nil && probe.ResultType != nil && *probe.ResultType == "input_required"
 }
 
 // sendMessage sends msg via the transport, attaching headers through
