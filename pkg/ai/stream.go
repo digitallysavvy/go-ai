@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -714,7 +715,9 @@ type StreamTextResult struct {
 	// passed to StreamText, fixed for the lifetime of the call.
 	cbInitialInstructionMessages []types.Message
 	// promptDeprecations are the initial prompt's deprecated-part warning
-	// batches, logged before each step's prompt conversion.
+	// batches (the prompt is normalized before the first step, so a step's
+	// messages no longer hold its deprecated parts), logged before each
+	// step's prompt conversion.
 	promptDeprecations [][]types.Warning
 
 	// cbModel and cbStreamOpts are retained so that processStream can start
@@ -1321,7 +1324,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		}
 	}
 
-	logPromptDeprecations(r.promptDeprecations)
+	logStepPromptDeprecations(r.promptDeprecations, stepMessages)
 	stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{System: appendSandboxDescription(stepSystem, stepSandbox), Messages: messagesForModel(stepMessages)}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
 	if normErr != nil {
 		if stepCancel != nil {
@@ -3199,6 +3202,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// All chunks (including tool call chunks) have already been forwarded above.
 		var stepToolResults []types.ToolResult
 		var toolExecutionMs map[string]int64
+		var liveToolResults []string
 		skipStepTools := stepSawErrorChunk && opts.Internal != nil && opts.Internal.StopOnStreamError
 		workflowBlocked := workflowBlockedToolStep(opts.Internal, r.finishReason, stepContent)
 		skipStepTools = skipStepTools || workflowBlocked
@@ -3254,8 +3258,52 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			usageForTools := r.usage.Add(stepUsage)
 			stepToolCallConcurrency, _ := prepareToolCallConcurrency(opts.ToolCallConcurrency)
+			executeCalls := withoutAnsweredToolCalls(callsToExecute, inlineInvalidResults)
+			// TS executeToolsFromStream enqueues each executed call's result
+			// as soon as it settles (after its onToolExecutionEnd), so
+			// parallel results stream in completion order and a fast tool's
+			// result does not wait for a slow one (also when the call is
+			// aborted later). liveToolResults holds the emission order.
+			liveToolResults = liveToolResults[:0]
+			callsByID := make(map[string]types.ToolCall, len(executeCalls))
+			for _, call := range executeCalls {
+				callsByID[call.ID] = call
+			}
+			userToolEnd := toolCallbacks.onFinish
+			if userToolEnd == nil {
+				userToolEnd = toolCallbacks.fallbackFinish
+			}
+			toolCallbacks.fallbackFinish = nil
+			toolCallbacks.onFinish = func(cbCtx context.Context, e OnToolCallFinishEvent) {
+				if userToolEnd != nil {
+					userToolEnd(cbCtx, e)
+				}
+				tr := e.ToolOutput
+				if !liveEmittableToolResult(tr, eagerApprovals) {
+					return
+				}
+				if call, ok := callsByID[tr.ToolCallID]; ok && !tr.Dynamic {
+					tr.Dynamic = call.Dynamic
+				}
+				one := []types.ToolResult{tr}
+				attachToolApprovalSignatures(one, opts.ExperimentalToolApprovalSecret)
+				tr = one[0]
+				preliminaryMu.Lock()
+				defer preliminaryMu.Unlock()
+				if stepCtx.Err() != nil {
+					// TS closes the stream when the signal fires: a result
+					// that settles after the abort is not streamed.
+					return
+				}
+				liveToolResults = append(liveToolResults, tr.ToolCallID)
+				forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeToolResult, ToolResult: &tr}})
+			}
 			var toolsErr error
-			stepToolResults, toolsErr = executeToolsConfigured(stepCtx, withoutAnsweredToolCalls(callsToExecute, inlineInvalidResults), stepExecutionTools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &usageForTools, toolCallbacks, stepToolCallConcurrency)
+			stepToolResults, toolsErr = executeToolsConfigured(stepCtx, executeCalls, stepExecutionTools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &usageForTools, toolCallbacks, stepToolCallConcurrency)
+			// The step's results (its content and toolResults) follow the
+			// emission order; the tool message is sorted by call order when
+			// the response messages are built.
+			reorderLiveToolResults(stepToolResults, liveToolResults)
 			// A failing ToModelOutput conversion is a stream error (as in
 			// GenerateText); cancellation errors are handled by the
 			// abort/timeout checks below.
@@ -3340,6 +3388,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 		for _, i := range emitOrder {
 			tr := &stepToolResults[i]
+			if slices.Contains(liveToolResults, tr.ToolCallID) {
+				// Already streamed when its execution settled.
+				continue
+			}
 			emitChunk := func(resultChunk provider.StreamChunk) {
 				forwardThroughTransformChain(0, []provider.StreamChunk{resultChunk})
 			}
@@ -3432,7 +3484,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// TS toolResults holds only tool-result parts: failed calls are
 		// tool-error content only (owner ruling r71). The telemetry step end
 		// keeps them (TelemetryStepEndEvent has no content).
-		stepTelemetryToolResults := types.ResultsForPublicView(mergeStreamedToolResults(stepToolResults, streamedToolResults, streamedToolResultOrder))
+		// TS step toolResults are the step content's tool results, in content
+		// order: a provider result streamed during the model call comes before
+		// a local result that settled after it.
+		stepTelemetryToolResults := types.ResultsForPublicView(orderToolResultsByContent(mergeStreamedToolResults(stepToolResults, streamedToolResults, streamedToolResultOrder), stepContent))
 		publicStepToolResults := successfulToolResults(stepTelemetryToolResults)
 
 		aggToolCallsLen, aggToolResultsLen, aggUsageBefore := len(r.toolCalls), len(r.toolResults), r.usage
@@ -3994,7 +4049,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			break
 		}
 		r.stepStartedAt = time.Now()
-		logPromptDeprecations(r.promptDeprecations)
+		logStepPromptDeprecations(r.promptDeprecations, nextMessages)
 		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
 			Messages: messagesForModel(nextMessages),
 			System:   appendSandboxDescription(nextSystem, nextSandbox),
@@ -6249,4 +6304,94 @@ func withInlineToolResults(calls []types.ToolCall, inline, executed []types.Tool
 		}
 	}
 	return out
+}
+
+// logStepPromptDeprecations logs the deprecated-part warnings TS
+// convertToLanguageModelPrompt logs for one step: the initial prompt's
+// (normalized before the first step) and those of the step's messages that
+// still hold deprecated parts (PrepareStep and steering messages).
+func logStepPromptDeprecations(initial [][]types.Warning, stepMessages []types.Message) {
+	logPromptDeprecations(initial)
+	logPromptDeprecations(promptDeprecationWarnings(stepMessages))
+}
+
+// liveEmittableToolResult reports whether an executed call's result is
+// streamed as soon as its execution settles: a result whose only part is the
+// tool-result (no approval, or an approval already streamed with its tool
+// call). Results that still need their approval parts are streamed after the
+// step's executions, with those parts.
+func liveEmittableToolResult(tr types.ToolResult, eagerApprovals map[string]preResolvedApproval) bool {
+	switch tr.ApprovalStatus {
+	case types.ToolApprovalStatusUserApproval, types.ToolApprovalStatusDenied:
+		return false
+	case types.ToolApprovalStatusApproved:
+		pre, inline := eagerApprovals[tr.ToolCallID]
+		return inline && pre.err == nil && pre.id != ""
+	}
+	return true
+}
+
+// reorderLiveToolResults puts the results that were streamed as their
+// executions settled into that order, leaving every other result in place.
+func reorderLiveToolResults(results []types.ToolResult, order []string) {
+	if len(order) < 2 {
+		return
+	}
+	rank := make(map[string]int, len(order))
+	for i, id := range order {
+		rank[id] = i
+	}
+	var slots []int
+	var live []types.ToolResult
+	for i := range results {
+		if _, ok := rank[results[i].ToolCallID]; ok {
+			slots = append(slots, i)
+			live = append(live, results[i])
+		}
+	}
+	sort.SliceStable(live, func(a, b int) bool { return rank[live[a].ToolCallID] < rank[live[b].ToolCallID] })
+	for k, i := range slots {
+		results[i] = live[k]
+	}
+}
+
+// orderToolResultsByContent orders results by the position of their
+// tool-result or tool-error part in content (TS derives a step's toolResults
+// from its content). Results without such a part keep their relative order
+// after the others.
+func orderToolResultsByContent(results []types.ToolResult, content []types.ContentPart) []types.ToolResult {
+	if len(results) < 2 {
+		return results
+	}
+	position := map[string]int{}
+	for i, part := range content {
+		id := ""
+		switch p := part.(type) {
+		case types.ToolResultContent:
+			id = p.ToolCallID
+		case *types.ToolResultContent:
+			if p != nil {
+				id = p.ToolCallID
+			}
+		case types.ToolErrorContent:
+			id = p.ToolCallID
+		case *types.ToolErrorContent:
+			if p != nil {
+				id = p.ToolCallID
+			}
+		}
+		if _, seen := position[id]; id != "" && !seen {
+			position[id] = i
+		}
+	}
+	ordered := append([]types.ToolResult(nil), results...)
+	sort.SliceStable(ordered, func(a, b int) bool {
+		pa, okA := position[ordered[a].ToolCallID]
+		pb, okB := position[ordered[b].ToolCallID]
+		if okA != okB {
+			return okA
+		}
+		return okA && pa < pb
+	})
+	return ordered
 }
