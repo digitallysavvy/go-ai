@@ -778,6 +778,46 @@ for no warnings, as TS); `create-ui-message-stream` "merged stream errors" (a
 Go channel cannot error); `stream-text-timeout` 294 / 328 (Go cancels a
 call's context when the call returns) (review round 84).
 
+## Input checks TS removed in ai@7.0.155
+
+TS `b6b9dcaec7` dropped runtime checks its types guarantee (prompt and message shapes, steering role, batch version, output type, nil schemas, tool callers, number types, smoothStream chunking, speech input, decide state and question shapes). Go types do not guarantee them, so Go keeps those checks and their v0.5 error texts; only the decide non-finite/cycle texts follow TS (coordinator ruling 5, review round 85).
+
+## Durable workflow telemetry
+
+TS `4d6d830c14` adds a durable telemetry bridge for the Workflow DevKit; Go ports only its operation-name mapping (`ai.workflowAgent.stream` is `invoke_agent`). There is no Workflow DevKit gate in Go (coordinator ruling 6, review round 85).
+
+## Vercel sandbox stdin and policy request shape
+
+`SandboxProcessOptions.Stdin` is rejected by the Vercel session before the command starts; TS streams stdin through `@vercel/sandbox` writeStdin / closeStdin, whose wire shape is not on disk (coordinator ruling 2). Go still sends the public `{allow, subnets}` policy shape on update; the recorded 3.9.0 fixture only shows the API's response shape. The local sandbox supports stdin (review round 85).
+
+## ACP callbacks checked at session start
+
+TS `createACP` throws when `isMcpToolCall` / `resolveHostToolCall` are missing; Go keeps them as optional `acp.Settings` fields (v0.5 compile compatibility) and `DoStart` returns the TS error (review round 85).
+
+## Vercel policy inspection source
+
+TS reads response rules from `listSessions()`; Go reads the raw `networkPolicy` of the last session response it received (the same metadata, no extra request) (review round 85).
+
+## SSE chunk-boundary artifacts
+
+eventsource-parser strips a mis-decoded BOM only when the first decoded chunk holds all three characters, and holds a CR at the end of a chunk until the next line terminator; a Node TextDecoderStream fed a BOM-only first chunk also drops a second BOM. Go parses as if the stream arrived in one piece (22 of 20,000 differential multi-chunk cases) (review round 85).
+
+## UI streams close open blocks at a step's finish
+
+`ToUIMessageStream` closes a text or reasoning block still open at a step's finish with `text-end` / `reasoning-end`, also for a StreamText source; TS forwards the parts as they are, so a provider stream without its end parts leaves the UI part streaming (review round 85).
+
+## Google videoMetadata validation errors
+
+TS throws a raw ZodError for an invalid file part `videoMetadata`; Go returns a `ValidationError` with the zod issue text, and the `gt(0)` issue renders `"inclusive":true` (review round 85).
+
+## Deferred sandbox optional operations
+
+TS sandbox sessions always have `stat`, `listDirectory` and `deleteFile`; in Go they are optional interfaces. A deferred (recipe-less) harness session always implements them and returns `errors.ErrUnsupported` when the original sandbox lacks the method (review round 85).
+
+## TS test replays skipped in round 85
+
+Recorded at TS `30548ee7f9` (ai@7.0.162) and skipped because the recording cannot carry the test's setup: the openai-compatible `mapReasoning` class function; the Anthropic `authToken` function and promise cases; two Google batch cases whose display name comes from a random `generateId`; the Bedrock Converse `doStream fallback tool restrictions` cases (the test cancels an unread empty stream, which ends in a JS `Controller is already closed` TypeError; the doGenerate variant covers the request); the two OpenAI Decisions 32/33-level cases (the recorder truncates deeper call arguments; `TestR85provbDecisionInputJSON` covers them); zai's two null-effort compat replays (TS zai's own enum schema rejects null); the TS circular tool-result convert case (Go values have no BigInt or reference cycles). The google-vertex Anthropic labels tests are not recorded (the TS checkout does not install `google-auth-library`; the suite already skips them) (review round 85).
+
 ## Features that are TypeScript-only (not ported)
 
 - **OpenAI Live over WebRTC** — the browser transport for OpenAI's realtime

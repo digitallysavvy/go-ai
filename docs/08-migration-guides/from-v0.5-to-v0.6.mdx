@@ -353,6 +353,56 @@ already, you can skip them.
 | xAI image `b64_json: ""`, empty `revised_prompt` | Data / omitted, as TS | silent behavior change | None | [xAI image empty values](#xai-image-empty-values) |
 | Azure MAI image `Size` / `AspectRatio` parsing | JS `Number` semantics | wire/protocol change | None unless you pass malformed sizes | [MAI image size parsing](#azure-mai-image-size-number) |
 | QuiverAI `Reasoning: types.ReasoningNone` / `types.ReasoningMax`; warning feature `reasoning effort none` | Sent as `low` / `xhigh` with a compatibility warning | wire/protocol change | Leave `Reasoning` unset for the default | [QuiverAI reasoning](#quiverai-reasoning-rounding) |
+| StreamText with `Output`: `ChunkTypeText` parts, text-delta `ProviderMetadata` | First block's deltas merged until the partial changes; sticky metadata | silent behavior change | Concatenate deltas | [StreamText merges an Output's text deltas and repeats a block's provider metadata](#stream-output-text-deltas) |
+| SmoothStream custom chunker prefix error | TS text with match and buffer | error text only | Do not match the text | [SmoothStream prefix error text](#smooth-stream-prefix-error) |
+| `jsonparser.FixJSON("[-")`, `"[ "` | Repairs to `[]` | silent behavior change | No action | [FixJSON at an array start](#fix-json-array-start) |
+| ExperimentalDecide errors for NaN/Inf or cyclic state, instructions, criteria | TS texts, checked first | error text only | Match InvalidArgumentError | [Decide rejects non-finite numbers and cycles first](#decide-serializable-json) |
+| Invalid tool call `ToolResult.Error.Error()`, UI `tool-output-error` text | `AI_NoSuchToolError: ...` (TS getErrorMessage); empty input stays `""` | error text only | Use errors.As | [An invalid tool call's tool error reads as TS getErrorMessage](#invalid-tool-call-error-text) |
+| `toolwebfetch` redirect with an unparseable Location | `network_error` result instead of a failed call | silent behavior change | Read ErrorCode | [Web fetch: an invalid redirect Location is a tool result](#web-fetch-invalid-redirect) |
+| `ToolApproval` policies reading `ToolCall.ToolMetadata` / `Dynamic` / `Title` on continuations | Taken from the server tool, not history | silent behavior change | Set Metadata/Title/Type on the tool | [Approval continuations use the server tool's metadata](#approval-continuation-server-tool-metadata) |
+| UI tool parts without `input`; approval `reason: ""`; unknown chunk types in `ReadUIMessages` | `input` stays absent; empty reason kept; no snapshot | wire/protocol change | Treat missing input like null | [UI tool parts without input, empty denial reasons](#ui-tool-part-absent-input) |
+| WorkflowAgent spans from `telemetry.NewOpenTelemetry` | Root is invoke_agent | silent behavior change | Match invoke_agent | [WorkflowAgent root span is invoke_agent](#workflow-agent-operation-name) |
+| Top-level `Reasoning` on Anthropic, Groq, Mistral, Perplexity, Gemini, Bedrock | Rounded to the closest supported level, with a compatibility warning | wire/protocol change | Set the provider option to pin | [Top-level Reasoning rounds to the closest supported level](#reasoning-closest-supported-level) |
+| `streaming.SSEParser` `Event` / `ID` / `Retry` with invalid UTF-8, NUL or non-digit retry | eventsource-parser rules | silent behavior change | None | [SSE parsing: all fields decoded, eventsource-parser field rules](#sse-field-decoding) |
+| Replayed tool calls with a JSON-string `Input` / `RawArguments`, or non-JSON arguments | Sent as the JSON they hold; non-JSON text as a JSON string | wire/protocol change | Pass the input as a map | [A tool input that is a JSON string holding JSON is sent as that JSON](#string-tool-input-json) |
+| OpenAI Responses / DeepSeek replayed `RawArguments` that are not JSON | Sent as a JSON string; non-object JSON kept | wire/protocol change | None | [OpenAI Responses and DeepSeek replay non-JSON tool arguments as a JSON string](#tool-call-arguments-text) |
+| Gateway calls cancelled by the caller's ctx | ctx error returned unchanged | silent behavior change | Check errors.Is(err, context.Canceled) | [Gateway returns the caller's cancellation unchanged](#gateway-caller-cancellation) |
+| Anthropic / Bedrock / Vertex Anthropic `ResponseFormat` JSON schema | Native output only for representable schemas; Claude 5 and 5.5 paths fixed | wire/protocol change | Set structuredOutputMode | [Anthropic native structured output only for representable schemas](#anthropic-native-structured-output-schema) |
+| Anthropic JSON response tool never called | Final text returned / streamed | silent behavior change | None | [Anthropic returns the text when the JSON response tool is not called](#anthropic-json-tool-text-fallback) |
+| Anthropic schemas with `$ref` and `definitions` / `$defs` on one node | Definitions kept | wire/protocol change | No action | [Anthropic schema sanitizer keeps definitions next to $ref](#anthropic-sanitizer-ref-definitions) |
+| Bedrock Anthropic `ReasoningNone` / reasoningConfig disabled | `thinking: disabled` sent (or the closest supported mode) | wire/protocol change | None | [Bedrock Anthropic models receive disabled thinking](#bedrock-anthropic-disabled-thinking) |
+| Bedrock Anthropic `SpecificToolChoice` | All tools sent, parallel use off | wire/protocol change | None | [Bedrock named tool choice keeps every tool](#bedrock-named-tool-choice) |
+| Bedrock documents with duplicate names | ` (2)`, ` (3)` suffixes | wire/protocol change | None | [Bedrock document names are unique](#bedrock-unique-document-names) |
+| Gemini in-stream RPC-status errors | Mapped StatusCode and retryability | silent behavior change | None | [Google in-stream errors with only an RPC status are classified](#google-stream-error-status-code) |
+| Google Interactions `ToolChoice` none | No tools sent | wire/protocol change | None | [Interactions toolChoice none sends no tools](#google-interactions-tool-choice-none) |
+| Gemini streamed function-call argument deltas | String closed on its final chunk | silent behavior change | Concatenate deltas | [Gemini streamed function args close on their final chunk](#gemini-stream-function-args-close) |
+| OpenAI `Reasoning` / `reasoningEffort` | Rounded or sent unchanged; GPT-5.x effort lists | wire/protocol change | Set providerOptions reasoningEffort | [OpenAI reasoning efforts: sent unchanged or rounded](#openai-reasoning-rounding) |
+| OpenAI / Azure transcription with providerOptions; streaming gpt-transcribe | TS defaults per model; languages / keywords | wire/protocol change | Set responseFormat explicitly | [OpenAI transcription defaults and streaming models](#openai-transcription-defaults) |
+| OpenAI `web_search_call` with status other than completed | Tool error with `{status}` | silent behavior change | None | [Unfinished OpenAI web searches are tool errors](#openai-unfinished-web-search) |
+| OpenAI Decisions JSON state; `promptCacheKey` | `input_json`; prompt_cache_key sent | wire/protocol change | None | [OpenAI Decisions send JSON state as input_json](#openai-decisions-input-json) |
+| OpenAI schema `propertyNames` without type | Stripped with a warning instead of failing | silent behavior change | None | [OpenAI strips a propertyNames schema without type](#openai-property-names-typeless) |
+| xAI Responses citations, incomplete finish, Grok 4.5+ `ReasoningNone` | One source per citation; `length`; none as low | silent behavior change | None | [xAI Responses citations, incomplete finish and none reasoning](#xai-responses-citations-finish) |
+| DeepSeek / Moonshot top-level `Reasoning` | Rounded down to supported efforts | wire/protocol change | Set the provider option | [DeepSeek and Moonshot reasoning rounding](#deepseek-moonshot-reasoning-rounding) |
+| Azure Speech 502 protocol-error responses | 502, retryable | silent behavior change | None | [Azure Speech 502 stays a retryable 502](#azure-speech-502-retryable) |
+| Fireworks `Reasoning` / `reasoningEffort` | Sent as given except per-family rejections | wire/protocol change | None | [Fireworks reasoning effort sent as given](#fireworks-reasoning-effort) |
+| OpenAI-compatible `reasoningEffort: nil`, raw `reasoning_effort` | Sent as null / passed through | wire/protocol change | None | [OpenAI-compatible reasoningEffort null](#compat-reasoning-effort-null) |
+| Cerebras deprecated-key warning; `reasoningEffort: nil` | Warned once; null sent | silent behavior change | None | [Cerebras: deprecated-key warning once](#cerebras-r85) |
+| Cohere documents with base64 `DataString` | Decoded to text | wire/protocol change | Pass text as FileDataTypeText | [Cohere decodes base64 document data](#cohere-base64-document-data) |
+| Perplexity provider metadata | `searchQueries` added | silent behavior change | None | [Perplexity reports search queries](#perplexity-search-queries) |
+| ElevenLabs `wav`, `eleven_v4`, voice ids | `wav_44100`; dialogue endpoint; encoded path | wire/protocol change | None | [ElevenLabs wav, eleven_v4 and the voice path](#elevenlabs-wav-and-v4-dialogue) |
+| ElevenLabs error messages | From the `detail` body | error text only | Match the status code | [ElevenLabs error messages from detail bodies](#elevenlabs-error-detail-messages) |
+| HeyGen `Duration` > 15, `ultraquality` | Accepted; new error text for invalid values | silent behavior change | None | [HeyGen accepts any positive integer duration](#heygen-duration-positive-integer) |
+| Topaz input-video upload redirect | Fails instead of resending the video | silent behavior change | None | [Topaz: redirected video uploads fail](#topaz-upload-redirect) |
+| MCP `input_required` results | Answered through OnElicitationRequest | silent behavior change | Register OnElicitationRequest | [MCP: multi-round-trip requests](#mcp-input-required) |
+| Custom `acp.Settings` without `ResolveHostToolCall` / `IsMcpToolCall` | DoStart fails | silent behavior change | Set both (acp.LegacyResolveHostToolCall) | [ACP host tools are resolved by the adapter](#acp-host-tool-resolver) |
+| Custom harness without GetBootstrap + `SandboxConfig.OnBootstrap` / `OnSession` | Setup runs on the first sandbox operation | silent behavior change | Run a sandbox op after CreateSession | [Recipe-less harnesses set up the sandbox on first use](#harness-deferred-sandbox-setup) |
+| `PromptControl.SubmitToolResult` for denials | ToolResult carries execution-denied | wire/protocol change | None | [Denied host tool results carry the execution-denied model output](#harness-denied-tool-result) |
+| Harness tool-call `ProviderMetadata` | `nativeToolName` added | silent behavior change | None | [Native tool names in tool-call harness metadata](#harness-native-tool-name-metadata) |
+| `OnPendingToolResult` at a built-in approval pause | Unechoed host results reported | silent behavior change | None | [Built-in approval pauses report unechoed host results](#harness-builtin-approval-host-result-pause) |
+| `bridge.Channel` sends while closing | Queued and resent | wire/protocol change | None | [Bridge frames sent while the socket closes are queued](#bridge-closing-send-queued) |
+| claude-code start frame | New keys; 7.0.162 bridge | wire/protocol change | None | [Claude Code start frame fields](#claudecode-start-frame-fields) |
+| Vercel policy mutations with native response rules; custom `PolicySandbox` | Refused instead of dropping rules | silent behavior change | Implement PolicySessionInspector | [Vercel sandbox: policies with response rules are not mutated](#vercel-response-rules) |
+| Vercel sandbox templates, `Persistent`, relative `WorkingDirectory`, `Spawn` ctx | v3 templates; kept; cwd-relative; cancel kills | silent behavior change | Pass a long-lived ctx to Spawn | [Vercel sandbox: template v3, persistent live sandboxes, relative working directories, cancel kills](#vercel-sandbox-r85) |
 
 ## Compile-time changes {#compile-time-changes}
 
@@ -1347,6 +1397,27 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   return `ctx.Err()` from the tool to report the timeout.
 - **Kind:** silent behavior change
 
+### StreamText merges an Output's text deltas and repeats a block's provider metadata {#stream-output-text-deltas}
+
+- **What changed:** v0.5 forwarded every provider text delta as it arrived. v0.6 runs TS `createOutputTransformStream` (stream-text.ts 1061-1224): with an `Output` (object, array, choice, json), the deltas of the step's first text block that do not change the parsed partial are held and published together with the next one that does (or before the block's `text-end` / the step's `finish-step`). In every default StreamText run (and with an Output in `StreamTextLowMemory`), a delta of that block without provider metadata carries the block's latest metadata. An empty delta without metadata publishes no partial (`PartialOutput()` stays nil).
+- **Am I affected?** Code that counts or keys on `ChunkTypeText` parts from `FullStream()`, `OnChunk`, `Chunks()` or UI `text-delta` chunks with `Output` set; code that reads `ProviderMetadata` on text deltas; code that expects `PartialOutput()` to be `""` after a stream whose only text was an empty delta.
+- **What to do:** No action unless you rely on one delta per provider chunk. Concatenate the deltas (the text is unchanged).
+- **Kind:** silent behavior change
+
+### SmoothStream prefix error text {#smooth-stream-prefix-error}
+
+- **What changed:** The error for a chunking function whose match is not a prefix of the buffer now reads as TS `a71172de0d`: `Chunking function must return a match that is a prefix of the buffer. Received: "<match>" which is not a prefix of buffer "<buffer>"`.
+- **Am I affected?** Code matching the old `smoothStream` / `SmoothStream` prefix error message.
+- **What to do:** Match the error type, not the text.
+- **Kind:** error text only
+
+### FixJSON at an array start {#fix-json-array-start}
+
+- **What changed:** `jsonparser.FixJSON` no longer treats the position right after `[` as a valid end: `[-` repairs to `[]` (v0.5: `[-]`, invalid JSON) and whitespace after `[` is dropped (`{"a": [ ` repairs to `{"a": []}`) (TS `8ba3a5c254`). Partial objects from streaming output therefore parse one chunk earlier for arrays that start with a negative number.
+- **Am I affected?** Callers comparing `jsonparser.FixJSON` / `ParsePartialJSON` text output.
+- **What to do:** No action unless you compare the repaired text.
+- **Kind:** silent behavior change
+
 ## Prompts and validation {#prompts-and-validation}
 
 ### Prompt validation matches TS {#prompt-validation}
@@ -1592,6 +1663,13 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **What to do:** No action, or switch to `types.FileContent{MediaType: "image/png",
   Data: ...}`; `ai.DisableLogWarnings()` silences it.
 - **Kind:** silent behavior change
+
+### Decide rejects non-finite numbers and cycles first {#decide-serializable-json}
+
+- **What changed:** `ExperimentalDecide` reports a NaN/±Inf or a cyclic map/slice in the state's JSON content as `InvalidArgumentError` `state`: "JSON content must not contain non-finite numbers, cycles, or array holes", and in a question's instructions or criteria as `questions.<id>`: "instructions and criteria must not contain non-finite numbers, cycles, or array holes" (TS `b6b9dcaec7`). v0.5 used the older texts and crashed (stack overflow) on a cyclic value. Other input checks keep their v0.5 texts (see the known difference "Input checks TS removed in ai@7.0.155").
+- **Am I affected?** Code matching the strings "must be a string, JSON object, or array of text, file, or json parts", "instructions must be a JSON-compatible string, object, or array" or "criteria descriptions must be JSON-compatible" for NaN/Inf input.
+- **What to do:** Match `*providererrors.InvalidArgumentError` with `errors.As` instead of the message.
+- **Kind:** error text only
 
 ## Tools {#tools}
 
@@ -2243,6 +2321,20 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   `moonshot`, `openresponses` or `openai` Responses model;
   `Parameters: schema.NewJSONSchema(` with any of them.
 - **What to do:** No action.
+- **Kind:** silent behavior change
+
+### An invalid tool call's tool error reads as TS getErrorMessage {#invalid-tool-call-error-text}
+
+- **What changed:** TS builds the tool-error of an invalid tool call (unknown tool, invalid input) with `error: getErrorMessage(toolCall.error)` (generate-text.ts 1498, stream-language-model-call.ts 750), the string `AI_NoSuchToolError: Model tried to call unavailable tool ...`. v0.5 gave the typed error, whose `Error()` had no name prefix, so a UI `OnError` returning `err.Error()` wrote `Model tried to call ...` in `tool-output-error`. v0.6: the error's `Error()` is the TS text, `errors.As` still finds `*ai.NoSuchToolError` / `*ai.InvalidToolInputError`, and `ToolErrorContent.Error` holds the prefixed text. The model sees the same text as before. An invalid call whose input does not parse keeps its input text (TS parse-tool-call.ts 116-117): an unknown tool's call with no input reports `input: ""` in `tool-input-error` (v0.5: `{}`).
+- **Am I affected?** UI `OnError` / `ToolResult.Error.Error()` / `ToolErrorContent.Error` comparisons for unknown tools or invalid tool input; `tool-input-error` `input` of a call with empty arguments.
+- **What to do:** Use `errors.As(err, &noSuchTool)` instead of matching the message.
+- **Kind:** error text only
+
+### Web fetch: an invalid redirect Location is a tool result {#web-fetch-invalid-redirect}
+
+- **What changed:** A redirect whose `Location` cannot be parsed returned an `Invalid URL` error that failed the tool call; it is now the result `{type: "error", errorCode: "network_error", message: "The server returned an invalid redirect location."}` (TS `dffe4053c1`).
+- **Am I affected?** Code that matches the `Invalid URL` error from the web fetch tool (`toolwebfetch`).
+- **What to do:** No action unless you relied on the error; read `ErrorOutput.ErrorCode == "network_error"` instead.
 - **Kind:** silent behavior change
 
 ## Agents and approvals {#agents-and-approvals}
@@ -3002,6 +3094,13 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 - **What to do:** no action unless you relied on the copied metadata.
 - **Kind:** silent behavior change
 
+### Approval continuations use the server tool's metadata {#approval-continuation-server-tool-metadata}
+
+- **What changed:** v0.5 validated an approved tool call from message history with the `ToolMetadata`, `Dynamic` and `Title` the history carried. v0.6 replaces them with the current server tool's `Metadata`, `Type == "dynamic"` and `Title` before signature verification, input refinement and the `ToolApproval` policy (TS `857ca45151`): history can no longer add, remove or forge them. A tool that no longer exists gets none.
+- **Am I affected?** `ToolApproval` policies or `RefineToolInput` functions that read `ToolCall.ToolMetadata`, `ToolCall.Dynamic` or `ToolCall.Title` on a resumed approval; `ValidateApprovedToolApprovals` callers that set those fields on `CollectedToolApproval.ToolCall`.
+- **What to do:** No action unless you relied on history-supplied metadata. Put the metadata on the tool (`types.Tool{Metadata: ..., Title: ..., Type: types.ToolTypeDynamic}`).
+- **Kind:** silent behavior change
+
 ## UI message streams {#ui-message-streams}
 
 ### UI message streams fail on an out-of-sequence chunk {#ui-out-of-sequence}
@@ -3543,6 +3642,13 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   last event; end every event with "\n\n" (the SDK's own writers already do).
 - **Kind:** silent behavior change
 
+### UI tool parts without input, empty denial reasons {#ui-tool-part-absent-input}
+
+- **What changed:** A UI tool part decoded without an `input` key (for example one whose output or approval request arrived before any input) is encoded without it again, and `ReadUIMessages` snapshots leave it out, as TS does (v0.5 wrote `"input": null`). A new dynamic tool part created by a `tool-input-delta` has no `rawInput` until the next delta. An approval `reason` of `""` is kept, so an output-denied part converts to an `error-text` of `""` instead of `"Tool call execution denied."` (TS `approval?.reason ?? ...`). `ReadUIMessages` writes no snapshot for a chunk type it does not know.
+- **Am I affected?** Code that reads `"input"` from encoded UI messages, compares `ReadUIMessages` snapshots, or sends `reason: ""` in tool approval responses.
+- **What to do:** No action unless you require the `input` key; treat a missing key like null.
+- **Kind:** wire/protocol change
+
 ## Telemetry and events {#telemetry-and-events}
 
 The [telemetry recording change](#telemetry-record-pointers) is listed under
@@ -3999,6 +4105,9 @@ compile-time changes.
   list of those definitions (marshal it to read them), not `[]types.Tool`
   (TS integrations see the serialized definitions too,
   `model-call-iterator.ts` 367) (review round 84).
+  A tool without a schema reports TS `asSchema(undefined)`,
+  `{"type":"object","properties":{},"additionalProperties":false}`
+  (round 85).
 - **Am I affected?** Span queries or exporters that parse `ai.prompt.tools` (the
   `parameters` key) or compare `gen_ai.tool.definitions` text byte for byte;
   custom `TelemetryIntegration`s that type-assert
@@ -4006,6 +4115,13 @@ compile-time changes.
   runs.
 - **What to do:** No action unless you read `parameters` from `ai.prompt.tools`;
   read `inputSchema` instead.
+- **Kind:** silent behavior change
+
+### WorkflowAgent root span is invoke_agent {#workflow-agent-operation-name}
+
+- **What changed:** The OpenTelemetry (GenAI) root span of a `WorkflowAgent` run was `ai.workflowAgent.stream <model>` with `gen_ai.operation.name=ai.workflowAgent.stream`. It is now `invoke_agent <model>` with `gen_ai.operation.name=invoke_agent`, like generateText/streamText (TS `4d6d830c14`). The legacy integration is unchanged.
+- **Am I affected?** Dashboards or tests that match `ai.workflowAgent.stream` on `telemetry.NewOpenTelemetry` spans.
+- **What to do:** Match `gen_ai.operation.name == "invoke_agent"`; tell workflow runs apart by `gen_ai.agent.name` / function id.
 - **Kind:** silent behavior change
 
 ## Errors {#errors}
@@ -4549,11 +4665,48 @@ compile-time changes.
   frame through TextDecoder), JSON response bodies through the shared HTTP
   client and provider error bodies (`ProviderError.Message`, `Data` and
   `ResponseBody`; TS `response.text()`). Each maximal invalid UTF-8 subpart is
-  one U+FFFD (review round 84).
+  one U+FFFD (review round 84). Round 85 extends this to the JSON bodies
+  providers read without the shared client: anthropic files and skills,
+  google files, batch and realtime, Vertex transcription and Cloud TTS,
+  bedrock, perplexity, mistral speech and transcription, heygen, groq
+  transcription, gateway config, credits, spend, generation and realtime;
+  openai, xai, deepseek, together and azure files, batch uploads, skills,
+  realtime client secrets, transcription and images, and the xai, alibaba
+  and azure Speech / MAI error parsers; topaz, deepinfra, prodia, cartesia,
+  bfl, luma, fal, klingai and replicate, the grokbuild and opencode
+  subscription lookups and the OPA policy client.
 - **Am I affected?** Provider responses, events or frames that carry invalid UTF-8 or
   start with `EF BB BF`; code comparing `ProviderError.ResponseBody` bytes.
 - **What to do:** No action.
 - **Kind:** silent behavior change
+
+#### Top-level Reasoning rounds to the closest supported level {#reasoning-closest-supported-level}
+
+- **What changed:** TS `61a315e333` maps a top-level `reasoning` level to the closest level the model supports, rounding down first and never to `none`; an unsupported `none` maps to the lowest level, with a `compatibility` warning. v0.6 does the same: Anthropic sends `xhigh` as `high` on models without xhigh effort and warns for `none` on between_tools models; Groq GPT-OSS sends `none` as `low`; Mistral GLM-5.3 sends `medium` as `low` and `xhigh` as `high`; Perplexity sends `none` as `minimal`; Gemini 2.5 Pro sends `none` as `thinkingBudget: 128` (Pro rejects 0) and Gemini 3 warns for `none`; Bedrock sends `xhigh` as `high` unless the model supports xhigh, gpt-oss `low`/`medium`/`high`, other OpenAI models the value as is (`none` included), and nothing for Nova 2 `none`. OpenAI, xAI, DeepSeek, Moonshot, Fireworks and QuiverAI have their own entries.
+- **Am I affected?** `Reasoning:` / `types.ReasoningXHigh` / `types.ReasoningNone` with anthropic, groq, mistral, perplexity, google, googlevertex or bedrock.
+- **What to do:** No action unless you relied on the old effort; set the provider option (`effort`, `reasoningEffort`, `reasoningConfig`, `thinkingConfig`) to pin it.
+- **Kind:** wire/protocol change
+
+#### SSE parsing: all fields decoded, eventsource-parser field rules {#sse-field-decoding}
+
+- **What changed:** `streaming.SSEParser` decodes invalid UTF-8 in every field (`event`, `id`, `data`) to U+FFFD, ignores an `id` that contains NUL, drops a leading mis-decoded BOM (`ï»¿`), and sets `Retry` only for a value of ASCII digits, as TS eventsource-parser 3.0.8 does.
+- **Am I affected?** `SSEEvent.Event`, `SSEEvent.ID`, `SSEEvent.Retry` readers on streams with invalid UTF-8, NUL ids or non-numeric retry values.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+#### A tool input that is a JSON string holding JSON is sent as that JSON {#string-tool-input-json}
+
+- **What changed:** TS `4ae6986cd8` sends a string tool input whose text is valid JSON as that JSON instead of double-encoding it. In Go such an input is a JSON string literal in `ToolCallContent.Input` / `ToolCall.RawArguments` (for example a Go `string` input `"{\"a\":1}"`). v0.6: Anthropic and Bedrock send it as the object (objects only), Google any value, Mistral, Groq, Cohere and the OpenAI-compatible family the text; OpenAI Chat keeps it when it holds an object (else `{}`). Text that is not JSON is sent as its JSON string by Mistral, Groq, Cohere and the OpenAI-compatible family (v0.5: the raw text). A Google server tool call whose string input is not JSON fails, as TS `secureJsonParse` throws.
+- **Am I affected?** Assistant tool calls replayed with a string `Input` or with `RawArguments` that are a JSON string literal or not JSON, on anthropic, bedrock, google, mistral, groq, cohere and OpenAI-compatible providers.
+- **What to do:** No action unless you relied on the double-encoded form; pass the input as a map.
+- **Kind:** wire/protocol change
+
+#### OpenAI Responses and DeepSeek replay non-JSON tool arguments as a JSON string {#tool-call-arguments-text}
+
+- **What changed:** OpenAI Responses and DeepSeek replay tool-call argument text that is not valid JSON as its JSON string literal, and Responses keeps a non-object JSON value instead of `{}` (TS `4ae6986cd8`). The OpenAI-compatible family, Groq and Cohere follow the same rule (see the previous entry).
+- **Am I affected?** Assistant tool calls replayed with `RawArguments` that are not JSON or not an object, on `openai` Responses or `deepseek`.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
 
 ### AI Gateway
 
@@ -4655,6 +4808,13 @@ compile-time changes.
   tool outputs without parts.
 - **What to do:** no action.
 - **Kind:** wire/protocol change
+
+#### Gateway returns the caller's cancellation unchanged {#gateway-caller-cancellation}
+
+- **What changed:** TS `9ca8bcf731` (ruling 4): `context.Canceled` and the caller's ctx deadline are returned unchanged. v0.5 turned a cancellation into a retryable 500 `GatewayResponseError` "Invalid error response format" and the caller's deadline into a `GatewayTimeoutError`. A transport timeout while the ctx is live is still a `GatewayTimeoutError`.
+- **Am I affected?** `IsGatewayTimeoutError` / `GatewayResponseError` checks around ctx cancellation on gateway language, video and realtime client secret calls.
+- **What to do:** Check `errors.Is(err, context.DeadlineExceeded)` / `context.Canceled`.
+- **Kind:** silent behavior change
 
 ### Anthropic
 
@@ -4814,6 +4974,27 @@ compile-time changes.
 - **What to do:** No action.
 - **Kind:** wire/protocol change
 
+#### Anthropic native structured output only for representable schemas {#anthropic-native-structured-output-schema}
+
+- **What changed:** Auto structured output uses `output_config.format` only for a schema Anthropic can represent: no `$ref` cycles, no open objects (maps, `additionalProperties: true`, free-form objects) and at most 10 optional properties (counted per `$ref` use); otherwise the JSON response tool (TS `f4c5f1e959`, `b0d51fecc0`, `2cd0a97424`). Opus/Sonnet 5.5 and Fable 5.1, which reject forced tool use, use native output on Bedrock and Vertex for a representable schema (v0.5 sent the JSON tool with `auto` and could return empty output). Claude 5 models on Bedrock support native output and strict tools. With the JSON tool, `ToolChoice` none drops the user tools and a named choice keeps only that tool. New helper `anthropic.SupportsNativeStructuredOutputSchema`.
+- **Am I affected?** `ResponseFormat` with `Type: "json"` on anthropic, bedrock (Anthropic models) and googlevertex/anthropic.
+- **What to do:** Set `providerOptions.anthropic.structuredOutputMode: "outputFormat"` to force native output.
+- **Kind:** wire/protocol change
+
+#### Anthropic returns the text when the JSON response tool is not called {#anthropic-json-tool-text-fallback}
+
+- **What changed:** With the JSON response tool, a response that never calls it (stop reason other than `tool_use` / `pause_turn`) returns its final text from DoGenerate and emits it at `message_stop` in DoStream; text before a tool block is dropped and held-back stream text keeps its citations (TS `e10aebbad6`). v0.5 dropped the text.
+- **Am I affected?** Anthropic-family calls with `ResponseFormat` JSON that fall back to the JSON response tool.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+#### Anthropic schema sanitizer keeps definitions next to $ref {#anthropic-sanitizer-ref-definitions}
+
+- **What changed:** v0.5 reduced any schema node with `$ref` to `{"$ref": ...}`, dropping its `definitions` / `$defs`, so a top-level `$ref` schema (the default shape of a reflected Go struct schema) sent as `output_config.format` or a tool schema referenced a missing definition and Anthropic returned 400. v0.6 keeps the sanitized `definitions` and `$defs` next to the `$ref` (TS `f4c5f1e959`).
+- **Am I affected?** Anthropic, Bedrock-Anthropic or Vertex-Anthropic calls with a JSON schema whose root (or a nested node) has `$ref` plus `definitions` / `$defs`.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
 ### Amazon Bedrock
 
 #### Anthropic provider tools on Bedrock {#bedrock-anthropic-provider-tools}
@@ -4903,6 +5084,27 @@ compile-time changes.
   video media type; use a document media type (`text/plain`,
   `text/markdown`, ...).
 - **Kind:** silent behavior change
+
+#### Bedrock Anthropic models receive disabled thinking {#bedrock-anthropic-disabled-thinking}
+
+- **What changed:** Bedrock Anthropic models now receive `thinking: {type: "disabled"}` for `Reasoning: types.ReasoningNone` or `reasoningConfig.type: "disabled"` (nothing for Claude 3.5 and older); models that reject it use between_tools or adaptive thinking (low effort) with a warning, and `xhigh` / `max` are lowered to `high` where rejected (TS `22b44614a2`). v0.5 sent nothing.
+- **Am I affected?** `ReasoningNone` or `"reasoningConfig": {"type": "disabled"}` on `bedrock` Anthropic models.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+#### Bedrock named tool choice keeps every tool {#bedrock-named-tool-choice}
+
+- **What changed:** A named `ToolChoice` on Bedrock Anthropic models that accept forced tool use keeps every function tool and sets `disable_parallel_tool_use: true` unless `disableParallelToolUse: false` (TS `62a4dcd641`). v0.5 sent only the named tool.
+- **Am I affected?** `types.SpecificToolChoice(...)` on `bedrock` Anthropic models.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+#### Bedrock document names are unique {#bedrock-unique-document-names}
+
+- **What changed:** Two document parts with the same name (or a file named like a generated `document-N`) made Bedrock reject the request; they now get ` (2)`, ` (3)` suffixes within 200 characters (TS `b6de62e95a`).
+- **Am I affected?** Bedrock requests with several file parts of the same filename.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
 
 ### Google and Vertex
 
@@ -5103,6 +5305,27 @@ compile-time changes.
   does (review round 84).
 - **Am I affected?** Streamed Interactions agent tool calls whose `ProviderMetadata["google"]["signature"]` you read.
 - **What to do:** No action.
+- **Kind:** silent behavior change
+
+#### Google in-stream errors with only an RPC status are classified {#google-stream-error-status-code}
+
+- **What changed:** An in-stream error that carries only an RPC status (`RESOURCE_EXHAUSTED`, `UNAVAILABLE`, ...) now gets the mapped HTTP `StatusCode` and retryability (TS `8ad78735f7`); v0.5 reported no status code and never retried.
+- **Am I affected?** `StreamProviderError.StatusCode`, `IsRetryable` on google / googlevertex streams.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+#### Interactions toolChoice none sends no tools {#google-interactions-tool-choice-none}
+
+- **What changed:** `ToolChoice` none on Google Interactions models sends no tools (provider tools included), no `tool_choice` and no warnings (TS `a32df11498`). v0.5 sent the tools with `tool_choice: none`, so provider-executed tools still ran.
+- **Am I affected?** `types.NoneToolChoice()` on `google` Interactions models.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+#### Gemini streamed function args close on their final chunk {#gemini-stream-function-args-close}
+
+- **What changed:** A streamed string argument's final chunk (or a value-less terminator) closes the string at once (TS `9f108f8a57`), so the `tool-input-delta` split differs from v0.5. The assembled input is unchanged.
+- **Am I affected?** Code that compares Gemini `ChunkTypeToolInputDelta` parts one by one.
+- **What to do:** No action; concatenate the deltas.
 - **Kind:** silent behavior change
 
 ### OpenAI
@@ -5430,6 +5653,41 @@ compile-time changes.
 - **What to do:** No action.
 - **Kind:** silent behavior change
 
+#### OpenAI reasoning efforts: sent unchanged or rounded {#openai-reasoning-rounding}
+
+- **What changed:** v0.5 dropped `providerOptions.openai.reasoningEffort` (and a top-level `Reasoning`) outside a GPT-6 model's effort list with an `unsupported` warning, and sent any top-level level to other models as is. v0.6 follows TS `61a315e333` / `d07b475bc8`: the provider option is sent unchanged; a top-level `Reasoning` is rounded to a supported effort (down first, never to `none`) with a `compatibility` warning `reasoning "<x>" is not directly supported by this model. mapped to effort "<y>".`; standard GPT-5.x models have effort lists (5.0 minimal-high, 5.1 none-high, 5.2-5.5 plus xhigh, 5.6+ plus max); Chat Completions never sends `max` to such a model; GPT-5.6+ Chat with function tools and no provider effort sends `reasoning_effort: "none"` with a compatibility warning when a level was requested; gpt-6.1-terra accepts `none`. `prompt_cache_retention` and Responses logprobs are no longer stripped on GPT-5.
+- **Am I affected?** `openai` Chat/Responses models with `Reasoning` or `reasoningEffort`; code matching the `only supports the following reasoning efforts` warning; `LanguageModelCapabilities.SupportedReasoningEfforts` (now non-nil for standard GPT-5.x).
+- **What to do:** No action unless you relied on the effort being dropped; set `providerOptions.openai.reasoningEffort` to send an exact value.
+- **Kind:** wire/protocol change
+
+#### OpenAI transcription defaults and streaming models {#openai-transcription-defaults}
+
+- **What changed:** v0.5 sent `response_format=verbose_json` and `timestamp_granularities[]=segment` for every non-gpt-4o model whenever `providerOptions.openai` was set (gpt-transcribe returned 400), and always sent verbose_json for whisper-1. v0.6 (TS `9026c7de79`, `599a97f9bf`, `226b7daf82`, `8375141ef4`): response_format defaults only for whisper-1 (verbose_json) and gpt-4o-transcribe-diarize (diarized_json); an explicit `responseFormat` wins; segment timestamps only for verbose_json; new `languages` / `keywords` options; `DurationInSeconds` falls back to `usage.seconds`; DoTranscribe rejects gpt-live-transcribe; DoStream (openai and azure) accepts gpt-live-transcribe and gpt-transcribe, sends `languages: [language]` for them and omits `delay` (with a warning) for gpt-transcribe; `IsRealtimeTranscriptionModelID` also reports gpt-live-transcribe.
+- **Am I affected?** `openai` / `azure` transcription models; `IsRealtimeTranscriptionModelID`.
+- **What to do:** Set `providerOptions.openai.responseFormat` / `timestampGranularities` explicitly to keep the old fields.
+- **Kind:** wire/protocol change
+
+#### Unfinished OpenAI web searches are tool errors {#openai-unfinished-web-search}
+
+- **What changed:** v0.5 returned a `searching` / `in_progress` `web_search_call` as a successful tool result; v0.6 (TS `436374eb36`) reports every status but `completed` as a tool error with `{status}` (generate, stream, batch, azure).
+- **Am I affected?** `ToolResultContent` / tool-result chunks of `web_search` on openai and azure Responses.
+- **What to do:** No action unless you read those results.
+- **Kind:** silent behavior change
+
+#### OpenAI Decisions send JSON state as input_json {#openai-decisions-input-json}
+
+- **What changed:** v0.5 sent every JSON state part as `input_text`; v0.6 (TS `47b1d8b2f7`) sends an object or a non-empty array of objects (at most 32 levels, 10,000 values, 256 KiB) as `{type: "input_json", data}` and supports `DecisionModelOptions.PromptCacheKey` (`prompt_cache_key`, no longer an unsupported warning).
+- **Am I affected?** OpenAI decision models with JSON state parts or a `promptCacheKey` option.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+#### OpenAI strips a propertyNames schema without type {#openai-property-names-typeless}
+
+- **What changed:** A JSON Schema `propertyNames` without `type` (a record with enum keys) failed the call with `UnsupportedFunctionalityError`; v0.6 (TS `7eac057241`) strips it with the `JSON Schema propertyNames` warning.
+- **Am I affected?** OpenAI strict schemas with `propertyNames` that omit `type`.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
 ### xAI
 
 #### xAI provider tool config is validated before the request {#xai-tool-args-validation}
@@ -5509,6 +5767,13 @@ compile-time changes.
   `XAIImageItemMetadata.RevisedPrompt` is nil for an empty `revised_prompt` in
   the image model (batch keeps it, as TS) (review round 84).
 - **Am I affected?** `xai.ImageModel` results whose API response has empty strings in these fields.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+#### xAI Responses citations, incomplete finish and none reasoning {#xai-responses-citations-finish}
+
+- **What changed:** xAI Responses streams emitted each `url_citation` source twice; v0.6 once (TS `0eb8de60dc`). DoGenerate reports `length` / raw `max_output_tokens` for an incomplete response (TS `3d6ac0ae11`; was `other` / `incomplete`). `Reasoning: none` on Grok 4.5+ is sent as `low` with a compatibility warning (TS `61a315e333`).
+- **Am I affected?** xAI Responses source counts, finish reasons, and `ReasoningNone` on Grok 4.5+.
 - **What to do:** No action.
 - **Kind:** silent behavior change
 
@@ -5592,6 +5857,20 @@ compile-time changes.
 - **Am I affected?** `azure` image models `mai-image-*` with a malformed `Size` or `AspectRatio`.
 - **What to do:** No action unless you relied on malformed sizes being dropped.
 - **Kind:** wire/protocol change
+
+#### DeepSeek and Moonshot reasoning rounding {#deepseek-moonshot-reasoning-rounding}
+
+- **What changed:** DeepSeek: `medium` is sent as `low` (was high) and `xhigh` as `high` (was max). Moonshot: `medium` as `low`, `xhigh` as `high`; Kimi K3 `none` as `low` with a compatibility warning (was dropped with an unsupported warning); Kimi K2.7 `none` gives a compatibility warning; unknown models send `thinking: {type: disabled}` for `none` (was dropped with a warning). TS `61a315e333`.
+- **Am I affected?** `Reasoning` on `deepseek` and `moonshot` models.
+- **What to do:** No action unless you relied on the old effort; set `reasoningEffort` / `thinking` provider options to pin it.
+- **Kind:** wire/protocol change
+
+#### Azure Speech 502 stays a retryable 502 {#azure-speech-502-retryable}
+
+- **What changed:** An Azure Speech 502 whose body says `reset reason: protocol error` was a non-retryable 400 with a voice message; v0.6 keeps status 502, `Azure Speech request failed with status 502.` and the default retryability (TS `c3b6fef1ff`).
+- **Am I affected?** Azure Speech (MAI-Voice / TTS) error handling that matched the 400.
+- **What to do:** No action.
+- **Kind:** silent behavior change
 
 ### OpenAI-compatible providers
 
@@ -5733,6 +6012,27 @@ compile-time changes.
 - **What to do:** No action (key order and the empty tuple only).
 - **Kind:** wire/protocol change
 
+#### Fireworks reasoning effort sent as given {#fireworks-reasoning-effort}
+
+- **What changed:** Fireworks no longer rewrites `minimal` to `low` and `xhigh` / `max` to `high`: the provider option is sent unchanged and top-level levels as is, except `none` on gpt-oss / glm-5p3 / muse-spark (sent as `minimal`) and `minimal` on nemotron / inkling (sent as `low`), with compatibility warnings (TS `61a315e333`).
+- **Am I affected?** `fireworks` models with `Reasoning` or `reasoningEffort`.
+- **What to do:** No action unless you relied on the rewrite.
+- **Kind:** wire/protocol change
+
+#### OpenAI-compatible reasoningEffort null {#compat-reasoning-effort-null}
+
+- **What changed:** OpenAI-compatible providers (gmicloud, together, fireworks, zai, ollama, alibaba, deepinfra and cerebras through the openai compat mode): `reasoningEffort: nil` (null) is accepted and sent as `"reasoning_effort": null`, beating the top-level `Reasoning`; a raw `reasoning_effort` provider option is passed through (no deprecation warning) and overwritten only when an effort resolves (TS `5006d83c4e`).
+- **Am I affected?** Provider options `reasoningEffort: nil` or a raw `reasoning_effort` key on OpenAI-compatible providers.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+#### Cerebras: deprecated-key warning once {#cerebras-r85}
+
+- **What changed:** `DoGenerate` reported the deprecated `openai-compatible` provider-options key warning twice; now once, as TS. An explicit `reasoningEffort: nil` is sent as `reasoning_effort: null` (TS `5006d83c4e`).
+- **Am I affected?** Code counting Cerebras warnings or passing `reasoningEffort: nil`.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
 ### Cohere
 
 #### Cohere generate content lists text parts in wire order {#cohere-generate-text-parts-in-order}
@@ -5791,6 +6091,13 @@ compile-time changes.
 - **Am I affected?** Cohere prompts with file parts of such media types.
 - **What to do:** no action.
 - **Kind:** silent behavior change
+
+#### Cohere decodes base64 document data {#cohere-base64-document-data}
+
+- **What changed:** A string `FileData.DataString` document was sent as its base64 text; it is now base64-decoded and TextDecoder-decoded (TS `7a93864932`).
+- **Am I affected?** Cohere text documents passed as base64 strings.
+- **What to do:** Pass plain text with `FileDataTypeText`.
+- **Kind:** wire/protocol change
 
 ### Mistral
 
@@ -5966,6 +6273,43 @@ compile-time changes.
   dropped; leave the key out instead.
 - **Kind:** wire/protocol change
 
+#### Perplexity reports search queries {#perplexity-search-queries}
+
+- **What changed:** `providerMetadata.perplexity.searchQueries` (`PerplexityMetadata.SearchQueries`) carries the deduplicated search queries of `search_results` output items and `response.reasoning.search_queries` events, null when there are none (TS `c6bbe485d7`).
+- **Am I affected?** Code that compares the whole Perplexity provider metadata.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### ElevenLabs, HeyGen and Topaz
+
+#### ElevenLabs wav, eleven_v4 and the voice path {#elevenlabs-wav-and-v4-dialogue}
+
+- **What changed:** `outputFormat: "wav"` is sent as `wav_44100` (TS `3e5a12334b`; ElevenLabs rejected `wav`); `eleven_v4` always uses Text to Dialogue and the voice id in the path is `encodeURIComponent`-encoded (TS `48ab95d62a`). New `withTimestamps` option.
+- **Am I affected?** `elevenlabs` speech with `wav`, `eleven_v4` or voice ids with reserved characters.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+#### ElevenLabs error messages from detail bodies {#elevenlabs-error-detail-messages}
+
+- **What changed:** Error messages are read from the `detail` error shapes ElevenLabs returns (TS `7062ab6818`); v0.5 gave the HTTP status text.
+- **Am I affected?** Code matching ElevenLabs error text.
+- **What to do:** Match the error type and status code.
+- **Kind:** error text only
+
+#### HeyGen accepts any positive integer duration {#heygen-duration-positive-integer}
+
+- **What changed:** Durations over 15 seconds failed locally; any positive integer is now accepted and `promptEnhancement: "ultraquality"` is allowed (TS `6f41ccc1f8`). Invalid values fail with `HeyGen duration must be a positive integer number of seconds.`.
+- **Am I affected?** `heygen` video calls with `Duration` > 15, or code matching the old duration error.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+#### Topaz: redirected video uploads fail {#topaz-upload-redirect}
+
+- **What changed:** The input-video upload no longer follows redirects (TS `c66402d340`, `redirect: 'error'`): a 3xx fails `DoStart` and the request is canceled. v0.5 followed it and net/http resent the whole video body to the redirect target.
+- **Am I affected?** `topaz` video models with input videos whose upload URL redirects.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
 ### QuiverAI
 
 #### QuiverAI rounds the reasoning level to a supported effort {#quiverai-reasoning-rounding}
@@ -6037,6 +6381,13 @@ compile-time changes.
   and code reading `tool.Parameters.(map[string]interface{})` on those tools.
 - **What to do:** No action unless you type-assert `Parameters` to a map;
   use `schema.ParametersMap(tool.Parameters)` instead.
+- **Kind:** silent behavior change
+
+### MCP: multi-round-trip requests {#mcp-input-required}
+
+- **What changed:** A modern-protocol `CallTool`, `GetPrompt` or `ReadResource` that returns `resultType: input_required` used to fail with "Server requested additional input, but multi round-trip requests are not supported yet"; it now asks `OnElicitationRequest` (form elicitation) and retries, up to 10 rounds (TS `c3af430640`). Outside that loop the error text is `Input-required results are not supported for <method> on protocol <version>`. A -32022 discovery error naming a supported legacy version now has a guidance message (TS `ade2a33f55`).
+- **Am I affected?** MCP clients of 2026-07-28 servers; code matching the old error texts.
+- **What to do:** Register `OnElicitationRequest` to answer input requests.
 - **Kind:** silent behavior change
 
 ## Code mode {#code-mode}
@@ -6223,6 +6574,88 @@ compile-time changes.
 - **What to do:** no action unless you opt in. If you do, update
   `BuiltinToolFiltering` lists and tool-name checks, and finish or drop open
   sessions before you switch.
+- **Kind:** silent behavior change
+
+### ACP host tools are resolved by the adapter {#acp-host-tool-resolver}
+
+- **What changed:** The ACP bridge no longer guesses which tool calls are host tools; it asks the host, which calls `acp.Settings.ResolveHostToolCall` (TS `03dac28304`). `DoStart` now fails with `ACP isMcpToolCall must be a function.` or `ACP resolveHostToolCall must be a function.` when either callback is nil (ruling: match TS, which throws). The Cursor, GitHub Copilot, Grok Build and fx adapters set both.
+- **Am I affected?** Only if you build `acp.Settings` yourself and call `acp.CreateACP` (grep `acp.Settings{`, `acp.CreateACP`).
+- **What to do:** Set both callbacks:
+
+  ```go
+  cfg := acp.Settings{
+  	// ...
+  	IsMcpToolCall:       func(acp.ToolCall) bool { return false },
+  	ResolveHostToolCall: acp.LegacyResolveHostToolCall, // the v0.5 bridge matching
+  }
+  ```
+- **Kind:** silent behavior change
+
+### Recipe-less harnesses set up the sandbox on first use {#harness-deferred-sandbox-setup}
+
+- **What changed:** v0.5 `Agent.CreateSession` always ran `SandboxConfig.OnBootstrap`, created the session work directory and ran `SandboxConfig.OnSession` before `DoStart`. In v0.6, for a harness that does not implement `harness.BootstrapProvider`, these run on the first file, exec or spawn operation on the session's sandbox (or its restricted view). They run once, a failure is returned by that operation and retried by the next, and a session that never touches the sandbox never runs them (TS `8a20b57d41`). Harnesses with a bootstrap recipe (all in-tree adapters) are unchanged. New: `CreateSessionOptions.SandboxCreator` creates the sandbox lazily.
+- **Am I affected?** A custom `harness.Harness` without `GetBootstrap` used with `SandboxConfig.OnBootstrap` / `OnSession`; code that expects an `OnSession` error from `CreateSession`; code that type-asserts `AgentSession.GetSandboxSession()` or `StartOptions.SandboxSession` to its own concrete sandbox type.
+- **What to do:** No action unless you rely on setup errors from `CreateSession` or on the concrete sandbox type. To run the setup eagerly, perform a sandbox operation right after `CreateSession`:
+
+  ```go
+  session, err := agent.CreateSession(ctx, harness.CreateSessionOptions{SandboxSession: sb})
+  if err != nil {
+  	return err
+  }
+  // Runs OnBootstrap / OnSession now for a harness without a bootstrap recipe.
+  if _, err := session.GetSandboxSession().Run(ctx, providerutils.SandboxProcessOptions{Command: "true"}); err != nil {
+  	return err
+  }
+  ```
+- **Kind:** silent behavior change
+
+### Denied host tool results carry the execution-denied model output {#harness-denied-tool-result}
+
+- **What changed:** A denied host tool call (filtered builtin, configured denial, denied approval) was submitted to the harness with only `Output`. `ToolResultSubmission.ToolResult` is now `&harness.ModelToolResult{Type: "tool-result", ToolCallID, ToolName, Output: {Type: execution-denied, Reason}}`, and an echoed denial no longer runs the tool's `ToModelOutput` (TS `033f8d9a63`).
+- **Am I affected?** Custom `harness.PromptControl.SubmitToolResult` implementations or bridges that inspect `ToolResult` / the `toolResult` frame key for denials; `ToModelOutput` functions that handled an execution-denied value.
+- **What to do:** No action unless you treat a non-nil `ToolResult` as a successful result.
+- **Kind:** wire/protocol change
+
+### Native tool names in tool-call harness metadata {#harness-native-tool-name-metadata}
+
+- **What changed:** When a harness tool call's native name differs from its tool name (Claude Code `Bash` for `bash`), the parsed tool call, its approval request and the step now carry `ProviderMetadata[<harnessID>]["nativeToolName"]`, merged over that harness's existing metadata (TS `e7a8988893`).
+- **Am I affected?** Code that compares a harness tool call's whole `ProviderMetadata`, or approval gates keyed on it.
+- **What to do:** No action; read `nativeToolName` to gate on native names.
+- **Kind:** silent behavior change
+
+### Built-in approval pauses report unechoed host results {#harness-builtin-approval-host-result-pause}
+
+- **What changed:** A turn whose assistant message holds an approval-gated built-in tool and a host tool call used to hang waiting for a host-result echo. It now pauses. Each submitted, unechoed host result is reported through `OnPendingToolResult` with `CompletedResult` (and again at a later pause until the runtime echoes it), and the host tool's outcome is surfaced in the paused step (TS `6eab0f7b11`).
+- **Am I affected?** Lifecycle code that persists `PendingToolResults` and assumes only client tools appear there; tests counting `OnPendingToolResult` calls.
+- **What to do:** No action; a completed pending result is resubmitted on continue without running the tool again.
+- **Kind:** silent behavior change
+
+### Bridge frames sent while the socket closes are queued {#bridge-closing-send-queued}
+
+- **What changed:** `bridge.Channel` wrote a frame whenever it was connected and lost it if the socket was already closing. It now queues the frame while the socket is not open and flushes it in order after the reconnect; a frame whose write fails is requeued and the socket is reconnected (TS `2c12e256d2`).
+- **Am I affected?** Custom `bridge.Conn` implementations (they count as open while connected) and bridges that could see a frame sent twice when a failed write had in fact been delivered.
+- **What to do:** None.
+- **Kind:** wire/protocol change
+
+### Claude Code start frame fields {#claudecode-start-frame-fields}
+
+- **What changed:** The claude-code `start` frame now carries `readableSkillRoots` (one `<home>/.claude/skills/<name>` per skill) when skills are present, `deferredToolUseId` on a rerun continuation with a pending built-in approval, and the new settings `skillOverrides`, `maxBudgetUsd`, `strictMcpConfig`, `questionTimeoutMs`, `excludeDynamicSections`, `toolHints` when set (TS `e3f24b634c`, `ede06e32cf`, `09b3e1d166`, `6e3e99969d`, `4ab93bbc91`, `31d83e2bd9`). The embedded bridge is the ai@7.0.162 build (1.0.177), which trusts skill-file reads only under `readableSkillRoots` and asks for approval for file tools outside the work directory.
+- **Am I affected?** Custom claude-code bridges that reject unknown start keys.
+- **What to do:** None.
+- **Kind:** wire/protocol change
+
+### Vercel sandbox: policies with response rules are not mutated {#vercel-response-rules}
+
+- **What changed:** `SetNetworkPolicy`, `SetRequestTransformations` and `AddRequestTransformations` used to rebuild the policy without native response (deny) rules; they now fail with `HarnessCapabilityUnsupportedError` when the current policy or the session metadata has response rules (TS `44a4261e52`). A custom (object) session policy in the API's `{mode, allowedDomains}` shape is now read as that allowlist instead of allow-all. A custom `vercel.PolicySandbox` implementation must also implement `vercel.PolicySessionInspector` before an object policy it did not create can be mutated.
+- **Am I affected?** Resumed Vercel sandboxes whose policy was set with the native SDK; implementations of `vercel.PolicySandbox`.
+- **What to do:** Manage such policies with the native SDK, or implement `CurrentSessionNetworkPolicyMetadata(ctx) (json.RawMessage, error)` on your PolicySandbox.
+- **Kind:** silent behavior change
+
+### Vercel sandbox: template v3, persistent live sandboxes, relative working directories, cancel kills {#vercel-sandbox-r85}
+
+- **What changed:** Template snapshots are named `ai-sdk-harness-v3-...` (TS `177291adce`; the first session per project builds a new template); `Persistent` reaches the live sandbox (TS `ea39523ce9`); a relative `WorkingDirectory` resolves against the session cwd instead of `/` (TS `5c247e9b85`); cancelling the ctx passed to `Spawn` kills the remote command (TS `269f4c0c32`).
+- **Am I affected?** Vercel sandbox users (`pkg/harness/sandbox/vercel`), especially callers passing a relative `WorkingDirectory` or a short-lived ctx to `Spawn`.
+- **What to do:** No action unless you passed a request-scoped ctx to `Spawn` for a process that must outlive it; pass a long-lived ctx.
 - **Kind:** silent behavior change
 
 ## Policy {#policy}
@@ -6454,6 +6887,26 @@ after upgrading:
   [WebSocket text frames with invalid UTF-8](./known-differences.mdx).
 - **TS test replays skipped in round 84**: eight TS cases are skipped for harness limits or Go idiom (azure-keyed OpenAI Responses case, `openai.chat` hint text, chat.ts replay start, a call-site spy, channel errors, provider signal after step end) (round 84). See
   [TS test replays skipped in round 84](./known-differences.mdx).
+- **Input checks TS removed in ai@7.0.155**: Go keeps the input checks TS removed in ai@7.0.155, with their v0.5 texts (ruling 5, round 85). See
+  [Input checks TS removed in ai@7.0.155](./known-differences.mdx).
+- **Durable workflow telemetry**: Durable workflow telemetry: only the operation-name mapping is ported (ruling 6, round 85). See
+  [Durable workflow telemetry](./known-differences.mdx).
+- **Vercel sandbox stdin and policy request shape**: Vercel sandbox stdin is rejected and policy updates keep the public shape until `@vercel/sandbox` 3.9.0 is available (ruling 2, round 85). See
+  [Vercel sandbox stdin and policy request shape](./known-differences.mdx).
+- **ACP callbacks checked at session start**: ACP `IsMcpToolCall` / `ResolveHostToolCall` are checked when the session starts, not in `CreateACP` (round 85). See
+  [ACP callbacks checked at session start](./known-differences.mdx).
+- **Vercel policy inspection source**: Vercel policy inspection reads the last session response instead of `listSessions()` (round 85). See
+  [Vercel policy inspection source](./known-differences.mdx).
+- **SSE chunk-boundary artifacts**: SSE parsing ignores chunk boundaries where eventsource-parser does not (round 85). See
+  [SSE chunk-boundary artifacts](./known-differences.mdx).
+- **UI streams close open blocks at a step's finish**: ToUIMessageStream synthesizes text-end / reasoning-end for blocks still open at finish-step (round 85). See
+  [UI streams close open blocks at a step's finish](./known-differences.mdx).
+- **Google videoMetadata validation errors**: An invalid Google `videoMetadata` is a ValidationError, not a raw ZodError (round 85). See
+  [Google videoMetadata validation errors](./known-differences.mdx).
+- **Deferred sandbox optional operations**: A deferred harness sandbox session always has Stat / ListDirectory / DeleteFile and reports ErrUnsupported when the sandbox lacks them (round 85). See
+  [Deferred sandbox optional operations](./known-differences.mdx).
+- **TS test replays skipped in round 85**: TS test replays skipped in round 85: harness limits (class functions, async auth tokens, random ids, a cancelled empty stream, deep-argument truncation) (round 85). See
+  [TS test replays skipped in round 85](./known-differences.mdx).
 - **Tool output JSON in replayed prompts keeps Go map key order.** See
   [Tool output JSON key order in replayed prompts](./known-differences.mdx).
 - **EmbedMany with a batch that reported no usage records the other batches' positive token sum**; TS sums to NaN and drops it. See
@@ -6526,6 +6979,7 @@ next one.
      -e 'MCPToolSchema|ToolSpec|InputSchema|unsupported part type|languageCode|inputTranscription|SourceText|mai-image|azure|prodia|toolwebfetch|ToolChoice\{|s3://|ParametersMap' \
      -e 'PerChunk|FirstChunk|Response\.Headers|ResponseHeadersMap|ai\.prompt\.(toolChoice|messages|tools)|JSONSchema\(\)|ResponseFormat\.Schema|jsonschema:"|Files\(\)|Skills\(\)|DecisionJSONPart|signature|zai|huggingface|openresponses|anthropic|perplexity' \
      -e 'quiverai|reasoning effort none' \
+     -e 'readableSkillRoots|nativeToolName|ResolveHostToolCall|IsMcpToolCall|SandboxCreator|OnBootstrap|invoke_agent|structuredOutputMode|wav_44100|eleven_v4|searchQueries|reasoningEffort|reasoning_effort|input_required|PolicySandbox|SetNetworkPolicy|FixJSON|web_search_call|AI_NoSuchToolError|propertyNames|IsRealtimeTranscriptionModelID|SSEParser|ToolUIPart|ExperimentalDecide|ToolApproval|SmoothStream|thinkingBudget|disable_parallel_tool_use|GatewayTimeoutError|heygen|topaz|toolwebfetch' \
      -e 'FileData\{Type: types\.FileDataTypeURL|remote file URL must|Invalid URL|allowed types are|ImageContent\{|ReasoningFileContent|AbortReason|ReadUIMessageStream|continuationToken|errorCode|InteractionsModel|ClientSecret|ConversationModel|NewJSONSchema\(|ResponseBody|xai\.VideoModel|Size:|AspectRatio' .
    ```
 
