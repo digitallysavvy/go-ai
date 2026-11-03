@@ -253,7 +253,7 @@ func (f *FilesAPI) DownloadFile(ctx context.Context, opts provider.DownloadFileO
 	// parameters, mirroring TS's responseHeaders['content-type'].split(';')[0].
 	mediaType := ""
 	if ct := httpResp.Header.Get("Content-Type"); ct != "" {
-		mediaType = strings.TrimSpace(strings.SplitN(ct, ";", 2)[0])
+		mediaType = providerutils.JSTrim(strings.SplitN(ct, ";", 2)[0])
 	}
 
 	return &provider.DownloadFileResult{
@@ -305,7 +305,7 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 // mirroring TS XaiFiles#getFileId.
 func xaiFileID(ref types.ProviderReference) (string, error) {
 	id := ref["xai"]
-	if strings.TrimSpace(id) == "" {
+	if providerutils.JSTrim(id) == "" {
 		return "", &providererrors.InvalidArgumentError{
 			Field:   "file",
 			Message: "file reference is missing an 'xai' file id.",

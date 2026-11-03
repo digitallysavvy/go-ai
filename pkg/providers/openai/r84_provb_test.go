@@ -71,3 +71,14 @@ func TestR84provbRealtimeURLUsesEncodeURIComponent(t *testing.T) {
 		t.Fatalf("url = %q, want %q", secret.URL, want)
 	}
 }
+
+// TS getFileId: fileId.trim() === ” uses JavaScript trim, which strips a
+// BOM (U+FEFF) but not NEL (U+0085); strings.TrimSpace did the opposite.
+func TestR84provbFileIDUsesJSTrim(t *testing.T) {
+	if _, err := openAIFileID(types.ProviderReference{"openai": "\ufeff"}); err == nil {
+		t.Error("BOM-only id accepted")
+	}
+	if id, err := openAIFileID(types.ProviderReference{"openai": "\u0085"}); err != nil || id != "\u0085" {
+		t.Errorf("NEL id = %q, %v", id, err)
+	}
+}

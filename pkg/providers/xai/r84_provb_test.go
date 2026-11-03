@@ -179,3 +179,13 @@ func TestR84provbRealtimeURLUsesEncodeURIComponent(t *testing.T) {
 		t.Fatalf("url = %q", secret.URL)
 	}
 }
+
+// TS XaiFiles#getFileId: JavaScript trim (BOM stripped, NEL kept).
+func TestR84provbFileIDUsesJSTrim(t *testing.T) {
+	if _, err := xaiFileID(map[string]string{"xai": "\ufeff"}); err == nil {
+		t.Error("BOM-only id accepted")
+	}
+	if id, err := xaiFileID(map[string]string{"xai": "\u0085"}); err != nil || id != "\u0085" {
+		t.Errorf("NEL id = %q, %v", id, err)
+	}
+}
