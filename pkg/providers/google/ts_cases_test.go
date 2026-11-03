@@ -47,9 +47,12 @@ func TestTSCasesLanguage(t *testing.T) {
 		"should send requestType as X-Vertex-AI-LLM-Request-Type header on Vertex":                                           "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
 		`should use "vertex" as providerMetadata key in thoughtSignature content when provider includes "vertex"`:            "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
 		`should use "vertex" as providerMetadata key in tool call content when provider includes "vertex"`:                   "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
+		`should use "vertex" as providerMetadata key in streaming reasoning events when provider includes "vertex"`:          "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
+		"should forward supported Vertex tool result URLs as function response file data":                                    "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
+		"should send streamFunctionCallArguments in toolConfig when provider option is set with Vertex provider":             "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
 		"merges async config headers with sync request headers":                                                              asyncHeaders,
-		"handles Promise-based headers":                                                                                      asyncHeaders,
-		"handles async function headers from config":                                                                         asyncHeaders,
+		"handles Promise-based headers":              asyncHeaders,
+		"handles async function headers from config": asyncHeaders,
 	})
 }
 

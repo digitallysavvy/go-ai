@@ -48,5 +48,6 @@ func TestTSCasesVertexLanguage(t *testing.T) {
 // `google.vertex.chat` model (the google package skips these).
 func r80provaVertexOnlyCase(name string) bool {
 	return strings.Contains(name, "for Vertex") || strings.HasSuffix(name, "on Vertex") || strings.Contains(name, "from Vertex requests") ||
-		strings.Contains(name, `when provider includes "vertex"`)
+		strings.Contains(name, `when provider includes "vertex"`) ||
+		strings.Contains(name, "supported Vertex tool result URLs") || strings.HasSuffix(name, "with Vertex provider")
 }

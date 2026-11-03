@@ -872,6 +872,49 @@ func asymmetricMatch(want, got interface{}, partial bool) bool {
 	return reflect.DeepEqual(want, got)
 }
 
+// aliasRootToolNames gives the assertions the TS tool names, as Normalize
+// does for snapshots: every "toolName" string with a ToolNameAlias entry (Go
+// names provider tools by their id) is renamed, in predicates and paths
+// alike. Without aliases the roots are returned as they are.
+func aliasRootToolNames(roots map[string]interface{}) map[string]interface{} {
+	if len(ToolNameAlias) == 0 {
+		return roots
+	}
+	// rename reports whether it renamed anything in a JSON value (in place).
+	var rename func(v interface{}) bool
+	rename = func(v interface{}) bool {
+		changed := false
+		switch x := v.(type) {
+		case map[string]interface{}:
+			for k, e := range x {
+				if name, ok := e.(string); ok && k == "toolName" && ToolNameAlias[name] != "" {
+					x[k] = ToolNameAlias[name]
+					changed = true
+				} else if rename(e) {
+					changed = true
+				}
+			}
+		case []interface{}:
+			for _, e := range x {
+				if rename(e) {
+					changed = true
+				}
+			}
+		}
+		return changed
+	}
+	out := make(map[string]interface{}, len(roots))
+	for k, v := range roots {
+		out[k] = v
+		// Only roots with a renamed tool name are replaced by their JSON
+		// form; the others keep their Go values (request bodies, calls).
+		if j := jsonValue(v); rename(j) {
+			out[k] = j
+		}
+	}
+	return out
+}
+
 func jsonString(v interface{}) string {
 	b, _ := json.Marshal(v)
 	return string(b)
@@ -879,6 +922,7 @@ func jsonString(v interface{}) string {
 
 func runAsserts(t *testing.T, c Case, roots map[string]interface{}) {
 	t.Helper()
+	roots = aliasRootToolNames(roots)
 	skipped := 0
 	for _, a := range c.Asserts {
 		msg, skip := a.check(roots, c.Aliases)
