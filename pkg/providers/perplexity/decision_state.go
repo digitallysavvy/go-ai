@@ -92,7 +92,19 @@ func perplexityDecisionImage(part provider.DecisionStatePart) (map[string]interf
 	if declared == "" {
 		declared = file.FileData.MediaType
 	}
-	if kind := file.FileData.Type; kind != "" && kind != types.FileDataTypeData {
+	kind := file.FileData.Type
+	if kind == "" && len(file.Data) == 0 {
+		// The legacy FileContent fields map to the TS data kinds.
+		switch {
+		case file.URL != "":
+			kind = types.FileDataTypeURL
+		case file.Reference != "":
+			kind = types.FileDataTypeReference
+		case file.Text != "":
+			kind = types.FileDataTypeText
+		}
+	}
+	if kind != "" && kind != types.FileDataTypeData {
 		return nil, &providererrors.UnsupportedFunctionalityError{
 			Functionality: fmt.Sprintf("Perplexity decision file input: %s", kind),
 		}

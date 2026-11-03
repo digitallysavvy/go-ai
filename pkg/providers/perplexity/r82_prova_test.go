@@ -109,3 +109,14 @@ func TestR82provaPerplexityStreamFinanceResultsNoSource(t *testing.T) {
 		}
 	}
 }
+
+// TS rejects a non-data decision file (`Perplexity decision file input:
+// url`); a Go part using the legacy URL field was sniffed as empty data and
+// failed with the image media type error instead.
+func TestR82provaPerplexityDecisionLegacyURLFile(t *testing.T) {
+	_, err := convertToPerplexityDecisionState([]provider.DecisionStatePart{provider.DecisionFilePart(types.FileContent{MediaType: "image/png", URL: "https://example.com/a.png"})})
+	var unsupported *providererrors.UnsupportedFunctionalityError
+	if !errors.As(err, &unsupported) || unsupported.Functionality != "Perplexity decision file input: url" {
+		t.Fatalf("err = %v", err)
+	}
+}
