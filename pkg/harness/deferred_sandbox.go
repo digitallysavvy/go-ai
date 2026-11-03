@@ -2,6 +2,8 @@ package harness
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"sync"
 
@@ -152,6 +154,58 @@ func (s *gatedSandboxSession) WriteTextFile(ctx context.Context, opts providerut
 		return err
 	}
 	return target.WriteTextFile(ctx, opts)
+}
+
+// Stat, ListDirectory and DeleteFile are required TS SandboxSession methods
+// that TS delegateSandboxOperations forwards; in Go they are the optional
+// providerutils.SandboxStatter, SandboxDirectoryLister and
+// SandboxFileDeleter. The gated session always has them, waits for the
+// setup and forwards to the target, or reports errors.ErrUnsupported when
+// the target does not implement the method.
+var (
+	_ providerutils.SandboxStatter         = (*gatedSandboxSession)(nil)
+	_ providerutils.SandboxDirectoryLister = (*gatedSandboxSession)(nil)
+	_ providerutils.SandboxFileDeleter     = (*gatedSandboxSession)(nil)
+)
+
+func unsupportedSandboxOperation(method string) error {
+	return fmt.Errorf("harness: the sandbox session does not implement %s: %w", method, errors.ErrUnsupported)
+}
+
+func (s *gatedSandboxSession) Stat(ctx context.Context, path string) (*providerutils.SandboxFileStat, error) {
+	target, err := s.resolve(ctx)
+	if err != nil {
+		return nil, err
+	}
+	statter, ok := target.(providerutils.SandboxStatter)
+	if !ok {
+		return nil, unsupportedSandboxOperation("Stat")
+	}
+	return statter.Stat(ctx, path)
+}
+
+func (s *gatedSandboxSession) ListDirectory(ctx context.Context, path string) ([]providerutils.SandboxDirectoryEntry, error) {
+	target, err := s.resolve(ctx)
+	if err != nil {
+		return nil, err
+	}
+	lister, ok := target.(providerutils.SandboxDirectoryLister)
+	if !ok {
+		return nil, unsupportedSandboxOperation("ListDirectory")
+	}
+	return lister.ListDirectory(ctx, path)
+}
+
+func (s *gatedSandboxSession) DeleteFile(ctx context.Context, path string) (bool, error) {
+	target, err := s.resolve(ctx)
+	if err != nil {
+		return false, err
+	}
+	deleter, ok := target.(providerutils.SandboxFileDeleter)
+	if !ok {
+		return false, unsupportedSandboxOperation("DeleteFile")
+	}
+	return deleter.DeleteFile(ctx, path)
 }
 
 // gateSandboxSession wraps target so every operation waits for gate.
