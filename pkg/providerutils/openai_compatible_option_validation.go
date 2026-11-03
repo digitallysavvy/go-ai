@@ -8,7 +8,7 @@ package providerutils
 
 var openAICompatChatOptionsSchema = OptionSchema{
 	"user":             OptString,
-	"reasoningEffort":  OptString,
+	"reasoningEffort":  OptNullable(OptString), // TS 5006d83c4e: z.string().nullish()
 	"textVerbosity":    OptString,
 	"strictJsonSchema": OptBool,
 }

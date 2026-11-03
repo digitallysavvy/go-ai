@@ -366,10 +366,11 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 			suffixed = fmt.Sprintf("%s#%02d", c.Test, occurrence)
 		}
 		// The TS test server sends content-length on a JSON response; Go
-		// reports it only for a case whose expectations show it (a Go
-		// stream may carry one where TS has none).
+		// reports it only for a case whose expectations (snapshots or plain
+		// assertions) show it (a Go stream may carry one where TS has none).
 		expsJSON, _ := json.Marshal(c.Exps)
-		keepContentLength := bytes.Contains(expsJSON, []byte(`"content-length"`))
+		assertsJSON, _ := json.Marshal(c.Asserts)
+		keepContentLength := bytes.Contains(expsJSON, []byte(`"content-length"`)) || bytes.Contains(assertsJSON, []byte(`"content-length"`))
 		t.Run(c.Test, func(t *testing.T) {
 			if why, ok := skip[suffixed]; ok {
 				t.Skip(why)

@@ -325,33 +325,56 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		isReasoningModel = v
 	}
 
-	// Resolve reasoning_effort: an explicit providerOptions.openai.reasoningEffort
-	// string wins (TS getArgs: `openaiOptions.reasoningEffort ?? (isCustomReasoning(reasoning) ? reasoning : undefined)`).
-	// types.ReasoningLevel's string values ("none", "minimal", "low", "medium",
-	// "high", "xhigh") are the exact literals TS's top-level `reasoning` field
-	// uses and forwards verbatim -- TS does NOT collapse "minimal" into "low" or
-	// "xhigh" into "high"; it sends the level straight through as-is (isCustomReasoning
-	// is true for anything except "provider-default"). Resolved early because the
-	// reasoning-model parameter-compatibility gating below needs to know whether
-	// the effective effort is "none" (TS getArgs).
-	resolvedReasoningEffort := ""
+	// Resolve reasoning_effort (TS getArgs, 61a315e333 / d07b475bc8): an
+	// explicit providerOptions.openai.reasoningEffort is sent unchanged;
+	// otherwise the top-level `reasoning` is rounded to an effort the model
+	// supports (resolveOpenAIReasoningEffort; Chat Completions never sends
+	// "max" to a model with a known effort list). Models that reject
+	// function tools with reasoning in Chat Completions (GPT-5.6+) get
+	// "none" when function tools are present and no provider effort is set.
+	// The OpenAI-compatible model sends the provider option (an explicit
+	// null included, 5006d83c4e) or the top-level value unmapped.
+	// Resolved early because the reasoning-model parameter-compatibility
+	// gating below needs to know whether the effective effort is "none".
+	var providerReasoningEffort *string
 	if v, ok := openaiOpts["reasoningEffort"].(string); ok && v != "" {
-		resolvedReasoningEffort = v
+		providerReasoningEffort = &v
 	}
-	if resolvedReasoningEffort == "" && opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
-		resolvedReasoningEffort = string(*opts.Reasoning)
-	}
-
-	// GPT-6+ models restrict reasoning effort to a fixed set (34c53c0); drop
-	// and warn on anything outside it (matches TS getArgs()).
-	if resolvedReasoningEffort != "" && capabilities.SupportedReasoningEfforts != nil &&
-		!chatStringSliceContains(capabilities.SupportedReasoningEfforts, resolvedReasoningEffort) {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "reasoningEffort",
-			Details: m.modelID + " only supports the following reasoning efforts: " + strings.Join(capabilities.SupportedReasoningEfforts, ", "),
-		})
-		resolvedReasoningEffort = ""
+	resolvedReasoningEffort := ""
+	compatReasoningEffortNull := false
+	if m.provider.config.OpenAICompatible {
+		if v, ok := openaiOpts["reasoningEffort"]; ok && v == nil {
+			compatReasoningEffortNull = true
+		} else if providerReasoningEffort != nil {
+			resolvedReasoningEffort = *providerReasoningEffort
+		} else if providerutils.IsCustomReasoning(opts.Reasoning) {
+			resolvedReasoningEffort = string(*opts.Reasoning)
+		}
+	} else {
+		requiresNoReasoningEffort := !capabilities.SupportsChatFunctionToolsWithReasoning &&
+			providerReasoningEffort == nil && chatHasFunctionTool(opts.Tools)
+		if requiresNoReasoningEffort {
+			if providerutils.IsCustomReasoning(opts.Reasoning) && *opts.Reasoning != types.ReasoningNone {
+				warnings = append(warnings, types.Warning{
+					Type:    "compatibility",
+					Feature: "reasoning",
+					Details: m.modelID + ` does not support function tools with reasoning in the Chat Completions API. reasoning effort set to "none". Use the Responses API to combine reasoning with function tools.`,
+				})
+			}
+			resolvedReasoningEffort = "none"
+		} else {
+			// Only the Responses API supports "max".
+			var supported []string
+			if capabilities.SupportedReasoningEfforts != nil {
+				supported = make([]string, 0, len(capabilities.SupportedReasoningEfforts))
+				for _, e := range capabilities.SupportedReasoningEfforts {
+					if e != "max" {
+						supported = append(supported, e)
+					}
+				}
+			}
+			resolvedReasoningEffort = resolveOpenAIReasoningEffort(providerReasoningEffort, opts.Reasoning, supported, &warnings)
+		}
 	}
 
 	// TS getArgs warning order: reasoningEffort, topK, reasoningSummary, message
@@ -550,7 +573,9 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// GPT-6+ models don't support it; use promptCacheOptions instead
 	// (b2b1bb9).
 	if promptCacheRetention, ok := openaiOpts["promptCacheRetention"].(string); ok && promptCacheRetention != "" {
-		if capabilities.SupportedReasoningEfforts != nil {
+		// TS promptCache.retention is false for GPT-6 and later models
+		// (SupportsConfigurationUpdate is the same GPT-6+ test).
+		if capabilities.SupportsConfigurationUpdate {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "promptCacheRetention",
@@ -720,6 +745,8 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 
 	if resolvedReasoningEffort != "" {
 		body["reasoning_effort"] = resolvedReasoningEffort
+	} else if compatReasoningEffortNull {
+		body["reasoning_effort"] = nil
 	}
 
 	// promptCacheOptions (b2b1bb9): {mode, ttl} forwarded as-is to
@@ -792,8 +819,15 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	for k, v := range compatPassthrough {
 		switch k {
 		case "user", "reasoningEffort", "textVerbosity", "strictJsonSchema",
-			"messages", "tools", "tool_choice", "reasoning_effort", "verbosity", "stream", "stream_options":
+			"messages", "tools", "tool_choice", "verbosity", "stream", "stream_options":
 			continue
+		case "reasoning_effort":
+			// TS 5006d83c4e: reasoning_effort is written after the
+			// passthrough only when it has a value, so a raw
+			// reasoning_effort (null included) is no longer overwritten.
+			if resolvedReasoningEffort != "" || compatReasoningEffortNull {
+				continue
+			}
 		}
 		body[k] = v
 	}
@@ -810,9 +844,11 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	return body, warnings, nil
 }
 
-func chatStringSliceContains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
+// chatHasFunctionTool reports whether any tool is a function tool (TS
+// `tools?.some(tool => tool.type === 'function')`).
+func chatHasFunctionTool(tools []types.Tool) bool {
+	for _, t := range tools {
+		if t.Type != "provider" {
 			return true
 		}
 	}

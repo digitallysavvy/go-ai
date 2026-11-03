@@ -348,46 +348,22 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	// option (reasoningEffort raw string) always takes precedence and is
 	// passed through verbatim, matching TS's
 	// `openResponsesOptions?.reasoningEffort ?? mapReasoningToProviderEffort(...)`.
-	var reasoningEffort string
-	// TS `??` only skips null/undefined: an empty-string reasoningEffort is a
-	// resolved value and is sent as is.
-	effortOption, effortOptionSet := provOpts.Raw["reasoningEffort"].(string)
-	// TS `reasoningEffort ?? (isCustomReasoning(reasoning) ? map...)`: the
-	// mapping (and its compatibility warning) only runs without the option.
-	if opts.Reasoning != nil && !effortOptionSet {
-		switch *opts.Reasoning {
-		case types.ReasoningNone:
-			reasoningEffort = "none"
-		case types.ReasoningMinimal:
-			// TS effortMap maps minimal -> low for Open Responses (there is no
-			// "minimal" effort value on this API) and reports a compatibility
-			// warning when the mapped value differs from the requested one.
-			reasoningEffort = "low"
-			warnings = append(warnings, types.Warning{
-				Type:    "compatibility",
-				Feature: "reasoning",
-				Details: `reasoning "minimal" is not directly supported by this model. mapped to effort "low".`,
-			})
-		case types.ReasoningLow:
-			reasoningEffort = "low"
-		case types.ReasoningMedium:
-			reasoningEffort = "medium"
-		case types.ReasoningHigh:
-			reasoningEffort = "high"
-		case types.ReasoningXHigh:
-			reasoningEffort = "xhigh"
-		case types.ReasoningMax:
-			reasoningEffort = "max"
-			// ReasoningDefault ("provider-default"): omit.
-		}
+	// TS 61a315e333: mapReasoningToProviderEffort with the provider option
+	// (TS `!= null`: an empty string is a resolved value and is sent as is)
+	// and the Open Responses efforts plus max; minimal rounds up to low with
+	// a compatibility warning.
+	var providerEffort *string
+	if effortOption, ok := provOpts.Raw["reasoningEffort"].(string); ok {
+		providerEffort = &effortOption
 	}
+	reasoningEffort, hasReasoningEffort := providerutils.MapReasoningToProviderEffort(opts.Reasoning, map[types.ReasoningLevel]string{
+		types.ReasoningNone: "none", types.ReasoningLow: "low", types.ReasoningMedium: "medium",
+		types.ReasoningHigh: "high", types.ReasoningXHigh: "xhigh", types.ReasoningMax: "max",
+	}, providerEffort, &warnings)
 	resolvedReasoningSummary := provOpts.ReasoningSummary
-	if effortOptionSet {
-		reasoningEffort = effortOption
-	}
-	if reasoningEffort != "" || effortOptionSet || resolvedReasoningSummary != "" {
+	if hasReasoningEffort || resolvedReasoningSummary != "" {
 		reasoning := map[string]interface{}{}
-		if reasoningEffort != "" || effortOptionSet {
+		if hasReasoningEffort {
 			reasoning["effort"] = reasoningEffort
 		}
 		if resolvedReasoningSummary != "" {

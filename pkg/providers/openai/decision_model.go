@@ -29,6 +29,9 @@ type DecisionModelOptions struct {
 	// SafetyIdentifier is an opaque end-user identifier for safety monitoring,
 	// up to 128 characters.
 	SafetyIdentifier *string `json:"safetyIdentifier,omitempty"`
+	// PromptCacheKey is the prompt cache key sent as prompt_cache_key
+	// (TS 47b1d8b2f7).
+	PromptCacheKey *string `json:"promptCacheKey,omitempty"`
 }
 
 // DecisionModel implements provider.DecisionModel on top of the OpenAI
@@ -173,6 +176,9 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	}
 	if openaiOpts.SafetyIdentifier != nil {
 		body["safety_identifier"] = *openaiOpts.SafetyIdentifier
+	}
+	if openaiOpts.PromptCacheKey != nil {
+		body["prompt_cache_key"] = *openaiOpts.PromptCacheKey
 	}
 
 	var raw json.RawMessage
@@ -347,26 +353,39 @@ func parseDecisionProviderOptions(providerOptions map[string]interface{}) (Decis
 	if !ok {
 		return out, &providererrors.InvalidArgumentError{Field: "providerOptions.openai", Message: "must be an object"}
 	}
-	value, present := options["safetyIdentifier"]
-	if !present {
-		return out, nil
-	}
-	s, ok := value.(string)
-	if !ok || len(s) > 128 {
-		return out, &providererrors.InvalidArgumentError{
-			Field:   "providerOptions.openai.safetyIdentifier",
-			Message: "must be a string of at most 128 characters",
+	if value, present := options["safetyIdentifier"]; present {
+		s, ok := value.(string)
+		if !ok || len(s) > 128 {
+			return out, &providererrors.InvalidArgumentError{
+				Field:   "providerOptions.openai.safetyIdentifier",
+				Message: "must be a string of at most 128 characters",
+			}
 		}
+		out.SafetyIdentifier = &s
 	}
-	out.SafetyIdentifier = &s
+	if value, present := options["promptCacheKey"]; present {
+		s, ok := value.(string)
+		if !ok {
+			return out, &providererrors.InvalidArgumentError{
+				Field:   "providerOptions.openai.promptCacheKey",
+				Message: "must be a string",
+			}
+		}
+		out.PromptCacheKey = &s
+	}
 	return out, nil
 }
+
+// decisionSupportedProviderOptions are the providerOptions.openai keys the
+// Decisions API reads (TS SUPPORTED_PROVIDER_OPTIONS); every other key gets
+// an unsupported warning.
+var decisionSupportedProviderOptions = map[string]bool{"safetyIdentifier": true, "promptCacheKey": true}
 
 func decisionUnsupportedOptionWarnings(providerOptions map[string]interface{}) []types.Warning {
 	openaiOpts, _ := providerOptions["openai"].(map[string]interface{})
 	keys := make([]string, 0, len(openaiOpts))
 	for k := range openaiOpts {
-		if k != "safetyIdentifier" {
+		if !decisionSupportedProviderOptions[k] {
 			keys = append(keys, k)
 		}
 	}
@@ -402,7 +421,15 @@ func decisionInputContent(parts []provider.DecisionStatePart) ([]interface{}, er
 		case "text":
 			content = append(content, map[string]interface{}{"type": "input_text", "text": part.Text})
 		case "json":
-			content = append(content, map[string]interface{}{"type": "input_text", "text": decisionJSONText(part.Value)})
+			// TS 47b1d8b2f7: an object, or a non-empty array of objects,
+			// within the input_json limits is sent natively; anything else
+			// as its JSON text.
+			text := decisionJSONText(part.Value)
+			if decisionIsInputJSONData(text) {
+				content = append(content, map[string]interface{}{"type": "input_json", "data": json.RawMessage(text)})
+			} else {
+				content = append(content, map[string]interface{}{"type": "input_text", "text": text})
+			}
 		case "file":
 			image, err := decisionImageContent(part)
 			if err != nil {
@@ -414,6 +441,75 @@ func decisionInputContent(parts []provider.DecisionStatePart) ([]interface{}, er
 		}
 	}
 	return content, nil
+}
+
+// TS INPUT_JSON_MAX_DEPTH, INPUT_JSON_MAX_VALUES, INPUT_JSON_MAX_BYTES.
+const (
+	decisionInputJSONMaxDepth  = 32
+	decisionInputJSONMaxValues = 10_000
+	decisionInputJSONMaxBytes  = 256 * 1024
+)
+
+// decisionIsInputJSONData ports TS isInputJsonData on the JSON text of the
+// value (JSON.stringify): an object, or a non-empty array of objects, with
+// at most 10,000 values, containers nested at most 32 deep, and at most
+// 256 KiB of UTF-8 JSON text.
+func decisionIsInputJSONData(text string) bool {
+	if len(text) > decisionInputJSONMaxBytes {
+		return false
+	}
+	dec := json.NewDecoder(strings.NewReader(text))
+	dec.UseNumber()
+	var value interface{}
+	if err := dec.Decode(&value); err != nil {
+		return false
+	}
+	switch v := value.(type) {
+	case map[string]interface{}:
+	case []interface{}:
+		if len(v) == 0 {
+			return false
+		}
+		for _, item := range v {
+			if _, ok := item.(map[string]interface{}); !ok {
+				return false
+			}
+		}
+	default:
+		return false
+	}
+	// The values are counted from the JSON text: Go maps drop duplicate
+	// keys, which JSON.stringify never produces anyway.
+	count := 0
+	var visit func(node interface{}, depth int) bool
+	visit = func(node interface{}, depth int) bool {
+		count++
+		if count > decisionInputJSONMaxValues {
+			return false
+		}
+		switch n := node.(type) {
+		case map[string]interface{}:
+			if depth > decisionInputJSONMaxDepth {
+				return false
+			}
+			for _, child := range n {
+				if !visit(child, depth+1) {
+					return false
+				}
+			}
+		case []interface{}:
+			if depth > decisionInputJSONMaxDepth {
+				return false
+			}
+			for _, child := range n {
+				if !visit(child, depth+1) {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	return visit(value, 1)
 }
 
 func decisionImageContent(part provider.DecisionStatePart) (map[string]interface{}, error) {

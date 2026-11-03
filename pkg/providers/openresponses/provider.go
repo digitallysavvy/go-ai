@@ -1,11 +1,13 @@
 package openresponses
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -34,6 +36,13 @@ type Config struct {
 	// APIKey is the optional API key for authentication
 	// Many local model servers don't require authentication
 	APIKey string
+
+	// APIKeyFunc resolves the optional API key for every request instead of
+	// APIKey (TS `apiKey` as a function, 7716e189ee). Its error fails the
+	// request; an empty result sends no Authorization header, like an empty
+	// APIKey. Setting both APIKey and APIKeyFunc fails every request with an
+	// InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 
 	// Headers are custom HTTP headers to include in requests
 	Headers map[string]string
@@ -141,11 +150,41 @@ func New(cfg Config) *Provider {
 	}
 	headers = version.WithUserAgentSuffix(headers, userAgentSuffix)
 
+	headersFunc := cfg.HeadersFunc
+	if cfg.APIKeyFunc != nil {
+		inner, userHeaders, apiKey, keyFunc := cfg.HeadersFunc, cfg.Headers, cfg.APIKey, cfg.APIKeyFunc
+		headersFunc = func() (map[string]string, error) {
+			out := map[string]string{}
+			// TS `{...(apiKey && {Authorization: Bearer apiKey}),
+			// ...options.headers}`: the caller's own Authorization header
+			// wins. TS resolves the key without an abort signal.
+			auth, err := providerutils.RequestAuthHeaderFunc(context.Background(), userHeaders, providerutils.ResolveAPIKeyOptions{
+				APIKey: apiKey, APIKeyFunc: keyFunc, Optional: true,
+			}, "Authorization", "Bearer ")
+			if err != nil {
+				return nil, err
+			}
+			if v, ok := auth["Authorization"]; ok && v != "Bearer " {
+				out["Authorization"] = v
+			}
+			if inner != nil {
+				extra, err := inner()
+				if err != nil {
+					return nil, err
+				}
+				for k, v := range extra {
+					out[k] = v
+				}
+			}
+			return out, nil
+		}
+	}
+
 	// Create HTTP client
 	client := http.NewClient(http.Config{
 		BaseURL:     cfg.BaseURL,
 		Headers:     headers,
-		HeadersFunc: cfg.HeadersFunc,
+		HeadersFunc: headersFunc,
 	})
 
 	registry, err := NewExtensionRegistry(cfg.Extensions)

@@ -184,7 +184,8 @@ func TestDecisionModel_SerializesStructuredInputAndRubrics(t *testing.T) {
 		t.Fatal(err)
 	}
 	input := rec.body["input"].([]interface{})[0].(map[string]interface{})["content"]
-	if !reflect.DeepEqual(input, []interface{}{map[string]interface{}{"type": "input_text", "text": `{"ticket":["charged twice"]}`}}) {
+	// TS 47b1d8b2f7: a JSON object is sent natively as input_json.
+	if !reflect.DeepEqual(input, []interface{}{map[string]interface{}{"type": "input_json", "data": map[string]interface{}{"ticket": []interface{}{"charged twice"}}}}) {
 		t.Fatalf("input = %v", input)
 	}
 	questions := rec.body["questions"].([]interface{})

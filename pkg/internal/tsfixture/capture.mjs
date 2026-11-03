@@ -31,15 +31,15 @@ function clone(v) { return v === undefined ? undefined : JSON.parse(JSON.stringi
 const server = { urls: new Proxy({}, { get(t, k) { if (!(k in t)) t[k] = {}; return t[k]; } }), calls: [] };
 class Model {
   constructor(id) { this.modelId = id; }
-  capture(kind) {
+  capture(kind, opts) {
     const routes = {};
     for (const [u, v] of Object.entries(server.urls)) routes[u] = clone(v.response);
     const now = JSON.stringify(Object.entries(server.urls).map(([u, v]) => [u, v.response]));
-    current.captures.push({ kind, modelId: this.modelId, routes, setByTest: now !== current.base || current.base === undefined });
+    current.captures.push({ kind, modelId: this.modelId, call: clone(opts), routes, setByTest: now !== current.base || current.base === undefined });
     throw SENTINEL;
   }
-  async doGenerate() { return this.capture('generate'); }
-  async doStream() { return this.capture('stream'); }
+  async doGenerate(o) { return this.capture('generate', o); }
+  async doStream(o) { return this.capture('stream', o); }
 }
 const anyProxy = new Proxy(function () {}, { get: (t, k) => (k === 'then' ? undefined : anyProxy), apply: () => anyProxy });
 const ctx = {
@@ -84,6 +84,7 @@ for (const c of cases) {
   const caps = captured[key] || [];
   const i = used[key] = (used[key] ?? -1) + 1;
   const cap = caps[i];
+  if (cap && c.call == null && cap.call != null) { c.call = cap.call; console.error('call from capture', c.test); }
   if (cap && !c.modelId && cap.modelId) { c.modelId = cap.modelId; console.error('model id from capture', c.test, cap.modelId); }
   if (c.response || c.routes || !['generate','stream'].includes(c.callKind)) continue;
   if (!cap) { console.error('no capture for', c.test, i); continue; }

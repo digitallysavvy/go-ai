@@ -302,20 +302,30 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// and topP warnings.
 	var effortWarnings []types.Warning
 
-	// Map top-level Reasoning to DeepSeek thinking + reasoning_effort (TS parity).
-	// TS effort map: minimal/low -> low, medium/high -> high, xhigh -> max.
-	if opts.Reasoning != nil {
+	// Map top-level Reasoning to DeepSeek thinking + reasoning_effort (TS
+	// parity). Without a provider reasoningEffort, the level is rounded onto
+	// DeepSeek's {low, high, max} (TS 61a315e333: medium -> low, xhigh ->
+	// high, minimal -> low, each with a compatibility warning).
+	if providerutils.IsCustomReasoning(opts.Reasoning) {
 		if *opts.Reasoning == types.ReasoningNone {
 			if m.provider.supportsThinking() {
 				body["thinking"] = map[string]interface{}{"type": "disabled"}
 			}
-		} else if effort, ok := deepseekTopLevelReasoningEffort(*opts.Reasoning); ok {
+		} else {
 			if m.provider.supportsThinking() {
 				body["thinking"] = map[string]interface{}{"type": "enabled"}
 			}
-			body["reasoning_effort"] = effort
-			if effort != string(*opts.Reasoning) && !hasProviderReasoningEffort {
-				effortWarnings = append(effortWarnings, reasoningCompatibilityWarning(string(*opts.Reasoning), effort))
+			if !hasProviderReasoningEffort {
+				n := len(effortWarnings)
+				if effort, ok := providerutils.MapReasoningToProviderEffort(opts.Reasoning, map[types.ReasoningLevel]string{
+					types.ReasoningLow: "low", types.ReasoningHigh: "high", types.ReasoningMax: "max",
+				}, nil, &effortWarnings); ok {
+					body["reasoning_effort"] = effort
+				}
+				// v0.5 also set Message on this warning.
+				for i := n; i < len(effortWarnings); i++ {
+					effortWarnings[i].Message = effortWarnings[i].Details
+				}
 			}
 		}
 	}
@@ -422,23 +432,6 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	return body, warnings, nil
 }
 
-// deepseekTopLevelReasoningEffort maps a top-level ReasoningLevel to
-// DeepSeek's reasoning_effort values, mirroring the TypeScript SDK's
-// mapReasoningToProviderEffort({minimal:'low', low:'low', medium:'high',
-// high:'high', xhigh:'max'}). ReasoningDefault (and any other unmapped level)
-// returns ok=false.
-func deepseekTopLevelReasoningEffort(level types.ReasoningLevel) (effort string, ok bool) {
-	switch level {
-	case types.ReasoningMinimal, types.ReasoningLow:
-		return "low", true
-	case types.ReasoningMedium, types.ReasoningHigh:
-		return "high", true
-	case types.ReasoningXHigh, types.ReasoningMax:
-		return "max", true
-	}
-	return "", false
-}
-
 // deepseekProviderReasoningEffort remaps legacy providerOptions.deepseek.reasoningEffort
 // values to DeepSeek's canonical set ({low, high, max}), mirroring the
 // TypeScript SDK's mapDeepSeekProviderReasoningEffort. remapped is true when
@@ -451,16 +444,6 @@ func deepseekProviderReasoningEffort(effort string) (mapped string, remapped boo
 		return "max", true
 	default:
 		return effort, false
-	}
-}
-
-func reasoningCompatibilityWarning(reasoning, effort string) types.Warning {
-	details := fmt.Sprintf("reasoning %q is not directly supported by this model. mapped to effort %q.", reasoning, effort)
-	return types.Warning{
-		Type:    "compatibility",
-		Feature: "reasoning",
-		Details: details,
-		Message: details,
 	}
 }
 

@@ -279,6 +279,9 @@ func TestChatReasoningEffortMaxAcceptedForGpt6(t *testing.T) {
 // TestChatReasoningEffortRejectedWhenUnsupportedForGpt6 covers 34c53c0: an
 // effort not in SupportedReasoningEfforts is dropped with a warning.
 func TestChatReasoningEffortRejectedWhenUnsupportedForGpt6(t *testing.T) {
+	// TS 61a315e333: a providerOptions.openai.reasoningEffort is sent
+	// unchanged, without validation or warnings, even when the model's
+	// effort list does not contain it.
 	p := New(Config{APIKey: "k"})
 	m := NewLanguageModel(p, "gpt-6-astra")
 
@@ -286,17 +289,13 @@ func TestChatReasoningEffortRejectedWhenUnsupportedForGpt6(t *testing.T) {
 		Prompt:          types.Prompt{Text: "hi"},
 		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"reasoningEffort": "minimal"}},
 	}, false)
-	if _, ok := body["reasoning_effort"]; ok {
-		t.Fatalf("reasoning_effort should be dropped, got %#v", body["reasoning_effort"])
+	if body["reasoning_effort"] != "minimal" {
+		t.Fatalf("reasoning_effort = %#v, want minimal (provider option sent unchanged)", body["reasoning_effort"])
 	}
-	var found bool
 	for _, w := range warnings {
-		if w.Type == "unsupported" && w.Feature == "reasoningEffort" {
-			found = true
+		if w.Feature == "reasoningEffort" || w.Feature == "reasoning" {
+			t.Fatalf("unexpected reasoning warning %#v", w)
 		}
-	}
-	if !found {
-		t.Fatalf("expected unsupported reasoningEffort warning, got %#v", warnings)
 	}
 }
 

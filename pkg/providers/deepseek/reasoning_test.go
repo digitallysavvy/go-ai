@@ -95,9 +95,9 @@ func TestDeepSeekReasoningAllLevels(t *testing.T) {
 		{types.ReasoningLow, "enabled", "low", true},
 		// TS deepseek-chat-language-model.ts effortMap maps medium -> "high"
 		// (DeepSeek's reasoning_effort scale is low/high/max, no "medium" value).
-		{types.ReasoningMedium, "enabled", "high", true},
+		{types.ReasoningMedium, "enabled", "low", true}, // TS 61a315e333 rounds down
 		{types.ReasoningHigh, "enabled", "high", true},
-		{types.ReasoningXHigh, "enabled", "max", true},
+		{types.ReasoningXHigh, "enabled", "high", true}, // TS 61a315e333 rounds down
 		{types.ReasoningDefault, "", "", false},
 	}
 
@@ -283,17 +283,17 @@ func TestDeepSeekReasoningCompatibilityWarnings(t *testing.T) {
 		{
 			name:       "medium",
 			level:      types.ReasoningMedium,
-			wantDetail: `reasoning "medium" is not directly supported by this model. mapped to effort "high".`,
+			wantDetail: `reasoning "medium" is not directly supported by this model. mapped to effort "low".`,
 		},
 		{
 			name:       "xhigh",
 			level:      types.ReasoningXHigh,
-			wantDetail: `reasoning "xhigh" is not directly supported by this model. mapped to effort "max".`,
+			wantDetail: `reasoning "xhigh" is not directly supported by this model. mapped to effort "high".`,
 		},
 		{
 			name:       "medium",
 			level:      types.ReasoningMedium,
-			wantDetail: `reasoning "medium" is not directly supported by this model. mapped to effort "high".`,
+			wantDetail: `reasoning "medium" is not directly supported by this model. mapped to effort "low".`,
 		},
 	}
 

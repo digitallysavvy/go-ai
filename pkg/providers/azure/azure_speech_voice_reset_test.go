@@ -11,8 +11,9 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
-// Ported from TS #21944: the Envoy "protocol error" 502 for unknown voices is
-// a non-retryable 400; other 502s stay retryable.
+// TS c3b6fef1ff ("keeps 502 responses retryable"): every 502, the Envoy
+// "protocol error" reset included, keeps its status, the standard message
+// and its retryability.
 func TestAzureSpeech_VoiceReset502IsNonRetryable400(t *testing.T) {
 	speechErr := func(t *testing.T, status int, body string) *providererrors.ProviderError {
 		t.Helper()
@@ -37,18 +38,15 @@ func TestAzureSpeech_VoiceReset502IsNonRetryable400(t *testing.T) {
 		return perr
 	}
 
-	perr := speechErr(t, 502, "upstream connect error or disconnect/reset before headers. reset reason: protocol error")
-	if perr.StatusCode != 400 || perr.IsRetryable() {
-		t.Errorf("status=%d retryable=%v, want 400 non-retryable", perr.StatusCode, perr.IsRetryable())
-	}
-	want := "Azure Speech could not synthesize the request. Check that the voice is available for this model and that the style is supported by the voice."
-	if perr.Message != want {
-		t.Errorf("message = %q", perr.Message)
-	}
-
-	perr = speechErr(t, 502, "bad gateway")
-	if perr.StatusCode != 502 || !perr.IsRetryable() {
-		t.Errorf("other 502: status=%d retryable=%v, want 502 retryable", perr.StatusCode, perr.IsRetryable())
+	for _, body := range []string{
+		"upstream connect error or disconnect/reset before headers. reset reason: protocol error",
+		"upstream connect error or disconnect/reset before headers. reset reason: connection termination",
+		"unavailable",
+	} {
+		perr := speechErr(t, 502, body)
+		if perr.StatusCode != 502 || !perr.IsRetryable() || perr.Message != "Azure Speech request failed with status 502." || perr.ResponseBody != body {
+			t.Errorf("%q: status=%d retryable=%v message=%q", body, perr.StatusCode, perr.IsRetryable(), perr.Message)
+		}
 	}
 }
 

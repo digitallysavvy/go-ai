@@ -81,8 +81,9 @@ func TestTranscriptionDiarizeModelDefaults(t *testing.T) {
 	}
 }
 
-// TestTranscriptionGpt4oTranscribeDefaultsToJSON covers the
-// isGpt4oTranscribeModel branch (json, not verbose_json).
+// TestTranscriptionGpt4oTranscribeDefaultsToJSON: TS 9026c7de79 sends no
+// response_format for gpt-4o-transcribe (the API default is json), and no
+// timestamp granularities.
 func TestTranscriptionGpt4oTranscribeDefaultsToJSON(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	m := NewTranscriptionModel(p, "gpt-4o-transcribe")
@@ -97,11 +98,8 @@ func TestTranscriptionGpt4oTranscribeDefaultsToJSON(t *testing.T) {
 	}
 	raw, _ := io.ReadAll(body)
 	blob := string(raw)
-	if !strings.Contains(blob, `name="response_format"`) {
-		t.Fatalf("missing response_format: %s", blob)
-	}
-	if strings.Contains(blob, "verbose_json") || strings.Contains(blob, "diarized_json") {
-		t.Fatalf("expected plain json response_format: %s", blob)
+	if strings.Contains(blob, `name="response_format"`) || strings.Contains(blob, "timestamp_granularities") {
+		t.Fatalf("expected no response_format or timestamp_granularities: %s", blob)
 	}
 }
 
@@ -307,7 +305,8 @@ func TestTranscriptionWhisper1AlwaysUsesVerboseJSON(t *testing.T) {
 		t.Fatalf("expected verbose_json response_format even without timestamps: %s", blob)
 	}
 
-	// An explicit responseFormat provider option override is ignored for whisper-1.
+	// TS 9026c7de79: an explicit responseFormat wins for whisper-1 too, and
+	// json gets no timestamp granularities.
 	body, _, err = m.buildMultipartBody(&provider.TranscriptionOptions{
 		Audio:    []byte("audio"),
 		MimeType: "audio/mpeg",
@@ -320,14 +319,14 @@ func TestTranscriptionWhisper1AlwaysUsesVerboseJSON(t *testing.T) {
 	}
 	raw, _ = io.ReadAll(body)
 	blob = string(raw)
-	if !strings.Contains(blob, "verbose_json") {
-		t.Fatalf("expected verbose_json response_format for whisper-1 even with responseFormat override: %s", blob)
+	if strings.Contains(blob, "verbose_json") || !strings.Contains(blob, "json") || strings.Contains(blob, "timestamp_granularities") {
+		t.Fatalf("expected the json responseFormat override without timestamps for whisper-1: %s", blob)
 	}
 }
 
-// TS getArgs: without providerOptions.openai only whisper-1 (verbose_json) and
-// the diarize model send a response_format; with options present the schema
-// defaults temperature=0 and timestampGranularities=["segment"] are sent and
+// TS getArgs: only whisper-1 (verbose_json) and the diarize model get a
+// default response_format, verbose_json gets segment timestamps, the schema
+// default temperature=0 is sent when providerOptions.openai is present, and
 // providerOptions.openai.language is honored.
 func TestTranscriptionOptionsDefaultsAndLanguage(t *testing.T) {
 	p := New(Config{APIKey: "k"})
@@ -349,8 +348,10 @@ func TestTranscriptionOptionsDefaultsAndLanguage(t *testing.T) {
 			t.Fatalf("missing %q: %s", want, blob)
 		}
 	}
-	if blob := read("gpt-4o-mini-transcribe-2025-03-20", map[string]interface{}{"openai": map[string]interface{}{}}); !strings.Contains(blob, "verbose_json") {
-		t.Fatalf("unknown model with options defaults to verbose_json: %s", blob)
+	// TS 9026c7de79: options no longer default an unknown model to
+	// verbose_json + segment.
+	if blob := read("gpt-4o-mini-transcribe-2025-03-20", map[string]interface{}{"openai": map[string]interface{}{}}); strings.Contains(blob, "response_format") || strings.Contains(blob, "timestamp_granularities") || !strings.Contains(blob, `name="temperature"`) {
+		t.Fatalf("unknown model with options: %s", blob)
 	}
 }
 

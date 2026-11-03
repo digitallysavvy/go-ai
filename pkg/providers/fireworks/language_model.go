@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -206,50 +207,15 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	}); format != nil {
 		body["response_format"] = format
 	}
-	// Map top-level Reasoning to Fireworks reasoning_effort.
-	// TS (openai-compatible-chat-language-model.ts:310-312): reasoning_effort
-	// is `compatibleOptions.reasoningEffort ?? (isCustomReasoning(reasoning)
-	// ? reasoning : undefined)` -- an explicit providerOptions.fireworks.
-	// reasoningEffort always wins over the unified Reasoning field.
-	// isCustomReasoning excludes only undefined/'provider-default', NOT
-	// 'none', so 'none' is forwarded as "none", not omitted. Fireworks' own
-	// transformRequestBody then remaps only minimal→low and xhigh→high,
-	// passing every other value (including an override with an
-	// unrecognized/custom string) straight through
-	// (fireworks-provider.ts:169-177).
-	reasoningEffort, hasReasoningEffort := providerutils.OpenAICompatibleStringOption(fireworksOptions, "reasoningEffort")
-	if !hasReasoningEffort && opts.Reasoning != nil {
-		switch *opts.Reasoning {
-		case types.ReasoningNone:
-			reasoningEffort, hasReasoningEffort = "none", true
-		case types.ReasoningMinimal:
-			reasoningEffort, hasReasoningEffort = "minimal", true
-		case types.ReasoningLow:
-			reasoningEffort, hasReasoningEffort = "low", true
-		case types.ReasoningMedium:
-			reasoningEffort, hasReasoningEffort = "medium", true
-		case types.ReasoningHigh:
-			reasoningEffort, hasReasoningEffort = "high", true
-		case types.ReasoningXHigh:
-			reasoningEffort, hasReasoningEffort = "xhigh", true
-		case types.ReasoningMax:
-			reasoningEffort, hasReasoningEffort = "max", true
-			// ReasoningDefault: omit
-		}
-	}
-	if hasReasoningEffort {
-		// Fireworks supports low, medium, and high reasoning levels.
-		original := reasoningEffort
-		switch reasoningEffort {
-		case "minimal":
-			reasoningEffort = "low"
-		case "xhigh", "max":
-			reasoningEffort = "high"
-		}
-		if reasoningEffort != original {
-			details := fmt.Sprintf("reasoning %q is not directly supported by this model. mapped to effort %q.", original, reasoningEffort)
-			warnings = append(warnings, types.Warning{Type: "compatibility", Feature: "reasoning", Details: details, Message: details})
-		}
+	// reasoning_effort (TS 61a315e333, 5006d83c4e): the provider option is
+	// sent unchanged (an explicit null as null); otherwise the top-level
+	// reasoning goes through Fireworks' mapReasoning, which sends every level
+	// except those the model family rejects ("none" for gpt-oss / glm-5p3 /
+	// muse-spark, "minimal" for nemotron / inkling), rounded with a
+	// compatibility warning.
+	if reasoningEffort, ok := providerutils.ResolveOpenAICompatibleReasoningEffort(fireworksOptions, opts.Reasoning, func(reasoning *types.ReasoningLevel) (string, bool) {
+		return providerutils.MapReasoningToProviderEffort(reasoning, fireworksReasoningEffortMap(m.modelID), nil, &warnings)
+	}); ok {
 		body["reasoning_effort"] = reasoningEffort
 	}
 
@@ -503,4 +469,29 @@ func newFireworksStream(reader io.ReadCloser) *fireworksStream {
 		return rc, rc != ""
 	}
 	return &fireworksStream{OpenAICompatStream: s}
+}
+
+// fireworksModelsWithoutNoneReasoningEffort are the model families that
+// always reason and reject reasoning effort "none" (TS fireworks-provider.ts).
+var fireworksModelsWithoutNoneReasoningEffort = regexp.MustCompile(`^(?:gpt-oss|glm-5p3|muse-spark)`)
+
+// fireworksModelsWithoutMinimalReasoningEffort reject "minimal".
+var fireworksModelsWithoutMinimalReasoningEffort = regexp.MustCompile(`^(?:nemotron|inkling)`)
+
+// fireworksReasoningEffortMap ports TS getFireworksReasoningEffortMap: every
+// level is sent as is, except "none" and "minimal" for the model families
+// known to reject them (matched on the name after the last "/").
+func fireworksReasoningEffortMap(modelID string) map[types.ReasoningLevel]string {
+	modelName := modelID[strings.LastIndex(modelID, "/")+1:]
+	effortMap := map[types.ReasoningLevel]string{
+		types.ReasoningLow: "low", types.ReasoningMedium: "medium", types.ReasoningHigh: "high",
+		types.ReasoningXHigh: "xhigh", types.ReasoningMax: "max",
+	}
+	if !fireworksModelsWithoutNoneReasoningEffort.MatchString(modelName) {
+		effortMap[types.ReasoningNone] = "none"
+	}
+	if !fireworksModelsWithoutMinimalReasoningEffort.MatchString(modelName) {
+		effortMap[types.ReasoningMinimal] = "minimal"
+	}
+	return effortMap
 }

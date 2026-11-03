@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"fmt"
 	stdhttp "net/http"
 	"os"
@@ -33,6 +34,13 @@ type Config struct {
 
 	// APIKey is the OpenAI API key
 	APIKey string
+
+	// APIKeyFunc resolves the API key for every request instead of APIKey
+	// (TS `apiKey` as a function, 7716e189ee). Its error fails the request;
+	// its result is sent as is, an empty string included, and the
+	// environment is not read. Setting both APIKey and APIKeyFunc fails
+	// every request with an InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 
 	// APIKeyEnvVar is the environment variable read per request when APIKey is
 	// empty (TS loadApiKey environmentVariableName). Defaults to
@@ -233,7 +241,7 @@ func New(cfg Config) *Provider {
 		}
 	}
 	apiKey := cfg.APIKey
-	if apiKey == "" && !authManaged {
+	if apiKey == "" && !authManaged && cfg.APIKeyFunc == nil {
 		apiKey = os.Getenv(apiKeyEnv)
 	}
 	cfg.APIKey = apiKey
@@ -272,8 +280,15 @@ func New(cfg Config) *Provider {
 		clientCfg.HeadersFunc = cfg.HeadersFunc
 	} else {
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
-		userHeaders, userKey := cfg.Headers, cfg.APIKey
+		// An APIKeyFunc is called per request (TS 7716e189ee; TS resolves it
+		// without an abort signal, so it gets context.Background()).
+		userHeaders, userKey, keyFunc := cfg.Headers, cfg.APIKey, cfg.APIKeyFunc
 		clientCfg.HeadersFunc = func() (map[string]string, error) {
+			if keyFunc != nil {
+				return providerutils.RequestAuthHeaderFunc(context.Background(), userHeaders, providerutils.ResolveAPIKeyOptions{
+					APIKey: userKey, APIKeyFunc: keyFunc, EnvVar: apiKeyEnv, Description: apiKeyDescription,
+				}, "Authorization", "Bearer ")
+			}
 			return providerutils.RequestAuthHeader(userHeaders, userKey, apiKeyEnv, apiKeyDescription, "Authorization", "Bearer ")
 		}
 	}

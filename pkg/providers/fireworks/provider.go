@@ -1,6 +1,7 @@
 package fireworks
 
 import (
+	"context"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"strings"
 
@@ -22,6 +23,13 @@ type Config struct {
 	// APIKey is the Fireworks AI API key
 	APIKey string
 
+	// APIKeyFunc resolves the API key for every request instead of APIKey
+	// (TS `apiKey` as a function, 7716e189ee). Its error fails the request;
+	// its result is sent as is, an empty string included, and the
+	// environment is not read. Setting both APIKey and APIKeyFunc fails
+	// every request with an InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+
 	// BaseURL is the base URL for the Fireworks AI API (optional)
 	BaseURL string
 
@@ -40,7 +48,9 @@ type Config struct {
 // New creates a new Fireworks AI provider with the given configuration
 func New(cfg Config) *Provider {
 	// TS loadApiKey: the key defaults to the FIREWORKS_API_KEY environment variable.
-	cfg.APIKey = providerutils.APIKeyOrEnv(cfg.APIKey, "FIREWORKS_API_KEY")
+	if cfg.APIKeyFunc == nil {
+		cfg.APIKey = providerutils.APIKeyOrEnv(cfg.APIKey, "FIREWORKS_API_KEY")
+	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api.fireworks.ai/inference"
@@ -55,6 +65,12 @@ func New(cfg Config) *Provider {
 		}, cfg.Headers), version.ProviderUserAgent("fireworks")),
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
 		HeadersFunc: func() (map[string]string, error) {
+			if cfg.APIKeyFunc != nil {
+				// TS resolves the key without an abort signal.
+				return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "FIREWORKS_API_KEY", Description: "Fireworks API key",
+				}, "Authorization", "Bearer ")
+			}
 			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "FIREWORKS_API_KEY", "Fireworks API key", "Authorization", "Bearer ")
 		},
 	})
@@ -87,6 +103,7 @@ func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, erro
 	}
 	return openai.New(openai.Config{
 		APIKey:            p.config.APIKey,
+		APIKeyFunc:        p.config.APIKeyFunc,
 		APIKeyEnvVar:      "FIREWORKS_API_KEY",
 		APIKeyDescription: "Fireworks API key",
 		BaseURL:           trimBaseURL(baseURL) + "/v1",

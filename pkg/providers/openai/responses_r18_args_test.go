@@ -14,9 +14,9 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
 )
 
-// TS resolves reasoningEffort once (option ?? top-level reasoning) and then
-// applies the GPT-6+ supported-efforts check to the result, so a top-level
-// `reasoning: minimal` on gpt-6 is warned about and dropped.
+// TS resolveOpenAIReasoningEffort (61a315e333): a top-level `reasoning:
+// minimal` on a GPT-6 model without "minimal" rounds up to its lowest effort
+// ("low", there is no lower level) with a compatibility warning.
 func TestResponsesTopLevelReasoningCheckedAgainstSupportedEfforts(t *testing.T) {
 	m := NewResponsesLanguageModel(New(Config{APIKey: "k"}), ModelGPT6Sol)
 	lvl := types.ReasoningMinimal
@@ -27,19 +27,13 @@ func TestResponsesTopLevelReasoningCheckedAgainstSupportedEfforts(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r, ok := body["reasoning"].(map[string]interface{}); ok {
-		if _, has := r["effort"]; has {
-			t.Fatalf("effort must be dropped, got %v", r)
-		}
+	r, _ := body["reasoning"].(map[string]interface{})
+	if r["effort"] != "low" {
+		t.Fatalf("effort = %v, want low", r)
 	}
-	found := false
-	for _, w := range warnings {
-		if w.Feature == "reasoningEffort" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected reasoningEffort warning, got %v", warnings)
+	want := []types.Warning{{Type: "compatibility", Feature: "reasoning", Details: `reasoning "minimal" is not directly supported by this model. mapped to effort "low".`}}
+	if !reflect.DeepEqual(warnings, want) {
+		t.Fatalf("warnings = %#v, want %#v", warnings, want)
 	}
 }
 

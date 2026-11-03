@@ -1,6 +1,7 @@
 package together
 
 import (
+	"context"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"log"
@@ -23,6 +24,13 @@ type Provider struct {
 type Config struct {
 	// APIKey is the Together AI API key
 	APIKey string
+
+	// APIKeyFunc resolves the API key for every request instead of APIKey
+	// (TS `apiKey` as a function, 7716e189ee). Its error fails the request;
+	// its result is sent as is, an empty string included, and the
+	// environment is not read. Setting both APIKey and APIKeyFunc fails
+	// every request with an InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 
 	// BaseURL is the base URL for the Together AI API (optional)
 	BaseURL string
@@ -63,7 +71,10 @@ func New(cfg Config) *Provider {
 	}
 	baseURL = trimBaseURL(baseURL)
 
-	apiKey := getAPIKey(cfg.APIKey)
+	apiKey := cfg.APIKey
+	if cfg.APIKeyFunc == nil {
+		apiKey = getAPIKey(cfg.APIKey)
+	}
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
@@ -73,6 +84,12 @@ func New(cfg Config) *Provider {
 		}, cfg.Headers), version.ProviderUserAgent("togetherai")),
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
 		HeadersFunc: func() (map[string]string, error) {
+			if cfg.APIKeyFunc != nil {
+				// TS resolves the key without an abort signal.
+				return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "TOGETHER_API_KEY", Description: "TogetherAI",
+				}, "Authorization", "Bearer ")
+			}
 			return providerutils.RequestAuthHeader(cfg.Headers, getAPIKey(cfg.APIKey), "TOGETHER_API_KEY", "TogetherAI", "Authorization", "Bearer ")
 		},
 	})
@@ -96,6 +113,16 @@ func (p *Provider) Name() string {
 	return "together"
 }
 
+// completionAPIKey is the static key for the completion model: the resolved
+// key, or the caller's own APIKey when an APIKeyFunc resolves it per
+// request.
+func (p *Provider) completionAPIKey() string {
+	if p.config.APIKeyFunc != nil {
+		return p.config.APIKey
+	}
+	return getAPIKey(p.config.APIKey)
+}
+
 // CompletionModel returns a text completion model (TS provider.completionModel,
 // an OpenAICompatibleCompletionLanguageModel with includeUsage: true).
 func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, error) {
@@ -104,7 +131,8 @@ func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, erro
 		baseURL = "https://api.together.xyz"
 	}
 	return openai.New(openai.Config{
-		APIKey:            getAPIKey(p.config.APIKey),
+		APIKey:            p.completionAPIKey(),
+		APIKeyFunc:        p.config.APIKeyFunc,
 		APIKeyEnvVar:      "TOGETHER_API_KEY",
 		APIKeyDescription: "TogetherAI",
 		BaseURL:           trimBaseURL(baseURL) + "/v1",

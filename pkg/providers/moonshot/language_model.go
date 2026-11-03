@@ -234,33 +234,31 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 				Details: "Kimi K3 always reasons and does not accept the thinking field. The option has been omitted.",
 			})
 		}
-		if reasoningNone {
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: `reasoning "none"`,
-				Details: "Kimi K3 reasoning cannot be disabled.",
-			})
-		}
+		// Kimi K3 reasoning cannot be disabled, so reasoning "none" maps to
+		// the lowest effort (TS 61a315e333); a provider effort is sent as is.
+		var providerEffort *string
 		if requestedReasoningEffort != "" {
-			reasoningEffort = requestedReasoningEffort
-		} else if isCustomReasoning(opts.Reasoning) && !reasoningNone {
-			reasoningEffort, _ = providerutils.MapReasoningToProviderEffort(opts.Reasoning, moonshotEffortMap, nil, &warnings)
+			providerEffort = &requestedReasoningEffort
 		}
+		reasoningEffort, _ = providerutils.MapReasoningToProviderEffort(opts.Reasoning, moonshotEffortMap, providerEffort, &warnings)
 
 	case FamilyKimiK27:
 		warnUnsupportedReasoningEffort()
-		thinkingDisabled := requestedThinking != nil && requestedThinking.Type == "disabled"
-		if thinkingDisabled || reasoningNone {
-			feature := `reasoning "none"`
-			if thinkingDisabled {
-				feature = `thinking.type "disabled"`
-			}
+		switch {
+		case requestedThinking != nil && requestedThinking.Type == "disabled":
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
-				Feature: feature,
+				Feature: `thinking.type "disabled"`,
 				Details: "Kimi K2.7 thinking cannot be disabled.",
 			})
-		} else if requestedThinking != nil && requestedThinking.Type == "enabled" {
+		case requestedThinking == nil && reasoningNone:
+			// TS 61a315e333: a compatibility warning, thinking stays on.
+			warnings = append(warnings, types.Warning{
+				Type:    "compatibility",
+				Feature: "reasoning",
+				Details: `reasoning "none" is not supported by Kimi K2.7; thinking cannot be disabled. Using thinking enabled instead.`,
+			})
+		case requestedThinking != nil && requestedThinking.Type == "enabled":
 			thinkingBody = map[string]interface{}{"type": "enabled"}
 		}
 
@@ -310,13 +308,9 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		}
 
 	case FamilyUnknown:
-		if reasoningNone {
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: `reasoning "none"`,
-				Details: "Use providerOptions.moonshotai.thinking to control thinking on custom models.",
-			})
-		}
+		// The capabilities of unknown models are not known, so reasoning
+		// "none" is sent as disabled thinking and the API decides (TS
+		// 61a315e333).
 		if requestedReasoningEffort != "" {
 			reasoningEffort = requestedReasoningEffort
 		} else if isCustomReasoning(opts.Reasoning) && !reasoningNone {
@@ -324,6 +318,8 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		}
 		if requestedThinking != nil && requestedThinking.Type != "" {
 			thinkingBody = map[string]interface{}{"type": requestedThinking.Type}
+		} else if reasoningNone {
+			thinkingBody = map[string]interface{}{"type": "disabled"}
 		}
 		if preserveReasoning {
 			preservedUnsupportedWarning()
@@ -494,26 +490,11 @@ func isCustomReasoning(r *types.ReasoningLevel) bool {
 	return r != nil && *r != types.ReasoningDefault
 }
 
-// moonshotEffortMap is the TS effortMap for Kimi K3 and unknown models.
+// moonshotEffortMap is TS moonshotReasoningEffortMap, the efforts the
+// Moonshot AI API supports; other levels round to the closest one (TS
+// 61a315e333: medium -> low, xhigh -> high, minimal and none -> low).
 var moonshotEffortMap = map[types.ReasoningLevel]string{
-	types.ReasoningMinimal: "low", types.ReasoningLow: "low",
-	types.ReasoningMedium: "high", types.ReasoningHigh: "high",
-	types.ReasoningXHigh: "max", types.ReasoningMax: "max",
-}
-
-// mapReasoningToMoonshotEffort mirrors the effortMap used for Kimi K3 and
-// unknown models: minimal/low -> low, medium/high -> high, xhigh/max -> max.
-func mapReasoningToMoonshotEffort(r types.ReasoningLevel) string {
-	switch r {
-	case types.ReasoningMinimal, types.ReasoningLow:
-		return "low"
-	case types.ReasoningMedium, types.ReasoningHigh:
-		return "high"
-	case types.ReasoningXHigh, types.ReasoningMax:
-		return "max"
-	default:
-		return ""
-	}
+	types.ReasoningLow: "low", types.ReasoningHigh: "high", types.ReasoningMax: "max",
 }
 
 // moonshotThinkingTypeFromReasoning resolves the thinking.type used by Kimi

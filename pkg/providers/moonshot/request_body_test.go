@@ -677,17 +677,18 @@ func TestBuildRequestBody_ReasoningFamilyGating(t *testing.T) {
 		}
 	})
 
-	t.Run("kimi-k3 warns and omits reasoning none", func(t *testing.T) {
+	t.Run("kimi-k3 maps reasoning none to the lowest effort", func(t *testing.T) {
+		// TS 61a315e333: Kimi K3 cannot disable reasoning.
 		model := newMoonshotTestModel("kimi-k3")
 		none := types.ReasoningNone
 		body, warnings, err := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{Prompt: textPrompt("Hello"), Reasoning: &none}, false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if _, has := body["reasoning_effort"]; has {
-			t.Error("expected reasoning_effort omitted")
+		if body["reasoning_effort"] != "low" {
+			t.Errorf("reasoning_effort = %v, want low", body["reasoning_effort"])
 		}
-		if len(warnings) != 1 || warnings[0].Feature != `reasoning "none"` {
+		if len(warnings) != 1 || warnings[0].Type != "compatibility" || warnings[0].Feature != "reasoning" {
 			t.Errorf("unexpected warnings: %#v", warnings)
 		}
 	})
@@ -983,8 +984,9 @@ func TestKimiK31ProModelsUseKimiK3Family(t *testing.T) {
 			if _, has := body["thinking"]; has {
 				t.Errorf("thinking must be omitted, got %#v", body["thinking"])
 			}
-			if body["reasoning_effort"] != "high" {
-				t.Errorf("reasoning_effort = %v, want high", body["reasoning_effort"])
+			// TS 61a315e333: medium rounds down to low.
+			if body["reasoning_effort"] != "low" {
+				t.Errorf("reasoning_effort = %v, want low", body["reasoning_effort"])
 			}
 			found := false
 			for _, w := range warnings {

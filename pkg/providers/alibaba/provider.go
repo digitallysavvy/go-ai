@@ -1,6 +1,7 @@
 package alibaba
 
 import (
+	"context"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
@@ -24,7 +25,7 @@ func New(cfg Config) *Provider {
 	cfg.BaseURL = providerutils.WithoutTrailingSlash(cfg.BaseURL)
 	cfg.VideoBaseURL = providerutils.WithoutTrailingSlash(cfg.VideoBaseURL)
 	cfg.EmbeddingBaseURL = providerutils.WithoutTrailingSlash(cfg.EmbeddingBaseURL)
-	if cfg.APIKey == "" {
+	if cfg.APIKey == "" && cfg.APIKeyFunc == nil {
 		cfg.APIKey = os.Getenv("ALIBABA_API_KEY")
 	}
 
@@ -51,6 +52,12 @@ func New(cfg Config) *Provider {
 
 	// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
 	headersFunc := func() (map[string]string, error) {
+		if cfg.APIKeyFunc != nil {
+			// TS resolves the key without an abort signal.
+			return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+				APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "ALIBABA_API_KEY", Description: "Alibaba Cloud (DashScope)",
+			}, "Authorization", "Bearer ")
+		}
 		return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "ALIBABA_API_KEY", "Alibaba Cloud (DashScope)", "Authorization", "Bearer ")
 	}
 

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -84,6 +85,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, internalhttp.StatusProviderError("openai", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
 	if err := providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaOpenAITranscr)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
 		return nil, err
 	}
@@ -95,10 +97,11 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	var rawResponse interface{}
 	_ = json.Unmarshal(resp.Body, &rawResponse)
 
+	duration := transcriptionDuration(response)
 	result := &types.TranscriptionResult{
 		Text: response.Text,
 		Usage: types.TranscriptionUsage{
-			DurationSeconds: durationOrZero(response.Duration),
+			DurationSeconds: durationOrZero(duration),
 		},
 		ProviderUsage: response.Usage,
 		Response: &types.ResponseMetadata{
@@ -109,10 +112,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		},
 	}
 	result.Language = openaiTranscriptionLanguage(response.Language, response.Languages)
-	if response.Duration != nil {
-		d := *response.Duration
-		result.DurationInSeconds = &d
-	}
+	result.DurationInSeconds = duration
 
 	// Timestamped segments/words (abb9ebf: diarized segments carry an extra
 	// "speaker" field, surfaced separately via ProviderMetadata below).
@@ -199,93 +199,87 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	}
 
 	openaiOpts := transcriptionOpenAIOptions(opts.ProviderOptions)
-	isDiarizationModel := m.modelID == "gpt-4o-transcribe-diarize"
-	isGpt4oTranscribeModel := m.modelID == "gpt-4o-transcribe" || m.modelID == "gpt-4o-mini-transcribe"
+	entry := getOpenAITranscriptionModelEntry(m.modelID)
 
-	// TS getArgs: whisper-1 unconditionally gets verbose_json; the other
-	// provider options (and, for other models, response_format) are only
-	// sent when providerOptions.openai is present, with the schema defaults
-	// temperature=0 and timestampGranularities=["segment"]. Without options
-	// only the diarize model gets a response_format.
-	if m.modelID == "whisper-1" {
-		if err := writer.WriteField("response_format", "verbose_json"); err != nil {
-			return nil, "", err
-		}
+	// TS getArgs (9026c7de79, 226b7daf82): response_format defaults only for
+	// the models that need one (whisper-1 verbose_json, the diarize model
+	// diarized_json), and timestamp_granularities only for verbose_json, so
+	// gpt-transcribe with provider options no longer gets verbose_json +
+	// segment (a 400). The fields go in one ordered list: response_format,
+	// include[], language, languages[], keywords[], prompt, temperature,
+	// timestamp_granularities[], then chunking_strategy. temperature is the
+	// schema default 0 whenever providerOptions.openai is present.
+	responseFormat := openaiOpts.ResponseFormat
+	if responseFormat == "" {
+		responseFormat = entry.responseFormat
+	}
+	granularities := openaiOpts.TimestampGranularities
+	switch {
+	case openaiOpts.HasTimestampGranularities:
+	case !openaiOpts.Present && opts.Timestamps:
+		// Go extension: top-level Timestamps requests word granularity when
+		// no providerOptions.openai are given (v0.5 behavior).
+		granularities = []string{"word"}
+	case responseFormat == "verbose_json":
+		granularities = []string{"segment"}
 	}
 	language := openaiOpts.Language
 	if language == "" {
+		// Go extension: the top-level TranscriptionOptions.Language.
 		language = opts.Language
 	}
+
+	writeField := func(key, value string) error { return writer.WriteField(key, value) }
+	writeList := func(key string, values []string) error {
+		for _, v := range values {
+			if err := writer.WriteField(key+"[]", v); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if responseFormat != "" {
+		if err := writeField("response_format", responseFormat); err != nil {
+			return nil, "", err
+		}
+	}
+	if err := writeList("include", openaiOpts.Include); err != nil {
+		return nil, "", err
+	}
+	if language != "" {
+		if err := writeField("language", language); err != nil {
+			return nil, "", err
+		}
+	}
+	if err := writeList("languages", openaiOpts.Languages); err != nil {
+		return nil, "", err
+	}
+	if err := writeList("keywords", openaiOpts.Keywords); err != nil {
+		return nil, "", err
+	}
+	if openaiOpts.Prompt != "" {
+		if err := writeField("prompt", openaiOpts.Prompt); err != nil {
+			return nil, "", err
+		}
+	}
 	if openaiOpts.Present {
-		for _, inc := range openaiOpts.Include {
-			if err := writer.WriteField("include[]", inc); err != nil {
-				return nil, "", err
-			}
-		}
-		if language != "" {
-			if err := writer.WriteField("language", language); err != nil {
-				return nil, "", err
-			}
-		}
-		if openaiOpts.Prompt != "" {
-			if err := writer.WriteField("prompt", openaiOpts.Prompt); err != nil {
-				return nil, "", err
-			}
-		}
-		if m.modelID != "whisper-1" {
-			responseFormat := "verbose_json"
-			switch {
-			case openaiOpts.ResponseFormat != "":
-				responseFormat = openaiOpts.ResponseFormat
-			case isDiarizationModel:
-				responseFormat = "diarized_json"
-			case isGpt4oTranscribeModel:
-				responseFormat = "json"
-			}
-			if err := writer.WriteField("response_format", responseFormat); err != nil {
-				return nil, "", err
-			}
-		}
 		temperature := openaiOpts.Temperature
 		if !openaiOpts.HasTemperature {
 			temperature = 0
 		}
-		if err := writer.WriteField("temperature", formatFloat(temperature)); err != nil {
+		if err := writeField("temperature", formatFloat(temperature)); err != nil {
 			return nil, "", err
 		}
-		granularities := openaiOpts.TimestampGranularities
-		if !openaiOpts.HasTimestampGranularities {
-			granularities = []string{"segment"}
-		}
-		for _, tg := range granularities {
-			if err := writer.WriteField("timestamp_granularities[]", tg); err != nil {
-				return nil, "", err
-			}
-		}
-	} else {
-		if isDiarizationModel {
-			if err := writer.WriteField("response_format", "diarized_json"); err != nil {
-				return nil, "", err
-			}
-		}
-		if language != "" {
-			if err := writer.WriteField("language", language); err != nil {
-				return nil, "", err
-			}
-		}
-		// Go extension: top-level Timestamps requests word granularity.
-		if opts.Timestamps {
-			if err := writer.WriteField("timestamp_granularities[]", "word"); err != nil {
-				return nil, "", err
-			}
-		}
+	}
+	if err := writeList("timestamp_granularities", granularities); err != nil {
+		return nil, "", err
 	}
 
 	// Controls how the audio is split into chunks before transcription
 	// (abb9ebf: default "auto" for the diarize model).
 	chunkingStrategy := openaiOpts.ChunkingStrategy
-	if chunkingStrategy == nil && isDiarizationModel {
-		chunkingStrategy = "auto"
+	if chunkingStrategy == nil && entry.chunkingStrategy != "" {
+		chunkingStrategy = entry.chunkingStrategy
 	}
 	if chunkingStrategy != nil {
 		var value string
@@ -348,6 +342,10 @@ type transcriptionOpenAIOptionsValue struct {
 	Temperature            float64
 	Include                []string
 	TimestampGranularities []string
+	// Languages and Keywords are the REST language and vocabulary hints
+	// (TS 226b7daf82), sent as repeated languages[] / keywords[] fields.
+	Languages []string
+	Keywords  []string
 	// Present is true when providerOptions.openai was supplied (TS
 	// parseProviderOptions then applies the schema defaults).
 	Present                   bool
@@ -391,6 +389,8 @@ func transcriptionOpenAIOptions(providerOptions map[string]interface{}) transcri
 			}
 		}
 	}
+	result.Languages = transcriptionStringList(openaiOpts["languages"])
+	result.Keywords = transcriptionStringList(openaiOpts["keywords"])
 	if v, ok := openaiOpts["timestampGranularities"].([]string); ok {
 		result.HasTimestampGranularities = true
 		result.TimestampGranularities = append(result.TimestampGranularities, v...)
@@ -404,6 +404,40 @@ func transcriptionOpenAIOptions(providerOptions map[string]interface{}) transcri
 		}
 	}
 	return result
+}
+
+// transcriptionStringList reads a []string or []interface{} of strings.
+func transcriptionStringList(v interface{}) []string {
+	switch list := v.(type) {
+	case []string:
+		return append([]string(nil), list...)
+	case []interface{}:
+		out := make([]string, 0, len(list))
+		for _, item := range list {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// transcriptionDuration ports TS doGenerate's durationInSeconds:
+// `response.duration ?? (usage.type === 'duration' && typeof usage.seconds
+// === 'number' ? usage.seconds : undefined)` (599a97f9bf: duration-billed
+// json responses, e.g. gpt-transcribe, report the duration only in usage).
+func transcriptionDuration(response openaiTranscriptionResponse) *float64 {
+	if response.Duration != nil {
+		d := *response.Duration
+		return &d
+	}
+	if response.Usage != nil && response.Usage["type"] == "duration" {
+		if seconds, ok := response.Usage["seconds"].(float64); ok {
+			return &seconds
+		}
+	}
+	return nil
 }
 
 func durationOrZero(d *float64) float64 {
@@ -520,8 +554,10 @@ func validateTranscriptionProviderOptions(providerOptions map[string]interface{}
 			}
 		}
 	}
-	if v, ok := opts["include"]; ok && v != nil && !isStringList(v) {
-		return fail("Invalid input: expected array at include")
+	for _, key := range []string{"include", "languages", "keywords"} {
+		if v, ok := opts[key]; ok && v != nil && !isStringList(v) {
+			return fail("Invalid input: expected array at " + key)
+		}
 	}
 	if v, ok := opts["temperature"]; ok && v != nil {
 		f, isNum := speechSpeedOption(v)

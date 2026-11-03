@@ -14,6 +14,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -150,6 +151,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, newXAIProviderError(f.Provider(), resp.StatusCode, resp.Body)
 	}
 
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
 	if err := providerutils.MediaResponseValidator(f.Provider(), providerutils.SchemaXAIFile)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
 		return nil, err
 	}
@@ -209,6 +211,7 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 		return nil, newXAIProviderError(f.Provider(), resp.StatusCode, resp.Body)
 	}
 
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
 	if err := providerutils.MediaResponseValidator(f.Provider(), providerutils.SchemaXAIFile)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
 		return nil, err
 	}
@@ -283,6 +286,7 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 		return nil, newXAIProviderError(f.Provider(), resp.StatusCode, resp.Body)
 	}
 
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
 	if err := providerutils.MediaResponseValidator(f.Provider(), providerutils.SchemaFileDelete)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
 		return nil, err
 	}

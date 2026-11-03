@@ -30,6 +30,8 @@ func TestR77ProvbTSCasesCapabilities(t *testing.T) {
 			"supportsConfigurationUpdate":    c.SupportsConfigurationUpdate,
 			"supportsAsyncToolCalling":       c.SupportsAsyncToolCalling,
 			"supportsNonReasoningParameters": c.SupportsNonReasoningParameters,
+			// TS d07b475bc8
+			"supportsChatFunctionToolsWithReasoning": c.SupportsChatFunctionToolsWithReasoning,
 		}
 		if c.SupportedReasoningEfforts != nil {
 			out["supportedReasoningEfforts"] = c.SupportedReasoningEfforts

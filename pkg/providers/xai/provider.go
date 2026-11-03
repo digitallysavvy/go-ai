@@ -1,6 +1,7 @@
 package xai
 
 import (
+	"context"
 	"os"
 	"strings"
 
@@ -22,6 +23,13 @@ type Provider struct {
 type Config struct {
 	// APIKey is the xAI API key
 	APIKey string
+
+	// APIKeyFunc resolves the API key for every request instead of APIKey
+	// (TS `apiKey` as a function, 7716e189ee). Its error fails the request;
+	// its result is sent as is, an empty string included, and the
+	// environment is not read. Setting both APIKey and APIKeyFunc fails
+	// every request with an InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 
 	// BaseURL is the base URL for the xAI API (optional)
 	BaseURL string
@@ -53,7 +61,10 @@ func New(cfg Config) *Provider {
 	baseURL := normalizeBaseURL(cfg.BaseURL)
 	cfg.BaseURL = baseURL
 
-	apiKey := getAPIKey(cfg.APIKey)
+	apiKey := cfg.APIKey
+	if cfg.APIKeyFunc == nil {
+		apiKey = getAPIKey(cfg.APIKey)
+	}
 	cfg.APIKey = apiKey
 
 	client := http.NewClient(http.Config{
@@ -64,6 +75,12 @@ func New(cfg Config) *Provider {
 		}, cfg.Headers), version.ProviderUserAgent("xai")),
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
 		HeadersFunc: func() (map[string]string, error) {
+			if cfg.APIKeyFunc != nil {
+				// TS resolves the key without an abort signal.
+				return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "XAI_API_KEY", Description: "xAI API key",
+				}, "Authorization", "Bearer ")
+			}
 			return providerutils.RequestAuthHeader(cfg.Headers, apiKey, "XAI_API_KEY", "xAI API key", "Authorization", "Bearer ")
 		},
 	})

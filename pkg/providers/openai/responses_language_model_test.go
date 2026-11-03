@@ -2455,11 +2455,13 @@ func TestResponsesLanguageModel_ReasoningEffortValidatedForGPT6(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildRequest failed: %v", err)
 	}
-	if _, ok := body["reasoning"]; ok {
-		t.Fatalf("reasoning should be dropped for unsupported effort: %#v", body)
+	// TS 61a315e333: the provider option is sent unchanged, no warning.
+	r, _ := body["reasoning"].(map[string]interface{})
+	if r["effort"] != "minimal" {
+		t.Fatalf("reasoning = %#v, want effort minimal (provider option sent unchanged)", body["reasoning"])
 	}
-	if len(warnings) != 1 || warnings[0].Feature != "reasoningEffort" {
-		t.Fatalf("warnings = %#v, want reasoningEffort warning", warnings)
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", warnings)
 	}
 }
 

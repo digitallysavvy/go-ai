@@ -89,7 +89,7 @@ node <go-ai repo>/pkg/internal/tsfixture/capture.mjs <path/to/test.ts> <ModelCla
   | gzip -9n > <go-ai repo>/pkg/providers/<provider>/testdata/tscases/<name>.json.gz
 ```
 
-It reports on stderr the cases it could not fill (a custom `fetch`, an error
+It also fills a case's `call` from the options the test passed to the model when the extractor could not evaluate them (a test helper such as `jsonCall(SCHEMA)`; since round 85). It reports on stderr the cases it could not fill (a custom `fetch`, an error
 response of a `rejects` test, no model call). Round 81 checked that it
 reproduces `perplexity/.../language_asserts.json.gz` byte for byte.
 

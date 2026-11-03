@@ -157,6 +157,7 @@ func TestR82provbCompatChatWireThroughProviders(t *testing.T) {
 		"~transformRequestBody":       "the transform is code in the TS test",
 		"~metadata extraction":        "metadataExtractor is a setting of the TS class that the TS provider does not expose (openai.Config.MetadataExtractor covers the class)",
 		"doGenerate > should generate distinct IDs for parallel tool calls with empty IDs": "TS generateId is random; distinct Go ids are checked in pkg/providerutils/streaming",
+		"doGenerate > response format > should map top-level reasoning with mapReasoning":  "the TS test passes a mapReasoning function in the class config; each Go provider applies its own TS provider's mapping (fireworks: TestFireworksReasoningCoercionWarnings)",
 	}
 	type mk func(base, key string, h map[string]string) provider.Provider
 	for _, p := range []struct {
@@ -175,19 +176,19 @@ func TestR82provbCompatChatWireThroughProviders(t *testing.T) {
 		}}, map[string]bool{"includeUsage": true}, func(b, k string, h map[string]string) provider.Provider {
 			return together.New(together.Config{APIKey: k, BaseURL: b, Headers: h})
 		}},
-		{"fireworks", "fireworks", tsfixture.WireSuite{GoAdds: "/inference", GoPrefix: func(string) string { return "/inference" }, PrepareTest: r82provbIncludeUsage, Skip: map[string]string{
-			"doGenerate > response format > should pass top-level max reasoning as reasoning_effort": "TS fireworks transformRequestBody maps max to high with a compatibility warning",
-		}}, map[string]bool{"includeUsage": true, "supportsStructuredOutputs": true}, func(b, k string, h map[string]string) provider.Provider {
+		{"fireworks", "fireworks", tsfixture.WireSuite{GoAdds: "/inference", GoPrefix: func(string) string { return "/inference" }, PrepareTest: r82provbIncludeUsage}, map[string]bool{"includeUsage": true, "supportsStructuredOutputs": true}, func(b, k string, h map[string]string) provider.Provider {
 			return fireworks.New(fireworks.Config{APIKey: k, BaseURL: b, Headers: h})
 		}},
 		{"gmicloud", "gmicloud", tsfixture.WireSuite{PrepareTest: r82provbIncludeUsage}, map[string]bool{"includeUsage": true}, func(b, k string, h map[string]string) provider.Provider {
 			return gmicloud.New(gmicloud.Config{APIKey: k, BaseURL: b, Headers: h})
 		}},
 		{"zai", "zai", tsfixture.WireSuite{Skip: map[string]string{
-			"doGenerate > should pass tools and toolChoice":                                       "TS ZaiChatLanguageModel drops a tool choice other than auto with an unsupported warning",
-			"doGenerate > response format > should not duplicate reasoningEffort in request body": "TS ZaiChatLanguageModel parses providerOptions.zai with a strict schema, which drops unknown keys",
-			"doGenerate > response format > should not duplicate textVerbosity in request body":   "TS ZaiChatLanguageModel parses providerOptions.zai with a strict schema, which drops unknown keys",
-			"~should include provider-specific options":                                           "TS ZaiChatLanguageModel parses providerOptions.zai with a strict schema, which drops unknown keys",
+			"doGenerate > should pass tools and toolChoice":                                                              "TS ZaiChatLanguageModel drops a tool choice other than auto with an unsupported warning",
+			"doGenerate > response format > should not duplicate reasoningEffort in request body":                        "TS ZaiChatLanguageModel parses providerOptions.zai with a strict schema, which drops unknown keys",
+			"doGenerate > response format > should not duplicate textVerbosity in request body":                          "TS ZaiChatLanguageModel parses providerOptions.zai with a strict schema, which drops unknown keys",
+			"~should include provider-specific options":                                                                  "TS ZaiChatLanguageModel parses providerOptions.zai with a strict schema, which drops unknown keys",
+			"doGenerate > response format > should send reasoningEffort null as reasoning_effort null":                   "TS ZaiChatLanguageModel parses providerOptions.zai with its own schema, where reasoningEffort is an enum (null is rejected)",
+			"doGenerate > response format > should prefer providerOptions reasoningEffort null over top-level reasoning": "TS ZaiChatLanguageModel parses providerOptions.zai with its own schema, where reasoningEffort is an enum (null is rejected)",
 		}}, nil, func(b, k string, h map[string]string) provider.Provider {
 			return zai.New(zai.Config{APIKey: k, BaseURL: b, Headers: h})
 		}},
