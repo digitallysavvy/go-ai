@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
@@ -106,5 +107,83 @@ func TestR84genToolResultAfterTimeoutKept(t *testing.T) {
 	}
 	if len(res.ToolResults) != 1 || res.ToolResults[0].Error != nil || res.ToolResults[0].Result != "finished anyway" {
 		t.Fatalf("tool results = %+v", res.ToolResults)
+	}
+}
+
+// TS generate-text.test.ts 9256: an invalid structuredOutputText (the empty
+// string or a truncated object) is parsed as given, without falling back to the valid
+// text content: NoObjectGeneratedError with that text and a JSONParseError.
+func TestR84genInvalidStructuredOutputTextNoFallback(t *testing.T) {
+	for _, structured := range []string{"", `{"value":`} {
+		structured := structured
+		model := &testutil.MockLanguageModel{
+			DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+				return &types.GenerateResult{
+					Content:              []types.ContentPart{types.TextContent{Text: `{"value":"draft"}`}},
+					Text:                 `{"value":"draft"}`,
+					StructuredOutputText: &structured,
+					FinishReason:         types.FinishReasonStop,
+				}, nil
+			},
+		}
+		_, err := GenerateText(context.Background(), GenerateTextOptions{
+			Model: model, Prompt: "prompt",
+			Output: ObjectOutput[map[string]interface{}](ObjectOutputOptions{Schema: r31ObjectSchema}),
+		})
+		var noObject *NoObjectGeneratedError
+		var parseErr *providererrors.JSONParseError
+		if !errors.As(err, &noObject) || noObject.Text != structured || !errors.As(noObject.Cause, &parseErr) {
+			t.Fatalf("structuredOutputText %q: err = %#v", structured, err)
+		}
+	}
+}
+
+// TS convertToLanguageModelPrompt logs the "image" content part deprecation
+// (logWarnings without provider or model) once per user message with image
+// parts, on every step's prompt conversion.
+func TestR84genImagePartDeprecationLoggedPerStep(t *testing.T) {
+	var batches [][]types.Warning
+	SetLogWarnings(func(o LogWarningsOptions) {
+		if len(o.Warnings) > 0 && o.Warnings[0].Setting == `"image" content part` && o.Provider == "" && o.Model == "" {
+			batches = append(batches, o.Warnings)
+		}
+	})
+	defer SetLogWarnings(nil)
+
+	calls := 0
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls++
+			if calls == 1 {
+				return &types.GenerateResult{
+					ToolCalls:    []types.ToolCall{{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}}},
+					FinishReason: types.FinishReasonToolCalls,
+				}, nil
+			}
+			return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model,
+		Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{
+			types.TextContent{Text: "look"},
+			types.ImageContent{Image: []byte{1, 2, 3}, MimeType: "image/png"},
+			types.ImageContent{Image: []byte{4, 5}, MimeType: "image/jpeg"},
+		}}},
+		Tools: []types.Tool{{Name: "t", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		}}},
+		StopWhen: []StopCondition{StepCountIs(2)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batches) != 2 || len(batches[0]) != 2 || len(batches[1]) != 2 {
+		t.Fatalf("batches = %+v, want two steps of two warnings", batches)
+	}
+	w := batches[0][0]
+	if w.Type != "deprecated" || w.Message != promptutils.ImageContentPartDeprecation ||
+		GetDeprecationCode(w.Setting, "") != "AISDK_DEP_IMAGE_CONTENT_PART" {
+		t.Fatalf("warning = %+v", w)
 	}
 }

@@ -34,3 +34,26 @@ func TestR84genLegacyLoopToolResultAfterTimeoutKept(t *testing.T) {
 		t.Fatalf("tool results = %+v", res.ToolResults)
 	}
 }
+
+// TS convertToLanguageModelPrompt logs the "image" content part deprecation
+// on every step's prompt conversion (the legacy loop, like GenerateText).
+func TestR84genAgentImagePartDeprecationLogged(t *testing.T) {
+	var n int
+	ai.SetLogWarnings(func(o ai.LogWarningsOptions) {
+		if len(o.Warnings) == 1 && o.Warnings[0].Setting == `"image" content part` {
+			n++
+		}
+	})
+	defer ai.SetLogWarnings(nil)
+	model := &mockLanguageModel{responses: []types.GenerateResult{{Text: "done", FinishReason: types.FinishReasonStop}}}
+	a := NewToolLoopAgent(AgentConfig{Model: model})
+	_, err := a.ExecuteWithMessages(context.Background(), []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{
+		types.ImageContent{Image: []byte{1}, MimeType: "image/png"},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("deprecation batches = %d, want 1", n)
+	}
+}

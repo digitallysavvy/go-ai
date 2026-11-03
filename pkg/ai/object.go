@@ -664,6 +664,8 @@ func prepareObjectPrompt(ctx context.Context, promptText string, messages []type
 	if err := promptutils.ValidatePromptInput(promptText, messages); err != nil {
 		return types.Prompt{}, err
 	}
+	// TS convertToLanguageModelPrompt logs deprecated "image" parts.
+	logPromptDeprecations(promptDeprecationWarnings(messages))
 	prompt, err := promptutils.NormalizePromptWithDownloadSupport(ctx, buildPrompt(promptText, messages, system), allowSystem, effectiveDownload(download), supportedURLChecker(model))
 	if err != nil {
 		return types.Prompt{}, err

@@ -2029,6 +2029,13 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	// Approval parts stay out of the model's prompt, except a
 	// provider-executed call's approval response (TS
 	// convertToLanguageModelPrompt, as GenerateText).
+	// TS convertToLanguageModelPrompt logs deprecated "image" parts on every
+	// step's prompt conversion.
+	for _, message := range callConfig.Messages {
+		if warnings := promptutils.DeprecatedContentWarnings(message); len(warnings) > 0 {
+			ai.LogWarnings(ai.LogWarningsOptions{Warnings: warnings})
+		}
+	}
 	prompt, err := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
 		Messages: aibridge.MessagesForModel(callConfig.Messages),
 		System:   promptSystem,

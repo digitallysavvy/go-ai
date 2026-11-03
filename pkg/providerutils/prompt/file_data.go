@@ -323,6 +323,40 @@ func sniffToolResult(t types.ToolResultContent) (types.ToolResultContent, bool) 
 	return t, true
 }
 
+// ImageContentPartDeprecation is the TS convertToLanguageModelPrompt
+// deprecation warning for an "image" part (types.ImageContent) of a user
+// message (setting `"image" content part`, code
+// AISDK_DEP_IMAGE_CONTENT_PART).
+const ImageContentPartDeprecation = `The "image" content part type is deprecated. Use a "file" part with mediaType: 'image' (or a more specific image/* subtype) instead.`
+
+// DeprecatedContentWarnings returns the deprecation warnings TS
+// convertToLanguageModelPrompt logs (logWarnings, without provider or model)
+// when it converts message: one per "image" part of a user message. Core
+// functions log them once per message that has any.
+func DeprecatedContentWarnings(message types.Message) []types.Warning {
+	if message.Role != types.RoleUser {
+		return nil
+	}
+	var warnings []types.Warning
+	for _, part := range message.Content {
+		switch typed := part.(type) {
+		case types.ImageContent:
+		case *types.ImageContent:
+			if typed == nil {
+				continue
+			}
+		default:
+			continue
+		}
+		warnings = append(warnings, types.Warning{
+			Type:    "deprecated",
+			Setting: `"image" content part`,
+			Message: ImageContentPartDeprecation,
+		})
+	}
+	return warnings
+}
+
 // NormalizeMessages rewrites message content into provider-facing v4 content.
 func NormalizeMessages(messages []types.Message, allowSystemMessages bool) ([]types.Message, error) {
 	if len(messages) == 0 {
