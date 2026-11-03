@@ -2263,7 +2263,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			case streamEnded:
 				err = io.EOF
 			default:
-				chunk, err = r.nextChunk(chunkDeadlineCtx)
+				chunk, err = r.readChunk(chunkDeadlineCtx)
 			}
 			if err == io.EOF {
 				if len(heldChunks) > 0 {
@@ -5609,20 +5609,17 @@ func isReasoningBoundaryChunk(chunkType provider.ChunkType) bool {
 }
 
 // armStepChunkDeadline returns the initial chunk-read deadline context for a
-// step: FirstChunk if configured (it always takes priority at the start of a
-// step — PerChunk only takes over once FirstChunk disarms, see
-// resetChunkDeadlineOnOutput), else PerChunk if configured, else stepCtx
-// itself with a no-op cancel. The returned reason identifies which of
-// TimeoutReasonFirstChunk/TimeoutReasonChunk a deadline expiring on this
-// context should be reported as ("" when there is no deadline at all).
+// model call attempt (a step, or a stream retry): FirstChunk if configured,
+// else stepCtx itself with a no-op cancel. PerChunk starts only once semantic
+// output begins (resetChunkDeadlineOnOutput), as TS's chunkMs timer: "Chunk
+// timeout tracking starts after semantic output begins" (TS arms only the
+// first-chunk timer when the stream opens or is retried). The returned reason
+// identifies which of TimeoutReasonFirstChunk/TimeoutReasonChunk a deadline
+// expiring on this context should be reported as ("" when there is none).
 func armStepChunkDeadline(stepCtx context.Context, tc *TimeoutConfig) (context.Context, context.CancelFunc, TimeoutReason) {
 	if tc.HasFirstChunk() {
 		c, cancel := context.WithTimeout(stepCtx, *tc.FirstChunk)
 		return c, cancel, TimeoutReasonFirstChunk
-	}
-	if tc.HasPerChunk() {
-		c, cancel := context.WithTimeout(stepCtx, *tc.PerChunk)
-		return c, cancel, TimeoutReasonChunk
 	}
 	return stepCtx, func() {}, ""
 }
@@ -5748,29 +5745,7 @@ func includedRequestMessages(include bool, messages []types.Message) []types.Mes
 func (r *StreamTextResult) nextChunk(ctx context.Context) (*provider.StreamChunk, error) {
 	stream := r.currentStream()
 	if r.timeout == nil || !r.timeout.HasPerChunk() {
-		if ctx == nil || ctx.Done() == nil {
-			return stream.Next()
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-		type chunkResult struct {
-			chunk *provider.StreamChunk
-			err   error
-		}
-		resultCh := make(chan chunkResult, 1)
-		go func() {
-			chunk, err := stream.Next()
-			resultCh <- chunkResult{chunk: chunk, err: err}
-		}()
-		select {
-		case result := <-resultCh:
-			return result.chunk, result.err
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+		return r.readChunk(ctx)
 	}
 
 	if ctx == nil {
@@ -5813,6 +5788,37 @@ func (r *StreamTextResult) nextChunk(ctx context.Context) (*provider.StreamChunk
 		return result.chunk, result.err
 	case <-chunkCtx.Done():
 		return nil, wrapTimeoutError(TimeoutReasonChunk, chunkCtx.Err())
+	}
+}
+
+// readChunk reads the next chunk, returning ctx's error once ctx is done.
+// processStream reads with it: its ctx carries the step's FirstChunk/PerChunk
+// deadline, which (as TS's chunkMs timer) starts only once semantic output
+// begins, so no per-read chunk timer is added.
+func (r *StreamTextResult) readChunk(ctx context.Context) (*provider.StreamChunk, error) {
+	stream := r.currentStream()
+	if ctx == nil || ctx.Done() == nil {
+		return stream.Next()
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	type chunkResult struct {
+		chunk *provider.StreamChunk
+		err   error
+	}
+	resultCh := make(chan chunkResult, 1)
+	go func() {
+		chunk, err := stream.Next()
+		resultCh <- chunkResult{chunk: chunk, err: err}
+	}()
+	select {
+	case result := <-resultCh:
+		return result.chunk, result.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 

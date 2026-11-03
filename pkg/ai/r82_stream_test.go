@@ -1364,3 +1364,201 @@ func TestR82streamSteeringErrorsAndPrepareStep(t *testing.T) {
 		_ = first.ConsumeStream()
 	})
 }
+
+// TS stream-text.ts: "Chunk timeout tracking starts after semantic output
+// begins" (resetChunkTimeout runs on the first output chunk; only
+// startFirstChunkTimeout runs when the stream opens). With chunkMs alone, a
+// slow first chunk is not a chunk timeout.
+func TestR82streamChunkTimeoutStartsAfterFirstOutput(t *testing.T) {
+	perChunk := 50 * time.Millisecond
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		return &delayedTextStream{chunks: []delayedChunk{
+			{delay: 5 * time.Millisecond, chunk: provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "r1"}}},
+			{delay: 150 * time.Millisecond, chunk: provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "1"}},
+			{chunk: provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"}},
+			{chunk: provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "1"}},
+			{chunk: provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop}},
+		}}, nil
+	}}
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test", Timeout: &TimeoutConfig{PerChunk: &perChunk}, OnError: func(context.Context, error) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	if err := r.Err(); err != nil {
+		t.Fatalf("Err() = %v, want no chunk timeout before the first output", err)
+	}
+	if r.Text() != "Hello" {
+		t.Fatalf("text = %q", r.Text())
+	}
+}
+
+// r82streamTimedStream sends its chunks, each after its delay, then blocks
+// until ctx is done (TS: a stream that errors with the abort reason).
+type r82streamTimedStream struct {
+	ctx    context.Context
+	chunks []delayedChunk
+	idx    int
+}
+
+func (s *r82streamTimedStream) Next() (*provider.StreamChunk, error) {
+	if s.idx >= len(s.chunks) {
+		<-s.ctx.Done()
+		return nil, context.Cause(s.ctx)
+	}
+	dc := s.chunks[s.idx]
+	s.idx++
+	select {
+	case <-time.After(dc.delay):
+	case <-s.ctx.Done():
+		return nil, context.Cause(s.ctx)
+	}
+	c := dc.chunk
+	return &c, nil
+}
+func (s *r82streamTimedStream) Err() error   { return nil }
+func (s *r82streamTimedStream) Close() error { return nil }
+
+func r82streamDur(ms int) *time.Duration {
+	d := time.Duration(ms) * time.Millisecond
+	return &d
+}
+
+func r82streamLastPart(t *testing.T, r *StreamTextResult) []string {
+	t.Helper()
+	var parts []string
+	s := r.FullStream()
+	for {
+		c, err := s.Next()
+		if err != nil {
+			return parts
+		}
+		parts = append(parts, string(c.Type))
+	}
+}
+
+// stream-text-timeout.test.ts 661: should start chunkMs only after output
+// begins in the next step / retry (firstChunkMs 150, chunkMs 50: the next
+// attempt's 100ms wait before output is no chunk timeout; 50ms after its
+// output stops, it is).
+func TestR82streamChunkTimeoutStartsInNextAttempt(t *testing.T) {
+	for _, continuation := range []string{"step", "retry"} {
+		t.Run(continuation, func(t *testing.T) {
+			var mu sync.Mutex
+			attempts := 0
+			model := &testutil.MockLanguageModel{DoStreamFunc: func(ctx context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+				mu.Lock()
+				attempts++
+				n := attempts
+				mu.Unlock()
+				if n == 1 {
+					if continuation == "step" {
+						return testutil.NewMockTextStream([]provider.StreamChunk{
+							{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "slow", Arguments: map[string]interface{}{}, RawArguments: "{}"}},
+							{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r82streamTestUsage},
+						}), nil
+					}
+					return testutil.NewMockTextStream([]provider.StreamChunk{
+						{Type: provider.ChunkTypeTextStart, ID: "1"},
+						{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+						{Type: provider.ChunkTypeTextEnd, ID: "1"},
+						{Type: provider.ChunkTypeError, Err: errors.New("retryable error")},
+					}), nil
+				}
+				return &r82streamTimedStream{ctx: ctx, chunks: []delayedChunk{
+					{delay: 100 * time.Millisecond, chunk: provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "2"}},
+					{chunk: provider.StreamChunk{Type: provider.ChunkTypeText, ID: "2", Text: "Next"}},
+				}}, nil
+			}}
+			retries := 0
+			if continuation == "retry" {
+				retries = 1
+			}
+			r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test",
+				Tools: []types.Tool{{Name: "slow", Parameters: map[string]interface{}{"type": "object"}, Execute: func(ctx context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+					select {
+					case <-time.After(100 * time.Millisecond):
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					}
+					return "done", nil
+				}}},
+				Timeout:       &TimeoutConfig{FirstChunk: r82streamDur(150), PerChunk: r82streamDur(50)},
+				StreamRetries: &retries, StopWhen: []StopCondition{IsStepCount(2)}, OnError: func(context.Context, error) {},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			parts := r82streamLastPart(t, r)
+			if attempts != 2 {
+				t.Fatalf("attempts = %d", attempts)
+			}
+			var te *TimeoutError
+			if !errors.As(r.Err(), &te) || te.Reason != TimeoutReasonChunk {
+				t.Fatalf("Err() = %v, want a chunk timeout", r.Err())
+			}
+			if !strings.Contains(strings.Join(parts, " "), "text") || parts[len(parts)-1] != "abort" {
+				t.Fatalf("parts = %v, want the next attempt's text then abort", parts)
+			}
+		})
+	}
+}
+
+// stream-text-timeout.test.ts 730: should re-arm firstChunkMs after retrying
+// an attempt that produced output.
+func TestR82streamFirstChunkTimeoutRearmedOnRetry(t *testing.T) {
+	var mu sync.Mutex
+	attempts := 0
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(ctx context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+		mu.Lock()
+		attempts++
+		n := attempts
+		mu.Unlock()
+		if n == 1 {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeTextStart, ID: "1"},
+				{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+				{Type: provider.ChunkTypeTextEnd, ID: "1"},
+				{Type: provider.ChunkTypeError, Err: errors.New("retryable error")},
+			}), nil
+		}
+		return &r82streamTimedStream{ctx: ctx}, nil
+	}}
+	retries := 1
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test",
+		Timeout: &TimeoutConfig{FirstChunk: r82streamDur(50)}, StreamRetries: &retries, OnError: func(context.Context, error) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	var te *TimeoutError
+	if attempts != 2 || !errors.As(r.Err(), &te) || te.Reason != TimeoutReasonFirstChunk {
+		t.Fatalf("attempts = %d, Err() = %v, want a first-chunk timeout", attempts, r.Err())
+	}
+}
+
+// stream-text-timeout.test.ts 814: should keep chunkMs active during
+// provider-executed tools without resetting on their results.
+func TestR82streamChunkTimeoutProviderExecutedTool(t *testing.T) {
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(ctx context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+		return &r82streamTimedStream{ctx: ctx, chunks: []delayedChunk{
+			{chunk: provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "slow", Arguments: map[string]interface{}{}, RawArguments: "{}", ProviderExecuted: true, ProviderExecutedSet: true}}},
+			{delay: 40 * time.Millisecond, chunk: provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "call-1", ToolName: "slow", Result: "progress", ProviderExecuted: true, Preliminary: true}}},
+		}}, nil
+	}}
+	start := time.Now()
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test",
+		Tools:   []types.Tool{{Name: "slow", Parameters: map[string]interface{}{"type": "object"}}},
+		Timeout: &TimeoutConfig{PerChunk: r82streamDur(50)}, OnError: func(context.Context, error) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	var te *TimeoutError
+	if !errors.As(r.Err(), &te) || te.Reason != TimeoutReasonChunk {
+		t.Fatalf("Err() = %v, want a chunk timeout", r.Err())
+	}
+	if el := time.Since(start); el > 85*time.Millisecond {
+		t.Fatalf("timed out after %v: the provider tool result reset chunkMs", el)
+	}
+}
