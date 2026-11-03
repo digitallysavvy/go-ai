@@ -19,6 +19,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // applyUserAgentSuffix appends the Go runtime tag to whatever "User-Agent"
@@ -472,7 +473,14 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 // names the value as sent; when the retry fails on anything else, that
 // error is returned, since it is the real schema violation the strict
 // decode did not reach (Go reports only the first type error).
+//
+// The body is first read as text the way TS response.text() does (WHATWG
+// UTF-8 decode: a leading BOM is dropped and each maximal invalid sequence is
+// one U+FFFD), so invalid bytes decode like TS rather than one U+FFFD each.
 func decodeJSONBody(body []byte, result interface{}) error {
+	if bytes.HasPrefix(body, utf8BOM) || !utf8.Valid(body) {
+		body = []byte(prompt.DecodeUTF8Text(body))
+	}
 	err := json.Unmarshal(body, result)
 	var typeErr *json.UnmarshalTypeError
 	if err == nil || !errors.As(err, &typeErr) || !strings.HasPrefix(typeErr.Value, "number") {
@@ -488,6 +496,9 @@ func decodeJSONBody(body []byte, result interface{}) error {
 	}
 	return err
 }
+
+// utf8BOM is the UTF-8 byte order mark TextDecoder drops.
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 // streamClient returns the client used for streaming requests. The shared
 // DefaultHTTPClient has no whole-request timeout; if one is ever set on it
