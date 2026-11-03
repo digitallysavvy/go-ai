@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -112,12 +113,6 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	if promptLen := len(utf16.Encode([]rune(opts.Prompt))); promptLen == 0 || promptLen > 32000 {
 		return nil, invalidArg("prompt", "HeyGen requires a prompt between 1 and 32,000 characters.")
 	}
-	if opts.Duration != nil {
-		d := *opts.Duration
-		if d != float64(int64(d)) || d < 5 || d > 15 {
-			return nil, invalidArg("duration", "HeyGen duration must be an integer between 5 and 15 seconds.")
-		}
-	}
 	if opts.Seed != nil && (*opts.Seed < 0 || int64(*opts.Seed) > 0xffffffff) {
 		return nil, invalidArg("seed", "HeyGen seed must be an unsigned 32-bit integer.")
 	}
@@ -207,6 +202,14 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 			mode = "reference_to_video"
 		default:
 			mode = "text_to_video"
+		}
+	}
+	// TS 6f41ccc1f8: any positive integer duration; HeyGen enforces its own
+	// limits. Checked after the mode is resolved, as in TS.
+	if opts.Duration != nil {
+		d := *opts.Duration
+		if math.IsInf(d, 0) || d != math.Trunc(d) || d <= 0 {
+			return nil, invalidArg("duration", "HeyGen duration must be a positive integer number of seconds.")
 		}
 	}
 	if (mode == "image_to_video" && image == nil) || (mode != "image_to_video" && image != nil) {
