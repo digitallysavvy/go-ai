@@ -137,11 +137,13 @@ func (t cerebrasTransformTransport) RoundTrip(req *http.Request) (*http.Response
 		// transport to rewrite.
 		return t.base.RoundTrip(req)
 	}
+	// A RoundTripper must close the request body, also on error, and must
+	// not modify the caller's request: the rewritten body goes on a clone.
 	body, err := io.ReadAll(req.Body)
+	_ = req.Body.Close()
 	if err != nil {
 		return nil, err
 	}
-	_ = req.Body.Close()
 	var payload interface{}
 	if err := json.Unmarshal(body, &payload); err == nil {
 		applyCerebrasRequestExtras(payload, extras)
@@ -149,9 +151,11 @@ func (t cerebrasTransformTransport) RoundTrip(req *http.Request) (*http.Response
 			body = transformed
 		}
 	}
-	req.Body = io.NopCloser(bytes.NewReader(body))
-	req.ContentLength = int64(len(body))
-	return t.base.RoundTrip(req)
+	clone := req.Clone(req.Context())
+	clone.Body = io.NopCloser(bytes.NewReader(body))
+	clone.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+	clone.ContentLength = int64(len(body))
+	return t.base.RoundTrip(clone)
 }
 
 // cerebrasOptionsContextKey is the context key LanguageModel uses to hand
