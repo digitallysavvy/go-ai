@@ -177,7 +177,9 @@ func countDecisionImages(value interface{}) (int, error) {
 		return total, nil
 	case map[string]interface{}:
 		if v["type"] == "image_url" {
-			image, _ := v["image_url"].(map[string]interface{})
+			// TS reads the JSON object form, so a typed Go map or struct
+			// counts as its JSON object.
+			image, _ := decisionJSONForm(v["image_url"]).(map[string]interface{})
 			url, _ := image["url"].(string)
 			if image == nil || !decisionImageDataURL.MatchString(url) {
 				return 0, &providererrors.UnsupportedFunctionalityError{
@@ -200,18 +202,29 @@ func countDecisionImages(value interface{}) (int, error) {
 	default:
 		// Any other Go JSON value (typed map, struct, json.RawMessage): TS
 		// walks its JSON object form (Object.values).
-		b, err := json.Marshal(v)
-		if err != nil {
-			return 0, nil
-		}
-		var generic interface{}
-		if json.Unmarshal(b, &generic) != nil {
-			return 0, nil
-		}
-		switch generic.(type) {
+		switch generic := decisionJSONForm(v).(type) {
 		case []interface{}, map[string]interface{}:
 			return countDecisionImages(generic)
 		}
 		return 0, nil
 	}
+}
+
+// decisionJSONForm returns the generic JSON form of a Go JSON value (typed
+// map, struct, json.RawMessage); generic values come back unchanged, and a
+// value that does not marshal comes back as nil.
+func decisionJSONForm(v interface{}) interface{} {
+	switch v.(type) {
+	case nil, map[string]interface{}, []interface{}, string, bool, float64:
+		return v
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	var generic interface{}
+	if json.Unmarshal(b, &generic) != nil {
+		return nil
+	}
+	return generic
 }
