@@ -59,6 +59,16 @@ type ToolCallDelta struct {
 	// Failed). Callers that cannot tell blank from absent leave both false
 	// and get the legacy deferred behavior (see Flush).
 	NameAbsent bool
+
+	// IDPresent reports that the wire delta carried an id, even an empty
+	// string, and MetadataPresent that it carried the field ProviderMetadata
+	// is extracted from (openai-compatible extra_content), even when it
+	// yielded no metadata. Only BufferNamelessIndexedCalls reads them: TS
+	// pendingToolCalls keeps the first id and extra_content that are not
+	// null (`?? null`), so a later value never replaces a present empty one.
+	// A non-empty ID or non-nil ProviderMetadata counts as present anyway.
+	IDPresent       bool
+	MetadataPresent bool
 }
 
 // WireName is a function name decoded from JSON that remembers whether the
@@ -188,12 +198,17 @@ type trackedToolCall struct {
 	hasFinished    bool
 	inputStarted   bool
 	metadata       map[string]interface{}
-	// strictAbsent is set when the creating delta was known to have no
-	// function name at all (ToolCallDelta.NameAbsent) and was buffered
-	// (BufferNamelessIndexedCalls): TS forwards such a still-pending call
-	// to the tracker at flush, which throws whatever else is in flight, so
-	// Flush never drops it silently.
-	strictAbsent bool
+}
+
+// pendingToolCall is a TS openai-compatible pendingToolCalls entry: the
+// deltas of one index buffered until its function.name arrives.
+type pendingToolCall struct {
+	index       int
+	id          string
+	idSet       bool
+	args        string
+	metadata    map[string]interface{}
+	metadataSet bool
 }
 
 // resolutionKind mirrors TS's ToolCallResolution discriminated union
@@ -237,15 +252,24 @@ type StreamingToolCallTracker struct {
 	failed bool
 	// bufferNamelessIndexed: see BufferNamelessIndexedCalls.
 	bufferNamelessIndexed bool
+	pending               map[int]*pendingToolCall
+	pendingOrder          []int
+	forwardedIndices      map[int]struct{}
 }
 
-// BufferNamelessIndexedCalls makes a new call whose delta has an index but
-// no function name (ToolCallDelta.NameAbsent) wait for its name instead of
-// failing the tracker: TS openai-compatible buffers such deltas by index
-// (pendingToolCalls) and forwards them once function.name arrives; a call
-// still nameless at Flush is reported as an error there (TS forwards it to
-// the tracker in flush(), which throws). A nameless delta without an index
-// still fails at once, as TS passes it to the tracker directly.
+// BufferNamelessIndexedCalls ports the TS openai-compatible pendingToolCalls
+// buffer in front of the tracker. A delta with an index that has not been
+// forwarded yet is buffered (first id and extra_content kept, arguments
+// concatenated) until a delta of that index carries a function name (blank
+// included); the tracker then sees one delta with that name, the buffered
+// id, metadata and arguments, and later deltas of the index go to it
+// directly. A delta without an index goes to it directly too. At Flush the
+// still-buffered entries are forwarded first, in insertion order, without a
+// name, exactly as TS flush() does: one that resolves to a sole unfinished
+// call continues it, an ambiguous one is dropped, and one that would start
+// a new call fails the tracker (TS throws "Expected 'function.name' to be a
+// string."), so Flush then returns the chunks so far and that error, and no
+// tool call is finalized.
 func (t *StreamingToolCallTracker) BufferNamelessIndexedCalls() {
 	if t != nil {
 		t.bufferNamelessIndexed = true
@@ -304,7 +328,100 @@ func (t *StreamingToolCallTracker) TrackDelta(delta ToolCallDelta) []ToolCallChu
 	if t == nil || t.failed {
 		return nil
 	}
+	if t.bufferNamelessIndexed && delta.Index != nil {
+		if _, forwarded := t.forwardedIndices[*delta.Index]; !forwarded {
+			return t.bufferPending(delta)
+		}
+	}
+	return t.processDelta(delta)
+}
 
+// bufferPending is TS openai-compatible processToolCallDelta for a delta of
+// an index that has not been forwarded to the tracker yet.
+func (t *StreamingToolCallTracker) bufferPending(delta ToolCallDelta) []ToolCallChunk {
+	index := *delta.Index
+	idPresent := delta.IDPresent || delta.ID != ""
+	metadataPresent := delta.MetadataPresent || delta.ProviderMetadata != nil
+	if t.pending == nil {
+		t.pending = make(map[int]*pendingToolCall)
+	}
+	p := t.pending[index]
+	if p == nil {
+		p = &pendingToolCall{index: index, id: delta.ID, idSet: idPresent, metadata: delta.ProviderMetadata, metadataSet: metadataPresent}
+		t.pending[index] = p
+		t.pendingOrder = append(t.pendingOrder, index)
+	} else {
+		if !p.idSet && idPresent {
+			p.id, p.idSet = delta.ID, true
+		}
+		if !p.metadataSet && metadataPresent {
+			p.metadata, p.metadataSet = delta.ProviderMetadata, true
+		}
+	}
+	if delta.ArgumentsPresent || delta.ArgumentsDelta != "" {
+		p.args += delta.ArgumentsDelta
+	}
+	// TS `name != null`: a present name, blank or not, forwards the call (a
+	// blank one is then ignored by the tracker, as on any new call).
+	if delta.Name == "" && !delta.NameBlank {
+		return nil
+	}
+	t.removePending(index)
+	if t.forwardedIndices == nil {
+		t.forwardedIndices = make(map[int]struct{})
+	}
+	t.forwardedIndices[index] = struct{}{}
+	idx := index
+	fwd := ToolCallDelta{
+		Index:            &idx,
+		ID:               p.id,
+		Name:             delta.Name,
+		ArgumentsDelta:   p.args,
+		ArgumentsPresent: true,
+		ProviderMetadata: p.metadata,
+	}
+	if nonBlank(delta.Name) == "" {
+		fwd.NameBlank = true
+	}
+	return t.processDelta(fwd)
+}
+
+func (t *StreamingToolCallTracker) removePending(index int) {
+	delete(t.pending, index)
+	for i, v := range t.pendingOrder {
+		if v == index {
+			t.pendingOrder = append(t.pendingOrder[:i], t.pendingOrder[i+1:]...)
+			break
+		}
+	}
+}
+
+// flushPending is the TS openai-compatible flush() loop that forwards every
+// still-pending entry without a function name before toolCallTracker.flush().
+func (t *StreamingToolCallTracker) flushPending() []ToolCallChunk {
+	var chunks []ToolCallChunk
+	order := t.pendingOrder
+	pending := t.pending
+	t.pendingOrder, t.pending = nil, nil
+	for _, index := range order {
+		p := pending[index]
+		idx := index
+		chunks = append(chunks, t.processDelta(ToolCallDelta{
+			Index:            &idx,
+			ID:               p.id,
+			ArgumentsDelta:   p.args,
+			ArgumentsPresent: true,
+			NameAbsent:       true,
+		})...)
+		if t.failed {
+			break
+		}
+	}
+	return chunks
+}
+
+// processDelta is TS StreamingToolCallTracker.processDelta.
+func (t *StreamingToolCallTracker) processDelta(delta ToolCallDelta) []ToolCallChunk {
 	wireID := nonBlank(delta.ID)
 	name := nonBlank(delta.Name)
 	index := delta.Index
@@ -335,8 +452,7 @@ func (t *StreamingToolCallTracker) TrackDelta(delta ToolCallDelta) []ToolCallChu
 				Err:  providererrors.NewInvalidResponseDataError(delta, message),
 			}}
 		}
-		bufferAbsent := t.bufferNamelessIndexed && index != nil
-		if name == "" && delta.NameAbsent && !bufferAbsent {
+		if name == "" && delta.NameAbsent {
 			// TS processNewToolCall throws InvalidResponseDataError
 			// ({data: toolCallDelta}) at once for a missing function.name;
 			// no later delta can name the call.
@@ -349,7 +465,6 @@ func (t *StreamingToolCallTracker) TrackDelta(delta ToolCallDelta) []ToolCallChu
 			}}
 		}
 		call = t.processNewToolCall(delta, wireID, index, name)
-		call.strictAbsent = name == "" && delta.NameAbsent
 		if name != "" {
 			chunks = t.startChunksForNewCall(call)
 		}
@@ -359,8 +474,8 @@ func (t *StreamingToolCallTracker) TrackDelta(delta ToolCallDelta) []ToolCallChu
 		// promoted once a correlated delta supplies a name (see
 		// processExistingToolCall), or reported as an error chunk from
 		// Flush if one never arrives. A known-absent name failed above, as
-		// TS throws there, unless BufferNamelessIndexedCalls buffers it
-		// (then it is promoted the same way, and Flush always reports it).
+		// TS throws there (BufferNamelessIndexedCalls buffers such deltas
+		// before they reach this point).
 	} else {
 		call = res.call
 		if wireID != "" {
@@ -379,7 +494,19 @@ func (t *StreamingToolCallTracker) TrackDelta(delta ToolCallDelta) []ToolCallChu
 // Flush finalizes any unfinished tool calls. Should be called during the
 // stream's flush handler to ensure all tool calls are properly completed.
 func (t *StreamingToolCallTracker) Flush() []ToolCallChunk {
-	if t == nil || t.failed || len(t.toolCalls) == 0 {
+	if t == nil || t.failed {
+		return nil
+	}
+	pendingChunks := t.flushPending()
+	if t.failed {
+		return pendingChunks
+	}
+	return append(pendingChunks, t.flushCalls()...)
+}
+
+// flushCalls is TS StreamingToolCallTracker.flush.
+func (t *StreamingToolCallTracker) flushCalls() []ToolCallChunk {
+	if len(t.toolCalls) == 0 {
 		return nil
 	}
 
@@ -437,7 +564,7 @@ func (t *StreamingToolCallTracker) Flush() []ToolCallChunk {
 		if call.hasFinished {
 			continue
 		}
-		if call.name == "" && hasNamedCall && !call.strictAbsent {
+		if call.name == "" && hasNamedCall {
 			call.hasFinished = true
 			continue
 		}
@@ -651,13 +778,14 @@ func (t *StreamingToolCallTracker) processExistingToolCall(call *trackedToolCall
 		return nil
 	}
 
-	if len(delta.ProviderMetadata) > 0 && call.metadata == nil {
-		call.metadata = delta.ProviderMetadata
-	}
-
+	// TS extracts a call's metadata once, from the delta that creates it;
+	// a legacy nameless call (Go only) is created by the delta naming it.
 	wasPending := call.name == ""
 	if wasPending && name != "" {
 		call.name = name
+		if call.metadata == nil {
+			call.metadata = delta.ProviderMetadata
+		}
 	}
 
 	if delta.ArgumentsDelta != "" {

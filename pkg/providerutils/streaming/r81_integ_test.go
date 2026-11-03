@@ -36,7 +36,8 @@ func TestR81integTrackerAbsentNameFailsAtOnce(t *testing.T) {
 
 	// Buffered (openai-compatible pendingToolCalls): an indexed nameless
 	// call waits for its name, and one never named is an error at Flush
-	// even when another call succeeds.
+	// even when another call succeeds; TS flush() throws before
+	// toolCallTracker.flush(), so the named call is not finalized either.
 	tr = NewStreamingToolCallTracker()
 	tr.BufferNamelessIndexedCalls()
 	one := 1
@@ -53,7 +54,7 @@ func TestR81integTrackerAbsentNameFailsAtOnce(t *testing.T) {
 			calls++
 		}
 	}
-	if errs != 1 || calls != 1 {
-		t.Fatalf("flush: %d errors %d calls, want 1 and 1", errs, calls)
+	if errs != 1 || calls != 0 {
+		t.Fatalf("flush: %d errors %d calls, want 1 and 0", errs, calls)
 	}
 }

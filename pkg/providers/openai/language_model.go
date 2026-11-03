@@ -1407,7 +1407,7 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 					Reasoning        *string         `json:"reasoning,omitempty"`
 					ToolCalls        []struct {
 						Index    *int    `json:"index"`
-						ID       string  `json:"id"`
+						ID       *string `json:"id"`
 						Type     *string `json:"type"` // nullable: OpenAI may send null for type in streaming deltas (#12901)
 						Function struct {
 							Name      streaming.WireName `json:"name"`
@@ -1591,7 +1591,13 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 				if !s.compat && tc.Type != nil {
 					toolCallType = *tc.Type
 				}
-				d := streaming.ToolCallDelta{Index: tc.Index, ID: tc.ID, Name: tc.Function.Name.Value, Type: toolCallType}
+				d := streaming.ToolCallDelta{Index: tc.Index, Name: tc.Function.Name.Value, Type: toolCallType,
+					// TS openai-compatible pendingToolCalls keeps the first
+					// non-null id and extra_content.
+					IDPresent: tc.ID != nil, MetadataPresent: tc.ExtraContent != nil}
+				if tc.ID != nil {
+					d.ID = *tc.ID
+				}
 				if tc.Function.Arguments != nil {
 					d.ArgumentsDelta, d.ArgumentsPresent = *tc.Function.Arguments, true
 				}

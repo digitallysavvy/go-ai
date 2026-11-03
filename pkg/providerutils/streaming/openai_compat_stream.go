@@ -237,7 +237,7 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 					Reasoning        *string         `json:"reasoning"`
 					ToolCalls        []struct {
 						Index    *int    `json:"index"`
-						ID       string  `json:"id"`
+						ID       *string `json:"id"`
 						Type     *string `json:"type"` // nullable mid-stream
 						Function struct {
 							Name      WireName `json:"name"`
@@ -418,9 +418,15 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 				for _, tc := range choice.Delta.ToolCalls {
 					delta := ToolCallDelta{
 						Index:            tc.Index,
-						ID:               tc.ID,
 						Name:             tc.Function.Name.Value,
 						ProviderMetadata: openAICompatToolCallMetadata(tc.ExtraContent, s.MetadataKey),
+						// TS pendingToolCalls keeps the first non-null id
+						// and extra_content.
+						IDPresent:       tc.ID != nil,
+						MetadataPresent: tc.ExtraContent != nil,
+					}
+					if tc.ID != nil {
+						delta.ID = *tc.ID
 					}
 					if tc.Function.Arguments != nil {
 						delta.ArgumentsDelta = *tc.Function.Arguments
