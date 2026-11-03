@@ -877,7 +877,14 @@ func (m *VideoModel) uploadVideo(ctx context.Context, requestID string, data []b
 		return err
 	}
 
-	client := fileutil.NewDownloadClient(uploadURL, opts)
+	// TS fetchWithValidatedEndpoint (c66402d340) uploads with
+	// redirect: 'error': net/http would replay the PUT body (a bytes.Reader
+	// sets GetBody) on a 307/308, sending the whole input video to the
+	// redirect target, so any redirect fails the upload.
+	client := &http.Client{Transport: opts.Transport, Timeout: opts.Timeout}
+	client.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+		return fmt.Errorf("topaz: the input video upload was redirected to %s; redirects are rejected", req.URL.Redacted())
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, bytes.NewReader(data))
 	if err != nil {
 		return err
