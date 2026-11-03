@@ -602,6 +602,18 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 	return ctx
 }
 
+// genAIUnsampledRoot reports whether callID has this integration's own root
+// span and that span is not recording (TS keeps the call state either way).
+func genAIUnsampledRoot(callID string) bool {
+	st := genAILoadedState(callID)
+	if st == nil {
+		return false
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.rootSpan != nil && !st.rootSpan.IsRecording()
+}
+
 // genAIIsObjectCall reports whether callID's root is generateObject or
 // streamObject.
 func genAIIsObjectCall(callID string) bool {
@@ -750,6 +762,12 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 		}
 	}
 	if parent == nil || !parent.IsRecording() {
+		// TS keeps the call state of a root span that is not recording
+		// (sampled out, or no tracer provider), so the inference duration
+		// histogram still records the call.
+		if !isObject && genAIUnsampledRoot(i.stateKey(e.CallID)) {
+			i.beginInference(e.CallID, genAIInference{start: time.Now(), provider: e.ModelProvider, modelID: e.ModelID, ctx: ctx})
+		}
 		return ctx
 	}
 	tracer := genAIChildTracer(i.stateKey(e.CallID), parent)
@@ -932,6 +950,13 @@ func finalToolResultsByCallID(content []types.ContentPart) map[string]types.Cont
 // and creates short-lived execute_tool spans for provider-executed tool
 // calls surfaced in the response (37b75e8), parented under the chat span.
 func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageModelCallEndEvent) {
+	// The duration is recorded whether or not the chat span records (it is
+	// a no-op without an open model call).
+	end := inferenceEnd{responseTimeMs: &e.Performance.ResponseTimeMs, provider: e.ModelProvider, responseModelID: &e.ModelID}
+	if e.FinishReason == string(types.FinishReasonError) {
+		end.errorType = "_OTHER"
+	}
+	i.recordInferenceDuration(e.CallID, end)
 	value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("languageModel", i.stateKey(e.CallID)))
 	if !ok {
 		return
@@ -940,11 +965,6 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 	if !ok || !entry.span.IsRecording() {
 		return
 	}
-	end := inferenceEnd{responseTimeMs: &e.Performance.ResponseTimeMs, provider: e.ModelProvider, responseModelID: &e.ModelID}
-	if e.FinishReason == string(types.FinishReasonError) {
-		end.errorType = "_OTHER"
-	}
-	i.recordInferenceDuration(e.CallID, end)
 	if e.FinishReason == string(types.FinishReasonError) {
 		entry.span.SetStatus(codes.Error, "")
 	}
@@ -1444,16 +1464,17 @@ func (i OpenTelemetry) OnToolCallFinish(ctx context.Context, e TelemetryToolCall
 // spans for any provider-executed tool calls surfaced this step (5ad6abf),
 // and ends the step span created by OnStepStart.
 func (i OpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEvent) {
-	stepSpan, ok := i.stepSpanFor(ctx, e.CallID)
-	if !ok || !stepSpan.IsRecording() {
-		return
-	}
-	// Streams can close after an error chunk without a model-call end.
+	// Streams can close after an error chunk without a model-call end. An
+	// open model call implies an open step, recording or not.
 	stepEnd := inferenceEnd{}
 	if e.FinishReason == string(types.FinishReasonError) {
 		stepEnd.errorType = "_OTHER"
 	}
 	i.recordInferenceDuration(e.CallID, stepEnd)
+	stepSpan, ok := i.stepSpanFor(ctx, e.CallID)
+	if !ok || !stepSpan.IsRecording() {
+		return
+	}
 	if e.FinishReason == string(types.FinishReasonError) {
 		stepSpan.SetStatus(codes.Error, "")
 	}
@@ -1723,9 +1744,7 @@ func (i OpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
 	// Terminal for the call (also when it arrives after OnEnd): never leave
 	// state behind.
 	defer genAIDeleteState(i.stateKey(e.CallID))
-	if genAIRootSpanFor(i.stateKey(e.CallID), ctx).IsRecording() {
-		i.recordInferenceDuration(e.CallID, inferenceEnd{errorType: inferenceErrorType(e.Error)})
-	}
+	i.recordInferenceDuration(e.CallID, inferenceEnd{errorType: inferenceErrorType(e.Error)})
 	i.closeOpenChildSpans(e.CallID, e.Error)
 	span := genAIRootSpanFor(i.stateKey(e.CallID), ctx)
 	if !span.IsRecording() {
@@ -1746,9 +1765,7 @@ func (i OpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
 // registered.
 func (i OpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent) {
 	defer genAIDeleteState(i.stateKey(e.CallID))
-	if genAIRootSpanFor(i.stateKey(e.CallID), ctx).IsRecording() {
-		i.recordInferenceDuration(e.CallID, inferenceEnd{errorType: "AbortError"})
-	}
+	i.recordInferenceDuration(e.CallID, inferenceEnd{errorType: "AbortError"})
 	i.closeOpenChildSpans(e.CallID, nil)
 	if e.CallID == "" {
 		if stepSpan, ok := ctx.Value(genAIStepSpanKey{}).(trace.Span); ok && stepSpan.IsRecording() {
@@ -1828,9 +1845,7 @@ func (i OpenTelemetry) closeOpenChildSpans(callID string, err error) {
 // handling: recordErrorOnSpan + end when e.Error is set (provider error),
 // or a plain end (mirroring onAbort) when it's nil.
 func (i OpenTelemetry) OnStepError(ctx context.Context, e TelemetryErrorEvent) {
-	if span, ok := i.stepSpanFor(ctx, e.CallID); ok && span.IsRecording() {
-		i.recordInferenceDuration(e.CallID, inferenceEnd{errorType: inferenceErrorType(e.Error)})
-	}
+	i.recordInferenceDuration(e.CallID, inferenceEnd{errorType: inferenceErrorType(e.Error)})
 	if e.CallID != "" {
 		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("languageModel", i.stateKey(e.CallID))); ok {
 			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
