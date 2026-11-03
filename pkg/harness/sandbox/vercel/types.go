@@ -1,5 +1,7 @@
 package vercel
 
+import "encoding/json"
+
 // Wire (HTTP) request/response shapes for the Vercel Sandbox API. Ported from
 // the response validators in
 // node_modules/@vercel/sandbox/dist/api-client/validators.js. Only the fields
@@ -59,6 +61,28 @@ type sessionWire struct {
 	NetworkPolicy *NetworkPolicy `json:"networkPolicy,omitempty"`
 	Status        string         `json:"status"`
 	Timeout       int64          `json:"timeout"`
+	// RawNetworkPolicy is the session's networkPolicy exactly as the API
+	// returned it: the session metadata TS reads through listSessions() to
+	// find response rules the decoded policy does not carry (44a4261e52).
+	RawNetworkPolicy json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON decodes the session and keeps its raw networkPolicy.
+func (w *sessionWire) UnmarshalJSON(data []byte) error {
+	type plain sessionWire
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	var raw struct {
+		NetworkPolicy json.RawMessage `json:"networkPolicy"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	p.RawNetworkPolicy = raw.NetworkPolicy
+	*w = sessionWire(p)
+	return nil
 }
 
 type sandboxWire struct {
