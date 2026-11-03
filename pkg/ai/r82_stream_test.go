@@ -649,3 +649,230 @@ func TestR82streamPipeChunksToResponse(t *testing.T) {
 		t.Fatalf("151 body = %q", buf.String())
 	}
 }
+
+func r82streamI64(v int64) *int64 { return &v }
+
+// TS testUsage / testUsage2 as LanguageModelUsage (asLanguageModelUsage
+// fills noCache and text tokens from the totals).
+var (
+	r82streamTestUsage = &types.Usage{InputTokens: r82streamI64(3), OutputTokens: r82streamI64(10), TotalTokens: r82streamI64(13),
+		InputDetails:  &types.InputTokenDetails{NoCacheTokens: r82streamI64(3)},
+		OutputDetails: &types.OutputTokenDetails{TextTokens: r82streamI64(10)}}
+	r82streamTestUsage2 = &types.Usage{InputTokens: r82streamI64(3), OutputTokens: r82streamI64(10), TotalTokens: r82streamI64(13),
+		InputDetails:  &types.InputTokenDetails{NoCacheTokens: r82streamI64(3), CacheReadTokens: r82streamI64(0), CacheWriteTokens: r82streamI64(0)},
+		OutputDetails: &types.OutputTokenDetails{TextTokens: r82streamI64(10), ReasoningTokens: r82streamI64(10)}}
+)
+
+// r82streamTwoStepRun is the TS "options.stopWhen > 2 steps: initial,
+// tool-result" setup.
+func r82streamTwoStepRun(t *testing.T) (*StreamTextResult, OnFinishEvent, []OnStepFinishEvent) {
+	t.Helper()
+	calls := 0
+	model := r82streamAttemptModel(&calls,
+		func(int) []provider.StreamChunk {
+			return []provider.StreamChunk{
+				{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-0", ModelID: "mock-model-id", Timestamp: time.UnixMilli(0), Headers: map[string]string{"call": "1"}}},
+				{Type: provider.ChunkTypeReasoningStart, ID: "0"},
+				{Type: provider.ChunkTypeReasoning, ID: "0", Reasoning: "thinking"},
+				{Type: provider.ChunkTypeReasoningEnd, ID: "0"},
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "value"}, RawArguments: `{ "value": "value" }`}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r82streamTestUsage},
+			}
+		},
+		func(int) []provider.StreamChunk {
+			return []provider.StreamChunk{
+				{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-1", ModelID: "mock-model-id", Timestamp: time.UnixMilli(1000), Headers: map[string]string{"call": "2"}}},
+				{Type: provider.ChunkTypeTextStart, ID: "1"},
+				{Type: provider.ChunkTypeText, ID: "1", Text: "Hello, "},
+				{Type: provider.ChunkTypeText, ID: "1", Text: "world!"},
+				{Type: provider.ChunkTypeTextEnd, ID: "1"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r82streamTestUsage2},
+			}
+		})
+	var mu sync.Mutex
+	var end OnFinishEvent
+	var stepEvents []OnStepFinishEvent
+	r := r71streamRun(t, StreamTextOptions{Model: model, Prompt: "test-input",
+		Tools: []types.Tool{{Name: "tool1", Parameters: r82streamValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "result1", nil
+		}}},
+		StopWhen: []StopCondition{StepCountIs(3)}, Internal: r72streamIDs(),
+		OnEndEvent:        func(_ context.Context, e OnFinishEvent) { mu.Lock(); end = e; mu.Unlock() },
+		OnStepFinishEvent: func(_ context.Context, e OnStepFinishEvent) { mu.Lock(); stepEvents = append(stepEvents, e); mu.Unlock() },
+	})
+	if calls != 2 {
+		t.Fatalf("doStream calls = %d", calls)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return r, end, stepEvents
+}
+
+// stream-text.test.ts 15255 (totalUsage), 15274 (usage), 15293
+// (finalStep.usage), 15313 (onFinish usage, totalUsage and finalStep), 15335
+// (finishReason) and 15339 (text) of "2 steps: initial, tool-result > value
+// promises".
+func TestR82streamTwoStepValuePromises(t *testing.T) {
+	r, end, _ := r82streamTwoStepRun(t)
+	const total = `{"inputTokenDetails":{"cacheReadTokens":0,"cacheWriteTokens":0,"noCacheTokens":6},"inputTokens":6,"outputTokenDetails":{"reasoningTokens":10,"textTokens":20},"outputTokens":20,"totalTokens":26}`
+	r75streamAssertJSON(t, "15255 totalUsage", r.TotalUsage(), total)
+	r75streamAssertJSON(t, "15274 usage", r.Usage(), total)
+	const final = `{"inputTokenDetails":{"cacheReadTokens":0,"cacheWriteTokens":0,"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"reasoningTokens":10,"textTokens":10},"outputTokens":10,"totalTokens":13}`
+	r75streamAssertJSON(t, "15293 finalStep.usage", r.FinalStep().Usage, final)
+	r75streamAssertJSON(t, "15313 onFinish usage", end.Usage, total)
+	r75streamAssertJSON(t, "15313 onFinish totalUsage", end.TotalUsage, total)
+	r75streamAssertJSON(t, "15313 onFinish finalStep.usage", end.FinalStep.Usage, final)
+	if len(end.Steps) != 2 || end.Steps[1].Response.ID != end.FinalStep.Response.ID {
+		t.Fatalf("15313 finalStep is not the last step: %d steps", len(end.Steps))
+	}
+	if fr := r.FinishReason(); fr != types.FinishReasonStop {
+		t.Fatalf("15335 finishReason = %q", fr)
+	}
+	if txt := r.Text(); txt != "Hello, world!" {
+		t.Fatalf("15339 text = %q", txt)
+	}
+	steps := r.Steps()
+	if fmt.Sprint(steps[0].Response.Headers, steps[1].Response.Headers) != "map[call:1] map[call:2]" {
+		t.Fatalf("step headers = %v %v", steps[0].Response.Headers, steps[1].Response.Headers)
+	}
+}
+
+// stream-text.test.ts 15343 (result.steps) and 15553 (responseMessages) of
+// "2 steps: initial, tool-result > value promises": each step's content,
+// finish reasons, model, response id/model/timestamp/headers/messages (the
+// step's own), step numbers, usage and warnings.
+func TestR82streamTwoStepSteps(t *testing.T) {
+	r, end, stepEvents := r82streamTwoStepRun(t)
+	steps := r.Steps()
+	if len(steps) != 2 || len(end.Steps) != 2 || len(stepEvents) != 2 {
+		t.Fatalf("steps = %d, onEnd steps = %d, onStepFinish = %d", len(steps), len(end.Steps), len(stepEvents))
+	}
+	type view struct {
+		CallID          string      `json:"callId"`
+		StepNumber      int         `json:"stepNumber"`
+		Model           interface{} `json:"model"`
+		Content         interface{} `json:"content"`
+		FinishReason    string      `json:"finishReason"`
+		RawFinishReason string      `json:"rawFinishReason"`
+		ResponseID      string      `json:"responseId"`
+		ResponseModel   string      `json:"responseModelId"`
+		Timestamp       string      `json:"timestamp"`
+		Headers         interface{} `json:"headers"`
+		Messages        interface{} `json:"messages"`
+		Usage           interface{} `json:"usage"`
+		Warnings        int         `json:"warnings"`
+		ToolExecution   []string    `json:"toolExecutionMs"`
+	}
+	toView := func(s types.StepResult) view {
+		var ids []string
+		for id := range s.Performance.ToolExecutionMs {
+			ids = append(ids, id)
+		}
+		return view{s.CallID, s.StepNumber, s.Model, s.Content, string(s.FinishReason), s.RawFinishReason, s.Response.ID, s.Response.ModelID,
+			s.Response.Timestamp.UTC().Format(time.RFC3339Nano), s.Response.Headers, s.Response.Messages, s.Usage, len(s.Warnings), ids}
+	}
+	const want = `[{"callId":"test-telemetry-call-id","stepNumber":0,"model":{"provider":"mock-provider","modelId":"mock-model-id"},` +
+		`"content":[{"type":"reasoning","text":"thinking"},{"type":"tool-call","toolCallId":"call-1","toolName":"tool1","input":{"value":"value"}},` +
+		`{"type":"tool-result","toolCallId":"call-1","toolName":"tool1","input":{"value":"value"},"output":{"type":"text","value":"result1"}}],` +
+		`"finishReason":"tool-calls","rawFinishReason":"","responseId":"id-0","responseModelId":"mock-model-id","timestamp":"1970-01-01T00:00:00Z","headers":{"call":"1"},` +
+		`"messages":[{"role":"assistant","content":[{"type":"reasoning","text":"thinking"},{"type":"tool-call","toolCallId":"call-1","toolName":"tool1","input":{"value":"value"}}],` +
+		`"tool_calls":[{"arguments":{"value":"value"},"id":"call-1","toolName":"tool1"}]},` +
+		`{"role":"tool","content":[{"type":"tool-result","toolCallId":"call-1","toolName":"tool1","output":{"type":"text","value":"result1"}}]}],` +
+		`"usage":{"inputTokenDetails":{"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"textTokens":10},"outputTokens":10,"totalTokens":13},"warnings":0,"toolExecutionMs":["call-1"]},` +
+		`{"callId":"test-telemetry-call-id","stepNumber":1,"model":{"provider":"mock-provider","modelId":"mock-model-id"},` +
+		`"content":[{"type":"text","text":"Hello, world!"}],"finishReason":"stop","rawFinishReason":"stop","responseId":"id-1","responseModelId":"mock-model-id",` +
+		`"timestamp":"1970-01-01T00:00:01Z","headers":{"call":"2"},"messages":[{"role":"assistant","content":[{"type":"text","text":"Hello, world!"}]}],` +
+		`"usage":{"inputTokenDetails":{"cacheReadTokens":0,"cacheWriteTokens":0,"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"reasoningTokens":10,"textTokens":10},"outputTokens":10,"totalTokens":13},"warnings":0,"toolExecutionMs":null}]`
+	r74streamAssertJSON(t, "15343 steps", []view{toView(steps[0]), toView(steps[1])}, want)
+	r74streamAssertJSON(t, "onEnd steps", []view{toView(end.Steps[0]), toView(end.Steps[1])}, want)
+	r74streamAssertJSON(t, "15553 responseMessages", r.ResponseMessages(),
+		`[{"role":"assistant","content":[{"type":"reasoning","text":"thinking"},{"type":"tool-call","toolCallId":"call-1","toolName":"tool1","input":{"value":"value"}}],`+
+			`"tool_calls":[{"arguments":{"value":"value"},"id":"call-1","toolName":"tool1"}]},`+
+			`{"role":"tool","content":[{"type":"tool-result","toolCallId":"call-1","toolName":"tool1","output":{"type":"text","value":"result1"}}]},`+
+			`{"role":"assistant","content":[{"type":"text","text":"Hello, world!"}]}]`)
+}
+
+func r82streamRawModel(captured *[]bool, raws ...interface{}) *testutil.MockLanguageModel {
+	var mu sync.Mutex
+	return &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id", DoStreamFunc: func(_ context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+		mu.Lock()
+		*captured = append(*captured, o.IncludeRawChunks)
+		mu.Unlock()
+		chunks := []provider.StreamChunk{{Type: provider.ChunkTypeStreamStart}}
+		for _, raw := range raws {
+			chunks = append(chunks, provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw})
+		}
+		chunks = append(chunks,
+			provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "test-id", ModelID: "test-model", Timestamp: time.UnixMilli(0)}},
+			provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "1"},
+			provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: "Hello, world!"},
+			provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "1"},
+			provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r82streamTestUsage},
+		)
+		return testutil.NewMockTextStream(chunks), nil
+	}}
+}
+
+// stream-text.test.ts raw chunks forwarding: 24638 (forwarded with
+// include.rawChunks), 24690 (not forwarded when disabled), 24731 / 24950
+// (the flag reaches the model), 24762 (onChunk gets the raw parts in order),
+// 25065 (experimental_include alias) and 25095 (include wins over it).
+func TestR82streamRawChunksForwarding(t *testing.T) {
+	tr, f := true, false
+	raw := map[string]interface{}{"type": "raw-data", "content": "should appear"}
+	var flags []bool
+	_, parts := r73streamParts(t, StreamTextOptions{Model: r82streamRawModel(&flags, raw), Prompt: "test prompt", Include: &IncludeOptions{RawChunks: &tr}})
+	var raws []interface{}
+	for _, p := range parts {
+		if p.Type == provider.ChunkTypeRaw {
+			raws = append(raws, p.Raw)
+		}
+	}
+	r75streamAssertJSON(t, "24638 raw parts", raws, `[{"content":"should appear","type":"raw-data"}]`)
+
+	_, parts = r73streamParts(t, StreamTextOptions{Model: r82streamRawModel(&flags, raw), Prompt: "test prompt", Include: &IncludeOptions{RawChunks: &f}})
+	for _, p := range parts {
+		if p.Type == provider.ChunkTypeRaw {
+			t.Fatal("24690: raw part forwarded with rawChunks false")
+		}
+	}
+
+	var mu sync.Mutex
+	var onChunk []provider.StreamChunk
+	r71streamRun(t, StreamTextOptions{Model: r82streamRawModel(&flags,
+		map[string]interface{}{"type": "stream-start", "data": "start"},
+		map[string]interface{}{"type": "response-metadata", "id": "test-id", "modelId": "test-model"},
+		map[string]interface{}{"type": "text-delta", "content": "Hello"},
+		map[string]interface{}{"type": "text-delta", "content": ", world!"},
+		map[string]interface{}{"type": "finish", "reason": "stop"},
+	), Prompt: "test prompt", Include: &IncludeOptions{RawChunks: &tr}, Internal: r72streamIDs(),
+		OnChunk: func(c provider.StreamChunk) { mu.Lock(); onChunk = append(onChunk, c); mu.Unlock() }})
+	mu.Lock()
+	var names []string
+	var rawValues []interface{}
+	for i := range onChunk {
+		// OnChunk keeps the Go-only stream-start marker (migration guide
+		// #streamtext-full-stream-markers).
+		if n := strings.SplitN(tsPartName(&onChunk[i]), ":", 2)[0]; n != "" && n != "stream-start" {
+			names = append(names, n)
+		}
+		if onChunk[i].Type == provider.ChunkTypeRaw {
+			rawValues = append(rawValues, onChunk[i].Raw)
+		}
+	}
+	mu.Unlock()
+	if want := "start start-step raw raw raw raw raw text-start text-delta text-end finish-step finish"; strings.Join(names, " ") != want {
+		t.Fatalf("24762 onChunk = %q", strings.Join(names, " "))
+	}
+	r75streamAssertJSON(t, "24762 raw values", rawValues, `[{"data":"start","type":"stream-start"},{"id":"test-id","modelId":"test-model","type":"response-metadata"},{"content":"Hello","type":"text-delta"},{"content":", world!","type":"text-delta"},{"reason":"stop","type":"finish"}]`)
+
+	flags = nil
+	r71streamRun(t, StreamTextOptions{Model: r82streamRawModel(&flags), Prompt: "p", Include: &IncludeOptions{RawChunks: &tr}})
+	r71streamRun(t, StreamTextOptions{Model: r82streamRawModel(&flags), Prompt: "p", Include: &IncludeOptions{RawChunks: &f}})
+	r71streamRun(t, StreamTextOptions{Model: r82streamRawModel(&flags), Prompt: "p"})
+	r71streamRun(t, StreamTextOptions{Model: r82streamRawModel(&flags), Prompt: "p", ExperimentalInclude: &IncludeOptions{RawChunks: &tr}})
+	r71streamRun(t, StreamTextOptions{Model: r82streamRawModel(&flags), Prompt: "p", Include: &IncludeOptions{RawChunks: &f}, ExperimentalInclude: &IncludeOptions{RawChunks: &tr}})
+	if fmt.Sprint(flags) != "[true false false true false]" {
+		t.Fatalf("24731/24950/25065/25095 includeRawChunks = %v", flags)
+	}
+}
