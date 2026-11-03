@@ -9,6 +9,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	promptutil "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
@@ -545,11 +546,17 @@ func resolveInlineBase64MediaType(mediaType, base64Data string) (string, error) 
 	if full, err := promptutil.ResolveFullMediaType(mediaType, nil, true); err == nil {
 		return full, nil
 	}
-	raw, err := types.DecodeFileDataString(base64Data)
+	// TS detectMediaType decodes only the sniffed prefix of the string
+	// (decodePrefix; atob throws on a bad prefix).
+	top, _, _ := strings.Cut(mediaType, "/")
+	detected, ok, err := fileutil.DetectMediaTypeSignatureBase64(base64Data, top)
 	if err != nil {
-		return mediaType, nil
+		return "", err
 	}
-	return promptutil.ResolveFullMediaType(mediaType, raw, true)
+	if ok && detected != "" {
+		return detected, nil
+	}
+	return promptutil.ResolveFullMediaType(mediaType, nil, true)
 }
 
 func openAIFileDataBase64(part types.FileContent) string {
