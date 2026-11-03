@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -124,5 +125,36 @@ func TestR86carryWorkflowChatSpanToolDefinitionsLikeStreamText(t *testing.T) {
 		if got, ok := r86carryWorkflowChatToolDefs(t, mode, nil); ok {
 			t.Errorf("%s without tools: gen_ai.tool.definitions = %q, want none", mode, got)
 		}
+	}
+}
+
+// TS workflow-chat-transport.ts reads the body with parseJsonEventStream,
+// which skips only an exact "[DONE]" and parses any other data, an empty one
+// included, as JSON: a failed parse ends the attempt (`throw chunk.error`).
+// Go trimmed the data and skipped empty and padded "[DONE]" events.
+func TestR86carryTransportEventDataNotTrimmed(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body    string
+		wantErr bool
+		read    int
+	}{
+		"done":                {body: "data: [DONE]\n\n", read: 0},
+		"empty data":          {body: "data:\n\ndata: {\"type\":\"finish\"}\n\n", wantErr: true},
+		"padded done":         {body: "data:  [DONE] \n\n", wantErr: true},
+		"json with spaces":    {body: "data:  {\"type\":\"finish\"} \n\n", read: 1},
+		"json then done":      {body: "data: {\"type\":\"start\"}\n\ndata: [DONE]\n\n", read: 1},
+		"no-break space json": {body: "data: \u00a0{\"type\":\"finish\"}\n\n", wantErr: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out := make(chan ai.UIMessageChunk, 16)
+			tr := &WorkflowChatTransport{}
+			read, _, err := tr.pumpChunkStream(context.Background(), strings.NewReader(tc.body), newUIStreamNormalizer(), nil, out)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if !tc.wantErr && read != tc.read {
+				t.Fatalf("read = %d, want %d", read, tc.read)
+			}
+		})
 	}
 }

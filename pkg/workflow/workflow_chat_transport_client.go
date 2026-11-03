@@ -434,8 +434,11 @@ func (t *WorkflowChatTransport) pumpChunkStream(ctx context.Context, body io.Rea
 			}
 			return read, gotFinish, err
 		}
-		data := strings.TrimSpace(event.Data)
-		if data == "" || data == "[DONE]" {
+		// TS parseJsonEventStream skips only an exact "[DONE]"; any other
+		// data, an empty one included, is parsed as JSON (JSON.parse
+		// whitespace is Go's JSON whitespace).
+		data := event.Data
+		if data == "[DONE]" {
 			continue
 		}
 		var chunk ai.UIMessageChunk
