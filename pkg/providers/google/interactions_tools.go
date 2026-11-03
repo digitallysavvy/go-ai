@@ -8,6 +8,12 @@ import (
 )
 
 func prepareInteractionsTools(tools []types.Tool, toolChoice types.ToolChoice) ([]map[string]interface{}, interface{}, []types.Warning) {
+	// The API's tool_choice only controls function tools, so toolChoice none
+	// omits every tool (provider-executed ones too), the tool_choice and the
+	// tool warnings (TS a32df11498).
+	if toolChoice.Type == types.ToolChoiceNone {
+		return nil, nil, nil
+	}
 	if len(tools) == 0 {
 		return nil, nil, nil
 	}
@@ -48,8 +54,6 @@ func prepareInteractionsTools(tools []types.Tool, toolChoice types.ToolChoice) (
 			choice = "auto"
 		case types.ToolChoiceRequired:
 			choice = "any"
-		case types.ToolChoiceNone:
-			choice = "none"
 		case types.ToolChoiceTool:
 			choice = map[string]interface{}{
 				"allowed_tools": map[string]interface{}{
