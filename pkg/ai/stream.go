@@ -1394,19 +1394,20 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// span parent yet. telemetryStepCtx is saved on r so the processStream
 	// loop iteration that consumes this step's stream reads it back instead
 	// of calling FireOnStepStart a second time.
-	telemetryStepCtx := telemetry.FireOnStepStart(stepCtx, telemetry.TelemetryStepStartEvent{
-		CallID:         callID,
-		OperationType:  "ai.streamText",
-		Settings:       telemetrySettings,
-		StepNumber:     0,
-		ModelProvider:  stepModel.Provider(),
-		ModelID:        stepModel.ModelID(),
-		ToolChoice:     stepToolChoice,
+	telemetryStepCtx := telemetry.FireOnStepStart(stepCtx, stepStartTelemetryPrompt(opts.Internal, telemetry.TelemetryStepStartEvent{
+		CallID:        callID,
+		OperationType: "ai.streamText",
+		Settings:      telemetrySettings,
+		StepNumber:    0,
+		ModelProvider: stepModel.Provider(),
+		ModelID:       stepModel.ModelID(),
+		// TS stepToolChoice is prepareToolChoice(...): auto when unset.
+		ToolChoice:     preparedToolChoice(stepToolChoice),
 		PromptMessages: genOpts.Prompt.Messages,
 		StepTools:      stepTools,
 		RuntimeContext: telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 		ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
-	})
+	}))
 	r.stepReopenTelemetryStepCtx = telemetryStepCtx
 
 	// startModelCall fires the model call's start (callback and telemetry)
@@ -2097,6 +2098,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		var stepResponseID string
 		stepDefaultResponseID := remapGenerateID()
 		stepResponseTimestamp := time.Now()
+		// TS finish-step response.headers is the step's own doStream
+		// response headers, so a step (or a recovered attempt, below) whose
+		// stream reports none has none: an earlier step's do not carry over.
+		r.mu.Lock()
+		r.responseHeaders = nil
+		r.mu.Unlock()
 		stepInstructions := r.cbSystem
 		stepInstructionMessages := r.cbInstructionMessages
 		stepTools := append([]types.Tool(nil), currentTools...)
@@ -2257,7 +2264,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			case streamEnded:
 				err = io.EOF
 			default:
-				chunk, err = r.nextChunk(chunkDeadlineCtx)
+				chunk, err = r.readChunk(chunkDeadlineCtx)
 			}
 			if err == io.EOF {
 				if len(heldChunks) > 0 {
@@ -2693,7 +2700,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// Mirrors TS SDK's 'response-metadata' chunk handling in stream-text.ts.
 			if chunk.Type == provider.ChunkTypeResponseMetadata && chunk.ResponseMetadata != nil {
 				if chunk.ResponseMetadata.Headers != nil {
+					r.mu.Lock()
 					r.responseHeaders = chunk.ResponseMetadata.Headers
+					r.mu.Unlock()
 				}
 				if chunk.ResponseMetadata.ModelID != "" {
 					stepResponseModelID = chunk.ResponseMetadata.ModelID
@@ -2909,6 +2918,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					stepResponseID = ""
 					stepDefaultResponseID = remapGenerateID()
 					stepResponseTimestamp = time.Now()
+					r.mu.Lock()
+					r.responseHeaders = nil
+					r.mu.Unlock()
 					toolInputCallbacks = newStreamToolInputCallbacks(stepExecutionTools, currentMessages, r.cbToolsCtx)
 					deferredToolInputs = nil
 					startedToolInputs = map[string]string{}
@@ -4023,19 +4035,19 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// 1). nextTelemetryStepCtx is saved on r so the top of the following
 		// loop iteration — which processes the stream DoStream returns here —
 		// reads it back instead of firing FireOnStepStart again.
-		nextTelemetryStepCtx := telemetry.FireOnStepStart(nextStepCtx, telemetry.TelemetryStepStartEvent{
+		nextTelemetryStepCtx := telemetry.FireOnStepStart(nextStepCtx, stepStartTelemetryPrompt(opts.Internal, telemetry.TelemetryStepStartEvent{
 			CallID:         r.cbCallID,
 			OperationType:  "ai.streamText",
 			Settings:       r.telemetrySettings,
 			StepNumber:     stepNum,
 			ModelProvider:  nextModel.Provider(),
 			ModelID:        nextModel.ModelID(),
-			ToolChoice:     nextToolChoice,
+			ToolChoice:     preparedToolChoice(nextToolChoice),
 			PromptMessages: nextGenOpts.Prompt.Messages,
 			StepTools:      nextTools,
 			RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
 			ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
-		})
+		}))
 		r.stepReopenTelemetryStepCtx = nextTelemetryStepCtx
 		// As for the first step: a retried DoStream open is a new model call.
 		var nextModelCallCtx context.Context
@@ -5598,20 +5610,17 @@ func isReasoningBoundaryChunk(chunkType provider.ChunkType) bool {
 }
 
 // armStepChunkDeadline returns the initial chunk-read deadline context for a
-// step: FirstChunk if configured (it always takes priority at the start of a
-// step — PerChunk only takes over once FirstChunk disarms, see
-// resetChunkDeadlineOnOutput), else PerChunk if configured, else stepCtx
-// itself with a no-op cancel. The returned reason identifies which of
-// TimeoutReasonFirstChunk/TimeoutReasonChunk a deadline expiring on this
-// context should be reported as ("" when there is no deadline at all).
+// model call attempt (a step, or a stream retry): FirstChunk if configured,
+// else stepCtx itself with a no-op cancel. PerChunk starts only once semantic
+// output begins (resetChunkDeadlineOnOutput), as TS's chunkMs timer: "Chunk
+// timeout tracking starts after semantic output begins" (TS arms only the
+// first-chunk timer when the stream opens or is retried). The returned reason
+// identifies which of TimeoutReasonFirstChunk/TimeoutReasonChunk a deadline
+// expiring on this context should be reported as ("" when there is none).
 func armStepChunkDeadline(stepCtx context.Context, tc *TimeoutConfig) (context.Context, context.CancelFunc, TimeoutReason) {
 	if tc.HasFirstChunk() {
 		c, cancel := context.WithTimeout(stepCtx, *tc.FirstChunk)
 		return c, cancel, TimeoutReasonFirstChunk
-	}
-	if tc.HasPerChunk() {
-		c, cancel := context.WithTimeout(stepCtx, *tc.PerChunk)
-		return c, cancel, TimeoutReasonChunk
 	}
 	return stepCtx, func() {}, ""
 }
@@ -5737,29 +5746,7 @@ func includedRequestMessages(include bool, messages []types.Message) []types.Mes
 func (r *StreamTextResult) nextChunk(ctx context.Context) (*provider.StreamChunk, error) {
 	stream := r.currentStream()
 	if r.timeout == nil || !r.timeout.HasPerChunk() {
-		if ctx == nil || ctx.Done() == nil {
-			return stream.Next()
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-		type chunkResult struct {
-			chunk *provider.StreamChunk
-			err   error
-		}
-		resultCh := make(chan chunkResult, 1)
-		go func() {
-			chunk, err := stream.Next()
-			resultCh <- chunkResult{chunk: chunk, err: err}
-		}()
-		select {
-		case result := <-resultCh:
-			return result.chunk, result.err
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+		return r.readChunk(ctx)
 	}
 
 	if ctx == nil {
@@ -5802,6 +5789,51 @@ func (r *StreamTextResult) nextChunk(ctx context.Context) (*provider.StreamChunk
 		return result.chunk, result.err
 	case <-chunkCtx.Done():
 		return nil, wrapTimeoutError(TimeoutReasonChunk, chunkCtx.Err())
+	}
+}
+
+// stepStartTelemetryPrompt clears the step prompt, tools and tool choice of
+// a telemetry step-start event for a WorkflowAgent run
+// (InternalOptions.OmitStepPromptTelemetry): TS WorkflowAgent's model-call
+// iterator dispatches onStepStart without promptMessages, stepTools or
+// stepToolChoice.
+func stepStartTelemetryPrompt(internal *InternalOptions, e telemetry.TelemetryStepStartEvent) telemetry.TelemetryStepStartEvent {
+	if internal != nil && internal.OmitStepPromptTelemetry {
+		e.ToolChoice = types.ToolChoice{}
+		e.PromptMessages = nil
+		e.StepTools = nil
+	}
+	return e
+}
+
+// readChunk reads the next chunk, returning ctx's error once ctx is done.
+// processStream reads with it: its ctx carries the step's FirstChunk/PerChunk
+// deadline, which (as TS's chunkMs timer) starts only once semantic output
+// begins, so no per-read chunk timer is added.
+func (r *StreamTextResult) readChunk(ctx context.Context) (*provider.StreamChunk, error) {
+	stream := r.currentStream()
+	if ctx == nil || ctx.Done() == nil {
+		return stream.Next()
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	type chunkResult struct {
+		chunk *provider.StreamChunk
+		err   error
+	}
+	resultCh := make(chan chunkResult, 1)
+	go func() {
+		chunk, err := stream.Next()
+		resultCh <- chunkResult{chunk: chunk, err: err}
+	}()
+	select {
+	case result := <-resultCh:
+		return result.chunk, result.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 

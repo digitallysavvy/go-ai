@@ -29,6 +29,12 @@ type InternalOptions struct {
 	// generateText/streamText.
 	ContinueOnMissingProviderResult bool
 
+	// OmitStepPromptTelemetry leaves PromptMessages, StepTools and ToolChoice
+	// off the telemetry step-start event: TS WorkflowAgent's model-call
+	// iterator dispatches onStepStart without promptMessages, stepTools or
+	// stepToolChoice. Used by WorkflowAgent.
+	OmitStepPromptTelemetry bool
+
 	// StopOnStreamError makes a step whose stream carried an error part end
 	// the run without executing or answering that step's tool calls, like TS
 	// WorkflowAgent's hasTerminalError (the loop is done; the error is

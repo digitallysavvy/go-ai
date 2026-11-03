@@ -184,11 +184,12 @@ func (s *StreamTextSingleConsumerResult) FinishReason() types.FinishReason { ret
 // provider finish reason.
 func (s *StreamTextSingleConsumerResult) RawFinishReason() string { return s.r.RawFinishReason() }
 
-// Usage waits for the generation to finish and returns the last step's usage.
+// Usage waits for the generation to finish and returns the usage summed over
+// all steps (as StreamTextResult.Usage; TS usage is the total usage).
 func (s *StreamTextSingleConsumerResult) Usage() types.Usage { return s.r.Usage() }
 
 // TotalUsage waits for the generation to finish and returns the usage summed
-// over all steps.
+// over all steps. It is the same value as Usage.
 func (s *StreamTextSingleConsumerResult) TotalUsage() types.Usage { return s.r.TotalUsage() }
 
 // PartialOutput returns the most recently parsed partial structured output

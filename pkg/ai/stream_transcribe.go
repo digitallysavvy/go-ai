@@ -307,7 +307,7 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 
 	var audioByteLength int64
 	audio := opts.Audio
-	if telemetry.Enabled(opts.ExperimentalTelemetry) {
+	if telemetry.Enabled(opts.ExperimentalTelemetry) && opts.Audio != nil {
 		audio = telemetryCountingAudioStream{inner: opts.Audio, total: &audioByteLength}
 	}
 
@@ -332,7 +332,11 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 		}
 		result.setFinalErr(err)
 		result.rejectAll(err)
-		opts.Audio.Cancel(err)
+		// A nil Audio has no producer to cancel (and must not crash the
+		// pipe goroutine).
+		if opts.Audio != nil {
+			opts.Audio.Cancel(err)
+		}
 	}
 	// abortReason reports a failure caused by cancellation with the abort
 	// reason, as TS pipeTo rejects with the signal's reason: Close gives

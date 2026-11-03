@@ -301,7 +301,11 @@ func runTranslationStreamPipe(pipeCtx context.Context, opts StreamTranslateOptio
 	fail := func(err error) {
 		result.setFinalErr(err)
 		result.rejectAll(err)
-		opts.Audio.Cancel(err)
+		// A nil Audio has no producer to cancel (and must not crash the
+		// pipe goroutine).
+		if opts.Audio != nil {
+			opts.Audio.Cancel(err)
+		}
 	}
 	// abortReason reports a failure caused by cancellation with the abort
 	// reason, as TS pipeTo rejects with the signal's reason: Close gives
