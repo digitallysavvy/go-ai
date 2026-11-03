@@ -384,8 +384,9 @@ func TestR84streamKeepAliveManyIdleComments(t *testing.T) {
 // with the TS abort reason text ("First chunk timeout of 50ms exceeded",
 // "Step timeout of 100ms exceeded", "Chunk timeout of 50ms exceeded";
 // AbortSignal.timeout's "The operation was aborted due to timeout" for
-// totalMs), which the abort part and the UI abort chunk carry
-// (getErrorMessage(abortSignal.reason)).
+// totalMs). The abort part and the UI abort chunk carry
+// getErrorMessage(abortSignal.reason), the DOMException's toString():
+// "TimeoutError: <message>".
 func TestR84streamTimeoutAbortReasonText(t *testing.T) {
 	hello := []delayedChunk{
 		{chunk: provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "1"}},
@@ -419,7 +420,7 @@ func TestR84streamTimeoutAbortReasonText(t *testing.T) {
 			if err := <-errs; err != nil {
 				t.Fatalf("ui stream error: %v", err)
 			}
-			if last["type"] != "abort" || last["reason"] != tc.want {
+			if last["type"] != "abort" || last["reason"] != "TimeoutError: "+tc.want {
 				t.Fatalf("last UI chunk = %v, want abort with reason %q", last, tc.want)
 			}
 			var te *TimeoutError
@@ -628,8 +629,53 @@ func TestR84streamStepTimeoutInToolInputCallback(t *testing.T) {
 	if !errors.As(r.Err(), &te) || te.Reason != TimeoutReasonStep || r.Err().Error() != "Step timeout of 50ms exceeded" {
 		t.Fatalf("Err() = %v (%T)", r.Err(), r.Err())
 	}
-	if last["type"] != "abort" || last["reason"] != "Step timeout of 50ms exceeded" {
+	if last["type"] != "abort" || last["reason"] != "TimeoutError: Step timeout of 50ms exceeded" {
 		t.Fatalf("last UI chunk = %v", last)
+	}
+}
+
+// stream-text.test.ts 25713 / 25734 / 25783: the abort part's reason is TS
+// getErrorMessage(abortSignal.reason): a plain cancel is AbortController's
+// "AbortError: This operation was aborted", a caller deadline
+// AbortSignal.timeout's TimeoutError, a cancel cause its own text (a TS
+// string reason).
+func TestR84streamAbortReasonMessage(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{nil, ""},
+		{context.Canceled, "AbortError: This operation was aborted"},
+		{context.DeadlineExceeded, "TimeoutError: The operation was aborted due to timeout"},
+		{&TimeoutError{Reason: TimeoutReasonChunk, Timeout: 50 * time.Millisecond, Err: context.DeadlineExceeded}, "TimeoutError: Chunk timeout of 50ms exceeded"},
+		{errors.New("manual abort"), "manual abort"},
+	} {
+		if got := abortReasonMessage(tc.err); got != tc.want {
+			t.Errorf("abortReasonMessage(%v) = %q, want %q", tc.err, got, tc.want)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(ctx context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+		return &r82streamTimedStream{ctx: ctx, chunks: []delayedChunk{{chunk: provider.StreamChunk{Type: provider.ChunkTypeStreamStart}}}}, nil
+	}}
+	r, err := StreamText(ctx, StreamTextOptions{Model: model, Prompt: "test-input", OnError: func(context.Context, error) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := r.NewStream()
+	var last provider.StreamChunk
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		last = *c
+		if c.Type == provider.ChunkTypeStart {
+			cancel()
+		}
+	}
+	if last.Type != provider.ChunkTypeAbort || last.AbortReason != "AbortError: This operation was aborted" {
+		t.Fatalf("last part = %+v", last)
 	}
 }
 

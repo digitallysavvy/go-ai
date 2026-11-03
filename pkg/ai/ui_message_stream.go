@@ -1088,9 +1088,9 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 					}
 					abortPart := provider.StreamChunk{Type: provider.ChunkTypeAbort}
 					abortChunk := UIMessageChunk{"type": "abort"}
-					if err.Error() != "" {
-						abortPart.AbortReason = err.Error()
-						abortChunk["reason"] = abortPart.AbortReason
+					if reason := abortReasonMessage(err); reason != "" {
+						abortPart.AbortReason = reason
+						abortChunk["reason"] = reason
 					}
 					processChunk(abortChunk)
 					processMessageMetadata(abortPart)

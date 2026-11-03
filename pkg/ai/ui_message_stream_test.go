@@ -1566,7 +1566,8 @@ func TestToUIMessageStream_AbortErrorProducesAbortChunk(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("chunks = %#v, want start and abort", got)
 	}
-	if got[1]["type"] != "abort" || got[1]["reason"] != context.Canceled.Error() {
+	// TS getErrorMessage(abortSignal.reason) of AbortController.abort().
+	if got[1]["type"] != "abort" || got[1]["reason"] != "AbortError: This operation was aborted" {
 		t.Fatalf("abort chunk = %#v", got[1])
 	}
 }

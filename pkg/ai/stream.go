@@ -1770,7 +1770,7 @@ func (r *StreamTextResult) abortBeforeStream(ctx context.Context, opts StreamTex
 	reason := abortReason(ctx, err)
 	abortChunk := provider.StreamChunk{Type: provider.ChunkTypeAbort}
 	if reason != nil {
-		abortChunk.AbortReason = reason.Error()
+		abortChunk.AbortReason = abortReasonMessage(reason)
 	}
 	// TS: `start` reaches onChunk first; abort() then notifies onAbort and
 	// the telemetry onAbort before it enqueues the `abort` part.
@@ -1963,7 +1963,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		})
 		abortChunk := provider.StreamChunk{Type: provider.ChunkTypeAbort}
 		if reason != nil {
-			abortChunk.AbortReason = reason.Error()
+			abortChunk.AbortReason = abortReasonMessage(reason)
 		}
 		forwardThroughTransformChain(0, []provider.StreamChunk{abortChunk})
 	}
@@ -5728,6 +5728,29 @@ func streamRequestBody(s provider.TextStream) interface{} {
 		return brb.RequestBody()
 	}
 	return nil
+}
+
+// abortReasonMessage is the `abort` part's reason text, TS
+// getErrorMessage(abortSignal.reason): an Error reason renders as
+// error.toString(), "<name>: <message>". The SDK's own reasons are the
+// DOMExceptions TS aborts with: a plain context cancellation is
+// "AbortError: This operation was aborted" (AbortController.abort()), a
+// timeout "TimeoutError: <message>" (setAbortTimeout / AbortSignal.timeout,
+// and a caller's own context deadline). Any other cause (for example from
+// context.WithCancelCause) is its Error() text, like a TS string reason.
+func abortReasonMessage(reason error) string {
+	var timeoutErr *TimeoutError
+	switch {
+	case reason == nil:
+		return ""
+	case errors.As(reason, &timeoutErr):
+		return "TimeoutError: " + timeoutErr.Error()
+	case reason == context.Canceled: //nolint:errorlint // only the bare sentinel is AbortController.abort()'s reason
+		return "AbortError: This operation was aborted"
+	case reason == context.DeadlineExceeded: //nolint:errorlint // only the bare sentinel is a deadline's own reason
+		return "TimeoutError: The operation was aborted due to timeout"
+	}
+	return reason.Error()
 }
 
 // classifyStepTimeout reports err as the step or total TimeoutError when
