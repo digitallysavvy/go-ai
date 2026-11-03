@@ -1,14 +1,16 @@
 package tool
 
 import (
+	"reflect"
+
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 // ResolveToolSchemas returns the tools as a provider should see them: a tool
 // whose Parameters is a schema.Schema (for example
-// schema.NewSimpleJSONSchema(...)) gets that schema's JSON Schema map as
-// Parameters, so the provider converters, which read Parameters as a JSON
+// schema.NewSimpleJSONSchema(...)) or a bare schema.Validator (for example
+// schema.NewJSONSchema(...)) gets that schema's JSON Schema map as Parameters, so the provider converters, which read Parameters as a JSON
 // Schema map, send the real schema. Maps and *schema.OrderedSchema values
 // (which marshal in their source key order) are left as they are. The input
 // slice and tools are not modified; the slice is returned unchanged when
@@ -44,9 +46,9 @@ func ResolveToolSchemas(tools []types.Tool) []types.Tool {
 	return out
 }
 
-// resolveParameters returns the JSON Schema map of a schema.Schema
-// Parameters value (ok). none reports a schema value that is no schema: a
-// typed nil pointer, a nil (or typed nil) Validator, or a nil JSON Schema,
+// resolveParameters returns the JSON Schema map of a schema.Schema or a bare
+// schema.Validator Parameters value (ok). none reports a schema value that is
+// no schema: a typed nil pointer, a nil (or typed nil) Validator, or a nil JSON Schema,
 // which callers treat as nil Parameters (TS asSchema(undefined)) instead of
 // calling into the nil value.
 func resolveParameters(p interface{}) (m map[string]interface{}, ok, none bool) {
@@ -58,6 +60,28 @@ func resolveParameters(p interface{}) (m map[string]interface{}, ok, none bool) 
 			return m, true, false
 		}
 		return nil, false, true
+	case schema.Validator:
+		// A bare validator (schema.NewJSONSchema(...)): TS
+		// asSchema(inputSchema).jsonSchema is a plain JSON Schema object
+		// for every schema kind.
+		if isNilValidator(s) {
+			return nil, false, true
+		}
+		if m := s.JSONSchema(); m != nil {
+			return m, true, false
+		}
+		return nil, false, true
 	}
 	return nil, false, false
+}
+
+// isNilValidator reports a typed nil validator, whose methods must not be
+// called.
+func isNilValidator(v schema.Validator) bool {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
+		return rv.IsNil()
+	}
+	return false
 }
