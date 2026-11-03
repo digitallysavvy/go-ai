@@ -16,6 +16,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -194,6 +195,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	if uploadResp.StatusCode >= 400 {
 		return nil, newXAIProviderError(b.Provider(), uploadResp.StatusCode, uploadResp.Body)
 	}
+	uploadResp.Body = []byte(textdecode.UTF8(uploadResp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
 	if err := providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaXAIFile)(uploadResp.StatusCode, uploadResp.Headers, uploadResp.Body); err != nil {
 		return nil, err
 	}

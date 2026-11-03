@@ -69,3 +69,13 @@ func TestR85provbAPIKeyFunc(t *testing.T) {
 		t.Fatalf("both set: err = %v, want InvalidArgumentError", err)
 	}
 }
+
+// R85 reviewer item 3: a BOM-prefixed error body parses as in TS.
+func TestR85provbBOMErrorBody(t *testing.T) {
+	if msg, code := alibabaChatErrorMessage(400, []byte("\xEF\xBB\xBF{\"error\":{\"message\":\"bad\",\"code\":\"c\"}}")); msg != "bad" || code != "c" {
+		t.Errorf("chat error = %q %q", msg, code)
+	}
+	if msg, _ := alibabaNativeErrorMessage(400, []byte("\xEF\xBB\xBF{\"message\":\"bad\"}")); msg != "bad" {
+		t.Errorf("native error = %q", msg)
+	}
+}

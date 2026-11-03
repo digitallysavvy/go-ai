@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -199,6 +200,7 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 		return nil, azureSpeechAPIError(m.Provider(), resp.StatusCode, resp.Header, respBody, false)
 	}
 
+	respBody = []byte(textdecode.UTF8(respBody)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
 	if err := providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaAzureSpeechTr)(resp.StatusCode, resp.Header, respBody); err != nil {
 		return nil, err
 	}
@@ -352,6 +354,7 @@ type azureSpeechErrorBody struct {
 // {"error":{"message"}} and {"message"}; an empty or unparseable body gets the
 // HTTP status text as its message.
 func azureSpeechAPIError(providerName string, statusCode int, headers stdhttp.Header, body []byte, speechSynthesis bool) error {
+	body = []byte(textdecode.UTF8(body)) // TS response.text()
 	var parsed azureSpeechErrorBody
 	parseOK := json.Unmarshal(body, &parsed) == nil
 	var message string

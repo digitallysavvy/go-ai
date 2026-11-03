@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 func newXAIProviderError(provider string, statusCode int, body []byte) *providererrors.ProviderError {
+	body = []byte(textdecode.UTF8(body)) // TS response.text()
 	var responsesError struct {
 		Code  string `json:"code"`
 		Error string `json:"error"`
@@ -221,6 +223,7 @@ type xaiSpeechErrorBody struct {
 //
 // If none of these shapes match, the raw body (trimmed) is returned as-is.
 func parseXAIErrorMessage(body []byte) string {
+	body = []byte(textdecode.UTF8(body)) // TS response.text()
 	// 1. Structured API error shape (object under "error").
 	var apiErr xaiAPIErrorBody
 	if err := json.Unmarshal(body, &apiErr); err == nil && apiErr.Error.Message != "" {

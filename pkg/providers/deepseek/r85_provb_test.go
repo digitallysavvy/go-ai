@@ -84,3 +84,18 @@ func TestR85provbAPIKeyFunc(t *testing.T) {
 		t.Fatalf("both set: err = %v, want InvalidArgumentError", err)
 	}
 }
+
+// R85 reviewer item 3: a BOM-prefixed files response parses as in TS.
+func TestR85provbFilesBOMBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("\xEF\xBB\xBF{\"id\":\"file-1\",\"object\":\"file\",\"bytes\":1,\"created_at\":1,\"filename\":\"a.png\",\"purpose\":\"user_data\"}"))
+	}))
+	defer srv.Close()
+	res, err := New(Config{APIKey: "k", BaseURL: srv.URL}).Files().UploadFile(context.Background(), types.UploadFileOptions{
+		Data: types.FileData{Type: types.FileDataTypeData, Data: []byte("\x89PNG\r\n\x1a\n")}, MediaType: "image/png", Filename: "a.png",
+	})
+	if err != nil || res == nil {
+		t.Fatalf("res = %+v, err = %v", res, err)
+	}
+}

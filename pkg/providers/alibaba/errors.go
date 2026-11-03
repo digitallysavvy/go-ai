@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -14,6 +15,7 @@ import (
 // "type"?:string|null}} gives its message and code; any other body (empty,
 // not JSON, a missing or wrongly typed field) gives the HTTP status text.
 func alibabaChatErrorMessage(statusCode int, body []byte) (message, code string) {
+	body = []byte(textdecode.UTF8(body)) // TS response.text()
 	var payload struct {
 		Error *struct {
 			Message *string `json:"message"`
@@ -35,6 +37,7 @@ func alibabaChatErrorMessage(statusCode int, body []byte) (message, code string)
 // {"code"?:string|null,"message":string,"request_id"?:string|null}; any other
 // body gives the HTTP status text.
 func alibabaNativeErrorMessage(statusCode int, body []byte) (message, code string) {
+	body = []byte(textdecode.UTF8(body)) // TS response.text()
 	var payload struct {
 		Code      *string `json:"code"`
 		Message   *string `json:"message"`

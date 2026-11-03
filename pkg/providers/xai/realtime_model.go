@@ -9,6 +9,7 @@ import (
 	"reflect"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -98,6 +99,7 @@ func (m *XAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provid
 		return provider.ClientSecretResult{}, providererrors.NewProviderError("xai", 0, "",
 			fmt.Sprintf("xAI realtime client secret request failed: %d %s", resp.StatusCode, string(resp.Body)), cause)
 	}
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
 	var data struct {
 		Value     string `json:"value"`
 		ExpiresAt *int64 `json:"expires_at"`

@@ -18,6 +18,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -474,6 +475,7 @@ func (m *azureMaiImageModel) call(ctx context.Context, extra map[string]string, 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return azureMaiImageCallResult{}, azureMaiImageAPIError(resp.StatusCode, headers, respBody)
 	}
+	respBody = []byte(textdecode.UTF8(respBody)) // TS response.text(): BOM dropped, invalid UTF-8 replaced
 	if err := providerutils.MediaResponseValidator("azure.image", providerutils.SchemaAzureMAIImage)(resp.StatusCode, resp.Header, respBody); err != nil {
 		return azureMaiImageCallResult{}, err
 	}
@@ -488,6 +490,7 @@ func (m *azureMaiImageModel) call(ctx context.Context, extra map[string]string, 
 // the JSON error message when present, else the HTTP status text with the
 // raw body preserved.
 func azureMaiImageAPIError(status int, headers map[string]string, body []byte) error {
+	body = []byte(textdecode.UTF8(body)) // TS response.text()
 	message := stdhttp.StatusText(status)
 	if message == "" {
 		message = "Azure MAI image request failed with status " + strconv.Itoa(status) + "."

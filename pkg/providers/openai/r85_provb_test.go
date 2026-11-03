@@ -346,3 +346,21 @@ func TestR85provbAPIKeyFunc(t *testing.T) {
 		t.Fatalf("both set: err = %v, want InvalidArgumentError", err)
 	}
 }
+
+// R85 reviewer item 3: a 2xx JSON body read without DoJSON is decoded like
+// TS response.text() (a leading BOM is dropped) before it is parsed.
+func TestR85provbTranscriptionBOMBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("\xEF\xBB\xBF{\"text\":\"hi\",\"usage\":{\"type\":\"duration\",\"seconds\":3}}"))
+	}))
+	defer srv.Close()
+	m := NewTranscriptionModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "gpt-transcribe")
+	res, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/wav"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text != "hi" || res.DurationInSeconds == nil || *res.DurationInSeconds != 3 {
+		t.Fatalf("result = %+v", res)
+	}
+}

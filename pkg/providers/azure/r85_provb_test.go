@@ -73,3 +73,16 @@ func TestR85provbAPIKeyFunc(t *testing.T) {
 		t.Fatalf("both set: err = %v, want InvalidArgumentError", err)
 	}
 }
+
+// R85 reviewer item 3: BOM-prefixed error bodies parse as in TS.
+func TestR85provbBOMErrorBodies(t *testing.T) {
+	var perr *providererrors.ProviderError
+	err := azureSpeechAPIError("azure.speech", 400, http.Header{}, []byte("\xEF\xBB\xBF{\"error\":{\"message\":\"bad voice\"}}"), true)
+	if !errors.As(err, &perr) || perr.Message != "bad voice" || perr.ResponseBody != `{"error":{"message":"bad voice"}}` {
+		t.Errorf("speech error = %#v", err)
+	}
+	err = azureMaiImageAPIError(400, map[string]string{}, []byte("\xEF\xBB\xBF{\"error\":{\"message\":\"bad prompt\"}}"))
+	if !errors.As(err, &perr) || perr.Message != "bad prompt" {
+		t.Errorf("mai image error = %#v", err)
+	}
+}

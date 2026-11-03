@@ -99,3 +99,23 @@ func TestR85provbAPIKeyFunc(t *testing.T) {
 		t.Fatalf("both set: err = %v, want InvalidArgumentError", err)
 	}
 }
+
+// R85 reviewer item 3: BOM-prefixed JSON bodies parse as in TS.
+func TestR85provbBOMBodies(t *testing.T) {
+	if got := parseXAIErrorMessage([]byte("\xEF\xBB\xBF{\"error\":{\"message\":\"bad\"}}")); got != "bad" {
+		t.Errorf("error message = %q", got)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("\xEF\xBB\xBF{\"text\":\"hi\",\"duration\":1}"))
+	}))
+	defer srv.Close()
+	m, err := New(Config{APIKey: "k", BaseURL: srv.URL}).TranscriptionModel("grok-stt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/wav"})
+	if err != nil || res.Text != "hi" {
+		t.Fatalf("res = %+v, err = %v", res, err)
+	}
+}
