@@ -319,7 +319,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		body[group.key] = items
 	}
 
-	headers, err := m.prov.resolveHeaders(opts.Headers)
+	headers, err := m.prov.resolveHeaders(ctx, opts.Headers)
 	if err != nil {
 		return nil, err
 	}
@@ -405,7 +405,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	}
 
 	currentDate := time.Now()
-	headers, err := m.prov.resolveHeaders(opts.Headers)
+	headers, err := m.prov.resolveHeaders(ctx, opts.Headers)
 	if err != nil {
 		return nil, err
 	}

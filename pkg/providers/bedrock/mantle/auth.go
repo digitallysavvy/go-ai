@@ -17,6 +17,7 @@ import (
 type sigV4Transport struct {
 	base               http.RoundTripper
 	apiKey             string
+	apiKeyFunc         providerutils.APIKeyFunc
 	accessKeyID        string
 	secretAccessKey    string
 	sessionToken       string
@@ -25,6 +26,17 @@ type sigV4Transport struct {
 }
 
 func (t *sigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.apiKeyFunc != nil {
+		key, err := providerutils.ResolveAPIKey(req.Context(), providerutils.ResolveAPIKeyOptions{
+			APIKey: t.apiKey, APIKeyFunc: t.apiKeyFunc, Description: "Amazon Bedrock", RequireNonEmpty: true,
+		})
+		if err != nil {
+			return nil, err
+		}
+		req = req.Clone(req.Context())
+		req.Header.Set("Authorization", "Bearer "+providerutils.JSTrim(key))
+		return t.base.RoundTrip(req)
+	}
 	if key := providerutils.JSTrim(providerutils.APIKeyOrEnv(t.apiKey, "AWS_BEARER_TOKEN_BEDROCK")); key != "" {
 		req = req.Clone(req.Context())
 		req.Header.Set("Authorization", "Bearer "+key)

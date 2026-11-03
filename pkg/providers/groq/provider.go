@@ -1,6 +1,7 @@
 package groq
 
 import (
+	"context"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"strings"
 
@@ -21,6 +22,12 @@ type Config struct {
 	// APIKey is the Groq API key
 	APIKey string
 
+	// APIKeyFunc resolves the API key before each request (TS apiKey given as
+	// a function, 7716e189ee), for keys that are looked up, refreshed or
+	// rotated. It cannot be combined with APIKey; the environment variable is
+	// not read, and its result is sent as is.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+
 	// BaseURL is the base URL for the Groq API (optional)
 	BaseURL string
 
@@ -31,7 +38,9 @@ type Config struct {
 // New creates a new Groq provider with the given configuration
 func New(cfg Config) *Provider {
 	// TS loadApiKey: the key defaults to the GROQ_API_KEY environment variable.
-	cfg.APIKey = providerutils.APIKeyOrEnv(cfg.APIKey, "GROQ_API_KEY")
+	if cfg.APIKeyFunc == nil {
+		cfg.APIKey = providerutils.APIKeyOrEnv(cfg.APIKey, "GROQ_API_KEY")
+	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api.groq.com/openai"
@@ -50,6 +59,12 @@ func New(cfg Config) *Provider {
 		}, cfg.Headers), version.ProviderUserAgent("groq")),
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
 		HeadersFunc: func() (map[string]string, error) {
+			if cfg.APIKeyFunc != nil {
+				// HeadersFunc has no request ctx (reports/cr-r85-prova-to-carry.md).
+				return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "GROQ_API_KEY", Description: "Groq",
+				}, "Authorization", "Bearer ")
+			}
 			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "GROQ_API_KEY", "Groq", "Authorization", "Bearer ")
 		},
 	})

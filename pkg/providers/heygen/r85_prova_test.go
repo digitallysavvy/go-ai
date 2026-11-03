@@ -36,3 +36,19 @@ func TestR85provaHeyGenLongDurationAndUltraquality(t *testing.T) {
 		t.Fatalf("fractional: %v", err)
 	}
 }
+
+// TS 7716e189ee: Config.APIKeyFunc resolves the x-api-key per call.
+func TestR85provaHeyGenAPIKeyFunc(t *testing.T) {
+	ts := newTestServer(t)
+	calls := 0
+	p := New(Config{BaseURL: ts.URL, APIKeyFunc: func(ctx context.Context) (string, error) {
+		calls++
+		return "fn-key", nil
+	}})
+	if _, err := NewVideoModel(p, "heygen-video-1").DoStart(context.Background(), opts(nil)); err != nil {
+		t.Fatal(err)
+	}
+	if got := ts.call(0).headers.Get("x-api-key"); got != "fn-key" || calls != 1 {
+		t.Fatalf("x-api-key = %q, calls = %d", got, calls)
+	}
+}

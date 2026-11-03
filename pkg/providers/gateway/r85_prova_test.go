@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 )
@@ -62,5 +63,37 @@ func TestR85provaGatewayCancellationUnchanged(t *testing.T) {
 	_, err = NewLanguageModel(tp, "openai/gpt-4o").DoGenerate(context.Background(), opts)
 	if !gatewayerrors.IsGatewayTimeoutError(err) {
 		t.Fatalf("transport timeout: err = %T %v", err, err)
+	}
+}
+
+// gateway-provider.test.ts async apiKey (TS 7716e189ee): the key func is
+// resolved per request and wins over the environment; an empty key or a
+// failing func is a GatewayAuthenticationError.
+func TestR85provaGatewayAPIKeyFunc(t *testing.T) {
+	var auth []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = append(auth, r.Header.Get("Authorization")+"|"+r.Header.Get("ai-gateway-auth-method"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"finish_reason":"stop","usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer srv.Close()
+	t.Setenv("AI_GATEWAY_API_KEY", "env-key")
+	key := "fn-key"
+	calls := 0
+	p, err := New(Config{BaseURL: srv.URL, APIKeyFunc: func(context.Context) (string, error) { calls++; return key, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewLanguageModel(p, "openai/gpt-4o")
+	_, _ = m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if len(auth) != 1 || auth[0] != "Bearer fn-key|api-key" || calls != 1 {
+		t.Fatalf("auth = %q, calls = %d", auth, calls)
+	}
+	key = " "
+	_, err = m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	var authErr *gatewayerrors.GatewayAuthenticationError
+	var loadErr *providererrors.LoadAPIKeyError
+	if !errors.As(err, &authErr) || !errors.As(err, &loadErr) || loadErr.Message != "AI Gateway API key must be a non-empty string." {
+		t.Fatalf("blank key: %T %v", err, err)
 	}
 }

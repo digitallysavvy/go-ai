@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"net/http"
 	"os"
@@ -64,6 +65,12 @@ type Config struct {
 	// to the AWS_BEARER_TOKEN_BEDROCK environment variable. Takes precedence
 	// over SigV4 credentials when non-empty.
 	BearerToken string
+
+	// BearerTokenFunc resolves the bearer API key before each request (TS apiKey given
+	// as a function, 7716e189ee). It must return a non-empty key ("Amazon
+	// Bedrock API key must be a non-empty string." otherwise), is trimmed,
+	// wins over the environment and SigV4, and cannot be combined with BearerToken.
+	BearerTokenFunc providerutils.APIKeyFunc `json:"-"`
 
 	// BaseURL overrides the default Bedrock endpoint
 	// (default: https://bedrock-runtime.{region}.amazonaws.com).
@@ -239,7 +246,19 @@ func (t *bedrockAnthropicTransport) RoundTrip(req *http.Request) (*http.Response
 		req.Header.Set("Accept", "application/vnd.amazon.eventstream")
 	}
 
-	bearerToken := strings.TrimSpace(firstNonEmpty(t.provider.config.BearerToken, os.Getenv("AWS_BEARER_TOKEN_BEDROCK")))
+	if t.provider.config.BearerTokenFunc != nil {
+		key, err := providerutils.ResolveAPIKey(req.Context(), providerutils.ResolveAPIKeyOptions{
+			APIKey: t.provider.config.BearerToken, APIKeyFunc: t.provider.config.BearerTokenFunc,
+			ParameterName: "bearerToken", Description: "Amazon Bedrock", RequireNonEmpty: true,
+		})
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+providerutils.JSTrim(key))
+		return t.base.RoundTrip(req)
+	}
+	// TS rawApiKey.trim() is a JavaScript trim.
+	bearerToken := providerutils.JSTrim(firstNonEmpty(t.provider.config.BearerToken, os.Getenv("AWS_BEARER_TOKEN_BEDROCK")))
 	if bearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+bearerToken)
 		return t.base.RoundTrip(req)

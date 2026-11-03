@@ -16,8 +16,14 @@ import (
 
 // ProviderSettings contains configuration for the Amazon Bedrock Mantle provider.
 type ProviderSettings struct {
-	Region          string
-	APIKey          string
+	Region string
+	APIKey string
+
+	// APIKeyFunc resolves the bearer API key before each request (TS apiKey given
+	// as a function, 7716e189ee). It must return a non-empty key ("Amazon
+	// Bedrock API key must be a non-empty string." otherwise), is trimmed,
+	// wins over the environment and SigV4, and cannot be combined with APIKey.
+	APIKeyFunc      providerutils.APIKeyFunc `json:"-"`
 	AccessKeyID     string
 	SecretAccessKey string
 	SessionToken    string
@@ -250,6 +256,7 @@ func withAuthTransport(client *http.Client, settings ProviderSettings, region st
 	client.Transport = &sigV4Transport{
 		base:               base,
 		apiKey:             settings.APIKey,
+		apiKeyFunc:         settings.APIKeyFunc,
 		accessKeyID:        settings.AccessKeyID,
 		secretAccessKey:    settings.SecretAccessKey,
 		sessionToken:       settings.SessionToken,

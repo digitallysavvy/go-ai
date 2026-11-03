@@ -139,6 +139,14 @@ type Config struct {
 	// or Vercel access token. Can also be set via AI_GATEWAY_API_KEY.
 	APIKey string
 
+	// APIKeyFunc resolves the API key or Vercel access token before each
+	// request (TS apiKey given as a function, 7716e189ee). It must return a
+	// non-empty key: an empty one (or an error) fails the request with a
+	// GatewayAuthenticationError whose cause is a LoadAPIKeyError "AI Gateway
+	// API key must be a non-empty string." (or the error). It wins over
+	// AI_GATEWAY_API_KEY and OIDC and cannot be combined with APIKey.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+
 	// TeamIDOrSlug scopes Vercel access-token requests to a team.
 	TeamIDOrSlug string
 
@@ -457,6 +465,17 @@ func CreateGatewayProvider(cfg Config, opts ...func(*Config)) (*Provider, error)
 }
 
 func resolveGatewayAuthToken(ctx context.Context, cfg Config) (token string, authMethod string, err error) {
+	if cfg.APIKeyFunc != nil {
+		key, err := providerutils.ResolveAPIKey(ctx, providerutils.ResolveAPIKeyOptions{
+			APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, Description: "AI Gateway", RequireNonEmpty: true,
+		})
+		if err != nil {
+			// TS getHeaders wraps every credential failure in the contextual
+			// authentication error.
+			return "", "", gatewayerrors.CreateContextualAuthenticationError(false, false, http.StatusUnauthorized, err, "")
+		}
+		return key, "api-key", nil
+	}
 	apiKey := cfg.APIKey
 	if apiKey == "" {
 		apiKey = os.Getenv("AI_GATEWAY_API_KEY")
@@ -806,13 +825,7 @@ func (p *Provider) gatewayAPIErrorWithContext(ctx context.Context, resp *interna
 	if resp == nil {
 		return gatewayerrors.NewGatewayResponseError("Gateway request failed", 0, nil, nil, nil, "")
 	}
-	authMethod := ""
-	if p.authResolver != nil {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		_, authMethod, _ = p.authResolver(ctx)
-	}
+	authMethod := p.requestAuthMethod(ctx)
 	cause := &providererrors.ProviderError{
 		Provider:        "gateway",
 		StatusCode:      resp.StatusCode,
@@ -835,13 +848,7 @@ func (p *Provider) gatewayInvalidJSONError(ctx context.Context, err error) (erro
 	if !errors.As(err, &pe) || pe.Message != providererrors.InvalidJSONResponseMessage {
 		return nil, false
 	}
-	authMethod := ""
-	if p.authResolver != nil {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		_, authMethod, _ = p.authResolver(ctx)
-	}
+	authMethod := p.requestAuthMethod(ctx)
 	return gatewayerrors.CreateGatewayErrorFromResponse([]byte(pe.ResponseBody), pe.StatusCode, "Gateway request failed", pe, authMethod), true
 }
 
@@ -1068,4 +1075,21 @@ func validateMetadataResponse(body []byte) error {
 		}
 	}
 	return nil
+}
+
+// requestAuthMethod is the auth method of the headers a failed request was
+// sent with (TS parseAuthMethod(resolvedHeaders)). A key func is not called
+// again: its requests always use "api-key".
+func (p *Provider) requestAuthMethod(ctx context.Context) string {
+	if p.config.APIKeyFunc != nil {
+		return "api-key"
+	}
+	if p.authResolver == nil {
+		return ""
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_, authMethod, _ := p.authResolver(ctx)
+	return authMethod
 }

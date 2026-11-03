@@ -1,11 +1,15 @@
 package bedrock
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
@@ -329,5 +333,27 @@ func TestR85provaBedrockJSONBodyDecoded(t *testing.T) {
 	got, err := readJSONResponseBody(strings.NewReader("\uFEFF{\"a\":\"\xff\"}"))
 	if err != nil || string(got) != "{\"a\":\"�\"}" {
 		t.Fatalf("got %q, %v", got, err)
+	}
+}
+
+// amazon-bedrock-provider.test.ts async apiKey (TS 7716e189ee): a key func
+// is resolved per request, trimmed, wins over the environment and SigV4, and
+// must return a non-empty key.
+func TestR85provaBedrockAPIKeyFunc(t *testing.T) {
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "env-key")
+	key := "  fn-key  "
+	p := New(Config{Region: "us-east-1", APIKeyFunc: func(ctx context.Context) (string, error) { return key, nil }})
+	req, _ := http.NewRequest(http.MethodPost, "https://bedrock-runtime.us-east-1.amazonaws.com/model/x/converse", nil)
+	if err := p.authenticateRequest(context.Background(), req, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer fn-key" {
+		t.Fatalf("Authorization = %q", got)
+	}
+	key = " \t"
+	err := p.authenticateRequest(context.Background(), req, nil)
+	var lerr *providererrors.LoadAPIKeyError
+	if !errors.As(err, &lerr) || lerr.Message != "Amazon Bedrock API key must be a non-empty string." {
+		t.Fatalf("empty key: %v", err)
 	}
 }

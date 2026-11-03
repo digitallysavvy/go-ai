@@ -53,6 +53,12 @@ type Config struct {
 	// Defaults to AWS_BEARER_TOKEN_BEDROCK. When set, it takes precedence over SigV4 credentials.
 	APIKey string
 
+	// APIKeyFunc resolves the bearer API key before each request (TS apiKey given
+	// as a function, 7716e189ee). It must return a non-empty key ("Amazon
+	// Bedrock API key must be a non-empty string." otherwise), is trimmed,
+	// wins over the environment and SigV4, and cannot be combined with APIKey.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+
 	// AWSAccessKeyID is the AWS access key ID
 	AWSAccessKeyID string
 
@@ -262,6 +268,16 @@ func (p *Provider) agentRuntimeBaseURL() (string, error) {
 }
 
 func (p *Provider) authenticateRequest(ctx context.Context, req *stdhttp.Request, payload []byte) error {
+	if p.config.APIKeyFunc != nil {
+		key, err := providerutils.ResolveAPIKey(ctx, providerutils.ResolveAPIKeyOptions{
+			APIKey: p.config.APIKey, APIKeyFunc: p.config.APIKeyFunc, Description: "Amazon Bedrock", RequireNonEmpty: true,
+		})
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+providerutils.JSTrim(key))
+		return nil
+	}
 	apiKey := providerutils.JSTrim(firstNonEmpty(p.config.APIKey, os.Getenv("AWS_BEARER_TOKEN_BEDROCK")))
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
