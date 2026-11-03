@@ -151,7 +151,7 @@ func GetLanguageModelCapabilities(modelID string) LanguageModelCapabilities {
 		SupportedReasoningEfforts:      supportedReasoningEfforts,
 		SupportsNonReasoningParameters: supportsNonReasoningParameters,
 		// GPT-5.6 rejects function tools with reasoning in Chat Completions.
-		SupportsChatFunctionToolsWithReasoning: !(hasGV && gv.major == 5 && gv.minor >= 6),
+		SupportsChatFunctionToolsWithReasoning: !hasGV || gv.major != 5 || gv.minor < 6,
 	}
 }
 

@@ -115,7 +115,7 @@ func r85provbSkipIfStaleRecording(t *testing.T, path, marker string) {
 	if err != nil {
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	zr, err := gzip.NewReader(f)
 	if err != nil {
 		return
