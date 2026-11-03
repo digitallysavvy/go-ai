@@ -278,7 +278,11 @@ func ObjectOutput[T any](opts ObjectOutputOptions) Output[T, T] {
 
 func (o *objectOutput[T]) ResponseFormat(ctx context.Context) (*provider.ResponseFormat, error) {
 	var jsonSchema interface{} = o.schema.Validator().JSONSchema()
-	if ordered, ok := schema.OrderedParameters(o.schema); ok {
+	if ordered, ok := o.schema.(*schema.OrderedSchema); ok && ordered != nil {
+		// Its source key order, as generateObject sends it
+		// (objectResponseSchema) and TS keeps the JSON schema's keys.
+		jsonSchema = ordered
+	} else if ordered, ok := schema.OrderedParameters(o.schema); ok {
 		// A struct schema: its fields in declaration order, as the TS zod
 		// object keeps its keys.
 		jsonSchema = ordered
@@ -569,6 +573,11 @@ func (o *arrayOutput[ELEMENT]) ResponseFormat(ctx context.Context) (*provider.Re
 	format := &provider.ResponseFormat{
 		Type:   "json",
 		Schema: arraySchema,
+	}
+	if ordered, ok := orderedArrayResponseSchema(o.elementSchema, o.minItems, o.maxItems); ok {
+		// A struct or ordered element schema: its keys in source order,
+		// as the TS object spread keeps them.
+		format.Schema = ordered
 	}
 
 	if o.name != "" {

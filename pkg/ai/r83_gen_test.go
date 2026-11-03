@@ -2,8 +2,10 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -11,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providerErrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -323,5 +326,87 @@ func TestR83genEveryStopConditionCalled(t *testing.T) {
 	}
 	if len(res.Steps) != 1 || fmt.Sprint(calls) != "[{0 1} {1 1}]" {
 		t.Fatalf("steps %d calls %v", len(res.Steps), calls)
+	}
+}
+
+type r83genArrayItem struct {
+	Zeta  string `json:"zeta" validate:"required"`
+	Alpha int8   `json:"alpha"`
+}
+
+// The array output wrapper keeps the element struct's field order and the TS
+// wrapper key order (output.ts array responseFormat, output-strategy.ts
+// arrayOutputStrategy.jsonSchema): {$schema, type, properties: {elements:
+// {type, items, minItems, maxItems}}, required, additionalProperties}.
+func TestR83genArrayOutputKeepsElementOrder(t *testing.T) {
+	t.Parallel()
+	item := `{"type":"object","properties":{"zeta":{"type":"string"},"alpha":{"type":"integer","minimum":-128,"maximum":127}},"required":["zeta"],"additionalProperties":false}`
+	wrap := func(bounds string) string {
+		return `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"elements":{"type":"array","items":` +
+			item + bounds + `}},"required":["elements"],"additionalProperties":false}`
+	}
+	elem := schema.NewSimpleStructSchema(reflect.TypeOf(r83genArrayItem{}))
+	one, three := 1, 3
+
+	rf, err := ArrayOutput[r83genArrayItem](ArrayOutputOptions[r83genArrayItem]{ElementSchema: elem, MinItems: &one, MaxItems: &three}).ResponseFormat(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := json.Marshal(rf.Schema); string(got) != wrap(`,"minItems":1,"maxItems":3`) {
+		t.Fatalf("Output.array schema\n got %s\nwant %s", got, wrap(`,"minItems":1,"maxItems":3`))
+	}
+
+	sf, err := buildStreamObjectResponseFormat(StreamObjectOptions{OutputMode: ObjectModeArray, Schema: elem})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := json.Marshal(sf.Schema); string(got) != wrap("") {
+		t.Fatalf("streamObject array schema\n got %s\nwant %s", got, wrap(""))
+	}
+
+	var captured interface{}
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			captured = opts.ResponseFormat.Schema
+			return &types.GenerateResult{Text: `{"elements":[{"zeta":"z","alpha":1}]}`, FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	if _, err := GenerateObject(context.Background(), GenerateObjectOptions{Model: model, Prompt: "p", OutputMode: ObjectModeArray, Schema: elem}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := json.Marshal(captured); string(got) != wrap("") {
+		t.Fatalf("generateObject array schema\n got %s\nwant %s", got, wrap(""))
+	}
+}
+
+// TS ...(definitions != null && { definitions }): a null definitions of the
+// item schema is not hoisted to the wrapper.
+func TestR83genArrayWrapperDropsNullDefinitions(t *testing.T) {
+	t.Parallel()
+	item := map[string]interface{}{"type": "string", "definitions": nil}
+	root := hoistSchemaDefs(item)
+	if _, ok := root["definitions"]; ok {
+		t.Fatalf("null definitions hoisted: %v", root)
+	}
+	if _, ok := item["definitions"]; ok {
+		t.Fatalf("null definitions left on the item: %v", item)
+	}
+}
+
+// Output.object with an *schema.OrderedSchema sends it in its key order, as
+// GenerateObject does (objectResponseSchema).
+func TestR83genObjectOutputKeepsOrderedSchema(t *testing.T) {
+	t.Parallel()
+	const raw = `{"type":"object","properties":{"zeta":{"type":"string"},"alpha":{"type":"string"}},"required":["zeta","alpha"]}`
+	s, err := schema.NewOrderedSchema([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rf, err := ObjectOutput[map[string]interface{}](ObjectOutputOptions{Schema: s}).ResponseFormat(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := json.Marshal(rf.Schema); string(got) != raw {
+		t.Fatalf("got %s", got)
 	}
 }

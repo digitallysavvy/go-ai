@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
 	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -94,15 +95,83 @@ func schemaToMap(s schema.Schema) map[string]interface{} {
 // element schema for array output).
 func hoistSchemaDefs(itemSchema map[string]interface{}) map[string]interface{} {
 	root := map[string]interface{}{}
+	// TS ...(definitions != null && { definitions }): a JSON null is
+	// removed from the item schema and not hoisted.
 	if definitions, ok := itemSchema["definitions"]; ok {
-		root["definitions"] = definitions
+		if definitions != nil {
+			root["definitions"] = definitions
+		}
 		delete(itemSchema, "definitions")
 	}
 	if defs, ok := itemSchema["$defs"]; ok {
-		root["$defs"] = defs
+		if defs != nil {
+			root["$defs"] = defs
+		}
 		delete(itemSchema, "$defs")
 	}
 	return root
+}
+
+// orderedArrayResponseSchema is the array output wrapper (TS
+// arrayOutputStrategy.jsonSchema and Output.array responseFormat) of an
+// element schema with a key order to keep: an *schema.OrderedSchema or a
+// struct schema. It is written in the TS key order ($schema, definitions,
+// $defs, type, properties.elements {type, items, minItems, maxItems},
+// required, additionalProperties) with the item keys in their source order,
+// as the TS object spread keeps them. ok is false for any other schema,
+// whose map has no order to keep.
+func orderedArrayResponseSchema(element schema.Schema, minItems, maxItems *int) (*schema.OrderedSchema, bool) {
+	var raw []byte
+	if o, ok := element.(*schema.OrderedSchema); ok {
+		if o == nil {
+			return nil, false
+		}
+		raw, _ = o.MarshalJSON()
+	} else if o, ok := schema.OrderedParameters(element); ok {
+		raw, _ = o.MarshalJSON()
+	}
+	if raw == nil {
+		return nil, false
+	}
+	v, _ := jsonorder.Parse(raw)
+	item, ok := v.(*jsonorder.Object)
+	if !ok {
+		return nil, false
+	}
+	definitions, _ := item.Get("definitions")
+	defs, _ := item.Get("$defs")
+	item.Delete("$schema")
+	item.Delete("definitions")
+	item.Delete("$defs")
+	elements := jsonorder.New()
+	elements.Set("type", "array")
+	elements.Set("items", item)
+	if minItems != nil {
+		elements.Set("minItems", *minItems)
+	}
+	if maxItems != nil {
+		elements.Set("maxItems", *maxItems)
+	}
+	properties := jsonorder.New()
+	properties.Set("elements", elements)
+	root := jsonorder.New()
+	root.Set("$schema", "http://json-schema.org/draft-07/schema#")
+	if definitions != nil {
+		root.Set("definitions", definitions)
+	}
+	if defs != nil {
+		root.Set("$defs", defs)
+	}
+	root.Set("type", "object")
+	root.Set("properties", properties)
+	root.Set("required", []interface{}{"elements"})
+	root.Set("additionalProperties", false)
+	out, err := root.MarshalJSON()
+	if err != nil {
+		return nil, false
+	}
+	wrapped, err := schema.NewOrderedSchema(out)
+	return wrapped, err == nil
 }
 
 func cloneSchemaMap(in map[string]interface{}) map[string]interface{} {
@@ -342,8 +411,13 @@ func objectOutputJSONSchema(mode ObjectOutputMode, s schema.Schema, enumValues [
 		if err != nil {
 			return nil
 		}
-		wrapped, _ := format.Schema.(map[string]interface{})
-		return wrapped
+		switch wrapped := format.Schema.(type) {
+		case map[string]interface{}:
+			return wrapped
+		case *schema.OrderedSchema:
+			return cloneSchemaMap(wrapped.JSONSchema())
+		}
+		return nil
 	case ObjectModeNoSchema:
 		return nil
 	}
@@ -381,9 +455,13 @@ func buildStreamObjectResponseFormat(opts StreamObjectOptions) (*provider.Respon
 		for k, v := range rootDefs {
 			wrapped[k] = v
 		}
+		var wire interface{} = wrapped
+		if ordered, ok := orderedArrayResponseSchema(opts.Schema, nil, nil); ok {
+			wire = ordered
+		}
 		return &provider.ResponseFormat{
 			Type:        "json",
-			Schema:      wrapped,
+			Schema:      wire,
 			Name:        opts.SchemaName,
 			Description: opts.SchemaDescription,
 		}, nil
@@ -1167,6 +1245,10 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 	for k, v := range rootDefs {
 		wrappedArraySchema[k] = v
 	}
+	var wireArraySchema interface{} = wrappedArraySchema
+	if ordered, ok := orderedArrayResponseSchema(opts.Schema, nil, nil); ok {
+		wireArraySchema = ordered
+	}
 
 	genOpts := &provider.GenerateOptions{
 		Prompt:           prompt,
@@ -1181,7 +1263,7 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 		ProviderOptions:  opts.ProviderOptions,
 		ResponseFormat: &provider.ResponseFormat{
 			Type:        "json",
-			Schema:      wrappedArraySchema,
+			Schema:      wireArraySchema,
 			Name:        opts.SchemaName,
 			Description: opts.SchemaDescription,
 		},
