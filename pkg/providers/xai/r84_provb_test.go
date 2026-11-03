@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -50,5 +51,50 @@ func TestR84provbVideoStatusBodyDecodedLikeTextDecoder(t *testing.T) {
 	res := r84provbVideoStatus(t, http.StatusAccepted, append(append([]byte{}, bom...), []byte("  \n")...))
 	if res.Status != provider.VideoOperationStatusPending {
 		t.Fatalf("whitespace 202: status = %q, want pending", res.Status)
+	}
+}
+
+// TS doStatus tests the status fields with == null / ??, so an empty string
+// is a value: error.message "" is the detail (not error.code), status ""
+// with a video URL is still pending, and video.url "" does not fall back to
+// file_output.public_url (the completed job then has no video URL).
+func TestR84provbVideoStatusEmptyStringsAreValues(t *testing.T) {
+	res := r84provbVideoStatus(t, http.StatusOK, []byte(`{"status":"failed","error":{"message":"","code":"c1"}}`))
+	if res.Status != provider.VideoOperationStatusError || res.Error != "Video generation failed: " {
+		t.Fatalf("failed with empty message: %q %q", res.Status, res.Error)
+	}
+	res = r84provbVideoStatus(t, http.StatusOK, []byte(`{"status":"failed","error":{"message":null,"code":"c1"}}`))
+	if res.Error != "Video generation failed: c1" {
+		t.Fatalf("failed with null message: %q", res.Error)
+	}
+	res = r84provbVideoStatus(t, http.StatusOK, []byte(`{"status":"","video":{"url":"https://x.test/v.mp4"}}`))
+	if res.Status != provider.VideoOperationStatusPending {
+		t.Fatalf("empty status with url: %q, want pending", res.Status)
+	}
+	res = r84provbVideoStatus(t, http.StatusOK, []byte(`{"status":"done","video":{"url":"","file_output":{"file_id":"f","filename":"a.mp4","public_url":"https://x.test/a.mp4"}}}`))
+	if res.Status != provider.VideoOperationStatusError || res.Error != "Video generation completed but no video URL was returned." {
+		t.Fatalf("done with empty url: %q %q", res.Status, res.Error)
+	}
+	res = r84provbVideoStatus(t, http.StatusOK, []byte(`{"status":"done","video":{"url":null,"file_output":{"file_id":"f","filename":"a.mp4","public_url":"https://x.test/a.mp4"}}}`))
+	if res.Status != provider.VideoOperationStatusCompleted || len(res.Videos) != 1 || res.Videos[0].URL != "https://x.test/a.mp4" {
+		t.Fatalf("done with null url: %+v", res)
+	}
+}
+
+// TS doStart throws AISDKError "No request_id returned from xAI API." (the
+// response is not part of the message).
+func TestR84provbVideoMissingRequestIDMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"request_id":null}`))
+	}))
+	defer server.Close()
+	model := NewVideoModel(New(Config{APIKey: "k", BaseURL: server.URL}), "grok-imagine-video")
+	_, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: provider.VideoModelV3CallOptions{Prompt: "p"}})
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if got := err.Error(); !strings.HasSuffix(got, "No request_id returned from xAI API.") {
+		t.Fatalf("error = %q", got)
 	}
 }
