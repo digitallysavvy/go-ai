@@ -144,12 +144,21 @@ func uiChunkWritesMessage(chunk UIMessageChunk) bool {
 		return chunk["messageId"] != nil || chunk["messageMetadata"] != nil
 	case "finish", "message-metadata":
 		return chunk["messageMetadata"] != nil
-	case "start-step", "finish-step", "error", "abort":
-		return false
+	case "text-start", "text-delta", "text-end", "custom",
+		"reasoning-start", "reasoning-delta", "reasoning-end",
+		"file", "reasoning-file", "source-url", "source-document",
+		"tool-input-start", "tool-input-delta", "tool-input-available", "tool-input-error",
+		"tool-approval-request", "tool-approval-response",
+		"tool-output-denied", "tool-output-available", "tool-output-error",
+		"reset-step":
+		return true
 	}
+	// start-step, finish-step, error, abort and any type TS does not know
+	// (its default branch) write nothing, except a data part that is not
+	// transient.
 	if strings.HasPrefix(chunkType, "data-") {
 		transient, _ := chunk["transient"].(bool)
 		return !transient
 	}
-	return true
+	return false
 }

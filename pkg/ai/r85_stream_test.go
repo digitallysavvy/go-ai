@@ -297,3 +297,36 @@ func TestR85streamOutputDeniedReasonNullish(t *testing.T) {
 		}
 	}
 }
+
+// TS readUIMessageStream (Node v24, packages/ai dist): a chunk type
+// processUIMessageStream does not know (and abort) writes no snapshot, so
+// start(messageId), text-start, text-delta and text-end give 4 snapshots.
+func TestR85streamReadUIMessagesUnknownChunkNoSnapshot(t *testing.T) {
+	chunks := []UIMessageChunk{
+		{"type": "start", "messageId": "m1"},
+		{"type": "text-start", "id": "t"},
+		{"type": "text-delta", "id": "t", "delta": "hi"},
+		{"type": "unknown-thing", "x": 1},
+		{"type": "abort"},
+		{"type": "text-end", "id": "t"},
+		{"type": "finish"},
+	}
+	in := make(chan UIMessageChunk, len(chunks))
+	for _, c := range chunks {
+		in <- c
+	}
+	close(in)
+	out, errCh := ReadUIMessages(context.Background(), ReadUIMessagesOptions{Stream: in})
+	var got []string
+	for m := range out {
+		b, _ := json.Marshal(m.Parts)
+		got = append(got, string(b))
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	want := []string{`[]`, `[{"type":"text","text":"","state":"streaming"}]`, `[{"type":"text","text":"hi","state":"streaming"}]`, `[{"type":"text","text":"hi","state":"done"}]`}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("snapshots = %q, want %q", got, want)
+	}
+}
