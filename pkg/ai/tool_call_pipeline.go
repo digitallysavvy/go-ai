@@ -153,8 +153,14 @@ func parseAndRefineToolCall(ctx context.Context, opts ParseToolCallOptions) (typ
 	}
 	tool := findToolForCall(call, opts.Tools)
 	invalid := call
-	if args, parseErr := toolCallInputArguments(call); parseErr == nil {
-		invalid.Arguments = args
+	// TS parseToolCall's catch block: safeParseJSON(toolCall.input) on the
+	// untrimmed text, the text itself when it does not parse. An empty or
+	// blank input does not parse, so it stays text ("" for an unknown
+	// tool's call with no input) instead of becoming {}.
+	if call.Arguments != nil || providerutils.JSTrim(call.RawArguments) != "" {
+		if args, parseErr := toolCallInputArguments(call); parseErr == nil {
+			invalid.Arguments = args
+		}
 	}
 	invalid.Dynamic = true
 	invalid.Invalid = true
@@ -819,6 +825,10 @@ func invalidToolCallResult(call types.ToolCall) types.ToolResult {
 	if err == nil {
 		err = fmt.Errorf("invalid tool call")
 	}
+	// TS builds the tool-error with error: getErrorMessage(toolCall.error),
+	// the string "<name>: <message>" (generate-text.ts 1498,
+	// stream-language-model-call.ts 750).
+	err = &invalidToolCallError{cause: err}
 	return types.ToolResult{
 		ToolCallID:   call.ID,
 		ToolName:     call.ToolName,
@@ -831,6 +841,18 @@ func invalidToolCallResult(call types.ToolCall) types.ToolResult {
 		InvalidToolCall: true,
 	}
 }
+
+// invalidToolCallError is the error of an invalid tool call's tool-error:
+// TS getErrorMessage(toolCall.error), a string, so Error() is
+// "<name>: <message>" and the model sees it unchanged. Unwrap returns the
+// original (errors.As finds *NoSuchToolError, *InvalidToolInputError).
+type invalidToolCallError struct{ cause error }
+
+func (e *invalidToolCallError) Error() string { return providerutils.ToolErrorText(e.cause) }
+func (e *invalidToolCallError) Unwrap() error { return e.cause }
+
+// ToolErrorText is the text the model is shown (already the TS string).
+func (e *invalidToolCallError) ToolErrorText() string { return e.Error() }
 
 // ErrorName is the TS error name, used where TS shows error.toString().
 func (e *NoSuchToolError) ErrorName() string { return "AI_NoSuchToolError" }

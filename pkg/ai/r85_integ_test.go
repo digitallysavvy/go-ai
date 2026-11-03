@@ -2,12 +2,14 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 func r85integText(text string, reason types.FinishReason) []provider.StreamChunk {
@@ -151,4 +153,80 @@ func TestR85integStreamTextSteeringQueue(t *testing.T) {
 			t.Fatalf("outcome = %+v", o)
 		}
 	})
+}
+
+// CR r85 stream to gen 2 (TS stream-language-model-call.ts 742-756,
+// parse-tool-call.ts 112-117): the tool-error of an invalid call carries
+// getErrorMessage(toolCall.error), "AI_NoSuchToolError: ...", which a UI
+// OnError sees; errors.As still finds the typed error; the model sees the
+// same text (not prefixed twice); an unknown tool's call with empty input
+// reports input "" in tool-input-error.
+func TestR85integInvalidToolCallErrorText(t *testing.T) {
+	const want = "AI_NoSuchToolError: Model tried to call unavailable tool 't9'. Available tools: t1."
+	var mu sync.Mutex
+	var prompts []*provider.GenerateOptions
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(_ context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		prompts = append(prompts, opts)
+		if len(prompts) == 1 {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "t9", RawArguments: ""}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: &types.Usage{}},
+			}), nil
+		}
+		return testutil.NewMockTextStream(r85integText("done", types.FinishReasonStop)), nil
+	}}
+	tools := []types.Tool{{Name: "t1", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }}}
+	result, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "p", Tools: tools, StopWhen: []StopCondition{IsStepCount(3)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks, errs := result.ToUIMessageStream(context.Background(), UIMessageStreamResultOptions{OnError: func(e error) string { return e.Error() }})
+	var inputErr, outputErr UIMessageChunk
+	for c := range chunks {
+		switch c["type"] {
+		case "tool-input-error":
+			inputErr = c
+		case "tool-output-error":
+			outputErr = c
+		}
+	}
+	if err := <-errs; err != nil {
+		t.Fatal(err)
+	}
+	if inputErr["input"] != "" || inputErr["errorText"] != "Model tried to call unavailable tool 't9'. Available tools: t1." {
+		t.Fatalf("tool-input-error = %#v", inputErr)
+	}
+	if outputErr["errorText"] != want {
+		t.Fatalf("tool-output-error = %#v", outputErr)
+	}
+	var toolErr *types.ToolErrorContent
+	for _, s := range result.Steps() {
+		for _, c := range s.Content {
+			if te, ok := c.(types.ToolErrorContent); ok {
+				toolErr = &te
+			}
+		}
+	}
+	var noSuch *NoSuchToolError
+	if toolErr == nil || toolErr.Error != want || toolErr.Err == nil || !errors.As(toolErr.Err, &noSuch) {
+		t.Fatalf("tool error = %+v", toolErr)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(prompts) != 2 {
+		t.Fatalf("model calls = %d", len(prompts))
+	}
+	var errorText interface{}
+	for _, m := range prompts[1].Prompt.Messages {
+		for _, part := range m.Content {
+			if tr, ok := part.(types.ToolResultContent); ok && tr.Output != nil {
+				errorText = tr.Output.Value
+			}
+		}
+	}
+	if errorText != want {
+		t.Fatalf("continuation error-text = %#v, want %q", errorText, want)
+	}
 }

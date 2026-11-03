@@ -293,6 +293,11 @@ func ToolErrorText(err error) string {
 	if err == nil {
 		return "unknown error"
 	}
+	// An error that stands for a TS string error (getErrorMessage of a
+	// string is the string itself).
+	if text, ok := err.(interface{ ToolErrorText() string }); ok {
+		return text.ToolErrorText()
+	}
 	name := "Error"
 	if named, ok := err.(ErrorNamer); ok {
 		name = named.ErrorName()

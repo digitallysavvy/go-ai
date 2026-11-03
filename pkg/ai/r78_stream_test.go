@@ -290,7 +290,7 @@ func TestR78StreamInvalidToolErrorBeforeToolChoiceViolation(t *testing.T) {
 	}
 	for _, p := range parts {
 		if p.Type == provider.ChunkTypeToolResult {
-			if p.ToolResult.Error == nil || p.ToolResult.Error.Error() != "Model tried to call unavailable tool 'unknown'. Available tools: tool1." || !p.ToolResult.Dynamic {
+			if p.ToolResult.Error == nil || p.ToolResult.Error.Error() != "AI_NoSuchToolError: Model tried to call unavailable tool 'unknown'. Available tools: tool1." || !p.ToolResult.Dynamic {
 				t.Fatalf("tool-error = %+v", p.ToolResult)
 			}
 		}

@@ -3539,10 +3539,8 @@ func invalidToolCallInput(call types.ToolCall) interface{} {
 	if call.Arguments != nil {
 		return call.Arguments
 	}
-	if call.RawArguments != "" {
-		return call.RawArguments
-	}
-	return call.Arguments
+	// TS toolCall.input is always text: "" when the model sent none.
+	return call.RawArguments
 }
 
 // orderedIDSet is a set of open block ids that remembers insertion order, so

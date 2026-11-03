@@ -106,8 +106,10 @@ func TestR73Gen_GenerateTextInvalidInputToolErrorErr(t *testing.T) {
 	if !errors.As(tes[0].Err, &target) || target.ToolName != "tool1" {
 		t.Fatalf("Err = %#v, want *InvalidToolInputError", tes[0].Err)
 	}
-	if tes[0].Error != target.Error() {
-		t.Fatalf("Error = %#v, want %q", tes[0].Error, target.Error())
+	// TS getErrorMessage(toolCall.error): error.toString() (CR r85 stream
+	// to gen 2).
+	if want := "AI_InvalidToolInputError: " + target.Error(); tes[0].Error != want {
+		t.Fatalf("Error = %#v, want %q", tes[0].Error, want)
 	}
 }
 
