@@ -69,7 +69,81 @@ func sanitizeResponseJSONSchema(schema interface{}) interface{} {
 	}
 	out := sanitizeSchemaMap(m)
 	if hint != nil {
-		return jsonorder.Hinted{V: out, Hint: hint}
+		return jsonorder.Hinted{V: out, Hint: sanitizedSchemaHint(hint)}
+	}
+	return out
+}
+
+// sanitizedSchemaMovedKeys are the keys TS sanitizeResponseJsonSchema takes
+// out of the schema and writes back after the other keys, in this order.
+var sanitizedSchemaMovedKeys = []string{"properties", "items", "additionalProperties", "anyOf", "oneOf"}
+
+// sanitizedSchemaHint is the key order of TS sanitizeResponseJsonSchema's
+// result for the input tree hint: the input keys except const and the moved
+// keys (in input order; an existing enum or $defs keeps its place), then enum
+// when it comes from const, then properties, items, additionalProperties,
+// anyOf and oneOf. Subschemas get the same order; other values keep theirs.
+func sanitizedSchemaHint(hint interface{}) interface{} {
+	o, ok := hint.(*jsonorder.Object)
+	if !ok {
+		return hint
+	}
+	out := jsonorder.New()
+	moved := map[string]bool{"const": true}
+	for _, k := range sanitizedSchemaMovedKeys {
+		moved[k] = true
+	}
+	for _, k := range o.Keys() {
+		if moved[k] {
+			continue
+		}
+		v, _ := o.Get(k)
+		if k == "$defs" {
+			v = sanitizedDefinitionsHint(v)
+		}
+		out.Set(k, v)
+	}
+	if c, ok := o.Get("const"); ok {
+		// Set keeps an existing enum's position.
+		out.Set("enum", []interface{}{c})
+	}
+	for _, k := range sanitizedSchemaMovedKeys {
+		v, ok := o.Get(k)
+		if !ok {
+			continue
+		}
+		switch k {
+		case "properties":
+			v = sanitizedDefinitionsHint(v)
+		case "items", "anyOf", "oneOf":
+			if list, isList := v.([]interface{}); isList {
+				hints := make([]interface{}, len(list))
+				for i, item := range list {
+					hints[i] = sanitizedSchemaHint(item)
+				}
+				v = hints
+			} else {
+				v = sanitizedSchemaHint(v)
+			}
+		default:
+			v = sanitizedSchemaHint(v)
+		}
+		out.Set(k, v)
+	}
+	return out
+}
+
+// sanitizedDefinitionsHint orders a properties / $defs map hint: entries in
+// input order, each a sanitized subschema.
+func sanitizedDefinitionsHint(hint interface{}) interface{} {
+	o, ok := hint.(*jsonorder.Object)
+	if !ok {
+		return hint
+	}
+	out := jsonorder.New()
+	for _, k := range o.Keys() {
+		v, _ := o.Get(k)
+		out.Set(k, sanitizedSchemaHint(v))
 	}
 	return out
 }
