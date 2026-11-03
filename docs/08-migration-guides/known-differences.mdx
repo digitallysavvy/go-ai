@@ -341,7 +341,10 @@ Go UI tool parts and chunks cannot tell an unset `dynamic` from
 `dynamic: false` (`ToolCall.Dynamic` is a `bool`), so Go writes `dynamic`
 only when it is true. TS `toUIMessageChunk` copies a tool part's own
 `dynamic` for a tool missing from the tool set, so it can write
-`dynamic: false`. Clients read a missing `dynamic` as false.
+`dynamic: false`; it also writes `dynamic: false` on the `tool-input-start`
+of an unknown tool and of a provider-executed tool that is not in the tool
+set. Clients read a missing `dynamic` as false (coordinator ruling, round 86:
+closing it needs a `DynamicSet` flag on `types.ToolCall`).
 
 ## UI message stream JSON key order
 
@@ -817,6 +820,22 @@ TS sandbox sessions always have `stat`, `listDirectory` and `deleteFile`; in Go 
 ## TS test replays skipped in round 85
 
 Recorded at TS `30548ee7f9` (ai@7.0.162) and skipped because the recording cannot carry the test's setup: the openai-compatible `mapReasoning` class function; the Anthropic `authToken` function and promise cases; two Google batch cases whose display name comes from a random `generateId`; the Bedrock Converse `doStream fallback tool restrictions` cases (the test cancels an unread empty stream, which ends in a JS `Controller is already closed` TypeError; the doGenerate variant covers the request); the two OpenAI Decisions 32/33-level cases (the recorder truncates deeper call arguments; `TestR85provbDecisionInputJSON` covers them); zai's two null-effort compat replays (TS zai's own enum schema rejects null); the TS circular tool-result convert case (Go values have no BigInt or reference cycles). The google-vertex Anthropic labels tests are not recorded (the TS checkout does not install `google-auth-library`; the suite already skips them) (review round 85).
+
+## ReadUIMessages after a terminating error
+
+With `TerminateOnError`, `ReadUIMessages` stops reading at the first error and reports it once. TS keeps consuming the source until its next snapshot write, which throws `Invalid state: Controller is already closed` into `onError`, and later `error` chunks before that write also reach `onError` (a WHATWG streams artifact, not SDK behavior) (coordinator ruling, round 86).
+
+## Live tool results and telemetry order
+
+A StreamText tool result is streamed right after the user `OnToolExecutionEnd` returns and before the telemetry tool end; TS runs both end notifications before it enqueues the result. Only an integration that compares its tool-end time with the stream part can see it (round 86).
+
+## WebSocket handshake headers with an empty value
+
+TS `connectToWebSocket` removes only `undefined` headers. Go header maps cannot hold `undefined`, so `wsutil.DialOptions.Headers` (and every WebSocket provider and the harness bridge) treats `""` as unset and does not send it; to send an empty header, set it on a custom dialer. A pointer or explicit-set flag would change the handshake of every WebSocket caller that uses `""` for unset since v0.5 (coordinator ruling, round 86).
+
+## Speech translation `TargetLanguage: ""`
+
+TS checks `targetLanguage == null`, so an empty string reaches the provider. `ai.StreamTranslateOptions.TargetLanguage` and `provider.SpeechTranslationStreamOptions.TargetLanguage` are plain strings (v0.5.2), so `""` counts as missing and the call fails before connecting (coordinator ruling, round 86).
 
 ## Features that are TypeScript-only (not ported)
 

@@ -114,12 +114,12 @@ Also new:
 - **`ai.TimeoutError.Timeout` / `ErrorName()`**: the configured duration that elapsed (the error then reads like the TS abort reason) and the TS error name `TimeoutError` (review round 84).
 - **`prompt.InvalidURLError`** (`pkg/providerutils/prompt`): TS `new URL()`'s `TypeError: Invalid URL` for a URL file part that does not parse (review round 84).
 - **`prompt.DeprecatedContentWarnings`, `prompt.ImageContentPartDeprecation`** (`pkg/providerutils/prompt`): the TS `deprecated` warnings for a message's `image` content parts (review round 84).
-- **`ai.InternalOptions.TelemetryToolDefinitions`**: the Tools value of telemetry language-model call start events; WorkflowAgent sets it to TS's serialized tool definitions (review round 84).
 - **`providerutils.MapReasoningToProviderEffort` rounding, `IsCustomReasoning`, `MapReasoningToProviderBudget` / `ReasoningBudgetOptions`**: the TS `map-reasoning-to-provider` helpers (TS 61a315e333): a provider-option effort wins, otherwise the nearest lower supported level (higher only when none is lower, never `none`); budgets use the TS percentages (round 85 prep).
 - **`providerutils.APIKeyFunc`, `ResolveAPIKey` / `ResolveAPIKeyOptions`, `RequestAuthHeaderFunc`**: per-request credentials (TS 7716e189ee `Resolvable<string>` API keys): a func is called with each request's context, its error is returned unchanged, setting it together with the static key is an `InvalidArgumentError`; providers adopt it field by field (round 85 prep).
 - **`(*ai.Steering).Queue`, `QueueMessage`**: a follow-up message delivered once the model finishes its current task (TS cf2796985a `steering.queue()`), for GenerateText, StreamText and ToolLoopAgent (review round 85).
 - **`telemetry.OpenTelemetryOptions.MeterProvider`, `telemetry.InferenceDurationMetricName`, `telemetry.GenAIMeterName`**: the `gen_ai.client.inference.duration` histogram (TS 59465581b0) (review round 85).
 - **`prompt.SecureJSONParse`, `prompt.JSONStringToolInput`, `prompt.SerializeToolCallArguments`** (`pkg/providerutils/prompt`): TS secureJsonParse and the provider tool-argument serializers (TS 4ae6986cd8) (review round 85).
+- **`prompt.StringifyToolCallInput`, `prompt.StringToolCallInput`** (`pkg/providerutils/prompt`): the TS `JSON.stringify(part.input)` and `typeof input === 'string' ? input : JSON.stringify(input)` tool-call input serializers (TS 4ae6986cd8) (review round 86).
 - **`providerutils.ResolveOpenAICompatibleReasoningEffort`, `OpenAICompatibleReasoningEffortOption`**: the OpenAI-compatible `reasoningEffort` resolution with null (TS 5006d83c4e) (review round 85).
 - **`providerutils.SandboxStatter`, `SandboxDirectoryLister`, `SandboxFileDeleter`, `WritableSandboxProcess`, `SandboxFileStat`, `SandboxDirectoryEntry`, `SandboxPathType*`, `SandboxProcessOptions.Stdin`**: optional sandbox file operations and writable stdin (TS 5c247e9b85 / 95348b32c6); the local and Vercel sandboxes implement them (Vercel rejects stdin) (review round 85).
 - **`Config.APIKeyFunc`** for openai, azure, xai, deepseek, alibaba, moonshot, openresponses, huggingface, gmicloud, together, fireworks, zai, cerebras and deepinfra (TS 7716e189ee), called per request with the request's context; **`openai.Config.HeadersFuncCtx`, `deepseek.Config.HeadersFuncCtx`** for NoAPIKey wrappers (review round 85).
@@ -272,6 +272,9 @@ search for and ends with a checklist for coding agents. Entries marked
 - **StreamText with an Output merges the first text block's deltas until the parsed partial changes, and a delta without metadata repeats the block's latest provider metadata** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-output-text-deltas)
 - **The SmoothStream prefix error names the match and the buffer, as TS** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#smooth-stream-prefix-error)
 - **jsonparser.FixJSON repairs a partial array start such as `[-` to `[]`** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#fix-json-array-start)
+- **StreamText streams each tool result when its execution settles (completion order with parallel tools; a result that settled before a cancel is kept)** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-live-tool-results)
+- **StreamText step `ToolResults` follow the step content order (streamed provider results before local ones)** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamtext-tool-results-content-order)
+- **StreamText reports resumed approved tool results in completion order, as TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-resume-completion-order)
 
 #### Prompts and validation
 
@@ -286,6 +289,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Reasoning-file data URLs take their media type; unsupported reasoning-file variants use the TS error text** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#reasoning-file-data-url-media-type)
 - **types.ImageContent prompt parts log the TS "image" content part deprecation warning** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#image-part-deprecation-warning)
 - **ExperimentalDecide reports non-finite numbers and cycles with the TS texts and no longer overflows the stack on a cyclic value** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#decide-serializable-json)
+- **Base64 string file data (`FileData.DataString`) gets its detected image media type, and data that is not base64 fails the call, as TS detectMediaType** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#file-data-string-media-type)
 
 #### Tools
 
@@ -393,6 +397,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **A null inputSchemaInput or tool input is kept** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-null-input-kept)
 - **ReadUIMessageStream frames events and decodes UTF-8 like the TS chat transport; an unterminated last event is dropped** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#read-ui-message-stream-sse)
 - **UI tool parts decoded without input stay without it, an empty denial reason is kept, and ReadUIMessages writes no snapshot for unknown chunks** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-tool-part-absent-input)
+- **`WorkflowChatTransport` skips only an exact `[DONE]` and parses every other SSE data line** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-transport-sse-data)
 
 #### Telemetry and events
 
@@ -571,6 +576,12 @@ search for and ends with a checklist for coding agents. Entries marked
 - **ElevenLabs errors carry the message of the detail body, as TS** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#elevenlabs-error-detail-messages)
 - **HeyGen accepts any positive integer duration and ultraquality prompt enhancement, as TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#heygen-duration-positive-integer)
 - **Topaz input-video uploads reject redirects** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#topaz-upload-redirect)
+- **Go-typed provider option values (`[]string`, `[]map[string]interface{}`, `map[string]bool`) read like their JSON form (Azure, Moonshot, Google, OpenAI, Black Forest Labs, Hume)** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provider-options-go-typed-lists)
+- **Prodia multipart responses are parsed with the TS rules (no Content-Type sniffing)** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#prodia-multipart-r86)
+- **Google and Vertex send `responseJsonSchema` in the TS sanitizer's key order** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-response-schema-key-order)
+- **OpenAI and Azure Responses send a legacy tool call's `RawArguments` when `Arguments` is nil (not `{}`)** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-responses-raw-arguments)
+- **DeepSeek file uploads parse the provider options first and report `invalid deepseek provider options`** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#deepseek-files-options)
+- **OpenAI-compatible replayed tool calls follow TS `??` for `thoughtSignature` (an empty provider value wins)** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#compat-thought-signature-nullish)
 
 #### MCP
 
@@ -606,6 +617,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **The Claude Code start frame carries readableSkillRoots, deferredToolUseId and the new settings, with the ai@7.0.162 bridge** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#claudecode-start-frame-fields)
 - **Vercel policy mutations refuse to drop response rules; a custom PolicySandbox needs PolicySessionInspector for object policies** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-response-rules)
 - **Vercel sandboxes use v3 templates, keep Persistent, resolve relative working directories against the session cwd, and kill a spawned command when its ctx ends** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-sandbox-r85)
+- **Cursor sessions report client-app version 1.0.88** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#cursor-client-app-r86)
 
 #### Policy
 
@@ -1544,7 +1556,8 @@ Notable ones:
   `OnError`/`OnEnd`; TS interleaves them (coordinator ruling, round 68).
 - UI tool parts cannot tell an unset `dynamic` from `dynamic: false` (Go
   `bool`), so Go writes `dynamic` only when true; TS can write
-  `dynamic: false` for a tool missing from the tool set.
+  `dynamic: false` for a tool missing from the tool set (and on an unknown or
+  provider-executed tool's `tool-input-start`, round 86).
 - UI message stream SSE events (`ToUIMessageStreamResponse`,
   `PipeUIMessageStreamToResponse`, `CreateUIMessageStreamResponse`) write
   each chunk's JSON with sorted keys, because `UIMessageChunk` is a map; TS
@@ -1595,6 +1608,10 @@ Notable ones:
 - **Google videoMetadata validation errors**: An invalid Google `videoMetadata` is a ValidationError, not a raw ZodError (round 85).
 - **Deferred sandbox optional operations**: A deferred harness sandbox session always has Stat / ListDirectory / DeleteFile and reports ErrUnsupported when the sandbox lacks them (round 85).
 - **TS test replays skipped in round 85**: TS test replays skipped in round 85: harness limits (class functions, async auth tokens, random ids, a cancelled empty stream, deep-argument truncation) (round 85).
+- **ReadUIMessages after a terminating error**: `ReadUIMessages` with `TerminateOnError` calls `OnError` once and stops reading (round 86).
+- **Live tool results and telemetry order**: StreamText streams a tool result after the user tool-end callback and before the telemetry tool end (round 86).
+- **WebSocket handshake headers with an empty value**: WebSocket handshakes do not send a header whose value is `""` (round 86).
+- **Speech translation `TargetLanguage: ""`**: An empty speech translation `TargetLanguage` counts as missing (round 86).
 - **Executed tool results carry the tool title**: `ToolResult.Title` of a locally executed tool is the call's title, as in v0.5.2; TS client tool results have no `title` (round 80).
 - **Live WebSocket close code**: Google/Vertex Live and OpenAI realtime translation close errors say `(code unknown)`; `golang.org/x/net/websocket` does not expose the close code, and v0.5.2 exports its `*websocket.Conn` (round 81).
 - **OpenAI compaction metadata keeps the v0.5 keys**: `openai.compaction` parts carry the TS `providerMetadata.openai` object and the v0.5.2 top-level keys (round 81).

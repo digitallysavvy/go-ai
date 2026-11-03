@@ -403,6 +403,18 @@ already, you can skip them.
 | claude-code start frame | New keys; 7.0.162 bridge | wire/protocol change | None | [Claude Code start frame fields](#claudecode-start-frame-fields) |
 | Vercel policy mutations with native response rules; custom `PolicySandbox` | Refused instead of dropping rules | silent behavior change | Implement PolicySessionInspector | [Vercel sandbox: policies with response rules are not mutated](#vercel-response-rules) |
 | Vercel sandbox templates, `Persistent`, relative `WorkingDirectory`, `Spawn` ctx | v3 templates; kept; cwd-relative; cancel kills | silent behavior change | Pass a long-lived ctx to Spawn | [Vercel sandbox: template v3, persistent live sandboxes, relative working directories, cancel kills](#vercel-sandbox-r85) |
+| `ChunkTypeToolResult` order, `step.ToolResults` with `ToolCallConcurrency` unset | Parallel tool results stream in completion order | silent behavior change | Match by `ToolCallID` or set `ToolCallConcurrency: 1` | [StreamText streams each tool result when it settles](#streamtext-live-tool-results) |
+| `ToolResults` of a StreamText step with provider-executed tools | Results follow the step content order | silent behavior change | Match by `ToolCallID` | [StreamText toolResults follow the step content](#streamtext-tool-results-content-order) |
+| StreamText approval resume with several approved tools | Results in completion order | silent behavior change | Match by `ToolCallID` | [StreamText resumed approvals stream in completion order](#stream-resume-completion-order) |
+| `FileData.DataString` image file parts | Media type detected from the base64 data; invalid base64 fails | wire/protocol change | No action | [Base64 string file data gets its detected image media type](#file-data-string-media-type) |
+| `WorkflowChatTransport` SSE events with empty or padded data | Parsed as JSON; only exact `[DONE]` skipped | wire/protocol change | Send `data: [DONE]` exactly | [Workflow chat transport parses every SSE data line](#workflow-transport-sse-data) |
+| Provider options given as typed Go slices / maps | Read like the JSON form | silent behavior change | None | [Go-typed provider option values read like their JSON form](#provider-options-go-typed-lists) |
+| Prodia multipart responses | TS parseMultipart rules (no Content-Type sniffing) | silent behavior change | None | [Prodia: multipart responses parsed like TS](#prodia-multipart-r86) |
+| google / googlevertex `responseJsonSchema` | TS sanitizer key order | wire/protocol change | Compare parsed JSON | [Google response schema key order](#google-response-schema-key-order) |
+| Responses `Message.ToolCalls` with only `RawArguments` | Raw text sent instead of `{}` | wire/protocol change | None | [OpenAI Responses replays RawArguments without Arguments](#openai-responses-raw-arguments) |
+| DeepSeek `UploadFile` option errors | `invalid deepseek provider options`, options first | error text only | Match `Field == "providerOptions"` | [DeepSeek files: provider options are parsed first](#deepseek-files-options) |
+| OpenAI-compatible tool call `thoughtSignature: ""` under the provider key | No Google fallback | wire/protocol change | None | [OpenAI-compatible thought signatures follow `??`](#compat-thought-signature-nullish) |
+| Cursor client app version | 1.0.88 | wire/protocol change | None | [Cursor client-app version](#cursor-client-app-r86) |
 
 ## Compile-time changes {#compile-time-changes}
 
@@ -1418,6 +1430,27 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **What to do:** No action unless you compare the repaired text.
 - **Kind:** silent behavior change
 
+### StreamText streams each tool result when it settles {#streamtext-live-tool-results}
+
+- **What changed:** v0.5 ran a step's tool calls and then emitted every `ChunkTypeToolResult` in call order once the last call returned; a cancel during the tools dropped them all. v0.6 streams each executed call's result as soon as it settles (TS `executeToolsFromStream`), so with the default unlimited `ToolCallConcurrency` parallel results arrive in completion order, the step's `Content` and `ToolResults` follow that order, and a result that settled before a cancel is still streamed before the `abort` part. The tool message in `ResponseMessages` keeps call order. `ToolCallConcurrency: 1` keeps call order. WorkflowAgent keeps writing a step's results in call order after all its calls settled (TS `writeToolResults`) (review round 86).
+- **Am I affected?** Code that reads `ChunkTypeToolResult` from `Stream()` / `OnChunk` / the UI stream, or `step.Content` / `step.ToolResults`, and assumes call order; tests that pin it.
+- **What to do:** Match results by `ToolCallID`, or set `ToolCallConcurrency: &one` (`one := 1`) for sequential execution in call order.
+- **Kind:** silent behavior change
+
+### StreamText toolResults follow the step content {#streamtext-tool-results-content-order}
+
+- **What changed:** A step's `ToolResults` (also `OnStepEndEvent`, `OnEndEvent`, `StreamTextResult.ToolResults()`) listed locally executed results first and streamed provider-executed results after them. v0.6 lists them in content order, as TS derives `toolResults` from the step content: a provider result streamed during the model call comes before a local result (review round 86).
+- **Am I affected?** Steps that mix provider-executed tools (web search, code execution) with local tools, and code that indexes `ToolResults` by position.
+- **What to do:** Match results by `ToolCallID`.
+- **Kind:** silent behavior change
+
+### StreamText resumed approvals stream in completion order {#stream-resume-completion-order}
+
+- **What changed:** v0.5 StreamText emitted the results of approved tools resumed from history, and built the tool message before the first step, in call order. v0.6 uses completion order, as TS streamText does (each result is enqueued when its execution settles). GenerateText keeps call order (review round 86).
+- **Am I affected?** `StreamText` with `ToolApproval` continuations of several approved tools; code reading the leading `ChunkTypeToolResult` chunks or `ResponseMessages()[0]` by position.
+- **What to do:** No action unless you index results by position; match by `ToolCallID`, or set `ToolCallConcurrency: &one` for call order.
+- **Kind:** silent behavior change
+
 ## Prompts and validation {#prompts-and-validation}
 
 ### Prompt validation matches TS {#prompt-validation}
@@ -1657,7 +1690,10 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   model, as TS `convertToLanguageModelPrompt` does: GenerateText and
   StreamText (every step), GenerateObject and StreamObject, the batch API and
   the agent legacy loop. The default logger writes each code once per process
-  to stderr (review round 84).
+  to stderr (review round 84). Since round 86 GenerateText and StreamText log
+  the warnings of each step's own messages: an `ImageContent` part in a
+  message added by `PrepareStep` or a steering message is logged on the steps
+  that send it, and a prompt message `PrepareStep` removes is not.
 - **Am I affected?** `types.ImageContent{` in prompts; custom `SetLogWarnings`
   functions; tests that capture stderr.
 - **What to do:** No action, or switch to `types.FileContent{MediaType: "image/png",
@@ -1670,6 +1706,13 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **Am I affected?** Code matching the strings "must be a string, JSON object, or array of text, file, or json parts", "instructions must be a JSON-compatible string, object, or array" or "criteria descriptions must be JSON-compatible" for NaN/Inf input.
 - **What to do:** Match `*providererrors.InvalidArgumentError` with `errors.As` instead of the message.
 - **Kind:** error text only
+
+### Base64 string file data gets its detected image media type {#file-data-string-media-type}
+
+- **What changed:** v0.5 detected the image media type of inline file data only from bytes (`FileData.Data`). v0.6 also sniffs a base64 string (`FileData{Type: FileDataTypeData, DataString: ...}`) in user file parts and tool-result file content, as TS `convertPartToLanguageModelPart` does with `detectMediaType`: a PNG/JPEG/... payload declared as `"image"` (or with another subtype) is sent with its detected type, and a `DataString` whose prefix is not base64 fails the call (review round 86).
+- **Am I affected?** `types.FileData{` with `DataString:` in `types.FileContent` or `types.FileContentBlock` parts, especially with `MediaType: "image"`.
+- **What to do:** No action unless you relied on the declared media type being sent unchanged or pass a `DataString` that is not base64 (decode or fix it first).
+- **Kind:** wire/protocol change
 
 ## Tools {#tools}
 
@@ -3644,9 +3687,16 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 
 ### UI tool parts without input, empty denial reasons {#ui-tool-part-absent-input}
 
-- **What changed:** A UI tool part decoded without an `input` key (for example one whose output or approval request arrived before any input) is encoded without it again, and `ReadUIMessages` snapshots leave it out, as TS does (v0.5 wrote `"input": null`). A new dynamic tool part created by a `tool-input-delta` has no `rawInput` until the next delta. An approval `reason` of `""` is kept, so an output-denied part converts to an `error-text` of `""` instead of `"Tool call execution denied."` (TS `approval?.reason ?? ...`). `ReadUIMessages` writes no snapshot for a chunk type it does not know.
-- **Am I affected?** Code that reads `"input"` from encoded UI messages, compares `ReadUIMessages` snapshots, or sends `reason: ""` in tool approval responses.
+- **What changed:** A UI tool part decoded without an `input` key (for example one whose output or approval request arrived before any input) is encoded without it again, and `ReadUIMessages` snapshots leave it out, as TS does (v0.5 wrote `"input": null`). A new dynamic tool part created by a `tool-input-delta` has no `rawInput` until the next delta. An approval `reason` of `""` is kept, so an output-denied part converts to an `error-text` of `""` instead of `"Tool call execution denied."` (TS `approval?.reason ?? ...`). `ReadUIMessages` writes no snapshot for a chunk type it does not know. A decoded `"rawInput": null` is kept as well: it is encoded again and `ConvertToModelMessages` logs the `rawInput` deprecation for it, as TS does for an own `rawInput` that is not undefined (review round 86).
+- **Am I affected?** Code that reads `"input"` from encoded UI messages, compares `ReadUIMessages` snapshots, sends `reason: ""` in tool approval responses, or stores `"rawInput": null`.
 - **What to do:** No action unless you require the `input` key; treat a missing key like null.
+- **Kind:** wire/protocol change
+
+### Workflow chat transport parses every SSE data line {#workflow-transport-sse-data}
+
+- **What changed:** v0.5 `WorkflowChatTransport` trimmed each SSE event's data and skipped empty and whitespace-padded `[DONE]` events. v0.6 skips only an exact `[DONE]` and parses any other data as JSON; a parse failure ends the attempt, as an invalid chunk already did (TS `parseJsonEventStream`; review round 86).
+- **Am I affected?** Servers that send `data:` lines with no value, or `[DONE]` with extra spaces, to `workflow.WorkflowChatTransport`.
+- **What to do:** No action unless your server sends such events; send `data: [DONE]` exactly.
 - **Kind:** wire/protocol change
 
 ## Telemetry and events {#telemetry-and-events}
@@ -4096,23 +4146,15 @@ compile-time changes.
   `{"type":"provider","name","id","args"}`. A struct schema keeps its field
   order. Harness turns record TS turn telemetry's `{"type":"function","name",
   "description","inputSchema"}` and leave out `inputSchema` for a tool
-  without one. WorkflowAgent chat spans record TS `serializeToolSet`'s
-  definitions (`{"title","metadata","description","inputSchema","strict",
-  "inputExamples","providerOptions","hasOwnValidator","type",
-  "hasOnInputStart",...,"isProviderExecuted","id","args"}`, set fields only,
-  no `name`), and `[]` for a step without tools; for those runs a custom
-  integration's `LanguageModelCallStartEvent.Tools` is a JSON-marshalable
-  list of those definitions (marshal it to read them), not `[]types.Tool`
-  (TS integrations see the serialized definitions too,
-  `model-call-iterator.ts` 367) (review round 84).
+  without one. WorkflowAgent chat spans record the same definitions as
+  generateText/streamText, and nothing for a step without tools (TS
+  `toLanguageModelToolDefinitions`, 4d6d830c14; review round 86; rounds
+  84-85 recorded TS's earlier `serializeToolSet` definitions and `[]`).
   A tool without a schema reports TS `asSchema(undefined)`,
   `{"type":"object","properties":{},"additionalProperties":false}`
   (round 85).
 - **Am I affected?** Span queries or exporters that parse `ai.prompt.tools` (the
-  `parameters` key) or compare `gen_ai.tool.definitions` text byte for byte;
-  custom `TelemetryIntegration`s that type-assert
-  `LanguageModelCallStartEvent.Tools` to `[]types.Tool` for WorkflowAgent
-  runs.
+  `parameters` key) or compare `gen_ai.tool.definitions` text byte for byte.
 - **What to do:** No action unless you read `parameters` from `ai.prompt.tools`;
   read `inputSchema` instead.
 - **Kind:** silent behavior change
@@ -4674,9 +4716,16 @@ compile-time changes.
   realtime client secrets, transcription and images, and the xai, alibaba
   and azure Speech / MAI error parsers; topaz, deepinfra, prodia, cartesia,
   bfl, luma, fal, klingai and replicate, the grokbuild and opencode
-  subscription lookups and the OPA policy client.
+  subscription lookups and the OPA policy client. Round 86 extends this to
+  the error bodies of streamed and raw requests: every provider's stream
+  error (the shared client's `DoStream`), and anthropic (with the Bedrock
+  and Vertex wrappers), Google and Vertex, bedrock, heygen, perplexity,
+  groq, elevenlabs and gateway; the Bedrock Anthropic error rewrite writes
+  the TS `JSON.stringify` text (`{"type":"error","error":{"type":"error",
+  "message":...}}`, no HTML escapes) to `ResponseBody`.
 - **Am I affected?** Provider responses, events or frames that carry invalid UTF-8 or
-  start with `EF BB BF`; code comparing `ProviderError.ResponseBody` bytes.
+  start with `EF BB BF`; code comparing `ProviderError.ResponseBody` bytes;
+  `ProviderError.Message` of streamed calls whose error body starts with a BOM.
 - **What to do:** No action.
 - **Kind:** silent behavior change
 
@@ -4703,8 +4752,8 @@ compile-time changes.
 
 #### OpenAI Responses and DeepSeek replay non-JSON tool arguments as a JSON string {#tool-call-arguments-text}
 
-- **What changed:** OpenAI Responses and DeepSeek replay tool-call argument text that is not valid JSON as its JSON string literal, and Responses keeps a non-object JSON value instead of `{}` (TS `4ae6986cd8`). The OpenAI-compatible family, Groq and Cohere follow the same rule (see the previous entry).
-- **Am I affected?** Assistant tool calls replayed with `RawArguments` that are not JSON or not an object, on `openai` Responses or `deepseek`.
+- **What changed:** OpenAI Responses and DeepSeek replay tool-call argument text that is not valid JSON as its JSON string literal, and Responses keeps a non-object JSON value instead of `{}` (TS `4ae6986cd8`). The OpenAI-compatible family, Groq and Cohere follow the same rule (see the previous entry). Round 86: OpenAI Responses and DeepSeek also send a JSON string literal holding JSON (`"{\"a\":1}"`) as the JSON it holds; xAI Responses legacy `ToolCalls`, Moonshot and Alibaba (TS `JSON.stringify(part.input)`) send an invalid call's raw argument text as its JSON string literal; Open Responses sends a JSON string literal as the text it holds and invalid text as is.
+- **Am I affected?** Assistant tool calls replayed with `RawArguments` that are not JSON or not an object, on `openai` Responses or `deepseek`; string-literal or invalid `RawArguments` on `xai` Responses, `moonshot`, `alibaba` or `openresponses`.
 - **What to do:** No action.
 - **Kind:** wire/protocol change
 
@@ -4990,7 +5039,7 @@ compile-time changes.
 
 #### Anthropic schema sanitizer keeps definitions next to $ref {#anthropic-sanitizer-ref-definitions}
 
-- **What changed:** v0.5 reduced any schema node with `$ref` to `{"$ref": ...}`, dropping its `definitions` / `$defs`, so a top-level `$ref` schema (the default shape of a reflected Go struct schema) sent as `output_config.format` or a tool schema referenced a missing definition and Anthropic returned 400. v0.6 keeps the sanitized `definitions` and `$defs` next to the `$ref` (TS `f4c5f1e959`).
+- **What changed:** v0.5 reduced any schema node with `$ref` to `{"$ref": ...}`, dropping its `definitions` / `$defs`, so a top-level `$ref` schema (the default shape of a reflected Go struct schema) sent as `output_config.format` or a tool schema referenced a missing definition and Anthropic returned 400. v0.6 keeps the sanitized `definitions` and `$defs` next to the `$ref` (TS `f4c5f1e959`). Since round 86 the raw-schema path (`json.RawMessage`, `[]byte`, `*schema.OrderedSchema`, struct schemas) also writes each node's keys in the TS sanitizer's order (`$schema`, `$id`, `title`, `description`, `default`, `const`, `enum`, `type`, `anyOf`, `allOf`, `definitions`, `$defs`, `properties`, `additionalProperties`, `required`, `items`, `format`; `$ref` first on a reference node), properties in the input's order (JSON key order only).
 - **Am I affected?** Anthropic, Bedrock-Anthropic or Vertex-Anthropic calls with a JSON schema whose root (or a nested node) has `$ref` plus `definitions` / `$defs`.
 - **What to do:** No action.
 - **Kind:** wire/protocol change
@@ -5327,6 +5376,13 @@ compile-time changes.
 - **Am I affected?** Code that compares Gemini `ChunkTypeToolInputDelta` parts one by one.
 - **What to do:** No action; concatenate the deltas.
 - **Kind:** silent behavior change
+
+#### Google response schema key order {#google-response-schema-key-order}
+
+- **What changed:** `generationConfig.responseJsonSchema` is written in the key order of TS `sanitizeResponseJsonSchema`: the schema's other keys first, then `enum` (from `const`), `properties`, `items`, `additionalProperties`, `anyOf`, `oneOf`; v0.5 kept the input order (review round 86).
+- **Am I affected?** Code that compares the Google / Vertex request body text with a `ResponseFormat` schema (`ResponseFormat{Type: "json", Schema: ...}`).
+- **What to do:** No action unless you compare request bytes; compare parsed JSON.
+- **Kind:** wire/protocol change
 
 ### OpenAI
 
@@ -5777,6 +5833,13 @@ compile-time changes.
 - **What to do:** No action.
 - **Kind:** silent behavior change
 
+#### OpenAI Responses replays RawArguments without Arguments {#openai-responses-raw-arguments}
+
+- **What changed:** In v0.5 OpenAI (and Azure) Responses sent `arguments: "{}"` for a legacy `Message.ToolCalls` entry that had `RawArguments` but nil `Arguments`. v0.6 sends the raw text (review round 86).
+- **Am I affected?** `types.ToolCall{RawArguments: ...}` without `Arguments` in a prompt for `openai.ResponsesModel` / Azure Responses.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
 ### Azure, DeepSeek and Alibaba
 
 #### Azure DeepSeek models send strict tools {#azure-deepseek-strict-tools}
@@ -5871,6 +5934,13 @@ compile-time changes.
 - **Am I affected?** Azure Speech (MAI-Voice / TTS) error handling that matched the 400.
 - **What to do:** No action.
 - **Kind:** silent behavior change
+
+#### DeepSeek files: provider options are parsed first {#deepseek-files-options}
+
+- **What changed:** In v0.5 DeepSeek `UploadFile` validated the file before `providerOptions.deepseek`, reported `expiresAfter` problems with its own error texts (`Field` `providerOptions.deepseek.expiresAfter`), and ignored `expiresAfter: nil`. v0.6 parses the options first, as TS does: an `InvalidArgumentError` with `Field` `providerOptions` and message `invalid deepseek provider options` (the zod issue is the cause), and null is rejected. A returned `filename: ""` stays in `ProviderMetadata["deepseek"]["filename"]`, and the result then has no filename (it used to have the request filename) (review round 86).
+- **Am I affected?** Code matching the old DeepSeek files error text or field, or passing `expiresAfter: nil`.
+- **What to do:** Match `InvalidArgumentError` with `Field == "providerOptions"`.
+- **Kind:** error text only
 
 ### OpenAI-compatible providers
 
@@ -6032,6 +6102,13 @@ compile-time changes.
 - **Am I affected?** Code counting Cerebras warnings or passing `reasoningEffort: nil`.
 - **What to do:** No action.
 - **Kind:** silent behavior change
+
+#### OpenAI-compatible thought signatures follow `??` {#compat-thought-signature-nullish}
+
+- **What changed:** In v0.5 an empty `providerOptions[<provider>].thoughtSignature` on a replayed tool call fell back to `providerOptions.google.thoughtSignature`. v0.6 follows TS `??`: the provider's empty value wins, and no `extra_content` is sent (review round 86).
+- **Am I affected?** OpenAI-compatible family tool calls (ollama, Vertex xAI) with an empty provider-key `thoughtSignature` and a Google one.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
 
 ### Cohere
 
@@ -6331,6 +6408,20 @@ compile-time changes.
   QuiverAI's default; leave `Reasoning` unset for that, or set
   `providerOptions.quiverai.reasoningEffort`.
 - **Kind:** wire/protocol change
+
+### Go-typed provider option values read like their JSON form {#provider-options-go-typed-lists}
+
+- **What changed:** In v0.5 some provider options given as Go-typed values (`[]string`, `[][]interface{}`, `[]map[string]interface{}`, `map[string]bool`) were rejected or dropped where the JSON form (`[]interface{}`, `map[string]interface{}`) worked. In v0.6 they read like their JSON form, as TS parses the JSON value (review round 86): Azure transcription `locales`, `phraseList.phrases` and `diarization`, Moonshot system-message `tools`, Google Interactions `environment` (`sources`, `network.allowlist`) and Google embedding `content` (the call used to fail); OpenAI / Azure streaming transcription `streaming.include`, TS-shaped `openai.shell` environment `skills` and `networkPolicy.domainSecrets` (and a `types.ProviderReference` skill reference), Black Forest Labs video `keyframes` and Hume `context.utterances` (dropped or reshaped); replayed OpenAI computer-call `actions` and `pendingSafetyChecks` (sent empty).
+- **Am I affected?** These options given as typed Go values: `providerOptions["azure"]["locales"|"phraseList"|"diarization"]`, `["moonshotai"]["tools"]`, `["google"]["environment"|"content"]`, `["openai"]["streaming"]["include"]`, `openai.shell` `ProviderArgs["environment"]`, computer `ToolCall.Arguments`, `["blackForestLabs"]["keyframes"]`, `["hume"]["context"]`.
+- **What to do:** No action: calls that used to fail now succeed, and dropped values are sent.
+- **Kind:** silent behavior change
+
+### Prodia: multipart responses parsed like TS {#prodia-multipart-r86}
+
+- **What changed:** Prodia job responses are split with the TS `parseMultipart` rules: a response without a `Content-Type` boundary fails with `Prodia response missing multipart boundary in content-type: ` (the body was sniffed before), a quoted boundary is used with its quotes, a part whose Content-Disposition contains `name="job"` (also `filename="job"`) is the job part, an output part's media type is its Content-Type as sent (parameters kept), and an empty output part counts as the output (review round 86).
+- **Am I affected?** Only with a proxy or server that sends unusual multipart output to `prodia` models.
+- **What to do:** No action.
+- **Kind:** silent behavior change
 
 ## MCP {#mcp}
 
@@ -6658,6 +6749,13 @@ compile-time changes.
 - **What to do:** No action unless you passed a request-scoped ctx to `Spawn` for a process that must outlive it; pass a long-lived ctx.
 - **Kind:** silent behavior change
 
+### Cursor client-app version {#cursor-client-app-r86}
+
+- **What changed:** The Cursor adapter reports client app `ai-sdk-harness-cursor/1.0.88` (TS @ai-sdk/harness-cursor at ai@7.0.162) instead of `1.0.78` (review round 86).
+- **Am I affected?** Only if you match `cursor.ClientAppVersion` or the client-app string Cursor sessions send.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
 ## Policy {#policy}
 
 ### An OPA HTTP policy response without result is not-applicable {#opa-undefined-result}
@@ -6907,6 +7005,14 @@ after upgrading:
   [Deferred sandbox optional operations](./known-differences.mdx).
 - **TS test replays skipped in round 85**: TS test replays skipped in round 85: harness limits (class functions, async auth tokens, random ids, a cancelled empty stream, deep-argument truncation) (round 85). See
   [TS test replays skipped in round 85](./known-differences.mdx).
+- **ReadUIMessages after a terminating error**: `ReadUIMessages` with `TerminateOnError` calls `OnError` once and stops reading (round 86). See
+  [ReadUIMessages after a terminating error](./known-differences.mdx).
+- **Live tool results and telemetry order**: StreamText streams a tool result after the user tool-end callback and before the telemetry tool end (round 86). See
+  [Live tool results and telemetry order](./known-differences.mdx).
+- **WebSocket handshake headers with an empty value**: WebSocket handshakes do not send a header whose value is `""` (round 86). See
+  [WebSocket handshake headers with an empty value](./known-differences.mdx).
+- **Speech translation `TargetLanguage: ""`**: An empty speech translation `TargetLanguage` counts as missing (round 86). See
+  [Speech translation `TargetLanguage: ""`](./known-differences.mdx).
 - **Tool output JSON in replayed prompts keeps Go map key order.** See
   [Tool output JSON key order in replayed prompts](./known-differences.mdx).
 - **EmbedMany with a batch that reported no usage records the other batches' positive token sum**; TS sums to NaN and drops it. See
@@ -6980,6 +7086,7 @@ next one.
      -e 'PerChunk|FirstChunk|Response\.Headers|ResponseHeadersMap|ai\.prompt\.(toolChoice|messages|tools)|JSONSchema\(\)|ResponseFormat\.Schema|jsonschema:"|Files\(\)|Skills\(\)|DecisionJSONPart|signature|zai|huggingface|openresponses|anthropic|perplexity' \
      -e 'quiverai|reasoning effort none' \
      -e 'readableSkillRoots|nativeToolName|ResolveHostToolCall|IsMcpToolCall|SandboxCreator|OnBootstrap|invoke_agent|structuredOutputMode|wav_44100|eleven_v4|searchQueries|reasoningEffort|reasoning_effort|input_required|PolicySandbox|SetNetworkPolicy|FixJSON|web_search_call|AI_NoSuchToolError|propertyNames|IsRealtimeTranscriptionModelID|SSEParser|ToolUIPart|ExperimentalDecide|ToolApproval|SmoothStream|thinkingBudget|disable_parallel_tool_use|GatewayTimeoutError|heygen|topaz|toolwebfetch' \
+     -e 'ToolCallConcurrency|ToolResults|ChunkTypeToolResult|WorkflowChatTransport|locales|phraseList|diarization|keyframes|utterances|domainSecrets|pendingSafetyChecks|responseJsonSchema|ClientAppVersion|expiresAfter|blackForestLabs|hume|rawInput' \
      -e 'FileData\{Type: types\.FileDataTypeURL|remote file URL must|Invalid URL|allowed types are|ImageContent\{|ReasoningFileContent|AbortReason|ReadUIMessageStream|continuationToken|errorCode|InteractionsModel|ClientSecret|ConversationModel|NewJSONSchema\(|ResponseBody|xai\.VideoModel|Size:|AspectRatio' .
    ```
 
