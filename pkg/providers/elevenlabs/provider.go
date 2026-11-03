@@ -2,9 +2,10 @@ package elevenlabs
 
 import (
 	"context"
+	"os"
+
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
-	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -36,6 +37,18 @@ type Config struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
+// authHeaders is the request-time xi-api-key header (TS getHeaders /
+// loadApiKey): from APIKeyFunc with the request ctx, else APIKey or
+// ELEVENLABS_API_KEY; a caller's own xi-api-key header is kept.
+func (cfg Config) authHeaders(ctx context.Context) (map[string]string, error) {
+	if cfg.APIKeyFunc != nil {
+		return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
+			APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "ELEVENLABS_API_KEY", Description: "ElevenLabs",
+		}, "xi-api-key", "")
+	}
+	return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "ELEVENLABS_API_KEY", "ElevenLabs", "xi-api-key", "")
+}
+
 // New creates a new ElevenLabs provider with the given configuration
 func New(cfg Config) *Provider {
 	baseURL := cfg.BaseURL
@@ -56,14 +69,7 @@ func New(cfg Config) *Provider {
 			"Content-Type": "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("elevenlabs")),
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
-		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
-			if cfg.APIKeyFunc != nil {
-				return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
-					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "ELEVENLABS_API_KEY", Description: "ElevenLabs",
-				}, "xi-api-key", "")
-			}
-			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "ELEVENLABS_API_KEY", "ElevenLabs", "xi-api-key", "")
-		},
+		HeadersFuncCtx: cfg.authHeaders,
 	})
 
 	return &Provider{
