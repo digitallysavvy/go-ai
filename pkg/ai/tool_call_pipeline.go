@@ -569,6 +569,9 @@ func applyToolCallInputDefaults(args map[string]interface{}, validator schema.Va
 	return args
 }
 
+// A nil schema value (a nil map, a typed nil Schema or Validator pointer, a
+// Schema whose Validator is nil) is no schema, as when the call is parsed
+// (toolCallInputValidator): TS asSchema(undefined).jsonSchema.
 func toolInputJSONSchema(tool *types.Tool) map[string]interface{} {
 	if isHintedParameters(tool.Parameters) {
 		if m, ok := schema.ParametersMap(tool.Parameters); ok {
@@ -577,14 +580,18 @@ func toolInputJSONSchema(tool *types.Tool) map[string]interface{} {
 	}
 	switch s := tool.Parameters.(type) {
 	case map[string]interface{}:
-		return s
-	case schema.Schema:
 		if s != nil {
-			return s.Validator().JSONSchema()
+			return s
+		}
+	case schema.Schema:
+		if !isNilInterfaceValue(s) {
+			if v := toolSchemaValidator(s.Validator()); v != nil {
+				return v.JSONSchema()
+			}
 		}
 	case schema.Validator:
-		if s != nil {
-			return s.JSONSchema()
+		if v := toolSchemaValidator(s); v != nil {
+			return v.JSONSchema()
 		}
 	}
 	return emptyToolInputJSONSchema()
