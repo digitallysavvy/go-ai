@@ -325,28 +325,30 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 	}
 	hasImageEntry := false
 	for _, entry := range interactionsOpts.ResponseFormat {
+		// TS pruneUndefined drops only absent values: an empty mime_type or
+		// an empty schema object is sent.
 		switch stringValue(entry["type"]) {
 		case "text":
-			responseFormatEntries = append(responseFormatEntries, pruneMap(map[string]interface{}{
+			responseFormatEntries = append(responseFormatEntries, dropNilValues(map[string]interface{}{
 				"type":      "text",
 				"mime_type": entry["mimeType"],
 				"schema":    entry["schema"],
 			}))
 		case "image":
 			hasImageEntry = true
-			responseFormatEntries = append(responseFormatEntries, pruneMap(map[string]interface{}{
+			responseFormatEntries = append(responseFormatEntries, dropNilValues(map[string]interface{}{
 				"type":         "image",
 				"mime_type":    entry["mimeType"],
 				"aspect_ratio": entry["aspectRatio"],
 				"image_size":   entry["imageSize"],
 			}))
 		case "audio":
-			responseFormatEntries = append(responseFormatEntries, pruneMap(map[string]interface{}{
+			responseFormatEntries = append(responseFormatEntries, dropNilValues(map[string]interface{}{
 				"type":      "audio",
 				"mime_type": entry["mimeType"],
 			}))
 		case "video":
-			responseFormatEntries = append(responseFormatEntries, pruneMap(map[string]interface{}{
+			responseFormatEntries = append(responseFormatEntries, dropNilValues(map[string]interface{}{
 				"type":         "video",
 				"aspect_ratio": entry["aspectRatio"],
 				"resolution":   entry["resolution"],
@@ -379,7 +381,9 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 
 		// Deprecated fallback: imageConfig contributes an image entry only
 		// when responseFormat didn't already supply one. Always warn.
-		if len(interactionsOpts.ImageConfig) > 0 {
+		// TS `imageConfig != null`: an empty imageConfig warns and adds
+		// the default image entry too.
+		if interactionsOpts.ImageConfig != nil {
 			msg := "google.interactions: providerOptions.google.imageConfig is deprecated. Use providerOptions.google.responseFormat with a { type: \"image\", ... } entry instead."
 			if hasImageEntry {
 				msg = "google.interactions: providerOptions.google.imageConfig is deprecated and was ignored because providerOptions.google.responseFormat already supplies an image entry. Use responseFormat exclusively."
@@ -979,7 +983,8 @@ func containsString(values []string, target string) bool {
 func snakeImageConfig(in map[string]interface{}) map[string]interface{} {
 	aspectRatio := firstMapValue(in, "aspectRatio", "aspect_ratio")
 	imageSize := firstMapValue(in, "imageSize", "image_size")
-	return pruneMap(map[string]interface{}{
+	// TS reads each field `!= null`; an empty imageConfig stays an object.
+	return dropNilValues(map[string]interface{}{
 		"aspect_ratio": aspectRatio,
 		"image_size":   imageSize,
 	})
@@ -1051,7 +1056,7 @@ func droppedAgentGenerationFields(opts *provider.GenerateOptions, googleOpts Goo
 	if googleOpts.ThinkingSummaries != "" {
 		dropped = append(dropped, "thinkingSummaries")
 	}
-	if len(googleOpts.ImageConfig) > 0 {
+	if googleOpts.ImageConfig != nil {
 		dropped = append(dropped, "imageConfig")
 	}
 	return dropped

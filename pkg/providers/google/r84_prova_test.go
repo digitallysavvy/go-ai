@@ -86,3 +86,29 @@ func TestR84provaInteractionsStepFieldsKept(t *testing.T) {
 		t.Errorf("steps =\n%s\nwant\n%s", got, want)
 	}
 }
+
+// TestR84provaInteractionsEmptyOptionValuesKept: TS pruneUndefined drops
+// only absent response format fields (an empty mime_type or schema object is
+// sent), and `imageConfig != null` makes an empty imageConfig warn and add
+// the default image entry.
+func TestR84provaInteractionsEmptyOptionValuesKept(t *testing.T) {
+	m := &InteractionsLanguageModel{modelID: "gemini-3-flash-preview"}
+	body, warnings, _, err := m.buildArgs(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"google": map[string]interface{}{
+			"responseFormat": []interface{}{map[string]interface{}{"type": "text", "mimeType": "", "schema": map[string]interface{}{}}},
+			"imageConfig":    map[string]interface{}{},
+		}},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := json.Marshal(body.ResponseFormat)
+	const want = `[{"mime_type":"","schema":{},"type":"text"},{"mime_type":"image/png","type":"image"}]`
+	if string(got) != want {
+		t.Errorf("response_format = %s, want %s", got, want)
+	}
+	if len(warnings) != 1 || warnings[0].Message != "google.interactions: providerOptions.google.imageConfig is deprecated. Use providerOptions.google.responseFormat with a { type: \"image\", ... } entry instead." {
+		t.Errorf("warnings = %v", warnings)
+	}
+}
