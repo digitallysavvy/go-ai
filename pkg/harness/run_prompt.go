@@ -2184,6 +2184,17 @@ func executionDeniedOutput(reason string) map[string]interface{} {
 	return out
 }
 
+// deniedSubmission is the submission for a denied host tool call: the
+// execution-denied output plus a model tool result carrying it, so the
+// model-facing output is recorded and the runtime's echo of the denial
+// never reaches the tool's ToModelOutput (TS 033f8d9a63).
+func deniedSubmission(toolCallID, toolName string, output map[string]interface{}, reason string) ToolResultSubmission {
+	return ToolResultSubmission{
+		ToolCallID: toolCallID, Output: output,
+		ToolResult: newModelToolResult(toolCallID, toolName, types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: reason}),
+	}
+}
+
 // handleApprovalRequest processes a `tool-approval-request` event from the
 // adapter (a built-in tool asking for permission): filters it against
 // BuiltinToolFiltering, records it as pending, resolves any startup
@@ -2277,7 +2288,7 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 		// echoed copy.
 		d.setHostOutcome(raw.ToolCallID, hostToolOutcome{output: output})
 		d.markAwaitingEcho(raw.ToolCallID)
-		if err := d.submitToolResult(ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: output}); err != nil {
+		if err := d.submitToolResult(deniedSubmission(raw.ToolCallID, raw.ToolName, output, BuiltinToolFilteringDenialReason(raw.ToolName))); err != nil {
 			return false, err
 		}
 		return false, nil
@@ -2327,7 +2338,7 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 		// the end right after it, without waiting for the runtime's echo.
 		d.ensureToolExecutionStarted(d.telStepCtx, call)
 		d.markAwaitingEcho(raw.ToolCallID)
-		if err := d.submitToolResult(ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: output}); err != nil {
+		if err := d.submitToolResult(deniedSubmission(raw.ToolCallID, raw.ToolName, output, decision.Reason)); err != nil {
 			return false, err
 		}
 		d.publishToolExecutionEnd(raw.ToolCallID, raw.ToolName, call, hostOutcomeResult(call, hostToolOutcome{output: output}))
@@ -2953,7 +2964,7 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 	d.settledHostIDs[approval.ToolCallID] = struct{}{}
 	if !continuation.Approved {
 		output := executionDeniedOutput(continuation.Reason)
-		if err := d.submitToolResult(ToolResultSubmission{ToolCallID: approval.ToolCallID, Output: output}); err != nil {
+		if err := d.submitToolResult(deniedSubmission(approval.ToolCallID, approval.ToolName, output, continuation.Reason)); err != nil {
 			return turnOutcomeContinue, err
 		}
 		return turnOutcomeContinue, nil

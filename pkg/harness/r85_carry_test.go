@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"sync"
@@ -171,4 +172,119 @@ func TestR85carryBuiltinApprovalPausesWithoutHostEcho(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Ports TS 033f8d9a63 denied-tool-output.test.ts ("configured" and
+// "filtered" sources, echo on and off, with a converter): every denial
+// submission carries a model tool result with the execution-denied output,
+// the tool and its ToModelOutput never run, and an echoed denial reaches the
+// response messages as the execution-denied output.
+func TestR85carryDeniedHostToolOutput(t *testing.T) {
+	const filteredReason = "Tool 'weather' is inactive due to the HarnessAgent tool filtering policy."
+	for _, source := range []string{"configured", "filtered"} {
+		for _, echo := range []bool{false, true} {
+			reasons := []string{"weather disabled", ""}
+			if source == "filtered" {
+				reasons = []string{filteredReason}
+			}
+			for _, reason := range reasons {
+				t.Run(source, func(t *testing.T) {
+					var executed, converted atomic.Int32
+					weather := types.Tool{
+						Name: "weather", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"city": map[string]interface{}{"type": "string"}}},
+						Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+							executed.Add(1)
+							return map[string]any{"content": []any{map[string]any{"text": "Sunny"}}}, nil
+						},
+						ToModelOutput: func(context.Context, types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
+							converted.Add(1)
+							return &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "Invalid weather result"}, nil
+						},
+					}
+					stop := FinishReason{Unified: FinishReasonStop, Raw: "end_turn"}
+					mock := newScriptedHarness(
+						func(emit func(StreamPart)) {
+							emit(&ToolCallPart{ToolCallID: "c1", ToolName: "weather", Input: `{"city":"SF"}`})
+						},
+						func(sub ToolResultSubmission, emit func(StreamPart)) {
+							if echo {
+								emit(&ToolResultPart{ToolCallID: sub.ToolCallID, ToolName: "weather", Result: sub.Output})
+							}
+							emit(&TextStartPart{ID: "answer"})
+							emit(&TextDeltaPart{ID: "answer", Delta: "Weather is disabled."})
+							emit(&TextEndPart{ID: "answer"})
+							emit(&FinishStepPart{FinishReason: stop, Usage: stringUsage(1, 1)})
+							emit(&FinishPart{FinishReason: stop, TotalUsage: stringUsage(1, 1)})
+						},
+					)
+					tools := map[string]types.Tool{"weather": weather}
+					in := runPromptInput{
+						Harness: mock.harness, Session: mock.session, Prompt: TextPrompt("Get the weather"), SandboxSession: testSandbox(),
+						SessionWorkDir: "/sandbox", Tools: tools, ActiveTools: tools,
+					}
+					if source == "filtered" {
+						in.ActiveTools = map[string]types.Tool{}
+					} else {
+						in.ToolApproval = ToolApprovalConfiguration{"weather": ai.ToolApprovalStatusDenied}
+						in.ToolApprovalReasons = map[string]string{"weather": reason}
+					}
+					out := runPrompt(context.Background(), in)
+					drainRunPrompt(t, out)
+					if err := out.Result.Err(); err != nil {
+						t.Fatalf("turn failed: %v", err)
+					}
+
+					denial := map[string]any{"type": "execution-denied"}
+					if reason != "" {
+						denial["reason"] = reason
+					}
+					if len(mock.toolResults) != 1 {
+						t.Fatalf("submissions = %+v", mock.toolResults)
+					}
+					got := r85carryJSON(t, map[string]any{"toolCallId": mock.toolResults[0].ToolCallID, "output": mock.toolResults[0].Output, "toolResult": mock.toolResults[0].ToolResult})
+					want := r85carryJSON(t, map[string]any{"toolCallId": "c1", "output": denial, "toolResult": map[string]any{"type": "tool-result", "toolCallId": "c1", "toolName": "weather", "output": denial}})
+					if !reflect.DeepEqual(got, want) {
+						t.Fatalf("submission = %v, want %v", got, want)
+					}
+					if executed.Load() != 0 || converted.Load() != 0 {
+						t.Fatalf("executed=%d converted=%d, want 0/0", executed.Load(), converted.Load())
+					}
+					var outputs []any
+					for _, m := range out.Result.ResponseMessages() {
+						if m.Role != types.RoleTool {
+							continue
+						}
+						for _, c := range m.Content {
+							if tr, ok := c.(types.ToolResultContent); ok && tr.Output != nil {
+								outputs = append(outputs, r85carryJSON(t, tr.Output))
+							}
+						}
+					}
+					var wantOutputs []any
+					if source == "configured" {
+						wantOutputs = append(wantOutputs, r85carryJSON(t, denial))
+					}
+					if echo {
+						wantOutputs = append(wantOutputs, r85carryJSON(t, denial))
+					}
+					if !reflect.DeepEqual(outputs, wantOutputs) {
+						t.Fatalf("echo=%v reason=%q: response tool outputs = %v, want %v", echo, reason, outputs, wantOutputs)
+					}
+				})
+			}
+		}
+	}
+}
+
+func r85carryJSON(t *testing.T, v any) any {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
