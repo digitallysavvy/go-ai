@@ -218,3 +218,12 @@ func TestR85provbStreamingTranscriptionModels(t *testing.T) {
 		t.Errorf("gpt-live-transcribe warnings = %#v", got)
 	}
 }
+
+// TS 436374eb36 mapWebSearchResult: every status but completed is an error.
+func TestR85provbUnfinishedWebSearchIsError(t *testing.T) {
+	for status, want := range map[string]bool{"completed": false, "searching": true, "in_progress": true, "failed": true, "incomplete": true} {
+		if got := isFailedWebSearchStatus(status); got != want {
+			t.Errorf("isFailedWebSearchStatus(%q) = %v, want %v", status, got, want)
+		}
+	}
+}

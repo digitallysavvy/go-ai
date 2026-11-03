@@ -1849,7 +1849,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				// only on the tool-call.
 			}
 			if isFailedWebSearchStatus(item.Status) {
-				// TS #22330: failed/incomplete searches are tool errors.
+				// TS mapWebSearchResult: an unfinished search is a tool error.
 				webSearchResult.Result = map[string]interface{}{"status": item.Status}
 				webSearchResult.Error = item.Status
 			}
@@ -4596,7 +4596,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			Result:     mapWebSearchOutput(item.Action),
 		}
 		if isFailedWebSearchStatus(item.Status) {
-			// TS #22330: failed/incomplete searches are tool errors.
+			// TS mapWebSearchResult: an unfinished search is a tool error.
 			webSearchResult.Result = map[string]interface{}{"status": item.Status}
 			webSearchResult.Error = errors.New(item.Status)
 		}
@@ -4934,9 +4934,10 @@ func sliceHas(values []string, want string) bool {
 }
 
 // isFailedWebSearchStatus reports whether a web_search_call status marks the
-// search as a tool error (TS: status === 'failed' || 'incomplete').
+// search as a tool error: every status other than "completed", including an
+// unfinished "searching" or "in_progress" (TS 436374eb36 mapWebSearchResult).
 func isFailedWebSearchStatus(status string) bool {
-	return status == "failed" || status == "incomplete"
+	return status != "completed"
 }
 
 // validateResponsesPromptCacheOptions mirrors the TS Responses option schema
