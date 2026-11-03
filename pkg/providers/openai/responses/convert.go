@@ -2213,6 +2213,9 @@ func computerCallFromArgs(args map[string]interface{}) (string, []map[string]int
 	if err := validateToolPayload(computerInputNode, args); err != nil {
 		return "", nil, nil, err
 	}
+	// Read Go-typed values ([]map[string]interface{} actions, ...) in the
+	// JSON form validateToolPayload checked.
+	args = providerutils.NormalizeOptionsJSON(args)
 	status, _ := args["status"].(string)
 	rawActions, _ := args["actions"].([]interface{})
 	actions := make([]map[string]interface{}, 0, len(rawActions))
