@@ -228,7 +228,7 @@ func NewParallelSearch(config ParallelSearchConfig) ParallelSearchTool {
 // toJSONSchema renders it (draft-07, io "input"). ValidateUIMessages checks
 // tool outputs against it, so nullable fields are anyOf [T, null] and the
 // required lists match zod's non-optional fields.
-const parallelSearchOutputSchemaJSON = `{
+var parallelSearchOutputSchemaJSON = `{
 	"anyOf": [
 		{
 			"type": "object",
@@ -349,35 +349,7 @@ const parallelSearchOutputSchemaJSON = `{
 				"results"
 			]
 		},
-		{
-			"type": "object",
-			"properties": {
-				"error": {
-					"type": "string",
-					"enum": [
-						"api_error",
-						"configuration_error",
-						"execution_error",
-						"gateway_rate_limit",
-						"invalid_input",
-						"rate_limit",
-						"timeout",
-						"unknown",
-						"unknown_tool"
-					]
-				},
-				"statusCode": {
-					"type": "number"
-				},
-				"message": {
-					"type": "string"
-				}
-			},
-			"required": [
-				"error",
-				"message"
-			]
-		}
+		` + gatewayToolErrorSchemaJSON + `
 	]
 }`
 

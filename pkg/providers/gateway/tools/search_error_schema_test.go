@@ -18,6 +18,8 @@ func TestSearchErrorVariantRequiresErrorAndMessage(t *testing.T) {
 		"tako":             NewTakoSearch(TakoSearchConfig{}).ToTool(),
 		"browserbase":      NewBrowserbaseSearch(BrowserbaseSearchConfig{}).ToTool(),
 		"browserbaseFetch": NewBrowserbaseFetch(BrowserbaseFetchConfig{}).ToTool(),
+		"deepseekSearch":   NewDeepSeekSearch(DeepSeekSearchConfig{}).ToTool(),
+		"deepseekFetch":    NewDeepSeekFetch(DeepSeekFetchConfig{}).ToTool(),
 	}
 	for name, tool := range tools {
 		t.Run(name, func(t *testing.T) {

@@ -946,6 +946,18 @@ func (t *Tools) BrowserbaseFetch(config tools.BrowserbaseFetchConfig) tools.Brow
 	return tools.NewBrowserbaseFetch(config)
 }
 
+// DeepSeekSearch creates a DeepSeek search tool with the given configuration
+// (TS gatewayTools.deepseekSearch, 2099d455e4).
+func (t *Tools) DeepSeekSearch(config tools.DeepSeekSearchConfig) tools.DeepSeekSearchTool {
+	return tools.NewDeepSeekSearch(config)
+}
+
+// DeepSeekFetch creates a DeepSeek fetch tool with the given configuration
+// (TS gatewayTools.deepseekFetch, 2099d455e4).
+func (t *Tools) DeepSeekFetch(config tools.DeepSeekFetchConfig) tools.DeepSeekFetchTool {
+	return tools.NewDeepSeekFetch(config)
+}
+
 // NewTools creates a new Tools instance for accessing gateway-specific tools
 func NewTools() *Tools {
 	return &Tools{}
