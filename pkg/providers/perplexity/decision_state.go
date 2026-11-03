@@ -100,14 +100,21 @@ func perplexityDecisionImage(part provider.DecisionStatePart) (map[string]interf
 	// full either).
 	if !isFullMediaType(mediaType) {
 		// Direct DoDecide calls can bypass core's media type detection.
-		detectable := raw
-		if detectable == nil {
-			// TS detectMediaType decodes the string with
-			// convertBase64ToUint8Array (base64url, optional padding).
-			detectable, _ = fileutil.ConvertBase64ToBytes(encoded)
+		var detected string
+		var ok bool
+		if raw == nil {
+			// TS detectMediaType decodes only the sniffed prefix of the
+			// string with convertBase64ToUint8Array (base64url, optional
+			// padding); a prefix that is not base64 throws (atob).
+			var err error
+			if detected, ok, err = fileutil.DetectMediaTypeSignatureBase64(encoded, "image"); err != nil {
+				return nil, err
+			}
+		} else {
+			detected, ok = fileutil.DetectMediaTypeSignature(raw, "image")
 		}
 		mediaType = ""
-		if detected, ok := fileutil.DetectMediaTypeSignature(detectable, "image"); ok {
+		if ok {
 			mediaType = detected
 		}
 	}
