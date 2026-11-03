@@ -2,7 +2,10 @@ package vercel
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
+	"math"
 	"path"
 	"strings"
 	"time"
@@ -23,7 +26,12 @@ type Session struct {
 	sandbox *Sandbox
 }
 
-var _ providerutils.SandboxSession = (*Session)(nil)
+var (
+	_ providerutils.SandboxSession         = (*Session)(nil)
+	_ providerutils.SandboxStatter         = (*Session)(nil)
+	_ providerutils.SandboxDirectoryLister = (*Session)(nil)
+	_ providerutils.SandboxFileDeleter     = (*Session)(nil)
+)
 
 // NewSession wraps an existing native sandbox as a restricted session.
 func NewSession(sandbox *Sandbox) *Session { return &Session{sandbox: sandbox} }
@@ -41,17 +49,47 @@ func (s *Session) Description() string {
 // which likewise returns accumulated output alongside a non-nil error rather
 // than a zero value) — see Sandbox.RunCommand / APIClient.RunCommandWait.
 func (s *Session) Run(ctx context.Context, opts providerutils.SandboxProcessOptions) (providerutils.SandboxRunResult, error) {
-	result, err := s.sandbox.RunCommand(ctx, "bash", []string{"-c", opts.Command}, opts.WorkingDirectory, opts.Env)
+	result, err := s.sandbox.RunCommand(ctx, "bash", []string{"-c", opts.Command}, s.resolveWorkingDirectory(opts.WorkingDirectory), opts.Env)
 	return providerutils.SandboxRunResult{Stdout: result.Stdout, Stderr: result.Stderr, ExitCode: result.ExitCode}, err
 }
 
+// resolveWorkingDirectory makes a relative working directory absolute
+// against the session cwd: the Vercel API resolves a relative cwd against
+// "/" instead (TS resolveWorkingDirectory, 5c247e9b85). The paths are joined
+// as text, not cleaned, so symbolic links are followed.
+func (s *Session) resolveWorkingDirectory(workingDirectory string) string {
+	if workingDirectory == "" || strings.HasPrefix(workingDirectory, "/") {
+		return workingDirectory
+	}
+	cwd := s.sandbox.CWD()
+	if cwd == "" || cwd == "/" {
+		return "/" + workingDirectory
+	}
+	return cwd + "/" + workingDirectory
+}
+
 // Spawn starts opts.Command via `bash -c`, detached, streaming output live.
+// Cancelling ctx kills the remote command, as the TS abort listener does
+// (269f4c0c32); Wait then returns the context error.
+//
+// A writable stdin (opts.Stdin) is not supported yet: TS sends it through
+// @vercel/sandbox 3.9.0 writeStdin/closeStdin, whose wire shapes are not
+// available to this port, so Spawn rejects it before starting the command,
+// as the TS SandboxSession contract requires of implementations without it.
 func (s *Session) Spawn(ctx context.Context, opts providerutils.SandboxProcessOptions) (providerutils.SandboxProcess, error) {
-	proc, err := s.sandbox.SpawnCommand(ctx, "bash", []string{"-c", opts.Command}, opts.WorkingDirectory, opts.Env)
+	if opts.Stdin {
+		return nil, errors.New("Vercel Sandbox sessions do not support a writable stdin in this SDK yet.") //nolint:staticcheck // sentence-style error like the TS sandbox errors
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	proc, err := s.sandbox.SpawnCommand(ctx, "bash", []string{"-c", opts.Command}, s.resolveWorkingDirectory(opts.WorkingDirectory), opts.Env)
 	if err != nil {
 		return nil, err
 	}
-	return &sandboxProcessAdapter{ctx: ctx, proc: proc}, nil
+	a := &sandboxProcessAdapter{ctx: ctx, proc: proc}
+	a.stopKillOnCancel = context.AfterFunc(ctx, func() { _ = a.Kill() })
+	return a, nil
 }
 
 // sandboxProcessAdapter adapts *RemoteProcess (whose Wait/Kill take a
@@ -61,6 +99,9 @@ func (s *Session) Spawn(ctx context.Context, opts providerutils.SandboxProcessOp
 type sandboxProcessAdapter struct {
 	ctx  context.Context
 	proc *RemoteProcess
+	// stopKillOnCancel removes the kill-on-cancel hook once the command has
+	// exited or was killed explicitly.
+	stopKillOnCancel func() bool
 }
 
 func (a *sandboxProcessAdapter) PID() int              { return a.proc.PID() }
@@ -71,7 +112,13 @@ func (a *sandboxProcessAdapter) ExitCode() (int, bool) { return a.proc.ExitCode(
 func (a *sandboxProcessAdapter) Wait() (providerutils.SandboxProcessResult, error) {
 	code, err := a.proc.Wait(a.ctx)
 	if err != nil {
+		if ctxErr := a.ctx.Err(); ctxErr != nil {
+			return providerutils.SandboxProcessResult{}, ctxErr
+		}
 		return providerutils.SandboxProcessResult{}, err
+	}
+	if a.stopKillOnCancel != nil {
+		a.stopKillOnCancel()
 	}
 	return providerutils.SandboxProcessResult{ExitCode: code}, nil
 }
@@ -82,7 +129,11 @@ func (a *sandboxProcessAdapter) Wait() (providerutils.SandboxProcessResult, erro
 func (a *sandboxProcessAdapter) Kill() error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(a.ctx), 30*time.Second)
 	defer cancel()
-	return a.proc.Kill(ctx)
+	err := a.proc.Kill(ctx)
+	if a.stopKillOnCancel != nil {
+		a.stopKillOnCancel()
+	}
+	return err
 }
 
 // ReadFile reads path, returning nil when it does not exist.
@@ -141,4 +192,136 @@ func (s *Session) WriteTextFile(ctx context.Context, opts providerutils.SandboxW
 		return err
 	}
 	return s.WriteBinaryFile(ctx, opts.Path, data)
+}
+
+// Exit codes of the path scripts, distinct from those bash and coreutils use
+// for their own errors (TS NOT_FOUND_EXIT_CODE / WRONG_TYPE_EXIT_CODE).
+const (
+	pathScriptNotFound  = 3
+	pathScriptWrongType = 4
+)
+
+// The path methods run these scripts (copied from TS
+// vercel-sandbox-session.ts, 5c247e9b85) instead of the native file API,
+// which reports every error other than "No such file or directory" as
+// EACCES and passes paths without `--`. The path is passed as $1.
+const exitMissingFunction = `
+exit_missing() {
+  error=$(LC_ALL=C; : 2>&1 < "$1")
+  case $error in
+    *": No such file or directory" | *": Not a directory") exit 3 ;;
+  esac
+  echo "${error:-Cannot access $1}" >&2
+  exit 1
+}
+`
+
+const statScript = exitMissingFunction + `
+[ -e "$1" ] || exit_missing "$1"
+if [ -f "$1" ]; then type=file; elif [ -d "$1" ]; then type=directory; else type=other; fi
+size=$(stat -L -c %s -- "$1" 2>/dev/null || stat -L -f %z -- "$1") || exit 1
+printf '%s %s' "$type" "$size"
+`
+
+const listDirectoryScript = exitMissingFunction + `
+if [ ! -d "$1" ]; then
+  [ -e "$1" ] || exit_missing "$1"
+  echo "Not a directory" >&2
+  exit 4
+fi
+case $1 in /*) dir=$1 ;; *) dir=./$1 ;; esac
+cd -P -- "$dir" || exit 1
+[ -r . ] || { echo "Permission denied" >&2; exit 1; }
+shopt -s dotglob nullglob
+for name in *; do
+  if [ -L "$name" ]; then type=symlink
+  elif [ -f "$name" ]; then type=file
+  elif [ -d "$name" ]; then type=directory
+  else type=other
+  fi
+  printf '%s %s\0' "$type" "$name"
+done
+`
+
+const deleteFileScript = exitMissingFunction + `
+if [ -d "$1" ] && [ ! -L "$1" ]; then
+  echo "Is a directory" >&2
+  exit 4
+fi
+[ -e "$1" ] || [ -L "$1" ] || exit_missing "$1"
+rm -f -- "$1"
+`
+
+func (s *Session) runPathScript(ctx context.Context, script, filePath string) (RunResult, error) {
+	if err := ctx.Err(); err != nil {
+		return RunResult{}, err
+	}
+	return s.sandbox.RunCommand(ctx, "bash", []string{"-c", script, "bash", filePath}, "", nil)
+}
+
+// Stat implements providerutils.SandboxStatter (TS VercelSandboxSession.stat).
+func (s *Session) Stat(ctx context.Context, filePath string) (*providerutils.SandboxFileStat, error) {
+	res, err := s.runPathScript(ctx, statScript, filePath)
+	if err != nil {
+		return nil, err
+	}
+	if res.ExitCode == pathScriptNotFound {
+		return nil, nil
+	}
+	if res.ExitCode != 0 {
+		return nil, fmt.Errorf("Failed to stat %s: %s", filePath, providerutils.JSTrim(res.Stderr)) //nolint:staticcheck // TS error text
+	}
+	typ, rawSize, _ := strings.Cut(res.Stdout, " ")
+	size, _ := providerutils.JSNumber(rawSize)
+	if math.IsNaN(size) { // TS Number() of a non-number
+		size = 0
+	}
+	return &providerutils.SandboxFileStat{Type: typ, Size: int64(size)}, nil
+}
+
+// ListDirectory implements providerutils.SandboxDirectoryLister (TS
+// VercelSandboxSession.listDirectory).
+func (s *Session) ListDirectory(ctx context.Context, filePath string) ([]providerutils.SandboxDirectoryEntry, error) {
+	res, err := s.runPathScript(ctx, listDirectoryScript, filePath)
+	if err != nil {
+		return nil, err
+	}
+	if res.ExitCode == pathScriptNotFound {
+		return nil, nil
+	}
+	if res.ExitCode != 0 {
+		return nil, fmt.Errorf("Failed to list %s: %s", filePath, providerutils.JSTrim(res.Stderr)) //nolint:staticcheck // TS error text
+	}
+	entries := []providerutils.SandboxDirectoryEntry{}
+	for _, record := range strings.Split(res.Stdout, "\x00") {
+		if record == "" {
+			continue
+		}
+		// TS splits at record.indexOf(' '); without a space (-1) the name is
+		// the whole record and the type is all but its last character.
+		typ, name, ok := strings.Cut(record, " ")
+		if !ok {
+			typ, name = record[:len(record)-1], record
+		}
+		entries = append(entries, providerutils.SandboxDirectoryEntry{Name: name, Type: typ})
+	}
+	return entries, nil
+}
+
+// DeleteFile implements providerutils.SandboxFileDeleter (TS
+// VercelSandboxSession.deleteFile).
+func (s *Session) DeleteFile(ctx context.Context, filePath string) (bool, error) {
+	res, err := s.runPathScript(ctx, deleteFileScript, filePath)
+	if err != nil {
+		return false, err
+	}
+	switch res.ExitCode {
+	case 0:
+		return true, nil
+	case pathScriptNotFound:
+		return false, nil
+	case pathScriptWrongType:
+		return false, fmt.Errorf("Cannot delete %s: it is a directory.", filePath) //nolint:staticcheck // TS error text
+	}
+	return false, fmt.Errorf("Failed to delete %s: %s", filePath, providerutils.JSTrim(res.Stderr)) //nolint:staticcheck // TS error text
 }

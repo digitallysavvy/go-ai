@@ -1,16 +1,23 @@
 package vercel
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // Ports TS vercel-network-policy-response-rules.test.ts (44a4261e52) and
@@ -215,5 +222,191 @@ func TestR85toolsLiveSandboxKeepsPersistentFalse(t *testing.T) {
 	body, _ := json.Marshal(f.createRequests[0])
 	if !strings.Contains(string(body), `"persistent":false`) || strings.Contains(string(body), `"runtime"`) {
 		t.Fatalf("create body = %s", body)
+	}
+}
+
+func r85toolsExecScript(t *testing.T, dir string) func(_, command string, args []string, _ string, _ map[string]string) CommandScript {
+	return func(_, command string, args []string, _ string, _ map[string]string) CommandScript {
+		cmd := exec.Command(command, args...)
+		cmd.Dir = dir
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		code := 0
+		if err := cmd.Run(); err != nil {
+			var ee *exec.ExitError
+			if !errors.As(err, &ee) {
+				t.Errorf("run %s: %v", command, err)
+			}
+			code = ee.ExitCode()
+		}
+		return CommandScript{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: code}
+	}
+}
+
+// Ports the TS 5c247e9b85 stat / listDirectory / deleteFile behavior by
+// running the ported path scripts with a real bash against a temp dir.
+func TestR85toolsPathScripts(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "sub dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("a.txt", filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "-dash"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := newFakeServer()
+	defer f.Close()
+	f.CommandFn = r85toolsExecScript(t, dir)
+	sess := NewSession(newTestSandbox(t, f, "sbx_paths"))
+	ctx := context.Background()
+
+	st, err := sess.Stat(ctx, "a.txt")
+	if err != nil || st == nil || st.Type != "file" || st.Size != 5 {
+		t.Fatalf("stat a.txt = %+v, %v", st, err)
+	}
+	if st, err := sess.Stat(ctx, "link"); err != nil || st == nil || st.Type != "file" {
+		t.Fatalf("stat link (followed) = %+v, %v", st, err)
+	}
+	if st, err := sess.Stat(ctx, "sub dir"); err != nil || st == nil || st.Type != "directory" {
+		t.Fatalf("stat dir = %+v, %v", st, err)
+	}
+	if st, err := sess.Stat(ctx, "missing"); err != nil || st != nil {
+		t.Fatalf("stat missing = %+v, %v", st, err)
+	}
+	if st, err := sess.Stat(ctx, "a.txt/under-file"); err != nil || st != nil {
+		t.Fatalf("stat under a file = %+v, %v; want nil (Not a directory is missing)", st, err)
+	}
+
+	entries, err := sess.ListDirectory(ctx, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, e := range entries {
+		got[e.Name] = e.Type
+	}
+	want := map[string]string{"a.txt": "file", "sub dir": "directory", "link": "symlink", "-dash": "file"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("listDirectory = %v, want %v", got, want)
+	}
+	if entries, err := sess.ListDirectory(ctx, "sub dir"); err != nil || entries == nil || len(entries) != 0 {
+		t.Fatalf("empty dir = %#v, %v; want an empty non-nil list", entries, err)
+	}
+	if entries, err := sess.ListDirectory(ctx, "missing"); err != nil || entries != nil {
+		t.Fatalf("list missing = %v, %v", entries, err)
+	}
+	if _, err := sess.ListDirectory(ctx, "a.txt"); err == nil || err.Error() != "Failed to list a.txt: Not a directory" {
+		t.Fatalf("list file err = %v", err)
+	}
+
+	if ok, err := sess.DeleteFile(ctx, "sub dir"); ok || err == nil || err.Error() != "Cannot delete sub dir: it is a directory." {
+		t.Fatalf("delete dir = %v, %v", ok, err)
+	}
+	if ok, err := sess.DeleteFile(ctx, "link"); !ok || err != nil {
+		t.Fatalf("delete link = %v, %v", ok, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a.txt")); err != nil {
+		t.Fatal("deleting the link removed its target")
+	}
+	if ok, err := sess.DeleteFile(ctx, "-dash"); !ok || err != nil {
+		t.Fatalf("delete -dash = %v, %v", ok, err)
+	}
+	if ok, err := sess.DeleteFile(ctx, "missing"); ok || err != nil {
+		t.Fatalf("delete missing = %v, %v", ok, err)
+	}
+}
+
+// TS 5c247e9b85: run/spawn resolve a relative workingDirectory against the
+// session cwd (the API would resolve it against "/").
+func TestR85toolsRelativeWorkingDirectory(t *testing.T) {
+	f := newFakeServer()
+	defer f.Close()
+	var cwds []string
+	f.CommandFn = func(_, _ string, _ []string, cwd string, _ map[string]string) CommandScript {
+		cwds = append(cwds, cwd)
+		return CommandScript{}
+	}
+	sbx := newTestSandbox(t, f, "sbx_cwd")
+	sess := NewSession(sbx)
+	ctx := context.Background()
+	for _, wd := range []string{"src", "/abs", ""} {
+		if _, err := sess.Run(ctx, providerutils.SandboxProcessOptions{Command: "true", WorkingDirectory: wd}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, err := sess.Spawn(ctx, providerutils.SandboxProcessOptions{Command: "true", WorkingDirectory: "a/../b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = p.Wait()
+	base := sbx.CWD()
+	want := []string{base + "/src", "/abs", "", base + "/a/../b"}
+	if base == "" || base == "/" {
+		want[0], want[3] = "/src", "/a/../b"
+	}
+	if !reflect.DeepEqual(cwds, want) {
+		t.Fatalf("cwds = %q, want %q", cwds, want)
+	}
+}
+
+// TS 269f4c0c32: aborting a spawn kills the remote command; a writable
+// stdin is rejected before the command starts (Go has no writeStdin port).
+func TestR85toolsSpawnCancelKillsAndStdinRejected(t *testing.T) {
+	f := newFakeServer()
+	defer f.Close()
+	var commands int
+	f.CommandFn = func(string, string, []string, string, map[string]string) CommandScript {
+		commands++
+		return CommandScript{}
+	}
+	sess := NewSession(newTestSandbox(t, f, "sbx_cancel"))
+	if _, err := sess.Spawn(context.Background(), providerutils.SandboxProcessOptions{Command: "cat", Stdin: true}); err == nil || commands != 0 {
+		t.Fatalf("stdin spawn err = %v, commands = %d", err, commands)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	p, err := sess.Spawn(ctx, providerutils.SandboxProcessOptions{Command: "sleep 100"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		f.mu.Lock()
+		kills := f.kills
+		f.mu.Unlock()
+		if kills == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("kills = %d after cancel, want 1", kills)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, err := p.Wait(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Wait err = %v, want context.Canceled", err)
+	}
+	// A process that exited normally is not killed by a later cancel.
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	p2, err := sess.Spawn(ctx2, providerutils.SandboxProcessOptions{Command: "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p2.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	cancel2()
+	time.Sleep(20 * time.Millisecond)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.kills != 1 {
+		t.Fatalf("kills = %d, want 1 (no kill after a normal exit)", f.kills)
 	}
 }
