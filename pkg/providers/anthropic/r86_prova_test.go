@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -78,5 +80,51 @@ func TestR86provaBatchResultsAuthTokenFuncOncePerRequest(t *testing.T) {
 	}
 	if calls != 2 || withoutCtx != 0 || len(auth) != 2 || auth[1] != "Bearer tok" {
 		t.Fatalf("calls = %d (without the caller ctx: %d), Authorization = %q", calls, withoutCtx, auth)
+	}
+}
+
+// Ports of the TS anthropic-provider.test.ts "authToken option" cases the
+// wire replay skips (the recording cannot carry a token function).
+func TestR86provaAuthTokenFuncTSCases(t *testing.T) {
+	var requests []http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Header.Clone())
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-3-haiku-20240307","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer srv.Close()
+	opts := func() *provider.GenerateOptions {
+		return &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}}
+	}
+
+	// "propagates token supplier errors without sending an API request"
+	tokenErr := errors.New("Token exchange failed")
+	m, _ := New(Config{BaseURL: srv.URL, AuthTokenFunc: func(context.Context) (string, error) { return "", tokenErr }}).LanguageModel("claude-3-haiku-20240307")
+	if _, err := m.DoGenerate(context.Background(), opts()); !errors.Is(err, tokenErr) {
+		t.Fatalf("supplier error: %v", err)
+	}
+	if len(requests) != 0 {
+		t.Fatalf("a request was sent: %d", len(requests))
+	}
+
+	// "merges the OAuth beta with provider, request, and feature betas"
+	m, _ = New(Config{
+		BaseURL:       srv.URL,
+		AuthTokenFunc: func(context.Context) (string, error) { return "test-auth-token", nil },
+		Headers:       map[string]string{"anthropic-beta": "provider-beta,oauth-2025-04-20"},
+	}).LanguageModel("claude-3-haiku-20240307")
+	o := opts()
+	o.Headers = map[string]string{"anthropic-beta": "request-beta,oauth-2025-04-20"}
+	o.ProviderOptions = map[string]interface{}{"anthropic": map[string]interface{}{"anthropicBeta": []interface{}{"feature-beta"}}}
+	if _, err := m.DoGenerate(context.Background(), o); err != nil {
+		t.Fatal(err)
+	}
+	betas := strings.Split(requests[0].Get("anthropic-beta"), ",")
+	sort.Strings(betas)
+	if strings.Join(betas, ",") != "feature-beta,oauth-2025-04-20,provider-beta,request-beta" {
+		t.Fatalf("anthropic-beta = %q", requests[0].Get("anthropic-beta"))
+	}
+	if requests[0].Get("Authorization") != "Bearer test-auth-token" || requests[0].Get("x-api-key") != "" {
+		t.Fatalf("auth headers = %v", requests[0])
 	}
 }
