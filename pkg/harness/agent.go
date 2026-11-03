@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
@@ -682,8 +683,7 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 	// excluded too — mirrors TS `_toToolSpecs(toolFiltering.activeUserTools)`.
 	toolSpecs := make([]ToolSpec, 0, len(activeTools))
 	for name, t := range activeTools {
-		schema, _ := jsonschema.ParametersMap(t.Parameters)
-		toolSpecs = append(toolSpecs, ToolSpec{Name: name, Description: t.Description, InputSchema: schema})
+		toolSpecs = append(toolSpecs, ToolSpec{Name: name, Description: t.Description, InputSchema: toolSpecInputSchema(t)})
 	}
 	// Go map iteration is random, while TS follows tool definition order.
 	// The specs feed order-sensitive consumers (Codex's turn-configuration
@@ -927,4 +927,40 @@ func streamResultToGenerateResult(r *ai.StreamTextResult) *ai.GenerateTextResult
 		Files:            r.Files(),
 		ResponseMessages: r.ResponseMessages(),
 	}
+}
+
+// toolSpecInputSchema is a user tool's JSON Schema for its ToolSpec (TS
+// `asSchema(tool.inputSchema).jsonSchema`). A schema with a key order (a
+// struct schema in field order, an *schema.OrderedSchema, an MCP tool's
+// schema with its ParameterKeyOrder) is an *schema.OrderedSchema, which
+// marshals in that order as the TS object keeps its keys; any other schema is
+// its JSON Schema map. A bare schema.Validator contributes its JSONSchema().
+// nil means no schema.
+func toolSpecInputSchema(t types.Tool) any {
+	if ordered, ok := jsonschema.OrderedToolParameters(t.Parameters, t.ParameterKeyOrder); ok {
+		return ordered
+	}
+	if ordered, ok := jsonschema.OrderedParameters(t.Parameters); ok {
+		return ordered
+	}
+	switch p := t.Parameters.(type) {
+	case *jsonschema.OrderedSchema:
+		if p != nil {
+			return p
+		}
+		return nil
+	case jsonschema.Schema:
+	case jsonschema.Validator:
+		if v := reflect.ValueOf(p); v.Kind() == reflect.Pointer && v.IsNil() {
+			return nil
+		}
+		if m := p.JSONSchema(); m != nil {
+			return m
+		}
+		return nil
+	}
+	if m, ok := jsonschema.ParametersMap(t.Parameters); ok {
+		return m
+	}
+	return nil
 }
