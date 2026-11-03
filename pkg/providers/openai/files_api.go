@@ -274,7 +274,7 @@ func (f *FilesAPI) DownloadFile(ctx context.Context, opts provider.DownloadFileO
 
 	mediaType := ""
 	if ct := httpResp.Header.Get("Content-Type"); ct != "" {
-		mediaType = strings.TrimSpace(strings.SplitN(ct, ";", 2)[0])
+		mediaType = providerutils.JSTrim(strings.SplitN(ct, ";", 2)[0])
 	}
 
 	return &provider.DownloadFileResult{
@@ -327,7 +327,7 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 // mirroring TypeScript's OpenAIFiles.getFileId error message exactly.
 func openAIFileID(file types.ProviderReference) (string, error) {
 	fileID, ok := file["openai"]
-	if !ok || strings.TrimSpace(fileID) == "" {
+	if !ok || providerutils.JSTrim(fileID) == "" {
 		return "", &providererrors.InvalidArgumentError{Field: "file", Message: "file reference is missing an 'openai' file id."}
 	}
 	return fileID, nil

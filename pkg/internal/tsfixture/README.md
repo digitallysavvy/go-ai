@@ -182,6 +182,23 @@ case file can only gain a case or an assertion that used to be dropped (google
 `interactions_parse_outputs` gains its 14th case).
 Function-level files without those shapes regenerate byte for byte.
 
+Since round 84, `--asserts` also records `const { warnings } = await
+createModel('id').doGenerate(...)` (a model built in place) as aliases, a
+`const NAME = <result or alias path>.filter|find|map|...(...)` chain and
+`const body = (await server.calls[0].requestBodyJson) as {...}` as aliases,
+and rewrites type-guard arrow heads (`(part): part is Extract<...> =>`, `(x) =>`)
+to `part =>`. The committed openai Responses / completion, xai Responses and
+azure provider case files gained those aliases and expressions only (merged
+into the committed cases; nothing else changed). A suite that calls
+`EvalExtendedAsserts(t)` (or `EnableExtendedAsserts()` from a test `init`)
+evaluates predicates joined by `&&` (`===`, `!==`, a bare path,
+`.startsWith('s')`), `.every`, `.flatMap(p => p.f ?? [])`, `p.a ?? p.b` maps,
+`.slice(a, b)`, `JSON.parse(path)`, `(await x)` / `(x as T)` around a path and
+`?.[n]`; the provb packages opt in. `TSFIXTURE_SKIPPED=1` logs each assertion
+that is still not evaluated. `LoadCases` keeps the source key order of every
+object `input` of a tool-call prompt part, so a replayed prompt sends
+`JSON.stringify(part.input)` in TS order.
+
 Test hooks used by the provider tests: `ProviderToolHook` (and
 `anthropictools.ProviderTool` for Anthropic tools), `ToolNameAlias` /
 `PromptToolNameAlias` (Go names provider tools by id), `MetadataKeyAlias`,

@@ -402,7 +402,14 @@ const serverVars = [...new Set([...src.matchAll(/\b(?:const|let)\s+(\w+)\s*=\s*c
 // `(p as { delta: string }).delta` reads as `p.delta`, `(x[0]!.content as
 // unknown[])[0]` as `x[0].content[0]`, `(result.raw as { a: { b?: string } })
 // .a.b` as `result.raw.a.b`
+// dropTypeGuards turns a type-guard arrow head `(part): part is T =>` (also
+// `(\n part,\n): part is Extract<...> =>`) into `part =>`.
+function dropTypeGuards(s) {
+  return s.replace(/\(\s*(\w+)\s*,?\s*\)\s*:\s*\1\s+is\s+[\s\S]*?=>/g, '$1 =>')
+    .replace(/\(\s*(\w+)\s*,?\s*\)\s*=>/g, '$1 =>');
+}
 function dropCasts(s) {
+  s = dropTypeGuards(s);
   return dropObjectCasts(s.replace(/\(\s*(\w+)\s+as\s+\{[^}]*\}\s*\)/g, '$1'))
     .replace(/!(?=[.\[])/g, '')
     .replace(/\(\s*([\w$.\[\]]+)\s+as\s+[\w$.<>\[\]| ]+\)/g, '$1');
@@ -437,8 +444,22 @@ function pathAliases(body, aliases) {
     }
     rhs = dropCasts(rhs).replace(/\s*\n\s*/g, '');
     const pm = /^(\w+)((?:\??\.\w+|\[\d+\])+)$/.exec(rhs);
-    if (pm && (pm[1] === 'result' || aliases[pm[1]] !== undefined)) aliases[m[1]] = pm[1] + pm[2];
+    if (pm && (pm[1] === 'result' || aliases[pm[1]] !== undefined)) { aliases[m[1]] = pm[1] + pm[2]; continue; }
+    // `(await server.calls[0].requestBodyJson)` (its `as {...}` cast dropped)
+    const sm = /^\(\s*await\s+(\w+)(\.calls\[\d+\]\.\w+)\s*\)$/.exec(rhs);
+    if (sm && (sm[1] === 'server' || serverVars.includes(sm[1]))) { aliases[m[1]] = 'server' + sm[2]; continue; }
+    // a path followed by array calls (`result.content.find(part => ...)`,
+    // `events.filter(...)`, `.at(-1)`, `?.error`), the Go side evaluates
+    // the calls it supports
+    const am = /^(\w+)((?:\??\.\w+|\[\d+\])*)((?:\??\.(?:filter|find|some|every|map|flatMap|at|slice)\(.*\)(?:\??\.\w+|\[\d+\])*)+)$/.exec(rhs);
+    if (am && (am[1] === 'result' || aliases[am[1]] !== undefined) && balancedText(am[3])) aliases[m[1]] = am[1] + am[2] + am[3];
   }
+}
+// balancedText reports whether the parens and brackets of s balance.
+function balancedText(s) {
+  let d = 0;
+  for (const ch of s) { if ('([{'.includes(ch)) d++; else if (')]}'.includes(ch)) { d--; if (d < 0) return false; } }
+  return d === 0;
 }
 // dropObjectCasts drops `(expr as { ... })` casts whose object type nests
 // braces, which the single-level pattern above cannot match.
@@ -837,7 +858,8 @@ for (let i = 0; i < starts.length; i++) {
     for (const am of body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*(?:await\s+)?(server\.calls\[\d+\]\.\w+)\s*;/g)) aliases[am[1]] = am[2];
     // `const { usage, response } = await model.doGenerate(...)`: each name is
     // that member of the call result
-    for (const am of body.matchAll(/(?:const|let)\s*\{([^}]*)\}\s*=\s*await\s+[\w.]+\.do(?:Generate|Stream)\(/g)) {
+    // (also over a model built in place: `await createModel('id').doGenerate(`)
+    for (const am of body.matchAll(/(?:const|let)\s*\{([^}]*)\}\s*=\s*await\s+(?:[\w.\s]|\([^()]*\))+?\.do(?:Generate|Stream)\(/g)) {
       for (const nm of am[1].split(',')) {
         const key = nm.trim().split(':')[0].trim(), n = nm.trim().split(':').pop().trim();
         if (n && /^\w+$/.test(key) && aliases[n] === undefined && n !== 'stream') aliases[n] = 'result.' + key;

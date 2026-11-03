@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	providertool "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 	"io"
 	"math"
 	"net/http"
@@ -674,7 +675,9 @@ func convertToolsToOpenResponses(tools []types.Tool, registry *ExtensionRegistry
 	result = make([]interface{}, 0, len(tools))
 	encodedProviderTools = map[string]encodedProviderTool{}
 
-	for _, t := range tools {
+	// A schema.Schema Parameters value is sent as its JSON Schema (TS
+	// parameters: tool.inputSchema), not dropped.
+	for _, t := range providertool.ResolveToolSchemas(tools) {
 		if t.Type == "provider" {
 			// Caller-executed "custom" tool (Config.CustomToolID), matched by
 			// provider-tool ID before the Extensions registry. Mirrors TS's

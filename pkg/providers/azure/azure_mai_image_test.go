@@ -343,7 +343,7 @@ func TestAzureMaiImage_EditsMultipart(t *testing.T) {
 func TestAzureMaiImage_DimensionsForAspectRatio(t *testing.T) {
 	cases := []struct {
 		ratio string
-		w, h  int
+		w, h  float64
 		ok    bool
 	}{
 		{"1:1", 1024, 1024, true},
@@ -357,7 +357,7 @@ func TestAzureMaiImage_DimensionsForAspectRatio(t *testing.T) {
 	for _, tc := range cases {
 		w, h, ok := azureMaiDimensionsForAspectRatio(tc.ratio)
 		if w != tc.w || h != tc.h || ok != tc.ok {
-			t.Errorf("%s = %d,%d,%v want %d,%d,%v", tc.ratio, w, h, ok, tc.w, tc.h, tc.ok)
+			t.Errorf("%s = %v,%v,%v want %v,%v,%v", tc.ratio, w, h, ok, tc.w, tc.h, tc.ok)
 		}
 	}
 }

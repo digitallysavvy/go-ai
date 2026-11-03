@@ -230,7 +230,11 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	// Always build providerMetadata with per-image array (exposes revisedPrompt).
 	imagesMeta := make([]XAIImageItemMetadata, len(resp.Data))
 	for i, d := range resp.Data {
-		imagesMeta[i] = XAIImageItemMetadata{RevisedPrompt: d.RevisedPrompt}
+		// TS `...(item.revised_prompt ? { revisedPrompt } : {})`: an empty
+		// revised prompt is left out.
+		if d.RevisedPrompt != nil && *d.RevisedPrompt != "" {
+			imagesMeta[i] = XAIImageItemMetadata{RevisedPrompt: d.RevisedPrompt}
+		}
 	}
 	meta := XAIImageMetadata{Images: imagesMeta}
 	if resp.Usage != nil && resp.Usage.CostInUsdTicks != nil {
@@ -265,7 +269,8 @@ func imageCallContext(ctx context.Context, abortSignal context.Context) (context
 func (m *ImageModel) responseImages(ctx context.Context, data []xaiImageData) ([][]byte, []string, error) {
 	hasAllBase64 := true
 	for _, image := range data {
-		if image.B64JSON == "" {
+		// TS image.b64_json != null: an empty string is base64 data.
+		if image.B64JSON == nil {
 			hasAllBase64 = false
 			break
 		}
@@ -275,13 +280,13 @@ func (m *ImageModel) responseImages(ctx context.Context, data []xaiImageData) ([
 	if hasAllBase64 {
 		base64Images := make([]string, 0, len(data))
 		for _, image := range data {
-			decoded, err := base64.StdEncoding.DecodeString(image.B64JSON)
+			decoded, err := base64.StdEncoding.DecodeString(*image.B64JSON)
 			if err != nil {
 				return nil, nil, providererrors.NewProviderError("xai.image", 0, "",
 					fmt.Sprintf("failed to decode b64_json image: %v", err), err)
 			}
 			images = append(images, decoded)
-			base64Images = append(base64Images, image.B64JSON)
+			base64Images = append(base64Images, *image.B64JSON)
 		}
 		return images, base64Images, nil
 	}
@@ -497,7 +502,7 @@ type xaiImageUsage struct {
 // xaiImageData represents image data in the response
 type xaiImageData struct {
 	URL               string  `json:"url,omitempty"`
-	B64JSON           string  `json:"b64_json,omitempty"`
+	B64JSON           *string `json:"b64_json,omitempty"`
 	RevisedPrompt     *string `json:"revised_prompt,omitempty"`
 	RespectModeration *bool   `json:"respect_moderation,omitempty"`
 }

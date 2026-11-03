@@ -5,6 +5,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
+	providertool "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
 
 // moonshotFunctionTool is the wire shape Moonshot expects for a function tool
@@ -33,6 +34,10 @@ func prepareMoonshotTools(tools []types.Tool, toolChoice types.ToolChoice, hasTo
 
 	var warnings []types.Warning
 	moonshotTools := make([]moonshotFunctionTool, 0, len(tools))
+	// A schema.Schema Parameters value is normalized as its JSON Schema (TS
+	// normalizeJsonSchemaForMFJS(tool.inputSchema)), as through
+	// tool.ToOpenAIFormat, instead of failing the MFJS root check.
+	tools = providertool.ResolveToolSchemas(tools)
 
 	for _, tool := range tools {
 		// TS: tool.type === 'provider' (the typed provider-defined tool).

@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -117,7 +118,73 @@ func LoadCases(t *testing.T, path string) []Case {
 	if err := json.Unmarshal(b, &cs); err != nil {
 		t.Fatal(err)
 	}
+	registerOrderedToolInputs(b, cs)
 	return cs
+}
+
+// orderedToolInputs maps a tool-call input object of a loaded case prompt
+// (by map identity) to its JSON text in the key order the TS test wrote it,
+// which TS JSON.stringify(part.input) keeps and a Go map loses. The entry
+// holds the map, so its address is not reused while registered.
+var orderedToolInputs sync.Map // uintptr -> orderedToolInput
+
+type orderedToolInput struct {
+	m    map[string]interface{}
+	text string
+}
+
+// registerOrderedToolInputs records the source-order JSON text of every
+// object `input` of a tool-call part in each case's call.prompt.
+func registerOrderedToolInputs(raw []byte, cs []Case) {
+	tree, ok := jsonorder.Parse(raw)
+	arr, isArr := tree.([]interface{})
+	if !ok || !isArr || len(arr) != len(cs) {
+		return
+	}
+	get := func(v interface{}, key string) interface{} {
+		if o, ok := v.(*jsonorder.Object); ok && o != nil {
+			x, _ := o.Get(key)
+			return x
+		}
+		return nil
+	}
+	for i := range cs {
+		orderedMsgs, _ := get(get(arr[i], "call"), "prompt").([]interface{})
+		msgs, _ := cs[i].Call["prompt"].([]interface{})
+		if len(orderedMsgs) != len(msgs) {
+			continue
+		}
+		for j, mv := range msgs {
+			msg, _ := mv.(map[string]interface{})
+			parts, _ := msg["content"].([]interface{})
+			orderedParts, _ := get(orderedMsgs[j], "content").([]interface{})
+			if len(parts) != len(orderedParts) {
+				continue
+			}
+			for k, pv := range parts {
+				part, _ := pv.(map[string]interface{})
+				in, isMap := part["input"].(map[string]interface{})
+				orderedIn, isObj := get(orderedParts[k], "input").(*jsonorder.Object)
+				if part["type"] != "tool-call" || !isMap || !isObj || in == nil {
+					continue
+				}
+				orderedToolInputs.Store(reflect.ValueOf(in).Pointer(), orderedToolInput{m: in, text: jsonorder.Stringify(orderedIn)})
+			}
+		}
+	}
+}
+
+// orderedToolInputText is the registered source-order JSON text of m.
+func orderedToolInputText(m map[string]interface{}) (string, bool) {
+	v, ok := orderedToolInputs.Load(reflect.ValueOf(m).Pointer())
+	if !ok {
+		return "", false
+	}
+	e := v.(orderedToolInput)
+	if reflect.ValueOf(e.m).Pointer() != reflect.ValueOf(m).Pointer() {
+		return "", false
+	}
+	return e.text, true
 }
 
 var simpleCall = regexp.MustCompile(`^\{ prompt: [A-Z_]+,?( includeRawChunks: false,?)? \}$`)
@@ -1298,8 +1365,14 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 					_ = json.Unmarshal([]byte(str), &tc.Arguments)
 				} else if mm, ok := in.(map[string]interface{}); ok && !isUndef(in) { // `input: undefined` is a missing input
 					tc.Arguments = mm
-					b, _ := json.Marshal(mm)
-					tc.Input = string(b)
+					if text, ok := orderedToolInputText(mm); ok {
+						// TS JSON.stringify(part.input) keeps the key order
+						// the test wrote.
+						tc.Input = text
+					} else {
+						b, _ := json.Marshal(mm)
+						tc.Input = string(b)
+					}
 				}
 				if pe, ok := p["providerExecuted"].(bool); ok {
 					tc.ProviderExecuted = pe

@@ -2,6 +2,7 @@ package responses
 
 import (
 	"fmt"
+	providertool "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 	"strings"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -41,7 +42,9 @@ func PrepareToolsWithOptionsName(tools []types.Tool, providerOptionsName string)
 	if len(tools) == 0 {
 		return nil, nil
 	}
-	tools = scopeFunctionToolOptions(tools, providerOptionsName)
+	// A schema.Schema Parameters value is sent as its JSON Schema (and
+	// normalized like one), as through tool.ToOpenAIFormat.
+	tools = scopeFunctionToolOptions(providertool.ResolveToolSchemas(tools), providerOptionsName)
 
 	result := make([]interface{}, 0, len(tools))
 	namespaces := map[string]*NamespaceToolDef{}

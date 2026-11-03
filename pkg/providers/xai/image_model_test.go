@@ -416,9 +416,10 @@ func TestXAIImageMetadataAlwaysPresent(t *testing.T) {
 	}
 
 	// Simulate what DoGenerate does with an empty response (no revised_prompt, no cost).
+	b64 := "aGVsbG8="
 	resp := xaiImageResponse{
 		Data: []xaiImageData{
-			{B64JSON: "aGVsbG8="},
+			{B64JSON: &b64},
 		},
 	}
 	imagesMeta := make([]XAIImageItemMetadata, len(resp.Data))

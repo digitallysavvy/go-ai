@@ -327,7 +327,7 @@ func normalizeDeepSeekMediaType(mediaType string) string {
 	if idx := strings.IndexByte(mediaType, ';'); idx >= 0 {
 		mediaType = mediaType[:idx]
 	}
-	return strings.ToLower(strings.TrimSpace(mediaType))
+	return strings.ToLower(providerutils.JSTrim(mediaType))
 }
 
 func deepSeekHasSupportedFilenameExtension(filename string) bool {
