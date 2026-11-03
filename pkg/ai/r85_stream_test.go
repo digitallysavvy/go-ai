@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -259,5 +260,40 @@ func TestR85streamDiceGameStreamParts(t *testing.T) {
 	if !reflect.DeepEqual(got, wantParts) {
 		g, _ := json.MarshalIndent(got, "", " ")
 		t.Errorf("stream parts mismatch; got:\n%s", g)
+	}
+}
+
+// TS convertToModelMessages (Node v24, packages/ai dist): an output-denied
+// tool part's error text is `approval.reason ?? 'Tool call execution
+// denied.'`, so a decoded empty reason stays empty and null or absent uses the
+// default.
+func TestR85streamOutputDeniedReasonNullish(t *testing.T) {
+	for _, c := range []struct{ reason, want string }{
+		{`,"reason":""`, ""},
+		{``, "Tool call execution denied."},
+		{`,"reason":null`, "Tool call execution denied."},
+		{`,"reason":"no"`, "no"},
+	} {
+		var msg UIMessage
+		raw := `{"id":"m","role":"assistant","parts":[{"type":"tool-x","toolCallId":"c1","state":"output-denied","input":{"a":1},"approval":{"id":"a1","approved":false` + c.reason + `}}]}`
+		if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+			t.Fatal(err)
+		}
+		out, err := ConvertToModelMessages(context.Background(), []UIMessage{msg})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out) != 2 || len(out[1].Content) != 2 {
+			t.Fatalf("%s: messages = %#v", c.reason, out)
+		}
+		tr, ok := out[1].Content[1].(types.ToolResultContent)
+		if !ok || tr.Output == nil || tr.Output.Value != c.want {
+			t.Errorf("%s: tool result = %#v, want error-text %q", c.reason, out[1].Content[1], c.want)
+		}
+		// The reason round-trips through the UI message JSON.
+		b, _ := json.Marshal(msg)
+		if c.reason == `,"reason":""` && !strings.Contains(string(b), `"reason":""`) {
+			t.Errorf("empty reason not re-encoded: %s", b)
+		}
 	}
 }

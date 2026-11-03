@@ -361,8 +361,10 @@ func convertUIToolBlock(ctx context.Context, block []UIMessagePart, options Conv
 
 		switch p.State {
 		case ToolStateOutputDenied:
+			// TS `approval?.reason ?? 'Tool call execution denied.'`: a
+			// decoded empty reason stays empty.
 			reason := "Tool call execution denied."
-			if p.Approval != nil && p.Approval.Reason != "" {
+			if p.Approval.hasReason() {
 				reason = p.Approval.Reason
 			}
 			msg.Content = append(msg.Content, types.ToolResultContent{
