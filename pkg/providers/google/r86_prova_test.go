@@ -105,3 +105,28 @@ func TestR86provaInteractionsTypedResponseFormat(t *testing.T) {
 		t.Fatalf("typed %v, plain %v", typed.ResponseFormat, plain.ResponseFormat)
 	}
 }
+
+// Class sweep of cr-r86-provb-to-prova: an environment map holding typed Go
+// slices (sources, network.allowlist) reads like its JSON form; it failed
+// validation ("expected array") or dropped the sources.
+func TestR86provaInteractionsTypedEnvironment(t *testing.T) {
+	env := map[string]interface{}{
+		"type":    "remote",
+		"sources": []map[string]interface{}{{"type": "inline", "content": "x", "target": "/a"}},
+		"network": map[string]interface{}{"allowlist": []map[string]interface{}{{"domain": "example.com"}}},
+	}
+	for name, raw := range map[string]interface{}{
+		"map":    map[string]interface{}{"environment": env},
+		"struct": GoogleInteractionsProviderOptions{Environment: env},
+	} {
+		opts, err := parseInteractionsProviderOptions(map[string]interface{}{"google": raw})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		wire, _ := json.Marshal(interactionsEnvironment(opts.Environment))
+		want := `{"network":{"allowlist":[{"domain":"example.com"}]},"sources":[{"content":"x","target":"/a","type":"inline"}],"type":"remote"}`
+		if string(wire) != want {
+			t.Fatalf("%s: environment = %s", name, wire)
+		}
+	}
+}
