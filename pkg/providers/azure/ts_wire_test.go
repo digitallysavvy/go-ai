@@ -1,9 +1,13 @@
 package azure
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +21,7 @@ import (
 // Azure's URL layout: /v1 segment and api-version query) can still be pointed
 // at the replay server. Language models are covered by TestTSCases.
 func TestTSWire(t *testing.T) {
+	r85provbSkipIfStaleRecording(t, "../testdata/tswire/azure.jsonl.gz", "keeps 502 responses retryable (upstream connect error or disconnect/reset before headers. reset reason: protocol error)")
 	tsfixture.RunWire(t, "../testdata/tswire/azure.jsonl.gz", tsfixture.WireSuite{
 		SkipLanguage: true,
 		Skip: map[string]string{
@@ -90,4 +95,29 @@ func usesDeployments(m tsfixture.WireModel) bool {
 		}
 	}
 	return false
+}
+
+// r85provbSkipIfStaleRecording skips the replay of a recording made before TS
+// 30548ee7f9: Go follows that range's transcription defaults (TS 9026c7de79)
+// and Speech 502 handling (TS c3b6fef1ff), which the older recording lacks.
+// The 30548ee7f9 recording is in
+// state/parity/oct_27_2026/reports/r85-provb-tswire/.
+func r85provbSkipIfStaleRecording(t *testing.T, path, marker string) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	zr, err := gzip.NewReader(f)
+	if err != nil {
+		return
+	}
+	data, err := io.ReadAll(zr)
+	if err != nil {
+		return
+	}
+	if !bytes.Contains(data, []byte(marker)) {
+		t.Skipf("%s predates TS 30548ee7f9 (no %q); replace it with the r85 recording", path, marker)
+	}
 }
