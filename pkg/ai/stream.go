@@ -714,7 +714,9 @@ type StreamTextResult struct {
 	// passed to StreamText, fixed for the lifetime of the call.
 	cbInitialInstructionMessages []types.Message
 	// promptDeprecations are the initial prompt's deprecated-part warning
-	// batches, logged before each step's prompt conversion.
+	// batches (the prompt is normalized before the first step, so a step's
+	// messages no longer hold its deprecated parts), logged before each
+	// step's prompt conversion.
 	promptDeprecations [][]types.Warning
 
 	// cbModel and cbStreamOpts are retained so that processStream can start
@@ -1321,7 +1323,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		}
 	}
 
-	logPromptDeprecations(r.promptDeprecations)
+	logStepPromptDeprecations(r.promptDeprecations, stepMessages)
 	stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{System: appendSandboxDescription(stepSystem, stepSandbox), Messages: messagesForModel(stepMessages)}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
 	if normErr != nil {
 		if stepCancel != nil {
@@ -3994,7 +3996,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			break
 		}
 		r.stepStartedAt = time.Now()
-		logPromptDeprecations(r.promptDeprecations)
+		logStepPromptDeprecations(r.promptDeprecations, nextMessages)
 		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
 			Messages: messagesForModel(nextMessages),
 			System:   appendSandboxDescription(nextSystem, nextSandbox),
@@ -6249,4 +6251,13 @@ func withInlineToolResults(calls []types.ToolCall, inline, executed []types.Tool
 		}
 	}
 	return out
+}
+
+// logStepPromptDeprecations logs the deprecated-part warnings TS
+// convertToLanguageModelPrompt logs for one step: the initial prompt's
+// (normalized before the first step) and those of the step's messages that
+// still hold deprecated parts (PrepareStep and steering messages).
+func logStepPromptDeprecations(initial [][]types.Warning, stepMessages []types.Message) {
+	logPromptDeprecations(initial)
+	logPromptDeprecations(promptDeprecationWarnings(stepMessages))
 }
