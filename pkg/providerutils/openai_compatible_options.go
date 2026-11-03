@@ -112,10 +112,60 @@ func OpenAICompatibleIntOption(options map[string]interface{}, keys ...string) (
 	return 0, false
 }
 
+// OpenAICompatibleReasoningEffortOption reads the reasoningEffort provider
+// option like TS openai-compatible (5006d83c4e: `reasoningEffort:
+// z.string().nullish()`): a string, or an explicit null (returned as a nil
+// value with ok=true, sent as "reasoning_effort": null). The deprecated
+// v0.5 spelling reasoning-effort is accepted as a string. A raw
+// reasoning_effort is not an option: it is a request body passthrough (TS
+// 5006d83c4e), sent by ApplyOpenAICompatibleCallSettings and overwritten
+// only when the effort resolves.
+func OpenAICompatibleReasoningEffortOption(options map[string]interface{}) (interface{}, bool) {
+	if v, ok := options["reasoningEffort"]; ok {
+		switch v := v.(type) {
+		case nil:
+			return nil, true
+		case string:
+			return v, true
+		}
+	}
+	if v, ok := OpenAICompatibleStringOption(options, "reasoning-effort"); ok {
+		return v, true
+	}
+	return nil, false
+}
+
+// ResolveOpenAICompatibleReasoningEffort ports TS
+// OpenAICompatibleChatLanguageModel's reasoning effort (5006d83c4e,
+// 61a315e333): the provider option when it is set (an explicit null
+// included, returned as a nil value), otherwise the top-level reasoning when
+// it is custom, through mapReasoning when one is given (TS
+// config.mapReasoning; it may report ok=false to send nothing), else as is.
+// ok=false means no reasoning_effort is written.
+func ResolveOpenAICompatibleReasoningEffort(options map[string]interface{}, reasoning *types.ReasoningLevel, mapReasoning func(reasoning *types.ReasoningLevel) (string, bool)) (interface{}, bool) {
+	if v, ok := OpenAICompatibleReasoningEffortOption(options); ok {
+		return v, true
+	}
+	if !IsCustomReasoning(reasoning) {
+		return nil, false
+	}
+	if mapReasoning != nil {
+		effort, ok := mapReasoning(reasoning)
+		if !ok {
+			return nil, false
+		}
+		return effort, true
+	}
+	return string(*reasoning), true
+}
+
 // ApplyOpenAICompatibleCommonRequestOptions applies the generic request fields
-// that the TS openai-compatible provider maps from provider options.
+// that the TS openai-compatible provider maps from provider options. An
+// explicit null reasoningEffort is sent as "reasoning_effort": null and wins
+// over a reasoning_effort the caller set from the top-level reasoning before
+// (TS 5006d83c4e).
 func ApplyOpenAICompatibleCommonRequestOptions(body map[string]interface{}, options map[string]interface{}) {
-	if reasoningEffort, ok := OpenAICompatibleStringOption(options, "reasoningEffort", "reasoning_effort", "reasoning-effort"); ok {
+	if reasoningEffort, ok := OpenAICompatibleReasoningEffortOption(options); ok {
 		body["reasoning_effort"] = reasoningEffort
 	}
 	if textVerbosity, ok := OpenAICompatibleStringOption(options, "textVerbosity", "text_verbosity", "text-verbosity"); ok {
@@ -134,9 +184,11 @@ func ApplyOpenAICompatibleCommonRequestOptions(body map[string]interface{}, opti
 // reasoningEffort, textVerbosity, strictJsonSchema), which TS spreads straight
 // into the request body from providerOptions[name] and providerOptions[camel]
 // (so they can override the standardized settings). Keys TS always overwrites
-// afterwards (reasoning_effort, verbosity, messages, tools, tool_choice, stream,
-// stream_options) and the extra `exclude` keys a provider handles itself are
-// skipped.
+// afterwards (verbosity, messages, tools, tool_choice, stream, stream_options)
+// and the extra `exclude` keys a provider handles itself are skipped. A raw
+// reasoning_effort is passed through (null included): TS writes
+// reasoning_effort afterwards only when it has a value (5006d83c4e), so
+// callers set it after this call only when the effort resolves.
 func ApplyOpenAICompatibleCallSettings(body map[string]interface{}, frequencyPenalty, presencePenalty *float64, seed, topK *int, providerName string, providerOptions map[string]interface{}, exclude ...string) []types.Warning {
 	var warnings []types.Warning
 	if topK != nil {
@@ -153,7 +205,7 @@ func ApplyOpenAICompatibleCallSettings(body map[string]interface{}, frequencyPen
 	}
 	skip := map[string]bool{
 		"user": true, "reasoningEffort": true, "textVerbosity": true, "strictJsonSchema": true,
-		"reasoning_effort": true, "verbosity": true, "messages": true, "tools": true,
+		"verbosity": true, "messages": true, "tools": true,
 		"tool_choice": true, "stream": true, "stream_options": true,
 	}
 	for _, k := range exclude {
@@ -175,7 +227,6 @@ func ApplyOpenAICompatibleCallSettings(body map[string]interface{}, frequencyPen
 func OpenAICompatibleCommonOptionWarnings(options map[string]interface{}) []types.Warning {
 	return DeprecatedOpenAICompatibleOptionWarnings(options, map[string]string{
 		"reasoning-effort": "reasoningEffort",
-		"reasoning_effort": "reasoningEffort",
 		"text-verbosity":   "textVerbosity",
 		"text_verbosity":   "textVerbosity",
 	})
