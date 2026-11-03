@@ -1160,30 +1160,36 @@ func ValidateMessages(messages []types.Message) error {
 // converted tool calls whose source carries a thought signature.
 func applyThoughtSignatures(toolCalls []map[string]interface{}, msg types.Message, key string) {
 	sigs := map[string]string{}
-	fromOptions := func(po map[string]interface{}) string {
+	// TS `providerOptions?.[key]?.thoughtSignature ??
+	// providerOptions?.google?.thoughtSignature`, sent when truthy: a
+	// non-null value under key wins even when it is "" (then nothing is
+	// sent).
+	fromOptions := func(po map[string]interface{}) (string, bool) {
 		for _, k := range []string{key, "google"} {
 			if m, ok := po[k].(map[string]interface{}); ok {
-				if v, ok := m["thoughtSignature"]; ok && v != nil && v != "" {
-					return fmt.Sprint(v)
+				if v, ok := m["thoughtSignature"]; ok && v != nil {
+					return fmt.Sprint(v), true
 				}
 			}
 		}
-		return ""
+		return "", false
 	}
+	decided := map[string]bool{}
 	for _, part := range msg.Content {
 		if tc, ok := part.(types.ToolCallContent); ok {
-			if sig := fromOptions(tc.ProviderOptions); sig != "" {
+			if sig, ok := fromOptions(tc.ProviderOptions); ok {
 				sigs[tc.ToolCallID] = sig
+				decided[tc.ToolCallID] = true
 			}
 		}
 	}
 	for _, tc := range msg.ToolCalls {
-		if sigs[tc.ID] != "" {
+		if decided[tc.ID] {
 			continue
 		}
 		if tc.ThoughtSignature != "" {
 			sigs[tc.ID] = tc.ThoughtSignature
-		} else if sig := fromOptions(tc.ProviderMetadata); sig != "" {
+		} else if sig, ok := fromOptions(tc.ProviderMetadata); ok {
 			sigs[tc.ID] = sig
 		}
 	}

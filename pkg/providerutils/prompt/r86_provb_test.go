@@ -53,3 +53,25 @@ func TestR86provbToolCallInputSerializersMatchNode(t *testing.T) {
 		}
 	}
 }
+
+// TestR86provbThoughtSignatureNullishFallback: TS reads
+// `providerOptions[key]?.thoughtSignature ?? providerOptions.google?.thoughtSignature`
+// and sends it when truthy, so an empty signature under the provider key
+// does not fall back to the google one.
+func TestR86provbThoughtSignatureNullishFallback(t *testing.T) {
+	convert := func(po map[string]interface{}) map[string]interface{} {
+		msgs := []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+			types.ToolCallContent{ToolCallID: "c1", ToolName: "f", Input: `{}`, ProviderOptions: po},
+		}}}
+		out := ToOpenAIMessages(msgs, ToOpenAIMessagesOptions{ThoughtSignatureKey: "ollama"})
+		return out[0]["tool_calls"].([]map[string]interface{})[0]
+	}
+	call := convert(map[string]interface{}{"ollama": map[string]interface{}{"thoughtSignature": ""}, "google": map[string]interface{}{"thoughtSignature": "g"}})
+	if _, has := call["extra_content"]; has {
+		t.Fatalf("empty ollama signature fell back to google: %v", call)
+	}
+	call = convert(map[string]interface{}{"ollama": map[string]interface{}{"thoughtSignature": nil}, "google": map[string]interface{}{"thoughtSignature": "g"}})
+	if got := call["extra_content"]; got == nil {
+		t.Fatalf("null ollama signature did not fall back to google: %v", call)
+	}
+}
