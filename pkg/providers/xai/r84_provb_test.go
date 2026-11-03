@@ -122,3 +122,43 @@ func TestR84provbVideoModeWithoutVideoURLSendsEmptyVideo(t *testing.T) {
 		}
 	}
 }
+
+// TS xai-image-model.ts: hasAllBase64 is every(b64_json != null), so an
+// empty b64_json is image data (no download), and revisedPrompt is set only
+// for a truthy revised_prompt (an empty one is left out); the batch
+// conversion keeps revised_prompt != null.
+func TestR84provbImageEmptyStringsFollowTS(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"b64_json":"","url":"https://x.test/never.png","revised_prompt":""},{"b64_json":"aGk=","revised_prompt":"p"}]}`))
+	}))
+	defer server.Close()
+	model := NewImageModel(New(Config{APIKey: "k", BaseURL: server.URL}), "grok-imagine-image")
+	res, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Base64Images) != 2 || res.Base64Images[0] != "" || res.Base64Images[1] != "aGk=" {
+		t.Fatalf("base64 images = %#v", res.Base64Images)
+	}
+	meta := res.ProviderMetadata["xai"].(XAIImageMetadata)
+	if meta.Images[0].RevisedPrompt != nil || meta.Images[1].RevisedPrompt == nil || *meta.Images[1].RevisedPrompt != "p" {
+		t.Fatalf("images metadata = %+v", meta.Images)
+	}
+}
+
+// TS XaiBatch#convertImageBatchResponse: an empty b64_json != null is data,
+// so it is decoded instead of downloading the url.
+func TestR84provbBatchImageEmptyBase64IsData(t *testing.T) {
+	var resp xaiImageResponse
+	if err := json.Unmarshal([]byte(`{"data":[{"b64_json":"","url":"https://x.test/never.png"}]}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	res, err := NewBatch(New(Config{APIKey: "k"})).convertImageBatchResponse(context.Background(), resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Base64Images) != 1 || res.Base64Images[0] != "" {
+		t.Fatalf("base64 images = %#v", res.Base64Images)
+	}
+}

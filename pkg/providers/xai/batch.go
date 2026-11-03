@@ -977,21 +977,21 @@ func (b *Batch) convertImageBatchResponse(ctx context.Context, resp xaiImageResp
 	var base64Images []string
 	allBase64 := true
 	for _, d := range resp.Data {
-		if d.B64JSON == "" {
+		if d.B64JSON == nil { // TS b64_json != null: "" is data
 			allBase64 = false
 			break
 		}
 	}
 	for _, d := range resp.Data {
 		switch {
-		case d.B64JSON != "":
-			decoded, err := base64.StdEncoding.DecodeString(d.B64JSON)
+		case d.B64JSON != nil:
+			decoded, err := base64.StdEncoding.DecodeString(*d.B64JSON)
 			if err != nil {
 				return nil, err
 			}
 			images = append(images, decoded)
 			if allBase64 {
-				base64Images = append(base64Images, d.B64JSON)
+				base64Images = append(base64Images, *d.B64JSON)
 			}
 		case d.URL == "":
 			return nil, &providererrors.InvalidArgumentError{
