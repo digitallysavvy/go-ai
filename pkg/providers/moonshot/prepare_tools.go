@@ -4,6 +4,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // moonshotFunctionTool is the wire shape Moonshot expects for a function tool
@@ -100,7 +101,8 @@ func prepareMoonshotTools(tools []types.Tool, toolChoice types.ToolChoice, hasTo
 			"function": map[string]interface{}{"name": toolChoice.ToolName},
 		}, warnings, nil
 	default:
-		return moonshotTools, nil, warnings, nil
+		// TS exhaustive check: UnsupportedFunctionalityError "tool choice type: <type>".
+		return nil, nil, nil, prompt.ValidateToolChoiceType(tools, toolChoice)
 	}
 }
 

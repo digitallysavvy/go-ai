@@ -65,6 +65,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "ollama"); err != nil {
 		return nil, err
 	}
+	// TS openai-compatible prepareTools throws for an unknown tool choice type.
+	if err := prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice); err != nil {
+		return nil, err
+	}
 	reqBody, warnings := m.buildRequestBody(opts, false)
 	var response ollamaResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
@@ -95,6 +99,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
 	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "ollama"); err != nil {
+		return nil, err
+	}
+	// TS openai-compatible prepareTools throws for an unknown tool choice type.
+	if err := prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice); err != nil {
 		return nil, err
 	}
 	reqBody, warnings := m.buildRequestBody(opts, true)

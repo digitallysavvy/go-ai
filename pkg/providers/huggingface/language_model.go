@@ -3,6 +3,7 @@ package huggingface
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"net/http"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // LanguageModel implements provider.LanguageModel using the Hugging Face
@@ -101,6 +103,12 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (map[string]inte
 		return nil, warnings, err
 	}
 
+	if prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice) != nil {
+		// TS prepareResponsesTools' exhaustive check throws a plain Error
+		// that interpolates the tool choice object.
+		msg := "Unsupported tool choice type: [object Object]"
+		return nil, warnings, errors.New(msg)
+	}
 	hfTools, toolsPresent, mappedToolChoice, toolWarnings := prepareResponsesTools(opts.Tools, opts.ToolChoice)
 	warnings = append(warnings, toolWarnings...)
 

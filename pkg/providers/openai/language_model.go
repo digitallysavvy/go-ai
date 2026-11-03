@@ -769,6 +769,11 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		}
 		warnings = append(warnings, toolSchemaWarnings...)
 		body["tools"] = normalizedTools
+		// TS prepareChatTools / openai-compatible prepareTools throw for an
+		// unknown tool choice type.
+		if err := prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice); err != nil {
+			return nil, nil, err
+		}
 		if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}

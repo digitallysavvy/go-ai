@@ -259,3 +259,20 @@ func DecodeUTF8Text(b []byte) string {
 	}
 	return out.String()
 }
+
+// ValidateToolChoiceType is the exhaustive-check default of the TS
+// prepareTools tool choice switch (openai chat and Responses,
+// openai-compatible, alibaba, moonshot, xai Responses): with at least one
+// tool, a tool choice type other than auto, none, required or tool is an
+// UnsupportedFunctionalityError "tool choice type: <type>". Without tools TS
+// returns before the switch, so nothing is checked.
+func ValidateToolChoiceType(tools []types.Tool, choice types.ToolChoice) error {
+	if len(tools) == 0 {
+		return nil
+	}
+	switch choice.Type {
+	case "", types.ToolChoiceAuto, types.ToolChoiceNone, types.ToolChoiceRequired, types.ToolChoiceTool:
+		return nil
+	}
+	return unsupportedFilePart("tool choice type: " + string(choice.Type))
+}

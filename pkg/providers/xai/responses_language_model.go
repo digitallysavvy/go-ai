@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"io"
 	"math"
 	"net/http"
@@ -479,6 +480,10 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 		// TS sets tools only when at least one tool survived preparation.
 		if len(preparedTools) > 0 {
 			body["tools"] = preparedTools
+		}
+		// TS prepareResponsesTools throws for an unknown tool choice type.
+		if err := prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice); err != nil {
+			return nil, nil, err
 		}
 		if opts.ToolChoice.Type != "" {
 			choice, choiceWarnings := resolveXAIResponsesToolChoice(opts.ToolChoice, opts.Tools)
