@@ -471,8 +471,15 @@ func TestDecodeLifecycleStateRejectsTopLevelPendingToolState(t *testing.T) {
 
 // A host call rejected for invalid input while the turn is being suspended is
 // reported once on the stream and stored as a completed pending result.
+//
+// The mock emits the tool call only once the suspension has begun: without
+// the gate the driver could reject the call before SuspendTurn, submitting
+// it to the runtime (TS submitToolResult when not suspending), which leaves
+// no pending result (1 failure in a provb full race run, round 86). TS's
+// event loop always runs suspendTurn() before the stream's parts.
 func TestSuspendedTurnReportsRejectedHostCallOnce(t *testing.T) {
 	finish := make(chan struct{})
+	suspending := make(chan struct{})
 	var once sync.Once
 	restricted := types.Tool{
 		Name: "restricted", Parameters: map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}, "required": []any{"city"}},
@@ -486,8 +493,9 @@ func TestSuspendedTurnReportsRejectedHostCallOnce(t *testing.T) {
 			return []StreamPart{&StreamStartPart{}, &ToolCallPart{ToolCallID: "c1", ToolName: "restricted", Input: `{"city":42}`}}
 		},
 		promptDone: func() <-chan struct{} { return finish },
+		emitGate:   func() <-chan struct{} { return suspending },
 		doSuspendTurn: func(context.Context) (*ContinueTurnState, error) {
-			once.Do(func() { close(finish) })
+			once.Do(func() { close(finish); close(suspending) })
 			return NewContinueTurnState("mock", map[string]any{})
 		},
 	})

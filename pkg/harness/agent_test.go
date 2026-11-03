@@ -151,6 +151,10 @@ type mockHarnessOptions struct {
 	// support a capability" as two distinct types rather than a nullable
 	// method, see mockSteerablePromptControl).
 	doReadHistory func(context.Context, string) (*ReadHistoryResult, error)
+	// emitGate, when set, is called once per DoPromptTurn; the mock emits
+	// the turn's parts only after the returned channel closes, so a test can
+	// order a host action (e.g. SuspendTurn) before the driver sees a part.
+	emitGate func() <-chan struct{}
 }
 
 type mockHarnessResult struct {
@@ -202,7 +206,14 @@ func newMockHarness(opts mockHarnessOptions) *mockHarnessResult {
 			if opts.promptDone != nil {
 				done = opts.promptDone()
 			}
+			var gate <-chan struct{}
+			if opts.emitGate != nil {
+				gate = opts.emitGate()
+			}
 			go func() {
+				if gate != nil {
+					<-gate
+				}
 				for _, p := range parts {
 					o.Emit(p)
 				}
