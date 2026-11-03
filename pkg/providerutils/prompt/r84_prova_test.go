@@ -69,3 +69,43 @@ func TestR84provaGoogleReferenceNeedsFullMediaType(t *testing.T) {
 		t.Errorf("assistant fileData = %#v", got)
 	}
 }
+
+// TestR84provaAnthropicPresentErrorCodeKept: TS
+// `extractErrorValue(output.value).errorCode ?? 'unavailable'` and
+// `errorInfo.errorCode ?? 'unknown'` keep any present errorCode (an empty
+// string or a number included); a typed Go value is read as its JSON object.
+func TestR84provaAnthropicPresentErrorCodeKept(t *testing.T) {
+	type typedErr struct {
+		ErrorCode string `json:"errorCode"`
+	}
+	cases := []struct {
+		tool  string
+		value interface{}
+		want  interface{}
+	}{
+		{"web_fetch", map[string]interface{}{"errorCode": ""}, ""},
+		{"web_search", map[string]interface{}{"errorCode": float64(7)}, float64(7)},
+		{"web_fetch", typedErr{ErrorCode: "too_many_requests"}, "too_many_requests"},
+		{"code_execution", map[string]interface{}{"type": "code_execution_tool_result_error", "errorCode": ""}, ""},
+		{"web_search", map[string]interface{}{}, "unavailable"},
+		{"code_execution", map[string]interface{}{}, "unknown"},
+	}
+	for i, tc := range cases {
+		msgs := []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+			{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "c", ToolName: tc.tool, Input: `{}`, ProviderExecuted: true},
+				types.ToolResultContent{ToolCallID: "c", ToolName: tc.tool, Output: &types.ToolResultOutput{Type: types.ToolResultOutputErrorJSON, Value: tc.value}},
+			}},
+		}
+		out, err := ConvertToAnthropicPrompt(msgs, AnthropicPromptOptions{})
+		if err != nil {
+			t.Fatal(i, err)
+		}
+		content, _ := out.Messages[1]["content"].([]map[string]interface{})
+		result, _ := content[1]["content"].(map[string]interface{})
+		if got := result["error_code"]; !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("case %d (%s): error_code = %#v, want %#v", i, tc.tool, got, tc.want)
+		}
+	}
+}
