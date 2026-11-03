@@ -43,7 +43,7 @@ func TestR86toolsNormalizeDomainsMatchesTS(t *testing.T) {
 	}
 }
 
-// testdata/r86_tools_urls_ts.json is node `new URL(u)` with `hash = ''`
+// testdata/r86_tools_urls_ts.json is node `new URL(u)` with the hash cleared
 // (the TS tool's URL handling): canonicalURL must fail exactly where it
 // throws (forbidden host code points, UTS46-disallowed and bidi-invalid
 // hosts, bad ports) and otherwise serialize the same href.
