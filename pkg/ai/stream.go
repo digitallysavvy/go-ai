@@ -714,11 +714,11 @@ type StreamTextResult struct {
 	// cbInitialInstructionMessages are the instruction messages originally
 	// passed to StreamText, fixed for the lifetime of the call.
 	cbInitialInstructionMessages []types.Message
-	// promptDeprecations are the initial prompt's deprecated-part warning
-	// batches (the prompt is normalized before the first step, so a step's
-	// messages no longer hold its deprecated parts), logged before each
-	// step's prompt conversion.
-	promptDeprecations [][]types.Warning
+	// promptDeprecations finds the deprecated-part warnings of each step's
+	// messages (the initial prompt's, recorded before normalization, and
+	// those of PrepareStep and steering messages), logged before each step's
+	// prompt conversion.
+	promptDeprecations stepPromptDeprecations
 
 	// cbModel and cbStreamOpts are retained so that processStream can start
 	// additional streaming steps when deferred provider tool results are pending.
@@ -950,12 +950,16 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// TS standardizePrompt reports a missing/duplicated/empty prompt before
 	// the system-message check.
 	var normalizedPrompt types.Prompt
-	// The prompt's deprecated parts, logged on every step's prompt
-	// conversion (TS stream-language-model-call.ts convertToLanguageModelPrompt).
-	r.promptDeprecations = promptDeprecationWarnings(prompt.Messages)
 	normErr := promptutils.ValidatePromptInput(opts.Prompt, opts.Messages)
 	if normErr == nil {
 		normalizedPrompt, normErr = promptutils.NormalizePrompt(prompt, allowSystem)
+	}
+	if normErr == nil {
+		// The prompt's deprecated parts, logged on the conversion of each
+		// step whose messages still hold them (TS stream-language-model-call.ts
+		// convertToLanguageModelPrompt; NormalizePrompt rewrites them, so they
+		// are recorded by message here).
+		r.promptDeprecations = newStepPromptDeprecations(prompt.Messages, normalizedPrompt.Messages)
 	}
 	if normErr != nil {
 		r.failBeforeStream(ctx, opts, preStreamCall{callID: callID}, normErr)
@@ -1324,7 +1328,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		}
 	}
 
-	logStepPromptDeprecations(r.promptDeprecations, stepMessages)
+	logPromptDeprecations(r.promptDeprecations.forStep(stepMessages))
 	stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{System: appendSandboxDescription(stepSystem, stepSandbox), Messages: messagesForModel(stepMessages)}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
 	if normErr != nil {
 		if stepCancel != nil {
@@ -4055,7 +4059,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			break
 		}
 		r.stepStartedAt = time.Now()
-		logStepPromptDeprecations(r.promptDeprecations, nextMessages)
+		logPromptDeprecations(r.promptDeprecations.forStep(nextMessages))
 		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
 			Messages: messagesForModel(nextMessages),
 			System:   appendSandboxDescription(nextSystem, nextSandbox),
@@ -6310,15 +6314,6 @@ func withInlineToolResults(calls []types.ToolCall, inline, executed []types.Tool
 		}
 	}
 	return out
-}
-
-// logStepPromptDeprecations logs the deprecated-part warnings TS
-// convertToLanguageModelPrompt logs for one step: the initial prompt's
-// (normalized before the first step) and those of the step's messages that
-// still hold deprecated parts (PrepareStep and steering messages).
-func logStepPromptDeprecations(initial [][]types.Warning, stepMessages []types.Message) {
-	logPromptDeprecations(initial)
-	logPromptDeprecations(promptDeprecationWarnings(stepMessages))
 }
 
 // liveEmittableToolResult reports whether an executed call's result is
