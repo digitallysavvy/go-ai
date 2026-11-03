@@ -1258,7 +1258,11 @@ func isUndefMarker(v interface{}) bool {
 
 func buildPrompt(v interface{}) ([]types.Message, string) {
 	var out []types.Message
-	for _, mv := range v.([]interface{}) {
+	list, ok := v.([]interface{})
+	if !ok {
+		return nil, "the prompt is not an array (built by a helper the extractor cannot evaluate)"
+	}
+	for _, mv := range list {
 		m := mv.(map[string]interface{})
 		role, _ := m["role"].(string)
 		msg := types.Message{Role: types.MessageRole(role)}

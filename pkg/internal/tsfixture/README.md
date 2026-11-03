@@ -169,8 +169,11 @@ Since round 82, `--fn=NAME` also evaluates locals with a trailing TS cast
 (`const steps = [...] as Array<Step>;`), records `const { a } = NAME(...)`
 without `await` as aliases, and records a function argument (a `generateId`
 the test defines, also as a top-level `function` declaration) as an opaque
-`{"__fn": NAME}` marker the Go adapter supplies. Function-level files without
-those shapes regenerate byte for byte.
+`{"__fn": NAME, "src": SOURCE}` marker the Go adapter supplies (a mapping such
+as `name === 'a' ? 'b' : name` can be read from the source). A top-level
+helper function the arguments call (a prompt builder) runs for real when its
+TypeScript strips to plain JS (`node:module` `stripTypeScriptTypes`).
+Function-level files without those shapes regenerate byte for byte.
 
 Test hooks used by the provider tests: `ProviderToolHook` (and
 `anthropictools.ProviderTool` for Anthropic tools), `ToolNameAlias` /

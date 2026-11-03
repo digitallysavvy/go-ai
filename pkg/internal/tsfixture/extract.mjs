@@ -11,6 +11,8 @@
 import fs from 'fs';
 import vm from 'vm';
 import path from 'path';
+import * as nodeModule from 'node:module';
+const stripTypeScriptTypes = nodeModule.stripTypeScriptTypes;
 
 const testFile = process.argv[2];
 const wantAsserts = process.argv.includes('--asserts') || process.argv.some(a => a.startsWith('--fn='));
@@ -196,8 +198,17 @@ if (wantAsserts) {
 if (fnName) {
   // top-level function declarations (a test's generateId) evaluate as
   // functions, which the fn-mode arguments record as {"__fn": NAME}
+  // (a helper that builds a prompt runs for real when its TS strips to JS)
   for (const m of src.matchAll(/^(?:export )?function (\w+)\s*\(/gm)) {
-    if (m[1] !== fnName) vm.runInContext(`var ${m[1]} = function ${m[1]}() {}`, ctx);
+    if (m[1] === fnName) continue;
+    let defined = false;
+    const pe = balanced(src, m.index + m[0].length - 1);
+    const open = pe > 0 ? src.indexOf('{', pe) : -1;
+    const body = open > 0 ? balanced(src, open) : -1;
+    if (body > 0 && stripTypeScriptTypes) {
+      try { vm.runInContext(stripTypeScriptTypes(src.slice(m.index, body).replace(/^export /, ''), { mode: 'strip' }), ctx); defined = typeof ctx[m[1]] === 'function'; } catch (e) { /* not plain JS after stripping */ }
+    }
+    if (!defined) vm.runInContext(`var ${m[1]} = function ${m[1]}() {}`, ctx);
   }
 }
 {
@@ -299,7 +310,7 @@ function splitTopLevelArgs(inner) {
   return parts.map(p => p.trim());
 }
 function evalArgsJSON(srcs) {
-  return srcs.map(a => JSON.parse(JSON.stringify(evalExpr(a), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (Object.prototype.toString.call(v) === '[object Set]' ? { __set: [...v] } : (v === undefined ? { __undef: true } : v)))));
+  return srcs.map(a => JSON.parse(JSON.stringify(evalExpr(a), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (Object.prototype.toString.call(v) === '[object Set]' ? { __set: [...v] } : (fnName && typeof v === 'function' ? { __fn: kk || v.name || 'fn', src: String(v) } : (v === undefined ? { __undef: true } : v))))));
 }
 
 // one test-server response value (`{ type: 'json-value', ... }`) in the
@@ -512,7 +523,7 @@ for (let i = 0; i < starts.length; i++) {
       try {
         // a function argument (e.g. a generateId the test defines) becomes
         // an opaque {"__fn": NAME} marker the Go adapter supplies.
-        fnArgs = fnArgSrc.map(a => JSON.parse(JSON.stringify(evalExpr(a), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (Object.prototype.toString.call(v) === '[object Set]' ? { __set: [...v] } : (typeof v === 'function' ? { __fn: kk || v.name || 'fn' } : (v === undefined ? { __undef: true } : v))))));
+        fnArgs = fnArgSrc.map(a => JSON.parse(JSON.stringify(evalExpr(a), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (Object.prototype.toString.call(v) === '[object Set]' ? { __set: [...v] } : (typeof v === 'function' ? { __fn: kk || v.name || 'fn', src: String(v) } : (v === undefined ? { __undef: true } : v))))));
       } catch (err) { fnArgs = null; }
     }
     const aliases2 = {};
