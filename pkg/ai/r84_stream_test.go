@@ -161,6 +161,47 @@ func TestR84streamTSProcessUIMessageStreamReplay(t *testing.T) {
 	}
 }
 
+// TestR84streamReadUIMessageStreamTSFraming compares ReadUIMessageStream
+// with TS DefaultChatTransport's parseJsonEventStream (TextDecoderStream,
+// then eventsource-parser 3.0.8) on the same bytes, split across two reads.
+// Each want was produced by running provider-utils parse-json-event-stream.ts
+// at e64ed82f27 under bun on these inputs.
+func TestR84streamReadUIMessageStreamTSFraming(t *testing.T) {
+	cat := func(parts ...string) string { return strings.Join(parts, "") }
+	cases := []struct {
+		name, in, want string
+	}{
+		{"one BOM", "\xEF\xBB\xBFdata: {\"type\":\"a\"}\n\n", `[{"type":"a"}]`},
+		{"two BOMs: the first line is no data field", "\xEF\xBB\xBF\xEF\xBB\xBFdata: {\"type\":\"a\"}\n\n", `[]`},
+		{"bare CR and CRLF", "data: {\"type\":\"a\"}\r\rdata: {\"type\":\"b\"}\r\n\r\n", `[{"type":"a"},{"type":"b"}]`},
+		{"multi-line data", "data: {\"type\":\ndata: \"a\"}\n\n", `[{"type":"a"}]`},
+		{"unterminated last event", "data: {\"type\":\"a\"}\n\ndata: {\"type\":\"b\"}\n", `[{"type":"a"}]`},
+		{"no space after colon", "data:{\"type\":\"a\"}\n\n", `[{"type":"a"}]`},
+		{"truncated sequence is one U+FFFD", cat("data: {\"type\":\"a\",\"v\":\"x", "\xF0\x9F\x98", "y\"}\n\n"), `[{"type":"a","v":"x\ufffdy"}]`},
+		{"BOM inside data kept", cat("data: {\"type\":\"a\"}\n\ndata: {\"type\":\"\xEF\xBB\xBFb\",\"v\":\"", "\xFF", "\"}\n\n"), `[{"type":"a"},{"type":"\ufeffb","v":"\ufffd"}]`},
+		{"event and id fields, comment, DONE", "event: x\nid: 1\ndata: {\"type\":\"a\"}\n\n: comment\ndata: [DONE]\n\n", `[{"type":"a"}]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := io.MultiReader(strings.NewReader(tc.in[:7]), strings.NewReader(tc.in[7:]))
+			chunks, err := ReadUIMessageStream(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var want interface{}
+			if err := json.Unmarshal([]byte(tc.want), &want); err != nil {
+				t.Fatal(err)
+			}
+			if got := r84streamJSON(t, chunks); !reflect.DeepEqual(got, want) {
+				t.Fatalf("got %v, want %v", got, want)
+			}
+		})
+	}
+	if _, err := ReadUIMessageStream(strings.NewReader("data: {nope\n\n")); err == nil {
+		t.Fatal("invalid JSON data: want an error (TS transport throws the parse failure)")
+	}
+}
+
 // r84streamProcessUIFixture is the gzip -9 + base64 JSON fixture (see
 // r84streamProcessUIRun).
 const r84streamProcessUIFixture = `
