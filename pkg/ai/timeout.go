@@ -43,13 +43,14 @@ var timeoutLabels = map[TimeoutReason]string{
 // Error is the TS abort reason's message: setAbortTimeout's
 // "<Label> timeout of <ms>ms exceeded" for a step, first-chunk or chunk
 // timeout with a known duration, and AbortSignal.timeout's "The operation was
-// aborted due to timeout" for the total timeout. A tool timeout, or a step
-// or chunk timeout without a duration, keeps the Go text.
+// aborted due to timeout" for the total timeout and for a tool timeout with
+// a known duration (TS mergeAbortSignals(abortSignal, toolMs)). A timeout
+// without a duration (other than total) keeps the Go text.
 func (e *TimeoutError) Error() string {
 	if e == nil {
 		return "<nil>"
 	}
-	if e.Reason == TimeoutReasonTotal {
+	if e.Reason == TimeoutReasonTotal || (e.Reason == TimeoutReasonTool && e.Timeout > 0) {
 		return "The operation was aborted due to timeout"
 	}
 	if label, ok := timeoutLabels[e.Reason]; ok && e.Timeout > 0 {

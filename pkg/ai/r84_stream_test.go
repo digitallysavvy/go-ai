@@ -433,6 +433,12 @@ func TestR84streamTimeoutAbortReasonText(t *testing.T) {
 	if got := (&TimeoutError{Reason: TimeoutReasonStep, Err: context.DeadlineExceeded}).Error(); got != "step timeout exceeded: context deadline exceeded" {
 		t.Errorf("no duration: %q", got)
 	}
+	if got := (&TimeoutError{Reason: TimeoutReasonTool, Err: context.DeadlineExceeded, Timeout: time.Second}).Error(); got != "The operation was aborted due to timeout" {
+		t.Errorf("tool with duration: %q", got)
+	}
+	if got := (&TimeoutError{Reason: TimeoutReasonTool, Err: context.DeadlineExceeded}).Error(); got != "tool timeout exceeded: context deadline exceeded" {
+		t.Errorf("tool without duration: %q", got)
+	}
 }
 
 // r84streamProcessUIFixture is the gzip -9 + base64 JSON fixture (see
