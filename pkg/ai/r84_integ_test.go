@@ -216,3 +216,75 @@ func TestR84integToolTimeoutErrorTextForModel(t *testing.T) {
 		t.Fatalf("second prompt = %s", second)
 	}
 }
+
+// gen CR 4: StreamText logs the "image" content part deprecation once per
+// user message on every step's prompt conversion (TS
+// stream-language-model-call.ts convertToLanguageModelPrompt), as
+// GenerateText does.
+func TestR84integStreamTextImagePartDeprecationPerStep(t *testing.T) {
+	var batches [][]types.Warning
+	SetLogWarnings(func(o LogWarningsOptions) {
+		if len(o.Warnings) > 0 && o.Warnings[0].Setting == `"image" content part` && o.Provider == "" && o.Model == "" {
+			batches = append(batches, o.Warnings)
+		}
+	})
+	defer SetLogWarnings(nil)
+	calls := 0
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			calls++
+			if calls == 1 {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}}},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+				}), nil
+			}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "done"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: model,
+		Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{
+			types.ImageContent{Image: []byte{1, 2, 3}, MimeType: "image/png"},
+			types.ImageContent{Image: []byte{4, 5}, MimeType: "image/jpeg"},
+		}}},
+		Tools: []types.Tool{{Name: "t", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		}}},
+		StopWhen: []StopCondition{StepCountIs(2)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	if r.Err() != nil || calls != 2 {
+		t.Fatalf("err = %v, calls = %d", r.Err(), calls)
+	}
+	if len(batches) != 2 || len(batches[0]) != 2 || len(batches[1]) != 2 {
+		t.Fatalf("batches = %+v, want two steps of two warnings", batches)
+	}
+}
+
+// gen CR 4: the batch path logs the deprecation too (TS batch.ts 201
+// convertToLanguageModelPrompt).
+func TestR84integBatchImagePartDeprecation(t *testing.T) {
+	var batches [][]types.Warning
+	SetLogWarnings(func(o LogWarningsOptions) {
+		if len(o.Warnings) > 0 && o.Warnings[0].Setting == `"image" content part` {
+			batches = append(batches, o.Warnings)
+		}
+	})
+	defer SetLogWarnings(nil)
+	_, err := buildBatchProviderRequest(context.Background(), BatchRequest{Text: &BatchTextRequest{ID: "r", Model: "m",
+		Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.ImageContent{Image: []byte{1, 2, 3}, MimeType: "image/png"}}}}}},
+		nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batches) != 1 || len(batches[0]) != 1 {
+		t.Fatalf("batches = %+v", batches)
+	}
+}

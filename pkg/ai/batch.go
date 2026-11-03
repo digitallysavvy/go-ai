@@ -781,9 +781,12 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 		if err := validateMaxOutputTokens(t.MaxTokens); err != nil {
 			return provider.BatchV4Request{}, err
 		}
+		requestPrompt := buildPrompt(t.Prompt, t.Messages, system)
+		// TS batch.ts convertToLanguageModelPrompt logs the deprecated parts.
+		logPromptDeprecations(promptDeprecationWarnings(requestPrompt.Messages))
 		normalizedPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(
 			ctx,
-			buildPrompt(t.Prompt, t.Messages, system),
+			requestPrompt,
 			t.AllowSystemInMessages,
 			DefaultDownload,
 			urlChecker,

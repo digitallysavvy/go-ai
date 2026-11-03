@@ -711,6 +711,9 @@ type StreamTextResult struct {
 	// cbInitialInstructionMessages are the instruction messages originally
 	// passed to StreamText, fixed for the lifetime of the call.
 	cbInitialInstructionMessages []types.Message
+	// promptDeprecations are the initial prompt's deprecated-part warning
+	// batches, logged before each step's prompt conversion.
+	promptDeprecations [][]types.Warning
 
 	// cbModel and cbStreamOpts are retained so that processStream can start
 	// additional streaming steps when deferred provider tool results are pending.
@@ -942,6 +945,9 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// TS standardizePrompt reports a missing/duplicated/empty prompt before
 	// the system-message check.
 	var normalizedPrompt types.Prompt
+	// The prompt's deprecated parts, logged on every step's prompt
+	// conversion (TS stream-language-model-call.ts convertToLanguageModelPrompt).
+	r.promptDeprecations = promptDeprecationWarnings(prompt.Messages)
 	normErr := promptutils.ValidatePromptInput(opts.Prompt, opts.Messages)
 	if normErr == nil {
 		normalizedPrompt, normErr = promptutils.NormalizePrompt(prompt, allowSystem)
@@ -1313,6 +1319,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		}
 	}
 
+	logPromptDeprecations(r.promptDeprecations)
 	stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{System: appendSandboxDescription(stepSystem, stepSandbox), Messages: messagesForModel(stepMessages)}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
 	if normErr != nil {
 		if stepCancel != nil {
@@ -3994,6 +4001,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			break
 		}
 		r.stepStartedAt = time.Now()
+		logPromptDeprecations(r.promptDeprecations)
 		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
 			Messages: messagesForModel(nextMessages),
 			System:   appendSandboxDescription(nextSystem, nextSandbox),
