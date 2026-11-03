@@ -673,6 +673,27 @@ func generatedFileDataToTS(f *types.GeneratedFileContent) interface{} {
 	return nil
 }
 
+// canonFileData compares the inline data of a file / reasoning-file part as
+// bytes: Go file outputs are bytes (re-encoded as canonical base64) where TS
+// passes the provider's string through, so a non-canonical fixture string
+// ("image1") and its canonical form ("imagew==") are the same data.
+func canonFileData(o map[string]interface{}) {
+	if o["type"] != "file" && o["type"] != "reasoning-file" {
+		return
+	}
+	d, ok := o["data"].(map[string]interface{})
+	if !ok || d["type"] != "data" {
+		return
+	}
+	str, ok := d["data"].(string)
+	if !ok {
+		return
+	}
+	if b, err := types.DecodeFileDataString(str); err == nil {
+		d["data"] = base64.StdEncoding.EncodeToString(b)
+	}
+}
+
 // StreamToTS renders chunks as TS stream parts.
 func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 	var out []interface{}
@@ -790,6 +811,23 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 				if d := generatedFileDataToTS(f); d != nil {
 					o["data"] = d
 				}
+				if len(f.ProviderMetadata) > 0 {
+					setPM(o, f.ProviderMetadata)
+				} else {
+					setPM(o, c.ProviderMetadata)
+				}
+			}
+		case provider.ChunkTypeReasoningFile:
+			if f := c.ReasoningFileContent; f != nil {
+				o["mediaType"] = f.MediaType
+				if d := generatedFileDataToTS(&types.GeneratedFileContent{FileData: f.FileData, Data: f.Data}); d != nil {
+					o["data"] = d
+				}
+				if len(f.ProviderMetadata) > 0 {
+					setPM(o, f.ProviderMetadata)
+				} else {
+					setPM(o, c.ProviderMetadata)
+				}
 			}
 		case provider.ChunkTypeFinish:
 			o["finishReason"] = map[string]interface{}{"raw": nilIfEmpty(c.RawFinishReason), "unified": string(c.FinishReason)}
@@ -901,6 +939,7 @@ func Normalize(v interface{}) interface{} {
 			}
 			o[k] = n
 		}
+		canonFileData(o)
 		if len(o) == 0 {
 			return nil
 		}
