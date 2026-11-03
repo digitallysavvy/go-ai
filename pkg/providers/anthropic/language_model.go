@@ -1824,8 +1824,10 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 
 		// TS createEventSourceResponseHandler yields {success:false} for a
 		// frame that is not valid JSON, and doStream turns it into an `error`
-		// part and keeps reading (it never ends the stream).
-		if strings.TrimSpace(event.Data) != "" && !json.Valid([]byte(event.Data)) {
+		// part and keeps reading (it never ends the stream). An empty `data:`
+		// event is dispatched by eventsource-parser and fails safeParseJSON
+		// too ("Unexpected end of JSON input").
+		if !json.Valid([]byte(event.Data)) {
 			var probe interface{}
 			parseErr := providererrors.NewJSONParseError(event.Data, json.Unmarshal([]byte(event.Data), &probe))
 			return &provider.StreamChunk{
@@ -1837,18 +1839,16 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 
 		// TS then validates the parsed value against anthropicChunkSchema; a
 		// mismatch is a TypeValidationError `error` part and the stream goes
-		// on. Empty data frames carry no payload and are left to the switch.
-		if strings.TrimSpace(event.Data) != "" {
-			if message := anthropicChunkValidationMessage(event.Data); message != "" {
-				return &provider.StreamChunk{
-					Type: provider.ChunkTypeError,
-					Text: message,
-					Err:  providererrors.NewValidationErrorWithContext(compactJSON(event.Data), validationIssueText(message), nil, &providererrors.ValidationContext{}),
-				}, nil
-			}
-			// TS dispatches on the payload `type`, not the SSE event name.
-			event.Event = anthropicChunkType(event.Data)
+		// on.
+		if message := anthropicChunkValidationMessage(event.Data); message != "" {
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: message,
+				Err:  providererrors.NewValidationErrorWithContext(compactJSON(event.Data), validationIssueText(message), nil, &providererrors.ValidationContext{}),
+			}, nil
 		}
+		// TS dispatches on the payload `type`, not the SSE event name.
+		event.Event = anthropicChunkType(event.Data)
 
 		// Anthropic uses different event types
 		switch event.Event {

@@ -60,6 +60,16 @@ func serveChunksFixture(name string, t *testing.T) func(http.ResponseWriter, *ht
 	}
 }
 
+// isTSEmptyEventError reports whether chunk i is the trailing JSON-parse error
+// part TS emits for the empty `data: ` event serveChunksFixture sends after a
+// fixture that ends with a newline (TS prepareChunksFixtureResponse splits on
+// "\n", and eventsource-parser dispatches the empty event).
+func isTSEmptyEventError(chunks []*provider.StreamChunk, i int) bool {
+	var parseErr *providererrors.JSONParseError
+	return i == len(chunks)-1 && chunks[i].Type == provider.ChunkTypeError &&
+		errors.As(chunks[i].Err, &parseErr) && parseErr.Text == ""
+}
+
 func drain(t *testing.T, s provider.TextStream) []*provider.StreamChunk {
 	t.Helper()
 	defer s.Close() //nolint:errcheck

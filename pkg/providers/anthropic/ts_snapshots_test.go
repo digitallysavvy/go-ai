@@ -170,8 +170,9 @@ type snapCase struct {
 	tools   []types.Tool
 	format  *provider.ResponseFormat
 	// tsEmptyEventError: the fixture ends with a newline, so TS also parsed an
-	// empty SSE event and recorded a trailing JSON-parse error part. Go's SSE
-	// decoder drops data-less events (the real API never sends one).
+	// empty SSE event and recorded a trailing JSON-parse error part; Go emits
+	// the same part (eventsource-parser dispatches an empty `data:` event and
+	// safeParseJSON fails on it).
 	tsEmptyEventError bool
 }
 
@@ -259,8 +260,8 @@ func TestTSSnapshotsDrivenThroughGo(t *testing.T) {
 			}
 			chunks := drain(t, s)
 			got, want := goStreamSeq(chunks), tsSeq(snap.Parts, true)
-			if sc.tsEmptyEventError && len(want) > 0 && want[len(want)-1] == "error" {
-				want = want[:len(want)-1]
+			if sc.tsEmptyEventError && (len(want) == 0 || want[len(want)-1] != "error") {
+				t.Fatalf("TS snapshot has no trailing empty-event error part: %v", want)
 			}
 			if strings.Join(got, ",") != strings.Join(want, ",") {
 				t.Fatalf("stream\n got %v\nwant %v", got, want)
