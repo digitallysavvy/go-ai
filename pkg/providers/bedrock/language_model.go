@@ -263,8 +263,11 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 
 	responseFormatIsJSON := opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json" && opts.ResponseFormat.Schema != nil
 
+	// TS 2cd0a97424: auto mode uses native structured output only for a
+	// schema it can represent (anthropic.SupportsNativeStructuredOutputSchema).
 	useNativeStructuredOutput := isAnthropic && responseFormatIsJSON &&
-		(structuredOutputMode == "outputFormat" || (structuredOutputMode == "auto" && modelSupportsNativeSO))
+		(structuredOutputMode == "outputFormat" || (structuredOutputMode == "auto" && modelSupportsNativeSO &&
+			anthropic.SupportsNativeStructuredOutputSchema(opts.ResponseFormat.Schema)))
 
 	useJSONInstructionForStructuredOutput := !useNativeStructuredOutput && isAnthropic && responseFormatIsJSON &&
 		(caps.RejectsForcedToolUse ||

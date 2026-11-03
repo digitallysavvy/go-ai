@@ -395,6 +395,36 @@ type convertOptions struct {
 	customToolNames map[string]string
 }
 
+// textOrThinkingBlockTypes mirrors TS TEXT_OR_THINKING_BLOCK_TYPES.
+var textOrThinkingBlockTypes = map[string]bool{"redacted_thinking": true, "text": true, "thinking": true}
+
+// isContinuationStopReason mirrors TS isContinuationStopReason.
+func isContinuationStopReason(stopReason string) bool {
+	return stopReason == "pause_turn" || stopReason == "tool_use"
+}
+
+// jsonResponseToolFallbackText mirrors TS getJsonResponseToolFallbackText:
+// the indexes of the text blocks to return when the JSON response tool is in
+// use, the text after the last tool call or result, and only when the tool
+// was never called and the stop reason is not a continuation.
+func jsonResponseToolFallbackText(content []anthropicContent, stopReason string) map[int]bool {
+	text := map[int]bool{}
+	if isContinuationStopReason(stopReason) {
+		return text
+	}
+	for i, part := range content {
+		if part.Type == "tool_use" && part.Name == "json" {
+			return map[int]bool{}
+		}
+		if part.Type == "text" {
+			text[i] = true
+		} else if !textOrThinkingBlockTypes[part.Type] {
+			text = map[int]bool{}
+		}
+	}
+	return text
+}
+
 func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, co convertOptions) *types.GenerateResult {
 	usesJsonResponseTool := co.usesJSONResponseTool
 	tools := co.tools
@@ -439,10 +469,17 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 		// appears earlier in the content array, same as TS.
 		citationDocs := append([]citationDocument(nil), co.citationDocuments...)
 		hasWebSearchResults := anthropicResponseHasWebSearchResults(response.Content)
+		// The JSON response tool call becomes the text, so other text is
+		// dropped, unless the model never called the tool and answered in
+		// text instead (TS e10aebbad6).
+		var jsonFallbackText map[int]bool
+		if usesJsonResponseTool {
+			jsonFallbackText = jsonResponseToolFallbackText(response.Content, response.StopReason)
+		}
 		for blockIdx, content := range response.Content {
 			switch content.Type {
 			case "text":
-				if usesJsonResponseTool {
+				if usesJsonResponseTool && !jsonFallbackText[blockIdx] {
 					continue
 				}
 				textParts = append(textParts, content.Text)
@@ -1531,6 +1568,14 @@ func isTextLikeBlock(blockType string) bool {
 	return blockType == "text" || blockType == "compaction" || blockType == "json-response-tool"
 }
 
+// anthropicHeldBackText is one text block held back in JSON response tool
+// mode (TS HeldBackText).
+type anthropicHeldBackText struct {
+	id        string
+	text      string
+	citations []map[string]interface{}
+}
+
 // anthropicStream implements provider.TextStream for Anthropic streaming
 type anthropicStream struct {
 	reader io.ReadCloser
@@ -1569,6 +1614,15 @@ type anthropicStream struct {
 	// isJsonResponseFromTool is set when a tool_use{name:"json"} content block
 	// is opened in jsonTool mode. Used to map stop_reason="tool_use" to "stop".
 	isJsonResponseFromTool bool
+	// heldBackText is the text held back while the JSON response tool is in
+	// use: it is only the answer if no tool block follows it and the model
+	// never calls the tool (TS e10aebbad6). heldBackTextByIndex maps a block
+	// index of the current message to its entry.
+	heldBackText        []*anthropicHeldBackText
+	heldBackTextByIndex map[int]*anthropicHeldBackText
+	// heldTextChunks are the held-back text parts message_stop releases;
+	// issueFinish emits them after the fallback sources.
+	heldTextChunks []*provider.StreamChunk
 	// serverToolCallNames maps tool_use_id → tool name for provider-executed tools
 	// (server_tool_use and mcp_tool_use blocks). Used to look up the tool name when
 	// the corresponding *_tool_result block arrives (potentially in a later step).
@@ -1889,6 +1943,11 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 			}
 			if start.ContentBlock.Type != "fallback" {
 				s.lastBlockType = start.ContentBlock.Type
+				// Text before a tool call or result is preamble, not the
+				// answer (TS e10aebbad6).
+				if !textOrThinkingBlockTypes[start.ContentBlock.Type] {
+					s.heldBackText = nil
+				}
 			}
 			switch start.ContentBlock.Type {
 			case "tool_use":
@@ -2129,7 +2188,15 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				// When a json response tool is used, the tool call is returned as
 				// text, so real "text" content blocks are ignored entirely (TS: `if
 				// (usesJsonResponseTool) { return; }`).
+				// The text is held back until it is known whether the tool
+				// was called (TS e10aebbad6).
 				if s.usesJsonResponseTool {
+					entry := &anthropicHeldBackText{id: strconv.Itoa(start.Index)}
+					s.heldBackText = append(s.heldBackText, entry)
+					if s.heldBackTextByIndex == nil {
+						s.heldBackTextByIndex = map[int]*anthropicHeldBackText{}
+					}
+					s.heldBackTextByIndex[start.Index] = entry
 					continue
 				}
 				s.contentBlocks[start.Index] = &streamContentBlock{blockType: "text"}
@@ -2277,6 +2344,8 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 			continue
 
 		case "message_start":
+			// Block indexes restart with each message (TS e10aebbad6).
+			s.heldBackTextByIndex = nil
 			// Capture input/cache tokens for inclusion in the final finish chunk.
 			// These are only available here — the message_delta only has output_tokens.
 			//
@@ -2451,6 +2520,9 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				// the response comes via the synthetic json tool. Suppress any text
 				// deltas to match the TypeScript SDK's usesJsonResponseTool guard.
 				if s.usesJsonResponseTool {
+					if entry := s.heldBackTextByIndex[delta.Index]; entry != nil {
+						entry.text += delta.Delta.Text
+					}
 					continue
 				}
 				return &provider.StreamChunk{
@@ -2559,6 +2631,9 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				// extracted from the request prompt.
 				if block := s.contentBlocks[delta.Index]; block != nil && isTextLikeBlock(block.blockType) {
 					block.citations = append(block.citations, delta.Delta.Citation)
+				}
+				if entry := s.heldBackTextByIndex[delta.Index]; entry != nil {
+					entry.citations = append(entry.citations, delta.Delta.Citation)
 				}
 				if citationType(delta.Delta.Citation) == "web_search_result_location" {
 					// Decide at the end of the stream, once it is known whether
@@ -2888,6 +2963,28 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 			if fr == "" {
 				fr = types.FinishReasonOther
 			}
+			// A message that hands off to a tool or continuation is not the
+			// final answer, so its held-back text is discarded (TS
+			// e10aebbad6); otherwise it is emitted before the finish part.
+			if !s.isJsonResponseFromTool && !isContinuationStopReason(s.curRawFinishReason) {
+				for _, held := range s.heldBackText {
+					if held.text == "" {
+						continue
+					}
+					var meta json.RawMessage
+					var citations []types.Citation
+					if len(held.citations) > 0 {
+						meta = citationsProviderMetadata(held.citations)
+						citations = mapAnthropicCitations(held.citations, s.citationDocuments)
+					}
+					s.heldTextChunks = append(s.heldTextChunks,
+						&provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: held.id},
+						&provider.StreamChunk{Type: provider.ChunkTypeText, ID: held.id, Text: held.text},
+						&provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: held.id, Citations: citations, ProviderMetadata: meta},
+					)
+				}
+			}
+			s.heldBackText = nil
 			s.finish = &provider.StreamChunk{
 				Type:            provider.ChunkTypeFinish,
 				FinishReason:    fr,
@@ -2938,6 +3035,9 @@ func (s *anthropicStream) issueFinish(final bool) *provider.StreamChunk {
 		}
 	}
 	s.fallbackWebCitations = nil
+	// Held-back JSON-response-tool text follows the sources (TS order).
+	sources = append(sources, s.heldTextChunks...)
+	s.heldTextChunks = nil
 	if len(sources) == 0 {
 		if final {
 			s.err = io.EOF

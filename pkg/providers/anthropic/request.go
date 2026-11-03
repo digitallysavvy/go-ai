@@ -194,8 +194,17 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 	if o.StructuredOutputMode != "" {
 		mode = o.StructuredOutputMode
 	}
-	useStructuredOutput := mode == StructuredOutputFormat || (mode == StructuredOutputAuto && supportsStructuredOutput)
-	if !useStructuredOutput && caps.RejectsForcedToolUse && supportsStructuredOutput && jsonSchemaFormat {
+	// TS 2cd0a97424 / b0d51fecc0: auto mode uses native structured outputs
+	// only for a schema they can represent (no cycles, no open objects, at
+	// most 10 optional properties).
+	supportsResponseSchema := !jsonSchemaFormat || SupportsNativeStructuredOutputSchema(opts.ResponseFormat.Schema)
+	useStructuredOutput := mode == StructuredOutputFormat || (mode == StructuredOutputAuto && supportsStructuredOutput && supportsResponseSchema)
+	// The JSON response tool relies on forced tool use, which some models
+	// reject (e.g. Opus 5.5, Fable 5.1). Fall back to native structured
+	// outputs even when the provider disables them by default (Bedrock,
+	// Vertex), unless they would reject the schema or lose data from it
+	// (TS f4c5f1e959, b0d51fecc0).
+	if !useStructuredOutput && caps.RejectsForcedToolUse && caps.SupportsStructuredOutput && jsonSchemaFormat && supportsResponseSchema {
 		warnUnsupported(&warnings, "providerOptions.anthropic.structuredOutputMode", fmt.Sprintf(
 			"structuredOutputMode 'jsonTool' is not supported by %s because it rejects forced tool use. Using 'outputFormat' instead.", m.modelID))
 		useStructuredOutput = true
@@ -526,7 +535,16 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 
 	var prepared preparedTools
 	if usesJSONResponseTool {
-		tools := append(append([]types.Tool{}, opts.Tools...), types.Tool{
+		// TS 2cd0a97424: toolChoice none drops the user tools and a named
+		// toolChoice keeps only that tool next to the JSON response tool.
+		var tools []types.Tool
+		for _, t := range opts.Tools {
+			if opts.ToolChoice.Type == types.ToolChoiceNone || (opts.ToolChoice.Type == types.ToolChoiceTool && t.Name != opts.ToolChoice.ToolName) {
+				continue
+			}
+			tools = append(tools, t)
+		}
+		tools = append(tools, types.Tool{
 			Name:        "json",
 			Description: "Respond with a JSON object.",
 			Parameters:  providerutils.ResponseFormatJSONSchemaOrdered(opts.ResponseFormat.Schema),

@@ -351,6 +351,9 @@ func TestOutputConfigFormatSanitizesSchema(t *testing.T) {
 			Type:   "json_schema",
 			Schema: schema,
 		},
+		// An open object uses the JSON response tool in auto mode (TS
+		// b0d51fecc0), so request native structured output explicitly.
+		ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"structuredOutputMode": "outputFormat"}},
 	}, false)
 
 	outputConfig := body["output_config"].(map[string]interface{})
@@ -872,7 +875,9 @@ func TestInferenceGeoInRequestBody(t *testing.T) {
 
 // TestEffortAndFormatCombined verifies effort and ResponseFormat both appear in output_config.
 func TestEffortAndFormatCombined(t *testing.T) {
-	schema := map[string]interface{}{"type": "object"}
+	// A bare {"type": "object"} is an open object, which auto mode sends
+	// through the JSON response tool (TS b0d51fecc0).
+	schema := map[string]interface{}{"type": "object", "properties": map[string]interface{}{"a": map[string]interface{}{"type": "string"}}, "required": []interface{}{"a"}}
 	prov := New(Config{APIKey: "test-key"})
 	model := NewLanguageModel(prov, ClaudeSonnet4_6, &ModelOptions{Effort: EffortHigh})
 

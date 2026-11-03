@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -233,6 +234,77 @@ func TestR85provaBedrockUniqueDocumentNames(t *testing.T) {
 		doc, _ := c["document"].(map[string]interface{})
 		if doc["name"] != want[i] {
 			t.Errorf("document %d name = %v, want %q", i, doc["name"], want[i])
+		}
+	}
+}
+
+// amazon-bedrock-native-structured-output.test.ts (TS 2cd0a97424): Claude 5
+// structured outputs through Converse.
+func TestR85provaBedrockConverseClaude5StructuredOutput(t *testing.T) {
+	answer := map[string]interface{}{
+		"type": "object", "properties": map[string]interface{}{"answer": map[string]interface{}{"type": "string"}},
+		"required": []interface{}{"answer"}, "additionalProperties": false,
+	}
+	toolNames := func(args *converseArgs) string {
+		tc, _ := args.Body["toolConfig"].(map[string]interface{})
+		specs, _ := tc["tools"].([]map[string]interface{})
+		var names []string
+		for _, s := range specs {
+			names = append(names, s["toolSpec"].(map[string]interface{})["name"].(string))
+		}
+		return strings.Join(names, ",")
+	}
+	outputConfig := func(args *converseArgs) interface{} {
+		return r85provaFields(args)["output_config"]
+	}
+	open := map[string]interface{}{"type": "object", "additionalProperties": true}
+	tools := []types.Tool{
+		{Type: types.ToolTypeFunction, Name: "lookup", Parameters: answer},
+		{Type: types.ToolTypeFunction, Name: "unused", Parameters: answer},
+	}
+	for _, c := range []struct {
+		choice types.ToolChoice
+		want   string
+	}{
+		{types.ToolChoice{Type: types.ToolChoiceNone}, "json"},
+		{types.ToolChoice{Type: types.ToolChoiceTool, ToolName: "lookup"}, "lookup,json"},
+		{types.ToolChoice{Type: types.ToolChoiceAuto}, "lookup,unused,json"},
+		{types.ToolChoice{Type: types.ToolChoiceRequired}, "lookup,unused,json"},
+	} {
+		args := r85provaArgs(t, "anthropic.claude-opus-5", &provider.GenerateOptions{
+			ResponseFormat: &provider.ResponseFormat{Type: "json", Schema: open}, ToolChoice: c.choice, Tools: tools,
+		})
+		if outputConfig(args) != nil || toolNames(args) != c.want {
+			t.Errorf("%v: tools = %s, want %s", c.choice, toolNames(args), c.want)
+		}
+	}
+	for _, id := range []string{"anthropic.claude-opus-5", "anthropic.claude-opus-5-5", "anthropic.claude-sonnet-5", "anthropic.claude-sonnet-5-5", "anthropic.claude-haiku-5-5"} {
+		args := r85provaArgs(t, id, &provider.GenerateOptions{
+			ResponseFormat: &provider.ResponseFormat{Type: "json", Schema: answer}, Tools: tools[:1],
+		})
+		oc, _ := outputConfig(args).(map[string]interface{})
+		if format, _ := oc["format"].(map[string]interface{}); format["type"] != "json_schema" || toolNames(args) != "lookup" {
+			t.Errorf("%s: output_config = %v tools = %s", id, outputConfig(args), toolNames(args))
+		}
+	}
+	optional := map[string]interface{}{}
+	for i := 0; i < 11; i++ {
+		optional[fmt.Sprintf("f%d", i)] = map[string]interface{}{"type": "string"}
+	}
+	for name, s := range map[string]interface{}{
+		"an open object":               open,
+		"a recursive reference":        map[string]interface{}{"type": "object", "properties": map[string]interface{}{"child": map[string]interface{}{"$ref": "#"}}, "required": []interface{}{"child"}, "additionalProperties": false},
+		"too many optional properties": map[string]interface{}{"type": "object", "properties": optional, "additionalProperties": false},
+	} {
+		args := r85provaArgs(t, "anthropic.claude-opus-5", &provider.GenerateOptions{ResponseFormat: &provider.ResponseFormat{Type: "json", Schema: s}})
+		tc, _ := args.Body["toolConfig"].(map[string]interface{})
+		if outputConfig(args) != nil || toolNames(args) != "json" || fmt.Sprint(tc["toolChoice"]) != "map[any:map[]]" {
+			t.Errorf("%s opus-5: output_config = %v toolConfig = %v", name, outputConfig(args), tc)
+		}
+		args = r85provaArgs(t, "anthropic.claude-sonnet-5-5", &provider.GenerateOptions{ResponseFormat: &provider.ResponseFormat{Type: "json", Schema: s}})
+		system, _ := args.Body["system"].([]map[string]interface{})
+		if outputConfig(args) != nil || args.Body["toolConfig"] != nil || len(system) == 0 || !strings.Contains(system[0]["text"].(string), "JSON schema:") {
+			t.Errorf("%s sonnet-5-5: body = %v", name, args.Body)
 		}
 	}
 }
