@@ -3264,6 +3264,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// parallel results stream in completion order and a fast tool's
 			// result does not wait for a slow one (also when the call is
 			// aborted later). liveToolResults holds the emission order.
+			// WorkflowAgent (DeferApprovalRequests) writes a step's results
+			// in call order once every call settled (TS workflow-agent.ts
+			// mapWithConcurrency, then writeToolResults), so it keeps the
+			// post-execution emission below.
 			liveToolResults = liveToolResults[:0]
 			callsByID := make(map[string]types.ToolCall, len(executeCalls))
 			for _, call := range executeCalls {
@@ -3273,30 +3277,32 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if userToolEnd == nil {
 				userToolEnd = toolCallbacks.fallbackFinish
 			}
-			toolCallbacks.fallbackFinish = nil
-			toolCallbacks.onFinish = func(cbCtx context.Context, e OnToolCallFinishEvent) {
-				if userToolEnd != nil {
-					userToolEnd(cbCtx, e)
+			if !deferApprovalRequests(opts.Internal) {
+				toolCallbacks.fallbackFinish = nil
+				toolCallbacks.onFinish = func(cbCtx context.Context, e OnToolCallFinishEvent) {
+					if userToolEnd != nil {
+						userToolEnd(cbCtx, e)
+					}
+					tr := e.ToolOutput
+					if !liveEmittableToolResult(tr, eagerApprovals) {
+						return
+					}
+					if call, ok := callsByID[tr.ToolCallID]; ok && !tr.Dynamic {
+						tr.Dynamic = call.Dynamic
+					}
+					one := []types.ToolResult{tr}
+					attachToolApprovalSignatures(one, opts.ExperimentalToolApprovalSecret)
+					tr = one[0]
+					preliminaryMu.Lock()
+					defer preliminaryMu.Unlock()
+					if stepCtx.Err() != nil {
+						// TS closes the stream when the signal fires: a result
+						// that settles after the abort is not streamed.
+						return
+					}
+					liveToolResults = append(liveToolResults, tr.ToolCallID)
+					forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeToolResult, ToolResult: &tr}})
 				}
-				tr := e.ToolOutput
-				if !liveEmittableToolResult(tr, eagerApprovals) {
-					return
-				}
-				if call, ok := callsByID[tr.ToolCallID]; ok && !tr.Dynamic {
-					tr.Dynamic = call.Dynamic
-				}
-				one := []types.ToolResult{tr}
-				attachToolApprovalSignatures(one, opts.ExperimentalToolApprovalSecret)
-				tr = one[0]
-				preliminaryMu.Lock()
-				defer preliminaryMu.Unlock()
-				if stepCtx.Err() != nil {
-					// TS closes the stream when the signal fires: a result
-					// that settles after the abort is not streamed.
-					return
-				}
-				liveToolResults = append(liveToolResults, tr.ToolCallID)
-				forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeToolResult, ToolResult: &tr}})
 			}
 			var toolsErr error
 			stepToolResults, toolsErr = executeToolsConfigured(stepCtx, executeCalls, stepExecutionTools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &usageForTools, toolCallbacks, stepToolCallConcurrency)
