@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -223,5 +224,75 @@ func TestR82provbSkillEmptyDefaultVersionKept(t *testing.T) {
 		if _, has := meta["defaultVersion"]; has != tc.has {
 			t.Fatalf("%s: defaultVersion present = %v, want %v (%v)", tc.body, has, tc.has, meta)
 		}
+	}
+}
+
+// TS OpenAIFiles.uploadFile: an inline file is appended to the FormData
+// before purpose / expires_after; a stream upload sends the fields first.
+// expires_after[seconds] is String(expiresAfter); toFileMetadata keeps
+// present empty strings; a null purpose fails the option schema.
+func TestR82provbFilesUploadPartOrderAndValues(t *testing.T) {
+	var names []string
+	var seconds string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		names = nil
+		mr, err := r.MultipartReader()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		for {
+			p, err := mr.NextPart()
+			if err != nil {
+				break
+			}
+			names = append(names, p.FormName())
+			if p.FormName() == "expires_after[seconds]" {
+				b, _ := io.ReadAll(p)
+				seconds = string(b)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"f","filename":"","purpose":"","status":""}`))
+	}))
+	defer srv.Close()
+	files := New(Config{APIKey: "k", BaseURL: srv.URL}).Files()
+	opts := map[string]interface{}{"openai": map[string]interface{}{"expiresAfter": 1e21}}
+	res, err := files.UploadFile(context.Background(), types.UploadFileOptions{
+		Data: types.FileData{Type: types.FileDataTypeText, Text: "x"}, Filename: "a.txt", ProviderOptions: opts,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(names, ","); got != "file,purpose,expires_after[anchor],expires_after[seconds]" {
+		t.Fatalf("inline part order = %s", got)
+	}
+	if seconds != "1e+21" {
+		t.Fatalf("expires_after[seconds] = %q, want 1e+21", seconds)
+	}
+	meta := res.ProviderMetadata["openai"].(map[string]interface{})
+	for _, k := range []string{"filename", "purpose", "status"} {
+		if v, ok := meta[k]; !ok || v != "" {
+			t.Fatalf("metadata %s = %v (present %v), want a present empty string", k, v, ok)
+		}
+	}
+	if res.Filename != "" {
+		t.Fatalf("filename = %q, want none (TS response.filename ?? filename is \"\")", res.Filename)
+	}
+
+	if _, err := files.UploadFile(context.Background(), types.UploadFileOptions{
+		Data: types.FileData{Type: types.FileDataTypeStream, Stream: strings.NewReader("x")}, Filename: "a.txt", ProviderOptions: opts,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(names, ","); got != "purpose,expires_after[anchor],expires_after[seconds],file" {
+		t.Fatalf("stream part order = %s", got)
+	}
+
+	if _, err := files.UploadFile(context.Background(), types.UploadFileOptions{
+		Data:            types.FileData{Type: types.FileDataTypeText, Text: "x"},
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"purpose": nil}},
+	}); err == nil {
+		t.Fatal("a null purpose was accepted; TS z.string().optional() rejects it")
 	}
 }
