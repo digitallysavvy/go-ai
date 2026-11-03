@@ -10,11 +10,14 @@ import (
 // ResolveToolSchemas returns the tools as a provider should see them: a tool
 // whose Parameters is a schema.Schema (for example
 // schema.NewSimpleJSONSchema(...)) or a bare schema.Validator (for example
-// schema.NewJSONSchema(...)) gets that schema's JSON Schema map as Parameters, so the provider converters, which read Parameters as a JSON
-// Schema map, send the real schema. Maps and *schema.OrderedSchema values
-// (which marshal in their source key order) are left as they are. The input
-// slice and tools are not modified; the slice is returned unchanged when
-// nothing needs resolving.
+// schema.NewJSONSchema(...)) gets that schema's JSON Schema map as
+// Parameters, so the provider converters, which read Parameters as a JSON
+// Schema map, send the real schema. A function or dynamic tool without a
+// schema (nil, typed nil or zero) gets TS asSchema(undefined).jsonSchema,
+// {"type":"object","properties":{},"additionalProperties":false}; a provider
+// tool keeps none. Maps and *schema.OrderedSchema values (which marshal in
+// their source key order) are left as they are. The input slice and tools are
+// not modified; the slice is returned unchanged when nothing needs resolving.
 func ResolveToolSchemas(tools []types.Tool) []types.Tool {
 	var out []types.Tool
 	for i := range tools {
@@ -28,9 +31,18 @@ func ResolveToolSchemas(tools []types.Tool) []types.Tool {
 			resolved = ordered
 		} else if m, ok, none := resolveParameters(tools[i].Parameters); ok {
 			resolved = m
-		} else if none {
-			// A nil schema value is no Parameters (TS asSchema(undefined)).
-			resolved = nil
+		} else if none || tools[i].Parameters == nil {
+			// No schema: TS prepareTools sends asSchema(undefined).jsonSchema,
+			// { type: 'object', properties: {}, additionalProperties: false },
+			// for a function or dynamic tool.
+			if !isFunctionTool(tools[i]) {
+				if tools[i].Parameters == nil {
+					continue
+				}
+				resolved = nil
+			} else {
+				resolved = emptyObjectSchema()
+			}
 		} else {
 			continue
 		}
@@ -84,4 +96,23 @@ func isNilValidator(v schema.Validator) bool {
 		return rv.IsNil()
 	}
 	return false
+}
+
+// isFunctionTool reports a tool TS prepareTools sends with an inputSchema
+// (type 'function' or 'dynamic'; provider tools carry id and args instead).
+func isFunctionTool(t types.Tool) bool {
+	switch t.Type {
+	case "", types.ToolTypeFunction, types.ToolTypeDynamic:
+		return true
+	}
+	return false
+}
+
+// emptyObjectSchema is TS asSchema(undefined).jsonSchema, in its key order.
+func emptyObjectSchema() *schema.OrderedSchema {
+	s, err := schema.NewOrderedSchema([]byte(`{"type":"object","properties":{},"additionalProperties":false}`))
+	if err != nil {
+		panic(err)
+	}
+	return s
 }

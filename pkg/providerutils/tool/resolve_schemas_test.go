@@ -13,7 +13,7 @@ func TestResolveToolSchemasReplacesSchemaParameters(t *testing.T) {
 	tools := []types.Tool{
 		{Name: "schema", Parameters: schema.NewSimpleJSONSchema(m)},
 		{Name: "map", Parameters: map[string]interface{}{"type": "object"}},
-		{Name: "none"},
+		{Name: "provider", Type: types.ToolTypeProviderDefined, ProviderID: "x.y"},
 	}
 	got := ResolveToolSchemas(tools)
 	if _, ok := got[0].Parameters.(map[string]interface{}); !ok {
