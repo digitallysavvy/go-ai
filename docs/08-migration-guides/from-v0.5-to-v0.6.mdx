@@ -352,6 +352,7 @@ already, you can skip them.
 | xAI video status empty strings, `mode` without `videoUrl`, missing `request_id` | TS `??` / `== null` semantics, `"video": {}`, TS error text | silent behavior change | None | [xAI video edge values](#xai-video-empty-values) |
 | xAI image `b64_json: ""`, empty `revised_prompt` | Data / omitted, as TS | silent behavior change | None | [xAI image empty values](#xai-image-empty-values) |
 | Azure MAI image `Size` / `AspectRatio` parsing | JS `Number` semantics | wire/protocol change | None unless you pass malformed sizes | [MAI image size parsing](#azure-mai-image-size-number) |
+| QuiverAI `Reasoning: types.ReasoningNone` / `types.ReasoningMax`; warning feature `reasoning effort none` | Sent as `low` / `xhigh` with a compatibility warning | wire/protocol change | Leave `Reasoning` unset for the default | [QuiverAI reasoning](#quiverai-reasoning-rounding) |
 
 ## Compile-time changes {#compile-time-changes}
 
@@ -5965,6 +5966,28 @@ compile-time changes.
   dropped; leave the key out instead.
 - **Kind:** wire/protocol change
 
+### QuiverAI
+
+#### QuiverAI rounds the reasoning level to a supported effort {#quiverai-reasoning-rounding}
+
+- **What changed:** v0.5 left `Reasoning: types.ReasoningNone` out of
+  QuiverAI language-model requests with an `unsupported` warning whose
+  feature is `reasoning effort none`, and sent `types.ReasoningMax` as
+  `reasoning.effort: "max"`, which is not one of QuiverAI's efforts (`low`,
+  `medium`, `high`, `xhigh`). v0.6 maps the level as TS `61a315e333`
+  (`mapReasoningToProviderEffort`): `none` is sent as `low` and `max` as
+  `xhigh`, each with a `compatibility` warning such as `reasoning "none" is
+  not directly supported by this model. mapped to effort "low".`. An explicit
+  `providerOptions.quiverai.reasoningEffort` still wins and is sent unchanged.
+- **Am I affected?** `quiverai` language models (`ModelArrow2` and friends)
+  called with `Reasoning` set to `types.ReasoningNone` or
+  `types.ReasoningMax`, or code that matches the `reasoning effort none`
+  warning feature.
+- **What to do:** No action unless you relied on `none` leaving the effort to
+  QuiverAI's default; leave `Reasoning` unset for that, or set
+  `providerOptions.quiverai.reasoningEffort`.
+- **Kind:** wire/protocol change
+
 ## MCP {#mcp}
 
 ### MCP OAuth rejects unbound pre-registered confidential credentials {#mcp-oauth-issuer}
@@ -6502,6 +6525,7 @@ next one.
      -e 'validate:"|ai\.usage\.tokens|Collect(ToolApproval|ToolResult)Continuations|isAborted|isCancelled|ReadUIMessages|ChunksContext|StreamTranslat|DataString|Request\.Body|RawRequest|RequestBody\(\)|alibaba|moonshot|CompletionModel|computer|thoughtSignature|cerebras|bedrock|googlevertex|closed unexpectedly' \
      -e 'MCPToolSchema|ToolSpec|InputSchema|unsupported part type|languageCode|inputTranscription|SourceText|mai-image|azure|prodia|toolwebfetch|ToolChoice\{|s3://|ParametersMap' \
      -e 'PerChunk|FirstChunk|Response\.Headers|ResponseHeadersMap|ai\.prompt\.(toolChoice|messages|tools)|JSONSchema\(\)|ResponseFormat\.Schema|jsonschema:"|Files\(\)|Skills\(\)|DecisionJSONPart|signature|zai|huggingface|openresponses|anthropic|perplexity' \
+     -e 'quiverai|reasoning effort none' \
      -e 'FileData\{Type: types\.FileDataTypeURL|remote file URL must|Invalid URL|allowed types are|ImageContent\{|ReasoningFileContent|AbortReason|ReadUIMessageStream|continuationToken|errorCode|InteractionsModel|ClientSecret|ConversationModel|NewJSONSchema\(|ResponseBody|xai\.VideoModel|Size:|AspectRatio' .
    ```
 

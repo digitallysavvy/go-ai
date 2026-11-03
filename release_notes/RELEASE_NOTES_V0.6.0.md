@@ -115,6 +115,8 @@ Also new:
 - **`prompt.InvalidURLError`** (`pkg/providerutils/prompt`): TS `new URL()`'s `TypeError: Invalid URL` for a URL file part that does not parse (review round 84).
 - **`prompt.DeprecatedContentWarnings`, `prompt.ImageContentPartDeprecation`** (`pkg/providerutils/prompt`): the TS `deprecated` warnings for a message's `image` content parts (review round 84).
 - **`ai.InternalOptions.TelemetryToolDefinitions`**: the Tools value of telemetry language-model call start events; WorkflowAgent sets it to TS's serialized tool definitions (review round 84).
+- **`providerutils.MapReasoningToProviderEffort` rounding, `IsCustomReasoning`, `MapReasoningToProviderBudget` / `ReasoningBudgetOptions`**: the TS `map-reasoning-to-provider` helpers (TS 61a315e333): a provider-option effort wins, otherwise the nearest lower supported level (higher only when none is lower, never `none`); budgets use the TS percentages (round 85 prep).
+- **`providerutils.APIKeyFunc`, `ResolveAPIKey` / `ResolveAPIKeyOptions`, `RequestAuthHeaderFunc`**: per-request credentials (TS 7716e189ee `Resolvable<string>` API keys): a func is called with each request's context, its error is returned unchanged, setting it together with the static key is an `InvalidArgumentError`; providers adopt it field by field (round 85 prep).
 - OpenAI Responses: `promptCacheOptions` 12h TTL and prewarm, shell tool
   `timeoutMs`/`maxOutputLength`, `additionalTools` and
   `omitFromRequestTools`. Azure `ToolSearch` and per-deployment model
@@ -512,6 +514,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **xAI video: empty status values, edit/extend video {} and the request_id error text follow TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#xai-video-empty-values)
 - **xAI image: an empty b64_json is data and an empty revised prompt is omitted, as TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#xai-image-empty-values)
 - **Azure MAI image size and aspect ratio use JavaScript Number parsing** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#azure-mai-image-size-number)
+- **QuiverAI sends reasoning none as low and max as xhigh, as TS (rounded to a supported effort)** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#quiverai-reasoning-rounding)
 
 #### MCP
 
