@@ -167,9 +167,9 @@ func (m *azureMaiImageModel) doGenerate(ctx context.Context, opts *provider.Imag
 		})
 	}
 
-	var width, height *int
-	if w, h, ok := parseAzureMaiImageSize(opts.Size); ok {
-		width, height = &w, &h
+	var width, height *float64
+	if opts.Size != "" {
+		width, height = parseAzureMaiImageSize(opts.Size)
 	}
 	if opts.Size != "" && opts.AspectRatio != "" {
 		warnings = append(warnings, types.Warning{
@@ -199,7 +199,16 @@ func (m *azureMaiImageModel) doGenerate(ctx context.Context, opts *provider.Imag
 		Vals: map[string]interface{}{"model": m.modelID, "prompt": opts.Prompt},
 	}
 	addField := func(jsonKey string, value interface{}) {
-		fields = append(fields, azureMaiField{jsonKey, fmt.Sprint(value)})
+		formValue := fmt.Sprint(value)
+		if f, ok := value.(float64); ok {
+			// TS String(value) in the form; JSON.stringify writes a
+			// non-finite number as null.
+			formValue = providerutils.JSNumberString(f)
+			if math.IsNaN(f) || math.IsInf(f, 0) {
+				value = nil
+			}
+		}
+		fields = append(fields, azureMaiField{jsonKey, formValue})
 		jsonBody.Keys = append(jsonBody.Keys, jsonKey)
 		jsonBody.Vals[jsonKey] = value
 	}
@@ -520,30 +529,39 @@ func azureMaiErrorCodeValid(code json.RawMessage) bool {
 	return false
 }
 
-// parseAzureMaiImageSize parses a "WxH" size string.
-func parseAzureMaiImageSize(size string) (int, int, bool) {
+// parseAzureMaiImageSize is TS parseSize: const [width, height] =
+// size.split('x').map(Number). A part that is not a JS number is NaN, and a
+// size without "x" has no height (undefined).
+func parseAzureMaiImageSize(size string) (width, height *float64) {
 	parts := strings.Split(size, "x")
-	if len(parts) != 2 {
-		return 0, 0, false
+	dims := make([]float64, len(parts))
+	for i, part := range parts {
+		f, ok := providerutils.JSNumber(part)
+		if !ok {
+			f = math.NaN()
+		}
+		dims[i] = f
 	}
-	w, err1 := strconv.Atoi(parts[0])
-	h, err2 := strconv.Atoi(parts[1])
-	if err1 != nil || err2 != nil {
-		return 0, 0, false
+	width = &dims[0]
+	if len(dims) > 1 {
+		height = &dims[1]
 	}
-	return w, h, true
+	return width, height
 }
 
 // azureMaiDimensionsForAspectRatio keeps the default 1024x1024 pixel budget,
-// raising the short side to 768, mirroring TS dimensionsForAspectRatio.
-func azureMaiDimensionsForAspectRatio(aspectRatio string) (int, int, bool) {
+// raising the short side to 768, mirroring TS dimensionsForAspectRatio
+// (float math, so an infinite part gives the non-finite sizes TS sends as
+// null).
+func azureMaiDimensionsForAspectRatio(aspectRatio string) (float64, float64, bool) {
+	// TS const [w, h] = aspectRatio.split(':').map(Number).
 	parts := strings.Split(aspectRatio, ":")
-	if len(parts) != 2 {
+	if len(parts) < 2 {
 		return 0, 0, false
 	}
-	w, err1 := strconv.ParseFloat(parts[0], 64)
-	h, err2 := strconv.ParseFloat(parts[1], 64)
-	if err1 != nil || err2 != nil || !(w > 0 && h > 0) {
+	w, okW := providerutils.JSNumber(parts[0])
+	h, okH := providerutils.JSNumber(parts[1])
+	if !okW || !okH || !(w > 0 && h > 0) {
 		return 0, 0, false
 	}
 
@@ -557,6 +575,7 @@ func azureMaiDimensionsForAspectRatio(aspectRatio string) (int, int, bool) {
 			width, height = azureMaiImageMinSide*ratio, azureMaiImageMinSide
 		}
 	}
-	floor16 := func(v float64) int { return int(math.Floor(v/16+1e-9)) * 16 }
-	return max(azureMaiImageMinSide, floor16(width)), max(azureMaiImageMinSide, floor16(height)), true
+	floor16 := func(v float64) float64 { return math.Floor(v/16+1e-9) * 16 }
+	// JS Math.max(768, x) is NaN for NaN x (Go's math.Max agrees).
+	return math.Max(azureMaiImageMinSide, floor16(width)), math.Max(azureMaiImageMinSide, floor16(height)), true
 }
