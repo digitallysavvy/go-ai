@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -30,5 +31,21 @@ func TestR86provbStreamingIncludeGoTypedList(t *testing.T) {
 	const tsWant = `{"session":{"audio":{"input":{"format":{"type":"audio/pcm"},"transcription":{"delay":"low","languages":["en"],"model":"gpt-live-transcribe"},"turn_detection":null}},"include":["item.input_audio_transcription.logprobs"],"type":"transcription"},"type":"session.update"}`
 	if got != tsWant {
 		t.Fatalf("session = %s\nwant      %s", got, tsWant)
+	}
+}
+
+// TestR86provbDecisionSafetyIdentifierLength: zod .max(128) counts UTF-16
+// code units, so 100 non-ASCII characters (300 UTF-8 bytes) are accepted and
+// 129 are not.
+func TestR86provbDecisionSafetyIdentifierLength(t *testing.T) {
+	ok, err := parseDecisionProviderOptions(map[string]interface{}{"openai": map[string]interface{}{"safetyIdentifier": strings.Repeat("é", 100)}})
+	if err != nil || ok.SafetyIdentifier == nil {
+		t.Fatalf("100 code units rejected: %v", err)
+	}
+	if _, err := parseDecisionProviderOptions(map[string]interface{}{"openai": map[string]interface{}{"safetyIdentifier": strings.Repeat("é", 129)}}); err == nil {
+		t.Fatal("129 code units accepted")
+	}
+	if _, err := parseDecisionProviderOptions(map[string]interface{}{"openai": map[string]interface{}{"safetyIdentifier": strings.Repeat("😀", 65)}}); err == nil {
+		t.Fatal("130 code units (65 surrogate pairs) accepted")
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -355,7 +356,8 @@ func parseDecisionProviderOptions(providerOptions map[string]interface{}) (Decis
 	}
 	if value, present := options["safetyIdentifier"]; present {
 		s, ok := value.(string)
-		if !ok || len(s) > 128 {
+		// zod .max(128) counts UTF-16 code units, not bytes.
+		if !ok || len(utf16.Encode([]rune(s))) > 128 {
 			return out, &providererrors.InvalidArgumentError{
 				Field:   "providerOptions.openai.safetyIdentifier",
 				Message: "must be a string of at most 128 characters",
