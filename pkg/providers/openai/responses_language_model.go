@@ -23,6 +23,7 @@ import (
 	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -925,6 +926,10 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				body["tool_choice"] = *allowedTools
 			}
 		} else if opts.ToolChoice.Type != "" {
+			// TS prepareResponsesTools throws for an unknown tool choice type.
+			if err := prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice); err != nil {
+				return nil, false, append(warnings, toolWarnings...), err
+			}
 			if err := responses.CheckOmittedToolChoice(opts.Tools, opts.ToolChoice); err != nil {
 				return nil, false, warnings, err
 			}

@@ -173,6 +173,13 @@ the test defines, also as a top-level `function` declaration) as an opaque
 as `name === 'a' ? 'b' : name` can be read from the source). A top-level
 helper function the arguments call (a prompt builder) runs for real when its
 TypeScript strips to plain JS (`node:module` `stripTypeScriptTypes`).
+
+Since round 83, an argument or expectation literal with a cast inside it
+(`{ steps: [...] as Array<Step>, generateId }`) that does not evaluate after
+the trailing-cast strip is evaluated through `stripTypeScriptTypes` (strip
+mode). Only literals that failed before evaluate differently, so a regenerated
+case file can only gain a case or an assertion that used to be dropped (google
+`interactions_parse_outputs` gains its 14th case).
 Function-level files without those shapes regenerate byte for byte.
 
 Test hooks used by the provider tests: `ProviderToolHook` (and

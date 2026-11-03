@@ -483,13 +483,17 @@ func azureMaiImageAPIError(status int, headers map[string]string, body []byte) e
 	if message == "" {
 		message = "Azure MAI image request failed with status " + strconv.Itoa(status) + "."
 	}
+	// TS maiErrorSchema: { error: { code?: string | number | null, message:
+	// string } }; a body that fails it gets the status text.
 	var parsed struct {
 		Error *struct {
-			Message string `json:"message"`
+			Code    json.RawMessage `json:"code"`
+			Message *string         `json:"message"`
 		} `json:"error"`
 	}
-	if len(body) > 0 && json.Unmarshal(body, &parsed) == nil && parsed.Error != nil && parsed.Error.Message != "" {
-		message = parsed.Error.Message
+	if len(body) > 0 && json.Unmarshal(body, &parsed) == nil && parsed.Error != nil && parsed.Error.Message != nil &&
+		azureMaiErrorCodeValid(parsed.Error.Code) {
+		message = *parsed.Error.Message
 	}
 	return &providererrors.ProviderError{
 		Provider:        "azure.image",
@@ -498,6 +502,22 @@ func azureMaiImageAPIError(status int, headers map[string]string, body []byte) e
 		ResponseHeaders: headers,
 		ResponseBody:    string(body),
 	}
+}
+
+// azureMaiErrorCodeValid is z.union([z.string(), z.number()]).nullish().
+func azureMaiErrorCodeValid(code json.RawMessage) bool {
+	if len(code) == 0 || string(code) == "null" {
+		return true
+	}
+	var v interface{}
+	if json.Unmarshal(code, &v) != nil {
+		return false
+	}
+	switch v.(type) {
+	case string, float64:
+		return true
+	}
+	return false
 }
 
 // parseAzureMaiImageSize parses a "WxH" size string.

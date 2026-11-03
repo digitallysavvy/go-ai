@@ -841,7 +841,9 @@ func convertToolChoiceToOpenResponses(toolChoice types.ToolChoice, encodedProvid
 			"name": toolChoice.ToolName,
 		}, nil
 	default:
-		return "auto", nil
+		// TS convertedToolChoice = toolChoice?.type: any other type is sent
+		// as given.
+		return string(toolChoice.Type), nil
 	}
 }
 

@@ -347,6 +347,10 @@ func (m *LanguageModel) buildRequestBodyChecked(opts *provider.GenerateOptions, 
 		functionTools, dropped := tool.DropProviderDefinedTools(opts.Tools, nil)
 		toolWarnings = dropped
 		body["tools"] = tool.ToOpenAIFormat(functionTools)
+		// TS prepareTools throws for an unknown tool choice type.
+		if err := prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice); err != nil {
+			return nil, nil, err
+		}
 		if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}

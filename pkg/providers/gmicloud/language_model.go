@@ -61,6 +61,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "gmicloud"); err != nil {
 		return nil, err
 	}
+	// TS openai-compatible prepareTools throws for an unknown tool choice type.
+	if err := prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice); err != nil {
+		return nil, err
+	}
 	reqBody, warnings := m.buildRequestBody(opts, false)
 	var response gmicloudResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
@@ -95,6 +99,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, err
 	}
 	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "gmicloud"); err != nil {
+		return nil, err
+	}
+	// TS openai-compatible prepareTools throws for an unknown tool choice type.
+	if err := prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice); err != nil {
 		return nil, err
 	}
 	reqBody, warnings := m.buildRequestBody(opts, true)

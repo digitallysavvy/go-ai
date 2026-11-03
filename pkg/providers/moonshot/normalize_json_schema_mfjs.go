@@ -3,6 +3,7 @@ package moonshot
 import (
 	"regexp"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -23,14 +24,81 @@ const mfjsRootError = `tool and response schemas must be a JSON Schema object wi
 // union of objects (anyOf/oneOf of object schemas, no root type) is sent with
 // type "object".
 // Everything else passes through unchanged. Mirrors TS
-// normalizeJsonSchemaForMFJS exactly.
+// normalizeJsonSchemaForMFJS exactly. A map schema gives a map; an ordered
+// schema object (from the schema's JSON text) gives an ordered object whose
+// keys are where the TS object spread and assignments put them.
 func NormalizeJSONSchemaForMFJS(schema interface{}) (interface{}, error) {
-	return normalizeMFJSDefinition(schema, true)
+	_, isMap := schema.(map[string]interface{})
+	out, err := normalizeMFJSDefinition(mfjsOrdered(schema), true)
+	if err != nil {
+		return nil, err
+	}
+	if isMap {
+		return mfjsPlain(out), nil
+	}
+	return out, nil
 }
 
+// mfjsOrdered deep-copies a schema into ordered objects: a map's keys are
+// sorted (its JSON order), an ordered object keeps its order. Other values
+// are kept as they are.
+func mfjsOrdered(v interface{}) interface{} {
+	switch x := v.(type) {
+	case map[string]interface{}:
+		if x == nil {
+			return v
+		}
+		o := jsonorder.FromMap(x)
+		for _, k := range o.Keys() {
+			child, _ := o.Get(k)
+			o.Set(k, mfjsOrdered(child))
+		}
+		return o
+	case *jsonorder.Object:
+		if x == nil {
+			return v
+		}
+		o := jsonorder.New()
+		for _, k := range x.Keys() {
+			child, _ := x.Get(k)
+			o.Set(k, mfjsOrdered(child))
+		}
+		return o
+	case []interface{}:
+		out := make([]interface{}, len(x))
+		for i, e := range x {
+			out[i] = mfjsOrdered(e)
+		}
+		return out
+	}
+	return v
+}
+
+// mfjsPlain turns the ordered objects of mfjsOrdered back into maps.
+func mfjsPlain(v interface{}) interface{} {
+	switch x := v.(type) {
+	case *jsonorder.Object:
+		m := make(map[string]interface{}, x.Len())
+		for _, k := range x.Keys() {
+			child, _ := x.Get(k)
+			m[k] = mfjsPlain(child)
+		}
+		return m
+	case []interface{}:
+		out := make([]interface{}, len(x))
+		for i, e := range x {
+			out[i] = mfjsPlain(e)
+		}
+		return out
+	}
+	return v
+}
+
+// normalizeMFJSDefinition is TS normalizeDefinition over a tree from
+// mfjsOrdered (owned by the caller, so it is changed in place).
 func normalizeMFJSDefinition(definition interface{}, isRoot bool) (interface{}, error) {
-	def, ok := definition.(map[string]interface{})
-	if !ok {
+	result, ok := definition.(*jsonorder.Object)
+	if !ok || result == nil {
 		if isRoot {
 			return nil, &providererrors.UnsupportedFunctionalityError{
 				Functionality: mfjsRootError,
@@ -40,34 +108,25 @@ func normalizeMFJSDefinition(definition interface{}, isRoot bool) (interface{}, 
 	}
 
 	// A root union of objects (Zod z.union / discriminatedUnion of objects) is
-	// an object; MFJS only needs the root to say so.
-	if _, hasType := def["type"]; isRoot && !hasType && isMFJSObjectUnion(def) {
-		withType := make(map[string]interface{}, len(def)+1)
-		for k, v := range def {
-			withType[k] = v
-		}
-		withType["type"] = "object"
-		def = withType
+	// an object; MFJS only needs the root to say so ({ type: 'object', ...definition }).
+	if _, hasType := result.Get("type"); isRoot && !hasType && isMFJSObjectUnion(result) {
+		result = result.WithLead("type", "object")
 	}
 
 	if isRoot {
-		if t, _ := def["type"].(string); t != "object" {
+		if t, _ := result.Get("type"); t != "object" {
 			return nil, &providererrors.UnsupportedFunctionalityError{
 				Functionality: mfjsRootError,
 			}
 		}
 	}
 
-	result := make(map[string]interface{}, len(def))
-	for k, v := range def {
-		result[k] = v
-	}
-
 	// Existing prefixItems stay first (they are positional); a tuple `items`
 	// array is appended after them and converted to prefixItems.
-	if tuple, ok := result["items"].([]interface{}); ok {
+	items, _ := result.Get("items")
+	if tuple, ok := items.([]interface{}); ok {
 		var prefix []interface{}
-		if existing, ok := result["prefixItems"].([]interface{}); ok {
+		if existing, ok := mfjsGet(result, "prefixItems").([]interface{}); ok {
 			prefix = append(prefix, existing...)
 		}
 		for _, item := range tuple {
@@ -77,42 +136,39 @@ func normalizeMFJSDefinition(definition interface{}, isRoot bool) (interface{}, 
 			}
 			prefix = append(prefix, normalized)
 		}
-		result["prefixItems"] = prefix
-		delete(result, "items")
-	} else if itemsMap, ok := result["items"].(map[string]interface{}); ok {
-		normalized, err := normalizeMFJSDefinition(itemsMap, false)
+		if prefix == nil {
+			prefix = []interface{}{}
+		}
+		result.Set("prefixItems", prefix)
+		result.Delete("items")
+	} else if itemsObj, ok := items.(*jsonorder.Object); ok {
+		normalized, err := normalizeMFJSDefinition(itemsObj, false)
 		if err != nil {
 			return nil, err
 		}
-		result["items"] = normalized
+		result.Set("items", normalized)
 	}
 
 	// MFJS requires type to live inside anyOf items, except at the root, which
 	// must keep type "object" (moving it leaves a typeless root that 400s).
-	if parentType, ok := result["type"].(string); ok && !isRoot {
-		if anyOf, ok := result["anyOf"].([]interface{}); ok {
-			delete(result, "type")
+	if parentType, ok := mfjsGet(result, "type").(string); ok && !isRoot {
+		if anyOf, ok := mfjsGet(result, "anyOf").([]interface{}); ok {
+			result.Delete("type")
 			newAnyOf := make([]interface{}, len(anyOf))
 			for i, branch := range anyOf {
-				if branchMap, ok := branch.(map[string]interface{}); ok {
-					if _, hasType := branchMap["type"]; !hasType {
-						merged := make(map[string]interface{}, len(branchMap)+1)
-						merged["type"] = parentType
-						for k, v := range branchMap {
-							merged[k] = v
-						}
-						newAnyOf[i] = merged
-						continue
-					}
+				// TS: isRecord(branch) && branch.type == null ? { type: parentType, ...branch } : branch
+				if b, ok := branch.(*jsonorder.Object); ok && b != nil && mfjsGet(b, "type") == nil {
+					newAnyOf[i] = b.WithLead("type", parentType)
+					continue
 				}
 				newAnyOf[i] = branch
 			}
-			result["anyOf"] = newAnyOf
+			result.Set("anyOf", newAnyOf)
 		}
 	}
 
 	for _, key := range mfjsArrayKeys {
-		arr, ok := result[key].([]interface{})
+		arr, ok := mfjsGet(result, key).([]interface{})
 		if !ok {
 			continue
 		}
@@ -124,55 +180,52 @@ func normalizeMFJSDefinition(definition interface{}, isRoot bool) (interface{}, 
 			}
 			newArr[i] = normalized
 		}
-		result[key] = newArr
+		result.Set(key, newArr)
 	}
 
 	for _, key := range mfjsMapKeys {
-		m, ok := result[key].(map[string]interface{})
-		if !ok {
+		m, ok := mfjsGet(result, key).(*jsonorder.Object)
+		if !ok || m == nil {
 			continue
 		}
-		newMap := make(map[string]interface{}, len(m))
-		for k, v := range m {
-			normalized, err := normalizeMFJSDefinition(v, false)
+		for _, k := range m.Keys() {
+			child, _ := m.Get(k)
+			normalized, err := normalizeMFJSDefinition(child, false)
 			if err != nil {
 				return nil, err
 			}
-			newMap[k] = normalized
+			m.Set(k, normalized)
 		}
-		result[key] = newMap
 	}
 
 	for _, key := range mfjsSingleKeys {
-		value, exists := result[key]
-		if !exists {
-			continue
-		}
-		if _, isBool := value.(bool); isBool {
-			// Booleans pass through unchanged (normalizeDefinition returns the
-			// value as-is for non-object, non-root definitions).
-			continue
-		}
-		if m, ok := value.(map[string]interface{}); ok {
+		// Booleans pass through unchanged (normalizeDefinition returns the
+		// value as-is for non-object, non-root definitions).
+		if m, ok := mfjsGet(result, key).(*jsonorder.Object); ok && m != nil {
 			normalized, err := normalizeMFJSDefinition(m, false)
 			if err != nil {
 				return nil, err
 			}
-			result[key] = normalized
+			result.Set(key, normalized)
 		}
 	}
 
 	return result, nil
 }
 
+func mfjsGet(o *jsonorder.Object, key string) interface{} {
+	v, _ := o.Get(key)
+	return v
+}
+
 // isMFJSObjectUnion reports whether every anyOf/oneOf on the root is a
 // non-empty union of object schemas. Local $refs (#/$defs/X, #/definitions/X)
 // are resolved one hop. A nullable branch (type: ["object", "null"]) is not an
 // object, so such unions keep failing the root check.
-func isMFJSObjectUnion(def map[string]interface{}) bool {
+func isMFJSObjectUnion(def *jsonorder.Object) bool {
 	found := false
 	for _, key := range []string{"anyOf", "oneOf"} {
-		value, exists := def[key]
+		value, exists := def.Get(key)
 		if !exists {
 			continue
 		}
@@ -190,28 +243,27 @@ func isMFJSObjectUnion(def map[string]interface{}) bool {
 	return found
 }
 
-func isMFJSObjectSchema(branch interface{}, root map[string]interface{}) bool {
-	resolved, ok := resolveMFJSLocalRef(branch, root).(map[string]interface{})
-	if !ok {
+func isMFJSObjectSchema(branch interface{}, root *jsonorder.Object) bool {
+	resolved, ok := resolveMFJSLocalRef(branch, root).(*jsonorder.Object)
+	if !ok || resolved == nil {
 		return false
 	}
-	t, hasType := resolved["type"]
+	t, hasType := resolved.Get("type")
 	if hasType {
-		s, _ := t.(string)
-		return s == "object"
+		return t == "object"
 	}
-	_, isMap := resolved["properties"].(map[string]interface{})
-	return isMap
+	_, isObj := mfjsGet(resolved, "properties").(*jsonorder.Object)
+	return isObj
 }
 
 var mfjsLocalRef = regexp.MustCompile(`^#/(\$defs|definitions)/([^/]+)$`)
 
-func resolveMFJSLocalRef(branch interface{}, root map[string]interface{}) interface{} {
-	b, ok := branch.(map[string]interface{})
-	if !ok {
+func resolveMFJSLocalRef(branch interface{}, root *jsonorder.Object) interface{} {
+	b, ok := branch.(*jsonorder.Object)
+	if !ok || b == nil {
 		return branch
 	}
-	ref, ok := b["$ref"].(string)
+	ref, ok := mfjsGet(b, "$ref").(string)
 	if !ok {
 		return branch
 	}
@@ -219,8 +271,8 @@ func resolveMFJSLocalRef(branch interface{}, root map[string]interface{}) interf
 	if m == nil {
 		return branch
 	}
-	if defs, ok := root[m[1]].(map[string]interface{}); ok {
-		return defs[m[2]]
+	if defs, ok := mfjsGet(root, m[1]).(*jsonorder.Object); ok && defs != nil {
+		return mfjsGet(defs, m[2])
 	}
 	return branch
 }

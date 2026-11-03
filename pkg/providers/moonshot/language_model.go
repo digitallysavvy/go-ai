@@ -14,6 +14,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -336,27 +337,32 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		if opts.ResponseFormat.Type == "json_object" {
 			schemaVal = nil
 		}
-		var schemaRaw json.RawMessage
-		if raw, ok := providerutils.RawJSONObject(schemaVal); ok {
-			if decoded := providerutils.DecodeRawJSONObject(raw); decoded != nil {
-				schemaRaw, schemaVal = raw, decoded
-			}
-		}
+		ordered, isOrdered := mfjsOrderedSource(schemaVal)
 		schemaMap, _ := schemaVal.(map[string]interface{})
-		if SupportsStructuredOutputs(m.modelID) && schemaMap != nil {
-			cleaned := make(map[string]interface{}, len(schemaMap))
-			for k, v := range schemaMap {
-				if k == "$schema" {
-					continue
+		if SupportsStructuredOutputs(m.modelID) && (isOrdered || schemaMap != nil) {
+			// TS const { $schema, ...schemaWithoutDollarSchema } = schema.
+			var cleaned interface{}
+			if isOrdered {
+				c := jsonorder.New()
+				for _, k := range ordered.Keys() {
+					if k != "$schema" {
+						v, _ := ordered.Get(k)
+						c.Set(k, v)
+					}
 				}
-				cleaned[k] = v
+				cleaned = c
+			} else {
+				c := make(map[string]interface{}, len(schemaMap))
+				for k, v := range schemaMap {
+					if k != "$schema" {
+						c[k] = v
+					}
+				}
+				cleaned = c
 			}
 			normalized, err := NormalizeJSONSchemaForMFJS(cleaned)
 			if err != nil {
 				return nil, nil, err
-			}
-			if schemaRaw != nil {
-				normalized = providerutils.OrderLike(normalized, schemaRaw)
 			}
 			strict := true
 			if modelOpts.HasStrictJSONSchema {
