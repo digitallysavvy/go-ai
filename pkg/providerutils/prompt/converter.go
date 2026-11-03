@@ -580,13 +580,31 @@ func openAIToolCalls(toolCalls []types.ToolCall, sanitizeReplayedArguments bool)
 			// RawArguments string that doesn't parse to a JSON object (e.g. an
 			// array, string, number, or invalid JSON) is sent as "{}" instead
 			// of forwarded verbatim.
+			//
+			// TS 4ae6986cd8: an input that is a JSON string literal holding
+			// JSON (a Go string Input) is the TS string input itself, so it
+			// is sent as the JSON it holds instead of double-encoded. OpenAI
+			// keeps it only when it is an object (convert-to-openai-chat-
+			// messages.ts serializeToolCallArguments); the OpenAI-compatible
+			// family, Groq and Cohere send any valid JSON as is and other
+			// text as its JSON string (SerializeToolCallArguments).
 			if sanitizeReplayedArguments {
-				var probe interface{}
-				if err := json.Unmarshal([]byte(arguments), &probe); err != nil {
-					arguments = "{}"
-				} else if _, isObject := probe.(map[string]interface{}); !isObject {
-					arguments = "{}"
+				if text, value, ok := JSONStringToolInput(arguments); ok {
+					if _, isObject := value.(map[string]interface{}); isObject {
+						arguments = text
+					} else {
+						arguments = "{}"
+					}
+				} else {
+					var probe interface{}
+					if err := json.Unmarshal([]byte(arguments), &probe); err != nil {
+						arguments = "{}"
+					} else if _, isObject := probe.(map[string]interface{}); !isObject {
+						arguments = "{}"
+					}
 				}
+			} else {
+				arguments = SerializeToolCallArguments(arguments)
 			}
 		} else {
 			args := tc.Arguments
