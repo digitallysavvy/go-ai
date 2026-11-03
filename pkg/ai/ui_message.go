@@ -162,6 +162,16 @@ type ToolUIPartApproval struct {
 	// (TS keeps the own property, so a null schema input is validated and
 	// serialized). Unexported so the struct's exported shape is unchanged.
 	inputSchemaInputNull bool
+	// reasonSet records a decoded `"reason"` string, an empty one included
+	// (TS `approval.reason ?? default` keeps ""). Unexported so the
+	// struct's exported shape is unchanged.
+	reasonSet bool
+}
+
+// hasReason reports whether the approval carries a response reason,
+// including a decoded empty string.
+func (a *ToolUIPartApproval) hasReason() bool {
+	return a != nil && (a.Reason != "" || a.reasonSet)
 }
 
 // hasInputSchemaInput reports whether the approval carries an
@@ -217,6 +227,12 @@ type ToolUIPart struct {
 	// Input otherwise means absent (input-streaming, output-error): TS keeps
 	// the null, validates it and serializes it.
 	inputNull bool
+	// inputAbsent records a decoded part without an "input" key on a state
+	// where a nil Input is otherwise serialized as null: TS keeps the key
+	// absent (a part that got its output or approval request before any
+	// input), so a decode/encode round trip and ReadUIMessages snapshots
+	// leave it out too.
+	inputAbsent bool
 }
 
 // hasInput reports whether the part carries an input, including a JSON null
@@ -722,7 +738,9 @@ func (a ToolUIPartApproval) MarshalJSON() ([]byte, error) {
 		o.field("descriptor", a.Descriptor)
 	}
 	o.str("requestReason", a.RequestReason)
-	o.str("reason", a.Reason)
+	if a.hasReason() {
+		o.field("reason", a.Reason)
+	}
 	if a.IsAutomatic != nil {
 		o.field("isAutomatic", *a.IsAutomatic)
 	}
@@ -739,7 +757,7 @@ func (a *ToolUIPartApproval) UnmarshalJSON(data []byte) error {
 		Approved         *bool           `json:"approved"`
 		Descriptor       interface{}     `json:"descriptor"`
 		RequestReason    string          `json:"requestReason"`
-		Reason           string          `json:"reason"`
+		Reason           *string         `json:"reason"`
 		IsAutomatic      *bool           `json:"isAutomatic"`
 		Signature        string          `json:"signature"`
 		InputSchemaInput json.RawMessage `json:"inputSchemaInput"`
@@ -752,9 +770,11 @@ func (a *ToolUIPartApproval) UnmarshalJSON(data []byte) error {
 		Approved:      raw.Approved,
 		Descriptor:    raw.Descriptor,
 		RequestReason: raw.RequestReason,
-		Reason:        raw.Reason,
 		IsAutomatic:   raw.IsAutomatic,
 		Signature:     raw.Signature,
+	}
+	if raw.Reason != nil {
+		a.Reason, a.reasonSet = *raw.Reason, true
 	}
 	if raw.InputSchemaInput != nil {
 		if err := json.Unmarshal(raw.InputSchemaInput, &a.InputSchemaInput); err != nil {
@@ -789,7 +809,7 @@ func (p ToolUIPart) MarshalJSON() ([]byte, error) {
 	o.field("state", p.State)
 	o.str("title", p.Title)
 	o.mapField("toolMetadata", p.ToolMetadata)
-	if p.hasInput() || toolStateRequiresInput(p.State) {
+	if p.hasInput() || (toolStateRequiresInput(p.State) && !p.inputAbsent) {
 		o.field("input", p.Input)
 	}
 	if p.Output != nil || p.State == ToolStateOutputAvailable {
@@ -864,6 +884,8 @@ func (p *ToolUIPart) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		p.inputNull = p.Input == nil
+	} else {
+		p.inputAbsent = true
 	}
 	if p.Type != "dynamic-tool" {
 		p.ToolName = ""

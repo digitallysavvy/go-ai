@@ -1992,6 +1992,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	}
 	transformStopped := false
 	var outputTracker partialOutputTracker
+	var outputText outputTextStage
 	var sinkPartialErr error
 	var preliminaryMu sync.Mutex
 	stopTransformStream := StreamTransformStopper(func() { transformStopped = true })
@@ -2003,21 +2004,33 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	forwardThroughTransformChain = func(startIdx int, chunks []provider.StreamChunk) {
 		if startIdx >= len(opts.ExperimentalTransform) {
 			for _, c := range chunks {
-				if rec != nil {
-					rec.record(c)
-					if r.partialSpec != nil && sinkPartialErr == nil {
-						partial, publish, perr := outputTracker.observe(ctx, r.partialSpec, c)
+				// TS createOutputTransformStream runs after the user
+				// transforms: the partial output follows the transformed
+				// text, and the first text block's deltas are published
+				// only when the partial changes (outputTextStage).
+				staged := []provider.StreamChunk{c}
+				if r.partialSpec != nil {
+					publish := false
+					if sinkPartialErr == nil {
+						partial, ok, perr := outputTracker.observe(ctx, r.partialSpec, c)
 						if perr != nil {
 							sinkPartialErr = perr
-						} else if publish {
+						} else if ok {
+							publish = true
 							r.mu.Lock()
 							r.partialOutput = partial
 							r.mu.Unlock()
 						}
 					}
+					staged = outputText.stage(c, publish)
 				}
-				if onChunk != nil {
-					onChunk(c)
+				for _, out := range staged {
+					if rec != nil {
+						rec.record(out)
+					}
+					if onChunk != nil {
+						onChunk(out)
+					}
 				}
 			}
 			return
@@ -2168,13 +2181,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// pendingToolCalls accumulates tool call chunks received during this step's stream.
 		// All Execute() calls happen after the stream loop ends.
 		var stepTextParts []string
-		// hasPublishedPartial/stepLastPartialJSON reset every step (audit row
-		// 2a5ed55 / WG4: partial output must be parsed from the current
-		// step's text only, not all steps concatenated), and
-		// hasPublishedPartial replaces relying on stepLastPartialJSON=="" as
-		// a "nothing published yet" sentinel, which incorrectly suppressed a
-		// genuine first empty-string partial (audit row 84f5d1b / WG4).
-		var stepPartialTracker partialOutputTracker
 		var stepToolCalls []types.ToolCall
 		// eagerApprovals: approvals resolved on each tool-call chunk (TS
 		// resolves them in the stream, right after the call part).
@@ -2491,26 +2497,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					stepContent = stepBlocks.textDelta(stepContent, chunk.ID, chunk.Text, chunk.ProviderMetadata)
 				}
 
-				// Update partial output after each text chunk (with deduplication).
-				// Only publishes when the JSON representation of the partial changes,
-				// matching the TypeScript SDK's deduplication behavior. Parses from
-				// this step's text only (audit row 2a5ed55 / WG4): in a multi-step
-				// tool-loop call, only the final step's text is ever a candidate
-				// structured-output response.
-				// With transforms the partial follows the transformed stream
-				// (see the sink in forwardThroughTransformChain).
-				if r.partialSpec != nil && rec == nil {
-					partial, publish, partialErr := stepPartialTracker.observe(ctx, r.partialSpec, *chunk)
-					if partialErr != nil {
-						r.err = partialErr
-						break
-					}
-					if publish {
-						r.mu.Lock()
-						r.partialOutput = partial
-						r.mu.Unlock()
-					}
-				}
+				// The partial output (parsed from this step's first text
+				// block only, audit row 2a5ed55 / WG4) is updated in the sink
+				// of forwardThroughTransformChain, after the transforms.
 			}
 
 			// Reasoning block boundaries: start a fresh part (carrying the
@@ -2960,8 +2949,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					startedToolInputs = map[string]string{}
 					preRefinementCalls = nil
 					stepTextParts = nil
-					stepPartialTracker.reset()
 					outputTracker.reset()
+					outputText.reset()
 					if rec != nil {
 						// TS eventProcessor retry boundary: the recorded
 						// content restarts, and the step's request and

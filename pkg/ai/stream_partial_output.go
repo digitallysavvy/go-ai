@@ -8,7 +8,7 @@ import (
 
 // partialOutputTracker mirrors TS createOutputTransformStream's partial-output
 // state: the partial is parsed from the text of the step's FIRST text block
-// only (later text blocks of the same step are ignored), the state resets at
+// (the block of the step's first text part) only (later text blocks of the same step are ignored), the state resets at
 // every start-step and retry boundary, and a partial is published only when
 // its serialised value changes. In the transform path it is fed the chunks
 // that leave the experimental_transform chain, so the partial follows the
@@ -29,14 +29,19 @@ func (t *partialOutputTracker) observe(ctx context.Context, spec outputProcessor
 	case provider.ChunkTypeStartStep:
 		t.reset()
 		return nil, false, nil
-	case provider.ChunkTypeText:
+	case provider.ChunkTypeText, provider.ChunkTypeTextStart, provider.ChunkTypeTextEnd:
 	default:
 		return nil, false, nil
 	}
+	// TS firstTextChunkId is the id of the step's first text part of any
+	// kind (text-start, text-delta or text-end).
 	if !t.hasFirstID {
 		t.hasFirstID = true
 		t.firstTextID = c.ID
 	} else if c.ID != t.firstTextID {
+		return nil, false, nil
+	}
+	if c.Type != provider.ChunkTypeText {
 		return nil, false, nil
 	}
 	t.text += c.Text
