@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http/httptest"
 	"sort"
 	"strings"
@@ -1623,5 +1624,142 @@ func TestR82streamTelemetryStepToolChoiceDefaultsToAuto(t *testing.T) {
 	got = r82streamStepToolChoices(t, twoSteps(&InternalOptions{OmitStepPromptTelemetry: true}))
 	if fmt.Sprint(got) != `[[- - -] [- - -]]` {
 		t.Fatalf("workflow steps: %v", got)
+	}
+}
+
+// r82streamStalledStream sends one text delta, then stalls forever (it
+// ignores the ctx, like a stalled HTTP body).
+type r82streamStalledStream struct {
+	sent  int
+	block chan struct{}
+}
+
+func (s *r82streamStalledStream) Next() (*provider.StreamChunk, error) {
+	s.sent++
+	switch s.sent {
+	case 1:
+		return &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "1"}, nil
+	case 2:
+		return &provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"}, nil
+	}
+	<-s.block
+	return nil, io.EOF
+}
+func (s *r82streamStalledStream) Err() error   { return nil }
+func (s *r82streamStalledStream) Close() error { return nil }
+
+// TS #22184 (stream-text.test.ts "abort signal" with a stalled body): the
+// abort ends the run at once, with the abort part and onAbort, even though
+// the provider read never returns.
+func TestR82streamAbortEndsStalledRead(t *testing.T) {
+	block := make(chan struct{})
+	defer close(block)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	aborted := make(chan struct{}, 1)
+	r, err := StreamText(ctx, StreamTextOptions{Prompt: "p",
+		Model: &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return &r82streamStalledStream{block: block}, nil
+		}},
+		OnAbortEvent: func(context.Context, GenerateTextAbortEvent) { aborted <- struct{}{} },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan []string, 1)
+	go func() { done <- r82streamLastPart(t, r) }()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case parts := <-done:
+		if parts[len(parts)-1] != "abort" {
+			t.Fatalf("parts = %v", parts)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the stalled read held the stream open after the abort")
+	}
+	select {
+	case <-aborted:
+	case <-time.After(time.Second):
+		t.Fatal("onAbort not called")
+	}
+}
+
+// r82streamEndless sends text-start, then "hello" deltas until closed.
+type r82streamEndless struct {
+	mu     sync.Mutex
+	n      int
+	closed int
+}
+
+func (s *r82streamEndless) Next() (*provider.StreamChunk, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed > 0 {
+		return nil, io.EOF
+	}
+	s.n++
+	if s.n == 1 {
+		return &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "text"}, nil
+	}
+	return &provider.StreamChunk{Type: provider.ChunkTypeText, ID: "text", Text: "hello"}, nil
+}
+func (s *r82streamEndless) Err() error { return nil }
+func (s *r82streamEndless) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed++
+	return nil
+}
+
+// stream-text-with-minimal-retention.test.ts 322: cancels the upstream
+// stream and rejects metadata when iteration stops early (Go: closing the
+// claimed stream cancels the generation; Err reports the abort).
+func TestR82streamLowMemoryEarlyStopCancels(t *testing.T) {
+	src := &r82streamEndless{}
+	r, err := StreamTextLowMemory(context.Background(), StreamTextOptions{Prompt: "test",
+		Model: &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) { return src, nil }}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := r.Stream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		c, err := s.Next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Type == provider.ChunkTypeText {
+			if c.Text != "hello" {
+				t.Fatalf("delta = %q", c.Text)
+			}
+			break
+		}
+	}
+	_ = s.Close()
+	done := make(chan error, 1)
+	go func() { done <- r.Err() }()
+	select {
+	case err := <-done:
+		if err == nil || !isAbortErr(context.Background(), err) {
+			t.Fatalf("Err() = %v, want an abort", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("metadata never settled after the consumer stopped")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		src.mu.Lock()
+		closed := src.closed
+		src.mu.Unlock()
+		if closed > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("upstream stream not closed")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
