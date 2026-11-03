@@ -50,6 +50,21 @@ func extractXAIFilesOptions(providerOptions map[string]interface{}) (xaiFilesOpt
 	if !ok || raw == nil {
 		return opts, nil
 	}
+	// TS z.looseObject({teamId, filePath: z.string().optional(),
+	// expiresAfter: z.number().int()...optional()}): a present null or a
+	// non-string filePath is invalid.
+	if m, ok := raw.(map[string]interface{}); ok {
+		for _, k := range []string{"teamId", "filePath", "expiresAfter"} {
+			if v, present := m[k]; present && v == nil {
+				return opts, invalidXAIProviderOptions(fmt.Errorf("invalid input: %s is null", k))
+			}
+		}
+		if v, present := m["filePath"]; present {
+			if _, ok := v.(string); !ok {
+				return opts, invalidXAIProviderOptions(fmt.Errorf("invalid input: expected string at filePath"))
+			}
+		}
+	}
 	b, err := json.Marshal(raw)
 	if err != nil {
 		return opts, invalidXAIProviderOptions(err)
@@ -143,9 +158,10 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, err
 	}
 
-	filename := out.Filename
-	if filename == "" {
-		filename = opts.Filename
+	// TS `response.filename ?? filename`, reported when truthy.
+	filename := opts.Filename
+	if out.Filename != nil {
+		filename = *out.Filename
 	}
 
 	succeeded = true
@@ -203,7 +219,7 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 
 	return &provider.FileMetadataResult{
 		ProviderReference: types.ProviderReference{"xai": out.ID},
-		Filename:          out.Filename,
+		Filename:          xaiFilesString(out.Filename),
 		ByteSize:          out.Bytes,
 		CreatedAt:         xaiUnixSecondsToTime(out.CreatedAt),
 		ExpiresAt:         xaiUnixSecondsToTime(out.ExpiresAt),
@@ -305,19 +321,27 @@ type xaiFileResponse struct {
 	Bytes     *int64   `json:"bytes,omitempty"`
 	CreatedAt *float64 `json:"created_at,omitempty"`
 	ExpiresAt *float64 `json:"expires_at,omitempty"`
-	Filename  string   `json:"filename,omitempty"`
-	Purpose   string   `json:"purpose,omitempty"`
-	Status    string   `json:"status,omitempty"`
+	Filename  *string  `json:"filename,omitempty"`
+	Purpose   *string  `json:"purpose,omitempty"`
+	Status    *string  `json:"status,omitempty"`
 }
 
-// xaiFileMetadata mirrors TS XaiFiles#toFileMetadata.
+func xaiFilesString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// xaiFileMetadata mirrors TS XaiFiles#toFileMetadata: each field that is
+// not null (a present empty string included).
 func xaiFileMetadata(r xaiFileResponse) map[string]interface{} {
 	meta := map[string]interface{}{}
-	if r.Filename != "" {
-		meta["filename"] = r.Filename
+	if r.Filename != nil {
+		meta["filename"] = *r.Filename
 	}
-	if r.Purpose != "" {
-		meta["purpose"] = r.Purpose
+	if r.Purpose != nil {
+		meta["purpose"] = *r.Purpose
 	}
 	if r.Bytes != nil {
 		meta["bytes"] = *r.Bytes
@@ -325,8 +349,8 @@ func xaiFileMetadata(r xaiFileResponse) map[string]interface{} {
 	if r.CreatedAt != nil {
 		meta["createdAt"] = xaiUnixSecondsMetadataValue(*r.CreatedAt)
 	}
-	if r.Status != "" {
-		meta["status"] = r.Status
+	if r.Status != nil {
+		meta["status"] = *r.Status
 	}
 	if r.ExpiresAt != nil {
 		meta["expiresAt"] = xaiUnixSecondsMetadataValue(*r.ExpiresAt)

@@ -133,7 +133,7 @@ func hfConvertImageContentToImagePart(img types.ImageContent) (hfContentPart, er
 	if mediaType == "" {
 		mediaType = "image/jpeg"
 	}
-	full, err := hfResolveFullMediaType(mediaType, img.Image)
+	full, err := hfResolveFullMediaType(mediaType, img.Image, "")
 	if err != nil {
 		return hfContentPart{}, err
 	}
@@ -175,13 +175,23 @@ func hfConvertFileToImagePart(file types.FileContent) (hfContentPart, error) {
 		if hfTopLevelMediaType(mediaType) != "image" {
 			return hfContentPart{}, &providererrors.UnsupportedFunctionalityError{Functionality: fmt.Sprintf("file part media type %s", mediaType)}
 		}
-		full, err := hfResolveFullMediaType(mediaType, fd.Data)
+		// A base64 string is sent as is (TS `${part.data.data}`) and
+		// sniffed from its prefix only (decodePrefix).
+		b64 := ""
+		if len(fd.Data) == 0 {
+			b64 = fd.DataString
+		}
+		full, err := hfResolveFullMediaType(mediaType, fd.Data, b64)
 		if err != nil {
 			return hfContentPart{}, err
 		}
+		payload := b64
+		if payload == "" {
+			payload = base64.StdEncoding.EncodeToString(fd.Data)
+		}
 		return hfContentPart{
 			Type:     "input_image",
-			ImageURL: fmt.Sprintf("data:%s;base64,%s", full, base64.StdEncoding.EncodeToString(fd.Data)),
+			ImageURL: fmt.Sprintf("data:%s;base64,%s", full, payload),
 		}, nil
 	}
 }
@@ -230,13 +240,25 @@ func hfTopLevelMediaType(mediaType string) string {
 // hfResolveFullMediaType mirrors TS resolveFullMediaType: a full media type
 // (e.g. "image/png") is returned as-is; otherwise (e.g. "image" or
 // "image/*") the subtype is sniffed from the inline bytes.
-func hfResolveFullMediaType(mediaType string, data []byte) (string, error) {
+func hfResolveFullMediaType(mediaType string, data []byte, b64 string) (string, error) {
 	if hfIsFullMediaType(mediaType) {
 		return mediaType, nil
 	}
-	detected := fileutil.DetectMediaType(data)
-	if detected.Category == "image" && detected.MimeType != "" {
-		return detected.MimeType, nil
+	// TS detectMediaType({data, topLevelType}): the signatures of the
+	// top-level type, over the bytes or the decoded prefix of a string.
+	top := hfTopLevelMediaType(mediaType)
+	var detected string
+	var ok bool
+	if len(data) == 0 && b64 != "" {
+		var err error
+		if detected, ok, err = fileutil.DetectMediaTypeSignatureBase64(b64, top); err != nil {
+			return "", err
+		}
+	} else {
+		detected, ok = fileutil.DetectMediaTypeSignature(data, top)
+	}
+	if ok && detected != "" {
+		return detected, nil
 	}
 	return "", &providererrors.UnsupportedFunctionalityError{
 		Functionality: fmt.Sprintf("file of media type %q must specify subtype since it could not be auto-detected", mediaType),

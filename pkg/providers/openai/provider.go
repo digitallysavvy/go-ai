@@ -199,6 +199,12 @@ type Config struct {
 	// TransformRequestBody; the returned warnings are appended to the call's
 	// warnings.
 	TransformRequestBodyWithWarnings func(body map[string]interface{}) (map[string]interface{}, []types.Warning) `json:"-"`
+
+	// MetadataExtractor, for OpenAICompatible chat models, adds provider
+	// metadata read from the raw response: the parsed body of DoGenerate
+	// and every parsed stream event, built into the finish part (TS
+	// openai-compatible `metadataExtractor`). Ignored for native OpenAI.
+	MetadataExtractor MetadataExtractor `json:"-"`
 }
 
 // New creates a new OpenAI provider with the given configuration

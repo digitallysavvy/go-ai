@@ -6,6 +6,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -245,19 +246,48 @@ func deepseekResolveImageMediaType(mediaType string) (string, error) {
 func deepseekFullImageMediaType(f types.FileContent) (string, error) {
 	mediaType := firstNonEmptyDS(f.MediaType, f.MimeType, f.FileData.MediaType)
 	inline := deepseekFileURL(f) == ""
-	resolved, err := prompt.ResolveFullMediaType(mediaType, deepseekFileBytes(f), inline)
+	var resolved string
+	var err error
+	if s := deepseekFileDataString(f); inline && s != "" {
+		resolved, err = deepseekResolveBase64MediaType(mediaType, s)
+	} else {
+		resolved, err = prompt.ResolveFullMediaType(mediaType, deepseekFileBytes(f), inline)
+	}
 	if err != nil {
 		return "", err
 	}
 	return deepseekResolveImageMediaType(resolved)
 }
 
-func deepseekImageDataURL(mediaType string, data []byte) string {
+// deepseekResolveBase64MediaType is TS resolveFullMediaType for a base64
+// string: detectMediaType decodes only the sniffed prefix (decodePrefix).
+func deepseekResolveBase64MediaType(mediaType, data string) (string, error) {
+	if full, err := prompt.ResolveFullMediaType(mediaType, nil, false); err == nil {
+		return full, nil
+	}
+	top, _, _ := strings.Cut(mediaType, "/")
+	detected, ok, err := fileutil.DetectMediaTypeSignatureBase64(data, top)
+	if err != nil {
+		return "", err
+	}
+	if ok && detected != "" {
+		return detected, nil
+	}
+	return prompt.ResolveFullMediaType(mediaType, nil, true)
+}
+
+// deepseekImageDataURL builds the data URL; TS convertToBase64 returns a
+// base64 string unchanged.
+func deepseekImageDataURL(mediaType string, f types.FileContent) string {
 	wireMediaType := mediaType
 	if wireMediaType == "image/jpg" {
 		wireMediaType = "image/jpeg"
 	}
-	return fmt.Sprintf("data:%s;base64,%s", wireMediaType, base64.StdEncoding.EncodeToString(data))
+	payload := deepseekFileDataString(f)
+	if payload == "" {
+		payload = base64.StdEncoding.EncodeToString(deepseekFileBytes(f))
+	}
+	return fmt.Sprintf("data:%s;base64,%s", wireMediaType, payload)
 }
 
 // deepseekResolveUserImagePart builds a user-message content part for an
@@ -304,8 +334,7 @@ func deepseekResolveUserImagePart(f types.FileContent, providerOptionsName strin
 		return map[string]interface{}{"type": "image_url", "image_url": imageURL}, nil
 	}
 
-	data := deepseekFileBytes(f)
-	dataURL := deepseekImageDataURL(mediaType, data)
+	dataURL := deepseekImageDataURL(mediaType, f)
 
 	if fileData {
 		if imageDetail != "" {
@@ -360,7 +389,7 @@ func deepseekResolveToolResultImagePart(f types.FileContent, providerOptionsName
 		}
 		url = u
 	} else {
-		url = deepseekImageDataURL(mediaType, deepseekFileBytes(f))
+		url = deepseekImageDataURL(mediaType, f)
 	}
 
 	imageURL := map[string]interface{}{"url": url}
@@ -392,17 +421,19 @@ func deepseekFileURL(f types.FileContent) string {
 }
 
 func deepseekFileBytes(f types.FileContent) []byte {
-	if f.FileData.Type == types.FileDataTypeData {
-		if len(f.FileData.Data) > 0 {
-			return f.FileData.Data
-		}
-		if f.FileData.DataString != "" {
-			if decoded, err := types.DecodeFileDataString(f.FileData.DataString); err == nil {
-				return decoded
-			}
-		}
+	if f.FileData.Type == types.FileDataTypeData && len(f.FileData.Data) > 0 {
+		return f.FileData.Data
 	}
 	return f.Data
+}
+
+// deepseekFileDataString is the base64 string of a data part given as one
+// (FileData.DataString), or "".
+func deepseekFileDataString(f types.FileContent) string {
+	if f.FileData.Type == types.FileDataTypeData && len(f.FileData.Data) == 0 {
+		return f.FileData.DataString
+	}
+	return ""
 }
 
 func deepseekConvertAssistantMessage(msg types.Message, index, lastUserMessageIndex int, isV4 bool) map[string]interface{} {

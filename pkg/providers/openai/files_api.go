@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"strconv"
 	"strings"
 	"time"
 
@@ -32,19 +31,21 @@ type openAIFilesResponse struct {
 	Object    string   `json:"object"`
 	Bytes     *int64   `json:"bytes"`
 	CreatedAt *float64 `json:"created_at"`
-	Filename  string   `json:"filename"`
-	Purpose   string   `json:"purpose"`
-	Status    string   `json:"status"`
+	Filename  *string  `json:"filename"`
+	Purpose   *string  `json:"purpose"`
+	Status    *string  `json:"status"`
 	ExpiresAt *float64 `json:"expires_at"`
 }
 
 func (r openAIFilesResponse) toMetadata() map[string]interface{} {
+	// TS toFileMetadata spreads each field that is not null (a present
+	// empty string included).
 	meta := map[string]interface{}{}
-	if r.Filename != "" {
-		meta["filename"] = r.Filename
+	if r.Filename != nil {
+		meta["filename"] = *r.Filename
 	}
-	if r.Purpose != "" {
-		meta["purpose"] = r.Purpose
+	if r.Purpose != nil {
+		meta["purpose"] = *r.Purpose
 	}
 	if r.Bytes != nil {
 		meta["bytes"] = *r.Bytes
@@ -52,8 +53,8 @@ func (r openAIFilesResponse) toMetadata() map[string]interface{} {
 	if r.CreatedAt != nil {
 		meta["createdAt"] = unixSecondsMetadataValue(*r.CreatedAt)
 	}
-	if r.Status != "" {
-		meta["status"] = r.Status
+	if r.Status != nil {
+		meta["status"] = *r.Status
 	}
 	if r.ExpiresAt != nil {
 		meta["expiresAt"] = unixSecondsMetadataValue(*r.ExpiresAt)
@@ -124,13 +125,14 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		purpose = filesOpts.purpose
 	}
 
-	parts := []internalhttp.MultipartStreamPart{
+	fields := []internalhttp.MultipartStreamPart{
 		{Name: "purpose", Value: purpose},
 	}
 	if filesOpts.expiresAfter != nil {
-		parts = append(parts,
+		fields = append(fields,
 			internalhttp.MultipartStreamPart{Name: "expires_after[anchor]", Value: "created_at"},
-			internalhttp.MultipartStreamPart{Name: "expires_after[seconds]", Value: strconv.FormatFloat(*filesOpts.expiresAfter, 'f', -1, 64)},
+			// TS String(expiresAfter)
+			internalhttp.MultipartStreamPart{Name: "expires_after[seconds]", Value: providerutils.JSNumberString(*filesOpts.expiresAfter)},
 		)
 	}
 
@@ -150,9 +152,15 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		}
 		content = bytes.NewReader(fileBytes)
 	}
-	parts = append(parts, internalhttp.MultipartStreamPart{
+	file := internalhttp.MultipartStreamPart{
 		IsFile: true, Name: "file", Filename: filename, MediaType: mediaType, Content: content,
-	})
+	}
+	// TS streams the fields before the file (postMultipartStreamToApi), and
+	// appends an inline file to its FormData before the fields.
+	parts := append(fields, file)
+	if opts.Data.Type != types.FileDataTypeStream {
+		parts = append([]internalhttp.MultipartStreamPart{file}, fields...)
+	}
 
 	body, contentType, err := internalhttp.NewMultipartStreamBody(parts)
 	if err != nil {
@@ -183,9 +191,10 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, err
 	}
 
-	resultFilename := out.Filename
-	if resultFilename == "" {
-		resultFilename = opts.Filename
+	// TS `response.filename ?? filename`, reported when truthy.
+	resultFilename := opts.Filename
+	if out.Filename != nil {
+		resultFilename = *out.Filename
 	}
 
 	succeeded = true
@@ -231,7 +240,7 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 
 	return &provider.FileMetadataResult{
 		ProviderReference: types.ProviderReference{"openai": out.ID},
-		Filename:          out.Filename,
+		Filename:          filesString(out.Filename),
 		ByteSize:          out.Bytes,
 		CreatedAt:         unixSecondsToTime(out.CreatedAt),
 		ExpiresAt:         unixSecondsToTime(out.ExpiresAt),
@@ -348,14 +357,15 @@ func parseOpenAIFilesOptions(providerOptions map[string]interface{}) (openAIFile
 	if !ok {
 		return out, invalid("Invalid input: expected object")
 	}
-	if v, ok := openaiOpts["purpose"]; ok && v != nil {
+	// TS z.string().optional() / z.number().optional(): null is invalid.
+	if v, ok := openaiOpts["purpose"]; ok {
 		s, ok := v.(string)
 		if !ok {
 			return out, invalid("Invalid input: expected string at purpose")
 		}
 		out.purpose = s
 	}
-	if v, ok := openaiOpts["expiresAfter"]; ok && v != nil {
+	if v, ok := openaiOpts["expiresAfter"]; ok {
 		n, ok := numericValue(v)
 		if !ok {
 			return out, invalid("Invalid input: expected number at expiresAfter")
@@ -396,4 +406,11 @@ func chooseFilename(filename string) string {
 		return "blob"
 	}
 	return filename
+}
+
+func filesString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

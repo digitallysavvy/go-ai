@@ -6,6 +6,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -342,9 +343,18 @@ func convertMoonshotFilePart(fc types.FileContent) (map[string]interface{}, erro
 			return map[string]interface{}{"type": "video_url", "video_url": map[string]interface{}{"url": url}}, nil
 		case "text":
 			var textContent string
-			if normalized.FileData.Type == types.FileDataTypeURL {
+			switch {
+			case normalized.FileData.Type == types.FileDataTypeURL:
 				textContent = normalized.FileData.URL
-			} else {
+			case normalized.FileData.DataString != "":
+				// TS TextDecoder over convertBase64ToUint8Array (atob
+				// throws on an invalid string).
+				b, err := fileutil.ConvertBase64ToBytes(normalized.FileData.DataString)
+				if err != nil {
+					return nil, err
+				}
+				textContent = string(b)
+			default:
 				textContent = string(normalized.FileData.Data)
 			}
 			return map[string]interface{}{"type": "text", "text": textContent}, nil
@@ -369,7 +379,8 @@ func formatMoonshotMediaURL(fd types.FileData, supportedMediaTypes []string, top
 	if fd.Type == types.FileDataTypeData {
 		// TS resolveFullMediaType: a bare or wildcard type on inline bytes
 		// is sniffed from the bytes.
-		resolved, err := prompt.ResolveFullMediaType(mediaType, fd.Data, true)
+		// A base64 string is sniffed from its prefix only (decodePrefix).
+		resolved, err := moonshotResolveDataMediaType(mediaType, fd)
 		if err != nil {
 			return "", err
 		}
@@ -387,5 +398,30 @@ func formatMoonshotMediaURL(fd types.FileData, supportedMediaTypes []string, top
 	if fd.Type == types.FileDataTypeURL {
 		return fd.URL, nil
 	}
-	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(fd.Data), nil
+	// TS convertToBase64 returns a base64 string unchanged.
+	payload := fd.DataString
+	if payload == "" {
+		payload = base64.StdEncoding.EncodeToString(fd.Data)
+	}
+	return "data:" + mediaType + ";base64," + payload, nil
+}
+
+// moonshotResolveDataMediaType is TS resolveFullMediaType for an inline
+// (data) file part given as bytes or as a base64 string.
+func moonshotResolveDataMediaType(mediaType string, fd types.FileData) (string, error) {
+	if fd.DataString == "" {
+		return prompt.ResolveFullMediaType(mediaType, fd.Data, true)
+	}
+	if full, err := prompt.ResolveFullMediaType(mediaType, nil, false); err == nil {
+		return full, nil
+	}
+	top, _, _ := strings.Cut(mediaType, "/")
+	detected, ok, err := fileutil.DetectMediaTypeSignatureBase64(fd.DataString, top)
+	if err != nil {
+		return "", err
+	}
+	if ok && detected != "" {
+		return detected, nil
+	}
+	return prompt.ResolveFullMediaType(mediaType, nil, true)
 }

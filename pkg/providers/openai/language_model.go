@@ -156,6 +156,14 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	m.applyChatLogprobs(result, resp.Body)
 	if m.provider.config.OpenAICompatible {
 		m.applyCompatMetadataKey(result, opts.ProviderOptions)
+		if ex := m.provider.config.MetadataExtractor; ex != nil {
+			extracted, err := ex.ExtractMetadata(ctx, rawResponse)
+			if err != nil {
+				return nil, err
+			}
+			key := providerutils.ResolveOpenAICompatibleMetadataKey(m.compatName(), opts.ProviderOptions)
+			result.ProviderMetadata = mergeExtractedMetadata(result.ProviderMetadata, key, extracted)
+		}
 		// The compat usage schema is loose: extra wire fields are kept in raw.
 		if raw, ok := rawResponse.(map[string]interface{}); ok {
 			if u, ok := raw["usage"].(map[string]interface{}); ok {
@@ -205,6 +213,9 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	inner.compat = m.provider.config.OpenAICompatible
 	if inner.compat {
 		inner.metaKey = providerutils.ResolveOpenAICompatibleMetadataKey(m.compatName(), opts.ProviderOptions)
+		if ex := m.provider.config.MetadataExtractor; ex != nil {
+			inner.metaExtractor = ex.CreateStreamExtractor()
+		}
 		// TS openai-compatible pendingToolCalls: indexed tool call deltas
 		// wait for their function.name (native OpenAI throws at once).
 		inner.toolCallTracker.BufferNamelessIndexedCalls()
@@ -1287,6 +1298,9 @@ type openAIStream struct {
 	// annotations/logprobs); metaKey is the providerMetadata namespace.
 	compat  bool
 	metaKey string
+	// metaExtractor is the Config.MetadataExtractor stream extractor
+	// (compat only).
+	metaExtractor StreamMetadataExtractor
 
 	// The terminal finish chunk is held back until the stream ends so a
 	// trailing usage-only chunk (stream_options.include_usage) can be merged
@@ -1407,7 +1421,7 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 					Reasoning        *string         `json:"reasoning,omitempty"`
 					ToolCalls        []struct {
 						Index    *int    `json:"index"`
-						ID       string  `json:"id"`
+						ID       *string `json:"id"`
 						Type     *string `json:"type"` // nullable: OpenAI may send null for type in streaming deltas (#12901)
 						Function struct {
 							Name      streaming.WireName `json:"name"`
@@ -1455,6 +1469,14 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			continue
 		}
 		rawChunk := s.rawChunk(event.Data)
+		if s.metaExtractor != nil {
+			// TS metadataExtractor.processChunk(chunk.rawValue) for every
+			// chunk that passes the schema, before the error check.
+			var parsed interface{}
+			if json.Unmarshal([]byte(event.Data), &parsed) == nil {
+				s.metaExtractor.ProcessChunk(parsed)
+			}
+		}
 		if len(chunkData.Error) > 0 {
 			// TS throwIfOpenAIStreamErrorBeforeOutput wraps only the native OpenAI
 			// models; the openai-compatible chat model emits an error part.
@@ -1591,7 +1613,13 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 				if !s.compat && tc.Type != nil {
 					toolCallType = *tc.Type
 				}
-				d := streaming.ToolCallDelta{Index: tc.Index, ID: tc.ID, Name: tc.Function.Name.Value, Type: toolCallType}
+				d := streaming.ToolCallDelta{Index: tc.Index, Name: tc.Function.Name.Value, Type: toolCallType,
+					// TS openai-compatible pendingToolCalls keeps the first
+					// non-null id and extra_content.
+					IDPresent: tc.ID != nil, MetadataPresent: tc.ExtraContent != nil}
+				if tc.ID != nil {
+					d.ID = *tc.ID
+				}
 				if tc.Function.Arguments != nil {
 					d.ArgumentsDelta, d.ArgumentsPresent = *tc.Function.Arguments, true
 				}
@@ -1840,7 +1868,11 @@ func (s *openAIStream) endStream() {
 		if len(s.logprobs) > 0 && !s.compat {
 			meta["logprobs"] = s.logprobs
 		}
-		if raw, err := json.Marshal(map[string]interface{}{key: meta}); err == nil {
+		all := map[string]interface{}{key: meta}
+		if s.metaExtractor != nil {
+			all = mergeExtractedMetadata(all, key, s.metaExtractor.BuildMetadata())
+		}
+		if raw, err := json.Marshal(all); err == nil {
 			finish.ProviderMetadata = raw
 		}
 		s.flushQueue = append(s.flushQueue, finish)

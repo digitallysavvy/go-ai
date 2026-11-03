@@ -11,6 +11,8 @@
 import fs from 'fs';
 import vm from 'vm';
 import path from 'path';
+import * as nodeModule from 'node:module';
+const stripTypeScriptTypes = nodeModule.stripTypeScriptTypes;
 
 const testFile = process.argv[2];
 const wantAsserts = process.argv.includes('--asserts') || process.argv.some(a => a.startsWith('--fn='));
@@ -193,6 +195,22 @@ if (wantAsserts) {
     var expect = { arrayContaining: (a) => ({ __arrayContaining: a }), objectContaining: (o) => ({ __objectContaining: o }) };
   `, ctx);
 }
+if (fnName) {
+  // top-level function declarations (a test's generateId) evaluate as
+  // functions, which the fn-mode arguments record as {"__fn": NAME}
+  // (a helper that builds a prompt runs for real when its TS strips to JS)
+  for (const m of src.matchAll(/^(?:export )?function (\w+)\s*\(/gm)) {
+    if (m[1] === fnName) continue;
+    let defined = false;
+    const pe = balanced(src, m.index + m[0].length - 1);
+    const open = pe > 0 ? src.indexOf('{', pe) : -1;
+    const body = open > 0 ? balanced(src, open) : -1;
+    if (body > 0 && stripTypeScriptTypes) {
+      try { vm.runInContext(stripTypeScriptTypes(src.slice(m.index, body).replace(/^export /, ''), { mode: 'strip' }), ctx); defined = typeof ctx[m[1]] === 'function'; } catch (e) { /* not plain JS after stripping */ }
+    }
+    if (!defined) vm.runInContext(`var ${m[1]} = function ${m[1]}() {}`, ctx);
+  }
+}
 {
   const re = wantAsserts ? /^(?:export )?(?:const|let) (\w+)(?::[^=]+)?\s*=\s+/gm : /^(?:export )?(?:const|let) (\w+)(?::[^=]+)? = /gm;
   let m;
@@ -214,7 +232,7 @@ if (wantAsserts) {
 }
 function dropParamTypes(s) { return s.replace(/\((\s*[A-Za-z_$][\w$]*)\s*:\s*[\w$.<>\[\]| ]+\)\s*=>/g, '($1) =>'); }
 // strip TS-only syntax so the literal evaluates as JS
-function stripTS(s) { return s.replace(/\s+satisfies\s+[\w.]+(<[^>]*>)?/g, '').replace(/\s+as\s+const\b/g, ''); }
+function stripTS(s) { return s.replace(/\s+satisfies\s+[\w.]+(<[^>]*>)?/g, '').replace(/\s+as\s+const\b/g, '').replace(/\s+as\s+(?:unknown\s+as\s+)?[\w$.]+(?:<[^;]*>)?(?:\[\])*\s*;?\s*$/, ''); }
 // end of the statement that starts at j: the next ';' outside brackets/strings
 function stmtEnd(s, j) {
   for (let k = j; k < s.length; k++) {
@@ -292,7 +310,7 @@ function splitTopLevelArgs(inner) {
   return parts.map(p => p.trim());
 }
 function evalArgsJSON(srcs) {
-  return srcs.map(a => JSON.parse(JSON.stringify(evalExpr(a), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (Object.prototype.toString.call(v) === '[object Set]' ? { __set: [...v] } : (v === undefined ? { __undef: true } : v)))));
+  return srcs.map(a => JSON.parse(JSON.stringify(evalExpr(a), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (Object.prototype.toString.call(v) === '[object Set]' ? { __set: [...v] } : (fnName && typeof v === 'function' ? { __fn: kk || v.name || 'fn', src: String(v) } : (v === undefined ? { __undef: true } : v))))));
 }
 
 // one test-server response value (`{ type: 'json-value', ... }`) in the
@@ -503,14 +521,16 @@ for (let i = 0; i < starts.length; i++) {
       if (cur.trim() !== '') parts.push(cur);
       fnArgSrc = parts.map(p => p.trim());
       try {
-        fnArgs = fnArgSrc.map(a => JSON.parse(JSON.stringify(evalExpr(a), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (Object.prototype.toString.call(v) === '[object Set]' ? { __set: [...v] } : (v === undefined ? { __undef: true } : v)))));
+        // a function argument (e.g. a generateId the test defines) becomes
+        // an opaque {"__fn": NAME} marker the Go adapter supplies.
+        fnArgs = fnArgSrc.map(a => JSON.parse(JSON.stringify(evalExpr(a), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (Object.prototype.toString.call(v) === '[object Set]' ? { __set: [...v] } : (typeof v === 'function' ? { __fn: kk || v.name || 'fn', src: String(v) } : (v === undefined ? { __undef: true } : v))))));
       } catch (err) { fnArgs = null; }
     }
     const aliases2 = {};
-    const dstr = new RegExp('(?:const|let)\\s*\\{([^}]*)\\}\\s*=\\s*await\\s+' + fnName + '\\(').exec(body0);
+    const dstr = new RegExp('(?:const|let)\\s*\\{([^}]*)\\}\\s*=\\s*(?:await\\s+)?' + fnName + '\\(').exec(body0);
     if (dstr) for (const nm of dstr[1].split(',')) { const n = nm.trim().split(':').pop().trim(); if (n) aliases2[n] = 'result.' + nm.trim().split(':')[0].trim(); }
-    const rv = new RegExp('(?:const|let)\\s+(\\w+)\\s*=\\s*await\\s+' + fnName + '\\(').exec(body0);
-    if (rv) aliases2[rv[1]] = 'result';
+    const rv = new RegExp('(?:const|let)\\s+(\\w+)\\s*=\\s*(await\\s+)?' + fnName + '\\(').exec(body0);
+    if (rv && (rv[2] || rv[1] !== 'result')) aliases2[rv[1]] = 'result';
     pathAliases(body0, aliases2);
     const asserts2 = [];
     const reE2 = /\bexpect\(/g;
@@ -705,6 +725,17 @@ for (let i = 0; i < starts.length; i++) {
     // provider\n  .interactions('id')\n  .doGenerate(...)
     if (wantAsserts && !midVar) { const ci = /\.interactions\(\s*['"]([^'"]+)['"]\s*\)\s*\.do(?:Generate|Stream)\(/.exec(body0); if (ci) midVar = ci[1]; }
   }
+  // const provider = createX({ ... }) inside the test, called by the test:
+  // its JSON-serializable settings (functions dropped).
+  let providerSettings = null;
+  if (wantAsserts) {
+    const pm = /\b(?:const|let)\s+(\w+)\s*=\s*create\w+\(\s*\{/.exec(body0);
+    if (pm && new RegExp('\\b' + pm[1] + '\\s*[.(]').test(body0.slice(pm.index + pm[0].length))) {
+      const os = pm.index + pm[0].length - 1;
+      const oe = balanced(body0, os);
+      if (oe > os) { try { const v = JSON.parse(JSON.stringify(evalExpr(body0.slice(os, oe)))); if (v && typeof v === 'object' && Object.keys(v).length) providerSettings = v; } catch (e) { /* not evaluable */ } }
+    }
+  }
   let callArgs = null, callKind = null, callObj = null;
   if (call) {
     callKind = call[1].toLowerCase();
@@ -845,6 +876,6 @@ for (let i = 0; i < starts.length; i++) {
     }
   }
   for (const n of Object.keys(saved)) { if (saved[n] === undefined) delete ctx[n]; else ctx[n] = saved[n]; }
-  if (exps.length || asserts.length) out.push({ test: name, response, callKind, callArgs, call: callObj, modelId: midVar || (mid ? mid[1] : null), suspect, topDescribe, exps, ...(wantAsserts ? { asserts, aliases } : {}), ...(routes ? { routes } : {}) });
+  if (exps.length || asserts.length) out.push({ test: name, response, callKind, callArgs, call: callObj, modelId: midVar || (mid ? mid[1] : null), suspect, topDescribe, exps, ...(wantAsserts ? { asserts, aliases } : {}), ...(routes ? { routes } : {}), ...(providerSettings ? { providerSettings } : {}) });
 }
 console.log(JSON.stringify(out));

@@ -146,21 +146,24 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	}
 	// TS prepareTools (openai-compatible): a provider-defined tool is dropped
 	// with an `unsupported` warning instead of being sent as a function tool.
-	var warnings []types.Warning
+	var toolWarnings []types.Warning
 	if len(opts.Tools) > 0 {
 		functionTools, dropped := tool.DropProviderDefinedTools(opts.Tools, nil)
-		warnings = append(warnings, dropped...)
+		toolWarnings = dropped
 		body["tools"] = tool.ToOpenAIFormat(functionTools)
 		if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
 	}
-	// Penalties and seed are sent, topK warns, unknown providerOptions.ollama
-	// keys are spread into the body (TS openai-compatible getArgs).
+	// TS openai-compatible getArgs: the deprecated 'openai-compatible' key
+	// warning first; penalties and seed are sent, topK warns, unknown
+	// providerOptions.ollama keys are spread into the body; tool warnings
+	// come last.
+	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("ollama", opts.ProviderOptions)
 	warnings = append(warnings, providerutils.ApplyOpenAICompatibleCallSettings(body, opts.FrequencyPenalty, opts.PresencePenalty, opts.Seed, opts.TopK, "ollama", opts.ProviderOptions)...)
+	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
 	// "json" is not a Chat Completions response_format type: json becomes
 	// json_object, or json_schema when a schema is given.
-	compatibleOptions, _ := providerutils.ResolveOpenAICompatibleProviderOptions("ollama", opts.ProviderOptions)
 	responseFormat, formatWarnings := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
 		StructuredOutputs: true,
 		StrictJSONSchema:  providerutils.BoolOption(compatibleOptions, "strictJsonSchema", true),
@@ -173,7 +176,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["reasoning_effort"] = string(*opts.Reasoning)
 	}
 	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
-	return body, warnings
+	return body, append(warnings, toolWarnings...)
 }
 
 func (m *LanguageModel) convertResponse(response ollamaResponse) *types.GenerateResult {

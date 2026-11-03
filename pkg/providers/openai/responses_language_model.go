@@ -2291,9 +2291,10 @@ func programCallArguments(item responses.ProgramItem) (map[string]interface{}, s
 // (scroll_x/scroll_y) to SDK (scrollX/scrollY) field names.
 func computerCallArguments(item responses.ComputerCall) (map[string]interface{}, string) {
 	// TS: `actions ?? (action != null ? [action] : [])` -- fall back to the
-	// singular `action` field when `actions` is empty/absent.
+	// singular `action` field only when `actions` is absent or null (a
+	// present empty list stays empty).
 	rawActions := item.Actions
-	if len(rawActions) == 0 && item.Action != nil {
+	if rawActions == nil && item.Action != nil {
 		rawActions = []map[string]interface{}{item.Action}
 	}
 	actions := make([]interface{}, 0, len(rawActions))

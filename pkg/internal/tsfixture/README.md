@@ -157,6 +157,24 @@ mode, so existing case files regenerate byte for byte.
   result; `ErrUnsupported` skips a case. `WarningsToTS` renders warnings the TS
   way (Go also mirrors `details` into `message`).
 
+Since round 82, `--asserts` also records `providerSettings`: the
+JSON-serializable settings of a provider a test creates and calls itself
+(`const provider = createGoogle({ headers: ... })`); `Run` exposes them as
+`CaseProviderSettings` while the test's model factory runs. A `fixture-json`
+response is served compacted, as `JSON.stringify` of the parsed fixture (the
+TS `prepareJsonFixtureResponse`), with its `content-length`; response headers
+keep `content-length` only in a case whose expectations show it.
+
+Since round 82, `--fn=NAME` also evaluates locals with a trailing TS cast
+(`const steps = [...] as Array<Step>;`), records `const { a } = NAME(...)`
+without `await` as aliases, and records a function argument (a `generateId`
+the test defines, also as a top-level `function` declaration) as an opaque
+`{"__fn": NAME, "src": SOURCE}` marker the Go adapter supplies (a mapping such
+as `name === 'a' ? 'b' : name` can be read from the source). A top-level
+helper function the arguments call (a prompt builder) runs for real when its
+TypeScript strips to plain JS (`node:module` `stripTypeScriptTypes`).
+Function-level files without those shapes regenerate byte for byte.
+
 Test hooks used by the provider tests: `ProviderToolHook` (and
 `anthropictools.ProviderTool` for Anthropic tools), `ToolNameAlias` /
 `PromptToolNameAlias` (Go names provider tools by id), `MetadataKeyAlias`,

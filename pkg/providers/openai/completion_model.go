@@ -116,6 +116,11 @@ func (m *CompletionModel) DoStream(ctx context.Context, opts *provider.GenerateO
 
 	inner := newCompletionStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, m.Provider(), httpResp.Header)
 	inner.compat = m.provider.config.OpenAICompatible
+	if inner.compat {
+		// TS OpenAICompatibleCompletionLanguageModel starts from
+		// {unified: 'other'} (the OpenAI model from 'interrupted').
+		inner.finishReason = types.FinishReasonOther
+	}
 	inner.requestBody = body
 	return streaming.NewWarningsStream(inner, warnings), nil
 }
@@ -520,7 +525,8 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 		}
 		if perr != nil {
 			s.queueRawChunk(event.Data)
-			s.finishReason = types.FinishReasonError
+			// TS finishReason = {unified: 'error', raw: undefined}.
+			s.finishReason, s.rawFinishReason = types.FinishReasonError, ""
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: msg,
@@ -530,8 +536,10 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 		}
 		rawChunk := s.rawChunk(event.Data)
 		if len(chunk.Error) > 0 {
-			s.finishReason = types.FinishReasonError
-			if !s.outputStarted {
+			s.finishReason, s.rawFinishReason = types.FinishReasonError, ""
+			// TS throwIfOpenAIStreamErrorBeforeOutput wraps only the OpenAI
+			// completion model; the openai-compatible one emits an error part.
+			if !s.outputStarted && !s.compat {
 				s.flushQueue = nil
 				s.pendingRaw = nil
 				s.pendingMetadata = nil
@@ -578,7 +586,9 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 			if len(choice.Logprobs) > 0 && string(choice.Logprobs) != "null" {
 				s.providerMetadata["openai"].(map[string]interface{})["logprobs"] = json.RawMessage(choice.Logprobs)
 			}
-			if choice.Text != "" {
+			// TS openai: `text.length > 0`; openai-compatible: `text != null`
+			// (the schema requires the string, so an empty one is a delta).
+			if choice.Text != "" || (s.compat && choice.TextPresent) {
 				s.outputStarted = true
 				if rawChunk != nil {
 					s.pendingRaw = append(s.pendingRaw, rawChunk)
@@ -717,6 +727,25 @@ type openAICompletionChunkChoice struct {
 	Text         string          `json:"text"`
 	FinishReason *string         `json:"finish_reason"`
 	Logprobs     json.RawMessage `json:"logprobs"`
+	// TextPresent reports a non-null `text` (set by UnmarshalJSON).
+	TextPresent bool `json:"-"`
+}
+
+// UnmarshalJSON decodes the choice and records whether `text` was a string.
+func (c *openAICompletionChunkChoice) UnmarshalJSON(b []byte) error {
+	type plain openAICompletionChunkChoice
+	var aux struct {
+		plain
+		Text *string `json:"text"`
+	}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	*c = openAICompletionChunkChoice(aux.plain)
+	if aux.Text != nil {
+		c.Text, c.TextPresent = *aux.Text, true
+	}
+	return nil
 }
 
 var _ provider.LanguageModel = (*CompletionModel)(nil)

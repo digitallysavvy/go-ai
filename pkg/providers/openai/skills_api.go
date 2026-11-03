@@ -62,7 +62,7 @@ func (s *SkillsAPI) UploadSkill(ctx context.Context, opts types.UploadSkillOptio
 		ID             string   `json:"id"`
 		Name           string   `json:"name"`
 		Description    string   `json:"description"`
-		DefaultVersion string   `json:"default_version"`
+		DefaultVersion *string  `json:"default_version"`
 		LatestVersion  string   `json:"latest_version"`
 		CreatedAt      *float64 `json:"created_at"`
 		UpdatedAt      *float64 `json:"updated_at"`
@@ -72,8 +72,9 @@ func (s *SkillsAPI) UploadSkill(ctx context.Context, opts types.UploadSkillOptio
 	}
 
 	meta := map[string]interface{}{}
-	if out.DefaultVersion != "" {
-		meta["defaultVersion"] = out.DefaultVersion
+	// TS `default_version != null`: a present empty string is kept.
+	if out.DefaultVersion != nil {
+		meta["defaultVersion"] = *out.DefaultVersion
 	}
 	if out.CreatedAt != nil {
 		meta["createdAt"] = unixSecondsMetadataValue(*out.CreatedAt)
