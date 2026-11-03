@@ -316,12 +316,13 @@ func TestMCPToolConverterSchemaProvidedToolsAreStaticAndExposeRawMeta(t *testing
 	if tools[0].Metadata["toolName"] != "with-meta" {
 		t.Fatalf("MCP metadata = %#v, want generated metadata preserved", tools[0].Metadata)
 	}
-	params, ok := tools[0].Parameters.(map[string]interface{})
-	if !ok {
-		t.Fatalf("Parameters = %T, want JSON Schema map", tools[0].Parameters)
+	// TS uses schemas[name].inputSchema as given (mcp-client.ts 1352).
+	params, ok := schema.ParametersMap(tools[0].Parameters)
+	if _, isSchema := tools[0].Parameters.(*schema.SimpleJSONSchema); !isSchema || !ok {
+		t.Fatalf("Parameters = %T, want the given schema", tools[0].Parameters)
 	}
 	if params["type"] != "object" {
-		t.Fatalf("Parameters = %#v, want normalized JSON Schema map", params)
+		t.Fatalf("Parameters = %#v, want the JSON Schema", params)
 	}
 }
 

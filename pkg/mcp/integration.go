@@ -112,17 +112,18 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool, toolSchema *MCPToolSchem
 		mcpMetadata["app"] = app
 	}
 	providerMetadata := map[string]interface{}{"mcp": mcpMetadata}
-	parameters, parameterKeyOrder := automaticMCPParameters(mcpTool)
+	automatic, parameterKeyOrder := automaticMCPParameters(mcpTool)
+	var parameters interface{} = automatic
 	var outputSchema schema.Schema
 	toolType := types.ToolTypeDynamic
 	if toolSchema != nil {
 		toolType = types.ToolTypeFunction
 		if toolSchema.InputSchema != nil {
-			normalizedInputSchema, err := normalizeMCPInputSchema(toolSchema.InputSchema)
+			explicit, err := explicitMCPInputSchema(toolSchema.InputSchema)
 			if err != nil {
 				return types.Tool{}, err
 			}
-			parameters = normalizedInputSchema
+			parameters = explicit
 			parameterKeyOrder = nil
 		}
 		var err error
@@ -238,12 +239,50 @@ func normalizeAutomaticMCPInputSchema(input map[string]interface{}) map[string]i
 	return normalized
 }
 
+// explicitMCPInputSchema is a tool's Parameters for an explicit
+// MCPToolSchema.InputSchema. TS toolsFromDefinitions uses
+// schemas[name].inputSchema as given (mcp-client.ts 1352), so a schema.Schema
+// or schema.Validator is kept as is: its key order reaches the provider and
+// its own validator checks tool input. A typed nil or zero schema value is no
+// schema (TS asSchema(undefined)). Maps and other values become a JSON Schema
+// map.
+func explicitMCPInputSchema(value interface{}) (interface{}, error) {
+	switch v := value.(type) {
+	case schema.Schema:
+		if isNilMCPSchemaValue(v) || isNilMCPSchemaValue(v.Validator()) {
+			return nil, nil
+		}
+		return v, nil
+	case schema.Validator:
+		if isNilMCPSchemaValue(v) {
+			return nil, nil
+		}
+		return v, nil
+	}
+	m, err := normalizeMCPInputSchema(value)
+	if m == nil || err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// isNilMCPSchemaValue reports a nil interface or a typed nil pointer or map.
+func isNilMCPSchemaValue(v interface{}) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Interface, reflect.Func, reflect.Slice, reflect.Chan:
+		return rv.IsNil()
+	}
+	return false
+}
+
 func normalizeMCPInputSchema(value interface{}) (map[string]interface{}, error) {
 	switch v := value.(type) {
 	case nil:
 		return nil, nil
-	case schema.Schema:
-		return copyMap(v.Validator().JSONSchema()), nil
 	case map[string]interface{}:
 		return copyMap(v), nil
 	default:
