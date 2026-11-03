@@ -103,3 +103,28 @@ func TestR82provbTSCasesConvertInput(t *testing.T) {
 }
 
 var r82provbTernaryMapping = regexp.MustCompile(`===\s*'([^']+)'\s*\?\s*'([^']+)'`)
+
+// TestR82provbTSCasesXAIInput replays convert-to-xai-responses-input.test.ts
+// (TS convertToXaiResponsesInput, extracted at e64ed82f27 with --expand-each
+// --fn=convertToXaiResponsesInput) through ConvertPromptToXAIInput.
+func TestR82provbTSCasesXAIInput(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/xai_input.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		in, _ := args[0].(map[string]interface{})
+		msgs, why := tsfixture.BuildPromptMessages(in["prompt"])
+		if why != "" {
+			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+		}
+		input, warnings, err := ConvertPromptToXAIInput(types.Prompt{Messages: msgs})
+		if err != nil {
+			return nil, nil, err
+		}
+		raw, _ := json.Marshal(input)
+		var out interface{}
+		_ = json.Unmarshal(raw, &out)
+		if out == nil {
+			out = []interface{}{}
+		}
+		return map[string]interface{}{"input": out, "inputWarnings": tsfixture.WarningsToTS(warnings)}, nil, nil
+	}, map[string]string{})
+}
