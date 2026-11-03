@@ -949,13 +949,19 @@ func (s *perplexityAgentStream) emitOutputSources(item *perplexityOutputItem) {
 			}
 		}
 	}
-	for _, result := range item.Results {
-		result := result
-		s.emitSource(result.URL, result.ID != nil, func() types.SourceContent { return perplexitySearchResultSource(result) })
+	// TS getSearchResults / getFetchedSources read only search_results and
+	// fetch_url_results items (a finance_results item also has `results`).
+	if item.Type == "search_results" {
+		for _, result := range item.Results {
+			result := result
+			s.emitSource(result.URL, result.ID != nil, func() types.SourceContent { return perplexitySearchResultSource(result) })
+		}
 	}
-	for _, fc := range item.Contents {
-		fc := fc
-		s.emitSource(fc.URL, false, func() types.SourceContent { return perplexityFetchedContentSource(fc) })
+	if item.Type == "fetch_url_results" {
+		for _, fc := range item.Contents {
+			fc := fc
+			s.emitSource(fc.URL, false, func() types.SourceContent { return perplexityFetchedContentSource(fc) })
+		}
 	}
 }
 

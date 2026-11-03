@@ -3,7 +3,9 @@ package perplexity
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -85,5 +87,25 @@ func TestR82provaPerplexityDecisionTypedObjectIsNativeState(t *testing.T) {
 	bad := map[string]map[string]interface{}{"x": {"type": "image_url", "image_url": map[string]string{"url": "https://example.com/a.png"}}}
 	if _, err := convertToPerplexityDecisionState([]provider.DecisionStatePart{{Type: "json", Value: bad}}); err == nil {
 		t.Fatal("typed value with a URL image: want an error")
+	}
+}
+
+// TS emitOutputSources reads results only from search_results items
+// (getSearchResults) and contents only from fetch_url_results items; a
+// finance_results item's `results` carry no source (TS wire replay "doStream
+// > preserves native tool traces in raw chunks ..."). Go emitted a url-less
+// source for it.
+func TestR82provaPerplexityStreamFinanceResultsNoSource(t *testing.T) {
+	body := "data: " + `{"type":"response.output_item.done","output_index":0,"item":{"type":"finance_results","results":[{"category":"quote","content":"AAPL"}],"contents":[{"url":"https://example.com/x"}]}}` + "\n\n" +
+		"data: " + `{"type":"response.completed","response":{"id":"r","created_at":1,"model":"m","object":"response","output":[],"status":"completed"}}` + "\n\n"
+	s := newPerplexityAgentStream(io.NopCloser(strings.NewReader(body)), nil, false, nil)
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		if c.Type == provider.ChunkTypeSource {
+			t.Fatalf("unexpected source %+v", c.SourceContent)
+		}
 	}
 }
