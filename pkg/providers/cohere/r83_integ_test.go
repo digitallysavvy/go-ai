@@ -1,6 +1,7 @@
 package cohere
 
 import (
+	"encoding/base64"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -9,7 +10,7 @@ import (
 // TestR83integCohereDocumentTextUsesTextDecoder: TS
 // convert-to-cohere-chat-prompt.ts 94-97 decodes byte data with new
 // TextDecoder().decode (BOM dropped, U+FFFD per maximal invalid subpart); a
-// string payload stays as given.
+// string payload is base64 since TS 7a93864932 and decodes the same way.
 func TestR83integCohereDocumentTextUsesTextDecoder(t *testing.T) {
 	in := []byte{0xEF, 0xBB, 0xBF, 0x41, 0xFF, 0xFE, 0x42, 0xE0, 0x80, 0x43, 0xF0, 0x9F, 0x98}
 	got, err := cohereDocumentText(types.FileContent{MediaType: "text/plain", FileData: types.FileData{Type: types.FileDataTypeData, Data: in}})
@@ -19,8 +20,8 @@ func TestR83integCohereDocumentTextUsesTextDecoder(t *testing.T) {
 	if want := "A\uFFFD\uFFFDB\uFFFD\uFFFDC\uFFFD"; got != want {
 		t.Fatalf("text = %q, want %q", got, want)
 	}
-	got, _ = cohereDocumentText(types.FileContent{MediaType: "text/plain", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "\uFEFFraw"}})
-	if got != "\uFEFFraw" {
-		t.Fatalf("string payload = %q", got)
+	got, _ = cohereDocumentText(types.FileContent{MediaType: "text/plain", FileData: types.FileData{Type: types.FileDataTypeData, DataString: base64.StdEncoding.EncodeToString(in)}})
+	if want := "A\uFFFD\uFFFDB\uFFFD\uFFFDC\uFFFD"; got != want {
+		t.Fatalf("base64 string payload = %q, want %q", got, want)
 	}
 }

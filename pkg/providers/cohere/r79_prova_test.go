@@ -17,7 +17,7 @@ import (
 )
 
 // TestR79prova_TSCasesChatAsserts replays cohere-chat-language-model.test.ts
-// extracted at e64ed82f27 with --asserts (plain assertions as well as
+// extracted at 30548ee7f9 (round 85) with --asserts (plain assertions as well as
 // snapshots, path snapshots included).
 func TestR79prova_TSCasesChatAsserts(t *testing.T) {
 	cases := tsfixture.LoadCases(t, "testdata/tscases/chat_asserts.json.gz")
@@ -46,7 +46,11 @@ func TestR79prova_TSCasesChatAsserts(t *testing.T) {
 				t.Fatal(err)
 			}
 			return m
-		}, nil)
+		}, map[string]string{
+			// Evaluated since the round 85 re-extraction records
+			// `const { response } = ...` aliases.
+			"should expose the raw response headers": "the TS test adds the test-header through its prepare*FixtureResponse helper, which the case file does not carry; covered by the cohere wire replay (TestTSWire)",
+		})
 	}
 	run(plain, nil)
 	// createCohere({apiKey: 'test-api-key', headers: {...}}) in the TS test
