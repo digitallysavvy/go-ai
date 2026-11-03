@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -121,5 +122,39 @@ func TestR83integUnknownToolChoiceTypeSiblings(t *testing.T) {
 		if err != nil && err.Error() == want {
 			t.Errorf("%s: no tools, still checked", c.n)
 		}
+	}
+}
+
+// TestR83integGroqJSONResponseToolReplacesUnknownChoice: TS groq replaces the
+// tool choice for the JSON response tool (required unless tool or none)
+// before prepareTools, so an unknown type is not checked then.
+func TestR83integGroqJSONResponseToolReplacesUnknownChoice(t *testing.T) {
+	var mu sync.Mutex
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		body = b
+		mu.Unlock()
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(`{"error":{"message":"x"}}`))
+	}))
+	defer srv.Close()
+	m, err := groq.New(groq.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("llama-3.3-70b-versatile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"},
+		Tools:          []types.Tool{{Name: "t", Parameters: map[string]interface{}{"type": "object"}}},
+		ToolChoice:     types.ToolChoice{Type: "unrecognized"},
+		ResponseFormat: &provider.ResponseFormat{Type: "json", Schema: map[string]interface{}{"type": "object"}}})
+	var uf *providererrors.UnsupportedFunctionalityError
+	if errors.As(err, &uf) {
+		t.Fatalf("err = %v, want the request sent", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.Contains(string(body), `"tool_choice":"required"`) {
+		t.Fatalf("body = %s, want tool_choice required", body)
 	}
 }

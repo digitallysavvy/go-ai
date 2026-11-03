@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -14,6 +15,14 @@ type r83integWeatherInput struct {
 	Zip   string `json:"zip" validate:"required"`
 	City  string `json:"city,omitempty"`
 	Email string `json:"email,omitempty" validate:"omitempty,email"`
+}
+
+// r83integValidator is a bare schema.Validator (not a schema.Schema).
+type r83integValidator struct{}
+
+func (r83integValidator) Validate(interface{}) error { return errors.New("r83integ: rejected") }
+func (r83integValidator) JSONSchema() map[string]interface{} {
+	return map[string]interface{}{"type": "object"}
 }
 
 // TestR83integExplicitInputSchemaKeptAsGiven: TS toolsFromDefinitions uses
@@ -52,6 +61,15 @@ func TestR83integExplicitInputSchemaKeptAsGiven(t *testing.T) {
 		if tools[0].Parameters != nil {
 			t.Fatalf("%s: Parameters = %#v, want nil", name, tools[0].Parameters)
 		}
+	}
+
+	// A bare validator is kept too (its Validate checks tool input).
+	tools, err = converter.ToolsFromDefinitions(defs, map[string]MCPToolSchema{"weather": {InputSchema: r83integValidator{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tools[0].Parameters.(r83integValidator); !ok {
+		t.Fatalf("validator InputSchema: Parameters = %T", tools[0].Parameters)
 	}
 
 	// A map keeps the JSON Schema map path.
