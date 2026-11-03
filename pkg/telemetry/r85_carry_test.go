@@ -195,10 +195,14 @@ func TestR85carryInferenceDurationErrorTypes(t *testing.T) {
 		fire func(c *r85carryCall)
 		want string
 	}{
-		"abort":                {func(c *r85carryCall) { c.i.OnAbort(c.ctx, TelemetryAbortEvent{CallID: c.id}) }, "AbortError"},
-		"error":                {func(c *r85carryCall) { c.i.OnError(c.ctx, TelemetryErrorEvent{CallID: c.id, Error: errors.New("boom")}) }, "Error"},
-		"step error api error": {func(c *r85carryCall) { c.i.OnStepError(c.ctx, TelemetryErrorEvent{CallID: c.id, Error: &providererrors.ProviderError{Message: "x"}}) }, "AI_APICallError"},
-		"error canceled":       {func(c *r85carryCall) { c.i.OnError(c.ctx, TelemetryErrorEvent{CallID: c.id, Error: context.Canceled}) }, "AbortError"},
+		"abort": {func(c *r85carryCall) { c.i.OnAbort(c.ctx, TelemetryAbortEvent{CallID: c.id}) }, "AbortError"},
+		"error": {func(c *r85carryCall) {
+			c.i.OnError(c.ctx, TelemetryErrorEvent{CallID: c.id, Error: errors.New("boom")})
+		}, "Error"},
+		"step error api error": {func(c *r85carryCall) {
+			c.i.OnStepError(c.ctx, TelemetryErrorEvent{CallID: c.id, Error: &providererrors.ProviderError{Message: "x"}})
+		}, "AI_APICallError"},
+		"error canceled": {func(c *r85carryCall) { c.i.OnError(c.ctx, TelemetryErrorEvent{CallID: c.id, Error: context.Canceled}) }, "AbortError"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			mp := &r85carryMeterProvider{}
@@ -224,4 +228,3 @@ func TestR85carryInferenceDurationNotForObjects(t *testing.T) {
 		t.Fatalf("points = %+v, want none", points)
 	}
 }
-
