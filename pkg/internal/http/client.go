@@ -411,6 +411,7 @@ func (c *Client) DoJSON(ctx context.Context, req Request, result interface{}) er
 	if err != nil {
 		return err
 	}
+	resp.Body = responseText(resp.Body)
 
 	// Check for error status codes
 	if resp.StatusCode >= 400 {
@@ -444,6 +445,7 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 	if err != nil {
 		return nil, err
 	}
+	resp.Body = responseText(resp.Body)
 	if resp.StatusCode >= 400 {
 		return nil, &HTTPStatusError{
 			StatusCode: resp.StatusCode,
@@ -474,13 +476,10 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 // error is returned, since it is the real schema violation the strict
 // decode did not reach (Go reports only the first type error).
 //
-// The body is first read as text the way TS response.text() does (WHATWG
-// UTF-8 decode: a leading BOM is dropped and each maximal invalid sequence is
-// one U+FFFD), so invalid bytes decode like TS rather than one U+FFFD each.
+// The body is read as text first (responseText), as TS parses
+// response.text().
 func decodeJSONBody(body []byte, result interface{}) error {
-	if bytes.HasPrefix(body, utf8BOM) || !utf8.Valid(body) {
-		body = []byte(prompt.DecodeUTF8Text(body))
-	}
+	body = responseText(body)
 	err := json.Unmarshal(body, result)
 	var typeErr *json.UnmarshalTypeError
 	if err == nil || !errors.As(err, &typeErr) || !strings.HasPrefix(typeErr.Value, "number") {
@@ -499,6 +498,17 @@ func decodeJSONBody(body []byte, result interface{}) error {
 
 // utf8BOM is the UTF-8 byte order mark TextDecoder drops.
 var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
+// responseText is a JSON response body as TS response.text() reads it (the
+// JSON response and error handlers, response-handler.ts): a WHATWG UTF-8
+// decode that drops a leading BOM and turns each maximal invalid sequence
+// into one U+FFFD. A valid body without a BOM is returned as is.
+func responseText(body []byte) []byte {
+	if bytes.HasPrefix(body, utf8BOM) || !utf8.Valid(body) {
+		return []byte(prompt.DecodeUTF8Text(body))
+	}
+	return body
+}
 
 // streamClient returns the client used for streaming requests. The shared
 // DefaultHTTPClient has no whole-request timeout; if one is ever set on it
