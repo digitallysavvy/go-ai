@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -38,6 +39,8 @@ func TestR86integWorkflowToolResultsInCallOrder(t *testing.T) {
 			case <-release:
 			case <-ctx.Done():
 			}
+			// Settle well after the fast call's end notification.
+			time.Sleep(50 * time.Millisecond)
 			return "S", nil
 		}},
 		{Name: "fast", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
