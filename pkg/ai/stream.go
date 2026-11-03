@@ -2293,6 +2293,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if !replayed && isOutputChunkForTiming(*chunk) {
 				chunkDeadlineCtx, chunkDeadlineCancel, chunkDeadlineReason = resetChunkDeadlineOnOutput(stepCtx, r.timeout, chunkDeadlineCancel)
 			}
+			// TS clearModelOutputTimeouts() on model-call-end (the provider
+			// finish part): the model call is over, so a pause before the
+			// stream closes is not a first-chunk or chunk timeout.
+			if !replayed && chunk.Type == provider.ChunkTypeFinish {
+				chunkDeadlineCancel()
+				chunkDeadlineCtx, chunkDeadlineCancel, chunkDeadlineReason = stepCtx, func() {}, ""
+			}
 			if r.resumeChunksRemaining > 0 {
 				// Outputs of resumed tool approvals: forward, but they belong
 				// to the initial response, not to this step's content.
