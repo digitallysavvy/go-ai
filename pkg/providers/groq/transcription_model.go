@@ -14,6 +14,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // TranscriptionModel implements the provider.TranscriptionModel interface for
@@ -128,7 +129,8 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	// A plain-text response (responseFormat: "text") is not JSON; only try
 	// the JSON path when the response doesn't look like bare text.
 	if groqOpts.ResponseFormat != nil && *groqOpts.ResponseFormat == "text" {
-		text := string(resp.Body)
+		// TS groqTextTranscriptionResponseHandler: textDecoder.decode(value).
+		text := prompt.DecodeUTF8Text(resp.Body)
 		return &types.TranscriptionResult{
 			Text: text,
 			Response: &types.ResponseMetadata{
