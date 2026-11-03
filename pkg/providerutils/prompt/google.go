@@ -356,6 +356,9 @@ func (c *googleConverter) convertUser(msg types.Message) ([]map[string]interface
 type googleFile struct {
 	mediaType string
 	url       string
+	// originalURL is FileData.OriginalURL: the caller's URL string when its
+	// WHATWG serialization (url) differs (TS data.originalUrl).
+	originalURL string
 	reference string
 	// referenceMap is the provider reference map (TS data.reference); the
 	// legacy single-id reference stays in reference.
@@ -368,6 +371,16 @@ type googleFile struct {
 	// (TS convertToBase64 returns a string as is); media type detection
 	// decodes only its sniffed prefix (TS detectMediaType decodePrefix).
 	raw string
+}
+
+// fileURI is TS `url.protocol === 'gs:' && originalUrl != null ?
+// originalUrl : url.toString()`: a Cloud Storage object name is sent as the
+// caller wrote it. f.url is the serialized URL, so its scheme is lowercase.
+func (f googleFile) fileURI() string {
+	if f.originalURL != "" && strings.HasPrefix(f.url, "gs:") {
+		return f.originalURL
+	}
+	return f.url
 }
 
 // hasData reports whether the file carries inline data.
@@ -385,6 +398,7 @@ func (f googleFile) base64Data() string {
 func (c *googleConverter) resolveFile(file types.FileContent) googleFile {
 	f := googleFile{mediaType: firstNonEmpty(file.MediaType, file.MimeType, file.FileData.MediaType)}
 	f.url = firstNonEmpty(file.URL, file.FileData.URL)
+	f.originalURL = file.FileData.OriginalURL
 	f.reference = file.Reference
 	if f.reference == "" && len(file.FileData.Reference) > 0 {
 		f.referenceMap = file.FileData.Reference
@@ -412,11 +426,14 @@ func (c *googleConverter) fileContentPart(file types.FileContent, assistant bool
 		if assistant {
 			return nil, googleUnsupported("File data URLs in assistant messages are not supported")
 		}
-		// TS resolveFullMediaType throws for a top-level-only media type on a
-		// URL; Go keeps completing it from the URL extension because the image
-		// model sends reference URLs as image/* (v0.5.2 behavior).
+		// TS resolveFullMediaType: a top-level-only media type ("image",
+		// "image/*") on a URL part fails, since it is not inline bytes.
+		mimeType, err := googleResolveFullMediaType(f.mediaType, nil, false)
+		if err != nil {
+			return nil, err
+		}
 		return map[string]interface{}{
-			"fileData": map[string]interface{}{"mimeType": googleFullMediaType(f.mediaType, f.url), "fileUri": f.url},
+			"fileData": map[string]interface{}{"mimeType": mimeType, "fileUri": f.fileURI()},
 		}, nil
 	case f.reference != "" || len(f.referenceMap) > 0:
 		if c.isVertexLike {
@@ -506,30 +523,6 @@ func googleUnsupported(functionality string) error {
 		Functionality: functionality,
 		Message:       fmt.Sprintf("'%s' functionality not supported.", functionality),
 	}
-}
-
-// googleFullMediaType resolves a top-level media type ("image") to a full one
-// using the URL extension when possible (TS resolveFullMediaType).
-func googleFullMediaType(mediaType, url string) string {
-	if isFullMediaType(mediaType) {
-		return mediaType
-	}
-	if mediaType == "image" || mediaType == "image/*" || mediaType == "" {
-		lower := strings.ToLower(url)
-		switch {
-		case strings.HasSuffix(lower, ".png"):
-			return "image/png"
-		case strings.HasSuffix(lower, ".gif"):
-			return "image/gif"
-		case strings.HasSuffix(lower, ".webp"):
-			return "image/webp"
-		}
-		if mediaType == "" {
-			return mediaType
-		}
-		return "image/jpeg"
-	}
-	return mediaType
 }
 
 // ── assistant ────────────────────────────────────────────────────────────────
@@ -955,13 +948,13 @@ func (c *googleConverter) appendToolResultParts(parts *[]map[string]interface{},
 					responseParts = append(responseParts, map[string]interface{}{
 						"inlineData": map[string]interface{}{"mimeType": m[1], "data": m[2]},
 					})
-				} else if isFullMediaType(f.mediaType) && c.isFunctionResponseURLSupported(f.mediaType, f.url) {
+				} else if supported := f.fileURI(); isFullMediaType(f.mediaType) && c.isFunctionResponseURLSupported(f.mediaType, supported) {
 					// Forward a supported non-data URL (e.g. gs:// on Vertex,
 					// Gemini 3+) directly instead of inlining it as text.
 					// Ports TS convert-to-google-messages.ts appendToolResultParts
 					// (ai@7.0.118 commit bc49f786f0).
 					responseParts = append(responseParts, map[string]interface{}{
-						"fileData": map[string]interface{}{"mimeType": f.mediaType, "fileUri": f.url},
+						"fileData": map[string]interface{}{"mimeType": f.mediaType, "fileUri": supported},
 					})
 				} else {
 					textParts = append(textParts, googleJSONText(b))
