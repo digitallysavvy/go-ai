@@ -146,7 +146,8 @@ func ConvertToGoogleMessages(messages []types.Message, opts GoogleMessagesOption
 					last := contents[len(contents)-1]
 					if last["role"] == "model" {
 						lastParts, _ := last["parts"].([]map[string]interface{})
-						last["parts"] = append(lastParts, googleServerToolResponse(p, serverToolType, serverToolCallID, stringOpt(opts, "thoughtSignature")))
+						sig, hasSig := optStringPresent(opts, "thoughtSignature")
+						last["parts"] = append(lastParts, googleServerToolResponse(p, serverToolType, serverToolCallID, sig, hasSig))
 						continue
 					}
 				}
@@ -283,6 +284,22 @@ func stringOpt(opts map[string]interface{}, key string) string {
 	return fmt.Sprint(v)
 }
 
+// optStringPresent is TS `opts?.[key] != null ? String(opts[key]) :
+// undefined`: a present empty string counts.
+func optStringPresent(opts map[string]interface{}, key string) (string, bool) {
+	if opts == nil {
+		return "", false
+	}
+	v, ok := opts[key]
+	if !ok || v == nil {
+		return "", false
+	}
+	if s, ok := v.(string); ok {
+		return s, true
+	}
+	return fmt.Sprint(v), true
+}
+
 func asToolResult(part types.ContentPart) (types.ToolResultContent, bool) {
 	switch p := part.(type) {
 	case types.ToolResultContent:
@@ -405,6 +422,15 @@ func (c *googleConverter) fileContentPart(file types.FileContent, assistant bool
 		if c.isVertexLike {
 			return nil, googleUnsupported("file parts with provider references")
 		}
+		mimeType := f.mediaType
+		if !assistant {
+			// TS user parts: resolveFullMediaType, which throws for a
+			// top-level-only type that is not inline bytes.
+			var err error
+			if mimeType, err = googleResolveFullMediaType(f.mediaType, nil, false); err != nil {
+				return nil, err
+			}
+		}
 		fileURI := f.reference
 		if len(f.referenceMap) > 0 {
 			id, err := providerutils.ResolveProviderReference(f.referenceMap, "google")
@@ -414,7 +440,7 @@ func (c *googleConverter) fileContentPart(file types.FileContent, assistant bool
 			fileURI = id
 		}
 		return map[string]interface{}{
-			"fileData": map[string]interface{}{"mimeType": f.mediaType, "fileUri": fileURI},
+			"fileData": map[string]interface{}{"mimeType": mimeType, "fileUri": fileURI},
 		}, nil
 	case f.hasText:
 		mimeType := "text/plain"
@@ -589,7 +615,7 @@ func (c *googleConverter) convertAssistant(msg types.Message) ([]map[string]inte
 				continue
 			}
 			part := map[string]interface{}{"text": p.Text}
-			if sig := stringOpt(c.readProviderOpts(p.ProviderOptions, p.ProviderMetadata), "thoughtSignature"); sig != "" {
+			if sig, ok := optStringPresent(c.readProviderOpts(p.ProviderOptions, p.ProviderMetadata), "thoughtSignature"); ok {
 				part["thoughtSignature"] = sig
 			}
 			parts = append(parts, part)
@@ -599,11 +625,11 @@ func (c *googleConverter) convertAssistant(msg types.Message) ([]map[string]inte
 				continue
 			}
 			part := map[string]interface{}{"text": p.Text, "thought": true}
-			sig := stringOpt(c.readProviderOpts(p.ProviderOptions, p.ProviderMetadata), "thoughtSignature")
-			if sig == "" {
-				sig = p.Signature
+			sig, ok := optStringPresent(c.readProviderOpts(p.ProviderOptions, p.ProviderMetadata), "thoughtSignature")
+			if !ok && p.Signature != "" {
+				sig, ok = p.Signature, true
 			}
-			if sig != "" {
+			if ok {
 				part["thoughtSignature"] = sig
 			}
 			parts = append(parts, part)
@@ -620,7 +646,7 @@ func (c *googleConverter) convertAssistant(msg types.Message) ([]map[string]inte
 				"inlineData": map[string]interface{}{"mimeType": firstNonEmpty(p.MediaType, p.FileData.MediaType), "data": base64.StdEncoding.EncodeToString(data)},
 				"thought":    true,
 			}
-			if sig := stringOpt(c.readProviderOpts(p.ProviderOptions, p.ProviderMetadata), "thoughtSignature"); sig != "" {
+			if sig, ok := optStringPresent(c.readProviderOpts(p.ProviderOptions, p.ProviderMetadata), "thoughtSignature"); ok {
 				part["thoughtSignature"] = sig
 			}
 			parts = append(parts, part)
@@ -639,7 +665,7 @@ func (c *googleConverter) convertAssistant(msg types.Message) ([]map[string]inte
 			if thought, _ := opts["thought"].(bool); thought {
 				part["thought"] = true
 			}
-			if sig := stringOpt(opts, "thoughtSignature"); sig != "" {
+			if sig, ok := optStringPresent(opts, "thoughtSignature"); ok {
 				part["thoughtSignature"] = sig
 			}
 			parts = append(parts, part)
@@ -684,22 +710,24 @@ func (c *googleConverter) assistantToolCall(tc googleToolCall, hasSigned *bool) 
 		}
 	}
 
-	thoughtSignature := stringOpt(tc.opts, "thoughtSignature")
-	if thoughtSignature == "" {
-		thoughtSignature = tc.thoughtSignature
+	// TS `!= null` checks: a present empty string counts (no sentinel for
+	// an empty thoughtSignature; an empty server tool id is still one).
+	thoughtSignature, hasSig := optStringPresent(tc.opts, "thoughtSignature")
+	if !hasSig && tc.thoughtSignature != "" {
+		thoughtSignature, hasSig = tc.thoughtSignature, true
 	}
-	serverToolCallID := stringOpt(tc.opts, "serverToolCallId")
-	serverToolType := stringOpt(tc.opts, "serverToolType")
-	isServerToolCall := serverToolCallID != "" && serverToolType != ""
+	serverToolCallID, hasServerID := optStringPresent(tc.opts, "serverToolCallId")
+	serverToolType, hasServerType := optStringPresent(tc.opts, "serverToolType")
+	isServerToolCall := hasServerID && hasServerType
 	// Gemini 3 returns a single signature for a parallel function-call response
 	// on the first standard function call; later ones legitimately have none.
-	skipMitigation := !isServerToolCall && thoughtSignature == "" && *hasSigned
-	effective := thoughtSignature
-	if effective == "" && c.opts.IsGemini3Model && !skipMitigation {
+	skipMitigation := !isServerToolCall && !hasSig && *hasSigned
+	effective, hasEffective := thoughtSignature, hasSig
+	if !hasSig && c.opts.IsGemini3Model && !skipMitigation {
 		c.missingSignatureToolNames = append(c.missingSignatureToolNames, tc.toolName)
-		effective = GoogleSkipThoughtSignatureValidator
+		effective, hasEffective = GoogleSkipThoughtSignatureValidator, true
 	}
-	if !isServerToolCall && thoughtSignature != "" {
+	if !isServerToolCall && hasSig {
 		*hasSigned = true
 	}
 
@@ -719,7 +747,7 @@ func (c *googleConverter) assistantToolCall(tc googleToolCall, hasSigned *bool) 
 		}
 		part = map[string]interface{}{"functionCall": fc}
 	}
-	if effective != "" {
+	if hasEffective {
 		part["thoughtSignature"] = effective
 	}
 	return part
@@ -740,12 +768,13 @@ func (c *googleConverter) assistantToolResult(p types.ToolResultContent) map[str
 	serverToolCallID := stringOpt(opts, "serverToolCallId")
 	serverToolType := stringOpt(opts, "serverToolType")
 	if serverToolCallID != "" && serverToolType != "" {
-		return googleServerToolResponse(p, serverToolType, serverToolCallID, stringOpt(opts, "thoughtSignature"))
+		sig, hasSig := optStringPresent(opts, "thoughtSignature")
+		return googleServerToolResponse(p, serverToolType, serverToolCallID, sig, hasSig)
 	}
 	return nil
 }
 
-func googleServerToolResponse(p types.ToolResultContent, toolType, id, thoughtSignature string) map[string]interface{} {
+func googleServerToolResponse(p types.ToolResultContent, toolType, id, thoughtSignature string, hasThoughtSignature bool) map[string]interface{} {
 	out := resolveGoogleToolOutput(p)
 	var response interface{} = map[string]interface{}{}
 	if out.kind == "json" {
@@ -754,7 +783,7 @@ func googleServerToolResponse(p types.ToolResultContent, toolType, id, thoughtSi
 	part := map[string]interface{}{
 		"toolResponse": map[string]interface{}{"toolType": toolType, "response": response, "id": id},
 	}
-	if thoughtSignature != "" {
+	if hasThoughtSignature {
 		part["thoughtSignature"] = thoughtSignature
 	}
 	return part
