@@ -1,6 +1,7 @@
 package prodia
 
 import (
+	"context"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
@@ -23,6 +24,12 @@ type Config struct {
 	// If empty, the PRODIA_TOKEN environment variable is used.
 	APIKey string
 
+	// APIKeyFunc resolves the key per request instead of APIKey (TS
+	// `apiKey: Resolvable<string>`, 7716e189ee). The environment is not
+	// read when it is set; setting both is an InvalidArgumentError. The func
+	// gets context.Background() (TS resolves it without an abort signal).
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+
 	// BaseURL is the base URL for the Prodia API (optional).
 	// Defaults to https://inference.prodia.com/v2
 	BaseURL string
@@ -43,7 +50,7 @@ func New(cfg Config) *Provider {
 	}
 
 	apiKey := cfg.APIKey
-	if apiKey == "" {
+	if apiKey == "" && cfg.APIKeyFunc == nil {
 		apiKey = os.Getenv("PRODIA_TOKEN")
 	}
 
@@ -60,7 +67,7 @@ func New(cfg Config) *Provider {
 		Headers: version.WithUserAgentSuffix(headers, version.ProviderUserAgent("prodia")),
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
 		HeadersFunc: func() (map[string]string, error) {
-			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "PRODIA_TOKEN", "Prodia", "Authorization", "Bearer ")
+			return prodiaAuthHeader(cfg)
 		},
 	})
 
@@ -84,11 +91,22 @@ func (p *Provider) effectiveBaseURL() string {
 	return "https://inference.prodia.com/v2"
 }
 
+// prodiaAuthHeader is the per-request Authorization header: from
+// APIKeyFunc when set, else APIKey or PRODIA_TOKEN.
+func prodiaAuthHeader(cfg Config) (map[string]string, error) {
+	if cfg.APIKeyFunc != nil {
+		return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+			APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "PRODIA_TOKEN", Description: "Prodia",
+		}, "Authorization", "Bearer ")
+	}
+	return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "PRODIA_TOKEN", "Prodia", "Authorization", "Bearer ")
+}
+
 // effectiveAPIKey loads the API key like TS loadApiKey: Config.APIKey, else
 // the PRODIA_TOKEN environment variable, else a LoadAPIKeyError. A caller
 // that supplies its own Authorization header keeps it (empty key, no error).
 func (p *Provider) effectiveAPIKey() (string, error) {
-	h, err := providerutils.RequestAuthHeader(p.config.Headers, p.config.APIKey, "PRODIA_TOKEN", "Prodia", "Authorization", "Bearer ")
+	h, err := prodiaAuthHeader(p.config)
 	if err != nil || h == nil {
 		return "", err
 	}

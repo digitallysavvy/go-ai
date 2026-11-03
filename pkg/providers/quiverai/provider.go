@@ -1,6 +1,7 @@
 package quiverai
 
 import (
+	"context"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
@@ -22,6 +23,23 @@ type Config struct {
 	APIKey  string            `json:"apiKey,omitempty"`
 	BaseURL string            `json:"baseURL,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
+
+	// APIKeyFunc resolves the key per request instead of APIKey (TS
+	// `apiKey: Resolvable<string>`, 7716e189ee). The environment is not
+	// read when it is set; setting both is an InvalidArgumentError. The func
+	// gets context.Background() (TS resolves it without an abort signal).
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+}
+
+// quiverAIAuthHeader is the per-request Authorization header: from
+// APIKeyFunc when set, else APIKey or QUIVERAI_API_KEY.
+func quiverAIAuthHeader(cfg Config) (map[string]string, error) {
+	if cfg.APIKeyFunc != nil {
+		return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+			APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "QUIVERAI_API_KEY", Description: "QuiverAI",
+		}, "Authorization", "Bearer ")
+	}
+	return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "QUIVERAI_API_KEY", "QuiverAI", "Authorization", "Bearer ")
 }
 
 // Provider implements SVG generation and vectorization for QuiverAI.
@@ -36,7 +54,7 @@ type Provider struct {
 // transport) so both use identical credentials/endpoint resolution.
 func resolveQuiverAIConfig(cfg Config) (apiKey, baseURL string) {
 	apiKey = cfg.APIKey
-	if apiKey == "" {
+	if apiKey == "" && cfg.APIKeyFunc == nil {
 		apiKey = os.Getenv("QUIVERAI_API_KEY")
 	}
 	baseURL = cfg.BaseURL
@@ -66,7 +84,7 @@ func New(cfg Config) *Provider {
 			Headers: headers,
 			// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
 			HeadersFunc: func() (map[string]string, error) {
-				return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "QUIVERAI_API_KEY", "QuiverAI", "Authorization", "Bearer ")
+				return quiverAIAuthHeader(cfg)
 			},
 		}),
 	}
@@ -94,7 +112,7 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 		APIKey:  apiKey,
 		Headers: p.config.Headers,
 		HeadersFunc: func() (map[string]string, error) {
-			return providerutils.RequestAuthHeader(p.config.Headers, p.config.APIKey, "QUIVERAI_API_KEY", "QuiverAI", "Authorization", "Bearer ")
+			return quiverAIAuthHeader(p.config)
 		},
 		Name:                     "quiverai",
 		StrictResponseInput:      true,

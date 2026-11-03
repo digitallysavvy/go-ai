@@ -1,6 +1,7 @@
 package voyage
 
 import (
+	"context"
 	"fmt"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -15,7 +16,12 @@ import (
 const DefaultBaseURL = "https://api.voyageai.com/v1"
 
 type Config struct {
-	APIKey     string
+	APIKey string
+	// APIKeyFunc resolves the key per request instead of APIKey (TS
+	// `apiKey: Resolvable<string>`, 7716e189ee). The environment is not
+	// read when it is set; setting both is an InvalidArgumentError. The func
+	// gets context.Background() (TS resolves it without an abort signal).
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 	BaseURL    string
 	Headers    map[string]string `json:"headers,omitempty"`
 	HTTPClient *http.Client      `json:"-"`
@@ -34,7 +40,7 @@ func New(cfg Config) *Provider {
 		baseURL = DefaultBaseURL
 	}
 	apiKey := cfg.APIKey
-	if apiKey == "" {
+	if apiKey == "" && cfg.APIKeyFunc == nil {
 		apiKey = os.Getenv("VOYAGE_API_KEY")
 	}
 	headers := map[string]string{
@@ -48,6 +54,11 @@ func New(cfg Config) *Provider {
 			HTTPClient: cfg.HTTPClient,
 			// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
 			HeadersFunc: func() (map[string]string, error) {
+				if cfg.APIKeyFunc != nil {
+					return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+						APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "VOYAGE_API_KEY", Description: "Voyage",
+					}, "Authorization", "Bearer ")
+				}
 				return providerutils.RequestAuthHeader(cfg.Headers, apiKey, "VOYAGE_API_KEY", "Voyage", "Authorization", "Bearer ")
 			},
 		}),
