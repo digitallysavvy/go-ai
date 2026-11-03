@@ -56,3 +56,24 @@ func TestR83provaURLMediaTypeAndTextToolResultErrors(t *testing.T) {
 		t.Fatalf("s3 image/png: out=%v err=%v", out, err)
 	}
 }
+
+// TS converts a text file part to a document whatever its media type, so an
+// image media type is an unsupported document format, not an image block.
+func TestR83provaTextFilePartIsAlwaysDocument(t *testing.T) {
+	msgs := []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{
+		types.FileContent{MediaType: "image/png", FileData: types.FileData{Type: types.FileDataTypeText, Text: "not an image"}},
+	}}}
+	_, _, err := convertToBedrockChatMessages(msgs, false)
+	if err == nil || !strings.Contains(err.Error(), "Unsupported file mime type: image/png") {
+		t.Fatalf("err = %v, want the TS unsupported document format error", err)
+	}
+	msgs[0].Content[0] = types.FileContent{MediaType: "text/markdown", Filename: "notes.md", FileData: types.FileData{Type: types.FileDataTypeText, Text: "# hi"}}
+	_, out, err := convertToBedrockChatMessages(msgs, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, _ := out[0]["content"].([]map[string]interface{})[0]["document"].(map[string]interface{})
+	if doc["format"] != "md" || doc["name"] != "notes" {
+		t.Fatalf("document = %v", doc)
+	}
+}

@@ -943,7 +943,8 @@ func bedrockUserFileBlock(file types.FileContent, getDocumentName func(string) s
 		return nil, false, bedrockUnsupported("File URL data", "")
 	}
 
-	if file.Text != "" || file.FileData.Type == types.FileDataTypeText {
+	isTextFile := file.Text != "" || file.FileData.Type == types.FileDataTypeText
+	if isTextFile {
 		if !isFullMediaType(mediaType) {
 			mediaType = "text/plain"
 		}
@@ -958,7 +959,13 @@ func bedrockUserFileBlock(file types.FileContent, getDocumentName func(string) s
 		return nil, false, nil
 	}
 
-	switch topLevelMediaType(mediaType) {
+	// TS: a text file part is always a document (its media type picks the
+	// document format), never an image or video block.
+	topLevel := topLevelMediaType(mediaType)
+	if isTextFile {
+		topLevel = ""
+	}
+	switch topLevel {
 	case "image":
 		format, err := bedrockImageFormat(mediaType)
 		if err != nil {
