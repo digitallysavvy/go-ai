@@ -208,3 +208,22 @@ func TestR84genNonHTTPSchemesAccepted(t *testing.T) {
 		}
 	}
 }
+
+// TS convertToLanguageModelPrompt reasoning-file: mediaType ?? part.mediaType
+// (a data URL's media type wins) and `Unsupported reasoning-file data type:`.
+func TestR84genReasoningFileDataURLAndErrorText(t *testing.T) {
+	got, err := NormalizeReasoningFileContent(types.ReasoningFileContent{
+		FileData:  types.FileData{Type: types.FileDataTypeURL, URL: "data:image/png;base64,AAAA"},
+		MediaType: "image/jpeg",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MediaType != "image/png" || got.FileData.Type != types.FileDataTypeData {
+		t.Fatalf("reasoning file = %+v", got)
+	}
+	_, err = NormalizeReasoningFileContent(types.ReasoningFileContent{FileData: types.FileData{Type: types.FileDataTypeText, Text: "x"}})
+	if err == nil || err.Error() != "Unsupported reasoning-file data type: text" {
+		t.Fatalf("err = %v", err)
+	}
+}

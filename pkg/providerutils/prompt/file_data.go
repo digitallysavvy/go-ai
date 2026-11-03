@@ -47,7 +47,8 @@ type ReasoningFileConstraintError struct {
 }
 
 func (e *ReasoningFileConstraintError) Error() string {
-	return fmt.Sprintf("reasoning-file data type %q is not supported; allowed types are %q and %q", e.Type, types.FileDataTypeData, types.FileDataTypeURL)
+	// TS convertToLanguageModelPrompt: `Unsupported reasoning-file data type: ${data.type}`.
+	return fmt.Sprintf("Unsupported reasoning-file data type: %s", e.Type)
 }
 
 // UnsupportedSystemMessageError is returned when a messages prompt contains a
@@ -939,7 +940,13 @@ func NormalizeReasoningFileContent(part types.ReasoningFileContent) (types.Reaso
 		return types.ReasoningFileContent{}, &ReasoningFileConstraintError{Type: normalized.Type}
 	}
 	part.FileData = normalized
-	part.MediaType = firstNonEmpty(part.MediaType, normalized.MediaType)
+	if data.Type == types.FileDataTypeURL && normalized.Type == types.FileDataTypeData {
+		// TS mediaType: mediaType ?? part.mediaType: a data: URL's media
+		// type wins over the declared one.
+		part.MediaType = normalized.MediaType
+	} else {
+		part.MediaType = firstNonEmpty(part.MediaType, normalized.MediaType)
+	}
 	part.Data = nil
 	if normalized.Type == types.FileDataTypeData {
 		part.Data = normalized.Data
