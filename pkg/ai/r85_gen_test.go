@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"math"
 	"reflect"
 	"sync"
 	"testing"
@@ -496,5 +497,52 @@ func TestR85genQueueNotDelivered(t *testing.T) {
 				t.Fatalf("outcome = %+v", o)
 			}
 		})
+	}
+}
+
+// Port of decide.test.ts 'rejects non-serializable JSON state %s before I/O',
+// the question-side cases and 'allows repeated JSON references without
+// treating them as cycles' (TS b6b9dcaec7, validate-decision.ts 19-38,
+// 56-90). A cyclic value used to recurse without end in Go.
+func TestR85genDecisionSerializableJSONTexts(t *testing.T) {
+	const stateMsg = "Invalid argument for parameter state: JSON content must not contain non-finite numbers, cycles, or array holes"
+	const questionMsg = "Invalid argument for parameter questions.q: instructions and criteria must not contain non-finite numbers, cycles, or array holes"
+	questions := map[string]provider.DecisionQuestion{"q": {Type: "choice", Instructions: "Pick", Criteria: map[string]interface{}{"a": nil}}}
+	cyclic := map[string]interface{}{}
+	cyclic["self"] = cyclic
+	cyclicSlice := make([]interface{}, 2)
+	cyclicSlice[1] = cyclicSlice
+	for name, state := range map[string]interface{}{
+		"infinity":       map[string]interface{}{"value": math.Inf(1)},
+		"json part NaN":  []provider.DecisionStatePart{provider.DecisionJSONPart(map[string]interface{}{"bad": math.NaN()})},
+		"json part cyc":  []provider.DecisionStatePart{provider.DecisionJSONPart(cyclic)},
+		"cyclic map":     cyclic,
+		"cyclic slice":   cyclicSlice,
+		"nested float32": []interface{}{map[string]interface{}{"x": float32(math.NaN())}},
+	} {
+		if err := validateDecisionInput(state, questions, nil); err == nil || err.Error() != stateMsg {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+	for name, q := range map[string]provider.DecisionQuestion{
+		"instructions NaN": {Type: "choice", Instructions: map[string]interface{}{"n": math.NaN()}, Criteria: map[string]interface{}{"a": nil}},
+		"criteria Inf":     {Type: "choice", Instructions: "test", Criteria: map[string]interface{}{"a": []interface{}{math.Inf(1)}}},
+		"cyclic criteria":  {Type: "choice", Instructions: "test", Criteria: cyclic},
+		"boolean NaN":      {Type: "boolean", Instructions: "Is it?", Criteria: map[string]interface{}{"true": math.NaN(), "maybe": "x"}},
+	} {
+		if err := validateDecisionInput("state", map[string]provider.DecisionQuestion{"q": q}, nil); err == nil || err.Error() != questionMsg {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+	shared := map[string]interface{}{"text": "hello"}
+	view := []interface{}{"a", "b"}
+	view[1] = view[:1]
+	for name, state := range map[string]interface{}{
+		"repeated reference": []provider.DecisionStatePart{provider.DecisionJSONPart([]interface{}{shared, shared})},
+		"shorter view":       view,
+	} {
+		if err := validateDecisionInput(state, questions, nil); err != nil {
+			t.Errorf("%s: err = %v", name, err)
+		}
 	}
 }
