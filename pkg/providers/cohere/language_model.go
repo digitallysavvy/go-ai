@@ -345,13 +345,14 @@ func fileDataToImageURL(file types.FileContent) (string, error) {
 		// TS buildImageUrl: resolveFullMediaType sniffs a bare or wildcard
 		// type (image, image/*) from the inline bytes.
 		// TS convertToBase64(part.data.data): a base64 string payload
-		// (DataString) is embedded as is; detection reads its bytes.
-		payload, sniff := base64.StdEncoding.EncodeToString(file.FileData.Data), file.FileData.Data
+		// (DataString) is embedded as is; detection decodes only its sniffed
+		// prefix.
+		payload, sniff, sniffString := base64.StdEncoding.EncodeToString(file.FileData.Data), file.FileData.Data, ""
 		if len(file.FileData.Data) == 0 && file.FileData.DataString != "" {
 			payload = file.FileData.DataString
-			sniff, _ = fileutil.ConvertBase64ToBytes(file.FileData.DataString)
+			sniffString = file.FileData.DataString
 		}
-		media, err := prompt.ResolveFullMediaType(media, sniff, true)
+		media, err := cohereResolveFullMediaType(media, sniff, sniffString)
 		if err != nil {
 			return "", err
 		}
@@ -972,4 +973,26 @@ func cohereToolInputText(raw string, args map[string]interface{}) string {
 	}
 	b, _ := jsonstr.Marshal(args)
 	return string(b)
+}
+
+// cohereResolveFullMediaType is prompt.ResolveFullMediaType for a part's inline payload: bytes, or
+// a base64 string of which TS detectMediaType decodes only the sniffed prefix
+// (decodePrefix), so a bad tail is still detected and a bad prefix is the
+// decode error (atob throws).
+func cohereResolveFullMediaType(mediaType string, data []byte, dataString string) (string, error) {
+	if dataString == "" {
+		return prompt.ResolveFullMediaType(mediaType, data, true)
+	}
+	if full, err := prompt.ResolveFullMediaType(mediaType, nil, true); err == nil {
+		return full, nil
+	}
+	top, _, _ := strings.Cut(mediaType, "/")
+	detected, ok, err := fileutil.DetectMediaTypeSignatureBase64(dataString, top)
+	if err != nil {
+		return "", err
+	}
+	if ok && detected != "" {
+		return detected, nil
+	}
+	return prompt.ResolveFullMediaType(mediaType, nil, true)
 }

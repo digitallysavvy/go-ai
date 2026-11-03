@@ -1,7 +1,9 @@
 package perplexity
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"regexp"
 
@@ -53,13 +55,29 @@ func convertToPerplexityDecisionState(parts []provider.DecisionStatePart) (inter
 		}
 	}
 
-	if len(converted) == 1 {
-		switch converted[0].(type) {
-		case string, map[string]interface{}, []interface{}:
-			return converted[0], nil
-		}
+	if len(converted) == 1 && isNativeDecisionState(converted[0]) {
+		return converted[0], nil
 	}
 	return converted, nil
+}
+
+// isNativeDecisionState is the TS check `single !== null && (typeof single
+// === 'string' || typeof single === 'object')` for a Go JSON value of any
+// type (typed maps, structs, slices, json.RawMessage, ordered objects): its
+// JSON form is a string, an object or an array.
+func isNativeDecisionState(v interface{}) bool {
+	switch v.(type) {
+	case nil:
+		return false
+	case string, map[string]interface{}, []interface{}:
+		return true
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return false
+	}
+	b = bytes.TrimLeft(b, " \t\r\n")
+	return len(b) > 0 && (b[0] == '{' || b[0] == '[' || b[0] == '"')
 }
 
 func perplexityDecisionImage(part provider.DecisionStatePart) (map[string]interface{}, error) {
@@ -74,7 +92,19 @@ func perplexityDecisionImage(part provider.DecisionStatePart) (map[string]interf
 	if declared == "" {
 		declared = file.FileData.MediaType
 	}
-	if kind := file.FileData.Type; kind != "" && kind != types.FileDataTypeData {
+	kind := file.FileData.Type
+	if kind == "" && len(file.Data) == 0 {
+		// The legacy FileContent fields map to the TS data kinds.
+		switch {
+		case file.URL != "":
+			kind = types.FileDataTypeURL
+		case file.Reference != "":
+			kind = types.FileDataTypeReference
+		case file.Text != "":
+			kind = types.FileDataTypeText
+		}
+	}
+	if kind != "" && kind != types.FileDataTypeData {
 		return nil, &providererrors.UnsupportedFunctionalityError{
 			Functionality: fmt.Sprintf("Perplexity decision file input: %s", kind),
 		}
@@ -100,14 +130,21 @@ func perplexityDecisionImage(part provider.DecisionStatePart) (map[string]interf
 	// full either).
 	if !isFullMediaType(mediaType) {
 		// Direct DoDecide calls can bypass core's media type detection.
-		detectable := raw
-		if detectable == nil {
-			// TS detectMediaType decodes the string with
-			// convertBase64ToUint8Array (base64url, optional padding).
-			detectable, _ = fileutil.ConvertBase64ToBytes(encoded)
+		var detected string
+		var ok bool
+		if raw == nil {
+			// TS detectMediaType decodes only the sniffed prefix of the
+			// string with convertBase64ToUint8Array (base64url, optional
+			// padding); a prefix that is not base64 throws (atob).
+			var err error
+			if detected, ok, err = fileutil.DetectMediaTypeSignatureBase64(encoded, "image"); err != nil {
+				return nil, err
+			}
+		} else {
+			detected, ok = fileutil.DetectMediaTypeSignature(raw, "image")
 		}
 		mediaType = ""
-		if detected, ok := fileutil.DetectMediaTypeSignature(detectable, "image"); ok {
+		if ok {
 			mediaType = detected
 		}
 	}
@@ -158,7 +195,23 @@ func countDecisionImages(value interface{}) (int, error) {
 			total += n
 		}
 		return total, nil
+	case nil, string, bool, float64, int, int64, json.Number:
+		return 0, nil
 	default:
+		// Any other Go JSON value (typed map, struct, json.RawMessage): TS
+		// walks its JSON object form (Object.values).
+		b, err := json.Marshal(v)
+		if err != nil {
+			return 0, nil
+		}
+		var generic interface{}
+		if json.Unmarshal(b, &generic) != nil {
+			return 0, nil
+		}
+		switch generic.(type) {
+		case []interface{}, map[string]interface{}:
+			return countDecisionImages(generic)
+		}
 		return 0, nil
 	}
 }

@@ -33,12 +33,13 @@ func TestEveryTSFixtureRunsThroughGo(t *testing.T) {
 					t.Fatal(err)
 				}
 				finishes := 0
-				for _, c := range drain(t, s) {
+				chunks := drain(t, s)
+				for i, c := range chunks {
 					if c.Type == provider.ChunkTypeFinish {
 						finishes++
 					}
 					// spliced-message-start is meant to end in an error chunk.
-					if c.Type == provider.ChunkTypeError && base != "spliced-message-start" {
+					if c.Type == provider.ChunkTypeError && base != "spliced-message-start" && !isTSEmptyEventError(chunks, i) {
 						t.Fatalf("error chunk: %v", c.Err)
 					}
 				}

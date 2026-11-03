@@ -761,13 +761,17 @@ func (s *stream) processNonFuncPart(part Part) {
 		if part.ThoughtSignature != "" {
 			meta["thoughtSignature"] = part.ThoughtSignature
 		}
-		metaJSON, _ := json.Marshal(s.cfg.wrapProviderMetadata(meta))
+		wrapped := s.cfg.wrapProviderMetadata(meta)
+		metaJSON, _ := json.Marshal(wrapped)
 		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 			Type: provider.ChunkTypeToolResult,
 			ToolResult: &types.ToolResult{
 				ToolCallID: toolCallID,
 				ToolName:   "server:" + part.ToolResponse.ToolType,
 				Result:     resultValue,
+				// TS tool-result providerMetadata: core reads the result's
+				// own metadata (stream content, UI tool-output part).
+				ProviderMetadata: wrapped,
 			},
 			ProviderMetadata: metaJSON,
 		})

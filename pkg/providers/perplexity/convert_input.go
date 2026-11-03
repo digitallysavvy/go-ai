@@ -205,13 +205,14 @@ func convertPerplexityUserPart(part types.ContentPart) (map[string]interface{}, 
 			return map[string]interface{}{"type": "input_image", "image_url": normalized.FileData.URL}, nil
 		case types.FileDataTypeData:
 			// TS convertToBase64(part.data.data): a base64 string payload
-			// (DataString) is embedded as is; detection reads its bytes.
-			payload, sniff := base64.StdEncoding.EncodeToString(normalized.Data), normalized.Data
+			// (DataString) is embedded as is; detection decodes only its
+			// sniffed prefix (TS detectMediaType decodePrefix).
+			payload, sniff, sniffString := base64.StdEncoding.EncodeToString(normalized.Data), normalized.Data, ""
 			if len(normalized.Data) == 0 && normalized.FileData.DataString != "" {
 				payload = normalized.FileData.DataString
-				sniff, _ = fileutil.ConvertBase64ToBytes(normalized.FileData.DataString)
+				sniffString = normalized.FileData.DataString
 			}
-			fullMediaType, err := resolvePerplexityImageMediaType(declaredMediaType, sniff)
+			fullMediaType, err := resolvePerplexityImageMediaType(declaredMediaType, sniff, sniffString)
 			if err != nil {
 				return nil, err
 			}
@@ -240,11 +241,23 @@ func isFullMediaType(mediaType string) bool {
 // resolvePerplexityImageMediaType resolves a bare/wildcard image media type
 // via signature detection from inline bytes, mirroring TS resolveFullMediaType
 // for the image-only case the Agent API supports.
-func resolvePerplexityImageMediaType(mediaType string, data []byte) (string, error) {
+// A non-empty dataString is a base64 payload of which only the sniffed prefix
+// is decoded; its decode failure is returned (TS atob throws).
+func resolvePerplexityImageMediaType(mediaType string, data []byte, dataString string) (string, error) {
 	if isFullMediaType(mediaType) {
 		return mediaType, nil
 	}
-	if detected, ok := fileutil.DetectMediaTypeSignature(data, "image"); ok {
+	var detected string
+	var ok bool
+	if dataString != "" {
+		var err error
+		if detected, ok, err = fileutil.DetectMediaTypeSignatureBase64(dataString, "image"); err != nil {
+			return "", err
+		}
+	} else {
+		detected, ok = fileutil.DetectMediaTypeSignature(data, "image")
+	}
+	if ok {
 		return detected, nil
 	}
 	return "", &providererrors.UnsupportedFunctionalityError{

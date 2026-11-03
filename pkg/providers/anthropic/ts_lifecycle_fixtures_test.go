@@ -57,8 +57,8 @@ func TestFixtureSplicedMessageStart(t *testing.T) {
 func TestFixtureDuplicateMessageStart(t *testing.T) {
 	chunks := streamFixture(t, "duplicate-message-start")
 	finishes := 0
-	for _, c := range chunks {
-		if c.Type == provider.ChunkTypeError {
+	for i, c := range chunks {
+		if c.Type == provider.ChunkTypeError && !isTSEmptyEventError(chunks, i) {
 			t.Fatalf("error chunk: %v", c.Err)
 		}
 		if c.Type == provider.ChunkTypeFinish {

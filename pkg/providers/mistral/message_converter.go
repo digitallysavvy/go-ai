@@ -135,12 +135,12 @@ func convertMistralFilePart(fc types.FileContent) (map[string]interface{}, error
 	mediaType := n.MediaType
 	isData := n.FileData.Type == types.FileDataTypeData
 	// TS convertToBase64(part.data.data): a base64 string payload
-	// (DataString) is embedded as is, bytes are encoded; detection reads the
-	// string's decoded bytes.
-	payload, sniff := base64.StdEncoding.EncodeToString(n.FileData.Data), n.FileData.Data
+	// (DataString) is embedded as is, bytes are encoded; detection decodes
+	// only the string's sniffed prefix.
+	payload, sniff, sniffString := base64.StdEncoding.EncodeToString(n.FileData.Data), n.FileData.Data, ""
 	if len(n.FileData.Data) == 0 && n.FileData.DataString != "" {
 		payload = n.FileData.DataString
-		sniff, _ = fileutil.ConvertBase64ToBytes(n.FileData.DataString)
+		sniffString = n.FileData.DataString
 	}
 	// TS formatFileUrl: urls pass through; inline bytes embed the media type
 	// resolved by resolveFullMediaType (signature-sniffed, error if unknown).
@@ -148,7 +148,7 @@ func convertMistralFilePart(fc types.FileContent) (map[string]interface{}, error
 		if !isData {
 			return n.FileData.URL, nil
 		}
-		full, err := prompt.ResolveFullMediaType(mediaType, sniff, true)
+		full, err := mistralResolveFullMediaType(mediaType, sniff, sniffString)
 		if err != nil {
 			return "", err
 		}
@@ -163,7 +163,7 @@ func convertMistralFilePart(fc types.FileContent) (map[string]interface{}, error
 	}
 	checked := mediaType
 	if isData {
-		full, err := prompt.ResolveFullMediaType(mediaType, sniff, true)
+		full, err := mistralResolveFullMediaType(mediaType, sniff, sniffString)
 		if err != nil {
 			return nil, err
 		}
@@ -357,4 +357,26 @@ func derefMistralUserPart(part types.ContentPart) types.ContentPart {
 		}
 	}
 	return part
+}
+
+// mistralResolveFullMediaType is prompt.ResolveFullMediaType for a part's inline payload: bytes, or
+// a base64 string of which TS detectMediaType decodes only the sniffed prefix
+// (decodePrefix), so a bad tail is still detected and a bad prefix is the
+// decode error (atob throws).
+func mistralResolveFullMediaType(mediaType string, data []byte, dataString string) (string, error) {
+	if dataString == "" {
+		return prompt.ResolveFullMediaType(mediaType, data, true)
+	}
+	if full, err := prompt.ResolveFullMediaType(mediaType, nil, true); err == nil {
+		return full, nil
+	}
+	top, _, _ := strings.Cut(mediaType, "/")
+	detected, ok, err := fileutil.DetectMediaTypeSignatureBase64(dataString, top)
+	if err != nil {
+		return "", err
+	}
+	if ok && detected != "" {
+		return detected, nil
+	}
+	return prompt.ResolveFullMediaType(mediaType, nil, true)
 }

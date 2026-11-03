@@ -380,7 +380,7 @@ func (m *ConversationLanguageModel) DoGenerate(ctx context.Context, opts *provid
 	if hasFunctionCalls {
 		result.FinishReason = types.FinishReasonToolCalls
 	}
-	result.Usage = convertMistralUsage(response.Usage)
+	result.Usage = convertMistralConversationUsage(response.Usage)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	result.ResponseMetadata = &types.ResponseMetadata{ID: response.ConversationID, ModelID: modelID, Headers: result.ResponseHeaders, Body: raw}
 	return result, nil
@@ -691,7 +691,7 @@ func (s *conversationStream) flush() {
 	case s.hasFunctionCalls:
 		reason = types.FinishReasonToolCalls
 	}
-	usage := convertMistralUsage(s.usage)
+	usage := convertMistralConversationUsage(s.usage)
 	s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: reason, Usage: &usage})
 }
 
@@ -741,4 +741,34 @@ func conversationRequiredFieldsPresent(data, eventType string) (string, bool) {
 		}
 	}
 	return "", true
+}
+
+// convertMistralConversationUsage is convertMistralUsage over TS
+// mistralConversationUsageSchema, which defaults prompt_tokens,
+// completion_tokens and total_tokens to 0: a usage object without them (the
+// web search response sends "usage": {}) reports zero tokens, and the parsed
+// object (usage.raw) carries the defaulted fields.
+func convertMistralConversationUsage(raw json.RawMessage) types.Usage {
+	if len(raw) == 0 || string(raw) == "null" {
+		return convertMistralUsage(raw)
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(raw, &m) != nil || m == nil {
+		return convertMistralUsage(raw)
+	}
+	changed := false
+	for _, key := range []string{"prompt_tokens", "completion_tokens", "total_tokens"} {
+		if _, ok := m[key]; !ok {
+			m[key] = json.RawMessage("0")
+			changed = true
+		}
+	}
+	if !changed {
+		return convertMistralUsage(raw)
+	}
+	filled, err := json.Marshal(m)
+	if err != nil {
+		return convertMistralUsage(raw)
+	}
+	return convertMistralUsage(filled)
 }
