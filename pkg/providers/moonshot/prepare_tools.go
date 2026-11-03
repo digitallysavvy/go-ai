@@ -1,6 +1,7 @@
 package moonshot
 
 import (
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -113,6 +114,21 @@ func moonshotDefaultObjectSchema(parameters interface{}) interface{} {
 			"properties": map[string]interface{}{},
 		}
 	}
+	if schema, ok := parameters.(*jsonorder.Object); ok && schema != nil {
+		_, hasType := schema.Get("type")
+		_, hasAnyOf := schema.Get("anyOf")
+		_, hasOneOf := schema.Get("oneOf")
+		if !hasType && !hasAnyOf && !hasOneOf {
+			copied := jsonorder.New()
+			for _, k := range schema.Keys() {
+				v, _ := schema.Get(k)
+				copied.Set(k, v)
+			}
+			copied.Set("type", "object")
+			return copied
+		}
+		return schema
+	}
 	if schema, ok := parameters.(map[string]interface{}); ok {
 		_, hasType := schema["type"]
 		_, hasAnyOf := schema["anyOf"]
@@ -132,21 +148,27 @@ func moonshotDefaultObjectSchema(parameters interface{}) interface{} {
 }
 
 // normalizeMFJSKeepingOrder normalizes tool parameters for MFJS. Raw JSON
-// (json.RawMessage) and *schema.OrderedSchema parameters are decoded for the
-// normalization and written back in their source key order, like the JS
-// object TS normalizes.
+// (json.RawMessage) and *schema.OrderedSchema parameters are normalized as an
+// ordered object, so their source key order (and the TS placement of keys the
+// normalization adds) reaches the wire, like the JS object TS normalizes.
 func normalizeMFJSKeepingOrder(parameters interface{}) (interface{}, error) {
-	raw, isRaw := providerutils.RawJSONObject(parameters)
-	if isRaw {
-		if m := providerutils.DecodeRawJSONObject(raw); m != nil {
-			parameters = m
-		} else {
-			isRaw = false
-		}
+	if ordered, ok := mfjsOrderedSource(parameters); ok {
+		parameters = ordered
 	}
-	normalized, err := NormalizeJSONSchemaForMFJS(moonshotDefaultObjectSchema(parameters))
-	if err != nil || !isRaw {
-		return normalized, err
+	return NormalizeJSONSchemaForMFJS(moonshotDefaultObjectSchema(parameters))
+}
+
+// mfjsOrderedSource parses a raw JSON or ordered schema value into an ordered
+// object (ok false for maps and other values).
+func mfjsOrderedSource(v interface{}) (*jsonorder.Object, bool) {
+	raw, ok := providerutils.RawJSONObject(v)
+	if !ok {
+		return nil, false
 	}
-	return providerutils.OrderLike(normalized, raw), nil
+	tree, ok := jsonorder.Parse(raw)
+	if !ok {
+		return nil, false
+	}
+	o, ok := tree.(*jsonorder.Object)
+	return o, ok
 }
