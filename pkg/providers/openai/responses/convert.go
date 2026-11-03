@@ -703,7 +703,7 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{
 		if args == nil {
 			args = map[string]interface{}{}
 		}
-		argsJSON := []byte(providerutils.ArgumentsJSONText(args, tc.RawArguments))
+		argsJSON := []byte(responsesFunctionCallArguments(args, tc.RawArguments))
 		namespace := ""
 		var async *bool
 		if openaiMeta, ok := tc.ProviderMetadata[providerName].(map[string]interface{}); ok {
@@ -820,6 +820,24 @@ func toolResultCaller(part types.ToolResultContent, providerName string) *ToolCa
 		return nil
 	}
 	return toolCallCallerFromMetadata(metadata, providerName)
+}
+
+// responsesFunctionCallArguments ports TS serializeToolCallArguments
+// (4ae6986cd8) for a replayed tool call whose input text is RawArguments:
+// valid JSON text is sent as is (an object through ArgumentsJSONText, which
+// keeps the wire key order), and text that is not valid JSON is sent as its
+// JSON string literal (TS JSON.stringify of a string input).
+func responsesFunctionCallArguments(args map[string]interface{}, raw string) string {
+	if trimmed := strings.TrimSpace(raw); trimmed != "" {
+		if !json.Valid([]byte(trimmed)) {
+			b, _ := jsonstr.Marshal(raw)
+			return string(b)
+		}
+		if trimmed[0] != '{' {
+			return providerutils.CompactJSON(json.RawMessage(trimmed))
+		}
+	}
+	return providerutils.ArgumentsJSONText(args, raw)
 }
 
 func toolCallContentArguments(part types.ToolCallContent) (map[string]interface{}, string) {
