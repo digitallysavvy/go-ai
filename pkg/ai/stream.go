@@ -3484,7 +3484,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// TS toolResults holds only tool-result parts: failed calls are
 		// tool-error content only (owner ruling r71). The telemetry step end
 		// keeps them (TelemetryStepEndEvent has no content).
-		stepTelemetryToolResults := types.ResultsForPublicView(mergeStreamedToolResults(stepToolResults, streamedToolResults, streamedToolResultOrder))
+		// TS step toolResults are the step content's tool results, in content
+		// order: a provider result streamed during the model call comes before
+		// a local result that settled after it.
+		stepTelemetryToolResults := types.ResultsForPublicView(orderToolResultsByContent(mergeStreamedToolResults(stepToolResults, streamedToolResults, streamedToolResultOrder), stepContent))
 		publicStepToolResults := successfulToolResults(stepTelemetryToolResults)
 
 		aggToolCallsLen, aggToolResultsLen, aggUsageBefore := len(r.toolCalls), len(r.toolResults), r.usage
@@ -6350,4 +6353,45 @@ func reorderLiveToolResults(results []types.ToolResult, order []string) {
 	for k, i := range slots {
 		results[i] = live[k]
 	}
+}
+
+// orderToolResultsByContent orders results by the position of their
+// tool-result or tool-error part in content (TS derives a step's toolResults
+// from its content). Results without such a part keep their relative order
+// after the others.
+func orderToolResultsByContent(results []types.ToolResult, content []types.ContentPart) []types.ToolResult {
+	if len(results) < 2 {
+		return results
+	}
+	position := map[string]int{}
+	for i, part := range content {
+		id := ""
+		switch p := part.(type) {
+		case types.ToolResultContent:
+			id = p.ToolCallID
+		case *types.ToolResultContent:
+			if p != nil {
+				id = p.ToolCallID
+			}
+		case types.ToolErrorContent:
+			id = p.ToolCallID
+		case *types.ToolErrorContent:
+			if p != nil {
+				id = p.ToolCallID
+			}
+		}
+		if _, seen := position[id]; id != "" && !seen {
+			position[id] = i
+		}
+	}
+	ordered := append([]types.ToolResult(nil), results...)
+	sort.SliceStable(ordered, func(a, b int) bool {
+		pa, okA := position[ordered[a].ToolCallID]
+		pb, okB := position[ordered[b].ToolCallID]
+		if okA != okB {
+			return okA
+		}
+		return okA && pa < pb
+	})
+	return ordered
 }

@@ -222,3 +222,46 @@ func TestR86streamToolPartRawInputNull(t *testing.T) {
 		t.Errorf("warnings = %v", settings)
 	}
 }
+
+// TS step toolResults come from the step content: a provider-executed result
+// streamed during the model call precedes a local result that settled after
+// the stream (Node recorded, 30548ee7f9: content tool-call:c1 tool-call:c2
+// tool-result:c2 tool-result:c1; step, onStepEnd, onEnd and result
+// toolResults c2,c1).
+func TestR86streamToolResultsFollowContentOrder(t *testing.T) {
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		return testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "exec", RawArguments: "{}"}},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c2", ToolName: "web", RawArguments: "{}", ProviderExecuted: true}},
+			{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "c2", ToolName: "web", Result: map[string]interface{}{"r": 2}, ProviderExecuted: true}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: r72streamTestUsage},
+		}), nil
+	}}
+	ids := func(rs []types.ToolResult) []string {
+		var s []string
+		for _, r := range rs {
+			s = append(s, r.ToolCallID)
+		}
+		return s
+	}
+	var stepEnd, end []string
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "x", Tools: []types.Tool{
+		{Name: "exec", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "E", nil
+		}},
+		{Name: "web", Type: types.ToolTypeProviderDefined, ProviderID: "m.web", ProviderExecuted: true},
+	},
+		OnStepEndEvent: func(_ context.Context, e OnStepFinishEvent) { stepEnd = ids(e.ToolResults) },
+		OnEndEvent:     func(_ context.Context, e OnFinishEvent) { end = ids(e.ToolResults) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	r86streamWantStrings(t, "step toolResults", ids(r.Steps()[0].ToolResults), "c2", "c1")
+	r86streamWantStrings(t, "result toolResults", ids(r.ToolResults()), "c2", "c1")
+	r86streamWantStrings(t, "onStepEnd toolResults", stepEnd, "c2", "c1")
+	r86streamWantStrings(t, "onEnd toolResults", end, "c2", "c1")
+}
