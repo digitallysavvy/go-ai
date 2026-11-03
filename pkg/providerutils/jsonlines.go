@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -51,7 +52,30 @@ func NewJSONLinesScanner(r io.Reader, maxLineBytes int) *bufio.Scanner {
 		initial = limit
 	}
 	scanner.Buffer(make([]byte, initial), limit)
+	scanner.Split(jsonLinesSplit())
 	return scanner
+}
+
+// jsonLinesSplit is bufio.ScanLines over the text TS parseJsonLines decodes
+// with TextDecoder (response-handler.ts 279): the stream's leading BOM is
+// dropped and each maximal invalid UTF-8 subpart in a row is one U+FFFD.
+// A line feed always ends an incomplete sequence, so decoding row by row
+// equals the stream decode.
+func jsonLinesSplit() bufio.SplitFunc {
+	first := true
+	return func(data []byte, atEOF bool) (int, []byte, error) {
+		advance, token, err := bufio.ScanLines(data, atEOF)
+		if token == nil {
+			return advance, token, err
+		}
+		if first {
+			first = false
+			if textdecode.HasBOM(token) {
+				token = token[3:]
+			}
+		}
+		return advance, textdecode.ReplaceInvalid(token), err
+	}
 }
 
 // JSONLinesScanError converts a scanner error into the error to return to the

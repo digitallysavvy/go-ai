@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 )
 
 // SSEEvent represents a single Server-Sent Event
@@ -120,7 +122,10 @@ func (p *SSEParser) Next() (*SSEEvent, error) {
 		}
 		line := p.scanner.Text()
 		if !p.started {
-			// eventsource-parser strips a leading byte order mark.
+			// TS TextDecoderStream (ignoreBOM false) drops one leading
+			// byte order mark before eventsource-parser sees the text
+			// (eventsource-parser's own strip targets the mis-decoded
+			// "\u00ef\u00bb\u00bf", which the decoder never produces here).
 			p.started = true
 			line = strings.TrimPrefix(line, "\ufeff")
 		}
@@ -132,7 +137,11 @@ func (p *SSEParser) Next() (*SSEEvent, error) {
 		if line == "" {
 			if len(dataLines) > 0 {
 				// Combine data lines
-				event.Data = strings.Join(dataLines, "\n")
+				// TS TextDecoderStream: each maximal invalid UTF-8
+				// subpart is one U+FFFD (a line end always ends an
+				// incomplete sequence, so per-event decoding equals the
+				// stream decode).
+				event.Data = textdecode.ReplaceInvalidString(strings.Join(dataLines, "\n"))
 				return event, nil
 			}
 			// Nothing to dispatch: the event type, id and retry are reset.
