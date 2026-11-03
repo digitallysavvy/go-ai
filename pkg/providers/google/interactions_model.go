@@ -523,7 +523,7 @@ func (m *InteractionsLanguageModel) pollUntilTerminal(ctx context.Context, inter
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			_ = m.cancelInteraction(context.Background(), interactionID, headers)
+			_ = m.cancelInteraction(context.WithoutCancel(ctx), interactionID, headers)
 			return interactionsResponse{}, nil, ctx.Err()
 		case <-timer.C:
 		}
@@ -537,7 +537,7 @@ func (m *InteractionsLanguageModel) pollUntilTerminal(ctx context.Context, inter
 		}, &response)
 		if err != nil {
 			if ctx.Err() != nil {
-				_ = m.cancelInteraction(context.Background(), interactionID, headers)
+				_ = m.cancelInteraction(context.WithoutCancel(ctx), interactionID, headers)
 			}
 			return interactionsResponse{}, nil, m.handleError(err)
 		}

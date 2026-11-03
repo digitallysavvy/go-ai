@@ -431,7 +431,13 @@ func (m *VideoModel) buildCompletedResult(ctx context.Context, operation *google
 
 	// TS resolves config.headers again for the download key; the key
 	// func gets the status call's ctx.
-	apiKey := m.prov.headersSnapshotCtx(ctx)["x-goog-api-key"]
+	// Resolved once, and a key func error fails the call (it was retried
+	// with context.Background() through the snapshot fallback).
+	downloadHeaders, err := m.prov.requestHeaders(ctx)
+	if err != nil {
+		return nil, err
+	}
+	apiKey := downloadHeaders["x-goog-api-key"]
 
 	videos := []provider.VideoModelV3VideoData{}
 	videoMetadata := []map[string]interface{}{}

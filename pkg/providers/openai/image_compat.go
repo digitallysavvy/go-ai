@@ -122,7 +122,13 @@ func (m *ImageModel) doCompat(ctx context.Context, opts *provider.ImageGenerateO
 			return nil, providererrors.NewProviderError(m.Provider(), 0, "", "Expected url in the image response", nil)
 		}
 		dlOpts := fileutil.TrustedOriginDownloadOptions(m.provider.config.BaseURL, m.provider.client.HTTPClient().Transport)
-		dlOpts.Headers = m.compatDownloadHeaders(d.URL, opts.Headers)
+		// TS resolves config.headers() inside the call: an APIKeyFunc gets
+		// the caller's ctx, once per download, and its error fails the call.
+		providerHeaders, err := m.provider.client.RequestHeadersCtx(ctx)
+		if err != nil {
+			return nil, err
+		}
+		dlOpts.Headers = m.compatDownloadHeaders(providerHeaders, d.URL, opts.Headers)
 		raw, err := fileutil.Download(ctx, d.URL, dlOpts)
 		if err != nil {
 			return nil, providererrors.NewProviderError(m.Provider(), 0, "", fmt.Sprintf("failed to download image: %v", err), err)
@@ -162,8 +168,8 @@ var safeUntrustedFirstHopHeaders = map[string]bool{
 // (TS fetchUntrustedUrl with credentialedOrigin = the request URL): the
 // provider and call headers when the URL is same-origin with the configured
 // base URL, otherwise only the non-credential allowlist.
-func (m *ImageModel) compatDownloadHeaders(imageURL string, callHeaders map[string]string) map[string]string {
-	all := internalhttp.MergeHeaders(m.provider.client.Headers(), callHeaders)
+func (m *ImageModel) compatDownloadHeaders(providerHeaders map[string]string, imageURL string, callHeaders map[string]string) map[string]string {
+	all := internalhttp.MergeHeaders(providerHeaders, callHeaders)
 	same := fileutil.IsSameOrigin(imageURL, m.provider.config.BaseURL)
 	out := make(map[string]string, len(all))
 	for k, v := range all {

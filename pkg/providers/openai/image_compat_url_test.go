@@ -112,11 +112,11 @@ func TestCompatDownloadHeadersWithholdCredentialsFromOtherOrigins(t *testing.T) 
 	m := NewImageModel(p, "m")
 	call := map[string]string{"x-api-key": "custom", "Traceparent": "00-abc", "Content-Type": "application/json"}
 
-	same := m.compatDownloadHeaders("https://api.example.com/files/a.png", call)
+	same := m.compatDownloadHeaders(m.provider.client.Headers(), "https://api.example.com/files/a.png", call)
 	if same["authorization"] != "Bearer test-key" || same["x-api-key"] != "custom" {
 		t.Fatalf("same-origin headers = %v", same)
 	}
-	other := m.compatDownloadHeaders("https://cdn.example.com/a.png", call)
+	other := m.compatDownloadHeaders(m.provider.client.Headers(), "https://cdn.example.com/a.png", call)
 	if _, ok := other["authorization"]; ok {
 		t.Fatalf("authorization leaked to another origin: %v", other)
 	}

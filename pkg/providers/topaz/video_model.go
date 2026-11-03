@@ -231,7 +231,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		if err := m.uploadVideo(callCtx, requestID, uploadBytes, created.UploadURLs, contentType); err != nil {
 			// Canceling before processing starts refunds any reserved
 			// credits.
-			m.cancelQuietly(context.Background(), requestID, opts.Headers)
+			m.cancelQuietly(context.WithoutCancel(callCtx), requestID, opts.Headers)
 			return nil, err
 		}
 	}

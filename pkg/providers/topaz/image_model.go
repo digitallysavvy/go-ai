@@ -123,7 +123,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		// path above already cancels on its own internal deadline; this
 		// additionally covers the caller's own ctx/AbortSignal firing mid-poll.
 		if ctx.Err() != nil || (opts.AbortSignal != nil && opts.AbortSignal.Err() != nil) {
-			m.cancelQuietly(context.Background(), submit.ProcessID, opts.Headers)
+			m.cancelQuietly(context.WithoutCancel(ctx), submit.ProcessID, opts.Headers)
 		}
 		return nil, err
 	}
@@ -400,7 +400,7 @@ func (m *ImageModel) waitForCompletion(ctx context.Context, processID string, he
 		}
 
 		if time.Now().Add(pollInterval).After(deadline) {
-			m.cancelQuietly(context.Background(), processID, headers)
+			m.cancelQuietly(context.WithoutCancel(ctx), processID, headers)
 			return nil, fmt.Errorf( //nolint:staticcheck // matches TS SDK's exact error text
 				"Topaz image enhancement did not finish within %dms (process %s, last status %s). Increase the `pollTimeoutMillis` provider option if the job needs longer.",
 				pollTimeout.Milliseconds(), processID, lastStatus)

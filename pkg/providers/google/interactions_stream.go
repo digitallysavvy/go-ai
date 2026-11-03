@@ -417,9 +417,19 @@ func (s *interactionsStream) Err() error {
 	return s.err
 }
 
+// cancelCtx is the context of a best-effort cancel request: the call's
+// values (an APIKeyFunc reads them, TS resolves config.headers() in the
+// call) without its cancellation, which already fired.
+func (s *interactionsStream) cancelCtx() context.Context {
+	if s.ctx == nil {
+		return context.Background()
+	}
+	return context.WithoutCancel(s.ctx)
+}
+
 func (s *interactionsStream) Close() error {
 	if s.resumable && !s.completed && s.interactionID != "" {
-		_ = (&InteractionsLanguageModel{cfg: InteractionsConfig{Client: s.client}}).cancelInteraction(context.Background(), s.interactionID, s.headers)
+		_ = (&InteractionsLanguageModel{cfg: InteractionsConfig{Client: s.client}}).cancelInteraction(s.cancelCtx(), s.interactionID, s.headers)
 	}
 	if s.reader == nil {
 		return nil
@@ -458,7 +468,7 @@ var interactionsStreamRetryDelay = 500 * time.Millisecond
 // cancelOnAbort fires the best-effort POST /interactions/{id}/cancel TS sends
 // when the caller aborts before the interaction completed.
 func (s *interactionsStream) cancelOnAbort() {
-	_ = (&InteractionsLanguageModel{cfg: InteractionsConfig{Client: s.client}}).cancelInteraction(context.Background(), s.interactionID, s.headers)
+	_ = (&InteractionsLanguageModel{cfg: InteractionsConfig{Client: s.client}}).cancelInteraction(s.cancelCtx(), s.interactionID, s.headers)
 }
 
 // sleepBeforeRetry waits retryDelay*attempt, returning ctx.Err() (after the

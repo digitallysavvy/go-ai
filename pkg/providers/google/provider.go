@@ -146,10 +146,9 @@ func (p *Provider) headersSnapshot() map[string]string {
 
 // headersSnapshotCtx is headersSnapshot with the context an APIKeyFunc gets.
 func (p *Provider) headersSnapshotCtx(ctx context.Context) map[string]string {
-	h, err := p.requestHeaders(ctx)
-	if err != nil {
-		return p.client.Headers()
-	}
+	// A failed key func is not retried without the ctx: the snapshot is
+	// then empty.
+	h, _ := p.requestHeaders(ctx)
 	return h
 }
 
