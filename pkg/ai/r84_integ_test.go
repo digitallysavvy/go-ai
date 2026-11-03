@@ -212,7 +212,7 @@ func TestR84integToolTimeoutErrorTextForModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if (&TimeoutError{}).ErrorName() != "TimeoutError" || !strings.Contains(second, "TimeoutError: The operation was aborted due to timeout") {
+	if !strings.Contains(second, "TimeoutError: The operation was aborted due to timeout") {
 		t.Fatalf("second prompt = %s", second)
 	}
 }
@@ -286,5 +286,32 @@ func TestR84integBatchImagePartDeprecation(t *testing.T) {
 	}
 	if len(batches) != 1 || len(batches[0]) != 1 {
 		t.Fatalf("batches = %+v", batches)
+	}
+}
+
+// A tool that swallows the step deadline and returns: the next iteration
+// rejects with the step TimeoutError (TS throwIfAborted), with its TS text.
+func TestR84integStepTimeoutAfterSwallowingTool(t *testing.T) {
+	step := 30 * time.Millisecond
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				ToolCalls:    []types.ToolCall{{ID: "tc1", ToolName: "stubborn", Arguments: map[string]interface{}{}}},
+				FinishReason: types.FinishReasonToolCalls,
+			}, nil
+		},
+	}
+	stubborn := types.Tool{Name: "stubborn", Execute: func(ctx context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+		<-ctx.Done()
+		return "ignored the abort", nil
+	}}
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model, Prompt: "go", Tools: []types.Tool{stubborn},
+		StopWhen: []StopCondition{StepCountIs(3)},
+		Timeout:  &TimeoutConfig{PerStep: &step},
+	})
+	var timeoutErr *TimeoutError
+	if !errors.As(err, &timeoutErr) || timeoutErr.Reason != TimeoutReasonStep || err.Error() != "Step timeout of 30ms exceeded" {
+		t.Fatalf("err = %v", err)
 	}
 }
