@@ -198,7 +198,17 @@ func (t *sigV4Transport) setLastCredentials(creds Credentials) {
 	t.lastCredsMu.Unlock()
 }
 
+// RoundTrip closes the request body on every error, as the
+// http.RoundTripper contract requires (also before the base transport runs).
 func (t *sigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.roundTrip(req)
+	if err != nil && req.Body != nil {
+		_ = req.Body.Close()
+	}
+	return resp, err
+}
+
+func (t *sigV4Transport) roundTrip(req *http.Request) (*http.Response, error) {
 	if key := providerutils.APIKeyOrEnv(t.apiKey, "ANTHROPIC_AWS_API_KEY"); key != "" {
 		req = req.Clone(req.Context())
 		req.Header.Set("x-api-key", key)
@@ -212,7 +222,11 @@ func (t *sigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	_ = req.Body.Close()
+	// Sign and send a clone: a RoundTripper must not modify the caller's
+	// request.
+	req = req.Clone(req.Context())
 	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
 	req.ContentLength = int64(len(body))
 
 	// TS loads the region first, at request time, and fails when it is

@@ -641,7 +641,17 @@ type azureTokenTransport struct {
 	tokenProvider func(context.Context) (string, error)
 }
 
+// RoundTrip closes the request body on every error, as the
+// http.RoundTripper contract requires (also before the base transport runs).
 func (t azureTokenTransport) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
+	resp, err := t.roundTrip(req)
+	if err != nil && req.Body != nil {
+		_ = req.Body.Close()
+	}
+	return resp, err
+}
+
+func (t azureTokenTransport) roundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
 	clone := req.Clone(req.Context())
 	if clone.Header.Get("Authorization") == "" {
 		token, err := t.tokenProvider(req.Context())

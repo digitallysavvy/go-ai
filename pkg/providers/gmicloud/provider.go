@@ -174,7 +174,17 @@ type gmicloudIncludeUsageTransport struct {
 	base stdhttp.RoundTripper
 }
 
+// RoundTrip closes the request body on every error, as the
+// http.RoundTripper contract requires (also before the base transport runs).
 func (t gmicloudIncludeUsageTransport) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
+	resp, err := t.roundTrip(req)
+	if err != nil && req.Body != nil {
+		_ = req.Body.Close()
+	}
+	return resp, err
+}
+
+func (t gmicloudIncludeUsageTransport) roundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
 	if req.Body == nil {
 		return t.base.RoundTrip(req)
 	}
