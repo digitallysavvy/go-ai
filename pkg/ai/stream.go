@@ -2897,6 +2897,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					startReopenCall()
 					newStream, reopenErr := doStreamWithGatewayRetryEach(r.stepReopenCtx, reopenModel, reopenOpts, r.stepReopenMaxRetries, startReopenCall)
 					if reopenErr != nil {
+						// A step or total deadline that passes while the
+						// retry's model call opens is that timeout (TS: the
+						// stepMs / totalMs abort reason), as on the first open.
+						if r.timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
+							reopenErr = r.timeout.timeoutError(TimeoutReasonStep, stepCtx.Err())
+						} else if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
+							reopenErr = r.timeout.timeoutError(TimeoutReasonTotal, reopenErr)
+						}
 						if isAbortErr(ctx, reopenErr) {
 							// TS's outer stream turns the error part into
 							// abort(); the telemetry onAbort ends the spans.

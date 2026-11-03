@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
@@ -438,6 +439,162 @@ func TestR84streamTimeoutAbortReasonText(t *testing.T) {
 	}
 	if got := (&TimeoutError{Reason: TimeoutReasonTool, Err: context.DeadlineExceeded}).Error(); got != "tool timeout exceeded: context deadline exceeded" {
 		t.Errorf("tool without duration: %q", got)
+	}
+}
+
+// r84streamEOFStream delivers its delayed chunks, then io.EOF.
+type r84streamEOFStream struct {
+	ctx    context.Context
+	chunks []delayedChunk
+	idx    int
+}
+
+func (s *r84streamEOFStream) Next() (*provider.StreamChunk, error) {
+	if s.idx >= len(s.chunks) {
+		return nil, io.EOF
+	}
+	dc := s.chunks[s.idx]
+	s.idx++
+	select {
+	case <-time.After(dc.delay):
+	case <-s.ctx.Done():
+		return nil, context.Cause(s.ctx)
+	}
+	c := dc.chunk
+	return &c, nil
+}
+func (s *r84streamEOFStream) Err() error   { return nil }
+func (s *r84streamEOFStream) Close() error { return nil }
+
+var r84streamTextChunks = []provider.StreamChunk{
+	{Type: provider.ChunkTypeTextStart, ID: "1"},
+	{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+	{Type: provider.ChunkTypeTextEnd, ID: "1"},
+	{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: r71streamUsage},
+}
+
+// stream-text-timeout.test.ts 216: firstChunkMs is armed again for the
+// second model-call step and aborts it with the first-chunk reason.
+func TestR84streamFirstChunkTimeoutRearmedPerStep(t *testing.T) {
+	var mu sync.Mutex
+	var ctxs []context.Context
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(ctx context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+		mu.Lock()
+		ctxs = append(ctxs, ctx)
+		n := len(ctxs)
+		mu.Unlock()
+		if n == 1 {
+			return testutil.NewMockTextStream(r71streamToolCallStep([2]string{"call-1", "test"})), nil
+		}
+		return &r82streamTimedStream{ctx: ctx, chunks: []delayedChunk{
+			{chunk: provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "response-2"}}},
+			{chunk: provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "2"}},
+		}}, nil
+	}}
+	tool := types.Tool{Name: "tool1", Parameters: r71streamValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "tool result", nil
+	}}
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test-input", Tools: []types.Tool{tool},
+		Timeout: &TimeoutConfig{FirstChunk: r82streamDur(50)}, StopWhen: []StopCondition{IsStepCount(2)}, OnError: func(context.Context, error) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ctxs) != 2 {
+		t.Fatalf("steps = %d", len(ctxs))
+	}
+	select {
+	case <-ctxs[1].Done():
+	default:
+		t.Fatal("the second step's model call was not aborted")
+	}
+	var te *TimeoutError
+	if !errors.As(r.Err(), &te) || te.Reason != TimeoutReasonFirstChunk || r.Err().Error() != "First chunk timeout of 50ms exceeded" {
+		t.Fatalf("Err() = %v", r.Err())
+	}
+}
+
+// stream-text-timeout.test.ts 613: a stream retry and an OnErrorRetry retry
+// each get a fresh firstChunkMs budget (40ms + 40ms of waiting is no 50ms
+// timeout).
+func TestR84streamRetryGetsFreshFirstChunkBudget(t *testing.T) {
+	for _, kind := range []string{"stream", "callback"} {
+		t.Run(kind, func(t *testing.T) {
+			var mu sync.Mutex
+			attempts := 0
+			model := &testutil.MockLanguageModel{DoStreamFunc: func(ctx context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+				mu.Lock()
+				attempts++
+				n := attempts
+				mu.Unlock()
+				if n == 1 {
+					return &r84streamEOFStream{ctx: ctx, chunks: []delayedChunk{{delay: 40 * time.Millisecond, chunk: provider.StreamChunk{Type: provider.ChunkTypeError, Err: errors.New("retryable stream error")}}}}, nil
+				}
+				chunks := []delayedChunk{{delay: 40 * time.Millisecond, chunk: r84streamTextChunks[0]}}
+				for _, c := range r84streamTextChunks[1:] {
+					chunks = append(chunks, delayedChunk{chunk: c})
+				}
+				return &r84streamEOFStream{ctx: ctx, chunks: chunks}, nil
+			}}
+			retries := 0
+			opts := StreamTextOptions{Model: model, Prompt: "test", Timeout: &TimeoutConfig{FirstChunk: r82streamDur(50), PerChunk: r82streamDur(50)}, StreamRetries: &retries}
+			if kind == "stream" {
+				retries = 1
+			} else {
+				opts.OnErrorRetry = func(context.Context, StreamTextOnErrorRetryEvent) bool { return true }
+			}
+			r := r71streamRun(t, opts)
+			if attempts != 2 || r.Err() != nil || r.Text() != "Hello" {
+				t.Fatalf("attempts = %d, Err() = %v, Text() = %q", attempts, r.Err(), r.Text())
+			}
+		})
+	}
+}
+
+// stream-text-timeout.test.ts 772: stepMs is cumulative across request
+// (maxRetries) and stream retries: 40ms + 40ms exceeds a 60ms step.
+func TestR84streamStepTimeoutCumulativeAcrossRetries(t *testing.T) {
+	for _, kind := range []string{"request", "stream"} {
+		t.Run(kind, func(t *testing.T) {
+			var mu sync.Mutex
+			attempts := 0
+			retryable := &providererrors.ProviderError{Provider: "mock", StatusCode: 429, Message: "retryable error", ResponseHeaders: map[string]string{"retry-after-ms": "0"}}
+			model := &testutil.MockLanguageModel{DoStreamFunc: func(ctx context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+				mu.Lock()
+				attempts++
+				n := attempts
+				mu.Unlock()
+				select {
+				case <-time.After(40 * time.Millisecond):
+				case <-ctx.Done():
+					return nil, context.Cause(ctx)
+				}
+				if n == 1 {
+					if kind == "request" {
+						return nil, retryable
+					}
+					return testutil.NewMockTextStream([]provider.StreamChunk{{Type: provider.ChunkTypeError, Err: retryable}}), nil
+				}
+				return testutil.NewMockTextStream(r84streamTextChunks), nil
+			}}
+			retries := 0
+			if kind == "stream" {
+				retries = 1
+			}
+			maxRetries := 1
+			r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test", MaxRetries: &maxRetries, StreamRetries: &retries,
+				Timeout: &TimeoutConfig{PerStep: r82streamDur(60), FirstChunk: r82streamDur(50)}, OnError: func(context.Context, error) {}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = r.ConsumeStream()
+			var te *TimeoutError
+			if attempts != 2 || !errors.As(r.Err(), &te) || te.Reason != TimeoutReasonStep || r.Err().Error() != "Step timeout of 60ms exceeded" {
+				t.Fatalf("attempts = %d, Err() = %v", attempts, r.Err())
+			}
+		})
 	}
 }
 
