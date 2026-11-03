@@ -3771,8 +3771,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 		if !hasLocalToolCalls && len(pendingDeferredToolCalls) == 0 {
 			// A waiting steering message keeps the loop going for another
-			// step, unless the step failed.
-			if !r.steering.hasPendingMessages() {
+			// step, unless the step failed. Queued messages wait for a task
+			// that was not cut off (TS stream-text.ts 3392-3400).
+			truncated := r.finishReason == types.FinishReasonLength || r.finishReason == types.FinishReasonContentFilter
+			if !r.steering.hasPendingMessages() && (truncated || !r.steering.promoteQueuedMessage()) {
 				break
 			}
 			if r.finishReason == types.FinishReasonError {
