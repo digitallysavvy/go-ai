@@ -112,3 +112,22 @@ func TestR84provaInteractionsEmptyOptionValuesKept(t *testing.T) {
 		t.Errorf("warnings = %v", warnings)
 	}
 }
+
+// TestR84provaSynthesizedToolCallEmptySignature: TS synthesizes the agent
+// stream's tool-call with the parsed part's providerMetadata, which keeps an
+// empty signature (signature != null), so the next turn sends it back.
+func TestR84provaSynthesizedToolCallEmptySignature(t *testing.T) {
+	empty := ""
+	resp := interactionsResponse{ID: "int-1", Status: InteractionStatusCompleted}
+	resp.Steps = []interactionsContentBlock{{Type: "function_call", ID: "c1", Name: "lookup", Arguments: []byte(`{}`), Signature: &empty}}
+	var meta map[string]interface{}
+	for _, c := range drainInteractions(t, newSynthesizedInteractionsStream(&InteractionsLanguageModel{}, resp, nil, nil, false)) {
+		if c.Type == provider.ChunkTypeToolCall {
+			meta = c.ToolCall.ProviderMetadata
+		}
+	}
+	got, _ := json.Marshal(meta)
+	if string(got) != `{"google":{"interactionId":"int-1","signature":""}}` {
+		t.Errorf("tool call providerMetadata = %s", got)
+	}
+}
