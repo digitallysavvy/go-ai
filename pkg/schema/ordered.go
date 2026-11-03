@@ -80,12 +80,19 @@ func MarshalSchema(v interface{}) (data []byte, ok bool, err error) {
 
 // MarshalJSON writes the JSON Schema, so a schema value used where a JSON
 // Schema is expected (a tool's Parameters) serializes as the schema.
+// A nil or zero value, which is no schema, writes {}.
 func (s *SimpleJSONSchema) MarshalJSON() ([]byte, error) {
-	return marshalSchemaMap(s.validator.schema)
+	if s == nil || s.validator == nil {
+		return []byte("{}"), nil
+	}
+	return s.validator.MarshalJSON()
 }
 
-// MarshalJSON writes the JSON Schema.
+// MarshalJSON writes the JSON Schema; {} for a nil validator.
 func (v *JSONSchemaValidator) MarshalJSON() ([]byte, error) {
+	if v == nil {
+		return []byte("{}"), nil
+	}
 	return marshalSchemaMap(v.schema)
 }
 

@@ -192,7 +192,8 @@ func sanitizeAnthropicSchemaMap(schema map[string]interface{}) map[string]interf
 		copyIfNotNil(out, schema, "required")
 	}
 
-	if items, ok := schema["items"]; ok {
+	if items, ok := schema["items"]; ok && items != nil {
+		// TS schema.items != null: a JSON null items is dropped.
 		out["items"] = SanitizeAnthropicSchema(items)
 	}
 

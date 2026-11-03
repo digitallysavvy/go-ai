@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -102,5 +103,20 @@ func TestR83genStructSchemaInvalidTagName(t *testing.T) {
 	got := r82integSchemaJSON(t, v{})
 	if !strings.Contains(got, `"Price":`) || !strings.Contains(got, `"café":`) {
 		t.Fatalf("got %s", got)
+	}
+}
+
+// A zero or nil JSON schema value is no schema; marshaling it writes {}
+// instead of dereferencing the nil validator (carry CR r83 item 1).
+func TestR83genNilJSONSchemaMarshal(t *testing.T) {
+	for name, f := range map[string]func() ([]byte, error){
+		"zero SimpleJSONSchema":   func() ([]byte, error) { return json.Marshal(&SimpleJSONSchema{}) },
+		"nil SimpleJSONSchema":    func() ([]byte, error) { return (*SimpleJSONSchema)(nil).MarshalJSON() },
+		"nil JSONSchemaValidator": func() ([]byte, error) { return (*JSONSchemaValidator)(nil).MarshalJSON() },
+	} {
+		b, err := f()
+		if err != nil || string(b) != "{}" {
+			t.Fatalf("%s: %s, %v", name, b, err)
+		}
 	}
 }
