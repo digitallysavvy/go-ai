@@ -288,3 +288,46 @@ func r85carryJSON(t *testing.T, v any) any {
 	}
 	return out
 }
+
+// Ports TS e7a8988893 "preserves $nativeName in built-in tool approval
+// metadata": the parsed tool call (stream tool-call, approval request and
+// step) carries providerMetadata[harnessId].nativeToolName when the native
+// name differs, merged over the harness's existing metadata; a native name
+// equal to the tool name adds nothing.
+func TestR85carryNativeToolNameMetadata(t *testing.T) {
+	for _, tc := range []struct{ toolName, nativeName string }{{"bash", "Bash"}, {"write", "Write"}, {"edit", "Edit"}, {"Bash", "Bash"}} {
+		t.Run(tc.toolName+"/"+tc.nativeName, func(t *testing.T) {
+			metadata := ProviderMetadata{"mock": {"session": "s1"}, "other": {"k": "v"}}
+			mock := newMockHarness(mockHarnessOptions{
+				builtinTools: map[string]BuiltinTool{tc.toolName: {Tool: r85carryBashTool()}}, supportsApproval: true,
+				script: func(func(string, interface{})) []StreamPart {
+					return []StreamPart{
+						&StreamStartPart{},
+						&ToolCallPart{ToolCallID: "c1", ToolName: tc.toolName, Input: `{"command":"echo hello"}`, ProviderExecuted: true, NativeName: tc.nativeName, ProviderMetadata: metadata},
+						&ToolApprovalRequestPart{ApprovalID: "a1", ToolCallID: "c1"},
+					}
+				},
+			})
+			out := runPrompt(context.Background(), runPromptInput{
+				Harness: mock.harness, Session: mock.session, Prompt: TextPrompt("Run the shell command `echo hello`"), SandboxSession: testSandbox(),
+				Tools: map[string]types.Tool{tc.toolName: r85carryBashTool()},
+			})
+			chunks := drainRunPrompt(t, out)
+			want := map[string]any{"mock": map[string]any{"session": "s1"}, "other": map[string]any{"k": "v"}}
+			if tc.nativeName != tc.toolName {
+				want["mock"] = map[string]any{"session": "s1", "nativeToolName": tc.nativeName}
+			}
+			calls := chunksOfType(chunks, provider.ChunkTypeToolCall)
+			if len(calls) != 1 || !reflect.DeepEqual(r85carryJSON(t, calls[0].ToolCall.ProviderMetadata), r85carryJSON(t, want)) {
+				t.Fatalf("tool-call metadata = %+v, want %v", calls, want)
+			}
+			reqs := chunksOfType(chunks, provider.ChunkTypeToolApprovalRequest)
+			if len(reqs) != 1 || !reflect.DeepEqual(r85carryJSON(t, reqs[0].ToolApprovalRequest.ToolCall.ProviderMetadata), r85carryJSON(t, want)) {
+				t.Fatalf("approval request = %+v, want metadata %v", reqs, want)
+			}
+			if _, mutated := metadata["mock"]["nativeToolName"]; mutated {
+				t.Fatal("the adapter's provider metadata was mutated")
+			}
+		})
+	}
+}

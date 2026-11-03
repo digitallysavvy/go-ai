@@ -1479,7 +1479,7 @@ func (d *turnDriver) classifyAndValidateToolCall(raw, display *ToolCallPart) (di
 		tools = nil
 	}
 	parsed, perr := ai.ParseToolCall(d.ctx, ai.ParseToolCallOptions{
-		ToolCall: toolCallPartToCall(eventPart),
+		ToolCall: toolCallPartToCall(eventPart, d.in.Harness.HarnessID()),
 		Tools:    tools,
 	})
 	if perr != nil {
@@ -1498,7 +1498,23 @@ func (d *turnDriver) classifyAndValidateToolCall(raw, display *ToolCallPart) (di
 // JSON input (RawArguments) so parsing/validation happens against the exact
 // text the event carried — mirrors TS's `LanguageModelV4ToolCall` shape
 // `validateToolCall` builds from a `HarnessV1StreamPart` tool-call event.
-func toolCallPartToCall(p *ToolCallPart) types.ToolCall {
+func toolCallPartToCall(p *ToolCallPart, harnessID string) types.ToolCall {
+	metadata := convertProviderMetadata(ProviderMetadata(p.ProviderMetadata))
+	// TS validateToolCall (TS e7a8988893): a native name that differs from
+	// the tool name goes to providerMetadata[harnessId].nativeToolName,
+	// merged over that harness's existing metadata, so native-name approval
+	// gates can recognize the call.
+	if p.NativeName != "" && p.NativeName != p.ToolName {
+		entry := map[string]any{}
+		for k, v := range p.ProviderMetadata[harnessID] {
+			entry[k] = v
+		}
+		entry["nativeToolName"] = p.NativeName
+		if metadata == nil {
+			metadata = map[string]interface{}{}
+		}
+		metadata[harnessID] = entry
+	}
 	return types.ToolCall{
 		ID:               p.ToolCallID,
 		ToolName:         p.ToolName,
@@ -1508,7 +1524,7 @@ func toolCallPartToCall(p *ToolCallPart) types.ToolCall {
 		// defines it, so an explicit false stays set.
 		ProviderExecutedSet: p.ProviderExecuted || !p.ProviderExecutedOmitted,
 		Dynamic:             p.Dynamic,
-		ProviderMetadata:    convertProviderMetadata(ProviderMetadata(p.ProviderMetadata)),
+		ProviderMetadata:    metadata,
 	}
 }
 
@@ -2913,7 +2929,7 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 	var call types.ToolCall
 	if approval.Kind == PendingToolApprovalCustom && continuation.Approved {
 		parsed, perr := ai.ParseToolCall(d.ctx, ai.ParseToolCallOptions{
-			ToolCall: toolCallPartToCall(&rawToolCall),
+			ToolCall: toolCallPartToCall(&rawToolCall, d.in.Harness.HarnessID()),
 			Tools:    d.toolsList,
 		})
 		if perr != nil {
