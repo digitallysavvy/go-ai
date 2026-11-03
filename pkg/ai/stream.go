@@ -1004,8 +1004,10 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// cancellation or deadline.
 	r.totalParentCtx = ctx
 	if opts.Timeout != nil && opts.Timeout.HasTotal() {
+		// The deadline's cause is the total TimeoutError, so the abort reason
+		// (context.Cause) reads like TS's AbortSignal.timeout reason.
 		var cancel context.CancelFunc
-		ctx, cancel = opts.Timeout.CreateTimeoutContext(ctx, "total")
+		ctx, cancel = context.WithTimeoutCause(ctx, *opts.Timeout.Total, opts.Timeout.timeoutError(TimeoutReasonTotal, context.DeadlineExceeded))
 		defer cancel()
 	}
 
@@ -1478,9 +1480,9 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		// stepCancel runs only after the error is classified below: a cancelled
 		// step context would make every open failure look like a step timeout.
 		if opts.Timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
-			err = wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
+			err = opts.Timeout.timeoutError(TimeoutReasonStep, stepCtx.Err())
 		} else if opts.Timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
-			err = wrapTimeoutError(TimeoutReasonTotal, err)
+			err = opts.Timeout.timeoutError(TimeoutReasonTotal, err)
 		}
 		// Close the still-open step span and the model-call/"chat" span
 		// (GenAI) opened above: without this they would leak, since
@@ -1768,7 +1770,7 @@ func (r *StreamTextResult) abortBeforeStream(ctx context.Context, opts StreamTex
 	reason := abortReason(ctx, err)
 	abortChunk := provider.StreamChunk{Type: provider.ChunkTypeAbort}
 	if reason != nil {
-		abortChunk.AbortReason = reason.Error()
+		abortChunk.AbortReason = abortReasonMessage(reason)
 	}
 	// TS: `start` reaches onChunk first; abort() then notifies onAbort and
 	// the telemetry onAbort before it enqueues the `abort` part.
@@ -1961,7 +1963,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		})
 		abortChunk := provider.StreamChunk{Type: provider.ChunkTypeAbort}
 		if reason != nil {
-			abortChunk.AbortReason = reason.Error()
+			abortChunk.AbortReason = abortReasonMessage(reason)
 		}
 		forwardThroughTransformChain(0, []provider.StreamChunk{abortChunk})
 	}
@@ -2275,11 +2277,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			if err != nil {
 				if errors.Is(chunkDeadlineCtx.Err(), context.DeadlineExceeded) && chunkDeadlineReason != "" {
-					err = wrapTimeoutError(chunkDeadlineReason, chunkDeadlineCtx.Err())
+					err = r.timeout.timeoutError(chunkDeadlineReason, chunkDeadlineCtx.Err())
 				} else if r.timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
-					err = wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
+					err = r.timeout.timeoutError(TimeoutReasonStep, stepCtx.Err())
 				} else if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
-					err = wrapTimeoutError(TimeoutReasonTotal, err)
+					err = r.timeout.timeoutError(TimeoutReasonTotal, err)
 				}
 				r.err = err
 				if isAbortErr(ctx, err) {
@@ -2351,6 +2353,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if chunk.Type == provider.ChunkTypeFile && chunk.GeneratedFileContent != nil {
 				resolved, resolveErr := resolveGeneratedFile(stepCtx, *chunk.GeneratedFileContent)
 				if resolveErr != nil {
+					resolveErr = r.classifyStepTimeout(stepCtx, ctx, resolveErr)
 					r.err = resolveErr
 					if isAbortErr(ctx, resolveErr) {
 						fireAbort(resolveErr)
@@ -2362,6 +2365,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if chunk.Type == provider.ChunkTypeReasoningFile && chunk.ReasoningFileContent != nil {
 				resolved, resolveErr := resolveReasoningFile(stepCtx, *chunk.ReasoningFileContent)
 				if resolveErr != nil {
+					resolveErr = r.classifyStepTimeout(stepCtx, ctx, resolveErr)
 					r.err = resolveErr
 					if isAbortErr(ctx, resolveErr) {
 						fireAbort(resolveErr)
@@ -2553,6 +2557,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				if parseErr != nil {
 					// Only a context cancellation reaches here (ParseToolCall
 					// otherwise returns an Invalid call rather than an error).
+					parseErr = r.classifyStepTimeout(stepCtx, ctx, parseErr)
 					r.err = parseErr
 					if isAbortErr(ctx, parseErr) {
 						fireAbort(parseErr)
@@ -2580,6 +2585,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 						if pre.err != nil {
 							// TS resolveToolApproval throws inside the
 							// stream transform: the stream errors.
+							pre.err = r.classifyStepTimeout(stepCtx, ctx, pre.err)
 							r.err = pre.err
 							if isAbortErr(ctx, pre.err) {
 								fireAbort(pre.err)
@@ -2895,6 +2901,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					startReopenCall()
 					newStream, reopenErr := doStreamWithGatewayRetryEach(r.stepReopenCtx, reopenModel, reopenOpts, r.stepReopenMaxRetries, startReopenCall)
 					if reopenErr != nil {
+						// A step or total deadline that passes while the
+						// retry's model call opens is that timeout (TS: the
+						// stepMs / totalMs abort reason), as on the first open.
+						if r.timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
+							reopenErr = r.timeout.timeoutError(TimeoutReasonStep, stepCtx.Err())
+						} else if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
+							reopenErr = r.timeout.timeoutError(TimeoutReasonTotal, reopenErr)
+						}
 						if isAbortErr(ctx, reopenErr) {
 							// TS's outer stream turns the error part into
 							// abort(); the telemetry onAbort ends the spans.
@@ -3045,6 +3059,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if deferToolInputCallbacks(opts.Internal) {
 				deferredToolInputs = recordDeferredToolInput(deferredToolInputs, startedToolInputs, *chunk)
 			} else if err := toolInputCallbacks.handle(stepCtx, *chunk); err != nil {
+				err = r.classifyStepTimeout(stepCtx, ctx, err)
 				r.err = err
 				if isAbortErr(ctx, err) {
 					fireAbort(err)
@@ -3106,7 +3121,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 		for _, c := range deferredToolInputs {
 			if err := toolInputCallbacks.handle(stepCtx, c); err != nil {
-				r.err = err
+				r.err = r.classifyStepTimeout(stepCtx, ctx, err)
 				break
 			}
 		}
@@ -3281,7 +3296,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					abortErr = ctx.Err()
 				}
 				if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
-					abortErr = wrapTimeoutError(TimeoutReasonTotal, abortErr)
+					abortErr = r.timeout.timeoutError(TimeoutReasonTotal, abortErr)
 				}
 				r.err = abortErr
 				fireAbort(r.err)
@@ -3293,9 +3308,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if stepCtx.Err() != nil && r.timeout.HasPerStep() {
 			switch {
 			case deadlineFired(stepCtx, ctx):
-				r.err = wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
+				r.err = r.timeout.timeoutError(TimeoutReasonStep, stepCtx.Err())
 			case r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx):
-				r.err = wrapTimeoutError(TimeoutReasonTotal, ctx.Err())
+				r.err = r.timeout.timeoutError(TimeoutReasonTotal, ctx.Err())
 			default:
 				// The caller cancelled: an abort, not a timeout.
 				r.err = stepCtx.Err()
@@ -4122,9 +4137,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// nextStepCancel runs after the error is classified: a cancelled
 			// step context would make every open failure look like a step timeout.
 			if r.timeout.HasPerStep() && deadlineFired(nextStepCtx, ctx) {
-				err = wrapTimeoutError(TimeoutReasonStep, nextStepCtx.Err())
+				err = r.timeout.timeoutError(TimeoutReasonStep, nextStepCtx.Err())
 			} else if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
-				err = wrapTimeoutError(TimeoutReasonTotal, err)
+				err = r.timeout.timeoutError(TimeoutReasonTotal, err)
 			}
 			openErr := err
 			r.err = wrapGatewayError(err)
@@ -5201,7 +5216,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		}
 		if err != nil {
 			if errors.Is(stepCtx.Err(), context.DeadlineExceeded) && r.timeout != nil && r.timeout.HasPerStep() {
-				err = wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
+				err = r.timeout.timeoutError(TimeoutReasonStep, stepCtx.Err())
 			}
 			r.err = err
 			if isAbortErr(ctx, err) {
@@ -5715,6 +5730,49 @@ func streamRequestBody(s provider.TextStream) interface{} {
 	return nil
 }
 
+// abortReasonMessage is the `abort` part's reason text, TS
+// getErrorMessage(abortSignal.reason): an Error reason renders as
+// error.toString(), "<name>: <message>". The SDK's own reasons are the
+// DOMExceptions TS aborts with: a plain context cancellation is
+// "AbortError: This operation was aborted" (AbortController.abort()), a
+// timeout "TimeoutError: <message>" (setAbortTimeout / AbortSignal.timeout,
+// and a caller's own context deadline). Any other cause (for example from
+// context.WithCancelCause) is its Error() text, like a TS string reason.
+func abortReasonMessage(reason error) string {
+	var timeoutErr *TimeoutError
+	switch {
+	case reason == nil:
+		return ""
+	case errors.As(reason, &timeoutErr):
+		return "TimeoutError: " + timeoutErr.Error()
+	case reason == context.Canceled: //nolint:errorlint // only the bare sentinel is AbortController.abort()'s reason
+		return "AbortError: This operation was aborted"
+	case reason == context.DeadlineExceeded: //nolint:errorlint // only the bare sentinel is a deadline's own reason
+		return "TimeoutError: The operation was aborted due to timeout"
+	}
+	return reason.Error()
+}
+
+// classifyStepTimeout reports err as the step or total TimeoutError when
+// that deadline is what ended it (TS: the stepMs / totalMs abort reason
+// rejects whatever was waiting on the signal), else returns err unchanged.
+func (r *StreamTextResult) classifyStepTimeout(stepCtx, ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	var timeoutErr *TimeoutError
+	if errors.As(err, &timeoutErr) {
+		return err
+	}
+	if r.timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
+		return r.timeout.timeoutError(TimeoutReasonStep, stepCtx.Err())
+	}
+	if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
+		return r.timeout.timeoutError(TimeoutReasonTotal, err)
+	}
+	return err
+}
+
 func isAbortErr(ctx context.Context, err error) bool {
 	if err == nil {
 		return false
@@ -5801,7 +5859,7 @@ func (r *StreamTextResult) nextChunk(ctx context.Context) (*provider.StreamChunk
 	case result := <-resultCh:
 		return result.chunk, result.err
 	case <-chunkCtx.Done():
-		return nil, wrapTimeoutError(TimeoutReasonChunk, chunkCtx.Err())
+		return nil, r.timeout.timeoutError(TimeoutReasonChunk, chunkCtx.Err())
 	}
 }
 

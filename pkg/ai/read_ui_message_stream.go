@@ -76,19 +76,7 @@ func ReadUIMessages(ctx context.Context, opts ReadUIMessagesOptions) (<-chan UIM
 				if !ok {
 					return
 				}
-				// TS reset-step writes a snapshot only when it removed parts.
-				emptyReset := stringValue(chunk["type"]) == "reset-step" &&
-					currentStepStartIndex(uiParts(state.message)) >= len(uiParts(state.message))
-				var processingErr error
-				state.apply(chunk, func(err error) string {
-					if processingErr == nil {
-						processingErr = err
-					}
-					if opts.OnError != nil {
-						opts.OnError(err)
-					}
-					return ""
-				})
+				write, processingErr := state.applyForSnapshot(chunk, opts.OnError)
 				if processingErr != nil {
 					if opts.TerminateOnError {
 						errCh <- processingErr
@@ -102,7 +90,7 @@ func ReadUIMessages(ctx context.Context, opts ReadUIMessagesOptions) (<-chan UIM
 					}
 					continue
 				}
-				if emptyReset || !uiChunkWritesMessage(chunk) {
+				if !write {
 					continue
 				}
 				snapshot, err := UIMessageFromChunk(state.responseMessage())
@@ -122,6 +110,29 @@ func ReadUIMessages(ctx context.Context, opts ReadUIMessagesOptions) (<-chan UIM
 		}
 	}()
 	return out, errCh
+}
+
+// applyForSnapshot applies one chunk to the state and reports whether TS
+// processUIMessageStream would write() a new message snapshot for it, and
+// the first processing error (also passed to onError, when set).
+func (s *uiMessageCallbackState) applyForSnapshot(chunk UIMessageChunk, onError func(error)) (bool, error) {
+	// TS reset-step writes a snapshot only when it removed parts.
+	emptyReset := stringValue(chunk["type"]) == "reset-step" &&
+		currentStepStartIndex(uiParts(s.message)) >= len(uiParts(s.message))
+	var processingErr error
+	s.apply(chunk, func(err error) string {
+		if processingErr == nil {
+			processingErr = err
+		}
+		if onError != nil {
+			onError(err)
+		}
+		return ""
+	})
+	if processingErr != nil {
+		return false, processingErr
+	}
+	return !emptyReset && uiChunkWritesMessage(chunk), nil
 }
 
 // uiChunkWritesMessage reports whether TS processUIMessageStream calls

@@ -12,12 +12,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
 	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
 // UIMessageChunk is a lightweight JSON-compatible chunk shape.
@@ -1085,9 +1088,9 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 					}
 					abortPart := provider.StreamChunk{Type: provider.ChunkTypeAbort}
 					abortChunk := UIMessageChunk{"type": "abort"}
-					if err.Error() != "" {
-						abortPart.AbortReason = err.Error()
-						abortChunk["reason"] = abortPart.AbortReason
+					if reason := abortReasonMessage(err); reason != "" {
+						abortPart.AbortReason = reason
+						abortChunk["reason"] = reason
 					}
 					processChunk(abortChunk)
 					processMessageMetadata(abortPart)
@@ -2952,39 +2955,55 @@ func writeUISSEEvents(chunks <-chan UIMessageChunk, keepAlive time.Duration, ope
 	}
 }
 
-// ReadUIMessageStream reads SSE data lines containing JSON UI chunks.
+// ReadUIMessageStream reads Server-Sent Events whose data are JSON UI
+// message chunks, as TS DefaultChatTransport does with parseJsonEventStream:
+// the bytes are decoded as UTF-8 the way TextDecoderStream decodes them (a
+// leading byte order mark dropped, each invalid subpart one U+FFFD), events
+// are framed like eventsource-parser (LF, CRLF and bare CR line endings,
+// multi-line data joined with "\n", an event dispatched only at a blank
+// line), and a `[DONE]` event is skipped. Data that is not valid JSON is an
+// error.
 func ReadUIMessageStream(r io.Reader) ([]UIMessageChunk, error) {
 	if r == nil {
 		return nil, fmt.Errorf("reader is required")
 	}
-	sc := bufio.NewScanner(r)
-	// UI message chunks can carry inline file/image data well over
-	// bufio.Scanner's default 64 KiB token limit on a single `data: ` line.
-	// Match the bound used for the shared SSEParser (R4-4).
-	sc.Buffer(make([]byte, 64*1024), 32*1024*1024)
+	// The parser drops one leading byte order mark, as TextDecoderStream
+	// (ignoreBOM false) does; a second one stays, so the first line is no
+	// data field (TS: eventsource-parser strips only the mis-decoded
+	// "\xEF\xBB\xBF" characters).
+	parser := streaming.NewSSEParser(r)
 	chunks := make([]UIMessageChunk, 0)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, ":") {
-			continue
+	for {
+		event, err := parser.Next()
+		if err == io.EOF {
+			return chunks, nil
 		}
-		if !strings.HasPrefix(line, "data:") {
-			continue
+		if err != nil {
+			return nil, err
 		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if payload == "[DONE]" {
+		data := decodeSSEDataUTF8(event.Data)
+		if data == "[DONE]" {
 			continue
 		}
 		var chunk UIMessageChunk
-		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			return nil, err
 		}
 		chunks = append(chunks, chunk)
 	}
-	if err := sc.Err(); err != nil {
-		return nil, err
+}
+
+// decodeSSEDataUTF8 replaces invalid UTF-8 in one event's data as WHATWG
+// TextDecoder does (one U+FFFD per maximal invalid subpart). Line
+// terminators always end an incomplete sequence, so decoding the data of
+// each event equals decoding the whole stream. A byte order mark inside the
+// data is kept: prompt.DecodeUTF8Text drops a leading one, so it decodes the
+// data behind one ASCII byte.
+func decodeSSEDataUTF8(data string) string {
+	if utf8.ValidString(data) {
+		return data
 	}
-	return chunks, nil
+	return prompt.DecodeUTF8Text(append([]byte{' '}, data...))[1:]
 }
 
 type resultChunkConversionOptions struct {
