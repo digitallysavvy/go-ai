@@ -5,6 +5,7 @@ package gmicloud
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -32,6 +33,13 @@ type Config struct {
 	// environment variable (matching GMI's own SDK package).
 	APIKey string
 
+	// APIKeyFunc resolves the API key for every request instead of APIKey
+	// (TS `apiKey` as a function, 7716e189ee). Its error fails the request;
+	// its result is sent as is, an empty string included, and the
+	// environment is not read. Setting both APIKey and APIKeyFunc fails
+	// every request with an InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+
 	// BaseURL is the base URL for API calls. Defaults to
 	// https://api.gmi-serving.com/v1.
 	BaseURL string
@@ -55,7 +63,7 @@ func New(cfg Config) *Provider {
 	}
 
 	apiKey := cfg.APIKey
-	if apiKey == "" {
+	if apiKey == "" && cfg.APIKeyFunc == nil {
 		apiKey = os.Getenv("GMI_CLOUD_APIKEY")
 	}
 
@@ -68,6 +76,12 @@ func New(cfg Config) *Provider {
 		HTTPClient: withGmicloudIncludeUsage(cfg.HTTPClient),
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
 		HeadersFunc: func() (map[string]string, error) {
+			if cfg.APIKeyFunc != nil {
+				// TS resolves the key without an abort signal.
+				return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "GMI_CLOUD_APIKEY", Description: "GMI Cloud API key",
+				}, "Authorization", "Bearer ")
+			}
 			return providerutils.RequestAuthHeader(cfg.Headers, apiKey, "GMI_CLOUD_APIKEY", "GMI Cloud API key", "Authorization", "Bearer ")
 		},
 	})

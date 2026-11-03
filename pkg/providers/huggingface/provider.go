@@ -8,6 +8,7 @@
 package huggingface
 
 import (
+	"context"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	stdhttp "net/http"
@@ -39,6 +40,13 @@ type Config struct {
 	// HUGGINGFACE_API_KEY environment variable.
 	APIKey string
 
+	// APIKeyFunc resolves the API key for every request instead of APIKey
+	// (TS `apiKey` as a function, 7716e189ee). Its error fails the request;
+	// its result is sent as is, an empty string included, and the
+	// environment is not read. Setting both APIKey and APIKeyFunc fails
+	// every request with an InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+
 	// BaseURL is the base URL for the Hugging Face Router API. Defaults to
 	// https://router.huggingface.co/v1.
 	BaseURL string
@@ -67,7 +75,7 @@ func New(cfg Config) *Provider {
 	}
 
 	apiKey := cfg.APIKey
-	if apiKey == "" {
+	if apiKey == "" && cfg.APIKeyFunc == nil {
 		apiKey = os.Getenv("HUGGINGFACE_API_KEY")
 	}
 
@@ -79,6 +87,12 @@ func New(cfg Config) *Provider {
 		HTTPClient: cfg.HTTPClient,
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
 		HeadersFunc: func() (map[string]string, error) {
+			if cfg.APIKeyFunc != nil {
+				// TS resolves the key without an abort signal.
+				return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "HUGGINGFACE_API_KEY", Description: "Hugging Face",
+				}, "Authorization", "Bearer ")
+			}
 			return providerutils.RequestAuthHeader(cfg.Headers, apiKey, "HUGGINGFACE_API_KEY", "Hugging Face", "Authorization", "Bearer ")
 		},
 	})

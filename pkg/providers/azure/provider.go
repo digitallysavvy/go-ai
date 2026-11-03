@@ -81,6 +81,12 @@ type Config struct {
 	// APIKey is the Azure OpenAI API key
 	APIKey string
 
+	// APIKeyFunc resolves the API key for every request instead of APIKey
+	// (TS `apiKey` as a function, 7716e189ee). Its error fails the request;
+	// its result is sent as is, an empty string included, and AZURE_API_KEY
+	// is not read. It cannot be combined with APIKey or ADTokenProvider.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+
 	// ADTokenProvider returns a Microsoft Entra ID access token for each
 	// request. When set, Authorization: Bearer <token> is used instead of the
 	// api-key header. The request context is passed through to token acquisition.
@@ -126,13 +132,14 @@ type Config struct {
 
 // New creates a new Azure OpenAI provider with the given configuration.
 func New(cfg Config) (*Provider, error) {
-	if cfg.APIKey != "" && cfg.ADTokenProvider != nil {
+	// TS `options.apiKey && tokenProvider`: an apiKey function is truthy too.
+	if (cfg.APIKey != "" || cfg.APIKeyFunc != nil) && cfg.ADTokenProvider != nil {
 		return nil, &providererrors.InvalidArgumentError{
 			Field:   "apiKey/tokenProvider",
 			Message: "Both apiKey and tokenProvider were provided. Please use only one authentication method.",
 		}
 	}
-	if cfg.APIKey == "" && cfg.ADTokenProvider == nil {
+	if cfg.APIKey == "" && cfg.ADTokenProvider == nil && cfg.APIKeyFunc == nil {
 		cfg.APIKey = os.Getenv("AZURE_API_KEY")
 	}
 	if cfg.ResourceName == "" {
@@ -173,13 +180,14 @@ func New(cfg Config) (*Provider, error) {
 			if cfg.ADTokenProvider != nil {
 				return nil, nil
 			}
-			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "AZURE_API_KEY", "Azure OpenAI", "api-key", "")
+			return azureAPIKeyHeader(context.Background(), cfg.Headers, cfg.APIKey, cfg.APIKeyFunc, "Azure OpenAI", "api-key")
 		},
 	})
 
 	return &Provider{
 		config: Config{
 			APIKey:                 cfg.APIKey,
+			APIKeyFunc:             cfg.APIKeyFunc,
 			ADTokenProvider:        cfg.ADTokenProvider,
 			ResourceName:           cfg.ResourceName,
 			DeploymentID:           cfg.DeploymentID,
@@ -477,6 +485,11 @@ func (p *Provider) endpointPath(modelID, apiPath string) string {
 // a token provider authenticates the request; a missing key is a
 // LoadAPIKeyError.
 func (p *Provider) apiKeyHeaders(api string) (map[string]string, error) {
+	return p.apiKeyHeadersCtx(context.Background(), api)
+}
+
+// apiKeyHeadersCtx is apiKeyHeaders with the context an APIKeyFunc gets.
+func (p *Provider) apiKeyHeadersCtx(ctx context.Context, api string) (map[string]string, error) {
 	if p.config.ADTokenProvider != nil {
 		return nil, nil
 	}
@@ -487,7 +500,19 @@ func (p *Provider) apiKeyHeaders(api string) (map[string]string, error) {
 	case "mai":
 		description = "Azure MAI"
 	}
-	return providerutils.RequestAuthHeader(p.config.Headers, p.config.APIKey, "AZURE_API_KEY", description, header, "")
+	return azureAPIKeyHeader(ctx, p.config.Headers, p.config.APIKey, p.config.APIKeyFunc, description, header)
+}
+
+// azureAPIKeyHeader is TS loadApiKey (AZURE_API_KEY) for one credential
+// header, with an APIKeyFunc resolved per request (TS 7716e189ee; TS
+// resolves it without an abort signal).
+func azureAPIKeyHeader(ctx context.Context, userHeaders map[string]string, apiKey string, apiKeyFunc providerutils.APIKeyFunc, description, header string) (map[string]string, error) {
+	if apiKeyFunc != nil {
+		return providerutils.RequestAuthHeaderFunc(ctx, userHeaders, providerutils.ResolveAPIKeyOptions{
+			APIKey: apiKey, APIKeyFunc: apiKeyFunc, EnvVar: "AZURE_API_KEY", Description: description,
+		}, header, "")
+	}
+	return providerutils.RequestAuthHeader(userHeaders, apiKey, "AZURE_API_KEY", description, header, "")
 }
 
 // openaiHeadersFunc is the per-request credential hook of the delegated
@@ -591,7 +616,7 @@ func (p *Provider) maiAPIHeaders(ctx context.Context) (map[string]string, error)
 		}
 		headers["authorization"] = "Bearer " + token
 	} else {
-		keyHeaders, err := p.apiKeyHeaders("mai")
+		keyHeaders, err := p.apiKeyHeadersCtx(ctx, "mai")
 		if err != nil {
 			return nil, err
 		}

@@ -1,6 +1,7 @@
 package moonshot
 
 import (
+	"context"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
@@ -36,7 +37,9 @@ func New(cfg Config) *Provider {
 
 	// TS loadApiKey: the key defaults to MOONSHOT_API_KEY and is loaded per
 	// request.
-	cfg.APIKey = providerutils.APIKeyOrEnv(cfg.APIKey, "MOONSHOT_API_KEY")
+	if cfg.APIKeyFunc == nil {
+		cfg.APIKey = providerutils.APIKeyOrEnv(cfg.APIKey, "MOONSHOT_API_KEY")
+	}
 
 	// Create HTTP client with authorization header
 	client := http.NewClient(http.Config{
@@ -47,6 +50,12 @@ func New(cfg Config) *Provider {
 		}, cfg.Headers), version.ProviderUserAgent("moonshotai")),
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
 		HeadersFunc: func() (map[string]string, error) {
+			if cfg.APIKeyFunc != nil {
+				// TS resolves the key without an abort signal.
+				return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "MOONSHOT_API_KEY", Description: "Moonshot API key",
+				}, "Authorization", "Bearer ")
+			}
 			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "MOONSHOT_API_KEY", "Moonshot API key", "Authorization", "Bearer ")
 		},
 	})

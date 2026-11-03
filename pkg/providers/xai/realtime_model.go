@@ -74,6 +74,11 @@ func (m *XAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provid
 			"Content-Type": "application/json",
 		}, m.provider.config.Headers), version.ProviderUserAgent("xai")),
 		HeadersFunc: func() (map[string]string, error) {
+			if keyFunc := m.provider.config.APIKeyFunc; keyFunc != nil {
+				return providerutils.RequestAuthHeaderFunc(ctx, userHeaders, providerutils.ResolveAPIKeyOptions{
+					APIKey: userKey, APIKeyFunc: keyFunc, EnvVar: "XAI_API_KEY", Description: "xAI API key",
+				}, "Authorization", "Bearer ")
+			}
 			return providerutils.RequestAuthHeader(userHeaders, userKey, "XAI_API_KEY", "xAI API key", "Authorization", "Bearer ")
 		},
 		HTTPClient: m.provider.client.HTTPClient(),
