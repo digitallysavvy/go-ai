@@ -31,3 +31,18 @@ func TestR85toolsResolveHostToolCall(t *testing.T) {
 		}
 	}
 }
+
+// Ports the TS cursor-harness.test.ts write tool assertion (afac7dee96).
+func TestR85toolsWriteBuiltinTool(t *testing.T) {
+	w, ok := BuildConfig(Settings{}).BuiltinTools["write"]
+	if !ok {
+		t.Fatal("no write built-in tool")
+	}
+	if w.Title != "Write" || w.NativeName != "writeToolCall" || w.ToolUseKind != "edit" {
+		t.Fatalf("write = %+v", w)
+	}
+	want := map[string]any{"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}}, "required": []string{"path"}}
+	if !reflect.DeepEqual(w.Parameters, want) {
+		t.Fatalf("write schema = %#v", w.Parameters)
+	}
+}

@@ -47,6 +47,10 @@ var BuiltinTools = map[string]harness.BuiltinTool{
 		obj(nil, map[string]any{})),
 	"edit": tool("edit", "editToolCall", harness.BuiltinToolUseKindEdit, "Edit",
 		obj([]string{"path"}, props("path", str()))),
+	// Cursor CLI 2026.10.22 reports file writes with a `Write <path>` title,
+	// an edit kind and a path-only raw input (TS afac7dee96).
+	"write": tool("write", "writeToolCall", harness.BuiltinToolUseKindEdit, "Write",
+		obj([]string{"path"}, props("path", str()))),
 	"ls": tool("ls", "lsToolCall", harness.BuiltinToolUseKindReadonly, "List",
 		obj([]string{"path"}, props("path", str()))),
 	"readLints": tool("readLints", "readLintsToolCall", harness.BuiltinToolUseKindReadonly, "Read Lints",
