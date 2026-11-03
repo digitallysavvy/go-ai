@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 	"net/http"
 	"strings"
@@ -126,7 +127,12 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	var uploadResult struct {
 		File googleFileResource `json:"file"`
 	}
-	if err := json.NewDecoder(io.LimitReader(uploadResp.Body, googleFilesMaxResponseBytes)).Decode(&uploadResult); err != nil {
+	uploadBody, err := io.ReadAll(io.LimitReader(uploadResp.Body, googleFilesMaxResponseBytes))
+	if err != nil {
+		return nil, err
+	}
+	// TS response.text() before JSON.parse.
+	if err := json.Unmarshal([]byte(textdecode.UTF8(uploadBody)), &uploadResult); err != nil {
 		return nil, err
 	}
 	file := uploadResult.File
@@ -164,6 +170,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		if err != nil {
 			return nil, err
 		}
+		pollBody = []byte(textdecode.UTF8(pollBody)) // TS response.text() before JSON.parse
 		// TS createJsonResponseHandler(googleFileResponseSchema).
 		if err := googleValidator(zGoogleFile)(pollResp.StatusCode, pollResp.Header, pollBody); err != nil {
 			return nil, err

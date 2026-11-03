@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"net/url"
 	"os"
@@ -615,6 +616,7 @@ func (p *Provider) fetchMetadata(ctx context.Context) (*MetadataResponse, error)
 	if resp.StatusCode >= http.StatusBadRequest {
 		return nil, p.gatewayAPIErrorWithContext(ctx, resp)
 	}
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text() before JSON.parse
 	var wire metadataResponseWire
 	if err := json.Unmarshal(resp.Body, &wire); err != nil {
 		return nil, p.handleErrorWithContext(ctx, err)
@@ -750,7 +752,7 @@ func (p *Provider) doOriginRequest(ctx context.Context, path string) ([]byte, er
 	if resp.StatusCode >= http.StatusBadRequest {
 		return nil, p.gatewayAPIErrorWithContext(ctx, resp)
 	}
-	return resp.Body, nil
+	return []byte(textdecode.UTF8(resp.Body)), nil // TS response.text() before JSON.parse
 }
 
 func (p *Provider) gatewayAPIErrorWithAuthMethod(resp *internalhttp.Response, authMethod string) error {

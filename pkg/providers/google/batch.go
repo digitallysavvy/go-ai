@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 	"math"
 	"net/http"
@@ -278,6 +279,7 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 	if err != nil {
 		return nil, err
 	}
+	uploadBody = []byte(textdecode.UTF8(uploadBody)) // TS response.text() before JSON.parse
 	// TS createJsonResponseHandler(googleFileUploadResponseSchema).
 	if err := googleValidator(zGoogleBatchFileUpload)(uploadResp.StatusCode, uploadResp.Header, uploadBody); err != nil {
 		return nil, err

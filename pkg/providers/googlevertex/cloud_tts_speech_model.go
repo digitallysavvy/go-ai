@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"strings"
 	"time"
@@ -150,6 +151,7 @@ func (m *CloudTTSSpeechModel) DoGenerate(ctx context.Context, opts *provider.Spe
 	}
 
 	// TS createJsonResponseHandler(googleVertexCloudTTSResponseSchema).
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text() before JSON.parse
 	if err := vertexValidator(m.Provider(), zVertexCloudTTS)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
 		return nil, err
 	}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 	"net/http"
 	"net/url"
@@ -91,7 +92,7 @@ func (p *Provider) MintRealtimeClientSecret(ctx context.Context, params MintReal
 		Token     string `json:"token"`
 		ExpiresAt *int64 `json:"expiresAt"`
 	}
-	if err := json.Unmarshal(response.Body, &parsed); err != nil || parsed.Token == "" {
+	if err := json.Unmarshal([]byte(textdecode.UTF8(response.Body)), &parsed); err != nil || parsed.Token == "" {
 		if err == nil {
 			err = fmt.Errorf("missing token")
 		}
