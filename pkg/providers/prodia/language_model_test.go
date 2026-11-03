@@ -205,24 +205,11 @@ func TestExtractLanguageProviderOptionsNil(t *testing.T) {
 	}
 }
 
-// TestDetectMultipartContentType verifies boundary detection from raw body.
-func TestDetectMultipartContentType(t *testing.T) {
-	// Build a real multipart body and then detect its boundary from the raw bytes.
+// TestParseMultipartResponseTextOutput verifies a text output part is
+// returned with its Content-Type.
+func TestParseMultipartResponseTextOutput(t *testing.T) {
 	body, fullCT := buildTestMultipartBody(`{"id":"job-1"}`, []byte("hello"), "text/plain")
-
-	detected, err := detectMultipartContentType(body)
-	if err != nil {
-		t.Fatalf("detectMultipartContentType error: %v", err)
-	}
-
-	// The detected CT must contain the same boundary as the original.
-	_ = fullCT
-	if !strings.Contains(detected, "boundary=") {
-		t.Errorf("detected CT %q missing boundary", detected)
-	}
-
-	// Verify parseMultipartResponse can use the detected CT.
-	jobResp, outputData, outputMIME, err := parseMultipartResponse(detected, body)
+	jobResp, outputData, outputMIME, err := parseMultipartResponse(fullCT, body)
 	if err != nil {
 		t.Fatalf("parseMultipartResponse error: %v", err)
 	}

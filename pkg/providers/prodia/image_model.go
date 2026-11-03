@@ -149,7 +149,8 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 
 	// TS: 'Prodia multipart response missing output image'. The legacy imageUrl
 	// field is the only other source of the image.
-	if len(imageData) == 0 && jobResp.ImageURL == "" {
+	// TS `!imageBytes`: an empty output part is still an image.
+	if imageData == nil && jobResp.ImageURL == "" {
 		return nil, fmt.Errorf("Prodia multipart response missing output image") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
@@ -167,7 +168,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 			},
 		},
 	}
-	if len(imageData) == 0 && jobResp.ImageURL != "" {
+	if imageData == nil && jobResp.ImageURL != "" {
 		result.URL = jobResp.ImageURL
 	}
 	result.Response = &types.ResponseMetadata{Timestamp: currentDate, ModelID: m.modelID, Headers: providerutils.ExtractHeaders(resp.Headers)}

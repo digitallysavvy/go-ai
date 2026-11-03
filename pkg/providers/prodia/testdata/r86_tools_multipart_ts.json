@@ -1,0 +1,164 @@
+[
+ {
+  "body": "LS1YWA0KQ29udGVudC1EaXNwb3NpdGlvbjogZm9ybS1kYXRhOyBuYW1lPSJqb2IiDQpDb250ZW50LVR5cGU6IGFwcGxpY2F0aW9uL2pzb24NCg0KeyJpZCI6ImoifQ0KLS1YWA0KQ29udGVudC1EaXNwb3NpdGlvbjogZm9ybS1kYXRhOyBuYW1lPSJvdXRwdXQiDQpDb250ZW50LVR5cGU6IGltYWdlL3BuZw0KDQpQTkcNCi0tWFgtLQ0K",
+  "contentType": "multipart/form-data; boundary=XX",
+  "name": "crlf",
+  "want": {
+   "boundary": "XX",
+   "name": "crlf",
+   "parts": [
+    {
+     "body": "eyJpZCI6ImoifQ==",
+     "headers": {
+      "content-disposition": "form-data; name=\"job\"",
+      "content-type": "application/json"
+     }
+    },
+    {
+     "body": "UE5H",
+     "headers": {
+      "content-disposition": "form-data; name=\"output\"",
+      "content-type": "image/png"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "body": "LS1YWApDb250ZW50LURpc3Bvc2l0aW9uOiBmb3JtLWRhdGE7IG5hbWU9ImpvYiIKCnsiaWQiOiJqIn0KLS1YWApDb250ZW50LVR5cGU6IHZpZGVvL21wNDsgY29kZWNzPWF2YzEKClZJRAotLVhYLS0K",
+  "contentType": "multipart/form-data; boundary=XX",
+  "name": "lf only",
+  "want": {
+   "boundary": "XX",
+   "name": "lf only",
+   "parts": [
+    {
+     "body": "eyJpZCI6ImoifQ==",
+     "headers": {
+      "content-disposition": "form-data; name=\"job\""
+     }
+    },
+    {
+     "body": "VklE",
+     "headers": {
+      "content-type": "video/mp4; codecs=avc1"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "body": "LS1YWA0KQ29udGVudC1EaXNwb3NpdGlvbjogZm9ybS1kYXRhOyBuYW1lPSJqb2IiDQoNCnt9DQotLVhYLS0=",
+  "contentType": "multipart/form-data; boundary=\"XX\"",
+  "name": "quoted boundary",
+  "want": {
+   "boundary": "\"XX\"",
+   "name": "quoted boundary",
+   "parts": []
+  }
+ },
+ {
+  "body": "LS0iWFgiDQpDb250ZW50LURpc3Bvc2l0aW9uOiBmb3JtLWRhdGE7IG5hbWU9ImpvYiINCg0Ke30NCi0tIlhYIi0t",
+  "contentType": "multipart/form-data; boundary=\"XX\"",
+  "name": "quoted boundary literal",
+  "want": {
+   "boundary": "\"XX\"",
+   "name": "quoted boundary literal",
+   "parts": [
+    {
+     "body": "e30=",
+     "headers": {
+      "content-disposition": "form-data; name=\"job\""
+     }
+    }
+   ]
+  }
+ },
+ {
+  "body": "cHJlYW1ibGUtLWIxDQpDb250ZW50LURpc3Bvc2l0aW9uOiBmb3JtLWRhdGE7IGZpbGVuYW1lPSJqb2IiDQoNClgNCi0tYjENCk5vQ29sb25MaW5lDQogOmxlYWQNCiBDb250ZW50LVR5cGUgOiAgdGV4dC9wbGFpbiAgDQpDb250ZW50LVR5cGU6IGltYWdlL3gNCg0KYm9keS0tYjEgaW5zaWRlDQotLWIxLS10cmFpbGVy",
+  "contentType": "multipart/form-data;boundary=b1;charset=x",
+  "name": "filename job",
+  "want": {
+   "boundary": "b1",
+   "name": "filename job",
+   "parts": [
+    {
+     "body": "WA==",
+     "headers": {
+      "content-disposition": "form-data; filename=\"job\""
+     }
+    },
+    {
+     "body": "Ym9keQ==",
+     "headers": {
+      "": "lead",
+      "content-type": "image/x"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "body": "LS1xDQpDb250ZW50LVR5cGU6IGEvYg0KLS1xDQoNCg0KLS1xDQoNCmVtcHR5LWhlYWRlcnMNCi0tcS0t",
+  "contentType": "multipart/form-data; boundary=q",
+  "name": "no header end",
+  "want": {
+   "boundary": "q",
+   "name": "no header end",
+   "parts": []
+  }
+ },
+ {
+  "body": "LS1xDQpBOiAxDQoNCi0tcQ0KQjogMgoKLS1xLS0=",
+  "contentType": "multipart/form-data; boundary=q",
+  "name": "empty part body",
+  "want": {
+   "boundary": "q",
+   "name": "empty part body",
+   "parts": []
+  }
+ },
+ {
+  "body": "LS1xDQoNCg==",
+  "contentType": "multipart/form-data",
+  "name": "no boundary",
+  "want": {
+   "boundary": null,
+   "name": "no boundary"
+  }
+ },
+ {
+  "body": "LS16DQpYLcOpOiD/IHZhbA0KDQpib2R5DQotLXotLQ==",
+  "contentType": "multipart/form-data; boundary=z",
+  "name": "non-ascii header",
+  "want": {
+   "boundary": "z",
+   "name": "non-ascii header",
+   "parts": [
+    {
+     "body": "Ym9keQ==",
+     "headers": {
+      "x-\u00e9": "\ufffd val"
+     }
+    }
+   ]
+  }
+ },
+ {
+  "body": "LS16LS0NCkE6IGINCg0KYw0KLS16DQpEOiBlDQoNCmYNCi0teg==",
+  "contentType": "multipart/form-data; boundary=z",
+  "name": "end delimiter mid",
+  "want": {
+   "boundary": "z",
+   "name": "end delimiter mid",
+   "parts": [
+    {
+     "body": "Zg==",
+     "headers": {
+      "d": "e"
+     }
+    }
+   ]
+  }
+ }
+]
