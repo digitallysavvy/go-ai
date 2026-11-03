@@ -221,7 +221,8 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 	hasText := false
 	for _, out := range outputs {
 		if out.isText {
-			result.Text = string(out.data)
+			// TS new TextDecoder().decode(part.body).
+			result.Text = promptutil.DecodeUTF8Text(out.data)
 			hasText = true
 			continue
 		}

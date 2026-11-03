@@ -5,9 +5,10 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 
 	"golang.org/x/text/encoding/htmlindex"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 type contentKind int
@@ -43,7 +44,7 @@ func looksLikeHTML(body []byte) bool {
 	if len(head) > 512 {
 		head = head[:512]
 	}
-	start := strings.ToLower(strings.TrimLeftFunc(decodeUTF8(head), isJSWhitespace))
+	start := strings.ToLower(strings.TrimLeftFunc(prompt.DecodeUTF8Text(head), isJSWhitespace))
 	return strings.HasPrefix(start, "<!doctype html") || strings.HasPrefix(start, "<html")
 }
 
@@ -119,39 +120,23 @@ func decodeText(body []byte, contentType string, isHTML bool) string {
 	if charset == "" {
 		charset = "utf-8"
 	}
+	// TS new TextDecoder(charset).decode(body) drops the BOM of that
+	// encoding; the UTF-8 paths decode the whole body the same way.
+	full := body
 	body = body[bomLen:]
 
 	enc, err := htmlindex.Get(charset)
 	if err != nil {
-		return decodeUTF8(body)
+		return prompt.DecodeUTF8Text(full)
 	}
 	if name, _ := htmlindex.Name(enc); name == "utf-8" {
-		return decodeUTF8(body)
+		return prompt.DecodeUTF8Text(full)
 	}
 	decoded, err := enc.NewDecoder().Bytes(body)
 	if err != nil {
-		return decodeUTF8(body)
+		return prompt.DecodeUTF8Text(full)
 	}
 	return string(decoded)
-}
-
-// decodeUTF8 is TextDecoder('utf-8'): each invalid byte becomes U+FFFD.
-func decodeUTF8(body []byte) string {
-	if utf8.Valid(body) {
-		return string(body)
-	}
-	var b strings.Builder
-	b.Grow(len(body))
-	for len(body) > 0 {
-		r, size := utf8.DecodeRune(body)
-		if r == utf8.RuneError && size == 1 {
-			b.WriteRune(utf8.RuneError)
-		} else {
-			b.Write(body[:size])
-		}
-		body = body[size:]
-	}
-	return b.String()
 }
 
 // isJSWhitespace is the set JavaScript's String.prototype.trimStart removes.

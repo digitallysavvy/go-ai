@@ -384,7 +384,7 @@ func cohereDocumentText(file types.FileContent) (string, error) {
 		if file.FileData.DataString != "" {
 			return file.FileData.DataString, nil
 		}
-		return string(file.FileData.Data), nil
+		return prompt.DecodeUTF8Text(file.FileData.Data), nil
 	case types.FileDataTypeURL:
 		return "", &providererrors.UnsupportedFunctionalityError{
 			Functionality: "File URL data",

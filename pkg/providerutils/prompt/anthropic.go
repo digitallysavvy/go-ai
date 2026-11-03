@@ -1081,7 +1081,7 @@ func (c *anthropicConverter) convertUserFile(p types.FileContent, cacheControl i
 				source = map[string]interface{}{
 					"type":       "text",
 					"media_type": "text/plain",
-					"data":       string(f.data),
+					"data":       DecodeUTF8Text(f.data), // TS TextDecoder
 				}
 			}
 			block = map[string]interface{}{"type": "document", "source": source}
