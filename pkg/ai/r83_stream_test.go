@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"iter"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -429,5 +430,177 @@ func TestR83streamPartialOutputWithoutFinish(t *testing.T) {
 	}
 	if r.Err() != nil {
 		t.Errorf("Err() = %v", r.Err())
+	}
+}
+
+// stream-text.test.ts 10944: should fire the model-call callbacks before tool
+// execution and step finish, and the model-call end event carries the call
+// ID, the content (text then tool call), finish reason tool-calls and the
+// response model ID.
+func TestR83streamModelCallCallbacksBeforeToolExecution(t *testing.T) {
+	var mu sync.Mutex
+	var order []string
+	var ends []LanguageModelCallEndEvent
+	push := func(s string) { mu.Lock(); order = append(order, s); mu.Unlock() }
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r83streamModel(
+			provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "response-1", ModelID: "response-model", Timestamp: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}},
+			provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "1"},
+			provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: "Before tool."},
+			provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "1"},
+			provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "test-arg"}}},
+			provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r83streamUsage()},
+		),
+		Prompt: "test-input",
+		Tools: []types.Tool{{
+			Name:       "tool1",
+			Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}, "required": []interface{}{"value"}},
+			Execute: func(_ context.Context, in map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+				return fmt.Sprint(in["value"]) + "-result", nil
+			},
+		}},
+		OnStepStart:              func(context.Context, OnStepStartEvent) { push("onStepStart") },
+		OnLanguageModelCallStart: func(context.Context, LanguageModelCallStartEvent) { push("onLanguageModelCallStart") },
+		OnLanguageModelCallEnd: func(_ context.Context, e LanguageModelCallEndEvent) {
+			push("onLanguageModelCallEnd")
+			mu.Lock()
+			ends = append(ends, e)
+			mu.Unlock()
+		},
+		OnToolExecutionStart: func(context.Context, OnToolCallStartEvent) { push("onToolExecutionStart") },
+		OnToolExecutionEnd:   func(context.Context, OnToolCallFinishEvent) { push("onToolExecutionEnd") },
+		OnStepFinish:         func(context.Context, types.StepResult, interface{}) { push("onStepFinish") },
+		OnError:              func(context.Context, error) {},
+		Internal:             &InternalOptions{GenerateCallID: func() string { return "test-telemetry-call-id" }},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"onStepStart", "onLanguageModelCallStart", "onLanguageModelCallEnd", "onToolExecutionStart", "onToolExecutionEnd", "onStepFinish"}
+	if !reflect.DeepEqual(order, want) {
+		t.Errorf("callback order = %v, want %v", order, want)
+	}
+	if len(ends) != 1 {
+		t.Fatalf("model-call end events = %d", len(ends))
+	}
+	e := ends[0]
+	if e.CallID != "test-telemetry-call-id" || e.FinishReason != types.FinishReasonToolCalls || e.ModelID != "response-model" || e.ResponseID != "response-1" {
+		t.Errorf("end event = callId %q finish %q model %q response %q", e.CallID, e.FinishReason, e.ModelID, e.ResponseID)
+	}
+	if len(e.Content) != 2 {
+		t.Fatalf("end content = %#v", e.Content)
+	}
+	if tc, ok := e.Content[0].(types.TextContent); !ok || tc.Text != "Before tool." {
+		t.Errorf("content[0] = %#v", e.Content[0])
+	}
+	call, ok := e.Content[1].(types.ToolCallContent)
+	if !ok || call.ToolCallID != "call-1" || call.ToolName != "tool1" || !reflect.DeepEqual(call.Arguments, map[string]interface{}{"value": "test-arg"}) {
+		t.Errorf("content[1] = %#v", e.Content[1])
+	}
+}
+
+// r83streamValidateCase is one validate-ui-messages.test.ts case: the input
+// messages and the TS expected messages (or an error prefix), compared as
+// JSON values.
+type r83streamValidateCase struct {
+	line      int
+	agent     bool
+	tools     []types.Tool
+	input     string
+	want      string // expected messages JSON; "" means same as input
+	wantError string // error prefix, when the case rejects
+}
+
+func r83streamArtifactTool() types.Tool {
+	return types.Tool{Name: "create_artifact", Parameters: map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"identifier": map[string]interface{}{"type": "string"},
+			"type":       map[string]interface{}{"type": "string", "enum": []interface{}{"application/vnd.react", "text/html"}},
+			"language":   map[string]interface{}{"type": "string"},
+			"code":       map[string]interface{}{"type": "string"},
+		},
+		"required": []interface{}{"identifier", "type", "language", "code"},
+	}}
+}
+
+// validate-ui-messages.test.ts 1566, 1729, 2035, 2146, 2173, 2206, 2248:
+// persisted aborted tool history, schema-incompatible output-error input and
+// terminal calls from unavailable agent tools become dynamic tool parts
+// (dynamic: false); stale terminal input of an available agent tool is
+// rejected; approval reasons and descriptors pass unchanged.
+func TestR83streamValidateUIMessagesTSCases(t *testing.T) {
+	foo := []types.Tool{testFooTool()}
+	cases := []r83streamValidateCase{
+		{line: 1566, tools: []types.Tool{r83streamArtifactTool()},
+			input: `[{"id":"u1","role":"user","parts":[{"type":"text","text":"make me a chart"}]},
+				{"id":"a1","role":"assistant","parts":[{"type":"step-start"},{"type":"tool-create_artifact","toolCallId":"toolu_demo_aborted","state":"output-available","input":{},"output":"{\"error\":\"Tool was aborted by the user.\"}"}]},
+				{"id":"u2","role":"user","parts":[{"type":"text","text":"are you working?"}]}]`,
+			want: `[{"id":"u1","role":"user","parts":[{"type":"text","text":"make me a chart"}]},
+				{"id":"a1","role":"assistant","parts":[{"type":"step-start"},{"type":"dynamic-tool","dynamic":false,"toolName":"create_artifact","toolCallId":"toolu_demo_aborted","state":"output-available","input":{},"output":"{\"error\":\"Tool was aborted by the user.\"}"}]},
+				{"id":"u2","role":"user","parts":[{"type":"text","text":"are you working?"}]}]`},
+		{line: 1729, tools: foo,
+			input: `[{"id":"1","role":"assistant","parts":[{"type":"tool-foo","toolCallId":"1","state":"output-error","input":{"foo":123},"errorText":"AI_InvalidToolInputError","providerExecuted":false}]}]`,
+			want:  `[{"id":"1","role":"assistant","parts":[{"type":"dynamic-tool","dynamic":false,"toolName":"foo","toolCallId":"1","state":"output-error","input":{"foo":123},"errorText":"AI_InvalidToolInputError","providerExecuted":false}]}]`},
+		{line: 2035, agent: true, tools: foo,
+			input: `[{"id":"1","role":"assistant","parts":[
+				{"type":"tool-bar","toolCallId":"1","state":"output-available","input":{},"output":{"result":"success"}},
+				{"type":"tool-bar","toolCallId":"2","state":"output-error","errorText":"Tool execution failed"},
+				{"type":"tool-bar","toolCallId":"3","state":"output-denied","input":{},"approval":{"id":"approval-1","approved":false}}]}]`,
+			want: `[{"id":"1","role":"assistant","parts":[
+				{"type":"dynamic-tool","dynamic":false,"toolName":"bar","toolCallId":"1","state":"output-available","input":{},"output":{"result":"success"}},
+				{"type":"dynamic-tool","dynamic":false,"toolName":"bar","toolCallId":"2","state":"output-error","errorText":"Tool execution failed"},
+				{"type":"dynamic-tool","dynamic":false,"toolName":"bar","toolCallId":"3","state":"output-denied","input":{},"approval":{"id":"approval-1","approved":false}}]}]`},
+		{line: 2146, agent: true, tools: foo,
+			input:     `[{"id":"1","role":"assistant","parts":[{"type":"tool-foo","toolCallId":"1","state":"output-available","input":{"foo":123},"output":{"result":"success"}}]}]`,
+			wantError: "Type validation failed for messages[0].parts[0].input"},
+		{line: 2173, tools: foo,
+			input: `[{"id":"1","role":"assistant","parts":[{"type":"tool-foo","toolCallId":"1","state":"output-available","input":{"foo":"bar"},"output":{"result":"ok"},"approval":{"id":"approval-1","approved":true,"isAutomatic":true,"reason":"trusted internal tool"}}]}]`},
+		{line: 2206, tools: foo,
+			input: `[{"id":"1","role":"assistant","parts":[
+				{"type":"tool-foo","toolCallId":"1","state":"approval-requested","input":{"foo":"bar"},"approval":{"id":"approval-1","requestReason":"requires operator review"}},
+				{"type":"tool-foo","toolCallId":"2","state":"approval-responded","input":{"foo":"baz"},"approval":{"id":"approval-2","approved":true,"requestReason":"requires security review","reason":"approved by operator"}}]}]`},
+		{line: 2248, tools: foo,
+			input: `[{"id":"1","role":"assistant","parts":[
+				{"type":"tool-foo","toolCallId":"1","state":"approval-requested","input":{"foo":"bar"},"approval":{"id":"approval-1","descriptor":{"action":"deleteAccount","permissions":["account:delete"],"risk":"high"}}},
+				{"type":"tool-foo","toolCallId":"2","state":"approval-responded","input":{"foo":"baz"},"approval":{"id":"approval-2","approved":true,"descriptor":{"action":"deleteAccount","permissions":["account:delete"],"risk":"high"}}}]}]`},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(fmt.Sprint(c.line), func(t *testing.T) {
+			opts := ValidateUIMessagesOptions{Messages: json.RawMessage(c.input), Tools: c.tools}
+			var msgs []UIMessage
+			var err error
+			if c.agent {
+				msgs, err = ValidateUIMessagesForAgent(context.Background(), opts)
+			} else {
+				msgs, err = ValidateUIMessages(context.Background(), opts)
+			}
+			if c.wantError != "" {
+				if err == nil || !strings.HasPrefix(err.Error(), c.wantError) {
+					t.Fatalf("TS %d error = %v, want prefix %q", c.line, err, c.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("TS %d: %v", c.line, err)
+			}
+			want := c.want
+			if want == "" {
+				want = c.input
+			}
+			var gotV, wantV interface{}
+			b, _ := json.Marshal(msgs)
+			_ = json.Unmarshal(b, &gotV)
+			if err := json.Unmarshal([]byte(want), &wantV); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(gotV, wantV) {
+				t.Errorf("TS %d messages differ\n got: %s\nwant: %s", c.line, b, want)
+			}
+		})
 	}
 }
