@@ -182,6 +182,9 @@ func humeContextFromRaw(providerOptions map[string]interface{}) (map[string]inte
 	if ctx == nil {
 		return nil, false
 	}
+	// TS parses the JSON value: Go-typed utterances
+	// ([]map[string]interface{}) and voices read like their JSON form.
+	ctx = providerutils.NormalizeOptionsJSON(ctx)
 	if id, ok := ctx["generationId"].(string); ok {
 		return map[string]interface{}{"generation_id": id}, true
 	}

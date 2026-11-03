@@ -575,7 +575,9 @@ func validGoogleEmbeddingTaskType(task string) bool {
 }
 
 func parseEmbeddingContent(raw interface{}) ([][]EmbeddingPart, error) {
-	values, ok := raw.([]interface{})
+	// TS parses the JSON value: Go-typed lists ([][]interface{},
+	// []map[string]interface{} parts) read like their JSON form.
+	values, ok := embeddingAnySlice(raw)
 	if !ok {
 		if typed, ok := raw.([][]EmbeddingPart); ok {
 			return typed, nil
@@ -587,7 +589,7 @@ func parseEmbeddingContent(raw interface{}) ([][]EmbeddingPart, error) {
 		if entry == nil {
 			continue
 		}
-		items, ok := entry.([]interface{})
+		items, ok := embeddingAnySlice(entry)
 		if !ok {
 			return nil, fmt.Errorf("google embedding content entry %d must be an array or nil", i)
 		}
@@ -607,7 +609,50 @@ func parseEmbeddingContent(raw interface{}) ([][]EmbeddingPart, error) {
 	return out, nil
 }
 
+// embeddingAnySlice returns a list value's elements: a []interface{} as is,
+// any other slice element by element (a [][]EmbeddingPart is handled by the
+// caller first). A typed slice's []EmbeddingPart entries keep their parts.
+func embeddingAnySlice(v interface{}) ([]interface{}, bool) {
+	if list, ok := v.([]interface{}); ok {
+		return list, true
+	}
+	if parts, ok := v.([]EmbeddingPart); ok {
+		out := make([]interface{}, len(parts))
+		for i, p := range parts {
+			out[i] = p
+		}
+		return out, true
+	}
+	rv := reflect.ValueOf(v)
+	if v == nil || rv.Kind() != reflect.Slice {
+		return nil, false
+	}
+	out := make([]interface{}, rv.Len())
+	for i := range out {
+		out[i] = rv.Index(i).Interface()
+	}
+	return out, true
+}
+
 func parseEmbeddingContentPart(raw interface{}) (EmbeddingPart, error) {
+	if part, ok := raw.(EmbeddingPart); ok {
+		switch part.(type) {
+		case TextEmbeddingPart, ImageEmbeddingPart, FileDataEmbeddingPart:
+			return part, nil
+		}
+	}
+	if m, ok := raw.(map[string]interface{}); ok {
+		// Nested Go-typed values (a map[string]string inlineData) read like
+		// their JSON form.
+		raw = providerutils.NormalizeOptionsJSON(m)
+	} else if rv := reflect.ValueOf(raw); raw != nil && rv.Kind() == reflect.Map && rv.Type().Key().Kind() == reflect.String {
+		if b, err := json.Marshal(raw); err == nil {
+			var normalized map[string]interface{}
+			if json.Unmarshal(b, &normalized) == nil {
+				raw = normalized
+			}
+		}
+	}
 	switch v := raw.(type) {
 	case TextEmbeddingPart, ImageEmbeddingPart, FileDataEmbeddingPart:
 		return v.(EmbeddingPart), nil
