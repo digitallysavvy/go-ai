@@ -246,7 +246,16 @@ function stmtEnd(s, j) {
 }
 // --asserts only: a one-line declaration's slice keeps its trailing ';'
 function trimSemi(s) { return wantAsserts ? s.replace(/;\s*$/, '') : s; }
-function evalExpr(s) { return vm.runInContext('(' + stripTS(s) + ')', ctx); }
+function evalExpr(s) {
+  try { return vm.runInContext('(' + stripTS(s) + ')', ctx); } catch (e) {
+    // a cast inside the literal (`[...] as Array<T>,`): erase the TS syntax
+    // with node's stripTypeScriptTypes and evaluate that
+    if (!stripTypeScriptTypes) throw e;
+    let js;
+    try { js = stripTypeScriptTypes('(' + s + ')', { mode: 'strip' }); } catch (e2) { throw e; }
+    return vm.runInContext(js, ctx);
+  }
+}
 
 const re = /\n(\s*)(it|test)(?:\.each\([^)]*\))?\(\s*(['"`])((?:\\.|(?!\3).)*)\3/g;
 const starts = [];
