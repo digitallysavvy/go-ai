@@ -92,6 +92,55 @@ type WireSuite struct {
 	// SkipModel returns a reason to skip a test that calls a model this suite
 	// does not replay (for example a model another suite covers).
 	SkipModel func(m WireModel) string
+	// MetadataKeyAlias renames the provider-metadata keys of the TS results
+	// (from -> to) before comparing, for a recording replayed through a Go
+	// provider whose metadata key differs (the TS test's "test-provider").
+	MetadataKeyAlias map[string]string
+	// ProviderOptionsKeyAlias renames the providerOptions keys of the TS
+	// call arguments (from -> to; the call options and every prompt part)
+	// before the Go call, for the same replays.
+	ProviderOptionsKeyAlias map[string]string
+	// PrepareTest, when set, adjusts each recorded test before it is
+	// replayed: for a recording of one TS class replayed through a Go
+	// provider whose TS counterpart configures that class differently (for
+	// example includeUsage), it rewrites what TS sent to what the TS
+	// provider sends.
+	PrepareTest func(w *WireTest)
+}
+
+// wireRenameMetaKeys renames the keys of every providerMetadata object in v.
+func wireRenameMetaKeys(v interface{}, alias map[string]string) interface{} {
+	return wireRenameKeysOf(v, "providerMetadata", alias)
+}
+
+// wireRenameKeysOf renames the keys of every object held under field in v.
+func wireRenameKeysOf(v interface{}, field string, alias map[string]string) interface{} {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(t))
+		for k, x := range t {
+			if pm, ok := x.(map[string]interface{}); ok && k == field {
+				renamed := make(map[string]interface{}, len(pm))
+				for mk, mv := range pm {
+					if to, ok := alias[mk]; ok {
+						mk = to
+					}
+					renamed[mk] = wireRenameKeysOf(mv, field, alias)
+				}
+				out[k] = renamed
+				continue
+			}
+			out[k] = wireRenameKeysOf(x, field, alias)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(t))
+		for i, x := range t {
+			out[i] = wireRenameKeysOf(x, field, alias)
+		}
+		return out
+	}
+	return v
 }
 
 // wireClsPrefix remembers, per TS model class, the base-URL prefix of tests
@@ -166,6 +215,9 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 			skip("the TS test serves a response the recording cannot carry (controlled stream)")
 		}
 	}
+	if s.PrepareTest != nil {
+		s.PrepareTest(&w)
+	}
 	wireVideoOps = map[string]json.RawMessage{}
 	srv := NewWireServer(w)
 	srv.GoAdds = s.GoAdds
@@ -214,6 +266,9 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 				skip(fmt.Sprintf("provider not constructible: %v", err))
 			}
 			prov[key] = p
+		}
+		if len(s.ProviderOptionsKeyAlias) > 0 {
+			c.Args, _ = wireRenameKeysOf(c.Args, "providerOptions", s.ProviderOptionsKeyAlias).([]interface{})
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		got, err := RunWireCall(ctx, srv, s, p, kind, c)
@@ -405,6 +460,10 @@ func CompareWireResult(srv *WireServer, s WireSuite, c WireCall, got map[string]
 	}
 	if WireKind(c) == "language" && !s.LanguageResults && os.Getenv("TSWIRE_LMRESULTS") == "" {
 		return nil
+	}
+	if len(s.MetadataKeyAlias) > 0 {
+		c.Result = wireRenameMetaKeys(c.Result, s.MetadataKeyAlias)
+		c.Parts, _ = wireRenameMetaKeys(c.Parts, s.MetadataKeyAlias).([]interface{})
 	}
 	if c.Method == "doStream" {
 		if WireKind(c) != "language" {

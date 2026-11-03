@@ -64,6 +64,15 @@ binary bodies and replay faithfully. The Anthropic and Google decision-model
 tests are recorded but skipped: a Go map carries the questions and the choice
 criteria, so the prompt orders them by key where TS uses insertion order.
 
+One recording can also be replayed through other Go providers built on the
+same TS class: `TestR82provbCompatChatWireThroughProviders`
+(`pkg/internal/tsfixture`) replays the openai-compatible chat tests through
+gmicloud, together, fireworks, zai and ollama. `WireSuite.MetadataKeyAlias`
+and `ProviderOptionsKeyAlias` map the TS test provider name onto the Go
+provider's key, and `PrepareTest` rewrites a recorded test to what the TS
+provider (not the bare class) sends, e.g. its `includeUsage`; tests whose
+class settings differ from the TS provider's are skipped with the reason.
+
 Packages whose Go provider needs package-private setup replay in-package:
 `fal` (fixed hosts), `azure` (URL layout selected by the resource name) and
 `openai` (typed provider tools, provider names).
