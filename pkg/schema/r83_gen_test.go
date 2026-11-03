@@ -120,3 +120,26 @@ func TestR83genNilJSONSchemaMarshal(t *testing.T) {
 		}
 	}
 }
+
+// MarshalSchema and a nil *OrderedSchema do not call into nil values: a
+// typed nil schema is no schema.
+func TestR83genMarshalSchemaNilValues(t *testing.T) {
+	var o *OrderedSchema
+	if b, err := o.MarshalJSON(); err != nil || string(b) != "{}" {
+		t.Fatalf("nil OrderedSchema: %s %v", b, err)
+	}
+	if o.JSONSchema() != nil {
+		t.Fatal("nil OrderedSchema JSONSchema")
+	}
+	for name, v := range map[string]interface{}{
+		"nil OrderedSchema":      o,
+		"nil SimpleJSONSchema":   (*SimpleJSONSchema)(nil),
+		"zero SimpleJSONSchema":  &SimpleJSONSchema{},
+		"nil SimpleStructSchema": (*SimpleStructSchema)(nil),
+		"nil JSON validator":     (*JSONSchemaValidator)(nil),
+	} {
+		if _, ok, err := MarshalSchema(v); ok || err != nil {
+			t.Fatalf("%s: ok=%v err=%v", name, ok, err)
+		}
+	}
+}
