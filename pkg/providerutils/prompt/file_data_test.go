@@ -171,12 +171,17 @@ func TestNormalizeFileContentMalformedDataURL(t *testing.T) {
 	}
 }
 
-func TestNormalizeFileContentRejectsNonHTTPRemoteURL(t *testing.T) {
-	_, err := NormalizeFileContent(types.FileContent{
+// TS file parts accept any URL `new URL(...)` parses; only the downloader
+// (validateDownloadUrl) limits schemes to http, https and data.
+func TestNormalizeFileContentKeepsNonHTTPURL(t *testing.T) {
+	got, err := NormalizeFileContent(types.FileContent{
 		FileData: types.FileData{Type: types.FileDataTypeURL, URL: "file:///tmp/document.pdf"},
 	})
-	if err == nil {
-		t.Fatal("NormalizeFileContent() error = nil, want non-http URL rejection")
+	if err != nil {
+		t.Fatalf("NormalizeFileContent() error = %v", err)
+	}
+	if got.FileData.URL != "file:///tmp/document.pdf" || got.FileData.MediaType != "application/pdf" {
+		t.Fatalf("FileData = %+v", got.FileData)
 	}
 }
 

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 )
 
 // MessageRole represents the role of a message sender in a conversation
@@ -1100,7 +1102,13 @@ func unmarshalLegacyToolResultFileContentBlock(blockType string, data []byte) (F
 			block.MediaType = "image"
 		}
 	case "file-url", "image-url":
+		// TS: url = new URL(item.url), with originalUrl: item.url when
+		// url.toString() differs. Core prompt conversion normalizes URL
+		// (and fails with "Invalid URL" when it does not parse).
 		block.FileData = FileData{Type: FileDataTypeURL, URL: raw.URL}
+		if href, err := urlnorm.Href(raw.URL); err == nil && href != raw.URL {
+			block.FileData.OriginalURL = raw.URL
+		}
 		block.URL = raw.URL
 		if block.MediaType == "" {
 			if blockType == "image-url" {
@@ -1146,11 +1154,15 @@ func legacyReferenceMediaType(blockType, mediaType string) string {
 	return "application"
 }
 
+// inferToolResultMediaTypeFromURL mirrors TS getMediaTypeFromUrl: the text
+// after the last "." of the WHATWG pathname (`new URL(url).pathname`), or
+// application/octet-stream when the URL does not parse.
 func inferToolResultMediaTypeFromURL(value string) string {
-	path := value
-	if idx := strings.IndexAny(path, "?#"); idx >= 0 {
-		path = path[:idx]
+	parsed, err := urlnorm.Parse(value)
+	if err != nil {
+		return "application/octet-stream"
 	}
+	path := parsed.Pathname()
 	idx := strings.LastIndex(path, ".")
 	if idx < 0 || idx == len(path)-1 {
 		return "application/octet-stream"
