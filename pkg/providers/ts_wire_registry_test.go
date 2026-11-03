@@ -102,6 +102,7 @@ var wireSuites = map[string]tsfixture.WireSuite{
 		"doEmbed > should not emit deprecated warning when camelCase provider name key is used": "TS embedding reads only the raw provider-name key; Go also honours the camelCase key",
 		"~should handle error stream parts":                                                     "TS emits stream errors as parts; Go ends the stream with the same error from Next",
 		"~should preserve structured error stream parts":                                        "TS emits stream errors as parts; Go ends the stream with the same error from Next",
+		"doGenerate > response format > should map top-level reasoning with mapReasoning":       "the TS test passes a mapReasoning function in the class config (TS 61a315e333); Go wrappers apply their own TS provider's mapping (fireworks: TestFireworksReasoningCoercionWarnings)",
 	}, Language: func(p provider.Provider, cls, id string) (provider.LanguageModel, error) {
 		op := p.(*openai.Provider)
 		if strings.Contains(cls, "Completion") {

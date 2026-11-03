@@ -38,6 +38,16 @@ bytes, and JSON strings over 3000 characters in `__fixtures__` are cut to 300
 (`trunc_fixtures.py`). Recorded TS results are computed from the truncated
 inputs, so Go and TS see the same data.
 
+With `NO_INSTALL=1`, `prepare.sh` links the TS checkout's installed
+`node_modules` instead of running pnpm (run with the checkout's
+`node_modules/.bin` on `PATH`, and delete the `.vite` caches vitest leaves in
+the linked directories afterwards). Round 85 re-recorded the provb suites and
+anthropic, amazon-bedrock, google, google-vertex, groq, mistral, cohere,
+elevenlabs, gateway, heygen, perplexity, cerebras, quiverai and topaz at
+`30548ee7f9` this way; the google-vertex Anthropic labels tests need
+`google-auth-library`, which that checkout does not install, so they are not
+in the recording (the suite skips them anyway).
+
 `finish.py` gzips with a fixed mtime (reproducible bytes) and splits a package
 into `<pkg>__<test-file>.jsonl.gz` when one file would exceed ~900 KB.
 

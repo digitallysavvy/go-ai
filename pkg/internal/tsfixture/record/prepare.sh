@@ -1,7 +1,7 @@
 #!/bin/bash
 # Prepares a scratch copy of the TS AI SDK for recording (see README.md).
 #
-# usage: prepare.sh <ai repo> <scratch dir>
+# usage: [NO_INSTALL=1] prepare.sh <ai repo> <scratch dir>
 #
 # Copies the provider packages and their workspace dependencies (no build
 # needed: vitest.config.mjs resolves @ai-sdk/* to src), trims the workspace,
@@ -44,7 +44,24 @@ mkdir -p "$W/rec/test-server"
 cp "$W"/packages/test-server/src/*.ts "$W/rec/test-server/"
 rm -f "$W/rec/test-server/with-vitest.test.ts"
 python3 "$HERE/hook_test_server.py" "$W/rec/test-server/create-test-server.ts"
-(cd "$W" && CI=true pnpm install --no-frozen-lockfile --ignore-scripts --config.manage-package-manager-versions=false)
+if [ -n "${NO_INSTALL:-}" ]; then
+  # Reuse the TS checkout's installed dependencies (no install, no download).
+  # A package without its own node_modules borrows anthropic's (the same
+  # pinned zod; @ai-sdk/* resolve to src through vitest.config.mjs). Vitest
+  # writes a .vite cache into a linked node_modules: delete
+  # "$AI"/packages/*/node_modules/.vite after recording.
+  for d in "$W"/packages/*/; do
+    n=$(basename "$d")
+    if [ -n "$(ls "$AI/packages/$n/node_modules" 2>/dev/null)" ]; then
+      ln -sfn "$AI/packages/$n/node_modules" "$d/node_modules"
+    else
+      ln -sfn "$AI/packages/anthropic/node_modules" "$d/node_modules"
+    fi
+  done
+  ln -sfn "$AI/node_modules" "$W/node_modules"
+else
+  (cd "$W" && CI=true pnpm install --no-frozen-lockfile --ignore-scripts --config.manage-package-manager-versions=false)
+fi
 ln -sfn "$W/packages/test-server/node_modules" "$W/rec/node_modules"
 # truncate the audio fixtures and large opaque strings so recordings stay small
 for f in $(find "$W/packages" -name 'transcript-test.mp3' -o -name 'transcription-test.mp3' | grep -v node_modules); do head -c 64 "$f" > "$f.tmp" && mv "$f.tmp" "$f"; done

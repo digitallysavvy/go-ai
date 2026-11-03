@@ -30,11 +30,20 @@ func init() {
 			"~when transformRequestBody is provided":                                       "the transform is code in the TS test; Go has Config.TransformRequestBody",
 			"~starts a batch from prepared requests and combines batch and inferred betas": "provider-level headers are not captured in the batch recording config",
 			"~forwards operation headers and the abort signal while retrieving results":    "provider-level headers are not captured in the batch recording config",
+			"~authToken option >": "the TS tests pass authToken as a function or promise (and provider-level headers), which the recording does not carry; Go Config.AuthTokenFunc is covered by TestR85provaAnthropicAuthTokenFunc",
 		},
 		Provider: func(b string, m tsfixture.WireModel) (provider.Provider, error) {
 			cfg := anthropic.Config{APIKey: wireAPIKey(m), BaseURL: b, Headers: wireHeaders(m)}
 			if name, _, _ := strings.Cut(m.Provider, "."); name != "" && name != "anthropic" {
 				cfg.Name = name
+			}
+			// Class settings the TS tests pass to AnthropicLanguageModel
+			// (Bedrock / Vertex behave this way).
+			if v, ok := m.Config["supportsNativeStructuredOutput"].(bool); ok {
+				cfg.SupportsNativeStructuredOutput = &v
+			}
+			if v, ok := m.Config["supportsStrictTools"].(bool); ok {
+				cfg.SupportsStrictTools = &v
 			}
 			return anthropic.New(cfg), nil
 		},
@@ -55,6 +64,8 @@ func init() {
 			"~async headers handling":                                                 "the TS test configures headers as (async) functions, which the recording does not carry",
 			"~GoogleBatch > starts an inline image generation batch":                  "the TS test mocks generateId (batch display name)",
 			"~GoogleBatch > omits webhook configuration for inline input":             "the TS test mocks generateId (batch display name)",
+			"~GoogleBatch > omits webhook configuration for file input":               "the batch display name comes from a random TS generateId",
+			"~uses a resumable file upload when the creation body reaches 20 MB":      "the TS test mocks generateId (batch display name) and sets provider-level headers the recording does not carry",
 			"~GoogleBatch > surfaces Google HTTP errors from starting a batch":        "the TS test mocks generateId (batch display name)",
 			"~tool-call + tool-result message pair through the request body (step 2)": "tool result JSON arrives as a Go map, which has no key order",
 		},
@@ -89,6 +100,7 @@ func init() {
 			"~should work with partial headers":                                           "the TS test signs the request with SigV4 and a signed header; Go uses the bearer token here",
 			"~should stream text through the encoded Converse route":                      "the TS test file mocks the event-stream response handler and feeds it JSON lines; Go reads real frames",
 			"~surfaces event stream decoding failures":                                    "the TS test fails while reading the stream (checksum); the recording carries no stream-read error",
+			"~doStream fallback tool restrictions":                                        "the TS test cancels the stream of an empty fetch body unread; the recorded stream ends in a JS 'Controller is already closed' TypeError (the request bodies are compared by the doGenerate variant)",
 			"~Cohere models behind application inference profile ARNs":                    "modelFamily is a per-model setting in the TS test",
 			"~should properly combine headers from all sources":                           "the TS test signs the request with SigV4 and a signed header; Go uses the bearer token here",
 		},
