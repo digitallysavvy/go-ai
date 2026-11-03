@@ -300,3 +300,201 @@ func TestR85genApprovalFollowUpEnforcesServerFieldPolicy(t *testing.T) {
 		}
 	}
 }
+
+// r85genLastUserTexts is the last user text of each recorded prompt (TS
+// lastUserText over model.doGenerateCalls).
+func r85genLastUserTexts(prompts [][]string) []string {
+	out := make([]string, len(prompts))
+	for i, p := range prompts {
+		if len(p) > 0 {
+			out[i] = p[len(p)-1]
+		}
+	}
+	return out
+}
+
+func r85genTextAnswers(answers ...string) *steerModel {
+	return &steerModel{next: func(call int) *types.GenerateResult {
+		return &types.GenerateResult{Text: answers[call-1], Content: []types.ContentPart{types.TextContent{Text: answers[call-1]}}, FinishReason: types.FinishReasonStop}
+	}}
+}
+
+// Ports of steering.test.ts (TS cf2796985a): queued messages wait until they
+// are promoted, promotion with nothing queued is false, ending the run
+// resolves queued messages as not delivered, and ids are shared with Steer.
+func TestR85genSteeringQueueRun(t *testing.T) {
+	steering := NewSteering()
+	run, err := startSteeringRun(steering)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steering.Queue("first", WithSteerID("queued-1"))
+	steering.Queue("second", WithSteerID("queued-2"))
+	if run.hasPendingMessages() {
+		t.Fatal("queued messages are pending")
+	}
+	if got := run.takeMessages(); len(got) != 0 {
+		t.Fatalf("takeMessages = %v, want none", got)
+	}
+	if !run.promoteQueuedMessage() {
+		t.Fatal("promoteQueuedMessage = false")
+	}
+	got := run.takeMessages()
+	if len(got) != 1 || userText(got[0]) != "first" {
+		t.Fatalf("takeMessages = %+v, want [first]", got)
+	}
+
+	empty, _ := startSteeringRun(NewSteering())
+	if empty.promoteQueuedMessage() {
+		t.Fatal("promoteQueuedMessage with nothing queued = true")
+	}
+	var nilRun *steeringRun
+	if nilRun.promoteQueuedMessage() {
+		t.Fatal("nil run promoted")
+	}
+
+	ending := NewSteering()
+	endRun, _ := startSteeringRun(ending)
+	h := ending.Queue("too late", WithSteerID("queued-1"))
+	endRun.end(SteeringStopCondition)
+	if o := waitOutcome(t, h); o.Delivered || o.ID != "queued-1" || o.Reason != SteeringStopCondition {
+		t.Fatalf("outcome = %+v", o)
+	}
+	if endRun.promoteQueuedMessage() {
+		t.Fatal("promoted after end")
+	}
+
+	shared := NewSteering()
+	steered := shared.Steer("first", WithSteerID("message-1"))
+	if shared.Queue("retry", WithSteerID("message-1")) != steered {
+		t.Fatal("queue with a steered id returned a new handle")
+	}
+	if _, err := shared.QueueMessage(types.Message{Role: types.RoleAssistant}); err == nil {
+		t.Fatal("QueueMessage accepted an assistant message")
+	}
+}
+
+// Port of generate-text-steering.test.ts 'queue' > 'should wait until the
+// current task is done to deliver a queued message'.
+func TestR85genQueueWaitsForTask(t *testing.T) {
+	steering := NewSteering()
+	var handle *SteerHandle
+	sm := &steerModel{next: func(call int) *types.GenerateResult {
+		switch call {
+		case 1:
+			return toolCallResult()
+		case 2:
+			return &types.GenerateResult{Text: "It is sunny in Paris.", FinishReason: types.FinishReasonStop}
+		}
+		return &types.GenerateResult{Text: "The readme is updated.", FinishReason: types.FinishReasonStop}
+	}}
+	tools := []types.Tool{{Name: "tool1", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		handle = steering.Queue("Then update the readme.")
+		return "sunny", nil
+	}}}
+	result, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: sm.model(), Prompt: "What is the weather in Paris?", Tools: tools,
+		StopWhen: []StopCondition{IsStepCount(5)}, ExperimentalSteering: steering,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"What is the weather in Paris?", "What is the weather in Paris?", "Then update the readme."}
+	if got := r85genLastUserTexts(sm.prompts); !reflect.DeepEqual(got, want) {
+		t.Fatalf("last user texts = %q, want %q", got, want)
+	}
+	if o := waitOutcome(t, handle); !o.Delivered || o.StepNumber != 2 {
+		t.Fatalf("outcome = %+v", o)
+	}
+	if result.Text != "The readme is updated." {
+		t.Fatalf("text = %q", result.Text)
+	}
+}
+
+// Ports of 'should deliver one queued message per task in order' and
+// 'should deliver steering messages before queued messages'.
+func TestR85genQueueOrder(t *testing.T) {
+	steering := NewSteering()
+	first := steering.Queue("Then update the readme.")
+	second := steering.Queue("Then add a changelog entry.")
+	sm := r85genTextAnswers("It is sunny in Paris.", "The readme is updated.", "The changelog is updated.")
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: sm.model(), Prompt: "What is the weather in Paris?", StopWhen: []StopCondition{IsStepCount(5)}, ExperimentalSteering: steering,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"What is the weather in Paris?", "Then update the readme.", "Then add a changelog entry."}
+	if got := r85genLastUserTexts(sm.prompts); !reflect.DeepEqual(got, want) {
+		t.Fatalf("last user texts = %q, want %q", got, want)
+	}
+	if o := waitOutcome(t, first); !o.Delivered || o.StepNumber != 1 {
+		t.Fatalf("first = %+v", o)
+	}
+	if o := waitOutcome(t, second); !o.Delivered || o.StepNumber != 2 {
+		t.Fatalf("second = %+v", o)
+	}
+
+	steering = NewSteering()
+	queued := steering.Queue("Then update the readme.")
+	sm = &steerModel{next: func(call int) *types.GenerateResult {
+		answers := []string{"It is sunny in Paris.", "It is 20 degrees.", "The readme is updated."}
+		if call == 1 {
+			steering.Steer("Use Celsius.")
+		}
+		return &types.GenerateResult{Text: answers[call-1], FinishReason: types.FinishReasonStop}
+	}}
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: sm.model(), Prompt: "What is the weather in Paris?", StopWhen: []StopCondition{IsStepCount(5)}, ExperimentalSteering: steering,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want = []string{"What is the weather in Paris?", "Use Celsius.", "Then update the readme."}
+	if got := r85genLastUserTexts(sm.prompts); !reflect.DeepEqual(got, want) {
+		t.Fatalf("last user texts = %q, want %q", got, want)
+	}
+	if o := waitOutcome(t, queued); !o.Delivered || o.StepNumber != 2 {
+		t.Fatalf("queued = %+v", o)
+	}
+}
+
+// Ports of 'should not deliver a queued message when a stop condition ends
+// the run', '... when the response finished with %s' (length,
+// content-filter) and '... after the run finished'.
+func TestR85genQueueNotDelivered(t *testing.T) {
+	steering := NewSteering()
+	h := steering.Queue("Then update the readme.", WithSteerID("queued-1"))
+	sm := r85genTextAnswers("It is sunny in Paris.")
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{Model: sm.model(), Prompt: "What is the weather in Paris?", ExperimentalSteering: steering}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sm.prompts) != 1 {
+		t.Fatalf("model calls = %d, want 1", len(sm.prompts))
+	}
+	if o := waitOutcome(t, h); o.Delivered || o.ID != "queued-1" || o.Reason != SteeringStopCondition || userText(o.Message) != "Then update the readme." || o.Message.Role != types.RoleUser {
+		t.Fatalf("outcome = %+v", o)
+	}
+	if o := waitOutcome(t, steering.Queue("Then update the readme.", WithSteerID("late"))); o.Delivered || o.Reason != SteeringFinished {
+		t.Fatalf("late outcome = %+v", o)
+	}
+
+	for _, reason := range []types.FinishReason{types.FinishReasonLength, types.FinishReasonContentFilter} {
+		t.Run(string(reason), func(t *testing.T) {
+			steering := NewSteering()
+			h := steering.Queue("Then update the readme.")
+			sm := &steerModel{next: func(int) *types.GenerateResult {
+				return &types.GenerateResult{Text: "It is sunny", FinishReason: reason}
+			}}
+			if _, err := GenerateText(context.Background(), GenerateTextOptions{
+				Model: sm.model(), Prompt: "What is the weather in Paris?", StopWhen: []StopCondition{IsStepCount(5)}, ExperimentalSteering: steering,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(sm.prompts) != 1 {
+				t.Fatalf("model calls = %d, want 1", len(sm.prompts))
+			}
+			if o := waitOutcome(t, h); o.Delivered || o.Reason != SteeringFinished {
+				t.Fatalf("outcome = %+v", o)
+			}
+		})
+	}
+}
