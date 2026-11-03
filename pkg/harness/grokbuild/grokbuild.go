@@ -1,6 +1,6 @@
 // Package grokbuild is the Go port of the TypeScript
 // `@ai-sdk/harness-grok-build` package (pinned to
-// ai@7.0.153, TS e64ed82f27).
+// ai@7.0.162, TS 30548ee7f9).
 //
 // Like pkg/harness/cursor, Grok Build is an "ACP-derived" adapter: TS
 // `createGrokBuild()` is a thin configuration layer over `createACP()`
