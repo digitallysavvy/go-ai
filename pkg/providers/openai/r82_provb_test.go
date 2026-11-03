@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
 )
 
 // r82provbStreamParts streams body from a test server through an
@@ -175,5 +176,23 @@ func TestR82provbCompatMetadataExtractor(t *testing.T) {
 		map[string]interface{}{"p": map[string]interface{}{"x": 2}, "q": 3})
 	if b, _ := json.Marshal(got); string(b) != `{"p":{"acceptedPredictionTokens":1,"x":2},"q":3}` {
 		t.Fatalf("merge = %s", b)
+	}
+}
+
+// TS mapComputerCallInput: `actions ?? (action != null ? [action] : [])` --
+// a present empty actions list is not replaced by the singular action.
+func TestR82provbComputerCallEmptyActionsKept(t *testing.T) {
+	for _, tc := range []struct{ wire, want string }{
+		{`{"type":"computer_call","id":"c","call_id":"k","status":"completed","action":{"type":"wait"},"actions":[]}`, `{"actions":[],"pendingSafetyChecks":[],"status":"completed"}`},
+		{`{"type":"computer_call","id":"c","call_id":"k","status":"completed","action":{"type":"wait"},"actions":null}`, `{"actions":[{"type":"wait"}],"pendingSafetyChecks":[],"status":"completed"}`},
+		{`{"type":"computer_call","id":"c","call_id":"k","status":"completed","action":{"type":"wait"}}`, `{"actions":[{"type":"wait"}],"pendingSafetyChecks":[],"status":"completed"}`},
+	} {
+		var item responses.ComputerCall
+		if err := json.Unmarshal([]byte(tc.wire), &item); err != nil {
+			t.Fatal(err)
+		}
+		if _, raw := computerCallArguments(item); raw != tc.want {
+			t.Fatalf("%s: input = %s, want %s", tc.wire, raw, tc.want)
+		}
 	}
 }
