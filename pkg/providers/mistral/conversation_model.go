@@ -16,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -112,6 +113,11 @@ func (m *ConversationLanguageModel) buildRequest(opts *provider.GenerateOptions)
 		}
 	}
 
+	// TS prepareConversationTools (run before the inputs are converted)
+	// throws for an unknown tool choice type.
+	if err := prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice); err != nil {
+		return nil, nil, err
+	}
 	names := newConversationToolNames(opts.Tools)
 	inputs, instructions, err := convertToMistralConversationInputs(messages, names)
 	if err != nil {
