@@ -171,12 +171,14 @@ func (m *InteractionsLanguageModel) convertAssistantSteps(parts []types.ContentP
 				seenToolCallIDs[p.ToolCallID] = true
 			}
 			args, orderRaw := interactionToolArgs(p.Arguments, p.Input)
-			steps = append(steps, withSignature(pruneMap(map[string]interface{}{
+			// TS sends id, name and arguments as given: an empty id or
+			// name and an empty arguments object are kept.
+			steps = append(steps, withSignature(map[string]interface{}{
 				"type":      "function_call",
 				"id":        p.ToolCallID,
 				"name":      p.ToolName,
 				"arguments": orderedArguments(args, orderRaw),
-			}), inputSignature(p.ProviderOptions, p.ThoughtSignature, extractGoogleMetadata(p.ProviderMetadata))))
+			}, inputSignature(p.ProviderOptions, p.ThoughtSignature, extractGoogleMetadata(p.ProviderMetadata))))
 		case types.CustomContent:
 			flush()
 			google := extractGoogleMetadata(p.ProviderMetadata)
@@ -194,20 +196,22 @@ func (m *InteractionsLanguageModel) convertAssistantSteps(parts []types.ContentP
 			// TS: typeof google?.signature === 'string' (an empty one is sent).
 			signature := inputSignature(nil, "", google)
 			switch p.Kind {
+			// TS `typeof google?.processingId === 'string'`: an empty id is
+			// sent too.
 			case "google.processing_call":
-				if processingID, _ := google["processingId"].(string); processingID != "" {
-					steps = append(steps, withSignature(pruneMap(map[string]interface{}{
+				if processingID, ok := google["processingId"].(string); ok {
+					steps = append(steps, withSignature(map[string]interface{}{
 						"type": "processing_call",
 						"id":   processingID,
-					}), signature))
+					}, signature))
 					continue
 				}
 			case "google.processing_result":
-				if processingCallID, _ := google["processingCallId"].(string); processingCallID != "" {
-					steps = append(steps, withSignature(pruneMap(map[string]interface{}{
+				if processingCallID, ok := google["processingCallId"].(string); ok {
+					steps = append(steps, withSignature(map[string]interface{}{
 						"type":    "processing_result",
 						"call_id": processingCallID,
-					}), signature))
+					}, signature))
 					continue
 				}
 			}
@@ -225,12 +229,12 @@ func (m *InteractionsLanguageModel) convertAssistantSteps(parts []types.ContentP
 		flush()
 		args, orderRaw := interactionToolArgs(call.Arguments, call.RawArguments)
 		callGoogle, _ := call.ProviderMetadata["google"].(map[string]interface{})
-		steps = append(steps, withSignature(pruneMap(map[string]interface{}{
+		steps = append(steps, withSignature(map[string]interface{}{
 			"type":      "function_call",
 			"id":        call.ID,
 			"name":      call.ToolName,
 			"arguments": orderedArguments(args, orderRaw),
-		}), inputSignature(nil, call.ThoughtSignature, callGoogle)))
+		}, inputSignature(nil, call.ThoughtSignature, callGoogle)))
 	}
 	flush()
 	return steps, warnings, nil

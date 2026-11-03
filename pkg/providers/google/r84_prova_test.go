@@ -2,10 +2,12 @@ package google
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // TS `new Error(message.error.message ?? 'Google Live API error')`: an empty
@@ -55,5 +57,32 @@ func TestR84provaLiveEmptyErrorMessageKept(t *testing.T) {
 				t.Fatalf("err = %v, want %q", err, want)
 			}
 		})
+	}
+}
+
+// TestR84provaInteractionsStepFieldsKept: TS convertToGoogleInteractionsInput
+// sends a function_call step's id, name and arguments as given (a zero-arg
+// call keeps `arguments: {}`), and a processing_call / processing_result step
+// whenever processingId / processingCallId is a string, an empty one included.
+func TestR84provaInteractionsStepFieldsKept(t *testing.T) {
+	m := &InteractionsLanguageModel{}
+	steps, _, warnings, err := m.convertPrompt(types.Prompt{Messages: []types.Message{{Role: types.RoleAssistant,
+		Content: []types.ContentPart{
+			types.ToolCallContent{ToolCallID: "c", ToolName: "f", Input: `{}`},
+			types.CustomContent{Kind: "google.processing_call", ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"processingId": ""}}},
+			types.CustomContent{Kind: "google.processing_result", ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"processingCallId": ""}}},
+		},
+		ToolCalls: []types.ToolCall{{ID: "", ToolName: "g"}},
+	}}}, GoogleInteractionsProviderOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("warnings = %v", warnings)
+	}
+	got, _ := json.Marshal(steps)
+	const want = `[{"arguments":{},"id":"c","name":"f","type":"function_call"},{"id":"","type":"processing_call"},{"call_id":"","type":"processing_result"},{"arguments":{},"id":"","name":"g","type":"function_call"}]`
+	if string(got) != want {
+		t.Errorf("steps =\n%s\nwant\n%s", got, want)
 	}
 }
