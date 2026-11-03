@@ -9,8 +9,8 @@ import (
 // Port of sanitize-json-schema.test.ts 'keeps definitions next to a
 // top-level $ref' (TS f4c5f1e959, sanitize-json-schema.ts 57-60, 149-170).
 // The expected values are the TS sanitizeJsonSchema output (ai@7.0.162,
-// node) for the raw-schema path. Compared as values: Go keeps the input's
-// key order (jsonorder.Hinted), TS the sanitizer's insertion order.
+// node) for the raw-schema path. Compared as values; the byte-exact key
+// order is TestR86genSanitizeAnthropicTSKeyOrder.
 func TestR85genSanitizeAnthropicKeepsDefinitionsNextToRef(t *testing.T) {
 	for in, want := range map[string]string{
 		`{"$ref":"#/definitions/Answer","definitions":{"Answer":{"type":"object","properties":{"answer":{"type":"string","minLength":1}},"required":["answer"]}},"$defs":{"Unused":{"type":"string"}}}`: `{"$ref":"#/definitions/Answer","definitions":{"Answer":{"type":"object","properties":{"answer":{"type":"string","description":"min length: 1."}},"additionalProperties":false,"required":["answer"]}},"$defs":{"Unused":{"type":"string"}}}`,
