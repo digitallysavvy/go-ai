@@ -224,6 +224,11 @@ func moonshotWireToolCalls(toolCalls []types.ToolCall) []map[string]interface{} 
 	result := make([]map[string]interface{}, 0, len(toolCalls))
 	for _, tc := range toolCalls {
 		arguments := tc.RawArguments
+		if arguments != "" {
+			// TS JSON.stringify(part.input): an invalid call's raw text is
+			// sent as its JSON string literal.
+			arguments = prompt.StringifyToolCallInput(arguments)
+		}
 		if arguments == "" {
 			args := tc.Arguments
 			if args == nil {

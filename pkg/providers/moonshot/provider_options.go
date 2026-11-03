@@ -290,6 +290,15 @@ func parseMoonshotMessageOptions(providerOptions map[string]interface{}) (*moons
 	}
 	if v, ok := resolved["tools"]; ok {
 		toolsRaw, isList := v.([]interface{})
+		if typed, ok := v.([]map[string]interface{}); ok {
+			// A Go-typed list reads like its JSON form (TS parses the
+			// array); it failed as invalid options. The tools keep their
+			// values as given (inputSchema below).
+			toolsRaw, isList = make([]interface{}, len(typed)), true
+			for i, tool := range typed {
+				toolsRaw[i] = tool
+			}
+		}
 		if !isList {
 			return nil, invalidMoonshotProviderOptions(nil)
 		}

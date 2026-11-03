@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"mime/multipart"
+	"reflect"
 	"strings"
 	"unicode/utf8"
 
@@ -63,6 +64,24 @@ type FilesAPI struct {
 // UploadFile uploads a file to DeepSeek's Files API (POST /files) with
 // purpose=user_data.
 func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions) (*types.UploadFileResult, error) {
+	// TS parses the provider options first (parseProviderOptions with
+	// deepSeekFilesOptionsSchema: expiresAfter z.number().int().min(3600)
+	// .max(2592000).optional()), then converts and validates the file.
+	deepseekOpts, err := providerutils.ParseProviderOptions("deepseek", opts.ProviderOptions, providerutils.OptionSchema{
+		"expiresAfter": providerutils.OptInt(&deepSeekMinExpiresAfter, &deepSeekMaxExpiresAfter),
+	})
+	if err != nil {
+		return nil, err
+	}
+	var expiresAfter *int
+	if raw, ok := deepseekOpts["expiresAfter"]; ok {
+		// OptInt checked an integer of any Go numeric kind.
+		if n, isNum := deepSeekOptionNumber(raw); isNum {
+			iv := int(n)
+			expiresAfter = &iv
+		}
+	}
+
 	fileBytes, err := deepSeekInlineFileBytes(opts.Data)
 	if err != nil {
 		return nil, err
@@ -70,43 +89,6 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 
 	if err := validateDeepSeekFileUpload(fileBytes, opts.MediaType, opts.Filename); err != nil {
 		return nil, err
-	}
-
-	// TS deepSeekFilesOptionsSchema: expiresAfter is z.number().int().
-	var expiresAfter *int
-	if opts.ProviderOptions != nil {
-		if deepseekOpts, ok := opts.ProviderOptions["deepseek"].(map[string]interface{}); ok {
-			if raw, present := deepseekOpts["expiresAfter"]; present && raw != nil {
-				var n float64
-				switch v := raw.(type) {
-				case int:
-					n = float64(v)
-				case int64:
-					n = float64(v)
-				case float64:
-					n = v
-				default:
-					return nil, &providererrors.InvalidArgumentError{
-						Field:   "providerOptions.deepseek.expiresAfter",
-						Message: "expiresAfter must be an integer between 3600 (1 hour) and 2592000 (30 days) seconds.",
-					}
-				}
-				if n != math.Trunc(n) {
-					return nil, &providererrors.InvalidArgumentError{
-						Field:   "providerOptions.deepseek.expiresAfter",
-						Message: "expiresAfter must be an integer between 3600 (1 hour) and 2592000 (30 days) seconds.",
-					}
-				}
-				iv := int(n)
-				expiresAfter = &iv
-			}
-		}
-	}
-	if expiresAfter != nil && (*expiresAfter < 3600 || *expiresAfter > 2592000) {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "providerOptions.deepseek.expiresAfter",
-			Message: "expiresAfter must be between 3600 (1 hour) and 2592000 (30 days) seconds.",
-		}
 	}
 
 	var body bytes.Buffer
@@ -157,7 +139,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		Object    string   `json:"object"`
 		Bytes     *float64 `json:"bytes"`
 		CreatedAt *float64 `json:"created_at"`
-		Filename  string   `json:"filename"`
+		Filename  *string  `json:"filename"`
 		Purpose   string   `json:"purpose"`
 		ExpiresAt *float64 `json:"expires_at"`
 	}
@@ -185,17 +167,19 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, err
 	}
 
-	filename := out.Filename
-	if filename == "" {
-		filename = opts.Filename
+	// TS `(response.filename ?? filename) ? {filename} : {}`: a returned
+	// "" filename wins over the request's and is then left out.
+	filename := opts.Filename
+	if out.Filename != nil {
+		filename = *out.Filename
 	}
 
 	meta := map[string]interface{}{}
 	if out.Object != "" {
 		meta["object"] = out.Object
 	}
-	if out.Filename != "" {
-		meta["filename"] = out.Filename
+	if out.Filename != nil {
+		meta["filename"] = *out.Filename
 	}
 	if out.Purpose != "" {
 		meta["purpose"] = out.Purpose
@@ -355,4 +339,25 @@ func deepSeekGroupThousands(n int) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// deepSeekMinExpiresAfter and deepSeekMaxExpiresAfter are the TS
+// expiresAfter bounds (1 hour, 30 days).
+var (
+	deepSeekMinExpiresAfter = 3600
+	deepSeekMaxExpiresAfter = 2592000
+)
+
+// deepSeekOptionNumber reads a provider option given as any Go numeric kind.
+func deepSeekOptionNumber(v interface{}) (float64, bool) {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Float32, reflect.Float64:
+		return rv.Float(), true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(rv.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return float64(rv.Uint()), true
+	}
+	return 0, false
 }

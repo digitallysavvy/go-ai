@@ -14,6 +14,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -221,6 +222,9 @@ func TranscriptionStreamOpenAIOptions(providerOptions map[string]interface{}) Tr
 	if !ok {
 		return result
 	}
+	// Read Go-typed values ([]string, map[string]string, ...) like their JSON
+	// form, the form TS parses (a []string streaming.include was dropped).
+	openaiOpts = providerutils.NormalizeOptionsJSON(openaiOpts)
 	if v, ok := openaiOpts["language"].(string); ok {
 		result.Language = v
 	}

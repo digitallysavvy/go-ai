@@ -9,6 +9,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	promptutil "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // ConvertPromptToXAIInput converts a prompt to the xAI Responses API input
@@ -298,6 +299,10 @@ func convertXAIAssistantItems(msg types.Message) ([]interface{}, []types.Warning
 		if args == "" {
 			b, _ := jsonstr.Marshal(tc.Arguments)
 			args = string(b)
+		} else {
+			// TS JSON.stringify(part.input): an invalid call's raw text is
+			// sent as its JSON string literal.
+			args = promptutil.StringifyToolCallInput(args)
 		}
 		toolCall(id, tc.ID, tc.ToolName, args)
 	}

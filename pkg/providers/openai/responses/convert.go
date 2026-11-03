@@ -699,11 +699,9 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{
 		// even when chaining with previousResponseId: the matching
 		// function_call_output can only reference the call by call_id, which
 		// the API cannot reconcile with an item id or item_reference.
-		args := tc.Arguments
-		if args == nil {
-			args = map[string]interface{}{}
-		}
-		argsJSON := []byte(responsesFunctionCallArguments(args, tc.RawArguments))
+		// Arguments nil: RawArguments is the input (a {} default here made
+		// ArgumentsJSONText send "{}" instead of it).
+		argsJSON := []byte(responsesFunctionCallArguments(tc.Arguments, tc.RawArguments))
 		namespace := ""
 		var async *bool
 		if openaiMeta, ok := tc.ProviderMetadata[providerName].(map[string]interface{}); ok {
@@ -736,6 +734,13 @@ func convertAssistantToolCallContentItem(part types.ToolCallContent, opts Conver
 		return nil, nil
 	}
 	arguments, genericArguments := toolCallContentArguments(part)
+	if part.Arguments == nil {
+		// TS serializeToolCallArguments: a JSON string literal holding JSON
+		// is the TS string input, sent as the JSON it holds.
+		if text, _, ok := promptutil.JSONStringToolInput(part.Input); ok {
+			genericArguments = text
+		}
+	}
 	tc := types.ToolCall{
 		ID:               part.ToolCallID,
 		ToolName:         part.ToolName,
@@ -828,6 +833,11 @@ func toolResultCaller(part types.ToolResultContent, providerName string) *ToolCa
 // keeps the wire key order), and text that is not valid JSON is sent as its
 // JSON string literal (TS JSON.stringify of a string input).
 func responsesFunctionCallArguments(args map[string]interface{}, raw string) string {
+	// A JSON string literal holding JSON is the TS string input itself
+	// (secureJsonParse succeeds), sent as the JSON it holds.
+	if text, _, ok := promptutil.JSONStringToolInput(raw); ok {
+		return text
+	}
 	if trimmed := strings.TrimSpace(raw); trimmed != "" {
 		if !json.Valid([]byte(trimmed)) {
 			b, _ := jsonstr.Marshal(raw)
@@ -2213,6 +2223,9 @@ func computerCallFromArgs(args map[string]interface{}) (string, []map[string]int
 	if err := validateToolPayload(computerInputNode, args); err != nil {
 		return "", nil, nil, err
 	}
+	// Read Go-typed values ([]map[string]interface{} actions, ...) in the
+	// JSON form validateToolPayload checked.
+	args = providerutils.NormalizeOptionsJSON(args)
 	status, _ := args["status"].(string)
 	rawActions, _ := args["actions"].([]interface{})
 	actions := make([]map[string]interface{}, 0, len(rawActions))

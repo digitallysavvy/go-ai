@@ -1160,30 +1160,36 @@ func ValidateMessages(messages []types.Message) error {
 // converted tool calls whose source carries a thought signature.
 func applyThoughtSignatures(toolCalls []map[string]interface{}, msg types.Message, key string) {
 	sigs := map[string]string{}
-	fromOptions := func(po map[string]interface{}) string {
+	// TS `providerOptions?.[key]?.thoughtSignature ??
+	// providerOptions?.google?.thoughtSignature`, sent when truthy: a
+	// non-null value under key wins even when it is "" (then nothing is
+	// sent).
+	fromOptions := func(po map[string]interface{}) (string, bool) {
 		for _, k := range []string{key, "google"} {
 			if m, ok := po[k].(map[string]interface{}); ok {
-				if v, ok := m["thoughtSignature"]; ok && v != nil && v != "" {
-					return fmt.Sprint(v)
+				if v, ok := m["thoughtSignature"]; ok && v != nil {
+					return fmt.Sprint(v), true
 				}
 			}
 		}
-		return ""
+		return "", false
 	}
+	decided := map[string]bool{}
 	for _, part := range msg.Content {
 		if tc, ok := part.(types.ToolCallContent); ok {
-			if sig := fromOptions(tc.ProviderOptions); sig != "" {
+			if sig, ok := fromOptions(tc.ProviderOptions); ok {
 				sigs[tc.ToolCallID] = sig
+				decided[tc.ToolCallID] = true
 			}
 		}
 	}
 	for _, tc := range msg.ToolCalls {
-		if sigs[tc.ID] != "" {
+		if decided[tc.ID] {
 			continue
 		}
 		if tc.ThoughtSignature != "" {
 			sigs[tc.ID] = tc.ThoughtSignature
-		} else if sig := fromOptions(tc.ProviderMetadata); sig != "" {
+		} else if sig, ok := fromOptions(tc.ProviderMetadata); ok {
 			sigs[tc.ID] = sig
 		}
 	}
@@ -1200,4 +1206,37 @@ func applyThoughtSignatures(toolCalls []map[string]interface{}, msg types.Messag
 // JSON.stringify of the value (the block array for content outputs) otherwise.
 func ToolResultText(p types.ToolResultContent) string {
 	return openAIToolResultText(p)
+}
+
+// StringifyToolCallInput mirrors TS `JSON.stringify(part.input)` (the xAI
+// Responses, Moonshot and Alibaba converters) for a Go tool call input given
+// as its JSON text raw (ToolCallContent.Input, ToolCall.RawArguments): valid
+// JSON is the TS parsed input and is sent as is; text that is not JSON (an
+// invalid tool call, whose TS input is the raw string) is sent as its JSON
+// string literal. raw must not be empty; callers serialize Arguments then.
+func StringifyToolCallInput(raw string) string {
+	if json.Valid([]byte(raw)) {
+		return raw
+	}
+	b, err := jsonstr.Marshal(raw)
+	if err != nil {
+		return raw
+	}
+	return string(b)
+}
+
+// StringToolCallInput mirrors TS `typeof part.input === 'string' ? part.input
+// : JSON.stringify(part.input)` (the Open Responses converter) for a Go tool
+// call input given as its JSON text raw: a JSON string literal is the TS
+// string input and is sent as the text it holds, text that is not JSON (an
+// invalid tool call's raw string) as is, and other JSON compacted.
+func StringToolCallInput(raw string) string {
+	var s string
+	if strings.HasPrefix(strings.TrimSpace(raw), `"`) && json.Unmarshal([]byte(raw), &s) == nil {
+		return s
+	}
+	if !json.Valid([]byte(raw)) {
+		return raw
+	}
+	return providerutils.CompactJSON(json.RawMessage(raw))
 }
