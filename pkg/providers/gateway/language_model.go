@@ -1159,6 +1159,10 @@ func (m *LanguageModel) handleErrorWithContext(ctx context.Context, err error) e
 	if err == nil {
 		return nil
 	}
+	// Caller cancellation is not a gateway failure (TS 9ca8bcf731).
+	if isGatewayCallerCancellation(ctx, err) {
+		return err
+	}
 
 	// Check if it's a timeout error and convert to GatewayTimeoutError
 	if gatewayerrors.IsTimeoutError(err) {

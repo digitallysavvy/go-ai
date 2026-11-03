@@ -393,9 +393,10 @@ func TestVideoModel_DoGenerate_Timeout(t *testing.T) {
 		t.Fatal("Expected timeout error, got nil")
 	}
 
-	// Verify it's a gateway timeout error
-	if !gatewayerrors.IsGatewayTimeoutError(err) {
-		t.Errorf("Expected GatewayTimeoutError, got %T: %v", err, err)
+	// The caller's own deadline is returned unchanged (TS 9ca8bcf731
+	// rethrows the caller's TimeoutError; round 85 ruling 4).
+	if gatewayerrors.IsGatewayTimeoutError(err) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Expected the ctx deadline error, got %T: %v", err, err)
 	}
 }
 

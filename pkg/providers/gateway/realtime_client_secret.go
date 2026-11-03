@@ -65,12 +65,18 @@ func (p *Provider) MintRealtimeClientSecret(ctx context.Context, params MintReal
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		if isGatewayCallerCancellation(ctx, err) {
+			return nil, err
+		}
 		return nil, p.gatewayUnknownError(err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		if isGatewayCallerCancellation(ctx, err) {
+			return nil, err
+		}
 		return nil, p.gatewayUnknownError(err)
 	}
 	response := &internalhttp.Response{

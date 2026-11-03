@@ -691,6 +691,10 @@ func (p *Provider) handleErrorWithContext(ctx context.Context, err error) error 
 	if err == nil {
 		return nil
 	}
+	// Caller cancellation is not a gateway failure (TS 9ca8bcf731).
+	if isGatewayCallerCancellation(ctx, err) {
+		return err
+	}
 	if gatewayerrors.IsTimeoutError(err) {
 		return gatewayerrors.ConvertToGatewayTimeoutError(err, "gateway")
 	}
@@ -839,6 +843,19 @@ func (p *Provider) gatewayInvalidJSONError(ctx context.Context, err error) (erro
 		_, authMethod, _ = p.authResolver(ctx)
 	}
 	return gatewayerrors.CreateGatewayErrorFromResponse([]byte(pe.ResponseBody), pe.StatusCode, "Gateway request failed", pe, authMethod), true
+}
+
+// isGatewayCallerCancellation mirrors TS asGatewayError's first check (TS
+// 9ca8bcf731): an AbortError or TimeoutError of the caller is rethrown
+// unchanged instead of becoming a retryable 500. In Go that is a
+// context.Canceled, or the error of the caller's ctx once it is done (its
+// deadline included); a transport timeout while ctx is still live stays a
+// GatewayTimeoutError.
+func isGatewayCallerCancellation(ctx context.Context, err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	return ctx != nil && ctx.Err() != nil && errors.Is(err, ctx.Err())
 }
 
 func (p *Provider) gatewayUnknownError(err error) error {
