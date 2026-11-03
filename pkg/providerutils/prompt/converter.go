@@ -1201,3 +1201,36 @@ func applyThoughtSignatures(toolCalls []map[string]interface{}, msg types.Messag
 func ToolResultText(p types.ToolResultContent) string {
 	return openAIToolResultText(p)
 }
+
+// StringifyToolCallInput mirrors TS `JSON.stringify(part.input)` (the xAI
+// Responses, Moonshot and Alibaba converters) for a Go tool call input given
+// as its JSON text raw (ToolCallContent.Input, ToolCall.RawArguments): valid
+// JSON is the TS parsed input and is sent as is; text that is not JSON (an
+// invalid tool call, whose TS input is the raw string) is sent as its JSON
+// string literal. raw must not be empty; callers serialize Arguments then.
+func StringifyToolCallInput(raw string) string {
+	if json.Valid([]byte(raw)) {
+		return raw
+	}
+	b, err := jsonstr.Marshal(raw)
+	if err != nil {
+		return raw
+	}
+	return string(b)
+}
+
+// StringToolCallInput mirrors TS `typeof part.input === 'string' ? part.input
+// : JSON.stringify(part.input)` (the Open Responses converter) for a Go tool
+// call input given as its JSON text raw: a JSON string literal is the TS
+// string input and is sent as the text it holds, text that is not JSON (an
+// invalid tool call's raw string) as is, and other JSON compacted.
+func StringToolCallInput(raw string) string {
+	var s string
+	if strings.HasPrefix(strings.TrimSpace(raw), `"`) && json.Unmarshal([]byte(raw), &s) == nil {
+		return s
+	}
+	if !json.Valid([]byte(raw)) {
+		return raw
+	}
+	return providerutils.CompactJSON(json.RawMessage(raw))
+}

@@ -78,3 +78,58 @@ func TestR86provbComputerCallGoTypedActions(t *testing.T) {
 		t.Fatalf("computer_call = %s", got)
 	}
 }
+
+// r86provbArgCases: raw Go tool input text -> TS 30548ee7f9 arguments
+// computed under Node (see prompt.r86provbToolInputCases): serialize is
+// convert-to-openai-responses-input.ts serializeToolCallArguments, stringify
+// is convert-to-xai-responses-input.ts JSON.stringify(part.input).
+var r86provbArgCases = []struct{ raw, serialize, stringify string }{
+	{`{"a":1}`, `{"a":1}`, `{"a":1}`},
+	{`[1,2]`, `[1,2]`, `[1,2]`},
+	{`"{\"a\":1}"`, `{"a":1}`, `"{\"a\":1}"`},
+	{`"[1]"`, `[1]`, `"[1]"`},
+	{`"abc"`, `"abc"`, `"abc"`},
+	{`abc`, `"abc"`, `"abc"`},
+	{`{"a":`, `"{\"a\":"`, `"{\"a\":"`},
+	{`123`, `123`, `123`},
+	{`"\"x\""`, `"x"`, `"\"x\""`},
+}
+
+func r86provbItemArguments(t *testing.T, items []interface{}) string {
+	t.Helper()
+	b, _ := json.Marshal(items)
+	var decoded []map[string]interface{}
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range decoded {
+		if args, ok := item["arguments"].(string); ok {
+			return args
+		}
+	}
+	t.Fatalf("no function_call in %s", b)
+	return ""
+}
+
+func TestR86provbReplayedToolCallArgumentsMatchNode(t *testing.T) {
+	for _, tc := range r86provbArgCases {
+		legacy := types.Prompt{Messages: []types.Message{{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{{ID: "c1", ToolName: "f", RawArguments: tc.raw}}}}}
+		parts := types.Prompt{Messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{types.ToolCallContent{ToolCallID: "c1", ToolName: "f", Input: tc.raw}}}}}
+		for name, p := range map[string]types.Prompt{"ToolCalls": legacy, "content": parts} {
+			items, _, err := ConvertPromptToInputWithOptions(p, "system", ConvertOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := r86provbItemArguments(t, items); got != tc.serialize {
+				t.Errorf("openai %s %s: arguments = %s, want %s", name, tc.raw, got, tc.serialize)
+			}
+			items, _, err = ConvertPromptToXAIInput(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := r86provbItemArguments(t, items); got != tc.stringify {
+				t.Errorf("xai %s %s: arguments = %s, want %s", name, tc.raw, got, tc.stringify)
+			}
+		}
+	}
+}

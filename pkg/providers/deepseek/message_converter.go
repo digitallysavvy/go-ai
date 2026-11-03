@@ -2,7 +2,6 @@ package deepseek
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -478,13 +477,12 @@ func deepseekToolCallsWire(calls []types.ToolCall) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(calls))
 	for _, tc := range calls {
 		arguments := tc.RawArguments
-		// TS 4ae6986cd8 serializeDeepSeekToolCallArguments: input text that
-		// is valid JSON is sent as is; other text as its JSON string literal
-		// (JSON.stringify of a string input).
-		if arguments != "" && !json.Valid([]byte(arguments)) {
-			if b, err := jsonstr.Marshal(arguments); err == nil {
-				arguments = string(b)
-			}
+		// TS 4ae6986cd8 serializeDeepSeekToolCallArguments: a JSON string
+		// literal holding JSON is the TS string input and is sent as the
+		// JSON it holds; other valid JSON as is; other text as its JSON
+		// string literal (JSON.stringify of a string input).
+		if arguments != "" {
+			arguments = prompt.SerializeToolCallArguments(arguments)
 		}
 		if arguments == "" {
 			args := tc.Arguments
