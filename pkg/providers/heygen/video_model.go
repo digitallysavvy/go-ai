@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"math"
 	"net/http"
 	"strings"
@@ -336,6 +337,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	if resp.StatusCode >= 400 {
 		return nil, newHeyGenAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text() before JSON.parse
 	if err := providerutils.MediaResponseValidator("heygen", providerutils.SchemaHeyGenVideoCreate)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
 		return nil, err
 	}
@@ -418,6 +420,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	if resp.StatusCode >= 400 {
 		return nil, newHeyGenAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text() before JSON.parse
 	if err := providerutils.MediaResponseValidator("heygen", providerutils.SchemaHeyGenVideoStatus)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
 		return nil, err
 	}

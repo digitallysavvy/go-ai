@@ -322,3 +322,12 @@ func TestR85provaBedrockStringToolInput(t *testing.T) {
 		t.Errorf("hint = %q", got)
 	}
 }
+
+// CR r85 provb -> prova item 1: JSON bodies are decoded like TS
+// response.text() (BOM dropped, invalid UTF-8 replaced).
+func TestR85provaBedrockJSONBodyDecoded(t *testing.T) {
+	got, err := readJSONResponseBody(strings.NewReader("\uFEFF{\"a\":\"\xff\"}"))
+	if err != nil || string(got) != "{\"a\":\"�\"}" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+}

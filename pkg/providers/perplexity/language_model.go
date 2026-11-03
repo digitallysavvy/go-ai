@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 	"math"
 	"net/http"
@@ -233,6 +234,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 
 	responseHeaders := providerutils.ExtractHeaders(resp.Headers)
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text() before JSON.parse
 
 	if err := validatePerplexityAgentResponse(resp.Body); err != nil {
 		return nil, &providererrors.ProviderError{

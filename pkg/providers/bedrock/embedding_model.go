@@ -240,7 +240,7 @@ func (m *EmbeddingModel) embedValues(ctx context.Context, values []string, opts 
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	respBody, err := readResponseBody(resp.Body)
+	respBody, err := readJSONResponseBody(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
