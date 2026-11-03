@@ -56,6 +56,7 @@ func TestR74prova_TSCasesLanguageWithTSToolNames(t *testing.T) {
 		"should stream code execution tool results without beta header":                              longSnapshot,
 		"should include file id list in code execution tool call result.":                            longSnapshot,
 		"should throw an api error when the first stream chunk is an overloaded error":               "the TS test expects DoStream to fail; covered by TestStreamOverloadedFirstEvent",
+		"should expose the raw response headers":                                                     "the TS response carries content-length, which tsfixture keeps only when a snapshot (not a plain assertion) names it; CR r85 prova to provb",
 	})
 }
 

@@ -87,12 +87,13 @@ func TestAnthropicReasoningAllLevels(t *testing.T) {
 		wantType   string
 		wantEffort string
 	}{
-		// claude-sonnet-4-6 supports adaptive thinking; xhigh maps to max.
+		// claude-sonnet-4-6 supports adaptive thinking; xhigh rounds down to
+		// high (TS 61a315e333).
 		{types.ReasoningMinimal, "adaptive", "low"},
 		{types.ReasoningLow, "adaptive", "low"},
 		{types.ReasoningMedium, "adaptive", "medium"},
 		{types.ReasoningHigh, "adaptive", "high"},
-		{types.ReasoningXHigh, "adaptive", "max"},
+		{types.ReasoningXHigh, "adaptive", "high"},
 		{types.ReasoningMax, "adaptive", "max"},
 		{types.ReasoningNone, "disabled", ""},
 	}

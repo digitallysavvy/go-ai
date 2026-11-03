@@ -649,7 +649,8 @@ func TestTopLevelReasoningXHighUsesAdaptiveEffortForOpus47(t *testing.T) {
 	}
 }
 
-func TestTopLevelReasoningXHighMapsToMaxForOpus46(t *testing.T) {
+// TS 61a315e333: an unsupported xhigh rounds down to high (it was max).
+func TestTopLevelReasoningXHighMapsToHighForOpus46(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
 	model := NewLanguageModel(prov, ClaudeOpus4_6, nil)
 	reasoning := types.ReasoningXHigh
@@ -663,8 +664,8 @@ func TestTopLevelReasoningXHighMapsToMaxForOpus46(t *testing.T) {
 	if !ok {
 		t.Fatalf("output_config = %#v, want map", body["output_config"])
 	}
-	if oc["effort"] != "max" {
-		t.Fatalf("output_config.effort = %v, want max", oc["effort"])
+	if oc["effort"] != "high" {
+		t.Fatalf("output_config.effort = %v, want high", oc["effort"])
 	}
 }
 
