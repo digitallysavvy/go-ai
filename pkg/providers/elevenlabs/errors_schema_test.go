@@ -8,16 +8,17 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
-// TS elevenlabsErrorDataSchema: only {"error":{"message","code"}} bodies give
-// their message; ElevenLabs' common {"detail":...} body gives the status text.
+// TS elevenlabsErrorDataSchema: since TS 7062ab6818 the {"detail":...} shapes
+// give their message too; a body outside the schema gives the status text.
 func TestHandleTranscriptionErrorFollowsTSErrorSchema(t *testing.T) {
 	for _, c := range []struct {
 		name, body, want string
 		status           int
 	}{
 		{"schema", `{"error":{"message":"bad","code":1}}`, "bad", 400},
-		{"detail string is off schema", `{"detail":"nope"}`, "Unprocessable Entity", 422},
-		{"detail object is off schema", `{"detail":{"status":"x","message":"y"}}`, "Unprocessable Entity", 422},
+		{"detail string", `{"detail":"nope"}`, "nope", 422},
+		{"detail object", `{"detail":{"status":"x","message":"y"}}`, "y", 422},
+		{"detail object off schema", `{"detail":{"status":"x"}}`, "Unprocessable Entity", 422},
 		{"plain text", `oops`, "Bad Gateway", 502},
 	} {
 		err := handleTranscriptionError(&internalhttp.HTTPStatusError{StatusCode: c.status, Body: []byte(c.body)})

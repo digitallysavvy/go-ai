@@ -110,15 +110,23 @@ type PerplexityToolCallUsage struct {
 // this SDK version, matching TS which always sets `images: null`), and a new
 // ToolCalls field surfaces per-tool invocation counts from usage.tool_calls_details.
 type PerplexityMetadata struct {
-	Usage     PerplexityUsageMeta                `json:"usage"`
-	Images    interface{}                        `json:"images"`
-	Cost      *PerplexityCost                    `json:"cost"`
-	ToolCalls map[string]PerplexityToolCallUsage `json:"toolCalls"`
+	Usage  PerplexityUsageMeta `json:"usage"`
+	Images interface{}         `json:"images"`
+	// SearchQueries lists the web search queries Perplexity ran, in run order
+	// and without duplicates; nil (JSON null) when there were none (TS
+	// c6bbe485d7 searchQueries).
+	SearchQueries []string                           `json:"searchQueries"`
+	Cost          *PerplexityCost                    `json:"cost"`
+	ToolCalls     map[string]PerplexityToolCallUsage `json:"toolCalls"`
 }
 
-// getPerplexityProviderMetadata mirrors TS getProviderMetadata(usage).
-func getPerplexityProviderMetadata(usage *perplexityUsage) map[string]interface{} {
+// getPerplexityProviderMetadata mirrors TS getProviderMetadata(usage,
+// searchQueries).
+func getPerplexityProviderMetadata(usage *perplexityUsage, searchQueries []string) map[string]interface{} {
 	meta := PerplexityMetadata{Images: nil}
+	if len(searchQueries) > 0 {
+		meta.SearchQueries = searchQueries
+	}
 
 	if usage != nil && usage.ToolCallsDetails != nil {
 		var total int64
@@ -167,4 +175,23 @@ func toInt64Ptr(n *pplxNumber) *int64 {
 	}
 	v := int64(*n)
 	return &v
+}
+
+// collectPerplexitySearchQueries mirrors TS collectSearchQueries: it appends
+// the queries not yet in target, in order. The same queries can arrive in
+// reasoning events, output items and the completed response.
+func collectPerplexitySearchQueries(target []string, queries []string) []string {
+	for _, q := range queries {
+		seen := false
+		for _, t := range target {
+			if t == q {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			target = append(target, q)
+		}
+	}
+	return target
 }

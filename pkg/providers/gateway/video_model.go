@@ -431,10 +431,7 @@ func (m *VideoModel) readSSEVideoResponse(ctx context.Context, body io.Reader) (
 // errorType and anything malformed becomes a GatewayResponseError with the
 // HTTP status of the stream.
 func (m *VideoModel) sseAPICallError(ctx context.Context, statusCode int, message string, body []byte, cause error, errorType ...string) error {
-	authMethod := ""
-	if m.provider.authResolver != nil {
-		_, authMethod, _ = m.provider.authResolver(ctx)
-	}
+	authMethod := m.provider.requestAuthMethod(ctx)
 	apiErr := &providererrors.ProviderError{Provider: "gateway", StatusCode: statusCode, Message: message}
 	if len(errorType) > 0 {
 		apiErr.ErrorCode = errorType[0]
@@ -552,6 +549,10 @@ func (m *VideoModel) getModelConfigHeaders() map[string]string {
 func (m *VideoModel) handleErrorWithContext(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
+	}
+	// Caller cancellation is not a gateway failure (TS 9ca8bcf731).
+	if isGatewayCallerCancellation(ctx, err) {
+		return err
 	}
 
 	// Check if it's a timeout error and convert to GatewayTimeoutError

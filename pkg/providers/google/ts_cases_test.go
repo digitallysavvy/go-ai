@@ -112,8 +112,8 @@ func TestTSCasesConvertMessages(t *testing.T) {
 		}
 		return res, map[string]interface{}{"warnings": out.Warnings}, nil
 	}, map[string]string{
-		"throws for top-level-only image with URL source (no bytes to detect)": "Go completes a top-level media type on a URL from its extension; the image model sends reference URLs as image/*",
-		"should serialize JSON Schema references in function response content": "tool result JSON arrives as a Go map, which has no key order",
+		"should serialize JSON Schema references in function response content":     "tool result JSON arrives as a Go map, which has no key order",
+		"should handle circular references in tool-result without recursion error": "a JS object cycle has no Go counterpart (encoding/json rejects pointer cycles); the case file cannot carry the cycle",
 	})
 }
 

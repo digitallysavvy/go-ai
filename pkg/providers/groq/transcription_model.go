@@ -10,6 +10,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -142,6 +143,8 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		}, nil
 	}
 
+	// TS createJsonResponseHandler reads response.text() before JSON.parse.
+	resp.Body = []byte(textdecode.UTF8(resp.Body))
 	if err := providerutils.MediaResponseValidator("groq", providerutils.SchemaGroqTranscr)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
 		return nil, err
 	}

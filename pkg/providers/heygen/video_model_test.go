@@ -353,8 +353,9 @@ func TestDoStart_RejectsInvalidInputsBeforeSubmitting(t *testing.T) {
 	}{
 		{"empty prompt", func(o *provider.VideoModelV3CallOptions) { o.Prompt = "" }},
 		{"long prompt", func(o *provider.VideoModelV3CallOptions) { o.Prompt = strings.Repeat("x", 32001) }},
-		{"short duration", func(o *provider.VideoModelV3CallOptions) { o.Duration = dur(4) }},
-		{"long duration", func(o *provider.VideoModelV3CallOptions) { o.Duration = dur(16) }},
+		// TS 6f41ccc1f8: any positive integer; HeyGen enforces its limits.
+		{"zero duration", func(o *provider.VideoModelV3CallOptions) { o.Duration = dur(0) }},
+		{"negative duration", func(o *provider.VideoModelV3CallOptions) { o.Duration = dur(-5) }},
 		{"fractional duration", func(o *provider.VideoModelV3CallOptions) { o.Duration = dur(5.5) }},
 		{"negative seed", func(o *provider.VideoModelV3CallOptions) { o.Seed = seed(-1) }},
 		{"large seed", func(o *provider.VideoModelV3CallOptions) { o.Seed = seed(aboveUint32Seed()) }},

@@ -120,7 +120,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	respBody, err := readResponseBody(resp.Body)
+	respBody, err := readJSONResponseBody(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 	"net/http"
 	"net/url"
@@ -109,7 +110,7 @@ func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 		Name       string `json:"name"`
 		ExpireTime string `json:"expireTime"`
 	}
-	if err := json.Unmarshal(respBody, &data); err != nil {
+	if err := json.Unmarshal([]byte(textdecode.UTF8(respBody)), &data); err != nil {
 		return provider.ClientSecretResult{}, err
 	}
 	var expiresAt *int64

@@ -2,7 +2,6 @@ package anthropic
 
 import (
 	"fmt"
-	"math"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -195,8 +194,17 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 	if o.StructuredOutputMode != "" {
 		mode = o.StructuredOutputMode
 	}
-	useStructuredOutput := mode == StructuredOutputFormat || (mode == StructuredOutputAuto && supportsStructuredOutput)
-	if !useStructuredOutput && caps.RejectsForcedToolUse && supportsStructuredOutput && jsonSchemaFormat {
+	// TS 2cd0a97424 / b0d51fecc0: auto mode uses native structured outputs
+	// only for a schema they can represent (no cycles, no open objects, at
+	// most 10 optional properties).
+	supportsResponseSchema := !jsonSchemaFormat || SupportsNativeStructuredOutputSchema(opts.ResponseFormat.Schema)
+	useStructuredOutput := mode == StructuredOutputFormat || (mode == StructuredOutputAuto && supportsStructuredOutput && supportsResponseSchema)
+	// The JSON response tool relies on forced tool use, which some models
+	// reject (e.g. Opus 5.5, Fable 5.1). Fall back to native structured
+	// outputs even when the provider disables them by default (Bedrock,
+	// Vertex), unless they would reject the schema or lose data from it
+	// (TS f4c5f1e959, b0d51fecc0).
+	if !useStructuredOutput && caps.RejectsForcedToolUse && caps.SupportsStructuredOutput && jsonSchemaFormat && supportsResponseSchema {
 		warnUnsupported(&warnings, "providerOptions.anthropic.structuredOutputMode", fmt.Sprintf(
 			"structuredOutputMode 'jsonTool' is not supported by %s because it rejects forced tool use. Using 'outputFormat' instead.", m.modelID))
 		useStructuredOutput = true
@@ -243,7 +251,7 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 	}
 	effort := string(o.Effort)
 
-	if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault && effort == "" {
+	if providerutils.IsCustomReasoning(opts.Reasoning) && effort == "" {
 		rTh, rEffort := resolveReasoningConfig(*opts.Reasoning, m.modelID, caps, &warnings)
 		if rTh != nil && !th.set {
 			th = *rTh
@@ -527,7 +535,16 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 
 	var prepared preparedTools
 	if usesJSONResponseTool {
-		tools := append(append([]types.Tool{}, opts.Tools...), types.Tool{
+		// TS 2cd0a97424: toolChoice none drops the user tools and a named
+		// toolChoice keeps only that tool next to the JSON response tool.
+		var tools []types.Tool
+		for _, t := range opts.Tools {
+			if opts.ToolChoice.Type == types.ToolChoiceNone || (opts.ToolChoice.Type == types.ToolChoiceTool && t.Name != opts.ToolChoice.ToolName) {
+				continue
+			}
+			tools = append(tools, t)
+		}
+		tools = append(tools, types.Tool{
 			Name:        "json",
 			Description: "Respond with a JSON object.",
 			Parameters:  providerutils.ResponseFormatJSONSchemaOrdered(opts.ResponseFormat.Schema),
@@ -599,6 +616,11 @@ func resolveReasoningConfig(level types.ReasoningLevel, modelID string, caps Mod
 		// support it: no upfront thinking, only short progress notes
 		// between tool calls (claude-sonnet-5-5+).
 		if caps.SupportsBetweenToolsThinking {
+			*warnings = append(*warnings, types.Warning{
+				Type:    "compatibility",
+				Feature: "reasoning",
+				Details: fmt.Sprintf("reasoning 'none' is not supported by %s; thinking cannot be disabled. Using 'between_tools' thinking, the lowest thinking setting, instead.", modelID),
+			})
 			return &effectiveThinking{typ: ThinkingTypeBetweenTools, set: true}, ""
 		}
 		if caps.RejectsThinkingDisabled {
@@ -612,44 +634,24 @@ func resolveReasoningConfig(level types.ReasoningLevel, modelID string, caps Mod
 		return &effectiveThinking{typ: ThinkingTypeDisabled, set: true}, ""
 	}
 	if caps.SupportsAdaptiveThinking {
+		// TS 61a315e333: only the supported efforts; the shared helper rounds
+		// an unsupported level down (minimal → low, xhigh → high).
 		effortMap := map[types.ReasoningLevel]string{
-			types.ReasoningMinimal: "low",
-			types.ReasoningLow:     "low",
-			types.ReasoningMedium:  "medium",
-			types.ReasoningHigh:    "high",
-			types.ReasoningXHigh:   "max",
-			types.ReasoningMax:     "max",
+			types.ReasoningLow:    "low",
+			types.ReasoningMedium: "medium",
+			types.ReasoningHigh:   "high",
+			types.ReasoningMax:    "max",
 		}
 		if caps.SupportsXHighEffort {
 			effortMap[types.ReasoningXHigh] = "xhigh"
 		}
-		effort, ok := effortMap[level]
-		if !ok {
-			*warnings = append(*warnings, types.Warning{Type: "unsupported", Feature: "reasoning", Details: fmt.Sprintf("reasoning %q is not supported by this model.", level)})
-		} else if effort != string(level) {
-			*warnings = append(*warnings, types.Warning{Type: "compatibility", Feature: "reasoning", Details: fmt.Sprintf("reasoning %q is not directly supported by this model. mapped to effort %q.", level, effort)})
-		}
+		effort, _ := providerutils.MapReasoningToProviderEffort(&level, effortMap, nil, warnings)
 		return &effectiveThinking{typ: ThinkingTypeAdaptive, display: ThinkingDisplaySummarized, set: true}, effort
 	}
-	pct, ok := map[types.ReasoningLevel]float64{
-		types.ReasoningMinimal: 0.02,
-		types.ReasoningLow:     0.10,
-		types.ReasoningMedium:  0.30,
-		types.ReasoningHigh:    0.60,
-		types.ReasoningXHigh:   0.90,
-		types.ReasoningMax:     0.95,
-	}[level]
-	if !ok {
-		*warnings = append(*warnings, types.Warning{Type: "unsupported", Feature: "reasoning", Details: fmt.Sprintf("reasoning %q is not supported by this model.", level)})
-		return nil, ""
-	}
-	budget := int(math.Round(float64(caps.MaxOutputTokens) * pct))
-	if budget < 1024 {
-		budget = 1024
-	}
-	if budget > caps.MaxOutputTokens {
-		budget = caps.MaxOutputTokens
-	}
+	budget := providerutils.MapReasoningToProviderBudget(level, providerutils.ReasoningBudgetOptions{
+		MaxOutputTokens:    caps.MaxOutputTokens,
+		MaxReasoningBudget: caps.MaxOutputTokens,
+	}, warnings)
 	return &effectiveThinking{typ: ThinkingTypeEnabled, budgetTokens: &budget, set: true}, ""
 }
 

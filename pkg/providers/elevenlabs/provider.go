@@ -1,6 +1,7 @@
 package elevenlabs
 
 import (
+	"context"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
@@ -21,6 +22,12 @@ type Config struct {
 	// APIKey is the ElevenLabs API key. Falls back to ELEVENLABS_API_KEY.
 	APIKey string
 
+	// APIKeyFunc resolves the API key before each request (TS apiKey given as
+	// a function, 7716e189ee), for keys that are looked up, refreshed or
+	// rotated. It cannot be combined with APIKey; the environment variable is
+	// not read, and its result is sent as is.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+
 	// BaseURL is the base URL for the ElevenLabs API (optional)
 	BaseURL string
 
@@ -38,7 +45,7 @@ func New(cfg Config) *Provider {
 	// Keep the resolved URL: the WebSocket models derive their endpoints from
 	// config.BaseURL, which would otherwise stay empty with the default API.
 	cfg.BaseURL = baseURL
-	if cfg.APIKey == "" {
+	if cfg.APIKey == "" && cfg.APIKeyFunc == nil {
 		cfg.APIKey = os.Getenv("ELEVENLABS_API_KEY")
 	}
 
@@ -50,6 +57,12 @@ func New(cfg Config) *Provider {
 		}, cfg.Headers), version.ProviderUserAgent("elevenlabs")),
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
 		HeadersFunc: func() (map[string]string, error) {
+			if cfg.APIKeyFunc != nil {
+				// HeadersFunc has no request ctx (reports/cr-r85-prova-to-carry.md).
+				return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "ELEVENLABS_API_KEY", Description: "ElevenLabs",
+				}, "xi-api-key", "")
+			}
 			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "ELEVENLABS_API_KEY", "ElevenLabs", "xi-api-key", "")
 		},
 	})

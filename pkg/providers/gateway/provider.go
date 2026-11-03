@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"net/url"
 	"os"
@@ -138,6 +139,14 @@ type Config struct {
 	// APIKey is the AI Gateway API key
 	// or Vercel access token. Can also be set via AI_GATEWAY_API_KEY.
 	APIKey string
+
+	// APIKeyFunc resolves the API key or Vercel access token before each
+	// request (TS apiKey given as a function, 7716e189ee). It must return a
+	// non-empty key: an empty one (or an error) fails the request with a
+	// GatewayAuthenticationError whose cause is a LoadAPIKeyError "AI Gateway
+	// API key must be a non-empty string." (or the error). It wins over
+	// AI_GATEWAY_API_KEY and OIDC and cannot be combined with APIKey.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 
 	// TeamIDOrSlug scopes Vercel access-token requests to a team.
 	TeamIDOrSlug string
@@ -457,6 +466,17 @@ func CreateGatewayProvider(cfg Config, opts ...func(*Config)) (*Provider, error)
 }
 
 func resolveGatewayAuthToken(ctx context.Context, cfg Config) (token string, authMethod string, err error) {
+	if cfg.APIKeyFunc != nil {
+		key, err := providerutils.ResolveAPIKey(ctx, providerutils.ResolveAPIKeyOptions{
+			APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, Description: "AI Gateway", RequireNonEmpty: true,
+		})
+		if err != nil {
+			// TS getHeaders wraps every credential failure in the contextual
+			// authentication error.
+			return "", "", gatewayerrors.CreateContextualAuthenticationError(false, false, http.StatusUnauthorized, err, "")
+		}
+		return key, "api-key", nil
+	}
 	apiKey := cfg.APIKey
 	if apiKey == "" {
 		apiKey = os.Getenv("AI_GATEWAY_API_KEY")
@@ -596,6 +616,7 @@ func (p *Provider) fetchMetadata(ctx context.Context) (*MetadataResponse, error)
 	if resp.StatusCode >= http.StatusBadRequest {
 		return nil, p.gatewayAPIErrorWithContext(ctx, resp)
 	}
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text() before JSON.parse
 	var wire metadataResponseWire
 	if err := json.Unmarshal(resp.Body, &wire); err != nil {
 		return nil, p.handleErrorWithContext(ctx, err)
@@ -691,6 +712,10 @@ func (p *Provider) handleErrorWithContext(ctx context.Context, err error) error 
 	if err == nil {
 		return nil
 	}
+	// Caller cancellation is not a gateway failure (TS 9ca8bcf731).
+	if isGatewayCallerCancellation(ctx, err) {
+		return err
+	}
 	if gatewayerrors.IsTimeoutError(err) {
 		return gatewayerrors.ConvertToGatewayTimeoutError(err, "gateway")
 	}
@@ -727,7 +752,7 @@ func (p *Provider) doOriginRequest(ctx context.Context, path string) ([]byte, er
 	if resp.StatusCode >= http.StatusBadRequest {
 		return nil, p.gatewayAPIErrorWithContext(ctx, resp)
 	}
-	return resp.Body, nil
+	return []byte(textdecode.UTF8(resp.Body)), nil // TS response.text() before JSON.parse
 }
 
 func (p *Provider) gatewayAPIErrorWithAuthMethod(resp *internalhttp.Response, authMethod string) error {
@@ -802,13 +827,7 @@ func (p *Provider) gatewayAPIErrorWithContext(ctx context.Context, resp *interna
 	if resp == nil {
 		return gatewayerrors.NewGatewayResponseError("Gateway request failed", 0, nil, nil, nil, "")
 	}
-	authMethod := ""
-	if p.authResolver != nil {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		_, authMethod, _ = p.authResolver(ctx)
-	}
+	authMethod := p.requestAuthMethod(ctx)
 	cause := &providererrors.ProviderError{
 		Provider:        "gateway",
 		StatusCode:      resp.StatusCode,
@@ -831,14 +850,21 @@ func (p *Provider) gatewayInvalidJSONError(ctx context.Context, err error) (erro
 	if !errors.As(err, &pe) || pe.Message != providererrors.InvalidJSONResponseMessage {
 		return nil, false
 	}
-	authMethod := ""
-	if p.authResolver != nil {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		_, authMethod, _ = p.authResolver(ctx)
-	}
+	authMethod := p.requestAuthMethod(ctx)
 	return gatewayerrors.CreateGatewayErrorFromResponse([]byte(pe.ResponseBody), pe.StatusCode, "Gateway request failed", pe, authMethod), true
+}
+
+// isGatewayCallerCancellation mirrors TS asGatewayError's first check (TS
+// 9ca8bcf731): an AbortError or TimeoutError of the caller is rethrown
+// unchanged instead of becoming a retryable 500. In Go that is a
+// context.Canceled, or the error of the caller's ctx once it is done (its
+// deadline included); a transport timeout while ctx is still live stays a
+// GatewayTimeoutError.
+func isGatewayCallerCancellation(ctx context.Context, err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	return ctx != nil && ctx.Err() != nil && errors.Is(err, ctx.Err())
 }
 
 func (p *Provider) gatewayUnknownError(err error) error {
@@ -927,6 +953,18 @@ func (t *Tools) BrowserbaseSearch(config tools.BrowserbaseSearchConfig) tools.Br
 // configuration.
 func (t *Tools) BrowserbaseFetch(config tools.BrowserbaseFetchConfig) tools.BrowserbaseFetchTool {
 	return tools.NewBrowserbaseFetch(config)
+}
+
+// DeepSeekSearch creates a DeepSeek search tool with the given configuration
+// (TS gatewayTools.deepseekSearch, 2099d455e4).
+func (t *Tools) DeepSeekSearch(config tools.DeepSeekSearchConfig) tools.DeepSeekSearchTool {
+	return tools.NewDeepSeekSearch(config)
+}
+
+// DeepSeekFetch creates a DeepSeek fetch tool with the given configuration
+// (TS gatewayTools.deepseekFetch, 2099d455e4).
+func (t *Tools) DeepSeekFetch(config tools.DeepSeekFetchConfig) tools.DeepSeekFetchTool {
+	return tools.NewDeepSeekFetch(config)
 }
 
 // NewTools creates a new Tools instance for accessing gateway-specific tools
@@ -1039,4 +1077,21 @@ func validateMetadataResponse(body []byte) error {
 		}
 	}
 	return nil
+}
+
+// requestAuthMethod is the auth method of the headers a failed request was
+// sent with (TS parseAuthMethod(resolvedHeaders)). A key func is not called
+// again: its requests always use "api-key".
+func (p *Provider) requestAuthMethod(ctx context.Context) string {
+	if p.config.APIKeyFunc != nil {
+		return "api-key"
+	}
+	if p.authResolver == nil {
+		return ""
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_, authMethod, _ := p.authResolver(ctx)
+	return authMethod
 }

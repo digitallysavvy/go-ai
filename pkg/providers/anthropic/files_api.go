@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"mime/multipart"
 	"net/textproto"
 	"strings"
@@ -62,6 +63,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	}
 
 	// TS createJsonResponseHandler(anthropicUploadFileResponseSchema).
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text() before JSON.parse
 	if err := anthropicSchemaValidator(f.provider.Name(), zFileUpload)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
 		return nil, err
 	}

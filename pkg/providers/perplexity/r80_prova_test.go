@@ -12,14 +12,14 @@ import (
 )
 
 // TestR80provaTSCasesLanguage replays perplexity-language-model.test.ts
-// extracted at e64ed82f27 with --asserts. The extractor cannot evaluate the
+// extracted at 30548ee7f9 (round 85) with --asserts. The extractor cannot evaluate the
 // test's prepareJsonResponse / prepareStream helpers, so each case's response
 // was captured by running the TS test file with a stub model that records
 // the response the test prepared before its call (review round 80).
 func TestR80provaTSCasesLanguage(t *testing.T) {
 	cases := tsfixture.LoadCases(t, "testdata/tscases/language_asserts.json.gz")
-	if len(cases) != 25 {
-		t.Fatalf("want 25 cases, got %d", len(cases))
+	if len(cases) != 29 {
+		t.Fatalf("want 29 cases, got %d", len(cases))
 	}
 	var plain, headers []tsfixture.Case
 	for _, c := range cases {

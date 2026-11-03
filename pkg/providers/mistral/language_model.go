@@ -103,53 +103,55 @@ func (m *LanguageModel) checkReasoningWarnings(opts *provider.GenerateOptions) [
 }
 
 // mistralReasoningMapWarnings returns the warnings TS emits for the top-level
-// reasoning setting: every non-"none" level maps to effort "high" (a
-// compatibility warning unless the level already is "high"), and models
-// without reasoning_effort support get an "unsupported" warning. An explicit
-// providerOptions.mistral.reasoningEffort short-circuits the mapping.
+// reasoning setting on a model without the low/high/max effort set (the
+// Conversations API).
 func mistralReasoningMapWarnings(supported bool, explicitEffort string, reasoning *types.ReasoningLevel) []types.Warning {
 	return mistralReasoningMapWarningsFor(supported, false, explicitEffort, reasoning)
 }
 
-// mistralReasoningEffortMap is the reasoning -> reasoning_effort mapping:
-// every level maps to "high", except on low/high/max models (GLM-5.3).
+// mistralReasoningEffortMap is the set of reasoning_effort values a model
+// accepts (TS 61a315e333): low/high/max on GLM-5.3, none/high elsewhere. The
+// shared helper rounds the other levels to the nearest of them.
 func mistralReasoningEffortMap(lowHighMax bool) map[types.ReasoningLevel]string {
 	if lowHighMax {
 		return map[types.ReasoningLevel]string{
-			types.ReasoningMinimal: "low", types.ReasoningLow: "low", types.ReasoningMedium: "high",
-			types.ReasoningHigh: "high", types.ReasoningXHigh: "max", types.ReasoningMax: "max",
+			types.ReasoningLow: "low", types.ReasoningHigh: "high", types.ReasoningMax: "max",
 		}
 	}
 	return map[types.ReasoningLevel]string{
-		types.ReasoningMinimal: "high", types.ReasoningLow: "high", types.ReasoningMedium: "high",
-		types.ReasoningHigh: "high", types.ReasoningXHigh: "high", types.ReasoningMax: "high",
+		types.ReasoningNone: "none", types.ReasoningHigh: "high",
 	}
 }
 
-// mistralReasoningMapWarningsFor is mistralReasoningMapWarnings with the
-// low/high/max model variant: reasoning "none" cannot be disabled there and
-// maps to effort "low" with a compatibility warning.
-func mistralReasoningMapWarningsFor(supported, lowHighMax bool, explicitEffort string, reasoning *types.ReasoningLevel) []types.Warning {
-	if reasoning == nil || *reasoning == types.ReasoningDefault {
-		return nil
-	}
+// mistralResolveReasoningEffort mirrors the TS chat and conversation
+// resolution: on a model that accepts reasoning_effort, an explicit
+// providerOptions.mistral.reasoningEffort is sent as is, otherwise the
+// top-level reasoning is rounded with mapReasoningToProviderEffort; on other
+// models a custom reasoning value gets an "unsupported" warning.
+func mistralResolveReasoningEffort(supported, lowHighMax bool, explicitEffort string, reasoning *types.ReasoningLevel) (string, []types.Warning) {
 	var warnings []types.Warning
-	switch {
-	case !supported:
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "reasoning",
-			Details: "This model does not support reasoning configuration.",
-		})
-	case explicitEffort == "" && *reasoning == types.ReasoningNone && lowHighMax:
-		warnings = append(warnings, types.Warning{
-			Type:    "compatibility",
-			Feature: "reasoning",
-			Details: `reasoning "none" is not directly supported by this model. mapped to effort "low".`,
-		})
-	case explicitEffort == "" && *reasoning != types.ReasoningNone:
-		providerutils.MapReasoningToProviderEffort(reasoning, mistralReasoningEffortMap(lowHighMax), nil, &warnings)
+	if !supported {
+		if providerutils.IsCustomReasoning(reasoning) {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "reasoning",
+				Details: "This model does not support reasoning configuration.",
+			})
+		}
+		return "", warnings
 	}
+	var explicit *string
+	if explicitEffort != "" {
+		explicit = &explicitEffort
+	}
+	effort, _ := providerutils.MapReasoningToProviderEffort(reasoning, mistralReasoningEffortMap(lowHighMax), explicit, &warnings)
+	return effort, warnings
+}
+
+// mistralReasoningMapWarningsFor returns the warnings of
+// mistralResolveReasoningEffort.
+func mistralReasoningMapWarningsFor(supported, lowHighMax bool, explicitEffort string, reasoning *types.ReasoningLevel) []types.Warning {
+	_, warnings := mistralResolveReasoningEffort(supported, lowHighMax, explicitEffort, reasoning)
 	return warnings
 }
 
@@ -382,30 +384,11 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			injectMistralJSONInstruction(body, schema)
 		}
 	}
-	// Map top-level Reasoning to Mistral reasoning_effort.
-	// Only selected Mistral models support reasoning_effort.
-	// Other models emit a CallWarning in DoGenerate instead.
-	// Mistral maps none → "none"; all non-default levels → "high".
-	// provider-default → omit.
-	if m.supportsReasoningEffort() {
-		if opts.Reasoning != nil {
-			lowHighMax := m.supportsLowHighMaxReasoningEffort()
-			switch *opts.Reasoning {
-			case types.ReasoningNone:
-				if lowHighMax {
-					// GLM-5.3 cannot disable reasoning and defaults to max.
-					body["reasoning_effort"] = "low"
-				} else {
-					body["reasoning_effort"] = "none"
-				}
-			case types.ReasoningMinimal, types.ReasoningLow, types.ReasoningMedium, types.ReasoningHigh, types.ReasoningXHigh, types.ReasoningMax:
-				body["reasoning_effort"] = mistralReasoningEffortMap(lowHighMax)[*opts.Reasoning]
-				// ReasoningDefault: omit
-			}
-		}
-		if provOpts.ReasoningEffort != "" {
-			body["reasoning_effort"] = provOpts.ReasoningEffort
-		}
+	// Map top-level Reasoning to Mistral reasoning_effort (TS 61a315e333).
+	// Only selected Mistral models support reasoning_effort; other models
+	// emit a warning in checkReasoningWarnings instead.
+	if effort, _ := mistralResolveReasoningEffort(m.supportsReasoningEffort(), m.supportsLowHighMaxReasoningEffort(), provOpts.ReasoningEffort, opts.Reasoning); effort != "" {
+		body["reasoning_effort"] = effort
 	}
 	return body
 }

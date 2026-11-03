@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"mime/multipart"
 
@@ -56,6 +57,7 @@ func (s *SkillsAPI) UploadSkill(ctx context.Context, opts types.UploadSkillOptio
 	if resp.StatusCode >= 400 {
 		return nil, anthropicHTTPError(s.provider.Name(), resp.StatusCode, resp.Headers, resp.Body, nil)
 	}
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text() before JSON.parse
 	if err := anthropicSchemaValidator(s.provider.Name(), zSkillResponse)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
 		return nil, err
 	}
@@ -132,6 +134,7 @@ func (s *SkillsAPI) fetchVersionMetadata(ctx context.Context, skillID, version s
 	if resp.StatusCode >= 400 {
 		return nil, anthropicHTTPError(s.provider.Name(), resp.StatusCode, resp.Headers, resp.Body, nil)
 	}
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text() before JSON.parse
 	if err := anthropicSchemaValidator(s.provider.Name(), zSkillVersionResponse)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
 		return nil, err
 	}

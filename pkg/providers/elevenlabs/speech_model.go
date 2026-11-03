@@ -34,6 +34,11 @@ type PronunciationDictionaryLocator struct {
 
 // SpeechModelOptions contains ElevenLabs-specific speech provider options.
 type SpeechModelOptions struct {
+	// WithTimestamps returns speech character alignment (text-to-speech and
+	// dialogue, /with-timestamps) or music lyric word timestamps
+	// (/v1/music/detailed) in providerMetadata.elevenlabs (TS 48ab95d62a).
+	WithTimestamps *bool
+
 	LanguageCode                    string
 	VoiceSettings                   *SpeechVoiceSettings
 	PronunciationDictionaryLocators []PronunciationDictionaryLocator
@@ -116,9 +121,13 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, err
 	}
 
+	path := req.path
+	if req.withTimestamps {
+		path += "/with-timestamps"
+	}
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
-		Path:    req.path,
+		Path:    path,
 		Body:    req.body,
 		Query:   req.query,
 		Headers: opts.Headers,
@@ -142,8 +151,30 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		metadata["requestedDurationMs"] = *req.requestedDurationMs
 	}
 
+	audio := resp.Body
+	switch {
+	case req.path == "/v1/music/detailed":
+		music, err := parseMusicTimestampsResponse(http.Header(resp.Headers).Get("Content-Type"), resp.Body)
+		if err != nil {
+			return nil, err
+		}
+		audio = music.audio
+		if music.hasWords {
+			metadata["wordTimestamps"] = music.wordTimestamps
+		}
+	case req.withTimestamps:
+		envelope, err := parseSpeechTimestampsResponse(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+		audio = envelope.audio
+		for k, v := range envelope.metadata {
+			metadata[k] = v
+		}
+	}
+
 	return &types.SpeechResult{
-		Audio:    resp.Body,
+		Audio:    audio,
 		Warnings: req.warnings,
 		Request: &types.StepRequest{
 			Body: string(requestBytes),
@@ -167,6 +198,9 @@ type speechRequest struct {
 
 	// requestedDurationMs is the length asked for (music and sound effects).
 	requestedDurationMs *float64
+	// withTimestamps requests the /with-timestamps variant of a speech or
+	// dialogue endpoint (TS 48ab95d62a).
+	withTimestamps bool
 }
 
 // buildRequest prepares the request for the model kind: music, sound effects,
@@ -175,16 +209,24 @@ func (m *SpeechModel) buildRequest(opts *provider.SpeechGenerateOptions) (*speec
 	if isMusicModelID(m.modelID) || isSoundEffectsModelID(m.modelID) {
 		return m.buildAudioGenerationRequest(opts)
 	}
-	if elOpts, ok := extractSpeechModelOptions(opts.ProviderOptions); ok && elOpts.Inputs != nil {
-		return m.buildDialogueRequest(opts, elOpts)
+	elOpts, _ := extractSpeechModelOptions(opts.ProviderOptions)
+	// eleven_v4 always goes through Text to Dialogue (TS 48ab95d62a); without
+	// inputs, the text and voice are its single input.
+	if elOpts.Inputs != nil || m.modelID == "eleven_v4" {
+		inputs := elOpts.Inputs
+		if inputs == nil {
+			inputs = []DialogueInput{{Text: opts.Text, VoiceID: speechVoice(opts.Voice)}}
+		}
+		return m.buildDialogueRequest(opts, elOpts, inputs)
 	}
 	body, query, warnings, voice := m.buildRequestArgs(opts)
 	return &speechRequest{
-		path:      fmt.Sprintf("/v1/text-to-speech/%s", voice),
-		body:      body,
-		bodyOrder: elevenlabsSpeechBodyOrder,
-		query:     query,
-		warnings:  warnings,
+		path:           "/v1/text-to-speech/" + providerutils.EncodeURIComponent(voice),
+		body:           body,
+		bodyOrder:      elevenlabsSpeechBodyOrder,
+		query:          query,
+		warnings:       warnings,
+		withTimestamps: elOpts.WithTimestamps != nil && *elOpts.WithTimestamps,
 	}, nil
 }
 
@@ -203,11 +245,16 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) map
 	return body
 }
 
-func (m *SpeechModel) buildRequestArgs(opts *provider.SpeechGenerateOptions) (map[string]interface{}, map[string]string, []types.Warning, string) {
-	voice := opts.Voice
+// speechVoice is the call voice, defaulting to TS getArgs' voice.
+func speechVoice(voice string) string {
 	if voice == "" {
-		voice = "21m00Tcm4TlvDq8ikWAM"
+		return "21m00Tcm4TlvDq8ikWAM"
 	}
+	return voice
+}
+
+func (m *SpeechModel) buildRequestArgs(opts *provider.SpeechGenerateOptions) (map[string]interface{}, map[string]string, []types.Warning, string) {
+	voice := speechVoice(opts.Voice)
 
 	body := map[string]interface{}{
 		"text":     opts.Text,
@@ -269,6 +316,9 @@ func mapElevenLabsOutputFormat(outputFormat string) string {
 			return "ulaw_8000"
 		}
 		return outputFormat
+	case "wav":
+		// TS 3e5a12334b: ElevenLabs rejects a bare "wav".
+		return "wav_44100"
 	default:
 		return outputFormat
 	}
@@ -359,6 +409,9 @@ func extractSpeechModelOptions(providerOptions map[string]interface{}) (SpeechMo
 
 func parseSpeechModelOptionsMap(raw map[string]interface{}) SpeechModelOptions {
 	var opts SpeechModelOptions
+	if v, ok := raw["withTimestamps"].(bool); ok {
+		opts.WithTimestamps = &v
+	}
 	if v, ok := raw["languageCode"].(string); ok {
 		opts.LanguageCode = v
 	}
@@ -500,7 +553,8 @@ var elevenLabsSpeechOptionsSchema = func() providerutils.OptionSchema {
 		return providerutils.OptArray(item, 0, 3)
 	}
 	return providerutils.OptionSchema{
-		"languageCode": providerutils.OptString,
+		"withTimestamps": providerutils.OptBool,
+		"languageCode":   providerutils.OptString,
 		"voiceSettings": providerutils.OptObject(providerutils.OptionSchema{
 			"stability": unit, "similarityBoost": unit, "style": unit,
 			"useSpeakerBoost": providerutils.OptBool,

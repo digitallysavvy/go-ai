@@ -998,8 +998,14 @@ func TestStream_InStreamError(t *testing.T) {
 		{"503 no text", false, 503, "UNAVAILABLE", true},
 		{"503 partial text", true, 503, "UNAVAILABLE", true},
 		{"400", false, 400, "INVALID_ARGUMENT", false},
-		{"null code", false, nil, "UNKNOWN", false},
+		// TS 8ad78735f7: a status without a numeric code maps to its HTTP
+		// status for statusCode and retryability; code stays absent.
+		{"null code", false, nil, "UNKNOWN", true},
+		{"null code resource exhausted", false, nil, "RESOURCE_EXHAUSTED", true},
+		{"null code invalid argument", false, nil, "INVALID_ARGUMENT", false},
+		{"null code unknown status", false, nil, "SOMETHING_NEW", false},
 	}
+	httpStatus := map[string]int{"UNKNOWN": 500, "RESOURCE_EXHAUSTED": 429, "INVALID_ARGUMENT": 400}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			errFrame := mustMarshal(map[string]interface{}{"error": map[string]interface{}{
@@ -1041,8 +1047,9 @@ func TestStream_InStreamError(t *testing.T) {
 				t.Fatalf("stream error = %+v", spe)
 			}
 			if tc.code == nil {
-				if spe.Code != nil || spe.StatusCode != nil {
-					t.Fatalf("code/status = %v/%v, want nil", spe.Code, spe.StatusCode)
+				want, mapped := httpStatus[tc.status]
+				if spe.Code != nil || (mapped && (spe.StatusCode == nil || *spe.StatusCode != want)) || (!mapped && spe.StatusCode != nil) {
+					t.Fatalf("code/status = %v/%v, want nil/%v", spe.Code, spe.StatusCode, want)
 				}
 			} else if spe.StatusCode == nil || *spe.StatusCode != tc.code.(int) {
 				t.Fatalf("statusCode = %v, want %v", spe.StatusCode, tc.code)

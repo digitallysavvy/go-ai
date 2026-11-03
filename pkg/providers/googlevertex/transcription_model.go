@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 	"math"
 	"net/http"
@@ -125,6 +126,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, gemini.GoogleHTTPError(m.Provider(), resp.StatusCode, resp.Header, respBody, nil)
 	}
+	respBody = []byte(textdecode.UTF8(respBody)) // TS response.text() before JSON.parse
 
 	// TS createJsonResponseHandler(googleVertexTranscriptionResponseSchema).
 	if err := vertexValidator(m.Provider(), zVertexTranscription)(resp.StatusCode, resp.Header, respBody); err != nil {

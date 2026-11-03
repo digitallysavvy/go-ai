@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 	"mime/multipart"
 	"strconv"
@@ -64,6 +65,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, internalhttp.StatusProviderError("mistral", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
+	resp.Body = []byte(textdecode.UTF8(resp.Body)) // TS response.text() before JSON.parse
 	if err := providerutils.MediaResponseValidator("mistral", providerutils.SchemaMistralTranscr)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
 		return nil, err
 	}

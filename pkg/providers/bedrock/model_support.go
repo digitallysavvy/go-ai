@@ -22,9 +22,8 @@ func isAnthropicModelID(modelID, modelFamily string, reasoningBudgetTokens *int)
 	return false
 }
 
-// Bedrock validates its own Messages schema. New Claude generations currently
-// reject native structured output and strict tools, so only known supported
-// Claude models receive those fields. Non-Claude models and opaque inference
+// Bedrock validates its own Messages schema. Only known supported Claude
+// models receive native structured output and strict tool fields. Non-Claude models and opaque inference
 // profile IDs retain their existing behavior. Ports TS
 // amazon-bedrock-anthropic-model-support.ts (TS #22487).
 
@@ -39,6 +38,9 @@ var modelsWithStrictToolSupport = []*regexp.Regexp{
 	regexp.MustCompile(`claude-opus-4-(?:1|5|6)(?:[-.:]|$)`),
 	regexp.MustCompile(`claude-sonnet-4-(?:5|6)(?:[-.:]|$)`),
 	regexp.MustCompile(`claude-haiku-4-5(?:[-.:]|$)`),
+	// Claude 5 (TS 2cd0a97424).
+	regexp.MustCompile(`claude-(?:opus|sonnet)-5(?:-5)?(?:-\d{8})?(?:-v\d+)?(?:[:.]|$)`),
+	regexp.MustCompile(`claude-haiku-5-5(?:-\d{8})?(?:-v\d+)?(?:[:.]|$)`),
 }
 
 // nativeStructuredOutputExcludedPattern matches models that support strict

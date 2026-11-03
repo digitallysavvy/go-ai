@@ -1,6 +1,7 @@
 package google
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -34,6 +35,11 @@ type Config struct {
 	// APIKey is the Google API key
 	APIKey string
 
+	// APIKeyFunc resolves the API key before each request (TS apiKey given as
+	// a function, 7716e189ee). It cannot be combined with APIKey; the
+	// environment variable is not read, and its result is sent as is.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+
 	// BaseURL is the base URL for the Google API (default: https://generativelanguage.googleapis.com)
 	BaseURL string
 
@@ -64,7 +70,7 @@ func New(cfg Config) *Provider {
 	cfg.BaseURL = baseURL
 
 	apiKey := cfg.APIKey
-	if apiKey == "" {
+	if apiKey == "" && cfg.APIKeyFunc == nil {
 		apiKey = os.Getenv("GOOGLE_GENERATIVE_AI_API_KEY")
 	}
 
@@ -95,6 +101,17 @@ func (p *Provider) apiKeyHeaders() (map[string]string, error) {
 		if strings.EqualFold(k, "x-goog-api-key") && v != "" {
 			return nil, nil
 		}
+	}
+	if p.config.APIKeyFunc != nil {
+		// HeadersFunc has no request ctx (reports/cr-r85-prova-to-carry.md).
+		key, err := providerutils.ResolveAPIKey(context.Background(), providerutils.ResolveAPIKeyOptions{
+			APIKey: p.config.APIKey, APIKeyFunc: p.config.APIKeyFunc,
+			EnvVar: "GOOGLE_GENERATIVE_AI_API_KEY", Description: "Google Generative AI",
+		})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"x-goog-api-key": key}, nil
 	}
 	key, err := providerutils.LoadAPIKey(p.config.APIKey, "GOOGLE_GENERATIVE_AI_API_KEY", "Google Generative AI")
 	if err != nil {
@@ -256,8 +273,13 @@ func (p *Provider) Client() *internalhttp.Client {
 	return p.client
 }
 
-// APIKey returns the API key
+// APIKey returns the static API key (Config.APIKey or
+// GOOGLE_GENERATIVE_AI_API_KEY); it is "" when the key comes from
+// Config.APIKeyFunc.
 func (p *Provider) APIKey() string {
+	if p.config.APIKeyFunc != nil {
+		return p.config.APIKey
+	}
 	return providerutils.APIKeyOrEnv(p.config.APIKey, "GOOGLE_GENERATIVE_AI_API_KEY")
 }
 

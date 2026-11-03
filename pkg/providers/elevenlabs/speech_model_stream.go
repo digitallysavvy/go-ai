@@ -375,6 +375,9 @@ func streamHTTPOnlyOptions(elOpts SpeechModelOptions) []string {
 	if elOpts.ApplyLanguageTextNormalization != nil {
 		set = append(set, "applyLanguageTextNormalization")
 	}
+	if elOpts.WithTimestamps != nil {
+		set = append(set, "withTimestamps")
+	}
 	if elOpts.Inputs != nil {
 		set = append(set, "inputs")
 	}

@@ -380,9 +380,14 @@ func cohereDocumentText(file types.FileContent) (string, error) {
 	case types.FileDataTypeText:
 		return file.FileData.Text, nil
 	case types.FileDataTypeData:
-		// TS uses a string payload as given and decodes bytes.
+		// TS 7a93864932: a string payload is base64 (convertBase64ToUint8Array,
+		// which throws on invalid input), then TextDecoder-decoded like bytes.
 		if file.FileData.DataString != "" {
-			return file.FileData.DataString, nil
+			data, err := fileutil.ConvertBase64ToBytes(file.FileData.DataString)
+			if err != nil {
+				return "", err
+			}
+			return prompt.DecodeUTF8Text(data), nil
 		}
 		return prompt.DecodeUTF8Text(file.FileData.Data), nil
 	case types.FileDataTypeURL:

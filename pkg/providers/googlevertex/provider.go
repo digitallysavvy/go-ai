@@ -97,6 +97,13 @@ type Config struct {
 	// When set, AccessToken/AuthToken/TokenSource are ignored.
 	APIKey string
 
+	// APIKeyFunc enables Vertex express mode with a key resolved before each
+	// request (TS apiKey given as a function, 7716e189ee). It must return a
+	// non-empty key ("Google Vertex API key must be a non-empty string."
+	// otherwise), wins over GOOGLE_VERTEX_API_KEY and cannot be combined with
+	// APIKey.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+
 	// Project is the Google Cloud project ID
 	Project string
 
@@ -197,16 +204,17 @@ func (c *cachedTokenSource) tokenFor(ctx context.Context) (string, error) {
 // are read lazily when a model is created, and a missing value is reported
 // then (TS loadSetting inside loadBaseURL).
 func New(cfg Config) (*Provider, error) {
-	if cfg.APIKey == "" {
+	if cfg.APIKey == "" && cfg.APIKeyFunc == nil {
 		cfg.APIKey = os.Getenv("GOOGLE_VERTEX_API_KEY")
 	}
+	express := cfg.APIKey != "" || cfg.APIKeyFunc != nil
 
 	headers := map[string]string{
 		"Content-Type": "application/json",
 	}
 	httpClient := cfg.HTTPClient
 
-	if cfg.APIKey == "" {
+	if !express {
 		// With no AuthToken, AccessToken or TokenSource, authentication falls
 		// back to Application Default Credentials, resolved lazily on the
 		// first request (TS createVertex defaults to google-auth-library).
@@ -253,8 +261,23 @@ func New(cfg Config) (*Provider, error) {
 		}
 	}
 
+	if cfg.APIKeyFunc != nil {
+		// TS createExpressModeFetch resolves the key per request and sets
+		// x-goog-api-key last.
+		baseTransport := stdhttp.RoundTripper(stdhttp.DefaultTransport)
+		if httpClient != nil && httpClient.Transport != nil {
+			baseTransport = httpClient.Transport
+		}
+		client := &stdhttp.Client{}
+		if httpClient != nil {
+			*client = *httpClient
+		}
+		client.Transport = &vertexExpressTransport{base: baseTransport, apiKey: cfg.APIKey, apiKeyFunc: cfg.APIKeyFunc}
+		httpClient = client
+	}
+
 	mergedHeaders := http.MergeHeaders(headers, cfg.Headers)
-	if cfg.APIKey != "" {
+	if express {
 		// TS express mode fetch sets x-goog-api-key last, so the key wins over
 		// any header of the same name.
 		for k := range mergedHeaders {
@@ -262,7 +285,9 @@ func New(cfg Config) (*Provider, error) {
 				delete(mergedHeaders, k)
 			}
 		}
-		mergedHeaders["x-goog-api-key"] = cfg.APIKey
+		if cfg.APIKeyFunc == nil {
+			mergedHeaders["x-goog-api-key"] = cfg.APIKey
+		}
 	}
 	mergedHeaders = version.WithUserAgentSuffix(mergedHeaders, version.ProviderUserAgent("google-vertex"))
 
@@ -334,7 +359,7 @@ func (p *Provider) clients() (*vertexClients, error) {
 	var endpointBaseURL string
 
 	switch {
-	case cfg.APIKey != "":
+	case cfg.APIKey != "" || cfg.APIKeyFunc != nil:
 		// Vertex express mode (TS parity): API key auth and publishers/google
 		// base URL. Tuned "endpoints/{id}" models are rejected in Express
 		// Mode (checked in LanguageModel), so no endpoint-style base URL is
@@ -384,7 +409,7 @@ func (p *Provider) clients() (*vertexClients, error) {
 	}
 	// Chirp speech models reject Express Mode outright (checked in
 	// SpeechModel), so the Cloud TTS client is only built for OAuth auth.
-	if cfg.APIKey == "" {
+	if cfg.APIKey == "" && cfg.APIKeyFunc == nil {
 		cloudTTSBaseURL := cfg.CloudTTSBaseURL
 		if cloudTTSBaseURL == "" {
 			cloudTTSBaseURL = defaultCloudTTSSynthesizeURL
@@ -458,7 +483,7 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 	if modelID == "" {
 		return nil, fmt.Errorf("model ID cannot be empty")
 	}
-	if isEndpointModelID(modelID) && p.config.APIKey != "" {
+	if isEndpointModelID(modelID) && p.expressMode() {
 		return nil, fmt.Errorf("Google Vertex tuned models do not support Express Mode API keys. Use standard Google Cloud credentials instead.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
@@ -478,7 +503,7 @@ func (p *Provider) Interactions(modelID string) (provider.LanguageModel, error) 
 	if modelID == "" {
 		return nil, fmt.Errorf("model ID cannot be empty")
 	}
-	if p.config.APIKey != "" {
+	if p.expressMode() {
 		return nil, fmt.Errorf("Google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if _, err := p.clients(); err != nil {
@@ -493,7 +518,7 @@ func (p *Provider) InteractionsAgent(agent string) (provider.LanguageModel, erro
 	if agent == "" {
 		return nil, fmt.Errorf("agent cannot be empty")
 	}
-	if p.config.APIKey != "" {
+	if p.expressMode() {
 		return nil, fmt.Errorf("Google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if _, err := p.clients(); err != nil {
@@ -508,7 +533,7 @@ func (p *Provider) InteractionsManagedAgent(id string) (provider.LanguageModel, 
 	if id == "" {
 		return nil, fmt.Errorf("managed agent id cannot be empty")
 	}
-	if p.config.APIKey != "" {
+	if p.expressMode() {
 		return nil, fmt.Errorf("Google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if _, err := p.clients(); err != nil {
@@ -616,7 +641,7 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 	// API, not Vertex's generateContent endpoint (TS:
 	// `modelId.startsWith('chirp')`).
 	if strings.HasPrefix(modelID, "chirp") {
-		if p.config.APIKey != "" {
+		if p.expressMode() {
 			return nil, fmt.Errorf("Google Vertex Chirp speech models do not support Express Mode API keys. Use standard Google Cloud credentials instead.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if _, err := p.clients(); err != nil {
@@ -661,7 +686,7 @@ func (p *Provider) Speech(modelID string) (provider.SpeechModel, error) {
 // createTranscriptionModel's `modelId.startsWith('gemini')` routing
 // predicate exactly.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	if p.config.APIKey != "" {
+	if p.expressMode() {
 		return nil, fmt.Errorf("Google Vertex transcription models do not support Express Mode API keys. Use standard Google Cloud credentials instead.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	// TS createConfig (loadBaseURL) loads location then project when there is
@@ -713,4 +738,30 @@ func (p *Provider) Project() string {
 // Location returns the Google Cloud location
 func (p *Provider) Location() string {
 	return p.location()
+}
+
+// expressMode reports Vertex express mode (an API key or key func).
+func (p *Provider) expressMode() bool {
+	return p.config.APIKey != "" || p.config.APIKeyFunc != nil
+}
+
+// vertexExpressTransport sets x-goog-api-key from the key func on every
+// request (TS createExpressModeFetch with a resolvable apiKey).
+type vertexExpressTransport struct {
+	base       stdhttp.RoundTripper
+	apiKey     string
+	apiKeyFunc providerutils.APIKeyFunc
+}
+
+func (t *vertexExpressTransport) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
+	key, err := providerutils.ResolveAPIKey(req.Context(), providerutils.ResolveAPIKeyOptions{
+		APIKey: t.apiKey, APIKeyFunc: t.apiKeyFunc, Description: "Google Vertex", RequireNonEmpty: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	clone := req.Clone(req.Context())
+	clone.Header.Del("x-goog-api-key")
+	clone.Header.Set("x-goog-api-key", key)
+	return t.base.RoundTrip(clone)
 }

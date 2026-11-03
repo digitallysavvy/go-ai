@@ -240,10 +240,22 @@ func convertMistralAssistantMessage(msg types.Message, isLastMessage bool) (map[
 
 // mistralToolCalls builds the OpenAI-shaped tool_calls array Mistral expects
 // in assistant message history.
+// mistralToolCallArguments mirrors TS serializeMistralToolCallArguments for a
+// Go tool call input (its JSON text, see prompt.SerializeToolCallArguments):
+// a string input that is valid JSON is sent as that text instead of
+// double-encoded, and text that is not JSON as a JSON string (TS
+// 4ae6986cd8).
+func mistralToolCallArguments(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	return prompt.SerializeToolCallArguments(raw)
+}
+
 func mistralToolCalls(toolCalls []types.ToolCall) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(toolCalls))
 	for _, tc := range toolCalls {
-		arguments := tc.RawArguments
+		arguments := mistralToolCallArguments(tc.RawArguments)
 		if arguments == "" {
 			args := tc.Arguments
 			if args == nil {

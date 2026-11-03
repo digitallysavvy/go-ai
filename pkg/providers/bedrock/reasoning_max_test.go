@@ -44,12 +44,18 @@ func TestBedrockReasoningNovaMaxWarns(t *testing.T) {
 	}
 }
 
-// TS #22045: OpenAI models on Bedrock send max natively.
+// TS 61a315e333: gpt-oss models on Bedrock support low/medium/high, so max
+// rounds down to high with a warning; other OpenAI models send it as is.
 func TestBedrockReasoningOpenAIMax(t *testing.T) {
 	var w []types.Warning
 	rc := resolveBedrockReasoningConfig(ptrLevel(types.ReasoningMax), nil, false, true, "openai.gpt-oss-120b-1:0", &w)
+	if rc == nil || rc.MaxReasoningEffort != "high" || len(w) != 1 || w[0].Type != "compatibility" {
+		t.Fatalf("gpt-oss: rc = %#v w = %#v", rc, w)
+	}
+	w = nil
+	rc = resolveBedrockReasoningConfig(ptrLevel(types.ReasoningMax), nil, false, true, "openai.gpt-5.5", &w)
 	if rc == nil || rc.MaxReasoningEffort != "max" || len(w) != 0 {
-		t.Fatalf("rc = %#v w = %#v", rc, w)
+		t.Fatalf("gpt-5.5: rc = %#v w = %#v", rc, w)
 	}
 }
 

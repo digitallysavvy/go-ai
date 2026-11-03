@@ -478,8 +478,40 @@ func (s *stream) processSSEEvent(chunkData Response) {
 	}
 }
 
+// mapGoogleErrorStatusToHTTPStatusCode mirrors TS
+// mapGoogleErrorStatusToHttpStatusCode (google-error.ts): the HTTP status of a
+// Google RPC status name sent without a numeric code.
+func mapGoogleErrorStatusToHTTPStatusCode(status string) (int, bool) {
+	switch status {
+	case "CANCELLED":
+		return 499, true
+	case "INVALID_ARGUMENT", "FAILED_PRECONDITION", "OUT_OF_RANGE":
+		return 400, true
+	case "DEADLINE_EXCEEDED":
+		return 504, true
+	case "NOT_FOUND":
+		return 404, true
+	case "ALREADY_EXISTS", "ABORTED":
+		return 409, true
+	case "PERMISSION_DENIED":
+		return 403, true
+	case "UNAUTHENTICATED":
+		return 401, true
+	case "RESOURCE_EXHAUSTED":
+		return 429, true
+	case "UNIMPLEMENTED":
+		return 501, true
+	case "UNKNOWN", "INTERNAL", "DATA_LOSS":
+		return 500, true
+	case "UNAVAILABLE":
+		return 503, true
+	}
+	return 0, false
+}
+
 // newStreamError mirrors TS createProviderStreamError for a Google in-stream
-// error: type is the Google status, code/statusCode the numeric code, and the
+// error: type is the Google status, code the numeric code, statusCode the
+// code or else the HTTP status of the RPC status (TS 8ad78735f7), and the
 // error is retryable for 408/409/429/5xx.
 func (s *stream) newStreamError(e *StreamError) *providererrors.StreamProviderError {
 	var code interface{}
@@ -489,6 +521,13 @@ func (s *stream) newStreamError(e *StreamError) *providererrors.StreamProviderEr
 		c := int(*e.Code)
 		code = *e.Code
 		statusCode = &c
+	} else if c, ok := mapGoogleErrorStatusToHTTPStatusCode(e.Status); ok {
+		// TS 8ad78735f7: a status without a numeric code still classifies
+		// the error; code stays absent.
+		statusCode = &c
+	}
+	if statusCode != nil {
+		c := *statusCode
 		retryable = c == 408 || c == 409 || c == 429 || c >= 500
 	}
 	var data interface{}

@@ -77,7 +77,7 @@ func convertToMistralConversationInputs(messages []types.Message, names conversa
 							wireName = s
 						}
 					}
-					args := input
+					args := mistralToolCallArguments(input)
 					var parsed struct {
 						Arguments *string `json:"arguments"`
 					}
@@ -91,7 +91,7 @@ func convertToMistralConversationInputs(messages []types.Message, names conversa
 					executions[id] = true
 					return
 				}
-				inputs = append(inputs, map[string]interface{}{"type": "function.call", "tool_call_id": id, "name": name, "arguments": input})
+				inputs = append(inputs, map[string]interface{}{"type": "function.call", "tool_call_id": id, "name": name, "arguments": mistralToolCallArguments(input)})
 			}
 			seenCalls := map[string]bool{}
 			for _, part := range msg.Content {

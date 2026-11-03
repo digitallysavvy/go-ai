@@ -68,6 +68,11 @@ type converseArgs struct {
 	ToolNames map[string]string
 }
 
+// legacyClaudeThinkingPattern matches Claude 3.5 and earlier, which accept no
+// thinking field (TS /claude-(?:instant|v?2|3-(?:5-)?(?:haiku|sonnet|opus))(?=[-.:]|$)/;
+// the lookahead becomes a consumed group, which matches the same IDs).
+var legacyClaudeThinkingPattern = regexp.MustCompile(`claude-(?:instant|v?2|3-(?:5-)?(?:haiku|sonnet|opus))(?:[-.:]|$)`)
+
 // getArgs ports TS amazon-bedrock-chat-language-model.ts#getArgs.
 func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, error) {
 	warnings := []types.Warning{}
@@ -148,8 +153,6 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 		amazonBedrockOptions["reasoningConfig"] = reasoningConfigToMap(resolvedReasoningConfig)
 	}
 
-	isThinkingEnabled := resolvedReasoningConfig != nil && (resolvedReasoningConfig.Type == "enabled" || resolvedReasoningConfig.Type == "adaptive")
-
 	structuredOutputMode := stringOption(amazonBedrockOptions["structuredOutputMode"])
 	if structuredOutputMode == "" {
 		structuredOutputMode = stringOption(anthropicOptions["structuredOutputMode"])
@@ -190,13 +193,81 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 		}
 	}
 
+	// TS 22b44614a2: resolve the thinking type and effort actually sent.
+	// Anthropic models get thinking {type: disabled} (Claude 3.5 and older
+	// accept no thinking field at all); models that reject disabled thinking
+	// fall back to between_tools or adaptive thinking with a warning, and
+	// efforts above high are lowered where the thinking type rejects them.
+	thinkingType := ""
+	maxReasoningEffort := ""
+	if resolvedReasoningConfig != nil {
+		thinkingType = resolvedReasoningConfig.Type
+		maxReasoningEffort = resolvedReasoningConfig.MaxReasoningEffort
+	}
+	if isAnthropic && thinkingType == "disabled" {
+		hasExplicitDisabledThinking := existingReasoningConfig != nil && existingReasoningConfig.Type == "disabled"
+		outputConfigEffort := ""
+		if oc, ok := additionalModelRequestFields["output_config"].(map[string]interface{}); ok {
+			outputConfigEffort, _ = oc["effort"].(string)
+		}
+		if legacyClaudeThinkingPattern.MatchString(m.modelID) {
+			// Claude 3.5 and earlier do not accept a thinking field, even
+			// disabled.
+			thinkingType = ""
+		} else if caps.RejectsThinkingDisabled {
+			thinkingType = "adaptive"
+			if caps.SupportsBetweenToolsThinking {
+				thinkingType = "between_tools"
+			}
+			if !hasExplicitDisabledThinking && thinkingType == "adaptive" {
+				if maxReasoningEffort == "" && existingReasoningConfig != nil {
+					maxReasoningEffort = existingReasoningConfig.MaxReasoningEffort
+				}
+				if maxReasoningEffort == "" && outputConfigEffort == "" {
+					maxReasoningEffort = "low"
+				}
+			}
+			w := types.Warning{
+				Type:    "compatibility",
+				Feature: "reasoning",
+				Details: fmt.Sprintf("thinking cannot be disabled for %s. Using '%s' thinking instead.", m.modelID, thinkingType),
+			}
+			if hasExplicitDisabledThinking {
+				w.Type = "unsupported"
+				w.Feature = "providerOptions.amazonBedrock.reasoningConfig"
+			}
+			warnings = append(warnings, w)
+		}
+		effort := maxReasoningEffort
+		if effort == "" {
+			effort = outputConfigEffort
+		}
+		if ((thinkingType == "disabled" && caps.RejectsThinkingDisabledAboveHighEffort) || thinkingType == "between_tools") &&
+			(effort == "xhigh" || effort == "max") {
+			feature := "providerOptions.amazonBedrock.additionalModelRequestFields.output_config.effort"
+			if maxReasoningEffort != "" {
+				feature = "providerOptions.amazonBedrock.reasoningConfig.maxReasoningEffort"
+			}
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: feature,
+				Details: fmt.Sprintf("effort '%s' is not supported by %s with '%s' thinking. The effort has been lowered to 'high'.", effort, m.modelID, thinkingType),
+			})
+			maxReasoningEffort = "high"
+		}
+	}
+	isThinkingEnabled := thinkingType == "enabled" || thinkingType == "adaptive" || thinkingType == "between_tools"
+
 	modelSupportsNativeSO := bedrockSupportsNativeStructuredOutput(m.modelID) &&
 		(caps.SupportsStructuredOutput || isThinkingEnabled || m.modelFamily() == "anthropic")
 
 	responseFormatIsJSON := opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json" && opts.ResponseFormat.Schema != nil
 
+	// TS 2cd0a97424: auto mode uses native structured output only for a
+	// schema it can represent (anthropic.SupportsNativeStructuredOutputSchema).
 	useNativeStructuredOutput := isAnthropic && responseFormatIsJSON &&
-		(structuredOutputMode == "outputFormat" || (structuredOutputMode == "auto" && modelSupportsNativeSO))
+		(structuredOutputMode == "outputFormat" || (structuredOutputMode == "auto" && modelSupportsNativeSO &&
+			anthropic.SupportsNativeStructuredOutputSchema(opts.ResponseFormat.Schema)))
 
 	useJSONInstructionForStructuredOutput := !useNativeStructuredOutput && isAnthropic && responseFormatIsJSON &&
 		(caps.RejectsForcedToolUse ||
@@ -218,7 +289,16 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 	toolChoiceForPrep := opts.ToolChoice
 	hasToolChoice := opts.ToolChoice.Type != ""
 	if jsonResponseTool != nil {
-		toolsForPrep = append(append([]types.Tool{}, opts.Tools...), *jsonResponseTool)
+		// TS 2cd0a97424: with the JSON response tool, toolChoice none drops
+		// the user tools and a named toolChoice keeps only that tool.
+		toolsForPrep = nil
+		for _, t := range opts.Tools {
+			if opts.ToolChoice.Type == types.ToolChoiceNone || (opts.ToolChoice.Type == types.ToolChoiceTool && t.Name != opts.ToolChoice.ToolName) {
+				continue
+			}
+			toolsForPrep = append(toolsForPrep, t)
+		}
+		toolsForPrep = append(toolsForPrep, *jsonResponseTool)
 		toolChoiceForPrep = types.RequiredToolChoice()
 		hasToolChoice = true
 	}
@@ -274,11 +354,10 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 		}
 	}
 
-	thinkingType := ""
 	var thinkingBudget *int
 	thinkingDisplay := ""
+	isAnthropicThinkingEnabled := isAnthropic && isThinkingEnabled
 	if resolvedReasoningConfig != nil {
-		thinkingType = resolvedReasoningConfig.Type
 		if thinkingType == "enabled" {
 			thinkingBudget = resolvedReasoningConfig.BudgetTokens
 		}
@@ -286,7 +365,6 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 			thinkingDisplay = resolvedReasoningConfig.Display
 		}
 	}
-	isAnthropicThinkingEnabled := isAnthropic && isThinkingEnabled
 
 	inferenceConfig := map[string]interface{}{}
 	maxTokens := opts.MaxTokens
@@ -307,7 +385,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 		inferenceConfig["stopSequences"] = opts.StopSequences
 	}
 
-	if isAnthropicThinkingEnabled {
+	if isAnthropic {
 		if thinkingBudget != nil {
 			if v, ok := inferenceConfig["maxTokens"].(int); ok {
 				inferenceConfig["maxTokens"] = v + *thinkingBudget
@@ -321,8 +399,10 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 				thinking["display"] = thinkingDisplay
 			}
 			additionalModelRequestFields["thinking"] = thinking
+		} else if thinkingType == "disabled" || thinkingType == "between_tools" {
+			additionalModelRequestFields["thinking"] = map[string]interface{}{"type": thinkingType}
 		}
-	} else if !isAnthropic {
+	} else {
 		// TS warns on reasoningConfig.budgetTokens whatever the thinking type.
 		if resolvedReasoningConfig != nil && resolvedReasoningConfig.BudgetTokens != nil {
 			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "budgetTokens", Details: "budgetTokens applies only to Anthropic models on Bedrock and will be ignored for this model."})
@@ -332,10 +412,6 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 		}
 	}
 
-	maxReasoningEffort := ""
-	if resolvedReasoningConfig != nil {
-		maxReasoningEffort = resolvedReasoningConfig.MaxReasoningEffort
-	}
 	if maxReasoningEffort != "" {
 		switch {
 		case isAnthropic:
@@ -904,7 +980,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
-	respBody, err := readResponseBody(resp.Body)
+	respBody, err := readJSONResponseBody(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}

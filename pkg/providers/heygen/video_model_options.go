@@ -40,8 +40,9 @@ type VideoModelOptions struct {
 	// Resolution is the output size class ("480p", "768p", "1080p", "2k"). It
 	// takes precedence over the standard resolution option.
 	Resolution string `json:"resolution,omitempty"`
-	// PromptEnhancement is "turbo", "quality", or "disabled". The API default
-	// is turbo; use "disabled" to preserve the original prompt.
+	// PromptEnhancement is "turbo", "quality", "ultraquality", or
+	// "disabled". The API default is quality; use "disabled" to preserve the
+	// original prompt.
 	PromptEnhancement string `json:"promptEnhancement,omitempty"`
 	// Image is the first frame, including an existing HeyGen asset. It cannot
 	// be combined with a standard image.
@@ -126,9 +127,9 @@ func validateVideoModelOptions(opts *VideoModelOptions) (*VideoModelOptions, err
 		return nil, invalidOptions(fmt.Sprintf("resolution %q is not one of 480p, 768p, 1080p, 2k", opts.Resolution))
 	}
 	switch opts.PromptEnhancement {
-	case "", "turbo", "quality", "disabled":
+	case "", "turbo", "quality", "ultraquality", "disabled":
 	default:
-		return nil, invalidOptions(fmt.Sprintf("promptEnhancement %q is not one of turbo, quality, disabled", opts.PromptEnhancement))
+		return nil, invalidOptions(fmt.Sprintf("promptEnhancement %q is not one of turbo, quality, ultraquality, disabled", opts.PromptEnhancement))
 	}
 	if opts.Image != nil {
 		if err := validateAssetShape(*opts.Image, "image"); err != nil {

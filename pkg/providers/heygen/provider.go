@@ -1,6 +1,7 @@
 package heygen
 
 import (
+	"context"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"strings"
 
@@ -28,6 +29,11 @@ type Config struct {
 	// from the HEYGEN_API_KEY environment variable lazily on each request
 	// (mirrors TypeScript's lazy loadApiKey).
 	APIKey string `json:"-"`
+
+	// APIKeyFunc resolves the API key before each request (TS apiKey given as
+	// a function, 7716e189ee). It cannot be combined with APIKey; the
+	// environment variable is not read, and its result is sent as is.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 
 	// BaseURL is the API URL prefix. Defaults to https://api.heygen.com. A
 	// trailing slash is stripped.
@@ -69,8 +75,10 @@ func (p *Provider) Name() string { return "heygen" }
 // resolveHeaders returns the headers for a call: the x-api-key (from
 // Config.APIKey or HEYGEN_API_KEY, resolved per call) plus configured custom
 // headers and the SDK user-agent suffix, then the per-request headers.
-func (p *Provider) resolveHeaders(requestHeaders map[string]string) (map[string]string, error) {
-	apiKey, err := providerutils.LoadAPIKey(p.config.APIKey, "HEYGEN_API_KEY", "HeyGen")
+func (p *Provider) resolveHeaders(ctx context.Context, requestHeaders map[string]string) (map[string]string, error) {
+	apiKey, err := providerutils.ResolveAPIKey(ctx, providerutils.ResolveAPIKeyOptions{
+		APIKey: p.config.APIKey, APIKeyFunc: p.config.APIKeyFunc, EnvVar: "HEYGEN_API_KEY", Description: "HeyGen",
+	})
 	if err != nil {
 		return nil, err
 	}

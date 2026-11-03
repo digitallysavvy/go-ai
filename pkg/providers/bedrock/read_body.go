@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -17,6 +18,17 @@ const maxResponseBodyBytes = fileutil.DefaultMaxDownloadSize
 // is larger.
 func readResponseBody(r io.Reader) ([]byte, error) {
 	return readLimited(r, maxResponseBodyBytes)
+}
+
+// readJSONResponseBody is readResponseBody for a JSON body: it is decoded
+// like TS response.text() (BOM dropped, invalid UTF-8 replaced) before
+// JSON.parse.
+func readJSONResponseBody(r io.Reader) ([]byte, error) {
+	data, err := readResponseBody(r)
+	if err != nil {
+		return data, err
+	}
+	return []byte(textdecode.UTF8(data)), nil
 }
 
 func readLimited(r io.Reader, limit int64) ([]byte, error) {

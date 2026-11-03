@@ -81,6 +81,8 @@ func (o SpeechModelOptions) isSet(name string) bool {
 		return o.Loop != nil
 	case "promptInfluence":
 		return o.PromptInfluence != nil
+	case "withTimestamps":
+		return o.WithTimestamps != nil
 	}
 	return false
 }
@@ -137,16 +139,17 @@ var dialogueBodyOrder = map[string][]string{
 }
 
 var musicBodyOrder = map[string][]string{
-	"": {"composition_plan", "prompt", "model_id", "music_length_ms", "force_instrumental", "seed"},
+	"": {"composition_plan", "prompt", "model_id", "music_length_ms", "force_instrumental", "seed", "with_timestamps"},
 }
 
 var soundEffectsBodyOrder = map[string][]string{
 	"": {"text", "model_id", "duration_seconds", "prompt_influence", "loop"},
 }
 
-// buildDialogueRequest is the multi-voice dialogue request (/v1/text-to-dialogue)
-// from providerOptions.elevenlabs.inputs, which replaces text and voice.
-func (m *SpeechModel) buildDialogueRequest(opts *provider.SpeechGenerateOptions, o SpeechModelOptions) (*speechRequest, error) {
+// buildDialogueRequest is the Text to Dialogue request (/v1/text-to-dialogue)
+// from providerOptions.elevenlabs.inputs, which replace text and voice, or a
+// single text/voice input for eleven_v4 (TS 48ab95d62a).
+func (m *SpeechModel) buildDialogueRequest(opts *provider.SpeechGenerateOptions, o SpeechModelOptions, dialogueInputs []DialogueInput) (*speechRequest, error) {
 	if !isDialogueModelID(m.modelID) {
 		return nil, &providererrors.UnsupportedFunctionalityError{
 			Functionality: "dialogue with " + m.modelID,
@@ -154,7 +157,7 @@ func (m *SpeechModel) buildDialogueRequest(opts *provider.SpeechGenerateOptions,
 		}
 	}
 	warnings := speechCommonWarnings(o)
-	if opts.Text != "" {
+	if opts.Text != "" && o.Inputs != nil {
 		warnings = append(warnings, types.Warning{
 			Type:    "other",
 			Message: "ElevenLabs dialogue uses providerOptions.elevenlabs.inputs; the text prompt was ignored.",
@@ -167,7 +170,7 @@ func (m *SpeechModel) buildDialogueRequest(opts *provider.SpeechGenerateOptions,
 	if opts.Speed != nil {
 		ignored = append(ignored, "speed")
 	}
-	if opts.Voice != "" {
+	if opts.Voice != "" && o.Inputs != nil {
 		ignored = append(ignored, "voice")
 	}
 	if o.ApplyLanguageTextNormalization != nil {
@@ -192,8 +195,8 @@ func (m *SpeechModel) buildDialogueRequest(opts *provider.SpeechGenerateOptions,
 		query["enable_logging"] = strconv.FormatBool(*o.EnableLogging)
 	}
 
-	inputs := make([]interface{}, 0, len(o.Inputs))
-	for _, input := range o.Inputs {
+	inputs := make([]interface{}, 0, len(dialogueInputs))
+	for _, input := range dialogueInputs {
 		inputs = append(inputs, map[string]interface{}{"text": input.Text, "voice_id": input.VoiceID})
 	}
 	body := map[string]interface{}{"inputs": inputs, "model_id": m.modelID}
@@ -242,6 +245,7 @@ func (m *SpeechModel) buildDialogueRequest(opts *provider.SpeechGenerateOptions,
 
 	return &speechRequest{
 		path: "/v1/text-to-dialogue", body: body, bodyOrder: dialogueBodyOrder, query: query, warnings: warnings,
+		withTimestamps: o.WithTimestamps != nil && *o.WithTimestamps,
 	}, nil
 }
 
@@ -286,7 +290,7 @@ func (m *SpeechModel) buildAudioGenerationRequest(opts *provider.SpeechGenerateO
 		ignoredOptions = append(ignoredOptions, soundEffectsOnlyOptions...)
 	} else {
 		ignoredOptions = append(ignoredOptions, musicOnlyOptions...)
-		ignoredOptions = append(ignoredOptions, "seed")
+		ignoredOptions = append(ignoredOptions, "seed", "withTimestamps")
 	}
 	for _, option := range ignoredOptions {
 		if o.isSet(option) {
@@ -306,6 +310,9 @@ func (m *SpeechModel) buildAudioGenerationRequest(opts *provider.SpeechGenerateO
 	req := &speechRequest{query: query}
 	if isMusic {
 		req.path = "/v1/music"
+		if o.WithTimestamps != nil && *o.WithTimestamps {
+			req.path = "/v1/music/detailed"
+		}
 		req.bodyOrder = musicBodyOrder
 		body := map[string]interface{}{"model_id": m.modelID}
 		if o.CompositionPlan != nil {
@@ -341,6 +348,9 @@ func (m *SpeechModel) buildAudioGenerationRequest(opts *provider.SpeechGenerateO
 		}
 		if o.Seed != nil {
 			body["seed"] = *o.Seed
+		}
+		if o.WithTimestamps != nil && *o.WithTimestamps {
+			body["with_timestamps"] = true
 		}
 		req.body = body
 	} else {

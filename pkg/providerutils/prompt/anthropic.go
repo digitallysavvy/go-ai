@@ -1761,7 +1761,7 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 		// tool-result/error for this call; otherwise Anthropic rejects the
 		// request for a dangling result with no matching call (TS commit
 		// c35458eac5, #21875).
-		rawInput := part.toolInput()
+		rawInput, rawHint := part.toolInput()
 		action, hasAction := rawInput["action"].(string)
 		if !hasAction {
 			c.warn(fmt.Sprintf("toolset tool call for tool %s is missing the action", part.toolName))
@@ -1775,7 +1775,7 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 			"id":           part.id,
 			"name":         name,
 			"toolset_name": toolsetName,
-			"input":        orderedInput(rawInput, part.inputRaw),
+			"input":        orderedInput(rawInput, rawHint),
 		}
 		if caller != nil {
 			block["caller"] = caller
@@ -1789,7 +1789,7 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 		"type":  "tool_use",
 		"id":    part.id,
 		"name":  part.toolName,
-		"input": orderedInput(part.toolInput(), part.inputRaw),
+		"input": orderedInput(part.toolInput()),
 	}
 	if caller != nil {
 		block["caller"] = caller
@@ -2275,24 +2275,115 @@ func anthropicCaller(providerOptions map[string]interface{}) map[string]interfac
 
 // toolInput is the tool_use input: a JSON null input is recorded as
 // {rawInvalidInput: null} like TS, other non-objects via toAnthropicToolInput.
-func (t anthropicToolCall) toolInput() map[string]interface{} {
+func (t anthropicToolCall) toolInput() (map[string]interface{}, string) {
 	if t.inputNull {
-		return map[string]interface{}{"rawInvalidInput": nil}
+		return map[string]interface{}{"rawInvalidInput": nil}, t.inputRaw
 	}
-	return toAnthropicToolInput(t.input)
+	out, hint := toAnthropicToolInput(t.input)
+	if hint == "" {
+		hint = t.inputRaw
+	}
+	return out, hint
 }
 
 // toAnthropicToolInput wraps invalid (non-object) tool call input because
-// Anthropic requires tool_use.input to be an object.
-func toAnthropicToolInput(input interface{}) map[string]interface{} {
+// Anthropic requires tool_use.input to be an object. A string input whose
+// text is a JSON object is sent as that object (TS 4ae6986cd8); hint is then
+// that text, for the key order.
+func toAnthropicToolInput(input interface{}) (out map[string]interface{}, hint string) {
 	switch v := input.(type) {
 	case map[string]interface{}:
-		return v
+		return v, ""
 	case nil:
-		return map[string]interface{}{}
+		return map[string]interface{}{}, ""
+	case string:
+		if parsed, ok := SecureJSONParse(v); ok {
+			if m, ok := parsed.(map[string]interface{}); ok {
+				return m, v
+			}
+		}
+		return map[string]interface{}{"rawInvalidInput": v}, ""
 	default:
-		return map[string]interface{}{"rawInvalidInput": v}
+		return map[string]interface{}{"rawInvalidInput": v}, ""
 	}
+}
+
+// SecureJSONParse ports TS provider-utils secureJsonParse: JSON.parse that
+// rejects (ok=false) a document with an object that has an own "__proto__"
+// key, or a "constructor" key whose value is an object with a "prototype"
+// key. Invalid JSON is ok=false too.
+func SecureJSONParse(text string) (interface{}, bool) {
+	var v interface{}
+	if err := json.Unmarshal([]byte(text), &v); err != nil {
+		return nil, false
+	}
+	next := []interface{}{v}
+	for len(next) > 0 {
+		nodes := next
+		next = nil
+		for _, node := range nodes {
+			switch n := node.(type) {
+			case map[string]interface{}:
+				if _, ok := n["__proto__"]; ok {
+					return nil, false
+				}
+				if c, ok := n["constructor"]; ok {
+					if cm, ok := c.(map[string]interface{}); ok {
+						if _, ok := cm["prototype"]; ok {
+							return nil, false
+						}
+					}
+				}
+				for _, child := range n {
+					next = append(next, child)
+				}
+			case []interface{}:
+				next = append(next, n...)
+			}
+		}
+	}
+	return v, true
+}
+
+// SerializeToolCallArguments mirrors TS serializeToolCallArguments of the
+// OpenAI-compatible, Groq, Mistral and Cohere converters (TS 4ae6986cd8) for
+// a Go tool call input given as its JSON text raw (ToolCallContent.Input,
+// ToolCall.RawArguments; Go keeps an input that is not JSON as its raw text,
+// TS as a string):
+//   - a JSON string literal whose text is valid JSON: that text;
+//   - other valid JSON: raw as is (TS JSON.stringify of the parsed value);
+//   - text that is not JSON (a TS string input): JSON.stringify of it.
+//
+// raw must not be empty; callers serialize Arguments then.
+func SerializeToolCallArguments(raw string) string {
+	if text, _, ok := JSONStringToolInput(raw); ok {
+		return text
+	}
+	if json.Valid([]byte(raw)) {
+		return raw
+	}
+	b, err := jsonstr.Marshal(raw)
+	if err != nil {
+		return raw
+	}
+	return string(b)
+}
+
+// JSONStringToolInput reports whether raw, the JSON text of a tool call
+// input (ToolCallContent.Input, ToolCall.RawArguments), is a JSON string
+// literal whose text is itself valid JSON (TS secureJsonParse), and returns
+// that text and its parsed value. TS 4ae6986cd8 sends such an input as the
+// JSON it holds instead of double-encoding it.
+func JSONStringToolInput(raw string) (text string, value interface{}, ok bool) {
+	var s string
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+		return "", nil, false
+	}
+	v, ok := SecureJSONParse(s)
+	if !ok {
+		return "", nil, false
+	}
+	return s, v, true
 }
 
 // orderedInput returns v so that it marshals with the key order of raw, the

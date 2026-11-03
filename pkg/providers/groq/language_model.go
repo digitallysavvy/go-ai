@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -241,33 +242,32 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if jsonResponseTool == nil {
 		warnings = append(warnings, formatWarnings...)
 	}
-	// Map top-level Reasoning to Groq reasoning_effort. An explicit
-	// providerOptions.groq.reasoningEffort always wins (applied below via
-	// ApplyOpenAICompatibleCommonRequestOptions, which runs after this).
-	// provider-default → omit. none → "none" for qwen/qwen3.6-27b (the only
-	// model that accepts it), else an "unsupported" warning (Groq otherwise
-	// has no way to disable reasoning on a reasoning model).
-	// minimal/low → "low", medium → "medium", high/xhigh → "high".
-	if _, hasExplicitReasoningEffort := providerutils.OpenAICompatibleStringOption(compatibleOptions, "reasoningEffort", "reasoning_effort", "reasoning-effort"); !hasExplicitReasoningEffort && opts.Reasoning != nil {
-		switch *opts.Reasoning {
-		case types.ReasoningNone:
-			if m.modelID == "qwen/qwen3.6-27b" {
-				body["reasoning_effort"] = "none"
-			} else {
-				warnings = append(warnings, types.Warning{
-					Type:    "unsupported",
-					Feature: "reasoning",
-					Details: `reasoning "none" is not supported by this model.`,
-				})
+	// Map top-level Reasoning to Groq reasoning_effort (TS 61a315e333). An
+	// explicit providerOptions.groq.reasoningEffort always wins (applied below
+	// via ApplyOpenAICompatibleCommonRequestOptions, which runs after this).
+	// none → "none" for qwen/qwen3.6-27b (the only model that accepts it);
+	// GPT-OSS models always reason, so none rounds to their lowest effort;
+	// other models do not reason, so none gets an "unsupported" warning.
+	// Levels round to the nearest supported effort (low, medium, high).
+	if _, hasExplicitReasoningEffort := providerutils.OpenAICompatibleStringOption(compatibleOptions, "reasoningEffort", "reasoning_effort", "reasoning-effort"); !hasExplicitReasoningEffort && providerutils.IsCustomReasoning(opts.Reasoning) {
+		supportsNoneReasoning := m.modelID == "qwen/qwen3.6-27b"
+		alwaysReasons := strings.HasPrefix(m.modelID, "openai/gpt-oss")
+		if *opts.Reasoning == types.ReasoningNone && !supportsNoneReasoning && !alwaysReasons {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "reasoning",
+				Details: `reasoning "none" is not supported by this model.`,
+			})
+		} else {
+			effortMap := map[types.ReasoningLevel]string{
+				types.ReasoningLow:    "low",
+				types.ReasoningMedium: "medium",
+				types.ReasoningHigh:   "high",
 			}
-		case types.ReasoningDefault:
-			// provider-default: omit
-		default:
-			if effort, ok := providerutils.MapReasoningToProviderEffort(opts.Reasoning, map[types.ReasoningLevel]string{
-				types.ReasoningMinimal: "low", types.ReasoningLow: "low",
-				types.ReasoningMedium: "medium", types.ReasoningHigh: "high",
-				types.ReasoningXHigh: "high", types.ReasoningMax: "high",
-			}, nil, &warnings); ok {
+			if supportsNoneReasoning {
+				effortMap[types.ReasoningNone] = "none"
+			}
+			if effort, ok := providerutils.MapReasoningToProviderEffort(opts.Reasoning, effortMap, nil, &warnings); ok {
 				body["reasoning_effort"] = effort
 			}
 		}
