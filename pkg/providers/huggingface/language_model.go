@@ -3,7 +3,7 @@ package huggingface
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"strings"
@@ -106,8 +106,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (map[string]inte
 	if prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice) != nil {
 		// TS prepareResponsesTools' exhaustive check throws a plain Error
 		// that interpolates the tool choice object.
-		msg := "Unsupported tool choice type: [object Object]"
-		return nil, warnings, errors.New(msg)
+		return nil, warnings, fmt.Errorf("%s", "Unsupported tool choice type: [object Object]")
 	}
 	hfTools, toolsPresent, mappedToolChoice, toolWarnings := prepareResponsesTools(opts.Tools, opts.ToolChoice)
 	warnings = append(warnings, toolWarnings...)
