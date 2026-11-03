@@ -64,7 +64,7 @@ func r85carryExpect(t *testing.T, start map[string]any, want map[string]any) {
 	}
 }
 
-func r85carryBool(b bool) *bool       { return &b }
+func r85carryBool(b bool) *bool        { return &b }
 func r85carryFloat(f float64) *float64 { return &f }
 func r85carryInt(i int) *int           { return &i }
 
