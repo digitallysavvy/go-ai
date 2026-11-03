@@ -7,6 +7,8 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -225,5 +227,62 @@ func TestR85provbUnfinishedWebSearchIsError(t *testing.T) {
 		if got := isFailedWebSearchStatus(status); got != want {
 			t.Errorf("isFailedWebSearchStatus(%q) = %v, want %v", status, got, want)
 		}
+	}
+}
+
+// TS 47b1d8b2f7 isInputJsonData: objects and non-empty arrays of objects
+// within depth 32, 10,000 values and 256 KiB go as input_json.
+func TestR85provbDecisionInputJSON(t *testing.T) {
+	nested := func(levels int) interface{} {
+		var v interface{} = map[string]interface{}{"leaf": true}
+		for i := 1; i < levels; i++ {
+			v = map[string]interface{}{"next": v}
+		}
+		return v
+	}
+	withKeys := func(n int) interface{} {
+		m := map[string]interface{}{}
+		for i := 0; i < n; i++ {
+			m["k"+strconv.Itoa(i)] = i
+		}
+		return m
+	}
+	big := map[string]interface{}{"text": strings.Repeat("x", 200*1024)}
+	tooBig := map[string]interface{}{"text": strings.Repeat("é", 129*1024)} // 258 KiB of UTF-8
+	tests := []struct {
+		name   string
+		value  interface{}
+		native bool
+	}{
+		{"object", map[string]interface{}{"a": 1}, true},
+		{"array of objects", []interface{}{map[string]interface{}{"charge": 49}, map[string]interface{}{"charge": 49}}, true},
+		{"empty array", []interface{}{}, false},
+		{"mixed array", []interface{}{map[string]interface{}{"a": 1}, 2}, false},
+		{"string", "hi", false},
+		{"number", 3, false},
+		{"null", nil, false},
+		{"32 container levels", nested(32), true},
+		{"33 container levels", nested(33), false},
+		{"9,000 values", withKeys(9000), true},
+		{"10,000 values", withKeys(10000), false}, // the object itself is one more value
+		{"200 KiB of JSON", big, true},
+		{"over 256 KiB of UTF-8", tooBig, false},
+	}
+	for _, tt := range tests {
+		if got := decisionIsInputJSONData(decisionJSONText(tt.value)); got != tt.native {
+			t.Errorf("%s: native = %v, want %v", tt.name, got, tt.native)
+		}
+	}
+
+	opts := map[string]interface{}{"openai": map[string]interface{}{"promptCacheKey": "k1", "safetyIdentifier": "u", "other": 1}}
+	parsed, err := parseDecisionProviderOptions(opts)
+	if err != nil || parsed.PromptCacheKey == nil || *parsed.PromptCacheKey != "k1" {
+		t.Fatalf("parsed = %+v, err %v", parsed, err)
+	}
+	if w := decisionUnsupportedOptionWarnings(opts); len(w) != 1 || w[0].Feature != "providerOptions.openai.other" {
+		t.Fatalf("warnings = %#v", w)
+	}
+	if _, err := parseDecisionProviderOptions(map[string]interface{}{"openai": map[string]interface{}{"promptCacheKey": 1}}); err == nil {
+		t.Fatal("a non-string promptCacheKey must fail")
 	}
 }
