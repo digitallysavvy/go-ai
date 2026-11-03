@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 func r85carryBashTool() types.Tool {
@@ -329,5 +331,260 @@ func TestR85carryNativeToolNameMetadata(t *testing.T) {
 				t.Fatal("the adapter's provider metadata was mutated")
 			}
 		})
+	}
+}
+
+// r85carryRecipeHarness is the mock harness with a bootstrap recipe.
+type r85carryRecipeHarness struct{ *mockHarnessAdapter }
+
+func (h r85carryRecipeHarness) GetBootstrap(context.Context) (*Bootstrap, error) {
+	return &Bootstrap{HarnessID: "mock", BootstrapDir: "mock-bootstrap"}, nil
+}
+
+// r85carryNetSandbox is a NetworkSandboxSession over mockSandbox with a
+// network policy setter (and no other optional method).
+type r85carryNetSandbox struct {
+	*mockSandbox
+	policies int
+}
+
+func (s *r85carryNetSandbox) ID() string                      { return "net-1" }
+func (s *r85carryNetSandbox) DefaultWorkingDirectory() string { return "/work" }
+func (s *r85carryNetSandbox) Ports() []int                    { return nil }
+func (s *r85carryNetSandbox) GetPortEndpoint(context.Context, PortEndpointOptions) (PortEndpoint, error) {
+	return PortEndpoint{}, nil
+}
+func (s *r85carryNetSandbox) GetPortURL(context.Context, PortEndpointOptions) (string, error) {
+	return "", nil
+}
+func (s *r85carryNetSandbox) Stop(context.Context) error                { return nil }
+func (s *r85carryNetSandbox) Destroy(context.Context) error             { return nil }
+func (s *r85carryNetSandbox) Restricted() providerutils.SandboxSession { return s.mockSandbox }
+func (s *r85carryNetSandbox) SetNetworkPolicy(context.Context, NetworkPolicy) error {
+	s.policies++
+	return nil
+}
+
+func r85carrySetupAgent(t *testing.T, h Harness, onSession func() error) (*Agent, *int32) {
+	t.Helper()
+	var sessions int32
+	a, err := NewAgent(AgentSettings{Harness: h, SandboxConfig: SandboxConfig{
+		OnSession: func(context.Context, SandboxSessionContext) error {
+			atomic.AddInt32(&sessions, 1)
+			if onSession != nil {
+				return onSession()
+			}
+			return nil
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a, &sessions
+}
+
+func r85carryMkdirs(sb *mockSandbox) int {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	n := 0
+	for _, r := range sb.runs {
+		if strings.HasPrefix(r.Command, "mkdir -p") {
+			n++
+		}
+	}
+	return n
+}
+
+// TS 8a20b57d41 "for a harness without a bootstrap recipe, sandbox setup runs
+// on the first sandbox operation, not at createSession()", "... concurrent
+// first operations on the sandbox and its restricted view share one setup"
+// and "... stopping and destroying the sandbox does not run setup".
+func TestR85carryDeferredSandboxSetup(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{script: func(func(string, interface{})) []StreamPart { return nil }})
+	a, sessions := r85carrySetupAgent(t, mock.harness, nil)
+	sb := &r85carryNetSandbox{mockSandbox: newMockSandbox()}
+	session, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: sb})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if n := atomic.LoadInt32(sessions); n != 0 || r85carryMkdirs(sb.mockSandbox) != 0 {
+		t.Fatalf("setup ran at CreateSession: onSession=%d mkdirs=%d", n, r85carryMkdirs(sb.mockSandbox))
+	}
+	adapterSandbox := mock.harness.(*mockHarnessAdapter).startCalls[0].SandboxSession
+	if adapterSandbox != session.GetSandboxSession() {
+		t.Fatal("the adapter and the session were handed different sandbox sessions")
+	}
+	net, ok := AsNetworkSandboxSession(adapterSandbox)
+	if !ok || net.ID() != "net-1" {
+		t.Fatalf("deferred session lost the network view: %T", adapterSandbox)
+	}
+	// Optional methods are forwarded exactly when the original has them.
+	if _, ok := adapterSandbox.(NetworkPolicySetter); !ok {
+		t.Fatal("deferred session lost SetNetworkPolicy")
+	}
+	if _, ok := adapterSandbox.(PortsSetter); ok {
+		t.Fatal("deferred session gained SetPorts")
+	}
+	if err := adapterSandbox.(NetworkPolicySetter).SetNetworkPolicy(context.Background(), NetworkPolicy{Mode: NetworkPolicyAllowAll}); err != nil || sb.policies != 1 {
+		t.Fatalf("SetNetworkPolicy = %v, policies %d", err, sb.policies)
+	}
+	if err := net.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := atomic.LoadInt32(sessions); n != 0 {
+		t.Fatalf("stop / network methods ran setup: onSession=%d", n)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		target := adapterSandbox
+		if i%2 == 1 {
+			target = GetRestrictedSandboxSession(adapterSandbox)
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := target.Run(context.Background(), providerutils.SandboxProcessOptions{Command: "ls"}); err != nil {
+				t.Errorf("Run: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if n := atomic.LoadInt32(sessions); n != 1 || r85carryMkdirs(sb.mockSandbox) != 1 {
+		t.Fatalf("onSession=%d mkdirs=%d, want one shared setup", n, r85carryMkdirs(sb.mockSandbox))
+	}
+	if _, err := adapterSandbox.Run(context.Background(), providerutils.SandboxProcessOptions{Command: "ls"}); err != nil || atomic.LoadInt32(sessions) != 1 {
+		t.Fatalf("a later operation reran setup: %v onSession=%d", err, atomic.LoadInt32(sessions))
+	}
+}
+
+// TS "for a harness without a bootstrap recipe, a failed sandbox setup
+// rejects its operation and is retried on the next one".
+func TestR85carryDeferredSandboxSetupRetriedAfterFailure(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{script: func(func(string, interface{})) []StreamPart { return nil }})
+	var fail atomic.Bool
+	fail.Store(true)
+	a, sessions := r85carrySetupAgent(t, mock.harness, func() error {
+		if fail.Load() {
+			return errors.New("onSession failed")
+		}
+		return nil
+	})
+	sb := newMockSandbox()
+	session, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: sb})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	sandbox := session.GetSandboxSession()
+	if _, err := sandbox.Run(context.Background(), providerutils.SandboxProcessOptions{Command: "ls"}); err == nil || err.Error() != "onSession failed" {
+		t.Fatalf("first Run err = %v, want the setup failure", err)
+	}
+	fail.Store(false)
+	if _, err := sandbox.Run(context.Background(), providerutils.SandboxProcessOptions{Command: "ls"}); err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	if n := atomic.LoadInt32(sessions); n != 2 {
+		t.Fatalf("onSession calls = %d, want 2 (retried)", n)
+	}
+}
+
+// TS "for a harness without a bootstrap recipe, createSandboxSession runs on
+// the first sandbox operation with setup before it" and "... a failed
+// createSandboxSession is retried on the next operation".
+func TestR85carrySandboxCreatorDeferred(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{script: func(func(string, interface{})) []StreamPart { return nil }})
+	a, sessions := r85carrySetupAgent(t, mock.harness, nil)
+	sb := newMockSandbox()
+	var creates int32
+	creator := &SandboxCreator{DefaultWorkingDirectory: "/vercel/sandbox", CreateSandboxSession: func(context.Context) (providerutils.SandboxSession, error) {
+		if atomic.AddInt32(&creates, 1) == 1 {
+			return nil, errors.New("create failed")
+		}
+		return sb, nil
+	}}
+	session, err := a.CreateSession(context.Background(), CreateSessionOptions{SessionID: "s1", SandboxCreator: creator})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if n := atomic.LoadInt32(&creates); n != 0 {
+		t.Fatalf("CreateSandboxSession called %d times at CreateSession, want 0", n)
+	}
+	if got := session.GetSessionWorkDir(); !strings.HasPrefix(got, "/vercel/sandbox/") {
+		t.Fatalf("session work dir = %q, want it under the creator's default working directory", got)
+	}
+	sandbox := session.GetSandboxSession()
+	if want := "Sandbox with the working directory /vercel/sandbox. It starts on first use."; sandbox.Description() != want {
+		t.Fatalf("Description = %q, want %q", sandbox.Description(), want)
+	}
+	if _, err := sandbox.Run(context.Background(), providerutils.SandboxProcessOptions{Command: "ls"}); err == nil || err.Error() != "create failed" {
+		t.Fatalf("first Run err = %v", err)
+	}
+	if _, err := sandbox.Run(context.Background(), providerutils.SandboxProcessOptions{Command: "ls"}); err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	if atomic.LoadInt32(&creates) != 2 || atomic.LoadInt32(sessions) != 1 {
+		t.Fatalf("creates=%d onSession=%d, want 2/1", creates, atomic.LoadInt32(sessions))
+	}
+	sb.mu.Lock()
+	events := append([]string(nil), sb.events...)
+	sb.mu.Unlock()
+	if len(events) == 0 || events[len(events)-1] != "run:ls" {
+		t.Fatalf("events = %v, want the setup before the ls", events)
+	}
+	for _, e := range events {
+		if e == "run:pwd" {
+			t.Fatalf("events = %v: the creator's default working directory replaces pwd", events)
+		}
+	}
+	if sandbox.Description() != "mock" {
+		t.Fatalf("Description after creation = %q, want the created sandbox's", sandbox.Description())
+	}
+}
+
+// TS "for a harness with a bootstrap recipe, createSandboxSession runs in
+// createSession() and skips pwd"; Go rejects SandboxSession together with
+// SandboxCreator.
+func TestR85carrySandboxCreatorWithRecipe(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{script: func(func(string, interface{})) []StreamPart { return nil }})
+	h := r85carryRecipeHarness{mock.harness.(*mockHarnessAdapter)}
+	a, sessions := r85carrySetupAgent(t, h, nil)
+	sb := newMockSandbox()
+	var creates int32
+	session, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxCreator: &SandboxCreator{DefaultWorkingDirectory: "/vercel/sandbox", CreateSandboxSession: func(context.Context) (providerutils.SandboxSession, error) {
+		atomic.AddInt32(&creates, 1)
+		return sb, nil
+	}}})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if atomic.LoadInt32(&creates) != 1 || atomic.LoadInt32(sessions) != 1 {
+		t.Fatalf("creates=%d onSession=%d, want 1/1 at CreateSession", creates, atomic.LoadInt32(sessions))
+	}
+	if session.GetSandboxSession() != providerutils.SandboxSession(sb) {
+		t.Fatalf("session sandbox = %T, want the created sandbox", session.GetSandboxSession())
+	}
+	for _, r := range sb.runs {
+		if r.Command == "pwd" {
+			t.Fatal("pwd ran; the creator's default working directory is used")
+		}
+	}
+	if _, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: sb, SandboxCreator: &SandboxCreator{CreateSandboxSession: func(context.Context) (providerutils.SandboxSession, error) { return sb, nil }}}); err == nil {
+		t.Fatal("SandboxSession together with SandboxCreator was accepted")
+	}
+}
+
+// A harness with a recipe keeps the eager setup (TS "sandboxConfig.onSession
+// runs ... before harness start for a harness with a bootstrap recipe").
+func TestR85carryRecipeHarnessSetsUpEagerly(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{script: func(func(string, interface{})) []StreamPart { return nil }})
+	h := r85carryRecipeHarness{mock.harness.(*mockHarnessAdapter)}
+	a, sessions := r85carrySetupAgent(t, h, nil)
+	sb := newMockSandbox()
+	session, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: sb})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if atomic.LoadInt32(sessions) != 1 || session.GetSandboxSession() != providerutils.SandboxSession(sb) {
+		t.Fatalf("onSession=%d sandbox=%T, want eager setup on the sandbox itself", atomic.LoadInt32(sessions), session.GetSandboxSession())
 	}
 }
