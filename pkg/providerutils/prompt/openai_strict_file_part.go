@@ -59,12 +59,33 @@ func openAIStrictFilePart(file types.FileContent, mode FilePartMode, refs *provi
 	isURL := file.FileData.Type == types.FileDataTypeURL || (file.URL != "" && len(file.Data) == 0)
 	inline := !isURL
 
+	// TS convertToBase64(part.data.data) returns a string payload as is, and
+	// detectMediaType decodes only its sniffed prefix (decodePrefix).
+	payloadString := len(file.Data) == 0 && file.FileData.Type == types.FileDataTypeData && file.FileData.DataString != ""
+	payload := file.FileData.DataString
+	if !payloadString {
+		payload = base64.StdEncoding.EncodeToString(file.Data)
+	}
+	resolve := func(inline bool) (string, error) {
+		if payloadString && inline && !isFullMediaType(mediaType) {
+			detected, ok, err := fileutil.DetectMediaTypeSignatureBase64(payload, topLevelMediaType(mediaType))
+			if err != nil {
+				return "", err
+			}
+			if ok && detected != "" {
+				return detected, nil
+			}
+			return "", unsupportedFilePart(fmt.Sprintf("file of media type %q must specify subtype since it could not be auto-detected", mediaType))
+		}
+		return resolveFullMediaTypeStrict(mediaType, file.Data, inline)
+	}
+
 	dataURL := func() (string, error) {
-		full, err := resolveFullMediaTypeStrict(mediaType, file.Data, inline)
+		full, err := resolve(inline)
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("data:%s;base64,%s", full, base64.StdEncoding.EncodeToString(file.Data)), nil
+		return fmt.Sprintf("data:%s;base64,%s", full, payload), nil
 	}
 	mediaURL := func() (string, error) {
 		if isURL {
@@ -110,7 +131,7 @@ func openAIStrictFilePart(file types.FileContent, mode FilePartMode, refs *provi
 		if isURL {
 			return nil, unsupportedFilePart("audio file parts with URLs")
 		}
-		full, err := resolveFullMediaTypeStrict(mediaType, file.Data, true)
+		full, err := resolve(true)
 		if err != nil {
 			return nil, err
 		}
@@ -127,7 +148,7 @@ func openAIStrictFilePart(file types.FileContent, mode FilePartMode, refs *provi
 			return nil, unsupportedFilePart("audio content parts with media type " + full)
 		}
 		return map[string]interface{}{"type": "input_audio", "input_audio": map[string]interface{}{
-			"data": base64.StdEncoding.EncodeToString(file.Data), "format": format,
+			"data": payload, "format": format,
 		}}, nil
 	}
 
@@ -137,25 +158,34 @@ func openAIStrictFilePart(file types.FileContent, mode FilePartMode, refs *provi
 			if isURL {
 				return nil, unsupportedFilePart("PDF file parts with URLs")
 			}
-			full, err := resolveFullMediaTypeStrict(mediaType, file.Data, true)
+			full, err := resolve(true)
 			if err != nil {
 				return nil, err
 			}
 			if full != "application/pdf" {
 				return nil, unsupportedFilePart("file part media type " + full)
 			}
-			return pdfFilePart(file), nil
+			return pdfFilePart(file, payload), nil
 		case "text":
 			if isURL {
 				return map[string]interface{}{"type": "text", "text": file.URL}, nil
 			}
-			return map[string]interface{}{"type": "text", "text": strings.ToValidUTF8(string(file.Data), "�")}, nil
+			text := file.Data
+			if payloadString {
+				// TS new TextDecoder().decode(convertBase64ToUint8Array(s)).
+				decoded, err := fileutil.ConvertBase64ToBytes(payload)
+				if err != nil {
+					return nil, err
+				}
+				text = decoded
+			}
+			return map[string]interface{}{"type": "text", "text": strings.ToValidUTF8(string(text), "�")}, nil
 		}
 		return nil, unsupportedFilePart("file part media type " + mediaType)
 	}
 
 	// FilePartsOpenAIChat: everything left must be a PDF.
-	full, err := resolveFullMediaTypeStrict(mediaType, file.Data, inline)
+	full, err := resolve(inline)
 	if err != nil {
 		return nil, err
 	}
@@ -165,12 +195,14 @@ func openAIStrictFilePart(file types.FileContent, mode FilePartMode, refs *provi
 	if isURL {
 		return nil, unsupportedFilePart("PDF file parts with URLs")
 	}
-	return pdfFilePart(file), nil
+	return pdfFilePart(file, payload), nil
 }
 
-func pdfFilePart(file types.FileContent) map[string]interface{} {
+// pdfFilePart builds the PDF file part; payload is the base64 data (a string
+// payload as given, TS convertToBase64).
+func pdfFilePart(file types.FileContent, payload string) map[string]interface{} {
 	fileObject := map[string]interface{}{
-		"file_data": "data:application/pdf;base64," + base64.StdEncoding.EncodeToString(file.Data),
+		"file_data": "data:application/pdf;base64," + payload,
 	}
 	if file.Filename != "" {
 		fileObject["filename"] = file.Filename
