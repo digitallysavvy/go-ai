@@ -870,21 +870,11 @@ func (c *Channel) rawSendLocked(data []byte) Conn {
 	return nil
 }
 
-// flushPending mirrors TS `flushPending`: it sends the queued frames one at
-// a time while the socket stays open and removes only the frames it sent, so
-// frames left when the socket stops being open (or a write fails) stay
-// queued, in order.
-func (c *Channel) flushPending() {
-	c.sendMu.Lock()
-	defer c.sendMu.Unlock()
-	if conn := c.flushPendingLocked(); conn != nil {
-		_ = conn.Close()
-	}
-}
-
-// flushPendingLocked sends queued frames while connected and open. c.sendMu
-// must be held, c.mu must not. It returns the socket whose write failed (to
-// be closed by the caller), or nil.
+// flushPendingLocked mirrors TS `flushPending`: it sends the queued frames
+// one at a time while the socket stays open and removes only the frames it
+// sent, so frames left when the socket stops being open (or a write fails)
+// stay queued, in order. c.sendMu must be held, c.mu must not. It returns
+// the socket whose write failed (to be closed by the caller), or nil.
 func (c *Channel) flushPendingLocked() Conn {
 	for {
 		c.mu.Lock()

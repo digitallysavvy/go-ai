@@ -71,7 +71,7 @@ func (h *r85carryHistogram) Record(_ context.Context, v float64, opts ...metric.
 	set := cfg.Attributes()
 	attrs := map[string]string{}
 	for _, kv := range set.ToSlice() {
-		attrs[string(kv.Key)] = kv.Value.Emit()
+		attrs[string(kv.Key)] = kv.Value.String()
 	}
 	h.p.mu.Lock()
 	h.p.points = append(h.p.points, r85carryPoint{value: v, attrs: attrs})
