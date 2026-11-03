@@ -51,8 +51,8 @@ type QuestionResolvedFrame struct {
 // FrameType returns "acp-question-resolved".
 func (QuestionResolvedFrame) FrameType() string { return TypeQuestionResolved }
 
-// decodeOutbound wraps bridge.DecodeOutbound with the three ACP-specific
-// extension frames above. Mirrors TS `outboundMessageSchema`.
+// decodeOutbound wraps bridge.DecodeOutbound with the four ACP-specific
+// extension frames (the three above and HostToolCallResolutionRequestFrame). Mirrors TS `outboundMessageSchema`.
 func decodeOutbound(data []byte) (bridge.OutboundMessage, *float64, error) {
 	typ, fields, err := harness.ReadTagged(data)
 	if err != nil {
@@ -66,7 +66,7 @@ func decodeOutbound(data []byte) (bridge.OutboundMessage, *float64, error) {
 		}
 	}
 	switch typ {
-	case TypeToolCallCandidate, TypeQuestionRequest, TypeQuestionResolved:
+	case TypeToolCallCandidate, TypeQuestionRequest, TypeQuestionResolved, TypeHostToolCallResolutionRequest:
 		if err := validateACPFrame(typ, fields); err != nil {
 			return nil, seq, err
 		}
@@ -86,6 +86,12 @@ func decodeOutbound(data []byte) (bridge.OutboundMessage, *float64, error) {
 		return f, seq, nil
 	case TypeQuestionResolved:
 		var f QuestionResolvedFrame
+		if err := json.Unmarshal(data, &f); err != nil {
+			return nil, seq, err
+		}
+		return f, seq, nil
+	case TypeHostToolCallResolutionRequest:
+		var f HostToolCallResolutionRequestFrame
 		if err := json.Unmarshal(data, &f); err != nil {
 			return nil, seq, err
 		}
@@ -124,6 +130,11 @@ func validateACPFrame(typ string, fields map[string]json.RawMessage) error {
 		if !toolCallOK(fields["toolCall"]) {
 			return invalid("toolCall")
 		}
+	case TypeHostToolCallResolutionRequest:
+		if !toolCallOK(fields["toolCall"]) {
+			return invalid("toolCall")
+		}
+		return validateHostToolCallResolutionFields(fields)
 	case TypeQuestionRequest:
 		if raw, ok := fields["nativeToolCall"]; ok && !toolCallOK(raw) {
 			return invalid("nativeToolCall")

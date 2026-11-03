@@ -1,4 +1,4 @@
-import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, realpath, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { argv, env, pid, stdout } from "node:process";
@@ -7,6 +7,7 @@ import * as claudeAgentSdk from "@anthropic-ai/claude-agent-sdk";
 import * as mcpServerModule from "@modelcontextprotocol/sdk/server/mcp.js";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod/v4";
+import path from "node:path";
 //#region ../harness/dist/bridge/index.js
 const name = "AI_HarnessBridgeCapabilityUnsupportedError";
 /**
@@ -672,11 +673,12 @@ function createCompactionLatch(emit) {
 }
 //#endregion
 //#region src/bridge/claude-code-system-prompt.ts
-function createClaudeCodeSystemPrompt(instructions) {
+function createClaudeCodeSystemPrompt(instructions, options) {
 	return {
 		type: "preset",
 		preset: "claude_code",
-		...instructions ? { append: instructions } : {}
+		...instructions ? { append: instructions } : {},
+		...options?.excludeDynamicSections !== void 0 ? { excludeDynamicSections: options.excludeDynamicSections } : {}
 	};
 }
 //#endregion
@@ -1223,7 +1225,8 @@ function defaultUsage() {
 //#endregion
 //#region src/bridge/json-schema-to-zod.ts
 function jsonSchemaToZodObject(input) {
-	return toZodObject(isJsonSchemaObject(input) ? input : {});
+	const schema = isJsonSchemaObject(input) ? input : {};
+	return withJsonSchemaMetadata(toZodObject(schema), schema);
 }
 function toZodObject(schema) {
 	const object = z.object(toZodShape(schema));
@@ -1247,7 +1250,22 @@ function toZodType(schema) {
 	let zType = zodForConst(schema) ?? zodForEnum(schema) ?? zodForUnion(schema) ?? zodForType(schema);
 	if (isNullable(schema)) zType = zType.nullable();
 	if (schema.description) zType = zType.describe(schema.description);
-	return zType;
+	return withJsonSchemaMetadata(zType, schema);
+}
+function withJsonSchemaMetadata(zType, schema) {
+	const metadata = {};
+	for (const key of [
+		"minimum",
+		"maximum",
+		"exclusiveMinimum",
+		"exclusiveMaximum",
+		"minLength",
+		"maxLength",
+		"minItems",
+		"maxItems",
+		"default"
+	]) if (schema[key] !== void 0) metadata[key] = schema[key];
+	return zType.meta(metadata);
 }
 function zodForType(schema) {
 	const types = getNonNullTypes(schema);
@@ -1296,6 +1314,53 @@ function isJsonSchemaObject(input) {
 }
 function isJsonLiteral(value) {
 	return value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value);
+}
+//#endregion
+//#region src/bridge/permission-paths.ts
+async function areFileToolPathsTrusted(options) {
+	if (options.paths.length === 0) return false;
+	try {
+		const roots = [await realpath(options.workDir)];
+		if (options.access === "read") for (const root of options.readableSkillRoots) try {
+			roots.push(await realpath(root));
+		} catch {
+			continue;
+		}
+		for (const filePath of options.paths) {
+			if (typeof filePath !== "string" || filePath.length === 0 || filePath !== filePath.trim() || filePath === "~" || filePath.startsWith("~/")) return false;
+			if (!path.posix.isAbsolute(filePath) && !path.posix.isAbsolute(options.cwd)) return false;
+			const absolutePath = path.posix.isAbsolute(filePath) ? filePath : `${options.cwd}/${filePath}`;
+			for (const candidatePath of [absolutePath, path.posix.normalize(absolutePath)]) {
+				const candidate = await resolvePermissionPath({ filePath: candidatePath });
+				if (!roots.some((root) => {
+					const relative = path.posix.relative(root, candidate);
+					return relative === "" || relative !== ".." && !relative.startsWith("../") && !path.posix.isAbsolute(relative);
+				})) return false;
+			}
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}
+async function resolvePermissionPath(options) {
+	let existingPath = options.filePath;
+	const missing = [];
+	for (;;) {
+		let exists = true;
+		try {
+			await lstat(existingPath);
+		} catch (error) {
+			if (error == null || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw error;
+			exists = false;
+		}
+		if (exists) return path.posix.join(await realpath(existingPath), ...missing);
+		const parent = path.posix.dirname(existingPath);
+		const segment = path.posix.basename(existingPath);
+		if (parent === existingPath || segment === "." || segment === "..") throw new Error("Unable to resolve permission path.");
+		missing.unshift(segment);
+		existingPath = parent;
+	}
 }
 //#endregion
 //#region src/bridge/tool-filtering.ts
@@ -1486,18 +1551,27 @@ function createPermissionOptions(input) {
 	return {
 		...baseOptions,
 		canUseTool: async (toolName, toolInput, options) => {
-			if (toolName.startsWith("mcp__harness-tools__")) return {
-				behavior: "allow",
-				updatedInput: toolInput
-			};
-			if (!inactiveNativeTools.has(toolName) && !nativeToolRequiresApproval({
-				nativeName: toolName,
-				permissionMode
+			if (!await needsHostApproval({
+				toolName,
+				toolInput,
+				permissionMode,
+				inactiveNativeTools,
+				cwd: input.toolCwds.get(options.toolUseID) ?? "",
+				readableSkillRoots: input.start.readableSkillRoots ?? [],
+				blockedPath: options.blockedPath
 			})) return {
 				behavior: "allow",
 				updatedInput: toolInput
 			};
 			const approvalId = options.toolUseID;
+			if (input.approvalDecisions.get(approvalId)?.approved === true) {
+				input.approvalDecisions.delete(approvalId);
+				return {
+					behavior: "allow",
+					updatedInput: toolInput,
+					toolUseID: approvalId
+				};
+			}
 			input.approvalRequestedToolUseIds.add(approvalId);
 			input.nativeToolCallNames.set(approvalId, toolName);
 			if (!input.emittedToolCallIds.has(approvalId)) {
@@ -1581,8 +1655,99 @@ function createPermissionSettings(input) {
 		sandbox: { autoAllowBashIfSandboxed: false }
 	};
 }
+/**
+* Claude Code picks a model's output limit, system prompt and default effort
+* from its own reading of the model id, and misreads AI Gateway ids with a
+* dotted version such as `anthropic/claude-opus-5.5`. `modelOverrides` maps
+* the id Claude Code expects (`claude-opus-5-5`) to the gateway id, which
+* stays the id sent to the gateway.
+*/
+function createGatewayModelOverrides(model) {
+	if (!model?.startsWith("anthropic/")) return void 0;
+	const id = model.slice(10).replace(/\[[^\]]*\]$/, "");
+	return id.includes(".") ? { [id.replace(/\./g, "-")]: model } : void 0;
+}
+async function needsHostApproval(input) {
+	if (input.toolName.startsWith("mcp__harness-tools__")) return false;
+	if (input.inactiveNativeTools.has(input.toolName) || nativeToolRequiresApproval({
+		nativeName: input.toolName,
+		permissionMode: input.permissionMode
+	})) return true;
+	const args = input.toolInput != null && typeof input.toolInput === "object" ? input.toolInput : {};
+	let paths;
+	let access;
+	if (input.toolName === "Glob" && (typeof args.pattern !== "string" || /\.\.|[{}()[\]]/.test(args.pattern) || args.pattern.includes("\\") || args.pattern.startsWith("/"))) return true;
+	switch (input.toolName) {
+		case "Read":
+			paths = [args.file_path];
+			access = "read";
+			break;
+		case "Write":
+		case "Edit":
+			paths = [args.file_path];
+			access = "write";
+			break;
+		case "NotebookEdit":
+			paths = [args.notebook_path];
+			access = "write";
+			break;
+		case "Glob":
+		case "Grep":
+			paths = [args.path ?? input.cwd];
+			access = "read";
+			break;
+		default:
+			if (input.blockedPath == null) return false;
+			paths = [];
+			access = "read";
+	}
+	if (input.blockedPath != null) paths.push(input.blockedPath);
+	if (!paths.every((value) => typeof value === "string")) return true;
+	return !await areFileToolPathsTrusted({
+		workDir: workdir,
+		cwd: input.cwd,
+		paths,
+		access,
+		readableSkillRoots: input.readableSkillRoots
+	});
+}
+function createApprovalPreToolUseHook(input) {
+	return async (hookInput, toolUseID) => {
+		if (hookInput.hook_event_name !== "PreToolUse") return {};
+		const toolName = hookInput.tool_name;
+		if (toolUseID == null || typeof toolName !== "string" || toolName === "AskUserQuestion") return {};
+		input.toolCwds.set(toolUseID, hookInput.cwd);
+		const decision = input.decisions.get(toolUseID);
+		if (decision != null) {
+			input.nativeToolCallNames.set(toolUseID, toolName);
+			if (!decision.approved) input.decisions.delete(toolUseID);
+			return { hookSpecificOutput: {
+				hookEventName: "PreToolUse",
+				...decision.approved ? { permissionDecision: "allow" } : {
+					permissionDecision: "deny",
+					permissionDecisionReason: decision.reason ?? "Denied"
+				}
+			} };
+		}
+		if (!await needsHostApproval({
+			toolName,
+			toolInput: hookInput.tool_input,
+			cwd: hookInput.cwd,
+			readableSkillRoots: input.readableSkillRoots,
+			permissionMode: input.permissionMode,
+			inactiveNativeTools: input.inactiveNativeTools
+		})) return {};
+		input.deferredToolUseIds.add(toolUseID);
+		return { hookSpecificOutput: {
+			hookEventName: "PreToolUse",
+			permissionDecision: "defer"
+		} };
+	};
+}
 function nativeToolRequiresApproval(input) {
 	if (input.permissionMode === "allow-all") return false;
+	if (input.nativeName === "EnterWorktree" || input.nativeName === "ExitWorktree") return true;
+	if (!(input.nativeName in NATIVE_TOOL_KINDS)) return true;
 	const kind = NATIVE_TOOL_KINDS[input.nativeName] ?? "edit";
 	if (input.permissionMode === "allow-edits") return kind === "bash";
 	return kind === "edit" || kind === "bash";
@@ -1605,70 +1770,75 @@ async function runTurn(start, turn) {
 			name: "harness-tools",
 			version: "1.0.0"
 		});
-		for (const tool of start.tools) server.registerTool(tool.name, {
-			description: tool.description ?? "",
-			inputSchema: jsonSchemaToZodObject(tool.inputSchema)
-		}, async (...handlerArgs) => {
-			const [input, extra] = handlerArgs;
-			const metadataToolCallId = extra._meta?.["claudecode/toolUseId"];
-			const toolCallId = resolveMcpHandlerToolUseId({
-				state: streamEventState,
-				metadataToolUseId: typeof metadataToolCallId === "string" ? metadataToolCallId : void 0,
-				toolName: tool.name,
-				input
-			}) ?? randomUUID();
-			streamEventState.mcpHandlerCalls.set(toolCallId, {
-				toolName: tool.name,
-				input
-			});
-			if (!streamEventState.emittedToolCallIds.has(toolCallId)) {
-				streamEventState.emittedToolCallIds.add(toolCallId);
+		for (const tool of start.tools) {
+			const hints = start.toolHints?.[tool.name];
+			server.registerTool(tool.name, {
+				description: tool.description ?? "",
+				inputSchema: jsonSchemaToZodObject(tool.inputSchema),
+				...hints?.readOnly == null ? {} : { annotations: { readOnlyHint: hints.readOnly } },
+				...hints?.alwaysLoad == null ? {} : { _meta: { "anthropic/alwaysLoad": hints.alwaysLoad } }
+			}, async (...handlerArgs) => {
+				const [input, extra] = handlerArgs;
+				const metadataToolCallId = extra._meta?.["claudecode/toolUseId"];
+				const toolCallId = resolveMcpHandlerToolUseId({
+					state: streamEventState,
+					metadataToolUseId: typeof metadataToolCallId === "string" ? metadataToolCallId : void 0,
+					toolName: tool.name,
+					input
+				}) ?? randomUUID();
+				streamEventState.mcpHandlerCalls.set(toolCallId, {
+					toolName: tool.name,
+					input
+				});
+				if (!streamEventState.emittedToolCallIds.has(toolCallId)) {
+					streamEventState.emittedToolCallIds.add(toolCallId);
+					emit({
+						type: "tool-call",
+						toolCallId,
+						toolName: tool.name,
+						input: JSON.stringify(input),
+						providerExecuted: false
+					});
+					markWaitingOnHostInput({
+						state: streamEventState,
+						emit,
+						toolUseId: toolCallId
+					});
+				}
+				const { output, isError, toolResult } = await turn.requestToolResult(toolCallId).finally(() => {
+					clearWaitingOnHostInput({
+						state: streamEventState,
+						toolUseId: toolCallId
+					});
+					if (!streamEventState.mcpToolCalls.has(toolCallId)) streamEventState.pendingStepToolUseIds.delete(toolCallId);
+				});
 				emit({
-					type: "tool-call",
+					type: "tool-result",
 					toolCallId,
 					toolName: tool.name,
-					input: JSON.stringify(input),
-					providerExecuted: false
+					result: output ?? null,
+					isError: !!isError
 				});
-				markWaitingOnHostInput({
-					state: streamEventState,
-					emit,
-					toolUseId: toolCallId
-				});
-			}
-			const { output, isError, toolResult } = await turn.requestToolResult(toolCallId).finally(() => {
-				clearWaitingOnHostInput({
-					state: streamEventState,
-					toolUseId: toolCallId
-				});
-				if (!streamEventState.mcpToolCalls.has(toolCallId)) streamEventState.pendingStepToolUseIds.delete(toolCallId);
-			});
-			emit({
-				type: "tool-result",
-				toolCallId,
-				toolName: tool.name,
-				result: output ?? null,
-				isError: !!isError
-			});
-			if (toolResult != null) {
-				const converted = convertHarnessToolModelOutput({ output: toolResult.output });
+				if (toolResult != null) {
+					const converted = convertHarnessToolModelOutput({ output: toolResult.output });
+					return {
+						content: converted.content.map((part) => part.type === "text" ? part : {
+							type: "image",
+							data: part.data,
+							mimeType: part.mediaType
+						}),
+						isError: isError === true || converted.isError
+					};
+				}
 				return {
-					content: converted.content.map((part) => part.type === "text" ? part : {
-						type: "image",
-						data: part.data,
-						mimeType: part.mediaType
-					}),
-					isError: isError === true || converted.isError
+					content: [{
+						type: "text",
+						text: JSON.stringify(output ?? null)
+					}],
+					isError
 				};
-			}
-			return {
-				content: [{
-					type: "text",
-					text: JSON.stringify(output ?? null)
-				}],
-				isError
-			};
-		});
+			});
+		}
 		mcpServers["harness-tools"] = {
 			type: "sdk",
 			name: "harness-tools",
@@ -1692,7 +1862,12 @@ async function runTurn(start, turn) {
 	const skillsOption = toClaudeSkillsOption(start.skills);
 	const nativeTools = resolveNativeTools(start.builtinToolFiltering);
 	const inactiveNativeTools = resolveInactiveNativeTools(start.builtinToolFiltering);
+	const permissionMode = start.permissionMode ?? "allow-all";
+	const approvalDecisions = /* @__PURE__ */ new Map();
+	const toolCwds = /* @__PURE__ */ new Map();
 	const permissionOptions = createPermissionOptions({
+		toolCwds,
+		approvalDecisions,
 		start,
 		inactiveNativeTools,
 		turn,
@@ -1710,6 +1885,22 @@ async function runTurn(start, turn) {
 		approvalRequestedToolUseIds: streamEventState.approvalRequestedToolUseIds,
 		emittedToolCallIds: streamEventState.emittedToolCallIds
 	});
+	const modelOverrides = createGatewayModelOverrides(start.model);
+	const deferredToolUseIds = /* @__PURE__ */ new Set();
+	const approvalPreToolUseHook = createApprovalPreToolUseHook({
+		toolCwds,
+		readableSkillRoots: start.readableSkillRoots ?? [],
+		permissionMode,
+		inactiveNativeTools: new Set(inactiveNativeTools),
+		decisions: approvalDecisions,
+		deferredToolUseIds,
+		nativeToolCallNames: streamEventState.nativeToolCallNames
+	});
+	const settings = {
+		...permissionOptions.settings,
+		...start.skillOverrides !== void 0 ? { skillOverrides: start.skillOverrides } : {},
+		...modelOverrides ? { modelOverrides } : {}
+	};
 	const questionPreToolUseHook = createQuestionPreToolUseHook({
 		turn,
 		emit,
@@ -1724,11 +1915,13 @@ async function runTurn(start, turn) {
 			toolUseId
 		})
 	});
-	const q = claudeSdk.query({
+	const queryArgs = {
 		prompt: queryInput.input,
 		options: {
 			...start.model ? { model: start.model } : {},
 			...start.maxTurns !== void 0 ? { maxTurns: start.maxTurns } : {},
+			...start.maxBudgetUsd !== void 0 ? { maxBudgetUsd: start.maxBudgetUsd } : {},
+			...start.strictMcpConfig !== void 0 ? { strictMcpConfig: start.strictMcpConfig } : {},
 			...start.agentProgressSummaries !== void 0 ? { agentProgressSummaries: start.agentProgressSummaries } : {},
 			...start.forwardSubagentText !== void 0 ? { forwardSubagentText: start.forwardSubagentText } : {},
 			...start.env !== void 0 ? { env: {
@@ -1738,7 +1931,7 @@ async function runTurn(start, turn) {
 			...skillsOption ? { skills: skillsOption } : {},
 			...nativeTools !== void 0 ? { tools: nativeTools } : {},
 			...inactiveNativeTools.length > 0 ? { disallowedTools: inactiveNativeTools } : {},
-			systemPrompt: createClaudeCodeSystemPrompt(start.instructions),
+			systemPrompt: createClaudeCodeSystemPrompt(start.instructions, { excludeDynamicSections: start.excludeDynamicSections }),
 			thinking: start.thinking,
 			...start.effort !== void 0 ? { effort: start.effort } : {},
 			...start.responseFormat?.type === "json" && start.responseFormat.schema != null ? { outputFormat: {
@@ -1747,9 +1940,10 @@ async function runTurn(start, turn) {
 			} } : {},
 			includePartialMessages: true,
 			hooks: {
-				PreToolUse: [{
+				PreToolUse: [...permissionMode === "allow-all" ? [] : [{ hooks: [approvalPreToolUseHook] }], {
 					matcher: "AskUserQuestion",
-					hooks: [questionPreToolUseHook]
+					hooks: [questionPreToolUseHook],
+					...start.questionTimeoutMs !== void 0 ? { timeout: Math.ceil(start.questionTimeoutMs / 1e3) } : {}
 				}],
 				PostCompact: [{ hooks: [async (input) => {
 					if (typeof input?.compact_summary === "string") compaction.onSummary(input.compact_summary);
@@ -1758,18 +1952,67 @@ async function runTurn(start, turn) {
 			},
 			...start.resumeSessionId ?? lastClaudeSessionId ? { resume: start.resumeSessionId ?? lastClaudeSessionId } : start.continue === true || !turn.firstTurn ? { continue: true } : {},
 			...permissionOptions,
+			...Object.keys(settings).length > 0 ? { settings } : {},
 			mcpServers,
 			cwd: workdir,
 			abortSignal: abortCtl.signal
 		}
+	};
+	let deferredToolUseId = start.deferredToolUseId;
+	let resumingDeferredCall = false;
+	let q = deferredToolUseId == null ? claudeSdk.query(queryArgs) : void 0;
+	const hostAborted = new Promise((resolve) => {
+		if (abortCtl.signal.aborted) resolve(void 0);
+		abortCtl.signal.addEventListener("abort", () => resolve(void 0), { once: true });
 	});
 	gracefulAbort = () => {
 		hardAbortTimer = setTimeout(() => abortCtl.abort(), 5e3);
 		hardAbortTimer.unref?.();
-		Promise.resolve().then(() => q.interrupt()).catch(() => abortCtl.abort());
+		Promise.resolve().then(() => q?.interrupt()).catch(() => abortCtl.abort());
 	};
 	let turnUsage;
 	let totalCostUsd;
+	let deferredDecision;
+	const requestDeferredApproval = (call) => {
+		for (const droppedToolUseId of deferredToolUseIds) {
+			if (droppedToolUseId === call.toolUseId) continue;
+			const nativeName = streamEventState.nativeToolCallNames.get(droppedToolUseId) ?? "unknown";
+			emit({
+				type: "tool-result",
+				toolCallId: droppedToolUseId,
+				toolName: toCommonName(nativeName),
+				result: "Claude Code can wait for only one approval at a time, so this call did not run.",
+				isError: true
+			});
+			streamEventState.pendingStepToolUseIds.delete(droppedToolUseId);
+		}
+		deferredToolUseIds.clear();
+		streamEventState.approvalRequestedToolUseIds.add(call.toolUseId);
+		streamEventState.nativeToolCallNames.set(call.toolUseId, call.toolName);
+		if (!streamEventState.emittedToolCallIds.has(call.toolUseId)) {
+			streamEventState.emittedToolCallIds.add(call.toolUseId);
+			emit({
+				type: "tool-call",
+				toolCallId: call.toolUseId,
+				toolName: toCommonName(call.toolName),
+				nativeName: call.toolName,
+				input: JSON.stringify(call.toolInput ?? {}),
+				providerExecuted: true,
+				...isExternalMcpTool(call.toolName) ? { dynamic: true } : {}
+			});
+		}
+		deferredDecision = turn.requestToolApproval(call.toolUseId);
+		emit({
+			type: "tool-approval-request",
+			approvalId: call.toolUseId,
+			toolCallId: call.toolUseId
+		});
+		markWaitingOnHostInput({
+			state: streamEventState,
+			emit,
+			toolUseId: call.toolUseId
+		});
+	};
 	let emittedTerminalError = false;
 	let emittedTerminalFinish = false;
 	const emitTerminalError = (message) => {
@@ -1792,14 +2035,59 @@ async function runTurn(start, turn) {
 		onCompactionBoundary: (boundary) => compaction.onBoundary(boundary),
 		toCommonName
 	});
+	async function* messages() {
+		for (;;) {
+			if (deferredToolUseId != null) {
+				const toolUseId = deferredToolUseId;
+				const decision = await Promise.race([deferredDecision ?? turn.requestToolApproval(toolUseId), hostAborted]).finally(() => clearWaitingOnHostInput({
+					state: streamEventState,
+					toolUseId
+				}));
+				deferredDecision = void 0;
+				if (decision == null || abortCtl.signal.aborted) return;
+				approvalDecisions.set(toolUseId, decision);
+				deferredToolUseId = void 0;
+				resumingDeferredCall = true;
+				q = claudeSdk.query({
+					prompt: withoutInitialMessage(queryInput.input),
+					options: {
+						...queryArgs.options,
+						...lastClaudeSessionId != null ? {
+							continue: void 0,
+							resume: lastClaudeSessionId
+						} : {}
+					}
+				});
+			}
+			for await (const msg of q) {
+				yield msg;
+				if (deferredToolUseId != null) break;
+			}
+			if (deferredToolUseId == null || abortCtl.signal.aborted) return;
+			queryInput.retire();
+			await disposeQuery(q);
+		}
+	}
 	try {
-		for await (const msg of q) {
+		for await (const msg of messages()) {
 			if (abortCtl.signal.aborted) break;
 			const type = msg.type;
 			if (type === "command_lifecycle") queryInput.handleLifecycle(msg);
 			const sessionId = msg.session_id;
 			if (typeof sessionId === "string" && sessionId.length > 0) lastClaudeSessionId = sessionId;
 			emitStreamEvent(msg);
+			if (type === "result" && msg.terminal_reason === "tool_deferred" && msg.deferred_tool_use?.id != null) {
+				const harnessUsage = mapUsage(msg.usage ?? msg.message?.usage);
+				if (harnessUsage) turnUsage = addUsage(turnUsage, harnessUsage);
+				if (typeof msg.total_cost_usd === "number") totalCostUsd = msg.total_cost_usd;
+				deferredToolUseId = msg.deferred_tool_use.id;
+				requestDeferredApproval({
+					toolUseId: msg.deferred_tool_use.id,
+					toolName: msg.deferred_tool_use.name,
+					toolInput: msg.deferred_tool_use.input
+				});
+				continue;
+			}
 			if (type === "result") {
 				if (msg.subtype === "success") {
 					if (msg.is_error) {
@@ -1835,7 +2123,7 @@ async function runTurn(start, turn) {
 						emit,
 						usage: streamEventState.pendingStepUsage ?? harnessUsage
 					});
-					if (!queryInput.answersSentMessage(msg)) continue;
+					if (!resumingDeferredCall && !queryInput.answersSentMessage(msg)) continue;
 					queryInput.observeResult();
 					if (!queryInput.hasActiveUserMessages()) {
 						queryInput.close();
@@ -1860,9 +2148,7 @@ async function runTurn(start, turn) {
 		if (hardAbortTimer != null) clearTimeout(hardAbortTimer);
 		turn.abortSignal.removeEventListener("abort", onHostAbort);
 		queryInput.close();
-		try {
-			await q.return?.(void 0);
-		} catch {}
+		await disposeQuery(q);
 	}
 	if (emittedTerminalError) return;
 	emittedTerminalFinish = true;
@@ -1919,6 +2205,24 @@ function createQueryInput({ initialUserMessage, userMessages, abortSignal }) {
 		...options.priority == null ? {} : { priority: options.priority }
 	});
 	const messageIterator = userMessages[Symbol.asyncIterator]();
+	let liveInputId = 0;
+	let bufferedMessage;
+	let pulling;
+	const takeMessage = async (inputId) => {
+		for (;;) {
+			if (inputId !== liveInputId) return void 0;
+			if (bufferedMessage != null) {
+				const message = bufferedMessage;
+				bufferedMessage = void 0;
+				return message;
+			}
+			pulling ??= messageIterator.next().then((result) => {
+				bufferedMessage = result;
+				pulling = void 0;
+			});
+			await pulling;
+		}
+	};
 	return {
 		close,
 		handleLifecycle: (message) => {
@@ -1943,10 +2247,14 @@ function createQueryInput({ initialUserMessage, userMessages, abortSignal }) {
 		observeResult: () => {
 			observedResult = true;
 		},
+		retire: () => {
+			liveInputId++;
+		},
 		get hasObservedResult() {
 			return observedResult;
 		},
 		input: { [Symbol.asyncIterator]() {
+			const inputId = ++liveInputId;
 			let sentInitial = false;
 			return { async next() {
 				if (closed || abortSignal.aborted) return {
@@ -1963,8 +2271,8 @@ function createQueryInput({ initialUserMessage, userMessages, abortSignal }) {
 						done: false
 					};
 				}
-				const nextMessage = await messageIterator.next();
-				if (nextMessage.done) return {
+				const nextMessage = await takeMessage(inputId);
+				if (nextMessage == null || nextMessage.done) return {
 					value: void 0,
 					done: true
 				};
@@ -1981,6 +2289,24 @@ function createQueryInput({ initialUserMessage, userMessages, abortSignal }) {
 			} };
 		} }
 	};
+}
+function withoutInitialMessage(input) {
+	return { [Symbol.asyncIterator]() {
+		const iterator = input[Symbol.asyncIterator]();
+		let skipped = false;
+		return { async next() {
+			if (!skipped) {
+				skipped = true;
+				await iterator.next();
+			}
+			return iterator.next();
+		} };
+	} };
+}
+async function disposeQuery(query) {
+	try {
+		await query?.return?.(void 0);
+	} catch {}
 }
 function addUsage(total, usage) {
 	if (total == null) return usage;

@@ -291,8 +291,20 @@ type Settings struct {
 	// of this package's scope).
 	BuiltinTools map[string]harness.BuiltinTool
 
-	MCPServers    map[string]any
+	MCPServers map[string]any
+	// IsMcpToolCall classifies an ACP tool call that did not resolve to a
+	// host tool as a dynamic MCP tool call. Required: a session fails to
+	// start without it (TS 03dac28304 makes it required, "ACP isMcpToolCall
+	// must be a function.").
 	IsMcpToolCall func(ToolCall) bool
+	// ResolveHostToolCall resolves an ACP tool call to the host tool it
+	// invokes (host tools are exposed to the ACP agent through the
+	// harness-owned MCP server). Required: a session fails to start without
+	// it ("ACP resolveHostToolCall must be a function."), since the bridge no
+	// longer resolves host tools itself (TS 03dac28304). The Cursor, GitHub
+	// Copilot and Grok Build adapters set their own; LegacyResolveHostToolCall
+	// keeps the pre-0.6 bridge behavior.
+	ResolveHostToolCall ResolveHostToolCallFunc
 
 	Port           int
 	PortEndpoint   *harness.PortEndpoint

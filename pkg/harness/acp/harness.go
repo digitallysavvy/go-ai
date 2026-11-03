@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -327,6 +328,16 @@ const (
 
 func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (harness.Session, error) {
 	settings := h.settings
+	// TS validateACPV1Settings (03dac28304) requires both callbacks; Go
+	// keeps them as optional fields for v0.5 compile compatibility and
+	// rejects a missing one when the session starts (ruling r85-1), never
+	// letting a host-tool call stall on an unanswered resolution request.
+	if settings.IsMcpToolCall == nil {
+		return nil, errors.New("ACP isMcpToolCall must be a function.") //nolint:staticcheck // matches TS SDK exact error text
+	}
+	if settings.ResolveHostToolCall == nil {
+		return nil, errors.New("ACP resolveHostToolCall must be a function.") //nolint:staticcheck // matches TS SDK exact error text
+	}
 	if opts.BuiltinToolFiltering != nil {
 		return nil, unsupported(settings.HarnessID, "ACP built-in tool filtering is not available in this initial ACP v1 implementation.")
 	}
@@ -529,7 +540,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		askUserQuestions: settings.AskUserQuestions, agentIdentity: agentIdentity,
 		authenticationProfile: authProfile, builtinTools: builtinToolCatalog,
 		permissionMode: permissionMode, permissionModeMapping: h.permMap, mcpServers: settings.MCPServers,
-		isMcpToolCall: settings.IsMcpToolCall, sandbox: toolSafeSandboxSession,
+		isMcpToolCall: settings.IsMcpToolCall, resolveHostToolCall: settings.ResolveHostToolCall, sandbox: toolSafeSandboxSession,
 		homePath: implementationHomeDir, skillsDir: skillsDir, skillsDirectory: skillsDirectory,
 		sandboxID: sandboxID, sandboxCredentialEnvironment: sandboxCredentialEnvironment,
 		reconnect: settings.Reconnect, bridgeStateDir: bridgeStateDir,

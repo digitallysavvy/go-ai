@@ -33,6 +33,7 @@ type sessionParams struct {
 	permissionModeMapping        *PermissionModeMapping
 	mcpServers                   map[string]any
 	isMcpToolCall                func(ToolCall) bool
+	resolveHostToolCall          ResolveHostToolCallFunc
 	sandbox                      providerutils.SandboxSession
 	homePath                     string
 	skillsDir                    string
@@ -412,6 +413,28 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		c.dynamicToolCalls[f.ToolCall.ToolCallID] = dynamic
 		c.mu.Unlock()
 		_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: map[string]any{"suppress": suppress}})
+	}))
+
+	// The bridge asks the host to resolve a native tool call to a host tool
+	// (TS 03dac28304, acp-v1-harness.ts 1229-1274). A resolver error (or a
+	// result naming an unknown tool or lacking an object input) answers
+	// `{hostToolCall: null}`, then fails the turn with an error part and an
+	// abort command.
+	unsub = append(unsub, s.p.channel.On(TypeHostToolCallResolutionRequest, func(e bridge.Event) {
+		f, ok := e.Message.(HostToolCallResolutionRequestFrame)
+		if !ok {
+			return
+		}
+		resolved, err := resolveHostToolCall(s.p.harnessID, s.p.resolveHostToolCall, f)
+		if err != nil {
+			_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: hostToolCallResolutionOutput(nil)})
+			closeForwardedBlock()
+			forward(&harness.ErrorPart{Error: err})
+			_ = s.p.channel.Send(bridge.AbortCommand{})
+			settle(err)
+			return
+		}
+		_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: hostToolCallResolutionOutput(resolved)})
 	}))
 
 	unsub = append(unsub, s.p.channel.On(TypeQuestionRequest, func(e bridge.Event) {

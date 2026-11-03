@@ -31,7 +31,7 @@ import (
 
 const (
 	ClientAppName    = "ai-sdk-harness-github-copilot"
-	ClientAppVersion = "1.0.60" // TS VERSION: the bridge manifest's source version
+	ClientAppVersion = "1.0.70" // TS VERSION: the bridge manifest's source version
 	HarnessID        = "github-copilot"
 
 	githubOAuthTokenBodyLength         = 36
@@ -170,8 +170,9 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 			}
 			return false
 		},
-		PortEndpoint:    settings.PortEndpoint,
-		MintBridgeToken: settings.MintBridgeToken,
+		ResolveHostToolCall: ResolveHostToolCall,
+		PortEndpoint:        settings.PortEndpoint,
+		MintBridgeToken:     settings.MintBridgeToken,
 	}
 	if settings.Port != nil {
 		cfg.Port = *settings.Port
@@ -214,4 +215,21 @@ func createGitHubOAuthSandboxCredentialPlaceholder(credential string) string {
 	sum := sha256.Sum256([]byte(credential))
 	tokenBody := hex.EncodeToString(sum[:])[:githubOAuthTokenBodyLength-len(githubOAuthSandboxCredentialMarker)]
 	return "gho_" + githubOAuthSandboxCredentialMarker + tokenBody
+}
+
+// ResolveHostToolCall resolves a GitHub Copilot ACP tool call to a host
+// tool. Copilot reports host tool calls without a programmatic name, titled
+// `<serverName>-<toolName>`, with the tool input as raw input. Mirrors TS
+// `resolveGitHubCopilotHostToolCall` (github-copilot-harness.ts, 03dac28304).
+func ResolveHostToolCall(opts acp.ResolveHostToolCallOptions) *acp.ResolvedHostToolCall {
+	raw, ok := opts.ToolCall.RawInput.(map[string]any)
+	if opts.ToolCall.Name != "" || !ok || raw == nil {
+		return nil
+	}
+	for _, name := range opts.ToolNames {
+		if opts.ToolCall.Title == opts.ServerName+"-"+name {
+			return &acp.ResolvedHostToolCall{ToolName: name, Input: raw}
+		}
+	}
+	return nil
 }

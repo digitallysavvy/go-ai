@@ -137,6 +137,10 @@ func testSettings(mut ...func(*Settings)) Settings {
 		Source:       Source{Type: SourceNPMLocked, PackageJSON: "{\"name\":\"test-acp-agent\"}\n", PnpmLockYAML: "lockfileVersion: '9.0'\n"},
 		Executable:   "test-acp-agent",
 		ModelMapping: ModelMapping{Type: ModelMappingSessionModel, Path: "model"},
+		// Required since TS 03dac28304 (the TS test settings add the same
+		// no-op callbacks).
+		IsMcpToolCall:       func(ToolCall) bool { return false },
+		ResolveHostToolCall: func(ResolveHostToolCallOptions) *ResolvedHostToolCall { return nil },
 	}
 	for _, m := range mut {
 		m(&s)
