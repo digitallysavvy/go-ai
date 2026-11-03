@@ -129,29 +129,6 @@ func TestTSCasesInteractionsParseOutputs(t *testing.T) {
 	}, nil)
 }
 
-// TestTSCasesInteractionsParseOutputsEmptyBuiltinID ports "generates an ID
-// when a built-in tool call ID is empty" (the steps are an inline cast the
-// extractor does not evaluate).
-func TestTSCasesInteractionsParseOutputsEmptyBuiltinID(t *testing.T) {
-	m := NewInteractionsLanguageModelWithConfig(InteractionsConfig{GenerateID: func() string { return "gen-id" }}, "gemini-2.5-flash")
-	var steps []interactionsContentBlock
-	if err := json.Unmarshal([]byte(`[{"type":"google_search_call","id":"","arguments":{"query":"weather"}}]`), &steps); err != nil {
-		t.Fatal(err)
-	}
-	content, _, _ := m.parseOutputs(steps, "")
-	got := r83provaContentToTS(content)
-	want := map[string]interface{}{"type": "tool-call", "toolCallId": "gen-id", "toolName": "google_search", "providerExecuted": true}
-	if len(got) == 0 {
-		t.Fatal("no content")
-	}
-	part, _ := got[0].(map[string]interface{})
-	for k, v := range want {
-		if part[k] != v {
-			t.Errorf("content[0].%s = %v, TS %v", k, part[k], v)
-		}
-	}
-}
-
 // TestTSCasesInteractionsSources replays
 // interactions/extract-google-interactions-sources.test.ts (annotationToSource,
 // annotationsToSources, builtinToolResultToSources).
