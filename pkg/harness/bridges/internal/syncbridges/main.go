@@ -6,7 +6,11 @@
 // deepagents, acp) must already be BUILT in the checkout -- this tool copies
 // packages/<pkg>/dist/bridge/*, it does not invoke pnpm/tsup itself, so the
 // checkout stays a pure "read" dependency of the Go build (no Node toolchain
-// is required to build go-ai). Build them first, e.g.:
+// is required to build go-ai). Since TS 726a1ccb32 the built dist/bridge
+// ships the lockfile as pnpm-lockfile.yaml (pnpm 12 `pnpm pack` drops files
+// named pnpm-lock.yaml); this tool reads that name and writes pnpm-lock.yaml,
+// the name the sandbox bootstrap installs from. Build them first (tsdown),
+// e.g.:
 //
 //	pnpm install --frozen-lockfile \
 //	  --filter "@ai-sdk/harness-claude-code..." \
@@ -66,8 +70,9 @@ type adapterSpec struct {
 	// for adapters that do have one.
 	sourceDir string
 	// files lists the file names to copy. For entries with a bundle step,
-	// "index.mjs" (tsup's output name) is renamed to "bridge.mjs" on copy;
-	// every other name is copied as-is.
+	// "index.mjs" (the bundler's output name) is renamed to "bridge.mjs" on
+	// copy and "pnpm-lock.yaml" is read from dist's "pnpm-lockfile.yaml"
+	// (see distSourceName); every other name is copied as-is.
 	files []string
 	// bridgeEntry is the file name (after the index.mjs -> bridge.mjs
 	// rename) that the TS host launches with `node`, or "" if this adapter
@@ -227,7 +232,11 @@ func syncAdapter(tsDir, outDir string, spec adapterSpec) (manifestFile, error) {
 
 	files := manifestFile{}
 	for _, name := range spec.files {
-		srcPath := filepath.Join(fromDir, name)
+		srcName := name
+		if spec.builtBridgeDir != "" {
+			srcName = distSourceName(name)
+		}
+		srcPath := filepath.Join(fromDir, srcName)
 		destName := name
 		if name == "index.mjs" {
 			destName = "bridge.mjs"
@@ -248,6 +257,16 @@ func syncAdapter(tsDir, outDir string, spec adapterSpec) (manifestFile, error) {
 		"bridgeEntry":   spec.bridgeEntry,
 		"files":         sortedKeys(files),
 	}, nil
+}
+
+// distSourceName maps an embedded file name to its name in a built
+// dist/bridge directory: TS 726a1ccb32 copies src/bridge/pnpm-lock.yaml to
+// dist/bridge/pnpm-lockfile.yaml.
+func distSourceName(name string) string {
+	if name == "pnpm-lock.yaml" {
+		return "pnpm-lockfile.yaml"
+	}
+	return name
 }
 
 // sortedKeys re-marshals a manifestFile of file->hash pairs so
