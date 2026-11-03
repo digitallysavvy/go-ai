@@ -7,8 +7,10 @@ import (
 )
 
 // testdata/fixjson_ts_golden.json holds [input, output] pairs produced by the
-// TS SDK's fixJson (packages/ai/src/util/fix-json.ts, ai@7.0.140) over every
-// prefix of several documents plus random token soup.
+// TS SDK's fixJson (packages/ai/src/util/fix-json.ts, ai@7.0.162) over every
+// prefix of several documents plus random token soup (round 85 added the
+// fix-json.test.ts array-start minus cases and soup biased toward "[" and
+// "-").
 func TestFixJSONMatchesTSGolden(t *testing.T) {
 	raw, err := os.ReadFile("testdata/fixjson_ts_golden.json")
 	if err != nil {
