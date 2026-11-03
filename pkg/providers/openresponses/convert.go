@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -147,8 +148,9 @@ func convertUserContent(content []types.ContentPart, warnings *[]types.Warning, 
 			mediaType := file.MediaType
 			// TS resolveFullMediaType: a top-level-only or wildcard type on
 			// inline bytes is sniffed (or rejected), never sent as is.
-			if len(file.Data) > 0 && file.URL == "" && file.Reference == "" {
-				resolved, err := resolveInlineMediaType(mediaType, file.Data)
+			b64 := fileDataString(file.FileData)
+			if (len(file.Data) > 0 || b64 != "") && file.URL == "" && file.Reference == "" {
+				resolved, err := resolveInlineMediaTypeData(mediaType, file.Data, b64)
 				if err != nil {
 					return nil, err
 				}
@@ -170,14 +172,14 @@ func convertUserContent(content []types.ContentPart, warnings *[]types.Warning, 
 				result = append(result, InputFileContent{Type: "input_file", FileURL: file.URL})
 			case file.Reference != "":
 				result = append(result, InputFileContent{Type: "input_file", FileID: file.Reference})
-			case len(file.Data) > 0:
+			case len(file.Data) > 0 || b64 != "":
 				filename := file.Filename
 				if filename == "" {
 					filename = "data"
 				}
 				result = append(result, InputFileContent{
 					Type:     "input_file",
-					FileData: fmt.Sprintf("data:%s;base64,%s", mediaTypeOrDefault(file.MediaType), base64.StdEncoding.EncodeToString(file.Data)),
+					FileData: fmt.Sprintf("data:%s;base64,%s", mediaTypeOrDefault(file.MediaType), inlineBase64(file.Data, b64)),
 					Filename: filename,
 				})
 			case file.Text != "":
@@ -231,12 +233,49 @@ func convertFileToImageURL(file types.FileContent, warnings *[]types.Warning) st
 		return fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString([]byte(file.Text)))
 	}
 
-	if len(file.Data) > 0 {
-		dataStr := base64.StdEncoding.EncodeToString(file.Data)
-		return fmt.Sprintf("data:%s;base64,%s", mediaType, dataStr)
+	if b64 := fileDataString(file.FileData); len(file.Data) > 0 || b64 != "" {
+		return fmt.Sprintf("data:%s;base64,%s", mediaType, inlineBase64(file.Data, b64))
 	}
 
 	return ""
+}
+
+// fileDataString is the base64 string of a data part given as one
+// (FileData.DataString with no bytes), or "".
+func fileDataString(fd types.FileData) string {
+	if fd.Type == types.FileDataTypeData && len(fd.Data) == 0 {
+		return fd.DataString
+	}
+	return ""
+}
+
+// inlineBase64 is TS convertToBase64: a base64 string is returned
+// unchanged, bytes are encoded.
+func inlineBase64(data []byte, b64 string) string {
+	if len(data) == 0 && b64 != "" {
+		return b64
+	}
+	return base64.StdEncoding.EncodeToString(data)
+}
+
+// resolveInlineMediaTypeData is resolveInlineMediaType for bytes or a base64
+// string; a string is sniffed from its prefix only (TS decodePrefix).
+func resolveInlineMediaTypeData(mediaType string, data []byte, b64 string) (string, error) {
+	if len(data) > 0 || b64 == "" || mediaType == "" {
+		return resolveInlineMediaType(mediaType, data)
+	}
+	if full, err := prompt.ResolveFullMediaType(mediaType, nil, false); err == nil {
+		return full, nil
+	}
+	top, _, _ := strings.Cut(mediaType, "/")
+	detected, ok, err := fileutil.DetectMediaTypeSignatureBase64(b64, top)
+	if err != nil {
+		return "", err
+	}
+	if ok && detected != "" {
+		return detected, nil
+	}
+	return prompt.ResolveFullMediaType(mediaType, nil, true)
 }
 
 func normalizeFileContentData(file types.FileContent) (types.FileContent, error) {
@@ -1005,8 +1044,9 @@ func convertToolFileContentBlock(block types.FileContentBlock, warnings *[]types
 	if err != nil {
 		return nil, false, err
 	}
-	if len(file.Data) > 0 && file.URL == "" && file.Reference == "" {
-		resolved, err := resolveInlineMediaType(file.MediaType, file.Data)
+	b64 := fileDataString(file.FileData)
+	if (len(file.Data) > 0 || b64 != "") && file.URL == "" && file.Reference == "" {
+		resolved, err := resolveInlineMediaTypeData(file.MediaType, file.Data, b64)
 		if err != nil {
 			return nil, false, err
 		}
@@ -1020,10 +1060,10 @@ func convertToolFileContentBlock(block types.FileContentBlock, warnings *[]types
 			return InputImageContent{Type: "input_image", ImageURL: file.URL, Detail: detail}, true, nil
 		case file.Reference != "":
 			return InputImageContent{Type: "input_image", ImageURL: file.Reference, Detail: detail}, true, nil
-		case len(file.Data) > 0:
+		case len(file.Data) > 0 || b64 != "":
 			return InputImageContent{
 				Type:     "input_image",
-				ImageURL: fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(file.Data)),
+				ImageURL: fmt.Sprintf("data:%s;base64,%s", mediaType, inlineBase64(file.Data, b64)),
 				Detail:   detail,
 			}, true, nil
 		case file.Text != "":
@@ -1043,7 +1083,7 @@ func convertToolFileContentBlock(block types.FileContentBlock, warnings *[]types
 		return InputFileContent{Type: "input_file", FileURL: file.URL}, true, nil
 	case file.Reference != "":
 		return InputFileContent{Type: "input_file", FileID: file.Reference}, true, nil
-	case len(file.Data) > 0:
+	case len(file.Data) > 0 || b64 != "":
 		filename := file.Filename
 		if filename == "" {
 			filename = "data"
@@ -1051,7 +1091,7 @@ func convertToolFileContentBlock(block types.FileContentBlock, warnings *[]types
 		return InputFileContent{
 			Type:     "input_file",
 			Filename: filename,
-			FileData: fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(file.Data)),
+			FileData: fmt.Sprintf("data:%s;base64,%s", mediaType, inlineBase64(file.Data, b64)),
 		}, true, nil
 	case file.Text != "":
 		return InputTextContent{Type: "input_text", Text: file.Text}, true, nil
