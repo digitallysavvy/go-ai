@@ -13,6 +13,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // r82genNilSchemaValidator is a Schema whose Validator is nil.
@@ -541,4 +543,41 @@ func TestR82genTelemetryIntegrations(t *testing.T) {
 			t.Fatalf("events = %v, want %v", events, want)
 		}
 	})
+}
+
+// r82genStepToolChoiceAttr returns the ai.prompt.toolChoice attribute of the
+// first span named name.
+func r82genStepToolChoiceAttr(spans []sdktrace.ReadOnlySpan, name string) (string, bool) {
+	for _, s := range spans {
+		if s.Name() != name {
+			continue
+		}
+		for _, kv := range s.Attributes() {
+			if kv.Key == "ai.prompt.toolChoice" {
+				return kv.Value.AsString(), true
+			}
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// TS stepToolChoice = prepareToolChoice(prepareStepResult?.toolChoice ??
+// toolChoice) is the telemetry step start's tool choice, {"type":"auto"} when
+// none is set (legacy-open-telemetry snapshots: "ai.prompt.toolChoice":
+// "{"type":"auto"}" on ai.generateText.doGenerate). Go passed the unset
+// choice, so the attribute was missing. (carry CR r82.)
+func TestR82genTelemetryStepToolChoiceDefaultsToAuto(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	settings := &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{
+		telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")}),
+	}}
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{Model: &testutil.MockLanguageModel{}, Prompt: "hi", Telemetry: settings}); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := r82genStepToolChoiceAttr(rec.Ended(), "ai.generateText.doGenerate"); !ok || got != `{"type":"auto"}` {
+		t.Fatalf(`ai.prompt.toolChoice = %q (present %v), want {"type":"auto"}`, got, ok)
+	}
 }

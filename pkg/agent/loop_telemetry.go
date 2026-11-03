@@ -515,6 +515,12 @@ type loopStepTelemetry struct {
 }
 
 func (a *ToolLoopAgent) startStepTelemetry(ctx context.Context, lt *loopTelemetry, stepIndex int, c PrepareCallConfig) *loopStepTelemetry {
+	// TS stepToolChoice is prepareToolChoice of the step's choice: an unset
+	// choice is auto, as the model call gets it (executeStep).
+	toolChoice := c.ToolChoice
+	if toolChoice.Type == "" {
+		toolChoice = types.AutoToolChoice()
+	}
 	stepCtx := telemetry.FireOnStepStart(ctx, telemetry.TelemetryStepStartEvent{
 		CallID:         lt.callID,
 		OperationType:  "ai.generateText",
@@ -522,7 +528,7 @@ func (a *ToolLoopAgent) startStepTelemetry(ctx context.Context, lt *loopTelemetr
 		StepNumber:     stepIndex,
 		ModelProvider:  c.Model.Provider(),
 		ModelID:        c.Model.ModelID(),
-		ToolChoice:     c.ToolChoice,
+		ToolChoice:     toolChoice,
 		PromptMessages: loopPromptMessages(c),
 		StepTools:      c.Tools,
 		RuntimeContext: telemetryRuntimeContextFor(lt.settings, c.RuntimeContext, c.SensitiveRuntimeContext),
