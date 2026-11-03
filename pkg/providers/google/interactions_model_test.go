@@ -157,7 +157,7 @@ func TestInteractionsPreviousInteractionCompactsAssistantAndToolResult(t *testin
 	}))
 	defer server.Close()
 
-	meta := providerMetaRaw("", "v1_prev")
+	meta := providerMetaRaw(nil, "v1_prev")
 	p := New(Config{APIKey: "test-key", BaseURL: server.URL})
 	model, err := p.Interactions(ModelGemini25Flash)
 	if err != nil {
@@ -492,7 +492,7 @@ func TestInteractionsParseOutputsPreservesToolCallsInOrderedContent(t *testing.T
 	model := NewInteractionsLanguageModel(p, ModelGemini25Flash)
 	content, toolCalls, hasFunctionCall := model.parseOutputs([]interactionsContentBlock{
 		{Type: "model_output", ContentRaw: json.RawMessage(`[{"type":"text","text":"before"}]`)},
-		{Type: "function_call", ID: "call-1", Name: "lookup", Arguments: json.RawMessage(`{"q":"x"}`), Signature: "sig"},
+		{Type: "function_call", ID: "call-1", Name: "lookup", Arguments: json.RawMessage(`{"q":"x"}`), Signature: signaturePtr("sig")},
 		{Type: "model_output", ContentRaw: json.RawMessage(`[{"type":"text","text":"after"}]`)},
 		{Type: "google_search_call", ID: "search-1", Arguments: json.RawMessage(`{"query":"go"}`)},
 	}, "v1_order")
@@ -528,7 +528,7 @@ func TestInteractionsAssistantToolCallContentRoundTrips(t *testing.T) {
 			ToolCallID:       "call-1",
 			ToolName:         "lookup",
 			Input:            `{"q":"x"}`,
-			ProviderMetadata: providerMetaRaw("sig-1", "v1_prev"),
+			ProviderMetadata: providerMetaRaw(signaturePtr("sig-1"), "v1_prev"),
 		},
 	}, nil, "")
 	if err != nil {
@@ -620,8 +620,8 @@ func TestInteractionsProcessingCallAndResultParseAndReplay(t *testing.T) {
 
 	model := NewInteractionsLanguageModel(New(Config{APIKey: "test-key"}), ModelGemini25Flash)
 	content, _, _ := model.parseOutputs([]interactionsContentBlock{
-		{Type: "processing_call", ID: "proc-1", Signature: "sig-a"},
-		{Type: "processing_result", CallID: "proc-1", Signature: "sig-b"},
+		{Type: "processing_call", ID: "proc-1", Signature: signaturePtr("sig-a")},
+		{Type: "processing_result", CallID: "proc-1", Signature: signaturePtr("sig-b")},
 	}, "v1_proc")
 	if len(content) != 2 {
 		t.Fatalf("content len = %d, content=%#v", len(content), content)

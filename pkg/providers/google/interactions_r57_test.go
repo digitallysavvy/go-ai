@@ -11,7 +11,7 @@ import (
 // tool-call parts; Go must do so for inline ToolCallContent parts too, not only
 // msg.ToolCalls.
 func TestR57InteractionsCompactionDropsInlineToolCallResults(t *testing.T) {
-	meta := providerMetaRaw("", "v1_prev")
+	meta := providerMetaRaw(nil, "v1_prev")
 	msgs := []types.Message{
 		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "first"}}},
 		{Role: types.RoleAssistant, Content: []types.ContentPart{

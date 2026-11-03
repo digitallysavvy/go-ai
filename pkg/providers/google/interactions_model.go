@@ -1281,11 +1281,37 @@ func outputTokensByModalityMap(usage *interactionsUsage) map[string]interface{} 
 	return out
 }
 
-func providerMetaRaw(signature, interactionID string) json.RawMessage {
-	google := pruneMap(map[string]interface{}{
-		"signature":     emptyToNil(signature),
+// withSignature adds a present signature (even "") to the google metadata.
+func withSignature(google map[string]interface{}, signature *string) map[string]interface{} {
+	if signature != nil {
+		if google == nil {
+			google = map[string]interface{}{}
+		}
+		google["signature"] = *signature
+	}
+	return google
+}
+
+// signaturePtr is a Go string signature as a response one ("" is absent).
+func signaturePtr(signature string) *string {
+	if signature == "" {
+		return nil
+	}
+	return &signature
+}
+
+// signatureText is the signature string ("" when absent).
+func signatureText(signature *string) string {
+	if signature == nil {
+		return ""
+	}
+	return *signature
+}
+
+func providerMetaRaw(signature *string, interactionID string) json.RawMessage {
+	google := withSignature(pruneMap(map[string]interface{}{
 		"interactionId": emptyToNil(interactionID),
-	})
+	}), signature)
 	if len(google) == 0 {
 		return nil
 	}
@@ -1293,11 +1319,10 @@ func providerMetaRaw(signature, interactionID string) json.RawMessage {
 	return raw
 }
 
-func providerMetaMap(signature, interactionID string) map[string]interface{} {
-	google := pruneMap(map[string]interface{}{
-		"signature":     emptyToNil(signature),
+func providerMetaMap(signature *string, interactionID string) map[string]interface{} {
+	google := withSignature(pruneMap(map[string]interface{}{
 		"interactionId": emptyToNil(interactionID),
-	})
+	}), signature)
 	if len(google) == 0 {
 		return nil
 	}
@@ -1307,36 +1332,17 @@ func providerMetaMap(signature, interactionID string) map[string]interface{} {
 // processingMeta builds the providerMetadata.google payload for
 // `google.processing_call`/`google.processing_result` custom content parts
 // (TS googleProviderMetadata's processingId/processingCallId fields).
-func processingMeta(signature, interactionID, processingID, processingCallID string) json.RawMessage {
-	google := pruneMap(map[string]interface{}{
-		"signature":        emptyToNil(signature),
+func processingMeta(signature *string, interactionID, processingID, processingCallID string) json.RawMessage {
+	google := withSignature(pruneMap(map[string]interface{}{
 		"interactionId":    emptyToNil(interactionID),
 		"processingId":     emptyToNil(processingID),
 		"processingCallId": emptyToNil(processingCallID),
-	})
+	}), signature)
 	if len(google) == 0 {
 		return nil
 	}
 	raw, _ := json.Marshal(map[string]interface{}{"google": google})
 	return raw
-}
-
-func signatureFromRawMetadata(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var envelope map[string]map[string]interface{}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return ""
-	}
-	google := envelope["google"]
-	if google == nil {
-		return ""
-	}
-	if sig, _ := google["signature"].(string); sig != "" {
-		return sig
-	}
-	return ""
 }
 
 func extractGoogleMetadata(raw json.RawMessage) map[string]interface{} {
@@ -1351,15 +1357,6 @@ func extractGoogleMetadata(raw json.RawMessage) map[string]interface{} {
 		return google
 	}
 	return nil
-}
-
-func googleSignature(raw json.RawMessage) string {
-	if google := extractGoogleMetadata(raw); google != nil {
-		if s, ok := google["signature"].(string); ok {
-			return s
-		}
-	}
-	return ""
 }
 
 func googleInteractionID(raw json.RawMessage) string {

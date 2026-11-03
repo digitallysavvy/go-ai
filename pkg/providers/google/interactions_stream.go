@@ -95,7 +95,7 @@ type interactionOpenBlock struct {
 	args         map[string]interface{}
 	argsRaw      json.RawMessage
 	argsString   string
-	signature    string
+	signature    *string
 	data         string
 	mimeType     string
 	uri          string
@@ -224,7 +224,7 @@ func newSynthesizedInteractionsStream(model *InteractionsLanguageModel, response
 				&provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: p.ToolCallID, ToolName: p.ToolName, ProviderExecuted: p.ProviderExecuted}},
 				&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ToolCall: &types.ToolCall{ID: p.ToolCallID, ToolName: p.ToolName}, Text: p.Input},
 				&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ToolCall: &types.ToolCall{ID: p.ToolCallID}},
-				&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: p.ToolCallID, ToolName: p.ToolName, Arguments: p.Arguments, RawArguments: p.Input, ProviderExecuted: p.ProviderExecuted, ProviderMetadata: providerMetaMap(p.ThoughtSignature, normalizedInteractionID(response.ID)), ThoughtSignature: p.ThoughtSignature}, ProviderMetadata: p.ProviderMetadata},
+				&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: p.ToolCallID, ToolName: p.ToolName, Arguments: p.Arguments, RawArguments: p.Input, ProviderExecuted: p.ProviderExecuted, ProviderMetadata: providerMetaMap(signaturePtr(p.ThoughtSignature), normalizedInteractionID(response.ID)), ThoughtSignature: p.ThoughtSignature}, ProviderMetadata: p.ProviderMetadata},
 			)
 		}
 	}
@@ -648,7 +648,7 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			if delta.Type != open.kind {
 				break
 			}
-			if delta.Signature != "" {
+			if delta.Signature != nil {
 				open.signature = delta.Signature
 			}
 			if open.kind == "processing_call" && delta.ID != "" {
@@ -672,7 +672,7 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 					}
 				}
 			}
-			if delta.Type == "thought_signature" && delta.Signature != "" {
+			if delta.Type == "thought_signature" && delta.Signature != nil {
 				open.signature = delta.Signature
 			}
 		case open.kind == "function_call" && delta.Type == "arguments_delta":
@@ -684,7 +684,7 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			if delta.ID != "" {
 				open.toolCallID = delta.ID
 			}
-			if delta.Signature != "" {
+			if delta.Signature != nil {
 				open.signature = delta.Signature
 			}
 			s.hasFunction = true
@@ -781,7 +781,7 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 func (s *interactionsStream) stopBlock(open *interactionOpenBlock) {
 	switch open.kind {
 	case "text":
-		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: open.id, ProviderMetadata: providerMetaRaw("", s.interactionID)})
+		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: open.id, ProviderMetadata: providerMetaRaw(nil, s.interactionID)})
 	case "thought":
 		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: open.id, ProviderMetadata: providerMetaRaw(open.signature, s.interactionID)})
 	case "image":
@@ -806,7 +806,7 @@ func (s *interactionsStream) stopBlock(open *interactionOpenBlock) {
 		}
 		s.buffer = append(s.buffer,
 			&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ToolCall: &types.ToolCall{ID: open.toolCallID}},
-			&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: open.toolCallID, ToolName: open.toolName, Arguments: args, RawArguments: argsJSON, ThoughtSignature: open.signature, ProviderMetadata: providerMetaMap(open.signature, s.interactionID)}, ProviderMetadata: providerMetaRaw(open.signature, s.interactionID)},
+			&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: open.toolCallID, ToolName: open.toolName, Arguments: args, RawArguments: argsJSON, ThoughtSignature: signatureText(open.signature), ProviderMetadata: providerMetaMap(open.signature, s.interactionID)}, ProviderMetadata: providerMetaRaw(open.signature, s.interactionID)},
 		)
 	case "pending_model_output":
 		// step ended before any delta revealed the content type — no output to emit
@@ -933,7 +933,7 @@ func (s *interactionsStream) emitSources(parts []types.ContentPart) {
 // emitFile queues a generated file from inline data or a URI (TS: data wins
 // over uri, neither emits nothing).
 func (s *interactionsStream) emitFile(data, uri, mimeType, defaultMime string) {
-	meta := providerMetaRaw("", s.interactionID)
+	meta := providerMetaRaw(nil, s.interactionID)
 	mediaType := firstNonEmpty(mimeType, defaultMime)
 	switch {
 	case data != "":

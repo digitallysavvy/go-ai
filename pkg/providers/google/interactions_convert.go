@@ -151,11 +151,10 @@ func (m *InteractionsLanguageModel) convertAssistantSteps(parts []types.ContentP
 			pending = append(pending, map[string]interface{}{"type": "text", "text": p.Text})
 		case types.ReasoningContent:
 			flush()
-			steps = append(steps, pruneMap(map[string]interface{}{
-				"type":      "thought",
-				"signature": emptyToNil(firstNonEmpty(googleOptString(p.ProviderOptions, "signature"), p.Signature, googleSignature(p.ProviderMetadata))),
-				"summary":   reasoningSummary(p.Text),
-			}))
+			steps = append(steps, withSignature(pruneMap(map[string]interface{}{
+				"type":    "thought",
+				"summary": reasoningSummary(p.Text),
+			}), inputSignature(p.ProviderOptions, p.Signature, extractGoogleMetadata(p.ProviderMetadata))))
 		case types.FileContent:
 			block, ws, err := fileContentToInteractionBlock(p, mediaResolution)
 			if err != nil {
@@ -172,13 +171,12 @@ func (m *InteractionsLanguageModel) convertAssistantSteps(parts []types.ContentP
 				seenToolCallIDs[p.ToolCallID] = true
 			}
 			args, orderRaw := interactionToolArgs(p.Arguments, p.Input)
-			steps = append(steps, pruneMap(map[string]interface{}{
+			steps = append(steps, withSignature(pruneMap(map[string]interface{}{
 				"type":      "function_call",
 				"id":        p.ToolCallID,
 				"name":      p.ToolName,
 				"arguments": orderedArguments(args, orderRaw),
-				"signature": emptyToNil(firstNonEmpty(googleOptString(p.ProviderOptions, "signature"), p.ThoughtSignature, signatureFromRawMetadata(p.ProviderMetadata))),
-			}))
+			}), inputSignature(p.ProviderOptions, p.ThoughtSignature, extractGoogleMetadata(p.ProviderMetadata))))
 		case types.CustomContent:
 			flush()
 			google := extractGoogleMetadata(p.ProviderMetadata)
@@ -193,24 +191,23 @@ func (m *InteractionsLanguageModel) convertAssistantSteps(parts []types.ContentP
 				}
 				google = merged
 			}
-			signature, _ := google["signature"].(string)
+			// TS: typeof google?.signature === 'string' (an empty one is sent).
+			signature := inputSignature(nil, "", google)
 			switch p.Kind {
 			case "google.processing_call":
 				if processingID, _ := google["processingId"].(string); processingID != "" {
-					steps = append(steps, pruneMap(map[string]interface{}{
-						"type":      "processing_call",
-						"id":        processingID,
-						"signature": emptyToNil(signature),
-					}))
+					steps = append(steps, withSignature(pruneMap(map[string]interface{}{
+						"type": "processing_call",
+						"id":   processingID,
+					}), signature))
 					continue
 				}
 			case "google.processing_result":
 				if processingCallID, _ := google["processingCallId"].(string); processingCallID != "" {
-					steps = append(steps, pruneMap(map[string]interface{}{
-						"type":      "processing_result",
-						"call_id":   processingCallID,
-						"signature": emptyToNil(signature),
-					}))
+					steps = append(steps, withSignature(pruneMap(map[string]interface{}{
+						"type":    "processing_result",
+						"call_id": processingCallID,
+					}), signature))
 					continue
 				}
 			}
@@ -227,13 +224,13 @@ func (m *InteractionsLanguageModel) convertAssistantSteps(parts []types.ContentP
 		}
 		flush()
 		args, orderRaw := interactionToolArgs(call.Arguments, call.RawArguments)
-		steps = append(steps, pruneMap(map[string]interface{}{
+		callGoogle, _ := call.ProviderMetadata["google"].(map[string]interface{})
+		steps = append(steps, withSignature(pruneMap(map[string]interface{}{
 			"type":      "function_call",
 			"id":        call.ID,
 			"name":      call.ToolName,
 			"arguments": orderedArguments(args, orderRaw),
-			"signature": emptyToNil(firstNonEmpty(call.ThoughtSignature, signatureFromMetadataMap(call.ProviderMetadata))),
-		}))
+		}), inputSignature(nil, call.ThoughtSignature, callGoogle)))
 	}
 	flush()
 	return steps, warnings, nil
@@ -409,8 +406,8 @@ func toolResultToInteractionBlock(part types.ToolResultContent) (map[string]inte
 		"call_id": part.ToolCallID,
 		"name":    part.ToolName,
 	}
-	if sig := googleOptString(part.ProviderOptions, "signature"); sig != "" {
-		base["signature"] = sig
+	if sig := inputSignature(part.ProviderOptions, "", nil); sig != nil {
+		base["signature"] = *sig
 	}
 	if part.Output == nil {
 		if part.Error != "" {
@@ -521,7 +518,7 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 				_ = json.Unmarshal(block.ContentRaw, &innerBlocks)
 			}
 			for _, inner := range innerBlocks {
-				meta := providerMetaRaw("", interactionID)
+				meta := providerMetaRaw(nil, interactionID)
 				switch inner.Type {
 				case "text":
 					content = append(content, types.TextContent{Text: inner.Text, ProviderMetadata: meta})
@@ -546,7 +543,7 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 			}
 		case "thought":
 			meta := providerMetaRaw(block.Signature, interactionID)
-			content = append(content, types.ReasoningContent{Text: thoughtText(block.Summary), Signature: block.Signature, ProviderMetadata: meta})
+			content = append(content, types.ReasoningContent{Text: thoughtText(block.Summary), Signature: signatureText(block.Signature), ProviderMetadata: meta})
 		case "processing_call":
 			processingID := firstNonEmpty(block.ID, gen())
 			content = append(content, types.CustomContent{
@@ -583,7 +580,7 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 				Input:            string(argsJSON),
 				Arguments:        args,
 				ProviderMetadata: metaRaw,
-				ThoughtSignature: block.Signature,
+				ThoughtSignature: signatureText(block.Signature),
 			})
 			toolCalls = append(toolCalls, types.ToolCall{
 				ID:               id,
@@ -591,7 +588,7 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 				Arguments:        args,
 				RawArguments:     string(argsJSON),
 				ProviderMetadata: providerMetaMap(block.Signature, interactionID),
-				ThoughtSignature: block.Signature,
+				ThoughtSignature: signatureText(block.Signature),
 			})
 		default:
 			if isBuiltinInteractionsToolCall(block.Type) {
@@ -766,15 +763,6 @@ func mergeAdjacentInteractionText(content []map[string]interface{}) []map[string
 		out = append(out, block)
 	}
 	return out
-}
-
-func signatureFromMetadataMap(meta map[string]interface{}) string {
-	if google, ok := meta["google"].(map[string]interface{}); ok {
-		if s, ok := google["signature"].(string); ok {
-			return s
-		}
-	}
-	return ""
 }
 
 func googleInteractionFromMap(meta map[string]interface{}) string {
@@ -954,6 +942,26 @@ func baseName(uriOrName string) string {
 // googleOptString reads providerOptions.google.<key> as a string (the TS
 // converter reads signatures, interaction ids and processing ids from the
 // prompt part's providerOptions).
+// inputSignature is the signature a converted step carries (TS
+// `...(signature != null ? { signature } : {})` over
+// providerOptions.google.signature): a string option, even "", wins; then the
+// Go field; then a string google metadata signature (parts that came back
+// from this provider carry it there). nil leaves the field out.
+func inputSignature(opts map[string]interface{}, field string, googleMeta map[string]interface{}) *string {
+	if google, ok := opts["google"].(map[string]interface{}); ok {
+		if v, ok := google["signature"].(string); ok {
+			return &v
+		}
+	}
+	if field != "" {
+		return &field
+	}
+	if v, ok := googleMeta["signature"].(string); ok {
+		return &v
+	}
+	return nil
+}
+
 func googleOptString(opts map[string]interface{}, key string) string {
 	if google, ok := opts["google"].(map[string]interface{}); ok {
 		if v, ok := google[key].(string); ok {

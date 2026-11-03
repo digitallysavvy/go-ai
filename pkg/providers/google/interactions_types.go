@@ -83,7 +83,7 @@ type interactionsContentBlock struct {
 	MimeType    string                     `json:"mime_type,omitempty"`
 	URI         string                     `json:"uri,omitempty"`
 	Resolution  string                     `json:"resolution,omitempty"`
-	Signature   string                     `json:"signature,omitempty"`
+	Signature   *string                    `json:"signature,omitempty"` // TS keeps "" (signature != null)
 	Summary     []interactionsContentBlock `json:"summary,omitempty"`
 	ContentRaw  json.RawMessage            `json:"content,omitempty"`
 	ID          string                     `json:"id,omitempty"`
