@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // MessageConversionError is returned when a UI message cannot be converted to
@@ -508,12 +509,12 @@ func fileUIPartToModel(p *FileUIPart) (types.FileContent, error) {
 	return content, nil
 }
 
-// validateUIPartURL mirrors `new URL(part.url)`, which rejects relative or
-// malformed URLs.
+// validateUIPartURL mirrors `new URL(part.url)`: a URL the WHATWG parser
+// rejects (relative, malformed host or port) is TS's TypeError "Invalid URL".
+// The URL is kept as given; core prompt conversion serializes it.
 func validateUIPartURL(raw string) error {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme == "" {
-		return fmt.Errorf("Invalid URL: %s", raw) //nolint:staticcheck // matches TS SDK's exact error text
+	if _, err := urlnorm.Parse(raw); err != nil {
+		return &promptutils.InvalidURLError{URL: raw}
 	}
 	return nil
 }

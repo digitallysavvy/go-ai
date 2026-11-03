@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -121,6 +123,38 @@ func TestR84integSupportedUnsafeURLForwardedNotFetched(t *testing.T) {
 		}
 		if downloaded.Load() != 0 || got.FileData.Type != types.FileDataTypeURL || got.FileData.URL != raw || len(got.FileData.Data) != 0 {
 			t.Fatalf("%s: provider part = %+v (downloads %d)", raw, got, downloaded.Load())
+		}
+	}
+}
+
+// TS ui/convert-to-model-messages.ts 174/242/250: `new URL(part.url)`; a URL
+// the WHATWG parser rejects is TypeError "Invalid URL" (net/url accepted
+// http://x:65536/ and rejected http://x.com/%zz). The URL is kept as given.
+func TestR84integUIFilePartURLUsesWHATWGParser(t *testing.T) {
+	for _, bad := range []string{"http://x:65536/a.png", "http://256.0.0.1/a.png", "/relative.png"} {
+		_, err := ConvertToModelMessages(context.Background(), []UIMessage{{Role: UIMessageRoleUser, Parts: []UIMessagePart{
+			FileUIPart{MediaType: "image/png", URL: bad},
+		}}})
+		var invalid *promptutils.InvalidURLError
+		if !errors.As(err, &invalid) || err.Error() != "Invalid URL" {
+			t.Fatalf("%s: err = %v", bad, err)
+		}
+		_, err = ConvertToModelMessages(context.Background(), []UIMessage{{Role: UIMessageRoleAssistant, Parts: []UIMessagePart{
+			ReasoningFileUIPart{MediaType: "image/png", URL: bad},
+		}}})
+		if !errors.As(err, &invalid) || err.Error() != "Invalid URL" {
+			t.Fatalf("reasoning %s: err = %v", bad, err)
+		}
+	}
+	for _, good := range []string{"http://x.com/%zz", "HTTPS://X.com/a b.png"} {
+		msgs, err := ConvertToModelMessages(context.Background(), []UIMessage{{Role: UIMessageRoleUser, Parts: []UIMessagePart{
+			FileUIPart{MediaType: "image/png", URL: good},
+		}}})
+		if err != nil {
+			t.Fatalf("%s: %v", good, err)
+		}
+		if f := msgs[0].Content[0].(types.FileContent); f.FileData.URL != good || f.FileData.OriginalURL != "" {
+			t.Fatalf("%s: part = %+v", good, f)
 		}
 	}
 }
