@@ -50,7 +50,8 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 }
 
 // DoStream streams a transcript for live audio over the OpenAI realtime
-// WebSocket (gpt-realtime-whisper deployments). Mirrors TS
+// WebSocket (gpt-realtime-whisper, gpt-live-transcribe and gpt-transcribe
+// deployments). Mirrors TS
 // AzureTranscriptionModel#doStream's default ("openai") branch, which wraps
 // an OpenAITranscriptionModel instance constructed with Azure's own
 // url/headers closures -- so this reuses the openai package's realtime
@@ -59,7 +60,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 // REST wire format but through p.endpointPath/p.requestHeaders instead of
 // OpenAI's.
 func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.TranscriptionStreamOptions) (*provider.TranscriptionStreamResult, error) {
-	if !openai.IsRealtimeTranscriptionModelID(m.deploymentID) {
+	if !openai.SupportsStreamingTranscription(m.deploymentID) {
 		return nil, &providererrors.UnsupportedFunctionalityError{
 			Functionality: fmt.Sprintf("streaming transcription with %s", m.deploymentID),
 		}
@@ -70,21 +71,10 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	}
 	streamOpts := openai.TranscriptionStreamOpenAIOptions(opts.ProviderOptions)
 
-	// options that only apply to the REST transcription endpoint, mirroring
-	// TS's doStream check on the raw providerOptions.openai fields.
-	var warnings []types.Warning
-	if streamOpts.HasInclude {
-		warnings = append(warnings, openai.UnsupportedStreamingTranscriptionWarning("include"))
-	}
-	if streamOpts.HasPrompt {
-		warnings = append(warnings, openai.UnsupportedStreamingTranscriptionWarning("prompt"))
-	}
-	if streamOpts.HasTemperature {
-		warnings = append(warnings, openai.UnsupportedStreamingTranscriptionWarning("temperature"))
-	}
-	if streamOpts.HasTimestampGranularities {
-		warnings = append(warnings, openai.UnsupportedStreamingTranscriptionWarning("timestampGranularities"))
-	}
+	// options that only apply to the REST transcription endpoint, and
+	// streaming.delay for a model without a delay setting, mirroring TS's
+	// doStream checks on providerOptions.openai.
+	warnings := openai.StreamingTranscriptionWarnings(m.deploymentID, streamOpts)
 
 	wsURL, err := m.realtimeWebSocketURL()
 	if err != nil {

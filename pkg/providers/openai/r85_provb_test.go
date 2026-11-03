@@ -2,12 +2,15 @@ package openai
 
 import (
 	"compress/gzip"
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"reflect"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -151,5 +154,67 @@ func TestR85provbResponsesReasoningEfforts(t *testing.T) {
 	}
 	if r, _ := body["reasoning"].(map[string]interface{}); r["effort"] != "max" || len(warnings) != 0 {
 		t.Errorf("gpt-5.6-luna: reasoning %#v, warnings %#v", body["reasoning"], warnings)
+	}
+}
+
+// TS 8375141ef4 / 226b7daf82: streaming transcription with
+// gpt-live-transcribe and gpt-transcribe (languages list, no delay for
+// gpt-transcribe, REST-only languages/keywords warnings); REST rejects
+// gpt-live-transcribe.
+func TestR85provbStreamingTranscriptionModels(t *testing.T) {
+	for id, want := range map[string]bool{
+		"gpt-realtime-whisper": true, "gpt-realtime-whisper-2026-01-01": true,
+		"gpt-live-transcribe": true, "gpt-live-transcribe-2026-10-01": true,
+		"gpt-transcribe": true, "gpt-transcribe-2026-10-01": true,
+		"whisper-1": false, "gpt-4o-transcribe": false, "custom": false, "gpt-transcriber": false,
+	} {
+		if got := SupportsStreamingTranscription(id); got != want {
+			t.Errorf("SupportsStreamingTranscription(%q) = %v, want %v", id, got, want)
+		}
+	}
+	for id, want := range map[string]bool{
+		"gpt-realtime-whisper": true, "gpt-live-transcribe": true, "gpt-live-transcribe-x": true,
+		"gpt-transcribe": false, "whisper-1": false, "custom": false,
+	} {
+		if got := IsRealtimeTranscriptionModelID(id); got != want {
+			t.Errorf("IsRealtimeTranscriptionModelID(%q) = %v, want %v", id, got, want)
+		}
+	}
+
+	_, err := NewTranscriptionModel(New(Config{APIKey: "k"}), "gpt-live-transcribe").DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/wav"})
+	var unsupported *providererrors.UnsupportedFunctionalityError
+	if !errors.As(err, &unsupported) || unsupported.Functionality != "non-streaming transcription with gpt-live-transcribe" {
+		t.Fatalf("DoTranscribe(gpt-live-transcribe) err = %v", err)
+	}
+
+	po := map[string]interface{}{"openai": map[string]interface{}{
+		"language": "en", "languages": []interface{}{"en"}, "keywords": []interface{}{"AI SDK"},
+		"streaming": map[string]interface{}{"delay": "low"},
+	}}
+	opts := TranscriptionStreamOpenAIOptions(po)
+	format := provider.AudioFormat{Type: "audio/pcm"}
+
+	transcription := func(session map[string]interface{}) map[string]interface{} {
+		return session["session"].(map[string]interface{})["audio"].(map[string]interface{})["input"].(map[string]interface{})["transcription"].(map[string]interface{})
+	}
+	if got := transcription(BuildOpenAIRealtimeTranscriptionSession("gpt-transcribe", format, opts)); !reflect.DeepEqual(got, map[string]interface{}{"model": "gpt-transcribe", "languages": []string{"en"}}) {
+		t.Errorf("gpt-transcribe transcription = %#v", got)
+	}
+	if got := transcription(BuildOpenAIRealtimeTranscriptionSession("gpt-live-transcribe", format, opts)); !reflect.DeepEqual(got, map[string]interface{}{"model": "gpt-live-transcribe", "languages": []string{"en"}, "delay": "low"}) {
+		t.Errorf("gpt-live-transcribe transcription = %#v", got)
+	}
+	if got := transcription(BuildOpenAIRealtimeTranscriptionSession("gpt-realtime-whisper", format, opts)); !reflect.DeepEqual(got, map[string]interface{}{"model": "gpt-realtime-whisper", "language": "en", "delay": "low"}) {
+		t.Errorf("gpt-realtime-whisper transcription = %#v", got)
+	}
+
+	rest := func(option string) types.Warning {
+		return types.Warning{Type: "unsupported", Feature: "providerOptions.openai." + option, Details: "OpenAI streaming transcription does not support " + option + "."}
+	}
+	want := []types.Warning{rest("languages"), rest("keywords"), {Type: "unsupported", Feature: "providerOptions.openai.streaming.delay", Details: "OpenAI streaming transcription with gpt-transcribe does not support delay."}}
+	if got := StreamingTranscriptionWarnings("gpt-transcribe", opts); !reflect.DeepEqual(got, want) {
+		t.Errorf("gpt-transcribe warnings = %#v", got)
+	}
+	if got := StreamingTranscriptionWarnings("gpt-live-transcribe", opts); !reflect.DeepEqual(got, want[:2]) {
+		t.Errorf("gpt-live-transcribe warnings = %#v", got)
 	}
 }

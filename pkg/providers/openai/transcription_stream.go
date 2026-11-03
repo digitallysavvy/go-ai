@@ -25,19 +25,22 @@ import (
 // of whitespace separates it from the token, not just a single space.
 var bearerTokenPattern = regexp.MustCompile(`(?i)^bearer\s+(.+)$`)
 
-// IsRealtimeTranscriptionModelID reports whether modelID streams over the
-// OpenAI realtime WebSocket rather than the REST transcription endpoint.
-// Prefix matching keeps dated snapshots (e.g. "gpt-realtime-whisper-2026-01-01")
-// working, mirroring TS isRealtimeTranscriptionModelId.
+// IsRealtimeTranscriptionModelID reports whether modelID only streams over
+// the OpenAI realtime WebSocket and has no REST transcription
+// (gpt-realtime-whisper and, since TS 8375141ef4, gpt-live-transcribe, with
+// their dated snapshots): DoTranscribe rejects these models. Models that
+// support both, such as gpt-transcribe, are not included; use
+// SupportsStreamingTranscription for the streaming check.
 func IsRealtimeTranscriptionModelID(modelID string) bool {
-	return modelID == "gpt-realtime-whisper" || strings.HasPrefix(modelID, "gpt-realtime-whisper-")
+	return getOpenAITranscriptionModelEntry(modelID).rest == transcriptionSupportNo
 }
 
 // DoStream streams a transcript for live audio over the OpenAI realtime
-// WebSocket (gpt-realtime-whisper and dated snapshots). Mirrors TS
-// OpenAITranscriptionModel#doStream / createOpenAIRealtimeTranscriptionStream.
+// WebSocket (gpt-realtime-whisper, gpt-live-transcribe, gpt-transcribe and
+// dated snapshots). Mirrors TS OpenAITranscriptionModel#doStream /
+// createOpenAIRealtimeTranscriptionStream.
 func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.TranscriptionStreamOptions) (*provider.TranscriptionStreamResult, error) {
-	if !IsRealtimeTranscriptionModelID(m.modelID) {
+	if !SupportsStreamingTranscription(m.modelID) {
 		return nil, &providererrors.UnsupportedFunctionalityError{
 			Functionality: fmt.Sprintf("streaming transcription with %s", m.modelID),
 		}
@@ -48,19 +51,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	}
 	streamOpts := TranscriptionStreamOpenAIOptions(opts.ProviderOptions)
 
-	var warnings []types.Warning
-	if streamOpts.HasInclude {
-		warnings = append(warnings, UnsupportedStreamingTranscriptionWarning("include"))
-	}
-	if streamOpts.HasPrompt {
-		warnings = append(warnings, UnsupportedStreamingTranscriptionWarning("prompt"))
-	}
-	if streamOpts.HasTemperature {
-		warnings = append(warnings, UnsupportedStreamingTranscriptionWarning("temperature"))
-	}
-	if streamOpts.HasTimestampGranularities {
-		warnings = append(warnings, UnsupportedStreamingTranscriptionWarning("timestampGranularities"))
-	}
+	warnings := StreamingTranscriptionWarnings(m.modelID, streamOpts)
 
 	baseHeaders, err := m.baseWSHeaders()
 	if err != nil {
@@ -110,6 +101,45 @@ func UnsupportedStreamingTranscriptionWarning(option string) types.Warning {
 	}
 }
 
+// StreamingTranscriptionWarnings returns TS doStream's warnings for
+// modelID: one "unsupported" warning per REST-only option that is set
+// (include, languages, keywords, prompt, temperature,
+// timestampGranularities, in that order), then, for a model without a
+// streaming delay setting (gpt-transcribe), one for streaming.delay
+// (TS 8375141ef4, 226b7daf82).
+func StreamingTranscriptionWarnings(modelID string, opts TranscriptionStreamOpenAIOptionsValue) []types.Warning {
+	var warnings []types.Warning
+	for _, option := range []struct {
+		name string
+		set  bool
+	}{
+		{"include", opts.HasInclude},
+		{"languages", opts.HasLanguages},
+		{"keywords", opts.HasKeywords},
+		{"prompt", opts.HasPrompt},
+		{"temperature", opts.HasTemperature},
+		{"timestampGranularities", opts.HasTimestampGranularities},
+	} {
+		if option.set {
+			warnings = append(warnings, UnsupportedStreamingTranscriptionWarning(option.name))
+		}
+	}
+	if !supportsStreamingTranscriptionDelay(modelID) && (opts.StreamingDelayLevel != "" || opts.StreamingDelay != nil) {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "providerOptions.openai.streaming.delay",
+			Details: fmt.Sprintf("OpenAI streaming transcription with %s does not support delay.", modelID),
+		})
+	}
+	return warnings
+}
+
+// supportsStreamingTranscriptionDelay is TS
+// `capabilities.transcription.streamingDelay === true`.
+func supportsStreamingTranscriptionDelay(modelID string) bool {
+	return getOpenAITranscriptionModelEntry(modelID).streamingDelay == transcriptionSupportYes
+}
+
 func realtimeTranscriptionWebSocketURL(baseURL string) string {
 	wsBase := strings.Replace(baseURL, "https://", "wss://", 1)
 	wsBase = strings.Replace(wsBase, "http://", "ws://", 1)
@@ -126,13 +156,22 @@ func BuildOpenAIRealtimeTranscriptionSession(modelID string, format provider.Aud
 
 	transcription := map[string]interface{}{"model": modelID}
 	if opts.Language != "" {
-		transcription["language"] = opts.Language
+		// gpt-live-transcribe and gpt-transcribe take a languages list
+		// (TS 8375141ef4 languageField).
+		if getOpenAITranscriptionModelEntry(modelID).languageField == "languages" {
+			transcription["languages"] = []string{opts.Language}
+		} else {
+			transcription["language"] = opts.Language
+		}
 	}
-	// TS: streaming.delay is an enum string (minimal|low|medium|high|xhigh).
-	if opts.StreamingDelayLevel != "" {
-		transcription["delay"] = opts.StreamingDelayLevel
-	} else if opts.StreamingDelay != nil {
-		transcription["delay"] = *opts.StreamingDelay
+	// TS: streaming.delay is an enum string (minimal|low|medium|high|xhigh),
+	// sent only to models with a delay setting.
+	if supportsStreamingTranscriptionDelay(modelID) {
+		if opts.StreamingDelayLevel != "" {
+			transcription["delay"] = opts.StreamingDelayLevel
+		} else if opts.StreamingDelay != nil {
+			transcription["delay"] = *opts.StreamingDelay
+		}
 	}
 
 	session := map[string]interface{}{
@@ -167,6 +206,10 @@ type TranscriptionStreamOpenAIOptionsValue struct {
 	// the raw options: an empty prompt or an empty array still warns.
 	HasPrompt                 bool
 	HasTimestampGranularities bool
+	// HasLanguages and HasKeywords flag the REST-only languages and keywords
+	// options (TS 226b7daf82).
+	HasLanguages bool
+	HasKeywords  bool
 }
 
 func TranscriptionStreamOpenAIOptions(providerOptions map[string]interface{}) TranscriptionStreamOpenAIOptionsValue {
@@ -188,6 +231,8 @@ func TranscriptionStreamOpenAIOptions(providerOptions map[string]interface{}) Tr
 	result.HasTemperature = openaiOpts["temperature"] != nil
 	result.HasInclude = openaiOpts["include"] != nil
 	result.HasTimestampGranularities = openaiOpts["timestampGranularities"] != nil
+	result.HasLanguages = openaiOpts["languages"] != nil
+	result.HasKeywords = openaiOpts["keywords"] != nil
 	if v, ok := openaiOpts["timestampGranularities"].([]interface{}); ok {
 		for _, item := range v {
 			if s, ok := item.(string); ok {
