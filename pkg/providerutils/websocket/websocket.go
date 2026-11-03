@@ -30,9 +30,13 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/net/websocket"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 )
 
 // DialOptions configures Dial. Both fields are optional.
@@ -172,6 +176,9 @@ func ReceiveLoop(ctx context.Context, conn *websocket.Conn, out chan<- Message) 
 	for {
 		var msg string
 		err := websocket.Message.Receive(conn, &msg)
+		if err == nil {
+			msg = frameText(msg)
+		}
 		select {
 		case out <- Message{Text: msg, Err: err}:
 		case <-ctx.Done():
@@ -192,6 +199,9 @@ func Receive(ctx context.Context, conn *websocket.Conn) (string, error) {
 	go func() {
 		var msg string
 		err := websocket.Message.Receive(conn, &msg)
+		if err == nil {
+			msg = frameText(msg)
+		}
 		done <- Message{Text: msg, Err: err}
 	}()
 	select {
@@ -218,6 +228,18 @@ func Send(ctx context.Context, conn *websocket.Conn, v interface{}) error {
 	case err := <-done:
 		return err
 	}
+}
+
+// frameText is TS readWebSocketMessageText (websocket.ts 49): the WebSocket
+// text decode drops a leading BOM, and a binary frame goes through
+// TextDecoder (BOM dropped, one U+FFFD per maximal invalid subpart). Go reads
+// both frame kinds as raw bytes; invalid UTF-8 in a text frame, which fails
+// the connection in Node, is decoded leniently too.
+func frameText(msg string) string {
+	if !utf8.ValidString(msg) || strings.HasPrefix(msg, "\ufeff") {
+		return textdecode.UTF8([]byte(msg))
+	}
+	return msg
 }
 
 // IsCleanClose reports whether err represents a clean WebSocket close (TS
