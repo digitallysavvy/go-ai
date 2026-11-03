@@ -24,6 +24,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -689,7 +690,7 @@ func canonFileData(o map[string]interface{}) {
 	if !ok {
 		return
 	}
-	if b, err := types.DecodeFileDataString(str); err == nil {
+	if b, err := fileutil.ConvertBase64ToBytes(str); err == nil {
 		d["data"] = base64.StdEncoding.EncodeToString(b)
 	}
 }

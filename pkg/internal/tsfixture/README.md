@@ -165,6 +165,13 @@ response is served compacted, as `JSON.stringify` of the parsed fixture (the
 TS `prepareJsonFixtureResponse`), with its `content-length`; response headers
 keep `content-length` only in a case whose expectations show it.
 
+Since round 82, `--fn=NAME` also evaluates locals with a trailing TS cast
+(`const steps = [...] as Array<Step>;`), records `const { a } = NAME(...)`
+without `await` as aliases, and records a function argument (a `generateId`
+the test defines, also as a top-level `function` declaration) as an opaque
+`{"__fn": NAME}` marker the Go adapter supplies. Function-level files without
+those shapes regenerate byte for byte.
+
 Test hooks used by the provider tests: `ProviderToolHook` (and
 `anthropictools.ProviderTool` for Anthropic tools), `ToolNameAlias` /
 `PromptToolNameAlias` (Go names provider tools by id), `MetadataKeyAlias`,
