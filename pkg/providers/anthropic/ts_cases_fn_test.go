@@ -33,6 +33,5 @@ func TestTSCasesSanitizeSchema(t *testing.T) {
 		return tool.SanitizeAnthropicSchema(args[0]), nil, nil
 	}, map[string]string{
 		"recursively sanitizes arrays, definitions, and composition schemas": "the TS test assigns several schemas to one variable before asserting; the harness reads the first call only",
-		"keeps definitions next to a top-level $ref":                         "TS f4c5f1e959 keeps definitions/$defs next to a top-level $ref; tool.SanitizeAnthropicSchema is gen's file (reports/cr-r85-prova-to-gen.md); remove this skip when it lands",
 	})
 }

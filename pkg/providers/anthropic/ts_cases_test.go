@@ -137,7 +137,6 @@ func TestTSCasesLanguage(t *testing.T) {
 		"should stream code execution tool results without beta header":                              longSnapshot,
 		"should include file id list in code execution tool call result.":                            longSnapshot,
 		"should throw an api error when the first stream chunk is an overloaded error":               "the TS test expects DoStream to fail; covered by TestStreamOverloadedFirstEvent",
-		"should expose the raw response headers":                                                     "the TS response carries content-length, which tsfixture keeps only when a snapshot (not a plain assertion) names it; CR r85 prova to provb",
 		"should parse advisor calls and results as provider-executed tool parts":                     "the Go tool hook builds no advisor tool with args; replayed with TS tool names by TestR74prova_TSCasesLanguageWithTSToolNames",
 	})
 }
