@@ -233,6 +233,9 @@ type ToolUIPart struct {
 	// input), so a decode/encode round trip and ReadUIMessages snapshots
 	// leave it out too.
 	inputAbsent bool
+	// rawInputNull records a decoded `"rawInput": null` (TS keeps the own
+	// property: it is serialized and logs the rawInput deprecation).
+	rawInputNull bool
 }
 
 // hasInput reports whether the part carries an input, including a JSON null
@@ -318,7 +321,7 @@ func warnIfUIMessagesHaveDeprecatedRawInput(messages []UIMessage) {
 	for _, message := range messages {
 		for _, part := range message.Parts {
 			tool, ok := AsToolUIPart(part)
-			if ok && tool.State == ToolStateOutputError && tool.RawInput != nil {
+			if ok && tool.State == ToolStateOutputError && (tool.RawInput != nil || tool.rawInputNull) {
 				LogWarnings(LogWarningsOptions{Warnings: []types.Warning{rawInputDeprecationWarning}})
 				return
 			}
@@ -815,7 +818,7 @@ func (p ToolUIPart) MarshalJSON() ([]byte, error) {
 	if p.Output != nil || p.State == ToolStateOutputAvailable {
 		o.field("output", p.Output)
 	}
-	if p.RawInput != nil {
+	if p.RawInput != nil || p.rawInputNull {
 		o.field("rawInput", p.RawInput)
 	}
 	if p.InputEncoding != "" {
@@ -850,7 +853,7 @@ func (p *ToolUIPart) UnmarshalJSON(data []byte) error {
 		ProviderExecuted       *bool                  `json:"providerExecuted"`
 		Input                  json.RawMessage        `json:"input"`
 		Output                 interface{}            `json:"output"`
-		RawInput               interface{}            `json:"rawInput"`
+		RawInput               json.RawMessage        `json:"rawInput"`
 		InputEncoding          string                 `json:"inputEncoding"`
 		ErrorText              string                 `json:"errorText"`
 		Preliminary            *bool                  `json:"preliminary"`
@@ -871,13 +874,18 @@ func (p *ToolUIPart) UnmarshalJSON(data []byte) error {
 		ToolMetadata:           raw.ToolMetadata,
 		ProviderExecuted:       raw.ProviderExecuted,
 		Output:                 raw.Output,
-		RawInput:               raw.RawInput,
 		InputEncoding:          raw.InputEncoding,
 		ErrorText:              raw.ErrorText,
 		Preliminary:            raw.Preliminary,
 		CallProviderMetadata:   raw.CallProviderMetadata,
 		ResultProviderMetadata: raw.ResultProviderMetadata,
 		Approval:               raw.Approval,
+	}
+	if raw.RawInput != nil {
+		if err := json.Unmarshal(raw.RawInput, &p.RawInput); err != nil {
+			return err
+		}
+		p.rawInputNull = p.RawInput == nil
 	}
 	if raw.Input != nil {
 		if err := json.Unmarshal(raw.Input, &p.Input); err != nil {

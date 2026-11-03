@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -188,5 +189,36 @@ func r86streamWantStrings(t *testing.T, what string, got []string, want ...strin
 	t.Helper()
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("%s = %v, want %v", what, got, want)
+	}
+}
+
+// TS keeps a part's own `rawInput: null`: safeValidateUIMessages returns it
+// unchanged and convertToModelMessages logs the rawInput deprecation (Node
+// recorded, 30548ee7f9).
+func TestR86streamToolPartRawInputNull(t *testing.T) {
+	const part = `{"type":"tool-x","toolCallId":"c","state":"output-error","rawInput":null,"errorText":"e"}`
+	var msg UIMessage
+	if err := json.Unmarshal([]byte(`{"id":"a","role":"assistant","parts":[`+part+`]}`), &msg); err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"id":"a","role":"assistant","parts":[` + part + `]}`; string(b) != want {
+		t.Errorf("round trip = %s\nwant %s", b, want)
+	}
+	var settings []string
+	SetLogWarnings(func(o LogWarningsOptions) {
+		for _, w := range o.Warnings {
+			settings = append(settings, w.Setting)
+		}
+	})
+	defer SetLogWarnings(nil)
+	if _, err := ConvertToModelMessages(context.Background(), []UIMessage{msg}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(settings, ",") != "rawInput in output-error UI message parts" {
+		t.Errorf("warnings = %v", settings)
 	}
 }
