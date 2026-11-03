@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
@@ -110,7 +111,8 @@ func (h *mcpEventWebhook) handle(w http.ResponseWriter, r *http.Request) (int, [
 		w.Header().Set("Allow", "POST")
 		return http.StatusMethodNotAllowed, nil
 	}
-	if strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0])) != "application/json" {
+	// TS .split(';')[0].trim().toLowerCase(): JS trim.
+	if strings.ToLower(providerutils.JSTrim(strings.Split(r.Header.Get("Content-Type"), ";")[0])) != "application/json" {
 		return http.StatusUnsupportedMediaType, nil
 	}
 	if r.ContentLength > mcpEventMaxBodyBytes {

@@ -351,3 +351,19 @@ func TestR85toolsDiscoveryLegacyVersionGuidance(t *testing.T) {
 		}
 	}
 }
+
+// TS content-type check uses JS trim: a leading U+0085 is kept (415), a
+// U+FEFF is trimmed (accepted).
+func TestR85toolsWebhookContentTypeJSTrim(t *testing.T) {
+	h := newWebhookHarness(t)
+	r := signedEventRequest(h.sub, testEvent, "evt_1")
+	r.Header.Set("content-type", "\u0085application/json")
+	if code := h.do(r); code != 415 {
+		t.Fatalf("NEL content type = %d, want 415", code)
+	}
+	r = signedEventRequest(h.sub, testEvent, "evt_1")
+	r.Header.Set("content-type", "\ufeffapplication/json; charset=utf-8")
+	if code := h.do(r); code == 415 {
+		t.Fatalf("BOM content type = %d, want it accepted", code)
+	}
+}
