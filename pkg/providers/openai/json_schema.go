@@ -137,8 +137,12 @@ func normalizeJSONSchemaValueRoot(def interface{}, removedPropertyNames, removed
 
 func normalizeJSONSchemaObject(schema map[string]interface{}, removedPropertyNames, removedLookaroundPattern *bool, isRoot bool) (map[string]interface{}, error) {
 	if propertyNames, ok := schema["propertyNames"]; ok && propertyNames != nil {
-		pnMap, isMap := propertyNames.(map[string]interface{})
-		if !isMap || pnMap["type"] != "string" {
+		// Property names are always strings in JSON, so a propertyNames
+		// schema without a type is a string schema and is stripped too;
+		// only a boolean or a non-string type is rejected (TS 7eac057241).
+		_, isBool := propertyNames.(bool)
+		pnMap, _ := propertyNames.(map[string]interface{})
+		if pnType, hasType := pnMap["type"]; isBool || (hasType && pnType != nil && pnType != "string") {
 			return nil, &providererrors.UnsupportedFunctionalityError{
 				Functionality: "JSON Schema propertyNames that does not use a string schema",
 			}
