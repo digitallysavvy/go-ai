@@ -242,6 +242,16 @@ type bedrockAnthropicTransport struct {
 }
 
 func (t *bedrockAnthropicTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.roundTrip(req)
+	// A RoundTripper closes the request body, even on errors (a
+	// credential or signing failure returns before the base transport).
+	if err != nil && req.Body != nil {
+		_ = req.Body.Close()
+	}
+	return resp, err
+}
+
+func (t *bedrockAnthropicTransport) roundTrip(req *http.Request) (*http.Response, error) {
 	if strings.Contains(req.URL.Path, "invoke-with-response-stream") {
 		req.Header.Set("Accept", "application/vnd.amazon.eventstream")
 	}

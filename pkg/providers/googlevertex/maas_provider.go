@@ -109,6 +109,16 @@ type maasAuthTransport struct {
 }
 
 func (t *maasAuthTransport) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
+	resp, err := t.roundTrip(req)
+	// A RoundTripper closes the request body, even on errors (a
+	// credential or signing failure returns before the base transport).
+	if err != nil && req.Body != nil {
+		_ = req.Body.Close()
+	}
+	return resp, err
+}
+
+func (t *maasAuthTransport) roundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
 	clone := req.Clone(req.Context())
 	if clone.Body != nil && clone.Method == stdhttp.MethodPost {
 		bodyBytes, err := io.ReadAll(clone.Body)

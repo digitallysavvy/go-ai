@@ -19,6 +19,16 @@ type authTransport struct {
 }
 
 func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.roundTrip(req)
+	// A RoundTripper closes the request body, even on errors (a
+	// credential or signing failure returns before the base transport).
+	if err != nil && req.Body != nil {
+		_ = req.Body.Close()
+	}
+	return resp, err
+}
+
+func (t *authTransport) roundTrip(req *http.Request) (*http.Response, error) {
 	clone := req.Clone(req.Context())
 	token, err := t.tokenFunc(req.Context())
 	if err != nil {

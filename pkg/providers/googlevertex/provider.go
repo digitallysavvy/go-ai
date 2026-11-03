@@ -429,7 +429,11 @@ func (p *Provider) clients() (*vertexClients, error) {
 // New* constructor that has no error return.
 type failingRoundTripper struct{ err error }
 
-func (f failingRoundTripper) RoundTrip(*stdhttp.Request) (*stdhttp.Response, error) {
+func (f failingRoundTripper) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
+	// A RoundTripper closes the request body, even on errors.
+	if req.Body != nil {
+		_ = req.Body.Close()
+	}
 	return nil, f.err
 }
 
@@ -754,6 +758,16 @@ type vertexExpressTransport struct {
 }
 
 func (t *vertexExpressTransport) RoundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
+	resp, err := t.roundTrip(req)
+	// A RoundTripper closes the request body, even on errors (a
+	// credential or signing failure returns before the base transport).
+	if err != nil && req.Body != nil {
+		_ = req.Body.Close()
+	}
+	return resp, err
+}
+
+func (t *vertexExpressTransport) roundTrip(req *stdhttp.Request) (*stdhttp.Response, error) {
 	key, err := providerutils.ResolveAPIKey(req.Context(), providerutils.ResolveAPIKeyOptions{
 		APIKey: t.apiKey, APIKeyFunc: t.apiKeyFunc, Description: "Google Vertex", RequireNonEmpty: true,
 	})

@@ -26,6 +26,16 @@ type sigV4Transport struct {
 }
 
 func (t *sigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.roundTrip(req)
+	// A RoundTripper closes the request body, even on errors (a
+	// credential or signing failure returns before the base transport).
+	if err != nil && req.Body != nil {
+		_ = req.Body.Close()
+	}
+	return resp, err
+}
+
+func (t *sigV4Transport) roundTrip(req *http.Request) (*http.Response, error) {
 	if t.apiKeyFunc != nil {
 		key, err := providerutils.ResolveAPIKey(req.Context(), providerutils.ResolveAPIKeyOptions{
 			APIKey: t.apiKey, APIKeyFunc: t.apiKeyFunc, Description: "Amazon Bedrock", RequireNonEmpty: true,
