@@ -345,12 +345,11 @@ type googleFile struct {
 	referenceMap types.ProviderReference
 	text         string
 	hasText      bool
-	// data is the inline bytes; for a base64 string payload (raw) it is the
-	// string decoded with TS convertBase64ToUint8Array, used only for media
-	// type detection (nil when it does not decode).
+	// data is the inline bytes (empty for a base64 string payload).
 	data []byte
 	// raw is a base64 string payload (FileData.DataString), sent unchanged
-	// (TS convertToBase64 returns a string as is).
+	// (TS convertToBase64 returns a string as is); media type detection
+	// decodes only its sniffed prefix (TS detectMediaType decodePrefix).
 	raw string
 }
 
@@ -382,7 +381,6 @@ func (c *googleConverter) resolveFile(file types.FileContent) googleFile {
 		f.data = file.FileData.Data
 		if len(f.data) == 0 && file.FileData.DataString != "" {
 			f.raw = file.FileData.DataString
-			f.data, _ = fileutil.ConvertBase64ToBytes(file.FileData.DataString)
 		}
 	}
 	return f
@@ -430,7 +428,7 @@ func (c *googleConverter) fileContentPart(file types.FileContent, assistant bool
 		mimeType := f.mediaType
 		if !assistant {
 			var err error
-			if mimeType, err = googleResolveFullMediaType(f.mediaType, f.data, true); err != nil {
+			if mimeType, err = f.resolveInlineMediaType(); err != nil {
 				return nil, err
 			}
 		}
@@ -438,6 +436,25 @@ func (c *googleConverter) fileContentPart(file types.FileContent, assistant bool
 			"inlineData": map[string]interface{}{"mimeType": mimeType, "data": f.base64Data()},
 		}, nil
 	}
+}
+
+// resolveInlineMediaType is googleResolveFullMediaType for the file's inline
+// payload: bytes, or a base64 string of which TS detectMediaType decodes only
+// the sniffed prefix (decodePrefix), so a bad tail is still detected and a
+// bad prefix is the decode error (atob throws).
+func (f googleFile) resolveInlineMediaType() (string, error) {
+	if f.raw == "" || isFullMediaType(f.mediaType) || f.mediaType == "" {
+		return googleResolveFullMediaType(f.mediaType, f.data, true)
+	}
+	top, _, _ := strings.Cut(f.mediaType, "/")
+	detected, ok, err := fileutil.DetectMediaTypeSignatureBase64(f.raw, top)
+	if err != nil {
+		return "", err
+	}
+	if ok {
+		return detected, nil
+	}
+	return "", googleUnsupported(fmt.Sprintf("file of media type %q must specify subtype since it could not be auto-detected", f.mediaType))
 }
 
 // googleResolveFullMediaType ports TS resolveFullMediaType for a user file
@@ -923,7 +940,7 @@ func (c *googleConverter) appendToolResultParts(parts *[]map[string]interface{},
 			case f.hasData():
 				// TS resolveFullMediaType: complete a top-level media type by
 				// sniffing the bytes; it throws when that fails.
-				mediaType, err := googleResolveFullMediaType(f.mediaType, f.data, true)
+				mediaType, err := f.resolveInlineMediaType()
 				if err != nil {
 					return err
 				}
@@ -975,7 +992,7 @@ func (c *googleConverter) appendLegacyToolResultParts(parts *[]map[string]interf
 		case types.FileContentBlock:
 			f := c.resolveFile(fileBlockToContent(b))
 			if f.url == "" && f.reference == "" && !f.hasText && f.hasData() {
-				mediaType, err := googleResolveFullMediaType(f.mediaType, f.data, true)
+				mediaType, err := f.resolveInlineMediaType()
 				if err != nil {
 					return err
 				}
