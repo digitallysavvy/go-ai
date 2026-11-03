@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
@@ -206,6 +209,11 @@ func newProviderError(provider string, statusCode int, errorCode, message string
 		// ResponseHeaders with Go canonical keys and comma-joined values in
 		// v0.5.2; keep that shape (accepted deviation from TS lower-case keys).
 		e.ResponseHeaders = canonicalResponseHeaders(cause, headers)
+	}
+	// TS createJsonErrorResponseHandler reads response.text(): a leading
+	// BOM is dropped and each maximal invalid UTF-8 subpart is one U+FFFD.
+	if textdecode.HasBOM(body) || !utf8.Valid(body) {
+		body = []byte(textdecode.UTF8(body))
 	}
 	e.ResponseBody = string(body)
 	if len(body) > 0 {
