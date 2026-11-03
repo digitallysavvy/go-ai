@@ -49,7 +49,7 @@ func TestR82integStructSchemaMatchesZodSnapshots(t *testing.T) {
 		{"should support optional fields with descriptions in object", struct {
 			Required string `json:"required" validate:"required" jsonschema:"description=Required description"`
 			Optional string `json:"optional,omitempty" description:"Optional description"`
-		}{}, s7 + `"type":"object","properties":{"required":{"type":"string","description":"Required description"},"optional":{"type":"string","description":"Optional description"}},"required":["required"],"additionalProperties":false}`},
+		}{}, s7 + `"type":"object","properties":{"required":{"type":"string","description":"Required description"},"optional":{"description":"Optional description","type":"string"}},"required":["required"],"additionalProperties":false}`},
 		{"should support arrays", struct {
 			Items []string `json:"items" validate:"required"`
 		}{}, s7 + `"type":"object","properties":{"items":{"type":"array","items":{"type":"string"}}},"required":["items"],"additionalProperties":false}`},
@@ -129,28 +129,28 @@ func TestR82integStructSchemaGoMapping(t *testing.T) {
 		`"name":{"type":"string","minLength":2,"maxLength":5},` +
 		`"nick":{"anyOf":[{"type":"string"},{"type":"null"}]},` +
 		`"age":{"type":"integer","minimum":18,"maximum":255},` +
-		`"score":{"type":"number","maximum":1,"exclusiveMinimum":0},` +
+		`"score":{"type":"number","exclusiveMinimum":0,"maximum":1},` +
 		`"count":{"type":"string"},` +
-		`"tags":{"type":"array","items":{"type":"string"},"minItems":1},` +
+		`"tags":{"minItems":1,"type":"array","items":{"type":"string"}},` +
 		`"blob":{"type":"string"},` +
 		`"at":{"type":"string","format":"date-time"},` +
-		`"meta":{"type":"object","propertyNames":{"type":"string"},"additionalProperties":{"type":"integer"}},` +
+		`"meta":{"type":"object","propertyNames":{"type":"string"},"additionalProperties":{"type":"integer","minimum":-9007199254740991,"maximum":9007199254740991}},` +
 		`"byId":{"type":"object","propertyNames":{"type":"string","pattern":"^-?[0-9]+$"},"additionalProperties":{"type":"boolean"}},` +
 		`"any":{},"raw":{},` +
 		`"color":{"type":"string","enum":["light red","blue"]},` +
 		`"level":{"type":"integer","minimum":-2147483648,"maximum":2147483647,"enum":[1,2,3]},` +
 		`"NoTag":{"type":"boolean"},` +
 		`"children":{"type":"array","items":{"$ref":"#/definitions/__schema0"}},` +
-		`"ptr":{"type":"integer"},` +
+		`"ptr":{"type":"integer","minimum":-9007199254740991,"maximum":9007199254740991},` +
 		`"labels":{"type":"object","propertyNames":{"type":"string"},"additionalProperties":{"type":"string"},"maxProperties":3}},` +
 		`"required":["name","children","ptr"],` +
-		`"definitions":{"__schema0":{"type":"object","properties":{"value":{"type":"integer"},"children":{"type":"array","items":{"$ref":"#/definitions/__schema0"}}},"required":["value"],"additionalProperties":false}},` +
+		`"definitions":{"__schema0":{"type":"object","properties":{"value":{"type":"integer","minimum":-9007199254740991,"maximum":9007199254740991},"children":{"type":"array","items":{"$ref":"#/definitions/__schema0"}}},"required":["value"],"additionalProperties":false}},` +
 		`"additionalProperties":false}`
 	_ = all{}.private
 	if got := r82integSchemaJSON(t, all{}); got != want {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
-	const node = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"value":{"type":"integer"},"children":{"type":"array","items":{"$ref":"#"}}},"required":["value"],"additionalProperties":false}`
+	const node = `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"value":{"type":"integer","minimum":-9007199254740991,"maximum":9007199254740991},"children":{"type":"array","items":{"$ref":"#"}}},"required":["value"],"additionalProperties":false}`
 	if got := r82integSchemaJSON(t, r82integNode{}); got != node {
 		t.Fatalf("root recursion: got %s\nwant %s", got, node)
 	}

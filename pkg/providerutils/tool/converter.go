@@ -45,8 +45,13 @@ func ToJSONSchema(tool types.Tool) map[string]interface{} {
 
 func defaultObjectSchema(parameters interface{}) interface{} {
 	// A schema.Schema marshals as {}; send its JSON Schema. An
-	// *schema.OrderedSchema is kept so its key order reaches the wire.
-	if resolved, ok, none := resolveParameters(parameters); ok {
+	// *schema.OrderedSchema (and a struct schema, in field order) is kept so
+	// its key order reaches the wire.
+	if o, isOrdered := parameters.(*schema.OrderedSchema); isOrdered && o == nil {
+		parameters = nil
+	} else if ordered, ok := orderedStructSchema(parameters); ok {
+		parameters = ordered
+	} else if resolved, ok, none := resolveParameters(parameters); ok {
 		parameters = resolved
 	} else if none {
 		parameters = nil
@@ -118,6 +123,9 @@ func SanitizeAnthropicSchema(in interface{}) interface{} {
 	case []byte:
 		return sanitizeAnthropicRawSchema(v)
 	case *schema.OrderedSchema:
+		if v == nil {
+			return nil
+		}
 		// Sanitize in source key order, like a raw JSON schema.
 		raw, err := v.MarshalJSON()
 		if err != nil {
@@ -131,6 +139,11 @@ func SanitizeAnthropicSchema(in interface{}) interface{} {
 		}
 		return out
 	default:
+		if ordered, ok := orderedStructSchema(in); ok {
+			// A struct schema: sanitized in its field order, as TS
+			// sanitizes the zod JSON schema object in its key order.
+			return SanitizeAnthropicSchema(ordered)
+		}
 		resolved, ok, none := resolveParameters(in)
 		if ok {
 			return sanitizeAnthropicSchemaMap(resolved)
@@ -140,6 +153,16 @@ func SanitizeAnthropicSchema(in interface{}) interface{} {
 		}
 		return in
 	}
+}
+
+// orderedStructSchema is the JSON Schema of a struct schema
+// (*schema.SimpleStructSchema, *schema.StructValidator) in its field order.
+func orderedStructSchema(p interface{}) (*schema.OrderedSchema, bool) {
+	switch p.(type) {
+	case *schema.SimpleStructSchema, *schema.StructValidator:
+		return schema.OrderedParameters(p)
+	}
+	return nil, false
 }
 
 func sanitizeAnthropicRawSchema(raw []byte) interface{} {
@@ -192,7 +215,8 @@ func sanitizeAnthropicSchemaMap(schema map[string]interface{}) map[string]interf
 		copyIfNotNil(out, schema, "required")
 	}
 
-	if items, ok := schema["items"]; ok {
+	if items, ok := schema["items"]; ok && items != nil {
+		// TS schema.items != null: a JSON null items is dropped.
 		out["items"] = SanitizeAnthropicSchema(items)
 	}
 

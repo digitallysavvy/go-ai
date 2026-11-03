@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 )
@@ -194,39 +195,83 @@ func (b *structSchemaBuilder) objectSchema(t reflect.Type) *jsonorder.Object {
 // fieldSchema is a property's schema, or nil for a field JSON cannot carry
 // (chan, func, complex, a non-empty interface).
 func (b *structSchemaBuilder) fieldSchema(f structField) *jsonorder.Object {
-	tags := f.tags
-	if f.quoted {
-		switch derefType(f.typ).Kind() {
-		case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
-			reflect.Float32, reflect.Float64:
-			// json ",string": the value is a JSON string.
-			s := jsonorder.New()
-			s.Set("type", "string")
-			b.setDescription(s, f.description)
-			return s
+	var s *jsonorder.Object
+	if f.quoted && isQuotableKind(derefType(f.typ).Kind()) {
+		// json ",string": the value is a JSON string.
+		s = jsonorder.New()
+		s.Set("type", "string")
+	} else {
+		s = b.typeSchema(f.typ, f.tags)
+		if s == nil {
+			return nil
 		}
 	}
-	s := b.typeSchema(f.typ, tags)
-	if s == nil {
-		return nil
-	}
-	if f.nullable() && s.Len() > 0 {
-		// zod .nullish(): anyOf the value and null.
+	if f.nullable() {
+		// zod .nullable() (.nullish() when optional): anyOf the value and
+		// null.
 		n := jsonorder.New()
 		n.Set("type", "null")
 		wrapped := jsonorder.New()
 		wrapped.Set("anyOf", []interface{}{s, n})
 		s = wrapped
 	}
-	b.setDescription(s, f.description)
-	return s
+	if f.description == "" {
+		return s
+	}
+	return describeSchema(s, f.description, !f.required())
 }
 
-func (b *structSchemaBuilder) setDescription(s *jsonorder.Object, d string) {
-	if d != "" {
-		s.Set("description", d)
+// describeSchema adds a field's description where zod .describe() on the
+// field's whole schema puts it: first on an optional field (the description
+// sits on the .optional() wrapper, which zod merges ahead of the inner
+// schema), otherwise after the schema's own keywords but before the
+// additionalProperties false that addAdditionalPropertiesToJsonSchema
+// appends to an object. A described $ref is {"description", "allOf": [ref]},
+// since draft-07 ignores the siblings of $ref.
+func describeSchema(s *jsonorder.Object, description string, optional bool) *jsonorder.Object {
+	out := jsonorder.New()
+	if optional {
+		out.Set("description", description)
+		copyKeys(out, s)
+		return out
 	}
+	if _, isRef := s.Get("$ref"); isRef {
+		out.Set("description", description)
+		out.Set("allOf", []interface{}{s})
+		return out
+	}
+	ap, hasAP := s.Get("additionalProperties")
+	closed := hasAP && ap == false
+	for _, k := range s.Keys() {
+		if closed && k == "additionalProperties" {
+			continue
+		}
+		v, _ := s.Get(k)
+		out.Set(k, v)
+	}
+	out.Set("description", description)
+	if closed {
+		out.Set("additionalProperties", false)
+	}
+	return out
+}
+
+func copyKeys(dst, src *jsonorder.Object) {
+	for _, k := range src.Keys() {
+		v, _ := src.Get(k)
+		dst.Set(k, v)
+	}
+}
+
+// isQuotableKind reports a kind encoding/json's ",string" option applies to.
+func isQuotableKind(k reflect.Kind) bool {
+	switch k {
+	case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64:
+		return true
+	}
+	return false
 }
 
 // typeSchema is the schema of a Go type (pointers dereferenced), with the
@@ -272,9 +317,10 @@ func (b *structSchemaBuilder) typeSchema(t reflect.Type, tags fieldTags) *jsonor
 		if items == nil {
 			return nil
 		}
+		// zod arrayProcessor: minItems/maxItems, then type and items.
+		tags.applyCount(s, "minItems", "maxItems")
 		s.Set("type", "array")
 		s.Set("items", items)
-		tags.applyCount(s, "minItems", "maxItems")
 	case reflect.Map:
 		keySchema := mapKeySchema(t.Key())
 		if keySchema == nil {
@@ -521,7 +567,7 @@ func validJSONTagName(s string) bool {
 }
 
 func isLetterOrDigit(c rune) bool {
-	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c > 127
+	return unicode.IsLetter(c) || unicode.IsDigit(c)
 }
 
 func hasTagOption(opts, want string) bool {
@@ -686,26 +732,26 @@ func (t fieldTags) applyString(s *jsonorder.Object) {
 	}
 }
 
-// applyNumber maps the rules to number keywords, with the value range of a
-// sized integer kind (encoding/json rejects a value outside it).
+// applyNumber maps the rules to number keywords the way zod
+// numberProcessor writes its bag: the lower bound (exclusiveMinimum when it
+// is at least the minimum, otherwise minimum), then the upper bound
+// (likewise). An integer kind has the range of its size (encoding/json
+// rejects a value outside it); int, int64, uint, uint64 and uintptr have the
+// safe integer range zod .int() gives every integer.
 func (t fieldTags) applyNumber(s *jsonorder.Object, typ reflect.Type) {
 	lo, hi := t.min, t.max
 	if kLo, kHi, ok := integerKindRange(typ.Kind()); ok {
 		lo, hi = tighterMin(lo, kLo), tighterMax(hi, kHi)
-	} else if isUnsignedKind(typ.Kind()) {
-		lo = tighterMin(lo, 0)
 	}
-	if lo != nil {
+	if t.exMin != nil && (lo == nil || *t.exMin >= *lo) {
+		s.Set("exclusiveMinimum", jsonNumber(*t.exMin))
+	} else if lo != nil {
 		s.Set("minimum", jsonNumber(*lo))
 	}
-	if hi != nil {
-		s.Set("maximum", jsonNumber(*hi))
-	}
-	if t.exMin != nil {
-		s.Set("exclusiveMinimum", jsonNumber(*t.exMin))
-	}
-	if t.exMax != nil {
+	if t.exMax != nil && (hi == nil || *t.exMax <= *hi) {
 		s.Set("exclusiveMaximum", jsonNumber(*t.exMax))
+	} else if hi != nil {
+		s.Set("maximum", jsonNumber(*hi))
 	}
 	if len(t.oneof) > 0 {
 		var enum []interface{}
@@ -747,15 +793,12 @@ func jsonNumber(f float64) interface{} {
 	return f
 }
 
-func isUnsignedKind(k reflect.Kind) bool {
-	switch k {
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		return true
-	}
-	return false
-}
+// maxSafeInteger is JavaScript's Number.MAX_SAFE_INTEGER, the bound of zod
+// .int().
+const maxSafeInteger = 1<<53 - 1
 
-// integerKindRange is the range of an 8, 16 or 32 bit integer kind.
+// integerKindRange is the value range of an integer kind: its size for 8, 16
+// and 32 bits, the safe integer range (zod .int()) otherwise.
 func integerKindRange(k reflect.Kind) (float64, float64, bool) {
 	switch k {
 	case reflect.Int8:
@@ -764,12 +807,16 @@ func integerKindRange(k reflect.Kind) (float64, float64, bool) {
 		return math.MinInt16, math.MaxInt16, true
 	case reflect.Int32:
 		return math.MinInt32, math.MaxInt32, true
+	case reflect.Int, reflect.Int64:
+		return -maxSafeInteger, maxSafeInteger, true
 	case reflect.Uint8:
 		return 0, math.MaxUint8, true
 	case reflect.Uint16:
 		return 0, math.MaxUint16, true
 	case reflect.Uint32:
 		return 0, math.MaxUint32, true
+	case reflect.Uint, reflect.Uint64, reflect.Uintptr:
+		return 0, maxSafeInteger, true
 	}
 	return 0, 0, false
 }

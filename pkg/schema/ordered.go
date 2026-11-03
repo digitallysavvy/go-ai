@@ -45,11 +45,23 @@ func (s *OrderedSchema) Validate(data interface{}) error {
 	return validateJSONSchemaValue(data, s.m, "$")
 }
 
-// JSONSchema returns the schema as a map (key order is lost).
-func (s *OrderedSchema) JSONSchema() map[string]interface{} { return s.m }
+// JSONSchema returns the schema as a map (key order is lost); nil for a nil
+// or zero OrderedSchema.
+func (s *OrderedSchema) JSONSchema() map[string]interface{} {
+	if s == nil {
+		return nil
+	}
+	return s.m
+}
 
-// MarshalJSON writes the schema in its source key order.
-func (s *OrderedSchema) MarshalJSON() ([]byte, error) { return s.root.MarshalJSON() }
+// MarshalJSON writes the schema in its source key order; {} for a nil or
+// zero OrderedSchema.
+func (s *OrderedSchema) MarshalJSON() ([]byte, error) {
+	if s == nil || s.root == nil {
+		return []byte("{}"), nil
+	}
+	return s.root.MarshalJSON()
+}
 
 // Keys returns the top-level keys in source order.
 func (s *OrderedSchema) Keys() []string { return s.root.Keys() }
@@ -60,18 +72,33 @@ func (s *OrderedSchema) Keys() []string { return s.root.Keys() }
 func MarshalSchema(v interface{}) (data []byte, ok bool, err error) {
 	switch s := v.(type) {
 	case *OrderedSchema:
-		data, err = s.MarshalJSON()
-		return data, true, err
-	case *SimpleStructSchema, *StructValidator:
-		data, err = json.Marshal(s)
-		return data, true, err
-	case Schema:
 		if s == nil {
 			return nil, false, nil
 		}
-		data, err = json.Marshal(s.Validator().JSONSchema())
+		data, err = s.MarshalJSON()
+		return data, true, err
+	case *SimpleStructSchema, *StructValidator:
+		if isNilValue(s) {
+			return nil, false, nil
+		}
+		data, err = json.Marshal(s)
+		return data, true, err
+	case Schema:
+		// A typed nil schema or validator is no schema (TS
+		// asSchema(undefined)); its methods must not be called.
+		if isNilValue(s) {
+			return nil, false, nil
+		}
+		val := s.Validator()
+		if isNilValue(val) {
+			return nil, false, nil
+		}
+		data, err = json.Marshal(val.JSONSchema())
 		return data, true, err
 	case Validator:
+		if isNilValue(s) {
+			return nil, false, nil
+		}
 		data, err = json.Marshal(s.JSONSchema())
 		return data, true, err
 	}
@@ -80,12 +107,19 @@ func MarshalSchema(v interface{}) (data []byte, ok bool, err error) {
 
 // MarshalJSON writes the JSON Schema, so a schema value used where a JSON
 // Schema is expected (a tool's Parameters) serializes as the schema.
+// A nil or zero value, which is no schema, writes {}.
 func (s *SimpleJSONSchema) MarshalJSON() ([]byte, error) {
-	return marshalSchemaMap(s.validator.schema)
+	if s == nil || s.validator == nil {
+		return []byte("{}"), nil
+	}
+	return s.validator.MarshalJSON()
 }
 
-// MarshalJSON writes the JSON Schema.
+// MarshalJSON writes the JSON Schema; {} for a nil validator.
 func (v *JSONSchemaValidator) MarshalJSON() ([]byte, error) {
+	if v == nil {
+		return []byte("{}"), nil
+	}
 	return marshalSchemaMap(v.schema)
 }
 
