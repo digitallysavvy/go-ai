@@ -353,9 +353,9 @@ func convertMoonshotFilePart(fc types.FileContent) (map[string]interface{}, erro
 				if err != nil {
 					return nil, err
 				}
-				textContent = string(b)
+				textContent = prompt.DecodeUTF8Text(b)
 			default:
-				textContent = string(normalized.FileData.Data)
+				textContent = prompt.DecodeUTF8Text(normalized.FileData.Data)
 			}
 			return map[string]interface{}{"type": "text", "text": textContent}, nil
 		default:
