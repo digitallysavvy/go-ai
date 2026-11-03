@@ -622,7 +622,7 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 		return nil, &HTTPStatusError{
 			StatusCode: httpResp.StatusCode,
 			Headers:    httpResp.Header,
-			Body:       errBody,
+			Body:       responseText(errBody),
 		}
 	}
 
