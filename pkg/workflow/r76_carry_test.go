@@ -104,11 +104,12 @@ func r76carryGenAISpans(t *testing.T, mode string) {
 		t.Fatalf("root spans = %v, want one workflow root", names)
 	}
 	root := roots[0]
-	if root.Name() != workflowRootOperation+" mock-model" {
-		t.Errorf("root span name = %q, want %q", root.Name(), workflowRootOperation+" mock-model")
+	// TS 4d6d830c14 maps the workflow root to invoke_agent.
+	if root.Name() != "invoke_agent mock-model" {
+		t.Errorf("root span name = %q, want %q", root.Name(), "invoke_agent mock-model")
 	}
-	if op, _ := r76carryAttr(root, "gen_ai.operation.name"); op != workflowRootOperation {
-		t.Errorf("root gen_ai.operation.name = %q, want %q (TS mapOperationName identity)", op, workflowRootOperation)
+	if op, _ := r76carryAttr(root, "gen_ai.operation.name"); op != "invoke_agent" {
+		t.Errorf("root gen_ai.operation.name = %q, want invoke_agent (TS mapOperationName)", op)
 	}
 	parentName := func(s sdktrace.ReadOnlySpan) string {
 		if p, ok := byID[s.Parent().SpanID().String()]; ok {
