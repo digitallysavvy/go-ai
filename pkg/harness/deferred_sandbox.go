@@ -193,8 +193,10 @@ func (s *deferredNetworkSandboxSession) GetPortEndpoint(ctx context.Context, opt
 func (s *deferredNetworkSandboxSession) GetPortURL(ctx context.Context, opts PortEndpointOptions) (string, error) {
 	return s.original.GetPortURL(ctx, opts) //nolint:staticcheck // forwards the deprecated method for callers that still use it
 }
-func (s *deferredNetworkSandboxSession) Stop(ctx context.Context) error    { return s.original.Stop(ctx) }
-func (s *deferredNetworkSandboxSession) Destroy(ctx context.Context) error { return s.original.Destroy(ctx) }
+func (s *deferredNetworkSandboxSession) Stop(ctx context.Context) error { return s.original.Stop(ctx) }
+func (s *deferredNetworkSandboxSession) Destroy(ctx context.Context) error {
+	return s.original.Destroy(ctx)
+}
 
 // Restricted returns the gated restricted view (TS `restricted ??=
 // gate(original.restricted())`).

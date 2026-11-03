@@ -357,8 +357,8 @@ func (s *r85carryNetSandbox) GetPortEndpoint(context.Context, PortEndpointOption
 func (s *r85carryNetSandbox) GetPortURL(context.Context, PortEndpointOptions) (string, error) {
 	return "", nil
 }
-func (s *r85carryNetSandbox) Stop(context.Context) error                { return nil }
-func (s *r85carryNetSandbox) Destroy(context.Context) error             { return nil }
+func (s *r85carryNetSandbox) Stop(context.Context) error               { return nil }
+func (s *r85carryNetSandbox) Destroy(context.Context) error            { return nil }
 func (s *r85carryNetSandbox) Restricted() providerutils.SandboxSession { return s.mockSandbox }
 func (s *r85carryNetSandbox) SetNetworkPolicy(context.Context, NetworkPolicy) error {
 	s.policies++
