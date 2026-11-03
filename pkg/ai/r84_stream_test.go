@@ -3,12 +3,19 @@ package ai
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"io"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 // Round 84 stream review ports.
@@ -199,6 +206,174 @@ func TestR84streamReadUIMessageStreamTSFraming(t *testing.T) {
 	}
 	if _, err := ReadUIMessageStream(strings.NewReader("data: {nope\n\n")); err == nil {
 		t.Fatal("invalid JSON data: want an error (TS transport throws the parse failure)")
+	}
+}
+
+func r84streamUIParts(t *testing.T, opts UIMessageStreamResultOptions, chunks ...provider.StreamChunk) interface{} {
+	t.Helper()
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: uiModel(chunks...), Prompt: "prompt", OnError: func(context.Context, error) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r84streamJSON(t, tsUIParts(t, r, opts))
+}
+
+func r84streamWant(t *testing.T, s string) interface{} {
+	t.Helper()
+	var v interface{}
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+// stream-text.test.ts 6568: document sources (with and without filename)
+// keep their own providerMetadata in the UI stream when sendSources is set.
+func TestR84streamToUIMessageStreamDocumentSources(t *testing.T) {
+	finish := provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: usage(3, 10)}
+	got := r84streamUIParts(t, UIMessageStreamResultOptions{SendSources: ptrBool(true)},
+		provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &types.SourceContent{SourceType: "document", ID: "doc-123", MediaType: "application/pdf", Title: "Document Example", Filename: "example.pdf", ProviderMetadata: json.RawMessage(`{"provider":{"custom":"doc-value"}}`)}},
+		provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "1"},
+		provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: "Hello from document!"},
+		provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &types.SourceContent{SourceType: "document", ID: "doc-456", MediaType: "text/plain", Title: "Text Document", ProviderMetadata: json.RawMessage(`{"provider":{"custom":"doc-value2"}}`)}},
+		finish)
+	want := r84streamWant(t, `[
+		{"type":"start"},{"type":"start-step"},
+		{"filename":"example.pdf","mediaType":"application/pdf","providerMetadata":{"provider":{"custom":"doc-value"}},"sourceId":"doc-123","title":"Document Example","type":"source-document"},
+		{"id":"1","type":"text-start"},{"delta":"Hello from document!","id":"1","type":"text-delta"},{"id":"1","type":"text-end"},
+		{"mediaType":"text/plain","providerMetadata":{"provider":{"custom":"doc-value2"}},"sourceId":"doc-456","title":"Text Document","type":"source-document"},
+		{"type":"finish-step"},{"finishReason":"stop","type":"finish"}]`)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v\nwant %v", got, want)
+	}
+}
+
+// stream-text.test.ts 6734: file parts carry their own providerMetadata; a
+// base64 string is sent as given ("Hello World" is not re-encoded).
+func TestR84streamToUIMessageStreamFileProviderMetadata(t *testing.T) {
+	finish := provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: usage(3, 10)}
+	got := r84streamUIParts(t, UIMessageStreamResultOptions{},
+		provider.StreamChunk{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: "text/plain", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "Hello World"}, ProviderMetadata: json.RawMessage(`{"testProvider":{"signature":"sig-1"}}`)}},
+		provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "1"},
+		provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: "Hello!"},
+		provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		provider.StreamChunk{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: "image/jpeg", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "QkFVRw=="}}},
+		finish)
+	var files []interface{}
+	for _, p := range got.([]interface{}) {
+		if p.(map[string]interface{})["type"] == "file" {
+			files = append(files, p)
+		}
+	}
+	want := r84streamWant(t, `[
+		{"mediaType":"text/plain","providerMetadata":{"testProvider":{"signature":"sig-1"}},"type":"file","url":"data:text/plain;base64,Hello World"},
+		{"mediaType":"image/jpeg","type":"file","url":"data:image/jpeg;base64,QkFVRw=="}]`)
+	if !reflect.DeepEqual(r84streamJSON(t, files), want) {
+		t.Fatalf("got %v\nwant %v", files, want)
+	}
+}
+
+// stream-text.test.ts 11440: onToolExecutionStart gets the call id, the
+// step messages, the tool call and the validated tool context.
+func TestR84streamOnToolExecutionStartContext(t *testing.T) {
+	tool := r71streamTool1(true, nil, nil)
+	tool.ContextSchema = schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "properties": map[string]interface{}{"context": map[string]interface{}{"type": "string"}}, "required": []interface{}{"context"}})
+	var mu sync.Mutex
+	var events []OnToolCallStartEvent
+	r71streamRun(t, StreamTextOptions{
+		Model: r71streamModel(nil, r71streamToolCallStep([2]string{"call-1", "test"})), Prompt: "prompt",
+		Tools: []types.Tool{tool}, ToolsContext: map[string]interface{}{"tool1": map[string]interface{}{"context": "test"}},
+		Internal: r71streamInternal,
+		OnToolExecutionStart: func(_ context.Context, e OnToolCallStartEvent) {
+			mu.Lock()
+			events = append(events, e)
+			mu.Unlock()
+		},
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 1 {
+		t.Fatalf("events = %d", len(events))
+	}
+	e := events[0]
+	if e.CallID != "test-telemetry-call-id" {
+		t.Errorf("callId = %q", e.CallID)
+	}
+	if !reflect.DeepEqual(r84streamJSON(t, e.ToolContext), map[string]interface{}{"context": "test"}) {
+		t.Errorf("toolContext = %#v", e.ToolContext)
+	}
+	if !reflect.DeepEqual(e.Messages, r71streamUserMessages("prompt")) {
+		t.Errorf("messages = %#v", e.Messages)
+	}
+	if e.ToolCall.ID != "call-1" || e.ToolCall.ToolName != "tool1" || !reflect.DeepEqual(e.ToolCall.Arguments, map[string]interface{}{"value": "test"}) || e.ToolCall.ProviderExecuted || e.ToolCall.Dynamic {
+		t.Errorf("toolCall = %#v", e.ToolCall)
+	}
+}
+
+// stream-text.test.ts 9741 / 10623: the onStart and onStepStart events carry
+// no telemetry settings (TS: no isEnabled / functionId property).
+func TestR84streamCallbackEventsHaveNoTelemetryFields(t *testing.T) {
+	for _, typ := range []reflect.Type{reflect.TypeOf(OnStartEvent{}), reflect.TypeOf(OnStepStartEvent{})} {
+		for i := 0; i < typ.NumField(); i++ {
+			switch name := typ.Field(i).Name; name {
+			case "IsEnabled", "FunctionID", "FunctionId", "Telemetry", "Metadata":
+				t.Errorf("%s has telemetry field %s", typ.Name(), name)
+			}
+		}
+	}
+	var start OnStartEvent
+	var step OnStepStartEvent
+	r71streamRun(t, StreamTextOptions{
+		Model: r71streamModel(nil, r71streamHelloWorld), Prompt: "test-input",
+		Telemetry:   &TelemetrySettings{IsEnabled: ptrBool(true), FunctionID: "deprecated-fn"},
+		OnStart:     func(_ context.Context, e OnStartEvent) { start = e },
+		OnStepStart: func(_ context.Context, e OnStepStartEvent) { step = e },
+	})
+	for _, ev := range []interface{}{start, step} {
+		b, err := json.Marshal(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), "deprecated-fn") {
+			t.Errorf("event exposes the telemetry function id: %s", b)
+		}
+	}
+}
+
+// create-sse-stream-with-keep-alive.test.ts 51: an idle source keeps one
+// pending receive while many keep-alive comments go out, and stopping ends
+// the writer without consuming the source.
+func TestR84streamKeepAliveManyIdleComments(t *testing.T) {
+	chunks := make(chan UIMessageChunk)
+	stop := make(chan struct{})
+	var events []string
+	const n = 2500
+	writeFailed, err := writeUISSEEvents(chunks, time.Microsecond, true, stop, nil, func(b []byte) error {
+		events = append(events, string(b))
+		if len(events) == n+1 {
+			close(stop)
+		}
+		return nil
+	})
+	if writeFailed || err != nil {
+		t.Fatalf("writeFailed = %v, err = %v", writeFailed, err)
+	}
+	if len(events) != n+1 || events[0] != sseStreamOpenComment {
+		t.Fatalf("events = %d, first %q", len(events), events[0])
+	}
+	for i, e := range events[1:] {
+		if e != sseKeepAliveComment {
+			t.Fatalf("event %d = %q", i+1, e)
+		}
+	}
+	if sseStreamOpenComment != ": stream-open\n\n" || sseKeepAliveComment != ": keep-alive\n\n" {
+		t.Fatalf("comments = %q, %q", sseStreamOpenComment, sseKeepAliveComment)
+	}
+	select {
+	case chunks <- UIMessageChunk{"type": "start"}:
+		t.Fatal("the stopped writer still receives from the source")
+	default:
 	}
 }
 
