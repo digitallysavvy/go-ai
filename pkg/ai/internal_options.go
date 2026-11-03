@@ -35,6 +35,13 @@ type InternalOptions struct {
 	// stepToolChoice. Used by WorkflowAgent.
 	OmitStepPromptTelemetry bool
 
+	// TelemetryToolDefinitions, when set, gives the Tools value of each
+	// telemetry language-model call start event from the step's prepared
+	// tools: TS WorkflowAgent dispatches onLanguageModelCallStart with its
+	// serialized tool definitions (model-call-iterator.ts 367), not the
+	// prepared language-model tools. Used by WorkflowAgent.
+	TelemetryToolDefinitions func(tools []types.Tool) interface{}
+
 	// StopOnStreamError makes a step whose stream carried an error part end
 	// the run without executing or answering that step's tool calls, like TS
 	// WorkflowAgent's hasTerminalError (the loop is done; the error is
@@ -508,4 +515,13 @@ func workflowToolMessages(internal *InternalOptions, prompt types.Prompt, respon
 		}
 	}
 	return callbackMessages, executeMessages, true
+}
+
+// telemetryCallTools is the Tools value of a telemetry language-model call
+// start event (InternalOptions.TelemetryToolDefinitions, else the tools).
+func telemetryCallTools(internal *InternalOptions, tools []types.Tool) interface{} {
+	if internal != nil && internal.TelemetryToolDefinitions != nil {
+		return internal.TelemetryToolDefinitions(tools)
+	}
+	return tools
 }

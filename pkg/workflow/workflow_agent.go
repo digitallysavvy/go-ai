@@ -2641,7 +2641,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 			}
 		}
 	}
-	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, InstructionMessages: instructionMessages, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: withFinishReasonStop(opts.StopWhen), Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: workflowInternalOptions}
+	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, InstructionMessages: instructionMessages, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: withFinishReasonStop(opts.StopWhen), Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: withTelemetryToolDefinitions(workflowInternalOptions, effectiveWorkflowTools(w, WorkflowStreamOptions{}, opts))}
 	result, err := a.GenerateAgent(agent.WithTelemetryCallID(ctx, callID), call)
 	if err != nil {
 		if isWorkflowAbort(ctx, err) {
@@ -2897,7 +2897,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	// TS reports the root's telemetry end when the run's loop ends: onError
 	// for a failed run, then onEnd (only with steps) with the stream-mode
 	// total usage; an aborted run ends the root with onAbort here.
-	internal := *early.internalOptions(opts.Messages, opts.Prompt)
+	internal := *withTelemetryToolDefinitions(early.internalOptions(opts.Messages, opts.Prompt), effectiveWorkflowTools(w, opts, WorkflowGenerateOptions{}))
 	// The delegated stream reports its step, model-call and tool events under
 	// the root's call ID, so each integration finds the workflow root (TS
 	// model-call-iterator uses the workflow's telemetryDispatcher and callId).
