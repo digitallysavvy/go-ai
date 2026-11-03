@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -828,6 +829,11 @@ func (p *Provider) gatewayAPIErrorWithContext(ctx context.Context, resp *interna
 		return gatewayerrors.NewGatewayResponseError("Gateway request failed", 0, nil, nil, nil, "")
 	}
 	authMethod := p.requestAuthMethod(ctx)
+	// TS createJsonErrorResponseHandler reads response.text() (BOM dropped,
+	// invalid UTF-8 replaced).
+	decoded := *resp
+	decoded.Body = []byte(textdecode.UTF8(resp.Body))
+	resp = &decoded
 	cause := &providererrors.ProviderError{
 		Provider:        "gateway",
 		StatusCode:      resp.StatusCode,

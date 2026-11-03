@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -22,6 +24,11 @@ func perplexityHTTPError(err error, providerName string) error {
 	if !errors.As(err, &statusErr) {
 		return err
 	}
+	// TS createJsonErrorResponseHandler reads response.text() (BOM dropped,
+	// invalid UTF-8 replaced).
+	decoded := *statusErr
+	decoded.Body = []byte(textdecode.UTF8(statusErr.Body))
+	statusErr = &decoded
 	message := http.StatusText(statusErr.StatusCode)
 	var raw map[string]interface{}
 	if perplexityErrorBodyMatches(statusErr.Body) {

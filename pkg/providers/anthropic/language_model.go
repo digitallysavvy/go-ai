@@ -5,13 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"io"
 	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -3297,6 +3299,10 @@ func messageStartChunk(data string) *provider.StreamChunk {
 // anthropicFailedResponseHandler), falling back to the raw body, and the
 // response headers and body are kept like TS APICallError.
 func anthropicHTTPError(providerName string, status int, headers http.Header, body []byte, cause error) *providererrors.ProviderError {
+	// TS createJsonErrorResponseHandler reads response.text(): a leading BOM
+	// is dropped and invalid UTF-8 becomes U+FFFD (streamed and raw requests
+	// hand the body over undecoded).
+	body = []byte(textdecode.UTF8(body))
 	var perr *providererrors.ProviderError
 	// TS anthropicErrorDataSchema: {type: 'error', error: {type: string, message: string}}.
 	var parsed struct {

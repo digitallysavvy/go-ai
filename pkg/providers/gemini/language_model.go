@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -346,6 +348,9 @@ func (m *LanguageModel) handleError(err error) error {
 // (TS googleFailedResponseHandler): the message is error.message when the body
 // matches googleErrorDataSchema, otherwise the HTTP status text.
 func GoogleHTTPError(providerName string, status int, headers http.Header, body []byte, cause error) *providererrors.ProviderError {
+	// TS createJsonErrorResponseHandler reads response.text() (BOM dropped,
+	// invalid UTF-8 replaced).
+	body = []byte(textdecode.UTF8(body))
 	message := http.StatusText(status)
 	if message == "" && cause != nil {
 		message = cause.Error()
