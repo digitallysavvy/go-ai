@@ -359,7 +359,7 @@ type googleFile struct {
 	// originalURL is FileData.OriginalURL: the caller's URL string when its
 	// WHATWG serialization (url) differs (TS data.originalUrl).
 	originalURL string
-	reference string
+	reference   string
 	// referenceMap is the provider reference map (TS data.reference); the
 	// legacy single-id reference stays in reference.
 	referenceMap types.ProviderReference

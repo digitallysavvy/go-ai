@@ -114,13 +114,13 @@ func TestR75ProvbEmptyAllowedCallers(t *testing.T) {
 		b, _ := json.Marshal(got[0])
 		return string(b)
 	}
-	if got := fn(map[string]interface{}{"allowedCallers": []interface{}{}}); got != `{"type":"function","name":"f","parameters":{"properties":{},"type":"object"},"strict":false,"allowed_callers":[]}` {
+	if got := fn(map[string]interface{}{"allowedCallers": []interface{}{}}); got != `{"type":"function","name":"f","parameters":{"type":"object","properties":{},"additionalProperties":false},"strict":false,"allowed_callers":[]}` {
 		t.Errorf("empty allowedCallers = %s", got)
 	}
-	if got := fn(map[string]interface{}{"allowedCallers": []string{"programmatic"}}); got != `{"type":"function","name":"f","parameters":{"properties":{},"type":"object"},"strict":false,"allowed_callers":["programmatic"]}` {
+	if got := fn(map[string]interface{}{"allowedCallers": []string{"programmatic"}}); got != `{"type":"function","name":"f","parameters":{"type":"object","properties":{},"additionalProperties":false},"strict":false,"allowed_callers":["programmatic"]}` {
 		t.Errorf("allowedCallers = %s", got)
 	}
-	if got := fn(map[string]interface{}{}); got != `{"type":"function","name":"f","parameters":{"properties":{},"type":"object"},"strict":false}` {
+	if got := fn(map[string]interface{}{}); got != `{"type":"function","name":"f","parameters":{"type":"object","properties":{},"additionalProperties":false},"strict":false}` {
 		t.Errorf("no allowedCallers = %s", got)
 	}
 }

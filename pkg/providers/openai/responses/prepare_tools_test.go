@@ -265,15 +265,10 @@ func TestPrepareTools_FunctionTool_DefaultParametersIncludeObjectType(t *testing
 	if !ok {
 		t.Fatalf("expected FunctionToolDef, got %T", result[0])
 	}
-	params, ok := def.Parameters.(map[string]interface{})
-	if !ok {
-		t.Fatalf("Parameters = %T %#v", def.Parameters, def.Parameters)
-	}
-	if params["type"] != "object" {
-		t.Fatalf("parameters.type = %v, want object", params["type"])
-	}
-	if _, ok := params["properties"].(map[string]interface{}); !ok {
-		t.Fatalf("parameters.properties = %#v", params["properties"])
+	// TS asSchema(undefined) through tool.ResolveToolSchemas (r84).
+	b, err := json.Marshal(def.Parameters)
+	if err != nil || string(b) != `{"type":"object","properties":{},"additionalProperties":false}` {
+		t.Fatalf("Parameters = %s (%v)", b, err)
 	}
 }
 
