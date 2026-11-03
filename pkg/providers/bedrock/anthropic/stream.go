@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock/eventstream"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // EventStreamDecoder decodes the AWS event-stream binary format used by
@@ -46,7 +47,8 @@ func (d *EventStreamDecoder) ReadEvent() (*EventStreamEvent, error) {
 		MessageType:   event.MessageType,
 		EventType:     event.EventType,
 		ExceptionType: event.ExceptionType,
-		Data:          string(event.Data),
+		// TS createAmazonBedrockEventStreamDecoder: textDecoder.decode(body).
+		Data: prompt.DecodeUTF8Text(event.Data),
 	}, nil
 }
 
@@ -116,7 +118,8 @@ func writeSSEEvent(w io.Writer, event *EventStreamEvent) error {
 			if err != nil {
 				return fmt.Errorf("invalid base64 in bedrock chunk bytes: %w", err)
 			}
-			_, err = fmt.Fprintf(w, "data: %s\n\n", string(decoded))
+			// TS new TextDecoder().decode(convertBase64ToUint8Array(bytes)).
+			_, err = fmt.Fprintf(w, "data: %s\n\n", prompt.DecodeUTF8Text(decoded))
 			return err
 		case "messageStop":
 			_, err := fmt.Fprint(w, "data: [DONE]\n\n")

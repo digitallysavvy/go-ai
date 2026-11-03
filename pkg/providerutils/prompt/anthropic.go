@@ -1969,8 +1969,9 @@ func (c *anthropicConverter) convertCodeExecutionResult(part types.ToolResultCon
 
 	if output.isError() {
 		errorInfo := parseErrorValue(output.value)
-		errorCode, _ := errorInfo["errorCode"].(string)
-		if errorCode == "" {
+		// TS `errorInfo.errorCode ?? 'unknown'`: any present value is kept.
+		errorCode := errorInfo["errorCode"]
+		if errorCode == nil {
 			errorCode = "unknown"
 		}
 		if errorInfo["type"] == "code_execution_tool_result_error" {
@@ -2380,13 +2381,22 @@ func parseErrorValue(value interface{}) map[string]interface{} {
 		}
 	case map[string]interface{}:
 		return v
+	case nil:
+	default:
+		// A typed Go value is read as the JS object TS receives.
+		if normalized, err := normalizeToolOutput(v); err == nil {
+			if m, ok := normalized.(map[string]interface{}); ok {
+				return m
+			}
+		}
 	}
 	return map[string]interface{}{}
 }
 
-// extractErrorCode mirrors extractErrorValue(...).errorCode ?? 'unavailable'.
-func extractErrorCode(value interface{}) string {
-	if code, _ := parseErrorValue(value)["errorCode"].(string); code != "" {
+// extractErrorCode mirrors extractErrorValue(...).errorCode ?? 'unavailable':
+// any present errorCode (an empty string included) is kept.
+func extractErrorCode(value interface{}) interface{} {
+	if code := parseErrorValue(value)["errorCode"]; code != nil {
 		return code
 	}
 	return "unavailable"

@@ -219,12 +219,20 @@ func newSynthesizedInteractionsStream(model *InteractionsLanguageModel, response
 			chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: p.ToolCallID, ToolName: p.ToolName, Result: p.Result}})
 		case types.ToolCallContent:
 			// TS streams the tool input (start, one delta with the whole
-			// input, end) before the tool call itself.
+			// input, end) before the tool call itself. The tool call carries
+			// the part's own providerMetadata (an empty signature included).
+			toolCallMeta := providerMetaMap(signaturePtr(p.ThoughtSignature), normalizedInteractionID(response.ID))
+			if len(p.ProviderMetadata) > 0 {
+				var partMeta map[string]interface{}
+				if json.Unmarshal(p.ProviderMetadata, &partMeta) == nil && partMeta != nil {
+					toolCallMeta = partMeta
+				}
+			}
 			chunks = append(chunks,
 				&provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: p.ToolCallID, ToolName: p.ToolName, ProviderExecuted: p.ProviderExecuted}},
 				&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ToolCall: &types.ToolCall{ID: p.ToolCallID, ToolName: p.ToolName}, Text: p.Input},
 				&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ToolCall: &types.ToolCall{ID: p.ToolCallID}},
-				&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: p.ToolCallID, ToolName: p.ToolName, Arguments: p.Arguments, RawArguments: p.Input, ProviderExecuted: p.ProviderExecuted, ProviderMetadata: providerMetaMap(signaturePtr(p.ThoughtSignature), normalizedInteractionID(response.ID)), ThoughtSignature: p.ThoughtSignature}, ProviderMetadata: p.ProviderMetadata},
+				&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: p.ToolCallID, ToolName: p.ToolName, Arguments: p.Arguments, RawArguments: p.Input, ProviderExecuted: p.ProviderExecuted, ProviderMetadata: toolCallMeta, ThoughtSignature: p.ThoughtSignature}, ProviderMetadata: p.ProviderMetadata},
 			)
 		}
 	}
