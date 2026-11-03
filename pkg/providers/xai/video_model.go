@@ -601,11 +601,15 @@ func (m *VideoModel) buildRequestBody(
 		}
 	}
 
-	// Video editing/extension: add source video URL
-	if (isEdit || isExtension) && provOpts.VideoURL != nil {
-		body["video"] = map[string]interface{}{
-			"url": *provOpts.VideoURL,
+	// Video editing/extension: add source video URL. TS always sends
+	// video: { url: xaiOptions!.videoUrl }, so an explicit mode without
+	// videoUrl sends "video": {}.
+	if isEdit || isExtension {
+		video := map[string]interface{}{}
+		if provOpts.VideoURL != nil {
+			video["url"] = *provOpts.VideoURL
 		}
+		body["video"] = video
 	}
 
 	// Convert the start image (first_frame or legacy image-to-video input)

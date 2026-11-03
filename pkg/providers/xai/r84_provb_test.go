@@ -98,3 +98,23 @@ func TestR84provbVideoMissingRequestIDMessage(t *testing.T) {
 		t.Fatalf("error = %q", got)
 	}
 }
+
+// TS buildRequestBody sets body.video = { url: xaiOptions!.videoUrl } for
+// every edit/extension request, so an explicit mode without videoUrl sends
+// "video": {} (JSON.stringify drops the undefined url).
+func TestR84provbVideoModeWithoutVideoURLSendsEmptyVideo(t *testing.T) {
+	for _, mode := range []string{"edit-video", "extend-video"} {
+		mode := mode
+		model := NewVideoModel(New(Config{APIKey: "k"}), "grok-imagine-video")
+		opts := &provider.VideoModelV3CallOptions{Prompt: "p", ProviderOptions: map[string]interface{}{"xai": map[string]interface{}{"mode": mode}}}
+		provOpts, extra, err := extractVideoProviderOptions(opts.ProviderOptions)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := model.buildRequestBody(opts, provOpts, extra, mode == "edit-video", mode == "extend-video", false)
+		b, _ := json.Marshal(body["video"])
+		if string(b) != `{}` {
+			t.Fatalf("%s: video = %s, want {}", mode, b)
+		}
+	}
+}
