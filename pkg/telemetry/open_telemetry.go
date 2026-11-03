@@ -814,8 +814,7 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 		}
 	}
 	toolDefs := toolDefinitionsList(e.Tools, isHarnessProvider(e.ModelProvider))
-	// TS `event.tools ? JSON.stringify(event.tools) : undefined`: a
-	// WorkflowAgent step without tools records "[]".
+	// TS `event.tools ? JSON.stringify(event.tools) : undefined`.
 	if recordInputs && toolDefs != nil {
 		if b, err := jsonstr.Marshal(toolDefs); err == nil {
 			attrs = append(attrs, attribute.String("gen_ai.tool.definitions", string(b)))
@@ -848,9 +847,11 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 // span entry so OnLanguageModelCallEnd can append provider-executed tools
 // observed only in the response (5ad6abf).
 //
-// Definitions already built as []*jsonorder.Object (WorkflowAgent's
-// serialized tool definitions, TS model-call-iterator.ts 367) are used as
-// given, an empty list included.
+// Definitions already built as []*jsonorder.Object (an
+// InternalOptions.TelemetryToolDefinitions hook) are used as given, an empty
+// list included. WorkflowAgent no longer sets one: since TS 4d6d830c14 its
+// start event carries toLanguageModelToolDefinitions, the same definitions
+// as generateText/streamText.
 func toolDefinitionsList(tools interface{}, harness bool) []*jsonorder.Object {
 	if defs, ok := tools.([]*jsonorder.Object); ok {
 		if defs == nil {
