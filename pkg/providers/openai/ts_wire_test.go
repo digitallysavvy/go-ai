@@ -44,11 +44,11 @@ func TestTSWire(t *testing.T) {
 			out["OpenAIResponsesLanguageModel > mixed citation types > compaction > should stream compaction output item from real fixture"] = why
 			return out
 		}(),
-		Skip: map[string]string{
+		Skip: r85provbWithStaleRecordingSkips(map[string]string{
 			"OpenAI batch service > creates a Responses batch from prepared JSONL requests":                                                           "provider headers are not captured in the batch recording config; JSONL line key order is semantically irrelevant (covered by batch unit tests)",
 			"OpenAI batch service > warns when a provider tool can return unsupported batch output":                                                   "typed Go hosted tools are named by their id, so the warning feature text differs from the TS tool name; covered by TestBatchWarnsForUnsupportedHostedTool",
 			"OpenAIResponsesLanguageModel > doGenerate > basic text response > should replay a regular function named tool_search as a function call": "the TS tool-call input is an object whose key order Go maps cannot carry; Go sends the Input string it is given as is",
-		},
+		}),
 		Provider: func(base string, m tsfixture.WireModel) (provider.Provider, error) {
 			headers := map[string]string{}
 			if h, ok := m.Config["headers"].(map[string]interface{}); ok {
@@ -95,4 +95,23 @@ func TestTSWire(t *testing.T) {
 		f := f
 		t.Run(strings.TrimSuffix(filepath.Base(f), ".jsonl.gz"), func(t *testing.T) { tsfixture.RunWire(t, f, suite) })
 	}
+}
+
+// r85provbStaleRecordingSkips lists tests of the e64ed82f27 recording whose
+// TS behavior changed in e64ed82f27..30548ee7f9 and which the new TS no
+// longer has (so the 30548ee7f9 recording, reports/r85-provb-tswire, does not
+// contain them). Go follows the new TS. Delete this list once
+// testdata/tswire/openai.jsonl.gz is the 30548ee7f9 recording.
+var r85provbStaleRecordingSkips = map[string]string{
+	"OpenAIResponsesLanguageModel > doGenerate > basic text response > should omit unsupported GPT-6 reasoning effort none":    "TS 61a315e333 rounds the effort instead (30548ee7f9 recording)",
+	"OpenAIResponsesLanguageModel > doGenerate > basic text response > should omit unsupported GPT-6 reasoning effort minimal": "TS 61a315e333 rounds the effort instead (30548ee7f9 recording)",
+	"doGenerate > reasoning models > should omit unsupported GPT-6 reasoning effort none":                                      "TS 61a315e333 rounds the effort instead (30548ee7f9 recording)",
+	"doGenerate > reasoning models > should omit unsupported GPT-6 reasoning effort minimal":                                   "TS 61a315e333 rounds the effort instead (30548ee7f9 recording)",
+}
+
+func r85provbWithStaleRecordingSkips(skip map[string]string) map[string]string {
+	for k, v := range r85provbStaleRecordingSkips {
+		skip[k] = v
+	}
+	return skip
 }

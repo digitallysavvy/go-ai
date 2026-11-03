@@ -535,25 +535,16 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		isReasoning = *forceReasoning
 	}
 
-	// TS: resolvedReasoningEffort = openaiOptions.reasoningEffort ??
-	// (isCustomReasoning(reasoning) ? reasoning : undefined), resolved once so
-	// the top-level `reasoning` value goes through the same GPT-6+ check.
+	// TS resolveOpenAIReasoningEffort (61a315e333 / d07b475bc8): an explicit
+	// providerOptions.openai.reasoningEffort is sent unchanged; otherwise the
+	// top-level `reasoning` is rounded to an effort the model supports, with
+	// a "compatibility" warning when the effort sent differs.
 	reasoningEffortOption := reasoningEffort
-	if reasoningEffort == "" && opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
-		reasoningEffort = string(*opts.Reasoning)
+	var providerReasoningEffort *string
+	if reasoningEffortOption != "" {
+		providerReasoningEffort = &reasoningEffortOption
 	}
-
-	// GPT-6+ models restrict reasoning effort to a fixed set; drop and warn
-	// on anything else (row 17e489e).
-	if reasoningEffort != "" && modelCapabilities.SupportedReasoningEfforts != nil &&
-		!slices.Contains(modelCapabilities.SupportedReasoningEfforts, reasoningEffort) {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "reasoningEffort",
-			Details: fmt.Sprintf("%s only supports the following reasoning efforts: %s", m.modelID, strings.Join(modelCapabilities.SupportedReasoningEfforts, ", ")),
-		})
-		reasoningEffort = ""
-	}
+	reasoningEffort = resolveOpenAIReasoningEffort(providerReasoningEffort, opts.Reasoning, modelCapabilities.SupportedReasoningEfforts, &warnings)
 	// TS reports this after the reasoningEffort check above.
 	if conversation != "" && previousResponseID != "" {
 		warnings = append(warnings, types.Warning{
@@ -844,9 +835,10 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				Details: "topP is not supported for reasoning models",
 			})
 		}
-		// GPT-6+ models (which have a fixed SupportedReasoningEfforts list)
-		// do not support logprobs while reasoning is active.
-		if modelCapabilities.SupportedReasoningEfforts != nil && (topLogprobs != nil || sliceHas(includeFields, "message.output_text.logprobs")) {
+		// GPT-6+ models do not support logprobs while reasoning is active
+		// (TS endpoints.responses.logprobsRequireNonReasoning;
+		// SupportsConfigurationUpdate is the same GPT-6+ test).
+		if modelCapabilities.SupportsConfigurationUpdate && (topLogprobs != nil || sliceHas(includeFields, "message.output_text.logprobs")) {
 			topLogprobs = nil
 			filtered := includeFields[:0:0]
 			for _, v := range includeFields {
