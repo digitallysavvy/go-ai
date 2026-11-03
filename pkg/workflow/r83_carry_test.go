@@ -47,7 +47,7 @@ func TestR83carryStructSchemaKeepsFieldOrderAcrossBoundary(t *testing.T) {
 			raw, tools := r83carryRoundTrip(t, []types.Tool{{Name: "weather", Parameters: params}})
 			s := string(raw)
 			zi, ci, ki := strings.Index(s, `"zip"`), strings.Index(s, `"city"`), strings.Index(s, `"country"`)
-			if zi < 0 || !(zi < ci && ci < ki) {
+			if zi < 0 || zi >= ci || ci >= ki {
 				t.Fatalf("serialized definition lost the field order: %s", s)
 			}
 			ordered, ok := schema.OrderedToolParameters(tools[0].Parameters, tools[0].ParameterKeyOrder)
