@@ -1,10 +1,13 @@
 package ai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -427,5 +430,222 @@ func TestR82streamStepHeadersDoNotCarryOver(t *testing.T) {
 	}
 	if h := r.ResponseHeaders(); len(h) != 0 {
 		t.Fatalf("result response headers = %v, want the last step's (none)", h)
+	}
+}
+
+// r82streamProcess applies chunks to a fresh message state (TS
+// processUIMessageStream) and returns the final message.
+func r82streamProcess(t *testing.T, chunks []UIMessageChunk) UIMessage {
+	t.Helper()
+	state := newUIMessageCallbackState(nil, "msg-123")
+	for _, c := range chunks {
+		var failed error
+		state.apply(c, func(err error) string {
+			failed = err
+			return ""
+		})
+		if failed != nil {
+			t.Fatalf("chunk %v: %v", c["type"], failed)
+		}
+	}
+	msg, err := UIMessageFromChunk(state.responseMessage())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return msg
+}
+
+// process-ui-message-stream.test.ts 7293: dynamic tool errors after input
+// streaming > clears raw input on tool input error / tool output error, and
+// the message validates without warnings.
+func TestR82streamDynamicToolErrorClearsRawInput(t *testing.T) {
+	for name, terminal := range map[string]UIMessageChunk{
+		"tool input error": {"type": "tool-input-error", "toolCallId": "call-1", "toolName": "cityAttractions",
+			"input": map[string]interface{}{"cities": []interface{}{"San Francisco"}}, "errorText": "Invalid input for tool cityAttractions", "dynamic": true},
+		"tool output error": {"type": "tool-output-error", "toolCallId": "call-1", "errorText": "Tool execution failed", "dynamic": true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setupLogWarnings(t)
+			warned := 0
+			SetLogWarnings(func(LogWarningsOptions) { warned++ })
+			msg := r82streamProcess(t, []UIMessageChunk{
+				{"type": "start"}, {"type": "start-step"},
+				{"type": "tool-input-start", "toolCallId": "call-1", "toolName": "cityAttractions", "dynamic": true},
+				{"type": "tool-input-delta", "toolCallId": "call-1", "inputTextDelta": `{ "cities": ["San Francisco"] }`},
+				terminal,
+				{"type": "finish-step"}, {"type": "finish"},
+			})
+			b, _ := json.Marshal(msg)
+			var m map[string]interface{}
+			_ = json.Unmarshal(b, &m)
+			var tool map[string]interface{}
+			for _, p := range m["parts"].([]interface{}) {
+				if pm := p.(map[string]interface{}); pm["toolCallId"] == "call-1" {
+					tool = pm
+				}
+			}
+			if tool == nil || tool["type"] != "dynamic-tool" || tool["state"] != "output-error" {
+				t.Fatalf("tool part = %v", tool)
+			}
+			if _, ok := tool["rawInput"]; ok {
+				t.Fatalf("rawInput kept: %v", tool)
+			}
+			if _, err := ValidateUIMessages(context.Background(), ValidateUIMessagesOptions{Messages: []interface{}{msg}}); err != nil {
+				t.Fatalf("ValidateUIMessages: %v", err)
+			}
+			if warned != 0 {
+				t.Fatalf("logWarnings called %d times", warned)
+			}
+		})
+	}
+}
+
+func r82streamCollect(t *testing.T, out <-chan UIMessageChunk, errCh <-chan error) ([]UIMessageChunk, error) {
+	t.Helper()
+	var got []UIMessageChunk
+	for c := range out {
+		got = append(got, c)
+	}
+	return got, <-errCh
+}
+
+// create-ui-message-stream.test.ts 130: should send async message
+// annotation and close the stream.
+func TestR82streamCreateAsyncWrite(t *testing.T) {
+	wait := make(chan struct{})
+	out, errCh := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{Execute: func(w UIMessageStreamWriter) {
+		<-wait
+		w.Write(UIMessageChunk{"type": "text-delta", "id": "1", "delta": "1a"})
+	}})
+	close(wait)
+	got, err := r82streamCollect(t, out, errCh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r75streamAssertJSON(t, "chunks", got, `[{"delta":"1a","id":"1","type":"text-delta"}]`)
+}
+
+// create-ui-message-stream.test.ts 1039: reports invalid chunk processing as
+// failed after completion was declared: the stream fails and onEnd's outcome
+// is failed with that same error.
+func TestR82streamCreateInvalidChunkAfterCompleted(t *testing.T) {
+	var events []map[string]interface{}
+	out, errCh := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(w UIMessageStreamWriter) {
+			w.SetOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeCompleted})
+			w.Write(UIMessageChunk{"type": "finish"})
+			w.Write(UIMessageChunk{"type": "text-delta", "id": "missing", "delta": "text"})
+		},
+		OnEnd: func(e map[string]interface{}) { events = append(events, e) },
+	})
+	_, err := r82streamCollect(t, out, errCh)
+	if err == nil {
+		t.Fatal("stream did not fail")
+	}
+	if len(events) != 1 {
+		t.Fatalf("onEnd calls = %d", len(events))
+	}
+	outcome, _ := events[0]["outcome"].(map[string]interface{})
+	if outcome["status"] != "failed" || outcome["error"] != err {
+		t.Fatalf("outcome = %#v, want failed with %v", outcome, err)
+	}
+}
+
+// create-sse-stream-with-keep-alive.test.ts 125: should preserve source
+// chunks and completion (the opening comment first).
+func TestR82streamKeepAlivePreservesChunks(t *testing.T) {
+	keepAlive := 100 * time.Millisecond
+	var buf bytes.Buffer
+	if err := PipeUIMessageChunksToResponse(r73streamChunkChan(
+		UIMessageChunk{"type": "text-delta", "id": "1", "delta": "data 1"},
+		UIMessageChunk{"type": "text-delta", "id": "1", "delta": "data 2"},
+	), &buf, &UIMessageStreamResponseInit{KeepAliveMs: &keepAlive}); err != nil {
+		t.Fatal(err)
+	}
+	want := ": stream-open\n\n" +
+		"data: {\"delta\":\"data 1\",\"id\":\"1\",\"type\":\"text-delta\"}\n\n" +
+		"data: {\"delta\":\"data 2\",\"id\":\"1\",\"type\":\"text-delta\"}\n\n" +
+		"data: [DONE]\n\n"
+	if buf.String() != want {
+		t.Fatalf("body = %q", buf.String())
+	}
+}
+
+// create-sse-stream-with-keep-alive.test.ts 88: should reset the keep-alive
+// timer after source activity.
+func TestR82streamKeepAliveResetsAfterChunk(t *testing.T) {
+	keepAlive := 400 * time.Millisecond
+	buf := &syncBuffer{}
+	chunks := make(chan UIMessageChunk)
+	done := make(chan error, 1)
+	go func() {
+		done <- PipeUIMessageChunksToResponse(chunks, buf, &UIMessageStreamResponseInit{KeepAliveMs: &keepAlive})
+	}()
+	waitForContains(t, buf, []byte(sseStreamOpenComment), time.Second)
+	time.Sleep(200 * time.Millisecond)
+	chunks <- UIMessageChunk{"type": "text-delta", "id": "1", "delta": "data"}
+	waitForContains(t, buf, []byte("data"), time.Second)
+	// The original timer would fire 200ms from here; the reset one 400ms.
+	time.Sleep(300 * time.Millisecond)
+	if strings.Contains(buf.String(), sseKeepAliveComment) {
+		t.Fatalf("keep-alive before the reset interval elapsed: %q", buf.String())
+	}
+	waitForContains(t, buf, []byte(sseKeepAliveComment), 2*time.Second)
+	close(chunks)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// pipe-ui-message-stream-to-response.test.ts 31 (headers, status and the
+// encoded stream), 123 (an error chunk) and 151 (a toUIMessageStream source
+// with sendStart false). Go writes the chunk keys sorted (known difference
+// "UI message stream JSON key order").
+func TestR82streamPipeChunksToResponse(t *testing.T) {
+	rec := httptest.NewRecorder()
+	if err := PipeUIMessageChunksToResponse(r73streamChunkChan(
+		UIMessageChunk{"type": "text-start", "id": "1"},
+		UIMessageChunk{"type": "text-delta", "id": "1", "delta": "test-data"},
+		UIMessageChunk{"type": "text-end", "id": "1"},
+	), rec, &UIMessageStreamResponseInit{Status: 200, StatusText: "OK", Headers: map[string]string{"Custom-Header": "test"}}); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != 200 {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	gotHeaders := map[string]string{}
+	for k := range rec.Header() {
+		gotHeaders[strings.ToLower(k)] = rec.Header().Get(k)
+	}
+	r75streamAssertJSON(t, "headers", gotHeaders, `{"cache-control":"no-cache","connection":"keep-alive","content-type":"text/event-stream","custom-header":"test","x-accel-buffering":"no","x-vercel-ai-ui-message-stream":"v1"}`)
+	if want := "data: {\"id\":\"1\",\"type\":\"text-start\"}\n\ndata: {\"delta\":\"test-data\",\"id\":\"1\",\"type\":\"text-delta\"}\n\ndata: {\"id\":\"1\",\"type\":\"text-end\"}\n\ndata: [DONE]\n\n"; rec.Body.String() != want {
+		t.Fatalf("31 body = %q", rec.Body.String())
+	}
+
+	var buf bytes.Buffer
+	if err := PipeUIMessageChunksToResponse(r73streamChunkChan(UIMessageChunk{"type": "error", "errorText": "Custom error message"}), &buf, &UIMessageStreamResponseInit{Status: 200}); err != nil {
+		t.Fatal(err)
+	}
+	if want := "data: {\"errorText\":\"Custom error message\",\"type\":\"error\"}\n\ndata: [DONE]\n\n"; buf.String() != want {
+		t.Fatalf("123 body = %q", buf.String())
+	}
+
+	f := false
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStart},
+		{Type: provider.ChunkTypeTextStart, ID: "t1"},
+		{Type: provider.ChunkTypeText, ID: "t1", Text: "Hello"},
+		{Type: provider.ChunkTypeTextEnd, ID: "t1"},
+	})
+	ui, uiErr := ToUIMessageStream(context.Background(), src, UIMessageStreamResultOptions{SendStart: &f})
+	buf.Reset()
+	if err := PipeUIMessageChunksToResponse(ui, &buf, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-uiErr; err != nil {
+		t.Fatal(err)
+	}
+	if want := "data: {\"id\":\"t1\",\"type\":\"text-start\"}\n\ndata: {\"delta\":\"Hello\",\"id\":\"t1\",\"type\":\"text-delta\"}\n\ndata: {\"id\":\"t1\",\"type\":\"text-end\"}\n\ndata: [DONE]\n\n"; buf.String() != want {
+		t.Fatalf("151 body = %q", buf.String())
 	}
 }
