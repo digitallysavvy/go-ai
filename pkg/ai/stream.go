@@ -2725,6 +2725,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// this step's model call instead of terminating the stream
 			// (streamRetries, audit row 802af1e / 35841f5 / WG8).
 			if chunk.Type == provider.ChunkTypeError {
+				// TS clearModelOutputTimeouts() on an error part: the
+				// first-chunk and chunk timers stop; the next output chunk
+				// re-arms the chunk timer and a stream retry re-arms
+				// FirstChunk (armStepChunkDeadline below).
+				chunkDeadlineCancel()
+				chunkDeadlineCtx, chunkDeadlineCancel, chunkDeadlineReason = stepCtx, func() {}, ""
 				var rawErr = errors.New(chunk.Text)
 				if chunk.Err != nil {
 					rawErr = chunk.Err

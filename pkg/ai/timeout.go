@@ -89,15 +89,19 @@ type TimeoutConfig struct {
 	// (non-empty text/reasoning/tool-input deltas, files, reasoning files,
 	// tool calls — see isOutputChunkForTiming) reset this timer; metadata,
 	// empty deltas and block boundary chunks do not, so a burst of
-	// non-output chunks can't mask a stalled stream. If no semantic output
-	// chunk is received within this duration, the stream is aborted with
-	// TimeoutReasonChunk (audit row 106ea59 / WG-TIMEOUT).
+	// non-output chunks can't mask a stalled stream. The timer starts with
+	// the first semantic output chunk of each model call attempt (use
+	// FirstChunk to bound the wait for it) and stops at an error part until
+	// the next output chunk; if no further semantic output chunk is received
+	// within this duration, the stream is aborted with TimeoutReasonChunk
+	// (TS chunkMs; audit row 106ea59 / WG-TIMEOUT).
 	PerChunk *time.Duration
 
 	// FirstChunk is the timeout for the first semantic output chunk of each
 	// model-call step (TS firstChunkMs). It is armed fresh at the start of
 	// every step and disarmed (stops applying, for the rest of that step)
-	// as soon as the first chunk matching isOutputChunkForTiming arrives;
+	// as soon as the first chunk matching isOutputChunkForTiming (or an
+	// error part, TS clearModelOutputTimeouts) arrives;
 	// PerChunk (if also set) then takes over from that point. Streaming
 	// only, like PerChunk (audit row 106ea59 / WG-TIMEOUT; GenerateText
 	// warns instead of applying it — audit row 349afe7).
