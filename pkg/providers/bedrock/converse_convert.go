@@ -280,6 +280,10 @@ func toolResultFileContentPayload(block types.FileContentBlock) (string, bedrock
 	if block.Reference != "" || block.FileData.Type == types.FileDataTypeReference {
 		return "", bedrockFilePayload{}, bedrockUnsupported(`tool result file data of type "reference"`, "")
 	}
+	if block.FileData.Type == types.FileDataTypeText {
+		// TS: only data and s3 url file parts are tool result content.
+		return "", bedrockFilePayload{}, bedrockUnsupported(`tool result file data of type "text"`, "")
+	}
 	mediaType := block.MediaType
 	if mediaType == "" {
 		mediaType = block.FileData.MediaType
@@ -292,6 +296,9 @@ func toolResultFileContentPayload(block types.FileContentBlock) (string, bedrock
 	if url != "" {
 		if !strings.HasPrefix(url, "s3://") {
 			return "", bedrockFilePayload{}, bedrockUnsupported(`tool result file data of type "url"`, "")
+		}
+		if err := requireFullURLMediaType(mediaType); err != nil {
+			return "", bedrockFilePayload{}, err
 		}
 		return mediaType, bedrockFilePayload{s3URI: url}, nil
 	}
@@ -337,6 +344,15 @@ func resolveBedrockDataMediaType(mediaType string, payload bedrockFilePayload) (
 		}
 	}
 	return "", bedrockUnsupported(fmt.Sprintf("file of media type %q must specify subtype since it could not be auto-detected", mediaType), "")
+}
+
+// requireFullURLMediaType is TS resolveFullMediaType for a url part: a bare or
+// wildcard media type cannot be sniffed without inline bytes.
+func requireFullURLMediaType(mediaType string) error {
+	if isFullMediaType(mediaType) {
+		return nil
+	}
+	return bedrockUnsupported(fmt.Sprintf("file of media type %q must specify subtype since it is not passed as inline bytes", mediaType), "")
 }
 
 // mediaSourceBlock builds an image/video `source` block: either inline bytes
@@ -903,6 +919,9 @@ func bedrockUserFileBlock(file types.FileContent, getDocumentName func(string) s
 	payload := fileContentPayload(file)
 
 	if payload.s3URI != "" {
+		if err := requireFullURLMediaType(mediaType); err != nil {
+			return nil, false, err
+		}
 		switch topLevelMediaType(mediaType) {
 		case "image":
 			format, err := bedrockImageFormat(mediaType)
