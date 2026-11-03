@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	toolutil "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
@@ -30,10 +31,19 @@ func languageModelToolDefinition(t types.Tool) *jsonorder.Object {
 	}
 	def.Set("type", "function")
 	def.Set("name", t.Name)
+	// The schema as the model receives it (TS prepareTools
+	// asSchema(inputSchema).jsonSchema): GenerateText and StreamText hand
+	// resolved tools already; a direct caller's nil, typed-nil or zero schema
+	// becomes the TS empty object schema here too.
+	t = toolutil.ResolveToolSchemas([]types.Tool{t})[0]
 	inputSchema, ok := toolDefinitionInputSchema(t)
 	if !ok {
-		// A Go tool without a schema is sent as the empty object schema.
-		inputSchema = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+		// TS asSchema(undefined).jsonSchema, as the model receives it.
+		empty := jsonorder.New()
+		empty.Set("type", "object")
+		empty.Set("properties", jsonorder.New())
+		empty.Set("additionalProperties", false)
+		inputSchema = empty
 	}
 	def.Set("inputSchema", inputSchema)
 	if t.Description != "" {

@@ -1242,9 +1242,19 @@ func TestAgent_CreateSession_CallerOwnedSandboxRunsOnBootstrap(t *testing.T) {
 		t.Fatalf("NewAgent: %v", err)
 	}
 	sb := newMockSandbox()
-	if _, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: sb}); err != nil {
+	// The mock harness has no bootstrap recipe, so the setup runs on the
+	// session's first sandbox operation (TS 8a20b57d41).
+	firstUse := func(session *AgentSession) {
+		t.Helper()
+		if _, err := session.GetSandboxSession().Run(context.Background(), providerutils.SandboxProcessOptions{Command: "true"}); err != nil {
+			t.Fatalf("first sandbox operation: %v", err)
+		}
+	}
+	session, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: sb})
+	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
+	firstUse(session)
 	if calls != 1 {
 		t.Fatalf("OnBootstrap called %d times, want 1", calls)
 	}
@@ -1252,9 +1262,11 @@ func TestAgent_CreateSession_CallerOwnedSandboxRunsOnBootstrap(t *testing.T) {
 	// A second session against the same physical sandbox must not re-run
 	// OnBootstrap (marker-guarded), the same idempotency
 	// CreateHarnessSandboxTemplate relies on.
-	if _, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: sb}); err != nil {
+	second, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: sb})
+	if err != nil {
 		t.Fatalf("CreateSession (second): %v", err)
 	}
+	firstUse(second)
 	if calls != 1 {
 		t.Fatalf("OnBootstrap called %d times after a second CreateSession, want 1 (marker should skip it)", calls)
 	}

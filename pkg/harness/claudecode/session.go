@@ -30,6 +30,7 @@ type sessionOptions struct {
 	proc providerutils.SandboxProcess
 
 	maxTurns               int
+	startSettings          startSettings
 	agentProgressSummaries bool
 	forwardSubagentText    bool
 	env                    map[string]string
@@ -40,6 +41,9 @@ type sessionOptions struct {
 	continueOnFirstPrompt bool
 	rerunContinue         bool
 	resumeSessionID       string
+	// deferredToolUseID is sent on the rerun-continue start (TS
+	// `deferredToolUseId`).
+	deferredToolUseID string
 
 	bridgePort                   int
 	bridgeToken                  string
@@ -70,6 +74,26 @@ type sessionOptions struct {
 
 	// debug is the observability debug config forwarded on `start`.
 	debug *harness.DebugConfig
+}
+
+// startSettings are the Settings forwarded unchanged on every start frame.
+// Mirrors the TS `createSession` parameters skillOverrides, maxBudgetUsd,
+// strictMcpConfig, questionTimeoutMs, excludeDynamicSections and toolHints.
+type startSettings struct {
+	skillOverrides         map[string]SkillOverride
+	maxBudgetUSD           *float64
+	strictMCPConfig        *bool
+	questionTimeoutMs      *int
+	excludeDynamicSections *bool
+	toolHints              map[string]ToolHint
+}
+
+func startSettingsFrom(settings Settings) startSettings {
+	return startSettings{
+		skillOverrides: settings.SkillOverrides, maxBudgetUSD: settings.MaxBudgetUSD,
+		strictMCPConfig: settings.StrictMCPConfig, questionTimeoutMs: settings.QuestionTimeoutMs,
+		excludeDynamicSections: settings.ExcludeDynamicSections, toolHints: settings.ToolHints,
+	}
 }
 
 type session struct {
@@ -163,6 +187,7 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 		} else {
 			frame.Continue = true
 		}
+		frame.DeferredToolUseID = s.opts.deferredToolUseID
 		s.pendingResumeFlag = false
 		s.mu.Unlock()
 		if err := s.opts.channel.Send(frame); err != nil {
@@ -198,6 +223,13 @@ func (s *session) buildStartFrame(prompt harnessutil.PromptContent, ts harness.T
 	if s.opts.maxTurns > 0 {
 		frame.MaxTurns = &s.opts.maxTurns
 	}
+	extra := s.opts.startSettings
+	frame.SkillOverrides = extra.skillOverrides
+	frame.MaxBudgetUSD = extra.maxBudgetUSD
+	frame.StrictMCPConfig = extra.strictMCPConfig
+	frame.QuestionTimeoutMs = extra.questionTimeoutMs
+	frame.ExcludeDynamicSections = extra.excludeDynamicSections
+	frame.ToolHints = extra.toolHints
 	if !prompt.IsText() {
 		frame.PromptContent = &prompt
 	}
@@ -208,6 +240,9 @@ func (s *session) buildStartFrame(prompt harnessutil.PromptContent, ts harness.T
 	}
 	for _, sk := range ts.Skills {
 		frame.Skills = append(frame.Skills, sk.Name)
+		// The bridge trusts reads under each skill's directory. Built like
+		// TS (`${sandboxHomeDir}/.claude/skills/${name}`, not path-cleaned).
+		frame.ReadableSkillRoots = append(frame.ReadableSkillRoots, s.opts.sandboxHomeDir+"/.claude/skills/"+sk.Name)
 	}
 	frame.MCPServers = s.opts.mcpServers
 	frame.Debug = s.opts.debug

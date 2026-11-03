@@ -1,6 +1,7 @@
 // Package claudecode is the Go host-side port of TS `@ai-sdk/harness-claude-code`
 // (`createClaudeCode`), pinned to
-// ai@7.0.153, TS e64ed82f27.
+// ai@7.0.162, TS 30548ee7f9 (host side; the embedded bridge is still the
+// ai@7.0.153 build until it is resynced).
 //
 // It implements harness.Harness/Session/PromptControl by launching the
 // embedded, unchanged TS bridge (pkg/harness/bridges, WG6) as `node
@@ -29,6 +30,28 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 )
 
+// ToolHint is a Claude Code hint for one host tool. Mirrors the value type
+// of TS `ClaudeCodeHarnessSettings.toolHints`; a nil field is left unset.
+type ToolHint struct {
+	// ReadOnly marks the tool as having no side effects.
+	ReadOnly *bool `json:"readOnly,omitempty"`
+	// AlwaysLoad sends the tool's definition from the first request instead
+	// of deferring it until the model looks it up.
+	AlwaysLoad *bool `json:"alwaysLoad,omitempty"`
+}
+
+// SkillOverride is how Claude Code exposes one named skill. Mirrors TS
+// `ClaudeCodeHarnessSettings.skillOverrides` values.
+type SkillOverride string
+
+// SkillOverride values.
+const (
+	SkillOverrideOn                SkillOverride = "on"
+	SkillOverrideNameOnly          SkillOverride = "name-only"
+	SkillOverrideUserInvocableOnly SkillOverride = "user-invocable-only"
+	SkillOverrideOff               SkillOverride = "off"
+)
+
 // Settings configures New. Mirrors TS `ClaudeCodeHarnessSettings`.
 type Settings struct {
 	// Auth selects the authentication route: unset (auto-detect), "direct",
@@ -41,9 +64,36 @@ type Settings struct {
 	// Claude Agent SDK's native configuration format. The name "harness-tools"
 	// is reserved.
 	MCPServers map[string]any
+	// ToolHints are Claude Code hints for host tools, keyed by tool name.
+	// ReadOnly marks a tool with no side effects: Claude Code can run
+	// read-only tool calls in parallel, runs each call to any other host tool
+	// on its own, and allows read-only tools in plan mode, so mark only tools
+	// that change nothing. AlwaysLoad sends the tool's definition from the
+	// first request when Claude Code's tool search would otherwise defer it.
+	ToolHints map[string]ToolHint
 	// MaxTurns caps how many internal turns the CLI can take before yielding
 	// back to the caller. Zero means the CLI's default.
 	MaxTurns int
+	// SkillOverrides overrides how named skills are exposed to Claude Code.
+	// Unspecified skills keep their Claude Code defaults.
+	SkillOverrides map[string]SkillOverride
+	// MaxBudgetUSD is the maximum estimated spend in USD for each Claude
+	// query. When it is exceeded, the query stops and the turn ends with an
+	// error. Nil means no limit.
+	MaxBudgetUSD *float64
+	// StrictMCPConfig, when true, uses only the MCP servers configured with
+	// MCPServers and ignores any other MCP configuration such as a project
+	// `.mcp.json` or user settings. Nil leaves the Claude Code default.
+	StrictMCPConfig *bool
+	// QuestionTimeoutMs is the maximum number of milliseconds Claude waits
+	// for an answer to an `AskUserQuestion` question before the question
+	// fails. Nil means the Claude Code default.
+	QuestionTimeoutMs *int
+	// ExcludeDynamicSections moves per-session sections (working directory,
+	// memory, git status) out of the Claude Code system prompt and into the
+	// first user message, so the system prompt can be cached across
+	// sessions. Nil leaves the Claude Code default.
+	ExcludeDynamicSections *bool
 	// AgentProgressSummaries enables periodic AI-generated progress
 	// summaries for running subagents. The summaries are forwarded in raw
 	// `task_progress` stream parts.

@@ -486,6 +486,13 @@ type turnDriver struct {
 	deferredPauseFinishStep     *FinishStepPart
 	ignoredFinishStep           *FinishStepPart
 	hostToolCallIDsAwaitingEcho map[string]struct{} // guarded by execMu
+	// submittedHostResults are the host tool results submitted to the
+	// runtime whose echo has not arrived yet, in submission order (TS
+	// `submittedHostToolResults`, TS 6eab0f7b11). A pause reports each one as
+	// a completed pending result, so a continuation resubmits it without
+	// running the tool again. Guarded by execMu.
+	submittedHostResults     map[string]ToolResultSubmission
+	submittedHostResultOrder []string
 
 	// completedSteps accumulates the locally-tracked StepResult from every
 	// completeStep call, used to evaluate StopConditions (which need the
@@ -1022,6 +1029,8 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 
 		if tr, isResult := part.(*ToolResultPart); isResult {
 			d.clearAwaitingEcho(tr.ToolCallID)
+			d.forgetSubmittedHostResult(tr.ToolCallID)
+			delete(d.pendingResultsByToolCallID, tr.ToolCallID)
 		}
 
 		// One event of lookahead (TS run-prompt.ts's `pendingStopBoundary`
@@ -1111,7 +1120,10 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 				if err := d.joinOutstandingExecutions(); err != nil {
 					return false, false, err
 				}
-				if d.awaitingEchoCount() == 0 {
+				// A built-in approval blocks the runtime, so the echoes of
+				// host results it holds back never arrive before the answer
+				// (TS 6eab0f7b11).
+				if d.awaitingEchoCount() == 0 || d.hasBuiltinPendingApproval() {
 					if err := d.pauseAtHostInputBoundary(fs); err != nil {
 						return false, false, err
 					}
@@ -1467,7 +1479,7 @@ func (d *turnDriver) classifyAndValidateToolCall(raw, display *ToolCallPart) (di
 		tools = nil
 	}
 	parsed, perr := ai.ParseToolCall(d.ctx, ai.ParseToolCallOptions{
-		ToolCall: toolCallPartToCall(eventPart),
+		ToolCall: toolCallPartToCall(eventPart, d.in.Harness.HarnessID()),
 		Tools:    tools,
 	})
 	if perr != nil {
@@ -1486,7 +1498,23 @@ func (d *turnDriver) classifyAndValidateToolCall(raw, display *ToolCallPart) (di
 // JSON input (RawArguments) so parsing/validation happens against the exact
 // text the event carried — mirrors TS's `LanguageModelV4ToolCall` shape
 // `validateToolCall` builds from a `HarnessV1StreamPart` tool-call event.
-func toolCallPartToCall(p *ToolCallPart) types.ToolCall {
+func toolCallPartToCall(p *ToolCallPart, harnessID string) types.ToolCall {
+	metadata := convertProviderMetadata(ProviderMetadata(p.ProviderMetadata))
+	// TS validateToolCall (TS e7a8988893): a native name that differs from
+	// the tool name goes to providerMetadata[harnessId].nativeToolName,
+	// merged over that harness's existing metadata, so native-name approval
+	// gates can recognize the call.
+	if p.NativeName != "" && p.NativeName != p.ToolName {
+		entry := map[string]any{}
+		for k, v := range p.ProviderMetadata[harnessID] {
+			entry[k] = v
+		}
+		entry["nativeToolName"] = p.NativeName
+		if metadata == nil {
+			metadata = map[string]interface{}{}
+		}
+		metadata[harnessID] = entry
+	}
 	return types.ToolCall{
 		ID:               p.ToolCallID,
 		ToolName:         p.ToolName,
@@ -1496,7 +1524,7 @@ func toolCallPartToCall(p *ToolCallPart) types.ToolCall {
 		// defines it, so an explicit false stays set.
 		ProviderExecutedSet: p.ProviderExecuted || !p.ProviderExecutedOmitted,
 		Dynamic:             p.Dynamic,
-		ProviderMetadata:    convertProviderMetadata(ProviderMetadata(p.ProviderMetadata)),
+		ProviderMetadata:    metadata,
 	}
 }
 
@@ -1628,6 +1656,18 @@ func (d *turnDriver) clearAwaitingEcho(toolCallID string) {
 	d.execMu.Lock()
 	delete(d.hostToolCallIDsAwaitingEcho, toolCallID)
 	d.execMu.Unlock()
+}
+
+// hasBuiltinPendingApproval reports whether any pending approval is for a
+// built-in tool (TS `[...pendingApprovalsByApprovalId.values()].some(approval
+// => approval.kind === 'builtin')`).
+func (d *turnDriver) hasBuiltinPendingApproval() bool {
+	for _, approval := range d.pendingApprovalsByApprovalID {
+		if approval.Kind == PendingToolApprovalBuiltin {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *turnDriver) awaitingEchoCount() int {
@@ -1940,6 +1980,7 @@ func (d *turnDriver) pauseAtHostInputBoundary(fs *FinishStepPart) error {
 	if err := d.joinOutstandingExecutions(); err != nil {
 		return err
 	}
+	d.reportUnechoedHostResults()
 	d.closingResumedStep = false
 	d.ensureStepOpen()
 	var usage Usage
@@ -2159,6 +2200,17 @@ func executionDeniedOutput(reason string) map[string]interface{} {
 	return out
 }
 
+// deniedSubmission is the submission for a denied host tool call: the
+// execution-denied output plus a model tool result carrying it, so the
+// model-facing output is recorded and the runtime's echo of the denial
+// never reaches the tool's ToModelOutput (TS 033f8d9a63).
+func deniedSubmission(toolCallID, toolName string, output map[string]interface{}, reason string) ToolResultSubmission {
+	return ToolResultSubmission{
+		ToolCallID: toolCallID, Output: output,
+		ToolResult: newModelToolResult(toolCallID, toolName, types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: reason}),
+	}
+}
+
 // handleApprovalRequest processes a `tool-approval-request` event from the
 // adapter (a built-in tool asking for permission): filters it against
 // BuiltinToolFiltering, records it as pending, resolves any startup
@@ -2252,7 +2304,7 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 		// echoed copy.
 		d.setHostOutcome(raw.ToolCallID, hostToolOutcome{output: output})
 		d.markAwaitingEcho(raw.ToolCallID)
-		if err := d.submitToolResult(ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: output}); err != nil {
+		if err := d.submitToolResult(deniedSubmission(raw.ToolCallID, raw.ToolName, output, BuiltinToolFilteringDenialReason(raw.ToolName))); err != nil {
 			return false, err
 		}
 		return false, nil
@@ -2302,7 +2354,7 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 		// the end right after it, without waiting for the runtime's echo.
 		d.ensureToolExecutionStarted(d.telStepCtx, call)
 		d.markAwaitingEcho(raw.ToolCallID)
-		if err := d.submitToolResult(ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: output}); err != nil {
+		if err := d.submitToolResult(deniedSubmission(raw.ToolCallID, raw.ToolName, output, decision.Reason)); err != nil {
 			return false, err
 		}
 		d.publishToolExecutionEnd(raw.ToolCallID, raw.ToolName, call, hostOutcomeResult(call, hostToolOutcome{output: output}))
@@ -2637,7 +2689,95 @@ func (d *turnDriver) submitToolResult(submission ToolResultSubmission) error {
 	if d.suspending() {
 		return d.recordSuspendedResult(submission)
 	}
+	d.rememberSubmittedHostResult(submission)
 	return d.control.SubmitToolResult(d.ctx, submission)
+}
+
+// rememberSubmittedHostResult records a submission until its echo arrives
+// (TS `submittedHostToolResults.set`). Safe from any goroutine.
+func (d *turnDriver) rememberSubmittedHostResult(submission ToolResultSubmission) {
+	d.execMu.Lock()
+	defer d.execMu.Unlock()
+	if d.submittedHostResults == nil {
+		d.submittedHostResults = map[string]ToolResultSubmission{}
+	}
+	if _, ok := d.submittedHostResults[submission.ToolCallID]; !ok {
+		d.submittedHostResultOrder = append(d.submittedHostResultOrder, submission.ToolCallID)
+	}
+	d.submittedHostResults[submission.ToolCallID] = submission
+}
+
+// forgetSubmittedHostResult drops a submission once the runtime echoed it.
+func (d *turnDriver) forgetSubmittedHostResult(toolCallID string) {
+	d.execMu.Lock()
+	defer d.execMu.Unlock()
+	if _, ok := d.submittedHostResults[toolCallID]; !ok {
+		return
+	}
+	delete(d.submittedHostResults, toolCallID)
+	for i, id := range d.submittedHostResultOrder {
+		if id == toolCallID {
+			d.submittedHostResultOrder = append(d.submittedHostResultOrder[:i:i], d.submittedHostResultOrder[i+1:]...)
+			break
+		}
+	}
+}
+
+// unechoedSubmissions returns the submissions still awaiting their echo, in
+// submission order.
+func (d *turnDriver) unechoedSubmissions() []ToolResultSubmission {
+	d.execMu.Lock()
+	defer d.execMu.Unlock()
+	out := make([]ToolResultSubmission, 0, len(d.submittedHostResultOrder))
+	for _, id := range d.submittedHostResultOrder {
+		out = append(out, d.submittedHostResults[id])
+	}
+	return out
+}
+
+// reportUnechoedHostResults runs at a pause: each submitted host result the
+// runtime has not echoed (it may be blocked behind a built-in approval)
+// becomes a completed pending result, and a host tool executed in this turn
+// has its outcome surfaced now. Mirrors TS `pauseForHostInput`'s
+// `submittedHostToolResults` loop (TS 6eab0f7b11).
+func (d *turnDriver) reportUnechoedHostResults() {
+	for _, submission := range d.unechoedSubmissions() {
+		id := submission.ToolCallID
+		var pending PendingToolResult
+		if p := d.pendingResultsByToolCallID[id]; p != nil {
+			pending = *p
+		} else if raw := d.rawToolCallsByID[id]; raw != nil {
+			pending = PendingToolResult{ToolCallID: id, ToolName: raw.ToolName, Input: raw.Input}
+			if raw.ProviderMetadata != nil {
+				pending.ProviderOptions = map[string]map[string]any(raw.ProviderMetadata)
+			}
+		} else {
+			continue
+		}
+		completed := &CompletedToolResult{Output: submission.Output, ToolResult: submission.ToolResult}
+		if submission.IsError {
+			isError := true
+			completed.IsError = &isError
+		}
+		pending.CompletedResult = completed
+		if d.in.OnPendingToolResult != nil {
+			d.in.OnPendingToolResult(pending)
+		}
+		call, known := d.toolCallsByID[id]
+		d.execMu.Lock()
+		outcome, ran := d.hostOutcomes[id]
+		modelOutput, hasModelOutput := d.toolModelOutputs[id]
+		d.execMu.Unlock()
+		if !known || !ran || d.isSettledHost(id) {
+			continue
+		}
+		chunk := d.hostOutcomeChunk(id, call.ToolName, call, outcome)
+		if outcome.err == nil && hasModelOutput {
+			mo := modelOutput
+			chunk.ToolResult.ModelOutput = &mo
+		}
+		d.stream.push(chunk)
+	}
 }
 
 // recordSuspendedResult stores a tool result that completed after the host
@@ -2789,7 +2929,7 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 	var call types.ToolCall
 	if approval.Kind == PendingToolApprovalCustom && continuation.Approved {
 		parsed, perr := ai.ParseToolCall(d.ctx, ai.ParseToolCallOptions{
-			ToolCall: toolCallPartToCall(&rawToolCall),
+			ToolCall: toolCallPartToCall(&rawToolCall, d.in.Harness.HarnessID()),
 			Tools:    d.toolsList,
 		})
 		if perr != nil {
@@ -2840,7 +2980,7 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 	d.settledHostIDs[approval.ToolCallID] = struct{}{}
 	if !continuation.Approved {
 		output := executionDeniedOutput(continuation.Reason)
-		if err := d.submitToolResult(ToolResultSubmission{ToolCallID: approval.ToolCallID, Output: output}); err != nil {
+		if err := d.submitToolResult(deniedSubmission(approval.ToolCallID, approval.ToolName, output, continuation.Reason)); err != nil {
 			return turnOutcomeContinue, err
 		}
 		return turnOutcomeContinue, nil
@@ -2947,11 +3087,9 @@ func (d *turnDriver) processResultContinuation(pending PendingToolResult, contin
 	if d.in.OnToolResultSettled != nil {
 		d.in.OnToolResultSettled(pending.ToolCallID)
 	}
-	if err := d.submitToolResult(submission); err != nil {
-		return err
-	}
-	delete(d.pendingResultsByToolCallID, pending.ToolCallID)
-	return nil
+	// The pending result is kept until the runtime echoes it, so another
+	// pause before the echo reports it again (TS 6eab0f7b11).
+	return d.submitToolResult(submission)
 }
 
 // unwrapToolResultOutput extracts the plain output value (and whether it

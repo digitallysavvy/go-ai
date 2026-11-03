@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
@@ -66,12 +67,20 @@ type wsConn struct {
 	writeMu      sync.Mutex
 	closeOnce    sync.Once
 	closeErr     error
+	// closed is set once the socket stops being open: Close was called, a
+	// read failed (the peer closed it), or a write failed. Mirrors TS
+	// `ws.readyState !== OPEN` for the channel's send gate.
+	closed atomic.Bool
 }
+
+func (c *wsConn) isOpen() bool { return !c.closed.Load() }
+func (c *wsConn) markClosed()  { c.closed.Store(true) }
 
 // Receive reads one text or binary message.
 func (c *wsConn) Receive() ([]byte, error) {
 	var msg []byte
 	if err := websocket.Message.Receive(c.ws, &msg); err != nil {
+		c.closed.Store(true)
 		if isEOF(err) {
 			// x/net reports a received close frame (or an orderly TCP
 			// shutdown) as io.EOF; closeInfo recovered the code and reason
@@ -100,6 +109,7 @@ func (c *wsConn) Send(data []byte) error {
 
 // Close closes the socket. Safe to call more than once.
 func (c *wsConn) Close() error {
+	c.closed.Store(true)
 	c.closeOnce.Do(func() { c.closeErr = c.ws.Close() })
 	return c.closeErr
 }

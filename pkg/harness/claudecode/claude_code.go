@@ -310,10 +310,19 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		return nil, err
 	}
 
+	// A rerun hands the respawned bridge the built-in call the previous one
+	// deferred while it waited for approval. Mirrors TS `deferredToolUseId`
+	// (`(continueFrom ?? resumeFrom?.continueFrom)?.pendingToolApprovals
+	// .find(kind === 'builtin')?.toolCallId`).
+	var deferredToolUseID string
+	if respawnStrategy == "rerun" {
+		deferredToolUseID = firstBuiltinApprovalToolCallID(opts)
+	}
+
 	return newSession(sessionOptions{
 		sessionID: opts.SessionID, channel: channel, proc: launched.Proc, finishListenerAttachment: finishAttachment, debug: debugConfig(opts.Observability),
-		maxTurns: settings.MaxTurns, agentProgressSummaries: settings.AgentProgressSummaries, forwardSubagentText: settings.ForwardSubagentText, env: sandboxClaudeEnv, thinking: *settings.Thinking, effort: settings.Effort,
-		isResume: isResume, continueOnFirstPrompt: isResume, rerunContinue: respawnStrategy == "rerun",
+		maxTurns: settings.MaxTurns, startSettings: startSettingsFrom(settings), agentProgressSummaries: settings.AgentProgressSummaries, forwardSubagentText: settings.ForwardSubagentText, env: sandboxClaudeEnv, thinking: *settings.Thinking, effort: settings.Effort,
+		isResume: isResume, continueOnFirstPrompt: isResume, rerunContinue: respawnStrategy == "rerun", deferredToolUseID: deferredToolUseID,
 		resumeSessionID: resumeData.ClaudeSessionID,
 		bridgePort:      launched.Port, bridgeToken: token, sandboxID: sandboxID,
 		sandboxCredentialEnvironment: sandboxCredentialEnv,
@@ -388,7 +397,7 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 	}
 	return newSession(sessionOptions{
 		sessionID: opts.sessionID, channel: channel, proc: nil, finishListenerAttachment: finishAttachment, debug: opts.debug,
-		maxTurns: opts.maxTurns, agentProgressSummaries: opts.agentProgressSummaries, forwardSubagentText: opts.forwardSubagentText, env: opts.env, thinking: opts.thinking, effort: opts.effort,
+		maxTurns: opts.maxTurns, startSettings: startSettingsFrom(opts.settings), agentProgressSummaries: opts.agentProgressSummaries, forwardSubagentText: opts.forwardSubagentText, env: opts.env, thinking: opts.thinking, effort: opts.effort,
 		isResume: true, continueOnFirstPrompt: false, rerunContinue: false,
 		resumeSessionID: opts.resumeSessionID,
 		bridgePort:      opts.coords.Port, bridgeToken: opts.coords.Token, sandboxID: opts.sandboxID,
@@ -404,6 +413,24 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 // (`supportsUserMessageResponses = hello.capabilities?.experimental_userMessageResponses === true`).
 func trackUserMessageResponses(supported *atomic.Bool) func(*bridge.Hello) {
 	return func(h *bridge.Hello) { supported.Store(h.SupportsUserMessageResponses()) }
+}
+
+// firstBuiltinApprovalToolCallID returns the tool call ID of the first
+// built-in pending approval of the continued turn, or "".
+func firstBuiltinApprovalToolCallID(opts harness.StartOptions) string {
+	continueFrom := opts.ContinueFrom
+	if continueFrom == nil && opts.ResumeFrom != nil {
+		continueFrom = opts.ResumeFrom.ContinueFrom
+	}
+	if continueFrom == nil {
+		return ""
+	}
+	for _, approval := range continueFrom.PendingToolApprovals {
+		if approval.Kind == "builtin" {
+			return approval.ToolCallID
+		}
+	}
+	return ""
 }
 
 func mkdirs(ctx context.Context, sandbox providerutils.SandboxSession, dirs ...string) error {

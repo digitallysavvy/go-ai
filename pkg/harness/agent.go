@@ -186,6 +186,12 @@ type CreateSessionOptions struct {
 	// SandboxSession is a caller-owned sandbox session. When set, the caller
 	// retains ownership of its lifecycle; Agent.Sandbox is not consulted.
 	SandboxSession providerutils.SandboxSession
+	// SandboxCreator creates a caller-owned sandbox session when it is
+	// needed: for a harness without a bootstrap recipe, on the first file,
+	// exec or spawn operation; otherwise in CreateSession. Mutually exclusive
+	// with SandboxSession. Mirrors TS `sandboxSession:
+	// HarnessAgentSandboxCreator` (TS 8a20b57d41).
+	SandboxCreator *SandboxCreator
 }
 
 // CreateSession starts a fresh session, or resumes one from state previously
@@ -227,28 +233,62 @@ func (a *Agent) CreateSession(ctx context.Context, opts CreateSessionOptions) (*
 		return nil, errors.New("HarnessAgent.CreateSession: `ToolsContext` can only rebind an unfinished turn from ContinueFrom or ResumeFrom.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	isResumedSession := validatedResumeFrom != nil || effectiveContinueFrom != nil
+	if opts.SandboxSession != nil && opts.SandboxCreator != nil {
+		return nil, errors.New("HarnessAgent.CreateSession: pass either SandboxSession or SandboxCreator, not both.") //nolint:staticcheck // Go-only option conflict, phrased like the TS option errors
+	}
+	if opts.SandboxCreator != nil && opts.SandboxCreator.CreateSandboxSession == nil {
+		return nil, errors.New("HarnessAgent.CreateSession: SandboxCreator.CreateSandboxSession is required.") //nolint:staticcheck // Go-only option check, phrased like the TS option errors
+	}
 
-	ownsSandboxLifecycle := opts.SandboxSession == nil
-	sandboxSession, sessionWorkDir, err := a.acquireSandbox(ctx, opts, isResumedSession)
+	ownsSandboxLifecycle := opts.SandboxSession == nil && opts.SandboxCreator == nil
+	sandboxSession, sessionWorkDir, recipe, err := a.acquireSandboxSession(ctx, opts, isResumedSession)
 	if err != nil {
 		return nil, err
 	}
-
-	if err := EnsureSandboxDirectory(ctx, sandboxSession, sessionWorkDir); err != nil {
-		a.cleanupAfterStartFailure(ctx, sandboxSession, ownsSandboxLifecycle)
-		return nil, err
+	// setupSandboxSession runs sandboxConfig.OnBootstrap (skipped when its
+	// marker exists), creates the session work directory and runs
+	// sandboxConfig.OnSession. Mirrors TS `setupSandboxSession`.
+	setupSandboxSession := func(ctx context.Context, session providerutils.SandboxSession) error {
+		restricted := GetRestrictedSandboxSession(session)
+		if err := RunSandboxBootstrap(ctx, RunSandboxBootstrapOptions{
+			Session: restricted, WorkDir: a.sandboxConfig.WorkDir,
+			OnBootstrap: a.sandboxConfig.OnBootstrap, BootstrapHash: a.sandboxConfig.BootstrapHash,
+			SkipOnBootstrapIfMarked: true,
+		}); err != nil {
+			return err
+		}
+		if err := EnsureSandboxDirectory(ctx, session, sessionWorkDir); err != nil {
+			return err
+		}
+		if a.sandboxConfig.OnSession != nil {
+			return a.sandboxConfig.OnSession(ctx, SandboxSessionContext{Session: restricted, SessionWorkDir: sessionWorkDir})
+		}
+		return nil
 	}
-	if a.sandboxConfig.OnSession != nil {
-		if err := a.sandboxConfig.OnSession(ctx, SandboxSessionContext{Session: GetRestrictedSandboxSession(sandboxSession), SessionWorkDir: sessionWorkDir}); err != nil {
+	// The session handed to the adapter and the host tools. A harness with a
+	// bootstrap recipe gets the sandbox set up before it starts. Without a
+	// recipe the setup (and, for a SandboxCreator, the sandbox creation)
+	// waits for the first file, exec or spawn operation (TS 8a20b57d41).
+	var adapterSandboxSession providerutils.SandboxSession
+	switch {
+	case opts.SandboxCreator != nil && recipe == nil:
+		adapterSandboxSession = deferSandboxSession(opts.SandboxCreator.DefaultWorkingDirectory, opts.SandboxCreator.CreateSandboxSession, setupSandboxSession)
+		sandboxSession = adapterSandboxSession
+	case recipe != nil:
+		if err := setupSandboxSession(ctx, sandboxSession); err != nil {
 			a.cleanupAfterStartFailure(ctx, sandboxSession, ownsSandboxLifecycle)
 			return nil, err
 		}
+		adapterSandboxSession = sandboxSession
+	default:
+		original := sandboxSession
+		adapterSandboxSession = deferSandboxSetup(original, func(ctx context.Context) error { return setupSandboxSession(ctx, original) })
 	}
 
 	startOpts := StartOptions{
 		Headers: a.headers, SessionID: sessionID, ResumeFrom: validatedResumeFrom, ContinueFrom: effectiveContinueFrom,
 		PermissionMode: a.permissionMode, BuiltinToolFiltering: a.builtinToolFiltering,
-		SandboxSession: sandboxSession, SessionWorkDir: sessionWorkDir,
+		SandboxSession: adapterSandboxSession, SessionWorkDir: sessionWorkDir,
 		Observability: buildObservability(a.settings),
 	}
 	underlying, err := a.settings.Harness.DoStart(ctx, startOpts)
@@ -277,86 +317,78 @@ func (a *Agent) CreateSession(ctx context.Context, opts CreateSessionOptions) (*
 
 	return newAgentSession(AgentSessionOptions{
 		SessionID: sessionID, Harness: a.settings.Harness, Underlying: underlying,
-		SandboxSession: sandboxSession, OwnsSandboxLifecycle: ownsSandboxLifecycle,
+		SandboxSession: adapterSandboxSession, OwnsSandboxLifecycle: ownsSandboxLifecycle,
 		SessionWorkDir: sessionWorkDir, ToolApproval: a.settings.ToolApproval,
 		PendingToolApprovals: pendingApprovals, PendingToolResults: pendingResults,
 		TurnSettings: turnSettings, ResumedToolsContext: opts.ToolsContext, ResumedRuntimeContext: opts.RuntimeContext, TurnState: turnState,
 	}), nil
 }
 
-func (a *Agent) acquireSandbox(ctx context.Context, opts CreateSessionOptions, isResumedSession bool) (providerutils.SandboxSession, string, error) {
-	sandboxSession, sessionWorkDir, err := a.acquireSandboxSession(ctx, opts, isResumedSession)
-	if err != nil {
-		return nil, "", err
-	}
-
-	// Unconditionally ensures sandboxConfig.OnBootstrap has run against this
-	// physical sandbox, regardless of which branch above produced it —
-	// including a caller-supplied SandboxSession (31742b9a1b), which
-	// previously never ran OnBootstrap at all, and a freshly-created
-	// sandbox whose provider may not honor CreateSandboxSessionOptions.
-	// OnFirstCreate. SkipOnBootstrapIfMarked makes the common case (a
-	// provider that already ran it via OnFirstCreate) a cheap marker-file
-	// read. Mirrors TS `HarnessAgent.createSession`'s unconditional
-	// post-branch `runSandboxBootstrap` call.
-	if err := RunSandboxBootstrap(ctx, RunSandboxBootstrapOptions{
-		Session: GetRestrictedSandboxSession(sandboxSession), WorkDir: a.sandboxConfig.WorkDir,
-		OnBootstrap: a.sandboxConfig.OnBootstrap, BootstrapHash: a.sandboxConfig.BootstrapHash,
-		SkipOnBootstrapIfMarked: true,
-	}); err != nil {
-		a.cleanupAfterStartFailure(ctx, sandboxSession, opts.SandboxSession == nil)
-		return nil, "", err
-	}
-	return sandboxSession, sessionWorkDir, nil
-}
-
 // acquireSandboxSession resolves the concrete sandbox session (caller-owned,
-// resumed, or freshly created) and applies the harness's own bootstrap
-// recipe. It does not run sandboxConfig.OnBootstrap — see acquireSandbox's
-// unconditional post-branch call for that.
-func (a *Agent) acquireSandboxSession(ctx context.Context, opts CreateSessionOptions, isResumedSession bool) (providerutils.SandboxSession, string, error) {
+// created by a SandboxCreator, resumed, or freshly created), applies the
+// harness's own bootstrap recipe and returns that recipe. It does not run
+// the session setup (sandboxConfig.OnBootstrap, the work directory,
+// OnSession); CreateSession does, now or on first use. With a SandboxCreator
+// and no recipe the returned session is nil: CreateSession defers it.
+func (a *Agent) acquireSandboxSession(ctx context.Context, opts CreateSessionOptions, isResumedSession bool) (providerutils.SandboxSession, string, *Bootstrap, error) {
 	harness := a.settings.Harness
 
-	if opts.SandboxSession != nil {
-		restricted := GetRestrictedSandboxSession(opts.SandboxSession)
-		defaultWD, err := ResolveSandboxDefaultWorkingDirectory(ctx, opts.SandboxSession)
-		if err != nil {
-			return nil, "", err
+	if opts.SandboxSession != nil || opts.SandboxCreator != nil {
+		var defaultWD string
+		if opts.SandboxCreator != nil {
+			defaultWD = opts.SandboxCreator.DefaultWorkingDirectory
+		} else {
+			var err error
+			if defaultWD, err = ResolveSandboxDefaultWorkingDirectory(ctx, opts.SandboxSession); err != nil {
+				return nil, "", nil, err
+			}
 		}
 		sessionWorkDir := ResolveSessionWorkDir(defaultWD, harness.HarnessID(), opts.SessionID, a.sandboxConfig.WorkDir)
-		if recipe, err := GetBootstrap(ctx, harness); err != nil {
-			return nil, "", err
-		} else if recipe != nil {
+		recipe, err := GetBootstrap(ctx, harness)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		session := opts.SandboxSession
+		if opts.SandboxCreator != nil {
+			if recipe == nil {
+				return nil, sessionWorkDir, nil, nil
+			}
+			if session, err = opts.SandboxCreator.CreateSandboxSession(ctx); err != nil {
+				return nil, "", nil, err
+			}
+		}
+		if recipe != nil {
+			restricted := GetRestrictedSandboxSession(session)
 			identity := HashHarnessBootstrap(*recipe)
 			home, err := ResolveSandboxHomeDir(ctx, restricted)
 			if err != nil {
-				return nil, "", err
+				return nil, "", nil, err
 			}
 			if err := ApplyBootstrapRecipe(ctx, restricted, *recipe, identity, StateDirectoryPath(home)); err != nil {
-				return nil, "", err
+				return nil, "", nil, err
 			}
 		}
-		return opts.SandboxSession, sessionWorkDir, nil
+		return session, sessionWorkDir, recipe, nil
 	}
 
 	if a.settings.Sandbox == nil {
-		return nil, "", errors.New("HarnessAgent.CreateSession: configure `Sandbox` on the agent or pass `SandboxSession`.") //nolint:staticcheck // matches TS SDK's exact error text
+		return nil, "", nil, errors.New("HarnessAgent.CreateSession: configure `Sandbox` on the agent or pass `SandboxSession`.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	recipe, err := GetBootstrap(ctx, harness)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 
 	if isResumedSession {
 		resumer, ok := a.settings.Sandbox.(SandboxSessionResumer)
 		if !ok {
-			return nil, "", NewCapabilityUnsupportedError(
+			return nil, "", nil, NewCapabilityUnsupportedError(
 				fmt.Sprintf("Sandbox provider '%s' does not support resume.", a.settings.Sandbox.ProviderID()),
 				harness.HarnessID(), nil)
 		}
 		resumed, err := resumer.ResumeSession(ctx, opts.SessionID)
 		if err != nil {
-			return nil, "", err
+			return nil, "", nil, err
 		}
 		sessionWorkDir := ResolveSessionWorkDir(resumed.DefaultWorkingDirectory(), harness.HarnessID(), opts.SessionID, a.sandboxConfig.WorkDir)
 		if recipe != nil {
@@ -369,21 +401,21 @@ func (a *Agent) acquireSandboxSession(ctx context.Context, opts CreateSessionOpt
 				// The agent owns this sandbox: do not leak it when the
 				// bootstrap fails (TS cleanupAfterStartFailure).
 				a.cleanupAfterStartFailure(ctx, resumed, true)
-				return nil, "", err
+				return nil, "", nil, err
 			}
 		}
-		return resumed, sessionWorkDir, nil
+		return resumed, sessionWorkDir, recipe, nil
 	}
 
 	plan, err := CreateSandboxBootstrapPlan(recipe, a.sandboxConfig)
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	created, err := a.settings.Sandbox.CreateSession(ctx, CreateSandboxSessionOptions{
 		SessionID: opts.SessionID, Identity: plan.Identity, OnFirstCreate: plan.OnFirstCreate,
 	})
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
 	sessionWorkDir := ResolveSessionWorkDir(created.DefaultWorkingDirectory(), harness.HarnessID(), opts.SessionID, plan.WorkDir)
 	if plan.Recipe != nil && plan.RecipeIdentity != "" {
@@ -393,10 +425,10 @@ func (a *Agent) acquireSandboxSession(ctx context.Context, opts CreateSessionOpt
 		}
 		if err != nil {
 			a.cleanupAfterStartFailure(ctx, created, true)
-			return nil, "", err
+			return nil, "", nil, err
 		}
 	}
-	return created, sessionWorkDir, nil
+	return created, sessionWorkDir, recipe, nil
 }
 
 func (a *Agent) cleanupAfterStartFailure(ctx context.Context, sandboxSession providerutils.SandboxSession, ownsSandboxLifecycle bool) {

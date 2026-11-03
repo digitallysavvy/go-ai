@@ -7,10 +7,12 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
@@ -36,6 +38,11 @@ type OpenTelemetryOptions struct {
 	// Tracer is the OTel tracer to use. Defaults to the global tracer
 	// provider's "gen_ai" tracer (GenAITracerName) when nil, as TS.
 	Tracer trace.Tracer
+	// MeterProvider receives the gen_ai.client.inference.duration histogram
+	// (InferenceDurationMetricName). Nil resolves the global MeterProvider
+	// each time a duration is recorded, as TS does, so a provider registered
+	// after the integration was built still receives metrics.
+	MeterProvider metric.MeterProvider
 	// EnrichSpan adds custom attributes to spans as they are created.
 	// SDK-managed attributes win on key collisions. A per-call
 	// Settings.EnrichSpan, when set, overrides this constructor-level value.
@@ -250,6 +257,9 @@ type genAICallState struct {
 	// settings are TS state.settings: the root call's request settings,
 	// which the chat spans report (not a step's PrepareStep override).
 	settings genAIRequestSettings
+	// inference is the text model call whose duration is still to be
+	// recorded (TS state.inferenceMetrics).
+	inference *genAIInference
 }
 
 // genAIRequestSettings are the call-level request settings of a text or
@@ -818,6 +828,12 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 	span.SetAttributes(attrs...)
 	if e.CallID != "" {
 		genAICallSpans.Store(genAISpanKey("languageModel", i.stateKey(e.CallID)), otelSpanEntry{span: span, toolDefs: toolDefs})
+		// generateText/streamText model calls feed the inference duration
+		// histogram (TS onLanguageModelCallStart; object calls use
+		// onObjectStepStart, which records none).
+		if !isObject {
+			i.beginInference(e.CallID, genAIInference{start: time.Now(), provider: e.ModelProvider, modelID: e.ModelID, ctx: ctx})
+		}
 	}
 	return ctx
 }
@@ -923,6 +939,11 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 	if !ok || !entry.span.IsRecording() {
 		return
 	}
+	end := inferenceEnd{responseTimeMs: &e.Performance.ResponseTimeMs, provider: e.ModelProvider, responseModelID: &e.ModelID}
+	if e.FinishReason == string(types.FinishReasonError) {
+		end.errorType = "_OTHER"
+	}
+	i.recordInferenceDuration(e.CallID, end)
 	if e.FinishReason == string(types.FinishReasonError) {
 		entry.span.SetStatus(codes.Error, "")
 	}
@@ -1426,6 +1447,12 @@ func (i OpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEvent) {
 	if !ok || !stepSpan.IsRecording() {
 		return
 	}
+	// Streams can close after an error chunk without a model-call end.
+	stepEnd := inferenceEnd{}
+	if e.FinishReason == string(types.FinishReasonError) {
+		stepEnd.errorType = "_OTHER"
+	}
+	i.recordInferenceDuration(e.CallID, stepEnd)
 	if e.FinishReason == string(types.FinishReasonError) {
 		stepSpan.SetStatus(codes.Error, "")
 	}
@@ -1695,6 +1722,9 @@ func (i OpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
 	// Terminal for the call (also when it arrives after OnEnd): never leave
 	// state behind.
 	defer genAIDeleteState(i.stateKey(e.CallID))
+	if genAIRootSpanFor(i.stateKey(e.CallID), ctx).IsRecording() {
+		i.recordInferenceDuration(e.CallID, inferenceEnd{errorType: inferenceErrorType(e.Error)})
+	}
 	i.closeOpenChildSpans(e.CallID, e.Error)
 	span := genAIRootSpanFor(i.stateKey(e.CallID), ctx)
 	if !span.IsRecording() {
@@ -1715,6 +1745,9 @@ func (i OpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
 // registered.
 func (i OpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent) {
 	defer genAIDeleteState(i.stateKey(e.CallID))
+	if genAIRootSpanFor(i.stateKey(e.CallID), ctx).IsRecording() {
+		i.recordInferenceDuration(e.CallID, inferenceEnd{errorType: "AbortError"})
+	}
 	i.closeOpenChildSpans(e.CallID, nil)
 	if e.CallID == "" {
 		if stepSpan, ok := ctx.Value(genAIStepSpanKey{}).(trace.Span); ok && stepSpan.IsRecording() {
@@ -1794,6 +1827,9 @@ func (i OpenTelemetry) closeOpenChildSpans(callID string, err error) {
 // handling: recordErrorOnSpan + end when e.Error is set (provider error),
 // or a plain end (mirroring onAbort) when it's nil.
 func (i OpenTelemetry) OnStepError(ctx context.Context, e TelemetryErrorEvent) {
+	if span, ok := i.stepSpanFor(ctx, e.CallID); ok && span.IsRecording() {
+		i.recordInferenceDuration(e.CallID, inferenceEnd{errorType: inferenceErrorType(e.Error)})
+	}
 	if e.CallID != "" {
 		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("languageModel", i.stateKey(e.CallID))); ok {
 			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
