@@ -31,7 +31,7 @@ func r82provbStreamParts(t *testing.T, body string) []*provider.StreamChunk {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	var out []*provider.StreamChunk
 	for {
 		c, err := s.Next()
@@ -155,7 +155,7 @@ func TestR82provbCompatMetadataExtractor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	var finish *provider.StreamChunk
 	for {
 		c, err := s.Next()
@@ -314,7 +314,7 @@ func r82provbCompletionStream(t *testing.T, cfg Config, body string) ([]*provide
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	var out []*provider.StreamChunk
 	for {
 		c, err := s.Next()
