@@ -2,12 +2,16 @@ package moonshot
 
 import (
 	"encoding/json"
+	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"reflect"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
+
+// The TS case suites of this package evaluate the extended assertion forms.
+func init() { tsfixture.EnableExtendedAsserts() }
 
 type r84provbArgs struct {
 	City string `json:"city"`

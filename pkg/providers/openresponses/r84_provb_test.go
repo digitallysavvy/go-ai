@@ -2,11 +2,15 @@ package openresponses
 
 import (
 	"encoding/json"
+	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
+
+// The TS case suites of this package evaluate the extended assertion forms.
+func init() { tsfixture.EnableExtendedAsserts() }
 
 // TS sends parameters: tool.inputSchema for every function tool. A
 // schema.Schema Parameters value was dropped (only maps and raw JSON were

@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"strings"
 	"testing"
 
@@ -9,6 +10,9 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
+
+// The TS case suites of this package evaluate the extended assertion forms.
+func init() { tsfixture.EnableExtendedAsserts() }
 
 // A Responses function tool whose Parameters is a schema.Schema is sent as
 // its JSON Schema and normalized like one (TS normalizeOpenAIJsonSchema runs

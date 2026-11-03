@@ -3,6 +3,7 @@ package xai
 import (
 	"context"
 	"encoding/json"
+	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,9 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
+
+// The TS case suites of this package evaluate the extended assertion forms.
+func init() { tsfixture.EnableExtendedAsserts() }
 
 // r84provbVideoStatus serves one status body with the given HTTP status and
 // returns what DoStatus made of it.

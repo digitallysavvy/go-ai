@@ -2,11 +2,15 @@ package azure
 
 import (
 	"context"
+	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"reflect"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
+
+// The TS case suites of this package evaluate the extended assertion forms.
+func init() { tsfixture.EnableExtendedAsserts() }
 
 // TS parseSize is size.split('x').map(Number) and dimensionsForAspectRatio
 // reads aspectRatio.split(':').map(Number): a part that is not a JS number is

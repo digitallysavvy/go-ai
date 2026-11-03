@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -75,16 +76,239 @@ func (r request) value(field string) (interface{}, bool) {
 
 var pathToken = regexp.MustCompile(`^(?:\??\.([A-Za-z_$][\w$]*)|\[(\d+)\]|\['([^']*)'\]|\["([^"]*)"\])`)
 
+// pathTokenExt is pathToken plus the optional index `?.[n]` (extended
+// assertions only).
+var pathTokenExt = regexp.MustCompile(`^(?:\??\.([A-Za-z_$][\w$]*)|(?:\?\.)?\[(\d+)\]|\['([^']*)'\]|\["([^"]*)"\])`)
+
+// extendedAsserts enables the array calls of parseArrayCall, .slice,
+// JSON.parse, `(await x)` / `(x as T)` and `?.[n]` in evalPath; see
+// EvalExtendedAsserts.
+var extendedAsserts bool
+
+// EvalExtendedAsserts makes the assertions and path snapshots of the test's
+// own run evaluate the extended expression forms (predicates joined by &&,
+// !==, .startsWith, .every, .flatMap, `p.a ?? x` maps, .slice, JSON.parse,
+// `(await x)` and `(x as T)` around a path, `?.[n]`). Suites opt in so
+// the assertions they could not evaluate before do not change their result
+// unseen; an opted-in suite triages what they find.
+func EvalExtendedAsserts(t *testing.T) {
+	t.Helper()
+	extendedAsserts = true
+	t.Cleanup(func() { extendedAsserts = false })
+}
+
+// EnableExtendedAsserts is EvalExtendedAsserts for every suite of a test
+// binary (call it from an init function of a _test.go file).
+func EnableExtendedAsserts() { extendedAsserts = true }
+
 // arrayCall matches `.filter(p => p.f === 'v')`, `.some(p => p.f === 'v')`,
 // `.find(p => p.f === 'v')` and `.map(p => p.f)` over an array (the
-// stream-part filters TS tests write).
+// stream-part filters TS tests write). arrayCallStart and parseArrayCall
+// extend it to predicates joined by && (===, !==, a bare path for
+// truthiness, .startsWith('s')), `.every`, `.flatMap(p => p.f ?? [])` and
+// `.map(p => p.f ?? x)`.
 var arrayCall = regexp.MustCompile(`^\.(filter|some|find|map)\(\s*\(?([A-Za-z_$][\w$]*)\)?\s*=>\s*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)(?:\s*===\s*'([^']*)')?\s*\)`)
 
-// atCall matches `.at(n)` (n may be negative).
-var atCall = regexp.MustCompile(`^\.at\((-?\d+)\)`)
+// arrayCallStart is the head of an array call with a one-parameter arrow.
+var arrayCallStart = regexp.MustCompile(`^\.(filter|some|every|find|map|flatMap)\(\s*\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*=>\s*`)
 
-// lineBreak joins an expression vitest formatting split over lines.
-var lineBreak = regexp.MustCompile(`\s*\n\s*`)
+// sliceCall matches `.slice(a)` and `.slice(a, b)`.
+var sliceCall = regexp.MustCompile(`^\.slice\(\s*(-?\d+)\s*(?:,\s*(-?\d+)\s*)?\)`)
+
+// predTerm is one && term of an arrow body: `p.a.b === lit`, `p.a !== lit`,
+// `p.a.startsWith('s')` or a bare `p.a` (truthy).
+var predTerm = regexp.MustCompile(`^([A-Za-z_$][\w$]*)((?:\??\.[A-Za-z_$][\w$]*)*)(?:\s*(===|!==)\s*('[^']*'|"[^"]*"|true|false|null|undefined|-?\d+(?:\.\d+)?)|\.startsWith\(\s*('[^']*'|"[^"]*")\s*\))?$`)
+
+// mapBody is a map/flatMap arrow body: `p.a.b` with an optional `?? lit`
+// (`[]`, a string, a number, true, false, null).
+var mapBody = regexp.MustCompile(`^([A-Za-z_$][\w$]*)((?:\??\.[A-Za-z_$][\w$]*)*)(?:\s*\?\?\s*(\[\]|'[^']*'|"[^"]*"|true|false|null|-?\d+(?:\.\d+)?|[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)+))?$`)
+
+// tsLiteral evaluates a predicate or map literal.
+func tsLiteral(lit string) interface{} {
+	switch lit {
+	case "true":
+		return true
+	case "false":
+		return false
+	case "null", "undefined":
+		return nil
+	case "[]":
+		return []interface{}{}
+	}
+	if strings.HasPrefix(lit, "'") || strings.HasPrefix(lit, `"`) {
+		return lit[1 : len(lit)-1]
+	}
+	f, _ := strconv.ParseFloat(lit, 64)
+	return f
+}
+
+// memberPath reads a `.a?.b` path (empty: the value itself).
+func memberPath(v interface{}, path string) interface{} {
+	for _, seg := range strings.Split(strings.ReplaceAll(path, "?.", "."), ".") {
+		if seg == "" {
+			continue
+		}
+		v = member(v, seg)
+	}
+	return v
+}
+
+// jsTruthy is JavaScript truthiness of a JSON value.
+func jsTruthy(v interface{}) bool {
+	switch x := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return x
+	case string:
+		return x != ""
+	case float64:
+		return x != 0
+	}
+	return !isUndef(v)
+}
+
+// parseArrayCall parses an array call at the start of rest. It returns the
+// evaluator and the length consumed, or ok false when the call is not one
+// of the supported shapes.
+func parseArrayCall(rest string) (func(cur interface{}) (interface{}, bool), int, bool) {
+	m := arrayCallStart.FindStringSubmatch(rest)
+	if m == nil {
+		return nil, 0, false
+	}
+	op, param := m[1], m[2]
+	// the arrow body runs to the call's closing paren
+	depth, end := 0, -1
+	for i := len(m[0]); i < len(rest) && end < 0; i++ {
+		switch rest[i] {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth == 0 {
+				end = i
+			}
+			depth--
+		case '\'', '"':
+			q := rest[i]
+			for i++; i < len(rest) && rest[i] != q; i++ {
+			}
+		}
+	}
+	if end < 0 {
+		return nil, 0, false
+	}
+	body := strings.TrimSuffix(strings.TrimSpace(rest[len(m[0]):end]), ",")
+	body = strings.TrimSpace(body)
+	items := func(cur interface{}) ([]interface{}, bool) {
+		x, ok := jsonValue(cur).([]interface{})
+		return x, ok
+	}
+	if op == "map" || op == "flatMap" {
+		bm := mapBody.FindStringSubmatch(body)
+		if bm == nil || bm[1] != param {
+			return nil, 0, false
+		}
+		path, fallback, hasFallback := bm[2], bm[3], bm[3] != ""
+		return func(cur interface{}) (interface{}, bool) {
+			list, ok := items(cur)
+			if !ok {
+				return nil, false
+			}
+			out := make([]interface{}, 0, len(list))
+			for _, it := range list {
+				v := memberPath(it, path)
+				if hasFallback && v == nil {
+					if fp := mapBody.FindStringSubmatch(fallback); fp != nil && fp[1] == param && fp[3] == "" {
+						v = memberPath(it, fp[2]) // `p.a ?? p.b`
+					} else {
+						v = tsLiteral(fallback)
+					}
+				}
+				if op == "flatMap" {
+					if arr, isArr := jsonValue(v).([]interface{}); isArr {
+						out = append(out, arr...)
+						continue
+					}
+				}
+				out = append(out, v)
+			}
+			return out, true
+		}, end + 1, true
+	}
+	type term struct {
+		path, cmp, lit, prefix string
+	}
+	var terms []term
+	for _, part := range strings.Split(body, "&&") {
+		tm := predTerm.FindStringSubmatch(strings.TrimSpace(part))
+		if tm == nil || tm[1] != param {
+			return nil, 0, false
+		}
+		terms = append(terms, term{path: tm[2], cmp: tm[3], lit: tm[4], prefix: tm[5]})
+	}
+	match := func(it interface{}) bool {
+		for _, t := range terms {
+			v := memberPath(it, t.path)
+			switch {
+			case t.cmp == "===":
+				if !reflect.DeepEqual(v, tsLiteral(t.lit)) {
+					return false
+				}
+			case t.cmp == "!==":
+				if reflect.DeepEqual(v, tsLiteral(t.lit)) {
+					return false
+				}
+			case t.prefix != "":
+				s, isStr := v.(string)
+				if !isStr || !strings.HasPrefix(s, tsLiteral(t.prefix).(string)) {
+					return false
+				}
+			default:
+				if !jsTruthy(v) {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	return func(cur interface{}) (interface{}, bool) {
+		list, ok := items(cur)
+		if !ok {
+			return nil, false
+		}
+		switch op {
+		case "filter":
+			out := []interface{}{}
+			for _, it := range list {
+				if match(it) {
+					out = append(out, it)
+				}
+			}
+			return out, true
+		case "find":
+			for _, it := range list {
+				if match(it) {
+					return it, true
+				}
+			}
+			return nil, true // undefined
+		case "every":
+			for _, it := range list {
+				if !match(it) {
+					return false, true
+				}
+			}
+			return true, true
+		default: // some
+			for _, it := range list {
+				if match(it) {
+					return true, true
+				}
+			}
+			return false, true
+		}
+	}, end + 1, true
+}
 
 // applyArrayCall evaluates one arrayCall match over cur.
 func applyArrayCall(cur interface{}, m []string) (interface{}, bool) {
@@ -129,6 +353,57 @@ func applyArrayCall(cur interface{}, m []string) (interface{}, bool) {
 	}
 }
 
+// atCall matches `.at(n)` (n may be negative).
+var atCall = regexp.MustCompile(`^\.at\((-?\d+)\)`)
+
+// lineBreak joins an expression vitest formatting split over lines.
+var lineBreak = regexp.MustCompile(`\s*\n\s*`)
+
+// jsonParseCall matches `JSON.parse(path)` followed by a path.
+var jsonParseCall = regexp.MustCompile(`^JSON\.parse\(([^()]+)\)(.*)$`)
+
+// closingParen is the index of the paren closing expr[0] ('('), or -1.
+func closingParen(expr string) int {
+	depth := 0
+	for i := 0; i < len(expr); i++ {
+		switch expr[i] {
+		case '(', '[', '{', '<':
+			depth++
+		case ')', ']', '}', '>':
+			if expr[i] == '>' && i > 0 && expr[i-1] == '=' {
+				continue // an arrow
+			}
+			depth--
+			if depth == 0 && expr[i] == ')' {
+				return i
+			}
+		case '\'', '"':
+			q := expr[i]
+			for i++; i < len(expr) && expr[i] != q; i++ {
+			}
+		}
+	}
+	return -1
+}
+
+// topLevelAs is the index of a top-level " as " in s, or -1.
+func topLevelAs(s string) int {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(', '[', '{', '<':
+			depth++
+		case ')', ']', '}', '>':
+			depth--
+		case ' ':
+			if depth == 0 && strings.HasPrefix(s[i:], " as ") {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
 // searchParam matches `new URL(expr).searchParams.get('key')`.
 var searchParam = regexp.MustCompile(`^new URL\((.+)\)\.searchParams\.get\('([^']*)'\)$`)
 
@@ -154,6 +429,32 @@ func evalPath(roots map[string]interface{}, aliases map[string]string, expr stri
 			return nil, true // URLSearchParams.get returns null
 		}
 		return q.Get(m[2]), true
+	}
+	if m := jsonParseCall.FindStringSubmatch(expr); extendedAsserts && m != nil {
+		// JSON.parse(path) of a JSON string, then the rest of the path
+		v, ok := evalPath(roots, aliases, m[1])
+		str, isStr := v.(string)
+		if !ok || !isStr {
+			return nil, false
+		}
+		var parsed interface{}
+		if json.Unmarshal([]byte(str), &parsed) != nil {
+			return nil, false
+		}
+		return evalPath(map[string]interface{}{"__parsed": parsed}, nil, "__parsed"+m[2])
+	}
+	if extendedAsserts && strings.HasPrefix(expr, "(") {
+		// `(await x)` and `(x as T)` around a path, then the rest of it
+		if end := closingParen(expr); end > 0 {
+			inner := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(expr[1:end]), "await "))
+			if i := topLevelAs(inner); i >= 0 {
+				inner = strings.TrimSpace(inner[:i])
+			}
+			if inner != "" && !strings.ContainsAny(inner, " ") {
+				return evalPath(roots, aliases, inner+expr[end+1:])
+			}
+		}
+		return nil, false
 	}
 	root := regexp.MustCompile(`^[A-Za-z_$][\w$]*`).FindString(expr)
 	if root == "" {
@@ -184,6 +485,40 @@ func evalPath(roots map[string]interface{}, aliases map[string]string, expr stri
 			rest = rest[len(m[0]):]
 			continue
 		}
+		if fn, n, ok := parseArrayCall(rest); extendedAsserts && ok {
+			v, ok := fn(cur)
+			if !ok {
+				return nil, false
+			}
+			cur = v
+			rest = strings.TrimSpace(rest[n:])
+			continue
+		}
+		if m := sliceCall.FindStringSubmatch(rest); extendedAsserts && m != nil {
+			// Array.prototype.slice: negative bounds count from the end
+			x, isArr := jsonValue(cur).([]interface{})
+			if !isArr {
+				return nil, false
+			}
+			clamp := func(s string, def int) int {
+				if s == "" {
+					return def
+				}
+				n, _ := strconv.Atoi(s)
+				if n < 0 {
+					n += len(x)
+				}
+				return max(0, min(n, len(x)))
+			}
+			from, to := clamp(m[1], 0), clamp(m[2], len(x))
+			out := []interface{}{}
+			if from < to {
+				out = append(out, x[from:to]...)
+			}
+			cur = out
+			rest = rest[len(m[0]):]
+			continue
+		}
 		if m := atCall.FindStringSubmatch(rest); m != nil {
 			// Array.prototype.at: a negative index counts from the end
 			x, isArr := cur.([]interface{})
@@ -201,7 +536,11 @@ func evalPath(roots map[string]interface{}, aliases map[string]string, expr stri
 			rest = rest[len(m[0]):]
 			continue
 		}
-		m := pathToken.FindStringSubmatch(rest)
+		tok := pathToken
+		if extendedAsserts {
+			tok = pathTokenExt
+		}
+		m := tok.FindStringSubmatch(rest)
 		if m == nil {
 			return nil, false
 		}
@@ -545,6 +884,9 @@ func runAsserts(t *testing.T, c Case, roots map[string]interface{}) {
 		msg, skip := a.check(roots, c.Aliases)
 		if skip {
 			skipped++
+			if os.Getenv("TSFIXTURE_SKIPPED") != "" {
+				t.Logf("not evaluated: expect(%s).%s", a.Expr, a.Matcher)
+			}
 			continue
 		}
 		if msg != "" {
