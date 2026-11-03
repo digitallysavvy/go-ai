@@ -754,6 +754,61 @@ func TestR84streamHandleFinishOnStepEnd(t *testing.T) {
 	}
 }
 
+// create-ui-message-stream.test.ts 19 / 47: written chunks and a merged
+// stream's chunks are forwarded as given and the stream closes (no start or
+// finish is added).
+func TestR84streamCreateUIWriteAndMerge(t *testing.T) {
+	got, err := r71streamCreate(t, []UIMessageChunk{
+		{"type": "text-start", "id": "1"}, {"type": "text-delta", "id": "1", "delta": "1a"}, {"type": "text-end", "id": "1"},
+	}, UIMessageStreamOptions{})
+	if err != nil || !reflect.DeepEqual(r84streamJSON(t, got), r84streamWant(t, `[{"id":"1","type":"text-start"},{"delta":"1a","id":"1","type":"text-delta"},{"id":"1","type":"text-end"}]`)) {
+		t.Fatalf("written: %v, %v", got, err)
+	}
+	src := make(chan UIMessageChunk, 2)
+	src <- UIMessageChunk{"type": "text-delta", "id": "1", "delta": "1a"}
+	src <- UIMessageChunk{"type": "text-delta", "id": "1", "delta": "1b"}
+	close(src)
+	chunks, errs := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{Execute: func(w UIMessageStreamWriter) { w.Merge(src) }})
+	var merged []UIMessageChunk
+	for c := range chunks {
+		merged = append(merged, c)
+	}
+	for e := range errs {
+		t.Fatal(e)
+	}
+	if !reflect.DeepEqual(r84streamJSON(t, merged), r84streamWant(t, `[{"delta":"1a","id":"1","type":"text-delta"},{"delta":"1b","id":"1","type":"text-delta"}]`)) {
+		t.Fatalf("merged: %v", merged)
+	}
+}
+
+// create-ui-message-stream.test.ts 78: once the consumer cancels, a merged
+// source is no longer read, so its later chunk is never forwarded (Go: the
+// merge stops receiving; a channel has no cancel to call).
+func TestR84streamCreateUIStopsMergeOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	src := make(chan UIMessageChunk)
+	chunks, errs := CreateUIMessageStreamWithOptions(ctx, UIMessageStreamOptions{Execute: func(w UIMessageStreamWriter) { w.Merge(src) }})
+	src <- UIMessageChunk{"type": "start"}
+	if first := <-chunks; first["type"] != "start" {
+		t.Fatalf("first = %v", first)
+	}
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case src <- UIMessageChunk{"type": "text-delta", "id": "continued-source", "delta": "discarded"}:
+		t.Fatal("the merged source is still read after the consumer cancelled")
+	default:
+	}
+	for c := range chunks {
+		if c["id"] == "continued-source" {
+			t.Fatalf("forwarded after cancel: %v", c)
+		}
+	}
+	for range errs {
+	}
+}
+
 // r84streamProcessUIFixture is the gzip -9 + base64 JSON fixture (see
 // r84streamProcessUIRun).
 const r84streamProcessUIFixture = `
