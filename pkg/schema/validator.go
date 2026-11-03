@@ -45,10 +45,10 @@ type Schema interface {
 // recursively. This mirrors TypeScript schema parsers that can normalize context
 // before callbacks receive it.
 func ApplyDefaults(value interface{}, schema Schema) interface{} {
-	if schema == nil {
+	root, ok := ParametersMap(schema)
+	if !ok {
 		return value
 	}
-	root := schema.Validator().JSONSchema()
 	return applyDefaultsWithRoot(value, root, root, newRefGuard())
 }
 
@@ -785,8 +785,11 @@ func NewSimpleJSONSchema(schema map[string]interface{}) *SimpleJSONSchema {
 	}
 }
 
-// Validator returns the validator
+// Validator returns the validator; nil for a nil or zero SimpleJSONSchema.
 func (s *SimpleJSONSchema) Validator() Validator {
+	if s == nil || s.validator == nil {
+		return nil
+	}
 	return s.validator
 }
 
@@ -802,7 +805,10 @@ func NewSimpleStructSchema(targetType reflect.Type) *SimpleStructSchema {
 	}
 }
 
-// Validator returns the validator
+// Validator returns the validator; nil for a nil or zero SimpleStructSchema.
 func (s *SimpleStructSchema) Validator() Validator {
+	if s == nil || s.validator == nil {
+		return nil
+	}
 	return s.validator
 }

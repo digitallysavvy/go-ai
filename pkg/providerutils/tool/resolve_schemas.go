@@ -24,8 +24,11 @@ func ResolveToolSchemas(tools []types.Tool) []types.Tool {
 			// A jsonorder.Hinted schema (MCP tools) becomes an
 			// *schema.OrderedSchema, which every converter sends in key order.
 			resolved = ordered
-		} else if m, ok := resolveParameters(tools[i].Parameters); ok {
+		} else if m, ok, none := resolveParameters(tools[i].Parameters); ok {
 			resolved = m
+		} else if none {
+			// A nil schema value is no Parameters (TS asSchema(undefined)).
+			resolved = nil
 		} else {
 			continue
 		}
@@ -41,21 +44,20 @@ func ResolveToolSchemas(tools []types.Tool) []types.Tool {
 	return out
 }
 
-func resolveParameters(p interface{}) (map[string]interface{}, bool) {
+// resolveParameters returns the JSON Schema map of a schema.Schema
+// Parameters value (ok). none reports a schema value that is no schema: a
+// typed nil pointer, a nil (or typed nil) Validator, or a nil JSON Schema,
+// which callers treat as nil Parameters (TS asSchema(undefined)) instead of
+// calling into the nil value.
+func resolveParameters(p interface{}) (m map[string]interface{}, ok, none bool) {
 	switch s := p.(type) {
 	case nil, map[string]interface{}, *schema.OrderedSchema:
-		return nil, false
+		return nil, false, false
 	case schema.Schema:
-		if s == nil {
-			return nil, false
+		if m, ok := schema.ParametersMap(s); ok {
+			return m, true, false
 		}
-		v := s.Validator()
-		if v == nil {
-			return nil, false
-		}
-		if m := v.JSONSchema(); m != nil {
-			return m, true
-		}
+		return nil, false, true
 	}
-	return nil, false
+	return nil, false, false
 }

@@ -46,8 +46,10 @@ func ToJSONSchema(tool types.Tool) map[string]interface{} {
 func defaultObjectSchema(parameters interface{}) interface{} {
 	// A schema.Schema marshals as {}; send its JSON Schema. An
 	// *schema.OrderedSchema is kept so its key order reaches the wire.
-	if resolved, ok := resolveParameters(parameters); ok {
+	if resolved, ok, none := resolveParameters(parameters); ok {
 		parameters = resolved
+	} else if none {
+		parameters = nil
 	}
 	if parameters == nil {
 		return map[string]interface{}{
@@ -129,8 +131,12 @@ func SanitizeAnthropicSchema(in interface{}) interface{} {
 		}
 		return out
 	default:
-		if resolved, ok := resolveParameters(in); ok {
+		resolved, ok, none := resolveParameters(in)
+		if ok {
 			return sanitizeAnthropicSchemaMap(resolved)
+		}
+		if none {
+			return nil
 		}
 		return in
 	}

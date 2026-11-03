@@ -2,6 +2,7 @@ package schema
 
 import (
 	"encoding/json"
+	"reflect"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 )
@@ -36,15 +37,30 @@ func ParametersMap(p interface{}) (map[string]interface{}, bool) {
 		}
 		return ParametersMap(*v)
 	case Schema:
-		if v == nil {
+		if isNilValue(v) {
 			return nil, false
 		}
-		if val := v.Validator(); val != nil {
+		if val := v.Validator(); !isNilValue(val) {
 			m := val.JSONSchema()
 			return m, m != nil
 		}
 	}
 	return nil, false
+}
+
+// isNilValue reports a nil interface or a typed nil pointer, map, slice,
+// func, chan or interface: a schema value that is no schema (TS
+// asSchema(undefined)), whose methods must not be called.
+func isNilValue(v interface{}) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
+		return rv.IsNil()
+	}
+	return false
 }
 
 // OrderedParameters converts a jsonorder.Hinted Parameters value to an
