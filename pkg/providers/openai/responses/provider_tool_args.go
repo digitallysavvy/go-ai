@@ -277,6 +277,10 @@ func shellEnvironmentFromArgs(args map[string]interface{}) (*ShellEnvironment, e
 	if !ok {
 		return nil, nil
 	}
+	// Read Go-typed values ([]map[string]interface{} skills and domain
+	// secrets, a types.ProviderReference, ...) like their JSON form, the
+	// form TS maps and validateOpenAIToolArgsSchema checked.
+	envArgs = providerutils.NormalizeOptionsJSON(envArgs)
 	str := func(m map[string]interface{}, key string) *string {
 		if s, ok := m[key].(string); ok {
 			return &s

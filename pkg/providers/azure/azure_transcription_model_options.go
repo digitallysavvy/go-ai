@@ -5,6 +5,7 @@ import (
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // AzureTranscriptionAPI selects which backend handles an azure.Transcription
@@ -105,6 +106,10 @@ func parseAzureTranscriptionProviderOptions(providerOptions map[string]interface
 	if !ok {
 		return result, invalidAzureOption("providerOptions.azure", "must be an object")
 	}
+	// Validate Go-typed values ([]string locales and phrases,
+	// map[string]bool diarization, ...) in their JSON form, the form TS
+	// parses; they failed as "must be an array" / "must be an object".
+	m = providerutils.NormalizeOptionsJSON(m)
 
 	allowed := map[string]bool{
 		"api": true, "timestamps": true, "transcribeStyle": true,
