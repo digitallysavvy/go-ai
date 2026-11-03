@@ -148,7 +148,7 @@ func mistralReasoningMapWarningsFor(supported, lowHighMax bool, explicitEffort s
 			Details: `reasoning "none" is not directly supported by this model. mapped to effort "low".`,
 		})
 	case explicitEffort == "" && *reasoning != types.ReasoningNone:
-		providerutils.MapReasoningToProviderEffort(*reasoning, mistralReasoningEffortMap(lowHighMax), &warnings)
+		providerutils.MapReasoningToProviderEffort(reasoning, mistralReasoningEffortMap(lowHighMax), nil, &warnings)
 	}
 	return warnings
 }

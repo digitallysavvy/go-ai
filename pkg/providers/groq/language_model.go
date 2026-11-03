@@ -263,11 +263,11 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		case types.ReasoningDefault:
 			// provider-default: omit
 		default:
-			if effort, ok := providerutils.MapReasoningToProviderEffort(*opts.Reasoning, map[types.ReasoningLevel]string{
+			if effort, ok := providerutils.MapReasoningToProviderEffort(opts.Reasoning, map[types.ReasoningLevel]string{
 				types.ReasoningMinimal: "low", types.ReasoningLow: "low",
 				types.ReasoningMedium: "medium", types.ReasoningHigh: "high",
 				types.ReasoningXHigh: "high", types.ReasoningMax: "high",
-			}, &warnings); ok {
+			}, nil, &warnings); ok {
 				body["reasoning_effort"] = effort
 			}
 		}

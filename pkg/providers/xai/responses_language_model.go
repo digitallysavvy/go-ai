@@ -521,11 +521,11 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 				if m.modelID == "grok-4.6" {
 					xhigh = "xhigh"
 				}
-				effort, _ = providerutils.MapReasoningToProviderEffort(*opts.Reasoning, map[types.ReasoningLevel]string{
+				effort, _ = providerutils.MapReasoningToProviderEffort(opts.Reasoning, map[types.ReasoningLevel]string{
 					types.ReasoningMinimal: "low", types.ReasoningLow: "low",
 					types.ReasoningMedium: "medium", types.ReasoningHigh: "high",
 					types.ReasoningXHigh: xhigh, types.ReasoningMax: xhigh,
-				}, &warnings)
+				}, nil, &warnings)
 			}
 		}
 	}

@@ -247,7 +247,7 @@ func TestLanguageModelWarnsAndOmitsStructuredOutput(t *testing.T) {
 	}
 }
 
-func TestLanguageModelOmitsReasoningNoneAndWarns(t *testing.T) {
+func TestLanguageModelMapsReasoningNoneToLow(t *testing.T) {
 	for _, method := range []string{"DoGenerate", "DoStream"} {
 		t.Run(method, func(t *testing.T) {
 			var requestBody map[string]interface{}
@@ -294,17 +294,20 @@ func TestLanguageModelOmitsReasoningNoneAndWarns(t *testing.T) {
 				warnings = chunk.Warnings
 			}
 
+			// TS 61a315e333: an unsupported "none" maps to the lowest level.
 			found := false
 			for _, w := range warnings {
-				if w.Type == "unsupported" && w.Feature == "reasoning effort none" {
+				if w.Type == "compatibility" && w.Feature == "reasoning" &&
+					w.Details == `reasoning "none" is not directly supported by this model. mapped to effort "low".` {
 					found = true
 				}
 			}
 			if !found {
-				t.Fatalf("%s warnings = %+v, want reasoning-effort-none warning", method, warnings)
+				t.Fatalf("%s warnings = %+v, want reasoning none compatibility warning", method, warnings)
 			}
-			if _, hasReasoning := requestBody["reasoning"]; hasReasoning {
-				t.Fatalf("%s: reasoning field should be omitted, got %v", method, requestBody["reasoning"])
+			reasoning, _ := requestBody["reasoning"].(map[string]interface{})
+			if reasoning["effort"] != "low" {
+				t.Fatalf("%s: reasoning = %v, want effort low", method, requestBody["reasoning"])
 			}
 		})
 	}

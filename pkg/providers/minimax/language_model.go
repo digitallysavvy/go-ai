@@ -128,13 +128,14 @@ func (m *LanguageModel) SupportedURLs() map[string][]string {
 
 // minimaxEffortMap maps the portable reasoning levels to MiniMax effort
 // (TS MiniMaxChatLanguageModel prepareCallOptions effortMap).
+// "minimal" and "none" round to "low" (with a compatibility warning), the
+// lowest supported level, because these models always reason.
 var minimaxEffortMap = map[types.ReasoningLevel]string{
-	types.ReasoningMinimal: "low",
-	types.ReasoningLow:     "low",
-	types.ReasoningMedium:  "medium",
-	types.ReasoningHigh:    "high",
-	types.ReasoningXHigh:   "xhigh",
-	types.ReasoningMax:     "max",
+	types.ReasoningLow:    "low",
+	types.ReasoningMedium: "medium",
+	types.ReasoningHigh:   "high",
+	types.ReasoningXHigh:  "xhigh",
+	types.ReasoningMax:    "max",
 }
 
 // prepareCallOptions maps the top-level reasoning of M3.1 and later models to
@@ -142,7 +143,7 @@ var minimaxEffortMap = map[types.ReasoningLevel]string{
 // The input options are not modified.
 func (m *LanguageModel) prepareCallOptions(opts *provider.GenerateOptions) (*provider.GenerateOptions, []types.Warning) {
 	var warnings []types.Warning
-	if opts == nil || !m.supportsM31Features || opts.Reasoning == nil || *opts.Reasoning == types.ReasoningDefault {
+	if opts == nil || !m.supportsM31Features || !providerutils.IsCustomReasoning(opts.Reasoning) {
 		return opts, nil
 	}
 	for _, namespace := range []string{"minimax", "anthropic"} {
@@ -151,22 +152,7 @@ func (m *LanguageModel) prepareCallOptions(opts *provider.GenerateOptions) (*pro
 		}
 	}
 
-	reasoning := *opts.Reasoning
-	var effort string
-	if reasoning == types.ReasoningNone {
-		warnings = append(warnings, types.Warning{
-			Type:    "compatibility",
-			Feature: "reasoning",
-			Details: "reasoning 'none' is not supported by " + m.modelID + "; it always reasons. Using effort 'low' to minimize thinking instead.",
-		})
-		effort = "low"
-	} else {
-		var ok bool
-		effort, ok = providerutils.MapReasoningToProviderEffort(reasoning, minimaxEffortMap, &warnings)
-		if !ok {
-			effort = ""
-		}
-	}
+	effort, _ := providerutils.MapReasoningToProviderEffort(opts.Reasoning, minimaxEffortMap, nil, &warnings)
 
 	prepared := *opts
 	// M3.1 and later use effort instead of Anthropic thinking budgets.

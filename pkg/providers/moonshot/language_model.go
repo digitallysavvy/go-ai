@@ -244,7 +244,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		if requestedReasoningEffort != "" {
 			reasoningEffort = requestedReasoningEffort
 		} else if isCustomReasoning(opts.Reasoning) && !reasoningNone {
-			reasoningEffort, _ = providerutils.MapReasoningToProviderEffort(*opts.Reasoning, moonshotEffortMap, &warnings)
+			reasoningEffort, _ = providerutils.MapReasoningToProviderEffort(opts.Reasoning, moonshotEffortMap, nil, &warnings)
 		}
 
 	case FamilyKimiK27:
@@ -320,7 +320,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		if requestedReasoningEffort != "" {
 			reasoningEffort = requestedReasoningEffort
 		} else if isCustomReasoning(opts.Reasoning) && !reasoningNone {
-			reasoningEffort, _ = providerutils.MapReasoningToProviderEffort(*opts.Reasoning, moonshotEffortMap, &warnings)
+			reasoningEffort, _ = providerutils.MapReasoningToProviderEffort(opts.Reasoning, moonshotEffortMap, nil, &warnings)
 		}
 		if requestedThinking != nil && requestedThinking.Type != "" {
 			thinkingBody = map[string]interface{}{"type": requestedThinking.Type}
