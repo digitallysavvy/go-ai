@@ -135,6 +135,8 @@ Handle the secret like any signing key:
 - A secret that changes, such as a new random value at every start, invalidates approvals that are still waiting. The demo generates a random secret per process unless `TOOL_APPROVAL_SECRET` is set, which is fine locally.
 - Without a secret, nothing is signed or verified. Set one for any endpoint that is reachable by users.
 
+During re-validation, the call's `ToolMetadata`, `Dynamic` and `Title` come from the current server-side tool definition (`types.Tool.Metadata`, `Type == types.ToolTypeDynamic`, `Title`), never from the message history. A server-side policy denial prevents execution even when the client supplies an approved response with a valid signature.
+
 The same field exists on `ai.GenerateTextOptions`, `ai.StreamTextOptions` and `PrepareCallConfig`. A signature failure returns an `*ai.InvalidToolApprovalSignatureError`; `ai.IsInvalidToolApprovalSignatureError` tests for it. Over HTTP it reaches the client as an `error` chunk, after the `200` status has gone out, so use `OnError` if you want to log or shape the message.
 
 ## The server

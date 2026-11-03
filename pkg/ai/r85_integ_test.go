@@ -177,7 +177,9 @@ func TestR85integInvalidToolCallErrorText(t *testing.T) {
 		}
 		return testutil.NewMockTextStream(r85integText("done", types.FinishReasonStop)), nil
 	}}
-	tools := []types.Tool{{Name: "t1", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }}}
+	tools := []types.Tool{{Name: "t1", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "ok", nil
+	}}}
 	result, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "p", Tools: tools, StopWhen: []StopCondition{IsStepCount(3)}})
 	if err != nil {
 		t.Fatal(err)

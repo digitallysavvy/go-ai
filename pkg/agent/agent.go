@@ -86,7 +86,8 @@ type AgentGenerateOptions struct {
 	CallOptions    interface{}
 
 	// ExperimentalSteering adds user messages to the run at the next step
-	// boundary (see ai.Steering). Supported by ToolLoopAgent.Generate,
+	// boundary (see ai.Steering; Steering.Queue waits for the current task
+	// to finish). Supported by ToolLoopAgent.Generate,
 	// ToolLoopAgent.Stream and CreateAgentUIStream; the legacy
 	// Execute/GenerateAgent loop ignores it. Create one per call with
 	// ai.NewSteering. Experimental (TS experimental_steering, #23813).

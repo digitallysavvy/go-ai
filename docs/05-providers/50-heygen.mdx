@@ -130,7 +130,7 @@ result, err := ai.GenerateVideo(ctx, ai.GenerateVideoOptions{
 |--------|------|-------------|
 | `mode` | `text_to_video`, `image_to_video`, `reference_to_video` | Inferred from the inputs when omitted. Explicit modes must match the supplied inputs. First-frame images cannot be combined with references. |
 | `resolution` | `480p`, `768p`, `1080p`, `2k` | Output size class. Defaults to `768p`. Takes precedence over the standard `Resolution` option. |
-| `promptEnhancement` | `turbo`, `quality`, `disabled` | HeyGen's prompt enhancement setting. The API defaults to `turbo`. |
+| `promptEnhancement` | `turbo`, `quality`, `ultraquality`, `disabled` | HeyGen's prompt enhancement setting. The API defaults to `turbo`. |
 | `image` | `VideoAsset` | First-frame input, including an existing asset ID. Cannot be combined with a standard image or `FrameImages`. |
 | `referenceImages` | `[]VideoAsset` (max 9) | Additional image references. |
 | `referenceVideos` | `[]VideoAsset` (max 3) | Additional video references. |
@@ -164,7 +164,7 @@ Text-to-video defaults to `16:9`. Reference-to-video defaults to `adaptive`, inh
 ## Other Constraints
 
 - Prompts must contain between 1 and 32,000 characters.
-- Duration must be an integer from 5 to 15 seconds; the default is 5.
+- Duration must be a positive integer number of seconds (HeyGen enforces its own limits for the mode, resolution and prompt enhancement); the default is 5.
 - Seeds must be unsigned 32-bit integers.
 - One video is generated per provider call.
 - Output is MP4 at 24 fps with generated audio. Unsupported `FPS` values and `GenerateAudio: false` produce warnings.

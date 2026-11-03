@@ -533,7 +533,9 @@ type GenerateTextOptions struct {
 	// step boundary. Create it with NewSteering before the call; it can be
 	// used for one generation only. A message waiting when the model finishes
 	// its answer keeps the loop going for another step unless a stop condition
-	// is met. Experimental (TS experimental_steering, #23813).
+	// is met; so does a message added with Steering.Queue, unless the answer
+	// was cut off (TS cf2796985a). Experimental (TS experimental_steering,
+	// #23813).
 	ExperimentalSteering *Steering
 
 	// OnStepError is called when a step that started fails before it produces

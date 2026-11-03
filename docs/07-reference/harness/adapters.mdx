@@ -211,7 +211,7 @@ Each adapter is its own package under `pkg/harness`. Every adapter has a `Harnes
 | `harness/cursor` | `cursor.CreateCursor(...Settings) (harness.Harness, error)` | Cursor, through ACP. |
 | `harness/githubcopilot` | `githubcopilot.CreateGitHubCopilot(...Settings) (harness.Harness, error)` | GitHub Copilot, through ACP. |
 | `harness/grokbuild` | `grokbuild.CreateGrokBuild(...Settings) (harness.Harness, error)` | Grok Build, through ACP. |
-| `harness/acp` | `acp.CreateACP(Settings) (harness.Harness, error)` | Any runtime that speaks the Agent Client Protocol. The Cursor, GitHub Copilot and Grok Build adapters are configurations of it. |
+| `harness/acp` | `acp.CreateACP(Settings) (harness.Harness, error)` | Any runtime that speaks the Agent Client Protocol. The Cursor, GitHub Copilot and Grok Build adapters are configurations of it. A custom configuration must set both `Settings.IsMcpToolCall` and `Settings.ResolveHostToolCall` (`acp.LegacyResolveHostToolCall` keeps the v0.5 bridge matching); `DoStart` fails without them. |
 
 ### Image input
 
@@ -272,7 +272,13 @@ See `examples/harness/image-input` for a runnable program.
 | `Auth` | `harness.Authentication` | Auth selects the authentication route: unset (auto-detect), "direct", "ai-gateway", or an isolated environment via harness.AuthEnvironment. |
 | `CredentialForwarding` | `harness.CredentialForwarding` | CredentialForwarding customizes each credential value immediately before it is forwarded into the sandbox. |
 | `MCPServers` | `map[string]any` | MCPServers are additional MCP server definitions, keyed by name, in the Claude Agent SDK's native configuration format. The name "harness-tools" is reserved. |
+| `ToolHints` | `map[string]ToolHint` | ToolHints are Claude Code hints for host tools, keyed by tool name. ReadOnly marks a tool with no side effects: Claude Code can run read-only tool calls in parallel, runs each call to any other host tool on its own, and allows read-only tools in plan mode, so mark only tools that change nothing. AlwaysLoad sends the tool's definition from the first request when Claude Code's tool search would otherwise defer it. |
 | `MaxTurns` | `int` | MaxTurns caps how many internal turns the CLI can take before yielding back to the caller. Zero means the CLI's default. |
+| `SkillOverrides` | `map[string]SkillOverride` | SkillOverrides overrides how named skills are exposed to Claude Code. Unspecified skills keep their Claude Code defaults. |
+| `MaxBudgetUSD` | `*float64` | MaxBudgetUSD is the maximum estimated spend in USD for each Claude query. When it is exceeded, the query stops and the turn ends with an error. Nil means no limit. |
+| `StrictMCPConfig` | `*bool` | StrictMCPConfig, when true, uses only the MCP servers configured with MCPServers and ignores any other MCP configuration such as a project `.mcp.json` or user settings. Nil leaves the Claude Code default. |
+| `QuestionTimeoutMs` | `*int` | QuestionTimeoutMs is the maximum number of milliseconds Claude waits for an answer to an `AskUserQuestion` question before the question fails. Nil means the Claude Code default. |
+| `ExcludeDynamicSections` | `*bool` | ExcludeDynamicSections moves per-session sections (working directory, memory, git status) out of the Claude Code system prompt and into the first user message, so the system prompt can be cached across sessions. Nil leaves the Claude Code default. |
 | `AgentProgressSummaries` | `bool` | AgentProgressSummaries enables periodic AI-generated progress summaries for running subagents. The summaries are forwarded in raw `task_progress` stream parts. |
 | `ForwardSubagentText` | `bool` | ForwardSubagentText forwards subagent text and thinking messages in addition to tool activity. Subagent messages are exposed as raw stream parts. |
 | `Env` | `map[string]string` | Env are additional environment variables for the Claude Code process, merged over the resolved authentication environment. |

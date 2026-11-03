@@ -209,7 +209,7 @@ With the agent, set `ExperimentalSteering` on `agent.AgentGenerateOptions` (and 
 ### How Steering Messages Are Delivered
 
 - Messages are added in the order they are sent. Each message is its own user message.
-- If the model finishes its answer while a message is waiting, the loop continues for another step. A step that finished with `error` does not continue.
+- If the model finishes its answer while a message is waiting, the loop continues for another step. So does a [queued message](#queueing-messages), unless the answer was cut off. A step that finished with `error` does not continue.
 - Stop conditions still apply. `GenerateText` and `StreamText` stop after one step by default, so set `StopWhen` to steer them.
 - Messages sent before the call starts are added to the first step.
 - `PrepareStep` and `OnStepStart` receive the steering messages as part of `Messages`. `PrepareStepOptions.ExperimentalSteeringMessages` lists the ones added for the current step.
@@ -229,6 +229,36 @@ With the agent, set `ExperimentalSteering` on `agent.AgentGenerateOptions` (and 
 - `ai.SteeringError`: the loop failed.
 
 Pass `ai.WithSteerID(id)` to make retries safe: sending a message again with the same id returns the handle of the first message.
+
+### Queueing Messages
+
+`Steer` changes what the agent is doing right now. Use `Queue` for a follow-up that should wait until the agent has finished its current task:
+
+```go
+steering := ai.NewSteering()
+
+go func() {
+    // while the agent is working:
+    steering.Queue("Then add tests for it.")
+    steering.Queue("Then update the readme.")
+}()
+
+result, err := myAgent.Generate(ctx, agent.AgentGenerateOptions{
+    Prompt:               "Refactor the auth module.",
+    ExperimentalSteering: steering,
+})
+```
+
+A queued message is added once the model finishes its current task, that is, when it gives a final answer without tool calls. The loop then continues with the message, so the agent works through the queue one task at a time:
+
+- Queued messages are added one per task, in the order they are queued.
+- Waiting steering messages are added first. A queued message waits for the next task that finishes.
+- Messages that are queued before the loop starts wait until the model has answered the prompt.
+- A response that is cut off (finish reason `length` or `content-filter`) does not finish the task, so the loop ends and the queued message is reported as not delivered.
+- Stop conditions still apply, and a queued message that the loop does not reach is reported as not delivered, so you can send it as a new message instead.
+- Queued messages are saved in `ExperimentalSteeringMessages` like steering messages, and `Queue` returns the same `*ai.SteerHandle` as `Steer`. `QueueMessage` takes a full user `types.Message`, and `ai.WithSteerID` ids are shared with `Steer`.
+
+It works with `ai.GenerateText`, `ai.StreamText` and `ToolLoopAgent`.
 
 ### Saving Steering Messages
 

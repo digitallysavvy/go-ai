@@ -171,6 +171,7 @@ The `OnStepEnd` and `OnEnd` events carry the same step data as `result.Steps()` 
 | `ToolsContext` | `map[string]interface{}` | ToolsContext rebinds host-only tool context for an unfinished turn resumed with ContinueFrom (directly or nested in ResumeFrom). Only valid together with one of those. |
 | `RuntimeContext` | `interface{}` | RuntimeContext rebinds host-only runtime context for an unfinished turn resumed with ContinueFrom (directly or nested in ResumeFrom). Runtime context is not serialized into lifecycle state. Mirrors TS `HarnessAgent.createSession`'s `options.runtimeContext`. |
 | `SandboxSession` | `providerutils.SandboxSession` | SandboxSession is a caller-owned sandbox session. When set, the caller retains ownership of its lifecycle; Agent.Sandbox is not consulted. |
+| `SandboxCreator` | `*SandboxCreator` | SandboxCreator creates a caller-owned sandbox session when it is needed: for a harness without a bootstrap recipe, on the first file, exec or spawn operation; otherwise in CreateSession. Mutually exclusive with SandboxSession. Mirrors TS `sandboxSession: HarnessAgentSandboxCreator` (TS 8a20b57d41). |
 
 {/* /gen:fields */}
 
