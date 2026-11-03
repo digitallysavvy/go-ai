@@ -406,3 +406,107 @@ func TestR85streamReadUINewDynamicPartWithoutRawInput(t *testing.T) {
 	})
 	r85streamJSONEqual(t, got, `[[{"type":"dynamic-tool","toolName":"t2","toolCallId":"c2","state":"input-streaming"}],[{"type":"dynamic-tool","toolName":"t2","toolCallId":"c2","state":"output-error","errorText":"boom"}],[{"type":"dynamic-tool","toolName":"t2","toolCallId":"c2","state":"output-error","errorText":"boom"},{"type":"step-start"},{"type":"dynamic-tool","toolName":"t2","toolCallId":"c2","state":"input-streaming","input":{"a":1}}],[{"type":"dynamic-tool","toolName":"t2","toolCallId":"c2","state":"output-error","errorText":"boom"},{"type":"step-start"},{"type":"dynamic-tool","toolName":"t2","toolCallId":"c2","state":"input-streaming","input":{"a":1},"rawInput":"{\"a\":1}"}]]`)
 }
+
+// r85streamTextDeltas runs the steps through StreamText and returns the full
+// stream's text deltas as [text, providerMetadata] pairs.
+func r85streamTextDeltas(t *testing.T, opts StreamTextOptions, chunks []provider.StreamChunk) string {
+	t.Helper()
+	opts.Model = &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id",
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream(chunks), nil
+		}}
+	opts.Prompt = "x"
+	r, err := StreamText(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got [][]interface{}
+	fs := r.FullStream()
+	for {
+		c, err := fs.Next()
+		if err != nil {
+			break
+		}
+		if c.Type == provider.ChunkTypeText {
+			var pm interface{}
+			if len(c.ProviderMetadata) > 0 {
+				_ = json.Unmarshal(c.ProviderMetadata, &pm)
+			}
+			got = append(got, []interface{}{c.Text, pm})
+		}
+	}
+	b, _ := json.Marshal(got)
+	return string(b)
+}
+
+// TS createOutputTransformStream (stream-text.ts 1061-1224), recorded with
+// streamText under Node v24 (packages/ai dist): with an object output the
+// first text block's deltas are held until the partial changes, then
+// published together; an empty delta is dropped.
+func TestR85streamObjectOutputCoalescesTextDeltas(t *testing.T) {
+	got := r85streamTextDeltas(t, StreamTextOptions{Output: ObjectOutput[map[string]interface{}](ObjectOutputOptions{Schema: r73streamValueObjectSchema})},
+		r73streamTextStep("{ ", `"value": `, `"Hello, `, `world!" `, "}", ""))
+	r85streamJSONEqual(t, got, `[["{ ",null],["\"value\": \"Hello, ",null],["world!\" ",null],["}",null]]`)
+
+	// Default text output: every non-empty delta changes the partial.
+	got = r85streamTextDeltas(t, StreamTextOptions{}, r73streamTextStep("{ ", `"value": `, `"Hello, `, `world!" `, "}", ""))
+	r85streamJSONEqual(t, got, `[["{ ",null],["\"value\": ",null],["\"Hello, ",null],["world!\" ",null],["}",null]]`)
+}
+
+// The published delta carries the first block's latest provider metadata
+// (`chunk.providerMetadata ?? textProviderMetadata`), so a delta without
+// metadata repeats the previous one's (TS recorded: both deltas carry
+// {x:{k:1}} in fullStream and in the UI message stream). Another block's
+// deltas pass through unchanged.
+func TestR85streamFirstTextBlockStickyProviderMetadata(t *testing.T) {
+	pm := json.RawMessage(`{"x":{"k":1}}`)
+	chunks := []provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "a", ProviderMetadata: pm},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "b"},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeTextStart, ID: "2"},
+		{Type: provider.ChunkTypeText, ID: "2", Text: "c", ProviderMetadata: pm},
+		{Type: provider.ChunkTypeText, ID: "2", Text: "d"},
+		{Type: provider.ChunkTypeTextEnd, ID: "2"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: r72streamTestUsage},
+	}
+	got := r85streamTextDeltas(t, StreamTextOptions{}, chunks)
+	r85streamJSONEqual(t, got, `[["a",{"x":{"k":1}}],["b",{"x":{"k":1}}],["c",{"x":{"k":1}}],["d",null]]`)
+}
+
+// TS firstTextChunkId comes from the step's first text part of any kind: with
+// blocks A and B started in that order and B's delta first, the partial is
+// parsed from A (TS recorded: partialOutputStream yields only {"a":1}).
+func TestR85streamPartialOutputFirstBlockByTextStart(t *testing.T) {
+	var res *StreamTextResult
+	rec := &r85streamPartialRecorder{
+		chunks: []provider.StreamChunk{
+			{Type: provider.ChunkTypeTextStart, ID: "A"},
+			{Type: provider.ChunkTypeTextStart, ID: "B"},
+			{Type: provider.ChunkTypeText, ID: "B", Text: `{"b":2}`},
+			{Type: provider.ChunkTypeText, ID: "A", Text: `{"a":1}`},
+			{Type: provider.ChunkTypeTextEnd, ID: "B"},
+			{Type: provider.ChunkTypeTextEnd, ID: "A"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: r72streamTestUsage},
+		},
+		ready: make(chan struct{}),
+		res:   &res,
+	}
+	model := &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id",
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) { return rec, nil }}
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "x", Output: JSONOutput(JSONOutputOptions{})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res = r
+	close(rec.ready)
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	rec.observe()
+	got, _ := json.Marshal(rec.partials)
+	if want := `[{"a":1}]`; string(got) != want {
+		t.Errorf("partial outputs = %s, want %s", got, want)
+	}
+}

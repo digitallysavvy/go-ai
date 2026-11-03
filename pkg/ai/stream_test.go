@@ -2833,11 +2833,13 @@ func TestStreamTextAllowsIncompleteStreamWithPartialOutput(t *testing.T) {
 	}
 }
 
-// TestStreamText_PublishesEmptyStringPartialOutput ports TS's "stream null
-// and empty-string JSON partial outputs" case (audit row 84f5d1b / WG4): a
-// genuine first empty-string partial must be published, not suppressed by
-// comparing against the "nothing published yet" sentinel.
-func TestStreamText_PublishesEmptyStringPartialOutput(t *testing.T) {
+// TestStreamText_EmptyDeltaPublishesNoPartialOutput: TS streamText drops an
+// empty text delta without provider metadata before its output transform
+// (stream-text.ts 3145), so a stream whose only text is an empty delta
+// publishes no partial (recorded: TS partialOutputStream yields nothing, round
+// 85). The genuine empty-string partial of a JSON `""` text is covered by
+// TestR73StreamJSONOutputNullAndEmptyString.
+func TestStreamText_EmptyDeltaPublishesNoPartialOutput(t *testing.T) {
 	model := &testutil.MockLanguageModel{
 		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
 			return testutil.NewMockTextStream([]provider.StreamChunk{
@@ -2859,13 +2861,8 @@ func TestStreamText_PublishesEmptyStringPartialOutput(t *testing.T) {
 		t.Fatalf("ReadAll() error = %v", err)
 	}
 
-	partial := result.PartialOutput()
-	s, ok := partial.(string)
-	if !ok {
-		t.Fatalf("PartialOutput() = %#v (%T), want the published empty string, not the unpublished zero value", partial, partial)
-	}
-	if s != "" {
-		t.Fatalf("PartialOutput() = %q, want empty string", s)
+	if partial := result.PartialOutput(); partial != nil {
+		t.Fatalf("PartialOutput() = %#v, want nil (TS publishes no partial)", partial)
 	}
 }
 
