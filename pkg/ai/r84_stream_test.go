@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"reflect"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
+	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 // Round 84 stream review ports.
@@ -374,6 +376,62 @@ func TestR84streamKeepAliveManyIdleComments(t *testing.T) {
 	case chunks <- UIMessageChunk{"type": "start"}:
 		t.Fatal("the stopped writer still receives from the source")
 	default:
+	}
+}
+
+// stream-text-timeout.test.ts 106 / 537 / 725: a timeout aborts the stream
+// with the TS abort reason text ("First chunk timeout of 50ms exceeded",
+// "Step timeout of 100ms exceeded", "Chunk timeout of 50ms exceeded";
+// AbortSignal.timeout's "The operation was aborted due to timeout" for
+// totalMs), which the abort part and the UI abort chunk carry
+// (getErrorMessage(abortSignal.reason)).
+func TestR84streamTimeoutAbortReasonText(t *testing.T) {
+	hello := []delayedChunk{
+		{chunk: provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "1"}},
+		{chunk: provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"}},
+	}
+	for _, tc := range []struct {
+		name    string
+		timeout *TimeoutConfig
+		chunks  []delayedChunk
+		reason  TimeoutReason
+		want    string
+	}{
+		{"first chunk", &TimeoutConfig{FirstChunk: r82streamDur(50)}, nil, TimeoutReasonFirstChunk, "First chunk timeout of 50ms exceeded"},
+		{"chunk", &TimeoutConfig{PerChunk: r82streamDur(50)}, hello, TimeoutReasonChunk, "Chunk timeout of 50ms exceeded"},
+		{"step", &TimeoutConfig{PerStep: r82streamDur(60)}, hello, TimeoutReasonStep, "Step timeout of 60ms exceeded"},
+		{"total", &TimeoutConfig{Total: r82streamDur(60)}, hello, TimeoutReasonTotal, "The operation was aborted due to timeout"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id", DoStreamFunc: func(ctx context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+				return &r82streamTimedStream{ctx: ctx, chunks: tc.chunks}, nil
+			}}
+			r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test-input", Timeout: tc.timeout, OnError: func(context.Context, error) {}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ui, errs := r.ToUIMessageStream(context.Background())
+			var last UIMessageChunk
+			for c := range ui {
+				last = c
+			}
+			if err := <-errs; err != nil {
+				t.Fatalf("ui stream error: %v", err)
+			}
+			if last["type"] != "abort" || last["reason"] != tc.want {
+				t.Fatalf("last UI chunk = %v, want abort with reason %q", last, tc.want)
+			}
+			var te *TimeoutError
+			if !errors.As(r.Err(), &te) || te.Reason != tc.reason || r.Err().Error() != tc.want || !errors.Is(r.Err(), context.DeadlineExceeded) {
+				t.Fatalf("Err() = %v (%T)", r.Err(), r.Err())
+			}
+		})
+	}
+	if got := (&TimeoutError{Reason: TimeoutReasonChunk, Timeout: 1500 * time.Microsecond}).Error(); got != "Chunk timeout of 1.5ms exceeded" {
+		t.Errorf("fractional ms: %q", got)
+	}
+	if got := (&TimeoutError{Reason: TimeoutReasonStep, Err: context.DeadlineExceeded}).Error(); got != "step timeout exceeded: context deadline exceeded" {
+		t.Errorf("no duration: %q", got)
 	}
 }
 

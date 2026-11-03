@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -19,15 +20,41 @@ const (
 )
 
 // TimeoutError wraps timeout failures so callers can inspect the reason with
-// errors.As, matching the TypeScript SDK's tagged timeout failures.
+// errors.As, matching the TypeScript SDK's tagged timeout failures. Unwrap
+// gives the underlying error (usually context.DeadlineExceeded).
 type TimeoutError struct {
 	Reason TimeoutReason
 	Err    error
+
+	// Timeout is the configured duration that elapsed, when known. With it,
+	// a step, first-chunk or chunk timeout reads like the TS abort reason
+	// ("Chunk timeout of 50ms exceeded").
+	Timeout time.Duration
 }
 
+// timeoutLabels are the TS setAbortTimeout labels (stream-text.ts,
+// generate-text.ts).
+var timeoutLabels = map[TimeoutReason]string{
+	TimeoutReasonStep:       "Step",
+	TimeoutReasonFirstChunk: "First chunk",
+	TimeoutReasonChunk:      "Chunk",
+}
+
+// Error is the TS abort reason's message: setAbortTimeout's
+// "<Label> timeout of <ms>ms exceeded" for a step, first-chunk or chunk
+// timeout with a known duration, and AbortSignal.timeout's "The operation was
+// aborted due to timeout" for the total timeout. A tool timeout, or a step
+// or chunk timeout without a duration, keeps the Go text.
 func (e *TimeoutError) Error() string {
 	if e == nil {
 		return "<nil>"
+	}
+	if e.Reason == TimeoutReasonTotal {
+		return "The operation was aborted due to timeout"
+	}
+	if label, ok := timeoutLabels[e.Reason]; ok && e.Timeout > 0 {
+		ms := strconv.FormatFloat(float64(e.Timeout)/float64(time.Millisecond), 'f', -1, 64)
+		return label + " timeout of " + ms + "ms exceeded"
 	}
 	if e.Err == nil {
 		return fmt.Sprintf("%s timeout exceeded", e.Reason)
@@ -59,6 +86,32 @@ func wrapTimeoutError(reason TimeoutReason, err error) error {
 		return nil
 	}
 	return &TimeoutError{Reason: reason, Err: err}
+}
+
+// timeoutError is wrapTimeoutError with the configured duration of the
+// timeout that fired.
+func (tc *TimeoutConfig) timeoutError(reason TimeoutReason, err error) error {
+	if err == nil {
+		return nil
+	}
+	timeoutErr := &TimeoutError{Reason: reason, Err: err}
+	if tc != nil {
+		var d *time.Duration
+		switch reason {
+		case TimeoutReasonTotal:
+			d = tc.Total
+		case TimeoutReasonStep:
+			d = tc.PerStep
+		case TimeoutReasonFirstChunk:
+			d = tc.FirstChunk
+		case TimeoutReasonChunk:
+			d = tc.PerChunk
+		}
+		if d != nil {
+			timeoutErr.Timeout = *d
+		}
+	}
+	return timeoutErr
 }
 
 // TimeoutConfig provides granular timeout controls for AI operations
