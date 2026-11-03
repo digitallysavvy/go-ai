@@ -162,6 +162,10 @@ func (g *GoogleJSONAccumulator) processPartialArgs(partialArgs []PartialArg) (ac
 				break
 			}
 			delta.WriteString(escaped)
+			// TS 9f108f8a57: the final chunk of a string closes it.
+			if arg.WillContinue == nil || !*arg.WillContinue {
+				delta.WriteString(g.closeOpenString())
+			}
 			continue
 		}
 
@@ -170,8 +174,15 @@ func (g *GoogleJSONAccumulator) processPartialArgs(partialArgs []PartialArg) (ac
 			// A value-less entry for a path without a value is an empty
 			// container (an empty container has no leaves to stream).
 			// Value-less entries for existing paths are string or array
-			// terminators and are ignored.
-			if existingOK || (arg.WillContinue != nil && *arg.WillContinue) {
+			// terminators: a string terminator closes the open string, an
+			// array terminator is ignored (TS 9f108f8a57).
+			if existingOK {
+				if _, isString := existingValue.(string); isString && (arg.WillContinue == nil || !*arg.WillContinue) {
+					delta.WriteString(g.closeOpenString())
+				}
+				continue
+			}
+			if arg.WillContinue != nil && *arg.WillContinue {
 				continue
 			}
 			var empty interface{} = newOrderedMap()
@@ -246,6 +257,16 @@ func (g *GoogleJSONAccumulator) ensureRoot() string {
 	return ""
 }
 
+// closeOpenString mirrors TS closeOpenString: it returns the closing quote of
+// the open string value (and closes it), or "" when no string is open.
+func (g *GoogleJSONAccumulator) closeOpenString() string {
+	if !g.stringOpen {
+		return ""
+	}
+	g.stringOpen = false
+	return `"`
+}
+
 // emitNavigationTo emits the JSON text fragment needed to navigate from the
 // current open path to the new leaf at targetSegments, then writes the value.
 //
@@ -254,10 +275,7 @@ func (g *GoogleJSONAccumulator) ensureRoot() string {
 func (g *GoogleJSONAccumulator) emitNavigationTo(target []interface{}, arg PartialArg, valueJSON string) string {
 	var fragment strings.Builder
 
-	if g.stringOpen {
-		fragment.WriteByte('"')
-		g.stringOpen = false
-	}
+	fragment.WriteString(g.closeOpenString())
 
 	fragment.WriteString(g.ensureRoot())
 
@@ -282,10 +300,7 @@ func (g *GoogleJSONAccumulator) emitNavigationTo(target []interface{}, arg Parti
 func (g *GoogleJSONAccumulator) emitContainer(target []interface{}, isArray bool) string {
 	var fragment strings.Builder
 
-	if g.stringOpen {
-		fragment.WriteByte('"')
-		g.stringOpen = false
-	}
+	fragment.WriteString(g.closeOpenString())
 
 	fragment.WriteString(g.ensureRoot())
 

@@ -36,7 +36,7 @@ func TestGoogleJSONAccumulator_FlatPaths(t *testing.T) {
 			{JSONPath: "$.location", StringValue: strPtr(", MA")},
 		})
 		assert.Equal(t, map[string]interface{}{"location": "Boston, MA"}, result.CurrentJSON)
-		assert.Equal(t, ", MA", result.TextDelta)
+		assert.Equal(t, `, MA"`, result.TextDelta) // TS 9f108f8a57: the final chunk closes the string
 	})
 
 	t.Run("complete string arg (no willContinue)", func(t *testing.T) {
@@ -113,7 +113,7 @@ func TestGoogleJSONAccumulator_FlatPaths(t *testing.T) {
 			{JSONPath: "$.query", StringValue: strPtr(`gan"`)},
 		})
 		assert.Equal(t, map[string]interface{}{"query": `Boston "Logan"`}, result.CurrentJSON)
-		assert.Equal(t, `gan\"`, result.TextDelta)
+		assert.Equal(t, `gan\""`, result.TextDelta)
 	})
 
 	t.Run("skip args with empty jsonPath after stripping $. prefix", func(t *testing.T) {
@@ -220,7 +220,7 @@ func TestGoogleJSONAccumulator_NestedPaths(t *testing.T) {
 		cont := acc.ProcessPartialArgs([]PartialArg{
 			{JSONPath: "$.recipe.steps[0]", StringValue: strPtr(" to 375°F.")},
 		})
-		assert.Equal(t, " to 375°F.", cont.TextDelta)
+		assert.Equal(t, ` to 375°F."`, cont.TextDelta)
 		assert.Equal(t, map[string]interface{}{
 			"recipe": map[string]interface{}{
 				"steps": []interface{}{"Preheat oven to 375°F."},
@@ -319,7 +319,8 @@ func TestGoogleJSONAccumulator_Finalize(t *testing.T) {
 			{JSONPath: "$.location", StringValue: strPtr(", MA")},
 		})
 		finalJSON, closingDelta := acc.Finalize()
-		assert.Equal(t, `"}`, closingDelta)
+		// The final chunk already closed the string (TS 9f108f8a57).
+		assert.Equal(t, `}`, closingDelta)
 		assert.Equal(t, `{"location":"Boston, MA"}`, finalJSON)
 	})
 
