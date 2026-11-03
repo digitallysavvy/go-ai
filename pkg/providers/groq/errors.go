@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
@@ -28,7 +30,9 @@ func parseGroqProviderError(err error) error {
 		return nil
 	}
 	var payload groqErrorPayload
-	if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr != nil || payload.Error.Message == "" {
+	// TS createJsonErrorResponseHandler reads response.text() (BOM dropped,
+	// invalid UTF-8 replaced).
+	if jsonErr := json.Unmarshal([]byte(textdecode.UTF8(statusErr.Body)), &payload); jsonErr != nil || payload.Error.Message == "" {
 		return nil
 	}
 	return providererrors.NewProviderError("groq", statusErr.StatusCode, payload.Error.Type, payload.Error.Message, err)

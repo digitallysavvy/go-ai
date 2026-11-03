@@ -119,18 +119,23 @@ func (p *Provider) apiKeyHeaders(ctx context.Context) (map[string]string, error)
 	return map[string]string{"x-goog-api-key": key}, nil
 }
 
-// defaultHeaders returns the client's default headers (user-agent suffix and
-// config headers) without the empty placeholder x-goog-api-key that New sets
+// authHeaders returns the client's default headers (user-agent suffix and
+// config headers) with the API key loaded once for this request with its ctx
+// (TS getHeaders), without the empty placeholder x-goog-api-key that New sets
 // when no key is configured, so a differently-cased header from Config.Headers
-// or the request-time key cannot collide with an empty value.
-func (p *Provider) defaultHeaders() map[string]string {
-	h := p.client.Headers()
+// cannot collide with an empty value. A missing key is the LoadAPIKeyError, a
+// key func error is returned as is.
+func (p *Provider) authHeaders(ctx context.Context) (map[string]string, error) {
+	h, err := p.client.RequestHeadersCtx(ctx)
+	if err != nil {
+		return nil, err
+	}
 	for k, v := range h {
 		if v == "" {
 			delete(h, k)
 		}
 	}
-	return h
+	return h, nil
 }
 
 // headersSnapshot returns the client's default headers with the lazily
@@ -141,13 +146,18 @@ func (p *Provider) headersSnapshot() map[string]string {
 
 // headersSnapshotCtx is headersSnapshot with the context an APIKeyFunc gets.
 func (p *Provider) headersSnapshotCtx(ctx context.Context) map[string]string {
-	h := p.client.Headers()
-	if extra, err := p.apiKeyHeaders(ctx); err == nil {
-		for k, v := range extra {
-			h[k] = v
-		}
+	h, err := p.requestHeaders(ctx)
+	if err != nil {
+		return p.client.Headers()
 	}
 	return h
+}
+
+// requestHeaders returns the client's default headers with the API key
+// loaded once for this request (TS resolves config.headers once per call);
+// a missing key is the LoadAPIKeyError, a key func error is returned as is.
+func (p *Provider) requestHeaders(ctx context.Context) (map[string]string, error) {
+	return p.client.RequestHeadersCtx(ctx)
 }
 
 // CreateGoogle creates a new Google Generative AI provider.

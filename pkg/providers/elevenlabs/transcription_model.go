@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -299,6 +301,9 @@ var elevenlabsErrorDataSchema = zodlite.Union(
 // numeric error.code of the older shape (Go ProviderError.ErrorCode).
 func elevenlabsErrorMessage(statusCode int, body []byte) (message, code string) {
 	var data map[string]interface{}
+	// TS createJsonErrorResponseHandler reads response.text() (BOM dropped,
+	// invalid UTF-8 replaced).
+	body = []byte(textdecode.UTF8(body))
 	if json.Unmarshal(body, &data) != nil || elevenlabsErrorDataSchema(data, true, nil) != nil {
 		return http.StatusText(statusCode), ""
 	}

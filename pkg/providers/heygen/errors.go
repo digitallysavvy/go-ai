@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
@@ -23,6 +25,9 @@ type heygenErrorBody struct {
 // error, mirroring TS heygenFailedResponseHandler: the message is
 // "<message> (<code>) [<param>]".
 func newHeyGenAPIError(statusCode int, body []byte, headers http.Header) error {
+	// TS createJsonErrorResponseHandler reads response.text() (BOM dropped,
+	// invalid UTF-8 replaced).
+	body = []byte(textdecode.UTF8(body))
 	var parsed heygenErrorBody
 	message := ""
 	code := ""

@@ -483,7 +483,7 @@ func TestVideoProviderOptionsValidationAndEmptySamplesMessage(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"name":"op","done":true,"response":{"generateVideoResponse":{"generatedSamples":[]}}}`), &op); err != nil {
 		t.Fatal(err)
 	}
-	_, err = m.buildCompletedResult(&op, provider.VideoModelV3ResponseInfo{})
+	_, err = m.buildCompletedResult(context.Background(), &op, provider.VideoModelV3ResponseInfo{})
 	want := `No videos in response. Response: {"name":"op","done":true,"response":{"generateVideoResponse":{"generatedSamples":[]}}}`
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("err = %v", err)

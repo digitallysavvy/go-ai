@@ -177,7 +177,7 @@ func (m *SpeechModel) startStream(ctx context.Context, opts *provider.SpeechStre
 		protocol = &singleContextProtocol{init: streamInitMessage(opts, elOpts), voice: voiceID}
 	}
 
-	headers, apiKey, err := m.streamHeaders(opts.Headers)
+	headers, apiKey, err := m.streamHeaders(ctx, opts.Headers)
 	if err != nil {
 		return nil, err
 	}
@@ -213,9 +213,11 @@ func (m *SpeechModel) startStream(ctx context.Context, opts *provider.SpeechStre
 // streamHeaders builds the WebSocket handshake headers like the HTTP client's
 // (provider headers, user agent), with per-call headers winning. The API key
 // is split out: it travels in the init message so native WebSockets work.
-func (m *SpeechModel) streamHeaders(perCall map[string]string) (headers map[string]string, apiKey string, err error) {
+func (m *SpeechModel) streamHeaders(ctx context.Context, perCall map[string]string) (headers map[string]string, apiKey string, err error) {
 	cfg := m.provider.config
-	authHeaders, err := providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "ELEVENLABS_API_KEY", "ElevenLabs", "xi-api-key", "")
+	// The key comes from the same request-time resolution as HTTP calls
+	// (APIKeyFunc included, TS 7716e189ee).
+	authHeaders, err := cfg.authHeaders(ctx)
 	if err != nil {
 		return nil, "", err
 	}

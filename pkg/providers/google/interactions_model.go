@@ -590,18 +590,23 @@ func parseInteractionsProviderOptions(providerOptions map[string]interface{}) (G
 	}
 	switch v := raw.(type) {
 	case GoogleInteractionsProviderOptions:
-		if err := validateInteractionsProviderOptions(v); err != nil {
-			return out, err
-		}
-		return v, nil
+		out = v
 	case *GoogleInteractionsProviderOptions:
-		if v != nil {
-			if err := validateInteractionsProviderOptions(*v); err != nil {
-				return out, err
-			}
-			return *v, nil
+		if v == nil {
+			return out, nil
 		}
+		out = *v
 	case map[string]interface{}:
+		if env, ok := v["environment"].(map[string]interface{}); ok {
+			// TS parses the JSON value: typed Go slices inside the
+			// environment read like their JSON form.
+			normalized := make(map[string]interface{}, len(v))
+			for k, x := range v {
+				normalized[k] = x
+			}
+			normalized["environment"] = providerutils.NormalizeOptionsJSON(env)
+			v = normalized
+		}
 		if err := checkInteractionsOptionTypes(v); err != nil {
 			return out, err
 		}
@@ -648,6 +653,12 @@ func parseInteractionsProviderOptions(providerOptions map[string]interface{}) (G
 		}
 	default:
 		return out, fmt.Errorf("google interactions provider options must be GoogleInteractionsProviderOptions or map[string]interface{}, got %T", raw)
+	}
+	// TS parses the JSON value: an environment map holding typed Go slices
+	// ([]map[string]interface{} sources or allowlist) reads like its JSON
+	// form.
+	if env, ok := out.Environment.(map[string]interface{}); ok {
+		out.Environment = providerutils.NormalizeOptionsJSON(env)
 	}
 	if err := validateInteractionsProviderOptions(out); err != nil {
 		return out, err
