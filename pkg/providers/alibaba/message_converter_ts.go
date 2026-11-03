@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
@@ -193,10 +194,35 @@ func alibabaImageURL(fc types.FileContent) (string, error) {
 	}
 	// TS formatImageUrl: data:${resolveFullMediaType({ part })}, so a
 	// top-level-only or wildcard type ("image", "image/*") is sniffed from
-	// the bytes.
-	resolved, err := prompt.ResolveFullMediaType(mediaType, normalized.FileData.Data, true)
+	// the bytes; a base64 string is sent unchanged (convertToBase64 returns
+	// it as is) and sniffed from its prefix only (decodePrefix).
+	resolved, err := alibabaResolveDataMediaType(mediaType, normalized.FileData)
 	if err != nil {
 		return "", err
 	}
-	return "data:" + resolved + ";base64," + base64.StdEncoding.EncodeToString(normalized.FileData.Data), nil
+	payload := normalized.FileData.DataString
+	if payload == "" {
+		payload = base64.StdEncoding.EncodeToString(normalized.FileData.Data)
+	}
+	return "data:" + resolved + ";base64," + payload, nil
+}
+
+// alibabaResolveDataMediaType is TS resolveFullMediaType for an inline
+// (data) file part given as bytes or as a base64 string.
+func alibabaResolveDataMediaType(mediaType string, fd types.FileData) (string, error) {
+	if fd.DataString == "" {
+		return prompt.ResolveFullMediaType(mediaType, fd.Data, true)
+	}
+	if full, err := prompt.ResolveFullMediaType(mediaType, nil, false); err == nil {
+		return full, nil
+	}
+	top, _, _ := strings.Cut(mediaType, "/")
+	detected, ok, err := fileutil.DetectMediaTypeSignatureBase64(fd.DataString, top)
+	if err != nil {
+		return "", err
+	}
+	if ok && detected != "" {
+		return detected, nil
+	}
+	return prompt.ResolveFullMediaType(mediaType, nil, true)
 }
