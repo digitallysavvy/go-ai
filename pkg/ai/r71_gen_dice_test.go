@@ -153,7 +153,10 @@ func r71genDiceResponseMessages() []interface{} {
 // code_execution triggers client tool across multiple turns (dice game
 // fixture)': every describe block (step inputs, responseMessages,
 // toolCalls/toolResults, tool execution, steps, text, finishReason,
-// totalUsage, prepareStep calls, onStepFinish, onFinish).
+// totalUsage, prepareStep calls, onStepFinish, onFinish). Appendix A rows:
+// generate-text.test.ts 10487, 10900 and 11054 (10505, 10918 and 11072 at
+// 30548ee7f9: result.responseMessages, result.steps length, onFinish
+// responseMessages).
 func TestR71Gen_GenerateText_ProgrammaticToolCallingDiceGame(t *testing.T) {
 	responses := r71genDiceResponses()
 	var mu sync.Mutex
