@@ -100,7 +100,7 @@ func convertToPerplexityInput(messages []types.Message) ([]map[string]interface{
 						"name":      p.ToolName,
 						"arguments": perplexityToolCallArguments(p),
 					}
-					if sig := perplexityThoughtSignature(p.ProviderOptions); sig != "" {
+					if sig, ok := perplexityThoughtSignature(p.ProviderOptions); ok {
 						item["thought_signature"] = sig
 					}
 					input = append(input, item)
@@ -115,7 +115,7 @@ func convertToPerplexityInput(messages []types.Message) ([]map[string]interface{
 						"name":    p.ToolName,
 						"output":  out,
 					}
-					if sig := perplexityThoughtSignature(p.ProviderOptions); sig != "" {
+					if sig, ok := perplexityThoughtSignature(p.ProviderOptions); ok {
 						item["thought_signature"] = sig
 					}
 					input = append(input, item)
@@ -152,7 +152,7 @@ func convertToPerplexityInput(messages []types.Message) ([]map[string]interface{
 					"name":    toolResult.ToolName,
 					"output":  out,
 				}
-				if sig := perplexityThoughtSignature(toolResult.ProviderOptions); sig != "" {
+				if sig, ok := perplexityThoughtSignature(toolResult.ProviderOptions); ok {
 					item["thought_signature"] = sig
 				}
 				input = append(input, item)
@@ -309,20 +309,15 @@ func perplexityToolCallArguments(part types.ToolCallContent) string {
 }
 
 // perplexityThoughtSignature mirrors TS getThoughtSignature: it reads
-// providerOptions.perplexity.thoughtSignature, returning "" (unset) unless
-// the value is a non-null string.
-func perplexityThoughtSignature(providerOptions map[string]interface{}) string {
-	if providerOptions == nil {
-		return ""
-	}
+// providerOptions.perplexity.thoughtSignature and reports whether it is a
+// string (TS `typeof thoughtSignature === 'string'`, so "" is sent too).
+func perplexityThoughtSignature(providerOptions map[string]interface{}) (string, bool) {
 	perp, ok := providerOptions["perplexity"].(map[string]interface{})
 	if !ok {
-		return ""
+		return "", false
 	}
-	if s, ok := perp["thoughtSignature"].(string); ok {
-		return s
-	}
-	return ""
+	s, ok := perp["thoughtSignature"].(string)
+	return s, ok
 }
 
 // perplexityToolOutput is the TS LanguageModelV4ToolResultOutput resolved

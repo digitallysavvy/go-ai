@@ -93,15 +93,22 @@ type googleLiveSpeechTranslationServerMessage struct {
 				} `json:"inlineData,omitempty"`
 			} `json:"parts,omitempty"`
 		} `json:"modelTurn,omitempty"`
-		OutputTranscription *googleLiveTranscription `json:"outputTranscription,omitempty"`
-		InputTranscription  *googleLiveTranscription `json:"inputTranscription,omitempty"`
-		TurnComplete        bool                     `json:"turnComplete,omitempty"`
+		OutputTranscription *googleLiveTranscription     `json:"outputTranscription,omitempty"`
+		InputTranscription  *googleLiveTranslationSource `json:"inputTranscription,omitempty"`
+		TurnComplete        bool                         `json:"turnComplete,omitempty"`
 	} `json:"serverContent,omitempty"`
-	InputTranscription *googleLiveTranscription            `json:"inputTranscription,omitempty"`
+	InputTranscription *googleLiveTranslationSource        `json:"inputTranscription,omitempty"`
 	UsageMetadata      *googleLiveTranslationUsageMetadata `json:"usageMetadata,omitempty"`
 	Error              *struct {
 		Message string `json:"message,omitempty"`
 	} `json:"error,omitempty"`
+}
+
+// googleLiveTranslationSource is an inputTranscription; Text is a pointer
+// because TS reads `serverContent?.inputTranscription?.text ??
+// message.inputTranscription?.text`, so only an absent text falls back.
+type googleLiveTranslationSource struct {
+	Text *string `json:"text,omitempty"`
 }
 
 type googleLiveTranslationTokenDetail struct {
@@ -434,10 +441,10 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 			}
 
 			inputText := ""
-			if message.ServerContent != nil && message.ServerContent.InputTranscription != nil {
-				inputText = message.ServerContent.InputTranscription.Text
-			} else if message.InputTranscription != nil {
-				inputText = message.InputTranscription.Text
+			if message.ServerContent != nil && message.ServerContent.InputTranscription != nil && message.ServerContent.InputTranscription.Text != nil {
+				inputText = *message.ServerContent.InputTranscription.Text
+			} else if message.InputTranscription != nil && message.InputTranscription.Text != nil {
+				inputText = *message.InputTranscription.Text
 			}
 			if inputText != "" {
 				onTurnActivity()

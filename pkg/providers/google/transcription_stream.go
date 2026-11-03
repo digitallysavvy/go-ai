@@ -299,10 +299,12 @@ type googleLiveServerMessage struct {
 }
 
 type googleLiveTranscription struct {
-	Text         string `json:"text,omitempty"`
-	Finished     bool   `json:"finished,omitempty"`
-	LanguageCode string `json:"languageCode,omitempty"`
-	SpeakerLabel string `json:"speakerLabel,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Finished bool   `json:"finished,omitempty"`
+	// LanguageCode is a pointer: TS `languageCode != null` also takes an
+	// empty code.
+	LanguageCode *string `json:"languageCode,omitempty"`
+	SpeakerLabel string  `json:"speakerLabel,omitempty"`
 }
 
 func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamConfig) {
@@ -563,8 +565,8 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 				transcription = serverContent.InputTranscription
 			}
 			if transcription != nil {
-				if transcription.LanguageCode != "" {
-					language = transcription.LanguageCode
+				if transcription.LanguageCode != nil {
+					language = *transcription.LanguageCode
 				}
 				if transcription.Text != "" {
 					schedulePendingFinish()
