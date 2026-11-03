@@ -64,15 +64,16 @@ func TestR84carryHarnessToolDefinitions(t *testing.T) {
 	}
 }
 
-// A schema value that is no schema (typed nil) gets the empty object schema
-// for a model tool, as the Go converters send it, without panicking.
+// A schema value that is no schema (typed nil, zero) gets the TS empty object
+// schema for a model tool, as the model receives it (r85: with
+// additionalProperties false), without panicking.
 func TestR84carryToolDefinitionsNilSchemaValues(t *testing.T) {
 	var nilJSON *schema.SimpleJSONSchema
 	got := r84carryToolDefinitions(t, "openai.chat", []types.Tool{
 		{Name: "a", Parameters: nilJSON},
 		{Name: "b", Parameters: &schema.SimpleJSONSchema{}},
 	}, nil)
-	const want = `[{"type":"function","name":"a","inputSchema":{"properties":{},"type":"object"}},{"type":"function","name":"b","inputSchema":{"properties":{},"type":"object"}}]`
+	const want = `[{"type":"function","name":"a","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},{"type":"function","name":"b","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}]`
 	if got != want {
 		t.Fatalf("gen_ai.tool.definitions =\n%s\nwant\n%s", got, want)
 	}
