@@ -277,7 +277,12 @@ func ObjectOutput[T any](opts ObjectOutputOptions) Output[T, T] {
 }
 
 func (o *objectOutput[T]) ResponseFormat(ctx context.Context) (*provider.ResponseFormat, error) {
-	jsonSchema := o.schema.Validator().JSONSchema()
+	var jsonSchema interface{} = o.schema.Validator().JSONSchema()
+	if ordered, ok := schema.OrderedParameters(o.schema); ok {
+		// A struct schema: its fields in declaration order, as the TS zod
+		// object keeps its keys.
+		jsonSchema = ordered
+	}
 
 	format := &provider.ResponseFormat{
 		Type:   "json",

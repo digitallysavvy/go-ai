@@ -63,12 +63,25 @@ func isNilValue(v interface{}) bool {
 	return false
 }
 
-// OrderedParameters converts a jsonorder.Hinted Parameters value to an
-// *OrderedSchema, which every provider already sends in source key order.
-// ok is false for any other value.
+// OrderedParameters converts a jsonorder.Hinted Parameters value, or a
+// struct schema (*SimpleStructSchema, *StructValidator; its fields in
+// declaration order), to an *OrderedSchema, which every provider already
+// sends in source key order. ok is false for any other value.
 func OrderedParameters(p interface{}) (*OrderedSchema, bool) {
 	var h jsonorder.Hinted
 	switch v := p.(type) {
+	case *SimpleStructSchema:
+		if v == nil || v.validator == nil {
+			return nil, false
+		}
+		return OrderedParameters(v.validator)
+	case *StructValidator:
+		raw := v.orderedJSONSchema()
+		if raw == nil {
+			return nil, false
+		}
+		s, err := NewOrderedSchema(raw)
+		return s, err == nil
 	case jsonorder.Hinted:
 		h = v
 	case *jsonorder.Hinted:

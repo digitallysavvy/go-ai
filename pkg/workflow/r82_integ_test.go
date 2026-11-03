@@ -77,7 +77,7 @@ func TestR82integWorkflowStepSpansOmitStepPrompt(t *testing.T) {
 				for _, kv := range s.Attributes() {
 					switch kv.Key {
 					case "ai.prompt.messages", "ai.prompt.tools", "ai.prompt.toolChoice":
-						t.Errorf("step span %d has %s = %s", steps, kv.Key, kv.Value.Emit())
+						t.Errorf("step span %d has %s = %s", steps, kv.Key, kv.Value.String())
 					}
 				}
 			}

@@ -62,6 +62,9 @@ func MarshalSchema(v interface{}) (data []byte, ok bool, err error) {
 	case *OrderedSchema:
 		data, err = s.MarshalJSON()
 		return data, true, err
+	case *SimpleStructSchema, *StructValidator:
+		data, err = json.Marshal(s)
+		return data, true, err
 	case Schema:
 		if s == nil {
 			return nil, false, nil
@@ -86,14 +89,21 @@ func (v *JSONSchemaValidator) MarshalJSON() ([]byte, error) {
 	return marshalSchemaMap(v.schema)
 }
 
-// MarshalJSON writes the JSON Schema.
+// MarshalJSON writes the JSON Schema in its generated key order (struct
+// field order, as the TS zod schema keeps its keys).
 func (s *SimpleStructSchema) MarshalJSON() ([]byte, error) {
-	return marshalSchemaMap(s.validator.JSONSchema())
+	if s == nil || s.validator == nil {
+		return []byte("{}"), nil
+	}
+	return s.validator.MarshalJSON()
 }
 
-// MarshalJSON writes the JSON Schema.
+// MarshalJSON writes the JSON Schema in its generated key order.
 func (v *StructValidator) MarshalJSON() ([]byte, error) {
-	return marshalSchemaMap(v.JSONSchema())
+	if raw := v.orderedJSONSchema(); raw != nil {
+		return raw, nil
+	}
+	return []byte("{}"), nil
 }
 
 func marshalSchemaMap(m map[string]interface{}) ([]byte, error) {

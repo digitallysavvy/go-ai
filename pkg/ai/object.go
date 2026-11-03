@@ -2430,6 +2430,11 @@ func objectResponseSchema(s schema.Schema) interface{} {
 	if o, ok := s.(*schema.OrderedSchema); ok {
 		return o
 	}
+	if o, ok := schema.OrderedParameters(s); ok {
+		// A struct schema: its fields in declaration order, as the TS zod
+		// object keeps its keys.
+		return o
+	}
 	if m := schemaToMap(s); m != nil {
 		return m
 	}
