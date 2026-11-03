@@ -47,7 +47,7 @@ func TestServerNotificationIsReportedAsUnsupportedMessageType(t *testing.T) {
 func TestInputRequiredRejectedInLegacyEra(t *testing.T) {
 	c := NewMCPClient(newMockTransport(), MCPClientConfig{})
 	err := c.validateModernResult("tools/call", json.RawMessage(`{"resultType":"input_required"}`))
-	if err == nil || !strings.Contains(err.Error(), "multi round-trip") {
+	if err == nil || !strings.Contains(err.Error(), "Input-required results are not supported for tools/call") {
 		t.Fatalf("err = %v", err)
 	}
 	if err := c.validateModernResult("tools/call", json.RawMessage(`{"content":[]}`)); err != nil {
