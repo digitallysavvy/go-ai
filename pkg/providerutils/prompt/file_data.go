@@ -182,15 +182,16 @@ func NormalizePromptWithDownloadSupport(ctx context.Context, prompt types.Prompt
 	if err != nil {
 		return types.Prompt{}, err
 	}
-	if download == nil {
-		normalized.Messages = MergeConsecutiveToolMessages(sniffImageMediaTypes(normalized.Messages))
-		return normalized, nil
+	messages := normalized.Messages
+	if download != nil {
+		if messages, err = DownloadUnsupportedFileURLs(ctx, normalized.Messages, download, isURLSupported); err != nil {
+			return types.Prompt{}, err
+		}
 	}
-	messages, err := DownloadUnsupportedFileURLs(ctx, normalized.Messages, download, isURLSupported)
-	if err != nil {
+	if messages, err = sniffImageMediaTypes(messages); err != nil {
 		return types.Prompt{}, err
 	}
-	normalized.Messages = MergeConsecutiveToolMessages(sniffImageMediaTypes(messages))
+	normalized.Messages = MergeConsecutiveToolMessages(messages)
 	return normalized, nil
 }
 
@@ -199,7 +200,10 @@ func NormalizePromptWithDownloadSupport(ctx context.Context, prompt types.Prompt
 // type, replacing whatever was declared (including the bare "image" default of
 // a legacy image part). It applies to user file parts and tool-result file
 // content, not to assistant file parts. Messages are copied before changes.
-func sniffImageMediaTypes(messages []types.Message) []types.Message {
+// Base64 string data (FileData.DataString) is sniffed too (TS detectMediaType
+// takes a string); a string that is not base64 fails the conversion, as TS's
+// decode throws.
+func sniffImageMediaTypes(messages []types.Message) ([]types.Message, error) {
 	var out []types.Message
 	for i, message := range messages {
 		if message.Role != types.RoleUser && message.Role != types.RoleTool && message.Role != types.RoleAssistant {
@@ -211,27 +215,39 @@ func sniffImageMediaTypes(messages []types.Message) []types.Message {
 				continue
 			}
 			var replaced types.ContentPart
+			var err error
 			switch typed := part.(type) {
 			case types.FileContent:
-				if f, ok := sniffFileContent(typed); ok {
+				var f types.FileContent
+				var ok bool
+				if f, ok, err = sniffFileContent(typed); ok {
 					replaced = f
 				}
 			case *types.FileContent:
 				if typed != nil {
-					if f, ok := sniffFileContent(*typed); ok {
+					var f types.FileContent
+					var ok bool
+					if f, ok, err = sniffFileContent(*typed); ok {
 						replaced = &f
 					}
 				}
 			case types.ToolResultContent:
-				if t, ok := sniffToolResult(typed); ok {
+				var t types.ToolResultContent
+				var ok bool
+				if t, ok, err = sniffToolResult(typed); ok {
 					replaced = t
 				}
 			case *types.ToolResultContent:
 				if typed != nil {
-					if t, ok := sniffToolResult(*typed); ok {
+					var t types.ToolResultContent
+					var ok bool
+					if t, ok, err = sniffToolResult(*typed); ok {
 						replaced = &t
 					}
 				}
+			}
+			if err != nil {
+				return nil, err
 			}
 			if replaced == nil {
 				continue
@@ -249,37 +265,46 @@ func sniffImageMediaTypes(messages []types.Message) []types.Message {
 		}
 	}
 	if out == nil {
-		return messages
+		return messages, nil
 	}
-	return out
+	return out, nil
 }
 
-func sniffImageType(data []byte) (string, bool) {
-	if len(data) == 0 {
-		return "", false
+// sniffImageType detects an image media type from inline data: the bytes, or
+// the base64 string when there are none.
+func sniffImageType(data types.FileData) (string, bool, error) {
+	if len(data.Data) == 0 {
+		if data.DataString == "" {
+			return "", false, nil
+		}
+		return fileutil.DetectMediaTypeSignatureBase64(data.DataString, "image")
 	}
-	return fileutil.DetectMediaTypeSignature(data, "image")
+	detected, ok := fileutil.DetectMediaTypeSignature(data.Data, "image")
+	return detected, ok, nil
 }
 
-func sniffFileContent(f types.FileContent) (types.FileContent, bool) {
+func sniffFileContent(f types.FileContent) (types.FileContent, bool, error) {
 	if f.FileData.Type != types.FileDataTypeData {
-		return f, false
+		return f, false, nil
 	}
-	detected, ok := sniffImageType(f.FileData.Data)
+	detected, ok, err := sniffImageType(f.FileData)
+	if err != nil {
+		return f, false, err
+	}
 	if !ok || (f.MediaType == detected && f.FileData.MediaType == detected) {
-		return f, false
+		return f, false, nil
 	}
 	f.MediaType = detected
 	f.FileData.MediaType = detected
 	if f.MimeType != "" {
 		f.MimeType = detected
 	}
-	return f, true
+	return f, true, nil
 }
 
-func sniffToolResult(t types.ToolResultContent) (types.ToolResultContent, bool) {
+func sniffToolResult(t types.ToolResultContent) (types.ToolResultContent, bool, error) {
 	if t.Output == nil || t.Output.Type != types.ToolResultOutputContent {
-		return t, false
+		return t, false, nil
 	}
 	var blocks []types.ToolResultContentBlock
 	for i, block := range t.Output.Content {
@@ -299,7 +324,10 @@ func sniffToolResult(t types.ToolResultContent) (types.ToolResultContent, bool) 
 		if b.FileData.Type != types.FileDataTypeData {
 			continue
 		}
-		detected, ok := sniffImageType(b.FileData.Data)
+		detected, ok, err := sniffImageType(b.FileData)
+		if err != nil {
+			return t, false, err
+		}
 		if !ok || (b.MediaType == detected && b.FileData.MediaType == detected) {
 			continue
 		}
@@ -315,12 +343,12 @@ func sniffToolResult(t types.ToolResultContent) (types.ToolResultContent, bool) 
 		}
 	}
 	if blocks == nil {
-		return t, false
+		return t, false, nil
 	}
 	output := *t.Output
 	output.Content = blocks
 	t.Output = &output
-	return t, true
+	return t, true, nil
 }
 
 // ImageContentPartDeprecation is the TS convertToLanguageModelPrompt
