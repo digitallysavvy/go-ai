@@ -27,7 +27,14 @@ func TestTSCasesLanguage(t *testing.T) {
 		if id == "" {
 			id = "gemini-pro"
 		}
-		m, err := New(Config{APIKey: "test-api-key", BaseURL: base}).LanguageModel(id)
+		cfg := Config{APIKey: "test-api-key", BaseURL: base}
+		if h, ok := tsfixture.CaseProviderSettings["headers"].(map[string]interface{}); ok {
+			cfg.Headers = map[string]string{}
+			for k, v := range h {
+				cfg.Headers[k], _ = v.(string)
+			}
+		}
+		m, err := New(cfg).LanguageModel(id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -40,8 +47,6 @@ func TestTSCasesLanguage(t *testing.T) {
 		"should send requestType as X-Vertex-AI-LLM-Request-Type header on Vertex":                                           "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
 		`should use "vertex" as providerMetadata key in thoughtSignature content when provider includes "vertex"`:            "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
 		`should use "vertex" as providerMetadata key in tool call content when provider includes "vertex"`:                   "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
-		"should expose the raw response headers":                                                                             "the TS snapshot has the TS test server's content-length (549); the Go replay server sets no content-length",
-		"should pass headers":                                                                                                "the TS test builds the model with provider-level headers; replayed with them by TestR82provaTSCaseProviderHeaders",
 		"merges async config headers with sync request headers":                                                              asyncHeaders,
 		"handles Promise-based headers":                                                                                      asyncHeaders,
 		"handles async function headers from config":                                                                         asyncHeaders,
