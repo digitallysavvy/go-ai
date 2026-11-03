@@ -174,7 +174,107 @@ func sanitizeAnthropicRawSchema(raw []byte) interface{} {
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		return json.RawMessage(raw)
 	}
-	return jsonorder.Hinted{V: SanitizeAnthropicSchema(decoded), Hint: hint}
+	return jsonorder.Hinted{V: SanitizeAnthropicSchema(decoded), Hint: anthropicSanitizedHint(decoded, hint)}
+}
+
+// anthropicSanitizedHint is the key order of SanitizeAnthropicSchema(in): the
+// TS sanitizer's insertion order for each schema node (sanitize-json-schema.ts
+// sanitizeSchema), with properties, definitions and $defs entries and
+// verbatim values (default, const, enum, required) in the input's order
+// (inHint, the ordered tree of the raw input).
+func anthropicSanitizedHint(in, inHint interface{}) interface{} {
+	switch v := in.(type) {
+	case map[string]interface{}:
+		h, _ := inHint.(*jsonorder.Object)
+		return anthropicSanitizedMapHint(v, h)
+	case []interface{}:
+		hs, _ := inHint.([]interface{})
+		out := make([]interface{}, len(v))
+		for i, item := range v {
+			var ch interface{}
+			if i < len(hs) {
+				ch = hs[i]
+			}
+			out[i] = anthropicSanitizedHint(item, ch)
+		}
+		return out
+	}
+	return inHint
+}
+
+func anthropicSanitizedMapHint(schema map[string]interface{}, h *jsonorder.Object) *jsonorder.Object {
+	child := func(key string) interface{} {
+		if h == nil {
+			return nil
+		}
+		v, _ := h.Get(key)
+		return v
+	}
+	out := jsonorder.New()
+	setDefinitions := func() {
+		for _, key := range []string{"definitions", "$defs"} {
+			if defs, ok := schema[key].(map[string]interface{}); ok {
+				out.Set(key, anthropicSanitizedEntriesHint(defs, child(key)))
+			}
+		}
+	}
+	if ref, ok := schema["$ref"]; ok && ref != nil {
+		out.Set("$ref", nil)
+		setDefinitions()
+		return out
+	}
+	for _, key := range []string{"$schema", "$id", "title", "description", "default", "const", "enum", "type"} {
+		value, ok := schema[key]
+		if !ok || (value == nil && key != "default" && key != "const") {
+			continue
+		}
+		out.Set(key, child(key))
+	}
+	if list, ok := schema["anyOf"].([]interface{}); ok {
+		out.Set("anyOf", anthropicSanitizedHint(list, child("anyOf")))
+	} else if list, ok := schema["oneOf"].([]interface{}); ok {
+		out.Set("anyOf", anthropicSanitizedHint(list, child("oneOf")))
+	}
+	if list, ok := schema["allOf"].([]interface{}); ok {
+		out.Set("allOf", anthropicSanitizedHint(list, child("allOf")))
+	}
+	setDefinitions()
+	if schemaType, _ := schema["type"].(string); schemaType == "object" || schema["properties"] != nil {
+		if properties, ok := schema["properties"].(map[string]interface{}); ok {
+			out.Set("properties", anthropicSanitizedEntriesHint(properties, child("properties")))
+		}
+		out.Set("additionalProperties", nil)
+		if schema["required"] != nil {
+			out.Set("required", child("required"))
+		}
+	}
+	if items, ok := schema["items"]; ok && items != nil {
+		out.Set("items", anthropicSanitizedHint(items, child("items")))
+	}
+	if format, ok := schema["format"].(string); ok && supportedAnthropicStringFormat(format) {
+		out.Set("format", nil)
+	}
+	if _, has := out.Get("description"); !has && anthropicConstraintDescription(schema) != "" {
+		out.Set("description", nil)
+	}
+	return out
+}
+
+// anthropicSanitizedEntriesHint is the hint of a sanitized name -> schema map
+// (properties, definitions, $defs): the input's entry order (TS
+// Object.fromEntries(Object.entries(...))).
+func anthropicSanitizedEntriesHint(entries map[string]interface{}, inHint interface{}) *jsonorder.Object {
+	h, _ := inHint.(*jsonorder.Object)
+	out := jsonorder.New()
+	if h != nil {
+		for _, name := range h.Keys() {
+			if value, ok := entries[name]; ok {
+				ch, _ := h.Get(name)
+				out.Set(name, anthropicSanitizedHint(value, ch))
+			}
+		}
+	}
+	return out
 }
 
 func sanitizeAnthropicSchemaMap(schema map[string]interface{}) map[string]interface{} {

@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"sort"
 	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -153,7 +154,25 @@ func resumeToolApprovals(ctx context.Context, opts toolApprovalResumeOptions) (t
 		// bounded by ToolCallConcurrency, with results in model order.
 		callbacks := opts.callbacks
 		var preliminaryMu sync.Mutex
+		// StreamText reports each result as its execution settles (TS
+		// stream-text.ts mapWithConcurrency execute: enqueue and push to
+		// toolOutputs), so the stream parts and the tool message follow
+		// completion order. GenerateText keeps call order (TS executeTools).
+		var completedMu sync.Mutex
+		var completed []string
 		if opts.streaming {
+			onEnd := callbacks.onFinish
+			if onEnd == nil {
+				onEnd = callbacks.fallbackFinish
+			}
+			callbacks.onFinish = func(ctx context.Context, e OnToolCallFinishEvent) {
+				completedMu.Lock()
+				completed = append(completed, e.ToolCallID)
+				completedMu.Unlock()
+				if onEnd != nil {
+					onEnd(ctx, e)
+				}
+			}
 			// Preliminary results of streaming tools are full-stream parts in
 			// the order they were produced, ahead of the final results.
 			callbacks.onPreliminary = func(result types.ToolResult) {
@@ -170,6 +189,9 @@ func resumeToolApprovals(ctx context.Context, opts toolApprovalResumeOptions) (t
 			return out, err
 		}
 		if opts.streaming {
+			completedMu.Lock()
+			executed = resultsInCompletionOrder(executed, completed)
+			completedMu.Unlock()
 			for i := range executed {
 				out.chunks = append(out.chunks, provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &executed[i]})
 			}
@@ -205,6 +227,29 @@ func resumeToolApprovals(ctx context.Context, opts toolApprovalResumeOptions) (t
 	}
 	out.responseMessages = providerutils.ConvertToResponseMessages(nil, nil, results)
 	return out, nil
+}
+
+// resultsInCompletionOrder stable-sorts results by the position of their
+// tool call ID in completed; results without one keep their place after them.
+func resultsInCompletionOrder(results []types.ToolResult, completed []string) []types.ToolResult {
+	if len(results) < 2 || len(completed) == 0 {
+		return results
+	}
+	pos := make(map[string]int, len(completed))
+	for i, id := range completed {
+		if _, ok := pos[id]; !ok {
+			pos[id] = i
+		}
+	}
+	rank := func(r types.ToolResult) int {
+		if p, ok := pos[r.ToolCallID]; ok {
+			return p
+		}
+		return len(completed)
+	}
+	out := append([]types.ToolResult(nil), results...)
+	sort.SliceStable(out, func(i, j int) bool { return rank(out[i]) < rank(out[j]) })
+	return out
 }
 
 // messagesForModel prepares model messages for a language model call the way

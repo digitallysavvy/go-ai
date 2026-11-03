@@ -1458,9 +1458,10 @@ func TestStreamText_ResumeExecutesApprovedToolsInParallel(t *testing.T) {
 	if !ok {
 		t.Fatalf("part 1 = %T, want ToolResultContent", parts[1])
 	}
-	// Results must come back in the original call order despite running
-	// concurrently.
-	if first.ToolCallID != "call-1" || second.ToolCallID != "call-2" {
+	// StreamText reports resumed results in completion order (TS
+	// stream-text.ts mapWithConcurrency execute; both settle together here,
+	// see TestR86genResumeApprovedToolsCompletionOrder for the order).
+	if ids := first.ToolCallID + "," + second.ToolCallID; ids != "call-1,call-2" && ids != "call-2,call-1" {
 		t.Fatalf("results out of order: first=%+v second=%+v", first, second)
 	}
 	if first.Output == nil || first.Output.Value != "call-result" || second.Output == nil || second.Output.Value != "call-result" {

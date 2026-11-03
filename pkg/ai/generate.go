@@ -930,11 +930,12 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// The prompt's deprecated parts, logged on every step's prompt
 	// conversion as TS convertToLanguageModelPrompt does (NormalizePrompt
 	// rewrites them, so they are collected first).
-	promptDeprecations := promptDeprecationWarnings(prompt.Messages)
+	rawPromptMessages := prompt.Messages
 	prompt, err = promptutils.NormalizePrompt(prompt, allowSystem)
 	if err != nil {
 		return nil, err
 	}
+	promptDeprecations := newStepPromptDeprecations(rawPromptMessages, prompt.Messages)
 
 	// Fire OnStart — registered integrations start their root spans here and
 	// embed them in the returned context.  When no integration is registered
@@ -1363,7 +1364,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			toolsByName[stepExecutionTools[i].Name] = &stepExecutionTools[i]
 		}
 
-		logPromptDeprecations(promptDeprecations)
+		logPromptDeprecations(promptDeprecations.forStep(stepMessages))
 		stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
 			Messages: messagesForModel(stepMessages),
 			System:   appendSandboxDescription(stepSystem, stepSandbox),
@@ -3284,6 +3285,48 @@ func promptDeprecationWarnings(messages []types.Message) [][]types.Warning {
 	var batches [][]types.Warning
 	for _, message := range messages {
 		if warnings := promptutils.DeprecatedContentWarnings(message); len(warnings) > 0 {
+			batches = append(batches, warnings)
+		}
+	}
+	return batches
+}
+
+// stepPromptDeprecations finds the deprecated parts of each step's messages
+// (TS convertToLanguageModelPrompt runs on every step's messages). The initial
+// prompt is normalized before the loop, which rewrites its deprecated parts,
+// so their warnings are recorded by message (the normalized content's backing
+// array, which the step messages share); messages added later (PrepareStep,
+// steering) still hold their deprecated parts and are checked directly.
+type stepPromptDeprecations struct {
+	initial map[*types.ContentPart][]types.Warning
+}
+
+func newStepPromptDeprecations(raw, normalized []types.Message) stepPromptDeprecations {
+	var d stepPromptDeprecations
+	for i, message := range raw {
+		if i >= len(normalized) || len(normalized[i].Content) == 0 {
+			continue
+		}
+		if warnings := promptutils.DeprecatedContentWarnings(message); len(warnings) > 0 {
+			if d.initial == nil {
+				d.initial = map[*types.ContentPart][]types.Warning{}
+			}
+			d.initial[&normalized[i].Content[0]] = warnings
+		}
+	}
+	return d
+}
+
+// forStep returns the warning batches of messages, one per user message with
+// deprecated parts, in message order.
+func (d stepPromptDeprecations) forStep(messages []types.Message) [][]types.Warning {
+	var batches [][]types.Warning
+	for i := range messages {
+		warnings := promptutils.DeprecatedContentWarnings(messages[i])
+		if len(warnings) == 0 && d.initial != nil && len(messages[i].Content) > 0 {
+			warnings = d.initial[&messages[i].Content[0]]
+		}
+		if len(warnings) > 0 {
 			batches = append(batches, warnings)
 		}
 	}
