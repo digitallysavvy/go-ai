@@ -19,6 +19,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // VideoModel implements the provider.VideoModelV3 interface for XAI
@@ -487,12 +488,16 @@ func (m *VideoModel) checkVideoStatus(ctx context.Context, requestID string, hea
 			return nil, nil, providererrors.NewProviderError("xai", resp.StatusCode, "",
 				fmt.Sprintf("xAI video status response exceeded %d bytes", maxPendingStatusBodyBytes), nil)
 		}
-		if len(limited) == 0 {
+		// TS readPendingBody decodes with TextDecoder (leading BOM dropped,
+		// one U+FFFD per invalid subpart) and treats text.trim() == "" as
+		// pending.
+		text := prompt.DecodeUTF8Text(limited)
+		if providerutils.JSTrim(text) == "" {
 			return &xaiVideoStatusResponse{Status: "pending"}, respHeaders, nil
 		}
 
 		var status xaiVideoStatusResponse
-		if err := providerutils.UnmarshalChunk(limited, &status); err != nil {
+		if err := providerutils.UnmarshalChunk([]byte(text), &status); err != nil {
 			return &xaiVideoStatusResponse{Status: "pending"}, respHeaders, nil
 		}
 		if status.Status == "" && (status.Video == nil || status.Video.URL == "") {
@@ -506,12 +511,14 @@ func (m *VideoModel) checkVideoStatus(ctx context.Context, requestID string, hea
 			parseXAIErrorMessage(resp.Body), nil)
 	}
 
-	// TS xaiVideoStatusJsonResponseHandler: createJsonResponseHandler(schema).
-	if err := providerutils.MediaResponseValidator("xai", providerutils.SchemaXAIVideoStatus)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+	// TS xaiVideoStatusJsonResponseHandler: createJsonResponseHandler(schema),
+	// which parses response.text() (UTF-8 decoded, leading BOM dropped).
+	body := []byte(prompt.DecodeUTF8Text(resp.Body))
+	if err := providerutils.MediaResponseValidator("xai", providerutils.SchemaXAIVideoStatus)(resp.StatusCode, resp.Headers, body); err != nil {
 		return nil, nil, err
 	}
 	var status xaiVideoStatusResponse
-	if err := providerutils.UnmarshalChunk(resp.Body, &status); err != nil {
+	if err := providerutils.UnmarshalChunk(body, &status); err != nil {
 		return nil, nil, fmt.Errorf("failed to decode JSON response: %w", err)
 	}
 	return &status, respHeaders, nil
