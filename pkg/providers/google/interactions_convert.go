@@ -1043,11 +1043,20 @@ func resolveInteractionMediaType(mediaType string, data []byte, dataString strin
 	if isFullMediaType(mediaType) {
 		return mediaType, nil
 	}
-	if len(data) == 0 && dataString != "" {
-		data, _ = fileutil.ConvertBase64ToBytes(dataString)
-	}
 	top, _, _ := strings.Cut(mediaType, "/")
-	if detected, ok := fileutil.DetectMediaTypeSignature(data, top); ok {
+	var detected string
+	var ok bool
+	if len(data) == 0 && dataString != "" {
+		// TS detectMediaType decodes only the sniffed prefix of a string
+		// (decodePrefix); a prefix that is not base64 throws (atob).
+		var err error
+		if detected, ok, err = fileutil.DetectMediaTypeSignatureBase64(dataString, top); err != nil {
+			return "", err
+		}
+	} else {
+		detected, ok = fileutil.DetectMediaTypeSignature(data, top)
+	}
+	if ok {
 		return detected, nil
 	}
 	functionality := fmt.Sprintf("file of media type %q must specify subtype since it could not be auto-detected", mediaType)
