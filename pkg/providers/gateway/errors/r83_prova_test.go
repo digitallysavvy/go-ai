@@ -14,7 +14,7 @@ import (
 func r83provaGatewayErrorToTS(err error) map[string]interface{} {
 	out := map[string]interface{}{"message": err.Error()}
 	t := reflect.TypeOf(err)
-	if t.Kind() == reflect.Ptr {
+	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	out["name"] = t.Name()
