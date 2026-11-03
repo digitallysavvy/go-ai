@@ -70,7 +70,7 @@ func openAIToolArgsError(args interface{}, issues string, cause error) error {
 }
 
 // openAIToolArgsNodes are the TS args schemas (packages/openai/src/tool/*.ts
-// at e64ed82f27, the *ArgsSchema each prepareResponsesTools case validates
+// at 30548ee7f9, unchanged since e64ed82f27, the *ArgsSchema each prepareResponsesTools case validates
 // with) as zodlite nodes, so a failure lists zod 4's exact issues.
 var openAIToolArgsNodes = func() map[string]zodlite.Node {
 	var (

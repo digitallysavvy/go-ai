@@ -45,7 +45,7 @@ func xaiSchema(s string) map[string]interface{} {
 	return out
 }
 
-// The tool schemas below are the TS xai tool schemas (packages/xai/src/tool/*.ts at e64ed82f27) as zod toJSONSchema
+// The tool schemas below are the TS xai tool schemas (packages/xai/src/tool/*.ts at 30548ee7f9, unchanged since e64ed82f27) as zod toJSONSchema
 // renders them (target draft-7, io "input", reused "inline"). Provider tool
 // calls are validated against the input schema and ValidateUIMessages checks
 // tool outputs against the output schema.

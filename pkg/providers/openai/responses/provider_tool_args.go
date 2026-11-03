@@ -241,7 +241,7 @@ func schemaFromJSON(s string) map[string]interface{} {
 	return out
 }
 
-// The input and output schemas below are the TS tool schemas (packages/openai/src/tool/{local-shell,shell,apply-patch,computer,programmatic-tool-calling}.ts at e64ed82f27) as zod
+// The input and output schemas below are the TS tool schemas (packages/openai/src/tool/{local-shell,shell,apply-patch,computer,programmatic-tool-calling}.ts at 30548ee7f9, unchanged since e64ed82f27) as zod
 // toJSONSchema renders them (target draft-7, io "input", reused "inline").
 // Tool calls are validated against the input schema and ValidateUIMessages
 // checks tool outputs against the output schema.
