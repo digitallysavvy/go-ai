@@ -18,10 +18,6 @@ type r86integCloseRecorder struct {
 
 func (r *r86integCloseRecorder) Close() error { r.closed = true; return nil }
 
-type r86integFailingReader struct{}
-
-func (r86integFailingReader) Read([]byte) (int, error) { return 0, errR86integ }
-
 // prova CR r86 (RoundTripper class): the transport closes the request body
 // when it fails before the base transport runs (http.RoundTripper contract).
 func TestR86integTransportClosesBodyOnError(t *testing.T) {

@@ -56,7 +56,7 @@ func TestR86integWorkflowToolResultsInCallOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	var parts []string
-	fs := res.FullStream()
+	fs := res.Stream()
 	for {
 		c, err := fs.Next()
 		if err != nil {
