@@ -76,6 +76,7 @@ type Client struct {
 	headers map[string]string
 
 	headersFunc  func() (map[string]string, error)
+	headersCtx   func(ctx context.Context) (map[string]string, error)
 	maxBodyBytes int64
 
 	mu sync.RWMutex
@@ -100,6 +101,13 @@ type Config struct {
 	// layered over Headers (TS lazy `headers: () => ...`). An error aborts the
 	// request before anything is sent.
 	HeadersFunc func() (map[string]string, error)
+
+	// HeadersFuncCtx is HeadersFunc for a credential resolved with the
+	// request's context (TS `Resolvable` headers and API keys, TS 7716e189ee /
+	// 63bf860638, such as an APIKeyFunc). It is called for every request
+	// after HeadersFunc and layered over its result; an error aborts the
+	// request before anything is sent.
+	HeadersFuncCtx func(ctx context.Context) (map[string]string, error)
 
 	// MaxResponseBytes bounds buffered response body reads. Zero uses
 	// fileutil.DefaultMaxDownloadSize (2 GiB), the TS response-handler limit.
@@ -143,6 +151,7 @@ func NewClient(cfg Config) *Client {
 		headers: cfg.Headers,
 
 		headersFunc:  cfg.HeadersFunc,
+		headersCtx:   cfg.HeadersFuncCtx,
 		maxBodyBytes: cfg.MaxResponseBytes,
 	}
 }
@@ -226,16 +235,32 @@ func (e *HTTPStatusError) HTTPResponseHeader() http.Header {
 // URL and default headers) under the read lock, so callers never range over
 // or concatenate the live fields while SetHeader/SetBaseURL may be running
 // on another goroutine.
-func (c *Client) requestDefaults() (string, map[string]string, error) {
+func (c *Client) requestDefaults(ctx context.Context) (string, map[string]string, error) {
 	baseURL, headers := c.snapshot()
+	if err := c.overlayRequestHeaders(ctx, headers); err != nil {
+		return "", nil, err
+	}
+	return baseURL, headers, nil
+}
+
+// overlayRequestHeaders layers the request-time headers (HeadersFunc, then
+// HeadersFuncCtx) over headers.
+func (c *Client) overlayRequestHeaders(ctx context.Context, headers map[string]string) error {
 	if c.headersFunc != nil {
 		extra, err := c.headersFunc()
 		if err != nil {
-			return "", nil, err
+			return err
 		}
 		overlayHeaders(headers, extra)
 	}
-	return baseURL, headers, nil
+	if c.headersCtx != nil {
+		extra, err := c.headersCtx(ctx)
+		if err != nil {
+			return err
+		}
+		overlayHeaders(headers, extra)
+	}
+	return nil
 }
 
 // overlayHeaders layers extra over headers. HTTP header names are
@@ -328,7 +353,7 @@ func formEscape(b *strings.Builder, s string) {
 
 // Do performs an HTTP request
 func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
-	baseURL, defaultHeaders, err := c.requestDefaults()
+	baseURL, defaultHeaders, err := c.requestDefaults(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -526,7 +551,7 @@ func (c *Client) streamClient() *http.Client {
 
 // DoStream performs an HTTP request that returns a streaming response
 func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, error) {
-	baseURL, defaultHeaders, err := c.requestDefaults()
+	baseURL, defaultHeaders, err := c.requestDefaults(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -665,10 +690,12 @@ func (c *Client) Headers() map[string]string {
 		out[k] = v
 	}
 	c.mu.RUnlock()
-	if c.headersFunc != nil {
-		if extra, err := c.headersFunc(); err == nil {
-			overlayHeaders(out, extra)
-		}
+	with := make(map[string]string, len(out))
+	for k, v := range out {
+		with[k] = v
+	}
+	if c.overlayRequestHeaders(context.Background(), with) == nil {
+		return with
 	}
 	return out
 }
@@ -678,18 +705,20 @@ func (c *Client) Headers() map[string]string {
 // API key) the error is returned (a LoadAPIKeyError) instead of handing back
 // headers without credentials.
 func (c *Client) RequestHeaders() (map[string]string, error) {
+	return c.RequestHeadersCtx(context.Background())
+}
+
+// RequestHeadersCtx is RequestHeaders with the context HeadersFuncCtx
+// resolves its credential with.
+func (c *Client) RequestHeadersCtx(ctx context.Context) (map[string]string, error) {
 	c.mu.RLock()
 	out := make(map[string]string, len(c.headers))
 	for k, v := range c.headers {
 		out[k] = v
 	}
 	c.mu.RUnlock()
-	if c.headersFunc != nil {
-		extra, err := c.headersFunc()
-		if err != nil {
-			return nil, err
-		}
-		overlayHeaders(out, extra)
+	if err := c.overlayRequestHeaders(ctx, out); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
