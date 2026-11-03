@@ -62,3 +62,29 @@ func TestR86provaVideoDownloadKeyFuncGetsCallerCtx(t *testing.T) {
 		t.Fatalf("calls without the caller ctx = %d, videos = %+v", withoutCtx, res.Videos)
 	}
 }
+
+// Batch uploads/downloads, file uploads and realtime tokens resolve the
+// APIKeyFunc once, with the caller's ctx (Go also called it through a
+// ctx-less header snapshot).
+func TestR86provaAuthHeadersKeyFuncOnceWithCtx(t *testing.T) {
+	var calls, withoutCtx int32
+	p := New(Config{APIKeyFunc: func(ctx context.Context) (string, error) {
+		atomic.AddInt32(&calls, 1)
+		if ctx.Value(r86provaCtxKey{}) == nil {
+			atomic.AddInt32(&withoutCtx, 1)
+		}
+		return "func-key", nil
+	}})
+	ctx := context.WithValue(context.Background(), r86provaCtxKey{}, true)
+	h, err := p.authHeaders(ctx)
+	if err != nil || h["x-goog-api-key"] != "func-key" {
+		t.Fatalf("headers = %v, err = %v", h, err)
+	}
+	key, err := (&GoogleRealtimeModel{provider: p}).googleRealtimeAPIKey(ctx)
+	if err != nil || key != "func-key" {
+		t.Fatalf("realtime key = %q, err = %v", key, err)
+	}
+	if calls != 2 || withoutCtx != 0 {
+		t.Fatalf("calls = %d, without the caller ctx = %d", calls, withoutCtx)
+	}
+}

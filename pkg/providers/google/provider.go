@@ -119,18 +119,23 @@ func (p *Provider) apiKeyHeaders(ctx context.Context) (map[string]string, error)
 	return map[string]string{"x-goog-api-key": key}, nil
 }
 
-// defaultHeaders returns the client's default headers (user-agent suffix and
-// config headers) without the empty placeholder x-goog-api-key that New sets
+// authHeaders returns the client's default headers (user-agent suffix and
+// config headers) with the API key loaded once for this request with its ctx
+// (TS getHeaders), without the empty placeholder x-goog-api-key that New sets
 // when no key is configured, so a differently-cased header from Config.Headers
-// or the request-time key cannot collide with an empty value.
-func (p *Provider) defaultHeaders() map[string]string {
-	h := p.client.Headers()
+// cannot collide with an empty value. A missing key is the LoadAPIKeyError, a
+// key func error is returned as is.
+func (p *Provider) authHeaders(ctx context.Context) (map[string]string, error) {
+	h, err := p.client.RequestHeadersCtx(ctx)
+	if err != nil {
+		return nil, err
+	}
 	for k, v := range h {
 		if v == "" {
 			delete(h, k)
 		}
 	}
-	return h
+	return h, nil
 }
 
 // headersSnapshot returns the client's default headers with the lazily
