@@ -65,7 +65,9 @@ func r84integChatToolDefs(t *testing.T, mode string, tools []types.Tool) (string
 // holds the serialized definitions in TS key order, without names, and "[]"
 // for a step without tools.
 func TestR84integWorkflowChatSpanSerializedToolDefinitions(t *testing.T) {
-	noop := func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }
+	noop := func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "ok", nil
+	}
 	strict := true
 	tools := []types.Tool{
 		{Name: "weather", Title: "Weather", Description: "Get weather", Parameters: schema.NewSimpleStructSchema(reflect.TypeOf(r84integCity{})), Strict: &strict, Execute: noop,
