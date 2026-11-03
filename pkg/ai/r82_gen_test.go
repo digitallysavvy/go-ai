@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sync"
@@ -580,4 +581,86 @@ func TestR82genTelemetryStepToolChoiceDefaultsToAuto(t *testing.T) {
 	if got, ok := r82genStepToolChoiceAttr(rec.Ended(), "ai.generateText.doGenerate"); !ok || got != `{"type":"auto"}` {
 		t.Fatalf(`ai.prompt.toolChoice = %q (present %v), want {"type":"auto"}`, got, ok)
 	}
+}
+
+// 'options.output' > 'provider-selected structured output' 9137 'should parse
+// the selected text while preserving content, messages, and callbacks': the
+// output parses structuredOutputText, while text, content, sources and the
+// response messages (each text and reasoning part with its provider
+// metadata as providerOptions) keep every part, in the result, the final
+// step, the model-call end and step end events and OnFinish.
+func TestR82genProviderSelectedStructuredOutput(t *testing.T) {
+	source := types.SourceContent{SourceType: "url", ID: "source-1", URL: "https://example.com", Title: "Example"}
+	draftMeta := json.RawMessage(`{"testProvider":{"itemId":"draft","phase":"commentary","annotations":[{"type":"url_citation","url":"https://example.com","title":"Example"}]}}`)
+	finalMeta := json.RawMessage(`{"testProvider":{"itemId":"final","phase":"final_answer"}}`)
+	start, end := 0, 17
+	content := []types.ContentPart{
+		types.ReasoningContent{Text: "Thinking."},
+		types.TextContent{Text: `{"value":"draft"}`, Citations: []types.Citation{{Source: source, StartIndex: &start, EndIndex: &end}}, ProviderMetadata: draftMeta},
+		source,
+		types.TextContent{Text: `{"value":`, ProviderMetadata: finalMeta},
+		types.TextContent{Text: `"final"}`, ProviderMetadata: finalMeta},
+	}
+	selected := `{"value":"final"}`
+	in, out := int64(3), int64(10)
+	model := &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+		return &types.GenerateResult{Content: content, StructuredOutputText: &selected, FinishReason: types.FinishReasonStop,
+			Usage: types.Usage{InputTokens: &in, OutputTokens: &out}}, nil
+	}}
+	var mu sync.Mutex
+	var lmEnd []types.ContentPart
+	var stepText string
+	var finishText string
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:  model,
+		Prompt: "prompt",
+		Output: ObjectOutput[map[string]interface{}](ObjectOutputOptions{Schema: schema.NewSimpleJSONSchema(map[string]interface{}{
+			"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}, "required": []interface{}{"value"},
+		})}),
+		OnLanguageModelCallEnd: func(_ context.Context, e LanguageModelCallEndEvent) {
+			mu.Lock()
+			lmEnd = e.Content
+			mu.Unlock()
+		},
+		OnStepFinish: func(_ context.Context, s types.StepResult, _ interface{}) {
+			mu.Lock()
+			stepText = s.Text
+			mu.Unlock()
+		},
+		OnFinish: func(_ context.Context, r *GenerateTextResult, _ interface{}) {
+			mu.Lock()
+			finishText = r.Text
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const wantText = `{"value":"draft"}{"value":"final"}`
+	if got := res.Output.(map[string]interface{}); got["value"] != "final" || len(got) != 1 {
+		t.Errorf("output = %v", got)
+	}
+	if res.Text != wantText || stepText != wantText || finishText != wantText {
+		t.Errorf("text = %q, step %q, finish %q", res.Text, stepText, finishText)
+	}
+	if !reflect.DeepEqual(res.Content, content) || !reflect.DeepEqual(res.FinalStep.Content, content) || !reflect.DeepEqual(lmEnd, content) {
+		t.Errorf("content = %#v\nfinal step %#v\nmodel call end %#v", res.Content, res.FinalStep.Content, lmEnd)
+	}
+	if !reflect.DeepEqual(res.Sources, []types.SourceContent{source}) {
+		t.Errorf("sources = %#v", res.Sources)
+	}
+	if res.Usage.TotalTokens == nil || *res.Usage.TotalTokens != 13 {
+		t.Errorf("usage = %+v", res.Usage)
+	}
+	var draft, final interface{}
+	_ = json.Unmarshal(draftMeta, &draft)
+	_ = json.Unmarshal(finalMeta, &final)
+	want := []interface{}{r71genObj{"role": "assistant", "content": []interface{}{
+		r71genObj{"type": "reasoning", "text": "Thinking."},
+		r71genObj{"type": "text", "text": `{"value":"draft"}`, "providerOptions": draft},
+		r71genObj{"type": "text", "text": `{"value":`, "providerOptions": final},
+		r71genObj{"type": "text", "text": `"final"}`, "providerOptions": final},
+	}}}
+	r71genCheckJSON(t, "responseMessages", r71genJSON(t, res.ResponseMessages), want)
+	r71genCheckJSON(t, "finalStep.response.messages", r71genJSON(t, res.FinalStep.Response.Messages), want)
 }
