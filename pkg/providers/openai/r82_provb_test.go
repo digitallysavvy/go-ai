@@ -196,3 +196,32 @@ func TestR82provbComputerCallEmptyActionsKept(t *testing.T) {
 		}
 	}
 }
+
+// TS uploadSkill spreads `defaultVersion` when `default_version != null`: a
+// present empty string is reported, an absent one is not.
+func TestR82provbSkillEmptyDefaultVersionKept(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		has  bool
+	}{
+		{`{"id":"s","created_at":1,"default_version":""}`, true},
+		{`{"id":"s","created_at":1,"default_version":null}`, false},
+		{`{"id":"s","created_at":1}`, false},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		res, err := New(Config{APIKey: "k", BaseURL: srv.URL}).Skills().UploadSkill(context.Background(), types.UploadSkillOptions{
+			Files: []types.UploadSkillFile{{Path: "a.md", Data: types.FileData{Type: types.FileDataTypeText, Text: "x"}}},
+		})
+		srv.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		meta, _ := res.ProviderMetadata["openai"].(map[string]interface{})
+		if _, has := meta["defaultVersion"]; has != tc.has {
+			t.Fatalf("%s: defaultVersion present = %v, want %v (%v)", tc.body, has, tc.has, meta)
+		}
+	}
+}
