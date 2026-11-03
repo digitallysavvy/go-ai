@@ -38,7 +38,7 @@ func TestR82provaAnthropicEmptyDataEventIsParseError(t *testing.T) {
 	var parseErr *providererrors.JSONParseError
 	for _, c := range drain(t, s) {
 		seq = append(seq, c.Type)
-		if c.Type == provider.ChunkTypeError && !(errors.As(c.Err, &parseErr) && parseErr.Text == "") {
+		if c.Type == provider.ChunkTypeError && (!errors.As(c.Err, &parseErr) || parseErr.Text != "") {
 			t.Fatalf("error part = %v, want a JSONParseError of empty text", c.Err)
 		}
 	}
