@@ -60,6 +60,11 @@ type Config struct {
 	// headers for every request (Azure api-key). An error fails the request.
 	HeadersFunc func() (map[string]string, error) `json:"-"`
 
+	// HeadersFuncCtx is HeadersFunc with the request's context, for a
+	// NoAPIKey wrapper whose credential comes from an APIKeyFunc (Azure,
+	// TS 7716e189ee). It is called after HeadersFunc and layered over it.
+	HeadersFuncCtx func(ctx context.Context) (map[string]string, error) `json:"-"`
+
 	// Name overrides the provider name returned by Provider.Name().
 	// Defaults to "openai".
 	Name string
@@ -278,14 +283,15 @@ func New(cfg Config) *Provider {
 	}
 	if authManaged {
 		clientCfg.HeadersFunc = cfg.HeadersFunc
+		clientCfg.HeadersFuncCtx = cfg.HeadersFuncCtx
 	} else {
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
-		// An APIKeyFunc is called per request (TS 7716e189ee; TS resolves it
-		// without an abort signal, so it gets context.Background()).
+		// An APIKeyFunc is called per request with the request's context
+		// (TS 7716e189ee).
 		userHeaders, userKey, keyFunc := cfg.Headers, cfg.APIKey, cfg.APIKeyFunc
-		clientCfg.HeadersFunc = func() (map[string]string, error) {
+		clientCfg.HeadersFuncCtx = func(ctx context.Context) (map[string]string, error) {
 			if keyFunc != nil {
-				return providerutils.RequestAuthHeaderFunc(context.Background(), userHeaders, providerutils.ResolveAPIKeyOptions{
+				return providerutils.RequestAuthHeaderFunc(ctx, userHeaders, providerutils.ResolveAPIKeyOptions{
 					APIKey: userKey, APIKeyFunc: keyFunc, EnvVar: apiKeyEnv, Description: apiKeyDescription,
 				}, "Authorization", "Bearer ")
 			}

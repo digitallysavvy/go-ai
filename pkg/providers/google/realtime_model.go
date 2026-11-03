@@ -67,7 +67,7 @@ var (
 )
 
 func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
-	apiKey, err := m.googleRealtimeAPIKey()
+	apiKey, err := m.googleRealtimeAPIKey(ctx)
 	if err != nil {
 		return provider.ClientSecretResult{}, err
 	}
@@ -130,9 +130,9 @@ func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 // googleRealtimeAPIKey mirrors TS `this.config.headers()['x-goog-api-key']`:
 // the provider's getHeaders loads the key (a missing key is a
 // LoadAPIKeyError), and a configured x-goog-api-key header wins.
-func (m *GoogleRealtimeModel) googleRealtimeAPIKey() (string, error) {
+func (m *GoogleRealtimeModel) googleRealtimeAPIKey(ctx context.Context) (string, error) {
 	headers := m.provider.defaultHeaders()
-	extra, err := m.provider.apiKeyHeaders()
+	extra, err := m.provider.apiKeyHeaders(ctx)
 	if err != nil {
 		return "", err
 	}

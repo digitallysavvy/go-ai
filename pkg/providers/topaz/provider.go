@@ -39,7 +39,7 @@ type Config struct {
 	// APIKeyFunc resolves the key per request instead of APIKey (TS
 	// `apiKey: Resolvable<string>`, 7716e189ee). The environment is not
 	// read when it is set; setting both is an InvalidArgumentError. The func
-	// gets context.Background() (TS resolves it without an abort signal).
+	// gets the request's context.
 	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 
 	// BaseURL is the base URL for the Topaz API (optional).
@@ -90,9 +90,9 @@ func New(cfg Config) *Provider {
 		BaseURL: baseURL,
 		Headers: headers,
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
-		HeadersFunc: func() (map[string]string, error) {
+		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
 			if cfg.APIKeyFunc != nil {
-				return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+				return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
 					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "TOPAZ_API_KEY", Description: "Topaz Labs",
 				}, "X-API-Key", "")
 			}

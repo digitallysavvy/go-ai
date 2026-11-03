@@ -51,10 +51,9 @@ func New(cfg Config) *Provider {
 	}, cfg.Headers), version.ProviderUserAgent("alibaba"))
 
 	// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
-	headersFunc := func() (map[string]string, error) {
+	headersFunc := func(ctx context.Context) (map[string]string, error) {
 		if cfg.APIKeyFunc != nil {
-			// TS resolves the key without an abort signal.
-			return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+			return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
 				APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "ALIBABA_API_KEY", Description: "Alibaba Cloud (DashScope)",
 			}, "Authorization", "Bearer ")
 		}
@@ -63,21 +62,21 @@ func New(cfg Config) *Provider {
 
 	// Create HTTP client for chat API
 	client := http.NewClient(http.Config{
-		BaseURL:     baseURL,
-		Headers:     headers,
-		HeadersFunc: headersFunc,
+		BaseURL:        baseURL,
+		Headers:        headers,
+		HeadersFuncCtx: headersFunc,
 	})
 
 	// Create HTTP client for video API
 	videoClient := http.NewClient(http.Config{
-		BaseURL:     videoBaseURL,
-		Headers:     headers,
-		HeadersFunc: headersFunc,
+		BaseURL:        videoBaseURL,
+		Headers:        headers,
+		HeadersFuncCtx: headersFunc,
 	})
 	embeddingClient := http.NewClient(http.Config{
-		BaseURL:     embeddingBaseURL,
-		Headers:     headers,
-		HeadersFunc: headersFunc,
+		BaseURL:        embeddingBaseURL,
+		Headers:        headers,
+		HeadersFuncCtx: headersFunc,
 	})
 
 	return &Provider{

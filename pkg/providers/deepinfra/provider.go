@@ -1,6 +1,7 @@
 package deepinfra
 
 import (
+	"context"
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -29,6 +30,7 @@ type Provider struct {
 	imageBaseURL string
 	editBaseURL  string
 	headers      map[string]string
+	apiKeyFunc   providerutils.APIKeyFunc
 }
 
 // Config contains configuration for the DeepInfra provider
@@ -42,13 +44,22 @@ type Config struct {
 
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string
+
+	// APIKeyFunc resolves the API key before each request with the
+	// request's context (TS `apiKey: Resolvable<string>`, 7716e189ee), for
+	// chat, completion, embedding and image calls. DEEPINFRA_API_KEY is not
+	// read when it is set; setting both APIKey and APIKeyFunc fails every
+	// request with an InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 }
 
 // New creates a new DeepInfra provider
 // DeepInfra uses OpenAI-compatible API
 func New(cfg Config) *Provider {
 	// TS loadApiKey: the key defaults to the DEEPINFRA_API_KEY environment variable.
-	cfg.APIKey = providerutils.APIKeyOrEnv(cfg.APIKey, "DEEPINFRA_API_KEY")
+	if cfg.APIKeyFunc == nil {
+		cfg.APIKey = providerutils.APIKeyOrEnv(cfg.APIKey, "DEEPINFRA_API_KEY")
+	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
@@ -57,6 +68,7 @@ func New(cfg Config) *Provider {
 	structuredOutputs := true
 	openaiProvider := openai.New(openai.Config{
 		APIKey:            cfg.APIKey,
+		APIKeyFunc:        cfg.APIKeyFunc,
 		APIKeyEnvVar:      "DEEPINFRA_API_KEY",
 		APIKeyDescription: "DeepInfra's API key",
 		BaseURL:           baseURL,
@@ -75,6 +87,7 @@ func New(cfg Config) *Provider {
 	return &Provider{
 		Provider:     openaiProvider,
 		apiKey:       cfg.APIKey,
+		apiKeyFunc:   cfg.APIKeyFunc,
 		imageBaseURL: deriveDeepInfraImageBaseURL(baseURL),
 		editBaseURL:  baseURL,
 		headers:      cfg.Headers,
@@ -131,8 +144,10 @@ func (p *Provider) imageClient(baseURL string) *internalhttp.Client {
 		BaseURL: baseURL,
 		Headers: version.WithUserAgentSuffix(p.requestHeaders(), version.ProviderUserAgent("deepinfra")),
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
-		HeadersFunc: func() (map[string]string, error) {
-			return providerutils.RequestAuthHeader(p.headers, p.apiKey, "DEEPINFRA_API_KEY", "DeepInfra's API key", "Authorization", "Bearer ")
+		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
+			return providerutils.RequestAuthHeaderFunc(ctx, p.headers, providerutils.ResolveAPIKeyOptions{
+				APIKey: p.apiKey, APIKeyFunc: p.apiKeyFunc, EnvVar: "DEEPINFRA_API_KEY", Description: "DeepInfra's API key",
+			}, "Authorization", "Bearer ")
 		},
 	})
 }

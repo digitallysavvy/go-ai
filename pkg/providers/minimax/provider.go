@@ -14,6 +14,7 @@
 package minimax
 
 import (
+	"context"
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"strings"
@@ -69,6 +70,13 @@ type Config struct {
 
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string
+
+	// APIKeyFunc resolves the API key before each request with the
+	// request's context (TS `apiKey: Resolvable<string>`, 7716e189ee), for
+	// chat and video calls. MINIMAX_API_KEY is not read when it is set;
+	// setting both APIKey and APIKeyFunc fails every request with an
+	// InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 }
 
 // New creates a new MiniMax provider with the given configuration. If
@@ -90,6 +98,7 @@ func New(cfg Config) *Provider {
 	// sub-provider through APIKeyEnvVar and by resolveVideoHeaders.
 	anthropicConfig := anthropic.Config{
 		APIKey:            cfg.APIKey,
+		APIKeyFunc:        cfg.APIKeyFunc,
 		APIKeyEnvVar:      "MINIMAX_API_KEY",
 		APIKeyDescription: "MiniMax API key",
 		Name:              "minimax",
@@ -126,9 +135,11 @@ func New(cfg Config) *Provider {
 // once and cached) and layering per-request headers over the provider's
 // configured ones (TS `combineHeaders(await resolve(this.config.headers),
 // options.headers)`: request headers win).
-func (p *Provider) resolveVideoHeaders(requestHeaders map[string]string) (map[string]string, error) {
+func (p *Provider) resolveVideoHeaders(ctx context.Context, requestHeaders map[string]string) (map[string]string, error) {
 	// TS loadApiKey: a missing key is a LoadAPIKeyError.
-	authHeaders, err := providerutils.RequestAuthHeader(p.config.Headers, p.config.APIKey, "MINIMAX_API_KEY", "MiniMax API key", "Authorization", "Bearer ")
+	authHeaders, err := providerutils.RequestAuthHeaderFunc(ctx, p.config.Headers, providerutils.ResolveAPIKeyOptions{
+		APIKey: p.config.APIKey, APIKeyFunc: p.config.APIKeyFunc, EnvVar: "MINIMAX_API_KEY", Description: "MiniMax API key",
+	}, "Authorization", "Bearer ")
 	if err != nil {
 		return nil, err
 	}

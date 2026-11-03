@@ -100,8 +100,8 @@ func encodeURIComponent(s string) string { return providerutils.EncodeURICompone
 // mirroring TS openai-speech-translation-model.ts's doStream, which reuses
 // `this.config.headers()` -- the same tagged getHeaders() closure used for
 // REST calls -- rather than rebuilding an untagged header set.
-func (m *SpeechTranslationModel) baseSpeechTranslationWSHeaders() (map[string]string, error) {
-	return m.provider.client.RequestHeaders()
+func (m *SpeechTranslationModel) baseSpeechTranslationWSHeaders(ctx context.Context) (map[string]string, error) {
+	return m.provider.client.RequestHeadersCtx(ctx)
 }
 
 // DoStream streams a speech-to-speech translation over the OpenAI realtime
@@ -143,7 +143,7 @@ func (m *SpeechTranslationModel) DoStream(ctx context.Context, opts *provider.Sp
 		})
 	}
 
-	baseHeaders, err := m.baseSpeechTranslationWSHeaders()
+	baseHeaders, err := m.baseSpeechTranslationWSHeaders(ctx)
 	if err != nil {
 		return nil, err
 	}

@@ -31,13 +31,21 @@ type Config struct {
 
 	// HTTPClient overrides the HTTP client used for requests.
 	HTTPClient *http.Client
+
+	// APIKeyFunc resolves the API key before each request with the
+	// request's context (TS `apiKey: Resolvable<string>`, 7716e189ee).
+	// CEREBRAS_API_KEY is not read when it is set; setting both APIKey and
+	// APIKeyFunc fails every request with an InvalidArgumentError.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 }
 
 // New creates a new Cerebras provider
 // Cerebras uses OpenAI-compatible API
 func New(cfg Config) *Provider {
 	// TS loadApiKey: the key defaults to the CEREBRAS_API_KEY environment variable.
-	cfg.APIKey = providerutils.APIKeyOrEnv(cfg.APIKey, "CEREBRAS_API_KEY")
+	if cfg.APIKeyFunc == nil {
+		cfg.APIKey = providerutils.APIKeyOrEnv(cfg.APIKey, "CEREBRAS_API_KEY")
+	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api.cerebras.ai/v1"
@@ -46,6 +54,7 @@ func New(cfg Config) *Provider {
 	structuredOutputs := true
 	openaiProvider := openai.New(openai.Config{
 		APIKey:            cfg.APIKey,
+		APIKeyFunc:        cfg.APIKeyFunc,
 		APIKeyEnvVar:      "CEREBRAS_API_KEY",
 		APIKeyDescription: "Cerebras API key",
 		Name:              "cerebras",

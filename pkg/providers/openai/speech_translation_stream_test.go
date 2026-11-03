@@ -45,7 +45,7 @@ func TestSpeechTranslationModel_BaseWSHeadersCarryUserAgentTag(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	m := NewSpeechTranslationModel(p, "gpt-realtime-translate")
 
-	baseHeaders, _ := m.baseSpeechTranslationWSHeaders()
+	baseHeaders, _ := m.baseSpeechTranslationWSHeaders(context.Background())
 	ua := baseHeaders["user-agent"]
 	if !strings.HasPrefix(ua, "ai-sdk-openai/") {
 		t.Fatalf("user-agent = %q, want ai-sdk-openai/... prefix", ua)

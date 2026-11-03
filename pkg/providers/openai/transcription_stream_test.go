@@ -175,7 +175,7 @@ func TestTranscriptionModel_BaseWSHeadersCarryUserAgentTag(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	m := NewTranscriptionModel(p, "gpt-realtime-whisper")
 
-	baseHeaders, _ := m.baseWSHeaders()
+	baseHeaders, _ := m.baseWSHeaders(context.Background())
 	ua := baseHeaders["user-agent"]
 	if !strings.HasPrefix(ua, "ai-sdk-openai/") {
 		t.Fatalf("user-agent = %q, want ai-sdk-openai/... prefix", ua)

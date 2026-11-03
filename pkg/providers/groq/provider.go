@@ -58,10 +58,9 @@ func New(cfg Config) *Provider {
 			"Content-Type":  "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("groq")),
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
-		HeadersFunc: func() (map[string]string, error) {
+		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
 			if cfg.APIKeyFunc != nil {
-				// HeadersFunc has no request ctx (reports/cr-r85-prova-to-carry.md).
-				return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+				return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
 					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "GROQ_API_KEY", Description: "Groq",
 				}, "Authorization", "Bearer ")
 			}

@@ -151,14 +151,16 @@ func New(cfg Config) *Provider {
 	headers = version.WithUserAgentSuffix(headers, userAgentSuffix)
 
 	headersFunc := cfg.HeadersFunc
+	var headersFuncCtx func(context.Context) (map[string]string, error)
 	if cfg.APIKeyFunc != nil {
 		inner, userHeaders, apiKey, keyFunc := cfg.HeadersFunc, cfg.Headers, cfg.APIKey, cfg.APIKeyFunc
-		headersFunc = func() (map[string]string, error) {
+		headersFunc = nil
+		headersFuncCtx = func(ctx context.Context) (map[string]string, error) {
 			out := map[string]string{}
 			// TS `{...(apiKey && {Authorization: Bearer apiKey}),
 			// ...options.headers}`: the caller's own Authorization header
-			// wins. TS resolves the key without an abort signal.
-			auth, err := providerutils.RequestAuthHeaderFunc(context.Background(), userHeaders, providerutils.ResolveAPIKeyOptions{
+			// wins. The key func gets the request's context.
+			auth, err := providerutils.RequestAuthHeaderFunc(ctx, userHeaders, providerutils.ResolveAPIKeyOptions{
 				APIKey: apiKey, APIKeyFunc: keyFunc, Optional: true,
 			}, "Authorization", "Bearer ")
 			if err != nil {
@@ -182,9 +184,10 @@ func New(cfg Config) *Provider {
 
 	// Create HTTP client
 	client := http.NewClient(http.Config{
-		BaseURL:     cfg.BaseURL,
-		Headers:     headers,
-		HeadersFunc: headersFunc,
+		BaseURL:        cfg.BaseURL,
+		Headers:        headers,
+		HeadersFunc:    headersFunc,
+		HeadersFuncCtx: headersFuncCtx,
 	})
 
 	registry, err := NewExtensionRegistry(cfg.Extensions)

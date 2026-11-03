@@ -86,10 +86,9 @@ func New(cfg Config) *Provider {
 		}, cfg.Headers),
 		HTTPClient: cfg.HTTPClient,
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
-		HeadersFunc: func() (map[string]string, error) {
+		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
 			if cfg.APIKeyFunc != nil {
-				// TS resolves the key without an abort signal.
-				return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+				return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
 					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "HUGGINGFACE_API_KEY", Description: "Hugging Face",
 				}, "Authorization", "Bearer ")
 			}

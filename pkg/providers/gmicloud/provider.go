@@ -75,10 +75,9 @@ func New(cfg Config) *Provider {
 		}, cfg.Headers), version.ProviderUserAgent("gmicloud")),
 		HTTPClient: withGmicloudIncludeUsage(cfg.HTTPClient),
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
-		HeadersFunc: func() (map[string]string, error) {
+		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
 			if cfg.APIKeyFunc != nil {
-				// TS resolves the key without an abort signal.
-				return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+				return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
 					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "GMI_CLOUD_APIKEY", Description: "GMI Cloud API key",
 				}, "Authorization", "Bearer ")
 			}

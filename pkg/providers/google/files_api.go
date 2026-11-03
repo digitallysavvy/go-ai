@@ -38,7 +38,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		baseURL = DefaultBaseURL
 	}
 	baseOrigin := strings.TrimSuffix(baseURL, "/v1beta")
-	keyHeaders, err := f.provider.apiKeyHeaders()
+	keyHeaders, err := f.provider.apiKeyHeaders(ctx)
 	if err != nil {
 		return nil, err
 	}

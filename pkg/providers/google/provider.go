@@ -86,7 +86,7 @@ func New(cfg Config) *Provider {
 		HTTPClient: cfg.HTTPClient,
 		// TS getHeaders runs per request: the key is (re)loaded then and a
 		// missing key fails the request with a LoadAPIKeyError.
-		HeadersFunc: p.apiKeyHeaders,
+		HeadersFuncCtx: p.apiKeyHeaders,
 	})
 
 	return p
@@ -96,15 +96,14 @@ func New(cfg Config) *Provider {
 // getHeaders/loadApiKey: Config.APIKey or GOOGLE_GENERATIVE_AI_API_KEY, and a
 // LoadAPIKeyError when neither is set. A non-empty x-goog-api-key in
 // Config.Headers already authenticates the request and is kept.
-func (p *Provider) apiKeyHeaders() (map[string]string, error) {
+func (p *Provider) apiKeyHeaders(ctx context.Context) (map[string]string, error) {
 	for k, v := range p.config.Headers {
 		if strings.EqualFold(k, "x-goog-api-key") && v != "" {
 			return nil, nil
 		}
 	}
 	if p.config.APIKeyFunc != nil {
-		// HeadersFunc has no request ctx (reports/cr-r85-prova-to-carry.md).
-		key, err := providerutils.ResolveAPIKey(context.Background(), providerutils.ResolveAPIKeyOptions{
+		key, err := providerutils.ResolveAPIKey(ctx, providerutils.ResolveAPIKeyOptions{
 			APIKey: p.config.APIKey, APIKeyFunc: p.config.APIKeyFunc,
 			EnvVar: "GOOGLE_GENERATIVE_AI_API_KEY", Description: "Google Generative AI",
 		})
@@ -137,8 +136,13 @@ func (p *Provider) defaultHeaders() map[string]string {
 // headersSnapshot returns the client's default headers with the lazily
 // loaded API key applied (a missing key leaves the header as configured).
 func (p *Provider) headersSnapshot() map[string]string {
+	return p.headersSnapshotCtx(context.Background())
+}
+
+// headersSnapshotCtx is headersSnapshot with the context an APIKeyFunc gets.
+func (p *Provider) headersSnapshotCtx(ctx context.Context) map[string]string {
 	h := p.client.Headers()
-	if extra, err := p.apiKeyHeaders(); err == nil {
+	if extra, err := p.apiKeyHeaders(ctx); err == nil {
 		for k, v := range extra {
 			h[k] = v
 		}

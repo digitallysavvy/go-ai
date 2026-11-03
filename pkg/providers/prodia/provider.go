@@ -27,7 +27,7 @@ type Config struct {
 	// APIKeyFunc resolves the key per request instead of APIKey (TS
 	// `apiKey: Resolvable<string>`, 7716e189ee). The environment is not
 	// read when it is set; setting both is an InvalidArgumentError. The func
-	// gets context.Background() (TS resolves it without an abort signal).
+	// gets the request's context.
 	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 
 	// BaseURL is the base URL for the Prodia API (optional).
@@ -66,8 +66,8 @@ func New(cfg Config) *Provider {
 		BaseURL: baseURL,
 		Headers: version.WithUserAgentSuffix(headers, version.ProviderUserAgent("prodia")),
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
-		HeadersFunc: func() (map[string]string, error) {
-			return prodiaAuthHeader(cfg)
+		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
+			return prodiaAuthHeader(ctx, cfg)
 		},
 	})
 
@@ -93,9 +93,9 @@ func (p *Provider) effectiveBaseURL() string {
 
 // prodiaAuthHeader is the per-request Authorization header: from
 // APIKeyFunc when set, else APIKey or PRODIA_TOKEN.
-func prodiaAuthHeader(cfg Config) (map[string]string, error) {
+func prodiaAuthHeader(ctx context.Context, cfg Config) (map[string]string, error) {
 	if cfg.APIKeyFunc != nil {
-		return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+		return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
 			APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "PRODIA_TOKEN", Description: "Prodia",
 		}, "Authorization", "Bearer ")
 	}
@@ -106,7 +106,7 @@ func prodiaAuthHeader(cfg Config) (map[string]string, error) {
 // the PRODIA_TOKEN environment variable, else a LoadAPIKeyError. A caller
 // that supplies its own Authorization header keeps it (empty key, no error).
 func (p *Provider) effectiveAPIKey() (string, error) {
-	h, err := prodiaAuthHeader(p.config)
+	h, err := prodiaAuthHeader(context.Background(), p.config)
 	if err != nil || h == nil {
 		return "", err
 	}

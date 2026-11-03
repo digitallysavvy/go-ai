@@ -53,7 +53,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 
 	warnings := StreamingTranscriptionWarnings(m.modelID, streamOpts)
 
-	baseHeaders, err := m.baseWSHeaders()
+	baseHeaders, err := m.baseWSHeaders(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -89,8 +89,8 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 // mirroring TS openai-transcription-model.ts's doStream, which reuses
 // `this.config.headers()` -- the same tagged getHeaders() closure used for
 // REST calls -- rather than rebuilding an untagged header set.
-func (m *TranscriptionModel) baseWSHeaders() (map[string]string, error) {
-	return m.provider.client.RequestHeaders()
+func (m *TranscriptionModel) baseWSHeaders(ctx context.Context) (map[string]string, error) {
+	return m.provider.client.RequestHeadersCtx(ctx)
 }
 
 func UnsupportedStreamingTranscriptionWarning(option string) types.Warning {

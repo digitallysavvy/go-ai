@@ -280,7 +280,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 		return nil, err
 	}
 	if isTrusted(resultsURL) {
-		rawHeaders, err := b.rawRequestHeaders(opts.Headers)
+		rawHeaders, err := b.rawRequestHeaders(ctx, opts.Headers)
 		if err != nil {
 			return nil, err
 		}
@@ -356,13 +356,13 @@ func (b *Batch) startBatchHeaders(betas []string, headers map[string]string) map
 // headers, user-agent suffix) with the request-time API key and the call
 // headers on top. *http.Client (returned by Client.HTTPClient()) does not
 // carry them itself.
-func (b *Batch) rawRequestHeaders(extra map[string]string) (map[string]string, error) {
+func (b *Batch) rawRequestHeaders(ctx context.Context, extra map[string]string) (map[string]string, error) {
 	// The client's default headers carry the API version, configured headers
 	// and the user-agent suffix (TS getBatchHeaders resolves the same
 	// provider headers).
 	headers := b.provider.client.Headers()
 	// A missing API key fails the request like TS getBatchHeaders/loadApiKey.
-	lazy, err := requestAuthHeaders(b.provider.config)
+	lazy, err := requestAuthHeaders(ctx, b.provider.config)
 	if err != nil {
 		return nil, err
 	}

@@ -27,15 +27,15 @@ type Config struct {
 	// APIKeyFunc resolves the key per request instead of APIKey (TS
 	// `apiKey: Resolvable<string>`, 7716e189ee). The environment is not
 	// read when it is set; setting both is an InvalidArgumentError. The func
-	// gets context.Background() (TS resolves it without an abort signal).
+	// gets the request's context.
 	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
 }
 
 // quiverAIAuthHeader is the per-request Authorization header: from
 // APIKeyFunc when set, else APIKey or QUIVERAI_API_KEY.
-func quiverAIAuthHeader(cfg Config) (map[string]string, error) {
+func quiverAIAuthHeader(ctx context.Context, cfg Config) (map[string]string, error) {
 	if cfg.APIKeyFunc != nil {
-		return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+		return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
 			APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "QUIVERAI_API_KEY", Description: "QuiverAI",
 		}, "Authorization", "Bearer ")
 	}
@@ -83,8 +83,8 @@ func New(cfg Config) *Provider {
 			BaseURL: baseURL,
 			Headers: headers,
 			// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
-			HeadersFunc: func() (map[string]string, error) {
-				return quiverAIAuthHeader(cfg)
+			HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
+				return quiverAIAuthHeader(ctx, cfg)
 			},
 		}),
 	}
@@ -107,13 +107,20 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 	}
 	apiKey, baseURL := resolveQuiverAIConfig(p.config)
 	structuredOutputsDisabled := false
+	var headersFunc func() (map[string]string, error)
+	if p.config.APIKeyFunc == nil {
+		headersFunc = func() (map[string]string, error) {
+			return quiverAIAuthHeader(context.Background(), p.config)
+		}
+	}
 	orProvider := openresponses.New(openresponses.Config{
 		BaseURL: baseURL + "/responses",
 		APIKey:  apiKey,
-		Headers: p.config.Headers,
-		HeadersFunc: func() (map[string]string, error) {
-			return quiverAIAuthHeader(p.config)
-		},
+		// An APIKeyFunc is resolved by the Open Responses client with the
+		// request's context (both set fails the request, as in New).
+		APIKeyFunc:               p.config.APIKeyFunc,
+		Headers:                  p.config.Headers,
+		HeadersFunc:              headersFunc,
 		Name:                     "quiverai",
 		StrictResponseInput:      true,
 		CustomToolID:             customToolID,

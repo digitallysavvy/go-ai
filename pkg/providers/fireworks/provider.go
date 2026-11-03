@@ -64,10 +64,9 @@ func New(cfg Config) *Provider {
 			"Content-Type":  "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("fireworks")),
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
-		HeadersFunc: func() (map[string]string, error) {
+		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) {
 			if cfg.APIKeyFunc != nil {
-				// TS resolves the key without an abort signal.
-				return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+				return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
 					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "FIREWORKS_API_KEY", Description: "Fireworks API key",
 				}, "Authorization", "Bearer ")
 			}

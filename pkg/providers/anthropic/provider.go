@@ -68,6 +68,14 @@ type Config struct {
 	// AuthToken is.
 	AuthTokenFunc providerutils.APIKeyFunc `json:"-"`
 
+	// APIKeyFunc resolves the x-api-key credential before each request with
+	// the request's context, for wrapper providers whose TS apiKey is a
+	// Resolvable (MiniMax, TS 7716e189ee); TS anthropic itself takes a
+	// string apiKey. The environment variable is not read when it is set;
+	// setting both APIKey and APIKeyFunc fails every request with an
+	// InvalidArgumentError. It is not serialized.
+	APIKeyFunc providerutils.APIKeyFunc `json:"-"`
+
 	// Name overrides the provider name returned by Provider.Name() and
 	// LanguageModel.Provider(). Defaults to "anthropic".
 	Name string
@@ -223,7 +231,7 @@ func New(cfg Config) *Provider {
 	}
 
 	// Create HTTP client with default headers
-	if cfg.APIKey != "" && (cfg.AuthToken != "" || cfg.AuthTokenFunc != nil) {
+	if (cfg.APIKey != "" || cfg.APIKeyFunc != nil) && (cfg.AuthToken != "" || cfg.AuthTokenFunc != nil) {
 		panic(&providererrors.InvalidArgumentError{
 			Field:   "apiKey/authToken",
 			Message: "Both apiKey and authToken were provided. Please use only one authentication method.",
@@ -255,7 +263,7 @@ func New(cfg Config) *Provider {
 		HTTPClient: cfg.HTTPClient,
 		// TS getHeaders runs per request: the key is (re)loaded then, and a
 		// missing key fails the request with a LoadAPIKeyError.
-		HeadersFunc: func() (map[string]string, error) { return requestAuthHeaders(cfg) },
+		HeadersFuncCtx: func(ctx context.Context) (map[string]string, error) { return requestAuthHeaders(ctx, cfg) },
 	})
 
 	return &Provider{
@@ -271,8 +279,8 @@ func New(cfg Config) *Provider {
 func authHeadersFor(cfg Config) map[string]string {
 	headers := map[string]string{}
 	apiKey := cfg.APIKey
-	if cfg.AuthTokenFunc != nil {
-		// The token is resolved per request (requestAuthHeaders).
+	if cfg.AuthTokenFunc != nil || cfg.APIKeyFunc != nil {
+		// The credential is resolved per request (requestAuthHeaders).
 		return headers
 	}
 	if apiKey == "" && cfg.AuthToken == "" && cfg.UserAgentName == "" && !cfg.NoUserAgentTag {
@@ -295,11 +303,10 @@ func authHeadersFor(cfg Config) map[string]string {
 // key is a LoadAPIKeyError. Wrapper providers (UserAgentName/NoUserAgentTag
 // set), AuthToken users and callers that authenticate through explicit
 // Config.Headers (x-api-key or Authorization) keep their own credentials.
-func requestAuthHeaders(cfg Config) (map[string]string, error) {
+func requestAuthHeaders(ctx context.Context, cfg Config) (map[string]string, error) {
 	if cfg.AuthTokenFunc != nil {
-		// HeadersFunc has no request ctx (reports/cr-r85-prova-to-carry.md).
 		// A caller's own Authorization header keeps its credential.
-		return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+		return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
 			APIKeyFunc: cfg.AuthTokenFunc, ParameterName: "authToken",
 		}, "Authorization", "Bearer ")
 	}
@@ -308,10 +315,15 @@ func requestAuthHeaders(cfg Config) (map[string]string, error) {
 	}
 	envVar, description := "ANTHROPIC_API_KEY", "Anthropic"
 	if cfg.UserAgentName != "" || cfg.NoUserAgentTag {
-		if cfg.APIKeyEnvVar == "" {
+		envVar, description = cfg.APIKeyEnvVar, cfg.APIKeyDescription
+		if envVar == "" && cfg.APIKeyFunc == nil {
 			return nil, nil
 		}
-		envVar, description = cfg.APIKeyEnvVar, cfg.APIKeyDescription
+	}
+	if cfg.APIKeyFunc != nil {
+		return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
+			APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: envVar, Description: description,
+		}, "x-api-key", "", "authorization")
 	}
 	// An explicit x-api-key or Authorization header keeps the caller's own
 	// credential.

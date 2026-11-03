@@ -80,6 +80,11 @@ type Config struct {
 	// HeadersFunc, when set on a NoAPIKey wrapper, resolves its credential
 	// headers for every request (Azure api-key). An error fails the request.
 	HeadersFunc func() (map[string]string, error) `json:"-"`
+
+	// HeadersFuncCtx is HeadersFunc with the request's context, for a
+	// NoAPIKey wrapper whose credential comes from an APIKeyFunc (Azure,
+	// TS 7716e189ee). It is called after HeadersFunc and layered over it.
+	HeadersFuncCtx func(ctx context.Context) (map[string]string, error) `json:"-"`
 }
 
 // New creates a new Deepseek provider with the given configuration
@@ -117,12 +122,12 @@ func New(cfg Config) *Provider {
 	}
 	if cfg.NoAPIKey {
 		clientCfg.HeadersFunc = cfg.HeadersFunc
+		clientCfg.HeadersFuncCtx = cfg.HeadersFuncCtx
 	} else {
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
-		clientCfg.HeadersFunc = func() (map[string]string, error) {
+		clientCfg.HeadersFuncCtx = func(ctx context.Context) (map[string]string, error) {
 			if cfg.APIKeyFunc != nil {
-				// TS resolves the key without an abort signal.
-				return providerutils.RequestAuthHeaderFunc(context.Background(), cfg.Headers, providerutils.ResolveAPIKeyOptions{
+				return providerutils.RequestAuthHeaderFunc(ctx, cfg.Headers, providerutils.ResolveAPIKeyOptions{
 					APIKey: cfg.APIKey, APIKeyFunc: cfg.APIKeyFunc, EnvVar: "DEEPSEEK_API_KEY", Description: "DeepSeek API key",
 				}, "Authorization", "Bearer ")
 			}
