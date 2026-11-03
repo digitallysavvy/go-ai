@@ -74,20 +74,8 @@ func (m *ConversationLanguageModel) buildRequest(opts *provider.GenerateOptions)
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK"})
 	}
 
-	warnings = append(warnings, mistralReasoningMapWarnings(conversationReasoningEffortModelIDs[m.modelID], provOpts.ReasoningEffort, opts.Reasoning)...)
-	var effort string
-	if conversationReasoningEffortModelIDs[m.modelID] {
-		if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
-			if *opts.Reasoning == types.ReasoningNone {
-				effort = "none"
-			} else {
-				effort = "high"
-			}
-		}
-		if provOpts.ReasoningEffort != "" {
-			effort = provOpts.ReasoningEffort
-		}
-	}
+	effort, reasoningWarnings := mistralResolveReasoningEffort(conversationReasoningEffortModelIDs[m.modelID], false, provOpts.ReasoningEffort, opts.Reasoning)
+	warnings = append(warnings, reasoningWarnings...)
 
 	messages := opts.Prompt.Messages
 	if opts.Prompt.IsSimple() && len(messages) == 0 {

@@ -9,12 +9,14 @@ import (
 
 // Ported from mistral-chat-language-model.test.ts (TS #24062): GLM-5.3 models
 // accept only low/high/max reasoning_effort and cannot disable reasoning.
+// Since TS 61a315e333 an unsupported level rounds down (medium → low,
+// xhigh → high).
 func TestGLM53ReasoningEffort(t *testing.T) {
 	ids := []string{"zai-glm-5-3", "zai-glm-5", "zai-glm-latest", "zai-glm-5-3-flash"}
 	cases := map[types.ReasoningLevel]string{
 		types.ReasoningMinimal: "low", types.ReasoningLow: "low",
-		types.ReasoningMedium: "high", types.ReasoningHigh: "high",
-		types.ReasoningXHigh: "max", types.ReasoningMax: "max",
+		types.ReasoningMedium: "low", types.ReasoningHigh: "high",
+		types.ReasoningXHigh: "high", types.ReasoningMax: "max",
 	}
 	for _, id := range ids {
 		m := NewLanguageModel(New(Config{APIKey: "k"}), id)
