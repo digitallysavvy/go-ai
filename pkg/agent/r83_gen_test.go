@@ -119,5 +119,5 @@ func TestR83genAgentIncludeRequestMessages(t *testing.T) {
 	if err := sr.ConsumeStream(); err != nil {
 		t.Fatal(err)
 	}
-	check("stream", sr.Request().Messages)
+	check("stream", sr.FinalStep().Request.Messages)
 }
