@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
@@ -120,14 +121,20 @@ func (p *SSEParser) Next() (*SSEEvent, error) {
 			// never parsed.
 			break
 		}
-		line := p.scanner.Text()
+		// TS decodes the whole stream (TextDecoderStream) before
+		// eventsource-parser sees it, so every field, not only data, has
+		// each maximal invalid UTF-8 subpart as one U+FFFD (a line end
+		// always ends an incomplete sequence, so per-line decoding equals
+		// the stream decode).
+		line := textdecode.ReplaceInvalidString(p.scanner.Text())
 		if !p.started {
 			// TS TextDecoderStream (ignoreBOM false) drops one leading
-			// byte order mark before eventsource-parser sees the text
-			// (eventsource-parser's own strip targets the mis-decoded
-			// "\u00ef\u00bb\u00bf", which the decoder never produces here).
+			// byte order mark; eventsource-parser then drops a leading
+			// mis-decoded BOM "\u00ef\u00bb\u00bf" (the text "ï»¿") at the
+			// start of its first chunk.
 			p.started = true
 			line = strings.TrimPrefix(line, "\ufeff")
+			line = strings.TrimPrefix(line, "\u00ef\u00bb\u00bf")
 		}
 
 		// Empty line signals end of event. Like eventsource-parser, an event
@@ -136,12 +143,7 @@ func (p *SSEParser) Next() (*SSEEvent, error) {
 		// fails, as in TS), while an event with no data field is dropped.
 		if line == "" {
 			if len(dataLines) > 0 {
-				// Combine data lines
-				// TS TextDecoderStream: each maximal invalid UTF-8
-				// subpart is one U+FFFD (a line end always ends an
-				// incomplete sequence, so per-event decoding equals the
-				// stream decode).
-				event.Data = textdecode.ReplaceInvalidString(strings.Join(dataLines, "\n"))
+				event.Data = strings.Join(dataLines, "\n")
 				return event, nil
 			}
 			// Nothing to dispatch: the event type, id and retry are reset.
@@ -177,12 +179,19 @@ func (p *SSEParser) Next() (*SSEEvent, error) {
 		case "data":
 			dataLines = append(dataLines, value)
 		case "id":
-			event.ID = value
+			// eventsource-parser ignores an id that contains NUL (the
+			// event's id is then unset).
+			if strings.Contains(value, "\x00") {
+				event.ID = ""
+			} else {
+				event.ID = value
+			}
 		case "retry":
-			// Parse retry as integer (milliseconds)
-			var retry int
-			_, _ = fmt.Sscanf(value, "%d", &retry)
-			event.Retry = retry
+			// eventsource-parser accepts only ASCII digits (/^\d+$/) and
+			// reports anything else as an invalid retry.
+			if retry, ok := parseSSERetry(value); ok {
+				event.Retry = retry
+			}
 		}
 	}
 
@@ -201,6 +210,27 @@ func (p *SSEParser) Next() (*SSEEvent, error) {
 	// when its input ends.
 	p.err = io.EOF
 	return nil, io.EOF
+}
+
+// parseSSERetry parses a retry value made only of ASCII digits (TS
+// eventsource-parser /^\d+$/), returning false for anything else or for a
+// value that does not fit an int.
+func parseSSERetry(value string) (int, bool) {
+	if value == "" {
+		return 0, false
+	}
+	n := 0
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		if n > (math.MaxInt-int(c-'0'))/10 {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n, true
 }
 
 // Err returns any error that occurred during parsing
