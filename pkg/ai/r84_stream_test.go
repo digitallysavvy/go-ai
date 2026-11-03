@@ -655,6 +655,7 @@ func TestR84streamAbortReasonMessage(t *testing.T) {
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	model := &testutil.MockLanguageModel{DoStreamFunc: func(ctx context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
 		return &r82streamTimedStream{ctx: ctx, chunks: []delayedChunk{{chunk: provider.StreamChunk{Type: provider.ChunkTypeStreamStart}}}}, nil
 	}}
