@@ -152,6 +152,9 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	}
 
 	audio := resp.Body
+	// TS response.body is the handler's rawValue: the parsed JSON of a
+	// timestamped response (the metadata part for music), nothing for audio.
+	var rawBody interface{}
 	switch {
 	case req.path == "/v1/music/detailed":
 		music, err := parseMusicTimestampsResponse(http.Header(resp.Headers).Get("Content-Type"), resp.Body)
@@ -159,6 +162,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			return nil, err
 		}
 		audio = music.audio
+		rawBody = music.raw
 		if music.hasWords {
 			metadata["wordTimestamps"] = music.wordTimestamps
 		}
@@ -168,6 +172,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			return nil, err
 		}
 		audio = envelope.audio
+		rawBody = envelope.raw
 		for k, v := range envelope.metadata {
 			metadata[k] = v
 		}
@@ -183,6 +188,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(resp.Headers),
+			Body:      rawBody,
 		},
 		ProviderMetadata: map[string]interface{}{"elevenlabs": metadata},
 	}, nil

@@ -56,6 +56,8 @@ var speechTimestampsResponseSchema = zodlite.Object(
 type speechTimestampsEnvelope struct {
 	audio    []byte
 	metadata map[string]interface{}
+	// raw is the parsed JSON body (TS rawValue, reported as response.body).
+	raw interface{}
 }
 
 type wireAlignment struct {
@@ -115,5 +117,5 @@ func parseSpeechTimestampsResponse(body []byte) (*speechTimestampsEnvelope, erro
 		}
 		metadata["voiceSegments"] = segments
 	}
-	return &speechTimestampsEnvelope{audio: audio, metadata: metadata}, nil
+	return &speechTimestampsEnvelope{audio: audio, metadata: metadata, raw: raw}, nil
 }

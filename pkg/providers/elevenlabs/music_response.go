@@ -25,6 +25,9 @@ type musicTimestampsResponse struct {
 	audio          []byte
 	wordTimestamps []MusicWordTimestamp
 	hasWords       bool
+	// raw is the parsed JSON metadata part (TS rawValue, reported as
+	// response.body).
+	raw interface{}
 }
 
 var (
@@ -127,7 +130,7 @@ func parseMusicMetadata(text string) (*musicTimestampsResponse, error) {
 		} `json:"words_timestamps"`
 	}
 	_ = json.Unmarshal([]byte(text), &decoded)
-	out := &musicTimestampsResponse{}
+	out := &musicTimestampsResponse{raw: raw}
 	if m, ok := raw.(map[string]interface{}); ok && m["words_timestamps"] != nil {
 		out.hasWords = true
 		out.wordTimestamps = make([]MusicWordTimestamp, 0, len(decoded.Words))
