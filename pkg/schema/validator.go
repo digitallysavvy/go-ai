@@ -151,8 +151,9 @@ func validateDecodedIntoStruct(data interface{}, target reflect.Type) error {
 // jsonschema:"required"; every other field is optional (zod .optional()), as
 // Validate accepts it missing. A pointer field not marked validate:"required"
 // also accepts null (anyOf with {"type":"null"}, zod .nullish();
-// jsonschema:"required" on a pointer is zod .nullable()). Kinds: string, boolean, integer (with the range of 8 to 32
-// bit kinds, minimum 0 for unsigned), number, array with items, []byte as a
+// jsonschema:"required" on a pointer is zod .nullable()). Kinds: string,
+// boolean, integer (the range of 8 to 32 bit kinds, the safe integer range
+// of zod .int() for the others), number, array with items, []byte as a
 // string, map[string]T as an object with propertyNames and
 // additionalProperties, nested structs as objects, time.Time as a
 // "date-time" string, any/json.RawMessage as {}. The validate rules
@@ -160,8 +161,9 @@ func validateDecodedIntoStruct(data interface{}, target reflect.Type) error {
 // maximum/exclusiveMinimum/exclusiveMaximum, minItems/maxItems,
 // minProperties/maxProperties and enum; other rules are enforced by Validate
 // only. jsonschema:"description=..." (or a description tag) becomes the
-// description. A recursive type is referenced as {"$ref": "#"} (the root) or
-// "#/definitions/__schemaN".
+// description, in zod's place for .describe() on the whole field (first on
+// an optional field). A recursive type is referenced as {"$ref": "#"} (the
+// root) or "#/definitions/__schemaN".
 //
 // The map is a new copy on every call; MarshalJSON writes the same schema in
 // this key order.
