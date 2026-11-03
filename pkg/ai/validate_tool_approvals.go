@@ -81,10 +81,11 @@ func ValidateApprovedToolApprovals(ctx context.Context, opts ValidateApprovedToo
 		toolsContext = map[string]interface{}{}
 	}
 
-	for _, approval := range opts.ApprovedToolApprovals {
+	for _, collected := range opts.ApprovedToolApprovals {
+		tool := findToolForCall(collected.ToolCall, opts.Tools)
+		approval := rebuildApprovalToolCall(collected, tool)
 		request := approval.ApprovalRequest
 		call := approval.ToolCall
-		tool := findToolForCall(call, opts.Tools)
 
 		if opts.ToolApprovalSecret != nil {
 			// TS reports "missing signature" for an absent (null/undefined)
@@ -145,6 +146,29 @@ func ValidateApprovedToolApprovals(ctx context.Context, opts ValidateApprovedToo
 		result.ApprovedToolApprovals = append(result.ApprovedToolApprovals, approval)
 	}
 	return result, nil
+}
+
+// rebuildApprovalToolCall replaces the history-supplied ToolMetadata,
+// Dynamic and Title of an approved call with the values of the current
+// server-side tool, as parsing a new model tool call sets them. History can
+// omit or alter these fields, and approval policies, input refinement and
+// execution see them, so they never come from the client. Mirrors TS
+// validateApprovedToolApprovals (validate-tool-approvals.ts 67-84): a tool
+// that no longer exists clears all three.
+func rebuildApprovalToolCall(approval CollectedToolApproval, tool *types.Tool) CollectedToolApproval {
+	call := approval.ToolCall
+	call.ToolMetadata = nil
+	call.Dynamic = false
+	call.Title = ""
+	if tool != nil {
+		if tool.Metadata != nil {
+			call.ToolMetadata = cloneStringAnyMap(tool.Metadata)
+		}
+		call.Dynamic = tool.Type == types.ToolTypeDynamic
+		call.Title = tool.Title
+	}
+	approval.ToolCall = call
+	return approval
 }
 
 // approvalSignatureInput is the input value that was signed when the approval
