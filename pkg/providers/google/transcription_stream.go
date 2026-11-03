@@ -151,10 +151,11 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	// header (TS's combineHeaders is deterministic here because JS object
 	// spread preserves insertion order).
 	// TS getHeaders() loads the key first: a missing key is a LoadAPIKeyError.
-	if _, err := m.prov.apiKeyHeaders(ctx); err != nil {
+	baseHeaders, err := m.prov.requestHeaders(ctx)
+	if err != nil {
 		return nil, err
 	}
-	baseAPIKey, filteredBaseHeaders := extractGoogleAPIKeyHeader(m.prov.headersSnapshotCtx(ctx))
+	baseAPIKey, filteredBaseHeaders := extractGoogleAPIKeyHeader(baseHeaders)
 	callAPIKey, filteredCallHeaders := extractGoogleAPIKeyHeader(opts.Headers)
 	apiKey := baseAPIKey
 	if callAPIKey != "" {

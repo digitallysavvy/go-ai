@@ -39,3 +39,44 @@ func TestR86provaAnthropicErrorBodyBOM(t *testing.T) {
 		}
 	}
 }
+
+type r86provaCtxKey struct{}
+
+// A batch results download resolves the AuthTokenFunc once, with the
+// caller's ctx (it was called a second time with context.Background()).
+func TestR86provaBatchResultsAuthTokenFuncOncePerRequest(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	var auth []string
+	mux.HandleFunc("/messages/batches/b1", func(w http.ResponseWriter, r *http.Request) {
+		auth = append(auth, r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"ended","request_counts":{"processing":0,"succeeded":1,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z","results_url":"` + srv.URL + `/results"}`))
+	})
+	mux.HandleFunc("/results", func(w http.ResponseWriter, r *http.Request) {
+		auth = append(auth, r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{"custom_id":"a","result":{"type":"succeeded","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-opus-5-5","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}}}`))
+	})
+	var calls int
+	var withoutCtx int
+	p := New(Config{BaseURL: srv.URL, AuthTokenFunc: func(ctx context.Context) (string, error) {
+		calls++
+		if ctx.Value(r86provaCtxKey{}) == nil {
+			withoutCtx++
+		}
+		return "tok", nil
+	}})
+	ctx := context.WithValue(t.Context(), r86provaCtxKey{}, true)
+	stream, err := p.ExperimentalBatch().DoGetBatchResults(ctx, provider.BatchV4OperationOptions{BatchID: "b1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Close() }()
+	if _, err := stream.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || withoutCtx != 0 || len(auth) != 2 || auth[1] != "Bearer tok" {
+		t.Fatalf("calls = %d (without the caller ctx: %d), Authorization = %q", calls, withoutCtx, auth)
+	}
+}

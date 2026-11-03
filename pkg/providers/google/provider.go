@@ -141,13 +141,18 @@ func (p *Provider) headersSnapshot() map[string]string {
 
 // headersSnapshotCtx is headersSnapshot with the context an APIKeyFunc gets.
 func (p *Provider) headersSnapshotCtx(ctx context.Context) map[string]string {
-	h := p.client.Headers()
-	if extra, err := p.apiKeyHeaders(ctx); err == nil {
-		for k, v := range extra {
-			h[k] = v
-		}
+	h, err := p.requestHeaders(ctx)
+	if err != nil {
+		return p.client.Headers()
 	}
 	return h
+}
+
+// requestHeaders returns the client's default headers with the API key
+// loaded once for this request (TS resolves config.headers once per call);
+// a missing key is the LoadAPIKeyError, a key func error is returned as is.
+func (p *Provider) requestHeaders(ctx context.Context) (map[string]string, error) {
+	return p.client.RequestHeadersCtx(ctx)
 }
 
 // CreateGoogle creates a new Google Generative AI provider.

@@ -360,14 +360,11 @@ func (b *Batch) rawRequestHeaders(ctx context.Context, extra map[string]string) 
 	// The client's default headers carry the API version, configured headers
 	// and the user-agent suffix (TS getBatchHeaders resolves the same
 	// provider headers).
-	headers := b.provider.client.Headers()
-	// A missing API key fails the request like TS getBatchHeaders/loadApiKey.
-	lazy, err := requestAuthHeaders(ctx, b.provider.config)
+	// The request-time credential is resolved once, with the call's ctx; a
+	// missing API key fails the request like TS getBatchHeaders/loadApiKey.
+	headers, err := b.provider.client.RequestHeadersCtx(ctx)
 	if err != nil {
 		return nil, err
-	}
-	for k, v := range lazy {
-		headers[k] = v
 	}
 	for k, v := range extra {
 		headers[k] = v

@@ -415,21 +415,23 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		}, nil
 	}
 
-	return m.buildCompletedResult(&operation, responseInfo)
+	return m.buildCompletedResult(ctx, &operation, responseInfo)
 }
 
 // buildCompletedResult converts a done operation's response into a
 // completed status result (TS GoogleVideoModel#buildCompletedResult),
 // appending the API key to same-origin download URLs so the returned URL is
 // directly fetchable.
-func (m *VideoModel) buildCompletedResult(operation *googleVideoOperationWire, responseInfo provider.VideoModelV3ResponseInfo) (*provider.VideoModelV3OperationStatusResult, error) {
+func (m *VideoModel) buildCompletedResult(ctx context.Context, operation *googleVideoOperationWire, responseInfo provider.VideoModelV3ResponseInfo) (*provider.VideoModelV3OperationStatusResult, error) {
 	if operation.Response == nil || operation.Response.GenerateVideoResponse == nil ||
 		operation.Response.GenerateVideoResponse.GeneratedSamples == nil || len(*operation.Response.GenerateVideoResponse.GeneratedSamples) == 0 {
 		raw, _ := json.Marshal(operation)
 		return nil, providererrors.NewVideoGenerationError("google", m.modelID, fmt.Sprintf("No videos in response. Response: %s", string(raw)), nil)
 	}
 
-	apiKey := m.prov.headersSnapshot()["x-goog-api-key"]
+	// TS resolves config.headers again for the download key; the key
+	// func gets the status call's ctx.
+	apiKey := m.prov.headersSnapshotCtx(ctx)["x-goog-api-key"]
 
 	videos := []provider.VideoModelV3VideoData{}
 	videoMetadata := []map[string]interface{}{}
