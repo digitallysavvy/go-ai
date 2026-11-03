@@ -2939,10 +2939,10 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			// tool's actual error/cancellation.
 			timedOut := errors.Is(execCtx.Err(), context.DeadlineExceeded)
 			execCancel() // release timeout resources immediately after execution
-			if callbacks.timeout != nil && callbacks.timeout.GetToolTimeout(call.ToolName) != nil && timedOut {
-				if toolErr == nil {
-					toolErr = context.DeadlineExceeded
-				}
+			// TS execute-tool-call.ts only aborts the tool's signal at its
+			// deadline: a tool that still returns a result has that result,
+			// and only a failing tool's error is reported as the timeout.
+			if callbacks.timeout != nil && callbacks.timeout.GetToolTimeout(call.ToolName) != nil && timedOut && toolErr != nil {
 				toolErr = wrapTimeoutError(TimeoutReasonTool, toolErr)
 			}
 			results[i] = types.ToolResult{

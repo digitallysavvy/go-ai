@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -73,5 +74,37 @@ func TestR84genGenerateTextInvalidFileURL(t *testing.T) {
 	var invalid *promptutils.InvalidURLError
 	if !errors.As(err, &invalid) || invalid.URL != "https://exa mple.com/x.png" {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TS execute-tool-call.ts aborts only the tool's signal at its deadline: a
+// tool that ignores it and still returns has its result, not a timeout error.
+func TestR84genToolResultAfterTimeoutKept(t *testing.T) {
+	toolTimeout := 10 * time.Millisecond
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				ToolCalls:    []types.ToolCall{{ID: "tc1", ToolName: "late", Arguments: map[string]interface{}{}}},
+				FinishReason: types.FinishReasonToolCalls,
+			}, nil
+		},
+	}
+	late := types.Tool{
+		Name: "late",
+		Execute: func(ctx context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			<-ctx.Done()
+			return "finished anyway", nil
+		},
+	}
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model, Prompt: "go", Tools: []types.Tool{late},
+		StopWhen: []StopCondition{StepCountIs(1)},
+		Timeout:  &TimeoutConfig{ToolMs: &toolTimeout},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.ToolResults) != 1 || res.ToolResults[0].Error != nil || res.ToolResults[0].Result != "finished anyway" {
+		t.Fatalf("tool results = %+v", res.ToolResults)
 	}
 }

@@ -2600,10 +2600,9 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				})
 			durationMs := time.Since(toolStarted).Milliseconds()
 			// Only the tool timeout's own deadline counts (see ai.executeToolsConfigured).
-			if toolTimeout != nil && errors.Is(execCtx.Err(), context.DeadlineExceeded) {
-				if toolErr == nil {
-					toolErr = context.DeadlineExceeded
-				}
+			// A tool that still returns a result after its deadline keeps it
+			// (TS only aborts the tool's signal).
+			if toolTimeout != nil && errors.Is(execCtx.Err(), context.DeadlineExceeded) && toolErr != nil {
 				toolErr = &ai.TimeoutError{Reason: ai.TimeoutReasonTool, Err: toolErr}
 			}
 			execCancel()
