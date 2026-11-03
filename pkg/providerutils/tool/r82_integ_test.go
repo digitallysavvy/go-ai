@@ -26,9 +26,10 @@ func TestR82integNilSchemaParametersDefaultObject(t *testing.T) {
 			if string(b) != `{"properties":{},"type":"object"}` {
 				t.Fatalf("parameters = %s", b)
 			}
+			// r84: a function tool without a schema gets TS asSchema(undefined).
 			resolved := ResolveToolSchemas([]types.Tool{{Name: "t", Parameters: p}})
-			if resolved[0].Parameters != nil {
-				t.Fatalf("ResolveToolSchemas Parameters = %#v, want nil", resolved[0].Parameters)
+			if b, _ := json.Marshal(resolved[0].Parameters); string(b) != `{"type":"object","properties":{},"additionalProperties":false}` {
+				t.Fatalf("ResolveToolSchemas Parameters = %s", b)
 			}
 			if s := SanitizeAnthropicSchema(p); s != nil {
 				t.Fatalf("SanitizeAnthropicSchema = %#v, want nil", s)

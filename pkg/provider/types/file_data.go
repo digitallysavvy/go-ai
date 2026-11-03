@@ -45,8 +45,18 @@ type FileData struct {
 	// multipart payload.
 	DataString string `json:"-"`
 
-	// URL holds a remote http(s) URL for Type == FileDataTypeURL.
+	// URL holds the file URL for Type == FileDataTypeURL. Core prompt
+	// conversion replaces it with its WHATWG serialization (TS
+	// url.toString()), which providers send.
 	URL string `json:"url,omitempty"`
+
+	// OriginalURL holds the URL as the caller wrote it when that differs
+	// from the normalized URL, for Type == FileDataTypeURL. Core prompt
+	// conversion sets it for the legacy URL string fields
+	// (FileContent.URL, ImageContent.URL, FileContentBlock.URL); a tagged
+	// FileData URL keeps the OriginalURL its caller set. Mirrors TS
+	// `{ type: 'url', url, originalUrl? }`; Google sends it as given.
+	OriginalURL string `json:"originalUrl,omitempty"`
 
 	// Reference holds provider file references for Type == FileDataTypeReference.
 	// It mirrors the TypeScript SDK's provider reference shape:
@@ -91,10 +101,12 @@ func (f FileData) MarshalJSON() ([]byte, error) {
 	case FileDataTypeURL:
 		return json.Marshal(struct {
 			fileDataBase
-			URL string `json:"url"`
+			URL         string `json:"url"`
+			OriginalURL string `json:"originalUrl,omitempty"`
 		}{
 			fileDataBase: base,
 			URL:          f.URL,
+			OriginalURL:  f.OriginalURL,
 		})
 	case FileDataTypeReference:
 		reference := f.Reference
@@ -144,6 +156,7 @@ func (f FileData) IsZero() bool {
 		len(f.Data) == 0 &&
 		f.DataString == "" &&
 		f.URL == "" &&
+		f.OriginalURL == "" &&
 		len(f.Reference) == 0 &&
 		f.Text == "" &&
 		f.MediaType == "" &&

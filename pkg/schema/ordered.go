@@ -40,8 +40,12 @@ func NewOrderedSchema(raw []byte) (*OrderedSchema, error) {
 // Validator returns the schema itself.
 func (s *OrderedSchema) Validator() Validator { return s }
 
-// Validate validates data against the schema.
+// Validate validates data against the schema. A nil or zero OrderedSchema
+// is the empty schema {}, which accepts any value.
 func (s *OrderedSchema) Validate(data interface{}) error {
+	if s == nil || s.m == nil {
+		return nil
+	}
 	return validateJSONSchemaValue(data, s.m, "$")
 }
 
@@ -63,8 +67,14 @@ func (s *OrderedSchema) MarshalJSON() ([]byte, error) {
 	return s.root.MarshalJSON()
 }
 
-// Keys returns the top-level keys in source order.
-func (s *OrderedSchema) Keys() []string { return s.root.Keys() }
+// Keys returns the top-level keys in source order; nil for a nil or zero
+// OrderedSchema.
+func (s *OrderedSchema) Keys() []string {
+	if s == nil || s.root == nil {
+		return nil
+	}
+	return s.root.Keys()
+}
 
 // MarshalSchema returns the JSON text of a schema for the wire. An
 // *OrderedSchema keeps its key order; every other schema marshals its

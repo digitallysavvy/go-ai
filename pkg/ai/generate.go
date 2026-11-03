@@ -925,6 +925,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	}
 	prompt := buildPrompt(opts.Prompt, opts.Messages, system)
 	allowSystem := allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages)
+	// The prompt's deprecated parts, logged on every step's prompt
+	// conversion as TS convertToLanguageModelPrompt does (NormalizePrompt
+	// rewrites them, so they are collected first).
+	promptDeprecations := promptDeprecationWarnings(prompt.Messages)
 	prompt, err = promptutils.NormalizePrompt(prompt, allowSystem)
 	if err != nil {
 		return nil, err
@@ -1357,6 +1361,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			toolsByName[stepExecutionTools[i].Name] = &stepExecutionTools[i]
 		}
 
+		logPromptDeprecations(promptDeprecations)
 		stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
 			Messages: messagesForModel(stepMessages),
 			System:   appendSandboxDescription(stepSystem, stepSandbox),
@@ -2939,10 +2944,10 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			// tool's actual error/cancellation.
 			timedOut := errors.Is(execCtx.Err(), context.DeadlineExceeded)
 			execCancel() // release timeout resources immediately after execution
-			if callbacks.timeout != nil && callbacks.timeout.GetToolTimeout(call.ToolName) != nil && timedOut {
-				if toolErr == nil {
-					toolErr = context.DeadlineExceeded
-				}
+			// TS execute-tool-call.ts only aborts the tool's signal at its
+			// deadline: a tool that still returns a result has that result,
+			// and only a failing tool's error is reported as the timeout.
+			if callbacks.timeout != nil && callbacks.timeout.GetToolTimeout(call.ToolName) != nil && timedOut && toolErr != nil {
 				toolErr = wrapTimeoutError(TimeoutReasonTool, toolErr)
 			}
 			results[i] = types.ToolResult{
@@ -3262,4 +3267,26 @@ func modelToolResultIDs(content []types.ContentPart) map[string]bool {
 		}
 	}
 	return ids
+}
+
+// promptDeprecationWarnings returns the batches TS
+// convertToLanguageModelPrompt passes to logWarnings for messages: one per
+// user message with deprecated "image" parts (types.ImageContent).
+func promptDeprecationWarnings(messages []types.Message) [][]types.Warning {
+	var batches [][]types.Warning
+	for _, message := range messages {
+		if warnings := promptutils.DeprecatedContentWarnings(message); len(warnings) > 0 {
+			batches = append(batches, warnings)
+		}
+	}
+	return batches
+}
+
+// logPromptDeprecations logs each batch like TS logWarnings({ warnings }):
+// without provider or model, so the default logger writes each
+// deprecation code once per process.
+func logPromptDeprecations(batches [][]types.Warning) {
+	for _, warnings := range batches {
+		LogWarnings(LogWarningsOptions{Warnings: warnings})
+	}
 }
