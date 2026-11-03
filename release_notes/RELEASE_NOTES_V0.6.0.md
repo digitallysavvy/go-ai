@@ -108,6 +108,8 @@ Also new:
 - **`streaming.ToolCallDelta.IDPresent` / `MetadataPresent`** mark a wire delta that carried an `id` / `extra_content`, even empty, so the OpenAI-compatible tracker keeps the first non-null one as TS `pendingToolCalls` (review round 82).
 - **`schema.StructValidator` JSON Schema**: `JSONSchema()` / `MarshalJSON` of a struct schema generate the struct's JSON Schema by reflection (TS `zodSchema(z.object(...))` shape; `jsonschema:"description=..."` and `jsonschema:"required"` tags); `schema.OrderedParameters` returns it as an `*OrderedSchema` (review round 82).
 - **`openai.Config.MetadataExtractor`** (`openai.MetadataExtractor`, `openai.StreamMetadataExtractor`): TS openai-compatible `metadataExtractor`, for `OpenAICompatible` chat models; generate reads the parsed body, the stream extractor sees every parsed event and builds the finish metadata (review round 82).
+- **`prompt.DecodeUTF8Text`** (`pkg/providerutils/prompt`): TS `new TextDecoder().decode(bytes)` for text bytes (leading BOM dropped, one U+FFFD per maximal invalid subpart); used for text file parts across providers and the web fetch tool (review round 83).
+- **`prompt.ValidateToolChoiceType`** (`pkg/providerutils/prompt`): the TS `prepareTools` exhaustive check for a custom provider: with tools, a tool choice type other than auto/none/required/tool is an `UnsupportedFunctionalityError` `tool choice type: <type>` (review round 83).
 - OpenAI Responses: `promptCacheOptions` 12h TTL and prewarm, shell tool
   `timeoutMs`/`maxOutputLength`, `additionalTools` and
   `omitFromRequestTools`. Azure `ToolSearch` and per-deployment model
@@ -239,6 +241,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Embed rejects only a missing embedding, with InvalidResponseDataError** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#embed-no-embeddings-invalid-response)
 - **A StreamText step's response headers are its own** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-step-headers-per-step)
 - **Timeout.PerChunk starts with the first output chunk; FirstChunk bounds the wait for it** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-per-chunk-after-first-output)
+- **ExperimentalStreamTranslate reports an unknown part type with the TS text** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-translate-unsupported-part-text)
 
 #### Prompts and validation
 
@@ -471,11 +474,21 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Perplexity: a typed decision state is sent as the native value** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#perplexity-decision-typed-state)
 - **Perplexity streams emit no source for finance results** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#perplexity-stream-finance-no-source)
 - **Perplexity: a decision file by URL, reference or text fails with the TS error** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#perplexity-decision-legacy-file-kind)
+- **An unknown tool choice type fails with UnsupportedFunctionalityError like TS instead of being sent as auto** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#unknown-tool-choice-type)
+- **Text file parts are decoded like TS TextDecoder (BOM dropped, one U+FFFD per invalid sequence)** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#text-file-part-textdecoder)
+- **Bedrock reports the TS errors for s3 file parts without a media subtype and for text files in tool results** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#bedrock-url-media-type-errors)
+- **Bedrock converts a text file part to a document whatever its media type** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#bedrock-text-file-document)
+- **Google Live transcription takes an empty languageCode like TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-live-empty-language-code)
+- **Google Live speech translation falls back to the top-level inputTranscription text like TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-live-translation-source-fallback)
+- **Azure MAI image errors read the message with the TS error schema** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#azure-mai-image-error-message)
+- **Moonshot MFJS schema normalization keeps the TS key order and sends an empty tuple as prefixItems []** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#moonshot-mfjs-key-order)
+- **Perplexity sends an empty providerOptions thoughtSignature as thought_signature ""** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#perplexity-empty-thought-signature)
 
 #### MCP
 
 - **MCP OAuth rejects unbound pre-registered confidential credentials** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-oauth-issuer)
 - **MCP clients have no default request timeout** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-no-default-timeout)
+- **An explicit MCPToolSchema.InputSchema schema is the tool's Parameters, as TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-explicit-input-schema)
 
 #### Code mode
 
@@ -494,6 +507,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **fx: the built-in terminal tool is removed** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#fx-terminal-removed)
 - **fx has an opt-in libfx runtime** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#fx-libfx-opt-in)
 - **Harness continuations accept pointer content parts** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#harness-continuation-pointer-parts)
+- **Harness tool specs send a tool's input schema in its key order (ToolSpec.InputSchema may be an *schema.OrderedSchema)** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#harness-tool-spec-schema-order)
 
 #### Policy
 
@@ -1138,6 +1152,7 @@ in v0.5.3.
 - Perplexity decisions: an `image/` media type is sniffed from the data (review round 81).
 - The repair `InputSchema` callback returns the empty object schema for a tool whose schema value is nil (typed nil pointer, nil `Validator`, nil map) instead of panicking (review round 82).
 - Tool conversion (`providerutils/tool`, `schema.ParametersMap`, `schema.ApplyDefaults`) treats a typed nil or zero schema value (`(*schema.SimpleJSONSchema)(nil)`, `&schema.SimpleJSONSchema{}`) as no schema instead of panicking (review round 82).
+- Marshaling a nil or zero `*schema.SimpleJSONSchema`, `*schema.JSONSchemaValidator` or `*schema.OrderedSchema` (`json.Marshal`, `MarshalJSON`, `schema.MarshalSchema`) gives `{}` instead of panicking, and workflow `SerializeToolSet`, the tool converters and the Anthropic sanitizer treat such a value as no schema (review round 83).
 - `ExperimentalStreamTranscribe` / `ExperimentalStreamTranslate` no longer panic when a failed call has no `Audio` stream (review round 82).
 - `StreamTextSingleConsumerResult.Usage` doc: it is the total usage, as `StreamTextResult.Usage` (review round 82).
 - Response messages' text parts no longer carry the content part's citations (TS `toResponseMessages`) (review round 82).
@@ -1458,7 +1473,7 @@ Notable ones:
 - **UI chunk-channel helpers cannot see a stream failure**: `PipeUIMessageChunksToResponse` and `CreateUIMessageChunksResponse` take a bare `<-chan UIMessageChunk` and always end with `data: [DONE]`; TS ends an errored stream without it. The `StreamTextResult` helpers match TS (round 79).
 - **StreamText reads the provider stream without a reader**: the model call runs until the `StreamText` ctx ends, also after a client disconnect or after a `ConsumeSSEStream` callback returns, as in v0.5; a TS stream nobody reads stalls under backpressure. Pass `r.Context()` or use `StreamTextLowMemory` (round 79).
 - **Invalid tool call input that is not a JSON object**: the raw text is kept in `ToolCall.RawArguments` / `ToolCallContent.Input` only (`Arguments`, `ToolResult.Input`, `ToolErrorContent.Input` are maps), JSON that is not an object is invalid also without `Parameters`, and validator / parser messages are Go's (round 79).
-- **Unknown tool choice types**: a custom `ToolChoice.Type` is sent as auto by OpenAI, xAI Responses, Alibaba, Moonshot and Hugging Face; TS cannot construct one (round 79).
+- **Struct-tag schemas: Go-only choices**: floats are a bare `number`, `time.Time` has no Z-only `pattern`, `[]byte` has no base64 keywords, a described recursive reference is `allOf` inline, pointer slice elements are not nullable, and `dive` rules and alternatives are left out (rounds 82-83).
 - **Tool output JSON key order in replayed prompts**: serialized tool output JSON keeps Go map key order (three openresponses TS replays skipped) (round 79).
 - **Embedding usage across EmbedMany batches**: a positive token sum is recorded when some batches reported no usage; TS sums to NaN and drops it (round 80).
 - **Legacy telemetry tool spans on error**: Go's legacy `OnError` ends still-open tool spans with the error status; TS never ends them (round 80).

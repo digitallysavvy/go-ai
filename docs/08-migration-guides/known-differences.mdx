@@ -612,15 +612,6 @@ accepts it. The validator text inside a `TypeValidationError` is Go's
 `JSONParseError` carries Go's parser message, not the JavaScript
 `SyntaxError` text (review round 79).
 
-## Unknown tool choice types
-
-`types.ToolChoiceType` is a string, so a caller can build a `ToolChoice`
-whose `Type` is not auto, none, required or tool. OpenAI (chat and
-Responses), xAI Responses, Alibaba, Moonshot and Hugging Face send it as
-auto (or ignore it); TypeScript cannot construct one (its exhaustive switch
-would throw `UnsupportedFunctionalityError`). DeepSeek follows its TS
-warning branch (review round 79).
-
 ## Tool output JSON key order in replayed prompts
 
 A tool result's JSON output that the SDK serializes into the request text
@@ -709,6 +700,22 @@ order. TS follows `Object.keys(providerOptions.perplexity)`, the object's
 insertion order, which a Go map does not keep (the wire replay of "warns
 about unsupported options without adding fields to the request" is skipped
 for it; review round 82).
+
+## Struct-tag schemas: Go-only choices
+
+`schema.NewStructSchema` / `NewSimpleStructSchema` generate the JSON Schema
+TS sends for the matching zod object, with these Go choices where no zod
+schema is the twin: a described required recursive reference is
+`{"description", "allOf": [{"$ref"}]}` inline (zod moves the described
+schema to its own `definitions` entry because it sits on the cycle);
+`float32` / `float64` are a bare `number` (zod `z.number()`, not
+`z.float32()` bounds); `time.Time` is `format: date-time` without zod
+`z.iso.datetime()`'s Z-only `pattern` (encoding/json accepts offsets);
+`[]byte` is a plain `string` without the zod `z.base64()` keywords; pointer
+slice elements are not nullable; `validate:"required"` also rejects zero
+values (go-playground), which JSON Schema `required` cannot state; and
+`validate` rules after `dive` and alternatives (`a|b`) are left out of the
+schema (review rounds 82 and 83).
 
 ## Features that are TypeScript-only (not ported)
 

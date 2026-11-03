@@ -75,12 +75,12 @@ type Weather struct {
 | `json` tag name; `-` and unexported fields skipped; embedded structs promoted | property name, in encoding/json field order |
 | `validate:"required"` or `jsonschema:"required"` | listed in `required` (every other field is optional, as `Validate` accepts it missing) |
 | pointer without `validate:"required"` | `anyOf` the value and `{"type":"null"}` |
-| `string`, `bool`, integers, floats | `string`, `boolean`, `integer` (8 to 32 bit kinds with their range, unsigned with `minimum` 0), `number` |
+| `string`, `bool`, integers, floats | `string`, `boolean`, `integer` (8 to 32 bit kinds with their size range; `int`, `int64`, `uint`, `uint64` and `uintptr` with the safe integer range of zod `.int()`, -9007199254740991 to 9007199254740991, from 0 when unsigned; `Validate` rejects a value outside the range), `number` |
 | slices and arrays; `[]byte` | `array` with `items`; `string` |
 | `map[string]T` | `object` with `propertyNames` and `additionalProperties` |
 | nested struct; `time.Time`; `interface{}` / `json.RawMessage` | `object`; `string` with `format: date-time`; `{}` |
-| `validate` `min`/`max`/`len`/`gt`/`gte`/`lt`/`lte`/`oneof` | `minLength`/`maxLength`, `minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum`, `minItems`/`maxItems`, `minProperties`/`maxProperties`, `enum` |
-| `jsonschema:"description=..."` or `description:"..."` | `description` |
+| `validate` `min`/`max`/`len`/`gt`/`gte`/`lt`/`lte`/`oneof` | `minLength`/`maxLength`, `minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum`, `minItems`/`maxItems`, `minProperties`/`maxProperties`, `enum` (of `gte`/`gt` and of `lte`/`lt` only the tighter bound, as zod writes it) |
+| `jsonschema:"description=..."` or `description:"..."` | `description` (first on an optional field, as zod `.optional().describe()`; beside a `$ref` as `{"description", "allOf": [ref]}`) |
 | recursive type | `{"$ref":"#"}` for the root, `#/definitions/__schemaN` otherwise |
 
 `Validate` decodes a JSON value into the struct, runs the `validate` tags and

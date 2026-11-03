@@ -297,8 +297,8 @@ already, you can skip them.
 | Reliance on the 60 s default HTTP client timeout (v0.5.3) | No whole-request timeout | silent behavior change | Bound calls with `ctx` | [HTTP client timeout](#v053-http-timeout) |
 | Calls to unknown tools ending the loop (v0.5.3) | Answered with a tool error | silent behavior change | No action unless you relied on the stop | [Unknown tools](#v053-unknown-tool) |
 | `StepResult.Response.Headers`, `ResponseHeaders()` / `ResponseHeadersMap()` in StreamText | The step's own headers, none when it reported none | silent behavior change | None | [Step headers](#stream-step-headers-per-step) |
-| `Timeout.PerChunk` / `FirstChunk` in StreamText | PerChunk starts with the first output chunk; an error part stops both timers | silent behavior change | Set `FirstChunk` to bound the first chunk | [PerChunk start](#stream-per-chunk-after-first-output) |
-| `schema.NewSimpleStructSchema`, `schema.NewStructSchema`, `StructValidator.JSONSchema()`, `ResponseFormat.Schema.(map[string]interface{})` | A full JSON Schema of the struct fields (was `{"type":"object"}`); sent as an `*schema.OrderedSchema` | wire/protocol change | Mark required fields `validate:"required"`; read maps with `schema.ParametersMap` | [Struct JSON Schema](#struct-schema-json-schema) |
+| `Timeout.PerChunk` / `FirstChunk` in StreamText | PerChunk starts with the first output chunk; an error part or the finish part stops both timers | silent behavior change | Set `FirstChunk` to bound the first chunk | [PerChunk start](#stream-per-chunk-after-first-output) |
+| `schema.NewSimpleStructSchema`, `schema.NewStructSchema`, `StructValidator.JSONSchema()`, `ResponseFormat.Schema.(map[string]interface{})` | A full JSON Schema of the struct fields (was `{"type":"object"}`); sent as an `*schema.OrderedSchema`; `Validate` rejects integers beyond ±9007199254740991 | wire/protocol change | Mark required fields `validate:"required"`; read maps with `schema.ParametersMap` | [Struct JSON Schema](#struct-schema-json-schema) |
 | `ai.prompt.toolChoice` on step spans; `TelemetryStepStartEvent.ToolChoice` | `{"type":"auto"}` when no tool choice is set | silent behavior change | None unless you relied on it being absent | [Step tool choice auto](#telemetry-step-tool-choice-auto) |
 | `ai.prompt.messages` / `ai.prompt.tools` on WorkflowAgent step spans | Not recorded | silent behavior change | Read the root `ai.prompt` or the model-call event | [WorkflowAgent step spans](#workflow-step-span-no-prompt) |
 | `FileData.DataString` with a `MediaType` without a subtype (anthropic, google, perplexity, mistral, cohere, bedrock, openai, groq, openai-compatible) | Only the sniffed prefix is decoded | silent behavior change | None | [Prefix sniffing](#file-data-string-prefix-sniff) |
@@ -316,6 +316,18 @@ already, you can skip them.
 | `provider.DecisionJSONPart(v)` alone in a Perplexity decision state, `v` a typed map, struct, typed slice or `json.RawMessage` | Sent as the native object/array | wire/protocol change | None | [Typed decision state](#perplexity-decision-typed-state) |
 | Perplexity stream `ChunkTypeSource` counts | No url-less source for `finance_results` | silent behavior change | None | [Finance results](#perplexity-stream-finance-no-source) |
 | Perplexity decision files given by `FileContent.URL` / `Reference` / `Text` | `Perplexity decision file input: url` (or `reference`, `text`) | error text only | Pass image bytes | [Decision file kind](#perplexity-decision-legacy-file-kind) |
+| `ExperimentalStreamTranslate` errors with `unsupported part type` | `Unsupported part type: [object Object]` (TS) | error text only | No action unless you match the text | [Translate part text](#stream-translate-unsupported-part-text) |
+| `types.ToolChoice{Type: "<custom>"}` with tools | `UnsupportedFunctionalityError` `tool choice type: <custom>` (huggingface: TS text; open-responses: sent as given) | silent behavior change | Use the `types.ToolChoice*` constants | [Unknown tool choice type](#unknown-tool-choice-type) |
+| `text/*` `FileContent` byte data with a BOM or invalid UTF-8 (OpenAI-compatible, Moonshot, Anthropic, Cohere), Prodia text output, `toolwebfetch` | Decoded like TS `TextDecoder` | silent behavior change | None | [TextDecoder text parts](#text-file-part-textdecoder) |
+| Bedrock `s3://` file parts with a bare media type; `FileDataTypeText` blocks in tool results | TS error texts (`UnsupportedFunctionalityError`) | error text only | Use a full media type / a text block | [Bedrock url media type errors](#bedrock-url-media-type-errors) |
+| Bedrock text `FileContent` with an `image/*` or `video/*` `MediaType` | Always a document block (error for non-document types) | silent behavior change | Use a document media type | [Bedrock text file document](#bedrock-text-file-document) |
+| Google Live transcription `TranscriptionStreamPart.Language` | An empty `languageCode` replaces the finish language | silent behavior change | None | [Empty language code](#google-live-empty-language-code) |
+| Google Live translation `SourceText` / source-transcript parts | Top-level `inputTranscription` used when `serverContent`'s has no text | silent behavior change | None | [Translation source fallback](#google-live-translation-source-fallback) |
+| `ProviderError.Message` from azure `mai-image-*` models | TS `maiErrorSchema` message rules | error text only | No action unless you match the text | [MAI image errors](#azure-mai-image-error-message) |
+| Moonshot tool / response schemas as JSON text, `*schema.OrderedSchema` or struct schemas | MFJS `type` first; empty tuple `prefixItems: []` | wire/protocol change | None | [Moonshot MFJS order](#moonshot-mfjs-key-order) |
+| Perplexity `ProviderOptions["perplexity"]["thoughtSignature"] = ""` on tool calls / results | Sent as `"thought_signature": ""` | wire/protocol change | Omit the key | [Empty thought signature](#perplexity-empty-thought-signature) |
+| `MCPToolSchema{InputSchema: <schema.Schema>}`, `tool.Parameters.(map[string]interface{})` on MCP tools | `Parameters` is the given schema | silent behavior change | Use `schema.ParametersMap` | [MCP explicit input schema](#mcp-explicit-input-schema) |
+| `harness.ToolSpec.InputSchema.(map[string]any)` | May be an `*schema.OrderedSchema` in source key order | wire/protocol change | Marshal it or use `schema.ParametersMap` | [Harness tool spec order](#harness-tool-spec-schema-order) |
 
 ## Compile-time changes {#compile-time-changes}
 
@@ -967,6 +979,19 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   cancel if you do not want the provider's last parts.
 - **Kind:** error text only
 
+### ExperimentalStreamTranslate reports an unknown part type with the TS text {#stream-translate-unsupported-part-text}
+
+- **What changed:** v0.5 `ExperimentalStreamTranslate` failed on a provider
+  part of an unknown type with `unsupported part type: <type>`. v0.6 uses the
+  TS `stream-translate.ts` exhaustive-check text, which formats the part
+  object: `Unsupported part type: [object Object]` (review round 83).
+- **Am I affected?** Code that matches the text of errors from
+  `ExperimentalStreamTranslate` result accessors or `FullStream().Next()`:
+  search for `unsupported part type`.
+- **What to do:** No action unless you compare this error text; compare it
+  to `"Unsupported part type: [object Object]"`.
+- **Kind:** error text only
+
 ### Stop conditions run only when the loop would continue {#stop-conditions-only-when-continue}
 
 - **What changed:** `StopWhen` conditions are evaluated only when the loop
@@ -1205,11 +1230,16 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   output is bounded by `FirstChunk` (TS `firstChunkMs`) only, as TS starts
   its chunk timer after output begins. An error part also stops both timers
   until the next output chunk (TS `clearModelOutputTimeouts`), so a pause
-  after a soft error part is no longer a timeout (review round 82).
+  after a soft error part is no longer a timeout (review round 82). The
+  first-chunk and chunk timers also stop at the model call's finish part
+  (TS `clearModelOutputTimeouts()` on `model-call-end`), so a pause between
+  the provider's finish part and the end of its stream is no longer a
+  `TimeoutError` with `TimeoutReasonFirstChunk` or `TimeoutReasonChunk`
+  (review round 83).
 - **Am I affected?** StreamText calls that set `Timeout.PerChunk` without
   `FirstChunk` and rely on it to fail a model that never starts answering;
   checks for `TimeoutReasonChunk` or `TimeoutReasonFirstChunk` on a slow
-  first chunk or after an error part.
+  first chunk, after an error part or after the finish part.
 - **What to do:** Set `FirstChunk` to bound the first chunk:
   `Timeout: &ai.TimeoutConfig{FirstChunk: &first, PerChunk: &perChunk}`.
 - **Kind:** silent behavior change
@@ -1345,9 +1375,24 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   the `validate` `min`/`max`/`len`/`gt`/`gte`/`lt`/`lte`/`oneof` rules as
   keywords and `jsonschema:"description=..."` as descriptions (see
   [StructValidator](../07-reference/schema/json-schema.mdx#structvalidator)).
-  Struct schemas reach tool `Parameters` and `ResponseFormat.Schema` as an
-  `*schema.OrderedSchema`, so the properties keep the field order on the
-  wire. `Validate` also checks a decoded value against the schema, so the
+  Integers carry the range zod `.int()` gives them (-9007199254740991 to
+  9007199254740991 for `int`, `int64`, `uint`, `uint64` and `uintptr`, from 0
+  when unsigned; the size range for 8 to 32 bit kinds); of `gte` and `gt`
+  (and of `lte` and `lt`) only the tighter bound is written, as zod does; a
+  description is written where zod `.describe()` on the whole field puts it
+  (first on an optional field) (review round 83). **`Validate` rejects an
+  integer outside that range:** a struct-schema tool input, object output or
+  `Validate` call with, for example, `{"id": 9007199254740993}` for an
+  `int64` field was accepted in v0.5.2 and now fails validation (zod
+  `.int()` rejects it; JSON numbers past 2^53 are not exact in TS).
+  Struct schemas reach tool `Parameters` and `ResponseFormat.Schema` (object
+  output, and the array wrapper of `ArrayOutput` and `GenerateObject` /
+  `StreamObject` array mode) as an `*schema.OrderedSchema`, so the
+  properties keep the field order on the wire. Workflow `SerializeToolSet`
+  keeps a struct schema's field order in the serialized `inputSchema` and in
+  the tools `ResolveSerializableTools` rebuilds, and a bare `schema.Validator`
+  as `Parameters` is serialized with `hasOwnValidator: true` (unless it is a
+  `*schema.JSONSchemaValidator`) (review round 83). `Validate` also checks a decoded value against the schema, so the
   two agree: `null` for a non-pointer field and a missing
   `jsonschema:"required"` field fail; unknown keys are still ignored, as
   zod strips them (coordinator ruling, review round 82).
@@ -1356,12 +1401,15 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   code that reads `StructValidator.JSONSchema()`; custom providers or
   middleware that type-assert `ResponseFormat.Schema` or resolved tool
   `Parameters` to `map[string]interface{}`; OpenAI `strict` structured
-  outputs, which need every property required.
+  outputs, which need every property required; struct fields of type `int`,
+  `int64`, `uint`, `uint64` or `uintptr` that receive values beyond
+  ±9007199254740991.
 - **What to do:** No action unless you read the schema as a map or use strict
   outputs: read a schema value with `schema.ParametersMap(v)` instead of a
   type assertion, and mark each field the model must send
   `validate:"required"` (`jsonschema:"required"` on a pointer that may be
-  `null`).
+  `null`). For integer values past 2^53, use a `string` field (or
+  `json.Number` with `,string`) instead of an integer kind.
 - **Kind:** wire/protocol change
 
 ## Tools {#tools}
@@ -4178,6 +4226,48 @@ compile-time changes.
 - **What to do:** treat the error chunk as the end of the stream.
 - **Kind:** silent behavior change
 
+#### An unknown tool choice type fails like TS {#unknown-tool-choice-type}
+
+- **What changed:** v0.5 sent a `types.ToolChoice{Type: X}` whose type is not
+  auto, none, required or tool as `"auto"` (moonshot dropped it; anthropic,
+  google, mistral, cohere and bedrock sent auto or nothing). v0.6, with at
+  least one tool, fails before the request with
+  `*providererrors.UnsupportedFunctionalityError` `'tool choice type: X'
+  functionality not supported.`, the TS `prepareTools` exhaustive check, in
+  openai chat and Responses, azure, xai Responses, alibaba, moonshot,
+  together, fireworks, gmicloud, ollama, cerebras, deepinfra,
+  `openai.Config.OpenAICompatible`, anthropic, google and Vertex (function
+  tools only), groq (unless the JSON response tool replaces the choice),
+  mistral, cohere and amazon-bedrock (standard tools; Anthropic models
+  through the Anthropic tool preparation). huggingface returns the TS error
+  text `Unsupported tool choice type: [object Object]`; open-responses sends
+  `"tool_choice": "X"` as given; deepseek and zai already warn and send none
+  ([DeepSeek](#deepseek-unknown-tool-choice)) (review round 83).
+- **Am I affected?** Code that builds `types.ToolChoice` with a custom
+  `Type` string, or converts one from user input without checking it.
+- **What to do:** Use `types.ToolChoiceAuto`, `types.ToolChoiceNone`,
+  `types.ToolChoiceRequired` or `types.ToolChoiceTool`.
+- **Kind:** silent behavior change
+
+#### Text file parts are decoded like TS TextDecoder {#text-file-part-textdecoder}
+
+- **What changed:** v0.5 turned the bytes of a text file part into a Go
+  string (invalid runs collapsed to one U+FFFD, or kept raw; a leading BOM
+  kept). v0.6 decodes them as TS `new TextDecoder().decode(bytes)`: a leading
+  UTF-8 BOM is dropped and every maximal invalid subpart becomes one U+FFFD.
+  This covers `text/*` file parts sent to OpenAI-compatible chat models
+  (openai `Config.OpenAICompatible`, together, fireworks, gmicloud, zai,
+  ollama, Vertex xai) and Moonshot, Anthropic `text/plain` document sources
+  (TS `convertBytesDataToString`), Cohere document text, Prodia text outputs
+  and the web fetch tool's UTF-8 bodies (a truncated sequence is one U+FFFD,
+  as TS) (review round 83).
+- **Am I affected?** `types.FileContent` / `FileData` byte data with a
+  `text/...` media type whose bytes start with `EF BB BF` or are not valid
+  UTF-8; `toolwebfetch` results of non-UTF-8 bodies.
+- **What to do:** No action unless you relied on the BOM or the raw bytes
+  reaching the model.
+- **Kind:** silent behavior change
+
 ### AI Gateway
 
 #### Provider tools reach the AI Gateway as provider tools {#gateway-provider-tools}
@@ -4483,6 +4573,38 @@ compile-time changes.
   `math.IsNaN`; a NaN count marshals as `null` and is left out of telemetry.
 - **Kind:** silent behavior change
 
+#### Bedrock s3 parts without a subtype and text tool-result files fail with the TS errors {#bedrock-url-media-type-errors}
+
+- **What changed:** an s3 URL file part (user content or tool-result
+  content) whose media type has no subtype (`image`, `video/*`) now fails
+  with `'file of media type "image" must specify subtype since it is not
+  passed as inline bytes' functionality not supported.` (was `Unsupported
+  image mime type: image, ...`), and a `FileDataTypeText` file block in
+  tool-result content fails with the `*UnsupportedFunctionalityError` `'tool
+  result file data of type "text"' functionality not supported.` (was a plain
+  `unsupported tool result file data for media type: ...` error), as TS
+  `resolveFullMediaType` and `convertToolResultOutput` (review round 83).
+- **Am I affected?** Bedrock `FileContent` / `FileContentBlock` with an
+  `s3://` URL and a bare media type; code matching the old error strings.
+- **What to do:** Give s3 parts a full media type (`image/png`); send text in
+  tool results as a `TextContentBlock`.
+- **Kind:** error text only
+
+#### A Bedrock text file part is always a document {#bedrock-text-file-document}
+
+- **What changed:** a user `FileContent` with text data (`FileData.Type ==
+  text` or the legacy `Text`) is always a Bedrock `document` block, as in TS
+  (`getAmazonBedrockDocumentFormat`). v0.5 made it an image or video block of
+  the text bytes when its media type was `image/*` or `video/*`; v0.6 fails
+  such a part with `Unsupported file mime type: image/png, ...` (review round
+  83).
+- **Am I affected?** Bedrock text file parts whose `MediaType` is not a
+  document type.
+- **What to do:** No action unless you sent text parts with an image or
+  video media type; use a document media type (`text/plain`,
+  `text/markdown`, ...).
+- **Kind:** silent behavior change
+
 ### Google and Vertex
 
 #### Google provider metadata keeps only the keys TS declares {#google-metadata-declared-keys}
@@ -4583,6 +4705,30 @@ compile-time changes.
   `providerMetadata.google.signature`.
 - **What to do:** No action.
 - **Kind:** wire/protocol change
+
+#### Google Live transcription takes an empty languageCode {#google-live-empty-language-code}
+
+- **What changed:** in Google Live transcription
+  (`TranscriptionModel.DoStream`), an `inputTranscription.languageCode` of
+  `""` now replaces an earlier language in the finish part, as TS
+  (`languageCode != null`) and the Vertex live stream (review round 83).
+- **Am I affected?** `TranscriptionStreamPart.Language` on the finish part of
+  a google live transcription stream.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+#### Google Live translation falls back to the top-level transcript text {#google-live-translation-source-fallback}
+
+- **What changed:** Google Live speech translation reads the source
+  transcript as TS `serverContent?.inputTranscription?.text ??
+  message.inputTranscription?.text`: a `serverContent.inputTranscription`
+  without `text` now falls back to the top-level `inputTranscription`; v0.5
+  used the top-level one only when the `serverContent` object was absent
+  (review round 83).
+- **Am I affected?** `SpeechTranslationStreamPart` source-transcript parts
+  and the finish `SourceText` of a google translation stream.
+- **What to do:** No action.
+- **Kind:** silent behavior change
 
 ### OpenAI
 
@@ -5006,6 +5152,18 @@ compile-time changes.
 - **What to do:** no action.
 - **Kind:** wire/protocol change
 
+#### Azure MAI image errors read the message with the TS schema {#azure-mai-image-error-message}
+
+- **What changed:** v0.5 reported the HTTP status text for an MAI image error
+  body `{"error":{"message":""}}`, and used the message of a body whose
+  `error.code` was not a string or number. v0.6 follows TS `maiErrorSchema`:
+  an empty message is kept, and an invalid `code` (or a missing message)
+  gives the status text (review round 83).
+- **Am I affected?** `ProviderError.Message` from `azure` MAI image models
+  (`mai-image-*`).
+- **What to do:** No action unless you match the message text.
+- **Kind:** error text only
+
 ### OpenAI-compatible providers
 
 #### gmicloud, ollama and alibaba report unknown usage for a response without usage {#compat-missing-usage-null}
@@ -5130,6 +5288,21 @@ compile-time changes.
 - **Am I affected?** zai `requestId` / `userId` with non-ASCII characters.
 - **What to do:** No action.
 - **Kind:** silent behavior change
+
+#### Moonshot MFJS schema normalization keeps the TS key order {#moonshot-mfjs-key-order}
+
+- **What changed:** v0.5 Moonshot MFJS normalization of a raw or ordered tool
+  or response schema wrote an added `type: "object"` on a root union, and a
+  `type` moved into `anyOf` branches, after the other keys, and sent an empty
+  tuple `items: []` as `prefixItems: null`. v0.6 uses the TS key order
+  (`{ type, ...rest }` puts `type` first) and sends `prefixItems: []`
+  (review round 83).
+- **Am I affected?** Moonshot tool `Parameters` or `ResponseFormat.Schema`
+  given as JSON text, an `*schema.OrderedSchema` or a struct schema, with a
+  root `anyOf` / `oneOf` of objects, a `type` beside `anyOf`, or an empty
+  tuple `items`.
+- **What to do:** No action (key order and the empty tuple only).
+- **Kind:** wire/protocol change
 
 ### Cohere
 
@@ -5351,6 +5524,19 @@ compile-time changes.
 - **What to do:** Pass image bytes.
 - **Kind:** error text only
 
+#### An empty thoughtSignature is sent {#perplexity-empty-thought-signature}
+
+- **What changed:** v0.5 dropped `providerOptions["perplexity"]
+  ["thoughtSignature"] = ""` on replayed tool calls and tool results; v0.6
+  sends `"thought_signature": ""` on the `function_call` and
+  `function_call_output` items, as TS `getThoughtSignature` sends any string
+  (review round 83).
+- **Am I affected?** `ToolCallContent` / `ToolResultContent` with
+  `ProviderOptions["perplexity"]["thoughtSignature"]` set to `""`.
+- **What to do:** No action unless you relied on an empty signature being
+  dropped; leave the key out instead.
+- **Kind:** wire/protocol change
+
 ## MCP {#mcp}
 
 ### MCP OAuth rejects unbound pre-registered confidential credentials {#mcp-oauth-issuer}
@@ -5382,6 +5568,24 @@ compile-time changes.
   _ = cfg
   ```
 
+- **Kind:** silent behavior change
+
+### An explicit MCP input schema is the tool's Parameters {#mcp-explicit-input-schema}
+
+- **What changed:** v0.5 copied an explicit `MCPToolSchema.InputSchema` given
+  as a `schema.Schema` into a JSON Schema map: sorted keys, JSON Schema
+  validation only, and a panic for a typed nil or zero schema value. v0.6
+  keeps the schema (or bare `schema.Validator`) you passed as the tool's
+  `Parameters`, as TS uses `schemas[name].inputSchema` directly
+  (`mcp-client.ts` 1352): its key order reaches the provider and its own
+  validator checks tool input (for a struct schema, its `validate:` tags). A
+  typed nil or zero schema value is no input schema. Maps and other values
+  still become a JSON Schema map (review round 83).
+- **Am I affected?** `ConvertToGoAIToolsWithSchemas` or
+  `ToolsFromDefinitions` with `MCPToolSchema{InputSchema: <schema.Schema>}`,
+  and code reading `tool.Parameters.(map[string]interface{})` on those tools.
+- **What to do:** No action unless you type-assert `Parameters` to a map;
+  use `schema.ParametersMap(tool.Parameters)` instead.
 - **Kind:** silent behavior change
 
 ## Code mode {#code-mode}
@@ -5514,6 +5718,24 @@ compile-time changes.
 - **What to do:** No action unless you relied on pointer parts being
   ignored; remove those parts from the trailing tool message instead.
 - **Kind:** silent behavior change
+
+### Harness tool specs keep the schema key order {#harness-tool-spec-schema-order}
+
+- **What changed:** v0.5 `harness.ToolSpec.InputSchema` (in
+  `TurnSettings.Tools`, sent to the adapter) was always the tool's JSON Schema
+  as a `map[string]any` (sorted keys), and a bare `schema.Validator` gave nil.
+  v0.6 sends a struct schema, an `*schema.OrderedSchema` or an MCP tool schema
+  with `ParameterKeyOrder` as an `*schema.OrderedSchema` that marshals in its
+  source key order, as TS `_toToolSpecs` sends `asSchema(inputSchema)
+  .jsonSchema`; a bare validator contributes its `JSONSchema()` (review round
+  83).
+- **Am I affected?** Code reading `ToolSpec.InputSchema` /
+  `TurnSettings.Tools[i].InputSchema` with a `.(map[string]any)` assertion,
+  or custom `harness.Harness` adapters that do so.
+- **What to do:** No action unless you type-assert `InputSchema` to a map;
+  marshal it, or use `schema.ParametersMap(spec.InputSchema)` (an
+  `*schema.OrderedSchema` is a `schema.Schema`).
+- **Kind:** wire/protocol change
 
 ### fx: the built-in terminal tool is removed {#fx-terminal-removed}
 
@@ -5766,8 +5988,9 @@ after upgrading:
 - **An invalid tool call's unparsable input is kept only as raw text**
   (`RawArguments`, `ToolCallContent.Input`); the tool-error has no `input`.
   See [Invalid tool call input that is not a JSON object](./known-differences.mdx).
-- **An unknown `ToolChoice.Type` is sent as auto** by most providers; TS
-  cannot construct one. See [Unknown tool choice types](./known-differences.mdx).
+- **Struct-tag schemas make a few Go-only choices** (floats, `time.Time`,
+  `[]byte`, described recursive references, `dive` rules). See
+  [Struct-tag schemas: Go-only choices](./known-differences.mdx).
 - **Tool output JSON in replayed prompts keeps Go map key order.** See
   [Tool output JSON key order in replayed prompts](./known-differences.mdx).
 - **EmbedMany with a batch that reported no usage records the other batches' positive token sum**; TS sums to NaN and drops it. See
@@ -5837,6 +6060,7 @@ next one.
      -e 'EmbeddingUsage|DoEmbed|SubscribeDiagnostic|NewSimpleStructSchema|NewStructSchema|inputSchemaInput|InputSchema\(|gmicloud|ollama|mistral|no embedding|ToolUIPart\{' \
      -e 'InvalidToolInputError|SpanRecorder|Ended\(\)|groundingMetadata|safetyRatings|promptFeedback|urlContextMetadata|StopSequences|RawArguments|ResponseHeaders|FinishReasonInterrupted|Prompt\{|ToolChoice\{Type|InputTokens' \
      -e 'validate:"|ai\.usage\.tokens|Collect(ToolApproval|ToolResult)Continuations|isAborted|isCancelled|ReadUIMessages|ChunksContext|StreamTranslat|DataString|Request\.Body|RawRequest|RequestBody\(\)|alibaba|moonshot|CompletionModel|computer|thoughtSignature|cerebras|bedrock|googlevertex|closed unexpectedly' \
+     -e 'MCPToolSchema|ToolSpec|InputSchema|unsupported part type|languageCode|inputTranscription|SourceText|mai-image|azure|prodia|toolwebfetch|ToolChoice\{|s3://|ParametersMap' \
      -e 'PerChunk|FirstChunk|Response\.Headers|ResponseHeadersMap|ai\.prompt\.(toolChoice|messages|tools)|JSONSchema\(\)|ResponseFormat\.Schema|jsonschema:"|Files\(\)|Skills\(\)|DecisionJSONPart|signature|zai|huggingface|openresponses|anthropic|perplexity' .
    ```
 
