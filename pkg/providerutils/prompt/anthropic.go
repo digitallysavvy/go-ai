@@ -875,11 +875,19 @@ func (f anthropicFile) resolveFullMediaType() (string, error) {
 		return f.mediaType, nil
 	}
 	if f.kind == types.FileDataTypeData {
-		if f.decodeErr != nil {
-			// TS detectMediaType decodes the string (atob throws).
-			return "", f.decodeErr
+		var detected string
+		if f.b64 != "" {
+			// TS detectMediaType decodes only the sniffed prefix of a string
+			// (decodePrefix; atob throws on a bad prefix), so a bad tail is
+			// still detected.
+			var err error
+			if detected, _, err = fileutil.DetectMediaTypeSignatureBase64(f.b64, topLevelMediaType(f.mediaType)); err != nil {
+				return "", err
+			}
+		} else {
+			detected = detectAnthropicMediaType(f.data, topLevelMediaType(f.mediaType))
 		}
-		if detected := detectAnthropicMediaType(f.data, topLevelMediaType(f.mediaType)); detected != "" {
+		if detected != "" {
 			return detected, nil
 		}
 		return "", &providererrors.UnsupportedFunctionalityError{
@@ -1017,6 +1025,13 @@ func (c *anthropicConverter) convertUserFile(p types.FileContent, cacheControl i
 	default: // url, data
 		topLevel := topLevelMediaType(f.mediaType)
 		isURL := f.kind == types.FileDataTypeURL
+		isPDF := false
+		if topLevel == "application" {
+			var err error
+			if isPDF, err = c.isPDF(f); err != nil {
+				return nil, err
+			}
+		}
 		switch {
 		case topLevel == "image":
 			var source map[string]interface{}
@@ -1035,7 +1050,7 @@ func (c *anthropicConverter) convertUserFile(p types.FileContent, cacheControl i
 			}
 			block = map[string]interface{}{"type": "image", "source": source}
 
-		case topLevel == "application" && c.isPDF(f):
+		case topLevel == "application" && isPDF:
 			c.addBeta(AnthropicBetaPDFs)
 			var source map[string]interface{}
 			if isURL {
@@ -1086,13 +1101,18 @@ func (c *anthropicConverter) convertUserFile(p types.FileContent, cacheControl i
 }
 
 // isPDF mirrors the TS check: URL parts compare the declared media type, data
-// parts compare the resolved (detected) media type.
-func (c *anthropicConverter) isPDF(f anthropicFile) bool {
+// parts compare the resolved (detected) media type. TS resolveFullMediaType
+// throws for a data part whose subtype cannot be detected, so that error is
+// returned rather than falling through to "media type: ...".
+func (c *anthropicConverter) isPDF(f anthropicFile) (bool, error) {
 	if f.kind == types.FileDataTypeURL {
-		return f.mediaType == "application/pdf"
+		return f.mediaType == "application/pdf", nil
 	}
 	mediaType, err := f.resolveFullMediaType()
-	return err == nil && mediaType == "application/pdf"
+	if err != nil {
+		return false, err
+	}
+	return mediaType == "application/pdf", nil
 }
 
 // anthropicToolOutput is the TS LanguageModelV4ToolResultOutput resolved from
