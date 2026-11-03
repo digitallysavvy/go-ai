@@ -110,6 +110,11 @@ Also new:
 - **`openai.Config.MetadataExtractor`** (`openai.MetadataExtractor`, `openai.StreamMetadataExtractor`): TS openai-compatible `metadataExtractor`, for `OpenAICompatible` chat models; generate reads the parsed body, the stream extractor sees every parsed event and builds the finish metadata (review round 82).
 - **`prompt.DecodeUTF8Text`** (`pkg/providerutils/prompt`): TS `new TextDecoder().decode(bytes)` for text bytes (leading BOM dropped, one U+FFFD per maximal invalid subpart); used for text file parts across providers and the web fetch tool (review round 83).
 - **`prompt.ValidateToolChoiceType`** (`pkg/providerutils/prompt`): the TS `prepareTools` exhaustive check for a custom provider: with tools, a tool choice type other than auto/none/required/tool is an `UnsupportedFunctionalityError` `tool choice type: <type>` (review round 83).
+- **`types.FileData.OriginalURL`** (JSON `originalUrl`): the caller's URL string when its WHATWG serialization differs (TS `data.originalUrl`); Google/Vertex send it for `gs:` URLs (review round 84).
+- **`ai.TimeoutError.Timeout` / `ErrorName()`**: the configured duration that elapsed (the error then reads like the TS abort reason) and the TS error name `TimeoutError` (review round 84).
+- **`prompt.InvalidURLError`** (`pkg/providerutils/prompt`): TS `new URL()`'s `TypeError: Invalid URL` for a URL file part that does not parse (review round 84).
+- **`prompt.DeprecatedContentWarnings`, `prompt.ImageContentPartDeprecation`** (`pkg/providerutils/prompt`): the TS `deprecated` warnings for a message's `image` content parts (review round 84).
+- **`ai.InternalOptions.TelemetryToolDefinitions`**: the Tools value of telemetry language-model call start events; WorkflowAgent sets it to TS's serialized tool definitions (review round 84).
 - OpenAI Responses: `promptCacheOptions` 12h TTL and prewarm, shell tool
   `timeoutMs`/`maxOutputLength`, `additionalTools` and
   `omitFromRequestTools`. Azure `ToolSearch` and per-deployment model
@@ -242,6 +247,10 @@ search for and ends with a checklist for coding agents. Entries marked
 - **A StreamText step's response headers are its own** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-step-headers-per-step)
 - **Timeout.PerChunk starts with the first output chunk; FirstChunk bounds the wait for it** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-per-chunk-after-first-output)
 - **ExperimentalStreamTranslate reports an unknown part type with the TS text** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-translate-unsupported-part-text)
+- **TimeoutError reads like the TS abort reason ("Chunk timeout of 50ms exceeded", "The operation was aborted due to timeout")** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#timeout-error-text)
+- **The abort part and UI abort chunk reason use the TS text ("AbortError: This operation was aborted", "TimeoutError: ...")** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#abort-part-reason)
+- **StreamText reports a step or total timeout as TimeoutError during stream retries, downloads, tool input callbacks, parsing and approvals** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-timeout-classification)
+- **A tool that returns after its timeout keeps its result (TS only aborts the signal)** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-timeout-result)
 
 #### Prompts and validation
 
@@ -252,6 +261,9 @@ search for and ends with a checklist for coding agents. Entries marked
 - **The JSON Schema validator enforces more keywords** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#json-schema-validator)
 - **Struct-tag schemas validate the decoded value** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#struct-schema-validates-decoded-value)
 - **Struct-tag schemas send their fields to the model** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#struct-schema-json-schema)
+- **URL file parts are WHATWG-normalized (as TS url.toString()); an unparseable URL fails with "Invalid URL"; FileData.OriginalURL added** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#url-file-part-normalized)
+- **Reasoning-file data URLs take their media type; unsupported reasoning-file variants use the TS error text** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#reasoning-file-data-url-media-type)
+- **types.ImageContent prompt parts log the TS "image" content part deprecation warning** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#image-part-deprecation-warning)
 
 #### Tools
 
@@ -282,6 +294,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **InvalidToolInputError shows its cause as TS does** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#invalid-tool-input-error-cause)
 - **GenerateText resolves a deferred provider call from any tool-result or tool-error part** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#deferred-result-any-result-part)
 - **RepairToolCall InputSchema of a tool without Parameters is the TS empty object schema** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#repair-input-schema-empty-object)
+- **A tool without Parameters is sent the TS empty object schema (additionalProperties: false)** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-without-parameters-schema)
+- **Schema-valued and bare validator tool Parameters reach moonshot, Open Responses and OpenAI Responses as JSON Schema** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#schema-value-tool-parameters)
 
 #### Agents and approvals
 
@@ -352,6 +366,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **ConsumeSSEStream keeps its copy after a client disconnect** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-consume-sse-outlives-disconnect)
 - **A failed UI conversion ends the SSE stream without [DONE]** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-failed-stream-no-done)
 - **A null inputSchemaInput or tool input is kept** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-null-input-kept)
+- **ReadUIMessageStream frames events and decodes UTF-8 like the TS chat transport; an unterminated last event is dropped** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#read-ui-message-stream-sse)
 
 #### Telemetry and events
 
@@ -380,6 +395,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **ExperimentalStreamTranslate reports the TS cancel reasons** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-translate-cancel-reason)
 - **Step spans record the auto tool choice** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-step-tool-choice-auto)
 - **WorkflowAgent step spans omit the step prompt and tools** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-step-span-no-prompt)
+- **Telemetry ai.prompt.tools and gen_ai.tool.definitions record the tools in the TS shapes and key order (inputSchema, not parameters)** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-prompt-tools-shape)
 
 #### Errors
 
@@ -483,6 +499,19 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Azure MAI image errors read the message with the TS error schema** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#azure-mai-image-error-message)
 - **Moonshot MFJS schema normalization keeps the TS key order and sends an empty tuple as prefixItems []** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#moonshot-mfjs-key-order)
 - **Perplexity sends an empty providerOptions thoughtSignature as thought_signature ""** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#perplexity-empty-thought-signature)
+- **Provider SSE data, JSON Lines rows, WebSocket frames, JSON and error bodies are decoded like TS TextDecoder (BOM dropped, one U+FFFD per invalid sequence)** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#sse-invalid-utf8)
+- **Anthropic: a replayed provider tool error result sends any present errorCode, as TS** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-tool-result-error-code)
+- **Google/Vertex: a present empty thoughtSignature is sent and suppresses the Gemini 3 sentinel** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-empty-thought-signature)
+- **Google/Vertex: URL and reference file parts with only a top-level media type fail like TS (must specify subtype)** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-reference-file-media-type)
+- **Google: an empty continuationToken provider option is sent** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-empty-continuation-token)
+- **Google/Vertex Live: an empty server error message is kept, as TS** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-live-empty-error-message)
+- **Google Interactions: replayed steps and options keep empty values as TS** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-interactions-step-fields)
+- **Google Interactions: synthesized agent stream tool calls carry the part's metadata** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-interactions-agent-stream-metadata)
+- **OpenAI/xAI realtime client-secret URLs encode the model id like encodeURIComponent** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#realtime-url-model-encoding)
+- **Files reference ids and media types use JavaScript trim (OpenAI, xAI, DeepSeek)** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#files-id-js-trim)
+- **xAI video: empty status values, edit/extend video {} and the request_id error text follow TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#xai-video-empty-values)
+- **xAI image: an empty b64_json is data and an empty revised prompt is omitted, as TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#xai-image-empty-values)
+- **Azure MAI image size and aspect ratio use JavaScript Number parsing** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#azure-mai-image-size-number)
 
 #### MCP
 
@@ -1153,6 +1182,7 @@ in v0.5.3.
 - The repair `InputSchema` callback returns the empty object schema for a tool whose schema value is nil (typed nil pointer, nil `Validator`, nil map) instead of panicking (review round 82).
 - Tool conversion (`providerutils/tool`, `schema.ParametersMap`, `schema.ApplyDefaults`) treats a typed nil or zero schema value (`(*schema.SimpleJSONSchema)(nil)`, `&schema.SimpleJSONSchema{}`) as no schema instead of panicking (review round 82).
 - Marshaling a nil or zero `*schema.SimpleJSONSchema`, `*schema.JSONSchemaValidator` or `*schema.OrderedSchema` (`json.Marshal`, `MarshalJSON`, `schema.MarshalSchema`) gives `{}` instead of panicking, and workflow `SerializeToolSet`, the tool converters and the Anthropic sanitizer treat such a value as no schema (review round 83).
+- A nil or zero `*schema.OrderedSchema` no longer panics in `Validate` / `Keys` (review round 84).
 - `ExperimentalStreamTranscribe` / `ExperimentalStreamTranslate` no longer panic when a failed call has no `Audio` stream (review round 82).
 - `StreamTextSingleConsumerResult.Usage` doc: it is the total usage, as `StreamTextResult.Usage` (review round 82).
 - Response messages' text parts no longer carry the content part's citations (TS `toResponseMessages`) (review round 82).
@@ -1477,6 +1507,12 @@ Notable ones:
 - **Tool output JSON key order in replayed prompts**: serialized tool output JSON keeps Go map key order (three openresponses TS replays skipped) (round 79).
 - **Embedding usage across EmbedMany batches**: a positive token sum is recorded when some batches reported no usage; TS sums to NaN and drops it (round 80).
 - **Legacy telemetry tool spans on error**: Go's legacy `OnError` ends still-open tool spans with the error status; TS never ends them (round 80).
+- **URL parsing: three IDNA edge cases**: Go's WHATWG URL serializer differs from Node on three classes of `xn--` labels (`xn---xii`, a doubly prefixed label, Arabic Extended-B Bidi) (round 84).
+- **Typed URL fields**: a Go URL field that does not parse fails with `Invalid URL`; TS treats such a plain string as base64 data (round 84).
+- **Prompt deprecation warnings**: no warnings for legacy tool-result content types (decoded into `FileContentBlock`), and image-part warnings cover the initial prompt only (round 84).
+- **Prompt file download errors**: the default prompt-file downloader keeps the v0.5 `SSRFError` texts and its up-front DNS check; TS reports `DownloadError` texts (round 84).
+- **WebSocket text frames with invalid UTF-8**: Go decodes them leniently; Node fails the connection (round 84).
+- **TS test replays skipped in round 84**: eight TS cases are skipped for harness limits or Go idiom (azure-keyed OpenAI Responses case, `openai.chat` hint text, chat.ts replay start, a call-site spy, channel errors, provider signal after step end) (round 84).
 - **Executed tool results carry the tool title**: `ToolResult.Title` of a locally executed tool is the call's title, as in v0.5.2; TS client tool results have no `title` (round 80).
 - **Live WebSocket close code**: Google/Vertex Live and OpenAI realtime translation close errors say `(code unknown)`; `golang.org/x/net/websocket` does not expose the close code, and v0.5.2 exports its `*websocket.Conn` (round 81).
 - **OpenAI compaction metadata keeps the v0.5 keys**: `openai.compaction` parts carry the TS `providerMetadata.openai` object and the v0.5.2 top-level keys (round 81).

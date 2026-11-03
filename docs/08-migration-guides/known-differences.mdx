@@ -717,6 +717,67 @@ values (go-playground), which JSON Schema `required` cannot state; and
 `validate` rules after `dive` and alternatives (`a|b`) are left out of the
 schema (review rounds 82 and 83).
 
+## URL parsing: three IDNA edge cases
+
+Core prompt conversion serializes URL file parts with a Go WHATWG URL
+parser (`pkg/internal/urlnorm`), differential-tested against Node 24
+`new URL(x).href` on a 5.2k-case corpus and 720k fuzz inputs. Three classes
+of non-ASCII domains with an `xn--` label after mapping still differ: Go
+rejects `xn---xii` (RFC 3492-valid, Node accepts), accepts
+`xn--xn--xiiffxn--255ab` (Node's Ada decoder rejects it), and applies the
+Bidi rule to a label that decodes to Arabic Extended-B code points (Ada
+skips it) (review round 84).
+
+## Typed URL fields
+
+TS treats a plain string file `data` that does not parse as a URL as
+base64 inline data. Go has no field that may hold either:
+`FileContent.URL`, `ImageContent.URL`, `FileContentBlock.URL` and
+`FileData{Type: url}` are URLs and bytes are `Data`, so a Go URL that does
+not parse fails with `Invalid URL`, as a TS tagged `{type: 'url'}` part does
+(review round 84).
+
+## Prompt deprecation warnings
+
+TS also logs `deprecated` warnings for the legacy `file-data`, `file-url`,
+`file-id`, `file-reference` and `image-*` tool-result content types. Go
+decodes those JSON types into `FileContentBlock`, so it cannot tell them
+apart and logs none. The `"image" content part` warning is logged for the
+messages of the initial prompt on every step; a message that `PrepareStep`
+adds is not scanned (review round 84).
+
+## Prompt file download errors
+
+The default prompt-file downloader (`ai.DefaultDownload`,
+`ai.CreateDownload`) refuses the URLs TS `validateDownloadUrl` refuses
+(non-http(s)/data schemes, localhost and `.local`/`.internal` names, private,
+loopback, link-local and metadata addresses in every IPv4/IPv6 spelling) and
+also resolves host names first, but reports them as the v0.5
+`*providererrors.SSRFError` texts (`URL scheme "file" is not allowed: only
+http, https, and data are permitted`, `URL resolves to loopback address
+127.0.0.1`) instead of TS `DownloadError` texts. The error type and text are
+kept from v0.5.2 (exported, security path) (review round 84).
+
+## WebSocket text frames with invalid UTF-8
+
+A WebSocket text frame that is not valid UTF-8 fails the connection in
+Node (fatal decode, close code 1007). Go decodes it leniently, one U+FFFD per
+invalid subpart, as it decodes binary frames (review round 84).
+
+## TS test replays skipped in round 84
+
+Skipped because of harness limits, with the behavior covered elsewhere:
+the OpenAI Responses cases `should use "azure" as providerMetadata key in
+streaming reasoning events when provider includes "azure"` (the TS test
+builds an `azure.responses` model; replayed by the azure suite) and `should
+return helpful error when Chat Completions stream is received` (Go names
+`Provider.ChatModel` instead of `openai.chat`); `process-ui-message-stream`
+`replay start` (`resetStateOnFirstMessageStart` is a chat.ts client option);
+`stream-text` "logWarnings called with []" (a call-site spy; Go logs nothing
+for no warnings, as TS); `create-ui-message-stream` "merged stream errors" (a
+Go channel cannot error); `stream-text-timeout` 294 / 328 (Go cancels a
+call's context when the call returns) (review round 84).
+
 ## Features that are TypeScript-only (not ported)
 
 - **OpenAI Live over WebRTC** — the browser transport for OpenAI's realtime

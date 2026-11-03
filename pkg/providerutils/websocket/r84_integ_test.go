@@ -23,7 +23,7 @@ func TestR84integFramesDecodedLikeTS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	first, err := Receive(context.Background(), conn)
 	if err != nil || first != "{}" {
 		t.Fatalf("text frame = %q (%v)", first, err)

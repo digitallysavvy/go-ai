@@ -318,7 +318,7 @@ already, you can skip them.
 | Perplexity decision files given by `FileContent.URL` / `Reference` / `Text` | `Perplexity decision file input: url` (or `reference`, `text`) | error text only | Pass image bytes | [Decision file kind](#perplexity-decision-legacy-file-kind) |
 | `ExperimentalStreamTranslate` errors with `unsupported part type` | `Unsupported part type: [object Object]` (TS) | error text only | No action unless you match the text | [Translate part text](#stream-translate-unsupported-part-text) |
 | `types.ToolChoice{Type: "<custom>"}` with tools | `UnsupportedFunctionalityError` `tool choice type: <custom>` (huggingface: TS text; open-responses: sent as given) | silent behavior change | Use the `types.ToolChoice*` constants | [Unknown tool choice type](#unknown-tool-choice-type) |
-| `text/*` `FileContent` byte data with a BOM or invalid UTF-8 (OpenAI-compatible, Moonshot, Anthropic, Cohere), Prodia text output, `toolwebfetch` | Decoded like TS `TextDecoder` | silent behavior change | None | [TextDecoder text parts](#text-file-part-textdecoder) |
+| `text/*` `FileContent` byte data with a BOM or invalid UTF-8 (OpenAI-compatible, Moonshot, Anthropic, Cohere), Prodia text output, `toolwebfetch`, Bedrock streams, Groq text transcriptions, xAI video status | Decoded like TS `TextDecoder` | silent behavior change | None | [TextDecoder text parts](#text-file-part-textdecoder) |
 | Bedrock `s3://` file parts with a bare media type; `FileDataTypeText` blocks in tool results | TS error texts (`UnsupportedFunctionalityError`) | error text only | Use a full media type / a text block | [Bedrock url media type errors](#bedrock-url-media-type-errors) |
 | Bedrock text `FileContent` with an `image/*` or `video/*` `MediaType` | Always a document block (error for non-document types) | silent behavior change | Use a document media type | [Bedrock text file document](#bedrock-text-file-document) |
 | Google Live transcription `TranscriptionStreamPart.Language` | An empty `languageCode` replaces the finish language | silent behavior change | None | [Empty language code](#google-live-empty-language-code) |
@@ -328,6 +328,30 @@ already, you can skip them.
 | Perplexity `ProviderOptions["perplexity"]["thoughtSignature"] = ""` on tool calls / results | Sent as `"thought_signature": ""` | wire/protocol change | Omit the key | [Empty thought signature](#perplexity-empty-thought-signature) |
 | `MCPToolSchema{InputSchema: <schema.Schema>}`, `tool.Parameters.(map[string]interface{})` on MCP tools | `Parameters` is the given schema | silent behavior change | Use `schema.ParametersMap` | [MCP explicit input schema](#mcp-explicit-input-schema) |
 | `harness.ToolSpec.InputSchema.(map[string]any)` | May be an `*schema.OrderedSchema` in source key order | wire/protocol change | Marshal it or use `schema.ParametersMap` | [Harness tool spec order](#harness-tool-spec-schema-order) |
+| `(*ai.TimeoutError).Error()`, `timeout exceeded`, `OnAbortEvent.Reason` | TS abort reason text; `Timeout` field and `ErrorName` added; total-timeout abort reason is the TimeoutError | error text only | Use `errors.As` / `errors.Is` | [Timeout error text](#timeout-error-text) |
+| `StreamChunk.AbortReason`, UI `abort` chunk `reason` | TS `getErrorMessage` text (`AbortError: This operation was aborted`) | wire/protocol change | Match the TS text or use `OnAbortEvent.Reason` | [Abort part reason](#abort-part-reason) |
+| `StreamTextResult.Err() == context.DeadlineExceeded` with `Timeout.PerStep` / `Total` | Retry reopen, downloads, tool input callbacks, parsing and approvals report `*TimeoutError` | silent behavior change | `errors.Is` / `errors.As` | [Stream timeout classification](#stream-timeout-classification) |
+| `TimeoutConfig{ToolMs:` / `Tools:`, `TimeoutReasonTool` | A tool's result after its deadline is kept | silent behavior change | Return `ctx.Err()` to fail | [Tool timeout result](#tool-timeout-result) |
+| `FileContent{URL:`, `ImageContent{URL:`, `FileData{Type: types.FileDataTypeURL`, `DownloadRequest.URL`, `remote file URL must`, `Invalid URL: ` | URL file parts are sent and matched in WHATWG serialized form; bad URLs fail with `Invalid URL`; `FileData.OriginalURL` added | wire/protocol change | None unless you compare URLs; use `OriginalURL` | [URL file parts](#url-file-part-normalized) |
+| `ReasoningFileContent` with a `data:` URL, `allowed types are` | Data URL media type wins; TS error text | silent behavior change | Match the error type | [Reasoning-file data URLs](#reasoning-file-data-url-media-type) |
+| `types.ImageContent{` | Logs the `AISDK_DEP_IMAGE_CONTENT_PART` deprecation warning | silent behavior change | Use `FileContent` or disable warnings | [Image part deprecation](#image-part-deprecation-warning) |
+| `types.Tool{` without `Parameters` | No-argument tools are sent `{"type":"object","properties":{},"additionalProperties":false}` | wire/protocol change | None | [Tool without Parameters](#tool-without-parameters-schema) |
+| `Parameters: schema.NewSimple...` / `schema.NewJSONSchema(` on moonshot, openresponses, OpenAI Responses | Read as its JSON Schema | silent behavior change | None | [Schema-valued tool parameters](#schema-value-tool-parameters) |
+| `ai.ReadUIMessageStream` | SSE framing and UTF-8 decoding follow TS `parseJsonEventStream` | silent behavior change | End each event with a blank line | [ReadUIMessageStream SSE](#read-ui-message-stream-sse) |
+| `ai.prompt.tools` / `gen_ai.tool.definitions` span attributes, `LanguageModelCallStartEvent.Tools` in WorkflowAgent runs | TS prepared tool JSON (`{type, name, inputSchema, ...}`) in TS key order; WorkflowAgent: TS serialized definitions | silent behavior change | Read `inputSchema`, not `parameters` | [Tool telemetry shape](#telemetry-prompt-tools-shape) |
+| Provider SSE, JSON Lines, WebSocket frames, JSON and error bodies with a BOM or invalid UTF-8 | Decoded like TS `TextDecoder` / `response.text()` | silent behavior change | None | [Provider UTF-8 decoding](#sse-invalid-utf8) |
+| Anthropic replayed provider tool error results with `errorCode` | Any present `errorCode` sent as `error_code` | wire/protocol change | None | [Anthropic error codes](#anthropic-tool-result-error-code) |
+| Google / Vertex `thoughtSignature: ""` on replayed parts | Sent as `""`; no Gemini 3 sentinel | wire/protocol change | Omit the key | [Google empty thoughtSignature](#google-empty-thought-signature) |
+| Google / Vertex `FileContent{URL:` or reference parts with `MediaType: "image"`, `ImageContent{URL:` without `MimeType` | `UnsupportedFunctionalityError` must specify subtype | silent behavior change | Pass a full media type | [Google file media type](#google-reference-file-media-type) |
+| Google `continuationToken: ""` | Sent as `""` | wire/protocol change | Omit the key | [Empty continuationToken](#google-empty-continuation-token) |
+| `"Google Live API error"`, `"Vertex Live API error"` | An empty server message is kept | error text only | Match the error type | [Live empty error message](#google-live-empty-error-message) |
+| Google `InteractionsModel` history and `responseFormat` / `imageConfig` options | Empty values kept as TS | wire/protocol change | None | [Interactions step fields](#google-interactions-step-fields) |
+| Google Interactions agent stream tool calls `ProviderMetadata["google"]` | The part's own metadata | silent behavior change | None | [Interactions agent stream metadata](#google-interactions-agent-stream-metadata) |
+| OpenAI / xAI realtime client-secret `URL` | `encodeURIComponent(modelId)` | wire/protocol change | None unless model ids contain spaces or `!'()*` | [Realtime URL model encoding](#realtime-url-model-encoding) |
+| OpenAI / xAI files reference ids, OpenAI / xAI / DeepSeek download media types with BOM / NEL | JavaScript `trim()` | silent behavior change | None | [Files ids use JS trim](#files-id-js-trim) |
+| xAI video status empty strings, `mode` without `videoUrl`, missing `request_id` | TS `??` / `== null` semantics, `"video": {}`, TS error text | silent behavior change | None | [xAI video edge values](#xai-video-empty-values) |
+| xAI image `b64_json: ""`, empty `revised_prompt` | Data / omitted, as TS | silent behavior change | None | [xAI image empty values](#xai-image-empty-values) |
+| Azure MAI image `Size` / `AspectRatio` parsing | JS `Number` semantics | wire/protocol change | None unless you pass malformed sizes | [MAI image size parsing](#azure-mai-image-size-number) |
 
 ## Compile-time changes {#compile-time-changes}
 
@@ -1244,6 +1268,84 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   `Timeout: &ai.TimeoutConfig{FirstChunk: &first, PerChunk: &perChunk}`.
 - **Kind:** silent behavior change
 
+### Timeout errors use the TS abort reason text {#timeout-error-text}
+
+- **What changed:** `(*ai.TimeoutError).Error()` reads like the TS abort reason when the
+  configured duration is known: a step, first-chunk or chunk timeout reads
+  `Step timeout of 100ms exceeded` / `First chunk timeout of 50ms exceeded` /
+  `Chunk timeout of 50ms exceeded` (TS `setAbortTimeout`), in StreamText and
+  (step) GenerateText; a total timeout and a tool timeout read `The operation
+  was aborted due to timeout` (TS `AbortSignal.timeout`, `mergeAbortSignals`),
+  in GenerateText, StreamText and `ToolLoopAgent`. v0.5 read `<reason> timeout
+  exceeded: context deadline exceeded`, which a `TimeoutError` without a
+  duration still reads. New additive field `TimeoutError.Timeout` and method
+  `TimeoutError.ErrorName()` (`"TimeoutError"`), so a tool that fails with its
+  timed-out context reaches the model as `TimeoutError: The operation was
+  aborted due to timeout` (TS `getErrorMessage(error)`; was `Error: tool
+  timeout exceeded: context deadline exceeded`). The StreamText total
+  deadline's `context.Cause` is the `TimeoutError`, so `OnAbortEvent.Reason`
+  is a `*ai.TimeoutError` (`errors.Is(reason, context.DeadlineExceeded)` still
+  holds) (review round 84).
+- **Am I affected?** Code that compares `err.Error()` of an `*ai.TimeoutError` or
+  matches `timeout exceeded`; tool-error text the model sees for timed-out
+  tools; `OnAbortEvent.Reason == context.DeadlineExceeded`.
+- **What to do:** Match with `errors.As` and the reason, or `errors.Is(err,
+  context.DeadlineExceeded)`:
+  ```go
+  var timeoutErr *ai.TimeoutError
+  if errors.As(err, &timeoutErr) && timeoutErr.Reason == ai.TimeoutReasonChunk {
+  	// handle a chunk timeout
+  }
+  ```
+- **Kind:** error text only
+
+### The abort part reason is the TS reason text {#abort-part-reason}
+
+- **What changed:** the `abort` part (`StreamChunk.AbortReason`) and the UI message
+  stream `abort` chunk's `reason` are TS `getErrorMessage(abortSignal.reason)`:
+  `AbortError: This operation was aborted` for a plain context cancel (v0.5:
+  `context canceled`), `TimeoutError: <timeout message>` for SDK timeouts and
+  `TimeoutError: The operation was aborted due to timeout` for the caller's own
+  context deadline (v0.5: `context deadline exceeded`). A
+  `context.WithCancelCause` cause keeps its `Error()` text (review round 84).
+- **Am I affected?** Code or clients that read `AbortReason` or the UI `abort` chunk's
+  `reason` and compare it with `context canceled`.
+- **What to do:** No action unless you match the reason text; compare with the new
+  strings or use `OnAbortEvent.Reason` with `errors.Is`.
+- **Kind:** wire/protocol change
+
+### Step and total timeouts are a TimeoutError everywhere in StreamText {#stream-timeout-classification}
+
+- **What changed:** a step or total deadline that ends a stream retry's reopened model
+  call, a generated-file or reasoning-file download, tool-call parsing or
+  repair, the approval pre-check or a tool input callback (`OnInputStart` /
+  `OnInputDelta` / `OnInputAvailable`) is now a `*ai.TimeoutError` (step or
+  total) and an abort with the timeout reason, as TS (the step deadline is
+  cumulative across retries, `stream-text-timeout.test.ts` 772). v0.5 returned
+  the raw context error there (review round 84).
+- **Am I affected?** `StreamTextResult.Err()` checks that expect
+  `context.DeadlineExceeded` itself (`err == context.DeadlineExceeded`) with
+  `Timeout.PerStep` or `Timeout.Total`.
+- **What to do:** Use `errors.Is(err, context.DeadlineExceeded)` or `errors.As`
+  with `*ai.TimeoutError`.
+- **Kind:** silent behavior change
+
+### A tool that returns after its timeout keeps its result {#tool-timeout-result}
+
+- **What changed:** v0.5 turned the result of a tool that returned after its
+  `TimeoutConfig.ToolMs` / `Tools[name]` deadline into a `TimeoutError`, even
+  when the tool returned without error. v0.6 does what TS
+  `execute-tool-call.ts` does: the deadline only cancels the tool's context. A
+  tool that still returns a result keeps it; only an error the tool returns is
+  reported as the tool timeout (`GenerateText`, `StreamText`,
+  `ToolLoopAgent`), with the text of [Timeout error text](#timeout-error-text)
+  (review round 84).
+- **Am I affected?** Tools that ignore `ctx.Done()` with `TimeoutConfig.ToolMs` or
+  `Tools` set; code expecting `TimeoutReasonTool` for them.
+- **What to do:** No action unless you relied on the late result being discarded;
+  return `ctx.Err()` from the tool to report the timeout.
+- **Kind:** silent behavior change
+
 ## Prompts and validation {#prompts-and-validation}
 
 ### Prompt validation matches TS {#prompt-validation}
@@ -1411,6 +1513,84 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   `null`). For integer values past 2^53, use a `string` field (or
   `json.Number` with `,string`) instead of an integer kind.
 - **Kind:** wire/protocol change
+
+### URL file parts are WHATWG-normalized {#url-file-part-normalized}
+
+- **What changed:** v0.5 sent a file part's URL string to the provider as given and
+  rejected `file:`, `javascript:`, `vbscript:` and hostless URLs with Go-only
+  errors. v0.6 does what TS does: core prompt conversion parses every URL file
+  part as `new URL(url)` does and sends its serialization (`url.toString()`).
+  The scheme and host are lowercased, a default port is dropped, dot segments
+  are resolved, spaces and non-ASCII characters in the path, query and
+  fragment are percent-encoded, IDNA hosts become punycode, and `\` becomes
+  `/` for http(s)/ws(s)/ftp/file. Download planning, `SupportedURLs` matching
+  and `DownloadRequest.URL` use that form. A URL that does not parse fails
+  with `*prompt.InvalidURLError` (`Invalid URL`, the TS `TypeError` text); UI
+  file and reasoning-file parts are checked with the same parser in
+  `ConvertToModelMessages` (`Invalid URL: <url>` becomes `Invalid URL`, and
+  net/url-only acceptances such as `http://x:65536/` now fail). Any other
+  scheme is accepted, and is forwarded only when the model's `SupportedURLs`
+  match it: the default downloader still fetches only http, https and data
+  URLs and still refuses private, loopback and link-local hosts, so a
+  `file:///etc/passwd` part is never read or fetched. New, additive:
+  `types.FileData.OriginalURL` (JSON `originalUrl`) holds your string when
+  serialization changed it, for `FileContent.URL`, `ImageContent.URL`,
+  `FileContentBlock.URL` and legacy `file-url`/`image-url` tool-result blocks,
+  as TS keeps `originalUrl` for a string URL; Google and Vertex send it for
+  `gs:` URLs (TS `originalUrl ?? url.toString()`). A legacy `file-url` block
+  without a media type infers it from the URL path, not the host (review
+  round 84).
+- **Am I affected?** `FileContent{URL:`, `ImageContent{URL:`, `FileContentBlock{URL:`,
+  `FileData{Type: types.FileDataTypeURL`; middleware, mocks or
+  `ExperimentalDownload` functions that compare `FileData.URL` /
+  `DownloadRequest.URL` with the string you passed; code matching
+  `remote file URL must` or `Invalid URL: `; prompts relying on `file:` /
+  `javascript:` URLs being rejected before the model call.
+- **What to do:** No action unless you compare the URL with your input. To read your
+  original string:
+  ```go
+  url := part.FileData.URL
+  if part.FileData.OriginalURL != "" {
+  	url = part.FileData.OriginalURL
+  }
+  ```
+  To match a bad URL, use `errors.As` with `*prompt.InvalidURLError`
+  (`pkg/providerutils/prompt`).
+- **Kind:** wire/protocol change
+
+### Reasoning-file data URLs take their media type {#reasoning-file-data-url-media-type}
+
+- **What changed:** v0.5 kept a `ReasoningFileContent`'s declared `MediaType` when its
+  `FileData` was a `data:` URL. v0.6 uses the data URL's media type, as TS
+  `mediaType ?? part.mediaType` does (file parts already did). An unsupported
+  reasoning-file variant now fails with the TS text `Unsupported
+  reasoning-file data type: <type>` (was `reasoning-file data type "<type>" is
+  not supported; ...`); the error type `*prompt.ReasoningFileConstraintError`
+  is unchanged (review round 84).
+- **Am I affected?** `types.ReasoningFileContent{FileData: types.FileData{Type:
+  types.FileDataTypeURL, URL: "data:...`; code matching `allowed types are`.
+- **What to do:** No action unless you match the old text; use `errors.As` with
+  `*prompt.ReasoningFileConstraintError`.
+- **Kind:** silent behavior change
+
+### Image parts log the TS deprecation warning {#image-part-deprecation-warning}
+
+- **What changed:** v0.6 logs TS's `deprecated` warning for every `types.ImageContent`
+  part of a user message (default logger line: `[AISDK_DEP_IMAGE_CONTENT_PART]
+  AI SDK Warning: Deprecated: ""image" content part". The "image" content part
+  type is deprecated. Use a "file" part with mediaType: 'image' (or a more
+  specific image/* subtype) instead.`), through the warning logger
+  (`SetLogWarnings`, `DisableLogWarnings`, `AI_SDK_LOG_WARNINGS=false`), once
+  per user message on every step's prompt conversion, without provider or
+  model, as TS `convertToLanguageModelPrompt` does: GenerateText and
+  StreamText (every step), GenerateObject and StreamObject, the batch API and
+  the agent legacy loop. The default logger writes each code once per process
+  to stderr (review round 84).
+- **Am I affected?** `types.ImageContent{` in prompts; custom `SetLogWarnings`
+  functions; tests that capture stderr.
+- **What to do:** No action, or switch to `types.FileContent{MediaType: "image/png",
+  Data: ...}`; `ai.DisableLogWarnings()` silences it.
+- **Kind:** silent behavior change
 
 ## Tools {#tools}
 
@@ -2029,6 +2209,39 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **Am I affected?** `RepairToolCall` functions that call `InputSchema` for
   tools without `Parameters` and inspect or forward the schema.
 - **What to do:** no action unless you compare the schema.
+- **Kind:** silent behavior change
+
+### A tool without Parameters is sent the TS empty object schema {#tool-without-parameters-schema}
+
+- **What changed:** v0.5 handed providers a nil `Parameters` for a function tool
+  without a schema (most converters then sent `{"type":"object",
+  "properties":{}}`, some `null`). v0.6 sends, through `GenerateText`,
+  `StreamText`, the batch API and `ToolLoopAgent`, TS's `asSchema(undefined)`
+  schema, `{"type":"object","properties":{},"additionalProperties":false}`,
+  for a function or dynamic tool whose `Parameters` is nil, a typed nil or a
+  zero schema value; the OpenAI Responses, Moonshot and Open Responses models
+  send it for such a tool on direct `DoGenerate` / `DoStream` calls too.
+  Provider tools are unchanged (review round 84).
+- **Am I affected?** `types.Tool{` without `Parameters:`; tests asserting the request
+  body of a no-argument tool.
+- **What to do:** No action unless you assert the old schema on the wire.
+- **Kind:** wire/protocol change
+
+### Schema-valued tool Parameters reach every converter as JSON Schema {#schema-value-tool-parameters}
+
+- **What changed:** calling `DoGenerate` / `DoStream` directly with a tool whose
+  `Parameters` is a `schema.Schema` (`schema.NewSimpleJSONSchema`,
+  `schema.NewSimpleStructSchema`) failed on moonshot (`must be a JSON Schema
+  object with type "object"`), sent no `parameters` on openresponses and
+  skipped OpenAI's JSON Schema normalization on the Responses API. A bare
+  `schema.Validator` (`schema.NewJSONSchema(m)`) was treated as no schema by
+  those converters through `ai.GenerateText` too. v0.6 uses the schema's JSON
+  Schema everywhere, as TS does with `asSchema(tool.inputSchema).jsonSchema`
+  (review round 84).
+- **Am I affected?** `types.Tool{Parameters: schema.NewSimple...}` passed straight to a
+  `moonshot`, `openresponses` or `openai` Responses model;
+  `Parameters: schema.NewJSONSchema(` with any of them.
+- **What to do:** No action.
 - **Kind:** silent behavior change
 
 ## Agents and approvals {#agents-and-approvals}
@@ -3314,6 +3527,21 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   the StreamText ctx (for example `context.WithoutCancel(r.Context())`).
 - **Kind:** silent behavior change
 
+### ReadUIMessageStream parses SSE like the TS chat transport {#read-ui-message-stream-sse}
+
+- **What changed:** v0.5 scanned `data:` lines one by one. v0.6 frames events like TS
+  `parseJsonEventStream` (DefaultChatTransport): one leading byte order mark
+  is dropped; LF, CRLF and bare CR end lines; multi-line `data:` fields are
+  joined with "\n"; an event is dispatched only at a blank line, so an
+  unterminated last event is dropped; invalid UTF-8 becomes one U+FFFD per
+  invalid subpart, as TextDecoder does (review round 84).
+- **Am I affected?** Callers of `ai.ReadUIMessageStream` that read SSE whose last event
+  has no closing blank line, that use bare-CR line ends, or that rely on a
+  BOM-prefixed stream's first line being skipped.
+- **What to do:** No action unless you produce SSE without a blank line after the
+  last event; end every event with "\n\n" (the SDK's own writers already do).
+- **Kind:** silent behavior change
+
 ## Telemetry and events {#telemetry-and-events}
 
 The [telemetry recording change](#telemetry-record-pointers) is listed under
@@ -3746,6 +3974,37 @@ compile-time changes.
   `StepTools` on WorkflowAgent step events.
 - **What to do:** read the conversation from the root `ai.prompt` attribute
   or the `OnLanguageModelCallStart` event instead.
+- **Kind:** silent behavior change
+
+### Tool telemetry records the TS tool shapes {#telemetry-prompt-tools-shape}
+
+- **What changed:** v0.5: the legacy step span's `ai.prompt.tools` held each
+  `types.Tool` marshaled with Go field names (`{"name":"weather",
+  "description":"","parameters":{...}}`, `"parameters":null` for a tool
+  without a schema), and the GenAI chat span's `gen_ai.tool.definitions`
+  wrote its objects with sorted keys. v0.6: both record the tools as TS
+  `prepareTools` hands them to the model, in TS key order:
+  `{"type":"function","name","inputSchema",...}` (with `description`,
+  `inputExamples`, `providerOptions`, `strict` when set) and
+  `{"type":"provider","name","id","args"}`. A struct schema keeps its field
+  order. Harness turns record TS turn telemetry's `{"type":"function","name",
+  "description","inputSchema"}` and leave out `inputSchema` for a tool
+  without one. WorkflowAgent chat spans record TS `serializeToolSet`'s
+  definitions (`{"title","metadata","description","inputSchema","strict",
+  "inputExamples","providerOptions","hasOwnValidator","type",
+  "hasOnInputStart",...,"isProviderExecuted","id","args"}`, set fields only,
+  no `name`), and `[]` for a step without tools; for those runs a custom
+  integration's `LanguageModelCallStartEvent.Tools` is a JSON-marshalable
+  list of those definitions (marshal it to read them), not `[]types.Tool`
+  (TS integrations see the serialized definitions too,
+  `model-call-iterator.ts` 367) (review round 84).
+- **Am I affected?** Span queries or exporters that parse `ai.prompt.tools` (the
+  `parameters` key) or compare `gen_ai.tool.definitions` text byte for byte;
+  custom `TelemetryIntegration`s that type-assert
+  `LanguageModelCallStartEvent.Tools` to `[]types.Tool` for WorkflowAgent
+  runs.
+- **What to do:** No action unless you read `parameters` from `ai.prompt.tools`;
+  read `inputSchema` instead.
 - **Kind:** silent behavior change
 
 ## Errors {#errors}
@@ -4238,7 +4497,8 @@ compile-time changes.
   together, fireworks, gmicloud, ollama, cerebras, deepinfra,
   `openai.Config.OpenAICompatible`, anthropic, google and Vertex (function
   tools only), groq (unless the JSON response tool replaces the choice),
-  mistral, cohere and amazon-bedrock (standard tools; Anthropic models
+  mistral (chat and, since review round 84, the Conversations model
+  `Provider.ConversationModel`), cohere and amazon-bedrock (standard tools; Anthropic models
   through the Anthropic tool preparation). huggingface returns the TS error
   text `Unsupported tool choice type: [object Object]`; open-responses sends
   `"tool_choice": "X"` as given; deepseek and zai already warn and send none
@@ -4262,13 +4522,36 @@ compile-time changes.
   and the web fetch tool's UTF-8 bodies (a truncated sequence is one U+FFFD,
   as TS). The MCP event webhook and Prodia job metadata parse their JSON from
   the decoded text, as TS, so a body with a leading BOM is accepted (it was
-  a 400 / parse error) (review round 83).
+  a 400 / parse error) (review round 83). Amazon Bedrock event-stream
+  payloads (Converse stream events, Bedrock-Anthropic chunk bytes and
+  exception messages), Groq `responseFormat: "text"` transcriptions and the
+  xAI video status body are decoded the same way (a BOM-prefixed Bedrock
+  event used to be a JSON parse error part); for provider JSON, error, SSE,
+  JSON Lines and WebSocket bodies see
+  [Provider UTF-8 decoding](#sse-invalid-utf8) (review round 84).
 - **Am I affected?** `types.FileContent` / `FileData` byte data with a
   `text/...` media type whose bytes start with `EF BB BF` or are not valid
   UTF-8; `toolwebfetch` results of non-UTF-8 bodies;
   `ExperimentalCreateMCPEventWebhook` senders that prefix a BOM.
 - **What to do:** No action unless you relied on the BOM or the raw bytes
   reaching the model.
+- **Kind:** silent behavior change
+
+#### Provider streams, JSON Lines, WebSocket frames and error bodies decode UTF-8 like TS {#sse-invalid-utf8}
+
+- **What changed:** v0.5 parsed provider bytes as given: encoding/json writes one
+  U+FFFD per invalid byte, and a leading BOM made a JSON body or event fail
+  to parse. v0.6 decodes them as TS does before parsing: SSE event data (TS
+  `TextDecoderStream`, every SSE provider), JSON Lines batch results (TS
+  `parseJsonLines`: the stream's leading BOM dropped), WebSocket frames (TS
+  `readWebSocketMessageText`: a text frame's leading BOM dropped, a binary
+  frame through TextDecoder), JSON response bodies through the shared HTTP
+  client and provider error bodies (`ProviderError.Message`, `Data` and
+  `ResponseBody`; TS `response.text()`). Each maximal invalid UTF-8 subpart is
+  one U+FFFD (review round 84).
+- **Am I affected?** Provider responses, events or frames that carry invalid UTF-8 or
+  start with `EF BB BF`; code comparing `ProviderError.ResponseBody` bytes.
+- **What to do:** No action.
 - **Kind:** silent behavior change
 
 ### AI Gateway
@@ -4518,6 +4801,18 @@ compile-time changes.
 - **What to do:** No action unless such a proxy is in your path.
 - **Kind:** silent behavior change
 
+#### Anthropic provider tool error results keep any present errorCode {#anthropic-tool-result-error-code}
+
+- **What changed:** when an Anthropic provider tool error result (web_fetch,
+  web_search, tool search, code execution) is replayed, any present
+  `errorCode` is sent as `error_code` (an empty string or a number included;
+  typed Go values are read as their JSON object), as TS `errorCode ??
+  'unavailable'` / `?? 'unknown'` does. v0.5 sent the default for a
+  non-string or empty code (review round 84).
+- **Am I affected?** Replayed provider tool results with `errorCode` in their output value.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
 ### Amazon Bedrock
 
 #### Anthropic provider tools on Bedrock {#bedrock-anthropic-provider-tools}
@@ -4730,6 +5025,82 @@ compile-time changes.
   (review round 83).
 - **Am I affected?** `SpeechTranslationStreamPart` source-transcript parts
   and the finish `SourceText` of a google translation stream.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+#### Google sends a present empty thoughtSignature {#google-empty-thought-signature}
+
+- **What changed:** v0.5: an empty `providerOptions.google.thoughtSignature` (or
+  `vertex` / `googleVertex`) on an assistant part was dropped, and a Gemini 3
+  function call with one got the `skip_thought_signature_validator` sentinel
+  and a warning. v0.6: like TS (`thoughtSignature != null`), a present empty
+  signature is sent as `""` and counts as a signature (no sentinel, no
+  warning). An empty `serverToolCallId` together with a `serverToolType` still
+  makes a server `toolCall` part (review round 84).
+- **Am I affected?** `"thoughtSignature": ""` in provider options or metadata you replay.
+- **What to do:** No action unless you relied on an empty signature being dropped; remove the key instead.
+- **Kind:** wire/protocol change
+
+#### Google URL and reference file parts need a full media type {#google-reference-file-media-type}
+
+- **What changed:** a user file part sent by URL or by provider reference
+  (`FileData{Type: FileDataTypeReference}`) with only a top-level media type
+  (`image`, `image/*`) now fails with `UnsupportedFunctionalityError` `file of
+  media type "image" must specify subtype since it is not passed as inline
+  bytes`, as TS `resolveFullMediaType` does. v0.5 sent `mimeType: "image"` for
+  a reference and completed a URL part's type from its extension (`.png`,
+  `.gif`, `.webp`, else `image/jpeg`). This applies to URLs the model takes
+  directly (Gemini files and YouTube URLs; every http(s) and `gs:` URL on
+  Vertex), including `types.ImageContent{URL: ...}` without a `MimeType`;
+  other URLs are downloaded and their type detected as before. The Google and
+  Vertex image models are unaffected (review round 84).
+- **Am I affected?** `FileDataTypeReference` parts, `FileContent{URL:` with `MediaType:
+  "image"` or `"image/*"`, and `ImageContent{URL:` without `MimeType`, sent to
+  Google or Vertex.
+- **What to do:** Give the full type: before `MediaType: "image"`, after
+  `MediaType: "image/png"` (or `ImageContent{URL: u, MimeType: "image/png"}`).
+- **Kind:** silent behavior change
+
+#### Google sends an empty continuationToken {#google-empty-continuation-token}
+
+- **What changed:** `providerOptions.google.continuationToken: ""` is now sent as
+  `"continuationToken": ""` (TS `!= null`); v0.5 dropped it (review round 84).
+- **Am I affected?** `continuationToken` provider options set to `""`.
+- **What to do:** No action unless you pass an empty token; omit the key instead.
+- **Kind:** wire/protocol change
+
+#### Google Live errors keep an empty server message {#google-live-empty-error-message}
+
+- **What changed:** a Google / Vertex Live transcription or speech translation server
+  error with an empty `message` now fails with that empty message, as TS
+  `message ?? 'Google Live API error'` does (`'Vertex Live API error'` on
+  Vertex); v0.5 used the default text (review round 84).
+- **Am I affected?** Code matching `"Google Live API error"` or `"Vertex Live API error"`.
+- **What to do:** No action unless you match the default text.
+- **Kind:** error text only
+
+#### Google Interactions history keeps empty fields like TS {#google-interactions-step-fields}
+
+- **What changed:** a replayed `function_call` step always carries `id`, `name` and
+  `arguments` (`{}` for a call without arguments; v0.5 left out `arguments`,
+  and an empty `id` or `name`). A `google.processing_call` /
+  `google.processing_result` custom part with an empty `processingId` /
+  `processingCallId` is sent as a step (v0.5 dropped it with a warning).
+  Provider-option `responseFormat` entries keep an empty `mimeType` or
+  `schema: {}`, and an empty `imageConfig: {}` adds the default image entry
+  and its deprecation warning (agent calls list it as dropped) (review round
+  84).
+- **Am I affected?** `InteractionsModel` calls with `processingId`, `imageConfig` or `responseFormat` provider options, or zero-argument tool calls in history.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+#### Google Interactions agent streams keep the part metadata {#google-interactions-agent-stream-metadata}
+
+- **What changed:** the synthesized stream of a non-streaming agent interaction gives
+  each tool call the part's own `providerMetadata.google` (an empty
+  `signature` included), so the next turn sends the signature back as TS
+  does (review round 84).
+- **Am I affected?** Streamed Interactions agent tool calls whose `ProviderMetadata["google"]["signature"]` you read.
 - **What to do:** No action.
 - **Kind:** silent behavior change
 
@@ -5039,6 +5410,25 @@ compile-time changes.
 - **What to do:** No action.
 - **Kind:** silent behavior change
 
+#### Realtime client-secret URL encodes the model id like encodeURIComponent {#realtime-url-model-encoding}
+
+- **What changed:** `DoCreateClientSecret` of the OpenAI and xAI realtime models builds
+  `?model=` with JavaScript `encodeURIComponent` (space `%20`, `! ' ( ) *`
+  literal) instead of `url.QueryEscape` (`+`, `%21`...) (review round 84).
+- **Am I affected?** `ClientSecretResult.URL` for model ids with spaces or `!'()*`.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+#### Files reference ids and media types use JavaScript trim {#files-id-js-trim}
+
+- **What changed:** the OpenAI and xAI files APIs reject a reference id that is empty
+  after JavaScript `trim()` (a BOM-only id is now rejected, an id of U+0085
+  accepted), and the downloaded media type (OpenAI, xAI, DeepSeek) is trimmed
+  the same way, as TS (review round 84).
+- **Am I affected?** `types.ProviderReference` ids made only of Unicode whitespace or a BOM.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
 ### xAI
 
 #### xAI provider tool config is validated before the request {#xai-tool-args-validation}
@@ -5096,6 +5486,29 @@ compile-time changes.
 - **Am I affected?** `result.ResponseMetadata == nil` checks on xAI batch
   results.
 - **What to do:** check the fields (`ID`, `ModelID`, `Timestamp`) instead.
+- **Kind:** silent behavior change
+
+#### xAI video: empty strings are values, edit/extend always send video {#xai-video-empty-values}
+
+- **What changed:** matching TS `xai-video-model.ts`: a status `error.message` of
+  `""` is the detail (`Video generation failed: `), `status: ""` with a
+  `video.url` stays pending, `video.url: ""` does not fall back to
+  `file_output.public_url`, a 202 or 200 status body with a leading BOM is
+  parsed, `mode: "edit-video"` / `"extend-video"` without `videoUrl` sends
+  `"video": {}`, and a missing `request_id` fails with `No request_id returned
+  from xAI API.` (the response is no longer appended) (review round 84).
+- **Am I affected?** `xai.VideoModel` `DoStart` / `DoStatus` / `DoGenerate`; matching the old error text `Response: {RequestID:`.
+- **What to do:** No action unless you match the old error text.
+- **Kind:** silent behavior change
+
+#### xAI image: an empty b64_json is image data {#xai-image-empty-values}
+
+- **What changed:** as TS: an image with `b64_json: ""` counts as base64 data (no
+  download of its `url`), in the image model and in batch results;
+  `XAIImageItemMetadata.RevisedPrompt` is nil for an empty `revised_prompt` in
+  the image model (batch keeps it, as TS) (review round 84).
+- **Am I affected?** `xai.ImageModel` results whose API response has empty strings in these fields.
+- **What to do:** No action.
 - **Kind:** silent behavior change
 
 ### Azure, DeepSeek and Alibaba
@@ -5166,6 +5579,18 @@ compile-time changes.
   (`mai-image-*`).
 - **What to do:** No action unless you match the message text.
 - **Kind:** error text only
+
+#### Azure MAI image size and aspect ratio follow JavaScript Number parsing {#azure-mai-image-size-number}
+
+- **What changed:** `ImageGenerateOptions.Size` and `AspectRatio` for MAI-Image models
+  are parsed like TS `split('x'|':').map(Number)`: whitespace is allowed,
+  extra parts are ignored, `"1024"` sends only `width`, a non-number part is
+  sent as `null` (JSON) / `NaN` (edit form) instead of being dropped, and
+  `"16:9:1"` is 16:9 instead of an invalid-aspect-ratio warning (review round
+  84).
+- **Am I affected?** `azure` image models `mai-image-*` with a malformed `Size` or `AspectRatio`.
+- **What to do:** No action unless you relied on malformed sizes being dropped.
+- **Kind:** wire/protocol change
 
 ### OpenAI-compatible providers
 
@@ -5994,6 +6419,18 @@ after upgrading:
 - **Struct-tag schemas make a few Go-only choices** (floats, `time.Time`,
   `[]byte`, described recursive references, `dive` rules). See
   [Struct-tag schemas: Go-only choices](./known-differences.mdx).
+- **URL parsing: three IDNA edge cases**: Go's WHATWG URL serializer differs from Node on three classes of `xn--` labels (`xn---xii`, a doubly prefixed label, Arabic Extended-B Bidi) (round 84). See
+  [URL parsing: three IDNA edge cases](./known-differences.mdx).
+- **Typed URL fields**: a Go URL field that does not parse fails with `Invalid URL`; TS treats such a plain string as base64 data (round 84). See
+  [Typed URL fields](./known-differences.mdx).
+- **Prompt deprecation warnings**: no warnings for legacy tool-result content types (decoded into `FileContentBlock`), and image-part warnings cover the initial prompt only (round 84). See
+  [Prompt deprecation warnings](./known-differences.mdx).
+- **Prompt file download errors**: the default prompt-file downloader keeps the v0.5 `SSRFError` texts and its up-front DNS check; TS reports `DownloadError` texts (round 84). See
+  [Prompt file download errors](./known-differences.mdx).
+- **WebSocket text frames with invalid UTF-8**: Go decodes them leniently; Node fails the connection (round 84). See
+  [WebSocket text frames with invalid UTF-8](./known-differences.mdx).
+- **TS test replays skipped in round 84**: eight TS cases are skipped for harness limits or Go idiom (azure-keyed OpenAI Responses case, `openai.chat` hint text, chat.ts replay start, a call-site spy, channel errors, provider signal after step end) (round 84). See
+  [TS test replays skipped in round 84](./known-differences.mdx).
 - **Tool output JSON in replayed prompts keeps Go map key order.** See
   [Tool output JSON key order in replayed prompts](./known-differences.mdx).
 - **EmbedMany with a batch that reported no usage records the other batches' positive token sum**; TS sums to NaN and drops it. See
@@ -6064,7 +6501,8 @@ next one.
      -e 'InvalidToolInputError|SpanRecorder|Ended\(\)|groundingMetadata|safetyRatings|promptFeedback|urlContextMetadata|StopSequences|RawArguments|ResponseHeaders|FinishReasonInterrupted|Prompt\{|ToolChoice\{Type|InputTokens' \
      -e 'validate:"|ai\.usage\.tokens|Collect(ToolApproval|ToolResult)Continuations|isAborted|isCancelled|ReadUIMessages|ChunksContext|StreamTranslat|DataString|Request\.Body|RawRequest|RequestBody\(\)|alibaba|moonshot|CompletionModel|computer|thoughtSignature|cerebras|bedrock|googlevertex|closed unexpectedly' \
      -e 'MCPToolSchema|ToolSpec|InputSchema|unsupported part type|languageCode|inputTranscription|SourceText|mai-image|azure|prodia|toolwebfetch|ToolChoice\{|s3://|ParametersMap' \
-     -e 'PerChunk|FirstChunk|Response\.Headers|ResponseHeadersMap|ai\.prompt\.(toolChoice|messages|tools)|JSONSchema\(\)|ResponseFormat\.Schema|jsonschema:"|Files\(\)|Skills\(\)|DecisionJSONPart|signature|zai|huggingface|openresponses|anthropic|perplexity' .
+     -e 'PerChunk|FirstChunk|Response\.Headers|ResponseHeadersMap|ai\.prompt\.(toolChoice|messages|tools)|JSONSchema\(\)|ResponseFormat\.Schema|jsonschema:"|Files\(\)|Skills\(\)|DecisionJSONPart|signature|zai|huggingface|openresponses|anthropic|perplexity' \
+     -e 'FileData\{Type: types\.FileDataTypeURL|remote file URL must|Invalid URL|allowed types are|ImageContent\{|ReasoningFileContent|AbortReason|ReadUIMessageStream|continuationToken|errorCode|InteractionsModel|ClientSecret|ConversationModel|NewJSONSchema\(|ResponseBody|xai\.VideoModel|Size:|AspectRatio' .
    ```
 
 4. For each match, open the entry the table links to. Apply **What to do**.
