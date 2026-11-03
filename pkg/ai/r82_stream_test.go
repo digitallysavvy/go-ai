@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -697,8 +698,12 @@ func r82streamTwoStepRun(t *testing.T) (*StreamTextResult, OnFinishEvent, []OnSt
 			return "result1", nil
 		}}},
 		StopWhen: []StopCondition{StepCountIs(3)}, Internal: r72streamIDs(),
-		OnEndEvent:        func(_ context.Context, e OnFinishEvent) { mu.Lock(); end = e; mu.Unlock() },
-		OnStepFinishEvent: func(_ context.Context, e OnStepFinishEvent) { mu.Lock(); stepEvents = append(stepEvents, e); mu.Unlock() },
+		OnEndEvent: func(_ context.Context, e OnFinishEvent) { mu.Lock(); end = e; mu.Unlock() },
+		OnStepFinishEvent: func(_ context.Context, e OnStepFinishEvent) {
+			mu.Lock()
+			stepEvents = append(stepEvents, e)
+			mu.Unlock()
+		},
 	})
 	if calls != 2 {
 		t.Fatalf("doStream calls = %d", calls)
@@ -875,4 +880,487 @@ func TestR82streamRawChunksForwarding(t *testing.T) {
 	if fmt.Sprint(flags) != "[true false false true false]" {
 		t.Fatalf("24731/24950/25065/25095 includeRawChunks = %v", flags)
 	}
+}
+
+// stream-text.test.ts 1806: tool choice enforcement > should reject tool
+// calls with none ($toolChoice, $stepToolChoice, $finishReason): one
+// violation with the step's finish reason, finishReason error, the usage
+// kept, and neither execute nor the input callbacks run.
+func TestR82streamToolChoiceNoneRejectsCalls(t *testing.T) {
+	for _, tc := range []struct {
+		toolChoice, stepToolChoice types.ToolChoiceType
+		finishReason               types.FinishReason
+	}{
+		{types.ToolChoiceNone, "", types.FinishReasonStop},
+		{types.ToolChoiceNone, "", types.FinishReasonToolCalls},
+		{types.ToolChoiceNone, "", types.FinishReasonInterrupted},
+		{types.ToolChoiceAuto, types.ToolChoiceNone, types.FinishReasonToolCalls},
+	} {
+		t.Run(fmt.Sprintf("%s,%s,%s", tc.toolChoice, tc.stepToolChoice, tc.finishReason), func(t *testing.T) {
+			var mu sync.Mutex
+			var calls []string
+			rec := func(name string) {
+				mu.Lock()
+				calls = append(calls, name)
+				mu.Unlock()
+			}
+			var errs r82streamErrors
+			opts := StreamTextOptions{
+				Model: r71streamModel(nil, []provider.StreamChunk{
+					{Type: provider.ChunkTypeToolInputStart, ID: "call-1", ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1"}},
+					{Type: provider.ChunkTypeToolInputDelta, ID: "call-1", Text: "{}"},
+					{Type: provider.ChunkTypeToolInputEnd, ID: "call-1", ToolCall: &types.ToolCall{ID: "call-1"}},
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{}, RawArguments: "{}"}},
+					{Type: provider.ChunkTypeFinish, FinishReason: tc.finishReason, RawFinishReason: string(tc.finishReason), Usage: r82streamTestUsage},
+				}),
+				Tools: []types.Tool{{Name: "tool1", Parameters: map[string]interface{}{"type": "object"},
+					Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+						rec("execute")
+						return "tool-result", nil
+					},
+					OnInputStart:     func(context.Context, types.OnInputStartOptions) error { rec("onInputStart"); return nil },
+					OnInputDelta:     func(context.Context, types.OnInputDeltaOptions) error { rec("onInputDelta"); return nil },
+					OnInputAvailable: func(context.Context, types.OnInputAvailableOptions) error { rec("onInputAvailable"); return nil },
+				}},
+				ToolChoice: types.ToolChoice{Type: tc.toolChoice},
+				Prompt:     "test-input",
+				OnError:    errs.onError,
+			}
+			if tc.stepToolChoice != "" {
+				opts.PrepareStep = func(_ context.Context, s PrepareStepOptions) PrepareStepOptions {
+					s.ToolChoice = types.ToolChoice{Type: tc.stepToolChoice}
+					return s
+				}
+			}
+			r, err := StreamText(context.Background(), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = r.ConsumeStream()
+			got := errs.all()
+			var v *ToolChoiceViolationError
+			if len(got) != 1 || !errors.As(got[0], &v) {
+				t.Fatalf("onError = %v", got)
+			}
+			if v.Error() != "Model response contained a tool call even though tool choice was none." || v.ToolChoice.Type != types.ToolChoiceNone || v.FinishReason != tc.finishReason {
+				t.Fatalf("violation = %q %+v", v.Error(), v)
+			}
+			if len(v.Content) != 1 {
+				t.Fatalf("content = %#v", v.Content)
+			}
+			if _, ok := v.Content[0].(types.ToolCallContent); !ok {
+				t.Fatalf("content[0] = %#v", v.Content[0])
+			}
+			if fr := r.FinishReason(); fr != types.FinishReasonError {
+				t.Fatalf("finishReason = %q", fr)
+			}
+			r75streamAssertJSON(t, "usage", r.Usage(), `{"inputTokenDetails":{"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"textTokens":10},"outputTokens":10,"totalTokens":13}`)
+			mu.Lock()
+			defer mu.Unlock()
+			if len(calls) != 0 {
+				t.Fatalf("tool callbacks ran: %v", calls)
+			}
+		})
+	}
+}
+
+// stream-text.test.ts 2013: tool choice enforcement > should preserve
+// interrupted output without enforcing tool choice (required and a specific
+// tool).
+func TestR82streamToolChoiceInterruptedNotEnforced(t *testing.T) {
+	for _, choice := range []types.ToolChoice{{Type: types.ToolChoiceRequired}, {Type: types.ToolChoiceTool, ToolName: "tool1"}} {
+		t.Run(string(choice.Type), func(t *testing.T) {
+			var errs r82streamErrors
+			var mu sync.Mutex
+			var finishes []string
+			add := func(s string) { mu.Lock(); finishes = append(finishes, s); mu.Unlock() }
+			r, err := StreamText(context.Background(), StreamTextOptions{
+				Model: r71streamModel(nil, []provider.StreamChunk{
+					{Type: provider.ChunkTypeTextStart, ID: "1"},
+					{Type: provider.ChunkTypeText, ID: "1", Text: "Let me check"},
+					{Type: provider.ChunkTypeTextEnd, ID: "1"},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonInterrupted, Usage: r82streamTestUsage, ProviderMetadata: json.RawMessage(`{"test":{"partial":true}}`)},
+				}),
+				Prompt:         "test-input",
+				Tools:          []types.Tool{{Name: "tool1", Parameters: map[string]interface{}{"type": "object"}}},
+				ToolChoice:     choice,
+				OnError:        errs.onError,
+				OnEndEvent:     func(_ context.Context, e OnFinishEvent) { add("onEnd:" + string(e.FinishReason)) },
+				OnStepEndEvent: func(_ context.Context, e OnStepFinishEvent) { add("onStepEnd:" + string(e.FinishReason)) },
+				OnLanguageModelCallEnd: func(_ context.Context, e LanguageModelCallEndEvent) {
+					add("onLanguageModelCallEnd:" + string(e.FinishReason))
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ends []string
+			s := r.FullStream()
+			for {
+				c, err := s.Next()
+				if err != nil {
+					break
+				}
+				switch c.Type {
+				case provider.ChunkTypeError:
+					t.Fatalf("error part: %v", c.Err)
+				case provider.ChunkTypeFinishStep, provider.ChunkTypeFinish:
+					ends = append(ends, fmt.Sprintf("%s:%s:%q", c.Type, c.FinishReason, c.RawFinishReason))
+				}
+			}
+			if fmt.Sprint(ends) != `[finish-step:interrupted:"" finish:interrupted:""]` {
+				t.Fatalf("finish parts = %v", ends)
+			}
+			if r.Text() != "Let me check" || r.FinishReason() != types.FinishReasonInterrupted {
+				t.Fatalf("text %q finishReason %q", r.Text(), r.FinishReason())
+			}
+			r75streamAssertJSON(t, "usage", r.Usage(), `{"inputTokenDetails":{"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"textTokens":10},"outputTokens":10,"totalTokens":13}`)
+			r75streamAssertJSON(t, "providerMetadata", json.RawMessage(r.ProviderMetadata()), `{"test":{"partial":true}}`)
+			if got := errs.all(); len(got) != 0 {
+				t.Fatalf("onError = %v", got)
+			}
+			mu.Lock()
+			sort.Strings(finishes)
+			if fmt.Sprint(finishes) != "[onEnd:interrupted onLanguageModelCallEnd:interrupted onStepEnd:interrupted]" {
+				t.Fatalf("callbacks = %v", finishes)
+			}
+			mu.Unlock()
+			ui, uiErr := r.ToUIMessageStream(context.Background())
+			found := false
+			for c := range ui {
+				if c["type"] == "finish" && c["finishReason"] == "interrupted" && len(c) == 2 {
+					found = true
+				}
+			}
+			<-uiErr
+			if !found {
+				t.Fatal("no {type: finish, finishReason: interrupted} UI chunk")
+			}
+		})
+	}
+}
+
+// r82streamSteerModel answers call n (1-based) with steps(n) and records
+// the prompts.
+func r82streamSteerModel(prompts *[][]types.Message, steps func(call int) []provider.StreamChunk) *testutil.MockLanguageModel {
+	var mu sync.Mutex
+	return &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id", DoStreamFunc: func(_ context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+		mu.Lock()
+		*prompts = append(*prompts, o.Prompt.Messages)
+		n := len(*prompts)
+		mu.Unlock()
+		return testutil.NewMockTextStream(steps(n)), nil
+	}}
+}
+
+func r82streamSteerText(text string) []provider.StreamChunk {
+	return []provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: text},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r82streamTestUsage},
+	}
+}
+
+func r82streamSteerToolCall() []provider.StreamChunk {
+	return []provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "weather", Arguments: map[string]interface{}{"city": "Paris"}, RawArguments: `{ "city": "Paris" }`}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, RawFinishReason: "tool_calls", Usage: r82streamTestUsage},
+	}
+}
+
+func r82streamWeather(execute func() string) types.Tool {
+	return types.Tool{Name: "weather", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"city": map[string]interface{}{"type": "string"}}, "required": []interface{}{"city"}},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return execute(), nil
+		}}
+}
+
+func r82streamHasUserText(msgs []types.Message, text string) bool {
+	for _, m := range msgs {
+		if m.Role != types.RoleUser {
+			continue
+		}
+		for _, p := range m.Content {
+			if tc, ok := p.(types.TextContent); ok && tc.Text == text {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func r82streamOutcome(t *testing.T, h *SteerHandle) SteeringOutcome {
+	t.Helper()
+	if h == nil {
+		t.Fatal("steer was never called")
+	}
+	return waitOutcome(t, h)
+}
+
+// stream-text-steering.test.ts 177 (before the stream starts: first step),
+// 230 (approval pending: waiting-for-tool-results), 259 (aborted), 324
+// (after the stream finished), 341 (kept out of response messages) and 440
+// (no continuation after a provider error: reason error).
+func TestR82streamSteeringOutcomes(t *testing.T) {
+	t.Run("177 before start", func(t *testing.T) {
+		s := NewSteering()
+		h := s.Steer("Answer in French.")
+		var prompts [][]types.Message
+		r71streamRun(t, StreamTextOptions{Model: r82streamSteerModel(&prompts, func(int) []provider.StreamChunk { return r82streamSteerText("Il fait beau.") }),
+			Prompt: "What is the weather in Paris?", ExperimentalSteering: s})
+		if last := prompts[0][len(prompts[0])-1]; !r82streamHasUserText([]types.Message{last}, "Answer in French.") {
+			t.Fatalf("last prompt message = %+v", last)
+		}
+		if o := r82streamOutcome(t, h); !o.Delivered || o.StepNumber != 0 {
+			t.Fatalf("outcome = %+v", o)
+		}
+	})
+	t.Run("230 approval pending", func(t *testing.T) {
+		s := NewSteering()
+		var h *SteerHandle
+		var prompts [][]types.Message
+		r71streamRun(t, StreamTextOptions{Model: r82streamSteerModel(&prompts, func(int) []provider.StreamChunk {
+			h = s.Steer("Hurry up.")
+			return r82streamSteerToolCall()
+		}), Prompt: "What is the weather in Paris?", Tools: []types.Tool{r82streamWeather(func() string { return "sunny" })},
+			ToolApproval: map[string]types.ToolApprovalValue{"weather": types.ToolApprovalStatusUserApproval},
+			StopWhen:     []StopCondition{IsStepCount(5)}, ExperimentalSteering: s})
+		if len(prompts) != 1 {
+			t.Fatalf("doStream calls = %d", len(prompts))
+		}
+		if o := r82streamOutcome(t, h); o.Delivered || o.Reason != SteeringWaitingForToolResults {
+			t.Fatalf("outcome = %+v", o)
+		}
+	})
+	t.Run("259 aborted", func(t *testing.T) {
+		s := NewSteering()
+		var h *SteerHandle
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		var prompts [][]types.Message
+		r, err := StreamText(ctx, StreamTextOptions{Model: r82streamSteerModel(&prompts, func(int) []provider.StreamChunk { return r82streamSteerToolCall() }),
+			Prompt: "What is the weather in Paris?", Tools: []types.Tool{r82streamWeather(func() string {
+				h = s.Steer("I meant Paris, Texas.")
+				cancel()
+				return "sunny"
+			})}, StopWhen: []StopCondition{IsStepCount(5)}, ExperimentalSteering: s})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = r.ConsumeStream()
+		if len(prompts) != 1 {
+			t.Fatalf("doStream calls = %d", len(prompts))
+		}
+		if o := r82streamOutcome(t, h); o.Delivered || o.Reason != SteeringAborted {
+			t.Fatalf("outcome = %+v", o)
+		}
+	})
+	t.Run("324 after finish", func(t *testing.T) {
+		s := NewSteering()
+		var prompts [][]types.Message
+		r71streamRun(t, StreamTextOptions{Model: r82streamSteerModel(&prompts, func(int) []provider.StreamChunk { return r82streamSteerText("done") }), Prompt: "hello", ExperimentalSteering: s})
+		if o := r82streamOutcome(t, s.Steer("too late")); o.Delivered || o.Reason != SteeringFinished {
+			t.Fatalf("outcome = %+v", o)
+		}
+	})
+	t.Run("341 response messages", func(t *testing.T) {
+		s := NewSteering()
+		var prompts [][]types.Message
+		r := r71streamRun(t, StreamTextOptions{Model: r82streamSteerModel(&prompts, func(n int) []provider.StreamChunk {
+			if n == 1 {
+				s.Steer("Also tell me about Tokyo.")
+				return r82streamSteerText("It is sunny in Paris.")
+			}
+			return r82streamSteerText("Tokyo is rainy.")
+		}), Prompt: "What is the weather in Paris?", StopWhen: []StopCondition{IsStepCount(5)}, ExperimentalSteering: s})
+		var roles []string
+		for _, m := range r.ResponseMessages() {
+			roles = append(roles, string(m.Role))
+		}
+		if fmt.Sprint(roles) != "[assistant assistant]" {
+			t.Fatalf("response message roles = %v", roles)
+		}
+	})
+	t.Run("440 provider error", func(t *testing.T) {
+		s := NewSteering()
+		var h *SteerHandle
+		var prompts [][]types.Message
+		r, err := StreamText(context.Background(), StreamTextOptions{Model: r82streamSteerModel(&prompts, func(n int) []provider.StreamChunk {
+			if n == 1 {
+				h = s.Steer("Also tell me about Tokyo.")
+				return []provider.StreamChunk{
+					{Type: provider.ChunkTypeStreamStart},
+					{Type: provider.ChunkTypeTextStart, ID: "1"},
+					{Type: provider.ChunkTypeText, ID: "1", Text: "It is"},
+					{Type: provider.ChunkTypeError, Err: errors.New("provider failure")},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonError, RawFinishReason: "error", Usage: r82streamTestUsage},
+				}
+			}
+			return r82streamSteerText("Tokyo is rainy.")
+		}), Prompt: "What is the weather in Paris?", StopWhen: []StopCondition{IsStepCount(5)}, OnError: func(context.Context, error) {}, ExperimentalSteering: s})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = r.ConsumeStream()
+		if len(prompts) != 1 {
+			t.Fatalf("doStream calls = %d", len(prompts))
+		}
+		if fr := r.FinishReason(); fr != types.FinishReasonError {
+			t.Fatalf("finishReason = %q", fr)
+		}
+		if o := r82streamOutcome(t, h); o.Delivered || o.Reason != SteeringError {
+			t.Fatalf("outcome = %+v", o)
+		}
+	})
+}
+
+// r82streamErrStream returns stream-start, then fails.
+type r82streamErrStream struct{ sent bool }
+
+func (s *r82streamErrStream) Next() (*provider.StreamChunk, error) {
+	if !s.sent {
+		s.sent = true
+		return &provider.StreamChunk{Type: provider.ChunkTypeStreamStart}, nil
+	}
+	return nil, errors.New("provider stream failure")
+}
+func (s *r82streamErrStream) Err() error   { return nil }
+func (s *r82streamErrStream) Close() error { return nil }
+
+// stream-text-steering.test.ts 290 (the provider stream fails: error), 480
+// (invalid arguments: error), 499 (invalid prompt: error), 368 (PrepareStep
+// sees the steering messages once and the rebuilt prompts keep them), 535
+// (removed by PrepareStep) and 569 (two streams at once).
+func TestR82streamSteeringErrorsAndPrepareStep(t *testing.T) {
+	t.Run("290 stream fails", func(t *testing.T) {
+		s := NewSteering()
+		var h *SteerHandle
+		r, err := StreamText(context.Background(), StreamTextOptions{Model: &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			h = s.Steer("during the failure")
+			return &r82streamErrStream{}, nil
+		}}, Prompt: "hello", StopWhen: []StopCondition{IsStepCount(5)}, OnError: func(context.Context, error) {}, ExperimentalSteering: s})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = r.ConsumeStream()
+		if o := r82streamOutcome(t, h); o.Delivered || o.Reason != SteeringError {
+			t.Fatalf("outcome = %+v", o)
+		}
+	})
+	t.Run("480 invalid arguments", func(t *testing.T) {
+		s := NewSteering()
+		h := s.Steer("hello")
+		bad := -1
+		var prompts [][]types.Message
+		if _, err := StreamText(context.Background(), StreamTextOptions{Model: r82streamSteerModel(&prompts, func(int) []provider.StreamChunk { return r82streamSteerText("unused") }),
+			Prompt: "hello", MaxRetries: &bad, ExperimentalSteering: s}); err == nil {
+			t.Fatal("StreamText accepted maxRetries -1")
+		}
+		if o := r82streamOutcome(t, h); o.Delivered || o.Reason != SteeringError {
+			t.Fatalf("outcome = %+v", o)
+		}
+	})
+	t.Run("499 invalid prompt", func(t *testing.T) {
+		s := NewSteering()
+		h := s.Steer("hello")
+		var prompts [][]types.Message
+		r, err := StreamText(context.Background(), StreamTextOptions{Model: r82streamSteerModel(&prompts, func(int) []provider.StreamChunk { return r82streamSteerText("unused") }),
+			Messages: []types.Message{}, OnError: func(context.Context, error) {}, ExperimentalSteering: s})
+		if err == nil {
+			_ = r.ConsumeStream()
+		}
+		if o := r82streamOutcome(t, h); o.Delivered || o.Reason != SteeringError {
+			t.Fatalf("outcome = %+v", o)
+		}
+	})
+	t.Run("368 prepareStep keeps them", func(t *testing.T) {
+		s := NewSteering()
+		steered := false
+		var prompts [][]types.Message
+		var seen []string
+		r71streamRun(t, StreamTextOptions{Model: r82streamSteerModel(&prompts, func(n int) []provider.StreamChunk {
+			if n < 3 {
+				return r82streamSteerToolCall()
+			}
+			return r82streamSteerText("It is sunny in Paris, Texas.")
+		}), Prompt: "What is the weather in Paris?", Tools: []types.Tool{r82streamWeather(func() string {
+			if !steered {
+				steered = true
+				s.Steer("I meant Paris, Texas.")
+			}
+			return "sunny"
+		})}, StopWhen: []StopCondition{IsStepCount(5)}, ExperimentalSteering: s,
+			PrepareStep: func(_ context.Context, p PrepareStepOptions) PrepareStepOptions {
+				var texts []string
+				for _, m := range p.ExperimentalSteeringMessages {
+					for _, c := range m.Content {
+						if tc, ok := c.(types.TextContent); ok {
+							texts = append(texts, tc.Text)
+						}
+					}
+				}
+				if p.ExperimentalSteeringMessages == nil {
+					seen = append(seen, "undefined")
+				} else {
+					seen = append(seen, strings.Join(texts, "|"))
+				}
+				msgs := append([]types.Message(nil), p.InitialMessages...)
+				for _, st := range p.Steps {
+					msgs = append(msgs, st.ExperimentalSteeringMessages...)
+					msgs = append(msgs, st.Response.Messages...)
+				}
+				msgs = append(msgs, p.ExperimentalSteeringMessages...)
+				p.Messages = msgs
+				return p
+			}})
+		if fmt.Sprint(seen) != "[undefined I meant Paris, Texas. undefined]" {
+			t.Fatalf("prepareStep steering messages = %q", seen)
+		}
+		for _, call := range []int{1, 2} {
+			if !r82streamHasUserText(prompts[call], "I meant Paris, Texas.") {
+				t.Fatalf("call %d prompt lacks the steering message", call)
+			}
+		}
+	})
+	t.Run("535 removed by prepareStep", func(t *testing.T) {
+		s := NewSteering()
+		var h *SteerHandle
+		var prompts [][]types.Message
+		r := r71streamRun(t, StreamTextOptions{Model: r82streamSteerModel(&prompts, func(n int) []provider.StreamChunk {
+			if n == 1 {
+				return r82streamSteerToolCall()
+			}
+			return r82streamSteerText("It is sunny in Paris.")
+		}), Prompt: "What is the weather in Paris?", Tools: []types.Tool{r82streamWeather(func() string {
+			h = s.Steer("I meant Paris, Texas.")
+			return "sunny"
+		})}, StopWhen: []StopCondition{IsStepCount(5)}, ExperimentalSteering: s,
+			PrepareStep: func(_ context.Context, p PrepareStepOptions) PrepareStepOptions {
+				p.Messages = append(append([]types.Message(nil), p.InitialMessages...), p.ResponseMessages...)
+				return p
+			}})
+		if o := r82streamOutcome(t, h); o.Delivered || o.Reason != SteeringRemovedByPrepareStep {
+			t.Fatalf("outcome = %+v", o)
+		}
+		if steps := r.Steps(); len(steps) != 2 || steps[1].ExperimentalSteeringMessages != nil {
+			t.Fatalf("steps = %d, step 1 steering = %v", len(steps), steps[1].ExperimentalSteeringMessages)
+		}
+	})
+	t.Run("569 two streams at once", func(t *testing.T) {
+		s := NewSteering()
+		var prompts [][]types.Message
+		model := r82streamSteerModel(&prompts, func(int) []provider.StreamChunk { return r82streamSteerText("first") })
+		first, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hello", ExperimentalSteering: s})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hello", ExperimentalSteering: s})
+		if err == nil || !strings.Contains(err.Error(), "The steering object was already used by a generation.") {
+			t.Fatalf("second StreamText err = %v", err)
+		}
+		_ = first.ConsumeStream()
+	})
 }
