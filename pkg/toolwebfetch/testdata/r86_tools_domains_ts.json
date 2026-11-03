@@ -1,0 +1,102 @@
+[
+ {
+  "domain": "Example.COM.",
+  "hostname": "example.com"
+ },
+ {
+  "domain": "xn--bcher-kva.ch",
+  "hostname": "xn--bcher-kva.ch"
+ },
+ {
+  "domain": "bücher.ch",
+  "hostname": "xn--bcher-kva.ch"
+ },
+ {
+  "domain": "exa mple.com",
+  "error": "bare"
+ },
+ {
+  "domain": "a b.com",
+  "error": "bare"
+ },
+ {
+  "domain": "a﻿b.com",
+  "error": "bare"
+ },
+ {
+  "domain": "xy.com",
+  "error": "invalid"
+ },
+ {
+  "domain": " example.com ",
+  "hostname": "example.com"
+ },
+ {
+  "domain": "﻿example.com",
+  "error": "invalid"
+ },
+ {
+  "domain": "1.2.3.4",
+  "hostname": "1.2.3.4"
+ },
+ {
+  "domain": "0x7f.1",
+  "hostname": "127.0.0.1"
+ },
+ {
+  "domain": "%41.com",
+  "hostname": "a.com"
+ },
+ {
+  "domain": "a..b",
+  "hostname": "a..b"
+ },
+ {
+  "domain": "-a.com",
+  "hostname": "-a.com"
+ },
+ {
+  "domain": "a_b.com",
+  "hostname": "a_b.com"
+ },
+ {
+  "domain": "a%2fb.com",
+  "error": "invalid"
+ },
+ {
+  "domain": "a|b.com",
+  "error": "invalid"
+ },
+ {
+  "domain": "a^b.com",
+  "error": "invalid"
+ },
+ {
+  "domain": "a<b.com",
+  "error": "invalid"
+ },
+ {
+  "domain": "a\u0000b.com",
+  "error": "invalid"
+ },
+ {
+  "domain": "ＥＸＡＭＰＬＥ.com",
+  "hostname": "example.com"
+ },
+ {
+  "domain": "a­b.com",
+  "hostname": "ab.com"
+ },
+ {
+  "domain": "a%zz.com",
+  "error": "invalid"
+ },
+ {
+  "domain": "999.1.1.1",
+  "error": "invalid"
+ },
+ {
+  "domain": "a.com...",
+  "hostname": "a.com"
+ }
+]
