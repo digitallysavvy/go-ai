@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -163,6 +164,13 @@ func toolParametersHint(tool types.Tool) interface{} {
 			return o
 		}
 	}
+	if ordered, ok := schema.OrderedParameters(tool.Parameters); ok {
+		// A struct schema: its properties in field order, like the TS zod
+		// object's key order.
+		if raw, err := ordered.MarshalJSON(); err == nil {
+			return parseOrderHint(raw)
+		}
+	}
 	var raw []byte
 	switch p := tool.Parameters.(type) {
 	case jsonorder.Hinted:
@@ -278,24 +286,51 @@ func SerializeToolSetWithOptions(ctx context.Context, tools []types.Tool, opts S
 }
 
 // serializeToolParameters converts a tool's Parameters to a JSON Schema map.
-// A schema.Schema contributes its validator's JSON Schema, and reports
-// hasOwnValidator when that validator is anything other than a plain JSON
-// Schema validator (for example a struct-based validator).
+// A schema.Schema (or a bare schema.Validator, which the agent loop also
+// accepts as a tool schema) contributes its validator's JSON Schema, and
+// reports hasOwnValidator when that validator is anything other than a plain
+// JSON Schema validator (for example a struct-based validator), as TS sets
+// hasOwnValidator when asSchema(inputSchema).validate exists. A schema value
+// that is no schema (a typed nil, or a zero value without a validator) is no
+// input schema (TS asSchema(undefined)).
 func serializeToolParameters(parameters interface{}) (map[string]interface{}, bool, error) {
-	if s, ok := parameters.(schema.Schema); ok && s != nil {
-		if o, isOrdered := s.(*schema.OrderedSchema); isOrdered {
-			// Plain JSON Schema that only keeps its key order: no own validator.
-			params, err := MarshalSchema(o)
-			return params, false, err
+	switch s := parameters.(type) {
+	case *schema.OrderedSchema:
+		if s == nil {
+			return nil, false, nil
 		}
-		if v := s.Validator(); v != nil {
-			params, err := MarshalSchema(v.JSONSchema())
-			_, plainJSON := v.(*schema.JSONSchemaValidator)
-			return params, !plainJSON, err
+		// Plain JSON Schema that only keeps its key order: no own validator.
+		params, err := MarshalSchema(s)
+		return params, false, err
+	case schema.Schema:
+		if isNilSchemaValue(s) {
+			return nil, false, nil
 		}
+		return serializeValidatorSchema(s.Validator())
+	case schema.Validator:
+		return serializeValidatorSchema(s)
 	}
 	params, err := MarshalSchema(parameters)
 	return params, false, err
+}
+
+// serializeValidatorSchema is serializeToolParameters for a validator.
+func serializeValidatorSchema(v schema.Validator) (map[string]interface{}, bool, error) {
+	if isNilSchemaValue(v) {
+		return nil, false, nil
+	}
+	params, err := MarshalSchema(v.JSONSchema())
+	_, plainJSON := v.(*schema.JSONSchemaValidator)
+	return params, !plainJSON, err
+}
+
+// isNilSchemaValue reports a nil interface or one holding a nil pointer.
+func isNilSchemaValue(v interface{}) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	return rv.Kind() == reflect.Pointer && rv.IsNil()
 }
 
 // ResolveSerializableTools reconstructs non-executable tool descriptors from
