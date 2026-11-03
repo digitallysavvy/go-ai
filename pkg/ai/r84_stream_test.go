@@ -679,6 +679,81 @@ func TestR84streamAbortReasonMessage(t *testing.T) {
 	}
 }
 
+// handle-ui-message-stream-finish.test.ts 48: without onFinish the chunks
+// pass through, and a start chunk without a messageId gets the response id.
+func TestR84streamHandleFinishInjectsMessageID(t *testing.T) {
+	input := []UIMessageChunk{
+		{"type": "start"},
+		{"type": "text-start", "id": "text-1"},
+		{"type": "text-delta", "id": "text-1", "delta": "Test"},
+		{"type": "text-end", "id": "text-1"},
+		{"type": "finish"},
+	}
+	var errsSeen []error
+	got, err := r71streamCreate(t, input, UIMessageStreamOptions{OriginalMessages: []UIMessageChunk{}, GenerateMessageID: func() string { return "injected-123" },
+		OnError: func(e error) string { errsSeen = append(errsSeen, e); return "" }})
+	if err != nil || len(errsSeen) != 0 {
+		t.Fatalf("err %v, onError %v", err, errsSeen)
+	}
+	want := append([]UIMessageChunk{{"type": "start", "messageId": "injected-123"}}, input[1:]...)
+	if !reflect.DeepEqual(r84streamJSON(t, got), r84streamJSON(t, want)) {
+		t.Fatalf("chunks = %v", got)
+	}
+}
+
+// handle-ui-message-stream-finish.test.ts 262: a last assistant original
+// message is continued: onEnd gets isContinuation, the assistant's id (the
+// generated "msg-999" is ignored) and [original user, response message].
+func TestR84streamHandleFinishContinuation(t *testing.T) {
+	user := UIMessageChunk{"id": "user-msg-1", "role": "user", "parts": []interface{}{map[string]interface{}{"type": "text", "text": "Continue this"}}}
+	assistant := UIMessageChunk{"id": "assistant-msg-1", "role": "assistant", "parts": []interface{}{map[string]interface{}{"type": "text", "text": "This is"}}}
+	input := []UIMessageChunk{
+		{"type": "start", "messageId": "assistant-msg-1"},
+		{"type": "text-start", "id": "text-1"},
+		{"type": "text-delta", "id": "text-1", "delta": " continued"},
+		{"type": "text-end", "id": "text-1"},
+		{"type": "finish"},
+	}
+	var events []map[string]interface{}
+	if _, err := r71streamCreate(t, input, UIMessageStreamOptions{OriginalMessages: []UIMessageChunk{user, assistant}, GenerateMessageID: func() string { return "msg-999" },
+		OnEnd: func(e map[string]interface{}) { events = append(events, e) }}); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("onEnd calls = %d", len(events))
+	}
+	e := events[0]
+	response, _ := e["responseMessage"].(UIMessageChunk)
+	messages, _ := e["messages"].([]UIMessageChunk)
+	if e["isContinuation"] != true || response["id"] != "assistant-msg-1" || len(messages) != 2 {
+		t.Fatalf("onEnd = %v", e)
+	}
+	if !reflect.DeepEqual(r84streamJSON(t, messages[0]), r84streamJSON(t, user)) || !reflect.DeepEqual(r84streamJSON(t, messages[1]), r84streamJSON(t, response)) {
+		t.Fatalf("messages = %v", messages)
+	}
+}
+
+// handle-ui-message-stream-finish.test.ts 611: onStepEnd runs once at the
+// finish-step chunk with the response message.
+func TestR84streamHandleFinishOnStepEnd(t *testing.T) {
+	input := []UIMessageChunk{
+		{"type": "start", "messageId": "msg-step-end"},
+		{"type": "text-start", "id": "text-1"},
+		{"type": "text-delta", "id": "text-1", "delta": "Hello"},
+		{"type": "text-end", "id": "text-1"},
+		{"type": "finish-step"},
+		{"type": "finish"},
+	}
+	var ids []interface{}
+	if _, err := r71streamCreate(t, input, UIMessageStreamOptions{OriginalMessages: []UIMessageChunk{},
+		OnStepEnd: func(e map[string]interface{}) { ids = append(ids, e["responseMessage"].(UIMessageChunk)["id"]) }}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(ids, []interface{}{"msg-step-end"}) {
+		t.Fatalf("onStepEnd response ids = %v", ids)
+	}
+}
+
 // r84streamProcessUIFixture is the gzip -9 + base64 JSON fixture (see
 // r84streamProcessUIRun).
 const r84streamProcessUIFixture = `
