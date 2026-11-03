@@ -2,6 +2,7 @@ package mistral
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -33,5 +34,24 @@ func TestR82provaMistralSniffDecodesOnlyPrefix(t *testing.T) {
 	}
 	if _, err := convertMistralFilePart(r82provaDataFile("image", r82provaBadPrefix)); !r82provaIsDecodeError(err) {
 		t.Fatalf("bad prefix: err = %v", err)
+	}
+}
+
+// TS mistralConversationUsageSchema defaults the three token counts to 0, so
+// "usage": {} is zero tokens with raw {prompt_tokens: 0, completion_tokens:
+// 0, total_tokens: 0} (TS wire replay "Mistral web search > handles string
+// output, ..."); Go reported an empty raw object.
+func TestR82provaMistralConversationUsageDefaults(t *testing.T) {
+	u := convertMistralConversationUsage([]byte(`{}`))
+	want := map[string]interface{}{"prompt_tokens": float64(0), "completion_tokens": float64(0), "total_tokens": float64(0)}
+	if u.InputTokens == nil || *u.InputTokens != 0 || u.OutputTokens == nil || *u.OutputTokens != 0 || !reflect.DeepEqual(u.Raw, want) {
+		t.Fatalf("usage = %+v", u)
+	}
+	u = convertMistralConversationUsage([]byte(`{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7,"x":1}`))
+	if *u.InputTokens != 3 || u.Raw["x"] != float64(1) {
+		t.Fatalf("usage = %+v", u)
+	}
+	if u = convertMistralConversationUsage(nil); u.InputTokens != nil {
+		t.Fatalf("absent usage = %+v", u)
 	}
 }
