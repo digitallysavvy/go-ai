@@ -1,6 +1,7 @@
 package perplexity
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -47,5 +48,42 @@ func TestR82provaPerplexityDecisionSniffDecodesOnlyPrefix(t *testing.T) {
 	}
 	if _, err := convertToPerplexityDecisionState([]provider.DecisionStatePart{imageState("image", r82provaBadPrefix)}); !r82provaIsDecodeError(err) {
 		t.Fatalf("bad prefix: err = %v", err)
+	}
+}
+
+// TS keeps a single string/object/array as native state (`typeof single ===
+// 'object'`); Go matched only map[string]interface{} and []interface{}, so a
+// typed map, struct or json.RawMessage was wrapped in an array.
+func TestR82provaPerplexityDecisionTypedObjectIsNativeState(t *testing.T) {
+	type review struct {
+		Review string `json:"review"`
+	}
+	for _, tc := range []struct {
+		name   string
+		value  interface{}
+		native bool
+	}{
+		{"typed map", map[string]string{"review": "ok"}, true},
+		{"struct", review{Review: "ok"}, true},
+		{"raw object", json.RawMessage(`{"review":"ok"}`), true},
+		{"typed slice", []string{"a"}, true},
+		{"number", 3, false},
+		{"bool", true, false},
+		{"nil", nil, false},
+	} {
+		got, err := convertToPerplexityDecisionState([]provider.DecisionStatePart{{Type: "json", Value: tc.value}})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		_, wrapped := got.([]interface{})
+		if wrapped == tc.native {
+			t.Fatalf("%s: state = %#v, native %v", tc.name, got, tc.native)
+		}
+	}
+	// Images inside a typed value are counted (TS countImages walks every
+	// object): a non-data-URL image is rejected.
+	bad := map[string]map[string]interface{}{"x": {"type": "image_url", "image_url": map[string]string{"url": "https://example.com/a.png"}}}
+	if _, err := convertToPerplexityDecisionState([]provider.DecisionStatePart{{Type: "json", Value: bad}}); err == nil {
+		t.Fatal("typed value with a URL image: want an error")
 	}
 }
