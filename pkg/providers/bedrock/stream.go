@@ -12,6 +12,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock/eventstream"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // bedrockStreamErrorMetadata maps a modeled Converse-stream exception type to
@@ -156,8 +157,11 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 		// JSON but not an object (5, "x", []) is not a parse error; it is wrapped
 		// under its payload type and then fails (or, for an unknown payload type,
 		// passes) schema validation below.
+		// TS createAmazonBedrockEventStreamDecoder: data is
+		// textDecoder.decode(body) (BOM dropped, invalid UTF-8 as U+FFFD).
+		data := prompt.DecodeUTF8Text(event.Data)
 		var rawPayload interface{}
-		if err := json.Unmarshal(event.Data, &rawPayload); err != nil {
+		if err := json.Unmarshal([]byte(data), &rawPayload); err != nil {
 			// Mirrors TS doStream's !chunk.success branch (amazon-bedrock-chat-
 			// language-model.ts): report the error but keep reading — the stream
 			// is not aborted — and mark finishReason as error in case the stream
@@ -168,7 +172,7 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 				// TS safeParseJSON: rawValue is undefined for unparsable JSON.
 				s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: nil})
 			}
-			parseErr := providererrors.NewJSONParseError(string(event.Data), err)
+			parseErr := providererrors.NewJSONParseError(data, err)
 			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeError, Text: parseErr.Error(), Err: parseErr})
 			continue
 		}
