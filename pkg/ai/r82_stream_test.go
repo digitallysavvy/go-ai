@@ -1763,3 +1763,30 @@ func TestR82streamLowMemoryEarlyStopCancels(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// A failed DoStream with no Audio stream rejects the accessors with the
+// provider error instead of panicking in the pipe goroutine on the nil
+// Audio's Cancel (TS cancels `audio` only when it exists to be cancelled).
+func TestR82streamNilAudioFailureDoesNotPanic(t *testing.T) {
+	boom := errors.New("auth failed")
+	tr, err := ExperimentalStreamTranslate(context.Background(), StreamTranslateOptions{TargetLanguage: "es",
+		Model: &mockSpeechTranslationModel{doStreamFn: func(context.Context, *provider.SpeechTranslationStreamOptions) (*provider.SpeechTranslationStreamResult, error) {
+			return nil, boom
+		}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tr.TranslationText(); !errors.Is(err, boom) {
+		t.Fatalf("translation err = %v", err)
+	}
+	ts, err := ExperimentalStreamTranscribe(context.Background(), StreamTranscribeOptions{
+		Model: &mockTranscriptionStreamerModel{doStreamFn: func(context.Context, *provider.TranscriptionStreamOptions) (*provider.TranscriptionStreamResult, error) {
+			return nil, boom
+		}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.Text(); !errors.Is(err, boom) {
+		t.Fatalf("transcription err = %v", err)
+	}
+}
