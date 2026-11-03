@@ -1186,7 +1186,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		if stepNum > 1 && ctx.Err() != nil {
 			abortErr := context.Cause(ctx)
 			if opts.Timeout.HasTotal() && deadlineFired(ctx, totalParent) {
-				abortErr = wrapTimeoutError(TimeoutReasonTotal, abortErr)
+				abortErr = opts.Timeout.timeoutError(TimeoutReasonTotal, abortErr)
 			}
 			return nil, abortErr
 		}
@@ -1525,9 +1525,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		if err != nil {
 			if opts.Timeout != nil {
 				if opts.Timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
-					err = wrapTimeoutError(TimeoutReasonStep, err)
+					err = opts.Timeout.timeoutError(TimeoutReasonStep, err)
 				} else if opts.Timeout.HasTotal() && deadlineFired(ctx, totalParent) {
-					err = wrapTimeoutError(TimeoutReasonTotal, err)
+					err = opts.Timeout.timeoutError(TimeoutReasonTotal, err)
 				}
 			}
 			// The deferred handler closes the step span (and, for the GenAI
@@ -1567,9 +1567,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			// abandoned): TS throwIfAborted() rethrows the abort reason, the
 			// step or total TimeoutError when that deadline fired.
 			if opts.Timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
-				parseErr = wrapTimeoutError(TimeoutReasonStep, parseErr)
+				parseErr = opts.Timeout.timeoutError(TimeoutReasonStep, parseErr)
 			} else if opts.Timeout.HasTotal() && deadlineFired(ctx, totalParent) {
-				parseErr = wrapTimeoutError(TimeoutReasonTotal, parseErr)
+				parseErr = opts.Timeout.timeoutError(TimeoutReasonTotal, parseErr)
 			} else if cause := context.Cause(stepCtx); cause != nil && errors.Is(parseErr, context.Canceled) {
 				parseErr = cause
 			}
@@ -1775,9 +1775,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			}
 			if err != nil {
 				if opts.Timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
-					err = wrapTimeoutError(TimeoutReasonStep, err)
+					err = opts.Timeout.timeoutError(TimeoutReasonStep, err)
 				} else if opts.Timeout.HasTotal() && deadlineFired(ctx, totalParent) {
-					err = wrapTimeoutError(TimeoutReasonTotal, err)
+					err = opts.Timeout.timeoutError(TimeoutReasonTotal, err)
 				}
 				var conversionErr *toolResultModelOutputError
 				if errors.As(err, &conversionErr) {
@@ -2138,7 +2138,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// step TimeoutError (a tool that swallowed the abort does not
 		// prevent it).
 		if opts.Timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
-			return nil, wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
+			return nil, opts.Timeout.timeoutError(TimeoutReasonStep, stepCtx.Err())
 		}
 	}
 
@@ -2947,8 +2947,12 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			// TS execute-tool-call.ts only aborts the tool's signal at its
 			// deadline: a tool that still returns a result has that result,
 			// and only a failing tool's error is reported as the timeout.
-			if callbacks.timeout != nil && callbacks.timeout.GetToolTimeout(call.ToolName) != nil && timedOut && toolErr != nil {
-				toolErr = wrapTimeoutError(TimeoutReasonTool, toolErr)
+			// With its duration the error reads as TS's abort reason ("The
+			// operation was aborted due to timeout").
+			if callbacks.timeout != nil && timedOut && toolErr != nil {
+				if toolTimeout := callbacks.timeout.GetToolTimeout(call.ToolName); toolTimeout != nil {
+					toolErr = &TimeoutError{Reason: TimeoutReasonTool, Err: toolErr, Timeout: *toolTimeout}
+				}
 			}
 			results[i] = types.ToolResult{
 				ToolCallID:       call.ID,

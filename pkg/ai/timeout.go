@@ -32,6 +32,12 @@ type TimeoutError struct {
 	Timeout time.Duration
 }
 
+// ErrorName is the TS error name (a DOMException named "TimeoutError"), so a
+// tool that fails with its timeout reaches the model as TS
+// getErrorMessage(error): "TimeoutError: The operation was aborted due to
+// timeout" (prompt/create-tool-model-output.ts).
+func (e *TimeoutError) ErrorName() string { return "TimeoutError" }
+
 // timeoutLabels are the TS setAbortTimeout labels (stream-text.ts,
 // generate-text.ts).
 var timeoutLabels = map[TimeoutReason]string{

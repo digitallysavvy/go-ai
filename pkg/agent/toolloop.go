@@ -2610,7 +2610,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			// A tool that still returns a result after its deadline keeps it
 			// (TS only aborts the tool's signal).
 			if toolTimeout != nil && errors.Is(execCtx.Err(), context.DeadlineExceeded) && toolErr != nil {
-				toolErr = &ai.TimeoutError{Reason: ai.TimeoutReasonTool, Err: toolErr}
+				toolErr = &ai.TimeoutError{Reason: ai.TimeoutReasonTool, Err: toolErr, Timeout: *toolTimeout}
 			}
 			execCancel()
 			timings.record(call.ID, durationMs)

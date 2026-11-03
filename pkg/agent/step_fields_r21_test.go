@@ -69,7 +69,7 @@ func TestLegacyLoopToolOptionsAndTimeout(t *testing.T) {
 	if gotMsgs == 0 || !gotUsage {
 		t.Fatalf("messages=%d usage=%v", gotMsgs, gotUsage)
 	}
-	if toolErrors := r71integAgentToolErrors(res.Steps); len(res.ToolResults) != 0 || len(toolErrors) != 1 || !strings.HasPrefix(toolErrors[0].Error.(string), string(ai.TimeoutReasonTool)+" timeout exceeded") {
+	if toolErrors := r71integAgentToolErrors(res.Steps); len(res.ToolResults) != 0 || len(toolErrors) != 1 || toolErrors[0].Error.(string) != "The operation was aborted due to timeout" || toolErrors[0].ErrorText != "TimeoutError: The operation was aborted due to timeout" {
 		t.Fatalf("tool results = %+v, tool errors = %+v", res.ToolResults, toolErrors)
 	}
 }

@@ -2,12 +2,14 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -156,5 +158,61 @@ func TestR84integUIFilePartURLUsesWHATWGParser(t *testing.T) {
 		if f := msgs[0].Content[0].(types.FileContent); f.FileData.URL != good || f.FileData.OriginalURL != "" {
 			t.Fatalf("%s: part = %+v", good, f)
 		}
+	}
+}
+
+// Stream CR item 1 via gen CR 3: GenerateText's step timeout reads like TS
+// setAbortTimeout({label: 'Step'}) (generate-text.ts 1010-1012).
+func TestR84integGenerateTextStepTimeoutText(t *testing.T) {
+	step := 30 * time.Millisecond
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	_, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "go", Timeout: &TimeoutConfig{PerStep: &step}})
+	var timeoutErr *TimeoutError
+	if !errors.As(err, &timeoutErr) || timeoutErr.Reason != TimeoutReasonStep || timeoutErr.Timeout != step ||
+		err.Error() != "Step timeout of 30ms exceeded" || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v (%#v)", err, timeoutErr)
+	}
+}
+
+// A tool that fails with its timed-out context reaches the model as TS
+// getErrorMessage(abortSignal.reason): "TimeoutError: The operation was
+// aborted due to timeout" (execute-tool-call.ts 120, create-tool-model-output.ts 18).
+func TestR84integToolTimeoutErrorTextForModel(t *testing.T) {
+	toolTimeout := 10 * time.Millisecond
+	var second string
+	calls := 0
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls++
+			if calls == 1 {
+				return &types.GenerateResult{
+					ToolCalls:    []types.ToolCall{{ID: "tc1", ToolName: "slow", Arguments: map[string]interface{}{}}},
+					FinishReason: types.FinishReasonToolCalls,
+				}, nil
+			}
+			b, _ := json.Marshal(opts.Prompt.Messages)
+			second = string(b)
+			return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	slow := types.Tool{Name: "slow", Execute: func(ctx context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model, Prompt: "go", Tools: []types.Tool{slow},
+		StopWhen: []StopCondition{StepCountIs(2)},
+		Timeout:  &TimeoutConfig{ToolMs: &toolTimeout},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if (&TimeoutError{}).ErrorName() != "TimeoutError" || !strings.Contains(second, "TimeoutError: The operation was aborted due to timeout") {
+		t.Fatalf("second prompt = %s", second)
 	}
 }
