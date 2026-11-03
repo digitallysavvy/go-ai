@@ -1094,10 +1094,10 @@ func TestPrepareTools_ModelsWithoutStrictSupportOmitStrict(t *testing.T) {
 	tools := []types.Tool{
 		{Type: types.ToolTypeFunction, Name: "t", Strict: types.BoolPtr(true), Parameters: map[string]interface{}{"type": "object", "additionalProperties": false}},
 	}
-	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-opus-5", "", nil, nil, false)
+	result := prepareBedrockTools(tools, types.ToolChoice{}, false, "anthropic.claude-opus-4-7", "", nil, nil, false)
 	toolSpec := result.ToolConfig.Tools[0]["toolSpec"].(map[string]interface{})
 	if _, ok := toolSpec["strict"]; ok {
-		t.Fatalf("expected strict omitted for claude-opus-5 (no strict tool support), got %#v", toolSpec)
+		t.Fatalf("expected strict omitted for claude-opus-4-7 (no strict tool support), got %#v", toolSpec)
 	}
 	foundWarning := false
 	for _, w := range result.Warnings {
@@ -1305,7 +1305,7 @@ func TestModelSupport_IsAnthropicModelID(t *testing.T) {
 }
 
 func TestModelSupport_SupportsStrictToolsAndNativeSO(t *testing.T) {
-	strictUnsupported := []string{"anthropic.claude-opus-4-7", "anthropic.claude-opus-4-8", "anthropic.claude-opus-5", "anthropic.claude-fable-5", "anthropic.claude-sonnet-5"}
+	strictUnsupported := []string{"anthropic.claude-opus-4-7", "anthropic.claude-opus-4-8", "anthropic.claude-fable-5"}
 	for _, id := range strictUnsupported {
 		if bedrockSupportsStrictTools(id) {
 			t.Errorf("bedrockSupportsStrictTools(%q) = true, want false", id)

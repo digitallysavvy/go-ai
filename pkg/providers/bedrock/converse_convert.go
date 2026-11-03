@@ -637,13 +637,29 @@ func convertToBedrockChatMessages(messages []types.Message, isMistral bool) (sys
 		documentCounter++
 		return fmt.Sprintf("document-%d", documentCounter)
 	}
+	// Bedrock rejects requests that contain duplicate document names, so a
+	// repeated name gets a " (2)", " (3)", ... suffix, the base cut to fit
+	// 200 characters (TS b6de62e95a). Sanitized names are ASCII.
+	usedDocumentNames := map[string]bool{}
 	getDocumentName := func(filename string) string {
+		baseName := ""
 		if filename != "" {
-			if sanitized := sanitizeDocumentName(filename); sanitized != "" {
-				return sanitized
-			}
+			baseName = sanitizeDocumentName(filename)
 		}
-		return generateDocumentName()
+		if baseName == "" {
+			baseName = generateDocumentName()
+		}
+		name := baseName
+		for suffix := 2; usedDocumentNames[name]; suffix++ {
+			suffixText := fmt.Sprintf(" (%d)", suffix)
+			base := baseName
+			if limit := 200 - len(suffixText); len(base) > limit {
+				base = base[:limit]
+			}
+			name = providerutils.JSTrim(base) + suffixText
+		}
+		usedDocumentNames[name] = true
+		return name
 	}
 
 	for blockIdx, block := range blocks {

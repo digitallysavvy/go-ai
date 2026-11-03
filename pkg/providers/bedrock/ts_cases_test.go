@@ -62,6 +62,8 @@ func TestTSCasesChat(t *testing.T) {
 		"should expose the raw response headers":         "the TS mock server answers with text/event-stream headers; Go reads the AWS event stream",
 		"should include response headers in rawResponse": "the TS mock server answers with text/event-stream headers; Go reads the AWS event stream",
 		"should handle Anthropic provider-defined tools": "the TS test mocks the Anthropic prepareTools result (tool_choice, betas, schema)",
+		"should work with partial headers":               "the TS test injects signed headers through a custom fetch; Go signs with SigV4 or sends the API key",
+		"should use JSON instructions instead of forced tool use for claude-opus-5-5 with structuredOutputMode jsonTool": "tsfixture hands responseFormat.schema to Go as a map (sorted keys), so the instruction's schema text differs in key order only; TestR85provaBedrockJSONInstructionKeepsSchemaOrder covers it with an ordered schema",
 	})
 }
 

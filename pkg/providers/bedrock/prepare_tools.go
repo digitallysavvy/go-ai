@@ -121,6 +121,14 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 		providerToolsForRequest = filtered
 	}
 
+	// TS 62a4dcd641: a named tool choice keeps every function tool for
+	// Anthropic models that accept forced tool use (below), so parallel tool
+	// use is disabled by default to keep the response to the named tool;
+	// disableParallelToolUse false opts out.
+	if disableParallelToolUse == nil && isAnthropic && hasToolChoice && toolChoice.Type == types.ToolChoiceTool && !rejectsForcedToolChoice {
+		disableParallelToolUse = &[]bool{true}[0]
+	}
+
 	usingAnthropicTools := isAnthropic && len(providerToolsForRequest) > 0
 
 	var bedrockTools []map[string]interface{}
@@ -197,8 +205,11 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 		hasPreparedToolChoice = true
 	}
 
+	// Anthropic models that accept forced tool use guarantee the named tool
+	// is called, so they keep every function tool. Other models only receive
+	// the named tool so they cannot call a different one (TS 62a4dcd641).
 	filteredFunctionTools := functionTools
-	if hasToolChoice && toolChoice.Type == types.ToolChoiceTool {
+	if hasToolChoice && toolChoice.Type == types.ToolChoiceTool && (!isAnthropic || rejectsForcedToolChoice) {
 		filtered := make([]types.Tool, 0, 1)
 		for _, t := range functionTools {
 			if t.Name == toolChoice.ToolName {
