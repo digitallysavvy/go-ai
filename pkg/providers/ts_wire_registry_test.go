@@ -1,6 +1,7 @@
 package providers_test
 
 import (
+	"context"
 	"encoding/json"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/cerebras"
@@ -95,10 +96,7 @@ func wireHeaders(m tsfixture.WireModel) map[string]string {
 // wireSuites maps a TS package (testdata/tswire/<pkg>.jsonl.gz) to the Go
 // provider replayed against it.
 var wireSuites = map[string]tsfixture.WireSuite{
-	"openai-compatible": {LanguageResults: true, SkipResults: map[string]string{
-		"metadata extraction > should process metadata from streaming response": "the metadataExtractor is code in the TS test; Go has no metadata extractor hook",
-	}, Skip: map[string]string{
-		"metadata extraction > should process metadata from complete response":             "the metadataExtractor is code in the TS test; Go has no metadata extractor hook",
+	"openai-compatible": {LanguageResults: true, Skip: map[string]string{
 		"doGenerate > should generate distinct IDs for parallel tool calls with empty IDs": "TS generateId is random; distinct Go ids are checked in pkg/providerutils/streaming",
 		"~transformRequestBody": "the transform is code in the TS test; Go has Config.TransformRequestBody",
 		"doEmbed > should not emit deprecated warning when camelCase provider name key is used": "TS embedding reads only the raw provider-name key; Go also honours the camelCase key",
@@ -119,9 +117,14 @@ var wireSuites = map[string]tsfixture.WireSuite{
 		multipart, _ := m.Config["supportsMultiPartToolContent"].(bool)
 		includeUsage, _ := m.Config["includeUsage"].(bool)
 		return openai.New(openai.Config{APIKey: wireAPIKey(m), BaseURL: b, Name: name, OpenAICompatible: true, Headers: wireHeaders(m),
-			SupportsStructuredOutputs: &structured, SupportsMultiPartToolContent: multipart, IncludeUsage: includeUsage}), nil
+			SupportsStructuredOutputs: &structured, SupportsMultiPartToolContent: multipart, IncludeUsage: includeUsage,
+			// the TS "metadata extraction" tests' testMetadataExtractor; it
+			// adds nothing to a response without test_field.
+			MetadataExtractor: wireTestMetadataExtractor{}}), nil
 	}},
-	"cohere": {RootBase: true, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"cohere": {RootBase: true, SkipResults: map[string]string{
+		"doStream > tool call > rejects prototype keys in streamed tool call arguments": "known difference \"JSON payloads with __proto__\": Go JSON has no prototype keys to reject",
+	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return cohere.New(cohere.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
 	"mistral": {
@@ -143,7 +146,9 @@ var wireSuites = map[string]tsfixture.WireSuite{
 	"voyage": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return voyage.New(voyage.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
-	"perplexity": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"perplexity": {Skip: map[string]string{
+		"warns about unsupported options without adding fields to the request": "the warnings follow TS Object.keys(providerOptions.perplexity) insertion order; a Go map has none",
+	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return perplexity.New(perplexity.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
 	"baseten": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
@@ -308,6 +313,44 @@ var wireSuites = map[string]tsfixture.WireSuite{
 			return types.Tool{Type: types.ToolTypeProviderDefined, ProviderID: id, Name: name, ProviderArgs: args}, true
 		},
 	},
+}
+
+// wireTestMetadataExtractor is the TS openai-compatible "metadata
+// extraction" testMetadataExtractor.
+type wireTestMetadataExtractor struct{}
+
+func (wireTestMetadataExtractor) ExtractMetadata(_ context.Context, body interface{}) (map[string]interface{}, error) {
+	if m, ok := body.(map[string]interface{}); ok {
+		if v, ok := m["test_field"]; ok {
+			return map[string]interface{}{"test-provider": map[string]interface{}{"value": v}}, nil
+		}
+	}
+	return nil, nil
+}
+
+func (wireTestMetadataExtractor) CreateStreamExtractor() openai.StreamMetadataExtractor {
+	return &wireTestStreamExtractor{}
+}
+
+type wireTestStreamExtractor struct{ value string }
+
+func (e *wireTestStreamExtractor) ProcessChunk(chunk interface{}) {
+	m, _ := chunk.(map[string]interface{})
+	choices, _ := m["choices"].([]interface{})
+	if len(choices) == 0 {
+		return
+	}
+	c, _ := choices[0].(map[string]interface{})
+	if v, ok := m["test_field"].(string); ok && c["finish_reason"] == "stop" {
+		e.value = v
+	}
+}
+
+func (e *wireTestStreamExtractor) BuildMetadata() map[string]interface{} {
+	if e.value == "" {
+		return nil
+	}
+	return map[string]interface{}{"test-provider": map[string]interface{}{"value": e.value}}
 }
 
 func indexByte(s string, c byte) int {

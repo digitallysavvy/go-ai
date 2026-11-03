@@ -543,8 +543,12 @@ func compareWireStream(c WireCall, got map[string]interface{}) []string {
 			}
 		}
 	}
-	wireAlignInvalidBase64(want, g)
-	if d := Diff("", Normalize(CanonStream(want)), Normalize(CanonStream(g))); d != "" {
+	// Align after CanonStream: it drops parts only one side has (Go's
+	// headers-only response-metadata, an empty stream-start), so the raw
+	// indexes of the two lists do not pair the same parts.
+	cw, cg := CanonStream(want), CanonStream(g)
+	wireAlignInvalidBase64(cw, cg)
+	if d := Diff("", Normalize(cw), Normalize(cg)); d != "" {
 		return []string{"stream (- TS, + Go):\n" + d}
 	}
 	return nil
