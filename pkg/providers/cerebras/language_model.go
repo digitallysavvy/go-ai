@@ -24,7 +24,9 @@ func (m *LanguageModel) SupportsStructuredOutput() bool {
 func (m *LanguageModel) SupportsImageInput() bool { return m.base.SupportsImageInput() }
 
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	ctx, warnings := m.withCerebrasOptions(ctx, opts)
+	// The option warnings (the deprecated openai-compatible key) are the
+	// base model's own; TS reports them once.
+	ctx, _ = m.withCerebrasOptions(ctx, opts)
 	result, err := m.base.DoGenerate(ctx, opts)
 	if err != nil || result == nil {
 		return result, parseCerebrasProviderError(err)
@@ -35,7 +37,6 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if extras, ok := ctx.Value(cerebrasOptionsContextKey{}).(cerebrasRequestExtras); ok {
 		applyCerebrasRequestExtras(result.RawRequest, extras)
 	}
-	result.Warnings = append(warnings, result.Warnings...)
 	if cerebrasJSONMode(opts) && result.Text != "" && result.FinishReason == types.FinishReasonToolCalls {
 		result.ToolCalls = nil
 		result.FinishReason = types.FinishReasonStop
