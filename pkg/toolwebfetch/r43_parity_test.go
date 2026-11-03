@@ -9,17 +9,19 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-// TS fetchWebResource calls new URL(location, currentUrl) outside any try, so
-// a Location it cannot parse throws and fails the tool call (no result).
+// TS dffe4053c1 (web-fetch-tool.test.ts "returns an error for an invalid
+// redirect location"): a Location new URL cannot parse is a network_error
+// result, and the target is never requested.
 func TestInvalidRedirectLocationFailsTheToolCall(t *testing.T) {
-	for _, location := range []string{"http://example.com:99999/", "http://[::1/"} {
+	for _, location := range []string{"http://example.com:99999/", "http://[::1/", "http://[invalid"} {
 		ft := serve(func(req *http.Request) *http.Response {
 			return response(302, "", "Location", location)
 		})
 		tool := newTool(t, Options{Transport: ft})
 		out, err := tool.Execute(context.Background(), map[string]interface{}{"url": "https://example.com/"}, types.ToolExecutionOptions{ToolCallID: "c"})
-		if err == nil || err.Error() != "Invalid URL" {
-			t.Fatalf("location %q: out = %#v, err = %v; want the Invalid URL error", location, out, err)
+		e, ok := out.(ErrorOutput)
+		if err != nil || !ok || e.ErrorCode != "network_error" || e.Message != "The server returned an invalid redirect location." {
+			t.Fatalf("location %q: out = %#v, err = %v; want the network_error result", location, out, err)
 		}
 		if ft.count() != 1 {
 			t.Fatalf("location %q: %d requests, want 1", location, ft.count())
