@@ -207,6 +207,9 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 	}
 
 	prepared := prepareTools(opts.Tools, opts.ToolChoice, m.modelID, isVertex)
+	if prepared.err != nil {
+		return nil, nil, nil, prepared.err
+	}
 
 	// Thinking config: resolved call-level reasoning merged with (and
 	// overridden by) providerOptions.thinkingConfig.

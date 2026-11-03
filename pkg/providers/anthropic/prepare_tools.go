@@ -309,7 +309,9 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 			out.toolChoice = withDisable(map[string]interface{}{"type": "tool", "name": choiceName})
 		}
 	default:
-		out.toolChoice = withDisable(map[string]interface{}{"type": "auto"})
+		// TS exhaustive check: UnsupportedFunctionalityError
+		// "tool choice type: <type>".
+		out.err = prompt.ValidateToolChoiceType(o.tools, *o.toolChoice)
 	}
 	return out
 }

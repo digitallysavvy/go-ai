@@ -71,6 +71,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err := prompt.RejectProviderReferenceFiles(opts.Prompt.Messages); err != nil {
 		return nil, err
 	}
+	// TS cohere prepareTools throws for an unknown tool choice type.
+	if err := prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice); err != nil {
+		return nil, err
+	}
 	reqBody, warnings, err := m.buildRequestBodyWithWarnings(opts)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -109,6 +113,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, err
 	}
 	if err := prompt.RejectProviderReferenceFiles(opts.Prompt.Messages); err != nil {
+		return nil, err
+	}
+	// TS cohere prepareTools throws for an unknown tool choice type.
+	if err := prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice); err != nil {
 		return nil, err
 	}
 	reqBody, warnings, err := m.buildRequestBodyWithWarnings(opts)

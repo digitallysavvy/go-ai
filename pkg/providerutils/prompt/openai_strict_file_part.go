@@ -262,7 +262,8 @@ func DecodeUTF8Text(b []byte) string {
 
 // ValidateToolChoiceType is the exhaustive-check default of the TS
 // prepareTools tool choice switch (openai chat and Responses,
-// openai-compatible, alibaba, moonshot, xai Responses): with at least one
+// openai-compatible, alibaba, moonshot, xai Responses, anthropic, google,
+// groq, mistral, cohere, amazon-bedrock): with at least one
 // tool, a tool choice type other than auto, none, required or tool is an
 // UnsupportedFunctionalityError "tool choice type: <type>". Without tools TS
 // returns before the switch, so nothing is checked.

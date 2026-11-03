@@ -276,6 +276,11 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 			amazonToolChoice = nil
 		case types.ToolChoiceTool:
 			amazonToolChoice = map[string]interface{}{"tool": map[string]interface{}{"name": preparedToolChoice.ToolName}}
+		default:
+			// TS exhaustive check: UnsupportedFunctionalityError
+			// "tool choice type: <type>".
+			result.Err = prompt.ValidateToolChoiceType(tools, preparedToolChoice)
+			return result
 		}
 	}
 

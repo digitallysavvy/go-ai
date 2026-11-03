@@ -72,6 +72,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsGroq, ""); err != nil {
 		return nil, err
 	}
+	if err := validateGroqToolChoice(opts); err != nil {
+		return nil, err
+	}
 	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, false)
 	var response groqResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
@@ -119,6 +122,9 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, err
 	}
 	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsGroq, ""); err != nil {
+		return nil, err
+	}
+	if err := validateGroqToolChoice(opts); err != nil {
 		return nil, err
 	}
 	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, true)
@@ -879,4 +885,14 @@ func groqCreatedTimestamp(created *float64) time.Time {
 		return time.Time{}
 	}
 	return time.UnixMilli(int64(*created * 1000))
+}
+
+// validateGroqToolChoice is the TS groq prepareTools exhaustive check: an
+// unknown tool choice type fails with UnsupportedFunctionalityError, unless
+// the JSON response tool replaces the tool choice first.
+func validateGroqToolChoice(opts *provider.GenerateOptions) error {
+	if providerutils.NeedsJSONResponseTool(opts.ResponseFormat, opts.Tools) {
+		return nil
+	}
+	return prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice)
 }

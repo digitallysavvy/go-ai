@@ -164,6 +164,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if _, err := extractMistralProviderOptions(opts); err != nil {
 		return nil, err
 	}
+	// TS mistral prepareTools throws for an unknown tool choice type.
+	if err := prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice); err != nil {
+		return nil, err
+	}
 	warnings := m.checkReasoningWarnings(opts)
 	reqBody := m.buildRequestBody(opts, false)
 	var response mistralResponse
@@ -207,6 +211,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, err
 	}
 	if _, err := extractMistralProviderOptions(opts); err != nil {
+		return nil, err
+	}
+	// TS mistral prepareTools throws for an unknown tool choice type.
+	if err := prompt.ValidateToolChoiceType(opts.Tools, opts.ToolChoice); err != nil {
 		return nil, err
 	}
 	warnings := m.checkReasoningWarnings(opts)
