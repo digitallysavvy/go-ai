@@ -137,11 +137,11 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (map[string]inte
 	var reasoningConfig map[string]interface{}
 	if parsedOptions != nil && parsedOptions.Reasoning != nil {
 		reasoningConfig = parsedOptions.Reasoning
-	} else if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
-		if *opts.Reasoning == types.ReasoningNone {
-			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: `reasoning "none"`})
-		} else {
-			reasoningConfig = map[string]interface{}{"effort": perplexityReasoningEffort(*opts.Reasoning, &warnings)}
+	} else if providerutils.IsCustomReasoning(opts.Reasoning) {
+		// Reasoning cannot be disabled, so reasoning "none" maps to the
+		// lowest effort (TS 61a315e333).
+		if effort, ok := perplexityReasoningEffort(opts.Reasoning, &warnings); ok {
+			reasoningConfig = map[string]interface{}{"effort": effort}
 		}
 	}
 
@@ -347,6 +347,7 @@ func (m *LanguageModel) convertResponse(response *perplexityAgentResponse, rawBo
 	var toolCalls []types.ToolCall
 	var textParts []string
 	hasFunctionCall := false
+	var searchQueries []string
 
 	sourceIndexesByURL := map[string]int{}
 	sourceHasResultID := map[string]bool{}
@@ -387,6 +388,7 @@ func (m *LanguageModel) convertResponse(response *perplexityAgentResponse, rawBo
 				}
 			}
 		case "search_results":
+			searchQueries = collectPerplexitySearchQueries(searchQueries, item.Queries)
 			for _, result := range item.Results {
 				result := result
 				addSource(result.URL, result.ID != nil, func() types.SourceContent {
@@ -442,7 +444,7 @@ func (m *LanguageModel) convertResponse(response *perplexityAgentResponse, rawBo
 		RawFinishReason:  rawFinishReason,
 		Usage:            convertPerplexityUsage(response.Usage, perplexityRawUsageBytes(rawBody)),
 		RawResponse:      providerutils.RawJSONBody(rawBody),
-		ProviderMetadata: getPerplexityProviderMetadata(response.Usage),
+		ProviderMetadata: getPerplexityProviderMetadata(response.Usage, searchQueries),
 	}
 	if len(textParts) > 0 {
 		var b strings.Builder
@@ -603,6 +605,7 @@ type perplexityAgentStream struct {
 	rawFinishReason string
 	usage           *perplexityUsage
 	usageRawBytes   []byte
+	searchQueries   []string
 
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
@@ -725,7 +728,11 @@ func (s *perplexityAgentStream) processEvent(data string) {
 		s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: s.activeReasoningID})
 		s.emitReasoningThought(chunk.Thought)
 
-	case "response.reasoning.search_queries", "response.reasoning.fetch_url_queries":
+	case "response.reasoning.search_queries":
+		s.emitReasoningThought(chunk.Thought)
+		s.searchQueries = collectPerplexitySearchQueries(s.searchQueries, chunk.Queries)
+
+	case "response.reasoning.fetch_url_queries":
 		s.emitReasoningThought(chunk.Thought)
 
 	case "response.reasoning.search_results":
@@ -952,6 +959,7 @@ func (s *perplexityAgentStream) emitOutputSources(item *perplexityOutputItem) {
 	// TS getSearchResults / getFetchedSources read only search_results and
 	// fetch_url_results items (a finance_results item also has `results`).
 	if item.Type == "search_results" {
+		s.searchQueries = collectPerplexitySearchQueries(s.searchQueries, item.Queries)
 		for _, result := range item.Results {
 			result := result
 			s.emitSource(result.URL, result.ID != nil, func() types.SourceContent { return perplexitySearchResultSource(result) })
@@ -984,7 +992,7 @@ func (s *perplexityAgentStream) flush() {
 	}
 
 	usage := convertPerplexityUsage(s.usage, s.usageRawBytes)
-	metaRaw, _ := json.Marshal(getPerplexityProviderMetadata(s.usage))
+	metaRaw, _ := json.Marshal(getPerplexityProviderMetadata(s.usage, s.searchQueries))
 	s.pending = append(s.pending, &provider.StreamChunk{
 		Type:             provider.ChunkTypeFinish,
 		FinishReason:     s.finishReason,
@@ -1010,13 +1018,20 @@ func perplexityExtractNestedUsageBytes(raw []byte) []byte {
 }
 
 // perplexityReasoningEffort maps a portable reasoning level to a Perplexity
-// reasoning effort (TS mapReasoningToProviderEffort with max -> xhigh). A
-// compatibility warning is appended when the level is coerced.
-func perplexityReasoningEffort(level types.ReasoningLevel, warnings *[]types.Warning) string {
-	if level != types.ReasoningMax {
-		return string(level)
+// reasoning effort (TS mapReasoningToProviderEffort over minimal…xhigh: max
+// rounds down to xhigh, none up to minimal). A compatibility warning is
+// appended when the level is coerced.
+func perplexityReasoningEffort(level *types.ReasoningLevel, warnings *[]types.Warning) (string, bool) {
+	before := len(*warnings)
+	effort, ok := providerutils.MapReasoningToProviderEffort(level, map[types.ReasoningLevel]string{
+		types.ReasoningMinimal: "minimal",
+		types.ReasoningLow:     "low",
+		types.ReasoningMedium:  "medium",
+		types.ReasoningHigh:    "high",
+		types.ReasoningXHigh:   "xhigh",
+	}, nil, warnings)
+	for i := before; i < len(*warnings); i++ {
+		(*warnings)[i].Message = (*warnings)[i].Details
 	}
-	details := fmt.Sprintf("reasoning %q is not directly supported by this model. mapped to effort %q.", string(level), "xhigh")
-	*warnings = append(*warnings, types.Warning{Type: "compatibility", Feature: "reasoning", Details: details, Message: details})
-	return "xhigh"
+	return effort, ok
 }

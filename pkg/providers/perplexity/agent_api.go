@@ -67,6 +67,7 @@ type perplexityOutputItem struct {
 	Type             string                     `json:"type"`
 	ID               *string                    `json:"id,omitempty"`
 	Content          []perplexityContentPart    `json:"content,omitempty"`
+	Queries          []string                   `json:"queries,omitempty"`
 	Results          []perplexitySearchResult   `json:"results,omitempty"`
 	Contents         []perplexityFetchedContent `json:"contents,omitempty"`
 	CallID           *string                    `json:"call_id,omitempty"`
