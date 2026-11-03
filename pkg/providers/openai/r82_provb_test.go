@@ -296,3 +296,77 @@ func TestR82provbFilesUploadPartOrderAndValues(t *testing.T) {
 		t.Fatal("a null purpose was accepted; TS z.string().optional() rejects it")
 	}
 }
+
+// r82provbCompletionStream streams body through a completion model.
+func r82provbCompletionStream(t *testing.T, cfg Config, body string) ([]*provider.StreamChunk, error) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	cfg.APIKey, cfg.BaseURL = "k", srv.URL
+	m, err := New(cfg).CompletionModel("m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := m.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var out []*provider.StreamChunk
+	for {
+		c, err := s.Next()
+		if err != nil {
+			return out, s.Err()
+		}
+		out = append(out, c)
+	}
+}
+
+// TS OpenAICompatibleCompletionLanguageModel doStream: the finish reason
+// starts as 'other', an empty `text` is a text delta, and an error chunk is
+// an error part (no throwIfOpenAIStreamErrorBeforeOutput); a parse or error
+// chunk resets the raw finish reason (both models: {unified: 'error', raw:
+// undefined}).
+func TestR82provbCompatCompletionStream(t *testing.T) {
+	compat := Config{OpenAICompatible: true, Name: "p"}
+	chunks, err := r82provbCompletionStream(t, compat, "data: {\"id\":\"c\",\"choices\":[{\"text\":\"\",\"index\":0}]}\n\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var texts int
+	var finish *provider.StreamChunk
+	for _, c := range chunks {
+		switch c.Type {
+		case provider.ChunkTypeText:
+			texts++
+		case provider.ChunkTypeFinish:
+			finish = c
+		}
+	}
+	if texts != 1 || finish == nil || finish.FinishReason != types.FinishReasonOther {
+		t.Fatalf("texts=%d finish=%+v, want one empty text delta and finish reason other", texts, finish)
+	}
+
+	chunks, err = r82provbCompletionStream(t, compat, "data: {\"error\":{\"message\":\"bad\"}}\n\n")
+	if err != nil {
+		t.Fatalf("compat error chunk ended the stream with %v; TS emits an error part", err)
+	}
+	var types_ []string
+	for _, c := range chunks {
+		types_ = append(types_, string(c.Type))
+	}
+	if len(chunks) < 2 || chunks[len(chunks)-1].FinishReason != types.FinishReasonError {
+		t.Fatalf("chunks = %v", types_)
+	}
+
+	for _, cfg := range []Config{{}, compat} {
+		chunks, _ = r82provbCompletionStream(t, cfg, "data: {\"id\":\"c\",\"choices\":[{\"text\":\"a\",\"index\":0,\"finish_reason\":\"stop\"}]}\n\ndata: {not json\n\n")
+		last := chunks[len(chunks)-1]
+		if last.FinishReason != types.FinishReasonError || last.RawFinishReason != "" {
+			t.Fatalf("compat=%v finish = %+v, want error with no raw reason", cfg.OpenAICompatible, last)
+		}
+	}
+}
