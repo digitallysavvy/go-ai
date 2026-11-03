@@ -283,7 +283,7 @@ already, you can skip them.
 | bedrock Nova embedding without `inputTokenCount`; token-count header values | Header read as JS Number; NaN when missing | silent behavior change | None | [Bedrock embedding token counts](#bedrock-embedding-token-count) |
 | googlevertex `DoEmbedMany` / `EmbedMany` `Responses` | One entry per request | silent behavior change | Index by request | [Vertex embedding responses](#vertex-embedding-one-response) |
 | google / googlevertex Live transcription and translation close errors | "... (code unknown)." | error text only | Match by prefix | [Google Live streams](#google-live-close-and-silence) |
-| `FileData.DataString` file parts (anthropic, google, googlevertex, mistral, cohere, perplexity) | Sent unchanged | wire/protocol change | None | [Base64 string payloads](#file-data-string-forwarded) |
+| `FileData.DataString` file parts (anthropic, google, googlevertex, mistral, cohere, perplexity, openai, groq, openai-compatible, alibaba, moonshot, deepseek, huggingface, openresponses) | Sent unchanged | wire/protocol change | None | [Base64 string payloads](#file-data-string-forwarded) |
 | `SpeechResult.Request.Body` (google, googlevertex, mistral) | TS key order | silent behavior change | Compare parsed JSON | [Speech request body order](#speech-request-body-key-order) |
 | alibaba / moonshot chat, openai completion `DoGenerate` with `"choices": []` | Error like the TS TypeError | silent behavior change | None | [Empty choices](#chat-empty-choices-typeerror) |
 | openai / groq / alibaba / deepseek / moonshot / mistral streams with a tool call delta without `function.name` (or with a wrong `type`) | The error chunk ends the stream; no later parts, no finish | silent behavior change | Treat the error as the end | [Nameless tool call](#chat-stream-missing-tool-name-no-finish) |
@@ -296,6 +296,26 @@ already, you can skip them.
 | `MaxRetries` unset on non-Gateway providers (v0.5.3) | Every provider retries | silent behavior change | Set `MaxRetries: &zero` to disable | [Retries](#v053-retries) |
 | Reliance on the 60 s default HTTP client timeout (v0.5.3) | No whole-request timeout | silent behavior change | Bound calls with `ctx` | [HTTP client timeout](#v053-http-timeout) |
 | Calls to unknown tools ending the loop (v0.5.3) | Answered with a tool error | silent behavior change | No action unless you relied on the stop | [Unknown tools](#v053-unknown-tool) |
+| `StepResult.Response.Headers`, `ResponseHeaders()` / `ResponseHeadersMap()` in StreamText | The step's own headers, none when it reported none | silent behavior change | None | [Step headers](#stream-step-headers-per-step) |
+| `Timeout.PerChunk` / `FirstChunk` in StreamText | PerChunk starts with the first output chunk; an error part stops both timers | silent behavior change | Set `FirstChunk` to bound the first chunk | [PerChunk start](#stream-per-chunk-after-first-output) |
+| `schema.NewSimpleStructSchema`, `schema.NewStructSchema`, `StructValidator.JSONSchema()`, `ResponseFormat.Schema.(map[string]interface{})` | A full JSON Schema of the struct fields (was `{"type":"object"}`); sent as an `*schema.OrderedSchema` | wire/protocol change | Mark required fields `validate:"required"`; read maps with `schema.ParametersMap` | [Struct JSON Schema](#struct-schema-json-schema) |
+| `ai.prompt.toolChoice` on step spans; `TelemetryStepStartEvent.ToolChoice` | `{"type":"auto"}` when no tool choice is set | silent behavior change | None unless you relied on it being absent | [Step tool choice auto](#telemetry-step-tool-choice-auto) |
+| `ai.prompt.messages` / `ai.prompt.tools` on WorkflowAgent step spans | Not recorded | silent behavior change | Read the root `ai.prompt` or the model-call event | [WorkflowAgent step spans](#workflow-step-span-no-prompt) |
+| `FileData.DataString` with a `MediaType` without a subtype (anthropic, google, perplexity, mistral, cohere, bedrock, openai, groq, openai-compatible) | Only the sniffed prefix is decoded | silent behavior change | None | [Prefix sniffing](#file-data-string-prefix-sniff) |
+| Anthropic `Functionality == "media type: application"` | `file of media type "application" must specify subtype since it could not be auto-detected` | error text only | Give a full media type | [Anthropic application subtype](#anthropic-application-subtype-error) |
+| Anthropic (Bedrock / Vertex Anthropic) streams with an empty `data:` event; code treating every `ChunkTypeError` as fatal | A JSON parse error part, the stream continues | silent behavior change | None unless a proxy sends empty events | [Empty data event](#anthropic-stream-empty-data-error) |
+| `providerMetadata.google.signature` of Google Interactions parts | A present `""` is kept and sent back | wire/protocol change | None | [Interactions empty signature](#google-interactions-empty-signature) |
+| `computer` tool-call `Arguments["actions"]` from `openai.ResponsesModel` | `"actions": []` stays empty | silent behavior change | None | [Computer actions](#responses-computer-empty-actions) |
+| `openai.Provider.Files().UploadFile`, `xai.Provider.Files().UploadFile` / `GetFileMetadata` | Inline uploads send the file part first; `null` options rejected; empty metadata kept | wire/protocol change | None unless you pass `null` options | [File uploads](#openai-files-upload-parity) |
+| `ProviderMetadata["openai"]["defaultVersion"]` from `Skills().UploadSkill` | A present `""` is reported | silent behavior change | None | [Skill default version](#skill-empty-default-version) |
+| `ollama` warnings with `providerOptions["openai-compatible"]` | `deprecated` warning added; tool warnings last | silent behavior change | Use `openaiCompatible` | [Ollama key warning](#ollama-compat-key-warning) |
+| `CompletionModel.DoStream` of OpenAI-compatible providers: `FinishReasonInterrupted`, `Err()` after an error chunk, `RawFinishReason` | Finish `other` without a finish reason; an error chunk is an error part followed by the finish | silent behavior change | Handle the error part | [Compat completion stream](#compat-completion-stream-parity) |
+| zai `requestId` / `userId` provider options with non-ASCII text | Lengths counted in UTF-16 units | silent behavior change | None | [Z.ai id length](#zai-id-length-utf16) |
+| `Usage.InputTokens == nil` on `mistral` `ConversationModel` results | `usage: {}` reports 0 tokens | silent behavior change | None | [Conversation usage](#mistral-conversation-usage-defaults) |
+| `huggingface` image parts with a bare or wildcard media type | Detected with the TS image signatures | silent behavior change | Give the full media type | [Hugging Face image sniff](#huggingface-image-signature-sniff) |
+| `provider.DecisionJSONPart(v)` alone in a Perplexity decision state, `v` a typed map, struct, typed slice or `json.RawMessage` | Sent as the native object/array | wire/protocol change | None | [Typed decision state](#perplexity-decision-typed-state) |
+| Perplexity stream `ChunkTypeSource` counts | No url-less source for `finance_results` | silent behavior change | None | [Finance results](#perplexity-stream-finance-no-source) |
+| Perplexity decision files given by `FileContent.URL` / `Reference` / `Text` | `Perplexity decision file input: url` (or `reference`, `text`) | error text only | Pass image bytes | [Decision file kind](#perplexity-decision-legacy-file-kind) |
 
 ## Compile-time changes {#compile-time-changes}
 
@@ -1160,6 +1180,40 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   `RuntimeContext`.
 - **Kind:** silent behavior change
 
+### A step's response headers are its own {#stream-step-headers-per-step}
+
+- **What changed:** `StepResult.Response.Headers` of a StreamText step (and
+  `StreamTextResult.ResponseHeaders()` / `ResponseHeadersMap()`, the last
+  step's) are the headers that step's model stream reported. v0.5 kept the
+  last headers seen in the run, so a later step, or a recovered
+  `StreamRetries` attempt, whose stream reported none showed an earlier
+  step's or the failed attempt's headers. TS takes each finish-step's
+  `response.headers` from that step's `doStream` result (review round 82).
+- **Am I affected?** Code reading `Response.Headers` of steps after the first,
+  or `ResponseHeaders()` / `ResponseHeadersMap()`, with providers that report
+  headers only on some calls.
+- **What to do:** No action unless you relied on earlier headers carrying
+  over; read `Steps()[i].Response.Headers` of the step you need.
+- **Kind:** silent behavior change
+
+### Timeout.PerChunk starts with the first output chunk {#stream-per-chunk-after-first-output}
+
+- **What changed:** `TimeoutConfig.PerChunk` (TS `chunkMs`) now bounds only
+  the gaps between semantic output chunks. v0.5 also applied it to the wait
+  for the first chunk of every step and stream retry (and to every read), so
+  a slow start failed with `TimeoutReasonChunk`. The wait for the first
+  output is bounded by `FirstChunk` (TS `firstChunkMs`) only, as TS starts
+  its chunk timer after output begins. An error part also stops both timers
+  until the next output chunk (TS `clearModelOutputTimeouts`), so a pause
+  after a soft error part is no longer a timeout (review round 82).
+- **Am I affected?** StreamText calls that set `Timeout.PerChunk` without
+  `FirstChunk` and rely on it to fail a model that never starts answering;
+  checks for `TimeoutReasonChunk` or `TimeoutReasonFirstChunk` on a slow
+  first chunk or after an error part.
+- **What to do:** Set `FirstChunk` to bound the first chunk:
+  `Timeout: &ai.TimeoutConfig{FirstChunk: &first, PerChunk: &perChunk}`.
+- **Kind:** silent behavior change
+
 ## Prompts and validation {#prompts-and-validation}
 
 ### Prompt validation matches TS {#prompt-validation}
@@ -1276,6 +1330,39 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **What to do:** no action unless you relied on the failure; check that
   the struct's `validate:` tags accept the output you expect.
 - **Kind:** silent behavior change
+
+### Struct-tag schemas send their fields to the model {#struct-schema-json-schema}
+
+- **What changed:** v0.5 `StructValidator.JSONSchema()` (behind
+  `schema.NewStructSchema` and `schema.NewSimpleStructSchema`) returned
+  `{"type":"object"}`, so a struct-tag tool or object output told the model
+  nothing about its fields. v0.6 generates the struct's JSON Schema by
+  reflection, in the shape TS sends for the matching zod object
+  (`zodSchema(z.object(...))`, `asSchema(...).jsonSchema`): `$schema`
+  draft-07, `properties` in field order under their `json` names, `required`
+  for the fields with `validate:"required"` (or `jsonschema:"required"`),
+  `additionalProperties: false`, pointers as `anyOf` with `{"type":"null"}`,
+  the `validate` `min`/`max`/`len`/`gt`/`gte`/`lt`/`lte`/`oneof` rules as
+  keywords and `jsonschema:"description=..."` as descriptions (see
+  [StructValidator](../07-reference/schema/json-schema.mdx#structvalidator)).
+  Struct schemas reach tool `Parameters` and `ResponseFormat.Schema` as an
+  `*schema.OrderedSchema`, so the properties keep the field order on the
+  wire. `Validate` also checks a decoded value against the schema, so the
+  two agree: `null` for a non-pointer field and a missing
+  `jsonschema:"required"` field fail; unknown keys are still ignored, as
+  zod strips them (coordinator ruling, review round 82).
+- **Am I affected?** `schema.NewSimpleStructSchema` / `schema.NewStructSchema`
+  as a tool `Parameters`, an `ObjectOutput` or a `GenerateObject` schema;
+  code that reads `StructValidator.JSONSchema()`; custom providers or
+  middleware that type-assert `ResponseFormat.Schema` or resolved tool
+  `Parameters` to `map[string]interface{}`; OpenAI `strict` structured
+  outputs, which need every property required.
+- **What to do:** No action unless you read the schema as a map or use strict
+  outputs: read a schema value with `schema.ParametersMap(v)` instead of a
+  type assertion, and mark each field the model must send
+  `validate:"required"` (`jsonschema:"required"` on a pointer that may be
+  `null`).
+- **Kind:** wire/protocol change
 
 ## Tools {#tools}
 
@@ -3580,6 +3667,39 @@ compile-time changes.
   handle or ignore `telemetry.DiagnosticEventOnStepError`.
 - **Kind:** silent behavior change
 
+### Step spans record the auto tool choice {#telemetry-step-tool-choice-auto}
+
+- **What changed:** v0.5 left `ai.prompt.toolChoice` off the
+  `ai.generateText.doGenerate` / `ai.streamText.doStream` span (and off the
+  GenAI `step N` span with `OpenTelemetryOptions.ToolChoice`) when the call
+  set no tool choice, and `TelemetryStepStartEvent.ToolChoice` was the zero
+  value. v0.6 sends the prepared tool choice, `{"type":"auto"}` when none is
+  set, as TS `prepareToolChoice` does for its `stepToolChoice`
+  (GenerateText, StreamText and ToolLoopAgent; review round 82). The
+  callback events (`OnStepStart`) keep the choice as given.
+- **Am I affected?** Span queries or tests on `ai.prompt.toolChoice`, and
+  custom integrations that read `TelemetryStepStartEvent.ToolChoice` and treat
+  `Type == ""` as "no tools".
+- **What to do:** No action unless you relied on the attribute being absent;
+  treat `{"type":"auto"}` as the default.
+- **Kind:** silent behavior change
+
+### WorkflowAgent step spans omit the step prompt and tools {#workflow-step-span-no-prompt}
+
+- **What changed:** v0.5 recorded `ai.prompt.messages` and `ai.prompt.tools`
+  on WorkflowAgent step spans (`ai.generateText.doGenerate` under
+  `ai.workflowAgent.stream`), and `TelemetryStepStartEvent.PromptMessages` /
+  `StepTools` were set for them. v0.6 leaves them (and `ToolChoice`) unset, in
+  generate and stream mode, as TS WorkflowAgent's `model-call-iterator.ts`
+  dispatches its step start without `promptMessages`, `stepTools` or
+  `stepToolChoice` (review round 82).
+- **Am I affected?** Span queries on `ai.prompt.messages` / `ai.prompt.tools`
+  for WorkflowAgent runs, or integrations reading `PromptMessages` /
+  `StepTools` on WorkflowAgent step events.
+- **What to do:** read the conversation from the root `ai.prompt` attribute
+  or the `OnLanguageModelCallStart` event instead.
+- **Kind:** silent behavior change
+
 ## Errors {#errors}
 
 ### Errors are returned without Go prefixes {#errors-unprefixed}
@@ -3958,13 +4078,41 @@ compile-time changes.
   only `FileData.Data`. v0.6 forwards the string unchanged, as TS
   `convertToBase64` does, and decodes it like TS `convertBase64ToUint8Array`
   only where the bytes are needed (Anthropic text/plain documents and media
-  type detection) (review round 81).
+  type detection) (review round 81). Round 82 extends this to the shared
+  OpenAI chat / Groq / OpenAI-compatible converter (image, audio, PDF and
+  text parts; a compatible `text/*` part decodes the string with
+  `convertBase64ToUint8Array`), alibaba (image parts), moonshot (image and
+  video data URLs; `text/*` parts decode the string), deepseek (image and
+  tool-result images; v0.6 drafts decoded and re-encoded the string,
+  rewriting base64url or unpadded strings and dropping undecodable ones),
+  huggingface (image parts), openresponses (user and tool-result file parts,
+  which were dropped) and the OpenAI Responses media type sniff: before,
+  these sent an empty payload.
 - **Am I affected?** `FileData.DataString` file parts sent to `anthropic`,
   `bedrock` (Anthropic models), `googlevertex/anthropic`, `google`,
-  `googlevertex`, `mistral`, `cohere` or `perplexity`.
+  `googlevertex`, `mistral`, `cohere`, `perplexity`, `openai` (chat and
+  Responses), `groq`, OpenAI-compatible providers, `alibaba`, `moonshot`,
+  `deepseek`, `huggingface` or `openresponses`.
 - **What to do:** no action unless you relied on the old error for a string
   that is not base64.
 - **Kind:** wire/protocol change
+
+#### A base64 string file payload is sniffed from its prefix only {#file-data-string-prefix-sniff}
+
+- **What changed:** v0.5: a `FileData.DataString` payload with a bare media
+  type (`image`, `image/*`, `application`) was decoded whole to detect the
+  subtype, so a string whose tail is not base64 failed (or was "could not be
+  auto-detected"). v0.6: only the sniffed prefix is decoded, as TS
+  `detectMediaType` (`decodePrefix`); a prefix that is not base64 returns
+  the base64 decode error (TS `atob` throws). This covers Anthropic, Google
+  and Google Interactions, Perplexity, Mistral, Cohere, Bedrock, the OpenAI
+  Responses converter, and the shared OpenAI chat / Groq / OpenAI-compatible
+  converter (review round 82).
+- **Am I affected?** `FileData{Type: types.FileDataTypeData, DataString: ...}`
+  with a `MediaType` without a subtype.
+- **What to do:** No action unless you match the old "could not be
+  auto-detected" error for an undecodable string.
+- **Kind:** silent behavior change
 
 #### Speech request.body keeps the TS key order {#speech-request-body-key-order}
 
@@ -4014,10 +4162,19 @@ compile-time changes.
   `pendingToolCalls`: a nameless delta with an `index` waits for its name,
   and a call never named ends the stream with the error and no finish chunk;
   a nameless delta without an `index` ends it at once (review round 81).
+  They port TS `pendingToolCalls` exactly (review round 82): a call whose
+  `function.name` never arrives fails at the end of the stream *before* any
+  tool call is finalized, so no `tool-call` part of another call precedes
+  the error; a nameless pending entry without an id that resolves to the
+  only unfinished call continues it instead of failing; the first non-null
+  `id` and `extra_content` of a pending index are kept (a present empty `id`
+  is not replaced by a later one); a thought signature is taken only from
+  the delta that creates the call.
 - **Am I affected?** Stream consumers of those providers that expect a
   finish chunk, or later parts, after that error, or that relied on a
   native (not OpenAI-compatible) provider naming a call after its first
-  delta.
+  delta; callers of `streaming.StreamingToolCallTracker.BufferNamelessIndexedCalls`,
+  `ToolCallDelta.IDPresent` and `ToolCallDelta.MetadataPresent`.
 - **What to do:** treat the error chunk as the end of the stream.
 - **Kind:** silent behavior change
 
@@ -4244,6 +4401,30 @@ compile-time changes.
   the signature as a string or leave the key out.
 - **Kind:** silent behavior change
 
+#### An undetected application file part fails with the TS error {#anthropic-application-subtype-error}
+
+- **What changed:** an inline `application` (no subtype) file whose bytes are
+  not a PDF failed with the `UnsupportedFunctionalityError` "media type:
+  application"; it now fails with TS's `file of media type "application" must
+  specify subtype since it could not be auto-detected` (TS
+  `resolveFullMediaType` in the application branch; review round 82).
+- **Am I affected?** Matching `Functionality == "media type: application"`.
+- **What to do:** Give a full media type.
+- **Kind:** error text only
+
+#### An empty SSE data event is a stream error part {#anthropic-stream-empty-data-error}
+
+- **What changed:** an SSE event with an empty `data:` field was skipped; it
+  is now a stream `error` part (a `JSONParseError` with empty text) and the
+  stream continues, as TS `parseJsonEventStream` (eventsource-parser
+  dispatches the event, `safeParseJSON("")` fails) (review round 82). The
+  other providers already did this.
+- **Am I affected?** Anthropic (and Bedrock / Vertex Anthropic) streams
+  through proxies that send empty `data:` events; code that treats any
+  `ChunkTypeError` as fatal.
+- **What to do:** No action unless such a proxy is in your path.
+- **Kind:** silent behavior change
+
 ### Amazon Bedrock
 
 #### Anthropic provider tools on Bedrock {#bedrock-anthropic-provider-tools}
@@ -4391,6 +4572,17 @@ compile-time changes.
 - **What to do:** match with `strings.HasPrefix(err.Error(), "... closed
   unexpectedly before finishing")`.
 - **Kind:** error text only
+
+#### Google Interactions keeps an empty signature {#google-interactions-empty-signature}
+
+- **What changed:** an empty `signature` in an Interactions response step is
+  kept in `providerMetadata.google.signature` (stream and generate) and sent
+  back on the next turn, as TS (`signature != null`); v0.5 dropped it on both
+  sides (review round 82).
+- **Am I affected?** Code reading the presence of
+  `providerMetadata.google.signature`.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
 
 ### OpenAI
 
@@ -4656,6 +4848,48 @@ compile-time changes.
   means none.
 - **Kind:** silent behavior change
 
+#### An empty computer_call actions list stays empty {#responses-computer-empty-actions}
+
+- **What changed:** an OpenAI Responses `computer_call` with `"actions": []`
+  and a singular `action` now has an empty `actions` input (TS
+  `actions ?? (action != null ? [action] : [])`); v0.5 fell back to
+  `[action]`. Only an absent or null `actions` uses `action` (review round
+  82).
+- **Am I affected?** `computer` tool-call `Arguments["actions"]` /
+  `RawArguments` from `openai.ResponsesModel`.
+- **What to do:** No action unless your executor relied on the fallback for
+  an empty list.
+- **Kind:** silent behavior change
+
+#### File uploads follow the TS form and metadata {#openai-files-upload-parity}
+
+- **What changed:** OpenAI `Files().UploadFile` with inline data (bytes or
+  text) now sends the `file` part first, then `purpose` and
+  `expires_after[...]` (TS FormData order; stream uploads keep the fields
+  first); `expires_after[seconds]` is `String(expiresAfter)` (`1e+21`, not
+  `1000000000000000000000`); a `null` `purpose` / `expiresAfter` option is an
+  invalid-options error (TS `.optional()` rejects null). OpenAI and xAI file
+  results keep a present empty `filename` / `purpose` / `status` in
+  `ProviderMetadata`, and `Filename` is `response.filename ?? filename` (a
+  present empty response filename is no longer replaced by the request's).
+  xAI `teamId` / `expiresAfter` / `filePath` `null`, or a non-string
+  `filePath`, are invalid-options errors (review round 82).
+- **Am I affected?** `openai.Provider.Files().UploadFile`,
+  `xai.Provider.Files().UploadFile` / `GetFileMetadata`, servers that depend
+  on multipart part order.
+- **What to do:** No action unless you pass `null` options or read empty
+  metadata values.
+- **Kind:** wire/protocol change
+
+#### An empty skill default_version is reported {#skill-empty-default-version}
+
+- **What changed:** OpenAI `Skills().UploadSkill` reports
+  `ProviderMetadata["openai"]["defaultVersion"]` for a present empty
+  `default_version` (TS `!= null`); v0.5 dropped it (review round 82).
+- **Am I affected?** Code that checks the presence of `defaultVersion`.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
 ### xAI
 
 #### xAI provider tool config is validated before the request {#xai-tool-args-validation}
@@ -4856,6 +5090,47 @@ compile-time changes.
 - **What to do:** no action unless you compare the reported body.
 - **Kind:** silent behavior change
 
+#### Ollama reports the deprecated openai-compatible key warning {#ollama-compat-key-warning}
+
+- **What changed:** ollama `DoGenerate` / `DoStream` now report the
+  `deprecated` warning "Use 'openaiCompatible' instead." for
+  `providerOptions["openai-compatible"]` (and the deprecated raw common
+  option names), and put the prepare-tools warnings after the option
+  warnings, as TS openai-compatible `getArgs` does; v0.5 dropped the first
+  and listed tool warnings first (review round 82).
+- **Am I affected?** Reading `GenerateResult.Warnings` / stream-start
+  warnings of `ollama` models with `providerOptions["openai-compatible"]`.
+- **What to do:** No action unless you compare warning lists; use the
+  `openaiCompatible` key.
+- **Kind:** silent behavior change
+
+#### OpenAI-compatible completion streams follow TS {#compat-completion-stream-parity}
+
+- **What changed:** an OpenAI-compatible completion stream
+  (`openai.Config{OpenAICompatible: true}` `CompletionModel`, for example the
+  baseten and deepinfra wrappers) ends with finish reason `other` when no
+  `finish_reason` arrives (TS starts from `{unified: 'other'}`; v0.6 drafts
+  reported `interrupted`), emits a text delta for an empty `text`, and turns
+  an `{"error": ...}` chunk into an error part followed by the finish part
+  instead of failing the stream before output (TS has no
+  `throwIfOpenAIStreamErrorBeforeOutput` there). Native OpenAI and
+  compatible completion streams report no raw finish reason after a parse
+  or error chunk (`{unified: 'error', raw: undefined}`) (review round 82).
+- **Am I affected?** `CompletionModel.DoStream` of OpenAI-compatible
+  providers: `FinishReasonInterrupted`, `Err()` after an error chunk,
+  `RawFinishReason`.
+- **What to do:** Handle the error part; no action otherwise.
+- **Kind:** silent behavior change
+
+#### Z.ai id lengths count UTF-16 units {#zai-id-length-utf16}
+
+- **What changed:** zai `requestId` (6..64) and `userId` (6..128) lengths are
+  counted in UTF-16 code units like the TS zod schema; v0.5 counted bytes and
+  rejected valid non-ASCII ids (review round 82).
+- **Am I affected?** zai `requestId` / `userId` with non-ASCII characters.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
 ### Cohere
 
 #### Cohere generate content lists text parts in wire order {#cohere-generate-text-parts-in-order}
@@ -4934,6 +5209,17 @@ compile-time changes.
   error as a malformed response.
 - **Kind:** silent behavior change
 
+#### Mistral conversation usage defaults to zero {#mistral-conversation-usage-defaults}
+
+- **What changed:** a Mistral conversation (web search) response with
+  `usage: {}` reported unknown token counts; it now reports 0, and
+  `Usage.Raw` carries `prompt_tokens`, `completion_tokens`, `total_tokens` =
+  0 (TS `mistralConversationUsageSchema` defaults; review round 82).
+- **Am I affected?** `Usage.InputTokens == nil` checks on the conversation
+  model.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
 ### Open Responses
 
 #### openresponses custom tool inputs keep HTML characters literal {#openresponses-custom-tool-input-literal}
@@ -4946,6 +5232,17 @@ compile-time changes.
   `ToolCallContent.Input` of openresponses custom tool calls as text.
 - **What to do:** no action unless you compare the escaped text; compare the
   decoded value.
+- **Kind:** silent behavior change
+
+#### Hugging Face detects image types with the TS signatures {#huggingface-image-signature-sniff}
+
+- **What changed:** huggingface resolves a bare or wildcard image media type
+  with the TS image signatures (`detectMediaType`), so TIFF, AVIF and HEIC
+  data are detected and `image/x-icon` is no longer guessed; v0.5 used
+  net/http content sniffing (review round 82).
+- **Am I affected?** `huggingface` image parts whose `MediaType` is `image`
+  or `image/*`.
+- **What to do:** Give the full media type.
 - **Kind:** silent behavior change
 
 ### Wrapper providers
@@ -5023,6 +5320,36 @@ compile-time changes.
   source ids.
 - **What to do:** no action.
 - **Kind:** silent behavior change
+
+#### A typed decision state is sent as the native value {#perplexity-decision-typed-state}
+
+- **What changed:** a single JSON decision state part whose Go value is a
+  typed map, struct, typed slice or `json.RawMessage` was sent as `[value]`;
+  it is now sent as the native object or array, as TS (`typeof single ===
+  'object'`) (review round 82).
+- **Am I affected?** `provider.DecisionJSONPart(v)` alone in the state with
+  such a `v`.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+#### The stream emits no source for finance results {#perplexity-stream-finance-no-source}
+
+- **What changed:** the Perplexity stream no longer emits a url-less `source`
+  part for a `finance_results` output item (TS reads sources only from
+  `search_results` / `fetch_url_results`) (review round 82).
+- **Am I affected?** Consumers counting stream sources.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+#### A decision file by URL, reference or text fails with the TS error {#perplexity-decision-legacy-file-kind}
+
+- **What changed:** a decision file given by the legacy `FileContent.URL` /
+  `Reference` / `Text` field fails with `Perplexity decision file input: url`
+  (or `reference`, `text`) instead of the image media type error, as TS
+  (review round 82).
+- **Am I affected?** Matching the old error for such parts.
+- **What to do:** Pass image bytes.
+- **Kind:** error text only
 
 ## MCP {#mcp}
 
@@ -5455,6 +5782,16 @@ after upgrading:
 - **OpenAI compaction parts keep the v0.5 top-level metadata keys** next to
   the TS `providerMetadata.openai` object. See
   [OpenAI compaction metadata keeps the v0.5 keys](./known-differences.mdx).
+- **Alibaba and Z.ai keep the v0.5 provider option spellings** (alibaba reads
+  the `openai-compatible` keys and raw snake_case names; zai forwards `user`
+  and `verbosity`). See
+  [Provider option spellings kept from v0.5](./known-differences.mdx).
+- **Hugging Face byte image data is base64**; TS interpolates the bytes as a
+  comma-separated list. See
+  [Hugging Face byte image data](./known-differences.mdx).
+- **Perplexity unsupported-option warnings follow sorted option names**; TS
+  follows the object's insertion order. See
+  [Provider option warning order](./known-differences.mdx).
 
 ## For coding agents {#for-coding-agents}
 
@@ -5499,7 +5836,8 @@ next one.
      -e 'ToolCallRepairError|InvalidToolCall|ValidateUIMessages|UncheckedStrictToolCalls|serviceTier|safetyIdentifier|promptCacheKey|\[DONE\]|"data-' \
      -e 'EmbeddingUsage|DoEmbed|SubscribeDiagnostic|NewSimpleStructSchema|NewStructSchema|inputSchemaInput|InputSchema\(|gmicloud|ollama|mistral|no embedding|ToolUIPart\{' \
      -e 'InvalidToolInputError|SpanRecorder|Ended\(\)|groundingMetadata|safetyRatings|promptFeedback|urlContextMetadata|StopSequences|RawArguments|ResponseHeaders|FinishReasonInterrupted|Prompt\{|ToolChoice\{Type|InputTokens' \
-     -e 'validate:"|ai\.usage\.tokens|Collect(ToolApproval|ToolResult)Continuations|isAborted|isCancelled|ReadUIMessages|ChunksContext|StreamTranslat|DataString|Request\.Body|RawRequest|RequestBody\(\)|alibaba|moonshot|CompletionModel|computer|thoughtSignature|cerebras|bedrock|googlevertex|closed unexpectedly' .
+     -e 'validate:"|ai\.usage\.tokens|Collect(ToolApproval|ToolResult)Continuations|isAborted|isCancelled|ReadUIMessages|ChunksContext|StreamTranslat|DataString|Request\.Body|RawRequest|RequestBody\(\)|alibaba|moonshot|CompletionModel|computer|thoughtSignature|cerebras|bedrock|googlevertex|closed unexpectedly' \
+     -e 'PerChunk|FirstChunk|Response\.Headers|ResponseHeadersMap|ai\.prompt\.(toolChoice|messages|tools)|JSONSchema\(\)|ResponseFormat\.Schema|jsonschema:"|Files\(\)|Skills\(\)|DecisionJSONPart|signature|zai|huggingface|openresponses|anthropic|perplexity' .
    ```
 
 4. For each match, open the entry the table links to. Apply **What to do**.

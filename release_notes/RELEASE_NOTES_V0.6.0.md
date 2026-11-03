@@ -105,6 +105,9 @@ Also new:
 - **`telemetry.DiagnosticEventOnStepError`** (`"onStepError"`): the diagnostic message `FireOnStepError` publishes (TS `onStepError`).
 - **`types.ToolApprovalRequestContent.InputSchemaInputSet`** (`json:"-"`): marks a nil `InputSchemaInput` as a present JSON null (TS `hasOwnProperty`), set by `ConvertToModelMessages` and honored by approval revalidation.
 - **`streaming.StreamingToolCallTracker.Failed`** reports that a delta raised the error TS throws from `processDelta` (a nameless or mistyped new call); callers end the stream there. **`BufferNamelessIndexedCalls`** makes indexed nameless deltas wait for their name, as TS openai-compatible `pendingToolCalls` (review round 81).
+- **`streaming.ToolCallDelta.IDPresent` / `MetadataPresent`** mark a wire delta that carried an `id` / `extra_content`, even empty, so the OpenAI-compatible tracker keeps the first non-null one as TS `pendingToolCalls` (review round 82).
+- **`schema.StructValidator` JSON Schema**: `JSONSchema()` / `MarshalJSON` of a struct schema generate the struct's JSON Schema by reflection (TS `zodSchema(z.object(...))` shape; `jsonschema:"description=..."` and `jsonschema:"required"` tags); `schema.OrderedParameters` returns it as an `*OrderedSchema` (review round 82).
+- **`openai.Config.MetadataExtractor`** (`openai.MetadataExtractor`, `openai.StreamMetadataExtractor`): TS openai-compatible `metadataExtractor`, for `OpenAICompatible` chat models; generate reads the parsed body, the stream extractor sees every parsed event and builds the finish metadata (review round 82).
 - OpenAI Responses: `promptCacheOptions` 12h TTL and prewarm, shell tool
   `timeoutMs`/`maxOutputLength`, `additionalTools` and
   `omitFromRequestTools`. Azure `ToolSearch` and per-deployment model
@@ -234,6 +237,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **A cancellation during tool execution aborts the StreamText step** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-abort-during-tools)
 - **StreamText ExperimentalContext follows a PrepareStep runtime context** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-experimental-context-prepared)
 - **Embed rejects only a missing embedding, with InvalidResponseDataError** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#embed-no-embeddings-invalid-response)
+- **A StreamText step's response headers are its own** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-step-headers-per-step)
+- **Timeout.PerChunk starts with the first output chunk; FirstChunk bounds the wait for it** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-per-chunk-after-first-output)
 
 #### Prompts and validation
 
@@ -243,6 +248,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Tool calls without results fail the prompt** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#missing-tool-results)
 - **The JSON Schema validator enforces more keywords** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#json-schema-validator)
 - **Struct-tag schemas validate the decoded value** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#struct-schema-validates-decoded-value)
+- **Struct-tag schemas send their fields to the model** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#struct-schema-json-schema)
 
 #### Tools
 
@@ -369,6 +375,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Legacy doEmbed span `ai.usage.tokens` is an integer** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-embed-usage-tokens-int)
 - **A cancelled UI ctx stops message processing** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-cancel-stops-processing)
 - **ExperimentalStreamTranslate reports the TS cancel reasons** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-translate-cancel-reason)
+- **Step spans record the auto tool choice** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-step-tool-choice-auto)
+- **WorkflowAgent step spans omit the step prompt and tools** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-step-span-no-prompt)
 
 #### Errors
 
@@ -448,6 +456,21 @@ search for and ends with a checklist for coding agents. Entries marked
 - **OpenAI-compatible completion results drop an empty text part** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#compat-completion-empty-text)
 - **OpenAI-compatible streams keep tool call thought signatures** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#compat-stream-tool-thought-signature)
 - **Cerebras reports the request body it sends** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#cerebras-request-body-extras)
+- **A base64 string file payload is sniffed from its prefix only; a bad prefix is a base64 error** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#file-data-string-prefix-sniff)
+- **Anthropic: an undetected application file part fails with the TS error** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-application-subtype-error)
+- **Anthropic: an empty SSE data event is a stream error part** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#anthropic-stream-empty-data-error)
+- **Google Interactions keeps an empty signature** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#google-interactions-empty-signature)
+- **OpenAI Responses: an empty computer_call actions list stays empty** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#responses-computer-empty-actions)
+- **OpenAI and xAI file uploads follow the TS form and metadata** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-files-upload-parity)
+- **OpenAI skills report an empty default_version** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#skill-empty-default-version)
+- **Ollama reports the deprecated openai-compatible key warning** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ollama-compat-key-warning)
+- **OpenAI-compatible completion streams follow TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#compat-completion-stream-parity)
+- **Z.ai requestId and userId lengths count UTF-16 units** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#zai-id-length-utf16)
+- **Mistral conversation usage defaults to zero** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mistral-conversation-usage-defaults)
+- **Hugging Face detects image types with the TS signatures** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#huggingface-image-signature-sniff)
+- **Perplexity: a typed decision state is sent as the native value** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#perplexity-decision-typed-state)
+- **Perplexity streams emit no source for finance results** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#perplexity-stream-finance-no-source)
+- **Perplexity: a decision file by URL, reference or text fails with the TS error** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#perplexity-decision-legacy-file-kind)
 
 #### MCP
 
@@ -1113,6 +1136,11 @@ in v0.5.3.
 - The telemetry integrations drop the embed and rerank span map entries on `OnError` / `OnAbort`, so a call without `OnEmbedEnd` / `OnRerankEnd` no longer leaks one entry per span (review round 81).
 - Perplexity embeddings: `DoEmbed` no longer panics on a response without embeddings (review round 81).
 - Perplexity decisions: an `image/` media type is sniffed from the data (review round 81).
+- The repair `InputSchema` callback returns the empty object schema for a tool whose schema value is nil (typed nil pointer, nil `Validator`, nil map) instead of panicking (review round 82).
+- Tool conversion (`providerutils/tool`, `schema.ParametersMap`, `schema.ApplyDefaults`) treats a typed nil or zero schema value (`(*schema.SimpleJSONSchema)(nil)`, `&schema.SimpleJSONSchema{}`) as no schema instead of panicking (review round 82).
+- `ExperimentalStreamTranscribe` / `ExperimentalStreamTranslate` no longer panic when a failed call has no `Audio` stream (review round 82).
+- `StreamTextSingleConsumerResult.Usage` doc: it is the total usage, as `StreamTextResult.Usage` (review round 82).
+- Response messages' text parts no longer carry the content part's citations (TS `toResponseMessages`) (review round 82).
 
 ### Providers
 
@@ -1216,6 +1244,7 @@ in v0.5.3.
 - Google and Vertex Gemini image models send a caller's empty
   `imageConfig: {}` as `generationConfig.imageConfig: {}`, as TS
   (`userImageConfig != null`); it was dropped (review round 65).
+- Google streams: server tool results carry `ToolResult.ProviderMetadata` (`serverToolCallId`, `serverToolType`), as the stream content and UI tool-output parts read it (review round 82).
 
 ### Workflow, MCP, code mode and harness
 
@@ -1436,6 +1465,9 @@ Notable ones:
 - **Executed tool results carry the tool title**: `ToolResult.Title` of a locally executed tool is the call's title, as in v0.5.2; TS client tool results have no `title` (round 80).
 - **Live WebSocket close code**: Google/Vertex Live and OpenAI realtime translation close errors say `(code unknown)`; `golang.org/x/net/websocket` does not expose the close code, and v0.5.2 exports its `*websocket.Conn` (round 81).
 - **OpenAI compaction metadata keeps the v0.5 keys**: `openai.compaction` parts carry the TS `providerMetadata.openai` object and the v0.5.2 top-level keys (round 81).
+- **Provider option spellings kept from v0.5**: alibaba accepts the `openai-compatible` keys and raw snake_case option names documented in v0.5.2; zai forwards `user` and `verbosity`; TS drops them (round 82).
+- **Hugging Face byte image data**: sent as base64; TS interpolates the bytes as a comma-separated list (round 82).
+- **Provider option warning order**: Perplexity unsupported-option warnings follow sorted option names, not the TS object's insertion order (round 82).
 - The Vertex Gemini image model accepts URL and `gs://` input images and
   sends them as `fileData` with the caller's media type, else one inferred
   from the URL path extension (query string and fragment ignored), else

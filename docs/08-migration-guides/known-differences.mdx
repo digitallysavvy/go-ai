@@ -553,6 +553,9 @@ through without parsing, so throwing would reject inputs that TS accepts.
   Changing these fields' types would break v0.5.x callers, and the real APIs
   do not send these empty values. An interactions builtin-tool
   `delta.result: null` is not stored; TS stores `null`.
+  OpenAI Responses `computer_call` `pending_safety_checks[].code` and
+  `message` (`responses.ComputerSafetyCheck` holds plain strings, exported
+  in v0.5.2) drop a present `""` from the tool input, where TS keeps it.
 - **Interactions id on `interaction.created`.** An `interaction.created`
   event with an empty id keeps the interaction id from an earlier event. TS
   resets it, but Go also uses that id to reconnect to and cancel the
@@ -676,6 +679,36 @@ also the same three keys at the top level of `providerMetadata`, which
 v0.5.2 callers read. TS has only the provider-keyed object. The openai wire
 suite lists the 7 compaction tests under `SkipResults` for it (review
 round 81).
+
+## Provider option spellings kept from v0.5
+
+Alibaba reads its options through the OpenAI-compatible resolver, so it
+also accepts `providerOptions["openai-compatible"]` and
+`providerOptions["openaiCompatible"]`, the raw `enable_thinking` /
+`thinking_budget` / `thinking-budget` / `parallel_tool_calls` spellings
+(with a `deprecated` warning) and the common `user` / `reasoningEffort` /
+`textVerbosity` options, which it sends. TS alibaba parses only
+`providerOptions.alibaba` with a strict schema (`enableThinking`,
+`thinkingBudget`, `preserveThinking`, `parallelToolCalls`) and drops the
+rest. The v0.5.2 Alibaba README and examples document
+`"enable_thinking"` / `"thinking_budget"`, so v0.5.x callers depend on
+them. Z.ai still forwards `user` and `verbosity`, which TS
+`transformZaiRequestBody` drops, as v0.5.2 did (review round 82).
+
+## Hugging Face byte image data
+
+A Hugging Face image part with byte data (`FileData.Data`) is sent as a
+base64 data URL. TS interpolates `part.data.data` into the data URL, so a
+`Uint8Array` becomes a comma-separated byte list there; base64 is what the
+API accepts (review round 82).
+
+## Provider option warning order
+
+Perplexity reports its unsupported-option warnings in sorted option-name
+order. TS follows `Object.keys(providerOptions.perplexity)`, the object's
+insertion order, which a Go map does not keep (the wire replay of "warns
+about unsupported options without adding fields to the request" is skipped
+for it; review round 82).
 
 ## Features that are TypeScript-only (not ported)
 
