@@ -36,8 +36,8 @@ type r83provbInner struct {
 	A *int   `json:"a"`
 }
 type r83provbArgs struct {
-	Zeta  string      `json:"zeta" validate:"required"`
-	Alpha []string    `json:"alpha,omitempty"`
+	Zeta  string         `json:"zeta" validate:"required"`
+	Alpha []string       `json:"alpha,omitempty"`
 	Inner *r83provbInner `json:"inner"`
 	Next  *r83provbArgs  `json:"next,omitempty"`
 }
@@ -72,19 +72,45 @@ func TestR83provbStructSchemaWireOrder(t *testing.T) {
 		model    func() (provider.LanguageModel, error)
 		response string // expected response schema text; "" = json_object
 	}{
-		{"openai chat", func() (provider.LanguageModel, error) { return openai.New(openai.Config{APIKey: "k", BaseURL: srv.URL}).ChatModel("gpt-4o") }, want},
-		{"openai responses", func() (provider.LanguageModel, error) { return openai.New(openai.Config{APIKey: "k", BaseURL: srv.URL}).ResponsesModel("gpt-4o") }, want},
-		{"xai", func() (provider.LanguageModel, error) { return xai.New(xai.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("grok-4") }, want},
-		{"deepseek", func() (provider.LanguageModel, error) { return deepseek.New(deepseek.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("deepseek-chat") }, ""},
-		{"alibaba", func() (provider.LanguageModel, error) { return alibaba.New(alibaba.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("qwen-plus") }, ""},
-		{"moonshot", func() (provider.LanguageModel, error) { return moonshot.New(moonshot.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("kimi-k2.5") }, noDollar},
-		{"openresponses", func() (provider.LanguageModel, error) { return openresponses.New(openresponses.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("m") }, want},
-		{"huggingface", func() (provider.LanguageModel, error) { return huggingface.New(huggingface.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("m") }, want},
-		{"gmicloud", func() (provider.LanguageModel, error) { return gmicloud.New(gmicloud.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("m") }, ""},
-		{"together", func() (provider.LanguageModel, error) { return together.New(together.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("m") }, ""},
-		{"fireworks", func() (provider.LanguageModel, error) { return fireworks.New(fireworks.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("m") }, want},
-		{"zai", func() (provider.LanguageModel, error) { return zai.New(zai.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("glm-4.6") }, ""},
-		{"ollama", func() (provider.LanguageModel, error) { return ollama.New(ollama.Config{BaseURL: srv.URL}).LanguageModel("m") }, want},
+		{"openai chat", func() (provider.LanguageModel, error) {
+			return openai.New(openai.Config{APIKey: "k", BaseURL: srv.URL}).ChatModel("gpt-4o")
+		}, want},
+		{"openai responses", func() (provider.LanguageModel, error) {
+			return openai.New(openai.Config{APIKey: "k", BaseURL: srv.URL}).ResponsesModel("gpt-4o")
+		}, want},
+		{"xai", func() (provider.LanguageModel, error) {
+			return xai.New(xai.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("grok-4")
+		}, want},
+		{"deepseek", func() (provider.LanguageModel, error) {
+			return deepseek.New(deepseek.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("deepseek-chat")
+		}, ""},
+		{"alibaba", func() (provider.LanguageModel, error) {
+			return alibaba.New(alibaba.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("qwen-plus")
+		}, ""},
+		{"moonshot", func() (provider.LanguageModel, error) {
+			return moonshot.New(moonshot.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("kimi-k2.5")
+		}, noDollar},
+		{"openresponses", func() (provider.LanguageModel, error) {
+			return openresponses.New(openresponses.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("m")
+		}, want},
+		{"huggingface", func() (provider.LanguageModel, error) {
+			return huggingface.New(huggingface.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("m")
+		}, want},
+		{"gmicloud", func() (provider.LanguageModel, error) {
+			return gmicloud.New(gmicloud.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("m")
+		}, ""},
+		{"together", func() (provider.LanguageModel, error) {
+			return together.New(together.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("m")
+		}, ""},
+		{"fireworks", func() (provider.LanguageModel, error) {
+			return fireworks.New(fireworks.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("m")
+		}, want},
+		{"zai", func() (provider.LanguageModel, error) {
+			return zai.New(zai.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("glm-4.6")
+		}, ""},
+		{"ollama", func() (provider.LanguageModel, error) {
+			return ollama.New(ollama.Config{BaseURL: srv.URL}).LanguageModel("m")
+		}, want},
 	}
 	for _, c := range cases {
 		m, err := c.model()
