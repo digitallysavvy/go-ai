@@ -178,3 +178,52 @@ func TestR85provaElevenLabsSpeechTimestamps(t *testing.T) {
 		t.Errorf("sound effects: %+v %v", (*calls)[0], res.Warnings)
 	}
 }
+
+// elevenlabs-error.test.ts (TS 7062ab6818): the detail shapes give the
+// message; a body outside the schema gives the status text.
+func TestR85provaElevenLabsErrorMessages(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"detail":{"type":"not_found","code":"voice_not_found","message":"A voice with voice_id 'x' was not found.","status":"voice_not_found","request_id":"req_test_404"}}`:                                                                            "A voice with voice_id 'x' was not found. (voice_not_found)",
+		`{"detail":{"code":null,"status":"invalid_content","message":"File is corrupted. Please ensure it is playable audio.","param":null}}`:                                                                                                             "File is corrupted. Please ensure it is playable audio.",
+		`{"detail":[{"type":"missing","loc":["body","text"],"msg":"Field required","input":null},{"type":"less_than_equal","loc":["body","voice_settings","stability",0],"msg":"Input should be less than or equal to 1"},{"msg":"Request is invalid"}]}`: "body.text: Field required; body.voice_settings.stability.0: Input should be less than or equal to 1; Request is invalid",
+		`{"detail":"Not authenticated"}`:                    "Not authenticated",
+		`{"error":{"message":"Quota exceeded","code":429}}`: "Quota exceeded",
+		`{"detail":{"message":1}}`:                          "Unprocessable Entity",
+		`not json`:                                          "Unprocessable Entity",
+	} {
+		if got, _ := elevenlabsErrorMessage(422, []byte(body)); got != want {
+			t.Errorf("%s: message = %q, want %q", body, got, want)
+		}
+	}
+}
+
+// elevenlabs-transcription-model.test.ts sourceUrl (TS 8b2fa5ba00).
+func TestR85provaElevenLabsTranscriptionSourceURL(t *testing.T) {
+	m := NewTranscriptionModel(New(Config{APIKey: "k"}), "scribe_v1")
+	buf, contentType, warnings, err := m.buildMultipartBody(&provider.TranscriptionOptions{
+		Audio: []byte{1, 2}, MimeType: "audio/wav",
+		ProviderOptions: map[string]interface{}{"elevenlabs": map[string]interface{}{"sourceUrl": "https://example.com/a.mp3"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := buf.String()
+	if !strings.Contains(body, `name="source_url"`) || strings.Contains(body, `name="file"`) || !strings.Contains(contentType, "multipart/form-data") {
+		t.Errorf("body = %s", body)
+	}
+	if strings.Index(body, `name="model_id"`) > strings.Index(body, `name="source_url"`) || strings.Index(body, `name="source_url"`) > strings.Index(body, `name="diarize"`) {
+		t.Errorf("field order: %s", body)
+	}
+	if len(warnings) != 1 || warnings[0].Message != "ElevenLabs transcribes providerOptions.elevenlabs.sourceUrl; the audio input was ignored." {
+		t.Errorf("warnings = %#v", warnings)
+	}
+	_, _, warnings, _ = m.buildMultipartBody(&provider.TranscriptionOptions{
+		ProviderOptions: map[string]interface{}{"elevenlabs": map[string]interface{}{"sourceUrl": "https://example.com/a.mp3"}},
+	})
+	if len(warnings) != 0 {
+		t.Errorf("no audio: warnings = %#v", warnings)
+	}
+	if err := validateTranscriptionOptions(map[string]interface{}{"elevenlabs": map[string]interface{}{"sourceUrl": 1}}); err == nil {
+		t.Error("non-string sourceUrl accepted")
+	}
+}

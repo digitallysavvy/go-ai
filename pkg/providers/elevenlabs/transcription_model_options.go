@@ -36,6 +36,12 @@ type TranscriptionModelOptions struct {
 	// FileFormat is "pcm_s16le_16" or "other". Defaults to "other".
 	FileFormat string `json:"fileFormat,omitempty"`
 
+	// SourceURL transcribes a hosted file: it is sent as source_url in place
+	// of the audio file, which is then ignored with a warning (TS
+	// 8b2fa5ba00). A pointer keeps an explicit "" apart from unset, as TS
+	// `sourceUrl != null`.
+	SourceURL *string `json:"sourceUrl,omitempty"`
+
 	// Streaming holds scribe_v2_realtime-only options; nil for batch calls
 	// that never set providerOptions.elevenlabs.streaming.
 	Streaming *StreamingOptions `json:"streaming,omitempty"`
@@ -198,6 +204,7 @@ func validateTranscriptionOptions(providerOptions map[string]interface{}) error 
 		{"timestampsGranularity", func(v interface{}) bool { return oneOf(v, "none", "word", "character") }},
 		{"diarize", isBool},
 		{"fileFormat", func(v interface{}) bool { return oneOf(v, "pcm_s16le_16", "other") }},
+		{"sourceUrl", isString},
 	}
 	for _, f := range top {
 		if err := check(raw, "", f.key, f.valid); err != nil {

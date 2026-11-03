@@ -9,9 +9,11 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -144,19 +146,32 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 		return nil, "", nil, err
 	}
 
-	fileHeader := textproto.MIMEHeader{}
-	fileHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="audio.%s"`, elevenLabsAudioExtension(opts.MimeType)))
-	contentType := opts.MimeType
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-	fileHeader.Set("Content-Type", contentType)
-	part, err := writer.CreatePart(fileHeader)
-	if err != nil {
-		return nil, "", nil, err
-	}
-	if _, err := part.Write(opts.Audio); err != nil {
-		return nil, "", nil, err
+	// ElevenLabs accepts exactly one of file or source_url (TS 8b2fa5ba00).
+	if present && elOpts.SourceURL != nil {
+		if err := writer.WriteField("source_url", *elOpts.SourceURL); err != nil {
+			return nil, "", nil, err
+		}
+		if len(opts.Audio) > 0 {
+			warnings = append(warnings, types.Warning{
+				Type:    "other",
+				Message: "ElevenLabs transcribes providerOptions.elevenlabs.sourceUrl; the audio input was ignored.",
+			})
+		}
+	} else {
+		fileHeader := textproto.MIMEHeader{}
+		fileHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="audio.%s"`, elevenLabsAudioExtension(opts.MimeType)))
+		contentType := opts.MimeType
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		fileHeader.Set("Content-Type", contentType)
+		part, err := writer.CreatePart(fileHeader)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		if _, err := part.Write(opts.Audio); err != nil {
+			return nil, "", nil, err
+		}
 	}
 
 	diarize := "true"
@@ -251,12 +266,84 @@ func (w *elevenlabsWord) UnmarshalJSON(data []byte) error {
 	return json.Unmarshal(data, &w.Raw)
 }
 
+// elevenlabsErrorDataSchema mirrors TS elevenlabsErrorDataSchema
+// (elevenlabs-error.ts, TS 7062ab6818): errors under `detail` (an API error
+// object, FastAPI's validation issue list, or a string), or the older
+// {"error":{"message","code"}} shape.
+var elevenlabsErrorDataSchema = zodlite.Union(
+	zodlite.Object(zodlite.F("detail", zodlite.Union(
+		zodlite.Object(
+			zodlite.F("message", zodlite.String),
+			zodlite.F("code", zodlite.Nullish(zodlite.String)),
+			zodlite.F("status", zodlite.Nullish(zodlite.String)),
+			zodlite.F("type", zodlite.Nullish(zodlite.String)),
+			zodlite.F("request_id", zodlite.Nullish(zodlite.String)),
+			zodlite.F("param", zodlite.Nullish(zodlite.String)),
+		),
+		zodlite.Array(zodlite.Object(
+			zodlite.F("msg", zodlite.String),
+			zodlite.F("loc", zodlite.Nullish(zodlite.Array(zodlite.Union(zodlite.String, zodlite.Number)))),
+			zodlite.F("type", zodlite.Nullish(zodlite.String)),
+		)),
+		zodlite.String,
+	))),
+	zodlite.Object(zodlite.F("error", zodlite.Object(
+		zodlite.F("message", zodlite.String),
+		zodlite.F("code", zodlite.Number),
+	))),
+)
+
+// elevenlabsErrorMessage is TS createJsonErrorResponseHandler with
+// elevenlabsErrorDataSchema and elevenlabsErrorToMessage: the message of a
+// body that matches the schema, else the HTTP status text. code is the
+// numeric error.code of the older shape (Go ProviderError.ErrorCode).
+func elevenlabsErrorMessage(statusCode int, body []byte) (message, code string) {
+	var data map[string]interface{}
+	if json.Unmarshal(body, &data) != nil || elevenlabsErrorDataSchema(data, true, nil) != nil {
+		return http.StatusText(statusCode), ""
+	}
+	detail, hasDetail := data["detail"]
+	if !hasDetail {
+		return providerutils.NestedErrorMessage(statusCode, body)
+	}
+	switch d := detail.(type) {
+	case string:
+		return d, ""
+	case []interface{}:
+		parts := make([]string, 0, len(d))
+		for _, item := range d {
+			issue, _ := item.(map[string]interface{})
+			msg, _ := issue["msg"].(string)
+			if loc, ok := issue["loc"].([]interface{}); ok && len(loc) > 0 {
+				segs := make([]string, 0, len(loc))
+				for _, l := range loc {
+					if f, ok := l.(float64); ok {
+						segs = append(segs, providerutils.JSNumberString(f))
+					} else {
+						segs = append(segs, fmt.Sprint(l))
+					}
+				}
+				msg = strings.Join(segs, ".") + ": " + msg
+			}
+			parts = append(parts, msg)
+		}
+		return strings.Join(parts, "; "), ""
+	case map[string]interface{}:
+		msg, _ := d["message"].(string)
+		if c, ok := d["code"].(string); ok {
+			return msg + " (" + c + ")", ""
+		}
+		return msg, ""
+	}
+	return http.StatusText(statusCode), ""
+}
+
 // handleTranscriptionError converts an HTTP error into a ProviderError,
-// parsing ElevenLabs' `{"error":{"message","code"}}` error shape when present.
+// parsing the ElevenLabs error shapes (TS elevenlabsFailedResponseHandler).
 func handleTranscriptionError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		message, code := providerutils.NestedErrorMessage(statusErr.StatusCode, statusErr.Body)
+		message, code := elevenlabsErrorMessage(statusErr.StatusCode, statusErr.Body)
 		return providererrors.NewProviderErrorFromResponse("elevenlabs", 0, code, message, err)
 	}
 	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
