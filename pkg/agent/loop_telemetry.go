@@ -615,10 +615,6 @@ func (s *loopStepTelemetry) modelCallStart(c PrepareCallConfig, model interface 
 		return nil
 	}
 	var tools interface{} = genTools
-	if c.Internal != nil && c.Internal.TelemetryToolDefinitions != nil {
-		// TS WorkflowAgent's serialized tool definitions.
-		tools = c.Internal.TelemetryToolDefinitions(genTools)
-	}
 	ctx := telemetry.FireOnLanguageModelCallStart(s.stepCtx, telemetry.LanguageModelCallStartEvent{
 		Settings:      s.lt.settings,
 		CallID:        s.lt.callID,

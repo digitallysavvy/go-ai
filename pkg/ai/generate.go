@@ -1504,7 +1504,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Prompt:              genOpts.Prompt,
 			Messages:            stepMessages,
 			InstructionMessages: stepInstructionMessages,
-			Tools:               telemetryCallTools(opts.Internal, genOpts.Tools),
+			Tools:               genOpts.Tools,
 			System:              stepSystem,
 			Temperature:         genOpts.Temperature,
 			MaxOutputTokens:     genOpts.MaxTokens,
