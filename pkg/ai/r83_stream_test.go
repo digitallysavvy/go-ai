@@ -2,9 +2,12 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
+	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -254,5 +257,177 @@ func TestR83streamTranslateUnsupportedPartTypeErrorText(t *testing.T) {
 	_, err = result.TranslationText()
 	if err == nil || err.Error() != "Unsupported part type: [object Object]" {
 		t.Fatalf("TranslationText() error = %v, want %q", err, "Unsupported part type: [object Object]")
+	}
+}
+
+func r83streamModel(chunks ...provider.StreamChunk) *testutil.MockLanguageModel {
+	return &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		return testutil.NewMockTextStream(chunks), nil
+	}}
+}
+
+func r83streamUsage() *types.Usage {
+	in, out := int64(3), int64(10)
+	return &types.Usage{InputTokens: &in, OutputTokens: &out}
+}
+
+// stream-text.test.ts 2851: should preserve provider metadata from empty text
+// deltas: the empty delta with providerMetadata is forwarded, and the step's
+// text part carries that metadata.
+func TestR83streamEmptyTextDeltaProviderMetadata(t *testing.T) {
+	meta := json.RawMessage(`{"testProvider":{"signature":"test-signature"}}`)
+	r83streamSameJSON := func(a, b interface{}) bool {
+		ja, _ := json.Marshal(a)
+		jb, _ := json.Marshal(b)
+		var va, vb interface{}
+		_ = json.Unmarshal(ja, &va)
+		_ = json.Unmarshal(jb, &vb)
+		return reflect.DeepEqual(va, vb)
+	}
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r83streamModel(
+			provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "1"},
+			provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+			provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: "", ProviderMetadata: meta},
+			provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "1"},
+			provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: r83streamUsage()},
+		),
+		Prompt: "test-input",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawEmpty := false
+	for c := range r.Chunks() {
+		if c.Type == provider.ChunkTypeText && c.Text == "" && c.ID == "1" && r83streamSameJSON(c.ProviderMetadata, meta) {
+			sawEmpty = true
+		}
+	}
+	if !sawEmpty {
+		t.Error("the empty text delta with providerMetadata was not forwarded")
+	}
+	steps := r.Steps()
+	if len(steps) != 1 {
+		t.Fatalf("steps = %d", len(steps))
+	}
+	found := false
+	for _, p := range steps[0].Content {
+		if tc, ok := p.(types.TextContent); ok && tc.Text == "Hello" && r83streamSameJSON(tc.ProviderMetadata, meta) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("step content = %#v, want a text part Hello with the delta's providerMetadata", steps[0].Content)
+	}
+}
+
+// stream-text.test.ts 3030: should call onFinish even when error chunk occurs
+// mid-stream: onError gets the chunk error, onFinish gets finishReason
+// error, text Hello and the usage.
+func TestR83streamOnFinishAfterMidStreamErrorChunk(t *testing.T) {
+	var mu sync.Mutex
+	var gotErr error
+	var fin *OnFinishEvent
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r83streamModel(
+			provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-0", ModelID: "mock-model-id", Timestamp: time.Unix(0, 0)}},
+			provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "1"},
+			provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+			provider.StreamChunk{Type: provider.ChunkTypeError, Err: errors.New("chunk error")},
+			provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonError, Usage: r83streamUsage()},
+		),
+		Prompt: "test-input",
+		OnError: func(_ context.Context, err error) {
+			mu.Lock()
+			gotErr = err
+			mu.Unlock()
+		},
+		OnFinishEvent: func(_ context.Context, e OnFinishEvent) {
+			mu.Lock()
+			fin = &e
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	mu.Lock()
+	defer mu.Unlock()
+	if gotErr == nil || gotErr.Error() != "chunk error" {
+		t.Errorf("onError error = %v, want chunk error", gotErr)
+	}
+	if fin == nil {
+		t.Fatal("onFinish was not called")
+	}
+	if fin.FinishReason != types.FinishReasonError || fin.Text != "Hello" {
+		t.Errorf("onFinish finishReason = %q text = %q, want error / Hello", fin.FinishReason, fin.Text)
+	}
+	if fin.Usage.GetInputTokens() != 3 || fin.Usage.GetOutputTokens() != 10 || fin.Usage.TotalTokens == nil || *fin.Usage.TotalTokens != 13 {
+		t.Errorf("onFinish usage = %+v, want 3/10/13", fin.Usage)
+	}
+}
+
+// stream-text.test.ts 4755: should not call onStepError when the step
+// completes.
+func TestR83streamNoStepErrorOnCompletedStep(t *testing.T) {
+	called := false
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r83streamModel(
+			provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "1"},
+			provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: "Hello, "},
+			provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: "world!"},
+			provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "1"},
+			provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: r83streamUsage()},
+		),
+		Prompt:      "test-input",
+		OnStepError: func(context.Context, OnStepErrorEvent) { called = true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	if r.Text() != "Hello, world!" {
+		t.Errorf("text = %q", r.Text())
+	}
+	if called {
+		t.Error("onStepError was called for a completed step")
+	}
+}
+
+// stream-text.test.ts 4879: should resolve with partial output when the
+// provider stream closes before the finish chunk after producing output:
+// text "Hello, world", finishReason other, one step, no onError.
+func TestR83streamPartialOutputWithoutFinish(t *testing.T) {
+	onErr := false
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r83streamModel(
+			provider.StreamChunk{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{}},
+			provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-0", ModelID: "mock-model-id", Timestamp: time.Unix(0, 0)}},
+			provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "1"},
+			provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+			provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: ", world"},
+		),
+		Prompt:  "test-input",
+		OnError: func(context.Context, error) { onErr = true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	if r.Text() != "Hello, world" {
+		t.Errorf("text = %q", r.Text())
+	}
+	if r.FinishReason() != types.FinishReasonOther {
+		t.Errorf("finishReason = %q, want other", r.FinishReason())
+	}
+	if n := len(r.Steps()); n != 1 {
+		t.Errorf("steps = %d, want 1", n)
+	}
+	if onErr {
+		t.Error("onError was called")
+	}
+	if r.Err() != nil {
+		t.Errorf("Err() = %v", r.Err())
 	}
 }
