@@ -910,7 +910,14 @@ func (m *VideoModel) uploadVideo(ctx context.Context, requestID string, data []b
 		body, _ := fileutil.ReadResponseWithSizeLimit(resp, uploadURL, fileutil.DefaultMaxDownloadSize)
 		apiErr := providererrors.NewProviderError("topaz", resp.StatusCode, "",
 			fmt.Sprintf("Uploading the input video failed with status %d.", resp.StatusCode), nil)
-		apiErr.ResponseBody = string(body)
+		// TS APICallError: responseBody is response.text() (WHATWG UTF-8
+		// decode: BOM dropped, invalid bytes replaced) and responseHeaders
+		// the lower-cased response headers.
+		apiErr.ResponseBody = textdecode.UTF8(body)
+		apiErr.ResponseHeaders = make(map[string]string, len(resp.Header))
+		for k := range resp.Header {
+			apiErr.ResponseHeaders[strings.ToLower(k)] = strings.Join(resp.Header.Values(k), ", ")
+		}
 		return apiErr
 	}
 	return nil

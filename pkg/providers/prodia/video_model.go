@@ -158,17 +158,11 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 		return nil, reqErr
 	}
 
-	// Derive the response Content-Type (needed for multipart boundary parsing).
+	// TS response.headers.get('content-type') ?? '': without a boundary
+	// in the header the response fails (the body is not sniffed).
 	respCT := ""
 	if respHeaders != nil {
 		respCT = respHeaders.Get("Content-Type")
-	}
-	if respCT == "" {
-		var err error
-		respCT, err = detectMultipartContentType(respBodyBytes)
-		if err != nil {
-			return nil, errMissingBoundary("")
-		}
 	}
 
 	jobResp, videoData, videoMIME, err := parseMultipartResponse(respCT, respBodyBytes)
@@ -176,7 +170,8 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 		return nil, err
 	}
 
-	if len(videoData) == 0 {
+	// TS `!videoBytes`: an empty output part is still an output.
+	if videoData == nil {
 		return nil, errors.New("Prodia multipart response missing output video") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	// TS keeps the video/mp4 default unless the part's Content-Type is video/*.

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 )
 
 // canonicalURL parses an absolute http(s) URL and returns it in a canonical
@@ -21,6 +22,12 @@ func canonicalURL(raw string) (*url.URL, bool) {
 	special := isSpecialScheme(preprocessed)
 	var path, query string
 	if special {
+		// The shared WHATWG parser decides failure (forbidden host code
+		// points such as "<", UTS46-disallowed ones such as U+0085), which
+		// the net/url based canonicalization below does not detect.
+		if _, err := urlnorm.Parse(raw); err != nil {
+			return nil, false
+		}
 		var ok bool
 		preprocessed, path, query, ok = splitSpecialURL(preprocessed)
 		if !ok {

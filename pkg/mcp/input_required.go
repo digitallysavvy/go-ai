@@ -82,7 +82,8 @@ func parseInputRequiredResult(raw json.RawMessage) (inputRequiredResult, error) 
 			if json.Unmarshal(rawReq, &obj) != nil || obj == nil || json.Unmarshal(rawReq, &req) != nil || req.Method == nil {
 				return out, fmt.Errorf("inputRequests.%s must be a request with a string method", key)
 			}
-			if len(req.Params) > 0 && string(req.Params) != "null" {
+			// TS z.optional(BaseParamsSchema): an explicit null fails.
+			if len(req.Params) > 0 {
 				var p map[string]json.RawMessage
 				if json.Unmarshal(req.Params, &p) != nil || p == nil {
 					return out, fmt.Errorf("inputRequests.%s.params must be an object", key)
@@ -92,8 +93,10 @@ func parseInputRequiredResult(raw json.RawMessage) (inputRequiredResult, error) 
 		}
 	}
 	if r, ok := fields["requestState"]; ok {
+		// TS z.string().optional(): null is not a string (json.Unmarshal
+		// would leave the string empty without an error).
 		var state string
-		if err := json.Unmarshal(r, &state); err != nil {
+		if len(r) == 0 || r[0] != '"' || json.Unmarshal(r, &state) != nil {
 			return out, errors.New("requestState must be a string")
 		}
 		out.RequestState = &state

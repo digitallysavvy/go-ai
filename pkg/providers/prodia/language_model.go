@@ -191,17 +191,9 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 		return nil, err // TS postFormDataToApi lets transport and API errors propagate unchanged
 	}
 
-	// Derive the Content-Type with boundary from the response header.
-	// Fall back to scanning the body when the header is absent.
-	respCT := respHeaders.Get("Content-Type")
-	if respCT == "" {
-		respCT, err = detectMultipartContentType(respBody)
-		if err != nil {
-			return nil, errMissingBoundary("")
-		}
-	}
-
-	jobResp, outputs, err := parseMultipartOutputs(respCT, respBody)
+	// TS response.headers.get('content-type') ?? '': without a boundary
+	// in the header the response fails (the body is not sniffed).
+	jobResp, outputs, err := parseMultipartOutputs(respHeaders.Get("Content-Type"), respBody)
 	if err != nil {
 		return nil, err
 	}
@@ -424,26 +416,6 @@ func extractPromptAndImage(prompt types.Prompt) (string, []byte, string) {
 		combined = systemMsg + "\n" + userText
 	}
 	return combined, imageData, imageMIME
-}
-
-// detectMultipartContentType scans the raw body for the multipart boundary
-// marker and synthesises a Content-Type header value that parseMultipartResponse
-// can consume.  Used as a fallback when the response Content-Type header is
-// absent.
-func detectMultipartContentType(body []byte) (string, error) {
-	// The first line of a well-formed multipart body begins with "--<boundary>".
-	if len(body) < 4 || body[0] != '-' || body[1] != '-' {
-		return "", fmt.Errorf("body does not start with multipart boundary marker")
-	}
-	end := 2
-	for end < len(body) && body[end] != '\r' && body[end] != '\n' {
-		end++
-	}
-	boundary := string(body[2:end])
-	if boundary == "" {
-		return "", fmt.Errorf("empty boundary in multipart body")
-	}
-	return "multipart/form-data; boundary=" + boundary, nil
 }
 
 // prodiaTextStream is a synchronous provider.TextStream backed by a pre-built

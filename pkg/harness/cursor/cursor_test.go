@@ -17,7 +17,7 @@ func TestBuildConfig_Recipe(t *testing.T) {
 	if cfg.HarnessID != "cursor" {
 		t.Errorf("HarnessID = %q, want cursor", cfg.HarnessID)
 	}
-	if cfg.ClientApp.Name != "ai-sdk-harness-cursor" || cfg.ClientApp.Version != "1.0.78" {
+	if cfg.ClientApp.Name != "ai-sdk-harness-cursor" || cfg.ClientApp.Version != "1.0.88" {
 		t.Errorf("ClientApp = %+v", cfg.ClientApp)
 	}
 	if cfg.Executable != "agent" {

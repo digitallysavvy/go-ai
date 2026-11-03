@@ -6,14 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"regexp"
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	promptutil "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
@@ -97,73 +97,35 @@ func parseMultipartResponse(contentType string, body []byte) (*prodiaJobResponse
 
 // parseMultipartResponseFor is parseMultipartResponse with the media type
 // prefix that identifies an unnamed output part: TS accepts "video/" parts in
-// the video model's handler and "image/" parts in the image model's.
+// the video model's handler and "image/" parts in the image model's. The
+// returned media type is the output part's Content-Type exactly as sent
+// (TS partContentType), "" when it has none.
 func parseMultipartResponseFor(contentType string, body []byte, fallbackPrefix string) (*prodiaJobResponse, []byte, string, error) {
-	_, params, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		return nil, nil, "", errMissingBoundary(contentType)
-	}
-
-	boundary, ok := params["boundary"]
+	boundary, ok := prodiaMultipartBoundary(contentType)
 	if !ok {
 		return nil, nil, "", errMissingBoundary(contentType)
 	}
 
-	mr := multipart.NewReader(bytes.NewReader(body), boundary)
 	var jobResp *prodiaJobResponse
 	var outputData []byte
 	var outputMIME string
-
-	for {
-		part, err := mr.NextPart()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, nil, "", fmt.Errorf("failed to read multipart part: %w", err)
-		}
-
-		partData, err := io.ReadAll(part)
-		if err != nil {
-			return nil, nil, "", fmt.Errorf("failed to read multipart part data: %w", err)
-		}
-
-		partCT := part.Header.Get("Content-Type")
-		switch part.FormName() {
-		case "job":
-			j, err := parseJobPart(partData)
+	for _, part := range parseProdiaMultipart(body, boundary) {
+		disposition := part.headers["content-disposition"]
+		partCT := part.headers["content-type"]
+		switch {
+		case strings.Contains(disposition, `name="job"`):
+			j, err := parseJobPart(part.body)
 			if err != nil {
 				return nil, nil, "", err
 			}
 			jobResp = j
-		case "output":
-			outputData = partData
-			if partCT != "" {
-				if mt, _, err := mime.ParseMediaType(partCT); err == nil {
-					outputMIME = mt
-				}
-			}
-			// If Content-Type is absent or ambiguous, fall back to the
-			// filename extension in Content-Disposition (e.g. "output.txt").
-			// Matches TS: contentDisposition.includes('.txt').
-			if outputMIME == "" {
-				cd := part.Header.Get("Content-Disposition")
-				if strings.Contains(cd, ".txt") {
-					outputMIME = "text/plain"
-				}
-			}
-		default:
-			// Fallback: treat any part whose Content-Type starts with the
-			// output prefix as output; as in TS a later such part replaces an
-			// earlier output.
-			if partCT != "" {
-				if mt, _, err2 := mime.ParseMediaType(partCT); err2 == nil {
-					if strings.HasPrefix(mt, fallbackPrefix) {
-						outputData = partData
-						outputMIME = mt
-					}
-				}
-			}
+		case strings.Contains(disposition, `name="output"`):
+			outputData = part.body
+			outputMIME = partCT
+		case strings.HasPrefix(partCT, fallbackPrefix):
+			// As in TS a later such part replaces an earlier output.
+			outputData = part.body
+			outputMIME = partCT
 		}
 	}
 
@@ -173,6 +135,118 @@ func parseMultipartResponseFor(contentType string, body []byte, fallbackPrefix s
 
 	return jobResp, outputData, outputMIME, nil
 }
+
+// prodiaBoundaryPattern is TS /boundary=([^\s;]+)/ (JS \s for the ASCII
+// range, which includes \v; a quoted boundary keeps its quotes, as in TS).
+var prodiaBoundaryPattern = regexp.MustCompile(`boundary=([^\t\n\v\f\r ;]+)`)
+
+// prodiaMultipartBoundary extracts the boundary like TS
+// contentType.match(/boundary=([^\s;]+)/).
+func prodiaMultipartBoundary(contentType string) (string, bool) {
+	m := prodiaBoundaryPattern.FindStringSubmatch(contentType)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
+// prodiaMultipartPart is TS MultipartPart: lower-cased header names to
+// trimmed values, and the raw body.
+type prodiaMultipartPart struct {
+	headers map[string]string
+	body    []byte
+}
+
+// parseProdiaMultipart is TS parseMultipart (prodia-api.ts), ported byte for
+// byte: every occurrence of "--boundary" splits the body, CRLF or LF around
+// a delimiter is dropped, the header block ends at the first CRLFCRLF or
+// LFLF, a part without one is skipped, and the closing "--boundary--" is
+// never a part. Unlike mime/multipart it does not require delimiters at
+// line starts or reject malformed headers.
+func parseProdiaMultipart(data []byte, boundary string) []prodiaMultipartPart {
+	delimiter := []byte("--" + boundary)
+	endDelimiter := []byte("--" + boundary + "--")
+
+	var positions []int
+	for i := 0; i <= len(data)-len(delimiter); i++ {
+		if bytes.Equal(data[i:i+len(delimiter)], delimiter) {
+			positions = append(positions, i)
+		}
+	}
+
+	at := func(i int) int { // JS data[i]: undefined outside the array
+		if i < 0 || i >= len(data) {
+			return -1
+		}
+		return int(data[i])
+	}
+
+	var parts []prodiaMultipartPart
+	for i := 0; i < len(positions)-1; i++ {
+		start := positions[i] + len(delimiter)
+		end := positions[i+1]
+
+		if positions[i]+len(endDelimiter) <= len(data) && bytes.Equal(data[positions[i]:positions[i]+len(endDelimiter)], endDelimiter) {
+			continue
+		}
+
+		partStart := start
+		if at(partStart) == '\r' && at(partStart+1) == '\n' {
+			partStart += 2
+		} else if at(partStart) == '\n' {
+			partStart++
+		}
+		partEnd := end
+		if at(partEnd-2) == '\r' && at(partEnd-1) == '\n' {
+			partEnd -= 2
+		} else if at(partEnd-1) == '\n' {
+			partEnd--
+		}
+		// JS slice(start, end) with end < start is empty.
+		var partData []byte
+		if partEnd > partStart {
+			partData = data[partStart:partEnd]
+		}
+
+		headerEnd := -1
+		for j := 0; j < len(partData)-3; j++ {
+			if partData[j] == '\r' && partData[j+1] == '\n' && partData[j+2] == '\r' && partData[j+3] == '\n' {
+				headerEnd = j
+				break
+			}
+			if partData[j] == '\n' && partData[j+1] == '\n' {
+				headerEnd = j
+				break
+			}
+		}
+		if headerEnd == -1 {
+			continue
+		}
+
+		headers := map[string]string{}
+		for _, line := range prodiaLineBreak.Split(textdecode.UTF8(partData[:headerEnd]), -1) {
+			if colon := strings.Index(line, ":"); colon > 0 {
+				headers[strings.ToLower(providerutils.JSTrim(line[:colon]))] = providerutils.JSTrim(line[colon+1:])
+			}
+		}
+
+		bodyStart := headerEnd + 2
+		if partData[headerEnd] == '\r' {
+			bodyStart = headerEnd + 4
+		}
+		var body []byte
+		if bodyStart < len(partData) {
+			body = append([]byte(nil), partData[bodyStart:]...)
+		} else {
+			body = []byte{}
+		}
+		parts = append(parts, prodiaMultipartPart{headers: headers, body: body})
+	}
+	return parts
+}
+
+// prodiaLineBreak is TS /\r?\n/.
+var prodiaLineBreak = regexp.MustCompile(`\r?\n`)
 
 // parseJobPart decodes the multipart "job" part, applying TS
 // prodiaJobResultSchema first: a body that does not match is the typed
@@ -335,43 +409,28 @@ type prodiaOutput struct {
 // text parts (text/* or a .txt filename) and image parts are kept in order,
 // anything else is ignored.
 func parseMultipartOutputs(contentType string, body []byte) (*prodiaJobResponse, []prodiaOutput, error) {
-	_, params, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		return nil, nil, errMissingBoundary(contentType)
-	}
-	boundary, ok := params["boundary"]
+	boundary, ok := prodiaMultipartBoundary(contentType)
 	if !ok {
 		return nil, nil, errMissingBoundary(contentType)
 	}
-	mr := multipart.NewReader(bytes.NewReader(body), boundary)
 	var jobResp *prodiaJobResponse
 	var outputs []prodiaOutput
-	for {
-		part, err := mr.NextPart()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to read multipart part: %w", err)
-		}
-		data, err := io.ReadAll(part)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to read multipart part data: %w", err)
-		}
-		partCT := part.Header.Get("Content-Type")
-		switch part.FormName() {
-		case "job":
-			j, err := parseJobPart(data)
+	for _, part := range parseProdiaMultipart(body, boundary) {
+		disposition := part.headers["content-disposition"]
+		partCT := part.headers["content-type"]
+		switch {
+		case strings.Contains(disposition, `name="job"`):
+			j, err := parseJobPart(part.body)
 			if err != nil {
 				return nil, nil, err
 			}
 			jobResp = j
-		case "output":
+		case strings.Contains(disposition, `name="output"`):
 			switch {
-			case strings.HasPrefix(partCT, "text/") || strings.Contains(part.Header.Get("Content-Disposition"), ".txt"):
-				outputs = append(outputs, prodiaOutput{mediaType: partCT, data: data, isText: true})
+			case strings.HasPrefix(partCT, "text/") || strings.Contains(disposition, ".txt"):
+				outputs = append(outputs, prodiaOutput{mediaType: partCT, data: part.body, isText: true})
 			case strings.HasPrefix(partCT, "image/"):
-				outputs = append(outputs, prodiaOutput{mediaType: partCT, data: data})
+				outputs = append(outputs, prodiaOutput{mediaType: partCT, data: part.body})
 			}
 		}
 	}

@@ -21,14 +21,19 @@ func normalizeDomains(parameter string, domains []string) ([]string, error) {
 	out := make([]string, 0, len(domains))
 	for _, domain := range domains {
 		trimmed := providerutils.JSTrim(domain) // TS domain.trim()
-		if trimmed == "" || strings.ContainsAny(trimmed, " \t\r\n\f\v/\\:*@?#[]") {
+		// TS /[\s/\\:*@?#[\]]/: JS \s is the JS trim whitespace set.
+		if trimmed == "" || strings.ContainsFunc(trimmed, func(r rune) bool {
+			return providerutils.IsJSWhiteSpace(r) || strings.ContainsRune("/\\:*@?#[]", r)
+		}) {
 			return nil, &providerrors.InvalidArgumentError{
 				Field:   parameter,
 				Message: `Invalid domain "` + domain + `". Use bare domains such as "example.com"; subdomains are included automatically.`,
 			}
 		}
-		parsed, err := url.Parse("https://" + trimmed)
-		if err != nil || parsed.Hostname() == "" {
+		// TS new URL(`https://${trimmed}`): the WHATWG parser, which rejects
+		// hosts net/url accepts (e.g. a C1 control such as U+0085).
+		parsed, ok := canonicalURL("https://" + trimmed)
+		if !ok || parsed.Hostname() == "" {
 			return nil, &providerrors.InvalidArgumentError{Field: parameter, Message: `Invalid domain "` + domain + `".`}
 		}
 		out = append(out, normalizeHostname(parsed.Hostname()))

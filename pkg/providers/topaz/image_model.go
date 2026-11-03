@@ -490,7 +490,13 @@ func (m *ImageModel) download(ctx context.Context, processID string, headers map
 		// the per-call headers already passed through client.Do for the
 		// earlier calls in this method, which merges in the client's own
 		// defaults automatically.
-		downloadOpts.Headers = internalhttp.MergeHeaders(m.prov.client.Headers(), headers)
+		// TS resolves config.headers() inside the call, so an APIKeyFunc
+		// gets the caller's ctx here too (not context.Background()).
+		providerHeaders, err := m.prov.client.RequestHeadersCtx(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		downloadOpts.Headers = internalhttp.MergeHeaders(providerHeaders, headers)
 	}
 
 	result, err := fileutil.DownloadWithMetadata(ctx, downloadResp.DownloadURL, downloadOpts)
