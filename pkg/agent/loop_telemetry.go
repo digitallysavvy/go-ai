@@ -521,6 +521,12 @@ func (a *ToolLoopAgent) startStepTelemetry(ctx context.Context, lt *loopTelemetr
 	if toolChoice.Type == "" {
 		toolChoice = types.AutoToolChoice()
 	}
+	promptMessages, stepTools := loopPromptMessages(c), c.Tools
+	if c.Internal != nil && c.Internal.OmitStepPromptTelemetry {
+		// TS WorkflowAgent's model-call iterator dispatches onStepStart
+		// without promptMessages, stepTools or stepToolChoice.
+		toolChoice, promptMessages, stepTools = types.ToolChoice{}, nil, nil
+	}
 	stepCtx := telemetry.FireOnStepStart(ctx, telemetry.TelemetryStepStartEvent{
 		CallID:         lt.callID,
 		OperationType:  "ai.generateText",
@@ -529,8 +535,8 @@ func (a *ToolLoopAgent) startStepTelemetry(ctx context.Context, lt *loopTelemetr
 		ModelProvider:  c.Model.Provider(),
 		ModelID:        c.Model.ModelID(),
 		ToolChoice:     toolChoice,
-		PromptMessages: loopPromptMessages(c),
-		StepTools:      c.Tools,
+		PromptMessages: promptMessages,
+		StepTools:      stepTools,
 		RuntimeContext: telemetryRuntimeContextFor(lt.settings, c.RuntimeContext, c.SensitiveRuntimeContext),
 		ToolsContext:   telemetryToolsContextFor(lt.settings, c.ToolsContext),
 	})

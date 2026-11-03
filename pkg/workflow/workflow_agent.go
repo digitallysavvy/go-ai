@@ -2968,8 +2968,10 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 }
 
 // workflowInternalOptions answers a provider-executed tool call with no
-// result (TS WorkflowAgent warns and sends an empty result).
-var workflowInternalOptions = &ai.InternalOptions{ContinueOnMissingProviderResult: true, StopOnStreamError: true, EndOnError: true, HeadersAsGiven: true, ApprovalID: workflowApprovalID, RequestMessagesAsPrompt: true, DeferApprovalRequests: true, ApprovalsResumed: true, ClientToolResultsWithoutCallMetadata: true, ToolMessagesAsConversationPrompt: true}
+// result (TS WorkflowAgent warns and sends an empty result). Its step spans
+// carry no step prompt, tools or tool choice (OmitStepPromptTelemetry): TS
+// model-call-iterator.ts dispatches onStepStart without them.
+var workflowInternalOptions = &ai.InternalOptions{ContinueOnMissingProviderResult: true, StopOnStreamError: true, EndOnError: true, HeadersAsGiven: true, ApprovalID: workflowApprovalID, RequestMessagesAsPrompt: true, DeferApprovalRequests: true, ApprovalsResumed: true, ClientToolResultsWithoutCallMetadata: true, ToolMessagesAsConversationPrompt: true, OmitStepPromptTelemetry: true}
 
 // workflowApprovalID is TS WorkflowAgent's approval ID for a tool call:
 // `approval-${toolCallId}`, in generate and stream mode.
