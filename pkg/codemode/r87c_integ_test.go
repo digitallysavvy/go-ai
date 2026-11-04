@@ -67,3 +67,15 @@ func TestR87cintegIntrinsicsFrozen(t *testing.T) {
 		t.Fatalf("got %v\nwant %v", out, want)
 	}
 }
+
+// TestR87cintegReplayDivergenceOfThePendingToolName: a resumed approval
+// whose call reaches another tool than the approved one (same input) is the
+// TS run replay divergence (assertReplayMatches compares the host function
+// name), never an approved run of the other tool.
+func TestR87cintegReplayDivergenceOfThePendingToolName(t *testing.T) {
+	err := r87ccarryResumeTamperedContinuation(t, "return await tools.guarded({ n: 1 });", func(c *Continuation) {
+		c.PendingInterruptions[0].ToolName = "echo"
+	})
+	protocol := r87ccarryProtocolError(t, err, "Continuation replay diverged from the recorded host function ledger.")
+	assertDeepEqual(t, protocol.Details, map[string]interface{}{"bridgeIndex": 1, "expectedHostFunctionName": "__codeMode.tool0", "receivedHostFunctionName": "__codeMode.tool1"})
+}
