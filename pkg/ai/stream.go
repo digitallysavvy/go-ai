@@ -3315,7 +3315,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// The step's results (its content and toolResults) follow the
 			// emission order; the tool message is sorted by call order when
 			// the response messages are built.
-			reorderLiveToolResults(stepToolResults, liveToolResults)
+			stepToolResults = resultsInCompletionOrder(stepToolResults, liveToolResults)
 			// A failing ToModelOutput conversion is a stream error (as in
 			// GenerateText); cancellation errors are handled by the
 			// abort/timeout checks below.
@@ -6332,30 +6332,6 @@ func liveEmittableToolResult(tr types.ToolResult, eagerApprovals map[string]preR
 		return inline && pre.err == nil && pre.id != ""
 	}
 	return true
-}
-
-// reorderLiveToolResults puts the results that were streamed as their
-// executions settled into that order, leaving every other result in place.
-func reorderLiveToolResults(results []types.ToolResult, order []string) {
-	if len(order) < 2 {
-		return
-	}
-	rank := make(map[string]int, len(order))
-	for i, id := range order {
-		rank[id] = i
-	}
-	var slots []int
-	var live []types.ToolResult
-	for i := range results {
-		if _, ok := rank[results[i].ToolCallID]; ok {
-			slots = append(slots, i)
-			live = append(live, results[i])
-		}
-	}
-	sort.SliceStable(live, func(a, b int) bool { return rank[live[a].ToolCallID] < rank[live[b].ToolCallID] })
-	for k, i := range slots {
-		results[i] = live[k]
-	}
 }
 
 // orderToolResultsByContent orders results by the position of their

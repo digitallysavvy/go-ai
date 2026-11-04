@@ -31,17 +31,12 @@ type musicTimestampsResponse struct {
 	raw interface{}
 }
 
-// musicJSSpaceChars is the body of the JS regexp \s class (RE2 \s is ASCII
-// only). It equals providerutils.JSRegexpSpaceChars (V061 item 25), which
-// replaces it once that helper is merged.
-const musicJSSpaceChars = `\t\n\v\f\r \x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}`
-
 // The TS regexps with JS semantics: \s is the JS class, and the /m ^ of the
 // part content type also starts a line after \r, U+2028 or U+2029.
 var (
 	musicMultipartPattern = regexp.MustCompile(`(?i)^multipart/mixed\b`)
-	musicBoundaryPattern  = regexp.MustCompile(`(?i)(?:^|;)[` + musicJSSpaceChars + `]*boundary=(?:"([^"]+)"|([^;` + musicJSSpaceChars + `]+))`)
-	musicPartTypePattern  = regexp.MustCompile(`(?i)(?:^|[\n\r\x{2028}\x{2029}])content-type:[` + musicJSSpaceChars + `]*([^;\r\n]+)`)
+	musicBoundaryPattern  = regexp.MustCompile(`(?i)(?:^|;)` + providerutils.JSRegexpSpace + `*boundary=(?:"([^"]+)"|([^;` + providerutils.JSRegexpSpaceChars + `]+))`)
+	musicPartTypePattern  = regexp.MustCompile(`(?i)(?:^|[\n\r\x{2028}\x{2029}])content-type:` + providerutils.JSRegexpSpace + `*([^;\r\n]+)`)
 )
 
 // musicMetadataSchema mirrors TS musicMetadataSchema.

@@ -5,17 +5,19 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // JavaScript `\s` (WhiteSpace and LineTerminator, the set
 // providerutils.IsJSWhiteSpace reports) as RE2 class members, and its
 // complement. RE2's `\s` is only [\t\n\f\r ].
 const (
-	jsPatternSpace    = `\t\n\v\f\r \x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}`
+	jsPatternSpace    = providerutils.JSRegexpSpaceChars
 	jsPatternNonSpace = `\x00-\x08\x0e-\x1f\x21-\x9f\x{a1}-\x{167f}\x{1681}-\x{1fff}\x{200b}-\x{2027}\x{202a}-\x{202e}\x{2030}-\x{205e}\x{2060}-\x{2fff}\x{3001}-\x{fefe}\x{ff00}-\x{10ffff}`
 	// JS `.` without the s flag excludes the four line terminators; RE2's
 	// excludes only \n.
-	jsPatternDot = `[^\n\r\x{2028}\x{2029}]`
+	jsPatternDot = providerutils.JSRegexpDot
 )
 
 // compileAjvPattern compiles a JSON Schema `pattern` / `patternProperties`

@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ChunkDetector finds the first complete chunk at the start of buffer.
@@ -19,18 +20,8 @@ import (
 // (`(buffer: string) => string | undefined | null`).
 type ChunkDetector func(buffer string) (string, bool)
 
-// smoothStreamWhitespaceClass approximates JavaScript's `\s` character
-// class, which is wider than RE2's `\s` (ASCII-only): it additionally
-// matches NBSP, several Unicode space separators, and U+FEFF (BOM), which
-// ECMAScript treats as whitespace for historical reasons. Written with
-// RE2's `\x{hex}` escapes (plain ASCII in the Go source) rather than Go
-// string Unicode escapes, to avoid embedding literal multi-byte runes
-// (in particular U+FEFF itself, which would otherwise appear as a BOM in
-// the middle of this source file) in the .go file.
-const smoothStreamWhitespaceClass = `\t\n\v\f\r \x{00a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}`
-
 var (
-	smoothStreamWordRegexp = regexp.MustCompile(`[^` + smoothStreamWhitespaceClass + `]+[` + smoothStreamWhitespaceClass + `]+`)
+	smoothStreamWordRegexp = regexp.MustCompile(`[^` + providerutils.JSRegexpSpaceChars + `]+` + providerutils.JSRegexpSpace + `+`) // JS /\S+\s+/m
 	smoothStreamLineRegexp = regexp.MustCompile(`\n+`)
 )
 

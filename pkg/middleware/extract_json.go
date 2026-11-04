@@ -32,7 +32,7 @@ var jsonFenceSuffixRe = regexp.MustCompile(`\n?` + "```" + jsWS + `*$`)
 
 // jsWS is the character class of JavaScript's regex \s (RE2's \s is ASCII
 // only and omits \v, NBSP, U+FEFF and the Unicode spaces).
-const jsWS = `[\t\n\v\f\r \x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]`
+const jsWS = providerutils.JSRegexpSpace
 
 var jsonFencePrefixRe = regexp.MustCompile(`^` + "```" + `(?:json)?` + jsWS + `*\n?`)
 
