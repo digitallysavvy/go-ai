@@ -1010,10 +1010,9 @@ func r87cstreamTSContent(t *testing.T, p types.ContentPart) interface{} {
 	return r75streamNormalize(t, p)
 }
 
-// r87cstreamTSMessages renders messages as JSON with reasoning-file parts in
-// the TS ModelMessage shape ({type, data, mediaType, providerOptions}): Go
-// marshals ReasoningFileContent with its tagged fileData and a null data
-// (cr-r87c-stream-to-gen.md). Go's legacy tool_calls mirror is dropped.
+// r87cstreamTSMessages renders messages as JSON (reasoning-file parts marshal
+// in the TS ModelMessage shape {type, data, mediaType, providerOptions} since
+// cr-r87c-stream-to-gen.md). Go's legacy tool_calls mirror is dropped.
 func r87cstreamTSMessages(t *testing.T, msgs []types.Message) interface{} {
 	t.Helper()
 	v := r75streamNormalize(t, msgs)
@@ -1036,16 +1035,6 @@ func r87cstreamTSMessages(t *testing.T, msgs []types.Message) interface{} {
 				}
 			}
 			delete(mm, "tool_calls")
-		}
-		for _, p := range parts {
-			pm, _ := p.(map[string]interface{})
-			if pm["type"] != "reasoning-file" {
-				continue
-			}
-			if fd, ok := pm["fileData"].(map[string]interface{}); ok {
-				pm["data"] = fd["data"]
-				delete(pm, "fileData")
-			}
 		}
 	}
 	return v

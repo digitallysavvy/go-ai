@@ -548,16 +548,105 @@ func (r ReasoningFileContent) ContentType() string {
 	return "reasoning-file"
 }
 
-// MarshalJSON emits the TypeScript SDK discriminated content-part shape.
+// MarshalJSON emits the TypeScript SDK ModelMessage ReasoningFilePart shape
+// (TS generate-text/to-response-messages.ts): `data` is the file's base64
+// string (FileData.DataString, else base64 of FileData.Data, else base64 of
+// Data), or the tagged `{"type":"url","url":...}` shape for a URL file, with
+// `mediaType`, `providerOptions` and `providerMetadata`. No `fileData` key is
+// written; UnmarshalJSON reads this shape and the v0.5 shape.
 func (r ReasoningFileContent) MarshalJSON() ([]byte, error) {
-	type reasoningFileContentAlias ReasoningFileContent
-	return json.Marshal(struct {
-		Type string `json:"type"`
-		reasoningFileContentAlias
-	}{
-		Type:                      r.ContentType(),
-		reasoningFileContentAlias: reasoningFileContentAlias(r),
+	type reasoningFileJSON struct {
+		Type             string                 `json:"type"`
+		Data             interface{}            `json:"data"`
+		MediaType        string                 `json:"mediaType"`
+		ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
+		ProviderMetadata json.RawMessage        `json:"providerMetadata,omitempty"`
+	}
+	var data interface{}
+	switch {
+	case r.FileData.Type == FileDataTypeURL:
+		data = FileData{Type: FileDataTypeURL, URL: r.FileData.URL, OriginalURL: r.FileData.OriginalURL}
+	case r.FileData.DataString != "":
+		data = r.FileData.DataString
+	case len(r.FileData.Data) > 0:
+		data = base64.StdEncoding.EncodeToString(r.FileData.Data)
+	default:
+		data = base64.StdEncoding.EncodeToString(r.Data)
+	}
+	return json.Marshal(reasoningFileJSON{
+		Type:             r.ContentType(),
+		Data:             data,
+		MediaType:        r.MediaType,
+		ProviderOptions:  r.ProviderOptions,
+		ProviderMetadata: r.ProviderMetadata,
 	})
+}
+
+// UnmarshalJSON reads the TS ReasoningFilePart shape (`data` as a base64
+// string or a tagged `{type: "data" | "url"}` object) and the v0.5 Go shape
+// (`fileData` plus a base64 `data`). A base64 string fills Data with the
+// decoded bytes when it decodes; FileData keeps the string as given.
+func (r *ReasoningFileContent) UnmarshalJSON(b []byte) error {
+	type taggedFileData struct {
+		Type        FileDataType `json:"type"`
+		Data        *string      `json:"data"`
+		URL         string       `json:"url"`
+		OriginalURL string       `json:"originalUrl"`
+	}
+	var raw struct {
+		Data             json.RawMessage        `json:"data"`
+		FileData         *taggedFileData        `json:"fileData"`
+		MediaType        string                 `json:"mediaType"`
+		ProviderOptions  map[string]interface{} `json:"providerOptions"`
+		ProviderMetadata json.RawMessage        `json:"providerMetadata"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	*r = ReasoningFileContent{MediaType: raw.MediaType, ProviderOptions: raw.ProviderOptions, ProviderMetadata: raw.ProviderMetadata}
+	fromTagged := func(t taggedFileData) {
+		switch t.Type {
+		case FileDataTypeURL:
+			r.FileData = FileData{Type: FileDataTypeURL, URL: t.URL, OriginalURL: t.OriginalURL}
+		default:
+			r.FileData = FileData{Type: t.Type}
+			if t.Data != nil {
+				r.FileData.DataString = *t.Data
+			}
+		}
+	}
+	if raw.FileData != nil {
+		fromTagged(*raw.FileData)
+	}
+	data := raw.Data
+	if len(data) == 0 || string(data) == "null" {
+		return nil
+	}
+	switch data[0] {
+	case '"':
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return err
+		}
+		if decoded, err := DecodeFileDataString(s); err == nil {
+			r.Data = decoded
+		}
+		if raw.FileData == nil {
+			r.FileData = FileData{Type: FileDataTypeData, DataString: s}
+		}
+	case '{':
+		var t taggedFileData
+		if err := json.Unmarshal(data, &t); err != nil {
+			return err
+		}
+		fromTagged(t)
+		if t.Type != FileDataTypeURL && t.Data != nil {
+			if decoded, err := DecodeFileDataString(*t.Data); err == nil {
+				r.Data = decoded
+			}
+		}
+	}
+	return nil
 }
 
 // ToolResultContent represents a tool execution result in a message
