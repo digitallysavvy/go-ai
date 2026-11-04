@@ -27,11 +27,26 @@ import (
 // absent from the ledger executes for real (or applies resume semantics;
 // see resumePendings/resumeResolutions in toolBridge) regardless of
 // whether it is less than the highest recorded index.
+//
+// SettledOrder is the call's place in settlement order (TS run's
+// settledOrder): a resumed run delivers replayed outcomes in that order, so
+// a script whose later calls depend on which call settled first replays the
+// same way. Status is "rejected" for a call that failed (TS run records
+// rejected calls too and replays the rejection instead of running the tool
+// again), with the rejection's message in ErrorMessage. Records written
+// before these fields existed have neither and replay as fulfilled, in the
+// order they are started.
 type replayRecord struct {
-	ToolName   string `json:"toolName"`
-	InputJSON  string `json:"inputJson"`
-	OutputJSON string `json:"outputJson"`
+	ToolName     string `json:"toolName"`
+	InputJSON    string `json:"inputJson"`
+	OutputJSON   string `json:"outputJson"`
+	Status       string `json:"status,omitempty"`
+	ErrorMessage string `json:"errorMessage,omitempty"`
+	SettledOrder int    `json:"settledOrder,omitempty"`
 }
+
+// replayStatusRejected marks a replayRecord for a call that failed.
+const replayStatusRejected = "rejected"
 
 func encodeReplayLedger(records map[int]replayRecord) (string, error) {
 	wire := make(map[string]replayRecord, len(records))

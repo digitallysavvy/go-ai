@@ -109,7 +109,9 @@ func TestInFlightBridgeLimitErrorUsesRunText(t *testing.T) {
 	}
 }
 
-// The detached-request message and counts are `run`'s (manager.js).
+// The detached-request message is `run`'s guest text with the tool's
+// property access, and the details are run's record (guest-sources.js
+// detachedError): id, kind, the host function name and the status.
 func TestDetachedBridgeRequestErrorUsesRunText(t *testing.T) {
 	tools := ToolSet{"guarded": {
 		Name:          "guarded",
@@ -129,7 +131,7 @@ func TestDetachedBridgeRequestErrorUsesRunText(t *testing.T) {
 		t.Fatalf("err = %#v (%v)", err, err)
 	}
 	d, _ := detached.Details.(map[string]interface{})
-	if d["inFlightBridgeRequests"] != 1 || d["totalBridgeRequests"] != 2 || d["toolName"] != "guarded" {
+	if d["id"] != 2 || d["kind"] != "hostFunction" || d["name"] != "__codeMode.tool1" || d["status"] != "idle" || len(d) != 4 {
 		t.Fatalf("details = %#v", detached.Details)
 	}
 }

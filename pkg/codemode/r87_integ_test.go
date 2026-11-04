@@ -10,8 +10,9 @@ import (
 
 // TS exceptions.test.ts "detached tool calls" (3fab50aa9b): the detached
 // request error names the tool as `tools<property access>`, and a tool name
-// with `$&` is inserted literally. Go detects detached calls for interrupted
-// (approval-needing) calls, so the cases run in interrupt mode.
+// with `$&` is inserted literally. These run the cases with approval-needing
+// tools in interrupt mode; the TS cases themselves (ordinary tools) are in
+// r87c_carry_test.go.
 func TestR87integDetachedToolCallsNameTheTool(t *testing.T) {
 	obj := map[string]interface{}{"type": "object"}
 	never := func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {

@@ -156,18 +156,17 @@ func NewBridgeLimitError(message string, details interface{}) *BridgeLimitError 
 	return &BridgeLimitError{NewError(message, "CODE_MODE_BRIDGE_LIMIT", details)}
 }
 
-// DetachedBridgeRequestError is raised when sandboxed code starts host
-// bridge work and returns without awaiting or otherwise observing it.
-// Mirrors TypeScript's CodeModeDetachedBridgeRequestError (`run`'s own
-// __runAssertNoDetachedBridgeCalls). A call that raises a code-mode
-// interruption (RequestCodeModeInterrupt, or approval under
-// ApprovalModeInterrupt) deliberately leaves its Promise unresolved (see
-// the package doc's "Host tool bridge dispatch" section) so the sandboxed
-// script can keep making synchronous progress; if the script never
-// `await`s (or otherwise observes) that Promise at all -- a fire-and-forget
-// `tools.x(input);` -- and completes anyway, that interruption was started
-// but never surfaced to the caller for resolution, and RunCodeMode raises
-// this error instead of silently returning a result that discards it.
+// DetachedBridgeRequestError is raised when sandboxed code returns a result
+// while a host call it made is detached: never observed (a fire-and-forget
+// `tools.x(input);`, which therefore never ran) or observed but still
+// pending (for example one call of a Promise.all whose other call failed,
+// or a call paused for approval). Mirrors TypeScript's
+// CodeModeDetachedBridgeRequestError, raised from `run`'s
+// __runAssertNoDetachedBridgeCalls: the message names the call as
+// `tools<property access>` (`__codeMode.missing` for an unknown tool), and
+// Details is run's record: id, kind ("hostFunction"), name (the TS host
+// function name, `__codeMode.tool<index>`) and status ("idle" or
+// "pending").
 type DetachedBridgeRequestError struct{ *BaseError }
 
 // NewDetachedBridgeRequestError creates a DetachedBridgeRequestError.
