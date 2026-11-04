@@ -2,7 +2,9 @@ package openresponses
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -289,6 +291,20 @@ type openResponsesResponseWire struct {
 	CompletedAt json.RawMessage `json:"completed_at,omitempty"`
 }
 
+// UnmarshalJSON decodes the response leniently (openResponsesLenientUnmarshal):
+// TS applies types to the body without validating it, so a field of an
+// unexpected JSON type does not fail the response or the stream event that
+// carries it.
+func (w *openResponsesResponseWire) UnmarshalJSON(data []byte) error {
+	type plain openResponsesResponseWire
+	var p plain
+	if err := openResponsesLenientUnmarshal(data, &p); err != nil {
+		return err
+	}
+	*w = openResponsesResponseWire(p)
+	return nil
+}
+
 // response returns the decoded OpenResponsesResponse.
 func (w *openResponsesResponseWire) response() OpenResponsesResponse {
 	r := w.OpenResponsesResponse
@@ -349,11 +365,40 @@ type OutputItem struct {
 // UnmarshalJSON decodes the known OutputItem fields via a type alias (so the
 // default struct-tag-driven decoding still applies), then separately
 // preserves the item's original bytes in Raw.
+//
+// The decode is lenient like TS, which reads the item without validating it:
+// a string field holding another JSON value keeps JS String(value) (`type`
+// only matches as a string, as TS compares it with ===), and any other field
+// of an unexpected type keeps its zero value instead of failing the item.
 func (o *OutputItem) UnmarshalJSON(data []byte) error {
 	type outputItemAlias OutputItem
 	var alias outputItemAlias
-	if err := json.Unmarshal(data, &alias); err != nil {
+	if err := openResponsesLenientUnmarshal(data, &alias); err != nil {
 		return err
+	}
+	var w struct {
+		Type             json.RawMessage `json:"type"`
+		ID               json.RawMessage `json:"id"`
+		Role             json.RawMessage `json:"role"`
+		Status           json.RawMessage `json:"status"`
+		CallID           json.RawMessage `json:"call_id"`
+		Name             json.RawMessage `json:"name"`
+		Arguments        json.RawMessage `json:"arguments"`
+		Namespace        json.RawMessage `json:"namespace"`
+		Input            json.RawMessage `json:"input"`
+		EncryptedContent json.RawMessage `json:"encrypted_content"`
+	}
+	if json.Unmarshal(data, &w) == nil {
+		alias.Type = openResponsesWireType(w.Type)
+		alias.ID = openResponsesWireString(w.ID)
+		alias.Role = openResponsesWireString(w.Role)
+		alias.Status = openResponsesWireString(w.Status)
+		alias.CallID = openResponsesWireString(w.CallID)
+		alias.Name = openResponsesWireString(w.Name)
+		alias.Arguments = openResponsesWireString(w.Arguments)
+		alias.Namespace = openResponsesWireString(w.Namespace)
+		alias.Input = openResponsesWireString(w.Input)
+		alias.EncryptedContent = openResponsesWireString(w.EncryptedContent)
 	}
 	*o = OutputItem(alias)
 	o.Raw = append(json.RawMessage(nil), data...)
@@ -424,7 +469,7 @@ func (u Usage) wire() map[string]interface{} {
 func (u *Usage) UnmarshalJSON(b []byte) error {
 	type plain Usage
 	var p plain
-	if err := json.Unmarshal(b, &p); err != nil {
+	if err := openResponsesLenientUnmarshal(b, &p); err != nil {
 		return err
 	}
 	*u = Usage(p)
@@ -532,27 +577,172 @@ type StreamEvent struct {
 	Raw json.RawMessage `json:"-"`
 }
 
-// UnmarshalJSON decodes the known StreamEvent fields via a type alias (so
-// the default struct-tag-driven decoding still applies), then separately
-// preserves the event's original bytes in Raw.
+// UnmarshalJSON decodes a stream event like TS reads it: doStream parses
+// events with z.any() and then reads fields as JS does, so a field of an
+// unexpected JSON type never fails the event decode.
+//   - type matches only as a string (TS compares it with ===); any other
+//     value is "" and matches no event.
+//   - item_id, delta, text, call_id, arguments and input hold JS
+//     String(value) for a non-string value; null or absent is "".
+//   - sequence_number, output_index and content_index (never read by TS; the
+//     extension check reads sequence_number from Raw) keep an integral
+//     number and are 0 otherwise.
+//   - response, item and error decode leniently; a non-object value (TS
+//     reads undefined from each of its fields) is the zero struct, and null
+//     or absent is nil.
 //
-// The embedded response decodes as openResponsesResponseWire: TS doStream
-// parses events with z.any(), so a fractional created_at does not fail the
-// event.
+// The embedded response decodes as openResponsesResponseWire, so a
+// fractional created_at does not fail the event either. Raw keeps the
+// event's original bytes.
 func (e *StreamEvent) UnmarshalJSON(data []byte) error {
-	type streamEventAlias StreamEvent
-	var aux struct {
-		streamEventAlias
-		Response *openResponsesResponseWire `json:"response,omitempty"`
+	var w struct {
+		Type           json.RawMessage `json:"type"`
+		SequenceNumber json.RawMessage `json:"sequence_number"`
+		Response       json.RawMessage `json:"response"`
+		OutputIndex    json.RawMessage `json:"output_index"`
+		Item           json.RawMessage `json:"item"`
+		ItemID         json.RawMessage `json:"item_id"`
+		ContentIndex   json.RawMessage `json:"content_index"`
+		Delta          json.RawMessage `json:"delta"`
+		Text           json.RawMessage `json:"text"`
+		CallID         json.RawMessage `json:"call_id"`
+		Arguments      json.RawMessage `json:"arguments"`
+		Input          json.RawMessage `json:"input"`
+		Error          json.RawMessage `json:"error"`
 	}
-	if err := json.Unmarshal(data, &aux); err != nil {
+	if err := json.Unmarshal(data, &w); err != nil {
 		return err
 	}
-	*e = StreamEvent(aux.streamEventAlias)
-	if aux.Response != nil {
-		r := aux.Response.response()
-		e.Response = &r
+	ev := StreamEvent{
+		Type:           openResponsesWireType(w.Type),
+		SequenceNumber: openResponsesWireInt(w.SequenceNumber),
+		OutputIndex:    openResponsesWireInt(w.OutputIndex),
+		ItemID:         openResponsesWireString(w.ItemID),
+		ContentIndex:   openResponsesWireInt(w.ContentIndex),
+		Delta:          openResponsesWireString(w.Delta),
+		Text:           openResponsesWireString(w.Text),
+		CallID:         openResponsesWireString(w.CallID),
+		Arguments:      openResponsesWireString(w.Arguments),
+		Input:          openResponsesWireString(w.Input),
 	}
-	e.Raw = append(json.RawMessage(nil), data...)
+	if openResponsesWirePresent(w.Response) {
+		var r openResponsesResponseWire
+		if openResponsesWireIsObject(w.Response) {
+			if err := json.Unmarshal(w.Response, &r); err != nil {
+				return err
+			}
+		}
+		resp := r.response()
+		ev.Response = &resp
+	}
+	if openResponsesWirePresent(w.Item) {
+		item := OutputItem{Raw: append(json.RawMessage(nil), w.Item...)}
+		if openResponsesWireIsObject(w.Item) {
+			if err := json.Unmarshal(w.Item, &item); err != nil {
+				return err
+			}
+		}
+		ev.Item = &item
+	}
+	if openResponsesWirePresent(w.Error) {
+		var re ResponseError
+		if openResponsesWireIsObject(w.Error) {
+			if err := json.Unmarshal(w.Error, &re); err != nil {
+				return err
+			}
+		}
+		ev.Error = &re
+	}
+	ev.Raw = append(json.RawMessage(nil), data...)
+	*e = ev
 	return nil
+}
+
+// openResponsesLenientUnmarshal is json.Unmarshal that does not fail on a
+// field whose JSON type does not match its Go type: encoding/json skips such
+// a field (it keeps its zero value) and decodes the rest. Syntax errors
+// still fail.
+func openResponsesLenientUnmarshal(data []byte, v interface{}) error {
+	err := json.Unmarshal(data, v)
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) {
+		return nil
+	}
+	return err
+}
+
+// openResponsesWirePresent reports whether a raw field is present and not
+// null.
+func openResponsesWirePresent(raw json.RawMessage) bool {
+	return len(raw) > 0 && string(raw) != "null"
+}
+
+// openResponsesWireIsObject reports whether a raw field is a JSON object.
+func openResponsesWireIsObject(raw json.RawMessage) bool {
+	return len(raw) > 0 && raw[0] == '{'
+}
+
+// openResponsesWireType is a `type` field: only a JSON string can equal a
+// TS string literal.
+func openResponsesWireType(raw json.RawMessage) string {
+	var s string
+	if len(raw) == 0 || raw[0] != '"' || json.Unmarshal(raw, &s) != nil {
+		return ""
+	}
+	return s
+}
+
+// openResponsesWireString is JS String(value) for a present, non-null field
+// ("" for null or absent).
+func openResponsesWireString(raw json.RawMessage) string {
+	if !openResponsesWirePresent(raw) {
+		return ""
+	}
+	var v interface{}
+	if json.Unmarshal(raw, &v) != nil {
+		return ""
+	}
+	return openResponsesJSString(v)
+}
+
+// openResponsesJSString is JS String(value) for a decoded JSON value: an
+// object is "[object Object]" and an array joins its elements with ","
+// (null elements are empty).
+func openResponsesJSString(v interface{}) string {
+	switch x := v.(type) {
+	case nil:
+		return "null"
+	case string:
+		return x
+	case bool:
+		if x {
+			return "true"
+		}
+		return "false"
+	case float64:
+		return providerutils.JSNumberString(x)
+	case []interface{}:
+		parts := make([]string, len(x))
+		for i, el := range x {
+			if el != nil {
+				parts[i] = openResponsesJSString(el)
+			}
+		}
+		return strings.Join(parts, ",")
+	default:
+		return "[object Object]"
+	}
+}
+
+// openResponsesWireInt keeps an integral JSON number that fits in an int32;
+// any other value is 0.
+func openResponsesWireInt(raw json.RawMessage) int {
+	var f float64
+	if len(raw) == 0 || json.Unmarshal(raw, &f) != nil {
+		return 0
+	}
+	if f != math.Trunc(f) || math.Abs(f) > math.MaxInt32 {
+		return 0
+	}
+	return int(f)
 }

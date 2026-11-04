@@ -1313,6 +1313,28 @@ func (s *openResponsesStream) Next() (*provider.StreamChunk, error) {
 	}
 }
 
+// openResponsesConcatDelta is the text TS appends to an existing
+// accumulator (`acc + chunk.delta` after `?? ""`): JS string concatenation, so an absent delta appends
+// "undefined" and a null one "null" (StreamEvent.Delta holds "" for both).
+func openResponsesConcatDelta(event *StreamEvent) string {
+	if event.Delta != "" || len(event.Raw) == 0 {
+		return event.Delta
+	}
+	var w struct {
+		Delta json.RawMessage `json:"delta"`
+	}
+	if json.Unmarshal(event.Raw, &w) != nil {
+		return ""
+	}
+	switch string(w.Delta) {
+	case "":
+		return "undefined"
+	case "null":
+		return "null"
+	}
+	return ""
+}
+
 // handleStreamEvent processes a stream event and returns appropriate chunk
 func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.StreamChunk, bool) {
 	switch event.Type {
@@ -1398,8 +1420,10 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 				ProviderMetadata: openResponsesToolCallMetadata(s.providerName, event.ItemID, ""),
 			}
 			s.toolCallsByItemID[event.ItemID] = state
+			state.ArgsJSON = event.Delta
+			return nil, false
 		}
-		state.ArgsJSON += event.Delta
+		state.ArgsJSON += openResponsesConcatDelta(event)
 		return nil, false
 
 	case "response.function_call_arguments.done":
@@ -1422,10 +1446,11 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		// arrives without a prior output_item.added.
 		state, ok := s.customToolCallsByItemID[event.ItemID]
 		if !ok {
-			state = &toolCallState{}
+			state = &toolCallState{ArgsJSON: event.Delta}
 			s.customToolCallsByItemID[event.ItemID] = state
+		} else {
+			state.ArgsJSON += openResponsesConcatDelta(event)
 		}
-		state.ArgsJSON += event.Delta
 		id := state.ID
 		if id == "" {
 			id = event.ItemID

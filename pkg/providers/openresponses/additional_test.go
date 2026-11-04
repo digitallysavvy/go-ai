@@ -964,7 +964,7 @@ func TestOpenResponsesStreamToolCallOutOfOrder(t *testing.T) {
 // and the stream keeps going.
 func TestOpenResponsesStreamFinalizesAtEOF(t *testing.T) {
 	sse := "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\",\"id\":\"m1\"}}\n\n" +
-		"data: {\"type\":\"response.output_text.delta\",\"item_id\":\"m1\",\"delta\":{\"x\":1}}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"item_id\":\"m1\",\"delta\":\"hi\"\n\n" +
 		"data: {\"type\":\"response.output_text.delta\",\"item_id\":\"m1\",\"delta\":\"hi\"}\n\n"
 	s := streaming.NewWarningsStream(newOpenResponsesStream(nopReadCloser{Reader: strings.NewReader(sse)}, []types.Warning{{Type: "other", Message: "w"}}), []types.Warning{{Type: "other", Message: "w"}})
 	var kinds []string
