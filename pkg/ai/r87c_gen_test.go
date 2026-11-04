@@ -904,3 +904,216 @@ func TestR87cgenOnToolExecutionEndPanicDoesNotBreakGeneration(t *testing.T) {
 		t.Fatalf("toolResults = %+v", res.ToolResults)
 	}
 }
+
+// r87cgenTwoStepResponses are the 'options.stopWhen' > '2 steps: initial,
+// tool-result' model responses: a tool1 call (usage 10 / 5, response
+// test-id-1-from-model at the epoch), then "Hello, world!" (testUsage,
+// response test-id-2-from-model at 10 s with a custom header).
+func r87cgenTwoStepResponse(n int) (*types.GenerateResult, error) {
+	switch n {
+	case 0:
+		r := r87cgenToolCalls(r87cgenCall("call-1", "tool1", `{ "value": "value" }`))
+		r.Usage = r87cgenUsage(10, 5)
+		r.ResponseMetadata = &types.ResponseMetadata{ID: "test-id-1-from-model", Timestamp: time.Unix(0, 0).UTC(), ModelID: "test-response-model-id"}
+		return r, nil
+	case 1:
+		r := r87cgenResult(r87cgenText("Hello, world!"))
+		r.ResponseMetadata = &types.ResponseMetadata{ID: "test-id-2-from-model", Timestamp: time.Unix(10, 0).UTC(), ModelID: "test-response-model-id",
+			Headers: map[string]string{"custom-response-header": "response-header-value"}}
+		return r, nil
+	}
+	return nil, errors.New("Unexpected response count")
+}
+
+const (
+	r87cgenTool1Schema = `{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"value":{"type":"string"}},"required":["value"],"type":"object"}`
+	r87cgenTotalUsage  = `{"inputTokenDetails":{"noCacheTokens":13},"inputTokens":13,"outputTokenDetails":{"textTokens":15},"outputTokens":15,"totalTokens":28}`
+	r87cgenFinalUsage  = `{"inputTokenDetails":{"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"textTokens":10},"outputTokens":10,"totalTokens":13}`
+	// The two steps of the 2-step snapshots, without the step 0 tool-call
+	// title (set by the plain block's tool only).
+	r87cgenTwoStepStep1 = `{"callId":"test-telemetry-call-id","content":[{"text":"Hello, world!","type":"text"}],"finishReason":"stop","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":{"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0,"responseTimeMs":0,"stepTimeMs":0,"toolExecutionMs":{}},"rawFinishReason":"stop","request":{},"response":{"headers":{"custom-response-header":"response-header-value"},"id":"test-id-2-from-model","messages":[{"content":[{"text":"Hello, world!","type":"text"}],"role":"assistant"}],"modelId":"test-response-model-id","timestamp":"1970-01-01T00:00:10.000Z"},"runtimeContext":%s,"stepNumber":1,"toolsContext":{},"usage":` + r87cgenFinalUsage + `,"warnings":[]}`
+	r87cgenTwoStepStep0 = `{"callId":"test-telemetry-call-id","content":[{"input":{"value":"value"},%s"toolCallId":"call-1","toolName":"tool1","type":"tool-call"},{"dynamic":false,"input":{"value":"value"},"output":"result1","toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"finishReason":"tool-calls","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":{"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0,"responseTimeMs":0,"stepTimeMs":0,"toolExecutionMs":{"call-1":0}},"request":{},"response":{"id":"test-id-1-from-model","messages":[{"content":[{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"text","value":"result1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"}],"modelId":"test-response-model-id","timestamp":"1970-01-01T00:00:00.000Z"},"runtimeContext":%s,"stepNumber":0,"toolsContext":{},"usage":{"inputTokenDetails":{"noCacheTokens":10},"inputTokens":10,"outputTokenDetails":{"textTokens":5},"outputTokens":5,"totalTokens":15},"warnings":[]}`
+	r87cgenTwoStepMessages = `[{"content":[{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"text","value":"result1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"},{"content":[{"text":"Hello, world!","type":"text"}],"role":"assistant"}]`
+)
+
+func r87cgenSprintf(format string, args ...interface{}) string {
+	out := format
+	for _, a := range args {
+		out = strings.Replace(out, "%s", a.(string), 1)
+	}
+	return out
+}
+
+// generate-text.test.ts 'options.stopWhen' > '2 steps: initial,
+// tool-result' (the shared beforeEach: the first call gets tool1, tool choice
+// auto and the user prompt; the tool gets the parsed input and the user
+// prompt as messages):
+// generate-text.test.ts 6347 result.text, 6351 result.toolCalls, 6357
+// result.finalStep.toolCalls, 6361 result.toolResults, 6367
+// result.finalStep.toolResults, 6371 result.responseMessages (snapshot),
+// 6469 result.totalUsage, 6488 result.usage, 6507 result.finalStep.usage,
+// 6527 onFinishResult.usage / finalStep, 6547 result.steps (snapshot) and
+// 6556 callbacks > onStepFinish (snapshot).
+func TestR87cgenStopWhenTwoSteps(t *testing.T) {
+	model := r87cgenModel(func(n int, o *provider.GenerateOptions) (*types.GenerateResult, error) {
+		if n == 0 {
+			r87cgenCheck(t, "tools", r87cgenToolsView(t, o.Tools), `[{"type":"function","name":"tool1","inputSchema":`+r87cgenTool1Schema+`}]`)
+			r87cgenCheck(t, "toolChoice", r87cgenRaw(t, o.ToolChoice), `{"type":"auto"}`)
+			r87cgenCheck(t, "prompt", r87cgenPromptView(t, o.Prompt), `[{"role":"user","content":[{"type":"text","text":"test-input"}]}]`)
+		}
+		return r87cgenTwoStepResponse(n)
+	})
+	tool := r87cgenTool("tool1", func(in map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+		if !reflect.DeepEqual(in, map[string]interface{}{"value": "value"}) {
+			t.Errorf("args = %v", in)
+		}
+		r87cgenCheck(t, "tool messages", r87cgenMessagesView(t, o.Messages), `[{"role":"user","content":[{"type":"text","text":"test-input"}]}]`)
+		return "result1", nil
+	}, "value")
+	tool.Title = "Tool One"
+	var onFinish OnFinishEvent
+	var onStepFinish []types.StepResult
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model, Tools: []types.Tool{tool}, Prompt: "test-input",
+		Internal:      &InternalOptions{GenerateID: func() string { return "test-call-id" }, GenerateCallID: func() string { return "test-telemetry-call-id" }},
+		OnFinishEvent: func(_ context.Context, e OnFinishEvent) { onFinish = e },
+		OnStepFinish:  func(_ context.Context, s types.StepResult, _ interface{}) { onStepFinish = append(onStepFinish, s) },
+		StopWhen:      []StopCondition{IsStepCount(3)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := func(n int, id func(int) string) []string {
+		out := []string{}
+		for i := 0; i < n; i++ {
+			out = append(out, id(i))
+		}
+		return out
+	}
+	if res.Text != "Hello, world!" {
+		t.Errorf("6347 text = %q", res.Text)
+	}
+	if got := ids(len(res.ToolCalls), func(i int) string { return res.ToolCalls[i].ID }); !reflect.DeepEqual(got, []string{"call-1"}) {
+		t.Errorf("6351 toolCalls = %v", got)
+	}
+	if len(res.FinalStep.ToolCalls) != 0 {
+		t.Errorf("6357 finalStep.toolCalls = %v", res.FinalStep.ToolCalls)
+	}
+	if got := ids(len(res.ToolResults), func(i int) string { return res.ToolResults[i].ToolCallID }); !reflect.DeepEqual(got, []string{"call-1"}) {
+		t.Errorf("6361 toolResults = %v", got)
+	}
+	if len(res.FinalStep.ToolResults) != 0 {
+		t.Errorf("6367 finalStep.toolResults = %v", res.FinalStep.ToolResults)
+	}
+	r87cgenCheck(t, "6371 responseMessages", r87cgenMessagesView(t, res.ResponseMessages), r87cgenTwoStepMessages)
+	r87cgenCheck(t, "6469 totalUsage", r87cgenRaw(t, res.TotalUsage), r87cgenTotalUsage)
+	r87cgenCheck(t, "6488 usage", r87cgenRaw(t, res.Usage), r87cgenTotalUsage)
+	r87cgenCheck(t, "6507 finalStep.usage", r87cgenRaw(t, res.FinalStep.Usage), r87cgenFinalUsage)
+	// 6527
+	if !reflect.DeepEqual(onFinish.Usage, res.Usage) || !reflect.DeepEqual(onFinish.Usage, res.TotalUsage) || !reflect.DeepEqual(onFinish.TotalUsage, res.TotalUsage) {
+		t.Errorf("6527 onFinish usage = %+v / %+v", onFinish.Usage, onFinish.TotalUsage)
+	}
+	if len(onFinish.Steps) == 0 || !reflect.DeepEqual(onFinish.FinalStep, onFinish.Steps[len(onFinish.Steps)-1]) || !reflect.DeepEqual(onFinish.FinalStep.Usage, res.FinalStep.Usage) {
+		t.Errorf("6527 onFinish finalStep = %+v", onFinish.FinalStep)
+	}
+	steps := "[" + r87cgenSprintf(r87cgenTwoStepStep0, `"title":"Tool One",`, "{}") + "," + r87cgenSprintf(r87cgenTwoStepStep1, "{}") + "]"
+	r87cgenCheck(t, "6547 steps", r87cgenStepsView(t, res.Steps), steps)
+	r87cgenCheck(t, "6556 onStepFinish", r87cgenStepsView(t, onStepFinish), steps)
+}
+
+func r87cgenStr(s string) *string { return &s }
+
+// generate-text.test.ts 'options.stopWhen' > '2 steps: initial, tool-result
+// with prepareStep' (the shared beforeEach: modelWithFiles is replaced by
+// prepareStep's model for both steps; step 0 forces tool1 with
+// system-message-0, a replaced prompt and runtimeContext state2; step 1 has
+// no active tools, system-message-1 and runtimeContext state3):
+// generate-text.test.ts 6709 should contain all prepareStep calls, 7237
+// result.text, 7241 result.toolCalls, 7247 result.finalStep.toolCalls, 7251
+// result.toolResults, 7257 result.finalStep.toolResults, 7261
+// result.responseMessages (snapshot), 7265 result.totalUsage, 7284
+// result.usage, 7303 result.finalStep.usage, 7323 result.steps (snapshot),
+// 7327 onStepFinish (snapshot), 7331 result.content and 7363
+// result.finalStep.content.
+//
+// The TS prepareStepCalls snapshot shows both steps under each call because
+// it records the SDK's live steps array (the callback itself asserts [] and
+// length 1); Go hands each call a copy, so the port checks the steps each
+// call saw.
+func TestR87cgenStopWhenTwoStepsWithPrepareStep(t *testing.T) {
+	trueModel := r87cgenModel(func(n int, _ *provider.GenerateOptions) (*types.GenerateResult, error) { return r87cgenTwoStepResponse(n) })
+	type prepareCall struct {
+		ModelID        string        `json:"modelId"`
+		StepNumber     int           `json:"stepNumber"`
+		Steps          []interface{} `json:"steps"`
+		Messages       []interface{} `json:"messages"`
+		RuntimeContext interface{}   `json:"runtimeContext"`
+	}
+	var prepareCalls []prepareCall
+	var onStepFinish []types.StepResult
+	toolChoice := types.ToolChoice{Type: types.ToolChoiceTool, ToolName: "tool1"}
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenModelWithFiles(),
+		Tools: []types.Tool{r87cgenTool("tool1", func(in map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+			if !reflect.DeepEqual(in, map[string]interface{}{"value": "value"}) {
+				t.Errorf("args = %v", in)
+			}
+			r87cgenCheck(t, "tool messages", r87cgenMessagesView(t, o.Messages), `[{"role":"user","content":[{"type":"text","text":"new input from prepareStep"}]}]`)
+			return "result1", nil
+		}, "value")},
+		RuntimeContext: map[string]interface{}{"context": "state1"},
+		Prompt:         "test-input",
+		Internal:       &InternalOptions{GenerateID: func() string { return "test-call-id" }, GenerateCallID: func() string { return "test-telemetry-call-id" }},
+		StopWhen:       []StopCondition{IsStepCount(3)},
+		OnStepFinish:   func(_ context.Context, s types.StepResult, _ interface{}) { onStepFinish = append(onStepFinish, s) },
+		PrepareStep: func(_ context.Context, o PrepareStepOptions) PrepareStepOptions {
+			prepareCalls = append(prepareCalls, prepareCall{o.Model.ModelID(), o.StepNumber, r87cgenStepsView(t, o.Steps), r87cgenMessagesView(t, o.Messages), o.RuntimeContext})
+			switch o.StepNumber {
+			case 0:
+				if len(o.Steps) != 0 {
+					t.Errorf("step 0 steps = %d", len(o.Steps))
+				}
+				return PrepareStepOptions{Model: trueModel, ToolChoice: toolChoice, Instructions: r87cgenStr("system-message-0"),
+					Messages:       []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "new input from prepareStep"}}}},
+					RuntimeContext: map[string]interface{}{"context": "state2"}}
+			case 1:
+				if len(o.Steps) != 1 {
+					t.Errorf("step 1 steps = %d", len(o.Steps))
+				}
+				return PrepareStepOptions{Model: trueModel, ActiveTools: []string{}, Instructions: r87cgenStr("system-message-1"),
+					RuntimeContext: map[string]interface{}{"context": "state3"}}
+			}
+			return PrepareStepOptions{}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step0 := r87cgenSprintf(r87cgenTwoStepStep0, "", `{"context":"state2"}`)
+	step1 := r87cgenSprintf(r87cgenTwoStepStep1, `{"context":"state3"}`)
+	r87cgenCheck(t, "6709 prepareStep calls", r87cgenRaw(t, prepareCalls), `[{"messages":[{"content":[{"type":"text","text":"test-input"}],"role":"user"}],"modelId":"mock-model-id","runtimeContext":{"context":"state1"},"stepNumber":0,"steps":[]},`+
+		`{"messages":[{"content":[{"type":"text","text":"new input from prepareStep"}],"role":"user"},{"content":[{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"text","value":"result1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"}],"modelId":"mock-model-id","runtimeContext":{"context":"state2"},"stepNumber":1,"steps":[`+step0+`]}]`)
+	if res.Text != "Hello, world!" {
+		t.Errorf("7237 text = %q", res.Text)
+	}
+	if len(res.ToolCalls) != 1 || res.ToolCalls[0].ID != "call-1" {
+		t.Errorf("7241 toolCalls = %+v", res.ToolCalls)
+	}
+	if len(res.FinalStep.ToolCalls) != 0 {
+		t.Errorf("7247 finalStep.toolCalls = %+v", res.FinalStep.ToolCalls)
+	}
+	if len(res.ToolResults) != 1 || res.ToolResults[0].ToolCallID != "call-1" {
+		t.Errorf("7251 toolResults = %+v", res.ToolResults)
+	}
+	if len(res.FinalStep.ToolResults) != 0 {
+		t.Errorf("7257 finalStep.toolResults = %+v", res.FinalStep.ToolResults)
+	}
+	r87cgenCheck(t, "7261 responseMessages", r87cgenMessagesView(t, res.ResponseMessages), r87cgenTwoStepMessages)
+	r87cgenCheck(t, "7265 totalUsage", r87cgenRaw(t, res.TotalUsage), r87cgenTotalUsage)
+	r87cgenCheck(t, "7284 usage", r87cgenRaw(t, res.Usage), r87cgenTotalUsage)
+	r87cgenCheck(t, "7303 finalStep.usage", r87cgenRaw(t, res.FinalStep.Usage), r87cgenFinalUsage)
+	r87cgenCheck(t, "7323 steps", r87cgenStepsView(t, res.Steps), "["+step0+","+step1+"]")
+	r87cgenCheck(t, "7327 onStepFinish", r87cgenStepsView(t, onStepFinish), "["+step0+","+step1+"]")
+	r87cgenCheck(t, "7331 content", r87cgenContentView(t, res.Content), `[{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"},{"dynamic":false,"input":{"value":"value"},"output":"result1","toolCallId":"call-1","toolName":"tool1","type":"tool-result"},{"text":"Hello, world!","type":"text"}]`)
+	r87cgenCheck(t, "7363 finalStep.content", r87cgenContentView(t, res.FinalStep.Content), `[{"text":"Hello, world!","type":"text"}]`)
+}
