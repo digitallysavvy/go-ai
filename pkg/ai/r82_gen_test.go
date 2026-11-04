@@ -362,8 +362,8 @@ func TestR82genProviderExecutedApprovalRequest(t *testing.T) {
 	})
 }
 
-// 'result.request' 2786 'should accept deprecated experimental_include as an
-// alias for include' and 2807 'should prefer include over deprecated
+// generate-text.test.ts 2786 / 2807: 'result.request' 2786 'should accept
+// deprecated experimental_include as an alias for include' and 2807 'should prefer include over deprecated
 // experimental_include': the request body is kept only when the effective
 // include asks for it, and Include wins over ExperimentalInclude.
 func TestR82genIncludeAlias(t *testing.T) {
