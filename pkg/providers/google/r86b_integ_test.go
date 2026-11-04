@@ -58,3 +58,16 @@ func TestR86bintegFilesUploadURLReadsAsFetch(t *testing.T) {
 		t.Errorf("invalid upload URL: err = %v, want the fetch TypeError text", err)
 	}
 }
+
+// cr-r86b-prova-to-carry (prova's known difference "Google Live API key with a
+// base URL that carries a query string"): TS url.searchParams.set('key')
+// keeps the base URL's own parameters in order with URLSearchParams escaping.
+func TestR86bintegLiveKeyKeepsBaseQueryOrder(t *testing.T) {
+	for name, got := range map[string]string{
+		"transcription": getLiveTranscriptionWebSocketURL("https://h.example/v1beta?b=1%202&a=~", "k~1"),
+	} {
+		if !strings.HasSuffix(got, "?b=1+2&a=%7E&key=k%7E1") {
+			t.Errorf("%s URL = %s, want query b=1+2&a=%%7E&key=k%%7E1 (TS)", name, got)
+		}
+	}
+}

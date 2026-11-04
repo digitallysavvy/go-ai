@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 )
 
 // TokenQueryParam is the query parameter the bridge authenticates host
@@ -97,25 +98,7 @@ func WithBridgeToken(endpoint harness.PortEndpoint, token string) (harness.PortE
 // formEncode implements the application/x-www-form-urlencoded byte
 // serializer used by URLSearchParams: ASCII alphanumerics and `*-._` stay as
 // is, space becomes `+`, everything else is percent-encoded.
-func formEncode(s string) string {
-	const hexDigits = "0123456789ABCDEF"
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
-			c == '*' || c == '-' || c == '.' || c == '_':
-			b.WriteByte(c)
-		case c == ' ':
-			b.WriteByte('+')
-		default:
-			b.WriteByte('%')
-			b.WriteByte(hexDigits[c>>4])
-			b.WriteByte(hexDigits[c&0x0f])
-		}
-	}
-	return b.String()
-}
+func formEncode(s string) string { return internalhttp.FormEscape(s) }
 
 var defaultPorts = map[string]string{"http": "80", "https": "443", "ws": "80", "wss": "443"}
 

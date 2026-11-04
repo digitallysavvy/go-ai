@@ -8,9 +8,9 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/url"
-	"strings"
 	"time"
+
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
@@ -165,14 +165,7 @@ func RefreshOAuthAccessToken(ctx context.Context, opts RefreshOAuthAccessTokenOp
 // formEscape is one URLSearchParams value: like url.QueryEscape, but `*` stays
 // literal and `~` is escaped (the WHATWG application/x-www-form-urlencoded
 // serializer leaves only `*-._` unescaped).
-func formEscape(v string) string {
-	escaped := url.QueryEscape(v)
-	if !strings.ContainsAny(escaped, "~") && !strings.Contains(escaped, "%2A") {
-		return escaped
-	}
-	escaped = strings.ReplaceAll(escaped, "~", "%7E")
-	return strings.ReplaceAll(escaped, "%2A", "*")
-}
+func formEscape(v string) string { return internalhttp.FormEscape(v) }
 
 func jsonString(s string) string {
 	b, _ := jsstr.Marshal(s)

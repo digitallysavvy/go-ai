@@ -86,11 +86,13 @@ func buildCartesiaStreamingTranscriptionURL(baseURL, version, modelID, encoding 
 	if !useTurnDetection && language != nil {
 		pairs = append(pairs, [2]string{"language", *language})
 	}
-	parts := make([]string, 0, len(pairs))
+	// TS url.searchParams.set on a fresh URL: insertion order, URLSearchParams
+	// escaping ("~" as %7E, "*" literal).
+	q := &internalhttp.SearchParams{}
 	for _, kv := range pairs {
-		parts = append(parts, url.QueryEscape(kv[0])+"="+url.QueryEscape(kv[1]))
+		q.Set(kv[0], kv[1])
 	}
-	u.RawQuery = strings.Join(parts, "&")
+	u.RawQuery = q.Encode()
 	return u, nil
 }
 

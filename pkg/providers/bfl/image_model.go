@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 	"math"
 	"net/http"
@@ -15,6 +14,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -639,7 +640,7 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 func (m *ImageModel) getPollBody(ctx context.Context, pollURL string, headers map[string]string) ([]byte, error) {
 	resolvedURL := pollURL
 	if !strings.HasPrefix(pollURL, "http://") && !strings.HasPrefix(pollURL, "https://") {
-		resolvedURL = strings.TrimRight(m.provider.baseURL(), "/") + "/" + strings.TrimLeft(pollURL, "/")
+		resolvedURL = m.provider.baseURL() + "/" + strings.TrimLeft(pollURL, "/") // base already withoutTrailingSlash
 	}
 	baseURL := m.provider.baseURL()
 	isTrusted := func(raw string) bool { return bflTrustedURL(raw, baseURL) }

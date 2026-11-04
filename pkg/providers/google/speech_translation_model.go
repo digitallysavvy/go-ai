@@ -158,14 +158,9 @@ func getLiveSpeechTranslationWebSocketURL(baseURL, apiKey string) string {
 	u := googleRealtimeBaseURL(baseURL)
 	u.Scheme = strings.Replace(u.Scheme, "http", "ws", 1)
 	u.Path = strings.TrimSuffix(u.Path, "/") + "/ws/" + liveSpeechTranslationWebSocketPath
-	// TS url.searchParams.set('key', apiKey): URLSearchParams escaping.
-	if u.RawQuery == "" {
-		u.RawQuery = internalhttp.EncodeQuery(map[string]string{"key": apiKey})
-	} else {
-		q := u.Query()
-		q.Set("key", apiKey)
-		u.RawQuery = q.Encode()
-	}
+	// TS url.searchParams.set('key', apiKey): the base URL's own parameters
+	// keep their order and the whole query uses URLSearchParams escaping.
+	u.RawQuery = internalhttp.SetSearchParam(u.RawQuery, "key", apiKey)
 	return u.String()
 }
 

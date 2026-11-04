@@ -6,11 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -180,7 +181,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	downloadOpts := fileutil.TrustedOriginDownloadOptions(m.prov.config.BaseURL, nil)
 	downloadOpts.Headers = m.prov.requestHeaders(authToken, opts.Headers)
 
-	statusURL := strings.TrimRight(m.prov.config.BaseURL, "/") + op.EndpointPath + "/" + providerutils.EncodePathSegment(op.TaskID)
+	statusURL := m.prov.config.BaseURL + op.EndpointPath + "/" + providerutils.EncodePathSegment(op.TaskID)
 
 	downloaded, err := fileutil.DownloadWithMetadata(ctx, statusURL, downloadOpts)
 	if err != nil {

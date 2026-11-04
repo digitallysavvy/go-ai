@@ -377,7 +377,7 @@ func (m *ImageModel) pollImagePrediction(ctx context.Context, prediction replica
 			if current.ID == "" {
 				return replicateImagePrediction{}, providererrors.NewInvalidResponseDataError(current, "Replicate prediction response is missing urls.get.")
 			}
-			pollURL = strings.TrimRight(m.provider.baseURL(), "/") + "/predictions/" + current.ID
+			pollURL = m.provider.baseURL() + "/predictions/" + current.ID
 		}
 		dl := fileutil.TrustedOriginDownloadOptions(m.provider.baseURL(), m.provider.client.HTTPClient().Transport)
 		dl.Headers = m.provider.credentialedHeaders(pollURL, callHeaders)

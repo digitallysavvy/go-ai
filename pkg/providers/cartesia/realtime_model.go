@@ -5,13 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -161,17 +162,17 @@ func (m *RealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.
 	} else {
 		u.Scheme = "wss"
 	}
-	// URLSearchParams.set keeps insertion order.
-	query := []string{
-		"model=" + url.QueryEscape(m.modelID),
-		"encoding=" + url.QueryEscape(encoding),
-		"sample_rate=" + strconv.Itoa(rate),
-		"cartesia_version=" + url.QueryEscape(m.provider.config.APIVersion),
-	}
+	// TS url.searchParams.set on new URL(...): the base URL's own parameters
+	// first, insertion order, URLSearchParams escaping.
+	query := internalhttp.ParseSearchParams(u.RawQuery)
+	query.Set("model", m.modelID)
+	query.Set("encoding", encoding)
+	query.Set("sample_rate", strconv.Itoa(rate))
+	query.Set("cartesia_version", m.provider.config.APIVersion)
 	if !useTurnDetection && language != nil {
-		query = append(query, "language="+url.QueryEscape(*language))
+		query.Set("language", *language)
 	}
-	u.RawQuery = strings.Join(query, "&")
+	u.RawQuery = query.Encode()
 
 	result := provider.ClientSecretResult{Token: token, URL: u.String()}
 	if opts.ExpiresAfterSeconds != nil {
@@ -191,16 +192,8 @@ func (m *RealtimeModel) GetWebSocketConfig(token, wsURL string) provider.WebSock
 	m.mu.Lock()
 	m.useTurnDetection = strings.Contains(u.Path, "/stt/turns/websocket")
 	m.mu.Unlock()
-	var pairs []string
-	if u.RawQuery != "" {
-		for _, pair := range strings.Split(u.RawQuery, "&") {
-			if pair != "" && !strings.HasPrefix(pair, "access_token=") {
-				pairs = append(pairs, pair)
-			}
-		}
-	}
-	pairs = append(pairs, "access_token="+url.QueryEscape(token))
-	u.RawQuery = strings.Join(pairs, "&")
+	// TS url.searchParams.set('access_token', token).
+	u.RawQuery = internalhttp.SetSearchParam(u.RawQuery, "access_token", token)
 	return provider.WebSocketConfig{URL: u.String()}
 }
 

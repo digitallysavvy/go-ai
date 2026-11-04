@@ -5,11 +5,11 @@
 package typesafeai
 
 import (
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	stdhttp "net/http"
 	"os"
-	"strings"
+
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -51,7 +51,7 @@ func New(cfg Config) *Provider {
 	if baseURL == "" {
 		baseURL = os.Getenv("TYPESAFE_AI_BASE_URL")
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
+	baseURL = providerutils.WithoutTrailingSlash(baseURL) // TS withoutTrailingSlash: one "/"
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}

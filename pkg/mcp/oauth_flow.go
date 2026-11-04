@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 )
 
@@ -1129,66 +1131,22 @@ func saveOAuthAuthorizationServerInformation(ctx context.Context, provider OAuth
 	return false, nil
 }
 
-// orderedQuery is an order-preserving query parameter list with the
-// semantics of the WHATWG URLSearchParams used by the TS SDK.
-type orderedQuery struct{ pairs [][2]string }
+// orderedQuery is the shared URLSearchParams list (internalhttp.SearchParams:
+// WHATWG parsing, insertion order, form escaping) used by the TS SDK.
+type orderedQuery struct{ p *internalhttp.SearchParams }
 
 func parseOrderedQuery(raw string) *orderedQuery {
-	q := &orderedQuery{}
-	for _, part := range strings.Split(raw, "&") {
-		if part == "" {
-			continue
-		}
-		name, value, _ := strings.Cut(part, "=")
-		n, err1 := url.QueryUnescape(name)
-		v, err2 := url.QueryUnescape(value)
-		if err1 != nil || err2 != nil {
-			n, v = name, value
-		}
-		q.pairs = append(q.pairs, [2]string{n, v})
-	}
-	return q
+	return &orderedQuery{internalhttp.ParseSearchParams(raw)}
 }
 
 // set replaces the first pair named name (dropping later ones) or appends.
-func (q *orderedQuery) set(name, value string) {
-	out := q.pairs[:0:0]
-	found := false
-	for _, p := range q.pairs {
-		if p[0] != name {
-			out = append(out, p)
-			continue
-		}
-		if !found {
-			out = append(out, [2]string{name, value})
-			found = true
-		}
-	}
-	if !found {
-		out = append(out, [2]string{name, value})
-	}
-	q.pairs = out
-}
+func (q *orderedQuery) set(name, value string) { q.p.Set(name, value) }
 
-func (q *orderedQuery) add(name, value string) {
-	q.pairs = append(q.pairs, [2]string{name, value})
-}
+func (q *orderedQuery) add(name, value string) { q.p.Append(name, value) }
 
 // encode serializes as application/x-www-form-urlencoded the way
-// URLSearchParams does: ASCII alphanumerics and *-._ stay literal, space is
-// "+", everything else is percent-encoded.
-func (q *orderedQuery) encode() string {
-	var b strings.Builder
-	for i, p := range q.pairs {
-		if i > 0 {
-			b.WriteByte('&')
-		}
-		writeFormEncoded(&b, p[0])
-		b.WriteByte('=')
-		writeFormEncoded(&b, p[1])
-	}
-	return b.String()
-}
+// URLSearchParams does.
+func (q *orderedQuery) encode() string { return q.p.Encode() }
 
 // encodeOAuthTokenForm serializes a token request body like the TS
 // URLSearchParams body: the request's own parameters in TS insertion order
@@ -1197,7 +1155,7 @@ func (q *orderedQuery) encode() string {
 // keeps no order), then resource (set last in TS), each with the
 // URLSearchParams form encoding (`*` literal, `~` as %7E).
 func encodeOAuthTokenForm(values url.Values, lead ...string) string {
-	q := &orderedQuery{}
+	q := parseOrderedQuery("")
 	seen := map[string]bool{}
 	emit := func(name string) {
 		if seen[name] {
@@ -1223,23 +1181,6 @@ func encodeOAuthTokenForm(values url.Values, lead ...string) string {
 	}
 	emit("resource")
 	return q.encode()
-}
-
-func writeFormEncoded(b *strings.Builder, s string) {
-	const hex = "0123456789ABCDEF"
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '*', c == '-', c == '.', c == '_':
-			b.WriteByte(c)
-		case c == ' ':
-			b.WriteByte('+')
-		default:
-			b.WriteByte('%')
-			b.WriteByte(hex[c>>4])
-			b.WriteByte(hex[c&15])
-		}
-	}
 }
 
 // oauthRefreshErrorEscalates mirrors the TS refresh catch block:
