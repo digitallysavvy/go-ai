@@ -1,6 +1,7 @@
 package openresponses
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -142,6 +143,48 @@ func TestR87bprovbStreamErrorCodePresence(t *testing.T) {
 				return
 			}
 			t.Fatal("no error chunk")
+		})
+	}
+}
+
+// V061 37: TS openResponsesLanguageModelOptions declares reasoningSummary as
+// z.enum(['concise', 'detailed', 'auto']).nullish(), so a present empty
+// summary is an InvalidArgumentError in TS (never sent); Go rejects it too.
+func TestR87bprovbEmptyReasoningSummaryRejected(t *testing.T) {
+	m := NewLanguageModel(New(Config{BaseURL: "http://127.0.0.1:0", Name: "open-responses"}), "m")
+	_, _, err := m.buildRequestBody(&provider.GenerateOptions{
+		Prompt:          types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"open-responses": map[string]interface{}{"reasoningSummary": ""}},
+	}, false)
+	var iae *providererrors.InvalidArgumentError
+	if !errors.As(err, &iae) {
+		t.Fatalf("err = %v (%T), want InvalidArgumentError", err, err)
+	}
+}
+
+// Class sweep of V061 37: TS 3fab50aa9b open-responses-language-model.ts
+// sends a custom tool's `description` when `typeof tool.args.description ===
+// 'string'`, so a present "" is written; an absent or non-string one is not.
+func TestR87bprovbCustomToolEmptyDescription(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args map[string]interface{}
+		want string
+	}{
+		{"empty", map[string]interface{}{"description": ""}, `{"type":"custom","name":"render","description":""}`},
+		{"absent", map[string]interface{}{}, `{"type":"custom","name":"render"}`},
+		{"non-string", map[string]interface{}{"description": 5}, `{"type":"custom","name":"render"}`},
+		{"value", map[string]interface{}{"description": "d"}, `{"type":"custom","name":"render","description":"d"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			converted, _, _ := convertToolsToOpenResponses([]types.Tool{{Type: "provider", ProviderID: "acme.custom", Name: "render", ProviderArgs: tc.args}}, nil, "acme.custom")
+			b, err := json.Marshal(converted[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(b) != tc.want {
+				t.Fatalf("tool = %s, want %s", b, tc.want)
+			}
 		})
 	}
 }

@@ -664,11 +664,16 @@ func convertToolsToOpenResponses(tools []types.Tool, registry *ExtensionRegistry
 			// the expected shape, otherwise omitted (not defaulted).
 			if customToolID != "" && t.ProviderID == customToolID {
 				custom := CustomToolItem{Type: "custom", Name: t.Name}
-				if desc, ok := t.ProviderArgs["description"].(string); ok {
-					custom.Description = desc
-				}
+				desc, hasDesc := t.ProviderArgs["description"].(string)
+				custom.Description = desc
 				custom.Format = openResponsesCustomToolFormat(t.ProviderArgs["format"])
-				result = append(result, custom)
+				if hasDesc && desc == "" {
+					// TS typeof description === 'string' keeps an empty
+					// description, which CustomToolItem's omitempty drops.
+					result = append(result, openResponsesCustomToolEmptyDescription{Type: custom.Type, Name: custom.Name, Format: custom.Format})
+				} else {
+					result = append(result, custom)
+				}
 				encodedProviderTools[t.Name] = encodedProviderTool{args: t.ProviderArgs, custom: true}
 				continue
 			}
@@ -1957,6 +1962,15 @@ func (s *openResponsesStream) streamProviderError(event *StreamEvent, respErr *R
 		}
 	}
 	return providererrors.NewStreamProviderError(respErr.Message, s.providerName, event.Type, code, statusCode, retryable, data)
+}
+
+// openResponsesCustomToolEmptyDescription is a CustomToolItem whose
+// description is a present empty string (written as "description": "").
+type openResponsesCustomToolEmptyDescription struct {
+	Type        string                 `json:"type"`
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	Format      map[string]interface{} `json:"format,omitempty"`
 }
 
 // openResponsesWireField is value[key] for a decoded JSON object (nil
