@@ -34,8 +34,8 @@ import (
 // to share it across sessions); unlike TS it is never written to the Vercel
 // token cache or the process environment, and the Vercel CLI login is never
 // refreshed, rewritten or cleared (the same rule as
-// gateway.VercelOIDCTokenFunc). Without OIDCRefresh, VERCEL_OIDC_TOKEN is
-// read as is.
+// gateway.VercelOIDCTokenFunc). Without OIDCRefresh, the token
+// (VERCEL_OIDC_TOKEN_FILE, else VERCEL_OIDC_TOKEN) is used as read.
 type OIDCRefresh struct {
 	// AccessToken returns the Vercel access token for the refresh request.
 	// Default: the Vercel CLI login token (read only).
