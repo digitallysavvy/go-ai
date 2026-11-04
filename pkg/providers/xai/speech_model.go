@@ -5,10 +5,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"net/http"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -81,7 +82,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 	}
 	// xAI returns a trace id on every response, success and error.
-	traceID := resp.Headers.Get("x-trace-id")
+	traceID := providerutils.FetchHeaderText(http.Header(resp.Headers), "x-trace-id")
 	if resp.StatusCode >= 400 {
 		message := parseXAIErrorMessage(resp.Body)
 		if traceID != "" {

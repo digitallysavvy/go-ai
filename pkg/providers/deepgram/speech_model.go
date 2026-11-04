@@ -504,14 +504,14 @@ func applyDeepgramSpeechOptions(query map[string]string, opts *SpeechModelOption
 // account identifier).
 func buildSpeechProviderMetadata(headers http.Header) map[string]interface{} {
 	metadata := map[string]interface{}{}
-	if v := headers.Get("Dg-Model-Name"); v != "" {
+	if v := providerutils.FetchHeaderText(headers, "Dg-Model-Name"); v != "" {
 		metadata["modelName"] = v
 	}
-	if v := headers.Get("Dg-Model-Uuid"); v != "" {
+	if v := providerutils.FetchHeaderText(headers, "Dg-Model-Uuid"); v != "" {
 		metadata["modelUuid"] = v
 	}
-	if vals := headers.Values("Dg-Additional-Model-Uuids"); len(vals) > 0 {
-		metadata["additionalModelUuids"] = strings.Split(vals[0], ",")
+	if len(headers.Values("Dg-Additional-Model-Uuids")) > 0 {
+		metadata["additionalModelUuids"] = strings.Split(providerutils.FetchHeaderText(headers, "Dg-Additional-Model-Uuids"), ",")
 	}
 	if v := headerNumber(headers, "Dg-Char-Count"); v != nil {
 		metadata["charCount"] = v
@@ -522,10 +522,10 @@ func buildSpeechProviderMetadata(headers http.Header) map[string]interface{} {
 	if v := headerNumber(headers, "Dg-Pronunciations-Applied"); v != nil {
 		metadata["pronunciationsApplied"] = v
 	}
-	if v := headers.Get("Dg-Pronunciation-Warnings"); v != "" {
+	if v := providerutils.FetchHeaderText(headers, "Dg-Pronunciation-Warnings"); v != "" {
 		metadata["pronunciationWarnings"] = v
 	}
-	if v := headers.Get("Dg-Request-Id"); v != "" {
+	if v := providerutils.FetchHeaderText(headers, "Dg-Request-Id"); v != "" {
 		metadata["requestId"] = v
 	}
 	return metadata
@@ -534,11 +534,10 @@ func buildSpeechProviderMetadata(headers http.Header) map[string]interface{} {
 // headerNumber is the TS headerNumber helper: absent -> nil, otherwise
 // Number(value) (an empty header is 0), NaN -> nil. Integral values stay int.
 func headerNumber(headers http.Header, name string) interface{} {
-	vals := headers.Values(name)
-	if len(vals) == 0 {
+	if len(headers.Values(name)) == 0 {
 		return nil
 	}
-	f, ok := providerutils.JSNumber(vals[0])
+	f, ok := providerutils.JSNumber(providerutils.FetchHeaderText(headers, name))
 	if !ok || math.IsNaN(f) {
 		return nil
 	}

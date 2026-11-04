@@ -11,7 +11,9 @@ import (
 )
 
 // ExtractHeaders converts an http.Header (map[string][]string) to map[string]string
-// by joining multi-value headers with ", " — matching TypeScript SDK behaviour.
+// by joining multi-value headers with ", " and reading each value as the
+// JavaScript string TS sees (IsomorphicDecode: each byte one character), like
+// TS extractResponseHeaders (Object.fromEntries(response.headers.entries())).
 // Returns nil when h is nil or empty.
 func ExtractHeaders(h http.Header) map[string]string {
 	if len(h) == 0 {
@@ -19,7 +21,7 @@ func ExtractHeaders(h http.Header) map[string]string {
 	}
 	out := make(map[string]string, len(h))
 	for k, vs := range h {
-		out[http.CanonicalHeaderKey(k)] = strings.Join(vs, ", ")
+		out[http.CanonicalHeaderKey(k)] = IsomorphicDecode(strings.Join(vs, ", "))
 	}
 	return out
 }

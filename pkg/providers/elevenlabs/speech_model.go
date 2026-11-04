@@ -157,7 +157,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	var rawBody interface{}
 	switch {
 	case req.path == "/v1/music/detailed":
-		music, err := parseMusicTimestampsResponse(http.Header(resp.Headers).Get("Content-Type"), resp.Body)
+		music, err := parseMusicTimestampsResponse(providerutils.FetchHeaderText(http.Header(resp.Headers), "Content-Type"), resp.Body)
 		if err != nil {
 			return nil, err
 		}

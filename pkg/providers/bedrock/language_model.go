@@ -5,12 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -1012,10 +1013,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if result.ResponseMetadata == nil {
 		result.ResponseMetadata = &types.ResponseMetadata{}
 	}
-	result.ResponseMetadata.ID = resp.Header.Get("x-amzn-requestid")
+	result.ResponseMetadata.ID = providerutils.FetchHeaderText(resp.Header, "x-amzn-requestid")
 	result.ResponseMetadata.ModelID = m.modelID
 	result.ResponseMetadata.Headers = result.ResponseHeaders
-	if dateHeader := resp.Header.Get("date"); dateHeader != "" {
+	if dateHeader := providerutils.FetchHeaderText(resp.Header, "date"); dateHeader != "" {
 		if ts, err := time.Parse(time.RFC1123, dateHeader); err == nil {
 			result.ResponseMetadata.Timestamp = ts
 		}
@@ -1374,14 +1375,14 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		warnings:             args.Warnings,
 		modelID:              m.modelID,
 		responseHeaders:      providerutils.ExtractHeaders(resp.Header),
-		requestID:            resp.Header.Get("x-amzn-requestid"),
+		requestID:            providerutils.FetchHeaderText(resp.Header, "x-amzn-requestid"),
 		contentBlocks:        map[int]*bedrockStreamContentBlock{},
 		finishReason:         types.FinishReasonInterrupted,
 		requestBody:          args.Body,
 		includeRawChunks:     opts.IncludeRawChunks,
 		toolNames:            args.ToolNames,
 	}
-	if dateHeader := resp.Header.Get("date"); dateHeader != "" {
+	if dateHeader := providerutils.FetchHeaderText(resp.Header, "date"); dateHeader != "" {
 		if ts, err := time.Parse(time.RFC1123, dateHeader); err == nil {
 			stream.responseTimestamp = &ts
 		}

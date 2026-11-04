@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	neturl "net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -164,7 +166,7 @@ func DownloadWithMetadata(ctx context.Context, url string, opts DownloadOptions)
 
 	return &DownloadResult{
 		Data:        data,
-		ContentType: resp.Header.Get("Content-Type"),
+		ContentType: providerutils.FetchHeaderText(resp.Header, "Content-Type"),
 		Headers:     map[string][]string(resp.Header),
 	}, nil
 }
@@ -284,6 +286,9 @@ func NewDownloadClient(rawURL string, opts DownloadOptions) *http.Client {
 		if len(via) > maxDownloadRedirects {
 			return providererrors.NewDownloadError(rawURL, 0, "", fmt.Sprintf("Too many redirects (max %d)", maxDownloadRedirects), nil)
 		}
+		if next, ok := fetchRedirectURL(req, via); ok {
+			req.URL = next
+		}
 		if validator != nil {
 			if err := validator(req.URL.String()); err != nil {
 				return err
@@ -304,6 +309,39 @@ func NewDownloadClient(rawURL string, opts DownloadOptions) *http.Client {
 		return nil
 	}
 	return client
+}
+
+// fetchRedirectURL is the hop TS fetchWithValidatedRedirects requests:
+// new URL(response.headers.get('location'), currentUrl). Headers.get joins
+// repeated Location lines with ", " and reads each byte as one character, so
+// a raw UTF-8 byte is percent-encoded as the UTF-8 of that Latin-1 character
+// (`/caf\xc3\xa9` -> `/caf%C3%83%C2%A9`); http.Client follows the first raw
+// line. ok is false when both read the same text or the TS text does not
+// resolve.
+func fetchRedirectURL(req *http.Request, via []*http.Request) (*url.URL, bool) {
+	if req.Response == nil || len(via) == 0 {
+		return nil, false
+	}
+	h := req.Response.Header
+	text := providerutils.FetchHeaderText(h, "Location")
+	if len(h.Values("Location")) <= 1 && text == h.Get("Location") {
+		return nil, false
+	}
+	var b strings.Builder
+	for _, r := range text {
+		if r < utf8.RuneSelf {
+			b.WriteRune(r)
+			continue
+		}
+		for _, c := range []byte(string(r)) {
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	ref, err := url.Parse(b.String())
+	if err != nil {
+		return nil, false
+	}
+	return via[len(via)-1].URL.ResolveReference(ref), true
 }
 
 // redirectChainCrossedOrigin reports whether req or any earlier hop has a

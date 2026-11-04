@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -206,7 +207,7 @@ func (t *WorkflowChatTransport) sendMessages(ctx context.Context, req ai.ChatTra
 		return
 	}
 
-	workflowRunID := resp.Header.Get("x-workflow-run-id")
+	workflowRunID := providerutils.FetchHeaderText(resp.Header, "x-workflow-run-id") // TS response.headers.get
 	if workflowRunID == "" {
 		// TS throws at once; draining an open run stream would wait for it
 		// to end.
@@ -325,7 +326,7 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 		if useExplicitStartIndex && explicitStartIndex > 0 {
 			chunkIndex = explicitStartIndex
 		} else if useExplicitStartIndex && explicitStartIndex < 0 {
-			if tailIndex, ok := parseIntPrefix(resp.Header.Get("x-workflow-stream-tail-index")); ok {
+			if tailIndex, ok := parseIntPrefix(providerutils.FetchHeaderText(resp.Header, "x-workflow-stream-tail-index")); ok {
 				// Resolve: e.g. tailIndex=499, startIndex=-20 -> 500 + (-20) = 480.
 				chunkIndex = tailIndex + 1 + explicitStartIndex
 				if chunkIndex < 0 {
@@ -378,15 +379,13 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 	t.finishChat(chatID, chunkIndex, errs)
 }
 
-// parseIntPrefix is JavaScript parseInt(s, 10) on a header value: leading
-// whitespace, an optional sign and the longest run of digits; ok is false when
-// there is none (NaN). fetch's Headers.get decodes header bytes as Latin-1, so
-// the JS whitespace among them is the ASCII set plus the 0xA0 byte (U+00A0);
-// UTF-8 encoded Unicode spaces decode to other Latin-1 characters (NaN).
+// parseIntPrefix is JavaScript parseInt(s, 10): leading JS whitespace, an
+// optional sign and the longest run of digits; ok is false when there is none
+// (NaN). Header values come through FetchHeaderText (Latin-1, as fetch's
+// Headers.get), so a raw 0xA0 byte is U+00A0 whitespace while UTF-8 encoded
+// Unicode spaces read as other Latin-1 characters (NaN).
 func parseIntPrefix(s string) (int, bool) {
-	for len(s) > 0 && strings.IndexByte(" \t\n\r\v\f\xa0", s[0]) >= 0 {
-		s = s[1:]
-	}
+	s = providerutils.JSTrimStart(s)
 	i := 0
 	if i < len(s) && (s[i] == '+' || s[i] == '-') {
 		i++

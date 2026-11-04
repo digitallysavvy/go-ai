@@ -276,7 +276,7 @@ func (f *FilesAPI) DownloadFile(ctx context.Context, opts provider.DownloadFileO
 	}
 
 	mediaType := ""
-	if ct := httpResp.Header.Get("Content-Type"); ct != "" {
+	if ct := providerutils.FetchHeaderText(httpResp.Header, "Content-Type"); ct != "" {
 		mediaType = providerutils.JSTrim(strings.SplitN(ct, ";", 2)[0])
 	}
 

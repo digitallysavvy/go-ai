@@ -213,10 +213,12 @@ func (e *HTTPStatusError) HTTPStatusDetails() (int, map[string]string, []byte) {
 	if e == nil {
 		return 0, nil, nil
 	}
+	// TS APICallError.responseHeaders is extractResponseHeaders(response):
+	// repeated lines joined with ", ", each byte one character.
 	headers := make(map[string]string, len(e.Headers))
 	for k, v := range e.Headers {
 		if len(v) > 0 {
-			headers[strings.ToLower(k)] = v[0]
+			headers[strings.ToLower(k)] = providerutils.IsomorphicDecode(strings.Join(v, ", "))
 		}
 	}
 	return e.StatusCode, headers, e.Body

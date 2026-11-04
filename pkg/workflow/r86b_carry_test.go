@@ -34,7 +34,7 @@ func TestR86bcarryTailIndexLatin1Whitespace(t *testing.T) {
 		if got := srv.requested(); !reflect.DeepEqual(got, want) {
 			t.Errorf("tail %q: requests = %v, want %v", c.header, got, want)
 		}
-		if n, ok := parseIntPrefix(c.header); c.header == "\xc2\xa08" && ok {
+		if n, ok := parseIntPrefix(providerutils.IsomorphicDecode(c.header)); c.header == "\xc2\xa08" && ok {
 			t.Errorf("parseIntPrefix(%q) = %d, true; want NaN", c.header, n)
 		}
 	}

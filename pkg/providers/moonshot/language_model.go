@@ -1049,8 +1049,8 @@ func (s *moonshotStream) buildProviderMetadata() json.RawMessage {
 // {"ttl5m": n, "ttl1h": n}. A missing or malformed header counts as 0 when the
 // other is present; neither present yields no metadata.
 func cacheWriteTokensByTTL(headers http.Header) (json.RawMessage, bool) {
-	ttl5m, ok5m := parseTokenCountHeader(headers.Get("msh-usage-cache-write-tokens-5m"))
-	ttl1h, ok1h := parseTokenCountHeader(headers.Get("msh-usage-cache-write-tokens-1h"))
+	ttl5m, ok5m := parseTokenCountHeader(providerutils.FetchHeaderText(headers, "msh-usage-cache-write-tokens-5m"))
+	ttl1h, ok1h := parseTokenCountHeader(providerutils.FetchHeaderText(headers, "msh-usage-cache-write-tokens-1h"))
 	if !ok5m && !ok1h {
 		return nil, false
 	}

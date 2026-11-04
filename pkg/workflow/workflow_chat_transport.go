@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/google/uuid"
 )
@@ -280,7 +281,7 @@ func (t *WorkflowRunMultiplexer) SendMessages(ctx context.Context, opts SendMess
 	if err != nil {
 		return nil, err
 	}
-	runID := resp.Header.Get("X-Workflow-Run-ID")
+	runID := providerutils.FetchHeaderText(resp.Header, "X-Workflow-Run-ID") // TS response.headers.get
 	if t.OnChatEnd != nil {
 		if err := t.OnChatEnd(ChatEndEvent{ChatID: opts.ChatID, ChunkIndex: len(events), RunID: runID, Events: events}); err != nil {
 			return events, err
