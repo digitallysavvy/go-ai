@@ -124,6 +124,9 @@ func RunCodeMode(ctx context.Context, input RunInput) (interface{}, error) {
 		if berr := bindCodeModeDispatch(jsCtx, bridge); berr != nil {
 			return "", false, false, berr
 		}
+		if ferr := freezeIntrinsics(jsCtx); ferr != nil {
+			return "", false, false, ferr
+		}
 		return driveCodeModeExecution(sandboxCtx, jsCtx, bridge, source)
 	})
 
@@ -571,6 +574,15 @@ func driveCodeModeExecution(ctx context.Context, jsCtx *qjs.Context, bridge *too
 	}
 	if derr := guestDetachedCheck(bridge.guest, bridge.toolNames); derr != nil {
 		return "", false, false, derr
+	}
+	// TS run's host side (manager.js handleReadyMessage) also rejects a
+	// result while host calls are still in flight, whatever the guest
+	// reported.
+	if inFlight := bridge.inFlightCount(); inFlight > 0 {
+		return "", false, false, NewDetachedBridgeRequestError(
+			fmt.Sprintf("JavaScript runtime returned while %d bridge request(s) were still in flight.", inFlight),
+			map[string]interface{}{"inFlightBridgeRequests": inFlight, "totalBridgeRequests": bridge.requestTotal()},
+		)
 	}
 	return js, undefined, false, nil
 }
