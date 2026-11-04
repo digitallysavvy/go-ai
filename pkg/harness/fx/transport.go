@@ -19,6 +19,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 )
 
 // Port of TS fx-transport.ts: the fetch the core's model requests go
@@ -176,8 +177,15 @@ func (gatewayProtocol) rewriteURL(u *url.URL, baseURL string) (*url.URL, error) 
 	return target, nil
 }
 
+// isModelRequest is TS url.pathname.endsWith('/ai/language-model') on the
+// WHATWG URL: the pathname stays percent-encoded (`language%2Dmodel` does
+// not match) and dot segments are removed (`x/../language-model` does).
 func (gatewayProtocol) isModelRequest(u *url.URL, gateway bool) bool {
-	return gateway && strings.HasSuffix(u.Path, "/ai/language-model")
+	if !gateway {
+		return false
+	}
+	parsed, err := urlnorm.Parse(u.String())
+	return err == nil && strings.HasSuffix(parsed.Pathname(), "/ai/language-model")
 }
 
 func (gatewayProtocol) prepareBody(body []byte, responseFormat json.RawMessage) ([]byte, error) {
