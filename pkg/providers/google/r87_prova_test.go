@@ -55,7 +55,7 @@ func r87provaLoadOrderCases(t *testing.T, path, providerName string) []r87provaO
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 	zr, err := gzip.NewReader(f)
 	if err != nil {
 		t.Fatal(err)

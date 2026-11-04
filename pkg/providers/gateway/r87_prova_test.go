@@ -131,7 +131,7 @@ func TestR87provaBinaryFieldScannerMatchesTS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 	zr, err := gzip.NewReader(f)
 	if err != nil {
 		t.Fatal(err)
