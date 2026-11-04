@@ -952,11 +952,13 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 }
 
 func deepseekStreamErrorText(raw json.RawMessage) string {
+	// TS deepSeekErrorSchema: error.message is a required string, so an
+	// empty one is the message.
 	var withMessage struct {
-		Message string `json:"message"`
+		Message *string `json:"message"`
 	}
-	if err := json.Unmarshal(raw, &withMessage); err == nil && withMessage.Message != "" {
-		return withMessage.Message
+	if err := json.Unmarshal(raw, &withMessage); err == nil && withMessage.Message != nil {
+		return *withMessage.Message
 	}
 	var text string
 	if err := json.Unmarshal(raw, &text); err == nil {

@@ -59,3 +59,21 @@ func TestR87provbSTTErrorMessageNullish(t *testing.T) {
 		}
 	}
 }
+
+// TS xaiErrorDataSchema members require their strings (z.string()), so an
+// empty message / error / code matches its member.
+func TestR87provbErrorMessageEmptyStrings(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"error":{"message":""}}`:  "",
+		`{"code":"","error":""}`:    ": ",
+		`{"code":"c","error":""}`:   "c: ",
+		`{"error":""}`:              "",
+		`{"error":{"message":"m"}}`: "m",
+		`{"code":7,"error":"e"}`:    "e",
+		`{"error":{"message":1}}`:   `{"error":{"message":1}}`,
+	} {
+		if got := parseXAIErrorMessage([]byte(body)); got != want {
+			t.Errorf("%s: message = %q, want %q", body, got, want)
+		}
+	}
+}

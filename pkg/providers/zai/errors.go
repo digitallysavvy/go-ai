@@ -16,10 +16,10 @@ import (
 //	z.union([{code, message}, {error: {code, message}}])
 type zaiErrorPayload struct {
 	Code    interface{} `json:"code,omitempty"`
-	Message string      `json:"message,omitempty"`
+	Message *string     `json:"message,omitempty"`
 	Error   *struct {
 		Code    interface{} `json:"code,omitempty"`
-		Message string      `json:"message"`
+		Message *string     `json:"message"`
 	} `json:"error,omitempty"`
 }
 
@@ -41,12 +41,13 @@ func parseZaiProviderError(err error) error {
 	var message string
 	var code interface{}
 	switch {
-	case payload.Error != nil && payload.Error.Message != "":
-		message = payload.Error.Message
-		code = payload.Error.Code
-	case payload.Message != "":
-		message = payload.Message
+	// TS zaiErrorSchema: message is a required string; "" is a message.
+	case payload.Message != nil:
+		message = *payload.Message
 		code = payload.Code
+	case payload.Error != nil && payload.Error.Message != nil:
+		message = *payload.Error.Message
+		code = payload.Error.Code
 	default:
 		return nil
 	}
