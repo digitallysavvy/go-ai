@@ -5,11 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -88,7 +89,10 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		initBody["file"] = map[string]interface{}{"display_name": *displayName}
 	}
 	payload, _ := json.Marshal(initBody)
-	initReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, baseOrigin+"/upload/v1beta/files", bytes.NewReader(payload))
+	initReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseOrigin+"/upload/v1beta/files", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
 	for k, v := range headers {
 		initReq.Header.Set(k, v)
 	}
@@ -106,12 +110,19 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, googleFilesMaxResponseBytes))
 		return nil, googleFilesError("GOOGLE_FILES_UPLOAD_ERROR", fmt.Sprintf("Failed to initiate resumable upload: %d %s", resp.StatusCode, string(b)))
 	}
-	uploadURL := resp.Header.Get("x-goog-upload-url")
+	// TS headers.get('x-goog-upload-url') passed to fetch: new URL(text).
+	uploadURL, uploadURLErr := providerutils.FetchURLFromHeader(resp.Header, "x-goog-upload-url")
+	if uploadURLErr != nil {
+		return nil, uploadURLErr
+	}
 	if uploadURL == "" {
 		return nil, googleFilesError("GOOGLE_FILES_UPLOAD_ERROR", "No upload URL returned from initiation request")
 	}
 
-	uploadReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, bytes.NewReader(content))
+	uploadReq, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, bytes.NewReader(content))
+	if err != nil {
+		return nil, err
+	}
 	uploadReq.Header.Set("Content-Length", fmt.Sprintf("%d", len(content)))
 	uploadReq.Header.Set("X-Goog-Upload-Offset", "0")
 	uploadReq.Header.Set("X-Goog-Upload-Command", "upload, finalize")
@@ -151,7 +162,10 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		case <-time.After(time.Duration(pollIntervalMs) * time.Millisecond):
 		}
 
-		pollReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/"+googleFilePath(file.Name), nil)
+		pollReq, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/"+googleFilePath(file.Name), nil)
+		if err != nil {
+			return nil, err
+		}
 		for k, v := range headers {
 			pollReq.Header.Set(k, v)
 		}

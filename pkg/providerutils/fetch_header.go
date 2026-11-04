@@ -1,9 +1,12 @@
 package providerutils
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 )
 
 // FetchHeaderValue returns the bytes TS fetch's Headers.get(name) holds:
@@ -41,4 +44,26 @@ func IsomorphicDecode(s string) string {
 		b.WriteRune(rune(s[i]))
 	}
 	return b.String()
+}
+
+// FetchURL is how TS fetch(input) reads a URL string: new URL(input).href
+// (percent-encoding, IDNA, dot segments), or the TypeError text "Failed to
+// parse URL from <input>" when input does not parse.
+func FetchURL(input string) (string, error) {
+	href, err := urlnorm.Href(input)
+	if err != nil {
+		return "", fmt.Errorf("Failed to parse URL from %s", input)
+	}
+	return href, nil
+}
+
+// FetchURLFromHeader reads a URL TS takes from response.headers.get(name) and
+// passes to fetch: FetchHeaderText then FetchURL. It returns "" and no error
+// when the header is absent or empty (TS `if (!url)`).
+func FetchURLFromHeader(h http.Header, name string) (string, error) {
+	text := FetchHeaderText(h, name)
+	if text == "" {
+		return "", nil
+	}
+	return FetchURL(text)
 }
