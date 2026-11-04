@@ -202,3 +202,36 @@ func TestR87integOpenAIChatRequestOriginEndToEnd(t *testing.T) {
 		}
 	}
 }
+
+// Survivor test for stream ba77a80b: the approval failure ends the stream at
+// the tool-call part (TS resolveToolApproval throws inside the transform), so
+// model parts after the call are not forwarded.
+func TestR87integApprovalErrorStopsAtToolCallPart(t *testing.T) {
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		return testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}}},
+			{Type: provider.ChunkTypeText, ID: "1", Text: "after"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r72streamTestUsage},
+		}), nil
+	}}
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "x",
+		Tools: []types.Tool{{Name: "t", Parameters: map[string]interface{}{"type": "object"},
+			ContextSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "properties": map[string]interface{}{"a": map[string]interface{}{"type": "string"}}, "required": []interface{}{"a"}}),
+			ToolApproval: types.ToolNeedsApprovalFunc(func(context.Context, map[string]interface{}, types.ToolNeedsApprovalOptions) bool { return true }),
+			Execute:      func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return 1, nil }}},
+		ToolsContext: map[string]interface{}{"t": map[string]interface{}{"a": 1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parts []string
+	for c := range r.Chunks() {
+		parts = append(parts, string(c.Type))
+	}
+	if want := []string{"start", "start-step", "tool-call"}; strings.Join(parts, ",") != strings.Join(want, ",") {
+		t.Errorf("full stream = %v, want %v", parts, want)
+	}
+	if r.Err() == nil {
+		t.Error("want the tool context error")
+	}
+}
