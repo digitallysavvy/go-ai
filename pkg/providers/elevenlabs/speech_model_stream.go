@@ -411,7 +411,7 @@ func toElevenLabsStreamOutputFormat(format *provider.AudioFormat) (string, error
 		return defaultSpeechOutputFormat, nil
 	}
 	// MIME types are case-insensitive and may carry parameters.
-	mediaType := strings.ToLower(strings.TrimSpace(strings.SplitN(format.Type, ";", 2)[0]))
+	mediaType := strings.ToLower(providerutils.JSTrim(strings.SplitN(format.Type, ";", 2)[0]))
 	rate := format.Rate
 	switch mediaType {
 	case "audio/mpeg", "audio/mp3":

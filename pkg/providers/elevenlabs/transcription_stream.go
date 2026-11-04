@@ -16,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 	"golang.org/x/net/websocket"
@@ -529,7 +530,7 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 		}
 		finished = true
 		stopFinishTimer()
-		text := strings.TrimSpace(strings.Join(finalTexts, " "))
+		text := providerutils.JSTrim(strings.Join(finalTexts, " "))
 		segments := finalSegments
 		if segments == nil {
 			segments = []provider.TranscriptSegment{}
@@ -647,7 +648,7 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 
 			case "final_transcript", "committed_transcript":
 				committedEventCount++
-				text := strings.TrimSpace(raw.Text)
+				text := providerutils.JSTrim(raw.Text)
 				id := segID()
 				if len(text) > 0 {
 					finalTexts = append(finalTexts, text)
@@ -668,7 +669,7 @@ func (s *elevenLabsRealtimeTranscriptionStream) run(cfg elevenLabsRealtimeStream
 				}
 
 			case "final_transcript_with_timestamps", "committed_transcript_with_timestamps":
-				text := strings.TrimSpace(raw.Text)
+				text := providerutils.JSTrim(raw.Text)
 				var timestampedWords []elevenLabsRealtimeWord
 				for _, w := range raw.Words {
 					if w.Start != nil && w.End != nil {

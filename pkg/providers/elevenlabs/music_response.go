@@ -9,6 +9,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // MusicWordTimestamp is one lyric word of a music track with timestamps
@@ -30,10 +31,17 @@ type musicTimestampsResponse struct {
 	raw interface{}
 }
 
+// musicJSSpaceChars is the body of the JS regexp \s class (RE2 \s is ASCII
+// only). It equals providerutils.JSRegexpSpaceChars (V061 item 25), which
+// replaces it once that helper is merged.
+const musicJSSpaceChars = `\t\n\v\f\r \x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}`
+
+// The TS regexps with JS semantics: \s is the JS class, and the /m ^ of the
+// part content type also starts a line after \r, U+2028 or U+2029.
 var (
 	musicMultipartPattern = regexp.MustCompile(`(?i)^multipart/mixed\b`)
-	musicBoundaryPattern  = regexp.MustCompile(`(?i)(?:^|;)\s*boundary=(?:"([^"]+)"|([^;\s]+))`)
-	musicPartTypePattern  = regexp.MustCompile(`(?im)^content-type:\s*([^;\r\n]+)`)
+	musicBoundaryPattern  = regexp.MustCompile(`(?i)(?:^|;)[` + musicJSSpaceChars + `]*boundary=(?:"([^"]+)"|([^;` + musicJSSpaceChars + `]+))`)
+	musicPartTypePattern  = regexp.MustCompile(`(?i)(?:^|[\n\r\x{2028}\x{2029}])content-type:[` + musicJSSpaceChars + `]*([^;\r\n]+)`)
 )
 
 // musicMetadataSchema mirrors TS musicMetadataSchema.
@@ -83,7 +91,7 @@ func parseMusicTimestampsResponse(contentType string, body []byte) (*musicTimest
 		headers := textdecode.UTF8(body[start+2 : headersEnd])
 		partType := ""
 		if m := musicPartTypePattern.FindStringSubmatch(headers); m != nil {
-			partType = strings.ToLower(strings.TrimSpace(m[1]))
+			partType = strings.ToLower(providerutils.JSTrim(m[1]))
 		}
 		part := body[headersEnd+len(separator) : end]
 		switch {
