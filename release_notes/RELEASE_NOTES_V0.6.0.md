@@ -635,6 +635,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Open Responses custom tools send an empty description** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openresponses-custom-tool-empty-description)
 - **OpenAI-compatible providers send raw stream / stream_options provider options in generate, like TS** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-compatible-raw-stream-options)
 - **You.com 402 errors interpolate any truthy message / upgrade_url / reset_at value** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#youcom-402-message)
+- **AI Gateway missing-credential errors are the GatewayAuthenticationError itself, and connection failures read like TS** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gateway-transport-errors)
+- **Provider credential, signing and key-function errors are returned unchanged and not retried** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#provider-credential-errors-unchanged)
 
 #### MCP
 
@@ -1718,7 +1720,9 @@ Notable ones:
 - **HTTP status text on a ResponseWriter**: `Pipe*` helpers cannot send a custom status text (round 87c).
 - **prepareStep `steps`**: `PrepareStep` gets a copy of the recorded steps, not the live array (round 87c).
 - **You.com tools**: You.com REST tools follow the pre-3.0 plugin; `APIKey: ""` falls back to `YDC_API_KEY` (round 87c).
-- **TS assertions the replay harness does not evaluate**: 302 TS provider-test assertions are not evaluated by `tsfixture` (round 87c).
+- **TS assertions that cannot apply to Go**: 10 TS provider-test assertions are marked n/a in `tsfixture` (pass-through objects a typed Go result cannot hold, reference identity, Go map key order); every other one is evaluated or hand-ported (round 87d).
+- **Google credential loading errors**: Go `oauth2` token source and ADC failures carry a Go prefix, with the error as the cause (round 87d).
+- **Errors of a caller-supplied HTTP transport**: outside the AI Gateway, stay the retryable "Cannot connect to API" error; TS returns a fetch rejection unchanged (round 87d).
 - **Executed tool results carry the tool title**: `ToolResult.Title` of a locally executed tool is the call's title, as in v0.5.2; TS client tool results have no `title` (round 80).
 - **Live WebSocket close code**: Google/Vertex Live and OpenAI realtime translation close errors say `(code unknown)`; `golang.org/x/net/websocket` does not expose the close code, and v0.5.2 exports its `*websocket.Conn` (round 81).
 - **OpenAI compaction metadata keeps the v0.5 keys**: `openai.compaction` parts carry the TS `providerMetadata.openai` object and the v0.5.2 top-level keys (round 81).

@@ -638,7 +638,7 @@ converters) keeps Go's map key order, not the TS object's insertion order.
 The values are the same. The TS replays "should convert tool message with
 json output", "should convert user - assistant (tool call) - tool message
 chain" and "should convert a tool roundtrip with follow-up assistant
-message" (openresponses) are skipped on it (review round 79).
+message" (openresponses) are skipped on it (review round 79). The google Interactions converter's `function_result` text (`JSON.stringify(output.value)`) follows the same rule; the TS assertion in "serializes a json tool result to a stringified payload" is marked n/a (review round 87d).
 
 ## Embedding usage across EmbedMany batches
 
@@ -934,9 +934,21 @@ TS passes `prepareStep` the live `steps` array, which later steps keep appending
 
 `youcom.YouSearch` / `YouResearch` / `YouContents` follow the plugin API the TS tools registry documents (`youSearch`, `youResearch`, `youContents`), which `@youdotcom-oss/ai-sdk-plugin` 3.0 removed in favor of the hosted MCP client (`youcom.CreateYouClient`). Their request shapes and error texts (rate limit, the 402 free-tier message, 403, Contents API errors, `You.com API Error: ...`) follow the pre-3.0 plugin and cannot be checked against the current 3.x source, which has no REST code. `YouClientConfig.APIKey: ""` falls back to `YDC_API_KEY`; TS falls back only when `apiKey` is undefined, so an explicit `''` sends no `Authorization` header there (review round 87c).
 
-## TS assertions the replay harness does not evaluate
+## TS assertions that cannot apply to Go
 
-`pkg/internal/tsfixture` replays the TS provider tests and evaluates their plain assertions and path snapshots. 302 assertions outside the OpenAI-family packages are still not evaluated (`TSFIXTURE_SKIPPED=1` lists them): locals built by loops or statements, error objects of rejected calls, mock and spy state, generic type arguments and helper calls, and a test's second model call. The request and response each case replays are still compared (review round 87c).
+`pkg/internal/tsfixture` replays the TS provider tests and evaluates their plain assertions and path snapshots. Expressions over locals the test builds with statements and loops, helper calls and spies go through a JS fallback (the vendored QuickJS, test-only) over the replayed values. Every TS plain assertion of the replayed provider suites is evaluated, reproduced by a named Go test (`tsfixture.RegisterPorted`, 77 assertions), or marked not applicable with its reason (`tsfixture.RegisterNotApplicable`); `TSFIXTURE_SKIPPED=1` lists the last two and no assertion as not evaluated, and every replay package fails an unfiltered run if one stops evaluating (`tsfixture.RequireEvaluated`). The 10 n/a marks (review round 87d):
+
+- AI Gateway `should extract text response` (`expect(content).toEqual(...)`) and `should extract usage information` (`expect(usage).toEqual(...)`): TS doGenerate passes the response's `content` and `usage` objects through as is, here the test helper's non-V4 shapes (a single content object, flat snake-case counts). Go's typed `GenerateResult.Content` slice and `types.Usage` cannot hold arbitrary objects; Go decodes the object into its one text part and reads no counts from that usage shape, as the TS core does not (`TestR87dprovrestGatewayGenerateResultFields`).
+- `toBe` reference identity with an object the test passed in: gateway `createGatewayErrorFromResponse` `responseError.response` (5 tests) and anthropic `convertAnthropicUsage` `result.raw` (2 tests). The Go functions take body bytes or the decoded wire struct, so they cannot hand back the caller's object; the kept values are compared instead (`TestTSCasesCreateGatewayError`, `TestR87dprovrestAnthropicConvertUsageRaw`).
+- Google Interactions `serializes a json tool result to a stringified payload` (`expect(fr.result).toBe(...)`): the JSON tool result is a Go map, so its text has Go's sorted key order ("Tool output JSON key order in replayed prompts").
+
+## Google credential loading errors
+
+A Go `oauth2.TokenSource` or Application Default Credentials failure (Google Vertex, Vertex Anthropic, MaaS and Vertex xAI) is returned with a Go prefix such as `failed to fetch Google access token: <error>` or `failed to load Google application default credentials: <error>`, the source's error kept as the cause (`errors.Is` / `errors.As` reach it). TS loads credentials with `google-auth-library`, whose error texts Go's `golang.org/x/oauth2` cannot reproduce. An `AuthToken` function's error is returned unchanged, as TS returns a custom `generateAuthToken` error (review round 87d).
+
+## Errors of a caller-supplied HTTP transport
+
+An error that your own `HTTPClient` Transport returns is a TS fetch rejection, which TS returns unchanged. Go cannot tell such an error from a network failure the transport passed on from a stdlib `http.Transport` (an `EOF`, a TLS or HTTP/2 error is not a `net.Error`), so, outside the AI Gateway, it stays the retryable `Cannot connect to API: <error>` provider error, as for a failed fetch. Credential and signing errors of the SDK's own provider transports and key functions are returned unchanged (review round 87d). The AI Gateway, whose TS tests cover a rejecting `fetch`, treats a custom transport's non-network error as a fetch rejection (`Invalid error response format: Gateway request failed: <message>`).
 
 ## Features that are TypeScript-only (not ported)
 

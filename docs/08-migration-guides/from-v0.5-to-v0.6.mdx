@@ -481,6 +481,8 @@ already, you can skip them.
 | `VERCEL_OIDC_TOKEN_FILE` with `vercel.ResolveCredentials` / Vercel Sandbox sessions | The token file is read first | silent behavior change | None unless the file and `VERCEL_OIDC_TOKEN` differ | [The Vercel Sandbox reads VERCEL_OIDC_TOKEN_FILE](#vercel-oidc-token-file) |
 | `invalid VERCEL_OIDC_TOKEN`, `missing owner_id/project_id claims` | Token failures are `LocalOidcContextError` authentication failures; empty claims accepted | error text only | Match `*harness.SandboxAuthenticationError` | [Vercel OIDC token decoding follows getCredentialsFromOIDCToken](#vercel-oidc-token-decoding) |
 | Vercel Sandbox request URLs (`teamId=`, `projectId=`) | Team first, TS key order, empty values kept | wire/protocol change | None | [Vercel Sandbox request queries keep empty values and the TS order](#vercel-query-empty-values) |
+| AI Gateway errors without credentials or connection | The GatewayAuthenticationError itself; connection failures read "Invalid error response format: Gateway request failed" | error text only | None unless you match the text | [AI Gateway credential and connection errors follow TS](#gateway-transport-errors) |
+| `ADTokenProvider`, `AuthToken`, `TokenSource`, `APIKeyFunc`, AWS `CredentialProvider` failures; `Cannot connect to API` on a credential error | The credential error itself (not a `ProviderError`), not retried | silent behavior change | Match your error with `errors.Is` / `errors.As` | [Provider credential, signing and key-function errors are returned unchanged](#provider-credential-errors-unchanged) |
 
 ## Compile-time changes {#compile-time-changes}
 
@@ -6789,6 +6791,20 @@ compile-time changes.
 - **Am I affected?** Error text from the `youcom` search / contents tools after an HTTP 402 whose body holds non-string `message`, `upgrade_url` or `reset_at` values.
 - **What to do:** No action unless you match that error text.
 - **Kind:** error text only
+
+### AI Gateway credential and connection errors follow TS {#gateway-transport-errors}
+
+- **What changed:** With no API key or OIDC token, v0.5 returned a connection error reading `Cannot connect to API: Post "<url>": AI Gateway authentication failed: ...`. v0.6 returns the `*gatewayerrors.GatewayAuthenticationError` itself, as TS does (its `asGatewayError` returns a gateway error as is). A failed connection now reads `Invalid error response format: Gateway request failed`, a retryable `GatewayResponseError` with status 500 and the transport error as its cause, like the TS APICallError "Cannot connect to API" path; v0.5 appended `: Cannot connect to API: Post "...": <dial error>`. An error from your own `Config.HTTPClient` Transport that is not a network error is treated like a TS fetch rejection: a gateway error comes back as is, and any other error gives `Invalid error response format: Gateway request failed: <message>` with that error as the cause (review round 87d).
+- **Am I affected?** `gateway` models and provider calls. You are affected if your code matches the error text `Cannot connect to API` or `Gateway request failed: Cannot connect`, or type-asserts the top-level error of a missing-credential call.
+- **What to do:** No action unless you match these error texts. Use `errors.As(err, &authErr)` with `*gatewayerrors.GatewayAuthenticationError` / `*gatewayerrors.GatewayResponseError`.
+- **Kind:** error text only
+
+### Provider credential, signing and key-function errors are returned unchanged {#provider-credential-errors-unchanged}
+
+- **What changed:** An error raised while a provider authenticates a request now reaches the caller as the error itself, and the core retry does not retry it. This covers an Azure `ADTokenProvider`; a Google Vertex `AuthToken`, express-mode `APIKeyFunc`, MaaS, Vertex xAI or Vertex Anthropic token; an AWS SigV4 `CredentialProvider`, missing region or signing failure (Amazon Bedrock Mantle, Bedrock Anthropic, Anthropic on AWS); a Vertex project / location configuration error; and the `APIKeyFunc` of every provider that takes one. v0.5 returned a `*providererrors.ProviderError` (status 0) around `Cannot connect to API: Post "<url>": <error>` for the providers that authenticate in their HTTP transport, which the core retry treated as a connection failure (the token function ran up to three times), and a `*providererrors.ProviderError` around the error for a key function. TS throws these from the provider's fetch wrapper or from its headers resolution before the request, `handleFetchError` returns such a rejection unchanged, and only an APICallError with `isRetryable` is retried. The AWS credential-provider message now reads like TS: `AWS credential provider failed: <message>. Please ensure your credential provider returns valid AWS credentials with accessKeyId and secretAccessKey properties.` (Bedrock, Mantle and Bedrock Anthropic said `with AccessKeyID and SecretAccessKey fields`) (review round 87d).
+- **Am I affected?** Code that handles a failing `ADTokenProvider`, `AuthToken`, `TokenSource`, `APIKeyFunc` or `CredentialProvider` through `*providererrors.ProviderError` (`errors.As(err, &providerErr)`, `providerErr.Message`), the text `Cannot connect to API` or `provider error (0)`, or the old AWS text `with AccessKeyID and SecretAccessKey fields`; code that counts on the retry calling a token function again.
+- **What to do:** No action unless you match credential failures as a `ProviderError` or by that text. Match your own error with `errors.Is` / `errors.As`; it is returned as is. A token function that should be tried again must retry itself.
+- **Kind:** silent behavior change
 
 ## MCP {#mcp}
 
