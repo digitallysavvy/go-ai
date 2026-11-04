@@ -162,6 +162,13 @@ type Config struct {
 	// TeamIDOrSlug scopes Vercel access-token requests to a team.
 	TeamIDOrSlug string
 
+	// OIDCTokenFunc resolves the Vercel OIDC token used when no API key is
+	// configured (TS getGatewayAuthToken's getVercelOidcToken()). Use
+	// VercelOIDCTokenFunc for the TS lookup with token refresh. When nil,
+	// VERCEL_OIDC_TOKEN is read as is. An error (or an empty token) fails the
+	// request with a GatewayAuthenticationError whose cause is that error.
+	OIDCTokenFunc func(ctx context.Context) (string, error) `json:"-"`
+
 	// BaseURL is the base URL for the AI Gateway API
 	// Default: https://ai-gateway.vercel.sh/v4/ai
 	BaseURL string
@@ -506,6 +513,17 @@ func resolveGatewayAuthToken(ctx context.Context, cfg Config) (token string, aut
 	}
 	if apiKey != "" {
 		return apiKey, "api-key", nil
+	}
+
+	if cfg.OIDCTokenFunc != nil {
+		token, err := cfg.OIDCTokenFunc(ctx)
+		if err == nil && token == "" {
+			err = &VercelOIDCTokenError{Message: vercelOIDCMissingMessage}
+		}
+		if err != nil {
+			return "", "", gatewayerrors.CreateContextualAuthenticationError(false, false, http.StatusUnauthorized, err, "")
+		}
+		return token, "oidc", nil
 	}
 
 	if oidcToken := strings.TrimSpace(os.Getenv("VERCEL_OIDC_TOKEN")); oidcToken != "" {
