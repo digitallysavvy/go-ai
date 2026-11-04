@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	neturl "net/url"
 	"strings"
 	"time"
@@ -318,7 +317,7 @@ func NewDownloadClient(rawURL string, opts DownloadOptions) *http.Client {
 // (`/caf\xc3\xa9` -> `/caf%C3%83%C2%A9`); http.Client follows the first raw
 // line. ok is false when both read the same text or the TS text does not
 // resolve.
-func fetchRedirectURL(req *http.Request, via []*http.Request) (*url.URL, bool) {
+func fetchRedirectURL(req *http.Request, via []*http.Request) (*neturl.URL, bool) {
 	if req.Response == nil || len(via) == 0 {
 		return nil, false
 	}
@@ -337,7 +336,7 @@ func fetchRedirectURL(req *http.Request, via []*http.Request) (*url.URL, bool) {
 			fmt.Fprintf(&b, "%%%02X", c)
 		}
 	}
-	ref, err := url.Parse(b.String())
+	ref, err := neturl.Parse(b.String())
 	if err != nil {
 		return nil, false
 	}

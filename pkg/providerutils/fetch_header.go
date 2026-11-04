@@ -52,7 +52,7 @@ func IsomorphicDecode(s string) string {
 func FetchURL(input string) (string, error) {
 	href, err := urlnorm.Href(input)
 	if err != nil {
-		return "", fmt.Errorf("Failed to parse URL from %s", input)
+		return "", fmt.Errorf("Failed to parse URL from %s", input) //nolint:staticcheck // TS fetch TypeError text
 	}
 	return href, nil
 }
