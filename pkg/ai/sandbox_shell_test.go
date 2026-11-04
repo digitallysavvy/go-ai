@@ -224,7 +224,7 @@ func TestShellSandboxTextFileEncoding(t *testing.T) {
 	if err := sb.WriteTextFile(context.Background(), SandboxWriteTextFileOptions{
 		Path:     path,
 		Content:  "caf\u00e9",
-		Encoding: "iso-8859-1",
+		Encoding: "latin1",
 	}); err != nil {
 		t.Fatalf("WriteTextFile() error = %v", err)
 	}
@@ -237,7 +237,7 @@ func TestShellSandboxTextFileEncoding(t *testing.T) {
 	}
 	text, err := sb.ReadTextFile(context.Background(), SandboxReadTextFileOptions{
 		Path:     path,
-		Encoding: "iso-8859-1",
+		Encoding: "latin1",
 	})
 	if err != nil {
 		t.Fatalf("ReadTextFile() error = %v", err)
