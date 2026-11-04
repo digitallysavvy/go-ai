@@ -589,8 +589,8 @@ func (s *openAIBatchResultsStream) Next() (*provider.BatchV4ItemResult, error) {
 			continue
 		}
 
-		line := bytes.TrimSpace(s.scanner.Bytes())
-		if len(line) == 0 {
+		line := s.scanner.Bytes()
+		if providerutils.JSONLineIsBlank(line) {
 			continue
 		}
 		var wire openAIBatchResultLineWire

@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -95,6 +96,55 @@ func TestR86bprovbCompatProviderOptionsNameJSTrim(t *testing.T) {
 		})
 		if got := body["user"] == "u1"; got != tc.want {
 			t.Errorf("provider %q, options key %q: user sent = %v, want %v (body %#v)", tc.name, tc.key, got, tc.want, body)
+		}
+	}
+}
+
+// TestR86bprovbBatchResultsBlankLinesJSTrim pins TS parseJsonLines
+// (`line.trim().length > 0`, then parseJSON of the untrimmed row): a row of
+// U+FEFF / U+3000 is skipped, a row of U+0085 and JSON behind U+00A0 fail.
+func TestR86bprovbBatchResultsBlankLinesJSTrim(t *testing.T) {
+	ok1 := `{"custom_id":"a","response":null,"error":{"code":"batch_cancelled","message":"x"}}`
+	ok2 := `{"custom_id":"b","response":null,"error":{"code":"batch_cancelled","message":"x"}}`
+	for _, tc := range []struct {
+		name, content string
+		items         int
+		wantErr       bool
+	}{
+		{"blank FEFF and U+3000 rows", ok1 + "\n\ufeff\n\u3000\t\r\n" + ok2 + "\n", 2, false},
+		{"U+0085 row", ok1 + "\n\u0085\n" + ok2 + "\n", 1, true},
+		{"JSON behind U+00A0", ok1 + "\n\u00a0" + ok2 + "\n", 1, true},
+	} {
+		mux := http.NewServeMux()
+		srv := httptest.NewServer(mux)
+		mux.HandleFunc("/batches/batch_1", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"batch_1","status":"completed","output_file_id":"file-out"}`))
+		})
+		mux.HandleFunc("/files/file-out/content", func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(tc.content))
+		})
+		stream, err := New(Config{APIKey: "k", BaseURL: srv.URL}).ExperimentalBatch().DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "batch_1"})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		items := 0
+		var gotErr error
+		for {
+			_, err := stream.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				gotErr = err
+				break
+			}
+			items++
+		}
+		_ = stream.Close()
+		srv.Close()
+		if items != tc.items || (gotErr != nil) != tc.wantErr {
+			t.Errorf("%s: %d items, err %v; want %d items, error %v", tc.name, items, gotErr, tc.items, tc.wantErr)
 		}
 	}
 }

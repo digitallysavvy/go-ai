@@ -56,6 +56,15 @@ func NewJSONLinesScanner(r io.Reader, maxLineBytes int) *bufio.Scanner {
 	return scanner
 }
 
+// JSONLineIsBlank reports whether a JSON Lines row is skipped: TS
+// parseJsonLines parses a row only when `line.trim().length > 0` (JS trim:
+// U+FEFF and U+00A0 count as blank, U+0085 does not), and then parses the
+// row itself, untrimmed, so JSON behind a non-JSON space fails like
+// JSON.parse.
+func JSONLineIsBlank(line []byte) bool {
+	return JSTrim(string(line)) == ""
+}
+
 // jsonLinesSplit is bufio.ScanLines over the text TS parseJsonLines decodes
 // with TextDecoder (response-handler.ts 279): the stream's leading BOM is
 // dropped and each maximal invalid UTF-8 subpart in a row is one U+FFFD.
