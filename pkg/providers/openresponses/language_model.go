@@ -127,11 +127,13 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	// with, and must raise a descriptive error rather than silently
 	// producing an empty result.
 	if response.Output == nil {
+		// TS `incomplete_details?.reason ?? status`: a present empty reason
+		// is kept (and then adds no detail).
 		detail := ""
 		if response.IncompleteDetails != nil {
 			detail = response.IncompleteDetails.Reason
 		}
-		if detail == "" {
+		if detail == "" && !openResponsesHasIncompleteReason(httpResp.Body) {
 			detail = response.Status
 		}
 		message := "Responses API returned no output"
@@ -1937,6 +1939,20 @@ func wireNumberPresent(raw map[string]interface{}, object, key string) bool {
 var openResponsesOptionsSchema = providerutils.OptionSchema{
 	"reasoningEffort":  providerutils.OptNullable(providerutils.OptString),
 	"reasoningSummary": providerutils.OptNullable(providerutils.OptEnum("concise", "detailed", "auto")),
+}
+
+// openResponsesHasIncompleteReason reports whether a response body carries a
+// non-null incomplete_details.reason.
+func openResponsesHasIncompleteReason(body []byte) bool {
+	var w struct {
+		IncompleteDetails struct {
+			Reason json.RawMessage `json:"reason"`
+		} `json:"incomplete_details"`
+	}
+	if json.Unmarshal(body, &w) != nil {
+		return false
+	}
+	return len(w.IncompleteDetails.Reason) > 0 && string(w.IncompleteDetails.Reason) != "null"
 }
 
 // responseFailedHasCode reports whether a response.failed event carries a

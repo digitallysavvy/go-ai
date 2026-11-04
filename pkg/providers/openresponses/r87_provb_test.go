@@ -178,3 +178,25 @@ func TestR87provbStreamErrorCodeTypes(t *testing.T) {
 		t.Fatalf("generate err = %v, want the API error message", err)
 	}
 }
+
+// TS doGenerate without output: `incomplete_details?.reason ?? status`, and
+// an empty detail adds no suffix.
+func TestR87provbNoOutputDetail(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"id":"r","status":"incomplete","incomplete_details":{"reason":""}}`:           "Responses API returned no output",
+		`{"id":"r","status":"incomplete","incomplete_details":{"reason":null}}`:         "Responses API returned no output (incomplete)",
+		`{"id":"r","status":"incomplete"}`:                                              "Responses API returned no output (incomplete)",
+		`{"id":"r","status":"incomplete","incomplete_details":{"reason":"max_tokens"}}`: "Responses API returned no output (max_tokens)",
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(body))
+		}))
+		m := NewLanguageModel(New(Config{BaseURL: srv.URL, Name: "open-responses"}), "m")
+		_, err := m.DoGenerate(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+		srv.Close()
+		if err == nil || !strings.Contains(err.Error(), want) || (want == "Responses API returned no output" && strings.Contains(err.Error(), "output (")) {
+			t.Errorf("%s: err = %v, want %q", body, err, want)
+		}
+	}
+}
