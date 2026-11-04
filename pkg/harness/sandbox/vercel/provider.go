@@ -355,7 +355,10 @@ func pollForTemplateSnapshotWithTimeout(ctx context.Context, client *APIClient, 
 	return "", fmt.Errorf("Timed out waiting for snapshot of template %q to publish.", name) //nolint:staticcheck // matches TS SDK's exact error text
 }
 
-var sandboxNameConflictPattern = regexp.MustCompile(`(?i)sandbox.*name.*already exists`)
+// sandboxNameConflictPattern is TS /sandbox.*name.*already exists/i: JS `.`
+// stops at a line terminator, and a /i regexp without the u flag never
+// folds s to U+017F (Go (?i) does).
+var sandboxNameConflictPattern = regexp.MustCompile(`(?i)(?-i:[sS])andbox` + providerutils.JSRegexpDot + `*name` + providerutils.JSRegexpDot + `*already exi(?-i:[sS])t(?-i:[sS])`)
 
 // isSandboxNameConflictError reports the API's duplicate sandbox name
 // response (400 or 409 with an "already exists" message).

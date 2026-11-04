@@ -98,7 +98,7 @@ func validateQuiverAIReferenceBytes(data []byte, argument string) error {
 
 // svgHeadPattern mirrors the TS SDK's isSvg head regex:
 // /^(?:(?:<\?xml[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE[\s\S]*?>)\s*)*<svg(?:\s|>)/i
-var svgHeadPattern = regexp.MustCompile(`(?is)^(?:(?:<\?xml.*?\?>|<!--.*?-->|<!DOCTYPE.*?>)` + jsSpace + `*)*<svg(?:` + jsSpace + `|>)`)
+var svgHeadPattern = regexp.MustCompile(`(?is)^(?:(?:<\?xml.*?\?>|<!--.*?-->|<!DOCTYPE.*?>)` + jsSpace + `*)*<` + svgName + `(?:` + jsSpace + `|>)`)
 
 // svgTailPattern and svgSelfClosingPattern mirror
 // prepare-quiverai-image-reference.ts's isSvg suffix checks:
@@ -107,13 +107,17 @@ var svgHeadPattern = regexp.MustCompile(`(?is)^(?:(?:<\?xml.*?\?>|<!--.*?-->|<!D
 // svgStrictHeadPattern is the reference-image variant (at most one xml
 // declaration, comment and doctype, in that order):
 // /^(?:<\?xml[\s\S]*?\?>\s*)?(?:<!--[\s\S]*?-->\s*)?(?:<!DOCTYPE[\s\S]*?>\s*)?<svg[\s>]/i
-var svgStrictHeadPattern = regexp.MustCompile(`(?is)^(?:<\?xml.*?\?>` + jsSpace + `*)?(?:<!--.*?-->` + jsSpace + `*)?(?:<!DOCTYPE.*?>` + jsSpace + `*)?<svg(?:` + jsSpace + `|>)`)
-var svgTailPattern = regexp.MustCompile(`(?is)</svg>` + jsSpace + `*$`)
-var svgSelfClosingPattern = regexp.MustCompile(`(?is)<svg(?:` + jsSpace + `[^>]*)?/>` + jsSpace + `*$`)
+var svgStrictHeadPattern = regexp.MustCompile(`(?is)^(?:<\?xml.*?\?>` + jsSpace + `*)?(?:<!--.*?-->` + jsSpace + `*)?(?:<!DOCTYPE.*?>` + jsSpace + `*)?<` + svgName + `(?:` + jsSpace + `|>)`)
+var svgTailPattern = regexp.MustCompile(`(?is)</` + svgName + `>` + jsSpace + `*$`)
+var svgSelfClosingPattern = regexp.MustCompile(`(?is)<` + svgName + `(?:` + jsSpace + `[^>]*)?/>` + jsSpace + `*$`)
 
 // jsSpace is the JavaScript regular expression `\s` class (WhiteSpace and
 // LineTerminator), wider than Go's ASCII-only `\s`.
-const jsSpace = `[\t\n\v\f\r \x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]`
+const jsSpace = providerutils.JSRegexpSpace
+
+// svgName is the TS `svg` of a /i regexp without the u flag: Go (?i) would
+// also fold its s to U+017F.
+const svgName = `(?-i:[sS])vg`
 
 const maxSVGHeadSniffBytes = 4096
 
