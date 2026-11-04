@@ -8,13 +8,14 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
-// cerebrasErrorPayload documents the Cerebras API error shape:
-// {"message": string, "type": string, "param": any, "code": string}.
+// cerebrasErrorPayload mirrors TS cerebrasErrorSchema: message, type, param
+// and code are all required strings (a body missing one, or with a
+// non-string one, is not a Cerebras error), and "" is a valid message.
 type cerebrasErrorPayload struct {
-	Message string      `json:"message"`
-	Type    string      `json:"type"`
-	Param   interface{} `json:"param,omitempty"`
-	Code    string      `json:"code,omitempty"`
+	Message *string `json:"message"`
+	Type    *string `json:"type"`
+	Param   *string `json:"param"`
+	Code    *string `json:"code"`
 }
 
 func parseCerebrasProviderError(err error) error {
@@ -36,12 +37,13 @@ func parseCerebrasHTTPStatusError(candidate error, cause error) error {
 		return nil
 	}
 	var payload cerebrasErrorPayload
-	if err := json.Unmarshal(statusErr.Body, &payload); err != nil || payload.Message == "" {
+	if err := json.Unmarshal(statusErr.Body, &payload); err != nil ||
+		payload.Message == nil || payload.Type == nil || payload.Param == nil || payload.Code == nil {
 		return nil
 	}
-	code := payload.Code
+	code := *payload.Code
 	if code == "" {
-		code = payload.Type
+		code = *payload.Type
 	}
-	return providererrors.NewProviderError("cerebras", statusErr.StatusCode, code, payload.Message, cause)
+	return providererrors.NewProviderError("cerebras", statusErr.StatusCode, code, *payload.Message, cause)
 }
