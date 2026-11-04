@@ -1,6 +1,7 @@
 package providerutils
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -234,11 +235,19 @@ func OpenAICompatibleCommonOptionWarnings(options map[string]interface{}) []type
 	})
 }
 
+// DeprecatedOpenAICompatibleOptionWarnings returns a deprecation warning for
+// each deprecated option key present, in key order (deterministic, unlike
+// map iteration).
 func DeprecatedOpenAICompatibleOptionWarnings(options map[string]interface{}, replacements map[string]string) []types.Warning {
+	rawNames := make([]string, 0, len(replacements))
+	for rawName := range replacements {
+		rawNames = append(rawNames, rawName)
+	}
+	sort.Strings(rawNames)
 	var warnings []types.Warning
-	for rawName, camelName := range replacements {
+	for _, rawName := range rawNames {
 		if _, ok := options[rawName]; ok {
-			warnings = append(warnings, deprecatedProviderOptionKeyWarning(rawName, camelName))
+			warnings = append(warnings, deprecatedProviderOptionKeyWarning(rawName, replacements[rawName]))
 		}
 	}
 	return warnings
