@@ -46,10 +46,15 @@ func languageModelToolDefinition(t types.Tool) *jsonorder.Object {
 		inputSchema = empty
 	}
 	def.Set("inputSchema", inputSchema)
+	// TS `description != null`: Go's v0.5.2 string field cannot tell an
+	// empty description from an unset one, so "" is omitted (known
+	// difference).
 	if t.Description != "" {
 		def.Set("description", t.Description)
 	}
-	if len(t.InputExamples) > 0 {
+	// TS `inputExamples != null`: a non-nil empty slice is present and
+	// written as [].
+	if t.InputExamples != nil {
 		examples := make([]map[string]interface{}, 0, len(t.InputExamples))
 		for _, ex := range t.InputExamples {
 			examples = append(examples, map[string]interface{}{"input": ex.Input})

@@ -1692,72 +1692,116 @@ type runtimeContextAttrsKey struct{}
 // getRuntimeContextAttributes (otel/src/supplemental-attributes.ts): nested
 // objects recurse, arrays and other primitives are kept as-is, and nil
 // values are skipped.
+//
+// TS writes every flattened key into one object, so a dotted key that names
+// the same path as a nested one ({"a.b": 1, "a": {"b": 2}}) yields a single
+// attribute holding the later entry's value (and a later value the sanitizer
+// drops removes it). Go keeps one attribute per name the same way, visiting
+// entries in runtimeContextObject order.
 func runtimeContextAttributes(runtimeContext map[string]interface{}) []attribute.KeyValue {
 	if len(runtimeContext) == 0 {
 		return nil
 	}
+	acc := &runtimeContextAccumulator{index: map[string]int{}}
+	acc.add("ai.settings.context", runtimeContext)
 	var attrs []attribute.KeyValue
-	for key, value := range runtimeContext {
-		attrs = appendRuntimeContextAttribute(attrs, "ai.settings.context."+key, value)
+	for i, kv := range acc.attrs {
+		if acc.valid[i] {
+			attrs = append(attrs, kv)
+		}
 	}
 	return attrs
 }
 
-func appendRuntimeContextAttribute(attrs []attribute.KeyValue, key string, value interface{}) []attribute.KeyValue {
+// runtimeContextAccumulator is TS's attributes object: one slot per name in
+// first-write order, the last write's value (or none when the sanitizer
+// rejects it).
+type runtimeContextAccumulator struct {
+	attrs []attribute.KeyValue
+	valid []bool
+	index map[string]int
+}
+
+func (a *runtimeContextAccumulator) add(key string, value interface{}) {
 	if value == nil {
-		return attrs
+		return
 	}
-	if nested, ok := runtimeContextObject(value); ok {
-		for nestedKey, nestedValue := range nested {
-			attrs = appendRuntimeContextAttribute(attrs, key+"."+nestedKey, nestedValue)
+	if keys, get, ok := runtimeContextObject(value); ok {
+		for _, nestedKey := range keys {
+			a.add(key+"."+nestedKey, get(nestedKey))
 		}
-		return attrs
+		return
 	}
 	// Arrays and primitives are kept as they are, then sanitized like every
-	// TS attribute value (selectAttributes -> sanitizeAttributeValue).
-	if kv, ok := enrichAttribute(key, value); ok {
-		return append(attrs, kv)
+	// TS attribute value (selectAttributes -> sanitizeAttributeValue). An
+	// ordered decode's json.Number leaves are numbers (jsonorder.Plain).
+	kv, ok := enrichAttribute(key, jsonorder.Plain(value))
+	if i, seen := a.index[key]; seen {
+		a.attrs[i], a.valid[i] = kv, ok
+		return
 	}
-	return attrs
+	a.index[key] = len(a.attrs)
+	a.attrs = append(a.attrs, kv)
+	a.valid = append(a.valid, ok)
 }
 
 // runtimeContextObject returns the entries of a value TS treats as an object
-// to flatten (typeof 'object', not an array): any string-keyed map, or a
-// struct by its JSON fields.
-func runtimeContextObject(value interface{}) (map[string]interface{}, bool) {
-	if m, ok := value.(map[string]interface{}); ok {
-		return m, true
+// to flatten (typeof 'object', not an array): any string-keyed map, an
+// ordered object, or a struct by its JSON fields. Entries come in the order
+// TS Object.entries would visit them where Go can see one: an ordered object
+// (*jsonorder.Object) keeps its wire order and a struct its JSON field order.
+// A map has none, so its keys are sorted (array-index keys first, as JS
+// enumerates them), the order Go serializes the same map.
+func runtimeContextObject(value interface{}) ([]string, func(string) interface{}, bool) {
+	switch obj := value.(type) {
+	case map[string]interface{}:
+		return jsonorder.FromMap(obj).Keys(), func(k string) interface{} { return obj[k] }, true
+	case *jsonorder.Object:
+		if obj == nil {
+			return nil, nil, false
+		}
+		return obj.Keys(), func(k string) interface{} {
+			v, _ := obj.Get(k)
+			return v
+		}, true
 	}
 	rv := reflect.ValueOf(value)
 	for rv.Kind() == reflect.Pointer {
 		if rv.IsNil() {
-			return nil, false
+			return nil, nil, false
 		}
 		rv = rv.Elem()
 	}
 	switch rv.Kind() {
 	case reflect.Map:
 		if rv.Type().Key().Kind() != reflect.String {
-			return nil, false
+			return nil, nil, false
 		}
 		out := make(map[string]interface{}, rv.Len())
 		iter := rv.MapRange()
 		for iter.Next() {
 			out[iter.Key().String()] = iter.Value().Interface()
 		}
-		return out, true
+		return jsonorder.FromMap(out).Keys(), func(k string) interface{} { return out[k] }, true
 	case reflect.Struct:
 		b, err := json.Marshal(rv.Interface())
 		if err != nil {
-			return nil, false
+			return nil, nil, false
 		}
-		var out map[string]interface{}
-		if json.Unmarshal(b, &out) != nil {
-			return nil, false
+		tree, ok := jsonorder.Parse(b)
+		if !ok {
+			return nil, nil, false
 		}
-		return out, true
+		obj, ok := tree.(*jsonorder.Object)
+		if !ok {
+			return nil, nil, false
+		}
+		return obj.Keys(), func(k string) interface{} {
+			v, _ := obj.Get(k)
+			return v
+		}, true
 	}
-	return nil, false
+	return nil, nil, false
 }
 
 // stepSpanFor resolves this integration's open step span for callID from its

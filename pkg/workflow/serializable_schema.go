@@ -65,7 +65,7 @@ type SerializableToolDef struct {
 	ProviderExecuted        bool                     `json:"providerExecuted,omitempty"`
 	IsProviderExecuted      bool                     `json:"isProviderExecuted,omitempty"`
 	SupportsDeferredResults bool                     `json:"supportsDeferredResults,omitempty"`
-	InputExamples           []types.ToolInputExample `json:"inputExamples,omitempty"`
+	InputExamples           []types.ToolInputExample `json:"inputExamples,omitzero"`
 	ProviderMetadata        map[string]interface{}   `json:"providerMetadata,omitempty"`
 	// HasOwnValidator records that the original input schema validates (and
 	// possibly normalizes) input with its own runtime validator, not just JSON

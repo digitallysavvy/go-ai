@@ -425,8 +425,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 
 	// Registered before the user-message submitter's own reconnect handler,
 	// so a lost turn start is retried before pending steering is replayed.
-	var unsubs []func()
-	unsubs = append(unsubs, s.opts.channel.OnReconnect(pc.retryStartAfterReconnect))
+	pc.subs.Add(s.opts.channel.OnReconnect(pc.retryStartAfterReconnect))
 
 	// Mid-turn steering: only when the bridge advertised acknowledged user
 	// messages on its hello (captured once at DoStart time — see
@@ -462,7 +461,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 	}
 	for _, t := range eventTypes {
 		t := t
-		unsubs = append(unsubs, s.opts.channel.On(t, func(e bridge.Event) {
+		pc.subs.Add(s.opts.channel.On(t, func(e bridge.Event) {
 			if t == harness.PartTypeFinishStep {
 				pc.checkpoint.Record(e)
 			}
@@ -471,7 +470,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 			}
 		}))
 	}
-	unsubs = append(unsubs, s.opts.channel.On(harness.PartTypeFinish, func(e bridge.Event) {
+	pc.subs.Add(s.opts.channel.On(harness.PartTypeFinish, func(e bridge.Event) {
 		f, ok := e.Message.(bridge.StreamPartFrame)
 		if !ok {
 			return
@@ -488,7 +487,10 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		forward(f.Part)
 		pc.settleSuccess()
 	}))
-	unsubs = append(unsubs, s.opts.channel.On(harness.PartTypeError, func(e bridge.Event) {
+	// A buffered finish or error can settle the turn while its listeners are
+	// still being registered (the channel replays it from On): Subscriptions
+	// then removes each later listener as soon as it is added.
+	pc.subs.Add(s.opts.channel.On(harness.PartTypeError, func(e bridge.Event) {
 		f, ok := e.Message.(bridge.StreamPartFrame)
 		if !ok {
 			return
@@ -500,19 +502,6 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		}
 		pc.settleError(cause)
 	}))
-	pc.mu.Lock()
-	settled := pc.settled
-	if !settled {
-		pc.unsubs = unsubs
-	}
-	pc.mu.Unlock()
-	if settled {
-		// A buffered finish or error settled the turn while its listeners
-		// were being registered.
-		for _, u := range unsubs {
-			u()
-		}
-	}
 	// Listeners are registered: release events the channel buffered while an
 	// attach/replay was in flight (first turn only).
 	s.mu.Lock()
@@ -549,9 +538,11 @@ type promptControl struct {
 	bridgeHello      func() *bridge.Hello
 	turnStartTimeout time.Duration
 
+	// subs holds the turn's bridge listener unsubscribes; settle runs them.
+	subs harnessutil.Subscriptions
+
 	// mu guards the fields below.
 	mu      sync.Mutex
-	unsubs  []func()
 	settled bool
 	// pendingStart is the start frame until the turn's first event (or its
 	// settlement); awaitingStartSend is true while it is queued but not yet
@@ -576,13 +567,9 @@ func (c *promptControl) settle(err error) {
 		c.mu.Lock()
 		c.settled = true
 		c.clearPendingStartLocked()
-		unsubs := c.unsubs
-		c.unsubs = nil
 		c.mu.Unlock()
 		c.err = err
-		for _, u := range unsubs {
-			u()
-		}
+		c.subs.UnsubscribeAll()
 		if c.userMessages != nil {
 			c.userMessages.Close(err)
 		}
