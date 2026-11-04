@@ -86,17 +86,8 @@ func buildXAIStreamingTranscriptionURL(baseURL, modelID string, inputAudioFormat
 	// null values, and URLSearchParams re-serializes the whole query with
 	// form escaping ("~" -> %7E, "*" literal, space "+"), keeping the order
 	// and any query of the base URL first.
-	var pairs [][2]string
-	for _, part := range strings.Split(u.RawQuery, "&") {
-		if part == "" {
-			continue
-		}
-		k, v, _ := strings.Cut(part, "=")
-		k, _ = url.QueryUnescape(k)
-		v, _ = url.QueryUnescape(v)
-		pairs = append(pairs, [2]string{k, v})
-	}
-	add := func(k, v string) { pairs = append(pairs, [2]string{k, v}) }
+	params := internalhttp.ParseSearchParams(u.RawQuery)
+	add := params.Append
 	addBool := func(k string, b *bool) {
 		if b != nil {
 			add(k, strconv.FormatBool(*b))
@@ -144,11 +135,7 @@ func buildXAIStreamingTranscriptionURL(baseURL, modelID string, inputAudioFormat
 		addInt("smart_turn_timeout", opts.Streaming.SmartTurnTimeout)
 	}
 
-	encoded := make([]string, len(pairs))
-	for i, kv := range pairs {
-		encoded[i] = internalhttp.EncodeQuery(map[string]string{kv[0]: kv[1]})
-	}
-	u.RawQuery = strings.Join(encoded, "&")
+	u.RawQuery = params.Encode()
 	return u, nil
 }
 
