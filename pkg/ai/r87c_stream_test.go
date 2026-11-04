@@ -892,3 +892,486 @@ func TestR87cstreamToUIMessageStreamResponseCustomHeaders(t *testing.T) {
 	}
 	r87cstreamAssertSSE(t, "body", r87cstreamSSEEvents(string(body)), r87cstreamHelloSSE)
 }
+
+// r87cstreamClockStream advances a fake clock to at[i] (when non-zero)
+// before it returns chunk i, so step timings are deterministic: the Go
+// analog of TS _internal.now mockValues, tied to the chunks instead of the
+// call order.
+type r87cstreamClockStream struct {
+	chunks []provider.StreamChunk
+	at     []int64
+	clock  *r87cstreamClock
+	i      int
+}
+
+type r87cstreamClock struct {
+	mu sync.Mutex
+	ms int64
+}
+
+func (c *r87cstreamClock) set(ms int64) { c.mu.Lock(); c.ms = ms; c.mu.Unlock() }
+func (c *r87cstreamClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return time.UnixMilli(c.ms)
+}
+
+func (s *r87cstreamClockStream) Next() (*provider.StreamChunk, error) {
+	if s.i >= len(s.chunks) {
+		return nil, io.EOF
+	}
+	if s.i < len(s.at) && s.at[s.i] != 0 {
+		s.clock.set(s.at[s.i])
+	}
+	c := s.chunks[s.i]
+	s.i++
+	return &c, nil
+}
+
+func (s *r87cstreamClockStream) Err() error   { return nil }
+func (s *r87cstreamClockStream) Close() error { return nil }
+
+// stream-text.test.ts 9285: result.steps > should include step performance
+// (now: 1000 at the step and call start, the three text deltas at 1200,
+// 1300 and 1400, the finish and step end at 1500).
+func TestR87cstreamStepPerformance(t *testing.T) {
+	clock := &r87cstreamClock{ms: 1000}
+	model := &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id", DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		// stream-start, response-metadata, text-start, 3 deltas, text-end, finish
+		return &r87cstreamClockStream{chunks: r87cstreamDefaultStream(nil), at: []int64{0, 0, 0, 1200, 1300, 1400, 0, 1500}, clock: clock}, nil
+	}}
+	internal := r87cstreamDefaultInternal()
+	internal.now = clock.now
+	r := r71streamRun(t, StreamTextOptions{Model: model, Prompt: "prompt", Internal: internal})
+	r75streamAssertJSON(t, "performance", r.FinalStep().Performance, `{"effectiveOutputTokensPerSecond":20,"outputTokensPerSecond":33.333333333333336,"inputTokensPerSecond":15,"effectiveTotalTokensPerSecond":26,"stepTimeMs":500,"responseTimeMs":500,"toolExecutionMs":{},"timeToFirstOutputMs":200,"timeBetweenOutputChunksMs":{"min":100,"p10":100,"median":100,"avg":100,"p90":100,"max":100}}`)
+}
+
+// r87cstreamTSContent projects a Go content part onto the TS content part
+// snapshot shape (files as TS DefaultGeneratedFileWithType).
+func r87cstreamTSContent(t *testing.T, p types.ContentPart) interface{} {
+	t.Helper()
+	md := func(m map[string]interface{}, raw json.RawMessage) {
+		if len(raw) > 0 && string(raw) != "null" {
+			m["providerMetadata"] = raw
+		}
+	}
+	switch c := p.(type) {
+	case types.GeneratedFileContent:
+		m := map[string]interface{}{"type": "file", "file": r87cstreamFileJSON(c.MediaType, c.FileData, c.Data)}
+		md(m, c.ProviderMetadata)
+		return m
+	case types.ReasoningFileContent:
+		m := map[string]interface{}{"type": "reasoning-file", "file": r87cstreamFileJSON(c.MediaType, c.FileData, c.Data)}
+		md(m, c.ProviderMetadata)
+		return m
+	case types.ReasoningContent:
+		m := map[string]interface{}{"type": "reasoning", "text": c.Text}
+		md(m, c.ProviderMetadata)
+		return m
+	case types.TextContent:
+		m := map[string]interface{}{"type": "text", "text": c.Text}
+		md(m, c.ProviderMetadata)
+		return m
+	}
+	return r75streamNormalize(t, p)
+}
+
+// r87cstreamTSMessages renders messages as JSON with reasoning-file parts in
+// the TS ModelMessage shape ({type, data, mediaType, providerOptions}): Go
+// marshals ReasoningFileContent with its tagged fileData and a null data
+// (cr-r87c-stream-to-gen.md).
+func r87cstreamTSMessages(t *testing.T, msgs []types.Message) interface{} {
+	t.Helper()
+	v := r75streamNormalize(t, msgs)
+	list, _ := v.([]interface{})
+	for _, m := range list {
+		mm, _ := m.(map[string]interface{})
+		parts, _ := mm["content"].([]interface{})
+		for _, p := range parts {
+			pm, _ := p.(map[string]interface{})
+			if pm["type"] != "reasoning-file" {
+				continue
+			}
+			if fd, ok := pm["fileData"].(map[string]interface{}); ok {
+				pm["data"] = fd["data"]
+				delete(pm, "fileData")
+			}
+		}
+	}
+	return v
+}
+
+// r87cstreamTSStep projects a Go step result onto the TS DefaultStepResult
+// snapshot (its own fields; Go's nil runtime / tools contexts are TS's {}).
+func r87cstreamTSStep(t *testing.T, s types.StepResult) map[string]interface{} {
+	t.Helper()
+	content := []interface{}{}
+	for _, p := range s.Content {
+		content = append(content, r87cstreamTSContent(t, p))
+	}
+	req := map[string]interface{}{}
+	if s.Request.Body != nil {
+		req["body"] = s.Request.Body
+	}
+	if s.Request.Messages != nil {
+		req["messages"] = s.Request.Messages
+	}
+	resp := map[string]interface{}{"id": s.Response.ID, "modelId": s.Response.ModelID, "timestamp": s.Response.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z07:00"), "messages": r87cstreamTSMessages(t, s.Response.Messages)}
+	if len(s.Response.Headers) > 0 {
+		resp["headers"] = s.Response.Headers
+	}
+	if s.Response.Body != nil {
+		resp["body"] = s.Response.Body
+	}
+	var runtimeCtx interface{} = map[string]interface{}{}
+	if s.RuntimeContext != nil {
+		runtimeCtx = s.RuntimeContext
+	}
+	toolsCtx := s.ToolsContext
+	if toolsCtx == nil {
+		toolsCtx = map[string]interface{}{}
+	}
+	warnings := s.Warnings
+	if warnings == nil {
+		warnings = []types.Warning{}
+	}
+	m := map[string]interface{}{
+		"callId": s.CallID, "content": content, "finishReason": string(s.FinishReason),
+		"model": map[string]interface{}{"modelId": s.Model.ModelID, "provider": s.Model.Provider},
+		"performance": s.Performance, "request": req, "response": resp,
+		"runtimeContext": runtimeCtx, "stepNumber": s.StepNumber, "toolsContext": toolsCtx,
+		"usage": s.Usage, "warnings": warnings,
+	}
+	if s.RawFinishReason != "" {
+		m["rawFinishReason"] = s.RawFinishReason
+	}
+	if len(s.ProviderMetadata) > 0 {
+		m["providerMetadata"] = s.ProviderMetadata
+	}
+	return m
+}
+
+const r87cstreamUsageJSON = `{"inputTokenDetails":{"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"textTokens":10},"outputTokens":10,"totalTokens":13}`
+
+// stream-text.test.ts 7707: result.warnings > should resolve with warnings.
+func TestR87cstreamResultWarnings(t *testing.T) {
+	r := r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, r87cstreamDefaultStream([]types.Warning{{Type: "other", Message: "test-warning"}})), Prompt: "test-input"})
+	r75streamAssertJSON(t, "warnings", r.Warnings(), `[{"type":"other","message":"test-warning"}]`)
+}
+
+// stream-text.test.ts 7858: result.usage > should resolve with token usage.
+func TestR87cstreamResultUsage(t *testing.T) {
+	r := r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, []provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Hello"}, {Type: provider.ChunkTypeTextEnd, ID: "1"},
+		r87cstreamFinish(types.FinishReasonStop, "stop"),
+	}), Prompt: "test-input"})
+	r75streamAssertJSON(t, "usage", r.Usage(), r87cstreamUsageJSON)
+}
+
+// stream-text.test.ts 7944: result.responseMessages > should contain
+// reasoning (modelWithReasoning).
+func TestR87cstreamResponseMessagesReasoning(t *testing.T) {
+	r := r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, r74streamReasoningSteps()), Prompt: "prompt", Internal: r87cstreamDefaultInternal()})
+	r75streamAssertJSON(t, "responseMessages", r.ResponseMessages(), `[{"content":[{"providerOptions":{"testProvider":{"signature":"1234567890"}},"text":"I will open the conversation with witty banter.","type":"reasoning"},{"providerOptions":{"testProvider":{"redactedData":"redacted-reasoning-data"}},"text":"","type":"reasoning"},{"providerOptions":{"testProvider":{"signature":"1234567890"}},"text":" Once the user has relaxed, I will pry for valuable information.","type":"reasoning"},{"providerOptions":{"testProvider":{"signature":"0987654321"}},"text":" I need to think about this problem carefully.","type":"reasoning"},{"providerOptions":{"testProvider":{"signature":"0987654321"}},"text":" The best solution requires careful consideration of all factors.","type":"reasoning"},{"providerOptions":{"testProvider":{"signature":"0987654321"}},"text":"Hi there!","type":"text"}],"role":"assistant"}]`)
+}
+
+// r87cstreamBodyModel streams the TS result.request fixture with request
+// body "test body".
+func r87cstreamBodyModel() *testutil.MockLanguageModel {
+	return &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id", DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		return &requestBodyTextStream{TextStream: testutil.NewMockTextStream([]provider.StreamChunk{
+			r87cstreamMeta("id-0"),
+			{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Hello"}, {Type: provider.ChunkTypeTextEnd, ID: "1"},
+			r87cstreamFinish(types.FinishReasonStop, "stop"),
+		}), body: "test body"}, nil
+	}}
+}
+
+// stream-text.test.ts 8078 / 8109: result.request > should accept deprecated
+// experimental_include as an alias for include; should prefer include over
+// deprecated experimental_include.
+func TestR87cstreamRequestExperimentalInclude(t *testing.T) {
+	r := r71streamRun(t, StreamTextOptions{Model: r87cstreamBodyModel(), Prompt: "test-input", ExperimentalInclude: &IncludeOptions{RequestBody: true}})
+	r75streamAssertJSON(t, "8078 request", r.Request(), `{"body":"test body"}`)
+	if r.Request().Messages != nil {
+		t.Fatalf("8078 messages = %v", r.Request().Messages)
+	}
+	r = r71streamRun(t, StreamTextOptions{Model: r87cstreamBodyModel(), Prompt: "test-input", Include: &IncludeOptions{RequestBody: false}, ExperimentalInclude: &IncludeOptions{RequestBody: true}})
+	if req := r.Request(); req.Body != nil || req.Messages != nil {
+		t.Fatalf("8109 request = %+v", req)
+	}
+}
+
+// stream-text.test.ts 8175: result.request > should resolve with messages
+// from after prepareStep.
+func TestR87cstreamRequestMessagesAfterPrepareStep(t *testing.T) {
+	prepared := r71streamUserMessages("prepared prompt")
+	r := r71streamRun(t, StreamTextOptions{Model: r87cstreamBodyModel(), Prompt: "test-input",
+		PrepareStep: func(_ context.Context, o PrepareStepOptions) PrepareStepOptions {
+			o.Messages = prepared
+			return o
+		},
+		Include: &IncludeOptions{RequestMessages: true}})
+	if !reflect.DeepEqual(r.Request().Messages, prepared) {
+		t.Fatalf("request messages = %#v", r.Request().Messages)
+	}
+	if !reflect.DeepEqual(r.Steps()[0].Request.Messages, prepared) {
+		t.Fatalf("steps[0] request messages = %#v", r.Steps()[0].Request.Messages)
+	}
+}
+
+// stream-text.test.ts 8212: result.request > should carry messages from
+// prepareStep forward to the next step.
+func TestR87cstreamRequestMessagesCarriedForward(t *testing.T) {
+	prepared := r71streamUserMessages("prepared prompt")
+	var mu sync.Mutex
+	var seen [][]types.Message
+	r := r71streamRun(t, StreamTextOptions{
+		Model: r71streamModel(nil,
+			[]provider.StreamChunk{{Type: provider.ChunkTypeStreamStart}, {Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", RawArguments: `{ "value": "test" }`}}, r87cstreamFinish(types.FinishReasonToolCalls, "")},
+			[]provider.StreamChunk{{Type: provider.ChunkTypeStreamStart}, {Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Done."}, {Type: provider.ChunkTypeTextEnd, ID: "1"}, r87cstreamFinish(types.FinishReasonStop, "stop")}),
+		Tools:    []types.Tool{r71streamTool1(true, nil, nil)},
+		Prompt:   "prompt",
+		StopWhen: []StopCondition{StepCountIs(3)},
+		PrepareStep: func(_ context.Context, o PrepareStepOptions) PrepareStepOptions {
+			mu.Lock()
+			seen = append(seen, append([]types.Message(nil), o.Messages...))
+			mu.Unlock()
+			if o.StepNumber == 0 {
+				o.Messages = prepared
+			}
+			return o
+		},
+		Include: &IncludeOptions{RequestMessages: true},
+	})
+	steps := r.Steps()
+	if len(steps) != 2 || len(seen) != 2 {
+		t.Fatalf("steps = %d, prepareStep calls = %d", len(steps), len(seen))
+	}
+	want := append(append([]types.Message(nil), prepared...), steps[0].Response.Messages...)
+	r75streamAssertJSON(t, "prepareStep messages[1]", seen[1], r71streamJSON(t, want))
+	r75streamAssertJSON(t, "steps[1].request.messages", steps[1].Request.Messages, r71streamJSON(t, want))
+}
+
+// stream-text.test.ts 8292: result.response > should resolve with response
+// information.
+func TestR87cstreamResultResponse(t *testing.T) {
+	model := &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id", DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		meta := r87cstreamMeta("id-0")
+		// TS createTestModel({response: {headers: {call: '2'}}}): the doStream
+		// result's response headers.
+		meta.ResponseMetadata.Headers = map[string]string{"call": "2"}
+		return testutil.NewMockTextStream([]provider.StreamChunk{
+			meta,
+			{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Hello"}, {Type: provider.ChunkTypeTextEnd, ID: "1"},
+			r87cstreamFinish(types.FinishReasonStop, "stop"),
+		}), nil
+	}}
+	r := r71streamRun(t, StreamTextOptions{Model: model, Prompt: "prompt", Internal: r87cstreamDefaultInternal()})
+	resp := r.Response()
+	r75streamAssertJSON(t, "response", map[string]interface{}{"headers": resp.Headers, "id": resp.ID, "messages": resp.Messages, "modelId": resp.ModelID, "timestamp": resp.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z07:00")},
+		`{"headers":{"call":"2"},"id":"id-0","messages":[{"content":[{"text":"Hello","type":"text"}],"role":"assistant"}],"modelId":"mock-model-id","timestamp":"1970-01-01T00:00:00.000Z"}`)
+	if resp.Body != nil {
+		t.Fatalf("response body = %v", resp.Body)
+	}
+}
+
+// stream-text.test.ts 8645: result.files > should contain file content parts
+// from all steps in result.content.
+func TestR87cstreamContentFilesFromAllSteps(t *testing.T) {
+	r := r71streamRun(t, StreamTextOptions{
+		Model: r71streamModel(nil,
+			[]provider.StreamChunk{r87cstreamDataFile("text/plain", "c3RlcC0w", nil), {Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", RawArguments: `{}`}}, r87cstreamFinish(types.FinishReasonToolCalls, "")},
+			[]provider.StreamChunk{r87cstreamDataFile("text/plain", "c3RlcC0x", nil), r87cstreamFinish(types.FinishReasonStop, "stop")}),
+		Tools: []types.Tool{{Name: "tool1", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "result1", nil
+		}}},
+		Prompt: "prompt", Internal: r87cstreamDefaultInternal(), StopWhen: []StopCondition{StepCountIs(3)},
+	})
+	var files []map[string]interface{}
+	for _, p := range r.Content() {
+		if f, ok := p.(types.GeneratedFileContent); ok {
+			files = append(files, map[string]interface{}{"base64": r87cstreamFileJSON(f.MediaType, f.FileData, f.Data)["base64Data"], "mediaType": f.MediaType})
+		}
+	}
+	r75streamAssertJSON(t, "content files", files, `[{"base64":"c3RlcC0w","mediaType":"text/plain"},{"base64":"c3RlcC0x","mediaType":"text/plain"}]`)
+	n := 0
+	for _, p := range r.FinalStep().Content {
+		if _, ok := p.(types.GeneratedFileContent); ok {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("final step files = %d, want 1", n)
+	}
+}
+
+// stream-text.test.ts 9135: result.steps > should add reasoning-files from
+// the model response to the step result (modelWithReasoningFiles).
+func TestR87cstreamStepReasoningFiles(t *testing.T) {
+	r := r71streamRun(t, StreamTextOptions{Model: r87cstreamModelWithReasoningFiles(), Prompt: "prompt", Internal: r87cstreamDefaultInternal()})
+	var steps []interface{}
+	for _, s := range r.Steps() {
+		steps = append(steps, r87cstreamTSStep(t, s))
+	}
+	r87cstreamAssert(t, "steps", steps, `[{"callId":"test-telemetry-call-id","content":[{"file":{"base64Data":"reasoning-file-data-1","mediaType":"image/png","type":"file"},"type":"reasoning-file"},{"text":"Some reasoning text.","type":"reasoning"},{"file":{"base64Data":"reasoning-file-data-2","mediaType":"image/jpeg","type":"file"},"providerMetadata":{"testProvider":{"signature":"rf-sig-1"}},"type":"reasoning-file"},{"text":"Hello!","type":"text"}],"finishReason":"stop","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":`+r87cstreamPerfKeys+`,"rawFinishReason":"stop","request":{},"response":{"id":"id-0","messages":[{"content":[{"data":"reasoning-file-data-1","mediaType":"image/png","type":"reasoning-file"},{"text":"Some reasoning text.","type":"reasoning"},{"data":"reasoning-file-data-2","mediaType":"image/jpeg","providerOptions":{"testProvider":{"signature":"rf-sig-1"}},"type":"reasoning-file"},{"text":"Hello!","type":"text"}],"role":"assistant"}],"modelId":"mock-model-id","timestamp":"1970-01-01T00:00:00.000Z"},"runtimeContext":{},"stepNumber":0,"toolsContext":{},"usage":`+r87cstreamUsageJSON+`,"warnings":[]}]`)
+}
+
+// stream-text.test.ts 9274: result.steps > should expose the final step
+// (finalStep is steps.at(-1)).
+func TestR87cstreamFinalStep(t *testing.T) {
+	r := r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, r87cstreamDefaultStream(nil)), Prompt: "prompt", Internal: r87cstreamDefaultInternal()})
+	steps := r.Steps()
+	if len(steps) != 1 || !reflect.DeepEqual(r.FinalStep(), steps[len(steps)-1]) {
+		t.Fatalf("finalStep = %+v, steps = %d", r.FinalStep(), len(steps))
+	}
+}
+
+// r87cstreamToolCallJSON projects tool calls onto the TS TypedToolCall
+// snapshot.
+func r87cstreamToolCallJSON(calls []types.ToolCall) []interface{} {
+	out := []interface{}{}
+	for _, c := range calls {
+		m := map[string]interface{}{"type": "tool-call", "toolCallId": c.ID, "toolName": c.ToolName, "input": c.Arguments}
+		if c.ProviderExecuted {
+			m["providerExecuted"] = true
+		}
+		if c.Dynamic {
+			m["dynamic"] = true
+		}
+		if c.Title != "" {
+			m["title"] = c.Title
+		}
+		if len(c.ProviderMetadata) > 0 {
+			m["providerMetadata"] = c.ProviderMetadata
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// stream-text.test.ts 9377: result.toolCalls > should resolve with tool
+// calls.
+func TestR87cstreamResultToolCalls(t *testing.T) {
+	r := r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, []provider.StreamChunk{
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", RawArguments: `{ "value": "value" }`}},
+		r87cstreamFinish(types.FinishReasonStop, "stop"),
+	}), Tools: []types.Tool{r71streamTool1(false, nil, nil)}, Prompt: "test-input"})
+	r75streamAssertJSON(t, "toolCalls", r87cstreamToolCallJSON(r.ToolCalls()), `[{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}]`)
+}
+
+// r87cstreamAllStepsModel is the TS "from all steps" fixture: tool1, then
+// dynamicTool, then text.
+func r87cstreamAllStepsRun(t *testing.T) *StreamTextResult {
+	t.Helper()
+	return r71streamRun(t, StreamTextOptions{
+		Model: r71streamModel(nil,
+			[]provider.StreamChunk{{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", RawArguments: `{ "value": "value-1" }`}}, r87cstreamFinish(types.FinishReasonToolCalls, "")},
+			[]provider.StreamChunk{{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-2", ToolName: "dynamicTool", RawArguments: `{ "value": "value-2" }`}}, r87cstreamFinish(types.FinishReasonToolCalls, "")},
+			[]provider.StreamChunk{{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "done"}, {Type: provider.ChunkTypeTextEnd, ID: "1"}, r87cstreamFinish(types.FinishReasonStop, "stop")}),
+		Tools: []types.Tool{r71streamTool1(true, nil, nil), {Name: "dynamicTool", Type: types.ToolTypeDynamic, Parameters: r71streamValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "value-2-result", nil
+		}}},
+		Prompt:   "test-input",
+		StopWhen: []StopCondition{StepCountIs(4)},
+	})
+}
+
+func r87cstreamCallIDs(calls []types.ToolCall) []string {
+	out := []string{}
+	for _, c := range calls {
+		out = append(out, c.ID)
+	}
+	return out
+}
+
+func r87cstreamResultIDs(results []types.ToolResult) []string {
+	out := []string{}
+	for _, c := range results {
+		out = append(out, c.ToolCallID)
+	}
+	return out
+}
+
+// stream-text.test.ts 9419: result.toolCalls > should resolve with tool
+// calls from all steps.
+func TestR87cstreamResultToolCallsAllSteps(t *testing.T) {
+	r := r87cstreamAllStepsRun(t)
+	r87cstreamAssertStrings(t, "toolCalls", r87cstreamCallIDs(r.ToolCalls()), []string{"call-1", "call-2"})
+	r87cstreamAssertStrings(t, "staticToolCalls", r87cstreamCallIDs(r.StaticToolCalls()), []string{"call-1"})
+	r87cstreamAssertStrings(t, "dynamicToolCalls", r87cstreamCallIDs(r.DynamicToolCalls()), []string{"call-2"})
+	if n := len(r.FinalStep().ToolCalls); n != 0 {
+		t.Fatalf("finalStep toolCalls = %d", n)
+	}
+}
+
+// stream-text.test.ts 9627: result.toolResults > should resolve with tool
+// results from all steps.
+func TestR87cstreamResultToolResultsAllSteps(t *testing.T) {
+	r := r87cstreamAllStepsRun(t)
+	r87cstreamAssertStrings(t, "toolResults", r87cstreamResultIDs(r.ToolResults()), []string{"call-1", "call-2"})
+	r87cstreamAssertStrings(t, "staticToolResults", r87cstreamResultIDs(r.StaticToolResults()), []string{"call-1"})
+	r87cstreamAssertStrings(t, "dynamicToolResults", r87cstreamResultIDs(r.DynamicToolResults()), []string{"call-2"})
+	if n := len(r.FinalStep().ToolResults); n != 0 {
+		t.Fatalf("finalStep toolResults = %d", n)
+	}
+}
+
+// stream-text.test.ts 9585: result.toolResults > should resolve with tool
+// results.
+func TestR87cstreamResultToolResults(t *testing.T) {
+	r := r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, []provider.StreamChunk{
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", RawArguments: `{ "value": "value" }`}},
+		r87cstreamFinish(types.FinishReasonStop, "stop"),
+	}), Tools: []types.Tool{r71streamTool1(true, nil, nil)}, Prompt: "test-input"})
+	var got []interface{}
+	for _, tr := range r.ToolResults() {
+		got = append(got, map[string]interface{}{"type": "tool-result", "dynamic": tr.Dynamic, "input": tr.Input, "output": tr.Result, "toolCallId": tr.ToolCallID, "toolName": tr.ToolName, "providerExecuted": tr.ProviderExecuted, "preliminary": tr.Preliminary})
+	}
+	r75streamAssertJSON(t, "toolResults", got, `[{"dynamic":false,"input":{"value":"value"},"output":"value-result","toolCallId":"call-1","toolName":"tool1","type":"tool-result","providerExecuted":false,"preliminary":false}]`)
+}
+
+// stream-text.test.ts 9505: toolCallConcurrency > should execute tool calls
+// sequentially in model order with concurrency 1.
+func TestR87cstreamToolCallConcurrencyOne(t *testing.T) {
+	firstStarted, secondStarted, releaseFirst := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var order r71streamOrder
+	one := 1
+	empty := map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r71streamModel(nil, []provider.StreamChunk{
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "first", RawArguments: `{}`}},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-2", ToolName: "second", RawArguments: `{}`}},
+			r87cstreamFinish(types.FinishReasonToolCalls, "tool-calls"),
+		}),
+		Tools: []types.Tool{
+			{Name: "first", Parameters: empty, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				order.add("first:start")
+				close(firstStarted)
+				<-releaseFirst
+				order.add("first:end")
+				return nil, nil
+			}},
+			{Name: "second", Parameters: empty, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				order.add("second:start")
+				close(secondStarted)
+				order.add("second:end")
+				return nil, nil
+			}},
+		},
+		Prompt:              "test-input",
+		ToolCallConcurrency: &one,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan []types.ToolResult)
+	go func() { done <- r.ToolResults() }()
+	<-firstStarted
+	time.Sleep(20 * time.Millisecond)
+	r87cstreamAssertStrings(t, "events after first start", order.get(), []string{"first:start"})
+	close(releaseFirst)
+	<-secondStarted
+	<-done
+	r87cstreamAssertStrings(t, "events", order.get(), []string{"first:start", "first:end", "second:start", "second:end"})
+}

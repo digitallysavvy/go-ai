@@ -785,6 +785,8 @@ type StreamTextResult struct {
 	// WorkflowAgent.stream dispatches one root per run.
 	callerOwnsTelemetryRoot bool
 	streamModeUsage         bool
+	// clock is InternalOptions.now (see now).
+	clock func() time.Time
 	// endOnError is InternalOptions.EndOnError (WorkflowAgent): its output
 	// handling stays its own (see setNoOutputErr).
 	endOnError     bool
@@ -894,6 +896,7 @@ func streamTextInternal(ctx context.Context, opts StreamTextOptions, steeringRun
 		result.onStreamDone = opts.Internal.onStreamDone
 		result.streamModeUsage = opts.Internal.streamModeUsage
 		result.endOnError = opts.Internal.EndOnError
+		result.clock = opts.Internal.now
 		result.callerOwnsTelemetryRoot = opts.Internal.onStreamDone != nil
 	}
 
@@ -1317,7 +1320,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		r.failBeforeStream(ctx, opts, preStreamCall{callID: callID, telemetryCtx: telemetryCtx, telemetrySettings: telemetrySettings}, err)
 		return
 	}
-	r.stepStartedAt = time.Now()
+	r.stepStartedAt = r.now()
 
 	// Resolve ResponseFormat: prefer explicit field, then derive from Output spec.
 	// A response format that cannot be built fails the model call itself (TS
@@ -1483,7 +1486,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		})
 
 		r.stepReopenCtx = modelCallCtx
-		r.stepCallStartedAt = time.Now()
+		r.stepCallStartedAt = r.now()
 		return modelCallCtx
 	}
 	startModelCall()
@@ -1834,6 +1837,15 @@ func (r *StreamTextResult) fail(err error) {
 	}
 }
 
+// now is the clock of step and model-call timings: InternalOptions.now (TS
+// _internal.now), else time.Now.
+func (r *StreamTextResult) now() time.Time {
+	if r.clock != nil {
+		return r.clock()
+	}
+	return time.Now()
+}
+
 // setNoOutputErr records OutputErr for a run that failed without a recorded
 // step, or that an incomplete model stream ended. TS flush then rejects the
 // result promises, result.output among them, with the abort reason, the
@@ -2135,7 +2147,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// callStartTimestampMs); both were recorded when the stream was opened.
 		stepStart := r.stepStartedAt
 		if stepStart.IsZero() {
-			stepStart = time.Now()
+			stepStart = r.now()
 		}
 		callStart := r.stepCallStartedAt
 		if callStart.IsZero() {
@@ -2166,7 +2178,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// stepResponseID holds only a provider-reported id.
 		var stepResponseID string
 		stepDefaultResponseID := remapGenerateID()
-		stepResponseTimestamp := time.Now()
+		stepResponseTimestamp := r.now()
 		// TS finish-step response.headers is the step's own doStream
 		// response headers, so a step (or a recovered attempt, below) whose
 		// stream reports none has none: an earlier step's do not carry over.
@@ -2384,7 +2396,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// withheld for tool choice none, and not again when chunks held back
 			// for stream retries are replayed.
 			if !replayed && isOutputChunkForTiming(*chunk) {
-				now := time.Now()
+				now := r.now()
 				if firstTokenAt == nil {
 					firstTokenAt = &now
 				} else if previousOutputChunkAt != nil {
@@ -2704,7 +2716,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 				if !modelCallEndFired {
 					modelCallEndFired = true
-					performance := stepPerformance(callStart, stepUsage, firstTokenAt, outputChunkGapsMs)
+					performance := stepPerformanceFor(callStart, r.now().Sub(callStart).Milliseconds(), stepUsage, firstTokenAt, outputChunkGapsMs)
 					modelCallPerformance = &performance
 					responseID := stepResponseID
 					if responseID == "" {
@@ -2947,7 +2959,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 							StopSequences:       reopenOpts.StopSequences,
 							Seed:                reopenOpts.Seed,
 						})
-						callStart = time.Now()
+						callStart = r.now()
 						return r.stepReopenCtx
 					}
 					startReopenCall()
@@ -2996,7 +3008,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					stepResponseModelID = stepModelID
 					stepResponseID = ""
 					stepDefaultResponseID = remapGenerateID()
-					stepResponseTimestamp = time.Now()
+					stepResponseTimestamp = r.now()
 					r.mu.Lock()
 					r.responseHeaders = nil
 					r.mu.Unlock()
@@ -3623,6 +3635,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			performance = *modelCallPerformance
 		}
 		performance = finishStepPerformance(performance, stepStart, toolExecutionMs)
+		performance.StepTimeMs = r.now().Sub(stepStart).Milliseconds()
 		stepSources := append([]types.SourceContent(nil), r.sources[stepSourcesStart:]...)
 		stepFiles := append([]types.GeneratedFileContent(nil), r.files[stepFilesStart:]...)
 		stepResult := types.StepResult{
@@ -4151,7 +4164,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			failNextStep(err)
 			break
 		}
-		r.stepStartedAt = time.Now()
+		r.stepStartedAt = r.now()
 		logPromptDeprecations(r.promptDeprecations.forStep(nextMessages))
 		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
 			Messages: messagesForModel(nextMessages),
@@ -4280,7 +4293,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				Seed:                nextGenOpts.Seed,
 			})
 			r.stepReopenCtx = nextModelCallCtx
-			r.stepCallStartedAt = time.Now()
+			r.stepCallStartedAt = r.now()
 			return nextModelCallCtx
 		}
 		startNextModelCall()
