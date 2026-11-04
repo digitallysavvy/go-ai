@@ -15,6 +15,7 @@ import (
 	"errors"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -194,11 +195,9 @@ func r87cstreambPart(c provider.StreamChunk) map[string]interface{} {
 		m := set(map[string]interface{}{"type": "tool-input-start", "id": c.ID})
 		if c.ToolCall != nil {
 			m["toolName"] = c.ToolCall.ToolName
+			m["dynamic"] = c.ToolCall.Dynamic
 			if c.ToolCall.ProviderExecuted {
 				m["providerExecuted"] = true
-			}
-			if c.ToolCall.Dynamic {
-				m["dynamic"] = true
 			}
 			if c.ToolCall.Title != "" {
 				m["title"] = c.ToolCall.Title
@@ -1538,4 +1537,67 @@ func TestR87cstreambAbortDuringToolOnAbort(t *testing.T) {
 	if e.CallID != "test-telemetry-call-id" || !errors.Is(e.Reason, context.Canceled) || len(e.Steps) != 0 {
 		t.Fatalf("onAbort = callId %q reason %v steps %d, want test-telemetry-call-id / abort / []", e.CallID, e.Reason, len(e.Steps))
 	}
+}
+
+// r87cstreambInvalidCallRun is the TS 'single invalid tool call' beforeEach:
+// cityAttractions expects {city} and the model sends {cities}.
+func r87cstreambInvalidCallRun(t *testing.T) (*StreamTextResult, []provider.StreamChunk) {
+	t.Helper()
+	input := `{ "cities": "San Francisco" }`
+	return r73streamParts(t, StreamTextOptions{
+		Model: r71streamModel(nil, []provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{}},
+			{Type: provider.ChunkTypeToolInputStart, ID: "call-1", ToolCall: &types.ToolCall{ID: "call-1", ToolName: "cityAttractions"}},
+			{Type: provider.ChunkTypeToolInputDelta, ID: "call-1", Text: input},
+			{Type: provider.ChunkTypeToolInputEnd, ID: "call-1"},
+			r87cstreambCall("call-1", "cityAttractions", input),
+			r87cstreambFinish(types.FinishReasonStop, "stop"),
+		}),
+		Prompt:   "test-input",
+		Internal: r87cstreambIDs(),
+		Tools: []types.Tool{{Name: "cityAttractions", Parameters: map[string]interface{}{
+			"$schema": "http://json-schema.org/draft-07/schema#", "additionalProperties": false, "type": "object",
+			"properties": map[string]interface{}{"city": map[string]interface{}{"type": "string"}}, "required": []interface{}{"city"}}}},
+	})
+}
+
+// r87cstreambInvalidCallError is the invalid call's error message: the TS
+// text up to "Error message: ", then Go's validator text (known difference
+// "the validator text inside a TypeValidationError is Go's, not zod's issue
+// list", known-differences.mdx).
+const r87cstreambInvalidCallError = `Invalid input for tool cityAttractions: AI_TypeValidationError: Type validation failed: Value: {\"cities\":\"San Francisco\"}.\nError message: Error: $.city: required: property is missing`
+
+const r87cstreambInvalidCallParts = `{"dynamic":true,"error":"` + r87cstreambInvalidCallError + `","input":{"cities":"San Francisco"},"invalid":true,"toolCallId":"call-1","toolName":"cityAttractions","type":"tool-call"},
+	{"dynamic":true,"error":"AI_InvalidToolInputError: ` + r87cstreambInvalidCallError + `","input":{"cities":"San Francisco"},"toolCallId":"call-1","toolName":"cityAttractions","type":"tool-error"}`
+
+// stream-text.test.ts 26705: invalid tool calls > single invalid tool call >
+// should add tool call and result error parts to the content.
+func TestR87cstreambInvalidToolCallContent(t *testing.T) {
+	r, _ := r87cstreambInvalidCallRun(t)
+	r87cstreambAssert(t, "content", r87cstreambContent(t, r.Content()), "["+r87cstreambInvalidCallParts+"]")
+	var inv *InvalidToolInputError
+	for _, c := range r.Content() {
+		if tc, ok := c.(types.ToolCallContent); ok {
+			if msg, _ := tc.Error.(string); !strings.HasPrefix(msg, "Invalid input for tool cityAttractions: ") {
+				t.Fatalf("tool-call error = %v", tc.Error)
+			}
+		}
+		if te, ok := c.(types.ToolErrorContent); ok && !errors.As(te.Err, &inv) {
+			t.Fatalf("tool-error Err = %T, want *InvalidToolInputError (TS AI_InvalidToolInputError)", te.Err)
+		}
+	}
+}
+
+// stream-text.test.ts 26757: invalid tool calls > single invalid tool call >
+// should add tool call and result error parts to the full stream.
+func TestR87cstreambInvalidToolCallFullStream(t *testing.T) {
+	_, parts := r87cstreambInvalidCallRun(t)
+	r87cstreambAssert(t, "full stream", r87cstreambParts(parts), `[
+		{"type":"start"},{"request":{},"type":"start-step","warnings":[]},
+		{"dynamic":false,"id":"call-1","toolName":"cityAttractions","type":"tool-input-start"},
+		{"delta":"{ \"cities\": \"San Francisco\" }","id":"call-1","type":"tool-input-delta"},
+		{"id":"call-1","type":"tool-input-end"},
+		`+r87cstreambInvalidCallParts+`,
+		{"finishReason":"stop","rawFinishReason":"stop","response":{"id":"id-0","modelId":"mock-model-id","timestamp":"<now>"},"type":"finish-step","usage":`+r87cstreambUsageJSON+`},
+		{"finishReason":"stop","rawFinishReason":"stop","totalUsage":`+r87cstreambUsageJSON+`,"type":"finish"}]`)
 }
