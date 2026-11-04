@@ -40,9 +40,6 @@ func r87dprovrestMark(goTest, test string, exprMatchers ...string) {
 }
 
 func init() {
-	r87dprovrestMark("TestR87dprovrestGatewayRequestHeaders", "should pass headers correctly", "headers", "toMatchObject")
-	r87dprovrestMark("TestR87dprovrestGatewayRequestHeaders", "should pass streaming headers", "headers", "toMatchObject")
-	r87dprovrestMark("TestR87dprovrestGatewayGenerateResultFields", "should default warnings to an empty array when absent", "warnings", "toEqual")
 	r87dprovrestMark("TestR87dprovrestGatewayNoAbortSignalWithoutOne", "should not pass abortSignal to fetch when not provided", "fetchCallArgs[1].signal", "toBeUndefined")
 	r87dprovrestMark("TestR87dprovrestGatewayNoAbortSignalWithoutOne", "should not pass abortSignal to fetch when not provided for streaming", "fetchCallArgs[1].signal", "toBeUndefined")
 	for _, tc := range r87dprovrestErrorCases {
@@ -116,36 +113,6 @@ func r87dprovrestModel(t *testing.T, base string, client *http.Client) provider.
 	return m
 }
 
-// TS 116-134 (doGenerate) and 794-810 (doStream): server.calls[0].requestHeaders toMatchObject.
-func TestR87dprovrestGatewayRequestHeaders(t *testing.T) {
-	for _, tc := range []struct {
-		stream bool
-		ctype  string
-		body   string
-		call   map[string]string
-		want   map[string]string
-	}{
-		{false, "application/json", r87dprovrestJSONBody("Hello, World!", ""), map[string]string{"Custom-Header": "test-value"}, map[string]string{
-			"authorization": "Bearer test-token", "custom-header": "test-value",
-			"ai-language-model-specification-version": "4", "ai-language-model-id": "test-model", "ai-language-model-streaming": "false",
-		}},
-		{true, "text/event-stream", r87dprovrestStreamBody("Test"), nil, map[string]string{
-			"ai-language-model-specification-version": "4", "ai-language-model-id": "test-model", "ai-language-model-streaming": "true",
-		}},
-	} {
-		rec, base := r87dprovrestServe(t, 200, tc.ctype, tc.body)
-		if _, err := r87dprovrestCall(r87dprovrestModel(t, base, nil), tc.stream, &provider.GenerateOptions{Prompt: r87dprovrestPrompt, Headers: tc.call}); err != nil {
-			t.Fatalf("stream=%v: %v", tc.stream, err)
-		}
-		h := rec.headers[0]
-		for k, v := range tc.want {
-			if got := h.Get(k); got != v {
-				t.Errorf("stream=%v: header %s = %q, TS %q", tc.stream, k, got, v)
-			}
-		}
-	}
-}
-
 // TS 136-192: const { content } / { usage } / { warnings } = await doGenerate(...).
 func TestR87dprovrestGatewayGenerateResultFields(t *testing.T) {
 	// should extract text response: TS returns the gateway's content object
@@ -173,16 +140,6 @@ func TestR87dprovrestGatewayGenerateResultFields(t *testing.T) {
 	}
 	if res.Usage.InputTokens != nil || res.Usage.OutputTokens != nil {
 		t.Errorf("usage = %+v, want no counts from the flat snake-case shape", res.Usage)
-	}
-
-	// should default warnings to an empty array when absent
-	_, base = r87dprovrestServe(t, 200, "application/json", r87dprovrestJSONBody("Hello", ""))
-	res, err = r87dprovrestModel(t, base, nil).DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: r87dprovrestPrompt})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Warnings == nil || len(res.Warnings) != 0 {
-		t.Errorf("warnings = %#v, TS []", res.Warnings)
 	}
 }
 

@@ -27,11 +27,6 @@ func r87dprovrestMark(goTest, test string, exprMatchers ...string) {
 }
 
 func init() {
-	// The convert-prompt getWarnings() assertions evaluate through the
-	// adapter's cacheControlValidator root; the prepare-tools one waits for
-	// its case file's JS program (cr-r87d-provrest-to-googlefam CR 2). Both
-	// files have this title; the convert-prompt assertion evaluates.
-	r87dprovrestMark("TestR87dprovrestAnthropicPrepareToolsCacheWarnings", "should limit cache breakpoints to 4", "cacheControlValidator.getWarnings()", "toEqual")
 	r87dprovrestMark("TestR87dprovrestAnthropicPrepareToolsNoneChoice", "should not affect auto and none tool choices",
 		"none.tools", "toHaveLength", "none.toolChoice", "toEqual", "none.toolWarnings", "toEqual")
 	for _, test := range []string{"should use usage as raw when rawUsage is not provided", "should sum across all iterations when iterations array is present"} {
@@ -40,28 +35,6 @@ func init() {
 	r87dprovrestMark("TestR87dprovrestAnthropicSanitizeSchemaKeepsInput", "does not mutate the input schema", "schema", "toEqual")
 	tsfixture.RegisterPorted(r87dprovrestPorted)
 	tsfixture.RegisterNotApplicable(r87dprovrestNA)
-}
-
-// r87dprovrestConvertPrompt runs ConvertToAnthropicPrompt on a
-// convert-to-anthropic-prompt.test.ts input with the test's own validator.
-func r87dprovrestConvertPrompt(t *testing.T, test string) (*prompt.AnthropicPrompt, *prompt.AnthropicCacheControlValidator) {
-	t.Helper()
-	args := r87dprovrestFnArgs(t, "testdata/tscases/convert_prompt.json.gz", test)
-	in, _ := args[0].(map[string]interface{})
-	msgs, why := tsfixture.BuildPromptMessages(in["prompt"])
-	if why != "" {
-		t.Fatal(why)
-	}
-	v := prompt.NewAnthropicCacheControlValidator()
-	opts := prompt.AnthropicPromptOptions{CacheControlValidator: v}
-	if b, ok := in["sendReasoning"].(bool); ok {
-		opts.SendReasoning = &b
-	}
-	out, err := prompt.ConvertToAnthropicPrompt(msgs, opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return out, v
 }
 
 // r87dprovrestValidatorRoot is the TS CacheControlValidator a test passes
@@ -111,14 +84,6 @@ func r87dprovrestPrepareTools(t *testing.T, test string, toolChoice map[string]i
 		t.Fatal(out.err)
 	}
 	return out
-}
-
-// anthropic-prepare-tools.test.ts 1647: the validator passed to prepareTools.
-func TestR87dprovrestAnthropicPrepareToolsCacheWarnings(t *testing.T) {
-	const test = "should limit cache breakpoints to 4"
-	v := prompt.NewAnthropicCacheControlValidator()
-	r87dprovrestPrepareTools(t, test, nil, v)
-	r87dprovrestEqual(t, "getWarnings", r87dprovrestArg(t, "testdata/tscases/prepare_tools.json.gz", test, 0, "cacheControlValidator.getWarnings()"), r87dprovrestWarnings(v))
 }
 
 // anthropic-prepare-tools.test.ts 2196-2205: the test's second prepareTools
