@@ -793,6 +793,17 @@ type ToolApprovalResponseContent struct {
 	// of a tool call that carried an explicit false. It follows
 	// ToolCall.ProviderExecutedSet.
 	ProviderExecutedSet bool `json:"-"`
+	// ReasonSet marks an empty Reason as given (TS `reason: ''`), which the
+	// execution-denied tool result keeps instead of the provider's default
+	// denial text (TS `reason ?? default`). A non-empty Reason is always
+	// given. JSON decoding sets it for `"reason": ""`.
+	ReasonSet bool `json:"-"`
+}
+
+// HasReason reports whether the response carries a reason, also an empty
+// one (TS `reason !== undefined`).
+func (t ToolApprovalResponseContent) HasReason() bool {
+	return t.Reason != "" || t.ReasonSet
 }
 
 func (t ToolApprovalResponseContent) ContentType() string {
@@ -807,14 +818,17 @@ func (t ToolApprovalResponseContent) MarshalJSON() ([]byte, error) {
 		ApprovalID       string           `json:"approvalId"`
 		ToolCall         *ToolCallContent `json:"toolCall,omitempty"`
 		Approved         bool             `json:"approved"`
-		Reason           string           `json:"reason,omitempty"`
+		Reason           *string          `json:"reason,omitempty"`
 		ProviderExecuted *bool            `json:"providerExecuted,omitempty"`
 	}
 	out := toolApprovalResponseContentJSON{
 		Type:       t.ContentType(),
 		ApprovalID: t.ApprovalID,
 		Approved:   t.Approved,
-		Reason:     t.Reason,
+	}
+	if t.HasReason() {
+		reason := t.Reason
+		out.Reason = &reason
 	}
 	if t.ProviderExecuted || t.ProviderExecutedSet {
 		providerExecuted := t.ProviderExecuted
@@ -825,6 +839,25 @@ func (t ToolApprovalResponseContent) MarshalJSON() ([]byte, error) {
 		out.ToolCall = &toolCall
 	}
 	return json.Marshal(out)
+}
+
+// UnmarshalJSON decodes the part with the default field mapping and marks an
+// empty reason string as given (ReasonSet).
+func (t *ToolApprovalResponseContent) UnmarshalJSON(data []byte) error {
+	type plain ToolApprovalResponseContent
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var reason struct {
+		Reason *string `json:"reason"`
+	}
+	if err := json.Unmarshal(data, &reason); err != nil {
+		return err
+	}
+	*t = ToolApprovalResponseContent(decoded)
+	t.ReasonSet = reason.Reason != nil && *reason.Reason == ""
+	return nil
 }
 
 func toolCallContentFromToolCall(call ToolCall) ToolCallContent {
@@ -922,8 +955,30 @@ type ToolResultOutput struct {
 	// Forwarded to the provider so the model understands the denial context.
 	Reason string `json:"reason,omitempty"`
 
+	// ReasonSet marks an empty Reason as given (TS `reason: ''`): provider
+	// converters then send "" instead of their default denial text (TS
+	// `output.reason ?? 'Tool call execution denied.'`). A non-empty Reason
+	// is always given. JSON decoding sets it for `"reason": ""`.
+	ReasonSet bool `json:"-"`
+
 	// ProviderOptions holds provider-specific options for the output direction.
 	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
+}
+
+// HasReason reports whether the output carries a reason, also an empty one
+// (TS `reason !== undefined`).
+func (o ToolResultOutput) HasReason() bool {
+	return o.Reason != "" || o.ReasonSet
+}
+
+// ReasonOr returns Reason when the output has one (HasReason), else
+// defaultReason: TS `output.reason ?? defaultReason`, as provider converters
+// build the text of an execution-denied result.
+func (o ToolResultOutput) ReasonOr(defaultReason string) string {
+	if o.HasReason() {
+		return o.Reason
+	}
+	return defaultReason
 }
 
 // MarshalJSON emits the TypeScript SDK ToolResultOutput union shape. Content
@@ -933,13 +988,16 @@ func (o ToolResultOutput) MarshalJSON() ([]byte, error) {
 	type outputJSON struct {
 		Type            ToolResultOutputType   `json:"type"`
 		Value           json.RawMessage        `json:"value,omitempty"`
-		Reason          string                 `json:"reason,omitempty"`
+		Reason          *string                `json:"reason,omitempty"`
 		ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
 	}
 	out := outputJSON{
 		Type:            o.Type,
-		Reason:          o.Reason,
 		ProviderOptions: o.ProviderOptions,
+	}
+	if o.HasReason() {
+		reason := o.Reason
+		out.Reason = &reason
 	}
 	marshalValue := func(value interface{}) error {
 		if value == nil {
@@ -984,7 +1042,7 @@ func (o *ToolResultOutput) UnmarshalJSON(data []byte) error {
 		Type            ToolResultOutputType   `json:"type"`
 		Value           json.RawMessage        `json:"value"`
 		Content         json.RawMessage        `json:"content"`
-		Reason          string                 `json:"reason"`
+		Reason          *string                `json:"reason"`
 		ProviderOptions map[string]interface{} `json:"providerOptions"`
 	}
 	var raw outputJSON
@@ -992,7 +1050,12 @@ func (o *ToolResultOutput) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	o.Type = raw.Type
-	o.Reason = raw.Reason
+	o.Reason = ""
+	o.ReasonSet = false
+	if raw.Reason != nil {
+		o.Reason = *raw.Reason
+		o.ReasonSet = *raw.Reason == ""
+	}
 	o.ProviderOptions = raw.ProviderOptions
 	o.Value = nil
 	o.Content = nil

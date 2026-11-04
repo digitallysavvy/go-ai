@@ -139,6 +139,7 @@ func ValidateApprovedToolApprovals(ctx context.Context, opts ValidateApprovedToo
 			denied.ApprovalResponse.Approved = false
 			if status.Reason != nil {
 				denied.ApprovalResponse.Reason = *status.Reason
+				denied.ApprovalResponse.ReasonSet = *status.Reason == ""
 			}
 			result.DeniedToolApprovals = append(result.DeniedToolApprovals, denied)
 			continue

@@ -221,3 +221,100 @@ func r86bgenSplitChars(s string) []string {
 	}
 	return out
 }
+
+// V061 item 23: an empty approval reason is kept end to end (TS `reason ??
+// default` keeps ""). TS generateText at 30548ee7f9 under bun:
+//
+//	history denial, reason '': last prompt message
+//	{"role":"tool","content":[{"type":"tool-result","toolCallId":"call-1","toolName":"tool1","output":{"type":"execution-denied","reason":""}}]}
+//	policy denial (toolApproval returns {type:'denied', reason:''}): next prompt
+//	{"role":"tool","content":[{"type":"tool-result","toolCallId":"c2","toolName":"tool1","output":{"type":"execution-denied","reason":""}}]}
+//	and the step's tool-approval-response part has "approved":false,"reason":"".
+func TestR86bgenEmptyApprovalReasonKept(t *testing.T) {
+	t.Run("history", func(t *testing.T) {
+		var prompts [][]types.Message
+		// The response part as decoded from TS JSON.
+		var response types.ToolApprovalResponseContent
+		if err := json.Unmarshal([]byte(`{"type":"tool-approval-response","approvalId":"id-1","approved":false,"reason":""}`), &response); err != nil {
+			t.Fatal(err)
+		}
+		if !response.HasReason() {
+			t.Fatal(`decoded "reason":"" is not kept`)
+		}
+		_, err := GenerateText(context.Background(), GenerateTextOptions{
+			Model: r71genHelloModel(&prompts),
+			Tools: r71genTool1(func() (interface{}, error) { return "x", nil }),
+			Messages: []types.Message{
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "test-input"}}},
+				{Role: types.RoleAssistant, Content: []types.ContentPart{
+					types.ToolCallContent{ToolCallID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "value"}},
+					types.ToolApprovalRequestContent{ApprovalID: "id-1", ToolCallID: "call-1"},
+				}},
+				{Role: types.RoleTool, Content: []types.ContentPart{response}},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		last := prompts[0][len(prompts[0])-1]
+		r71genCheckJSON(t, "last prompt message", r71genJSON(t, []types.Message{last}), []interface{}{
+			r71genToolMessage(r71genObj{"type": "execution-denied", "reason": ""}),
+		})
+		if out := last.Content[0].(types.ToolResultContent).Output; out.ReasonOr("Tool call execution denied.") != "" {
+			t.Fatalf("ReasonOr = %q, want the empty reason", out.ReasonOr("Tool call execution denied."))
+		}
+	})
+
+	t.Run("policy", func(t *testing.T) {
+		var prompts [][]types.Message
+		calls := 0
+		model := &testutil.MockLanguageModel{DoGenerateFunc: func(_ context.Context, o *provider.GenerateOptions) (*types.GenerateResult, error) {
+			prompts = append(prompts, o.Prompt.Messages)
+			calls++
+			if calls == 1 {
+				return &types.GenerateResult{
+					ToolCalls:    []types.ToolCall{{ID: "c2", ToolName: "tool1", RawArguments: "{}"}},
+					FinishReason: types.FinishReasonToolCalls,
+				}, nil
+			}
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		}}
+		empty := ""
+		res, err := GenerateText(context.Background(), GenerateTextOptions{
+			Model: model,
+			Tools: []types.Tool{{Name: "tool1", Parameters: map[string]interface{}{"type": "object"}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "x", nil
+			}}},
+			ToolApproval: types.GenericToolApprovalFunc(func(types.ToolApprovalOptions) types.ToolApprovalResult {
+				return types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied, Reason: &empty}
+			}),
+			Prompt:   "hi",
+			StopWhen: []StopCondition{IsStepCount(2)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(prompts) != 2 {
+			t.Fatalf("model calls = %d", len(prompts))
+		}
+		last := prompts[1][len(prompts[1])-1]
+		r71genCheckJSON(t, "next prompt tool message", r71genJSON(t, []types.Message{last}), []interface{}{
+			r71genObj{"role": "tool", "content": []interface{}{r71genObj{"type": "tool-result", "toolCallId": "c2", "toolName": "tool1", "output": r71genObj{"type": "execution-denied", "reason": ""}}}},
+		})
+		found := false
+		for _, part := range res.Steps[0].Content {
+			if resp, ok := part.(types.ToolApprovalResponseContent); ok {
+				found = true
+				data, _ := json.Marshal(resp)
+				var obj map[string]interface{}
+				_ = json.Unmarshal(data, &obj)
+				if reason, ok := obj["reason"]; !ok || reason != "" || obj["approved"] != false {
+					t.Fatalf("approval response = %s", data)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("no tool-approval-response part in %#v", res.Steps[0].Content)
+		}
+	})
+}

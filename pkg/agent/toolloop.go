@@ -2459,7 +2459,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				Title:            call.Title,
 				Input:            call.Arguments,
 				Error:            rejectionErr,
-				Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: reasonText},
+				Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: reasonText, ReasonSet: reason != nil && reasonText == ""},
 				ApprovalStatus:   types.ToolApprovalStatusDenied,
 				ApprovalReason:   reason,
 				ProviderExecuted: providerExecuted,
@@ -3254,6 +3254,7 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 				ToolCall:         toolCall,
 				Approved:         result.ApprovalStatus == types.ToolApprovalStatusApproved,
 				Reason:           reason,
+				ReasonSet:        result.ApprovalReason != nil && reason == "",
 				ProviderExecuted: result.ProviderExecuted,
 				// TS: providerExecuted: toolCall.providerExecuted.
 				ProviderExecutedSet: result.ProviderExecutedSet,

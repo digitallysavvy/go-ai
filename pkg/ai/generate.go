@@ -2783,7 +2783,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				ToolName:         call.ToolName,
 				Title:            call.Title,
 				Input:            call.Arguments,
-				Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: reasonText},
+				Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: reasonText, ReasonSet: reason != nil && reasonText == ""},
 				ApprovalStatus:   types.ToolApprovalStatusDenied,
 				ApprovalID:       approvalID,
 				ApprovalReason:   reason,

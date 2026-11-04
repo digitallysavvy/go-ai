@@ -173,13 +173,13 @@ func approvalResponseToolCallID(response types.ToolApprovalResponseContent) stri
 }
 
 func deniedApprovalToolResultContent(response types.ToolApprovalResponseContent) types.ToolResultContent {
-	reason := response.Reason
 	return types.ToolResultContent{
 		ToolCallID: approvalResponseToolCallID(response),
 		ToolName:   response.ToolCall.ToolName,
 		Output: &types.ToolResultOutput{
-			Type:   types.ToolResultOutputExecutionDenied,
-			Reason: reason,
+			Type:      types.ToolResultOutputExecutionDenied,
+			Reason:    response.Reason,
+			ReasonSet: response.ReasonSet,
 		},
 	}
 }
@@ -632,6 +632,7 @@ func responseToolApprovalResponseContent(part types.ToolApprovalResponseContent)
 		ApprovalID:       part.ApprovalID,
 		Approved:         part.Approved,
 		Reason:           part.Reason,
+		ReasonSet:        part.ReasonSet,
 		ProviderExecuted: part.ProviderExecuted,
 		// TS to-response-messages copies part.providerExecuted, an
 		// explicit false included.

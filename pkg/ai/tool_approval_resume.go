@@ -208,8 +208,9 @@ func resumeToolApprovals(ctx context.Context, opts toolApprovalResumeOptions) (t
 	for _, approval := range deniedWithoutResults {
 		call := approval.ToolCall
 		output := types.ToolResultOutput{
-			Type:   types.ToolResultOutputExecutionDenied,
-			Reason: approval.ApprovalResponse.Reason,
+			Type:      types.ToolResultOutputExecutionDenied,
+			Reason:    approval.ApprovalResponse.Reason,
+			ReasonSet: approval.ApprovalResponse.ReasonSet,
 		}
 		if call.ProviderExecuted {
 			// Provider-executed tools carry the approval ID so the provider
@@ -332,6 +333,7 @@ func messagesForModel(messages []types.Message) []types.Message {
 			ApprovalID: response.ApprovalID,
 			Approved:   response.Approved,
 			Reason:     response.Reason,
+			ReasonSet:  response.ReasonSet,
 		}
 	}
 	keepResponse := func(response types.ToolApprovalResponseContent) (types.ToolApprovalResponseContent, bool) {
