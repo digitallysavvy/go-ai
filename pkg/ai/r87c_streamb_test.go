@@ -1601,3 +1601,45 @@ func TestR87cstreambInvalidToolCallFullStream(t *testing.T) {
 		{"finishReason":"stop","rawFinishReason":"stop","response":{"id":"id-0","modelId":"mock-model-id","timestamp":"<now>"},"type":"finish-step","usage":`+r87cstreambUsageJSON+`},
 		{"finishReason":"stop","rawFinishReason":"stop","totalUsage":`+r87cstreambUsageJSON+`,"type":"finish"}]`)
 }
+
+// r87cstreambPreliminaryRun is the TS 'single tool with preliminary results'
+// beforeEach (cityAttractions yields loading, then success).
+func r87cstreambPreliminaryRun(t *testing.T) *StreamTextResult {
+	t.Helper()
+	tool := cityAttractionsTool()
+	tool.Parameters = map[string]interface{}{"$schema": "http://json-schema.org/draft-07/schema#", "additionalProperties": false, "type": "object",
+		"properties": map[string]interface{}{"city": map[string]interface{}{"type": "string"}}, "required": []interface{}{"city"}}
+	r, _ := r73streamParts(t, StreamTextOptions{
+		Model: r71streamModel(nil, []provider.StreamChunk{{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{}},
+			r87cstreambCall("call-1", "cityAttractions", `{ "city": "San Francisco" }`), r87cstreambFinish(types.FinishReasonStop, "stop")}),
+		Prompt:   "test-input",
+		Internal: r87cstreambIDs(),
+		Tools:    []types.Tool{tool},
+	})
+	return r
+}
+
+const r87cstreambPreliminaryContent = `[{"input":{"city":"San Francisco"},"toolCallId":"call-1","toolName":"cityAttractions","type":"tool-call"},
+	{"dynamic":false,"input":{"city":"San Francisco"},"output":{"status":"success","temperature":72,"text":"The weather in San Francisco is 72°F"},"toolCallId":"call-1","toolName":"cityAttractions","type":"tool-result"}]`
+
+// stream-text.test.ts 27189: tools with preliminary results > single tool
+// with preliminary results > should only include final tool result in
+// content.
+func TestR87cstreambPreliminaryContent(t *testing.T) {
+	r := r87cstreambPreliminaryRun(t)
+	r87cstreambAssert(t, "content", r87cstreambContent(t, r.Content()), r87cstreambPreliminaryContent)
+}
+
+// stream-text.test.ts 27221: tools with preliminary results > single tool
+// with preliminary results > should only include final tool result in step
+// content.
+func TestR87cstreambPreliminaryStepContent(t *testing.T) {
+	r := r87cstreambPreliminaryRun(t)
+	r87cstreambAssert(t, "steps", r87cstreambSteps(t, r.Steps()), `[{"callId":"test-telemetry-call-id","content":`+r87cstreambPreliminaryContent+`,
+		"finishReason":"stop","model":{"modelId":"mock-model-id","provider":"mock-provider"},"toolExecutionMsKeys":["call-1"],"rawFinishReason":"stop","request":{},
+		"response":{"id":"id-0","messages":[
+			{"content":[{"input":{"city":"San Francisco"},"toolCallId":"call-1","toolName":"cityAttractions","type":"tool-call"}],"role":"assistant"},
+			{"content":[{"output":{"type":"json","value":{"status":"success","temperature":72,"text":"The weather in San Francisco is 72°F"}},"toolCallId":"call-1","toolName":"cityAttractions","type":"tool-result"}],"role":"tool"}],
+			"modelId":"mock-model-id","timestamp":"<now>"},
+		"runtimeContext":{},"stepNumber":0,"toolsContext":{},"usage":`+r87cstreambUsageJSON+`,"warnings":[]}]`)
+}
