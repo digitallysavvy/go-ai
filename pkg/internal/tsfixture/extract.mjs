@@ -264,6 +264,17 @@ if (wantAsserts) {
   try { tsLib = nodeModule.createRequire(path.join(process.cwd(), 'x.js'))('typescript'); } catch (e) { tsLib = null; }
 }
 const ctxBuiltinNames = new Set(Object.getOwnPropertyNames(ctx));
+let jsScopedDecls = [];
+let jsTopConst = null;
+function jsTopConstSrc() {
+  if (jsTopConst) return jsTopConst;
+  jsTopConst = Object.create(null);
+  for (const m of src.matchAll(/^(?:export )?(?:const|let) (\w+)(?::[^=]+)?\s*=\s+/gm)) {
+    const se = stmtEnd(src, m.index + m[0].length);
+    if (se > 0) jsTopConst[m[1]] = src.slice(m.index + m[0].length, se);
+  }
+  return jsTopConst;
+}
 const topFnSrc = Object.create(null);
 for (const m of src.matchAll(/^(?:export )?(?:async )?function\s*\*?\s*(\w+)\s*[(<]/gm)) {
   const open = src.indexOf('{', balanced(src, src.indexOf('(', m.index + m[0].length - 1)));
@@ -422,8 +433,15 @@ function jsProgram0(body0, off, callRe, exprStart, exprEnd) {
     done.add(n);
     let decl = null;
     if (topFnSrc[n] !== undefined) decl = topFnSrc[n];
-    else if (!ctxBuiltinNames.has(n) && Object.prototype.hasOwnProperty.call(ctx, n)) {
+    else if (!ctxBuiltinNames.has(n) && Object.prototype.hasOwnProperty.call(ctx, n) && ctx[n] !== undefined) {
       try { decl = `const ${n} = ${jsValueSrc(ctx[n])};`; } catch (e) { decl = null; }
+    }
+    if (decl === null) {
+      // a const the extractor could not evaluate (a typed arrow function, a
+      // helper call): its TS source, innermost scope first
+      const d = [...jsScopedDecls].reverse().find(x => x.name === n);
+      const srcExpr = d ? d.expr : jsTopConstSrc()[n];
+      if (srcExpr !== undefined) decl = `let ${n}; try { ${n} = (${srcExpr.replace(/;\s*$/, '')}); } catch (__e) {}`;
     }
     if (decl === null) continue;
     outer.push(decl);
@@ -703,6 +721,7 @@ function topDescribeOf(idx) {
 
 const out = [];
 for (let i = 0; i < starts.length; i++) {
+  jsScopedDecls = scopedDecls(starts[i].idx, starts[i].line.length - 2);
   const saved = {};
   for (const d of scopedDecls(starts[i].idx, starts[i].line.length - 2)) {
     if (!(d.name in saved)) saved[d.name] = ctx[d.name];
@@ -1108,7 +1127,8 @@ for (let i = 0; i < starts.length; i++) {
     }
     // the stream parts of a doStream call (`const parts = await
     // convertReadableStreamToArray(stream)`)
-    for (const am of body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*await\s+convertReadableStreamToArray\(\s*(?:(\w+)\.)?stream\s*,?\s*\)\s*;/g)) {
+    // (also an assignment to a describe-level `let parts;` in a beforeEach)
+    for (const am of body.matchAll(/(?:(?:const|let)\s+|^\s*)(\w+)\s*=\s*await\s+convertReadableStreamToArray\(\s*(?:(\w+)\.)?stream\s*,?\s*\)\s*;/gm)) {
       if (!am[2] || am[2] === 'result' || aliases[am[2]] === 'result') aliases[am[1]] = 'result.stream';
     }
     {
