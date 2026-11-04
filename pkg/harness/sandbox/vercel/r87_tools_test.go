@@ -774,3 +774,18 @@ func TestR87toolsPortEndpointWHATWG(t *testing.T) {
 		}
 	}
 }
+
+// 3.9.0 Sandbox.create sends `ports: params.ports ?? []`.
+func TestR87toolsCreateSandboxSendsPorts(t *testing.T) {
+	client, reqs, mu := r87toolsWireServer(t, func(w http.ResponseWriter, r *http.Request, _ string) {
+		_, _ = fmt.Fprintf(w, r87toolsSandboxJSON, "running")
+	})
+	if _, err := CreateSandbox(context.Background(), client, CreateParams{Name: "sb"}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.Contains((*reqs)[0].body, `"ports":[]`) {
+		t.Fatalf("create body = %s", (*reqs)[0].body)
+	}
+}

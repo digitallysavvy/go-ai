@@ -159,6 +159,9 @@ func toAPIError(err error) error {
 // /v2/sandboxes (runtime set), matching TS `createSandbox`.
 func (c *APIClient) CreateSandbox(ctx context.Context, req createSandboxRequest) (*sandboxAndSessionResponse, error) {
 	req.ProjectID = c.credentials.ProjectID
+	if req.Ports == nil {
+		req.Ports = []int{}
+	}
 	path := "/v3/sandboxes"
 	if req.Runtime != "" {
 		path = "/v2/sandboxes"
