@@ -125,7 +125,7 @@ func TestDetachedBridgeRequestErrorUsesRunText(t *testing.T) {
 		Options: &Options{Approval: &ApprovalOptions{Mode: ApprovalModeInterrupt}},
 	})
 	var detached *DetachedBridgeRequestError
-	if !errors.As(err, &detached) || detached.Error() != "JavaScript runtime returned while 1 bridge request(s) were still in flight." {
+	if !errors.As(err, &detached) || detached.Error() != "JavaScript runtime created an unawaited hostFunction bridge request: tools.guarded." {
 		t.Fatalf("err = %#v (%v)", err, err)
 	}
 	d, _ := detached.Details.(map[string]interface{})

@@ -165,12 +165,17 @@ func RunCodeMode(ctx context.Context, input RunInput) (interface{}, error) {
 		// anyway. Mirrors TypeScript's CodeModeDetachedBridgeRequestError
 		// (code-mode/src/errors.ts), translated from the underlying `run`
 		// package's RUN_DETACHED_BRIDGE_REQUEST in toCodeModeRuntimeError.
-		// The message and the inFlightBridgeRequests/totalBridgeRequests
-		// details are `run`'s (manager.js); toolName/toolCallId name the
-		// first detached call for Go callers.
+		// The message is `run`'s unawaited-request text with the host
+		// function name replaced by the tool's property access, inserted
+		// literally (TS 3fab50aa9b toCodeModeRuntimeError: `$&` in a tool
+		// name is not expanded). The batch holds calls the script never
+		// awaited, so the unawaited wording applies. The
+		// inFlightBridgeRequests/totalBridgeRequests details are `run`'s
+		// (manager.js); toolName/toolCallId name the first detached call
+		// for Go callers.
 		first := batch[0]
 		return nil, NewDetachedBridgeRequestError(
-			fmt.Sprintf("JavaScript runtime returned while %d bridge request(s) were still in flight.", len(batch)),
+			"JavaScript runtime created an unawaited hostFunction bridge request: tools"+formatPropertyAccess(first.ToolName)+".",
 			map[string]interface{}{
 				"inFlightBridgeRequests": len(batch),
 				"totalBridgeRequests":    bridge.requestTotal(),
