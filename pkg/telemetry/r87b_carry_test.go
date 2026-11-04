@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -143,5 +144,23 @@ func TestR87bcarryRuntimeContextSanitizedLaterValueRemoves(t *testing.T) {
 	want = [][2]interface{}{{"ai.settings.context.a.b", int64(1)}}
 	if got := r87bcarryUsageKV(runtimeContextAttributes(ctx)); !reflect.DeepEqual(got, want) {
 		t.Fatalf("null entry: attrs = %v, want %v (TS skips null)", got, want)
+	}
+}
+
+// V061 item 44: TS prepareTools (ai/src/prompt/prepare-tools.ts at
+// 3fab50aa9b) spreads `inputExamples != null ? { inputExamples } : {}`, so an
+// empty examples array is kept in the prepared tool that ai.prompt.tools and
+// gen_ai.tool.definitions stringify. A nil slice is absent.
+func TestR87bcarryToolDefinitionEmptyInputExamples(t *testing.T) {
+	t.Parallel()
+	got := languageModelToolDefinition(types.Tool{Name: "t", InputExamples: []types.ToolInputExample{}}).String()
+	want := `{"type":"function","name":"t","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"inputExamples":[]}`
+	if got != want {
+		t.Fatalf("empty examples:\n got %s\nwant %s", got, want)
+	}
+	got = languageModelToolDefinition(types.Tool{Name: "t"}).String()
+	want = `{"type":"function","name":"t","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}`
+	if got != want {
+		t.Fatalf("nil examples:\n got %s\nwant %s", got, want)
 	}
 }
