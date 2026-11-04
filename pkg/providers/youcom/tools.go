@@ -1,4 +1,6 @@
-// Package youcom provides You.com AI SDK plugin tool factories.
+// Package youcom provides the You.com AI SDK plugin: CreateYouClient (the
+// hosted MCP client of plugin 3.x) and the YouSearch, YouResearch and
+// YouContents tool factories.
 package youcom
 
 import (
