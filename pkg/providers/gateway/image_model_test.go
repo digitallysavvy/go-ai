@@ -131,8 +131,8 @@ func TestGatewayImageModelProviderOptionsAndZeroSeedParity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGenerate error = %v", err)
 	}
-	if _, ok := seenBody["seed"]; ok {
-		t.Fatalf("seed=0 should be omitted to match TS truthy spread behavior: %#v", seenBody)
+	if seenBody["seed"] != float64(0) {
+		t.Fatalf("seed=0 should be sent like TS `seed != null` (ef2dfb5e9f): %#v", seenBody)
 	}
 	if prompt, ok := seenBody["prompt"].(string); !ok || prompt != "" {
 		t.Fatalf("empty prompt string should be preserved in request body: %#v", seenBody)

@@ -305,8 +305,8 @@ func (m *VideoModel) buildRequest(opts *provider.VideoModelV3CallOptions) (map[s
 		parameters["durationSeconds"] = *opts.Duration
 	}
 
-	// TS: `if (options.seed)` -- falsy (including 0) is skipped.
-	if opts.Seed != nil && *opts.Seed != 0 {
+	// TS (ef2dfb5e9f): `if (options.seed != null)` -- seed 0 is sent.
+	if opts.Seed != nil {
 		parameters["seed"] = *opts.Seed
 	}
 

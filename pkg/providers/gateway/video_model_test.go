@@ -768,10 +768,13 @@ func TestVideoModel_ZeroNumericOptionsWireParity(t *testing.T) {
 	if capturedBody["prompt"] != "" || capturedBody["n"] != float64(0) {
 		t.Fatalf("prompt and n should be sent unconditionally like TS: %v", capturedBody)
 	}
-	for _, key := range []string{"duration", "fps", "seed"} {
+	for _, key := range []string{"duration", "fps"} {
 		if _, ok := capturedBody[key]; ok {
 			t.Fatalf("%s=0 should be omitted to match TS truthy spread behavior: %v", key, capturedBody)
 		}
+	}
+	if capturedBody["seed"] != float64(0) {
+		t.Fatalf("seed=0 should be sent like TS `seed != null` (ef2dfb5e9f): %v", capturedBody)
 	}
 }
 

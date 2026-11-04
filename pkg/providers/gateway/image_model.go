@@ -75,7 +75,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		body["aspectRatio"] = opts.AspectRatio
 	}
 
-	if opts.Seed != nil && *opts.Seed != 0 {
+	if opts.Seed != nil {
 		body["seed"] = *opts.Seed
 	}
 

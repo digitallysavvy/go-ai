@@ -603,8 +603,8 @@ func TestBedrockImageModelHelpers(t *testing.T) {
 	if _, ok := config["numberOfImages"]; ok {
 		t.Fatalf("numberOfImages=0 should be omitted to match TS truthy spread behavior: %#v", config)
 	}
-	if _, ok := config["seed"]; ok {
-		t.Fatalf("seed=0 should be omitted to match TS truthy spread behavior: %#v", config)
+	if config["seed"] != 0 {
+		t.Fatalf("seed=0 should be sent like TS `seed != null` (ef2dfb5e9f): %#v", config)
 	}
 	if _, ok := config["cfgScale"]; ok {
 		t.Fatalf("cfgScale=0 should be omitted to match TS truthy spread behavior: %#v", config)
