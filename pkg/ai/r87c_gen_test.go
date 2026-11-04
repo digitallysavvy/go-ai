@@ -1117,3 +1117,186 @@ func TestR87cgenStopWhenTwoStepsWithPrepareStep(t *testing.T) {
 	r87cgenCheck(t, "7331 content", r87cgenContentView(t, res.Content), `[{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"},{"dynamic":false,"input":{"value":"value"},"output":"result1","toolCallId":"call-1","toolName":"tool1","type":"tool-result"},{"text":"Hello, world!","type":"text"}]`)
 	r87cgenCheck(t, "7363 finalStep.content", r87cgenContentView(t, res.FinalStep.Content), `[{"text":"Hello, world!","type":"text"}]`)
 }
+
+// generate-text.test.ts 7693 'options.stopWhen' > 'should complete tool loop
+// with isLoopFinished()'.
+func TestR87cgenIsLoopFinished(t *testing.T) {
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenModel(func(n int, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+			switch n {
+			case 0:
+				return r87cgenToolCalls(r87cgenCall("call-1", "tool1", `{ "value": "value" }`)), nil
+			case 1:
+				return r87cgenResult(r87cgenText("Done!")), nil
+			}
+			return nil, errors.New("Unexpected response count")
+		}),
+		Tools:    []types.Tool{r87cgenTool("tool1", func(map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result1", nil }, "value")},
+		Prompt:   "test-input",
+		StopWhen: []StopCondition{IsLoopFinished()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text != "Done!" || len(res.Steps) != 2 {
+		t.Fatalf("text = %q, steps = %d", res.Text, len(res.Steps))
+	}
+}
+
+// generate-text.test.ts 7763 'options.providerOptions' > 'should pass
+// provider options to model'.
+func TestR87cgenProviderOptionsToModel(t *testing.T) {
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenModel(func(_ int, o *provider.GenerateOptions) (*types.GenerateResult, error) {
+			if !reflect.DeepEqual(o.ProviderOptions, map[string]interface{}{"aProvider": map[string]interface{}{"someKey": "someValue"}}) {
+				t.Errorf("providerOptions = %#v", o.ProviderOptions)
+			}
+			return r87cgenResult(r87cgenText("provider metadata test")), nil
+		}),
+		Prompt:          "test-input",
+		ProviderOptions: map[string]interface{}{"aProvider": map[string]interface{}{"someKey": "someValue"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text != "provider metadata test" {
+		t.Fatalf("text = %q", res.Text)
+	}
+}
+
+// generate-text.test.ts 7805 'options.reasoning' > 'should pass through
+// provider-default'.
+func TestR87cgenReasoningProviderDefault(t *testing.T) {
+	model := r87cgenHello("test")
+	level := types.ReasoningDefault
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "test-input", Reasoning: &level}); err != nil {
+		t.Fatal(err)
+	}
+	if got := model.GenerateCalls[0].Reasoning; got == nil || *got != "provider-default" {
+		t.Fatalf("reasoning = %v, want provider-default", got)
+	}
+}
+
+// generate-text.test.ts 7824 'options.abortSignal' > 'should forward abort
+// signal to tool execution': the caller aborts after the call started (in Go,
+// while the model call runs); the tool still runs with the call's abort
+// signal (its ctx is cancelled), call-1, the messages and no context.
+func TestR87cgenAbortSignalForwardedToTool(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type call struct {
+		input     map[string]interface{}
+		cancelled bool
+		id        string
+		messages  int
+		toolCtx   interface{}
+	}
+	var calls []call
+	_, err := GenerateText(ctx, GenerateTextOptions{
+		Model: r87cgenModel(func(int, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			cancel()
+			return r87cgenResult(r87cgenCall("call-1", "tool1", `{ "value": "value" }`)), nil
+		}),
+		Tools: []types.Tool{{Name: "tool1", Parameters: r87cgenSchema("value"), Execute: func(toolCtx context.Context, in map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+			calls = append(calls, call{in, toolCtx.Err() != nil, o.ToolCallID, len(o.Messages), o.ToolContext})
+			return "tool result", nil
+		}}},
+		Prompt: "test-input",
+	})
+	if err != nil {
+		t.Fatalf("err = %v, want the call to finish", err)
+	}
+	if len(calls) != 1 || !reflect.DeepEqual(calls[0].input, map[string]interface{}{"value": "value"}) || !calls[0].cancelled || calls[0].id != "call-1" || calls[0].messages == 0 || calls[0].toolCtx != nil {
+		t.Fatalf("tool calls = %+v", calls)
+	}
+}
+
+func r87cgenDur(ms int) *time.Duration { d := time.Duration(ms) * time.Millisecond; return &d }
+
+func r87cgenHasDeadline(ctx context.Context) bool {
+	_, ok := ctx.Deadline()
+	return ok
+}
+
+// generate-text.test.ts 'options.timeout' (TS abort signals are Go context
+// deadlines: "an AbortSignal is passed" is a ctx with a deadline):
+// generate-text.test.ts 8016 should forward timeout abort signal to tool
+// execution, 8055 should support timeout object with totalMs, 8119 should
+// forward stepMs as abort signal to each step, 8187 should forward stepMs
+// abort signal to tool execution, 8221 should support both totalMs and
+// stepMs together.
+func TestR87cgenTimeoutSignals(t *testing.T) {
+	toolCallModel := func(int, *provider.GenerateOptions) (*types.GenerateResult, error) {
+		return r87cgenResult(r87cgenCall("call-1", "tool1", `{ "value": "value" }`)), nil
+	}
+	t.Run("8016 timeout to tool execution", func(t *testing.T) {
+		type call struct {
+			input       map[string]interface{}
+			hasDeadline bool
+			id          string
+			messages    int
+			toolCtx     interface{}
+		}
+		var calls []call
+		if _, err := GenerateText(context.Background(), GenerateTextOptions{
+			Model: r87cgenModel(toolCallModel),
+			Tools: []types.Tool{{Name: "tool1", Parameters: r87cgenSchema("value"), Execute: func(ctx context.Context, in map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+				calls = append(calls, call{in, r87cgenHasDeadline(ctx), o.ToolCallID, len(o.Messages), o.ToolContext})
+				return "tool result", nil
+			}}},
+			Prompt:  "test-input",
+			Timeout: &TimeoutConfig{Total: r87cgenDur(5000)},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if len(calls) != 1 || !reflect.DeepEqual(calls[0].input, map[string]interface{}{"value": "value"}) || !calls[0].hasDeadline || calls[0].id != "call-1" || calls[0].messages == 0 || calls[0].toolCtx != nil {
+			t.Fatalf("tool calls = %+v", calls)
+		}
+	})
+	modelSignals := func(t *testing.T, timeout *TimeoutConfig) []bool {
+		var got []bool
+		if _, err := GenerateText(context.Background(), GenerateTextOptions{
+			Model: &testutil.MockLanguageModel{DoGenerateFunc: func(ctx context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+				got = append(got, r87cgenHasDeadline(ctx))
+				return r87cgenResult(r87cgenText("Hello, world!")), nil
+			}},
+			Prompt:  "test-input",
+			Timeout: timeout,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	t.Run("8055 totalMs", func(t *testing.T) {
+		if got := modelSignals(t, &TimeoutConfig{Total: r87cgenDur(5000)}); !reflect.DeepEqual(got, []bool{true}) {
+			t.Fatalf("model signals = %v", got)
+		}
+	})
+	t.Run("8119 stepMs to each step", func(t *testing.T) {
+		if got := modelSignals(t, &TimeoutConfig{PerStep: r87cgenDur(5000)}); !reflect.DeepEqual(got, []bool{true}) {
+			t.Fatalf("model signals = %v", got)
+		}
+	})
+	t.Run("8221 totalMs and stepMs", func(t *testing.T) {
+		if got := modelSignals(t, &TimeoutConfig{Total: r87cgenDur(10000), PerStep: r87cgenDur(5000)}); !reflect.DeepEqual(got, []bool{true}) {
+			t.Fatalf("model signals = %v", got)
+		}
+	})
+	t.Run("8187 stepMs to tool execution", func(t *testing.T) {
+		hasDeadline := false
+		if _, err := GenerateText(context.Background(), GenerateTextOptions{
+			Model: r87cgenModel(toolCallModel),
+			Tools: []types.Tool{{Name: "tool1", Parameters: r87cgenSchema("value"), Execute: func(ctx context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+				hasDeadline = r87cgenHasDeadline(ctx)
+				return "tool result", nil
+			}}},
+			Prompt:  "test-input",
+			Timeout: &TimeoutConfig{PerStep: r87cgenDur(5000)},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if !hasDeadline {
+			t.Fatal("tool ctx has no deadline")
+		}
+	})
+}
