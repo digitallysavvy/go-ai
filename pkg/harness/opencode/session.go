@@ -189,7 +189,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		c.submitter = bridge.NewChannelUserMessageSubmitter(s.p.channel)
 	}
 
-	var unsub []func()
+	var unsub harnessutil.Subscriptions
 	// turnMu guards this turn's own settlement bookkeeping below
 	// (isSettled/isFinished/drainingAfterAbort), separate from
 	// promptControl's own c.mu (which only guards the caller-visible
@@ -226,9 +226,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		s.mu.Lock()
 		s.activeTurn = false
 		s.mu.Unlock()
-		for _, u := range unsub {
-			u()
-		}
+		unsub.UnsubscribeAll()
 		close(turnDrain)
 	}
 	settleSuccess := func() {
@@ -255,7 +253,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 	}
 
 	for _, t := range eventTypes {
-		unsub = append(unsub, s.p.channel.On(t, func(e bridge.Event) {
+		unsub.Add(s.p.channel.On(t, func(e bridge.Event) {
 			if t == harness.PartTypeFinishStep {
 				c.checkpoint.Record(e)
 			}
@@ -264,7 +262,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 			}
 		}))
 	}
-	unsub = append(unsub, s.p.channel.On(harness.PartTypeFinish, func(e bridge.Event) {
+	unsub.Add(s.p.channel.On(harness.PartTypeFinish, func(e bridge.Event) {
 		turnMu.Lock()
 		draining := drainingAfterAbort
 		turnMu.Unlock()
@@ -277,7 +275,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		}
 		settleSuccess()
 	}))
-	unsub = append(unsub, s.p.channel.On(harness.PartTypeError, func(e bridge.Event) {
+	unsub.Add(s.p.channel.On(harness.PartTypeError, func(e bridge.Event) {
 		turnMu.Lock()
 		draining := drainingAfterAbort
 		turnMu.Unlock()
@@ -558,25 +556,23 @@ func (s *session) currentModel() string {
 
 func (s *session) runCompactOperation(ctx context.Context, msg StartMessage) error {
 	done := make(chan error, 1)
-	var unsub []func()
+	var unsub harnessutil.Subscriptions
 	settle := func(err error) {
-		for _, u := range unsub {
-			u()
-		}
+		unsub.UnsubscribeAll()
 		select {
 		case done <- err:
 		default:
 		}
 	}
-	unsub = append(unsub, s.p.channel.On(harness.PartTypeCompaction, func(e bridge.Event) {
+	unsub.Add(s.p.channel.On(harness.PartTypeCompaction, func(e bridge.Event) {
 		if f, ok := e.Message.(bridge.StreamPartFrame); ok {
 			s.mu.Lock()
 			s.pendingCompaction = append(s.pendingCompaction, f.Part)
 			s.mu.Unlock()
 		}
 	}))
-	unsub = append(unsub, s.p.channel.On(harness.PartTypeFinish, func(bridge.Event) { settle(nil) }))
-	unsub = append(unsub, s.p.channel.On(harness.PartTypeError, func(e bridge.Event) {
+	unsub.Add(s.p.channel.On(harness.PartTypeFinish, func(bridge.Event) { settle(nil) }))
+	unsub.Add(s.p.channel.On(harness.PartTypeError, func(e bridge.Event) {
 		if f, ok := e.Message.(bridge.StreamPartFrame); ok {
 			if ep, ok := f.Part.(*harness.ErrorPart); ok {
 				// TS rejects with the raw error value; a wire object keeps its

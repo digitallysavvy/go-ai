@@ -71,7 +71,7 @@ type promptControl struct {
 	settled bool
 	err     error
 	done    chan struct{}
-	unsub   []func()
+	subs    harnessutil.Subscriptions
 }
 
 func (c *promptControl) settleSuccess() {
@@ -81,11 +81,8 @@ func (c *promptControl) settleSuccess() {
 		return
 	}
 	c.settled = true
-	unsub := c.unsub
 	c.mu.Unlock()
-	for _, u := range unsub {
-		u()
-	}
+	c.subs.UnsubscribeAll()
 	close(c.done)
 }
 
@@ -97,11 +94,8 @@ func (c *promptControl) settleError(err error) {
 	}
 	c.settled = true
 	c.err = err
-	unsub := c.unsub
 	c.mu.Unlock()
-	for _, u := range unsub {
-		u()
-	}
+	c.subs.UnsubscribeAll()
 	close(c.done)
 }
 
@@ -153,15 +147,15 @@ func wireTurn(ctx context.Context, channel *bridge.Channel, emit harness.EmitFun
 				forward(f.Part)
 			}
 		})
-		c.unsub = append(c.unsub, unsub)
+		c.subs.Add(unsub)
 	}
-	c.unsub = append(c.unsub, channel.On(harness.PartTypeFinish, func(e bridge.Event) {
+	c.subs.Add(channel.On(harness.PartTypeFinish, func(e bridge.Event) {
 		if f, ok := e.Message.(bridge.StreamPartFrame); ok {
 			forward(f.Part)
 		}
 		c.settleSuccess()
 	}))
-	c.unsub = append(c.unsub, channel.On(harness.PartTypeError, func(e bridge.Event) {
+	c.subs.Add(channel.On(harness.PartTypeError, func(e bridge.Event) {
 		f, ok := e.Message.(bridge.StreamPartFrame)
 		if !ok {
 			c.settleError(errors.New("deepagents: malformed error frame"))

@@ -486,9 +486,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 type promptControl struct {
 	channel      *bridge.Channel
 	emit         harness.EmitFunc
-	unsubMu      sync.Mutex
-	unsubs       []func()
-	unsubscribed bool
+	subs         harnessutil.Subscriptions
 	userMessages *bridge.ExperimentalUserMessageSubmitter
 	checkpoint   *bridge.CheckpointRecorder
 
@@ -502,28 +500,11 @@ func (c *promptControl) forward(part harness.StreamPart) {
 	c.emit(part)
 }
 
-// addUnsub records a handler's unsubscribe, or runs it at once when the
-// turn has already settled.
-func (c *promptControl) addUnsub(u func()) {
-	c.unsubMu.Lock()
-	if c.unsubscribed {
-		c.unsubMu.Unlock()
-		u()
-		return
-	}
-	c.unsubs = append(c.unsubs, u)
-	c.unsubMu.Unlock()
-}
+// addUnsub records a handler's unsubscribe (harnessutil.Subscriptions: a
+// handler registered after the turn settled is removed at once).
+func (c *promptControl) addUnsub(u func()) { c.subs.Add(u) }
 
-func (c *promptControl) unsubscribeAll() {
-	c.unsubMu.Lock()
-	list := c.unsubs
-	c.unsubs, c.unsubscribed = nil, true
-	c.unsubMu.Unlock()
-	for _, u := range list {
-		u()
-	}
-}
+func (c *promptControl) unsubscribeAll() { c.subs.UnsubscribeAll() }
 
 func (c *promptControl) settleSuccess() {
 	c.once.Do(func() {
