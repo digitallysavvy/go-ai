@@ -871,6 +871,10 @@ for (let i = 0; i < starts.length; i++) {
         if (snap && snap.__err) continue;
         const e2 = is[1].trim().replace(/^await\s+/, '');
         const a3 = { expr: e2, matcher: 'toEqual', not: false, arg: snap };
+        {
+          const js = jsProgram(body0, is.index, new RegExp('\\b' + fnName + '\\('), is.index + 'expect('.length, is.index + 'expect('.length + is[1].length);
+          if (js) a3.js = js;
+        }
         if (new RegExp('^' + fnName + '\\(').test(e2)) {
           try { const open = e2.indexOf('('); a3.callArgs = evalArgsJSON(splitTopLevelArgs(e2.slice(open + 1, balanced(e2, open) - 1))); a3.callSuffix = e2.slice(balanced(e2, open)).replace(/[,\s]+$/, ''); } catch (err) { continue; }
         }
