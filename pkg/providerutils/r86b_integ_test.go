@@ -15,11 +15,11 @@ import (
 // "Ã©z"). FetchURL is TS fetch's new URL(input).href / TypeError text.
 func TestR86bintegExtractHeadersAndFetchURL(t *testing.T) {
 	h := ExtractHeaders(http.Header{"X-U": {"\xc3\xa9z"}, "X-A": {"a", "b"}, "X-P": {"plain"}})
-	if h["X-U"] != "Ã©z" || h["X-A"] != "a, b" || h["X-P"] != "plain" {
+	if h["X-U"] != "\u00c3\u00a9z" || h["X-A"] != "a, b" || h["X-P"] != "plain" {
 		t.Errorf("ExtractHeaders = %q", h)
 	}
 	for _, tc := range []struct{ in, want, err string }{
-		{"https://h.example/cafÃ©?q=é", "https://h.example/caf%C3%83%C2%A9?q=%C3%A9", ""},
+		{"https://h.example/caf\u00c3\u00a9?q=\u00e9", "https://h.example/caf%C3%83%C2%A9?q=%C3%A9", ""},
 		{"https://H.example:443/a/../b", "https://h.example/b", ""},
 		{"http://[::1", "", "Failed to parse URL from http://[::1"},
 	} {
@@ -76,7 +76,7 @@ func TestR86bintegSandboxTextNodeBufferEncodings(t *testing.T) {
 		case isUTF16[strings.ToLower(label(c.Enc))]:
 			// UTF-16: a JS string can hold a lone surrogate, a Go string
 			// cannot (it reads as U+FFFD); compare the code points Go can hold.
-			want := strings.ToValidUTF8(*c.OK, "�")
+			want := strings.ToValidUTF8(*c.OK, "\ufffd")
 			if err != nil || got != want {
 				t.Errorf("decode %s as %q = %q, %v; want %q", c.Bytes, label(c.Enc), got, err, want)
 			}

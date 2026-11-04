@@ -55,7 +55,7 @@ func resolveDebugConfig(debug *DebugConfig, getenv func(string) string) resolved
 	if debug != nil && debug.Enabled != nil {
 		out.Enabled = *debug.Enabled
 	} else {
-		_, out.Enabled = envTruthy[strings.ToLower(getenv("HARNESS_DEBUG"))]
+		_, out.Enabled = envTruthy[providerutils.JSToLower(getenv("HARNESS_DEBUG"))]
 	}
 	switch {
 	case debug != nil && debug.Level != "":

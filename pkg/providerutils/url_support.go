@@ -23,7 +23,7 @@ func CompileSupportedURLPatterns(patternsByMediaType map[string][]string) map[st
 	}
 	compiled := make(map[string][]*regexp.Regexp, len(patternsByMediaType))
 	for mediaType, patterns := range patternsByMediaType {
-		key := strings.ToLower(mediaType)
+		key := JSToLower(mediaType)
 		for _, pattern := range patterns {
 			if re, err := regexp.Compile(pattern); err == nil {
 				compiled[key] = append(compiled[key], re)
@@ -52,7 +52,7 @@ func MatchesSupportedURL(compiled map[string][]*regexp.Regexp, mediaType, url st
 	}
 	// Only the media type is lowercased; the URL is matched as given, so
 	// patterns are case-sensitive unless they say otherwise (TS #23333).
-	mediaType = strings.ToLower(mediaType)
+	mediaType = JSToLower(mediaType)
 	topLevelOnly := !strings.Contains(mediaType, "/")
 	for key, regexes := range compiled {
 		prefix := strings.ReplaceAll(key, "*", "")

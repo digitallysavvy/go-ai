@@ -5,11 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"math"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -541,10 +542,10 @@ func selectInputVideo(opts *provider.VideoModelV3CallOptions, warnings *[]types.
 // reference, mirroring TS isVideoReference.
 func isVideoReference(file *provider.VideoModelV3File) bool {
 	if file.Type == "file" {
-		return strings.HasPrefix(strings.ToLower(file.MediaType), "video/")
+		return strings.HasPrefix(providerutils.JSToLower(file.MediaType), "video/")
 	}
 	if file.MediaType != "" {
-		return strings.HasPrefix(strings.ToLower(file.MediaType), "video/")
+		return strings.HasPrefix(providerutils.JSToLower(file.MediaType), "video/")
 	}
 	return containerFromURL(file.URL) != ""
 }
@@ -558,7 +559,7 @@ func containerFromURL(rawURL string) string {
 	}
 	// TS withoutQuery.split('.').pop(): with no dot the whole string is the
 	// "extension".
-	extension := strings.ToLower(withoutQuery[strings.LastIndex(withoutQuery, ".")+1:])
+	extension := providerutils.JSToLower(withoutQuery[strings.LastIndex(withoutQuery, ".")+1:])
 	return extensionContainers[extension]
 }
 
@@ -575,7 +576,7 @@ func resolveContainer(input *provider.VideoModelV3File, topazOpts *VideoModelOpt
 	}
 
 	if input.Type == "file" {
-		container := mediaTypeContainers[strings.ToLower(input.MediaType)]
+		container := mediaTypeContainers[providerutils.JSToLower(input.MediaType)]
 		if container == "" {
 			return "", invalidArgument("inputReferences",
 				fmt.Sprintf("Could not map the media type %q onto a Topaz container. Set the `source.container` provider option explicitly.", input.MediaType), nil)
@@ -585,7 +586,7 @@ func resolveContainer(input *provider.VideoModelV3File, topazOpts *VideoModelOpt
 
 	container := ""
 	if input.MediaType != "" {
-		container = mediaTypeContainers[strings.ToLower(input.MediaType)]
+		container = mediaTypeContainers[providerutils.JSToLower(input.MediaType)]
 	}
 	if container == "" {
 		container = containerFromURL(input.URL)

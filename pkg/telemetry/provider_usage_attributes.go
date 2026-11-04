@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jscase"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -41,7 +42,7 @@ func normalizeUsageKey(key string) string {
 	transformed := usageCamelBoundary.ReplaceAllString(key, "${1}_${2}")
 	transformed = usageNonAlnum.ReplaceAllString(transformed, "_")
 	transformed = strings.Trim(transformed, "_")
-	return strings.ToLower(transformed)
+	return jscase.ToLower(transformed)
 }
 
 // usageNumericValue converts common numeric JSON representations (float64

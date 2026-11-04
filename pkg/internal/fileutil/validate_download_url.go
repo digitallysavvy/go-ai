@@ -10,6 +10,7 @@ import (
 	"golang.org/x/net/idna"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ValidateDownloadURL rejects URL forms that can bypass SSRF protections.
@@ -367,7 +368,7 @@ func zeroBytes(data []byte) bool {
 func canonicalIPv6Hostname(ip net.IP) string {
 	v6 := ip.To16()
 	if v6 == nil {
-		return "[" + strings.ToLower(ip.String()) + "]"
+		return "[" + providerutils.JSToLower(ip.String()) + "]"
 	}
 	groups := make([]uint16, 8)
 	for i := 0; i < 8; i++ {
@@ -412,9 +413,9 @@ func canonicalIPv6Hostname(ip net.IP) string {
 // slip past string-based hostname blocklists. Hosts that fail IDNA mapping
 // are returned lowercased; net/http rejects them at dial time.
 func NormalizeHostname(host string) string {
-	host = strings.ToLower(host)
+	host = providerutils.JSToLower(host)
 	if ascii, err := idna.Lookup.ToASCII(host); err == nil {
 		host = ascii
 	}
-	return strings.TrimRight(strings.ToLower(host), ".")
+	return strings.TrimRight(providerutils.JSToLower(host), ".")
 }

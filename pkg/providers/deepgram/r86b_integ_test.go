@@ -17,7 +17,7 @@ func TestR86bintegDeepgramHeadersReadAsFetch(t *testing.T) {
 		"Dg-Char-Count":             {"\xa042"},
 	})
 	want := map[string]interface{}{
-		"requestId":            "rÃ©",
+		"requestId":            "r\u00c3\u00a9",
 		"modelName":            "a, b",
 		"additionalModelUuids": []string{"u1", " u2"},
 		"charCount":            42,

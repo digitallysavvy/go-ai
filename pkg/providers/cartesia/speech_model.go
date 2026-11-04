@@ -59,7 +59,7 @@ func resolveOutputFormat(outputFormat string, opts *SpeechModelOptions, warnings
 	if outputFormat == "" {
 		outputFormat = "mp3"
 	}
-	parts := strings.Split(strings.ToLower(outputFormat), "_")
+	parts := strings.Split(providerutils.JSToLower(outputFormat), "_")
 	formatName := parts[0]
 	// TS destructures `[formatName, sampleRateText, ...extraParts]`: a
 	// trailing underscore ("mp3_") gives an empty, but present, sample rate.

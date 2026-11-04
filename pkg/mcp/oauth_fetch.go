@@ -18,7 +18,7 @@ const maxOAuthDiscoveryRedirects = 10
 // isOAuthLoopbackHost allows loopback HTTP(S) for local MCP OAuth (RFC 8252
 // §7.3, RFC 6761 §6.3), matching TS isOAuthLoopbackHost.
 func isOAuthLoopbackHost(hostname string) bool {
-	normalized := strings.TrimRight(strings.ToLower(hostname), ".")
+	normalized := strings.TrimRight(providerutils.JSToLower(hostname), ".")
 	return normalized == "localhost" ||
 		strings.HasSuffix(normalized, ".localhost") ||
 		normalized == "127.0.0.1" ||

@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,6 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
@@ -357,7 +359,7 @@ func requestOpenCodeGitLabDirectAccess(ctx context.Context, httpClient *http.Cli
 func createOpenCodeGitLabSubscriptionRequestTransformations(directAccess *GitLabDirectAccess, sandboxAccessToken string) ([]harness.RequestTransformation, error) {
 	headers := map[string]string{}
 	for k, v := range directAccess.Headers {
-		lower := strings.ToLower(k)
+		lower := providerutils.JSToLower(k)
 		if lower == "authorization" || lower == "x-api-key" {
 			continue
 		}

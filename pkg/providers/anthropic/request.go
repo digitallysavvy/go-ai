@@ -73,7 +73,7 @@ func (m *LanguageModel) userSuppliedBetas(opts *provider.GenerateOptions) []stri
 	collect := func(headers map[string]string) {
 		for k, v := range headers {
 			if strings.EqualFold(k, "anthropic-beta") {
-				for _, b := range strings.Split(strings.ToLower(v), ",") {
+				for _, b := range strings.Split(providerutils.JSToLower(v), ",") {
 					if b = providerutils.JSTrim(b); b != "" { // TS beta.trim()
 						out = append(out, b)
 					}

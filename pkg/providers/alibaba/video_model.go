@@ -627,7 +627,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		if statusResp.Output != nil {
 			message = statusResp.Output.Message
 		}
-		errMsg := providerutils.JSTrim(fmt.Sprintf("Video generation %s. Task ID: %s. %s", strings.ToLower(taskStatus), operation.TaskID, message))
+		errMsg := providerutils.JSTrim(fmt.Sprintf("Video generation %s. Task ID: %s. %s", providerutils.JSToLower(taskStatus), operation.TaskID, message))
 		return &provider.VideoModelV3OperationStatusResult{
 			Status:   provider.VideoOperationStatusError,
 			Error:    errMsg,

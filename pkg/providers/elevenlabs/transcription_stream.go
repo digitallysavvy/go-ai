@@ -65,7 +65,7 @@ func isRealtimeTranscriptionModelID(modelID string) bool {
 // `audio_format` query value and the sample rate to send with each chunk,
 // mirroring TS getElevenLabsRealtimeAudioFormat.
 func elevenLabsRealtimeAudioFormat(format provider.AudioFormat) (audioFormat string, sampleRate int, err error) {
-	t := strings.ToLower(format.Type)
+	t := providerutils.JSToLower(format.Type)
 
 	if t == "audio/pcmu" {
 		if format.Rate != nil && *format.Rate != 8000 {

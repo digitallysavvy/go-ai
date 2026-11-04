@@ -12,7 +12,6 @@ import (
 	stdhttp "net/http"
 	"net/textproto"
 	"strconv"
-	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -676,7 +675,7 @@ func isXAICancellationError(code interface{}) bool {
 	case float64:
 		return v == 1
 	case string:
-		lower := strings.ToLower(v)
+		lower := providerutils.JSToLower(v)
 		return lower == "1" || lower == "cancelled" || lower == "batch_cancelled"
 	default:
 		return false

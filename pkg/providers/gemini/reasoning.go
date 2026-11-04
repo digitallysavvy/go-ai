@@ -18,7 +18,7 @@ func isGemini3Model(modelID string) bool {
 // isGemmaModel reports whether modelID identifies a Gemma model.
 // Gemma models do not support systemInstruction.
 func isGemmaModel(modelID string) bool {
-	return strings.HasPrefix(strings.ToLower(modelID), "gemma-")
+	return strings.HasPrefix(providerutils.JSToLower(modelID), "gemma-")
 }
 
 // maxOutputTokensForGemini25Model mirrors TS getMaxOutputTokensForGemini25Model.
@@ -27,7 +27,7 @@ const maxOutputTokensForGemini25Model = 65536
 // maxThinkingTokensForModel mirrors TS getMaxThinkingTokensForGemini25Model:
 // 2.5-pro and gemini-3-pro-image variants → 32768, everything else → 24576.
 func maxThinkingTokensForModel(modelID string) int {
-	id := strings.ToLower(modelID)
+	id := providerutils.JSToLower(modelID)
 	if strings.Contains(id, "2.5-pro") || strings.Contains(id, "gemini-3-pro-image") {
 		return 32768
 	}
@@ -38,7 +38,7 @@ func maxThinkingTokensForModel(modelID string) int {
 // 2.5 Pro cannot disable thinking and needs a budget of at least 128 tokens;
 // other Gemini 2.5 models disable thinking with a budget of 0.
 func minThinkingTokensForGemini25Model(modelID string) int {
-	if strings.Contains(strings.ToLower(modelID), "2.5-pro") {
+	if strings.Contains(providerutils.JSToLower(modelID), "2.5-pro") {
 		return 128
 	}
 	return 0

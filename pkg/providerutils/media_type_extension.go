@@ -15,7 +15,7 @@ func MediaTypeToExtension(mediaType string) string {
 	// TS: const [_type, subtype = ''] = mediaType.toLowerCase().split('/'),
 	// the second segment only ("a/b/c" has subtype "b").
 	subtype := ""
-	if parts := strings.SplitN(strings.ToLower(mediaType), "/", 3); len(parts) >= 2 {
+	if parts := strings.SplitN(JSToLower(mediaType), "/", 3); len(parts) >= 2 {
 		subtype = parts[1]
 	}
 	switch subtype {

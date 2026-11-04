@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // PolicySandbox is the minimal surface VercelNetworkPolicyManager needs from
@@ -291,7 +292,7 @@ func inspectCurrentPolicy(policy NetworkPolicy) (currentPolicyInspection, error)
 					return currentPolicyInspection{}, newResponseRuleConflictError()
 				}
 				if hasRequestTransformation(rule) {
-					transformationHostSet[strings.ToLower(host)] = struct{}{}
+					transformationHostSet[providerutils.JSToLower(host)] = struct{}{}
 				}
 				if rule.ForwardURL != "" {
 					forwardRules = append(forwardRules, forwardRule{
@@ -454,8 +455,8 @@ func intersectHostPatterns(first, second string) (string, bool) {
 }
 
 func isHostPatternSubset(candidate, container string) bool {
-	normalizedCandidate := strings.ToLower(candidate)
-	normalizedContainer := strings.ToLower(container)
+	normalizedCandidate := providerutils.JSToLower(candidate)
+	normalizedContainer := providerutils.JSToLower(container)
 	if normalizedCandidate == normalizedContainer || normalizedContainer == "*" {
 		return true
 	}
@@ -540,7 +541,7 @@ func getRequestTransformationHosts(policy NetworkPolicy) []string {
 	for host, rules := range policy.AllowMap {
 		for _, rule := range rules {
 			if hasRequestTransformation(rule) {
-				set[strings.ToLower(host)] = struct{}{}
+				set[providerutils.JSToLower(host)] = struct{}{}
 			}
 		}
 	}
@@ -555,10 +556,10 @@ func getRequestTransformationHosts(policy NetworkPolicy) []string {
 func isHostSetSubset(subset, superset []string) bool {
 	set := map[string]struct{}{}
 	for _, h := range superset {
-		set[strings.ToLower(h)] = struct{}{}
+		set[providerutils.JSToLower(h)] = struct{}{}
 	}
 	for _, h := range subset {
-		if _, ok := set[strings.ToLower(h)]; !ok {
+		if _, ok := set[providerutils.JSToLower(h)]; !ok {
 			return false
 		}
 	}
@@ -589,7 +590,7 @@ func mergeRequestTransformations(existing, incoming []harness.RequestTransformat
 func requestTransformationIdentity(t harness.RequestTransformation) string {
 	names := make([]string, 0, len(t.Transform.Headers))
 	for name := range t.Transform.Headers {
-		names = append(names, strings.ToLower(name))
+		names = append(names, providerutils.JSToLower(name))
 	}
 	sort.Strings(names)
 	payload := struct {

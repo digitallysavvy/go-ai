@@ -110,7 +110,7 @@ func (m *AzureSpeechSpeechModel) DoGenerate(ctx context.Context, opts *provider.
 
 	outputFormat := azureDefaultOutputFormat
 	if opts.OutputFormat != "" {
-		format := strings.ToLower(opts.OutputFormat)
+		format := providerutils.JSToLower(opts.OutputFormat)
 		if shorthand, ok := azureOutputFormatShorthands[format]; ok {
 			outputFormat = shorthand
 		} else if azureNativeOutputFormatPattern.MatchString(format) {
@@ -208,7 +208,7 @@ func (m *AzureSpeechSpeechModel) DoGenerate(ctx context.Context, opts *provider.
 func azureResolveVoice(voice, language string) (resolved string, languageWarning string) {
 	code := ""
 	if language != "" {
-		code = strings.ToLower(strings.SplitN(language, "-", 2)[0])
+		code = providerutils.JSToLower(strings.SplitN(language, "-", 2)[0])
 	}
 	if voice == "" {
 		if code == "" {
@@ -224,7 +224,7 @@ func azureResolveVoice(voice, language string) (resolved string, languageWarning
 	}
 	voiceLanguage := ""
 	if match := azureVoiceLanguagePattern.FindStringSubmatch(voice); match != nil {
-		voiceLanguage = strings.ToLower(match[1])
+		voiceLanguage = providerutils.JSToLower(match[1])
 	}
 	if code != "" && code != "auto" && voiceLanguage != "" && code != voiceLanguage {
 		return voice, "The voice " + voice + " selects the language. Language \"" + language + "\" was ignored."

@@ -113,7 +113,7 @@ func (h *mcpEventWebhook) handle(w http.ResponseWriter, r *http.Request) (int, [
 	}
 	// TS request.headers.get(...) (repeated lines joined, each byte one
 	// character; FetchHeaderText) .split(';')[0].trim().toLowerCase(): JS trim.
-	if strings.ToLower(providerutils.JSTrim(strings.Split(providerutils.FetchHeaderText(r.Header, "Content-Type"), ";")[0])) != "application/json" {
+	if providerutils.JSToLower(providerutils.JSTrim(strings.Split(providerutils.FetchHeaderText(r.Header, "Content-Type"), ";")[0])) != "application/json" {
 		return http.StatusUnsupportedMediaType, nil
 	}
 	if r.ContentLength > mcpEventMaxBodyBytes {

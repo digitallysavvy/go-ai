@@ -152,7 +152,7 @@ func buildTranscriptionConfig(opts transcriptionModelOptions) map[string]interfa
 		if modeType == "" {
 			modeType = "VERBATIM"
 		}
-		mode := map[string]interface{}{"type": strings.ToLower(modeType)}
+		mode := map[string]interface{}{"type": providerutils.JSToLower(modeType)}
 		if opts.Diarization != nil && *opts.Diarization {
 			mode["diarization_mode"] = "speaker"
 		}

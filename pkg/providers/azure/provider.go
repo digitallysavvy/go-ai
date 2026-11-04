@@ -67,7 +67,7 @@ func getAzureOpenAIBaseURLInfo(baseURL string) azureBaseURLInfo {
 
 	isFoundryProject := strings.HasSuffix(hostname, ".services.ai.azure.com") &&
 		strings.HasPrefix(pathname, "/api/projects/")
-	isVersioned := isAzureOpenAI && strings.HasSuffix(strings.ToLower(pathname), "/openai/v1")
+	isVersioned := isAzureOpenAI && strings.HasSuffix(providerutils.JSToLower(pathname), "/openai/v1")
 
 	return azureBaseURLInfo{
 		isAzureOpenAI:    isAzureOpenAI,

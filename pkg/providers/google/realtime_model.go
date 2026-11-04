@@ -156,7 +156,7 @@ var thinkingLiveModelRe = regexp.MustCompile(`^gemini-\d+\.\d+-live\b[^\n\r\x{20
 // Live model, matching only the last "/"-separated path segment.
 func isThinkingLiveModel(modelID string) bool {
 	segments := strings.Split(modelID, "/")
-	name := strings.ToLower(segments[len(segments)-1])
+	name := providerutils.JSToLower(segments[len(segments)-1])
 	return thinkingLiveModelRe.MatchString(name)
 }
 
@@ -170,7 +170,7 @@ func (m *GoogleRealtimeModel) BuildSessionConfig(config provider.RealtimeSession
 	if config.OutputModalities != nil {
 		modalities := make([]string, len(config.OutputModalities))
 		for i, modality := range config.OutputModalities {
-			modalities[i] = strings.ToUpper(modality)
+			modalities[i] = providerutils.JSToUpper(modality)
 		}
 		generation["responseModalities"] = modalities
 	} else {

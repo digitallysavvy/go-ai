@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -344,7 +345,7 @@ func (m *ImageModel) buildRequest(opts *provider.ImageGenerateOptions) (map[stri
 	if len(deprecated) > 0 {
 		parts := make([]string, len(deprecated))
 		for i, key := range deprecated {
-			camel := falSnakeRe.ReplaceAllStringFunc(key, func(s string) string { return strings.ToUpper(s[1:]) })
+			camel := falSnakeRe.ReplaceAllStringFunc(key, func(s string) string { return providerutils.JSToUpper(s[1:]) })
 			parts[i] = fmt.Sprintf("'%s' (use '%s')", key, camel)
 		}
 		warnings = append(warnings, types.Warning{

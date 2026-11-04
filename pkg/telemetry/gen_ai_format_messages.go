@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jscase"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -118,7 +119,7 @@ var wellKnownProviderPrefixes = []providerNameMapping{
 // gen_ai.provider.name value per the OTel GenAI SemConv, mirroring TS's
 // mapProviderName (eb70e72, fc15550).
 func mapProviderName(provider string) string {
-	lower := strings.ToLower(provider)
+	lower := jscase.ToLower(provider)
 	for _, m := range wellKnownProviderPrefixes {
 		if lower == m.prefix || strings.HasPrefix(lower, m.prefix+".") || strings.HasPrefix(lower, m.prefix+"-") {
 			return m.mapped

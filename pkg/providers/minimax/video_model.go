@@ -846,7 +846,7 @@ func minimaxNonImageFrameMediaType(f *provider.VideoModelV3File) string {
 // returning ("", false) when it cannot be resolved (TS
 // resolveTopLevelResolution).
 func resolveTopLevelResolution(resolution string) (string, bool) {
-	named := strings.ToUpper(resolution)
+	named := providerutils.JSToUpper(resolution)
 	if minimaxVideoResolutions[named] {
 		return named, true
 	}

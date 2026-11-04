@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
@@ -258,7 +259,7 @@ func normalizeAgentHeaders(headers map[string]string) (map[string]string, error)
 	// the error is deterministic for any combination of forbidden headers.
 	names := make([]string, 0, len(headers))
 	for name := range headers {
-		names = append(names, strings.ToLower(name))
+		names = append(names, providerutils.JSToLower(name))
 	}
 	sort.Strings(names)
 	for _, lower := range names {
@@ -268,7 +269,7 @@ func normalizeAgentHeaders(headers map[string]string) (map[string]string, error)
 	}
 	out := make(map[string]string, len(headers))
 	for name, value := range headers {
-		out[strings.ToLower(name)] = value
+		out[providerutils.JSToLower(name)] = value
 	}
 	return out, nil
 }

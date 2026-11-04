@@ -208,7 +208,7 @@ func (m *SpeechModel) buildArgs(opts *provider.SpeechGenerateOptions) (map[strin
 // encoding/container/sample_rate/bit_rate query parameters.
 // https://developers.deepgram.com/docs/tts-media-output-settings#audio-format-combinations
 func applyOutputFormat(query map[string]string, outputFormat string) {
-	formatLower := strings.ToLower(outputFormat)
+	formatLower := providerutils.JSToLower(outputFormat)
 
 	type mapped struct {
 		encoding   string
@@ -316,11 +316,11 @@ func inRates(rates []float64, v float64) bool {
 // combinations per Deepgram's spec.
 func applyDeepgramSpeechOptions(query map[string]string, opts *SpeechModelOptions, warnings *[]types.Warning) {
 	if opts.Encoding != "" {
-		newEncoding := strings.ToLower(opts.Encoding)
+		newEncoding := providerutils.JSToLower(opts.Encoding)
 		query["encoding"] = newEncoding
 
 		if opts.Container != "" {
-			container := strings.ToLower(opts.Container)
+			container := providerutils.JSToLower(opts.Container)
 			switch newEncoding {
 			case "linear16", "mulaw", "alaw":
 				if container != "wav" && container != "none" {
@@ -362,8 +362,8 @@ func applyDeepgramSpeechOptions(query map[string]string, opts *SpeechModelOption
 			delete(query, "bit_rate")
 		}
 	} else if opts.Container != "" {
-		container := strings.ToLower(opts.Container)
-		oldEncoding := strings.ToLower(query["encoding"])
+		container := providerutils.JSToLower(opts.Container)
+		oldEncoding := providerutils.JSToLower(query["encoding"])
 		var newEncoding string
 		switch container {
 		case "wav":
@@ -393,7 +393,7 @@ func applyDeepgramSpeechOptions(query map[string]string, opts *SpeechModelOption
 		sampleRatePtr = &v
 	}
 	if sampleRatePtr != nil {
-		encoding := strings.ToLower(query["encoding"])
+		encoding := providerutils.JSToLower(query["encoding"])
 		sampleRate := *sampleRatePtr
 		// JS String(number): 22050.5 stays fractional, 48000 has no ".0".
 		rateStr := providerutils.JSNumberString(sampleRate)
@@ -435,7 +435,7 @@ func applyDeepgramSpeechOptions(query map[string]string, opts *SpeechModelOption
 	}
 
 	if opts.BitRate != nil {
-		encoding := strings.ToLower(query["encoding"])
+		encoding := providerutils.JSToLower(query["encoding"])
 		bitRateStr := jsStringOf(opts.BitRate)
 		// TS Number(bitRate): a non-numeric string is NaN, so every range
 		// comparison is false (opus/aac accept it) and mp3's list check fails.

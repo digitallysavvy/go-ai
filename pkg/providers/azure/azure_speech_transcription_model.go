@@ -230,7 +230,7 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 			locale = *phrase.Locale
 			// TS: `phrase.locale ? [...] : []` -- an empty locale adds no language.
 			if locale != "" {
-				base := strings.ToLower(strings.SplitN(locale, "-", 2)[0])
+				base := providerutils.JSToLower(strings.SplitN(locale, "-", 2)[0])
 				languages[base] = true
 			}
 		}

@@ -86,7 +86,7 @@ func parseMusicTimestampsResponse(contentType string, body []byte) (*musicTimest
 		headers := textdecode.UTF8(body[start+2 : headersEnd])
 		partType := ""
 		if m := musicPartTypePattern.FindStringSubmatch(headers); m != nil {
-			partType = strings.ToLower(providerutils.JSTrim(m[1]))
+			partType = providerutils.JSToLower(providerutils.JSTrim(m[1]))
 		}
 		part := body[headersEnd+len(separator) : end]
 		switch {

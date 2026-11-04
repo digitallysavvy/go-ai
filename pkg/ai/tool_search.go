@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
-	"strings"
 	"sync"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ToolSearchDefaultName is the tool name ToolSearch uses when config.Name is
@@ -410,7 +410,7 @@ var (
 // prepare-tool-search.ts.
 func tokenizeSearchText(text string) []string {
 	spaced := camelCaseBoundary.ReplaceAllString(text, "$1 $2")
-	lower := strings.ToLower(spaced)
+	lower := providerutils.JSToLower(spaced)
 	return searchWordToken.FindAllString(lower, -1)
 }
 

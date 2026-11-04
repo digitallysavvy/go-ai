@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jscase"
 	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 )
 
@@ -1242,7 +1243,7 @@ func inferToolResultMediaTypeFromURL(value string) string {
 	if idx < 0 || idx == len(path)-1 {
 		return "application/octet-stream"
 	}
-	switch strings.ToLower(path[idx+1:]) {
+	switch jscase.ToLower(path[idx+1:]) {
 	case "jpg", "jpeg":
 		return "image/jpeg"
 	case "png":

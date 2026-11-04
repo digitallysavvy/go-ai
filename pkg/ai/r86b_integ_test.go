@@ -173,3 +173,56 @@ func TestR86bintegShellSandboxOptionalOperations(t *testing.T) {
 		t.Errorf("DeleteFile(file) = %v, %v", ok, err)
 	}
 }
+
+// cr-r86b-tools-to-integrator 1 and the data-url class: TS getTextFromDataUrl
+// (ai/src/util/data-url.ts) matches the charset with JS \s and /i without the
+// u flag, returns atob's binary string when there is no charset (each byte
+// one character), and decodes with new TextDecoder(charset) (WHATWG labels,
+// not Node Buffer encodings). Wants printed by Node 24 running the TS
+// function.
+func TestR86bintegGetTextFromDataURLMatchesTS(t *testing.T) {
+	for _, tc := range []struct{ in, want, err string }{
+		{"data:text/plain;base64,w6k=", "\u00c3\u00a9", ""},
+		{"data:text/plain;charset=utf-8;base64,77u/w6n/", "\u00e9\ufffd", ""},
+		{"data:text/plain;charset=iso-8859-1;base64,Y2Fm6YA=", "caf\u00e9\u20ac", ""},
+		{"data:text/plain;charset=windows-1252;base64,gA==", "\u20ac", ""},
+		{"data:text/plain;charset=latin1;base64,6Q==", "\u00e9", ""},
+		{"data:text/plain;charset=utf-16le;base64,//5BAADY", "A\ufffd", ""},
+		{"data:text/plain;charset=utf-16be;base64,/v8AQQ==", "A", ""},
+		{"data:text/plain;charset=base64;base64,eA==", "", "Error decoding data URL"},
+		{"data:text/plain;charset=bogus;base64,eA==", "", "Error decoding data URL"},
+		{"data:text/plain;charset=\"UTF-8\";base64,b2s=", "ok", ""},
+		{"data:text/plain; charset=windows-1252,6Q==", "\u00e9", ""},
+		{"data:text/plain;\u00a0charset=windows-1252;base64,6Q==", "\u00e9", ""},
+		{"data:text/plain;charset=windows-1252\u00a0;base64,6Q==", "\u00e9", ""},
+		{"data:text/plain;char\u017fet=windows-1252;base64,gA==", "\u0080", ""}, // no charset: TS /i does not fold s to U+017F
+		{"data:text/plain;CHARSET=Shift_JIS;base64,gqA=", "\u3042", ""},
+		{"data:text/plain;charset=iso-2022-kr;base64,YWI=", "", "Error decoding data URL"},
+	} {
+		got, err := GetTextFromDataURL(tc.in)
+		if tc.err != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.err) {
+				t.Errorf("GetTextFromDataURL(%q) = %q, %v; want error %q", tc.in, got, err, tc.err)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Errorf("GetTextFromDataURL(%q) = %q, %v; want %q", tc.in, got, err, tc.want)
+		}
+	}
+}
+
+// cr-r86b-stream-to-integrator 2: TS generate-speech.ts 314 / 330
+// mediaType.split(';', 1)[0].trim().toLowerCase() and
+// outputFormat.trim().toLowerCase().
+func TestR86bintegSpeechMediaTypeJSTrim(t *testing.T) {
+	if got := responseAudioMediaType(map[string]string{"Content-Type": "audio/mpeg\ufeff"}); got != "audio/mpeg" {
+		t.Errorf("U+FEFF-padded media type = %q, want audio/mpeg", got)
+	}
+	if got := responseAudioMediaType(map[string]string{"content-type": "\u0085audio/mpeg"}); got != "" {
+		t.Errorf("U+0085-prefixed media type = %q, want none (TS does not trim U+0085)", got)
+	}
+	if got := outputFormatMediaType("PCM\ufeff"); got != "audio/pcm" {
+		t.Errorf("outputFormatMediaType = %q, want audio/pcm", got)
+	}
+}

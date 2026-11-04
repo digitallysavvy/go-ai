@@ -124,7 +124,7 @@ func openAIStreamErrorStatusCode(frame *openAIStreamErrorFrame) int {
 		}
 	}
 
-	discriminator := strings.ToLower(strings.TrimSpace(openAIStreamErrorCodeString(frame.Code) + " " + frame.Type))
+	discriminator := providerutils.JSToLower(strings.TrimSpace(openAIStreamErrorCodeString(frame.Code) + " " + frame.Type))
 	if strings.Contains(discriminator, "insufficient_quota") || strings.Contains(discriminator, "rate_limit") {
 		return 429
 	}

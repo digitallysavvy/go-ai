@@ -13,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
@@ -282,7 +283,7 @@ func responseAudioMediaType(headers map[string]string) string {
 		if !strings.EqualFold(name, "content-type") {
 			continue
 		}
-		normalized := strings.ToLower(strings.TrimSpace(strings.SplitN(value, ";", 2)[0]))
+		normalized := providerutils.JSToLower(providerutils.JSTrim(strings.SplitN(value, ";", 2)[0]))
 		if normalized == "" {
 			return ""
 		}
@@ -297,7 +298,7 @@ func responseAudioMediaType(headers map[string]string) string {
 // outputFormatMediaType maps the caller's requested outputFormat to a media
 // type for headerless raw formats that can't be sniffed from the bytes.
 func outputFormatMediaType(outputFormat string) string {
-	switch strings.ToLower(strings.TrimSpace(outputFormat)) {
+	switch providerutils.JSToLower(providerutils.JSTrim(outputFormat)) {
 	case "pcm", "audio/pcm":
 		return "audio/pcm"
 	case "audio/l16":

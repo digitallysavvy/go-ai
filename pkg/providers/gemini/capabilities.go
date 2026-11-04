@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ModelCapabilities classifies a Gemini model ID. Mirrors the TS SDK
@@ -47,7 +49,7 @@ func GetModelCapabilities(modelID string) ModelCapabilities {
 
 	return ModelCapabilities{
 		SupportsGemini2Tools: (isGemini && !isKnownPreGemini2) ||
-			strings.Contains(strings.ToLower(modelID), "nano-banana"),
+			strings.Contains(providerutils.JSToLower(modelID), "nano-banana"),
 		SupportsFileSearch:  gemini25ModelPattern.MatchString(modelID) || usesGemini3Features,
 		UsesGemini3Features: usesGemini3Features,
 	}
@@ -65,7 +67,7 @@ func isGemini25Model(modelID string) bool {
 func minimumThinkingLevelForGemini3Model(modelID string) string {
 	modelName := ""
 	if m := geminiModelNamePattern.FindStringSubmatch(modelID); m != nil {
-		modelName = strings.ToLower(m[1])
+		modelName = providerutils.JSToLower(m[1])
 	}
 
 	if modelName == "gemini-flash-latest" {

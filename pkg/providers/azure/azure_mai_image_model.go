@@ -44,7 +44,7 @@ var azureMaiImageModels = map[string]bool{
 // isMAIImageModel reports whether modelID is served by the MAI image API
 // (case-insensitive), mirroring TS isMAIImageModel.
 func isMAIImageModel(modelID string) bool {
-	return azureMaiImageModels[strings.ToLower(modelID)]
+	return azureMaiImageModels[providerutils.JSToLower(modelID)]
 }
 
 // AzureImageModelOptions is the parsed providerOptions.azure for azure.Image,

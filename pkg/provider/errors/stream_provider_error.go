@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jscase"
 )
 
 // StreamProviderError is a normalized error reported by a provider after a
@@ -67,7 +69,9 @@ func isRetryableStatusCode(statusCode *int) bool {
 // carry no other structured metadata (normalize-stream-provider-error.ts
 // inferExactMessageMetadata).
 func inferredMessageMetadata(message string) (statusCode int, isRetryable bool, ok bool) {
-	switch strings.ToLower(strings.TrimSpace(message)) {
+	// TS message.trim().toLowerCase(): JS trim (U+FEFF trimmed, U+0085 not)
+	// and JS lowercase (U+0130 is "i\u0307", so it never matches).
+	switch jscase.ToLower(strings.TrimFunc(message, isJSWhiteSpace)) {
 	case "overloaded", "overloaded error", "model overloaded":
 		return 503, true, true
 	case "internal server error":
@@ -253,4 +257,14 @@ func firstHTTPStatusCode(values ...interface{}) *int {
 		}
 	}
 	return nil
+}
+
+// isJSWhiteSpace is providerutils.IsJSWhiteSpace (String.prototype.trim's
+// set), repeated here because providerutils imports this package.
+func isJSWhiteSpace(r rune) bool {
+	switch r {
+	case '\t', '\n', '\v', '\f', '\r', ' ', 0x00a0, 0x1680, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff:
+		return true
+	}
+	return r >= 0x2000 && r <= 0x200a
 }

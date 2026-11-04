@@ -918,7 +918,7 @@ func builtinToolResultSources(block interactionsContentBlock, generateID func() 
 }
 
 func inferDocumentMediaType(uriOrName string) string {
-	lower := strings.ToLower(uriOrName)
+	lower := providerutils.JSToLower(uriOrName)
 	switch {
 	case strings.HasSuffix(lower, ".pdf"):
 		return "application/pdf"

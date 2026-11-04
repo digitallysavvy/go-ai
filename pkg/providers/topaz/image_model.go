@@ -5,14 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -396,7 +397,7 @@ func (m *ImageModel) waitForCompletion(ctx context.Context, processID string, he
 			return status, nil
 		}
 		if status.Status == "Failed" || status.Status == "Cancelled" {
-			return nil, fmt.Errorf("Topaz image enhancement %s for process %s.", strings.ToLower(status.Status), processID) //nolint:staticcheck // matches TS SDK's exact error text
+			return nil, fmt.Errorf("Topaz image enhancement %s for process %s.", providerutils.JSToLower(status.Status), processID) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 
 		if time.Now().Add(pollInterval).After(deadline) {

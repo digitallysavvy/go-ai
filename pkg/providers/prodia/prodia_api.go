@@ -228,7 +228,7 @@ func parseProdiaMultipart(data []byte, boundary string) []prodiaMultipartPart {
 		headers := map[string]string{}
 		for _, line := range prodiaLineBreak.Split(textdecode.UTF8(partData[:headerEnd]), -1) {
 			if colon := strings.Index(line, ":"); colon > 0 {
-				headers[strings.ToLower(providerutils.JSTrim(line[:colon]))] = providerutils.JSTrim(line[colon+1:])
+				headers[providerutils.JSToLower(providerutils.JSTrim(line[:colon]))] = providerutils.JSTrim(line[colon+1:])
 			}
 		}
 

@@ -15,8 +15,8 @@ func TestR86bintegHTTPStatusDetailsHeadersAsFetch(t *testing.T) {
 		"X-U":         {"\xc3\xa9z"},
 	}}
 	_, h, _ := e.HTTPStatusDetails()
-	if h["retry-after"] != "1, 2" || h["x-u"] != "Ã©z" {
-		t.Errorf("headers = %q, want retry-after \"1, 2\" and x-u \"Ã©z\"", h)
+	if h["retry-after"] != "1, 2" || h["x-u"] != "\u00c3\u00a9z" {
+		t.Errorf("headers = %q, want retry-after \"1, 2\" and x-u \"\u00c3\u00a9z\"", h)
 	}
 }
 
@@ -26,7 +26,7 @@ func TestR86bintegSetSearchParamMatchesURLSearchParams(t *testing.T) {
 	for _, tc := range []struct{ q, k, v, want string }{
 		{"b=1%202&a=~", "key", "a~b*c d", "b=1+2&a=%7E&key=a%7Eb*c+d"},
 		{"a=1&key=x&key=y&b=%zz", "key", "v", "a=1&key=v&b=%25zz"},
-		{"x=%E9&y=+&z=%C3%A9", "q", "é!'()", "x=%EF%BF%BD&y=+&z=%C3%A9&q=%C3%A9%21%27%28%29"},
+		{"x=%E9&y=+&z=%C3%A9", "q", "\u00e9!'()", "x=%EF%BF%BD&y=+&z=%C3%A9&q=%C3%A9%21%27%28%29"},
 		{"", "k", "1", "k=1"},
 	} {
 		if got := SetSearchParam(tc.q, tc.k, tc.v); got != tc.want {

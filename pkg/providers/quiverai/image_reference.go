@@ -228,12 +228,12 @@ func isSvgMarkupWellFormed(svg string) bool {
 			continue
 		}
 
-		if end := min(position+9, len(doc)); strings.ToUpper(string(doc[position:end])) == "<!DOCTYPE" {
+		if end := min(position+9, len(doc)); providerutils.JSToUpper(string(doc[position:end])) == "<!DOCTYPE" {
 			if c := at(position + 9); rootSeen || doctypeSeen || len(elements) > 0 || !isXMLSpace(c) {
 				return false
 			}
 			name, nameEnd, ok := readXMLName(doc, skipXMLWhitespace(doc, position+9))
-			if !ok || strings.ToLower(name) != "svg" {
+			if !ok || providerutils.JSToLower(name) != "svg" {
 				return false
 			}
 			doctypeEnd := findDoctypeEnd(doc, nameEnd)
@@ -283,7 +283,7 @@ func isSvgMarkupWellFormed(svg string) bool {
 			return false
 		}
 		if !rootSeen {
-			if strings.ToLower(openName) != "svg" {
+			if providerutils.JSToLower(openName) != "svg" {
 				return false
 			}
 			rootSeen = true

@@ -58,7 +58,7 @@ func ExtractLines(text string, startLine, endLine *int) string {
 // normalizeEncoding: case-insensitive, with its aliases) to its canonical
 // form; ok is false for a name Buffer rejects.
 func nodeBufferEncoding(label string) (string, bool) {
-	switch strings.ToLower(label) {
+	switch JSToLower(label) {
 	case "utf8", "utf-8":
 		return "utf8", true
 	case "ucs2", "ucs-2", "utf16le", "utf-16le":
@@ -66,7 +66,7 @@ func nodeBufferEncoding(label string) (string, bool) {
 	case "latin1", "binary":
 		return "latin1", true
 	case "base64", "base64url", "hex", "ascii":
-		return strings.ToLower(label), true
+		return JSToLower(label), true
 	}
 	return "", false
 }
