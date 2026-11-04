@@ -119,7 +119,11 @@
 // in its recorded settlement order (TS run's queueBridgeResponse); a call
 // covering one of the continuation's PendingInterruptions (found by its own
 // call index, recovered from its RunInterruptionID, not its position in the
-// batch) gets resume semantics; every other call executes for real.
+// batch) gets resume semantics; every other call executes for real. As in
+// TS run, a resumed call that is not the recorded one ("Continuation replay
+// diverged from the recorded host function ledger.") and a script that
+// finishes before making every recorded call ("Continuation completed
+// before replaying the full host function ledger.") are protocol errors.
 package codemode
 
 import (

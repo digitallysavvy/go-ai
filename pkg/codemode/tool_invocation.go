@@ -2,9 +2,11 @@ package codemode
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
@@ -129,6 +131,11 @@ type toolBridge struct {
 	nextSettlementOrder int
 	nextResponseOrder   int
 
+	// finished is set once the script itself produced a result (fulfilled
+	// or rejected), as opposed to stopping on an interruption or a fatal
+	// error.
+	finished bool
+
 	// batchIndex is pendingBatch's call numbers, kept so the batch is
 	// reported in call order (TS sorts the pending interruption indexes).
 	batchIndex []int
@@ -232,8 +239,13 @@ func (b *toolBridge) start(toolName, inputJSON string, serializeErr error) int {
 	// Replay a call already settled by a prior invocation of this same
 	// source: deliver its recorded outcome without touching the real host
 	// tool, so side effects never repeat. Keyed by call index, not position
-	// (see replayLedger's doc comment).
+	// (see replayLedger's doc comment). TS run's assertReplayMatches first
+	// checks the call is the recorded one.
 	if rec, ok := b.replayLedger[idx]; ok {
+		if rec.ToolName != toolName || rec.InputJSON != inputJSON {
+			b.setFatal(b.replayDivergedError(n, rec.ToolName, toolName))
+			return n
+		}
 		b.mu.Lock()
 		b.committed[idx] = rec
 		resp := bridgeResponse{id: n, ok: rec.Status != replayStatusRejected, outputJSON: rec.OutputJSON, errMessage: rec.ErrorMessage}
@@ -247,6 +259,10 @@ func (b *toolBridge) start(toolName, inputJSON string, serializeErr error) int {
 		if qerr != nil {
 			b.setFatal(qerr)
 		}
+		return n
+	}
+	if pending, ok := b.resumePendings[idx]; ok && !sameRecordedCall(pending, toolName, inputJSON) {
+		b.setFatal(b.replayDivergedError(n, pending.ToolName, toolName))
 		return n
 	}
 
@@ -277,9 +293,60 @@ func (b *toolBridge) start(toolName, inputJSON string, serializeErr error) int {
 	return n
 }
 
+// replayDivergedError is TS run's assertReplayMatches error.
+func (b *toolBridge) replayDivergedError(n int, expected, received string) CodeModeError {
+	return NewProtocolError("Continuation replay diverged from the recorded host function ledger.", map[string]interface{}{
+		"bridgeIndex":              n,
+		"expectedHostFunctionName": b.hostFunctionName(expected),
+		"receivedHostFunctionName": b.hostFunctionName(received),
+	})
+}
+
+// hostFunctionName is the TS code-mode host function a tool name is bound
+// to: `__codeMode.tool<index>` for a known tool, `__codeMode.missing`
+// otherwise.
+func (b *toolBridge) hostFunctionName(toolName string) string {
+	for i, name := range b.toolNames {
+		if name == toolName {
+			return "__codeMode.tool" + strconv.Itoa(i)
+		}
+	}
+	return "__codeMode.missing"
+}
+
+// sameRecordedCall reports whether a resumed call is the one the pending
+// interruption recorded (TS assertReplayMatches compares the host function
+// and its serialized arguments).
+func sameRecordedCall(pending PendingInterruption, toolName, inputJSON string) bool {
+	if pending.ToolName != toolName {
+		return false
+	}
+	var got interface{}
+	if inputJSON != "" {
+		if err := json.Unmarshal([]byte(inputJSON), &got); err != nil {
+			return false
+		}
+	}
+	want := pending.Input
+	if want != nil {
+		// The recorded input went through a JSON round trip already when the
+		// continuation was encoded; normalize Go-side values the same way.
+		if data, err := json.Marshal(want); err == nil {
+			want = nil
+			if uerr := json.Unmarshal(data, &want); uerr != nil {
+				return false
+			}
+		}
+	}
+	return reflect.DeepEqual(got, want)
+}
+
 // queueResponseLocked queues resp for delivery at settlement order order
 // (TS run's queueBridgeResponse). b.mu must be held.
 func (b *toolBridge) queueResponseLocked(order int, resp bridgeResponse) CodeModeError {
+	if _, dup := b.ready[order]; dup || order < b.nextResponseOrder {
+		return NewProtocolError("Duplicate bridge settlement order.", map[string]interface{}{"settledOrder": order})
+	}
 	b.ready[order] = resp
 	return nil
 }
@@ -398,6 +465,33 @@ func (b *toolBridge) shutdown() {
 	b.mu.Unlock()
 	b.cancelTools()
 	b.wg.Wait()
+}
+
+// markFinished records that the script produced a result.
+func (b *toolBridge) markFinished() {
+	b.mu.Lock()
+	b.finished = true
+	b.mu.Unlock()
+}
+
+// finishedScript reports whether the script produced a result.
+func (b *toolBridge) finishedScript() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.finished
+}
+
+// ledgerLength is TS run's continuation ledger length: one past the highest
+// call index the continuation recorded (settled or pending).
+func (b *toolBridge) ledgerLength() int {
+	length := 0
+	for idx := range b.replayLedger {
+		length = max(length, idx+1)
+	}
+	for idx := range b.resumePendings {
+		length = max(length, idx+1)
+	}
+	return length
 }
 
 // invoke runs one host call on its own goroutine (see start): input size and

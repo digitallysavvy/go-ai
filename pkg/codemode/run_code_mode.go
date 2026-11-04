@@ -141,6 +141,13 @@ func RunCodeMode(ctx context.Context, input RunInput) (interface{}, error) {
 		return buildInterruptResult(input, options, outerToolCall, toolNames, committed, batch)
 	}
 
+	// TS run (manager.js handleReadyMessage): a resumed script that
+	// finished, successfully or not, before making every call the
+	// continuation recorded is a protocol error.
+	if bridge.finishedScript() && input.Continuation != nil && bridge.requestTotal() < bridge.ledgerLength() {
+		return nil, NewProtocolError("Continuation completed before replaying the full host function ledger.", nil)
+	}
+
 	if err != nil {
 		// Prefer a preserved *typed* CodeModeError a bridge call raised
 		// over the generic JavaScript exception text that comes back once
@@ -464,6 +471,7 @@ func wrapCodeModeSource(js string) string {
 func driveCodeModeExecution(ctx context.Context, jsCtx *qjs.Context, bridge *toolBridge, source string) (resultJSON string, isUndefined bool, interrupted bool, err error) {
 	value, eerr := jsCtx.EvalNoAutoAwait("code-mode.js", qjs.Code(source))
 	if eerr != nil {
+		bridge.markFinished()
 		return "", false, false, eerr
 	}
 
@@ -481,6 +489,7 @@ func driveCodeModeExecution(ctx context.Context, jsCtx *qjs.Context, bridge *too
 			value = value.PromiseResult()
 			continue
 		case qjs.PromiseStateRejected:
+			bridge.markFinished()
 			reason := value.PromiseResult()
 			rejected := &guestRejection{err: reason.Exception()}
 			if reason.IsError() {
@@ -542,6 +551,7 @@ func driveCodeModeExecution(ctx context.Context, jsCtx *qjs.Context, bridge *too
 		}
 	}
 
+	bridge.markFinished()
 	var js string
 	undefined := value.IsUndefined()
 	if !undefined {

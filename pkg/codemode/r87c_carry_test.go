@@ -252,6 +252,24 @@ func TestR87ccarryReplayRejectedCalls(t *testing.T) {
 // approval granted.
 func r87ccarryResumeTampered(t *testing.T, js string, tamper func(map[int]replayRecord)) error {
 	t.Helper()
+	return r87ccarryResumeTamperedContinuation(t, js, func(c *Continuation) {
+		ledger, err := decodeReplayLedger(c.Token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tamper(ledger)
+		token, err := encodeReplayLedger(ledger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.Token = token
+	})
+}
+
+// r87ccarryResumeTamperedContinuation is r87ccarryResumeTampered for any
+// change to the unsigned continuation.
+func r87ccarryResumeTamperedContinuation(t *testing.T, js string, tamper func(*Continuation)) error {
+	t.Helper()
 	tools := ToolSet{
 		"echo": echoTools()["echo"],
 		"guarded": {Name: "guarded", Parameters: r87ccarryObject, NeedsApproval: true,
@@ -265,17 +283,9 @@ func r87ccarryResumeTampered(t *testing.T, js string, tamper func(map[int]replay
 		t.Fatal(err)
 	}
 	interrupt := pending.(*Interrupt)
-	ledger, err := decodeReplayLedger(interrupt.Continuation.Token)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tamper(ledger)
-	token, err := encodeReplayLedger(ledger)
-	if err != nil {
-		t.Fatal(err)
-	}
 	unsigned := interrupt.Continuation
-	unsigned.Token = token
+	unsigned.PendingInterruptions = append([]PendingInterruption(nil), unsigned.PendingInterruptions...)
+	tamper(&unsigned)
 	security, err := resolveContinuationSecurity(ContinuationSecurityOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -289,6 +299,62 @@ func r87ccarryResumeTampered(t *testing.T, js string, tamper func(map[int]replay
 		InterruptResolution: &InterruptResolution{InterruptID: interrupt.InterruptID, Resolution: ApprovalDecision{Approved: true}},
 	})
 	return err
+}
+
+func r87ccarryProtocolError(t *testing.T, err error, want string) *ProtocolError {
+	t.Helper()
+	var protocol *ProtocolError
+	if !errors.As(err, &protocol) || protocol.Error() != want {
+		t.Fatalf("err = %#v (%v), want ProtocolError %q", err, err, want)
+	}
+	return protocol
+}
+
+// TS run's assertReplayMatches: a resumed call that is not the recorded one
+// fails with a protocol error instead of taking the recorded result.
+func TestR87ccarryReplayDivergenceIsAProtocolError(t *testing.T) {
+	err := r87ccarryResumeTampered(t, "await tools.echo({ n: 1 }); return await tools.guarded({});", func(ledger map[int]replayRecord) {
+		rec := ledger[0]
+		rec.InputJSON = `{"n":2}`
+		ledger[0] = rec
+	})
+	protocol := r87ccarryProtocolError(t, err, "Continuation replay diverged from the recorded host function ledger.")
+	assertDeepEqual(t, protocol.Details, map[string]interface{}{"bridgeIndex": 1, "expectedHostFunctionName": "__codeMode.tool0", "receivedHostFunctionName": "__codeMode.tool0"})
+}
+
+// The resumed call of a pending interruption is checked the same way.
+func TestR87ccarryReplayDivergenceOfThePendingCall(t *testing.T) {
+	err := r87ccarryResumeTamperedContinuation(t, "return await tools.guarded({ n: 1 });", func(c *Continuation) {
+		c.PendingInterruptions[0].Input = map[string]interface{}{"n": 2}
+	})
+	protocol := r87ccarryProtocolError(t, err, "Continuation replay diverged from the recorded host function ledger.")
+	assertDeepEqual(t, protocol.Details, map[string]interface{}{"bridgeIndex": 1, "expectedHostFunctionName": "__codeMode.tool1", "receivedHostFunctionName": "__codeMode.tool1"})
+
+	// An unchanged pending input with nested values resumes.
+	if err := r87ccarryResumeTamperedContinuation(t, "return await tools.guarded({ n: 1, nested: { list: [1, 'a', null], b: true } });", func(*Continuation) {}); err != nil {
+		t.Fatalf("unchanged resume failed: %v", err)
+	}
+}
+
+// TS run (handleReadyMessage): a resumed script that finishes before making
+// every recorded call is a protocol error.
+func TestR87ccarryReplayMustReachTheWholeLedger(t *testing.T) {
+	err := r87ccarryResumeTampered(t, "await tools.echo({ n: 1 }); return await tools.guarded({});", func(ledger map[int]replayRecord) {
+		ledger[5] = replayRecord{ToolName: "echo", InputJSON: `{"n":9}`, OutputJSON: `{}`}
+	})
+	r87ccarryProtocolError(t, err, "Continuation completed before replaying the full host function ledger.")
+}
+
+// TS run's queueBridgeResponse: two outcomes with the same settlement order
+// are a protocol error.
+func TestR87ccarryReplayDuplicateSettlementOrder(t *testing.T) {
+	err := r87ccarryResumeTampered(t, "await tools.echo({ n: 1 }); await tools.echo({ n: 2 }); return await tools.guarded({});", func(ledger map[int]replayRecord) {
+		rec := ledger[1]
+		rec.SettledOrder = ledger[0].SettledOrder
+		ledger[1] = rec
+	})
+	protocol := r87ccarryProtocolError(t, err, "Duplicate bridge settlement order.")
+	assertDeepEqual(t, protocol.Details, map[string]interface{}{"settledOrder": 1})
 }
 
 // A continuation recorded before settlement orders and statuses existed
