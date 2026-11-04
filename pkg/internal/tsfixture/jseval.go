@@ -29,10 +29,6 @@ var (
 	jsInitErr error
 )
 
-// jsUndefined is the JS fallback's value for undefined (Go nil is null
-// there, so toBeDefined / toBeUndefined can tell the two apart).
-var jsUndefined = map[string]interface{}{"__undef": true}
-
 // jsPrelude are the stubs every program sees: expect is a no-op chain (the
 // statements before the assertion may hold other expectations), the stream
 // helpers return the replayed parts, and the encoder writes the value back
