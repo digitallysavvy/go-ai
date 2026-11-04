@@ -150,8 +150,8 @@ func LegacyResolveHostToolCall(opts ResolveHostToolCallOptions) *ResolvedHostToo
 		return nil
 	}
 	serverName := opts.ServerName
-	// toolCall.name == null in TS: Go carries an absent name as "".
-	nameAbsent := toolCall.Name == ""
+	// toolCall.name == null in TS (a reported `name: ""` is present).
+	nameAbsent := !toolCall.HasName()
 	var matches []ResolvedHostToolCall
 	for _, toolName := range opts.ToolNames {
 		isQualified := func(v any) bool {

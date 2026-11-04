@@ -223,7 +223,8 @@ func createGitHubOAuthSandboxCredentialPlaceholder(credential string) string {
 // `resolveGitHubCopilotHostToolCall` (github-copilot-harness.ts, 03dac28304).
 func ResolveHostToolCall(opts acp.ResolveHostToolCallOptions) *acp.ResolvedHostToolCall {
 	raw, ok := opts.ToolCall.RawInput.(map[string]any)
-	if opts.ToolCall.Name != "" || !ok || raw == nil {
+	// TS `toolCall.name != null`: a reported `name: ""` also opts out.
+	if opts.ToolCall.HasName() || !ok || raw == nil {
 		return nil
 	}
 	for _, name := range opts.ToolNames {
