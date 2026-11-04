@@ -982,6 +982,12 @@ func r87cstreamTSContent(t *testing.T, p types.ContentPart) interface{} {
 		if c.ProviderExecuted {
 			m["providerExecuted"] = true
 		}
+		if c.Dynamic {
+			m["dynamic"] = true
+		}
+		if c.Invalid {
+			m["invalid"] = true
+		}
 		if c.Title != "" {
 			m["title"] = c.Title
 		}
@@ -1081,7 +1087,7 @@ func r87cstreamTSStep(t *testing.T, s types.StepResult) map[string]interface{} {
 	}
 	m := map[string]interface{}{
 		"callId": s.CallID, "content": content, "finishReason": string(s.FinishReason),
-		"model": map[string]interface{}{"modelId": s.Model.ModelID, "provider": s.Model.Provider},
+		"model":       map[string]interface{}{"modelId": s.Model.ModelID, "provider": s.Model.Provider},
 		"performance": s.Performance, "request": req, "response": resp,
 		"runtimeContext": runtimeCtx, "stepNumber": s.StepNumber, "toolsContext": toolsCtx,
 		"usage": s.Usage, "warnings": warnings,
@@ -1451,8 +1457,10 @@ func TestR87cstreamPrepareStepSettingsValidated(t *testing.T) {
 	var errs r82streamErrors
 	zero := 0
 	r, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, r87cstreamDefaultStream(nil)), Prompt: "test-input",
-		PrepareStep: func(context.Context, PrepareStepOptions) PrepareStepOptions { return PrepareStepOptions{MaxOutputTokens: &zero} },
-		OnError:     errs.onError})
+		PrepareStep: func(context.Context, PrepareStepOptions) PrepareStepOptions {
+			return PrepareStepOptions{MaxOutputTokens: &zero}
+		},
+		OnError: errs.onError})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1467,7 +1475,7 @@ func TestR87cstreamPrepareStepSettingsValidated(t *testing.T) {
 // initialInstructions, initialMessages, and responseMessages to prepareStep.
 func TestR87cstreamPrepareStepInitialAndResponseMessages(t *testing.T) {
 	type call struct {
-		instructions, initialInstructions          *string
+		instructions, initialInstructions           *string
 		initialMessages, responseMessages, messages []types.Message
 	}
 	var mu sync.Mutex
@@ -1596,7 +1604,9 @@ func TestR87cstreamResponseMessagesTextAndTools(t *testing.T) {
 		provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", RawArguments: `{ "value": "value" }`}},
 		r87cstreamFinish(types.FinishReasonStop, "stop"))
 	tool := r71streamTool1(false, nil, nil)
-	tool.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result1", nil }
+	tool.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "result1", nil
+	}
 	r = r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, withTool), Tools: []types.Tool{tool}, Prompt: "test-input"})
 	r87cstreamAssert(t, "14006", r87cstreamTSMessages(t, r.ResponseMessages()), `[{"content":[{"text":"Hello, world!","type":"text"},{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"text","value":"result1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"}]`)
 }
@@ -1654,7 +1664,9 @@ func r87cstreamTwoSteps(t *testing.T, opts StreamTextOptions) *r87cstreamTwoStep
 	}
 	if len(opts.Tools) == 0 {
 		tool := r71streamTool1(false, nil, nil)
-		tool.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result1", nil }
+		tool.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "result1", nil
+		}
 		opts.Tools = []types.Tool{tool}
 	}
 	opts.Prompt = "test-input"
@@ -1753,7 +1765,7 @@ func r87cstreamTSEnd(t *testing.T, e OnFinishEvent) map[string]interface{} {
 		"callId": e.CallID, "content": r87cstreamTSContents(t, e.Content),
 		"dynamicToolCalls": r87cstreamToolCallJSON(e.DynamicToolCalls), "dynamicToolResults": r87cstreamTSToolResults(e.DynamicToolResults),
 		"files": orEmpty(e.Files), "finalStep": r87cstreamTSStep(t, e.FinalStep), "finishReason": string(e.FinishReason),
-		"model": map[string]interface{}{"modelId": e.Model.ModelID, "provider": e.Model.Provider},
+		"model":     map[string]interface{}{"modelId": e.Model.ModelID, "provider": e.Model.Provider},
 		"reasoning": reasoning, "request": req, "response": resp, "responseMessages": r87cstreamTSMessages(t, e.ResponseMessages),
 		"runtimeContext": runtimeCtx, "sources": orEmpty(e.Sources),
 		"staticToolCalls": r87cstreamToolCallJSON(e.StaticToolCalls), "staticToolResults": r87cstreamTSToolResults(e.StaticToolResults),
@@ -1798,7 +1810,9 @@ func TestR87cstreamTwoStepsUIMessageStream(t *testing.T) {
 	r, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, r87cstreamTwoStepChunks()...),
 		Tools: []types.Tool{func() types.Tool {
 			tool := r71streamTool1(false, nil, nil)
-			tool.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result1", nil }
+			tool.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "result1", nil
+			}
 			return tool
 		}()},
 		Prompt: "test-input", StopWhen: []StopCondition{StepCountIs(3)}, Internal: r87cstreamDefaultInternal(), OnError: func(context.Context, error) {}})
@@ -1887,7 +1901,9 @@ func r87cstreamPrepareStepRun(t *testing.T) ([]*provider.GenerateOptions, []r87c
 		}
 		return testutil.NewMockTextStream(steps[len(calls)-1]), nil
 	}}
-	tool := types.Tool{Name: "tool1", Parameters: r87cstreamZodValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result1", nil }}
+	tool := types.Tool{Name: "tool1", Parameters: r87cstreamZodValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "result1", nil
+	}}
 	r := r71streamRun(t, StreamTextOptions{Model: model, Tools: []types.Tool{tool}, RuntimeContext: map[string]interface{}{"context": "state1"}, Prompt: "test-input",
 		StopWhen: []StopCondition{StepCountIs(3)},
 		Internal: &InternalOptions{GenerateID: func() string { return "test-call-id" }, GenerateCallID: func() string { return "test-telemetry-call-id" }},
@@ -2018,7 +2034,9 @@ func TestR87cstreamTransformedValuePromises(t *testing.T) {
 // with isLoopFinished().
 func TestR87cstreamIsLoopFinished(t *testing.T) {
 	tool := r71streamTool1(false, nil, nil)
-	tool.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result1", nil }
+	tool.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "result1", nil
+	}
 	r := r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil,
 		[]provider.StreamChunk{r87cstreamMeta("id-0"), {Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", RawArguments: `{ "value": "value" }`}}, r87cstreamFinish(types.FinishReasonToolCalls, "")},
 		[]provider.StreamChunk{r87cstreamMetaAt("id-1", 1000, nil), {Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Done!"}, {Type: provider.ChunkTypeTextEnd, ID: "1"}, r87cstreamFinish(types.FinishReasonStop, "stop")}),
@@ -2032,7 +2050,9 @@ func TestR87cstreamIsLoopFinished(t *testing.T) {
 // reasoning part IDs across steps when providers reuse IDs.
 func TestR87cstreamUniqueReasoningIDsAcrossSteps(t *testing.T) {
 	tool := r71streamTool1(false, nil, nil)
-	tool.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result1", nil }
+	tool.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "result1", nil
+	}
 	r, parts := r73streamParts(t, StreamTextOptions{Model: r71streamModel(nil,
 		[]provider.StreamChunk{
 			{Type: provider.ChunkTypeReasoningStart, ID: "0"}, {Type: provider.ChunkTypeReasoning, ID: "0", Reasoning: "thinking"}, {Type: provider.ChunkTypeReasoningEnd, ID: "0"},
@@ -2094,5 +2114,294 @@ func TestR87cstreamSetHeaders(t *testing.T) {
 	r87cstreamAssertStrings(t, "textStream", texts, []string{"Hello", ", ", "world!"})
 	if !reflect.DeepEqual(got, map[string]string{"custom-request-header": "request-header-value"}) {
 		t.Fatalf("doStream headers = %v", got)
+	}
+}
+
+// r87cstreamDynamicRun is the TS dynamic tools > single dynamic tool call
+// and result setup.
+func r87cstreamDynamicRun(t *testing.T) (*StreamTextResult, []provider.StreamChunk) {
+	t.Helper()
+	return r73streamParts(t, StreamTextOptions{Model: r71streamModel(nil, []provider.StreamChunk{
+		{Type: provider.ChunkTypeToolInputStart, ID: "call-1", ToolCall: &types.ToolCall{ID: "call-1", ToolName: "dynamicTool"}},
+		{Type: provider.ChunkTypeToolInputDelta, ID: "call-1", Text: `{ "value": "value" }`},
+		{Type: provider.ChunkTypeToolInputEnd, ID: "call-1", ToolCall: &types.ToolCall{ID: "call-1"}},
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "dynamicTool", RawArguments: `{ "value": "value" }`}},
+		r87cstreamFinish(types.FinishReasonToolCalls, ""),
+	}), Tools: []types.Tool{{Name: "dynamicTool", Type: types.ToolTypeDynamic, Parameters: r87cstreamZodValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return map[string]interface{}{"value": "test-result"}, nil
+	}}}, Prompt: "prompt", Internal: r87cstreamDefaultInternal()})
+}
+
+// stream-text.test.ts 19290: dynamic tools > single dynamic tool call and
+// result > should include dynamic tool call and result content.
+func TestR87cstreamDynamicToolContent(t *testing.T) {
+	r, _ := r87cstreamDynamicRun(t)
+	r87cstreamAssert(t, "content", r87cstreamTSContents(t, r.Content()), `[{"dynamic":true,"input":{"value":"value"},"toolCallId":"call-1","toolName":"dynamicTool","type":"tool-call"},{"dynamic":true,"input":{"value":"value"},"output":{"value":"test-result"},"toolCallId":"call-1","toolName":"dynamicTool","type":"tool-result"}]`)
+}
+
+// stream-text.test.ts 19321: dynamic tools > single dynamic tool call and
+// result > should include dynamic tool call and result in the full stream.
+func TestR87cstreamDynamicToolFullStream(t *testing.T) {
+	_, parts := r87cstreamDynamicRun(t)
+	r87cstreamEpochFallback(t, parts)
+	r87cstreamAssert(t, "parts", r87cstreamTSParts(parts), `[{"type":"start"},{"request":{},"type":"start-step","warnings":[]},{"dynamic":true,"id":"call-1","toolName":"dynamicTool","type":"tool-input-start"},{"delta":"{ \"value\": \"value\" }","id":"call-1","type":"tool-input-delta"},{"id":"call-1","type":"tool-input-end"},{"dynamic":true,"input":{"value":"value"},"toolCallId":"call-1","toolName":"dynamicTool","type":"tool-call"},{"dynamic":true,"input":{"value":"value"},"output":{"value":"test-result"},"toolCallId":"call-1","toolName":"dynamicTool","type":"tool-result"},{"finishReason":"tool-calls","performance":{"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0,"inputTokensPerSecond":0,"outputTokensPerSecond":0,"responseTimeMs":0,"stepTimeMs":0,"timeBetweenOutputChunksMs":{"avg":0,"max":0,"median":0,"min":0,"p10":0,"p90":0},"timeToFirstOutputMs":0,"toolExecutionMs":{"call-1":0}},"response":{"id":"id-0","modelId":"mock-model-id","timestamp":"1970-01-01T00:00:00.000Z"},"type":"finish-step","usage":{"inputTokenDetails":{"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"textTokens":10},"outputTokens":10,"totalTokens":13}},{"finishReason":"tool-calls","totalUsage":{"inputTokenDetails":{"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"textTokens":10},"outputTokens":10,"totalTokens":13},"type":"finish"}]`)
+}
+
+// r87cstreamCapture is a model whose doStream records its options and
+// streams the given chunks.
+func r87cstreamCapture(opts *[]*provider.GenerateOptions, chunks ...provider.StreamChunk) *testutil.MockLanguageModel {
+	var mu sync.Mutex
+	return &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id", DoStreamFunc: func(_ context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+		mu.Lock()
+		*opts = append(*opts, o)
+		mu.Unlock()
+		return testutil.NewMockTextStream(chunks), nil
+	}}
+}
+
+// stream-text.test.ts 19498: options.providerMetadata > should pass provider
+// metadata to model.
+func TestR87cstreamProviderOptionsToModel(t *testing.T) {
+	var calls []*provider.GenerateOptions
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: r87cstreamCapture(&calls,
+		provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "1"}, provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: "provider metadata test"}, provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		r87cstreamFinish(types.FinishReasonStop, "stop")),
+		Prompt: "test-input", ProviderOptions: map[string]interface{}{"aProvider": map[string]interface{}{"someKey": "someValue"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, errCh := ToTextStream(context.Background(), r.FullStream())
+	texts := []string{}
+	for s := range out {
+		texts = append(texts, s)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	r87cstreamAssertStrings(t, "textStream", texts, []string{"provider metadata test"})
+	if len(calls) != 1 || !reflect.DeepEqual(calls[0].ProviderOptions, map[string]interface{}{"aProvider": map[string]interface{}{"someKey": "someValue"}}) {
+		t.Fatalf("providerOptions = %v", calls[0].ProviderOptions)
+	}
+}
+
+// stream-text.test.ts 19565: options.reasoning > should pass through
+// provider-default.
+func TestR87cstreamReasoningProviderDefault(t *testing.T) {
+	var calls []*provider.GenerateOptions
+	level := types.ReasoningDefault
+	r := r71streamRun(t, StreamTextOptions{Model: r87cstreamCapture(&calls,
+		provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "1"}, provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: "test"}, provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		r87cstreamFinish(types.FinishReasonStop, "stop")),
+		Prompt: "test-input", Reasoning: &level})
+	_ = r.Text()
+	if len(calls) != 1 || calls[0].Reasoning == nil || *calls[0].Reasoning != "provider-default" {
+		t.Fatalf("doStream reasoning = %v", calls[0].Reasoning)
+	}
+}
+
+type r87cstreamCtxKey struct{}
+
+// stream-text.test.ts 19594: options.abortSignal > should forward abort
+// signal to tool execution during streaming. Go's abort signal is the
+// caller's context: the tool's context derives from it (it carries the
+// caller's values and is cancelled with it), and the options carry the tool
+// call id, no tool context and the messages.
+func TestR87cstreamAbortSignalToToolExecution(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), r87cstreamCtxKey{}, "caller"))
+	defer cancel()
+	type execCall struct {
+		input map[string]interface{}
+		ctx   context.Context
+		opts  types.ToolExecutionOptions
+	}
+	var mu sync.Mutex
+	var execs []execCall
+	tool := types.Tool{Name: "tool1", Parameters: r87cstreamZodValueSchema, Execute: func(c context.Context, in map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+		mu.Lock()
+		execs = append(execs, execCall{in, c, o})
+		mu.Unlock()
+		return "tool result", nil
+	}}
+	r, err := StreamText(ctx, StreamTextOptions{Model: r71streamModel(nil, []provider.StreamChunk{
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", RawArguments: `{ "value": "value" }`}},
+		r87cstreamFinish(types.FinishReasonStop, "stop"),
+	}), Tools: []types.Tool{tool}, Prompt: "test-input", OnError: func(context.Context, error) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	cancel()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(execs) != 1 {
+		t.Fatalf("execute calls = %d", len(execs))
+	}
+	e := execs[0]
+	if !reflect.DeepEqual(e.input, map[string]interface{}{"value": "value"}) || e.opts.ToolCallID != "call-1" || e.opts.ToolContext != nil || e.opts.Messages == nil {
+		t.Fatalf("execute(%v, %+v)", e.input, e.opts)
+	}
+	if e.ctx.Value(r87cstreamCtxKey{}) != "caller" {
+		t.Fatal("tool context does not derive from the caller's context")
+	}
+	select {
+	case <-e.ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("tool context is not cancelled with the caller's context")
+	}
+}
+
+// stream-text.test.ts 19737: options.timeout > should throw Timeout error
+// when abort signal is aborted (an abort before doStream returns: the run
+// fails with the abort reason, context.Canceled in Go, and result.output
+// rejects with it).
+func TestR87cstreamAbortBeforeDoStreamReturns(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	release := make(chan struct{})
+	model := &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id", DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		<-release
+		return testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Hello"}, {Type: provider.ChunkTypeTextEnd, ID: "1"},
+			r87cstreamFinish(types.FinishReasonStop, "stop"),
+		}), nil
+	}}
+	r, err := StreamText(ctx, StreamTextOptions{Model: model, Prompt: "test-input", OnError: func(context.Context, error) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	close(release)
+	_ = r.ConsumeStream()
+	if r.Text() != "" || !errors.Is(r.Err(), context.Canceled) {
+		t.Fatalf("text = %q, err = %v", r.Text(), r.Err())
+	}
+	if !errors.Is(r.OutputErr(), context.Canceled) {
+		t.Fatalf("OutputErr = %v", r.OutputErr())
+	}
+}
+
+// r87cstreamDeadlineModel records whether each doStream context carries a
+// deadline (the Go form of a timeout abort signal).
+func r87cstreamDeadlineModel(deadlines *[]bool, ctxs *[]context.Context) *testutil.MockLanguageModel {
+	var mu sync.Mutex
+	return &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id", DoStreamFunc: func(c context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+		_, ok := c.Deadline()
+		mu.Lock()
+		*deadlines = append(*deadlines, ok)
+		if ctxs != nil {
+			*ctxs = append(*ctxs, c)
+		}
+		mu.Unlock()
+		return testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Hello"}, {Type: provider.ChunkTypeTextEnd, ID: "1"},
+			r87cstreamFinish(types.FinishReasonStop, "stop"),
+		}), nil
+	}}
+}
+
+// stream-text.test.ts 19770 / 19867: options.timeout > should support
+// timeout object with totalMs; should forward stepMs as abort signal to each
+// step (the doStream context has a deadline; one step).
+func TestR87cstreamTimeoutTotalAndStepDeadlines(t *testing.T) {
+	for _, tc := range []struct {
+		line int
+		cfg  *TimeoutConfig
+	}{
+		{19770, &TimeoutConfig{Total: r82streamDur(5000)}},
+		{19867, &TimeoutConfig{PerStep: r82streamDur(5000)}},
+	} {
+		var deadlines []bool
+		r71streamRun(t, StreamTextOptions{Model: r87cstreamDeadlineModel(&deadlines, nil), Prompt: "test-input", Timeout: tc.cfg})
+		if len(deadlines) != 1 || !deadlines[0] {
+			t.Fatalf("%d: doStream deadlines = %v", tc.line, deadlines)
+		}
+	}
+}
+
+// stream-text.test.ts 20144: options.timeout > should complete successfully
+// when chunks arrive within chunkMs timeout (the doStream context is not
+// cancelled by the chunk timer).
+func TestR87cstreamChunkTimeoutNotFired(t *testing.T) {
+	var deadlines []bool
+	var ctxs []context.Context
+	model := r87cstreamDeadlineModel(&deadlines, &ctxs)
+	inner := model.DoStreamFunc
+	model.DoStreamFunc = func(c context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+		s, err := inner(c, o)
+		return testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Hello"}, {Type: provider.ChunkTypeText, ID: "1", Text: " World"}, {Type: provider.ChunkTypeTextEnd, ID: "1"},
+			r87cstreamFinish(types.FinishReasonStop, "stop"),
+		}), func() error { _ = s; return err }()
+	}
+	var ctxErrAtEnd error
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test-input", Timeout: &TimeoutConfig{PerChunk: r82streamDur(5000)}, OnError: func(context.Context, error) {},
+		OnEndEvent: func(context.Context, OnFinishEvent) { ctxErrAtEnd = ctxs[0].Err() }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); err != nil || r.Err() != nil {
+		t.Fatalf("consume = %v, Err = %v", err, r.Err())
+	}
+	if len(ctxs) != 1 || ctxErrAtEnd != nil {
+		t.Fatalf("doStream context aborted: %v", ctxErrAtEnd)
+	}
+}
+
+// r87cstreamStallStream sends its first chunks, then blocks until release is
+// closed before sending the rest.
+type r87cstreamStallStream struct {
+	first, rest []provider.StreamChunk
+	release     chan struct{}
+	i           int
+}
+
+func (s *r87cstreamStallStream) Next() (*provider.StreamChunk, error) {
+	all := append(append([]provider.StreamChunk(nil), s.first...), s.rest...)
+	if s.i == len(s.first) {
+		<-s.release
+	}
+	if s.i >= len(all) {
+		return nil, io.EOF
+	}
+	c := all[s.i]
+	s.i++
+	return &c, nil
+}
+
+func (s *r87cstreamStallStream) Err() error   { return nil }
+func (s *r87cstreamStallStream) Close() error { return nil }
+
+// stream-text.test.ts 20177: options.timeout > should abort when chunk
+// timeout expires (the doStream context is cancelled with a TimeoutError).
+func TestR87cstreamChunkTimeoutAbortsModelCall(t *testing.T) {
+	release := make(chan struct{})
+	var mu sync.Mutex
+	var received context.Context
+	model := &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id", DoStreamFunc: func(c context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+		mu.Lock()
+		received = c
+		mu.Unlock()
+		return &r87cstreamStallStream{
+			first:   []provider.StreamChunk{{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Hello"}},
+			rest:    []provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: "1"}, r87cstreamFinish(types.FinishReasonStop, "stop")},
+			release: release,
+		}, nil
+	}}
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test-input", Timeout: &TimeoutConfig{PerChunk: r82streamDur(50)}, OnError: func(context.Context, error) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { _ = r.ConsumeStream(); close(done) }()
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	if received == nil || received.Err() == nil {
+		t.Fatal("doStream context was not aborted")
+	}
+	var te *TimeoutError
+	if !errors.As(context.Cause(received), &te) || te.Reason != TimeoutReasonChunk {
+		t.Fatalf("abort reason = %v", context.Cause(received))
 	}
 }

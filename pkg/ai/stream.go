@@ -797,6 +797,10 @@ type StreamTextResult struct {
 	// making the first provider stream request) that hasn't produced a
 	// stream yet — see the StreamText/bootstrapAndStream split below.
 	cancelBootstrap context.CancelFunc
+	// abortBootstrap cancels the same context with a cause: a chunk or
+	// first-chunk timeout aborts the model call with its TimeoutError, as
+	// TS aborts the step's signal with it (chunkMs / firstChunkMs).
+	abortBootstrap context.CancelCauseFunc
 
 	// resolvedToolCallers and toolSearchState are resolved once,
 	// synchronously, in StreamText and reused for every step (initial and
@@ -874,12 +878,14 @@ func streamTextInternal(ctx context.Context, opts StreamTextOptions, steeringRun
 		return nil, err
 	}
 
-	bootstrapCtx, cancelBootstrap := context.WithCancel(ctx)
+	bootstrapCtx, abortBootstrap := context.WithCancelCause(ctx)
+	cancelBootstrap := func() { abortBootstrap(nil) }
 	result := &StreamTextResult{
 		steering:            steeringRun,
 		status:              StreamStatusSubmitted, // actively streaming; set before any chunks arrive
 		timeout:             opts.Timeout,
 		cancelBootstrap:     cancelBootstrap,
+		abortBootstrap:      abortBootstrap,
 		resolvedToolCallers: resolvedToolCallers,
 		toolSearchState:     toolSearchState,
 		requestTools:        opts.Tools,
@@ -2360,6 +2366,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if err != nil {
 				if errors.Is(chunkDeadlineCtx.Err(), context.DeadlineExceeded) && chunkDeadlineReason != "" {
 					err = r.timeout.timeoutError(chunkDeadlineReason, chunkDeadlineCtx.Err())
+					// TS aborts the step signal with the TimeoutError, so the
+					// model call sees it as the abort reason.
+					if r.abortBootstrap != nil {
+						r.abortBootstrap(err)
+					}
 				} else if r.timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
 					err = r.timeout.timeoutError(TimeoutReasonStep, stepCtx.Err())
 				} else if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
