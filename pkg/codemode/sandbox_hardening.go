@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/third_party/qjs"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // sandboxGlobalsToStrip lists every quickjs-libc-provided global that must
@@ -346,8 +347,10 @@ func (w *cappedConsoleWriter) Write(p []byte) (int, error) {
 
 // regexDynamicImport matches an import( call (allowing whitespace or a
 // comment before the parenthesis) inside a token the tokenizer classified
-// as a regular-expression literal.
-var regexDynamicImport = regexp.MustCompile(`\bimport\s*(?:/\*.*?\*/\s*)*\(`)
+// as a regular-expression literal. The whitespace is JavaScript's (the
+// engine also accepts U+00A0, U+FEFF, the Unicode spaces and the line
+// terminators between import and "("), and a block comment may span lines.
+var regexDynamicImport = regexp.MustCompile(`\bimport` + providerutils.JSRegexpSpace + `*(?:/\*(?s:.)*?\*/` + providerutils.JSRegexpSpace + `*)*\(`)
 
 func dynamicImportError(offset int) error {
 	return NewUnsupportedSyntaxError(
