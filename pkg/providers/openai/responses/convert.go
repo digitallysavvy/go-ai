@@ -829,22 +829,25 @@ func toolResultCaller(part types.ToolResultContent, providerName string) *ToolCa
 
 // responsesFunctionCallArguments ports TS serializeToolCallArguments
 // (4ae6986cd8) for a replayed tool call whose input text is RawArguments:
-// valid JSON text is sent as is (an object through ArgumentsJSONText, which
-// keeps the wire key order), and text that is not valid JSON is sent as its
-// JSON string literal (TS JSON.stringify of a string input).
+// valid JSON text is the TS parsed input, sent as JSON.stringify of it (an
+// object through ArgumentsJSONText, which keeps the wire key order), and text
+// that is not valid JSON (whitespace only, or JSON behind a non-JSON space
+// such as U+00A0, included) is the TS string input, sent as its JSON string
+// literal.
 func responsesFunctionCallArguments(args map[string]interface{}, raw string) string {
 	// A JSON string literal holding JSON is the TS string input itself
 	// (secureJsonParse succeeds), sent as the JSON it holds.
 	if text, _, ok := promptutil.JSONStringToolInput(raw); ok {
 		return text
 	}
-	if trimmed := strings.TrimSpace(raw); trimmed != "" {
-		if !json.Valid([]byte(trimmed)) {
+	if raw != "" {
+		if !json.Valid([]byte(raw)) {
 			b, _ := jsonstr.Marshal(raw)
 			return string(b)
 		}
-		if trimmed[0] != '{' {
-			return providerutils.CompactJSON(json.RawMessage(trimmed))
+		// JSON whitespace is the only kind json.Valid allowed around it.
+		if trimmed := strings.TrimLeft(raw, " \t\r\n"); trimmed[0] != '{' {
+			return providerutils.CompactJSON(json.RawMessage(raw))
 		}
 	}
 	return providerutils.ArgumentsJSONText(args, raw)
@@ -865,8 +868,9 @@ func toolCallContentArguments(part types.ToolCallContent) (map[string]interface{
 	if args, ok := parsed.(map[string]interface{}); ok {
 		return args, providerutils.ArgumentsJSONText(args, part.Input)
 	}
-	argsJSON, _ := jsonstr.Marshal(parsed)
-	return map[string]interface{}{}, string(argsJSON)
+	// TS JSON.stringify of the parsed (non-object) input: wire key order and
+	// JS number spelling, not a Go re-marshal of the decoded value.
+	return map[string]interface{}{}, providerutils.CompactJSON(json.RawMessage(part.Input))
 }
 
 func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts ConvertOptions) (interface{}, bool, error) {
@@ -1062,9 +1066,11 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 // the text as Arguments {"input": text} and/or RawArguments as the JSON string
 // literal of it; plain (non-JSON-string) RawArguments is the text itself.
 func customToolCallInputText(tc types.ToolCall) string {
-	if raw := strings.TrimSpace(tc.RawArguments); strings.HasPrefix(raw, `"`) {
+	// A JSON string literal (JSON whitespace around it only, like JSON.parse;
+	// text behind any other space, U+00A0 for one, is the raw text itself).
+	if raw := strings.TrimLeft(tc.RawArguments, " \t\r\n"); strings.HasPrefix(raw, `"`) {
 		var text string
-		if json.Unmarshal([]byte(raw), &text) == nil {
+		if json.Unmarshal([]byte(tc.RawArguments), &text) == nil {
 			return text
 		}
 	}

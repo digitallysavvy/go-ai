@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -1062,9 +1061,10 @@ func cacheWriteTokensByTTL(headers http.Header) (json.RawMessage, bool) {
 	return raw, true
 }
 
-// parseTokenCountHeader accepts only a (trimmed) run of ASCII digits.
+// parseTokenCountHeader accepts only a (JS-trimmed) run of ASCII digits (TS
+// /^\d+$/.test(value.trim())).
 func parseTokenCountHeader(value string) (int64, bool) {
-	value = strings.TrimSpace(value)
+	value = providerutils.JSTrim(value)
 	if value == "" {
 		return 0, false
 	}

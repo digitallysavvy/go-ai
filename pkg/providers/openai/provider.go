@@ -234,7 +234,7 @@ func New(cfg Config) *Provider {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
+	baseURL = providerutils.WithoutTrailingSlash(baseURL) // TS withoutTrailingSlash: one "/"
 	cfg.BaseURL = baseURL
 
 	authManaged := cfg.NoAPIKey || cfg.Name == "azure"
@@ -390,7 +390,7 @@ func (p *Provider) completionProviderOptionsName() string {
 	if p.config.OpenAICompatible {
 		// TS OpenAICompatibleCompletionLanguageModel: provider.split('.')[0].
 		name, _, _ := strings.Cut(p.Name(), ".")
-		return strings.TrimSpace(name)
+		return providerutils.JSTrim(name)
 	}
 	return "openai"
 }

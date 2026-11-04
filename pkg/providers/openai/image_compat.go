@@ -24,7 +24,7 @@ import (
 // merged into the request body verbatim.
 func (m *ImageModel) compatImageArgs(providerOptions map[string]interface{}) (map[string]interface{}, []types.Warning) {
 	key, _, _ := strings.Cut(m.provider.Name(), ".")
-	key = strings.TrimSpace(key)
+	key = providerutils.JSTrim(key) // TS provider.split('.')[0].trim()
 	camel := providerutils.ToOpenAICompatibleCamelCase(key)
 	args := map[string]interface{}{}
 	var warnings []types.Warning

@@ -601,6 +601,10 @@ func openAIToolCalls(toolCalls []types.ToolCall, sanitizeReplayedArguments bool)
 						arguments = "{}"
 					} else if _, isObject := probe.(map[string]interface{}); !isObject {
 						arguments = "{}"
+					} else {
+						// TS stringifyWithBigIntAndCycles(input): the parsed
+						// object re-stringified.
+						arguments = providerutils.CompactJSON(json.RawMessage(arguments))
 					}
 				}
 			} else {
@@ -1211,12 +1215,14 @@ func ToolResultText(p types.ToolResultContent) string {
 // StringifyToolCallInput mirrors TS `JSON.stringify(part.input)` (the xAI
 // Responses, Moonshot and Alibaba converters) for a Go tool call input given
 // as its JSON text raw (ToolCallContent.Input, ToolCall.RawArguments): valid
-// JSON is the TS parsed input and is sent as is; text that is not JSON (an
-// invalid tool call, whose TS input is the raw string) is sent as its JSON
-// string literal. raw must not be empty; callers serialize Arguments then.
+// JSON is the TS parsed input and is sent re-stringified (JSON.stringify of
+// the parsed value: compact, JS number spelling, JS key order); text that is
+// not JSON (an invalid tool call, whose TS input is the raw string) is sent as
+// its JSON string literal. raw must not be empty; callers serialize Arguments
+// then.
 func StringifyToolCallInput(raw string) string {
 	if json.Valid([]byte(raw)) {
-		return raw
+		return providerutils.CompactJSON(json.RawMessage(raw))
 	}
 	b, err := jsonstr.Marshal(raw)
 	if err != nil {

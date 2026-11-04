@@ -17,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -68,7 +69,7 @@ func xaiInputAudioFormatTypesList() string {
 // transcription URL with query parameters, mirroring TS
 // buildXaiStreamingTranscriptionUrl.
 func buildXAIStreamingTranscriptionURL(baseURL, modelID string, inputAudioFormat provider.AudioFormat, opts XAITranscriptionProviderOptions) (*url.URL, error) {
-	full := strings.TrimRight(baseURL, "/") + "/stt"
+	full := baseURL + "/stt" // TS `${baseURL}/stt`; New removed one trailing "/"
 	u, err := url.Parse(full)
 	if err != nil {
 		return nil, err
@@ -80,63 +81,74 @@ func buildXAIStreamingTranscriptionURL(baseURL, modelID string, inputAudioFormat
 		u.Scheme = "ws"
 	}
 
-	q := u.Query()
-
-	if modelID != "" {
-		q.Set("model", modelID)
+	// TS appendXaiSttParams appends to url.searchParams in object order
+	// (getXaiSttParams, then encoding and the streaming options), skips
+	// null values, and URLSearchParams re-serializes the whole query with
+	// form escaping ("~" -> %7E, "*" literal, space "+"), keeping the order
+	// and any query of the base URL first.
+	var pairs [][2]string
+	for _, part := range strings.Split(u.RawQuery, "&") {
+		if part == "" {
+			continue
+		}
+		k, v, _ := strings.Cut(part, "=")
+		k, _ = url.QueryUnescape(k)
+		v, _ = url.QueryUnescape(v)
+		pairs = append(pairs, [2]string{k, v})
+	}
+	add := func(k, v string) { pairs = append(pairs, [2]string{k, v}) }
+	addBool := func(k string, b *bool) {
+		if b != nil {
+			add(k, strconv.FormatBool(*b))
+		}
+	}
+	addInt := func(k string, n *int) {
+		if n != nil {
+			add(k, strconv.Itoa(*n))
+		}
+	}
+	addNum := func(k string, f *float64) {
+		if f != nil {
+			add(k, providerutils.JSNumberString(*f)) // TS String(number)
+		}
 	}
 
+	if modelID != "" {
+		add("model", modelID)
+	}
 	sampleRate := opts.SampleRate
 	if sampleRate == nil {
 		sampleRate = inputAudioFormat.Rate
 	}
-	if sampleRate != nil {
-		q.Set("sample_rate", strconv.Itoa(*sampleRate))
+	addInt("sample_rate", sampleRate)
+	if opts.Language != nil {
+		add("language", *opts.Language)
 	}
-
+	addBool("multichannel", opts.Multichannel)
+	addInt("channels", opts.Channels)
+	addBool("diarize", opts.Diarize)
+	addBool("filler_words", opts.FillerWords)
+	addNum("vad_threshold", opts.VadThreshold)
+	for _, kt := range xaiKeyterms(opts.Keyterm) {
+		add("keyterm", kt)
+	}
 	encoding := xaiEncodingFromInputAudioFormat(inputAudioFormat.Type)
 	if opts.AudioFormat != nil {
 		encoding = *opts.AudioFormat
 	}
-	q.Set("encoding", encoding)
-
-	if opts.Language != nil {
-		q.Set("language", *opts.Language)
-	}
-	if opts.Diarize != nil {
-		q.Set("diarize", strconv.FormatBool(*opts.Diarize))
-	}
-	if opts.FillerWords != nil {
-		q.Set("filler_words", strconv.FormatBool(*opts.FillerWords))
-	}
-	if opts.Multichannel != nil {
-		q.Set("multichannel", strconv.FormatBool(*opts.Multichannel))
-	}
-	if opts.Channels != nil {
-		q.Set("channels", strconv.Itoa(*opts.Channels))
-	}
-	if opts.VadThreshold != nil {
-		q.Set("vad_threshold", strconv.FormatFloat(*opts.VadThreshold, 'f', -1, 64))
-	}
+	add("encoding", encoding)
 	if opts.Streaming != nil {
-		if opts.Streaming.InterimResults != nil {
-			q.Set("interim_results", strconv.FormatBool(*opts.Streaming.InterimResults))
-		}
-		if opts.Streaming.Endpointing != nil {
-			q.Set("endpointing", strconv.Itoa(*opts.Streaming.Endpointing))
-		}
-		if opts.Streaming.SmartTurn != nil {
-			q.Set("smart_turn", strconv.FormatFloat(*opts.Streaming.SmartTurn, 'f', -1, 64))
-		}
-		if opts.Streaming.SmartTurnTimeout != nil {
-			q.Set("smart_turn_timeout", strconv.Itoa(*opts.Streaming.SmartTurnTimeout))
-		}
-	}
-	for _, kt := range xaiKeyterms(opts.Keyterm) {
-		q.Add("keyterm", kt)
+		addBool("interim_results", opts.Streaming.InterimResults)
+		addInt("endpointing", opts.Streaming.Endpointing)
+		addNum("smart_turn", opts.Streaming.SmartTurn)
+		addInt("smart_turn_timeout", opts.Streaming.SmartTurnTimeout)
 	}
 
-	u.RawQuery = q.Encode()
+	encoded := make([]string, len(pairs))
+	for i, kv := range pairs {
+		encoded[i] = internalhttp.EncodeQuery(map[string]string{kv[0]: kv[1]})
+	}
+	u.RawQuery = strings.Join(encoded, "&")
 	return u, nil
 }
 

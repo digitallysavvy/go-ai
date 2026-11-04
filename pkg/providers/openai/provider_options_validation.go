@@ -94,7 +94,7 @@ func (m *EmbeddingModel) validateEmbeddingProviderOptions(providerOptions map[st
 		return validateProviderOptionKeys(providerOptions, openAIEmbeddingOptionsSchema, "openai")
 	}
 	name, _, _ := strings.Cut(m.provider.Name(), ".")
-	return providerutils.ValidateOpenAICompatibleEmbeddingOptions(providerOptions, name)
+	return providerutils.ValidateOpenAICompatibleEmbeddingOptions(providerOptions, providerutils.JSTrim(name))
 }
 
 // openAIResponsesOptionsSchema is openaiLanguageModelResponsesOptionsSchema

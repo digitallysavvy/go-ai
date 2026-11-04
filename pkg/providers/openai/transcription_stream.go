@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -19,12 +19,36 @@ import (
 	"golang.org/x/net/websocket"
 )
 
-// bearerTokenPattern extracts the token from an "Authorization: Bearer
-// <token>" header value, mirroring TS getOpenAIRealtimeConnection's
-// `/^bearer\s+(.+)$/i`: the "bearer" scheme name is matched
-// case-insensitively (the HTTP auth scheme is case-insensitive) and any run
-// of whitespace separates it from the token, not just a single space.
-var bearerTokenPattern = regexp.MustCompile(`(?i)^bearer\s+(.+)$`)
+// bearerToken extracts the token from an "Authorization: Bearer <token>"
+// header value like TS getOpenAIRealtimeConnection's
+// `authorization.match(/^bearer\s+(.+)$/i)?.[1]`: the scheme name is matched
+// case-insensitively, JS \s is any JS whitespace or line terminator (U+00A0,
+// U+2003, U+FEFF, \v, ...; RE2 \s is ASCII only), and the token is the rest
+// of the value, which must hold no line terminator (JS .). When only
+// whitespace follows, the regexp backtracks and the token is its last
+// character.
+func bearerToken(v string) (string, bool) {
+	const scheme = "bearer"
+	if len(v) < len(scheme) || !strings.EqualFold(v[:len(scheme)], scheme) {
+		return "", false
+	}
+	rest := v[len(scheme):]
+	token := strings.TrimLeftFunc(rest, providerutils.IsJSWhiteSpace)
+	if len(token) == len(rest) {
+		return "", false // \s+ needs one character
+	}
+	if token == "" {
+		_, size := utf8.DecodeLastRuneInString(rest)
+		if size == len(rest) {
+			return "", false // \s+ and .+ need a character each
+		}
+		token = rest[len(rest)-size:]
+	}
+	if strings.ContainsAny(token, "\n\r\u2028\u2029") {
+		return "", false
+	}
+	return token, true
+}
 
 // IsRealtimeTranscriptionModelID reports whether modelID only streams over
 // the OpenAI realtime WebSocket and has no REST transcription
@@ -284,8 +308,8 @@ func openAIRealtimeWSAuth(headers map[string]string) ([]string, map[string]strin
 	var token string
 	for k, v := range headers {
 		if strings.EqualFold(k, "authorization") && v != "" {
-			if m := bearerTokenPattern.FindStringSubmatch(v); m != nil {
-				token = m[1]
+			if t, ok := bearerToken(v); ok {
+				token = t
 			}
 		}
 	}

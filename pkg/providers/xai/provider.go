@@ -3,7 +3,6 @@ package xai
 import (
 	"context"
 	"os"
-	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -53,7 +52,7 @@ func getAPIKey(apiKey string) string {
 // If Config.APIKey is empty, the API key is loaded from the XAI_API_KEY
 // environment variable.
 func New(cfg Config) *Provider {
-	realtimeBaseURL := strings.TrimRight(cfg.BaseURL, "/")
+	realtimeBaseURL := providerutils.WithoutTrailingSlash(cfg.BaseURL)
 	if realtimeBaseURL == "" {
 		realtimeBaseURL = "https://api.x.ai/v1"
 	}
@@ -95,7 +94,7 @@ func normalizeBaseURL(baseURL string) string {
 	if baseURL == "" {
 		baseURL = "https://api.x.ai/v1"
 	}
-	return strings.TrimRight(baseURL, "/")
+	return providerutils.WithoutTrailingSlash(baseURL) // TS withoutTrailingSlash: one "/"
 }
 
 // CreateXai creates a new xAI provider.
