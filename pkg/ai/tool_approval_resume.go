@@ -229,26 +229,38 @@ func resumeToolApprovals(ctx context.Context, opts toolApprovalResumeOptions) (t
 	return out, nil
 }
 
-// resultsInCompletionOrder stable-sorts results by the position of their
-// tool call ID in completed; results without one keep their place after them.
+// resultsInCompletionOrder returns results with the ones whose
+// ToolCallID is in completed (the order their executions settled, TS
+// enqueueing each result when it settles) put into that order among their
+// own positions; every other result keeps its position. It is the one
+// completion-order helper for the StreamText approval resume and the
+// StreamText live step results.
 func resultsInCompletionOrder(results []types.ToolResult, completed []string) []types.ToolResult {
-	if len(results) < 2 || len(completed) == 0 {
+	if len(results) < 2 || len(completed) < 2 {
 		return results
 	}
-	pos := make(map[string]int, len(completed))
+	rank := make(map[string]int, len(completed))
 	for i, id := range completed {
-		if _, ok := pos[id]; !ok {
-			pos[id] = i
+		if _, ok := rank[id]; !ok {
+			rank[id] = i
 		}
 	}
-	rank := func(r types.ToolResult) int {
-		if p, ok := pos[r.ToolCallID]; ok {
-			return p
+	var slots []int
+	var listed []types.ToolResult
+	for i := range results {
+		if _, ok := rank[results[i].ToolCallID]; ok {
+			slots = append(slots, i)
+			listed = append(listed, results[i])
 		}
-		return len(completed)
 	}
+	if len(listed) < 2 {
+		return results
+	}
+	sort.SliceStable(listed, func(a, b int) bool { return rank[listed[a].ToolCallID] < rank[listed[b].ToolCallID] })
 	out := append([]types.ToolResult(nil), results...)
-	sort.SliceStable(out, func(i, j int) bool { return rank(out[i]) < rank(out[j]) })
+	for k, i := range slots {
+		out[i] = listed[k]
+	}
 	return out
 }
 

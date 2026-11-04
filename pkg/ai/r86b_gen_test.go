@@ -174,3 +174,50 @@ func TestR86bgenDecideEmptyChoiceAndTypedCriteria(t *testing.T) {
 		t.Fatalf("typed choice criteria = %#v", mock.calls[0].Questions["q"].Criteria)
 	}
 }
+
+// V061 item 33: one completion-order helper. Results listed in the
+// completion order move into that order among their own positions; the
+// others (results not streamed as they settled) keep theirs.
+func TestR86bgenToolResultsInCompletionOrder(t *testing.T) {
+	ids := func(results []types.ToolResult) string {
+		out := ""
+		for _, r := range results {
+			out += r.ToolCallID
+		}
+		return out
+	}
+	mk := func(s string) []types.ToolResult {
+		var out []types.ToolResult
+		for _, c := range s {
+			out = append(out, types.ToolResult{ToolCallID: string(c)})
+		}
+		return out
+	}
+	for _, c := range []struct {
+		results, completed, want string
+	}{
+		{"ab", "ba", "ba"},
+		{"abc", "cab", "cab"},
+		{"axb", "ba", "bxa"},   // x was not streamed live: keeps its slot
+		{"abc", "c", "abc"},    // one listed result: nothing to reorder
+		{"abc", "cbac", "cba"}, // first occurrence counts
+		{"a", "a", "a"},
+	} {
+		in := mk(c.results)
+		got := resultsInCompletionOrder(in, r86bgenSplitChars(c.completed))
+		if ids(got) != c.want {
+			t.Errorf("%s by %s = %s, want %s", c.results, c.completed, ids(got), c.want)
+		}
+		if ids(in) != c.results {
+			t.Errorf("input changed to %s", ids(in))
+		}
+	}
+}
+
+func r86bgenSplitChars(s string) []string {
+	var out []string
+	for _, c := range s {
+		out = append(out, string(c))
+	}
+	return out
+}
