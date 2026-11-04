@@ -352,8 +352,11 @@ func TestR85toolsDiscoveryLegacyVersionGuidance(t *testing.T) {
 	}
 }
 
-// TS content-type check uses JS trim: a leading U+0085 is kept (415), a
-// U+FEFF is trimmed (accepted).
+// TS content-type check uses JS trim on request.headers.get, which reads
+// each header byte as one character (r86b): the UTF-8 bytes of U+0085
+// (C2 85) and U+FEFF (EF BB BF) read as "\u00c2\u0085" and "\u00ef\u00bb\u00bf",
+// which trim() keeps (415); a raw 0xA0 byte is trimmed (accepted, see
+// TestR86btoolsWebhookHeadersReadAsLatin1).
 func TestR85toolsWebhookContentTypeJSTrim(t *testing.T) {
 	h := newWebhookHarness(t)
 	r := signedEventRequest(h.sub, testEvent, "evt_1")
@@ -363,7 +366,7 @@ func TestR85toolsWebhookContentTypeJSTrim(t *testing.T) {
 	}
 	r = signedEventRequest(h.sub, testEvent, "evt_1")
 	r.Header.Set("content-type", "\ufeffapplication/json; charset=utf-8")
-	if code := h.do(r); code == 415 {
-		t.Fatalf("BOM content type = %d, want it accepted", code)
+	if code := h.do(r); code != 415 {
+		t.Fatalf("BOM bytes content type = %d, want 415", code)
 	}
 }
