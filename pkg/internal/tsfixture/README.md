@@ -199,6 +199,26 @@ that is still not evaluated. `LoadCases` keeps the source key order of every
 object `input` of a tool-call prompt part, so a replayed prompt sends
 `JSON.stringify(part.input)` in TS order.
 
+Since round 87c, the extended forms also cover `new Set(x)` (a toEqual
+against a Set compares membership in any order; `.size`), `'k' in x`,
+`cond ? a : b` (cond an `in` check, `===` / `!==`, `||` / `&&`, `!`,
+`.startsWith`, `.includes`, `Array.isArray` or a truthy path; a branch a
+literal, `[path]` or a path) also as a map / flatMap / filter arrow body,
+`a ?? b`, object literals (`{ id: response?.id }`), `.join('s')`, `?.map(`,
+typed arrow parameters (`(t: any) =>`) and `(x as T)` casts split over lines.
+`EvalExtendedAsserts` and `EvalPathSnapshots` restore the previous setting
+when their test ends, so a binary-wide `EnableExtendedAsserts` survives a
+suite-scoped opt-in. The extractor records `const x = result.input[0]!;`
+(non-null assertions), `(x as Extract<...>)` casts of any type, `const a =
+path ?? [];`, `const p = JSON.parse(path);`, `const response = await
+model.doGenerate(...)` (the test's one model call) and
+`convertReadableStreamToArray(alias.stream)` as aliases. The openai chat /
+Responses case files gained those aliases only (merged into the committed
+cases at TS `3fab50aa9b`, cases whose assertions changed upstream left as
+they are), and `openai/responses/.../convert_input.json.gz` was re-extracted
+(two aliases added, nothing else changed). The case and wire servers send no
+`Date` header (the TS test server sends only the headers a response sets).
+
 Test hooks used by the provider tests: `ProviderToolHook` (and
 `anthropictools.ProviderTool` for Anthropic tools), `ToolNameAlias` /
 `PromptToolNameAlias` (Go names provider tools by id), `MetadataKeyAlias`,
