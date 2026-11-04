@@ -378,10 +378,15 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 	t.finishChat(chatID, chunkIndex, errs)
 }
 
-// parseIntPrefix is JavaScript parseInt(s, 10): leading whitespace, an optional
-// sign and the longest run of digits; ok is false when there is none (NaN).
+// parseIntPrefix is JavaScript parseInt(s, 10) on a header value: leading
+// whitespace, an optional sign and the longest run of digits; ok is false when
+// there is none (NaN). fetch's Headers.get decodes header bytes as Latin-1, so
+// the JS whitespace among them is the ASCII set plus the 0xA0 byte (U+00A0);
+// UTF-8 encoded Unicode spaces decode to other Latin-1 characters (NaN).
 func parseIntPrefix(s string) (int, bool) {
-	s = strings.TrimLeft(s, " \t\n\r\v\f")
+	for len(s) > 0 && strings.IndexByte(" \t\n\r\v\f\xa0", s[0]) >= 0 {
+		s = s[1:]
+	}
 	i := 0
 	if i < len(s) && (s[i] == '+' || s[i] == '-') {
 		i++
