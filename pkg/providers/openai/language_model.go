@@ -851,8 +851,14 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	for k, v := range compatPassthrough {
 		switch k {
 		case "user", "reasoningEffort", "textVerbosity", "strictJsonSchema",
-			"messages", "tools", "tool_choice", "stream", "stream_options":
+			"messages", "tools", "tool_choice":
 			continue
+		case "stream", "stream_options":
+			// TS doStream writes them after the spread; doGenerate posts
+			// the raw values as given.
+			if stream {
+				continue
+			}
 		case "verbosity":
 			// TS add01abd2c: verbosity is written after the passthrough only
 			// when textVerbosity is set, so a raw verbosity survives otherwise.

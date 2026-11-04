@@ -1716,7 +1716,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 					Type: provider.ChunkTypeError,
 					Text: formatXAIResponseError(e.Response.Error.Code, e.Response.Error.Message),
-					Err:  newXAIResponsesStreamError("xai", e.Response.Error.Message, e.Response.Error.Code, peek.Type, data),
+					Err:  newXAIResponsesStreamError("xai", e.Response.Error.Message, e.Response.Error.Code, xaiWireValuePresent(data, "response", "error", "code"), peek.Type, data),
 				})
 			}
 			continue
@@ -1733,7 +1733,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: streamErr.Error(),
-				Err:  newXAIResponsesStreamError("xai", e.Message, e.Code, peek.Type, data),
+				Err:  newXAIResponsesStreamError("xai", e.Message, e.Code, xaiWireValuePresent(data, "code"), peek.Type, data),
 			})
 			if ok {
 				return chunk, nil

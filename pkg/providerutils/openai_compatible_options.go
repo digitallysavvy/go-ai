@@ -185,8 +185,11 @@ func ApplyOpenAICompatibleCommonRequestOptions(body map[string]interface{}, opti
 // reasoningEffort, textVerbosity, strictJsonSchema), which TS spreads straight
 // into the request body from providerOptions[name] and providerOptions[camel]
 // (so they can override the standardized settings). Keys TS always overwrites
-// afterwards (messages, tools, tool_choice, stream, stream_options) and the
-// extra `exclude` keys a provider handles itself are skipped. A raw
+// afterwards (messages, tools, tool_choice) and the extra `exclude` keys a
+// provider handles itself are skipped. stream and stream_options are skipped
+// only for a streaming body (body["stream"] is true, set by the caller before
+// this call): TS doStream writes them after the spread, while doGenerate
+// sends a raw stream / stream_options as given. A raw
 // reasoning_effort is passed through (null included): TS writes
 // reasoning_effort afterwards only when it has a value (5006d83c4e), so
 // callers set it after this call only when the effort resolves. A raw
@@ -208,8 +211,10 @@ func ApplyOpenAICompatibleCallSettings(body map[string]interface{}, frequencyPen
 	}
 	skip := map[string]bool{
 		"user": true, "reasoningEffort": true, "textVerbosity": true, "strictJsonSchema": true,
-		"messages": true, "tools": true,
-		"tool_choice": true, "stream": true, "stream_options": true,
+		"messages": true, "tools": true, "tool_choice": true,
+	}
+	if streaming, _ := body["stream"].(bool); streaming {
+		skip["stream"], skip["stream_options"] = true, true
 	}
 	for _, k := range exclude {
 		skip[k] = true

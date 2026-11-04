@@ -664,11 +664,16 @@ func convertToolsToOpenResponses(tools []types.Tool, registry *ExtensionRegistry
 			// the expected shape, otherwise omitted (not defaulted).
 			if customToolID != "" && t.ProviderID == customToolID {
 				custom := CustomToolItem{Type: "custom", Name: t.Name}
-				if desc, ok := t.ProviderArgs["description"].(string); ok {
-					custom.Description = desc
-				}
+				desc, hasDesc := t.ProviderArgs["description"].(string)
+				custom.Description = desc
 				custom.Format = openResponsesCustomToolFormat(t.ProviderArgs["format"])
-				result = append(result, custom)
+				if hasDesc && desc == "" {
+					// TS typeof description === 'string' keeps an empty
+					// description, which CustomToolItem's omitempty drops.
+					result = append(result, openResponsesCustomToolEmptyDescription{Type: custom.Type, Name: custom.Name, Format: custom.Format})
+				} else {
+					result = append(result, custom)
+				}
 				encodedProviderTools[t.Name] = encodedProviderTool{args: t.ProviderArgs, custom: true}
 				continue
 			}
@@ -1313,6 +1318,28 @@ func (s *openResponsesStream) Next() (*provider.StreamChunk, error) {
 	}
 }
 
+// openResponsesConcatDelta is the text TS appends to an existing
+// accumulator (`acc + chunk.delta` after `?? ""`): JS string concatenation, so an absent delta appends
+// "undefined" and a null one "null" (StreamEvent.Delta holds "" for both).
+func openResponsesConcatDelta(event *StreamEvent) string {
+	if event.Delta != "" || len(event.Raw) == 0 {
+		return event.Delta
+	}
+	var w struct {
+		Delta json.RawMessage `json:"delta"`
+	}
+	if json.Unmarshal(event.Raw, &w) != nil {
+		return ""
+	}
+	switch string(w.Delta) {
+	case "":
+		return "undefined"
+	case "null":
+		return "null"
+	}
+	return ""
+}
+
 // handleStreamEvent processes a stream event and returns appropriate chunk
 func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.StreamChunk, bool) {
 	switch event.Type {
@@ -1398,8 +1425,10 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 				ProviderMetadata: openResponsesToolCallMetadata(s.providerName, event.ItemID, ""),
 			}
 			s.toolCallsByItemID[event.ItemID] = state
+			state.ArgsJSON = event.Delta
+			return nil, false
 		}
-		state.ArgsJSON += event.Delta
+		state.ArgsJSON += openResponsesConcatDelta(event)
 		return nil, false
 
 	case "response.function_call_arguments.done":
@@ -1422,10 +1451,11 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		// arrives without a prior output_item.added.
 		state, ok := s.customToolCallsByItemID[event.ItemID]
 		if !ok {
-			state = &toolCallState{}
+			state = &toolCallState{ArgsJSON: event.Delta}
 			s.customToolCallsByItemID[event.ItemID] = state
+		} else {
+			state.ArgsJSON += openResponsesConcatDelta(event)
 		}
-		state.ArgsJSON += event.Delta
 		id := state.ID
 		if id == "" {
 			id = event.ItemID
@@ -1915,13 +1945,39 @@ func (s *openResponsesStream) streamProviderError(event *StreamEvent, respErr *R
 	// TS createProviderStreamError({message, type: chunk.type, code, ...metadata,
 	// data: chunk}): the type is the event type and the data is the whole chunk.
 	var data interface{} = respErr
+	// TS `code: error.code`: an absent or null code is no code (an empty
+	// string is kept).
+	var code interface{} = respErr.Code
 	if len(event.Raw) > 0 {
 		var chunk interface{}
 		if json.Unmarshal(event.Raw, &chunk) == nil {
 			data = chunk
+			errObj := chunk
+			if event.Type == "response.failed" {
+				errObj = openResponsesWireField(chunk, "response")
+			}
+			if respErr.Code == "" && openResponsesWireField(openResponsesWireField(errObj, "error"), "code") == nil {
+				code = nil
+			}
 		}
 	}
-	return providererrors.NewStreamProviderError(respErr.Message, s.providerName, event.Type, respErr.Code, statusCode, retryable, data)
+	return providererrors.NewStreamProviderError(respErr.Message, s.providerName, event.Type, code, statusCode, retryable, data)
+}
+
+// openResponsesCustomToolEmptyDescription is a CustomToolItem whose
+// description is a present empty string (written as "description": "").
+type openResponsesCustomToolEmptyDescription struct {
+	Type        string                 `json:"type"`
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	Format      map[string]interface{} `json:"format,omitempty"`
+}
+
+// openResponsesWireField is value[key] for a decoded JSON object (nil
+// otherwise).
+func openResponsesWireField(value interface{}, key string) interface{} {
+	m, _ := value.(map[string]interface{})
+	return m[key]
 }
 
 // wireNumberPresent reports whether raw[object][key] is a JSON number.
