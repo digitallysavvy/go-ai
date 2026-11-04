@@ -102,6 +102,22 @@ func TestR86bintegStreamPolicyEmptyDenialReasonKept(t *testing.T) {
 	if !strings.Contains(string(b), `"output":{"type":"execution-denied","reason":""}`) {
 		t.Fatalf("next prompt tool message = %s, want the empty reason kept", b)
 	}
+	// The approval response part StreamText emits on the tool call (TS
+	// execute-tools-from-stream) keeps the empty reason too.
+	found := false
+	for _, step := range r.Steps() {
+		for _, part := range step.Content {
+			if resp, ok := part.(types.ToolApprovalResponseContent); ok {
+				found = true
+				if !resp.HasReason() {
+					t.Errorf("approval response part lost the empty reason: %#v", resp)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no tool-approval-response part in the steps")
+	}
 }
 
 // V061 item 12 (cr-r86b-gen-to-integrator 1): ShellSandbox implements the
@@ -156,6 +172,12 @@ func TestR86bintegShellSandboxOptionalOperations(t *testing.T) {
 		t.Errorf("ListDirectory(file) err = %v", err)
 	}
 
+	if err := os.Symlink(filepath.Join(dir, "sub"), filepath.Join(dir, "dirlink")); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := sb.DeleteFile(ctx, filepath.Join(dir, "dirlink")); !ok || err != nil {
+		t.Errorf("DeleteFile(link to a directory) = %v, %v; want the link deleted", ok, err)
+	}
 	if ok, err := sb.DeleteFile(ctx, filepath.Join(dir, "link")); !ok || err != nil {
 		t.Errorf("DeleteFile(link) = %v, %v", ok, err)
 	}
