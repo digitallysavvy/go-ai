@@ -41,7 +41,14 @@ func TestTSCasesVertexLanguage(t *testing.T) {
 			t.Fatal(err)
 		}
 		return m
-	}, nil)
+	}, map[string]string{
+		// The extractor evaluates the runtime alias `signature`
+		// (readThemeCall.providerMetadata.vertex.thoughtSignature) to the
+		// describe-level `signature` constant of another block; Go's value is
+		// the fixture's signature, as in TS. The ordering and signature
+		// placement are compared part by part in TestR87provaVertexStreamOrderMatchesTS.
+		"should emit no-args function calls and preserve thoughtSignature alongside streamed-args calls": "extractor alias artifact (see comment)",
+	})
 }
 
 // r80provaVertexOnlyCase reports whether a google language case builds a
@@ -49,5 +56,6 @@ func TestTSCasesVertexLanguage(t *testing.T) {
 func r80provaVertexOnlyCase(name string) bool {
 	return strings.Contains(name, "for Vertex") || strings.HasSuffix(name, "on Vertex") || strings.Contains(name, "from Vertex requests") ||
 		strings.Contains(name, `when provider includes "vertex"`) ||
-		strings.Contains(name, "supported Vertex tool result URLs") || strings.HasSuffix(name, "with Vertex provider")
+		strings.Contains(name, "supported Vertex tool result URLs") || strings.HasSuffix(name, "with Vertex provider") ||
+		name == "should emit no-args function calls and preserve thoughtSignature alongside streamed-args calls"
 }

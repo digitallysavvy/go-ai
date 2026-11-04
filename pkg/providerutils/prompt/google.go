@@ -670,24 +670,27 @@ func (c *googleConverter) convertAssistant(msg types.Message) ([]map[string]inte
 	for _, raw := range c.assistantParts(msg) {
 		switch p := raw.(type) {
 		case types.TextContent:
-			if p.Text == "" {
+			// TS fd7e8a75d7: an empty text part is kept when it carries a
+			// thoughtSignature (a standalone signature keeps its position).
+			sig, ok := optStringPresent(c.readProviderOpts(p.ProviderOptions, p.ProviderMetadata), "thoughtSignature")
+			if p.Text == "" && !ok {
 				continue
 			}
 			part := map[string]interface{}{"text": p.Text}
-			if sig, ok := optStringPresent(c.readProviderOpts(p.ProviderOptions, p.ProviderMetadata), "thoughtSignature"); ok {
+			if ok {
 				part["thoughtSignature"] = sig
 			}
 			parts = append(parts, part)
 
 		case types.ReasoningContent:
-			if p.Text == "" {
-				continue
-			}
-			part := map[string]interface{}{"text": p.Text, "thought": true}
 			sig, ok := optStringPresent(c.readProviderOpts(p.ProviderOptions, p.ProviderMetadata), "thoughtSignature")
 			if !ok && p.Signature != "" {
 				sig, ok = p.Signature, true
 			}
+			if p.Text == "" && !ok {
+				continue
+			}
+			part := map[string]interface{}{"text": p.Text, "thought": true}
 			if ok {
 				part["thoughtSignature"] = sig
 			}

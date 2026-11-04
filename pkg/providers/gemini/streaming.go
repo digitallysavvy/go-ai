@@ -430,17 +430,14 @@ func (s *stream) processSSEEvent(chunkData Response) {
 		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &src})
 	}
 
-	// Process parts: non-function-call parts first (text/thought/code/inline),
-	// then function call parts. Matches TS: main loop + getToolCallsFromParts.
-	parts := candidate.Content.Parts
-	for _, part := range parts {
-		if part.FunctionCall == nil {
-			s.processNonFuncPart(part)
-		}
-	}
-	for _, part := range parts {
+	// Process all parts in a single loop to preserve their order (TS
+	// fd7e8a75d7: function calls are handled in the same part loop, so a
+	// call between two text parts stays between them).
+	for _, part := range candidate.Content.Parts {
 		if part.FunctionCall != nil {
 			s.processFuncCallPart(part)
+		} else {
+			s.processNonFuncPart(part)
 		}
 	}
 
@@ -578,6 +575,10 @@ func (s *stream) finishActiveStreamingToolCall() {
 	}
 	active := s.activeStreamingToolCalls[n-1]
 	s.activeStreamingToolCalls = s.activeStreamingToolCalls[:n-1]
+
+	// Finalized partial-argument calls also separate surrounding blocks (TS
+	// fd7e8a75d7).
+	s.closeOpenBlocks()
 
 	finalJSON, closingDelta := active.accumulator.Finalize()
 
@@ -862,13 +863,38 @@ func (s *stream) processNonFuncPart(part Part) {
 		}))
 	}
 
-	// Empty text + thoughtSignature on an open text block → text-delta with metadata only.
-	if part.Text == "" && !part.textAbsent && sigMeta != nil && s.currentTextBlockID != "" {
-		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
-			Type:             provider.ChunkTypeText,
-			ID:               s.currentTextBlockID,
-			ProviderMetadata: sigMeta,
-		})
+	// Empty text + thoughtSignature: on an open text block a text-delta with
+	// metadata only; otherwise (TS fd7e8a75d7) an open reasoning block is
+	// closed and the signature gets a block of its own (start, empty delta,
+	// end; reasoning when the part is a thought), so it keeps its position
+	// without merging later content.
+	if part.Text == "" && !part.textAbsent && sigMeta != nil {
+		if s.currentTextBlockID != "" {
+			s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
+				Type:             provider.ChunkTypeText,
+				ID:               s.currentTextBlockID,
+				ProviderMetadata: sigMeta,
+			})
+			return
+		}
+		if s.currentReasoningBlockID != "" {
+			s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
+				Type: provider.ChunkTypeReasoningEnd,
+				ID:   s.currentReasoningBlockID,
+			})
+			s.currentReasoningBlockID = ""
+		}
+		id := fmt.Sprintf("%d", s.blockCounter)
+		s.blockCounter++
+		start, delta, end := provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd
+		if part.Thought {
+			start, delta, end = provider.ChunkTypeReasoningStart, provider.ChunkTypeReasoning, provider.ChunkTypeReasoningEnd
+		}
+		s.chunkBuffer = append(s.chunkBuffer,
+			&provider.StreamChunk{Type: start, ID: id, ProviderMetadata: sigMeta},
+			&provider.StreamChunk{Type: delta, ID: id, ProviderMetadata: sigMeta},
+			&provider.StreamChunk{Type: end, ID: id},
+		)
 		return
 	}
 
@@ -960,6 +986,12 @@ func (s *stream) processFuncCallPart(part Part) {
 	isTerminalChunk := !hasName && !fc.ArgsSet && !fc.PartialArgsSet && fc.WillContinue == nil
 	isCompleteCall := hasName && fc.ArgsSet && !fc.PartialArgsSet
 	isNoArgsCompleteCall := hasName && !fc.ArgsSet && !fc.PartialArgsSet && !willContinueTrue
+
+	// A complete (or no-args) call closes the open text and reasoning blocks
+	// first, so text after it starts a new block (TS fd7e8a75d7).
+	if !isStreamingChunk && (isCompleteCall || isNoArgsCompleteCall) {
+		s.closeOpenBlocks()
+	}
 
 	switch {
 	case isStreamingChunk:

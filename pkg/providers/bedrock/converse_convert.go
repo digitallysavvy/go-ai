@@ -466,6 +466,30 @@ func addAnthropicBeta(existing interface{}, beta string) []interface{} {
 
 // ─── Reasoning metadata ─────────────────────────────────────────────────────
 
+// withoutForeignEmptyText is TS convert-to-amazon-bedrock-chat-messages.ts
+// 458-467 (fd7e8a75d7): foreign empty text is metadata only (for example a
+// Google standalone thought signature), so an empty text part whose provider
+// options are set and carry neither an amazonBedrock nor a bedrock entry is
+// removed before the last part and the reasoning blocks are determined.
+func withoutForeignEmptyText(parts []types.ContentPart) []types.ContentPart {
+	out := parts[:0:0]
+	for _, part := range parts {
+		var text *types.TextContent
+		switch p := part.(type) {
+		case types.TextContent:
+			text = &p
+		case *types.TextContent:
+			text = p
+		}
+		if text != nil && text.Text == "" && text.ProviderOptions != nil &&
+			text.ProviderOptions["amazonBedrock"] == nil && text.ProviderOptions["bedrock"] == nil {
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
+}
+
 func bedrockReasoningMetadata(part types.ReasoningContent) (signature string, hasSignature bool, redactedData string, hasRedactedData bool, redactedContent string, hasRedactedContent bool) {
 	signature = part.Signature
 	hasSignature = part.Signature != ""
@@ -775,7 +799,7 @@ func convertToBedrockChatMessages(messages []types.Message, isMistral bool) (sys
 
 			for msgIdx, msg := range block.Messages {
 				isLastMessage := msgIdx == len(block.Messages)-1
-				msg.Content = withLegacyToolCalls(msg)
+				msg.Content = withoutForeignEmptyText(withLegacyToolCalls(msg))
 				hasReasoning := false
 				for _, part := range msg.Content {
 					if _, ok := part.(types.ReasoningContent); ok {
