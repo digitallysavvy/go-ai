@@ -266,8 +266,11 @@ value (`FindAssertion` / `MatchAssertion` reuse the case's expectation), and
 marked assertion is not counted as not evaluated; `TSFIXTURE_SKIPPED=1` logs
 it as hand-ported or n/a. `PortedMain(m, marks...)` (a TestMain body) fails an
 unfiltered run for a mark that matches nothing, or a hand-port mark whose
-assertion now evaluates. A RunFn adapter returns a vitest spy the TS function
-calls (`onWarning`) as `SpyRoot(calls...)`.
+assertion now evaluates; after `RequireEvaluated()` (from an init) it also
+fails a run in which any assertion was neither evaluated nor marked (the
+google, googlevertex and gemini packages opt in). A RunFn adapter returns a vitest spy the TS function
+calls (`onWarning`) as `SpyRoot(calls...)`, and a helper object whose
+method the test calls afterwards as `{"method": Returns(v)}`.
 
 Test hooks used by the provider tests: `ProviderToolHook` (and
 `anthropictools.ProviderTool` for Anthropic tools), `ToolNameAlias` /

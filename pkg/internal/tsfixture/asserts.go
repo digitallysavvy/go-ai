@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -1175,6 +1176,12 @@ func PortedMain(m *testing.M, marks ...map[string]string) int {
 			return code
 		}
 	}
+	if requireEvaluated {
+		if n := notEvaluatedCount.Load(); n > 0 {
+			fmt.Fprintf(os.Stderr, "tsfixture: %d TS plain assertions were not evaluated (RequireEvaluated; list them with TSFIXTURE_SKIPPED=1)\n", n)
+			code = 1
+		}
+	}
 	for _, mk := range marks {
 		for _, s := range CheckPortedUsed(nil, mk) {
 			fmt.Fprintln(os.Stderr, "tsfixture:", s)
@@ -1183,6 +1190,18 @@ func PortedMain(m *testing.M, marks ...map[string]string) int {
 	}
 	return code
 }
+
+// requireEvaluated and notEvaluatedCount back RequireEvaluated.
+var (
+	requireEvaluated  bool
+	notEvaluatedCount atomic.Int64
+)
+
+// RequireEvaluated makes PortedMain fail an unfiltered run of the test binary
+// in which any TS plain assertion was neither evaluated nor marked (hand-ported
+// or n/a), so a package whose replays evaluate everything stays that way.
+// Call it from an init function.
+func RequireEvaluated() { requireEvaluated = true }
 
 // portedFor returns the Go test of a marked assertion and records that the
 // mark was reached (evaluated reports whether the evaluator handled it).
@@ -1222,6 +1241,7 @@ func runAsserts(t testing.TB, c Case, roots map[string]interface{}) {
 		}
 		if skip {
 			skipped++
+			notEvaluatedCount.Add(1)
 			if os.Getenv("TSFIXTURE_SKIPPED") != "" {
 				t.Logf("not evaluated: expect(%s).%s", a.Expr, a.Matcher)
 			}
