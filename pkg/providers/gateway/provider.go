@@ -403,7 +403,7 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
+	baseURL = providerutils.WithoutTrailingSlash(baseURL)
 
 	authResolver := func(ctx context.Context) (string, string, error) {
 		return resolveGatewayAuthToken(ctx, cfg)
@@ -680,12 +680,14 @@ func (p *Provider) fetchMetadata(ctx context.Context) (*MetadataResponse, error)
 // the same team header works for model calls and getSpendReport.
 func (p *Provider) GetCredits(ctx context.Context) (*CreditsInfo, error) {
 	path := "/v1/credits"
-	if teamIDOrSlug := gatewayTeamFromHeaders(p.headers); teamIDOrSlug != "" {
+	// TS getTeamIdOrSlug: value?.trim() || undefined, then
+	// url.searchParams.set (URLSearchParams escaping).
+	if teamIDOrSlug := providerutils.JSTrim(gatewayTeamFromHeaders(p.headers)); teamIDOrSlug != "" {
 		key := "slug"
 		if strings.HasPrefix(teamIDOrSlug, "team_") {
 			key = "teamId"
 		}
-		path += "?" + key + "=" + url.QueryEscape(teamIDOrSlug)
+		path += "?" + internalhttp.EncodeQuery(map[string]string{key: teamIDOrSlug})
 	}
 	body, err := p.doOriginRequest(ctx, path)
 	if err != nil {

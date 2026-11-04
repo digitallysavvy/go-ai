@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -167,7 +166,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 		return nil, b.handleError(ctx, err)
 	}
 
-	return newGatewayBatchResultsStream(httpResp.Body, strings.TrimRight(b.provider.config.BaseURL, "/")+"/batch/results", maxLineBytes), nil
+	return newGatewayBatchResultsStream(httpResp.Body, b.provider.baseURL+"/batch/results", maxLineBytes), nil
 }
 
 func (b *Batch) handleError(ctx context.Context, err error) error {

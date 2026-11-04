@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -67,7 +66,7 @@ func (p *Provider) GetGenerationInfo(ctx context.Context, params GenerationInfoP
 		return nil, fmt.Errorf("generation ID is required")
 	}
 
-	body, err := p.doOriginRequest(ctx, "/v1/generation?id="+url.QueryEscape(params.ID))
+	body, err := p.doOriginRequest(ctx, "/v1/generation?id="+providerutils.EncodeURIComponent(params.ID))
 	if err != nil {
 		return nil, err
 	}
