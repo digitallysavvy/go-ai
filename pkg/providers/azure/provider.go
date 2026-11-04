@@ -441,7 +441,7 @@ func (p *Provider) responsesBaseURL(modelID string) string {
 	if baseURL == "" {
 		baseURL = fmt.Sprintf("https://%s.openai.azure.com/openai", p.config.ResourceName)
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
+	baseURL = providerutils.WithoutTrailingSlash(baseURL) // TS withoutTrailingSlash: one "/"
 	if p.config.UseDeploymentBasedURLs {
 		return fmt.Sprintf("%s/deployments/%s", baseURL, modelID)
 	}
@@ -557,7 +557,7 @@ func (p *Provider) speechHTTPClient() *stdhttp.Client {
 // unconditionally in New), since an explicit SpeechBaseURL makes it unused.
 func (p *Provider) speechBaseURL() (string, error) {
 	if p.config.SpeechBaseURL != "" {
-		return strings.TrimRight(p.config.SpeechBaseURL, "/"), nil
+		return providerutils.WithoutTrailingSlash(p.config.SpeechBaseURL), nil
 	}
 	if p.config.ResourceName == "" {
 		return "", missingResourceNameError()
@@ -574,7 +574,7 @@ func (p *Provider) speechBaseURL() (string, error) {
 // speechBaseURL.
 func (p *Provider) maiBaseURL() (string, error) {
 	if p.config.MaiBaseURL != "" {
-		return strings.TrimRight(p.config.MaiBaseURL, "/"), nil
+		return providerutils.WithoutTrailingSlash(p.config.MaiBaseURL), nil
 	}
 	if p.config.ResourceName == "" {
 		return "", missingResourceNameError()

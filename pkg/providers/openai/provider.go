@@ -234,7 +234,7 @@ func New(cfg Config) *Provider {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
+	baseURL = providerutils.WithoutTrailingSlash(baseURL) // TS withoutTrailingSlash: one "/"
 	cfg.BaseURL = baseURL
 
 	authManaged := cfg.NoAPIKey || cfg.Name == "azure"

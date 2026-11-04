@@ -68,7 +68,7 @@ func xaiInputAudioFormatTypesList() string {
 // transcription URL with query parameters, mirroring TS
 // buildXaiStreamingTranscriptionUrl.
 func buildXAIStreamingTranscriptionURL(baseURL, modelID string, inputAudioFormat provider.AudioFormat, opts XAITranscriptionProviderOptions) (*url.URL, error) {
-	full := strings.TrimRight(baseURL, "/") + "/stt"
+	full := baseURL + "/stt" // TS `${baseURL}/stt`; New removed one trailing "/"
 	u, err := url.Parse(full)
 	if err != nil {
 		return nil, err

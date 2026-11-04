@@ -148,3 +148,29 @@ func TestR86bprovbBatchResultsBlankLinesJSTrim(t *testing.T) {
 		}
 	}
 }
+
+// TestR86bprovbBaseURLOneTrailingSlash pins TS withoutTrailingSlash
+// (url.replace(/\/$/, '')): one trailing "/" is removed, not every one, and
+// paths are appended to that base as is. Wants printed by Node 24.
+func TestR86bprovbBaseURLOneTrailingSlash(t *testing.T) {
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+	p := New(Config{APIKey: "k", BaseURL: srv.URL + "/v1//"})
+	_, _ = NewLanguageModel(p, "gpt-4o").DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if path != "/v1//chat/completions" {
+		t.Errorf("request path = %q, want /v1//chat/completions", path)
+	}
+
+	cfg, err := NewRealtimeModelLive(New(Config{APIKey: "k", BaseURL: "https://h.example/v1//"}), "m").GetServerWebSocketConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.URL != "wss://h.example/v1//live/sessions" {
+		t.Errorf("live URL = %q, want wss://h.example/v1//live/sessions", cfg.URL)
+	}
+}
