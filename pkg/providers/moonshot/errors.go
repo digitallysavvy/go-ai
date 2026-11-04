@@ -19,6 +19,27 @@ type moonshotErrorPayload struct {
 	Message string `json:"message"`
 	Type    string `json:"type,omitempty"`
 	Code    string `json:"code,omitempty"`
+
+	// hasCode reports a present, non-null code (TS `error.code ?? undefined`
+	// keeps an empty string).
+	hasCode bool
+}
+
+// UnmarshalJSON decodes the payload and records whether code was present
+// and not null.
+func (p *moonshotErrorPayload) UnmarshalJSON(b []byte) error {
+	type plain moonshotErrorPayload
+	var v plain
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	var w struct {
+		Code json.RawMessage `json:"code"`
+	}
+	_ = json.Unmarshal(b, &w)
+	v.hasCode = len(w.Code) > 0 && string(w.Code) != "null"
+	*p = moonshotErrorPayload(v)
+	return nil
 }
 
 // parseMoonshotProviderError extracts a Moonshot {error:{message,type,code}}
@@ -105,12 +126,13 @@ func newMoonshotStreamProviderErrorChunk(payload moonshotErrorPayload, raw json.
 		statusPtr = &statusCode
 		retryablePtr = &isRetryable
 	}
-	// TS createMoonshotAIStreamError forwards error.code as-is (no fallback
-	// to type — that fallback belongs only to newMoonshotStreamProviderError
-	// above, which reports a single ErrorCode string with no separate type
-	// field).
+	// TS createMoonshotAIStreamError forwards `error.code ?? undefined`: an
+	// empty string is kept, null or absent is no code, and there is no
+	// fallback to type (that fallback belongs only to the HTTP
+	// parseMoonshotProviderError above, which reports a single ErrorCode
+	// string with no separate type field).
 	var code interface{}
-	if payload.Code != "" {
+	if payload.hasCode || payload.Code != "" {
 		code = payload.Code
 	}
 	return providererrors.NewStreamProviderError(payload.Message, "moonshot", payload.Type, code, statusPtr, retryablePtr, data)
