@@ -81,7 +81,7 @@ func TestMistralProviderReasoningEffortValidatedLikeTypeScript(t *testing.T) {
 	}{
 		{
 			name: "invalid enum",
-			opts: map[string]interface{}{"mistral": map[string]interface{}{"reasoningEffort": "medium"}},
+			opts: map[string]interface{}{"mistral": map[string]interface{}{"reasoningEffort": "xhigh"}},
 		},
 		{
 			name: "non string",

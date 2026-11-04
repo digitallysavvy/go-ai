@@ -55,6 +55,15 @@ var mistralModelsWithLowHighMaxReasoningEffort = map[string]bool{
 	ModelZaiGLMLatest:  true,
 }
 
+// mistralModelsWithLowMediumHighReasoningEffort mirrors
+// modelsWithLowMediumHighReasoningEffort in the TS model catalog (TS
+// 9ab42ea99a, #24350): Mistral Large 4 Chat accepts low, medium and high
+// reasoning effort and cannot disable reasoning.
+var mistralModelsWithLowMediumHighReasoningEffort = map[string]bool{
+	ModelMistralLarge4:  true,
+	ModelMistralLarge40: true,
+}
+
 // Mistral speech (text-to-speech) model IDs, mirroring MistralSpeechModelId in
 // ai/packages/mistral/src/mistral-speech-model-options.ts. Any other model ID
 // string is accepted as well.
