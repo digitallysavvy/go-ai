@@ -77,11 +77,15 @@ func decodeOutbound(data []byte) (bridge.OutboundMessage, *float64, error) {
 		if err := json.Unmarshal(data, &f); err != nil {
 			return nil, seq, err
 		}
+		f.ToolCall.markDecodedName(fields["toolCall"])
 		return f, seq, nil
 	case TypeQuestionRequest:
 		var f QuestionRequestFrame
 		if err := json.Unmarshal(data, &f); err != nil {
 			return nil, seq, err
+		}
+		if f.NativeToolCall != nil {
+			f.NativeToolCall.markDecodedName(fields["nativeToolCall"])
 		}
 		return f, seq, nil
 	case TypeQuestionResolved:
@@ -95,6 +99,7 @@ func decodeOutbound(data []byte) (bridge.OutboundMessage, *float64, error) {
 		if err := json.Unmarshal(data, &f); err != nil {
 			return nil, seq, err
 		}
+		f.ToolCall.markDecodedName(fields["toolCall"])
 		return f, seq, nil
 	}
 	return bridge.DecodeOutbound(data)

@@ -260,22 +260,14 @@ func (e *MCPEvents) Unsubscribe(ctx context.Context, ref MCPEventSubscriptionRef
 	return store.Delete(ctx, sub.Key)
 }
 
-// appendMCPEventQuery sets name=value on a raw query, replacing an existing
-// parameter of the same name and preserving the others in order.
+// appendMCPEventQuery is TS url.searchParams.set(name, value): the first
+// parameter of that name is replaced in place (later ones dropped), or the
+// pair is appended, and the whole query is re-serialized with the
+// URLSearchParams form encoding (so "a%20b" becomes "a+b" and "~" "%7E").
 func appendMCPEventQuery(rawQuery, name, value string) string {
-	var parts []string
-	for _, part := range strings.Split(rawQuery, "&") {
-		if part == "" {
-			continue
-		}
-		pname, _, _ := strings.Cut(part, "=")
-		if decoded, err := url.QueryUnescape(pname); err == nil && decoded == name {
-			continue
-		}
-		parts = append(parts, part)
-	}
-	parts = append(parts, url.QueryEscape(name)+"="+url.QueryEscape(value))
-	return strings.Join(parts, "&")
+	q := parseOrderedQuery(rawQuery)
+	q.set(name, value)
+	return q.encode()
 }
 
 func newMCPEventKey() (string, error) {

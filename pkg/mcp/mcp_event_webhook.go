@@ -111,8 +111,9 @@ func (h *mcpEventWebhook) handle(w http.ResponseWriter, r *http.Request) (int, [
 		w.Header().Set("Allow", "POST")
 		return http.StatusMethodNotAllowed, nil
 	}
-	// TS .split(';')[0].trim().toLowerCase(): JS trim.
-	if strings.ToLower(providerutils.JSTrim(strings.Split(r.Header.Get("Content-Type"), ";")[0])) != "application/json" {
+	// TS request.headers.get(...) (repeated lines joined, each byte one
+	// character; FetchHeaderText) .split(';')[0].trim().toLowerCase(): JS trim.
+	if strings.ToLower(providerutils.JSTrim(strings.Split(providerutils.FetchHeaderText(r.Header, "Content-Type"), ";")[0])) != "application/json" {
 		return http.StatusUnsupportedMediaType, nil
 	}
 	if r.ContentLength > mcpEventMaxBodyBytes {
@@ -121,7 +122,7 @@ func (h *mcpEventWebhook) handle(w http.ResponseWriter, r *http.Request) (int, [
 
 	ctx := r.Context()
 	key := r.URL.Query().Get(MCPEventCallbackKey)
-	id := r.Header.Get("X-MCP-Subscription-Id")
+	id := providerutils.FetchHeaderText(r.Header, "X-MCP-Subscription-Id")
 	if key == "" || id == "" {
 		return http.StatusUnauthorized, nil
 	}
@@ -205,7 +206,7 @@ func (h *mcpEventWebhook) handle(w http.ResponseWriter, r *http.Request) (int, [
 	}
 
 	if isControl {
-		messageID := r.Header.Get("webhook-id")
+		messageID := providerutils.FetchHeaderText(r.Header, "webhook-id")
 		if gap != nil {
 			if h.opts.OnGap != nil {
 				if err := h.opts.OnGap(ctx, MCPEventWebhookGapArgs{Subscription: info, MessageID: messageID, Gap: *gap}); err != nil {
@@ -244,7 +245,7 @@ func (h *mcpEventWebhook) handle(w http.ResponseWriter, r *http.Request) (int, [
 	var event MCPEvent
 	if err := json.Unmarshal(body, &event); err != nil ||
 		event.Name != sub.Name ||
-		event.EventID != r.Header.Get("webhook-id") {
+		event.EventID != providerutils.FetchHeaderText(r.Header, "webhook-id") {
 		return http.StatusBadRequest, nil
 	}
 	if h.opts.ValidatePayload != nil {

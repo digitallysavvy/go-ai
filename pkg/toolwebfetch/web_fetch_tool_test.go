@@ -586,11 +586,21 @@ func TestRedirects(t *testing.T) {
 		}
 	})
 	t.Run("blocks redirects to private addresses", func(t *testing.T) {
-		for _, target := range []string{"http://169.254.169.254/", "http://localhost/", "http://metadata.internal/", "http://[::1]/", "http://ｌｏｃａｌｈｏｓｔ/", "http://metadata.google.ｉｎｔｅｒｎａｌ/", "http://%6c%6f%63%61%6c%68%6f%73%74/"} {
+		for _, target := range []string{"http://169.254.169.254/", "http://localhost/", "http://metadata.internal/", "http://[::1]/", "http://%6c%6f%63%61%6c%68%6f%73%74/"} {
 			ft := fixed(307, "", "Location", target)
 			errOut(t, run(t, newTool(t, Options{Transport: ft}), "https://example.com/", 0), "url_not_allowed")
 			if ft.count() != 1 {
 				t.Fatalf("%s: requests = %d, want 1 (the target must not be requested)", target, ft.count())
+			}
+		}
+		// A Location header is read byte by byte (TS headers.get), so the
+		// UTF-8 bytes of a fullwidth host read as Latin-1 and new URL throws
+		// (node: Invalid URL): a network_error, the target never requested.
+		for _, target := range []string{"http://ｌｏｃａｌｈｏｓｔ/", "http://metadata.google.ｉｎｔｅｒｎａｌ/"} {
+			ft := fixed(307, "", "Location", target)
+			e := errOut(t, run(t, newTool(t, Options{Transport: ft}), "https://example.com/", 0), "network_error")
+			if e.Message != "The server returned an invalid redirect location." || ft.count() != 1 {
+				t.Fatalf("%s: message %q, requests = %d, want the invalid-location error and 1 request", target, e.Message, ft.count())
 			}
 		}
 	})

@@ -141,7 +141,10 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, newProdiaProviderError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 
-	contentType := resp.Headers.Get("Content-Type")
+	// TS response.headers.get('content-type') ?? '': repeated lines joined,
+	// each byte one character (the boundary is then UTF-8 encoded, as TS
+	// TextEncoder does).
+	contentType := providerutils.FetchHeaderText(resp.Headers, "Content-Type")
 	jobResp, imageData, mimeType, err := parseMultipartResponseFor(contentType, resp.Body, "image/")
 	if err != nil {
 		return nil, err

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -20,6 +19,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 )
 
 // Native OpenCode subscription auth. Mirrors TS opencode-subscription.ts.
@@ -602,25 +602,25 @@ func resolveOpenCodeSubscriptionRequestURL(authentication *Subscription) string 
 	return ""
 }
 
-// normalizeDomain mirrors TS `normalizeDomain`.
+// normalizeDomain mirrors TS `normalizeDomain`: the WHATWG URL host
+// (`new URL(...).host`, with IDNA, IPv4 forms and default ports as Node),
+// else the value without one leading http(s):// and its trailing slashes.
 func normalizeDomain(value string) string {
 	target := value
 	if !strings.Contains(value, "://") {
 		target = "https://" + value
 	}
-	if u, err := url.Parse(target); err == nil && u.Host != "" {
-		// WHATWG URL.host: lowercase hostname, default port dropped.
-		host := strings.ToLower(u.Hostname())
-		if strings.Contains(u.Host, ":") && strings.HasPrefix(u.Host, "[") {
-			host = "[" + host + "]"
+	if u, err := urlnorm.Parse(target); err == nil {
+		if u.Port >= 0 {
+			return u.Host + ":" + strconv.Itoa(u.Port)
 		}
-		if port := u.Port(); port != "" && (port != "443" || u.Scheme != "https") && (port != "80" || u.Scheme != "http") {
-			host += ":" + port
-		}
-		return host
+		return u.Host
 	}
-	v := strings.TrimPrefix(value, "https://")
-	v = strings.TrimPrefix(v, "http://")
+	// TS value.replace(/^https?:\/\//, '').replace(/\/+$/, ''): one prefix.
+	v, ok := strings.CutPrefix(value, "https://")
+	if !ok {
+		v = strings.TrimPrefix(value, "http://")
+	}
 	return strings.TrimRight(v, "/")
 }
 

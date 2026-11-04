@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 const maxOAuthDiscoveryRedirects = 10
@@ -126,7 +127,10 @@ func oauthMetadataGETOnce(ctx context.Context, client *http.Client, endpoint, pr
 			return nil, &oauthFetchFailure{err: err}
 		}
 
-		location := resp.Header.Get("Location")
+		// TS fetchWithValidatedRedirects reads response.headers.get('location')
+		// from a redirect: 'manual' hop: repeated lines joined with ", ", each
+		// byte one character (raw UTF-8 reads as Latin-1 before new URL).
+		location := providerutils.FetchHeaderText(resp.Header, "Location")
 		if !isFetchRedirectStatus(resp.StatusCode) || location == "" {
 			return resp, nil
 		}

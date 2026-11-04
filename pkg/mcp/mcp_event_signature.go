@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // mcpEventNow is the clock used for webhook timestamp tolerance checks;
@@ -61,9 +63,12 @@ func decodeMCPEventSignatureValue(value string) ([]byte, bool) {
 // five minute timestamp tolerance. Multiple space-separated signatures
 // support secret rotation; a malformed signature never hides a valid one.
 func verifyMCPEventSignature(headers http.Header, body []byte, secret string) (bool, error) {
-	id := headers.Get("webhook-id")
-	timestamp := headers.Get("webhook-timestamp")
-	signatures := headers.Get("webhook-signature")
+	// TS headers.get(...): repeated lines joined with ", " (a rotation
+	// signature on a later line still counts), each byte one character (the
+	// signed prefix is the UTF-8 of that text, TS TextEncoder).
+	id := providerutils.FetchHeaderText(headers, "webhook-id")
+	timestamp := providerutils.FetchHeaderText(headers, "webhook-timestamp")
+	signatures := providerutils.FetchHeaderText(headers, "webhook-signature")
 	if id == "" || timestamp == "" || signatures == "" || !mcpEventDigits.MatchString(timestamp) {
 		return false, nil
 	}

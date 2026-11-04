@@ -16,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ProdiaVideoModel implements the provider.VideoModelV3 interface for the
@@ -158,11 +159,12 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 		return nil, reqErr
 	}
 
-	// TS response.headers.get('content-type') ?? '': without a boundary
-	// in the header the response fails (the body is not sniffed).
+	// TS response.headers.get('content-type') ?? '' (repeated lines joined,
+	// each byte one character): without a boundary in the header the
+	// response fails (the body is not sniffed).
 	respCT := ""
 	if respHeaders != nil {
-		respCT = respHeaders.Get("Content-Type")
+		respCT = providerutils.FetchHeaderText(respHeaders, "Content-Type")
 	}
 
 	jobResp, videoData, videoMIME, err := parseMultipartResponse(respCT, respBodyBytes)
@@ -179,13 +181,8 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 		videoMIME = "video/mp4"
 	}
 
-	// Convert response headers to the flat map expected by VideoModelV3ResponseInfo.
-	headerMap := make(map[string]string)
-	for k, vals := range respHeaders {
-		if len(vals) > 0 {
-			headerMap[k] = vals[0]
-		}
-	}
+	// TS response.headers.forEach: repeated lines joined with ", ".
+	headerMap := providerutils.ExtractHeaders(respHeaders)
 
 	return &provider.VideoModelV3Response{
 		Videos: []provider.VideoModelV3VideoData{

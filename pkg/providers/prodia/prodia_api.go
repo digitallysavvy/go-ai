@@ -136,9 +136,11 @@ func parseMultipartResponseFor(contentType string, body []byte, fallbackPrefix s
 	return jobResp, outputData, outputMIME, nil
 }
 
-// prodiaBoundaryPattern is TS /boundary=([^\s;]+)/ (JS \s for the ASCII
-// range, which includes \v; a quoted boundary keeps its quotes, as in TS).
-var prodiaBoundaryPattern = regexp.MustCompile(`boundary=([^\t\n\v\f\r ;]+)`)
+// prodiaBoundaryPattern is TS /boundary=([^\s;]+)/ with JS \s (a quoted
+// boundary keeps its quotes, as in TS). The callers pass the Content-Type as
+// TS reads it (providerutils.FetchHeaderText), so a raw 0xA0 ends the
+// boundary.
+var prodiaBoundaryPattern = regexp.MustCompile(`boundary=([^` + providerutils.JSRegexpSpaceChars + `;]+)`)
 
 // prodiaMultipartBoundary extracts the boundary like TS
 // contentType.match(/boundary=([^\s;]+)/).

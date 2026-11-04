@@ -256,14 +256,10 @@ func toStoreMode(v string) string {
 	return ""
 }
 
-// jsWS is JavaScript's `\s` (Go's is ASCII-only) and jsDot its `.` (excludes
-// all four line terminators), so the TS regex matches the same lines.
-const (
-	jsWS  = `[\t\n\v\f\r \x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]`
-	jsDot = `[^\n\r\x{2028}\x{2029}]`
-)
-
-var storeModeLine = regexp.MustCompile(`^` + jsWS + `*cli_auth_credentials_store` + jsWS + `*=` + jsWS + `*["'](file|keyring|auto|ephemeral)["']` + jsWS + `*(?:#` + jsDot + `*)?$`)
+// storeModeLine is the TS regex with JS `\s` and `.` (Go's `\s` is ASCII
+// only and its `.` matches \r, U+2028 and U+2029), so it matches the same
+// lines.
+var storeModeLine = regexp.MustCompile(`^` + providerutils.JSRegexpSpace + `*cli_auth_credentials_store` + providerutils.JSRegexpSpace + `*=` + providerutils.JSRegexpSpace + `*["'](file|keyring|auto|ephemeral)["']` + providerutils.JSRegexpSpace + `*(?:#` + providerutils.JSRegexpDot + `*)?$`)
 
 // readStoreModeFromConfig reads `cli_auth_credentials_store` from the
 // top-level of `$CODEX_HOME/config.toml` (scanning stops at the first table

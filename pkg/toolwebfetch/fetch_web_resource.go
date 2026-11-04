@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	providerrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 const maxRedirects = 5
@@ -136,7 +137,9 @@ func fetchWebResource(ctx context.Context, rawURL string, headers map[string]str
 			return fetchResult{errCode: errNetwork, message: fmt.Sprintf("The request failed%s.", formatErrno(err))}, nil
 		}
 
-		location := resp.Header.Get("Location")
+		// TS response.headers.get(...): repeated lines joined with ", ", each
+		// byte one character (a raw UTF-8 Location reads as Latin-1, as in TS).
+		location := providerutils.FetchHeaderText(resp.Header, "Location")
 		if isRedirectStatus(resp.StatusCode) && location != "" {
 			drainAndClose(resp)
 			next, ok := resolveRedirect(currentURL, location)
@@ -156,7 +159,7 @@ func fetchWebResource(ctx context.Context, rawURL string, headers map[string]str
 				message += " " + text
 			}
 			message += "."
-			if resp.Header.Get("Cf-Mitigated") == "challenge" {
+			if providerutils.FetchHeaderValue(resp.Header, "Cf-Mitigated") == "challenge" {
 				message = fmt.Sprintf("The request was blocked by bot protection (HTTP %d).", resp.StatusCode)
 			}
 			return fetchResult{errCode: errHTTP, message: message, statusCode: resp.StatusCode}, nil
@@ -174,7 +177,7 @@ func fetchWebResource(ctx context.Context, rawURL string, headers map[string]str
 			}
 			return fetchResult{errCode: errNetwork, message: fmt.Sprintf("Reading the response failed%s.", formatErrno(err))}, nil
 		}
-		return fetchResult{finalURL: current, contentType: resp.Header.Get("Content-Type"), body: body}, nil
+		return fetchResult{finalURL: current, contentType: providerutils.FetchHeaderText(resp.Header, "Content-Type"), body: body}, nil
 	}
 	return fetchResult{errCode: errTooManyRedirects, message: fmt.Sprintf("The URL exceeded the maximum of %d redirects.", maxRedirects)}, nil
 }

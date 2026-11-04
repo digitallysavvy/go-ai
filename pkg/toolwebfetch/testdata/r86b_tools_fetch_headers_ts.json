@@ -1,0 +1,130 @@
+{
+ "source": "node v24.20.0 fetch (redirect: manual) against a raw TCP response; TS 30548ee7f9 tool-web-fetch/src/content-type.ts (imported), fetch-web-resource.ts new URL(location, currentUrl) / cf-mitigated",
+ "cases": [
+  {
+   "name": "nbsp before charset",
+   "raw": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IHRleHQvcGxhaW47oGNoYXJzZXQ9d2luZG93cy0xMjUyDQpDb250ZW50LUxlbmd0aDogNA0KQ29ubmVjdGlvbjogY2xvc2UNCg0KY2Fm6Q==",
+   "ts": {
+    "contentType": "text/plain; charset=windows-1252",
+    "mediaType": "text/plain",
+    "kind": "text",
+    "text": "café"
+   }
+  },
+  {
+   "name": "nbsp around media type",
+   "raw": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IKB0ZXh0L2h0bWygDQpDb250ZW50LUxlbmd0aDogOQ0KQ29ubmVjdGlvbjogY2xvc2UNCg0KPHA+aGk8L3A+",
+   "ts": {
+    "contentType": " text/html ",
+    "mediaType": "text/html",
+    "kind": "html",
+    "text": "<p>hi</p>"
+   }
+  },
+  {
+   "name": "repeated content-type lines",
+   "raw": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IHRleHQvaHRtbA0KQ29udGVudC1UeXBlOiB0ZXh0L3BsYWluDQpDb250ZW50LUxlbmd0aDogOQ0KQ29ubmVjdGlvbjogY2xvc2UNCg0KPHA+aGk8L3A+",
+   "ts": {
+    "contentType": "text/html, text/plain",
+    "mediaType": "text/html, text/plain",
+    "kind": "text",
+    "text": "<p>hi</p>"
+   }
+  },
+  {
+   "name": "nbsp after charset value",
+   "raw": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IHRleHQvcGxhaW47IGNoYXJzZXQ9d2luZG93cy0xMjUyoA0KQ29udGVudC1MZW5ndGg6IDENCkNvbm5lY3Rpb246IGNsb3NlDQoNCuk=",
+   "ts": {
+    "contentType": "text/plain; charset=windows-1252 ",
+    "mediaType": "text/plain",
+    "kind": "text",
+    "text": "é"
+   }
+  },
+  {
+   "name": "meta charset after nbsp",
+   "raw": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IHRleHQvaHRtbA0KQ29udGVudC1MZW5ndGg6IDcxDQpDb25uZWN0aW9uOiBjbG9zZQ0KDQo8aHRtbD48aGVhZD48bWV0YSBjaGFyc2V0PaB3aW5kb3dzLTEyNTI+PC9oZWFkPjxib2R5PmNhZuk8L2JvZHk+PC9odG1sPg==",
+   "ts": {
+    "contentType": "text/html",
+    "mediaType": "text/html",
+    "kind": "html",
+    "text": "<html><head><meta charset= windows-1252></head><body>café</body></html>"
+   }
+  },
+  {
+   "name": "latin-1 media type",
+   "raw": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IHRleHQvY2Fm6Q0KQ29udGVudC1MZW5ndGg6IDENCkNvbm5lY3Rpb246IGNsb3NlDQoNCng=",
+   "ts": {
+    "contentType": "text/café",
+    "mediaType": "text/café",
+    "kind": "text",
+    "text": "x"
+   }
+  },
+  {
+   "name": "raw utf-8 media type",
+   "raw": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IHRleHQvY2Fmw6kNCkNvbnRlbnQtTGVuZ3RoOiAxDQpDb25uZWN0aW9uOiBjbG9zZQ0KDQp4",
+   "ts": {
+    "contentType": "text/cafÃ©",
+    "mediaType": "text/cafã©",
+    "kind": "text",
+    "text": "x"
+   }
+  },
+  {
+   "name": "NEL after charset value",
+   "raw": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IHRleHQvcGxhaW47IGNoYXJzZXQ9d2luZG93cy0xMjUyhQ0KQ29udGVudC1MZW5ndGg6IDENCkNvbm5lY3Rpb246IGNsb3NlDQoNCuk=",
+   "ts": {
+    "contentType": "text/plain; charset=windows-1252",
+    "mediaType": "text/plain",
+    "kind": "text",
+    "text": "�"
+   }
+  },
+  {
+   "name": "ascii baseline",
+   "raw": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IFRFWFQvUExBSU47IENIQVJTRVQ9SVNPLTg4NTktMg0KQ29udGVudC1MZW5ndGg6IDENCkNvbm5lY3Rpb246IGNsb3NlDQoNCrE=",
+   "ts": {
+    "contentType": "TEXT/PLAIN; CHARSET=ISO-8859-2",
+    "mediaType": "text/plain",
+    "kind": "text",
+    "text": "ą"
+   }
+  },
+  {
+   "name": "raw utf-8 location",
+   "raw": "SFRUUC8xLjEgMzAyIEZvdW5kDQpMb2NhdGlvbjogL2NhZsOpDQpDb250ZW50LUxlbmd0aDogMA0KQ29ubmVjdGlvbjogY2xvc2UNCg0K",
+   "ts": {
+    "location": "https://example.com/caf%C3%83%C2%A9"
+   }
+  },
+  {
+   "name": "repeated location lines",
+   "raw": "SFRUUC8xLjEgMzAyIEZvdW5kDQpMb2NhdGlvbjogL2ENCkxvY2F0aW9uOiAvYg0KQ29udGVudC1MZW5ndGg6IDANCkNvbm5lY3Rpb246IGNsb3NlDQoNCg==",
+   "ts": {
+    "location": "https://example.com/a,%20/b"
+   }
+  },
+  {
+   "name": "nbsp in location",
+   "raw": "SFRUUC8xLjEgMzAyIEZvdW5kDQpMb2NhdGlvbjogL2GgYg0KQ29udGVudC1MZW5ndGg6IDANCkNvbm5lY3Rpb246IGNsb3NlDQoNCg==",
+   "ts": {
+    "location": "https://example.com/a%C2%A0b"
+   }
+  },
+  {
+   "name": "repeated cf-mitigated",
+   "raw": "SFRUUC8xLjEgNDAzIEZvcmJpZGRlbg0KQ2YtTWl0aWdhdGVkOiBjaGFsbGVuZ2UNCkNmLU1pdGlnYXRlZDogY2hhbGxlbmdlDQpDb250ZW50LUxlbmd0aDogMA0KQ29ubmVjdGlvbjogY2xvc2UNCg0K",
+   "ts": {
+    "challenged": false
+   }
+  },
+  {
+   "name": "cf-mitigated",
+   "raw": "SFRUUC8xLjEgNDAzIEZvcmJpZGRlbg0KQ2YtTWl0aWdhdGVkOiBjaGFsbGVuZ2UNCkNvbnRlbnQtTGVuZ3RoOiAwDQpDb25uZWN0aW9uOiBjbG9zZQ0KDQo=",
+   "ts": {
+    "challenged": true
+   }
+  }
+ ]
+}

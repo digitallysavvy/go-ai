@@ -1,5 +1,7 @@
 package acp
 
+import "encoding/json"
+
 // ToolKind is a broad ACP tool capability category. Mirrors TS `ACPToolKind`.
 type ToolKind string
 
@@ -44,4 +46,34 @@ type ToolCall struct {
 	// metadata (e.g. Grok Build's `x.ai/tool` namespace) rather than raw
 	// input shape.
 	Meta map[string]any `json:"_meta,omitempty"`
+
+	// nameSet records a non-null `name` key in the bridge frame the tool
+	// call was decoded from, so HasName can tell
+	// `name: ""` from an absent name (TS `toolCall.name != null`).
+	nameSet bool
+}
+
+// HasName reports whether the tool call carries a programmatic name: TS
+// `toolCall.name != null`. A tool call decoded from a bridge frame has one
+// when the frame held a non-null `name`, an empty string included; any other
+// ToolCall has one when Name is not empty.
+func (tc ToolCall) HasName() bool {
+	return tc.nameSet || tc.Name != ""
+}
+
+// markDecodedName records, for a tool call decoded from raw (a bridge
+// frame's toolCall object), whether its last exact `name` key is present and
+// not null, as TS JSON.parse sees it. Without one, Name is cleared:
+// encoding/json also fills it from a "Name" key and keeps an earlier value
+// over a later null, which TS would not see.
+func (tc *ToolCall) markDecodedName(raw json.RawMessage) {
+	var keys map[string]json.RawMessage
+	if json.Unmarshal(raw, &keys) != nil {
+		return
+	}
+	name, ok := keys["name"]
+	tc.nameSet = ok && string(name) != "null"
+	if !tc.nameSet {
+		tc.Name = ""
+	}
 }
