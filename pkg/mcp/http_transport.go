@@ -795,7 +795,9 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		// before the retry, so the retried request carries a session id the
 		// 401 assigned. It is a no-op for the modern (2026-07-28) protocol era.
 		if !t.isModernProtocol() {
-			if sessionID := resp.Header.Get("mcp-session-id"); sessionID != "" {
+			// TS response.headers.get: repeated lines joined with ", ", the
+			// bytes echoed back unchanged.
+			if sessionID := providerutils.FetchHeaderValue(resp.Header, "mcp-session-id"); sessionID != "" {
 				t.setSessionID(sessionID)
 			}
 		}
@@ -905,7 +907,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 	// is parsed, text/event-stream is handed to a reader, and anything else
 	// (including a missing content-type) is an "Unexpected content type"
 	// error, reported via OnError and returned.
-	contentType := resp.Header.Get("content-type")
+	contentType := providerutils.FetchHeaderValue(resp.Header, "content-type")
 	switch {
 	case strings.Contains(contentType, "application/json"):
 		var body []byte
@@ -1390,7 +1392,7 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 	}
 	// TS applySessionIdFromResponse is a no-op for the modern protocol era,
 	// which a SetProtocolVersion can switch to while this GET is in flight.
-	if sessionID := resp.Header.Get("mcp-session-id"); sessionID != "" && !t.isModernProtocol() {
+	if sessionID := providerutils.FetchHeaderValue(resp.Header, "mcp-session-id"); sessionID != "" && !t.isModernProtocol() {
 		t.setSessionIDVia(sessionID, t.bg.callback)
 	}
 

@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ValidateOAuthState compares the state parameter returned in an OAuth callback
@@ -213,9 +215,11 @@ func ExtractWWWAuthenticateParams(resp *http.Response) WWWAuthenticateParams {
 	if resp == nil {
 		return WWWAuthenticateParams{}
 	}
-	// Fetch's Headers.get joins repeated header lines with ", "; a challenge
-	// parameter on a later line is found just like one on the first.
-	header := strings.Join(resp.Header.Values("WWW-Authenticate"), ", ")
+	// Fetch's Headers.get joins repeated header lines with ", " (a challenge
+	// parameter on a later line is found just like one on the first) and
+	// reads each byte as one character: a raw 0xA0 is a JS \s, and raw
+	// UTF-8 in a scope or URL reads as Latin-1, as in TS.
+	header := providerutils.FetchHeaderText(resp.Header, "WWW-Authenticate")
 	if header == "" {
 		return WWWAuthenticateParams{}
 	}
@@ -241,9 +245,11 @@ func ExtractWWWAuthenticateParams(resp *http.Response) WWWAuthenticateParams {
 // extractWWWAuthenticateParams.
 func extractQuotedChallengeParam(header, key string) string {
 	// TS: header.match(/(?:^|[,\s])key="([^"]*)"/i): the name must start the
-	// header or follow a comma or whitespace (not be the tail of another
-	// name), and matches case-insensitively.
-	re := regexp.MustCompile(`(?i)(?:^|[,\s])` + regexp.QuoteMeta(key) + `="([^"]*)"`)
+	// header or follow a comma or JS whitespace (not be the tail of another
+	// name), and matches case-insensitively. The header holds only runes up
+	// to U+00FF (FetchHeaderText), so Go's (?i) fold of s to U+017F cannot
+	// apply.
+	re := regexp.MustCompile(`(?i)(?:^|[,` + providerutils.JSRegexpSpaceChars + `])` + regexp.QuoteMeta(key) + `="([^"]*)"`)
 	if m := re.FindStringSubmatch(header); m != nil {
 		return m[1]
 	}
