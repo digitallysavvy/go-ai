@@ -246,6 +246,217 @@ function stmtEnd(s, j) {
 }
 // --asserts only: a one-line declaration's slice keeps its trailing ';'
 function trimSemi(s) { return wantAsserts ? s.replace(/;\s*$/, '') : s; }
+// --asserts: jsProgram builds, for one assertion, a JS program the Go
+// evaluator runs (in QuickJS) when it cannot evaluate the expression itself:
+// `async (__result) => { ... }` over the replayed result (Go binds `result`,
+// `server`, the function-level roots and the stubs `expect` and
+// `convertReadableStreamToArray`). It holds the test's statements up to the
+// assertion: declarations before the model (or function) call evaluated
+// leniently (one that throws is undefined), the call's declaration bound to
+// __result, every later statement verbatim; then `return (EXPR)`. The
+// module and describe consts and top-level functions it names come along as
+// source. The TypeScript is transpiled with the checkout's `typescript`.
+// null when the assertion is not a top-level statement of the test, the call
+// is not a plain declaration, or anything fails to transpile.
+const jsProgramRuntimeNames = new Set(['result', 'server', '__result', 'expect', 'convertReadableStreamToArray', 'undefined', 'NaN', 'Infinity']);
+let tsLib = null;
+if (wantAsserts) {
+  try { tsLib = nodeModule.createRequire(path.join(process.cwd(), 'x.js'))('typescript'); } catch (e) { tsLib = null; }
+}
+const ctxBuiltinNames = new Set(Object.getOwnPropertyNames(ctx));
+let jsScopedDecls = [];
+let jsTopConst = null;
+function jsTopConstSrc() {
+  if (jsTopConst) return jsTopConst;
+  jsTopConst = Object.create(null);
+  for (const m of src.matchAll(/^(?:export )?(?:const|let) (\w+)(?::[^=]+)?\s*=\s+/gm)) {
+    const se = stmtEnd(src, m.index + m[0].length);
+    if (se > 0) jsTopConst[m[1]] = src.slice(m.index + m[0].length, se);
+  }
+  return jsTopConst;
+}
+const topFnSrc = Object.create(null);
+for (const m of src.matchAll(/^(?:export )?(?:async )?function\s*\*?\s*(\w+)\s*[(<]/gm)) {
+  const open = src.indexOf('{', balanced(src, src.indexOf('(', m.index + m[0].length - 1)));
+  const end = open > 0 ? balanced(src, open) : -1;
+  if (end > 0) topFnSrc[m[1]] = src.slice(m.index, end).replace(/^export /, '');
+}
+function jsValueSrc(v, seen = new Set()) {
+  if (v === undefined) return 'undefined';
+  if (v === null || typeof v === 'boolean' || typeof v === 'string') return JSON.stringify(v);
+  if (typeof v === 'number') return Number.isFinite(v) ? String(v) : (Number.isNaN(v) ? 'NaN' : (v > 0 ? 'Infinity' : '-Infinity'));
+  if (typeof v === 'bigint') return v + 'n';
+  if (typeof v === 'function') { const fs2 = String(v); if (/\[native code\]/.test(fs2)) throw new Error('native'); return '(' + fs2 + ')'; }
+  if (seen.has(v)) throw new Error('cycle');
+  seen.add(v);
+  const tag = Object.prototype.toString.call(v);
+  try {
+    if (tag === '[object Uint8Array]') return `new Uint8Array([${Array.from(v).join(',')}])`;
+    if (tag === '[object Date]') return `new Date(${v.getTime()})`;
+    if (tag === '[object Set]') return `new Set([${[...v].map(x => jsValueSrc(x, seen)).join(',')}])`;
+    if (tag === '[object Map]') return `new Map([${[...v].map(([a, b]) => `[${jsValueSrc(a, seen)},${jsValueSrc(b, seen)}]`).join(',')}])`;
+    if (Array.isArray(v)) return '[' + v.map(x => jsValueSrc(x, seen)).join(',') + ']';
+    if (tag === '[object URL]') return `new URL(${JSON.stringify(v.href)})`;
+    if (tag === '[object RegExp]') return String(v);
+    if (tag === '[object Object]') return '{' + Object.keys(v).map(k => JSON.stringify(k) + ':' + jsValueSrc(v[k], seen)).join(',') + '}';
+  } finally { seen.delete(v); }
+  throw new Error('unsupported value ' + tag);
+}
+function jsIdents(text) { return new Set(text.match(/(?<![\w$.])[A-Za-z_$][\w$]*/g) || []); }
+// unwrap await, parens, `as` / `satisfies` casts and non-null assertions
+function jsUnwrap(n) {
+  for (;;) {
+    if (tsLib.isAwaitExpression(n) || tsLib.isParenthesizedExpression(n) || tsLib.isAsExpression(n) || tsLib.isNonNullExpression(n) || (tsLib.isSatisfiesExpression && tsLib.isSatisfiesExpression(n))) n = n.expression;
+    else return n;
+  }
+}
+const jsTestCache = new Map();
+function jsTestStatements(body0) {
+  if (jsTestCache.has(body0)) return jsTestCache.get(body0);
+  let stmts = null;
+  try {
+    const sf = tsLib.createSourceFile('t.ts', body0, tsLib.ScriptTarget.Latest, true);
+    const st = sf.statements[0];
+    if (st && tsLib.isExpressionStatement(st) && tsLib.isCallExpression(st.expression)) {
+      const fnArg = [...st.expression.arguments].reverse().find(a => (tsLib.isArrowFunction(a) || tsLib.isFunctionExpression(a)) && tsLib.isBlock(a.body));
+      if (fnArg) stmts = [...fnArg.body.statements];
+    }
+  } catch (e) { stmts = null; }
+  jsTestCache.set(body0, stmts);
+  return stmts;
+}
+function jsProgram(body0, off, callRe, exprStart, exprEnd) {
+  const r = jsProgram0(body0, off, callRe, exprStart, exprEnd);
+  if (typeof r === 'string' && !r.startsWith('async')) { if (process.env.TSFIXTURE_JS_DEBUG) console.error('js:', r, JSON.stringify(body0.slice(off, off + 60))); return null; }
+  return r;
+}
+function jsProgram0(body0, off, callRe, exprStart, exprEnd) {
+  if (!tsLib) return 'no typescript';
+  const stmts = jsTestStatements(body0);
+  if (!stmts) return 'no statements';
+  const si = stmts.findIndex(st => st.getStart() <= off && off < st.getEnd());
+  if (si < 0) return 'not a top-level statement';
+  const sst = stmts[si];
+  const isExpectStmt = st => tsLib.isExpressionStatement(st) && (st.getStart() === off || /^await\s+$/.test(body0.slice(st.getStart(), off)));
+  // an assertion inside a loop, a branch or a callback (`for (...) {
+  // expect(x).toBe(1); }`): the enclosing statement runs with that
+  // expectation replaced by collecting its value, and the program returns
+  // {__each: [values]} (the matcher must hold for each)
+  let eachStmt = null;
+  if (!isExpectStmt(sst)) {
+    const find = n => {
+      if (n.getStart() > off || n.getEnd() <= off) return null;
+      if (n !== sst && isExpectStmt(n)) return n;
+      let hit = null;
+      tsLib.forEachChild(n, ch => { if (!hit) hit = find(ch); });
+      return hit;
+    };
+    eachStmt = find(sst);
+    if (!eachStmt) return 'nested or not an expect statement';
+  }
+  let ci = -1;
+  for (let k = 0; k < si; k++) if (callRe.test(stmts[k].getText())) { ci = k; break; }
+  const parts = [];
+  // Values that come from the Go replay: the result (and what the call's
+  // declaration binds), the test server, and the identifiers the call takes
+  // as arguments (the Go call's own inputs and out-parameters, which Go may
+  // pass back as roots; a TS declaration of them must not stand in for Go's).
+  const tainted = new Set(['result', 'server', '__result']);
+  let callArgIdents = new Set();
+  if (ci >= 0) {
+    const callText = stmts[ci].getText();
+    const mc = callRe.exec(callText);
+    if (mc) {
+      const open = callText.indexOf('(', mc.index + mc[0].length - 1);
+      const close = balanced(callText, open);
+      if (close > 0) callArgIdents = jsIdents(callText.slice(open + 1, close - 1));
+    }
+    for (const n of callArgIdents) tainted.add(n);
+  }
+  // test-local names (fn mode evaluates them into ctx too): never injected
+  // from ctx, so a Go root of that name (an out-parameter) is what the
+  // program reads
+  const testLocal = new Set();
+  for (let k = 0; k < si; k++) {
+    const st = stmts[k];
+    if (tsLib.isVariableStatement(st)) for (const d of st.declarationList.declarations) for (const n of jsIdents(d.name.getText())) testLocal.add(n);
+  }
+  for (let k = 0; k < ci; k++) {
+    const st = stmts[k];
+    if (!tsLib.isVariableStatement(st)) continue;
+    for (const d of st.declarationList.declarations) {
+      if (!tsLib.isIdentifier(d.name) || jsProgramRuntimeNames.has(d.name.text) || callArgIdents.has(d.name.text)) continue;
+      parts.push(`let ${d.name.text}; try { ${d.name.text} = ${d.initializer ? '(' + d.initializer.getText() + ')' : 'undefined'}; } catch (__e) {}`);
+    }
+  }
+  if (ci >= 0) {
+    const st = stmts[ci];
+    if (tsLib.isVariableStatement(st)) {
+      const ds = st.declarationList.declarations;
+      if (ds.length !== 1 || !ds[0].initializer) return 'call declaration shape';
+      const init = jsUnwrap(ds[0].initializer);
+      if (!tsLib.isCallExpression(init) || !callRe.test(init.expression.getText() + '(')) return 'call initializer';
+      parts.push(`const ${ds[0].name.getText()} = __result;`);
+      for (const n of jsIdents(ds[0].name.getText())) tainted.add(n);
+    } else if (!tsLib.isExpressionStatement(st)) {
+      return 'call statement kind';
+    }
+  }
+  for (let k = ci + 1; k < si; k++) {
+    const text = stmts[k].getText();
+    parts.push(text);
+    // a statement that reads a replayed value taints what it declares or
+    // touches
+    const ids = jsIdents(text);
+    if ([...ids].some(n => tainted.has(n))) for (const n of ids) tainted.add(n);
+  }
+  const expr = body0.slice(exprStart, exprEnd).trim().replace(/,\s*$/, '');
+  let ret = `\nreturn (${expr});`;
+  if (eachStmt) {
+    const st0 = sst.getStart();
+    const text = body0.slice(st0, eachStmt.getStart()) + `__each.push((${expr}));` + body0.slice(eachStmt.getEnd(), sst.getEnd());
+    const ids = jsIdents(text);
+    if ([...ids].some(n => tainted.has(n))) for (const n of ids) tainted.add(n);
+    ret = `\nconst __each = [];\n${text}\nreturn { __each };`;
+  }
+  // an expression over the test's own literals alone says nothing about Go
+  if (![...jsIdents(expr)].some(n => tainted.has(n))) return 'independent of the replay';
+  const inner = parts.join('\n') + ret;
+  // the module / describe consts and top-level functions it names
+  const outer = [];
+  const done = new Set();
+  const declared = new Set([...inner.matchAll(/\b(?:const|let|var|function)\s+([A-Za-z_$][\w$]*)/g)].map(m => m[1]));
+  const queue = [...jsIdents(inner)].filter(n => !declared.has(n));
+  while (queue.length) {
+    const n = queue.shift();
+    if (done.has(n) || jsProgramRuntimeNames.has(n) || testLocal.has(n)) continue;
+    done.add(n);
+    let decl = null;
+    if (topFnSrc[n] !== undefined) decl = topFnSrc[n];
+    else if (!ctxBuiltinNames.has(n) && Object.prototype.hasOwnProperty.call(ctx, n) && ctx[n] !== undefined) {
+      try { decl = `const ${n} = ${jsValueSrc(ctx[n])};`; } catch (e) { decl = null; }
+    }
+    if (decl === null) {
+      // a const the extractor could not evaluate (a typed arrow function, a
+      // helper call): its TS source, innermost scope first
+      const d = [...jsScopedDecls].reverse().find(x => x.name === n);
+      const srcExpr = d ? d.expr : jsTopConstSrc()[n];
+      if (srcExpr !== undefined) decl = `let ${n}; try { ${n} = (${srcExpr.replace(/;\s*$/, '')}); } catch (__e) {}`;
+    }
+    if (decl === null) continue;
+    outer.push(decl);
+    for (const x of jsIdents(decl)) if (!done.has(x)) queue.push(x);
+  }
+  const tsSrc = `const __f = async (__result) => {\n${outer.join('\n')}\nreturn await (async () => {\n${inner}\n})();\n};`;
+  let js;
+  try {
+    js = tsLib.transpileModule(tsSrc, { reportDiagnostics: false, compilerOptions: { target: tsLib.ScriptTarget.ES2022, module: tsLib.ModuleKind.ESNext, removeComments: true } }).outputText;
+  } catch (e) { return 'transpile failed'; }
+  const mm = /^const __f = ([\s\S]*);\s*$/.exec(js.replace(/^export \{\};\s*$/m, '').replace(/^"use strict";\s*/, '').trim() + '\n');
+  if (!mm) return 'transpile output';
+  try { new vm.Script('(' + mm[1] + ')'); } catch (e) { return 'compile failed'; }
+  return mm[1];
+}
 function evalExpr(s) {
   try { return vm.runInContext('(' + stripTS(s) + ')', ctx); } catch (e) {
     // a cast inside the literal (`[...] as Array<T>,`): erase the TS syntax
@@ -510,6 +721,7 @@ function topDescribeOf(idx) {
 
 const out = [];
 for (let i = 0; i < starts.length; i++) {
+  jsScopedDecls = scopedDecls(starts[i].idx, starts[i].line.length - 2);
   const saved = {};
   for (const d of scopedDecls(starts[i].idx, starts[i].line.length - 2)) {
     if (!(d.name in saved)) saved[d.name] = ctx[d.name];
@@ -611,6 +823,21 @@ for (let i = 0; i < starts.length; i++) {
       const matcher = (rejects ? 'rejects.' : '') + mm3[1];
       if (!ok && !/toThrow/.test(matcher)) continue;
       const a2 = { expr, matcher, not, arg: ok ? arg : null };
+      if (!/toThrow/.test(matcher) && !rejects) {
+        const js = jsProgram(body0, em2.index, new RegExp('\\b' + fnName + '\\('), st + 1, e - 1);
+        if (js) a2.js = js;
+      }
+      // `obj.fnName(args)` over the test's own arguments is the test's call
+      const methodCall = new RegExp('^\\w+\\.' + fnName + '\\(').exec(expr);
+      if (methodCall && fnArgSrc && fnArgs) {
+        const open = methodCall[0].length - 1;
+        const close = balanced(expr, open);
+        const norm = x => x.replace(/\s+/g, '').replace(/,$/, '');
+        if (close > 0 && norm(expr.slice(open + 1, close - 1)) === norm(fnArgSrc.join(','))) {
+          a2.callArgs = fnArgs;
+          a2.callSuffix = expr.slice(close).replace(/[,\s]+$/, '');
+        }
+      }
       if (new RegExp('^' + fnName + '\\(').test(expr)) {
         try {
           const open = expr.indexOf('(');
@@ -644,6 +871,10 @@ for (let i = 0; i < starts.length; i++) {
         if (snap && snap.__err) continue;
         const e2 = is[1].trim().replace(/^await\s+/, '');
         const a3 = { expr: e2, matcher: 'toEqual', not: false, arg: snap };
+        {
+          const js = jsProgram(body0, is.index, new RegExp('\\b' + fnName + '\\('), is.index + 'expect('.length, is.index + 'expect('.length + is[1].length);
+          if (js) a3.js = js;
+        }
         if (new RegExp('^' + fnName + '\\(').test(e2)) {
           try { const open = e2.indexOf('('); a3.callArgs = evalArgsJSON(splitTopLevelArgs(e2.slice(open + 1, balanced(e2, open) - 1))); a3.callSuffix = e2.slice(balanced(e2, open)).replace(/[,\s]+$/, ''); } catch (err) { continue; }
         }
@@ -900,7 +1131,9 @@ for (let i = 0; i < starts.length; i++) {
     }
     // the stream parts of a doStream call (`const parts = await
     // convertReadableStreamToArray(stream)`)
-    for (const am of body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*await\s+convertReadableStreamToArray\(\s*(?:(\w+)\.)?stream\s*,?\s*\)\s*;/g)) {
+    // (also an assignment to a describe-level `let parts;` in a beforeEach)
+    for (const am of body.matchAll(/(?:(?:const|let)\s+|^\s*)(\w+)\s*=\s*await\s+convertReadableStreamToArray\(\s*(?:(\w+)\.)?stream\s*,?\s*\)\s*;/gm)) {
+      if (!/^\s*(?:const|let)/.test(am[0]) && (am[1] === 'result' || !new RegExp('\\blet\\s+' + am[1] + '\\b').test(src))) continue;
       if (!am[2] || am[2] === 'result' || aliases[am[2]] === 'result') aliases[am[1]] = 'result.stream';
     }
     {
@@ -937,7 +1170,15 @@ for (let i = 0; i < starts.length; i++) {
         try { arg = JSON.parse(JSON.stringify(evalExpr(argSrc), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (Object.prototype.toString.call(v) === '[object Set]' ? { __set: [...v] } : (v === undefined ? { __undef: true } : v)))); } catch (err) { ok = false; }
       }
       if (!ok) continue;
-      asserts.push({ expr, matcher: mm3[1], not, arg });
+      const a = { expr, matcher: mm3[1], not, arg };
+      {
+        const delta = body.length - body0.length;
+        if (em.index >= delta) {
+          const js = jsProgram(body0, em.index - delta, /\.do(?:Generate|Stream)\(/, st + 1 - delta, e - 1 - delta);
+          if (js) a.js = js;
+        }
+      }
+      asserts.push(a);
     }
   }
   for (const n of Object.keys(saved)) { if (saved[n] === undefined) delete ctx[n]; else ctx[n] = saved[n]; }

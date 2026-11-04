@@ -99,10 +99,20 @@ func TestTSCasesConvertMessages(t *testing.T) {
 			}
 			_, onWarning = o["onWarning"]
 		}
-		_ = onWarning
 		out, err := prompt.ConvertToGoogleMessages(msgs, opts)
 		if err != nil {
 			return nil, nil, err
+		}
+		extra := map[string]interface{}{"warnings": out.Warnings}
+		if onWarning {
+			// TS calls options.onWarning once per warning it emits (the one
+			// call site is the skip-thought-signature sentinel warning);
+			// Go returns the same warnings.
+			var calls [][]interface{}
+			for _, w := range tsfixture.WarningsToTS(out.Warnings) {
+				calls = append(calls, []interface{}{w})
+			}
+			extra["onWarning"] = tsfixture.SpyRoot(calls...)
 		}
 		contents := out.Contents
 		if contents == nil {
@@ -112,7 +122,7 @@ func TestTSCasesConvertMessages(t *testing.T) {
 		if out.SystemInstruction != nil {
 			res["systemInstruction"] = out.SystemInstruction
 		}
-		return res, map[string]interface{}{"warnings": out.Warnings}, nil
+		return res, extra, nil
 	}, map[string]string{
 		"should serialize JSON Schema references in function response content":     "tool result JSON arrives as a Go map, which has no key order",
 		"should handle circular references in tool-result without recursion error": "a JS object cycle has no Go counterpart (encoding/json rejects pointer cycles); the case file cannot carry the cycle",
