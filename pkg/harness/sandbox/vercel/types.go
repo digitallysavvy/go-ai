@@ -182,8 +182,10 @@ type runCommandRequest struct {
 	Env     map[string]string `json:"env,omitempty"`
 	Sudo    bool              `json:"sudo,omitempty"`
 	Wait    bool              `json:"wait,omitempty"`
-	Logs    bool              `json:"logs,omitempty"`
-	Timeout int64             `json:"timeout,omitempty"`
+	// AttachStdin is TS `attachStdin: params.attachStdin || undefined`.
+	AttachStdin bool  `json:"attachStdin,omitempty"`
+	Logs        bool  `json:"logs,omitempty"`
+	Timeout     int64 `json:"timeout,omitempty"`
 }
 
 type mkdirRequest struct {

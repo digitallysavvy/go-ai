@@ -2,7 +2,6 @@ package vercel
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -72,25 +71,35 @@ func (s *Session) resolveWorkingDirectory(workingDirectory string) string {
 // Cancelling ctx kills the remote command, as the TS abort listener does
 // (269f4c0c32); Wait then returns the context error.
 //
-// A writable stdin (opts.Stdin) is not supported yet: TS sends it through
-// @vercel/sandbox 3.9.0 writeStdin/closeStdin, whose wire shapes are not
-// available to this port, so Spawn rejects it before starting the command,
-// as the TS SandboxSession contract requires of implementations without it.
+// With opts.Stdin the command is started with attachStdin and the returned
+// process is a providerutils.WritableSandboxProcess whose Stdin writes
+// through @vercel/sandbox 3.9.0 writeStdin / closeStdin (TS
+// `createStdinStream`).
 func (s *Session) Spawn(ctx context.Context, opts providerutils.SandboxProcessOptions) (providerutils.SandboxProcess, error) {
-	if opts.Stdin {
-		return nil, errors.New("Vercel Sandbox sessions do not support a writable stdin in this SDK yet.") //nolint:staticcheck // sentence-style error like the TS sandbox errors
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	proc, err := s.sandbox.SpawnCommand(ctx, "bash", []string{"-c", opts.Command}, s.resolveWorkingDirectory(opts.WorkingDirectory), opts.Env)
+	proc, err := s.sandbox.spawnCommand(ctx, "bash", []string{"-c", opts.Command}, s.resolveWorkingDirectory(opts.WorkingDirectory), opts.Env, opts.Stdin)
 	if err != nil {
 		return nil, err
 	}
 	a := &sandboxProcessAdapter{ctx: ctx, proc: proc}
 	a.stopKillOnCancel = context.AfterFunc(ctx, func() { _ = a.Kill() })
+	if opts.Stdin {
+		return &writableSandboxProcessAdapter{sandboxProcessAdapter: a}, nil
+	}
 	return a, nil
 }
+
+// writableSandboxProcessAdapter is a process spawned with opts.Stdin.
+type writableSandboxProcessAdapter struct {
+	*sandboxProcessAdapter
+}
+
+// Stdin implements providerutils.WritableSandboxProcess.
+func (w *writableSandboxProcessAdapter) Stdin() io.WriteCloser { return w.proc.Stdin() }
+
+var _ providerutils.WritableSandboxProcess = (*writableSandboxProcessAdapter)(nil)
 
 // sandboxProcessAdapter adapts *RemoteProcess (whose Wait/Kill take a
 // context) to the context-free providerutils.SandboxProcess interface, using
