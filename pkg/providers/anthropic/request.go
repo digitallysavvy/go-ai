@@ -49,13 +49,16 @@ type betaSet struct {
 	seen map[string]bool
 }
 
+// add appends each value not yet in the set, as given: TS keeps the betas in
+// a Set<string> and trims only the header values (getBetasFromHeaders), so
+// providerOptions.anthropic.anthropicBeta entries are neither trimmed nor
+// dropped when empty.
 func (b *betaSet) add(values ...string) {
 	if b.seen == nil {
 		b.seen = map[string]bool{}
 	}
 	for _, v := range values {
-		v = strings.TrimSpace(v)
-		if v == "" || b.seen[v] {
+		if b.seen[v] {
 			continue
 		}
 		b.seen[v] = true
@@ -71,7 +74,7 @@ func (m *LanguageModel) userSuppliedBetas(opts *provider.GenerateOptions) []stri
 		for k, v := range headers {
 			if strings.EqualFold(k, "anthropic-beta") {
 				for _, b := range strings.Split(strings.ToLower(v), ",") {
-					if b = strings.TrimSpace(b); b != "" {
+					if b = providerutils.JSTrim(b); b != "" { // TS beta.trim()
 						out = append(out, b)
 					}
 				}
