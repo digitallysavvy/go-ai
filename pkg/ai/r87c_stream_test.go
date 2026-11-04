@@ -2013,3 +2013,86 @@ func TestR87cstreamTransformedValuePromises(t *testing.T) {
 	r87cstreamAssert(t, "17461 steps", r87cstreamTSSteps(t, r.Steps()), `[{"callId":"test-telemetry-call-id","content":[{"text":"thinking","type":"reasoning"},{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"},{"dynamic":false,"input":{"value":"VALUE"},"output":"RESULT1","toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"finishReason":"tool-calls","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":{"effectiveOutputTokensPerSecond":16.666666666666668,"effectiveTotalTokensPerSecond":21.666666666666668,"inputTokensPerSecond":30,"outputTokensPerSecond":20,"responseTimeMs":600,"stepTimeMs":1000,"timeBetweenOutputChunksMs":{"avg":400,"max":400,"median":400,"min":400,"p10":400,"p90":400},"timeToFirstOutputMs":100,"toolExecutionMs":{"call-1":0}},"request":{},"response":{"headers":{"call":"1"},"id":"id-0","messages":[{"content":[{"text":"thinking","type":"reasoning"},{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"text","value":"RESULT1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"}],"modelId":"mock-model-id","timestamp":"1970-01-01T00:00:00.000Z"},"runtimeContext":{},"stepNumber":0,"toolsContext":{},"usage":{"inputTokenDetails":{"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"textTokens":10},"outputTokens":10,"totalTokens":13},"warnings":[]},{"callId":"test-telemetry-call-id","content":[{"text":"Hello, world!","type":"text"}],"finishReason":"stop","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":{"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0,"inputTokensPerSecond":0,"outputTokensPerSecond":0,"responseTimeMs":0,"stepTimeMs":0,"timeBetweenOutputChunksMs":{"avg":0,"max":0,"median":0,"min":0,"p10":0,"p90":0},"timeToFirstOutputMs":0,"toolExecutionMs":{}},"rawFinishReason":"stop","request":{},"response":{"headers":{"call":"2"},"id":"id-1","messages":[{"content":[{"text":"Hello, world!","type":"text"}],"role":"assistant"}],"modelId":"mock-model-id","timestamp":"1970-01-01T00:00:01.000Z"},"runtimeContext":{},"stepNumber":1,"toolsContext":{},"usage":{"inputTokenDetails":{"cacheReadTokens":0,"cacheWriteTokens":0,"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"reasoningTokens":10,"textTokens":10},"outputTokens":10,"totalTokens":13},"warnings":[]}]`)
 	r87cstreamAssert(t, "17671 responseMessages", r87cstreamTSMessages(t, r.ResponseMessages()), `[{"content":[{"text":"thinking","type":"reasoning"},{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"text","value":"RESULT1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"},{"content":[{"text":"Hello, world!","type":"text"}],"role":"assistant"}]`)
 }
+
+// stream-text.test.ts 18152: options.stopWhen > should complete tool loop
+// with isLoopFinished().
+func TestR87cstreamIsLoopFinished(t *testing.T) {
+	tool := r71streamTool1(false, nil, nil)
+	tool.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result1", nil }
+	r := r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil,
+		[]provider.StreamChunk{r87cstreamMeta("id-0"), {Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", RawArguments: `{ "value": "value" }`}}, r87cstreamFinish(types.FinishReasonToolCalls, "")},
+		[]provider.StreamChunk{r87cstreamMetaAt("id-1", 1000, nil), {Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Done!"}, {Type: provider.ChunkTypeTextEnd, ID: "1"}, r87cstreamFinish(types.FinishReasonStop, "stop")}),
+		Tools: []types.Tool{tool}, Prompt: "test-input", StopWhen: []StopCondition{IsLoopFinished()}})
+	if r.Text() != "Done!" || len(r.Steps()) != 2 {
+		t.Fatalf("text = %q, steps = %d", r.Text(), len(r.Steps()))
+	}
+}
+
+// stream-text.test.ts 18336: multi-step part IDs > should emit unique
+// reasoning part IDs across steps when providers reuse IDs.
+func TestR87cstreamUniqueReasoningIDsAcrossSteps(t *testing.T) {
+	tool := r71streamTool1(false, nil, nil)
+	tool.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result1", nil }
+	r, parts := r73streamParts(t, StreamTextOptions{Model: r71streamModel(nil,
+		[]provider.StreamChunk{
+			{Type: provider.ChunkTypeReasoningStart, ID: "0"}, {Type: provider.ChunkTypeReasoning, ID: "0", Reasoning: "thinking"}, {Type: provider.ChunkTypeReasoningEnd, ID: "0"},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", RawArguments: `{ "value": "test" }`}},
+			r87cstreamFinish(types.FinishReasonToolCalls, ""),
+		},
+		[]provider.StreamChunk{
+			{Type: provider.ChunkTypeReasoningStart, ID: "0"}, {Type: provider.ChunkTypeReasoning, ID: "0", Reasoning: "thinking more"}, {Type: provider.ChunkTypeReasoningEnd, ID: "0"},
+			{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "It is sunny."}, {Type: provider.ChunkTypeTextEnd, ID: "1"},
+			r87cstreamFinish(types.FinishReasonStop, "stop"),
+		}),
+		Tools: []types.Tool{tool}, Prompt: "test-input", StopWhen: []StopCondition{StepCountIs(2)},
+		Internal: &InternalOptions{GenerateID: r73streamCounterIDs("id")}})
+	var reasoning, errs []interface{}
+	for _, p := range r87cstreamTSParts(parts) {
+		m := p.(map[string]interface{})
+		switch m["type"] {
+		case "error":
+			errs = append(errs, m)
+		case "reasoning-start", "reasoning-delta", "reasoning-end":
+			reasoning = append(reasoning, m)
+		}
+	}
+	if len(errs) != 0 {
+		t.Fatalf("error parts = %v", errs)
+	}
+	r87cstreamAssert(t, "reasoning parts", reasoning, `[{"id":"0","type":"reasoning-start"},{"id":"0","text":"thinking","type":"reasoning-delta"},{"id":"0","type":"reasoning-end"},{"id":"id-2","type":"reasoning-start"},{"id":"id-2","text":"thinking more","type":"reasoning-delta"},{"id":"id-2","type":"reasoning-end"}]`)
+	steps := r.Steps()
+	if len(steps) != 2 || steps[0].ReasoningText != "thinking" || steps[1].ReasoningText != "thinking more" {
+		t.Fatalf("steps reasoning = %+v", steps)
+	}
+}
+
+// stream-text.test.ts 18553: options.headers > should set headers (the
+// doStream headers are exactly the call's headers).
+func TestR87cstreamSetHeaders(t *testing.T) {
+	var got map[string]string
+	model := r71streamModel(nil, []provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Hello"}, {Type: provider.ChunkTypeText, ID: "1", Text: ", "}, {Type: provider.ChunkTypeText, ID: "1", Text: "world!"}, {Type: provider.ChunkTypeTextEnd, ID: "1"},
+		r87cstreamFinish(types.FinishReasonStop, "stop"),
+	})
+	inner := model.DoStreamFunc
+	model.DoStreamFunc = func(ctx context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+		got = o.Headers
+		return inner(ctx, o)
+	}
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test-input", Headers: map[string]string{"custom-request-header": "request-header-value"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, errCh := ToTextStream(context.Background(), r.FullStream())
+	texts := []string{}
+	for s := range out {
+		texts = append(texts, s)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	r87cstreamAssertStrings(t, "textStream", texts, []string{"Hello", ", ", "world!"})
+	if !reflect.DeepEqual(got, map[string]string{"custom-request-header": "request-header-value"}) {
+		t.Fatalf("doStream headers = %v", got)
+	}
+}
