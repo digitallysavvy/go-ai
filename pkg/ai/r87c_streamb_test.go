@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"reflect"
 	"sort"
 	"strings"
@@ -2415,5 +2416,342 @@ func TestR87cstreambTelemetryMultiplePerCall(t *testing.T) {
 	})
 	if got, want := events.get(), []string{"first", "second"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %v, want %v", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ui-message-stream / ui partial rows (round 87c streamb). SSE event JSON is
+// compared with sorted keys: known difference "UI message stream JSON key
+// order" (UIMessageChunk is a map); the values are the TS ones.
+// ---------------------------------------------------------------------------
+
+// r87cstreambClosingStream is a provider stream that blocks until it is
+// closed and records the close (the Go form of a TS source stream's cancel).
+type r87cstreambClosingStream struct {
+	once   sync.Once
+	closed chan struct{}
+}
+
+func newR87cstreambClosingStream() *r87cstreambClosingStream {
+	return &r87cstreambClosingStream{closed: make(chan struct{})}
+}
+
+func (s *r87cstreambClosingStream) Next() (*provider.StreamChunk, error) {
+	<-s.closed
+	return nil, context.Canceled
+}
+func (s *r87cstreambClosingStream) Err() error { return nil }
+func (s *r87cstreambClosingStream) Close() error {
+	s.once.Do(func() { close(s.closed) })
+	return nil
+}
+
+// r87cstreambReadN reads from r until it has n bytes or times out.
+func r87cstreambReadN(t *testing.T, r io.Reader, n int) string {
+	t.Helper()
+	type res struct {
+		b   []byte
+		err error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		b := make([]byte, n)
+		_, err := io.ReadFull(r, b)
+		ch <- res{b, err}
+	}()
+	select {
+	case got := <-ch:
+		if got.err != nil {
+			t.Fatalf("read %d bytes: %v", n, got.err)
+		}
+		return string(got.b)
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out reading %d bytes", n)
+	}
+	return ""
+}
+
+// create-sse-stream-with-keep-alive.test.ts 17: createSseStreamWithKeepAlive
+// > should pass through the original stream when keepAliveMs is undefined.
+// TS returns the same stream object; Go has no SSE string stream to return,
+// so the pass-through is checked on the output: without KeepAliveMs the SSE
+// body is byte-identical to the one without any init (no comments added).
+func TestR87cstreambKeepAliveUndefinedPassesThrough(t *testing.T) {
+	body := func(init *UIMessageStreamResponseInit) string {
+		ch := make(chan UIMessageChunk, 1)
+		ch <- UIMessageChunk{"type": "text-delta", "id": "1", "delta": "data"}
+		close(ch)
+		resp, err := CreateUIMessageChunksResponse(ch, init)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	want := "data: {\"delta\":\"data\",\"id\":\"1\",\"type\":\"text-delta\"}\n\ndata: [DONE]\n\n"
+	if got := body(&UIMessageStreamResponseInit{KeepAliveMs: nil}); got != want {
+		t.Fatalf("body without keepAliveMs = %q, want %q", got, want)
+	}
+	if got := body(nil); got != want {
+		t.Fatalf("body without init = %q, want %q", got, want)
+	}
+}
+
+// create-sse-stream-with-keep-alive.test.ts 138: createSseStreamWithKeepAlive
+// > should cancel the source stream. Go: a response is cancelled through the
+// request ctx that drives both StreamText and the SSE writer (known
+// difference "StreamText reads the provider stream without a reader": pass
+// r.Context()); cancelling it after the opening comment closes the source
+// model stream and ends the body. TS also forwards the cancel reason; a Go
+// stream's Close takes none.
+func TestR87cstreambKeepAliveCancelsSource(t *testing.T) {
+	src := newR87cstreambClosingStream()
+	opened := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r, err := StreamText(ctx, StreamTextOptions{
+		Model: &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			close(opened)
+			return src, nil
+		}},
+		Prompt:  "test-input",
+		OnError: func(context.Context, error) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keepAlive := 100 * time.Millisecond
+	resp, err := CreateUIMessageStreamResponseWithInit(ctx, r, &UIMessageStreamResponseInit{KeepAliveMs: &keepAlive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got := r87cstreambReadN(t, resp.Body, len(sseStreamOpenComment)); got != sseStreamOpenComment {
+		t.Fatalf("first read = %q, want the opening comment", got)
+	}
+	select {
+	case <-opened: // the source exists before the response is cancelled, as in TS
+	case <-time.After(5 * time.Second):
+		t.Fatal("the model stream was not opened")
+	}
+	cancel()
+	select {
+	case <-src.closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelling the response did not cancel the source stream")
+	}
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.ReadAll(resp.Body)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the response body did not end after the cancel")
+	}
+}
+
+// create-ui-message-stream-response.test.ts 65: createUIMessageStreamResponse
+// > should send opening and keep-alive comments for an idle stream.
+func TestR87cstreambResponseKeepAliveIdle(t *testing.T) {
+	keepAlive := 100 * time.Millisecond
+	idle := make(chan UIMessageChunk)
+	resp, err := CreateUIMessageChunksResponse(idle, &UIMessageStreamResponseInit{KeepAliveMs: &keepAlive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got := r87cstreambReadN(t, resp.Body, len(sseStreamOpenComment)); got != ": stream-open\n\n" {
+		t.Fatalf("first read = %q", got)
+	}
+	start := time.Now()
+	if got := r87cstreambReadN(t, resp.Body, len(sseKeepAliveComment)); got != ": keep-alive\n\n" {
+		t.Fatalf("second read = %q", got)
+	}
+	if d := time.Since(start); d < 80*time.Millisecond {
+		t.Fatalf("keep-alive came after %v, want about 100ms", d)
+	}
+}
+
+// create-ui-message-stream-response.test.ts 90: createUIMessageStreamResponse
+// > can respond with a stream created by toUIMessageStream.
+func TestR87cstreambResponseFromToUIMessageStream(t *testing.T) {
+	chunks, _ := ToUIMessageStream(context.Background(), testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStart},
+		{Type: provider.ChunkTypeTextStart, ID: "t1"},
+		{Type: provider.ChunkTypeText, ID: "t1", Text: "Hello"},
+		{Type: provider.ChunkTypeTextEnd, ID: "t1"},
+	}), UIMessageStreamResultOptions{GenerateMessageID: func() string { return "msg-123" }})
+	resp, err := CreateUIMessageChunksResponse(chunks, &UIMessageStreamResponseInit{Status: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "data: {\"messageId\":\"msg-123\",\"type\":\"start\"}\n\n" +
+		"data: {\"id\":\"t1\",\"type\":\"text-start\"}\n\n" +
+		"data: {\"delta\":\"Hello\",\"id\":\"t1\",\"type\":\"text-delta\"}\n\n" +
+		"data: {\"id\":\"t1\",\"type\":\"text-end\"}\n\n" +
+		"data: [DONE]\n\n"
+	if string(b) != want || resp.StatusCode != 200 {
+		t.Fatalf("status %d body = %q, want %q", resp.StatusCode, b, want)
+	}
+}
+
+// create-ui-message-stream-response.test.ts 153: createUIMessageStreamResponse
+// > should call consumeSseStream with a teed stream.
+func TestR87cstreambResponseConsumeSSEStreamTee(t *testing.T) {
+	var calls int
+	consumed := make(chan string, 1)
+	ch := make(chan UIMessageChunk, 2)
+	ch <- UIMessageChunk{"type": "text-delta", "id": "1", "delta": "test-data-1"}
+	ch <- UIMessageChunk{"type": "text-delta", "id": "1", "delta": "test-data-2"}
+	close(ch)
+	resp, err := CreateUIMessageChunksResponse(ch, &UIMessageStreamResponseInit{Status: 200, ConsumeSSEStream: func(r io.Reader) error {
+		calls++
+		b, err := io.ReadAll(r)
+		consumed <- string(b)
+		return err
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "data: {\"delta\":\"test-data-1\",\"id\":\"1\",\"type\":\"text-delta\"}\n\n" +
+		"data: {\"delta\":\"test-data-2\",\"id\":\"1\",\"type\":\"text-delta\"}\n\n" +
+		"data: [DONE]\n\n"
+	if string(b) != want {
+		t.Fatalf("response body = %q, want %q", b, want)
+	}
+	select {
+	case got := <-consumed:
+		if got != want || calls != 1 {
+			t.Fatalf("consumeSseStream calls %d data %q, want 1 and %q", calls, got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("consumeSseStream did not finish")
+	}
+}
+
+// create-ui-message-stream.test.ts 422: createUIMessageStream > should
+// support writing from delayed merged streams.
+func TestR87cstreambDelayedMergedStreams(t *testing.T) {
+	ch1 := make(chan UIMessageChunk)
+	executed := make(chan UIMessageStreamWriter, 1)
+	out, _ := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{Execute: func(w UIMessageStreamWriter) {
+		w.Merge(ch1)
+		executed <- w
+	}})
+	pull := func() UIMessageChunk {
+		select {
+		case c := <-out:
+			return c
+		case <-time.After(5 * time.Second):
+			t.Fatal("pull timed out")
+		}
+		return nil
+	}
+	// The execute function is finished.
+	var writer UIMessageStreamWriter
+	select {
+	case writer = <-executed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("execute did not finish")
+	}
+	var result []UIMessageChunk
+	ch1 <- UIMessageChunk{"type": "text-delta", "id": "1", "delta": "1a"}
+	result = append(result, pull())
+	ch2 := make(chan UIMessageChunk)
+	writer.Merge(ch2)
+	close(ch1)
+	time.Sleep(10 * time.Millisecond) // relinquish control
+	ch2 <- UIMessageChunk{"type": "text-delta", "id": "2", "delta": "2a"}
+	close(ch2)
+	result = append(result, pull())
+	r87cstreambAssert(t, "result", result, `[{"delta":"1a","id":"1","type":"text-delta"},{"delta":"2a","id":"2","type":"text-delta"}]`)
+}
+
+// get-response-ui-message-id.test.ts 16 / 28 / 48: getResponseUIMessageId >
+// should return the last assistant message id when present, should generate
+// new id when last message is not from assistant, should use the
+// responseMessageId when it is a string. Go's getResponseUIMessageId is
+// responseUIMessageIDOK: TS's responseMessageId generator is
+// GenerateMessageID and a string responseMessageId is ResponseMessageID.
+func TestR87cstreambGetResponseUIMessageID(t *testing.T) {
+	gen := func() string { return "new-id" }
+	msg := func(id, role string) UIMessageChunk {
+		return UIMessageChunk{"id": id, "role": role, "parts": []interface{}{}}
+	}
+	cases := []struct {
+		name string
+		opts UIMessageStreamResultOptions
+		want string
+	}{
+		{"last assistant (TS 16)", UIMessageStreamResultOptions{OriginalMessages: []UIMessageChunk{msg("msg-1", "user"), msg("msg-2", "assistant")}, GenerateMessageID: gen}, "msg-2"},
+		{"last not assistant (TS 28)", UIMessageStreamResultOptions{OriginalMessages: []UIMessageChunk{msg("msg-1", "assistant"), msg("msg-2", "user")}, GenerateMessageID: gen}, "new-id"},
+		{"string id (TS 48)", UIMessageStreamResultOptions{OriginalMessages: []UIMessageChunk{}, ResponseMessageID: "response-id"}, "response-id"},
+	}
+	for _, c := range cases {
+		if got, ok := responseUIMessageIDOK(c.opts); !ok || got != c.want {
+			t.Errorf("%s: got %q (%v), want %q", c.name, got, ok, c.want)
+		}
+	}
+}
+
+// read-ui-message-stream.test.ts 665: readUIMessageStream > should cancel the
+// input stream when iteration exits early. Go: the caller stops iterating by
+// cancelling ctx; ReadUIMessages then closes its output and reads nothing
+// more from the input channel (a channel has no cancel; its producer stops
+// on the same ctx).
+func TestR87cstreambReadUIMessagesEarlyExitStopsInput(t *testing.T) {
+	in := make(chan UIMessageChunk)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	out, errs := ReadUIMessages(ctx, ReadUIMessagesOptions{Stream: in})
+	go func() {
+		for _, c := range []UIMessageChunk{{"type": "start", "messageId": "msg-123"}, {"type": "text-start", "id": "text-1"}, {"type": "text-delta", "id": "text-1", "delta": "Hello"}} {
+			select {
+			case in <- c:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	for m := range out {
+		hasText := false
+		for _, p := range m.Parts {
+			if txt := uiPartText(p); txt != "" {
+				hasText = true
+			}
+		}
+		if hasText {
+			cancel()
+			break
+		}
+	}
+	select {
+	case _, ok := <-errs:
+		if ok {
+			t.Fatal("unexpected error after an early exit")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ReadUIMessages did not stop after the early exit")
+	}
+	select {
+	case in <- UIMessageChunk{"type": "text-delta", "id": "text-1", "delta": " more"}:
+		t.Fatal("ReadUIMessages still reads the input after the early exit")
+	case <-time.After(50 * time.Millisecond):
 	}
 }
