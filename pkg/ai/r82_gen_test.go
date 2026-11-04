@@ -254,6 +254,7 @@ func TestR82genNeedsApprovalFunction(t *testing.T) {
 	}
 }
 
+// generate-text.test.ts 13646 / 13652 / 13715 / 13840 / 13853 / 13916:
 // 'when a single tool is automatically rejected' 13646 / 13652 / 13715 and
 // 'automatically approved' 13840 / 13853 / 13916: the run continues to a
 // second step; the second prompt holds the call and its execution-denied

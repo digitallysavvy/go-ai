@@ -203,17 +203,6 @@ func r87cgenPartView(m r87cgenObj) r87cgenObj {
 			out["dynamic"] = false
 		}
 		return out
-	case "tool-approval-request":
-		out := r87cgenObj{"type": m["type"], "approvalId": m["approvalId"]}
-		if tc, ok := m["toolCall"].(r87cgenObj); ok {
-			out["toolCall"] = r87cgenToolCallView(tc)
-		}
-		for _, k := range []string{"isAutomatic", "reason", "signature"} {
-			if v, ok := m[k]; ok {
-				out[k] = v
-			}
-		}
-		return out
 	}
 	return m
 }
@@ -1626,4 +1615,298 @@ func TestR87cgenPreliminaryFinalResultInStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	r87cgenCheck(t, "steps", r87cgenStepsView(t, res.Steps), `[{"callId":"test-telemetry-call-id","content":[{"input":{"city":"San Francisco"},"toolCallId":"call-1","toolName":"cityAttractions","type":"tool-call"},{"dynamic":false,"input":{"city":"San Francisco"},"output":{"status":"success","temperature":72,"text":"The weather in San Francisco is 72°F"},"toolCallId":"call-1","toolName":"cityAttractions","type":"tool-result"}],"finishReason":"tool-calls","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":{"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0,"responseTimeMs":0,"stepTimeMs":0,"toolExecutionMs":{"call-1":0}},"request":{},"response":{"id":"test-id","messages":[{"content":[{"input":{"city":"San Francisco"},"toolCallId":"call-1","toolName":"cityAttractions","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"json","value":{"status":"success","temperature":72,"text":"The weather in San Francisco is 72°F"}},"toolCallId":"call-1","toolName":"cityAttractions","type":"tool-result"}],"role":"tool"}],"modelId":"mock-model-id","timestamp":"1970-01-01T00:00:00.000Z"},"runtimeContext":{},"stepNumber":0,"toolsContext":{},"usage":{"inputTokenDetails":{"noCacheTokens":10},"inputTokens":10,"outputTokenDetails":{"textTokens":20},"outputTokens":20,"totalTokens":30},"warnings":[]}]`)
+}
+
+// r87cgenPromptsView is the TS prompts list a model recorded.
+func r87cgenPromptsView(t *testing.T, prompts [][]types.Message) []interface{} {
+	t.Helper()
+	out := []interface{}{}
+	for _, p := range prompts {
+		out = append(out, r87cgenMessagesView(t, p))
+	}
+	return out
+}
+
+// r87cgenRecording answers every call with resp(n) and records the prompts.
+func r87cgenRecording(prompts *[][]types.Message, resp func(n int) *types.GenerateResult) *testutil.MockLanguageModel {
+	return r87cgenModel(func(n int, o *provider.GenerateOptions) (*types.GenerateResult, error) {
+		*prompts = append(*prompts, o.Prompt.Messages)
+		return resp(n), nil
+	})
+}
+
+const (
+	r87cgenUserTestInput = `{"content":[{"text":"test-input","type":"text"}],"role":"user"}`
+	r87cgenAssistantCall = `{"content":[{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"}`
+	r87cgenHelloMessage  = `{"content":[{"text":"Hello, world!","type":"text"}],"role":"assistant"}`
+)
+
+// generate-text.test.ts 'tool execution approval' > 'when a single tool has
+// a needsApproval function' (beforeEach: call-1 needs approval, call-2 does
+// not): 12433 should have tool-calls finish reason, 12437 should add a tool
+// approval request to the content, 12491 should include tool approval
+// request in response messages, 12543 should call the needsApproval function
+// with the correct input and options.
+func TestR87cgenNeedsApprovalFunction(t *testing.T) {
+	type approvalCall struct {
+		Input   map[string]interface{} `json:"input"`
+		Options r87cgenObj             `json:"options"`
+	}
+	var calls []approvalCall
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenModel(func(int, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return r87cgenToolCalls(r87cgenCall("call-1", "tool1", `{ "value": "value-needs-approval" }`), r87cgenCall("call-2", "tool1", `{ "value": "value-no-approval" }`)), nil
+		}),
+		Tools: []types.Tool{r87cgenTool("tool1", func(in map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			return "result for " + in["value"].(string), nil
+		}, "value")},
+		ToolApproval: map[string]types.ToolApprovalValue{"tool1": types.SingleToolApprovalFunc(func(in map[string]interface{}, o types.SingleToolApprovalOptions) types.ToolApprovalResult {
+			opts := r87cgenObj{"messages": r87cgenMessagesView(t, o.Messages), "runtimeContext": r87cgenObj{}, "toolCallId": o.ToolCallID}
+			if o.RuntimeContext != nil {
+				opts["runtimeContext"] = o.RuntimeContext
+			}
+			if o.ToolContext != nil {
+				opts["toolContext"] = o.ToolContext
+			}
+			calls = append(calls, approvalCall{in, opts})
+			if in["value"] == "value-needs-approval" {
+				return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}
+			}
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+		})},
+		StopWhen: []StopCondition{IsStepCount(3)},
+		Prompt:   "test-input",
+		Internal: r87cgenIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.FinishReason != types.FinishReasonToolCalls {
+		t.Errorf("12433 finishReason = %s", res.FinishReason)
+	}
+	r87cgenCheck(t, "12437 content", r87cgenContentView(t, res.Content), `[`+
+		`{"input":{"value":"value-needs-approval"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"},`+
+		`{"input":{"value":"value-no-approval"},"toolCallId":"call-2","toolName":"tool1","type":"tool-call"},`+
+		`{"dynamic":false,"input":{"value":"value-no-approval"},"output":"result for value-no-approval","toolCallId":"call-2","toolName":"tool1","type":"tool-result"},`+
+		`{"approvalId":"id-1","toolCall":{"input":{"value":"value-needs-approval"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"},"type":"tool-approval-request"}]`)
+	r87cgenCheck(t, "12491 responseMessages", r87cgenMessagesView(t, res.ResponseMessages), `[{"content":[`+
+		`{"input":{"value":"value-needs-approval"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"},`+
+		`{"input":{"value":"value-no-approval"},"toolCallId":"call-2","toolName":"tool1","type":"tool-call"},`+
+		`{"approvalId":"id-1","toolCallId":"call-1","type":"tool-approval-request"}],"role":"assistant"},`+
+		`{"content":[{"output":{"type":"text","value":"result for value-no-approval"},"toolCallId":"call-2","toolName":"tool1","type":"tool-result"}],"role":"tool"}]`)
+	r87cgenCheck(t, "12543 needsApproval calls", r87cgenRaw(t, calls), `[`+
+		`{"input":{"value":"value-needs-approval"},"options":{"messages":[`+r87cgenUserTestInput+`],"runtimeContext":{},"toolCallId":"call-1"}},`+
+		`{"input":{"value":"value-no-approval"},"options":{"messages":[`+r87cgenUserTestInput+`],"runtimeContext":{},"toolCallId":"call-2"}}]`)
+}
+
+// generate-text.test.ts 'when a call from a single tool that needs approval
+// is approved': 12657 should execute the tool (input, no abort signal: no
+// deadline, call-1, the messages), 12668 should call the model with a prompt
+// that includes the tool result, 12719 should include the tool result in the
+// response messages.
+func TestR87cgenApprovedToolCall(t *testing.T) {
+	var prompts [][]types.Message
+	type exec struct {
+		input       map[string]interface{}
+		hasDeadline bool
+		id          string
+		messages    int
+	}
+	var execs []exec
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenRecording(&prompts, func(int) *types.GenerateResult { return r87cgenResult(r87cgenText("Hello, world!")) }),
+		Tools: []types.Tool{{Name: "tool1", Parameters: r87cgenSchema("value"), Execute: func(ctx context.Context, in map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+			execs = append(execs, exec{in, r87cgenHasDeadline(ctx), o.ToolCallID, len(o.Messages)})
+			return "result1", nil
+		}}},
+		ToolApproval: map[string]types.ToolApprovalValue{"tool1": types.ToolApprovalStatusUserApproval},
+		StopWhen:     []StopCondition{IsStepCount(3)},
+		Internal:     r87cgenIDs(),
+		Messages:     r71genApprovalHistory(true, ""),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(execs) != 1 || !reflect.DeepEqual(execs[0].input, map[string]interface{}{"value": "value"}) || execs[0].hasDeadline || execs[0].id != "call-1" || execs[0].messages == 0 {
+		t.Errorf("12657 executions = %+v", execs)
+	}
+	toolResult := `{"content":[{"output":{"type":"text","value":"result1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"}`
+	r87cgenCheck(t, "12668 prompts", r87cgenPromptsView(t, prompts), `[[`+r87cgenUserTestInput+`,`+r87cgenAssistantCall+`,`+toolResult+`]]`)
+	r87cgenCheck(t, "12719 responseMessages", r87cgenMessagesView(t, res.ResponseMessages), `[`+toolResult+`,`+r87cgenHelloMessage+`]`)
+}
+
+// generate-text.test.ts 13160 'when experimental_toolApprovalSecret is
+// configured' > 'should work without a secret (backward compatible)': an
+// unsigned approval request is executed once when no secret is set.
+func TestR87cgenApprovalWithoutSecret(t *testing.T) {
+	executions := 0
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenHello("done"),
+		Tools: []types.Tool{r87cgenTool("tool1", func(map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			executions++
+			return "result1", nil
+		}, "value")},
+		ToolApproval: map[string]types.ToolApprovalValue{"tool1": types.ToolApprovalStatusUserApproval},
+		StopWhen:     []StopCondition{IsStepCount(3)},
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "test"}}},
+			{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "test"}},
+				types.ToolApprovalRequestContent{ApprovalID: "approval-1", ToolCallID: "call-1"},
+			}},
+			{Role: types.RoleTool, Content: []types.ContentPart{types.ToolApprovalResponseContent{ApprovalID: "approval-1", Approved: true}}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if executions != 1 {
+		t.Fatalf("executions = %d, want 1", executions)
+	}
+}
+
+// generate-text.test.ts 'when a call from a single tool that needs approval
+// is denied': 13405 should not execute the tool, 13409 should call the model
+// with a prompt that includes the tool error (execution-denied, no reason),
+// 13460 should include the tool error in the response messages.
+func TestR87cgenDeniedToolCall(t *testing.T) {
+	var prompts [][]types.Message
+	executions := 0
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenRecording(&prompts, func(int) *types.GenerateResult { return r87cgenToolCalls(r87cgenText("Hello, world!")) }),
+		Tools: []types.Tool{r87cgenTool("tool1", func(map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			executions++
+			return "result1", nil
+		}, "value")},
+		ToolApproval: map[string]types.ToolApprovalValue{"tool1": types.ToolApprovalStatusUserApproval},
+		StopWhen:     []StopCondition{IsStepCount(3)},
+		Internal:     r87cgenIDs(),
+		Messages:     r71genApprovalHistory(false, ""),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executions != 0 {
+		t.Errorf("13405 executions = %d", executions)
+	}
+	denied := `{"content":[{"output":{"type":"execution-denied"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"}`
+	r87cgenCheck(t, "13409 prompts", r87cgenPromptsView(t, prompts), `[[`+r87cgenUserTestInput+`,`+r87cgenAssistantCall+`,`+denied+`]]`)
+	r87cgenCheck(t, "13460 responseMessages", r87cgenMessagesView(t, res.ResponseMessages), `[`+denied+`,`+r87cgenHelloMessage+`]`)
+}
+
+// generate-text.test.ts 14141 'when two calls from a single tool that needs
+// approval are approved' > 'should include the tool results in the response
+// messages'.
+func TestR87cgenTwoApprovedToolCalls(t *testing.T) {
+	var prompts [][]types.Message
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:        r87cgenRecording(&prompts, func(int) *types.GenerateResult { return r87cgenToolCalls(r87cgenText("Hello, world!")) }),
+		Tools:        []types.Tool{r87cgenTool("tool1", func(map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result1", nil }, "value")},
+		ToolApproval: map[string]types.ToolApprovalValue{"tool1": types.ToolApprovalStatusUserApproval},
+		StopWhen:     []StopCondition{IsStepCount(3)},
+		Internal:     r87cgenIDs(),
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "test-input"}}},
+			{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "value1"}},
+				types.ToolApprovalRequestContent{ApprovalID: "id-1", ToolCallID: "call-1"},
+				types.ToolCallContent{ToolCallID: "call-2", ToolName: "tool1", Arguments: map[string]interface{}{"value": "value2"}},
+				types.ToolApprovalRequestContent{ApprovalID: "id-2", ToolCallID: "call-2"},
+			}},
+			{Role: types.RoleTool, Content: []types.ContentPart{
+				types.ToolApprovalResponseContent{ApprovalID: "id-1", Approved: true},
+				types.ToolApprovalResponseContent{ApprovalID: "id-2", Approved: true},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r87cgenCheck(t, "responseMessages", r87cgenMessagesView(t, res.ResponseMessages), `[{"content":[`+
+		`{"output":{"type":"text","value":"result1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"},`+
+		`{"output":{"type":"text","value":"result1"},"toolCallId":"call-2","toolName":"tool1","type":"tool-result"}],"role":"tool"},`+r87cgenHelloMessage+`]`)
+}
+
+var r87cgenMCPTool = types.Tool{Name: "mcp_tool", Type: types.ToolTypeProviderDefined, ProviderExecuted: true, ProviderID: "test.mcp_tool", Parameters: r87cgenSchema("query")}
+
+// generate-text.test.ts 'provider-executed tool (MCP) approval' > 'when a
+// provider-executed tool emits tool-approval-request': 14226 should only
+// execute 1 step when waiting for approval, 14230 should have tool-calls
+// finish reason, 14234 should add tool approval request with providerExecuted
+// tool call to content, 14267 should include tool approval request in
+// response messages.
+func TestR87cgenMCPApprovalRequest(t *testing.T) {
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenModel(func(int, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return r87cgenToolCalls(types.ToolCallContent{ToolCallID: "mcp-call-1", ToolName: "mcp_tool", Input: `{ "query": "test" }`, ProviderExecuted: true},
+				types.ToolApprovalRequestContent{ApprovalID: "mcp-approval-1", ToolCallID: "mcp-call-1"}), nil
+		}),
+		Tools:    []types.Tool{r87cgenMCPTool},
+		StopWhen: []StopCondition{IsStepCount(3)},
+		Prompt:   "test-input",
+		Internal: r87cgenIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Steps) != 1 {
+		t.Errorf("14226 steps = %d", len(res.Steps))
+	}
+	if res.FinishReason != types.FinishReasonToolCalls {
+		t.Errorf("14230 finishReason = %s", res.FinishReason)
+	}
+	call := `{"input":{"query":"test"},"providerExecuted":true,"toolCallId":"mcp-call-1","toolName":"mcp_tool","type":"tool-call"}`
+	r87cgenCheck(t, "14234 content", r87cgenContentView(t, res.Content), `[`+call+`,{"approvalId":"mcp-approval-1","toolCall":`+call+`,"type":"tool-approval-request"}]`)
+	r87cgenCheck(t, "14267 responseMessages", r87cgenMessagesView(t, res.ResponseMessages), `[{"content":[`+call+`,{"approvalId":"mcp-approval-1","toolCallId":"mcp-call-1","type":"tool-approval-request"}],"role":"assistant"}]`)
+}
+
+// generate-text.test.ts 14441 'when a provider-executed tool approval is
+// approved' > 'should include provider-executed tool result in content'.
+func TestR87cgenMCPApprovedContent(t *testing.T) {
+	var prompts [][]types.Message
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenRecording(&prompts, func(n int) *types.GenerateResult {
+			if n == 0 {
+				return r87cgenResult(
+					types.ToolCallContent{ToolCallID: "mcp-call-1", ToolName: "mcp_tool", Input: `{ "query": "test" }`, ProviderExecuted: true},
+					types.ToolResultContent{ToolCallID: "mcp-call-1", ToolName: "mcp_tool", Result: map[string]interface{}{"shortened_url": "https://short.url/abc"}, ProviderExecuted: true},
+					r87cgenText("Here is your shortened URL: https://short.url/abc"))
+			}
+			return r87cgenResult(r87cgenText("Done"))
+		}),
+		Tools: []types.Tool{r87cgenMCPTool}, StopWhen: []StopCondition{IsStepCount(3)}, Internal: r87cgenIDs(),
+		Messages: r71genMCPHistory(true, ""),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// TS prints "dynamic": undefined for the provider's result; the view's
+	// default false is dropped to match.
+	content := r87cgenContentView(t, res.Content)
+	if r, ok := content[1].(r87cgenObj); ok && r["dynamic"] == false {
+		delete(r, "dynamic")
+	}
+	r87cgenCheck(t, "content", content, `[{"input":{"query":"test"},"providerExecuted":true,"toolCallId":"mcp-call-1","toolName":"mcp_tool","type":"tool-call"},`+
+		`{"input":{"query":"test"},"output":{"shortened_url":"https://short.url/abc"},"providerExecuted":true,"toolCallId":"mcp-call-1","toolName":"mcp_tool","type":"tool-result"},`+
+		`{"text":"Here is your shortened URL: https://short.url/abc","type":"text"}]`)
+}
+
+// generate-text.test.ts 'when a provider-executed tool approval is denied':
+// 14612 should include text response from model in content, 14623 should
+// have stop finish reason.
+func TestR87cgenMCPDenied(t *testing.T) {
+	var prompts [][]types.Message
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenRecording(&prompts, func(int) *types.GenerateResult {
+			return r87cgenResult(r87cgenText("I understand. The tool execution was not approved."))
+		}),
+		Tools: []types.Tool{r87cgenMCPTool}, StopWhen: []StopCondition{IsStepCount(3)}, Internal: r87cgenIDs(),
+		Messages: r71genMCPHistory(false, "User denied the request"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r87cgenCheck(t, "14612 content", r87cgenContentView(t, res.Content), `[{"text":"I understand. The tool execution was not approved.","type":"text"}]`)
+	if res.FinishReason != types.FinishReasonStop {
+		t.Errorf("14623 finishReason = %s", res.FinishReason)
+	}
 }
