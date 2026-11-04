@@ -22,7 +22,7 @@ type fireworksErrorObject struct {
 	Object  string          `json:"object,omitempty"`
 	Type    string          `json:"type,omitempty"`
 	Code    json.RawMessage `json:"code,omitempty"`
-	Message string          `json:"message"`
+	Message *string         `json:"message"`
 }
 
 // parseFireworksProviderError unwraps an HTTPStatusError and, when the body
@@ -42,18 +42,17 @@ func parseFireworksProviderError(err error) error {
 	// {"error": "plain string message"}
 	var message string
 	if jsonErr := json.Unmarshal(payload.Error, &message); jsonErr == nil {
-		if message == "" {
-			return nil
-		}
+		// TS errorToMessage: the string itself, an empty one included.
 		return providererrors.NewProviderError("fireworks", statusErr.StatusCode, "", message, err)
 	}
 
 	// {"error": {"object","type","code","message"}}
 	var obj fireworksErrorObject
-	if jsonErr := json.Unmarshal(payload.Error, &obj); jsonErr != nil || obj.Message == "" {
+	// TS fireworksErrorSchema: message is a required string ("" is valid).
+	if jsonErr := json.Unmarshal(payload.Error, &obj); jsonErr != nil || obj.Message == nil {
 		return nil
 	}
-	return providererrors.NewProviderError("fireworks", statusErr.StatusCode, fireworksErrorCode(obj.Code), obj.Message, err)
+	return providererrors.NewProviderError("fireworks", statusErr.StatusCode, fireworksErrorCode(obj.Code), *obj.Message, err)
 }
 
 // fireworksErrorCode stringifies a code that may be a JSON string or number.

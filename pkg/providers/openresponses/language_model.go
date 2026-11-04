@@ -127,11 +127,13 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	// with, and must raise a descriptive error rather than silently
 	// producing an empty result.
 	if response.Output == nil {
+		// TS `incomplete_details?.reason ?? status`: a present empty reason
+		// is kept (and then adds no detail).
 		detail := ""
 		if response.IncompleteDetails != nil {
 			detail = response.IncompleteDetails.Reason
 		}
-		if detail == "" {
+		if detail == "" && !openResponsesHasIncompleteReason(httpResp.Body) {
 			detail = response.Status
 		}
 		message := "Responses API returned no output"
@@ -193,6 +195,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	stream.getResponseErrorMetadata = m.provider.config.GetResponseErrorMetadata
 	stream.requestBody = reqBody
 	stream.includeRawChunks = opts.IncludeRawChunks
+	stream.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
 	// TS enqueues stream-start with the warnings first.
 	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(stream, warnings), httpResp.Header, m.ModelID()), nil
 }
@@ -1183,6 +1186,11 @@ type openResponsesStream struct {
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
 	// "stream request body field").
 	requestBody interface{}
+
+	// responseHeaders are the HTTP response headers, carried on the
+	// response-metadata chunk of a response.created event so it does not
+	// clear the headers the leading header chunk reported.
+	responseHeaders map[string]string
 }
 
 // RequestBody implements provider.StreamRequestBody, exposing the raw
@@ -1308,6 +1316,12 @@ func (s *openResponsesStream) Next() (*provider.StreamChunk, error) {
 // handleStreamEvent processes a stream event and returns appropriate chunk
 func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.StreamChunk, bool) {
 	switch event.Type {
+	case "response.created":
+		// TS 4b16915083: {type: 'response-metadata', id: chunk.response.id,
+		// timestamp: new Date(chunk.response.created_at * 1000), modelId:
+		// chunk.response.model}.
+		return s.responseCreatedMetadata(event)
+
 	case "response.output_item.added":
 		// New output item started
 		if event.Item != nil && event.Item.Type == "function_call" {
@@ -1670,8 +1684,10 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 				s.finishUsage = &u
 			}
 		}
+		// TS `chunk.response.error?.code ?? chunk.response.status`: a present
+		// non-null code wins, an empty string included.
 		s.rawFinishReason = status
-		if respErr != nil && respErr.Code != "" {
+		if respErr != nil && (respErr.Code != "" || responseFailedHasCode(event.Raw)) {
 			s.rawFinishReason = respErr.Code
 		}
 		if respErr == nil {
@@ -1923,6 +1939,63 @@ func wireNumberPresent(raw map[string]interface{}, object, key string) bool {
 var openResponsesOptionsSchema = providerutils.OptionSchema{
 	"reasoningEffort":  providerutils.OptNullable(providerutils.OptString),
 	"reasoningSummary": providerutils.OptNullable(providerutils.OptEnum("concise", "detailed", "auto")),
+}
+
+// openResponsesHasIncompleteReason reports whether a response body carries a
+// non-null incomplete_details.reason.
+func openResponsesHasIncompleteReason(body []byte) bool {
+	var w struct {
+		IncompleteDetails struct {
+			Reason json.RawMessage `json:"reason"`
+		} `json:"incomplete_details"`
+	}
+	if json.Unmarshal(body, &w) != nil {
+		return false
+	}
+	return len(w.IncompleteDetails.Reason) > 0 && string(w.IncompleteDetails.Reason) != "null"
+}
+
+// responseFailedHasCode reports whether a response.failed event carries a
+// non-null response.error.code.
+func responseFailedHasCode(raw json.RawMessage) bool {
+	var w struct {
+		Response struct {
+			Error struct {
+				Code json.RawMessage `json:"code"`
+			} `json:"error"`
+		} `json:"response"`
+	}
+	if json.Unmarshal(raw, &w) != nil {
+		return false
+	}
+	return len(w.Response.Error.Code) > 0 && string(w.Response.Error.Code) != "null"
+}
+
+// responseCreatedMetadata maps a response.created event to the
+// response-metadata chunk TS enqueues. A missing or null `response` is the
+// TypeError TS throws reading `chunk.response.id`, which errors the stream.
+func (s *openResponsesStream) responseCreatedMetadata(event *StreamEvent) (*provider.StreamChunk, bool) {
+	var wire struct {
+		Response json.RawMessage `json:"response"`
+	}
+	_ = json.Unmarshal(event.Raw, &wire)
+	if event.Response == nil {
+		what := "undefined"
+		if string(wire.Response) == "null" {
+			what = "null"
+		}
+		s.err = fmt.Errorf("Cannot read properties of %s (reading 'id')", what) //nolint:staticcheck // ST1005: TypeError text from TS
+		return nil, false
+	}
+	meta := &provider.ResponseMetadata{
+		ID:      event.Response.ID,
+		ModelID: event.Response.Model,
+		Headers: s.responseHeaders,
+	}
+	if ts, ok := openResponsesCreatedAt(wire.Response); ok {
+		meta.Timestamp = ts
+	}
+	return &provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: meta}, true
 }
 
 // openResponsesCreatedAt reads `created_at` (unix seconds) from the raw

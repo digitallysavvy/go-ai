@@ -641,24 +641,36 @@ func convertOpenAIBatchResultLine(wire openAIBatchResultLineWire) *provider.Batc
 }
 
 func convertOpenAIBatchErrorResponse(body json.RawMessage, statusCode int) *provider.BatchError {
+	// TS openaiErrorDataSchema: error.message a string ("" is valid), type a
+	// nullish string, code a nullish string or number (String(code)).
 	var envelope struct {
 		Error struct {
-			Message string      `json:"message"`
+			Message *string     `json:"message"`
 			Type    string      `json:"type"`
 			Code    interface{} `json:"code"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(body, &envelope); err != nil || envelope.Error.Message == "" {
+	code, codeOK := "", true
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		codeOK = false
+	} else {
+		switch c := envelope.Error.Code.(type) {
+		case nil:
+		case string:
+			code = c
+		case float64:
+			code = providerutils.JSNumberString(c)
+		default:
+			codeOK = false
+		}
+	}
+	if envelope.Error.Message == nil || !codeOK {
 		return &provider.BatchError{
 			Message:    fmt.Sprintf("OpenAI batch request failed with status code %d.", statusCode),
 			StatusCode: statusCode,
 		}
 	}
-	code := ""
-	if envelope.Error.Code != nil {
-		code = fmt.Sprintf("%v", envelope.Error.Code)
-	}
-	return &provider.BatchError{Message: envelope.Error.Message, Type: envelope.Error.Type, Code: code, StatusCode: statusCode}
+	return &provider.BatchError{Message: *envelope.Error.Message, Type: envelope.Error.Type, Code: code, StatusCode: statusCode}
 }
 
 // convertOpenAIBatchResponseBodyBytes decodes and converts one succeeded

@@ -95,10 +95,7 @@ func newDeepSeekStreamProviderErrorChunk(raw json.RawMessage, fullFrame json.Raw
 		Code    json.RawMessage `json:"code"`
 	}
 	_ = json.Unmarshal(raw, &payload)
-	message := payload.Message
-	if message == "" {
-		message = deepseekStreamErrorText(raw)
-	}
+	message := deepseekStreamErrorText(raw)
 	var code interface{}
 	if len(payload.Code) > 0 {
 		_ = json.Unmarshal(payload.Code, &code)

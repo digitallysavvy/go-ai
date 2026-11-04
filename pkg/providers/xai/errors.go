@@ -189,31 +189,6 @@ func (e *XAIStreamFailed) Error() string {
 	return "xai.responses stream failed"
 }
 
-// xaiAPIErrorBody is the structured `{"error": {"message": ..., "code": ...}}`
-// error shape used by most xAI REST endpoints (chat completions, images,
-// videos).
-type xaiAPIErrorBody struct {
-	Error struct {
-		Message string      `json:"message"`
-		Type    string      `json:"type,omitempty"`
-		Code    interface{} `json:"code,omitempty"`
-	} `json:"error"`
-}
-
-// xaiResponsesErrorBody is the `{"code": ..., "error": "..."}` shape used by
-// the xAI Responses API.
-type xaiResponsesErrorBody struct {
-	Code  string `json:"code"`
-	Error string `json:"error"`
-}
-
-// xaiSpeechErrorBody is the simpler `{"error": "some string"}` shape used by
-// the xAI text-to-speech endpoint, e.g. {"error":"speed must be between 0.7
-// and 1.5"}.
-type xaiSpeechErrorBody struct {
-	Error string `json:"error"`
-}
-
 // parseXAIErrorMessage extracts a human-readable error message from a raw
 // xAI error response body, mirroring the TS SDK's xaiFailedResponseHandler /
 // xaiErrorDataSchema union. It tries, in order:
@@ -225,22 +200,34 @@ type xaiSpeechErrorBody struct {
 func parseXAIErrorMessage(body []byte) string {
 	body = []byte(textdecode.UTF8(body)) // TS response.text()
 	// 1. Structured API error shape (object under "error").
-	var apiErr xaiAPIErrorBody
-	if err := json.Unmarshal(body, &apiErr); err == nil && apiErr.Error.Message != "" {
-		return apiErr.Error.Message
+	// Each member's strings are required (z.string()), so an empty string
+	// matches and is the message.
+	var apiErr struct {
+		Error *struct {
+			Message *string `json:"message"`
+			Type    *string `json:"type"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &apiErr); err == nil && apiErr.Error != nil && apiErr.Error.Message != nil {
+		return *apiErr.Error.Message
 	}
 
 	// 2. Responses API shape: {"code": "...", "error": "..."}.
-	var responsesErr xaiResponsesErrorBody
+	var responsesErr struct {
+		Code  *string `json:"code"`
+		Error *string `json:"error"`
+	}
 	if err := json.Unmarshal(body, &responsesErr); err == nil &&
-		responsesErr.Code != "" && responsesErr.Error != "" {
-		return responsesErr.Code + ": " + responsesErr.Error
+		responsesErr.Code != nil && responsesErr.Error != nil {
+		return *responsesErr.Code + ": " + *responsesErr.Error
 	}
 
 	// 3. Plain speech error shape: {"error": "some string"}.
-	var speechErr xaiSpeechErrorBody
-	if err := json.Unmarshal(body, &speechErr); err == nil && speechErr.Error != "" {
-		return speechErr.Error
+	var speechErr struct {
+		Error *string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &speechErr); err == nil && speechErr.Error != nil {
+		return *speechErr.Error
 	}
 
 	return string(body)

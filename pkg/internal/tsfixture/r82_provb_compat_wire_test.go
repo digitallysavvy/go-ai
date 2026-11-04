@@ -187,6 +187,7 @@ func TestR82provbCompatChatWireThroughProviders(t *testing.T) {
 			"doGenerate > response format > should not duplicate reasoningEffort in request body":                        "TS ZaiChatLanguageModel parses providerOptions.zai with a strict schema, which drops unknown keys",
 			"doGenerate > response format > should not duplicate textVerbosity in request body":                          "TS ZaiChatLanguageModel parses providerOptions.zai with a strict schema, which drops unknown keys",
 			"~should include provider-specific options":                                                                  "TS ZaiChatLanguageModel parses providerOptions.zai with a strict schema, which drops unknown keys",
+			"doGenerate > response format > should pass raw verbosity through when textVerbosity is not set":             "TS ZaiChatLanguageModel parses providerOptions.zai with a strict schema, which drops unknown keys (and transformZaiRequestBody drops verbosity)",
 			"doGenerate > response format > should send reasoningEffort null as reasoning_effort null":                   "TS ZaiChatLanguageModel parses providerOptions.zai with its own schema, where reasoningEffort is an enum (null is rejected)",
 			"doGenerate > response format > should prefer providerOptions reasoningEffort null over top-level reasoning": "TS ZaiChatLanguageModel parses providerOptions.zai with its own schema, where reasoningEffort is an enum (null is rejected)",
 		}}, nil, func(b, k string, h map[string]string) provider.Provider {

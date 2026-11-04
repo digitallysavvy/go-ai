@@ -154,7 +154,9 @@ func deriveOrigin(rawURL string) (string, error) {
 	case "ws":
 		origin.Scheme = "http"
 	}
+	origin.User = nil // an origin has no userinfo (never echo credentials)
 	origin.Path = "/"
+	origin.RawPath = ""
 	origin.RawQuery = ""
 	origin.Fragment = ""
 	return origin.String(), nil

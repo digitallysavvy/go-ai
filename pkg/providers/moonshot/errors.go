@@ -34,7 +34,14 @@ func parseMoonshotProviderError(err error) error {
 
 	var envelope moonshotErrorEnvelope
 	var raw map[string]interface{}
-	if unmarshalErr := json.Unmarshal(statusErr.Body, &envelope); unmarshalErr != nil || envelope.Error.Message == "" {
+	// TS moonshotAIErrorSchema: error.message is a required string; an
+	// empty one is a valid message.
+	var present struct {
+		Error struct {
+			Message *string `json:"message"`
+		} `json:"error"`
+	}
+	if unmarshalErr := json.Unmarshal(statusErr.Body, &envelope); unmarshalErr != nil || json.Unmarshal(statusErr.Body, &present) != nil || present.Error.Message == nil {
 		return err
 	}
 	_ = json.Unmarshal(statusErr.Body, &raw)
