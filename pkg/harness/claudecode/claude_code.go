@@ -284,10 +284,11 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	}
 
 	var supportsUserMessages atomic.Bool
+	var bridgeHello atomic.Pointer[bridge.Hello]
 	channelOpts := bridge.ChannelOptions{
 		Connect: bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{
 			Name: "claude-code bridge", OpenRetryTimeout: timeout, StartContext: ctx,
-			OnHello: trackUserMessageResponses(&supportsUserMessages),
+			OnHello: trackHello(&bridgeHello, &supportsUserMessages),
 		}),
 		Reconnect:     settings.Reconnect,
 		OnDebug:       settings.OnDebug,
@@ -329,6 +330,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		permissionMode:               opts.PermissionMode, builtinToolFiltering: opts.BuiltinToolFiltering,
 		mcpServers: settings.MCPServers, sandbox: restricted, sandboxHomeDir: sandboxHomeDir,
 		supportsUserMessages: supportsUserMessages.Load,
+		bridgeHello:          bridgeHello.Load, turnStartTimeout: turnStartTimeout(settings),
 	}), nil
 }
 
@@ -374,10 +376,11 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 		return nil
 	}
 	var supportsUserMessages atomic.Bool
+	var bridgeHello atomic.Pointer[bridge.Hello]
 	channel := bridge.NewChannel(bridge.ChannelOptions{
 		Connect: bridge.NewBridgeConnectFunc(attachEndpoint, bridge.BridgeConnectOptions{
 			Name:    "claude-code bridge",
-			OnHello: trackUserMessageResponses(&supportsUserMessages),
+			OnHello: trackHello(&bridgeHello, &supportsUserMessages),
 		}),
 		Reconnect:              opts.settings.Reconnect,
 		OnDebug:                opts.settings.OnDebug,
@@ -403,9 +406,36 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 		bridgePort:      opts.coords.Port, bridgeToken: opts.coords.Token, sandboxID: opts.sandboxID,
 		sandboxCredentialEnvironment: opts.sandboxCredentialEnvironment,
 		supportsUserMessages:         supportsUserMessages.Load,
-		permissionMode:               opts.permissionMode, builtinToolFiltering: opts.builtinToolFiltering,
+		bridgeHello:                  bridgeHello.Load, turnStartTimeout: turnStartTimeout(opts.settings),
+		permissionMode: opts.permissionMode, builtinToolFiltering: opts.builtinToolFiltering,
 		mcpServers: opts.mcpServers, sandbox: opts.sandbox, sandboxHomeDir: opts.sandboxHomeDir,
 	})
+}
+
+// defaultTurnStartTimeout is the default Settings.TurnStartTimeout (TS
+// `turnStartTimeoutMs ?? 120_000`).
+const defaultTurnStartTimeout = 120 * time.Second
+
+// turnStartTimeout resolves Settings.TurnStartTimeout: zero is the default,
+// a negative value disables the deadline (returned as 0).
+func turnStartTimeout(settings Settings) time.Duration {
+	switch {
+	case settings.TurnStartTimeout == 0:
+		return defaultTurnStartTimeout
+	case settings.TurnStartTimeout < 0:
+		return 0
+	}
+	return settings.TurnStartTimeout
+}
+
+// trackHello records the latest bridge-hello of the connection (TS
+// `onHello`: `bridgeHello = hello`) and its user-message capability.
+func trackHello(latest *atomic.Pointer[bridge.Hello], supported *atomic.Bool) func(*bridge.Hello) {
+	track := trackUserMessageResponses(supported)
+	return func(h *bridge.Hello) {
+		latest.Store(h)
+		track(h)
+	}
 }
 
 // trackUserMessageResponses records the capability of each bridge-hello,

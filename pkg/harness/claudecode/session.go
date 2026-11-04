@@ -2,6 +2,8 @@ package claudecode
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -74,6 +76,13 @@ type sessionOptions struct {
 
 	// debug is the observability debug config forwarded on `start`.
 	debug *harness.DebugConfig
+
+	// bridgeHello returns the latest bridge-hello of the channel's current
+	// connection (nil before any). Mirrors TS `getBridgeHello`.
+	bridgeHello func() *bridge.Hello
+	// turnStartTimeout bounds the wait for a turn's first event; 0 disables
+	// it. Mirrors TS `turnStartTimeoutMs`.
+	turnStartTimeout time.Duration
 }
 
 // startSettings are the Settings forwarded unchanged on every start frame.
@@ -159,8 +168,7 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 	// Recovery starts a native turn once. Later continuations attach to it.
 	s.rerunContinue = false
 	s.mu.Unlock()
-	if err := s.opts.channel.Send(frame); err != nil {
-		control.settleError(err)
+	if err := control.sendStart(frame); err != nil {
 		return nil, err
 	}
 	return control, nil
@@ -190,8 +198,7 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 		frame.DeferredToolUseID = s.opts.deferredToolUseID
 		s.pendingResumeFlag = false
 		s.mu.Unlock()
-		if err := s.opts.channel.Send(frame); err != nil {
-			control.settleError(err)
+		if err := control.sendStart(frame); err != nil {
 			return nil, err
 		}
 	}
@@ -408,19 +415,42 @@ func waitForProcOrTimeout(proc providerutils.SandboxProcess, d time.Duration) {
 // wireTurn subscribes to one turn's worth of bridge events and returns the
 // control surface. Mirrors TS `wireTurn`.
 func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptControl {
-	pc := &promptControl{channel: s.opts.channel, done: make(chan struct{})}
+	pc := &promptControl{channel: s.opts.channel, done: make(chan struct{}), bridgeHello: s.opts.bridgeHello, turnStartTimeout: s.opts.turnStartTimeout}
 	pc.checkpoint = bridge.NewCheckpointRecorder(s.opts.channel)
 	forward := func(part harness.StreamPart) {
+		pc.clearPendingStart()
 		defer func() { _ = recover() }()
 		emit(part)
 	}
+
+	// Registered before the user-message submitter's own reconnect handler,
+	// so a lost turn start is retried before pending steering is replayed.
+	var unsubs []func()
+	unsubs = append(unsubs, s.opts.channel.OnReconnect(pc.retryStartAfterReconnect))
 
 	// Mid-turn steering: only when the bridge advertised acknowledged user
 	// messages on its hello (captured once at DoStart time — see
 	// sessionOptions.supportsUserMessages). Mirrors TS `wireTurn`'s
 	// `supportsUserMessageResponses() ? experimental_createBridgeUserMessageSubmitter(...) : undefined`.
+	// The submitter owns replay after the turn start has been retried, so
+	// its requests are not queued while disconnected (TS
+	// `queueIfDisconnected: false`).
 	if s.opts.supportsUserMessages != nil && s.opts.supportsUserMessages() {
-		pc.userMessages = bridge.NewChannelUserMessageSubmitter(s.opts.channel)
+		channel := s.opts.channel
+		noQueue := false
+		pc.userMessages = bridge.NewExperimentalUserMessageSubmitter(bridge.ExperimentalUserMessageSubmitterOptions{
+			Send: func(cmd bridge.UserMessageCommand) error {
+				return channel.SendWithOptions(cmd, bridge.SendOptions{QueueIfDisconnected: &noQueue})
+			},
+			OnResponse: func(fn func(*bridge.UserMessageResponse)) func() {
+				return channel.On(bridge.TypeUserMessageResponse, func(ev bridge.Event) {
+					if r, ok := ev.Message.(*bridge.UserMessageResponse); ok {
+						fn(r)
+					}
+				})
+			},
+			OnReconnect: channel.OnReconnect,
+		})
 	}
 
 	eventTypes := []string{
@@ -430,7 +460,6 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		harness.PartTypeToolCall, harness.PartTypeToolApprovalRequest, harness.PartTypeToolResult,
 		harness.PartTypeFinishStep, harness.PartTypeCompaction, harness.PartTypeRaw,
 	}
-	var unsubs []func()
 	for _, t := range eventTypes {
 		t := t
 		unsubs = append(unsubs, s.opts.channel.On(t, func(e bridge.Event) {
@@ -471,7 +500,9 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		}
 		pc.settleError(cause)
 	}))
+	pc.mu.Lock()
 	pc.unsubs = unsubs
+	pc.mu.Unlock()
 	// Listeners are registered: release events the channel buffered while an
 	// attach/replay was in flight (first turn only).
 	s.mu.Lock()
@@ -502,31 +533,44 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 // UserMessageSubmitter (when the bridge advertises support).
 type promptControl struct {
 	channel      *bridge.Channel
-	unsubs       []func()
 	userMessages *bridge.ExperimentalUserMessageSubmitter
 	checkpoint   *bridge.CheckpointRecorder
+
+	bridgeHello      func() *bridge.Hello
+	turnStartTimeout time.Duration
+
+	// mu guards the fields below.
+	mu      sync.Mutex
+	unsubs  []func()
+	settled bool
+	// pendingStart is the start frame until the turn's first event (or its
+	// settlement); awaitingStartSend is true while it is queued but not yet
+	// written; startCursor is the event cursor when it was first sent.
+	// Mirrors TS `pendingStart`, `awaitingStartSend`, `startCursor`.
+	pendingStart      *StartFrame
+	awaitingStartSend bool
+	startCursor       float64
+	startTimer        *time.Timer
 
 	once sync.Once
 	done chan struct{}
 	err  error
 }
 
-func (c *promptControl) settleSuccess() {
-	c.once.Do(func() {
-		for _, u := range c.unsubs {
-			u()
-		}
-		if c.userMessages != nil {
-			c.userMessages.Close(nil)
-		}
-		close(c.done)
-	})
-}
+func (c *promptControl) settleSuccess() { c.settle(nil) }
 
-func (c *promptControl) settleError(err error) {
+func (c *promptControl) settleError(err error) { c.settle(err) }
+
+func (c *promptControl) settle(err error) {
 	c.once.Do(func() {
+		c.mu.Lock()
+		c.settled = true
+		c.clearPendingStartLocked()
+		unsubs := c.unsubs
+		c.unsubs = nil
+		c.mu.Unlock()
 		c.err = err
-		for _, u := range c.unsubs {
+		for _, u := range unsubs {
 			u()
 		}
 		if c.userMessages != nil {
@@ -534,6 +578,130 @@ func (c *promptControl) settleError(err error) {
 		}
 		close(c.done)
 	})
+}
+
+// clearPendingStart forgets the start frame and stops its deadline: the
+// bridge emitted a turn event, so the start arrived. Mirrors TS
+// `clearPendingStart`.
+func (c *promptControl) clearPendingStart() {
+	c.mu.Lock()
+	c.clearPendingStartLocked()
+	c.mu.Unlock()
+}
+
+func (c *promptControl) clearPendingStartLocked() {
+	c.pendingStart = nil
+	if c.startTimer != nil {
+		c.startTimer.Stop()
+		c.startTimer = nil
+	}
+}
+
+// sendStart sends the turn's start frame with a fresh StartID and arms the
+// first-event deadline. A send error settles the turn and is returned.
+// Mirrors TS `sendStart`.
+func (c *promptControl) sendStart(frame *StartFrame) error {
+	cursor := c.channel.LastSeenEventID()
+	if hello := c.hello(); hello != nil && hello.LastSeq != nil && *hello.LastSeq > cursor {
+		cursor = *hello.LastSeq
+	}
+	c.mu.Lock()
+	if c.settled {
+		c.mu.Unlock()
+		return nil
+	}
+	c.startCursor = cursor
+	frame.StartID = newStartID()
+	c.pendingStart = frame
+	if timeout := c.turnStartTimeout; timeout > 0 {
+		c.startTimer = time.AfterFunc(timeout, func() {
+			c.mu.Lock()
+			fire := !c.settled && c.pendingStart != nil
+			c.mu.Unlock()
+			if fire {
+				c.failStart(fmt.Errorf("claude-code bridge did not emit a turn event within %dms.", timeout.Milliseconds())) //nolint:staticcheck // matches TS SDK's exact error text
+			}
+		})
+	}
+	c.mu.Unlock()
+	if err := c.sendPendingStart(); err != nil {
+		c.settleError(err)
+		return err
+	}
+	return nil
+}
+
+// sendPendingStart (re)sends the pending start frame. awaitingStartSend
+// stays true until the frame was handed to the socket, so a reconnect that
+// flushes the queued frame does not send it a second time. Mirrors TS
+// `sendPendingStart`.
+func (c *promptControl) sendPendingStart() error {
+	c.mu.Lock()
+	frame := c.pendingStart
+	if frame == nil {
+		c.mu.Unlock()
+		return nil
+	}
+	c.awaitingStartSend = true
+	c.mu.Unlock()
+	err := c.channel.SendWithOptions(frame, bridge.SendOptions{OnSent: func() {
+		c.mu.Lock()
+		c.awaitingStartSend = false
+		c.mu.Unlock()
+	}})
+	if err != nil {
+		c.mu.Lock()
+		c.awaitingStartSend = false
+		c.mu.Unlock()
+	}
+	return err
+}
+
+// retryStartAfterReconnect resends a start the bridge never received: only
+// when the reconnected bridge reports it is waiting for a turn and has not
+// emitted an event past the start's cursor. A bridge without
+// idempotentStart cannot tell a resend from a new turn, so the turn fails
+// instead. Mirrors the TS `channel.onReconnect` handler in `wireTurn`.
+func (c *promptControl) retryStartAfterReconnect() {
+	c.mu.Lock()
+	if c.pendingStart == nil || c.settled || c.awaitingStartSend {
+		c.mu.Unlock()
+		return
+	}
+	cursor := c.startCursor
+	c.mu.Unlock()
+	hello := c.hello()
+	if hello == nil || hello.State != "waiting" || hello.LastSeq == nil || *hello.LastSeq > cursor {
+		return
+	}
+	if hello.SupportsIdempotentStart() {
+		_ = c.sendPendingStart()
+		return
+	}
+	c.failStart(errors.New("claude-code bridge is waiting for a start after reconnect and does not support safe start retries.")) //nolint:staticcheck // matches TS SDK's exact error text
+}
+
+// failStart fails the turn and tears the bridge connection down. Mirrors TS
+// `failStart`.
+func (c *promptControl) failStart(err error) {
+	c.settleError(err)
+	c.channel.BeginClose()
+	_ = c.channel.Send(bridge.AbortCommand{})
+	c.channel.Close()
+}
+
+func (c *promptControl) hello() *bridge.Hello {
+	if c.bridgeHello == nil {
+		return nil
+	}
+	return c.bridgeHello()
+}
+
+// newStartID returns a random turn start identifier (TS `generateId()`).
+func newStartID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 func (c *promptControl) SubmitToolResult(ctx context.Context, result harness.ToolResultSubmission) error {

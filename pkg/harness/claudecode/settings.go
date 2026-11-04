@@ -121,6 +121,12 @@ type Settings struct {
 	// StartupTimeout bounds how long to wait for the bridge to announce its
 	// port. Defaults to 120s.
 	StartupTimeout time.Duration
+	// TurnStartTimeout bounds how long a turn waits for its first bridge
+	// event after the start frame was sent. When it passes, the turn fails
+	// with "claude-code bridge did not emit a turn event within <n>ms." and
+	// the bridge connection is closed. Zero uses the default of 120s; a
+	// negative value disables the deadline. Mirrors TS `turnStartTimeoutMs`.
+	TurnStartTimeout time.Duration
 	// Reconnect tunes reconnection after an established bridge connection
 	// drops.
 	Reconnect bridge.ReconnectOptions

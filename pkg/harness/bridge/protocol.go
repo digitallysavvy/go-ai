@@ -64,6 +64,10 @@ func (f StreamPartFrame) FrameType() string { return f.Part.PartType() }
 
 // HelloCapabilities are the capabilities announced on bridge-hello.
 type HelloCapabilities struct {
+	// IdempotentStart reports that the bridge drops a repeated `start`
+	// whose StartID equals the last one it accepted, so a host may resend a
+	// start lost during a reconnect. Null decodes as absent (TS `nullish`).
+	IdempotentStart                  *bool `json:"idempotentStart,omitempty"`
 	ExperimentalUserMessageResponses *bool `json:"experimental_userMessageResponses,omitempty"`
 }
 
@@ -356,6 +360,11 @@ type StartBase struct {
 	PermissionMode       harness.PermissionMode        `json:"permissionMode,omitempty"`
 	BuiltinToolFiltering *harness.BuiltinToolFiltering `json:"builtinToolFiltering,omitempty"`
 	ResponseFormat       *harness.ResponseFormat       `json:"responseFormat,omitempty"`
+	// StartID identifies one turn start. A bridge that advertises
+	// HelloCapabilities.IdempotentStart ignores a start whose StartID equals
+	// the previous one, which makes a resend after a reconnect safe. Mirrors
+	// TS `harnessV1BridgeStartBaseSchema.startId`.
+	StartID string `json:"startId,omitempty"`
 }
 
 // FrameType returns "start".

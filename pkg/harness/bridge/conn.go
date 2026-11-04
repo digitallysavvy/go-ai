@@ -276,6 +276,13 @@ func (h *Hello) SupportsUserMessageResponses() bool {
 		*h.Capabilities.ExperimentalUserMessageResponses
 }
 
+// SupportsIdempotentStart reports the hello capability
+// `idempotentStart === true`.
+func (h *Hello) SupportsIdempotentStart() bool {
+	return h != nil && h.Capabilities != nil && h.Capabilities.IdempotentStart != nil &&
+		*h.Capabilities.IdempotentStart
+}
+
 // errConnectionAborted is the default abort reason (TS
 // "WebSocket connection aborted").
 var errConnectionAborted = errors.New("WebSocket connection aborted")

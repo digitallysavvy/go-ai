@@ -77,6 +77,8 @@ type Server struct {
 	active     *serverConn
 	state      string // "waiting" | "running"
 	handshakes []handshake
+	// lastStartID is the startId of the last start accepted.
+	lastStartID string
 }
 
 type serverConn struct {
@@ -159,11 +161,11 @@ func (s *Server) handle(ws *websocket.Conn) {
 		if s.opts.HelloDelay > 0 {
 			time.Sleep(s.opts.HelloDelay)
 		}
-		supportsUserMessages := true
+		supported := true
 		_ = c.send(&bridge.Hello{
 			State:        state,
 			LastSeq:      &lastSeq,
-			Capabilities: &bridge.HelloCapabilities{ExperimentalUserMessageResponses: &supportsUserMessages},
+			Capabilities: &bridge.HelloCapabilities{IdempotentStart: &supported, ExperimentalUserMessageResponses: &supported},
 		})
 	}
 
@@ -199,6 +201,15 @@ func (s *Server) handleInbound(c *serverConn, raw []byte) {
 		var payload map[string]any
 		_ = json.Unmarshal(raw, &payload)
 		s.mu.Lock()
+		// Like runBridge (3bf70f83bc), a start that repeats the last
+		// startId is a retry of a start already accepted: drop it.
+		if startID, ok := payload["startId"].(string); ok {
+			if startID == s.lastStartID {
+				s.mu.Unlock()
+				return
+			}
+			s.lastStartID = startID
+		}
 		s.active = c
 		s.state = "running"
 		onStart := s.opts.OnStart
