@@ -393,13 +393,13 @@ func filterResponseContent(content []types.ContentPart) []types.ContentPart {
 	for _, part := range content {
 		switch p := part.(type) {
 		case types.TextContent:
-			if p.Text == "" {
+			if p.Text == "" && !hasProviderMetadata(p.ProviderMetadata) {
 				continue
 			}
 			filtered = append(filtered, responseTextContent(p))
 			continue
 		case *types.TextContent:
-			if p == nil || p.Text == "" {
+			if p == nil || (p.Text == "" && !hasProviderMetadata(p.ProviderMetadata)) {
 				continue
 			}
 			filtered = append(filtered, responseTextContent(*p))
@@ -499,6 +499,15 @@ func filterResponseContent(content []types.ContentPart) []types.ContentPart {
 		filtered = append(filtered, part)
 	}
 	return filtered
+}
+
+// hasProviderMetadata reports whether a content part carries provider
+// metadata (TS `providerMetadata != null`): absent and the JSON literal null
+// count as none, an empty object does not. TS to-response-messages.ts
+// (fd7e8a75d7) keeps an empty text part that has metadata, so a Google
+// thoughtSignature on an empty text part is replayed.
+func hasProviderMetadata(metadata json.RawMessage) bool {
+	return len(metadata) > 0 && string(metadata) != "null"
 }
 
 func providerMetadataOptions(metadata json.RawMessage) map[string]interface{} {

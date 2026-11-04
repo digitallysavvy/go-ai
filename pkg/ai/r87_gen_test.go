@@ -138,3 +138,115 @@ func TestR87genStreamRequestURLCapability(t *testing.T) {
 		t.Errorf("streamRequestURL without the capability = %q", got)
 	}
 }
+
+// r87genEmptyTextCases are the empty-text-provider-metadata.test.ts cases
+// (fd7e8a75d7): metadata, and whether the empty text part is kept in the
+// response messages.
+var r87genEmptyTextCases = []struct {
+	name     string
+	metadata json.RawMessage
+	retain   bool
+}{
+	{"undefined metadata", nil, false},
+	{"null metadata from a JavaScript provider", json.RawMessage(`null`), false},
+	{"an empty metadata object", json.RawMessage(`{}`), true},
+	{"opaque generic provider metadata", json.RawMessage(`{"custom":{"opaque":"preserve-exactly/+="}}`), true},
+}
+
+func r87genCheckEmptyTextResponse(t *testing.T, api, name string, retain bool, metadata json.RawMessage, step types.StepResult) {
+	t.Helper()
+	if len(step.ResponseMessages) != 1 || step.ResponseMessages[0].Role != types.RoleAssistant {
+		t.Fatalf("%s %s: response messages %+v", api, name, step.ResponseMessages)
+	}
+	var texts []string
+	var kept *types.TextContent
+	for _, part := range step.ResponseMessages[0].Content {
+		tc, ok := part.(types.TextContent)
+		if !ok {
+			t.Fatalf("%s %s: unexpected part %T", api, name, part)
+		}
+		texts = append(texts, tc.Text)
+		if tc.Text == "" {
+			kept = &tc
+		}
+	}
+	want := []string{"A", "B"}
+	if retain {
+		want = []string{"A", "", "B"}
+	}
+	if !reflect.DeepEqual(texts, want) {
+		t.Fatalf("%s %s: response texts %q, want %q", api, name, texts, want)
+	}
+	if retain {
+		got, _ := json.Marshal(kept.ProviderOptions)
+		wantOpts := string(metadata)
+		if wantOpts == "{}" {
+			wantOpts = "null" // Go has no distinct empty providerOptions; it serializes the same (omitted)
+		}
+		if string(got) != wantOpts {
+			t.Errorf("%s %s: kept part providerOptions %s, want %s", api, name, got, wantOpts)
+		}
+		found := false
+		for _, part := range step.Content {
+			if tc, ok := part.(types.TextContent); ok && tc.Text == "" && string(tc.ProviderMetadata) == string(metadata) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s %s: step content lost the empty text part with metadata", api, name)
+		}
+	}
+}
+
+// TestR87genEmptyTextProviderMetadataGenerate ports
+// empty-text-provider-metadata.test.ts (generateText).
+func TestR87genEmptyTextProviderMetadataGenerate(t *testing.T) {
+	for _, c := range r87genEmptyTextCases {
+		model := &testutil.MockLanguageModel{
+			DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+				return &types.GenerateResult{
+					Text: "AB",
+					Content: []types.ContentPart{
+						types.TextContent{Text: "A"},
+						types.TextContent{Text: "", ProviderMetadata: c.metadata},
+						types.TextContent{Text: "B"},
+					},
+					FinishReason: types.FinishReasonStop,
+				}, nil
+			},
+		}
+		result, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "Metadata preservation"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r87genCheckEmptyTextResponse(t, "generateText", c.name, c.retain, c.metadata, result.FinalStep)
+	}
+}
+
+// TestR87genEmptyTextProviderMetadataStream ports
+// empty-text-provider-metadata.test.ts (streamText).
+func TestR87genEmptyTextProviderMetadataStream(t *testing.T) {
+	for _, c := range r87genEmptyTextCases {
+		model := &testutil.MockLanguageModel{
+			DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeTextStart, ID: "a"},
+					{Type: provider.ChunkTypeText, ID: "a", Text: "A"},
+					{Type: provider.ChunkTypeTextEnd, ID: "a"},
+					{Type: provider.ChunkTypeTextStart, ID: "empty", ProviderMetadata: c.metadata},
+					{Type: provider.ChunkTypeText, ID: "empty", Text: "", ProviderMetadata: c.metadata},
+					{Type: provider.ChunkTypeTextEnd, ID: "empty"},
+					{Type: provider.ChunkTypeTextStart, ID: "b"},
+					{Type: provider.ChunkTypeText, ID: "b", Text: "B"},
+					{Type: provider.ChunkTypeTextEnd, ID: "b"},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+				}), nil
+			},
+		}
+		result, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "Metadata preservation"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r87genCheckEmptyTextResponse(t, "streamText", c.name, c.retain, c.metadata, result.FinalStep())
+	}
+}
