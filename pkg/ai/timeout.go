@@ -192,18 +192,22 @@ func (tc *TimeoutConfig) CreateTimeoutContext(ctx context.Context, timeoutType s
 		return ctx, func() {}
 	}
 
+	// The deadline's cause is the TS abort reason (setAbortTimeout /
+	// AbortSignal.timeout): a model call, tool or provider reading
+	// context.Cause sees the TimeoutError; ctx.Err() stays
+	// context.DeadlineExceeded.
 	switch timeoutType {
 	case "total":
 		if tc.Total != nil {
-			return context.WithTimeout(ctx, *tc.Total)
+			return context.WithTimeoutCause(ctx, *tc.Total, tc.timeoutError(TimeoutReasonTotal, context.DeadlineExceeded))
 		}
 	case "step":
 		if tc.PerStep != nil {
-			return context.WithTimeout(ctx, *tc.PerStep)
+			return context.WithTimeoutCause(ctx, *tc.PerStep, tc.timeoutError(TimeoutReasonStep, context.DeadlineExceeded))
 		}
 	case "chunk":
 		if tc.PerChunk != nil {
-			return context.WithTimeout(ctx, *tc.PerChunk)
+			return context.WithTimeoutCause(ctx, *tc.PerChunk, tc.timeoutError(TimeoutReasonChunk, context.DeadlineExceeded))
 		}
 	}
 

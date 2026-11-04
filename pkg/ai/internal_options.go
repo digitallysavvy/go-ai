@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/aibridge"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -167,6 +168,11 @@ type InternalOptions struct {
 	// approval response as is, without generateText's execution-denied
 	// result. Used by WorkflowAgent.
 	ApprovalsResumed bool
+
+	// now replaces time.Now for StreamText's step and model-call timings
+	// (performance, fallback response timestamps), as TS _internal.now.
+	// Tests only.
+	now func() time.Time
 }
 
 // setWorkflowStreamHooks is aibridge.SetWorkflowStreamHooks.

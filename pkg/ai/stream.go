@@ -785,13 +785,22 @@ type StreamTextResult struct {
 	// WorkflowAgent.stream dispatches one root per run.
 	callerOwnsTelemetryRoot bool
 	streamModeUsage         bool
-	streamDoneOnce          sync.Once
+	// clock is InternalOptions.now (see now).
+	clock func() time.Time
+	// endOnError is InternalOptions.EndOnError (WorkflowAgent): its output
+	// handling stays its own (see setNoOutputErr).
+	endOnError     bool
+	streamDoneOnce sync.Once
 
 	// cancelBootstrap cancels bootstrapAndStream's context. It lets Close()
 	// interrupt in-flight bootstrap work (resuming approved tool calls, or
 	// making the first provider stream request) that hasn't produced a
 	// stream yet — see the StreamText/bootstrapAndStream split below.
 	cancelBootstrap context.CancelFunc
+	// abortBootstrap cancels the same context with a cause: a chunk or
+	// first-chunk timeout aborts the model call with its TimeoutError, as
+	// TS aborts the step's signal with it (chunkMs / firstChunkMs).
+	abortBootstrap context.CancelCauseFunc
 
 	// resolvedToolCallers and toolSearchState are resolved once,
 	// synchronously, in StreamText and reused for every step (initial and
@@ -869,12 +878,14 @@ func streamTextInternal(ctx context.Context, opts StreamTextOptions, steeringRun
 		return nil, err
 	}
 
-	bootstrapCtx, cancelBootstrap := context.WithCancel(ctx)
+	bootstrapCtx, abortBootstrap := context.WithCancelCause(ctx)
+	cancelBootstrap := func() { abortBootstrap(nil) }
 	result := &StreamTextResult{
 		steering:            steeringRun,
 		status:              StreamStatusSubmitted, // actively streaming; set before any chunks arrive
 		timeout:             opts.Timeout,
 		cancelBootstrap:     cancelBootstrap,
+		abortBootstrap:      abortBootstrap,
 		resolvedToolCallers: resolvedToolCallers,
 		toolSearchState:     toolSearchState,
 		requestTools:        opts.Tools,
@@ -890,6 +901,8 @@ func streamTextInternal(ctx context.Context, opts StreamTextOptions, steeringRun
 	if opts.Internal != nil {
 		result.onStreamDone = opts.Internal.onStreamDone
 		result.streamModeUsage = opts.Internal.streamModeUsage
+		result.endOnError = opts.Internal.EndOnError
+		result.clock = opts.Internal.now
 		result.callerOwnsTelemetryRoot = opts.Internal.onStreamDone != nil
 	}
 
@@ -1313,7 +1326,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		r.failBeforeStream(ctx, opts, preStreamCall{callID: callID, telemetryCtx: telemetryCtx, telemetrySettings: telemetrySettings}, err)
 		return
 	}
-	r.stepStartedAt = time.Now()
+	r.stepStartedAt = r.now()
 
 	// Resolve ResponseFormat: prefer explicit field, then derive from Output spec.
 	// A response format that cannot be built fails the model call itself (TS
@@ -1479,7 +1492,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		})
 
 		r.stepReopenCtx = modelCallCtx
-		r.stepCallStartedAt = time.Now()
+		r.stepCallStartedAt = r.now()
 		return modelCallCtx
 	}
 	startModelCall()
@@ -1817,6 +1830,8 @@ func (r *StreamTextResult) fail(err error) {
 	r.err = err
 	r.steering.end(steeringEndReasonFor(context.TODO(), err))
 	r.mu.Lock()
+	// No step was recorded.
+	r.setNoOutputErr(context.TODO(), err)
 	r.status = StreamStatusDone
 	r.mu.Unlock()
 	r.notifyStreamDone()
@@ -1826,6 +1841,33 @@ func (r *StreamTextResult) fail(err error) {
 	if r.processingDone != nil {
 		close(r.processingDone)
 	}
+}
+
+// now is the clock of step and model-call timings: InternalOptions.now (TS
+// _internal.now), else time.Now.
+func (r *StreamTextResult) now() time.Time {
+	if r.clock != nil {
+		return r.clock()
+	}
+	return time.Now()
+}
+
+// setNoOutputErr records OutputErr for a run that failed without a recorded
+// step, or that an incomplete model stream ended. TS flush then rejects the
+// result promises, result.output among them, with the abort reason, the
+// no-finish error, else a NoOutputGeneratedError ("No output generated.
+// Check the stream for errors."). WorkflowAgent (EndOnError) keeps its own
+// output handling. Call it with r.mu held.
+func (r *StreamTextResult) setNoOutputErr(ctx context.Context, err error) {
+	if r.outputErr != nil || r.endOnError || err == nil {
+		return
+	}
+	var noFinish *NoOutputGeneratedError
+	if isAbortErr(ctx, err) || errors.As(err, &noFinish) {
+		r.outputErr = err
+		return
+	}
+	r.outputErr = &NoOutputGeneratedError{Message: "No output generated. Check the stream for errors."}
 }
 
 // notifyStreamDone runs InternalOptions.onStreamDone once, on the processing
@@ -2111,7 +2153,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// callStartTimestampMs); both were recorded when the stream was opened.
 		stepStart := r.stepStartedAt
 		if stepStart.IsZero() {
-			stepStart = time.Now()
+			stepStart = r.now()
 		}
 		callStart := r.stepCallStartedAt
 		if callStart.IsZero() {
@@ -2142,7 +2184,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// stepResponseID holds only a provider-reported id.
 		var stepResponseID string
 		stepDefaultResponseID := remapGenerateID()
-		stepResponseTimestamp := time.Now()
+		stepResponseTimestamp := r.now()
 		// TS finish-step response.headers is the step's own doStream
 		// response headers, so a step (or a recovered attempt, below) whose
 		// stream reports none has none: an earlier step's do not carry over.
@@ -2324,6 +2366,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if err != nil {
 				if errors.Is(chunkDeadlineCtx.Err(), context.DeadlineExceeded) && chunkDeadlineReason != "" {
 					err = r.timeout.timeoutError(chunkDeadlineReason, chunkDeadlineCtx.Err())
+					// TS aborts the step signal with the TimeoutError, so the
+					// model call sees it as the abort reason.
+					if r.abortBootstrap != nil {
+						r.abortBootstrap(err)
+					}
 				} else if r.timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
 					err = r.timeout.timeoutError(TimeoutReasonStep, stepCtx.Err())
 				} else if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
@@ -2360,7 +2407,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// withheld for tool choice none, and not again when chunks held back
 			// for stream retries are replayed.
 			if !replayed && isOutputChunkForTiming(*chunk) {
-				now := time.Now()
+				now := r.now()
 				if firstTokenAt == nil {
 					firstTokenAt = &now
 				} else if previousOutputChunkAt != nil {
@@ -2680,7 +2727,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 				if !modelCallEndFired {
 					modelCallEndFired = true
-					performance := stepPerformance(callStart, stepUsage, firstTokenAt, outputChunkGapsMs)
+					performance := stepPerformanceFor(callStart, r.now().Sub(callStart).Milliseconds(), stepUsage, firstTokenAt, outputChunkGapsMs)
 					modelCallPerformance = &performance
 					responseID := stepResponseID
 					if responseID == "" {
@@ -2923,7 +2970,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 							StopSequences:       reopenOpts.StopSequences,
 							Seed:                reopenOpts.Seed,
 						})
-						callStart = time.Now()
+						callStart = r.now()
 						return r.stepReopenCtx
 					}
 					startReopenCall()
@@ -2972,7 +3019,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					stepResponseModelID = stepModelID
 					stepResponseID = ""
 					stepDefaultResponseID = remapGenerateID()
-					stepResponseTimestamp = time.Now()
+					stepResponseTimestamp = r.now()
 					r.mu.Lock()
 					r.responseHeaders = nil
 					r.mu.Unlock()
@@ -3599,6 +3646,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			performance = *modelCallPerformance
 		}
 		performance = finishStepPerformance(performance, stepStart, toolExecutionMs)
+		performance.StepTimeMs = r.now().Sub(stepStart).Milliseconds()
 		stepSources := append([]types.SourceContent(nil), r.sources[stepSourcesStart:]...)
 		stepFiles := append([]types.GeneratedFileContent(nil), r.files[stepFilesStart:]...)
 		stepResult := types.StepResult{
@@ -4127,7 +4175,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			failNextStep(err)
 			break
 		}
-		r.stepStartedAt = time.Now()
+		r.stepStartedAt = r.now()
 		logPromptDeprecations(r.promptDeprecations.forStep(nextMessages))
 		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
 			Messages: messagesForModel(nextMessages),
@@ -4256,7 +4304,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				Seed:                nextGenOpts.Seed,
 			})
 			r.stepReopenCtx = nextModelCallCtx
-			r.stepCallStartedAt = time.Now()
+			r.stepCallStartedAt = r.now()
 			return nextModelCallCtx
 		}
 		startNextModelCall()
@@ -4443,6 +4491,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			})
 		}
 		r.mu.Lock()
+		var noFinish *NoOutputGeneratedError
+		if len(allSteps) == 0 || errors.As(r.err, &noFinish) {
+			r.setNoOutputErr(ctx, r.err)
+		}
 		r.status = StreamStatusDone
 		r.mu.Unlock()
 		return
@@ -4935,11 +4987,13 @@ func (r *StreamTextResult) ToUIMessageStreamResponse(ctx context.Context, init *
 	return CreateUIMessageStreamResponseWithInit(ctx, r, init, opts...)
 }
 
-// PipeTextStreamToResponse writes text delta output to the writer.
+// PipeTextStreamToResponse writes text delta output to the writer. When w is
+// an http.ResponseWriter it first writes status 200 and Content-Type:
+// text/plain; charset=utf-8, like TS result.pipeTextStreamToResponse.
 //
 // Deprecated: use PipeTextStreamToWriter with Stream.
 func (r *StreamTextResult) PipeTextStreamToResponse(ctx context.Context, w io.Writer) error {
-	return PipeTextStreamToWriter(ctx, r.NewStream(), w)
+	return PipeTextStreamToResponse(ctx, r, w)
 }
 
 // PipeUIMessageStreamToResponse writes UI message chunk output to the writer.
@@ -5783,7 +5837,7 @@ func isReasoningBoundaryChunk(chunkType provider.ChunkType) bool {
 // expiring on this context should be reported as ("" when there is none).
 func armStepChunkDeadline(stepCtx context.Context, tc *TimeoutConfig) (context.Context, context.CancelFunc, TimeoutReason) {
 	if tc.HasFirstChunk() {
-		c, cancel := context.WithTimeout(stepCtx, *tc.FirstChunk)
+		c, cancel := context.WithTimeoutCause(stepCtx, *tc.FirstChunk, tc.timeoutError(TimeoutReasonFirstChunk, context.DeadlineExceeded))
 		return c, cancel, TimeoutReasonFirstChunk
 	}
 	return stepCtx, func() {}, ""
@@ -5800,7 +5854,7 @@ func armStepChunkDeadline(stepCtx context.Context, tc *TimeoutConfig) (context.C
 func resetChunkDeadlineOnOutput(stepCtx context.Context, tc *TimeoutConfig, prevCancel context.CancelFunc) (context.Context, context.CancelFunc, TimeoutReason) {
 	prevCancel()
 	if tc.HasPerChunk() {
-		c, cancel := context.WithTimeout(stepCtx, *tc.PerChunk)
+		c, cancel := context.WithTimeoutCause(stepCtx, *tc.PerChunk, tc.timeoutError(TimeoutReasonChunk, context.DeadlineExceeded))
 		return c, cancel, TimeoutReasonChunk
 	}
 	return stepCtx, func() {}, ""
