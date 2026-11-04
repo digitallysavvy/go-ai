@@ -205,9 +205,11 @@ func pickDirectProvider(provider ResolvedAuthenticationMode, env map[string]stri
 	default:
 		names = []string{"GITLAB_TOKEN", "GITLAB_INSTANCE_URL"}
 	}
+	// TS `processEnv[name] == null ? [] : [[name, value]]`: a present empty
+	// value is kept (only pickOpenAI / pickAnthropic use truthiness).
 	out := map[string]string{}
 	for _, k := range names {
-		if v := env[k]; v != "" {
+		if v, ok := env[k]; ok {
 			out[k] = v
 		}
 	}
@@ -232,10 +234,14 @@ func toGatewayBaseURL(baseURL string) string {
 	return trimmed + "/v1"
 }
 
+// createBearerTransformation mirrors TS `createBearerTransformation`: TS
+// checks `credential == null || sandboxCredential == null`, so a present
+// empty value still builds the transformation (it sends only the given
+// value, `Bearer ` + the empty credential).
 func createBearerTransformation(environment, sandboxEnvironment map[string]string, envVarName, matchURL string) ([]harness.RequestTransformation, error) {
-	credential := environment[envVarName]
-	sandboxCredential := sandboxEnvironment[envVarName]
-	if credential == "" || sandboxCredential == "" {
+	credential, hasCredential := environment[envVarName]
+	sandboxCredential, hasSandboxCredential := sandboxEnvironment[envVarName]
+	if !hasCredential || !hasSandboxCredential {
 		return nil, nil
 	}
 	t, err := harnessutil.CreateCredentialRequestTransformation(harnessutil.CreateCredentialRequestTransformationOptions{
@@ -283,8 +289,8 @@ func createOpenCodeRequestTransformations(in createRequestTransformationsInput) 
 		if in.Env["OPENAI_API_KEY"] == "" || in.SandboxEnv["OPENAI_API_KEY"] == "" {
 			return nil, nil
 		}
-		base := in.Env["OPENAI_BASE_URL"]
-		if base == "" {
+		base, ok := in.Env["OPENAI_BASE_URL"] // TS `??`
+		if !ok {
 			base = "https://api.openai.com/v1"
 		}
 		t, err := harnessutil.CreateCredentialRequestTransformation(harnessutil.CreateCredentialRequestTransformationOptions{
@@ -296,12 +302,13 @@ func createOpenCodeRequestTransformations(in createRequestTransformationsInput) 
 		}
 		return []harness.RequestTransformation{t}, nil
 	case AuthAnthropic:
-		matchURL := in.Env["ANTHROPIC_BASE_URL"]
-		if matchURL == "" {
+		matchURL, ok := in.Env["ANTHROPIC_BASE_URL"] // TS `??`
+		if !ok {
 			matchURL = "https://api.anthropic.com"
 		}
 		var out []harness.RequestTransformation
-		if in.Env["ANTHROPIC_API_KEY"] != "" && in.SandboxEnv["ANTHROPIC_API_KEY"] != "" {
+		// TS `!= null` (presence), unlike the truthy openai / google checks.
+		if hasKey(in.Env, "ANTHROPIC_API_KEY") && hasKey(in.SandboxEnv, "ANTHROPIC_API_KEY") {
 			t, err := harnessutil.CreateCredentialRequestTransformation(harnessutil.CreateCredentialRequestTransformationOptions{
 				MatchURL: matchURL, MatchHeaders: map[string]string{"x-api-key": in.SandboxEnv["ANTHROPIC_API_KEY"]},
 				TransformHeaders: map[string]string{"x-api-key": in.Env["ANTHROPIC_API_KEY"]},
@@ -311,7 +318,7 @@ func createOpenCodeRequestTransformations(in createRequestTransformationsInput) 
 			}
 			out = append(out, t)
 		}
-		if in.Env["ANTHROPIC_AUTH_TOKEN"] != "" && in.SandboxEnv["ANTHROPIC_AUTH_TOKEN"] != "" {
+		if hasKey(in.Env, "ANTHROPIC_AUTH_TOKEN") && hasKey(in.SandboxEnv, "ANTHROPIC_AUTH_TOKEN") {
 			t, err := harnessutil.CreateCredentialRequestTransformation(harnessutil.CreateCredentialRequestTransformationOptions{
 				MatchURL: matchURL, MatchHeaders: map[string]string{"Authorization": "Bearer " + in.SandboxEnv["ANTHROPIC_AUTH_TOKEN"]},
 				TransformHeaders: map[string]string{"Authorization": "Bearer " + in.Env["ANTHROPIC_AUTH_TOKEN"]},
@@ -335,14 +342,14 @@ func createOpenCodeRequestTransformations(in createRequestTransformationsInput) 
 		}
 		return []harness.RequestTransformation{t}, nil
 	case AuthXAI:
-		base := in.Env["XAI_BASE_URL"]
-		if base == "" {
+		base, ok := in.Env["XAI_BASE_URL"] // TS `??`
+		if !ok {
 			base = "https://api.x.ai/v1"
 		}
 		return createBearerTransformation(in.Env, in.SandboxEnv, "XAI_API_KEY", base)
 	case AuthGitHubCopilot:
 		name := "GITHUB_TOKEN"
-		if in.Env["GITHUB_COPILOT_TOKEN"] != "" {
+		if hasKey(in.Env, "GITHUB_COPILOT_TOKEN") { // TS `!= null`
 			name = "GITHUB_COPILOT_TOKEN"
 		}
 		return createBearerTransformation(in.Env, in.SandboxEnv, name, "https://api.githubcopilot.com")
@@ -368,9 +375,11 @@ const gitLabDirectAccessPath = "/api/v4/ai/third_party_agents/direct_access"
 // URL yields a `//api/v4/...` path that never matches (fails closed, as in
 // TS). Mirrors TS `opencode-auth.ts` 175-199.
 func createGitLabRequestTransformations(environment, sandboxEnvironment map[string]string) ([]harness.RequestTransformation, error) {
-	credential := environment["GITLAB_TOKEN"]
-	sandboxCredential := sandboxEnvironment["GITLAB_TOKEN"]
-	if credential == "" || sandboxCredential == "" {
+	// TS `credential == null || sandboxCredential == null`: a present empty
+	// GITLAB_TOKEN still builds the rule; it can only send the given value.
+	credential, hasCredential := environment["GITLAB_TOKEN"]
+	sandboxCredential, hasSandboxCredential := sandboxEnvironment["GITLAB_TOKEN"]
+	if !hasCredential || !hasSandboxCredential {
 		return nil, nil
 	}
 	base, ok := environment["GITLAB_INSTANCE_URL"]
