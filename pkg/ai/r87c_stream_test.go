@@ -5,8 +5,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -516,4 +520,375 @@ func TestR87cstreamOutputErrNoFinish(t *testing.T) {
 	if oe := r.OutputErr(); !errors.As(oe, &noOutput) || oe.Error() != "No output generated. The model stream ended without a finish chunk." {
 		t.Fatalf("OutputErr = %v, Err = %v", oe, r.Err())
 	}
+}
+
+// r87cstreamDefaultStream is TS createTestModel's default stream.
+func r87cstreamDefaultStream(warnings []types.Warning) []provider.StreamChunk {
+	finish := r87cstreamFinish(types.FinishReasonStop, "stop")
+	finish.ProviderMetadata = r87cstreamRawMD(`{"testProvider":{"testKey":"testValue"}}`)
+	return []provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart, Warnings: warnings},
+		r87cstreamMeta("id-0"),
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: ", "},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "world!"},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		finish,
+	}
+}
+
+// r87cstreamWriteRecorder is a Node ServerResponse stand-in: it records the
+// status, the headers and every write as one decoded chunk.
+type r87cstreamWriteRecorder struct {
+	header http.Header
+	status int
+	chunks []string
+}
+
+func (w *r87cstreamWriteRecorder) Header() http.Header {
+	if w.header == nil {
+		w.header = http.Header{}
+	}
+	return w.header
+}
+
+func (w *r87cstreamWriteRecorder) WriteHeader(status int) {
+	if w.status == 0 {
+		w.status = status
+	}
+}
+
+func (w *r87cstreamWriteRecorder) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	w.chunks = append(w.chunks, string(b))
+	return len(b), nil
+}
+
+func (w *r87cstreamWriteRecorder) Flush() {}
+
+// lowerHeaders is the Node `response.headers` view (lower-case names).
+func (w *r87cstreamWriteRecorder) lowerHeaders() map[string]string {
+	return r87cstreamLowerHeaders(w.header)
+}
+
+func r87cstreamLowerHeaders(h http.Header) map[string]string {
+	out := map[string]string{}
+	for k, v := range h {
+		out[strings.ToLower(k)] = strings.Join(v, ", ")
+	}
+	return out
+}
+
+const r87cstreamUIHeaders = `{"cache-control":"no-cache","connection":"keep-alive","content-type":"text/event-stream","x-accel-buffering":"no","x-vercel-ai-ui-message-stream":"v1"}`
+
+// r87cstreamHelloSSE is the TS SSE snapshot of the default test model.
+var r87cstreamHelloSSE = []string{
+	`data: {"type":"start"}` + "\n\n",
+	`data: {"type":"start-step"}` + "\n\n",
+	`data: {"type":"text-start","id":"1"}` + "\n\n",
+	`data: {"type":"text-delta","id":"1","delta":"Hello"}` + "\n\n",
+	`data: {"type":"text-delta","id":"1","delta":", "}` + "\n\n",
+	`data: {"type":"text-delta","id":"1","delta":"world!"}` + "\n\n",
+	`data: {"type":"text-end","id":"1"}` + "\n\n",
+	`data: {"type":"finish-step"}` + "\n\n",
+	`data: {"type":"finish","finishReason":"stop"}` + "\n\n",
+	"data: [DONE]\n\n",
+}
+
+// r87cstreamSSEEvents splits an SSE body into its events (each with its
+// trailing blank line), the TS getDecodedChunks / convertResponseStreamToArray
+// view of one write per event.
+func r87cstreamSSEEvents(body string) []string {
+	var out []string
+	for _, e := range strings.SplitAfter(body, "\n\n") {
+		if e != "" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// r87cstreamAssertSSE compares SSE events, each JSON payload by value: Go
+// writes UI chunk object keys sorted (known difference "UI message stream
+// JSON key order").
+func r87cstreamAssertSSE(t *testing.T, label string, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s: %d events, want %d:\n got  %q\n want %q", label, len(got), len(want), got, want)
+	}
+	for i := range want {
+		g, w := got[i], want[i]
+		if strings.HasPrefix(w, "data: {") && strings.HasSuffix(g, "\n\n") && strings.HasPrefix(g, "data: ") {
+			r87cstreamAssert(t, fmt.Sprintf("%s[%d]", label, i), json.RawMessage(strings.TrimSuffix(strings.TrimPrefix(g, "data: "), "\n\n")), strings.TrimSuffix(strings.TrimPrefix(w, "data: "), "\n\n"))
+			continue
+		}
+		if g != w {
+			t.Fatalf("%s[%d] = %q, want %q", label, i, g, w)
+		}
+	}
+}
+
+func r87cstreamAssertStrings(t *testing.T, label string, got, want []string) {
+	t.Helper()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("%s:\n got  %q\n want %q", label, got, want)
+	}
+}
+
+func r87cstreamHelloResult(t *testing.T) *StreamTextResult {
+	t.Helper()
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, r87cstreamDefaultStream(nil)), Prompt: "test-input", Internal: r87cstreamDefaultInternal()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// stream-text.test.ts 5143: result.pipeUIMessageStreamToResponse > should
+// write data stream parts to a Node.js response-like object.
+func TestR87cstreamPipeUIMessageStreamToResponse(t *testing.T) {
+	w := &r87cstreamWriteRecorder{}
+	if err := r87cstreamHelloResult(t).PipeUIMessageStreamToResponse(context.Background(), w); err != nil {
+		t.Fatal(err)
+	}
+	if w.status != 200 {
+		t.Fatalf("status = %d", w.status)
+	}
+	r87cstreamAssert(t, "headers", w.lowerHeaders(), r87cstreamUIHeaders)
+	r87cstreamAssertSSE(t, "chunks", r87cstreamSSEEvents(strings.Join(w.chunks, "")), r87cstreamHelloSSE)
+}
+
+// stream-text.test.ts 5205: result.pipeUIMessageStreamToResponse > should
+// create a Response with a data stream and custom headers. net/http cannot
+// send a custom reason phrase, so statusText ('foo') is not observable on a
+// ResponseWriter (known difference); status and headers are.
+func TestR87cstreamPipeUIMessageStreamToResponseCustomHeaders(t *testing.T) {
+	w := &r87cstreamWriteRecorder{}
+	if err := PipeUIMessageStreamToResponseWithInit(context.Background(), r87cstreamHelloResult(t), w, &UIMessageStreamResponseInit{Status: 201, StatusText: "foo", Headers: map[string]string{"custom-header": "custom-value"}}); err != nil {
+		t.Fatal(err)
+	}
+	if w.status != 201 {
+		t.Fatalf("status = %d", w.status)
+	}
+	r87cstreamAssert(t, "headers", w.lowerHeaders(), `{"cache-control":"no-cache","connection":"keep-alive","content-type":"text/event-stream","custom-header":"custom-value","x-accel-buffering":"no","x-vercel-ai-ui-message-stream":"v1"}`)
+	r87cstreamAssertSSE(t, "chunks", r87cstreamSSEEvents(strings.Join(w.chunks, "")), r87cstreamHelloSSE)
+}
+
+// stream-text.test.ts 5614: result.pipeTextStreamToResponse > should write
+// text deltas to a Node.js response-like object.
+func TestR87cstreamPipeTextStreamToResponse(t *testing.T) {
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, []provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: ", "},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "world!"},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		r87cstreamFinish(types.FinishReasonStop, "stop"),
+	}), Prompt: "test-input"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &r87cstreamWriteRecorder{}
+	if err := r.PipeTextStreamToResponse(context.Background(), w); err != nil {
+		t.Fatal(err)
+	}
+	if w.status != 200 {
+		t.Fatalf("status = %d", w.status)
+	}
+	r87cstreamAssert(t, "headers", w.lowerHeaders(), `{"content-type":"text/plain; charset=utf-8"}`)
+	r87cstreamAssertStrings(t, "chunks", w.chunks, []string{"Hello", ", ", "world!"})
+}
+
+// r87cstreamUI collects a StreamText result's UI message stream as JSON.
+func r87cstreamUI(t *testing.T, r *StreamTextResult, opts ...UIMessageStreamResultOptions) []interface{} {
+	t.Helper()
+	out, errCh := r.ToUIMessageStream(context.Background(), opts...)
+	got := []interface{}{}
+	for c := range out {
+		got = append(got, r75streamNormalize(t, c))
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// stream-text.test.ts 6029: result.toUIMessageStream > should send message
+// metadata as defined in the metadata function (mockValues: one value per
+// call, the last one repeating).
+func TestR87cstreamUIMessageMetadataFunction(t *testing.T) {
+	n := 0
+	metadata := func(map[string]interface{}) map[string]interface{} {
+		if n < 8 {
+			n++
+		}
+		return map[string]interface{}{fmt.Sprintf("key%d", n): fmt.Sprintf("value%d", n)}
+	}
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, r87cstreamDefaultStream(nil)), Prompt: "prompt", Internal: r87cstreamDefaultInternal(), OnError: func(context.Context, error) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r87cstreamAssert(t, "ui", r87cstreamUI(t, r, UIMessageStreamResultOptions{MessageMetadata: metadata}),
+		`[{"messageMetadata":{"key1":"value1"},"type":"start"},{"type":"start-step"},{"messageMetadata":{"key2":"value2"},"type":"message-metadata"},{"id":"1","type":"text-start"},{"messageMetadata":{"key3":"value3"},"type":"message-metadata"},{"delta":"Hello","id":"1","type":"text-delta"},{"messageMetadata":{"key4":"value4"},"type":"message-metadata"},{"delta":", ","id":"1","type":"text-delta"},{"messageMetadata":{"key5":"value5"},"type":"message-metadata"},{"delta":"world!","id":"1","type":"text-delta"},{"messageMetadata":{"key6":"value6"},"type":"message-metadata"},{"id":"1","type":"text-end"},{"messageMetadata":{"key7":"value7"},"type":"message-metadata"},{"messageMetadata":{"key8":"value8"},"type":"message-metadata"},{"type":"finish-step"},{"finishReason":"stop","messageMetadata":{"key8":"value8"},"type":"finish"}]`)
+}
+
+// stream-text.test.ts 6329: result.toUIMessageStream > should send reasoning
+// content when sendReasoning is true.
+func TestR87cstreamUISendReasoning(t *testing.T) {
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, r74streamReasoningSteps()), Prompt: "prompt", Internal: r87cstreamDefaultInternal(), OnError: func(context.Context, error) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	send := true
+	r87cstreamAssert(t, "ui", r87cstreamUI(t, r, UIMessageStreamResultOptions{SendReasoning: &send}),
+		`[{"type":"start"},{"type":"start-step"},{"id":"1","type":"reasoning-start"},{"delta":"I will open the conversation","id":"1","type":"reasoning-delta"},{"delta":" with witty banter.","id":"1","type":"reasoning-delta"},{"delta":"","id":"1","providerMetadata":{"testProvider":{"signature":"1234567890"}},"type":"reasoning-delta"},{"id":"1","type":"reasoning-end"},{"id":"2","providerMetadata":{"testProvider":{"redactedData":"redacted-reasoning-data"}},"type":"reasoning-start"},{"id":"2","type":"reasoning-end"},{"id":"3","type":"reasoning-start"},{"delta":" Once the user has relaxed,","id":"3","type":"reasoning-delta"},{"delta":" I will pry for valuable information.","id":"3","type":"reasoning-delta"},{"id":"3","providerMetadata":{"testProvider":{"signature":"1234567890"}},"type":"reasoning-end"},{"id":"4","providerMetadata":{"testProvider":{"signature":"1234567890"}},"type":"reasoning-start"},{"delta":" I need to think about","id":"4","type":"reasoning-delta"},{"delta":" this problem carefully.","id":"4","type":"reasoning-delta"},{"id":"5","providerMetadata":{"testProvider":{"signature":"1234567890"}},"type":"reasoning-start"},{"delta":" The best solution","id":"5","type":"reasoning-delta"},{"delta":" requires careful","id":"5","type":"reasoning-delta"},{"delta":" consideration of all factors.","id":"5","type":"reasoning-delta"},{"id":"4","providerMetadata":{"testProvider":{"signature":"0987654321"}},"type":"reasoning-end"},{"id":"5","providerMetadata":{"testProvider":{"signature":"0987654321"}},"type":"reasoning-end"},{"id":"1","type":"text-start"},{"delta":"Hi","id":"1","type":"text-delta"},{"delta":" there!","id":"1","type":"text-delta"},{"id":"1","providerMetadata":{"testProvider":{"signature":"0987654321"}},"type":"text-end"},{"type":"finish-step"},{"finishReason":"stop","type":"finish"}]`)
+}
+
+// stream-text.test.ts 6633: result.toUIMessageStream > should send custom
+// parts in toUIMessageStream (modelWithCustom).
+func TestR87cstreamUISendCustomParts(t *testing.T) {
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, []provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello!"},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeCustom, CustomContent: &types.CustomContent{Kind: "openai.compaction", ProviderMetadata: r87cstreamRawMD(`{"openai":{"itemId":"cmp_123"}}`)}},
+		r87cstreamFinish(types.FinishReasonStop, "stop"),
+	}), Prompt: "prompt", Internal: r87cstreamDefaultInternal(), OnError: func(context.Context, error) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r87cstreamAssert(t, "ui", r87cstreamUI(t, r),
+		`[{"type":"start"},{"type":"start-step"},{"id":"1","type":"text-start"},{"delta":"Hello!","id":"1","type":"text-delta"},{"id":"1","type":"text-end"},{"kind":"openai.compaction","providerMetadata":{"openai":{"itemId":"cmp_123"}},"type":"custom"},{"type":"finish-step"},{"finishReason":"stop","type":"finish"}]`)
+}
+
+// stream-text.test.ts 6935: result.toUIMessageStream > should call onFinish
+// when async iteration stops mid-stream. Go's analog of breaking out of
+// `for await` is cancelling the consumer context after five chunks.
+func TestR87cstreamUIOnFinishWhenIterationStops(t *testing.T) {
+	chunks := []provider.StreamChunk{
+		{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "msg-4", ModelID: "test-model", Timestamp: time.Now()}},
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+	}
+	for _, d := range []string{"First", " chunk", " of", " text", " that", " will", " be", " interrupted"} {
+		chunks = append(chunks, provider.StreamChunk{Type: provider.ChunkTypeText, ID: "1", Text: d})
+	}
+	in, out, zero := int64(10), int64(5), int64(0)
+	chunks = append(chunks, provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "1"}, provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop",
+		Usage: &types.Usage{InputTokens: &in, OutputTokens: &out, InputDetails: &types.InputTokenDetails{NoCacheTokens: &in, CacheReadTokens: &zero, CacheWriteTokens: &zero}, OutputDetails: &types.OutputTokenDetails{TextTokens: &out, ReasoningTokens: &zero}}})
+	release := make(chan struct{})
+	model := &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id", DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		return &r87cstreamGateStream{chunks: chunks, gateAt: 5, release: release}, nil
+	}}
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "Generate text"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var mu sync.Mutex
+	var finishes []map[string]interface{}
+	ui, errCh := r.ToUIMessageStream(ctx, UIMessageStreamResultOptions{
+		OnFinish:          func(e map[string]interface{}) { mu.Lock(); finishes = append(finishes, e); mu.Unlock() },
+		GenerateMessageID: func() string { return "msg-async-iter" },
+	})
+	var collected []UIMessageChunk
+	for c := range ui {
+		collected = append(collected, c)
+		if len(collected) >= 5 {
+			break
+		}
+	}
+	cancel()
+	close(release)
+	for range ui {
+	}
+	<-errCh
+	if len(collected) != 5 {
+		t.Fatalf("collected = %d", len(collected))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(finishes) != 1 {
+		t.Fatalf("onFinish calls = %d", len(finishes))
+	}
+	e := r75streamNormalize(t, finishes[0]).(map[string]interface{})
+	msg := e["responseMessage"].(map[string]interface{})
+	if msg["id"] != "msg-async-iter" || msg["role"] != "assistant" {
+		t.Fatalf("responseMessage = %v", msg)
+	}
+	var text map[string]interface{}
+	for _, p := range msg["parts"].([]interface{}) {
+		if pm := p.(map[string]interface{}); pm["type"] == "text" {
+			text = pm
+			break
+		}
+	}
+	if text == nil || !strings.Contains(text["text"].(string), "First chunk") || text["state"] != "streaming" {
+		t.Fatalf("text part = %v", text)
+	}
+	if e["isAborted"] != false {
+		t.Fatalf("isAborted = %v", e["isAborted"])
+	}
+}
+
+// r87cstreamGateStream streams chunks and blocks before chunk gateAt until
+// release is closed, so a consumer can stop mid-stream deterministically.
+type r87cstreamGateStream struct {
+	chunks  []provider.StreamChunk
+	gateAt  int
+	release chan struct{}
+	i       int
+}
+
+func (s *r87cstreamGateStream) Next() (*provider.StreamChunk, error) {
+	if s.i == s.gateAt {
+		<-s.release
+	}
+	if s.i >= len(s.chunks) {
+		return nil, io.EOF
+	}
+	c := s.chunks[s.i]
+	s.i++
+	return &c, nil
+}
+
+func (s *r87cstreamGateStream) Err() error   { return nil }
+func (s *r87cstreamGateStream) Close() error { return nil }
+
+// stream-text.test.ts 7218: result.toUIMessageStreamResponse > should
+// create a Response with a data stream.
+func TestR87cstreamToUIMessageStreamResponse(t *testing.T) {
+	resp, err := r87cstreamHelloResult(t).ToUIMessageStreamResponse(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	r87cstreamAssert(t, "headers", r87cstreamLowerHeaders(resp.Header), r87cstreamUIHeaders)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r87cstreamAssertSSE(t, "body", r87cstreamSSEEvents(string(body)), r87cstreamHelloSSE)
+}
+
+// stream-text.test.ts 7279: result.toUIMessageStreamResponse > should
+// create a Response with a data stream and custom headers.
+func TestR87cstreamToUIMessageStreamResponseCustomHeaders(t *testing.T) {
+	resp, err := r87cstreamHelloResult(t).ToUIMessageStreamResponse(context.Background(), &UIMessageStreamResponseInit{Status: 201, StatusText: "foo", Headers: map[string]string{"custom-header": "custom-value"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 201 || resp.Status != "foo" {
+		t.Fatalf("status = %d %q", resp.StatusCode, resp.Status)
+	}
+	r87cstreamAssert(t, "headers", r87cstreamLowerHeaders(resp.Header), `{"cache-control":"no-cache","connection":"keep-alive","content-type":"text/event-stream","custom-header":"custom-value","x-accel-buffering":"no","x-vercel-ai-ui-message-stream":"v1"}`)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r87cstreamAssertSSE(t, "body", r87cstreamSSEEvents(string(body)), r87cstreamHelloSSE)
 }

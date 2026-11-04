@@ -4963,11 +4963,13 @@ func (r *StreamTextResult) ToUIMessageStreamResponse(ctx context.Context, init *
 	return CreateUIMessageStreamResponseWithInit(ctx, r, init, opts...)
 }
 
-// PipeTextStreamToResponse writes text delta output to the writer.
+// PipeTextStreamToResponse writes text delta output to the writer. When w is
+// an http.ResponseWriter it first writes status 200 and Content-Type:
+// text/plain; charset=utf-8, like TS result.pipeTextStreamToResponse.
 //
 // Deprecated: use PipeTextStreamToWriter with Stream.
 func (r *StreamTextResult) PipeTextStreamToResponse(ctx context.Context, w io.Writer) error {
-	return PipeTextStreamToWriter(ctx, r.NewStream(), w)
+	return PipeTextStreamToResponse(ctx, r, w)
 }
 
 // PipeUIMessageStreamToResponse writes UI message chunk output to the writer.
