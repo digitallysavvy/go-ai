@@ -2783,7 +2783,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				ToolName:         call.ToolName,
 				Title:            call.Title,
 				Input:            call.Arguments,
-				Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: reasonText},
+				Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: reasonText, ReasonSet: reason != nil && reasonText == ""},
 				ApprovalStatus:   types.ToolApprovalStatusDenied,
 				ApprovalID:       approvalID,
 				ApprovalReason:   reason,
@@ -3280,7 +3280,8 @@ func modelToolResultIDs(content []types.ContentPart) map[string]bool {
 
 // promptDeprecationWarnings returns the batches TS
 // convertToLanguageModelPrompt passes to logWarnings for messages: one per
-// user message with deprecated "image" parts (types.ImageContent).
+// message with deprecated parts (a user message's "image" parts, legacy
+// tool-result content types; promptutils.DeprecatedContentWarnings).
 func promptDeprecationWarnings(messages []types.Message) [][]types.Warning {
 	var batches [][]types.Warning
 	for _, message := range messages {
@@ -3317,7 +3318,7 @@ func newStepPromptDeprecations(raw, normalized []types.Message) stepPromptDeprec
 	return d
 }
 
-// forStep returns the warning batches of messages, one per user message with
+// forStep returns the warning batches of messages, one per message with
 // deprecated parts, in message order.
 func (d stepPromptDeprecations) forStep(messages []types.Message) [][]types.Warning {
 	var batches [][]types.Warning

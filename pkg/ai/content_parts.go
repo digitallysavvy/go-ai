@@ -497,6 +497,7 @@ func toolApprovalResponseFromToolResult(tr types.ToolResult) types.ToolApprovalR
 		ToolCall:         toolCallForToolResult(tr),
 		Approved:         tr.ApprovalStatus == types.ToolApprovalStatusApproved,
 		Reason:           reason,
+		ReasonSet:        tr.ApprovalReason != nil && reason == "",
 		ProviderExecuted: tr.ProviderExecuted,
 		// TS: providerExecuted: toolCall.providerExecuted, so an explicit
 		// false on the call reaches the response.
