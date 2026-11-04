@@ -1823,3 +1823,341 @@ func TestR87cstreambDiceOnFinishResponseMessages(t *testing.T) {
 	}
 	r87cstreambAssert(t, "onFinish responseMessages", r87cstreambMessages(t, end.ResponseMessages), r87cstreambDiceResponseMessages())
 }
+
+// r87cstreambUserApprovalRun is the TS 'when a single tool needs approval
+// (user-defined)' beforeEach.
+func r87cstreambUserApprovalRun(t *testing.T) (*StreamTextResult, []provider.StreamChunk) {
+	t.Helper()
+	return r73streamParts(t, StreamTextOptions{
+		Model: r71streamModel(nil, []provider.StreamChunk{{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{}},
+			r87cstreambCall("call-1", "tool1", `{ "value": "value" }`),
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r87cstreambUsage()}}),
+		Prompt:   "test-input",
+		Internal: r87cstreambIDs(),
+		Tools: []types.Tool{{Name: "tool1", Parameters: r87cstreambZodValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "result1", nil
+		}}},
+		ToolApproval: map[string]types.ToolApprovalValue{"tool1": types.ToolApprovalStatusUserApproval},
+	})
+}
+
+const r87cstreambApprovalCall = `{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}`
+
+const r87cstreambApprovalRequest = `{"approvalId":"id-1","toolCall":` + r87cstreambApprovalCall + `,"type":"tool-approval-request"}`
+
+// stream-text.test.ts 30190: tool execution approval > when a single tool
+// needs approval (user-defined) > should add tool approval requests to the
+// full stream.
+func TestR87cstreambUserApprovalFullStream(t *testing.T) {
+	_, parts := r87cstreambUserApprovalRun(t)
+	r87cstreambAssert(t, "full stream", r87cstreambParts(parts), `[{"type":"start"},{"request":{},"type":"start-step","warnings":[]},
+		`+r87cstreambApprovalCall+`,`+r87cstreambApprovalRequest+`,
+		{"finishReason":"tool-calls","response":{"id":"id-0","modelId":"mock-model-id","timestamp":"<now>"},"type":"finish-step","usage":`+r87cstreambUsageJSON+`},
+		{"finishReason":"tool-calls","totalUsage":`+r87cstreambUsageJSON+`,"type":"finish"}]`)
+	for _, p := range parts {
+		if p.Type == provider.ChunkTypeFinishStep && (p.Performance == nil || len(p.Performance.ToolExecutionMs) != 0) {
+			t.Fatalf("finish-step toolExecutionMs = %+v, want {}", p.Performance)
+		}
+	}
+}
+
+// r87cstreambUI runs StreamText and returns its UI message stream chunks.
+func r87cstreambUI(t *testing.T, opts StreamTextOptions) []map[string]interface{} {
+	t.Helper()
+	chunks, err := r72streamUI(t, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return chunks
+}
+
+// stream-text.test.ts 30292: tool execution approval > when a single tool
+// needs approval (user-defined) > should add tool approval requests to the
+// UI message stream.
+func TestR87cstreambUserApprovalUIStream(t *testing.T) {
+	model := r71streamModel(nil, []provider.StreamChunk{{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{}},
+		r87cstreambCall("call-1", "tool1", `{ "value": "value" }`),
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r87cstreambUsage()}})
+	got := r87cstreambUI(t, StreamTextOptions{
+		Model: model, Prompt: "test-input", Internal: r87cstreambIDs(),
+		Tools: []types.Tool{{Name: "tool1", Parameters: r87cstreambZodValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "result1", nil
+		}}},
+		ToolApproval: map[string]types.ToolApprovalValue{"tool1": types.ToolApprovalStatusUserApproval},
+	})
+	r87cstreambAssert(t, "ui stream", got, `[{"type":"start"},{"type":"start-step"},
+		{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-input-available"},
+		{"approvalId":"id-1","toolCallId":"call-1","type":"tool-approval-request"},
+		{"type":"finish-step"},{"finishReason":"tool-calls","type":"finish"}]`)
+}
+
+// stream-text.test.ts 30326: tool execution approval > when a single tool
+// needs approval (user-defined) > should add tool approval requests to the
+// content.
+func TestR87cstreambUserApprovalContent(t *testing.T) {
+	r, _ := r87cstreambUserApprovalRun(t)
+	r87cstreambAssert(t, "content", r87cstreambContent(t, r.Content()), `[`+r87cstreambApprovalCall+`,`+r87cstreambApprovalRequest+`]`)
+}
+
+// stream-text.test.ts 30359: tool execution approval > when a single tool
+// needs approval (user-defined) > should add tool approval requests to the
+// response messages.
+func TestR87cstreambUserApprovalResponseMessages(t *testing.T) {
+	r, _ := r87cstreambUserApprovalRun(t)
+	r87cstreambAssert(t, "responseMessages", r87cstreambMessages(t, r.ResponseMessages()), `[{"content":[`+r87cstreambApprovalCall+`,
+		{"approvalId":"id-1","toolCallId":"call-1","type":"tool-approval-request"}],"role":"assistant"}]`)
+}
+
+// r87cstreambExecRec records tool1's executions.
+type r87cstreambExecRec struct {
+	mu    sync.Mutex
+	calls []map[string]interface{}
+}
+
+func (e *r87cstreambExecRec) tool(t *testing.T, result func(map[string]interface{}) interface{}) types.Tool {
+	return types.Tool{Name: "tool1", Parameters: r87cstreambZodValueSchema, Execute: func(_ context.Context, in map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		e.calls = append(e.calls, map[string]interface{}{"input": in, "toolCallId": o.ToolCallID, "messages": o.Messages != nil, "sandbox": o.ExperimentalSandbox})
+		return result(in), nil
+	}}
+}
+
+// r87cstreambPromptRec records the prompt of every doStream call and serves
+// the given steps (the last one repeats).
+func r87cstreambPromptModel(t *testing.T, prompts *[]interface{}, mu *sync.Mutex, steps ...[]provider.StreamChunk) *testutil.MockLanguageModel {
+	n := 0
+	return &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id",
+		DoStreamFunc: func(_ context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			*prompts = append(*prompts, r87cstreambCallOptions(t, o)["prompt"])
+			i := n
+			if i >= len(steps) {
+				i = len(steps) - 1
+			}
+			n++
+			return testutil.NewMockTextStream(steps[i]), nil
+		}}
+}
+
+var r87cstreambHelloStep = []provider.StreamChunk{{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{}},
+	{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Hello, world!"}, {Type: provider.ChunkTypeTextEnd, ID: "1"},
+	{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r87cstreambUsage()}}
+
+// r87cstreambAutoApprovedRun is the TS 'when a single tool is automatically
+// approved' beforeEach.
+func r87cstreambAutoApprovedRun(t *testing.T) (*StreamTextResult, *r87cstreambExecRec, []interface{}) {
+	t.Helper()
+	var mu sync.Mutex
+	var prompts []interface{}
+	exec := &r87cstreambExecRec{}
+	reason := "trusted internal tool"
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: r87cstreambPromptModel(t, &prompts, &mu,
+			[]provider.StreamChunk{{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{}}, r87cstreambCall("call-1", "tool1", `{ "value": "value" }`),
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r87cstreambUsage()}},
+			r87cstreambHelloStep),
+		Prompt:       "test-input",
+		StopWhen:     []StopCondition{StepCountIs(3)},
+		Internal:     r87cstreambIDs(),
+		Tools:        []types.Tool{exec.tool(t, func(map[string]interface{}) interface{} { return "result1" })},
+		ToolApproval: map[string]types.ToolApprovalValue{"tool1": types.ToolApprovalResult{Status: types.ToolApprovalStatusApproved, Reason: &reason}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return r, exec, append([]interface{}(nil), prompts...)
+}
+
+// stream-text.test.ts 30737: tool execution approval > when a single tool is
+// automatically approved > should continue to a second step and execute the
+// tool.
+func TestR87cstreambAutoApprovedExecutes(t *testing.T) {
+	r, exec, _ := r87cstreambAutoApprovedRun(t)
+	exec.mu.Lock()
+	defer exec.mu.Unlock()
+	r87cstreambAssert(t, "execute calls", exec.calls, `[{"input":{"value":"value"},"messages":true,"sandbox":null,"toolCallId":"call-1"}]`)
+	if r.Text() != "Hello, world!" || len(r.Steps()) != 2 {
+		t.Fatalf("text %q, steps %d; want Hello, world! and 2", r.Text(), len(r.Steps()))
+	}
+}
+
+const r87cstreambUserPrompt = `{"content":[{"text":"test-input","type":"text"}],"role":"user"}`
+
+const r87cstreambToolResult1 = `{"output":{"type":"text","value":"result1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}`
+
+// stream-text.test.ts 30750: tool execution approval > when a single tool is
+// automatically approved > should call the model again for the second step
+// with the tool result.
+func TestR87cstreambAutoApprovedPrompts(t *testing.T) {
+	_, _, prompts := r87cstreambAutoApprovedRun(t)
+	r87cstreambAssert(t, "prompts", prompts, `[[`+r87cstreambUserPrompt+`],
+		[`+r87cstreambUserPrompt+`,{"content":[`+r87cstreambApprovalCall+`],"role":"assistant"},{"content":[`+r87cstreambToolResult1+`],"role":"tool"}]]`)
+}
+
+// stream-text.test.ts 30813: tool execution approval > when a single tool is
+// automatically approved > should produce response messages with automatic
+// approval metadata.
+func TestR87cstreambAutoApprovedResponseMessages(t *testing.T) {
+	r, _, _ := r87cstreambAutoApprovedRun(t)
+	r87cstreambAssert(t, "responseMessages", r87cstreambMessages(t, r.ResponseMessages()), `[
+		{"content":[`+r87cstreambApprovalCall+`,{"approvalId":"id-1","isAutomatic":true,"toolCallId":"call-1","type":"tool-approval-request"}],"role":"assistant"},
+		{"content":[{"approvalId":"id-1","approved":true,"reason":"trusted internal tool","type":"tool-approval-response"},`+r87cstreambToolResult1+`],"role":"tool"},
+		{"content":[{"text":"Hello, world!","type":"text"}],"role":"assistant"}]`)
+}
+
+// r87cstreambApprovalFuncRun is the TS 'when a single tool has a
+// user-defined approval function' beforeEach.
+func r87cstreambApprovalFuncRun(t *testing.T) (*StreamTextResult, []provider.StreamChunk) {
+	t.Helper()
+	exec := &r87cstreambExecRec{}
+	return r73streamParts(t, StreamTextOptions{
+		Model: r71streamModel(nil, []provider.StreamChunk{{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{}},
+			r87cstreambCall("call-1", "tool1", `{ "value": "value-needs-approval" }`),
+			r87cstreambCall("call-2", "tool1", `{ "value": "value-no-approval" }`),
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r87cstreambUsage()}}),
+		Tools: []types.Tool{exec.tool(t, func(in map[string]interface{}) interface{} { return "result for " + in["value"].(string) })},
+		ToolApproval: map[string]types.ToolApprovalValue{"tool1": types.SingleToolApprovalFunc(func(in map[string]interface{}, _ types.SingleToolApprovalOptions) types.ToolApprovalResult {
+			if in["value"] == "value-needs-approval" {
+				return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}
+			}
+			return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
+		})},
+		StopWhen: []StopCondition{StepCountIs(3)},
+		Prompt:   "test-input",
+		Internal: r87cstreambIDs(),
+	})
+}
+
+const r87cstreambFuncCall1 = `{"input":{"value":"value-needs-approval"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}`
+const r87cstreambFuncCall2 = `{"input":{"value":"value-no-approval"},"toolCallId":"call-2","toolName":"tool1","type":"tool-call"}`
+const r87cstreambFuncResult2 = `{"dynamic":false,"input":{"value":"value-no-approval"},"output":"result for value-no-approval","toolCallId":"call-2","toolName":"tool1","type":"tool-result"}`
+const r87cstreambFuncRequest = `{"approvalId":"id-1","toolCall":` + r87cstreambFuncCall1 + `,"type":"tool-approval-request"}`
+
+// stream-text.test.ts 30992: tool execution approval > when a single tool has
+// a user-defined approval function > should add tool approval requests to
+// the full stream.
+func TestR87cstreambApprovalFuncFullStream(t *testing.T) {
+	_, parts := r87cstreambApprovalFuncRun(t)
+	r87cstreambAssert(t, "full stream", r87cstreambParts(parts), `[{"type":"start"},{"request":{},"type":"start-step","warnings":[]},
+		`+r87cstreambFuncCall1+`,`+r87cstreambFuncRequest+`,`+r87cstreambFuncCall2+`,`+r87cstreambFuncResult2+`,
+		{"finishReason":"tool-calls","response":{"id":"id-0","modelId":"mock-model-id","timestamp":"<now>"},"type":"finish-step","usage":`+r87cstreambUsageJSON+`},
+		{"finishReason":"tool-calls","totalUsage":`+r87cstreambUsageJSON+`,"type":"finish"}]`)
+	for _, p := range parts {
+		if p.Type == provider.ChunkTypeFinishStep {
+			if _, ok := p.Performance.ToolExecutionMs["call-2"]; !ok || len(p.Performance.ToolExecutionMs) != 1 {
+				t.Fatalf("finish-step toolExecutionMs = %v, want call-2 only", p.Performance.ToolExecutionMs)
+			}
+		}
+	}
+}
+
+// stream-text.test.ts 31171: tool execution approval > when a single tool has
+// a user-defined approval function > should only execute 1 step when the
+// tool needs approval.
+func TestR87cstreambApprovalFuncOneStep(t *testing.T) {
+	r, _ := r87cstreambApprovalFuncRun(t)
+	if n := len(r.Steps()); n != 1 {
+		t.Fatalf("steps = %d, want 1", n)
+	}
+}
+
+// stream-text.test.ts 31175: tool execution approval > when a single tool has
+// a user-defined approval function > should have tool-calls finish reason.
+func TestR87cstreambApprovalFuncFinishReason(t *testing.T) {
+	r, _ := r87cstreambApprovalFuncRun(t)
+	if fr := r.FinishReason(); fr != types.FinishReasonToolCalls {
+		t.Fatalf("finishReason = %q, want tool-calls", fr)
+	}
+}
+
+// stream-text.test.ts 31179: tool execution approval > when a single tool has
+// a user-defined approval function > should add a tool approval request to
+// the content.
+func TestR87cstreambApprovalFuncContent(t *testing.T) {
+	r, _ := r87cstreambApprovalFuncRun(t)
+	r87cstreambAssert(t, "content", r87cstreambContent(t, r.Content()), `[`+r87cstreambFuncCall1+`,`+r87cstreambFuncRequest+`,`+r87cstreambFuncCall2+`,`+r87cstreambFuncResult2+`]`)
+}
+
+// stream-text.test.ts 31233: tool execution approval > when a single tool has
+// a user-defined approval function > should add tool approval requests to
+// the response messages.
+func TestR87cstreambApprovalFuncResponseMessages(t *testing.T) {
+	r, _ := r87cstreambApprovalFuncRun(t)
+	r87cstreambAssert(t, "responseMessages", r87cstreambMessages(t, r.ResponseMessages()), `[
+		{"content":[`+r87cstreambFuncCall1+`,{"approvalId":"id-1","toolCallId":"call-1","type":"tool-approval-request"},`+r87cstreambFuncCall2+`],"role":"assistant"},
+		{"content":[{"output":{"type":"text","value":"result for value-no-approval"},"toolCallId":"call-2","toolName":"tool1","type":"tool-result"}],"role":"tool"}]`)
+}
+
+// r87cstreambSandbox stands in for the TS test sandbox session.
+type r87cstreambSandbox struct{ description string }
+
+// r87cstreambApprovedRun is the TS 'when a call from a single tool that needs
+// approval is approved' beforeEach (an approved approval response in the
+// input messages).
+func r87cstreambApprovedRun(t *testing.T) (*StreamTextResult, *r87cstreambExecRec, []interface{}, []provider.StreamChunk, *r87cstreambSandbox) {
+	t.Helper()
+	var mu sync.Mutex
+	var prompts []interface{}
+	exec := &r87cstreambExecRec{}
+	sandbox := &r87cstreambSandbox{description: "test sandbox"}
+	r, parts := r73streamParts(t, StreamTextOptions{
+		Model:               r87cstreambPromptModel(t, &prompts, &mu, r87cstreambHelloStep),
+		Tools:               []types.Tool{exec.tool(t, func(map[string]interface{}) interface{} { return "result1" })},
+		ToolApproval:        map[string]types.ToolApprovalValue{"tool1": types.ToolApprovalStatusUserApproval},
+		ExperimentalSandbox: sandbox,
+		StopWhen:            []StopCondition{StepCountIs(3)},
+		Internal:            r87cstreambIDs(),
+		Messages:            tsApprovalHistory(true),
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	return r, exec, append([]interface{}(nil), prompts...), parts, sandbox
+}
+
+// stream-text.test.ts 31421: tool execution approval > when a call from a
+// single tool that needs approval is approved > should execute the tool.
+func TestR87cstreambApprovedExecutes(t *testing.T) {
+	_, exec, _, _, sandbox := r87cstreambApprovedRun(t)
+	exec.mu.Lock()
+	defer exec.mu.Unlock()
+	if len(exec.calls) != 1 || exec.calls[0]["toolCallId"] != "call-1" || exec.calls[0]["messages"] != true || exec.calls[0]["sandbox"] != sandbox ||
+		!reflect.DeepEqual(exec.calls[0]["input"], map[string]interface{}{"value": "value"}) {
+		t.Fatalf("execute calls = %v", exec.calls)
+	}
+}
+
+// stream-text.test.ts 31441: tool execution approval > when a call from a
+// single tool that needs approval is approved > should call the model with a
+// prompt that includes the tool result.
+func TestR87cstreambApprovedPrompt(t *testing.T) {
+	_, _, prompts, _, _ := r87cstreambApprovedRun(t)
+	r87cstreambAssert(t, "prompts", prompts, `[[`+r87cstreambUserPrompt+`,{"content":[`+r87cstreambApprovalCall+`],"role":"assistant"},{"content":[`+r87cstreambToolResult1+`],"role":"tool"}]]`)
+}
+
+// stream-text.test.ts 31492: tool execution approval > when a call from a
+// single tool that needs approval is approved > should include the tool
+// result in the response messages.
+func TestR87cstreambApprovedResponseMessages(t *testing.T) {
+	r, _, _, _, _ := r87cstreambApprovedRun(t)
+	r87cstreambAssert(t, "responseMessages", r87cstreambMessages(t, r.ResponseMessages()), `[{"content":[`+r87cstreambToolResult1+`],"role":"tool"},{"content":[{"text":"Hello, world!","type":"text"}],"role":"assistant"}]`)
+}
+
+// stream-text.test.ts 31617: tool execution approval > when a call from a
+// single tool that needs approval is approved > should include the tool
+// result in the full stream.
+func TestR87cstreambApprovedFullStream(t *testing.T) {
+	_, _, _, parts, _ := r87cstreambApprovedRun(t)
+	r87cstreambAssert(t, "full stream", r87cstreambParts(parts), `[{"type":"start"},
+		{"dynamic":false,"input":{"value":"value"},"output":"result1","toolCallId":"call-1","toolName":"tool1","type":"tool-result"},
+		{"request":{},"type":"start-step","warnings":[]},
+		{"id":"1","type":"text-start"},{"id":"1","text":"Hello, world!","type":"text-delta"},{"id":"1","type":"text-end"},
+		{"finishReason":"stop","rawFinishReason":"stop","response":{"id":"id-0","modelId":"mock-model-id","timestamp":"<now>"},"type":"finish-step","usage":`+r87cstreambUsageJSON+`},
+		{"finishReason":"stop","rawFinishReason":"stop","totalUsage":`+r87cstreambUsageJSON+`,"type":"finish"}]`)
+}
