@@ -699,7 +699,9 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 	// Apply total timeout if configured (TS `timeout ?? preparedCall.timeout`)
 	var cancel context.CancelFunc
 	if fc.Timeout != nil && fc.Timeout.HasTotal() {
-		ctx, cancel = fc.Timeout.CreateTimeoutContext(ctx, "total")
+		// The deadline's cause is the total TimeoutError (TS
+		// AbortSignal.timeout's reason), as in GenerateText.
+		ctx, cancel = context.WithTimeoutCause(ctx, *fc.Timeout.Total, &ai.TimeoutError{Reason: ai.TimeoutReasonTotal, Err: context.DeadlineExceeded, Timeout: *fc.Timeout.Total})
 		defer cancel()
 	}
 
@@ -1985,9 +1987,25 @@ func (a *ToolLoopAgent) stepTimeoutContext(ctx context.Context, callConfig Prepa
 		stepTimeout = a.config.Timeout
 	}
 	if stepTimeout.HasPerStep() {
-		return stepTimeout.CreateTimeoutContext(ctx, "step")
+		// TS setAbortTimeout aborts the step with a TimeoutError ("Step
+		// timeout of <ms>ms exceeded"), the cause the model call and tools
+		// see.
+		return context.WithTimeoutCause(ctx, *stepTimeout.PerStep, a.stepTimeoutCause(callConfig))
 	}
 	return ctx, func() {}
+}
+
+// stepTimeoutCause is the abort reason of the per-step timeout
+// stepTimeoutContext applies (nil without one).
+func (a *ToolLoopAgent) stepTimeoutCause(callConfig PrepareCallConfig) error {
+	stepTimeout := callConfig.Timeout
+	if stepTimeout == nil {
+		stepTimeout = a.config.Timeout
+	}
+	if !stepTimeout.HasPerStep() {
+		return nil
+	}
+	return &ai.TimeoutError{Reason: ai.TimeoutReasonStep, Err: context.DeadlineExceeded, Timeout: *stepTimeout.PerStep}
 }
 
 // executeStep executes a single agent step
@@ -2129,9 +2147,15 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 			// Keep the per-step deadline on the model-call ctx, so it expires
 			// with context.DeadlineExceeded like the step ctx (a plain cancel
 			// would surface as context.Canceled, an abort).
+			// The step's own deadline aborts with the step TimeoutError
+			// (its context.Cause); an earlier deadline of the step's parent
+			// (the total timeout, the caller's deadline) already reaches mc
+			// with its own cause.
 			var cancel context.CancelFunc
-			if deadline, ok := stepCtx.Deadline(); ok {
-				modelCallCtx, cancel = context.WithDeadline(mc, deadline)
+			deadline, ok := stepCtx.Deadline()
+			parentDeadline, parentOK := stepTel.stepCtx.Deadline()
+			if ok && (!parentOK || deadline.Before(parentDeadline)) {
+				modelCallCtx, cancel = context.WithDeadlineCause(mc, deadline, a.stepTimeoutCause(callConfig))
 			} else {
 				modelCallCtx, cancel = context.WithCancel(mc)
 			}
@@ -2603,7 +2627,9 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			execCancel := func() {}
 			toolTimeout := a.config.Timeout.GetToolTimeout(call.ToolName)
 			if toolTimeout != nil {
-				execCtx, execCancel = context.WithTimeout(toolTelCtx, *toolTimeout)
+				// TS mergeAbortSignals(abortSignal, toolMs): the tool's
+				// signal aborts with AbortSignal.timeout's TimeoutError.
+				execCtx, execCancel = context.WithTimeoutCause(toolTelCtx, *toolTimeout, &ai.TimeoutError{Reason: ai.TimeoutReasonTool, Err: context.DeadlineExceeded, Timeout: *toolTimeout})
 			}
 			toolStarted := time.Now()
 			toolResult, toolErr := telemetry.FireExecuteToolWithSettings(execCtx, tsettings, call.ToolName, call.Arguments,
