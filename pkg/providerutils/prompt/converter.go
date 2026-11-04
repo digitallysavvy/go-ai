@@ -801,7 +801,7 @@ func openAIToolResultTextWithErrors(p types.ToolResultContent, wrapErrors bool) 
 	case "text", "error-text":
 		return stringValue(out.value)
 	case "execution-denied":
-		if out.reason != "" {
+		if out.hasReason {
 			return out.reason
 		}
 		return "Tool call execution denied."

@@ -436,7 +436,7 @@ func toolResultToInteractionBlock(part types.ToolResultContent) (map[string]inte
 		base["result"] = interactionResultText(part.Output.Value)
 	case types.ToolResultOutputExecutionDenied:
 		base["is_error"] = true
-		base["result"] = firstNonEmpty(part.Output.Reason, "Tool execution denied by user.")
+		base["result"] = part.Output.ReasonOr("Tool execution denied by user.")
 	case types.ToolResultOutputContent:
 		blocks, warnings, err := toolResultContentBlocks(part.Output.Content)
 		if err != nil {

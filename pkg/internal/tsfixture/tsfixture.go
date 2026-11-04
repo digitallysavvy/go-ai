@@ -1393,7 +1393,9 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 						case types.ToolResultOutputText, types.ToolResultOutputJSON, types.ToolResultOutputError, types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON:
 							o.Value = out["value"]
 						case types.ToolResultOutputExecutionDenied:
-							o.Reason, _ = out["reason"].(string)
+							if r, ok := out["reason"].(string); ok {
+								o.Reason, o.ReasonSet = r, r == ""
+							}
 						case types.ToolResultOutputContent:
 							blocks, _ := out["value"].([]interface{})
 							for _, bv := range blocks {
@@ -1451,7 +1453,9 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 			case "tool-approval-response":
 				ar := types.ToolApprovalResponseContent{ApprovalID: p["approvalId"].(string)}
 				ar.Approved, _ = p["approved"].(bool)
-				ar.Reason, _ = p["reason"].(string)
+				if r, ok := p["reason"].(string); ok {
+					ar.Reason, ar.ReasonSet = r, r == ""
+				}
 				msg.Content = append(msg.Content, ar)
 			default:
 				return nil, fmt.Sprintf("prompt part %v", p["type"])

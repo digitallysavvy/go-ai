@@ -876,6 +876,8 @@ type googleToolOutput struct {
 	value   interface{}
 	content []types.ToolResultContentBlock
 	reason  string
+	// hasReason is TS output.reason != null (an empty reason included).
+	hasReason bool
 }
 
 func resolveGoogleToolOutput(p types.ToolResultContent) googleToolOutput {
@@ -896,7 +898,7 @@ func resolveGoogleToolOutput(p types.ToolResultContent) googleToolOutput {
 		return googleToolOutput{kind: "json", value: p.Result}
 	}
 	o := p.Output
-	out := googleToolOutput{value: o.Value, content: o.Content, reason: o.Reason}
+	out := googleToolOutput{value: o.Value, content: o.Content, reason: o.Reason, hasReason: o.HasReason()}
 	switch o.Type {
 	case types.ToolResultOutputError:
 		if _, ok := o.Value.(string); ok {
@@ -924,7 +926,7 @@ func (c *googleConverter) appendFunctionResponse(parts *[]map[string]interface{}
 	isError := out.kind == "error-text" || out.kind == "error-json" || out.kind == "execution-denied"
 	if out.kind == "execution-denied" {
 		content = "Tool call execution denied."
-		if out.reason != "" {
+		if out.hasReason {
 			content = out.reason
 		}
 	} else {

@@ -147,10 +147,8 @@ func ConvertToolModelOutput(output types.ToolResultOutput) ([]ToolModelOutputCon
 	case types.ToolResultOutputError:
 		return []ToolModelOutputContent{{Type: ToolModelOutputContentText, Text: textOf(output.Value)}}, true, nil
 	case types.ToolResultOutputExecutionDenied:
-		reason := output.Reason
-		if reason == "" {
-			reason = "Tool execution denied."
-		}
+		// TS output.reason ?? 'Tool execution denied.'
+		reason := output.ReasonOr("Tool execution denied.")
 		return []ToolModelOutputContent{{Type: ToolModelOutputContentText, Text: reason}}, true, nil
 	case types.ToolResultOutputContent:
 		out := make([]ToolModelOutputContent, 0, len(output.Content))

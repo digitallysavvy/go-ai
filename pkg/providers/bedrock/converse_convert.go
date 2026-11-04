@@ -92,7 +92,7 @@ var invalidToolNameCharsPattern = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 
 // whitespacePattern is the JS /\s+/g class (RE2 \s lacks \v, NBSP and the
 // Unicode spaces, which JS collapses to a single space before they are stripped).
-var whitespacePattern = regexp.MustCompile(`[\t\n\x{0B}\f\r \x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}]+`)
+var whitespacePattern = regexp.MustCompile(providerutils.JSRegexpSpace + `+`)
 var invalidDocumentNameCharsPattern = regexp.MustCompile(`[^a-zA-Z0-9 ()\[\]-]`)
 
 // sanitizeDocumentName ports TS
@@ -1137,10 +1137,7 @@ func bedrockToolResultContent(part types.ToolResultContent, getDocumentName func
 		// error shape) is JSON.stringify(value), never Go's %v map rendering.
 		return []map[string]interface{}{{"text": jsonStringify(part.Output.Value)}}, nil
 	case types.ToolResultOutputExecutionDenied:
-		reason := part.Output.Reason
-		if reason == "" {
-			reason = "Tool call execution denied."
-		}
+		reason := part.Output.ReasonOr("Tool call execution denied.")
 		return []map[string]interface{}{{"text": reason}}, nil
 	case types.ToolResultOutputJSON, types.ToolResultOutputErrorJSON:
 		fallthrough

@@ -337,6 +337,7 @@ func convertUIToolBlock(ctx context.Context, block []UIMessagePart, options Conv
 				ApprovalID:       p.Approval.ID,
 				Approved:         *p.Approval.Approved,
 				Reason:           p.Approval.Reason,
+				ReasonSet:        p.Approval.hasReason(),
 				ProviderExecuted: isTrue(p.ProviderExecuted),
 			})
 		}
@@ -347,8 +348,9 @@ func convertUIToolBlock(ctx context.Context, block []UIMessagePart, options Conv
 				ToolCallID: p.ToolCallID,
 				ToolName:   toolName,
 				Output: &types.ToolResultOutput{
-					Type:   types.ToolResultOutputExecutionDenied,
-					Reason: p.Approval.Reason,
+					Type:      types.ToolResultOutputExecutionDenied,
+					Reason:    p.Approval.Reason,
+					ReasonSet: p.Approval.hasReason(),
 				},
 				ProviderOptions: p.CallProviderMetadata,
 			})

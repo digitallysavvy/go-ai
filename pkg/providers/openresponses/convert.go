@@ -973,10 +973,7 @@ func convertStructuredToolResultOutput(output types.ToolResultOutput, warnings *
 		}
 		return fmt.Sprintf("%v", output.Value), nil
 	case types.ToolResultOutputExecutionDenied:
-		if output.Reason != "" {
-			return output.Reason, nil
-		}
-		return "Tool call execution denied.", nil
+		return output.ReasonOr("Tool call execution denied."), nil
 	case types.ToolResultOutputJSON:
 		jsonBytes, _ := jsonstr.Marshal(output.Value)
 		return string(jsonBytes), nil

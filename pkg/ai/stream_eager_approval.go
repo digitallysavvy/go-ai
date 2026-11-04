@@ -78,7 +78,7 @@ func eagerApprovalChunks(
 		if approval.Reason != nil {
 			reason = *approval.Reason
 		}
-		skeleton[0].Result = types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: reason}
+		skeleton[0].Result = types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: reason, ReasonSet: approval.Reason != nil && reason == ""}
 	}
 	attachToolApprovalSignatures(skeleton, secret)
 	tr := skeleton[0]

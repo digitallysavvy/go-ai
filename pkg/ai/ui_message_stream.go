@@ -3339,7 +3339,7 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			"approvalId": chunk.ToolApprovalResponse.ApprovalID,
 			"approved":   chunk.ToolApprovalResponse.Approved,
 		}
-		if chunk.ToolApprovalResponse.Reason != "" {
+		if chunk.ToolApprovalResponse.HasReason() {
 			part["reason"] = chunk.ToolApprovalResponse.Reason
 		}
 		// TS forwards providerExecuted when it is not undefined, so an

@@ -1033,7 +1033,7 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 			localResults = append(localResults, types.ToolResultContent{
 				ToolCallID: call.ID,
 				ToolName:   call.ToolName,
-				Output:     &types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: approval.ApprovalResponse.Reason},
+				Output:     &types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: approval.ApprovalResponse.Reason, ReasonSet: approval.ApprovalResponse.ReasonSet},
 			})
 		}
 		deniedChunks++

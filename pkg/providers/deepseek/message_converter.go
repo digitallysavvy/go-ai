@@ -524,10 +524,7 @@ func (m *LanguageModel) convertToolMessage(msg types.Message, providerOptionsNam
 			entries = append(entries, deepseekToolMessage(tr.ToolCallID, deepseekStringValue(tr.Output.Value)))
 
 		case types.ToolResultOutputExecutionDenied:
-			reason := tr.Output.Reason
-			if reason == "" {
-				reason = "Tool call execution denied."
-			}
+			reason := tr.Output.ReasonOr("Tool call execution denied.")
 			entries = append(entries, deepseekToolMessage(tr.ToolCallID, reason))
 
 		case types.ToolResultOutputJSON, types.ToolResultOutputErrorJSON, types.ToolResultOutputError:

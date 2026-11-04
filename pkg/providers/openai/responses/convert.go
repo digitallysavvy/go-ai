@@ -2446,10 +2446,7 @@ func toolResultOutputBP(tr types.ToolResultContent, opts ConvertOptions, scalarB
 				return asOutput(string(b))
 			}
 		case types.ToolResultOutputExecutionDenied:
-			reason := tr.Output.Reason
-			if reason == "" {
-				reason = "Tool call execution denied."
-			}
+			reason := tr.Output.ReasonOr("Tool call execution denied.")
 			return asOutput(scalarOutput(reason))
 		case types.ToolResultOutputContent:
 			parts := make([]CustomToolCallOutputPart, 0, len(tr.Output.Content))

@@ -327,6 +327,8 @@ type perplexityToolOutput struct {
 	value   interface{}
 	content []types.ToolResultContentBlock
 	reason  string
+	// hasReason is TS output.reason != null (an empty reason included).
+	hasReason bool
 }
 
 func resolvePerplexityToolOutput(p types.ToolResultContent) perplexityToolOutput {
@@ -348,7 +350,7 @@ func resolvePerplexityToolOutput(p types.ToolResultContent) perplexityToolOutput
 	}
 
 	o := p.Output
-	out := perplexityToolOutput{value: o.Value, content: o.Content, reason: o.Reason}
+	out := perplexityToolOutput{value: o.Value, content: o.Content, reason: o.Reason, hasReason: o.HasReason()}
 	switch o.Type {
 	case types.ToolResultOutputError:
 		if _, ok := o.Value.(string); ok {
@@ -380,7 +382,7 @@ func serializePerplexityToolOutput(p types.ToolResultContent) (string, error) {
 		b, err := jsonstr.Marshal(out.value)
 		return string(b), err
 	case "execution-denied":
-		if out.reason != "" {
+		if out.hasReason {
 			return out.reason, nil
 		}
 		return "Tool call execution denied.", nil

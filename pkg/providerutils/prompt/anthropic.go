@@ -1122,6 +1122,7 @@ type anthropicToolOutput struct {
 	value           interface{}
 	content         []types.ToolResultContentBlock
 	reason          string
+	hasReason       bool // TS output.reason != null (an empty reason included)
 	providerOptions map[string]interface{}
 }
 
@@ -1143,7 +1144,7 @@ func resolveToolOutput(p types.ToolResultContent) anthropicToolOutput {
 		return anthropicToolOutput{kind: "json", value: p.Result}
 	}
 	o := p.Output
-	out := anthropicToolOutput{value: o.Value, content: o.Content, reason: o.Reason, providerOptions: o.ProviderOptions}
+	out := anthropicToolOutput{value: o.Value, content: o.Content, reason: o.Reason, hasReason: o.HasReason(), providerOptions: o.ProviderOptions}
 	switch o.Type {
 	case types.ToolResultOutputError:
 		if _, ok := o.Value.(string); ok {
@@ -1201,7 +1202,7 @@ func (c *anthropicConverter) convertToolResult(msg types.Message, part types.Too
 	case "text", "error-text":
 		contentValue = stringValue(output.value)
 	case "execution-denied":
-		if output.reason != "" {
+		if output.hasReason {
 			contentValue = output.reason
 		} else {
 			contentValue = "Tool call execution denied."

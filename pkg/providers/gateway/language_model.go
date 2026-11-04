@@ -963,7 +963,7 @@ func (m *LanguageModel) convertContentPart(part types.ContentPart) (map[string]i
 
 	case types.ToolApprovalResponseContent:
 		result := map[string]interface{}{"type": "tool-approval-response", "approvalId": v.ApprovalID, "approved": v.Approved}
-		if v.Reason != "" {
+		if v.HasReason() {
 			result["reason"] = v.Reason
 		}
 		return result, nil
@@ -1074,7 +1074,7 @@ func gatewayToolResultOutputMap(output types.ToolResultOutput) (map[string]inter
 		// schema requires.
 		result["value"] = output.Value
 	}
-	if output.Reason != "" {
+	if output.HasReason() {
 		result["reason"] = output.Reason
 	}
 	addProviderOptions(result, output.ProviderOptions)

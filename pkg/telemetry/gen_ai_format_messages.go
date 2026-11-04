@@ -227,7 +227,13 @@ func toolResultResponseValue(t types.ToolResultContent) interface{} {
 		types.ToolResultOutputJSON, types.ToolResultOutputErrorJSON:
 		return out.Value
 	case types.ToolResultOutputExecutionDenied:
-		return map[string]interface{}{"denied": true, "reason": out.Reason}
+		// TS {denied: true, reason: output.reason}: JSON.stringify drops an
+		// undefined reason and keeps an empty one.
+		denied := map[string]interface{}{"denied": true}
+		if out.HasReason() {
+			denied["reason"] = out.Reason
+		}
+		return denied
 	default:
 		return out
 	}
@@ -388,7 +394,7 @@ func convertMessagePartToSemConv(part types.ContentPart) semConvPart {
 			"approved":    p.Approved,
 		}
 		// TS `reason: part.reason` serializes away when undefined.
-		if p.Reason != "" {
+		if p.HasReason() {
 			out["reason"] = p.Reason
 		}
 		return out

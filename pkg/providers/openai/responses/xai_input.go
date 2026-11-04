@@ -342,10 +342,7 @@ func xaiToolResultOutput(tr types.ToolResultContent) (interface{}, error) {
 		b, _ := jsonstr.Marshal(out.Value)
 		return string(b), nil
 	case types.ToolResultOutputExecutionDenied:
-		if out.Reason != "" {
-			return out.Reason, nil
-		}
-		return "tool execution denied", nil
+		return out.ReasonOr("tool execution denied"), nil
 	case types.ToolResultOutputJSON, types.ToolResultOutputErrorJSON:
 		b, _ := jsonstr.Marshal(out.Value)
 		return string(b), nil
