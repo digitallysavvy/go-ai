@@ -3285,7 +3285,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				toolCallbacks.fallbackFinish = nil
 				toolCallbacks.onFinish = func(cbCtx context.Context, e OnToolCallFinishEvent) {
 					if userToolEnd != nil {
-						userToolEnd(cbCtx, e)
+						// TS notify swallows a throwing callback and the
+						// result is still enqueued after it.
+						safeCall(cbCtx, e, userToolEnd)
 					}
 					tr := e.ToolOutput
 					if !liveEmittableToolResult(tr, eagerApprovals) {
