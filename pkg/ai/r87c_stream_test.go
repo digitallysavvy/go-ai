@@ -1955,3 +1955,61 @@ func TestR87cstreamPrepareStepCalls(t *testing.T) {
 	// after the prepared user message).
 	r87cstreamAssert(t, "call 1 response messages", r87cstreamTSMessages(t, prepares[1].messages[1:]), r71streamJSON(t, want[1]["messages"].([]interface{})[1:]))
 }
+
+// r87cstreamUpperToolResults is TS upperCaseToolResultTransform: a static
+// tool-result's output and input value are upper-cased.
+func r87cstreamUpperToolResults(_ context.Context, c provider.StreamChunk) []provider.StreamChunk {
+	if c.Type == provider.ChunkTypeToolResult && c.ToolResult != nil && !c.ToolResult.Dynamic {
+		tr := *c.ToolResult
+		if s, ok := tr.Result.(string); ok {
+			tr.Result = strings.ToUpper(s)
+		}
+		input := map[string]interface{}{}
+		for k, v := range tr.Input {
+			input[k] = v
+		}
+		if s, ok := input["value"].(string); ok {
+			input["value"] = strings.ToUpper(s)
+		}
+		tr.Input = input
+		c.ToolResult = &tr
+	}
+	return []provider.StreamChunk{c}
+}
+
+// r87cstreamTransformedRun is the TS options.stopWhen "2 steps: initial,
+// tool-result with transformed tool results" setup (reasoning id "id-0").
+func r87cstreamTransformedRun(t *testing.T) *r87cstreamTwoStepRun {
+	t.Helper()
+	chunks := r87cstreamTwoStepChunks()
+	for i := 1; i <= 3; i++ {
+		chunks[0][i].ID = "id-0"
+	}
+	return r87cstreamTwoSteps(t, StreamTextOptions{Model: r71streamModel(nil, chunks...), ExperimentalTransform: []StreamTransformFunc{r87cstreamUpperToolResults}})
+}
+
+// stream-text.test.ts 16491: options.stopWhen > 2 steps: initial,
+// tool-result with transformed tool results > should contain assistant
+// response message and tool message from all steps.
+func TestR87cstreamTransformedFullStream(t *testing.T) {
+	run := r87cstreamTransformedRun(t)
+	r87cstreamAssert(t, "parts", r87cstreamTSParts(run.parts), `[{"type":"start"},{"request":{},"type":"start-step","warnings":[]},{"id":"id-0","type":"reasoning-start"},{"id":"id-0","text":"thinking","type":"reasoning-delta"},{"id":"id-0","type":"reasoning-end"},{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"},{"dynamic":false,"input":{"value":"VALUE"},"output":"RESULT1","toolCallId":"call-1","toolName":"tool1","type":"tool-result"},{"finishReason":"tool-calls","performance":{"effectiveOutputTokensPerSecond":16.666666666666668,"effectiveTotalTokensPerSecond":21.666666666666668,"inputTokensPerSecond":30,"outputTokensPerSecond":20,"responseTimeMs":600,"stepTimeMs":1000,"timeBetweenOutputChunksMs":{"avg":400,"max":400,"median":400,"min":400,"p10":400,"p90":400},"timeToFirstOutputMs":100,"toolExecutionMs":{"call-1":0}},"response":{"headers":{"call":"1"},"id":"id-0","modelId":"mock-model-id","timestamp":"1970-01-01T00:00:00.000Z"},"type":"finish-step","usage":{"inputTokenDetails":{"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"textTokens":10},"outputTokens":10,"totalTokens":13}},{"request":{},"type":"start-step","warnings":[]},{"id":"1","type":"text-start"},{"id":"1","text":"Hello, ","type":"text-delta"},{"id":"1","text":"world!","type":"text-delta"},{"id":"1","type":"text-end"},{"finishReason":"stop","performance":{"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0,"inputTokensPerSecond":0,"outputTokensPerSecond":0,"responseTimeMs":0,"stepTimeMs":0,"timeBetweenOutputChunksMs":{"avg":0,"max":0,"median":0,"min":0,"p10":0,"p90":0},"timeToFirstOutputMs":0,"toolExecutionMs":{}},"rawFinishReason":"stop","response":{"headers":{"call":"2"},"id":"id-1","modelId":"mock-model-id","timestamp":"1970-01-01T00:00:01.000Z"},"type":"finish-step","usage":{"inputTokenDetails":{"cacheReadTokens":0,"cacheWriteTokens":0,"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"reasoningTokens":10,"textTokens":10},"outputTokens":10,"totalTokens":13}},{"finishReason":"stop","rawFinishReason":"stop","totalUsage":{"inputTokenDetails":{"cacheReadTokens":0,"cacheWriteTokens":0,"noCacheTokens":6},"inputTokens":6,"outputTokenDetails":{"reasoningTokens":10,"textTokens":20},"outputTokens":20,"totalTokens":26},"type":"finish"}]`)
+}
+
+// stream-text.test.ts 17395, 17414, 17433, 17453, 17457, 17461, 17671:
+// options.stopWhen > 2 steps: initial, tool-result with transformed tool
+// results > value promises.
+func TestR87cstreamTransformedValuePromises(t *testing.T) {
+	r := r87cstreamTransformedRun(t).result
+	r87cstreamAssert(t, "17395 totalUsage", r.TotalUsage(), `{"inputTokenDetails":{"cacheReadTokens":0,"cacheWriteTokens":0,"noCacheTokens":6},"inputTokens":6,"outputTokenDetails":{"reasoningTokens":10,"textTokens":20},"outputTokens":20,"totalTokens":26}`)
+	r87cstreamAssert(t, "17414 usage", r.Usage(), `{"inputTokenDetails":{"cacheReadTokens":0,"cacheWriteTokens":0,"noCacheTokens":6},"inputTokens":6,"outputTokenDetails":{"reasoningTokens":10,"textTokens":20},"outputTokens":20,"totalTokens":26}`)
+	r87cstreamAssert(t, "17433 finalStep.usage", r.FinalStep().Usage, `{"inputTokenDetails":{"cacheReadTokens":0,"cacheWriteTokens":0,"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"reasoningTokens":10,"textTokens":10},"outputTokens":10,"totalTokens":13}`)
+	if r.FinishReason() != types.FinishReasonStop {
+		t.Fatalf("17453 finishReason = %q", r.FinishReason())
+	}
+	if r.Text() != "Hello, world!" {
+		t.Fatalf("17457 text = %q", r.Text())
+	}
+	r87cstreamAssert(t, "17461 steps", r87cstreamTSSteps(t, r.Steps()), `[{"callId":"test-telemetry-call-id","content":[{"text":"thinking","type":"reasoning"},{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"},{"dynamic":false,"input":{"value":"VALUE"},"output":"RESULT1","toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"finishReason":"tool-calls","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":{"effectiveOutputTokensPerSecond":16.666666666666668,"effectiveTotalTokensPerSecond":21.666666666666668,"inputTokensPerSecond":30,"outputTokensPerSecond":20,"responseTimeMs":600,"stepTimeMs":1000,"timeBetweenOutputChunksMs":{"avg":400,"max":400,"median":400,"min":400,"p10":400,"p90":400},"timeToFirstOutputMs":100,"toolExecutionMs":{"call-1":0}},"request":{},"response":{"headers":{"call":"1"},"id":"id-0","messages":[{"content":[{"text":"thinking","type":"reasoning"},{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"text","value":"RESULT1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"}],"modelId":"mock-model-id","timestamp":"1970-01-01T00:00:00.000Z"},"runtimeContext":{},"stepNumber":0,"toolsContext":{},"usage":{"inputTokenDetails":{"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"textTokens":10},"outputTokens":10,"totalTokens":13},"warnings":[]},{"callId":"test-telemetry-call-id","content":[{"text":"Hello, world!","type":"text"}],"finishReason":"stop","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":{"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0,"inputTokensPerSecond":0,"outputTokensPerSecond":0,"responseTimeMs":0,"stepTimeMs":0,"timeBetweenOutputChunksMs":{"avg":0,"max":0,"median":0,"min":0,"p10":0,"p90":0},"timeToFirstOutputMs":0,"toolExecutionMs":{}},"rawFinishReason":"stop","request":{},"response":{"headers":{"call":"2"},"id":"id-1","messages":[{"content":[{"text":"Hello, world!","type":"text"}],"role":"assistant"}],"modelId":"mock-model-id","timestamp":"1970-01-01T00:00:01.000Z"},"runtimeContext":{},"stepNumber":1,"toolsContext":{},"usage":{"inputTokenDetails":{"cacheReadTokens":0,"cacheWriteTokens":0,"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"reasoningTokens":10,"textTokens":10},"outputTokens":10,"totalTokens":13},"warnings":[]}]`)
+	r87cstreamAssert(t, "17671 responseMessages", r87cstreamTSMessages(t, r.ResponseMessages()), `[{"content":[{"text":"thinking","type":"reasoning"},{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"text","value":"RESULT1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"},{"content":[{"text":"Hello, world!","type":"text"}],"role":"assistant"}]`)
+}
