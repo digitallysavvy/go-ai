@@ -18,10 +18,11 @@ import (
 // OIDCRefresh opts in to the @vercel/sandbox 3.9.0 Vercel OIDC token
 // refresh (`APIClient.ensureValidToken` and `getCredentials` through
 // @vercel/oidc `getVercelOidcToken`):
-//   - With no explicit credentials, the token is resolved like
-//     getVercelOidcToken: the request context token
-//     (gateway.ContextWithVercelOIDCToken), a token refreshed earlier by this
-//     OIDCRefresh, or VERCEL_OIDC_TOKEN, refreshed from the linked project
+//   - With no explicit credentials, the token is resolved like @vercel/oidc
+//     4.0.0 getVercelOidcToken: the request context token
+//     (gateway.ContextWithVercelOIDCToken), the file named by
+//     VERCEL_OIDC_TOKEN_FILE (read on each lookup), a token refreshed earlier
+//     by this OIDCRefresh, or VERCEL_OIDC_TOKEN, refreshed from the linked project
 //     (.vercel/project.json, the cached project token, or the Vercel API with
 //     the Vercel CLI login) when it is missing or expired.
 //   - Before every Vercel Sandbox API request made with a JWT token (one
@@ -33,8 +34,8 @@ import (
 // to share it across sessions); unlike TS it is never written to the Vercel
 // token cache or the process environment, and the Vercel CLI login is never
 // refreshed, rewritten or cleared (the same rule as
-// gateway.VercelOIDCTokenFunc). Without OIDCRefresh, VERCEL_OIDC_TOKEN is
-// read as is.
+// gateway.VercelOIDCTokenFunc). Without OIDCRefresh, the token
+// (VERCEL_OIDC_TOKEN_FILE, else VERCEL_OIDC_TOKEN) is used as read.
 type OIDCRefresh struct {
 	// AccessToken returns the Vercel access token for the refresh request.
 	// Default: the Vercel CLI login token (read only).
@@ -55,6 +56,8 @@ func (o *OIDCRefresh) tokenResolver() *verceloidc.Resolver {
 	o.once.Do(func() {
 		o.resolver = verceloidc.New(verceloidc.Options{
 			AccessToken: o.AccessToken, HTTPClient: o.HTTPClient, APIBaseURL: o.APIBaseURL,
+			// @vercel/sandbox 3.9.0 pins @vercel/oidc 4.0.0.
+			V4: true,
 		})
 	})
 	return o.resolver
@@ -177,20 +180,8 @@ func (t *oidcTokenTransport) RoundTrip(req *http.Request) (*http.Response, error
 	}
 	clone := req.Clone(req.Context())
 	clone.Header.Set("Authorization", "Bearer "+token)
-	if teamID != "" {
-		// TS sends `teamId: this.teamId` on every request; the client
-		// encodes queries sorted with URLSearchParams escaping.
-		q := clone.URL.Query()
-		if q.Get("teamId") != teamID {
-			flat := map[string]string{}
-			for k, v := range q {
-				if len(v) > 0 {
-					flat[k] = v[len(v)-1]
-				}
-			}
-			flat["teamId"] = teamID
-			clone.URL.RawQuery = httpinternal.EncodeQuery(flat)
-		}
-	}
+	// TS sends `teamId: this.teamId` first on every request (APIClient.path
+	// put the client's team there); the refreshed team takes its place.
+	clone.URL.RawQuery = httpinternal.SetSearchParam(clone.URL.RawQuery, "teamId", teamID)
 	return t.base.RoundTrip(clone)
 }

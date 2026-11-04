@@ -10,10 +10,11 @@
 // api-client.js.
 //
 // Capability gaps vs the TS package (documented, not silently dropped):
-//   - No `@vercel/oidc` token refresh loop or local-dev credential prompting
-//     (`vercel link` / `vercel env pull`). VERCEL_OIDC_TOKEN is read fresh on
-//     each top-level operation; explicit Token+TeamID+ProjectID work exactly
-//     as in TS.
+//   - The `@vercel/oidc` token refresh is opt-in (OIDCRefresh) and there is
+//     no local-dev credential prompting (`vercel link` / `vercel env pull`).
+//     The Vercel OIDC token (VERCEL_OIDC_TOKEN_FILE, else VERCEL_OIDC_TOKEN)
+//     is read fresh on each top-level operation; explicit
+//     Token+TeamID+ProjectID work exactly as in TS.
 //   - Snapshots are only created and listed for template preparation; there is
 //     no snapshot tree, session listing, user/group management, or
 //     `@workflow/serde` (de)serialization hooks — these are native-SDK
@@ -98,7 +99,8 @@ type Template struct {
 type CreateSessionOptions struct {
 	Credentials Credentials
 	// OIDCRefresh opts in to the @vercel/sandbox OIDC token refresh (see
-	// OIDCRefresh). Nil reads VERCEL_OIDC_TOKEN as is.
+	// OIDCRefresh). Nil uses the token as read (VERCEL_OIDC_TOKEN_FILE, else
+	// VERCEL_OIDC_TOKEN).
 	OIDCRefresh *OIDCRefresh
 	// BaseURL overrides the Vercel API base URL (tests only).
 	BaseURL string
@@ -188,7 +190,8 @@ type ResumeSessionOptions struct {
 	BaseURL     string
 	SandboxID   string
 	// OIDCRefresh opts in to the @vercel/sandbox OIDC token refresh (see
-	// OIDCRefresh). Nil reads VERCEL_OIDC_TOKEN as is.
+	// OIDCRefresh). Nil uses the token as read (VERCEL_OIDC_TOKEN_FILE, else
+	// VERCEL_OIDC_TOKEN).
 	OIDCRefresh *OIDCRefresh
 }
 
@@ -342,16 +345,21 @@ func pollForTemplateSnapshotWithTimeout(ctx context.Context, client *APIClient, 
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		snapshots, err := client.ListSnapshots(ctx, name)
+		// Only completed manual snapshots count: automatic snapshots can be
+		// taken of a half-prepared builder. Like TS, the listing stops at
+		// the first match.
+		snapshotID, found := "", false
+		err := client.eachSnapshot(ctx, name, func(snap snapshotWire) bool {
+			if snap.Status == "created" && snap.CreationMethod == "manual" {
+				snapshotID, found = snap.ID, true
+			}
+			return found
+		})
 		if err != nil {
 			return "", err
 		}
-		// Only completed manual snapshots count: automatic snapshots can be
-		// taken of a half-prepared builder.
-		for _, snap := range snapshots {
-			if snap.Status == "created" && snap.CreationMethod == "manual" {
-				return snap.ID, nil
-			}
+		if found {
+			return snapshotID, nil
 		}
 		select {
 		case <-ctx.Done():

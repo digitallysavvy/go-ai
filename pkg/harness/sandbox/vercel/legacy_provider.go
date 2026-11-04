@@ -23,7 +23,8 @@ type LegacySettings struct {
 	Credentials Credentials
 	BaseURL     string
 	// OIDCRefresh opts in to the @vercel/sandbox OIDC token refresh (see
-	// OIDCRefresh). Nil reads VERCEL_OIDC_TOKEN as is.
+	// OIDCRefresh). Nil uses the token as read (VERCEL_OIDC_TOKEN_FILE, else
+	// VERCEL_OIDC_TOKEN).
 	OIDCRefresh *OIDCRefresh
 	// Name overrides the auto-derived template snapshot name
 	// ("ai-sdk-harness-<identity>").

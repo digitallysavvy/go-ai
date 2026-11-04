@@ -31,7 +31,10 @@ type KeepLastSnapshotsParams struct {
 
 // createSandboxRequest is the body of POST /v2|v3/sandboxes.
 type createSandboxRequest struct {
-	ProjectID string `json:"projectId,omitempty"`
+	// ProjectID is always sent: 3.9.0 Sandbox.create passes
+	// `projectId: credentials.projectId`, a string ("" from a token whose
+	// project_id claim is empty).
+	ProjectID string `json:"projectId"`
 	// Ports is always sent: 3.9.0 Sandbox.create passes `ports ?? []`.
 	Ports              []int                    `json:"ports"`
 	Source             *SnapshotSource          `json:"source,omitempty"`

@@ -1,13 +1,14 @@
 // Package verceloidc resolves the Vercel OIDC token like TS @vercel/oidc
-// 3.2.0 getVercelOidcToken, keeping a refreshed token in memory (owner
-// decision b: the Vercel token cache, the CLI login and process
-// environment are never written, removed or renamed). It is shared by
-// gateway.VercelOIDCTokenFunc and the Vercel Sandbox OIDC refresh.
+// getVercelOidcToken, keeping a refreshed token in memory (owner decision b:
+// the Vercel token cache, the CLI login and process environment are never
+// written, removed or renamed). It is shared by gateway.VercelOIDCTokenFunc,
+// which follows @vercel/oidc 3.2.0 (the version TS @ai-sdk/gateway pins), and
+// the Vercel Sandbox OIDC refresh, which follows 4.0.0 (the version
+// @vercel/sandbox 3.9.0 pins; Options.V4).
 package verceloidc
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,8 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // TokenError is the default error for a missing, malformed or unrefreshable
@@ -65,10 +68,24 @@ type Options struct {
 	APIBaseURL string
 	// NewError builds the TS VercelOidcTokenError; default *TokenError.
 	NewError func(message string, cause error) error
+	// V4 follows @vercel/oidc 4.0.0 instead of 3.2.0: the token file named
+	// by VERCEL_OIDC_TOKEN_FILE is read on each lookup (after the request
+	// context token, before VERCEL_OIDC_TOKEN and the refreshed token), the
+	// error texts lose their "Please run `vc env pull`" / "Do you have the
+	// OIDC option enabled" suffixes, and a CLI login with only a refresh
+	// token is not reported as missing.
+	V4 bool
 }
 
-// MissingMessage is the TS getVercelOidcTokenSync error text.
+// MissingMessage is the @vercel/oidc 3.2.0 getVercelOidcTokenSync error text.
 const MissingMessage = "The 'x-vercel-oidc-token' header is missing from the request. Do you have the OIDC option enabled in the Vercel project settings?"
+
+// MissingMessageV4 is the @vercel/oidc 4.0.0 getVercelOidcTokenSync error
+// text.
+const MissingMessageV4 = "The 'x-vercel-oidc-token' header is missing from the request."
+
+// TokenFileEnv names the file @vercel/oidc 4.0.0 reads the token from.
+const TokenFileEnv = "VERCEL_OIDC_TOKEN_FILE"
 
 // Resolver is TS getVercelOidcToken with an in-memory refreshed token. It is
 // safe for concurrent use; concurrent refreshes are serialized.
@@ -78,10 +95,28 @@ type Resolver struct {
 	// refreshed is the last refreshed token; it stands in for TS's
 	// process.env.VERCEL_OIDC_TOKEN assignment.
 	refreshed string
+	// saved holds the tokens refreshed per project; it stands in for TS
+	// saveToken (com.vercel.token/<project>.json), read before that file.
+	saved map[string]string
 }
 
 // New returns a Resolver.
 func New(opts Options) *Resolver { return &Resolver{opts: opts} }
+
+func (r *Resolver) missingMessage() string {
+	if r.opts.V4 {
+		return MissingMessageV4
+	}
+	return MissingMessage
+}
+
+// withVCEnvPull is a 3.2.0 error text; 4.0.0 drops the suffix.
+func (r *Resolver) withVCEnvPull(message string) string {
+	if r.opts.V4 {
+		return message + "."
+	}
+	return message + ". Please run `vc env pull` and try again"
+}
 
 func (r *Resolver) newError(message string, cause error) error {
 	if r.opts.NewError != nil {
@@ -102,18 +137,34 @@ func (r *Resolver) TokenFor(ctx context.Context, projectID, teamID string, buffe
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	token := r.current(ctx)
+	// 4.0.0: `getContext().headers?.["x-vercel-oidc-token"] ? null : await
+	// tryOidcTokenFromFile()`, outside the try that joins messages.
+	token := ""
+	if r.opts.V4 && contextToken(ctx) == "" {
+		fileToken, err := r.TokenFromFile()
+		if err != nil {
+			return "", err
+		}
+		token = fileToken
+	}
+	if token == "" {
+		token = r.current(ctx)
+	}
 	syncMessage := ""
 	if token == "" {
-		syncMessage = MissingMessage
+		syncMessage = r.missingMessage()
 	}
 	err := func() error {
 		if token != "" {
-			payload, err := r.tokenPayload(token)
+			payload, err := r.TokenPayload(token)
 			if err != nil {
 				return err
 			}
-			if !tokenExpired(payload, buffer) {
+			expired, err := TokenExpired(payload, buffer)
+			if err != nil {
+				return err
+			}
+			if !expired {
 				return nil
 			}
 		}
@@ -122,7 +173,7 @@ func (r *Resolver) TokenFor(ctx context.Context, projectID, teamID string, buffe
 		}
 		token = r.current(ctx)
 		if token == "" {
-			return r.newError(MissingMessage, nil)
+			return r.newError(r.missingMessage(), nil)
 		}
 		return nil
 	}()
@@ -136,8 +187,34 @@ func (r *Resolver) TokenFor(ctx context.Context, projectID, teamID string, buffe
 	return token, nil
 }
 
+// TokenFromFile is 4.0.0 tryOidcTokenFromFile: "" when
+// VERCEL_OIDC_TOKEN_FILE is unset or empty, else the file's trimmed text; a
+// read error is returned as is and an empty file is a TokenError naming the
+// path.
+func (r *Resolver) TokenFromFile() (string, error) {
+	path := os.Getenv(TokenFileEnv)
+	if path == "" {
+		return "", nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	// readFile(…, "utf8"): invalid UTF-8 becomes U+FFFD; then String.trim.
+	token := providerutils.JSTrim(string(textdecode.ReplaceInvalid(data)))
+	if token == "" {
+		return "", r.newError("The Vercel OIDC token file is empty: "+path, nil)
+	}
+	return token, nil
+}
+
+func contextToken(ctx context.Context) string {
+	v, _ := ctx.Value(contextKey{}).(string)
+	return v
+}
+
 func (r *Resolver) current(ctx context.Context) string {
-	if v, ok := ctx.Value(contextKey{}).(string); ok && v != "" {
+	if v := contextToken(ctx); v != "" {
 		return v
 	}
 	if r.refreshed != "" {
@@ -163,22 +240,27 @@ func (r *Resolver) refresh(ctx context.Context, projectID, teamID string, buffer
 	if projectID == "" {
 		return r.newError("Failed to refresh OIDC token: No project specified. Try re-linking your project with `vc link`", nil)
 	}
-	token, err := r.loadCachedToken(projectID)
-	if err != nil {
-		return err
+	token, ok := r.saved[projectID]
+	if !ok {
+		var err error
+		if token, err = r.loadCachedToken(projectID); err != nil {
+			return err
+		}
 	}
 	expired := token == ""
 	if !expired {
-		payload, err := r.tokenPayload(token)
+		payload, err := r.TokenPayload(token)
 		if err != nil {
 			return err
 		}
-		expired = tokenExpired(payload, buffer)
+		if expired, err = TokenExpired(payload, buffer); err != nil {
+			return err
+		}
 	}
 	if expired {
 		accessToken := r.opts.AccessToken
 		if accessToken == nil {
-			accessToken = func(context.Context) (string, error) { return cliAccessToken(buffer) }
+			accessToken = func(context.Context) (string, error) { return cliAccessToken(buffer, r.opts.V4) }
 		}
 		authToken, err := accessToken(ctx)
 		if err != nil {
@@ -188,6 +270,10 @@ func (r *Resolver) refresh(ctx context.Context, projectID, teamID string, buffer
 		if err != nil {
 			return err
 		}
+		if r.saved == nil {
+			r.saved = map[string]string{}
+		}
+		r.saved[projectID] = token
 	}
 	r.refreshed = token
 	return nil
@@ -231,55 +317,97 @@ func (r *Resolver) requestOIDCToken(ctx context.Context, authToken, projectID, t
 	if err := json.Unmarshal(body, &value); err != nil {
 		return "", err
 	}
-	return assertTokenResponse(value)
+	return r.assertTokenResponse(value)
 }
 
 // assertTokenResponse is TS assertVercelOidcTokenResponse.
-func assertTokenResponse(value interface{}) (string, error) {
+func (r *Resolver) assertTokenResponse(value interface{}) (string, error) {
 	obj, ok := value.(map[string]interface{})
 	if !ok {
-		return "", errors.New("Vercel OIDC token is malformed. Expected an object. Please run `vc env pull` and try again") //nolint:staticcheck // TS TypeError text
+		return "", errors.New(r.withVCEnvPull("Vercel OIDC token is malformed. Expected an object"))
 	}
 	token, ok := obj["token"].(string)
 	if !ok {
-		return "", errors.New("Vercel OIDC token is malformed. Expected a string-valued token property. Please run `vc env pull` and try again") //nolint:staticcheck // TS TypeError text
+		return "", errors.New(r.withVCEnvPull("Vercel OIDC token is malformed. Expected a string-valued token property"))
 	}
 	return token, nil
 }
 
-// tokenPayload is TS getTokenPayload: the JWT payload, base64url
-// decoded and parsed as JSON.
-func (r *Resolver) tokenPayload(token string) (map[string]interface{}, error) {
+// TokenPayload is TS getTokenPayload: the JWT payload of a three-part token,
+// its second part decoded like Buffer.from(…, "base64") after the -/_ swap
+// (characters outside the alphabet skipped, invalid UTF-8 as U+FFFD) and
+// parsed as JSON (any JSON value).
+func (r *Resolver) TokenPayload(token string) (interface{}, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return nil, r.newError("Invalid token. Please run `vc env pull` and try again", nil)
+		return nil, r.newError(r.withVCEnvPull("Invalid token"), nil)
 	}
 	b64 := strings.NewReplacer("-", "+", "_", "/").Replace(parts[1])
 	b64 += strings.Repeat("=", (4-len(b64)%4)%4)
-	// Buffer.from(…, 'base64') is lenient: decode what is valid.
-	decoded, err := base64.StdEncoding.DecodeString(b64)
-	if err != nil {
-		decoded, _ = base64.RawStdEncoding.DecodeString(strings.TrimRight(b64, "="))
-	}
-	var payload interface{}
-	if err := json.Unmarshal(decoded, &payload); err != nil {
-		return nil, err
-	}
-	m, _ := payload.(map[string]interface{})
-	if m == nil {
-		m = map[string]interface{}{}
-	}
-	return m, nil
+	return DecodeBase64JSON(b64)
 }
 
-// tokenExpired is TS isExpired: `token.exp * 1000 < Date.now() +
-// bufferMs`; a missing or non-numeric exp compares as NaN (not expired).
-func tokenExpired(payload map[string]interface{}, buffer time.Duration) bool {
-	exp, ok := payload["exp"].(float64)
-	if !ok || math.IsNaN(exp) {
-		return false
+// DecodeBase64JSON is JSON.parse(Buffer.from(text, "base64").toString("utf8")).
+func DecodeBase64JSON(text string) (interface{}, error) {
+	decoded, err := providerutils.EncodeSandboxText(text, "base64")
+	if err != nil {
+		return nil, err
 	}
-	return exp*1000 < float64(time.Now().UnixMilli())+float64(buffer.Milliseconds())
+	var payload interface{}
+	if err := json.Unmarshal(textdecode.ReplaceInvalid(decoded), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+// TokenExpired is TS isExpired: `token.exp * 1000 < Date.now() + bufferMs`,
+// exp converted with JS ToNumber (a missing exp, an object or a non-numeric
+// string is NaN: not expired); a null payload throws like `null.exp`.
+func TokenExpired(payload interface{}, buffer time.Duration) (bool, error) {
+	if payload == nil {
+		return false, errors.New("Cannot read properties of null (reading 'exp')") //nolint:staticcheck // JS TypeError text
+	}
+	obj, ok := payload.(map[string]interface{})
+	if !ok {
+		// A primitive or an array has no exp property: undefined -> NaN.
+		return false, nil
+	}
+	raw, present := obj["exp"]
+	if !present {
+		return false, nil
+	}
+	exp := jsToNumber(raw)
+	if math.IsNaN(exp) {
+		return false, nil
+	}
+	return exp*1000 < float64(time.Now().UnixMilli())+float64(buffer.Milliseconds()), nil
+}
+
+// jsToNumber is JS ToNumber for a value decoded from JSON.
+func jsToNumber(v interface{}) float64 {
+	switch x := v.(type) {
+	case nil:
+		return 0
+	case bool:
+		if x {
+			return 1
+		}
+		return 0
+	case float64:
+		return x
+	case string:
+		if f, ok := providerutils.JSNumber(x); ok {
+			return f
+		}
+		return math.NaN()
+	case []interface{}:
+		// ToPrimitive of an array is its String() join.
+		if f, ok := providerutils.JSNumber(providerutils.JSString(x)); ok {
+			return f
+		}
+		return math.NaN()
+	}
+	return math.NaN()
 }
 
 type projectInfo struct{ projectID, teamID string }
@@ -352,30 +480,37 @@ func (r *Resolver) loadCachedToken(projectID string) (string, error) {
 	if err := json.Unmarshal(data, &value); err != nil {
 		return "", err
 	}
-	return assertTokenResponse(value)
+	return r.assertTokenResponse(value)
 }
 
 // cliAccessToken is TS getVercelToken without the OAuth refresh: the
-// Vercel CLI login token (auth.json, read only) when it is still valid.
-func cliAccessToken(buffer time.Duration) (string, error) {
+// Vercel CLI login token (auth.json, read only) when it is still valid. 3.2.0
+// reports a login without a token as missing; 4.0.0 only one with neither a
+// token nor a refresh token (the refresh is then not ported).
+func cliAccessToken(buffer time.Duration, v4 bool) (string, error) {
 	dir := userDataDir()
 	if dir == "" {
 		return "", fmt.Errorf("Unable to find Vercel CLI data directory. Your platform: %s. Supported: darwin, linux, win32.", runtime.GOOS) //nolint:staticcheck // TS error text
 	}
 	var config struct {
-		Token     string      `json:"token"`
-		ExpiresAt interface{} `json:"expiresAt"`
+		Token        string      `json:"token"`
+		RefreshToken string      `json:"refreshToken"`
+		ExpiresAt    interface{} `json:"expiresAt"`
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "com.vercel.cli", "auth.json"))
 	if err == nil && len(data) > 0 {
 		_ = json.Unmarshal(data, &config)
 	}
-	if config.Token == "" {
+	if config.Token == "" && (!v4 || config.RefreshToken == "") {
 		return "", errors.New("No authentication found. Please log in with the Vercel CLI (vercel login).") //nolint:staticcheck // TS AccessTokenMissingError text
 	}
 	expiresAt, ok := config.ExpiresAt.(float64)
-	if !ok || expiresAt >= float64(time.Now().Unix())+buffer.Seconds() {
+	if config.Token != "" && (!ok || expiresAt >= float64(time.Now().Unix())+buffer.Seconds()) {
 		return config.Token, nil
 	}
-	return "", errors.New("Failed to refresh authentication token.: the Vercel CLI login has expired; run `vercel login` (the Go SDK does not refresh the CLI login)") //nolint:staticcheck // TS RefreshAccessTokenFailedError text plus the Go reason
+	reason := "the Vercel CLI login has expired; run `vercel login` (the Go SDK does not refresh the CLI login)"
+	if config.Token == "" {
+		reason = "the Vercel CLI login has only a refresh token; run `vercel login` (the Go SDK does not refresh the CLI login)"
+	}
+	return "", errors.New("Failed to refresh authentication token.: " + reason) //nolint:staticcheck // TS RefreshAccessTokenFailedError text plus the Go reason
 }
