@@ -48,6 +48,12 @@ func r87integTelemetry() (*telemetry.Options, *tracetest.SpanRecorder, func()) {
 	return opts, rec, func() { _ = tp.Shutdown(context.Background()) }
 }
 
+// TS delta 30548ee7f9..3fab50aa9b, core-scope cases ported in round 87:
+//   - generate-text.test.ts 15018 (request URL results and callbacks): this file;
+//   - stream-text.test.ts 33641 (streamed request URL): r87_stream_requesturl_test.go;
+//   - empty-text-provider-metadata.test.ts 33 (generate and stream): r87_gen_test.go;
+//   - google-streamed-tool-order.test.ts 119: pkg/providers/google/r87_integ_test.go.
+
 // TS generate-text.test.ts (934100cad4) callback block: the step-end and end
 // events and the model call end event carry only the origin, no callback
 // payload carries credentials / path / query / fragment, and the chat span
