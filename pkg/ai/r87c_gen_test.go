@@ -720,3 +720,187 @@ func TestR87cgenResultResponseMessages(t *testing.T) {
 		r87cgenCheck(t, "responseMessages", r87cgenMessagesView(t, res.ResponseMessages), `[{"content":[{"providerOptions":{"testProvider":{"signature":"signature"}},"text":"I will open the conversation with witty banter.","type":"reasoning"},{"providerOptions":{"testProvider":{"redactedData":"redacted-reasoning-data"}},"text":"","type":"reasoning"},{"text":"Hello, world!","type":"text"}],"role":"assistant"}]`)
 	})
 }
+
+func r87cgenHello(text string) *testutil.MockLanguageModel {
+	return r87cgenModel(func(int, *provider.GenerateOptions) (*types.GenerateResult, error) {
+		return r87cgenResult(r87cgenText(text)), nil
+	})
+}
+
+// generate-text.test.ts 2995 'options.onStart' > 'should pass
+// runtimeContext' and 3646 'options.onStepStart' > 'should pass
+// runtimeContext'.
+func TestR87cgenStartEventsRuntimeContext(t *testing.T) {
+	var start interface{}
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenHello("Hello!"), Prompt: "test-input",
+		RuntimeContext: map[string]interface{}{"userId": "test-user", "sessionId": "123"},
+		OnStart:        func(_ context.Context, e OnStartEvent) { start = e.RuntimeContext },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(start, map[string]interface{}{"userId": "test-user", "sessionId": "123"}) {
+		t.Errorf("onStart runtimeContext = %v", start)
+	}
+	var stepStart interface{}
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenHello("Hello!"), Prompt: "test-input",
+		RuntimeContext: map[string]interface{}{"userId": "test-user", "requestId": "req-123"},
+		OnStepStart:    func(_ context.Context, e OnStepStartEvent) { stepStart = e.RuntimeContext },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(stepStart, map[string]interface{}{"userId": "test-user", "requestId": "req-123"}) {
+		t.Errorf("onStepStart runtimeContext = %v", stepStart)
+	}
+}
+
+// generate-text.test.ts 3258 'options.onStepStart' > 'should not break
+// generation when callback throws' (a Go callback panics).
+func TestR87cgenOnStepStartPanicDoesNotBreakGeneration(t *testing.T) {
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenHello("Hello, World!"), Prompt: "test-input",
+		OnStepStart: func(context.Context, OnStepStartEvent) { panic(errors.New("callback error")) },
+	})
+	if err != nil || res.Text != "Hello, World!" {
+		t.Fatalf("text = %v, err = %v", res, err)
+	}
+}
+
+// generate-text.test.ts 3474 'options.onStepStart' > 'should validate model
+// call settings returned from prepareStep': maxOutputTokens 0 from
+// prepareStep rejects with 'maxOutputTokens must be >= 1'.
+func TestR87cgenPrepareStepMaxOutputTokensValidated(t *testing.T) {
+	zero := 0
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenHello("unused"), Prompt: "test-input",
+		PrepareStep: func(context.Context, PrepareStepOptions) PrepareStepOptions {
+			return PrepareStepOptions{MaxOutputTokens: &zero}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "maxOutputTokens must be >= 1") {
+		t.Fatalf("err = %v, want 'maxOutputTokens must be >= 1'", err)
+	}
+}
+
+// generate-text.test.ts 4123 'options.onStepEnd stepNumber' > 'should call
+// onStepEnd with step result': stepNumber 0.
+func TestR87cgenOnStepEndStepNumber(t *testing.T) {
+	stepNumber, eventStepNumber := -1, -1
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenHello("Hello!"), Prompt: "test-input",
+		OnStepEnd:      func(_ context.Context, s types.StepResult, _ interface{}) { stepNumber = s.StepNumber },
+		OnStepEndEvent: func(_ context.Context, e OnStepFinishEvent) { eventStepNumber = e.StepNumber },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if stepNumber != 0 || eventStepNumber != 0 {
+		t.Fatalf("stepNumber = %d (event %d), want 0", stepNumber, eventStepNumber)
+	}
+}
+
+// generate-text.test.ts 4187 'options.onStepFinish stepNumber' > 'should
+// pass correct stepNumber for each step in a multi-step tool loop'.
+func TestR87cgenOnStepFinishStepNumbers(t *testing.T) {
+	model := r87cgenModel(func(n int, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+		switch n {
+		case 0:
+			return r87cgenToolCalls(r87cgenCall("call-1", "tool1", `{ "value": "test" }`)), nil
+		case 1:
+			return r87cgenToolCalls(r87cgenCall("call-2", "tool1", `{ "value": "test2" }`)), nil
+		}
+		return r87cgenResult(r87cgenText("Done.")), nil
+	})
+	var numbers []int
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model, Prompt: "test-input", StopWhen: []StopCondition{IsStepCount(4)},
+		Tools: []types.Tool{r87cgenTool("tool1", func(in map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			return in["value"].(string) + "-result", nil
+		}, "value")},
+		OnStepFinish: func(_ context.Context, s types.StepResult, _ interface{}) { numbers = append(numbers, s.StepNumber) },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(numbers, []int{0, 1, 2}) {
+		t.Fatalf("step numbers = %v, want [0 1 2]", numbers)
+	}
+}
+
+func r87cgenValueTool(record func()) types.Tool {
+	return r87cgenTool("tool1", func(in map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+		if record != nil {
+			record()
+		}
+		return in["value"].(string) + "-result", nil
+	}, "value")
+}
+
+// generate-text.test.ts 4580 'options.onToolExecutionStart' > 'should be
+// called with correct tool name, id, and input' (snapshot of the event:
+// callId, messages, toolCall, toolContext).
+func TestR87cgenOnToolExecutionStartEvent(t *testing.T) {
+	var events []interface{}
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenModel(func(int, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return r87cgenToolCalls(r87cgenCall("call-1", "tool1", `{ "value": "test-arg" }`)), nil
+		}),
+		Tools: []types.Tool{r87cgenValueTool(nil)}, Prompt: "test-input",
+		Internal: &InternalOptions{GenerateID: func() string { return "test-call-id" }, GenerateCallID: func() string { return "test-telemetry-call-id" }},
+		OnToolExecutionStart: func(_ context.Context, e OnToolCallStartEvent) {
+			ev := r87cgenObj{"callId": e.CallID, "messages": r87cgenMessagesView(t, e.Messages), "toolCall": r87cgenToolCallView(r87cgenRaw(t, e.ToolCall).(r87cgenObj))}
+			if e.ToolContext != nil {
+				ev["toolContext"] = e.ToolContext
+			}
+			events = append(events, ev)
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r87cgenCheck(t, "events", events, `[{"callId":"test-telemetry-call-id","messages":[{"content":[{"type":"text","text":"test-input"}],"role":"user"}],"toolCall":{"input":{"value":"test-arg"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}}]`)
+}
+
+// generate-text.test.ts 4728 'options.onToolExecutionStart' > 'should be
+// called before tool execution'.
+func TestR87cgenOnToolExecutionStartBeforeExecute(t *testing.T) {
+	var order []string
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenModel(func(int, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return r87cgenToolCalls(r87cgenCall("call-1", "tool1", `{ "value": "test" }`)), nil
+		}),
+		Tools:                []types.Tool{r87cgenValueTool(func() { order = append(order, "execute") })},
+		Prompt:               "test-input",
+		OnToolExecutionStart: func(context.Context, OnToolCallStartEvent) { order = append(order, "onToolExecutionStart") },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	start, exec := -1, -1
+	for i, e := range order {
+		if e == "onToolExecutionStart" && start < 0 {
+			start = i
+		}
+		if e == "execute" && exec < 0 {
+			exec = i
+		}
+	}
+	if start < 0 || exec < 0 || start >= exec {
+		t.Fatalf("order = %v", order)
+	}
+}
+
+// generate-text.test.ts 5146 'options.onToolExecutionEnd' > 'should not
+// break generation when callback throws' (a Go callback panics).
+func TestR87cgenOnToolExecutionEndPanicDoesNotBreakGeneration(t *testing.T) {
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenModel(func(int, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return r87cgenToolCalls(r87cgenCall("call-1", "tool1", `{ "value": "test" }`)), nil
+		}),
+		Tools: []types.Tool{r87cgenValueTool(nil)}, Prompt: "test-input",
+		OnToolExecutionEnd: func(context.Context, OnToolCallFinishEvent) { panic(errors.New("callback error")) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.ToolResults) != 1 || res.ToolResults[0].Result != "test-result" {
+		t.Fatalf("toolResults = %+v", res.ToolResults)
+	}
+}
