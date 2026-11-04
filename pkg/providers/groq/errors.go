@@ -15,8 +15,8 @@ import (
 // uses error.message as the surfaced error text.
 type groqErrorPayload struct {
 	Error struct {
-		Message string `json:"message"`
-		Type    string `json:"type,omitempty"`
+		Message *string `json:"message"`
+		Type    *string `json:"type,omitempty"`
 	} `json:"error"`
 }
 
@@ -32,10 +32,12 @@ func parseGroqProviderError(err error) error {
 	var payload groqErrorPayload
 	// TS createJsonErrorResponseHandler reads response.text() (BOM dropped,
 	// invalid UTF-8 replaced).
-	if jsonErr := json.Unmarshal([]byte(textdecode.UTF8(statusErr.Body)), &payload); jsonErr != nil || payload.Error.Message == "" {
+	// The TS schema requires both as strings; "" is a valid message
+	// (errorToMessage: data.error.message).
+	if jsonErr := json.Unmarshal([]byte(textdecode.UTF8(statusErr.Body)), &payload); jsonErr != nil || payload.Error.Message == nil || payload.Error.Type == nil {
 		return nil
 	}
-	return providererrors.NewProviderError("groq", statusErr.StatusCode, payload.Error.Type, payload.Error.Message, err)
+	return providererrors.NewProviderError("groq", statusErr.StatusCode, *payload.Error.Type, *payload.Error.Message, err)
 }
 
 // groqStreamErrorMetadata returns the inferred (statusCode, isRetryable)
@@ -73,12 +75,16 @@ func groqStreamErrorMetadata(errType string) (statusCode int, isRetryable bool) 
 // be nil/empty, in which case raw is used as a fallback.
 func newGroqStreamProviderErrorChunk(raw json.RawMessage, fullFrame json.RawMessage) *providererrors.StreamProviderError {
 	var payload struct {
-		Message string `json:"message"`
-		Type    string `json:"type"`
+		Message *string `json:"message"`
+		Type    string  `json:"type"`
 	}
 	_ = json.Unmarshal(raw, &payload)
-	message := payload.Message
-	if message == "" {
+	// TS createGroqStreamError uses error.message as is: a present "" is the
+	// message; only a frame without a string message falls back.
+	var message string
+	if payload.Message != nil {
+		message = *payload.Message
+	} else {
 		message = groqStreamErrorText(raw)
 	}
 	statusCode, isRetryable := groqStreamErrorMetadata(payload.Type)
