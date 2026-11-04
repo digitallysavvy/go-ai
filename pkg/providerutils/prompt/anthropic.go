@@ -2351,7 +2351,8 @@ func SecureJSONParse(text string) (interface{}, bool) {
 // ToolCall.RawArguments; Go keeps an input that is not JSON as its raw text,
 // TS as a string):
 //   - a JSON string literal whose text is valid JSON: that text;
-//   - other valid JSON: raw as is (TS JSON.stringify of the parsed value);
+//   - other valid JSON: JSON.stringify of the parsed value
+//     (StringifyToolCallInput);
 //   - text that is not JSON (a TS string input): JSON.stringify of it.
 //
 // raw must not be empty; callers serialize Arguments then.
@@ -2359,14 +2360,7 @@ func SerializeToolCallArguments(raw string) string {
 	if text, _, ok := JSONStringToolInput(raw); ok {
 		return text
 	}
-	if json.Valid([]byte(raw)) {
-		return raw
-	}
-	b, err := jsonstr.Marshal(raw)
-	if err != nil {
-		return raw
-	}
-	return string(b)
+	return StringifyToolCallInput(raw)
 }
 
 // JSONStringToolInput reports whether raw, the JSON text of a tool call
