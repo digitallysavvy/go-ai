@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -65,5 +66,41 @@ func TestR86bstreamPanickingToolEndKeepsLiveResults(t *testing.T) {
 			}
 		}
 		r86streamWantStrings(t, "parts", parts, "tool-call:a", "tool-call:b", "tool-result:b", "tool-result:a")
+	}
+}
+
+// TS safeValidateUIMessages strips rawInput from the states that do not
+// declare it, also a `"rawInput": null`, and keeps it on output-error.
+// Recorded under Node v24 (packages/ai dist at 30548ee7f9).
+func TestR86bstreamValidateDropsUndeclaredRawInputNull(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{`{"type":"tool-x","toolCallId":"c","state":"input-available","input":{},"rawInput":null}`,
+			`{"type":"tool-x","toolCallId":"c","state":"input-available","input":{}}`},
+		{`{"type":"tool-x","toolCallId":"c","state":"output-available","input":{},"output":1,"rawInput":null}`,
+			`{"type":"tool-x","toolCallId":"c","state":"output-available","input":{},"output":1}`},
+		{`{"type":"tool-x","toolCallId":"c","state":"output-error","input":{},"rawInput":null,"errorText":"e"}`,
+			`{"type":"tool-x","toolCallId":"c","state":"output-error","input":{},"rawInput":null,"errorText":"e"}`},
+		{`{"type":"tool-x","toolCallId":"c","state":"input-streaming","rawInput":null}`, ``},
+	} {
+		res := SafeValidateUIMessages(context.Background(), ValidateUIMessagesOptions{
+			Messages: `[{"id":"a","role":"assistant","parts":[` + c.in + `]}]`,
+		})
+		if c.want == "" {
+			if res.Success {
+				t.Errorf("%s: validated, want a failure", c.in)
+			}
+			continue
+		}
+		if !res.Success {
+			t.Errorf("%s: %v", c.in, res.Error)
+			continue
+		}
+		b, err := json.Marshal(res.Data[0].Parts[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(b) != c.want {
+			t.Errorf("validated part = %s\nwant %s", b, c.want)
+		}
 	}
 }
