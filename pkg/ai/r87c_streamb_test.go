@@ -2485,7 +2485,7 @@ func TestR87cstreambKeepAliveUndefinedPassesThrough(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		b, err := io.ReadAll(resp.Body)
 		if err != nil {
 			t.Fatal(err)
@@ -2529,7 +2529,7 @@ func TestR87cstreambKeepAliveCancelsSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if got := r87cstreambReadN(t, resp.Body, len(sseStreamOpenComment)); got != sseStreamOpenComment {
 		t.Fatalf("first read = %q, want the opening comment", got)
 	}
@@ -2565,7 +2565,7 @@ func TestR87cstreambResponseKeepAliveIdle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if got := r87cstreambReadN(t, resp.Body, len(sseStreamOpenComment)); got != ": stream-open\n\n" {
 		t.Fatalf("first read = %q", got)
 	}
@@ -2591,7 +2591,7 @@ func TestR87cstreambResponseFromToUIMessageStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -2624,7 +2624,7 @@ func TestR87cstreambResponseConsumeSSEStreamTee(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatal(err)
