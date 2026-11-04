@@ -134,10 +134,15 @@ func toAPIError(err error) error {
 		return err
 	}
 	apiErr := &APIError{StatusCode: statusErr.StatusCode}
-	var body errorResponseBody
+	// TS extractServerMessage needs only a string error.message; the code
+	// is read on its own (pipe-stdin.js `error.json?.error?.code`), so one
+	// mistyped member does not hide the other.
+	var body struct {
+		Error map[string]json.RawMessage `json:"error"`
+	}
 	if json.Unmarshal(statusErr.Body, &body) == nil {
-		apiErr.Message = body.Error.Message
-		apiErr.Code = body.Error.Code
+		_ = json.Unmarshal(body.Error["message"], &apiErr.Message)
+		_ = json.Unmarshal(body.Error["code"], &apiErr.Code)
 	}
 	return apiErr
 }

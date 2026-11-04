@@ -361,14 +361,25 @@ func pollForTemplateSnapshotWithTimeout(ctx context.Context, client *APIClient, 
 var sandboxNameConflictPattern = regexp.MustCompile(`(?i)(?-i:[sS])andbox` + providerutils.JSRegexpDot + `*name` + providerutils.JSRegexpDot + `*already exi(?-i:[sS])t(?-i:[sS])`)
 
 // isSandboxNameConflictError reports the API's duplicate sandbox name
-// response (400 or 409 with an "already exists" message).
+// response (400 or 409 with an "already exists" message). Mirrors TS
+// `isSandboxNameConflictError`, which tests the @vercel/sandbox 3.9.0
+// APIError message ("Status code N is not ok: <server message>", from
+// base-client.js parse) and json.error.message. Go's own Error() text
+// ("vercel sandbox API: ...") is not one of them: its "sandbox" prefix
+// would match a server message that only says the name already exists.
 func isSandboxNameConflictError(err error) bool {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		return false
 	}
-	return (apiErr.StatusCode == 400 || apiErr.StatusCode == 409) &&
-		(sandboxNameConflictPattern.MatchString(apiErr.Message) || sandboxNameConflictPattern.MatchString(apiErr.Error()))
+	if apiErr.StatusCode != 400 && apiErr.StatusCode != 409 {
+		return false
+	}
+	tsMessage := "Status code " + strconv.Itoa(apiErr.StatusCode) + " is not ok"
+	if apiErr.Message != "" {
+		tsMessage += ": " + apiErr.Message
+	}
+	return sandboxNameConflictPattern.MatchString(tsMessage) || sandboxNameConflictPattern.MatchString(apiErr.Message)
 }
 
 // createLiveSandboxFromSnapshot forks a live sandbox from a prepared
