@@ -221,15 +221,25 @@ sandbox's job queue is idle, and then all of them are returned together:
 - No tool in the batch runs until every entry is resolved. If any entry is
   denied, none of them run, and the result is a `*ToolApprovalDeniedError`.
 
-Calls that don't need approval run immediately and aren't part of the
-batch. `MaxInFlightBridgeRequests` counts the calls in a batch. A promise
-that never settles while no tool call is pending fails fast with a
-`*ProtocolError` instead of waiting for the execution timeout.
+Calls that don't need approval run concurrently and aren't part of the
+batch. A tool call starts only once the script awaits or otherwise observes
+it (as in TS `run`): a call the script never observes never runs, and a
+script that returns while a call is unobserved or still pending fails with
+`*DetachedBridgeRequestError`. `MaxInFlightBridgeRequests` counts the calls
+running at once. A promise that never settles while no tool call is pending
+fails fast with a `*ProtocolError` instead of waiting for the execution
+timeout.
 
 Continuations are signed (HMAC-SHA256, TS-compatible canonical envelope) so
 they can safely round-trip through client-visible state between requests.
 `SetCodeModeContinuationSigningKey` sets the process-wide signing key; a
 random key is generated at process start if it's never called.
+
+`Date.now()`, `Date()`, `new Date()` without arguments and `Math.random()`
+are deterministic inside the sandbox, as in TS `run`: the clock starts at
+the run's start time, advances 1 ms per read and moves to the host time
+whenever a tool call settles, and `Math.random()` is seeded per run. A
+resumed run replays both, so it computes the same values.
 
 ## Vendored dependency
 

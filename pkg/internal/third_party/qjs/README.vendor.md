@@ -274,8 +274,8 @@ will settle in a moment apart from one deliberately left pending forever
 returning. Nothing else exported from `qjs.wasm` could run the job queue to
 exhaustion and simply report what happened, without that promise-shaped
 stopping condition. See `pkg/codemode/engine.go` and
-`pkg/codemode/run_code_mode.go` (`driveCodeModeExecution`,
-`bindCodeModeDispatch`) for the full design this rebuild enabled, which was
+`pkg/codemode/run_code_mode.go` (`driveCodeModeExecution`) and
+`pkg/codemode/bridge_guest.go` (`bindCodeModeDispatch`) for the full design this rebuild enabled, which was
 prototyped and verified against the exports below (including the
 "genuinely-never-settles must not hang" case) before being wired into
 `pkg/codemode` itself.
@@ -467,7 +467,7 @@ independently verified (`pkg/codemode/sandbox_hardening_test.go`):
 If a future contributor revisits `-DQJS_BUILD_LIBC=OFF` (e.g. to shrink
 `qjs.wasm` further), they must first confirm whether `console` survives
 the rebuild and, if not, reimplement it as a Go-bound host function (the
-same pattern `bindCodeModeDispatch` in `pkg/codemode/run_code_mode.go`
+same pattern `bindCodeModeDispatch` in `pkg/codemode/bridge_guest.go`
 already uses for `tools.*`) before removing libc — not after.
 
 ## Native-module import escape (adversarial review follow-up, 2026-10-01) — qjs.wasm still NOT rebuilt
