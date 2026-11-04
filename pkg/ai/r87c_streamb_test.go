@@ -117,7 +117,13 @@ func r87cstreambErrText(err error) interface{} {
 	return err.Error()
 }
 
+// r87cstreambTimestamp renders a response timestamp like the TS snapshot. A
+// fallback timestamp (no response-metadata part) is the current time in Go
+// and renders "<now>"; TS mocks the clock there and shows Date(0).
 func r87cstreambTimestamp(ts time.Time) string {
+	if d := time.Since(ts); d > -time.Minute && d < time.Minute {
+		return "<now>"
+	}
 	return ts.UTC().Format("2006-01-02T15:04:05.000Z")
 }
 
@@ -471,8 +477,6 @@ func TestR87cstreambToolCallbacksStepToolContext(t *testing.T) {
 	r87cstreambAssert(t, "recorded calls", recorded, want)
 }
 
-var _ = strings.ToUpper
-
 // r87cstreambToolErrorRun is the TS 'tool execution errors' beforeEach:
 // tool1 throws "test error" (defaultSettings).
 func r87cstreambToolErrorRun(t *testing.T) (*StreamTextResult, []provider.StreamChunk) {
@@ -669,3 +673,381 @@ func TestR87cstreambOnStepEndCalled(t *testing.T) {
 		t.Fatalf("onStepEnd step numbers = %v, want [0]", got)
 	}
 }
+
+// r87cstreambCallOptions projects the doStream call options onto the TS
+// LanguageModelV4CallOptions snapshot keys that are defined.
+func r87cstreambCallOptions(t *testing.T, o *provider.GenerateOptions) map[string]interface{} {
+	t.Helper()
+	var prompt []interface{}
+	if o.Prompt.System != "" {
+		prompt = append(prompt, map[string]interface{}{"role": "system", "content": o.Prompt.System})
+	}
+	if msgs, ok := r87cstreambMessages(t, o.Prompt.Messages).([]interface{}); ok {
+		prompt = append(prompt, msgs...)
+	}
+	if o.Prompt.Text != "" {
+		prompt = append(prompt, map[string]interface{}{"role": "user", "content": []interface{}{map[string]interface{}{"type": "text", "text": o.Prompt.Text}}})
+	}
+	m := map[string]interface{}{"includeRawChunks": o.IncludeRawChunks, "prompt": prompt, "toolChoice": o.ToolChoice}
+	if o.ToolChoice.Type == "" {
+		delete(m, "toolChoice")
+	}
+	add := func(k string, v interface{}, set bool) {
+		if set {
+			m[k] = v
+		}
+	}
+	add("temperature", o.Temperature, o.Temperature != nil)
+	add("maxOutputTokens", o.MaxTokens, o.MaxTokens != nil)
+	add("topP", o.TopP, o.TopP != nil)
+	add("topK", o.TopK, o.TopK != nil)
+	add("frequencyPenalty", o.FrequencyPenalty, o.FrequencyPenalty != nil)
+	add("presencePenalty", o.PresencePenalty, o.PresencePenalty != nil)
+	add("stopSequences", o.StopSequences, o.StopSequences != nil)
+	add("seed", o.Seed, o.Seed != nil)
+	add("headers", o.Headers, o.Headers != nil)
+	add("reasoning", o.Reasoning, o.Reasoning != nil)
+	add("providerOptions", o.ProviderOptions, o.ProviderOptions != nil)
+	if len(o.Tools) > 0 {
+		var tools []interface{}
+		for _, tool := range o.Tools {
+			tm := map[string]interface{}{"type": "function", "name": tool.Name, "inputSchema": tool.Parameters}
+			if tool.Description != "" {
+				tm["description"] = tool.Description
+			}
+			tools = append(tools, tm)
+		}
+		m["tools"] = tools
+	}
+	if rf := o.ResponseFormat; rf != nil {
+		f := map[string]interface{}{"type": rf.Type}
+		if rf.Schema != nil {
+			f["schema"] = rf.Schema
+		}
+		if rf.Name != "" {
+			f["name"] = rf.Name
+		}
+		if rf.Description != "" {
+			f["description"] = rf.Description
+		}
+		m["responseFormat"] = f
+	}
+	return m
+}
+
+// r87cstreambPartials runs StreamText over one model step and returns the
+// partial outputs in publish order (TS partialOutputStream), recorded with
+// r85streamPartialRecorder.
+func r87cstreambPartials(t *testing.T, chunks []provider.StreamChunk, output interface{}) ([]interface{}, *StreamTextResult) {
+	t.Helper()
+	var res *StreamTextResult
+	rec := &r85streamPartialRecorder{chunks: chunks, ready: make(chan struct{}), res: &res}
+	model := &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id",
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) { return rec, nil }}
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "prompt", Output: output})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res = r
+	close(rec.ready)
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	rec.observe()
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	return append([]interface{}{}, rec.partials...), r
+}
+
+func r87cstreambHelloWorldStep() []provider.StreamChunk {
+	return r87cstreambJoin(r87cstreambText("1", "Hello, ", "world!"), []provider.StreamChunk{r87cstreambFinish(types.FinishReasonStop, "stop")})
+}
+
+// stream-text.test.ts 22811: options.output > text output (default) > should
+// send partial output stream.
+func TestR87cstreambDefaultTextPartialOutputStream(t *testing.T) {
+	got, _ := r87cstreambPartials(t, r87cstreambHelloWorldStep(), nil)
+	r87cstreambAssert(t, "partialOutputStream", got, `["Hello, ","Hello, world!"]`)
+}
+
+// stream-text.test.ts 22838: options.output > text output (default) > should
+// resolve output promise with the correct content.
+func TestR87cstreambDefaultTextOutput(t *testing.T) {
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, r87cstreambHelloWorldStep()), Prompt: "prompt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Output(); got != "Hello, world!" {
+		t.Fatalf("output = %#v, want \"Hello, world!\"", got)
+	}
+}
+
+// stream-text.test.ts 22861: options.output > text output > should send
+// partial output stream.
+func TestR87cstreambTextOutputPartialOutputStream(t *testing.T) {
+	got, _ := r87cstreambPartials(t, r87cstreambHelloWorldStep(), TextOutput())
+	r87cstreambAssert(t, "partialOutputStream", got, `["Hello, ","Hello, world!"]`)
+}
+
+// stream-text.test.ts 22933: options.output > text output > should resolve
+// output promise with the correct content.
+func TestR87cstreambTextOutputOutput(t *testing.T) {
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, r87cstreambHelloWorldStep()), Prompt: "prompt", Output: TextOutput()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Output(); got != "Hello, world!" {
+		t.Fatalf("output = %#v, want \"Hello, world!\"", got)
+	}
+}
+
+// r87cstreambZodValueSchema is the JSON schema zod produces for
+// z.object({ value: z.string() }).
+var r87cstreambZodValueSchema = map[string]interface{}{
+	"$schema": "http://json-schema.org/draft-07/schema#", "additionalProperties": false, "type": "object",
+	"properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}, "required": []interface{}{"value"},
+}
+
+func r87cstreambValueOutput() Output[map[string]interface{}, map[string]interface{}] {
+	return ObjectOutput[map[string]interface{}](ObjectOutputOptions{Schema: schema.NewSimpleJSONSchema(r87cstreambZodValueSchema)})
+}
+
+func r87cstreambObjectStep(deltas ...string) []provider.StreamChunk {
+	return r87cstreambJoin(r87cstreambText("1", deltas...), []provider.StreamChunk{r87cstreambFinish(types.FinishReasonStop, "stop")})
+}
+
+var r87cstreambSixDeltas = []string{`{ `, `"value": `, `"Hello, `, `world`, `!"`, ` }`}
+
+// stream-text.test.ts 22957: options.output > object output > should set
+// responseFormat to json and send schema as part of the responseFormat.
+func TestR87cstreambObjectOutputCallOptions(t *testing.T) {
+	var got map[string]interface{}
+	model := &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id",
+		DoStreamFunc: func(_ context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+			got = r87cstreambCallOptions(t, o)
+			return testutil.NewMockTextStream(r87cstreambObjectStep(r87cstreambSixDeltas...)), nil
+		}}
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Output: r87cstreambValueOutput(), Prompt: "prompt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	r87cstreambAssert(t, "callOptions", got, `{
+		"includeRawChunks":false,
+		"prompt":[{"content":[{"text":"prompt","type":"text"}],"role":"user"}],
+		"responseFormat":{"schema":{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"value":{"type":"string"}},"required":["value"],"type":"object"},"type":"json"},
+		"toolChoice":{"type":"auto"}}`)
+}
+
+// stream-text.test.ts 23042: options.output > object output > should send
+// valid partial text fragments (the text after a ':' is combined with the
+// next delta).
+func TestR87cstreambObjectOutputTextFragments(t *testing.T) {
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, r87cstreambObjectStep(r87cstreambSixDeltas...)), Output: r87cstreambValueOutput(), Prompt: "prompt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r87cstreambTextStream(t, r); !reflect.DeepEqual(got, []string{`{ `, `"value": "Hello, `, `world`, `!"`, ` }`}) {
+		t.Fatalf("textStream = %q", got)
+	}
+}
+
+// stream-text.test.ts 23079: options.output > object output > should send
+// partial output stream.
+func TestR87cstreambObjectOutputPartialOutputStream(t *testing.T) {
+	got, _ := r87cstreambPartials(t, r87cstreambObjectStep(r87cstreambSixDeltas...), r87cstreambValueOutput())
+	r87cstreambAssert(t, "partialOutputStream", got, `[{},{"value":"Hello, "},{"value":"Hello, world"},{"value":"Hello, world!"}]`)
+}
+
+var r87cstreambFiveDeltas = []string{`{ `, `"value": `, `"Hello, `, `world!" `, `}`}
+
+// stream-text.test.ts 23217: options.output > object output > should resolve
+// text promise with the correct content.
+func TestR87cstreambObjectOutputText(t *testing.T) {
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, r87cstreambObjectStep(r87cstreambFiveDeltas...)), Output: r87cstreambValueOutput(), Prompt: "prompt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Text(); got != `{ "value": "Hello, world!" }` {
+		t.Fatalf("text = %q", got)
+	}
+}
+
+// stream-text.test.ts 23244: options.output > object output > should resolve
+// output promise with the correct content.
+func TestR87cstreambObjectOutputOutput(t *testing.T) {
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, r87cstreambObjectStep(r87cstreambFiveDeltas...)), Output: r87cstreambValueOutput(), Prompt: "prompt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	r87cstreambAssert(t, "output", r.Output(), `{"value":"Hello, world!"}`)
+}
+
+// stream-text.test.ts 23271: options.output > object output > should expose
+// parsed output to onEnd after the stream completes.
+func TestR87cstreambObjectOutputOnEnd(t *testing.T) {
+	var mu sync.Mutex
+	var got interface{}
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  r71streamModel(nil, r87cstreambObjectStep(`{ "value": "Hello, world!" }`)),
+		Output: r87cstreambValueOutput(), Prompt: "prompt",
+		OnEndEvent: func(_ context.Context, e OnFinishEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			got = e.Output
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	r87cstreambAssert(t, "onEnd output", got, `{"value":"Hello, world!"}`)
+}
+
+// r87cstreambToolResult is the TS tool-result entry of toolResults.
+func r87cstreambToolResult(tr types.ToolResult) map[string]interface{} {
+	return r87cstreambPart(provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &tr})
+}
+
+// r87cstreambEnd projects an onEnd / onFinish event onto the TS snapshot.
+func r87cstreambEnd(t *testing.T, e OnFinishEvent) map[string]interface{} {
+	t.Helper()
+	calls := func(cs []types.ToolCall) []interface{} {
+		out := []interface{}{}
+		for i := range cs {
+			out = append(out, r87cstreambToolCall(&cs[i]))
+		}
+		return out
+	}
+	results := func(rs []types.ToolResult) []interface{} {
+		out := []interface{}{}
+		for _, r := range rs {
+			out = append(out, r87cstreambToolResult(r))
+		}
+		return out
+	}
+	list := func(v interface{}, n int) interface{} {
+		if n == 0 {
+			return []interface{}{}
+		}
+		return v
+	}
+	m := map[string]interface{}{
+		"callId":             e.CallID,
+		"content":            r87cstreambContent(t, e.Content),
+		"dynamicToolCalls":   calls(e.DynamicToolCalls),
+		"dynamicToolResults": results(e.DynamicToolResults),
+		"files":              list(e.Files, len(e.Files)),
+		"finalStep":          r87cstreambStep(t, e.FinalStep),
+		"finishReason":       string(e.FinishReason),
+		"model":              map[string]interface{}{"provider": e.Model.Provider, "modelId": e.Model.ModelID},
+		"rawFinishReason":    e.RawFinishReason,
+		"reasoning":          list(e.Reasoning, len(e.Reasoning)),
+		"request":            r87cstreambNorm(t, e.Request),
+		"responseMessages":   r87cstreambMessages(t, e.ResponseMessages),
+		"runtimeContext":     e.RuntimeContext,
+		"sources":            list(e.Sources, len(e.Sources)),
+		"staticToolCalls":    calls(e.StaticToolCalls),
+		"staticToolResults":  results(e.StaticToolResults),
+		"stepNumber":         e.StepNumber,
+		"steps":              r87cstreambSteps(t, e.Steps),
+		"text":               e.Text,
+		"toolCalls":          calls(e.ToolCalls),
+		"toolResults":        results(e.ToolResults),
+		"toolsContext":       e.ToolsContext,
+		"totalUsage":         e.TotalUsage,
+		"usage":              e.Usage,
+		"warnings":           list(e.Warnings, len(e.Warnings)),
+	}
+	if e.Output != nil {
+		m["output"] = e.Output
+	}
+	if e.ReasoningText != "" {
+		m["reasoningText"] = e.ReasoningText
+	}
+	if e.RawFinishReason == "" {
+		delete(m, "rawFinishReason")
+	}
+	if e.RuntimeContext == nil {
+		m["runtimeContext"] = map[string]interface{}{}
+	}
+	if e.ToolsContext == nil {
+		m["toolsContext"] = map[string]interface{}{}
+	}
+	if len(e.ProviderMetadata) > 0 {
+		m["providerMetadata"] = e.ProviderMetadata
+	}
+	resp := map[string]interface{}{"id": e.Response.ID, "modelId": e.Response.ModelID, "timestamp": r87cstreambTimestamp(e.Response.Timestamp), "messages": r87cstreambMessages(t, e.Response.Messages)}
+	if len(e.Response.Headers) > 0 {
+		resp["headers"] = e.Response.Headers
+	}
+	m["response"] = resp
+	return m
+}
+
+// stream-text.test.ts 23461: options.output > object output > should call
+// onFinish with the correct content.
+func TestR87cstreambObjectOutputOnFinish(t *testing.T) {
+	var mu sync.Mutex
+	var got OnFinishEvent
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  r71streamModel(nil, r87cstreambObjectStep(r87cstreambFiveDeltas...)),
+		Output: r87cstreambValueOutput(), Prompt: "prompt",
+		OnFinishEvent: func(_ context.Context, e OnFinishEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			got = e
+		},
+		Internal: r87cstreambIDs(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	const text = `{ \"value\": \"Hello, world!\" }`
+	msgs := `[{"content":[{"text":"` + text + `","type":"text"}],"role":"assistant"}]`
+	step := `{"callId":"test-telemetry-call-id","content":[{"text":"` + text + `","type":"text"}],"finishReason":"stop",
+		"model":{"modelId":"mock-model-id","provider":"mock-provider"},"toolExecutionMsKeys":[],"rawFinishReason":"stop","request":{},
+		"response":{"id":"id-0","messages":` + msgs + `,"modelId":"mock-model-id","timestamp":"<now>"},
+		"runtimeContext":{},"stepNumber":0,"toolsContext":{},"usage":` + r87cstreambUsageJSON + `,"warnings":[]}`
+	r87cstreambAssert(t, "onFinish", r87cstreambEnd(t, got), `{
+		"callId":"test-telemetry-call-id",
+		"content":[{"text":"`+text+`","type":"text"}],
+		"dynamicToolCalls":[],"dynamicToolResults":[],"files":[],
+		"finalStep":`+step+`,
+		"finishReason":"stop",
+		"model":{"modelId":"mock-model-id","provider":"mock-provider"},
+		"output":{"value":"Hello, world!"},
+		"rawFinishReason":"stop","reasoning":[],"request":{},
+		"response":{"id":"id-0","messages":`+msgs+`,"modelId":"mock-model-id","timestamp":"<now>"},
+		"responseMessages":`+msgs+`,
+		"runtimeContext":{},"sources":[],"staticToolCalls":[],"staticToolResults":[],"stepNumber":0,
+		"steps":[`+step+`],
+		"text":"`+text+`","toolCalls":[],"toolResults":[],"toolsContext":{},
+		"totalUsage":`+r87cstreambUsageJSON+`,"usage":`+r87cstreambUsageJSON+`,"warnings":[]}`)
+}
+
+var _ = strings.ToUpper
