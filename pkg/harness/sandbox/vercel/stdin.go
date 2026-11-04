@@ -94,7 +94,7 @@ func (c *APIClient) writeCommandStdin(ctx context.Context, sessionID, cmdID stri
 	path := "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/cmd/" + pathEscape(cmdID) + "/stdin"
 	for attempt := 0; ; attempt++ {
 		canRetry := attempt < stdinMaxRetries
-		resp, err := c.http.Do(ctx, httpinternal.Request{
+		resp, err := c.http.Do(withoutRetry(ctx), httpinternal.Request{
 			Method: http.MethodPost, Path: path, Headers: c.headers(nil), Query: c.query(nil), Body: body,
 		})
 		if err != nil {

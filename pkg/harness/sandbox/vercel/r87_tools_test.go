@@ -408,3 +408,352 @@ func TestR87toolsSpawnStdinOffsetProbeNeedsBytesWritten(t *testing.T) {
 		t.Fatalf("Write = %v", err)
 	}
 }
+
+var r87toolsRealBackoff = requestRetryBackoff
+
+func init() {
+	// with-retry.js waits 400-800 ms and 800-1600 ms; keep the package's
+	// tests fast. TestR87toolsRequestRetryBackoffRange pins the real values.
+	requestRetryBackoff = func(int) time.Duration { return time.Millisecond }
+	logsReconnectDelay = func(int) time.Duration { return time.Millisecond }
+	retryAfterDelay = func(float64) time.Duration { return time.Millisecond }
+}
+
+func TestR87toolsRequestRetryBackoffRange(t *testing.T) {
+	old := requestRetryBackoff
+	defer func() { requestRetryBackoff = old }()
+	requestRetryBackoff = r87toolsRealBackoff
+	for i := 0; i < 50; i++ {
+		for n, lo := range []time.Duration{400 * time.Millisecond, 800 * time.Millisecond} {
+			if d := requestRetryBackoff(n); d < lo || d >= 2*lo {
+				t.Fatalf("backoff(%d) = %v, want [%v, %v)", n, d, lo, 2*lo)
+			}
+		}
+	}
+}
+
+// with-retry.js: 429 / 5xx / network errors are retried twice, then the
+// last response is returned; Retry-After > 20 is returned at once; a
+// request body is replayed; runCommand with wait is not retried.
+func TestR87toolsRequestRetries(t *testing.T) {
+	type step struct {
+		status     int
+		retryAfter string
+		hangup     bool
+	}
+	cases := []struct {
+		name     string
+		steps    []step
+		call     func(c *APIClient) error
+		wantReqs int
+		wantErr  bool
+	}{
+		{"503 then success", []step{{status: 503}, {status: 200}}, func(c *APIClient) error {
+			_, err := c.GetCommand(context.Background(), "s", "c", false)
+			return err
+		}, 2, false},
+		{"5xx three times", []step{{status: 500}, {status: 502}, {status: 503}}, func(c *APIClient) error {
+			_, err := c.GetCommand(context.Background(), "s", "c", false)
+			var apiErr *APIError
+			if errors.As(err, &apiErr) && apiErr.StatusCode == 503 {
+				return errors.New("503")
+			}
+			return err
+		}, 3, true},
+		{"429 Retry-After 30 is not retried", []step{{status: 429, retryAfter: "30"}}, func(c *APIClient) error {
+			_, err := c.GetCommand(context.Background(), "s", "c", false)
+			return err
+		}, 1, true},
+		{"429 Retry-After 0 is retried", []step{{status: 429, retryAfter: "0"}, {status: 200}}, func(c *APIClient) error {
+			_, err := c.GetCommand(context.Background(), "s", "c", false)
+			return err
+		}, 2, false},
+		{"connection reset is retried with the body", []step{{hangup: true}, {status: 200}}, func(c *APIClient) error {
+			_, err := c.RunCommandDetached(context.Background(), "s", runCommandRequest{Command: "x"})
+			return err
+		}, 2, false},
+		{"runCommand wait is not retried", []step{{status: 503}, {status: 200}}, func(c *APIClient) error {
+			_, err := c.RunCommandWait(context.Background(), "s", runCommandRequest{Command: "x"})
+			return err
+		}, 1, true},
+		{"4xx is not retried", []step{{status: 404}, {status: 200}}, func(c *APIClient) error {
+			_, err := c.GetCommand(context.Background(), "s", "c", false)
+			return err
+		}, 1, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var bodies []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				mu.Lock()
+				st := step{status: 200}
+				if len(bodies) < len(tc.steps) {
+					st = tc.steps[len(bodies)]
+				}
+				bodies = append(bodies, string(b))
+				mu.Unlock()
+				if st.hangup {
+					conn, _, _ := w.(http.Hijacker).Hijack()
+					_ = conn.Close()
+					return
+				}
+				if st.retryAfter != "" {
+					w.Header().Set("Retry-After", st.retryAfter)
+				}
+				w.WriteHeader(st.status)
+				_, _ = io.WriteString(w, `{"command":{"id":"c"}}`)
+			}))
+			defer srv.Close()
+			err := tc.call(NewAPIClient(srv.URL, Credentials{Token: "t"}))
+			mu.Lock()
+			defer mu.Unlock()
+			if (err != nil) != tc.wantErr || len(bodies) != tc.wantReqs {
+				t.Fatalf("err = %v after %d requests, want err=%v after %d", err, len(bodies), tc.wantErr, tc.wantReqs)
+			}
+			for _, b := range bodies[1:] {
+				if b != bodies[0] {
+					t.Fatalf("retried body %q != %q", b, bodies[0])
+				}
+			}
+		})
+	}
+}
+
+func r87toolsNDJSONServer(t *testing.T, handler func(w http.ResponseWriter, r *http.Request, n int)) *APIClient {
+	t.Helper()
+	var mu sync.Mutex
+	counts := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		counts[r.URL.Path]++
+		n := counts[r.URL.Path]
+		mu.Unlock()
+		handler(w, r, n)
+	}))
+	t.Cleanup(srv.Close)
+	return NewAPIClient(srv.URL, Credentials{Token: "t"})
+}
+
+// r87toolsHangup writes body, flushes, then drops the connection without a
+// terminating chunk (an interrupted stream).
+func r87toolsHangup(w http.ResponseWriter, body string) {
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(200)
+	_, _ = io.WriteString(w, body)
+	w.(http.Flusher).Flush()
+	conn, buf, _ := w.(http.Hijacker).Hijack()
+	_ = buf.Flush()
+	_ = conn.Close()
+}
+
+// jsonlines 0.1.1 (split on "\n", skip only "", JSON.parse the rest): a
+// whitespace-only or lone "\r" line fails, a record with a trailing "\r"
+// parses, and an unterminated invalid last line is an interrupted stream.
+func TestR87toolsJSONLinesRules(t *testing.T) {
+	var lines []string
+	collect := func(b []byte) error { lines = append(lines, string(b)); return nil }
+	if err := readJSONLines(strings.NewReader("\n{\"a\":1}\r\n\n[2]"), "s", collect); err != nil || len(lines) != 2 {
+		t.Fatalf("lines = %q, err = %v", lines, err)
+	}
+	for _, in := range []string{"{}\n\r\n{}\n", "{}\n  \n", "{}\n\t\n"} {
+		err := readJSONLines(strings.NewReader(in), "s", func([]byte) error { return nil })
+		var connErr *connectionError
+		if err == nil || errors.As(err, &connErr) {
+			t.Errorf("%q: err = %v, want a syntax error", in, err)
+		}
+	}
+	err := readJSONLines(strings.NewReader("{}\n{\"a\":"), "s", func([]byte) error { return nil })
+	var connErr *connectionError
+	if !errors.As(err, &connErr) || connErr.message != "Stream ended with an incomplete JSON record" {
+		t.Fatalf("unterminated record err = %v", err)
+	}
+}
+
+// getLogsStream: an interrupted logs stream is requested again and the
+// output already delivered (in UTF-16 code units) is skipped.
+func TestR87toolsGetLogsReconnectSkipsDelivered(t *testing.T) {
+	client := r87toolsNDJSONServer(t, func(w http.ResponseWriter, r *http.Request, n int) {
+		if n == 1 {
+			r87toolsHangup(w, `{"stream":"stdout","data":"h😀"}`+"\n"+`{"stream":"stderr","data":"e"}`+"\n"+`{"stream":"stdout","da`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = io.WriteString(w, `{"stream":"stdout","data":"h😀llo"}`+"\n"+`{"stream":"stderr","data":"e"}`+"\n"+`{"stream":"stderr","data":"rr"}`+"\n")
+	})
+	var got []string
+	err := client.GetLogs(context.Background(), "s", "c", func(e LogEntry) { got = append(got, e.Stream+":"+e.Data) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"stdout:h😀", "stderr:e", "stdout:llo", "stderr:rr"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("logs = %q, want %q", got, want)
+	}
+}
+
+// getLogsStream gives up after three interrupted attempts.
+func TestR87toolsGetLogsReconnectGivesUp(t *testing.T) {
+	var mu sync.Mutex
+	attempts := 0
+	client := r87toolsNDJSONServer(t, func(w http.ResponseWriter, r *http.Request, n int) {
+		mu.Lock()
+		attempts = n
+		mu.Unlock()
+		r87toolsHangup(w, `{"stream":"stdout","data":"x"}`+"\n"+`{"str`)
+	})
+	err := client.GetLogs(context.Background(), "s", "c", func(LogEntry) {})
+	var connErr *connectionError
+	mu.Lock()
+	defer mu.Unlock()
+	if !errors.As(err, &connErr) || attempts != 3 {
+		t.Fatalf("err = %v after %d attempts", err, attempts)
+	}
+}
+
+// runCommand (wait): a stream that ends before the finished command falls
+// back to the logs endpoint (skipping delivered output) and GET
+// .../cmd/{id}?wait=true for the exit code.
+func TestR87toolsRunCommandWaitFallsBackAfterInterruption(t *testing.T) {
+	client := r87toolsNDJSONServer(t, func(w http.ResponseWriter, r *http.Request, n int) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/cmd"):
+			r87toolsHangup(w, `{"command":{"id":"c9"}}`+"\n"+`{"stream":"stdout","data":"ab"}`+"\n")
+		case strings.HasSuffix(r.URL.Path, "/logs"):
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			_, _ = io.WriteString(w, `{"stream":"stdout","data":"abcd"}`+"\n"+`{"stream":"stderr","data":"!"}`+"\n")
+		case strings.HasSuffix(r.URL.Path, "/cmd/c9"):
+			if r.URL.Query().Get("wait") != "true" {
+				t.Errorf("command query = %q", r.URL.RawQuery)
+			}
+			_, _ = io.WriteString(w, `{"command":{"id":"c9","exitCode":3}}`)
+		default:
+			t.Errorf("unexpected %s", r.URL.Path)
+		}
+	})
+	res, err := client.RunCommandWait(context.Background(), "s", runCommandRequest{Command: "x"})
+	if err != nil || res.Stdout != "abcd" || res.Stderr != "!" || res.Command.ExitCode == nil || *res.Command.ExitCode != 3 {
+		t.Fatalf("result = %+v, err = %v", res, err)
+	}
+}
+
+// The command and logs streams must be application/x-ndjson, and log lines
+// must match LogLine.
+func TestR87toolsNDJSONContentTypeAndLogLine(t *testing.T) {
+	client := r87toolsNDJSONServer(t, func(w http.ResponseWriter, r *http.Request, n int) {
+		if r.URL.Query().Get("bad") == "" {
+			_, _ = io.WriteString(w, `{"stream":"stdout","data":"x"}`+"\n")
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = io.WriteString(w, `{"stream":"stdin","data":"x"}`+"\n")
+	})
+	err := client.GetLogs(context.Background(), "s", "c", func(LogEntry) {})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Message != "Expected a stream of logs" {
+		t.Fatalf("err = %v", err)
+	}
+	line, err := parseLogLine([]byte(`{"stream":"stdin","data":"x"}`), "s")
+	if err == nil {
+		t.Fatalf("parsed %+v", line)
+	}
+	if _, err := parseLogLine([]byte(`{"stream":"stdout","data":1}`), "s"); err == nil {
+		t.Fatal("non-string data accepted")
+	}
+	if l, err := parseLogLine([]byte(`{"stream":"error","data":{"code":"sandbox_stopped","message":"stopped"}}`), "s"); err != nil || l.Err == nil || l.Err.Code != "sandbox_stopped" {
+		t.Fatalf("error line = %+v, %v", l, err)
+	}
+}
+
+// 3.9.0 request details: runCommand sends args [] / env {} / sudo false;
+// createSnapshot without an expiration has no body; sandbox names use
+// encodeURIComponent; readFile wants application/octet-stream.
+func TestR87toolsRequestDetails(t *testing.T) {
+	var mu sync.Mutex
+	got := map[string]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		got[r.Method+" "+r.URL.EscapedPath()] = string(b)
+		mu.Unlock()
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/fs/read"):
+			if strings.Contains(string(b), "json") {
+				w.Header().Set("Content-Type", "application/json")
+			} else if strings.Contains(string(b), "boom") {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(400)
+				_, _ = io.WriteString(w, `{"error":{"message":"nope","code":"bad"}}`)
+				return
+			} else {
+				w.Header().Set("Content-Type", "application/octet-stream")
+			}
+			_, _ = io.WriteString(w, "data")
+		case strings.HasSuffix(r.URL.Path, "/snapshot"):
+			_, _ = io.WriteString(w, `{"snapshot":{"id":"snap"},"session":{"id":"s","status":"stopped"}}`)
+		default:
+			_, _ = io.WriteString(w, `{"command":{"id":"c"},"sandbox":{"name":"x"}}`)
+		}
+	}))
+	defer srv.Close()
+	c := NewAPIClient(srv.URL, Credentials{Token: "t"})
+	ctx := context.Background()
+	if _, err := c.RunCommandDetached(ctx, "s", runCommandRequest{Command: "true"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.CreateSnapshot(ctx, "s", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DeleteSandbox(ctx, "a!b*(c)'d e"); err != nil {
+		t.Fatal(err)
+	}
+	rc, err := c.ReadFile(ctx, "s", "ok", "")
+	if err != nil || rc == nil {
+		t.Fatalf("ReadFile = %v, %v", rc, err)
+	}
+	_ = rc.Close()
+	if _, err := c.ReadFile(ctx, "s", "json", ""); err == nil || err.Error() != "vercel sandbox API: status 200: Unexpected response reading file: status 200, content-type application/json" {
+		t.Fatalf("ReadFile json = %v", err)
+	}
+	_, err = c.ReadFile(ctx, "s", "boom", "")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "bad" || apiErr.Message != "Unexpected response reading file: status 400, content-type application/json" {
+		t.Fatalf("ReadFile 400 = %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if b := got["POST /v2/sandboxes/sessions/s/cmd"]; b != `{"command":"true","args":[],"env":{},"sudo":false}` {
+		t.Errorf("cmd body = %s", b)
+	}
+	if b, ok := got["POST /v2/sandboxes/sessions/s/snapshot"]; !ok || b != "" {
+		t.Errorf("snapshot body = %q", b)
+	}
+	if _, ok := got["DELETE /v2/sandboxes/a!b*(c)'d%20e"]; !ok {
+		t.Errorf("paths = %v", got)
+	}
+}
+
+// A positive Retry-After (up to 20 s) is waited before the retry.
+func TestR87toolsRequestRetryWaitsRetryAfter(t *testing.T) {
+	var waited []float64
+	old := retryAfterDelay
+	retryAfterDelay = func(s float64) time.Duration { waited = append(waited, s); return time.Millisecond }
+	defer func() { retryAfterDelay = old }()
+	n := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n++
+		if n == 1 {
+			w.Header().Set("Retry-After", "1.5")
+			w.WriteHeader(429)
+			return
+		}
+		_, _ = io.WriteString(w, `{"command":{"id":"c"}}`)
+	}))
+	defer srv.Close()
+	if _, err := NewAPIClient(srv.URL, Credentials{Token: "t"}).GetCommand(context.Background(), "s", "c", false); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(waited, []float64{1.5}) || n != 2 {
+		t.Fatalf("waited %v over %d requests", waited, n)
+	}
+}

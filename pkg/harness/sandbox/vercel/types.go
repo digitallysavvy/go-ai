@@ -176,16 +176,29 @@ type ndjsonLine struct {
 }
 
 type runCommandRequest struct {
-	Command string            `json:"command"`
-	Args    []string          `json:"args,omitempty"`
-	CWD     string            `json:"cwd,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
-	Sudo    bool              `json:"sudo,omitempty"`
-	Wait    bool              `json:"wait,omitempty"`
+	Command string `json:"command"`
+	// Args, Env and Sudo are always sent: 3.9.0 Session.runCommand passes
+	// `args ?? []`, `env ?? {}` and `sudo ?? false` (see withDefaults).
+	Args []string          `json:"args"`
+	CWD  string            `json:"cwd,omitempty"`
+	Env  map[string]string `json:"env"`
+	Sudo bool              `json:"sudo"`
+	Wait bool              `json:"wait,omitempty"`
 	// AttachStdin is TS `attachStdin: params.attachStdin || undefined`.
 	AttachStdin bool  `json:"attachStdin,omitempty"`
 	Logs        bool  `json:"logs,omitempty"`
 	Timeout     int64 `json:"timeout,omitempty"`
+}
+
+// withDefaults fills the 3.9.0 Session.runCommand defaults.
+func (r runCommandRequest) withDefaults() runCommandRequest {
+	if r.Args == nil {
+		r.Args = []string{}
+	}
+	if r.Env == nil {
+		r.Env = map[string]string{}
+	}
+	return r
 }
 
 type mkdirRequest struct {

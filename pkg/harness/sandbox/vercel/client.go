@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	httpinternal "github.com/digitallysavvy/go-ai/pkg/internal/http"
 )
@@ -73,8 +74,15 @@ func NewAPIClient(baseURL string, credentials Credentials) *APIClient {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
+	base := httpinternal.DefaultHTTPClient.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
 	return &APIClient{
-		http:        httpinternal.NewClient(httpinternal.Config{BaseURL: baseURL}),
+		http: httpinternal.NewClient(httpinternal.Config{
+			BaseURL:    baseURL,
+			HTTPClient: &http.Client{Transport: &retryTransport{base: base}},
+		}),
 		credentials: credentials,
 	}
 }
@@ -218,11 +226,20 @@ func (c *APIClient) StopSession(ctx context.Context, sessionID string) (*stopSes
 func (c *APIClient) CreateSnapshot(ctx context.Context, sessionID string, expiration *int64) (*createSnapshotResponse, error) {
 	var out createSnapshotResponse
 	if err := c.http.DoJSON(ctx, httpinternal.Request{
-		Method: http.MethodPost, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/snapshot", Headers: c.headers(nil), Query: c.query(nil), Body: createSnapshotRequest{Expiration: expiration},
+		Method: http.MethodPost, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/snapshot", Headers: c.headers(nil), Query: c.query(nil), Body: createSnapshotBody(expiration),
 	}, &out); err != nil {
 		return nil, toAPIError(err)
 	}
 	return &out, nil
+}
+
+// createSnapshotBody is TS `expiration === undefined ? undefined :
+// JSON.stringify({expiration})`: no body without an expiration.
+func createSnapshotBody(expiration *int64) interface{} {
+	if expiration == nil {
+		return nil
+	}
+	return createSnapshotRequest{Expiration: expiration}
 }
 
 // maxSnapshotListPages bounds how many pages ListSnapshots follows.
@@ -271,76 +288,127 @@ type RunCommandWaitResult struct {
 	Stderr  string
 }
 
+// expectNDJSON is the 3.9.0 check `response.headers.get("content-type") !==
+// "application/x-ndjson"` on the command and logs streams.
+func expectNDJSON(resp *http.Response, sessionID, message string) error {
+	if resp.Header.Get("Content-Type") != "application/x-ndjson" {
+		return &APIError{StatusCode: resp.StatusCode, Message: message, SessionID: sessionID}
+	}
+	return nil
+}
+
 // RunCommandWait posts POST /v2/sandboxes/sessions/{id}/cmd with wait=true,
 // logs=true and consumes the ndjson stream to completion, accumulating
-// stdout/stderr client-side (mirrors TS `Session.runCommand`'s non-detached
-// path).
+// stdout/stderr client-side. Mirrors @vercel/sandbox 3.9.0
+// `APIClient.runCommand` (wait) with `Session.runCommand`'s onLog: the
+// request is not retried; the first record is the started command; when the
+// stream is interrupted or ends before the finished command arrives (a
+// connectionError), the remaining output is read from the logs endpoint,
+// skipping what was already delivered, and the exit code from GET
+// .../cmd/{id}?wait=true.
 //
-// On a stream failure (an early end, an oversized line, or a sandbox-
-// reported "error" line) this still returns whatever stdout/stderr had
-// already been accumulated, alongside the error — never a nil result — so a
-// caller does not lose output the command had already produced just because
-// the stream failed before the command's own finish line arrived. This
-// mirrors how TS's `@vercel/sandbox` delivers stdout/stderr as they arrive,
-// over independent ReadableStreams that keep whatever was already pushed to
-// a reader even once the stream later errors.
+// On a stream failure this still returns whatever stdout/stderr had already
+// been accumulated, alongside the error — never a nil result — so a caller
+// does not lose output the command had already produced.
 func (c *APIClient) RunCommandWait(ctx context.Context, sessionID string, req runCommandRequest) (*RunCommandWaitResult, error) {
+	req = req.withDefaults()
 	req.Wait = true
 	req.Logs = true
-	resp, err := c.http.DoStream(ctx, httpinternal.Request{
+	result := &RunCommandWaitResult{}
+	resp, err := c.http.DoStream(withoutRetry(ctx), httpinternal.Request{
 		Method: http.MethodPost, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/cmd", Headers: c.headers(nil), Query: c.query(nil), Body: req,
 	})
 	if err != nil {
-		return nil, toAPIError(err)
+		return result, toAPIError(err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
-
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), vercelNDJSONMaxLine)
-
-	result := &RunCommandWaitResult{}
-
-	// Blank lines carry no record; skip them as GetLogs does.
-	scan := func() bool {
-		for scanner.Scan() {
-			if len(bytes.TrimSpace(scanner.Bytes())) > 0 {
-				return true
-			}
-		}
-		return false
-	}
-	if !scan() {
-		return result, streamEndedEarly(sessionID, wrapScanError(scanner.Err(), sessionID))
-	}
-	var first ndjsonLine
-	if err := json.Unmarshal(scanner.Bytes(), &first); err != nil {
+	if err := expectNDJSON(resp, sessionID, "Expected a stream of command data"); err != nil {
 		return result, err
 	}
 
-	for scan() {
-		var line ndjsonLine
-		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
-			return result, err
+	delivered := logDelivered{}
+	var started *commandWire
+	finished := false
+	streamErr := readJSONLines(resp.Body, sessionID, func(raw []byte) error {
+		if started == nil {
+			var first commandResponse
+			var probe struct {
+				Command *commandWire `json:"command"`
+			}
+			if err := json.Unmarshal(raw, &probe); err != nil || probe.Command == nil {
+				return fmt.Errorf("vercel sandbox: invalid command response: %s", truncateForError(raw))
+			}
+			first.Command = *probe.Command
+			started = &first.Command
+			return nil
 		}
-		if line.Command != nil {
-			result.Command = *line.Command
-			return result, nil
+		var probe struct {
+			Command *commandWire `json:"command"`
 		}
-		switch line.Stream {
-		case "error":
-			return result, streamErrorFromData(line.Data, sessionID)
-		case "stdout":
-			result.Stdout += dataString(line.Data)
-		case "stderr":
-			result.Stderr += dataString(line.Data)
+		if json.Unmarshal(raw, &probe) == nil && probe.Command != nil {
+			result.Command = *probe.Command
+			finished = true
+			return errStopJSONLines
 		}
+		line, err := parseLogLine(raw, sessionID)
+		if err != nil {
+			return err
+		}
+		if line.Err != nil {
+			return line.Err
+		}
+		if line.Stream == "stdout" {
+			result.Stdout += line.Data
+		} else {
+			result.Stderr += line.Data
+		}
+		delivered[line.Stream] += jsLength(line.Data)
+		return nil
+	})
+	if started == nil {
+		if streamErr == nil {
+			return result, streamEndedEarly(sessionID, nil)
+		}
+		var connErr *connectionError
+		if errors.As(streamErr, &connErr) || errors.Is(streamErr, bufio.ErrTooLong) {
+			return result, streamEndedEarly(sessionID, streamErr)
+		}
+		return result, streamErr
 	}
-	return result, streamEndedEarly(sessionID, wrapScanError(scanner.Err(), sessionID))
+	if finished {
+		return result, nil
+	}
+	if streamErr == nil {
+		streamErr = &connectionError{message: "Stream ended before command finished"}
+	}
+	var connErr *connectionError
+	if ctx.Err() != nil || !errors.As(streamErr, &connErr) {
+		if errors.Is(streamErr, bufio.ErrTooLong) {
+			return result, streamEndedEarly(sessionID, streamErr)
+		}
+		return result, streamErr
+	}
+	if err := c.getLogsStream(ctx, sessionID, started.ID, delivered, func(entry LogEntry) {
+		if entry.Stream == "stdout" {
+			result.Stdout += entry.Data
+		} else {
+			result.Stderr += entry.Data
+		}
+	}); err != nil {
+		return result, err
+	}
+	command, err := c.GetCommand(ctx, sessionID, started.ID, true)
+	if err != nil {
+		return result, err
+	}
+	result.Command = *command
+	return result, nil
 }
 
 // RunCommandDetached posts POST .../cmd without wait, returning immediately
 // with the created command (TS detached path).
 func (c *APIClient) RunCommandDetached(ctx context.Context, sessionID string, req runCommandRequest) (*commandWire, error) {
+	req = req.withDefaults()
 	var out commandResponse
 	if err := c.http.DoJSON(ctx, httpinternal.Request{
 		Method: http.MethodPost, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/cmd", Headers: c.headers(nil), Query: c.query(nil), Body: req,
@@ -389,8 +457,27 @@ type LogEntry struct {
 
 // GetLogs streams GET .../cmd/{id}/logs, invoking onLog for every stdout/
 // stderr line until the stream closes or ctx is cancelled. It blocks until
-// the stream ends.
+// the stream ends. Like 3.9.0 `getLogsStream`, an interrupted stream (a
+// connectionError) is requested again up to twice, 200 ms and 400 ms later,
+// skipping the output already delivered.
 func (c *APIClient) GetLogs(ctx context.Context, sessionID, cmdID string, onLog func(LogEntry)) error {
+	return c.getLogsStream(ctx, sessionID, cmdID, logDelivered{}, onLog)
+}
+
+func (c *APIClient) getLogsStream(ctx context.Context, sessionID, cmdID string, delivered logDelivered, onLog func(LogEntry)) error {
+	for attempt := 0; ; attempt++ {
+		err := c.getLogsOnce(ctx, sessionID, cmdID, delivered, onLog)
+		var connErr *connectionError
+		if err == nil || ctx.Err() != nil || !errors.As(err, &connErr) || attempt >= 2 {
+			return err
+		}
+		if err := sleepCtx(ctx, logsReconnectDelay(attempt)); err != nil {
+			return err
+		}
+	}
+}
+
+func (c *APIClient) getLogsOnce(ctx context.Context, sessionID, cmdID string, delivered logDelivered, onLog func(LogEntry)) error {
 	resp, err := c.http.DoStream(ctx, httpinternal.Request{
 		Method: http.MethodGet, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/cmd/" + pathEscape(cmdID) + "/logs", Headers: c.headers(nil), Query: c.query(nil),
 	})
@@ -398,29 +485,34 @@ func (c *APIClient) GetLogs(ctx context.Context, sessionID, cmdID string, onLog 
 		return toAPIError(err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
-
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), vercelNDJSONMaxLine)
-	for scanner.Scan() {
-		if len(bytes.TrimSpace(scanner.Bytes())) == 0 {
-			continue
-		}
-		var line ndjsonLine
-		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
+	if err := expectNDJSON(resp, sessionID, "Expected a stream of logs"); err != nil {
+		return err
+	}
+	skip := logDelivered{}
+	for k, v := range delivered {
+		skip[k] = v
+	}
+	return readJSONLines(resp.Body, sessionID, func(raw []byte) error {
+		line, err := parseLogLine(raw, sessionID)
+		if err != nil {
 			return err
 		}
-		switch line.Stream {
-		case "error":
-			return streamErrorFromData(line.Data, sessionID)
-		case "stdout", "stderr":
-			onLog(LogEntry{Stream: line.Stream, Data: dataString(line.Data)})
+		if line.Err != nil {
+			return line.Err
 		}
-	}
-	// wrapScanError clarifies a bufio.ErrTooLong (or other scan failure) the
-	// same way RunCommandWait does, instead of returning it bare: see
-	// vercelNDJSONMaxLine's doc comment — this cap and RunCommandWait's are
-	// the same client-side limitation, not a sandbox-reported error.
-	return wrapScanError(scanner.Err(), sessionID)
+		length := jsLength(line.Data)
+		skipped := skip[line.Stream]
+		if skipped > length {
+			skipped = length
+		}
+		skip[line.Stream] -= skipped
+		data := jsSliceFrom(line.Data, skipped)
+		if data != "" || length == 0 {
+			delivered[line.Stream] += length - skipped
+			onLog(LogEntry{Stream: line.Stream, Data: data})
+		}
+		return nil
+	})
 }
 
 // MkDir posts POST .../fs/mkdir.
@@ -491,35 +583,53 @@ func (c *APIClient) ReadFile(ctx context.Context, sessionID, path, cwd string) (
 		Method: http.MethodPost, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/fs/read", Headers: c.headers(nil), Query: c.query(nil),
 		Body: readFileRequest{Path: path, CWD: cwd},
 	})
+	// 3.9.0 readFile: 404 is a missing file; any other error status, or a
+	// success that is not a byte stream, is "Unexpected response reading
+	// file: status N, content-type T".
+	unexpected := func(status int, header http.Header, apiErr *APIError) error {
+		contentType := header.Get("Content-Type")
+		if contentType == "" {
+			contentType = "(none)"
+		}
+		if apiErr == nil {
+			apiErr = &APIError{StatusCode: status}
+		}
+		apiErr.Message = "Unexpected response reading file: status " + strconv.Itoa(status) + ", content-type " + contentType
+		apiErr.SessionID = sessionID
+		return apiErr
+	}
 	if err != nil {
-		if statusErr, ok := err.(*httpinternal.HTTPStatusError); ok && statusErr.StatusCode == 404 {
+		statusErr, ok := err.(*httpinternal.HTTPStatusError)
+		if !ok {
+			return nil, err
+		}
+		if statusErr.StatusCode == 404 {
 			return nil, nil
 		}
-		return nil, toAPIError(err)
+		apiErr, _ := toAPIError(err).(*APIError)
+		return nil, unexpected(statusErr.StatusCode, statusErr.Headers, apiErr)
+	}
+	if !strings.Contains(resp.Header.Get("Content-Type"), "application/octet-stream") {
+		_ = resp.Body.Close()
+		return nil, unexpected(resp.StatusCode, resp.Header, nil)
 	}
 	return resp.Body, nil
 }
 
+// pathEscape is JS encodeURIComponent (3.9.0 encodes sandbox names with it):
+// every byte but A-Z a-z 0-9 - _ . ! ~ * ' ( ) is percent-encoded.
 func pathEscape(s string) string {
-	// Sandbox names/session/command IDs are opaque identifiers; percent-encode
-	// path-unsafe characters the same way encodeURIComponent would for the
-	// characters these IDs can plausibly contain.
 	var b bytes.Buffer
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
-			c == '-' || c == '_' || c == '.' || c == '~' {
+			strings.IndexByte("-_.!~*'()", c) >= 0 {
 			b.WriteByte(c)
 			continue
 		}
 		_, _ = fmt.Fprintf(&b, "%%%02X", c)
 	}
 	return b.String()
-}
-
-func dataString(data interface{}) string {
-	s, _ := data.(string)
-	return s
 }
 
 // StreamError mirrors TS `StreamError`: a sandbox-reported error interleaved
@@ -539,13 +649,6 @@ type StreamError struct {
 func (e *StreamError) Error() string { return e.Message }
 
 func (e *StreamError) Unwrap() error { return e.Cause }
-
-func streamErrorFromData(data interface{}, sessionID string) error {
-	m, _ := data.(map[string]interface{})
-	code, _ := m["code"].(string)
-	message, _ := m["message"].(string)
-	return &StreamError{Code: code, Message: message, SessionID: sessionID}
-}
 
 // streamEndedEarly reports that the ndjson command/log stream ended (or
 // failed) before the expected data was received. cause, when non-nil (a real
