@@ -345,16 +345,21 @@ func pollForTemplateSnapshotWithTimeout(ctx context.Context, client *APIClient, 
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		snapshots, err := client.ListSnapshots(ctx, name)
+		// Only completed manual snapshots count: automatic snapshots can be
+		// taken of a half-prepared builder. Like TS, the listing stops at
+		// the first match.
+		snapshotID, found := "", false
+		err := client.eachSnapshot(ctx, name, func(snap snapshotWire) bool {
+			if snap.Status == "created" && snap.CreationMethod == "manual" {
+				snapshotID, found = snap.ID, true
+			}
+			return found
+		})
 		if err != nil {
 			return "", err
 		}
-		// Only completed manual snapshots count: automatic snapshots can be
-		// taken of a half-prepared builder.
-		for _, snap := range snapshots {
-			if snap.Status == "created" && snap.CreationMethod == "manual" {
-				return snap.ID, nil
-			}
+		if found {
+			return snapshotID, nil
 		}
 		select {
 		case <-ctx.Done():

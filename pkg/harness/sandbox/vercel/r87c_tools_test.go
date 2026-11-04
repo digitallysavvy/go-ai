@@ -263,7 +263,9 @@ func TestR87ctoolsQueryTeamFirstAndEmptyValues(t *testing.T) {
 
 // Snapshot.list + attachPaginator: no cursor on the first page, listSnapshots
 // query order (project, name, cursor, sortOrder), the next page fetched while
-// `pagination.next !== null` (an empty page and an empty cursor included).
+// `pagination.next !== null` (an empty page and an empty cursor included);
+// pollForTemplateSnapshot stops listing at the first created manual
+// snapshot (utils.ts `for await` with an early return).
 func TestR87ctoolsSnapshotPagination(t *testing.T) {
 	var seen r87ctoolsQuerySeen
 	pages := map[string]string{
@@ -302,6 +304,15 @@ func TestR87ctoolsSnapshotPagination(t *testing.T) {
 	}
 	if strings.Join(seen.all(), "\n") != strings.Join(want, "\n") {
 		t.Fatalf("requests:\n%s", strings.Join(seen.all(), "\n"))
+	}
+
+	seen = r87ctoolsQuerySeen{}
+	id, err := pollForTemplateSnapshotWithTimeout(context.Background(), c, "tpl", time.Minute)
+	if err != nil || id != "m" {
+		t.Fatalf("poll = %q, %v", id, err)
+	}
+	if n := len(seen.all()); n != 3 {
+		t.Fatalf("poll made %d requests, want 3 (stop at the first match)", n)
 	}
 }
 
