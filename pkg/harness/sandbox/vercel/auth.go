@@ -34,13 +34,12 @@ var ErrPartialCredentials = errors.New("Missing credentials parameters to access
 // when all three fields are set; otherwise the VERCEL_OIDC_TOKEN env var is
 // decoded as a JWT for its owner_id/project_id claims.
 //
-// Capability gap: the TS SDK additionally refreshes a near-expiring OIDC
-// token via `@vercel/oidc`'s `getVercelOidcToken` (walking linked-project
-// files, local dev credential prompts, etc.). This port only reads
-// VERCEL_OIDC_TOKEN once per call; it does not implement local-dev credential
-// generation or proactive token refresh. In deployed Vercel environments the
-// platform keeps VERCEL_OIDC_TOKEN current, so re-reading the env var on each
-// call covers the common case.
+// It reads VERCEL_OIDC_TOKEN as is. The TS refresh through `@vercel/oidc`
+// `getVercelOidcToken` (linked project, cached project token, Vercel CLI
+// login, and a 5 minute refresh before each request) is opt-in: set
+// OIDCRefresh on CreateSessionOptions, ResumeSessionOptions or
+// LegacySettings. The interactive local dev credential prompt is not
+// ported.
 func ResolveCredentials(explicit Credentials) (Credentials, error) {
 	if explicit.Token != "" && explicit.TeamID != "" && explicit.ProjectID != "" {
 		return explicit, nil

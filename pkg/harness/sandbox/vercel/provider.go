@@ -73,7 +73,8 @@ func withAuthError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, ErrNoCredentials) || errors.Is(err, ErrPartialCredentials) {
+	var oidcErr *vercelOIDCContextError
+	if errors.Is(err, ErrNoCredentials) || errors.Is(err, ErrPartialCredentials) || errors.As(err, &oidcErr) {
 		return harness.NewSandboxAuthenticationError(vercelAuthMessage, vercelProviderID, err)
 	}
 	var apiErr *APIError
@@ -96,6 +97,9 @@ type Template struct {
 // TS `VercelNetworkSandboxSessionCreateOptions`.
 type CreateSessionOptions struct {
 	Credentials Credentials
+	// OIDCRefresh opts in to the @vercel/sandbox OIDC token refresh (see
+	// OIDCRefresh). Nil reads VERCEL_OIDC_TOKEN as is.
+	OIDCRefresh *OIDCRefresh
 	// BaseURL overrides the Vercel API base URL (tests only).
 	BaseURL string
 
@@ -143,11 +147,11 @@ func CreateNetworkSandboxSession(ctx context.Context, opts CreateSessionOptions)
 		KeepLastSnapshots:  opts.KeepLastSnapshots,
 	})
 
-	creds, err := ResolveCredentials(opts.Credentials)
+	creds, err := resolveCredentialsWithRefresh(ctx, opts.Credentials, opts.OIDCRefresh)
 	if err != nil {
 		return nil, withAuthError(err)
 	}
-	client := NewAPIClient(opts.BaseURL, creds)
+	client := newAPIClient(opts.BaseURL, creds, opts.OIDCRefresh)
 
 	if opts.Template != nil && opts.Template.Prepare == nil {
 		return nil, errors.New("createVercelNetworkSandboxSession: template.Prepare must be provided.") //nolint:staticcheck // mirrors TS message style
@@ -183,16 +187,19 @@ type ResumeSessionOptions struct {
 	Credentials Credentials
 	BaseURL     string
 	SandboxID   string
+	// OIDCRefresh opts in to the @vercel/sandbox OIDC token refresh (see
+	// OIDCRefresh). Nil reads VERCEL_OIDC_TOKEN as is.
+	OIDCRefresh *OIDCRefresh
 }
 
 // ResumeNetworkSandboxSession resumes an existing named sandbox. Mirrors TS
 // `resumeVercelNetworkSandboxSession`.
 func ResumeNetworkSandboxSession(ctx context.Context, opts ResumeSessionOptions) (harness.NetworkSandboxSession, error) {
-	creds, err := ResolveCredentials(opts.Credentials)
+	creds, err := resolveCredentialsWithRefresh(ctx, opts.Credentials, opts.OIDCRefresh)
 	if err != nil {
 		return nil, withAuthError(err)
 	}
-	client := NewAPIClient(opts.BaseURL, creds)
+	client := newAPIClient(opts.BaseURL, creds, opts.OIDCRefresh)
 	resume := true
 	sbx, err := GetSandbox(ctx, client, opts.SandboxID, &resume)
 	if err != nil {

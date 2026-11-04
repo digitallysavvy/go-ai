@@ -71,6 +71,14 @@ type APIClient struct {
 // NewAPIClient builds a client authenticated with credentials, talking to
 // baseURL (DefaultBaseURL in production; overridden by tests).
 func NewAPIClient(baseURL string, credentials Credentials) *APIClient {
+	return newAPIClient(baseURL, credentials, nil)
+}
+
+// newAPIClient is NewAPIClient with an optional OIDC refresh. Like the 3.9.0
+// APIClient constructor, a JWT token whose payload has an owner_id sets the
+// team (owner_id) and project (project_id) from its claims; with refresh set,
+// such a token is checked before every request (ensureValidToken).
+func newAPIClient(baseURL string, credentials Credentials, refresh *OIDCRefresh) *APIClient {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
@@ -78,10 +86,18 @@ func NewAPIClient(baseURL string, credentials Credentials) *APIClient {
 	if base == nil {
 		base = http.DefaultTransport
 	}
+	var transport http.RoundTripper = &retryTransport{base: base}
+	if owner, project, ok := unverifiedTokenClaims(credentials.Token); ok {
+		credentials.TeamID, credentials.ProjectID = owner, project
+		if refresh != nil {
+			transport = &oidcTokenTransport{base: transport, refresh: refresh,
+				token: credentials.Token, teamID: owner, projectID: project}
+		}
+	}
 	return &APIClient{
 		http: httpinternal.NewClient(httpinternal.Config{
 			BaseURL:    baseURL,
-			HTTPClient: &http.Client{Transport: &retryTransport{base: base}},
+			HTTPClient: &http.Client{Transport: transport},
 		}),
 		credentials: credentials,
 	}
