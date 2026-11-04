@@ -74,7 +74,7 @@ func TestR87bprovbStreamEventLenientFieldTypes(t *testing.T) {
 		"text m1 1,2,,[object Object],true",
 		`tool-call 99 42 {"a":1}`,
 		"tool-call c2 g undefinednull",
-		"error error code= message=",
+		"error error code=<nil> message=",
 		"finish error",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
@@ -106,5 +106,42 @@ func TestR87bprovbGenerateLenientFieldTypes(t *testing.T) {
 	}
 	if res.Usage.InputTokens == nil || *res.Usage.InputTokens != 3 || res.Usage.OutputTokens == nil || *res.Usage.OutputTokens != 2 {
 		t.Fatalf("usage = %+v", res.Usage)
+	}
+}
+
+// TS 3fab50aa9b createOpenResponsesStreamError passes `code: error.code`
+// as is: absent or null is no code, "" is kept.
+func TestR87bprovbStreamErrorCodePresence(t *testing.T) {
+	for _, tc := range []struct {
+		name, event string
+		want        interface{}
+	}{
+		{"error empty", `{"type":"error","error":{"code":"","message":"m"}}`, ""},
+		{"error absent", `{"type":"error","error":{"message":"m"}}`, nil},
+		{"error null", `{"type":"error","error":{"code":null,"message":"m"}}`, nil},
+		{"failed empty", `{"type":"response.failed","response":{"status":"failed","error":{"code":"","message":"m"}}}`, ""},
+		{"failed absent", `{"type":"response.failed","response":{"status":"failed","error":{"message":"m"}}}`, nil},
+		{"failed value", `{"type":"response.failed","response":{"status":"failed","error":{"code":"x","message":"m"}}}`, "x"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chunks, err := r87provbStream(t, tc.event)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, c := range chunks {
+				if c.Type != provider.ChunkTypeError {
+					continue
+				}
+				var spe *providererrors.StreamProviderError
+				if !errors.As(c.Err, &spe) {
+					t.Fatalf("chunk.Err = %T", c.Err)
+				}
+				if spe.Code != tc.want {
+					t.Fatalf("code = %#v, want %#v", spe.Code, tc.want)
+				}
+				return
+			}
+			t.Fatal("no error chunk")
+		})
 	}
 }

@@ -1940,13 +1940,30 @@ func (s *openResponsesStream) streamProviderError(event *StreamEvent, respErr *R
 	// TS createProviderStreamError({message, type: chunk.type, code, ...metadata,
 	// data: chunk}): the type is the event type and the data is the whole chunk.
 	var data interface{} = respErr
+	// TS `code: error.code`: an absent or null code is no code (an empty
+	// string is kept).
+	var code interface{} = respErr.Code
 	if len(event.Raw) > 0 {
 		var chunk interface{}
 		if json.Unmarshal(event.Raw, &chunk) == nil {
 			data = chunk
+			errObj := chunk
+			if event.Type == "response.failed" {
+				errObj = openResponsesWireField(chunk, "response")
+			}
+			if respErr.Code == "" && openResponsesWireField(openResponsesWireField(errObj, "error"), "code") == nil {
+				code = nil
+			}
 		}
 	}
-	return providererrors.NewStreamProviderError(respErr.Message, s.providerName, event.Type, respErr.Code, statusCode, retryable, data)
+	return providererrors.NewStreamProviderError(respErr.Message, s.providerName, event.Type, code, statusCode, retryable, data)
+}
+
+// openResponsesWireField is value[key] for a decoded JSON object (nil
+// otherwise).
+func openResponsesWireField(value interface{}, key string) interface{} {
+	m, _ := value.(map[string]interface{})
+	return m[key]
 }
 
 // wireNumberPresent reports whether raw[object][key] is a JSON number.
