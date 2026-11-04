@@ -29,6 +29,7 @@ var r87dprovrestPorted = map[string]string{}
 
 // r87dprovrestNA are the assertions that cannot apply to Go.
 var r87dprovrestNA = map[string]string{
+	tsfixture.PortedKey("should extract text response", "content", "toEqual"):   "TS doGenerate returns the response's content as is (here the test helper's single object, not the V4 content array the gateway sends); types.GenerateResult.Content is a typed slice, and Go decodes the object into its one text part (TestR87dprovrestGatewayGenerateResultFields)",
 	tsfixture.PortedKey("should extract usage information", "usage", "toEqual"): "TS doGenerate returns the response's usage object as is (here the test helper's flat snake-case counts, not the V4 usage the gateway sends); types.Usage cannot hold an arbitrary object. Go reads no counts from that shape, as the TS core does not (TestR87dprovrestGatewayGenerateResultFields)",
 }
 
@@ -41,7 +42,6 @@ func r87dprovrestMark(goTest, test string, exprMatchers ...string) {
 func init() {
 	r87dprovrestMark("TestR87dprovrestGatewayRequestHeaders", "should pass headers correctly", "headers", "toMatchObject")
 	r87dprovrestMark("TestR87dprovrestGatewayRequestHeaders", "should pass streaming headers", "headers", "toMatchObject")
-	r87dprovrestMark("TestR87dprovrestGatewayGenerateResultFields", "should extract text response", "content", "toEqual")
 	r87dprovrestMark("TestR87dprovrestGatewayGenerateResultFields", "should default warnings to an empty array when absent", "warnings", "toEqual")
 	r87dprovrestMark("TestR87dprovrestGatewayNoAbortSignalWithoutOne", "should not pass abortSignal to fetch when not provided", "fetchCallArgs[1].signal", "toBeUndefined")
 	r87dprovrestMark("TestR87dprovrestGatewayNoAbortSignalWithoutOne", "should not pass abortSignal to fetch when not provided for streaming", "fetchCallArgs[1].signal", "toBeUndefined")
