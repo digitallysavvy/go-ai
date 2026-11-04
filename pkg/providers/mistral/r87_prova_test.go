@@ -487,3 +487,146 @@ func TestR87provaTranscribeWarnsRealtimeOnlyOptions(t *testing.T) {
 		t.Fatalf("realtime options sent: %s", form)
 	}
 }
+
+func r87provaStr(s string) *string { return &s }
+
+// Ported from realtime/mistral-realtime-model.test.ts (TS 0912e0b1b9).
+func TestR87provaRealtimeSessions(t *testing.T) {
+	type call struct {
+		method, path, auth string
+		body               map[string]interface{}
+	}
+	var calls []call
+	status, respBody := 200, `{"id":"session-1","participant_token":"participant-token","server_url":"wss://voice.example.com","unused":"x"}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		calls = append(calls, call{r.Method, r.URL.EscapedPath(), r.Header.Get("Authorization"), body})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, respBody)
+	}))
+	defer srv.Close()
+	rt := New(Config{APIKey: "test-api-key", BaseURL: srv.URL + "/v1/"}).ExperimentalRealtime()
+
+	session, err := rt.CreateSession(context.Background(), RealtimeCreateSessionOptions{Model: "mistral-small-latest"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *session != (RealtimeSession{ID: "session-1", ParticipantToken: "participant-token", ServerURL: "wss://voice.example.com"}) {
+		t.Fatalf("session = %+v", session)
+	}
+	if c := calls[0]; c.method != "POST" || c.path != "/v1/audio/sessions" || c.auth != "Bearer test-api-key" ||
+		!reflect.DeepEqual(c.body, map[string]interface{}{"llm": map[string]interface{}{"model": "mistral-small-latest"}}) {
+		t.Fatalf("create call = %+v", c)
+	}
+
+	// Normalized and provider-specific settings.
+	calls = nil
+	_, err = rt.CreateSession(context.Background(), RealtimeCreateSessionOptions{Model: "mistral-small-latest", SessionConfig: &provider.RealtimeSessionConfig{
+		Instructions:             r87provaStr("Be concise."),
+		Voice:                    r87provaStr("voice_447"),
+		OutputModalities:         []string{"audio", "text"},
+		OutputAudioTranscription: &provider.RealtimeAudioTranscriptionConfig{},
+		InputAudioTranscription:  &provider.RealtimeAudioTranscriptionConfig{Model: r87provaStr("voxtral-mini-transcribe-realtime-3"), Language: r87provaStr("en")},
+		Tools:                    []provider.RealtimeToolDefinition{{Type: "function", Name: "weather", Parameters: map[string]interface{}{"type": "object"}}},
+		ProviderOptions: map[string]interface{}{"mistral": map[string]interface{}{
+			"stt": map[string]interface{}{"model": "overridden-model", "language": "fr", "contextBias": []string{"Vercel"}, "targetStreamingDelayMs": 240,
+				"turnDetection": map[string]interface{}{"minSilenceMs": 500, "endThreshold": 0.33}},
+			"tts":            map[string]interface{}{"model": "voxtral-mini-tts-3", "voiceId": "overridden-voice", "phonemeHints": map[string][]string{"SDK": {"s"}}},
+			"turn":           map[string]interface{}{"allowInterruptions": false, "inactivity": map[string]interface{}{"timeoutMs": 10000, "maxReminders": 2, "messages": []string{"Hello?"}}},
+			"welcomeMessage": "Hello!", "agentId": "saved-agent", "agentVersion": 2,
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"agent_id":"saved-agent","agent_version":2,"instructions":"Be concise.","llm":{"model":"mistral-small-latest"},"stt":{"context_bias":["Vercel"],"language":"en","model":"voxtral-mini-transcribe-realtime-3","target_streaming_delay_ms":240,"turn_detection":{"end_threshold":0.33,"min_silence_ms":500}},"tools":[{"function":{"name":"weather","parameters":{"type":"object"}},"type":"function"}],"tts":{"model":"voxtral-mini-tts-3","phoneme_hints":{"SDK":["s"]},"voice_id":"voice_447"},"turn":{"allow_interruptions":false,"inactivity":{"max_reminders":2,"messages":["Hello?"],"timeout_ms":10000}},"welcome_message":"Hello!"}`
+	if got, _ := json.Marshal(calls[0].body); string(got) != want {
+		t.Fatalf("body = %s\nwant %s", got, want)
+	}
+
+	// Close: the session ID is one encoded path segment.
+	calls, status, respBody = nil, 204, ""
+	if err := rt.CloseSession(context.Background(), "session/1?query"); err != nil {
+		t.Fatal(err)
+	}
+	if c := calls[0]; c.method != "DELETE" || c.path != "/v1/audio/sessions/session%2F1%3Fquery" || c.auth != "Bearer test-api-key" {
+		t.Fatalf("close call = %+v", c)
+	}
+	for _, id := range []string{"", ".", "..", " "} {
+		if err := rt.CloseSession(context.Background(), id); err == nil || !strings.Contains(err.Error(), "valid session ID") {
+			t.Fatalf("%q: err = %v", id, err)
+		}
+	}
+	if _, err := rt.CreateSession(context.Background(), RealtimeCreateSessionOptions{Model: " "}); err == nil {
+		t.Fatal("blank model accepted")
+	}
+
+	// HTTP errors and malformed credentials.
+	status, respBody = 401, `{"object":"error","message":"Invalid key","type":"authentication","param":null,"code":null}`
+	for _, op := range []func() error{
+		func() error {
+			_, err := rt.CreateSession(context.Background(), RealtimeCreateSessionOptions{Model: "m"})
+			return err
+		},
+		func() error { return rt.CloseSession(context.Background(), "session-1") },
+	} {
+		err := op()
+		var pe *providererrors.ProviderError
+		if !errors.As(err, &pe) || pe.StatusCode != 401 || !strings.Contains(err.Error(), "Invalid key") {
+			t.Fatalf("err = %v", err)
+		}
+	}
+	status, respBody = 200, `{"id":"session-1"}`
+	if _, err := rt.CreateSession(context.Background(), RealtimeCreateSessionOptions{Model: "m"}); err == nil || !strings.Contains(err.Error(), "Invalid JSON response") {
+		t.Fatalf("malformed credentials: err = %v", err)
+	}
+}
+
+func TestR87provaRealtimeSessionConfigChecks(t *testing.T) {
+	var unsupported *providererrors.UnsupportedFunctionalityError
+	for i, c := range []provider.RealtimeSessionConfig{
+		{InputAudioFormat: &provider.RealtimeAudioFormat{Type: "audio/pcm"}},
+		{OutputAudioFormat: &provider.RealtimeAudioFormat{Type: "audio/pcm"}},
+		{InputAudioTranscription: &provider.RealtimeAudioTranscriptionConfig{Prompt: r87provaStr("Vocabulary")}},
+		{OutputAudioTranscription: &provider.RealtimeAudioTranscriptionConfig{Model: r87provaStr("other")}},
+		{OutputModalities: []string{"text"}},
+		{TurnDetection: &provider.RealtimeTurnDetection{Type: "server-vad"}},
+	} {
+		if _, err := BuildRealtimeSessionConfig(c, "", false); !errors.As(err, &unsupported) {
+			t.Errorf("case %d: err = %v", i, err)
+		}
+	}
+	for i, m := range []map[string]interface{}{
+		{"stt": map[string]interface{}{"targetStreamingDelayMs": 79}},
+		{"stt": map[string]interface{}{"turnDetection": map[string]interface{}{"endThreshold": 2}}},
+		{"tts": map[string]interface{}{"expressiveness": 2}},
+		{"agentVersion": 2},
+		{"unknown": true},
+	} {
+		if _, err := BuildRealtimeSessionConfig(provider.RealtimeSessionConfig{ProviderOptions: map[string]interface{}{"mistral": m}}, "", false); err == nil {
+			t.Errorf("provider case %d accepted", i)
+		}
+	}
+	got, err := BuildRealtimeSessionConfig(provider.RealtimeSessionConfig{
+		Instructions:    r87provaStr("Updated instructions"),
+		Tools:           []provider.RealtimeToolDefinition{},
+		ProviderOptions: map[string]interface{}{"mistral": map[string]interface{}{"turn": map[string]interface{}{"allowInterruptions": true}}},
+	}, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := json.Marshal(got); string(b) != `{"instructions":"Updated instructions","tools":[],"turn":{"allow_interruptions":true}}` {
+		t.Fatalf("update = %s", b)
+	}
+	for i, c := range []provider.RealtimeSessionConfig{
+		{Voice: r87provaStr("voice_447")},
+		{ProviderOptions: map[string]interface{}{"mistral": map[string]interface{}{"stt": map[string]interface{}{"language": "en"}}}},
+		{ProviderOptions: map[string]interface{}{"mistral": map[string]interface{}{"agentId": "saved-agent"}}},
+	} {
+		if _, err := BuildRealtimeSessionConfig(c, "", true); !errors.As(err, &unsupported) {
+			t.Errorf("update case %d: err = %v", i, err)
+		}
+	}
+}
