@@ -355,8 +355,8 @@ func TestR87dprovrestGatewayFetchRejections(t *testing.T) {
 		if want := "Invalid error response format: Gateway request failed: Network connection failed"; re.Error() != want {
 			t.Errorf("stream=%v: responseError.message = %q, TS %q", stream, re.Error(), want)
 		}
-		if !errors.Is(re, networkError) {
-			t.Errorf("stream=%v: responseError.cause = %v, TS the network error", stream, errors.Unwrap(re))
+		if errors.Unwrap(re) != networkError {
+			t.Errorf("stream=%v: responseError.cause = %v, TS the network error itself (toBe)", stream, errors.Unwrap(re))
 		}
 	}
 }
