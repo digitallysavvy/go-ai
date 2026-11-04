@@ -156,3 +156,32 @@ func TestR86bprovaBatchResultsURL(t *testing.T) {
 		}
 	}
 }
+
+// TS gatewayDecisionAnswerSchema: a choice answer needs choice: z.string()
+// (cr-r86b-gen-to-prova 2), so an answer without one fails at the provider
+// (TypeValidationError) and never reaches core as "".
+func TestR86bprovaDecisionChoiceAnswerRequiresChoice(t *testing.T) {
+	var got string
+	for body, ok := range map[string]bool{
+		`{"answers":{"q":{"type":"choice"}}}`:             false,
+		`{"answers":{"q":{"type":"choice","choice":""}}}`: true,
+		`{"answers":{"q":{"type":"other"}}}`:              false,
+	} {
+		srv := r86bprovaRawQueryServer(t, body, &got)
+		p, _ := New(Config{APIKey: "k", BaseURL: srv.URL})
+		model, _ := p.DecisionModel("typesafe-ai/jev-latest")
+		res, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{State: "s", Questions: map[string]provider.DecisionQuestion{
+			"q": {Type: "choice", Instructions: "i", Criteria: map[string]interface{}{"": "empty", "a": "a"}},
+		}})
+		if ok {
+			if err != nil || res.Answers["q"].Choice != "" {
+				t.Fatalf("%s: %+v %v", body, res, err)
+			}
+			continue
+		}
+		var tv *providererrors.TypeValidationError
+		if !errors.As(err, &tv) {
+			t.Fatalf("%s: err = %T %v, want TypeValidationError", body, err, err)
+		}
+	}
+}
