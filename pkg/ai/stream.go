@@ -5837,7 +5837,7 @@ func isReasoningBoundaryChunk(chunkType provider.ChunkType) bool {
 // expiring on this context should be reported as ("" when there is none).
 func armStepChunkDeadline(stepCtx context.Context, tc *TimeoutConfig) (context.Context, context.CancelFunc, TimeoutReason) {
 	if tc.HasFirstChunk() {
-		c, cancel := context.WithTimeout(stepCtx, *tc.FirstChunk)
+		c, cancel := context.WithTimeoutCause(stepCtx, *tc.FirstChunk, tc.timeoutError(TimeoutReasonFirstChunk, context.DeadlineExceeded))
 		return c, cancel, TimeoutReasonFirstChunk
 	}
 	return stepCtx, func() {}, ""
@@ -5854,7 +5854,7 @@ func armStepChunkDeadline(stepCtx context.Context, tc *TimeoutConfig) (context.C
 func resetChunkDeadlineOnOutput(stepCtx context.Context, tc *TimeoutConfig, prevCancel context.CancelFunc) (context.Context, context.CancelFunc, TimeoutReason) {
 	prevCancel()
 	if tc.HasPerChunk() {
-		c, cancel := context.WithTimeout(stepCtx, *tc.PerChunk)
+		c, cancel := context.WithTimeoutCause(stepCtx, *tc.PerChunk, tc.timeoutError(TimeoutReasonChunk, context.DeadlineExceeded))
 		return c, cancel, TimeoutReasonChunk
 	}
 	return stepCtx, func() {}, ""

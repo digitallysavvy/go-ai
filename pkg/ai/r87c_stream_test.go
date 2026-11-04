@@ -1267,7 +1267,7 @@ func TestR87cstreamStepReasoningFiles(t *testing.T) {
 	r87cstreamAssert(t, "steps", steps, `[{"callId":"test-telemetry-call-id","content":[{"file":{"base64Data":"reasoning-file-data-1","mediaType":"image/png","type":"file"},"type":"reasoning-file"},{"text":"Some reasoning text.","type":"reasoning"},{"file":{"base64Data":"reasoning-file-data-2","mediaType":"image/jpeg","type":"file"},"providerMetadata":{"testProvider":{"signature":"rf-sig-1"}},"type":"reasoning-file"},{"text":"Hello!","type":"text"}],"finishReason":"stop","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":`+r87cstreamPerfKeys+`,"rawFinishReason":"stop","request":{},"response":{"id":"id-0","messages":[{"content":[{"data":"reasoning-file-data-1","mediaType":"image/png","type":"reasoning-file"},{"text":"Some reasoning text.","type":"reasoning"},{"data":"reasoning-file-data-2","mediaType":"image/jpeg","providerOptions":{"testProvider":{"signature":"rf-sig-1"}},"type":"reasoning-file"},{"text":"Hello!","type":"text"}],"role":"assistant"}],"modelId":"mock-model-id","timestamp":"1970-01-01T00:00:00.000Z"},"runtimeContext":{},"stepNumber":0,"toolsContext":{},"usage":`+r87cstreamUsageJSON+`,"warnings":[]}]`)
 }
 
-// stream-text.test.ts 9274: result.steps > should expose the final step
+// stream-text.test.ts 9274: result.steps > exposes the final step
 // (finalStep is steps.at(-1)).
 func TestR87cstreamFinalStep(t *testing.T) {
 	r := r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, r87cstreamDefaultStream(nil)), Prompt: "prompt", Internal: r87cstreamDefaultInternal()})
@@ -1936,7 +1936,7 @@ func TestR87cstreamPrepareStepDoStreamCalls(t *testing.T) {
 }
 
 // stream-text.test.ts 15934: options.stopWhen > 2 steps: initial,
-// tool-result with prepareStep > should contain all prepareStep calls. TS
+// tool-result with prepareStep > the prepareStep calls. TS
 // passes the live steps array, so its snapshot (taken after the run) shows
 // both steps in both calls; Go passes a snapshot, so the steps each call saw
 // are checked against the final steps at call time ([] and [step 0]), and
@@ -2403,5 +2403,58 @@ func TestR87cstreamChunkTimeoutAbortsModelCall(t *testing.T) {
 	var te *TimeoutError
 	if !errors.As(context.Cause(received), &te) || te.Reason != TimeoutReasonChunk {
 		t.Fatalf("abort reason = %v", context.Cause(received))
+	}
+}
+
+// cr-r87c-gen-to-stream (TS setAbortTimeout / AbortSignal.timeout): a
+// step, total, chunk or first-chunk timeout aborts the model call with the
+// TS TimeoutError reason.
+func TestR87cstreamTimeoutCauses(t *testing.T) {
+	d := 40 * time.Millisecond
+	for _, tc := range []struct {
+		name string
+		cfg  TimeoutConfig
+		send bool
+		want string
+	}{
+		{"step", TimeoutConfig{PerStep: &d}, false, "Step timeout of 40ms exceeded"},
+		{"total", TimeoutConfig{Total: &d}, false, "The operation was aborted due to timeout"},
+		{"first chunk", TimeoutConfig{FirstChunk: &d}, false, "First chunk timeout of 40ms exceeded"},
+		{"chunk", TimeoutConfig{PerChunk: &d}, true, "Chunk timeout of 40ms exceeded"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			causeCh := make(chan error, 1)
+			m := &testutil.MockLanguageModel{DoStreamFunc: func(ctx context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+				if tc.cfg.PerStep != nil || tc.cfg.Total != nil {
+					<-ctx.Done()
+					causeCh <- context.Cause(ctx)
+					return nil, ctx.Err()
+				}
+				first := []provider.StreamChunk{}
+				if tc.send {
+					first = []provider.StreamChunk{{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Hello"}}
+				}
+				release := make(chan struct{})
+				go func() { <-ctx.Done(); causeCh <- context.Cause(ctx); close(release) }()
+				return &r87cstreamStallStream{first: first, release: release}, nil
+			}}
+			zero := 0
+			cfg := tc.cfg
+			r, err := StreamText(context.Background(), StreamTextOptions{Model: m, Prompt: "x", Timeout: &cfg, MaxRetries: &zero, OnError: func(context.Context, error) {}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = r.ConsumeStream()
+			var cause error
+			select {
+			case cause = <-causeCh:
+			case <-time.After(2 * time.Second):
+				t.Fatal("model call was not aborted")
+			}
+			var te *TimeoutError
+			if !errors.As(cause, &te) || te.Error() != tc.want {
+				t.Fatalf("cause = %T %v", cause, cause)
+			}
+		})
 	}
 }
