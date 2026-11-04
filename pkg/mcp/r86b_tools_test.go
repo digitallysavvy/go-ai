@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -227,5 +228,65 @@ func TestR86btoolsOAuthRedirectLocationReadsAsFetch(t *testing.T) {
 			t.Errorf("Location %q: requested %q, want the second hop at %q", c.location, paths, c.want)
 		}
 		mu.Unlock()
+	}
+}
+
+type r86btoolsBodyTransport struct{ bodies []string }
+
+func (rt *r86btoolsBodyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	b, _ := io.ReadAll(req.Body)
+	rt.bodies = append(rt.bodies, string(b))
+	return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"access_token":"AT","token_type":"Bearer"}`)), Request: req}, nil
+}
+
+// cr-r86b-prova-to-tools 3: TS token requests send a URLSearchParams body:
+// insertion order (grant_type, code, code_verifier, redirect_uri, then
+// client auth, then resource) and form encoding with `*` literal and `~` as
+// %7E. Go sent url.Values.Encode() (sorted, `*` as %2A, `~` literal).
+// Expected bodies from node URLSearchParams.toString() with the same steps.
+func TestR86btoolsOAuthTokenBodyMatchesURLSearchParams(t *testing.T) {
+	rt := &r86btoolsBodyTransport{}
+	client := &http.Client{Transport: rt}
+	meta := &OAuthAuthorizationServerMetadata{TokenEndpoint: "https://auth.example.com/token"}
+	resource, _ := url.Parse("https://api.example.com/mcp")
+	if _, err := ExchangeOAuthAuthorization(context.Background(), "https://auth.example.com", ExchangeOAuthAuthorizationParams{
+		Metadata: meta, ClientInformation: OAuthClientInformation{ClientID: "cid", ClientSecret: "s"},
+		AuthorizationCode: "c*~ d", CodeVerifier: "v~.-_", RedirectURI: "https://app.example.com/cb", Resource: resource, HTTPClient: client,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RefreshOAuthAuthorization(context.Background(), "https://auth.example.com", RefreshOAuthAuthorizationParams{
+		Metadata: meta, RefreshToken: "r~*", HTTPClient: client,
+		AddClientAuthentication: func(_ context.Context, _ http.Header, p url.Values, _ string, _ *OAuthAuthorizationServerMetadata) error {
+			// TS keeps a callback's insertion order; Go's url.Values cannot,
+			// so client_id / client_secret come first and other keys sorted.
+			p.Set("client_id", "cid")
+			p.Set("x_extra", "1")
+			return nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"grant_type=authorization_code&code=c*%7E+d&code_verifier=v%7E.-_&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcb&client_id=cid&client_secret=s&resource=https%3A%2F%2Fapi.example.com%2Fmcp",
+		"grant_type=refresh_token&refresh_token=r%7E*&client_id=cid&x_extra=1",
+	}
+	if len(rt.bodies) != 2 || rt.bodies[0] != want[0] || rt.bodies[1] != want[1] {
+		t.Fatalf("bodies = %q, want %q", rt.bodies, want)
+	}
+}
+
+// TS mcp-events.ts url.searchParams.set(MCP_EVENT_CALLBACK_KEY, key)
+// re-serializes the query (node: "?tenant=one&x=a+b&y=%7E*%7E&...") and
+// replaces an existing key in place.
+func TestR86btoolsEventCallbackQueryMatchesURLSearchParams(t *testing.T) {
+	for raw, want := range map[string]string{
+		"tenant=one&x=a%20b&y=~*%7e":                               "tenant=one&x=a+b&y=%7E*%7E&mcp_event_subscription=KEY",
+		"mcp_event_subscription=old&x=1&mcp_event_subscription=o2": "mcp_event_subscription=KEY&x=1",
+		"": "mcp_event_subscription=KEY",
+	} {
+		if got := appendMCPEventQuery(raw, MCPEventCallbackKey, "KEY"); got != want {
+			t.Errorf("%q: got %q, want %q", raw, got, want)
+		}
 	}
 }

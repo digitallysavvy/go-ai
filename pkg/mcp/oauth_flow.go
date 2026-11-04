@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -744,7 +745,7 @@ func ExchangeOAuthAuthorization(ctx context.Context, authorizationServerURL stri
 		values.Set("resource", resourceURLStripSlash(params.Resource))
 	}
 
-	resp, err := doOAuthTokenPOST(ctx, params.HTTPClient, tokenURL.String(), allowLoopback, headers, []byte(values.Encode()))
+	resp, err := doOAuthTokenPOST(ctx, params.HTTPClient, tokenURL.String(), allowLoopback, headers, []byte(encodeOAuthTokenForm(values, "grant_type", "code", "code_verifier", "redirect_uri")))
 	if err != nil {
 		return nil, err
 	}
@@ -803,7 +804,7 @@ func RefreshOAuthAuthorization(ctx context.Context, authorizationServerURL strin
 		values.Set("resource", resourceURLStripSlash(params.Resource))
 	}
 
-	resp, err := doOAuthTokenPOST(ctx, params.HTTPClient, tokenURL.String(), allowLoopback, headers, []byte(values.Encode()))
+	resp, err := doOAuthTokenPOST(ctx, params.HTTPClient, tokenURL.String(), allowLoopback, headers, []byte(encodeOAuthTokenForm(values, "grant_type", "refresh_token")))
 	if err != nil {
 		return nil, err
 	}
@@ -1187,6 +1188,41 @@ func (q *orderedQuery) encode() string {
 		writeFormEncoded(&b, p[1])
 	}
 	return b.String()
+}
+
+// encodeOAuthTokenForm serializes a token request body like the TS
+// URLSearchParams body: the request's own parameters in TS insertion order
+// (lead), then client_id and client_secret (TS applyPostAuth order), then any
+// parameter an AddClientAuthentication callback added (sorted: a url.Values
+// keeps no order), then resource (set last in TS), each with the
+// URLSearchParams form encoding (`*` literal, `~` as %7E).
+func encodeOAuthTokenForm(values url.Values, lead ...string) string {
+	q := &orderedQuery{}
+	seen := map[string]bool{}
+	emit := func(name string) {
+		if seen[name] {
+			return
+		}
+		seen[name] = true
+		for _, v := range values[name] {
+			q.add(name, v)
+		}
+	}
+	for _, name := range append(lead, "client_id", "client_secret") {
+		emit(name)
+	}
+	rest := make([]string, 0, len(values))
+	for name := range values {
+		if !seen[name] && name != "resource" {
+			rest = append(rest, name)
+		}
+	}
+	sort.Strings(rest)
+	for _, name := range rest {
+		emit(name)
+	}
+	emit("resource")
+	return q.encode()
 }
 
 func writeFormEncoded(b *strings.Builder, s string) {
