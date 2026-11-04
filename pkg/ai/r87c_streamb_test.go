@@ -15,7 +15,6 @@ import (
 	"errors"
 	"reflect"
 	"sort"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1050,4 +1049,173 @@ func TestR87cstreambObjectOutputOnFinish(t *testing.T) {
 		"totalUsage":`+r87cstreambUsageJSON+`,"usage":`+r87cstreambUsageJSON+`,"warnings":[]}`)
 }
 
-var _ = strings.ToUpper
+// r87cstreambContentElement is the JSON schema zod produces for
+// z.object({ content: z.string() }).
+var r87cstreambContentElement = schema.NewSimpleJSONSchema(map[string]interface{}{
+	"$schema": "http://json-schema.org/draft-07/schema#", "additionalProperties": false, "type": "object",
+	"properties": map[string]interface{}{"content": map[string]interface{}{"type": "string"}}, "required": []interface{}{"content"},
+})
+
+func r87cstreambArrayOutput() Output[[]map[string]interface{}, []map[string]interface{}] {
+	return ArrayOutput[map[string]interface{}](ArrayOutputOptions[map[string]interface{}]{ElementSchema: r87cstreambContentElement})
+}
+
+// r87cstreambArray3 is the TS 'array with 3 elements' stream.
+var r87cstreambArray3 = []string{`{"elements":[`, `{`, `"content":`, `"element 1"`, `},`, `{ `, `"content": `, `"element 2"`, `},`, `{`, `"content":`, `"element 3"`, `}`, `]`, `}`}
+
+// r87cstreambArray2 is the TS 'array with 2 elements streamed in 1 chunk' stream.
+var r87cstreambArray2 = []string{`{"elements":[{"content":"element 1"},{"content":"element 2"}]}`}
+
+func r87cstreambArrayRun(t *testing.T, deltas []string) *StreamTextResult {
+	t.Helper()
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, r87cstreambObjectStep(deltas...)), Output: r87cstreambArrayOutput(), Prompt: "prompt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func r87cstreambElements(t *testing.T, r *StreamTextResult) []interface{} {
+	t.Helper()
+	out := []interface{}{}
+	ch := ElementStream[map[string]interface{}](r, ElementStreamOptions[map[string]interface{}]{ElementSchema: r87cstreambContentElement})
+	timeout := time.After(5 * time.Second)
+	for {
+		select {
+		case e, ok := <-ch:
+			if !ok {
+				return out
+			}
+			out = append(out, e.Element)
+		case <-timeout:
+			t.Fatal("elementStream did not end")
+		}
+	}
+}
+
+// stream-text.test.ts 23812: options.output > array output > array with 3
+// elements > should stream only complete objects in partialObjectStream.
+func TestR87cstreambArray3PartialOutputStream(t *testing.T) {
+	got, _ := r87cstreambPartials(t, r87cstreambObjectStep(r87cstreambArray3...), r87cstreambArrayOutput())
+	r87cstreambAssert(t, "partialOutputStream", got, `[[],[{"content":"element 1"}],[{"content":"element 1"},{"content":"element 2"}],[{"content":"element 1"},{"content":"element 2"},{"content":"element 3"}]]`)
+}
+
+// stream-text.test.ts 23845: options.output > array output > array with 3
+// elements > should stream individual elements in elementStream.
+func TestR87cstreambArray3ElementStream(t *testing.T) {
+	r := r87cstreambArrayRun(t, r87cstreambArray3)
+	r87cstreambAssert(t, "elementStream", r87cstreambElements(t, r), `[{"content":"element 1"},{"content":"element 2"},{"content":"element 3"}]`)
+}
+
+// stream-text.test.ts 23862: options.output > array output > array with 3
+// elements > should resolve output promise with the correct content.
+func TestR87cstreambArray3Output(t *testing.T) {
+	r := r87cstreambArrayRun(t, r87cstreambArray3)
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	r87cstreambAssert(t, "output", r.Output(), `[{"content":"element 1"},{"content":"element 2"},{"content":"element 3"}]`)
+}
+
+// stream-text.test.ts 23870: options.output > array output > array with 3
+// elements > should resolve text promise with the correct text.
+func TestR87cstreambArray3Text(t *testing.T) {
+	r := r87cstreambArrayRun(t, r87cstreambArray3)
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Text(); got != `{"elements":[{"content":"element 1"},{ "content": "element 2"},{"content":"element 3"}]}` {
+		t.Fatalf("text = %q", got)
+	}
+}
+
+// stream-text.test.ts 23913: options.output > array output > array with 2
+// elements streamed in 1 chunk > should stream only complete objects in
+// partialObjectStream.
+func TestR87cstreambArray2PartialOutputStream(t *testing.T) {
+	got, _ := r87cstreambPartials(t, r87cstreambObjectStep(r87cstreambArray2...), r87cstreambArrayOutput())
+	r87cstreambAssert(t, "partialOutputStream", got, `[[{"content":"element 1"},{"content":"element 2"}]]`)
+}
+
+// stream-text.test.ts 23929: options.output > array output > array with 2
+// elements streamed in 1 chunk > should stream individual elements in
+// elementStream.
+func TestR87cstreambArray2ElementStream(t *testing.T) {
+	r := r87cstreambArrayRun(t, r87cstreambArray2)
+	r87cstreambAssert(t, "elementStream", r87cstreambElements(t, r), `[{"content":"element 1"},{"content":"element 2"}]`)
+}
+
+// stream-text.test.ts 23943: options.output > array output > array with 2
+// elements streamed in 1 chunk > should resolve output promise with the
+// correct content.
+func TestR87cstreambArray2Output(t *testing.T) {
+	r := r87cstreambArrayRun(t, r87cstreambArray2)
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	r87cstreambAssert(t, "output", r.Output(), `[{"content":"element 1"},{"content":"element 2"}]`)
+}
+
+// stream-text.test.ts 23950: options.output > array output > array with 2
+// elements streamed in 1 chunk > should resolve text promise with the
+// correct text.
+func TestR87cstreambArray2Text(t *testing.T) {
+	r := r87cstreambArrayRun(t, r87cstreambArray2)
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Text(); got != `{"elements":[{"content":"element 1"},{"content":"element 2"}]}` {
+		t.Fatalf("text = %q", got)
+	}
+}
+
+func r87cstreambWeather() Output[string, string] {
+	return ChoiceOutput[string](ChoiceOutputOptions[string]{Options: []string{"sunny", "rainy", "snowy"}})
+}
+
+var r87cstreambSunny = []string{`{ `, `"result": `, `"su`, `nny`, `"`, ` }`}
+
+// stream-text.test.ts 24119: options.output > choice output > should stream
+// an choice value.
+func TestR87cstreambChoicePartialOutputStream(t *testing.T) {
+	got, _ := r87cstreambPartials(t, r87cstreambObjectStep(r87cstreambSunny...), r87cstreambWeather())
+	r87cstreambAssert(t, "partialOutputStream", got, `["sunny"]`)
+}
+
+// stream-text.test.ts 24154: options.output > choice output > should resolve
+// text promise with the correct text.
+func TestR87cstreambChoiceText(t *testing.T) {
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, r87cstreambObjectStep(r87cstreambSunny...)), Output: r87cstreambWeather(), Prompt: "prompt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Text(); got != `{ "result": "sunny" }` {
+		t.Fatalf("text = %q", got)
+	}
+}
+
+// stream-text.test.ts 24184: options.output > choice output > should resolve
+// output promise with the correct content.
+func TestR87cstreambChoiceOutput(t *testing.T) {
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, r87cstreambObjectStep(r87cstreambSunny...)), Output: r87cstreambWeather(), Prompt: "prompt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Output(); got != "sunny" {
+		t.Fatalf("output = %#v, want sunny", got)
+	}
+}
+
+// stream-text.test.ts 24282: options.output > choice output > should handle
+// non-ambiguous values ("foo" + "bar" against foobar / barfoo).
+func TestR87cstreambChoiceNonAmbiguous(t *testing.T) {
+	got, _ := r87cstreambPartials(t, r87cstreambObjectStep(`{ `, `"result": `, `"foo`, `bar`, `"`, ` }`),
+		ChoiceOutput[string](ChoiceOutputOptions[string]{Options: []string{"foobar", "barfoo"}}))
+	r87cstreambAssert(t, "partialOutputStream", got, `["foobar"]`)
+}
