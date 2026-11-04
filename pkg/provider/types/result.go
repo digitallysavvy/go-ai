@@ -19,6 +19,13 @@ type StepRequest struct {
 
 	// Messages are the model messages sent in this step when explicitly included.
 	Messages []Message `json:"messages,omitempty"`
+
+	// URL is the HTTP origin ("https://host[:port]") of the endpoint the
+	// provider reported for this request (GenerateResult.RequestURL or a
+	// stream's RequestURL), without credentials, path, query or fragment.
+	// Empty when the provider reported none or the URL is not http(s).
+	// Mirrors TS LanguageModelRequestMetadata.url (934100cad4).
+	URL string `json:"url,omitempty"`
 }
 
 // StepResponse contains metadata about the response received from the provider.
@@ -128,6 +135,13 @@ type GenerateResult struct {
 
 	// Raw request sent to the provider (for debugging)
 	RawRequest interface{} `json:"rawRequest,omitempty"`
+
+	// RequestURL is the HTTP endpoint the provider posted this request to,
+	// when known (TS LanguageModelV4GenerateResult.request.url, 934100cad4).
+	// pkg/ai reduces it to its origin before it reaches step results,
+	// callbacks or telemetry (types.StepRequest.URL); it never forwards the
+	// path, query, fragment or credentials.
+	RequestURL string `json:"requestUrl,omitempty"`
 
 	// Raw response from the provider (for debugging)
 	RawResponse interface{} `json:"rawResponse,omitempty"`

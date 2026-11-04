@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/ordered"
@@ -81,6 +82,14 @@ func executeToolsLimited(ctx context.Context, calls []types.ToolCall, tools []ty
 		results, err := executeTools(ctx, []types.ToolCall{calls[i]}, tools, runtimeContext, toolsContext, toolApproval, &perCallUsage[i], cb)
 		perCallResults[i] = results
 		errs[i] = err
+		// A failing ToModelOutput conversion does not stop the calls not yet
+		// started: TS runs every call (mapWithConcurrency over
+		// executeToolCall) and converts the outputs afterwards, so the first
+		// conversion error is returned once all calls ran.
+		var conversionErr *toolResultModelOutputError
+		if errors.As(err, &conversionErr) {
+			return nil
+		}
 		return err
 	})
 
