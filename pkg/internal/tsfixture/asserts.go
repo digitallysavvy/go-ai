@@ -8,8 +8,10 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -1012,12 +1014,100 @@ func jsonString(v interface{}) string {
 	return string(b)
 }
 
-func runAsserts(t *testing.T, c Case, roots map[string]interface{}) {
+// Hand-ported assertions (round 87d closure rule): a TS plain assertion the
+// evaluator cannot evaluate, reproduced by a named Go test with the same input
+// and expected value. Marked assertions are neither counted nor logged as not
+// evaluated; TSFIXTURE_SKIPPED=1 logs them as hand-ported with the Go test.
+var (
+	portedMu      sync.Mutex
+	portedAsserts = map[string]string{}
+	// portedSeen records, per key, whether a replayed assertion reached the
+	// mark (false: it evaluated, so the mark is not needed).
+	portedSeen = map[string]bool{}
+)
+
+// PortedKey is the RegisterPorted key of one TS plain assertion: the case's
+// TS test title (no `#01` suffix, so a mark covers every case with that
+// title), the assertion expression and its matcher, exactly as the case file
+// holds them (TSFIXTURE_SKIPPED=1 prints them).
+func PortedKey(test, expr, matcher string) string {
+	return test + "\x00" + expr + "\x00" + matcher
+}
+
+// RegisterPorted marks TS plain assertions (PortedKey -> the name of the Go
+// test that reproduces each) as hand-ported. Call it from an init function of
+// a _test.go file, or at the start of a suite. A marked assertion the
+// evaluator can evaluate is still evaluated (and CheckPortedUsed reports its
+// mark as unneeded).
+func RegisterPorted(m map[string]string) {
+	portedMu.Lock()
+	defer portedMu.Unlock()
+	for k, v := range m {
+		portedAsserts[k] = v
+	}
+}
+
+// CheckPortedUsed fails t for every entry of m that is stale: no replayed
+// assertion of this test binary matched its key, or the assertion it marks
+// now evaluates (remove the mark). Call it after the suites that replay the
+// marked cases have run, for example from a t.Cleanup registered by the
+// first of them, or from TestMain after m.Run (with a nil t it returns the
+// stale keys' descriptions only).
+func CheckPortedUsed(t testing.TB, m map[string]string) []string {
+	portedMu.Lock()
+	var stale []string
+	for k, goTest := range m {
+		parts := strings.SplitN(k, "\x00", 3)
+		desc := strings.Join(parts, " | ")
+		reached, seen := portedSeen[k]
+		switch {
+		case !seen:
+			stale = append(stale, fmt.Sprintf("hand-port mark %q (%s) matches no replayed assertion", desc, goTest))
+		case !reached:
+			stale = append(stale, fmt.Sprintf("hand-port mark %q (%s) is not needed: the assertion evaluates", desc, goTest))
+		}
+	}
+	portedMu.Unlock()
+	sort.Strings(stale)
+	if t != nil {
+		t.Helper()
+		for _, s := range stale {
+			t.Error(s)
+		}
+	}
+	return stale
+}
+
+// portedFor returns the Go test of a marked assertion and records that the
+// mark was reached (evaluated reports whether the evaluator handled it).
+func portedFor(test string, a Assertion, evaluated bool) (string, bool) {
+	k := PortedKey(test, a.Expr, a.Matcher)
+	portedMu.Lock()
+	defer portedMu.Unlock()
+	goTest, ok := portedAsserts[k]
+	if !ok {
+		return "", false
+	}
+	if !evaluated {
+		portedSeen[k] = true
+	} else if _, seen := portedSeen[k]; !seen {
+		portedSeen[k] = false
+	}
+	return goTest, true
+}
+
+func runAsserts(t testing.TB, c Case, roots map[string]interface{}) {
 	t.Helper()
 	roots = aliasRootToolNames(roots)
 	skipped := 0
 	for _, a := range c.Asserts {
 		msg, skip := a.check(roots, c.Aliases)
+		if goTest, ok := portedFor(c.Test, a, !skip); ok && skip {
+			if os.Getenv("TSFIXTURE_SKIPPED") != "" {
+				t.Logf("hand-ported: expect(%s).%s -> %s", a.Expr, a.Matcher, goTest)
+			}
+			continue
+		}
 		if skip {
 			skipped++
 			if os.Getenv("TSFIXTURE_SKIPPED") != "" {
