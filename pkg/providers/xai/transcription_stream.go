@@ -264,7 +264,7 @@ type xaiStreamingTranscriptionEvent struct {
 	Start        *float64 `json:"start,omitempty"`
 	Duration     *float64 `json:"duration,omitempty"`
 	ChannelIndex *int     `json:"channel_index,omitempty"`
-	Message      string   `json:"message,omitempty"`
+	Message      *string  `json:"message,omitempty"`
 }
 
 // pumpAudio forwards raw audio chunks as binary WebSocket frames (xAI reads
@@ -505,9 +505,11 @@ func (s *xaiTranscriptionStream) run(cfg xaiTranscriptionStreamConfig) {
 			case "error":
 				// xAI STT errors are terminal: surface the server message
 				// instead of letting the socket close mask it.
-				msg := raw.Message
-				if msg == "" {
-					msg = "xAI STT error"
+				// TS `raw.message ?? 'xAI STT error'`: a present empty message
+				// is kept.
+				msg := "xAI STT error"
+				if raw.Message != nil {
+					msg = *raw.Message
 				}
 				fail(errors.New(msg))
 				return

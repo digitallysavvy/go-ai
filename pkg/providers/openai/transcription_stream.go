@@ -461,9 +461,11 @@ func (s *openAIRealtimeTranscriptionStream) run(cfg OpenAIRealtimeTranscriptionS
 				return
 
 			case "error":
+				// TS `raw.error?.message ?? 'OpenAI realtime error'`: an empty
+				// message is kept.
 				message := "OpenAI realtime error"
 				if errObj, ok := raw["error"].(map[string]interface{}); ok {
-					if m, ok := errObj["message"].(string); ok && m != "" {
+					if m, ok := errObj["message"].(string); ok {
 						message = m
 					}
 				}

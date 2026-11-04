@@ -1,7 +1,9 @@
 package xai
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
@@ -18,5 +20,42 @@ func TestR87provbStreamingTranscriptionBaseQueryLenient(t *testing.T) {
 	want := "wss://x.example/v1?k=%25zz&p=a+bA%2Fstt&model=grok-stt&encoding=pcm"
 	if got := u.String(); got != want {
 		t.Errorf("URL =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// TS `new Error(raw.message ?? 'xAI STT error')`: an empty message is kept,
+// a missing one uses the default.
+func TestR87provbSTTErrorMessageNullish(t *testing.T) {
+	for _, tc := range []struct {
+		event map[string]interface{}
+		want  string
+	}{
+		{map[string]interface{}{"type": "error", "message": ""}, ""},
+		{map[string]interface{}{"type": "error"}, "xAI STT error"},
+		{map[string]interface{}{"type": "error", "message": nil}, "xAI STT error"},
+	} {
+		server := newXAISTTTestServer(t)
+		model := newTestXAITranscriptionModel(server.ts.URL)
+		result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+			Audio:            newXAIChanAudioStream([]byte{1, 2, 3}),
+			InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		errCh := make(chan error, 1)
+		go func() {
+			_, err := drainXAIStream(result.Stream)
+			errCh <- err
+		}()
+		server.send(map[string]interface{}{"type": "transcript.created"})
+		server.waitForFrame(t, "audio.done", time.Second)
+		server.send(tc.event)
+		err = <-errCh
+		_ = result.Stream.Close()
+		server.close()
+		if err == nil || err.Error() != tc.want {
+			t.Errorf("%v: stream error = %v, want %q", tc.event, err, tc.want)
+		}
 	}
 }
