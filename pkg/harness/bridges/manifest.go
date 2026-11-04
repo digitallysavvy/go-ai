@@ -1,8 +1,12 @@
 package bridges
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"sort"
 )
 
 // AdapterManifest is one adapter's entry in VERSIONS.json.
@@ -24,6 +28,26 @@ type AdapterManifest struct {
 	BridgeEntry string `json:"bridgeEntry"`
 	// Files maps each embedded file name to its lowercase-hex sha256.
 	Files map[string]string `json:"files"`
+	// ContentHash is ContentHash(Files): one hash over every vendored file
+	// of this adapter. The package version (SourceVersion) does not change
+	// when TS rebuilds a bridge between releases, so this hash, together
+	// with ManifestData.TSCommit, records which bytes are embedded.
+	ContentHash string `json:"contentHash"`
+}
+
+// ContentHash returns the lowercase-hex sha256 of "<name> <sha256>\n" over
+// files in name order (the VERSIONS.json `contentHash` of an adapter).
+func ContentHash(files map[string]string) string {
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	h := sha256.New()
+	for _, name := range names {
+		_, _ = io.WriteString(h, name+" "+files[name]+"\n")
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // ManifestData is the parsed contents of VERSIONS.json.

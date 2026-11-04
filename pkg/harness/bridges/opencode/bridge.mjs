@@ -158,6 +158,7 @@ async function runBridge(options) {
 	* between turns. A new `start` fences on this so turns never overlap.
 	*/
 	let activeTurn;
+	let lastStartId;
 	let debugConfig;
 	let consoleCaptureInstalled = false;
 	const envDebugEnabled = ENV_TRUTHY.has((env.HARNESS_DEBUG ?? "").toLowerCase());
@@ -301,6 +302,11 @@ async function runBridge(options) {
 	const handleInbound = async (msg, ws) => {
 		switch (msg.type) {
 			case "start": {
+				const startId = msg.startId;
+				if (startId != null) {
+					if (startId === lastStartId) return;
+					lastStartId = startId;
+				}
 				for (;;) {
 					const pendingTurn = activeTurn;
 					if (pendingTurn == null) break;
@@ -518,7 +524,10 @@ async function runBridge(options) {
 			type: "bridge-hello",
 			state: currentTurnState,
 			lastSeq: seqCounter,
-			capabilities: { experimental_userMessageResponses: true }
+			capabilities: {
+				idempotentStart: true,
+				experimental_userMessageResponses: true
+			}
 		});
 		ws.on("message", (raw) => {
 			let parsed;

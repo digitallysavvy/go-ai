@@ -23,7 +23,7 @@ func lastPolicy(t *testing.T, f *fakeServer) NetworkPolicy {
 	if len(f.updateRequests) == 0 || f.updateRequests[len(f.updateRequests)-1].Req.NetworkPolicy == nil {
 		t.Fatal("no network policy update was sent")
 	}
-	return *f.updateRequests[len(f.updateRequests)-1].Req.NetworkPolicy
+	return NetworkPolicy(*f.updateRequests[len(f.updateRequests)-1].Req.NetworkPolicy)
 }
 
 func TestLegacySetNetworkPolicyCombinedShapes(t *testing.T) {

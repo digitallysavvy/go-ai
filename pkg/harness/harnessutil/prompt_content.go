@@ -4,12 +4,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"net/url"
-	"regexp"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -220,27 +219,39 @@ func inlineImageFromFile(p types.FileContent) (inlineImage, error) {
 	return inlineImage{}, nil
 }
 
-var urlSchemeRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.\-]*:`)
-
-// inlineImageFromString mirrors the TS string branch: a string that parses as
-// a URL must be a data: URL, anything else is raw base64.
+// inlineImageFromString mirrors the TS string branch: a string that parses
+// as a URL (WHATWG `new URL(data)`) must be a data: URL, anything else is
+// raw base64.
 func inlineImageFromString(s string) (inlineImage, error) {
-	if urlSchemeRE.MatchString(s) {
-		return inlineImageFromDataURL(s)
+	u, err := urlnorm.Parse(s)
+	if err != nil {
+		return inlineImage{data: s}, nil
 	}
-	return inlineImage{data: s}, nil
+	return inlineImageFromURL(u)
 }
 
+// inlineImageFromDataURL is TS getDataUrlImage for a URL-typed file part.
 func inlineImageFromDataURL(raw string) (inlineImage, error) {
-	u, err := url.Parse(raw)
-	if err != nil || !strings.EqualFold(u.Scheme, "data") {
+	u, err := urlnorm.Parse(raw)
+	if err != nil {
 		return inlineImage{}, unsupportedUserContent("remote image URLs")
 	}
-	header, data, ok := strings.Cut(raw[len("data:"):], ",")
+	return inlineImageFromURL(u)
+}
+
+// inlineImageFromURL is TS getDataUrlImage: `url.href.split(',', 2)` (the
+// serialized URL, so tabs and newlines are already removed), a header
+// ending in ";base64" and its media type.
+func inlineImageFromURL(u *urlnorm.URL) (inlineImage, error) {
+	if u.Scheme != "data" {
+		return inlineImage{}, unsupportedUserContent("remote image URLs")
+	}
+	header, rest, ok := strings.Cut(u.String(), ",")
 	if !ok || !strings.HasSuffix(header, ";base64") {
 		return inlineImage{}, unsupportedUserContent("data URLs that are not base64 encoded")
 	}
-	mediaType, _, _ := strings.Cut(header, ";")
+	data, _, _ := strings.Cut(rest, ",")
+	mediaType, _, _ := strings.Cut(header[len("data:"):], ";")
 	return inlineImage{data: data, mediaType: mediaType}, nil
 }
 

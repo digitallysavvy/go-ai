@@ -31,8 +31,9 @@ type KeepLastSnapshotsParams struct {
 
 // createSandboxRequest is the body of POST /v2|v3/sandboxes.
 type createSandboxRequest struct {
-	ProjectID          string                   `json:"projectId,omitempty"`
-	Ports              []int                    `json:"ports,omitempty"`
+	ProjectID string `json:"projectId,omitempty"`
+	// Ports is always sent: 3.9.0 Sandbox.create passes `ports ?? []`.
+	Ports              []int                    `json:"ports"`
 	Source             *SnapshotSource          `json:"source,omitempty"`
 	Timeout            int64                    `json:"timeout,omitempty"`
 	Resources          *ResourcesParams         `json:"resources,omitempty"`
@@ -40,7 +41,7 @@ type createSandboxRequest struct {
 	Image              string                   `json:"image,omitempty"`
 	Name               string                   `json:"name,omitempty"`
 	Persistent         *bool                    `json:"persistent,omitempty"`
-	NetworkPolicy      *NetworkPolicy           `json:"networkPolicy,omitempty"`
+	NetworkPolicy      *apiNetworkPolicy        `json:"networkPolicy,omitempty"`
 	Env                map[string]string        `json:"env,omitempty"`
 	Tags               map[string]string        `json:"tags,omitempty"`
 	SnapshotExpiration *int64                   `json:"snapshotExpiration,omitempty"`
@@ -104,11 +105,11 @@ type sandboxAndSessionResponse struct {
 }
 
 type updateSandboxRequest struct {
-	Persistent         *bool          `json:"persistent,omitempty"`
-	Timeout            int64          `json:"timeout,omitempty"`
-	NetworkPolicy      *NetworkPolicy `json:"networkPolicy,omitempty"`
-	Ports              []int          `json:"ports,omitempty"`
-	SnapshotExpiration *int64         `json:"snapshotExpiration,omitempty"`
+	Persistent         *bool             `json:"persistent,omitempty"`
+	Timeout            int64             `json:"timeout,omitempty"`
+	NetworkPolicy      *apiNetworkPolicy `json:"networkPolicy,omitempty"`
+	Ports              []int             `json:"ports,omitempty"`
+	SnapshotExpiration *int64            `json:"snapshotExpiration,omitempty"`
 }
 
 type updateSandboxResponse struct {
@@ -176,14 +177,29 @@ type ndjsonLine struct {
 }
 
 type runCommandRequest struct {
-	Command string            `json:"command"`
-	Args    []string          `json:"args,omitempty"`
-	CWD     string            `json:"cwd,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
-	Sudo    bool              `json:"sudo,omitempty"`
-	Wait    bool              `json:"wait,omitempty"`
-	Logs    bool              `json:"logs,omitempty"`
-	Timeout int64             `json:"timeout,omitempty"`
+	Command string `json:"command"`
+	// Args, Env and Sudo are always sent: 3.9.0 Session.runCommand passes
+	// `args ?? []`, `env ?? {}` and `sudo ?? false` (see withDefaults).
+	Args []string          `json:"args"`
+	CWD  string            `json:"cwd,omitempty"`
+	Env  map[string]string `json:"env"`
+	Sudo bool              `json:"sudo"`
+	Wait bool              `json:"wait,omitempty"`
+	// AttachStdin is TS `attachStdin: params.attachStdin || undefined`.
+	AttachStdin bool  `json:"attachStdin,omitempty"`
+	Logs        bool  `json:"logs,omitempty"`
+	Timeout     int64 `json:"timeout,omitempty"`
+}
+
+// withDefaults fills the 3.9.0 Session.runCommand defaults.
+func (r runCommandRequest) withDefaults() runCommandRequest {
+	if r.Args == nil {
+		r.Args = []string{}
+	}
+	if r.Env == nil {
+		r.Env = map[string]string{}
+	}
+	return r
 }
 
 type mkdirRequest struct {

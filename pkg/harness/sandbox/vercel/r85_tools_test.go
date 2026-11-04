@@ -357,20 +357,15 @@ func TestR85toolsRelativeWorkingDirectory(t *testing.T) {
 	}
 }
 
-// TS 269f4c0c32: aborting a spawn kills the remote command; a writable
-// stdin is rejected before the command starts (Go has no writeStdin port).
-func TestR85toolsSpawnCancelKillsAndStdinRejected(t *testing.T) {
+// TS 269f4c0c32: aborting a spawn kills the remote command. (A writable
+// stdin is supported since round 87: TestR87toolsSpawnStdin*.)
+func TestR85toolsSpawnCancelKills(t *testing.T) {
 	f := newFakeServer()
 	defer f.Close()
-	var commands int
 	f.CommandFn = func(string, string, []string, string, map[string]string) CommandScript {
-		commands++
 		return CommandScript{}
 	}
 	sess := NewSession(newTestSandbox(t, f, "sbx_cancel"))
-	if _, err := sess.Spawn(context.Background(), providerutils.SandboxProcessOptions{Command: "cat", Stdin: true}); err == nil || commands != 0 {
-		t.Fatalf("stdin spawn err = %v, commands = %d", err, commands)
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	p, err := sess.Spawn(ctx, providerutils.SandboxProcessOptions{Command: "sleep 100"})
 	if err != nil {

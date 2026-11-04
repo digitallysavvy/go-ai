@@ -4,8 +4,9 @@
     "acp": {
       "bridgeEntry": "bridge.mjs",
       "builtFrom": "packages/harness-acp/dist/bridge (tsup bundle of packages/harness-acp/src/v1/bridge)",
+      "contentHash": "4769e71aad0c2510420acca2949efffdaca3ab4b3aafedd574f29d374a63211d",
       "files": {
-        "bridge.mjs": "316e103d8d5098f958bac860bed737ce8a943f74e3b58ffda5d5209f9153633b",
+        "bridge.mjs": "66d98b6128cd1e5c3c7313a9cad19e18143a305b6c0ab18b524073d4667830ba",
         "host-tool-mcp.mjs": "f617326d63f6433ea7317b06262d8f47587ce30ba88b7b4ea97280b7876c3372",
         "package.json": "c93314220c22c2f16571e1032f7b06025c20de03df80f17d2cf0de4f5147d16b",
         "pnpm-lock.yaml": "bd16f2833fc176fa4c5ddec7da94014deb051ef01e66281b1d7a6950dfc48e7d"
@@ -17,8 +18,9 @@
     "claudecode": {
       "bridgeEntry": "bridge.mjs",
       "builtFrom": "packages/harness-claude-code/dist/bridge (tsup bundle of packages/harness-claude-code/src/bridge)",
+      "contentHash": "0c9997c3ca11247413a682bbd755bc1ee43c8dbcbe921810d1291b3f4c3ef672",
       "files": {
-        "bridge.mjs": "cb4c8b212eb57996866bd468b03886fba0b27bb7907e7ecd661330db7abc691e",
+        "bridge.mjs": "cf157b89dae0d70dd43b178962063ca6a45cad5f2ef082d505fca94dd5b9868f",
         "package.json": "8e8e1c4cb4115e0a985b7c9f042aaa75c7e6e567e9a2e829f1437719b2fe69b1",
         "pnpm-lock.yaml": "7d03f7e2a001f597bb6ac07b2ccf5ddafb9639f57f8656d223ece0b11036a945",
         "pnpm-workspace.yaml": "1b7dc1f62935c3a98407e38ae1a225218ab30c4072db5972438f591831c3850b"
@@ -30,8 +32,9 @@
     "codex": {
       "bridgeEntry": "bridge.mjs",
       "builtFrom": "packages/harness-codex/dist/bridge (tsup bundle of packages/harness-codex/src/bridge)",
+      "contentHash": "e7474235f1c37f1ef4f2ea782a843e1f87ccb79724d211be52c4cabf3def8bf6",
       "files": {
-        "bridge.mjs": "bc033ac09d54e769a8931bdaaea6ef3c9df839e5a560b6643292ed16e7b8d7f1",
+        "bridge.mjs": "297ba68b3013a5dbfec36b97e0e0775888e0d5501dd4c3311ce837493d62cee0",
         "package.json": "d2e9356f61bc8acc1a3007b6a5db65aae4b92b55673b076d8ff7b5b8ba34dd94",
         "pnpm-lock.yaml": "ab2cd3e52c4da77e838bf6f7dea065b8b5bf0667df0b43f3823eb10cb3b1ed3f"
       },
@@ -42,8 +45,9 @@
     "deepagents": {
       "bridgeEntry": "bridge.mjs",
       "builtFrom": "packages/harness-deepagents/dist/bridge (tsup bundle of packages/harness-deepagents/src/bridge)",
+      "contentHash": "7278472d96127d6b66988d963bc24bb987b543a0802062e1454f1ef2f63f988d",
       "files": {
-        "bridge.mjs": "802d5940c3be8f137dd463dd4f8bb6a22812ea950b0217a0f3d0d483afc64e00",
+        "bridge.mjs": "2ddff0101b289878ad2145e86a675809be0752a28318a3eef39e15373d9d8e2b",
         "package.json": "8c5ec733e3e35a3b5b9ad077be0633b08a5174e5e893faca0e08a300e321f803",
         "pnpm-lock.yaml": "87b76f1cd70400fa390cb7837703ced74bc4b4ef9eecad7fa8db7ab0a3b6d45b"
       },
@@ -54,6 +58,7 @@
     "githubcopilot": {
       "bridgeEntry": "",
       "builtFrom": "packages/harness-github-copilot/src/bridge (direct copy, no bundle step)",
+      "contentHash": "3b385ece5d25287b66521134270f02527590bf83fe4a96316ac7ff5b1525ea76",
       "files": {
         "package.json": "9c02f808b6ba44e70c80a02fc4b11f7696d01d7fc116afb2f99244b5a862b762",
         "pnpm-lock.yaml": "a28b1b748ba410818d9b20ba1d7dfe2a68fa2adea9cd3770844d1e72f5d9a08b",
@@ -66,6 +71,7 @@
     "grokbuild": {
       "bridgeEntry": "",
       "builtFrom": "packages/harness-grok-build/src/bridge (direct copy, no bundle step)",
+      "contentHash": "923b7f353d18c1c8c787fed462fb8a36a88430192964f236d7cdf9500c2cad42",
       "files": {
         "package.json": "ce5c61d1fde6a3ea823200f28bdbb3c72937feb2f28565f12ba34d08084a93ea",
         "pnpm-lock.yaml": "8b99873db56f7c317f000041208779188c31d35f462f3fa2f1b1598ab93e9205",
@@ -78,8 +84,9 @@
     "opencode": {
       "bridgeEntry": "bridge.mjs",
       "builtFrom": "packages/harness-opencode/dist/bridge (tsup bundle of packages/harness-opencode/src/bridge)",
+      "contentHash": "9e6229a65849489113a799dd781581f36d7cfffe60210c1a919753cca4d46c6f",
       "files": {
-        "bridge.mjs": "3320d8936f00d4f6207935406b20cf22a9178599b62d74fb0a020bd6220704c1",
+        "bridge.mjs": "169f857d553996444f45f0a24c5f6da4dd7befe1651667a48031edaf3932c51e",
         "host-tool-mcp.mjs": "6174810bc99a63362ad1c07f3dee5fe7678caa5366552af1c8767565d649a99a",
         "package.json": "a0370c6f3e4d35798ec34bd67b6b660beeb5026c3f33c5775d66d4bd94d6aaab",
         "pnpm-lock.yaml": "1d8cd1e376e48c72ed2895c9adb9bec44c841c4b0c03853972905af751583d22",
@@ -90,6 +97,6 @@
       "sourceVersion": "1.0.176"
     }
   },
-  "tsCommit": "30548ee7f9",
+  "tsCommit": "3fab50aa9b",
   "tsTag": "ai@7.0.162"
 }

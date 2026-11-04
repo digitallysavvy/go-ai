@@ -195,7 +195,7 @@ func (f *fakeServer) handleCreateOrList(w http.ResponseWriter, r *http.Request) 
 		state.currentSnapshotID = req.Source.SnapshotID
 	}
 	if req.NetworkPolicy != nil {
-		state.networkPolicy = req.NetworkPolicy
+		state.networkPolicy = (*NetworkPolicy)(req.NetworkPolicy)
 	}
 	f.byName[name] = state
 	f.bySession[sessionID] = state
@@ -275,7 +275,7 @@ func (f *fakeServer) handleUpdateSandbox(w http.ResponseWriter, r *http.Request,
 		state.routes = routes
 	}
 	if req.NetworkPolicy != nil {
-		state.networkPolicy = req.NetworkPolicy
+		state.networkPolicy = (*NetworkPolicy)(req.NetworkPolicy)
 	}
 	resp := updateSandboxResponse{Sandbox: f.snapshotToWire(state), Routes: routes}
 	f.mu.Unlock()

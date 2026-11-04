@@ -99,15 +99,18 @@ func TestRunCommandWait_StreamEndedEarly_WrapsRealCause(t *testing.T) {
 	}
 }
 
-// Blank lines between ndjson records are skipped, like GetLogs does.
+// Empty lines between ndjson records are skipped, like GetLogs does
+// (jsonlines 0.1.1 skips exactly empty lines; see
+// TestR87toolsJSONLinesRules for whitespace-only lines).
 func TestR42RunCommandWaitSkipsBlankLines(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
 		var buf bytes.Buffer
 		buf.WriteString("\n")
 		writeNDJSON(&buf, commandResponse{Command: commandWire{ID: "cmd1"}})
 		buf.WriteString("\n\n")
 		writeNDJSON(&buf, ndjsonLine{Stream: "stdout", Data: "hi"})
-		buf.WriteString("\r\n")
+		buf.WriteString("\n")
 		exit := 0
 		writeNDJSON(&buf, commandResponse{Command: commandWire{ID: "cmd1", ExitCode: &exit}})
 		_, _ = w.Write(buf.Bytes())

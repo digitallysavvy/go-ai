@@ -222,6 +222,7 @@ async function runBridge(options) {
 	* between turns. A new `start` fences on this so turns never overlap.
 	*/
 	let activeTurn;
+	let lastStartId;
 	let debugConfig;
 	let consoleCaptureInstalled = false;
 	const envDebugEnabled = ENV_TRUTHY.has((env.HARNESS_DEBUG ?? "").toLowerCase());
@@ -365,6 +366,11 @@ async function runBridge(options) {
 	const handleInbound = async (msg, ws) => {
 		switch (msg.type) {
 			case "start": {
+				const startId = msg.startId;
+				if (startId != null) {
+					if (startId === lastStartId) return;
+					lastStartId = startId;
+				}
 				for (;;) {
 					const pendingTurn = activeTurn;
 					if (pendingTurn == null) break;
@@ -582,7 +588,10 @@ async function runBridge(options) {
 			type: "bridge-hello",
 			state: currentTurnState,
 			lastSeq: seqCounter,
-			capabilities: { experimental_userMessageResponses: true }
+			capabilities: {
+				idempotentStart: true,
+				experimental_userMessageResponses: true
+			}
 		});
 		ws.on("message", (raw) => {
 			let parsed;
@@ -1662,10 +1671,24 @@ function createPermissionSettings(input) {
 * the id Claude Code expects (`claude-opus-5-5`) to the gateway id, which
 * stays the id sent to the gateway.
 */
-function createGatewayModelOverrides(model) {
+function toGatewayModelOverride(model) {
 	if (!model?.startsWith("anthropic/")) return void 0;
 	const id = model.slice(10).replace(/\[[^\]]*\]$/, "");
 	return id.includes(".") ? { [id.replace(/\./g, "-")]: model } : void 0;
+}
+/**
+* The `ANTHROPIC_DEFAULT_*_MODEL` variables point Claude Code's model aliases
+* at other ids, which it misreads the same way. `model` comes last so that its
+* entry wins a key it shares with an alias.
+*/
+function createGatewayModelOverrides(model, env) {
+	const overrides = {
+		...toGatewayModelOverride(env.ANTHROPIC_DEFAULT_OPUS_MODEL),
+		...toGatewayModelOverride(env.ANTHROPIC_DEFAULT_SONNET_MODEL),
+		...toGatewayModelOverride(env.ANTHROPIC_DEFAULT_HAIKU_MODEL),
+		...toGatewayModelOverride(model)
+	};
+	return Object.keys(overrides).length > 0 ? overrides : void 0;
 }
 async function needsHostApproval(input) {
 	if (input.toolName.startsWith("mcp__harness-tools__")) return false;
@@ -1885,7 +1908,11 @@ async function runTurn(start, turn) {
 		approvalRequestedToolUseIds: streamEventState.approvalRequestedToolUseIds,
 		emittedToolCallIds: streamEventState.emittedToolCallIds
 	});
-	const modelOverrides = createGatewayModelOverrides(start.model);
+	const sdkEnv = {
+		...env,
+		...start.env
+	};
+	const modelOverrides = createGatewayModelOverrides(start.model, sdkEnv);
 	const deferredToolUseIds = /* @__PURE__ */ new Set();
 	const approvalPreToolUseHook = createApprovalPreToolUseHook({
 		toolCwds,
@@ -1924,10 +1951,7 @@ async function runTurn(start, turn) {
 			...start.strictMcpConfig !== void 0 ? { strictMcpConfig: start.strictMcpConfig } : {},
 			...start.agentProgressSummaries !== void 0 ? { agentProgressSummaries: start.agentProgressSummaries } : {},
 			...start.forwardSubagentText !== void 0 ? { forwardSubagentText: start.forwardSubagentText } : {},
-			...start.env !== void 0 ? { env: {
-				...env,
-				...start.env
-			} } : {},
+			...start.env !== void 0 ? { env: sdkEnv } : {},
 			...skillsOption ? { skills: skillsOption } : {},
 			...nativeTools !== void 0 ? { tools: nativeTools } : {},
 			...inactiveNativeTools.length > 0 ? { disallowedTools: inactiveNativeTools } : {},

@@ -2,16 +2,17 @@ package githubcopilot
 
 import (
 	"context"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -327,38 +328,23 @@ func plaintextToken(config map[string]any, accountKey string) string {
 }
 
 // parseGitHubURL mirrors `new URL(host.includes('://') ? host : "https://"+host)`
-// closely enough for host normalization: it returns the lowercased hostname
-// (IPv6 keeps its brackets, like WHATWG `hostname`), the port with the scheme's
-// default dropped, and the scheme.
+// with the WHATWG parser: it returns the serialized hostname (lowercased and
+// IDNA-mapped for special schemes, IPv6 in brackets, like `URL.hostname`),
+// the port with the scheme's default dropped, and the scheme. ok is false
+// where `new URL` throws.
 func parseGitHubURL(host string) (scheme, hostname, port string, ok bool) {
 	full := host
 	if !strings.Contains(host, "://") {
 		full = "https://" + host
 	}
-	u, err := url.Parse(full)
-	if err != nil || u.Scheme == "" || u.Host == "" {
+	u, err := urlnorm.Parse(full)
+	if err != nil {
 		return "", "", "", false
 	}
-	hostname = strings.ToLower(u.Hostname())
-	if strings.HasPrefix(u.Host, "[") {
-		hostname = "[" + hostname + "]"
+	if u.Port >= 0 {
+		port = strconv.Itoa(u.Port)
 	}
-	port = u.Port()
-	switch u.Scheme {
-	case "http", "ws":
-		if port == "80" {
-			port = ""
-		}
-	case "https", "wss":
-		if port == "443" {
-			port = ""
-		}
-	case "ftp":
-		if port == "21" {
-			port = ""
-		}
-	}
-	return strings.ToLower(u.Scheme), hostname, port, true
+	return u.Scheme, u.Host, port, true
 }
 
 // normalizeGitHubOrigin mirrors TS `normalizeGitHubOrigin` (`URL.origin`):
