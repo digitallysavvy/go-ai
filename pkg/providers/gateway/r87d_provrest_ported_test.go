@@ -99,7 +99,6 @@ func r87dprovrestStreamBody(texts ...string) string {
 type r87dprovrestServer struct {
 	mu      sync.Mutex
 	headers []http.Header
-	reqs    []*http.Request
 }
 
 func r87dprovrestServe(t *testing.T, status int, ctype, body string) (*r87dprovrestServer, string) {

@@ -41,16 +41,6 @@ type r87dprovrestRun struct {
 	reqs   []r87dprovrestReq
 }
 
-func (r *r87dprovrestRun) req(t *testing.T, i int) r87dprovrestReq {
-	t.Helper()
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if i >= len(r.reqs) {
-		t.Fatalf("request %d not sent (%d requests)", i, len(r.reqs))
-	}
-	return r.reqs[i]
-}
-
 type r87dprovrestModel struct {
 	provider.LanguageModel
 	run *r87dprovrestRun
@@ -152,18 +142,6 @@ func r87dprovrestEqual(t *testing.T, what string, want, got interface{}) {
 	t.Helper()
 	w, g := r87dprovrestJSON(t, want), r87dprovrestJSON(t, got)
 	if !r87dprovrestMatch(w, g, false) {
-		wb, _ := json.Marshal(w)
-		gb, _ := json.Marshal(g)
-		t.Errorf("%s:\n TS %s\n Go %s", what, wb, gb)
-	}
-}
-
-// r87dprovrestMatchObject is r87dprovrestEqual for toMatchObject (object
-// members of want are a subset).
-func r87dprovrestMatchObject(t *testing.T, what string, want, got interface{}) {
-	t.Helper()
-	w, g := r87dprovrestJSON(t, want), r87dprovrestJSON(t, got)
-	if !r87dprovrestMatch(w, g, true) {
 		wb, _ := json.Marshal(w)
 		gb, _ := json.Marshal(g)
 		t.Errorf("%s:\n TS %s\n Go %s", what, wb, gb)

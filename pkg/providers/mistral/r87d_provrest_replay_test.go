@@ -41,16 +41,6 @@ type r87dprovrestRun struct {
 	reqs   []r87dprovrestReq
 }
 
-func (r *r87dprovrestRun) req(t *testing.T, i int) r87dprovrestReq {
-	t.Helper()
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if i >= len(r.reqs) {
-		t.Fatalf("request %d not sent (%d requests)", i, len(r.reqs))
-	}
-	return r.reqs[i]
-}
-
 type r87dprovrestModel struct {
 	provider.LanguageModel
 	run *r87dprovrestRun
@@ -214,19 +204,6 @@ func r87dprovrestMatch(want, got interface{}, partial bool) bool {
 		return true
 	}
 	return reflect.DeepEqual(want, got)
-}
-
-// r87dprovrestFnArgs are the evaluated TS arguments of the function-level case
-// named test of file.
-func r87dprovrestFnArgs(t *testing.T, file, test string) []interface{} {
-	t.Helper()
-	for _, c := range tsfixture.LoadCases(t, file) {
-		if c.Test == test {
-			return c.FnArgs
-		}
-	}
-	t.Fatalf("%s: case %q not found", file, test)
-	return nil
 }
 
 // r87dprovrestArg is the TS expected value (as the case file records it) of
