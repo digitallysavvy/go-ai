@@ -3357,6 +3357,16 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// cancellation errors are handled by the abort/timeout checks
 			// below.
 			var conversionErr *toolResultModelOutputError
+			if errors.As(toolsErr, &conversionErr) && deferApprovalRequests(opts.Internal) {
+				// WorkflowAgent converts inside its mapWithConcurrency
+				// execute (TS workflow-agent.ts executeToolWithCallbacks):
+				// the throw rejects the step's tool execution before
+				// writeToolResults, so no tool result and no step boundary
+				// reach the stream.
+				r.err = conversionErr.Unwrap()
+				cancelStep()
+				break
+			}
 			if errors.As(toolsErr, &conversionErr) {
 				if stepModelOutputErr == nil {
 					stepModelOutputErr = conversionErr.Unwrap()
@@ -3638,6 +3648,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// (populated on the step below, after tool results settle) — TS's
 		// finish-step response shape is {...stepResponse, headers} without
 		// messages either.
+		if stepModelOutputErr != nil && deferApprovalRequests(opts.Internal) {
+			// WorkflowAgent: a provider-executed result's conversion throws in
+			// resolveProviderToolResult after the model stream was written and
+			// before writeToolResults' step boundary (TS workflow-agent.ts).
+			r.err = stepModelOutputErr
+			cancelStep()
+			break
+		}
 		finishStepResponse := stepResult.Response
 		finishStepPerf := performance
 		finishStepUsage := stepUsage
