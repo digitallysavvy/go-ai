@@ -71,13 +71,9 @@ drive the job yourself with `ai.ExperimentalStartVideo` /
 `ai.ExperimentalGetVideoStatus`, which support both polling and webhook
 completion (fal and Replicate) outside of a workflow.
 
-## Vercel Sandbox: no OIDC token refresh loop
+## Vercel Sandbox OIDC token refresh
 
-`pkg/harness/sandbox/vercel` (the Go port of `@vercel/sandbox`'s harness
-provider) does not run a background `@vercel/oidc` token refresh loop.
-`VERCEL_OIDC_TOKEN` is re-read from the environment on each call instead;
-explicit `Token` / `TeamID` / `ProjectID` credentials also work and bypass
-OIDC entirely.
+`@vercel/sandbox` refreshes the Vercel OIDC token through `@vercel/oidc` by default, writing the refreshed token to the Vercel token cache and `process.env`, and can prompt for local dev credentials. In `pkg/harness/sandbox/vercel` the refresh is opt-in: set `OIDCRefresh` on `CreateSessionOptions`, `ResumeSessionOptions` or `LegacySettings`. The refreshed token is kept in memory in that `OIDCRefresh` value, the Vercel CLI login and the token cache are read only, and there is no interactive credential prompt. Without `OIDCRefresh`, `VERCEL_OIDC_TOKEN` is read as is. The refresh follows `@vercel/oidc` 3.2.0 (the version the TS checkout installs, whose `getVercelOidcToken({team, project, expirationBufferMs})` options are the ones `@vercel/sandbox` 3.9.0 passes); 3.9.0 pins 4.0.0, whose source was not available to compare. A JWT `owner_id` claim that is an array is sent as one comma-joined `teamId`, where TS appends one `teamId` per element (owner decision b, review round 87b).
 
 ## Code-mode: never-settling promises and in-flight limits
 
@@ -879,6 +875,30 @@ With `ExperimentalStreamingImageDecoding`, Go reads the body in 64 KiB reads; th
 ## Empty string message content
 
 TS keeps the text part of a string `content: ''` message (only part arrays are filtered); Go messages always hold parts, so a single empty text part in a user message is removed before the model call (review round 87).
+
+## Vercel Sandbox user agent
+
+`@vercel/sandbox` sends `vercel/sandbox/<version> (Node.js/<version>; <platform>/<arch>)`. The Go port sends the SDK's own Go user agent, because Go is not that client running on Node.js (review round 87b).
+
+## Vercel Sandbox JSON Lines errors under backpressure
+
+When a `@vercel/sandbox` command or logs stream contains a complete line that is not valid JSON, TS reports either a syntax error or a `ConnectionError` (a recoverable interruption). Which one depends on whether its JSON Lines parser handled the line before the HTTP body ended, and that depends on how fast the caller consumes the records. TS also drops valid records that precede the invalid line in the same network chunk. Go always gives what TS gives for a caller that keeps up: every earlier record, then a syntax error. An invalid unterminated last line is a `ConnectionError` in both (review round 87b).
+
+## Provider usage and runtime context attributes: colliding keys in a Go map
+
+Two provider usage keys that normalize to the same attribute (`inputTokens` and `input_tokens`), or a dotted runtime context key that names the same path as a nested one (`"a.b"` and `"a": {"b": ...}`), give one attribute like TS. In TS the later key in object order wins. A Go map has no order, so its keys are read in sorted order (array-index keys first), which is the order `ai.response.usage` shows. An ordered object (`*jsonorder.Object`) or a struct keeps its own key order and matches TS exactly (review round 87b).
+
+## Empty tool and response format descriptions
+
+A tool with `Description: ""` has no `description` in `ai.prompt.tools`, `gen_ai.tool.definitions`, a serialized workflow tool or an Open Responses function tool, and Open Responses `ResponseFormat.Description: ""` is not sent; TS writes `description: ""` (`!= null`). `types.Tool.Description` and `ResponseFormat.Description` are v0.5.2 string fields, where `""` means unset (coordinator ruling, round 87b; same ruling as the OpenAI REST transcription options). A custom tool's `description` provider arg of `""` is sent, as in TS.
+
+## Realtime error events with an empty code
+
+Realtime server error events (`provider.RealtimeServerEvent.Code`: OpenAI realtime / live, xAI realtime) report a present `code: ""` the same as no code, where TS keeps `""` (`event.error?.code ?? event.code`). The field is a v0.5.2 string (review round 87b).
+
+## Open Responses and AI Gateway: field values of an unexpected JSON type
+
+Open Responses events and responses, and AI Gateway stream parts and responses, are decoded leniently like TS (`z.any()` / unvalidated types): a string field holding another JSON value reads as JS `String(value)`, and other mismatched fields read as zero. Some differences remain because the Go fields are typed (v0.5.2): a non-numeric usage count (for example `"input_tokens": "5"`) or a mistyped finish reason or provider metadata reads as zero or unset where TS passes the value on; a null or absent `delta` on an Open Responses text, reasoning or custom tool input delta part is `""` where TS forwards `null` / `undefined` (accumulated tool arguments do append `"null"` / `"undefined"`, as in TS); and a numeric `item_id` is matched to an item whose `id` is the same digits as a string, where a TS `Map` keeps `5` and `"5"` apart (review round 87b).
 
 ## Features that are TypeScript-only (not ported)
 

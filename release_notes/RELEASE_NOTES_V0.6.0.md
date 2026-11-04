@@ -127,6 +127,8 @@ Also new:
 - **Request URL metadata** (TS 934100cad4): `provider.StreamRequestURL`, `types.GenerateResult.RequestURL`, `types.StepRequest.URL` and `ai.GenerateStepRequest.URL` (the HTTP origin only), `ai.LanguageModelCallEndEvent.Request` / `ai.LanguageModelCallRequest`, `telemetry.LanguageModelCallEndEvent.RequestURL`, and OpenTelemetry `server.address` / `server.port` on chat spans; OpenAI Chat (and Azure / Bedrock Mantle through it) reports its URL (review round 87).
 - **Mistral realtime transcription** (`DoStream`, PCM input, `targetStreamingDelayMs` / `speakerReferences` / `turnDetection`, `ModelVoxtralMiniTranscribeRealtime3` / `...30`; TS b26902ea1a) and the server half of the voice agent (`(*mistral.Provider).ExperimentalRealtime()` with `CreateSession` / `CloseSession`, `mistral.BuildRealtimeSessionConfig`; TS 0912e0b1b9). Gateway: opt-in Vercel OIDC token refresh in memory (`gateway.Config.OIDCTokenFunc`, `gateway.VercelOIDCTokenFunc`, `ContextWithVercelOIDCToken`, `VercelOIDCTokenError`) and `GatewayProviderOptions.ExperimentalStreamingImageDecoding` (TS 89aff56165) (review round 87).
 - **`claudecode.Settings.TurnStartTimeout`**, `bridge.HelloCapabilities.IdempotentStart`, `bridge.StartBase.StartID`, `(*bridge.Channel).SendWithOptions` / `bridge.SendOptions` (TS 3bf70f83bc); `vercel.Sandbox.SpawnCommandWithStdin`, `vercel.RemoteProcess.Stdin` (`@vercel/sandbox` 3.9.0 writeStdin / closeStdin); `harnessutil.Subscriptions`; `bridges.ContentHash`, `bridges.AdapterManifest.ContentHash` (review round 87).
+- **`vercel.OIDCRefresh`** on `CreateSessionOptions`, `ResumeSessionOptions` and `LegacySettings`: opt-in Vercel OIDC token refresh matching `@vercel/sandbox` 3.9.0 `getCredentials` / `ensureValidToken` (5 minute buffer, in memory, shares the resolver with `gateway.VercelOIDCTokenFunc` through `pkg/internal/verceloidc`); **`vercel.APIClient.ExtendSessionTimeout`** (`POST .../extend-timeout`, used by `Sandbox.Update`) (review round 87b).
+- **`providerutils.JSString` / `JSTruthy`**: JavaScript `String(value)` and truthiness for values decoded from JSON (used where TS reads unvalidated `z.any()` values: Open Responses, AI Gateway, You.com, the Vercel token claims) (review round 87b).
 - **`ai.ShellSandbox` `Stat` / `ListDirectory` / `DeleteFile`** (the optional `providerutils.SandboxStatter` / `SandboxDirectoryLister` / `SandboxFileDeleter`, also on `bridgetest.Sandbox`), **`acp.ToolCall.HasName`**, **`websocket.ErrInvalidUTF8Text`** (review round 86b).
 - **`Config.APIKeyFunc`** for openai, azure, xai, deepseek, alibaba, moonshot, openresponses, huggingface, gmicloud, together, fireworks, zai, cerebras and deepinfra (TS 7716e189ee), called per request with the request's context; **`openai.Config.HeadersFuncCtx`, `deepseek.Config.HeadersFuncCtx`** for NoAPIKey wrappers (review round 85).
 - **`openai.ModelGPT61Terra`, `LanguageModelCapabilities.SupportsChatFunctionToolsWithReasoning`, `openai.SupportsStreamingTranscription`, `openai.StreamingTranscriptionWarnings`, `TranscriptionStreamOpenAIOptionsValue.HasLanguages` / `HasKeywords`, `DecisionModelOptions.PromptCacheKey`** (review round 85).
@@ -448,6 +450,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Telemetry ai.prompt.tools and gen_ai.tool.definitions record the tools in the TS shapes and key order (inputSchema, not parameters)** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#telemetry-prompt-tools-shape)
 - **The WorkflowAgent GenAI root span is `invoke_agent`, as TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-agent-operation-name)
 - **Chat spans record server.address / server.port from the provider's request origin** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#otel-server-address)
+- **Provider usage and runtime context attributes keep one value per name (later key wins)** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#otel-usage-key-collision)
+- **An empty InputExamples list is kept as [] in tool telemetry and serialized workflow tools** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tool-definitions-empty-input-examples)
 
 #### Errors
 
@@ -619,6 +623,12 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Open Responses streams report the server's response id, model and timestamp from response.created** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openresponses-stream-response-metadata)
 - **A raw verbosity provider option is sent to OpenAI-compatible hosts when textVerbosity is unset** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-compatible-raw-verbosity)
 - **Open Responses errors keep numeric codes and empty codes / reasons like TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openresponses-error-fields)
+- **Open Responses events and responses with unexpected field types decode like TS instead of failing** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openresponses-lenient-decode)
+- **AI Gateway stream parts and generate bodies with unexpected field types decode like TS instead of failing** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gateway-lenient-decode)
+- **Stream error codes: Moonshot and xAI keep an empty code, Open Responses reports none when absent** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-error-empty-code)
+- **Open Responses custom tools send an empty description** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openresponses-custom-tool-empty-description)
+- **OpenAI-compatible providers send raw stream / stream_options provider options in generate, like TS** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-compatible-raw-stream-options)
+- **You.com 402 errors interpolate any truthy message / upgrade_url / reset_at value** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#youcom-402-message)
 
 #### MCP
 
@@ -669,6 +679,9 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Vercel Sandbox.Update applies a policy to the session before PATCHing the sandbox** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-policy-update-order)
 - **Vercel Sandbox API requests are retried and interrupted streams recovered like @vercel/sandbox 3.9.0** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-sandbox-retries-and-streams)
 - **Vercel Sandbox request bodies carry the @vercel/sandbox 3.9.0 defaults** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-sandbox-request-bodies)
+- **OpenCode keeps credentials and URLs that are set but empty** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#opencode-empty-credentials)
+- **Vercel `Sandbox.Update` extends a running session's timeout** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-update-extends-timeout)
+- **A Vercel Sandbox OIDC token sets the team from its owner_id claim** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-jwt-claims)
 
 #### Policy
 
@@ -1678,6 +1691,13 @@ Notable ones:
 - **Mistral realtime transcription WebSocket hint**: Mistral realtime transcription socket errors have no WebSocket-implementation hint (round 87).
 - **Gateway streaming image decoding**: Gateway streaming image decoding validates the placeholder skeleton (round 87).
 - **Empty string message content**: A user message whose only part is an empty text part loses it; TS keeps a string `content: ''` (round 87).
+- **Vercel Sandbox OIDC token refresh**: Vercel Sandbox: OIDC refresh is opt-in (`OIDCRefresh`), in memory, and follows `@vercel/oidc` 3.2.0 (round 87b).
+- **Vercel Sandbox user agent**: Vercel Sandbox sends the Go SDK user agent, not `vercel/sandbox/<version> (Node.js/...)` (round 87b).
+- **Vercel Sandbox JSON Lines errors under backpressure**: Vercel Sandbox: a complete invalid JSON Lines record is always a syntax error after every earlier record (the TS fast-consumer result) (round 87b).
+- **Provider usage and runtime context attributes: colliding keys in a Go map**: Colliding provider usage / runtime context keys in a Go map: the later key in sorted order wins (round 87b).
+- **Empty tool and response format descriptions**: A `Description: ""` tool or response format has no `description` (v0.5.2 string fields) (round 87b).
+- **Realtime error events with an empty code**: Realtime error events: `code: ""` reads as no code (`RealtimeServerEvent.Code` is a v0.5.2 string) (round 87b).
+- **Open Responses and AI Gateway: field values of an unexpected JSON type**: Open Responses / AI Gateway: typed fields read a mistyped value as `String(value)` or zero; TS passes it on (round 87b).
 - **Executed tool results carry the tool title**: `ToolResult.Title` of a locally executed tool is the call's title, as in v0.5.2; TS client tool results have no `title` (round 80).
 - **Live WebSocket close code**: Google/Vertex Live and OpenAI realtime translation close errors say `(code unknown)`; `golang.org/x/net/websocket` does not expose the close code, and v0.5.2 exports its `*websocket.Conn` (round 81).
 - **OpenAI compaction metadata keeps the v0.5 keys**: `openai.compaction` parts carry the TS `providerMetadata.openai` object and the v0.5.2 top-level keys (round 81).

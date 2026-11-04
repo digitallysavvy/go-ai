@@ -40,11 +40,33 @@ func HasConfiguredCredentials(explicit Credentials) bool
 `ErrNoCredentials` is returned when neither explicit credentials nor
 `VERCEL_OIDC_TOKEN` are available.
 
-See [Known differences: Vercel Sandbox has no OIDC token refresh
-loop](../../08-migration-guides/known-differences.mdx#vercel-sandbox-no-oidc-token-refresh-loop) —
-unlike the TypeScript provider, this port does not run a background
-`@vercel/oidc` refresh loop; `VERCEL_OIDC_TOKEN` is re-read from the
-environment on each call.
+A JWT token whose payload has an `owner_id` claim also sets the `teamId`
+query of every request, as the `@vercel/sandbox` 3.9.0 `APIClient` does;
+`ProjectID` keeps the value from the credentials.
+
+### OIDC token refresh
+
+```go
+type OIDCRefresh struct {
+    AccessToken func(ctx context.Context) (string, error) // default: the Vercel CLI login (read only)
+    HTTPClient  *http.Client                              // default: http.DefaultClient
+    APIBaseURL  string                                    // default: https://api.vercel.com
+}
+```
+
+Set `OIDCRefresh` on `CreateSessionOptions`, `ResumeSessionOptions` or
+`LegacySettings` to refresh the Vercel OIDC token like `@vercel/sandbox`
+(`getVercelOidcToken` and `APIClient.ensureValidToken`): with no explicit
+credentials the token is resolved from the request context
+(`gateway.ContextWithVercelOIDCToken`), an earlier refresh or
+`VERCEL_OIDC_TOKEN`, refreshed from the linked project when it is missing or
+expired; before every request a JWT token that expires within 5 minutes is
+refreshed (a failed refresh keeps the current token). The refreshed token is
+kept in memory in the `OIDCRefresh` value (reuse one to share it); the Vercel
+CLI login and token cache are only read, never written, and nothing is
+written to the environment. Without `OIDCRefresh`, `VERCEL_OIDC_TOKEN` is read
+as is. See [Known differences: Vercel Sandbox OIDC token
+refresh](../../08-migration-guides/known-differences.mdx#vercel-sandbox-oidc-token-refresh).
 
 ## Creating a session
 
@@ -53,7 +75,8 @@ func CreateNetworkSandboxSession(ctx context.Context, opts CreateSessionOptions)
 
 type CreateSessionOptions struct {
     Credentials Credentials
-    BaseURL     string // overrides the Vercel API base URL (tests only)
+    OIDCRefresh *OIDCRefresh // opt-in OIDC token refresh (nil: VERCEL_OIDC_TOKEN as is)
+    BaseURL     string       // overrides the Vercel API base URL (tests only)
 
     SandboxID string
     Name      string
@@ -107,6 +130,7 @@ type ResumeSessionOptions struct {
     Credentials Credentials
     BaseURL     string
     SandboxID   string
+    OIDCRefresh *OIDCRefresh
 }
 ```
 

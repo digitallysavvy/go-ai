@@ -459,6 +459,17 @@ already, you can skip them.
 | `vercel.Sandbox.Update` with a network policy | Session first, then PATCH | silent behavior change | None | [Vercel `Sandbox.Update` updates the session first](#vercel-policy-update-order) |
 | Vercel Sandbox API calls | Retried; streams recovered; stricter content types | silent behavior change | None | [Vercel Sandbox API retries and stream recovery](#vercel-sandbox-retries-and-streams) |
 | Vercel Sandbox API request bodies | 3.9.0 defaults | wire/protocol change | None | [Vercel Sandbox request bodies follow @vercel/sandbox 3.9.0](#vercel-sandbox-request-bodies) |
+| `ai.usage.*` / `gen_ai.usage.*` / `ai.settings.context.*` with colliding keys | One attribute, later key wins (map: sorted order) | silent behavior change | None | [Provider usage and runtime context attributes keep one value per name](#otel-usage-key-collision) |
+| `InputExamples: []types.ToolInputExample{}` | `"inputExamples":[]` in tool telemetry and `SerializableToolDef` JSON | wire/protocol change | Leave it nil to omit | [Empty inputExamples are kept in tool definitions](#tool-definitions-empty-input-examples) |
+| Open Responses events with unexpected field types | Decoded like TS, no error part | silent behavior change | None | [Open Responses events and responses decode like TS](#openresponses-lenient-decode) |
+| `failed to parse stream chunk` from the AI Gateway | Only for invalid JSON; mistyped fields are tolerated | silent behavior change | None | [AI Gateway stream parts and responses decode like TS](#gateway-lenient-decode) |
+| `StreamProviderError.Code` from moonshot / xAI Responses / Open Responses | `""` kept (moonshot, xAI); nil when absent (Open Responses) | silent behavior change | Compare with both | [Stream error codes follow TS presence](#stream-error-empty-code) |
+| Open Responses custom tool `ProviderArgs["description"]: ""` | Sent as `"description":""` | wire/protocol change | Remove the key | [Open Responses custom tools send an empty description](#openresponses-custom-tool-empty-description) |
+| `"stream"` / `"stream_options"` in OpenAI-compatible provider options | Sent in generate | wire/protocol change | Remove them | [Raw stream / stream_options provider options are sent in generate](#openai-compatible-raw-stream-options) |
+| You.com 402 error text | Non-string body fields used | error text only | None | [You.com 402 messages use any truthy body field](#youcom-402-message) |
+| OpenCode credentials set to `""` | Used as given (TS `== null`) | silent behavior change | Unset instead of `""` | [OpenCode keeps present empty credentials](#opencode-empty-credentials) |
+| `vercel.Sandbox.Update` with `TimeoutMs` | Extends the running session first | wire/protocol change | None | [Vercel Sandbox.Update extends a running session's timeout](#vercel-update-extends-timeout) |
+| `vercel.Credentials` with an OIDC JWT token | `teamId` from the token `owner_id` | silent behavior change | None | [A Vercel OIDC token sets the team](#vercel-jwt-claims) |
 
 ## Compile-time changes {#compile-time-changes}
 
@@ -4301,6 +4312,20 @@ compile-time changes.
 - **What to do:** No action.
 - **Kind:** wire/protocol change
 
+### Provider usage and runtime context attributes keep one value per name {#otel-usage-key-collision}
+
+- **What changed:** v0.5 emitted one `ai.usage.*` / `gen_ai.usage.*` attribute per provider usage key, so two keys that normalize to the same name (`inputTokens`, `input_tokens`) gave duplicates and the span kept an arbitrary one. v0.6 emits one attribute holding the later key's value, as TS `getProviderUsageAttributes` writes into one object. A plain map is read in sorted key order (array-index keys first); an ordered object (`*jsonorder.Object`) keeps its key order. Runtime context attributes (`ai.settings.context.*`) follow the same rule for a dotted key and a nested path, and a later value the sanitizer drops (NaN) removes the attribute. A struct context flattens in its JSON field order, and `json.Number` values are numbers (review round 87b).
+- **Am I affected?** Span consumers that read `ai.usage.*`, `gen_ai.usage.*` or `ai.settings.context.*` from provider usage maps or runtime contexts with colliding keys (`ProviderUsage`, `SpeechResult.Usage`, `RuntimeContext`); runtime contexts holding `json.Number`.
+- **What to do:** No action unless you relied on which duplicate survived.
+- **Kind:** silent behavior change
+
+### Empty inputExamples are kept in tool definitions {#tool-definitions-empty-input-examples}
+
+- **What changed:** A tool with a non-nil empty `InputExamples` now shows `"inputExamples":[]` in `ai.prompt.tools` and `gen_ai.tool.definitions`, and a workflow `SerializableToolDef` keeps `"inputExamples":[]` in its JSON (TS `inputExamples != null`). A nil slice is still omitted (review round 87b).
+- **Am I affected?** `InputExamples: []types.ToolInputExample{}`; tests comparing those attributes or serialized workflow tool JSON.
+- **What to do:** No action, or leave `InputExamples` nil to omit the key.
+- **Kind:** wire/protocol change
+
 ## Errors {#errors}
 
 ### Errors are returned without Go prefixes {#errors-unprefixed}
@@ -6677,6 +6702,48 @@ compile-time changes.
 - **What to do:** No action unless you match the old decode-error text.
 - **Kind:** silent behavior change
 
+### Open Responses events and responses decode like TS {#openresponses-lenient-decode}
+
+- **What changed:** v0.5 failed an Open Responses stream event (an error part) or the whole DoGenerate call when a field had an unexpected JSON type (for example a numeric `delta` or `status`, a string `sequence_number`). v0.6 decodes leniently like TS (`z.any()` events, an unvalidated generate body): string fields read as JS `String(value)`, `type` matches only as a string, other mismatched fields read as zero, and a non-object `item` / `error` / `response` is empty. An absent or null `delta` appended to accumulated tool arguments adds `"undefined"` / `"null"`, as JS string concatenation does in TS (review round 87b).
+- **Am I affected?** `openresponses.StreamEvent`, `openresponses.OutputItem`, `openresponses.Usage` decoding; tests that expect an error part for a mistyped event.
+- **What to do:** No action unless you relied on a mistyped event producing an error part.
+- **Kind:** silent behavior change
+
+### AI Gateway stream parts and responses decode like TS {#gateway-lenient-decode}
+
+- **What changed:** v0.5 ended an AI Gateway stream with `failed to parse stream chunk: ...` when a stream part had a field of an unexpected JSON type (for example a numeric `id`), failed DoGenerate the same way, and dropped a generate content part with such a field. TS parses both with `z.any()` and passes the parts on, so v0.6 fails only on invalid JSON: a mistyped field reads as zero, a non-object part is skipped, and the string fields Go reads (ids, deltas, text, tool names and tool arguments) hold JS `String(value)` (TS 3fab50aa9b `gateway-language-model.ts`, review round 87b).
+- **Am I affected?** `gateway` language models; code that matches `failed to parse stream chunk` for parts that are valid JSON.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### Stream error codes follow TS presence {#stream-error-empty-code}
+
+- **What changed:** The `StreamProviderError.Code` of a mid-stream error now follows TS: Moonshot and xAI Responses keep a present `code: ""` (v0.5 reported no code, TS `code ?? undefined`); Open Responses reports no code (nil) when the error has no `code` or `code: null` (v0.5 reported `""`, TS passes `error.code` as is) (review round 87b).
+- **Am I affected?** `providererrors.StreamProviderError.Code` checks on moonshot, xAI Responses (`error`, `response.failed`) and Open Responses (`error`, `response.failed`) stream error chunks, for example `spe.Code == nil` or `spe.Code == ""`.
+- **What to do:** No action unless you compare `Code` with `nil` or `""` for these providers.
+- **Kind:** silent behavior change
+
+### Open Responses custom tools send an empty description {#openresponses-custom-tool-empty-description}
+
+- **What changed:** A custom tool (`Config.CustomToolID`) whose `ProviderArgs["description"]` is `""` now sends `"description": ""` (TS `typeof description === 'string'`); v0.5 omitted it (review round 87b).
+- **Am I affected?** `ProviderArgs` with `"description": ""` on an Open Responses custom tool.
+- **What to do:** No action unless you set an empty description and the server rejects it.
+- **Kind:** wire/protocol change
+
+### Raw stream / stream_options provider options are sent in generate {#openai-compatible-raw-stream-options}
+
+- **What changed:** Raw `stream` / `stream_options` keys in an OpenAI-compatible provider options map (`ProviderOptions["<name>"]`) are now sent in DoGenerate, like TS openai-compatible doGenerate, which spreads the raw options; DoStream still writes its own `stream: true` and `stream_options`. v0.5 dropped them in both (review round 87b).
+- **Am I affected?** Provider options maps for together (`togetherai`), fireworks, gmicloud, ollama, Vertex xAI and `openai.Config{OpenAICompatible: true}` providers that contain `stream` or `stream_options`.
+- **What to do:** No action unless you put `stream` / `stream_options` in provider options; remove them for generate calls.
+- **Kind:** wire/protocol change
+
+### You.com 402 messages use any truthy body field {#youcom-402-message}
+
+- **What changed:** The You.com 402 error message reads the body's `message`, `upgrade_url` and `reset_at` with JS `||` / truthiness and interpolates them with `String()`: a non-string value such as a number is used now; v0.5 used only non-empty strings and otherwise the default text (review round 87b).
+- **Am I affected?** Error text from the `youcom` search / contents tools after an HTTP 402 whose body holds non-string `message`, `upgrade_url` or `reset_at` values.
+- **What to do:** No action unless you match that error text.
+- **Kind:** error text only
+
 ## MCP {#mcp}
 
 ### MCP OAuth rejects unbound pre-registered confidential credentials {#mcp-oauth-issuer}
@@ -7108,6 +7175,27 @@ compile-time changes.
 - **What to do:** No action.
 - **Kind:** wire/protocol change
 
+### OpenCode keeps present empty credentials {#opencode-empty-credentials}
+
+- **What changed:** An OpenCode credential or URL that is set but empty is now used as given, like TS's `== null` / `??` checks. Examples: `GITLAB_TOKEN=""`, `XAI_API_KEY=""`, `GITHUB_COPILOT_TOKEN=""`, `ANTHROPIC_API_KEY=""`, `OPENAI_BASE_URL=""`, `GITLAB_AI_GATEWAY_URL=""`, and an empty `accountId` / `enterpriseUrl` in the OpenCode auth store. These empty values now build the brokering rule (it can only send the given empty value), are forwarded, or are written to `OPENCODE_AUTH_CONTENT`. An empty base URL fails with `Invalid URL`, as in TS. The truthy TS checks are unchanged: the AI Gateway key, the OpenAI key, the Google key, `pickOpenAI` / `pickAnthropic`, and `ChatGPT-Account-Id` (opencode-auth.ts, opencode-subscription.ts, opencode-harness.ts; review round 87b).
+- **Am I affected?** You set one of `GITLAB_TOKEN`, `XAI_API_KEY`, `XAI_BASE_URL`, `GITHUB_COPILOT_TOKEN`, `POE_API_KEY`, `OPENCODE_API_KEY`, `GITLAB_INSTANCE_URL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `GITLAB_AI_GATEWAY_URL` or `AI_GATEWAY_API_KEY` to an empty string for the `opencode` harness, or your OpenCode `auth.json` has `"accountId": ""` or `"enterpriseUrl": ""`.
+- **What to do:** No action unless you set those variables to `""` to mean unset. Unset them instead.
+- **Kind:** silent behavior change
+
+### Vercel Sandbox.Update extends a running session's timeout {#vercel-update-extends-timeout}
+
+- **What changed:** `Sandbox.Update` with an `UpdateParams.TimeoutMs` larger than the running session's timeout first sends `POST /v2/sandboxes/sessions/{id}/extend-timeout` with the difference. A 410 or a 422 `sandbox_stopping` response is ignored; any other error fails before the session policy update and the PATCH. The session timeout is then tracked from the API responses (`@vercel/sandbox` 3.9.0 `Sandbox.update`, review round 87b).
+- **Am I affected?** `vercel.Sandbox.Update` with `UpdateParams.TimeoutMs`.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### A Vercel OIDC token sets the team {#vercel-jwt-claims}
+
+- **What changed:** When the Vercel Sandbox token is a JWT whose payload has a truthy `owner_id`, the client sends that `owner_id` as the `teamId` query of every request, also when an explicit `TeamID` is passed (`@vercel/sandbox` 3.9.0 `APIClient` constructor). The explicit `ProjectID` is still the one sent in request bodies and queries; the token's `project_id` only feeds the opt-in OIDC refresh (review round 87b).
+- **Am I affected?** `vercel.Credentials{Token: <OIDC JWT>, TeamID: ...}` or `vercel.NewAPIClient` with a team that differs from the token's `owner_id`.
+- **What to do:** No action unless you pass an OIDC token together with a different team.
+- **Kind:** silent behavior change
+
 ## Policy {#policy}
 
 ### An OPA HTTP policy response without result is not-applicable {#opa-undefined-result}
@@ -7389,6 +7477,20 @@ after upgrading:
   [Gateway streaming image decoding](./known-differences.mdx).
 - **Empty string message content**: A user message whose only part is an empty text part loses it; TS keeps a string `content: ''` (round 87). See
   [Empty string message content](./known-differences.mdx).
+- **Vercel Sandbox OIDC token refresh**: Vercel Sandbox: OIDC refresh is opt-in (`OIDCRefresh`), in memory, and follows `@vercel/oidc` 3.2.0 (round 87b). See
+  [Vercel Sandbox OIDC token refresh](./known-differences.mdx).
+- **Vercel Sandbox user agent**: Vercel Sandbox sends the Go SDK user agent, not `vercel/sandbox/<version> (Node.js/...)` (round 87b). See
+  [Vercel Sandbox user agent](./known-differences.mdx).
+- **Vercel Sandbox JSON Lines errors under backpressure**: Vercel Sandbox: a complete invalid JSON Lines record is always a syntax error after every earlier record (the TS fast-consumer result) (round 87b). See
+  [Vercel Sandbox JSON Lines errors under backpressure](./known-differences.mdx).
+- **Provider usage and runtime context attributes: colliding keys in a Go map**: Colliding provider usage / runtime context keys in a Go map: the later key in sorted order wins (round 87b). See
+  [Provider usage and runtime context attributes: colliding keys in a Go map](./known-differences.mdx).
+- **Empty tool and response format descriptions**: A `Description: ""` tool or response format has no `description` (v0.5.2 string fields) (round 87b). See
+  [Empty tool and response format descriptions](./known-differences.mdx).
+- **Realtime error events with an empty code**: Realtime error events: `code: ""` reads as no code (`RealtimeServerEvent.Code` is a v0.5.2 string) (round 87b). See
+  [Realtime error events with an empty code](./known-differences.mdx).
+- **Open Responses and AI Gateway: field values of an unexpected JSON type**: Open Responses / AI Gateway: typed fields read a mistyped value as `String(value)` or zero; TS passes it on (round 87b). See
+  [Open Responses and AI Gateway: field values of an unexpected JSON type](./known-differences.mdx).
 - **Tool output JSON in replayed prompts keeps Go map key order.** See
   [Tool output JSON key order in replayed prompts](./known-differences.mdx).
 - **EmbedMany with a batch that reported no usage records the other batches' positive token sum**; TS sums to NaN and drops it. See
