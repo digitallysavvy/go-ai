@@ -315,6 +315,9 @@ func (m *LanguageModel) convertResponse(response vertexXaiResponse) *types.Gener
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
 	if providerutils.IsInvalidJSONResponse(err) {
 		return err // TS createJsonResponseHandler failure
 	}

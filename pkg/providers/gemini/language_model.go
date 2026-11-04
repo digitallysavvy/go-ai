@@ -328,6 +328,9 @@ func (m *LanguageModel) generateID() string {
 // Google {error:{code,message,status,details}} JSON body when present
 // (TS googleFailedResponseHandler / createJsonErrorResponseHandler).
 func (m *LanguageModel) handleError(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
 	var loadKeyErr *providererrors.LoadAPIKeyError
 	if errors.As(err, &loadKeyErr) {
 		return err // TS throws LoadAPIKeyError unwrapped

@@ -241,7 +241,15 @@ func (e *HTTPStatusError) HTTPResponseHeader() http.Header {
 func (c *Client) requestDefaults(ctx context.Context) (string, map[string]string, error) {
 	baseURL, headers := c.snapshot()
 	if err := c.overlayRequestHeaders(ctx, headers); err != nil {
-		return "", nil, err
+		// TS resolves the config headers (a key or token function) before
+		// the request and throws its error as is: a FetchRejection, so a
+		// provider's error handler returns it unchanged. A LoadAPIKeyError
+		// stays unmarked: every handler already returns it as is.
+		var loadKeyErr *providererrors.LoadAPIKeyError
+		if errors.As(err, &loadKeyErr) {
+			return "", nil, err
+		}
+		return "", nil, RejectFetch(err)
 	}
 	return baseURL, headers, nil
 }
@@ -738,6 +746,10 @@ func (c *Client) SetBaseURL(baseURL string) {
 // errors) are returned unchanged, and other transport failures read
 // "Cannot connect to API: <cause>". The cause stays wrapped for errors.Is/As.
 func transportError(err error) error {
+	var rejection *FetchRejection
+	if errors.As(err, &rejection) {
+		return rejection
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
@@ -758,6 +770,63 @@ func (e *connectError) Unwrap() error { return e.err }
 
 // IsRetryable reports true: TS retries connection failures.
 func (e *connectError) IsRetryable() bool { return true }
+
+// FetchRejection marks an error a provider's own http.RoundTripper raises
+// before (or instead of) a network round trip: a credential, signing or
+// configuration failure. In TS such an error is thrown by the provider's
+// fetch wrapper or by its headers() resolution (bedrock / anthropic-aws
+// createSigV4FetchFunction, google-vertex and azure token headers), and
+// provider-utils handleFetchError returns any rejection that is not a failed
+// fetch unchanged: it is not the retryable APICallError "Cannot connect to
+// API". transportError therefore returns a FetchRejection itself (without
+// the *url.Error "Post <url>:" prefix or the connect wrapper), and a
+// provider's error handler returns Err as is (FetchRejectionCause), so the
+// caller gets the credential error unchanged and the core retry does not
+// retry it. Only pre-network errors are marked: an error of the base
+// transport the RoundTripper delegates to keeps the failed-fetch path.
+//
+// Err must not carry a token or secret in its text.
+type FetchRejection struct{ Err error }
+
+// Error returns Err's text.
+func (e *FetchRejection) Error() string { return e.Err.Error() }
+
+// Unwrap returns Err.
+func (e *FetchRejection) Unwrap() error { return e.Err }
+
+// RejectFetch marks err (when non-nil) as a FetchRejection.
+func RejectFetch(err error) error {
+	if err == nil {
+		return nil
+	}
+	var existing *FetchRejection
+	if errors.As(err, &existing) {
+		return err
+	}
+	return &FetchRejection{Err: err}
+}
+
+// UnwrapFetchRejection returns the error a FetchRejection marks, or err
+// itself. Call sites that return a request error as is (TS: postToApi lets a
+// transport failure propagate unchanged) use it so the marker never reaches
+// the caller.
+func UnwrapFetchRejection(err error) error {
+	if cause, ok := FetchRejectionCause(err); ok {
+		return cause
+	}
+	return err
+}
+
+// FetchRejectionCause returns the error a provider RoundTripper rejected the
+// request with (see FetchRejection), when err's chain holds one. Provider
+// error handlers return it unwrapped, like TS.
+func FetchRejectionCause(err error) (error, bool) {
+	var rejection *FetchRejection
+	if errors.As(err, &rejection) {
+		return rejection.Err, true
+	}
+	return nil, false
+}
 
 // StatusProviderError builds a *providererrors.ProviderError for a non-2xx
 // provider response, mirroring the TS APICallError a failedResponseHandler

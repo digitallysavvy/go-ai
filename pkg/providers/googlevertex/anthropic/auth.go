@@ -3,6 +3,7 @@ package anthropic
 import (
 	"context"
 	"fmt"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"net/http"
 	"os"
 	"sync"
@@ -32,7 +33,7 @@ func (t *authTransport) roundTrip(req *http.Request) (*http.Response, error) {
 	clone := req.Clone(req.Context())
 	token, err := t.tokenFunc(req.Context())
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.RejectFetch(err)
 	}
 	clone.Header.Set("Authorization", "Bearer "+token)
 	for k, v := range t.headers {
@@ -41,7 +42,7 @@ func (t *authTransport) roundTrip(req *http.Request) (*http.Response, error) {
 	if t.headersFunc != nil {
 		headers, err := t.headersFunc(req.Context())
 		if err != nil {
-			return nil, err
+			return nil, internalhttp.RejectFetch(err)
 		}
 		for k, v := range headers {
 			clone.Header.Set(k, v)

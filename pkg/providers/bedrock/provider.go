@@ -314,7 +314,7 @@ func (p *Provider) resolveCredentials(ctx context.Context) (awsCredentials, erro
 	if p.config.CredentialProvider != nil {
 		creds, err := p.config.CredentialProvider(ctx)
 		if err != nil {
-			return awsCredentials{}, fmt.Errorf("AWS credential provider failed: %v. Please ensure your credential provider returns valid AWS credentials with AccessKeyID and SecretAccessKey fields", err)
+			return awsCredentials{}, fmt.Errorf("AWS credential provider failed: %v. Please ensure your credential provider returns valid AWS credentials with accessKeyId and secretAccessKey properties.", err) //nolint:staticcheck // message text matches TS
 		}
 		if !creds.valid() {
 			return awsCredentials{}, fmt.Errorf("AWS credential provider failed: incomplete credentials. Please ensure your credential provider returns valid AWS credentials with AccessKeyID and SecretAccessKey fields")

@@ -133,7 +133,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		Headers: opts.Headers,
 	})
 	if err != nil {
-		return nil, err // TS postJsonToApi lets a transport failure propagate unchanged
+		return nil, internalhttp.UnwrapFetchRejection(err) // TS postJsonToApi lets a transport failure propagate unchanged
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

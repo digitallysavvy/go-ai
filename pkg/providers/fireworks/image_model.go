@@ -135,6 +135,9 @@ func (m *ImageModel) doGenerateSync(ctx context.Context, opts *provider.ImageGen
 
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{Method: "POST", Path: m.syncPath(), Body: reqBody, Headers: opts.Headers})
 	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
 		return nil, providererrors.NewProviderError("fireworks", 0, "", err.Error(), err)
 	}
 

@@ -149,6 +149,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			pe.Cause = err
 			return nil, pe
 		}
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
 		return nil, providererrors.NewProviderError("perplexity", 0, "", err.Error(), err)
 	}
 

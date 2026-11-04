@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -188,7 +189,7 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 
 	respBody, respHeaders, err := postMultipartToProdia(ctx, m.prov.client, buf, contentType, "multipart/form-data", opts.Headers)
 	if err != nil {
-		return nil, err // TS postFormDataToApi lets transport and API errors propagate unchanged
+		return nil, internalhttp.UnwrapFetchRejection(err) // TS postFormDataToApi lets transport and API errors propagate unchanged
 	}
 
 	// TS response.headers.get('content-type') ?? '': without a boundary

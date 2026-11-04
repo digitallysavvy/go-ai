@@ -144,6 +144,9 @@ func (m *CloudTTSSpeechModel) DoGenerate(ctx context.Context, opts *provider.Spe
 		Body:    reqBody,
 	})
 	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
 		return nil, providererrors.NewProviderError("google-vertex", 0, "", "failed to synthesize speech: "+err.Error(), err)
 	}
 	if resp.StatusCode >= 400 {

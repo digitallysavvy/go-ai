@@ -21,6 +21,9 @@ type humeErrorPayload struct {
 // handleError converts an HTTP error into a ProviderError, parsing Hume's
 // `{"error":{"message","code"}}` error shape when present.
 func handleError(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
 	if providererrors.IsLoadAPIKeyError(err) {
 		return err // TS throws LoadAPIKeyError unwrapped
 	}

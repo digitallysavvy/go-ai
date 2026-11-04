@@ -219,7 +219,7 @@ func (t *sigV4Transport) roundTrip(req *http.Request) (*http.Response, error) {
 	}
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.RejectFetch(err)
 	}
 	_ = req.Body.Close()
 	// Sign and send a clone: a RoundTripper must not modify the caller's
@@ -233,11 +233,11 @@ func (t *sigV4Transport) roundTrip(req *http.Request) (*http.Response, error) {
 	// missing even if a custom baseURL made it unnecessary for routing.
 	region := firstNonEmpty(t.region, os.Getenv("AWS_REGION"))
 	if region == "" {
-		return nil, fmt.Errorf("AWS region setting is missing. Pass it using the 'region' parameter or the AWS_REGION environment variable")
+		return nil, internalhttp.RejectFetch(fmt.Errorf("AWS region setting is missing. Pass it using the 'region' parameter or the AWS_REGION environment variable"))
 	}
 	creds, err := t.credentials(req.Context())
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.RejectFetch(err)
 	}
 	t.setLastCredentials(creds)
 	signAWSRequest(req, body, region, creds)
@@ -249,7 +249,7 @@ func (t *sigV4Transport) credentials(ctx context.Context) (Credentials, error) {
 	if t.credentialProvider != nil {
 		creds, err := t.credentialProvider(ctx)
 		if err != nil {
-			return Credentials{}, fmt.Errorf("AWS credential provider failed: %v. Please ensure your credential provider returns valid AWS credentials with accessKeyId and secretAccessKey properties", err)
+			return Credentials{}, fmt.Errorf("AWS credential provider failed: %v. Please ensure your credential provider returns valid AWS credentials with accessKeyId and secretAccessKey properties.", err) //nolint:staticcheck // message text matches TS
 		}
 		if creds.AccessKeyID == "" || creds.SecretAccessKey == "" {
 			return Credentials{}, fmt.Errorf("AWS credential provider failed: missing accessKeyId or secretAccessKey. Please ensure your credential provider returns valid AWS credentials with accessKeyId and secretAccessKey properties")

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -70,6 +71,9 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 
 	resp, err := m.provider.Client().HTTPClient().Do(req)
 	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
 		return nil, providererrors.NewProviderError("amazon-bedrock", 0, "", err.Error(), err)
 	}
 	defer resp.Body.Close() //nolint:errcheck

@@ -335,6 +335,9 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 // a missing key/credential error passes through and HTTP failures keep
 // status, headers and body for retry decisions.
 func (m *GeminiTranscriptionModel) handleError(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
 	if providerutils.IsInvalidJSONResponse(err) {
 		return err // TS createJsonResponseHandler failure is an APICallError as is
 	}

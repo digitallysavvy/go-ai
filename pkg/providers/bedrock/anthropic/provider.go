@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"net/http"
@@ -262,7 +263,7 @@ func (t *bedrockAnthropicTransport) roundTrip(req *http.Request) (*http.Response
 			ParameterName: "bearerToken", Description: "Amazon Bedrock", RequireNonEmpty: true,
 		})
 		if err != nil {
-			return nil, err
+			return nil, internalhttp.RejectFetch(err)
 		}
 		req.Header.Set("Authorization", "Bearer "+providerutils.JSTrim(key))
 		return t.base.RoundTrip(req)
@@ -279,7 +280,7 @@ func (t *bedrockAnthropicTransport) roundTrip(req *http.Request) (*http.Response
 	}
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.RejectFetch(err)
 	}
 	_ = req.Body.Close()
 	req.Body = io.NopCloser(bytes.NewReader(body))
@@ -290,17 +291,17 @@ func (t *bedrockAnthropicTransport) roundTrip(req *http.Request) (*http.Response
 	// problem. It matters with an explicit BaseURL, which needs no region.
 	region := t.provider.awsRegion()
 	if region == "" {
-		return nil, fmt.Errorf("AWS region setting is missing. Pass it using the 'region' parameter or the AWS_REGION environment variable.") //nolint:staticcheck // message text matches TS
+		return nil, internalhttp.RejectFetch(fmt.Errorf("AWS region setting is missing. Pass it using the 'region' parameter or the AWS_REGION environment variable.")) //nolint:staticcheck // message text matches TS
 	}
 
 	creds, err := t.provider.resolveCredentials(req.Context())
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.RejectFetch(err)
 	}
 
 	signer := bedrock.NewAWSSigner(creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken, region)
 	if err := signer.SignRequest(req, body); err != nil {
-		return nil, err
+		return nil, internalhttp.RejectFetch(err)
 	}
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	return t.base.RoundTrip(req)
@@ -314,7 +315,7 @@ func (p *BedrockAnthropicProvider) resolveCredentials(ctx context.Context) (AWSC
 	if p.config.CredentialProvider != nil {
 		creds, err := p.config.CredentialProvider(ctx)
 		if err != nil {
-			return AWSCredentials{}, fmt.Errorf("AWS credential provider failed: %v. Please ensure your credential provider returns valid AWS credentials with AccessKeyID and SecretAccessKey fields", err)
+			return AWSCredentials{}, fmt.Errorf("AWS credential provider failed: %v. Please ensure your credential provider returns valid AWS credentials with accessKeyId and secretAccessKey properties.", err) //nolint:staticcheck // message text matches TS
 		}
 		if creds.AccessKeyID == "" || creds.SecretAccessKey == "" {
 			return AWSCredentials{}, fmt.Errorf("AWS credential provider failed: incomplete credentials. Please ensure your credential provider returns valid AWS credentials with AccessKeyID and SecretAccessKey fields")

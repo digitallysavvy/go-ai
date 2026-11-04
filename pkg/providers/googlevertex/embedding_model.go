@@ -414,6 +414,9 @@ func isNumber(v interface{}) bool {
 // failure gives the TS googleVertexFailedResponseHandler message (error.message
 // of a Google error body, else the HTTP status text).
 func vertexEmbeddingError(providerName string, err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
 	if providerutils.IsInvalidJSONResponse(err) {
 		return err // TS createJsonResponseHandler failure is an APICallError as is
 	}

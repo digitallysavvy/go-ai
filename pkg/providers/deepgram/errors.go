@@ -21,6 +21,9 @@ type deepgramErrorPayload struct {
 // handleError converts an HTTP error into a ProviderError, parsing
 // Deepgram's `{"err_code","err_msg","request_id"}` error shape when present.
 func handleError(providerName string, err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
 	if providererrors.IsLoadAPIKeyError(err) || providerutils.IsInvalidJSONResponse(err) {
 		return err // TS throws these unwrapped
 	}

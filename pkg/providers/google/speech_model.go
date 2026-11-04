@@ -186,6 +186,9 @@ func (m *SpeechModel) handleError(err error) error {
 	if providerutils.IsInvalidJSONResponse(err) {
 		return err // TS createJsonResponseHandler failure is an APICallError as is
 	}
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
 	var loadKeyErr *providererrors.LoadAPIKeyError
 	if errors.As(err, &loadKeyErr) {
 		return err // TS throws LoadAPIKeyError unwrapped

@@ -1272,6 +1272,9 @@ func anthropicStreamErrorMetadata(errType string) (statusCode int, isRetryable b
 // It attempts to parse Anthropic API error responses (HTTP NNN: {...}) so that
 // error.type is surfaced as ProviderError.ErrorCode rather than being lost.
 func (m *LanguageModel) handleError(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
 	if err == nil {
 		return nil
 	}

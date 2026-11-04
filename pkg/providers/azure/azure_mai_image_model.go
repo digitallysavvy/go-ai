@@ -464,6 +464,9 @@ func (m *azureMaiImageModel) call(ctx context.Context, extra map[string]string, 
 
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return azureMaiImageCallResult{}, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
 		return azureMaiImageCallResult{}, providererrors.NewProviderError("azure.image", 0, "", err.Error(), err)
 	}
 	defer resp.Body.Close() //nolint:errcheck

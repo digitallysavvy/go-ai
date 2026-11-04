@@ -2814,6 +2814,9 @@ func convertResponsesUsage(u *responses.ResponsesAPIUsage) types.Usage {
 }
 
 func (m *ResponsesLanguageModel) wrapErr(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
 	if providererrors.IsLoadAPIKeyError(err) {
 		return err // TS throws LoadAPIKeyError unwrapped
 	}

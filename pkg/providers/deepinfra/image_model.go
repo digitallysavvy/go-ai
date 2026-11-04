@@ -129,6 +129,9 @@ func (m *ImageModel) doGenerate(ctx context.Context, opts *provider.ImageGenerat
 		Headers: opts.Headers,
 	})
 	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
 		return nil, providererrors.NewProviderError("deepinfra", 0, "", err.Error(), err)
 	}
 	// TS response.text() / json(): a BOM is dropped and invalid UTF-8
@@ -214,6 +217,9 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
 	})
 	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
 		return nil, providererrors.NewProviderError("deepinfra", 0, "", err.Error(), err)
 	}
 	// TS response.text() / json(): a BOM is dropped and invalid UTF-8

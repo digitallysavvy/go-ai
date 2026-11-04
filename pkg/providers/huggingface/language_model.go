@@ -189,13 +189,16 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		ValidateResponse: providerutils.HuggingFaceResponsesResponseValidator("huggingface"),
 	}, &resp)
 	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
 		if providererrors.IsLoadAPIKeyError(err) || providerutils.IsInvalidJSONResponse(err) {
 			return nil, err
 		}
 		if converted := parseHuggingFaceError(err); converted != nil {
 			return nil, converted
 		}
-		return nil, err // TS postJsonToApi lets a transport failure propagate unchanged
+		return nil, internalhttp.UnwrapFetchRejection(err) // TS postJsonToApi lets a transport failure propagate unchanged
 	}
 
 	responseHeaders := providerutils.ExtractHeaders(httpResp.Headers)
@@ -390,7 +393,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		if converted := parseHuggingFaceError(err); converted != nil {
 			return nil, converted
 		}
-		return nil, err // TS postJsonToApi lets a transport failure propagate unchanged
+		return nil, internalhttp.UnwrapFetchRejection(err) // TS postJsonToApi lets a transport failure propagate unchanged
 	}
 
 	s := newHFStream(httpResp.Body, warnings, m.provider.responsesProviderName())

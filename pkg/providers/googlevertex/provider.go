@@ -434,7 +434,7 @@ func (f failingRoundTripper) RoundTrip(req *stdhttp.Request) (*stdhttp.Response,
 	if req.Body != nil {
 		_ = req.Body.Close()
 	}
-	return nil, f.err
+	return nil, http.RejectFetch(f.err)
 }
 
 // mainClient returns the base-model request client, or a client that fails
@@ -772,7 +772,7 @@ func (t *vertexExpressTransport) roundTrip(req *stdhttp.Request) (*stdhttp.Respo
 		APIKey: t.apiKey, APIKeyFunc: t.apiKeyFunc, Description: "Google Vertex", RequireNonEmpty: true,
 	})
 	if err != nil {
-		return nil, err
+		return nil, http.RejectFetch(err)
 	}
 	clone := req.Clone(req.Context())
 	clone.Header.Del("x-goog-api-key")

@@ -134,7 +134,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "multipart/form-data; image/png"}, opts.Headers),
 	})
 	if err != nil {
-		return nil, err // TS postToApi lets a transport failure propagate unchanged
+		return nil, internalhttp.UnwrapFetchRejection(err) // TS postToApi lets a transport failure propagate unchanged
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

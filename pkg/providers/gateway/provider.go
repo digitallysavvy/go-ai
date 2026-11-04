@@ -77,7 +77,7 @@ type gatewayAuthTransport struct {
 	base     http.RoundTripper
 	resolver gatewayAuthResolver
 	// custom is set when the caller's HTTPClient brings its own
-	// RoundTripper (the TS `fetch` option); see gatewayFetchRejection.
+	// RoundTripper (the TS `fetch` option); see customFetchError.
 	custom bool
 }
 
@@ -936,9 +936,8 @@ func (p *Provider) gatewayUnknownError(err error) error {
 	// decode failure is a permanent error (the body will never parse
 	// differently on retry); a transient network/body-read error is
 	// retryable. See 90192f1.
-	var rejection *gatewayFetchRejection
-	if errors.As(err, &rejection) {
-		err = rejection.err // TS: `Gateway request failed: ${error.message}`
+	if rejected, ok := internalhttp.FetchRejectionCause(err); ok {
+		err = rejected // TS: `Gateway request failed: ${error.message}`
 	} else if converted, ok := gatewayConnectError(err); ok {
 		return converted
 	}

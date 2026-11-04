@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"net/http"
 	"strings"
 	"time"
@@ -116,6 +117,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	// Make the request using provider-scoped transport.
 	resp, err := m.provider.Client().HTTPClient().Do(req)
 	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
 		return nil, providererrors.NewProviderError("amazon-bedrock", 0, "", err.Error(), err)
 	}
 	defer resp.Body.Close() //nolint:errcheck

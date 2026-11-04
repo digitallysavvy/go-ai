@@ -353,7 +353,7 @@ func handleTranscriptionError(err error) error {
 	}
 	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
 	// connect to API") propagate unchanged.
-	return err
+	return internalhttp.UnwrapFetchRejection(err)
 }
 
 // schemaWord keeps only the keys of the TS response schema's word object

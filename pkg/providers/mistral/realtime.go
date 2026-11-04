@@ -68,6 +68,9 @@ func (r *RealtimeSessions) CreateSession(ctx context.Context, opts RealtimeCreat
 	}
 	resp, err := r.provider.client.Do(ctx, internalhttp.Request{Method: http.MethodPost, Path: "/v1/audio/sessions", Body: body})
 	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return nil, cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
 		return nil, providererrors.NewProviderError("mistral", 0, "", err.Error(), err)
 	}
 	if resp.StatusCode >= 400 {
@@ -103,6 +106,9 @@ func (r *RealtimeSessions) CloseSession(ctx context.Context, sessionID string) e
 		Path:   "/v1/audio/sessions/" + providerutils.EncodeURIComponent(sessionID),
 	})
 	if err != nil {
+		if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+			return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+		}
 		return providererrors.NewProviderError("mistral", 0, "", err.Error(), err)
 	}
 	if resp.StatusCode >= 400 {

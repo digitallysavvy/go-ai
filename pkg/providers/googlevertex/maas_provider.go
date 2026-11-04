@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"io"
 	stdhttp "net/http"
 	"os"
@@ -124,7 +125,7 @@ func (t *maasAuthTransport) roundTrip(req *stdhttp.Request) (*stdhttp.Response, 
 		bodyBytes, err := io.ReadAll(clone.Body)
 		_ = clone.Body.Close()
 		if err != nil {
-			return nil, err
+			return nil, internalhttp.RejectFetch(err)
 		}
 		bodyBytes = applyMaasMaxTokensDefault(bodyBytes)
 		clone.Body = io.NopCloser(bytes.NewReader(bodyBytes))
@@ -133,7 +134,7 @@ func (t *maasAuthTransport) roundTrip(req *stdhttp.Request) (*stdhttp.Response, 
 	if t.headersFunc != nil {
 		headers, err := t.headersFunc(req.Context())
 		if err != nil {
-			return nil, err
+			return nil, internalhttp.RejectFetch(err)
 		}
 		for k, v := range headers {
 			clone.Header.Set(k, v)
@@ -141,7 +142,7 @@ func (t *maasAuthTransport) roundTrip(req *stdhttp.Request) (*stdhttp.Response, 
 	}
 	token, err := t.authToken(req.Context())
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.RejectFetch(err)
 	}
 	clone.Header.Set("Authorization", "Bearer "+token)
 	return t.base.RoundTrip(clone)

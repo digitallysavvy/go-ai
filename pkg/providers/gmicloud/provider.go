@@ -190,7 +190,7 @@ func (t gmicloudIncludeUsageTransport) roundTrip(req *stdhttp.Request) (*stdhttp
 	}
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.RejectFetch(err)
 	}
 	_ = req.Body.Close()
 	var payload map[string]interface{}

@@ -155,6 +155,9 @@ func (m *RerankingModel) convertResponse(response cohereRerankResponse) *types.R
 
 // handleError converts various errors to provider errors
 func (m *RerankingModel) handleError(err error) error {
+	if cause, ok := internalhttp.FetchRejectionCause(err); ok {
+		return cause // TS: a rejected fetch wrapper or headers() resolution is returned unchanged
+	}
 	if providererrors.IsLoadAPIKeyError(err) {
 		return err // TS throws LoadAPIKeyError unwrapped
 	}

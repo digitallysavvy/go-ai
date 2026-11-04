@@ -3,6 +3,7 @@ package cerebras
 import (
 	"bytes"
 	"encoding/json"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"io"
 	"net/http"
 
@@ -142,7 +143,7 @@ func (t cerebrasTransformTransport) RoundTrip(req *http.Request) (*http.Response
 	body, err := io.ReadAll(req.Body)
 	_ = req.Body.Close()
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.RejectFetch(err)
 	}
 	var payload interface{}
 	if err := json.Unmarshal(body, &payload); err == nil {

@@ -11,6 +11,7 @@ package internal
 
 import (
 	"context"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"net/http"
 )
 
@@ -45,7 +46,7 @@ func (t *AuthTransport) roundTrip(req *http.Request) (*http.Response, error) {
 	}
 	token, err := t.TokenFunc(req.Context())
 	if err != nil {
-		return nil, err
+		return nil, internalhttp.RejectFetch(err)
 	}
 	clone.Header.Set("Authorization", "Bearer "+token)
 	return t.Base.RoundTrip(clone)

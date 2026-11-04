@@ -656,7 +656,7 @@ func (t azureTokenTransport) roundTrip(req *stdhttp.Request) (*stdhttp.Response,
 	if clone.Header.Get("Authorization") == "" {
 		token, err := t.tokenProvider(req.Context())
 		if err != nil {
-			return nil, err
+			return nil, http.RejectFetch(err)
 		}
 		clone.Header.Set("Authorization", "Bearer "+token)
 	}

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 )
 
@@ -44,27 +45,22 @@ func gatewayConnectError(err error) (error, bool) {
 	return out, true
 }
 
-// gatewayFetchRejection is an error of a caller-supplied RoundTripper (the
-// TS `fetch` option) that is not a network error. TS provider-utils
-// handleFetchError turns only a failed fetch (`TypeError: fetch failed`)
-// into the APICallError "Cannot connect to API" and returns any other
-// rejection unchanged, so asGatewayError returns a rejected gateway error as
-// is and converts any other error to a GatewayResponseError "Invalid error
-// response format: Gateway request failed: <message>" with the error as the
-// cause. A stdlib *http.Transport only fails the way fetch fails (network,
-// TLS, protocol), so only a custom RoundTripper's errors are marked.
-type gatewayFetchRejection struct{ err error }
-
-func (e *gatewayFetchRejection) Error() string { return e.err.Error() }
-func (e *gatewayFetchRejection) Unwrap() error { return e.err }
-
-// customFetchError marks err of a custom RoundTripper as a fetch rejection
-// unless it is a network error (a custom RoundTripper that delegates to a
-// stdlib transport: the TS failed-fetch path).
+// customFetchError marks an error of a caller-supplied RoundTripper (the
+// TS `fetch` option) that is not a network error as a fetch rejection
+// (internalhttp.FetchRejection). TS provider-utils handleFetchError turns
+// only a failed fetch (`TypeError: fetch failed`) into the APICallError
+// "Cannot connect to API" and returns any other rejection unchanged, so
+// asGatewayError returns a rejected gateway error as is and converts any
+// other error to a GatewayResponseError "Invalid error response format:
+// Gateway request failed: <message>" with the error as the cause. A stdlib
+// *http.Transport only fails the way fetch fails (network, TLS, protocol),
+// so only a custom RoundTripper's errors are marked, and a network error of
+// a custom RoundTripper that delegates to a stdlib transport keeps the TS
+// failed-fetch path.
 func customFetchError(err error) error {
 	var ne net.Error
 	if errors.As(err, &ne) {
 		return err
 	}
-	return &gatewayFetchRejection{err: err}
+	return internalhttp.RejectFetch(err)
 }
