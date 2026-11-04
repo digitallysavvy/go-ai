@@ -700,8 +700,9 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 	var cancel context.CancelFunc
 	if fc.Timeout != nil && fc.Timeout.HasTotal() {
 		// The deadline's cause is the total TimeoutError (TS
-		// AbortSignal.timeout's reason), as in GenerateText.
-		ctx, cancel = context.WithTimeoutCause(ctx, *fc.Timeout.Total, &ai.TimeoutError{Reason: ai.TimeoutReasonTotal, Err: context.DeadlineExceeded, Timeout: *fc.Timeout.Total})
+		// AbortSignal.timeout's reason; ai.CreateTimeoutContext), as in
+		// GenerateText.
+		ctx, cancel = fc.Timeout.CreateTimeoutContext(ctx, "total")
 		defer cancel()
 	}
 
@@ -1989,8 +1990,8 @@ func (a *ToolLoopAgent) stepTimeoutContext(ctx context.Context, callConfig Prepa
 	if stepTimeout.HasPerStep() {
 		// TS setAbortTimeout aborts the step with a TimeoutError ("Step
 		// timeout of <ms>ms exceeded"), the cause the model call and tools
-		// see.
-		return context.WithTimeoutCause(ctx, *stepTimeout.PerStep, a.stepTimeoutCause(callConfig))
+		// see (ai.CreateTimeoutContext).
+		return stepTimeout.CreateTimeoutContext(ctx, "step")
 	}
 	return ctx, func() {}
 }

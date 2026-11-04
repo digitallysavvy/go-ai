@@ -1049,10 +1049,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	totalParent := ctx
 	var cancel context.CancelFunc
 	if opts.Timeout != nil && opts.Timeout.HasTotal() {
-		// The deadline's cause is the total TimeoutError, so the abort reason
-		// the model call and tools see (context.Cause) is TS's
-		// AbortSignal.timeout reason, as in StreamText.
-		ctx, cancel = context.WithTimeoutCause(ctx, *opts.Timeout.Total, opts.Timeout.timeoutError(TimeoutReasonTotal, context.DeadlineExceeded))
+		// The deadline's cause is the total TimeoutError (CreateTimeoutContext),
+		// so the abort reason the model call and tools see (context.Cause) is
+		// TS's AbortSignal.timeout reason, as in StreamText.
+		ctx, cancel = opts.Timeout.CreateTimeoutContext(ctx, "total")
 		defer cancel()
 	}
 
@@ -1206,8 +1206,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		if opts.Timeout != nil && opts.Timeout.HasPerStep() {
 			// TS setAbortTimeout aborts the step with a TimeoutError
 			// DOMException ("Step timeout of <ms>ms exceeded"): that is the
-			// cause the model call and tools see.
-			stepCtx, stepCancel = context.WithTimeoutCause(ctx, *opts.Timeout.PerStep, opts.Timeout.timeoutError(TimeoutReasonStep, context.DeadlineExceeded))
+			// cause the model call and tools see (CreateTimeoutContext).
+			stepCtx, stepCancel = opts.Timeout.CreateTimeoutContext(ctx, "step")
 			defer stepCancel()
 		}
 		stepModel := opts.Model
