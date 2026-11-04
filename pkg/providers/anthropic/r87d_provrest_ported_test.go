@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
-	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
@@ -33,18 +32,9 @@ func init() {
 	// the mark above covers both files (TestR87dprovrestAnthropicPrepareToolsCacheWarnings).
 	r87dprovrestMark("TestR87dprovrestAnthropicPrepareToolsNoneChoice", "should not affect auto and none tool choices",
 		"none.tools", "toHaveLength", "none.toolChoice", "toEqual", "none.toolWarnings", "toEqual")
-	r87dprovrestMark("TestR87dprovrestAnthropicConvertPromptBetas", "should emit a mid-conversation system message inline and add the beta",
-		"result.betas.has('mid-conversation-system-2026-04-07')", "toBe")
-	r87dprovrestMark("TestR87dprovrestAnthropicConvertPromptBetas", "should emit tool change blocks on a mid-conversation system message and add the beta",
-		"result.betas.has('mid-conversation-system-2026-04-07')", "toBe")
-	r87dprovrestMark("TestR87dprovrestAnthropicConvertPromptBetas", "should serialize effort updates and turn-scoped reminders on separate system messages",
-		"result.betas.has('mid-conversation-system-clear-at-2026-08-21'),", "toBe")
 	r87dprovrestMark("TestR87dprovrestAnthropicConvertUsageRaw", "should use usage as raw when rawUsage is not provided", "result.raw", "toBe")
 	r87dprovrestMark("TestR87dprovrestAnthropicConvertUsageRaw", "should sum across all iterations when iterations array is present", "result.raw", "toBe")
 	r87dprovrestMark("TestR87dprovrestAnthropicSanitizeSchemaKeepsInput", "does not mutate the input schema", "schema", "toEqual")
-	for _, test := range []string{"should warn when using the default max output token limit", "should not warn when max output tokens are provided", "should use the current-generation default and warn for an unknown Claude model"} {
-		r87dprovrestMark("TestR87dprovrestAnthropicUnknownModelWarnings", test, "warnings", "toEqual")
-	}
 	tsfixture.RegisterPorted(r87dprovrestPorted)
 }
 
@@ -86,24 +76,6 @@ func r87dprovrestWarnings(v *prompt.AnthropicCacheControlValidator) []interface{
 		out = append(out, map[string]interface{}{"type": w.Type, "feature": w.Feature, "details": w.Details})
 	}
 	return out
-}
-
-// TS mid-conversation system tests: expect(result.betas.has(BETA)).toBe(true).
-func TestR87dprovrestAnthropicConvertPromptBetas(t *testing.T) {
-	for test, beta := range map[string]string{
-		"should emit a mid-conversation system message inline and add the beta":                 "mid-conversation-system-2026-04-07",
-		"should emit tool change blocks on a mid-conversation system message and add the beta":  "mid-conversation-system-2026-04-07",
-		"should serialize effort updates and turn-scoped reminders on separate system messages": "mid-conversation-system-clear-at-2026-08-21",
-	} {
-		out, _ := r87dprovrestConvertPrompt(t, test)
-		has := false
-		for _, b := range out.Betas {
-			has = has || b == beta
-		}
-		if !has {
-			t.Errorf("%s: betas %v, TS has %s", test, out.Betas, beta)
-		}
-	}
 }
 
 // r87dprovrestPrepareTools runs prepareTools on the first call's TS input of
@@ -181,26 +153,4 @@ func TestR87dprovrestAnthropicSanitizeSchemaKeepsInput(t *testing.T) {
 	schema := map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "number", "exclusiveMinimum": 0}}}
 	_ = tool.SanitizeAnthropicSchema(schema)
 	r87dprovrestEqual(t, "schema", r87dprovrestArg(t, "testdata/tscases/sanitize_schema.json.gz", "does not mutate the input schema", 0, "schema"), schema)
-}
-
-// anthropic-unknown-model-max-output-tokens.test.ts: const { warnings } = await model.doGenerate(...)
-func TestR87dprovrestAnthropicUnknownModelWarnings(t *testing.T) {
-	const file = "testdata/tscases/unknown_model_max_tokens.json.gz"
-	for _, test := range []string{"should warn when using the default max output token limit", "should not warn when max output tokens are provided", "should use the current-generation default and warn for an unknown Claude model"} {
-		run := r87dprovrestReplay(t, file, test, 0, nil, func(base, id string) provider.LanguageModel {
-			m, err := New(Config{APIKey: "test-api-key", BaseURL: base}).LanguageModel(id)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return m
-		})
-		if run.gen == nil {
-			t.Fatalf("%s: no result (err %v)", test, run.genErr)
-		}
-		got := []interface{}{}
-		for _, w := range run.gen.Warnings {
-			got = append(got, map[string]interface{}{"type": w.Type, "feature": w.Feature, "details": w.Details})
-		}
-		r87dprovrestEqual(t, test, r87dprovrestArg(t, file, test, 0, "warnings"), got)
-	}
 }

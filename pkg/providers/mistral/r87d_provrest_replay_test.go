@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"flag"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -232,26 +230,5 @@ func r87dprovrestArg(t *testing.T, file, test string, nth int, expr string) inte
 // r87d_provrest_ported_test.go) are registered for every suite.
 func init() { tsfixture.RegisterPorted(r87dprovrestPorted) }
 
-// TestMain fails a full run whose hand-port marks are stale (a mark that no
-// replayed assertion reaches, or whose assertion now evaluates).
-func TestMain(m *testing.M) {
-	code := m.Run()
-	if code == 0 && r87dprovrestFullRun() {
-		if stale := tsfixture.CheckPortedUsed(nil, r87dprovrestPorted); len(stale) > 0 {
-			for _, s := range stale {
-				fmt.Fprintln(os.Stderr, s)
-			}
-			code = 1
-		}
-	}
-	os.Exit(code)
-}
-
-func r87dprovrestFullRun() bool {
-	for _, name := range []string{"test.run", "test.skip"} {
-		if f := flag.Lookup(name); f != nil && f.Value.String() != "" {
-			return false
-		}
-	}
-	return true
-}
+// TestMain fails an unfiltered run whose hand-port or n/a marks are stale.
+func TestMain(m *testing.M) { os.Exit(tsfixture.PortedMain(m, r87dprovrestPorted)) }

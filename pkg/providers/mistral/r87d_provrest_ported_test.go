@@ -12,7 +12,6 @@ import (
 // evaluate (R87D_TSFIXTURE closure rule), and their marks.
 
 var r87dprovrestPorted = map[string]string{
-	tsfixture.PortedKey("should preserve the complete raw usage object without changing normalized usage", "usage", "toStrictEqual"):                                 "TestR87dprovrestMistralRawUsagePreserved",
 	tsfixture.PortedKey("uses Conversations even when no search tools are supplied", "model.provider", "toBe"):                                                       "TestR87dprovrestMistralConversationProvider",
 	tsfixture.PortedKey("replays search executions and assistant answers on a follow-up turn", "(await server.calls[1].requestBodyJson).inputs", "toEqual"):          "TestR87dprovrestMistralFollowUpReplaysSearch",
 	tsfixture.PortedKey("preserves the executed function and raw search result for replay", "(await server.calls[1].requestBodyJson).inputs.slice(1, 3)", "toEqual"): "TestR87dprovrestMistralReplayKeepsExecutedFunction",
@@ -21,25 +20,6 @@ var r87dprovrestPorted = map[string]string{
 }
 
 const r87dprovrestConvFile = "testdata/tscases/conversation.json.gz"
-
-// mistral-chat-language-model.test.ts 285-289: const { usage } = await model.doGenerate(...); expect(usage).toStrictEqual({...})
-func TestR87dprovrestMistralRawUsagePreserved(t *testing.T) {
-	const test = "should preserve the complete raw usage object without changing normalized usage"
-	run := r87dprovrestReplay(t, "testdata/tscases/chat_asserts.json.gz", test, 0, nil, func(base, id string) provider.LanguageModel {
-		if id == "" {
-			id = "mistral-small-latest"
-		}
-		m, err := New(Config{APIKey: "k", BaseURL: base}).LanguageModel(id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return m
-	})
-	if run.gen == nil {
-		t.Fatalf("no generate result (err %v)", run.genErr)
-	}
-	r87dprovrestEqual(t, "usage", r87dprovrestArg(t, "testdata/tscases/chat_asserts.json.gz", test, 0, "usage"), tsfixture.UsageToTS(run.gen.Usage))
-}
 
 // mistral-conversation-language-model.test.ts 165-168: expect(model.provider).toBe('mistral.conversation')
 func TestR87dprovrestMistralConversationProvider(t *testing.T) {

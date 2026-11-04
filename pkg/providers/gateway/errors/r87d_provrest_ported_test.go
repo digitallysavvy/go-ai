@@ -2,7 +2,6 @@ package errors
 
 import (
 	stderrors "errors"
-	"flag"
 	"fmt"
 	"os"
 	"testing"
@@ -12,12 +11,14 @@ import (
 
 // Hand-port marks for create-gateway-error.test.ts (R87D_TSFIXTURE closure
 // rule). The five `expect(responseError.response).toBe(response)` assertions
-// are reference equality in TS; CreateGatewayErrorFromResponse takes the raw
-// body bytes, so Go cannot keep the caller's object, and
-// TestTSCasesCreateGatewayError compares the kept value with the TS response
-// instead. The two `expect(error.cause).toBe(originalCause)` assertions keep
+// are n/a: reference equality in TS, while CreateGatewayErrorFromResponse
+// takes the raw body bytes (TestTSCasesCreateGatewayError compares the kept
+// value with the TS response instead). The two `expect(error.cause).toBe(originalCause)` assertions keep
 // their identity in Go: TestR87dprovrestGatewayErrorCauseIdentity.
 var r87dprovrestPorted = map[string]string{}
+
+// r87dprovrestNA are the assertions that cannot apply to Go.
+var r87dprovrestNA = map[string]string{}
 
 func init() {
 	for _, test := range []string{
@@ -27,7 +28,7 @@ func init() {
 		"should create GatewayResponseError for array response",
 		"should use default defaultMessage when not provided",
 	} {
-		r87dprovrestPorted[tsfixture.PortedKey(test, "responseError.response", "toBe")] = "TestTSCasesCreateGatewayError"
+		r87dprovrestNA[tsfixture.PortedKey(test, "responseError.response", "toBe")] = "toBe is reference identity with the caller's response object; CreateGatewayErrorFromResponse takes the body bytes, so Go cannot hand back the caller's object (TestTSCasesCreateGatewayError compares the kept value with the TS response)"
 	}
 	for _, test := range []string{
 		"should include cause in the created error",
@@ -36,27 +37,11 @@ func init() {
 		r87dprovrestPorted[tsfixture.PortedKey(test, "error.cause", "toBe")] = "TestR87dprovrestGatewayErrorCauseIdentity"
 	}
 	tsfixture.RegisterPorted(r87dprovrestPorted)
+	tsfixture.RegisterNotApplicable(r87dprovrestNA)
 }
 
-// TestMain fails a full run whose hand-port marks are stale.
-func TestMain(m *testing.M) {
-	code := m.Run()
-	full := true
-	for _, name := range []string{"test.run", "test.skip"} {
-		if f := flag.Lookup(name); f != nil && f.Value.String() != "" {
-			full = false
-		}
-	}
-	if code == 0 && full {
-		if stale := tsfixture.CheckPortedUsed(nil, r87dprovrestPorted); len(stale) > 0 {
-			for _, s := range stale {
-				fmt.Fprintln(os.Stderr, s)
-			}
-			code = 1
-		}
-	}
-	os.Exit(code)
-}
+// TestMain fails an unfiltered run whose hand-port or n/a marks are stale.
+func TestMain(m *testing.M) { os.Exit(tsfixture.PortedMain(m, r87dprovrestPorted, r87dprovrestNA)) }
 
 // create-gateway-error.test.ts 306-322 and 508-530: the created error's cause
 // is the caller's cause (toBe: the same error value).

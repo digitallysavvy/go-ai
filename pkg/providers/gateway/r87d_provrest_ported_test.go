@@ -3,8 +3,6 @@ package gateway
 import (
 	"context"
 	"errors"
-	"flag"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +27,11 @@ import (
 
 var r87dprovrestPorted = map[string]string{}
 
+// r87dprovrestNA are the assertions that cannot apply to Go.
+var r87dprovrestNA = map[string]string{
+	tsfixture.PortedKey("should extract usage information", "usage", "toEqual"): "TS doGenerate returns the response's usage object as is (here the test helper's flat snake-case counts, not the V4 usage the gateway sends); types.Usage cannot hold an arbitrary object. Go reads no counts from that shape, as the TS core does not (TestR87dprovrestGatewayGenerateResultFields)",
+}
+
 func r87dprovrestMark(goTest, test string, exprMatchers ...string) {
 	for i := 0; i < len(exprMatchers); i += 2 {
 		r87dprovrestPorted[tsfixture.PortedKey(test, exprMatchers[i], exprMatchers[i+1])] = goTest
@@ -39,7 +42,6 @@ func init() {
 	r87dprovrestMark("TestR87dprovrestGatewayRequestHeaders", "should pass headers correctly", "headers", "toMatchObject")
 	r87dprovrestMark("TestR87dprovrestGatewayRequestHeaders", "should pass streaming headers", "headers", "toMatchObject")
 	r87dprovrestMark("TestR87dprovrestGatewayGenerateResultFields", "should extract text response", "content", "toEqual")
-	r87dprovrestMark("TestR87dprovrestGatewayGenerateResultFields", "should extract usage information", "usage", "toEqual")
 	r87dprovrestMark("TestR87dprovrestGatewayGenerateResultFields", "should default warnings to an empty array when absent", "warnings", "toEqual")
 	r87dprovrestMark("TestR87dprovrestGatewayNoAbortSignalWithoutOne", "should not pass abortSignal to fetch when not provided", "fetchCallArgs[1].signal", "toBeUndefined")
 	r87dprovrestMark("TestR87dprovrestGatewayNoAbortSignalWithoutOne", "should not pass abortSignal to fetch when not provided for streaming", "fetchCallArgs[1].signal", "toBeUndefined")
@@ -57,27 +59,11 @@ func init() {
 	r87dprovrestMark("TestR87dprovrestGatewayFetchRejections", "should handle network errors gracefully", "GatewayResponseError.isInstance(error)", "toBe", "responseError.message", "toBe")
 	r87dprovrestMark("TestR87dprovrestGatewayFetchRejections", "should handle network errors gracefully in streaming", "GatewayResponseError.isInstance(error)", "toBe", "responseError.message", "toBe")
 	tsfixture.RegisterPorted(r87dprovrestPorted)
+	tsfixture.RegisterNotApplicable(r87dprovrestNA)
 }
 
-// TestMain fails a full run whose hand-port marks are stale.
-func TestMain(m *testing.M) {
-	code := m.Run()
-	full := true
-	for _, name := range []string{"test.run", "test.skip"} {
-		if f := flag.Lookup(name); f != nil && f.Value.String() != "" {
-			full = false
-		}
-	}
-	if code == 0 && full {
-		if stale := tsfixture.CheckPortedUsed(nil, r87dprovrestPorted); len(stale) > 0 {
-			for _, s := range stale {
-				fmt.Fprintln(os.Stderr, s)
-			}
-			code = 1
-		}
-	}
-	os.Exit(code)
-}
+// TestMain fails an unfiltered run whose hand-port or n/a marks are stale.
+func TestMain(m *testing.M) { os.Exit(tsfixture.PortedMain(m, r87dprovrestPorted, r87dprovrestNA)) }
 
 // TS prepareJsonResponse({ content, usage }) and prepareStreamResponse({ content }).
 func r87dprovrestJSONBody(text string, usage string) string {
