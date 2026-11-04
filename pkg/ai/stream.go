@@ -785,7 +785,10 @@ type StreamTextResult struct {
 	// WorkflowAgent.stream dispatches one root per run.
 	callerOwnsTelemetryRoot bool
 	streamModeUsage         bool
-	streamDoneOnce          sync.Once
+	// endOnError is InternalOptions.EndOnError (WorkflowAgent): its output
+	// handling stays its own (see setNoOutputErr).
+	endOnError     bool
+	streamDoneOnce sync.Once
 
 	// cancelBootstrap cancels bootstrapAndStream's context. It lets Close()
 	// interrupt in-flight bootstrap work (resuming approved tool calls, or
@@ -890,6 +893,7 @@ func streamTextInternal(ctx context.Context, opts StreamTextOptions, steeringRun
 	if opts.Internal != nil {
 		result.onStreamDone = opts.Internal.onStreamDone
 		result.streamModeUsage = opts.Internal.streamModeUsage
+		result.endOnError = opts.Internal.EndOnError
 		result.callerOwnsTelemetryRoot = opts.Internal.onStreamDone != nil
 	}
 
@@ -1817,6 +1821,8 @@ func (r *StreamTextResult) fail(err error) {
 	r.err = err
 	r.steering.end(steeringEndReasonFor(context.TODO(), err))
 	r.mu.Lock()
+	// No step was recorded.
+	r.setNoOutputErr(context.TODO(), err)
 	r.status = StreamStatusDone
 	r.mu.Unlock()
 	r.notifyStreamDone()
@@ -1826,6 +1832,24 @@ func (r *StreamTextResult) fail(err error) {
 	if r.processingDone != nil {
 		close(r.processingDone)
 	}
+}
+
+// setNoOutputErr records OutputErr for a run that failed without a recorded
+// step, or that an incomplete model stream ended. TS flush then rejects the
+// result promises, result.output among them, with the abort reason, the
+// no-finish error, else a NoOutputGeneratedError ("No output generated.
+// Check the stream for errors."). WorkflowAgent (EndOnError) keeps its own
+// output handling. Call it with r.mu held.
+func (r *StreamTextResult) setNoOutputErr(ctx context.Context, err error) {
+	if r.outputErr != nil || r.endOnError || err == nil {
+		return
+	}
+	var noFinish *NoOutputGeneratedError
+	if isAbortErr(ctx, err) || errors.As(err, &noFinish) {
+		r.outputErr = err
+		return
+	}
+	r.outputErr = &NoOutputGeneratedError{Message: "No output generated. Check the stream for errors."}
 }
 
 // notifyStreamDone runs InternalOptions.onStreamDone once, on the processing
@@ -4443,6 +4467,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			})
 		}
 		r.mu.Lock()
+		var noFinish *NoOutputGeneratedError
+		if len(allSteps) == 0 || errors.As(r.err, &noFinish) {
+			r.setNoOutputErr(ctx, r.err)
+		}
 		r.status = StreamStatusDone
 		r.mu.Unlock()
 		return
