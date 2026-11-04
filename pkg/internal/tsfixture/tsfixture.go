@@ -29,6 +29,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // Case is one TS test that feeds a canned response through a model and
@@ -478,6 +479,9 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 					}
 					if !m.Timestamp.IsZero() {
 						resp["timestamp"] = m.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z")
+					}
+					if m.Body != nil {
+						resp["body"] = m.Body // TS result.response.body
 					}
 				}
 				resultMap["response"] = resp
@@ -1369,7 +1373,14 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 				tc := types.ToolCallContent{ToolCallID: p["toolCallId"].(string), ToolName: promptToolName(p["toolName"].(string)), ProviderOptions: po, ProviderMetadata: pm}
 				if str, ok := in.(string); ok {
 					tc.Input = str
-					_ = json.Unmarshal([]byte(str), &tc.Arguments)
+					// A string TS input is the JSON text alone: Arguments
+					// mirrors it only when TS secureJsonParse would accept it
+					// (a forbidden prototype key leaves the parsing, and its
+					// fallback, to the converter, as for a Go caller that
+					// sets Input only).
+					if _, safe := prompt.SecureJSONParse(str); safe {
+						_ = json.Unmarshal([]byte(str), &tc.Arguments)
+					}
 				} else if mm, ok := in.(map[string]interface{}); ok && !isUndef(in) { // `input: undefined` is a missing input
 					tc.Arguments = mm
 					if text, ok := orderedToolInputText(mm); ok {
