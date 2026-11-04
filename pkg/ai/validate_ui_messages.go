@@ -364,6 +364,7 @@ func decodeValidatedUIMessages(raw interface{}) ([]UIMessage, error) {
 			// inputEncoding only on input-streaming parts.
 			if tool.State != ToolStateOutputError && tool.State != ToolStateInputStreaming {
 				tool.RawInput = nil
+				tool.rawInputNull = false
 			}
 			if tool.State != ToolStateInputStreaming {
 				tool.InputEncoding = ""
