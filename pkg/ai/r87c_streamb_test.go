@@ -244,7 +244,11 @@ func r87cstreambPart(c provider.StreamChunk) map[string]interface{} {
 				resp["headers"] = c.Response.Headers
 			}
 		}
-		return set(map[string]interface{}{"type": "finish-step", "finishReason": string(c.FinishReason), "rawFinishReason": c.RawFinishReason, "response": resp, "usage": c.Usage})
+		m := set(map[string]interface{}{"type": "finish-step", "finishReason": string(c.FinishReason), "rawFinishReason": c.RawFinishReason, "response": resp, "usage": c.Usage})
+		if c.RawFinishReason == "" {
+			delete(m, "rawFinishReason")
+		}
+		return m
 	case provider.ChunkTypeFinish:
 		m := map[string]interface{}{"type": "finish", "finishReason": string(c.FinishReason), "rawFinishReason": c.RawFinishReason, "totalUsage": c.Usage}
 		if c.RawFinishReason == "" {
@@ -1311,4 +1315,227 @@ func TestR87cstreambInterleavedSteps(t *testing.T) {
 		"model":{"modelId":"mock-model-id","provider":"mock-provider"},"toolExecutionMsKeys":[],"rawFinishReason":"stop","request":{},
 		"response":{"id":"id-0","messages":[{"content":`+content+`,"role":"assistant"}],"modelId":"mock-model-id","timestamp":"<now>"},
 		"runtimeContext":{},"stepNumber":0,"toolsContext":{},"usage":`+r87cstreambUsageJSON+`,"warnings":[]}]`)
+}
+
+// r87cstreambAbortRec records the abort / error / end callbacks of the TS
+// 'abort signal' blocks.
+type r87cstreambAbortRec struct {
+	mu     sync.Mutex
+	errs   []error
+	aborts []GenerateTextAbortEvent
+	ends   int
+}
+
+func (a *r87cstreambAbortRec) options(opts StreamTextOptions) StreamTextOptions {
+	opts.OnError = func(_ context.Context, err error) {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		a.errs = append(a.errs, err)
+	}
+	opts.OnAbortEvent = func(_ context.Context, e GenerateTextAbortEvent) {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		a.aborts = append(a.aborts, e)
+	}
+	opts.OnEndEvent = func(context.Context, OnFinishEvent) {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		a.ends++
+	}
+	return opts
+}
+
+// r87cstreambAbortSecondStep is the TS 'abort in 2nd step' beforeEach: step
+// 1 calls tool1, step 2 streams "Hello" and then the caller aborts and the
+// provider stream fails with the abort.
+func r87cstreambAbortSecondStep(t *testing.T) (*StreamTextResult, *r87cstreambAbortRec, []provider.StreamChunk) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	var mu sync.Mutex
+	call := 0
+	model := &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id",
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			mu.Lock()
+			call++
+			n := call
+			mu.Unlock()
+			if n == 1 {
+				return testutil.NewMockTextStream([]provider.StreamChunk{{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{}},
+					r87cstreambCall("call-1", "tool1", `{ "value": "value" }`),
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r87cstreambUsage()}}), nil
+			}
+			return &abortingStream{ctx: ctx, cancel: cancel, chunks: []provider.StreamChunk{{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{}},
+				{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Hello"}}}, nil
+		}}
+	rec := &r87cstreambAbortRec{}
+	r, err := StreamText(ctx, rec.options(StreamTextOptions{
+		Model: model,
+		Tools: []types.Tool{{Name: "tool1", Parameters: r71streamValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "result1", nil
+		}}},
+		StopWhen: []StopCondition{StepCountIs(3)},
+		Prompt:   "prompt",
+		Internal: r87cstreambIDs(),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := r.FullStream()
+	var parts []provider.StreamChunk
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		parts = append(parts, *c)
+	}
+	return r, rec, parts
+}
+
+// r87cstreambAbortStepJSON is the completed first step TS onAbort receives.
+const r87cstreambAbortStepJSON = `{"callId":"test-telemetry-call-id",
+	"content":[{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"},
+		{"dynamic":false,"input":{"value":"value"},"output":"result1","toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],
+	"finishReason":"tool-calls","model":{"modelId":"mock-model-id","provider":"mock-provider"},"toolExecutionMsKeys":["call-1"],"request":{},
+	"response":{"id":"id-0","messages":[
+		{"content":[{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},
+		{"content":[{"output":{"type":"text","value":"result1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"}],
+		"modelId":"mock-model-id","timestamp":"<now>"},
+	"runtimeContext":{},"stepNumber":0,"toolsContext":{},"usage":` + r87cstreambUsageJSON + `,"warnings":[]}`
+
+// stream-text.test.ts 25915: abort signal > abort in 2nd step > should not
+// call onError for abort errors.
+func TestR87cstreambAbortSecondStepNoOnError(t *testing.T) {
+	_, rec, _ := r87cstreambAbortSecondStep(t)
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.errs) != 0 {
+		t.Fatalf("onError calls = %v, want []", rec.errs)
+	}
+}
+
+// stream-text.test.ts 25920: abort signal > abort in 2nd step > should call
+// onAbort when the abort signal is triggered.
+func TestR87cstreambAbortSecondStepOnAbort(t *testing.T) {
+	_, rec, _ := r87cstreambAbortSecondStep(t)
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.aborts) != 1 {
+		t.Fatalf("onAbort calls = %d, want 1", len(rec.aborts))
+	}
+	e := rec.aborts[0]
+	if e.CallID != "test-telemetry-call-id" || !errors.Is(e.Reason, context.Canceled) || abortReasonMessage(e.Reason) != "AbortError: This operation was aborted" {
+		t.Fatalf("onAbort callId %q reason %v", e.CallID, e.Reason)
+	}
+	r87cstreambAssert(t, "onAbort steps", r87cstreambSteps(t, e.Steps), "["+r87cstreambAbortStepJSON+"]")
+}
+
+// stream-text.test.ts 26040: abort signal > abort in 2nd step > should not
+// call onEnd when aborting after a completed step.
+func TestR87cstreambAbortSecondStepNoOnEnd(t *testing.T) {
+	_, rec, _ := r87cstreambAbortSecondStep(t)
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if rec.ends != 0 {
+		t.Fatalf("onEnd calls = %d, want 0", rec.ends)
+	}
+}
+
+// stream-text.test.ts 26045: abort signal > abort in 2nd step > should
+// reject result promises when aborting after a completed step (Go: the
+// result's Err and ConsumeStream report the abort).
+func TestR87cstreambAbortSecondStepRejects(t *testing.T) {
+	r, _, _ := r87cstreambAbortSecondStep(t)
+	if err := r.Err(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Err() = %v, want the abort", err)
+	}
+	if err := r.ConsumeStream(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ConsumeStream() = %v, want the abort", err)
+	}
+}
+
+// stream-text.test.ts 26059: abort signal > abort in 2nd step > should only
+// stream initial chunks in full stream. The first step and the abort part
+// are the TS snapshot. Known difference "Abort keeps the parts produced
+// before it" (known-differences.mdx): TS also drops the second step's
+// start-step, text-start and text-delta, which were still queued in its pipe
+// chain when the abort cancelled the reader; Go delivers the parts the model
+// produced before the abort, between the first step and the abort part.
+func TestR87cstreambAbortSecondStepFullStream(t *testing.T) {
+	_, _, parts := r87cstreambAbortSecondStep(t)
+	r87cstreambAssert(t, "full stream", r87cstreambParts(parts), `[
+		{"type":"start"},{"type":"start-step","request":{},"warnings":[]},
+		{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"},
+		{"dynamic":false,"input":{"value":"value"},"output":"result1","toolCallId":"call-1","toolName":"tool1","type":"tool-result"},
+		{"finishReason":"tool-calls","response":{"id":"id-0","modelId":"mock-model-id","timestamp":"<now>"},"type":"finish-step","usage":`+r87cstreambUsageJSON+`},
+		{"type":"start-step","request":{},"warnings":[]},{"id":"1","type":"text-start"},{"id":"1","text":"Hello","type":"text-delta"},
+		{"reason":"AbortError: This operation was aborted","type":"abort"}]`)
+}
+
+// r87cstreambAbortDuringTool is the TS 'abort during tool execution'
+// beforeEach: tool1 aborts the call while it runs and returns "result1".
+func r87cstreambAbortDuringTool(t *testing.T) (*StreamTextResult, *r87cstreambAbortRec) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	var mu sync.Mutex
+	call := 0
+	model := &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id",
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			mu.Lock()
+			call++
+			n := call
+			mu.Unlock()
+			if n == 1 {
+				return testutil.NewMockTextStream([]provider.StreamChunk{{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{}},
+					r87cstreambCall("call-1", "tool1", `{ "value": "value" }`),
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r87cstreambUsage()}}), nil
+			}
+			return testutil.NewMockTextStream(r87cstreambJoin([]provider.StreamChunk{{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{}}},
+				r87cstreambText("1", "Hello"),
+				[]provider.StreamChunk{{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r87cstreambUsage()}})), nil
+		}}
+	rec := &r87cstreambAbortRec{}
+	r, err := StreamText(ctx, rec.options(StreamTextOptions{
+		Model: model,
+		Tools: []types.Tool{{Name: "tool1", Parameters: r71streamValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			cancel()
+			return "result1", nil
+		}}},
+		StopWhen: []StopCondition{StepCountIs(3)},
+		Prompt:   "prompt",
+		Internal: r87cstreambIDs(),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	return r, rec
+}
+
+// stream-text.test.ts 26290: abort signal > abort during tool execution >
+// should not call onError for abort errors.
+func TestR87cstreambAbortDuringToolNoOnError(t *testing.T) {
+	_, rec := r87cstreambAbortDuringTool(t)
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.errs) != 0 {
+		t.Fatalf("onError calls = %v, want []", rec.errs)
+	}
+}
+
+// stream-text.test.ts 26295: abort signal > abort during tool execution >
+// should call onAbort when the abort signal is triggered during tool call.
+func TestR87cstreambAbortDuringToolOnAbort(t *testing.T) {
+	_, rec := r87cstreambAbortDuringTool(t)
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.aborts) != 1 {
+		t.Fatalf("onAbort calls = %d, want 1", len(rec.aborts))
+	}
+	e := rec.aborts[0]
+	if e.CallID != "test-telemetry-call-id" || !errors.Is(e.Reason, context.Canceled) || len(e.Steps) != 0 {
+		t.Fatalf("onAbort = callId %q reason %v steps %d, want test-telemetry-call-id / abort / []", e.CallID, e.Reason, len(e.Steps))
+	}
 }
