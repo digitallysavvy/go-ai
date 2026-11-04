@@ -191,8 +191,68 @@ func NormalizePromptWithDownloadSupport(ctx context.Context, prompt types.Prompt
 	if messages, err = sniffImageMediaTypes(messages); err != nil {
 		return types.Prompt{}, err
 	}
-	normalized.Messages = MergeConsecutiveToolMessages(messages)
+	normalized.Messages = MergeConsecutiveToolMessages(removeEmptyTextParts(messages))
 	return normalized, nil
+}
+
+// removeEmptyTextParts is TS convertToLanguageModelMessage's empty text
+// filter (convert-to-language-model-prompt.ts): a user message loses every
+// text part with empty text, an assistant message every empty text part
+// without provider options (`part.providerOptions != null` keeps it, so a
+// replayed Google thoughtSignature on an empty text part reaches the
+// provider). Go messages always hold parts, so TS's string-content form,
+// which is never filtered, has no counterpart. Messages are copied before
+// changes.
+func removeEmptyTextParts(messages []types.Message) []types.Message {
+	var out []types.Message
+	for i, message := range messages {
+		if message.Role != types.RoleUser && message.Role != types.RoleAssistant {
+			continue
+		}
+		drop := func(part types.ContentPart) bool {
+			var text *types.TextContent
+			switch p := part.(type) {
+			case types.TextContent:
+				text = &p
+			case *types.TextContent:
+				if p == nil {
+					return false
+				}
+				text = p
+			default:
+				return false
+			}
+			if text.Text != "" {
+				return false
+			}
+			return message.Role == types.RoleUser || text.ProviderOptions == nil
+		}
+		var kept []types.ContentPart
+		changed := false
+		for j, part := range message.Content {
+			if drop(part) {
+				if !changed {
+					kept = append(make([]types.ContentPart, 0, len(message.Content)), message.Content[:j]...)
+					changed = true
+				}
+				continue
+			}
+			if changed {
+				kept = append(kept, part)
+			}
+		}
+		if !changed {
+			continue
+		}
+		if out == nil {
+			out = append([]types.Message(nil), messages...)
+		}
+		out[i].Content = kept
+	}
+	if out == nil {
+		return messages
+	}
+	return out
 }
 
 // sniffImageMediaTypes mirrors the tail of TS convertPartToLanguageModelPart:
