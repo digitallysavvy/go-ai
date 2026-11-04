@@ -451,6 +451,7 @@ func r82genHelloOnly() *testutil.MockLanguageModel {
 	}}
 }
 
+// generate-text.test.ts 14771 / 14896 / 14941 / 14968:
 // 'telemetry integrations' 14771 'should call per-call integration listeners
 // for all lifecycle events', 14896 'alongside user callbacks', 14941 'should
 // not break generation when an integration listener throws' and 14968

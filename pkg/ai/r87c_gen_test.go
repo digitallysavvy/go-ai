@@ -437,6 +437,7 @@ func TestR87cgenResultReasoningText(t *testing.T) {
 	}
 }
 
+// Rows: generate-text.test.ts 1474 / 1569.
 // generate-text.test.ts 1474 'result.sources' > 'should contain sources'
 // (snapshot) and 1569 'result.files' > 'should contain files' (snapshot).
 func TestR87cgenResultSourcesAndFiles(t *testing.T) {
@@ -492,6 +493,7 @@ func TestR87cgenFileContentFromAllSteps(t *testing.T) {
 	}
 }
 
+// Rows: generate-text.test.ts 1835 / 1848 / 1861.
 // generate-text.test.ts 1835 'result.steps' > 'should add the reasoning from
 // the model response to the step result', 1848 'should contain sources' and
 // 1861 'should contain files' (snapshots of result.steps).
@@ -671,7 +673,7 @@ func TestR87cgenResultToolResults(t *testing.T) {
 }
 
 // generate-text.test.ts 2685 / 2699 / 2734 'result.responseMessages' >
-// 'should contain assistant response message when there are no tool calls',
+// (assistant response message, no tool calls),
 // '... and tool message when there are tool calls with results' (the tool
 // gets the parsed input and the user prompt as messages) and 'should contain
 // reasoning' (snapshots).
@@ -722,6 +724,7 @@ func r87cgenHello(text string) *testutil.MockLanguageModel {
 	})
 }
 
+// Rows: generate-text.test.ts 2995 / 3646.
 // generate-text.test.ts 2995 'options.onStart' > 'should pass
 // runtimeContext' and 3646 'options.onStepStart' > 'should pass
 // runtimeContext'.
@@ -939,6 +942,7 @@ func r87cgenSprintf(format string, args ...interface{}) string {
 	return out
 }
 
+// Rows: generate-text.test.ts 6347 / 6351 / 6357 / 6361 / 6367 / 6371 / 6469 / 6488 / 6507 / 6527 / 6547 / 6556.
 // generate-text.test.ts 'options.stopWhen' > '2 steps: initial,
 // tool-result' (the shared beforeEach: the first call gets tool1, tool choice
 // auto and the user prompt; the tool gets the parsed input and the user
@@ -1018,12 +1022,13 @@ func TestR87cgenStopWhenTwoSteps(t *testing.T) {
 
 func r87cgenStr(s string) *string { return &s }
 
+// Rows: generate-text.test.ts 6709 / 7237 / 7241 / 7247 / 7251 / 7257 / 7261 / 7265 / 7284 / 7303 / 7323 / 7327 / 7331 / 7363.
 // generate-text.test.ts 'options.stopWhen' > '2 steps: initial, tool-result
 // with prepareStep' (the shared beforeEach: modelWithFiles is replaced by
 // prepareStep's model for both steps; step 0 forces tool1 with
 // system-message-0, a replaced prompt and runtimeContext state2; step 1 has
 // no active tools, system-message-1 and runtimeContext state3):
-// generate-text.test.ts 6709 should contain all prepareStep calls, 7237
+// generate-text.test.ts 6709 (all the prepareStep calls), 7237
 // result.text, 7241 result.toolCalls, 7247 result.finalStep.toolCalls, 7251
 // result.toolResults, 7257 result.finalStep.toolResults, 7261
 // result.responseMessages (snapshot), 7265 result.totalUsage, 7284
@@ -1215,10 +1220,11 @@ func r87cgenHasDeadline(ctx context.Context) bool {
 	return ok
 }
 
+// Rows: generate-text.test.ts 8016 / 8055 / 8119 / 8187 / 8221.
 // generate-text.test.ts 'options.timeout' (TS abort signals are Go context
 // deadlines: "an AbortSignal is passed" is a ctx with a deadline):
 // generate-text.test.ts 8016 should forward timeout abort signal to tool
-// execution, 8055 should support timeout object with totalMs, 8119 should
+// execution, 8055 (timeout object, totalMs), 8119 should
 // forward stepMs as abort signal to each step, 8187 should forward stepMs
 // abort signal to tool execution, 8221 should support both totalMs and
 // stepMs together.
@@ -1564,6 +1570,7 @@ func (i r87cgenContextIntegration) OnEnd(_ context.Context, e telemetry.Telemetr
 	i.pick(e.RuntimeContext, e.ToolsContext)
 }
 
+// Rows: generate-text.test.ts 11463 / 11527 / 11581.
 // generate-text.test.ts 11463 'context' > 'should include configured
 // toolsContext properties in telemetry', 11527 'should exclude toolsContext
 // properties from telemetry by default' and 11581 'should exclude
@@ -1641,6 +1648,7 @@ const (
 	r87cgenHelloMessage  = `{"content":[{"text":"Hello, world!","type":"text"}],"role":"assistant"}`
 )
 
+// Rows: generate-text.test.ts 12433 / 12437 / 12491 / 12543.
 // generate-text.test.ts 'tool execution approval' > 'when a single tool has
 // a needsApproval function' (beforeEach: call-1 needs approval, call-2 does
 // not): 12433 should have tool-calls finish reason, 12437 should add a tool
@@ -1699,6 +1707,7 @@ func TestR87cgenNeedsApprovalFunction(t *testing.T) {
 		`{"input":{"value":"value-no-approval"},"options":{"messages":[`+r87cgenUserTestInput+`],"runtimeContext":{},"toolCallId":"call-2"}}]`)
 }
 
+// Rows: generate-text.test.ts 12657 / 12668 / 12719.
 // generate-text.test.ts 'when a call from a single tool that needs approval
 // is approved': 12657 should execute the tool (input, no abort signal: no
 // deadline, call-1, the messages), 12668 should call the model with a prompt
@@ -1764,6 +1773,7 @@ func TestR87cgenApprovalWithoutSecret(t *testing.T) {
 	}
 }
 
+// Rows: generate-text.test.ts 13405 / 13409 / 13460.
 // generate-text.test.ts 'when a call from a single tool that needs approval
 // is denied': 13405 should not execute the tool, 13409 should call the model
 // with a prompt that includes the tool error (execution-denied, no reason),
@@ -1828,6 +1838,7 @@ func TestR87cgenTwoApprovedToolCalls(t *testing.T) {
 
 var r87cgenMCPTool = types.Tool{Name: "mcp_tool", Type: types.ToolTypeProviderDefined, ProviderExecuted: true, ProviderID: "test.mcp_tool", Parameters: r87cgenSchema("query")}
 
+// Rows: generate-text.test.ts 14226 / 14230 / 14234 / 14267.
 // generate-text.test.ts 'provider-executed tool (MCP) approval' > 'when a
 // provider-executed tool emits tool-approval-request': 14226 should only
 // execute 1 step when waiting for approval, 14230 should have tool-calls
@@ -1890,6 +1901,7 @@ func TestR87cgenMCPApprovedContent(t *testing.T) {
 		`{"text":"Here is your shortened URL: https://short.url/abc","type":"text"}]`)
 }
 
+// Rows: generate-text.test.ts 14612 / 14623.
 // generate-text.test.ts 'when a provider-executed tool approval is denied':
 // 14612 should include text response from model in content, 14623 should
 // have stop finish reason.
