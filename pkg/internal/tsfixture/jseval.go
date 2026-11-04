@@ -138,7 +138,7 @@ func evalJS(roots map[string]interface{}, aliases map[string]string, program str
 	}
 	rootsLit, _ := json.Marshal(string(rootsJSON))
 	src := "(async () => {\n'use strict';\n" + jsPrelude +
-		"const __roots = JSON.parse(" + string(rootsLit) + ", (k, v) => (v !== null && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 1 && Array.isArray(v.__set) ? new Set(v.__set) : v));\n" + decls.String() +
+		"const __roots = JSON.parse(" + string(rootsLit) + ", (k, v) => (v === null || typeof v !== 'object' || Array.isArray(v) || Object.keys(v).length !== 1 ? v : Array.isArray(v.__set) ? new Set(v.__set) : ('__returns' in v ? () => v.__returns : v)));\n" + decls.String() +
 		"const __program = (" + program + ");\n" +
 		"return JSON.stringify({ v: __enc(await __program(__roots.result)) });\n})()"
 

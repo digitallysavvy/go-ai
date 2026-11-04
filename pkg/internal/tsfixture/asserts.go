@@ -1378,6 +1378,14 @@ func SpyRoot(calls ...[]interface{}) map[string]interface{} {
 	return map[string]interface{}{"mock": map[string]interface{}{"calls": list}}
 }
 
+// Returns is a root value that the JS fallback sees as a function returning
+// v: a RunFn adapter exposes a TS helper object whose method a test calls
+// after the call (`cacheControlValidator.getWarnings()`) as
+// map[string]interface{}{"getWarnings": Returns(goWarnings)}.
+func Returns(v interface{}) map[string]interface{} {
+	return map[string]interface{}{"__returns": v}
+}
+
 // ErrUnsupported is returned by a RunFn call function for an input the Go side
 // cannot express (the case is skipped).
 var ErrUnsupported = errors.New("unsupported")

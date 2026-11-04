@@ -89,6 +89,8 @@ func TestR87dgooglefamJSFallback(t *testing.T) {
 				map[string]interface{}{"type": "finish", "a": nil},
 			},
 		},
+		"v":      map[string]interface{}{"getWarnings": Returns([]interface{}{"w"})},
+		"s":      map[string]interface{}{"__set": []interface{}{"a"}},
 		"server": map[string]interface{}{"calls": []request{{body: map[string]interface{}{"b": float64(1), "a": "x"}, headers: map[string]interface{}{}}}},
 	}
 	const loop = `async (__result) => { return await (async () => {
@@ -126,6 +128,10 @@ func TestR87dgooglefamJSFallback(t *testing.T) {
 		{name: "a throwing program is not evaluated", a: Assertion{Expr: "x", Matcher: "toBe", Arg: float64(1),
 			JS: `async () => { await model.doGenerate({}); return 1; }`}, skip: true},
 		{name: "no program", a: Assertion{Expr: "Object.keys(result)", Matcher: "toEqual", Arg: []interface{}{}}, skip: true},
+		{name: "a Returns root is a method", a: Assertion{Expr: "v.getWarnings()", Matcher: "toEqual", Arg: []interface{}{"w"},
+			JS: `async () => v.getWarnings()`}},
+		{name: "a Set root has .has", a: Assertion{Expr: "s.has('a')", Matcher: "toBe", Arg: true,
+			JS: `async () => s.has('a')`}},
 		{name: "Uint8Array and Set encode as the extractor does", a: Assertion{Expr: "x", Matcher: "toEqual",
 			Arg: map[string]interface{}{"b": map[string]interface{}{"__bytes": "AQID"}, "s": map[string]interface{}{"__set": []interface{}{"a"}}},
 			JS:  `async () => ({ b: new Uint8Array([1, 2, 3]), s: new Set(['a']) })`}},
