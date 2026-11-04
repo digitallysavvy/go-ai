@@ -501,8 +501,18 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		pc.settleError(cause)
 	}))
 	pc.mu.Lock()
-	pc.unsubs = unsubs
+	settled := pc.settled
+	if !settled {
+		pc.unsubs = unsubs
+	}
 	pc.mu.Unlock()
+	if settled {
+		// A buffered finish or error settled the turn while its listeners
+		// were being registered.
+		for _, u := range unsubs {
+			u()
+		}
+	}
 	// Listeners are registered: release events the channel buffered while an
 	// attach/replay was in flight (first turn only).
 	s.mu.Lock()
