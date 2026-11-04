@@ -34,6 +34,12 @@ type DecisionQuestion struct {
 	//   - "boolean": optional; when non-nil, a map[string]interface{} with
 	//     only "true"/"false" keys.
 	//   - "box": unused (a box question has instructions only).
+	//
+	// ExperimentalDecide also accepts typed Go containers in Instructions and
+	// Criteria (any slice or array, any map with string keys, for example
+	// []string score levels or map[string]string options) and passes their
+	// JSON form ([]interface{} / map[string]interface{}) to the model.
+	// Providers called directly through DoDecide expect the generic forms.
 	Criteria interface{}
 }
 

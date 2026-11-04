@@ -3,11 +3,15 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -97,5 +101,75 @@ func TestR86bintegStreamPolicyEmptyDenialReasonKept(t *testing.T) {
 	b, _ := json.Marshal(last)
 	if !strings.Contains(string(b), `"output":{"type":"execution-denied","reason":""}`) {
 		t.Fatalf("next prompt tool message = %s, want the empty reason kept", b)
+	}
+}
+
+// V061 item 12 (cr-r86b-gen-to-integrator 1): ShellSandbox implements the
+// optional SandboxSession operations TS just-bash sessions have (stat,
+// listDirectory, deleteFile), with the local harness sandbox's contracts.
+func TestR86bintegShellSandboxOptionalOperations(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.txt")
+	if err := os.WriteFile(file, []byte("abc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(file, filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	sb := NewShellSandbox()
+
+	if st, err := sb.Stat(ctx, file); err != nil || st == nil || st.Type != providerutils.SandboxPathTypeFile || st.Size != 3 {
+		t.Errorf("Stat(file) = %+v, %v", st, err)
+	}
+	if st, err := sb.Stat(ctx, filepath.Join(dir, "link")); err != nil || st == nil || st.Type != providerutils.SandboxPathTypeFile {
+		t.Errorf("Stat(link) = %+v, %v; want the target (followed)", st, err)
+	}
+	if st, err := sb.Stat(ctx, filepath.Join(dir, "sub")); err != nil || st == nil || st.Type != providerutils.SandboxPathTypeDirectory {
+		t.Errorf("Stat(dir) = %+v, %v", st, err)
+	}
+	for _, missing := range []string{filepath.Join(dir, "nope"), filepath.Join(file, "x")} {
+		if st, err := sb.Stat(ctx, missing); st != nil || err != nil {
+			t.Errorf("Stat(%s) = %+v, %v; want nil, nil", missing, st, err)
+		}
+	}
+
+	entries, err := sb.ListDirectory(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, e := range entries {
+		got[e.Name] = e.Type
+	}
+	want := map[string]string{"a.txt": "file", "sub": "directory", "link": "symlink"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ListDirectory = %v, want %v", got, want)
+	}
+	if e, err := sb.ListDirectory(ctx, filepath.Join(dir, "nope")); e != nil || err != nil {
+		t.Errorf("ListDirectory(missing) = %v, %v", e, err)
+	}
+	if _, err := sb.ListDirectory(ctx, file); err == nil || err.Error() != "Failed to list "+file+": Not a directory" {
+		t.Errorf("ListDirectory(file) err = %v", err)
+	}
+
+	if ok, err := sb.DeleteFile(ctx, filepath.Join(dir, "link")); !ok || err != nil {
+		t.Errorf("DeleteFile(link) = %v, %v", ok, err)
+	}
+	if _, err := os.Stat(file); err != nil {
+		t.Errorf("deleting the link removed its target: %v", err)
+	}
+	if ok, err := sb.DeleteFile(ctx, filepath.Join(dir, "nope")); ok || err != nil {
+		t.Errorf("DeleteFile(missing) = %v, %v", ok, err)
+	}
+	sub := filepath.Join(dir, "sub")
+	if _, err := sb.DeleteFile(ctx, sub); err == nil || err.Error() != "Cannot delete "+sub+": it is a directory." {
+		t.Errorf("DeleteFile(dir) err = %v", err)
+	}
+	if ok, err := sb.DeleteFile(ctx, file); !ok || err != nil {
+		t.Errorf("DeleteFile(file) = %v, %v", ok, err)
 	}
 }

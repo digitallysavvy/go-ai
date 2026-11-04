@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -221,6 +223,108 @@ func (s *ShellSandbox) WriteTextFile(ctx context.Context, opts SandboxWriteTextF
 		return err
 	}
 	return s.WriteFile(ctx, opts.Path, bytes.NewReader(data))
+}
+
+// The optional SandboxSession operations TS sandbox sessions implement
+// (just-bash stat / listDirectory / deleteFile). Paths are used as given, as
+// ReadFile and WriteFile do.
+var (
+	_ providerutils.SandboxStatter         = (*ShellSandbox)(nil)
+	_ providerutils.SandboxDirectoryLister = (*ShellSandbox)(nil)
+	_ providerutils.SandboxFileDeleter     = (*ShellSandbox)(nil)
+)
+
+// Stat implements providerutils.SandboxStatter (TS SandboxSession.stat):
+// symbolic links are followed; a missing path (or one under a file) is
+// (nil, nil).
+func (s *ShellSandbox) Stat(ctx context.Context, path string) (*providerutils.SandboxFileStat, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(path)
+	if shellSandboxMissing(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	typ := providerutils.SandboxPathTypeOther
+	switch {
+	case info.Mode().IsRegular():
+		typ = providerutils.SandboxPathTypeFile
+	case info.IsDir():
+		typ = providerutils.SandboxPathTypeDirectory
+	}
+	return &providerutils.SandboxFileStat{Type: typ, Size: info.Size()}, nil
+}
+
+// ListDirectory implements providerutils.SandboxDirectoryLister (TS
+// SandboxSession.listDirectory): entries are not followed, so a symbolic link
+// is reported as "symlink"; a missing directory is (nil, nil).
+func (s *ShellSandbox) ListDirectory(ctx context.Context, path string) ([]providerutils.SandboxDirectoryEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(path)
+	if shellSandboxMissing(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("Failed to list %s: Not a directory", path) //nolint:staticcheck // TS error text
+	}
+	dirEntries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]providerutils.SandboxDirectoryEntry, 0, len(dirEntries))
+	for _, e := range dirEntries {
+		typ := providerutils.SandboxPathTypeOther
+		switch mode := e.Type(); {
+		case mode&os.ModeSymlink != 0:
+			typ = providerutils.SandboxPathTypeSymlink
+		case mode.IsRegular():
+			typ = providerutils.SandboxPathTypeFile
+		case mode.IsDir():
+			typ = providerutils.SandboxPathTypeDirectory
+		}
+		entries = append(entries, providerutils.SandboxDirectoryEntry{Name: e.Name(), Type: typ})
+	}
+	return entries, nil
+}
+
+// DeleteFile implements providerutils.SandboxFileDeleter (TS
+// SandboxSession.deleteFile): a symbolic link is deleted itself, a missing
+// file is false, a directory is an error.
+func (s *ShellSandbox) DeleteFile(ctx context.Context, path string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	info, err := os.Lstat(path)
+	if shellSandboxMissing(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if info.IsDir() {
+		return false, fmt.Errorf("Cannot delete %s: it is a directory.", path) //nolint:staticcheck // TS error text
+	}
+	if err := os.Remove(path); err != nil {
+		if shellSandboxMissing(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// shellSandboxMissing reports a path that does not exist, including one under
+// a regular file (ENOTDIR), which TS treats as missing too.
+func shellSandboxMissing(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
 }
 
 func decodeSandboxText(data []byte, encodingLabel string) (string, error) {
