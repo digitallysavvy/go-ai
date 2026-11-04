@@ -23,6 +23,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -2222,5 +2223,197 @@ func TestR87cstreambPrepareStepModelSupportedURLs(t *testing.T) {
 		{"data":{"data":"AQIDBA==","type":"data"},"mediaType":"image/png","type":"file"}],"role":"user"}],"toolChoice":{"type":"auto"}}]`)
 	if got := r.Text(); got != "response from without-image-url-support" {
 		t.Fatalf("text = %q", got)
+	}
+}
+
+// r87cstreambIntegration is a TS telemetry integration object: each set
+// listener records its name (or panics, the Go form of a throwing listener).
+type r87cstreambIntegration struct {
+	telemetry.NoopTelemetryIntegration
+	rec      func(string)
+	names    map[string]string
+	panicked bool
+}
+
+func (i *r87cstreambIntegration) fire(event string) {
+	name, ok := i.names[event]
+	if !ok {
+		return
+	}
+	if i.panicked {
+		panic("integration error")
+	}
+	i.rec(name)
+}
+
+func (i *r87cstreambIntegration) OnStart(ctx context.Context, _ telemetry.TelemetryStartEvent) context.Context {
+	i.fire("onStart")
+	return ctx
+}
+
+func (i *r87cstreambIntegration) OnStepStart(ctx context.Context, _ telemetry.TelemetryStepStartEvent) context.Context {
+	i.fire("onStepStart")
+	return ctx
+}
+
+func (i *r87cstreambIntegration) OnToolExecutionStart(ctx context.Context, _ telemetry.TelemetryToolCallStartEvent) context.Context {
+	i.fire("onToolExecutionStart")
+	return ctx
+}
+
+func (i *r87cstreambIntegration) OnToolExecutionEnd(context.Context, telemetry.TelemetryToolCallFinishEvent) {
+	i.fire("onToolExecutionEnd")
+}
+
+func (i *r87cstreambIntegration) OnStepEnd(context.Context, telemetry.TelemetryStepEndEvent) {
+	i.fire("onStepEnd")
+}
+
+func (i *r87cstreambIntegration) OnFinish(context.Context, telemetry.TelemetryFinishEvent) {
+	i.fire("onEnd")
+}
+
+// r87cstreambEvents is a concurrency-safe event log.
+type r87cstreambEvents struct {
+	mu   sync.Mutex
+	list []string
+}
+
+func (e *r87cstreambEvents) add(s string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.list = append(e.list, s)
+}
+
+func (e *r87cstreambEvents) get() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string{}, e.list...)
+}
+
+// r87cstreambNames maps TS listener names to the recorded event names.
+func r87cstreambNames(pairs ...string) map[string]string {
+	m := map[string]string{}
+	for i := 0; i+1 < len(pairs); i += 2 {
+		m[pairs[i]] = pairs[i+1]
+	}
+	return m
+}
+
+// r87cstreambConsume runs StreamText to the end and returns the result.
+func r87cstreambConsume(t *testing.T, opts StreamTextOptions) *StreamTextResult {
+	t.Helper()
+	if opts.OnError == nil {
+		opts.OnError = func(context.Context, error) {}
+	}
+	r, err := StreamText(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// r87cstreambGlobalIntegrations registers global integrations (TS
+// globalThis.AI_SDK_TELEMETRY_INTEGRATIONS) until the test ends.
+func r87cstreambGlobalIntegrations(t *testing.T, integrations ...telemetry.TelemetryIntegration) {
+	t.Helper()
+	telemetry.RegisterTelemetryIntegration(integrations[0], integrations[1:]...)
+	t.Cleanup(func() { telemetry.RegisterTelemetryIntegration(telemetry.NoopTelemetryIntegration{}) })
+}
+
+// stream-text.test.ts 33376: telemetry integrations > should call per-call
+// integration listeners for all lifecycle events (3fab50aa9b line 33378).
+func TestR87cstreambTelemetryPerCallLifecycle(t *testing.T) {
+	var events r87cstreambEvents
+	in := &r87cstreambIntegration{rec: events.add, names: r87cstreambNames("onStart", "onStart", "onStepStart", "onStepStart",
+		"onToolExecutionStart", "onToolExecutionStart", "onToolExecutionEnd", "onToolExecutionEnd", "onStepEnd", "onStepEnd", "onEnd", "onEnd")}
+	r87cstreambConsume(t, StreamTextOptions{
+		Model: r71streamModel(nil, []provider.StreamChunk{r87cstreambMeta("id-0"), r87cstreambCall("call-1", "testTool", `{ "value": "test" }`),
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: r87cstreambUsage()}}),
+		Tools: []types.Tool{{Name: "testTool", Parameters: r87cstreambZodValueSchema, Execute: func(_ context.Context, in map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			return in["value"].(string) + "-result", nil
+		}}},
+		Prompt:    "test-input",
+		Telemetry: &TelemetrySettings{Integrations: []telemetry.TelemetryIntegration{in}},
+	})
+	if got, want := events.get(), []string{"onStart", "onStepStart", "onToolExecutionStart", "onToolExecutionEnd", "onStepEnd", "onEnd"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+}
+
+// stream-text.test.ts 33449: telemetry integrations > should call globally
+// registered integration listeners (3fab50aa9b line 33451).
+func TestR87cstreambTelemetryGlobalIntegrations(t *testing.T) {
+	var events r87cstreambEvents
+	r87cstreambGlobalIntegrations(t, &r87cstreambIntegration{rec: events.add, names: r87cstreambNames("onStart", "global-onStart", "onStepEnd", "global-onStepEnd", "onEnd", "global-onEnd")})
+	r87cstreambConsume(t, StreamTextOptions{Model: r71streamModel(nil, r87cstreambDefaultStream()), Prompt: "test-input"})
+	if got, want := events.get(), []string{"global-onStart", "global-onStepEnd", "global-onEnd"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+}
+
+// stream-text.test.ts 33481: telemetry integrations > should only call
+// per-call integrations when both global and per-call integrations are
+// provided (3fab50aa9b line 33483).
+func TestR87cstreambTelemetryPerCallReplacesGlobal(t *testing.T) {
+	var events r87cstreambEvents
+	r87cstreambGlobalIntegrations(t, &r87cstreambIntegration{rec: events.add, names: r87cstreambNames("onStart", "global")})
+	r87cstreambConsume(t, StreamTextOptions{Model: r71streamModel(nil, r87cstreambDefaultStream()), Prompt: "test-input",
+		Telemetry: &TelemetrySettings{Integrations: []telemetry.TelemetryIntegration{&r87cstreambIntegration{rec: events.add, names: r87cstreambNames("onStart", "per-call")}}}})
+	if got, want := events.get(), []string{"per-call"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+}
+
+// stream-text.test.ts 33510: telemetry integrations > should call integration
+// listeners alongside user callbacks (3fab50aa9b line 33512).
+func TestR87cstreambTelemetryAlongsideUserCallbacks(t *testing.T) {
+	var events r87cstreambEvents
+	r87cstreambConsume(t, StreamTextOptions{
+		Model: r71streamModel(nil, r87cstreambDefaultStream()), Prompt: "test-input",
+		OnStart:           func(context.Context, OnStartEvent) { events.add("user-onStart") },
+		OnStepFinishEvent: func(context.Context, OnStepFinishEvent) { events.add("user-onStepFinish") },
+		OnFinishEvent:     func(context.Context, OnFinishEvent) { events.add("user-onFinish") },
+		Telemetry: &TelemetrySettings{Integrations: []telemetry.TelemetryIntegration{&r87cstreambIntegration{rec: events.add,
+			names: r87cstreambNames("onStart", "integration-onStart", "onStepEnd", "integration-onStepEnd", "onEnd", "integration-onEnd")}}},
+	})
+	// TS has user-onStart first; Go starts the telemetry root before the user
+	// OnStart (known difference "Telemetry start before the start
+	// callbacks", as in the generateText port). Step end and end run the user
+	// callback first, as TS.
+	if got, want := events.get(), []string{"integration-onStart", "user-onStart", "user-onStepFinish", "integration-onStepEnd", "user-onFinish", "integration-onEnd"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+}
+
+// stream-text.test.ts 33553: telemetry integrations > should not break
+// streaming when an integration listener throws (3fab50aa9b line 33555; a
+// Go listener panics).
+func TestR87cstreambTelemetryThrowingIntegration(t *testing.T) {
+	r := r87cstreambConsume(t, StreamTextOptions{
+		Model: r71streamModel(nil, r87cstreambDefaultStream()), Prompt: "test-input",
+		Telemetry: &TelemetrySettings{Integrations: []telemetry.TelemetryIntegration{&r87cstreambIntegration{panicked: true, rec: func(string) {},
+			names: r87cstreambNames("onStart", "x", "onStepEnd", "x", "onEnd", "x")}}},
+	})
+	if got := r.Text(); got != "Hello, world!" {
+		t.Fatalf("text = %q, want Hello, world!", got)
+	}
+}
+
+// stream-text.test.ts 33578: telemetry integrations > should support
+// multiple per-call integrations as an array (3fab50aa9b line 33580).
+func TestR87cstreambTelemetryMultiplePerCall(t *testing.T) {
+	var events r87cstreambEvents
+	r87cstreambConsume(t, StreamTextOptions{
+		Model: r71streamModel(nil, r87cstreambDefaultStream()), Prompt: "test-input",
+		Telemetry: &TelemetrySettings{Integrations: []telemetry.TelemetryIntegration{
+			&r87cstreambIntegration{rec: events.add, names: r87cstreambNames("onStart", "first")},
+			&r87cstreambIntegration{rec: events.add, names: r87cstreambNames("onStart", "second")}}},
+	})
+	if got, want := events.get(), []string{"first", "second"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
 	}
 }
