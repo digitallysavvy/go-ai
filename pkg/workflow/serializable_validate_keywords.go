@@ -266,7 +266,7 @@ func (w *ajvWalker) appendObjectErrors(obj map[string]interface{}, sch map[strin
 	patternKeys := orderedKeys(patternSchemas, hintChild(hint, "patternProperties"))
 	patterns := make([]*regexp.Regexp, len(patternKeys))
 	for i, p := range patternKeys {
-		if re, err := regexp.Compile(p); err == nil {
+		if re, err := compileAjvPattern(p); err == nil {
 			patterns[i] = re
 		}
 	}
@@ -429,7 +429,7 @@ func (w *ajvWalker) evaluatedProps(obj map[string]interface{}, sch map[string]in
 	}
 	if pp, ok := sch["patternProperties"].(map[string]interface{}); ok {
 		for p := range pp {
-			if re, err := regexp.Compile(p); err == nil {
+			if re, err := compileAjvPattern(p); err == nil {
 				for k := range obj {
 					if re.MatchString(k) {
 						evaluated[k] = true
