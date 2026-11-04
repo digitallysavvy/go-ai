@@ -30,7 +30,7 @@ func TestNewProviderErrorFromResponseKeepsCanonicalHeaders(t *testing.T) {
 		"Set-Cookie":   {"a=1", "b=2"},
 	}}
 	e := NewProviderErrorFromResponse("p", 0, "", "m", fmt.Errorf("wrapped: %w", cause))
-	if e.ResponseHeaders["X-Request-Id"] != "r1" || e.ResponseHeaders["Set-Cookie"] != "a=1, b=2" {
+	if e.ResponseHeaders["X-Request-Id"] != "r1" || e.ResponseHeaders["Set-Cookie"] != "b=2" {
 		t.Fatalf("ResponseHeaders = %#v", e.ResponseHeaders)
 	}
 	if _, lower := e.ResponseHeaders["x-request-id"]; lower {

@@ -17,6 +17,18 @@ func FetchHeaderValue(h http.Header, name string) string {
 	return strings.Join(h.Values(name), ", ")
 }
 
+// FetchHeaderEntry is the value TS's Object.fromEntries(response.headers)
+// keeps for one header name: fetch's Headers iterator yields each Set-Cookie
+// line as its own entry, so the last line wins, while every other repeated
+// header is one entry with its lines joined by ", ". The result is the
+// header's bytes (see FetchHeaderText for reading it as text).
+func FetchHeaderEntry(name string, values []string) string {
+	if len(values) > 0 && strings.EqualFold(name, "Set-Cookie") {
+		return values[len(values)-1]
+	}
+	return strings.Join(values, ", ")
+}
+
 // FetchHeaderText is FetchHeaderValue read as the JavaScript string TS sees:
 // a header value is a ByteString, so each byte is one character (see
 // IsomorphicDecode). A raw 0xA0 byte is then a JS `\s` and trim() strips it,

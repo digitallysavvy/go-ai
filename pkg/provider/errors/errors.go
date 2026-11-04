@@ -236,15 +236,17 @@ func newProviderError(provider string, statusCode int, errorCode, message string
 }
 
 // canonicalResponseHeaders returns the response headers with Go canonical keys
-// and repeated values joined by ", " (the v0.5.2 ResponseHeaders shape). It
-// uses the raw header when the cause keeps one, else canonicalizes headers.
+// (the v0.5.2 ResponseHeaders shape) and repeated values joined by ", ",
+// except Set-Cookie, whose last line wins (TS extractResponseHeaders,
+// Object.fromEntries over fetch's Headers iterator). It uses the raw header
+// when the cause keeps one, else canonicalizes headers.
 func canonicalResponseHeaders(cause error, headers map[string]string) map[string]string {
 	var raw interface{ HTTPResponseHeader() http.Header }
 	if errors.As(cause, &raw) {
 		if h := raw.HTTPResponseHeader(); len(h) > 0 {
 			out := make(map[string]string, len(h))
 			for k, vs := range h {
-				out[http.CanonicalHeaderKey(k)] = strings.Join(vs, ", ")
+				out[http.CanonicalHeaderKey(k)] = fetchHeaderEntry(k, vs)
 			}
 			return out
 		}
@@ -839,4 +841,14 @@ func NewDownloadError(url string, statusCode int, statusText, message string, ca
 		Message:    message,
 		Cause:      cause,
 	}
+}
+
+// fetchHeaderEntry is providerutils.FetchHeaderEntry (this package cannot
+// import providerutils): the last Set-Cookie line, every other repeated
+// header joined with ", ".
+func fetchHeaderEntry(name string, values []string) string {
+	if len(values) > 0 && strings.EqualFold(name, "Set-Cookie") {
+		return values[len(values)-1]
+	}
+	return strings.Join(values, ", ")
 }

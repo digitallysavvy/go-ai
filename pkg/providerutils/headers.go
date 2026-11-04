@@ -4,14 +4,14 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
 // ExtractHeaders converts an http.Header (map[string][]string) to map[string]string
-// by joining multi-value headers with ", " and reading each value as the
+// by joining multi-value headers with ", " (the last Set-Cookie line wins, as
+// fetch iterates each Set-Cookie line separately) and reading each value as the
 // JavaScript string TS sees (IsomorphicDecode: each byte one character), like
 // TS extractResponseHeaders (Object.fromEntries(response.headers.entries())).
 // Returns nil when h is nil or empty.
@@ -21,7 +21,7 @@ func ExtractHeaders(h http.Header) map[string]string {
 	}
 	out := make(map[string]string, len(h))
 	for k, vs := range h {
-		out[http.CanonicalHeaderKey(k)] = IsomorphicDecode(strings.Join(vs, ", "))
+		out[http.CanonicalHeaderKey(k)] = IsomorphicDecode(FetchHeaderEntry(k, vs))
 	}
 	return out
 }

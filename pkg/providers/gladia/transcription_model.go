@@ -9,7 +9,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -385,16 +384,17 @@ func (m *TranscriptionModel) pollHeaders(resultURL, trustedOrigin string, header
 	return version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{"x-gladia-key": providerutils.APIKeyOrEnv(m.provider.config.APIKey, "GLADIA_API_KEY")}, m.provider.config.Headers, headers), version.ProviderUserAgent("gladia"))
 }
 
-// flattenHeaders joins multi-value HTTP headers into single strings, matching
+// flattenHeaders joins multi-value HTTP headers into single strings (the last
+// Set-Cookie line wins, providerutils.FetchHeaderEntry), matching
 // providerutils.ExtractHeaders's convention for other providers' response
-// metadata (avoids importing providerutils here for a one-line helper).
+// metadata.
 func flattenHeaders(h map[string][]string) map[string]string {
 	if len(h) == 0 {
 		return nil
 	}
 	out := make(map[string]string, len(h))
 	for k, vs := range h {
-		out[http.CanonicalHeaderKey(k)] = strings.Join(vs, ", ")
+		out[http.CanonicalHeaderKey(k)] = providerutils.FetchHeaderEntry(k, vs)
 	}
 	return out
 }

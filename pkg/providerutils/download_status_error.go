@@ -36,7 +36,7 @@ func StatusCodeDownloadError(provider string, err error) error {
 	}
 	headers := make(map[string]string, len(dl.Headers))
 	for k, v := range dl.Headers {
-		headers[strings.ToLower(k)] = IsomorphicDecode(strings.Join(v, ", "))
+		headers[strings.ToLower(k)] = IsomorphicDecode(FetchHeaderEntry(k, v))
 	}
 	cause := &downloadStatusCause{status: dl.StatusCode, headers: headers, body: dl.Body}
 	return providererrors.NewProviderErrorFromResponse(provider, 0, "", http.StatusText(dl.StatusCode), cause)

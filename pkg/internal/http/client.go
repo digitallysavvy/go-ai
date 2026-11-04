@@ -214,11 +214,12 @@ func (e *HTTPStatusError) HTTPStatusDetails() (int, map[string]string, []byte) {
 		return 0, nil, nil
 	}
 	// TS APICallError.responseHeaders is extractResponseHeaders(response):
-	// repeated lines joined with ", ", each byte one character.
+	// repeated lines joined with ", " (the last Set-Cookie line wins), each
+	// byte one character.
 	headers := make(map[string]string, len(e.Headers))
 	for k, v := range e.Headers {
 		if len(v) > 0 {
-			headers[strings.ToLower(k)] = providerutils.IsomorphicDecode(strings.Join(v, ", "))
+			headers[strings.ToLower(k)] = providerutils.IsomorphicDecode(providerutils.FetchHeaderEntry(k, v))
 		}
 	}
 	return e.StatusCode, headers, e.Body

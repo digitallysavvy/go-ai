@@ -5,10 +5,10 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // revaiErrorPayload documents Rev.ai's error envelope: {"error":{"message","code"}}.
@@ -48,16 +48,17 @@ func handleError(err error) error {
 	return err
 }
 
-// flattenHeaders joins multi-value HTTP headers into single strings, matching
+// flattenHeaders joins multi-value HTTP headers into single strings (the last
+// Set-Cookie line wins, providerutils.FetchHeaderEntry), matching
 // providerutils.ExtractHeaders's convention for other providers' response
-// metadata (avoids importing providerutils here for a one-line helper).
+// metadata.
 func flattenHeaders(h map[string][]string) map[string]string {
 	if len(h) == 0 {
 		return nil
 	}
 	out := make(map[string]string, len(h))
 	for k, vs := range h {
-		out[http.CanonicalHeaderKey(k)] = strings.Join(vs, ", ")
+		out[http.CanonicalHeaderKey(k)] = providerutils.FetchHeaderEntry(k, vs)
 	}
 	return out
 }
