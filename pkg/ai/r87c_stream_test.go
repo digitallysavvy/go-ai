@@ -172,9 +172,7 @@ func r87cstreamTSPart(c provider.StreamChunk) map[string]interface{} {
 		if tr.ProviderExecuted {
 			m["providerExecuted"] = true
 		}
-		if tr.Dynamic {
-			m["dynamic"] = true
-		}
+		m["dynamic"] = tr.Dynamic
 		if tr.Preliminary {
 			m["preliminary"] = true
 		}
@@ -185,7 +183,10 @@ func r87cstreamTSPart(c provider.StreamChunk) map[string]interface{} {
 			m["providerMetadata"] = tr.ProviderMetadata
 		}
 	case provider.ChunkTypeFinishStep:
-		m["finishReason"], m["rawFinishReason"] = string(c.FinishReason), c.RawFinishReason
+		m["finishReason"] = string(c.FinishReason)
+		if c.RawFinishReason != "" {
+			m["rawFinishReason"] = c.RawFinishReason
+		}
 		if c.Response != nil {
 			resp := map[string]interface{}{"id": c.Response.ID, "modelId": c.Response.ModelID, "timestamp": c.Response.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z07:00")}
 			if len(c.Response.Headers) > 0 {
@@ -199,7 +200,10 @@ func r87cstreamTSPart(c provider.StreamChunk) map[string]interface{} {
 		}
 		md(c.ProviderMetadata)
 	case provider.ChunkTypeFinish:
-		m["finishReason"], m["rawFinishReason"] = string(c.FinishReason), c.RawFinishReason
+		m["finishReason"] = string(c.FinishReason)
+		if c.RawFinishReason != "" {
+			m["rawFinishReason"] = c.RawFinishReason
+		}
 		m["totalUsage"] = c.Usage
 	case provider.ChunkTypeError:
 		if c.Err != nil {
@@ -973,6 +977,29 @@ func r87cstreamTSContent(t *testing.T, p types.ContentPart) interface{} {
 		m := map[string]interface{}{"type": "text", "text": c.Text}
 		md(m, c.ProviderMetadata)
 		return m
+	case types.ToolCallContent:
+		m := map[string]interface{}{"type": "tool-call", "toolCallId": c.ToolCallID, "toolName": c.ToolName, "input": c.Arguments}
+		if c.ProviderExecuted {
+			m["providerExecuted"] = true
+		}
+		if c.Title != "" {
+			m["title"] = c.Title
+		}
+		md(m, c.ProviderMetadata)
+		return m
+	case types.ToolResultContent:
+		m := map[string]interface{}{"type": "tool-result", "toolCallId": c.ToolCallID, "toolName": c.ToolName, "input": c.Input, "output": c.Result, "dynamic": c.Dynamic}
+		if c.ProviderExecuted {
+			m["providerExecuted"] = true
+		}
+		if c.Preliminary {
+			m["preliminary"] = true
+		}
+		if c.Title != "" {
+			m["title"] = c.Title
+		}
+		md(m, c.ProviderMetadata)
+		return m
 	}
 	return r75streamNormalize(t, p)
 }
@@ -1572,4 +1599,359 @@ func TestR87cstreamResponseMessagesTextAndTools(t *testing.T) {
 	tool.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result1", nil }
 	r = r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, withTool), Tools: []types.Tool{tool}, Prompt: "test-input"})
 	r87cstreamAssert(t, "14006", r87cstreamTSMessages(t, r.ResponseMessages()), `[{"content":[{"text":"Hello, world!","type":"text"},{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"text","value":"result1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"}]`)
+}
+
+// r87cstreamTestUsage2 is TS testUsage2 (cache 0, reasoning 10).
+func r87cstreamTestUsage2() *types.Usage {
+	in, out, total, zero := int64(3), int64(10), int64(13), int64(0)
+	return &types.Usage{InputTokens: &in, OutputTokens: &out, TotalTokens: &total,
+		InputDetails:  &types.InputTokenDetails{NoCacheTokens: &in, CacheReadTokens: &zero, CacheWriteTokens: &zero},
+		OutputDetails: &types.OutputTokenDetails{TextTokens: &out, ReasoningTokens: &out}}
+}
+
+func r87cstreamMetaAt(id string, ms int64, headers map[string]string) provider.StreamChunk {
+	return provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: id, ModelID: "mock-model-id", Timestamp: time.UnixMilli(ms).UTC(), Headers: headers}}
+}
+
+// r87cstreamTwoStepChunks are the TS options.stopWhen "2 steps: initial,
+// tool-result" model streams (doStream response headers as the
+// response-metadata headers).
+func r87cstreamTwoStepChunks() [][]provider.StreamChunk {
+	finish2 := provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r87cstreamTestUsage2()}
+	return [][]provider.StreamChunk{
+		{
+			r87cstreamMetaAt("id-0", 0, map[string]string{"call": "1"}),
+			{Type: provider.ChunkTypeReasoningStart, ID: "0"},
+			{Type: provider.ChunkTypeReasoning, ID: "0", Reasoning: "thinking"},
+			{Type: provider.ChunkTypeReasoningEnd, ID: "0"},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", RawArguments: `{ "value": "value" }`}},
+			r87cstreamFinish(types.FinishReasonToolCalls, ""),
+		},
+		{
+			r87cstreamMetaAt("id-1", 1000, map[string]string{"call": "2"}),
+			{Type: provider.ChunkTypeTextStart, ID: "1"},
+			{Type: provider.ChunkTypeText, ID: "1", Text: "Hello, "},
+			{Type: provider.ChunkTypeText, ID: "1", Text: "world!"},
+			{Type: provider.ChunkTypeTextEnd, ID: "1"},
+			finish2,
+		},
+	}
+}
+
+type r87cstreamTwoStepRun struct {
+	result      *StreamTextResult
+	parts       []provider.StreamChunk
+	end         OnFinishEvent
+	stepResults []types.StepResult
+}
+
+func r87cstreamTwoSteps(t *testing.T, opts StreamTextOptions) *r87cstreamTwoStepRun {
+	t.Helper()
+	run := &r87cstreamTwoStepRun{}
+	var mu sync.Mutex
+	if opts.Model == nil {
+		opts.Model = r71streamModel(nil, r87cstreamTwoStepChunks()...)
+	}
+	if len(opts.Tools) == 0 {
+		tool := r71streamTool1(false, nil, nil)
+		tool.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result1", nil }
+		opts.Tools = []types.Tool{tool}
+	}
+	opts.Prompt = "test-input"
+	opts.OnEndEvent = func(_ context.Context, e OnFinishEvent) { mu.Lock(); run.end = e; mu.Unlock() }
+	opts.OnStepFinish = func(_ context.Context, s types.StepResult, _ interface{}) {
+		mu.Lock()
+		run.stepResults = append(run.stepResults, s)
+		mu.Unlock()
+	}
+	opts.StopWhen = []StopCondition{StepCountIs(3)}
+	opts.Internal = r87cstreamDefaultInternal()
+	run.result, run.parts = r73streamParts(t, opts)
+	return run
+}
+
+func r87cstreamTSToolCall(c types.ToolCall) map[string]interface{} {
+	return r87cstreamToolCallJSON([]types.ToolCall{c})[0].(map[string]interface{})
+}
+
+func r87cstreamTSToolResult(tr types.ToolResult) map[string]interface{} {
+	m := map[string]interface{}{"type": "tool-result", "toolCallId": tr.ToolCallID, "toolName": tr.ToolName, "input": tr.Input, "output": tr.Result, "dynamic": tr.Dynamic}
+	if tr.ProviderExecuted {
+		m["providerExecuted"] = true
+	}
+	if tr.Preliminary {
+		m["preliminary"] = true
+	}
+	if len(tr.ProviderMetadata) > 0 {
+		m["providerMetadata"] = tr.ProviderMetadata
+	}
+	if tr.Title != "" {
+		m["title"] = tr.Title
+	}
+	return m
+}
+
+func r87cstreamTSToolResults(results []types.ToolResult) []interface{} {
+	out := []interface{}{}
+	for _, tr := range results {
+		out = append(out, r87cstreamTSToolResult(tr))
+	}
+	return out
+}
+
+func r87cstreamTSContents(t *testing.T, parts []types.ContentPart) []interface{} {
+	t.Helper()
+	out := []interface{}{}
+	for _, p := range parts {
+		out = append(out, r87cstreamTSContent(t, p))
+	}
+	return out
+}
+
+func r87cstreamTSSteps(t *testing.T, steps []types.StepResult) []interface{} {
+	t.Helper()
+	out := []interface{}{}
+	for _, s := range steps {
+		out = append(out, r87cstreamTSStep(t, s))
+	}
+	return out
+}
+
+// r87cstreamTSEnd projects an OnFinishEvent onto the TS onEnd event
+// snapshot keys.
+func r87cstreamTSEnd(t *testing.T, e OnFinishEvent) map[string]interface{} {
+	t.Helper()
+	orEmpty := func(v interface{}) interface{} {
+		if reflect.ValueOf(v).IsNil() {
+			return []interface{}{}
+		}
+		return v
+	}
+	req := map[string]interface{}{}
+	if e.Request.Body != nil {
+		req["body"] = e.Request.Body
+	}
+	if e.Request.Messages != nil {
+		req["messages"] = e.Request.Messages
+	}
+	resp := r75streamNormalize(t, e.Response).(map[string]interface{})
+	resp["timestamp"] = e.Response.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+	resp["messages"] = r87cstreamTSMessages(t, e.Response.Messages)
+	var runtimeCtx interface{} = map[string]interface{}{}
+	if e.RuntimeContext != nil {
+		runtimeCtx = e.RuntimeContext
+	}
+	toolsCtx := e.ToolsContext
+	if toolsCtx == nil {
+		toolsCtx = map[string]interface{}{}
+	}
+	reasoning := []interface{}{}
+	for _, rc := range e.Reasoning {
+		reasoning = append(reasoning, r87cstreamTSContent(t, rc))
+	}
+	m := map[string]interface{}{
+		"callId": e.CallID, "content": r87cstreamTSContents(t, e.Content),
+		"dynamicToolCalls": r87cstreamToolCallJSON(e.DynamicToolCalls), "dynamicToolResults": r87cstreamTSToolResults(e.DynamicToolResults),
+		"files": orEmpty(e.Files), "finalStep": r87cstreamTSStep(t, e.FinalStep), "finishReason": string(e.FinishReason),
+		"model": map[string]interface{}{"modelId": e.Model.ModelID, "provider": e.Model.Provider},
+		"reasoning": reasoning, "request": req, "response": resp, "responseMessages": r87cstreamTSMessages(t, e.ResponseMessages),
+		"runtimeContext": runtimeCtx, "sources": orEmpty(e.Sources),
+		"staticToolCalls": r87cstreamToolCallJSON(e.StaticToolCalls), "staticToolResults": r87cstreamTSToolResults(e.StaticToolResults),
+		"stepNumber": e.StepNumber, "steps": r87cstreamTSSteps(t, e.Steps), "text": e.Text,
+		"toolCalls": r87cstreamToolCallJSON(e.ToolCalls), "toolResults": r87cstreamTSToolResults(e.ToolResults),
+		"toolsContext": toolsCtx, "totalUsage": e.TotalUsage, "usage": e.Usage, "warnings": orEmpty(e.Warnings),
+	}
+	if e.RawFinishReason != "" {
+		m["rawFinishReason"] = e.RawFinishReason
+	}
+	if len(e.ProviderMetadata) > 0 {
+		m["providerMetadata"] = e.ProviderMetadata
+	}
+	return m
+}
+
+// stream-text.test.ts 14347: options.stopWhen > 2 steps: initial,
+// tool-result > should contain assistant response message and tool message
+// from all steps (the full stream).
+func TestR87cstreamTwoStepsFullStream(t *testing.T) {
+	run := r87cstreamTwoSteps(t, StreamTextOptions{})
+	r87cstreamAssert(t, "parts", r87cstreamTSParts(run.parts), `[{"type":"start"},{"request":{},"type":"start-step","warnings":[]},{"id":"0","type":"reasoning-start"},{"id":"0","text":"thinking","type":"reasoning-delta"},{"id":"0","type":"reasoning-end"},{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"},{"dynamic":false,"input":{"value":"value"},"output":"result1","toolCallId":"call-1","toolName":"tool1","type":"tool-result"},{"finishReason":"tool-calls","performance":{"effectiveOutputTokensPerSecond":16.666666666666668,"effectiveTotalTokensPerSecond":21.666666666666668,"inputTokensPerSecond":30,"outputTokensPerSecond":20,"responseTimeMs":600,"stepTimeMs":1000,"timeBetweenOutputChunksMs":{"avg":400,"max":400,"median":400,"min":400,"p10":400,"p90":400},"timeToFirstOutputMs":100,"toolExecutionMs":{"call-1":0}},"response":{"headers":{"call":"1"},"id":"id-0","modelId":"mock-model-id","timestamp":"1970-01-01T00:00:00.000Z"},"type":"finish-step","usage":{"inputTokenDetails":{"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"textTokens":10},"outputTokens":10,"totalTokens":13}},{"request":{},"type":"start-step","warnings":[]},{"id":"1","type":"text-start"},{"id":"1","text":"Hello, ","type":"text-delta"},{"id":"1","text":"world!","type":"text-delta"},{"id":"1","type":"text-end"},{"finishReason":"stop","performance":{"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0,"inputTokensPerSecond":0,"outputTokensPerSecond":0,"responseTimeMs":0,"stepTimeMs":0,"timeBetweenOutputChunksMs":{"avg":0,"max":0,"median":0,"min":0,"p10":0,"p90":0},"timeToFirstOutputMs":0,"toolExecutionMs":{}},"rawFinishReason":"stop","response":{"headers":{"call":"2"},"id":"id-1","modelId":"mock-model-id","timestamp":"1970-01-01T00:00:01.000Z"},"type":"finish-step","usage":{"inputTokenDetails":{"cacheReadTokens":0,"cacheWriteTokens":0,"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"reasoningTokens":10,"textTokens":10},"outputTokens":10,"totalTokens":13}},{"finishReason":"stop","rawFinishReason":"stop","totalUsage":{"inputTokenDetails":{"cacheReadTokens":0,"cacheWriteTokens":0,"noCacheTokens":6},"inputTokens":6,"outputTokenDetails":{"reasoningTokens":10,"textTokens":20},"outputTokens":20,"totalTokens":26},"type":"finish"}]`)
+}
+
+// stream-text.test.ts 14549: options.stopWhen > 2 steps: initial,
+// tool-result > callbacks > onFinish should send correct information.
+func TestR87cstreamTwoStepsOnFinish(t *testing.T) {
+	run := r87cstreamTwoSteps(t, StreamTextOptions{})
+	r87cstreamAssert(t, "onFinish", r87cstreamTSEnd(t, run.end), `{"callId":"test-telemetry-call-id","content":[{"text":"thinking","type":"reasoning"},{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"},{"dynamic":false,"input":{"value":"value"},"output":"result1","toolCallId":"call-1","toolName":"tool1","type":"tool-result"},{"text":"Hello, world!","type":"text"}],"dynamicToolCalls":[],"dynamicToolResults":[],"files":[],"finalStep":{"callId":"test-telemetry-call-id","content":[{"text":"Hello, world!","type":"text"}],"finishReason":"stop","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":{"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0,"inputTokensPerSecond":0,"outputTokensPerSecond":0,"responseTimeMs":0,"stepTimeMs":0,"timeBetweenOutputChunksMs":{"avg":0,"max":0,"median":0,"min":0,"p10":0,"p90":0},"timeToFirstOutputMs":0,"toolExecutionMs":{}},"rawFinishReason":"stop","request":{},"response":{"headers":{"call":"2"},"id":"id-1","messages":[{"content":[{"text":"Hello, world!","type":"text"}],"role":"assistant"}],"modelId":"mock-model-id","timestamp":"1970-01-01T00:00:01.000Z"},"runtimeContext":{},"stepNumber":1,"toolsContext":{},"usage":{"inputTokenDetails":{"cacheReadTokens":0,"cacheWriteTokens":0,"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"reasoningTokens":10,"textTokens":10},"outputTokens":10,"totalTokens":13},"warnings":[]},"finishReason":"stop","model":{"modelId":"mock-model-id","provider":"mock-provider"},"rawFinishReason":"stop","reasoning":[],"request":{},"response":{"headers":{"call":"2"},"id":"id-1","messages":[{"content":[{"text":"Hello, world!","type":"text"}],"role":"assistant"}],"modelId":"mock-model-id","timestamp":"1970-01-01T00:00:01.000Z"},"responseMessages":[{"content":[{"text":"thinking","type":"reasoning"},{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"text","value":"result1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"},{"content":[{"text":"Hello, world!","type":"text"}],"role":"assistant"}],"runtimeContext":{},"sources":[],"staticToolCalls":[{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"staticToolResults":[{"dynamic":false,"input":{"value":"value"},"output":"result1","toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"stepNumber":1,"steps":[{"callId":"test-telemetry-call-id","content":[{"text":"thinking","type":"reasoning"},{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"},{"dynamic":false,"input":{"value":"value"},"output":"result1","toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"finishReason":"tool-calls","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":{"effectiveOutputTokensPerSecond":16.666666666666668,"effectiveTotalTokensPerSecond":21.666666666666668,"inputTokensPerSecond":30,"outputTokensPerSecond":20,"responseTimeMs":600,"stepTimeMs":1000,"timeBetweenOutputChunksMs":{"avg":400,"max":400,"median":400,"min":400,"p10":400,"p90":400},"timeToFirstOutputMs":100,"toolExecutionMs":{"call-1":0}},"request":{},"response":{"headers":{"call":"1"},"id":"id-0","messages":[{"content":[{"text":"thinking","type":"reasoning"},{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"text","value":"result1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"}],"modelId":"mock-model-id","timestamp":"1970-01-01T00:00:00.000Z"},"runtimeContext":{},"stepNumber":0,"toolsContext":{},"usage":{"inputTokenDetails":{"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"textTokens":10},"outputTokens":10,"totalTokens":13},"warnings":[]},{"callId":"test-telemetry-call-id","content":[{"text":"Hello, world!","type":"text"}],"finishReason":"stop","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":{"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0,"inputTokensPerSecond":0,"outputTokensPerSecond":0,"responseTimeMs":0,"stepTimeMs":0,"timeBetweenOutputChunksMs":{"avg":0,"max":0,"median":0,"min":0,"p10":0,"p90":0},"timeToFirstOutputMs":0,"toolExecutionMs":{}},"rawFinishReason":"stop","request":{},"response":{"headers":{"call":"2"},"id":"id-1","messages":[{"content":[{"text":"Hello, world!","type":"text"}],"role":"assistant"}],"modelId":"mock-model-id","timestamp":"1970-01-01T00:00:01.000Z"},"runtimeContext":{},"stepNumber":1,"toolsContext":{},"usage":{"inputTokenDetails":{"cacheReadTokens":0,"cacheWriteTokens":0,"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"reasoningTokens":10,"textTokens":10},"outputTokens":10,"totalTokens":13},"warnings":[]}],"text":"Hello, world!","toolCalls":[{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"toolResults":[{"dynamic":false,"input":{"value":"value"},"output":"result1","toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"toolsContext":{},"totalUsage":{"inputTokenDetails":{"cacheReadTokens":0,"cacheWriteTokens":0,"noCacheTokens":6},"inputTokens":6,"outputTokenDetails":{"reasoningTokens":10,"textTokens":20},"outputTokens":20,"totalTokens":26},"usage":{"inputTokenDetails":{"cacheReadTokens":0,"cacheWriteTokens":0,"noCacheTokens":6},"inputTokens":6,"outputTokenDetails":{"reasoningTokens":10,"textTokens":20},"outputTokens":20,"totalTokens":26},"warnings":[]}`)
+}
+
+// stream-text.test.ts 15039: options.stopWhen > 2 steps: initial,
+// tool-result > callbacks > onStepFinish should send correct information.
+func TestR87cstreamTwoStepsOnStepFinish(t *testing.T) {
+	run := r87cstreamTwoSteps(t, StreamTextOptions{})
+	r87cstreamAssert(t, "onStepFinish", r87cstreamTSSteps(t, run.stepResults), `[{"callId":"test-telemetry-call-id","content":[{"text":"thinking","type":"reasoning"},{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"},{"dynamic":false,"input":{"value":"value"},"output":"result1","toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"finishReason":"tool-calls","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":{"effectiveOutputTokensPerSecond":16.666666666666668,"effectiveTotalTokensPerSecond":21.666666666666668,"inputTokensPerSecond":30,"outputTokensPerSecond":20,"responseTimeMs":600,"stepTimeMs":1000,"timeBetweenOutputChunksMs":{"avg":400,"max":400,"median":400,"min":400,"p10":400,"p90":400},"timeToFirstOutputMs":100,"toolExecutionMs":{"call-1":0}},"request":{},"response":{"headers":{"call":"1"},"id":"id-0","messages":[{"content":[{"text":"thinking","type":"reasoning"},{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"text","value":"result1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"}],"modelId":"mock-model-id","timestamp":"1970-01-01T00:00:00.000Z"},"runtimeContext":{},"stepNumber":0,"toolsContext":{},"usage":{"inputTokenDetails":{"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"textTokens":10},"outputTokens":10,"totalTokens":13},"warnings":[]},{"callId":"test-telemetry-call-id","content":[{"text":"Hello, world!","type":"text"}],"finishReason":"stop","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":{"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0,"inputTokensPerSecond":0,"outputTokensPerSecond":0,"responseTimeMs":0,"stepTimeMs":0,"timeBetweenOutputChunksMs":{"avg":0,"max":0,"median":0,"min":0,"p10":0,"p90":0},"timeToFirstOutputMs":0,"toolExecutionMs":{}},"rawFinishReason":"stop","request":{},"response":{"headers":{"call":"2"},"id":"id-1","messages":[{"content":[{"text":"Hello, world!","type":"text"}],"role":"assistant"}],"modelId":"mock-model-id","timestamp":"1970-01-01T00:00:01.000Z"},"runtimeContext":{},"stepNumber":1,"toolsContext":{},"usage":{"inputTokenDetails":{"cacheReadTokens":0,"cacheWriteTokens":0,"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"reasoningTokens":10,"textTokens":10},"outputTokens":10,"totalTokens":13},"warnings":[]}]`)
+}
+
+// stream-text.test.ts 15605: options.stopWhen > 2 steps: initial,
+// tool-result > should have correct ui message stream.
+func TestR87cstreamTwoStepsUIMessageStream(t *testing.T) {
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, r87cstreamTwoStepChunks()...),
+		Tools: []types.Tool{func() types.Tool {
+			tool := r71streamTool1(false, nil, nil)
+			tool.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result1", nil }
+			return tool
+		}()},
+		Prompt: "test-input", StopWhen: []StopCondition{StepCountIs(3)}, Internal: r87cstreamDefaultInternal(), OnError: func(context.Context, error) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r87cstreamAssert(t, "ui", r87cstreamUI(t, r), `[{"type":"start"},{"type":"start-step"},{"id":"0","type":"reasoning-start"},{"delta":"thinking","id":"0","type":"reasoning-delta"},{"id":"0","type":"reasoning-end"},{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-input-available"},{"output":"result1","toolCallId":"call-1","type":"tool-output-available"},{"type":"finish-step"},{"type":"start-step"},{"id":"1","type":"text-start"},{"delta":"Hello, ","id":"1","type":"text-delta"},{"delta":"world!","id":"1","type":"text-delta"},{"id":"1","type":"text-end"},{"type":"finish-step"},{"finishReason":"stop","type":"finish"}]`)
+}
+
+// r87cstreamZodValueSchema is the JSON Schema zod gives TS
+// z.object({ value: z.string() }).
+var r87cstreamZodValueSchema = map[string]interface{}{"$schema": "http://json-schema.org/draft-07/schema#", "additionalProperties": false, "type": "object",
+	"properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}, "required": []interface{}{"value"}}
+
+// r87cstreamTSCallOptions projects a doStream call onto the TS
+// LanguageModelV4CallOptions snapshot (prompt with the system message
+// first; undefined settings dropped).
+func r87cstreamTSCallOptions(t *testing.T, o *provider.GenerateOptions) map[string]interface{} {
+	t.Helper()
+	prompt := []interface{}{}
+	if o.Prompt.System != "" {
+		prompt = append(prompt, map[string]interface{}{"role": "system", "content": o.Prompt.System})
+	}
+	if msgs, ok := r87cstreamTSMessages(t, o.Prompt.Messages).([]interface{}); ok {
+		prompt = append(prompt, msgs...)
+	}
+	m := map[string]interface{}{"includeRawChunks": o.IncludeRawChunks, "prompt": prompt}
+	if o.ToolChoice.Type != "" {
+		tc := map[string]interface{}{"type": string(o.ToolChoice.Type)}
+		if o.ToolChoice.ToolName != "" {
+			tc["toolName"] = o.ToolChoice.ToolName
+		}
+		m["toolChoice"] = tc
+	}
+	if len(o.Tools) > 0 {
+		var tools []interface{}
+		for _, tool := range o.Tools {
+			tm := map[string]interface{}{"type": "function", "name": tool.Name, "inputSchema": tool.Parameters}
+			if tool.Description != "" {
+				tm["description"] = tool.Description
+			}
+			tools = append(tools, tm)
+		}
+		m["tools"] = tools
+	}
+	for k, v := range map[string]interface{}{"maxOutputTokens": o.MaxTokens, "temperature": o.Temperature, "topP": o.TopP, "topK": o.TopK, "seed": o.Seed, "presencePenalty": o.PresencePenalty, "frequencyPenalty": o.FrequencyPenalty} {
+		if !reflect.ValueOf(v).IsNil() {
+			m[k] = v
+		}
+	}
+	if o.Headers != nil {
+		m["headers"] = o.Headers
+	}
+	if o.ProviderOptions != nil {
+		m["providerOptions"] = o.ProviderOptions
+	}
+	return m
+}
+
+type r87cstreamPrepareCall struct {
+	modelID        string
+	stepNumber     int
+	steps          []types.StepResult
+	messages       []types.Message
+	runtimeContext interface{}
+}
+
+// r87cstreamPrepareStepRun is the TS options.stopWhen "2 steps: initial,
+// tool-result with prepareStep" setup.
+func r87cstreamPrepareStepRun(t *testing.T) ([]*provider.GenerateOptions, []r87cstreamPrepareCall, *StreamTextResult) {
+	t.Helper()
+	var mu sync.Mutex
+	var calls []*provider.GenerateOptions
+	var prepares []r87cstreamPrepareCall
+	steps := [][]provider.StreamChunk{
+		{r87cstreamMetaAt("id-0", 0, map[string]string{"call": "1"}), {Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", RawArguments: `{ "value": "value" }`}}, r87cstreamFinish(types.FinishReasonToolCalls, "")},
+		{r87cstreamMetaAt("id-1", 1000, map[string]string{"call": "2"}), {Type: provider.ChunkTypeTextStart, ID: "2"}, {Type: provider.ChunkTypeText, ID: "2", Text: "Hello, "}, {Type: provider.ChunkTypeText, ID: "2", Text: "world!"}, {Type: provider.ChunkTypeTextEnd, ID: "2"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, RawFinishReason: "stop", Usage: r87cstreamTestUsage2()}},
+	}
+	model := &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id", DoStreamFunc: func(_ context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, o)
+		if len(calls) > 2 {
+			return nil, fmt.Errorf("Unexpected response count: %d", len(calls))
+		}
+		return testutil.NewMockTextStream(steps[len(calls)-1]), nil
+	}}
+	tool := types.Tool{Name: "tool1", Parameters: r87cstreamZodValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result1", nil }}
+	r := r71streamRun(t, StreamTextOptions{Model: model, Tools: []types.Tool{tool}, RuntimeContext: map[string]interface{}{"context": "state1"}, Prompt: "test-input",
+		StopWhen: []StopCondition{StepCountIs(3)},
+		Internal: &InternalOptions{GenerateID: func() string { return "test-call-id" }, GenerateCallID: func() string { return "test-telemetry-call-id" }},
+		PrepareStep: func(_ context.Context, o PrepareStepOptions) PrepareStepOptions {
+			mu.Lock()
+			prepares = append(prepares, r87cstreamPrepareCall{modelID: o.Model.ModelID(), stepNumber: o.StepNumber, steps: append([]types.StepResult(nil), o.Steps...), messages: append([]types.Message(nil), o.Messages...), runtimeContext: o.RuntimeContext})
+			mu.Unlock()
+			switch o.StepNumber {
+			case 0:
+				s0 := "system-message-0"
+				return PrepareStepOptions{ToolChoice: types.ToolChoice{Type: types.ToolChoiceTool, ToolName: "tool1"}, Instructions: &s0, Messages: r71streamUserMessages("new input from prepareStep"), RuntimeContext: map[string]interface{}{"context": "state2"}}
+			case 1:
+				s1 := "system-message-1"
+				return PrepareStepOptions{ActiveTools: []string{}, Instructions: &s1, RuntimeContext: map[string]interface{}{"context": "state3"}}
+			}
+			return PrepareStepOptions{}
+		}})
+	return calls, prepares, r
+}
+
+// stream-text.test.ts 15803: options.stopWhen > 2 steps: initial,
+// tool-result with prepareStep > should contain all doStream calls.
+func TestR87cstreamPrepareStepDoStreamCalls(t *testing.T) {
+	calls, _, _ := r87cstreamPrepareStepRun(t)
+	var got []interface{}
+	for _, c := range calls {
+		got = append(got, r87cstreamTSCallOptions(t, c))
+	}
+	r87cstreamAssert(t, "doStream calls", got, `[{"includeRawChunks":false,"prompt":[{"content":"system-message-0","role":"system"},{"content":[{"text":"new input from prepareStep","type":"text"}],"role":"user"}],"toolChoice":{"toolName":"tool1","type":"tool"},"tools":[{"inputSchema":{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"value":{"type":"string"}},"required":["value"],"type":"object"},"name":"tool1","type":"function"}]},{"includeRawChunks":false,"prompt":[{"content":"system-message-1","role":"system"},{"content":[{"text":"new input from prepareStep","type":"text"}],"role":"user"},{"content":[{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"text","value":"result1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"}],"toolChoice":{"type":"auto"}}]`)
+}
+
+// stream-text.test.ts 15934: options.stopWhen > 2 steps: initial,
+// tool-result with prepareStep > should contain all prepareStep calls. TS
+// passes the live steps array, so its snapshot (taken after the run) shows
+// both steps in both calls; Go passes a snapshot, so the steps each call saw
+// are checked against the final steps at call time ([] and [step 0]), and
+// the final steps against the TS step snapshot.
+func TestR87cstreamPrepareStepCalls(t *testing.T) {
+	_, prepares, r := r87cstreamPrepareStepRun(t)
+	var want []map[string]interface{}
+	if err := json.Unmarshal([]byte(`[{"messages":[{"content":"test-input","role":"user"}],"modelId":"mock-model-id","runtimeContext":{"context":"state1"},"stepNumber":0,"steps":[{"callId":"test-telemetry-call-id","content":[{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"},{"dynamic":false,"input":{"value":"value"},"output":"result1","toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"finishReason":"tool-calls","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":{"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0,"inputTokensPerSecond":0,"outputTokensPerSecond":0,"responseTimeMs":0,"stepTimeMs":0,"timeToFirstOutputMs":0,"toolExecutionMs":{"call-1":0}},"request":{},"response":{"headers":{"call":"1"},"id":"id-0","messages":[{"content":[{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"text","value":"result1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"}],"modelId":"mock-model-id","timestamp":"1970-01-01T00:00:00.000Z"},"runtimeContext":{"context":"state2"},"stepNumber":0,"toolsContext":{},"usage":{"inputTokenDetails":{"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"textTokens":10},"outputTokens":10,"totalTokens":13},"warnings":[]},{"callId":"test-telemetry-call-id","content":[{"text":"Hello, world!","type":"text"}],"finishReason":"stop","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":{"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0,"inputTokensPerSecond":0,"outputTokensPerSecond":0,"responseTimeMs":0,"stepTimeMs":0,"timeBetweenOutputChunksMs":{"avg":0,"max":0,"median":0,"min":0,"p10":0,"p90":0},"timeToFirstOutputMs":0,"toolExecutionMs":{}},"rawFinishReason":"stop","request":{},"response":{"headers":{"call":"2"},"id":"id-1","messages":[{"content":[{"text":"Hello, world!","type":"text"}],"role":"assistant"}],"modelId":"mock-model-id","timestamp":"1970-01-01T00:00:01.000Z"},"runtimeContext":{"context":"state3"},"stepNumber":1,"toolsContext":{},"usage":{"inputTokenDetails":{"cacheReadTokens":0,"cacheWriteTokens":0,"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"reasoningTokens":10,"textTokens":10},"outputTokens":10,"totalTokens":13},"warnings":[]}]},{"messages":[{"content":"new input from prepareStep","role":"user"},{"content":[{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"text","value":"result1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"}],"modelId":"mock-model-id","runtimeContext":{"context":"state2"},"stepNumber":1,"steps":[{"callId":"test-telemetry-call-id","content":[{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"},{"dynamic":false,"input":{"value":"value"},"output":"result1","toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"finishReason":"tool-calls","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":{"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0,"inputTokensPerSecond":0,"outputTokensPerSecond":0,"responseTimeMs":0,"stepTimeMs":0,"timeToFirstOutputMs":0,"toolExecutionMs":{"call-1":0}},"request":{},"response":{"headers":{"call":"1"},"id":"id-0","messages":[{"content":[{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"text","value":"result1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"}],"modelId":"mock-model-id","timestamp":"1970-01-01T00:00:00.000Z"},"runtimeContext":{"context":"state2"},"stepNumber":0,"toolsContext":{},"usage":{"inputTokenDetails":{"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"textTokens":10},"outputTokens":10,"totalTokens":13},"warnings":[]},{"callId":"test-telemetry-call-id","content":[{"text":"Hello, world!","type":"text"}],"finishReason":"stop","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":{"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0,"inputTokensPerSecond":0,"outputTokensPerSecond":0,"responseTimeMs":0,"stepTimeMs":0,"timeBetweenOutputChunksMs":{"avg":0,"max":0,"median":0,"min":0,"p10":0,"p90":0},"timeToFirstOutputMs":0,"toolExecutionMs":{}},"rawFinishReason":"stop","request":{},"response":{"headers":{"call":"2"},"id":"id-1","messages":[{"content":[{"text":"Hello, world!","type":"text"}],"role":"assistant"}],"modelId":"mock-model-id","timestamp":"1970-01-01T00:00:01.000Z"},"runtimeContext":{"context":"state3"},"stepNumber":1,"toolsContext":{},"usage":{"inputTokenDetails":{"cacheReadTokens":0,"cacheWriteTokens":0,"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"reasoningTokens":10,"textTokens":10},"outputTokens":10,"totalTokens":13},"warnings":[]}]}]`), &want); err != nil {
+		t.Fatal(err)
+	}
+	if len(prepares) != len(want) {
+		t.Fatalf("prepareStep calls = %d, want %d", len(prepares), len(want))
+	}
+	steps := r.Steps()
+	r87cstreamAssert(t, "final steps", r87cstreamTSSteps(t, steps), r71streamJSON(t, want[0]["steps"]))
+	tsUser := func(text string) []types.Message { return r71streamUserMessages(text) }
+	wantMessages := [][]types.Message{tsUser("test-input"), append(tsUser("new input from prepareStep"), steps[0].Response.Messages...)}
+	for i, p := range prepares {
+		w := want[i]
+		if p.modelID != w["modelId"] || float64(p.stepNumber) != w["stepNumber"] {
+			t.Fatalf("call %d = %s / %d", i, p.modelID, p.stepNumber)
+		}
+		r75streamAssertJSON(t, fmt.Sprintf("call %d runtimeContext", i), p.runtimeContext, r71streamJSON(t, w["runtimeContext"]))
+		if !reflect.DeepEqual(p.messages, wantMessages[i]) {
+			t.Fatalf("call %d messages = %#v", i, p.messages)
+		}
+		if len(p.steps) != i || (i == 1 && !reflect.DeepEqual(p.steps[0], steps[0])) {
+			t.Fatalf("call %d steps = %d", i, len(p.steps))
+		}
+	}
+	// The TS messages snapshot of call 1 (the response messages of step 0
+	// after the prepared user message).
+	r87cstreamAssert(t, "call 1 response messages", r87cstreamTSMessages(t, prepares[1].messages[1:]), r71streamJSON(t, want[1]["messages"].([]interface{})[1:]))
 }
