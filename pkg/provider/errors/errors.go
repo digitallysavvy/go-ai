@@ -262,7 +262,9 @@ func canonicalResponseHeaders(cause error, headers map[string]string) map[string
 // ExtractAPIErrorMessage pulls a human-readable message out of a JSON error
 // body using the shapes common to provider APIs: {"error":{"message"}},
 // {"error":"msg"}, {"message"}, {"detail"}, {"errors":[{"message"}]}.
-// It returns "" when no message is found.
+// It returns "" when no message is found. The message is returned as sent,
+// without trimming, like the TS providers' errorToMessage (for example
+// openai-compatible `data.error.message`).
 func ExtractAPIErrorMessage(body []byte) string {
 	var v map[string]interface{}
 	if err := json.Unmarshal(body, &v); err != nil {
@@ -270,7 +272,7 @@ func ExtractAPIErrorMessage(body []byte) string {
 	}
 	str := func(x interface{}) string {
 		s, _ := x.(string)
-		return strings.TrimSpace(s)
+		return s
 	}
 	switch e := v["error"].(type) {
 	case map[string]interface{}:

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math"
 	"net/url"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -347,7 +346,7 @@ func appendStringErrors(str string, sch map[string]interface{}, path string, out
 		out = append(out, fmt.Sprintf("%s must NOT have fewer than %s characters", path, formatJSNumber(m)))
 	}
 	if pat, ok := sch["pattern"].(string); ok {
-		if re, err := regexp.Compile(pat); err == nil && !re.MatchString(str) {
+		if re, err := compileAjvPattern(pat); err == nil && !re.MatchString(str) {
 			out = append(out, fmt.Sprintf("%s must match pattern \"%s\"", path, pat))
 		}
 	}

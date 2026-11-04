@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"reflect"
 	"sort"
@@ -91,8 +92,9 @@ func Parse(raw []byte) (interface{}, bool) {
 	if !ok {
 		return nil, false
 	}
-	if _, err := dec.Token(); err == nil {
-		return nil, false // trailing data
+	if _, err := dec.Token(); err != io.EOF {
+		// Trailing data, a token or a syntax error: JSON.parse throws.
+		return nil, false
 	}
 	return v, true
 }
