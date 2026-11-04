@@ -470,6 +470,17 @@ already, you can skip them.
 | OpenCode credentials set to `""` | Used as given (TS `== null`) | silent behavior change | Unset instead of `""` | [OpenCode keeps present empty credentials](#opencode-empty-credentials) |
 | `vercel.Sandbox.Update` with `TimeoutMs` | Extends the running session first | wire/protocol change | None | [Vercel Sandbox.Update extends a running session's timeout](#vercel-update-extends-timeout) |
 | `vercel.Credentials` with an OIDC JWT token | `teamId` from the token `owner_id` | silent behavior change | None | [A Vercel OIDC token sets the team](#vercel-jwt-claims) |
+| `context.Cause(ctx)` under `Timeout.Total` / `PerStep` / `PerChunk` / `FirstChunk` / tool / batch timeouts | `*ai.TimeoutError` (TS abort reason) | silent behavior change | Use `errors.Is` / `errors.As` | [Timeout contexts end with the TS TimeoutError cause](#timeout-abort-reason) |
+| StreamText `OutputErr()` after a failed run | The abort / no-finish / `NoOutputGeneratedError` | silent behavior change | Check `Err()` first | [StreamText OutputErr reports a failed run](#stream-output-err-no-output) |
+| `StreamTextResult.PipeTextStreamToResponse` on a ResponseWriter | Status 200 + `text/plain; charset=utf-8` first | silent behavior change | Use `PipeTextStreamToResponseWithInit` for a custom head | [PipeTextStreamToResponse writes the response head](#stream-pipe-text-head) |
+| JSON of `types.ReasoningFileContent` (`fileData`) | TS shape: `data` string, no `fileData` | wire/protocol change | Read `data` | [Reasoning-file parts marshal in the TS message shape](#reasoning-file-message-json) |
+| `codemode` host calls (`tools.x(...)` not awaited, `Promise.all`) | Start when observed, run concurrently; unawaited or pending calls fail with `DetachedBridgeRequestError` | silent behavior change | Await every call; make tools concurrency-safe | [Code mode host calls follow `run`](#codemode-host-call-bridge) |
+| `codemode` resume (`ContinueCodeModeApproval`, `RunInput.Continuation`) | A diverged or incomplete replay is a `ProtocolError` | silent behavior change | Keep scripts deterministic | [Code mode checks resumed runs against the ledger](#codemode-replay-checks) |
+| `codemode` `Date` / `Math.random` | Deterministic per run, replayed on resume | silent behavior change | Time work outside the sandbox | [Code mode Date and Math.random are deterministic](#codemode-deterministic-clock) |
+| `codemode` scripts that patch built-ins (`Array.prototype.x =`) | Intrinsics are frozen | silent behavior change | Use local helpers | [Code mode freezes the JavaScript intrinsics](#codemode-frozen-intrinsics) |
+| `VERCEL_OIDC_TOKEN_FILE` with `vercel.ResolveCredentials` / Vercel Sandbox sessions | The token file is read first | silent behavior change | None unless the file and `VERCEL_OIDC_TOKEN` differ | [The Vercel Sandbox reads VERCEL_OIDC_TOKEN_FILE](#vercel-oidc-token-file) |
+| `invalid VERCEL_OIDC_TOKEN`, `missing owner_id/project_id claims` | Token failures are `LocalOidcContextError` authentication failures; empty claims accepted | error text only | Match `*harness.SandboxAuthenticationError` | [Vercel OIDC token decoding follows getCredentialsFromOIDCToken](#vercel-oidc-token-decoding) |
+| Vercel Sandbox request URLs (`teamId=`, `projectId=`) | Team first, TS key order, empty values kept | wire/protocol change | None | [Vercel Sandbox request queries keep empty values and the TS order](#vercel-query-empty-values) |
 
 ## Compile-time changes {#compile-time-changes}
 
@@ -1540,6 +1551,41 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **Am I affected?** `middleware.ExtractReasoningMiddleware`, `ExtractJSONMiddleware`, `SimulateStreamingMiddleware` with `Request.Body` / `Request.URL` readers.
 - **What to do:** No action unless you relied on an empty request.
 - **Kind:** silent behavior change
+
+### Timeout contexts end with the TS TimeoutError cause {#timeout-abort-reason}
+
+- **What changed:** In v0.5 the contexts GenerateText, StreamText, batch calls and the ToolLoopAgent derive for `Timeout.Total`, `Timeout.PerStep`, `Timeout.PerChunk`, `Timeout.FirstChunk` and tool timeouts (`Timeout.ToolMs` / `Timeout.Tools`) ended with cause `context.DeadlineExceeded`, and a StreamText chunk or first-chunk timeout cancelled the model call's context with a plain cancel. In v0.6 `context.Cause(ctx)` is a `*ai.TimeoutError` (`ErrorName()` `"TimeoutError"`): "Step timeout of <ms>ms exceeded", "Chunk timeout of <ms>ms exceeded" and "First chunk timeout of <ms>ms exceeded" for a step, chunk and first chunk, "The operation was aborted due to timeout" for total and tool timeouts. That is the TS abort reason (`setAbortTimeout`, `AbortSignal.timeout`). `ctx.Err()` is still `context.DeadlineExceeded`, and `errors.Is(cause, context.DeadlineExceeded)` still holds. A ToolLoopAgent run whose total timeout fires between steps now fails with `step N failed: The operation was aborted due to timeout` (review round 87c).
+- **Am I affected?** `context.Cause(` in a tool `Execute`, a custom `provider.LanguageModel` or middleware, under `GenerateTextOptions.Timeout`, `StreamTextOptions.Timeout`, `AgentConfig.Timeout`, `PrepareCallConfig.Timeout` or a batch `Timeout`; string matches on `context deadline exceeded` in ToolLoopAgent errors.
+- **What to do:** No action unless you compare `context.Cause(ctx)` with `context.DeadlineExceeded` using `==`:
+  ```go
+  cause := context.Cause(ctx)
+  if errors.Is(cause, context.DeadlineExceeded) { // was: cause == context.DeadlineExceeded
+  	var timeoutErr *ai.TimeoutError
+  	_ = errors.As(cause, &timeoutErr) // timeoutErr.Reason is the boundary that fired
+  }
+  ```
+- **Kind:** silent behavior change
+
+### StreamText OutputErr reports a failed run {#stream-output-err-no-output}
+
+- **What changed:** In v0.5 `OutputErr()` stayed nil when the run failed before recording a step (a model call error, an abort) or the model stream closed without a finish chunk. In v0.6 it returns the error TS rejects `result.output` with (stream-text.ts flush): the abort error, the no-finish `*NoOutputGeneratedError`, else a `*NoOutputGeneratedError` "No output generated. Check the stream for errors." WorkflowAgent results are unchanged (review round 87c).
+- **Am I affected?** Code that reads `OutputErr()` (or `Output()` with a nil check) after a failed `StreamText` and treats a nil error as success.
+- **What to do:** No action unless you rely on `OutputErr() == nil` after `Err() != nil`. `errors.As(r.OutputErr(), &noOutput)` finds the new case.
+- **Kind:** silent behavior change
+
+### StreamTextResult.PipeTextStreamToResponse writes the response head {#stream-pipe-text-head}
+
+- **What changed:** In v0.5 the method wrote only the text. In v0.6, when the writer is an `http.ResponseWriter`, it first sets `Content-Type: text/plain; charset=utf-8` and writes status 200, like TS `result.pipeTextStreamToResponse` and the package function `ai.PipeTextStreamToResponse` (review round 87c).
+- **Am I affected?** Calls of the method `result.PipeTextStreamToResponse(ctx, w)` followed by `w.WriteHeader` or header changes (now too late).
+- **What to do:** Set headers before the call, or use `ai.PipeTextStreamToResponseWithInit` for another status or headers.
+- **Kind:** silent behavior change
+
+### Reasoning-file parts marshal in the TS message shape {#reasoning-file-message-json}
+
+- **What changed:** `json.Marshal` of a `types.ReasoningFileContent` (in `Response.Messages`, `ResponseMessages()` and step content) wrote `{"type":"reasoning-file","fileData":{"type":"data","data":...},"mediaType":...,"data":<base64 or null>}`. v0.6 writes the TS ModelMessage reasoning-file part (`to-response-messages.ts`): `{"type":"reasoning-file","data":"<base64>","mediaType":...,"providerOptions":...}`, a URL file as `"data":{"type":"url","url":...}`, and no `fileData`. `UnmarshalJSON` reads both shapes (review round 87c).
+- **Am I affected?** Code that persists or forwards response messages or step content as JSON and reads `fileData` of reasoning-file parts.
+- **What to do:** No action unless you parse the JSON yourself; read `data`.
+- **Kind:** wire/protocol change
 
 ## Prompts and validation {#prompts-and-validation}
 
@@ -6876,10 +6922,54 @@ compile-time changes.
 
 ### Detached bridge request errors name the tool {#codemode-detached-tool-name}
 
-- **What changed:** `*codemode.DetachedBridgeRequestError` read "JavaScript runtime returned while N bridge request(s) were still in flight."; v0.6 uses `run`'s unawaited-request text with the tool's property access, as TS 3fab50aa9b: "JavaScript runtime created an unawaited hostFunction bridge request: tools.createSlide." (`tools["update-slide"]` for a name that is not an identifier). The details are unchanged.
+- **What changed:** `*codemode.DetachedBridgeRequestError` read "JavaScript runtime returned while N bridge request(s) were still in flight."; v0.6 uses `run`'s unawaited-request text with the tool's property access, as TS 3fab50aa9b: "JavaScript runtime created an unawaited hostFunction bridge request: tools.createSlide." (`tools["update-slide"]` for a name that is not an identifier). The details are run's record; see [Code mode host calls follow `run`](#codemode-host-call-bridge).
 - **Am I affected?** `DetachedBridgeRequestError.Error()` text matches.
 - **What to do:** No action unless you match the message; match the type with `errors.As`.
 - **Kind:** error text only
+
+### Code mode host calls follow `run`: lazy, concurrent, detached calls fail {#codemode-host-call-bridge}
+
+- **What changed:** v0.5 ran each `tools.x(input)` call synchronously, in call order, as soon as the expression ran. A call the script never awaited still ran, and only an unawaited approval call in interrupt mode failed. v0.6 follows `run@2.1.8`, as TS code mode 3fab50aa9b does:
+  - A call starts only once the script observes it (`await`, `.then`, `Promise.all`).
+  - Calls run concurrently on their own goroutines, and their outcomes reach the script in settlement order.
+  - A script that returns while a call was never observed, or is still pending, fails with `*codemode.DetachedBridgeRequestError`: "JavaScript runtime created an unawaited hostFunction bridge request: tools.x." or "JavaScript runtime returned while a hostFunction bridge request was still pending: tools.x.". Its `Details` are run's record `{id, kind, name, status}`, where `name` is `__codeMode.tool<N>`, or `__codeMode.missing` for an unknown tool (which also stays in the message). A result returned while host calls are still in flight fails with run's host-side text "JavaScript runtime returned while N bridge request(s) were still in flight." (details `inFlightBridgeRequests`, `totalBridgeRequests`).
+  - `MaxInFlightBridgeRequests` (default 32) counts the calls running at once, so a `Promise.all` over more than 32 tool calls fails with `*BridgeLimitError`.
+  - Request numbers (the `<outer>:tool-N` tool call IDs, the interrupt IDs and the approval batch order) follow the order calls start: `Promise.all([tools.a(), Promise.all([tools.b(), tools.c()])])` numbers b, c, a. An input that fails to serialize counts as a request.
+  - The tool's `ctx` is cancelled when the invocation ends (TS aborts run's invocation signal).
+  - A resumed run replays a failed call's rejection instead of running the tool again (review round 87c).
+- **Am I affected?** `codemode.RunCodeMode` and the code mode tool with fire-and-forget `tools.x(...)` calls; `DetachedBridgeRequestError` `Details` keys `inFlightBridgeRequests` / `totalBridgeRequests` / `toolName` / `toolCallId`; `MaxInFlightBridgeRequests`; tools or `OnApprovalRequired` callbacks that are not safe to call concurrently; code that parses `:tool-N`; tools that use `ctx` after `Execute` returns.
+- **What to do:** Await every tool call, make tools safe for concurrent calls, and raise the in-flight limit for large fan-outs:
+  ```go
+  _, err := codemode.RunCodeMode(ctx, codemode.RunInput{
+  	JS:    "await tools.log({ msg: 'hi' }); return 1;", // was: "tools.log({ msg: 'hi' }); return 1;"
+  	Tools: tools,
+  	Options: &codemode.Options{
+  		ExecutionPolicy: &codemode.ExecutionPolicy{MaxInFlightBridgeRequests: 64},
+  	},
+  })
+  ```
+- **Kind:** silent behavior change
+
+### Code mode checks resumed runs against the ledger {#codemode-replay-checks}
+
+- **What changed:** v0.5 gave a resumed run the recorded result for whatever call came at a recorded index, and ran the approved call with whatever tool and input the replay computed. v0.6 fails with `*codemode.ProtocolError`, as TS run does: "Continuation replay diverged from the recorded host function ledger." (details `bridgeIndex`, `expectedHostFunctionName`, `receivedHostFunctionName`) when a resumed call has another tool or input than recorded, the approved call included; "Duplicate bridge settlement order."; and "Continuation completed before replaying the full host function ledger." (review round 87c).
+- **Am I affected?** `ContinueCodeModeApproval`, `ContinueCodeModeInterrupt`, `RunInput.Continuation`, and scripts whose calls before an interruption depend on something outside the sandbox.
+- **What to do:** No action unless you resume continuations of scripts that are not deterministic. Keep the script's inputs to the sandbox the same between the run and its resume.
+- **Kind:** silent behavior change
+
+### Code mode Date and Math.random are deterministic {#codemode-deterministic-clock}
+
+- **What changed:** v0.5 used the real clock and QuickJS's random generator. v0.6 installs run's deterministic APIs: `Date.now()`, `Date()` and `new Date()` without arguments read a clock that starts at the run's start time, advances 1 ms per read and moves to the host time when a tool call settles; `Math.random()` is xorshift128+ seeded per run. The continuation token (opaque) now records the seed, the start time and each call's settlement time, so a resumed run computes the same values; tokens from v0.5 still resume (review round 87c).
+- **Am I affected?** Scripts that time work with `Date.now()` inside the sandbox, or that need `Math.random()` to differ across a resume; code that reads `Continuation.Token`.
+- **What to do:** No action unless you measure elapsed time inside a code mode script; time the `RunCodeMode` call in Go instead.
+- **Kind:** silent behavior change
+
+### Code mode freezes the JavaScript intrinsics {#codemode-frozen-intrinsics}
+
+- **What changed:** v0.5 let a script change the built-in objects (`Array.prototype`, `Object.prototype`, `Promise.prototype`, `Math`, `JSON`, `Date`, the typed arrays) and reassign the intrinsic globals (`Array`, `Object`, `JSON`, `Promise`, ...). v0.6 freezes them and locks those globals before the script runs, as `run@2.1.8`'s HARDENING_SOURCE does in TS. An assignment to them is ignored in sloppy code and throws a `TypeError` in strict code; `Object.defineProperty` on them throws. Without the freeze, a script could hide its detached tool calls from the bridge's checks (review round 87c, integrator).
+- **Am I affected?** Code mode scripts that polyfill or patch built-ins.
+- **What to do:** No action unless a script patches built-ins; use local helper functions instead.
+- **Kind:** silent behavior change
 
 ## Harness, ACP and fx {#harness-acp-and-fx}
 
@@ -7195,6 +7285,27 @@ compile-time changes.
 - **Am I affected?** `vercel.Credentials{Token: <OIDC JWT>, TeamID: ...}` or `vercel.NewAPIClient` with a team that differs from the token's `owner_id`.
 - **What to do:** No action unless you pass an OIDC token together with a different team.
 - **Kind:** silent behavior change
+
+### The Vercel Sandbox reads VERCEL_OIDC_TOKEN_FILE {#vercel-oidc-token-file}
+
+- **What changed:** With no explicit credentials, `pkg/harness/sandbox/vercel` reads the Vercel OIDC token from the file named by `VERCEL_OIDC_TOKEN_FILE` on each credential lookup, ahead of `VERCEL_OIDC_TOKEN`, like `@vercel/oidc` 4.0.0, which `@vercel/sandbox` 3.9.0 pins. v0.5 read only `VERCEL_OIDC_TOKEN`. A missing or empty token file is an authentication failure (cause `The Vercel OIDC token file is empty: <path>`, or the file read error). With `OIDCRefresh`, the request context token still comes first, and the 4.0.0 error texts apply (`The 'x-vercel-oidc-token' header is missing from the request.`, `Invalid token.`). The AI Gateway (`gateway.VercelOIDCTokenFunc`) keeps `@vercel/oidc` 3.2.0, which TS `@ai-sdk/gateway` pins, and does not read the file (review round 87c).
+- **Am I affected?** `VERCEL_OIDC_TOKEN_FILE` set in the environment of a program that calls `vercel.ResolveCredentials`, `vercel.CreateNetworkSandboxSession`, `vercel.ResumeNetworkSandboxSession` or `vercel.NewLegacyProvider` without explicit `Credentials`.
+- **What to do:** No action unless `VERCEL_OIDC_TOKEN_FILE` and `VERCEL_OIDC_TOKEN` name different tokens: the file now wins.
+- **Kind:** silent behavior change
+
+### Vercel OIDC token decoding follows getCredentialsFromOIDCToken {#vercel-oidc-token-decoding}
+
+- **What changed:** The Vercel Sandbox decodes the OIDC token like `@vercel/sandbox` 3.9.0: `getTokenPayload` first (three dot-separated parts, a JSON payload), then `getCredentialsFromOIDCToken` (the second part decoded as lenient base64, string `owner_id` and `project_id` claims that may be empty, numeric `exp` / `iat` when present). Empty claims are now accepted (v0.5 rejected them). Every failure is the TS `LocalOidcContextError` (`Could not get credentials from OIDC context. ...`, or the `VercelOidcContextError` text when `VERCEL_URL` is set) and an authentication failure (`*harness.SandboxAuthenticationError` from the session functions); the cause carries the TS reason (`\nInvalid token.`, `Invalid Vercel OIDC token: <zod issues>`). v0.5 returned `vercel sandbox: invalid VERCEL_OIDC_TOKEN ...` / `... missing owner_id/project_id claims` errors that were not authentication failures. `isExpired` (`@vercel/oidc` 3.2.0 and 4.0.0) also reads `exp` with JS number conversion (`"1"`, `true`, `null` count as expired) and fails for a `null` payload; this reaches the opt-in refresh and `gateway.VercelOIDCTokenFunc` (review round 87c).
+- **Am I affected?** Code that matches the text `invalid VERCEL_OIDC_TOKEN` or `missing owner_id/project_id claims` from `vercel.ResolveCredentials`, or that relies on a token with empty claims being rejected.
+- **What to do:** No action unless you match the v0.5 error texts. Match `*harness.SandboxAuthenticationError` with `errors.As` (or the `Could not get credentials from OIDC context.` text) instead.
+- **Kind:** error text only
+
+### Vercel Sandbox request queries keep empty values and the TS order {#vercel-query-empty-values}
+
+- **What changed:** Every Vercel Sandbox API request sends `teamId` first and always, also when it is empty (`teamId=`), then the call's query keys in the `@vercel/sandbox` 3.9.0 order (`getSandbox`: `projectId`, `resume`; `listSnapshots`: `project`, `name`, `cursor`, `sortOrder`; `getCommand`: `wait`), with empty values kept (`projectId=`). v0.5 dropped empty values and sorted the keys. The createSandbox body always has `"projectId"` (`""` for an empty project). Snapshot listing follows `pagination.next` while it is not null (also after an empty page or with an empty cursor), and the template snapshot poll stops listing at the first created manual snapshot (review round 87c).
+- **Am I affected?** Proxies or test servers that match the exact Vercel Sandbox request URL or require a non-empty `teamId` / `projectId`; `vercel.APIClient.ListSnapshots` callers whose server returns an empty page with a next cursor.
+- **What to do:** No action unless you match the request URL or query order.
+- **Kind:** wire/protocol change
 
 ## Policy {#policy}
 

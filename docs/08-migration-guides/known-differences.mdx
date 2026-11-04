@@ -73,7 +73,19 @@ completion (fal and Replicate) outside of a workflow.
 
 ## Vercel Sandbox OIDC token refresh
 
-`@vercel/sandbox` refreshes the Vercel OIDC token through `@vercel/oidc` by default, writing the refreshed token to the Vercel token cache and `process.env`, and can prompt for local dev credentials. In `pkg/harness/sandbox/vercel` the refresh is opt-in: set `OIDCRefresh` on `CreateSessionOptions`, `ResumeSessionOptions` or `LegacySettings`. The refreshed token is kept in memory in that `OIDCRefresh` value, the Vercel CLI login and the token cache are read only, and there is no interactive credential prompt. Without `OIDCRefresh`, `VERCEL_OIDC_TOKEN` is read as is. The refresh follows `@vercel/oidc` 3.2.0 (the version the TS checkout installs, whose `getVercelOidcToken({team, project, expirationBufferMs})` options are the ones `@vercel/sandbox` 3.9.0 passes); 3.9.0 pins 4.0.0, whose source was not available to compare. A JWT `owner_id` claim that is an array is sent as one comma-joined `teamId`, where TS appends one `teamId` per element (owner decision b, review round 87b).
+`@vercel/sandbox` refreshes the Vercel OIDC token through `@vercel/oidc` by default, writing the refreshed token to the Vercel token cache and `process.env`, and can prompt for local dev credentials. In `pkg/harness/sandbox/vercel` the refresh is opt-in: set `OIDCRefresh` on `CreateSessionOptions`, `ResumeSessionOptions` or `LegacySettings`. The refreshed token, and the project token TS saves to the token cache, are kept in memory in that `OIDCRefresh` value; the Vercel CLI login and the token cache are read only, the CLI login is never refreshed with its refresh token (the error is `Failed to refresh authentication token.: <reason>`), and there is no interactive credential prompt. Without `OIDCRefresh`, the token (`VERCEL_OIDC_TOKEN_FILE`, else `VERCEL_OIDC_TOKEN`) is used as read, also when it has expired. The sandbox follows `@vercel/oidc` 4.0.0 (the version `@vercel/sandbox` 3.9.0 pins); `gateway.VercelOIDCTokenFunc` follows 3.2.0 (the version TS `@ai-sdk/gateway` pins). A JWT `owner_id` claim that is an array is sent as one comma-joined `teamId`, where TS appends one `teamId` per element (owner decision b, review rounds 87b and 87c).
+
+## Vercel OIDC 4.0.0: keyring login and CLI config
+
+`@vercel/oidc` 4.0.0 asks `@vercel/cli-config` where the Vercel CLI keeps its login (`getGlobalPathConfig`, `tryReadAuthConfig`) and, when the CLI stores credentials in the system keyring (`VERCEL_TOKEN_STORAGE` / `credStorage`), runs `vercel project token <project> --format=json [--scope <team>]` to refresh the OIDC token. Go reads the login from `<user data dir>/com.vercel.cli/auth.json` as 3.2.0 did and never runs the Vercel CLI: with keyring storage, pass `OIDCRefresh.AccessToken`. The `@vercel/cli-config` source was not available to compare (not in the TS checkout or the owner-approved packages) (review round 87c).
+
+## Vercel OIDC token parse errors
+
+When the Vercel OIDC token payload is not JSON, the cause of the `LocalOidcContextError` carries Go's JSON parse error text (for example `unexpected end of JSON input`), not V8's `SyntaxError` text (`Unexpected end of JSON input`). A missing `VERCEL_OIDC_TOKEN_FILE` file is Go's `open <path>: no such file or directory` (matchable with `errors.Is(err, os.ErrNotExist)`), not Node's `ENOENT: ...` text. The zod issue texts match (review round 87c).
+
+## Vercel Sandbox snapshot listing bound
+
+`vercel.APIClient.ListSnapshots` and the template snapshot poll follow at most 20 pages; TS follows `pagination.next` without a bound (review round 87c).
 
 ## Code-mode: never-settling promises and in-flight limits
 
@@ -84,7 +96,17 @@ These details differ:
 
 - A promise that never settles and has no pending tool call fails fast
   with a `ProtocolError`. TypeScript waits for the execution timeout.
-- `MaxInFlightBridgeRequests` counts the calls in an approval batch.
+- Tool call arguments are serialized with `JSON.stringify` when the call is
+  made. A function or symbol in the arguments is dropped instead of failing
+  the call (TS `run` serializes with devalue and throws), and a circular
+  value fails the call when it starts (review round 87c).
+- Every property of `tools` is a tool. In TS, names inherited from
+  `Object.prototype` (`tools.toString`, `tools.hasOwnProperty`) resolve to
+  those functions instead of a tool call (review round 87c).
+- A script that returns while a call paused for approval is still pending
+  always fails with `DetachedBridgeRequestError`. In TS the outcome depends
+  on timing: the host may register the interruption before the result and
+  return an interrupt instead (review round 87c).
 - `SetMaxWorkers(0)` means no concurrency limit; TypeScript rejects 0.
 - On platforms other than Linux, macOS and Windows, the default worker cap
   is 32, because Go cannot read available memory there without cgo.
@@ -899,6 +921,22 @@ Realtime server error events (`provider.RealtimeServerEvent.Code`: OpenAI realti
 ## Open Responses and AI Gateway: field values of an unexpected JSON type
 
 Open Responses events and responses, and AI Gateway stream parts and responses, are decoded leniently like TS (`z.any()` / unvalidated types): a string field holding another JSON value reads as JS `String(value)`, and other mismatched fields read as zero. Some differences remain because the Go fields are typed (v0.5.2): a non-numeric usage count (for example `"input_tokens": "5"`) or a mistyped finish reason or provider metadata reads as zero or unset where TS passes the value on; a null or absent `delta` on an Open Responses text, reasoning or custom tool input delta part is `""` where TS forwards `null` / `undefined` (accumulated tool arguments do append `"null"` / `"undefined"`, as in TS); and a numeric `item_id` is matched to an item whose `id` is the same digits as a string, where a TS `Map` keeps `5` and `"5"` apart (review round 87b).
+
+## HTTP status text on a ResponseWriter
+
+`UIMessageStreamResponseInit.StatusText` / `TextStreamResponseInit.StatusText` set `http.Response.Status` on the `To*Response` / `Create*Response` helpers. The `Pipe*` helpers write to an `http.ResponseWriter`, and net/http always sends the standard reason phrase, so a custom status text (`'foo'` in TS `pipeUIMessageStreamToResponse(response, { statusText })`) is not sent (review round 87c; stream-text.test.ts 5205).
+
+## prepareStep `steps`
+
+TS passes `prepareStep` the live `steps` array, which later steps keep appending to; Go passes a copy of the steps recorded so far (review round 87c; stream-text.test.ts 15934, whose TS snapshot shows both steps in both calls for that reason).
+
+## You.com tools
+
+`youcom.YouSearch` / `YouResearch` / `YouContents` follow the plugin API the TS tools registry documents (`youSearch`, `youResearch`, `youContents`), which `@youdotcom-oss/ai-sdk-plugin` 3.0 removed in favor of the hosted MCP client (`youcom.CreateYouClient`). Their request shapes and error texts (rate limit, the 402 free-tier message, 403, Contents API errors, `You.com API Error: ...`) follow the pre-3.0 plugin and cannot be checked against the current 3.x source, which has no REST code. `YouClientConfig.APIKey: ""` falls back to `YDC_API_KEY`; TS falls back only when `apiKey` is undefined, so an explicit `''` sends no `Authorization` header there (review round 87c).
+
+## TS assertions the replay harness does not evaluate
+
+`pkg/internal/tsfixture` replays the TS provider tests and evaluates their plain assertions and path snapshots. 302 assertions outside the OpenAI-family packages are still not evaluated (`TSFIXTURE_SKIPPED=1` lists them): locals built by loops or statements, error objects of rejected calls, mock and spy state, generic type arguments and helper calls, and a test's second model call. The request and response each case replays are still compared (review round 87c).
 
 ## Features that are TypeScript-only (not ported)
 

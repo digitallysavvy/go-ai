@@ -241,6 +241,13 @@ the run's start time, advances 1 ms per read and moves to the host time
 whenever a tool call settles, and `Math.random()` is seeded per run. A
 resumed run replays both, so it computes the same values.
 
+Before the script runs, the JavaScript intrinsics (`Object`, `Array`,
+`Promise`, `Math`, `JSON`, `Date`, the typed arrays and their prototypes)
+are frozen and the intrinsic globals are locked, as TS `run` does: a
+script cannot patch built-ins. A resumed run whose calls diverge from the
+recorded ledger (another tool or input at a recorded index, the approved
+call included) fails with a `*ProtocolError`.
+
 ## Vendored dependency
 
 `pkg/codemode` vendors a patched copy of `fastschema/qjs` v0.0.6 at

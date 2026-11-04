@@ -129,6 +129,8 @@ Also new:
 - **`claudecode.Settings.TurnStartTimeout`**, `bridge.HelloCapabilities.IdempotentStart`, `bridge.StartBase.StartID`, `(*bridge.Channel).SendWithOptions` / `bridge.SendOptions` (TS 3bf70f83bc); `vercel.Sandbox.SpawnCommandWithStdin`, `vercel.RemoteProcess.Stdin` (`@vercel/sandbox` 3.9.0 writeStdin / closeStdin); `harnessutil.Subscriptions`; `bridges.ContentHash`, `bridges.AdapterManifest.ContentHash` (review round 87).
 - **`vercel.OIDCRefresh`** on `CreateSessionOptions`, `ResumeSessionOptions` and `LegacySettings`: opt-in Vercel OIDC token refresh matching `@vercel/sandbox` 3.9.0 `getCredentials` / `ensureValidToken` (5 minute buffer, in memory, shares the resolver with `gateway.VercelOIDCTokenFunc` through `pkg/internal/verceloidc`); **`vercel.APIClient.ExtendSessionTimeout`** (`POST .../extend-timeout`, used by `Sandbox.Update`) (review round 87b).
 - **`providerutils.JSString` / `JSTruthy`**: JavaScript `String(value)` and truthiness for values decoded from JSON (used where TS reads unvalidated `z.any()` values: Open Responses, AI Gateway, You.com, the Vercel token claims) (review round 87b).
+- **`youcom.CreateYouClient`** (`youcom.YouClientConfig{APIKey, Tools, Profile}`): connects to the hosted You.com MCP server (`https://api.you.com/mcp`), matching `@youdotcom-oss/ai-sdk-plugin` 3.x `createYouClient`; resolve its tools with `mcp.GetMCPToolsForAgent` (review round 87c).
+- **`VERCEL_OIDC_TOKEN_FILE`** in `pkg/harness/sandbox/vercel` (`@vercel/oidc` 4.0.0, pinned by `@vercel/sandbox` 3.9.0); `pkg/internal/verceloidc` follows 4.0.0 for the sandbox and 3.2.0 for the AI Gateway (review round 87c).
 - **`ai.ShellSandbox` `Stat` / `ListDirectory` / `DeleteFile`** (the optional `providerutils.SandboxStatter` / `SandboxDirectoryLister` / `SandboxFileDeleter`, also on `bridgetest.Sandbox`), **`acp.ToolCall.HasName`**, **`websocket.ErrInvalidUTF8Text`** (review round 86b).
 - **`Config.APIKeyFunc`** for openai, azure, xai, deepseek, alibaba, moonshot, openresponses, huggingface, gmicloud, together, fireworks, zai, cerebras and deepinfra (TS 7716e189ee), called per request with the request's context; **`openai.Config.HeadersFuncCtx`, `deepseek.Config.HeadersFuncCtx`** for NoAPIKey wrappers (review round 85).
 - **`openai.ModelGPT61Terra`, `LanguageModelCapabilities.SupportsChatFunctionToolsWithReasoning`, `openai.SupportsStreamingTranscription`, `openai.StreamingTranscriptionWarnings`, `TranscriptionStreamOpenAIOptionsValue.HasLanguages` / `HasKeywords`, `DecisionModelOptions.PromptCacheKey`** (review round 85).
@@ -289,6 +291,10 @@ search for and ends with a checklist for coding agents. Entries marked
 - **StreamObject reports the provider stream's request body** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#streamobject-request-body)
 - **A failing ToModelOutput no longer skips the remaining limited tool calls** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#tomodeloutput-error-concurrency)
 - **Middleware-wrapped streams keep the provider request body and URL** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#middleware-request-metadata)
+- **Timeout contexts end with the TS TimeoutError cause (context.Cause), also for StreamText chunk and first-chunk timeouts** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#timeout-abort-reason)
+- **StreamText OutputErr() reports the TS no-output rejection for a failed run** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-output-err-no-output)
+- **StreamTextResult.PipeTextStreamToResponse writes status 200 and the text/plain content type first** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-pipe-text-head)
+- **Reasoning-file parts marshal in the TS message shape (data string, no fileData)** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#reasoning-file-message-json)
 
 #### Prompts and validation
 
@@ -646,6 +652,10 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Code mode validates a bare schema.Validator Parameters** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codemode-bare-validator-validated)
 - **Code mode rejects `import(` written with JavaScript whitespace or multi-line comments** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codemode-dynamic-import-js-whitespace)
 - **Code mode detached bridge request errors name the tool, as TS** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codemode-detached-tool-name)
+- **Code mode host calls start when observed, run concurrently and fail the run when left unawaited or pending, as TS run** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codemode-host-call-bridge)
+- **Code mode resumes fail with a ProtocolError when the replay diverges from the recorded ledger** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codemode-replay-checks)
+- **Code mode Date.now() and Math.random() are deterministic per run and replayed on resume** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codemode-deterministic-clock)
+- **Code mode freezes the JavaScript intrinsics before the script runs, as TS run** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codemode-frozen-intrinsics)
 
 #### Harness, ACP and fx
 
@@ -682,6 +692,9 @@ search for and ends with a checklist for coding agents. Entries marked
 - **OpenCode keeps credentials and URLs that are set but empty** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#opencode-empty-credentials)
 - **Vercel `Sandbox.Update` extends a running session's timeout** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-update-extends-timeout)
 - **A Vercel Sandbox OIDC token sets the team from its owner_id claim** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-jwt-claims)
+- **The Vercel Sandbox reads the OIDC token from VERCEL_OIDC_TOKEN_FILE first** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-oidc-token-file)
+- **Vercel OIDC token failures are LocalOidcContextError authentication failures, and empty claims are accepted** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-oidc-token-decoding)
+- **Vercel Sandbox request queries keep empty values and the TS key order** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-query-empty-values)
 
 #### Policy
 
@@ -1691,13 +1704,21 @@ Notable ones:
 - **Mistral realtime transcription WebSocket hint**: Mistral realtime transcription socket errors have no WebSocket-implementation hint (round 87).
 - **Gateway streaming image decoding**: Gateway streaming image decoding validates the placeholder skeleton (round 87).
 - **Empty string message content**: A user message whose only part is an empty text part loses it; TS keeps a string `content: ''` (round 87).
-- **Vercel Sandbox OIDC token refresh**: Vercel Sandbox: OIDC refresh is opt-in (`OIDCRefresh`), in memory, and follows `@vercel/oidc` 3.2.0 (round 87b).
+- **Vercel Sandbox OIDC token refresh**: Vercel Sandbox: OIDC refresh is opt-in (`OIDCRefresh`), in memory, and follows `@vercel/oidc` 4.0.0 (the AI Gateway: 3.2.0) (rounds 87b, 87c).
 - **Vercel Sandbox user agent**: Vercel Sandbox sends the Go SDK user agent, not `vercel/sandbox/<version> (Node.js/...)` (round 87b).
 - **Vercel Sandbox JSON Lines errors under backpressure**: Vercel Sandbox: a complete invalid JSON Lines record is always a syntax error after every earlier record (the TS fast-consumer result) (round 87b).
 - **Provider usage and runtime context attributes: colliding keys in a Go map**: Colliding provider usage / runtime context keys in a Go map: the later key in sorted order wins (round 87b).
 - **Empty tool and response format descriptions**: A `Description: ""` tool or response format has no `description` (v0.5.2 string fields) (round 87b).
 - **Realtime error events with an empty code**: Realtime error events: `code: ""` reads as no code (`RealtimeServerEvent.Code` is a v0.5.2 string) (round 87b).
 - **Open Responses and AI Gateway: field values of an unexpected JSON type**: Open Responses / AI Gateway: typed fields read a mistyped value as `String(value)` or zero; TS passes it on (round 87b).
+- **Code-mode tool arguments**: Code mode serializes tool call arguments with `JSON.stringify` (functions dropped, a circular value fails the call when it starts); every `tools` property is a tool; a script returning while an approval is pending always fails (round 87c).
+- **Vercel OIDC 4.0.0: keyring login and CLI config**: Vercel Sandbox: the CLI login is read from `auth.json`; the Vercel CLI is never run for keyring storage (round 87c).
+- **Vercel OIDC token parse errors**: Vercel OIDC token parse and missing-file causes carry Go's error texts (round 87c).
+- **Vercel Sandbox snapshot listing bound**: Vercel Sandbox snapshot listing follows at most 20 pages (round 87c).
+- **HTTP status text on a ResponseWriter**: `Pipe*` helpers cannot send a custom status text (round 87c).
+- **prepareStep `steps`**: `PrepareStep` gets a copy of the recorded steps, not the live array (round 87c).
+- **You.com tools**: You.com REST tools follow the pre-3.0 plugin; `APIKey: ""` falls back to `YDC_API_KEY` (round 87c).
+- **TS assertions the replay harness does not evaluate**: 302 TS provider-test assertions are not evaluated by `tsfixture` (round 87c).
 - **Executed tool results carry the tool title**: `ToolResult.Title` of a locally executed tool is the call's title, as in v0.5.2; TS client tool results have no `title` (round 80).
 - **Live WebSocket close code**: Google/Vertex Live and OpenAI realtime translation close errors say `(code unknown)`; `golang.org/x/net/websocket` does not expose the close code, and v0.5.2 exports its `*websocket.Conn` (round 81).
 - **OpenAI compaction metadata keeps the v0.5 keys**: `openai.compaction` parts carry the TS `providerMetadata.openai` object and the v0.5.2 top-level keys (round 81).
