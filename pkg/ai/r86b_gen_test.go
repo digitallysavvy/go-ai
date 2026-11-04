@@ -62,3 +62,47 @@ func TestR86bgenGenerateTextLogsLegacyToolResultDeprecation(t *testing.T) {
 		t.Fatalf("logged settings = %q, want the file-data deprecation on both steps", settings)
 	}
 }
+
+// V061 item 29: a model tool call has no title or toolMetadata
+// (LanguageModelV4ToolCall); TS parseToolCall's invalid call takes both from
+// the tool only (`title: tool?.title`). Valid calls keep the v0.5 Go
+// behavior (a ToolMetadata a custom provider sets is kept when the tool has
+// none, TestToolLoopAgentPreservesToolMetadataOnResults), so only the
+// invalid cases are compared.
+// Expected: TS parseToolCall at 30548ee7f9 under bun on calls carrying an
+// extra title "P" and toolMetadata {p: 1}:
+// {"unknown":{"title":null,"toolMetadata":null,"invalid":true},
+// "known":{"title":null,"toolMetadata":null,"invalid":false},
+// "knownInvalid":{"title":null,"toolMetadata":null,"invalid":true},
+// "metaInvalid":{"title":"T","toolMetadata":{"m":1},"invalid":true},
+// "providerDynamic":{"title":null,"toolMetadata":null,"invalid":false}}.
+func TestR86bgenParseToolCallTitleMetadataFromToolOnly(t *testing.T) {
+	tools := []types.Tool{
+		{Name: "known", Parameters: map[string]interface{}{"type": "object"}},
+		{Name: "meta", Title: "T", Metadata: map[string]interface{}{"m": 1}, Parameters: map[string]interface{}{"type": "object"}},
+	}
+	call := func(id, name, input string) types.ToolCall {
+		return types.ToolCall{ID: id, ToolName: name, RawArguments: input, Title: "P", ToolMetadata: map[string]interface{}{"p": 1}}
+	}
+	cases := []struct {
+		name     string
+		tools    []types.Tool
+		call     types.ToolCall
+		title    string
+		metadata map[string]interface{}
+		invalid  bool
+	}{
+		{"unknown", tools, call("1", "nope", "{}"), "", nil, true},
+		{"knownInvalid", tools, call("3", "known", "{"), "", nil, true},
+		{"metaInvalid", tools, call("4", "meta", "{"), "T", map[string]interface{}{"m": 1}, true},
+	}
+	for _, c := range cases {
+		got, err := ParseToolCall(context.Background(), ParseToolCallOptions{ToolCall: c.call, Tools: c.tools})
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got.Title != c.title || got.Invalid != c.invalid || len(got.ToolMetadata) != len(c.metadata) || (c.metadata != nil && got.ToolMetadata["m"] != 1) {
+			t.Errorf("%s: title %q toolMetadata %v invalid %v; want %q %v %v", c.name, got.Title, got.ToolMetadata, got.Invalid, c.title, c.metadata, c.invalid)
+		}
+	}
+}

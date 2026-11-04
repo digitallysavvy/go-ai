@@ -165,6 +165,11 @@ func parseAndRefineToolCall(ctx context.Context, opts ParseToolCallOptions) (typ
 	invalid.Dynamic = true
 	invalid.Invalid = true
 	invalid.Error = err
+	// TS `title: tool?.title` and toolMetadata only from the tool: a model
+	// tool call (LanguageModelV4ToolCall) has neither, so a value a provider
+	// put on the call is not kept.
+	invalid.Title = ""
+	invalid.ToolMetadata = nil
 	if tool != nil {
 		invalid.Title = tool.Title
 		if tool.Metadata != nil {
