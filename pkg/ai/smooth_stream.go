@@ -25,6 +25,15 @@ var (
 	smoothStreamLineRegexp = regexp.MustCompile(`\n+`)
 )
 
+// streamTransformFailure marks an error part with which a built-in transform
+// reports that it failed (TS: the transform throws, so the stream errors).
+// StreamText ends the run with the wrapped error instead of forwarding the
+// part.
+type streamTransformFailure struct{ err error }
+
+func (f *streamTransformFailure) Error() string { return f.err.Error() }
+func (f *streamTransformFailure) Unwrap() error { return f.err }
+
 // SmoothStreamOptions configures SmoothStream.
 //
 // Mirrors the TypeScript SDK's smoothStream options (generate-text/smooth-stream.ts),
@@ -264,7 +273,10 @@ func SmoothStream(opts SmoothStreamOptions) (StreamTransformFunc, error) {
 			match, derr := detect(buffer.String())
 			if derr != nil {
 				streamEnded = true
-				out = append(out, provider.StreamChunk{Type: provider.ChunkTypeError, Text: derr.Error()})
+				// TS detectChunk throws inside the transform, which errors
+				// the stream; StreamText recognizes the failure and ends the
+				// run with it (a direct caller sees the error part).
+				out = append(out, provider.StreamChunk{Type: provider.ChunkTypeError, Text: derr.Error(), Err: &streamTransformFailure{err: derr}})
 				buffer.Reset()
 				metadata = nil
 				return out

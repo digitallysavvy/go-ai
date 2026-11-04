@@ -2000,6 +2000,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		rec = &transformRecorder{}
 	}
 	transformStopped := false
+	// transformFailErr: a built-in transform failed (TS: it threw, so the
+	// stream errors). Nothing more reaches the consumer and the run ends
+	// with it.
+	var transformFailErr error
 	var outputTracker partialOutputTracker
 	var outputText outputTextStage
 	var sinkPartialErr error
@@ -2013,6 +2017,15 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	forwardThroughTransformChain = func(startIdx int, chunks []provider.StreamChunk) {
 		if startIdx >= len(opts.ExperimentalTransform) {
 			for _, c := range chunks {
+				if transformFailErr != nil {
+					return
+				}
+				var failure *streamTransformFailure
+				if c.Type == provider.ChunkTypeError && errors.As(c.Err, &failure) {
+					transformFailErr = failure.err
+					transformStopped = true
+					return
+				}
 				// TS createOutputTransformStream runs after the user
 				// transforms: the partial output follows the transformed
 				// text, and the first text block's deltas are published
@@ -2195,6 +2208,16 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// resolves them in the stream, right after the call part).
 		eagerApprovals := make(map[string]preResolvedApproval)
 		var pendingApprovalChunks []provider.StreamChunk
+		// pendingApprovalErr: a tool call's approval resolution failed. TS
+		// executeToolsFromStream enqueues the tool-call part before it
+		// resolves the approval, so the part (and its tool input callbacks)
+		// reach the consumer before the stream errors.
+		var pendingApprovalErr error
+		// stepModelOutputErr: the first ToModelOutput conversion of the
+		// step that failed. TS converts tool outputs when it builds the
+		// step's response messages (toResponseMessages, after the step's
+		// finish-step part), so the stream errors only after finish-step.
+		var stepModelOutputErr error
 		// inlineInvalidResults: the tool errors of invalid client calls,
 		// emitted right after their tool-call part (TS
 		// stream-language-model-call follows an invalid call with its
@@ -2589,17 +2612,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					if pre, approvalChunks, approvalParts, handled := eagerApprovalChunks(stepCtx, refined, &parsed, stepExecutionTools, currentMessages, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, opts.ExperimentalToolApprovalSecret, internalApprovalID(opts.Internal, remapGenerateID)); handled {
 						if pre.err != nil {
 							// TS resolveToolApproval throws inside the
-							// stream transform: the stream errors.
-							pre.err = r.classifyStepTimeout(stepCtx, ctx, pre.err)
-							r.err = pre.err
-							if isAbortErr(ctx, pre.err) {
-								fireAbort(pre.err)
-							}
-							break
+							// stream transform: the stream errors once the
+							// tool-call part is forwarded (below).
+							pendingApprovalErr = pre.err
+						} else {
+							eagerApprovals[refined.ID] = pre
+							stepContent = append(stepContent, approvalParts...)
+							pendingApprovalChunks = approvalChunks
 						}
-						eagerApprovals[refined.ID] = pre
-						stepContent = append(stepContent, approvalParts...)
-						pendingApprovalChunks = approvalChunks
 					}
 				}
 			}
@@ -2631,9 +2651,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// Track provider-inline tool results for the deferred hasResult check.
 			if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil {
 				enrichedResult, convertErr := enrichStreamedToolResultForModelOutput(stepCtx, *chunk.ToolResult, !r.adapterToolResults[chunk.ToolResult], stepToolCalls, toolsByName, &stepUsage)
-				if convertErr != nil {
-					r.err = convertErr
-					break
+				if convertErr != nil && stepModelOutputErr == nil {
+					stepModelOutputErr = convertErr
 				}
 				chunk.ToolResult = &enrichedResult
 				streamedToolResultOrder = recordStreamedToolResult(streamedToolResults, streamedToolResultOrder, enrichedResult)
@@ -2971,6 +2990,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					stepToolCalls = nil
 					eagerApprovals = make(map[string]preResolvedApproval)
 					pendingApprovalChunks = nil
+					stepModelOutputErr = nil
 					inlineInvalidResults = nil
 					pendingInvalidToolErrors = nil
 					stepContent = nil
@@ -3071,11 +3091,22 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 				break
 			}
+			if pendingApprovalErr != nil {
+				err := r.classifyStepTimeout(stepCtx, ctx, pendingApprovalErr)
+				r.err = err
+				if isAbortErr(ctx, err) {
+					fireAbort(err)
+				}
+				break
+			}
 			if transformStopped {
 				break
 			}
 		}
 		chunkDeadlineCancel()
+		if transformFailErr != nil && r.err == nil {
+			r.err = transformFailErr
+		}
 		if transformStopped && r.err == nil {
 			// A transform called stopStream: close the provider stream, run
 			// no tools, and record the step from what the transform emitted.
@@ -3317,13 +3348,19 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// the response messages are built.
 			stepToolResults = resultsInCompletionOrder(stepToolResults, liveToolResults)
 			// A failing ToModelOutput conversion is a stream error (as in
-			// GenerateText); cancellation errors are handled by the
-			// abort/timeout checks below.
+			// GenerateText), raised after the step's finish-step part (TS
+			// converts when it builds the step's response messages);
+			// cancellation errors are handled by the abort/timeout checks
+			// below.
 			var conversionErr *toolResultModelOutputError
 			if errors.As(toolsErr, &conversionErr) {
-				r.err = conversionErr.Unwrap()
-				cancelStep()
-				break
+				if stepModelOutputErr == nil {
+					stepModelOutputErr = conversionErr.Unwrap()
+				}
+				toolsErr = nil
+				stepToolResults = slices.DeleteFunc(stepToolResults, func(tr types.ToolResult) bool {
+					return tr.ToolCallID == "" && tr.ToolName == ""
+				})
 			}
 			// A tool context that fails its schema errors the stream (TS
 			// executeToolCall validates it outside its try). TS's
@@ -3608,6 +3645,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			RawFinishReason:  stepRawFinishReason,
 			ProviderMetadata: stepProviderMetadataRaw,
 		}})
+		if stepModelOutputErr != nil {
+			// TS toResponseMessages throws after finish-step: no step is
+			// recorded and the stream errors.
+			r.err = stepModelOutputErr
+			cancelStep()
+			break
+		}
 
 		// With experimental transforms the recorded step comes from the
 		// transformed stream (TS eventProcessor after the transforms): content,
