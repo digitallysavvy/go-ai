@@ -17,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -979,7 +980,7 @@ func r87cstreamTSContent(t *testing.T, p types.ContentPart) interface{} {
 // r87cstreamTSMessages renders messages as JSON with reasoning-file parts in
 // the TS ModelMessage shape ({type, data, mediaType, providerOptions}): Go
 // marshals ReasoningFileContent with its tagged fileData and a null data
-// (cr-r87c-stream-to-gen.md).
+// (cr-r87c-stream-to-gen.md). Go's legacy tool_calls mirror is dropped.
 func r87cstreamTSMessages(t *testing.T, msgs []types.Message) interface{} {
 	t.Helper()
 	v := r75streamNormalize(t, msgs)
@@ -987,6 +988,22 @@ func r87cstreamTSMessages(t *testing.T, msgs []types.Message) interface{} {
 	for _, m := range list {
 		mm, _ := m.(map[string]interface{})
 		parts, _ := mm["content"].([]interface{})
+		// Go's legacy Message.ToolCalls mirror (no TS twin) must match the
+		// tool-call parts.
+		if tcs, ok := mm["tool_calls"].([]interface{}); ok {
+			var ids []interface{}
+			for _, p := range parts {
+				if pm, _ := p.(map[string]interface{}); pm["type"] == "tool-call" {
+					ids = append(ids, pm["toolCallId"])
+				}
+			}
+			for i, tc := range tcs {
+				if i >= len(ids) || tc.(map[string]interface{})["id"] != ids[i] {
+					t.Fatalf("message tool_calls %v do not mirror the tool-call parts", tcs)
+				}
+			}
+			delete(mm, "tool_calls")
+		}
 		for _, p := range parts {
 			pm, _ := p.(map[string]interface{})
 			if pm["type"] != "reasoning-file" {
@@ -1374,4 +1391,185 @@ func TestR87cstreamToolCallConcurrencyOne(t *testing.T) {
 	<-secondStarted
 	<-done
 	r87cstreamAssertStrings(t, "events", order.get(), []string{"first:start", "first:end", "second:start", "second:end"})
+}
+
+// stream-text.test.ts 9824 / 9931: options.onStart > should include
+// configured runtimeContext properties in telemetry; should exclude
+// runtimeContext from telemetry by default (onStart, onStepStart, onStepEnd,
+// onEnd of the telemetry integration, in that order).
+func TestR87cstreamTelemetryRuntimeContext(t *testing.T) {
+	runtimeCtx := map[string]interface{}{"userId": "user-123", "requestId": "request-123"}
+	for _, tc := range []struct {
+		line     int
+		settings TelemetrySettings
+		want     string
+	}{
+		{9824, TelemetrySettings{IncludeRuntimeContext: map[string]bool{"requestId": true}}, `[{"requestId":"request-123"},{"requestId":"request-123"},{"requestId":"request-123"},{"requestId":"request-123"}]`},
+		{9931, TelemetrySettings{}, `[{},{},{},{}]`},
+	} {
+		rec := &r73streamCtxRecorder{}
+		settings := tc.settings
+		settings.Integrations = []telemetry.TelemetryIntegration{rec}
+		r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, r87cstreamDefaultStream(nil)), Prompt: "test-input", RuntimeContext: runtimeCtx, Telemetry: &settings})
+		rec.mu.Lock()
+		got := append([]interface{}(nil), rec.runtime...)
+		rec.mu.Unlock()
+		r75streamAssertJSON(t, fmt.Sprintf("%d telemetry runtime contexts", tc.line), got, tc.want)
+	}
+}
+
+// stream-text.test.ts 10576: options.onStepStart > should validate model
+// call settings returned from prepareStep.
+func TestR87cstreamPrepareStepSettingsValidated(t *testing.T) {
+	var errs r82streamErrors
+	zero := 0
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: r71streamModel(nil, r87cstreamDefaultStream(nil)), Prompt: "test-input",
+		PrepareStep: func(context.Context, PrepareStepOptions) PrepareStepOptions { return PrepareStepOptions{MaxOutputTokens: &zero} },
+		OnError:     errs.onError})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	got := errs.all()
+	if len(got) != 1 || got[0].Error() != "Invalid argument for parameter maxOutputTokens: maxOutputTokens must be >= 1" {
+		t.Fatalf("onError = %v", got)
+	}
+}
+
+// stream-text.test.ts 10645: options.onStepStart > should pass
+// initialInstructions, initialMessages, and responseMessages to prepareStep.
+func TestR87cstreamPrepareStepInitialAndResponseMessages(t *testing.T) {
+	type call struct {
+		instructions, initialInstructions          *string
+		initialMessages, responseMessages, messages []types.Message
+	}
+	var mu sync.Mutex
+	var calls []call
+	var prompts []types.Prompt
+	model := r71streamModel(nil,
+		[]provider.StreamChunk{r87cstreamMeta("id-0"), {Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", RawArguments: `{ "value": "test" }`}}, r87cstreamFinish(types.FinishReasonToolCalls, "")},
+		[]provider.StreamChunk{{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-1", ModelID: "mock-model-id", Timestamp: time.UnixMilli(1000)}}, {Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Done."}, {Type: provider.ChunkTypeTextEnd, ID: "1"}, r87cstreamFinish(types.FinishReasonStop, "stop")})
+	inner := model.DoStreamFunc
+	model.DoStreamFunc = func(ctx context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+		mu.Lock()
+		prompts = append(prompts, o.Prompt)
+		mu.Unlock()
+		return inner(ctx, o)
+	}
+	instructions := "test instructions"
+	prepared := "prepared instructions"
+	r71streamRun(t, StreamTextOptions{Model: model, Tools: []types.Tool{r71streamTool1(true, nil, nil)}, Instructions: &instructions,
+		Messages: r71streamUserMessages("test-input"), StopWhen: []StopCondition{StepCountIs(3)},
+		PrepareStep: func(_ context.Context, o PrepareStepOptions) PrepareStepOptions {
+			mu.Lock()
+			calls = append(calls, call{o.Instructions, o.InitialInstructions, append([]types.Message(nil), o.InitialMessages...), append([]types.Message(nil), o.ResponseMessages...), append([]types.Message(nil), o.Messages...)})
+			mu.Unlock()
+			if o.StepNumber == 0 {
+				o.Instructions = &prepared
+			}
+			return o
+		}})
+	if len(calls) != 2 {
+		t.Fatalf("prepareStep calls = %d", len(calls))
+	}
+	str := func(p *string) string {
+		if p == nil {
+			return "<nil>"
+		}
+		return *p
+	}
+	user := r71streamJSON(t, r71streamUserMessages("test-input"))
+	if str(calls[0].instructions) != "test instructions" || str(calls[0].initialInstructions) != "test instructions" {
+		t.Fatalf("call 0 instructions = %q / %q", str(calls[0].instructions), str(calls[0].initialInstructions))
+	}
+	r75streamAssertJSON(t, "call 0 initialMessages", calls[0].initialMessages, user)
+	if len(calls[0].responseMessages) != 0 {
+		t.Fatalf("call 0 responseMessages = %v", calls[0].responseMessages)
+	}
+	r75streamAssertJSON(t, "call 0 messages", calls[0].messages, user)
+	if str(calls[1].instructions) != "prepared instructions" || str(calls[1].initialInstructions) != "test instructions" {
+		t.Fatalf("call 1 instructions = %q / %q", str(calls[1].instructions), str(calls[1].initialInstructions))
+	}
+	r75streamAssertJSON(t, "call 1 initialMessages", calls[1].initialMessages, user)
+	r87cstreamAssert(t, "call 1 responseMessages", r87cstreamTSMessages(t, calls[1].responseMessages), `[{"content":[{"input":{"value":"test"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"text","value":"test-result"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"}]`)
+	want := append(append([]types.Message(nil), calls[1].initialMessages...), calls[1].responseMessages...)
+	if !reflect.DeepEqual(calls[1].messages, want) {
+		t.Fatalf("call 1 messages = %#v", calls[1].messages)
+	}
+	if len(prompts) != 2 || prompts[1].System != "prepared instructions" {
+		t.Fatalf("doStream[1] system = %q", prompts[1].System)
+	}
+}
+
+// stream-text.test.ts 10911: options.onLanguageModelCallStart and
+// onLanguageModelCallEnd > should expose provider metadata on model-call end.
+func TestR87cstreamModelCallEndProviderMetadata(t *testing.T) {
+	finish := r87cstreamFinish(types.FinishReasonStop, "stop")
+	finish.ProviderMetadata = r87cstreamRawMD(`{"gateway":{"generationId":"generation-id"}}`)
+	var mu sync.Mutex
+	var ends []LanguageModelCallEndEvent
+	r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, []provider.StreamChunk{finish}), Prompt: "test-input",
+		OnLanguageModelCallEnd: func(_ context.Context, e LanguageModelCallEndEvent) { mu.Lock(); ends = append(ends, e); mu.Unlock() }})
+	if len(ends) != 1 {
+		t.Fatalf("onLanguageModelCallEnd calls = %d", len(ends))
+	}
+	r75streamAssertJSON(t, "providerMetadata", ends[0].ProviderMetadata, `{"gateway":{"generationId":"generation-id"}}`)
+}
+
+// stream-text.test.ts 12439: options.onChunk > should include custom parts in
+// onChunk events (modelWithCustom; TS onChunk gets every part including
+// start, start-step, finish-step and finish).
+func TestR87cstreamOnChunkCustomParts(t *testing.T) {
+	var mu sync.Mutex
+	var chunks []provider.StreamChunk
+	r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, []provider.StreamChunk{
+		{Type: provider.ChunkTypeTextStart, ID: "1"},
+		{Type: provider.ChunkTypeText, ID: "1", Text: "Hello!"},
+		{Type: provider.ChunkTypeTextEnd, ID: "1"},
+		{Type: provider.ChunkTypeCustom, CustomContent: &types.CustomContent{Kind: "openai.compaction", ProviderMetadata: r87cstreamRawMD(`{"openai":{"itemId":"cmp_123"}}`)}},
+		r87cstreamFinish(types.FinishReasonStop, "stop"),
+	}), Prompt: "test-input", Internal: r87cstreamDefaultInternal(),
+		OnChunk: func(c provider.StreamChunk) { mu.Lock(); chunks = append(chunks, c); mu.Unlock() }})
+	mu.Lock()
+	defer mu.Unlock()
+	r87cstreamEpochFallback(t, chunks)
+	r87cstreamAssert(t, "onChunk", r87cstreamTSParts(chunks), `[{"type":"start"},{"request":{},"type":"start-step","warnings":[]},{"id":"1","type":"text-start"},{"id":"1","text":"Hello!","type":"text-delta"},{"id":"1","type":"text-end"},{"kind":"openai.compaction","providerMetadata":{"openai":{"itemId":"cmp_123"}},"type":"custom"},{"finishReason":"stop","performance":{"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0,"inputTokensPerSecond":0,"outputTokensPerSecond":0,"responseTimeMs":0,"stepTimeMs":0,"timeToFirstOutputMs":0,"toolExecutionMs":{}},"rawFinishReason":"stop","response":{"id":"id-0","modelId":"mock-model-id","timestamp":"1970-01-01T00:00:00.000Z"},"type":"finish-step","usage":`+r87cstreamUsageJSON+`},{"finishReason":"stop","rawFinishReason":"stop","totalUsage":`+r87cstreamUsageJSON+`,"type":"finish"}]`)
+}
+
+// stream-text.test.ts 12591: options.onError > should invoke onError.
+func TestR87cstreamOnErrorInvoked(t *testing.T) {
+	var errs r82streamErrors
+	r, err := StreamText(context.Background(), StreamTextOptions{Model: r87cstreamThrowingModel(), Prompt: "test-input", OnError: errs.onError})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.ConsumeStream()
+	got := errs.all()
+	if len(got) != 1 || got[0].Error() != "test error" {
+		t.Fatalf("onError = %v", got)
+	}
+}
+
+// stream-text.test.ts 13947: options.onEnd > should not prevent error from
+// being forwarded (onFinish defined; the stream is start + error).
+func TestR87cstreamOnFinishDoesNotSwallowError(t *testing.T) {
+	_, parts := r73streamParts(t, StreamTextOptions{Model: r87cstreamThrowingModel(), Prompt: "test-input", OnFinish: func(*StreamTextResult) {}})
+	r87cstreamAssert(t, "parts", r87cstreamTSParts(parts), `[{"type":"start"},{"type":"error","error":"test error"}]`)
+}
+
+// stream-text.test.ts 13972 / 14006: result.responseMessages > should
+// contain assistant response message when there are no tool calls; and
+// tool message when there are tool calls with results.
+func TestR87cstreamResponseMessagesTextAndTools(t *testing.T) {
+	text := []provider.StreamChunk{{Type: provider.ChunkTypeTextStart, ID: "1"}, {Type: provider.ChunkTypeText, ID: "1", Text: "Hello, "}, {Type: provider.ChunkTypeText, ID: "1", Text: "world!"}, {Type: provider.ChunkTypeTextEnd, ID: "1"}}
+	r := r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, append(append([]provider.StreamChunk(nil), text...), r87cstreamFinish(types.FinishReasonStop, "stop"))), Prompt: "test-input"})
+	r87cstreamAssert(t, "13972", r87cstreamTSMessages(t, r.ResponseMessages()), `[{"content":[{"text":"Hello, world!","type":"text"}],"role":"assistant"}]`)
+
+	withTool := append(append([]provider.StreamChunk(nil), text...),
+		provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", RawArguments: `{ "value": "value" }`}},
+		r87cstreamFinish(types.FinishReasonStop, "stop"))
+	tool := r71streamTool1(false, nil, nil)
+	tool.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result1", nil }
+	r = r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, withTool), Tools: []types.Tool{tool}, Prompt: "test-input"})
+	r87cstreamAssert(t, "14006", r87cstreamTSMessages(t, r.ResponseMessages()), `[{"content":[{"text":"Hello, world!","type":"text"},{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"text","value":"result1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"}]`)
 }
