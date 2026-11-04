@@ -1,5 +1,5 @@
 // Package harnessutil ports the adapter helpers of `@ai-sdk/harness/utils`
-// (ai@7.0.162, TS 30548ee7f9) that are not part of the bridge transport: authentication
+// (ai@7.0.162, TS 3fab50aa9b) that are not part of the bridge transport: authentication
 // environment resolution, AI Gateway auth, OAuth refresh, credential
 // forwarding and brokering, skills and instructions materialization, shell
 // quoting and client-app attribution.

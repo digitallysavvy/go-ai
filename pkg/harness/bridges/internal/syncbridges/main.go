@@ -36,7 +36,7 @@
 //	  -ts-dir /path/to/ai \
 //	  -out pkg/harness/bridges \
 //	  -tag ai@7.0.162 \
-//	  -commit 30548ee7f9
+//	  -commit 3fab50aa9b
 package main
 
 import (
@@ -150,7 +150,7 @@ type manifestFile = map[string]any
 // Defaults must match the tsTag/tsCommit recorded in VERSIONS.json.
 const (
 	defaultTag    = "ai@7.0.162"
-	defaultCommit = "30548ee7f9"
+	defaultCommit = "3fab50aa9b"
 )
 
 func main() {
@@ -248,8 +248,13 @@ func syncAdapter(tsDir, outDir string, spec adapterSpec) (manifestFile, error) {
 		}
 		files[destName] = sum
 	}
+	hashes := map[string]string{}
+	for name, sum := range files {
+		hashes[name] = sum.(string)
+	}
 
 	return manifestFile{
+		"contentHash":   contentHash(hashes),
 		"sourcePackage": spec.npmPackage,
 		"sourceVersion": sourceVersion,
 		"sourceDir":     fmt.Sprintf("packages/%s/%s", spec.packageDir, spec.sourceDir),
@@ -257,6 +262,24 @@ func syncAdapter(tsDir, outDir string, spec adapterSpec) (manifestFile, error) {
 		"bridgeEntry":   spec.bridgeEntry,
 		"files":         sortedKeys(files),
 	}, nil
+}
+
+// contentHash is the adapter's bridge content hash: the lowercase-hex sha256
+// of "<name> <sha256>\n" over its files in name order. It changes whenever
+// any vendored byte changes, so drift reviews can tell two builds of the
+// same sourceVersion apart (TS bridge bytes move between releases without a
+// version bump). Must match bridges.ContentHash.
+func contentHash(files map[string]string) string {
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	h := sha256.New()
+	for _, name := range names {
+		_, _ = io.WriteString(h, name+" "+files[name]+"\n")
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // distSourceName maps an embedded file name to its name in a built
