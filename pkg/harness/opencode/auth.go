@@ -5,6 +5,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 )
 
 // SubscriptionAccessTokenEnvironmentVariable mirrors TS
@@ -350,11 +351,48 @@ func createOpenCodeRequestTransformations(in createRequestTransformationsInput) 
 	case AuthOpenCodeGo:
 		return createBearerTransformation(in.Env, in.SandboxEnv, "OPENCODE_API_KEY", "https://opencode.ai/zen/go/v1")
 	case AuthGitLab:
-		base := in.Env["GITLAB_INSTANCE_URL"]
-		if base == "" {
-			base = "https://gitlab.com"
-		}
-		return createBearerTransformation(in.Env, in.SandboxEnv, "GITLAB_TOKEN", base)
+		return createGitLabRequestTransformations(in.Env, in.SandboxEnv)
 	}
 	return nil, nil
+}
+
+// gitLabDirectAccessPath is the chat token-exchange route OpenCode's GitLab
+// provider POSTs to with GITLAB_TOKEN (TS 138d66eb78).
+const gitLabDirectAccessPath = "/api/v4/ai/third_party_agents/direct_access"
+
+// createGitLabRequestTransformations restricts the real GITLAB_TOKEN to the
+// POST chat token exchange; every other GitLab request keeps the sandbox
+// placeholder. The URL is built by string concatenation and parsed with the
+// WHATWG parser exactly like TS `new URL(`${GITLAB_INSTANCE_URL ??
+// 'https://gitlab.com'}/api/v4/...`)`, so a trailing slash on the instance
+// URL yields a `//api/v4/...` path that never matches (fails closed, as in
+// TS). Mirrors TS `opencode-auth.ts` 175-199.
+func createGitLabRequestTransformations(environment, sandboxEnvironment map[string]string) ([]harness.RequestTransformation, error) {
+	credential := environment["GITLAB_TOKEN"]
+	sandboxCredential := sandboxEnvironment["GITLAB_TOKEN"]
+	if credential == "" || sandboxCredential == "" {
+		return nil, nil
+	}
+	base, ok := environment["GITLAB_INSTANCE_URL"]
+	if !ok {
+		base = "https://gitlab.com"
+	}
+	requestURL, err := urlnorm.Parse(base + gitLabDirectAccessPath)
+	if err != nil {
+		// TS `new URL` throws a TypeError whose message is just "Invalid URL";
+		// the input is not echoed (an instance URL can carry userinfo).
+		return nil, urlnorm.ErrInvalidURL
+	}
+	return []harness.RequestTransformation{{
+		Match: harness.RequestTransformationMatch{
+			Host:   requestURL.Host,
+			Path:   &harness.StringMatcher{Exact: requestURL.Pathname()},
+			Method: []string{"POST"},
+			Headers: []harness.KeyValueMatcher{{
+				Key:   &harness.StringMatcher{Exact: "Authorization"},
+				Value: &harness.StringMatcher{Exact: "Bearer " + sandboxCredential},
+			}},
+		},
+		Transform: harness.RequestTransformationTransform{Headers: map[string]string{"Authorization": "Bearer " + credential}},
+	}}, nil
 }
