@@ -84,6 +84,31 @@ func (h *openCodeHarness) ValidateLifecycleStateData(data json.RawMessage) error
 	return harnessutil.ValidateLifecycleStateObject(data, &resumeStateData{})
 }
 
+// openCodeBridgeAuthEnvironment is the forwarded part of the bridge
+// environment (TS opencode-harness.ts 537-557): the forwarded auth variables
+// without the subscription access token, plus OPENCODE_AUTH_CONTENT built
+// from the subscription when the token was forwarded. TS tests
+// `subscriptionAccessToken == null`, so a forwarded empty token still writes
+// the auth content.
+func openCodeBridgeAuthEnvironment(forwarded map[string]string, subscription *Subscription, gitLabSubscriptionBrokered bool) (map[string]string, error) {
+	subscriptionAccessToken, hasSubscriptionAccessToken := forwarded[SubscriptionAccessTokenEnvironmentVariable]
+	env := map[string]string{}
+	for k, v := range forwarded {
+		if k == SubscriptionAccessTokenEnvironmentVariable {
+			continue
+		}
+		env[k] = v
+	}
+	if !gitLabSubscriptionBrokered && subscription != nil && hasSubscriptionAccessToken {
+		content, err := createOpenCodeSubscriptionAuthContent(subscription, subscriptionAccessToken)
+		if err != nil {
+			return nil, err
+		}
+		env["OPENCODE_AUTH_CONTENT"] = content
+	}
+	return env, nil
+}
+
 func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions) (harness.Session, error) {
 	settings := h.settings
 	if err := validateBuiltinToolFiltering(opts.BuiltinToolFiltering); err != nil {
@@ -263,22 +288,9 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 			CredentialEnvironmentVariables: CredentialEnvironmentVariables,
 		})
 	}
-	// TS `subscriptionAccessToken == null`: presence (a forwarded empty value
-	// still writes OPENCODE_AUTH_CONTENT).
-	subscriptionAccessToken, hasSubscriptionAccessToken := forwardedAuthEnvironment[SubscriptionAccessTokenEnvironmentVariable]
-	env := map[string]string{}
-	for k, v := range forwardedAuthEnvironment {
-		if k == SubscriptionAccessTokenEnvironmentVariable {
-			continue
-		}
-		env[k] = v
-	}
-	if !gitLabSubscriptionBrokered && resolved.Subscription != nil && hasSubscriptionAccessToken {
-		content, err := createOpenCodeSubscriptionAuthContent(resolved.Subscription, subscriptionAccessToken)
-		if err != nil {
-			return nil, err
-		}
-		env["OPENCODE_AUTH_CONTENT"] = content
+	env, err := openCodeBridgeAuthEnvironment(forwardedAuthEnvironment, resolved.Subscription, gitLabSubscriptionBrokered)
+	if err != nil {
+		return nil, err
 	}
 	env["AI_SDK_HARNESS_CLIENT_APP"] = clientApp
 
