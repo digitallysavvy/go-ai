@@ -157,7 +157,7 @@ func (m *SpeechTranslationModel) baseSpeechTranslationHeaders() map[string]strin
 func getLiveSpeechTranslationWebSocketURL(baseURL, apiKey string) string {
 	u := googleRealtimeBaseURL(baseURL)
 	u.Scheme = strings.Replace(u.Scheme, "http", "ws", 1)
-	u.Path = strings.TrimRight(u.Path, "/") + "/ws/" + liveSpeechTranslationWebSocketPath
+	u.Path = strings.TrimSuffix(u.Path, "/") + "/ws/" + liveSpeechTranslationWebSocketPath
 	q := u.Query()
 	q.Set("key", apiKey)
 	u.RawQuery = q.Encode()

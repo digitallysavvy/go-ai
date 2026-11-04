@@ -560,7 +560,7 @@ func (m *googleRealtimeEventMapper) serializeClientEvent(event provider.Realtime
 
 func googleAuthTokenURL(base, apiKey string) string {
 	u := googleRealtimeBaseURL(base)
-	u.Path = strings.TrimRight(u.Path, "/") + "/v1alpha/auth_tokens"
+	u.Path = strings.TrimSuffix(u.Path, "/") + "/v1alpha/auth_tokens" // TS replace(/\/$/, '')
 	q := u.Query()
 	q.Set("key", apiKey)
 	u.RawQuery = q.Encode()
@@ -570,7 +570,7 @@ func googleAuthTokenURL(base, apiKey string) string {
 func googleWebSocketURL(base string) string {
 	baseURL := googleRealtimeBaseURL(base)
 	baseURL.Scheme = strings.Replace(baseURL.Scheme, "http", "ws", 1)
-	baseURL.Path = strings.TrimRight(baseURL.Path, "/") + "/ws/" + realtimeWebSocketPath
+	baseURL.Path = strings.TrimSuffix(baseURL.Path, "/") + "/ws/" + realtimeWebSocketPath
 	return baseURL.String()
 }
 

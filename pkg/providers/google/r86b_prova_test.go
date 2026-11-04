@@ -70,3 +70,20 @@ func TestR86bprovaParseOffsetSecondsJSWhitespace(t *testing.T) {
 		}
 	}
 }
+
+// TS getRealtimeWebSocketURL / the auth token URL strip one trailing "/"
+// (pathname.replace(/\/$/, ”)). Node on literal copies of the TS functions:
+// wss://x.example/a//ws/P?key=k and https://x.example/a//v1alpha/auth_tokens.
+func TestR86bprovaRealtimeURLsOneTrailingSlash(t *testing.T) {
+	const base = "https://x.example/a//"
+	for got, want := range map[string]string{
+		googleWebSocketURL(base):                        "wss://x.example/a//ws/" + realtimeWebSocketPath,
+		googleAuthTokenURL(base, "k"):                   "https://x.example/a//v1alpha/auth_tokens?key=k",
+		getLiveTranscriptionWebSocketURL(base, "k"):     "wss://x.example/a//ws/" + liveTranscriptionWebSocketPath + "?key=k",
+		getLiveSpeechTranslationWebSocketURL(base, "k"): "wss://x.example/a//ws/" + liveSpeechTranslationWebSocketPath + "?key=k",
+	} {
+		if got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	}
+}

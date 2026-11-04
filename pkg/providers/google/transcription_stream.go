@@ -38,7 +38,7 @@ const defaultFinishGraceDuration = 3 * time.Second
 func getLiveTranscriptionWebSocketURL(baseURL, apiKey string) string {
 	u := googleRealtimeBaseURL(baseURL)
 	u.Scheme = strings.Replace(u.Scheme, "http", "ws", 1)
-	u.Path = strings.TrimRight(u.Path, "/") + "/ws/" + liveTranscriptionWebSocketPath
+	u.Path = strings.TrimSuffix(u.Path, "/") + "/ws/" + liveTranscriptionWebSocketPath
 	q := u.Query()
 	q.Set("key", apiKey)
 	u.RawQuery = q.Encode()
