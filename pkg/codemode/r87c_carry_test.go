@@ -342,7 +342,7 @@ func TestR87ccarryReplayMustReachTheWholeLedger(t *testing.T) {
 	err := r87ccarryResumeTampered(t, "await tools.echo({ n: 1 }); return await tools.guarded({});", func(ledger map[int]replayRecord) {
 		ledger[5] = replayRecord{ToolName: "echo", InputJSON: `{"n":9}`, OutputJSON: `{}`}
 	})
-	r87ccarryProtocolError(t, err, "Continuation completed before replaying the full host function ledger.")
+	_ = r87ccarryProtocolError(t, err, "Continuation completed before replaying the full host function ledger.")
 }
 
 // TS run's queueBridgeResponse: two outcomes with the same settlement order
