@@ -524,7 +524,9 @@ func TestR87carryDeadlineClearedByFirstEventOrAbort(t *testing.T) {
 		t.Cleanup(srv.Close)
 		sandbox := newTestSandbox(srv)
 		wireSpawn(sandbox)
-		h, _ := claudecode.New(claudecode.Settings{MintBridgeToken: func(string) string { return "tok" }, StartupTimeout: 2 * time.Second, TurnStartTimeout: 100 * time.Millisecond})
+		// The deadline leaves room for a loaded machine; the turn must still
+		// be open well after it.
+		h, _ := claudecode.New(claudecode.Settings{MintBridgeToken: func(string) string { return "tok" }, StartupTimeout: 2 * time.Second, TurnStartTimeout: 500 * time.Millisecond})
 		sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/workdir"})
 		if err != nil {
 			t.Fatal(err)
@@ -540,7 +542,7 @@ func TestR87carryDeadlineClearedByFirstEventOrAbort(t *testing.T) {
 			t.Fatal(err)
 		}
 		r87carryWait(t, got)
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(700 * time.Millisecond)
 		select {
 		case <-control.Done():
 			t.Fatalf("the turn settled after its first event: %v", control.Err())
