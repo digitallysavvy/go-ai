@@ -322,3 +322,17 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 ```
 
 The Conversations API does not support `safePrompt`, `documentImageLimit`, `documentPageLimit`, `promptCacheKey` or `parallelToolCalls`; setting them under `providerOptions.mistral` produces `unsupported` warnings. System messages become `instructions`, and previously executed web searches are replayed as `function.call` and `function.result` inputs. `topK` is unsupported, and `Reasoning` is only forwarded for the reasoning-capable model IDs.
+
+## November 4 2026 catch-up
+
+### Mistral Large 4 reasoning levels
+
+`mistral-large-4` and `mistral-large-4-0` accept `low`, `medium` and `high`. `Reasoning: none` sends `low` with a `compatibility` warning, `medium` is sent as `medium`, and `providerOptions.mistral.reasoningEffort: "medium"` is accepted (TS 9ab42ea99a).
+
+### Realtime transcription
+
+The transcription model implements `DoStream` for `voxtral-mini-transcribe-realtime-3` and `voxtral-mini-transcribe-realtime-3-0` (`mistral.ModelVoxtralMiniTranscribeRealtime3`, `mistral.ModelVoxtralMiniTranscribeRealtime30`). It opens a WebSocket to `.../v1/audio/transcriptions/realtime?model=<id>`, sends the audio as `input_audio.append` frames of at most 64 KiB and reports transcript deltas, final segments and the finish. The input must be `audio/pcm` with a positive integer rate (default 16000). The realtime-only options `targetStreamingDelayMs` (80-1200 or 2400), `speakerReferences` and `turnDetection` go under `providerOptions.mistral`; `DoTranscribe` warns that they apply to realtime transcription only (TS b26902ea1a).
+
+### Voice agent sessions (server side)
+
+`(*mistral.Provider).ExperimentalRealtime()` returns the server half of the Mistral voice agent: `CreateSession` posts `/v1/audio/sessions` and returns the session id, participant token and server URL a browser client connects to; `CloseSession` deletes a session. `mistral.BuildRealtimeSessionConfig` builds the session body (or the live-update subset) from the TS `providerOptions.mistral` schema. The LiveKit browser transport of `mistral.experimental_realtime(modelId)` is TS-only (TS 0912e0b1b9).

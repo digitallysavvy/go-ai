@@ -175,6 +175,8 @@ if err != nil {
 }
 ```
 
+`ExperimentalTransform` is deprecated: the TypeScript WorkflowAgent no longer has `experimental_transform`, because a transform cannot run across durable workflow step boundaries. Go keeps it working for existing callers.
+
 ### Output and provider tool calls
 
 Like TS stream mode, the stream result parses `Output` (the call's or the agent's) from the last step's text only when that text is non-empty, whatever the finish reason, and leaves `Output()` nil when neither sets an `Output` (core `StreamText` would return the text); a step with no text (for example a tool-calls finish) leaves `Output()` nil and `OutputErr()` nil. A parse failure also surfaces from `Err()`.

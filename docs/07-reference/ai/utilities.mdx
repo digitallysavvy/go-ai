@@ -237,6 +237,7 @@ Options for streaming array elements as they complete.
 
 | Field | Type | Description |
 | --- | --- | --- |
+| `URL` | `string` | URL is the HTTP(S) origin of the request the provider reports (scheme, host and non-default port only; credentials, path, query and fragment are removed). Empty when the provider reports no URL or the URL is not http(s). Mirrors TS LanguageModelRequestMetadata.url. |
 | `Body` | `interface{}` | Body is the raw request body sent to the provider API (for debugging). |
 | `Messages` | `[]types.Message` | Messages are the step's request messages when the call includes them (TS request.messages, set with include.requestMessages). |
 

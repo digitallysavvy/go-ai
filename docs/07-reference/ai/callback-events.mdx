@@ -248,6 +248,7 @@ These events wrap each provider call inside a step.
 | `Content` | `[]types.ContentPart` | Content are the (parsed) content parts produced by the model call. |
 | `ResponseID` | `string` | ResponseID is the provider-returned response id. |
 | `ProviderMetadata` | `map[string]interface{}` | ProviderMetadata is optional provider-specific metadata. |
+| `Request` | `*LanguageModelCallRequest` | Request is the request the provider reports for this call, nil when it reports no HTTP(S) URL. Mirrors TS LanguageModelCallEndEvent.request. |
 | `Performance` | `LanguageModelCallPerformance` | Performance contains performance metrics for the model call. |
 
 {/* /gen:fields */}

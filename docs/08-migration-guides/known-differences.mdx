@@ -780,10 +780,6 @@ TS `b6b9dcaec7` dropped runtime checks its types guarantee (prompt and message s
 
 TS `4d6d830c14` adds a durable telemetry bridge for the Workflow DevKit; Go ports only its operation-name mapping (`ai.workflowAgent.stream` is `invoke_agent`). There is no Workflow DevKit gate in Go (coordinator ruling 6, review round 85).
 
-## Vercel sandbox stdin and policy request shape
-
-`SandboxProcessOptions.Stdin` is rejected by the Vercel session before the command starts; TS streams stdin through `@vercel/sandbox` writeStdin / closeStdin, whose wire shape is not on disk (coordinator ruling 2). Go still sends the public `{allow, subnets}` policy shape on update; the recorded 3.9.0 fixture only shows the API's response shape. The local sandbox supports stdin (review round 85). Also pending the package: the JSON Lines blank-row rule of the sandbox API streams (Go skips rows that are only Unicode whitespace) and `isSandboxNameConflictError`, which in Go also matches the `vercel sandbox API` error prefix (review round 86b).
-
 ## ACP callbacks checked at session start
 
 TS `createACP` throws when `isMcpToolCall` / `resolveHostToolCall` are missing; Go keeps them as optional `acp.Settings` fields (v0.5 compile compatibility) and `DoStart` returns the TS error (review round 85).
@@ -858,7 +854,31 @@ Sandbox `ReadTextFile` / `WriteTextFile` use Node Buffer encodings like TS, with
 
 ## AI Gateway OIDC token refresh
 
-The AI Gateway provider reads `VERCEL_OIDC_TOKEN` from the environment on each request. TS `getVercelOidcToken` (`@vercel/oidc` 3.2.0) also takes the token from the request context header and, when it is missing or expired, refreshes it with the Vercel CLI credentials (`.vercel/project.json`, the CLI auth file, an OAuth refresh against vercel.com) and caches it under the user data directory. Go does not read or write the Vercel CLI files; refresh the token yourself (`vercel env pull`) or use `AI_GATEWAY_API_KEY` (review round 86b; tracked for round 87).
+TS refreshes the Vercel OIDC token by default and writes the refreshed token to the Vercel token cache and `process.env`, and refreshes (or clears) the Vercel CLI login. Go refreshes only when `Config.OIDCTokenFunc` is set to `gateway.VercelOIDCTokenFunc(...)`, keeps the token in memory, reads the CLI login and the token cache read only, and fails with an error asking for `vercel login` when the CLI login has expired (owner decision b, review round 87).
+
+## WorkflowAgent ExperimentalTransform
+
+TS removed `experimental_transform` from `WorkflowAgent.stream()` (85b920f29e) because a transform cannot run across durable workflow step boundaries. Go keeps `WorkflowStreamOptions.ExperimentalTransform` working (it shipped in v0.5.2) and marks it deprecated (coordinator ruling 1, review round 87).
+
+## claude-code TurnStartTimeout zero
+
+TS `turnStartTimeoutMs: 0` fails a turn at once; Go `TurnStartTimeout: 0` is the 120 s default (like `StartupTimeout`), and a negative value disables the deadline (coordinator ruling 5, review round 87).
+
+## Mistral voice agent browser transport
+
+The LiveKit WebRTC transport and the `provider` connection kind of `mistral.experimental_realtime(modelId)` are browser-only and not in Go; `(*mistral.Provider).ExperimentalRealtime()` provides the server half (`CreateSession` / `CloseSession`, `BuildRealtimeSessionConfig`) (coordinator ruling 3, review round 87).
+
+## Mistral realtime transcription WebSocket hint
+
+TS appends "Pass a header-capable WebSocket implementation (e.g. ws) ..." to the socket error when no `webSocket` is configured; the Go client always sends the headers, so the text has no hint. The realtime URL follows Go's `/v1` path rule for custom base URLs, like the REST paths (review round 87).
+
+## Gateway streaming image decoding
+
+With `ExperimentalStreamingImageDecoding`, Go reads the body in 64 KiB reads; the 64 KiB minimum, the canonical-base64 rule and the placeholders (`[binary data: N bytes; ref A-B]`) match TS. Validation runs on the skeleton (placeholders are strings), which accepts and rejects the same bodies as TS's string-or-bytes schema (review round 87).
+
+## Empty string message content
+
+TS keeps the text part of a string `content: ''` message (only part arrays are filtered); Go messages always hold parts, so a single empty text part in a user message is removed before the model call (review round 87).
 
 ## Features that are TypeScript-only (not ported)
 

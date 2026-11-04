@@ -35,6 +35,8 @@ export AI_GATEWAY_API_KEY="your-api-key-here"
 
 `AI_GATEWAY_API_KEY` may contain either an AI Gateway API key or a Vercel access token. When a Vercel access token can access multiple teams, set `TeamIDOrSlug`; the provider sends it as `x-vercel-ai-gateway-team`.
 
+Without an API key the provider uses `VERCEL_OIDC_TOKEN`. Set `Config.OIDCTokenFunc` to `gateway.VercelOIDCTokenFunc(gateway.VercelOIDCTokenOptions{})` to resolve it like TS `getVercelOidcToken`: a request-context token (`gateway.ContextWithVercelOIDCToken`), else the environment, refreshed through the Vercel API when it is missing or about to expire, using the linked project (`.vercel/project.json`) and the Vercel CLI login. The refreshed token is kept in memory; the Vercel CLI files are only read, never written or cleared.
+
 ### Basic Configuration
 
 ```go
@@ -201,6 +203,8 @@ result, err := ai.GenerateImage(context.Background(), ai.GenerateImageOptions{
 // the retry loop, so this does not appear as a field on the returned
 // GenerateImageResult.
 ```
+
+Set `experimental_streamingImageDecoding: true` under `providerOptions.gateway` (typed: `GatewayProviderOptions.ExperimentalStreamingImageDecoding`) to decode canonical base64 images of at least 64 KiB while the response body is read, which lowers peak memory for large images. The option is a client setting and is not sent to the Gateway. When any image was decoded this way, every image is returned as bytes (`Images`) and `Base64Images` stays empty (TS 89aff56165).
 
 ## Transcription
 
