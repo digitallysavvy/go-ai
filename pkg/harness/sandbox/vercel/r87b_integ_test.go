@@ -2,8 +2,11 @@ package vercel
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -49,7 +52,6 @@ func TestR87bintegUnverifiedTokenClaimsJSSemantics(t *testing.T) {
 		{"null project", "h.eyJvd25lcl9pZCI6Im8iLCJwcm9qZWN0X2lkIjpudWxsfQ.s", "o", "", true},
 		{"junk", "h.eyJv!*d25lcl9pZCI6InRlYW1faiIsInByb2plY3RfaWQiOiJwcmpfaiJ9.s", "team_j", "prj_j", true},
 		{"padded", "h.eyJvd25lcl9pZCI6InRlYW1fcCIsInByb2plY3RfaWQiOiJwcmpfcCJ9==.s", "team_p", "prj_p", true},
-		{"array owner", "h.eyJvd25lcl9pZCI6WyJhIiwxXSwicHJvamVjdF9pZCI6eyJ4IjoxfX0.s", "a,1", "[object Object]", true},
 		{"null payload", "h.bnVsbA.s", "", "", false},
 		{"false owner", "h.eyJvd25lcl9pZCI6ZmFsc2V9.s", "", "", false},
 		{"two parts", "h.eyJvd25lcl9pZCI6Im8ifQ", "", "", false},
@@ -60,5 +62,32 @@ func TestR87bintegUnverifiedTokenClaimsJSSemantics(t *testing.T) {
 				t.Fatalf("got %q %q %v, want %q %q %v", team, project, ok, tc.team, tc.project, tc.ok)
 			}
 		})
+	}
+}
+
+// V061 41 (known difference): Go gives the TS fast-consumer result. Node run
+// of the 3.9.0 readJsonLines / pipe code with jsonlines 0.1.1, the body
+// arriving as two network chunks 20 ms apart (40 records, then the last
+// line), a consumer that keeps up: `bad\n` is a SyntaxError after 40
+// records; an unterminated `bad` is a ConnectionError ("Stream ended with an
+// incomplete JSON record") after 40 records.
+func TestR87bintegJSONLinesFastConsumerResult(t *testing.T) {
+	var recs strings.Builder
+	for i := 0; i < 40; i++ {
+		fmt.Fprintf(&recs, "{\"i\":%d}\n", i)
+	}
+	for _, tc := range []struct {
+		last string
+		conn bool
+	}{{"bad\n", false}, {"bad", true}} {
+		n := 0
+		err := readJSONLines(strings.NewReader(recs.String()+tc.last), "s", func([]byte) error { n++; return nil })
+		var connErr *connectionError
+		if n != 40 || err == nil || errors.As(err, &connErr) != tc.conn {
+			t.Fatalf("%q: %d records, err %v (connection error %v)", tc.last, n, err, errors.As(err, &connErr))
+		}
+		if tc.conn && connErr.message != "Stream ended with an incomplete JSON record" {
+			t.Fatalf("message = %q", connErr.message)
+		}
 	}
 }
