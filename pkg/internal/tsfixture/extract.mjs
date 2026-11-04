@@ -1129,6 +1129,7 @@ for (let i = 0; i < starts.length; i++) {
     // convertReadableStreamToArray(stream)`)
     // (also an assignment to a describe-level `let parts;` in a beforeEach)
     for (const am of body.matchAll(/(?:(?:const|let)\s+|^\s*)(\w+)\s*=\s*await\s+convertReadableStreamToArray\(\s*(?:(\w+)\.)?stream\s*,?\s*\)\s*;/gm)) {
+      if (!/^\s*(?:const|let)/.test(am[0]) && (am[1] === 'result' || !new RegExp('\\blet\\s+' + am[1] + '\\b').test(src))) continue;
       if (!am[2] || am[2] === 'result' || aliases[am[2]] === 'result') aliases[am[1]] = 'result.stream';
     }
     {
