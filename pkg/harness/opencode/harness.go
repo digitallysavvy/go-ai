@@ -84,6 +84,28 @@ func (h *openCodeHarness) ValidateLifecycleStateData(data json.RawMessage) error
 	return harnessutil.ValidateLifecycleStateObject(data, &resumeStateData{})
 }
 
+// gitLabDirectAccessInputs are the optional requestOpenCodeGitLabDirectAccess
+// arguments; an unset one takes the TS default parameter value.
+type gitLabDirectAccessInputs struct {
+	instanceURL     string
+	instanceURLSet  bool
+	aiGatewayURL    string
+	aiGatewayURLSet bool
+}
+
+// openCodeGitLabDirectAccessInputs mirrors TS opencode-harness.ts 366-374:
+// `instanceUrl` is passed when the subscription's `enterpriseUrl != null` and
+// `aiGatewayUrl` when `process.env.GITLAB_AI_GATEWAY_URL != null`, so a
+// present empty value is passed as given (the JS default parameter only
+// replaces undefined).
+func openCodeGitLabDirectAccessInputs(sub *Subscription, processEnv map[string]string) gitLabDirectAccessInputs {
+	gw, gwSet := processEnv["GITLAB_AI_GATEWAY_URL"]
+	return gitLabDirectAccessInputs{
+		instanceURL: sub.EnterpriseURL, instanceURLSet: sub.hasEnterpriseURL(),
+		aiGatewayURL: gw, aiGatewayURLSet: gwSet,
+	}
+}
+
 // openCodeBridgeAuthEnvironment is the forwarded part of the bridge
 // environment (TS opencode-harness.ts 537-557): the forwarded auth variables
 // without the subscription access token, plus OPENCODE_AUTH_CONTENT built
@@ -179,9 +201,9 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 		sandboxSubscriptionAccessToken, hasSandboxSubscriptionAccessToken := sandboxAuthEnvironment[SubscriptionAccessTokenEnvironmentVariable]
 		var transformations []harness.RequestTransformation
 		if resolved.Subscription != nil && resolved.Subscription.ProviderID == SubscriptionGitLab && hasSandboxSubscriptionAccessToken {
-			aiGatewayURL, aiGatewayURLSet := processEnv["GITLAB_AI_GATEWAY_URL"]
+			in := openCodeGitLabDirectAccessInputs(resolved.Subscription, processEnv)
 			directAccess, err := requestOpenCodeGitLabDirectAccessWith(ctx, nil,
-				resolved.Subscription.AccessToken, resolved.Subscription.EnterpriseURL, resolved.Subscription.hasEnterpriseURL(), aiGatewayURL, aiGatewayURLSet)
+				resolved.Subscription.AccessToken, in.instanceURL, in.instanceURLSet, in.aiGatewayURL, in.aiGatewayURLSet)
 			if err != nil {
 				return nil, err
 			}
