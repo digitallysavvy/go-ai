@@ -260,11 +260,13 @@ func TestR87btoolsOIDCRefreshResolvesMissingToken(t *testing.T) {
 }
 
 // 3.9.0 APIClient constructor: a JWT token with an owner_id claim sets the
-// team and project from its claims, also for explicit credentials.
+// team from its claims, also for explicit credentials (the project stays).
 func TestR87btoolsJWTClaimsSetTeamAndProject(t *testing.T) {
 	token := r87btoolsJWT("team_claims", "prj_claims", time.Now().Add(time.Hour))
 	c := NewAPIClient("http://127.0.0.1", Credentials{Token: token, TeamID: "team_x", ProjectID: "prj_x"})
-	if c.credentials.TeamID != "team_claims" || c.credentials.ProjectID != "prj_claims" {
+	// TS keeps credentials.projectId for request bodies and queries; only the
+	// teamId query follows the claims (api-client.js 93-100, sandbox.js 350-358).
+	if c.credentials.TeamID != "team_claims" || c.credentials.ProjectID != "prj_x" {
 		t.Fatalf("credentials = %+v", c.credentials)
 	}
 	c = NewAPIClient("http://127.0.0.1", Credentials{Token: "plain", TeamID: "team_x", ProjectID: "prj_x"})

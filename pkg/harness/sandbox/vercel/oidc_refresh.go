@@ -2,8 +2,8 @@ package vercel
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -11,7 +11,9 @@ import (
 	"time"
 
 	httpinternal "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"github.com/digitallysavvy/go-ai/pkg/internal/verceloidc"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // OIDCRefresh opts in to the @vercel/sandbox 3.9.0 Vercel OIDC token
@@ -123,21 +125,43 @@ func unverifiedTokenClaims(token string) (ownerID, projectID string, ok bool) {
 	if len(parts) != 3 {
 		return "", "", false
 	}
-	// Buffer.from(…, "base64url") ignores padding and invalid characters.
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	// Buffer.from(…, "base64url").toString("utf8"): both alphabets, other
+	// characters skipped, decoding stops at "="; invalid UTF-8 is U+FFFD.
+	raw, err := providerutils.EncodeSandboxText(parts[1], "base64url")
 	if err != nil {
 		return "", "", false
 	}
 	var payload map[string]any
-	if json.Unmarshal(raw, &payload) != nil {
+	if json.Unmarshal(textdecode.ReplaceInvalid(raw), &payload) != nil {
+		// Invalid JSON, or a payload that is not an object (null throws,
+		// a primitive has no owner_id).
 		return "", "", false
 	}
-	owner, _ := payload["owner_id"].(string)
-	if owner == "" {
+	owner := payload["owner_id"]
+	if !jsTruthy(owner) {
 		return "", "", false
 	}
-	project, _ := payload["project_id"].(string)
-	return owner, project, true
+	// The team is sent as the `teamId` query (URLSearchParams String()).
+	ownerID = providerutils.JSString(owner)
+	if project, present := payload["project_id"]; present && project != nil {
+		projectID = providerutils.JSString(project)
+	}
+	return ownerID, projectID, true
+}
+
+// jsTruthy is JavaScript truthiness for a decoded JSON value.
+func jsTruthy(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return x
+	case string:
+		return x != ""
+	case float64:
+		return x != 0 && !math.IsNaN(x)
+	}
+	return true
 }
 
 // oidcTokenTransport is 3.9.0 `APIClient.ensureValidToken`, run before each

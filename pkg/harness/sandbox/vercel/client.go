@@ -76,8 +76,11 @@ func NewAPIClient(baseURL string, credentials Credentials) *APIClient {
 
 // newAPIClient is NewAPIClient with an optional OIDC refresh. Like the 3.9.0
 // APIClient constructor, a JWT token whose payload has an owner_id sets the
-// team (owner_id) and project (project_id) from its claims; with refresh set,
-// such a token is checked before every request (ensureValidToken).
+// team (owner_id, the `teamId` query of every request) from its claims. The
+// claims' project_id only feeds the refresh: request bodies and queries keep
+// the credentials' ProjectID, which TS passes from getCredentials
+// (`projectId: credentials.projectId`). With refresh set, such a token is
+// checked before every request (ensureValidToken).
 func newAPIClient(baseURL string, credentials Credentials, refresh *OIDCRefresh) *APIClient {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
@@ -88,7 +91,7 @@ func newAPIClient(baseURL string, credentials Credentials, refresh *OIDCRefresh)
 	}
 	var transport http.RoundTripper = &retryTransport{base: base}
 	if owner, project, ok := unverifiedTokenClaims(credentials.Token); ok {
-		credentials.TeamID, credentials.ProjectID = owner, project
+		credentials.TeamID = owner
 		if refresh != nil {
 			transport = &oidcTokenTransport{base: transport, refresh: refresh,
 				token: credentials.Token, teamID: owner, projectID: project}
