@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"encoding/json"
+	"math"
 	"reflect"
 	"testing"
 
@@ -82,5 +83,65 @@ func TestR87bcarryProviderUsageJSONNumber(t *testing.T) {
 	want := [][2]interface{}{{"ai.usage.input_tokens", 7.0}}
 	if got := r87bcarryUsageKV(getProviderUsageAttributes(usage, "ai.usage")); !reflect.DeepEqual(got, want) {
 		t.Fatalf("attrs = %v, want %v", got, want)
+	}
+}
+
+// Class sweep of item 43 (one attribute per flattened name, later entry
+// wins): TS getRuntimeContextAttributes (otel/src/supplemental-attributes.ts
+// at 3fab50aa9b) followed by sanitizeAttributeValue. Expected values are the
+// TS output (bun, 2026-11-04):
+//
+//	{"a.b":1,"a":{"b":2},"z":"x"}  -> {"ai.settings.context.a.b":2,"ai.settings.context.z":"x"}
+//	{"a":{"b":1},"a.b":NaN,"c":3}  -> {"ai.settings.context.c":3}
+//	{"a":{"b":1},"a.b":null}       -> {"ai.settings.context.a.b":1}
+
+type r87bcarryRuntimeCtx struct {
+	AB int `json:"a.b"`
+	A  struct {
+		B int `json:"b"`
+	} `json:"a"`
+	Z string `json:"z"`
+}
+
+func TestR87bcarryRuntimeContextStructOrderLaterWins(t *testing.T) {
+	t.Parallel()
+	v := r87bcarryRuntimeCtx{AB: 1, Z: "x"}
+	v.A.B = 2
+	want := [][2]interface{}{{"ai.settings.context.ctx.a.b", 2.0}, {"ai.settings.context.ctx.z", "x"}}
+	for i := 0; i < 50; i++ {
+		got := r87bcarryUsageKV(runtimeContextAttributes(map[string]interface{}{"ctx": v}))
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("run %d: attrs = %v, want %v (TS output)", i, got, want)
+		}
+	}
+}
+
+func TestR87bcarryRuntimeContextOrderedObjectLaterWins(t *testing.T) {
+	t.Parallel()
+	tree, ok := jsonorder.Parse([]byte(`{"a.b":1,"a":{"b":2},"z":"x"}`))
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	want := [][2]interface{}{{"ai.settings.context.ctx.a.b", 2.0}, {"ai.settings.context.ctx.z", "x"}}
+	got := r87bcarryUsageKV(runtimeContextAttributes(map[string]interface{}{"ctx": tree}))
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("attrs = %v, want %v (TS output; json.Number leaves are numbers)", got, want)
+	}
+}
+
+func TestR87bcarryRuntimeContextSanitizedLaterValueRemoves(t *testing.T) {
+	t.Parallel()
+	// Sorted map order equals the TS JSON order here ("a" < "a.b" < "c").
+	ctx := map[string]interface{}{"a": map[string]interface{}{"b": 1}, "a.b": math.NaN(), "c": 3}
+	want := [][2]interface{}{{"ai.settings.context.c", int64(3)}}
+	for i := 0; i < 50; i++ {
+		if got := r87bcarryUsageKV(runtimeContextAttributes(ctx)); !reflect.DeepEqual(got, want) {
+			t.Fatalf("run %d: attrs = %v, want %v (TS output)", i, got, want)
+		}
+	}
+	ctx = map[string]interface{}{"a": map[string]interface{}{"b": 1}, "a.b": nil}
+	want = [][2]interface{}{{"ai.settings.context.a.b", int64(1)}}
+	if got := r87bcarryUsageKV(runtimeContextAttributes(ctx)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("null entry: attrs = %v, want %v (TS skips null)", got, want)
 	}
 }
