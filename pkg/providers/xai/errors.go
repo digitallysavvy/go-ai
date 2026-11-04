@@ -142,7 +142,10 @@ func xaiStreamErrorIsRetryableStatusCode(statusCode int) bool {
 // createXaiResponsesStreamError. eventType is "error" or "response.failed"
 // (used as the error's Type, matching TS's `type: eventType`). data is the
 // raw event payload, attached verbatim for callers that inspect it further.
-func newXAIResponsesStreamError(providerName, message, code, eventType string, data interface{}) *providererrors.StreamProviderError {
+//
+// codePresent reports a present, non-null code: TS `code ?? undefined` keeps
+// an empty string.
+func newXAIResponsesStreamError(providerName, message, code string, codePresent bool, eventType string, data interface{}) *providererrors.StreamProviderError {
 	var statusCode *int
 	var isRetryable *bool
 
@@ -156,7 +159,7 @@ func newXAIResponsesStreamError(providerName, message, code, eventType string, d
 	}
 
 	var codeArg interface{}
-	if code != "" {
+	if codePresent || code != "" {
 		codeArg = code
 	}
 	return providererrors.NewStreamProviderError(message, providerName, eventType, codeArg, statusCode, isRetryable, data)
@@ -231,4 +234,20 @@ func parseXAIErrorMessage(body []byte) string {
 	}
 
 	return string(body)
+}
+
+// xaiWireValuePresent reports whether the decoded JSON value holds a non-null
+// value at path (object keys).
+func xaiWireValuePresent(data interface{}, path ...string) bool {
+	for _, key := range path {
+		m, ok := data.(map[string]interface{})
+		if !ok {
+			return false
+		}
+		data, ok = m[key]
+		if !ok {
+			return false
+		}
+	}
+	return data != nil
 }
