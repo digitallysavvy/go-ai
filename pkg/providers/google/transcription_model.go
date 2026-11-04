@@ -168,9 +168,10 @@ func buildTranscriptionConfig(opts transcriptionModelOptions) map[string]interfa
 }
 
 // parseOffsetSeconds is TS Number.parseFloat for a Google duration offset such
-// as "1s" or "9.400s": the longest leading decimal prefix, finite only.
+// as "1s" or "9.400s": leading JS whitespace skipped, then the longest
+// decimal prefix, finite only.
 func parseOffsetSeconds(offset string) (float64, bool) {
-	m := leadingFloatRE.FindString(strings.TrimLeft(offset, " \t\r\n"))
+	m := leadingFloatRE.FindString(providerutils.JSTrimStart(offset))
 	if m == "" {
 		return 0, false
 	}

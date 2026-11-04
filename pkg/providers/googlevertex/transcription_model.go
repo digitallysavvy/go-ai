@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 	"math"
 	"net/http"
@@ -14,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -302,9 +303,10 @@ func convertVertexTranscriptionResponse(resp vertexTranscriptionResponse, modelI
 }
 
 // parseGoogleDuration is TS Number.parseFloat for a Speech-to-Text duration
-// such as "1.200s": the longest leading decimal prefix, finite only.
+// such as "1.200s": leading JS whitespace skipped, then the longest decimal
+// prefix, finite only.
 func parseGoogleDuration(value string) (float64, bool) {
-	m := leadingFloatRE.FindString(strings.TrimLeft(value, " \t\r\n"))
+	m := leadingFloatRE.FindString(providerutils.JSTrimStart(value))
 	if m == "" {
 		return 0, false
 	}
