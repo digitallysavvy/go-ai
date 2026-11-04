@@ -3,6 +3,7 @@ package tsfixture
 import (
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"net/url"
 	"os"
@@ -29,6 +30,9 @@ type Assertion struct {
 	CallArgs []interface{} `json:"callArgs"`
 	// CallSuffix is what follows that call in Expr (for example ".inputTokens").
 	CallSuffix string `json:"callSuffix"`
+	// JS is the extractor's JS program for the assertion (see evalJS), run
+	// when evalPath cannot evaluate Expr.
+	JS string `json:"js,omitempty"`
 }
 
 // request is one request the test server received.
@@ -755,11 +759,56 @@ func subset(want, got interface{}) bool {
 // check evaluates one assertion. It returns "" on success or when the
 // expression is not one the harness can evaluate (skipped reports that).
 func (a Assertion) check(roots map[string]interface{}, aliases map[string]string) (msg string, skipped bool) {
-	got, ok := evalPath(roots, aliases, a.Expr)
+	if got, ok := evalPath(roots, aliases, a.Expr); ok {
+		return a.match(got, false)
+	}
+	got, ok := evalJS(roots, a.JS)
 	if !ok {
 		return "", true
 	}
+	if m, isMap := got.(map[string]interface{}); isMap && len(m) == 1 {
+		if each, ok := m["__each"].([]interface{}); ok {
+			// an expectation inside a loop: it must hold for every value
+			for _, v := range each {
+				if msg, skipped := a.match(v, true); msg != "" || skipped {
+					return msg, skipped
+				}
+			}
+			return "", false
+		}
+	}
+	return a.match(got, true)
+}
+
+// match checks the value of an assertion's expression. fromJS: the value came
+// from the JS fallback, which tells undefined (the {__undef: true} marker)
+// from null.
+func (a Assertion) match(got interface{}, fromJS bool) (msg string, skipped bool) {
+	undef := false
+	if fromJS && isUndef(got) && got != nil {
+		undef, got = true, nil
+	}
 	got = jsonValue(got)
+	if fromJS {
+		argUndef := isUndef(a.Arg) && a.Arg != nil
+		switch a.Matcher {
+		case "toBeDefined":
+			return a.failure(!undef, got), false
+		case "toBeUndefined":
+			return a.failure(undef, got), false
+		case "toBeNull":
+			return a.failure(got == nil && !undef, got), false
+		case "toBe", "toEqual", "toStrictEqual":
+			switch {
+			case argUndef:
+				return a.failure(undef, got), false
+			case undef:
+				return a.failure(false, got), false // undefined is not null or a value
+			case a.Arg == nil:
+				return a.failure(got == nil, got), false
+			}
+		}
+	}
 	// a TS Set arrives as {__set: [...]}; length and membership look inside it
 	if m, ok := got.(map[string]interface{}); ok && len(m) == 1 && (a.Matcher == "toContain" || a.Matcher == "toHaveLength") {
 		if items, ok := m["__set"]; ok {
@@ -1051,8 +1100,9 @@ func RegisterPorted(m map[string]string) {
 // assertion of this test binary matched its key, or the assertion it marks
 // now evaluates (remove the mark). Call it after the suites that replay the
 // marked cases have run, for example from a t.Cleanup registered by the
-// first of them, or from TestMain after m.Run (with a nil t it returns the
-// stale keys' descriptions only).
+// first of them, or from TestMain after m.Run (PortedMain; with a nil t it
+// returns the stale keys' descriptions only). m may be a RegisterPorted or a
+// RegisterNotApplicable map.
 func CheckPortedUsed(t testing.TB, m map[string]string) []string {
 	portedMu.Lock()
 	var stale []string
@@ -1078,6 +1128,62 @@ func CheckPortedUsed(t testing.TB, m map[string]string) []string {
 	return stale
 }
 
+// notApplicable maps a PortedKey to the reason a TS assertion cannot apply to
+// Go (RegisterNotApplicable).
+var notApplicable = map[string]string{}
+
+// RegisterNotApplicable marks TS plain assertions (PortedKey -> the exact
+// reason) that cannot apply to Go, for example a JSON key order a Go map does
+// not keep (a documented known difference). A marked assertion is not
+// evaluated, counted or logged as not evaluated; TSFIXTURE_SKIPPED=1 logs it
+// as n/a with its reason. CheckPortedUsed also reports these marks when no
+// replayed assertion matches them.
+func RegisterNotApplicable(m map[string]string) {
+	portedMu.Lock()
+	defer portedMu.Unlock()
+	for k, v := range m {
+		notApplicable[k] = v
+	}
+}
+
+// notApplicableFor returns the reason of an n/a assertion and records that the
+// mark was reached.
+func notApplicableFor(test string, a Assertion) (string, bool) {
+	k := PortedKey(test, a.Expr, a.Matcher)
+	portedMu.Lock()
+	defer portedMu.Unlock()
+	why, ok := notApplicable[k]
+	if ok {
+		portedSeen[k] = true
+	}
+	return why, ok
+}
+
+// PortedMain is a TestMain body for a package that registers hand-port or n/a
+// marks: it runs the tests and then, when they passed and ran unfiltered (no
+// -run / -skip), fails the binary for every stale mark in marks (see
+// CheckPortedUsed):
+//
+//	func TestMain(m *testing.M) { os.Exit(tsfixture.PortedMain(m, ported, notApplicable)) }
+func PortedMain(m *testing.M, marks ...map[string]string) int {
+	code := m.Run()
+	if code != 0 {
+		return code
+	}
+	for _, name := range []string{"test.run", "test.skip"} {
+		if f := flag.Lookup(name); f != nil && f.Value.String() != "" {
+			return code
+		}
+	}
+	for _, mk := range marks {
+		for _, s := range CheckPortedUsed(nil, mk) {
+			fmt.Fprintln(os.Stderr, "tsfixture:", s)
+			code = 1
+		}
+	}
+	return code
+}
+
 // portedFor returns the Go test of a marked assertion and records that the
 // mark was reached (evaluated reports whether the evaluator handled it).
 func portedFor(test string, a Assertion, evaluated bool) (string, bool) {
@@ -1101,6 +1207,12 @@ func runAsserts(t testing.TB, c Case, roots map[string]interface{}) {
 	roots = aliasRootToolNames(roots)
 	skipped := 0
 	for _, a := range c.Asserts {
+		if why, ok := notApplicableFor(c.Test, a); ok {
+			if os.Getenv("TSFIXTURE_SKIPPED") != "" {
+				t.Logf("n/a: expect(%s).%s: %s", a.Expr, a.Matcher, why)
+			}
+			continue
+		}
 		msg, skip := a.check(roots, c.Aliases)
 		if goTest, ok := portedFor(c.Test, a, !skip); ok && skip {
 			if os.Getenv("TSFIXTURE_SKIPPED") != "" {
@@ -1224,6 +1336,46 @@ func firstLine(s string) string {
 		s = s[:60]
 	}
 	return s
+}
+
+// MatchAssertion checks a value a hand-port computed against a case
+// assertion's matcher and expected value, as the replay would (msg is "" when
+// it holds; evaluated is false for a matcher the harness does not support).
+// A hand-port of an assertion the evaluator cannot reach reuses the TS
+// expectation this way instead of copying it.
+func MatchAssertion(a Assertion, got interface{}) (msg string, evaluated bool) {
+	msg, skipped := a.match(got, false)
+	return msg, !skipped
+}
+
+// FindAssertion returns the assertion of the case titled test with the given
+// expression and matcher (the PortedKey parts), so a hand-port can read its
+// expected value.
+func FindAssertion(cases []Case, test, expr, matcher string) (Case, Assertion, bool) {
+	for _, c := range cases {
+		if c.Test != test {
+			continue
+		}
+		for _, a := range c.Asserts {
+			if a.Expr == expr && a.Matcher == matcher {
+				return c, a, true
+			}
+		}
+	}
+	return Case{}, Assertion{}, false
+}
+
+// SpyRoot is the TS form of a vitest mock function (`vi.fn()`) that was
+// called once per entry of calls with that entry's arguments: a RunFn
+// adapter returns it as an extra root (named like the TS spy) so
+// assertions over `spy.mock.calls[n][i]` evaluate against the Go values the
+// TS function would have passed to its callback.
+func SpyRoot(calls ...[]interface{}) map[string]interface{} {
+	list := make([]interface{}, 0, len(calls))
+	for _, c := range calls {
+		list = append(list, append([]interface{}{}, c...))
+	}
+	return map[string]interface{}{"mock": map[string]interface{}{"calls": list}}
 }
 
 // ErrUnsupported is returned by a RunFn call function for an input the Go side

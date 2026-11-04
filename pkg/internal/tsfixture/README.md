@@ -219,6 +219,43 @@ they are), and `openai/responses/.../convert_input.json.gz` was re-extracted
 (two aliases added, nothing else changed). The case and wire servers send no
 `Date` header (the TS test server sends only the headers a response sets).
 
+Since round 87d, `--asserts` and `--fn=NAME` also record a JS program per
+assertion (`js`), which `Run` / `RunFn` run in QuickJS (the module's vendored
+`pkg/internal/third_party/qjs`, no file system, no modules) when the Go
+evaluator cannot evaluate the expression: the test's statements up to the
+assertion, with the model (or function) call's declaration bound to the
+replayed result, every later statement verbatim, the module and describe
+consts and top-level functions it names, and `return (EXPR)`; types are
+stripped with the TS checkout's `typescript` (resolved from the working
+directory). The program sees `result`, `server` (with
+`calls[n].requestBodyJson` / `requestHeaders` / ...), the function-level
+roots, a no-op `expect` and `convertReadableStreamToArray` over the replayed
+parts. Declarations before the call evaluate leniently (one that throws is
+undefined); a program that throws (a mock, a second model call) leaves the
+assertion not evaluated. An expectation inside a loop, branch or callback
+runs with its value collected (`{__each: [...]}`) and must hold for each. An
+expression that reads none of the replayed values (only the test's own
+literals, or an argument of the call, such as an "input not mutated" check)
+gets no program. The JS fallback tells `undefined` from `null`. The extractor
+also treats `obj.NAME(args)` over the test's own arguments as the test's call.
+`TSFIXTURE_JS_DEBUG=1` prints why an assertion got no program.
+
+Regenerate a committed case file by extracting at the target commit and
+merging the new `js` programs and aliases into the committed cases (cases
+whose assertions changed upstream keep theirs; an assertion whose expression
+text only changed, from newer cast handling, takes the new one), so
+responses filled by `capture.mjs` stay as they are.
+
+Marks (round 87d): `RegisterPorted(map[PortedKey(test, expr, matcher)]GoTest)`
+for an assertion a named Go test reproduces with the same input and expected
+value (`FindAssertion` / `MatchAssertion` reuse the case's expectation), and
+`RegisterNotApplicable(map[key]reason)` for one that cannot apply to Go. A
+marked assertion is not counted as not evaluated; `TSFIXTURE_SKIPPED=1` logs
+it as hand-ported or n/a. `PortedMain(m, marks...)` (a TestMain body) fails an
+unfiltered run for a mark that matches nothing, or a hand-port mark whose
+assertion now evaluates. A RunFn adapter returns a vitest spy the TS function
+calls (`onWarning`) as `SpyRoot(calls...)`.
+
 Test hooks used by the provider tests: `ProviderToolHook` (and
 `anthropictools.ProviderTool` for Anthropic tools), `ToolNameAlias` /
 `PromptToolNameAlias` (Go names provider tools by id), `MetadataKeyAlias`,
