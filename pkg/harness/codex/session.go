@@ -434,9 +434,12 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		harness.PartTypeToolCall, harness.PartTypeToolApprovalRequest, harness.PartTypeToolResult,
 		harness.PartTypeFileChange, harness.PartTypeFinishStep, harness.PartTypeRaw,
 	}
-	var unsubs []func()
+	// channel.On replays a buffered terminal event synchronously, so the turn
+	// can settle while its handlers are still being registered: the list is
+	// guarded and a handler registered after settling is removed at once
+	// (like acp's addUnsub).
 	for _, t := range eventTypes {
-		unsubs = append(unsubs, s.opts.channel.On(t, func(e bridge.Event) {
+		pc.addUnsub(s.opts.channel.On(t, func(e bridge.Event) {
 			if t == harness.PartTypeFinishStep {
 				pc.checkpoint.Record(e)
 			}
@@ -445,13 +448,13 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 			}
 		}))
 	}
-	unsubs = append(unsubs, s.opts.channel.On(harness.PartTypeFinish, func(e bridge.Event) {
+	pc.addUnsub(s.opts.channel.On(harness.PartTypeFinish, func(e bridge.Event) {
 		if f, ok := e.Message.(bridge.StreamPartFrame); ok {
 			pc.forward(f.Part)
 		}
 		pc.settleSuccess()
 	}))
-	unsubs = append(unsubs, s.opts.channel.On(harness.PartTypeError, func(e bridge.Event) {
+	pc.addUnsub(s.opts.channel.On(harness.PartTypeError, func(e bridge.Event) {
 		var cause = errors.New("codex bridge reported an error")
 		if f, ok := e.Message.(bridge.StreamPartFrame); ok {
 			pc.forward(f.Part)
@@ -461,7 +464,6 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		}
 		pc.settleError(cause)
 	}))
-	pc.unsubs = unsubs
 
 	s.opts.channel.OnClose(func(_ int, reason string) {
 		if reason == bridge.CloseReasonSuspended {
@@ -484,7 +486,9 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 type promptControl struct {
 	channel      *bridge.Channel
 	emit         harness.EmitFunc
+	unsubMu      sync.Mutex
 	unsubs       []func()
+	unsubscribed bool
 	userMessages *bridge.ExperimentalUserMessageSubmitter
 	checkpoint   *bridge.CheckpointRecorder
 
@@ -498,11 +502,32 @@ func (c *promptControl) forward(part harness.StreamPart) {
 	c.emit(part)
 }
 
+// addUnsub records a handler's unsubscribe, or runs it at once when the
+// turn has already settled.
+func (c *promptControl) addUnsub(u func()) {
+	c.unsubMu.Lock()
+	if c.unsubscribed {
+		c.unsubMu.Unlock()
+		u()
+		return
+	}
+	c.unsubs = append(c.unsubs, u)
+	c.unsubMu.Unlock()
+}
+
+func (c *promptControl) unsubscribeAll() {
+	c.unsubMu.Lock()
+	list := c.unsubs
+	c.unsubs, c.unsubscribed = nil, true
+	c.unsubMu.Unlock()
+	for _, u := range list {
+		u()
+	}
+}
+
 func (c *promptControl) settleSuccess() {
 	c.once.Do(func() {
-		for _, u := range c.unsubs {
-			u()
-		}
+		c.unsubscribeAll()
 		if c.userMessages != nil {
 			c.userMessages.Close(nil)
 		}
@@ -513,9 +538,7 @@ func (c *promptControl) settleSuccess() {
 func (c *promptControl) settleError(err error) {
 	c.once.Do(func() {
 		c.err = err
-		for _, u := range c.unsubs {
-			u()
-		}
+		c.unsubscribeAll()
 		if c.userMessages != nil {
 			c.userMessages.Close(err)
 		}
