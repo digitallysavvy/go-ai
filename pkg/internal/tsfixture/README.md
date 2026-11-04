@@ -244,7 +244,20 @@ Regenerate a committed case file by extracting at the target commit and
 merging the new `js` programs and aliases into the committed cases (cases
 whose assertions changed upstream keep theirs; an assertion whose expression
 text only changed, from newer cast handling, takes the new one), so
-responses filled by `capture.mjs` stay as they are.
+responses filled by `capture.mjs` stay as they are:
+
+```sh
+cd <ai repo>/packages
+node <go-ai repo>/pkg/internal/tsfixture/extract.mjs <test.ts> --asserts > /tmp/fresh.json   # or --fn=NAME [--expand-each]
+python3 -I <go-ai repo>/pkg/internal/tsfixture/record/merge_cases.py <case>.json.gz /tmp/fresh.json /tmp/out.json
+gzip -9n < /tmp/out.json > <case>.json.gz
+```
+
+Round 87d merged the programs into the google, googlevertex (the shared
+google `language` file), gemini `sanitize_schema`, and the anthropic
+(`convert_prompt`, `convert_usage`, `json_response_tool_fallback`,
+`unknown_model_max_tokens`), cohere, gateway/errors, groq and mistral case
+files at TS `3fab50aa9b`.
 
 Marks (round 87d): `RegisterPorted(map[PortedKey(test, expr, matcher)]GoTest)`
 for an assertion a named Go test reproduces with the same input and expected
