@@ -437,6 +437,9 @@ func (s *WireServer) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := s.test.HTTP[idx].Response
 	mockFetch := s.test.HTTP[idx].MockFetch
+	// the recorded TS response has only the headers it was recorded with: no
+	// Date header Go's server would add
+	w.Header()["Date"] = nil
 	setH := func(def map[string]string) {
 		if mockFetch {
 			// A mock fetch Response carries only the headers it was built

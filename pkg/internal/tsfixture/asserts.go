@@ -93,8 +93,9 @@ var extendedAsserts bool
 // unseen; an opted-in suite triages what they find.
 func EvalExtendedAsserts(t *testing.T) {
 	t.Helper()
+	prev := extendedAsserts
 	extendedAsserts = true
-	t.Cleanup(func() { extendedAsserts = false })
+	t.Cleanup(func() { extendedAsserts = prev }) // keep a binary-wide EnableExtendedAsserts
 }
 
 // EnableExtendedAsserts is EvalExtendedAsserts for every suite of a test
@@ -109,8 +110,9 @@ func EnableExtendedAsserts() { extendedAsserts = true }
 // `.map(p => p.f ?? x)`.
 var arrayCall = regexp.MustCompile(`^\.(filter|some|find|map)\(\s*\(?([A-Za-z_$][\w$]*)\)?\s*=>\s*([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)(?:\s*===\s*'([^']*)')?\s*\)`)
 
-// arrayCallStart is the head of an array call with a one-parameter arrow.
-var arrayCallStart = regexp.MustCompile(`^\.(filter|some|every|find|map|flatMap)\(\s*\(?\s*([A-Za-z_$][\w$]*)\s*\)?\s*=>\s*`)
+// arrayCallStart is the head of an array call with a one-parameter arrow
+// (its TS type annotation, `(t: any) =>`, ignored).
+var arrayCallStart = regexp.MustCompile(`^\??\.(filter|some|every|find|map|flatMap)\(\s*\(?\s*([A-Za-z_$][\w$]*)\s*(?::\s*(?:\{[^{}()]*\}|[\w$.<>\[\]| ]+?)\s*)?\)?\s*=>\s*`)
 
 // sliceCall matches `.slice(a)` and `.slice(a, b)`.
 var sliceCall = regexp.MustCompile(`^\.slice\(\s*(-?\d+)\s*(?:,\s*(-?\d+)\s*)?\)`)
@@ -206,7 +208,29 @@ func parseArrayCall(rest string) (func(cur interface{}) (interface{}, bool), int
 	if op == "map" || op == "flatMap" {
 		bm := mapBody.FindStringSubmatch(body)
 		if bm == nil || bm[1] != param {
-			return nil, 0, false
+			// `p => ('k' in p ? p.a : p.b)`, `p => (p.f === 'v' ? [p.a] : [])`
+			if !isOperatorBody(body) {
+				return nil, 0, false
+			}
+			return func(cur interface{}) (interface{}, bool) {
+				list, ok := items(cur)
+				if !ok {
+					return nil, false
+				}
+				out := make([]interface{}, 0, len(list))
+				for _, it := range list {
+					v, ok, _ := evalOperatorExpr(map[string]interface{}{param: it}, nil, body)
+					if !ok {
+						return nil, false
+					}
+					if arr, isArr := v.([]interface{}); isArr && op == "flatMap" {
+						out = append(out, arr...)
+						continue
+					}
+					out = append(out, v)
+				}
+				return out, true
+			}, end + 1, true
 		}
 		path, fallback, hasFallback := bm[2], bm[3], bm[3] != ""
 		return func(cur interface{}) (interface{}, bool) {
@@ -239,37 +263,45 @@ func parseArrayCall(rest string) (func(cur interface{}) (interface{}, bool), int
 		path, cmp, lit, prefix string
 	}
 	var terms []term
+	useCond := false // a body of another shape goes through evalCond (||, in, ...)
 	for _, part := range strings.Split(body, "&&") {
 		tm := predTerm.FindStringSubmatch(strings.TrimSpace(part))
 		if tm == nil || tm[1] != param {
-			return nil, 0, false
+			if !extendedAsserts {
+				return nil, 0, false
+			}
+			useCond, terms = true, nil
+			break
 		}
 		terms = append(terms, term{path: tm[2], cmp: tm[3], lit: tm[4], prefix: tm[5]})
 	}
-	match := func(it interface{}) bool {
+	match := func(it interface{}) (bool, bool) {
+		if useCond {
+			return evalCond(map[string]interface{}{param: it}, nil, body)
+		}
 		for _, t := range terms {
 			v := memberPath(it, t.path)
 			switch {
 			case t.cmp == "===":
 				if !reflect.DeepEqual(v, tsLiteral(t.lit)) {
-					return false
+					return false, true
 				}
 			case t.cmp == "!==":
 				if reflect.DeepEqual(v, tsLiteral(t.lit)) {
-					return false
+					return false, true
 				}
 			case t.prefix != "":
 				s, isStr := v.(string)
 				if !isStr || !strings.HasPrefix(s, tsLiteral(t.prefix).(string)) {
-					return false
+					return false, true
 				}
 			default:
 				if !jsTruthy(v) {
-					return false
+					return false, true
 				}
 			}
 		}
-		return true
+		return true, true
 	}
 	return func(cur interface{}) (interface{}, bool) {
 		list, ok := items(cur)
@@ -280,28 +312,44 @@ func parseArrayCall(rest string) (func(cur interface{}) (interface{}, bool), int
 		case "filter":
 			out := []interface{}{}
 			for _, it := range list {
-				if match(it) {
+				hit, ok := match(it)
+				if !ok {
+					return nil, false
+				}
+				if hit {
 					out = append(out, it)
 				}
 			}
 			return out, true
 		case "find":
 			for _, it := range list {
-				if match(it) {
+				hit, ok := match(it)
+				if !ok {
+					return nil, false
+				}
+				if hit {
 					return it, true
 				}
 			}
 			return nil, true // undefined
 		case "every":
 			for _, it := range list {
-				if !match(it) {
+				hit, ok := match(it)
+				if !ok {
+					return nil, false
+				}
+				if !hit {
 					return false, true
 				}
 			}
 			return true, true
 		default: // some
 			for _, it := range list {
-				if match(it) {
+				hit, ok := match(it)
+				if !ok {
+					return nil, false
+				}
+				if hit {
 					return true, true
 				}
 			}
@@ -443,6 +491,11 @@ func evalPath(roots map[string]interface{}, aliases map[string]string, expr stri
 		}
 		return evalPath(map[string]interface{}{"__parsed": parsed}, nil, "__parsed"+m[2])
 	}
+	if extendedAsserts {
+		if v, ok, handled := evalOperatorExpr(roots, aliases, expr); handled {
+			return v, ok
+		}
+	}
 	if extendedAsserts && strings.HasPrefix(expr, "(") {
 		// `(await x)` and `(x as T)` around a path, then the rest of it
 		if end := closingParen(expr); end > 0 {
@@ -468,6 +521,15 @@ func evalPath(roots map[string]interface{}, aliases map[string]string, expr stri
 			if k != root {
 				inner[k] = v
 			}
+		}
+		if rest != "" && extendedAsserts && (isOperatorBody(a) || len(splitTopLevel(a, "??")) > 1) {
+			// an operator alias (`x ?? []`) is evaluated before the rest of
+			// the path applies to it
+			v, ok := evalPath(roots, inner, a)
+			if !ok {
+				return nil, false
+			}
+			return evalPath(map[string]interface{}{"__alias": v}, nil, "__alias"+rest)
 		}
 		return evalPath(roots, inner, a+rest)
 	}
@@ -519,6 +581,26 @@ func evalPath(roots map[string]interface{}, aliases map[string]string, expr stri
 			rest = rest[len(m[0]):]
 			continue
 		}
+		if m := joinCall.FindStringSubmatch(rest); extendedAsserts && m != nil {
+			// Array.prototype.join over strings (null / undefined join as "")
+			x, isArr := jsonValue(cur).([]interface{})
+			if !isArr {
+				return nil, false
+			}
+			parts := make([]string, len(x))
+			for i, e := range x {
+				switch ev := e.(type) {
+				case nil:
+				case string:
+					parts[i] = ev
+				default:
+					return nil, false
+				}
+			}
+			cur = strings.Join(parts, tsLiteral(m[1]).(string))
+			rest = rest[len(m[0]):]
+			continue
+		}
 		if m := atCall.FindStringSubmatch(rest); m != nil {
 			// Array.prototype.at: a negative index counts from the end
 			x, isArr := cur.([]interface{})
@@ -547,6 +629,10 @@ func evalPath(roots map[string]interface{}, aliases map[string]string, expr stri
 		rest = rest[len(m[0]):]
 		switch {
 		case m[1] != "":
+			if items, isSet := setItems(cur); isSet && m[1] == "size" {
+				cur = float64(len(items))
+				continue
+			}
 			if m[1] == "length" {
 				switch x := cur.(type) {
 				case []interface{}:
@@ -679,6 +765,12 @@ func (a Assertion) check(roots map[string]interface{}, aliases map[string]string
 		}
 	}
 	var pass bool
+	if want, isSet := setItems(a.Arg); isSet && (a.Matcher == "toEqual" || a.Matcher == "toStrictEqual") {
+		// vitest equals compares two Sets by membership, in any order
+		have, gotSet := setItems(got)
+		pass = gotSet && setsEqual(want, have)
+		return a.failure(pass, got), false
+	}
 	if hasAsymmetric(a.Arg) {
 		switch a.Matcher {
 		case "toEqual", "toStrictEqual":
@@ -1064,4 +1156,413 @@ func WarningsToTS(ws []types.Warning) []interface{} {
 		out = append(out, v)
 	}
 	return out
+}
+
+// joinCall matches `.join('s')` (extended assertions only).
+var joinCall = regexp.MustCompile(`^\.join\(\s*('[^']*'|"[^"]*")\s*\)`)
+
+// newSetCall is the head of `new Set(x)`.
+var newSetCall = regexp.MustCompile(`^new Set\(`)
+
+// inCheck is the JS `in` operator: `'k' in path`.
+var inCheck = regexp.MustCompile(`^('[^']*'|"[^"]*")\s+in\s+(.+)$`)
+
+// compareCond is `path === lit` or `path !== lit`.
+var compareCond = regexp.MustCompile(`^(.+?)\s*(===|!==)\s*('[^']*'|"[^"]*"|true|false|null|undefined|-?\d+(?:\.\d+)?)$`)
+
+// setItems returns the elements of a TS Set (`{__set: [...]}`).
+func setItems(v interface{}) ([]interface{}, bool) {
+	m, ok := v.(map[string]interface{})
+	if !ok || len(m) != 1 {
+		return nil, false
+	}
+	items, ok := m["__set"].([]interface{})
+	return items, ok
+}
+
+// setsEqual is vitest equality of two Sets: the same size and every element
+// of one equal to an element of the other, in any order.
+func setsEqual(want, got []interface{}) bool {
+	if len(want) != len(got) {
+		return false
+	}
+	for _, w := range want {
+		found := false
+		for _, g := range got {
+			if Diff("", Normalize(w), Normalize(g)) == "" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// unwrapParens drops parens that enclose all of s.
+func unwrapParens(s string) string {
+	for {
+		s = strings.TrimSpace(s)
+		if !strings.HasPrefix(s, "(") || closingParen(s) != len(s)-1 {
+			return s
+		}
+		s = s[1 : len(s)-1]
+	}
+}
+
+// topLevelTernary splits `cond ? a : b` at its top level (outside brackets
+// and strings; `?.` and `??` are not the operator).
+func topLevelTernary(s string) (cond, a, b string, ok bool) {
+	depth, q := 0, -1
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; c {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		case '\'', '"', '`':
+			for i++; i < len(s) && s[i] != c; i++ {
+			}
+		case '?':
+			if depth != 0 {
+				continue
+			}
+			if i+1 < len(s) && (s[i+1] == '.' || s[i+1] == '?') {
+				i++
+				continue
+			}
+			if q < 0 {
+				q = i
+			}
+		case ':':
+			if depth == 0 && q >= 0 {
+				return strings.TrimSpace(s[:q]), strings.TrimSpace(s[q+1 : i]), strings.TrimSpace(s[i+1:]), true
+			}
+		}
+	}
+	return "", "", "", false
+}
+
+// isOperatorBody reports whether an arrow body is one of the operator forms
+// evalOperatorExpr evaluates.
+func isOperatorBody(body string) bool {
+	inner := unwrapParens(body)
+	_, _, _, isTernary := topLevelTernary(inner)
+	return isTernary || inCheck.MatchString(inner) || newSetCall.MatchString(inner) || len(splitTopLevel(inner, "??")) > 1
+}
+
+// evalOperatorExpr evaluates the operator forms of an extended assertion:
+// `new Set(x)` (then a path such as `.size`), `'k' in x` and
+// `cond ? a : b` (cond an `in` check, a `===` / `!==` comparison or a
+// path's truthiness; a branch a literal, `[path, ...]` or a path). handled
+// is false when expr is none of them.
+func evalOperatorExpr(roots map[string]interface{}, aliases map[string]string, expr string) (v interface{}, ok, handled bool) {
+	inner := unwrapParens(strings.TrimSuffix(strings.TrimSpace(lineBreak.ReplaceAllString(expr, " ")), ","))
+	if cond, a, b, isTernary := topLevelTernary(inner); isTernary {
+		c, ok := evalCond(roots, aliases, cond)
+		if !ok {
+			return nil, false, true
+		}
+		branch := b
+		if c {
+			branch = a
+		}
+		v, ok := evalOperand(roots, aliases, branch)
+		return v, ok, true
+	}
+	if terms := splitTopLevel(inner, "??"); len(terms) > 1 {
+		// `a ?? b`: the first operand that is neither null nor undefined
+		var v interface{}
+		for _, term := range terms {
+			var ok bool
+			if v, ok = evalOperand(roots, aliases, term); !ok {
+				return nil, false, true
+			}
+			if !isUndef(jsonValue(v)) {
+				break
+			}
+		}
+		return v, true, true
+	}
+	if strings.HasPrefix(inner, "{") && closingBracket(inner) == len(inner)-1 {
+		v, ok := evalObjectLiteral(roots, aliases, inner)
+		return v, ok, true
+	}
+	if inCheck.MatchString(inner) || isArrayCond.MatchString(inner) || includesCond.MatchString(inner) {
+		c, ok := evalCond(roots, aliases, inner)
+		return c, ok, true
+	}
+	if newSetCall.MatchString(inner) {
+		open := len("new Set")
+		end := closingParen(inner[open:])
+		if end < 0 {
+			return nil, false, true
+		}
+		end += open
+		src, ok := evalPath(roots, aliases, inner[open+1:end])
+		list, isArr := jsonValue(src).([]interface{})
+		if !ok || !isArr {
+			return nil, false, true
+		}
+		// a Set keeps the first of equal (SameValueZero) primitives; objects
+		// are distinct by identity
+		items := []interface{}{}
+		for _, e := range list {
+			dup := false
+			for _, have := range items {
+				if isPrimitive(e) && reflect.DeepEqual(e, have) {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				items = append(items, e)
+			}
+		}
+		set := map[string]interface{}{"__set": items}
+		rest := strings.TrimSpace(inner[end+1:])
+		if rest == "" {
+			return set, true, true
+		}
+		v, ok := evalPath(map[string]interface{}{"__setValue": set}, nil, "__setValue"+rest)
+		return v, ok, true
+	}
+	return nil, false, false
+}
+
+func isPrimitive(v interface{}) bool {
+	switch v.(type) {
+	case nil, bool, string, float64:
+		return true
+	}
+	return false
+}
+
+// evalCond evaluates a ternary condition or a bare `in` check.
+func evalCond(roots map[string]interface{}, aliases map[string]string, cond string) (bool, bool) {
+	cond = unwrapParens(cond)
+	for _, op := range []string{"||", "&&"} {
+		terms := splitTopLevel(cond, op)
+		if len(terms) < 2 {
+			continue
+		}
+		for _, term := range terms {
+			c, ok := evalCond(roots, aliases, term)
+			if !ok {
+				return false, false
+			}
+			if c == (op == "||") {
+				return c, true // short circuit
+			}
+		}
+		return op == "&&", true
+	}
+	if strings.HasPrefix(cond, "!") && !strings.HasPrefix(cond, "!=") {
+		c, ok := evalCond(roots, aliases, cond[1:])
+		return !c, ok
+	}
+	if m := startsWithCond.FindStringSubmatch(cond); m != nil {
+		v, ok := evalPath(roots, aliases, m[1])
+		if !ok {
+			return false, false
+		}
+		str, isStr := jsonValue(v).(string)
+		if !isStr {
+			return false, false // a TypeError in TS
+		}
+		return strings.HasPrefix(str, tsLiteral(m[2]).(string)), true
+	}
+	if m := isArrayCond.FindStringSubmatch(cond); m != nil {
+		v, ok := evalOperand(roots, aliases, m[1])
+		_, isArr := jsonValue(v).([]interface{})
+		return isArr, ok
+	}
+	if m := includesCond.FindStringSubmatch(cond); m != nil {
+		// Array.prototype.includes (SameValueZero) or String.prototype.includes
+		hay, ok1 := evalOperand(roots, aliases, m[1])
+		needle, ok2 := evalOperand(roots, aliases, m[2])
+		if !ok1 || !ok2 {
+			return false, false
+		}
+		switch h := jsonValue(hay).(type) {
+		case string:
+			n, isStr := jsonValue(needle).(string)
+			return isStr && strings.Contains(h, n), isStr
+		case []interface{}:
+			for _, e := range h {
+				if isPrimitive(e) && reflect.DeepEqual(e, jsonValue(needle)) {
+					return true, true
+				}
+			}
+			return false, true
+		}
+		return false, false
+	}
+	if m := inCheck.FindStringSubmatch(cond); m != nil {
+		v, ok := evalPath(roots, aliases, m[2])
+		if !ok {
+			return false, false
+		}
+		obj, isObj := jsonValue(v).(map[string]interface{})
+		if !isObj {
+			return false, false // `in` throws on a primitive
+		}
+		_, has := obj[tsLiteral(m[1]).(string)]
+		return has, true
+	}
+	if m := compareCond.FindStringSubmatch(cond); m != nil {
+		v, ok := evalPath(roots, aliases, m[1])
+		if !ok {
+			return false, false
+		}
+		eq := reflect.DeepEqual(jsonValue(v), tsLiteral(m[3]))
+		return eq == (m[2] == "==="), true
+	}
+	v, ok := evalPath(roots, aliases, cond)
+	return ok && jsTruthy(jsonValue(v)), ok
+}
+
+// operandLiteral matches the literals a ternary branch can be.
+var operandLiteral = regexp.MustCompile(`^(?:'[^']*'|"[^"]*"|true|false|null|undefined|-?\d+(?:\.\d+)?|\[\])$`)
+
+// evalOperand evaluates a ternary branch: a literal, `[path, ...]` or a path.
+func evalOperand(roots map[string]interface{}, aliases map[string]string, s string) (interface{}, bool) {
+	s = unwrapParens(s)
+	if i := trailingCast(s); i >= 0 {
+		s = unwrapParens(s[:i]) // `(x as T)`: the cast is type-only
+	}
+	if strings.HasPrefix(s, "{") || splitTopLevel(s, "??")[0] != s {
+		v, ok, _ := evalOperatorExpr(roots, aliases, s)
+		return v, ok
+	}
+	if operandLiteral.MatchString(s) {
+		return tsLiteral(s), true
+	}
+	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+		out := []interface{}{}
+		for _, e := range strings.Split(s[1:len(s)-1], ",") {
+			if e = strings.TrimSpace(e); e == "" {
+				continue
+			}
+			v, ok := evalOperand(roots, aliases, e)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, v)
+		}
+		return out, true
+	}
+	return evalPath(roots, aliases, s)
+}
+
+// startsWithCond is `path.startsWith('s')`.
+var startsWithCond = regexp.MustCompile(`^(.+)\.startsWith\(\s*('[^']*'|"[^"]*")\s*\)$`)
+
+// splitTopLevel splits s at each top-level op (outside brackets and
+// strings).
+func splitTopLevel(s, op string) []string {
+	var out []string
+	depth, start := 0, 0
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; c {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		case '\'', '"', '`':
+			for i++; i < len(s) && s[i] != c; i++ {
+			}
+		default:
+			if depth == 0 && strings.HasPrefix(s[i:], op) {
+				out = append(out, strings.TrimSpace(s[start:i]))
+				i += len(op) - 1
+				start = i + 1
+			}
+		}
+	}
+	return append(out, strings.TrimSpace(s[start:]))
+}
+
+// isArrayCond is `Array.isArray(x)`.
+var isArrayCond = regexp.MustCompile(`^Array\.isArray\((.+)\)$`)
+
+// includesCond is `x.includes(y)` (x an array literal or a path).
+var includesCond = regexp.MustCompile(`^(.+)\.includes\(\s*([^()]+?)\s*,?\s*\)$`)
+
+// trailingCast is the index of a top-level TS `as` cast in s (`x as T`, also
+// with the space before T lost to a joined line break: `x as| A | B`), or
+// -1.
+func trailingCast(s string) int {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; c {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		case '\'', '"', '`':
+			for i++; i < len(s) && s[i] != c; i++ {
+			}
+		case ' ':
+			if depth == 0 && strings.HasPrefix(s[i:], " as") && len(s) > i+3 && !isIdentByte(s[i+3]) {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func isIdentByte(c byte) bool {
+	return c == '_' || c == '$' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+}
+
+// evalObjectLiteral evaluates `{ key: expr, short, ... }`.
+func evalObjectLiteral(roots map[string]interface{}, aliases map[string]string, s string) (interface{}, bool) {
+	body := strings.TrimSpace(s[1 : len(s)-1])
+	out := map[string]interface{}{}
+	for _, entry := range splitTopLevel(body, ",") {
+		if entry == "" {
+			continue
+		}
+		key, val, hasColon := strings.Cut(entry, ":")
+		key = strings.Trim(strings.TrimSpace(key), `'"`)
+		if !hasColon {
+			val = key // shorthand property
+		}
+		if !regexp.MustCompile(`^[A-Za-z_$][\w$]*$`).MatchString(key) {
+			return nil, false
+		}
+		v, ok := evalOperand(roots, aliases, strings.TrimSpace(val))
+		if !ok {
+			return nil, false
+		}
+		if v = jsonValue(v); v != nil {
+			out[key] = v
+		} else {
+			out[key] = map[string]interface{}{"__undef": true}
+		}
+	}
+	return out, true
+}
+
+// closingBracket is the index of the bracket closing s[0] ('(', '[' or
+// '{'), or -1.
+func closingBracket(s string) int {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; c {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth--; depth == 0 {
+				return i
+			}
+		case '\'', '"', '`':
+			for i++; i < len(s) && s[i] != c; i++ {
+			}
+		}
+	}
+	return -1
 }

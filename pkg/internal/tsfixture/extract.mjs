@@ -406,12 +406,14 @@ const serverVars = [...new Set([...src.matchAll(/\b(?:const|let)\s+(\w+)\s*=\s*c
 // `(\n part,\n): part is Extract<...> =>`) into `part =>`.
 function dropTypeGuards(s) {
   return s.replace(/\(\s*(\w+)\s*,?\s*\)\s*:\s*\1\s+is\s+[\s\S]*?=>/g, '$1 =>')
-    .replace(/\(\s*(\w+)\s*,?\s*\)\s*=>/g, '$1 =>');
+    .replace(/\(\s*(\w+)\s*,?\s*\)\s*=>/g, '$1 =>')
+    // a typed parameter: `(item: any) =>`, `(tool: { name: string }) =>`
+    .replace(/\(\s*(\w+)\s*:\s*(?:\{[^{}()]*\}|[\w$.<>\[\]| ]+?)\s*,?\s*\)\s*=>/g, '$1 =>');
 }
 function dropCasts(s) {
-  s = dropTypeGuards(s);
+  s = dropParenCasts(dropTypeGuards(s));
   return dropObjectCasts(s.replace(/\(\s*(\w+)\s+as\s+\{[^}]*\}\s*\)/g, '$1'))
-    .replace(/!(?=[.\[])/g, '')
+    .replace(/!(?=[.\[)]|$)/g, '')
     .replace(/\(\s*([\w$.\[\]]+)\s+as\s+[\w$.<>\[\]| ]+\)/g, '$1');
 }
 // pathAliases records `const NAME = BASE.path;` (also `BASE[0]`, with casts
@@ -439,12 +441,15 @@ function pathAliases(body, aliases) {
     for (let k = 0; k < rhs.length; k++) {
       const ch = rhs[k];
       if ('([{<'.includes(ch)) depth++;
-      else if (')]}>'.includes(ch)) depth--;
+      else if (')]}>'.includes(ch) && !(ch === '>' && rhs[k - 1] === '=')) depth--;
       else if (depth === 0 && /\s/.test(ch) && rhs.startsWith('as ', k + 1)) { rhs = rhs.slice(0, k).trim(); break; }
     }
     rhs = dropCasts(rhs).replace(/\s*\n\s*/g, '');
-    const pm = /^(\w+)((?:\??\.\w+|\[\d+\])+)$/.exec(rhs);
-    if (pm && (pm[1] === 'result' || aliases[pm[1]] !== undefined)) { aliases[m[1]] = pm[1] + pm[2]; continue; }
+    const pm = /^(\w+)((?:\??\.\w+|\[\d+\])+)(\s*\?\?\s*(?:\[\]|'[^']*'|null|undefined))?$/.exec(rhs);
+    if (pm && (pm[1] === 'result' || aliases[pm[1]] !== undefined)) { aliases[m[1]] = pm[1] + pm[2] + (pm[3] || ''); continue; }
+    // `JSON.parse(path)` of a known root
+    const jm = /^JSON\.parse\(\s*(\w+)((?:\??\.\w+|\[\d+\])*)\s*\)$/.exec(rhs);
+    if (jm && (jm[1] === 'result' || aliases[jm[1]] !== undefined)) { aliases[m[1]] = `JSON.parse(${jm[1]}${jm[2]})`; continue; }
     // `(await server.calls[0].requestBodyJson)` (its `as {...}` cast dropped)
     const sm = /^\(\s*await\s+(\w+)(\.calls\[\d+\]\.\w+)\s*\)$/.exec(rhs);
     if (sm && (sm[1] === 'server' || serverVars.includes(sm[1]))) { aliases[m[1]] = 'server' + sm[2]; continue; }
@@ -463,6 +468,26 @@ function balancedText(s) {
 }
 // dropObjectCasts drops `(expr as { ... })` casts whose object type nests
 // braces, which the single-level pattern above cannot match.
+// dropParenCasts drops `(path as T)` casts of any type T (a union over
+// lines, `Extract<typeof x, { type: 't' }>`), keeping the path.
+function dropParenCasts(s) {
+  const re = /\(\s*([\w$.?!\[\]']+)\s+as\b/g;
+  let out = '', last = 0, m;
+  while ((m = re.exec(s))) {
+    let depth = 0, k = m.index + m[0].length;
+    for (; k < s.length; k++) {
+      const ch = s[k];
+      if ('([{<'.includes(ch)) depth++;
+      else if (ch === '>' && s[k - 1] === '=') continue;
+      else if (')]}>'.includes(ch)) { if (depth === 0) break; depth--; }
+    }
+    if (k >= s.length || s[k] !== ')') continue;
+    out += s.slice(last, m.index) + m[1];
+    last = k + 1;
+    re.lastIndex = last;
+  }
+  return out + s.slice(last);
+}
 function dropObjectCasts(s) {
   const re = /\(\s*([\w$.\[\]]+)\s+as\s+(?=\{)/g;
   let out = '', last = 0, m;
@@ -866,9 +891,18 @@ for (let i = 0; i < starts.length; i++) {
       }
     }
     for (const am of body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*(result\.[\w.\[\]?']+)\s*;/g)) aliases[am[1]] = am[2];
+    // `const response = await provider.chat('id').doGenerate(...)`: the
+    // test's one model call is the result
+    {
+      const calls = [...body.matchAll(/\.do(?:Generate|Stream)\(/g)];
+      const rm = /(?:const|let)\s+(\w+)\s*=\s*await\s+(?:[\w.\s]|\([^()]*\))+?\.do(?:Generate|Stream)\(/.exec(body);
+      if (calls.length === 1 && rm && rm[1] !== 'result' && aliases[rm[1]] === undefined) aliases[rm[1]] = 'result';
+    }
     // the stream parts of a doStream call (`const parts = await
     // convertReadableStreamToArray(stream)`)
-    for (const am of body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*await\s+convertReadableStreamToArray\(\s*(?:result\.)?stream\s*\)\s*;/g)) aliases[am[1]] = 'result.stream';
+    for (const am of body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*await\s+convertReadableStreamToArray\(\s*(?:(\w+)\.)?stream\s*,?\s*\)\s*;/g)) {
+      if (!am[2] || am[2] === 'result' || aliases[am[2]] === 'result') aliases[am[1]] = 'result.stream';
+    }
     {
       Object.assign(aliases, routeAliases);
       // `const calls = pollServer.calls;`

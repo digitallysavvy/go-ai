@@ -200,8 +200,9 @@ var evalPathSnapshots bool
 // a test opts in for its own run.
 func EvalPathSnapshots(t *testing.T) {
 	t.Helper()
+	prev := evalPathSnapshots
 	evalPathSnapshots = true
-	t.Cleanup(func() { evalPathSnapshots = false })
+	t.Cleanup(func() { evalPathSnapshots = prev })
 }
 
 // StreamBodyEncoder, when set, turns the canned stream lines (one JSON
@@ -233,6 +234,7 @@ func (r *Response) serveNth(w http.ResponseWriter, call int) {
 }
 
 func notFound(w http.ResponseWriter) {
+	w.Header()["Date"] = nil // the TS test server sends no Date header
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNotFound)
 	_, _ = io.WriteString(w, `{"error":"Not Found"}`)
@@ -260,6 +262,10 @@ func matchRoute(routes []Route, path string) int {
 }
 
 func (r *Response) serve(w http.ResponseWriter) {
+	// The TS test server (msw) sends only the headers a response sets; Go's
+	// server would add a Date header, which providers read as the response
+	// timestamp (TS: undefined).
+	w.Header()["Date"] = nil
 	if r.Kind == "chunks" || r.Kind == "fixture-chunks" {
 		// TS createTestServer stream-chunks: these defaults, then the case's
 		// own headers over them.
