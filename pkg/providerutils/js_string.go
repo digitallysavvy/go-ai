@@ -2,6 +2,7 @@ package providerutils
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 )
 
@@ -40,4 +41,24 @@ func JSString(v interface{}) string {
 	default:
 		return "[object Object]"
 	}
+}
+
+// JSTruthy is JavaScript truthiness for a value decoded from JSON into
+// interface{}: null, false, "", 0 and NaN are falsy; every other value,
+// including an empty object or array, is truthy.
+func JSTruthy(v interface{}) bool {
+	switch x := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return x
+	case string:
+		return x != ""
+	case float64:
+		return x != 0 && !math.IsNaN(x)
+	case json.Number:
+		f, ok := JSNumber(string(x))
+		return ok && f != 0
+	}
+	return true
 }

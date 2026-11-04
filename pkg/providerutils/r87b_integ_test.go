@@ -27,3 +27,22 @@ func TestR87bintegJSString(t *testing.T) {
 		t.Errorf("json.Number = %q", got)
 	}
 }
+
+// JS truthiness for decoded JSON values (node: !!JSON.parse(x)).
+func TestR87bintegJSTruthy(t *testing.T) {
+	for in, want := range map[string]bool{
+		`null`: false, `false`: false, `""`: false, `0`: false, `-0`: false,
+		`true`: true, `"0"`: true, `" "`: true, `1`: true, `-1.5`: true, `{}`: true, `[]`: true,
+	} {
+		var v interface{}
+		if err := json.Unmarshal([]byte(in), &v); err != nil {
+			t.Fatal(err)
+		}
+		if got := JSTruthy(v); got != want {
+			t.Errorf("JSTruthy(%s) = %v, want %v", in, got, want)
+		}
+	}
+	if JSTruthy(json.Number("0")) || !JSTruthy(json.Number("2")) {
+		t.Error("json.Number truthiness")
+	}
+}

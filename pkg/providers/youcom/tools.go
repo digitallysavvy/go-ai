@@ -532,14 +532,16 @@ func youAPIHTTPError(endpoint endpointKind, resp *http.Response) error {
 		upgradeURL := "https://you.com/platform"
 		var body map[string]interface{}
 		if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
-			if v, ok := body["message"].(string); ok && v != "" {
-				message = v
+			// JS `body.message || default`: any truthy value is used, and
+			// the template interpolates it with String().
+			if v := body["message"]; providerutils.JSTruthy(v) {
+				message = providerutils.JSString(v)
 			}
-			if v, ok := body["upgrade_url"].(string); ok && v != "" {
-				upgradeURL = v
+			if v := body["upgrade_url"]; providerutils.JSTruthy(v) {
+				upgradeURL = providerutils.JSString(v)
 			}
-			if v, ok := body["reset_at"].(string); ok && v != "" {
-				message += " Limit resets on " + v + "."
+			if v := body["reset_at"]; providerutils.JSTruthy(v) {
+				message += " Limit resets on " + providerutils.JSString(v) + "."
 			}
 		}
 		return fmt.Errorf("%s Upgrade at: %s", message, upgradeURL)

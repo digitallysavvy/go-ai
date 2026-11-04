@@ -3,7 +3,6 @@ package vercel
 import (
 	"context"
 	"encoding/json"
-	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -138,7 +137,7 @@ func unverifiedTokenClaims(token string) (ownerID, projectID string, ok bool) {
 		return "", "", false
 	}
 	owner := payload["owner_id"]
-	if !jsTruthy(owner) {
+	if !providerutils.JSTruthy(owner) {
 		return "", "", false
 	}
 	// The team is sent as the `teamId` query (URLSearchParams String()).
@@ -147,21 +146,6 @@ func unverifiedTokenClaims(token string) (ownerID, projectID string, ok bool) {
 		projectID = providerutils.JSString(project)
 	}
 	return ownerID, projectID, true
-}
-
-// jsTruthy is JavaScript truthiness for a decoded JSON value.
-func jsTruthy(v any) bool {
-	switch x := v.(type) {
-	case nil:
-		return false
-	case bool:
-		return x
-	case string:
-		return x != ""
-	case float64:
-		return x != 0 && !math.IsNaN(x)
-	}
-	return true
 }
 
 // oidcTokenTransport is 3.9.0 `APIClient.ensureValidToken`, run before each
