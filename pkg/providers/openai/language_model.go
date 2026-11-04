@@ -191,10 +191,20 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	inner, warnings, err := m.openChatStream(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	return streaming.NewWarningsStream(inner, warnings), nil
+}
+
+// openChatStream posts the streaming request and returns the unwrapped chat
+// stream with the call warnings.
+func (m *LanguageModel) openChatStream(ctx context.Context, opts *provider.GenerateOptions) (*openAIStream, []types.Warning, error) {
 	// Build request body with streaming enabled
 	reqBody, warnings, err := m.buildRequestBodyWithWarnings(opts, true)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Make streaming API request
@@ -206,11 +216,12 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
 	if err != nil {
-		return nil, m.handleError(err)
+		return nil, nil, m.handleError(err)
 	}
 
 	inner := newOpenAIStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, m.Provider(), httpResp.Header)
 	inner.requestBody = reqBody
+	inner.requestURL = m.chatRequestURL()
 	inner.compat = m.provider.config.OpenAICompatible
 	if inner.compat {
 		inner.metaKey = providerutils.ResolveOpenAICompatibleMetadataKey(m.compatName(), opts.ProviderOptions)
@@ -221,7 +232,23 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		// wait for their function.name (native OpenAI throws at once).
 		inner.toolCallTracker.BufferNamelessIndexedCalls()
 	}
-	return streaming.NewWarningsStream(inner, warnings), nil
+	return inner, warnings, nil
+}
+
+// chatRequestURL is the URL DoGenerate and DoStream post to, as TS
+// OpenAIChatLanguageModel reports it in `request.url` (934100cad4): the
+// base URL, the /chat/completions path and the chat query (Azure
+// api-version). The OpenAI-compatible model reports none, as TS
+// OpenAICompatibleChatLanguageModel.
+func (m *LanguageModel) chatRequestURL() string {
+	if m.provider.config.OpenAICompatible {
+		return ""
+	}
+	u := m.provider.config.BaseURL + "/chat/completions"
+	if len(m.provider.config.ChatQuery) > 0 {
+		u += "?" + internalhttp.EncodeQuery(m.provider.config.ChatQuery)
+	}
+	return u
 }
 
 // buildRequestBody builds the OpenAI API request body.
@@ -1343,6 +1370,7 @@ type openAIStream struct {
 	providerName    string
 	responseHeaders http.Header
 	requestBody     interface{}
+	requestURL      string
 
 	// compat marks an OpenAI-compatible wrapper (reasoning deltas, no
 	// annotations/logprobs); metaKey is the providerMetadata namespace.
@@ -1418,6 +1446,13 @@ func (s *openAIStream) contentParts(raw json.RawMessage) []streaming.CompatConte
 // "stream request body field").
 func (s *openAIStream) RequestBody() interface{} {
 	return s.requestBody
+}
+
+// RequestURL returns the URL the stream was opened with (TS doStream
+// request.url, 934100cad4; the provider.StreamRequestURL capability); pkg/ai
+// reduces it to its origin. Empty for the OpenAI-compatible model.
+func (s *openAIStream) RequestURL() string {
+	return s.requestURL
 }
 
 // Close implements io.Closer
