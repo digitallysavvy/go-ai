@@ -232,6 +232,15 @@ type GatewayProviderOptions struct {
 	// Caching enables automatic caching behavior when supported by the
 	// Gateway. The only valid value is GatewayCachingAuto ("auto").
 	Caching string `json:"caching,omitempty"`
+
+	// ExperimentalStreamingImageDecoding (experimental, image models only)
+	// decodes large base64 images while the response is read, to reduce peak
+	// memory (TS experimental_streamingImageDecoding, 89aff56165). Extracted
+	// images are returned as bytes (ImageResult.Images, with Base64Images
+	// empty); if a result mixes extracted and small images, all are returned
+	// as bytes. Defaults to false. Image models remove this client option
+	// from requests.
+	ExperimentalStreamingImageDecoding *bool `json:"experimental_streamingImageDecoding,omitempty"`
 }
 
 // Gateway `has` capability tags. See GatewayProviderOptions.Has.
@@ -319,6 +328,9 @@ func (o GatewayProviderOptions) toMap() map[string]interface{} {
 	}
 	if o.Caching != "" {
 		out["caching"] = o.Caching
+	}
+	if o.ExperimentalStreamingImageDecoding != nil {
+		out[gatewayStreamingImageDecodingKey] = *o.ExperimentalStreamingImageDecoding
 	}
 	return out
 }
