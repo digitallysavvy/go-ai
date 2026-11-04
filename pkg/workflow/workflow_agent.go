@@ -390,10 +390,13 @@ type WorkflowStreamOptions struct {
 
 	// ExperimentalTransform is an ordered list of transforms applied to raw
 	// model stream chunks before they reach OnChunk or the returned
-	// WorkflowStreamResult, matching TS WorkflowAgent's
-	// `experimental_transform` stream option (hash 165455d). Previously
-	// declared-but-unused in TS; this forwards it through to the underlying
-	// ai.StreamText call so it actually runs.
+	// WorkflowStreamResult. It is forwarded to the underlying ai.StreamText
+	// call and still runs.
+	//
+	// Deprecated: TS removed WorkflowAgent's `experimental_transform`
+	// (85b920f29e) because a transform cannot run across durable workflow
+	// step boundaries. Go keeps it working for v0.5 callers; apply transforms
+	// with ai.StreamText or to the returned stream instead.
 	ExperimentalTransform []ai.StreamTransformFunc
 
 	OnChunk              func(chunk provider.StreamChunk)
