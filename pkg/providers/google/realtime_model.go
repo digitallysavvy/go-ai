@@ -5,13 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
@@ -139,7 +141,8 @@ func (m *GoogleRealtimeModel) googleRealtimeAPIKey(ctx context.Context) (string,
 }
 
 func (m *GoogleRealtimeModel) GetWebSocketConfig(token, wsURL string) provider.WebSocketConfig {
-	return provider.WebSocketConfig{URL: wsURL + "?access_token=" + url.QueryEscape(token)}
+	// TS `${options.url}?access_token=${encodeURIComponent(options.token)}`.
+	return provider.WebSocketConfig{URL: wsURL + "?access_token=" + providerutils.EncodeURIComponent(token)}
 }
 
 // thinkingLiveModelRe matches Live models that reason in the background
@@ -561,10 +564,8 @@ func (m *googleRealtimeEventMapper) serializeClientEvent(event provider.Realtime
 func googleAuthTokenURL(base, apiKey string) string {
 	u := googleRealtimeBaseURL(base)
 	u.Path = strings.TrimSuffix(u.Path, "/") + "/v1alpha/auth_tokens" // TS replace(/\/$/, '')
-	q := u.Query()
-	q.Set("key", apiKey)
-	u.RawQuery = q.Encode()
-	return u.String()
+	// TS `${getAuthTokensURL(baseURL)}?key=${encodeURIComponent(apiKey)}`.
+	return u.String() + "?key=" + providerutils.EncodeURIComponent(apiKey)
 }
 
 func googleWebSocketURL(base string) string {

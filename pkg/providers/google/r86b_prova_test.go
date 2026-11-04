@@ -87,3 +87,21 @@ func TestR86bprovaRealtimeURLsOneTrailingSlash(t *testing.T) {
 		}
 	}
 }
+
+// TS query escaping of the Live API credentials: the auth token URL and the
+// access_token use encodeURIComponent, the transcription and translation key
+// url.searchParams.set (URLSearchParams). Node: a~b*c%20d, t~*%2F%20,
+// key=a%7Eb*c+d.
+func TestR86bprovaRealtimeCredentialQueryEscaping(t *testing.T) {
+	const base = "https://x.example/v1beta"
+	for got, want := range map[string]string{
+		googleAuthTokenURL(base, "a~b*c d"):                                   "https://x.example/v1alpha/auth_tokens?key=a~b*c%20d",
+		(&GoogleRealtimeModel{}).GetWebSocketConfig("t~*/ ", "wss://h/p").URL: "wss://h/p?access_token=t~*%2F%20",
+		getLiveTranscriptionWebSocketURL(base, "a~b*c d"):                     "wss://x.example/ws/" + liveTranscriptionWebSocketPath + "?key=a%7Eb*c+d",
+		getLiveSpeechTranslationWebSocketURL(base, "a~b*c d"):                 "wss://x.example/ws/" + liveSpeechTranslationWebSocketPath + "?key=a%7Eb*c+d",
+	} {
+		if got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	}
+}
