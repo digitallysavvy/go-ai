@@ -159,7 +159,8 @@ func NormalizeStreamProviderError(err error, providerName string, data interface
 			details = errObj
 		}
 
-		if m, ok := details["message"].(string); ok && m != "" {
+		// TS uses details.message whenever it is a string, "" included.
+		if m, ok := details["message"].(string); ok {
 			message = m
 		}
 
