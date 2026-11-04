@@ -16,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ProdiaVideoModel implements the provider.VideoModelV3 interface for the
@@ -158,11 +159,12 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 		return nil, reqErr
 	}
 
-	// TS response.headers.get('content-type') ?? '': without a boundary
-	// in the header the response fails (the body is not sniffed).
+	// TS response.headers.get('content-type') ?? '' (repeated lines joined,
+	// each byte one character): without a boundary in the header the
+	// response fails (the body is not sniffed).
 	respCT := ""
 	if respHeaders != nil {
-		respCT = respHeaders.Get("Content-Type")
+		respCT = providerutils.FetchHeaderText(respHeaders, "Content-Type")
 	}
 
 	jobResp, videoData, videoMIME, err := parseMultipartResponse(respCT, respBodyBytes)

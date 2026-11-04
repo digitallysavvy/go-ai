@@ -193,7 +193,7 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 
 	// TS response.headers.get('content-type') ?? '': without a boundary
 	// in the header the response fails (the body is not sniffed).
-	jobResp, outputs, err := parseMultipartOutputs(respHeaders.Get("Content-Type"), respBody)
+	jobResp, outputs, err := parseMultipartOutputs(providerutils.FetchHeaderText(respHeaders, "Content-Type"), respBody)
 	if err != nil {
 		return nil, err
 	}
