@@ -34,10 +34,16 @@ func TestR87carryInitialStartSendErrorCleansUp(t *testing.T) {
 		t.Fatal("the turn did not settle")
 	}
 	pc.mu.Lock()
-	timer, unsubs, pending := pc.startTimer, pc.unsubs, pc.pendingStart
+	timer, pending := pc.startTimer, pc.pendingStart
 	pc.mu.Unlock()
-	if timer != nil || unsubs != nil || pending != nil {
-		t.Fatalf("timer = %v, unsubs = %d, pending = %v", timer, len(unsubs), pending)
+	if timer != nil || pending != nil {
+		t.Fatalf("timer = %v, pending = %v", timer, pending)
+	}
+	// The listeners are removed: a later Add unsubscribes at once.
+	removed := false
+	pc.subs.Add(func() { removed = true })
+	if !removed {
+		t.Fatal("the turn's subscriptions were not released")
 	}
 	if pc.Err() != err {
 		t.Fatalf("Err = %v, want the send error", pc.Err())
