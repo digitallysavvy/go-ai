@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/third_party/qjs"
@@ -109,6 +110,7 @@ type toolBridge struct {
 	cancelTools context.CancelFunc
 	toolNames   []string
 	guest       *qjs.Value
+	determinism runDeterminism
 
 	// inFlight counts started host calls whose outcome the drive loop has
 	// not taken yet (TS run's inFlightBridgeRequests); done holds the
@@ -156,6 +158,7 @@ type bridgeResponse struct {
 	ok         bool
 	outputJSON string
 	errMessage string
+	dateNowMs  int64
 }
 
 func newToolBridge(ctx context.Context, input RunInput, options *Options, policy resolvedPolicy, outerToolCall string, replayLedger map[int]replayRecord, resumePendings map[int]PendingInterruption, resumeResolutions map[int]interface{}) *toolBridge {
@@ -178,6 +181,7 @@ func newToolBridge(ctx context.Context, input RunInput, options *Options, policy
 		toolCtx:             toolCtx,
 		cancelTools:         cancelTools,
 		toolNames:           toolNames,
+		determinism:         newRunDeterminism(),
 		notify:              make(chan struct{}, 1),
 		ready:               make(map[int]bridgeResponse),
 		nextSettlementOrder: nextSettlementOrder,
@@ -248,7 +252,7 @@ func (b *toolBridge) start(toolName, inputJSON string, serializeErr error) int {
 		}
 		b.mu.Lock()
 		b.committed[idx] = rec
-		resp := bridgeResponse{id: n, ok: rec.Status != replayStatusRejected, outputJSON: rec.OutputJSON, errMessage: rec.ErrorMessage}
+		resp := bridgeResponse{id: n, ok: rec.Status != replayStatusRejected, outputJSON: rec.OutputJSON, errMessage: rec.ErrorMessage, dateNowMs: rec.DateNowMs}
 		var qerr CodeModeError
 		if rec.SettledOrder == 0 {
 			b.immediate = append(b.immediate, resp)
@@ -367,8 +371,9 @@ func (b *toolBridge) finish(c bridgeCompletion, wasInFlight bool) {
 	if c.err == nil {
 		b.nextSettlementOrder++
 		order := b.nextSettlementOrder
-		b.committed[idx] = replayRecord{ToolName: c.toolName, InputJSON: c.inputJSON, OutputJSON: c.output, SettledOrder: order}
-		if qerr := b.queueResponseLocked(order, bridgeResponse{id: c.n, ok: true, outputJSON: c.output}); qerr != nil && b.fatalErr == nil {
+		now := time.Now().UnixMilli()
+		b.committed[idx] = replayRecord{ToolName: c.toolName, InputJSON: c.inputJSON, OutputJSON: c.output, SettledOrder: order, DateNowMs: now}
+		if qerr := b.queueResponseLocked(order, bridgeResponse{id: c.n, ok: true, outputJSON: c.output, dateNowMs: now}); qerr != nil && b.fatalErr == nil {
 			b.fatalErr = qerr
 		}
 		return
@@ -393,8 +398,9 @@ func (b *toolBridge) finish(c bridgeCompletion, wasInFlight bool) {
 	b.nextSettlementOrder++
 	order := b.nextSettlementOrder
 	message := c.err.Error()
-	b.committed[idx] = replayRecord{ToolName: c.toolName, InputJSON: c.inputJSON, Status: replayStatusRejected, ErrorMessage: message, SettledOrder: order}
-	if qerr := b.queueResponseLocked(order, bridgeResponse{id: c.n, errMessage: message}); qerr != nil && b.fatalErr == nil {
+	now := time.Now().UnixMilli()
+	b.committed[idx] = replayRecord{ToolName: c.toolName, InputJSON: c.inputJSON, Status: replayStatusRejected, ErrorMessage: message, SettledOrder: order, DateNowMs: now}
+	if qerr := b.queueResponseLocked(order, bridgeResponse{id: c.n, errMessage: message, dateNowMs: now}); qerr != nil && b.fatalErr == nil {
 		b.fatalErr = qerr
 	}
 }

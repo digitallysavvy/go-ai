@@ -253,12 +253,12 @@ func TestR87ccarryReplayRejectedCalls(t *testing.T) {
 func r87ccarryResumeTampered(t *testing.T, js string, tamper func(map[int]replayRecord)) error {
 	t.Helper()
 	return r87ccarryResumeTamperedContinuation(t, js, func(c *Continuation) {
-		ledger, err := decodeReplayLedger(c.Token)
-		if err != nil {
-			t.Fatal(err)
+		ledger, determinism, err := decodeReplayToken(c.Token)
+		if err != nil || determinism == nil {
+			t.Fatalf("token: %v (determinism %v)", err, determinism)
 		}
 		tamper(ledger)
-		token, err := encodeReplayLedger(ledger)
+		token, err := encodeReplayToken(ledger, *determinism)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -368,5 +368,120 @@ func TestR87ccarryReplayLegacyLedger(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("legacy ledger resume failed: %v", err)
+	}
+}
+
+// run@2.1.8 DETERMINISTIC_APIS_SOURCE: the guest clock starts at the run's
+// recorded time and advances 1 ms per read; Math.random is run's
+// xorshift128+ for the recorded seed. Expected values from Node running
+// run's source for the same determinism.
+func TestR87ccarryDeterministicDateAndRandom(t *testing.T) {
+	tools := ToolSet{"a": {Name: "a", Parameters: r87ccarryObject,
+		Execute: func(_ context.Context, _ map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return opts.CodeModeInterrupt.(*InterruptExecutionContext).Resolution, nil
+		}}}
+	js := `
+		const v = [Math.random(), Math.random(), Math.random(), Date.now(), Date.now(), new Date().getTime(), typeof Date()];
+		const resolved = await tools.a({});
+		return { v, resolved };
+	`
+	token, err := encodeReplayToken(nil, runDeterminism{DateNowMs: 1700000000000, RandomSeed: "0123456789abcdeffedcba9876543210"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsigned := Continuation{
+		Version: 2, JS: js, OuterToolCallID: "outer", ToolNames: []string{"a"}, Token: token,
+		PendingInterruptions: []PendingInterruption{{
+			RunInterruptionID: "interrupt-1", InterruptID: "outer:tool-1:interrupt", ToolName: "a",
+			ToolCallID: "outer:tool-1", Input: map[string]interface{}{}, Payload: InterruptPayload{"kind": "generic"},
+		}},
+		Resolutions: []PendingResolution{},
+	}
+	security, err := resolveContinuationSecurity(ContinuationSecurityOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := signContinuation(unsigned, security)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interrupt, err := toCodeModeInterrupt(signed, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ContinueCodeModeInterrupt(context.Background(), *interrupt, "x", tools, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDeepEqual(t, got, map[string]interface{}{
+		"v":        []interface{}{0.2933376985432904, 0.29333770514396784, 0.09071237636959384, float64(1700000000000), float64(1700000000001), float64(1700000000002), "string"},
+		"resolved": "x",
+	})
+}
+
+// A resumed run computes the same Date.now() and Math.random() values it
+// computed before the interruption, including the clock reset to each
+// replayed call's recorded settlement time, so the approved call is the
+// recorded one (TS run replays its determinism).
+func TestR87ccarryResumeReplaysDeterminism(t *testing.T) {
+	var guardedInput map[string]interface{}
+	tools := ToolSet{
+		"echo": echoTools()["echo"],
+		"slow": {Name: "slow", Parameters: r87ccarryObject,
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				time.Sleep(30 * time.Millisecond)
+				return 1, nil
+			}},
+		"guarded": {Name: "guarded", Parameters: r87ccarryObject, NeedsApproval: true,
+			Execute: func(_ context.Context, input map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+				guardedInput = input
+				return "approved", nil
+			}},
+	}
+	js := `
+		const r = Math.random();
+		const t0 = Date.now();
+		await tools.slow({});
+		const t1 = Date.now();
+		const ok = await tools.guarded({ r, t0, t1 });
+		return { r, t0, t1, ok };
+	`
+	options := &Options{Approval: &ApprovalOptions{Mode: ApprovalModeInterrupt}}
+	pending, err := RunCodeMode(context.Background(), RunInput{JS: js, Tools: tools, Options: options})
+	if err != nil {
+		t.Fatal(err)
+	}
+	interrupt := pending.(*Interrupt)
+	recorded, _ := interrupt.Input.(map[string]interface{})
+	time.Sleep(20 * time.Millisecond)
+	result, err := ContinueCodeModeApproval(context.Background(), *interrupt,
+		ApprovalResponse{ApprovalID: interrupt.InterruptID, Approved: true}, tools, options, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recorded == nil || recorded["t1"].(float64)-recorded["t0"].(float64) < 20 {
+		t.Fatalf("recorded input %#v: the clock did not move to the settlement time", recorded)
+	}
+	assertDeepEqual(t, result, map[string]interface{}{"r": recorded["r"], "t0": recorded["t0"], "t1": recorded["t1"], "ok": "approved"})
+	assertDeepEqual(t, guardedInput, recorded)
+}
+
+// TS run's hasValidDeterminism: a token whose determinism is not a
+// non-negative time and a 32-digit hex seed is not decodable; a bare
+// ledger map (tokens written before the determinism was recorded) is.
+func TestR87ccarryReplayTokenDeterminismValidation(t *testing.T) {
+	for _, token := range []string{
+		`{"ledger":{},"determinism":{"dateNowMs":-1,"randomSeed":"0123456789abcdeffedcba9876543210"}}`,
+		`{"ledger":{},"determinism":{"dateNowMs":1,"randomSeed":"0123"}}`,
+		`{"ledger":{},"determinism":{"dateNowMs":1,"randomSeed":"0123456789ABCDEFFEDCBA9876543210"}}`,
+		`{"ledger":{}}`,
+	} {
+		if _, _, err := decodeReplayToken(token); err == nil || err.Error() != "Code mode continuation token could not be decoded by this implementation." {
+			t.Errorf("%s: err = %v", token, err)
+		}
+	}
+	records, determinism, err := decodeReplayToken(`{"0":{"toolName":"echo","inputJson":"{}","outputJson":"{}"}}`)
+	if err != nil || determinism != nil || records[0].ToolName != "echo" {
+		t.Fatalf("legacy token: %v %v %v", records, determinism, err)
 	}
 }

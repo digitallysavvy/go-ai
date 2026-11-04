@@ -113,7 +113,10 @@
 // Promise.all as one that does) can settle before an earlier one still
 // pending approval, so the ledger is sparse, not a "calls 0..N-1" prefix.
 // Continuation.Token is that sparse map, JSON-encoded, for every call
-// settled by the time the pending interruption batch was collected.
+// settled by the time the pending interruption batch was collected, with
+// the run's determinism (run's DETERMINISTIC_APIS_SOURCE: the guest clock's
+// start time, each settled call's host time, and the Math.random seed), so
+// a resumed script computes the same Date.now() and Math.random() values.
 // Resuming decodes it back into a replay ledger and re-runs the identical
 // source: a call present in the ledger gets its recorded outcome, delivered
 // in its recorded settlement order (TS run's queueBridgeResponse); a call

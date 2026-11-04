@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/third_party/qjs"
 )
@@ -28,9 +29,106 @@ import (
 //     without waiting for. RunCodeMode calls it once the script's result is
 //     serialized, as run's serializeValuePayload does.
 //
+// It also installs run's DETERMINISTIC_APIS_SOURCE: Date.now() (and Date()
+// / new Date() without arguments) returns a guest clock that starts at the
+// run's recorded start time, advances by 1 ms per read and is reset to the
+// host time recorded for each settled call when its outcome is delivered,
+// and Math.random() is run's xorshift128+ generator seeded from the run's
+// recorded seed. A resumed run reuses both, so it computes the same values
+// it computed before the interruption.
+//
 // The intrinsics it uses are captured before any user source runs.
+// __CODE_MODE_DETERMINISM__ is replaced by the run's determinism (JSON).
 const codeModeGuestSource = `(function () {
   "use strict";
+  var resetDateNow = (function (config) {
+    var OriginalDate = Date;
+    var OriginalNumber = Number;
+    var OriginalMath = Math;
+    var OriginalReflect = Reflect;
+    var dateNowMs = OriginalNumber(config && config.dateNowMs);
+    if (!OriginalNumber.isFinite(dateNowMs)) dateNowMs = 0;
+
+    function resetDateNow(value) {
+      var next = OriginalNumber(value);
+      if (OriginalNumber.isFinite(next)) dateNowMs = OriginalMath.trunc(next);
+    }
+
+    function nextDateMs() {
+      var value = dateNowMs;
+      dateNowMs += 1;
+      return value;
+    }
+
+    function RunDate() {
+      if (new.target) {
+        if (arguments.length === 0) return new OriginalDate(nextDateMs());
+        return OriginalReflect.construct(OriginalDate, arguments, new.target);
+      }
+      return new OriginalDate(nextDateMs()).toString();
+    }
+
+    Object.defineProperty(RunDate, 'prototype', {
+      value: OriginalDate.prototype,
+      writable: false,
+      configurable: false,
+    });
+    Object.defineProperty(OriginalDate.prototype, 'constructor', {
+      value: RunDate,
+      writable: false,
+      configurable: false,
+    });
+    Object.defineProperty(RunDate, 'now', {
+      value: nextDateMs,
+      writable: false,
+      configurable: false,
+    });
+    Object.defineProperty(RunDate, 'parse', {
+      value: OriginalDate.parse,
+      writable: false,
+      configurable: false,
+    });
+    Object.defineProperty(RunDate, 'UTC', {
+      value: OriginalDate.UTC,
+      writable: false,
+      configurable: false,
+    });
+    Object.defineProperty(globalThis, 'Date', {
+      value: RunDate,
+      writable: false,
+      configurable: false,
+    });
+
+    var randomSeed = String(config && config.randomSeed || '');
+    var mask64 = (1n << 64n) - 1n;
+
+    function readSeedPart(offset, fallback) {
+      var part = randomSeed.slice(offset, offset + 16);
+      return /^[0-9a-fA-F]{16}$/.test(part) ? BigInt('0x' + part) : fallback;
+    }
+
+    var randomState0 = readSeedPart(0, 0x243f6a8885a308d3n);
+    var randomState1 = readSeedPart(16, 0x13198a2e03707344n);
+    if ((randomState0 | randomState1) === 0n) randomState1 = 0x9e3779b97f4a7c15n;
+
+    function nextRandom64() {
+      var s1 = randomState0;
+      var s0 = randomState1;
+      randomState0 = s0;
+      s1 = (s1 ^ ((s1 << 23n) & mask64)) & mask64;
+      randomState1 = (s1 ^ s0 ^ (s1 >> 17n) ^ (s0 >> 26n)) & mask64;
+      return (randomState1 + s0) & mask64;
+    }
+
+    Object.defineProperty(Math, 'random', {
+      value: function () {
+        return OriginalNumber(nextRandom64() >> 11n) / 9007199254740992;
+      },
+      writable: false,
+      configurable: false,
+    });
+    return resetDateNow;
+  })(__CODE_MODE_DETERMINISM__);
   var start = globalThis.__codeModeStart;
   var serialize = globalThis.__codeModeSerialize;
   delete globalThis.__codeModeStart;
@@ -122,10 +220,11 @@ const codeModeGuestSource = `(function () {
   defineProperty(globalThis, "__codeModeTools", { value: tools, writable: false, configurable: false });
 
   return freeze({
-    settle: function (id, ok, value) {
+    settle: function (id, ok, value, dateNowMs) {
       var waiter = apply(mapGet, waiting, [id]);
       if (waiter === undefined) return false;
       apply(mapDelete, waiting, [id]);
+      resetDateNow(dateNowMs);
       if (ok) waiter.resolve(value); else waiter.reject(value);
       return true;
     },
@@ -172,7 +271,12 @@ func bindCodeModeDispatch(jsCtx *qjs.Context, bridge *toolBridge) error {
 	global.SetPropertyStr("__codeModeSerialize", serialize)
 	global.SetPropertyStr("__codeModeStart", start)
 
-	guest, err := jsCtx.Eval("code-mode-bridge.js", qjs.Code(codeModeGuestSource))
+	determinism, derr := json.Marshal(bridge.determinism)
+	if derr != nil {
+		return NewProtocolError("Failed to encode the code mode determinism state.", nil)
+	}
+	source := strings.Replace(codeModeGuestSource, "__CODE_MODE_DETERMINISM__", string(determinism), 1)
+	guest, err := jsCtx.Eval("code-mode-bridge.js", qjs.Code(source))
 	if err != nil {
 		return err
 	}
@@ -193,10 +297,17 @@ func settleGuest(jsCtx *qjs.Context, guest *qjs.Value, resp bridgeResponse) erro
 	}
 	id := jsCtx.NewFloat64(float64(resp.id))
 	ok := jsCtx.NewBool(resp.ok)
+	// A record without a host time (older continuations) leaves the guest
+	// clock as it is (run's resetDateNow ignores a non-finite value).
+	dateNowMs := jsCtx.NewUndefined()
+	if resp.dateNowMs != 0 {
+		dateNowMs = jsCtx.NewFloat64(float64(resp.dateNowMs))
+	}
 	defer id.Free()
 	defer ok.Free()
 	defer value.Free()
-	result, err := guest.InvokeJS("settle", id, ok, value)
+	defer dateNowMs.Free()
+	result, err := guest.InvokeJS("settle", id, ok, value, dateNowMs)
 	if result != nil {
 		result.Free()
 	}

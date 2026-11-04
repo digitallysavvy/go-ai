@@ -92,6 +92,9 @@ func RunCodeMode(ctx context.Context, input RunInput) (interface{}, error) {
 	// count) and runInSandbox runs it.
 	ctx = withCPUBudget(ctx, newCPUBudget(policy.CPUTimeoutMs))
 	bridge := newToolBridge(ctx, input, options, policy, outerToolCall, prepared.replayLedger, prepared.resumePendings, prepared.resumeResolutions)
+	if prepared.determinism != nil {
+		bridge.determinism = *prepared.determinism
+	}
 	// Mirrors TypeScript's stripSnippetTypes (run package,
 	// dist/utils/source-cache.js), which catches *any* stripper error and
 	// falls back to the snippet unmodified rather than rejecting it: any
@@ -138,7 +141,7 @@ func RunCodeMode(ctx context.Context, input RunInput) (interface{}, error) {
 		if len(batch) == 0 {
 			return nil, NewProtocolError("Code mode reported an interruption with no pending interruptions recorded.", nil)
 		}
-		return buildInterruptResult(input, options, outerToolCall, toolNames, committed, batch)
+		return buildInterruptResult(input, options, outerToolCall, toolNames, committed, bridge.determinism, batch)
 	}
 
 	// TS run (manager.js handleReadyMessage): a resumed script that
@@ -207,6 +210,10 @@ type preparedContinuation struct {
 	replayLedger      map[int]replayRecord
 	resumePendings    map[int]PendingInterruption
 	resumeResolutions map[int]interface{}
+
+	// determinism is the continuation's recorded determinism; nil for a
+	// fresh invocation or a token that did not record it.
+	determinism *runDeterminism
 }
 
 // prepareContinuation validates and advances input.Continuation, mirroring
@@ -290,7 +297,7 @@ func prepareContinuation(input RunInput, toolNames []string, maxToolOutputBytes 
 		return preparedContinuation{}, err
 	}
 
-	ledger, derr := decodeReplayLedger(continuation.Token)
+	ledger, determinism, derr := decodeReplayToken(continuation.Token)
 	if derr != nil {
 		return preparedContinuation{}, derr
 	}
@@ -312,6 +319,7 @@ func prepareContinuation(input RunInput, toolNames []string, maxToolOutputBytes 
 		}
 	}
 	return preparedContinuation{
+		determinism:       determinism,
 		replayLedger:      ledger,
 		resumePendings:    resumePendings,
 		resumeResolutions: resumeResolutions,
@@ -365,8 +373,8 @@ func assertNoDeniedApproval(pendingInterruptions []PendingInterruption, resoluti
 // in prepareContinuation (run_code_mode.go's prepareContinuation/
 // toCodeModeInterrupt), exactly as it already does for a hypothetical
 // multi-entry continuation from any source.
-func buildInterruptResult(input RunInput, options *Options, outerToolCall string, toolNames []string, committed map[int]replayRecord, batch []PendingInterruption) (interface{}, error) {
-	token, err := encodeReplayLedger(committed)
+func buildInterruptResult(input RunInput, options *Options, outerToolCall string, toolNames []string, committed map[int]replayRecord, determinism runDeterminism, batch []PendingInterruption) (interface{}, error) {
+	token, err := encodeReplayToken(committed, determinism)
 	if err != nil {
 		return nil, err
 	}
