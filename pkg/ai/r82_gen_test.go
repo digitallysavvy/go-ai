@@ -583,7 +583,8 @@ func TestR82genTelemetryStepToolChoiceDefaultsToAuto(t *testing.T) {
 	}
 }
 
-// 'options.output' > 'provider-selected structured output' 9137 'should parse
+// generate-text.test.ts 9137: 'options.output' > 'provider-selected
+// structured output' 'should parse
 // the selected text while preserving content, messages, and callbacks': the
 // output parses structuredOutputText, while text, content, sources and the
 // response messages (each text and reasoning part with its provider
@@ -611,9 +612,12 @@ func TestR82genProviderSelectedStructuredOutput(t *testing.T) {
 	var lmEnd []types.ContentPart
 	var stepText string
 	var finishText string
+	var stepEnd types.StepResult
+	var endEvent OnFinishEvent
 	res, err := GenerateText(context.Background(), GenerateTextOptions{
-		Model:  model,
-		Prompt: "prompt",
+		Model:      model,
+		Prompt:     "prompt",
+		OnEndEvent: func(_ context.Context, e OnFinishEvent) { endEvent = e },
 		Output: ObjectOutput[map[string]interface{}](ObjectOutputOptions{Schema: schema.NewSimpleJSONSchema(map[string]interface{}{
 			"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}, "required": []interface{}{"value"},
 		})}),
@@ -625,6 +629,7 @@ func TestR82genProviderSelectedStructuredOutput(t *testing.T) {
 		OnStepFinish: func(_ context.Context, s types.StepResult, _ interface{}) {
 			mu.Lock()
 			stepText = s.Text
+			stepEnd = s
 			mu.Unlock()
 		},
 		OnFinish: func(_ context.Context, r *GenerateTextResult, _ interface{}) {
@@ -663,4 +668,15 @@ func TestR82genProviderSelectedStructuredOutput(t *testing.T) {
 	}}}
 	r71genCheckJSON(t, "responseMessages", r71genJSON(t, res.ResponseMessages), want)
 	r71genCheckJSON(t, "finalStep.response.messages", r71genJSON(t, res.FinalStep.Response.Messages), want)
+	r71genCheckJSON(t, "response.messages", r71genJSON(t, res.Response.Messages), want)
+	// onStepEnd (OnStepFinish): text, content, response.messages; onEnd: text, content,
+	// responseMessages.
+	if stepEnd.Text != wantText || !reflect.DeepEqual(stepEnd.Content, content) {
+		t.Errorf("onStepEnd text %q content %#v", stepEnd.Text, stepEnd.Content)
+	}
+	r71genCheckJSON(t, "onStepEnd response.messages", r71genJSON(t, stepEnd.Response.Messages), want)
+	if endEvent.Text != wantText || !reflect.DeepEqual(endEvent.Content, content) {
+		t.Errorf("onEnd text %q content %#v", endEvent.Text, endEvent.Content)
+	}
+	r71genCheckJSON(t, "onEnd responseMessages", r71genJSON(t, endEvent.ResponseMessages), want)
 }

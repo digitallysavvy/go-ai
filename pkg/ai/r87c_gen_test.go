@@ -38,6 +38,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 type r87cgenObj = map[string]interface{}
@@ -1387,4 +1388,71 @@ func TestR87cgenTimeoutCauses(t *testing.T) {
 		<-ctx.Done()
 		check(t, context.Cause(ctx), TimeoutReasonTotal, "The operation was aborted due to timeout")
 	})
+}
+
+// generate-text.test.ts 8932 'options.output' > 'text output' > 'should set
+// responseFormat to text and not change the prompt': the model call options
+// snapshot (abortSignal undefined: no deadline; headers: the user agent;
+// every sampling setting, providerOptions, reasoning, seed, stopSequences and
+// tools undefined; toolChoice auto; responseFormat text; the plain user
+// prompt). TS mocks VERSION as 0.0.0-test; Go sends its own version.
+func TestR87cgenTextOutputCallOptions(t *testing.T) {
+	var opts *provider.GenerateOptions
+	var hasDeadline bool
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: &testutil.MockLanguageModel{DoGenerateFunc: func(ctx context.Context, o *provider.GenerateOptions) (*types.GenerateResult, error) {
+			opts, hasDeadline = o, r87cgenHasDeadline(ctx)
+			return r87cgenResult(r87cgenText("Hello, world!")), nil
+		}},
+		Prompt: "prompt",
+		Output: TextOutput(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if hasDeadline {
+		t.Error("abortSignal: the call has a deadline")
+	}
+	got := r87cgenObj{
+		"headers":         opts.Headers,
+		"prompt":          r87cgenPromptView(t, opts.Prompt),
+		"responseFormat":  r87cgenObj{"type": opts.ResponseFormat.Type},
+		"toolChoice":      r87cgenRaw(t, opts.ToolChoice),
+		"tools":           r87cgenToolsView(t, opts.Tools),
+		"providerOptions": opts.ProviderOptions,
+	}
+	unset := opts.FrequencyPenalty == nil && opts.MaxTokens == nil && opts.PresencePenalty == nil && opts.Reasoning == nil &&
+		opts.Seed == nil && opts.StopSequences == nil && opts.Temperature == nil && opts.TopK == nil && opts.TopP == nil
+	if !unset || opts.ResponseFormat.Schema != nil || opts.ResponseFormat.Name != "" || opts.ResponseFormat.Description != "" {
+		t.Errorf("call options = %+v", opts)
+	}
+	r71genCheckJSON(t, "call options", r87cgenRaw(t, got), r87cgenWant(t, `{"headers":{"user-agent":"ai/`+version.Version+`"},"prompt":[{"content":[{"text":"prompt","type":"text"}],"role":"user"}],"providerOptions":null,"responseFormat":{"type":"text"},"toolChoice":{"type":"auto"},"tools":null}`))
+}
+
+// generate-text.test.ts 9281 'options.output' > 'provider-selected structured
+// output' > 'should preserve all text for $name output' (default and text
+// output): structuredOutputText does not narrow text output.
+func TestR87cgenTextOutputKeepsAllText(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		output interface{}
+	}{{"default", nil}, {"text", TextOutput()}} {
+		t.Run(tc.name, func(t *testing.T) {
+			selected := "Final answer."
+			res, err := GenerateText(context.Background(), GenerateTextOptions{
+				Model: r87cgenModel(func(int, *provider.GenerateOptions) (*types.GenerateResult, error) {
+					r := r87cgenResult(r87cgenText("Commentary. "), r87cgenText("Final answer."))
+					r.StructuredOutputText = &selected
+					return r, nil
+				}),
+				Prompt: "prompt",
+				Output: tc.output,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Output != "Commentary. Final answer." || res.Text != "Commentary. Final answer." {
+				t.Fatalf("output = %#v, text = %q", res.Output, res.Text)
+			}
+		})
+	}
 }
