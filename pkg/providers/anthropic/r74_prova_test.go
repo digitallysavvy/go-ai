@@ -13,6 +13,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // r74provaTSShapedTool builds the TS LanguageModelV4ProviderTool as is: the
@@ -159,6 +160,7 @@ func TestR74prova_TSCasesPrepareToolsWithTSShapedTools(t *testing.T) {
 		if v, ok := in["disableParallelToolUse"].(bool); ok {
 			o.disableParallelToolUse = &v
 		}
+		o.validator = prompt.NewAnthropicCacheControlValidator()
 		out := prepareTools(o)
 		if out.err != nil {
 			return nil, nil, out.err
@@ -173,7 +175,7 @@ func TestR74prova_TSCasesPrepareToolsWithTSShapedTools(t *testing.T) {
 			"toolChoice":   out.toolChoice,
 			"toolWarnings": tsfixture.WarningsToTS(out.warnings),
 			"betas":        map[string]interface{}{"__set": betas},
-		}, nil, nil
+		}, map[string]interface{}{"cacheControlValidator": r87dprovrestValidatorRoot(o.validator)}, nil
 	}, map[string]string{
 		"should correctly prepare computer_20251124 tool with enableZoom false": "enableZoom is a Go bool: explicit false is omitted like unset (same API default false)",
 	})

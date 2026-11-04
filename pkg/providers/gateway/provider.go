@@ -76,6 +76,9 @@ type gatewayAuthResolver func(ctx context.Context) (token string, authMethod str
 type gatewayAuthTransport struct {
 	base     http.RoundTripper
 	resolver gatewayAuthResolver
+	// custom is set when the caller's HTTPClient brings its own
+	// RoundTripper (the TS `fetch` option); see gatewayFetchRejection.
+	custom bool
 }
 
 func (t *gatewayAuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -103,7 +106,11 @@ func (t *gatewayAuthTransport) roundTrip(req *http.Request) (*http.Response, err
 	if clone.Header.Get("ai-gateway-auth-method") == "" {
 		clone.Header.Set("ai-gateway-auth-method", authMethod)
 	}
-	return t.base.RoundTrip(clone)
+	resp, err := t.base.RoundTrip(clone)
+	if err != nil && t.custom {
+		return nil, customFetchError(err)
+	}
+	return resp, err
 }
 
 func newGatewayHTTPClient(baseClient *http.Client, resolver gatewayAuthResolver) *http.Client {
@@ -115,8 +122,11 @@ func newGatewayHTTPClient(baseClient *http.Client, resolver gatewayAuthResolver)
 		httpClient = &http.Client{}
 	}
 	baseTransport := http.RoundTripper(http.DefaultTransport)
+	custom := false
 	if httpClient.Transport != nil {
 		baseTransport = httpClient.Transport
+		_, std := baseTransport.(*http.Transport)
+		custom = !std
 	}
 	if transport, ok := baseTransport.(*http.Transport); ok {
 		baseTransport = transport.Clone()
@@ -124,6 +134,7 @@ func newGatewayHTTPClient(baseClient *http.Client, resolver gatewayAuthResolver)
 	httpClient.Transport = &gatewayAuthTransport{
 		base:     baseTransport,
 		resolver: resolver,
+		custom:   custom,
 	}
 	return httpClient
 }
@@ -762,8 +773,8 @@ func (p *Provider) handleErrorWithContext(ctx context.Context, err error) error 
 	if gatewayerrors.IsTimeoutError(err) {
 		return gatewayerrors.ConvertToGatewayTimeoutError(err, "gateway")
 	}
-	if gatewayerrors.IsGatewayError(err) {
-		return err
+	if ge, ok := gatewayErrorIn(err); ok {
+		return ge
 	}
 	if converted, ok := p.gatewayInvalidJSONError(ctx, err); ok {
 		return converted
@@ -925,6 +936,12 @@ func (p *Provider) gatewayUnknownError(err error) error {
 	// decode failure is a permanent error (the body will never parse
 	// differently on retry); a transient network/body-read error is
 	// retryable. See 90192f1.
+	var rejection *gatewayFetchRejection
+	if errors.As(err, &rejection) {
+		err = rejection.err // TS: `Gateway request failed: ${error.message}`
+	} else if converted, ok := gatewayConnectError(err); ok {
+		return converted
+	}
 	retryable := !isGatewayJSONDecodeError(err)
 	return gatewayerrors.NewGatewayResponseErrorWithRetryable(
 		fmt.Sprintf("Invalid error response format: Gateway request failed: %s", err.Error()),

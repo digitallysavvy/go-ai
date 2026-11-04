@@ -560,8 +560,8 @@ func (m *VideoModel) handleErrorWithContext(ctx context.Context, err error) erro
 		return gatewayerrors.ConvertToGatewayTimeoutError(err, "gateway")
 	}
 
-	if gatewayerrors.IsGatewayError(err) {
-		return err
+	if ge, ok := gatewayErrorIn(err); ok {
+		return ge
 	}
 
 	// Check if it's already a provider error

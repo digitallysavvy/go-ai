@@ -1237,8 +1237,8 @@ func (m *LanguageModel) handleErrorWithContext(ctx context.Context, err error) e
 		return gatewayerrors.ConvertToGatewayTimeoutError(err, "gateway")
 	}
 
-	if gatewayerrors.IsGatewayError(err) {
-		return err
+	if ge, ok := gatewayErrorIn(err); ok {
+		return ge
 	}
 
 	if converted, ok := m.provider.gatewayInvalidJSONError(ctx, err); ok {

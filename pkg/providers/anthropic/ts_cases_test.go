@@ -138,6 +138,7 @@ func TestTSCasesLanguage(t *testing.T) {
 		"should include file id list in code execution tool call result.":                            longSnapshot,
 		"should throw an api error when the first stream chunk is an overloaded error":               "the TS test expects DoStream to fail; covered by TestStreamOverloadedFirstEvent",
 		"should parse advisor calls and results as provider-executed tool parts":                     "the Go tool hook builds no advisor tool with args; replayed with TS tool names by TestR74prova_TSCasesLanguageWithTSToolNames",
+		"should emit the advisor server_tool_use as a provider-executed tool call":                   "the Go tool hook builds no advisor tool with args (the tool is named by its id), so the advisor tool call is not mapped; replayed with TS tool names by TestR74prova_TSCasesLanguageWithTSToolNames",
 	})
 }
 
@@ -152,7 +153,9 @@ func TestTSCasesConvertPrompt(t *testing.T) {
 		if why != "" {
 			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
 		}
-		opts := prompt.AnthropicPromptOptions{}
+		// the test's own CacheControlValidator (cacheControlValidator.getWarnings())
+		validator := prompt.NewAnthropicCacheControlValidator()
+		opts := prompt.AnthropicPromptOptions{CacheControlValidator: validator}
 		if tn, ok := in["toolsetNames"].(map[string]interface{}); ok {
 			opts.ToolsetNames = map[string]string{}
 			for k, v := range tn {
@@ -201,7 +204,7 @@ func TestTSCasesConvertPrompt(t *testing.T) {
 		return map[string]interface{}{
 			"prompt": map[string]interface{}{"system": system, "messages": messages},
 			"betas":  map[string]interface{}{"__set": betas},
-		}, map[string]interface{}{"warnings": warnings}, nil
+		}, map[string]interface{}{"warnings": warnings, "cacheControlValidator": r87dprovrestValidatorRoot(validator)}, nil
 	}, map[string]string{})
 }
 
@@ -234,6 +237,7 @@ func TestTSCasesPrepareTools(t *testing.T) {
 		if v, ok := in["disableParallelToolUse"].(bool); ok {
 			o.disableParallelToolUse = &v
 		}
+		o.validator = prompt.NewAnthropicCacheControlValidator()
 		out := prepareTools(o)
 		if out.err != nil {
 			return nil, nil, out.err
@@ -249,7 +253,7 @@ func TestTSCasesPrepareTools(t *testing.T) {
 			"toolChoice":   out.toolChoice,
 			"toolWarnings": warnings,
 			"betas":        map[string]interface{}{"__set": betas},
-		}, nil, nil
+		}, map[string]interface{}{"cacheControlValidator": r87dprovrestValidatorRoot(o.validator)}, nil
 	}, map[string]string{
 		"should correctly prepare computer_20251124 tool with enableZoom false": "enableZoom is a Go bool: explicit false is omitted like unset (same API default false)",
 	})
