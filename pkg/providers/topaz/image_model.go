@@ -504,13 +504,8 @@ func (m *ImageModel) download(ctx context.Context, processID string, headers map
 		return nil, nil, err
 	}
 
-	responseHeaders := make(map[string]string, len(result.Headers))
-	for k, vs := range result.Headers {
-		if len(vs) > 0 {
-			responseHeaders[k] = vs[0]
-		}
-	}
-	return result.Data, responseHeaders, nil
+	// TS response headers: repeated lines joined with ", ".
+	return result.Data, providerutils.ExtractHeaders(result.Headers), nil
 }
 
 type topazImageSubmitResponse struct {

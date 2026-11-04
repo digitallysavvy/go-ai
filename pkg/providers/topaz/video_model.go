@@ -255,7 +255,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Response: provider.VideoModelV3ResponseInfo{
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
-			Headers:   flattenHeader(resp.Headers),
+			Headers:   providerutils.ExtractHeaders(resp.Headers),
 		},
 	}, nil
 }
@@ -302,7 +302,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	response := provider.VideoModelV3ResponseInfo{
 		Timestamp: currentDate,
 		ModelID:   m.modelID,
-		Headers:   flattenHeader(resp.Headers),
+		Headers:   providerutils.ExtractHeaders(resp.Headers),
 	}
 
 	switch status.Status {
@@ -932,16 +932,6 @@ func (m *VideoModel) cancelQuietly(ctx context.Context, requestID string, header
 		Path:    "/video/" + requestID,
 		Headers: headers,
 	})
-}
-
-func flattenHeader(h http.Header) map[string]string {
-	out := make(map[string]string, len(h))
-	for k, vs := range h {
-		if len(vs) > 0 {
-			out[k] = vs[0]
-		}
-	}
-	return out
 }
 
 func lowerBoundCredits(estimates *topazVideoEstimates) *float64 {

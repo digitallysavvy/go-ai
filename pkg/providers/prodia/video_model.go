@@ -181,13 +181,8 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 		videoMIME = "video/mp4"
 	}
 
-	// Convert response headers to the flat map expected by VideoModelV3ResponseInfo.
-	headerMap := make(map[string]string)
-	for k, vals := range respHeaders {
-		if len(vals) > 0 {
-			headerMap[k] = vals[0]
-		}
-	}
+	// TS response.headers.forEach: repeated lines joined with ", ".
+	headerMap := providerutils.ExtractHeaders(respHeaders)
 
 	return &provider.VideoModelV3Response{
 		Videos: []provider.VideoModelV3VideoData{

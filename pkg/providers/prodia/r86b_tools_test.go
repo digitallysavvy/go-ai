@@ -71,6 +71,7 @@ func TestR86btoolsBoundaryHeaderMatchesTS(t *testing.T) {
 				body.WriteString("--\r\n")
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.Header()["Content-Type"] = resp.Header.Values("Content-Type")
+					w.Header()["X-Rep"] = []string{"a", "b"}
 					_, _ = w.Write(body.Bytes())
 				}))
 				defer srv.Close()
@@ -93,6 +94,10 @@ func TestR86btoolsBoundaryHeaderMatchesTS(t *testing.T) {
 					callErr = err
 					if err == nil && len(res.Videos) == 1 {
 						got = string(res.Videos[0].Binary)
+						// TS response.headers.forEach joins repeated lines.
+						if h := res.Response.Headers["X-Rep"]; h != "a, b" {
+							t.Errorf("Response.Headers[X-Rep] = %q, want %q", h, "a, b")
+						}
 					}
 				case "language":
 					res, err := NewLanguageModel(p, LanguageModelNanoBananaImgToImgV2).DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "p"}})

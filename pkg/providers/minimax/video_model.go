@@ -140,7 +140,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Response: provider.VideoModelV3ResponseInfo{
 			Timestamp: time.Now(),
 			ModelID:   m.modelID,
-			Headers:   flattenHeaders(submitResp.Headers),
+			Headers:   providerutils.ExtractHeaders(submitResp.Headers),
 		},
 	}, nil
 }
@@ -202,7 +202,7 @@ func (m *VideoModel) getStatus(ctx context.Context, opts *provider.VideoModelV3S
 	responseInfo := provider.VideoModelV3ResponseInfo{
 		Timestamp: time.Now(),
 		ModelID:   m.modelID,
-		Headers:   flattenHeaders(result.Headers),
+		Headers:   providerutils.ExtractHeaders(result.Headers),
 	}
 
 	task := statusResp.Task
@@ -899,19 +899,6 @@ func (m *VideoModel) handlePollError(err error) error {
 		return m.parseAPIError(dlErr.Body, dlErr.StatusCode)
 	}
 	return NewVideoGenerationError(fmt.Sprintf("failed to check status: %v", err))
-}
-
-// flattenHeaders flattens a map[string][]string (net/http.Header or a
-// fileutil.DownloadResult's Headers) into the map[string]string expected by
-// VideoModelV3ResponseInfo.Headers, taking the first value for each key.
-func flattenHeaders(headers map[string][]string) map[string]string {
-	out := make(map[string]string, len(headers))
-	for k, vs := range headers {
-		if len(vs) > 0 {
-			out[k] = vs[0]
-		}
-	}
-	return out
 }
 
 // minimaxStatusResponse is the response from the task status endpoint (TS
