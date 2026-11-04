@@ -1643,3 +1643,183 @@ func TestR87cstreambPreliminaryStepContent(t *testing.T) {
 			"modelId":"mock-model-id","timestamp":"<now>"},
 		"runtimeContext":{},"stepNumber":0,"toolsContext":{},"usage":`+r87cstreambUsageJSON+`,"warnings":[]}]`)
 }
+
+// stream-text.test.ts 27670: programmatic tool calling > should stop an
+// interrupted stream with a deferred provider tool result.
+func TestR87cstreambInterruptedDeferredProviderResult(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	model := &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id",
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			mu.Lock()
+			calls++
+			mu.Unlock()
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "program", RawArguments: "{}", ProviderExecuted: true}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonInterrupted, Usage: r87cstreambUsage()},
+			}), nil
+		}}
+	var errs []error
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "Run a program",
+		Tools: []types.Tool{{Name: "program", Type: "provider", ProviderID: "test.program", ProviderExecuted: true, SupportsDeferredResults: true,
+			Parameters: map[string]interface{}{"$schema": "http://json-schema.org/draft-07/schema#", "additionalProperties": false, "type": "object", "properties": map[string]interface{}{}}}},
+		StopWhen: []StopCondition{StepCountIs(3)},
+		OnError: func(_ context.Context, err error) {
+			mu.Lock()
+			defer mu.Unlock()
+			errs = append(errs, err)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 || len(r.Steps()) != 1 || r.FinishReason() != types.FinishReasonInterrupted || len(errs) != 0 {
+		t.Fatalf("doStream calls %d, steps %d, finishReason %q, onError %v; want 1, 1, interrupted, none", calls, len(r.Steps()), r.FinishReason(), errs)
+	}
+}
+
+// The full stdout and final text of the TS dice game fixture.
+const (
+	r87cstreambDiceStdout = "=== DICE GAME: First to 3 Wins ===\n\n--- Round 1 ---\nPlayer 1 rolls: 5\nPlayer 2 rolls: 6\nPlayer 2 wins this round!\nScore: Player 1 = 0, Player 2 = 1\n\n--- Round 2 ---\nPlayer 1 rolls: 4\nPlayer 2 rolls: 6\nPlayer 2 wins this round!\nScore: Player 1 = 0, Player 2 = 2\n\n--- Round 3 ---\nPlayer 1 rolls: 5\nPlayer 2 rolls: 2\nPlayer 1 wins this round!\nScore: Player 1 = 1, Player 2 = 2\n\n--- Round 4 ---\nPlayer 1 rolls: 6\nPlayer 2 rolls: 6\nDraw! No one gets a point.\nScore: Player 1 = 1, Player 2 = 2\n\n--- Round 5 ---\nPlayer 1 rolls: 3\nPlayer 2 rolls: 2\nPlayer 1 wins this round!\nScore: Player 1 = 2, Player 2 = 2\n\n--- Round 6 ---\nPlayer 1 rolls: 6\nPlayer 2 rolls: 6\nDraw! No one gets a point.\nScore: Player 1 = 2, Player 2 = 2\n\n--- Round 7 ---\nPlayer 1 rolls: 2\nPlayer 2 rolls: 3\nPlayer 2 wins this round!\nScore: Player 1 = 2, Player 2 = 3\n\n========================================\n🏆 GAME OVER: Player 2 wins the game! (3-2)\n========================================\n\n📊 Analysis:\nTotal rounds played: 7\nPlayer 2 had better results - likely using the loaded die! 🎲\n"
+	r87cstreambDiceFinal  = "## Game Results\n\n**Player 2 wins the game 3-2!** 🏆\n\nThe game lasted 7 rounds with the following breakdown:\n- **Player 1**: 2 round wins\n- **Player 2**: 3 round wins\n- **Draws**: 2 rounds (both rolling 6)\n\nBased on the results, **Player 2 appears to be the one using the loaded die**."
+)
+
+// r87cstreambDiceRun runs the TS 'dice game fixture' (r81streamDiceSteps
+// with the full stdout and final text; the code_execution input is the
+// parsed {code}: TS zod strips the fixture's extra "type" key, known
+// difference "TS zod object schemas strip keys").
+func r87cstreambDiceRun(t *testing.T) (*StreamTextResult, []*provider.GenerateOptions, OnFinishEvent) {
+	t.Helper()
+	steps := r81streamDiceSteps()
+	last := steps[4]
+	tr := *last[1].ToolResult
+	tr.Result = map[string]interface{}{"type": "code_execution_result", "stdout": r87cstreambDiceStdout, "stderr": "", "return_code": float64(0), "content": []interface{}{}}
+	last[1].ToolResult = &tr
+	last[3].Text = r87cstreambDiceFinal
+	var mu sync.Mutex
+	var calls []*provider.GenerateOptions
+	model := &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id",
+		DoStreamFunc: func(_ context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			calls = append(calls, o)
+			return testutil.NewMockTextStream(steps[len(calls)-1]), nil
+		}}
+	var end OnFinishEvent
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "Play a dice game between two players.",
+		Tools: []types.Tool{
+			{Name: "code_execution", Type: "provider", ProviderID: "anthropic.code_execution_20250825", ProviderExecuted: true, SupportsDeferredResults: true,
+				Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"code": map[string]interface{}{"type": "string"}}, "required": []interface{}{"code"}}},
+			{Name: "rollDie", Description: "Roll a die and return the result.",
+				Parameters:      map[string]interface{}{"type": "object", "properties": map[string]interface{}{"player": map[string]interface{}{"type": "string", "enum": []interface{}{"player1", "player2"}}}, "required": []interface{}{"player"}, "additionalProperties": false},
+				ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"allowedCallers": []interface{}{"code_execution_20250825"}}},
+				Execute: func(_ context.Context, in map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+					if in["player"] == "player1" {
+						return 6, nil
+					}
+					return 3, nil
+				}},
+		},
+		StopWhen: []StopCondition{IsStepCount(10)},
+		PrepareStep: func(_ context.Context, s PrepareStepOptions) PrepareStepOptions {
+			if s.StepNumber > 0 && len(s.Steps) > 0 {
+				if a, ok := s.Steps[len(s.Steps)-1].ProviderMetadata["anthropic"].(map[string]interface{}); ok {
+					if c, ok := a["container"].(map[string]interface{}); ok && c["id"] != nil {
+						s.ProviderOptions = map[string]interface{}{"anthropic": map[string]interface{}{"container": map[string]interface{}{"id": c["id"]}}}
+					}
+				}
+			}
+			return s
+		},
+		OnFinishEvent: func(_ context.Context, e OnFinishEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			end = e
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return r, append([]*provider.GenerateOptions(nil), calls...), end
+}
+
+func r87cstreambRollCall(id, player string) string {
+	return `{"input":{"player":"` + player + `"},"toolCallId":"` + id + `","toolName":"rollDie","type":"tool-call"}`
+}
+
+func r87cstreambRollResult(id string, value int) string {
+	return `{"output":{"type":"json","value":` + map[int]string{6: "6", 3: "3"}[value] + `},"toolCallId":"` + id + `","toolName":"rollDie","type":"tool-result"}`
+}
+
+func r87cstreambRollTurn(id, player string, value int) string {
+	return `{"content":[` + r87cstreambRollCall(id, player) + `],"role":"assistant"},{"content":[` + r87cstreambRollResult(id, value) + `],"role":"tool"}`
+}
+
+const r87cstreambDiceFirstAssistant = `{"content":[{"text":"I'll help you simulate this game between two players where one is using a loaded die.","type":"text"},
+	{"input":{"code":"game_loop()"},"providerExecuted":true,"toolCallId":"srvtoolu_01MzSrFWsmzBdcoQkGWLyRjK","toolName":"code_execution","type":"tool-call"},
+	{"input":{"player":"player1"},"toolCallId":"toolu_019jKkXz4jAdwHweHBw92CVY","toolName":"rollDie","type":"tool-call"}],"role":"assistant"}`
+
+// stream-text.test.ts 28263: programmatic tool calling > 5 steps:
+// code_execution triggers client tool across multiple turns (dice game
+// fixture) > step inputs > should include all previous messages in step 3
+// prompt (round 2).
+func TestR87cstreambDiceStep3Prompt(t *testing.T) {
+	_, calls, _ := r87cstreambDiceRun(t)
+	if len(calls) != 5 {
+		t.Fatalf("doStream calls = %d, want 5", len(calls))
+	}
+	r87cstreambAssert(t, "step 3 prompt", r87cstreambCallOptions(t, calls[2])["prompt"], `[
+		{"content":[{"text":"Play a dice game between two players.","type":"text"}],"role":"user"},
+		`+r87cstreambDiceFirstAssistant+`,
+		{"content":[`+r87cstreambRollResult("toolu_019jKkXz4jAdwHweHBw92CVY", 6)+`],"role":"tool"},
+		`+r87cstreambRollTurn("toolu_015dGLMbwBKv1ZRQr6KdJzeH", "player2", 3)+`]`)
+}
+
+// r87cstreambDiceResponseMessages is the TS result.responseMessages snapshot.
+func r87cstreambDiceResponseMessages() string {
+	stdout, _ := json.Marshal(r87cstreambDiceStdout)
+	final, _ := json.Marshal(r87cstreambDiceFinal)
+	return `[` + r87cstreambDiceFirstAssistant + `,
+		{"content":[` + r87cstreambRollResult("toolu_019jKkXz4jAdwHweHBw92CVY", 6) + `],"role":"tool"},
+		` + r87cstreambRollTurn("toolu_015dGLMbwBKv1ZRQr6KdJzeH", "player2", 3) + `,
+		` + r87cstreambRollTurn("toolu_01YYqBNq5mk1wMtv3PAqY44m", "player1", 6) + `,
+		` + r87cstreambRollTurn("toolu_018WxjDkQG8h7i63poySGT2x", "player2", 3) + `,
+		{"content":[{"output":{"type":"json","value":{"content":[],"return_code":0,"stderr":"","stdout":` + string(stdout) + `,"type":"code_execution_result"}},
+			"toolCallId":"srvtoolu_01MzSrFWsmzBdcoQkGWLyRjK","toolName":"code_execution","type":"tool-result"},
+			{"text":` + string(final) + `,"type":"text"}],"role":"assistant"}]`
+}
+
+// stream-text.test.ts 28380: programmatic tool calling > 5 steps:
+// code_execution triggers client tool across multiple turns (dice game
+// fixture) > result.responseMessages > should contain response messages from
+// all steps.
+func TestR87cstreambDiceResponseMessages(t *testing.T) {
+	r, _, _ := r87cstreambDiceRun(t)
+	r87cstreambAssert(t, "responseMessages", r87cstreambMessages(t, r.ResponseMessages()), r87cstreambDiceResponseMessages())
+}
+
+// stream-text.test.ts 28904: programmatic tool calling > 5 steps:
+// code_execution triggers client tool across multiple turns (dice game
+// fixture) > onFinish callback > should contain response messages from all
+// steps (9 messages).
+func TestR87cstreambDiceOnFinishResponseMessages(t *testing.T) {
+	_, _, end := r87cstreambDiceRun(t)
+	if len(end.ResponseMessages) != 9 {
+		t.Fatalf("onFinish responseMessages = %d, want 9", len(end.ResponseMessages))
+	}
+	r87cstreambAssert(t, "onFinish responseMessages", r87cstreambMessages(t, end.ResponseMessages), r87cstreambDiceResponseMessages())
+}
