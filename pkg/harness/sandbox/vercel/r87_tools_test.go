@@ -421,12 +421,11 @@ func init() {
 }
 
 func TestR87toolsRequestRetryBackoffRange(t *testing.T) {
-	old := requestRetryBackoff
-	defer func() { requestRetryBackoff = old }()
-	requestRetryBackoff = r87toolsRealBackoff
+	// Call the saved real function: swapping the package variable races with
+	// background log readers left by earlier tests.
 	for i := 0; i < 50; i++ {
 		for n, lo := range []time.Duration{400 * time.Millisecond, 800 * time.Millisecond} {
-			if d := requestRetryBackoff(n); d < lo || d >= 2*lo {
+			if d := r87toolsRealBackoff(n); d < lo || d >= 2*lo {
 				t.Fatalf("backoff(%d) = %v, want [%v, %v)", n, d, lo, 2*lo)
 			}
 		}
