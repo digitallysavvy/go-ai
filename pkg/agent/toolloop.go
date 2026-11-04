@@ -1210,7 +1210,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			ResponseHeaders:    stepResult.Response.Headers,
 			// TS onStepEnd receives the StepResult (content, performance,
 			// request.messages).
-			Request: ai.GenerateStepRequest{Body: stepResult.Request.Body, Messages: stepResult.Request.Messages},
+			Request: ai.GenerateStepRequest{Body: stepResult.Request.Body, Messages: stepResult.Request.Messages, URL: stepResult.Request.URL},
 			Response: ai.GenerateStepResponse{
 				ID:        stepResult.Response.ID,
 				Timestamp: stepResult.Response.Timestamp,
@@ -1382,7 +1382,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			finishEvent.RawFinishReason = last.RawFinishReason
 			finishEvent.ProviderMetadata = last.ProviderMetadata
 			finishEvent.ResponseHeaders = last.Response.Headers
-			finishEvent.Request = ai.GenerateStepRequest{Body: last.Request.Body, Messages: last.Request.Messages}
+			finishEvent.Request = ai.GenerateStepRequest{Body: last.Request.Body, Messages: last.Request.Messages, URL: last.Request.URL}
 			finishEvent.Response = ai.GenerateStepResponse{
 				ID:        last.Response.ID,
 				Timestamp: last.Response.Timestamp,
@@ -2255,6 +2255,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		Content:          modelCallContent,
 		ResponseID:       stepResponse.ID,
 		ProviderMetadata: genResult.ProviderMetadata,
+		Request:          agentModelCallRequest(genResult.RequestURL),
 		Performance:      ai.NonStreamingModelCallPerformance(modelCallMs, genResult.Usage),
 	}, callConfig.OnLanguageModelCallEnd)
 	stepTel.modelCallEnd(stepModel, genResult, modelCallContent, stepResponse, modelCallMs)
@@ -3785,4 +3786,15 @@ func agentHasProviderApprovalRequest(content []types.ContentPart) bool {
 		}
 	}
 	return false
+}
+
+// agentModelCallRequest is the call-end event's request for a provider-reported
+// URL: only its HTTP origin, nil without one (TS generate-text.ts spreads
+// request only when the sanitized request has a url, 934100cad4).
+func agentModelCallRequest(rawURL string) *ai.LanguageModelCallRequest {
+	origin := urlnorm.RequestOrigin(rawURL)
+	if origin == "" {
+		return nil
+	}
+	return &ai.LanguageModelCallRequest{URL: origin}
 }

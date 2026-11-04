@@ -150,6 +150,8 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	// TS result.request.body / result.response.body: the request as sent and
 	// the response as received.
 	result.RawRequest = reqBody
+	// TS 934100cad4: request: {body, url}; core reduces the URL to its origin.
+	result.RequestURL = m.chatRequestURL()
 	var rawResponse interface{}
 	if json.Unmarshal(resp.Body, &rawResponse) == nil {
 		result.RawResponse = rawResponse

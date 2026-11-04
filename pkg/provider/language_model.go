@@ -193,6 +193,17 @@ type StreamRequestBody interface {
 	RequestBody() interface{}
 }
 
+// StreamRequestURL is an optional capability a TextStream implementation
+// can provide to report the HTTP endpoint it posted to (TS doStream()
+// {request: {url}}, 934100cad4). pkg/ai reduces it to its origin
+// (types.StepRequest.URL) before results, callbacks or telemetry see it, so
+// credentials, path, query and fragment never leave the provider. A stream
+// that doesn't implement it reports no request URL.
+type StreamRequestURL interface {
+	// RequestURL returns the URL the stream was opened with, or "".
+	RequestURL() string
+}
+
 // StreamChunk represents a single chunk in a text stream
 type StreamChunk struct {
 	// Type of chunk

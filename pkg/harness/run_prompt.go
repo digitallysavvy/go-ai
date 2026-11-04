@@ -109,7 +109,7 @@ func stepFinishEvent(callID string, step types.StepResult) ai.OnStepFinishEvent 
 		Warnings: step.Warnings, Sources: step.Sources, Files: step.Files,
 		ProviderMetadata: step.ProviderMetadata,
 		ResponseHeaders:  step.Response.Headers,
-		Request:          ai.GenerateStepRequest{Body: step.Request.Body, Messages: step.Request.Messages},
+		Request:          ai.GenerateStepRequest{Body: step.Request.Body, Messages: step.Request.Messages, URL: step.Request.URL},
 		Response: ai.GenerateStepResponse{
 			ID: step.Response.ID, Timestamp: step.Response.Timestamp, ModelID: step.Response.ModelID,
 			Headers: step.Response.Headers, Messages: step.Response.Messages, Body: step.Response.Body,

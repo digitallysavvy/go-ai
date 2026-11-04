@@ -429,7 +429,7 @@ func (d *turnDriver) telEnd(steps []types.StepResult, totalUsage types.Usage) {
 			Usage: totalUsage, TotalUsage: totalUsage, Steps: steps,
 			ProviderMetadata: finalStep.ProviderMetadata,
 			ResponseHeaders:  finalStep.Response.Headers,
-			Request:          ai.GenerateStepRequest{Body: finalStep.Request.Body, Messages: finalStep.Request.Messages},
+			Request:          ai.GenerateStepRequest{Body: finalStep.Request.Body, Messages: finalStep.Request.Messages, URL: finalStep.Request.URL},
 			Response: ai.GenerateStepResponse{
 				ID: finalStep.Response.ID, Timestamp: finalStep.Response.Timestamp, ModelID: finalStep.Response.ModelID,
 				Headers: finalStep.Response.Headers, Messages: finalStep.Response.Messages, Body: finalStep.Response.Body,

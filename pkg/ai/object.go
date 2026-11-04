@@ -1161,7 +1161,7 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 	// The telemetry step end follows the user callback (TS
 	// notify([onStepEnd, telemetry.onObjectStepEnd])).
-	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), resMeta.ID, genResult.ProviderMetadata)
+	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), resMeta.ID, genResult.ProviderMetadata, reqMeta.URL)
 	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, resMeta.ID, resMeta.ModelID, resMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
 
 	obj, _, _, err := parseGenerateObjectResult(structuredParseResult(genResult), ObjectModeObject, opts.Schema, nil, opts.Model)
@@ -1332,7 +1332,7 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 	// The telemetry step end follows the user callback (TS
 	// notify([onStepEnd, telemetry.onObjectStepEnd])).
-	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), arrResMeta.ID, genResult.ProviderMetadata)
+	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), arrResMeta.ID, genResult.ProviderMetadata, arrReqMeta.URL)
 	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, arrResMeta.ID, arrResMeta.ModelID, arrResMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
 
 	_, arr, _, err := parseGenerateObjectResult(structuredParseResult(genResult), ObjectModeArray, opts.Schema, nil, opts.Model)
@@ -1490,7 +1490,7 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 	// The telemetry step end follows the user callback (TS
 	// notify([onStepEnd, telemetry.onObjectStepEnd])).
-	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), enumResMeta.ID, genResult.ProviderMetadata)
+	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), enumResMeta.ID, genResult.ProviderMetadata, enumReqMeta.URL)
 	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, enumResMeta.ID, enumResMeta.ModelID, enumResMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
 
 	_, _, selectedValue, err := parseGenerateObjectResult(structuredParseResult(genResult), ObjectModeEnum, nil, opts.EnumValues, opts.Model)
@@ -1642,7 +1642,7 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 	// The telemetry step end follows the user callback (TS
 	// notify([onStepEnd, telemetry.onObjectStepEnd])).
-	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), nsResMeta.ID, genResult.ProviderMetadata)
+	fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, generateResultContentParts(genResult), nsResMeta.ID, genResult.ProviderMetadata, nsReqMeta.URL)
 	fireObjectStepEnd(telStep, "ai.generateObject", opts.ExperimentalTelemetry, genResult.FinishReason, genResult.Usage, genResult.Text, nsResMeta.ID, nsResMeta.ModelID, nsResMeta.Timestamp, genResult.ProviderMetadata, time.Time{})
 
 	obj, _, _, err := parseGenerateObjectResult(structuredParseResult(genResult), ObjectModeNoSchema, nil, nil, opts.Model)
@@ -2238,7 +2238,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			Response:         streamResMeta,
 			ProviderMetadata: streamProviderMetadata,
 		}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
-		fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, finishReason, usage, streamCallEndContent, streamResMeta.ID, streamProviderMetadata)
+		fireObjectLanguageModelCallEnd(telStep, opts.Model, opts.ExperimentalTelemetry, finishReason, usage, streamCallEndContent, streamResMeta.ID, streamProviderMetadata, streamReqMeta.URL)
 		fireObjectStepEnd(telStep, "ai.streamObject", opts.ExperimentalTelemetry, finishReason, usage, accumulatedText, streamResMeta.ID, streamResMeta.ModelID, streamResMeta.Timestamp, streamProviderMetadata, firstChunkAt)
 	}
 

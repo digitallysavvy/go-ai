@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/aibridge"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
@@ -659,6 +660,7 @@ func (s *loopStepTelemetry) modelCallEnd(model interface {
 		ResponseID:       response.ID,
 		ProviderMetadata: res.ProviderMetadata,
 		Performance:      ai.NonStreamingModelCallPerformance(elapsedMs, res.Usage),
+		RequestURL:       urlnorm.RequestOrigin(res.RequestURL),
 	})
 	s.errCtx = s.stepCtx
 }

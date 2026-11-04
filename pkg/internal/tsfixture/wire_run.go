@@ -1182,6 +1182,14 @@ func wireLanguage(ctx context.Context, s WireSuite, m provider.LanguageModel, c 
 	if res.RawRequest != nil {
 		out["request"] = map[string]interface{}{"body": res.RawRequest}
 	}
+	if res.RequestURL != "" {
+		rq, _ := out["request"].(map[string]interface{})
+		if rq == nil {
+			rq = map[string]interface{}{}
+			out["request"] = rq
+		}
+		rq["url"] = res.RequestURL
+	}
 	resp := map[string]interface{}{}
 	if r := res.ResponseMetadata; r != nil {
 		resp["id"], resp["modelId"] = r.ID, r.ModelID

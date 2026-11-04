@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/aibridge"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -2472,6 +2473,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				startStepRequest := types.StepRequest{
 					Body:     includedRequestBody(r.cbInclude.RequestBody, r.currentStream()),
 					Messages: includedRequestMessages(r.cbInclude.RequestMessages, currentMessages),
+					URL:      streamRequestOrigin(r.currentStream()),
 				}
 				forwardThroughTransformChain(0, []provider.StreamChunk{{
 					Type:     provider.ChunkTypeStartStep,
@@ -2696,6 +2698,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 						Content:          append([]types.ContentPart(nil), stepContent...),
 						ResponseID:       responseID,
 						ProviderMetadata: decodeProviderMetadataMap(chunk.ProviderMetadata),
+						Request:          languageModelCallRequest(streamRequestOrigin(r.currentStream())),
 						Performance:      languageModelCallPerformance(performance),
 					}, onLanguageModelCallEnd)
 					telemetry.FireOnLanguageModelCallEnd(ctx, telemetry.LanguageModelCallEndEvent{
@@ -2709,6 +2712,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 						ResponseID:       responseID,
 						ProviderMetadata: decodeProviderMetadataMap(chunk.ProviderMetadata),
 						Performance:      languageModelCallPerformance(performance),
+						RequestURL:       streamRequestOrigin(r.currentStream()),
 					})
 				}
 			}
@@ -3613,6 +3617,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Request: types.StepRequest{
 				Body:     includedRequestBody(r.cbInclude.RequestBody, r.currentStream()),
 				Messages: includedRequestMessages(r.cbInclude.RequestMessages, currentMessages),
+				URL:      streamRequestOrigin(r.currentStream()),
 			},
 			Response: types.StepResponse{
 				ID:        firstNonEmptyString(stepResponseID, stepDefaultResponseID),
@@ -3831,7 +3836,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Files:                        stepFiles,
 			ProviderMetadata:             stepResult.ProviderMetadata,
 			ResponseHeaders:              stepHeaders,
-			Request:                      GenerateStepRequest{Body: stepResult.Request.Body, Messages: stepResult.Request.Messages},
+			Request:                      generateStepRequestOf(stepResult.Request),
 			Response: GenerateStepResponse{
 				ID:        stepResult.Response.ID,
 				Timestamp: stepResult.Response.Timestamp,
@@ -4620,7 +4625,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		Files:              streamFiles,
 		ProviderMetadata:   lastStep.ProviderMetadata,
 		ResponseHeaders:    r.responseHeaders,
-		Request:            GenerateStepRequest{Body: lastStep.Request.Body, Messages: lastStep.Request.Messages},
+		Request:            generateStepRequestOf(lastStep.Request),
 		Response: GenerateStepResponse{
 			ID:        lastStep.Response.ID,
 			Timestamp: lastStep.Response.Timestamp,
@@ -5566,6 +5571,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		Request: types.StepRequest{
 			Body:     includedRequestBody(r.cbInclude.RequestBody, r.currentStream()),
 			Messages: includedRequestMessages(r.cbInclude.RequestMessages, r.cbMessages),
+			URL:      streamRequestOrigin(r.currentStream()),
 		},
 		Response: types.StepResponse{
 			ID:        r.stepResponse.ID,
@@ -5829,6 +5835,22 @@ func remapDuplicateBlockID(chunk *provider.StreamChunk, used map[string]bool, re
 			chunk.ID = newID
 		}
 	}
+}
+
+// streamRequestOrigin is the HTTP origin of the request URL s reports (TS
+// stream-language-model-call sanitizeRequestMetadata), "" when it reports
+// none or the URL is not http(s).
+func streamRequestOrigin(s provider.TextStream) string {
+	return urlnorm.RequestOrigin(streamRequestURL(s))
+}
+
+// languageModelCallRequest is the call-end event's request for a sanitized
+// origin: nil without one (TS spreads request only when request.url is set).
+func languageModelCallRequest(origin string) *LanguageModelCallRequest {
+	if origin == "" {
+		return nil
+	}
+	return &LanguageModelCallRequest{URL: origin}
 }
 
 // streamRequestBody returns the raw request body for s if it implements the

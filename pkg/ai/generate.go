@@ -1620,6 +1620,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Content:          generateResultContentParts(genResult),
 			ResponseID:       responseID,
 			ProviderMetadata: genResult.ProviderMetadata,
+			Request:          languageModelCallRequest(urlnorm.RequestOrigin(genResult.RequestURL)),
 			Performance:      languageModelCallPerformance(performance),
 		}, onLanguageModelCallEnd)
 		telemetry.FireOnLanguageModelCallEnd(stepCtx, telemetry.LanguageModelCallEndEvent{
@@ -1633,6 +1634,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			ResponseID:       responseID,
 			ProviderMetadata: genResult.ProviderMetadata,
 			Performance:      languageModelCallPerformance(performance),
+			RequestURL:       urlnorm.RequestOrigin(genResult.RequestURL),
 		})
 
 		if violation := checkToolChoiceViolation(stepToolChoice, genResult.ToolCalls, genResult.FinishReason, stepModel.Provider(), stepModel.ModelID(), generateResultContentParts(genResult)); violation != nil {
@@ -3349,7 +3351,7 @@ func logPromptDeprecations(batches [][]types.Warning) {
 // 934100cad4), or "" when the stream does not report one. The method set is
 // the one provider.StreamRequestURL declares.
 func streamRequestURL(stream provider.TextStream) string {
-	if s, ok := stream.(interface{ RequestURL() string }); ok {
+	if s, ok := stream.(provider.StreamRequestURL); ok {
 		return s.RequestURL()
 	}
 	return ""
@@ -3358,5 +3360,5 @@ func streamRequestURL(stream provider.TextStream) string {
 // generateStepRequestOf converts a step's request metadata to the callback
 // shape (the step-end and end events carry the step's request as in TS).
 func generateStepRequestOf(r types.StepRequest) GenerateStepRequest {
-	return GenerateStepRequest{Body: r.Body, Messages: r.Messages}
+	return GenerateStepRequest{Body: r.Body, Messages: r.Messages, URL: r.URL}
 }
