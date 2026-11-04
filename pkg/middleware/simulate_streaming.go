@@ -264,3 +264,20 @@ func (s *simulatedStream) Close() error {
 func (s *simulatedStream) Err() error {
 	return nil
 }
+
+// RequestBody is the wrapped DoGenerate result's request body (TS
+// simulateStreamingMiddleware returns request: result.request).
+func (s *simulatedStream) RequestBody() interface{} {
+	if s.result == nil {
+		return nil
+	}
+	return s.result.RawRequest
+}
+
+// RequestURL is the wrapped DoGenerate result's request URL (TS 934100cad4).
+func (s *simulatedStream) RequestURL() string {
+	if s.result == nil {
+		return ""
+	}
+	return s.result.RequestURL
+}

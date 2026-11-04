@@ -331,3 +331,20 @@ func (w *streamingExtractJSONWrapper) Close() error {
 func (w *streamingExtractJSONWrapper) Err() error {
 	return w.stream.Err()
 }
+
+// RequestBody forwards the wrapped stream's request body (TS middleware
+// doStream returns {...rest, stream}, so the request survives the wrapper).
+func (w *streamingExtractJSONWrapper) RequestBody() interface{} {
+	if rb, ok := w.stream.(provider.StreamRequestBody); ok {
+		return rb.RequestBody()
+	}
+	return nil
+}
+
+// RequestURL forwards the wrapped stream's request URL (TS 934100cad4).
+func (w *streamingExtractJSONWrapper) RequestURL() string {
+	if ru, ok := w.stream.(provider.StreamRequestURL); ok {
+		return ru.RequestURL()
+	}
+	return ""
+}

@@ -105,6 +105,16 @@ func (s *responseMetadataStream) RequestBody() interface{} {
 	return nil
 }
 
+// RequestURL implements provider.StreamRequestURL by delegating to inner when
+// inner implements it (TS doStream request.url, 934100cad4), so the wrapper
+// doesn't hide the capability from pkg/ai.
+func (s *responseMetadataStream) RequestURL() string {
+	if ru, ok := s.inner.(provider.StreamRequestURL); ok {
+		return ru.RequestURL()
+	}
+	return ""
+}
+
 // WithResponseMetadata wraps stream so that a ChunkTypeResponseMetadata chunk
 // carrying the given HTTP response headers is emitted before provider content.
 // A leading ChunkTypeStreamStart is kept first so warnings preserve TS ordering.

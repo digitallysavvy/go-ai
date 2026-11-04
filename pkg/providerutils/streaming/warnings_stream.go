@@ -43,3 +43,13 @@ func (s *WarningsStream) RequestBody() interface{} {
 	}
 	return nil
 }
+
+// RequestURL implements provider.StreamRequestURL by delegating to inner when
+// inner implements it (TS doStream request.url, 934100cad4), so the wrapper
+// doesn't hide the capability from pkg/ai.
+func (s *WarningsStream) RequestURL() string {
+	if ru, ok := s.inner.(provider.StreamRequestURL); ok {
+		return ru.RequestURL()
+	}
+	return ""
+}

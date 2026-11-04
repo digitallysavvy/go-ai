@@ -393,6 +393,23 @@ func (s *extractReasoningStream) Err() error {
 	return s.underlying.Err()
 }
 
+// RequestBody forwards the wrapped stream's request body (TS middleware
+// doStream returns {...rest, stream}, so the request survives the wrapper).
+func (s *extractReasoningStream) RequestBody() interface{} {
+	if rb, ok := s.underlying.(provider.StreamRequestBody); ok {
+		return rb.RequestBody()
+	}
+	return nil
+}
+
+// RequestURL forwards the wrapped stream's request URL (TS 934100cad4).
+func (s *extractReasoningStream) RequestURL() string {
+	if ru, ok := s.underlying.(provider.StreamRequestURL); ok {
+		return ru.RequestURL()
+	}
+	return ""
+}
+
 // getPotentialStartIndex finds where searchedText could potentially start in text.
 // Returns the index of either a complete match or a partial match at the end of text.
 // Returns -1 if no match is found.
