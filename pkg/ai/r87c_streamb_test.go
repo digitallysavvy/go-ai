@@ -1219,3 +1219,96 @@ func TestR87cstreambChoiceNonAmbiguous(t *testing.T) {
 		ChoiceOutput[string](ChoiceOutputOptions[string]{Options: []string{"foobar", "barfoo"}}))
 	r87cstreambAssert(t, "partialOutputStream", got, `["foobar"]`)
 }
+
+// stream-text.test.ts 24518: options.activeTools > should filter available
+// tools to only the ones in activeTools.
+func TestR87cstreambActiveTools(t *testing.T) {
+	var got map[string]interface{}
+	model := &testutil.MockLanguageModel{ProviderName: "mock-provider", ModelName: "mock-model-id",
+		DoStreamFunc: func(_ context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+			got = r87cstreambCallOptions(t, o)
+			return testutil.NewMockTextStream(r87cstreambJoin(r87cstreambText("1", "Hello", ", ", "world!"), []provider.StreamChunk{r87cstreambFinish(types.FinishReasonStop, "stop")})), nil
+		}}
+	exec := func(out string) types.ToolExecutor {
+		return func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return out, nil
+		}
+	}
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: model,
+		Tools: []types.Tool{
+			{Name: "tool1", Parameters: r87cstreambZodValueSchema, Execute: exec("result1")},
+			{Name: "tool2", Parameters: r87cstreambZodValueSchema, Execute: exec("result2")},
+		},
+		Prompt:      "test-input",
+		ActiveTools: []string{"tool1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	r87cstreambAssert(t, "tools", got["tools"], `[{"inputSchema":{"$schema":"http://json-schema.org/draft-07/schema#","additionalProperties":false,"properties":{"value":{"type":"string"}},"required":["value"],"type":"object"},"name":"tool1","type":"function"}]`)
+}
+
+// r87cstreambInterleavedRun is the TS 'mixed text and reasoning blocks'
+// beforeEach.
+func r87cstreambInterleavedRun(t *testing.T) (*StreamTextResult, []provider.StreamChunk) {
+	t.Helper()
+	text := func(id, d string) provider.StreamChunk {
+		return provider.StreamChunk{Type: provider.ChunkTypeText, ID: id, Text: d}
+	}
+	reason := func(id, d string) provider.StreamChunk {
+		return provider.StreamChunk{Type: provider.ChunkTypeReasoning, ID: id, Text: d}
+	}
+	mark := func(typ provider.ChunkType, id string) provider.StreamChunk {
+		return provider.StreamChunk{Type: typ, ID: id}
+	}
+	return r73streamParts(t, StreamTextOptions{
+		Model: r71streamModel(nil, []provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart, Warnings: []types.Warning{}},
+			mark(provider.ChunkTypeReasoningStart, "0"), mark(provider.ChunkTypeTextStart, "1"),
+			reason("0", "Thinking..."), text("1", "Hello"), text("1", ", "),
+			mark(provider.ChunkTypeTextStart, "2"), text("2", "This "), text("2", "is "),
+			mark(provider.ChunkTypeReasoningStart, "3"), reason("0", "I'm thinking..."), reason("3", "Separate thoughts"),
+			text("2", "a"), text("1", "world!"), mark(provider.ChunkTypeReasoningEnd, "0"), text("2", " test."),
+			mark(provider.ChunkTypeTextEnd, "2"), mark(provider.ChunkTypeReasoningEnd, "3"), mark(provider.ChunkTypeTextEnd, "1"),
+			r87cstreambFinish(types.FinishReasonStop, "stop"),
+		}),
+		Prompt:   "test-input",
+		Internal: r87cstreambIDs(),
+	})
+}
+
+// stream-text.test.ts 25171: mixed multi content streaming with interleaving
+// parts > mixed text and reasoning blocks > should return the full stream
+// with the correct parts.
+func TestR87cstreambInterleavedFullStream(t *testing.T) {
+	_, parts := r87cstreambInterleavedRun(t)
+	r87cstreambAssert(t, "full stream", r87cstreambParts(parts), `[
+		{"type":"start"},{"type":"start-step","request":{},"warnings":[]},
+		{"id":"0","type":"reasoning-start"},{"id":"1","type":"text-start"},
+		{"id":"0","text":"Thinking...","type":"reasoning-delta"},
+		{"id":"1","text":"Hello","type":"text-delta"},{"id":"1","text":", ","type":"text-delta"},
+		{"id":"2","type":"text-start"},{"id":"2","text":"This ","type":"text-delta"},{"id":"2","text":"is ","type":"text-delta"},
+		{"id":"3","type":"reasoning-start"},
+		{"id":"0","text":"I'm thinking...","type":"reasoning-delta"},{"id":"3","text":"Separate thoughts","type":"reasoning-delta"},
+		{"id":"2","text":"a","type":"text-delta"},{"id":"1","text":"world!","type":"text-delta"},
+		{"id":"0","type":"reasoning-end"},{"id":"2","text":" test.","type":"text-delta"},
+		{"id":"2","type":"text-end"},{"id":"3","type":"reasoning-end"},{"id":"1","type":"text-end"},
+		{"finishReason":"stop","rawFinishReason":"stop","response":{"id":"id-0","modelId":"mock-model-id","timestamp":"<now>"},"type":"finish-step","usage":`+r87cstreambUsageJSON+`},
+		{"finishReason":"stop","rawFinishReason":"stop","totalUsage":`+r87cstreambUsageJSON+`,"type":"finish"}]`)
+}
+
+// stream-text.test.ts 25373: mixed multi content streaming with interleaving
+// parts > mixed text and reasoning blocks > should return the step content
+// parts in the correct order.
+func TestR87cstreambInterleavedSteps(t *testing.T) {
+	r, _ := r87cstreambInterleavedRun(t)
+	content := `[{"text":"Thinking...I'm thinking...","type":"reasoning"},{"text":"Hello, world!","type":"text"},{"text":"This is a test.","type":"text"},{"text":"Separate thoughts","type":"reasoning"}]`
+	r87cstreambAssert(t, "steps", r87cstreambSteps(t, r.Steps()), `[{"callId":"test-telemetry-call-id","content":`+content+`,"finishReason":"stop",
+		"model":{"modelId":"mock-model-id","provider":"mock-provider"},"toolExecutionMsKeys":[],"rawFinishReason":"stop","request":{},
+		"response":{"id":"id-0","messages":[{"content":`+content+`,"role":"assistant"}],"modelId":"mock-model-id","timestamp":"<now>"},
+		"runtimeContext":{},"stepNumber":0,"toolsContext":{},"usage":`+r87cstreambUsageJSON+`,"warnings":[]}]`)
+}
