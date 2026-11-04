@@ -530,7 +530,9 @@ func TestR87cgenResultStepsSnapshots(t *testing.T) {
 // step': finalStep is the last step.
 func TestR87cgenExposeFinalStep(t *testing.T) {
 	res, err := GenerateText(context.Background(), GenerateTextOptions{
-		Model:  r87cgenModel(func(int, *provider.GenerateOptions) (*types.GenerateResult, error) { return r87cgenResult(r87cgenText("Hello!")), nil }),
+		Model: r87cgenModel(func(int, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return r87cgenResult(r87cgenText("Hello!")), nil
+		}),
 		Prompt: "test-input",
 	})
 	if err != nil {
@@ -685,7 +687,9 @@ func TestR87cgenResultToolResults(t *testing.T) {
 func TestR87cgenResultResponseMessages(t *testing.T) {
 	t.Run("no tool calls", func(t *testing.T) {
 		res, err := GenerateText(context.Background(), GenerateTextOptions{
-			Model:  r87cgenModel(func(int, *provider.GenerateOptions) (*types.GenerateResult, error) { return r87cgenResult(r87cgenText("Hello, world!")), nil }),
+			Model: r87cgenModel(func(int, *provider.GenerateOptions) (*types.GenerateResult, error) {
+				return r87cgenResult(r87cgenText("Hello, world!")), nil
+			}),
 			Prompt: "test-input",
 		})
 		if err != nil {
@@ -931,8 +935,8 @@ const (
 	r87cgenFinalUsage  = `{"inputTokenDetails":{"noCacheTokens":3},"inputTokens":3,"outputTokenDetails":{"textTokens":10},"outputTokens":10,"totalTokens":13}`
 	// The two steps of the 2-step snapshots, without the step 0 tool-call
 	// title (set by the plain block's tool only).
-	r87cgenTwoStepStep1 = `{"callId":"test-telemetry-call-id","content":[{"text":"Hello, world!","type":"text"}],"finishReason":"stop","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":{"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0,"responseTimeMs":0,"stepTimeMs":0,"toolExecutionMs":{}},"rawFinishReason":"stop","request":{},"response":{"headers":{"custom-response-header":"response-header-value"},"id":"test-id-2-from-model","messages":[{"content":[{"text":"Hello, world!","type":"text"}],"role":"assistant"}],"modelId":"test-response-model-id","timestamp":"1970-01-01T00:00:10.000Z"},"runtimeContext":%s,"stepNumber":1,"toolsContext":{},"usage":` + r87cgenFinalUsage + `,"warnings":[]}`
-	r87cgenTwoStepStep0 = `{"callId":"test-telemetry-call-id","content":[{"input":{"value":"value"},%s"toolCallId":"call-1","toolName":"tool1","type":"tool-call"},{"dynamic":false,"input":{"value":"value"},"output":"result1","toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"finishReason":"tool-calls","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":{"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0,"responseTimeMs":0,"stepTimeMs":0,"toolExecutionMs":{"call-1":0}},"request":{},"response":{"id":"test-id-1-from-model","messages":[{"content":[{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"text","value":"result1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"}],"modelId":"test-response-model-id","timestamp":"1970-01-01T00:00:00.000Z"},"runtimeContext":%s,"stepNumber":0,"toolsContext":{},"usage":{"inputTokenDetails":{"noCacheTokens":10},"inputTokens":10,"outputTokenDetails":{"textTokens":5},"outputTokens":5,"totalTokens":15},"warnings":[]}`
+	r87cgenTwoStepStep1    = `{"callId":"test-telemetry-call-id","content":[{"text":"Hello, world!","type":"text"}],"finishReason":"stop","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":{"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0,"responseTimeMs":0,"stepTimeMs":0,"toolExecutionMs":{}},"rawFinishReason":"stop","request":{},"response":{"headers":{"custom-response-header":"response-header-value"},"id":"test-id-2-from-model","messages":[{"content":[{"text":"Hello, world!","type":"text"}],"role":"assistant"}],"modelId":"test-response-model-id","timestamp":"1970-01-01T00:00:10.000Z"},"runtimeContext":%s,"stepNumber":1,"toolsContext":{},"usage":` + r87cgenFinalUsage + `,"warnings":[]}`
+	r87cgenTwoStepStep0    = `{"callId":"test-telemetry-call-id","content":[{"input":{"value":"value"},%s"toolCallId":"call-1","toolName":"tool1","type":"tool-call"},{"dynamic":false,"input":{"value":"value"},"output":"result1","toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"finishReason":"tool-calls","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":{"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0,"responseTimeMs":0,"stepTimeMs":0,"toolExecutionMs":{"call-1":0}},"request":{},"response":{"id":"test-id-1-from-model","messages":[{"content":[{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"text","value":"result1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"}],"modelId":"test-response-model-id","timestamp":"1970-01-01T00:00:00.000Z"},"runtimeContext":%s,"stepNumber":0,"toolsContext":{},"usage":{"inputTokenDetails":{"noCacheTokens":10},"inputTokens":10,"outputTokenDetails":{"textTokens":5},"outputTokens":5,"totalTokens":15},"warnings":[]}`
 	r87cgenTwoStepMessages = `[{"content":[{"input":{"value":"value"},"toolCallId":"call-1","toolName":"tool1","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"text","value":"result1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}],"role":"tool"},{"content":[{"text":"Hello, world!","type":"text"}],"role":"assistant"}]`
 )
 
@@ -1041,7 +1045,9 @@ func r87cgenStr(s string) *string { return &s }
 // length 1); Go hands each call a copy, so the port checks the steps each
 // call saw.
 func TestR87cgenStopWhenTwoStepsWithPrepareStep(t *testing.T) {
-	trueModel := r87cgenModel(func(n int, _ *provider.GenerateOptions) (*types.GenerateResult, error) { return r87cgenTwoStepResponse(n) })
+	trueModel := r87cgenModel(func(n int, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+		return r87cgenTwoStepResponse(n)
+	})
 	type prepareCall struct {
 		ModelID        string        `json:"modelId"`
 		StepNumber     int           `json:"stepNumber"`
@@ -1298,5 +1304,87 @@ func TestR87cgenTimeoutSignals(t *testing.T) {
 		if !hasDeadline {
 			t.Fatal("tool ctx has no deadline")
 		}
+	})
+}
+
+// generate-text.test.ts 8241 'options.timeout' > 'should abort when step
+// timeout expires': the model call's signal is aborted with a TimeoutError
+// reason (Go: the ctx is done and its cause is a *TimeoutError named
+// "TimeoutError").
+func TestR87cgenStepTimeoutAborts(t *testing.T) {
+	zero := 0
+	var aborted bool
+	var cause error
+	_, _ = GenerateText(context.Background(), GenerateTextOptions{
+		Model: &testutil.MockLanguageModel{DoGenerateFunc: func(ctx context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+			select {
+			case <-ctx.Done():
+			case <-time.After(5 * time.Second):
+			}
+			aborted, cause = ctx.Err() != nil, context.Cause(ctx)
+			return r87cgenResult(r87cgenText("Hello, world!")), nil
+		}},
+		Prompt:     "test-input",
+		Timeout:    &TimeoutConfig{PerStep: r87cgenDur(50)},
+		MaxRetries: &zero,
+	})
+	var te *TimeoutError
+	if !aborted || !errors.As(cause, &te) || te.ErrorName() != "TimeoutError" {
+		t.Fatalf("aborted = %v, reason = %T %v", aborted, cause, cause)
+	}
+}
+
+// The class of 8241 (TS util/set-abort-timeout.ts, merge-abort-signals.ts):
+// every GenerateText timeout aborts with a TimeoutError reason. The total
+// timeout's reason is AbortSignal.timeout's ("The operation was aborted due
+// to timeout"), the step timeout's setAbortTimeout's ("Step timeout of 50ms
+// exceeded"), a tool timeout's AbortSignal.timeout's, and a batch call's
+// timeout is its total timeout.
+func TestR87cgenTimeoutCauses(t *testing.T) {
+	blockingModel := func(cause *error) *testutil.MockLanguageModel {
+		return &testutil.MockLanguageModel{DoGenerateFunc: func(ctx context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+			<-ctx.Done()
+			*cause = context.Cause(ctx)
+			return nil, ctx.Err()
+		}}
+	}
+	check := func(t *testing.T, cause error, reason TimeoutReason, text string) {
+		t.Helper()
+		var te *TimeoutError
+		if !errors.As(cause, &te) || te.Reason != reason || te.Error() != text || !errors.Is(cause, context.DeadlineExceeded) {
+			t.Fatalf("cause = %T %v, want the %s TimeoutError %q", cause, cause, reason, text)
+		}
+	}
+	zero := 0
+	t.Run("total", func(t *testing.T) {
+		var cause error
+		_, _ = GenerateText(context.Background(), GenerateTextOptions{Model: blockingModel(&cause), Prompt: "x", MaxRetries: &zero, Timeout: &TimeoutConfig{Total: r87cgenDur(30)}})
+		check(t, cause, TimeoutReasonTotal, "The operation was aborted due to timeout")
+	})
+	t.Run("step", func(t *testing.T) {
+		var cause error
+		_, _ = GenerateText(context.Background(), GenerateTextOptions{Model: blockingModel(&cause), Prompt: "x", MaxRetries: &zero, Timeout: &TimeoutConfig{PerStep: r87cgenDur(50)}})
+		check(t, cause, TimeoutReasonStep, "Step timeout of 50ms exceeded")
+	})
+	t.Run("tool", func(t *testing.T) {
+		var cause error
+		_, _ = GenerateText(context.Background(), GenerateTextOptions{
+			Model: r87cgenModel(func(int, *provider.GenerateOptions) (*types.GenerateResult, error) {
+				return r87cgenResult(r87cgenCall("call-1", "tool1", `{ "value": "value" }`)), nil
+			}),
+			Tools: []types.Tool{{Name: "tool1", Parameters: r87cgenSchema("value"), Execute: func(ctx context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+				<-ctx.Done()
+				cause = context.Cause(ctx)
+				return nil, ctx.Err()
+			}}},
+			Prompt: "x", Timeout: &TimeoutConfig{ToolMs: r87cgenDur(30)},
+		})
+		check(t, cause, TimeoutReasonTool, "The operation was aborted due to timeout")
+	})
+	t.Run("batch", func(t *testing.T) {
+		ctx, cancel := withOptionalTimeout(context.Background(), r87cgenDur(10))
+		defer cancel()
+		<-ctx.Done()
+		check(t, context.Cause(ctx), TimeoutReasonTotal, "The operation was aborted due to timeout")
 	})
 }

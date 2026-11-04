@@ -1049,7 +1049,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	totalParent := ctx
 	var cancel context.CancelFunc
 	if opts.Timeout != nil && opts.Timeout.HasTotal() {
-		ctx, cancel = opts.Timeout.CreateTimeoutContext(ctx, "total")
+		// The deadline's cause is the total TimeoutError, so the abort reason
+		// the model call and tools see (context.Cause) is TS's
+		// AbortSignal.timeout reason, as in StreamText.
+		ctx, cancel = context.WithTimeoutCause(ctx, *opts.Timeout.Total, opts.Timeout.timeoutError(TimeoutReasonTotal, context.DeadlineExceeded))
 		defer cancel()
 	}
 
@@ -1189,7 +1192,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// step callbacks are not called for it.
 		if stepNum > 1 && ctx.Err() != nil {
 			abortErr := context.Cause(ctx)
-			if opts.Timeout.HasTotal() && deadlineFired(ctx, totalParent) {
+			var timeoutErr *TimeoutError
+			if opts.Timeout.HasTotal() && deadlineFired(ctx, totalParent) && !errors.As(abortErr, &timeoutErr) {
 				abortErr = opts.Timeout.timeoutError(TimeoutReasonTotal, abortErr)
 			}
 			return nil, abortErr
@@ -1200,7 +1204,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		stepCtx := ctx
 		var stepCancel context.CancelFunc
 		if opts.Timeout != nil && opts.Timeout.HasPerStep() {
-			stepCtx, stepCancel = opts.Timeout.CreateTimeoutContext(ctx, "step")
+			// TS setAbortTimeout aborts the step with a TimeoutError
+			// DOMException ("Step timeout of <ms>ms exceeded"): that is the
+			// cause the model call and tools see.
+			stepCtx, stepCancel = context.WithTimeoutCause(ctx, *opts.Timeout.PerStep, opts.Timeout.timeoutError(TimeoutReasonStep, context.DeadlineExceeded))
 			defer stepCancel()
 		}
 		stepModel := opts.Model
@@ -2925,7 +2932,9 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			execCtx := toolCtx
 			execCancel := func() {}
 			if toolTimeout := callbacks.timeout.GetToolTimeout(call.ToolName); toolTimeout != nil {
-				execCtx, execCancel = context.WithTimeout(toolCtx, *toolTimeout)
+				// TS mergeAbortSignals(abortSignal, toolMs): the tool's
+				// signal aborts with AbortSignal.timeout's TimeoutError.
+				execCtx, execCancel = context.WithTimeoutCause(toolCtx, *toolTimeout, &TimeoutError{Reason: TimeoutReasonTool, Err: context.DeadlineExceeded, Timeout: *toolTimeout})
 			}
 
 			toolStarted := time.Now()

@@ -862,5 +862,7 @@ func withOptionalTimeout(ctx context.Context, timeout *time.Duration) (context.C
 	if timeout == nil {
 		return ctx, func() {}
 	}
-	return context.WithTimeout(ctx, *timeout)
+	// TS mergeAbortSignals(abortSignal, getTotalTimeoutMs(timeout)): the
+	// call's signal aborts with AbortSignal.timeout's TimeoutError.
+	return context.WithTimeoutCause(ctx, *timeout, &TimeoutError{Reason: TimeoutReasonTotal, Err: context.DeadlineExceeded, Timeout: *timeout})
 }
