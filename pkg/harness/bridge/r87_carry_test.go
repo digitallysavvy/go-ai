@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/harness"
 )
 
 // TS 3bf70f83bc (sandbox-channel.test.ts, harness-v1-bridge-protocol.test.ts):
@@ -261,5 +263,30 @@ func TestR87carryStartIDAndIdempotentStartCapability(t *testing.T) {
 	}
 	if string(out) != `{"type":"bridge-hello","state":"waiting","capabilities":{"idempotentStart":false}}` {
 		t.Errorf("hello = %s", out)
+	}
+}
+
+// TS withBridgeToken is `new URL(url)`, `searchParams.set` and `toString()`.
+// Expected values recorded with Node 24 (WHATWG URL): IDNA hosts, dot
+// segments, backslashes, leading-zero ports and invalid UTF-8 in the query.
+var r87carryWithBridgeTokenNode = map[string]string{
+	"ws://Host.Example:80/a b?x=1&agent_bridge_token=old&y=%zz&agent_bridge_token=2": "ws://host.example/a%20b?x=1&agent_bridge_token=tok+en%26%3F&y=%25zz",
+	"wss://ÄÖ.example:443":              "wss://xn--4ca0b.example/?agent_bridge_token=tok+en%26%3F",
+	"ws://[::1]:9000/p/../q?%C3%28=v":   "ws://[::1]:9000/q?%EF%BF%BD%28=v&agent_bridge_token=tok+en%26%3F",
+	"http://u:p@h/%7e?a=~":              "http://u:p@h/%7e?a=%7E&agent_bridge_token=tok+en%26%3F",
+	"ws://h/path with space?q=a+b#frag": "ws://h/path%20with%20space?q=a+b&agent_bridge_token=tok+en%26%3F#frag",
+	"WS://H:0081/x\\y":                  "ws://h:81/x/y?agent_bridge_token=tok+en%26%3F",
+	"https://h.example?":                "https://h.example/?agent_bridge_token=tok+en%26%3F",
+}
+
+func TestR87carryWithBridgeTokenMatchesNode(t *testing.T) {
+	for in, want := range r87carryWithBridgeTokenNode {
+		out, err := WithBridgeToken(harness.PortEndpoint{URL: in, Headers: map[string]string{"a": "b"}}, "tok en&?")
+		if err != nil || out.URL != want || out.Headers["a"] != "b" {
+			t.Errorf("%q: got %q, %v; want %q", in, out.URL, err, want)
+		}
+	}
+	if _, err := WithBridgeToken(harness.PortEndpoint{URL: "not a url"}, "t"); err == nil {
+		t.Error("want an error for an invalid URL")
 	}
 }
