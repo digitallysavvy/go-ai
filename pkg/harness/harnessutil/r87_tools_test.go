@@ -1,6 +1,9 @@
 package harnessutil
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // Expected values are Node 24 `new URL(s).hostname` and
 // the pathname without trailing slashes (TS createCredentialRequestTransformation).
@@ -28,6 +31,34 @@ func TestR87toolsCredentialTransformationWHATWGURL(t *testing.T) {
 		}
 		if got.Match.Host != tc.host || gotPath != tc.path {
 			t.Errorf("%q: host %q path %q, want %q %q", tc.in, got.Match.Host, gotPath, tc.host, tc.path)
+		}
+	}
+}
+
+// TS getInlineImage string branch (`new URL(data)`, then getDataUrlImage on
+// `url.href.split(',', 2)`); expected values from Node 24.
+func TestR87toolsInlineImageFromStringWHATWG(t *testing.T) {
+	cases := []struct {
+		in, data, mediaType, errPart string
+	}{
+		{" data:image/png;base64,AAAA", "AAAA", "image/png", ""},
+		{"data:image/png;base64,AA\nAA", "AAAA", "image/png", ""},
+		{"DATA:image/png;base64,AAAA,BBB", "AAAA", "image/png", ""},
+		{"http://[bad", "http://[bad", "", ""},
+		{"abc:def", "", "", "remote image URLs"},
+		{"AAAA", "AAAA", "", ""},
+		{"data:text/plain,hi", "", "", "data URLs that are not base64 encoded"},
+	}
+	for _, tc := range cases {
+		img, err := inlineImageFromString(tc.in)
+		if tc.errPart != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.errPart) {
+				t.Errorf("%q: err = %v, want %q", tc.in, err, tc.errPart)
+			}
+			continue
+		}
+		if err != nil || img.data != tc.data || img.mediaType != tc.mediaType {
+			t.Errorf("%q: %+v, %v; want data %q media type %q", tc.in, img, err, tc.data, tc.mediaType)
 		}
 	}
 }

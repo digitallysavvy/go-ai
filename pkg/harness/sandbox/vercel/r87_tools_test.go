@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/harness"
 	httpinternal "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -755,5 +756,21 @@ func TestR87toolsRequestRetryWaitsRetryAfter(t *testing.T) {
 	}
 	if !reflect.DeepEqual(waited, []float64{1.5}) || n != 2 {
 		t.Fatalf("waited %v over %d requests", waited, n)
+	}
+}
+
+// TS getPortEndpoint: new URL(domain), the protocol setter, toString().
+func TestR87toolsPortEndpointWHATWG(t *testing.T) {
+	sb := &Sandbox{routes: []sandboxRouteWire{{Subdomain: "SB-Abc", Port: 3000}}}
+	n := &NetworkSession{Session: NewSession(sb), sandbox: sb}
+	for protocol, want := range map[harness.PortProtocol]string{
+		harness.PortProtocolWS:    "wss://sb-abc.vercel.run/",
+		harness.PortProtocolHTTP:  "https://sb-abc.vercel.run/",
+		harness.PortProtocolHTTPS: "https://sb-abc.vercel.run/",
+	} {
+		got, err := n.GetPortEndpoint(context.Background(), harness.PortEndpointOptions{Port: 3000, Protocol: protocol})
+		if err != nil || got.URL != want {
+			t.Errorf("%s: %q, %v; want %q", protocol, got.URL, err, want)
+		}
 	}
 }
