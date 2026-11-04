@@ -69,9 +69,13 @@ func classifyContent(mediaType string, body []byte) contentKind {
 	return kindUnsupported
 }
 
+// TS /;\s*charset\s*=\s*"?([^";\s]+)"?/i and
+// /<meta[^>]+charset\s*=\s*["']?\s*([\w.:-]+)/i with JS `\s`. The header is
+// read as Latin-1 (FetchHeaderText) and the prescan as windows-1252, so no
+// input holds the runes Go `(?i)` folds to s or `\w` (U+017F, U+212A).
 var (
-	charsetFromContentType = regexp.MustCompile(`(?i);\s*charset\s*=\s*"?([^";\s]+)"?`)
-	charsetFromMetaTag     = regexp.MustCompile(`(?i)<meta[^>]+charset\s*=\s*["']?\s*([\w.:-]+)`)
+	charsetFromContentType = regexp.MustCompile(`(?i);` + providerutils.JSRegexpSpace + `*charset` + providerutils.JSRegexpSpace + `*=` + providerutils.JSRegexpSpace + `*"?([^";` + providerutils.JSRegexpSpaceChars + `]+)"?`)
+	charsetFromMetaTag     = regexp.MustCompile(`(?i)<meta[^>]+charset` + providerutils.JSRegexpSpace + `*=` + providerutils.JSRegexpSpace + `*["']?` + providerutils.JSRegexpSpace + `*([\w.:-]+)`)
 )
 
 func charsetFromBOM(body []byte) string {
@@ -127,7 +131,7 @@ func decodeText(body []byte, contentType string, isHTML bool) string {
 	body = body[bomLen:]
 
 	enc, err := htmlindex.Get(charset)
-	if err != nil {
+	if err != nil || !isEncodingLabel(charset) {
 		return prompt.DecodeUTF8Text(full)
 	}
 	if name, _ := htmlindex.Name(enc); name == "utf-8" {
@@ -138,4 +142,18 @@ func decodeText(body []byte, contentType string, isHTML bool) string {
 		return prompt.DecodeUTF8Text(full)
 	}
 	return string(decoded)
+}
+
+// isEncodingLabel reports whether TS new TextDecoder(label) could accept the
+// label. It trims only ASCII whitespace and matches ASCII case-insensitively;
+// htmlindex.Get also trims Unicode spaces (U+0085, U+00A0) and lowercases
+// U+212A to k. Every WHATWG label is printable ASCII.
+func isEncodingLabel(label string) bool {
+	label = strings.Trim(label, "\t\n\f\r ")
+	for i := 0; i < len(label); i++ {
+		if label[i] <= ' ' || label[i] > '~' {
+			return false
+		}
+	}
+	return label != ""
 }
