@@ -17,6 +17,9 @@ import (
 
 var r87dprovrestPorted = map[string]string{}
 
+// r87dprovrestNA are the assertions that cannot apply to Go.
+var r87dprovrestNA = map[string]string{}
+
 func r87dprovrestMark(goTest, test string, exprMatchers ...string) {
 	for i := 0; i < len(exprMatchers); i += 2 {
 		r87dprovrestPorted[tsfixture.PortedKey(test, exprMatchers[i], exprMatchers[i+1])] = goTest
@@ -24,18 +27,19 @@ func r87dprovrestMark(goTest, test string, exprMatchers ...string) {
 }
 
 func init() {
-	const getWarnings = "cacheControlValidator.getWarnings()"
-	for _, test := range []string{"should reject cache_control on thinking blocks", "should reject cache_control on redacted thinking blocks", "should limit cache breakpoints to 4"} {
-		r87dprovrestMark("TestR87dprovrestAnthropicConvertPromptCacheWarnings", test, getWarnings, "toEqual")
-	}
-	// "should limit cache breakpoints to 4" is also a prepare-tools title:
-	// the mark above covers both files (TestR87dprovrestAnthropicPrepareToolsCacheWarnings).
+	// The convert-prompt getWarnings() assertions evaluate through the
+	// adapter's cacheControlValidator root; the prepare-tools one waits for
+	// its case file's JS program (cr-r87d-provrest-to-googlefam CR 2). Both
+	// files have this title; the convert-prompt assertion evaluates.
+	r87dprovrestMark("TestR87dprovrestAnthropicPrepareToolsCacheWarnings", "should limit cache breakpoints to 4", "cacheControlValidator.getWarnings()", "toEqual")
 	r87dprovrestMark("TestR87dprovrestAnthropicPrepareToolsNoneChoice", "should not affect auto and none tool choices",
 		"none.tools", "toHaveLength", "none.toolChoice", "toEqual", "none.toolWarnings", "toEqual")
-	r87dprovrestMark("TestR87dprovrestAnthropicConvertUsageRaw", "should use usage as raw when rawUsage is not provided", "result.raw", "toBe")
-	r87dprovrestMark("TestR87dprovrestAnthropicConvertUsageRaw", "should sum across all iterations when iterations array is present", "result.raw", "toBe")
+	for _, test := range []string{"should use usage as raw when rawUsage is not provided", "should sum across all iterations when iterations array is present"} {
+		r87dprovrestNA[tsfixture.PortedKey(test, "result.raw", "toBe")] = "toBe is reference identity with the caller's usage object; convertAnthropicUsage takes the decoded wire struct, so Go cannot hand back the caller's object (TestR87dprovrestAnthropicConvertUsageRaw compares the value)"
+	}
 	r87dprovrestMark("TestR87dprovrestAnthropicSanitizeSchemaKeepsInput", "does not mutate the input schema", "schema", "toEqual")
 	tsfixture.RegisterPorted(r87dprovrestPorted)
+	tsfixture.RegisterNotApplicable(r87dprovrestNA)
 }
 
 // r87dprovrestConvertPrompt runs ConvertToAnthropicPrompt on a
@@ -60,13 +64,10 @@ func r87dprovrestConvertPrompt(t *testing.T, test string) (*prompt.AnthropicProm
 	return out, v
 }
 
-// convert-to-anthropic-prompt.test.ts 5636, 5678, 5770:
-// expect(cacheControlValidator.getWarnings()).toMatchInlineSnapshot(...)
-func TestR87dprovrestAnthropicConvertPromptCacheWarnings(t *testing.T) {
-	for _, test := range []string{"should reject cache_control on thinking blocks", "should reject cache_control on redacted thinking blocks", "should limit cache breakpoints to 4"} {
-		_, v := r87dprovrestConvertPrompt(t, test)
-		r87dprovrestEqual(t, test, r87dprovrestArg(t, "testdata/tscases/convert_prompt.json.gz", test, 0, "cacheControlValidator.getWarnings()"), r87dprovrestWarnings(v))
-	}
+// r87dprovrestValidatorRoot is the TS CacheControlValidator a test passes
+// in, as the root the JS fallback calls (cacheControlValidator.getWarnings()).
+func r87dprovrestValidatorRoot(v *prompt.AnthropicCacheControlValidator) map[string]interface{} {
+	return map[string]interface{}{"getWarnings": tsfixture.Returns(r87dprovrestWarnings(v))}
 }
 
 // TS getWarnings() returns { type, feature, details } (no message).

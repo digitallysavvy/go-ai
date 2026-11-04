@@ -232,4 +232,4 @@ func r87dprovrestArg(t *testing.T, file, test string, nth int, expr string) inte
 func init() { tsfixture.RegisterPorted(r87dprovrestPorted) }
 
 // TestMain fails an unfiltered run whose hand-port or n/a marks are stale.
-func TestMain(m *testing.M) { os.Exit(tsfixture.PortedMain(m, r87dprovrestPorted)) }
+func TestMain(m *testing.M) { os.Exit(tsfixture.PortedMain(m, r87dprovrestPorted, r87dprovrestNA)) }
