@@ -263,7 +263,9 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 			CredentialEnvironmentVariables: CredentialEnvironmentVariables,
 		})
 	}
-	subscriptionAccessToken := forwardedAuthEnvironment[SubscriptionAccessTokenEnvironmentVariable]
+	// TS `subscriptionAccessToken == null`: presence (a forwarded empty value
+	// still writes OPENCODE_AUTH_CONTENT).
+	subscriptionAccessToken, hasSubscriptionAccessToken := forwardedAuthEnvironment[SubscriptionAccessTokenEnvironmentVariable]
 	env := map[string]string{}
 	for k, v := range forwardedAuthEnvironment {
 		if k == SubscriptionAccessTokenEnvironmentVariable {
@@ -271,7 +273,7 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 		}
 		env[k] = v
 	}
-	if !gitLabSubscriptionBrokered && resolved.Subscription != nil && subscriptionAccessToken != "" {
+	if !gitLabSubscriptionBrokered && resolved.Subscription != nil && hasSubscriptionAccessToken {
 		content, err := createOpenCodeSubscriptionAuthContent(resolved.Subscription, subscriptionAccessToken)
 		if err != nil {
 			return nil, err
