@@ -106,3 +106,71 @@ func TestR86bgenParseToolCallTitleMetadataFromToolOnly(t *testing.T) {
 		}
 	}
 }
+
+// r86bgenDecide runs ExperimentalDecide with a model returning answers.
+func r86bgenDecide(questions map[string]provider.DecisionQuestion, answers map[string]provider.DecisionAnswer) (*DecideResult, *mockDecisionModel, error) {
+	mock := &mockDecisionModel{
+		providerName: "test",
+		modelID:      "m",
+		doDecide: func(context.Context, provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+			return &provider.DecisionResult{Answers: answers}, nil
+		},
+	}
+	result, err := ExperimentalDecide(context.Background(), DecideOptions{Model: mock, State: "s", Questions: questions})
+	return result, mock, err
+}
+
+// V061 items 30 and 32, against TS decide at 30548ee7f9 under bun
+// (DecisionMockModelV4):
+//
+//	emptyChoice ok {"q":{"type":"choice","choice":""}}
+//	emptyChoiceNotOption error AI_InvalidResponseDataError Question "q" selected an unknown option.
+//	scoreStrings ok {"q":{"type":"score","score":1.5}}
+func TestR86bgenDecideEmptyChoiceAndTypedCriteria(t *testing.T) {
+	result, _, err := r86bgenDecide(
+		map[string]provider.DecisionQuestion{"q": {Type: "choice", Instructions: "i", Criteria: map[string]interface{}{"": "empty", "a": "A"}}},
+		map[string]provider.DecisionAnswer{"q": {Type: "choice", Choice: ""}},
+	)
+	if err != nil || result.Answers["q"].Choice != "" {
+		t.Fatalf("emptyChoice: %v, %v", result, err)
+	}
+	_, _, err = r86bgenDecide(
+		map[string]provider.DecisionQuestion{"q": {Type: "choice", Instructions: "i", Criteria: map[string]interface{}{"a": "A"}}},
+		map[string]provider.DecisionAnswer{"q": {Type: "choice", Choice: ""}},
+	)
+	if err == nil || err.Error() != `Question "q" selected an unknown option.` {
+		t.Fatalf("emptyChoiceNotOption: %v", err)
+	}
+
+	score := 1.5
+	type r86bgenLevel string
+	for name, criteria := range map[string]interface{}{
+		"[]string":       []string{"low", "mid", "high"},
+		"named elements": []r86bgenLevel{"low", "mid", "high"},
+		"array":          [3]string{"low", "mid", "high"},
+	} {
+		_, mock, err := r86bgenDecide(
+			map[string]provider.DecisionQuestion{"q": {Type: "score", Instructions: "i", Criteria: criteria}},
+			map[string]provider.DecisionAnswer{"q": {Type: "score", Score: &score}},
+		)
+		if err != nil {
+			t.Fatalf("scoreStrings %s: %v", name, err)
+		}
+		// The model gets the JSON form the providers read.
+		if got, ok := mock.calls[0].Questions["q"].Criteria.([]interface{}); !ok || len(got) != 3 || got[2] != "high" {
+			t.Fatalf("scoreStrings %s: model criteria = %#v", name, mock.calls[0].Questions["q"].Criteria)
+		}
+	}
+
+	// Same class: typed choice options and instructions.
+	_, mock, err := r86bgenDecide(
+		map[string]provider.DecisionQuestion{"q": {Type: "choice", Instructions: []string{"pick", "one"}, Criteria: map[string]string{"a": "A", "b": "B"}}},
+		map[string]provider.DecisionAnswer{"q": {Type: "choice", Choice: "b"}},
+	)
+	if err != nil {
+		t.Fatalf("typed choice: %v", err)
+	}
+	if got, ok := mock.calls[0].Questions["q"].Criteria.(map[string]interface{}); !ok || got["b"] != "B" {
+		t.Fatalf("typed choice criteria = %#v", mock.calls[0].Questions["q"].Criteria)
+	}
+}
