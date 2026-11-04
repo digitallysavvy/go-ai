@@ -1082,7 +1082,7 @@ func unmarshalLegacyToolResultFileContentBlock(blockType string, data []byte) (F
 		URL               string                 `json:"url"`
 		FileID            interface{}            `json:"fileId"`
 		ProviderReference ProviderReference      `json:"providerReference"`
-		MediaType         string                 `json:"mediaType"`
+		MediaType         *string                `json:"mediaType"`
 		Filename          string                 `json:"filename"`
 		ProviderOptions   map[string]interface{} `json:"providerOptions"`
 	}
@@ -1090,15 +1090,25 @@ func unmarshalLegacyToolResultFileContentBlock(blockType string, data []byte) (F
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return FileContentBlock{}, err
 	}
+	mediaType := ""
+	if raw.MediaType != nil {
+		mediaType = *raw.MediaType
+	}
+	// TS mapToolResultOutput: only "file-data" keeps filename, and only
+	// "file-data", "image-data" and "file-url" read item.mediaType (the
+	// other legacy types have none in the TS schema, so it is dropped).
 	block := FileContentBlock{
-		MediaType:       raw.MediaType,
-		Filename:        raw.Filename,
 		ProviderOptions: raw.ProviderOptions,
+		legacyType:      blockType,
 	}
 	switch blockType {
 	case "file-data", "image-data":
 		block.FileData = FileData{Type: FileDataTypeData, DataString: raw.Data}
-		if block.MediaType == "" && strings.HasPrefix(blockType, "image-") {
+		block.MediaType = mediaType
+		if blockType == "file-data" {
+			block.Filename = raw.Filename
+		} else if raw.MediaType == nil {
+			// Required by the TS schema; Go keeps its v0.5 default.
 			block.MediaType = "image"
 		}
 	case "file-url", "image-url":
@@ -1110,19 +1120,24 @@ func unmarshalLegacyToolResultFileContentBlock(blockType string, data []byte) (F
 			block.FileData.OriginalURL = raw.URL
 		}
 		block.URL = raw.URL
-		if block.MediaType == "" {
-			if blockType == "image-url" {
-				block.MediaType = "image"
-			} else {
-				block.MediaType = inferToolResultMediaTypeFromURL(raw.URL)
-			}
+		switch {
+		case blockType == "image-url":
+			block.MediaType = "image"
+		case raw.MediaType != nil:
+			// TS `item.mediaType ?? getMediaTypeFromUrl(item.url)`: "" is
+			// kept, but still counts as missing in the warning.
+			block.MediaType = mediaType
+			block.legacyMediaTypeMissing = mediaType == ""
+		default:
+			block.MediaType = inferToolResultMediaTypeFromURL(raw.URL)
+			block.legacyMediaTypeMissing = true
 		}
 	case "file-id", "image-file-id":
 		block.FileData = FileData{Type: FileDataTypeReference, Reference: providerReferenceFromLegacyFileID(raw.FileID)}
-		block.MediaType = legacyReferenceMediaType(blockType, block.MediaType)
+		block.MediaType = legacyReferenceMediaType(blockType)
 	case "file-reference", "image-file-reference":
 		block.FileData = FileData{Type: FileDataTypeReference, Reference: raw.ProviderReference}
-		block.MediaType = legacyReferenceMediaType(blockType, block.MediaType)
+		block.MediaType = legacyReferenceMediaType(blockType)
 	}
 	return block, nil
 }
@@ -1144,10 +1159,7 @@ func providerReferenceFromLegacyFileID(fileID interface{}) ProviderReference {
 	}
 }
 
-func legacyReferenceMediaType(blockType, mediaType string) string {
-	if mediaType != "" {
-		return mediaType
-	}
+func legacyReferenceMediaType(blockType string) string {
 	if strings.HasPrefix(blockType, "image-") {
 		return "image"
 	}
@@ -1335,11 +1347,53 @@ type FileContentBlock struct {
 
 	// Provider-specific options
 	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
+
+	// legacyType is the deprecated TS tool-result content type the block was
+	// decoded from ("file-data", "file-url", "file-id", "file-reference",
+	// "image-data", "image-url", "image-file-id", "image-file-reference"),
+	// "" otherwise.
+	legacyType string
+	// legacyMediaTypeMissing is set for a legacy "file-url" block decoded
+	// without a mediaType (TS `!item.mediaType`).
+	legacyMediaTypeMissing bool
 }
 
 // ToolResultContentType implements ToolResultContentBlock interface
 func (f FileContentBlock) ToolResultContentType() string {
 	return "file"
+}
+
+// DeprecationWarning returns the deprecation warning TS mapToolResultOutput
+// logs when it converts a tool-result content item of a legacy type
+// ("file-data", "file-url", "file-id", "file-reference", "image-data",
+// "image-url", "image-file-id", "image-file-reference"), and false for a
+// block that was not decoded from one of those JSON types.
+func (f FileContentBlock) DeprecationWarning() (Warning, bool) {
+	var message string
+	switch f.legacyType {
+	case "":
+		return Warning{}, false
+	case "file-data", "image-data":
+		message = `The "` + f.legacyType + `" type for tool result content is deprecated. Use the "file" type with mediaType and { type: 'data', data } instead.`
+	case "file-url":
+		message = `The "file-url" type for tool result content is deprecated. Use the "file" type with mediaType and { type: 'url', url } instead.`
+		if f.legacyMediaTypeMissing {
+			inferenceSuffix := `Inferred media type '` + f.MediaType + `' from URL.`
+			if f.MediaType == "application/octet-stream" {
+				inferenceSuffix = `Unable to infer media type from URL. Defaulting to 'application/octet-stream'.`
+			}
+			message = `The "file-url" tool result content part with URL "` + f.URL + `" is missing a "mediaType". ` + inferenceSuffix + " " + message
+		}
+	case "image-url":
+		message = `The "image-url" type for tool result content is deprecated. Use the "file" type with mediaType 'image' (or a specific image/* subtype) and { type: 'url', url } instead.`
+	default:
+		message = `The "` + f.legacyType + `" type for tool result content is deprecated. Use the "file" type with mediaType and { type: 'reference', reference } instead.`
+	}
+	return Warning{
+		Type:    "deprecated",
+		Setting: `"tool-result" content of type "` + f.legacyType + `"`,
+		Message: message,
+	}, true
 }
 
 // MarshalJSON emits the TypeScript SDK tagged file tool-result shape.
@@ -1388,6 +1442,8 @@ func (f *FileContentBlock) UnmarshalJSON(data []byte) error {
 	f.MediaType = raw.MediaType
 	f.Filename = raw.Filename
 	f.ProviderOptions = raw.ProviderOptions
+	f.legacyType = ""
+	f.legacyMediaTypeMissing = false
 	switch raw.Data.Type {
 	case FileDataTypeURL:
 		f.URL = raw.Data.URL

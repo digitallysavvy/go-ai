@@ -359,28 +359,61 @@ const ImageContentPartDeprecation = `The "image" content part type is deprecated
 
 // DeprecatedContentWarnings returns the deprecation warnings TS
 // convertToLanguageModelPrompt logs (logWarnings, without provider or model)
-// when it converts message: one per "image" part of a user message. Core
-// functions log them once per message that has any.
+// when it converts message: one per "image" part of a user message, and one
+// per tool-result content item of a legacy type ("file-data", "file-url",
+// "image-url", ...; see types.FileContentBlock.DeprecationWarning) in an
+// assistant or tool message, in part order. Core functions log them once per
+// message that has any.
 func DeprecatedContentWarnings(message types.Message) []types.Warning {
-	if message.Role != types.RoleUser {
-		return nil
-	}
 	var warnings []types.Warning
-	for _, part := range message.Content {
-		switch typed := part.(type) {
-		case types.ImageContent:
-		case *types.ImageContent:
-			if typed == nil {
+	switch message.Role {
+	case types.RoleUser:
+		for _, part := range message.Content {
+			switch typed := part.(type) {
+			case types.ImageContent:
+			case *types.ImageContent:
+				if typed == nil {
+					continue
+				}
+			default:
 				continue
 			}
-		default:
-			continue
+			warnings = append(warnings, types.Warning{
+				Type:    "deprecated",
+				Setting: `"image" content part`,
+				Message: ImageContentPartDeprecation,
+			})
 		}
-		warnings = append(warnings, types.Warning{
-			Type:    "deprecated",
-			Setting: `"image" content part`,
-			Message: ImageContentPartDeprecation,
-		})
+	case types.RoleAssistant, types.RoleTool:
+		for _, part := range message.Content {
+			var output *types.ToolResultOutput
+			switch typed := part.(type) {
+			case types.ToolResultContent:
+				output = typed.Output
+			case *types.ToolResultContent:
+				if typed != nil {
+					output = typed.Output
+				}
+			}
+			if output == nil || output.Type != types.ToolResultOutputContent {
+				continue
+			}
+			for _, block := range output.Content {
+				var warning types.Warning
+				var ok bool
+				switch typed := block.(type) {
+				case types.FileContentBlock:
+					warning, ok = typed.DeprecationWarning()
+				case *types.FileContentBlock:
+					if typed != nil {
+						warning, ok = typed.DeprecationWarning()
+					}
+				}
+				if ok {
+					warnings = append(warnings, warning)
+				}
+			}
+		}
 	}
 	return warnings
 }
