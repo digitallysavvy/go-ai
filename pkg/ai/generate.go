@@ -8,6 +8,7 @@ import (
 	"time"
 
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -1666,7 +1667,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		if include.ResponseBody {
 			responseBody = stepResp.Body
 		}
-		stepRequest := types.StepRequest{Body: requestBody}
+		stepRequest := types.StepRequest{Body: requestBody, URL: urlnorm.RequestOrigin(genResult.RequestURL)}
 		if include.RequestMessages {
 			stepRequest.Messages = append([]types.Message(nil), stepMessages...)
 		}
@@ -2004,7 +2005,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			ExperimentalSteeringMessages: stepResult.ExperimentalSteeringMessages,
 			// The step's request/response, so the bodies follow Include as
 			// in TS (the step-end event is the StepResult).
-			Request: GenerateStepRequest{Body: stepResult.Request.Body, Messages: stepResult.Request.Messages},
+			Request: generateStepRequestOf(stepResult.Request),
 			Response: GenerateStepResponse{
 				ID:        stepResult.Response.ID,
 				Timestamp: stepResult.Response.Timestamp,
@@ -2309,7 +2310,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		ProviderMetadata:   result.ProviderMetadata,
 		ResponseHeaders:    result.ResponseHeaders,
 		// TS onEndEvent.request is the final step's request.
-		Request: GenerateStepRequest{Body: result.RawRequest, Messages: finalRequestMessages},
+		Request: generateStepRequestOf(types.StepRequest{Body: result.RawRequest, Messages: finalRequestMessages, URL: result.Request.URL}),
 		// TS onEndEvent.response is the final step's response, as the step-end
 		// event of that step reports it.
 		Response: GenerateStepResponse{
@@ -3341,4 +3342,21 @@ func logPromptDeprecations(batches [][]types.Warning) {
 	for _, warnings := range batches {
 		LogWarnings(LogWarningsOptions{Warnings: warnings})
 	}
+}
+
+// streamRequestURL returns the request URL a provider stream reports through
+// the optional RequestURL() capability (TS doStream() {request: {url}},
+// 934100cad4), or "" when the stream does not report one. The method set is
+// the one provider.StreamRequestURL declares.
+func streamRequestURL(stream provider.TextStream) string {
+	if s, ok := stream.(interface{ RequestURL() string }); ok {
+		return s.RequestURL()
+	}
+	return ""
+}
+
+// generateStepRequestOf converts a step's request metadata to the callback
+// shape (the step-end and end events carry the step's request as in TS).
+func generateStepRequestOf(r types.StepRequest) GenerateStepRequest {
+	return GenerateStepRequest{Body: r.Body, Messages: r.Messages}
 }

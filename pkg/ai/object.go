@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -1140,7 +1141,7 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 
 	reasoning := extractObjectReasoning(genResult)
 
-	reqMeta := GenerateStepRequest{Body: genResult.RawRequest}
+	reqMeta := generateStepRequestOf(types.StepRequest{Body: genResult.RawRequest, URL: urlnorm.RequestOrigin(genResult.RequestURL)})
 	resMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
 
 	// Fire OnStepFinish after provider returns, BEFORE JSON parsing.
@@ -1312,7 +1313,7 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 
 	arrayReasoning := extractObjectReasoning(genResult)
 
-	arrReqMeta := GenerateStepRequest{Body: genResult.RawRequest}
+	arrReqMeta := generateStepRequestOf(types.StepRequest{Body: genResult.RawRequest, URL: urlnorm.RequestOrigin(genResult.RequestURL)})
 	arrResMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
 
 	Notify(ctx, ObjectOnStepFinishEvent{
@@ -1470,7 +1471,7 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 
 	enumReasoning := extractObjectReasoning(genResult)
 
-	enumReqMeta := GenerateStepRequest{Body: genResult.RawRequest}
+	enumReqMeta := generateStepRequestOf(types.StepRequest{Body: genResult.RawRequest, URL: urlnorm.RequestOrigin(genResult.RequestURL)})
 	enumResMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
 
 	Notify(ctx, ObjectOnStepFinishEvent{
@@ -1622,7 +1623,7 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 
 	noSchemaReasoning := extractObjectReasoning(genResult)
 
-	nsReqMeta := GenerateStepRequest{Body: genResult.RawRequest}
+	nsReqMeta := generateStepRequestOf(types.StepRequest{Body: genResult.RawRequest, URL: urlnorm.RequestOrigin(genResult.RequestURL)})
 	nsResMeta := generateStepResponseFromGenerateResult(opts.Model, genResult)
 
 	Notify(ctx, ObjectOnStepFinishEvent{
@@ -2195,7 +2196,9 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		logModelWarnings(streamWarnings, opts.Model.Provider(), opts.Model.ModelID())
 	}
 
-	streamReqMeta := GenerateStepRequest{}
+	// TS stream-object.ts resolves request from doStream() {request}
+	// (sanitized: body as reported, url reduced to its origin).
+	streamReqMeta := generateStepRequestOf(types.StepRequest{Body: streamRequestBody(stream), URL: urlnorm.RequestOrigin(streamRequestURL(stream))})
 
 	// Fire language-model-call-end/step-end telemetry unconditionally, like
 	// the callback events above — TS's TransformStream flush handler always

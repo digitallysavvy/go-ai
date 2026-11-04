@@ -14,6 +14,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/aibridge"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -2295,6 +2296,9 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		Request: types.StepRequest{
 			Body:     includeValue(include.RequestBody, genResult.RawRequest),
 			Messages: includeAgentRequestMessages(include.RequestMessages, callConfig.Internal, callConfig.Messages, prompt),
+			// TS generateText step request: the sanitized request metadata
+			// (url reduced to its origin, 934100cad4).
+			URL: urlnorm.RequestOrigin(genResult.RequestURL),
 		},
 		Response:       stepResponse,
 		ToolsContext:   callConfig.ToolsContext,
