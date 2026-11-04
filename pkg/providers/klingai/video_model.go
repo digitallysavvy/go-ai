@@ -963,9 +963,10 @@ func (m *VideoModel) checkUnsupportedOptions(opts *provider.VideoModelV3CallOpti
 		})
 	}
 
-	// TS checks `if (options.seed)` / `if (options.fps)`: a truthy check, so
-	// an explicit zero (like an omitted value) does not warn.
-	if opts.Seed != nil && *opts.Seed != 0 {
+	// TS checks `options.seed != null` (ef2dfb5e9f), so an explicit zero
+	// warns too; fps stays a truthy check (`if (options.fps)`), so an explicit
+	// zero fps does not warn.
+	if opts.Seed != nil {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "seed",

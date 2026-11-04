@@ -303,10 +303,13 @@ func TestBuildRequestBody_ZeroDurationAndSeedOmitted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	for _, key := range []string{"duration", "seed"} {
-		if _, ok := ts.createBody[key]; ok {
-			t.Fatalf("%s=0 should be omitted to match TS truthy checks: %#v", key, ts.createBody)
-		}
+	// TS: duration keeps its truthy check; seed is sent when != null
+	// (ef2dfb5e9f "should pass seed when it is 0").
+	if _, ok := ts.createBody["duration"]; ok {
+		t.Fatalf("duration=0 should be omitted to match the TS truthy check: %#v", ts.createBody)
+	}
+	if v, ok := ts.createBody["seed"]; !ok || v != float64(0) {
+		t.Fatalf("seed=0 should be sent (TS seed != null): %#v", ts.createBody)
 	}
 }
 

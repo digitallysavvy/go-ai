@@ -109,7 +109,7 @@ func (m *VideoModel) buildInput(opts *provider.VideoModelV3CallOptions) (map[str
 		input["fps"] = *opts.FPS
 	}
 
-	if opts.Seed != nil && *opts.Seed != 0 {
+	if opts.Seed != nil {
 		input["seed"] = *opts.Seed
 	}
 

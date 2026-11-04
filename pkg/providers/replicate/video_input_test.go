@@ -13,7 +13,7 @@ import (
 // Ports of the doStart input-mapping tests in
 // packages/replicate/src/replicate-video-model.test.ts.
 func TestVideoModel_DoStart_InputMapping(t *testing.T) {
-	dur, fps, seed := 6.0, 24, 42
+	dur, fps, seed, seed0 := 6.0, 24, 42, 0
 	cases := []struct {
 		name string
 		opts provider.VideoModelV3CallOptions
@@ -21,6 +21,8 @@ func TestVideoModel_DoStart_InputMapping(t *testing.T) {
 	}{
 		{"prompt only", provider.VideoModelV3CallOptions{Prompt: "p"}, map[string]interface{}{"prompt": "p"}},
 		{"seed", provider.VideoModelV3CallOptions{Prompt: "p", Seed: &seed}, map[string]interface{}{"prompt": "p", "seed": float64(42)}},
+		// TS ef2dfb5e9f "should pass seed when it is 0" (seed != null).
+		{"seed zero", provider.VideoModelV3CallOptions{Prompt: "p", Seed: &seed0}, map[string]interface{}{"prompt": "p", "seed": float64(0)}},
 		{"aspect ratio 16:9", provider.VideoModelV3CallOptions{Prompt: "p", AspectRatio: "16:9"}, map[string]interface{}{"prompt": "p", "aspect_ratio": "16:9"}},
 		{"aspect ratio 9:16", provider.VideoModelV3CallOptions{Prompt: "p", AspectRatio: "9:16"}, map[string]interface{}{"prompt": "p", "aspect_ratio": "9:16"}},
 		{"resolution becomes size", provider.VideoModelV3CallOptions{Prompt: "p", Resolution: "1920x1080"}, map[string]interface{}{"prompt": "p", "size": "1920x1080"}},

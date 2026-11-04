@@ -533,7 +533,7 @@ func (m *VideoModel) buildRequestBodyWithWarnings(opts *provider.VideoModelV3Cal
 		body["duration"] = *opts.Duration
 	}
 
-	if opts.Seed != nil && *opts.Seed != 0 {
+	if opts.Seed != nil {
 		body["seed"] = *opts.Seed
 	}
 

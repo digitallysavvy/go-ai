@@ -121,7 +121,7 @@ func (m *VideoModel) buildStartRequestBody(opts *provider.VideoModelV3CallOption
 	}
 
 	// TS: `if (options.seed)` -- falsy (including 0) is skipped.
-	if opts.Seed != nil && *opts.Seed != 0 {
+	if opts.Seed != nil {
 		body["seed"] = *opts.Seed
 	}
 

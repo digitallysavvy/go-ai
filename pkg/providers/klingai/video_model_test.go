@@ -576,8 +576,9 @@ func TestCheckUnsupportedOptions_ZeroValuesNoWarning(t *testing.T) {
 
 	warnings := model.checkUnsupportedOptions(opts)
 
-	if len(warnings) != 0 {
-		t.Errorf("expected no warnings for zero seed/fps, got %d: %+v", len(warnings), warnings)
+	// TS ef2dfb5e9f: seed != null warns for 0; fps keeps its truthy check.
+	if len(warnings) != 1 || warnings[0].Feature != "seed" {
+		t.Errorf("expected only the seed warning for zero seed/fps, got %d: %+v", len(warnings), warnings)
 	}
 }
 
