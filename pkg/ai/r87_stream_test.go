@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -139,5 +140,28 @@ func TestR87streamToModelOutputErrorAfterFinishStep(t *testing.T) {
 				t.Errorf("step ends = %d, model calls = %d; want 0, 1", stepEnds, calls)
 			}
 		})
+	}
+}
+
+// TS LanguageModelRequestMetadata.url and LanguageModelCallEndEvent
+// request?.url (934100cad4): the origin serializes as "url" and is omitted
+// when empty.
+func TestR87streamRequestURLFieldsJSON(t *testing.T) {
+	for _, tc := range []struct {
+		v    interface{}
+		want string
+	}{
+		{GenerateStepRequest{URL: "https://h:8443"}, `{"url":"https://h:8443"}`},
+		{GenerateStepRequest{}, `{}`},
+		{LanguageModelCallRequest{URL: "https://h:8443"}, `{"url":"https://h:8443"}`},
+		{LanguageModelCallRequest{}, `{}`},
+	} {
+		b, err := json.Marshal(tc.v)
+		if err != nil || string(b) != tc.want {
+			t.Errorf("json(%#v) = %s, %v; want %s", tc.v, b, err, tc.want)
+		}
+	}
+	if (LanguageModelCallEndEvent{}).Request != nil {
+		t.Error("zero LanguageModelCallEndEvent.Request is not nil")
 	}
 }
