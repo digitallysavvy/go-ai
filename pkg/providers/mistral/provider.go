@@ -15,6 +15,8 @@ import (
 type Provider struct {
 	config Config
 	client *http.Client
+	// baseURL is the resolved API origin without the /v1 segment.
+	baseURL string
 }
 
 // Config contains configuration for the Mistral AI provider
@@ -69,8 +71,9 @@ func New(cfg Config) *Provider {
 	})
 
 	return &Provider{
-		config: cfg,
-		client: client,
+		config:  cfg,
+		client:  client,
+		baseURL: baseURL,
 	}
 }
 

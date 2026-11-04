@@ -1452,6 +1452,26 @@ func assistantParts(msg types.Message) []types.ContentPart {
 	return parts
 }
 
+// withoutEmptyText is TS `content.filter(part => part.type !== 'text' ||
+// part.text.length > 0)` (convert-to-anthropic-prompt.ts, fd7e8a75d7).
+func withoutEmptyText(parts []types.ContentPart) []types.ContentPart {
+	out := parts[:0:0]
+	for _, part := range parts {
+		switch p := part.(type) {
+		case types.TextContent:
+			if p.Text == "" {
+				continue
+			}
+		case *types.TextContent:
+			if p == nil || p.Text == "" {
+				continue
+			}
+		}
+		out = append(out, part)
+	}
+	return out
+}
+
 // legacyToolCallPart adapts a Message.ToolCalls entry to a content part.
 type legacyToolCallPart struct{ call types.ToolCall }
 
@@ -1463,7 +1483,11 @@ func (c *anthropicConverter) convertAssistantBlock(block anthropicBlock, isLastB
 
 	for j, msg := range block.messages {
 		isLastMessage := j == len(block.messages)-1
-		parts := assistantParts(msg)
+		// TS fd7e8a75d7: empty text parts (for example a foreign standalone
+		// thought signature) are removed before the last part is determined,
+		// so message cache control and assistant prefill trimming apply to the
+		// content actually sent.
+		parts := withoutEmptyText(assistantParts(msg))
 
 		for k, part := range parts {
 			isLastContentPart := k == len(parts)-1

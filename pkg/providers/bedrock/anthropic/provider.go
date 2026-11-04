@@ -358,32 +358,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// encodeURIComponent mirrors JavaScript's encodeURIComponent, which Go's
-// url.PathEscape does not: encodeURIComponent percent-encodes ':' and '/'
-// (both allowed, unencoded, in a URL path segment per RFC 3986), which
-// matters for Bedrock model IDs/ARNs such as
-// "anthropic.claude-3-sonnet-20240229-v1:0".
-func encodeURIComponent(s string) string {
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if isURIComponentUnreserved(c) {
-			b.WriteByte(c)
-		} else {
-			_, _ = fmt.Fprintf(&b, "%%%02X", c)
-		}
-	}
-	return b.String()
-}
-
-func isURIComponentUnreserved(c byte) bool {
-	switch {
-	case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9':
-		return true
-	}
-	switch c {
-	case '-', '_', '.', '!', '~', '*', '\'', '(', ')':
-		return true
-	}
-	return false
-}
+// encodeURIComponent is JavaScript encodeURIComponent (the shared helper);
+// unlike url.PathEscape it encodes ':' and '/', which matters for Bedrock
+// model IDs/ARNs such as "anthropic.claude-3-sonnet-20240229-v1:0".
+func encodeURIComponent(s string) string { return providerutils.EncodeURIComponent(s) }

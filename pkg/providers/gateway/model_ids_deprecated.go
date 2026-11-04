@@ -153,4 +153,14 @@ const (
 	//
 	// Deprecated: removed from the suggested Gateway model IDs.
 	GatewayDecisionModelConvaiinnovationsLayaFree GatewayDecisionModelID = "convaiinnovations/laya-free"
+
+	// GatewayLanguageModelXiaomiMimoV25 is no longer in the TS Gateway model ID union (TS acea2b5ec5).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelXiaomiMimoV25 GatewayLanguageModelID = "xiaomi/mimo-v2.5"
+
+	// GatewayLanguageModelXiaomiMimoV25Pro is no longer in the TS Gateway model ID union (TS acea2b5ec5).
+	//
+	// Deprecated: removed from the suggested Gateway model IDs.
+	GatewayLanguageModelXiaomiMimoV25Pro GatewayLanguageModelID = "xiaomi/mimo-v2.5-pro"
 )

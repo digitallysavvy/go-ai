@@ -160,7 +160,7 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) (map[
 			imageGenerationConfig["height"] = height
 		}
 	}
-	if opts.Seed != nil && *opts.Seed != 0 {
+	if opts.Seed != nil {
 		imageGenerationConfig["seed"] = *opts.Seed
 	}
 	if opts.N != nil && *opts.N != 0 {

@@ -85,7 +85,7 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions) (m
 		body["fps"] = *opts.FPS
 	}
 
-	if opts.Seed != nil && *opts.Seed != 0 {
+	if opts.Seed != nil {
 		body["seed"] = *opts.Seed
 	}
 

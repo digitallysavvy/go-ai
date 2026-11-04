@@ -13,7 +13,7 @@ var mistralChatOptionsSchema = providerutils.OptionSchema{
 	"strictJsonSchema":   providerutils.OptBool,
 	"parallelToolCalls":  providerutils.OptBool,
 	"promptCacheKey":     providerutils.OptString,
-	"reasoningEffort":    providerutils.OptEnum("high", "none", "low", "max"),
+	"reasoningEffort":    providerutils.OptEnum("high", "none", "low", "medium", "max"),
 }
 
 // mistralEmbeddingOptionsSchema mirrors mistralEmbeddingModelOptions.

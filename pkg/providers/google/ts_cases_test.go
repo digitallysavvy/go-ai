@@ -50,6 +50,7 @@ func TestTSCasesLanguage(t *testing.T) {
 		`should use "vertex" as providerMetadata key in streaming reasoning events when provider includes "vertex"`:          "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
 		"should forward supported Vertex tool result URLs as function response file data":                                    "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
 		"should send streamFunctionCallArguments in toolConfig when provider option is set with Vertex provider":             "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
+		"should emit no-args function calls and preserve thoughtSignature alongside streamed-args calls":                     "Vertex-only behavior (a google.vertex.chat model); replayed by googlevertex/ts_cases_test.go",
 		"merges async config headers with sync request headers":                                                              asyncHeaders,
 		"handles Promise-based headers":              asyncHeaders,
 		"handles async function headers from config": asyncHeaders,

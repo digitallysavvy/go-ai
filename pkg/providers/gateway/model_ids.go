@@ -326,8 +326,6 @@ const (
 	GatewayLanguageModelTencentHy4Preview                GatewayLanguageModelID = "tencent/hy4-preview"
 	GatewayLanguageModelThinkingmachinesInkling          GatewayLanguageModelID = "thinkingmachines/inkling"
 	GatewayLanguageModelThinkingmachinesInklingSmall     GatewayLanguageModelID = "thinkingmachines/inkling-small"
-	GatewayLanguageModelXiaomiMimoV25                    GatewayLanguageModelID = "xiaomi/mimo-v2.5"
-	GatewayLanguageModelXiaomiMimoV25Pro                 GatewayLanguageModelID = "xiaomi/mimo-v2.5-pro"
 	GatewayLanguageModelXiaomiMimoV26Flash               GatewayLanguageModelID = "xiaomi/mimo-v2.6-flash"
 	GatewayLanguageModelXiaomiMimoV26Pro                 GatewayLanguageModelID = "xiaomi/mimo-v2.6-pro"
 	GatewayLanguageModelXiaomiMimoV26ProUltraspeed       GatewayLanguageModelID = "xiaomi/mimo-v2.6-pro-ultraspeed"
@@ -861,8 +859,6 @@ var GatewayLanguageModelIDs = []GatewayLanguageModelID{
 	GatewayLanguageModelTencentHy4Preview,
 	GatewayLanguageModelThinkingmachinesInkling,
 	GatewayLanguageModelThinkingmachinesInklingSmall,
-	GatewayLanguageModelXiaomiMimoV25,
-	GatewayLanguageModelXiaomiMimoV25Pro,
 	GatewayLanguageModelXiaomiMimoV26Flash,
 	GatewayLanguageModelXiaomiMimoV26Pro,
 	GatewayLanguageModelXiaomiMimoV26ProUltraspeed,

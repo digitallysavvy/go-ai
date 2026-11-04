@@ -74,7 +74,7 @@ func (m *ConversationLanguageModel) buildRequest(opts *provider.GenerateOptions)
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK"})
 	}
 
-	effort, reasoningWarnings := mistralResolveReasoningEffort(conversationReasoningEffortModelIDs[m.modelID], false, provOpts.ReasoningEffort, opts.Reasoning)
+	effort, reasoningWarnings := mistralResolveReasoningEffort(conversationReasoningEffortModelIDs[m.modelID], mistralEffortNoneHigh, provOpts.ReasoningEffort, opts.Reasoning)
 	warnings = append(warnings, reasoningWarnings...)
 
 	messages := opts.Prompt.Messages

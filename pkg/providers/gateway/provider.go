@@ -162,6 +162,13 @@ type Config struct {
 	// TeamIDOrSlug scopes Vercel access-token requests to a team.
 	TeamIDOrSlug string
 
+	// OIDCTokenFunc resolves the Vercel OIDC token used when no API key is
+	// configured (TS getGatewayAuthToken's getVercelOidcToken()). Use
+	// VercelOIDCTokenFunc for the TS lookup with token refresh. When nil,
+	// VERCEL_OIDC_TOKEN is read as is. An error (or an empty token) fails the
+	// request with a GatewayAuthenticationError whose cause is that error.
+	OIDCTokenFunc func(ctx context.Context) (string, error) `json:"-"`
+
 	// BaseURL is the base URL for the AI Gateway API
 	// Default: https://ai-gateway.vercel.sh/v4/ai
 	BaseURL string
@@ -232,6 +239,15 @@ type GatewayProviderOptions struct {
 	// Caching enables automatic caching behavior when supported by the
 	// Gateway. The only valid value is GatewayCachingAuto ("auto").
 	Caching string `json:"caching,omitempty"`
+
+	// ExperimentalStreamingImageDecoding (experimental, image models only)
+	// decodes large base64 images while the response is read, to reduce peak
+	// memory (TS experimental_streamingImageDecoding, 89aff56165). Extracted
+	// images are returned as bytes (ImageResult.Images, with Base64Images
+	// empty); if a result mixes extracted and small images, all are returned
+	// as bytes. Defaults to false. Image models remove this client option
+	// from requests.
+	ExperimentalStreamingImageDecoding *bool `json:"experimental_streamingImageDecoding,omitempty"`
 }
 
 // Gateway `has` capability tags. See GatewayProviderOptions.Has.
@@ -319,6 +335,9 @@ func (o GatewayProviderOptions) toMap() map[string]interface{} {
 	}
 	if o.Caching != "" {
 		out["caching"] = o.Caching
+	}
+	if o.ExperimentalStreamingImageDecoding != nil {
+		out[gatewayStreamingImageDecodingKey] = *o.ExperimentalStreamingImageDecoding
 	}
 	return out
 }
@@ -494,6 +513,17 @@ func resolveGatewayAuthToken(ctx context.Context, cfg Config) (token string, aut
 	}
 	if apiKey != "" {
 		return apiKey, "api-key", nil
+	}
+
+	if cfg.OIDCTokenFunc != nil {
+		token, err := cfg.OIDCTokenFunc(ctx)
+		if err == nil && token == "" {
+			err = &VercelOIDCTokenError{Message: vercelOIDCMissingMessage}
+		}
+		if err != nil {
+			return "", "", gatewayerrors.CreateContextualAuthenticationError(false, false, http.StatusUnauthorized, err, "")
+		}
+		return token, "oidc", nil
 	}
 
 	if oidcToken := strings.TrimSpace(os.Getenv("VERCEL_OIDC_TOKEN")); oidcToken != "" {
