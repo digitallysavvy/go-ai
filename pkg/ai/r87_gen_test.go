@@ -3,8 +3,10 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"regexp"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -248,5 +250,50 @@ func TestR87genEmptyTextProviderMetadataStream(t *testing.T) {
 			t.Fatal(err)
 		}
 		r87genCheckEmptyTextResponse(t, "streamText", c.name, c.retain, c.metadata, result.FinalStep())
+	}
+}
+
+// TestR87genToModelOutputErrorRunsRemainingCalls (cr-r87-stream-to-gen 3):
+// with ToolCallConcurrency below the call count, a failing ToModelOutput
+// does not keep the later calls from executing (TS runs every call, then
+// converts); GenerateText still fails with the conversion error.
+func TestR87genToModelOutputErrorRunsRemainingCalls(t *testing.T) {
+	one := 1
+	var mu sync.Mutex
+	var executed []string
+	execute := func(name string) types.ToolExecutor {
+		return func(ctx context.Context, input map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			mu.Lock()
+			executed = append(executed, name)
+			mu.Unlock()
+			return "ok", nil
+		}
+	}
+	convErr := errors.New("toModelOutput failed")
+	tools := []types.Tool{
+		{Name: "t", Execute: execute("t"), ToModelOutput: func(ctx context.Context, _ types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
+			return nil, convErr
+		}},
+		{Name: "u", Execute: execute("u")},
+	}
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				ToolCalls: []types.ToolCall{
+					{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}},
+					{ID: "c2", ToolName: "u", Arguments: map[string]interface{}{}},
+				},
+				FinishReason: types.FinishReasonToolCalls,
+			}, nil
+		},
+	}
+	_, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "go", Tools: tools, ToolCallConcurrency: &one})
+	if !errors.Is(err, convErr) {
+		t.Fatalf("err = %v, want the conversion error", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !reflect.DeepEqual(executed, []string{"t", "u"}) {
+		t.Errorf("executed %v, want [t u]", executed)
 	}
 }

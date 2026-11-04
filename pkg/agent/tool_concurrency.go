@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/ordered"
@@ -90,6 +91,13 @@ func (a *ToolLoopAgent) runToolCalls(ctx context.Context, toolCalls []types.Tool
 			release(i)
 		}()
 		perCall[i], errs[i] = runCall(toolCalls[i], gate)
+		// A failing ToModelOutput conversion does not stop the calls not yet
+		// started (TS runs every call, then converts the outputs); the first
+		// error is returned once all calls ran.
+		var conversionErr *toolResultModelOutputError
+		if errors.As(errs[i], &conversionErr) {
+			return nil
+		}
 		return errs[i]
 	})
 	notStarted := false
