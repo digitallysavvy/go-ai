@@ -193,6 +193,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	stream.getResponseErrorMetadata = m.provider.config.GetResponseErrorMetadata
 	stream.requestBody = reqBody
 	stream.includeRawChunks = opts.IncludeRawChunks
+	stream.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
 	// TS enqueues stream-start with the warnings first.
 	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(stream, warnings), httpResp.Header, m.ModelID()), nil
 }
@@ -1183,6 +1184,11 @@ type openResponsesStream struct {
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
 	// "stream request body field").
 	requestBody interface{}
+
+	// responseHeaders are the HTTP response headers, carried on the
+	// response-metadata chunk of a response.created event so it does not
+	// clear the headers the leading header chunk reported.
+	responseHeaders map[string]string
 }
 
 // RequestBody implements provider.StreamRequestBody, exposing the raw
@@ -1308,6 +1314,12 @@ func (s *openResponsesStream) Next() (*provider.StreamChunk, error) {
 // handleStreamEvent processes a stream event and returns appropriate chunk
 func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.StreamChunk, bool) {
 	switch event.Type {
+	case "response.created":
+		// TS 4b16915083: {type: 'response-metadata', id: chunk.response.id,
+		// timestamp: new Date(chunk.response.created_at * 1000), modelId:
+		// chunk.response.model}.
+		return s.responseCreatedMetadata(event)
+
 	case "response.output_item.added":
 		// New output item started
 		if event.Item != nil && event.Item.Type == "function_call" {
@@ -1923,6 +1935,33 @@ func wireNumberPresent(raw map[string]interface{}, object, key string) bool {
 var openResponsesOptionsSchema = providerutils.OptionSchema{
 	"reasoningEffort":  providerutils.OptNullable(providerutils.OptString),
 	"reasoningSummary": providerutils.OptNullable(providerutils.OptEnum("concise", "detailed", "auto")),
+}
+
+// responseCreatedMetadata maps a response.created event to the
+// response-metadata chunk TS enqueues. A missing or null `response` is the
+// TypeError TS throws reading `chunk.response.id`, which errors the stream.
+func (s *openResponsesStream) responseCreatedMetadata(event *StreamEvent) (*provider.StreamChunk, bool) {
+	var wire struct {
+		Response json.RawMessage `json:"response"`
+	}
+	_ = json.Unmarshal(event.Raw, &wire)
+	if event.Response == nil {
+		what := "undefined"
+		if string(wire.Response) == "null" {
+			what = "null"
+		}
+		s.err = fmt.Errorf("Cannot read properties of %s (reading 'id')", what) //nolint:staticcheck // ST1005: TypeError text from TS
+		return nil, false
+	}
+	meta := &provider.ResponseMetadata{
+		ID:      event.Response.ID,
+		ModelID: event.Response.Model,
+		Headers: s.responseHeaders,
+	}
+	if ts, ok := openResponsesCreatedAt(wire.Response); ok {
+		meta.Timestamp = ts
+	}
+	return &provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: meta}, true
 }
 
 // openResponsesCreatedAt reads `created_at` (unix seconds) from the raw
