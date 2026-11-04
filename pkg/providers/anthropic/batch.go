@@ -817,7 +817,7 @@ func (s *anthropicBatchResultsStream) Next() (*provider.BatchV4ItemResult, error
 		// parses the line as read, so JS whitespace around a JSON value
 		// (U+00A0, U+0085 alone, ...) is a JSONParseError.
 		line := s.scanner.Bytes()
-		if providerutils.JSTrim(string(line)) == "" {
+		if providerutils.JSONLineIsBlank(line) {
 			continue
 		}
 		// TS createJsonLinesResponseHandler(anthropicBatchResultLineSchema): a

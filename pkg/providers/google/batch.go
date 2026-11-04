@@ -8,13 +8,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/geminischema"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -244,7 +245,11 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 		body, _ := io.ReadAll(io.LimitReader(initResp.Body, googleFilesMaxResponseBytes))
 		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: initResp.StatusCode, Headers: initResp.Header, Body: body})
 	}
-	uploadURL := initResp.Header.Get("x-goog-upload-url")
+	// TS headers.get('x-goog-upload-url') passed to fetch: new URL(text).
+	uploadURL, uploadURLErr := providerutils.FetchURLFromHeader(initResp.Header, "x-goog-upload-url")
+	if uploadURLErr != nil {
+		return nil, uploadURLErr
+	}
 	if uploadURL == "" {
 		return nil, providererrors.NewInvalidResponseDataError(nil, "Google did not return a resumable upload URL.")
 	}
@@ -986,7 +991,7 @@ func (s *googleBatchFileResultsStream) Next() (*provider.BatchV4ItemResult, erro
 		// parses the line as read, so JS whitespace around a JSON value
 		// (U+00A0, U+0085 alone, ...) is a JSONParseError.
 		line := s.scanner.Bytes()
-		if providerutils.JSTrim(string(line)) == "" {
+		if providerutils.JSONLineIsBlank(line) {
 			continue
 		}
 		// TS createJsonLinesResponseHandler(googleBatchResultLineSchema): a line
