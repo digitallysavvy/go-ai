@@ -1682,8 +1682,10 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 				s.finishUsage = &u
 			}
 		}
+		// TS `chunk.response.error?.code ?? chunk.response.status`: a present
+		// non-null code wins, an empty string included.
 		s.rawFinishReason = status
-		if respErr != nil && respErr.Code != "" {
+		if respErr != nil && (respErr.Code != "" || responseFailedHasCode(event.Raw)) {
 			s.rawFinishReason = respErr.Code
 		}
 		if respErr == nil {
@@ -1935,6 +1937,22 @@ func wireNumberPresent(raw map[string]interface{}, object, key string) bool {
 var openResponsesOptionsSchema = providerutils.OptionSchema{
 	"reasoningEffort":  providerutils.OptNullable(providerutils.OptString),
 	"reasoningSummary": providerutils.OptNullable(providerutils.OptEnum("concise", "detailed", "auto")),
+}
+
+// responseFailedHasCode reports whether a response.failed event carries a
+// non-null response.error.code.
+func responseFailedHasCode(raw json.RawMessage) bool {
+	var w struct {
+		Response struct {
+			Error struct {
+				Code json.RawMessage `json:"code"`
+			} `json:"error"`
+		} `json:"response"`
+	}
+	if json.Unmarshal(raw, &w) != nil {
+		return false
+	}
+	return len(w.Response.Error.Code) > 0 && string(w.Response.Error.Code) != "null"
 }
 
 // responseCreatedMetadata maps a response.created event to the

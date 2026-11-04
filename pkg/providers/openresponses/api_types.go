@@ -3,6 +3,8 @@ package openresponses
 import (
 	"encoding/json"
 	"math"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // OpenResponsesRequestBody represents the request body for the Open Responses API
@@ -459,6 +461,49 @@ type ResponseError struct {
 	// from the transport-level HTTP status of the response envelope. Used
 	// by Config.GetResponseErrorMetadata to classify retryability.
 	StatusCode *int `json:"status_code,omitempty"`
+}
+
+// UnmarshalJSON decodes a response error like TS reads it: neither doGenerate
+// (no schema validation) nor doStream (z.any()) checks the error's field
+// types, so a numeric code or message is kept (as JS String() of it) instead
+// of failing the whole response or event; null or absent is "". StatusCode is
+// set only for an integer number (TS getResponseErrorMetadata checks
+// Number.isInteger).
+func (e *ResponseError) UnmarshalJSON(data []byte) error {
+	var w struct {
+		Code       json.RawMessage `json:"code"`
+		Message    json.RawMessage `json:"message"`
+		StatusCode json.RawMessage `json:"status_code"`
+	}
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*e = ResponseError{Code: responseErrorText(w.Code), Message: responseErrorText(w.Message)}
+	var n json.Number
+	if len(w.StatusCode) > 0 && json.Unmarshal(w.StatusCode, &n) == nil {
+		if f, err := n.Float64(); err == nil && f == math.Trunc(f) && math.Abs(f) <= math.MaxInt32 {
+			status := int(f)
+			e.StatusCode = &status
+		}
+	}
+	return nil
+}
+
+// responseErrorText is JS String(value) for a JSON scalar ("" for null or
+// absent); an object or array keeps its compact JSON text.
+func responseErrorText(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var f float64
+	if json.Unmarshal(raw, &f) == nil {
+		return providerutils.JSNumberString(f)
+	}
+	return providerutils.CompactJSON(raw)
 }
 
 // Streaming event types

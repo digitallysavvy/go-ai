@@ -120,3 +120,61 @@ func TestR87provbResponseCreatedEdgeCases(t *testing.T) {
 		}
 	}
 }
+
+// TS reads a streamed error without validating its field types (z.any()): a
+// numeric code is an error part with that code, not a chunk parse failure;
+// response.failed's raw finish reason is `error?.code ?? status` (an empty
+// code is kept). doGenerate does not validate the body either.
+func TestR87provbStreamErrorCodeTypes(t *testing.T) {
+	chunks, err := r87provbStream(t, `{"type":"error","error":{"code":500,"message":"boom"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var errChunk, finish *provider.StreamChunk
+	for _, c := range chunks {
+		switch c.Type {
+		case provider.ChunkTypeError:
+			errChunk = c
+		case provider.ChunkTypeFinish:
+			finish = c
+		}
+	}
+	if errChunk == nil || errChunk.Text != "boom" {
+		t.Fatalf("error chunk = %+v", errChunk)
+	}
+	if finish == nil || finish.RawFinishReason != "500" {
+		t.Fatalf("finish = %+v, want raw 500", finish)
+	}
+
+	for raw, want := range map[string]string{
+		`{"type":"response.failed","response":{"status":"failed","error":{"code":"","message":"m"}}}`:   "",
+		`{"type":"response.failed","response":{"status":"failed","error":{"code":null,"message":"m"}}}`: "failed",
+		`{"type":"response.failed","response":{"status":"failed","error":{"message":"m"}}}`:             "failed",
+		`{"type":"response.failed","response":{"status":"failed","error":{"code":"x","message":"m"}}}`:  "x",
+	} {
+		chunks, err := r87provbStream(t, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fin *provider.StreamChunk
+		for _, c := range chunks {
+			if c.Type == provider.ChunkTypeFinish {
+				fin = c
+			}
+		}
+		if fin == nil || fin.RawFinishReason != want {
+			t.Errorf("%s: raw finish = %+v, want %q", raw, fin, want)
+		}
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"r","status":"failed","error":{"code":42,"message":"bad"},"output":[]}`))
+	}))
+	defer srv.Close()
+	m := NewLanguageModel(New(Config{BaseURL: srv.URL, Name: "open-responses"}), "m")
+	_, err = m.DoGenerate(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err == nil || !strings.Contains(err.Error(), "bad") {
+		t.Fatalf("generate err = %v, want the API error message", err)
+	}
+}
