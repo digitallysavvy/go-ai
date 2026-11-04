@@ -127,6 +127,37 @@ func (p NetworkPolicy) MarshalJSON() ([]byte, error) {
 	return json.Marshal(obj)
 }
 
+// apiNetworkPolicy is a NetworkPolicy as the Sandbox API request bodies
+// carry it: @vercel/sandbox 3.9.0 `toAPINetworkPolicy` sends the bare
+// "allow-all" / "deny-all" modes as {"mode": ...} and every other policy in
+// its public {allow, subnets} shape (createSandbox, updateSandbox,
+// updateNetworkPolicy).
+type apiNetworkPolicy NetworkPolicy
+
+// toAPINetworkPolicy returns p's request form, or nil for a nil policy.
+func toAPINetworkPolicy(p *NetworkPolicy) *apiNetworkPolicy {
+	if p == nil {
+		return nil
+	}
+	a := apiNetworkPolicy(*p)
+	return &a
+}
+
+// MarshalJSON implements the 3.9.0 `toAPINetworkPolicy` mapping.
+func (p apiNetworkPolicy) MarshalJSON() ([]byte, error) {
+	if p.Mode == "allow-all" || p.Mode == "deny-all" {
+		return json.Marshal(struct {
+			Mode string `json:"mode"`
+		}{p.Mode})
+	}
+	return NetworkPolicy(p).MarshalJSON()
+}
+
+// UnmarshalJSON decodes either request form (used by the test server).
+func (p *apiNetworkPolicy) UnmarshalJSON(data []byte) error {
+	return (*NetworkPolicy)(p).UnmarshalJSON(data)
+}
+
 // UnmarshalJSON decodes either a bare mode string or an {allow, subnets}
 // object.
 func (p *NetworkPolicy) UnmarshalJSON(data []byte) error {

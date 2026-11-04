@@ -35,7 +35,7 @@ func (p CreateParams) toRequest() createSandboxRequest {
 		Image:              p.Image,
 		Name:               p.Name,
 		Persistent:         p.Persistent,
-		NetworkPolicy:      p.NetworkPolicy,
+		NetworkPolicy:      toAPINetworkPolicy(p.NetworkPolicy),
 		SnapshotExpiration: p.SnapshotExpiration,
 		Resources:          p.Resources,
 		Env:                p.Env,
@@ -65,7 +65,10 @@ type Sandbox struct {
 	persistent        bool
 	currentSnapshotID string
 
-	sessionID     string
+	sessionID string
+	// sessionStatus is the current session's status as the API last
+	// reported it (TS `this.session.status`).
+	sessionStatus string
 	cwd           string
 	routes        []sandboxRouteWire
 	networkPolicy NetworkPolicy // current session's network policy (zero value = unset)
@@ -81,6 +84,7 @@ func newSandboxFromResponse(client *APIClient, resp *sandboxAndSessionResponse) 
 		persistent:        resp.Sandbox.Persistent,
 		currentSnapshotID: resp.Sandbox.CurrentSnapshotID,
 		sessionID:         resp.Session.ID,
+		sessionStatus:     resp.Session.Status,
 		cwd:               resp.Session.CWD,
 		routes:            resp.Routes,
 	}
@@ -213,13 +217,28 @@ func (s *Sandbox) UpdateNetworkPolicy(ctx context.Context, policy NetworkPolicy)
 	return s.Update(ctx, UpdateParams{NetworkPolicy: &policy})
 }
 
-// Update applies params, PATCHing the sandbox and, when a network policy is
-// included and a session is running, also updating that session's policy.
-// Mirrors TS `Sandbox.update`.
+// Update applies params. Mirrors @vercel/sandbox 3.9.0 `Sandbox.update`: a
+// network policy is first applied to the current session (POST
+// .../network-policy) unless that session is stopped, stopping, aborted or
+// failed, and only then is the sandbox PATCHed, so a policy the session
+// rejects is not persisted for later sessions.
 func (s *Sandbox) Update(ctx context.Context, params UpdateParams) error {
+	if params.NetworkPolicy != nil && s.sessionID != "" && sessionAcceptsUpdates(s.sessionStatus) {
+		sessResp, err := s.client.UpdateSessionNetworkPolicy(ctx, s.sessionID, *params.NetworkPolicy)
+		if err != nil {
+			return err
+		}
+		s.sessionStatus = sessResp.Session.Status
+		if sessResp.Session.NetworkPolicy != nil {
+			s.networkPolicy = *sessResp.Session.NetworkPolicy
+		} else {
+			s.networkPolicy = *params.NetworkPolicy
+		}
+		s.networkPolicyMetadata = sessResp.Session.RawNetworkPolicy
+	}
 	req := updateSandboxRequest{
 		Persistent:         params.Persistent,
-		NetworkPolicy:      params.NetworkPolicy,
+		NetworkPolicy:      toAPINetworkPolicy(params.NetworkPolicy),
 		Ports:              params.Ports,
 		SnapshotExpiration: params.SnapshotExpiration,
 	}
@@ -235,19 +254,16 @@ func (s *Sandbox) Update(ctx context.Context, params UpdateParams) error {
 	if params.Ports != nil && resp.Routes != nil {
 		s.routes = resp.Routes
 	}
-	if params.NetworkPolicy != nil {
-		sessResp, err := s.client.UpdateSessionNetworkPolicy(ctx, s.sessionID, *params.NetworkPolicy)
-		if err != nil {
-			return err
-		}
-		if sessResp.Session.NetworkPolicy != nil {
-			s.networkPolicy = *sessResp.Session.NetworkPolicy
-		} else {
-			s.networkPolicy = *params.NetworkPolicy
-		}
-		s.networkPolicyMetadata = sessResp.Session.RawNetworkPolicy
-	}
 	return nil
+}
+
+// sessionAcceptsUpdates is the 3.9.0 `Sandbox.update` session check.
+func sessionAcceptsUpdates(status string) bool {
+	switch status {
+	case "stopped", "stopping", "aborted", "failed":
+		return false
+	}
+	return true
 }
 
 // SetPorts replaces the exposed port list (a thin Update wrapper matching
@@ -263,6 +279,7 @@ func (s *Sandbox) Stop(ctx context.Context) (snapshotID string, err error) {
 	if err != nil {
 		return "", err
 	}
+	s.sessionStatus = resp.Session.Status
 	if resp.Snapshot != nil {
 		snapshotID = resp.Snapshot.ID
 	}
@@ -280,6 +297,7 @@ func (s *Sandbox) Snapshot(ctx context.Context, expiration *int64) (string, erro
 	if err != nil {
 		return "", err
 	}
+	s.sessionStatus = resp.Session.Status
 	return resp.Snapshot.ID, nil
 }
 

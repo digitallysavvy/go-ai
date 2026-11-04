@@ -256,7 +256,7 @@ func (c *APIClient) ListSnapshots(ctx context.Context, name string) ([]snapshotW
 func (c *APIClient) UpdateSessionNetworkPolicy(ctx context.Context, sessionID string, policy NetworkPolicy) (*sessionResponse, error) {
 	var out sessionResponse
 	if err := c.http.DoJSON(ctx, httpinternal.Request{
-		Method: http.MethodPost, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/network-policy", Headers: c.headers(nil), Query: c.query(nil), Body: policy,
+		Method: http.MethodPost, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/network-policy", Headers: c.headers(nil), Query: c.query(nil), Body: apiNetworkPolicy(policy),
 	}, &out); err != nil {
 		return nil, toAPIError(err)
 	}

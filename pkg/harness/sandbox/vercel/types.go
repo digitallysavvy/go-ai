@@ -40,7 +40,7 @@ type createSandboxRequest struct {
 	Image              string                   `json:"image,omitempty"`
 	Name               string                   `json:"name,omitempty"`
 	Persistent         *bool                    `json:"persistent,omitempty"`
-	NetworkPolicy      *NetworkPolicy           `json:"networkPolicy,omitempty"`
+	NetworkPolicy      *apiNetworkPolicy        `json:"networkPolicy,omitempty"`
 	Env                map[string]string        `json:"env,omitempty"`
 	Tags               map[string]string        `json:"tags,omitempty"`
 	SnapshotExpiration *int64                   `json:"snapshotExpiration,omitempty"`
@@ -104,11 +104,11 @@ type sandboxAndSessionResponse struct {
 }
 
 type updateSandboxRequest struct {
-	Persistent         *bool          `json:"persistent,omitempty"`
-	Timeout            int64          `json:"timeout,omitempty"`
-	NetworkPolicy      *NetworkPolicy `json:"networkPolicy,omitempty"`
-	Ports              []int          `json:"ports,omitempty"`
-	SnapshotExpiration *int64         `json:"snapshotExpiration,omitempty"`
+	Persistent         *bool             `json:"persistent,omitempty"`
+	Timeout            int64             `json:"timeout,omitempty"`
+	NetworkPolicy      *apiNetworkPolicy `json:"networkPolicy,omitempty"`
+	Ports              []int             `json:"ports,omitempty"`
+	SnapshotExpiration *int64            `json:"snapshotExpiration,omitempty"`
 }
 
 type updateSandboxResponse struct {
