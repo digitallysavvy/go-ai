@@ -148,8 +148,9 @@ func (m *GoogleRealtimeModel) GetWebSocketConfig(token, wsURL string) provider.W
 // thinkingLiveModelRe matches Live models that reason in the background
 // (e.g. "gemini-3.8-live-extended-thinking"). Google requires exactly one of
 // thinkingLevel/thinkingBudget in their setup and rejects thinkingConfig on
-// every other Live model (TS isThinkingLiveModel).
-var thinkingLiveModelRe = regexp.MustCompile(`^gemini-\d+\.\d+-live\b.*thinking`)
+// every other Live model (TS isThinkingLiveModel). The TS `.` does not match
+// a line terminator (\r, U+2028, U+2029 as well as \n).
+var thinkingLiveModelRe = regexp.MustCompile(`^gemini-\d+\.\d+-live\b[^\n\r\x{2028}\x{2029}]*thinking`)
 
 // isThinkingLiveModel reports whether modelID names a background-reasoning
 // Live model, matching only the last "/"-separated path segment.

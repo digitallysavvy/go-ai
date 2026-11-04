@@ -105,3 +105,10 @@ func TestR86bprovaRealtimeCredentialQueryEscaping(t *testing.T) {
 		}
 	}
 }
+
+// TS /^gemini-\d+\.\d+-live\b.*thinking/: `.` stops at \r. Node: false, true.
+func TestR86bprovaThinkingLiveModelDot(t *testing.T) {
+	if isThinkingLiveModel("gemini-3.8-live\rthinking") || !isThinkingLiveModel("models/Gemini-3.8-live-extended-thinking") {
+		t.Fatal("isThinkingLiveModel mismatch")
+	}
+}
