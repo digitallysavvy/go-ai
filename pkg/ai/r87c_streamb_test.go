@@ -2003,8 +2003,8 @@ const r87cstreambUserPrompt = `{"content":[{"text":"test-input","type":"text"}],
 const r87cstreambToolResult1 = `{"output":{"type":"text","value":"result1"},"toolCallId":"call-1","toolName":"tool1","type":"tool-result"}`
 
 // stream-text.test.ts 30750: tool execution approval > when a single tool is
-// automatically approved > should call the model again for the second step
-// with the tool result.
+// automatically approved > should call the model again for the
+// second step with the tool result.
 func TestR87cstreambAutoApprovedPrompts(t *testing.T) {
 	_, _, prompts := r87cstreambAutoApprovedRun(t)
 	r87cstreambAssert(t, "prompts", prompts, `[[`+r87cstreambUserPrompt+`],
@@ -2012,8 +2012,8 @@ func TestR87cstreambAutoApprovedPrompts(t *testing.T) {
 }
 
 // stream-text.test.ts 30813: tool execution approval > when a single tool is
-// automatically approved > should produce response messages with automatic
-// approval metadata.
+// automatically approved > should produce response
+// messages with automatic approval metadata.
 func TestR87cstreambAutoApprovedResponseMessages(t *testing.T) {
 	r, _, _ := r87cstreambAutoApprovedRun(t)
 	r87cstreambAssert(t, "responseMessages", r87cstreambMessages(t, r.ResponseMessages()), `[
