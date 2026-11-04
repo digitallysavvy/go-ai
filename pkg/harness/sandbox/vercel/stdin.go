@@ -95,7 +95,7 @@ func (c *APIClient) writeCommandStdin(ctx context.Context, sessionID, cmdID stri
 	for attempt := 0; ; attempt++ {
 		canRetry := attempt < stdinMaxRetries
 		resp, err := c.http.Do(withoutRetry(ctx), httpinternal.Request{
-			Method: http.MethodPost, Path: path, Headers: c.headers(nil), Query: c.query(nil), Body: body,
+			Method: http.MethodPost, Path: c.path(path), Headers: c.headers(nil), Body: body,
 		})
 		if err != nil {
 			if !resendable || !canRetry || ctx.Err() != nil {

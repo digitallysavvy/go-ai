@@ -142,17 +142,20 @@ func (c *APIClient) headers(extra map[string]string) map[string]string {
 	return h
 }
 
-func (c *APIClient) query(extra map[string]string) map[string]string {
-	q := map[string]string{}
-	if c.credentials.TeamID != "" {
-		q["teamId"] = c.credentials.TeamID
+// path is p with the 3.9.0 APIClient.request query `{teamId: this.teamId,
+// ...params.query}`, serialized like base-client.js (url.searchParams.append
+// in object order): the team comes first and is always sent (the client's
+// teamId is a string, so an empty team is `teamId=`), then pairs (name,
+// value, ...) in the TS call's key order, "" values included (base-client.js
+// drops only undefined and null, which callers express by leaving the pair
+// out).
+func (c *APIClient) path(p string, pairs ...string) string {
+	q := &httpinternal.SearchParams{}
+	q.Append("teamId", c.credentials.TeamID)
+	for i := 0; i+1 < len(pairs); i += 2 {
+		q.Append(pairs[i], pairs[i+1])
 	}
-	for k, v := range extra {
-		if v != "" {
-			q[k] = v
-		}
-	}
-	return q
+	return p + "?" + q.Encode()
 }
 
 func toAPIError(err error) error {
@@ -187,7 +190,7 @@ func (c *APIClient) CreateSandbox(ctx context.Context, req createSandboxRequest)
 	}
 	var out sandboxAndSessionResponse
 	if err := c.http.DoJSON(ctx, httpinternal.Request{
-		Method: http.MethodPost, Path: path, Headers: c.headers(nil), Query: c.query(nil), Body: req,
+		Method: http.MethodPost, Path: c.path(path), Headers: c.headers(nil), Body: req,
 	}, &out); err != nil {
 		return nil, toAPIError(err)
 	}
@@ -197,13 +200,13 @@ func (c *APIClient) CreateSandbox(ctx context.Context, req createSandboxRequest)
 // GetSandbox fetches GET /v2/sandboxes/{name}, optionally resuming its
 // session.
 func (c *APIClient) GetSandbox(ctx context.Context, name string, resume *bool) (*sandboxAndSessionResponse, error) {
-	q := map[string]string{"projectId": c.credentials.ProjectID}
+	q := []string{"projectId", c.credentials.ProjectID}
 	if resume != nil {
-		q["resume"] = strconv.FormatBool(*resume)
+		q = append(q, "resume", strconv.FormatBool(*resume))
 	}
 	var out sandboxAndSessionResponse
 	if err := c.http.DoJSON(ctx, httpinternal.Request{
-		Method: http.MethodGet, Path: "/v2/sandboxes/" + pathEscape(name), Headers: c.headers(nil), Query: c.query(q),
+		Method: http.MethodGet, Path: c.path("/v2/sandboxes/"+pathEscape(name), q...), Headers: c.headers(nil),
 	}, &out); err != nil {
 		return nil, toAPIError(err)
 	}
@@ -214,7 +217,7 @@ func (c *APIClient) GetSandbox(ctx context.Context, name string, resume *bool) (
 func (c *APIClient) UpdateSandbox(ctx context.Context, name string, req updateSandboxRequest) (*updateSandboxResponse, error) {
 	var out updateSandboxResponse
 	if err := c.http.DoJSON(ctx, httpinternal.Request{
-		Method: http.MethodPatch, Path: "/v2/sandboxes/" + pathEscape(name), Headers: c.headers(nil), Query: c.query(map[string]string{"projectId": c.credentials.ProjectID}), Body: req,
+		Method: http.MethodPatch, Path: c.path("/v2/sandboxes/"+pathEscape(name), "projectId", c.credentials.ProjectID), Headers: c.headers(nil), Body: req,
 	}, &out); err != nil {
 		return nil, toAPIError(err)
 	}
@@ -225,7 +228,7 @@ func (c *APIClient) UpdateSandbox(ctx context.Context, name string, req updateSa
 func (c *APIClient) DeleteSandbox(ctx context.Context, name string) error {
 	var out updateSandboxResponse
 	if err := c.http.DoJSON(ctx, httpinternal.Request{
-		Method: http.MethodDelete, Path: "/v2/sandboxes/" + pathEscape(name), Headers: c.headers(nil), Query: c.query(map[string]string{"projectId": c.credentials.ProjectID}),
+		Method: http.MethodDelete, Path: c.path("/v2/sandboxes/"+pathEscape(name), "projectId", c.credentials.ProjectID), Headers: c.headers(nil),
 	}, &out); err != nil {
 		return toAPIError(err)
 	}
@@ -236,7 +239,7 @@ func (c *APIClient) DeleteSandbox(ctx context.Context, name string) error {
 func (c *APIClient) StopSession(ctx context.Context, sessionID string) (*stopSessionResponse, error) {
 	var out stopSessionResponse
 	if err := c.http.DoJSON(ctx, httpinternal.Request{
-		Method: http.MethodPost, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/stop", Headers: c.headers(nil), Query: c.query(nil),
+		Method: http.MethodPost, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/stop"), Headers: c.headers(nil),
 	}, &out); err != nil {
 		return nil, toAPIError(err)
 	}
@@ -248,7 +251,7 @@ func (c *APIClient) StopSession(ctx context.Context, sessionID string) (*stopSes
 func (c *APIClient) CreateSnapshot(ctx context.Context, sessionID string, expiration *int64) (*createSnapshotResponse, error) {
 	var out createSnapshotResponse
 	if err := c.http.DoJSON(ctx, httpinternal.Request{
-		Method: http.MethodPost, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/snapshot", Headers: c.headers(nil), Query: c.query(nil), Body: createSnapshotBody(expiration),
+		Method: http.MethodPost, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/snapshot"), Headers: c.headers(nil), Body: createSnapshotBody(expiration),
 	}, &out); err != nil {
 		return nil, toAPIError(err)
 	}
@@ -264,7 +267,8 @@ func createSnapshotBody(expiration *int64) interface{} {
 	return createSnapshotRequest{Expiration: expiration}
 }
 
-// maxSnapshotListPages bounds how many pages ListSnapshots follows.
+// maxSnapshotListPages bounds how many pages ListSnapshots follows (Go
+// only: TS follows `pagination.next` without a bound).
 const maxSnapshotListPages = 20
 
 // ListSnapshots lists the project's snapshots for a sandbox name, newest
@@ -272,22 +276,46 @@ const maxSnapshotListPages = 20
 // iterated with `for await`).
 func (c *APIClient) ListSnapshots(ctx context.Context, name string) ([]snapshotWire, error) {
 	var all []snapshotWire
-	cursor := ""
-	for page := 0; page < maxSnapshotListPages; page++ {
-		var out listSnapshotsResponse
-		if err := c.http.DoJSON(ctx, httpinternal.Request{
-			Method: http.MethodGet, Path: "/v2/sandboxes/snapshots", Headers: c.headers(nil),
-			Query: c.query(map[string]string{"project": c.credentials.ProjectID, "name": name, "sortOrder": "desc", "cursor": cursor}),
-		}, &out); err != nil {
-			return nil, toAPIError(err)
-		}
-		all = append(all, out.Snapshots...)
-		if out.Pagination.Next == nil || *out.Pagination.Next == "" || len(out.Snapshots) == 0 {
-			break
-		}
-		cursor = *out.Pagination.Next
+	err := c.eachSnapshot(ctx, name, func(s snapshotWire) bool {
+		all = append(all, s)
+		return false
+	})
+	if err != nil {
+		return nil, err
 	}
 	return all, nil
+}
+
+// eachSnapshot is `for await (const snapshot of Snapshot.list({name,
+// sortOrder: 'desc'}))`: the first page has no cursor, the next page is
+// fetched while `pagination.next !== null` (an empty page or an empty
+// cursor included), and the iteration stops as soon as yield returns true.
+func (c *APIClient) eachSnapshot(ctx context.Context, name string, yield func(snapshotWire) bool) error {
+	var cursor *string
+	for page := 0; page < maxSnapshotListPages; page++ {
+		// listSnapshots query order: project, name, (limit), cursor, sortOrder.
+		q := []string{"project", c.credentials.ProjectID, "name", name}
+		if cursor != nil {
+			q = append(q, "cursor", *cursor)
+		}
+		q = append(q, "sortOrder", "desc")
+		var out listSnapshotsResponse
+		if err := c.http.DoJSON(ctx, httpinternal.Request{
+			Method: http.MethodGet, Path: c.path("/v2/sandboxes/snapshots", q...), Headers: c.headers(nil),
+		}, &out); err != nil {
+			return toAPIError(err)
+		}
+		for _, s := range out.Snapshots {
+			if yield(s) {
+				return nil
+			}
+		}
+		if out.Pagination.Next == nil {
+			return nil
+		}
+		cursor = out.Pagination.Next
+	}
+	return nil
 }
 
 // extendTimeoutRequest is the 3.9.0 `extendTimeout` body.
@@ -300,7 +328,7 @@ type extendTimeoutRequest struct {
 func (c *APIClient) ExtendSessionTimeout(ctx context.Context, sessionID string, durationMs int64) (*sessionResponse, error) {
 	var out sessionResponse
 	if err := c.http.DoJSON(ctx, httpinternal.Request{
-		Method: http.MethodPost, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/extend-timeout", Headers: c.headers(nil), Query: c.query(nil), Body: extendTimeoutRequest{Duration: durationMs},
+		Method: http.MethodPost, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/extend-timeout"), Headers: c.headers(nil), Body: extendTimeoutRequest{Duration: durationMs},
 	}, &out); err != nil {
 		return nil, toAPIError(err)
 	}
@@ -312,7 +340,7 @@ func (c *APIClient) ExtendSessionTimeout(ctx context.Context, sessionID string, 
 func (c *APIClient) UpdateSessionNetworkPolicy(ctx context.Context, sessionID string, policy NetworkPolicy) (*sessionResponse, error) {
 	var out sessionResponse
 	if err := c.http.DoJSON(ctx, httpinternal.Request{
-		Method: http.MethodPost, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/network-policy", Headers: c.headers(nil), Query: c.query(nil), Body: apiNetworkPolicy(policy),
+		Method: http.MethodPost, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/network-policy"), Headers: c.headers(nil), Body: apiNetworkPolicy(policy),
 	}, &out); err != nil {
 		return nil, toAPIError(err)
 	}
@@ -355,7 +383,7 @@ func (c *APIClient) RunCommandWait(ctx context.Context, sessionID string, req ru
 	req.Logs = true
 	result := &RunCommandWaitResult{}
 	resp, err := c.http.DoStream(withoutRetry(ctx), httpinternal.Request{
-		Method: http.MethodPost, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/cmd", Headers: c.headers(nil), Query: c.query(nil), Body: req,
+		Method: http.MethodPost, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/cmd"), Headers: c.headers(nil), Body: req,
 	})
 	if err != nil {
 		return result, toAPIError(err)
@@ -450,7 +478,7 @@ func (c *APIClient) RunCommandDetached(ctx context.Context, sessionID string, re
 	req = req.withDefaults()
 	var out commandResponse
 	if err := c.http.DoJSON(ctx, httpinternal.Request{
-		Method: http.MethodPost, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/cmd", Headers: c.headers(nil), Query: c.query(nil), Body: req,
+		Method: http.MethodPost, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/cmd"), Headers: c.headers(nil), Body: req,
 	}, &out); err != nil {
 		return nil, toAPIError(err)
 	}
@@ -459,13 +487,13 @@ func (c *APIClient) RunCommandDetached(ctx context.Context, sessionID string, re
 
 // GetCommand fetches GET .../cmd/{id}[?wait=true].
 func (c *APIClient) GetCommand(ctx context.Context, sessionID, cmdID string, wait bool) (*commandWire, error) {
-	q := map[string]string{}
+	var q []string
 	if wait {
-		q["wait"] = "true"
+		q = []string{"wait", "true"}
 	}
 	var out commandResponse
 	if err := c.http.DoJSON(ctx, httpinternal.Request{
-		Method: http.MethodGet, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/cmd/" + pathEscape(cmdID), Headers: c.headers(nil), Query: c.query(q),
+		Method: http.MethodGet, Path: c.path("/v2/sandboxes/sessions/"+pathEscape(sessionID)+"/cmd/"+pathEscape(cmdID), q...), Headers: c.headers(nil),
 	}, &out); err != nil {
 		return nil, toAPIError(err)
 	}
@@ -480,8 +508,8 @@ func (c *APIClient) KillCommand(ctx context.Context, sessionID, cmdID string, si
 	}
 	var out commandResponse
 	if err := c.http.DoJSON(ctx, httpinternal.Request{
-		Method: http.MethodPost, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/cmd/" + pathEscape(cmdID) + "/kill",
-		Headers: c.headers(nil), Query: c.query(nil), Body: killCommandRequest{Signal: sig},
+		Method: http.MethodPost, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/cmd/" + pathEscape(cmdID) + "/kill"),
+		Headers: c.headers(nil), Body: killCommandRequest{Signal: sig},
 	}, &out); err != nil {
 		return toAPIError(err)
 	}
@@ -518,7 +546,7 @@ func (c *APIClient) getLogsStream(ctx context.Context, sessionID, cmdID string, 
 
 func (c *APIClient) getLogsOnce(ctx context.Context, sessionID, cmdID string, delivered logDelivered, onLog func(LogEntry)) error {
 	resp, err := c.http.DoStream(ctx, httpinternal.Request{
-		Method: http.MethodGet, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/cmd/" + pathEscape(cmdID) + "/logs", Headers: c.headers(nil), Query: c.query(nil),
+		Method: http.MethodGet, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/cmd/" + pathEscape(cmdID) + "/logs"), Headers: c.headers(nil),
 	})
 	if err != nil {
 		return toAPIError(err)
@@ -558,7 +586,7 @@ func (c *APIClient) getLogsOnce(ctx context.Context, sessionID, cmdID string, de
 func (c *APIClient) MkDir(ctx context.Context, sessionID, path, cwd string) error {
 	var out map[string]interface{}
 	if err := c.http.DoJSON(ctx, httpinternal.Request{
-		Method: http.MethodPost, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/fs/mkdir", Headers: c.headers(nil), Query: c.query(nil),
+		Method: http.MethodPost, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/fs/mkdir"), Headers: c.headers(nil),
 		Body: mkdirRequest{Path: path, CWD: cwd},
 	}, &out); err != nil {
 		return toAPIError(err)
@@ -605,9 +633,8 @@ func (c *APIClient) WriteFiles(ctx context.Context, sessionID, extractDir string
 	var out map[string]interface{}
 	if err := c.http.DoJSON(ctx, httpinternal.Request{
 		Method:  http.MethodPost,
-		Path:    "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/fs/write",
+		Path:    c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/fs/write"),
 		Headers: c.headers(map[string]string{"Content-Type": "application/gzip", "X-Cwd": extractDir}),
-		Query:   c.query(nil),
 		Body:    buf.Bytes(),
 	}, &out); err != nil {
 		return toAPIError(err)
@@ -619,7 +646,7 @@ func (c *APIClient) WriteFiles(ctx context.Context, sessionID, extractDir string
 // on a 404 (file not found). The caller must Close the returned reader.
 func (c *APIClient) ReadFile(ctx context.Context, sessionID, path, cwd string) (io.ReadCloser, error) {
 	resp, err := c.http.DoStream(ctx, httpinternal.Request{
-		Method: http.MethodPost, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/fs/read", Headers: c.headers(nil), Query: c.query(nil),
+		Method: http.MethodPost, Path: c.path("/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/fs/read"), Headers: c.headers(nil),
 		Body: readFileRequest{Path: path, CWD: cwd},
 	})
 	// 3.9.0 readFile: 404 is a missing file; any other error status, or a

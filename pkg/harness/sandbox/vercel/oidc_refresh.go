@@ -180,20 +180,8 @@ func (t *oidcTokenTransport) RoundTrip(req *http.Request) (*http.Response, error
 	}
 	clone := req.Clone(req.Context())
 	clone.Header.Set("Authorization", "Bearer "+token)
-	if teamID != "" {
-		// TS sends `teamId: this.teamId` on every request; the client
-		// encodes queries sorted with URLSearchParams escaping.
-		q := clone.URL.Query()
-		if q.Get("teamId") != teamID {
-			flat := map[string]string{}
-			for k, v := range q {
-				if len(v) > 0 {
-					flat[k] = v[len(v)-1]
-				}
-			}
-			flat["teamId"] = teamID
-			clone.URL.RawQuery = httpinternal.EncodeQuery(flat)
-		}
-	}
+	// TS sends `teamId: this.teamId` first on every request (APIClient.path
+	// put the client's team there); the refreshed team takes its place.
+	clone.URL.RawQuery = httpinternal.SetSearchParam(clone.URL.RawQuery, "teamId", teamID)
 	return t.base.RoundTrip(clone)
 }

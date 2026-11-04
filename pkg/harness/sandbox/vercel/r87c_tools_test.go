@@ -3,11 +3,16 @@ package vercel
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -193,4 +198,147 @@ func TestR87ctoolsResolveCredentialsFromOIDCToken(t *testing.T) {
 			t.Fatalf("= %+v, %v", got, err)
 		}
 	})
+}
+
+type r87ctoolsQuerySeen struct {
+	mu   sync.Mutex
+	uris []string
+}
+
+func (s *r87ctoolsQuerySeen) add(r *http.Request) {
+	s.mu.Lock()
+	s.uris = append(s.uris, r.Method+" "+r.URL.RequestURI())
+	s.mu.Unlock()
+}
+
+func (s *r87ctoolsQuerySeen) all() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.uris...)
+}
+
+// api-client.js request: `teamId` first and always sent (an empty team is
+// `teamId=`), then the call's query keys in TS order with "" kept.
+func TestR87ctoolsQueryTeamFirstAndEmptyValues(t *testing.T) {
+	var seen r87ctoolsQuerySeen
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen.add(r)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	ctx := context.Background()
+	resume := true
+
+	c := NewAPIClient(srv.URL, Credentials{Token: "plain", TeamID: "", ProjectID: ""})
+	_, _ = c.GetSandbox(ctx, "sb", &resume)
+	_, _ = c.UpdateSandbox(ctx, "sb", updateSandboxRequest{})
+	_ = c.DeleteSandbox(ctx, "sb")
+	_, _ = c.StopSession(ctx, "s1")
+	c = NewAPIClient(srv.URL, Credentials{Token: "plain", TeamID: "team_1", ProjectID: "prj_1"})
+	_, _ = c.GetSandbox(ctx, "sb", &resume)
+	_, _ = c.GetSandbox(ctx, "sb", nil)
+	_, _ = c.GetCommand(ctx, "s1", "c1", true)
+	_, _ = c.GetCommand(ctx, "s1", "c1", false)
+	// A token whose owner_id is "" is not a JWT for the client (the team
+	// stays the credentials' team, here the claims' empty owner).
+	empty := r87ctoolsRawJWT(`{"owner_id":"","project_id":""}`)
+	c = NewAPIClient(srv.URL, Credentials{Token: empty})
+	_, _ = c.StopSession(ctx, "s1")
+
+	want := []string{
+		"GET /v2/sandboxes/sb?teamId=&projectId=&resume=true",
+		"PATCH /v2/sandboxes/sb?teamId=&projectId=",
+		"DELETE /v2/sandboxes/sb?teamId=&projectId=",
+		"POST /v2/sandboxes/sessions/s1/stop?teamId=",
+		"GET /v2/sandboxes/sb?teamId=team_1&projectId=prj_1&resume=true",
+		"GET /v2/sandboxes/sb?teamId=team_1&projectId=prj_1",
+		"GET /v2/sandboxes/sessions/s1/cmd/c1?teamId=team_1&wait=true",
+		"GET /v2/sandboxes/sessions/s1/cmd/c1?teamId=team_1",
+		"POST /v2/sandboxes/sessions/s1/stop?teamId=",
+	}
+	if got := seen.all(); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("requests:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// Snapshot.list + attachPaginator: no cursor on the first page, listSnapshots
+// query order (project, name, cursor, sortOrder), the next page fetched while
+// `pagination.next !== null` (an empty page and an empty cursor included).
+func TestR87ctoolsSnapshotPagination(t *testing.T) {
+	var seen r87ctoolsQuerySeen
+	pages := map[string]string{
+		"":   `{"snapshots":[{"id":"a","status":"created","creationMethod":"automatic"}],"pagination":{"next":"c1"}}`,
+		"c1": `{"snapshots":[],"pagination":{"next":""}}`,
+		"e":  `{"snapshots":[{"id":"m","status":"created","creationMethod":"manual"}],"pagination":{"next":"c2"}}`,
+		"c2": `{"snapshots":[{"id":"z","status":"created","creationMethod":"manual"}],"pagination":{"next":null}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen.add(r)
+		key := r.URL.Query().Get("cursor")
+		if r.URL.Query().Has("cursor") && key == "" {
+			key = "e"
+		}
+		_, _ = w.Write([]byte(pages[key]))
+	}))
+	defer srv.Close()
+	c := NewAPIClient(srv.URL, Credentials{Token: "plain", TeamID: "team_1", ProjectID: "prj_1"})
+
+	got, err := c.ListSnapshots(context.Background(), "tpl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, len(got))
+	for i, s := range got {
+		ids[i] = s.ID
+	}
+	if strings.Join(ids, ",") != "a,m,z" {
+		t.Fatalf("ids = %v", ids)
+	}
+	want := []string{
+		"GET /v2/sandboxes/snapshots?teamId=team_1&project=prj_1&name=tpl&sortOrder=desc",
+		"GET /v2/sandboxes/snapshots?teamId=team_1&project=prj_1&name=tpl&cursor=c1&sortOrder=desc",
+		"GET /v2/sandboxes/snapshots?teamId=team_1&project=prj_1&name=tpl&cursor=&sortOrder=desc",
+		"GET /v2/sandboxes/snapshots?teamId=team_1&project=prj_1&name=tpl&cursor=c2&sortOrder=desc",
+	}
+	if strings.Join(seen.all(), "\n") != strings.Join(want, "\n") {
+		t.Fatalf("requests:\n%s", strings.Join(seen.all(), "\n"))
+	}
+}
+
+// ensureValidToken: the refreshed team replaces the first `teamId` pair.
+func TestR87ctoolsOIDCRefreshTeamStaysFirst(t *testing.T) {
+	r87ctoolsEnv(t)
+	expiring := r87ctoolsRawJWT(fmt.Sprintf(`{"owner_id":"team_1","project_id":"prj_1","exp":%d}`, time.Now().Add(time.Minute).Unix()))
+	fresh := r87ctoolsRawJWT(fmt.Sprintf(`{"owner_id":"team_2","project_id":"prj_1","exp":%d}`, time.Now().Add(time.Hour).Unix()))
+	t.Setenv("VERCEL_OIDC_TOKEN", fresh)
+	var seen r87ctoolsQuerySeen
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen.add(r)
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	}))
+	defer srv.Close()
+	c := newAPIClient(srv.URL, Credentials{Token: expiring, TeamID: "x", ProjectID: "prj_1"}, &OIDCRefresh{})
+	resume := false
+	_, _ = c.GetSandbox(context.Background(), "sb", &resume)
+	want := "GET /v2/sandboxes/sb?teamId=team_2&projectId=prj_1&resume=false"
+	if got := seen.all(); len(got) != 1 || got[0] != want {
+		t.Fatalf("requests = %q, want %q", got, want)
+	}
+}
+
+// createSandbox body: `projectId: params.projectId` is the credentials'
+// string, so an empty project is sent as "".
+func TestR87ctoolsCreateSandboxSendsEmptyProjectID(t *testing.T) {
+	bodies := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		bodies <- string(raw)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	c := NewAPIClient(srv.URL, Credentials{Token: "plain"})
+	_, _ = c.CreateSandbox(context.Background(), createSandboxRequest{})
+	if body := <-bodies; !strings.HasPrefix(body, `{"projectId":"","ports":[]`) {
+		t.Fatalf("body = %s", body)
+	}
 }
