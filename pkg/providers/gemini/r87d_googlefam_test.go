@@ -18,7 +18,10 @@ var r87dgooglefamPorted = map[string]string{
 	tsfixture.PortedKey(r87dgooglefamSanitizeTest, "schema", "toMatchObject"): "TestR87dgooglefamSanitizeKeepsInputSchema",
 }
 
-func init() { tsfixture.RegisterPorted(r87dgooglefamPorted) }
+func init() {
+	tsfixture.RequireEvaluated()
+	tsfixture.RegisterPorted(r87dgooglefamPorted)
+}
 
 func TestMain(m *testing.M) { os.Exit(tsfixture.PortedMain(m, r87dgooglefamPorted)) }
 

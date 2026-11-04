@@ -35,6 +35,7 @@ var r87dgooglefamNotApplicable = map[string]string{
 }
 
 func init() {
+	tsfixture.RequireEvaluated()
 	tsfixture.RegisterPorted(r87dgooglefamPorted)
 	tsfixture.RegisterNotApplicable(r87dgooglefamNotApplicable)
 }
