@@ -141,6 +141,16 @@ type v4Part struct {
 	Citations        []v4Citation    `json:"citations"`
 }
 
+// jsStrings sets the string fields Go reads to JS String(value) when the
+// part (TS passes it through unvalidated) holds a non-string value there.
+func (p *v4Part) jsStrings(raw map[string]interface{}) {
+	gatewayJSString(raw, "id", &p.ID)
+	gatewayJSString(raw, "text", &p.Text)
+	gatewayJSString(raw, "delta", &p.Delta)
+	gatewayJSString(raw, "toolCallId", &p.ToolCallID)
+	gatewayJSString(raw, "toolName", &p.ToolName)
+}
+
 type v4Citation struct {
 	Source     json.RawMessage `json:"source"`
 	StartIndex *int            `json:"startIndex"`
@@ -323,7 +333,8 @@ func decodeV4GenerateResult(body []byte) (*types.GenerateResult, error) {
 		Warnings         json.RawMessage        `json:"warnings"`
 		ProviderMetadata map[string]interface{} `json:"providerMetadata"`
 	}
-	if err := json.Unmarshal(body, &wire); err != nil {
+	// TS createJsonResponseHandler(z.any()): only invalid JSON fails.
+	if err := decodeGatewayLenient(body, &wire); err != nil {
 		return nil, err
 	}
 	result := &types.GenerateResult{
@@ -335,9 +346,12 @@ func decodeV4GenerateResult(body []byte) (*types.GenerateResult, error) {
 	}
 	for _, raw := range wire.Content {
 		var p v4Part
-		if json.Unmarshal(raw, &p) != nil {
+		var fields map[string]interface{}
+		if json.Unmarshal(raw, &fields) != nil {
 			continue
 		}
+		_ = json.Unmarshal(raw, &p)
+		p.jsStrings(fields)
 		part, tc := decodeV4Content(p)
 		if part == nil {
 			continue

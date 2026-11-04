@@ -9,6 +9,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -297,6 +298,75 @@ type gatewayStreamChunk struct {
 	part v4Part
 }
 
+// decodeGatewayStreamChunk decodes one stream part. TS parses the parts with
+// createEventSourceResponseHandler(z.any()) and enqueues them verbatim, so
+// only invalid JSON fails the stream: a field of an unexpected JSON type does
+// not fail the part (see decodeGatewayLenient), a non-object part has no type
+// and is skipped, and the string fields Go reads (ids, deltas, tool names,
+// tool arguments) hold JS String(value) of a non-string value.
+func decodeGatewayStreamChunk(data []byte, chunk *gatewayStreamChunk) error {
+	if err := decodeGatewayLenient(data, chunk); err != nil {
+		return err
+	}
+	_ = json.Unmarshal(data, &chunk.raw)
+	_ = json.Unmarshal(data, &chunk.part)
+	if chunk.raw == nil {
+		return nil
+	}
+	gatewayJSString(chunk.raw, "id", &chunk.ID)
+	gatewayJSString(chunk.raw, "delta", &chunk.Delta)
+	gatewayJSString(chunk.raw, "textDelta", &chunk.TextDelta)
+	gatewayJSString(chunk.raw, "reasoningDelta", &chunk.ReasoningDelta)
+	gatewayJSString(chunk.raw, "toolCallId", &chunk.ToolCallID)
+	gatewayJSString(chunk.raw, "toolCallName", &chunk.ToolCallName)
+	gatewayJSString(chunk.raw, "toolCallArgs", &chunk.ToolCallArgs)
+	chunk.part.jsStrings(chunk.raw)
+	return nil
+}
+
+// decodeGatewayLenient decodes a gateway JSON object the way TS reads a
+// `z.any()` value: only invalid JSON is an error. A field of an unexpected
+// JSON type keeps its zero value instead of failing the whole value (the
+// object is decoded key by key, in sorted key order, when the one-shot decode
+// fails), and a JSON value that is not an object decodes as the zero value.
+func decodeGatewayLenient(data []byte, dst interface{}) error {
+	err := json.Unmarshal(data, dst)
+	if err == nil {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if ferr := json.Unmarshal(data, &fields); ferr != nil {
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(ferr, &typeErr) {
+			return nil
+		}
+		return err
+	}
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		one, merr := json.Marshal(map[string]json.RawMessage{k: fields[k]})
+		if merr != nil {
+			continue
+		}
+		_ = json.Unmarshal(one, dst)
+	}
+	return nil
+}
+
+// gatewayJSString sets *dst to JS String(value) when raw[key] holds a
+// non-null value that is not a JSON string (a string was decoded already).
+func gatewayJSString(raw map[string]interface{}, key string, dst *string) {
+	if v, ok := raw[key]; ok && v != nil {
+		if _, isString := v.(string); !isString {
+			*dst = providerutils.JSString(v)
+		}
+	}
+}
+
 // Close implements io.Closer
 func (s *gatewayTextStream) Close() error {
 	return s.body.Close()
@@ -336,12 +406,10 @@ func (s *gatewayTextStream) Next() (*provider.StreamChunk, error) {
 
 		// Parse the JSON data from the SSE event
 		var chunk gatewayStreamChunk
-		if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
+		if err := decodeGatewayStreamChunk([]byte(event.Data), &chunk); err != nil {
 			s.err = fmt.Errorf("failed to parse stream chunk: %w", err)
 			return nil, s.err
 		}
-		_ = json.Unmarshal([]byte(event.Data), &chunk.raw)
-		_ = json.Unmarshal([]byte(event.Data), &chunk.part)
 
 		// Convert Gateway chunk to provider StreamChunk.
 		result, convertErr, ok := s.convertChunk(&chunk)

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
-	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -705,33 +704,10 @@ func openResponsesWireString(raw json.RawMessage) string {
 	return openResponsesJSString(v)
 }
 
-// openResponsesJSString is JS String(value) for a decoded JSON value: an
-// object is "[object Object]" and an array joins its elements with ","
-// (null elements are empty).
+// openResponsesJSString is JS String(value) for a decoded JSON value
+// (providerutils.JSString).
 func openResponsesJSString(v interface{}) string {
-	switch x := v.(type) {
-	case nil:
-		return "null"
-	case string:
-		return x
-	case bool:
-		if x {
-			return "true"
-		}
-		return "false"
-	case float64:
-		return providerutils.JSNumberString(x)
-	case []interface{}:
-		parts := make([]string, len(x))
-		for i, el := range x {
-			if el != nil {
-				parts[i] = openResponsesJSString(el)
-			}
-		}
-		return strings.Join(parts, ",")
-	default:
-		return "[object Object]"
-	}
+	return providerutils.JSString(v)
 }
 
 // openResponsesWireInt keeps an integral JSON number that fits in an int32;
