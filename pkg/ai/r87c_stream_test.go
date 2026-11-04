@@ -1682,10 +1682,6 @@ func r87cstreamTwoSteps(t *testing.T, opts StreamTextOptions) *r87cstreamTwoStep
 	return run
 }
 
-func r87cstreamTSToolCall(c types.ToolCall) map[string]interface{} {
-	return r87cstreamToolCallJSON([]types.ToolCall{c})[0].(map[string]interface{})
-}
-
 func r87cstreamTSToolResult(tr types.ToolResult) map[string]interface{} {
 	m := map[string]interface{}{"type": "tool-result", "toolCallId": tr.ToolCallID, "toolName": tr.ToolName, "input": tr.Input, "output": tr.Result, "dynamic": tr.Dynamic}
 	if tr.ProviderExecuted {
