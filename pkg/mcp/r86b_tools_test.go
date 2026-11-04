@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -186,5 +187,45 @@ func TestR86btoolsWebhookHeadersReadAsLatin1(t *testing.T) {
 	r.Header.Set("content-type", "\xa0application/json\xa0")
 	if code := h.do(r); code != 204 || h.events != 1 {
 		t.Fatalf("code=%d events=%d, want 204 and the event delivered", code, h.events)
+	}
+}
+
+// TS fetchWithValidatedRedirects follows OAuth discovery redirects with
+// redirect: 'manual' and new URL(response.headers.get('location'), current):
+// raw UTF-8 in Location reads as Latin-1 (node: /caf%C3%83%C2%A9) and repeated
+// Location lines are joined with ", " (/a,%20/b).
+func TestR86btoolsOAuthRedirectLocationReadsAsFetch(t *testing.T) {
+	for _, c := range []struct {
+		location []string
+		want     string
+	}{
+		{[]string{"/caf\xc3\xa9"}, "/caf%C3%83%C2%A9"},
+		{[]string{"/a", "/b"}, "/a,%20/b"},
+	} {
+		var mu sync.Mutex
+		var paths []string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			paths = append(paths, r.URL.EscapedPath())
+			n := len(paths)
+			mu.Unlock()
+			if n == 1 {
+				w.Header()["Location"] = c.location
+				w.WriteHeader(http.StatusFound)
+				return
+			}
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		resp, err := oauthMetadataGET(context.Background(), srv.Client(), srv.URL+"/start", "", srv.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		srv.Close()
+		mu.Lock()
+		if len(paths) != 2 || paths[1] != c.want {
+			t.Errorf("Location %q: requested %q, want the second hop at %q", c.location, paths, c.want)
+		}
+		mu.Unlock()
 	}
 }
