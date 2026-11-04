@@ -2173,9 +2173,9 @@ func TestR87cstreambApprovedFullStream(t *testing.T) {
 		{"finishReason":"stop","rawFinishReason":"stop","totalUsage":`+r87cstreambUsageJSON+`,"type":"finish"}]`)
 }
 
-// stream-text.test.ts 33223: prepareStep with model switch and image URLs >
+// stream-text.test.ts 33225: prepareStep with model switch and image URLs >
 // should use the prepareStep model supportedUrls for download decision
-// (TS 3fab50aa9b line 33225).
+// (TS 3fab50aa9b).
 func TestR87cstreambPrepareStepModelSupportedURLs(t *testing.T) {
 	var mu sync.Mutex
 	var calls []map[string]interface{}
@@ -2325,8 +2325,8 @@ func r87cstreambGlobalIntegrations(t *testing.T, integrations ...telemetry.Telem
 	t.Cleanup(func() { telemetry.RegisterTelemetryIntegration(telemetry.NoopTelemetryIntegration{}) })
 }
 
-// stream-text.test.ts 33376: telemetry integrations > should call per-call
-// integration listeners for all lifecycle events (3fab50aa9b line 33378).
+// stream-text.test.ts 33378: telemetry integrations > should call per-call
+// integration listeners for all lifecycle events (TS 3fab50aa9b).
 func TestR87cstreambTelemetryPerCallLifecycle(t *testing.T) {
 	var events r87cstreambEvents
 	in := &r87cstreambIntegration{rec: events.add, names: r87cstreambNames("onStart", "onStart", "onStepStart", "onStepStart",
@@ -2345,8 +2345,8 @@ func TestR87cstreambTelemetryPerCallLifecycle(t *testing.T) {
 	}
 }
 
-// stream-text.test.ts 33449: telemetry integrations > should call globally
-// registered integration listeners (3fab50aa9b line 33451).
+// stream-text.test.ts 33451: telemetry integrations > should call globally
+// registered integration listeners (TS 3fab50aa9b).
 func TestR87cstreambTelemetryGlobalIntegrations(t *testing.T) {
 	var events r87cstreambEvents
 	r87cstreambGlobalIntegrations(t, &r87cstreambIntegration{rec: events.add, names: r87cstreambNames("onStart", "global-onStart", "onStepEnd", "global-onStepEnd", "onEnd", "global-onEnd")})
@@ -2356,9 +2356,9 @@ func TestR87cstreambTelemetryGlobalIntegrations(t *testing.T) {
 	}
 }
 
-// stream-text.test.ts 33481: telemetry integrations > should only call
+// stream-text.test.ts 33483: telemetry integrations > should only call
 // per-call integrations when both global and per-call integrations are
-// provided (3fab50aa9b line 33483).
+// provided (TS 3fab50aa9b).
 func TestR87cstreambTelemetryPerCallReplacesGlobal(t *testing.T) {
 	var events r87cstreambEvents
 	r87cstreambGlobalIntegrations(t, &r87cstreambIntegration{rec: events.add, names: r87cstreambNames("onStart", "global")})
@@ -2369,8 +2369,8 @@ func TestR87cstreambTelemetryPerCallReplacesGlobal(t *testing.T) {
 	}
 }
 
-// stream-text.test.ts 33510: telemetry integrations > should call integration
-// listeners alongside user callbacks (3fab50aa9b line 33512).
+// stream-text.test.ts 33512: telemetry integrations > should call integration
+// listeners alongside user callbacks (TS 3fab50aa9b).
 func TestR87cstreambTelemetryAlongsideUserCallbacks(t *testing.T) {
 	var events r87cstreambEvents
 	r87cstreambConsume(t, StreamTextOptions{
@@ -2390,8 +2390,8 @@ func TestR87cstreambTelemetryAlongsideUserCallbacks(t *testing.T) {
 	}
 }
 
-// stream-text.test.ts 33553: telemetry integrations > should not break
-// streaming when an integration listener throws (3fab50aa9b line 33555; a
+// stream-text.test.ts 33555: telemetry integrations > should not break
+// streaming when an integration listener throws (TS 3fab50aa9b; a
 // Go listener panics).
 func TestR87cstreambTelemetryThrowingIntegration(t *testing.T) {
 	r := r87cstreambConsume(t, StreamTextOptions{
@@ -2404,8 +2404,8 @@ func TestR87cstreambTelemetryThrowingIntegration(t *testing.T) {
 	}
 }
 
-// stream-text.test.ts 33578: telemetry integrations > should support
-// multiple per-call integrations as an array (3fab50aa9b line 33580).
+// stream-text.test.ts 33580: telemetry integrations > should support
+// multiple per-call integrations as an array (TS 3fab50aa9b).
 func TestR87cstreambTelemetryMultiplePerCall(t *testing.T) {
 	var events r87cstreambEvents
 	r87cstreambConsume(t, StreamTextOptions{
