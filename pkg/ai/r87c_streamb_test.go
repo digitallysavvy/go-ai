@@ -282,7 +282,7 @@ func r87cstreambParts(parts []provider.StreamChunk) []map[string]interface{} {
 }
 
 // r87cstreambMessages projects model messages onto TS ModelMessage JSON (the
-// Go-only legacy tool_calls key dropped).
+// Go-only legacy tool_calls key dropped, a file part's fileData as TS data).
 func r87cstreambMessages(t *testing.T, msgs []types.Message) interface{} {
 	t.Helper()
 	out := r87cstreambNorm(t, msgs)
@@ -290,6 +290,15 @@ func r87cstreambMessages(t *testing.T, msgs []types.Message) interface{} {
 	for _, m := range list {
 		if mm, ok := m.(map[string]interface{}); ok {
 			delete(mm, "tool_calls")
+			parts, _ := mm["content"].([]interface{})
+			for _, p := range parts {
+				// A Go file part keeps TS `data` ({type, data}) in fileData
+				// and the legacy raw bytes in data.
+				if pm, ok := p.(map[string]interface{}); ok && pm["fileData"] != nil {
+					pm["data"] = pm["fileData"]
+					delete(pm, "fileData")
+				}
+			}
 		}
 	}
 	if list == nil {
@@ -2160,4 +2169,58 @@ func TestR87cstreambApprovedFullStream(t *testing.T) {
 		{"id":"1","type":"text-start"},{"id":"1","text":"Hello, world!","type":"text-delta"},{"id":"1","type":"text-end"},
 		{"finishReason":"stop","rawFinishReason":"stop","response":{"id":"id-0","modelId":"mock-model-id","timestamp":"<now>"},"type":"finish-step","usage":`+r87cstreambUsageJSON+`},
 		{"finishReason":"stop","rawFinishReason":"stop","totalUsage":`+r87cstreambUsageJSON+`,"type":"finish"}]`)
+}
+
+// stream-text.test.ts 33223: prepareStep with model switch and image URLs >
+// should use the prepareStep model supportedUrls for download decision
+// (TS 3fab50aa9b line 33225).
+func TestR87cstreambPrepareStepModelSupportedURLs(t *testing.T) {
+	var mu sync.Mutex
+	var calls []map[string]interface{}
+	var downloads []DownloadRequest
+	textModel := func(name string, supported map[string][]string) *supportedURLMockModel {
+		return &supportedURLMockModel{supported: supported, MockLanguageModel: &testutil.MockLanguageModel{ProviderName: name, ModelName: name,
+			DoStreamFunc: func(_ context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+				mu.Lock()
+				calls = append(calls, r87cstreambCallOptions(t, o))
+				mu.Unlock()
+				return testutil.NewMockTextStream(r87cstreambText("1", "response from "+name)), nil
+			}}}
+	}
+	with := textModel("with-image-url-support", map[string][]string{"image/*": {`^https?://.*$`}})
+	without := textModel("without-image-url-support", map[string][]string{})
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model: with,
+		Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{
+			types.TextContent{Text: "Describe this image"}, types.ImageContent{URL: "https://example.com/test.jpg"}}}},
+		PrepareStep: func(_ context.Context, s PrepareStepOptions) PrepareStepOptions {
+			return PrepareStepOptions{Model: without}
+		},
+		ExperimentalDownload: func(_ context.Context, reqs []DownloadRequest) ([]*DownloadResult, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			downloads = append(downloads, reqs...)
+			out := make([]*DownloadResult, len(reqs))
+			for i, d := range reqs {
+				if !d.IsURLSupportedByModel {
+					out[i] = &DownloadResult{Data: []byte{1, 2, 3, 4}, MediaType: "image/png"}
+				}
+			}
+			return out, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	r87cstreambAssert(t, "downloads", downloads, `[{"IsURLSupportedByModel":false,"URL":"https://example.com/test.jpg"}]`)
+	r87cstreambAssert(t, "languageModelCalls", calls, `[{"includeRawChunks":false,"prompt":[{"content":[{"text":"Describe this image","type":"text"},
+		{"data":{"data":"AQIDBA==","type":"data"},"mediaType":"image/png","type":"file"}],"role":"user"}],"toolChoice":{"type":"auto"}}]`)
+	if got := r.Text(); got != "response from without-image-url-support" {
+		t.Fatalf("text = %q", got)
+	}
 }
