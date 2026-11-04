@@ -1,7 +1,7 @@
 // Package claudecode is the Go host-side port of TS `@ai-sdk/harness-claude-code`
 // (`createClaudeCode`), pinned to
-// ai@7.0.162, TS 30548ee7f9 (host side and the embedded bridge, resynced in
-// review round 85).
+// ai@7.0.162, TS 3fab50aa9b (host side and the embedded bridge, resynced in
+// review round 87).
 //
 // It implements harness.Harness/Session/PromptControl by launching the
 // embedded, unchanged TS bridge (pkg/harness/bridges, WG6) as `node
@@ -121,6 +121,12 @@ type Settings struct {
 	// StartupTimeout bounds how long to wait for the bridge to announce its
 	// port. Defaults to 120s.
 	StartupTimeout time.Duration
+	// TurnStartTimeout bounds how long a turn waits for its first bridge
+	// event after the start frame was sent. When it passes, the turn fails
+	// with "claude-code bridge did not emit a turn event within <n>ms." and
+	// the bridge connection is closed. Zero uses the default of 120s; a
+	// negative value disables the deadline. Mirrors TS `turnStartTimeoutMs`.
+	TurnStartTimeout time.Duration
 	// Reconnect tunes reconnection after an established bridge connection
 	// drops.
 	Reconnect bridge.ReconnectOptions

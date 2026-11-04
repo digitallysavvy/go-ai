@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/urlnorm"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
@@ -998,6 +999,10 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 			attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.time_per_output_chunk", stats.Avg/1000)
 		}
 	}
+	// TS records the endpoint on the chat span at call end and, for
+	// generateObject/streamObject, in onObjectStepEnd (both
+	// getServerAttributes(request.url)).
+	attrs = append(attrs, serverAttrs(e.RequestURL)...)
 	recordOutputs := e.Settings.ShouldRecordOutputs()
 	// TS records gen_ai.output.messages for every call, an empty response
 	// included ([{role, parts: [], finish_reason}]); only an event that carries
@@ -1084,6 +1089,31 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 	}
 
 	entry.span.End()
+}
+
+// serverAttrs is server.address and server.port for an http(s) endpoint
+// URL, and nothing for an empty, unparsable or non-HTTP one. Only the host
+// and port are recorded, never credentials, path, query or fragment. Mirrors
+// TS `getServerAttributes` (otel/src/server-attributes.ts, 934100cad4):
+// WHATWG parsing, IPv6 brackets removed, the scheme's default port when the
+// URL names none.
+func serverAttrs(rawURL string) []attribute.KeyValue {
+	if rawURL == "" {
+		return nil
+	}
+	u, err := urlnorm.Parse(rawURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return nil
+	}
+	port := u.Port
+	if port < 0 {
+		port = 80
+		if u.Scheme == "https" {
+			port = 443
+		}
+	}
+	host := strings.TrimSuffix(strings.TrimPrefix(u.Host, "["), "]")
+	return []attribute.KeyValue{attribute.String("server.address", host), attribute.Int("server.port", port)}
 }
 
 // finishReasonsAttrs is gen_ai.response.finish_reasons ([finishReason]), or

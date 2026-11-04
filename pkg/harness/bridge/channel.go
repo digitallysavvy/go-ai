@@ -224,6 +224,28 @@ type bufferedEvent struct {
 
 type reconnectHandler struct{ fn func() }
 
+// pendingSend is a frame queued while disconnected, with its optional
+// SendOptions.OnSent notification. Mirrors TS `PendingSend`.
+type pendingSend struct {
+	data   []byte
+	onSent func()
+}
+
+// SendOptions tunes one SendWithOptions call. Mirrors the TS
+// `send(message, {onSent, queueIfDisconnected})` options.
+type SendOptions struct {
+	// OnSent runs once the frame has been handed to the socket (not after
+	// the bridge acknowledged it). For a frame flushed after a reconnect it
+	// runs after the OnReconnect handlers of that connection. It never runs
+	// for a frame that was discarded.
+	OnSent func()
+	// QueueIfDisconnected controls what happens to a frame sent while the
+	// channel is disconnected (nil means true): queue it and flush it after
+	// the next reconnect, or discard it when the caller owns reconnect
+	// replay (false).
+	QueueIfDisconnected *bool
+}
+
 type cancelHandle struct{ cancel context.CancelCauseFunc }
 
 // ErrChannelAborted is the abort reason used when the channel tears down an
@@ -285,7 +307,7 @@ type Channel struct {
 	terminal          bool
 	pinned            *pinnedCursor
 	lastSeen          float64
-	pendingSends      [][]byte
+	pendingSends      []pendingSend
 	activeConnect     *cancelHandle
 	reconnectAbort    *cancelHandle
 	done              chan struct{}
@@ -486,6 +508,13 @@ func (c *Channel) OnReconnect(handler func()) (unsubscribe func()) {
 // frame is queued and flushed after the next reconnect. It fails only once
 // the channel is closed.
 func (c *Channel) Send(cmd InboundCommand) error {
+	return c.SendWithOptions(cmd, SendOptions{})
+}
+
+// SendWithOptions is Send with per-frame options: an OnSent notification
+// and whether a frame sent while disconnected is queued (the default) or
+// discarded because the caller replays it after a reconnect.
+func (c *Channel) SendWithOptions(cmd InboundCommand, opts SendOptions) error {
 	c.mu.Lock()
 	terminal := c.terminal
 	c.mu.Unlock()
@@ -496,7 +525,10 @@ func (c *Channel) Send(cmd InboundCommand) error {
 	if err != nil {
 		return err
 	}
-	c.rawSend(data)
+	queue := opts.QueueIfDisconnected == nil || *opts.QueueIfDisconnected
+	if c.rawSendFrame(pendingSend{data: data, onSent: opts.OnSent}, queue) && opts.OnSent != nil {
+		opts.OnSent()
+	}
 	return nil
 }
 
@@ -716,8 +748,9 @@ func (c *Channel) reconnectLoop() {
 					failed = conn
 				}
 			}
+			var flushed []func()
 			if failed == nil {
-				failed = c.flushPendingLocked()
+				failed, flushed = c.flushPendingLocked()
 			}
 			c.sendMu.Unlock()
 			if failed == nil {
@@ -727,9 +760,13 @@ func (c *Channel) reconnectLoop() {
 				for _, h := range handlers {
 					h.fn()
 				}
+				// TS queues each flushed frame's onSent as a microtask, so
+				// they run after the synchronous reconnect handlers.
+				runOnSent(flushed)
 				c.debug(ChannelDebugEvent{Event: DebugReconnected, Attempt: attempt, LastSeenEventID: c.LastSeenEventID()})
 				return
 			}
+			runOnSent(flushed)
 			// A write failed during the flush: like a TS flush that throws,
 			// this attempt failed. The unsent frames stay queued for the next
 			// connection; the failed socket is retired before it is closed so
@@ -842,52 +879,72 @@ func (c *Channel) debug(ev ChannelDebugEvent) {
 // sees the drop and reconnects (TS `ws` destroys a socket whose write
 // failed); the frame goes out again after the resume.
 func (c *Channel) rawSend(data []byte) {
-	c.sendMu.Lock()
-	defer c.sendMu.Unlock()
-	if conn := c.rawSendLocked(data); conn != nil {
-		_ = conn.Close()
-	}
+	c.rawSendFrame(pendingSend{data: data}, true)
 }
 
-// rawSendLocked is rawSend with c.sendMu held. It returns the socket whose
-// write failed (to be closed by the caller), or nil.
-func (c *Channel) rawSendLocked(data []byte) Conn {
+// rawSendFrame is rawSend for one frame with its OnSent callback. With
+// queue false (TS `queueIfDisconnected: false`) a frame that cannot be
+// written now is discarded instead of queued. It reports whether the frame
+// was written; the caller then runs its OnSent (queued frames run theirs
+// when they are flushed).
+func (c *Channel) rawSendFrame(frame pendingSend, queue bool) bool {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	sent, failed := c.rawSendLocked(frame, queue)
+	if failed != nil {
+		_ = failed.Close()
+	}
+	return sent
+}
+
+// rawSendLocked is rawSendFrame with c.sendMu held. It reports whether the
+// frame was written and returns the socket whose write failed (to be closed
+// by the caller), or nil.
+func (c *Channel) rawSendLocked(frame pendingSend, queue bool) (sent bool, failed Conn) {
 	c.mu.Lock()
 	conn := c.ws
 	if !c.connected || conn == nil || !connIsOpen(conn) {
-		c.pendingSends = append(c.pendingSends, data)
+		if queue {
+			c.pendingSends = append(c.pendingSends, frame)
+		}
 		c.mu.Unlock()
-		return nil
+		return false, nil
 	}
 	c.mu.Unlock()
-	if err := conn.Send(data); err != nil {
+	if err := conn.Send(frame.data); err != nil {
 		markConnClosed(conn)
-		c.mu.Lock()
-		c.pendingSends = append(c.pendingSends, data)
-		c.mu.Unlock()
-		return conn
+		if queue {
+			c.mu.Lock()
+			c.pendingSends = append(c.pendingSends, frame)
+			c.mu.Unlock()
+		}
+		return false, conn
 	}
-	return nil
+	return true, nil
 }
 
 // flushPendingLocked mirrors TS `flushPending`: it sends the queued frames
 // one at a time while the socket stays open and removes only the frames it
 // sent, so frames left when the socket stops being open (or a write fails)
 // stay queued, in order. c.sendMu must be held, c.mu must not. It returns
-// the socket whose write failed (to be closed by the caller), or nil.
-func (c *Channel) flushPendingLocked() Conn {
+// the socket whose write failed (to be closed by the caller), or nil, and
+// the OnSent callbacks of the frames it wrote, in order.
+func (c *Channel) flushPendingLocked() (failed Conn, onSent []func()) {
 	for {
 		c.mu.Lock()
 		conn := c.ws
 		if !c.connected || conn == nil || !connIsOpen(conn) || len(c.pendingSends) == 0 {
 			c.mu.Unlock()
-			return nil
+			return nil, onSent
 		}
-		data := c.pendingSends[0]
+		frame := c.pendingSends[0]
 		c.mu.Unlock()
-		if err := conn.Send(data); err != nil {
+		if err := conn.Send(frame.data); err != nil {
 			markConnClosed(conn)
-			return conn
+			return conn, onSent
+		}
+		if frame.onSent != nil {
+			onSent = append(onSent, frame.onSent)
 		}
 		c.mu.Lock()
 		// Only this goroutine (holding sendMu) removes from the front.
@@ -896,6 +953,12 @@ func (c *Channel) flushPendingLocked() Conn {
 			c.pendingSends = nil
 		}
 		c.mu.Unlock()
+	}
+}
+
+func runOnSent(fns []func()) {
+	for _, fn := range fns {
+		fn()
 	}
 }
 

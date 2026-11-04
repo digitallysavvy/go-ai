@@ -230,6 +230,12 @@ type LanguageModelCallEndEvent struct {
 	// ai.response.providerMetadata when OpenTelemetryOptions.ProviderMetadata
 	// is set (18651f6).
 	ProviderMetadata map[string]interface{}
+	// RequestURL is the HTTP origin of the endpoint the provider reported for
+	// this model call ("https://host[:port]"; never a path or credentials),
+	// or "" when unknown. OpenTelemetry records it as server.address and
+	// server.port. Mirrors TS `LanguageModelCallEndEvent.request.url`
+	// (934100cad4).
+	RequestURL string
 
 	// AIVersion is the version of the Go AI SDK that emitted the event. The
 	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
