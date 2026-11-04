@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // StripWorkDir removes the session working-directory prefix from path-bearing
@@ -273,14 +275,9 @@ func hasPrefix(s, prefix string) bool {
 
 // isJSSpace reports whether r matches the JavaScript regex class `\s`, which
 // (unlike Go's ASCII-only `\s`) includes the vertical tab, no-break space,
-// the Unicode space separators, the line/paragraph separators and the BOM.
-func isJSSpace(r rune) bool {
-	switch r {
-	case '\t', '\n', '\v', '\f', '\r', ' ', 0x00a0, 0x1680, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff:
-		return true
-	}
-	return r >= 0x2000 && r <= 0x200a
-}
+// the Unicode space separators, the line/paragraph separators and the BOM:
+// the same set String.prototype.trim strips.
+func isJSSpace(r rune) bool { return providerutils.IsJSWhiteSpace(r) }
 
 func isPathBoundary(value string, index int, precedingCharacter string, havePrecedingCharacter bool) bool {
 	var r rune
