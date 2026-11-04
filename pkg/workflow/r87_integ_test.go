@@ -49,7 +49,9 @@ func TestR87integWorkflowToModelOutputErrorKeepsWorkflowOrder(t *testing.T) {
 					return nil, errors.New("tmo failed")
 				}}
 			if !tc.providerExecuted {
-				tool.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "r", nil }
+				tool.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+					return "r", nil
+				}
 			}
 			model := &r87integToolModel{providerExecuted: tc.providerExecuted}
 			agent, err := NewWorkflowAgent(WorkflowAgent{Model: model, Tools: []types.Tool{tool}})

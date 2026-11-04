@@ -223,8 +223,10 @@ func TestR87integApprovalErrorStopsAtToolCallPart(t *testing.T) {
 	r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "x",
 		Tools: []types.Tool{{Name: "t", Parameters: map[string]interface{}{"type": "object"},
 			ContextSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "properties": map[string]interface{}{"a": map[string]interface{}{"type": "string"}}, "required": []interface{}{"a"}}),
-			ToolApproval: types.ToolNeedsApprovalFunc(func(context.Context, map[string]interface{}, types.ToolNeedsApprovalOptions) bool { return true }),
-			Execute:      func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return 1, nil }}},
+			ToolApproval:  types.ToolNeedsApprovalFunc(func(context.Context, map[string]interface{}, types.ToolNeedsApprovalOptions) bool { return true }),
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return 1, nil
+			}}},
 		ToolsContext: map[string]interface{}{"t": map[string]interface{}{"a": 1}},
 	})
 	if err != nil {
