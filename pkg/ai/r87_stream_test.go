@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"regexp"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -163,5 +164,63 @@ func TestR87streamRequestURLFieldsJSON(t *testing.T) {
 	}
 	if (LanguageModelCallEndEvent{}).Request != nil {
 		t.Error("zero LanguageModelCallEndEvent.Request is not nil")
+	}
+}
+
+// TS smoothStream's detectChunk throws inside the transform when a custom
+// detector breaks its contract or a RegExp matches the empty string, so the
+// stream errors there. Recorded with streamText under Node v24 (packages/ai
+// dist at 3fab50aa9b), chunking `() => ”`: fullStream yields start,
+// start-step, text-start and then rejects with "Chunking function must return
+// a non-empty string."; onError, onStepEnd and onEnd are not called and
+// result.text rejects. Go passed the rest through after an error part and
+// finished the step normally.
+func TestR87streamSmoothStreamDetectorErrorEndsRun(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		chunking interface{}
+		want     string
+	}{
+		{"empty function match", ChunkDetector(func(string) (string, bool) { return "", true }), "Chunking function must return a non-empty string."},
+		{"empty regexp match", regexp.MustCompile(`x*`), "Chunking RegExp must not match an empty string."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeTextStart, ID: "1"},
+					{Type: provider.ChunkTypeText, ID: "1", Text: "hello "},
+					{Type: provider.ChunkTypeText, ID: "1", Text: "world "},
+					{Type: provider.ChunkTypeTextEnd, ID: "1"},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: r72streamTestUsage},
+				}), nil
+			}}
+			zero := 0
+			sm, err := SmoothStream(SmoothStreamOptions{DelayInMs: &zero, Chunking: tc.chunking})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var callbacks []string
+			r, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "x", ExperimentalTransform: []StreamTransformFunc{sm},
+				OnError:    func(context.Context, error) { callbacks = append(callbacks, "onError") },
+				OnStepEnd:  func(context.Context, types.StepResult, interface{}) { callbacks = append(callbacks, "onStepEnd") },
+				OnEndEvent: func(context.Context, OnFinishEvent) { callbacks = append(callbacks, "onEnd") },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var parts []string
+			for c := range r.Chunks() {
+				parts = append(parts, string(c.Type))
+			}
+			if want := []string{"start", "start-step", "text-start"}; !reflect.DeepEqual(parts, want) {
+				t.Errorf("full stream = %v, want %v", parts, want)
+			}
+			if _, err := r.ReadAll(); err == nil || err.Error() != tc.want {
+				t.Errorf("ReadAll() error = %v, want %q", err, tc.want)
+			}
+			if len(callbacks) != 0 {
+				t.Errorf("callbacks = %v, want none", callbacks)
+			}
+		})
 	}
 }

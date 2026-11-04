@@ -2000,6 +2000,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		rec = &transformRecorder{}
 	}
 	transformStopped := false
+	// transformFailErr: a built-in transform failed (TS: it threw, so the
+	// stream errors). Nothing more reaches the consumer and the run ends
+	// with it.
+	var transformFailErr error
 	var outputTracker partialOutputTracker
 	var outputText outputTextStage
 	var sinkPartialErr error
@@ -2013,6 +2017,15 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	forwardThroughTransformChain = func(startIdx int, chunks []provider.StreamChunk) {
 		if startIdx >= len(opts.ExperimentalTransform) {
 			for _, c := range chunks {
+				if transformFailErr != nil {
+					return
+				}
+				var failure *streamTransformFailure
+				if c.Type == provider.ChunkTypeError && errors.As(c.Err, &failure) {
+					transformFailErr = failure.err
+					transformStopped = true
+					return
+				}
 				// TS createOutputTransformStream runs after the user
 				// transforms: the partial output follows the transformed
 				// text, and the first text block's deltas are published
@@ -3091,6 +3104,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 		}
 		chunkDeadlineCancel()
+		if transformFailErr != nil && r.err == nil {
+			r.err = transformFailErr
+		}
 		if transformStopped && r.err == nil {
 			// A transform called stopStream: close the provider stream, run
 			// no tools, and record the step from what the transform emitted.
