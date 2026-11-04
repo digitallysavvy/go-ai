@@ -63,6 +63,7 @@ func (m *LanguageModel) fileReferenceProvider() string {
 		return "openai"
 	}
 	name, _, _ := strings.Cut(m.Provider(), ".")
+	name = providerutils.JSTrim(name) // TS provider.split('.')[0].trim()
 	if name == "" {
 		return "openai"
 	}
@@ -522,7 +523,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 				}
 				strict := true
 				cname, _, _ := strings.Cut(m.provider.Name(), ".")
-				if resolved, _ := providerutils.ResolveOpenAICompatibleProviderOptions(strings.TrimSpace(cname), opts.ProviderOptions); resolved != nil {
+				if resolved, _ := providerutils.ResolveOpenAICompatibleProviderOptions(providerutils.JSTrim(cname), opts.ProviderOptions); resolved != nil {
 					if v, ok := resolved["strictJsonSchema"].(bool); ok {
 						strict = v
 					}
@@ -1383,7 +1384,7 @@ func (s *openAIStream) chunkShape() providerutils.ChatChunkShape {
 		return providerutils.ChatChunkShape{Kind: providerutils.ChunkKindOpenAI}
 	}
 	name, _, _ := strings.Cut(s.providerName, ".")
-	return providerutils.ChatChunkShape{Error: providerutils.ChunkErrorKindForProvider(strings.TrimSpace(name))}
+	return providerutils.ChatChunkShape{Error: providerutils.ChunkErrorKindForProvider(providerutils.JSTrim(name))}
 }
 
 // contentParts reads a delta's `content` (already schema-validated): a string,
@@ -2002,14 +2003,14 @@ func (m *LanguageModel) thoughtSignatureKey() string {
 		return ""
 	}
 	name, _, _ := strings.Cut(m.provider.Name(), ".")
-	return strings.TrimSpace(name)
+	return providerutils.JSTrim(name)
 }
 
 // compatName is the provider name used for provider options and metadata on
 // OpenAI-compatible hosts (TS providerOptionsName: provider.split('.')[0]).
 func (m *LanguageModel) compatName() string {
 	name, _, _ := strings.Cut(m.provider.Name(), ".")
-	return strings.TrimSpace(name)
+	return providerutils.JSTrim(name)
 }
 
 // applyCompatMetadataKey moves the camelCase namespace convertResponse uses

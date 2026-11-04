@@ -237,6 +237,7 @@ func (m *EmbeddingModel) applyDimensions(reqBody map[string]interface{}, opts *p
 	var warnings []types.Warning
 	if m.provider.config.OpenAICompatible {
 		name, _, _ := strings.Cut(m.provider.Name(), ".")
+		name = providerutils.JSTrim(name) // TS providerOptionsName: split('.')[0].trim()
 		var resolved map[string]interface{}
 		resolved, warnings = providerutils.ResolveOpenAICompatibleProviderOptions(name, opts.ProviderOptions)
 		dimensionsOption, userOption = resolved["dimensions"], resolved["user"]
