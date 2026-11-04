@@ -262,6 +262,15 @@ const sandboxTimeoutGrace = 5 * time.Second
 // ones), not a completed result -- resultJSON/isUndefined are meaningless
 // when interrupted is true.
 func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *qjs.Context) (resultJSON string, isUndefined bool, interrupted bool, err error)) (resultJSON string, isUndefined bool, interrupted bool, err error) {
+	return runInSandboxCtx(ctx, policy, func(_ context.Context, jsCtx *qjs.Context) (string, bool, bool, error) {
+		return drive(jsCtx)
+	})
+}
+
+// runInSandboxCtx is runInSandbox for a drive that waits on host work: it
+// also gets the sandbox's context, done once the invocation is aborted, times
+// out or runs out of CPU budget.
+func runInSandboxCtx(ctx context.Context, policy resolvedPolicy, drive func(sandboxCtx context.Context, jsCtx *qjs.Context) (resultJSON string, isUndefined bool, interrupted bool, err error)) (resultJSON string, isUndefined bool, interrupted bool, err error) {
 	if werr := warmUp(); werr != nil {
 		return "", false, false, werr
 	}
@@ -370,7 +379,7 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 		// Sandbox setup (WASM instantiation, hardening) is not sandboxed code:
 		// the CPU budget counts only the script's own execution.
 		budget.start(cancelSandbox)
-		rJSON, isUndef, interruptedResult, derr := drive(jsCtx)
+		rJSON, isUndef, interruptedResult, derr := drive(sandboxCtx, jsCtx)
 		if derr != nil {
 			out.err = classifySandboxFailure(derr, ctx, policy, budget)
 			return

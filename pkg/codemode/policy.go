@@ -54,12 +54,12 @@ type ExecutionPolicy struct {
 	// one invocation. Default: 256.
 	MaxBridgeRequests int
 
-	// MaxInFlightBridgeRequests bounds how many host tool calls may
-	// accumulate in one pending-interruption batch at once (see the
-	// package doc's "Host tool bridge dispatch" section): calls dispatched
-	// concurrently (e.g. within a Promise.all([...])) that all need
-	// approval count toward this together. Exceeding it fails the whole
-	// invocation with *BridgeLimitError. Default: 32.
+	// MaxInFlightBridgeRequests bounds how many host tool calls may run at
+	// once (see the package doc's "Host tool bridge dispatch" section): the
+	// calls of a Promise.all([...]) start together and count together until
+	// each finishes; a call pending an interruption no longer counts once it
+	// paused. Starting one more fails the whole invocation with
+	// *BridgeLimitError. Default: 32.
 	MaxInFlightBridgeRequests int
 }
 

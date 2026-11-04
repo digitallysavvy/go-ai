@@ -187,9 +187,12 @@ func TestConcurrentApprovalBatch_OneNeedsApprovalOneDoesNot(t *testing.T) {
 }
 
 // A nested Promise.all still collects every concurrently-dispatched call
-// into the same batch: the inner array's elements are evaluated
-// synchronously while building it, exactly like the outer array's, all
-// before the sandbox's job queue ever goes quiescent.
+// into the same batch. A host call starts only once its thenable is
+// observed (run@2.1.8 createBridgePromise): the inner Promise.all observes
+// b and c while the outer array is still being built, and the outer one
+// observes a after it, so the requests (and the batch, in request order)
+// are b, c, a, as in TS (checked against run's createBridgePromise in
+// Node).
 func TestConcurrentApprovalBatch_NestedPromiseAll(t *testing.T) {
 	var mu sync.Mutex
 	calls := map[string]int{}
@@ -229,10 +232,10 @@ func TestConcurrentApprovalBatch_NestedPromiseAll(t *testing.T) {
 		t.Fatalf("expected all three concurrently-dispatched calls (a, b, c) in one batch, got %d: %#v", len(batch), batch)
 	}
 	gotNames := []string{batch[0].ToolName, batch[1].ToolName, batch[2].ToolName}
-	wantNames := []string{"a", "b", "c"}
+	wantNames := []string{"b", "c", "a"}
 	for i, want := range wantNames {
 		if gotNames[i] != want {
-			t.Fatalf("expected dispatch order a, b, c (array-literal evaluation order); got %v", gotNames)
+			t.Fatalf("expected request order b, c, a (observation order); got %v", gotNames)
 		}
 	}
 

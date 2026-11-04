@@ -13,7 +13,7 @@ import (
 // never stay reachable from code-mode JavaScript: each one is a host-escape
 // primitive (filesystem, process/env, raw binary JSON) with no sanctioned
 // path in or out of the sandbox other than the `tools.*` host bridge
-// (bindCodeModeDispatch in run_code_mode.go). stripSandboxGlobals deletes
+// (bindCodeModeDispatch in bridge_guest.go). stripSandboxGlobals deletes
 // every one of them from the global object before any user source runs, as
 // defense in depth alongside never mounting a host filesystem
 // (qjs.Option.NoFSMount, wired in runInSandbox below) and never passing

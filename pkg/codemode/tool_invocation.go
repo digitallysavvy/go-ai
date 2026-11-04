@@ -2,12 +2,16 @@ package codemode
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/third_party/qjs"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
@@ -30,9 +34,9 @@ type toolBridge struct {
 	// replayLedger holds every call from a prior invocation of the
 	// identical source that had already completed, keyed by its 0-based
 	// call index (see replayRecord's doc comment for why this is sparse,
-	// not a "calls 0..N-1" prefix, since CM3's concurrent batching); invoke
-	// short-circuits an index present here with its recorded output
-	// instead of calling the real host tool. nil on a fresh
+	// not a "calls 0..N-1" prefix, since CM3's concurrent batching); start
+	// replays an index present here with its recorded outcome instead of
+	// calling the real host tool. nil on a fresh
 	// (non-continuation) invocation.
 	replayLedger map[int]replayRecord
 
@@ -52,7 +56,7 @@ type toolBridge struct {
 	mu           sync.Mutex
 	requestCount int
 
-	// committed accumulates every call resolved so far this invocation,
+	// committed accumulates every call settled so far this invocation,
 	// keyed by its 0-based call index (see replayRecord's doc comment for
 	// why this must be index-keyed rather than append-ordered: a
 	// later-dispatched call can settle before an earlier-dispatched one
@@ -66,21 +70,19 @@ type toolBridge struct {
 	// pendingBatch accumulates every call that decided to interrupt
 	// (approval under ApprovalModeInterrupt, or a host tool calling
 	// RequestCodeModeInterrupt) during the current invocation, in the call
-	// order each one was dispatched. A dispatch that decides to interrupt
-	// never resolves or rejects its own Promise (see invoke's doc comment
-	// and bindCodeModeDispatch in run_code_mode.go): the sandboxed script
-	// keeps running -- issuing further concurrent dispatches, e.g. the
-	// rest of a `Promise.all([...])` array -- until the job queue goes
-	// quiescent (runInSandbox's poll loop, driven by
-	// qjs.Context.RunPendingJobs), at which point every entry collected
-	// here so far is surfaced together as one multi-item Interrupt batch.
+	// order of their request numbers. A call that decides to interrupt is
+	// never settled (see finish): the sandboxed script keeps running --
+	// starting further calls, e.g. the rest of a `Promise.all([...])`
+	// array -- until the job queue is idle with no call in flight
+	// (driveCodeModeExecution), at which point every entry collected here
+	// so far is surfaced together as one multi-item Interrupt batch.
 	// This is what lets Promise.all([tools.a(x), tools.b(y)]), where both
 	// need approval, produce a single two-item Continuation instead of two
 	// single-item ones chained together.
 	pendingBatch []PendingInterruption
 
-	// fatalErr, once set, wins over everything else once runInSandbox next
-	// polls the bridge: an aborted context or an exceeded bridge-request
+	// fatalErr, once set, wins over everything else once
+	// driveCodeModeExecution next polls the bridge: an aborted context or an exceeded bridge-request
 	// limit must stop the whole invocation immediately, not just the one
 	// call that observed it (mirrors TypeScript's failTerminal, which
 	// aborts the entire worker run for exactly these two conditions,
@@ -100,6 +102,63 @@ type toolBridge struct {
 	// (mirrors TypeScript's codeModeErrors accumulator /
 	// findPreservedCodeModeError).
 	typedErrs []CodeModeError
+
+	// The asynchronous half of the bridge (see start). toolCtx is the
+	// context host tools run under: the caller's, cancelled once the
+	// invocation ends (TS passes run's invocation abort signal).
+	toolCtx     context.Context
+	cancelTools context.CancelFunc
+	toolNames   []string
+	guest       *qjs.Value
+	determinism runDeterminism
+
+	// inFlight counts started host calls whose outcome the drive loop has
+	// not taken yet (TS run's inFlightBridgeRequests); done holds the
+	// outcomes the tool goroutines produced, in completion order, and
+	// notify wakes the drive loop.
+	inFlight int
+	done     []bridgeCompletion
+	notify   chan struct{}
+	closed   bool
+	wg       sync.WaitGroup
+
+	// Responses reach the guest one at a time in settlement order (TS run's
+	// queueBridgeResponse): nextSettlementOrder numbers each settled call,
+	// starting after the replayed ledger's highest order, and
+	// nextResponseOrder is the next order to deliver. immediate holds
+	// replayed outcomes recorded without an order (continuations made
+	// before settlement orders were recorded), delivered as they come.
+	ready               map[int]bridgeResponse
+	immediate           []bridgeResponse
+	nextSettlementOrder int
+	nextResponseOrder   int
+
+	// finished is set once the script itself produced a result (fulfilled
+	// or rejected), as opposed to stopping on an interruption or a fatal
+	// error.
+	finished bool
+
+	// batchIndex is pendingBatch's call numbers, kept so the batch is
+	// reported in call order (TS sorts the pending interruption indexes).
+	batchIndex []int
+}
+
+// bridgeCompletion is one host call's outcome from its goroutine.
+type bridgeCompletion struct {
+	n         int
+	toolName  string
+	inputJSON string
+	output    string
+	err       error
+}
+
+// bridgeResponse is one settlement to deliver to the guest.
+type bridgeResponse struct {
+	id         int
+	ok         bool
+	outputJSON string
+	errMessage string
+	dateNowMs  int64
 }
 
 func newToolBridge(ctx context.Context, input RunInput, options *Options, policy resolvedPolicy, outerToolCall string, replayLedger map[int]replayRecord, resumePendings map[int]PendingInterruption, resumeResolutions map[int]interface{}) *toolBridge {
@@ -107,23 +166,345 @@ func newToolBridge(ctx context.Context, input RunInput, options *Options, policy
 	if input.ToolExecutionOptions != nil {
 		base = *input.ToolExecutionOptions
 	}
+	toolNames := make([]string, 0, len(input.Tools))
+	for name := range input.Tools {
+		toolNames = append(toolNames, name)
+	}
+	sort.Strings(toolNames)
+	toolCtx, cancelTools := context.WithCancel(ctx)
+	nextSettlementOrder := 0
+	for _, rec := range replayLedger {
+		nextSettlementOrder = max(nextSettlementOrder, rec.SettledOrder)
+	}
 	return &toolBridge{
-		ctx:               ctx,
-		tools:             input.Tools,
-		baseOptions:       base,
-		options:           options,
-		policy:            policy,
-		outerToolCall:     outerToolCall,
-		replayLedger:      replayLedger,
-		resumePendings:    resumePendings,
-		resumeResolutions: resumeResolutions,
-		committed:         make(map[int]replayRecord),
+		ctx:                 ctx,
+		toolCtx:             toolCtx,
+		cancelTools:         cancelTools,
+		toolNames:           toolNames,
+		determinism:         newRunDeterminism(),
+		notify:              make(chan struct{}, 1),
+		ready:               make(map[int]bridgeResponse),
+		nextSettlementOrder: nextSettlementOrder,
+		nextResponseOrder:   1,
+		tools:               input.Tools,
+		baseOptions:         base,
+		options:             options,
+		policy:              policy,
+		outerToolCall:       outerToolCall,
+		replayLedger:        replayLedger,
+		resumePendings:      resumePendings,
+		resumeResolutions:   resumeResolutions,
+		committed:           make(map[int]replayRecord),
 	}
 }
 
-// invoke handles one `tools.<name>(input)` call. inputJSON is "" when the
-// sandbox called the tool with no arguments.
-func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err error) {
+// start begins one host call the guest has observed (see
+// codeModeGuestSource) and returns its request number, which the guest uses
+// to match the settlement. It runs on the sandbox goroutine, in the order
+// the guest starts calls, so request numbers (and the `:tool-N` tool call
+// IDs) follow TS run's request order. Mirrors run's
+// handleHostFunctionRequest: an aborted invocation, the bridge request limit
+// and the in-flight limit are terminal (the call never settles; the drive
+// loop stops on the fatal error); a call already settled in the
+// continuation's ledger is replayed with its recorded outcome, in its
+// recorded settlement order; anything else runs on its own goroutine, so
+// several host calls are in flight together as in TS.
+//
+// serializeErr is the error serializing the call's input failed with (TS
+// rejects the call with the JSON payload error); the call still counts as a
+// request.
+func (b *toolBridge) start(toolName, inputJSON string, serializeErr error) int {
+	if cErr := b.ctx.Err(); cErr != nil {
+		b.setFatal(NewAbortedError())
+		return 0
+	}
+
+	b.mu.Lock()
+	b.requestCount++
+	n := b.requestCount
+	inFlight := b.inFlight
+	b.mu.Unlock()
+	if b.policy.MaxBridgeRequests > 0 && n > b.policy.MaxBridgeRequests {
+		b.setFatal(NewBridgeLimitError(
+			fmt.Sprintf("JavaScript runtime exceeded the %d bridge request limit.", b.policy.MaxBridgeRequests),
+			map[string]interface{}{"maxBridgeRequests": b.policy.MaxBridgeRequests},
+		))
+		return n
+	}
+	if b.policy.MaxInFlightBridgeRequests > 0 && inFlight >= b.policy.MaxInFlightBridgeRequests {
+		b.setFatal(NewBridgeLimitError(
+			fmt.Sprintf("JavaScript runtime exceeded the %d in-flight bridge request limit.", b.policy.MaxInFlightBridgeRequests),
+			map[string]interface{}{"maxInFlightBridgeRequests": b.policy.MaxInFlightBridgeRequests},
+		))
+		return n
+	}
+	idx := n - 1 // 0-based call index, aligned with replayLedger/resumePendings.
+
+	// Replay a call already settled by a prior invocation of this same
+	// source: deliver its recorded outcome without touching the real host
+	// tool, so side effects never repeat. Keyed by call index, not position
+	// (see replayLedger's doc comment). TS run's assertReplayMatches first
+	// checks the call is the recorded one.
+	if rec, ok := b.replayLedger[idx]; ok {
+		if rec.ToolName != toolName || rec.InputJSON != inputJSON {
+			b.setFatal(b.replayDivergedError(n, rec.ToolName, toolName))
+			return n
+		}
+		b.mu.Lock()
+		b.committed[idx] = rec
+		resp := bridgeResponse{id: n, ok: rec.Status != replayStatusRejected, outputJSON: rec.OutputJSON, errMessage: rec.ErrorMessage, dateNowMs: rec.DateNowMs}
+		var qerr CodeModeError
+		if rec.SettledOrder == 0 {
+			b.immediate = append(b.immediate, resp)
+		} else {
+			qerr = b.queueResponseLocked(rec.SettledOrder, resp)
+		}
+		b.mu.Unlock()
+		if qerr != nil {
+			b.setFatal(qerr)
+		}
+		return n
+	}
+	if pending, ok := b.resumePendings[idx]; ok && !sameRecordedCall(pending, toolName, inputJSON) {
+		b.setFatal(b.replayDivergedError(n, pending.ToolName, toolName))
+		return n
+	}
+
+	if serializeErr != nil {
+		b.finish(bridgeCompletion{n: n, toolName: toolName, inputJSON: inputJSON, err: serializeErr}, false)
+		return n
+	}
+
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return n
+	}
+	b.inFlight++
+	b.wg.Add(1)
+	b.mu.Unlock()
+	go func() {
+		defer b.wg.Done()
+		out, err := b.invoke(n, toolName, inputJSON)
+		b.mu.Lock()
+		b.done = append(b.done, bridgeCompletion{n: n, toolName: toolName, inputJSON: inputJSON, output: out, err: err})
+		b.mu.Unlock()
+		select {
+		case b.notify <- struct{}{}:
+		default:
+		}
+	}()
+	return n
+}
+
+// replayDivergedError is TS run's assertReplayMatches error.
+func (b *toolBridge) replayDivergedError(n int, expected, received string) CodeModeError {
+	return NewProtocolError("Continuation replay diverged from the recorded host function ledger.", map[string]interface{}{
+		"bridgeIndex":              n,
+		"expectedHostFunctionName": b.hostFunctionName(expected),
+		"receivedHostFunctionName": b.hostFunctionName(received),
+	})
+}
+
+// hostFunctionName is the TS code-mode host function a tool name is bound
+// to: `__codeMode.tool<index>` for a known tool, `__codeMode.missing`
+// otherwise.
+func (b *toolBridge) hostFunctionName(toolName string) string {
+	for i, name := range b.toolNames {
+		if name == toolName {
+			return "__codeMode.tool" + strconv.Itoa(i)
+		}
+	}
+	return "__codeMode.missing"
+}
+
+// sameRecordedCall reports whether a resumed call is the one the pending
+// interruption recorded (TS assertReplayMatches compares the host function
+// and its serialized arguments).
+func sameRecordedCall(pending PendingInterruption, toolName, inputJSON string) bool {
+	if pending.ToolName != toolName {
+		return false
+	}
+	var got interface{}
+	if inputJSON != "" {
+		if err := json.Unmarshal([]byte(inputJSON), &got); err != nil {
+			return false
+		}
+	}
+	want := pending.Input
+	if want != nil {
+		// The recorded input went through a JSON round trip already when the
+		// continuation was encoded; normalize Go-side values the same way.
+		if data, err := json.Marshal(want); err == nil {
+			want = nil
+			if uerr := json.Unmarshal(data, &want); uerr != nil {
+				return false
+			}
+		}
+	}
+	return reflect.DeepEqual(got, want)
+}
+
+// queueResponseLocked queues resp for delivery at settlement order order
+// (TS run's queueBridgeResponse). b.mu must be held.
+func (b *toolBridge) queueResponseLocked(order int, resp bridgeResponse) CodeModeError {
+	if _, dup := b.ready[order]; dup || order < b.nextResponseOrder {
+		return NewProtocolError("Duplicate bridge settlement order.", map[string]interface{}{"settledOrder": order})
+	}
+	b.ready[order] = resp
+	return nil
+}
+
+// finish records one host call's outcome on the sandbox goroutine (TS run's
+// handleHostFunctionRequest tail / handleHostFunctionFailure): a value or an
+// ordinary failure is numbered in settlement order, recorded in the ledger
+// and queued for the guest; an interruption joins the pending batch and
+// never settles; an abort or a bridge limit is terminal. wasInFlight is
+// whether the call counted as in flight.
+func (b *toolBridge) finish(c bridgeCompletion, wasInFlight bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if wasInFlight {
+		b.inFlight--
+	}
+	idx := c.n - 1
+	if c.err == nil {
+		b.nextSettlementOrder++
+		order := b.nextSettlementOrder
+		now := time.Now().UnixMilli()
+		b.committed[idx] = replayRecord{ToolName: c.toolName, InputJSON: c.inputJSON, OutputJSON: c.output, SettledOrder: order, DateNowMs: now}
+		if qerr := b.queueResponseLocked(order, bridgeResponse{id: c.n, ok: true, outputJSON: c.output, dateNowMs: now}); qerr != nil && b.fatalErr == nil {
+			b.fatalErr = qerr
+		}
+		return
+	}
+	switch e := c.err.(type) {
+	case *interruptUnwind:
+		// Keep the batch in call order.
+		pos := sort.SearchInts(b.batchIndex, c.n)
+		b.batchIndex = append(b.batchIndex, 0)
+		copy(b.batchIndex[pos+1:], b.batchIndex[pos:])
+		b.batchIndex[pos] = c.n
+		b.pendingBatch = append(b.pendingBatch, PendingInterruption{})
+		copy(b.pendingBatch[pos+1:], b.pendingBatch[pos:])
+		b.pendingBatch[pos] = e.pending
+		return
+	case *AbortedError, *BridgeLimitError:
+		if b.fatalErr == nil {
+			b.fatalErr = c.err.(CodeModeError)
+		}
+		return
+	}
+	b.nextSettlementOrder++
+	order := b.nextSettlementOrder
+	message := c.err.Error()
+	now := time.Now().UnixMilli()
+	b.committed[idx] = replayRecord{ToolName: c.toolName, InputJSON: c.inputJSON, Status: replayStatusRejected, ErrorMessage: message, SettledOrder: order, DateNowMs: now}
+	if qerr := b.queueResponseLocked(order, bridgeResponse{id: c.n, errMessage: message, dateNowMs: now}); qerr != nil && b.fatalErr == nil {
+		b.fatalErr = qerr
+	}
+}
+
+// takeCompletion moves one finished host call's outcome into the bridge
+// state, reporting whether there was one.
+func (b *toolBridge) takeCompletion() bool {
+	b.mu.Lock()
+	if len(b.done) == 0 {
+		b.mu.Unlock()
+		return false
+	}
+	c := b.done[0]
+	b.done = b.done[1:]
+	b.mu.Unlock()
+	b.finish(c, true)
+	return true
+}
+
+// nextResponse returns the next settlement to deliver, if one is ready.
+func (b *toolBridge) nextResponse() (bridgeResponse, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.immediate) > 0 {
+		resp := b.immediate[0]
+		b.immediate = b.immediate[1:]
+		return resp, true
+	}
+	resp, ok := b.ready[b.nextResponseOrder]
+	if !ok {
+		return bridgeResponse{}, false
+	}
+	delete(b.ready, b.nextResponseOrder)
+	b.nextResponseOrder++
+	return resp, true
+}
+
+// inFlightCount returns how many started host calls have not finished.
+func (b *toolBridge) inFlightCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.inFlight
+}
+
+// waitCompletion blocks until a host call finishes or ctx is done.
+func (b *toolBridge) waitCompletion(ctx context.Context) error {
+	for {
+		b.mu.Lock()
+		ready := len(b.done) > 0
+		b.mu.Unlock()
+		if ready {
+			return nil
+		}
+		select {
+		case <-b.notify:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// shutdown ends the invocation's host calls: their context is cancelled (TS
+// aborts the invocation signal) and RunCodeMode waits for their goroutines,
+// which return promptly once cancelled (raceAgainstAbort).
+func (b *toolBridge) shutdown() {
+	b.mu.Lock()
+	b.closed = true
+	b.mu.Unlock()
+	b.cancelTools()
+	b.wg.Wait()
+}
+
+// markFinished records that the script produced a result.
+func (b *toolBridge) markFinished() {
+	b.mu.Lock()
+	b.finished = true
+	b.mu.Unlock()
+}
+
+// finishedScript reports whether the script produced a result.
+func (b *toolBridge) finishedScript() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.finished
+}
+
+// ledgerLength is TS run's continuation ledger length: one past the highest
+// call index the continuation recorded (settled or pending).
+func (b *toolBridge) ledgerLength() int {
+	length := 0
+	for idx := range b.replayLedger {
+		length = max(length, idx+1)
+	}
+	for idx := range b.resumePendings {
+		length = max(length, idx+1)
+	}
+	return length
+}
+
+// invoke runs one host call on its own goroutine (see start): input size and
+// validation, approval, the resumed interruption's resolution, and the tool
+// itself. n is the call's 1-based request number. It touches no bridge state
+// other than typedErrs; finish records the outcome.
+func (b *toolBridge) invoke(n int, toolName, inputJSON string) (outputJSON string, err error) {
 	defer func() {
 		if err != nil {
 			if cmErr, ok := err.(CodeModeError); ok {
@@ -134,42 +515,10 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 		}
 	}()
 
-	// The sandbox is blocked for the whole host call: time spent in tools,
-	// approval callbacks and validation does not count toward the CPU budget.
-	if budget := cpuBudgetFrom(b.ctx); budget != nil {
-		budget.pause()
-		defer budget.resume()
-	}
-
-	if cErr := b.ctx.Err(); cErr != nil {
+	if cErr := b.toolCtx.Err(); cErr != nil {
 		return "", NewAbortedError()
 	}
-
-	b.mu.Lock()
-	b.requestCount++
-	n := b.requestCount
-	b.mu.Unlock()
-	if b.policy.MaxBridgeRequests > 0 && n > b.policy.MaxBridgeRequests {
-		return "", NewBridgeLimitError(
-			fmt.Sprintf("JavaScript runtime exceeded the %d bridge request limit.", b.policy.MaxBridgeRequests),
-			map[string]interface{}{"maxBridgeRequests": b.policy.MaxBridgeRequests},
-		)
-	}
-	idx := n - 1 // 0-based call index, aligned with replayLedger/resumePendings.
-
-	// Short-circuit a call already resolved by a prior invocation of this
-	// same source: return its recorded result without touching the real
-	// host tool, so side effects never repeat. Mirrors TypeScript's
-	// deterministic replay of a resumed run. Keyed by call index, not
-	// position (see replayLedger's doc comment): a later-dispatched call
-	// can have settled, and so be present here, while an earlier-dispatched
-	// one is not.
-	if rec, ok := b.replayLedger[idx]; ok {
-		b.mu.Lock()
-		b.committed[idx] = rec
-		b.mu.Unlock()
-		return rec.OutputJSON, nil
-	}
+	idx := n - 1
 
 	// TS invokeCodeModeTool serializes the input against maxToolInputBytes
 	// before invokeHostTool looks the tool up, so an oversized input fails
@@ -268,8 +617,8 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 	}
 
 	if !skipApproval {
-		needsApproval, aerr := raceAgainstAbort(b.ctx, func() (bool, error) {
-			return resolveNeedsApproval(b.ctx, tool, input, execOptions)
+		needsApproval, aerr := raceAgainstAbort(b.toolCtx, func() (bool, error) {
+			return resolveNeedsApproval(b.toolCtx, tool, input, execOptions)
 		})
 		if aerr != nil {
 			return "", aerr
@@ -281,8 +630,8 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 		}
 	}
 
-	output, oerr := raceAgainstAbort(b.ctx, func() (interface{}, error) {
-		return tool.Execute(b.ctx, input, execOptions)
+	output, oerr := raceAgainstAbort(b.toolCtx, func() (interface{}, error) {
+		return tool.Execute(b.toolCtx, input, execOptions)
 	})
 	if oerr != nil {
 		if _, ok := oerr.(CodeModeError); ok {
@@ -310,27 +659,17 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 	if jerr != nil {
 		return "", jerr
 	}
-	b.mu.Lock()
-	b.committed[idx] = replayRecord{ToolName: toolName, InputJSON: inputJSON, OutputJSON: outJSON}
-	b.mu.Unlock()
 	return outJSON, nil
 }
 
-// raiseInterrupt records the call at index n-1 (1-based n, matching
-// invoke's toolCallID numbering) as one of the invocation's pending
-// interruptions (see pendingBatch's doc comment) and returns the sentinel
-// error bindCodeModeDispatch recognizes to leave this call's Promise
-// deliberately unresolved instead of rejecting it, so the sandboxed script
-// keeps making synchronous progress (e.g. the rest of a concurrent
-// Promise.all array) until nothing more can run.
-//
-// Enforces policy.MaxInFlightBridgeRequests against the batch collected so
-// far: TypeScript enforces the same limit (run-code-mode.ts's
-// maxInFlightBridgeRequests -> run's RunLimits.maxInFlightBridgeRequests)
-// against however many host calls are concurrently dispatched-but-not-yet-
-// settled; in this port that count is exactly len(pendingBatch), since
-// every non-interrupting call already resolves synchronously before the
-// next dispatch happens (see invoke).
+// raiseInterrupt builds the pending interruption for the call numbered n
+// (1-based, matching invoke's toolCallID numbering) and returns the
+// sentinel error finish recognizes: the call joins the invocation's pending
+// batch (see pendingBatch's doc comment) and its Promise is left
+// unresolved, so the sandboxed script keeps making progress (e.g. the rest
+// of a concurrent Promise.all array) until nothing more can run. An
+// interrupted call stops counting as in flight once finish takes it, as in
+// TS run.
 func (b *toolBridge) raiseInterrupt(toolName string, input interface{}, toolCallID string, n int, payload InterruptPayload) error {
 	pending := PendingInterruption{
 		RunInterruptionID: fmt.Sprintf("interrupt-%d", n),
@@ -340,16 +679,6 @@ func (b *toolBridge) raiseInterrupt(toolName string, input interface{}, toolCall
 		Input:             input,
 		Payload:           payload,
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.policy.MaxInFlightBridgeRequests > 0 && len(b.pendingBatch) >= b.policy.MaxInFlightBridgeRequests {
-		b.fatalErr = NewBridgeLimitError(
-			fmt.Sprintf("JavaScript runtime exceeded the %d in-flight bridge request limit.", b.policy.MaxInFlightBridgeRequests),
-			map[string]interface{}{"maxInFlightBridgeRequests": b.policy.MaxInFlightBridgeRequests},
-		)
-		return b.fatalErr
-	}
-	b.pendingBatch = append(b.pendingBatch, pending)
 	return &interruptUnwind{pending: pending}
 }
 
@@ -363,12 +692,10 @@ func rawToolInput(inputJSON string) interface{} {
 }
 
 // interruptUnwind is the sentinel error returned by invoke when a call
-// raises a pending interruption. bindCodeModeDispatch (run_code_mode.go)
-// recognizes it by type and leaves the call's Promise deliberately
-// unresolved instead of rejecting it -- unless the sandboxed script
-// finishes (or itself settles) without ever awaiting that Promise, in
-// which case RunCodeMode reports *DetachedBridgeRequestError (see the
-// package doc).
+// raises a pending interruption. finish recognizes it by type and leaves
+// the call's Promise deliberately unresolved instead of rejecting it; a
+// script that returns while such a call is still pending fails with
+// *DetachedBridgeRequestError (guestDetachedCheck).
 type interruptUnwind struct {
 	pending PendingInterruption
 }
@@ -466,8 +793,8 @@ func (b *toolBridge) resolveApproval(tool types.Tool, toolName string, input map
 		return NewToolApprovalRequiredError(toolName, input, toolCallID)
 	}
 
-	decision, derr := raceAgainstAbort(b.ctx, func() (ApprovalDecision, error) {
-		return onApprovalRequired(b.ctx, ApprovalRequest{ToolName: toolName, Input: input, ToolCallID: toolCallID})
+	decision, derr := raceAgainstAbort(b.toolCtx, func() (ApprovalDecision, error) {
+		return onApprovalRequired(b.toolCtx, ApprovalRequest{ToolName: toolName, Input: input, ToolCallID: toolCallID})
 	})
 	if derr != nil {
 		return derr
