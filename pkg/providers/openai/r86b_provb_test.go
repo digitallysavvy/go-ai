@@ -150,7 +150,7 @@ func TestR86bprovbBatchResultsBlankLinesJSTrim(t *testing.T) {
 }
 
 // TestR86bprovbBaseURLOneTrailingSlash pins TS withoutTrailingSlash
-// (url.replace(/\/$/, '')): one trailing "/" is removed, not every one, and
+// (url.replace(/\/$/, "")): one trailing "/" is removed, not every one, and
 // paths are appended to that base as is. Wants printed by Node 24.
 func TestR86bprovbBaseURLOneTrailingSlash(t *testing.T) {
 	var path string
