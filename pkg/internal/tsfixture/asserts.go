@@ -762,7 +762,7 @@ func (a Assertion) check(roots map[string]interface{}, aliases map[string]string
 	if got, ok := evalPath(roots, aliases, a.Expr); ok {
 		return a.match(got, false)
 	}
-	got, ok := evalJS(roots, a.JS)
+	got, ok := evalJS(roots, aliases, a.JS)
 	if !ok {
 		return "", true
 	}

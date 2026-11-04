@@ -3,6 +3,7 @@ package tsfixture
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -94,9 +95,20 @@ func jsRoot(name string, v interface{}) interface{} {
 	return out
 }
 
+// jsDebug prints why a JS program failed (TSFIXTURE_JS_DEBUG=1).
+func jsDebug(err error) {
+	if os.Getenv("TSFIXTURE_JS_DEBUG") != "" {
+		msg, _, _ := strings.Cut(err.Error(), "\n    at ")
+		fmt.Fprintln(os.Stderr, "tsfixture js:", msg)
+	}
+}
+
 // evalJS runs an assertion's JS program over roots. ok is false when the
 // program throws or its value cannot be read back.
-func evalJS(roots map[string]interface{}, program string) (interface{}, bool) {
+// The case's aliases the Go side can evaluate (a describe-level `parts` set
+// in a beforeEach, for example) are bound too; the program's own
+// declarations shadow them.
+func evalJS(roots map[string]interface{}, aliases map[string]string, program string) (interface{}, bool) {
 	if program == "" {
 		return nil, false
 	}
@@ -109,13 +121,24 @@ func evalJS(roots map[string]interface{}, program string) (interface{}, bool) {
 		bound[k] = jsRoot(k, v)
 		fmt.Fprintf(&decls, "const %s = __roots[%q];\n", k, k)
 	}
+	for k, expr := range aliases {
+		if _, isRoot := roots[k]; isRoot || !jsIdent.MatchString(k) || jsReserved[k] || strings.HasPrefix(k, "__") {
+			continue
+		}
+		v, ok := evalPath(roots, aliases, expr)
+		if !ok {
+			continue
+		}
+		bound[k] = jsRoot(k, v)
+		fmt.Fprintf(&decls, "const %s = __roots[%q];\n", k, k)
+	}
 	rootsJSON, err := json.Marshal(bound)
 	if err != nil {
 		return nil, false
 	}
 	rootsLit, _ := json.Marshal(string(rootsJSON))
 	src := "(async () => {\n'use strict';\n" + jsPrelude +
-		"const __roots = JSON.parse(" + string(rootsLit) + ");\n" + decls.String() +
+		"const __roots = JSON.parse(" + string(rootsLit) + ", (k, v) => (v !== null && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 1 && Array.isArray(v.__set) ? new Set(v.__set) : v));\n" + decls.String() +
 		"const __program = (" + program + ");\n" +
 		"return JSON.stringify({ v: __enc(await __program(__roots.result)) });\n})()"
 
@@ -135,12 +158,14 @@ func evalJS(roots map[string]interface{}, program string) (interface{}, bool) {
 		}()
 		v, err := jsRuntime.Context().Eval("assertion.js", qjs.Code(src))
 		if err != nil {
+			jsDebug(err)
 			return "", false
 		}
 		defer v.Free()
 		if v.IsPromise() {
 			w, err := v.Await()
 			if err != nil {
+				jsDebug(err)
 				return "", false
 			}
 			defer w.Free()
