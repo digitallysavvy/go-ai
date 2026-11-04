@@ -184,11 +184,13 @@ func ApplyOpenAICompatibleCommonRequestOptions(body map[string]interface{}, opti
 // reasoningEffort, textVerbosity, strictJsonSchema), which TS spreads straight
 // into the request body from providerOptions[name] and providerOptions[camel]
 // (so they can override the standardized settings). Keys TS always overwrites
-// afterwards (verbosity, messages, tools, tool_choice, stream, stream_options)
-// and the extra `exclude` keys a provider handles itself are skipped. A raw
+// afterwards (messages, tools, tool_choice, stream, stream_options) and the
+// extra `exclude` keys a provider handles itself are skipped. A raw
 // reasoning_effort is passed through (null included): TS writes
 // reasoning_effort afterwards only when it has a value (5006d83c4e), so
-// callers set it after this call only when the effort resolves.
+// callers set it after this call only when the effort resolves. A raw
+// verbosity is passed through the same way: TS writes verbosity afterwards
+// only when textVerbosity is set (add01abd2c).
 func ApplyOpenAICompatibleCallSettings(body map[string]interface{}, frequencyPenalty, presencePenalty *float64, seed, topK *int, providerName string, providerOptions map[string]interface{}, exclude ...string) []types.Warning {
 	var warnings []types.Warning
 	if topK != nil {
@@ -205,7 +207,7 @@ func ApplyOpenAICompatibleCallSettings(body map[string]interface{}, frequencyPen
 	}
 	skip := map[string]bool{
 		"user": true, "reasoningEffort": true, "textVerbosity": true, "strictJsonSchema": true,
-		"verbosity": true, "messages": true, "tools": true,
+		"messages": true, "tools": true,
 		"tool_choice": true, "stream": true, "stream_options": true,
 	}
 	for _, k := range exclude {

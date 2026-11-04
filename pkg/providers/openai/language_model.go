@@ -813,15 +813,23 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	}
 	// textVerbosity controls the length/detail of the model's text response.
 	// Maps to top-level "verbosity" in the Chat Completions API.
+	textVerbositySet := false
 	if v, ok := openaiOpts["textVerbosity"].(string); ok {
 		body["verbosity"] = v
+		textVerbositySet = true
 	}
 
 	for k, v := range compatPassthrough {
 		switch k {
 		case "user", "reasoningEffort", "textVerbosity", "strictJsonSchema",
-			"messages", "tools", "tool_choice", "verbosity", "stream", "stream_options":
+			"messages", "tools", "tool_choice", "stream", "stream_options":
 			continue
+		case "verbosity":
+			// TS add01abd2c: verbosity is written after the passthrough only
+			// when textVerbosity is set, so a raw verbosity survives otherwise.
+			if textVerbositySet {
+				continue
+			}
 		case "reasoning_effort":
 			// TS 5006d83c4e: reasoning_effort is written after the
 			// passthrough only when it has a value, so a raw
