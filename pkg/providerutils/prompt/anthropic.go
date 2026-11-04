@@ -1397,7 +1397,7 @@ func toolCallFromContent(p types.ToolCallContent) anthropicToolCall {
 		toolName:         p.ToolName,
 		input:            input,
 		inputRaw:         p.Input,
-		inputNull:        p.Arguments == nil && strings.TrimSpace(p.Input) == "null",
+		inputNull:        p.Arguments == nil && jsonWhitespaceTrim(p.Input) == "null",
 		providerExecuted: p.ProviderExecuted,
 		providerOptions:  opts,
 	}
@@ -1417,7 +1417,7 @@ func toolCallFromLegacy(p types.ToolCall) anthropicToolCall {
 		toolName:         p.ToolName,
 		input:            input,
 		inputRaw:         p.RawArguments,
-		inputNull:        p.Arguments == nil && strings.TrimSpace(p.RawArguments) == "null",
+		inputNull:        p.Arguments == nil && jsonWhitespaceTrim(p.RawArguments) == "null",
 		providerExecuted: p.ProviderExecuted,
 		providerOptions:  p.ProviderMetadata,
 	}
@@ -2272,6 +2272,11 @@ func anthropicCaller(providerOptions map[string]interface{}) map[string]interfac
 	}
 	return nil
 }
+
+// jsonWhitespaceTrim strips the JSON insignificant whitespace (space, tab,
+// LF, CR) around a JSON text: other Unicode spaces make the text invalid JSON,
+// which TS keeps as a string input.
+func jsonWhitespaceTrim(s string) string { return strings.Trim(s, " \t\n\r") }
 
 // toolInput is the tool_use input: a JSON null input is recorded as
 // {rawInvalidInput: null} like TS, other non-objects via toAnthropicToolInput.
