@@ -171,9 +171,6 @@ These details differ:
   `Settings.MCPServerOrder` gives the TS object's key order. Structured MCP
   tool output is serialized with sorted object keys.
 - **Edge cases only the core or a crafted request reaches.**
-  - The Gateway transport's model-request check uses Go's decoded URL path,
-    where TS uses the WHATWG `pathname` (percent-encoded, dot segments
-    removed).
   - The Responses endpoint check ignores the URL's userinfo and fragment,
     which TS `href.split('?')[0]` keeps.
   - A host tool image with `data: ""` and no `sourceRef` is rejected as an
@@ -761,12 +758,6 @@ http, https, and data are permitted`, `URL resolves to loopback address
 127.0.0.1`) instead of TS `DownloadError` texts. The error type and text are
 kept from v0.5.2 (exported, security path) (review round 84).
 
-## WebSocket text frames with invalid UTF-8
-
-A WebSocket text frame that is not valid UTF-8 fails the connection in
-Node (fatal decode, close code 1007). Go decodes it leniently, one U+FFFD per
-invalid subpart, as it decodes binary frames (review round 84).
-
 ## TS test replays skipped in round 84
 
 Skipped because of harness limits, with the behavior covered elsewhere:
@@ -791,7 +782,7 @@ TS `4d6d830c14` adds a durable telemetry bridge for the Workflow DevKit; Go port
 
 ## Vercel sandbox stdin and policy request shape
 
-`SandboxProcessOptions.Stdin` is rejected by the Vercel session before the command starts; TS streams stdin through `@vercel/sandbox` writeStdin / closeStdin, whose wire shape is not on disk (coordinator ruling 2). Go still sends the public `{allow, subnets}` policy shape on update; the recorded 3.9.0 fixture only shows the API's response shape. The local sandbox supports stdin (review round 85).
+`SandboxProcessOptions.Stdin` is rejected by the Vercel session before the command starts; TS streams stdin through `@vercel/sandbox` writeStdin / closeStdin, whose wire shape is not on disk (coordinator ruling 2). Go still sends the public `{allow, subnets}` policy shape on update; the recorded 3.9.0 fixture only shows the API's response shape. The local sandbox supports stdin (review round 85). Also pending the package: the JSON Lines blank-row rule of the sandbox API streams (Go skips rows that are only Unicode whitespace) and `isSandboxNameConflictError`, which in Go also matches the `vercel sandbox API` error prefix (review round 86b).
 
 ## ACP callbacks checked at session start
 
@@ -836,6 +827,38 @@ TS `connectToWebSocket` removes only `undefined` headers. Go header maps cannot 
 ## Speech translation `TargetLanguage: ""`
 
 TS checks `targetLanguage == null`, so an empty string reaches the provider. `ai.StreamTranslateOptions.TargetLanguage` and `provider.SpeechTranslationStreamOptions.TargetLanguage` are plain strings (v0.5.2), so `""` counts as missing and the call fails before connecting (coordinator ruling, round 86).
+
+## Serializable tool patterns RE2 cannot compile
+
+A `pattern` or `patternProperties` key that uses lookaround (`(?=`, `(?!`, `(?<=`, `(?<!`) or a backreference does not compile in Go's RE2, so `ResolveSerializableTools` / `ValidateSerializableToolInput` skip that keyword and accept the value; TS Ajv evaluates it. Every other pattern is matched with JavaScript u-mode semantics (`\s`, `.`, `\u` escapes) (review round 86b).
+
+## Tool call metadata from custom providers
+
+A `ToolCall.ToolMetadata` a custom provider sets on a valid model tool call is kept when the tool has no `Metadata`, and a provider-executed dynamic call keeps a provider `Title` / `ToolMetadata` (v0.5 behavior). TS model tool calls have neither field; invalid calls follow TS (`title: tool?.title`, metadata from the tool only). No built-in provider sets them. Decision providers called directly through `DoDecide` (not through `ExperimentalDecide`) still expect `[]interface{}` / `map[string]interface{}` criteria; TS providers receive JSON (review round 86b).
+
+## Files results: empty filename on the result struct
+
+OpenAI, xAI and DeepSeek file results keep a returned `filename: ""` in `ProviderMetadata[<provider>]["filename"]`, but `UploadFileResult.Filename` / `FileMetadataResult.Filename` are v0.5.2 `string` fields, so `""` there means both "returned empty" and "absent" (TS keeps `filename: ""` on GetFileMetadata). Read the metadata map when the difference matters (review round 86b).
+
+## MCP OAuth client authentication parameters
+
+A custom `AddClientAuthentication` callback's extra form parameters are sent after `client_id` / `client_secret` in key order; TS sends them in insertion order (`url.Values` keeps no order) (review round 86b).
+
+## ElevenLabs stream audio format rate
+
+A native `outputFormat` whose rate part is fractional (for example `pcm_22050.5`) has no `Rate`: `provider.AudioFormat.Rate` is an `*int` (v0.5.2), where TS reports `rate: 22050.5` (review round 86b).
+
+## OpenAI REST transcription `language: ""` / `prompt: ""`
+
+An empty `language` or `prompt` provider option is omitted from the OpenAI REST transcription request; TS sends them (`value != null`). The options are v0.5.2 string fields, where `""` means unset (coordinator ruling, round 86b; same ruling as the WebSocket empty header and speech translation `TargetLanguage`).
+
+## Sandbox text: lone surrogates and an empty encoding
+
+Sandbox `ReadTextFile` / `WriteTextFile` use Node Buffer encodings like TS, with two edges a Go string cannot express: `utf16le` / `ucs2` bytes that decode to a lone surrogate read as U+FFFD (a JS string keeps the surrogate), and `Encoding: ""` is the default `utf-8` (TS `toString('')` throws `Unknown encoding: `; `""` is unset in the v0.5.2 option) (review round 86b).
+
+## AI Gateway OIDC token refresh
+
+The AI Gateway provider reads `VERCEL_OIDC_TOKEN` from the environment on each request. TS `getVercelOidcToken` (`@vercel/oidc` 3.2.0) also takes the token from the request context header and, when it is missing or expired, refreshes it with the Vercel CLI credentials (`.vercel/project.json`, the CLI auth file, an OAuth refresh against vercel.com) and caches it under the user data directory. Go does not read or write the Vercel CLI files; refresh the token yourself (`vercel env pull`) or use `AI_GATEWAY_API_KEY` (review round 86b; tracked for round 87).
 
 ## Features that are TypeScript-only (not ported)
 

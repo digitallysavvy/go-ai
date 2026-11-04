@@ -415,6 +415,24 @@ already, you can skip them.
 | DeepSeek `UploadFile` option errors | `invalid deepseek provider options`, options first | error text only | Match `Field == "providerOptions"` | [DeepSeek files: provider options are parsed first](#deepseek-files-options) |
 | OpenAI-compatible tool call `thoughtSignature: ""` under the provider key | No Google fallback | wire/protocol change | None | [OpenAI-compatible thought signatures follow `??`](#compat-thought-signature-nullish) |
 | Cursor client app version | 1.0.88 | wire/protocol change | None | [Cursor client-app version](#cursor-client-app-r86) |
+| Legacy tool-result content types (`file-data`, `image-url`, ...) | Deprecation warning logged; `filename` / `mediaType` as TS | wire/protocol change | Use `"file"` content | [Legacy tool-result content types are logged and shaped like TS](#legacy-tool-result-content-deprecation) |
+| `GetTextFromDataURL(` without `charset=` | Bytes read as Latin-1 (TS atob string); TextDecoder labels | silent behavior change | Add `;charset=utf-8` | [GetTextFromDataURL follows TS getTextFromDataUrl](#data-url-text-ts) |
+| `ToolCall.Title` / `ToolMetadata` on invalid tool calls | From the tool only | silent behavior change | Set them on the Tool | [Invalid tool calls take Title and ToolMetadata from the tool](#invalid-tool-call-title-metadata) |
+| `Encoding: "iso-8859-1"` (or another WHATWG label) on sandbox text reads / writes | Node Buffer encodings; WHATWG labels fail | silent behavior change | Use `latin1`, `hex`, `base64`, ... | [Sandbox text encodings are Node Buffer encodings](#sandbox-text-node-encodings) |
+| `"reason": ""` on approval responses / execution-denied outputs | Kept and sent as `""` | wire/protocol change | Omit the reason for the default text | [An empty approval reason is kept](#empty-approval-reason) |
+| `Response.Headers` values, repeated or non-ASCII response headers | Joined with ", ", read as Latin-1 like fetch | silent behavior change | None | [Response headers read like TS fetch headers.get](#fetch-header-text) |
+| Provider header values, batch rows, query values with `~*!'()` | JS trim, regexp and URLSearchParams rules | silent behavior change | None | [Provider trims, regexps and URL escaping follow JavaScript](#r86b-js-whitespace-and-url-escaping) |
+| `BaseURL` ending in `//` | One trailing `/` removed, not all | wire/protocol change | Remove the extra slash | [Base URLs lose one trailing slash](#base-url-one-trailing-slash) |
+| OpenAI realtime `Authorization` header with Unicode spaces | Parsed with the JS regexp | silent behavior change | None | [OpenAI realtime bearer token parsing follows the TS regexp](#openai-realtime-bearer-whitespace) |
+| OpenAI-compatible `Config.Name` with surrounding whitespace | JS trim, also for embeddings | silent behavior change | None | [OpenAI-compatible provider options names are JS-trimmed](#openai-compatible-provider-options-name-trim) |
+| Batch results with whitespace-only rows | JS-blank rows skipped, others parsed untrimmed | silent behavior change | None | [Batch result rows that are only JS whitespace are skipped](#jsonl-blank-rows) |
+| xAI streaming transcription URL | TS parameter order and escaping | wire/protocol change | None | [xAI streaming STT URL query in TS order](#xai-stt-query-order) |
+| WebSocket text frames with invalid UTF-8 | Connection fails with close 1007 | wire/protocol change | Match `ErrInvalidUTF8Text` | [A WebSocket text frame with invalid UTF-8 fails the connection](#websocket-invalid-utf8-text-frame) |
+| Model IDs, media types or formats with U+0130, final sigma, U+00DF | JS `toLowerCase` / `toUpperCase` | silent behavior change | None | [Lowercasing and uppercasing follow JavaScript](#js-case-conversion) |
+| MCP OAuth token request bodies | URLSearchParams order and escaping | wire/protocol change | None | [MCP OAuth token bodies and event callback queries follow URLSearchParams](#mcp-oauth-form-order) |
+| Code mode scripts with `import` + Unicode space + `(` | Rejected as dynamic import | silent behavior change | None | [Code mode rejects dynamic import() across JavaScript whitespace](#codemode-dynamic-import-js-whitespace) |
+| `ToolCall.Name != ""` in ACP resolvers | `name: ""` counts as a name | silent behavior change | Use `ToolCall.HasName()` | [ACP tool calls named with an empty string](#acp-toolcall-hasname) |
+| OpenCode GitHub Copilot enterprise URL | WHATWG host | silent behavior change | None | [OpenCode enterprise domain is the WHATWG host](#opencode-normalize-domain) |
 
 ## Compile-time changes {#compile-time-changes}
 
@@ -1714,6 +1732,20 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **What to do:** No action unless you relied on the declared media type being sent unchanged or pass a `DataString` that is not base64 (decode or fix it first).
 - **Kind:** wire/protocol change
 
+### Legacy tool-result content types are logged and shaped like TS {#legacy-tool-result-content-deprecation}
+
+- **What changed:** v0.5 decoded the legacy TS tool-result content types (`file-data`, `file-url`, `file-id`, `file-reference`, `image-data`, `image-url`, `image-file-id`, `image-file-reference`) into `types.FileContentBlock` silently, keeping every `filename` and item `mediaType`. v0.6 logs the TS `deprecated` warning for each one on every prompt conversion that sends it (codes `AISDK_DEP_TOOL_RESULT_*`, once per code with the default logger) and shapes them as TS `mapToolResultOutput`: only `file-data` keeps `filename`; `file-id` / `file-reference` are `application` and `image-url` / `image-file-id` / `image-file-reference` are `image` whatever `mediaType` the item has; a `file-url` with `"mediaType": ""` keeps `""` (review round 86b).
+- **Am I affected?** JSON tool-result outputs with `"type": "file-data"`, `"file-url"`, `"file-id"`, `"file-reference"`, `"image-data"`, `"image-url"`, `"image-file-id"` or `"image-file-reference"` decoded into `types.ToolResultOutput`; `SetLogWarnings` consumers.
+- **What to do:** Use `"type": "file"` content with `data: {type: "data" | "url" | "reference", ...}` and a `mediaType`, or no action if the log line is acceptable.
+- **Kind:** wire/protocol change
+
+### GetTextFromDataURL follows TS getTextFromDataUrl {#data-url-text-ts}
+
+- **What changed:** `ai.GetTextFromDataURL` returned the decoded bytes as a Go string when the data URL declares no charset; TS returns `atob`'s binary string, so each byte is one character (UTF-8 text reads as Latin-1, `w6k=` gives `"Ã©"`). A declared charset is decoded with TS `new TextDecoder(charset)` semantics (WHATWG labels; an unknown or replacement label is `Error decoding data URL`), and the charset is matched with JS `\s` and a JS `/i` that does not fold `s` to U+017F (review round 86b).
+- **Am I affected?** Callers of `GetTextFromDataURL` with non-ASCII text in a data URL without `charset=`.
+- **What to do:** No action unless you rely on UTF-8 decoding: add `;charset=utf-8` to the data URL.
+- **Kind:** silent behavior change
+
 ## Tools {#tools}
 
 ### Tools in a step run concurrently {#tools-concurrent}
@@ -2380,6 +2412,20 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **What to do:** No action unless you relied on the error; read `ErrorOutput.ErrorCode == "network_error"` instead.
 - **Kind:** silent behavior change
 
+### Invalid tool calls take Title and ToolMetadata from the tool {#invalid-tool-call-title-metadata}
+
+- **What changed:** v0.5 kept a `Title` / `ToolMetadata` the provider put on a tool call that failed to parse or named an unknown tool. v0.6 sets both from the tool only (none for an unknown tool), as TS `parseToolCall` (`title: tool?.title`) (review round 86b).
+- **Am I affected?** Custom providers that set `types.ToolCall.Title` or `ToolMetadata` on model tool calls and read them back from invalid calls (`ToolCall.Invalid`, the tool-error result).
+- **What to do:** No action unless you rely on that; put them on the `types.Tool` (`Title`, `Metadata`).
+- **Kind:** silent behavior change
+
+### Sandbox text encodings are Node Buffer encodings {#sandbox-text-node-encodings}
+
+- **What changed:** `ReadTextFile` / `WriteTextFile` `Encoding` on `ai.ShellSandbox` and the local and Vercel harness sandboxes took WHATWG labels; TS sandbox sessions use `Buffer.from(bytes).toString(encoding)` / `Buffer.from(content, encoding)`. v0.6 takes the Node set and aliases, case-insensitive: `utf8` / `utf-8` (invalid bytes read as U+FFFD), `utf16le` / `ucs2`, `latin1` / `binary` (bytes 0x80-0x9F are U+0080-U+009F, not windows-1252), `ascii` (high bit cleared), `hex`, `base64`, `base64url`; any other name (`iso-8859-1`, `windows-1252`, ...) fails with `Unknown encoding: <name>` (review round 86b).
+- **Am I affected?** `SandboxReadTextFileOptions.Encoding` / `SandboxWriteTextFileOptions.Encoding` set to a WHATWG label other than UTF-8.
+- **What to do:** Use the Node name: `latin1` for ISO-8859-1 text; decode other legacy encodings from `ReadBinaryFile` yourself.
+- **Kind:** silent behavior change
+
 ## Agents and approvals {#agents-and-approvals}
 
 ### A panicking ToolLoopAgent callback does not skip the other one {#agent-callback-panic-isolation}
@@ -3043,7 +3089,7 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
   `workflow: invalid input for ...` text) (owner decision 2026-11-01,
   review round 76). A definition with `Type: "provider"` and no `ID` (rebuilt
   as a function tool) also passes `ValidateInput` unvalidated, as TS skips
-  validation for every provider definition (review round 77).
+  validation for every provider definition (review round 77). Schema `pattern` and `patternProperties` keys are matched with JavaScript u-mode semantics like Ajv: `\s` / `\S` include the Unicode spaces and `\v`, `.` does not match `\r`, U+2028 or U+2029, and `\uXXXX` / `\u{...}` escapes are code points (review round 86b).
 - **Am I affected?** Callers of `ResolveSerializableTools` that match tool
   error text, rely on schema defaults reaching `Execute`, or rely on core
   rejecting input for `HasOwnValidator` or provider defs.
@@ -3143,6 +3189,13 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 - **Am I affected?** `ToolApproval` policies or `RefineToolInput` functions that read `ToolCall.ToolMetadata`, `ToolCall.Dynamic` or `ToolCall.Title` on a resumed approval; `ValidateApprovedToolApprovals` callers that set those fields on `CollectedToolApproval.ToolCall`.
 - **What to do:** No action unless you relied on history-supplied metadata. Put the metadata on the tool (`types.Tool{Metadata: ..., Title: ..., Type: types.ToolTypeDynamic}`).
 - **Kind:** silent behavior change
+
+### An empty approval reason is kept {#empty-approval-reason}
+
+- **What changed:** v0.5 treated an empty `Reason` on `types.ToolApprovalResponseContent` and on an execution-denied `types.ToolResultOutput` as absent, so providers sent their default denial text (`Tool call execution denied.`). v0.6 keeps an empty reason that was given, as TS `reason ?? default`: JSON `"reason": ""` decodes with the new `ReasonSet`, a policy `Reason` pointing to `""` sets it, a UI approval with `reason: ""` keeps it, and every provider converter (OpenAI chat and Responses, the OpenAI-compatible family, Anthropic, Bedrock, Google and Interactions, Perplexity, DeepSeek, xAI, Open Responses, Gateway) sends `""`. JSON encoding writes `"reason": ""` for such a reason; telemetry omits an absent reason (`{"denied":true}`) and keeps a given empty one (review round 86b).
+- **Am I affected?** Approval responses or UI messages with `"reason": ""`; `ToolApproval` functions returning `Reason` pointing to `""`; code comparing the marshaled JSON of these parts or the telemetry `response` of denied tools.
+- **What to do:** No action unless you want the default text for an empty reason: send no reason (omit the key, or `Reason: nil` in the policy result).
+- **Kind:** wire/protocol change
 
 ## UI message streams {#ui-message-streams}
 
@@ -3687,7 +3740,7 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 
 ### UI tool parts without input, empty denial reasons {#ui-tool-part-absent-input}
 
-- **What changed:** A UI tool part decoded without an `input` key (for example one whose output or approval request arrived before any input) is encoded without it again, and `ReadUIMessages` snapshots leave it out, as TS does (v0.5 wrote `"input": null`). A new dynamic tool part created by a `tool-input-delta` has no `rawInput` until the next delta. An approval `reason` of `""` is kept, so an output-denied part converts to an `error-text` of `""` instead of `"Tool call execution denied."` (TS `approval?.reason ?? ...`). `ReadUIMessages` writes no snapshot for a chunk type it does not know. A decoded `"rawInput": null` is kept as well: it is encoded again and `ConvertToModelMessages` logs the `rawInput` deprecation for it, as TS does for an own `rawInput` that is not undefined (review round 86).
+- **What changed:** A UI tool part decoded without an `input` key (for example one whose output or approval request arrived before any input) is encoded without it again, and `ReadUIMessages` snapshots leave it out, as TS does (v0.5 wrote `"input": null`). A new dynamic tool part created by a `tool-input-delta` has no `rawInput` until the next delta. An approval `reason` of `""` is kept, so an output-denied part converts to an `error-text` of `""` instead of `"Tool call execution denied."` (TS `approval?.reason ?? ...`). `ReadUIMessages` writes no snapshot for a chunk type it does not know. A decoded `"rawInput": null` is kept as well: it is encoded again and `ConvertToModelMessages` logs the `rawInput` deprecation for it, as TS does for an own `rawInput` that is not undefined (review round 86). `ValidateUIMessages` still drops `rawInput` (null included) from states other than input-streaming and output-error, as TS does (review round 86b).
 - **Am I affected?** Code that reads `"input"` from encoded UI messages, compares `ReadUIMessages` snapshots, sends `reason: ""` in tool approval responses, or stores `"rawInput": null`.
 - **What to do:** No action unless you require the `input` key; treat a missing key like null.
 - **Kind:** wire/protocol change
@@ -4752,7 +4805,7 @@ compile-time changes.
 
 #### OpenAI Responses and DeepSeek replay non-JSON tool arguments as a JSON string {#tool-call-arguments-text}
 
-- **What changed:** OpenAI Responses and DeepSeek replay tool-call argument text that is not valid JSON as its JSON string literal, and Responses keeps a non-object JSON value instead of `{}` (TS `4ae6986cd8`). The OpenAI-compatible family, Groq and Cohere follow the same rule (see the previous entry). Round 86: OpenAI Responses and DeepSeek also send a JSON string literal holding JSON (`"{\"a\":1}"`) as the JSON it holds; xAI Responses legacy `ToolCalls`, Moonshot and Alibaba (TS `JSON.stringify(part.input)`) send an invalid call's raw argument text as its JSON string literal; Open Responses sends a JSON string literal as the text it holds and invalid text as is.
+- **What changed:** OpenAI Responses and DeepSeek replay tool-call argument text that is not valid JSON as its JSON string literal, and Responses keeps a non-object JSON value instead of `{}` (TS `4ae6986cd8`). The OpenAI-compatible family, Groq and Cohere follow the same rule (see the previous entry). Round 86: OpenAI Responses and DeepSeek also send a JSON string literal holding JSON (`"{\"a\":1}"`) as the JSON it holds; xAI Responses legacy `ToolCalls`, Moonshot and Alibaba (TS `JSON.stringify(part.input)`) send an invalid call's raw argument text as its JSON string literal; Open Responses sends a JSON string literal as the text it holds and invalid text as is. Round 86b: a replayed tool call whose input text is valid JSON is sent as JSON.stringify of the parsed input, like TS (compact, JS number spelling `1.0` -> `1`, `1e2` -> `100`, `-0` -> `0`, array-index keys first, a duplicate key's last value) on OpenAI chat and Responses, xAI Responses, Moonshot, Alibaba, the OpenAI-compatible family, Groq, Cohere, DeepSeek and Mistral; `providerutils.CompactJSON` and zodlite validation `Value:` texts follow the same rule; Responses sends whitespace-only input text, or JSON behind U+00A0, as a JSON string literal instead of `{}`.
 - **Am I affected?** Assistant tool calls replayed with `RawArguments` that are not JSON or not an object, on `openai` Responses or `deepseek`; string-literal or invalid `RawArguments` on `xai` Responses, `moonshot`, `alibaba` or `openresponses`.
 - **What to do:** No action.
 - **Kind:** wire/protocol change
@@ -6423,6 +6476,69 @@ compile-time changes.
 - **What to do:** No action.
 - **Kind:** silent behavior change
 
+### Response headers read like TS fetch headers.get {#fetch-header-text}
+
+- **What changed:** v0.5 read response headers with `Header.Get` (first line, raw bytes) and ported TS header regexes with RE2 `\s`. v0.6 reads them like TS fetch `headers.get`: repeated lines joined with ", " and each byte one character (Latin-1), with JS `\s` / `.` in the regexes. This covers `Response.Headers` / `ResponseMetadata.Headers` (`providerutils.ExtractHeaders`), download redirects (the next hop is `new URL(location, current)`) and the reported download content type, toolwebfetch (charset, Location, `cf-mitigated`, `DocumentOutput.ContentType`), MCP (WWW-Authenticate, OAuth discovery redirects, webhook signature headers, `mcp-session-id`, content type), the Prodia multipart boundary, the Google files upload URL, Bedrock request id and date, Moonshot cache-write token headers, the xAI speech trace id, OpenAI / xAI file download media types, ElevenLabs timestamps, Deepgram `dg-*` metadata and the workflow run-id / tail-index headers (review round 86b).
+- **Am I affected?** Only for servers that repeat these headers or put non-ASCII or 0xA0 bytes in them; code reading non-ASCII values from `Response.Headers`.
+- **What to do:** No action unless you relied on the first value of a repeated header or on raw UTF-8 header bytes.
+- **Kind:** silent behavior change
+
+### Provider trims, regexps and URL escaping follow JavaScript {#r86b-js-whitespace-and-url-escaping}
+
+- **What changed:** Trims, regexps and URL escaping now follow JavaScript: `String.prototype.trim` (U+FEFF trimmed, U+0085 kept) for Anthropic `anthropic-beta` header values, Gateway subprotocols and the credits team, Cohere streamed tool arguments, ElevenLabs transcripts and media types, and Google duration offsets (`Number.parseFloat`); Anthropic, Gateway and Google batch result rows are skipped only when JS-blank and parsed as read; `providerOptions.anthropic.anthropicBeta` entries are sent as given (no trim, `""` kept); Gateway credits / spend report, Google Live credential queries (a base URL's own query keeps its order) and the Cartesia STT URLs use `URLSearchParams` / `encodeURIComponent` escaping; the Gateway batch results error URL names the resolved base URL (review round 86b).
+- **Am I affected?** Only with exotic input: Unicode spaces or U+FEFF around header values, tool arguments, batch rows or durations; `anthropicBeta` entries with spaces or `""`; team slugs, spend-report filters, generation ids, model ids or API keys holding `~ * ! ' ( )` or spaces.
+- **What to do:** No action unless you rely on the old trimming or escaping.
+- **Kind:** silent behavior change
+
+### Base URLs lose one trailing slash {#base-url-one-trailing-slash}
+
+- **What changed:** TS `withoutTrailingSlash` removes ONE trailing `/`; Go removed all of them. OpenAI, xAI, Azure (`BaseURL`, `SpeechBaseURL`, `MaiBaseURL`), Gateway, Perplexity, HeyGen, Google Live paths and TypeSafe AI keep one, and the ByteDance, KlingAI, Replicate and BFL poll URLs no longer trim the normalized base again: `https://h/v1//` requests `https://h/v1//chat/completions` (review round 86b).
+- **Am I affected?** Base URLs ending in `//`.
+- **What to do:** Remove the extra slash.
+- **Kind:** wire/protocol change
+
+### OpenAI realtime bearer token parsing follows the TS regexp {#openai-realtime-bearer-whitespace}
+
+- **What changed:** The OpenAI realtime WebSocket (streaming transcription, speech translation) took the token from `Authorization: Bearer<ASCII space>...` only; v0.6 also accepts the separators JS `\s` matches (U+00A0, U+2003, U+FEFF, `\v`, ...) and rejects a token containing `\r` or U+2028 / U+2029, like TS `/^bearer\s+(.+)$/i` (review round 86b).
+- **Am I affected?** Custom `Authorization` headers with non-ASCII spaces.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### OpenAI-compatible provider options names are JS-trimmed {#openai-compatible-provider-options-name-trim}
+
+- **What changed:** The providerOptions key of an OpenAI-compatible provider (`Config.Name` up to the first `.`) is trimmed with JS trim (U+FEFF trimmed, U+0085 not); embedding option resolution and validation and the file-reference provider now trim too (they did not) (review round 86b).
+- **Am I affected?** `Config{OpenAICompatible: true, Name: ...}` with surrounding whitespace in the name.
+- **What to do:** No action unless your name has surrounding whitespace.
+- **Kind:** silent behavior change
+
+### Batch result rows that are only JS whitespace are skipped {#jsonl-blank-rows}
+
+- **What changed:** OpenAI, Anthropic, Gateway and Google batch result rows that are only JS whitespace (U+FEFF, U+3000 included) are skipped; a U+0085-only row or JSON behind U+00A0 is a parse error (TS `parseJsonLines`: `line.trim()` decides, the row is parsed as read) (review round 86b).
+- **Am I affected?** No, unless the batch files contain such rows.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
+### xAI streaming STT URL query in TS order {#xai-stt-query-order}
+
+- **What changed:** The xAI streaming STT WebSocket URL lists its query parameters in TS order with URLSearchParams escaping and JS number text (`vad_threshold=1e-7`, `~` as `%7E`) (review round 86b).
+- **Am I affected?** Code matching the exact URL.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
+### A WebSocket text frame with invalid UTF-8 fails the connection {#websocket-invalid-utf8-text-frame}
+
+- **What changed:** v0.5 decoded a WebSocket text frame that is not valid UTF-8 leniently (one U+FFFD per invalid subpart). Node's WebSocket (undici) fails the connection: v0.6 sends a close frame with status 1007 and reason `Received invalid UTF-8 in text frame.`, and `websocket.Receive` / `ReceiveLoop` return the new `websocket.ErrInvalidUTF8Text` (not a clean close), so the realtime, streaming transcription and speech streams fail like TS. Binary frames keep the TextDecoder replacement (review round 86b).
+- **Am I affected?** Servers that send invalid UTF-8 in text frames to a `providerutils/websocket` connection.
+- **What to do:** No action; match `errors.Is(err, websocket.ErrInvalidUTF8Text)` if you handle it.
+- **Kind:** wire/protocol change
+
+### Lowercasing and uppercasing follow JavaScript {#js-case-conversion}
+
+- **What changed:** Where TS calls `toLowerCase()` / `toUpperCase()` on data (model IDs, media types, output formats, statuses, encoding names, env keys, file extensions, policy hosts, tool search text, telemetry provider names, the inferred stream error messages), Go now uses `providerutils.JSToLower` / `JSToUpper`: U+0130 lowercases to `i\u0307`, a word-final capital sigma to final sigma, U+00DF uppercases to `SS`, ligatures expand, and Unicode 17 case pairs Go's tables lack are mapped. The inferred stream provider error message is also trimmed with JS trim (review round 86b).
+- **Am I affected?** Only for inputs with those characters.
+- **What to do:** No action.
+- **Kind:** silent behavior change
+
 ## MCP {#mcp}
 
 ### MCP OAuth rejects unbound pre-registered confidential credentials {#mcp-oauth-issuer}
@@ -6481,6 +6597,13 @@ compile-time changes.
 - **What to do:** Register `OnElicitationRequest` to answer input requests.
 - **Kind:** silent behavior change
 
+### MCP OAuth token bodies and event callback queries follow URLSearchParams {#mcp-oauth-form-order}
+
+- **What changed:** MCP OAuth token requests send the form body in TS URLSearchParams order with `~` as `%7E` and `*` literal (v0.5 sorted the keys with `url.Values`), and the event callback URL query is re-serialized like `searchParams.set` (the key replaced in place) (review round 86b).
+- **Am I affected?** Servers or tests comparing raw token bodies or `MCPEventSubscription.Delivery.URL` strings.
+- **What to do:** No action.
+- **Kind:** wire/protocol change
+
 ## Code mode {#code-mode}
 
 ### Code mode has a default 10 s CPU limit {#codemode-cpu-limit}
@@ -6537,6 +6660,13 @@ compile-time changes.
 - **Am I affected?** Modules that pin `github.com/tetratelabs/wazero`
   themselves.
 - **What to do:** move your pin to v1.12.0.
+- **Kind:** silent behavior change
+
+### Code mode rejects dynamic import() across JavaScript whitespace {#codemode-dynamic-import-js-whitespace}
+
+- **What changed:** The guard against `import(` inside a regex-like token matched only ASCII whitespace and single-line block comments; it now also matches the JavaScript whitespace the engine accepts between `import` and `(` (U+00A0, U+FEFF, the Unicode spaces, line terminators) and multi-line block comments (review round 86b).
+- **Am I affected?** Scripts with such text in a regular-expression literal.
+- **What to do:** No action; rewrite the regex if a script is rejected.
 - **Kind:** silent behavior change
 
 ## Harness, ACP and fx {#harness-acp-and-fx}
@@ -6755,6 +6885,20 @@ compile-time changes.
 - **Am I affected?** Only if you match `cursor.ClientAppVersion` or the client-app string Cursor sessions send.
 - **What to do:** No action.
 - **Kind:** wire/protocol change
+
+### ACP tool calls named with an empty string {#acp-toolcall-hasname}
+
+- **What changed:** An ACP tool call reported with `name: ""` now counts as named (TS `toolCall.name != null`): `githubcopilot.ResolveHostToolCall` and `acp.LegacyResolveHostToolCall` no longer resolve it by title. New `acp.ToolCall.HasName()` (review round 86b).
+- **Am I affected?** Custom resolvers testing `ToolCall.Name != ""`.
+- **What to do:** Use `opts.ToolCall.HasName()`.
+- **Kind:** silent behavior change
+
+### OpenCode enterprise domain is the WHATWG host {#opencode-normalize-domain}
+
+- **What changed:** The GitHub Copilot enterprise URL host in the OpenCode subscription is the WHATWG `new URL().host` (IDNA: `Bücher.example` becomes punycode, IPv4 forms: `0x7f.1` becomes `127.0.0.1`, percent-decoded host); the fallback strips one `http(s)://` prefix (review round 86b).
+- **Am I affected?** Enterprise URLs with non-ASCII or numeric hosts.
+- **What to do:** No action.
+- **Kind:** silent behavior change
 
 ## Policy {#policy}
 
@@ -6981,8 +7125,6 @@ after upgrading:
   [Prompt deprecation warnings](./known-differences.mdx).
 - **Prompt file download errors**: the default prompt-file downloader keeps the v0.5 `SSRFError` texts and its up-front DNS check; TS reports `DownloadError` texts (round 84). See
   [Prompt file download errors](./known-differences.mdx).
-- **WebSocket text frames with invalid UTF-8**: Go decodes them leniently; Node fails the connection (round 84). See
-  [WebSocket text frames with invalid UTF-8](./known-differences.mdx).
 - **TS test replays skipped in round 84**: eight TS cases are skipped for harness limits or Go idiom (azure-keyed OpenAI Responses case, `openai.chat` hint text, chat.ts replay start, a call-site spy, channel errors, provider signal after step end) (round 84). See
   [TS test replays skipped in round 84](./known-differences.mdx).
 - **Input checks TS removed in ai@7.0.155**: Go keeps the input checks TS removed in ai@7.0.155, with their v0.5 texts (ruling 5, round 85). See
@@ -7013,6 +7155,22 @@ after upgrading:
   [WebSocket handshake headers with an empty value](./known-differences.mdx).
 - **Speech translation `TargetLanguage: ""`**: An empty speech translation `TargetLanguage` counts as missing (round 86). See
   [Speech translation `TargetLanguage: ""`](./known-differences.mdx).
+- **Serializable tool patterns RE2 cannot compile**: A serializable tool `pattern` with lookaround or a backreference is skipped (RE2) (round 86b). See
+  [Serializable tool patterns RE2 cannot compile](./known-differences.mdx).
+- **Tool call metadata from custom providers**: A valid tool call keeps a custom provider's `ToolMetadata` / `Title` (v0.5 behavior) (round 86b). See
+  [Tool call metadata from custom providers](./known-differences.mdx).
+- **Files results: empty filename on the result struct**: File results: an empty returned `filename` reads as absent on the `Filename` field; the metadata map keeps it (round 86b). See
+  [Files results: empty filename on the result struct](./known-differences.mdx).
+- **MCP OAuth client authentication parameters**: MCP OAuth: extra `AddClientAuthentication` form parameters are sent in key order (round 86b). See
+  [MCP OAuth client authentication parameters](./known-differences.mdx).
+- **ElevenLabs stream audio format rate**: ElevenLabs: a fractional native output-format rate has no `Rate` (`*int`) (round 86b). See
+  [ElevenLabs stream audio format rate](./known-differences.mdx).
+- **OpenAI REST transcription `language: ""` / `prompt: ""`**: OpenAI REST transcription: `language: ""` / `prompt: ""` are omitted (round 86b). See
+  [OpenAI REST transcription `language: ""` / `prompt: ""`](./known-differences.mdx).
+- **Sandbox text: lone surrogates and an empty encoding**: Sandbox text: a UTF-16 lone surrogate reads as U+FFFD and `Encoding: ""` is utf-8 (round 86b). See
+  [Sandbox text: lone surrogates and an empty encoding](./known-differences.mdx).
+- **AI Gateway OIDC token refresh**: AI Gateway: no `@vercel/oidc` refresh of an expired `VERCEL_OIDC_TOKEN` (round 86b). See
+  [AI Gateway OIDC token refresh](./known-differences.mdx).
 - **Tool output JSON in replayed prompts keeps Go map key order.** See
   [Tool output JSON key order in replayed prompts](./known-differences.mdx).
 - **EmbedMany with a batch that reported no usage records the other batches' positive token sum**; TS sums to NaN and drops it. See
@@ -7087,6 +7245,7 @@ next one.
      -e 'quiverai|reasoning effort none' \
      -e 'readableSkillRoots|nativeToolName|ResolveHostToolCall|IsMcpToolCall|SandboxCreator|OnBootstrap|invoke_agent|structuredOutputMode|wav_44100|eleven_v4|searchQueries|reasoningEffort|reasoning_effort|input_required|PolicySandbox|SetNetworkPolicy|FixJSON|web_search_call|AI_NoSuchToolError|propertyNames|IsRealtimeTranscriptionModelID|SSEParser|ToolUIPart|ExperimentalDecide|ToolApproval|SmoothStream|thinkingBudget|disable_parallel_tool_use|GatewayTimeoutError|heygen|topaz|toolwebfetch' \
      -e 'ToolCallConcurrency|ToolResults|ChunkTypeToolResult|WorkflowChatTransport|locales|phraseList|diarization|keyframes|utterances|domainSecrets|pendingSafetyChecks|responseJsonSchema|ClientAppVersion|expiresAfter|blackForestLabs|hume|rawInput' \
+     -e 'GetTextFromDataURL|ReasonSet|HasReason|HasName\(\)|ToolCall\.Name|Encoding: "|ErrInvalidUTF8Text|"file-data"|"image-url"|anthropicBeta|BaseURL:.*//"|DeprecationWarning' \
      -e 'FileData\{Type: types\.FileDataTypeURL|remote file URL must|Invalid URL|allowed types are|ImageContent\{|ReasoningFileContent|AbortReason|ReadUIMessageStream|continuationToken|errorCode|InteractionsModel|ClientSecret|ConversationModel|NewJSONSchema\(|ResponseBody|xai\.VideoModel|Size:|AspectRatio' .
    ```
 

@@ -122,6 +122,9 @@ Also new:
 - **`prompt.StringifyToolCallInput`, `prompt.StringToolCallInput`** (`pkg/providerutils/prompt`): the TS `JSON.stringify(part.input)` and `typeof input === 'string' ? input : JSON.stringify(input)` tool-call input serializers (TS 4ae6986cd8) (review round 86).
 - **`providerutils.ResolveOpenAICompatibleReasoningEffort`, `OpenAICompatibleReasoningEffortOption`**: the OpenAI-compatible `reasoningEffort` resolution with null (TS 5006d83c4e) (review round 85).
 - **`providerutils.SandboxStatter`, `SandboxDirectoryLister`, `SandboxFileDeleter`, `WritableSandboxProcess`, `SandboxFileStat`, `SandboxDirectoryEntry`, `SandboxPathType*`, `SandboxProcessOptions.Stdin`**: optional sandbox file operations and writable stdin (TS 5c247e9b85 / 95348b32c6); the local and Vercel sandboxes implement them (Vercel rejects stdin) (review round 85).
+- **`providerutils.JSToLower` / `JSToUpper`**: JavaScript `toLowerCase` / `toUpperCase` (SpecialCasing, Final_Sigma, Unicode 17 pairs; checked against Node over every code point); **`providerutils.JSRegexpSpaceChars` / `JSRegexpSpace` / `JSRegexpDot`**: the JS regexp `\s` and `.` for RE2 ports; **`providerutils.FetchHeaderValue` / `FetchHeaderText` / `IsomorphicDecode` / `FetchURL` / `FetchURLFromHeader`**: TS fetch `headers.get` and `new URL(...)` reads (review round 86b).
+- **`types.FileContentBlock.DeprecationWarning`**, **`types.ToolApprovalResponseContent.ReasonSet` / `HasReason`**, **`types.ToolResultOutput.ReasonSet` / `HasReason` / `ReasonOr`**: legacy tool-result content warnings and an empty approval reason kept as given (TS `reason ?? default`) (review round 86b).
+- **`ai.ShellSandbox` `Stat` / `ListDirectory` / `DeleteFile`** (the optional `providerutils.SandboxStatter` / `SandboxDirectoryLister` / `SandboxFileDeleter`, also on `bridgetest.Sandbox`), **`acp.ToolCall.HasName`**, **`websocket.ErrInvalidUTF8Text`** (review round 86b).
 - **`Config.APIKeyFunc`** for openai, azure, xai, deepseek, alibaba, moonshot, openresponses, huggingface, gmicloud, together, fireworks, zai, cerebras and deepinfra (TS 7716e189ee), called per request with the request's context; **`openai.Config.HeadersFuncCtx`, `deepseek.Config.HeadersFuncCtx`** for NoAPIKey wrappers (review round 85).
 - **`openai.ModelGPT61Terra`, `LanguageModelCapabilities.SupportsChatFunctionToolsWithReasoning`, `openai.SupportsStreamingTranscription`, `openai.StreamingTranscriptionWarnings`, `TranscriptionStreamOpenAIOptionsValue.HasLanguages` / `HasKeywords`, `DecisionModelOptions.PromptCacheKey`** (review round 85).
 - **`anthropic.SupportsNativeStructuredOutputSchema`**, **`anthropic.Config.AuthTokenFunc`** (TS 63bf860638) and **`anthropic.Config.APIKeyFunc`** (for wrappers such as MiniMax); **`Config.APIKeyFunc`** for groq, mistral, cohere, perplexity, google, googlevertex (express), bedrock, bedrock mantle and gateway, **`bedrock/anthropic.Config.BearerTokenFunc`** (review round 85).
@@ -290,6 +293,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **types.ImageContent prompt parts log the TS "image" content part deprecation warning** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#image-part-deprecation-warning)
 - **ExperimentalDecide reports non-finite numbers and cycles with the TS texts and no longer overflows the stack on a cyclic value** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#decide-serializable-json)
 - **Base64 string file data (`FileData.DataString`) gets its detected image media type, and data that is not base64 fails the call, as TS detectMediaType** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#file-data-string-media-type)
+- **Legacy tool-result content types (`file-data`, `file-url`, `image-url`, ...) log the TS deprecation warning and drop the `filename` / `mediaType` TS drops** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-tool-result-content-deprecation)
+- **`GetTextFromDataURL` returns the TS atob string when no charset is declared and decodes a charset like TS `TextDecoder`** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#data-url-text-ts)
 
 #### Tools
 
@@ -324,6 +329,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Schema-valued and bare validator tool Parameters reach moonshot, Open Responses and OpenAI Responses as JSON Schema** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#schema-value-tool-parameters)
 - **An invalid tool call's tool error reads `AI_NoSuchToolError: ...` / `AI_InvalidToolInputError: ...` as TS, and an unknown tool's empty input stays empty** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#invalid-tool-call-error-text)
 - **Web fetch reports an invalid redirect Location as a `network_error` result** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#web-fetch-invalid-redirect)
+- **Invalid tool calls take `Title` and `ToolMetadata` from the tool only, as TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#invalid-tool-call-title-metadata)
+- **Sandbox text file encodings are Node Buffer encodings (`latin1`, `base64`, `hex`, ...), not WHATWG labels** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#sandbox-text-node-encodings)
 
 #### Agents and approvals
 
@@ -371,6 +378,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **The legacy loop's invalid tool call errors carry no tool metadata** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#agent-invalid-tool-error-no-tool-metadata)
 - **Approved calls of struct-schema tools are revalidated as they were parsed** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#approval-struct-schema-revalidation)
 - **Approval continuations take ToolMetadata, Dynamic and Title from the server tool, not from message history** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#approval-continuation-server-tool-metadata)
+- **An empty tool approval reason is kept and sent as `""` instead of the provider's default denial text, as TS** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#empty-approval-reason)
 
 #### UI message streams
 
@@ -582,6 +590,15 @@ search for and ends with a checklist for coding agents. Entries marked
 - **OpenAI and Azure Responses send a legacy tool call's `RawArguments` when `Arguments` is nil (not `{}`)** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-responses-raw-arguments)
 - **DeepSeek file uploads parse the provider options first and report `invalid deepseek provider options`** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#deepseek-files-options)
 - **OpenAI-compatible replayed tool calls follow TS `??` for `thoughtSignature` (an empty provider value wins)** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#compat-thought-signature-nullish)
+- **Response headers and header regexes follow TS fetch `headers.get` and JS `\s` (joined repeated lines, Latin-1 bytes)** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#fetch-header-text)
+- **Providers follow JavaScript trim, regexp and URL-escaping rules on edge inputs (Unicode spaces, BOM, `~*!'()` in query values)** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#r86b-js-whitespace-and-url-escaping)
+- **Base URLs lose one trailing slash (TS `withoutTrailingSlash`), not all** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#base-url-one-trailing-slash)
+- **OpenAI realtime WebSocket bearer tokens are parsed with the TS regexp (JS `\s`, `.`)** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-realtime-bearer-whitespace)
+- **OpenAI-compatible provider options names are trimmed with JS trim everywhere** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#openai-compatible-provider-options-name-trim)
+- **Batch result rows follow TS `parseJsonLines` (JS-blank rows skipped, others parsed untrimmed)** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#jsonl-blank-rows)
+- **The xAI streaming STT URL query follows the TS order and URLSearchParams escaping** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#xai-stt-query-order)
+- **A WebSocket text frame with invalid UTF-8 fails the connection with close 1007, as Node** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#websocket-invalid-utf8-text-frame)
+- **Lowercasing and uppercasing of data follow JavaScript `toLowerCase` / `toUpperCase`** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#js-case-conversion)
 
 #### MCP
 
@@ -589,6 +606,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **MCP clients have no default request timeout** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-no-default-timeout)
 - **An explicit MCPToolSchema.InputSchema schema is the tool's Parameters, as TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-explicit-input-schema)
 - **MCP tool, prompt and resource calls answer input_required through OnElicitationRequest, as TS** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-input-required)
+- **MCP OAuth token bodies and the event callback query follow URLSearchParams order and escaping** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#mcp-oauth-form-order)
 
 #### Code mode
 
@@ -596,6 +614,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Code mode caps concurrent scripts** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codemode-max-workers)
 - **wazero is v1.12.0** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#wazero-version)
 - **Code mode validates a bare schema.Validator Parameters** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codemode-bare-validator-validated)
+- **Code mode rejects `import(` written with JavaScript whitespace or multi-line comments** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#codemode-dynamic-import-js-whitespace)
 
 #### Harness, ACP and fx
 
@@ -618,6 +637,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **Vercel policy mutations refuse to drop response rules; a custom PolicySandbox needs PolicySessionInspector for object policies** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-response-rules)
 - **Vercel sandboxes use v3 templates, keep Persistent, resolve relative working directories against the session cwd, and kill a spawned command when its ctx ends** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#vercel-sandbox-r85)
 - **Cursor sessions report client-app version 1.0.88** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#cursor-client-app-r86)
+- **ACP `name: ""` counts as a name; new `acp.ToolCall.HasName`** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#acp-toolcall-hasname)
+- **The OpenCode enterprise domain is the WHATWG URL host** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#opencode-normalize-domain)
 
 #### Policy
 
@@ -1269,6 +1290,7 @@ in v0.5.3.
 - Response messages' text parts no longer carry the content part's citations (TS `toResponseMessages`) (review round 82).
 - A UI stream piped with `PipeUIMessageStreamToResponseWithInit` on the request ctx reports `isCancelled` on a client disconnect every time; Go's child-context cancellation order let StreamText's abort part through about once in 4,000 runs (`isAborted`) (review round 85).
 - The harness deferred sandbox session forwards `Stat`, `ListDirectory` and `DeleteFile` (TS `delegateSandboxOperations`) (review round 85).
+- Review round 86b (low edge inputs): JS trim / regexp / lowercase / URLSearchParams / one-trailing-slash rules across core, providers, MCP and harness; Ajv u-mode patterns for serializable tools; `jsonorder.Parse` rejects trailing text like `JSON.parse`; `ExtractAPIErrorMessage` keeps the message as sent; the workflow tail index skips a Latin-1 0xA0; `ValidateUIMessages` drops `rawInput: null` from states without it; a panicking tool-end callback keeps live tool results; Decide accepts an `""` choice option and typed criteria; invalid tool calls take `Title` / `ToolMetadata` from the tool; fx checks the WHATWG pathname for Gateway model requests (V061 7).
 
 ### Providers
 
@@ -1374,6 +1396,7 @@ in v0.5.3.
   (`userImageConfig != null`); it was dropped (review round 65).
 - Google streams: server tool results carry `ToolResult.ProviderMetadata` (`serverToolCallId`, `serverToolType`), as the stream content and UI tool-output parts read it (review round 82).
 - ElevenLabs timestamped speech and music responses report the response JSON as `Response.Body` (TS rawValue) (review round 85).
+- Google files upload no longer panics when the `x-goog-upload-url` header does not parse as a URL (the ignored `http.NewRequest` error left a nil request; now the TS fetch error `Failed to parse URL from <url>`); the init and poll requests check their errors too (review round 86b, high).
 
 ### Workflow, MCP, code mode and harness
 
@@ -1596,7 +1619,6 @@ Notable ones:
 - **Typed URL fields**: a Go URL field that does not parse fails with `Invalid URL`; TS treats such a plain string as base64 data (round 84).
 - **Prompt deprecation warnings**: no warnings for legacy tool-result content types (decoded into `FileContentBlock`), and image-part warnings cover the initial prompt only (round 84).
 - **Prompt file download errors**: the default prompt-file downloader keeps the v0.5 `SSRFError` texts and its up-front DNS check; TS reports `DownloadError` texts (round 84).
-- **WebSocket text frames with invalid UTF-8**: Go decodes them leniently; Node fails the connection (round 84).
 - **TS test replays skipped in round 84**: eight TS cases are skipped for harness limits or Go idiom (azure-keyed OpenAI Responses case, `openai.chat` hint text, chat.ts replay start, a call-site spy, channel errors, provider signal after step end) (round 84).
 - **Input checks TS removed in ai@7.0.155**: Go keeps the input checks TS removed in ai@7.0.155, with their v0.5 texts (ruling 5, round 85) (round 85).
 - **Durable workflow telemetry**: Durable workflow telemetry: only the operation-name mapping is ported (ruling 6, round 85) (round 85).
@@ -1612,6 +1634,14 @@ Notable ones:
 - **Live tool results and telemetry order**: StreamText streams a tool result after the user tool-end callback and before the telemetry tool end (round 86).
 - **WebSocket handshake headers with an empty value**: WebSocket handshakes do not send a header whose value is `""` (round 86).
 - **Speech translation `TargetLanguage: ""`**: An empty speech translation `TargetLanguage` counts as missing (round 86).
+- **Serializable tool patterns RE2 cannot compile**: A serializable tool `pattern` with lookaround or a backreference is skipped (RE2) (round 86b).
+- **Tool call metadata from custom providers**: A valid tool call keeps a custom provider's `ToolMetadata` / `Title` (v0.5 behavior) (round 86b).
+- **Files results: empty filename on the result struct**: File results: an empty returned `filename` reads as absent on the `Filename` field; the metadata map keeps it (round 86b).
+- **MCP OAuth client authentication parameters**: MCP OAuth: extra `AddClientAuthentication` form parameters are sent in key order (round 86b).
+- **ElevenLabs stream audio format rate**: ElevenLabs: a fractional native output-format rate has no `Rate` (`*int`) (round 86b).
+- **OpenAI REST transcription `language: ""` / `prompt: ""`**: OpenAI REST transcription: `language: ""` / `prompt: ""` are omitted (round 86b).
+- **Sandbox text: lone surrogates and an empty encoding**: Sandbox text: a UTF-16 lone surrogate reads as U+FFFD and `Encoding: ""` is utf-8 (round 86b).
+- **AI Gateway OIDC token refresh**: AI Gateway: no `@vercel/oidc` refresh of an expired `VERCEL_OIDC_TOKEN` (round 86b).
 - **Executed tool results carry the tool title**: `ToolResult.Title` of a locally executed tool is the call's title, as in v0.5.2; TS client tool results have no `title` (round 80).
 - **Live WebSocket close code**: Google/Vertex Live and OpenAI realtime translation close errors say `(code unknown)`; `golang.org/x/net/websocket` does not expose the close code, and v0.5.2 exports its `*websocket.Conn` (round 81).
 - **OpenAI compaction metadata keeps the v0.5 keys**: `openai.compaction` parts carry the TS `providerMetadata.openai` object and the v0.5.2 top-level keys (round 81).
