@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
@@ -86,5 +87,57 @@ func TestR87provbChatReportsRequestURL(t *testing.T) {
 	c := NewLanguageModel(New(Config{APIKey: "k", BaseURL: srv.URL, OpenAICompatible: true, Name: "x"}), "m")
 	if got := c.chatRequestURL(); got != "" {
 		t.Fatalf("compat chatRequestURL = %q, want empty", got)
+	}
+}
+
+// TS `new Error(raw.error?.message ?? 'OpenAI realtime error')`: an empty
+// message is kept, a missing one uses the default.
+func TestR87provbRealtimeTranscriptionErrorMessageNullish(t *testing.T) {
+	for _, tc := range []struct {
+		errObj map[string]interface{}
+		want   string
+	}{
+		{map[string]interface{}{"message": ""}, ""},
+		{map[string]interface{}{}, "OpenAI realtime error"},
+	} {
+		server := newRealtimeTranscriptionTestServer(t)
+		model := newTestTranscriptionModel(server.ts.URL)
+		result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+			Audio:            newChanTestAudioStream(),
+			InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		server.waitForReceived(t, "session.update", time.Second)
+		server.toSend <- map[string]interface{}{"type": "error", "error": tc.errObj}
+		if _, err := result.Stream.Next(); err != nil {
+			t.Fatal(err)
+		}
+		_, err = result.Stream.Next()
+		_ = result.Stream.Close()
+		server.close()
+		if err == nil || err.Error() != tc.want {
+			t.Errorf("%v: error = %v, want %q", tc.errObj, err, tc.want)
+		}
+	}
+}
+
+// TS convertOpenAIBatchError: openaiErrorDataSchema accepts an empty message
+// and a string or number code (String(code)); anything else is the generic
+// status message.
+func TestR87provbBatchErrorResponse(t *testing.T) {
+	generic := "OpenAI batch request failed with status code 400."
+	for body, want := range map[string][2]string{
+		`{"error":{"message":"","type":"t","code":1e21}}`: {"", "1e+21"},
+		`{"error":{"message":"m","code":"c"}}`:            {"m", "c"},
+		`{"error":{"message":"m","code":true}}`:           {generic, ""},
+		`{"error":{"message":"m","type":5}}`:              {generic, ""},
+		`{"error":{"type":"t"}}`:                          {generic, ""},
+	} {
+		got := convertOpenAIBatchErrorResponse([]byte(body), 400)
+		if got.Message != want[0] || got.Code != want[1] {
+			t.Errorf("%s: %+v, want message %q code %q", body, got, want[0], want[1])
+		}
 	}
 }
