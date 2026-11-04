@@ -86,6 +86,9 @@ const (
 	ModelVoxtralSmallTranscribe30     = "voxtral-small-transcribe-3-0"
 	ModelVoxtralSmallTranscribe3      = "voxtral-small-transcribe-3"
 	ModelVoxtralSmallTranscribeLatest = "voxtral-small-transcribe-latest"
+	// Realtime transcription models (DoStream only; TS b26902ea1a).
+	ModelVoxtralMiniTranscribeRealtime3  = "voxtral-mini-transcribe-realtime-3"
+	ModelVoxtralMiniTranscribeRealtime30 = "voxtral-mini-transcribe-realtime-3-0"
 )
 
 // mistralModelsWithoutReasoningEffort mirrors modelsWithoutReasoningEffort in
