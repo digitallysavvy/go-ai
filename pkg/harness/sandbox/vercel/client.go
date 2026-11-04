@@ -271,6 +271,23 @@ func (c *APIClient) ListSnapshots(ctx context.Context, name string) ([]snapshotW
 	return all, nil
 }
 
+// extendTimeoutRequest is the 3.9.0 `extendTimeout` body.
+type extendTimeoutRequest struct {
+	Duration int64 `json:"duration"`
+}
+
+// ExtendSessionTimeout posts POST /v2/sandboxes/sessions/{id}/extend-timeout
+// with `{"duration": ms}` (3.9.0 `APIClient.extendTimeout`).
+func (c *APIClient) ExtendSessionTimeout(ctx context.Context, sessionID string, durationMs int64) (*sessionResponse, error) {
+	var out sessionResponse
+	if err := c.http.DoJSON(ctx, httpinternal.Request{
+		Method: http.MethodPost, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/extend-timeout", Headers: c.headers(nil), Query: c.query(nil), Body: extendTimeoutRequest{Duration: durationMs},
+	}, &out); err != nil {
+		return nil, toAPIError(err)
+	}
+	return &out, nil
+}
+
 // UpdateSessionNetworkPolicy posts POST
 // /v2/sandboxes/sessions/{id}/network-policy.
 func (c *APIClient) UpdateSessionNetworkPolicy(ctx context.Context, sessionID string, policy NetworkPolicy) (*sessionResponse, error) {

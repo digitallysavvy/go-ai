@@ -3,6 +3,7 @@ package vercel
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -69,9 +70,12 @@ type Sandbox struct {
 	// sessionStatus is the current session's status as the API last
 	// reported it (TS `this.session.status`).
 	sessionStatus string
-	cwd           string
-	routes        []sandboxRouteWire
-	networkPolicy NetworkPolicy // current session's network policy (zero value = unset)
+	// sessionTimeout is the current session's timeout in milliseconds as
+	// the API last reported it (TS `this.session.timeout`).
+	sessionTimeout int64
+	cwd            string
+	routes         []sandboxRouteWire
+	networkPolicy  NetworkPolicy // current session's network policy (zero value = unset)
 	// networkPolicyMetadata is the session's networkPolicy as the API last
 	// returned it (see PolicySessionInspector).
 	networkPolicyMetadata json.RawMessage
@@ -85,6 +89,7 @@ func newSandboxFromResponse(client *APIClient, resp *sandboxAndSessionResponse) 
 		currentSnapshotID: resp.Sandbox.CurrentSnapshotID,
 		sessionID:         resp.Session.ID,
 		sessionStatus:     resp.Session.Status,
+		sessionTimeout:    resp.Session.Timeout,
 		cwd:               resp.Session.CWD,
 		routes:            resp.Routes,
 	}
@@ -218,17 +223,33 @@ func (s *Sandbox) UpdateNetworkPolicy(ctx context.Context, policy NetworkPolicy)
 }
 
 // Update applies params. Mirrors @vercel/sandbox 3.9.0 `Sandbox.update`: a
-// network policy is first applied to the current session (POST
-// .../network-policy) unless that session is stopped, stopping, aborted or
-// failed, and only then is the sandbox PATCHed, so a policy the session
-// rejects is not persisted for later sessions.
+// timeout larger than the running session's current timeout first extends
+// that session by the difference (POST .../extend-timeout; a 410 or a 422
+// sandbox_stopping response is ignored, as the session is gone), then a
+// network policy is applied to the current session (POST .../network-policy)
+// unless that session is stopped, stopping, aborted or failed, and only then
+// is the sandbox PATCHed, so a policy the session rejects is not persisted
+// for later sessions.
 func (s *Sandbox) Update(ctx context.Context, params UpdateParams) error {
+	if params.TimeoutMs != nil && s.sessionID != "" && s.sessionStatus == "running" {
+		if increment := *params.TimeoutMs - s.sessionTimeout; increment > 0 {
+			sessResp, err := s.client.ExtendSessionTimeout(ctx, s.sessionID, increment)
+			if err != nil {
+				if !isSandboxStoppedOrStopping(err) {
+					return err
+				}
+			} else {
+				s.applySession(sessResp.Session)
+			}
+		}
+	}
 	if params.NetworkPolicy != nil && s.sessionID != "" && sessionAcceptsUpdates(s.sessionStatus) {
 		sessResp, err := s.client.UpdateSessionNetworkPolicy(ctx, s.sessionID, *params.NetworkPolicy)
 		if err != nil {
 			return err
 		}
 		s.sessionStatus = sessResp.Session.Status
+		s.sessionTimeout = sessResp.Session.Timeout
 		if sessResp.Session.NetworkPolicy != nil {
 			s.networkPolicy = *sessResp.Session.NetworkPolicy
 		} else {
@@ -255,6 +276,29 @@ func (s *Sandbox) Update(ctx context.Context, params UpdateParams) error {
 		s.routes = resp.Routes
 	}
 	return nil
+}
+
+// applySession replaces the tracked session state with a session the API
+// returned (TS `this.session = toSandboxSnapshot(response.json.session)`).
+func (s *Sandbox) applySession(w sessionWire) {
+	s.sessionStatus = w.Status
+	s.sessionTimeout = w.Timeout
+	if w.NetworkPolicy != nil {
+		s.networkPolicy = *w.NetworkPolicy
+	} else {
+		s.networkPolicy = NetworkPolicy{}
+	}
+	s.networkPolicyMetadata = w.RawNetworkPolicy
+}
+
+// isSandboxStoppedOrStopping is 3.9.0 `isSandboxStoppedError(err) ||
+// isSandboxStoppingError(err)`: a 410, or a 422 with code sandbox_stopping.
+func isSandboxStoppedOrStopping(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return apiErr.StatusCode == 410 || (apiErr.StatusCode == 422 && apiErr.Code == "sandbox_stopping")
 }
 
 // sessionAcceptsUpdates is the 3.9.0 `Sandbox.update` session check.
