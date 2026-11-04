@@ -625,33 +625,9 @@ func ValidationMessage(schema Node, data string) string {
 	return "Type validation failed: Value: " + stringify(data) + ".\nError message: " + issues.String()
 }
 
-// stringify is JSON.stringify of the parsed frame: wire key order kept,
-// \u escapes decoded, numbers re-rendered the JS way (1.0 -> 1).
+// stringify is JSON.stringify of the parsed frame (see CompactJSON).
 func stringify(data string) string {
-	tree, ok := jsonorder.Parse([]byte(data))
-	if !ok {
-		return CompactJSON(data)
-	}
-	return jsonorder.Stringify(jsNumbers(tree))
-}
-
-func jsNumbers(v interface{}) interface{} {
-	switch x := v.(type) {
-	case json.Number:
-		if f, err := x.Float64(); err == nil {
-			return f
-		}
-	case []interface{}:
-		for i := range x {
-			x[i] = jsNumbers(x[i])
-		}
-	case *jsonorder.Object:
-		for _, k := range x.Keys() {
-			e, _ := x.Get(k)
-			x.Set(k, jsNumbers(e))
-		}
-	}
-	return v
+	return CompactJSON(data)
 }
 
 // IssueText returns the issue list that follows "Error message: " in a
@@ -663,11 +639,19 @@ func IssueText(message string) string {
 	return message
 }
 
-// CompactJSON compacts data, or returns it unchanged when it is not JSON.
+// CompactJSON is JSON.stringify(JSON.parse(data)): whitespace removed, wire
+// key order kept (array-index keys first, as a JS object enumerates them; a
+// duplicate key keeps its first position and its last value), \u escapes
+// decoded, and numbers re-rendered through a double the JS way (1.0 -> 1,
+// 1e2 -> 100, -0 -> 0, out of range -> null). data that is not JSON is
+// returned unchanged.
 func CompactJSON(data string) string {
-	var b bytes.Buffer
-	if err := json.Compact(&b, []byte(data)); err != nil {
+	if !json.Valid([]byte(data)) {
 		return data
 	}
-	return b.String()
+	tree, ok := jsonorder.Parse([]byte(data))
+	if !ok {
+		return data
+	}
+	return jsonorder.Stringify(tree)
 }
