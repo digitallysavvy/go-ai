@@ -43,6 +43,7 @@ func TestTSCasesLanguage(t *testing.T) {
 		"should pass penalty settings for Vertex Gemini 2.5 models":                                                          "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
 		"should pass imageConfig.personGeneration, imageConfig.prominentPeople and imageConfig.imageOutputOptions on Vertex": "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
 		"should omit function call IDs from Vertex requests":                                                                 "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
+		"should omit server-side tool invocation flag for Vertex Gemini 3":                                                   "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
 		"should send sharedRequestType as X-Vertex-AI-LLM-Shared-Request-Type header on Vertex":                              "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
 		"should send requestType as X-Vertex-AI-LLM-Request-Type header on Vertex":                                           "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
 		`should use "vertex" as providerMetadata key in thoughtSignature content when provider includes "vertex"`:            "Vertex-only behavior; replayed by googlevertex/ts_cases_test.go",
