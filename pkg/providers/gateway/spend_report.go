@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
+
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 )
 
 // SpendReportParams configures a spend report query.
@@ -101,10 +102,13 @@ func (p *Provider) GetSpendReport(ctx context.Context, params SpendReportParams)
 		return nil, fmt.Errorf("end date is required")
 	}
 
-	// Same order as TS URLSearchParams.set calls.
+	// Same order and escaping as the TS URLSearchParams.set calls.
+	param := func(key, value string) string {
+		return internalhttp.EncodeQuery(map[string]string{key: value})
+	}
 	query := []string{
-		"start_date=" + url.QueryEscape(params.StartDate),
-		"end_date=" + url.QueryEscape(params.EndDate),
+		param("start_date", params.StartDate),
+		param("end_date", params.EndDate),
 	}
 	for _, kv := range [][2]string{
 		{"group_by", params.GroupBy},
@@ -115,11 +119,11 @@ func (p *Provider) GetSpendReport(ctx context.Context, params SpendReportParams)
 		{"credential_type", params.CredentialType},
 	} {
 		if kv[1] != "" {
-			query = append(query, kv[0]+"="+url.QueryEscape(kv[1]))
+			query = append(query, param(kv[0], kv[1]))
 		}
 	}
 	if len(params.Tags) > 0 {
-		query = append(query, "tags="+url.QueryEscape(strings.Join(params.Tags, ",")))
+		query = append(query, param("tags", strings.Join(params.Tags, ",")))
 	}
 
 	body, err := p.doOriginRequest(ctx, "/v1/report?"+strings.Join(query, "&"))

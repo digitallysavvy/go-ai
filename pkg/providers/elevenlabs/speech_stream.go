@@ -6,19 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -53,12 +53,8 @@ func isWordBoundary(r rune) bool {
 	switch r {
 	case '。', '、', '！', '？', '，', '；', '：':
 		return true
-	case 0x85:
-		return false
-	case 0xFEFF:
-		return true
 	}
-	return unicode.IsSpace(r)
+	return providerutils.IsJSWhiteSpace(r)
 }
 
 // takeCompleteWords splits buffered text at the last word boundary. It
@@ -111,11 +107,9 @@ func getElevenLabsAudioFormat(outputFormat string) provider.AudioFormat {
 	withRate := func(mediaType string) provider.AudioFormat {
 		format := provider.AudioFormat{Type: mediaType}
 		if len(parts) > 1 {
-			// JS Number(): an empty string is 0, a non-number is NaN.
-			if parts[1] == "" {
-				zero := 0
-				format.Rate = &zero
-			} else if f, err := strconv.ParseFloat(parts[1], 64); err == nil && f == float64(int(f)) {
+			// TS Number(rate) kept when finite. Rate is an int, so a
+			// fractional rate is dropped.
+			if f, ok := providerutils.JSNumber(parts[1]); ok && f == math.Trunc(f) && math.Abs(f) <= math.MaxInt32 {
 				rate := int(f)
 				format.Rate = &rate
 			}

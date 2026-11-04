@@ -2,10 +2,10 @@ package perplexity
 
 import (
 	"context"
+	"os"
+
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
-	"os"
-	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -43,7 +43,7 @@ type Config struct {
 
 // New creates a new Perplexity provider with the given configuration
 func New(cfg Config) *Provider {
-	baseURL := strings.TrimRight(cfg.BaseURL, "/")
+	baseURL := providerutils.WithoutTrailingSlash(cfg.BaseURL)
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}

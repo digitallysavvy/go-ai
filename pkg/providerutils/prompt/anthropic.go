@@ -1397,7 +1397,7 @@ func toolCallFromContent(p types.ToolCallContent) anthropicToolCall {
 		toolName:         p.ToolName,
 		input:            input,
 		inputRaw:         p.Input,
-		inputNull:        p.Arguments == nil && strings.TrimSpace(p.Input) == "null",
+		inputNull:        p.Arguments == nil && jsonWhitespaceTrim(p.Input) == "null",
 		providerExecuted: p.ProviderExecuted,
 		providerOptions:  opts,
 	}
@@ -1417,7 +1417,7 @@ func toolCallFromLegacy(p types.ToolCall) anthropicToolCall {
 		toolName:         p.ToolName,
 		input:            input,
 		inputRaw:         p.RawArguments,
-		inputNull:        p.Arguments == nil && strings.TrimSpace(p.RawArguments) == "null",
+		inputNull:        p.Arguments == nil && jsonWhitespaceTrim(p.RawArguments) == "null",
 		providerExecuted: p.ProviderExecuted,
 		providerOptions:  p.ProviderMetadata,
 	}
@@ -2273,6 +2273,11 @@ func anthropicCaller(providerOptions map[string]interface{}) map[string]interfac
 	return nil
 }
 
+// jsonWhitespaceTrim strips the JSON insignificant whitespace (space, tab,
+// LF, CR) around a JSON text: other Unicode spaces make the text invalid JSON,
+// which TS keeps as a string input.
+func jsonWhitespaceTrim(s string) string { return strings.Trim(s, " \t\n\r") }
+
 // toolInput is the tool_use input: a JSON null input is recorded as
 // {rawInvalidInput: null} like TS, other non-objects via toAnthropicToolInput.
 func (t anthropicToolCall) toolInput() (map[string]interface{}, string) {
@@ -2351,7 +2356,8 @@ func SecureJSONParse(text string) (interface{}, bool) {
 // ToolCall.RawArguments; Go keeps an input that is not JSON as its raw text,
 // TS as a string):
 //   - a JSON string literal whose text is valid JSON: that text;
-//   - other valid JSON: raw as is (TS JSON.stringify of the parsed value);
+//   - other valid JSON: JSON.stringify of the parsed value
+//     (StringifyToolCallInput);
 //   - text that is not JSON (a TS string input): JSON.stringify of it.
 //
 // raw must not be empty; callers serialize Arguments then.
@@ -2359,14 +2365,7 @@ func SerializeToolCallArguments(raw string) string {
 	if text, _, ok := JSONStringToolInput(raw); ok {
 		return text
 	}
-	if json.Valid([]byte(raw)) {
-		return raw
-	}
-	b, err := jsonstr.Marshal(raw)
-	if err != nil {
-		return raw
-	}
-	return string(b)
+	return StringifyToolCallInput(raw)
 }
 
 // JSONStringToolInput reports whether raw, the JSON text of a tool call

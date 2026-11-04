@@ -2,14 +2,12 @@ package gateway
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -168,7 +166,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 		return nil, b.handleError(ctx, err)
 	}
 
-	return newGatewayBatchResultsStream(httpResp.Body, strings.TrimRight(b.provider.config.BaseURL, "/")+"/batch/results", maxLineBytes), nil
+	return newGatewayBatchResultsStream(httpResp.Body, b.provider.baseURL+"/batch/results", maxLineBytes), nil
 }
 
 func (b *Batch) handleError(ctx context.Context, err error) error {
@@ -438,8 +436,11 @@ func (s *gatewayBatchResultsStream) Next() (*provider.BatchV4ItemResult, error) 
 			}
 			return nil, io.EOF
 		}
-		line := bytes.TrimSpace(s.scanner.Bytes())
-		if len(line) == 0 {
+		// TS parseJsonLines skips a line only when line.trim() is empty and
+		// parses the line as read, so JS whitespace around a JSON value
+		// (U+00A0, U+0085 alone, ...) is a JSONParseError.
+		line := s.scanner.Bytes()
+		if providerutils.JSTrim(string(line)) == "" {
 			continue
 		}
 		// TS createJsonLinesResponseHandler(gatewayBatchItemResultLineSchema):

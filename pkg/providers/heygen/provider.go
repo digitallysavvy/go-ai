@@ -2,8 +2,8 @@ package heygen
 
 import (
 	"context"
+
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
-	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -55,7 +55,7 @@ type Config struct {
 
 // New creates a new HeyGen provider.
 func New(cfg Config) *Provider {
-	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
+	cfg.BaseURL = providerutils.WithoutTrailingSlash(cfg.BaseURL)
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = DefaultBaseURL
 	}

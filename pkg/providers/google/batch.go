@@ -982,8 +982,11 @@ func (s *googleBatchFileResultsStream) Next() (*provider.BatchV4ItemResult, erro
 			}
 			return nil, io.EOF
 		}
-		line := bytes.TrimSpace(s.scanner.Bytes())
-		if len(line) == 0 {
+		// TS parseJsonLines skips a line only when line.trim() is empty and
+		// parses the line as read, so JS whitespace around a JSON value
+		// (U+00A0, U+0085 alone, ...) is a JSONParseError.
+		line := s.scanner.Bytes()
+		if providerutils.JSTrim(string(line)) == "" {
 			continue
 		}
 		// TS createJsonLinesResponseHandler(googleBatchResultLineSchema): a line

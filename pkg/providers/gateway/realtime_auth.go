@@ -3,6 +3,8 @@ package gateway
 import (
 	"encoding/base64"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 const (
@@ -95,7 +97,7 @@ func GetGatewayRealtimeTeamIDOrSlug(secWebSocketProtocol string) string {
 
 func findProtocol(header string, prefix string) string {
 	for _, part := range strings.Split(header, ",") {
-		protocol := strings.TrimSpace(part)
+		protocol := providerutils.JSTrim(part) // TS protocol.trim()
 		if strings.HasPrefix(protocol, prefix) {
 			return protocol
 		}

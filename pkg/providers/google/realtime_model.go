@@ -5,13 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
 	"io"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
@@ -139,14 +141,16 @@ func (m *GoogleRealtimeModel) googleRealtimeAPIKey(ctx context.Context) (string,
 }
 
 func (m *GoogleRealtimeModel) GetWebSocketConfig(token, wsURL string) provider.WebSocketConfig {
-	return provider.WebSocketConfig{URL: wsURL + "?access_token=" + url.QueryEscape(token)}
+	// TS `${options.url}?access_token=${encodeURIComponent(options.token)}`.
+	return provider.WebSocketConfig{URL: wsURL + "?access_token=" + providerutils.EncodeURIComponent(token)}
 }
 
 // thinkingLiveModelRe matches Live models that reason in the background
 // (e.g. "gemini-3.8-live-extended-thinking"). Google requires exactly one of
 // thinkingLevel/thinkingBudget in their setup and rejects thinkingConfig on
-// every other Live model (TS isThinkingLiveModel).
-var thinkingLiveModelRe = regexp.MustCompile(`^gemini-\d+\.\d+-live\b.*thinking`)
+// every other Live model (TS isThinkingLiveModel). The TS `.` does not match
+// a line terminator (\r, U+2028, U+2029 as well as \n).
+var thinkingLiveModelRe = regexp.MustCompile(`^gemini-\d+\.\d+-live\b[^\n\r\x{2028}\x{2029}]*thinking`)
 
 // isThinkingLiveModel reports whether modelID names a background-reasoning
 // Live model, matching only the last "/"-separated path segment.
@@ -560,17 +564,15 @@ func (m *googleRealtimeEventMapper) serializeClientEvent(event provider.Realtime
 
 func googleAuthTokenURL(base, apiKey string) string {
 	u := googleRealtimeBaseURL(base)
-	u.Path = strings.TrimRight(u.Path, "/") + "/v1alpha/auth_tokens"
-	q := u.Query()
-	q.Set("key", apiKey)
-	u.RawQuery = q.Encode()
-	return u.String()
+	u.Path = strings.TrimSuffix(u.Path, "/") + "/v1alpha/auth_tokens" // TS replace(/\/$/, '')
+	// TS `${getAuthTokensURL(baseURL)}?key=${encodeURIComponent(apiKey)}`.
+	return u.String() + "?key=" + providerutils.EncodeURIComponent(apiKey)
 }
 
 func googleWebSocketURL(base string) string {
 	baseURL := googleRealtimeBaseURL(base)
 	baseURL.Scheme = strings.Replace(baseURL.Scheme, "http", "ws", 1)
-	baseURL.Path = strings.TrimRight(baseURL.Path, "/") + "/ws/" + realtimeWebSocketPath
+	baseURL.Path = strings.TrimSuffix(baseURL.Path, "/") + "/ws/" + realtimeWebSocketPath
 	return baseURL.String()
 }
 

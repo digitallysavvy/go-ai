@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -923,7 +924,7 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 			if tc := s.pendingTool; tc != nil && !tc.finished {
 				tc.finished = true
 				s.pendingTool = nil
-				text := strings.TrimSpace(tc.arguments)
+				text := providerutils.JSTrim(tc.arguments) // TS arguments?.trim()
 				if text == "" {
 					text = "{}"
 				}
@@ -977,7 +978,7 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 // '{}')): the arguments text compacted with its wire key order; args (sorted)
 // stands in when the text is not valid JSON.
 func cohereToolInputText(raw string, args map[string]interface{}) string {
-	text := strings.TrimSpace(raw)
+	text := providerutils.JSTrim(raw)
 	if text == "" {
 		text = "{}"
 	}
