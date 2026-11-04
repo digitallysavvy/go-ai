@@ -93,8 +93,9 @@ var extendedAsserts bool
 // unseen; an opted-in suite triages what they find.
 func EvalExtendedAsserts(t *testing.T) {
 	t.Helper()
+	prev := extendedAsserts
 	extendedAsserts = true
-	t.Cleanup(func() { extendedAsserts = false })
+	t.Cleanup(func() { extendedAsserts = prev }) // keep a binary-wide EnableExtendedAsserts
 }
 
 // EnableExtendedAsserts is EvalExtendedAsserts for every suite of a test
