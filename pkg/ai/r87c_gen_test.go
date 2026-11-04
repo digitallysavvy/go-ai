@@ -37,6 +37,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
@@ -1455,4 +1456,174 @@ func TestR87cgenTextOutputKeepsAllText(t *testing.T) {
 			}
 		})
 	}
+}
+
+// generate-text.test.ts 9743 'programmatic tool calling' > 'should stop an
+// interrupted response with a deferred provider tool result': one model
+// call, one step, finish reason interrupted.
+func TestR87cgenInterruptedDeferredProviderTool(t *testing.T) {
+	model := r87cgenModel(func(int, *provider.GenerateOptions) (*types.GenerateResult, error) {
+		r := r87cgenResult(types.ToolCallContent{ToolCallID: "call-1", ToolName: "program", Input: "{}", ProviderExecuted: true})
+		r.FinishReason, r.RawFinishReason = types.FinishReasonInterrupted, ""
+		return r, nil
+	})
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model, Prompt: "Run a program",
+		Tools:    []types.Tool{{Name: "program", Type: types.ToolTypeProviderDefined, ProviderExecuted: true, ProviderID: "test.program", Parameters: r87cgenSchema(), SupportsDeferredResults: true}},
+		StopWhen: []StopCondition{IsStepCount(3)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(model.GenerateCalls) != 1 || len(res.Steps) != 1 || res.FinishReason != types.FinishReasonInterrupted {
+		t.Fatalf("model calls %d, steps %d, finish %s", len(model.GenerateCalls), len(res.Steps), res.FinishReason)
+	}
+}
+
+// generate-text.test.ts 11062 'dynamic tools' > 'should execute dynamic
+// tools': the client runs the tool; the content is the dynamic call and its
+// dynamic result.
+func TestR87cgenDynamicToolExecuted(t *testing.T) {
+	executed := false
+	tool := r87cgenTool("dynamicTool", func(map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		executed = true
+		return map[string]interface{}{"value": "test-result"}, nil
+	}, "value")
+	tool.Type = types.ToolTypeDynamic
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenModel(func(int, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return r87cgenToolCalls(r87cgenCall("call-1", "dynamicTool", `{ "value": "test" }`)), nil
+		}),
+		Tools: []types.Tool{tool}, Prompt: "test-input",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !executed {
+		t.Fatal("dynamic tool not executed")
+	}
+	r87cgenCheck(t, "content", r87cgenContentView(t, res.Content), `[{"dynamic":true,"input":{"value":"test"},"toolCallId":"call-1","toolName":"dynamicTool","type":"tool-call"},{"dynamic":true,"input":{"value":"test"},"output":{"value":"test-result"},"toolCallId":"call-1","toolName":"dynamicTool","type":"tool-result"}]`)
+}
+
+// generate-text.test.ts 11235 'context' > 'should pass sandbox to
+// prepareStep' and 11346 'should send runtimeContext in onFinish callback'.
+func TestR87cgenContextSandboxAndOnFinishRuntimeContext(t *testing.T) {
+	sandbox := &r78genSandbox{name: "test sandbox"}
+	var captured interface{}
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenHello("Hello, world!"), Prompt: "test",
+		ExperimentalSandbox: sandbox,
+		PrepareStep: func(_ context.Context, o PrepareStepOptions) PrepareStepOptions {
+			captured = o.ExperimentalSandbox
+			return PrepareStepOptions{}
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if captured != sandbox {
+		t.Errorf("prepareStep sandbox = %v", captured)
+	}
+	var recorded, recordedEvent interface{}
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenHello("Hello, world!"), Prompt: "test-input",
+		RuntimeContext: map[string]interface{}{"context": "test"},
+		OnFinish:       func(_ context.Context, _ *GenerateTextResult, rc interface{}) { recorded = rc },
+		OnFinishEvent:  func(_ context.Context, e OnFinishEvent) { recordedEvent = e.RuntimeContext },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]interface{}{"context": "test"}
+	if !reflect.DeepEqual(recorded, want) || !reflect.DeepEqual(recordedEvent, want) {
+		t.Errorf("onFinish runtimeContext = %v / %v", recorded, recordedEvent)
+	}
+}
+
+// r87cgenContextIntegration records the runtime / tools context of the
+// telemetry start, step start, step end and end events.
+type r87cgenContextIntegration struct {
+	telemetry.NoopTelemetryIntegration
+	tools bool
+	got   *[]interface{}
+}
+
+func (i r87cgenContextIntegration) pick(rc, tc map[string]interface{}) {
+	v := rc
+	if i.tools {
+		v = tc
+	}
+	if v == nil {
+		v = map[string]interface{}{}
+	}
+	*i.got = append(*i.got, v)
+}
+
+func (i r87cgenContextIntegration) OnStart(ctx context.Context, e telemetry.TelemetryStartEvent) context.Context {
+	i.pick(e.RuntimeContext, e.ToolsContext)
+	return ctx
+}
+
+func (i r87cgenContextIntegration) OnStepStart(ctx context.Context, e telemetry.TelemetryStepStartEvent) context.Context {
+	i.pick(e.RuntimeContext, e.ToolsContext)
+	return ctx
+}
+
+func (i r87cgenContextIntegration) OnStepEnd(_ context.Context, e telemetry.TelemetryStepEndEvent) {
+	i.pick(e.RuntimeContext, e.ToolsContext)
+}
+
+func (i r87cgenContextIntegration) OnEnd(_ context.Context, e telemetry.TelemetryFinishEvent) {
+	i.pick(e.RuntimeContext, e.ToolsContext)
+}
+
+// generate-text.test.ts 11463 'context' > 'should include configured
+// toolsContext properties in telemetry', 11527 'should exclude toolsContext
+// properties from telemetry by default' and 11581 'should exclude
+// runtimeContext from telemetry by default': the four integration events
+// carry only the included keys ({} by default).
+func TestR87cgenTelemetryContextFiltering(t *testing.T) {
+	weather := r87cgenTool("weather", func(map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "sunny", nil }, "city")
+	toolsContext := map[string]interface{}{"weather": map[string]interface{}{"apiKey": "secret-api-key", "region": "eu"}}
+	run := func(t *testing.T, opts GenerateTextOptions, tools bool, settings TelemetrySettings) []interface{} {
+		t.Helper()
+		var got []interface{}
+		settings.Integrations = []telemetry.TelemetryIntegration{r87cgenContextIntegration{tools: tools, got: &got}}
+		opts.Model, opts.Prompt, opts.Telemetry = r87cgenHello("Hello, world!"), "test-input", &settings
+		if _, err := GenerateText(context.Background(), opts); err != nil {
+			t.Fatal(err)
+		}
+		return r87cgenRaw(t, got).([]interface{})
+	}
+	t.Run("11463 included toolsContext", func(t *testing.T) {
+		got := run(t, GenerateTextOptions{Tools: []types.Tool{weather}, ToolsContext: toolsContext}, true,
+			TelemetrySettings{IncludeToolsContext: map[string]map[string]bool{"weather": {"region": true}}})
+		r87cgenCheck(t, "toolsContext", got, `[{"weather":{"region":"eu"}},{"weather":{"region":"eu"}},{"weather":{"region":"eu"}},{"weather":{"region":"eu"}}]`)
+	})
+	t.Run("11527 toolsContext excluded by default", func(t *testing.T) {
+		got := run(t, GenerateTextOptions{Tools: []types.Tool{weather}, ToolsContext: toolsContext}, true, TelemetrySettings{})
+		r87cgenCheck(t, "toolsContext", got, `[{},{},{},{}]`)
+	})
+	t.Run("11581 runtimeContext excluded by default", func(t *testing.T) {
+		got := run(t, GenerateTextOptions{RuntimeContext: map[string]interface{}{"userId": "user-123", "requestId": "request-123"}}, false, TelemetrySettings{})
+		r87cgenCheck(t, "runtimeContext", got, `[{},{},{},{}]`)
+	})
+}
+
+// generate-text.test.ts 11870 'tools with preliminary results' > 'single
+// tool with preliminary results' > 'should only include final tool result in
+// step content' (snapshot of result.steps).
+func TestR87cgenPreliminaryFinalResultInStep(t *testing.T) {
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: r87cgenModel(func(int, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			r := r87cgenToolCalls(r87cgenCall("call-1", "cityAttractions", `{ "city": "San Francisco" }`))
+			r.Usage = r87cgenUsage(10, 20)
+			return r, nil
+		}),
+		Prompt:   "test-input",
+		Internal: &InternalOptions{GenerateID: func() string { return "test-id" }, GenerateCallID: func() string { return "test-telemetry-call-id" }},
+		Tools:    []types.Tool{cityAttractionsTool()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r87cgenCheck(t, "steps", r87cgenStepsView(t, res.Steps), `[{"callId":"test-telemetry-call-id","content":[{"input":{"city":"San Francisco"},"toolCallId":"call-1","toolName":"cityAttractions","type":"tool-call"},{"dynamic":false,"input":{"city":"San Francisco"},"output":{"status":"success","temperature":72,"text":"The weather in San Francisco is 72°F"},"toolCallId":"call-1","toolName":"cityAttractions","type":"tool-result"}],"finishReason":"tool-calls","model":{"modelId":"mock-model-id","provider":"mock-provider"},"performance":{"effectiveOutputTokensPerSecond":0,"effectiveTotalTokensPerSecond":0,"responseTimeMs":0,"stepTimeMs":0,"toolExecutionMs":{"call-1":0}},"request":{},"response":{"id":"test-id","messages":[{"content":[{"input":{"city":"San Francisco"},"toolCallId":"call-1","toolName":"cityAttractions","type":"tool-call"}],"role":"assistant"},{"content":[{"output":{"type":"json","value":{"status":"success","temperature":72,"text":"The weather in San Francisco is 72°F"}},"toolCallId":"call-1","toolName":"cityAttractions","type":"tool-result"}],"role":"tool"}],"modelId":"mock-model-id","timestamp":"1970-01-01T00:00:00.000Z"},"runtimeContext":{},"stepNumber":0,"toolsContext":{},"usage":{"inputTokenDetails":{"noCacheTokens":10},"inputTokens":10,"outputTokenDetails":{"textTokens":20},"outputTokens":20,"totalTokens":30},"warnings":[]}]`)
 }
