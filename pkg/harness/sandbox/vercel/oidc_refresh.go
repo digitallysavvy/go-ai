@@ -18,10 +18,11 @@ import (
 // OIDCRefresh opts in to the @vercel/sandbox 3.9.0 Vercel OIDC token
 // refresh (`APIClient.ensureValidToken` and `getCredentials` through
 // @vercel/oidc `getVercelOidcToken`):
-//   - With no explicit credentials, the token is resolved like
-//     getVercelOidcToken: the request context token
-//     (gateway.ContextWithVercelOIDCToken), a token refreshed earlier by this
-//     OIDCRefresh, or VERCEL_OIDC_TOKEN, refreshed from the linked project
+//   - With no explicit credentials, the token is resolved like @vercel/oidc
+//     4.0.0 getVercelOidcToken: the request context token
+//     (gateway.ContextWithVercelOIDCToken), the file named by
+//     VERCEL_OIDC_TOKEN_FILE (read on each lookup), a token refreshed earlier
+//     by this OIDCRefresh, or VERCEL_OIDC_TOKEN, refreshed from the linked project
 //     (.vercel/project.json, the cached project token, or the Vercel API with
 //     the Vercel CLI login) when it is missing or expired.
 //   - Before every Vercel Sandbox API request made with a JWT token (one
@@ -55,6 +56,8 @@ func (o *OIDCRefresh) tokenResolver() *verceloidc.Resolver {
 	o.once.Do(func() {
 		o.resolver = verceloidc.New(verceloidc.Options{
 			AccessToken: o.AccessToken, HTTPClient: o.HTTPClient, APIBaseURL: o.APIBaseURL,
+			// @vercel/sandbox 3.9.0 pins @vercel/oidc 4.0.0.
+			V4: true,
 		})
 	})
 	return o.resolver
