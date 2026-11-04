@@ -17,7 +17,10 @@ import (
 // one shared state.
 const maxDecisionImages = 8
 
-var decisionImageDataURL = regexp.MustCompile(`(?i)^data:image/(png|jpeg|webp);base64,`)
+// decisionImageDataURL is TS /^data:image\/(png|jpeg|webp);base64,/i: a JS
+// regexp without the u flag never folds an ASCII letter to a non-ASCII one,
+// while Go (?i) matches s against U+017F, so the s is spelled out.
+var decisionImageDataURL = regexp.MustCompile(`(?i)^data:image/(png|jpeg|webp);ba(?-i:[sS])e64,`)
 
 // convertToPerplexityDecisionState maps ordered decision state parts to the
 // native Perplexity state: text and JSON values pass through unchanged (no
