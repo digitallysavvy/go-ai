@@ -22,6 +22,9 @@ type LegacySettings struct {
 
 	Credentials Credentials
 	BaseURL     string
+	// OIDCRefresh opts in to the @vercel/sandbox OIDC token refresh (see
+	// OIDCRefresh). Nil reads VERCEL_OIDC_TOKEN as is.
+	OIDCRefresh *OIDCRefresh
 	// Name overrides the auto-derived template snapshot name
 	// ("ai-sdk-harness-<identity>").
 	Name string
@@ -107,11 +110,11 @@ func (p *LegacyProvider) CreateSession(ctx context.Context, opts harness.CreateS
 
 	baseParams := withDefaultSandboxSettings(p.settings.createParams())
 
-	creds, err := ResolveCredentials(p.settings.Credentials)
+	creds, err := resolveCredentialsWithRefresh(ctx, p.settings.Credentials, p.settings.OIDCRefresh)
 	if err != nil {
 		return nil, withAuthError(err)
 	}
-	client := NewAPIClient(p.settings.BaseURL, creds)
+	client := newAPIClient(p.settings.BaseURL, creds, p.settings.OIDCRefresh)
 
 	var sessionNameOverride string
 	if opts.SessionID != "" {
@@ -154,11 +157,11 @@ func (p *LegacyProvider) ResumeSession(ctx context.Context, sessionID string) (h
 	if p.settings.Sandbox != nil {
 		return NewNetworkSession(p.settings.Sandbox, false), nil
 	}
-	creds, err := ResolveCredentials(p.settings.Credentials)
+	creds, err := resolveCredentialsWithRefresh(ctx, p.settings.Credentials, p.settings.OIDCRefresh)
 	if err != nil {
 		return nil, withAuthError(err)
 	}
-	client := NewAPIClient(p.settings.BaseURL, creds)
+	client := newAPIClient(p.settings.BaseURL, creds, p.settings.OIDCRefresh)
 	sbx, err := GetSandbox(ctx, client, legacySessionSandboxName(sessionID), nil)
 	if err != nil {
 		return nil, withAuthError(err)

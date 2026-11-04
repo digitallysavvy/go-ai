@@ -148,11 +148,15 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 		}
 		sandboxAuthEnvironment = merged
 
-		sandboxSubscriptionAccessToken := sandboxAuthEnvironment[SubscriptionAccessTokenEnvironmentVariable]
+		// TS tests `sandboxSubscriptionAccessToken != null` and
+		// `GITLAB_AI_GATEWAY_URL == null` / `enterpriseUrl == null`: presence,
+		// so a present empty string counts.
+		sandboxSubscriptionAccessToken, hasSandboxSubscriptionAccessToken := sandboxAuthEnvironment[SubscriptionAccessTokenEnvironmentVariable]
 		var transformations []harness.RequestTransformation
-		if resolved.Subscription != nil && resolved.Subscription.ProviderID == SubscriptionGitLab && sandboxSubscriptionAccessToken != "" {
-			directAccess, err := requestOpenCodeGitLabDirectAccess(ctx, nil,
-				resolved.Subscription.AccessToken, resolved.Subscription.EnterpriseURL, processEnv["GITLAB_AI_GATEWAY_URL"])
+		if resolved.Subscription != nil && resolved.Subscription.ProviderID == SubscriptionGitLab && hasSandboxSubscriptionAccessToken {
+			aiGatewayURL, aiGatewayURLSet := processEnv["GITLAB_AI_GATEWAY_URL"]
+			directAccess, err := requestOpenCodeGitLabDirectAccessWith(ctx, nil,
+				resolved.Subscription.AccessToken, resolved.Subscription.EnterpriseURL, resolved.Subscription.hasEnterpriseURL(), aiGatewayURL, aiGatewayURLSet)
 			if err != nil {
 				return nil, err
 			}
@@ -166,7 +170,7 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 				return resolveOpenCodeGitLabSubscriptionModel(model, provider)
 			}
 			gitLabSubscriptionBrokered = true
-		} else if resolved.Subscription == nil || sandboxSubscriptionAccessToken == "" {
+		} else if resolved.Subscription == nil || !hasSandboxSubscriptionAccessToken {
 			transformations, err = createOpenCodeRequestTransformations(createRequestTransformationsInput{
 				Env: resolvedAuthEnvironment, SandboxEnv: sandboxAuthEnvironment, Auth: authenticationMode,
 			})
@@ -259,7 +263,9 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 			CredentialEnvironmentVariables: CredentialEnvironmentVariables,
 		})
 	}
-	subscriptionAccessToken := forwardedAuthEnvironment[SubscriptionAccessTokenEnvironmentVariable]
+	// TS `subscriptionAccessToken == null`: presence (a forwarded empty value
+	// still writes OPENCODE_AUTH_CONTENT).
+	subscriptionAccessToken, hasSubscriptionAccessToken := forwardedAuthEnvironment[SubscriptionAccessTokenEnvironmentVariable]
 	env := map[string]string{}
 	for k, v := range forwardedAuthEnvironment {
 		if k == SubscriptionAccessTokenEnvironmentVariable {
@@ -267,7 +273,7 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 		}
 		env[k] = v
 	}
-	if !gitLabSubscriptionBrokered && resolved.Subscription != nil && subscriptionAccessToken != "" {
+	if !gitLabSubscriptionBrokered && resolved.Subscription != nil && hasSubscriptionAccessToken {
 		content, err := createOpenCodeSubscriptionAuthContent(resolved.Subscription, subscriptionAccessToken)
 		if err != nil {
 			return nil, err

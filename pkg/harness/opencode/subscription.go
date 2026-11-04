@@ -125,6 +125,20 @@ type Subscription struct {
 	AccessToken   string
 	AccountID     string
 	EnterpriseURL string
+
+	// accountIDSet / enterpriseURLSet record a present empty string read
+	// from the auth store (TS keeps `typeof x === 'string'` values and then
+	// tests `== null`). A non-empty field counts as set on its own.
+	accountIDSet     bool
+	enterpriseURLSet bool
+}
+
+// hasAccountID mirrors TS `accountId != null`.
+func (s *Subscription) hasAccountID() bool { return s.AccountID != "" || s.accountIDSet }
+
+// hasEnterpriseURL mirrors TS `enterpriseUrl != null`.
+func (s *Subscription) hasEnterpriseURL() bool {
+	return s.EnterpriseURL != "" || s.enterpriseURLSet
 }
 
 // GitLabDirectAccess is the result of exchanging a GitLab OAuth token for AI
@@ -179,7 +193,7 @@ func resolveOpenCodeAuthentication(ctx context.Context, auth AuthenticationMode,
 // hasOpenCodeCredential mirrors TS `hasOpenCodeCredential`.
 func hasOpenCodeCredential(environment map[string]string, authenticationMode ResolvedAuthenticationMode) bool {
 	if authenticationMode == AuthAIGateway {
-		return environment["AI_GATEWAY_API_KEY"] != ""
+		return hasKey(environment, "AI_GATEWAY_API_KEY") // TS `!= null`
 	}
 	for name := range environment {
 		if strings.HasSuffix(name, "_API_KEY") || strings.HasSuffix(name, "_TOKEN") || name == "ANTHROPIC_AUTH_TOKEN" {
@@ -245,10 +259,10 @@ func readOpenCodeSubscriptionWithOptions(ctx context.Context, providerID string,
 		return nil, nil
 	}
 	expires := int64(expiresF)
-	enterpriseURL, _ := candidate["enterpriseUrl"].(string)
+	enterpriseURL, enterpriseURLSet := candidate["enterpriseUrl"].(string)
 
 	if providerID == string(SubscriptionGitHubCopilot) {
-		return &Subscription{ProviderID: SubscriptionGitHubCopilot, AccessToken: refresh, EnterpriseURL: enterpriseURL}, nil
+		return &Subscription{ProviderID: SubscriptionGitHubCopilot, AccessToken: refresh, EnterpriseURL: enterpriseURL, enterpriseURLSet: enterpriseURLSet}, nil
 	}
 	if providerID == string(SubscriptionPoe) {
 		if harnessutil.IsAccessTokenExpiringSoon(expires, time.Now().UnixMilli(), 0) {
@@ -260,7 +274,7 @@ func readOpenCodeSubscriptionWithOptions(ctx context.Context, providerID string,
 	accessToken := access
 	accountID, hasAccountID := candidate["accountId"].(string)
 	if !hasAccountID && providerID == string(SubscriptionOpenAI) {
-		accountID = extractOpenAIAccountID(access)
+		accountID, hasAccountID = extractOpenAIAccountID(access)
 	}
 	if harnessutil.IsAccessTokenExpiringSoon(expires, time.Now().UnixMilli(), 0) {
 		tokenURL, clientID := resolveRefreshSettings(providerID, candidate, env)
@@ -272,8 +286,10 @@ func readOpenCodeSubscriptionWithOptions(ctx context.Context, providerID string,
 		}
 		accessToken = refreshed.AccessToken
 		if providerID == string(SubscriptionOpenAI) {
-			if aid := extractOpenAIAccountID(refreshed.AccessToken); aid != "" {
-				accountID = aid
+			// TS `(await extractOpenAIAccountId(...)) ?? accountId`: a
+			// present empty claim wins.
+			if aid, ok := extractOpenAIAccountID(refreshed.AccessToken); ok {
+				accountID, hasAccountID = aid, true
 			}
 		}
 		updated := map[string]any{}
@@ -287,7 +303,7 @@ func readOpenCodeSubscriptionWithOptions(ctx context.Context, providerID string,
 		}
 		updated["refresh"] = newRefresh
 		updated["expires"] = float64(refreshed.ExpiresAt)
-		if accountID != "" {
+		if hasAccountID { // TS `accountId == null ? {} : ...`
 			updated["accountId"] = accountID
 		}
 		store.Value[providerID] = updated
@@ -298,16 +314,25 @@ func readOpenCodeSubscriptionWithOptions(ctx context.Context, providerID string,
 		}
 	}
 
-	return &Subscription{ProviderID: SubscriptionProvider(providerID), AccessToken: accessToken, AccountID: accountID, EnterpriseURL: enterpriseURL}, nil
+	return &Subscription{ProviderID: SubscriptionProvider(providerID), AccessToken: accessToken, AccountID: accountID, EnterpriseURL: enterpriseURL,
+		accountIDSet: hasAccountID, enterpriseURLSet: enterpriseURLSet}, nil
 }
 
 // requestOpenCodeGitLabDirectAccess mirrors TS
 // `requestOpenCodeGitLabDirectAccess`.
 func requestOpenCodeGitLabDirectAccess(ctx context.Context, httpClient *http.Client, accessToken, instanceURL, aiGatewayURL string) (*GitLabDirectAccess, error) {
-	if instanceURL == "" {
+	return requestOpenCodeGitLabDirectAccessWith(ctx, httpClient, accessToken, instanceURL, instanceURL != "", aiGatewayURL, aiGatewayURL != "")
+}
+
+// requestOpenCodeGitLabDirectAccessWith is requestOpenCodeGitLabDirectAccess
+// with presence flags: TS destructuring defaults apply only to an absent
+// (undefined) `instanceUrl` / `aiGatewayUrl`, so a present empty string is
+// used as given.
+func requestOpenCodeGitLabDirectAccessWith(ctx context.Context, httpClient *http.Client, accessToken, instanceURL string, instanceURLSet bool, aiGatewayURL string, aiGatewayURLSet bool) (*GitLabDirectAccess, error) {
+	if !instanceURLSet {
 		instanceURL = "https://gitlab.com"
 	}
-	if aiGatewayURL == "" {
+	if !aiGatewayURLSet {
 		aiGatewayURL = gitlabAIGatewayURL
 	}
 	if httpClient == nil {
@@ -514,10 +539,10 @@ func createOpenCodeSubscriptionAuthContent(authentication *Subscription, accessT
 			refresh = accessToken
 		}
 		value = `{"type":"oauth","access":` + q(accessToken) + `,"refresh":` + q(refresh) + `,"expires":` + strconv.FormatInt(numberMaxSafeInteger, 10)
-		if authentication.AccountID != "" {
+		if authentication.hasAccountID() {
 			value += `,"accountId":` + q(authentication.AccountID)
 		}
-		if authentication.EnterpriseURL != "" {
+		if authentication.hasEnterpriseURL() {
 			value += `,"enterpriseUrl":` + q(authentication.EnterpriseURL)
 		}
 		value += "}"
@@ -587,7 +612,7 @@ func resolveOpenCodeSubscriptionRequestURL(authentication *Subscription) string 
 	case SubscriptionXAI:
 		return "https://api.x.ai/v1"
 	case SubscriptionGitHubCopilot:
-		if authentication.EnterpriseURL == "" {
+		if !authentication.hasEnterpriseURL() {
 			return "https://api.githubcopilot.com"
 		}
 		return "https://copilot-api." + normalizeDomain(authentication.EnterpriseURL)
@@ -596,7 +621,7 @@ func resolveOpenCodeSubscriptionRequestURL(authentication *Subscription) string 
 	case SubscriptionOpenCodeGo:
 		return "https://opencode.ai/zen/go/v1"
 	case SubscriptionGitLab:
-		if authentication.EnterpriseURL != "" {
+		if authentication.hasEnterpriseURL() { // TS `??`
 			return authentication.EnterpriseURL
 		}
 		return "https://gitlab.com"
@@ -627,17 +652,19 @@ func normalizeDomain(value string) string {
 }
 
 // extractOpenAIAccountID mirrors TS `extractOpenAIAccountId`.
-func extractOpenAIAccountID(accessToken string) string {
+// extractOpenAIAccountID mirrors TS `extractOpenAIAccountId`; ok is false
+// where TS returns undefined (a present empty claim is kept).
+func extractOpenAIAccountID(accessToken string) (accountID string, ok bool) {
 	payload := subscription.ParseJWTPayload(accessToken)
 	if payload == nil {
-		return ""
+		return "", false
 	}
-	auth, ok := payload["https://api.openai.com/auth"].(map[string]any)
-	if !ok {
-		return ""
+	auth, isRecord := payload["https://api.openai.com/auth"].(map[string]any)
+	if !isRecord {
+		return "", false
 	}
-	accountID, _ := auth["chatgpt_account_id"].(string)
-	return accountID
+	accountID, ok = auth["chatgpt_account_id"].(string)
+	return accountID, ok
 }
 
 func hasKey(m map[string]string, k string) bool {
