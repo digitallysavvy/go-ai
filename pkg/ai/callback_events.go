@@ -12,6 +12,12 @@ import (
 // the provider for a single generation step.
 // Mirrors LanguageModelRequestMetadata in the TypeScript SDK.
 type GenerateStepRequest struct {
+	// URL is the HTTP(S) origin of the request the provider reports
+	// (scheme, host and non-default port only; credentials, path, query and
+	// fragment are removed). Empty when the provider reports no URL or the
+	// URL is not http(s). Mirrors TS LanguageModelRequestMetadata.url.
+	URL string `json:"url,omitempty"`
+
 	// Body is the raw request body sent to the provider API (for debugging).
 	Body interface{} `json:"body,omitempty"`
 
@@ -664,8 +670,20 @@ type LanguageModelCallEndEvent struct {
 	// ProviderMetadata is optional provider-specific metadata.
 	ProviderMetadata map[string]interface{}
 
+	// Request is the request the provider reports for this call, nil when
+	// it reports no HTTP(S) URL. Mirrors TS LanguageModelCallEndEvent.request.
+	Request *LanguageModelCallRequest
+
 	// Performance contains performance metrics for the model call.
 	Performance LanguageModelCallPerformance
+}
+
+// LanguageModelCallRequest is the request metadata on
+// LanguageModelCallEndEvent. Mirrors TS `request?: { url?: string }`.
+type LanguageModelCallRequest struct {
+	// URL is the HTTP(S) origin of the request (scheme, host and
+	// non-default port), without credentials, path, query or fragment.
+	URL string `json:"url,omitempty"`
 }
 
 // OnLanguageModelCallStartCallback is the callback type for
