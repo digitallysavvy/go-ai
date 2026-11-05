@@ -22,7 +22,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
@@ -1689,14 +1688,14 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 			}
 			s.message["id"] = id
 		}
-		s.mergeMetadataReporting(chunk["messageMetadata"], onError)
+		s.mergeMetadata(chunk["messageMetadata"])
 	case "finish":
 		if reason := chunk["finishReason"]; reason != nil {
 			s.finishReason = reason
 		}
-		s.mergeMetadataReporting(chunk["messageMetadata"], onError)
+		s.mergeMetadata(chunk["messageMetadata"])
 	case "message-metadata":
-		s.mergeMetadataReporting(chunk["messageMetadata"], onError)
+		s.mergeMetadata(chunk["messageMetadata"])
 	case "abort":
 		s.isAborted = true
 	case "text-start":
@@ -1969,13 +1968,6 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 }
 
 func (s *uiMessageCallbackState) mergeMetadata(metadata interface{}) {
-	s.mergeMetadataReporting(metadata, nil)
-}
-
-// mergeMetadataReporting is TS updateMessageMetadata: a non-null value is
-// merged into the message metadata with mergeObjects; a merge TS throws on
-// is reported to onError (a processing failure) and changes nothing.
-func (s *uiMessageCallbackState) mergeMetadataReporting(metadata interface{}, onError func(error) string) {
 	// TS updateMessageMetadata skips `metadata == null`: a Go value that
 	// encodes as JSON null (a nil map or pointer, json.RawMessage("null")) is
 	// null too.
@@ -1987,36 +1979,25 @@ func (s *uiMessageCallbackState) mergeMetadataReporting(metadata interface{}, on
 		s.message["metadata"] = cloneUIValue(metadata)
 		return
 	}
-	merged, err := jsMergeUIMetadata(existing, metadata)
-	if err != nil {
-		// TS: the TypeError thrown by mergeObjects fails the processing.
-		if onError != nil {
-			_ = onError(err)
-		}
-		return
-	}
-	s.message["metadata"] = merged
+	s.message["metadata"] = jsMergeUIMetadata(existing, metadata)
 }
 
 // jsMergeUIMetadata is TS mergeObjects(base, incoming) for two non-null
 // JSON values: `{...base}` (an object's keys, a string's or array's index
 // keys, nothing for a number or boolean), then incoming's own keys (the same
-// rule), nested objects merged deeply. TS evaluates `key in base` for each
-// incoming key, which throws a TypeError when base is a string, number or
-// boolean. A Go value that encodes as a JSON object (a struct, a typed map,
-// json.RawMessage) is an object, like a map[string]interface{}.
-func jsMergeUIMetadata(base, incoming interface{}) (interface{}, error) {
+// rule), nested objects merged deeply. A Go value that encodes as a JSON
+// object (a struct, a typed map, json.RawMessage) is an object, like a
+// map[string]interface{}. TS evaluates `key in base` for each incoming key,
+// which throws a TypeError for a string, number or boolean base; v0.5.2
+// replaced the metadata there and the stream went on, so Go keeps that
+// (S6: a stream that works in v0.5.2 does not start failing).
+func jsMergeUIMetadata(base, incoming interface{}) interface{} {
 	baseKeys, basePrimitive := jsSpreadUIValue(base)
 	incomingKeys, _ := jsSpreadUIValue(incoming)
 	if basePrimitive && len(incomingKeys) > 0 {
-		keys := make([]string, 0, len(incomingKeys))
-		for key := range incomingKeys {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		return nil, fmt.Errorf("Cannot use 'in' operator to search for '%s' in %s", jsonorder.JSKeyOrder(keys)[0], providerutils.JSString(base))
+		return cloneUIValue(incoming)
 	}
-	return mergeUIMaps(baseKeys, incomingKeys), nil
+	return mergeUIMaps(baseKeys, incomingKeys)
 }
 
 // jsSpreadUIValue is the own enumerable keys of a JSON value as JS object

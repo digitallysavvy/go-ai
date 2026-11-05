@@ -191,7 +191,7 @@ func r87estreamNormJSON(t *testing.T, text string) string {
 }
 
 // UI message metadata merges like TS mergeObjects for every JSON value pair,
-// through the chunk path; a merge TS throws on fails the processing.
+// through the chunk path; where TS throws, the v0.5.2 replacement stays.
 func TestR87estreamMessageMetadataMergeMatchesTS(t *testing.T) {
 	for _, tc := range r87estreamTSMergeCases {
 		var base, incoming interface{}
@@ -206,44 +206,18 @@ func TestR87estreamMessageMetadataMergeMatchesTS(t *testing.T) {
 			t.Fatal(err)
 		}
 		err := applyUIStateChunk(s, UIMessageChunk{"type": "message-metadata", "messageMetadata": incoming}, nil)
-		if strings.HasPrefix(tc.want, "TypeError: ") {
-			if err == nil || err.Error() != strings.TrimPrefix(tc.want, "TypeError: ") {
-				t.Errorf("%s + %s: err = %v, want %s", tc.base, tc.incoming, err, tc.want)
-			}
-			continue
+		want := tc.want
+		if strings.HasPrefix(want, "TypeError: ") {
+			// S6: v0.5.2 replaced the metadata where TS throws.
+			want = tc.incoming
 		}
 		if err != nil {
 			t.Fatalf("%s + %s: %v", tc.base, tc.incoming, err)
 		}
 		b, _ := json.Marshal(s.message["metadata"])
-		if got, want := string(b), r87estreamNormJSON(t, tc.want); got != want {
+		if got, want := string(b), r87estreamNormJSON(t, want); got != want {
 			t.Errorf("%s + %s = %s, want %s", tc.base, tc.incoming, got, want)
 		}
-	}
-}
-
-// The TS TypeError ends a CreateUIMessageStreamWithOptions run as a
-// processing failure: the error is returned and onEnd sees a failed outcome.
-func TestR87estreamMessageMetadataMergeTypeErrorFailsStream(t *testing.T) {
-	var ended map[string]interface{}
-	chunks, errs := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
-		Execute: func(w UIMessageStreamWriter) {
-			w.Write(UIMessageChunk{"type": "start", "messageMetadata": "ab"})
-			w.Write(UIMessageChunk{"type": "message-metadata", "messageMetadata": map[string]interface{}{"a": 1.0}})
-		},
-		OnEnd: func(e map[string]interface{}) { ended = e },
-	})
-	for range chunks {
-	}
-	err := <-errs
-	if err == nil || err.Error() != "Cannot use 'in' operator to search for 'a' in ab" {
-		t.Fatalf("err = %v", err)
-	}
-	if ended == nil {
-		t.Fatal("onEnd not called")
-	}
-	if outcome, _ := ended["outcome"].(map[string]interface{}); outcome["status"] != string(UIMessageStreamOutcomeFailed) {
-		t.Fatalf("outcome = %#v", ended["outcome"])
 	}
 }
 
@@ -317,9 +291,11 @@ func TestR87estreamResponseHeadersFromStream(t *testing.T) {
 		return testutil.NewMockTextStream(chunks), nil
 	}}
 	r, err := StreamText(context.Background(), StreamTextOptions{
-		Model:    model,
-		Prompt:   "p",
-		Tools:    []types.Tool{{Name: "t", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }}},
+		Model:  model,
+		Prompt: "p",
+		Tools: []types.Tool{{Name: "t", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		}}},
 		StopWhen: []StopCondition{StepCountIs(2)},
 	})
 	if err != nil {
