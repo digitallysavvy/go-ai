@@ -3,7 +3,6 @@ package ai
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
@@ -187,35 +186,37 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 		}
 
 		results := make([]*types.EmbeddingsResult, len(group))
-		var groupErr error
 		if len(group) == 1 {
-			results[0], groupErr = callModel(ctx, group[0], groupOptions[0])
+			res, err := callModel(ctx, group[0], groupOptions[0])
+			if err != nil {
+				return nil, err
+			}
+			results[0] = res
 		} else {
 			// TS Promise.all rejects with the first failure in time, not
-			// the lowest batch index. The siblings are not cancelled (TS
-			// does not abort them either); Go waits for them so no call
-			// outlives EmbedMany.
-			var wg sync.WaitGroup
-			var errMu sync.Mutex
+			// the lowest batch index, as soon as it happens. The siblings
+			// are not cancelled (TS does not abort them either): they run
+			// to completion on their own (bounded by ctx) and their results
+			// are dropped. The channel is buffered so they never block.
+			type batchOutcome struct {
+				index  int
+				result *types.EmbeddingsResult
+				err    error
+			}
+			outcomes := make(chan batchOutcome, len(group))
 			for i := range group {
-				wg.Add(1)
 				go func(i int) {
-					defer wg.Done()
 					res, err := callModel(ctx, group[i], groupOptions[i])
-					results[i] = res
-					if err != nil {
-						errMu.Lock()
-						if groupErr == nil {
-							groupErr = err
-						}
-						errMu.Unlock()
-					}
+					outcomes <- batchOutcome{index: i, result: res, err: err}
 				}(i)
 			}
-			wg.Wait()
-		}
-		if groupErr != nil {
-			return nil, groupErr
+			for range group {
+				o := <-outcomes
+				if o.err != nil {
+					return nil, o.err
+				}
+				results[o.index] = o.result
+			}
 		}
 
 		for _, result := range results {
