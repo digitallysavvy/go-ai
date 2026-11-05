@@ -17,9 +17,11 @@ const defaultMCPURL = "https://api.you.com/mcp"
 // YouClientConfig configures CreateYouClient, matching the TypeScript
 // @youdotcom-oss/ai-sdk-plugin (3.x) YouClientConfig.
 type YouClientConfig struct {
-	// APIKey is sent as `Authorization: Bearer <key>`. Empty falls back to
-	// YDC_API_KEY; with neither, no Authorization header is sent.
-	APIKey string
+	// APIKey is sent as `Authorization: Bearer <key>`. Nil falls back to
+	// YDC_API_KEY (TS default parameter: only an undefined apiKey does); an
+	// empty key, given or from the environment, sends no Authorization
+	// header.
+	APIKey *string
 
 	// Tools scopes the hosted tool set to these tool ids (sent as
 	// `tools=<ids joined by ",">`; TS tools?: string | string[]). Nil requests
@@ -47,8 +49,10 @@ func CreateYouClient(ctx context.Context, config ...YouClientConfig) (*mcp.MCPCl
 	if len(config) > 0 {
 		cfg = config[0]
 	}
-	apiKey := cfg.APIKey
-	if apiKey == "" {
+	var apiKey string
+	if cfg.APIKey != nil {
+		apiKey = *cfg.APIKey
+	} else {
 		apiKey = os.Getenv("YDC_API_KEY")
 	}
 	endpoint, err := youClientURL(cfg)
