@@ -241,3 +241,93 @@ func TestR87egenStreamObjectRawStreamFailure(t *testing.T) {
 		t.Errorf("telemetry = %v, want [start stepError error]", ev)
 	}
 }
+
+type r87egenCtxKey struct{}
+
+// r87egenRootCtx marks the context its OnStart returns (the root span's).
+type r87egenRootCtx struct {
+	telemetry.NoopTelemetryIntegration
+}
+
+func (r87egenRootCtx) OnStart(ctx context.Context, _ telemetry.TelemetryStartEvent) context.Context {
+	return context.WithValue(ctx, r87egenCtxKey{}, true)
+}
+
+// TS notify([onStart, telemetry.onStart]) (generate-text.test.ts 14951) starts
+// the user callback first, outside the root span; later callbacks run inside
+// it. Known difference "Telemetry start before the start callbacks".
+func TestR87egenUserOnStartBeforeTelemetryRoot(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var inRootAtStart, inRootAtStep bool
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: "hi", FinishReason: types.FinishReasonStop}, nil
+		}},
+		Prompt:    "x",
+		Telemetry: &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{r87egenRootCtx{}}},
+		OnStart: func(ctx context.Context, _ OnStartEvent) {
+			mu.Lock()
+			inRootAtStart = ctx.Value(r87egenCtxKey{}) != nil
+			mu.Unlock()
+		},
+		OnStepStart: func(ctx context.Context, _ OnStepStartEvent) {
+			mu.Lock()
+			inRootAtStep = ctx.Value(r87egenCtxKey{}) != nil
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if inRootAtStart || !inRootAtStep {
+		t.Errorf("OnStart in root = %v, OnStepStart in root = %v; want false, true", inRootAtStart, inRootAtStep)
+	}
+}
+
+// TS doParseToolCall takes toolMetadata from the tool only and
+// parseProviderExecutedDynamicToolCall builds the call without title or
+// toolMetadata (a LanguageModelV4ToolCall has neither). Known difference
+// "Tool call metadata from custom providers".
+func TestR87egenModelToolCallMetadataIsTheTools(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var execMetadata map[string]interface{}
+	tools := []types.Tool{{Name: "lookup", Parameters: map[string]interface{}{"type": "object"}, Execute: func(_ context.Context, _ map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+		mu.Lock()
+		execMetadata = o.ToolMetadata
+		mu.Unlock()
+		return "ok", nil
+	}}}
+	gen, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{{ID: "c1", ToolName: "lookup", Arguments: map[string]interface{}{"q": "x"}, ToolMetadata: map[string]interface{}{"trace": "provider"}}}}, nil
+		}},
+		Prompt:   "x",
+		Tools:    tools,
+		StopWhen: []StopCondition{StepCountIs(1)},
+		ExperimentalRefineToolInput: map[string]ToolInputRefiner{"lookup": func(_ context.Context, o ToolInputRefinementOptions) (map[string]interface{}, error) {
+			return map[string]interface{}{"q": "refined"}, nil
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if execMetadata != nil || gen.Steps[0].ToolCalls[0].ToolMetadata != nil {
+		t.Errorf("tool metadata: execute %v, step call %v; want none", execMetadata, gen.Steps[0].ToolCalls[0].ToolMetadata)
+	}
+	mu.Unlock()
+	dynamic, err := ParseToolCall(context.Background(), ParseToolCallOptions{
+		ToolCall: types.ToolCall{ID: "c2", ToolName: "remote", RawArguments: `{}`, ProviderExecuted: true, Dynamic: true, Title: "Provider title", ToolMetadata: map[string]interface{}{"trace": "provider"}},
+		Tools:    tools,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dynamic.ToolMetadata != nil || dynamic.Title != "" || !dynamic.Dynamic || !dynamic.ProviderExecuted {
+		t.Errorf("provider-executed dynamic call = %+v, want no title or metadata", dynamic)
+	}
+}
