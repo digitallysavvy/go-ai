@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
@@ -148,11 +149,11 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 		Responses:  []types.EmbeddingResponse{},
 	}
 	// TS sums usage.tokens over the chunks, with NaN for a chunk without
-	// usage, so a reported 0 survives only when every chunk reported usage,
-	// and zero chunks give 0. Reported is therefore an AND, true for zero
-	// chunks. A positive sum with an unreported batch is still recorded (the
-	// v0.5 reading; TS NaN drops it): known difference "Embedding usage
-	// across EmbedMany batches".
+	// usage (`modelResponse.usage ?? { tokens: NaN }`), so one such chunk
+	// makes the total NaN (dropped from telemetry), a reported 0 survives
+	// only when every chunk reported usage, and zero chunks give 0. Reported
+	// is therefore an AND, true for zero chunks. The Go-only InputTokens /
+	// TotalTokens counters keep their sums.
 	out.Usage.Reported = true
 
 	nextStartIndex := 0
@@ -223,7 +224,11 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 			out.Embeddings = append(out.Embeddings, result.Embeddings...)
 			out.Warnings = append(out.Warnings, result.Warnings...)
 			out.Responses = append(out.Responses, embeddingResponsesOrPlaceholder(result.Responses)...)
-			out.Usage.Tokens += result.Usage.Tokens
+			if embeddingUsageAbsent(result.Usage) {
+				out.Usage.Tokens = math.NaN()
+			} else {
+				out.Usage.Tokens += result.Usage.Tokens
+			}
 			out.Usage.InputTokens += result.Usage.InputTokens
 			out.Usage.TotalTokens += result.Usage.TotalTokens
 			out.Usage.Reported = out.Usage.Reported && result.Usage.Reported
@@ -232,6 +237,14 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 	}
 
 	return out, nil
+}
+
+// embeddingUsageAbsent reports whether a model call sent no usage (TS
+// `usage` undefined): the provider did not mark it Reported and every
+// counter is zero. A v0.5.2 custom model that leaves Reported false but
+// fills a counter reported usage.
+func embeddingUsageAbsent(u types.EmbeddingUsage) bool {
+	return !u.Reported && u.Tokens == 0 && u.InputTokens == 0 && u.TotalTokens == 0
 }
 
 // embeddingResponsesOrPlaceholder keeps one response entry per model call
