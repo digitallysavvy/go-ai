@@ -4716,11 +4716,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 // providerToolResultError is the error of a provider tool result flagged
 // isError: its text is the result value (a string as is, anything else as
-// JSON), which the tool-error part keeps as its error value.
+// JSON), which the tool-error part keeps as its error value. A nil result is
+// JSON null (the TS result is a non-nullable JSON value; a Go provider
+// decodes `null` to nil), so its text is TS JSON.stringify(null), "null".
 func providerToolResultError(value interface{}) error {
 	switch v := value.(type) {
 	case nil:
-		return errors.New("tool error")
+		return errors.New("null")
 	case string:
 		return errors.New(v)
 	default:
