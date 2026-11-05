@@ -368,6 +368,11 @@ func ToJSONValue(value interface{}) interface{} {
 		// rejects the whole value. Retry with them replaced in plain trees.
 		data, err = json.Marshal(nullNonFinite(value))
 		if err != nil {
+			// A NaN in a struct field: marshal a copy holding a sentinel and
+			// null it after decoding (cr-r87e-gen-to-carry 3).
+			if out, ok := nullNonFiniteViaSentinel(value); ok {
+				return out
+			}
 			return nil
 		}
 	}
@@ -440,8 +445,8 @@ func nullNonFinite(v interface{}) interface{} {
 // name (map[string]float64, []float32, [][]float64, pointers to them, named
 // float types): string-keyed maps, slices and arrays become plain maps and
 // slices with their non-finite numbers set to nil. Byte slices, structs and
-// every other value are returned as orig (a struct holding NaN still fails to
-// marshal).
+// every other value are returned as orig (a struct holding NaN is handled by
+// nullNonFiniteViaSentinel).
 func nullNonFiniteReflect(rv reflect.Value, orig interface{}) interface{} {
 	switch rv.Kind() {
 	case reflect.Float32, reflect.Float64:
