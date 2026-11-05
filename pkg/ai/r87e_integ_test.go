@@ -3,10 +3,12 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -131,5 +133,44 @@ func TestR87eintegStreamProviderToolErrorWithoutValue(t *testing.T) {
 	}
 	if v, ok := outErr["errorText"]; ok {
 		t.Fatalf("tool-output-error errorText = %v, want the key absent", v)
+	}
+}
+
+// cr-r87e-stream-to-integrator 3: TS executeToolsFromStream enqueues a
+// tool result after executeToolCall's notify([onToolExecutionEnd,
+// telemetry.onToolExecutionEnd]) settled, so the user end, then the
+// telemetry end, then the result part.
+func TestR87eintegLiveToolResultAfterTelemetryEnd(t *testing.T) {
+	var events r87cstreambEvents
+	tool := types.Tool{Name: "t", Parameters: map[string]interface{}{"type": "object"}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "ok", nil
+	}}
+	model := r71streamModel(nil,
+		[]provider.StreamChunk{
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "t", RawArguments: "{}"}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+		},
+		[]provider.StreamChunk{{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop}},
+	)
+	res, err := StreamText(context.Background(), StreamTextOptions{
+		Model: model, Prompt: "x", Tools: []types.Tool{tool},
+		StopWhen:           []StopCondition{StepCountIs(2)},
+		OnToolExecutionEnd: func(context.Context, OnToolCallFinishEvent) { events.add("user-end") },
+		OnChunk: func(c provider.StreamChunk) {
+			if c.Type == provider.ChunkTypeToolResult {
+				events.add("result")
+			}
+		},
+		Telemetry: &TelemetrySettings{Integrations: []telemetry.TelemetryIntegration{&r87cstreambIntegration{rec: events.add,
+			names: r87cstreambNames("onToolExecutionEnd", "telemetry-end")}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := res.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := events.get(), []string{"user-end", "telemetry-end", "result"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
 	}
 }

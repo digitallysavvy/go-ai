@@ -2381,10 +2381,8 @@ func TestR87cstreambTelemetryAlongsideUserCallbacks(t *testing.T) {
 		Telemetry: &TelemetrySettings{Integrations: []telemetry.TelemetryIntegration{&r87cstreambIntegration{rec: events.add,
 			names: r87cstreambNames("onStart", "integration-onStart", "onStepEnd", "integration-onStepEnd", "onEnd", "integration-onEnd")}}},
 	})
-	// TS has user-onStart first; Go starts the telemetry root before the user
-	// OnStart (known difference "Telemetry start before the start
-	// callbacks", as in the generateText port). Step end and end run the user
-	// callback first, as TS.
+	// TS notify([onStart, telemetry.onStart]): the user callback runs first
+	// at the start, the step end and the end (round 87e).
 	if got, want := events.get(), []string{"user-onStart", "integration-onStart", "user-onStepFinish", "integration-onStepEnd", "user-onFinish", "integration-onEnd"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %v, want %v", got, want)
 	}

@@ -3365,18 +3365,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			for _, call := range executeCalls {
 				callsByID[call.ID] = call
 			}
-			userToolEnd := toolCallbacks.onFinish
-			if userToolEnd == nil {
-				userToolEnd = toolCallbacks.fallbackFinish
-			}
 			if !deferApprovalRequests(opts.Internal) {
-				toolCallbacks.fallbackFinish = nil
-				toolCallbacks.onFinish = func(cbCtx context.Context, e OnToolCallFinishEvent) {
-					if userToolEnd != nil {
-						// TS notify swallows a throwing callback and the
-						// result is still enqueued after it.
-						safeCall(cbCtx, e, userToolEnd)
-					}
+				// TS executeToolsFromStream enqueues the result after
+				// executeToolCall's notify([onToolExecutionEnd,
+				// telemetry.onToolExecutionEnd]) settled.
+				toolCallbacks.afterEnd = func(cbCtx context.Context, e OnToolCallFinishEvent) {
 					tr := e.ToolOutput
 					if !liveEmittableToolResult(tr, eagerApprovals) {
 						return
