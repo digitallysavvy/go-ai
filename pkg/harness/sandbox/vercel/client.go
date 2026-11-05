@@ -267,10 +267,6 @@ func createSnapshotBody(expiration *int64) interface{} {
 	return createSnapshotRequest{Expiration: expiration}
 }
 
-// maxSnapshotListPages bounds how many pages ListSnapshots follows (Go
-// only: TS follows `pagination.next` without a bound).
-const maxSnapshotListPages = 20
-
 // ListSnapshots lists the project's snapshots for a sandbox name, newest
 // first, following pagination (TS `Snapshot.list({ name, sortOrder: 'desc' })`
 // iterated with `for await`).
@@ -290,9 +286,11 @@ func (c *APIClient) ListSnapshots(ctx context.Context, name string) ([]snapshotW
 // sortOrder: 'desc'}))`: the first page has no cursor, the next page is
 // fetched while `pagination.next !== null` (an empty page or an empty
 // cursor included), and the iteration stops as soon as yield returns true.
+// Like attachPaginator, there is no page bound: ctx ends a server that never
+// stops paginating.
 func (c *APIClient) eachSnapshot(ctx context.Context, name string, yield func(snapshotWire) bool) error {
 	var cursor *string
-	for page := 0; page < maxSnapshotListPages; page++ {
+	for {
 		// listSnapshots query order: project, name, (limit), cursor, sortOrder.
 		q := []string{"project", c.credentials.ProjectID, "name", name}
 		if cursor != nil {
@@ -315,7 +313,6 @@ func (c *APIClient) eachSnapshot(ctx context.Context, name string, yield func(sn
 		}
 		cursor = out.Pagination.Next
 	}
-	return nil
 }
 
 // extendTimeoutRequest is the 3.9.0 `extendTimeout` body.
