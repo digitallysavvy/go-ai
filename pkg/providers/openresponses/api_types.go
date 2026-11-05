@@ -432,6 +432,43 @@ type OutputItem struct {
 	idKey string
 }
 
+// rawField returns the item's raw JSON field and whether it is present and
+// not null (TS `!= null`). An item built in Go (no Raw) counts a non-empty
+// value as present.
+func (o *OutputItem) rawField(key, value string) (json.RawMessage, bool) {
+	if o.Raw == nil {
+		return nil, value != ""
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(o.Raw, &fields) != nil {
+		return nil, value != ""
+	}
+	raw, ok := fields[key]
+	return raw, ok && string(raw) != "null"
+}
+
+// idValue is the item's `id` as TS reads it into provider metadata
+// (`itemId: item.id`): the decoded JSON value (a string, a number, null) and
+// whether the key is present at all (undefined is dropped from the JSON).
+func (o *OutputItem) idValue() (interface{}, bool) {
+	if o.Raw == nil {
+		return o.ID, o.ID != ""
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(o.Raw, &fields) != nil {
+		return o.ID, o.ID != ""
+	}
+	raw, ok := fields["id"]
+	if !ok {
+		return nil, false
+	}
+	var v interface{}
+	if json.Unmarshal(raw, &v) != nil {
+		return o.ID, true
+	}
+	return v, true
+}
+
 // mapKey is the item's id as a TS Map key: a decoded id keeps its JSON
 // type, so 5 and "5" are different keys.
 func (o *OutputItem) mapKey() string {

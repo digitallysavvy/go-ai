@@ -137,3 +137,136 @@ func TestR87eprovbReplayKeepsEmptyItemIDs(t *testing.T) {
 		t.Fatalf("strict = %s, want a completed message with id \"\"", raw)
 	}
 }
+
+func r87eprovbMeta(t *testing.T, raw interface{}) map[string]interface{} {
+	t.Helper()
+	var b []byte
+	switch v := raw.(type) {
+	case json.RawMessage:
+		b = v
+	default:
+		b, _ = json.Marshal(v)
+	}
+	var top map[string]map[string]interface{}
+	if err := json.Unmarshal(b, &top); err != nil {
+		t.Fatalf("metadata %s: %v", b, err)
+	}
+	return top["open-responses"]
+}
+
+// TS {itemId: part.id} / {itemId: chunk.item.id}: the id keeps its JSON
+// value ("" and numbers) and only an undefined id is left out.
+func TestR87eprovbMetadataItemIDKeepsJSONValue(t *testing.T) {
+	var resp OpenResponsesResponse
+	if err := json.Unmarshal([]byte(`{"id":"r","output":[
+		{"type":"function_call","id":"","call_id":"c1","name":"f","arguments":"{}"},
+		{"type":"function_call","id":5,"call_id":"c2","name":"f","arguments":"{}"},
+		{"type":"function_call","call_id":"c3","name":"f","arguments":"{}"},
+		{"type":"message","id":"","role":"assistant","content":[{"type":"output_text","text":"hi"}]}
+	]}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (&LanguageModel{}).convertResponse(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.ToolCalls) != 3 {
+		t.Fatalf("tool calls = %d", len(result.ToolCalls))
+	}
+	if m := r87eprovbMeta(t, result.ToolCalls[0].ProviderMetadata); m == nil || m["itemId"] != "" {
+		t.Errorf("\"\" id metadata = %v, want itemId \"\"", m)
+	}
+	if m := r87eprovbMeta(t, result.ToolCalls[1].ProviderMetadata); m["itemId"] != float64(5) {
+		t.Errorf("numeric id metadata = %v, want itemId 5", m)
+	}
+	if m := r87eprovbMeta(t, result.ToolCalls[2].ProviderMetadata); m == nil || len(m) != 0 {
+		t.Errorf("absent id metadata = %v, want {}", m)
+	}
+	var text map[string]interface{}
+	for _, c := range result.Content {
+		if tc, ok := c.(types.TextContent); ok {
+			text = r87eprovbMeta(t, tc.ProviderMetadata)
+		}
+	}
+	if id, ok := text["itemId"]; !ok || id != "" {
+		t.Errorf("text metadata = %v, want itemId \"\"", text)
+	}
+
+	// Stream: the done item's own id is the metadata itemId.
+	sse := `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"","call_id":"c1","name":"f","arguments":""}}` + "\n\n" +
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"","call_id":"c1","name":"f","arguments":"{}"}}` + "\n\n"
+	s := newOpenResponsesStream(io.NopCloser(strings.NewReader(sse)), nil)
+	for {
+		chunk, err := s.Next()
+		if err != nil {
+			t.Fatalf("no tool call: %v", err)
+		}
+		if chunk.Type == provider.ChunkTypeToolCall {
+			if m := r87eprovbMeta(t, chunk.ToolCall.ProviderMetadata); m == nil || m["itemId"] != "" {
+				t.Errorf("stream metadata = %v, want itemId \"\"", m)
+			}
+			break
+		}
+	}
+}
+
+// TS doStream: toolCall?.toolCallId ?? item.call_id and toolCall?.toolName
+// ?? item.name keep a "" call_id / name from output_item.added; a null one
+// falls through to the done item (and to chunk.item_id for a custom tool
+// input delta).
+func TestR87eprovbStreamDoneKeepsEmptyAddedValues(t *testing.T) {
+	run := func(sse string) []*provider.StreamChunk {
+		s := newOpenResponsesStream(io.NopCloser(strings.NewReader(sse)), nil)
+		var out []*provider.StreamChunk
+		for {
+			chunk, err := s.Next()
+			if err != nil {
+				return out
+			}
+			out = append(out, chunk)
+		}
+	}
+	ev := func(s string) string { return "data: " + s + "\n\n" }
+	for _, tc := range []struct {
+		name, added, wantID, wantName string
+	}{
+		{"empty", `"call_id":"","name":""`, "", ""},
+		{"null", `"call_id":null,"name":null`, "c9", "n9"},
+	} {
+		chunks := run(ev(`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"i1",`+tc.added+`,"arguments":""}}`) +
+			ev(`{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"i1","call_id":"c9","name":"n9","arguments":"{}"}}`))
+		var call *types.ToolCall
+		for _, c := range chunks {
+			if c.Type == provider.ChunkTypeToolCall {
+				call = c.ToolCall
+			}
+		}
+		if call == nil || call.ID != tc.wantID || call.ToolName != tc.wantName {
+			t.Errorf("function %s: call = %+v, want id %q name %q", tc.name, call, tc.wantID, tc.wantName)
+		}
+
+		chunks = run(ev(`{"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"k1",`+tc.added+`,"input":""}}`) +
+			ev(`{"type":"response.custom_tool_call_input.delta","output_index":0,"item_id":"k1","delta":"x"}`) +
+			ev(`{"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"k1","call_id":"c9","name":"n9","input":""}}`))
+		wantDeltaID := tc.wantID
+		if tc.name == "null" {
+			wantDeltaID = "k1" // TS `?? chunk.item_id`
+		}
+		var deltaID string
+		call = nil
+		for _, c := range chunks {
+			switch c.Type {
+			case provider.ChunkTypeToolInputDelta:
+				deltaID = c.ID
+			case provider.ChunkTypeToolCall:
+				call = c.ToolCall
+			}
+		}
+		if deltaID != wantDeltaID {
+			t.Errorf("custom %s: delta id = %q, want %q", tc.name, deltaID, wantDeltaID)
+		}
+		if call == nil || call.ID != tc.wantID || call.ToolName != tc.wantName {
+			t.Errorf("custom %s: call = %+v, want id %q name %q", tc.name, call, tc.wantID, tc.wantName)
+		}
+	}
+}

@@ -884,7 +884,7 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 				textParts = append(textParts, part.Text)
 				result.Content = append(result.Content, types.TextContent{
 					Text:             part.Text,
-					ProviderMetadata: openResponsesTextMetadataPayload(m.providerName(), itemCopy.ID, validAnnotations[i]),
+					ProviderMetadata: openResponsesTextMetadataPayload(m.providerName(), &itemCopy, validAnnotations[i]),
 				})
 			}
 
@@ -930,7 +930,7 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 				ToolName:         item.Name,
 				Arguments:        args,
 				RawArguments:     item.Arguments,
-				ProviderMetadata: openResponsesToolCallMetadata(m.providerName(), item.ID, item.Namespace),
+				ProviderMetadata: openResponsesItemToolCallMetadata(m.providerName(), &item, item.Namespace),
 			})
 
 		case "custom_tool_call":
@@ -945,7 +945,7 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 				ToolName:         item.Name,
 				Arguments:        map[string]interface{}{"input": item.Input},
 				RawArguments:     string(rawArgs),
-				ProviderMetadata: openResponsesToolCallMetadata(m.providerName(), item.ID, ""),
+				ProviderMetadata: openResponsesItemToolCallMetadata(m.providerName(), &item, ""),
 			})
 
 		default:
@@ -1207,10 +1207,22 @@ func (s *openResponsesStream) RequestBody() interface{} { return s.requestBody }
 
 // toolCallState tracks the state of a tool call during streaming
 type toolCallState struct {
-	ID               string
-	ToolName         string
-	ArgsJSON         string // Accumulated JSON string
-	ProviderMetadata map[string]interface{}
+	ID       string
+	ToolName string
+	ArgsJSON string // Accumulated JSON string
+	// hasID / hasToolName: output_item.added carried call_id / name (not
+	// null), "" included, so TS `toolCall?.toolCallId ?? item.call_id`
+	// keeps it.
+	hasID       bool
+	hasToolName bool
+	// Namespace is the Go-only v0.5 namespace of the added item.
+	Namespace string
+}
+
+// id / toolName return the accumulated value when TS `??` would keep it.
+func (t *toolCallState) id() (string, bool) { return t.ID, t.hasID || t.ID != "" }
+func (t *toolCallState) toolName() (string, bool) {
+	return t.ToolName, t.hasToolName || t.ToolName != ""
 }
 
 // newOpenResponsesStream creates a new Open Responses stream
@@ -1356,13 +1368,17 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		// New output item started
 		if event.Item != nil && event.Item.Type == "function_call" {
 			// Initialize tool call tracking
+			_, hasID := event.Item.rawField("call_id", event.Item.CallID)
+			_, hasName := event.Item.rawField("name", event.Item.Name)
 			s.toolCallsByItemID[event.Item.mapKey()] = &toolCallState{
 				ID:       event.Item.CallID,
 				ToolName: event.Item.Name,
 				// TS seeds the accumulator with the item's own arguments;
 				// later deltas append to them.
-				ArgsJSON:         event.Item.Arguments,
-				ProviderMetadata: openResponsesToolCallMetadata(s.providerName, event.Item.ID, event.Item.Namespace),
+				ArgsJSON:    event.Item.Arguments,
+				hasID:       hasID,
+				hasToolName: hasName,
+				Namespace:   event.Item.Namespace,
 			}
 			return nil, false
 		}
@@ -1386,10 +1402,14 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		// A caller-executed "custom" tool call starts streaming its raw text
 		// input. Keyed by item id, mirroring the function_call accumulator.
 		if event.Item != nil && event.Item.Type == "custom_tool_call" {
+			_, hasID := event.Item.rawField("call_id", event.Item.CallID)
+			_, hasName := event.Item.rawField("name", event.Item.Name)
 			s.customToolCallsByItemID[event.Item.mapKey()] = &toolCallState{
-				ID:       event.Item.CallID,
-				ToolName: event.Item.Name,
-				ArgsJSON: event.Item.Input,
+				ID:          event.Item.CallID,
+				ToolName:    event.Item.Name,
+				ArgsJSON:    event.Item.Input,
+				hasID:       hasID,
+				hasToolName: hasName,
 			}
 			return &provider.StreamChunk{
 				Type:     provider.ChunkTypeToolInputStart,
@@ -1424,11 +1444,8 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		// lazily if a delta arrives without a prior output_item.added.
 		state, ok := s.toolCallsByItemID[event.mapItemKey()]
 		if !ok {
-			state = &toolCallState{
-				ProviderMetadata: openResponsesToolCallMetadata(s.providerName, event.ItemID, ""),
-			}
+			state = &toolCallState{ArgsJSON: event.Delta}
 			s.toolCallsByItemID[event.mapItemKey()] = state
-			state.ArgsJSON = event.Delta
 			return nil, false
 		}
 		state.ArgsJSON += openResponsesConcatDelta(event)
@@ -1439,9 +1456,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		// lazily if this arrives without a prior output_item.added.
 		state, ok := s.toolCallsByItemID[event.mapItemKey()]
 		if !ok {
-			state = &toolCallState{
-				ProviderMetadata: openResponsesToolCallMetadata(s.providerName, event.ItemID, ""),
-			}
+			state = &toolCallState{}
 			s.toolCallsByItemID[event.mapItemKey()] = state
 		}
 		// TS: toolCall.arguments = chunk.arguments, even when it is "".
@@ -1459,8 +1474,9 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		} else {
 			state.ArgsJSON += openResponsesConcatDelta(event)
 		}
-		id := state.ID
-		if id == "" {
+		// TS `toolCall?.toolCallId ?? chunk.item_id`.
+		id, ok := state.id()
+		if !ok {
 			id = event.ItemID
 		}
 		return &provider.StreamChunk{
@@ -1498,24 +1514,26 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			id := event.Item.CallID
 			toolName := event.Item.Name
 			argsJSON := event.Item.Arguments
-			providerMetadata := openResponsesToolCallMetadata(s.providerName, event.Item.ID, event.Item.Namespace)
+			namespace := event.Item.Namespace
 			if ok {
 				// TS: toolCall?.toolCallId ?? item.call_id and
 				// toolCall?.toolName ?? item.name -- the id and name seen when
-				// the item was added win over those of the done item.
-				if state.ID != "" {
-					id = state.ID
+				// the item was added win over those of the done item, "" included.
+				if v, has := state.id(); has {
+					id = v
 				}
-				if state.ToolName != "" {
-					toolName = state.ToolName
+				if v, has := state.toolName(); has {
+					toolName = v
 				}
 				if argsJSON == "" {
 					argsJSON = state.ArgsJSON
 				}
-				if state.ProviderMetadata != nil {
-					providerMetadata = state.ProviderMetadata
+				if namespace == "" {
+					namespace = state.Namespace
 				}
 			}
+			// TS {itemId: chunk.item.id} of the done item.
+			providerMetadata := openResponsesItemToolCallMetadata(s.providerName, event.Item, namespace)
 			var args map[string]interface{}
 			if argsJSON != "" {
 				_ = json.Unmarshal([]byte(argsJSON), &args) //nolint:errcheck
@@ -1545,11 +1563,11 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			input := event.Item.Input
 			if ok {
 				// TS: toolCall?.toolCallId ?? item.call_id (likewise the name).
-				if custom.ID != "" {
-					customToolCallID = custom.ID
+				if v, has := custom.id(); has {
+					customToolCallID = v
 				}
-				if custom.ToolName != "" {
-					toolName = custom.ToolName
+				if v, has := custom.toolName(); has {
+					toolName = v
 				}
 				if input == "" {
 					input = custom.ArgsJSON
@@ -1566,7 +1584,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 					ID:               customToolCallID,
 					ToolName:         toolName,
 					RawArguments:     string(rawArgs),
-					ProviderMetadata: openResponsesToolCallMetadata(s.providerName, event.Item.ID, ""),
+					ProviderMetadata: openResponsesItemToolCallMetadata(s.providerName, event.Item, ""),
 					Arguments:        map[string]interface{}{"input": input},
 				},
 			})
@@ -1790,9 +1808,11 @@ func openResponsesReasoningProviderMetadata(providerName string, item *OutputIte
 		reasoningContent = content
 	}
 	payload := map[string]interface{}{
-		"itemId":           item.ID,
 		"reasoningSummary": summary,
 		"reasoningContent": reasoningContent,
+	}
+	if id, ok := item.idValue(); ok {
+		payload["itemId"] = id
 	}
 	if item.EncryptedContent != "" {
 		payload["reasoningEncryptedContent"] = item.EncryptedContent
@@ -1811,8 +1831,11 @@ func openResponsesReasoningProviderMetadata(providerName string, item *OutputIte
 // all of the item's content parts), mirroring TS's
 // `{[providerOptionsName]: {itemId, ...(annotations.length > 0 &&
 // {annotations})}}`.
-func openResponsesTextMetadataPayload(providerName, itemID string, annotations []Annotation) json.RawMessage {
-	payload := map[string]interface{}{"itemId": itemID}
+func openResponsesTextMetadataPayload(providerName string, item *OutputItem, annotations []Annotation) json.RawMessage {
+	payload := map[string]interface{}{}
+	if id, ok := item.idValue(); ok {
+		payload["itemId"] = id
+	}
 	if len(annotations) > 0 {
 		payload["annotations"] = annotations
 	}
@@ -1837,7 +1860,7 @@ func openResponsesTextProviderMetadata(providerName string, item *OutputItem) js
 	for _, partAnnotations := range openResponsesOutputTextAnnotations(item.Raw, item.Content) {
 		annotations = append(annotations, partAnnotations...)
 	}
-	return openResponsesTextMetadataPayload(providerName, item.ID, annotations)
+	return openResponsesTextMetadataPayload(providerName, item, annotations)
 }
 
 // openResponsesOutputTextAnnotations is TS getOutputTextAnnotations applied to
@@ -1889,13 +1912,14 @@ func openResponsesOutputTextAnnotations(rawItem json.RawMessage, content []Conte
 	return out
 }
 
-func openResponsesToolCallMetadata(providerName, itemID, namespace string) map[string]interface{} {
-	if itemID == "" && namespace == "" {
-		return nil
-	}
+// openResponsesItemToolCallMetadata is TS `{[providerOptionsName]: {itemId:
+// item.id}}`: the id keeps its JSON value ("" and numbers included) and is
+// left out only when the item has no id key (undefined). namespace is the
+// Go-only v0.5 namespace (kept, known difference).
+func openResponsesItemToolCallMetadata(providerName string, item *OutputItem, namespace string) map[string]interface{} {
 	payload := map[string]interface{}{}
-	if itemID != "" {
-		payload["itemId"] = itemID
+	if id, ok := item.idValue(); ok {
+		payload["itemId"] = id
 	}
 	if namespace != "" {
 		payload["namespace"] = namespace
