@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -128,5 +129,40 @@ func TestR87etoolsHTTPSendRetriedFetchFailureReportedTwice(t *testing.T) {
 	}
 	if got := rec.count(); got != 2 {
 		t.Fatalf("OnError calls = %d, want 2: %v", got, rec.errs)
+	}
+}
+
+// TS StdioMCPTransport clears its process on the child's `close` event, so a
+// send after the server exited on its own fails with "StdioClientTransport
+// not connected" (Go wrote into the closed pipe), and start() spawns a new
+// process.
+func TestR87etoolsStdioSendAfterServerExit(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	transport := NewStdioTransport(StdioTransportConfig{Command: "sh", Args: []string{"-c", "exit 0"}, Stderr: io.Discard})
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer transport.Close() //nolint:errcheck
+	if _, err := transport.Receive(context.Background()); err != io.EOF {
+		t.Fatalf("Receive err = %v, want EOF", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for transport.IsConnected() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	msg, _ := CreateRequest(1, "ping", nil)
+	err := transport.Send(context.Background(), msg)
+	var clientErr *MCPClientError
+	if !errors.As(err, &clientErr) || clientErr.Message != "StdioClientTransport not connected" {
+		t.Fatalf("Send after exit: err = %v", err)
+	}
+	// start() after the close event spawns the server again.
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect after exit: %v", err)
+	}
+	if err := transport.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

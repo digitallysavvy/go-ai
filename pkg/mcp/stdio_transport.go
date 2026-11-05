@@ -29,6 +29,7 @@ type StdioTransport struct {
 
 	// Process
 	cmd    *exec.Cmd
+	proc   *stdioProcess
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
 	stderr io.ReadCloser
@@ -50,6 +51,18 @@ type StdioTransport struct {
 
 	// Configuration
 	config TransportConfig
+}
+
+// stdioProcess is one started child: wait runs cmd.Wait exactly once, from
+// Close or from the exit watcher, whichever comes first.
+type stdioProcess struct {
+	cmd       *exec.Cmd
+	waitOnce  sync.Once
+	watchOnce sync.Once
+}
+
+func (p *stdioProcess) wait() {
+	p.waitOnce.Do(func() { _ = p.cmd.Wait() })
 }
 
 // StdioTransportConfig contains configuration for stdio transport
@@ -219,8 +232,28 @@ func (t *StdioTransport) Connect(ctx context.Context) error {
 		go t.logStderr()
 	}
 
+	t.proc = &stdioProcess{cmd: t.cmd}
 	t.connected = true
 	return nil
+}
+
+// watchExit is TS's child `close` event (the process exited and its stdio
+// streams closed): once stdout has ended, it waits for the process and then
+// marks the transport disconnected, so a later Send fails with
+// "StdioClientTransport not connected" and Connect starts a new process.
+// Waiting only after stdout ended keeps cmd.Wait from closing the pipe
+// while unread lines remain.
+func (t *StdioTransport) watchExit(proc *stdioProcess) {
+	proc.watchOnce.Do(func() {
+		go func() {
+			proc.wait()
+			t.mu.Lock()
+			if t.proc == proc && t.connected {
+				t.connected = false
+			}
+			t.mu.Unlock()
+		}()
+	})
 }
 
 // Close closes the connection and terminates the command
@@ -246,7 +279,9 @@ func (t *StdioTransport) Close() error {
 	// Kill process
 	if t.cmd != nil && t.cmd.Process != nil {
 		_ = t.cmd.Process.Kill()
-		_ = t.cmd.Wait()
+		if t.proc != nil {
+			t.proc.wait()
+		}
 	}
 
 	t.connected = false
@@ -327,6 +362,7 @@ func (t *StdioTransport) Receive(ctx context.Context) (*MCPMessage, error) {
 	t.mu.Lock()
 	connected := t.connected
 	reader := t.reader
+	proc := t.proc
 	t.mu.Unlock()
 
 	if !connected {
@@ -339,6 +375,7 @@ func (t *StdioTransport) Receive(ctx context.Context) (*MCPMessage, error) {
 			err := reader.Err()
 			if err == nil {
 				err = io.EOF
+				t.watchExit(proc)
 			}
 			return nil, err
 		}
