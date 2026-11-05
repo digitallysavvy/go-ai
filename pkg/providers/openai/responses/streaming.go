@@ -13,8 +13,9 @@ import (
 // "{provider}-{type}"). ConvertPromptToInput still accepts the legacy
 // "openai-compaction" spelling on input for backward compatibility.
 //
-// The ProviderMetadata JSON carries three fields:
-//   - "type"             — the raw event type string ("compaction")
+// The ProviderMetadata JSON is {"openai": {type, itemId, encryptedContent}}
+// like the TS custom part's providerMetadata:
+//   - "type"             — always "compaction"
 //   - "itemId"           — the item ID from the compaction event
 //   - "encryptedContent" — the opaque encrypted context blob
 //
@@ -26,22 +27,19 @@ func CompactionEventToChunk(event CompactionEvent) *provider.StreamChunk {
 
 // CompactionEventToChunkForProvider is CompactionEventToChunk for a specific
 // provider-options name (e.g. "azure"). The metadata is namespaced under that
-// name like the TS custom part's providerMetadata[providerOptionsName]; the
-// flat v0.5.2 keys are kept alongside for existing callers.
+// name like the TS custom part's providerMetadata[providerOptionsName]
+// (openai-responses-language-model.ts); v0.6 no longer writes the flat v0.5.2
+// keys beside it.
 func CompactionEventToChunkForProvider(event CompactionEvent, providerName string) *provider.StreamChunk {
 	if event.ItemID == "" {
 		event.ItemID = event.ID
 	}
-	fields := map[string]interface{}{
-		"type":             event.Type,
-		"itemId":           event.ItemID,
-		"encryptedContent": event.EncryptedContent,
-	}
 	metadata, _ := json.Marshal(map[string]interface{}{
-		"type":             event.Type,
-		"itemId":           event.ItemID,
-		"encryptedContent": event.EncryptedContent,
-		providerName:       fields,
+		providerName: map[string]interface{}{
+			"type":             "compaction",
+			"itemId":           event.ItemID,
+			"encryptedContent": event.EncryptedContent,
+		},
 	})
 	return &provider.StreamChunk{
 		Type: provider.ChunkTypeCustom,
