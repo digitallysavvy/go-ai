@@ -288,18 +288,14 @@ func TestCohereAndOpenResponsesStreamsExposeHeaders(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer st.Close() //nolint:errcheck
-			for {
-				ch, err := st.Next()
-				if err != nil {
-					t.Fatal("no response-metadata chunk with headers")
-				}
-				if ch != nil && ch.Type == provider.ChunkTypeResponseMetadata {
-					h := ch.ResponseMetadata.Headers
-					if h["X-Resp"] == "" && h["x-resp"] == "" {
-						t.Fatalf("headers = %v", h)
-					}
-					return
-				}
+			// TS doStream returns response.headers beside the stream
+			// (provider.StreamResponseHeaders, round 87e).
+			rh, ok := st.(provider.StreamResponseHeaders)
+			if !ok {
+				t.Fatalf("stream %T reports no response headers", st)
+			}
+			if h := rh.ResponseHeaders(); h["X-Resp"] == "" && h["x-resp"] == "" {
+				t.Fatalf("headers = %v", h)
 			}
 		})
 	}

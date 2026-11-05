@@ -4949,6 +4949,22 @@ func (s *prefixedTextStream) Close() error {
 	return s.base.Close()
 }
 
+// RequestBody, RequestURL and ResponseHeaders delegate to the wrapped model
+// stream, so a first step that starts with initial chunks (resumed
+// approvals, InitialStreamChunks) keeps its request and response metadata.
+func (s *prefixedTextStream) RequestBody() interface{} { return streamRequestBody(s.base) }
+
+func (s *prefixedTextStream) RequestURL() string {
+	if ru, ok := s.base.(provider.StreamRequestURL); ok {
+		return ru.RequestURL()
+	}
+	return ""
+}
+
+func (s *prefixedTextStream) ResponseHeaders() map[string]string {
+	return streamResponseHeaders(s.base)
+}
+
 // ConsumeStream drains the stream and waits for completion.
 func (r *StreamTextResult) ConsumeStream() error {
 	_, err := r.ReadAll()
@@ -5930,7 +5946,7 @@ func languageModelCallRequest(origin string) *LanguageModelCallRequest {
 // (TS doStream's response.headers, which TS returns beside the stream rather
 // than as a stream part), or nil.
 func streamResponseHeaders(s provider.TextStream) map[string]string {
-	if h, ok := s.(interface{ ResponseHeaders() map[string]string }); ok {
+	if h, ok := s.(provider.StreamResponseHeaders); ok {
 		return h.ResponseHeaders()
 	}
 	return nil

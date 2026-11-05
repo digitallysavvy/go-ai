@@ -448,7 +448,16 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 				if rb, ok := s.(provider.StreamRequestBody); ok {
 					resultMap["request"] = map[string]interface{}{"body": rb.RequestBody()}
 				}
+				// TS doStream response.headers: the stream reports them
+				// beside its parts (provider.StreamResponseHeaders), or a v0.5
+				// style response-metadata part carries them.
+				if rh, ok := s.(provider.StreamResponseHeaders); ok && len(rh.ResponseHeaders()) > 0 {
+					resultMap["response"] = map[string]interface{}{"headers": lowerHeaders(rh.ResponseHeaders(), keepContentLength)}
+				}
 				for _, ch := range chunks {
+					if resultMap["response"] != nil {
+						break
+					}
 					if ch.Type == provider.ChunkTypeResponseMetadata && ch.ResponseMetadata != nil && len(ch.ResponseMetadata.Headers) > 0 {
 						resultMap["response"] = map[string]interface{}{"headers": lowerHeaders(ch.ResponseMetadata.Headers, keepContentLength)}
 						break

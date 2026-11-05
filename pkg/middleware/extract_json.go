@@ -348,3 +348,12 @@ func (w *streamingExtractJSONWrapper) RequestURL() string {
 	}
 	return ""
 }
+
+// ResponseHeaders implements provider.StreamResponseHeaders by delegating to
+// the wrapped stream (TS doStream response.headers, review round 87e).
+func (w *streamingExtractJSONWrapper) ResponseHeaders() map[string]string {
+	if rh, ok := w.stream.(provider.StreamResponseHeaders); ok {
+		return rh.ResponseHeaders()
+	}
+	return nil
+}

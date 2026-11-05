@@ -472,6 +472,10 @@ type completionStream struct {
 // request body that was sent to open this stream.
 func (s *completionStream) RequestBody() interface{} { return s.requestBody }
 
+// ResponseHeaders implements provider.StreamResponseHeaders (TS doStream
+// response.headers).
+func (s *completionStream) ResponseHeaders() map[string]string { return s.headerMap() }
+
 func newCompletionStream(reader io.ReadCloser, includeRawChunks bool) *completionStream {
 	return newCompletionStreamWithMetadata(reader, includeRawChunks, "openai.completion", nil)
 }
@@ -623,16 +627,9 @@ func (s *completionStream) finish() {
 	}
 	s.finished = true
 	s.flushPendingMetadata()
-	if !s.metadataEmitted {
-		// No valid chunk carried response metadata: the headers still reach
-		// the caller (TS doStream response.headers).
-		if h := s.headerMap(); len(h) > 0 {
-			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-				Type:             provider.ChunkTypeResponseMetadata,
-				ResponseMetadata: &provider.ResponseMetadata{Headers: h},
-			})
-		}
-	}
+	// No valid chunk carried response metadata: TS emits no
+	// response-metadata part; the headers reach the caller through
+	// ResponseHeaders (TS doStream response.headers, review round 87e).
 	// TS opens the text block on the first valid chunk, whether or not it
 	// carries text, and closes it in flush().
 	if s.metadataEmitted && !s.textStarted {

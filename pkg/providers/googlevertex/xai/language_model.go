@@ -122,7 +122,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	inner := newVertexXaiStream(httpResp.Body)
 	inner.SetRequestBody(reqBody)
 	inner.IncludeRawChunks = opts.IncludeRawChunks
-	inner.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Header)
+	inner.HTTPResponseHeaders = providerutils.ExtractHeaders(httpResp.Header)
 	return streaming.NewWarningsStream(inner, warnings), nil
 }
 

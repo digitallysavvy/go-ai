@@ -53,12 +53,13 @@ type OpenAICompatStream struct {
 	// If it returns ("", false), standard processing continues unchanged.
 	OnReasoningDelta func(eventBytes []byte) (text string, ok bool)
 
-	// ResponseHeaders are the HTTP response headers. The first event carrying
-	// id/model/created yields one ChunkTypeResponseMetadata (with these
-	// headers), like TS's once-only response-metadata part; a stream with no
-	// such event reports the headers alone at its end.
-	ResponseHeaders map[string]string
-	metadataEmitted bool
+	// HTTPResponseHeaders are the HTTP response headers, reported through
+	// ResponseHeaders (TS doStream response.headers). The first event
+	// carrying id/model/created yields one ChunkTypeResponseMetadata (with
+	// these headers), like TS's once-only response-metadata part; a stream
+	// with no such event adds no part (review round 87e).
+	HTTPResponseHeaders map[string]string
+	metadataEmitted     bool
 
 	// MetadataKey is the providerMetadata key (TS providerOptionsName, e.g.
 	// "togetherai") under which the finish chunk reports
@@ -162,6 +163,12 @@ func (s *OpenAICompatStream) SetRequestBody(body interface{}) {
 // RequestBody implements provider.StreamRequestBody, exposing the raw
 // request body that was sent to open this stream (hand-off: "stream request
 // body field"). Returns nil if SetRequestBody was never called.
+// ResponseHeaders implements provider.StreamResponseHeaders (TS doStream
+// response.headers).
+func (s *OpenAICompatStream) ResponseHeaders() map[string]string {
+	return s.HTTPResponseHeaders
+}
+
 func (s *OpenAICompatStream) RequestBody() interface{} {
 	return s.requestBody
 }
@@ -294,7 +301,7 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 		// result); a stream with no metadata event reports them at its end.
 		if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0) {
 			s.metadataEmitted = true
-			meta := &provider.ResponseMetadata{ID: chunkData.ID, ModelID: chunkData.Model, Headers: s.ResponseHeaders}
+			meta := &provider.ResponseMetadata{ID: chunkData.ID, ModelID: chunkData.Model, Headers: s.HTTPResponseHeaders}
 			// TS created: z.number(), new Date(created * 1000): a fractional
 			// value keeps its milliseconds; outside the JS Date range is none.
 			if ms := chunkData.Created * 1000; chunkData.Created != 0 && math.Abs(ms) <= 8.64e15 {
@@ -534,13 +541,6 @@ func (s *OpenAICompatStream) endStream(err error) (*provider.StreamChunk, error)
 	// Order matches TS flush(): close any still-open reasoning block, then
 	// finalize the tool calls, before the error/finish chunks.
 	var pending []*provider.StreamChunk
-	if !s.metadataEmitted && len(s.ResponseHeaders) > 0 {
-		s.metadataEmitted = true
-		pending = append(pending, &provider.StreamChunk{
-			Type:             provider.ChunkTypeResponseMetadata,
-			ResponseMetadata: &provider.ResponseMetadata{Headers: s.ResponseHeaders},
-		})
-	}
 	if s.isActiveReasoning {
 		s.isActiveReasoning = false
 		pending = append(pending, &provider.StreamChunk{

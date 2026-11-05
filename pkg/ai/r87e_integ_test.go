@@ -3,11 +3,14 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"reflect"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
@@ -210,5 +213,58 @@ func TestR87eintegStreamObjectResponseHeadersFromStream(t *testing.T) {
 	}
 	if res.Response.Headers["x-test"] != "1" || finish.Response.Headers["x-test"] != "1" {
 		t.Fatalf("headers: result %v, finish %v; want x-test 1", res.Response.Headers, finish.Response.Headers)
+	}
+}
+
+// cr-r87e-stream-to-integrator 2: WithResponseMetadata reports the headers
+// beside the stream (TS doStream response.headers) and adds no part; the
+// step response still gets them through every wrapper, and the full stream
+// carries no Go-only header part.
+func TestR87eintegResponseHeadersBesideTheStream(t *testing.T) {
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		inner := providerutils.WithResponseMetadata(testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeStreamStart},
+			{Type: provider.ChunkTypeText, Text: "hi"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+		}), http.Header{"X-A": {"1"}}, "m")
+		return streaming.NewWarningsStream(inner, []types.Warning{{Type: "other", Message: "w"}}), nil
+	}}
+	var metaParts int
+	res, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "x",
+		OnChunk: func(c provider.StreamChunk) {
+			if c.Type == provider.ChunkTypeResponseMetadata {
+				metaParts++
+			}
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := res.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	steps := res.Steps()
+	if len(steps) != 1 || steps[0].Response.Headers["X-A"] != "1" {
+		t.Fatalf("step response headers = %+v", steps)
+	}
+	if metaParts != 0 {
+		t.Fatalf("response-metadata parts = %d, want none", metaParts)
+	}
+}
+
+type r87eintegMetaStream struct {
+	provider.TextStream
+}
+
+func (r87eintegMetaStream) ResponseHeaders() map[string]string { return map[string]string{"X-A": "1"} }
+func (r87eintegMetaStream) RequestURL() string                 { return "https://h/v1" }
+func (r87eintegMetaStream) RequestBody() interface{}           { return "body" }
+
+// A first step that starts with initial chunks (resumed approvals,
+// InitialStreamChunks) keeps the model stream's request and response
+// metadata: prefixedTextStream forwards them.
+func TestR87eintegPrefixedStreamForwardsMetadata(t *testing.T) {
+	var s provider.TextStream = &prefixedTextStream{base: r87eintegMetaStream{testutil.NewMockTextStream(nil)}}
+	if streamResponseHeaders(s)["X-A"] != "1" || streamRequestURL(s) != "https://h/v1" || streamRequestBody(s) != "body" {
+		t.Fatal("prefixedTextStream hides the model stream's metadata")
 	}
 }

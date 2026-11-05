@@ -28,7 +28,7 @@ func TestOpenAICompatStreamResponseMetadataAfterPlaceholderChunk(t *testing.T) {
 
 	for _, headers := range []map[string]string{nil, {"x-request-id": "r1"}} {
 		stream := newTestStream(b.String())
-		stream.ResponseHeaders = headers
+		stream.HTTPResponseHeaders = headers
 		chunks := collectStreamChunks(t, stream)
 		var metas []*provider.ResponseMetadata
 		for _, c := range chunks {
@@ -49,21 +49,19 @@ func TestOpenAICompatStreamResponseMetadataAfterPlaceholderChunk(t *testing.T) {
 	}
 }
 
-// A stream with no event carrying metadata still reports its response
-// headers (TS returns them on the doStream result).
+// A stream with no event carrying metadata emits no response-metadata part
+// (TS has none) and reports its headers through ResponseHeaders, as TS
+// returns them on the doStream result (review round 87e).
 func TestOpenAICompatStreamHeadersWithoutMetadataEvent(t *testing.T) {
 	stream := newTestStream(`data: {"choices":[{"delta":{"content":"x"},"finish_reason":"stop","index":0}]}` + "\n\ndata: [DONE]\n\n")
-	stream.ResponseHeaders = map[string]string{"x-request-id": "r1"}
-	var found bool
+	stream.HTTPResponseHeaders = map[string]string{"x-request-id": "r1"}
 	for _, c := range collectStreamChunks(t, stream) {
 		if c.Type == provider.ChunkTypeResponseMetadata {
-			if found || c.ResponseMetadata.Headers["x-request-id"] != "r1" || c.ResponseMetadata.ID != "" {
-				t.Fatalf("unexpected metadata chunk %+v", c.ResponseMetadata)
-			}
-			found = true
+			t.Fatalf("unexpected metadata chunk %+v", c.ResponseMetadata)
 		}
 	}
-	if !found {
-		t.Fatal("no response-metadata chunk with the headers")
+	var s provider.TextStream = stream
+	if rh, ok := s.(provider.StreamResponseHeaders); !ok || rh.ResponseHeaders()["x-request-id"] != "r1" {
+		t.Fatal("headers not reported through ResponseHeaders")
 	}
 }

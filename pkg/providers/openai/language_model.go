@@ -1466,6 +1466,12 @@ func (s *openAIStream) RequestURL() string {
 	return s.requestURL
 }
 
+// ResponseHeaders implements provider.StreamResponseHeaders (TS doStream
+// response.headers).
+func (s *openAIStream) ResponseHeaders() map[string]string {
+	return s.headerMap()
+}
+
 // Close implements io.Closer
 func (s *openAIStream) Close() error {
 	return s.reader.Close()
@@ -1895,17 +1901,9 @@ func (s *openAIStream) endStream() {
 	if !s.finished {
 		s.finished = true
 		s.flushPendingMetadata()
-		if !s.metadataEmitted {
-			// No chunk carried response metadata: the headers still reach the
-			// caller (TS doStream response.headers).
-			if h := s.headerMap(); len(h) > 0 {
-				s.metadataEmitted = true
-				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-					Type:             provider.ChunkTypeResponseMetadata,
-					ResponseMetadata: &provider.ResponseMetadata{Headers: h},
-				})
-			}
-		}
+		// No chunk carried response metadata: TS emits no response-metadata
+		// part; the headers reach the caller through ResponseHeaders (TS
+		// doStream response.headers, review round 87e).
 		if s.closeBlocksAndToolCalls() {
 			s.err = io.EOF
 			return

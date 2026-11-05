@@ -410,6 +410,15 @@ func (s *extractReasoningStream) RequestURL() string {
 	return ""
 }
 
+// ResponseHeaders implements provider.StreamResponseHeaders by delegating to
+// the wrapped stream (TS doStream response.headers, review round 87e).
+func (s *extractReasoningStream) ResponseHeaders() map[string]string {
+	if rh, ok := s.underlying.(provider.StreamResponseHeaders); ok {
+		return rh.ResponseHeaders()
+	}
+	return nil
+}
+
 // getPotentialStartIndex finds where searchedText could potentially start in text.
 // Returns the index of either a complete match or a partial match at the end of text.
 // Returns -1 if no match is found.

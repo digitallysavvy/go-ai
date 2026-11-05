@@ -281,3 +281,13 @@ func (s *simulatedStream) RequestURL() string {
 	}
 	return s.result.RequestURL
 }
+
+// ResponseHeaders implements provider.StreamResponseHeaders: TS
+// simulateStreamingMiddleware returns `response: result.response` beside the
+// stream (review round 87e).
+func (s *simulatedStream) ResponseHeaders() map[string]string {
+	if s.result == nil {
+		return nil
+	}
+	return s.result.ResponseHeaders
+}

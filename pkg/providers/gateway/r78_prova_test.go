@@ -78,16 +78,13 @@ func TestR78prova_TSCasesLanguage(t *testing.T) {
 		}
 		return m
 	}, map[string]string{
-		"should stream text deltas":                                    r78provaV3Parts,
-		"should work without provider options":                         "the TS test's prepareJsonResponse content is one V3-shaped object, which TS returns verbatim as result.content",
-		"should filter raw chunks based on includeRawChunks option":    r78provaV3Parts,
-		"should include raw chunks when includeRawChunks is true":      r78provaV3Parts,
-		"should not modify response-metadata chunks without timestamp": r78provaHeaderMetadata,
-		"should handle null timestamp values gracefully":               r78provaHeaderMetadata,
+		"should stream text deltas":                                 r78provaV3Parts,
+		"should work without provider options":                      "the TS test's prepareJsonResponse content is one V3-shaped object, which TS returns verbatim as result.content",
+		"should filter raw chunks based on includeRawChunks option": r78provaV3Parts,
+		"should include raw chunks when includeRawChunks is true":   r78provaV3Parts,
 	})
 }
 
 const (
-	r78provaV3Parts        = "the TS test streams V3-shaped parts (textDelta, a string finishReason, wire usage), which TS forwards verbatim; Go decodes them to V4 parts"
-	r78provaHeaderMetadata = "Go streams carry the HTTP response headers in a leading response-metadata part (providerutils.WithResponseMetadata); TS returns them on the stream result, so TS counts one part less"
+	r78provaV3Parts = "the TS test streams V3-shaped parts (textDelta, a string finishReason, wire usage), which TS forwards verbatim; Go decodes them to V4 parts"
 )

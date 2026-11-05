@@ -234,6 +234,11 @@ func TestR79provbChatCompletionStreamHeaders(t *testing.T) {
 				h = c.ResponseMetadata.Headers
 			}
 		}
+		// A stream with no metadata event reports the headers through
+		// ResponseHeaders only (TS doStream response.headers; round 87e).
+		if rh, ok := s.(provider.StreamResponseHeaders); ok && h == nil {
+			h = rh.ResponseHeaders()
+		}
 		return h
 	}
 	for _, tc := range []struct{ name, frame string }{

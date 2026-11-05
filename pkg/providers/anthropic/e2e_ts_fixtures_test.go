@@ -167,7 +167,7 @@ func TestFixtureToolWithoutArgs(t *testing.T) {
 		t.Fatal(err)
 	}
 	seq := chunkSeq(drain(t, s))
-	want := []string{"stream-start", "response-metadata", "response-metadata", "custom", "text-start", "text", "text-end",
+	want := []string{"stream-start", "response-metadata", "custom", "text-start", "text", "text-end",
 		"tool-input-start:updateIssueList", "tool-input-end:", "tool-call:updateIssueList", "finish"}
 	if strings.Join(seq, ",") != strings.Join(want, ",") {
 		t.Fatalf("sequence\n got %v\nwant %v", seq, want)
@@ -222,7 +222,7 @@ func TestFixtureWebSearchStreamOrder(t *testing.T) {
 	}
 	seq := chunkSeq(drain(t, s))
 	head := strings.Join(seq[:10], ",")
-	want := "stream-start,response-metadata,response-metadata,custom,tool-input-start:web_search,tool-input-delta,tool-input-end:,tool-call:web_search,tool-result:web_search,source"
+	want := "stream-start,response-metadata,custom,tool-input-start:web_search,tool-input-delta,tool-input-end:,tool-call:web_search,tool-result:web_search,source,text-start"
 	if head != want {
 		t.Fatalf("head\n got %s\nwant %s", head, want)
 	}

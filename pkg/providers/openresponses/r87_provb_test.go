@@ -62,18 +62,19 @@ func TestR87provbResponseCreatedEmitsResponseMetadata(t *testing.T) {
 			metas = append(metas, c.ResponseMetadata)
 		}
 	}
-	// Go's leading header chunk (WithResponseMetadata), then the TS part.
-	if len(metas) != 2 {
-		t.Fatalf("response-metadata chunks = %d, want 2 (order %v)", len(metas), order)
+	// Only the TS part: the headers are reported beside the stream
+	// (WithResponseMetadata, review round 87e).
+	if len(metas) != 1 {
+		t.Fatalf("response-metadata chunks = %d, want 1 (order %v)", len(metas), order)
 	}
-	got := metas[1]
+	got := metas[0]
 	if got.ID != "resp_123" || got.ModelID != "server-reported-model-id" || !got.Timestamp.Equal(time.Unix(1750000000, 0)) {
 		t.Fatalf("metadata = %+v", got)
 	}
 	if got.Headers["X-Test"] != "1" {
 		t.Fatalf("headers = %v, want the response headers kept", got.Headers)
 	}
-	if have := strings.Join(order[:4], ","); have != "stream-start,response-metadata,response-metadata,text-start" {
+	if have := strings.Join(order[:4], ","); have != "stream-start,response-metadata,text-start,text" {
 		t.Fatalf("order = %s", have)
 	}
 }

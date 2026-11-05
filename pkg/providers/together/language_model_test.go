@@ -187,11 +187,11 @@ func TestLanguageModelDoGenerateAndDoStream(t *testing.T) {
 	if err != nil || chunk.Text != "world" {
 		t.Fatalf("third stream chunk = %+v err=%v", chunk, err)
 	}
-	// No event carries id/model/created (TS emits no response-metadata
-	// part), so the headers come in a headers-only metadata chunk at the end.
-	chunk, err = stream.Next()
-	if err != nil || chunk.Type != provider.ChunkTypeResponseMetadata || chunk.ResponseMetadata.Headers["Content-Type"] != "text/event-stream" {
-		t.Fatalf("metadata chunk = %+v err=%v", chunk, err)
+	// No event carries id/model/created: TS emits no response-metadata
+	// part, and the headers come through ResponseHeaders (doStream
+	// response.headers, round 87e).
+	if rh, ok := stream.(provider.StreamResponseHeaders); !ok || rh.ResponseHeaders()["Content-Type"] != "text/event-stream" {
+		t.Fatalf("stream %T reports no Content-Type header", stream)
 	}
 	chunk, err = stream.Next()
 	if err != nil || chunk.Type != provider.ChunkTypeFinish || chunk.FinishReason != types.FinishReasonStop {

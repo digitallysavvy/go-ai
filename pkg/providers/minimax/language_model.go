@@ -227,3 +227,21 @@ func (s *warningsAppendStream) RequestBody() interface{} {
 	}
 	return nil
 }
+
+// RequestURL implements provider.StreamRequestURL by delegating to the
+// wrapped stream.
+func (s *warningsAppendStream) RequestURL() string {
+	if ru, ok := s.inner.(provider.StreamRequestURL); ok {
+		return ru.RequestURL()
+	}
+	return ""
+}
+
+// ResponseHeaders implements provider.StreamResponseHeaders by delegating to
+// the wrapped stream (TS doStream response.headers, review round 87e).
+func (s *warningsAppendStream) ResponseHeaders() map[string]string {
+	if rh, ok := s.inner.(provider.StreamResponseHeaders); ok {
+		return rh.ResponseHeaders()
+	}
+	return nil
+}

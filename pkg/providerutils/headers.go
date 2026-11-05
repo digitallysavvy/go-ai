@@ -2,9 +2,7 @@ package providerutils
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
-	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
@@ -26,79 +24,26 @@ func ExtractHeaders(h http.Header) map[string]string {
 	return out
 }
 
-// responseMetadataStream wraps a TextStream and emits a ChunkTypeResponseMetadata
-// chunk before provider content. If the inner stream starts with stream-start
-// warnings, that chunk is preserved first to match the TypeScript SDK lifecycle
-// order.
-type responseMetadataStream struct {
-	meta       *provider.StreamChunk
-	emitted    bool
-	inner      provider.TextStream
-	passQueue  []*provider.StreamChunk
-	checkedOne bool
-	sawStart   bool
-	pendingErr error
+// responseHeadersStream wraps a TextStream and reports the HTTP response
+// headers through provider.StreamResponseHeaders, as TS doStream returns
+// response.headers beside the stream. The stream's parts pass through
+// unchanged: TS has no header part.
+type responseHeadersStream struct {
+	inner   provider.TextStream
+	headers map[string]string
 }
 
-func (s *responseMetadataStream) Next() (*provider.StreamChunk, error) {
-	if s.pendingErr != nil {
-		return nil, s.pendingErr
-	}
-	if len(s.passQueue) > 0 {
-		chunk := s.passQueue[0]
-		s.passQueue = s.passQueue[1:]
-		return chunk, nil
-	}
-	if !s.emitted {
-		if !s.checkedOne {
-			s.checkedOne = true
-			chunk, err := s.inner.Next()
-			if err != nil {
-				return s.metaThenErr(chunk, err)
-			}
-			if chunk != nil && chunk.Type == provider.ChunkTypeStreamStart {
-				s.sawStart = true
-				return chunk, nil
-			}
-			s.passQueue = append(s.passQueue, chunk)
-		}
-		if s.sawStart {
-			chunk, err := s.inner.Next()
-			if err != nil {
-				return s.metaThenErr(chunk, err)
-			}
-			if chunk != nil && chunk.Type == provider.ChunkTypeRaw {
-				s.passQueue = append(s.passQueue, s.meta)
-				s.emitted = true
-				return chunk, nil
-			}
-			s.passQueue = append(s.passQueue, chunk)
-		}
-		s.emitted = true
-		return s.meta, nil
-	}
-	return s.inner.Next()
-}
+func (s *responseHeadersStream) Next() (*provider.StreamChunk, error) { return s.inner.Next() }
+func (s *responseHeadersStream) Err() error                           { return s.inner.Err() }
+func (s *responseHeadersStream) Close() error                         { return s.inner.Close() }
 
-// metaThenErr delivers the response metadata before surfacing an inner stream
-// error/EOF that occurred before any content, so headers are never lost on
-// short streams. Genuine (non-EOF) errors are returned as is.
-func (s *responseMetadataStream) metaThenErr(chunk *provider.StreamChunk, err error) (*provider.StreamChunk, error) {
-	if err != io.EOF {
-		return chunk, err
-	}
-	s.emitted = true
-	s.pendingErr = err
-	return s.meta, nil
-}
-
-func (s *responseMetadataStream) Err() error   { return s.inner.Err() }
-func (s *responseMetadataStream) Close() error { return s.inner.Close() }
+// ResponseHeaders implements provider.StreamResponseHeaders.
+func (s *responseHeadersStream) ResponseHeaders() map[string]string { return s.headers }
 
 // RequestBody implements provider.StreamRequestBody by delegating to inner
 // when inner implements it, so wrapping a stream in WithResponseMetadata
 // doesn't hide the capability from pkg/ai/stream.go's type assertion.
-func (s *responseMetadataStream) RequestBody() interface{} {
+func (s *responseHeadersStream) RequestBody() interface{} {
 	if rb, ok := s.inner.(provider.StreamRequestBody); ok {
 		return rb.RequestBody()
 	}
@@ -108,33 +53,28 @@ func (s *responseMetadataStream) RequestBody() interface{} {
 // RequestURL implements provider.StreamRequestURL by delegating to inner when
 // inner implements it (TS doStream request.url, 934100cad4), so the wrapper
 // doesn't hide the capability from pkg/ai.
-func (s *responseMetadataStream) RequestURL() string {
+func (s *responseHeadersStream) RequestURL() string {
 	if ru, ok := s.inner.(provider.StreamRequestURL); ok {
 		return ru.RequestURL()
 	}
 	return ""
 }
 
-// WithResponseMetadata wraps stream so that a ChunkTypeResponseMetadata chunk
-// carrying the given HTTP response headers is emitted before provider content.
-// A leading ChunkTypeStreamStart is kept first so warnings preserve TS ordering.
-// Consumers (StreamObject, StreamText) will pick up the real headers and
-// response ID from these headers, mirroring the TS SDK's 'response-metadata'
-// chunk. h may be nil; in that case the wrapped stream is returned unchanged.
+// WithResponseMetadata wraps stream so that it reports the given HTTP
+// response headers through provider.StreamResponseHeaders, which StreamText
+// and StreamObject read for the step response (TS doStream returns
+// response.headers beside the stream). The stream's parts are unchanged: v0.5
+// added a leading header-only response-metadata part, which TS does not have
+// (review round 87e). modelID is no longer used; the step response falls back
+// to the model's ID, as TS `responseModelId ?? model.modelId`. h may be nil;
+// in that case the wrapped stream is returned unchanged.
 func WithResponseMetadata(stream provider.TextStream, h http.Header, modelID string) provider.TextStream {
+	_ = modelID
 	headers := ExtractHeaders(h)
 	if len(headers) == 0 {
 		return stream
 	}
-	meta := &provider.StreamChunk{
-		Type: provider.ChunkTypeResponseMetadata,
-		ResponseMetadata: &provider.ResponseMetadata{
-			Headers:   headers,
-			Timestamp: time.Now(),
-			ModelID:   modelID,
-		},
-	}
-	return &responseMetadataStream{meta: meta, inner: stream}
+	return &responseHeadersStream{inner: stream, headers: headers}
 }
 
 // RawJSONBody decodes a JSON response body for ResponseMetadata.Body, which

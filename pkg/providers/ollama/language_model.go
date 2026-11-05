@@ -118,7 +118,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	stream := newOllamaStream(httpResp.Body)
 	stream.SetRequestBody(reqBody)
 	stream.IncludeRawChunks = opts.IncludeRawChunks
-	stream.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Header)
+	stream.HTTPResponseHeaders = providerutils.ExtractHeaders(httpResp.Header)
 	return streaming.NewWarningsStream(stream, warnings), nil
 }
 

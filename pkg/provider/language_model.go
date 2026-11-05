@@ -204,6 +204,17 @@ type StreamRequestURL interface {
 	RequestURL() string
 }
 
+// StreamResponseHeaders is an optional interface a TextStream can provide to
+// report the HTTP response headers of the call that opened it (TS doStream()
+// {response: {headers}}, returned beside the stream rather than as a stream
+// part). pkg/ai reads it for the step response; a response-metadata part that
+// carries headers still replaces them (v0.5 providers). Stream wrappers
+// forward it like RequestURL.
+type StreamResponseHeaders interface {
+	// ResponseHeaders returns the HTTP response headers, or nil.
+	ResponseHeaders() map[string]string
+}
+
 // StreamChunk represents a single chunk in a text stream
 type StreamChunk struct {
 	// Type of chunk
