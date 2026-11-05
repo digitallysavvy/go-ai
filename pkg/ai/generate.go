@@ -965,7 +965,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// populated — every telemetry integration needs it from the very first
 	// event to track its own root span by CallID.
 	callID := internalGenerateCallID(opts.Internal)()
-	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+	// The root telemetry start is sent right after the user OnStart below
+	// (TS notify([onStart, telemetry.onStart]) starts the callback first).
+	telemetryStart := telemetry.TelemetryStartEvent{
 		CallID:              callID,
 		OperationType:       "ai.generateText",
 		ModelProvider:       opts.Model.Provider(),
@@ -986,7 +988,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		MaxRetries:          &generateTextMaxRetries,
 		RuntimeContext:      telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 		ToolsContext:        telemetryToolsContext(telemetrySettings, toolsContext),
-	})
+	}
 
 	// liveResult is the result under construction. The deferred abort handler
 	// reads the steps completed so far from it: a failing step returns a nil
@@ -1114,6 +1116,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		RuntimeContext:      runtimeContext,
 		ToolsContext:        toolsContext,
 	}, opts.OnStart)
+	// The callback ran outside the root span, as in TS; everything after it
+	// runs inside it.
+	ctx = telemetry.FireOnStart(ctx, telemetryStart)
 
 	// Initialize result (named return — assign, not declare)
 	result = &GenerateTextResult{

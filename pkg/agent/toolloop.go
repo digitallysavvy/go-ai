@@ -625,8 +625,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 	if err := validateToolCallConcurrency(firstCallConfig.ToolCallConcurrency); err != nil {
 		return nil, err
 	}
-	var lt *loopTelemetry
-	ctx, lt = a.beginLoopTelemetry(ctx, firstCallConfig)
+	lt, startLoopTelemetry := a.beginLoopTelemetry(ctx, firstCallConfig)
 	ctx = context.WithValue(ctx, loopTelemetryKey{}, lt)
 	*ltOut = lt
 
@@ -695,6 +694,9 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		RuntimeContext:      fc.RuntimeContext,
 		ToolsContext:        fc.ToolsContext,
 	}, cbs.onStart)
+	// The root span opens after the user OnStart, as TS notify([onStart,
+	// telemetry.onStart]) starts the callback first.
+	ctx = startLoopTelemetry(ctx)
 
 	// Apply total timeout if configured (TS `timeout ?? preparedCall.timeout`)
 	var cancel context.CancelFunc

@@ -507,10 +507,9 @@ func TestR82genTelemetryIntegrations(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// TS has user-onStart first; Go starts the telemetry root before the
-		// user OnStart (known difference "Telemetry start before the start
-		// callbacks"). Step end and end run the user callback first, as TS.
-		want := []string{"integration-onStart", "user-onStart", "user-onStepFinish", "integration-onStepEnd", "user-onFinish", "integration-onEnd"}
+		// TS generate-text.test.ts 14951: the user onStart starts first, as
+		// the step end and end callbacks do.
+		want := []string{"user-onStart", "integration-onStart", "user-onStepFinish", "integration-onStepEnd", "user-onFinish", "integration-onEnd"}
 		if !reflect.DeepEqual(events, want) {
 			t.Fatalf("events = %v, want %v", events, want)
 		}
