@@ -124,8 +124,10 @@ type Settings struct {
 	// TurnStartTimeout bounds how long a turn waits for its first bridge
 	// event after the start frame was sent. When it passes, the turn fails
 	// with "claude-code bridge did not emit a turn event within <n>ms." and
-	// the bridge connection is closed. Zero uses the default of 120s; a
-	// negative value disables the deadline. Mirrors TS `turnStartTimeoutMs`.
+	// the bridge connection is closed. Zero uses the default of 120s. Like
+	// TS `turnStartTimeoutMs` (a Node timer), a value below 1ms, negative
+	// included, fails the turn on the first timer tick after the start was
+	// sent; there is no value that disables the deadline.
 	TurnStartTimeout time.Duration
 	// Reconnect tunes reconnection after an established bridge connection
 	// drops.
