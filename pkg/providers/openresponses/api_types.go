@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"strconv"
+	"sync/atomic"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -359,6 +361,19 @@ type OutputItem struct {
 	// custom fields). Used for extension item decode/replay (row 9a68261,
 	// OR-EXT). Populated by UnmarshalJSON.
 	Raw json.RawMessage `json:"-"`
+
+	// idKey is the TS Map key of a decoded `id` that is not a JSON string
+	// (openResponsesMapKey); "" means the key is ID.
+	idKey string
+}
+
+// mapKey is the item's id as a TS Map key: a decoded id keeps its JSON
+// type, so 5 and "5" are different keys.
+func (o *OutputItem) mapKey() string {
+	if o.idKey != "" {
+		return o.idKey
+	}
+	return o.ID
 }
 
 // UnmarshalJSON decodes the known OutputItem fields via a type alias (so the
@@ -398,6 +413,7 @@ func (o *OutputItem) UnmarshalJSON(data []byte) error {
 		alias.Namespace = openResponsesWireString(w.Namespace)
 		alias.Input = openResponsesWireString(w.Input)
 		alias.EncryptedContent = openResponsesWireString(w.EncryptedContent)
+		alias.idKey = openResponsesMapKey(w.ID)
 	}
 	*o = OutputItem(alias)
 	o.Raw = append(json.RawMessage(nil), data...)
@@ -574,6 +590,50 @@ type StreamEvent struct {
 	// OR-EXT). Populated by UnmarshalJSON; left nil for StreamEvent values
 	// constructed directly (e.g. in tests) rather than decoded from JSON.
 	Raw json.RawMessage `json:"-"`
+
+	// itemIDKey is the TS Map key of a decoded `item_id` that is not a JSON
+	// string (openResponsesMapKey); "" means the key is ItemID.
+	itemIDKey string
+}
+
+// mapItemKey is the event's item_id as a TS Map key (see OutputItem.mapKey).
+func (e *StreamEvent) mapItemKey() string {
+	if e.itemIDKey != "" {
+		return e.itemIDKey
+	}
+	return e.ItemID
+}
+
+// openResponsesObjectKeys numbers decoded object / array keys: a TS Map
+// keys an object by identity, so no two parsed objects are the same key.
+var openResponsesObjectKeys atomic.Uint64
+
+// openResponsesMapKey is the TS Map key (SameValueZero) of a raw JSON value
+// that is not a string, and "" for a string (its key is the string itself).
+// The other keys start with 0xff, which no decoded JSON string holds (it is
+// not valid UTF-8), so a numeric id never matches a string id with the same
+// digits; absent (undefined) and null are their own keys; an object or array
+// matches only itself.
+func openResponsesMapKey(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "\xffu"
+	}
+	var v interface{}
+	if json.Unmarshal(raw, &v) != nil {
+		return "\xffu"
+	}
+	switch x := v.(type) {
+	case string:
+		return ""
+	case nil:
+		return "\xffl"
+	case float64:
+		return "\xffn" + openResponsesJSString(x)
+	case bool:
+		return "\xffb" + openResponsesJSString(x)
+	default:
+		return "\xffo" + strconv.FormatUint(openResponsesObjectKeys.Add(1), 10)
+	}
 }
 
 // UnmarshalJSON decodes a stream event like TS reads it: doStream parses
@@ -623,6 +683,7 @@ func (e *StreamEvent) UnmarshalJSON(data []byte) error {
 		CallID:         openResponsesWireString(w.CallID),
 		Arguments:      openResponsesWireString(w.Arguments),
 		Input:          openResponsesWireString(w.Input),
+		itemIDKey:      openResponsesMapKey(w.ItemID),
 	}
 	if openResponsesWirePresent(w.Response) {
 		var r openResponsesResponseWire

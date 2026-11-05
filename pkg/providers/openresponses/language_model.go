@@ -1356,7 +1356,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		// New output item started
 		if event.Item != nil && event.Item.Type == "function_call" {
 			// Initialize tool call tracking
-			s.toolCallsByItemID[event.Item.ID] = &toolCallState{
+			s.toolCallsByItemID[event.Item.mapKey()] = &toolCallState{
 				ID:       event.Item.CallID,
 				ToolName: event.Item.Name,
 				// TS seeds the accumulator with the item's own arguments;
@@ -1386,7 +1386,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		// A caller-executed "custom" tool call starts streaming its raw text
 		// input. Keyed by item id, mirroring the function_call accumulator.
 		if event.Item != nil && event.Item.Type == "custom_tool_call" {
-			s.customToolCallsByItemID[event.Item.ID] = &toolCallState{
+			s.customToolCallsByItemID[event.Item.mapKey()] = &toolCallState{
 				ID:       event.Item.CallID,
 				ToolName: event.Item.Name,
 				ArgsJSON: event.Item.Input,
@@ -1422,12 +1422,12 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 	case "response.function_call_arguments.delta":
 		// Tool call arguments delta. Row fb82a6c: create the accumulator
 		// lazily if a delta arrives without a prior output_item.added.
-		state, ok := s.toolCallsByItemID[event.ItemID]
+		state, ok := s.toolCallsByItemID[event.mapItemKey()]
 		if !ok {
 			state = &toolCallState{
 				ProviderMetadata: openResponsesToolCallMetadata(s.providerName, event.ItemID, ""),
 			}
-			s.toolCallsByItemID[event.ItemID] = state
+			s.toolCallsByItemID[event.mapItemKey()] = state
 			state.ArgsJSON = event.Delta
 			return nil, false
 		}
@@ -1437,12 +1437,12 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 	case "response.function_call_arguments.done":
 		// Tool call arguments complete. Row fb82a6c: create the accumulator
 		// lazily if this arrives without a prior output_item.added.
-		state, ok := s.toolCallsByItemID[event.ItemID]
+		state, ok := s.toolCallsByItemID[event.mapItemKey()]
 		if !ok {
 			state = &toolCallState{
 				ProviderMetadata: openResponsesToolCallMetadata(s.providerName, event.ItemID, ""),
 			}
-			s.toolCallsByItemID[event.ItemID] = state
+			s.toolCallsByItemID[event.mapItemKey()] = state
 		}
 		// TS: toolCall.arguments = chunk.arguments, even when it is "".
 		state.ArgsJSON = event.Arguments
@@ -1452,10 +1452,10 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		// Caller-executed custom tool input delta (raw text, not JSON).
 		// Row fb82a6c-equivalent: create the accumulator lazily if a delta
 		// arrives without a prior output_item.added.
-		state, ok := s.customToolCallsByItemID[event.ItemID]
+		state, ok := s.customToolCallsByItemID[event.mapItemKey()]
 		if !ok {
 			state = &toolCallState{ArgsJSON: event.Delta}
-			s.customToolCallsByItemID[event.ItemID] = state
+			s.customToolCallsByItemID[event.mapItemKey()] = state
 		} else {
 			state.ArgsJSON += openResponsesConcatDelta(event)
 		}
@@ -1473,10 +1473,10 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		// Final raw input for a caller-executed custom tool call. No chunk is
 		// emitted here (mirrors TS): the terminal tool-call chunk is built
 		// from response.output_item.done below.
-		state, ok := s.customToolCallsByItemID[event.ItemID]
+		state, ok := s.customToolCallsByItemID[event.mapItemKey()]
 		if !ok {
 			state = &toolCallState{}
-			s.customToolCallsByItemID[event.ItemID] = state
+			s.customToolCallsByItemID[event.mapItemKey()] = state
 		}
 		state.ArgsJSON = event.Input
 		return nil, false
@@ -1494,7 +1494,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			// output_item.added and/or delta events, if any were seen) only
 			// for provider metadata and for arguments when the done event
 			// itself doesn't carry them.
-			state, ok := s.toolCallsByItemID[event.Item.ID]
+			state, ok := s.toolCallsByItemID[event.Item.mapKey()]
 			id := event.Item.CallID
 			toolName := event.Item.Name
 			argsJSON := event.Item.Arguments
@@ -1522,7 +1522,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			}
 			// TS toolCallsByItemId.delete(item.id): a repeated done event for
 			// the same item must not reuse the accumulated arguments.
-			delete(s.toolCallsByItemID, event.Item.ID)
+			delete(s.toolCallsByItemID, event.Item.mapKey())
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeToolCall,
 				ToolCall: &types.ToolCall{
@@ -1539,7 +1539,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			// output_item.added and/or custom_tool_call_input.delta/.done
 			// events) only when the done event itself doesn't carry them.
 			s.hasToolCalls = true
-			custom, ok := s.customToolCallsByItemID[event.Item.ID]
+			custom, ok := s.customToolCallsByItemID[event.Item.mapKey()]
 			customToolCallID := event.Item.CallID
 			toolName := event.Item.Name
 			input := event.Item.Input
@@ -1555,7 +1555,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 					input = custom.ArgsJSON
 				}
 			}
-			delete(s.customToolCallsByItemID, event.Item.ID)
+			delete(s.customToolCallsByItemID, event.Item.mapKey())
 			rawArgs, _ := jsonstr.Marshal(input) //nolint:errcheck // TS JSON.stringify: <, > and & stay literal
 			// TS enqueues tool-input-end then tool-call as two separate parts;
 			// queue the tool-call chunk for the next Next() call and return
