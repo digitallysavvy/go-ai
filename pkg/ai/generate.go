@@ -2738,10 +2738,10 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 
 		if tool == nil {
 			toolErr := fmt.Errorf("tool not found: %s", call.ToolName)
+			// No Title: TS builds a client tool's tool-result and tool-error without it.
 			results[i] = types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
-				Title:            call.Title,
 				Input:            call.Arguments,
 				Error:            toolErr,
 				ProviderExecuted: false,
@@ -2971,10 +2971,10 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 					toolErr = &TimeoutError{Reason: TimeoutReasonTool, Err: toolErr, Timeout: *toolTimeout}
 				}
 			}
+			// No Title: TS builds a client tool's tool-result and tool-error without it.
 			results[i] = types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
-				Title:            call.Title,
 				Input:            call.Arguments,
 				Result:           toolResult,
 				Error:            toolErr,

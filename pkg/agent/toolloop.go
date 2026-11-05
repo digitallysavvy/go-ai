@@ -2423,10 +2423,10 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 
 		if tool == nil {
 			notFoundErr := fmt.Errorf("tool not found: %s", call.ToolName)
+			// No Title: TS builds a client tool's tool-result and tool-error without it.
 			results = append(results, types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
-				Title:            call.Title,
 				Input:            call.Arguments,
 				Error:            notFoundErr,
 				ProviderExecuted: false,
@@ -2646,10 +2646,10 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			}
 			execCancel()
 			timings.record(call.ID, durationMs)
+			// No Title: TS builds a client tool's tool-result and tool-error without it.
 			result := types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
-				Title:            call.Title,
 				Input:            call.Arguments,
 				Result:           toolResult,
 				Error:            toolErr,
