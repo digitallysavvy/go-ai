@@ -569,13 +569,9 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 			if args == nil {
 				args = map[string]interface{}{}
 			}
-			// TS keeps an empty or missing id as is. Go matches tool results
-			// by ID, so an id-less call takes one from the provider's ID
-			// generator (unique across the steps of a run; known difference).
+			// TS parse-google-interactions-outputs.ts: toolCallId: call.id,
+			// so an empty or missing id stays empty (no generated ID).
 			id := block.ID
-			if id == "" {
-				id = gen()
-			}
 			argsJSON := jsonorder.Text(block.Arguments, args)
 			metaRaw := providerMetaRaw(block.Signature, interactionID)
 			content = append(content, types.ToolCallContent{

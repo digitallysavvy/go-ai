@@ -13,12 +13,15 @@ import (
 )
 
 // r63: TS createVertex({generateId}) hands the generator to the chat and
-// Interactions models (`generateId: options.generateId ?? generateId`).
+// Interactions models (`generateId: options.generateId ?? generateId`). An
+// Interactions function_call keeps its (empty) id (TS `toolCallId:
+// call.id`); an id-less built-in tool call takes a generated one (TS
+// `call.id || generateId()`) (round 87e).
 func TestR63VertexGenerateIDReachesChatAndInteractions(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if strings.HasSuffix(r.URL.Path, "/interactions") {
-			_, _ = fmt.Fprint(w, `{"id":"v1","status":"requires_action","steps":[{"type":"function_call","name":"lookup","arguments":{}}]}`)
+			_, _ = fmt.Fprint(w, `{"id":"v1","status":"requires_action","steps":[{"type":"function_call","name":"lookup","arguments":{}},{"type":"google_search_call","arguments":{}}]}`)
 			return
 		}
 		_, _ = fmt.Fprint(w, `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"lookup","args":{}}}]},"finishReason":"STOP"}]}`)
@@ -42,8 +45,23 @@ func TestR63VertexGenerateIDReachesChatAndInteractions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if len(res.ToolCalls) != 1 || res.ToolCalls[0].ID != "provider-id" {
-			t.Fatalf("%s: tool calls = %+v, want one with ID provider-id", name, res.ToolCalls)
+		want := "provider-id"
+		if name == "interactions" {
+			want = ""
+		}
+		if len(res.ToolCalls) == 0 || res.ToolCalls[0].ID != want {
+			t.Fatalf("%s: tool calls = %+v, want the first with ID %q", name, res.ToolCalls, want)
+		}
+		if name == "interactions" {
+			var builtin []string
+			for _, c := range res.Content {
+				if tc, ok := c.(types.ToolCallContent); ok && tc.ProviderExecuted {
+					builtin = append(builtin, tc.ToolCallID)
+				}
+			}
+			if len(builtin) != 1 || builtin[0] != "provider-id" {
+				t.Fatalf("built-in tool call IDs = %v, want [provider-id]", builtin)
+			}
 		}
 	}
 }
