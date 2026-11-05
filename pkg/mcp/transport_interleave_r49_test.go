@@ -21,8 +21,10 @@ import (
 //	Handshake   Connect bumped gen to g+1 and installed cancel; GET pending
 //	Reading     body installed, reader goroutine for g+1 running, no endpoint
 //	Connected   endpoint locked, connected; reader running
-//	Ended       reader saw EOF or a read error: !connected, streamErr set;
-//	            cancel and body stay until the next Close or Connect
+//	Ended       reader saw EOF (or a read error before the endpoint):
+//	            !connected, streamErr set; cancel and body stay until the
+//	            next Close or Connect. A read error after the endpoint is
+//	            only reported (TS): the transport stays Connected.
 //
 // Transitions, each guarded by the gen captured at Connect's start:
 //

@@ -598,11 +598,15 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, gen uint64, ready chan<
 		if err != nil {
 			t.mu.Lock()
 			aborted := t.streamGen != gen // closed via Close, or replaced
-			if !aborted {
+			if !aborted && !readySent {
 				t.connected = false
 				t.endpoint = nil
 				t.streamErr = NewMCPClientError(0, "MCP SSE Transport Error: Connection closed unexpectedly", nil)
 			}
+			// After the endpoint event, TS processEvents' catch only reports
+			// the read error: the transport stays connected (Send still
+			// POSTs) and no message arrives any more, so Receive waits for
+			// its context or Close.
 			t.mu.Unlock()
 			if !readySent {
 				if aborted {
