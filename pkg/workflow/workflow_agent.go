@@ -2,8 +2,6 @@ package workflow
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -2991,13 +2989,17 @@ func isWorkflowAbort(ctx context.Context, err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
+// workflowCallIDGenerator is TS workflow-agent-telemetry.ts generateCallId,
+// createIdGenerator({prefix: 'call', size: 24}).
+var workflowCallIDGenerator, _ = ai.CreateIDGenerator(ai.CreateIDGeneratorOptions{Prefix: "call", Size: 24})
+
 // newWorkflowCallID returns the call ID shared by one WorkflowAgent run's
-// telemetry events (TelemetryStartEvent.CallID).
-func newWorkflowCallID() string {
-	b := make([]byte, 8)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
-}
+// telemetry events (TelemetryStartEvent.CallID): "call-" and 24
+// alphanumerics, the ID TS gives a durable run's root, model steps and
+// report (createWorkflowAgentTelemetryRecorder). Outside a durable run TS
+// sends the literal 'workflow-agent' instead, which collides between
+// concurrent runs on one integration; Go has one mode, the durable one.
+func newWorkflowCallID() string { return workflowCallIDGenerator() }
 
 func validateWorkflowToolResults(messages []types.Message, tools []types.Tool) error {
 	var providerTools []string
