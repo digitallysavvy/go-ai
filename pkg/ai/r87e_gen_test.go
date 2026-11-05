@@ -373,3 +373,31 @@ func TestR87egenSetDefaultProvider(t *testing.T) {
 		t.Fatalf("batch status through the default provider: %v", err)
 	}
 }
+
+// r87egenV3DecisionModel reports specification version v3.
+type r87egenV3DecisionModel struct{ mockDecisionModel }
+
+func (r87egenV3DecisionModel) SpecificationVersion() string { return "v3" }
+
+// TS resolveDecisionModel: a model whose specificationVersion is not 'v4'
+// throws UnsupportedModelVersionError (resolve-model.ts). Known difference
+// "Decide: model version check and telemetry fields".
+func TestR87egenDecideRejectsUnsupportedModelVersion(t *testing.T) {
+	t.Parallel()
+	called := false
+	m := &r87egenV3DecisionModel{mockDecisionModel{providerName: "p", modelID: "m", doDecide: func(context.Context, provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+		called = true
+		return &provider.DecisionResult{Answers: decisionAnswersFixture()}, nil
+	}}}
+	_, err := ExperimentalDecide(context.Background(), DecideOptions{Model: m, State: "s", Questions: decisionQuestionsFixture()})
+	var target *UnsupportedModelVersionError
+	if !errors.As(err, &target) || target.Version != "v3" || target.Provider != "p" || target.ModelID != "m" {
+		t.Fatalf("err = %v, want UnsupportedModelVersionError", err)
+	}
+	if want := `Unsupported model version v3 for provider "p" and model "m". AI SDK 5 only supports models that implement specification version "v2".`; err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
+	}
+	if called {
+		t.Error("DoDecide was called")
+	}
+}

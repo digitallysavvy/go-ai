@@ -146,6 +146,9 @@ type DecideOptions struct {
 // Experimental: may change in patch releases.
 func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult, error) {
 	model, err := resolveDecisionModel(opts.Model, decisionResolver(opts))
+	if err == nil {
+		model, err = checkDecisionModelVersion(model)
+	}
 	if err != nil {
 		return nil, err
 	}
