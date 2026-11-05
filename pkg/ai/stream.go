@@ -1104,7 +1104,6 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		onEndEvent = opts.OnFinishEvent
 	}
 
-
 	// Resume tool approvals from the input messages before the first step
 	// (TS streamText initial tool execution stream).
 	var resumeUsage types.Usage

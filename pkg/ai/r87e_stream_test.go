@@ -291,7 +291,9 @@ func TestR87estreamResponseHeadersFromStream(t *testing.T) {
 
 type r87estreamCtxKey struct{}
 
-type r87estreamRootCtx struct{ telemetry.NoopTelemetryIntegration }
+type r87estreamRootCtx struct {
+	telemetry.NoopTelemetryIntegration
+}
 
 func (r87estreamRootCtx) OnStart(ctx context.Context, _ telemetry.TelemetryStartEvent) context.Context {
 	return context.WithValue(ctx, r87estreamCtxKey{}, "root")
