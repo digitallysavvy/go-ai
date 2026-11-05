@@ -3,7 +3,7 @@ package ai
 import (
 	"context"
 	"fmt"
-	"sync"
+	"math"
 	"time"
 
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
@@ -149,11 +149,11 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 		Responses:  []types.EmbeddingResponse{},
 	}
 	// TS sums usage.tokens over the chunks, with NaN for a chunk without
-	// usage, so a reported 0 survives only when every chunk reported usage,
-	// and zero chunks give 0. Reported is therefore an AND, true for zero
-	// chunks. A positive sum with an unreported batch is still recorded (the
-	// v0.5 reading; TS NaN drops it): known difference "Embedding usage
-	// across EmbedMany batches".
+	// usage (`modelResponse.usage ?? { tokens: NaN }`), so one such chunk
+	// makes the total NaN (dropped from telemetry), a reported 0 survives
+	// only when every chunk reported usage, and zero chunks give 0. Reported
+	// is therefore an AND, true for zero chunks. The Go-only InputTokens /
+	// TotalTokens counters keep their sums.
 	out.Usage.Reported = true
 
 	nextStartIndex := 0
@@ -187,42 +187,48 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 		}
 
 		results := make([]*types.EmbeddingsResult, len(group))
-		var groupErr error
 		if len(group) == 1 {
-			results[0], groupErr = callModel(ctx, group[0], groupOptions[0])
+			res, err := callModel(ctx, group[0], groupOptions[0])
+			if err != nil {
+				return nil, err
+			}
+			results[0] = res
 		} else {
 			// TS Promise.all rejects with the first failure in time, not
-			// the lowest batch index. The siblings are not cancelled (TS
-			// does not abort them either); Go waits for them so no call
-			// outlives EmbedMany.
-			var wg sync.WaitGroup
-			var errMu sync.Mutex
+			// the lowest batch index, as soon as it happens. The siblings
+			// are not cancelled (TS does not abort them either): they run
+			// to completion on their own (bounded by ctx) and their results
+			// are dropped. The channel is buffered so they never block.
+			type batchOutcome struct {
+				index  int
+				result *types.EmbeddingsResult
+				err    error
+			}
+			outcomes := make(chan batchOutcome, len(group))
 			for i := range group {
-				wg.Add(1)
 				go func(i int) {
-					defer wg.Done()
 					res, err := callModel(ctx, group[i], groupOptions[i])
-					results[i] = res
-					if err != nil {
-						errMu.Lock()
-						if groupErr == nil {
-							groupErr = err
-						}
-						errMu.Unlock()
-					}
+					outcomes <- batchOutcome{index: i, result: res, err: err}
 				}(i)
 			}
-			wg.Wait()
-		}
-		if groupErr != nil {
-			return nil, groupErr
+			for range group {
+				o := <-outcomes
+				if o.err != nil {
+					return nil, o.err
+				}
+				results[o.index] = o.result
+			}
 		}
 
 		for _, result := range results {
 			out.Embeddings = append(out.Embeddings, result.Embeddings...)
 			out.Warnings = append(out.Warnings, result.Warnings...)
 			out.Responses = append(out.Responses, embeddingResponsesOrPlaceholder(result.Responses)...)
-			out.Usage.Tokens += result.Usage.Tokens
+			if embeddingUsageAbsent(result.Usage) {
+				out.Usage.Tokens = math.NaN()
+			} else {
+				out.Usage.Tokens += result.Usage.Tokens
+			}
 			out.Usage.InputTokens += result.Usage.InputTokens
 			out.Usage.TotalTokens += result.Usage.TotalTokens
 			out.Usage.Reported = out.Usage.Reported && result.Usage.Reported
@@ -231,6 +237,14 @@ func embedManyCalls(ctx context.Context, opts EmbedManyOptions, callID string, m
 	}
 
 	return out, nil
+}
+
+// embeddingUsageAbsent reports whether a model call sent no usage (TS
+// `usage` undefined): the provider did not mark it Reported and every
+// counter is zero. A v0.5.2 custom model that leaves Reported false but
+// fills a counter reported usage.
+func embeddingUsageAbsent(u types.EmbeddingUsage) bool {
+	return !u.Reported && u.Tokens == 0 && u.InputTokens == 0 && u.TotalTokens == 0
 }
 
 // embeddingResponsesOrPlaceholder keeps one response entry per model call

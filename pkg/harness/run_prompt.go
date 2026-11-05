@@ -448,6 +448,9 @@ type turnDriver struct {
 	// the runtime sent them (not work-dir-stripped), for the model-call-end
 	// content (TS stepProviderToolResults).
 	stepProviderToolResults []types.ToolResult
+	// stepProviderOutcomes keeps each provider-executed call's first outcome
+	// this step (TS execution.toolOutput, set once per call).
+	stepProviderOutcomes map[string]types.ToolResult
 	// stepApprovalRequests mirrors TS stepApprovalRequests: approval-request
 	// parts enqueued this step, reported in onLanguageModelCallEnd content.
 	stepApprovalRequests []types.ToolApprovalRequestContent
@@ -1633,6 +1636,7 @@ func (d *turnDriver) resetStepAccum() {
 	d.stepToolCalls = nil
 	d.stepToolResults = nil
 	d.stepProviderToolResults = nil
+	d.stepProviderOutcomes = nil
 	d.stepApprovalRequests = nil
 	d.toolExecMs = map[string]int64{}
 	d.stepOpen = false
@@ -1765,7 +1769,18 @@ func (d *turnDriver) recordToolResult(tr, raw *ToolResultPart) {
 	toolResult := partToolResult(raw, call, ok)
 	inStep := d.isStepToolCall(tr.ToolCallID)
 	if toolResult.ProviderExecuted && inStep {
-		d.stepProviderToolResults = append(d.stepProviderToolResults, toolResult)
+		// TS pushes execution.toolOutput, which only the call's first result
+		// sets: a later (final) result after a preliminary one repeats the
+		// first outcome in the model-call content.
+		first, seen := d.stepProviderOutcomes[tr.ToolCallID]
+		if !seen {
+			if d.stepProviderOutcomes == nil {
+				d.stepProviderOutcomes = map[string]types.ToolResult{}
+			}
+			d.stepProviderOutcomes[tr.ToolCallID] = toolResult
+			first = toolResult
+		}
+		d.stepProviderToolResults = append(d.stepProviderToolResults, first)
 	}
 	// A host-executed tool reports its own outcome (raw output / original
 	// error) to the callbacks, not the echoed copy (TS keeps the first

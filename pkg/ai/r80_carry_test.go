@@ -2,8 +2,10 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
+	"strings"
 	"testing"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -151,9 +153,9 @@ func TestR80carryEmbedManyZeroChunksRecordsZero(t *testing.T) {
 	}
 }
 
-// A positive sum with an unreported batch keeps the v0.5 reading: the sum is
-// recorded although Reported is false (TS: NaN, dropped; known difference
-// "Embedding usage across EmbedMany batches").
+// A batch without usage makes the sum NaN, as TS sums `usage.tokens` with NaN
+// for it (`modelResponse.usage ?? { tokens: NaN }`) and drops the NaN
+// attribute (round 87e; v0.5 kept the positive sum of the other batches).
 func TestR80carryEmbedManyPositiveSumWithUnreportedBatch(t *testing.T) {
 	call := 0
 	model := &testutil.MockEmbeddingModel{
@@ -161,7 +163,7 @@ func TestR80carryEmbedManyPositiveSumWithUnreportedBatch(t *testing.T) {
 		DoEmbedManyFunc: func(context.Context, []string, *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
 			call++
 			if call == 1 {
-				return &types.EmbeddingsResult{Embeddings: [][]float64{{0.1}}, Usage: types.EmbeddingUsage{Tokens: 3, Reported: true}}, nil
+				return &types.EmbeddingsResult{Embeddings: [][]float64{{0.1}}, Usage: types.EmbeddingUsage{Tokens: 3, InputTokens: 3, Reported: true}}, nil
 			}
 			return &types.EmbeddingsResult{Embeddings: [][]float64{{0.1}}}, nil
 		},
@@ -174,15 +176,14 @@ func TestR80carryEmbedManyPositiveSumWithUnreportedBatch(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if res.Usage.Reported || res.Usage.Tokens != 3 {
-		t.Fatalf("Usage = %+v, want unreported with 3 tokens", res.Usage)
+	if res.Usage.Reported || !math.IsNaN(res.Usage.Tokens) || res.Usage.InputTokens != 3 {
+		t.Fatalf("Usage = %+v, want unreported NaN tokens with the Go-only InputTokens sum", res.Usage)
 	}
-	v, ok := got["ai.embedMany ai.usage.tokens"]
-	if !ok {
-		t.Fatalf("root ai.usage.tokens not set; all: %v", got)
+	if b, err := json.Marshal(res.Usage); err != nil || !strings.Contains(string(b), `"tokens":null`) {
+		t.Fatalf("Usage JSON = %s (%v), want tokens null like TS JSON.stringify(NaN)", b, err)
 	}
-	if n, _ := v.(int64); n != 3 {
-		t.Fatalf("root ai.usage.tokens = %v, want 3", v)
+	if v, ok := got["ai.embedMany ai.usage.tokens"]; ok {
+		t.Fatalf("root ai.usage.tokens = %v, want it dropped (TS NaN); all: %v", v, got)
 	}
 }
 

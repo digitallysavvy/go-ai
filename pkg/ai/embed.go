@@ -669,6 +669,11 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 // TotalTokens), so the root and the provider-call span record the same count
 // as in TS, where both are usage.tokens.
 func telemetryUsageFromEmbeddingUsage(usage types.EmbeddingUsage) telemetry.TelemetryUsage {
+	// A NaN usage.tokens (TS sanitizeAttributeValue drops it) is left out,
+	// whatever the Go-only counters hold.
+	if math.IsNaN(usage.Tokens) {
+		return telemetry.TelemetryUsage{}
+	}
 	tokens := usage.Tokens
 	if math.IsNaN(tokens) || math.IsInf(tokens, 0) || tokens <= 0 {
 		tokens = float64(usage.InputTokens)

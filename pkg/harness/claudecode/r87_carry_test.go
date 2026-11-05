@@ -577,18 +577,24 @@ type r87carryCancelled struct{}
 
 func (*r87carryCancelled) Error() string { return "cancelled" }
 
-// Ruling 5: a negative TurnStartTimeout disables the deadline.
-func TestR87carryNegativeTurnStartTimeoutDisablesDeadline(t *testing.T) {
+// TS `turnStartTimeoutMs: -1`: Node runs the deadline after 1 ms, so the
+// start is sent and the turn then fails with the configured value in the
+// text (round 87e; Go used to disable the deadline for a negative value).
+func TestR87carryNegativeTurnStartTimeoutFailsAtOnce(t *testing.T) {
 	frames := make(chan string, 16)
-	sess, _ := r87carrySilentHarness(t, -1, frames)
+	sess, _ := r87carrySilentHarness(t, -time.Millisecond, frames)
 	control, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{Prompt: harness.TextPrompt("Hello"), Emit: func(harness.StreamPart) {}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(150 * time.Millisecond)
-	select {
-	case <-control.Done():
-		t.Fatalf("the turn settled: %v", control.Err())
-	default:
+	r87carryWait(t, control.Done())
+	if err := control.Err(); err == nil || err.Error() != "claude-code bridge did not emit a turn event within -1ms." {
+		t.Fatalf("err = %v", err)
+	}
+	if !r87carryHasFrame(frames, "start", 2*time.Second) {
+		t.Fatal("the start was not sent before the deadline")
+	}
+	if !r87carryHasFrame(frames, "abort", 2*time.Second) {
+		t.Fatal("no abort was sent")
 	}
 }

@@ -2,8 +2,6 @@ package workflow
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -2667,20 +2665,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		}
 		return nil, err
 	}
-	telemetrypkg.FireOnEnd(ctx, telemetrypkg.TelemetryFinishEvent{
-		CallID:         callID,
-		Settings:       telemetrySettings,
-		RuntimeContext: workflowTelemetryRuntimeContext(telemetrySettings, runtimeContext),
-		FinishReason:   string(result.FinishReason),
-		ModelProvider:  modelProvider,
-		ModelID:        modelID,
-		Text:           result.Text,
-		Usage: telemetrypkg.TelemetryUsage{
-			InputTokens:  result.Usage.InputTokens,
-			OutputTokens: result.Usage.OutputTokens,
-			TotalTokens:  result.Usage.TotalTokens,
-		},
-	})
+	telemetrypkg.FireOnEnd(ctx, workflowRootEndEvent(callID, telemetrySettings, workflowTelemetryRuntimeContext(telemetrySettings, runtimeContext), modelProvider, modelID, result.FinishReason, result.Text, result.Steps, result.Usage))
 	responseMessages := append([]types.Message(nil), initialResponseMessages...)
 	for _, step := range result.Steps {
 		responseMessages = append(responseMessages, step.Response.Messages...)
@@ -2924,20 +2909,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		if len(done.Steps) == 0 {
 			return
 		}
-		telemetrypkg.FireOnEnd(rootCtx, telemetrypkg.TelemetryFinishEvent{
-			CallID:         callID,
-			Settings:       telemetrySettings,
-			RuntimeContext: workflowTelemetryRuntimeContext(telemetrySettings, runtimeContext),
-			FinishReason:   string(done.FinishReason),
-			ModelProvider:  modelProvider,
-			ModelID:        modelID,
-			Text:           done.Text,
-			Usage: telemetrypkg.TelemetryUsage{
-				InputTokens:  done.Usage.InputTokens,
-				OutputTokens: done.Usage.OutputTokens,
-				TotalTokens:  done.Usage.TotalTokens,
-			},
-		})
+		telemetrypkg.FireOnEnd(rootCtx, workflowRootEndEvent(callID, telemetrySettings, workflowTelemetryRuntimeContext(telemetrySettings, runtimeContext), modelProvider, modelID, done.FinishReason, done.Text, done.Steps, done.Usage))
 	})
 	call := agent.AgentStreamOptions{
 		AgentGenerateOptions:  agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, InstructionMessages: instructionMessages, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: withFinishReasonStop(opts.StopWhen), Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: &internal},
@@ -2991,12 +2963,74 @@ func isWorkflowAbort(ctx context.Context, err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
+// workflowCallIDGenerator is TS workflow-agent-telemetry.ts generateCallId,
+// createIdGenerator({prefix: 'call', size: 24}).
+var workflowCallIDGenerator, _ = ai.CreateIDGenerator(ai.CreateIDGeneratorOptions{Prefix: "call", Size: 24})
+
 // newWorkflowCallID returns the call ID shared by one WorkflowAgent run's
-// telemetry events (TelemetryStartEvent.CallID).
-func newWorkflowCallID() string {
-	b := make([]byte, 8)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+// telemetry events (TelemetryStartEvent.CallID): "call-" and 24
+// alphanumerics, the ID TS gives a durable run's root, model steps and
+// report (createWorkflowAgentTelemetryRecorder). Outside a durable run TS
+// sends the literal 'workflow-agent' instead, which collides between
+// concurrent runs on one integration; Go has one mode, the durable one.
+func newWorkflowCallID() string { return workflowCallIDGenerator() }
+
+// workflowRootEndEvent is the WorkflowAgent root end event as TS reports it
+// from a durable run (workflow-agent-telemetry.ts withFinalStepFields): the
+// final step's text, reasoning and provider metadata, the tool calls, tool
+// results and files of every step, and the run's total usage. TS OTel
+// integrations build the generate-shaped root end attributes from it.
+func workflowRootEndEvent(callID string, settings *ai.TelemetrySettings, runtimeContext map[string]interface{}, modelProvider, modelID string, finishReason types.FinishReason, text string, steps []types.StepResult, usage types.Usage) telemetrypkg.TelemetryFinishEvent {
+	e := telemetrypkg.TelemetryFinishEvent{
+		CallID:         callID,
+		OperationType:  workflowRootOperation,
+		Settings:       settings,
+		RuntimeContext: runtimeContext,
+		FinishReason:   string(finishReason),
+		ModelProvider:  modelProvider,
+		ModelID:        modelID,
+		Text:           text,
+		Usage:          workflowTelemetryUsage(usage),
+	}
+	if len(steps) == 0 {
+		return e
+	}
+	final := steps[len(steps)-1]
+	e.Reasoning = telemetrypkg.JoinReasoning(final.Reasoning)
+	e.ReasoningParts = final.Reasoning
+	e.ProviderMetadata = final.ProviderMetadata
+	for _, part := range final.Content {
+		switch c := part.(type) {
+		case types.ReasoningFileContent:
+			e.ReasoningFiles = append(e.ReasoningFiles, c)
+		case *types.ReasoningFileContent:
+			if c != nil {
+				e.ReasoningFiles = append(e.ReasoningFiles, *c)
+			}
+		}
+	}
+	for _, step := range steps {
+		e.ToolCalls = append(e.ToolCalls, step.ToolCalls...)
+		e.ToolResults = append(e.ToolResults, step.ToolResults...)
+		e.Files = append(e.Files, step.Files...)
+	}
+	return e
+}
+
+// workflowTelemetryUsage is the run's usage in the telemetry shape, with the
+// input and output token details (TS LanguageModelUsage).
+func workflowTelemetryUsage(u types.Usage) telemetrypkg.TelemetryUsage {
+	out := telemetrypkg.TelemetryUsage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, TotalTokens: u.TotalTokens}
+	if u.InputDetails != nil {
+		out.NoCacheInputTokens = u.InputDetails.NoCacheTokens
+		out.CacheReadInputTokens = u.InputDetails.CacheReadTokens
+		out.CacheCreationInputTokens = u.InputDetails.CacheWriteTokens
+	}
+	if u.OutputDetails != nil {
+		out.OutputTextTokens = u.OutputDetails.TextTokens
+		out.ReasoningTokens = u.OutputDetails.ReasoningTokens
+	}
+	return out
 }
 
 func validateWorkflowToolResults(messages []types.Message, tools []types.Tool) error {

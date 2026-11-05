@@ -50,9 +50,10 @@ func TestR87carryInitialStartSendErrorCleansUp(t *testing.T) {
 	}
 }
 
-// Ruling 5: zero is the TS default (120 s), a negative value disables it.
+// Zero is the TS default (120 s); any other value, negative included, is
+// used as given (TS `turnStartTimeoutMs ?? 120_000`, round 87e).
 func TestR87carryTurnStartTimeoutDefault(t *testing.T) {
-	for in, want := range map[time.Duration]time.Duration{0: 120 * time.Second, -time.Second: 0, 5 * time.Second: 5 * time.Second} {
+	for in, want := range map[time.Duration]time.Duration{0: 120 * time.Second, -time.Second: -time.Second, 5 * time.Second: 5 * time.Second} {
 		if got := turnStartTimeout(Settings{TurnStartTimeout: in}); got != want {
 			t.Errorf("turnStartTimeout(%v) = %v, want %v", in, got, want)
 		}

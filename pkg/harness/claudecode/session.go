@@ -80,8 +80,8 @@ type sessionOptions struct {
 	// bridgeHello returns the latest bridge-hello of the channel's current
 	// connection (nil before any). Mirrors TS `getBridgeHello`.
 	bridgeHello func() *bridge.Hello
-	// turnStartTimeout bounds the wait for a turn's first event; 0 disables
-	// it. Mirrors TS `turnStartTimeoutMs`.
+	// turnStartTimeout bounds the wait for a turn's first event (0 only in
+	// internal tests: no deadline). Mirrors TS `turnStartTimeoutMs`.
 	turnStartTimeout time.Duration
 }
 
@@ -610,13 +610,22 @@ func (c *promptControl) sendStart(frame *StartFrame) error {
 	c.startCursor = cursor
 	frame.StartID = newStartID()
 	c.pendingStart = frame
-	if timeout := c.turnStartTimeout; timeout > 0 {
-		c.startTimer = time.AfterFunc(timeout, func() {
+	if timeout := c.turnStartTimeout; timeout != 0 {
+		// Node's setTimeout runs a delay below 1 ms (negative included) after
+		// 1 ms, so the start is sent before the deadline can fire.
+		delay := timeout
+		if delay < time.Millisecond {
+			delay = time.Millisecond
+		}
+		// TS `within ${turnStartTimeoutMs}ms`: the configured milliseconds
+		// as a JS number.
+		ms := providerutils.JSNumberString(float64(timeout) / float64(time.Millisecond))
+		c.startTimer = time.AfterFunc(delay, func() {
 			c.mu.Lock()
 			fire := !c.settled && c.pendingStart != nil
 			c.mu.Unlock()
 			if fire {
-				c.failStart(fmt.Errorf("claude-code bridge did not emit a turn event within %dms.", timeout.Milliseconds())) //nolint:staticcheck // matches TS SDK's exact error text
+				c.failStart(fmt.Errorf("claude-code bridge did not emit a turn event within %sms.", ms)) //nolint:staticcheck // matches TS SDK's exact error text
 			}
 		})
 	}

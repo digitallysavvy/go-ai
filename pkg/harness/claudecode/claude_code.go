@@ -416,14 +416,11 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 // `turnStartTimeoutMs ?? 120_000`).
 const defaultTurnStartTimeout = 120 * time.Second
 
-// turnStartTimeout resolves Settings.TurnStartTimeout: zero is the default,
-// a negative value disables the deadline (returned as 0).
+// turnStartTimeout resolves Settings.TurnStartTimeout: zero is the default
+// (TS `turnStartTimeoutMs ?? 120_000`); any other value is used as given.
 func turnStartTimeout(settings Settings) time.Duration {
-	switch {
-	case settings.TurnStartTimeout == 0:
+	if settings.TurnStartTimeout == 0 {
 		return defaultTurnStartTimeout
-	case settings.TurnStartTimeout < 0:
-		return 0
 	}
 	return settings.TurnStartTimeout
 }
