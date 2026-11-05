@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -147,5 +148,99 @@ func TestR87estreamProviderToolErrorNilResult(t *testing.T) {
 	}
 	if got == nil || got["errorText"] != "null" {
 		t.Fatalf("tool-output-error = %v, want errorText \"null\"", got)
+	}
+}
+
+// TS mergeObjects (bun, 3fab50aa9b, util/merge-objects.ts): base + incoming
+// => JSON.stringify(result), or the TypeError `key in base` throws (V8 text,
+// node 24).
+var r87estreamTSMergeCases = []struct{ base, incoming, want string }{
+	{`{"a":1,"n":{"x":1}}`, `"ab"`, `{"0":"a","1":"b","a":1,"n":{"x":1}}`},
+	{`{"a":1,"n":{"x":1}}`, `[1,2]`, `{"0":1,"1":2,"a":1,"n":{"x":1}}`},
+	{`{"a":1,"n":{"x":1}}`, `5`, `{"a":1,"n":{"x":1}}`},
+	{`{"a":1,"n":{"x":1}}`, `true`, `{"a":1,"n":{"x":1}}`},
+	{`{"a":1,"n":{"x":1}}`, `{"n":{"y":2},"b":"z"}`, `{"a":1,"n":{"x":1,"y":2},"b":"z"}`},
+	{`"ab"`, `{"a":1,"n":{"x":1}}`, `TypeError: Cannot use 'in' operator to search for 'a' in ab`},
+	{`"ab"`, `"ab"`, `TypeError: Cannot use 'in' operator to search for '0' in ab`},
+	{`"ab"`, `5`, `{"0":"a","1":"b"}`},
+	{`"ab"`, `true`, `{"0":"a","1":"b"}`},
+	{`[1,2]`, `{"a":1,"n":{"x":1}}`, `{"0":1,"1":2,"a":1,"n":{"x":1}}`},
+	{`[1,2]`, `"ab"`, `{"0":"a","1":"b"}`},
+	{`[1,2]`, `5`, `{"0":1,"1":2}`},
+	{`5`, `{"a":1,"n":{"x":1}}`, `TypeError: Cannot use 'in' operator to search for 'a' in 5`},
+	{`5`, `[1,2]`, `TypeError: Cannot use 'in' operator to search for '0' in 5`},
+	{`5`, `5`, `{}`},
+	{`true`, `true`, `{}`},
+	{`true`, `"ab"`, `TypeError: Cannot use 'in' operator to search for '0' in true`},
+	{`1.5`, `{"a":1}`, `TypeError: Cannot use 'in' operator to search for 'a' in 1.5`},
+}
+
+func r87estreamNormJSON(t *testing.T, text string) string {
+	t.Helper()
+	var v interface{}
+	if err := json.Unmarshal([]byte(text), &v); err != nil {
+		t.Fatalf("%s: %v", text, err)
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// UI message metadata merges like TS mergeObjects for every JSON value pair,
+// through the chunk path; a merge TS throws on fails the processing.
+func TestR87estreamMessageMetadataMergeMatchesTS(t *testing.T) {
+	for _, tc := range r87estreamTSMergeCases {
+		var base, incoming interface{}
+		if err := json.Unmarshal([]byte(tc.base), &base); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal([]byte(tc.incoming), &incoming); err != nil {
+			t.Fatal(err)
+		}
+		s := newUIMessageCallbackState(nil, "m")
+		if err := applyUIStateChunk(s, UIMessageChunk{"type": "start", "messageMetadata": base}, nil); err != nil {
+			t.Fatal(err)
+		}
+		err := applyUIStateChunk(s, UIMessageChunk{"type": "message-metadata", "messageMetadata": incoming}, nil)
+		if strings.HasPrefix(tc.want, "TypeError: ") {
+			if err == nil || err.Error() != strings.TrimPrefix(tc.want, "TypeError: ") {
+				t.Errorf("%s + %s: err = %v, want %s", tc.base, tc.incoming, err, tc.want)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%s + %s: %v", tc.base, tc.incoming, err)
+		}
+		b, _ := json.Marshal(s.message["metadata"])
+		if got, want := string(b), r87estreamNormJSON(t, tc.want); got != want {
+			t.Errorf("%s + %s = %s, want %s", tc.base, tc.incoming, got, want)
+		}
+	}
+}
+
+// The TS TypeError ends a CreateUIMessageStreamWithOptions run as a
+// processing failure: the error is returned and onEnd sees a failed outcome.
+func TestR87estreamMessageMetadataMergeTypeErrorFailsStream(t *testing.T) {
+	var ended map[string]interface{}
+	chunks, errs := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(w UIMessageStreamWriter) {
+			w.Write(UIMessageChunk{"type": "start", "messageMetadata": "ab"})
+			w.Write(UIMessageChunk{"type": "message-metadata", "messageMetadata": map[string]interface{}{"a": 1.0}})
+		},
+		OnEnd: func(e map[string]interface{}) { ended = e },
+	})
+	for range chunks {
+	}
+	err := <-errs
+	if err == nil || err.Error() != "Cannot use 'in' operator to search for 'a' in ab" {
+		t.Fatalf("err = %v", err)
+	}
+	if ended == nil {
+		t.Fatal("onEnd not called")
+	}
+	if outcome, _ := ended["outcome"].(map[string]interface{}); outcome["status"] != string(UIMessageStreamOutcomeFailed) {
+		t.Fatalf("outcome = %#v", ended["outcome"])
 	}
 }

@@ -10,9 +10,11 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
@@ -20,6 +22,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
@@ -1676,14 +1679,14 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 			}
 			s.message["id"] = id
 		}
-		s.mergeMetadata(chunk["messageMetadata"])
+		s.mergeMetadataReporting(chunk["messageMetadata"], onError)
 	case "finish":
 		if reason := chunk["finishReason"]; reason != nil {
 			s.finishReason = reason
 		}
-		s.mergeMetadata(chunk["messageMetadata"])
+		s.mergeMetadataReporting(chunk["messageMetadata"], onError)
 	case "message-metadata":
-		s.mergeMetadata(chunk["messageMetadata"])
+		s.mergeMetadataReporting(chunk["messageMetadata"], onError)
 	case "abort":
 		s.isAborted = true
 	case "text-start":
@@ -1956,29 +1959,97 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 }
 
 func (s *uiMessageCallbackState) mergeMetadata(metadata interface{}) {
+	s.mergeMetadataReporting(metadata, nil)
+}
+
+// mergeMetadataReporting is TS updateMessageMetadata: a non-null value is
+// merged into the message metadata with mergeObjects; a merge TS throws on
+// is reported to onError (a processing failure) and changes nothing.
+func (s *uiMessageCallbackState) mergeMetadataReporting(metadata interface{}, onError func(error) string) {
 	// TS updateMessageMetadata skips `metadata == null`: a Go value that
 	// encodes as JSON null (a nil map or pointer, json.RawMessage("null")) is
 	// null too.
 	if isUIJSONNull(metadata) {
 		return
 	}
-	// A Go value that encodes as a JSON object (a struct, a typed map,
-	// json.RawMessage) is an object to TS mergeObjects, like a
-	// map[string]interface{}.
-	if existing, ok := uiJSONObject(s.message["metadata"]); ok {
-		if incoming, ok := uiJSONObject(metadata); ok {
-			s.message["metadata"] = mergeUIMaps(existing, incoming)
-			return
+	existing := s.message["metadata"]
+	if isUIJSONNull(existing) {
+		s.message["metadata"] = cloneUIValue(metadata)
+		return
+	}
+	merged, err := jsMergeUIMetadata(existing, metadata)
+	if err != nil {
+		// TS: the TypeError thrown by mergeObjects fails the processing.
+		if onError != nil {
+			_ = onError(err)
 		}
-		// TS mergeObjects(existing, incoming) copies the existing object and
-		// finds no own keys on a number or boolean, so the object is kept.
-		// A string or array incoming value replaces it (Go-only: TS would
-		// merge its index keys; see known differences).
-		if isUIScalarNumberOrBool(metadata) {
-			return
+		return
+	}
+	s.message["metadata"] = merged
+}
+
+// jsMergeUIMetadata is TS mergeObjects(base, incoming) for two non-null
+// JSON values: `{...base}` (an object's keys, a string's or array's index
+// keys, nothing for a number or boolean), then incoming's own keys (the same
+// rule), nested objects merged deeply. TS evaluates `key in base` for each
+// incoming key, which throws a TypeError when base is a string, number or
+// boolean. A Go value that encodes as a JSON object (a struct, a typed map,
+// json.RawMessage) is an object, like a map[string]interface{}.
+func jsMergeUIMetadata(base, incoming interface{}) (interface{}, error) {
+	baseKeys, basePrimitive := jsSpreadUIValue(base)
+	incomingKeys, _ := jsSpreadUIValue(incoming)
+	if basePrimitive && len(incomingKeys) > 0 {
+		keys := make([]string, 0, len(incomingKeys))
+		for key := range incomingKeys {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		return nil, fmt.Errorf("Cannot use 'in' operator to search for '%s' in %s", jsonorder.JSKeyOrder(keys)[0], providerutils.JSString(base))
+	}
+	return mergeUIMaps(baseKeys, incomingKeys), nil
+}
+
+// jsSpreadUIValue is the own enumerable keys of a JSON value as JS object
+// spread and for...in see them: an object's keys, a string's UTF-16 index
+// keys (one code unit each), an array's index keys, none for a number or
+// boolean. primitive reports a string, number or boolean (the bases `in`
+// rejects).
+func jsSpreadUIValue(v interface{}) (keys map[string]interface{}, primitive bool) {
+	if m, ok := uiJSONObject(v); ok {
+		return m, false
+	}
+	switch x := v.(type) {
+	case string:
+		units := utf16.Encode([]rune(x))
+		out := make(map[string]interface{}, len(units))
+		for i, unit := range units {
+			// A lone surrogate half has no Go string; it reads U+FFFD.
+			out[strconv.Itoa(i)] = string(rune(unit))
+		}
+		return out, true
+	case []interface{}:
+		out := make(map[string]interface{}, len(x))
+		for i, el := range x {
+			out[strconv.Itoa(i)] = el
+		}
+		return out, false
+	}
+	b, err := json.Marshal(v)
+	if err == nil && len(b) > 0 {
+		switch b[0] {
+		case '"':
+			var str string
+			if json.Unmarshal(b, &str) == nil {
+				return jsSpreadUIValue(str)
+			}
+		case '[':
+			var arr []interface{}
+			if json.Unmarshal(b, &arr) == nil {
+				return jsSpreadUIValue(arr)
+			}
 		}
 	}
-	s.message["metadata"] = cloneUIValue(metadata)
+	return map[string]interface{}{}, true
 }
 
 // isUIJSONNull reports whether v is nil or a Go value that encodes as JSON
@@ -1998,22 +2069,6 @@ func isUIJSONNull(v interface{}) bool {
 	}
 	b, err := json.Marshal(v)
 	return err == nil && string(b) == "null"
-}
-
-// isUIScalarNumberOrBool reports whether v is a JSON number or boolean.
-func isUIScalarNumberOrBool(v interface{}) bool {
-	switch v.(type) {
-	case nil, string, map[string]interface{}, UIMessageChunk, []interface{}:
-		return false
-	case bool, float64, float32, int, int8, int16, int32, int64,
-		uint, uint8, uint16, uint32, uint64, json.Number:
-		return true
-	}
-	b, err := json.Marshal(v)
-	if err != nil || len(b) == 0 {
-		return false
-	}
-	return b[0] == 't' || b[0] == 'f' || b[0] == '-' || (b[0] >= '0' && b[0] <= '9')
 }
 
 // uiJSONObject returns v as a map when it encodes as a JSON object: a

@@ -44,7 +44,7 @@ func TestR76StreamMetadataMergeTypedObjects(t *testing.T) {
 		{"raw then map", json.RawMessage(`{"a":{"x":1}}`), map[string]interface{}{"a": map[string]interface{}{"y": 2.0}}, `{"a":{"x":1,"y":2}}`},
 		{"nested struct", map[string]interface{}{"usage": r76streamMeta{CreatedAt: "t0"}}, map[string]interface{}{"usage": map[string]interface{}{"tokens": 3.0}}, `{"usage":{"createdAt":"t0","tokens":3}}`},
 		{"struct then named number", r76streamMeta{CreatedAt: "t0"}, r76streamScore(4), `{"createdAt":"t0"}`},
-		{"struct then string", r76streamMeta{CreatedAt: "t0"}, "s", `"s"`},
+		{"struct then string", r76streamMeta{CreatedAt: "t0"}, "s", `{"0":"s","createdAt":"t0"}`}, // TS {...base, 0: "s"}
 		{"nil pointer then map", (*r76streamMeta)(nil), map[string]interface{}{"a": 1.0}, `{"a":1}`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
