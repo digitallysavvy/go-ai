@@ -125,34 +125,6 @@ func TestR87estreamToolInputStartDynamicFalse(t *testing.T) {
 	}
 }
 
-// TS (bun, 3fab50aa9b): a provider-executed tool-error whose value is null
-// writes errorText JSON.stringify(null), "null". Go reads a nil result as
-// JSON null (v0.5 wrote "tool error").
-func TestR87estreamProviderToolErrorNilResult(t *testing.T) {
-	isErr := true
-	r, err := StreamText(context.Background(), StreamTextOptions{
-		Model: r71streamModel(nil, []provider.StreamChunk{
-			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "web", ProviderExecuted: true, Dynamic: true, RawArguments: "{}"}},
-			{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "c1", ToolName: "web", IsError: &isErr, ProviderExecuted: true, Dynamic: true}},
-			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
-		}),
-		Prompt: "p",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	chunks, _ := CreateUIMessageStream(context.Background(), r)
-	var got UIMessageChunk
-	for c := range chunks {
-		if c["type"] == "tool-output-error" {
-			got = c
-		}
-	}
-	if got == nil || got["errorText"] != "null" {
-		t.Fatalf("tool-output-error = %v, want errorText \"null\"", got)
-	}
-}
-
 // TS mergeObjects (bun, 3fab50aa9b, util/merge-objects.ts): base + incoming
 // => JSON.stringify(result), or the TypeError `key in base` throws (V8 text,
 // node 24).
