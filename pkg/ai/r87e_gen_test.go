@@ -401,3 +401,37 @@ func TestR87egenDecideRejectsUnsupportedModelVersion(t *testing.T) {
 		t.Error("DoDecide was called")
 	}
 }
+
+// r87egenToolEndOrder records the telemetry tool end.
+type r87egenToolEndOrder struct {
+	telemetry.NoopTelemetryIntegration
+	add func(string)
+}
+
+func (r r87egenToolEndOrder) OnToolExecutionEnd(context.Context, telemetry.TelemetryToolCallFinishEvent) {
+	r.add("telemetry")
+}
+
+// TS execute-tools-from-stream.ts 241-264 awaits executeToolCall (notify over
+// [onToolExecutionEnd, telemetry.onToolExecutionEnd]) before it enqueues the
+// output: afterEnd runs after both (cr-r87e-stream-to-gen 1).
+func TestR87egenToolAfterEndRunsAfterTelemetry(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var order []string
+	add := func(s string) { mu.Lock(); order = append(order, s); mu.Unlock() }
+	tool := r87egenTitledTool()
+	_, err := executeTools(context.Background(), []types.ToolCall{{ID: "c1", ToolName: "weather", Arguments: map[string]interface{}{"city": "Paris"}}}, []types.Tool{tool}, nil, nil, nil, &types.Usage{}, toolCallEventCallbacks{
+		onFinish:          func(context.Context, OnToolCallFinishEvent) { add("user") },
+		afterEnd:          func(context.Context, OnToolCallFinishEvent) { add("after") },
+		telemetrySettings: &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{r87egenToolEndOrder{add: add}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(order) != 3 || order[0] != "user" || order[1] != "telemetry" || order[2] != "after" {
+		t.Fatalf("order = %v, want [user telemetry after]", order)
+	}
+}

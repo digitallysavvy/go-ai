@@ -2430,6 +2430,12 @@ type toolCallEventCallbacks struct {
 	// (generator-style) tools as preliminary tool results. Nil when the caller
 	// does not stream (TS generateText ignores preliminary results).
 	onPreliminary func(result types.ToolResult)
+	// afterEnd runs after the user and telemetry tool-end notifications of a
+	// locally executed call; StreamText streams the live result here (TS
+	// execute-tools-from-stream.ts awaits executeToolCall, whose notify
+	// covers [onToolExecutionEnd, telemetry.onToolExecutionEnd], before it
+	// enqueues the output).
+	afterEnd func(ctx context.Context, e OnToolCallFinishEvent)
 	// preApprovals holds approval decisions already made while the step's
 	// stream was running (StreamText); executeTools reuses them instead of
 	// resolving the approval a second time.
@@ -3035,6 +3041,9 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 					DurationMs:  durationMs,
 					ToolContext: telemetryToolContext(callbacks.telemetrySettings, call.ToolName, toolContext),
 				})
+				if callbacks.afterEnd != nil {
+					callbacks.afterEnd(ctx, finishEvent)
+				}
 			}
 			if toolErr == nil && tool.ToModelOutput != nil {
 				converted, convertErr := tool.ToModelOutput(ctx, types.ToModelOutputOptions{
