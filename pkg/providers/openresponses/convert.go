@@ -349,6 +349,9 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 	var items []interface{}
 	var assistantContent []OutputTextContent
 	var assistantMessageID string
+	// assistantHasMessageID: the text parts carried a string itemId, ""
+	// included (TS assistantMessageId is undefined otherwise).
+	var assistantHasMessageID bool
 	handledExtensionItemIDs := map[string]bool{}
 
 	flush := func() {
@@ -356,7 +359,7 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 			return
 		}
 		switch {
-		case strictResponseInput && assistantMessageID == "":
+		case strictResponseInput && !assistantHasMessageID:
 			var text strings.Builder
 			for _, part := range assistantContent {
 				text.WriteString(part.Text)
@@ -375,6 +378,7 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 			}
 			items = append(items, MessageItem{
 				ID:      assistantMessageID,
+				idSet:   true,
 				Type:    "message",
 				Status:  "completed",
 				Role:    "assistant",
@@ -386,13 +390,13 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 				parts = append(parts, part)
 			}
 			item := MessageItem{Type: "message", Role: "assistant", Content: parts}
-			if assistantMessageID != "" {
-				item.ID = assistantMessageID
+			if assistantHasMessageID {
+				item.ID, item.idSet = assistantMessageID, true
 			}
 			items = append(items, item)
 		}
 		assistantContent = nil
-		assistantMessageID = ""
+		assistantMessageID, assistantHasMessageID = "", false
 	}
 
 	for _, part := range content {
@@ -404,20 +408,23 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 			flush()
 
 			data := openResponsesProviderData(p.ProviderOptions, p.ProviderMetadata, providerName)
-			itemID, _ := data["itemId"].(string)
+			// TS `typeof x === 'string'`: a string itemId / encrypted content
+			// is sent even when it is "".
+			itemID, hasItemID := data["itemId"].(string)
 			summary := openResponsesParseSummaryParts(data["reasoningSummary"])
 			if summary == nil {
 				summary = []SummaryPart{}
 			}
 			reasoningContent, hasReasoningContentKey := openResponsesParseReasoningTextParts(data)
-			encryptedContent, _ := data["reasoningEncryptedContent"].(string)
-			if encryptedContent == "" {
+			encryptedContent, hasEncryptedContent := data["reasoningEncryptedContent"].(string)
+			if !hasEncryptedContent {
+				// Go-only: ReasoningContent.EncryptedContent (v0.5.2).
 				encryptedContent = p.EncryptedContent
 			}
 
 			reasoningItem := ReasoningInputItem{Type: "reasoning", Summary: summary}
-			if itemID != "" {
-				reasoningItem.ID = itemID
+			if hasItemID {
+				reasoningItem.ID, reasoningItem.idSet = itemID, true
 			}
 			switch {
 			case reasoningContent != nil:
@@ -425,12 +432,14 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 			case !hasReasoningContentKey && p.Text != "":
 				reasoningItem.Content = []ReasoningTextPart{{Type: "reasoning_text", Text: p.Text}}
 			}
-			if encryptedContent != "" {
+			if encryptedContent != "" || hasEncryptedContent {
 				reasoningItem.EncryptedContent = encryptedContent
+				reasoningItem.encryptedContentSet = hasEncryptedContent
 			}
 
-			if reasoningItem.ID != "" && len(items) > 0 {
-				if prev, ok := items[len(items)-1].(ReasoningInputItem); ok && prev.ID == reasoningItem.ID {
+			// TS: reasoningItem.id != null && previousItem.id === reasoningItem.id.
+			if hasItemID && len(items) > 0 {
+				if prev, ok := items[len(items)-1].(ReasoningInputItem); ok && (prev.idSet || prev.ID != "") && prev.ID == reasoningItem.ID {
 					if reasoningItem.Content != nil {
 						prev.Content = append(prev.Content, reasoningItem.Content...)
 						items[len(items)-1] = prev
@@ -442,13 +451,14 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 
 		case types.TextContent:
 			data := openResponsesProviderData(p.ProviderOptions, p.ProviderMetadata, providerName)
-			itemID, _ := data["itemId"].(string)
+			itemID, hasItemID := data["itemId"].(string)
 			annotations := openResponsesParseAnnotations(data["annotations"])
 
-			if len(assistantContent) > 0 && assistantMessageID != itemID {
+			// TS assistantMessageId !== itemId (undefined only equals undefined).
+			if len(assistantContent) > 0 && (assistantHasMessageID != hasItemID || assistantMessageID != itemID) {
 				flush()
 			}
-			assistantMessageID = itemID
+			assistantMessageID, assistantHasMessageID = itemID, hasItemID
 			assistantContent = append(assistantContent, OutputTextContent{
 				Type:        "output_text",
 				Text:        p.Text,
@@ -504,7 +514,7 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 			flush()
 
 			data := openResponsesProviderData(p.ProviderOptions, p.ProviderMetadata, providerName)
-			itemID, _ := data["itemId"].(string)
+			itemID, hasItemID := data["itemId"].(string)
 			namespace, _ := data["namespace"].(string)
 
 			// A caller-executed "custom" tool (Config.CustomToolID) replays as
@@ -519,8 +529,8 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 					Name:   p.ToolName,
 					Input:  customToolCallInputText(p),
 				}
-				if itemID != "" {
-					custom.ID = itemID
+				if hasItemID {
+					custom.ID, custom.idSet = itemID, true
 				}
 				items = append(items, custom)
 				continue
@@ -533,8 +543,8 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 				Arguments: serializeToolCallArguments(p),
 				Namespace: namespace,
 			}
-			if itemID != "" {
-				item.ID = itemID
+			if hasItemID {
+				item.ID, item.idSet = itemID, true
 			}
 			items = append(items, item)
 

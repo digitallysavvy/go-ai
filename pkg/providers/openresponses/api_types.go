@@ -106,6 +106,12 @@ type ReasoningInputItem struct {
 	EncryptedContent string              `json:"encrypted_content,omitempty"`
 	Summary          []SummaryPart       `json:"summary,omitempty"`
 	Content          []ReasoningTextPart `json:"content,omitempty"`
+
+	// idSet / encryptedContentSet: the replayed provider data held a string
+	// itemId / reasoningEncryptedContent, "" included (TS `typeof ===
+	// 'string'`), so an empty value is still written.
+	idSet               bool
+	encryptedContentSet bool
 }
 
 // MarshalJSON mirrors the TS reasoning item literal: summary is always
@@ -119,14 +125,25 @@ func (r ReasoningInputItem) MarshalJSON() ([]byte, error) {
 	out := struct {
 		Type             string               `json:"type"`
 		Summary          []SummaryPart        `json:"summary"`
-		ID               string               `json:"id,omitempty"`
+		ID               *string              `json:"id,omitempty"`
 		Content          *[]ReasoningTextPart `json:"content,omitempty"`
-		EncryptedContent string               `json:"encrypted_content,omitempty"`
-	}{Type: r.Type, Summary: summary, ID: r.ID, EncryptedContent: r.EncryptedContent}
+		EncryptedContent *string              `json:"encrypted_content,omitempty"`
+	}{Type: r.Type, Summary: summary,
+		ID:               presentString(r.ID, r.idSet),
+		EncryptedContent: presentString(r.EncryptedContent, r.encryptedContentSet)}
 	if r.Content != nil {
 		out.Content = &r.Content
 	}
 	return json.Marshal(out)
+}
+
+// presentString is the value to write for an omitempty string field: nil
+// (omitted) for "" unless the value was set explicitly.
+func presentString(v string, set bool) *string {
+	if v == "" && !set {
+		return nil
+	}
+	return &v
 }
 
 // SummaryPart is a single entry in a reasoning item's summary array.
@@ -148,6 +165,22 @@ type MessageItem struct {
 	Content interface{} `json:"content"`
 	ID      string      `json:"id,omitempty"`
 	Status  string      `json:"status,omitempty"`
+
+	// idSet writes `"id": ""` for an empty ID (a replayed string itemId).
+	idSet bool
+}
+
+// MarshalJSON writes the item as its struct tags do, plus `"id": ""` when an
+// empty id was set explicitly (TS `itemId != null && {id}`).
+func (m MessageItem) MarshalJSON() ([]byte, error) {
+	type plain MessageItem
+	if m.ID != "" || !m.idSet {
+		return json.Marshal(plain(m))
+	}
+	return json.Marshal(struct {
+		plain
+		ID *string `json:"id"`
+	}{plain: plain(m), ID: &m.ID})
 }
 
 // InputTextContent represents text input
@@ -212,6 +245,22 @@ type FunctionCallItem struct {
 	Namespace string `json:"namespace,omitempty"`
 	ID        string `json:"id,omitempty"`
 	Status    string `json:"status,omitempty"`
+
+	// idSet writes `"id": ""` for an empty ID (a replayed string itemId).
+	idSet bool
+}
+
+// MarshalJSON writes the item as its struct tags do, plus `"id": ""` when an
+// empty id was set explicitly (TS `itemId != null && {id}`).
+func (f FunctionCallItem) MarshalJSON() ([]byte, error) {
+	type plain FunctionCallItem
+	if f.ID != "" || !f.idSet {
+		return json.Marshal(plain(f))
+	}
+	return json.Marshal(struct {
+		plain
+		ID *string `json:"id"`
+	}{plain: plain(f), ID: &f.ID})
 }
 
 // FunctionCallOutputItem represents function call output
@@ -234,6 +283,22 @@ type CustomToolCallItem struct {
 	CallID string `json:"call_id"`
 	Name   string `json:"name"`
 	Input  string `json:"input"`
+
+	// idSet writes `"id": ""` for an empty ID (a replayed string itemId).
+	idSet bool
+}
+
+// MarshalJSON writes the item as its struct tags do, plus `"id": ""` when an
+// empty id was set explicitly (TS `itemId != null && {id}`).
+func (c CustomToolCallItem) MarshalJSON() ([]byte, error) {
+	type plain CustomToolCallItem
+	if c.ID != "" || !c.idSet {
+		return json.Marshal(plain(c))
+	}
+	return json.Marshal(struct {
+		plain
+		ID *string `json:"id"`
+	}{plain: plain(c), ID: &c.ID})
 }
 
 // CustomToolCallOutputItem replays a caller-executed "custom" tool result
