@@ -165,15 +165,10 @@ func PipeAgentUIStreamFromUIMessagesToResponse(ctx context.Context, agent *ToolL
 	if err != nil {
 		return err
 	}
-	if err := ai.PipeUIMessageChunksToResponse(chunks, w, nil); err != nil {
-		return err
-	}
-	select {
-	case err := <-errs:
-		return err
-	default:
-		return nil
-	}
+	// TS pipeAgentUIStreamToResponse ends an errored stream without
+	// "data: [DONE]"; StreamErrors gives the helper the failure, which it
+	// returns.
+	return ai.PipeUIMessageChunksToResponse(chunks, w, &ai.UIMessageStreamResponseInit{StreamErrors: errs})
 }
 
 // CreateAgentUIStreamResponseFromUIMessages runs the agent on UI messages
@@ -181,9 +176,11 @@ func PipeAgentUIStreamFromUIMessagesToResponse(ctx context.Context, agent *ToolL
 // with the UI message stream status and headers. Mirrors TS
 // createAgentUIStreamResponse({ agent, uiMessages }).
 func CreateAgentUIStreamResponseFromUIMessages(ctx context.Context, agent *ToolLoopAgent, opts CreateAgentUIStreamFromUIMessagesOptions) (*http.Response, error) {
-	chunks, _, err := CreateAgentUIStreamFromUIMessages(ctx, agent, opts)
+	chunks, errs, err := CreateAgentUIStreamFromUIMessages(ctx, agent, opts)
 	if err != nil {
 		return nil, err
 	}
-	return ai.CreateUIMessageChunksResponse(chunks, nil)
+	// TS createAgentUIStreamResponse ends an errored stream without
+	// "data: [DONE]".
+	return ai.CreateUIMessageChunksResponse(chunks, &ai.UIMessageStreamResponseInit{StreamErrors: errs})
 }

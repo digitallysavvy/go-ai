@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
@@ -172,5 +173,42 @@ func TestR87eintegLiveToolResultAfterTelemetryEnd(t *testing.T) {
 	}
 	if got, want := events.get(), []string{"user-end", "telemetry-end", "result"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %v, want %v", got, want)
+	}
+}
+
+// r87eintegHeaderStream is a provider stream that returns its response
+// headers beside the stream (TS doStream response.headers) and sends no
+// header-only response-metadata part.
+type r87eintegHeaderStream struct {
+	provider.TextStream
+	headers map[string]string
+}
+
+func (s *r87eintegHeaderStream) ResponseHeaders() map[string]string { return s.headers }
+
+// cr-r87e-stream-to-gen 2: StreamObject takes the response headers from a
+// stream that exposes them when no response-metadata part carries any.
+func TestR87eintegStreamObjectResponseHeadersFromStream(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return &r87eintegHeaderStream{TextStream: testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"value":"a"}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), headers: map[string]string{"x-test": "1"}}, nil
+		},
+	}
+	sch := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type":       "object",
+		"properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}},
+	})
+	var finish ObjectOnFinishEvent
+	res, err := StreamObject(context.Background(), StreamObjectOptions{Model: model, Prompt: "hi", Schema: sch,
+		OnFinishEvent: func(_ context.Context, e ObjectOnFinishEvent) { finish = e }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Response.Headers["x-test"] != "1" || finish.Response.Headers["x-test"] != "1" {
+		t.Fatalf("headers: result %v, finish %v; want x-test 1", res.Response.Headers, finish.Response.Headers)
 	}
 }

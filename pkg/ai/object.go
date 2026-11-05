@@ -2180,6 +2180,13 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		}
 	}
 
+	// TS doStream returns response.headers beside the stream: a stream that
+	// exposes them (ResponseHeaders) supplies the headers when no
+	// response-metadata part carried any (cr-r87e-stream-to-gen 2).
+	if streamResMeta.Headers == nil {
+		streamResMeta.Headers = streamResponseHeaders(stream)
+	}
+
 	// Apply default finish reason, mirroring TS SDK's `finishReason ?? 'other'` in the flush handler.
 	// If the stream ended without a finish chunk (e.g. stream error, provider omitted it),
 	// default to 'other' rather than leaving the zero-value empty string.
