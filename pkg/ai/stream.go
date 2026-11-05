@@ -2188,8 +2188,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// TS finish-step response.headers is the step's own doStream
 		// response headers, so a step (or a recovered attempt, below) whose
 		// stream reports none has none: an earlier step's do not carry over.
+		// A stream that exposes them (ResponseHeaders) gives them up front;
+		// a response-metadata part with headers still replaces them.
+		stepStreamHeaders := streamResponseHeaders(r.currentStream())
 		r.mu.Lock()
-		r.responseHeaders = nil
+		r.responseHeaders = stepStreamHeaders
 		r.mu.Unlock()
 		stepInstructions := r.cbSystem
 		stepInstructionMessages := r.cbInstructionMessages
@@ -3020,8 +3023,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					stepResponseID = ""
 					stepDefaultResponseID = remapGenerateID()
 					stepResponseTimestamp = r.now()
+					attemptHeaders := streamResponseHeaders(newStream)
 					r.mu.Lock()
-					r.responseHeaders = nil
+					r.responseHeaders = attemptHeaders
 					r.mu.Unlock()
 					toolInputCallbacks = newStreamToolInputCallbacks(stepExecutionTools, currentMessages, r.cbToolsCtx)
 					deferredToolInputs = nil
@@ -5925,6 +5929,17 @@ func languageModelCallRequest(origin string) *LanguageModelCallRequest {
 		return nil
 	}
 	return &LanguageModelCallRequest{URL: origin}
+}
+
+// streamResponseHeaders returns the HTTP response headers of a provider
+// stream that exposes them with a ResponseHeaders() map[string]string method
+// (TS doStream's response.headers, which TS returns beside the stream rather
+// than as a stream part), or nil.
+func streamResponseHeaders(s provider.TextStream) map[string]string {
+	if h, ok := s.(interface{ ResponseHeaders() map[string]string }); ok {
+		return h.ResponseHeaders()
+	}
+	return nil
 }
 
 // streamRequestBody returns the raw request body for s if it implements the

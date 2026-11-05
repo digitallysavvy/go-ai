@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 // r87estreamTSChunkJSON is JSON.stringify(toUIMessageChunk(part)) for parts
@@ -288,5 +289,53 @@ func TestR87estreamChunkHelpersStreamErrors(t *testing.T) {
 	buf.Reset()
 	if err := PipeUIMessageChunksToResponse(chunks, &buf, &UIMessageStreamResponseInit{StreamErrors: errs}); err != nil || !strings.HasSuffix(buf.String(), "data: [DONE]\n\n") {
 		t.Fatalf("clean pipe err = %v, body = %q", err, buf.String())
+	}
+}
+
+type r87estreamHeaderStream struct {
+	provider.TextStream
+	headers map[string]string
+}
+
+func (s r87estreamHeaderStream) ResponseHeaders() map[string]string { return s.headers }
+
+// TS returns doStream's response.headers beside the stream; a Go stream that
+// exposes ResponseHeaders gives the step its headers without a
+// response-metadata part, and each step gets its own stream's headers.
+func TestR87estreamResponseHeadersFromStream(t *testing.T) {
+	call := 0
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		call++
+		chunks := []provider.StreamChunk{{Type: provider.ChunkTypeText, Text: "x"}, {Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop}}
+		if call == 1 {
+			chunks = []provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "t", RawArguments: "{}", Arguments: map[string]interface{}{}}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+			}
+			return r87estreamHeaderStream{testutil.NewMockTextStream(chunks), map[string]string{"x-step": "1"}}, nil
+		}
+		return testutil.NewMockTextStream(chunks), nil
+	}}
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model:    model,
+		Prompt:   "p",
+		Tools:    []types.Tool{{Name: "t", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }}},
+		StopWhen: []StopCondition{StepCountIs(2)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	steps := r.Steps()
+	if len(steps) != 2 {
+		t.Fatalf("steps = %d", len(steps))
+	}
+	if got := steps[0].Response.Headers["x-step"]; got != "1" {
+		t.Fatalf("step 1 headers = %v", steps[0].Response.Headers)
+	}
+	if len(steps[1].Response.Headers) != 0 {
+		t.Fatalf("step 2 headers = %v, want none", steps[1].Response.Headers)
 	}
 }
