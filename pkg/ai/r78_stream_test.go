@@ -83,7 +83,7 @@ func (w *r78streamSignalWriter) String() string {
 // "waits before reading" case is the same rule for a consumer that does not
 // read yet: TS tee() buffers each branch, so the response is not held up.
 func TestR78StreamConsumeSSEStreamDoesNotBlockResponse(t *testing.T) {
-	const want = "data: {\"delta\":\"test-data\",\"id\":\"1\",\"type\":\"text-delta\"}\n\ndata: [DONE]\n\n"
+	const want = "data: {\"type\":\"text-delta\",\"id\":\"1\",\"delta\":\"test-data\"}\n\ndata: [DONE]\n\n"
 	for _, readFirst := range []bool{true, false} {
 		name := "reads then waits"
 		if !readFirst {
@@ -178,7 +178,7 @@ func TestR78StreamResultResponseDoesNotWaitForConsumeSSEStream(t *testing.T) {
 // 2026-11-02: TS pipeUIMessageStreamToResponse does not await
 // consumeSseStream).
 func TestR78StreamPipeWritesBeforeSlowConsumer(t *testing.T) {
-	const want = "data: {\"delta\":\"a\",\"id\":\"1\",\"type\":\"text-delta\"}\n\ndata: [DONE]\n\n"
+	const want = "data: {\"type\":\"text-delta\",\"id\":\"1\",\"delta\":\"a\"}\n\ndata: [DONE]\n\n"
 	w := &r78streamSignalWriter{done: make(chan struct{})}
 	release := make(chan struct{})
 	consumed := make(chan string, 1)
@@ -341,9 +341,9 @@ func TestR78StreamToUIMessageStreamResponseErrorText(t *testing.T) {
 			}
 			want := "data: {\"type\":\"start\"}\n\n" +
 				"data: {\"type\":\"start-step\"}\n\n" +
-				"data: {\"errorText\":\"" + tc.errText + "\",\"type\":\"error\"}\n\n" +
+				"data: {\"type\":\"error\",\"errorText\":\"" + tc.errText + "\"}\n\n" +
 				"data: {\"type\":\"finish-step\"}\n\n" +
-				"data: {\"finishReason\":\"error\",\"type\":\"finish\"}\n\n" +
+				"data: {\"type\":\"finish\",\"finishReason\":\"error\"}\n\n" +
 				"data: [DONE]\n\n"
 			if got := r78streamReadBody(t, resp.Body); got != want {
 				t.Fatalf("body =\n%s\nwant\n%s", got, want)

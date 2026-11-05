@@ -30,7 +30,7 @@ func TestPipeUIMessageChunksToResponse(t *testing.T) {
 		t.Fatalf("pipe: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, `data: {"data":{"step":1},"id":"p1","type":"data-progress"}`) {
+	if !strings.Contains(out, `data: {"type":"data-progress","id":"p1","data":{"step":1}}`) {
 		t.Fatalf("missing data part:\n%s", out)
 	}
 	if !strings.HasSuffix(out, "data: [DONE]\n\n") {

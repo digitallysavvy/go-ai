@@ -877,7 +877,7 @@ func TestR81streamTSChunksResponseErrorsAndConsumeFailure(t *testing.T) {
 		return string(b)
 	}
 	if got, want := read(t, []UIMessageChunk{{"type": "error", "errorText": "Custom error message"}}, &UIMessageStreamResponseInit{Status: 200}),
-		"data: {\"errorText\":\"Custom error message\",\"type\":\"error\"}\n\ndata: [DONE]\n\n"; got != want {
+		"data: {\"type\":\"error\",\"errorText\":\"Custom error message\"}\n\ndata: [DONE]\n\n"; got != want {
 		t.Fatalf("129 body = %q, want %q", got, want)
 	}
 	for name, consume := range map[string]func(io.Reader) error{
@@ -886,7 +886,7 @@ func TestR81streamTSChunksResponseErrorsAndConsumeFailure(t *testing.T) {
 		calls := make(chan struct{}, 2)
 		got := read(t, []UIMessageChunk{{"type": "text-delta", "id": "1", "delta": "error-test"}}, &UIMessageStreamResponseInit{Status: 200,
 			ConsumeSSEStream: func(r io.Reader) error { calls <- struct{}{}; return consume(r) }})
-		if want := "data: {\"delta\":\"error-test\",\"id\":\"1\",\"type\":\"text-delta\"}\n\ndata: [DONE]\n\n"; got != want {
+		if want := "data: {\"type\":\"text-delta\",\"id\":\"1\",\"delta\":\"error-test\"}\n\ndata: [DONE]\n\n"; got != want {
 			t.Fatalf("305 %s body = %q, want %q", name, got, want)
 		}
 		select {

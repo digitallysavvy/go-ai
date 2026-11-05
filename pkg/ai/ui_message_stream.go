@@ -9,12 +9,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -2611,7 +2613,7 @@ func writeUIMessageSSEChunk(bw *bufio.Writer, flush func() error, chunk UIMessag
 
 // uiSSEEventBytes is the SSE data event of one UI message chunk.
 func uiSSEEventBytes(chunk UIMessageChunk) ([]byte, error) {
-	b, err := jsonstr.Marshal(chunk)
+	b, err := marshalUIChunkInTSOrder(chunk)
 	if err != nil {
 		return nil, err
 	}
@@ -2619,6 +2621,103 @@ func uiSSEEventBytes(chunk UIMessageChunk) ([]byte, error) {
 	event = append(event, "data: "...)
 	event = append(event, b...)
 	return append(event, "\n\n"...), nil
+}
+
+// uiChunkTSKeyOrders is the key order of each UI message chunk type as TS
+// builds it (to-ui-message-chunk.ts object literals, the start / finish
+// chunks of handle-ui-message-stream-finish.ts, the error chunk of
+// create-ui-message-stream.ts), so JSON.stringify in JsonToSseTransformStream
+// writes the keys in this order.
+var uiChunkTSKeyOrders = map[string][]string{
+	"text-start":             {"type", "id", "providerMetadata"},
+	"text-delta":             {"type", "id", "delta", "providerMetadata"},
+	"text-end":               {"type", "id", "citations", "providerMetadata"},
+	"reasoning-start":        {"type", "id", "providerMetadata"},
+	"reasoning-delta":        {"type", "id", "delta", "providerMetadata"},
+	"reasoning-end":          {"type", "id", "providerMetadata"},
+	"file":                   {"type", "mediaType", "url", "providerMetadata"},
+	"reasoning-file":         {"type", "mediaType", "url", "providerMetadata"},
+	"source-url":             {"type", "sourceId", "url", "title", "providerMetadata"},
+	"source-document":        {"type", "sourceId", "mediaType", "title", "filename", "providerMetadata"},
+	"custom":                 {"type", "kind", "providerMetadata"},
+	"tool-input-start":       {"type", "toolCallId", "toolName", "inputEncoding", "providerExecuted", "providerMetadata", "toolMetadata", "dynamic", "title"},
+	"tool-input-delta":       {"type", "toolCallId", "inputTextDelta"},
+	"tool-input-available":   {"type", "toolCallId", "toolName", "input", "providerExecuted", "providerMetadata", "toolMetadata", "dynamic", "title"},
+	"tool-input-error":       {"type", "toolCallId", "toolName", "input", "providerExecuted", "providerMetadata", "toolMetadata", "dynamic", "errorText", "title"},
+	"tool-approval-request":  {"type", "approvalId", "toolCallId", "approvalDescriptor", "inputSchemaInput", "reason", "isAutomatic", "signature"},
+	"tool-approval-response": {"type", "approvalId", "approved", "reason", "providerExecuted"},
+	"tool-output-available":  {"type", "toolCallId", "output", "providerExecuted", "providerMetadata", "toolMetadata", "preliminary", "dynamic"},
+	"tool-output-error":      {"type", "toolCallId", "errorText", "providerExecuted", "providerMetadata", "toolMetadata", "dynamic"},
+	"tool-output-denied":     {"type", "toolCallId"},
+	"error":                  {"type", "errorText"},
+	"start":                  {"type", "messageMetadata", "messageId"},
+	"finish":                 {"type", "finishReason", "messageMetadata"},
+	"abort":                  {"type", "reason"},
+	"message-metadata":       {"type", "messageMetadata"},
+}
+
+// uiDataChunkTSKeyOrder is the key order of a data-* chunk (the
+// uiMessageChunkSchema field order, the order writer.write callers use).
+var uiDataChunkTSKeyOrder = []string{"type", "id", "data", "transient"}
+
+// marshalUIChunkInTSOrder is JSON.stringify of a UI message chunk: its keys
+// in the order TS creates them (uiChunkTSKeyOrders), then any other key in
+// sorted order, with array-index keys first as a JS object enumerates them.
+// Nested objects (provider metadata, tool input and output) keep Go's
+// encoding of their values.
+func marshalUIChunkInTSOrder(chunk UIMessageChunk) ([]byte, error) {
+	if chunk == nil {
+		return []byte("null"), nil
+	}
+	typ, _ := chunk["type"].(string)
+	order, ok := uiChunkTSKeyOrders[typ]
+	if !ok {
+		if strings.HasPrefix(typ, "data-") {
+			order = uiDataChunkTSKeyOrder
+		} else {
+			order = []string{"type"}
+		}
+	}
+	keys := make([]string, 0, len(chunk))
+	for _, key := range order {
+		if _, present := chunk[key]; present {
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) < len(chunk) {
+		known := make(map[string]bool, len(order))
+		for _, key := range order {
+			known[key] = true
+		}
+		rest := make([]string, 0, len(chunk)-len(keys))
+		for key := range chunk {
+			if !known[key] {
+				rest = append(rest, key)
+			}
+		}
+		sort.Strings(rest)
+		keys = append(keys, rest...)
+	}
+	keys = jsonorder.JSKeyOrder(keys)
+	buf := make([]byte, 0, 64)
+	buf = append(buf, '{')
+	for i, key := range keys {
+		if i > 0 {
+			buf = append(buf, ',')
+		}
+		k, err := jsonstr.Marshal(key)
+		if err != nil {
+			return nil, err
+		}
+		v, err := jsonstr.Marshal(chunk[key])
+		if err != nil {
+			return nil, err
+		}
+		buf = append(buf, k...)
+		buf = append(buf, ':')
+		buf = append(buf, v...)
+	}
+	return append(buf, '}'), nil
 }
 
 // PipeUIMessageStreamToResponseWithInit supports optional SSE side-channel consumption.
