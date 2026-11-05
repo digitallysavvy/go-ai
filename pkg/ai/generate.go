@@ -965,7 +965,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// populated — every telemetry integration needs it from the very first
 	// event to track its own root span by CallID.
 	callID := internalGenerateCallID(opts.Internal)()
-	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+	// The root telemetry start is sent right after the user OnStart below
+	// (TS notify([onStart, telemetry.onStart]) starts the callback first).
+	telemetryStart := telemetry.TelemetryStartEvent{
 		CallID:              callID,
 		OperationType:       "ai.generateText",
 		ModelProvider:       opts.Model.Provider(),
@@ -986,7 +988,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		MaxRetries:          &generateTextMaxRetries,
 		RuntimeContext:      telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
 		ToolsContext:        telemetryToolsContext(telemetrySettings, toolsContext),
-	})
+	}
 
 	// liveResult is the result under construction. The deferred abort handler
 	// reads the steps completed so far from it: a failing step returns a nil
@@ -1114,6 +1116,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		RuntimeContext:      runtimeContext,
 		ToolsContext:        toolsContext,
 	}, opts.OnStart)
+	// The callback ran outside the root span, as in TS; everything after it
+	// runs inside it.
+	ctx = telemetry.FireOnStart(ctx, telemetryStart)
 
 	// Initialize result (named return — assign, not declare)
 	result = &GenerateTextResult{
@@ -2425,6 +2430,12 @@ type toolCallEventCallbacks struct {
 	// (generator-style) tools as preliminary tool results. Nil when the caller
 	// does not stream (TS generateText ignores preliminary results).
 	onPreliminary func(result types.ToolResult)
+	// afterEnd runs after the user and telemetry tool-end notifications of a
+	// locally executed call; StreamText streams the live result here (TS
+	// execute-tools-from-stream.ts awaits executeToolCall, whose notify
+	// covers [onToolExecutionEnd, telemetry.onToolExecutionEnd], before it
+	// enqueues the output).
+	afterEnd func(ctx context.Context, e OnToolCallFinishEvent)
 	// preApprovals holds approval decisions already made while the step's
 	// stream was running (StreamText); executeTools reuses them instead of
 	// resolving the approval a second time.
@@ -2738,10 +2749,10 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 
 		if tool == nil {
 			toolErr := fmt.Errorf("tool not found: %s", call.ToolName)
+			// No Title: TS builds a client tool's tool-result and tool-error without it.
 			results[i] = types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
-				Title:            call.Title,
 				Input:            call.Arguments,
 				Error:            toolErr,
 				ProviderExecuted: false,
@@ -2971,10 +2982,10 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 					toolErr = &TimeoutError{Reason: TimeoutReasonTool, Err: toolErr, Timeout: *toolTimeout}
 				}
 			}
+			// No Title: TS builds a client tool's tool-result and tool-error without it.
 			results[i] = types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
-				Title:            call.Title,
 				Input:            call.Arguments,
 				Result:           toolResult,
 				Error:            toolErr,
@@ -3030,6 +3041,9 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 					DurationMs:  durationMs,
 					ToolContext: telemetryToolContext(callbacks.telemetrySettings, call.ToolName, toolContext),
 				})
+				if callbacks.afterEnd != nil {
+					callbacks.afterEnd(ctx, finishEvent)
+				}
 			}
 			if toolErr == nil && tool.ToModelOutput != nil {
 				converted, convertErr := tool.ToModelOutput(ctx, types.ToModelOutputOptions{

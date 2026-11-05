@@ -2776,10 +2776,12 @@ func TestToolLoopAgentPreservesToolMetadataOnResults(t *testing.T) {
 		doGenerate: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
 			return &types.GenerateResult{
 				ToolCalls: []types.ToolCall{{
-					ID:           "tc",
-					ToolName:     "lookup",
-					Arguments:    map[string]interface{}{"q": "x"},
-					ToolMetadata: map[string]interface{}{"trace": "agent"},
+					ID:        "tc",
+					ToolName:  "lookup",
+					Arguments: map[string]interface{}{"q": "x"},
+					// A model tool call has no metadata of its own (TS
+					// doParseToolCall takes the tool's).
+					ToolMetadata: map[string]interface{}{"trace": "provider"},
 				}},
 				FinishReason: types.FinishReasonToolCalls,
 			}, nil
@@ -2788,7 +2790,8 @@ func TestToolLoopAgentPreservesToolMetadataOnResults(t *testing.T) {
 	agent := NewToolLoopAgent(AgentConfig{
 		Model: model,
 		Tools: []types.Tool{{
-			Name: "lookup",
+			Name:     "lookup",
+			Metadata: map[string]interface{}{"trace": "agent"},
 			Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 				if options.ToolMetadata["trace"] != "agent" {
 					t.Fatalf("execution metadata = %+v, want agent", options.ToolMetadata)

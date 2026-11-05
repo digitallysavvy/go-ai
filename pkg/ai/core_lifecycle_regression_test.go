@@ -112,17 +112,20 @@ func TestGenerateTextRefinesToolInputAndPassesSandboxAndMetadata(t *testing.T) {
 		DoGenerateFunc: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
 			return &types.GenerateResult{
 				ToolCalls: []types.ToolCall{{
-					ID:           "tc",
-					ToolName:     "lookup",
-					Arguments:    map[string]interface{}{"q": "raw"},
-					ToolMetadata: map[string]interface{}{"trace": "tool"},
+					ID:        "tc",
+					ToolName:  "lookup",
+					Arguments: map[string]interface{}{"q": "raw"},
+					// A model tool call has no metadata of its own (TS
+					// doParseToolCall takes the tool's).
+					ToolMetadata: map[string]interface{}{"trace": "provider"},
 				}},
 				FinishReason: types.FinishReasonToolCalls,
 			}, nil
 		},
 	}
 	tool := types.Tool{
-		Name: "lookup",
+		Name:     "lookup",
+		Metadata: map[string]interface{}{"trace": "tool"},
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 			receivedInput = input
 			receivedSandbox = options.ExperimentalSandbox

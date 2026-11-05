@@ -625,8 +625,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 	if err := validateToolCallConcurrency(firstCallConfig.ToolCallConcurrency); err != nil {
 		return nil, err
 	}
-	var lt *loopTelemetry
-	ctx, lt = a.beginLoopTelemetry(ctx, firstCallConfig)
+	lt, startLoopTelemetry := a.beginLoopTelemetry(ctx, firstCallConfig)
 	ctx = context.WithValue(ctx, loopTelemetryKey{}, lt)
 	*ltOut = lt
 
@@ -695,6 +694,9 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		RuntimeContext:      fc.RuntimeContext,
 		ToolsContext:        fc.ToolsContext,
 	}, cbs.onStart)
+	// The root span opens after the user OnStart, as TS notify([onStart,
+	// telemetry.onStart]) starts the callback first.
+	ctx = startLoopTelemetry(ctx)
 
 	// Apply total timeout if configured (TS `timeout ?? preparedCall.timeout`)
 	var cancel context.CancelFunc
@@ -2423,10 +2425,10 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 
 		if tool == nil {
 			notFoundErr := fmt.Errorf("tool not found: %s", call.ToolName)
+			// No Title: TS builds a client tool's tool-result and tool-error without it.
 			results = append(results, types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
-				Title:            call.Title,
 				Input:            call.Arguments,
 				Error:            notFoundErr,
 				ProviderExecuted: false,
@@ -2646,10 +2648,10 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			}
 			execCancel()
 			timings.record(call.ID, durationMs)
+			// No Title: TS builds a client tool's tool-result and tool-error without it.
 			result := types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
-				Title:            call.Title,
 				Input:            call.Arguments,
 				Result:           toolResult,
 				Error:            toolErr,

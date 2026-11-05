@@ -18,9 +18,8 @@ package ai
 //     lazily decoded uint8ArrayData is not compared (base64Data is).
 //   - Go's ToolCall / ToolResult structs keep their v0.5.2 JSON keys (id,
 //     arguments, result); the views use the TS names (toolCallId, input,
-//     output). A tool result's Title is dropped (known difference "Executed
-//     tool results carry the tool title"); a nil RuntimeContext is {} (known
-//     difference "RuntimeContext defaults to nil").
+//     output). A nil RuntimeContext is {} (known difference
+//     "RuntimeContext defaults to nil").
 //   - A TS prompt string message ({role:'user', content:'test-input'}) is a
 //     Go user message with one text part.
 //   - A TS zod inputSchema is the equivalent JSON Schema map.
@@ -160,7 +159,7 @@ func r87cgenToolCallView(m r87cgenObj) r87cgenObj {
 }
 
 // r87cgenToolResultView maps a Go ToolResult's JSON to the TS tool-result
-// shape (the title a local result carries is dropped, see the header).
+// shape.
 func r87cgenToolResultView(m r87cgenObj) r87cgenObj {
 	out := r87cgenObj{"type": "tool-result", "toolCallId": m["toolCallId"], "toolName": m["toolName"], "input": m["input"], "output": m["result"], "dynamic": false}
 	if out["input"] == nil {

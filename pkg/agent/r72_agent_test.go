@@ -998,8 +998,9 @@ func TestR72agentTelemetryIntegrations(t *testing.T) {
 			if _, err := r72agentRun(t, a, mode, AgentGenerateOptions{Prompt: "test"}); err != nil {
 				t.Fatal(err)
 			}
+			// TS tool-loop-agent.test.ts 4164: the user onStart starts first.
 			want := []string{
-				"integration-onStart", "agent-onStart",
+				"agent-onStart", "integration-onStart",
 				"integration-onStepStart",
 				"agent-onStepFinish", "integration-onStepEnd",
 				"agent-onFinish", "integration-onEnd",

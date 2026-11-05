@@ -386,6 +386,9 @@ func doParseToolCall(call types.ToolCall, tools []types.Tool) (types.ToolCall, m
 	parsed.Invalid = false
 	parsed.Error = nil
 	parsed.Title = tool.Title
+	// TS doParseToolCall: toolMetadata is the tool's metadata only (a model
+	// tool call has none of its own).
+	parsed.ToolMetadata = nil
 	if tool.Metadata != nil {
 		parsed.ToolMetadata = cloneStringAnyMap(tool.Metadata)
 	}
@@ -458,6 +461,10 @@ func parseProviderExecutedDynamicToolCall(call types.ToolCall) (types.ToolCall, 
 	parsed.ProviderExecuted = true
 	parsed.ProviderExecutedSet = true
 	parsed.Dynamic = true
+	// TS parseProviderExecutedDynamicToolCall builds the call without title
+	// or toolMetadata.
+	parsed.Title = ""
+	parsed.ToolMetadata = nil
 	return parsed, nil
 }
 

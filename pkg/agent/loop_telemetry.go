@@ -367,22 +367,29 @@ func telemetryUsage(u types.Usage) telemetry.TelemetryUsage {
 // beginLoopTelemetry opens the root span unless the caller already did. c is
 // the first step's prepared configuration: its telemetry settings (when
 // PrepareCall set them) are the root's.
-func (a *ToolLoopAgent) beginLoopTelemetry(ctx context.Context, c PrepareCallConfig) (context.Context, *loopTelemetry) {
+//
+// The root is opened by the returned start function, which the loop calls
+// after the user OnStart: TS notify([onStart, telemetry.onStart]) starts the
+// callback first, so the callback runs outside the root span. start returns
+// its context unchanged when the caller already opened the root.
+func (a *ToolLoopAgent) beginLoopTelemetry(ctx context.Context, c PrepareCallConfig) (*loopTelemetry, func(context.Context) context.Context) {
 	settings := a.loopTelemetrySettings()
 	if id, ok := ctx.Value(telemetryCallIDKey{}).(string); ok && id != "" {
 		// The caller's root was opened under the configured settings; a
 		// PrepareCall override opens a root of its own (adoptPreparedTelemetry).
-		return ctx, &loopTelemetry{settings: settings, callID: id, sensitiveRuntimeContext: c.SensitiveRuntimeContext}
+		return &loopTelemetry{settings: settings, callID: id, sensitiveRuntimeContext: c.SensitiveRuntimeContext}, func(ctx context.Context) context.Context { return ctx }
 	}
 	if c.Telemetry != nil {
 		settings = c.Telemetry
 	}
 	lt := &loopTelemetry{settings: settings, rootSettings: settings, callID: newTelemetryCallID(), ownsRoot: true, baseCtx: ctx, sensitiveRuntimeContext: c.SensitiveRuntimeContext}
-	ctx = telemetry.FireOnStart(ctx, a.loopStartEvent(lt.callID, settings, c))
-	if telemetry.Enabled(settings) {
-		lt.rootCtx = ctx
+	return lt, func(ctx context.Context) context.Context {
+		ctx = telemetry.FireOnStart(ctx, a.loopStartEvent(lt.callID, settings, c))
+		if telemetry.Enabled(settings) {
+			lt.rootCtx = ctx
+		}
+		return ctx
 	}
-	return ctx, lt
 }
 
 // endLoopTelemetry closes the root span opened by beginLoopTelemetry.
