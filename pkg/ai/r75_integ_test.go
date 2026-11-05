@@ -9,8 +9,10 @@ import (
 // merges message metadata with mergeObjects(existing, incoming). An object
 // existing value with a number or boolean incoming value keeps the object
 // ({...base} with no own keys to copy). A string or array incoming value
-// replaces it in Go (known difference "Message metadata merge with
-// non-object values"), as does any value over a non-object existing one.
+// adds its index keys ({...base, 0: "s"}), and a number over a number gives
+// {} (round 87e, bun run of util/merge-objects.ts). Where TS throws (`key in
+// base` on a primitive base followed by a value with keys) Go keeps the
+// v0.5.2 replacement (S6).
 func TestR75Integ_MessageMetadataMergeNonObject(t *testing.T) {
 	object := map[string]interface{}{"a": 1.0, "nested": map[string]interface{}{"b": true}}
 	for _, c := range []struct {
@@ -23,10 +25,10 @@ func TestR75Integ_MessageMetadataMergeNonObject(t *testing.T) {
 		{"object then int", object, 7, object},
 		{"object then json.Number", object, json.Number("3"), object},
 		{"object then boolean", object, false, object},
-		{"object then string", object, "s", "s"},
-		{"object then array", object, []interface{}{1.0}, []interface{}{1.0}},
+		{"object then string", object, "s", map[string]interface{}{"0": "s", "a": 1.0, "nested": map[string]interface{}{"b": true}}},
+		{"object then array", object, []interface{}{1.0}, map[string]interface{}{"0": 1.0, "a": 1.0, "nested": map[string]interface{}{"b": true}}},
 		{"number then object", 1.0, map[string]interface{}{"x": 1.0}, map[string]interface{}{"x": 1.0}},
-		{"number then number", 1.0, 2.0, 2.0},
+		{"number then number", 1.0, 2.0, map[string]interface{}{}},
 		{"object then object", object, map[string]interface{}{"nested": map[string]interface{}{"c": 1.0}},
 			map[string]interface{}{"a": 1.0, "nested": map[string]interface{}{"b": true, "c": 1.0}}},
 	} {
