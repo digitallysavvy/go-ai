@@ -568,8 +568,8 @@ func TestR82streamKeepAlivePreservesChunks(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := ": stream-open\n\n" +
-		"data: {\"delta\":\"data 1\",\"id\":\"1\",\"type\":\"text-delta\"}\n\n" +
-		"data: {\"delta\":\"data 2\",\"id\":\"1\",\"type\":\"text-delta\"}\n\n" +
+		"data: {\"type\":\"text-delta\",\"id\":\"1\",\"delta\":\"data 1\"}\n\n" +
+		"data: {\"type\":\"text-delta\",\"id\":\"1\",\"delta\":\"data 2\"}\n\n" +
 		"data: [DONE]\n\n"
 	if buf.String() != want {
 		t.Fatalf("body = %q", buf.String())
@@ -623,7 +623,7 @@ func TestR82streamPipeChunksToResponse(t *testing.T) {
 		gotHeaders[strings.ToLower(k)] = rec.Header().Get(k)
 	}
 	r75streamAssertJSON(t, "headers", gotHeaders, `{"cache-control":"no-cache","connection":"keep-alive","content-type":"text/event-stream","custom-header":"test","x-accel-buffering":"no","x-vercel-ai-ui-message-stream":"v1"}`)
-	if want := "data: {\"id\":\"1\",\"type\":\"text-start\"}\n\ndata: {\"delta\":\"test-data\",\"id\":\"1\",\"type\":\"text-delta\"}\n\ndata: {\"id\":\"1\",\"type\":\"text-end\"}\n\ndata: [DONE]\n\n"; rec.Body.String() != want {
+	if want := "data: {\"type\":\"text-start\",\"id\":\"1\"}\n\ndata: {\"type\":\"text-delta\",\"id\":\"1\",\"delta\":\"test-data\"}\n\ndata: {\"type\":\"text-end\",\"id\":\"1\"}\n\ndata: [DONE]\n\n"; rec.Body.String() != want {
 		t.Fatalf("31 body = %q", rec.Body.String())
 	}
 
@@ -631,7 +631,7 @@ func TestR82streamPipeChunksToResponse(t *testing.T) {
 	if err := PipeUIMessageChunksToResponse(r73streamChunkChan(UIMessageChunk{"type": "error", "errorText": "Custom error message"}), &buf, &UIMessageStreamResponseInit{Status: 200}); err != nil {
 		t.Fatal(err)
 	}
-	if want := "data: {\"errorText\":\"Custom error message\",\"type\":\"error\"}\n\ndata: [DONE]\n\n"; buf.String() != want {
+	if want := "data: {\"type\":\"error\",\"errorText\":\"Custom error message\"}\n\ndata: [DONE]\n\n"; buf.String() != want {
 		t.Fatalf("123 body = %q", buf.String())
 	}
 
@@ -650,7 +650,7 @@ func TestR82streamPipeChunksToResponse(t *testing.T) {
 	if err := <-uiErr; err != nil {
 		t.Fatal(err)
 	}
-	if want := "data: {\"id\":\"t1\",\"type\":\"text-start\"}\n\ndata: {\"delta\":\"Hello\",\"id\":\"t1\",\"type\":\"text-delta\"}\n\ndata: {\"id\":\"t1\",\"type\":\"text-end\"}\n\ndata: [DONE]\n\n"; buf.String() != want {
+	if want := "data: {\"type\":\"text-start\",\"id\":\"t1\"}\n\ndata: {\"type\":\"text-delta\",\"id\":\"t1\",\"delta\":\"Hello\"}\n\ndata: {\"type\":\"text-end\",\"id\":\"t1\"}\n\ndata: [DONE]\n\n"; buf.String() != want {
 		t.Fatalf("151 body = %q", buf.String())
 	}
 }

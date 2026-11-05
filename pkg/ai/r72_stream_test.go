@@ -1126,15 +1126,15 @@ func (o *r72streamStartOrder) OnStepStart(ctx context.Context, _ telemetry.Telem
 	return ctx
 }
 
-// The telemetry OnStart runs before the user OnStart (known difference
-// "Telemetry start before the start callbacks"), but OnStepStart runs the
+// The user OnStart runs before the telemetry OnStart (TS
+// notify([onStart, telemetry.onStart]); round 87e), and OnStepStart runs the
 // user callback first, as TS notify([onStepStart, telemetry.onStepStart]),
 // in StreamText and GenerateText, for the first and later steps.
 func TestR72StreamStartAndStepStartOrder(t *testing.T) {
 	tool := types.Tool{Name: "tool1", Parameters: r71streamValueSchema, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
 		return "result1", nil
 	}}
-	want := []string{"tel:onStart", "onStart", "onStepStart", "tel:onStepStart", "onStepStart", "tel:onStepStart"}
+	want := []string{"onStart", "tel:onStart", "onStepStart", "tel:onStepStart", "onStepStart", "tel:onStepStart"}
 	rec := &r72streamStartOrder{}
 	r71streamRun(t, StreamTextOptions{Model: r71streamModel(nil, r72streamToolCallStep, r72streamHelloStep), Prompt: "test-input",
 		Tools: []types.Tool{tool}, StopWhen: []StopCondition{StepCountIs(3)},

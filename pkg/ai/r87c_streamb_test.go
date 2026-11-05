@@ -2385,7 +2385,7 @@ func TestR87cstreambTelemetryAlongsideUserCallbacks(t *testing.T) {
 	// OnStart (known difference "Telemetry start before the start
 	// callbacks", as in the generateText port). Step end and end run the user
 	// callback first, as TS.
-	if got, want := events.get(), []string{"integration-onStart", "user-onStart", "user-onStepFinish", "integration-onStepEnd", "user-onFinish", "integration-onEnd"}; !reflect.DeepEqual(got, want) {
+	if got, want := events.get(), []string{"user-onStart", "integration-onStart", "user-onStepFinish", "integration-onStepEnd", "user-onFinish", "integration-onEnd"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %v, want %v", got, want)
 	}
 }
@@ -2492,7 +2492,7 @@ func TestR87cstreambKeepAliveUndefinedPassesThrough(t *testing.T) {
 		}
 		return string(b)
 	}
-	want := "data: {\"delta\":\"data\",\"id\":\"1\",\"type\":\"text-delta\"}\n\ndata: [DONE]\n\n"
+	want := "data: {\"type\":\"text-delta\",\"id\":\"1\",\"delta\":\"data\"}\n\ndata: [DONE]\n\n"
 	if got := body(&UIMessageStreamResponseInit{KeepAliveMs: nil}); got != want {
 		t.Fatalf("body without keepAliveMs = %q, want %q", got, want)
 	}
@@ -2596,10 +2596,10 @@ func TestR87cstreambResponseFromToUIMessageStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "data: {\"messageId\":\"msg-123\",\"type\":\"start\"}\n\n" +
-		"data: {\"id\":\"t1\",\"type\":\"text-start\"}\n\n" +
-		"data: {\"delta\":\"Hello\",\"id\":\"t1\",\"type\":\"text-delta\"}\n\n" +
-		"data: {\"id\":\"t1\",\"type\":\"text-end\"}\n\n" +
+	want := "data: {\"type\":\"start\",\"messageId\":\"msg-123\"}\n\n" +
+		"data: {\"type\":\"text-start\",\"id\":\"t1\"}\n\n" +
+		"data: {\"type\":\"text-delta\",\"id\":\"t1\",\"delta\":\"Hello\"}\n\n" +
+		"data: {\"type\":\"text-end\",\"id\":\"t1\"}\n\n" +
 		"data: [DONE]\n\n"
 	if string(b) != want || resp.StatusCode != 200 {
 		t.Fatalf("status %d body = %q, want %q", resp.StatusCode, b, want)
@@ -2629,8 +2629,8 @@ func TestR87cstreambResponseConsumeSSEStreamTee(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "data: {\"delta\":\"test-data-1\",\"id\":\"1\",\"type\":\"text-delta\"}\n\n" +
-		"data: {\"delta\":\"test-data-2\",\"id\":\"1\",\"type\":\"text-delta\"}\n\n" +
+	want := "data: {\"type\":\"text-delta\",\"id\":\"1\",\"delta\":\"test-data-1\"}\n\n" +
+		"data: {\"type\":\"text-delta\",\"id\":\"1\",\"delta\":\"test-data-2\"}\n\n" +
 		"data: [DONE]\n\n"
 	if string(b) != want {
 		t.Fatalf("response body = %q, want %q", b, want)

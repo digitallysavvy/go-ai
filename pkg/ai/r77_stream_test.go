@@ -145,7 +145,7 @@ func TestR77StreamCreateUIMessageChunksResponseHeadersAndBody(t *testing.T) {
 	if resp.Header.Get("Custom-Header") != "test" || resp.Header.Get("Cache-Control") != "no-cache" {
 		t.Fatalf("headers = %v", resp.Header)
 	}
-	if got, want := string(body), "data: {\"delta\":\"test-data\",\"id\":\"1\",\"type\":\"text-delta\"}\n\ndata: [DONE]\n\n"; got != want {
+	if got, want := string(body), "data: {\"type\":\"text-delta\",\"id\":\"1\",\"delta\":\"test-data\"}\n\ndata: [DONE]\n\n"; got != want {
 		t.Fatalf("body = %q\nwant %q", got, want)
 	}
 }
@@ -160,7 +160,7 @@ func TestR77StreamCreateUIMessageChunksResponseErrorsAndConsumeFailure(t *testin
 	}
 	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if got, want := string(body), "data: {\"errorText\":\"Custom error message\",\"type\":\"error\"}\n\ndata: [DONE]\n\n"; got != want {
+	if got, want := string(body), "data: {\"type\":\"error\",\"errorText\":\"Custom error message\"}\n\ndata: [DONE]\n\n"; got != want {
 		t.Fatalf("error body = %q\nwant %q", got, want)
 	}
 
@@ -185,7 +185,7 @@ func TestR77StreamCreateUIMessageChunksResponseErrorsAndConsumeFailure(t *testin
 	if err != nil {
 		t.Fatalf("body read error = %v", err)
 	}
-	if got, want := string(body), "data: {\"delta\":\"error-test\",\"id\":\"1\",\"type\":\"text-delta\"}\n\ndata: [DONE]\n\n"; got != want {
+	if got, want := string(body), "data: {\"type\":\"text-delta\",\"id\":\"1\",\"delta\":\"error-test\"}\n\ndata: [DONE]\n\n"; got != want {
 		t.Fatalf("body = %q\nwant %q", got, want)
 	}
 	// The body does not wait for the callback (r78: TS does not await

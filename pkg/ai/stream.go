@@ -999,6 +999,45 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		telMessages = buildPrompt(opts.Prompt, opts.Messages, "").Messages
 	}
 	streamTextMaxRetries := preparedMaxRetries(opts.MaxRetries)
+	// Emit OnStartEvent before streaming begins and before the telemetry root
+	// start: TS notify([onStart, telemetry.onStart]) starts the user callback
+	// first, so it runs outside the root span (gen c8cc78d6 for GenerateText).
+	Notify(ctx, OnStartEvent{
+		CallID:              callID,
+		OperationID:         "ai.streamText",
+		Provider:            opts.Model.Provider(),
+		ModelProvider:       opts.Model.Provider(),
+		ModelID:             opts.Model.ModelID(),
+		Instructions:        system,
+		InstructionMessages: instructionMessages,
+		System:              system,
+		Prompt:              opts.Prompt,
+		// TS start event messages: the standardized prompt's messages (a
+		// prompt string becomes one user message).
+		Messages:            buildPrompt(opts.Prompt, opts.Messages, "").Messages,
+		Tools:               opts.Tools,
+		ActiveTools:         opts.ActiveTools,
+		ToolOrder:           opts.ToolOrder,
+		ToolChoice:          opts.ToolChoice,
+		Timeout:             opts.Timeout,
+		Reasoning:           opts.Reasoning,
+		Output:              opts.Output,
+		ProviderOptions:     opts.ProviderOptions,
+		Headers:             opts.Headers,
+		Temperature:         opts.Temperature,
+		MaxTokens:           opts.MaxTokens,
+		TopP:                opts.TopP,
+		TopK:                opts.TopK,
+		FrequencyPenalty:    opts.FrequencyPenalty,
+		PresencePenalty:     opts.PresencePenalty,
+		StopSequences:       opts.StopSequences,
+		Seed:                opts.Seed,
+		MaxRetries:          preparedMaxRetries(opts.MaxRetries),
+		ExperimentalContext: runtimeContext,
+		RuntimeContext:      runtimeContext,
+		ToolsContext:        toolsContext,
+	}, opts.OnStart)
+
 	ctx = r.fireRootStart(ctx, telemetry.TelemetryStartEvent{
 		CallID:              callID,
 		OperationType:       "ai.streamText",
@@ -1064,43 +1103,6 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	if onEndEvent == nil {
 		onEndEvent = opts.OnFinishEvent
 	}
-
-	// Emit OnStartEvent before streaming begins.
-	Notify(ctx, OnStartEvent{
-		CallID:              callID,
-		OperationID:         "ai.streamText",
-		Provider:            opts.Model.Provider(),
-		ModelProvider:       opts.Model.Provider(),
-		ModelID:             opts.Model.ModelID(),
-		Instructions:        system,
-		InstructionMessages: instructionMessages,
-		System:              system,
-		Prompt:              opts.Prompt,
-		// TS start event messages: the standardized prompt's messages (a
-		// prompt string becomes one user message).
-		Messages:            buildPrompt(opts.Prompt, opts.Messages, "").Messages,
-		Tools:               opts.Tools,
-		ActiveTools:         opts.ActiveTools,
-		ToolOrder:           opts.ToolOrder,
-		ToolChoice:          opts.ToolChoice,
-		Timeout:             opts.Timeout,
-		Reasoning:           opts.Reasoning,
-		Output:              opts.Output,
-		ProviderOptions:     opts.ProviderOptions,
-		Headers:             opts.Headers,
-		Temperature:         opts.Temperature,
-		MaxTokens:           opts.MaxTokens,
-		TopP:                opts.TopP,
-		TopK:                opts.TopK,
-		FrequencyPenalty:    opts.FrequencyPenalty,
-		PresencePenalty:     opts.PresencePenalty,
-		StopSequences:       opts.StopSequences,
-		Seed:                opts.Seed,
-		MaxRetries:          preparedMaxRetries(opts.MaxRetries),
-		ExperimentalContext: runtimeContext,
-		RuntimeContext:      runtimeContext,
-		ToolsContext:        toolsContext,
-	}, opts.OnStart)
 
 	// Resume tool approvals from the input messages before the first step
 	// (TS streamText initial tool execution stream).
@@ -2188,8 +2190,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// TS finish-step response.headers is the step's own doStream
 		// response headers, so a step (or a recovered attempt, below) whose
 		// stream reports none has none: an earlier step's do not carry over.
+		// A stream that exposes them (ResponseHeaders) gives them up front;
+		// a response-metadata part with headers still replaces them.
+		stepStreamHeaders := streamResponseHeaders(r.currentStream())
 		r.mu.Lock()
-		r.responseHeaders = nil
+		r.responseHeaders = stepStreamHeaders
 		r.mu.Unlock()
 		stepInstructions := r.cbSystem
 		stepInstructionMessages := r.cbInstructionMessages
@@ -3020,8 +3025,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					stepResponseID = ""
 					stepDefaultResponseID = remapGenerateID()
 					stepResponseTimestamp = r.now()
+					attemptHeaders := streamResponseHeaders(newStream)
 					r.mu.Lock()
-					r.responseHeaders = nil
+					r.responseHeaders = attemptHeaders
 					r.mu.Unlock()
 					toolInputCallbacks = newStreamToolInputCallbacks(stepExecutionTools, currentMessages, r.cbToolsCtx)
 					deferredToolInputs = nil
@@ -5923,6 +5929,17 @@ func languageModelCallRequest(origin string) *LanguageModelCallRequest {
 		return nil
 	}
 	return &LanguageModelCallRequest{URL: origin}
+}
+
+// streamResponseHeaders returns the HTTP response headers of a provider
+// stream that exposes them with a ResponseHeaders() map[string]string method
+// (TS doStream's response.headers, which TS returns beside the stream rather
+// than as a stream part), or nil.
+func streamResponseHeaders(s provider.TextStream) map[string]string {
+	if h, ok := s.(interface{ ResponseHeaders() map[string]string }); ok {
+		return h.ResponseHeaders()
+	}
+	return nil
 }
 
 // streamRequestBody returns the raw request body for s if it implements the

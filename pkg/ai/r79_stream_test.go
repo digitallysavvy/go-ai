@@ -108,9 +108,9 @@ func TestR79StreamConsumeSSEStreamOutlivesClientDisconnect(t *testing.T) {
 		t.Fatalf("Pipe error = %v, want the write error", err)
 	}
 	want := "data: {\"type\":\"start\"}\n\n" +
-		"data: {\"id\":\"1\",\"type\":\"text-start\"}\n\n" +
-		"data: {\"delta\":\"" + r79streamBigDelta + "\",\"id\":\"1\",\"type\":\"text-delta\"}\n\n" +
-		"data: {\"id\":\"1\",\"type\":\"text-end\"}\n\n" +
+		"data: {\"type\":\"text-start\",\"id\":\"1\"}\n\n" +
+		"data: {\"type\":\"text-delta\",\"id\":\"1\",\"delta\":\"" + r79streamBigDelta + "\"}\n\n" +
+		"data: {\"type\":\"text-end\",\"id\":\"1\"}\n\n" +
 		"data: {\"type\":\"finish\"}\n\n" +
 		"data: [DONE]\n\n"
 	select {
@@ -146,7 +146,7 @@ func TestR79StreamResultConsumeSSEStreamOutlivesClientDisconnect(t *testing.T) {
 	}
 	select {
 	case got := <-copied:
-		if !strings.Contains(got, "data: {\"delta\":\"world!\",\"id\":\"1\",\"type\":\"text-delta\"}\n\n") || !strings.HasSuffix(got, "data: {\"finishReason\":\"stop\",\"type\":\"finish\"}\n\ndata: [DONE]\n\n") {
+		if !strings.Contains(got, "data: {\"type\":\"text-delta\",\"id\":\"1\",\"delta\":\"world!\"}\n\n") || !strings.HasSuffix(got, "data: {\"type\":\"finish\",\"finishReason\":\"stop\"}\n\ndata: [DONE]\n\n") {
 			t.Fatalf("consumer copy = %q", got)
 		}
 	case <-time.After(5 * time.Second):

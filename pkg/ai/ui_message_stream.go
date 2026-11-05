@@ -9,12 +9,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -182,6 +186,16 @@ type UIMessageStreamResponseInit struct {
 	// zero, a negative duration or one above 2147483647ms is an error, as in
 	// TS createSseStreamWithKeepAlive's `keepAliveMs` option (TS #21672).
 	KeepAliveMs *time.Duration //nolint:revive,staticcheck // name matches TS SDK field "keepAliveMs" for parity
+	// StreamErrors, when set, is the error channel returned with the chunks
+	// passed to PipeUIMessageChunksToResponse or CreateUIMessageChunksResponse
+	// (CreateUIMessageStreamWithOptions, CreateUIMessageStream,
+	// CreateAgentUIStreamFromUIMessages). Once the chunk channel closes, the
+	// helper reads one error from it without blocking; a failed stream then
+	// ends without "data: [DONE]", as TS ends an errored stream: the Pipe
+	// helper returns the error and the response body ends with it. The error
+	// is consumed. Nil keeps the v0.5 behavior (always "data: [DONE]"). The
+	// StreamTextResult helpers ignore it: they see their own failure.
+	StreamErrors <-chan error
 }
 
 const (
@@ -1960,23 +1974,73 @@ func (s *uiMessageCallbackState) mergeMetadata(metadata interface{}) {
 	if isUIJSONNull(metadata) {
 		return
 	}
-	// A Go value that encodes as a JSON object (a struct, a typed map,
-	// json.RawMessage) is an object to TS mergeObjects, like a
-	// map[string]interface{}.
-	if existing, ok := uiJSONObject(s.message["metadata"]); ok {
-		if incoming, ok := uiJSONObject(metadata); ok {
-			s.message["metadata"] = mergeUIMaps(existing, incoming)
-			return
+	existing := s.message["metadata"]
+	if isUIJSONNull(existing) {
+		s.message["metadata"] = cloneUIValue(metadata)
+		return
+	}
+	s.message["metadata"] = jsMergeUIMetadata(existing, metadata)
+}
+
+// jsMergeUIMetadata is TS mergeObjects(base, incoming) for two non-null
+// JSON values: `{...base}` (an object's keys, a string's or array's index
+// keys, nothing for a number or boolean), then incoming's own keys (the same
+// rule), nested objects merged deeply. A Go value that encodes as a JSON
+// object (a struct, a typed map, json.RawMessage) is an object, like a
+// map[string]interface{}. TS evaluates `key in base` for each incoming key,
+// which throws a TypeError for a string, number or boolean base; v0.5.2
+// replaced the metadata there and the stream went on, so Go keeps that
+// (S6: a stream that works in v0.5.2 does not start failing).
+func jsMergeUIMetadata(base, incoming interface{}) interface{} {
+	baseKeys, basePrimitive := jsSpreadUIValue(base)
+	incomingKeys, _ := jsSpreadUIValue(incoming)
+	if basePrimitive && len(incomingKeys) > 0 {
+		return cloneUIValue(incoming)
+	}
+	return mergeUIMaps(baseKeys, incomingKeys)
+}
+
+// jsSpreadUIValue is the own enumerable keys of a JSON value as JS object
+// spread and for...in see them: an object's keys, a string's UTF-16 index
+// keys (one code unit each), an array's index keys, none for a number or
+// boolean. primitive reports a string, number or boolean (the bases `in`
+// rejects).
+func jsSpreadUIValue(v interface{}) (keys map[string]interface{}, primitive bool) {
+	if m, ok := uiJSONObject(v); ok {
+		return m, false
+	}
+	switch x := v.(type) {
+	case string:
+		units := utf16.Encode([]rune(x))
+		out := make(map[string]interface{}, len(units))
+		for i, unit := range units {
+			// A lone surrogate half has no Go string; it reads U+FFFD.
+			out[strconv.Itoa(i)] = string(rune(unit))
 		}
-		// TS mergeObjects(existing, incoming) copies the existing object and
-		// finds no own keys on a number or boolean, so the object is kept.
-		// A string or array incoming value replaces it (Go-only: TS would
-		// merge its index keys; see known differences).
-		if isUIScalarNumberOrBool(metadata) {
-			return
+		return out, true
+	case []interface{}:
+		out := make(map[string]interface{}, len(x))
+		for i, el := range x {
+			out[strconv.Itoa(i)] = el
+		}
+		return out, false
+	}
+	b, err := json.Marshal(v)
+	if err == nil && len(b) > 0 {
+		switch b[0] {
+		case '"':
+			var str string
+			if json.Unmarshal(b, &str) == nil {
+				return jsSpreadUIValue(str)
+			}
+		case '[':
+			var arr []interface{}
+			if json.Unmarshal(b, &arr) == nil {
+				return jsSpreadUIValue(arr)
+			}
 		}
 	}
-	s.message["metadata"] = cloneUIValue(metadata)
+	return map[string]interface{}{}, true
 }
 
 // isUIJSONNull reports whether v is nil or a Go value that encodes as JSON
@@ -1996,22 +2060,6 @@ func isUIJSONNull(v interface{}) bool {
 	}
 	b, err := json.Marshal(v)
 	return err == nil && string(b) == "null"
-}
-
-// isUIScalarNumberOrBool reports whether v is a JSON number or boolean.
-func isUIScalarNumberOrBool(v interface{}) bool {
-	switch v.(type) {
-	case nil, string, map[string]interface{}, UIMessageChunk, []interface{}:
-		return false
-	case bool, float64, float32, int, int8, int16, int32, int64,
-		uint, uint8, uint16, uint32, uint64, json.Number:
-		return true
-	}
-	b, err := json.Marshal(v)
-	if err != nil || len(b) == 0 {
-		return false
-	}
-	return b[0] == 't' || b[0] == 'f' || b[0] == '-' || (b[0] >= '0' && b[0] <= '9')
 }
 
 // uiJSONObject returns v as a map when it encodes as a JSON object: a
@@ -2611,7 +2659,7 @@ func writeUIMessageSSEChunk(bw *bufio.Writer, flush func() error, chunk UIMessag
 
 // uiSSEEventBytes is the SSE data event of one UI message chunk.
 func uiSSEEventBytes(chunk UIMessageChunk) ([]byte, error) {
-	b, err := jsonstr.Marshal(chunk)
+	b, err := marshalUIChunkInTSOrder(chunk)
 	if err != nil {
 		return nil, err
 	}
@@ -2619,6 +2667,103 @@ func uiSSEEventBytes(chunk UIMessageChunk) ([]byte, error) {
 	event = append(event, "data: "...)
 	event = append(event, b...)
 	return append(event, "\n\n"...), nil
+}
+
+// uiChunkTSKeyOrders is the key order of each UI message chunk type as TS
+// builds it (to-ui-message-chunk.ts object literals, the start / finish
+// chunks of handle-ui-message-stream-finish.ts, the error chunk of
+// create-ui-message-stream.ts), so JSON.stringify in JsonToSseTransformStream
+// writes the keys in this order.
+var uiChunkTSKeyOrders = map[string][]string{
+	"text-start":             {"type", "id", "providerMetadata"},
+	"text-delta":             {"type", "id", "delta", "providerMetadata"},
+	"text-end":               {"type", "id", "citations", "providerMetadata"},
+	"reasoning-start":        {"type", "id", "providerMetadata"},
+	"reasoning-delta":        {"type", "id", "delta", "providerMetadata"},
+	"reasoning-end":          {"type", "id", "providerMetadata"},
+	"file":                   {"type", "mediaType", "url", "providerMetadata"},
+	"reasoning-file":         {"type", "mediaType", "url", "providerMetadata"},
+	"source-url":             {"type", "sourceId", "url", "title", "providerMetadata"},
+	"source-document":        {"type", "sourceId", "mediaType", "title", "filename", "providerMetadata"},
+	"custom":                 {"type", "kind", "providerMetadata"},
+	"tool-input-start":       {"type", "toolCallId", "toolName", "inputEncoding", "providerExecuted", "providerMetadata", "toolMetadata", "dynamic", "title"},
+	"tool-input-delta":       {"type", "toolCallId", "inputTextDelta"},
+	"tool-input-available":   {"type", "toolCallId", "toolName", "input", "providerExecuted", "providerMetadata", "toolMetadata", "dynamic", "title"},
+	"tool-input-error":       {"type", "toolCallId", "toolName", "input", "providerExecuted", "providerMetadata", "toolMetadata", "dynamic", "errorText", "title"},
+	"tool-approval-request":  {"type", "approvalId", "toolCallId", "approvalDescriptor", "inputSchemaInput", "reason", "isAutomatic", "signature"},
+	"tool-approval-response": {"type", "approvalId", "approved", "reason", "providerExecuted"},
+	"tool-output-available":  {"type", "toolCallId", "output", "providerExecuted", "providerMetadata", "toolMetadata", "preliminary", "dynamic"},
+	"tool-output-error":      {"type", "toolCallId", "errorText", "providerExecuted", "providerMetadata", "toolMetadata", "dynamic"},
+	"tool-output-denied":     {"type", "toolCallId"},
+	"error":                  {"type", "errorText"},
+	"start":                  {"type", "messageMetadata", "messageId"},
+	"finish":                 {"type", "finishReason", "messageMetadata"},
+	"abort":                  {"type", "reason"},
+	"message-metadata":       {"type", "messageMetadata"},
+}
+
+// uiDataChunkTSKeyOrder is the key order of a data-* chunk (the
+// uiMessageChunkSchema field order, the order writer.write callers use).
+var uiDataChunkTSKeyOrder = []string{"type", "id", "data", "transient"}
+
+// marshalUIChunkInTSOrder is JSON.stringify of a UI message chunk: its keys
+// in the order TS creates them (uiChunkTSKeyOrders), then any other key in
+// sorted order, with array-index keys first as a JS object enumerates them.
+// Nested objects (provider metadata, tool input and output) keep Go's
+// encoding of their values.
+func marshalUIChunkInTSOrder(chunk UIMessageChunk) ([]byte, error) {
+	if chunk == nil {
+		return []byte("null"), nil
+	}
+	typ, _ := chunk["type"].(string)
+	order, ok := uiChunkTSKeyOrders[typ]
+	if !ok {
+		if strings.HasPrefix(typ, "data-") {
+			order = uiDataChunkTSKeyOrder
+		} else {
+			order = []string{"type"}
+		}
+	}
+	keys := make([]string, 0, len(chunk))
+	for _, key := range order {
+		if _, present := chunk[key]; present {
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) < len(chunk) {
+		known := make(map[string]bool, len(order))
+		for _, key := range order {
+			known[key] = true
+		}
+		rest := make([]string, 0, len(chunk)-len(keys))
+		for key := range chunk {
+			if !known[key] {
+				rest = append(rest, key)
+			}
+		}
+		sort.Strings(rest)
+		keys = append(keys, rest...)
+	}
+	keys = jsonorder.JSKeyOrder(keys)
+	buf := make([]byte, 0, 64)
+	buf = append(buf, '{')
+	for i, key := range keys {
+		if i > 0 {
+			buf = append(buf, ',')
+		}
+		k, err := jsonstr.Marshal(key)
+		if err != nil {
+			return nil, err
+		}
+		v, err := jsonstr.Marshal(chunk[key])
+		if err != nil {
+			return nil, err
+		}
+		buf = append(buf, k...)
+		buf = append(buf, ':')
+		buf = append(buf, v...)
+	}
+	return append(buf, '}'), nil
 }
 
 // PipeUIMessageStreamToResponseWithInit supports optional SSE side-channel consumption.
@@ -2689,7 +2834,9 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 // as Server-Sent Events, ending with "data: [DONE]". Use it for streams that
 // don't come from a single StreamTextResult, such as the output of
 // CreateUIMessageStreamWithOptions or CreateAgentUIStreamFromUIMessages.
-// Mirrors TS pipeUIMessageStreamToResponse({ response, stream }).
+// Mirrors TS pipeUIMessageStreamToResponse({ response, stream }). Pass the
+// stream's error channel as init.StreamErrors so a failed stream ends
+// without "data: [DONE]" and its error is returned, as in TS.
 //
 // When w is an http.ResponseWriter it first sets the UI message stream
 // headers (UIMessageStreamHeaders, overridden by init's) and writes the
@@ -2719,7 +2866,27 @@ func PipeUIMessageChunksToResponse(chunks <-chan UIMessageChunk, w io.Writer, in
 	}
 	status, _, headers := uiMessageStreamResponseHead(init)
 	writeResponseHead(w, status, headers)
-	return writeUIMessageChunksSSE(chunks, w, init, nil, nil)
+	return writeUIMessageChunksSSE(chunks, w, init, nil, uiChunkStreamFailure(init))
+}
+
+// uiChunkStreamFailure reads the failure of a bare chunk stream from
+// init.StreamErrors (once, without blocking), or nil without one.
+func uiChunkStreamFailure(init *UIMessageStreamResponseInit) func() error {
+	if init == nil || init.StreamErrors == nil {
+		return nil
+	}
+	errs := init.StreamErrors
+	var once sync.Once
+	var failure error
+	return func() error {
+		once.Do(func() {
+			select {
+			case failure = <-errs:
+			default:
+			}
+		})
+		return failure
+	}
 }
 
 // CreateUIMessageChunksResponse returns an *http.Response that streams any
@@ -2740,7 +2907,7 @@ func CreateUIMessageChunksResponse(chunks <-chan UIMessageChunk, init *UIMessage
 		// response body (TS tees the stream and does not await
 		// consumeSseStream): the body ends after the last SSE event, and
 		// only a write failure ends it with an error.
-		_ = pw.CloseWithError(writeUIMessageChunksSSE(chunks, pw, init, nil, nil))
+		_ = pw.CloseWithError(writeUIMessageChunksSSE(chunks, pw, init, nil, uiChunkStreamFailure(init)))
 	}()
 	return &http.Response{
 		StatusCode: status,
@@ -3283,8 +3450,16 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if len(chunk.ToolCall.ToolMetadata) > 0 {
 			part["toolMetadata"] = chunk.ToolCall.ToolMetadata
 		}
-		if isDynamicTool(chunk.ToolCall.ToolName, chunk.ToolCall.Dynamic) {
-			part["dynamic"] = true
+		// TS streamText gives every tool-input-start a boolean dynamic
+		// (`chunk.dynamic ?? tool?.type === 'dynamic'`), and toUIMessageChunk
+		// copies it for a tool missing from the tool set, so an unknown or
+		// provider-executed tool that is not in the set writes dynamic: false.
+		if hasUITool(opts.Tools, chunk.ToolCall.ToolName) {
+			if isDynamicTool(chunk.ToolCall.ToolName, chunk.ToolCall.Dynamic) {
+				part["dynamic"] = true
+			}
+		} else {
+			part["dynamic"] = chunk.ToolCall.Dynamic
 		}
 		if chunk.ToolCall.Title != "" {
 			part["title"] = chunk.ToolCall.Title
@@ -3495,6 +3670,17 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		}
 	}
 	return out
+}
+
+// hasUITool reports whether the UI conversion's tool set has a tool named
+// toolName (TS `tools?.[toolName] != null`).
+func hasUITool(tools []types.Tool, toolName string) bool {
+	for _, tool := range tools {
+		if tool.Name == toolName {
+			return true
+		}
+	}
+	return false
 }
 
 // deriveFileURL is the UI file part url: TS `data:${mediaType};base64,${file.base64}`.
