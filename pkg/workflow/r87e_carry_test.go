@@ -164,7 +164,7 @@ func TestR87ecarryWorkflowRootEndCarriesFinalStepFields(t *testing.T) {
 				}
 				found = true
 				for _, kv := range s.Attributes() {
-					attrs[string(kv.Key)] = kv.Value.Emit()
+					attrs[string(kv.Key)] = kv.Value.String()
 				}
 			}
 			if !found {
