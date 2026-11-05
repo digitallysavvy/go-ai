@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
@@ -329,5 +330,46 @@ func TestR87egenModelToolCallMetadataIsTheTools(t *testing.T) {
 	}
 	if dynamic.ToolMetadata != nil || dynamic.Title != "" || !dynamic.Dynamic || !dynamic.ProviderExecuted {
 		t.Errorf("provider-executed dynamic call = %+v, want no title or metadata", dynamic)
+	}
+}
+
+// TS resolveDecisionModel and resolveBatchApi resolve through
+// `globalThis.AI_SDK_DEFAULT_PROVIDER ?? gateway`; a default provider without
+// a decision factory is NoSuchModelError "The default provider does not
+// support decision models. ...". Known difference "Decide: model version
+// check and telemetry fields" (global default provider). Not parallel: it
+// sets the process-wide default.
+func TestR87egenSetDefaultProvider(t *testing.T) {
+	defer SetDefaultProvider(nil)
+	model := &mockDecisionModel{providerName: "default", modelID: "m", doDecide: func(context.Context, provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+		return &provider.DecisionResult{Answers: decisionAnswersFixture()}, nil
+	}}
+	SetDefaultProvider(mockDecisionModelProvider{models: map[string]provider.DecisionModel{"m": model}})
+	res, err := ExperimentalDecide(context.Background(), DecideOptions{Model: "m", State: "s", Questions: decisionQuestionsFixture()})
+	if err != nil {
+		t.Fatalf("ExperimentalDecide() error = %v", err)
+	}
+	if len(res.Answers) == 0 {
+		t.Fatal("no answers from the default provider's model")
+	}
+
+	SetDefaultProvider(struct{}{})
+	_, err = ExperimentalDecide(context.Background(), DecideOptions{Model: "m", State: "s", Questions: decisionQuestionsFixture()})
+	var noSuch *providererrors.NoSuchModelError
+	if !errors.As(err, &noSuch) || noSuch.Error() != "The default provider does not support decision models. Pass a decision model instance or configure AI_SDK_DEFAULT_PROVIDER with a decisionModel method." || noSuch.ModelType != "decisionModel" {
+		t.Fatalf("err = %v, want the TS NoSuchModelError", err)
+	}
+	_, err = ExperimentalGetBatchStatus(context.Background(), GetBatchStatusOptions{Batch: BatchReference{Version: 2, ID: "b", Provider: "x"}})
+	var unsupported *providererrors.UnsupportedFunctionalityError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("batch err = %v, want UnsupportedFunctionalityError for a default provider without batches", err)
+	}
+
+	batches := &mockBatchV4{providerName: "default-batch", statusFn: func(context.Context, provider.BatchV4OperationOptions) (*provider.BatchV4Status, error) {
+		return &provider.BatchV4Status{}, nil
+	}}
+	SetDefaultProvider(batches)
+	if _, err := ExperimentalGetBatchStatus(context.Background(), GetBatchStatusOptions{Batch: BatchReference{Version: 2, ID: "b", Provider: "default-batch"}}); err != nil {
+		t.Fatalf("batch status through the default provider: %v", err)
 	}
 }

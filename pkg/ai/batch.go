@@ -156,7 +156,8 @@ type Batch struct {
 type StartBatchOptions struct {
 	// Provider is a provider.BatchV4 instance, a provider.BatchProvider (a
 	// Provider exposing ExperimentalBatch()), or nil. When nil, batches are
-	// processed through the AI Gateway (mirrors TypeScript:
+	// processed through the SetDefaultProvider provider, else the AI Gateway
+	// (mirrors TypeScript:
 	// `globalThis.AI_SDK_DEFAULT_PROVIDER ?? gateway`).
 	Provider interface{}
 
@@ -607,10 +608,14 @@ func ExperimentalListBatches(ctx context.Context, opts ListBatchesOptions) (*Lis
 }
 
 // resolveBatchAPI resolves p (nil, a provider.BatchV4, or a
-// provider.BatchProvider) to a provider.BatchV4. nil falls back to the AI
-// Gateway, mirroring TypeScript's
+// provider.BatchProvider) to a provider.BatchV4. nil falls back to the
+// SetDefaultProvider provider, then the AI Gateway, mirroring TypeScript's
 // `globalThis.AI_SDK_DEFAULT_PROVIDER ?? gateway`.
 func resolveBatchAPI(p interface{}) (provider.BatchV4, error) {
+	if p == nil {
+		// TS `provider ??= globalThis.AI_SDK_DEFAULT_PROVIDER ?? gateway`.
+		p = configuredDefaultProvider()
+	}
 	switch v := p.(type) {
 	case nil:
 		gw, err := gateway.Gateway()

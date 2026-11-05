@@ -80,12 +80,14 @@ type DecideResult struct {
 type DecideOptions struct {
 	// Model is a provider.DecisionModel instance (or a deprecated
 	// provider.EvaluationModel), or a string ID resolved via DecisionProvider,
-	// then Provider, then the AI Gateway.
+	// then Provider, then the SetDefaultProvider provider, then the AI
+	// Gateway.
 	Model interface{}
 
 	// DecisionProvider resolves a string Model ID to a DecisionModel. It
 	// takes precedence over Provider. When both are nil and Model is a
-	// string, resolution falls back to the AI Gateway (mirrors TypeScript:
+	// string, resolution falls back to the SetDefaultProvider provider, then
+	// the AI Gateway (mirrors TypeScript:
 	// `(globalThis.AI_SDK_DEFAULT_PROVIDER ?? gateway).decisionModel(id)`).
 	DecisionProvider provider.DecisionModelProvider
 
@@ -429,10 +431,8 @@ func decisionResolver(opts DecideOptions) provider.DecisionModelProvider {
 
 // resolveDecisionModel resolves model (a provider.DecisionModel instance
 // or a string ID) using resolver, falling back to the AI Gateway when
-// resolver is nil and model is a string. Mirrors TypeScript's
-// resolveDecisionModel. TS also throws "The default provider does not
-// support decision models" for a default provider without a decision
-// factory; in Go the resolver is typed, so that case cannot occur.
+// resolver is nil and model is a string, through the SetDefaultProvider
+// provider when one is set. Mirrors TypeScript's resolveDecisionModel.
 func resolveDecisionModel(model interface{}, resolver provider.DecisionModelProvider) (provider.DecisionModel, error) {
 	switch v := model.(type) {
 	case provider.DecisionModel:
@@ -448,6 +448,13 @@ func resolveDecisionModel(model interface{}, resolver provider.DecisionModelProv
 		}
 		return provider.AdaptEvaluationModel(v), nil //nolint:staticcheck // deprecated compatibility path
 	case string:
+		if resolver == nil {
+			defaultResolver, err := defaultDecisionResolver(v)
+			if err != nil {
+				return nil, err
+			}
+			resolver = defaultResolver
+		}
 		if resolver == nil {
 			gw, err := gateway.Gateway()
 			if err != nil {
