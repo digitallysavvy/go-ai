@@ -111,7 +111,8 @@ func TestHTTPTransportAuthProviderReportsUnauthorized(t *testing.T) {
 	if !errors.As(err, &unauthorized) {
 		t.Fatalf("err = %v, want UnauthorizedError", err)
 	}
-	if len(reported) != 1 || !errors.As(reported[0], &unauthorized) {
+	// TS: authorizeOnce's catch reports it, then attempt()'s outer catch.
+	if len(reported) != 2 || !errors.As(reported[0], &unauthorized) || reported[0] != reported[1] {
 		t.Fatalf("reported = %v", reported)
 	}
 	if len(provider.redirectedTo) != 1 {

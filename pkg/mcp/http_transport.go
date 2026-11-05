@@ -689,20 +689,32 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		return NewTransportError("not connected", nil)
 	}
 
-	// fail reports err via OnError before returning it, matching every
-	// `this.onerror?.(error); throw error;` site in TS send()'s attempt()
-	// (non-ok responses, fetch failures, OAuth refresh failures, session
-	// expiry). Matching TS's `if (options?.signal?.aborted) throw error;`
-	// guard, a caller-canceled context suppresses the report. This
-	// deliberately checks the caller's own ctx, not reqCtx below: TS's guard
-	// only looks at `options?.signal` (the caller's own per-call signal), so
-	// an abort caused solely by Close() (the transport-wide signal) is still
-	// reported here, exactly as TS's send() does.
+	// fail reports err via OnError before returning it as TS send()'s
+	// attempt() does: its outer catch reports every error it throws
+	// (`this.onerror?.(error); throw error;`) unless the caller's own signal
+	// is aborted, and an attempt retried after a 401 (attempt(true)) runs
+	// inside the first attempt's try, so the first attempt's catch reports
+	// it once more. This deliberately checks the caller's own ctx, not
+	// reqCtx below: TS's guard only looks at `options?.signal`, so an abort
+	// caused solely by Close() (the transport-wide signal) is still
+	// reported, exactly as TS's send() does.
+	retried := false
 	fail := func(err error) error {
 		if ctx.Err() == nil {
 			t.reportError(err)
+			if retried {
+				t.reportError(err)
+			}
 		}
 		return err
+	}
+	// failReported is fail for the TS sites that also report the error
+	// themselves before throwing it (a non-ok response, an unexpected or
+	// bodiless content type, a failed 401 authorization): one report that
+	// no signal suppresses, then fail's.
+	failReported := func(err error) error {
+		t.reportError(err)
+		return fail(err)
 	}
 
 	// Marshal message to JSON
@@ -814,11 +826,12 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		}
 		if t.auth.enabled() {
 			if err := t.auth.authorize(ctx, resp); err != nil {
-				return fail(err)
+				return failReported(err)
 			}
 		} else if err := t.refreshOAuthToken(ctx); err != nil {
-			return fail(NewTransportError("failed to refresh OAuth token", err))
+			return failReported(NewTransportError("failed to refresh OAuth token", err))
 		}
+		retried = true
 		req, err = http.NewRequestWithContext(reqCtx, "POST", t.url, bytes.NewReader(data))
 		if err != nil {
 			return fail(NewTransportError("failed to create request", err))
@@ -867,7 +880,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 				errMessage += ". This server does not support HTTP transport. Try using `sse` transport instead"
 			}
 		}
-		return fail(NewMCPClientError(0, errMessage, nil, WithMCPHTTPResponse(resp.StatusCode, t.url, string(body))))
+		return failReported(NewMCPClientError(0, errMessage, nil, WithMCPHTTPResponse(resp.StatusCode, t.url, string(body))))
 	}
 	if resp.StatusCode == http.StatusAccepted {
 		// If the server accepted the message (e.g. the initialized
@@ -939,7 +952,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		// always non-nil (nil only occurs with a fake/custom RoundTripper, as
 		// in tests). Reported via OnError like every other send() failure.
 		if resp.Body == nil {
-			return fail(NewMCPClientError(0, "MCP HTTP Transport Error: text/event-stream response without body", nil, WithMCPHTTPStatus(resp.StatusCode), WithMCPHTTPURL(t.url)))
+			return failReported(NewMCPClientError(0, "MCP HTTP Transport Error: text/event-stream response without body", nil, WithMCPHTTPStatus(resp.StatusCode), WithMCPHTTPURL(t.url)))
 		}
 		// Guard the handoff with the same sseClosing flag (and sseMu lock)
 		// startInboundSSE uses: a transport that is already closing drains
@@ -970,7 +983,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		if resp.Body != nil {
 			resp.Body.Close() //nolint:errcheck
 		}
-		return fail(NewMCPClientError(0, fmt.Sprintf("MCP HTTP Transport Error: Unexpected content type: %s", contentType), nil, WithMCPHTTPStatus(resp.StatusCode), WithMCPHTTPURL(t.url)))
+		return failReported(NewMCPClientError(0, fmt.Sprintf("MCP HTTP Transport Error: Unexpected content type: %s", contentType), nil, WithMCPHTTPStatus(resp.StatusCode), WithMCPHTTPURL(t.url)))
 	}
 }
 
