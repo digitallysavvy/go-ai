@@ -24,8 +24,9 @@ func TestHTTPTransportFailedResponseArrayBodyIsHTTPError(t *testing.T) {
 	}
 }
 
-// A Connect after Close starts a fresh transport lifecycle; requests no
-// longer derive from the canceled one.
+// A Connect after Close fails like TS start() ("Transport already started"),
+// whose abortController close() does not clear; the closed transport sends
+// nothing.
 func TestHTTPTransportReconnectAfterClose(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -38,19 +39,25 @@ func TestHTTPTransportReconnectAfterClose(t *testing.T) {
 	defer srv.Close()
 	transport := NewHTTPTransport(HTTPTransportConfig{URL: srv.URL})
 	msg, _ := CreateRequest(1, "ping", nil)
-	for i := 0; i < 2; i++ {
-		if err := transport.Connect(t.Context()); err != nil {
-			t.Fatalf("connect %d: %v", i, err)
-		}
-		if err := transport.Send(t.Context(), msg); err != nil {
-			t.Fatalf("send after connect %d: %v", i, err)
-		}
-		if _, err := transport.Receive(t.Context()); err != nil {
-			t.Fatal(err)
-		}
-		if err := transport.Close(); err != nil {
-			t.Fatal(err)
-		}
+	if err := transport.Connect(t.Context()); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if err := transport.Send(t.Context(), msg); err != nil {
+		t.Fatalf("send after connect: %v", err)
+	}
+	if _, err := transport.Receive(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := transport.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err := transport.Connect(t.Context())
+	var clientErr *MCPClientError
+	if !errors.As(err, &clientErr) || clientErr.Message != "MCP HTTP Transport Error: Transport already started. Note: client.connect() calls start() automatically." {
+		t.Fatalf("connect after close: err = %v", err)
+	}
+	if err := transport.Send(t.Context(), msg); err == nil {
+		t.Fatal("send after a refused connect succeeded")
 	}
 }
 

@@ -76,9 +76,6 @@ type Sandbox struct {
 	cwd            string
 	routes         []sandboxRouteWire
 	networkPolicy  NetworkPolicy // current session's network policy (zero value = unset)
-	// networkPolicyMetadata is the session's networkPolicy as the API last
-	// returned it (see PolicySessionInspector).
-	networkPolicyMetadata json.RawMessage
 }
 
 func newSandboxFromResponse(client *APIClient, resp *sandboxAndSessionResponse) *Sandbox {
@@ -96,7 +93,6 @@ func newSandboxFromResponse(client *APIClient, resp *sandboxAndSessionResponse) 
 	if resp.Session.NetworkPolicy != nil {
 		s.networkPolicy = *resp.Session.NetworkPolicy
 	}
-	s.networkPolicyMetadata = resp.Session.RawNetworkPolicy
 	return s
 }
 
@@ -205,14 +201,24 @@ func (s *Sandbox) CurrentNetworkPolicy() NetworkPolicy {
 	return s.networkPolicy
 }
 
-// CurrentSessionNetworkPolicyMetadata implements PolicySessionInspector: the
-// running session's networkPolicy as the API last returned it, or nil when
-// the session response carried none.
-func (s *Sandbox) CurrentSessionNetworkPolicyMetadata(context.Context) (json.RawMessage, error) {
-	if len(s.networkPolicyMetadata) == 0 {
-		return nil, nil
+// CurrentSessionNetworkPolicyMetadata implements PolicySessionInspector like
+// TS VercelNetworkPolicyManager #inspectPolicy: it lists the sandbox's
+// sessions (`sandbox.listSessions()`, every page until the current one is
+// found) and returns the current session's networkPolicy metadata as the API
+// sent it, or nil when the session is not listed or carries none.
+func (s *Sandbox) CurrentSessionNetworkPolicyMetadata(ctx context.Context) (json.RawMessage, error) {
+	var raw json.RawMessage
+	err := s.client.eachSession(ctx, s.name, func(w sessionWire) bool {
+		if w.ID != s.sessionID {
+			return false
+		}
+		raw = w.RawNetworkPolicy
+		return true
+	})
+	if err != nil {
+		return nil, err
 	}
-	return append(json.RawMessage(nil), s.networkPolicyMetadata...), nil
+	return raw, nil
 }
 
 // UpdateNetworkPolicy implements PolicySandbox via the full Sandbox.update
@@ -255,7 +261,6 @@ func (s *Sandbox) Update(ctx context.Context, params UpdateParams) error {
 		} else {
 			s.networkPolicy = *params.NetworkPolicy
 		}
-		s.networkPolicyMetadata = sessResp.Session.RawNetworkPolicy
 	}
 	req := updateSandboxRequest{
 		Persistent:         params.Persistent,
@@ -288,7 +293,6 @@ func (s *Sandbox) applySession(w sessionWire) {
 	} else {
 		s.networkPolicy = NetworkPolicy{}
 	}
-	s.networkPolicyMetadata = w.RawNetworkPolicy
 }
 
 // isSandboxStoppedOrStopping is 3.9.0 `isSandboxStoppedError(err) ||

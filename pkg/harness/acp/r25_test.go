@@ -298,7 +298,8 @@ func TestR42BootstrapPnpmWorkspaceYAML(t *testing.T) {
 	if c, ok := has(i); !ok || c != "x: 1\n" {
 		t.Fatalf("pnpm-workspace.yaml = %q, %v", c, ok)
 	}
-	s := Settings{HarnessID: "my-agent", Source: tsLocked().Source, Executable: "agent"}
+	s := Settings{HarnessID: "my-agent", Source: tsLocked().Source, Executable: "agent",
+		IsMcpToolCall: func(ToolCall) bool { return false }, ResolveHostToolCall: func(ResolveHostToolCallOptions) *ResolvedHostToolCall { return nil }}
 	s.Source.PnpmWorkspaceYAML, s.Source.PnpmWorkspaceYAMLSet = "", true
 	if _, err := CreateACP(s); err == nil || err.Error() != "ACP source.pnpmWorkspaceYaml must not be empty." {
 		t.Fatalf("New err = %v", err)

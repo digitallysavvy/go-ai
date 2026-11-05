@@ -170,25 +170,20 @@ func TestR85toolsResolverFailureFailsTurn(t *testing.T) {
 	}
 }
 
-// Ruling r85-1: TS requires isMcpToolCall and resolveHostToolCall; Go
-// fails the session start without them.
+// TS validateACPV1Settings (run by createACP) requires isMcpToolCall and
+// resolveHostToolCall, after the harnessId check.
 func TestR85toolsDoStartRequiresCallbacks(t *testing.T) {
-	srv := bridgetest.NewServer(bridgetest.Options{Token: "t"})
-	t.Cleanup(srv.Close)
 	for _, tc := range []struct {
 		mut  func(*Settings)
 		want string
 	}{
 		{func(s *Settings) { s.IsMcpToolCall = nil }, "ACP isMcpToolCall must be a function."},
 		{func(s *Settings) { s.ResolveHostToolCall = nil }, "ACP resolveHostToolCall must be a function."},
+		{func(s *Settings) { s.IsMcpToolCall = nil; s.HarnessID = "Bad ID" }, `ACP harnessId must be a stable kebab-case identifier; received "Bad ID".`},
 	} {
 		h, err := CreateACP(testSettings(tc.mut))
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, err = h.DoStart(context.Background(), harness.StartOptions{SessionID: "s", SessionWorkDir: "/w", SandboxSession: newFakeSandbox(srv)})
-		if err == nil || err.Error() != tc.want {
-			t.Fatalf("DoStart err = %v, want %q", err, tc.want)
+		if h != nil || err == nil || err.Error() != tc.want {
+			t.Fatalf("CreateACP err = %v, want %q", err, tc.want)
 		}
 	}
 }

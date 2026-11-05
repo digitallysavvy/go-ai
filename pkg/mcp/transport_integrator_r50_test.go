@@ -48,8 +48,8 @@ func waitClosed(t *testing.T, ch <-chan struct{}, what string) {
 
 // A read error on the inbound GET is reported from its goroutine: Close from
 // that OnError must not deadlock, and (TS checks the abort after onerror) the
-// failed stream schedules no reconnect, even once a new Connect has reset the
-// transport.
+// failed stream schedules no reconnect. A Connect after that Close fails as
+// TS start() does ("Transport already started").
 func TestR50IntegratorInboundReadErrorCloseAndReconnect(t *testing.T) {
 	var gets atomic.Int32
 	var tr *HTTPTransport
@@ -70,8 +70,8 @@ func TestR50IntegratorInboundReadErrorCloseAndReconnect(t *testing.T) {
 		OnError: func(err error) {
 			once.Do(func() {
 				_ = tr.Close()
-				if err := tr.Connect(context.Background()); err != nil {
-					t.Errorf("reconnect: %v", err)
+				if err := tr.Connect(context.Background()); err == nil || !strings.Contains(err.Error(), "Transport already started") {
+					t.Errorf("reconnect: err = %v, want the already started error", err)
 				}
 				close(closed)
 			})
@@ -84,11 +84,11 @@ func TestR50IntegratorInboundReadErrorCloseAndReconnect(t *testing.T) {
 	defer tr.Close() //nolint:errcheck
 	// The first reconnect delay is 1 s.
 	time.Sleep(inboundSSEInitialReconnectionDelay + 500*time.Millisecond)
-	if got := gets.Load(); got != 2 {
-		t.Fatalf("inbound GETs = %d, want 2 (the failed stream must not schedule a reconnect after onerror closed it)", got)
+	if got := gets.Load(); got != 1 {
+		t.Fatalf("inbound GETs = %d, want 1 (the failed stream must not schedule a reconnect after onerror closed it)", got)
 	}
-	if !tr.IsConnected() {
-		t.Fatal("not connected after the reconnect")
+	if tr.IsConnected() {
+		t.Fatal("connected after Close")
 	}
 }
 

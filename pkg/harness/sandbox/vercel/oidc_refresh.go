@@ -3,6 +3,7 @@ package vercel
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"strings"
@@ -121,34 +122,99 @@ func resolveCredentialsWithRefresh(ctx context.Context, explicit Credentials, re
 }
 
 // unverifiedTokenClaims is 3.9.0 api-client.js `decodeUnverifiedToken`: a
-// three-part token whose base64url JSON payload has a truthy owner_id.
+// three-part token whose base64url JSON payload has a truthy owner_id. The
+// owner is returned as its JS String() (the `team` the OIDC refresh sends).
 func unverifiedTokenClaims(token string) (ownerID, projectID string, ok bool) {
+	owner, projectID, ok := unverifiedTokenOwner(token)
+	if !ok {
+		return "", "", false
+	}
+	return providerutils.JSString(owner), projectID, true
+}
+
+// unverifiedTokenOwner is unverifiedTokenClaims with the owner_id claim as
+// decoded (an array owner sends one `teamId` per element; see teamQueryOf).
+func unverifiedTokenOwner(token string) (owner any, projectID string, ok bool) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return "", "", false
+		return nil, "", false
 	}
 	// Buffer.from(…, "base64url").toString("utf8"): both alphabets, other
 	// characters skipped, decoding stops at "="; invalid UTF-8 is U+FFFD.
 	raw, err := providerutils.EncodeSandboxText(parts[1], "base64url")
 	if err != nil {
-		return "", "", false
+		return nil, "", false
 	}
 	var payload map[string]any
 	if json.Unmarshal(textdecode.ReplaceInvalid(raw), &payload) != nil {
 		// Invalid JSON, or a payload that is not an object (null throws,
 		// a primitive has no owner_id).
-		return "", "", false
+		return nil, "", false
 	}
-	owner := payload["owner_id"]
+	owner = payload["owner_id"]
 	if !providerutils.JSTruthy(owner) {
-		return "", "", false
+		return nil, "", false
 	}
-	// The team is sent as the `teamId` query (URLSearchParams String()).
-	ownerID = providerutils.JSString(owner)
 	if project, present := payload["project_id"]; present && project != nil {
 		projectID = providerutils.JSString(project)
 	}
-	return ownerID, projectID, true
+	return owner, projectID, true
+}
+
+// teamQuery is the `teamId` query of a client's team: base-client.js
+// `array(value).forEach(v => url.searchParams.append(key, v.toString()))`.
+// A team that is an array (an owner_id claim array) sends one `teamId` per
+// element, none for an empty array; a null element makes every request
+// throw `toString`'s TypeError before it is sent.
+type teamQuery struct {
+	values []string
+	err    error
+}
+
+func teamQueryOf(owner any) teamQuery {
+	list, isArray := owner.([]any)
+	if !isArray {
+		return teamQuery{values: []string{providerutils.JSString(owner)}}
+	}
+	values := make([]string, 0, len(list))
+	for _, v := range list {
+		if v == nil {
+			return teamQuery{err: httpinternal.RejectFetch(errors.New("Cannot read properties of null (reading 'toString')"))} //nolint:staticcheck // ST1005: TypeError text from TS
+		}
+		values = append(values, providerutils.JSString(v))
+	}
+	return teamQuery{values: values}
+}
+
+// withTeam returns rawQuery with its `teamId` pairs replaced by team's values
+// at the front, as APIClient.request builds `{teamId: this.teamId,
+// ...params.query}` again on every request.
+func (team teamQuery) withTeam(rawQuery string) string {
+	rest := httpinternal.ParseSearchParams(rawQuery)
+	rest.Delete("teamId")
+	head := &httpinternal.SearchParams{}
+	for _, v := range team.values {
+		head.Append("teamId", v)
+	}
+	switch h, r := head.Encode(), rest.Encode(); {
+	case h == "":
+		return r
+	case r == "":
+		return h
+	default:
+		return h + "&" + r
+	}
+}
+
+// teamErrorTransport fails every request with the team's TypeError (a null
+// element in an owner_id array).
+type teamErrorTransport struct{ err error }
+
+func (t teamErrorTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Body != nil {
+		_ = req.Body.Close()
+	}
+	return nil, t.err
 }
 
 // oidcTokenTransport is 3.9.0 `APIClient.ensureValidToken`, run before each
@@ -161,27 +227,34 @@ type oidcTokenTransport struct {
 	mu        sync.Mutex
 	token     string
 	teamID    string
+	team      teamQuery
 	projectID string
 }
 
 func (t *oidcTokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	t.mu.Lock()
-	token, teamID, projectID := t.token, t.teamID, t.projectID
+	token, teamID, team, projectID := t.token, t.teamID, t.team, t.projectID
 	t.mu.Unlock()
 	// TS swallows every refresh error and keeps the current token.
 	if fresh, err := t.refresh.tokenResolver().TokenFor(req.Context(), projectID, teamID, sandboxOIDCExpirationBuffer); err == nil && fresh != token {
 		token = fresh
-		if owner, _, ok := unverifiedTokenClaims(fresh); ok {
-			teamID = owner
+		if owner, _, ok := unverifiedTokenOwner(fresh); ok {
+			teamID, team = providerutils.JSString(owner), teamQueryOf(owner)
 		}
 		t.mu.Lock()
-		t.token, t.teamID = token, teamID
+		t.token, t.teamID, t.team = token, teamID, team
 		t.mu.Unlock()
+	}
+	if team.err != nil {
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+		return nil, team.err
 	}
 	clone := req.Clone(req.Context())
 	clone.Header.Set("Authorization", "Bearer "+token)
 	// TS sends `teamId: this.teamId` first on every request (APIClient.path
 	// put the client's team there); the refreshed team takes its place.
-	clone.URL.RawQuery = httpinternal.SetSearchParam(clone.URL.RawQuery, "teamId", teamID)
+	clone.URL.RawQuery = team.withTeam(clone.URL.RawQuery)
 	return t.base.RoundTrip(clone)
 }

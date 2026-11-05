@@ -21,8 +21,10 @@ import (
 //	Handshake   Connect bumped gen to g+1 and installed cancel; GET pending
 //	Reading     body installed, reader goroutine for g+1 running, no endpoint
 //	Connected   endpoint locked, connected; reader running
-//	Ended       reader saw EOF or a read error: !connected, streamErr set;
-//	            cancel and body stay until the next Close or Connect
+//	Ended       reader saw EOF (or a read error before the endpoint):
+//	            !connected, streamErr set; cancel and body stay until the
+//	            next Close or Connect. A read error after the endpoint is
+//	            only reported (TS): the transport stays Connected.
 //
 // Transitions, each guarded by the gen captured at Connect's start:
 //
@@ -509,7 +511,14 @@ func runHTTPInterleaving(t *testing.T, seed int64) {
 	if !waitFor(3*time.Second, func() bool { return active.Load() == 0 }) {
 		fail("%d inbound SSE streams still open after Close", active.Load())
 	}
-	if err := tr.Connect(context.Background()); err != nil {
+	// TS start() succeeds once: a transport any Connect started refuses
+	// another Connect.
+	err := tr.Connect(context.Background())
+	if len(okConnectStarts) > 0 {
+		if err == nil || !strings.Contains(err.Error(), "Transport already started") {
+			fail("Connect after the interleaving: err = %v, want the already started error", err)
+		}
+	} else if err != nil {
 		fail("Connect after the interleaving: %v", err)
 	}
 	_ = tr.Close()

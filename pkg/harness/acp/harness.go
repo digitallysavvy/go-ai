@@ -48,6 +48,14 @@ func CreateACP(settings Settings) (harness.Harness, error) {
 	if !harnessIDRegexp.MatchString(settings.HarnessID) {
 		return nil, fmt.Errorf("ACP harnessId must be a stable kebab-case identifier; received %s.", jsonString(settings.HarnessID)) //nolint:staticcheck // matches TS SDK's exact error text
 	}
+	// TS validateACPV1Settings requires both callbacks, after the harnessId
+	// check and before the source checks.
+	if settings.IsMcpToolCall == nil {
+		return nil, errors.New("ACP isMcpToolCall must be a function.") //nolint:staticcheck // matches TS SDK exact error text
+	}
+	if settings.ResolveHostToolCall == nil {
+		return nil, errors.New("ACP resolveHostToolCall must be a function.") //nolint:staticcheck // matches TS SDK exact error text
+	}
 	impl := newImplementation(settings)
 	if err := validateImplementation(impl); err != nil {
 		return nil, err
@@ -328,16 +336,6 @@ const (
 
 func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (harness.Session, error) {
 	settings := h.settings
-	// TS validateACPV1Settings (03dac28304) requires both callbacks; Go
-	// keeps them as optional fields for v0.5 compile compatibility and
-	// rejects a missing one when the session starts (ruling r85-1), never
-	// letting a host-tool call stall on an unanswered resolution request.
-	if settings.IsMcpToolCall == nil {
-		return nil, errors.New("ACP isMcpToolCall must be a function.") //nolint:staticcheck // matches TS SDK exact error text
-	}
-	if settings.ResolveHostToolCall == nil {
-		return nil, errors.New("ACP resolveHostToolCall must be a function.") //nolint:staticcheck // matches TS SDK exact error text
-	}
 	if opts.BuiltinToolFiltering != nil {
 		return nil, unsupported(settings.HarnessID, "ACP built-in tool filtering is not available in this initial ACP v1 implementation.")
 	}

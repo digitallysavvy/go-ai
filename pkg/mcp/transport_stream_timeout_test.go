@@ -39,9 +39,17 @@ func TestSSETransportStreamOutlivesRequestTimeout(t *testing.T) {
 	}
 }
 
-// A dropped event stream is reported to Receive instead of hanging it.
+// A dropped event stream (a read error after the endpoint event) is
+// reported to OnError, as TS processEvents' catch does; the transport stays
+// connected, so Send still POSTs, and Receive waits (no message can arrive).
 func TestSSETransportReportsStreamFailure(t *testing.T) {
+	posts := make(chan struct{}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			posts <- struct{}{}
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = fmt.Fprint(w, "event: endpoint\ndata: /post\n\n")
 		w.(http.Flusher).Flush()
@@ -50,16 +58,32 @@ func TestSSETransportReportsStreamFailure(t *testing.T) {
 		_ = hj.Close() // abrupt close mid-stream
 	}))
 	defer srv.Close()
-	tr := NewSSETransport(SSETransportConfig{URL: srv.URL})
+	reported := make(chan error, 4)
+	tr := NewSSETransport(SSETransportConfig{URL: srv.URL, OnError: func(err error) { reported <- err }})
 	if err := tr.Connect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	defer tr.Close() //nolint:errcheck
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if _, err := tr.Receive(ctx); err == nil || ctx.Err() != nil {
-		t.Fatalf("Receive err = %v (ctx: %v), want the stream failure", err, ctx.Err())
+	select {
+	case err := <-reported:
+		if !strings.Contains(err.Error(), "failed to read SSE event") {
+			t.Fatalf("reported %v, want the stream failure", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the stream failure was not reported")
 	}
+	if !tr.IsConnected() {
+		t.Fatal("disconnected after a read error; TS stays connected")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if _, err := tr.Receive(ctx); err != context.DeadlineExceeded {
+		t.Fatalf("Receive err = %v, want it to wait for its context", err)
+	}
+	if err := tr.Send(context.Background(), &MCPMessage{JSONRpc: "2.0", Method: "notifications/initialized"}); err != nil {
+		t.Fatalf("Send after the read error: %v", err)
+	}
+	<-posts
 }
 
 func TestHTTPTransportStreamedPostResponseOutlivesRequestTimeout(t *testing.T) {

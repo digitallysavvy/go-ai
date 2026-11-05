@@ -265,11 +265,13 @@ func TestHTTPTransportCloseDuringConnectStaysClosed(t *testing.T) {
 		t.Fatal("transport connected after Close")
 	}
 	mu.Lock()
-	defer mu.Unlock()
-	if gets != 0 {
-		t.Fatalf("%d inbound SSE GETs after Close", gets)
+	n := gets
+	mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d inbound SSE GETs after Close", n)
 	}
-	// The transport can still be started again.
+	// The transport was never started, so it can still be started. (mu is
+	// released first: Close waits for the inbound GET, which takes mu.)
 	if err := transport.Connect(context.Background()); err != nil {
 		t.Fatalf("Connect after Close: %v", err)
 	}

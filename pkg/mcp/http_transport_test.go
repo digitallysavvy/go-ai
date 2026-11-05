@@ -369,12 +369,15 @@ func TestHTTPTransportSendFailsOnEventStreamResponseWithoutBody(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(errs) != 1 {
-		t.Fatalf("OnError calls = %d, want 1: %v", len(errs), errs)
+	// TS reports it before throwing and again in attempt()'s catch.
+	if len(errs) != 2 {
+		t.Fatalf("OnError calls = %d, want 2: %v", len(errs), errs)
 	}
-	var reportedErr *MCPClientError
-	if !errors.As(errs[0], &reportedErr) || reportedErr.Message != wantMessage {
-		t.Fatalf("OnError reported %v, want the same %q error", errs[0], wantMessage)
+	for _, e := range errs {
+		var reportedErr *MCPClientError
+		if !errors.As(e, &reportedErr) || reportedErr.Message != wantMessage {
+			t.Fatalf("OnError reported %v, want the same %q error", e, wantMessage)
+		}
 	}
 }
 
@@ -930,12 +933,10 @@ func TestHTTPTransportSuppressesOnErrorWhenCallerContextAlreadyCanceled(t *testi
 	}
 }
 
-// TestHTTPTransportReportsOAuthRetryRefreshFailureOnce guards against
-// double-reporting when a 401 response triggers the retry-refresh path (the
-// scenario TS's authorizeOnce catch + outer catch double-reports for its own
-// authProvider flow): the refresh failure must be reported via OnError
-// exactly once.
-func TestHTTPTransportReportsOAuthRetryRefreshFailureOnce(t *testing.T) {
+// TestHTTPTransportReportsOAuthRetryRefreshFailureLikeTS: a failed refresh
+// after a 401 is reported like TS's failed authorizeOnce: by its own catch
+// and again by attempt()'s outer catch (twice).
+func TestHTTPTransportReportsOAuthRetryRefreshFailureLikeTS(t *testing.T) {
 	sse := &errorSSEClient{status: http.StatusUnauthorized, body: "Unauthorized"}
 	var mu sync.Mutex
 	var captured []error
@@ -968,17 +969,16 @@ func TestHTTPTransportReportsOAuthRetryRefreshFailureOnce(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(captured) != 1 {
-		t.Fatalf("OnError calls = %d, want exactly 1 (no double-reporting): %v", len(captured), captured)
+	if len(captured) != 2 {
+		t.Fatalf("OnError calls = %d, want 2 (TS authorizeOnce catch + outer catch): %v", len(captured), captured)
 	}
 }
 
-// TestHTTPTransportReportsRepeated401AfterSuccessfulRefreshOnce guards
-// against double-reporting when the retry-refresh succeeds but the retried
-// request still comes back 401 (refresh produced a token the server still
-// rejects): the final non-2xx error must be reported via OnError exactly
-// once, not once per attempt.
-func TestHTTPTransportReportsRepeated401AfterSuccessfulRefreshOnce(t *testing.T) {
+// TestHTTPTransportReportsRepeated401AfterSuccessfulRefreshLikeTS: the
+// retry-refresh succeeds but the retried request still comes back 401. TS
+// reports that non-ok error three times: before throwing it, in the retried
+// attempt(true)'s catch, and in the first attempt's catch around it.
+func TestHTTPTransportReportsRepeated401AfterSuccessfulRefreshLikeTS(t *testing.T) {
 	sse := &errorSSEClient{status: http.StatusUnauthorized, body: "Unauthorized"}
 	var mu sync.Mutex
 	var captured []error
@@ -1020,8 +1020,8 @@ func TestHTTPTransportReportsRepeated401AfterSuccessfulRefreshOnce(t *testing.T)
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(captured) != 1 {
-		t.Fatalf("OnError calls = %d, want exactly 1 (no double-reporting across the retry): %v", len(captured), captured)
+	if len(captured) != 3 {
+		t.Fatalf("OnError calls = %d, want 3 (TS reports per catch across the retry): %v", len(captured), captured)
 	}
 }
 

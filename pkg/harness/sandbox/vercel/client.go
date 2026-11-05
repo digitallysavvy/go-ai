@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	httpinternal "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // DefaultBaseURL is the production Vercel API base URL (TS `baseUrl:
@@ -66,6 +67,8 @@ var linuxSignalMapping = map[string]int{
 type APIClient struct {
 	http        *httpinternal.Client
 	credentials Credentials
+	// team is the `teamId` query of every request (see teamQuery).
+	team teamQuery
 }
 
 // NewAPIClient builds a client authenticated with credentials, talking to
@@ -90,11 +93,15 @@ func newAPIClient(baseURL string, credentials Credentials, refresh *OIDCRefresh)
 		base = http.DefaultTransport
 	}
 	var transport http.RoundTripper = &retryTransport{base: base}
-	if owner, project, ok := unverifiedTokenClaims(credentials.Token); ok {
-		credentials.TeamID = owner
+	team := teamQuery{values: []string{credentials.TeamID}}
+	if owner, project, ok := unverifiedTokenOwner(credentials.Token); ok {
+		credentials.TeamID = providerutils.JSString(owner)
+		team = teamQueryOf(owner)
 		if refresh != nil {
 			transport = &oidcTokenTransport{base: transport, refresh: refresh,
-				token: credentials.Token, teamID: owner, projectID: project}
+				token: credentials.Token, teamID: credentials.TeamID, team: team, projectID: project}
+		} else if team.err != nil {
+			transport = teamErrorTransport{err: team.err}
 		}
 	}
 	return &APIClient{
@@ -103,6 +110,7 @@ func newAPIClient(baseURL string, credentials Credentials, refresh *OIDCRefresh)
 			HTTPClient: &http.Client{Transport: transport},
 		}),
 		credentials: credentials,
+		team:        team,
 	}
 }
 
@@ -151,7 +159,9 @@ func (c *APIClient) headers(extra map[string]string) map[string]string {
 // out).
 func (c *APIClient) path(p string, pairs ...string) string {
 	q := &httpinternal.SearchParams{}
-	q.Append("teamId", c.credentials.TeamID)
+	for _, team := range c.team.values {
+		q.Append("teamId", team)
+	}
 	for i := 0; i+1 < len(pairs); i += 2 {
 		q.Append(pairs[i], pairs[i+1])
 	}
@@ -267,10 +277,6 @@ func createSnapshotBody(expiration *int64) interface{} {
 	return createSnapshotRequest{Expiration: expiration}
 }
 
-// maxSnapshotListPages bounds how many pages ListSnapshots follows (Go
-// only: TS follows `pagination.next` without a bound).
-const maxSnapshotListPages = 20
-
 // ListSnapshots lists the project's snapshots for a sandbox name, newest
 // first, following pagination (TS `Snapshot.list({ name, sortOrder: 'desc' })`
 // iterated with `for await`).
@@ -290,9 +296,11 @@ func (c *APIClient) ListSnapshots(ctx context.Context, name string) ([]snapshotW
 // sortOrder: 'desc'}))`: the first page has no cursor, the next page is
 // fetched while `pagination.next !== null` (an empty page or an empty
 // cursor included), and the iteration stops as soon as yield returns true.
+// Like attachPaginator, there is no page bound: ctx ends a server that never
+// stops paginating.
 func (c *APIClient) eachSnapshot(ctx context.Context, name string, yield func(snapshotWire) bool) error {
 	var cursor *string
-	for page := 0; page < maxSnapshotListPages; page++ {
+	for {
 		// listSnapshots query order: project, name, (limit), cursor, sortOrder.
 		q := []string{"project", c.credentials.ProjectID, "name", name}
 		if cursor != nil {
@@ -315,7 +323,37 @@ func (c *APIClient) eachSnapshot(ctx context.Context, name string, yield func(sn
 		}
 		cursor = out.Pagination.Next
 	}
-	return nil
+}
+
+// eachSession is `for await (const metadata of sandbox.listSessions())`
+// (3.9.0 `Sandbox.listSessions` with no parameters, `APIClient.listSessions`
+// and attachPaginator): the first page has no cursor, the next page is
+// fetched while `pagination.next !== null`, and the iteration stops as soon
+// as yield returns true. There is no page bound; ctx ends the iteration.
+func (c *APIClient) eachSession(ctx context.Context, name string, yield func(sessionWire) bool) error {
+	var cursor *string
+	for {
+		// listSessions query order: project, name, (limit), cursor, (sortOrder).
+		q := []string{"project", c.credentials.ProjectID, "name", name}
+		if cursor != nil {
+			q = append(q, "cursor", *cursor)
+		}
+		var out listSessionsResponse
+		if err := c.http.DoJSON(ctx, httpinternal.Request{
+			Method: http.MethodGet, Path: c.path("/v2/sandboxes/sessions", q...), Headers: c.headers(nil),
+		}, &out); err != nil {
+			return toAPIError(err)
+		}
+		for _, s := range out.Sessions {
+			if yield(s) {
+				return nil
+			}
+		}
+		if out.Pagination.Next == nil {
+			return nil
+		}
+		cursor = out.Pagination.Next
+	}
 }
 
 // extendTimeoutRequest is the 3.9.0 `extendTimeout` body.

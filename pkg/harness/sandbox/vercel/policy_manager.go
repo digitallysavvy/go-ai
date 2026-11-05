@@ -31,8 +31,8 @@ type PolicySandbox interface {
 //
 // Before mutating a custom (object) policy it did not create, PolicyManager
 // requires it (TS 44a4261e52): a PolicySandbox without it fails closed with
-// a CapabilityUnsupportedError. *Sandbox implements it from the last
-// session response.
+// a CapabilityUnsupportedError. *Sandbox implements it by listing the
+// sandbox's sessions, as TS does.
 type PolicySessionInspector interface {
 	CurrentSessionNetworkPolicyMetadata(ctx context.Context) (json.RawMessage, error)
 }
