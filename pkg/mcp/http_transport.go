@@ -67,7 +67,10 @@ type HTTPTransport struct {
 	receiveQueue []*MCPMessage
 
 	// State
-	connected       bool
+	connected bool
+	// started is set by the first successful Connect and never cleared (TS
+	// start()'s abortController).
+	started         bool
 	protocolVersion string
 	mu              sync.Mutex
 	// closeGen counts Close calls, so a Connect that a Close overlaps (during
@@ -508,10 +511,12 @@ func errHTTPTransportAlreadyStarted() *MCPClientError {
 	return NewMCPClientError(0, "MCP HTTP Transport Error: Transport already started. Note: client.connect() calls start() automatically.", nil)
 }
 
-// Connect establishes a connection to the HTTP server
+// Connect establishes a connection to the HTTP server. Like TS start(),
+// whose abortController close() never clears, a transport starts once:
+// Connect after Close fails with the "already started" error too.
 func (t *HTTPTransport) Connect(ctx context.Context) error {
 	t.mu.Lock()
-	if t.connected {
+	if t.connected || t.started {
 		t.mu.Unlock()
 		return errHTTPTransportAlreadyStarted()
 	}
@@ -531,7 +536,7 @@ func (t *HTTPTransport) Connect(ctx context.Context) error {
 	t.startMu.Lock()
 	defer t.startMu.Unlock()
 	t.mu.Lock()
-	if t.connected {
+	if t.connected || t.started {
 		t.mu.Unlock()
 		return errHTTPTransportAlreadyStarted()
 	}
@@ -540,6 +545,7 @@ func (t *HTTPTransport) Connect(ctx context.Context) error {
 		return errHTTPTransportClosedDuringStart()
 	}
 	t.connected = true
+	t.started = true
 	t.mu.Unlock()
 
 	// Open the standing inbound SSE listener for the legacy protocol era,
