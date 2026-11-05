@@ -3,6 +3,9 @@ package ai
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // r87estreamTSChunkJSON is JSON.stringify(toUIMessageChunk(part)) for parts
@@ -75,6 +78,45 @@ func TestR87estreamUISSEChunkKeyOrderUnknownKeys(t *testing.T) {
 		}
 		if got := string(event); got != "data: "+tc.want+"\n\n" {
 			t.Errorf("event = %q, want %q", got, tc.want)
+		}
+	}
+}
+
+// TS (bun, 3fab50aa9b): streamText sets dynamic on every tool-input-start
+// (`chunk.dynamic ?? tool?.type === 'dynamic'`) and toUIMessageChunk copies
+// it for a tool missing from the tool set: {"dynamic":false} for an unknown
+// tool, nothing for a static tool in the set, true for a dynamic tool.
+func TestR87estreamToolInputStartDynamicFalse(t *testing.T) {
+	tools := []types.Tool{{Name: "known"}, {Name: "dyn", Type: types.ToolTypeDynamic}}
+	start := func(name string, dynamic bool) provider.StreamChunk {
+		return provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: "c-" + name, ToolName: name, Dynamic: dynamic}}
+	}
+	for _, tc := range []struct {
+		name    string
+		tools   []types.Tool
+		chunk   provider.StreamChunk
+		dynamic interface{}
+	}{
+		{"static tool in the set", tools, start("known", false), nil},
+		{"unknown tool", tools, start("unknown", false), false},
+		{"provider dynamic tool not in the set", tools, start("provdyn", true), true},
+		{"dynamic tool in the set", tools, start("dyn", true), true},
+		{"no tool set, static tool", nil, start("known", false), false},
+		{"no tool set, dynamic tool", nil, start("dyn", true), true},
+	} {
+		parts := convertProviderChunkToUIMessageChunks(tc.chunk, resultChunkConversionOptions{OnError: func(error) string { return "" }, Tools: tc.tools})
+		if len(parts) != 1 {
+			t.Fatalf("%s: parts = %v", tc.name, parts)
+		}
+		got, present := parts[0]["dynamic"]
+		if tc.dynamic == nil {
+			if present {
+				t.Errorf("%s: dynamic = %v, want absent", tc.name, got)
+			}
+			continue
+		}
+		if !present || got != tc.dynamic {
+			t.Errorf("%s: dynamic = %v (present %v), want %v", tc.name, got, present, tc.dynamic)
 		}
 	}
 }

@@ -3382,8 +3382,16 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if len(chunk.ToolCall.ToolMetadata) > 0 {
 			part["toolMetadata"] = chunk.ToolCall.ToolMetadata
 		}
-		if isDynamicTool(chunk.ToolCall.ToolName, chunk.ToolCall.Dynamic) {
-			part["dynamic"] = true
+		// TS streamText gives every tool-input-start a boolean dynamic
+		// (`chunk.dynamic ?? tool?.type === 'dynamic'`), and toUIMessageChunk
+		// copies it for a tool missing from the tool set, so an unknown or
+		// provider-executed tool that is not in the set writes dynamic: false.
+		if hasUITool(opts.Tools, chunk.ToolCall.ToolName) {
+			if isDynamicTool(chunk.ToolCall.ToolName, chunk.ToolCall.Dynamic) {
+				part["dynamic"] = true
+			}
+		} else {
+			part["dynamic"] = chunk.ToolCall.Dynamic
 		}
 		if chunk.ToolCall.Title != "" {
 			part["title"] = chunk.ToolCall.Title
@@ -3594,6 +3602,17 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		}
 	}
 	return out
+}
+
+// hasUITool reports whether the UI conversion's tool set has a tool named
+// toolName (TS `tools?.[toolName] != null`).
+func hasUITool(tools []types.Tool, toolName string) bool {
+	for _, tool := range tools {
+		if tool.Name == toolName {
+			return true
+		}
+	}
+	return false
 }
 
 // deriveFileURL is the UI file part url: TS `data:${mediaType};base64,${file.base64}`.
