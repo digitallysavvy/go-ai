@@ -94,3 +94,52 @@ func TestR87egenExecutedToolResultHasNoTitle(t *testing.T) {
 		t.Fatal("StreamText sent no tool-result part")
 	}
 }
+
+// TS convert-language-model-content.ts turns a model tool-result with isError
+// into a tool-error whose error is part.result: undefined when the result has
+// no value, so the response message replays it as error-json null
+// (createToolModelOutput toJSONValue(undefined)). Known difference "Provider
+// tool error without a value".
+func TestR87egenProviderToolErrorWithoutValue(t *testing.T) {
+	t.Parallel()
+	isErr := true
+	model := &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+		return &types.GenerateResult{
+			Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "ws", ToolName: "web_search", Input: "{}", ProviderExecuted: true},
+				types.ToolResultContent{ToolCallID: "ws", ToolName: "web_search", IsError: &isErr, ProviderExecuted: true},
+			},
+			ToolCalls:    []types.ToolCall{{ID: "ws", ToolName: "web_search", RawArguments: "{}", ProviderExecuted: true}},
+			FinishReason: types.FinishReasonStop,
+		}, nil
+	}}
+	res, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var errPart *types.ToolErrorContent
+	for _, part := range res.FinalStep.Content {
+		if p, ok := part.(types.ToolErrorContent); ok {
+			errPart = &p
+		}
+	}
+	if errPart == nil || errPart.Error != nil {
+		t.Fatalf("tool-error part = %+v, want one with a nil Error", errPart)
+	}
+	msgs := res.FinalStep.Response.Messages
+	if len(msgs) != 1 || len(msgs[0].Content) != 2 {
+		t.Fatalf("response messages = %+v, want one assistant message with the call and its result", msgs)
+	}
+	replayed, ok := msgs[0].Content[1].(types.ToolResultContent)
+	if !ok || replayed.Output == nil || replayed.Output.Type != types.ToolResultOutputErrorJSON || replayed.Output.Value != nil {
+		t.Fatalf("replayed tool result = %+v, want error-json null", msgs[0].Content[1])
+	}
+
+	// The stream path's ToolResult carries errProviderToolNoValue (a Go
+	// error must be non-nil); its content part keeps the error undefined.
+	part := toolResultContentFromToolResult(types.ToolResult{ToolCallID: "ws", ToolName: "web_search", Error: errProviderToolNoValue, ProviderExecuted: true})
+	streamed, ok := part.(types.ToolErrorContent)
+	if !ok || streamed.Error != nil || streamed.Err != nil {
+		t.Fatalf("streamed tool-error part = %+v, want a nil Error and Err", part)
+	}
+}

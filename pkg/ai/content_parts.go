@@ -239,7 +239,9 @@ func providerErrorResultsAsToolErrors(parts []types.ContentPart) []types.Content
 		if errValue == nil && p.Output != nil {
 			errValue = p.Output.Value
 		}
-		if errValue == nil {
+		if errValue == nil && p.Error != "" {
+			// A result flagged isError without a value keeps its error
+			// undefined (TS tool-error.error is part.result).
 			errValue = p.Error
 		}
 		if out == nil {
@@ -693,6 +695,13 @@ func toolResultModelOutput(result interface{}) *types.ToolResultOutput {
 	return &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: toJSONValue(result)}
 }
 
+// errProviderToolNoValue is the error of a provider-executed tool result
+// flagged isError that has no value. TS runToolsTransformation makes it a
+// tool-error whose error is that value (undefined): the content part's Error
+// stays nil (error-json null in the response messages) and the UI
+// tool-output-error has no errorText (JSON.stringify(undefined)).
+var errProviderToolNoValue = errors.New("tool error")
+
 func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart {
 	if result.Error != nil {
 		// A provider-executed error is the provider's own error value (TS
@@ -709,6 +718,10 @@ func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart 
 				// The provider's error is a structured value, not a Go
 				// error: Err stays nil.
 				errValue = result.Result
+				typedErr = nil
+			} else if errors.Is(result.Error, errProviderToolNoValue) {
+				// TS keeps the tool-error's error undefined.
+				errValue = nil
 				typedErr = nil
 			}
 		}
