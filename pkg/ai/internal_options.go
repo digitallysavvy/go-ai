@@ -97,6 +97,12 @@ type InternalOptions struct {
 	// aibridge.SetWorkflowStreamHooks; they are not public API.
 	streamModeUsage bool
 	onStreamDone    func(aibridge.StreamDoneInfo)
+	// callerRootStart opens a caller-owned telemetry root (WorkflowAgent's)
+	// right after the user OnStart, as TS notify([onStart,
+	// telemetry.onStart]) and TS WorkflowAgent (onStart, then
+	// telemetryDispatcher.onStart) order them. Set through
+	// aibridge.SetCallerRootStart; not public API.
+	callerRootStart func(context.Context) context.Context
 
 	// HeadersAsGiven makes the legacy agent loop (pkg/agent GenerateAgent)
 	// send each step's headers to the model as they are, without its
@@ -181,6 +187,21 @@ func setWorkflowStreamHooks(internal interface{}, onDone func(aibridge.StreamDon
 		o.streamModeUsage = true
 		o.onStreamDone = onDone
 	}
+}
+
+// setCallerRootStart is aibridge.SetCallerRootStart.
+func setCallerRootStart(internal interface{}, start func(context.Context) context.Context) {
+	if o, ok := internal.(*InternalOptions); ok && o != nil {
+		o.callerRootStart = start
+	}
+}
+
+// callerRootStartOf is aibridge.CallerRootStart.
+func callerRootStartOf(internal interface{}) func(context.Context) context.Context {
+	if o, ok := internal.(*InternalOptions); ok && o != nil {
+		return o.callerRootStart
+	}
+	return nil
 }
 
 func deferApprovalRequests(internal *InternalOptions) bool {

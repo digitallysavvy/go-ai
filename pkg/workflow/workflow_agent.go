@@ -2621,9 +2621,15 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	if cancelled {
 		fireWorkflowStartBeforeAbort(ctx, mergeStart(w.OnStart, opts.OnStart), model, opts.Messages, opts.Prompt, runtimeContext, toolsContext)
 	}
-	ctx = telemetrypkg.FireOnStart(ctx, workflowStartEvent(workflowRootOperation, callID, modelProvider, modelID, telemetrySettings, early, prepared, opts.Messages, opts.Prompt, runtimeContext, toolsContext))
+	// TS WorkflowAgent calls onStart, then telemetryDispatcher.onStart: the
+	// root opens right after the user OnStart, which the delegated loop
+	// fires (aibridge.SetCallerRootStart), so OnStart runs outside it. A run
+	// that fails before OnStart opens the root before it reports the
+	// failure.
+	startRoot := newWorkflowRootStart(workflowStartEvent(workflowRootOperation, callID, modelProvider, modelID, telemetrySettings, early, prepared, opts.Messages, opts.Prompt, runtimeContext, toolsContext))
 	onAbort := mergeAbort(w.OnAbort, opts.OnAbort)
 	if cancelled {
+		ctx = startRoot(ctx)
 		// TS awaits options.onAbort first; the root abort is Go's stand-in
 		// for TS's telemetry end of an aborted run.
 		if onAbort != nil {
@@ -2642,8 +2648,11 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 			}
 		}
 	}
-	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, InstructionMessages: instructionMessages, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: withFinishReasonStop(opts.StopWhen), Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: workflowInternalOptions}
+	generateInternal := *workflowInternalOptions
+	aibridge.SetCallerRootStart(&generateInternal, startRoot)
+	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, InstructionMessages: instructionMessages, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: withFinishReasonStop(opts.StopWhen), Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: &generateInternal}
 	result, err := a.GenerateAgent(agent.WithTelemetryCallID(ctx, callID), call)
+	ctx = startRoot(ctx)
 	if err != nil {
 		if isWorkflowAbort(ctx, err) {
 			stepsMu.Lock()
@@ -2671,6 +2680,27 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		responseMessages = append(responseMessages, step.Response.Messages...)
 	}
 	return &WorkflowResult{AgentResult: result, ResponseMessages: responseMessages}, nil
+}
+
+// newWorkflowRootStart returns the function that opens the workflow's
+// telemetry root once: the first call fires the root start with the context
+// it is given and returns the context the integrations return; later calls
+// return their context unchanged (integrations find the root by call ID).
+// The delegated loop calls it right after the user OnStart
+// (aibridge.SetCallerRootStart); the end and failure paths call it too, so
+// the root always opens before it ends.
+func newWorkflowRootStart(e telemetrypkg.TelemetryStartEvent) func(context.Context) context.Context {
+	var mu sync.Mutex
+	started := false
+	return func(ctx context.Context) context.Context {
+		mu.Lock()
+		defer mu.Unlock()
+		if started {
+			return ctx
+		}
+		started = true
+		return telemetrypkg.FireOnStart(ctx, e)
+	}
 }
 
 // fireWorkflowStartBeforeAbort fires the user OnStart for a run whose context
@@ -2861,9 +2891,15 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	if cancelled {
 		fireWorkflowStartBeforeAbort(ctx, mergeStart(w.OnStart, opts.OnStart), model, opts.Messages, opts.Prompt, runtimeContext, toolsContext)
 	}
-	ctx = telemetrypkg.FireOnStart(ctx, workflowStartEvent(workflowRootOperation, callID, modelProvider, modelID, telemetrySettings, early, prepared, opts.Messages, opts.Prompt, runtimeContext, toolsContext))
+	// TS WorkflowAgent calls onStart, then telemetryDispatcher.onStart: the
+	// root opens right after the user OnStart, which the delegated loop
+	// fires (aibridge.SetCallerRootStart), so OnStart runs outside it. A run
+	// that fails before OnStart opens the root before it reports the
+	// failure.
+	startRoot := newWorkflowRootStart(workflowStartEvent(workflowRootOperation, callID, modelProvider, modelID, telemetrySettings, early, prepared, opts.Messages, opts.Prompt, runtimeContext, toolsContext))
 	onAbort := mergeAbort(w.OnAbort, opts.OnAbort)
 	if cancelled {
+		ctx = startRoot(ctx)
 		// TS awaits options.onAbort first; the root abort is Go's stand-in
 		// for TS's telemetry end of an aborted run.
 		if onAbort != nil {
@@ -2897,8 +2933,9 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	// of the assistant messages it adds to the conversation (the next
 	// step's prompt, step.response.messages and onEnd's messages).
 	internal.OmitReasoningFilesFromPrompt = true
-	rootCtx := ctx
+	aibridge.SetCallerRootStart(&internal, startRoot)
 	aibridge.SetWorkflowStreamHooks(&internal, func(done aibridge.StreamDoneInfo) {
+		rootCtx := startRoot(ctx)
 		if done.Err != nil {
 			if isWorkflowAbort(rootCtx, done.Err) {
 				telemetrypkg.FireOnAbort(rootCtx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Steps: done.Steps})
@@ -2923,6 +2960,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	}
 	stream, err := a.Stream(ctx, call)
 	if err != nil {
+		ctx = startRoot(ctx)
 		if isWorkflowAbort(ctx, err) {
 			// TS awaits options.onAbort first; the root abort is Go's stand-in
 			// for TS's telemetry end of an aborted run.

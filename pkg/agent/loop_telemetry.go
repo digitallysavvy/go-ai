@@ -377,7 +377,13 @@ func (a *ToolLoopAgent) beginLoopTelemetry(ctx context.Context, c PrepareCallCon
 	if id, ok := ctx.Value(telemetryCallIDKey{}).(string); ok && id != "" {
 		// The caller's root was opened under the configured settings; a
 		// PrepareCall override opens a root of its own (adoptPreparedTelemetry).
-		return &loopTelemetry{settings: settings, callID: id, sensitiveRuntimeContext: c.SensitiveRuntimeContext}, func(ctx context.Context) context.Context { return ctx }
+		// A caller that defers its root start (WorkflowAgent, through
+		// aibridge.SetCallerRootStart) opens it here, after the user OnStart.
+		start := func(ctx context.Context) context.Context { return ctx }
+		if callerStart := aibridge.CallerRootStart(c.Internal); callerStart != nil {
+			start = callerStart
+		}
+		return &loopTelemetry{settings: settings, callID: id, sensitiveRuntimeContext: c.SensitiveRuntimeContext}, start
 	}
 	if c.Telemetry != nil {
 		settings = c.Telemetry

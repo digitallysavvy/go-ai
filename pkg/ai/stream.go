@@ -784,7 +784,10 @@ type StreamTextResult struct {
 	// workflow's ai.workflowAgent.stream root is the only root, as TS
 	// WorkflowAgent.stream dispatches one root per run.
 	callerOwnsTelemetryRoot bool
-	streamModeUsage         bool
+	// callerRootStart opens the caller's root after the user OnStart
+	// (InternalOptions.callerRootStart).
+	callerRootStart func(context.Context) context.Context
+	streamModeUsage bool
 	// clock is InternalOptions.now (see now).
 	clock func() time.Time
 	// endOnError is InternalOptions.EndOnError (WorkflowAgent): its output
@@ -904,6 +907,7 @@ func streamTextInternal(ctx context.Context, opts StreamTextOptions, steeringRun
 		result.endOnError = opts.Internal.EndOnError
 		result.clock = opts.Internal.now
 		result.callerOwnsTelemetryRoot = opts.Internal.onStreamDone != nil
+		result.callerRootStart = opts.Internal.callerRootStart
 	}
 
 	go result.bootstrapAndStream(bootstrapCtx, opts, instructionMessages)
@@ -6368,6 +6372,11 @@ func removeID(ids []string, id string) []string {
 // reported under the caller's root and call ID only.
 func (r *StreamTextResult) fireRootStart(ctx context.Context, e telemetry.TelemetryStartEvent) context.Context {
 	if r.callerOwnsTelemetryRoot {
+		// The caller's root opens here, after the user OnStart (TS
+		// WorkflowAgent: onStart, then telemetryDispatcher.onStart).
+		if r.callerRootStart != nil {
+			return r.callerRootStart(ctx)
+		}
 		return ctx
 	}
 	return telemetry.FireOnStart(ctx, e)

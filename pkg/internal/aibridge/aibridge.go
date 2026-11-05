@@ -94,6 +94,16 @@ var (
 	// the full stream return. Used by WorkflowAgent's stream path.
 	SetWorkflowStreamHooks func(internal interface{}, onDone func(StreamDoneInfo))
 
+	// SetCallerRootStart makes a StreamText run or a ToolLoopAgent loop
+	// with internal (an *ai.InternalOptions) whose caller owns the
+	// telemetry root call start(ctx) right after the user OnStart, and
+	// continue with the context it returns. WorkflowAgent opens its root
+	// there (TS WorkflowAgent: onStart, then telemetryDispatcher.onStart).
+	SetCallerRootStart func(internal interface{}, start func(context.Context) context.Context)
+
+	// CallerRootStart returns the function SetCallerRootStart set, or nil.
+	CallerRootStart func(internal interface{}) func(context.Context) context.Context
+
 	// StreamTextHasOutputSpec reports whether result (an
 	// *ai.StreamTextResult) was started with an Output option. Its Output()
 	// is the final text otherwise; WorkflowAgent's stream mode leaves the
