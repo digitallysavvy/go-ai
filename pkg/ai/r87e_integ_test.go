@@ -66,3 +66,70 @@ func TestR87eintegUnsupportedModelVersionTextUnescaped(t *testing.T) {
 		t.Fatalf("Error() = %s\nwant      %s", err.Error(), want)
 	}
 }
+
+// cr-r87e-gen-to-stream 2: a streamed provider tool result flagged isError
+// without a value is a tool-error whose error is undefined (TS
+// runToolsTransformation): the step content's Error is nil, the response
+// message replays error-json null, and the UI tool-output-error has no
+// errorText (to-ui-message-chunk.ts JSON.stringify(undefined)).
+func TestR87eintegStreamProviderToolErrorWithoutValue(t *testing.T) {
+	t.Parallel()
+	isErr := true
+	newModel := func() *testutil.MockLanguageModel {
+		return &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "ws", ToolName: "web_search", RawArguments: "{}", ProviderExecuted: true}},
+				{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "ws", ToolName: "web_search", IsError: &isErr, ProviderExecuted: true}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		}}
+	}
+	res, err := StreamText(context.Background(), StreamTextOptions{Model: newModel(), Prompt: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := res.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	var errPart *types.ToolErrorContent
+	for _, part := range res.Content() {
+		if p, ok := part.(types.ToolErrorContent); ok {
+			errPart = &p
+		}
+	}
+	if errPart == nil || errPart.Error != nil || errPart.Err != nil {
+		t.Fatalf("tool-error part = %+v, want a nil Error and Err", errPart)
+	}
+	var replayed *types.ToolResultContent
+	for _, m := range res.ResponseMessages() {
+		for _, c := range m.Content {
+			if p, ok := c.(types.ToolResultContent); ok {
+				replayed = &p
+			}
+		}
+	}
+	if replayed == nil || replayed.Output == nil || replayed.Output.Type != types.ToolResultOutputErrorJSON || replayed.Output.Value != nil {
+		t.Fatalf("replayed tool result = %+v, want error-json null", replayed)
+	}
+
+	res2, err := StreamText(context.Background(), StreamTextOptions{Model: newModel(), Prompt: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks, errs := res2.ToUIMessageStream(context.Background())
+	var outErr UIMessageChunk
+	for c := range chunks {
+		if c["type"] == "tool-output-error" {
+			outErr = c
+		}
+	}
+	if e := <-errs; e != nil {
+		t.Fatal(e)
+	}
+	if outErr == nil {
+		t.Fatal("no tool-output-error chunk")
+	}
+	if v, ok := outErr["errorText"]; ok {
+		t.Fatalf("tool-output-error errorText = %v, want the key absent", v)
+	}
+}

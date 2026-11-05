@@ -3624,6 +3624,11 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 				"toolCallId": chunk.ToolResult.ToolCallID,
 				"errorText":  errorText,
 			}
+			if chunk.ToolResult.ProviderExecuted && chunk.ToolResult.Result == nil && errors.Is(chunk.ToolResult.Error, errProviderToolNoValue) {
+				// TS JSON.stringify(undefined) for a provider tool error
+				// without a value: the chunk has no errorText.
+				delete(part, "errorText")
+			}
 			if len(chunk.ToolResult.ToolMetadata) > 0 {
 				part["toolMetadata"] = chunk.ToolResult.ToolMetadata
 			}

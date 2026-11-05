@@ -4726,7 +4726,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 func providerToolResultError(value interface{}) error {
 	switch v := value.(type) {
 	case nil:
-		return errors.New("tool error")
+		// TS keeps the tool-error's error undefined (gen b50b7492).
+		return errProviderToolNoValue
 	case string:
 		return errors.New(v)
 	default:
