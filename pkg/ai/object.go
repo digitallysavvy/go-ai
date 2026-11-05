@@ -2242,8 +2242,19 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		fireObjectStepEnd(telStep, "ai.streamObject", opts.ExperimentalTelemetry, finishReason, usage, accumulatedText, streamResMeta.ID, streamResMeta.ModelID, streamResMeta.Timestamp, streamProviderMetadata, firstChunkAt)
 	}
 
-	// If the stream itself errored, fire OnStepFinish + OnFinishEvent with the
-	// error (matching TS flush handler) then return.
+	// A stream that itself failed (Next returned an error) ends like TS's
+	// rejected source stream: onError only (above). TS's flush handler never
+	// runs, so there is no onStepFinish and no onFinish. Go still closes the
+	// step and root spans with the error (known difference "StreamObject is
+	// not lazy").
+	if streamErr != nil && rawStreamErr {
+		fireObjectStepError(telStep, opts.ExperimentalTelemetry, streamErr)
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: streamErr})
+		return nil, streamErr
+	}
+
+	// An error part ends through TS's flush handler: OnStepFinish and
+	// OnFinishEvent with the error, then the telemetry onEnd.
 	if streamErr != nil {
 		fireStepEnd()
 		Notify(ctx, ObjectOnFinishEvent{
@@ -2258,13 +2269,9 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 			Response:         streamResMeta,
 			ProviderMetadata: streamProviderMetadata,
 		}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
-		if rawStreamErr {
-			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: streamErr})
-		} else {
-			// TS sends an error part's outcome through the flush handler's
-			// onEnd (finishReason "error"), not onError.
-			fireStreamObjectTelemetryEnd(ctx, opts, callID, finishReason, accumulatedText, nil, streamProviderMetadata, usage)
-		}
+		// TS sends an error part's outcome through the flush handler's onEnd
+		// (finishReason "error"), not onError.
+		fireStreamObjectTelemetryEnd(ctx, opts, callID, finishReason, accumulatedText, nil, streamProviderMetadata, usage)
 		// TS streamObject surfaces the stream error as is (no message prefix).
 		return nil, streamErr
 	}

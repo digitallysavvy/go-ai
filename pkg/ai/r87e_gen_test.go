@@ -5,11 +5,15 @@ package ai
 
 import (
 	"context"
+	"errors"
+	"io"
 	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -141,5 +145,99 @@ func TestR87egenProviderToolErrorWithoutValue(t *testing.T) {
 	streamed, ok := part.(types.ToolErrorContent)
 	if !ok || streamed.Error != nil || streamed.Err != nil {
 		t.Fatalf("streamed tool-error part = %+v, want a nil Error and Err", part)
+	}
+}
+
+// r87egenFailingStream sends its chunks and then fails Next with err.
+type r87egenFailingStream struct {
+	chunks []provider.StreamChunk
+	err    error
+}
+
+func (s *r87egenFailingStream) Next() (*provider.StreamChunk, error) {
+	if len(s.chunks) == 0 {
+		if s.err == nil {
+			return nil, io.EOF
+		}
+		return nil, s.err
+	}
+	c := s.chunks[0]
+	s.chunks = s.chunks[1:]
+	return &c, nil
+}
+func (s *r87egenFailingStream) Err() error   { return nil }
+func (s *r87egenFailingStream) Close() error { return nil }
+
+// r87egenTelemetry records the telemetry events it gets, by name.
+type r87egenTelemetry struct {
+	telemetry.NoopTelemetryIntegration
+	mu     sync.Mutex
+	events []string
+}
+
+func (r *r87egenTelemetry) add(name string) {
+	r.mu.Lock()
+	r.events = append(r.events, name)
+	r.mu.Unlock()
+}
+func (r *r87egenTelemetry) OnStart(ctx context.Context, _ telemetry.TelemetryStartEvent) context.Context {
+	r.add("start")
+	return ctx
+}
+func (r *r87egenTelemetry) OnStepEnd(context.Context, telemetry.TelemetryStepEndEvent) {
+	r.add("stepEnd")
+}
+func (r *r87egenTelemetry) OnStepError(context.Context, telemetry.TelemetryErrorEvent) {
+	r.add("stepError")
+}
+func (r *r87egenTelemetry) OnFinish(context.Context, telemetry.TelemetryFinishEvent) {
+	r.add("end")
+}
+func (r *r87egenTelemetry) OnError(context.Context, telemetry.TelemetryErrorEvent) { r.add("error") }
+func (r *r87egenTelemetry) got() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.events...)
+}
+
+// TS stream-object.ts: a source stream that rejects reaches the stitchable
+// stream's onError (rejectResultPromises + onError); the transform's flush
+// handler never runs, so there is no onStepFinish and no onFinish. Go closes
+// the spans with the error (TS leaves them open). Known difference
+// "StreamObject is not lazy".
+func TestR87egenStreamObjectRawStreamFailure(t *testing.T) {
+	t.Parallel()
+	boom := errors.New("connection reset")
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		return &r87egenFailingStream{chunks: []provider.StreamChunk{{Type: provider.ChunkTypeText, Text: `{"a":`}}, err: boom}, nil
+	}}
+	var mu sync.Mutex
+	var calls []string
+	record := func(name string) {
+		mu.Lock()
+		calls = append(calls, name)
+		mu.Unlock()
+	}
+	rec := &r87egenTelemetry{}
+	_, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:     model,
+		Prompt:    "gen",
+		Schema:    schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"}),
+		Telemetry: &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{rec}},
+		OnError:   func(context.Context, error) { record("onError") },
+		OnStepEnd: func(context.Context, ObjectOnStepFinishEvent) { record("onStepEnd") },
+		OnEnd:     func(context.Context, ObjectOnFinishEvent) { record("onEnd") },
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("StreamObject() error = %v, want the stream error", err)
+	}
+	mu.Lock()
+	got := append([]string(nil), calls...)
+	mu.Unlock()
+	if len(got) != 1 || got[0] != "onError" {
+		t.Errorf("callbacks = %v, want [onError]", got)
+	}
+	if ev := rec.got(); len(ev) != 3 || ev[0] != "start" || ev[1] != "stepError" || ev[2] != "error" {
+		t.Errorf("telemetry = %v, want [start stepError error]", ev)
 	}
 }
