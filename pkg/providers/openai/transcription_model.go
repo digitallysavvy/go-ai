@@ -226,10 +226,12 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	case responseFormat == "verbose_json":
 		granularities = []string{"segment"}
 	}
-	language := openaiOpts.Language
-	if language == "" {
+	// TS sends every option that is `!= null`, so a present "" language or
+	// prompt is sent as an empty form field.
+	language, hasLanguage := openaiOpts.Language, openaiOpts.hasLanguage
+	if !hasLanguage && opts.Language != "" {
 		// Go extension: the top-level TranscriptionOptions.Language.
-		language = opts.Language
+		language, hasLanguage = opts.Language, true
 	}
 
 	writeField := func(key, value string) error { return writer.WriteField(key, value) }
@@ -249,7 +251,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	if err := writeList("include", openaiOpts.Include); err != nil {
 		return nil, "", err
 	}
-	if language != "" {
+	if hasLanguage {
 		if err := writeField("language", language); err != nil {
 			return nil, "", err
 		}
@@ -260,7 +262,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	if err := writeList("keywords", openaiOpts.Keywords); err != nil {
 		return nil, "", err
 	}
-	if openaiOpts.Prompt != "" {
+	if openaiOpts.hasPrompt {
 		if err := writeField("prompt", openaiOpts.Prompt); err != nil {
 			return nil, "", err
 		}
@@ -354,6 +356,10 @@ type transcriptionOpenAIOptionsValue struct {
 	Present                   bool
 	HasTimestampGranularities bool
 	Language                  string
+	// hasLanguage / hasPrompt: the key holds a string, "" included (TS
+	// `value != null`).
+	hasLanguage bool
+	hasPrompt   bool
 }
 
 func transcriptionOpenAIOptions(providerOptions map[string]interface{}) transcriptionOpenAIOptionsValue {
@@ -367,7 +373,7 @@ func transcriptionOpenAIOptions(providerOptions map[string]interface{}) transcri
 	}
 	result.Present = true
 	if v, ok := openaiOpts["language"].(string); ok {
-		result.Language = v
+		result.Language, result.hasLanguage = v, true
 	}
 	if v, ok := openaiOpts["responseFormat"].(string); ok {
 		result.ResponseFormat = v
@@ -376,7 +382,7 @@ func transcriptionOpenAIOptions(providerOptions map[string]interface{}) transcri
 		result.ChunkingStrategy = v
 	}
 	if v, ok := openaiOpts["prompt"].(string); ok {
-		result.Prompt = v
+		result.Prompt, result.hasPrompt = v, true
 	}
 	if v, ok := speechSpeedOption(openaiOpts["temperature"]); ok {
 		result.Temperature = v

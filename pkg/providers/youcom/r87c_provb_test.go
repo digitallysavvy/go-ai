@@ -75,7 +75,7 @@ func TestR87cprovbCreateYouClient(t *testing.T) {
 		wantAuth string
 	}{
 		{"default", YouClientConfig{}, "", "/mcp", ""},
-		{"api key", YouClientConfig{APIKey: "k1"}, "", "/mcp", "Bearer k1"},
+		{"api key", YouClientConfig{APIKey: r87eprovbKey("k1")}, "", "/mcp", "Bearer k1"},
 		{"env key", YouClientConfig{}, "env-key", "/mcp", "Bearer env-key"},
 		{"tools", YouClientConfig{Tools: []string{"you-search", "you-contents"}}, "", "/mcp?tools=you-search%2Cyou-contents", ""},
 		{"one tool", YouClientConfig{Tools: []string{"you-finance"}}, "", "/mcp?tools=you-finance", ""},
@@ -130,7 +130,7 @@ func TestR87cprovbCreateYouClientDefaultsAndFailure(t *testing.T) {
 		_, _ = io.WriteString(w, "nope")
 	}))
 	defer srv.Close()
-	client, err := CreateYouClient(context.Background(), YouClientConfig{URL: srv.URL + "/mcp", APIKey: "bad"})
+	client, err := CreateYouClient(context.Background(), YouClientConfig{URL: srv.URL + "/mcp", APIKey: r87eprovbKey("bad")})
 	if err == nil || client != nil {
 		t.Fatalf("CreateYouClient = %v, %v; want an error", client, err)
 	}

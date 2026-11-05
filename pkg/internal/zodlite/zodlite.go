@@ -50,6 +50,9 @@ type Issue struct {
 	Maximum int64
 	Minimum int64
 	Note    string
+	// Exclusive marks a strict bound (zod gt / lt): the too_small /
+	// too_big issue renders "inclusive":false.
+	Exclusive bool
 	// Format is the invalid_type "format" (int: "safeint") or the
 	// invalid_format "format" ("regex"); Pattern is the regex as zod
 	// renders it ("/^\\d+$/").
@@ -127,9 +130,9 @@ func (i *Issue) json() []byte {
 	case i.Note != "" && i.Code == "too_small":
 		parts = append(parts, `"code":`+enc(i.Code), `"minimum":`+strconv.FormatInt(i.Minimum, 10), `"note":`+enc(i.Note), `"origin":`+enc(i.Origin), `"inclusive":true`)
 	case i.Code == "too_big":
-		parts = append(parts, `"origin":`+enc(i.Origin), `"code":`+enc(i.Code), `"maximum":`+strconv.FormatInt(i.Maximum, 10), `"inclusive":true`)
+		parts = append(parts, `"origin":`+enc(i.Origin), `"code":`+enc(i.Code), `"maximum":`+strconv.FormatInt(i.Maximum, 10), `"inclusive":`+strconv.FormatBool(!i.Exclusive))
 	case i.Code == "too_small":
-		parts = append(parts, `"origin":`+enc(i.Origin), `"code":`+enc(i.Code), `"minimum":`+strconv.FormatInt(i.Minimum, 10), `"inclusive":true`)
+		parts = append(parts, `"origin":`+enc(i.Origin), `"code":`+enc(i.Code), `"minimum":`+strconv.FormatInt(i.Minimum, 10), `"inclusive":`+strconv.FormatBool(!i.Exclusive))
 	case i.Code == "invalid_format" && i.Format == "regex":
 		parts = append(parts, `"origin":"string"`, `"code":`+enc(i.Code), `"format":"regex"`, `"pattern":`+enc(i.Pattern))
 	case i.Discriminator != "" && i.Options != nil:

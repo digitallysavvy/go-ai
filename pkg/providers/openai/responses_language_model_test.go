@@ -3115,7 +3115,7 @@ func TestComputerCallArguments_FallsBackToSingularAction(t *testing.T) {
 		Status: "completed",
 		Action: map[string]interface{}{"type": "screenshot"},
 	}
-	args, _ := computerCallArguments(item)
+	args, _ := computerCallArguments(item, nil)
 	actions, ok := args["actions"].([]map[string]interface{})
 	if !ok || len(actions) != 1 || actions[0]["type"] != "screenshot" {
 		t.Fatalf("actions = %#v, want one screenshot action from the singular action field", args["actions"])

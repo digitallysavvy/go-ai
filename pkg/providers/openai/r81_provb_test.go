@@ -85,7 +85,7 @@ func TestR81provbComputerCallInputTSOrder(t *testing.T) {
 		"pending_safety_checks":[{"message":"m","code":"c","id":"sc_1"}]}`), &item); err != nil {
 		t.Fatal(err)
 	}
-	args, raw := computerCallArguments(item)
+	args, raw := computerCallArguments(item, nil)
 	want := `{"actions":[{"type":"click","button":"left","x":100,"y":200,"keys":["CTRL"]},{"type":"double_click","x":110,"y":210},{"type":"scroll","x":1,"y":2,"scrollX":0,"scrollY":-5},{"type":"keypress","keys":["CTRL","L"]}],"pendingSafetyChecks":[{"id":"sc_1","code":"c","message":"m"}],"status":"completed"}`
 	if raw != want {
 		t.Fatalf("input =\n%s\nwant\n%s", raw, want)

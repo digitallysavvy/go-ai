@@ -1722,7 +1722,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				)
 				continue
 			}
-			args, rawArgs := computerCallArguments(item)
+			args, rawArgs := computerCallArguments(item, rawItem)
 			pushCall(types.ToolCall{
 				ID:               *item.CallID,
 				ToolName:         openAIDeclaredToolName(tools, "openai.computer", "computer"),
@@ -2286,7 +2286,11 @@ func programCallArguments(item responses.ProgramItem) (map[string]interface{}, s
 // status} arguments for a decoded computer_call item, mirroring TS
 // mapComputerCallInput (row 0063c2d): actions are translated from wire
 // (scroll_x/scroll_y) to SDK (scrollX/scrollY) field names.
-func computerCallArguments(item responses.ComputerCall) (map[string]interface{}, string) {
+//
+// raw is the item's JSON: a safety check's code / message is kept when it is
+// present and not null, "" included (TS `!= null`), which the plain string
+// fields of responses.ComputerSafetyCheck cannot tell apart from absent.
+func computerCallArguments(item responses.ComputerCall, raw []byte) (map[string]interface{}, string) {
 	// TS: `actions ?? (action != null ? [action] : [])` -- fall back to the
 	// singular `action` field only when `actions` is absent or null (a
 	// present empty list stays empty).
@@ -2298,14 +2302,26 @@ func computerCallArguments(item responses.ComputerCall) (map[string]interface{},
 	for _, action := range rawActions {
 		actions = append(actions, computerActionToSDK(action))
 	}
+	var present struct {
+		PendingSafetyChecks []struct {
+			Code    *string `json:"code"`
+			Message *string `json:"message"`
+		} `json:"pending_safety_checks"`
+	}
+	_ = json.Unmarshal(raw, &present) // raw already decoded into item
 	checks := make([]interface{}, 0, len(item.PendingSafetyChecks))
-	for _, c := range item.PendingSafetyChecks {
+	for i, c := range item.PendingSafetyChecks {
+		hasCode, hasMessage := c.Code != "", c.Message != ""
+		if i < len(present.PendingSafetyChecks) {
+			hasCode = present.PendingSafetyChecks[i].Code != nil
+			hasMessage = present.PendingSafetyChecks[i].Message != nil
+		}
 		check := jsonorder.New()
 		check.Set("id", c.ID)
-		if c.Code != "" {
+		if hasCode {
 			check.Set("code", c.Code)
 		}
-		if c.Message != "" {
+		if hasMessage {
 			check.Set("message", c.Message)
 		}
 		checks = append(checks, check)
@@ -4540,7 +4556,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				},
 			})
 		}
-		computerArgs, computerRawArgs := computerCallArguments(item)
+		computerArgs, computerRawArgs := computerCallArguments(item, e.Item)
 		s.flushQueue = append(s.flushQueue,
 			&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: *item.CallID, Text: computerRawArgs},
 			&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: *item.CallID, ToolCall: &types.ToolCall{

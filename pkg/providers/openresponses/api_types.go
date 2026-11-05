@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"strconv"
+	"sync/atomic"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -104,6 +106,12 @@ type ReasoningInputItem struct {
 	EncryptedContent string              `json:"encrypted_content,omitempty"`
 	Summary          []SummaryPart       `json:"summary,omitempty"`
 	Content          []ReasoningTextPart `json:"content,omitempty"`
+
+	// idSet / encryptedContentSet: the replayed provider data held a string
+	// itemId / reasoningEncryptedContent, "" included (TS `typeof ===
+	// 'string'`), so an empty value is still written.
+	idSet               bool
+	encryptedContentSet bool
 }
 
 // MarshalJSON mirrors the TS reasoning item literal: summary is always
@@ -117,14 +125,25 @@ func (r ReasoningInputItem) MarshalJSON() ([]byte, error) {
 	out := struct {
 		Type             string               `json:"type"`
 		Summary          []SummaryPart        `json:"summary"`
-		ID               string               `json:"id,omitempty"`
+		ID               *string              `json:"id,omitempty"`
 		Content          *[]ReasoningTextPart `json:"content,omitempty"`
-		EncryptedContent string               `json:"encrypted_content,omitempty"`
-	}{Type: r.Type, Summary: summary, ID: r.ID, EncryptedContent: r.EncryptedContent}
+		EncryptedContent *string              `json:"encrypted_content,omitempty"`
+	}{Type: r.Type, Summary: summary,
+		ID:               presentString(r.ID, r.idSet),
+		EncryptedContent: presentString(r.EncryptedContent, r.encryptedContentSet)}
 	if r.Content != nil {
 		out.Content = &r.Content
 	}
 	return json.Marshal(out)
+}
+
+// presentString is the value to write for an omitempty string field: nil
+// (omitted) for "" unless the value was set explicitly.
+func presentString(v string, set bool) *string {
+	if v == "" && !set {
+		return nil
+	}
+	return &v
 }
 
 // SummaryPart is a single entry in a reasoning item's summary array.
@@ -146,6 +165,22 @@ type MessageItem struct {
 	Content interface{} `json:"content"`
 	ID      string      `json:"id,omitempty"`
 	Status  string      `json:"status,omitempty"`
+
+	// idSet writes `"id": ""` for an empty ID (a replayed string itemId).
+	idSet bool
+}
+
+// MarshalJSON writes the item as its struct tags do, plus `"id": ""` when an
+// empty id was set explicitly (TS `itemId != null && {id}`).
+func (m MessageItem) MarshalJSON() ([]byte, error) {
+	type plain MessageItem
+	if m.ID != "" || !m.idSet {
+		return json.Marshal(plain(m))
+	}
+	return json.Marshal(struct {
+		plain
+		ID *string `json:"id"`
+	}{plain: plain(m), ID: &m.ID})
 }
 
 // InputTextContent represents text input
@@ -210,6 +245,22 @@ type FunctionCallItem struct {
 	Namespace string `json:"namespace,omitempty"`
 	ID        string `json:"id,omitempty"`
 	Status    string `json:"status,omitempty"`
+
+	// idSet writes `"id": ""` for an empty ID (a replayed string itemId).
+	idSet bool
+}
+
+// MarshalJSON writes the item as its struct tags do, plus `"id": ""` when an
+// empty id was set explicitly (TS `itemId != null && {id}`).
+func (f FunctionCallItem) MarshalJSON() ([]byte, error) {
+	type plain FunctionCallItem
+	if f.ID != "" || !f.idSet {
+		return json.Marshal(plain(f))
+	}
+	return json.Marshal(struct {
+		plain
+		ID *string `json:"id"`
+	}{plain: plain(f), ID: &f.ID})
 }
 
 // FunctionCallOutputItem represents function call output
@@ -232,6 +283,22 @@ type CustomToolCallItem struct {
 	CallID string `json:"call_id"`
 	Name   string `json:"name"`
 	Input  string `json:"input"`
+
+	// idSet writes `"id": ""` for an empty ID (a replayed string itemId).
+	idSet bool
+}
+
+// MarshalJSON writes the item as its struct tags do, plus `"id": ""` when an
+// empty id was set explicitly (TS `itemId != null && {id}`).
+func (c CustomToolCallItem) MarshalJSON() ([]byte, error) {
+	type plain CustomToolCallItem
+	if c.ID != "" || !c.idSet {
+		return json.Marshal(plain(c))
+	}
+	return json.Marshal(struct {
+		plain
+		ID *string `json:"id"`
+	}{plain: plain(c), ID: &c.ID})
 }
 
 // CustomToolCallOutputItem replays a caller-executed "custom" tool result
@@ -359,6 +426,56 @@ type OutputItem struct {
 	// custom fields). Used for extension item decode/replay (row 9a68261,
 	// OR-EXT). Populated by UnmarshalJSON.
 	Raw json.RawMessage `json:"-"`
+
+	// idKey is the TS Map key of a decoded `id` that is not a JSON string
+	// (openResponsesMapKey); "" means the key is ID.
+	idKey string
+}
+
+// rawField returns the item's raw JSON field and whether it is present and
+// not null (TS `!= null`). An item built in Go (no Raw) counts a non-empty
+// value as present.
+func (o *OutputItem) rawField(key, value string) (json.RawMessage, bool) {
+	if o.Raw == nil {
+		return nil, value != ""
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(o.Raw, &fields) != nil {
+		return nil, value != ""
+	}
+	raw, ok := fields[key]
+	return raw, ok && string(raw) != "null"
+}
+
+// idValue is the item's `id` as TS reads it into provider metadata
+// (`itemId: item.id`): the decoded JSON value (a string, a number, null) and
+// whether the key is present at all (undefined is dropped from the JSON).
+func (o *OutputItem) idValue() (interface{}, bool) {
+	if o.Raw == nil {
+		return o.ID, o.ID != ""
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(o.Raw, &fields) != nil {
+		return o.ID, o.ID != ""
+	}
+	raw, ok := fields["id"]
+	if !ok {
+		return nil, false
+	}
+	var v interface{}
+	if json.Unmarshal(raw, &v) != nil {
+		return o.ID, true
+	}
+	return v, true
+}
+
+// mapKey is the item's id as a TS Map key: a decoded id keeps its JSON
+// type, so 5 and "5" are different keys.
+func (o *OutputItem) mapKey() string {
+	if o.idKey != "" {
+		return o.idKey
+	}
+	return o.ID
 }
 
 // UnmarshalJSON decodes the known OutputItem fields via a type alias (so the
@@ -398,6 +515,7 @@ func (o *OutputItem) UnmarshalJSON(data []byte) error {
 		alias.Namespace = openResponsesWireString(w.Namespace)
 		alias.Input = openResponsesWireString(w.Input)
 		alias.EncryptedContent = openResponsesWireString(w.EncryptedContent)
+		alias.idKey = openResponsesMapKey(w.ID)
 	}
 	*o = OutputItem(alias)
 	o.Raw = append(json.RawMessage(nil), data...)
@@ -574,6 +692,50 @@ type StreamEvent struct {
 	// OR-EXT). Populated by UnmarshalJSON; left nil for StreamEvent values
 	// constructed directly (e.g. in tests) rather than decoded from JSON.
 	Raw json.RawMessage `json:"-"`
+
+	// itemIDKey is the TS Map key of a decoded `item_id` that is not a JSON
+	// string (openResponsesMapKey); "" means the key is ItemID.
+	itemIDKey string
+}
+
+// mapItemKey is the event's item_id as a TS Map key (see OutputItem.mapKey).
+func (e *StreamEvent) mapItemKey() string {
+	if e.itemIDKey != "" {
+		return e.itemIDKey
+	}
+	return e.ItemID
+}
+
+// openResponsesObjectKeys numbers decoded object / array keys: a TS Map
+// keys an object by identity, so no two parsed objects are the same key.
+var openResponsesObjectKeys atomic.Uint64
+
+// openResponsesMapKey is the TS Map key (SameValueZero) of a raw JSON value
+// that is not a string, and "" for a string (its key is the string itself).
+// The other keys start with 0xff, which no decoded JSON string holds (it is
+// not valid UTF-8), so a numeric id never matches a string id with the same
+// digits; absent (undefined) and null are their own keys; an object or array
+// matches only itself.
+func openResponsesMapKey(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "\xffu"
+	}
+	var v interface{}
+	if json.Unmarshal(raw, &v) != nil {
+		return "\xffu"
+	}
+	switch x := v.(type) {
+	case string:
+		return ""
+	case nil:
+		return "\xffl"
+	case float64:
+		return "\xffn" + openResponsesJSString(x)
+	case bool:
+		return "\xffb" + openResponsesJSString(x)
+	default:
+		return "\xffo" + strconv.FormatUint(openResponsesObjectKeys.Add(1), 10)
+	}
 }
 
 // UnmarshalJSON decodes a stream event like TS reads it: doStream parses
@@ -623,6 +785,7 @@ func (e *StreamEvent) UnmarshalJSON(data []byte) error {
 		CallID:         openResponsesWireString(w.CallID),
 		Arguments:      openResponsesWireString(w.Arguments),
 		Input:          openResponsesWireString(w.Input),
+		itemIDKey:      openResponsesMapKey(w.ItemID),
 	}
 	if openResponsesWirePresent(w.Response) {
 		var r openResponsesResponseWire

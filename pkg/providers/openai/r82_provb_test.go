@@ -192,7 +192,7 @@ func TestR82provbComputerCallEmptyActionsKept(t *testing.T) {
 		if err := json.Unmarshal([]byte(tc.wire), &item); err != nil {
 			t.Fatal(err)
 		}
-		if _, raw := computerCallArguments(item); raw != tc.want {
+		if _, raw := computerCallArguments(item, nil); raw != tc.want {
 			t.Fatalf("%s: input = %s, want %s", tc.wire, raw, tc.want)
 		}
 	}

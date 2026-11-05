@@ -180,7 +180,8 @@ func BuildOpenAIRealtimeTranscriptionSession(modelID string, format provider.Aud
 	}
 
 	transcription := map[string]interface{}{"model": modelID}
-	if opts.Language != "" {
+	// TS `providerOptions?.language != null`: a present "" is sent too.
+	if opts.Language != "" || opts.HasLanguage {
 		// gpt-live-transcribe and gpt-transcribe take a languages list
 		// (TS 8375141ef4 languageField).
 		if getOpenAITranscriptionModelEntry(modelID).languageField == "languages" {
@@ -235,6 +236,10 @@ type TranscriptionStreamOpenAIOptionsValue struct {
 	// options (TS 226b7daf82).
 	HasLanguages bool
 	HasKeywords  bool
+	// HasLanguage is true when providerOptions.openai.language holds a
+	// string, "" included; BuildOpenAIRealtimeTranscriptionSession then sends
+	// it like TS `language != null`.
+	HasLanguage bool
 }
 
 func TranscriptionStreamOpenAIOptions(providerOptions map[string]interface{}) TranscriptionStreamOpenAIOptionsValue {
@@ -250,7 +255,7 @@ func TranscriptionStreamOpenAIOptions(providerOptions map[string]interface{}) Tr
 	// form, the form TS parses (a []string streaming.include was dropped).
 	openaiOpts = providerutils.NormalizeOptionsJSON(openaiOpts)
 	if v, ok := openaiOpts["language"].(string); ok {
-		result.Language = v
+		result.Language, result.HasLanguage = v, true
 	}
 	if v, ok := openaiOpts["prompt"].(string); ok {
 		result.Prompt = v
