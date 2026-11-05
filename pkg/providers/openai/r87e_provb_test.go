@@ -1,10 +1,16 @@
 package openai
 
 import (
+	"bufio"
+	"context"
+	"crypto/sha1" //nolint:gosec // RFC 6455 handshake
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"mime"
 	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -177,5 +183,77 @@ func TestR87eprovbComputerSafetyCheckEmptyStringsKept(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+// r87eprovbBlockingAudio never ends (audio keeps streaming until cancel).
+type r87eprovbBlockingAudio struct{}
+
+func (r87eprovbBlockingAudio) Next(ctx context.Context) ([]byte, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func (r87eprovbBlockingAudio) Cancel(error) {}
+
+// r87eprovbRawWSServer completes the WebSocket handshake, waits for the
+// client's first frame (session.update), then writes frames verbatim and
+// closes the TCP connection.
+func r87eprovbRawWSServer(t *testing.T, frames ...[]byte) string {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := sha1.Sum([]byte(r.Header.Get("Sec-WebSocket-Key") + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")) //nolint:gosec
+		conn, rw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close() //nolint:errcheck
+		_, _ = rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " +
+			base64.StdEncoding.EncodeToString(h[:]) + "\r\n\r\n")
+		_ = rw.Flush()
+		_, _ = bufio.NewReader(rw).ReadByte() // the session.update frame
+		for _, f := range frames {
+			_, _ = rw.Write(f)
+		}
+		_ = rw.Flush()
+	}))
+	t.Cleanup(ts.Close)
+	return ts.URL
+}
+
+// TS openai-speech-translation-model.ts onClose: `... before finishing (code
+// ${code ?? 'unknown'}${reason ? `, reason: ${reason}` : ""}).` (the TS test
+// expects `(code 1011, reason: internal server error).`; ws reports 1006 for
+// a connection that ended without a close frame).
+func TestR87eprovbSpeechTranslationCloseCodeAndReason(t *testing.T) {
+	closeFrame := func(code uint16, reason string) []byte {
+		p := append([]byte{byte(code >> 8), byte(code)}, reason...)
+		return append([]byte{0x88, byte(len(p))}, p...)
+	}
+	for _, tc := range []struct {
+		name   string
+		frames [][]byte
+		want   string
+	}{
+		{"code and reason", [][]byte{closeFrame(1011, "internal server error")}, "OpenAI realtime translation WebSocket closed unexpectedly before finishing (code 1011, reason: internal server error)."},
+		{"code only", [][]byte{closeFrame(4000, "")}, "OpenAI realtime translation WebSocket closed unexpectedly before finishing (code 4000)."},
+		{"no close frame", nil, "OpenAI realtime translation WebSocket closed unexpectedly before finishing (code 1006)."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := newTestSpeechTranslationModel(r87eprovbRawWSServer(t, tc.frames...))
+			rate := 24000
+			result, err := model.DoStream(context.Background(), &provider.SpeechTranslationStreamOptions{
+				Audio:            r87eprovbBlockingAudio{},
+				InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: &rate},
+				TargetLanguage:   "es",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer result.Stream.Close() //nolint:errcheck
+			_, err = drainUntilTranslationFinishOrError(t, result.Stream)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("err = %v\nwant %s", err, tc.want)
+			}
+		})
 	}
 }
