@@ -182,6 +182,8 @@ func (m *LanguageModel) buildRequestBodyChecked(opts *provider.GenerateOptions, 
 		"thinking_budget":     "thinkingBudget",
 		"parallel-tool-calls": "parallelToolCalls",
 		"parallel_tool_calls": "parallelToolCalls",
+		"preserve-thinking":   "preserveThinking",
+		"preserve_thinking":   "preserveThinking",
 	})...)
 
 	// Extract Alibaba-level cache control (applies to all message types).
