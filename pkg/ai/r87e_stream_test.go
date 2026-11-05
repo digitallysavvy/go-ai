@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 
@@ -242,5 +243,50 @@ func TestR87estreamMessageMetadataMergeTypeErrorFailsStream(t *testing.T) {
 	}
 	if outcome, _ := ended["outcome"].(map[string]interface{}); outcome["status"] != string(UIMessageStreamOutcomeFailed) {
 		t.Fatalf("outcome = %#v", ended["outcome"])
+	}
+}
+
+// TS pipeUIMessageStreamToResponse / createUIMessageStreamResponse end an
+// errored stream without [DONE]. With StreamErrors the chunk-channel helpers
+// see the failure (a callback that panics errors the TS stream).
+func TestR87estreamChunkHelpersStreamErrors(t *testing.T) {
+	run := func() (<-chan UIMessageChunk, <-chan error) {
+		return CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+			Execute: func(w UIMessageStreamWriter) {
+				w.Write(UIMessageChunk{"type": "start"})
+				w.Write(UIMessageChunk{"type": "finish-step"})
+			},
+			OnStepEnd: func(map[string]interface{}) { panic("step callback failed") },
+			OnError:   func(error) string { panic("onError failed") },
+		})
+	}
+	chunks, errs := run()
+	var buf strings.Builder
+	err := PipeUIMessageChunksToResponse(chunks, &buf, &UIMessageStreamResponseInit{StreamErrors: errs})
+	if err == nil || strings.Contains(buf.String(), "[DONE]") {
+		t.Fatalf("pipe err = %v, body = %q; want the stream error and no [DONE]", err, buf.String())
+	}
+	chunks, errs = run()
+	resp, err := CreateUIMessageChunksResponse(chunks, &UIMessageStreamResponseInit{StreamErrors: errs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr == nil || strings.Contains(string(body), "[DONE]") {
+		t.Fatalf("body err = %v, body = %q; want the stream error and no [DONE]", readErr, body)
+	}
+	// Without StreamErrors the v0.5 behavior stays.
+	chunks, _ = run()
+	buf.Reset()
+	if err := PipeUIMessageChunksToResponse(chunks, &buf, nil); err != nil || !strings.HasSuffix(buf.String(), "data: [DONE]\n\n") {
+		t.Fatalf("pipe err = %v, body = %q", err, buf.String())
+	}
+	// A clean stream still ends with [DONE].
+	chunks, errs = CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{Execute: func(w UIMessageStreamWriter) {
+		w.Write(UIMessageChunk{"type": "start"})
+	}})
+	buf.Reset()
+	if err := PipeUIMessageChunksToResponse(chunks, &buf, &UIMessageStreamResponseInit{StreamErrors: errs}); err != nil || !strings.HasSuffix(buf.String(), "data: [DONE]\n\n") {
+		t.Fatalf("clean pipe err = %v, body = %q", err, buf.String())
 	}
 }

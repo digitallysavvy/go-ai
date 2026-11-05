@@ -187,6 +187,16 @@ type UIMessageStreamResponseInit struct {
 	// zero, a negative duration or one above 2147483647ms is an error, as in
 	// TS createSseStreamWithKeepAlive's `keepAliveMs` option (TS #21672).
 	KeepAliveMs *time.Duration //nolint:revive,staticcheck // name matches TS SDK field "keepAliveMs" for parity
+	// StreamErrors, when set, is the error channel returned with the chunks
+	// passed to PipeUIMessageChunksToResponse or CreateUIMessageChunksResponse
+	// (CreateUIMessageStreamWithOptions, CreateUIMessageStream,
+	// CreateAgentUIStreamFromUIMessages). Once the chunk channel closes, the
+	// helper reads one error from it without blocking; a failed stream then
+	// ends without "data: [DONE]", as TS ends an errored stream: the Pipe
+	// helper returns the error and the response body ends with it. The error
+	// is consumed. Nil keeps the v0.5 behavior (always "data: [DONE]"). The
+	// StreamTextResult helpers ignore it: they see their own failure.
+	StreamErrors <-chan error
 }
 
 const (
@@ -2843,7 +2853,9 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 // as Server-Sent Events, ending with "data: [DONE]". Use it for streams that
 // don't come from a single StreamTextResult, such as the output of
 // CreateUIMessageStreamWithOptions or CreateAgentUIStreamFromUIMessages.
-// Mirrors TS pipeUIMessageStreamToResponse({ response, stream }).
+// Mirrors TS pipeUIMessageStreamToResponse({ response, stream }). Pass the
+// stream's error channel as init.StreamErrors so a failed stream ends
+// without "data: [DONE]" and its error is returned, as in TS.
 //
 // When w is an http.ResponseWriter it first sets the UI message stream
 // headers (UIMessageStreamHeaders, overridden by init's) and writes the
@@ -2873,7 +2885,27 @@ func PipeUIMessageChunksToResponse(chunks <-chan UIMessageChunk, w io.Writer, in
 	}
 	status, _, headers := uiMessageStreamResponseHead(init)
 	writeResponseHead(w, status, headers)
-	return writeUIMessageChunksSSE(chunks, w, init, nil, nil)
+	return writeUIMessageChunksSSE(chunks, w, init, nil, uiChunkStreamFailure(init))
+}
+
+// uiChunkStreamFailure reads the failure of a bare chunk stream from
+// init.StreamErrors (once, without blocking), or nil without one.
+func uiChunkStreamFailure(init *UIMessageStreamResponseInit) func() error {
+	if init == nil || init.StreamErrors == nil {
+		return nil
+	}
+	errs := init.StreamErrors
+	var once sync.Once
+	var failure error
+	return func() error {
+		once.Do(func() {
+			select {
+			case failure = <-errs:
+			default:
+			}
+		})
+		return failure
+	}
 }
 
 // CreateUIMessageChunksResponse returns an *http.Response that streams any
@@ -2894,7 +2926,7 @@ func CreateUIMessageChunksResponse(chunks <-chan UIMessageChunk, init *UIMessage
 		// response body (TS tees the stream and does not await
 		// consumeSseStream): the body ends after the last SSE event, and
 		// only a write failure ends it with an error.
-		_ = pw.CloseWithError(writeUIMessageChunksSSE(chunks, pw, init, nil, nil))
+		_ = pw.CloseWithError(writeUIMessageChunksSSE(chunks, pw, init, nil, uiChunkStreamFailure(init)))
 	}()
 	return &http.Response{
 		StatusCode: status,
