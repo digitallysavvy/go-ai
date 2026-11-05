@@ -1,12 +1,15 @@
 package openai
 
 import (
+	"encoding/json"
 	"io"
 	"mime"
 	"mime/multipart"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
 )
 
 // r87eprovbFormFields parses a multipart transcription body into its
@@ -133,5 +136,46 @@ func TestR87eprovbStreamingTranscriptionEmptyLanguageIsSent(t *testing.T) {
 	lit := BuildOpenAIRealtimeTranscriptionSession("gpt-realtime-whisper", format, TranscriptionStreamOpenAIOptionsValue{Language: "de"})
 	if got := lit["session"].(map[string]interface{})["audio"].(map[string]interface{})["input"].(map[string]interface{})["transcription"].(map[string]interface{})["language"]; got != "de" {
 		t.Fatalf("literal language = %v, want de", got)
+	}
+}
+
+// TS mapComputerCallInput: `...(safetyCheck.code != null && {code})`, so a
+// present "" code / message stays in the tool input and a null or absent one
+// is dropped. Generate and stream.
+func TestR87eprovbComputerSafetyCheckEmptyStringsKept(t *testing.T) {
+	const item = `{"type":"computer_call","id":"cu_1","call_id":"call_1","status":"completed","actions":[],` +
+		`"pending_safety_checks":[{"id":"a","code":"","message":""},{"id":"b","code":null},{"id":"c","code":"x","message":"y"}]}`
+	const want = `{"actions":[],"pendingSafetyChecks":[{"id":"a","code":"","message":""},{"id":"b"},{"id":"c","code":"x","message":"y"}],"status":"completed"}`
+
+	model := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "gpt-4o")
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{
+		Output: []json.RawMessage{json.RawMessage(item)},
+		Usage:  &responses.ResponsesAPIUsage{InputTokens: 1, OutputTokens: 1},
+	}, true, "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %#v", result.ToolCalls)
+	}
+	if got := result.ToolCalls[0].RawArguments; got != want {
+		t.Fatalf("generate input =\n%s\nwant\n%s", got, want)
+	}
+
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"computer_call","id":"cu_1","status":"in_progress"}}`+"\n\n"+
+			`data: {"type":"response.output_item.done","output_index":0,"item":`+item+`}`+"\n\n")), false)
+	defer stream.Close() //nolint:errcheck
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			t.Fatalf("stream ended without a tool call: %v", err)
+		}
+		if chunk.Type == provider.ChunkTypeToolCall {
+			if got := chunk.ToolCall.RawArguments; got != want {
+				t.Fatalf("stream input =\n%s\nwant\n%s", got, want)
+			}
+			return
+		}
 	}
 }
