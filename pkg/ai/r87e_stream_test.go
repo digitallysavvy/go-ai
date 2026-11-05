@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -285,5 +286,36 @@ func TestR87estreamResponseHeadersFromStream(t *testing.T) {
 	}
 	if len(steps[1].Response.Headers) != 0 {
 		t.Fatalf("step 2 headers = %v, want none", steps[1].Response.Headers)
+	}
+}
+
+type r87estreamCtxKey struct{}
+
+type r87estreamRootCtx struct{ telemetry.NoopTelemetryIntegration }
+
+func (r87estreamRootCtx) OnStart(ctx context.Context, _ telemetry.TelemetryStartEvent) context.Context {
+	return context.WithValue(ctx, r87estreamCtxKey{}, "root")
+}
+
+// TS notify([onStart, telemetry.onStart]) starts the user callback first, so
+// the user OnStart runs outside the integration's root context; later
+// callbacks run inside it.
+func TestR87estreamUserOnStartBeforeTelemetryRoot(t *testing.T) {
+	var startVal, stepVal interface{}
+	r, err := StreamText(context.Background(), StreamTextOptions{
+		Model:       r71streamModel(nil, []provider.StreamChunk{{Type: provider.ChunkTypeText, Text: "x"}, {Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop}}),
+		Prompt:      "p",
+		Telemetry:   &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{r87estreamRootCtx{}}},
+		OnStart:     func(ctx context.Context, _ OnStartEvent) { startVal = ctx.Value(r87estreamCtxKey{}) },
+		OnStepStart: func(ctx context.Context, _ OnStepStartEvent) { stepVal = ctx.Value(r87estreamCtxKey{}) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	if startVal != nil || stepVal != "root" {
+		t.Fatalf("OnStart ctx value = %v (want nil), OnStepStart ctx value = %v (want root)", startVal, stepVal)
 	}
 }

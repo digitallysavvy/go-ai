@@ -999,6 +999,45 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		telMessages = buildPrompt(opts.Prompt, opts.Messages, "").Messages
 	}
 	streamTextMaxRetries := preparedMaxRetries(opts.MaxRetries)
+	// Emit OnStartEvent before streaming begins and before the telemetry root
+	// start: TS notify([onStart, telemetry.onStart]) starts the user callback
+	// first, so it runs outside the root span (gen c8cc78d6 for GenerateText).
+	Notify(ctx, OnStartEvent{
+		CallID:              callID,
+		OperationID:         "ai.streamText",
+		Provider:            opts.Model.Provider(),
+		ModelProvider:       opts.Model.Provider(),
+		ModelID:             opts.Model.ModelID(),
+		Instructions:        system,
+		InstructionMessages: instructionMessages,
+		System:              system,
+		Prompt:              opts.Prompt,
+		// TS start event messages: the standardized prompt's messages (a
+		// prompt string becomes one user message).
+		Messages:            buildPrompt(opts.Prompt, opts.Messages, "").Messages,
+		Tools:               opts.Tools,
+		ActiveTools:         opts.ActiveTools,
+		ToolOrder:           opts.ToolOrder,
+		ToolChoice:          opts.ToolChoice,
+		Timeout:             opts.Timeout,
+		Reasoning:           opts.Reasoning,
+		Output:              opts.Output,
+		ProviderOptions:     opts.ProviderOptions,
+		Headers:             opts.Headers,
+		Temperature:         opts.Temperature,
+		MaxTokens:           opts.MaxTokens,
+		TopP:                opts.TopP,
+		TopK:                opts.TopK,
+		FrequencyPenalty:    opts.FrequencyPenalty,
+		PresencePenalty:     opts.PresencePenalty,
+		StopSequences:       opts.StopSequences,
+		Seed:                opts.Seed,
+		MaxRetries:          preparedMaxRetries(opts.MaxRetries),
+		ExperimentalContext: runtimeContext,
+		RuntimeContext:      runtimeContext,
+		ToolsContext:        toolsContext,
+	}, opts.OnStart)
+
 	ctx = r.fireRootStart(ctx, telemetry.TelemetryStartEvent{
 		CallID:              callID,
 		OperationType:       "ai.streamText",
@@ -1065,42 +1104,6 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		onEndEvent = opts.OnFinishEvent
 	}
 
-	// Emit OnStartEvent before streaming begins.
-	Notify(ctx, OnStartEvent{
-		CallID:              callID,
-		OperationID:         "ai.streamText",
-		Provider:            opts.Model.Provider(),
-		ModelProvider:       opts.Model.Provider(),
-		ModelID:             opts.Model.ModelID(),
-		Instructions:        system,
-		InstructionMessages: instructionMessages,
-		System:              system,
-		Prompt:              opts.Prompt,
-		// TS start event messages: the standardized prompt's messages (a
-		// prompt string becomes one user message).
-		Messages:            buildPrompt(opts.Prompt, opts.Messages, "").Messages,
-		Tools:               opts.Tools,
-		ActiveTools:         opts.ActiveTools,
-		ToolOrder:           opts.ToolOrder,
-		ToolChoice:          opts.ToolChoice,
-		Timeout:             opts.Timeout,
-		Reasoning:           opts.Reasoning,
-		Output:              opts.Output,
-		ProviderOptions:     opts.ProviderOptions,
-		Headers:             opts.Headers,
-		Temperature:         opts.Temperature,
-		MaxTokens:           opts.MaxTokens,
-		TopP:                opts.TopP,
-		TopK:                opts.TopK,
-		FrequencyPenalty:    opts.FrequencyPenalty,
-		PresencePenalty:     opts.PresencePenalty,
-		StopSequences:       opts.StopSequences,
-		Seed:                opts.Seed,
-		MaxRetries:          preparedMaxRetries(opts.MaxRetries),
-		ExperimentalContext: runtimeContext,
-		RuntimeContext:      runtimeContext,
-		ToolsContext:        toolsContext,
-	}, opts.OnStart)
 
 	// Resume tool approvals from the input messages before the first step
 	// (TS streamText initial tool execution stream).
