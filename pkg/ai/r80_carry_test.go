@@ -153,9 +153,10 @@ func TestR80carryEmbedManyZeroChunksRecordsZero(t *testing.T) {
 	}
 }
 
-// A batch without usage makes the sum NaN, as TS sums `usage.tokens` with NaN
-// for it (`modelResponse.usage ?? { tokens: NaN }`) and drops the NaN
-// attribute (round 87e; v0.5 kept the positive sum of the other batches).
+// A batch without usage makes TS's sum NaN (`modelResponse.usage ?? { tokens:
+// NaN }`), so the root span drops ai.usage.tokens. The Go result keeps the
+// v0.5.2 sum of the reported batches and never NaN (coordinator ruling,
+// round 87e: S6 for the result, TS for telemetry).
 func TestR80carryEmbedManyPositiveSumWithUnreportedBatch(t *testing.T) {
 	call := 0
 	model := &testutil.MockEmbeddingModel{
@@ -176,11 +177,11 @@ func TestR80carryEmbedManyPositiveSumWithUnreportedBatch(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if res.Usage.Reported || !math.IsNaN(res.Usage.Tokens) || res.Usage.InputTokens != 3 {
-		t.Fatalf("Usage = %+v, want unreported NaN tokens with the Go-only InputTokens sum", res.Usage)
+	if res.Usage.Reported || res.Usage.Tokens != 3 || res.Usage.InputTokens != 3 {
+		t.Fatalf("Usage = %+v, want unreported with the v0.5.2 sum 3", res.Usage)
 	}
-	if b, err := json.Marshal(res.Usage); err != nil || !strings.Contains(string(b), `"tokens":null`) {
-		t.Fatalf("Usage JSON = %s (%v), want tokens null like TS JSON.stringify(NaN)", b, err)
+	if b, err := json.Marshal(res.Usage); err != nil || !strings.Contains(string(b), `"tokens":3`) {
+		t.Fatalf("Usage JSON = %s (%v), want tokens 3", b, err)
 	}
 	if v, ok := got["ai.embedMany ai.usage.tokens"]; ok {
 		t.Fatalf("root ai.usage.tokens = %v, want it dropped (TS NaN); all: %v", v, got)
@@ -188,13 +189,13 @@ func TestR80carryEmbedManyPositiveSumWithUnreportedBatch(t *testing.T) {
 }
 
 func TestR80carryTelemetryUsageFromEmbeddingUsageReported(t *testing.T) {
-	if u := telemetryUsageFromEmbeddingUsage(types.EmbeddingUsage{Reported: true}); u.TotalTokens == nil || *u.TotalTokens != 0 {
+	if u := telemetryUsageFromEmbeddingUsage(types.EmbeddingUsage{Reported: true}, false); u.TotalTokens == nil || *u.TotalTokens != 0 {
 		t.Fatalf("reported 0: %+v", u)
 	}
-	if u := telemetryUsageFromEmbeddingUsage(types.EmbeddingUsage{}); u.TotalTokens != nil {
+	if u := telemetryUsageFromEmbeddingUsage(types.EmbeddingUsage{}, false); u.TotalTokens != nil {
 		t.Fatalf("unreported 0: %+v", u)
 	}
-	if u := telemetryUsageFromEmbeddingUsage(types.EmbeddingUsage{Tokens: math.Inf(1), Reported: true}); u.TotalTokens != nil {
+	if u := telemetryUsageFromEmbeddingUsage(types.EmbeddingUsage{Tokens: math.Inf(1), Reported: true}, false); u.TotalTokens != nil {
 		t.Fatalf("reported Inf: %+v", u)
 	}
 }

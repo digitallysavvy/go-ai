@@ -53,7 +53,7 @@ func TestR87ecarryEmbedManyFailsWithoutWaitingForSiblings(t *testing.T) {
 // A NaN token count is dropped from the root span (TS
 // sanitizeAttributeValue) even when the Go-only counters hold a sum.
 func TestR87ecarryEmbeddingTelemetryDropsNaNTokens(t *testing.T) {
-	if u := telemetryUsageFromEmbeddingUsage(types.EmbeddingUsage{Tokens: math.NaN(), InputTokens: 5, TotalTokens: 5, Reported: true}); u.TotalTokens != nil {
+	if u := telemetryUsageFromEmbeddingUsage(types.EmbeddingUsage{Tokens: math.NaN(), InputTokens: 5, TotalTokens: 5, Reported: true}, false); u.TotalTokens != nil {
 		t.Fatalf("NaN tokens with counters: %+v, want no token count", u)
 	}
 }

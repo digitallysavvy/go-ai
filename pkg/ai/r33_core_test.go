@@ -71,13 +71,13 @@ func TestPromptInputIsStandardized(t *testing.T) {
 // span's ai.usage.tokens unset instead of recording 0.
 func TestTelemetryUsageFromEmbeddingUsage(t *testing.T) {
 	t.Parallel()
-	if u := telemetryUsageFromEmbeddingUsage(types.EmbeddingUsage{}); u.TotalTokens != nil {
+	if u := telemetryUsageFromEmbeddingUsage(types.EmbeddingUsage{}, false); u.TotalTokens != nil {
 		t.Fatalf("no usage -> %d, want unset", *u.TotalTokens)
 	}
-	if u := telemetryUsageFromEmbeddingUsage(types.EmbeddingUsage{Tokens: 7, TotalTokens: 7}); u.TotalTokens == nil || *u.TotalTokens != 7 {
+	if u := telemetryUsageFromEmbeddingUsage(types.EmbeddingUsage{Tokens: 7, TotalTokens: 7}, false); u.TotalTokens == nil || *u.TotalTokens != 7 {
 		t.Fatalf("usage 7 -> %v", u.TotalTokens)
 	}
-	if u := telemetryUsageFromEmbeddingUsage(types.EmbeddingUsage{TotalTokens: 3}); u.TotalTokens == nil || *u.TotalTokens != 3 {
+	if u := telemetryUsageFromEmbeddingUsage(types.EmbeddingUsage{TotalTokens: 3}, false); u.TotalTokens == nil || *u.TotalTokens != 3 {
 		t.Fatalf("legacy TotalTokens-only usage -> %v", u.TotalTokens)
 	}
 }

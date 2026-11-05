@@ -419,7 +419,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 		ModelProvider: opts.Model.Provider(),
 		ModelID:       opts.Model.ModelID(),
 		Text:          "",
-		Usage:         telemetryUsageFromEmbeddingUsage(embedResult.Usage),
+		Usage:         telemetryUsageFromEmbeddingUsage(embedResult.Usage, embeddingUsageAbsent(result.Usage)),
 		Embedding:     embedResult.Embedding,
 	})
 
@@ -604,7 +604,7 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		ToolsContext:   map[string]interface{}{},
 	})
 
-	embedResult, err := embedManyCalls(ctx, opts, callID, resolvedMaxRetries)
+	embedResult, usageMissing, err := embedManyCalls(ctx, opts, callID, resolvedMaxRetries)
 	if err != nil {
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
 		return nil, err
@@ -653,7 +653,7 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		ModelProvider: opts.Model.Provider(),
 		ModelID:       opts.Model.ModelID(),
 		Text:          "",
-		Usage:         telemetryUsageFromEmbeddingUsage(embedResult.Usage),
+		Usage:         telemetryUsageFromEmbeddingUsage(embedResult.Usage, usageMissing),
 		Embedding:     embedResult.Embeddings,
 	})
 
@@ -668,10 +668,14 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 // doEmbed span (telemetry embeddingUsageTokens: Tokens, then InputTokens, then
 // TotalTokens), so the root and the provider-call span record the same count
 // as in TS, where both are usage.tokens.
-func telemetryUsageFromEmbeddingUsage(usage types.EmbeddingUsage) telemetry.TelemetryUsage {
+//
+// usageMissing marks a call where TS's usage.tokens is NaN (the single call,
+// or any EmbedMany batch, sent no usage): the attribute is dropped whatever
+// the result's v0.5.2 sum holds (coordinator ruling, round 87e).
+func telemetryUsageFromEmbeddingUsage(usage types.EmbeddingUsage, usageMissing bool) telemetry.TelemetryUsage {
 	// A NaN usage.tokens (TS sanitizeAttributeValue drops it) is left out,
 	// whatever the Go-only counters hold.
-	if math.IsNaN(usage.Tokens) {
+	if usageMissing || math.IsNaN(usage.Tokens) {
 		return telemetry.TelemetryUsage{}
 	}
 	tokens := usage.Tokens
