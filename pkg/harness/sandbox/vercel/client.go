@@ -315,6 +315,37 @@ func (c *APIClient) eachSnapshot(ctx context.Context, name string, yield func(sn
 	}
 }
 
+// eachSession is `for await (const metadata of sandbox.listSessions())`
+// (3.9.0 `Sandbox.listSessions` with no parameters, `APIClient.listSessions`
+// and attachPaginator): the first page has no cursor, the next page is
+// fetched while `pagination.next !== null`, and the iteration stops as soon
+// as yield returns true. There is no page bound; ctx ends the iteration.
+func (c *APIClient) eachSession(ctx context.Context, name string, yield func(sessionWire) bool) error {
+	var cursor *string
+	for {
+		// listSessions query order: project, name, (limit), cursor, (sortOrder).
+		q := []string{"project", c.credentials.ProjectID, "name", name}
+		if cursor != nil {
+			q = append(q, "cursor", *cursor)
+		}
+		var out listSessionsResponse
+		if err := c.http.DoJSON(ctx, httpinternal.Request{
+			Method: http.MethodGet, Path: c.path("/v2/sandboxes/sessions", q...), Headers: c.headers(nil),
+		}, &out); err != nil {
+			return toAPIError(err)
+		}
+		for _, s := range out.Sessions {
+			if yield(s) {
+				return nil
+			}
+		}
+		if out.Pagination.Next == nil {
+			return nil
+		}
+		cursor = out.Pagination.Next
+	}
+}
+
 // extendTimeoutRequest is the 3.9.0 `extendTimeout` body.
 type extendTimeoutRequest struct {
 	Duration int64 `json:"duration"`

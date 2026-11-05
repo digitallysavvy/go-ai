@@ -66,8 +66,8 @@ type sessionWire struct {
 	Status        string         `json:"status"`
 	Timeout       int64          `json:"timeout"`
 	// RawNetworkPolicy is the session's networkPolicy exactly as the API
-	// returned it: the session metadata TS reads through listSessions() to
-	// find response rules the decoded policy does not carry (44a4261e52).
+	// returned it: in a listSessions() page, the session metadata TS reads
+	// to find response rules the decoded policy does not carry (44a4261e52).
 	RawNetworkPolicy json.RawMessage `json:"-"`
 }
 
@@ -146,6 +146,15 @@ type createSnapshotResponse struct {
 
 type listSnapshotsResponse struct {
 	Snapshots  []snapshotWire `json:"snapshots"`
+	Pagination struct {
+		Next *string `json:"next"`
+	} `json:"pagination"`
+}
+
+// listSessionsResponse is the 3.9.0 SessionsResponse (GET
+// /v2/sandboxes/sessions).
+type listSessionsResponse struct {
+	Sessions   []sessionWire `json:"sessions"`
 	Pagination struct {
 		Next *string `json:"next"`
 	} `json:"pagination"`

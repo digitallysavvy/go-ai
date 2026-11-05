@@ -2,9 +2,11 @@ package vercel
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -57,3 +59,86 @@ func TestR87etoolsSnapshotListingHasNoPageBound(t *testing.T) {
 	}
 }
 
+// r87etoolsSessionsServer serves one sandbox session listing and records
+// every request; a POST (a policy mutation) answers with the session.
+func r87etoolsSessionsServer(t *testing.T, rec *r87etoolsRecorder, list func(cursor string) (int, string)) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.add(r)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v2/sandboxes/sessions":
+			status, body := list(r.URL.Query().Get("cursor"))
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/network-policy"):
+			_, _ = w.Write([]byte(`{"session":{"id":"session","cwd":"/vercel/sandbox","status":"running","timeout":120000,"networkPolicy":{"mode":"custom","allowedDomains":["example.com"]}}}`))
+		case r.Method == http.MethodPatch || r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"sandbox":{"name":"sbx","persistent":false}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+func r87etoolsObjectPolicySandbox(t *testing.T, url string) *Sandbox {
+	t.Helper()
+	body := `{"sandbox":{"name":"sbx","persistent":false,"currentSessionId":"session"},` +
+		`"session":{"id":"session","cwd":"/vercel/sandbox","status":"running","timeout":120000,"networkPolicy":{"mode":"custom","allowedDomains":["example.com"]}},"routes":[]}`
+	var resp sandboxAndSessionResponse
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatal(err)
+	}
+	return newSandboxFromResponse(NewAPIClient(url, Credentials{Token: "t", TeamID: "team", ProjectID: "p"}), &resp)
+}
+
+// "rejects when the current session policy cannot be inspected": the
+// session is not listed, listed under another id, or listed without a
+// networkPolicy. The listing comes from the API on every mutation, not from
+// the last session response.
+func TestR87etoolsPolicyInspectionListsSessions(t *testing.T) {
+	for _, sessions := range []string{
+		`[]`,
+		`[{"id":"other-session","networkPolicy":{"mode":"custom"}}]`,
+		`[{"id":"session"}]`,
+	} {
+		rec := &r87etoolsRecorder{}
+		srv := r87etoolsSessionsServer(t, rec, func(string) (int, string) {
+			return 200, `{"sessions":` + sessions + `,"pagination":{"count":1,"next":null}}`
+		})
+		sbx := r87etoolsObjectPolicySandbox(t, srv.URL)
+		err := NewPolicyManager(sbx).AddRequestTransformations(context.Background(), r85toolsTransformations)
+		srv.Close()
+		if err == nil || !strings.Contains(err.Error(), "could not be inspected") {
+			t.Fatalf("%s: err = %v", sessions, err)
+		}
+		if got := strings.Join(rec.all(), "\n"); got != "GET /v2/sandboxes/sessions?teamId=team&project=p&name=sbx" {
+			t.Fatalf("%s: requests:\n%s", sessions, got)
+		}
+	}
+
+	// A failed listing rejects the mutation with its error; the next one
+	// lists again and proceeds.
+	rec := &r87etoolsRecorder{}
+	calls := 0
+	srv := r87etoolsSessionsServer(t, rec, func(string) (int, string) {
+		calls++
+		if calls == 1 {
+			return 400, `{"error":{"message":"inspection failed"}}`
+		}
+		return 200, `{"sessions":[{"id":"session","networkPolicy":{"mode":"custom","allowedDomains":["example.com"],"responseRules":[]}}],"pagination":{"count":1,"next":null}}`
+	})
+	defer srv.Close()
+	sbx := r87etoolsObjectPolicySandbox(t, srv.URL)
+	m := NewPolicyManager(sbx)
+	err := m.AddRequestTransformations(context.Background(), r85toolsTransformations)
+	if err == nil || !strings.Contains(err.Error(), "inspection failed") {
+		t.Fatalf("first mutation: err = %v", err)
+	}
+	if err := m.AddRequestTransformations(context.Background(), r85toolsTransformations); err != nil {
+		t.Fatalf("second mutation: %v", err)
+	}
+	reqs := rec.all()
+	if len(reqs) < 3 || !strings.HasPrefix(reqs[1], "GET /v2/sandboxes/sessions?") || strings.HasPrefix(reqs[2], "GET ") {
+		t.Fatalf("requests:\n%s", strings.Join(reqs, "\n"))
+	}
+}

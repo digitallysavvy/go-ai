@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
@@ -101,18 +101,34 @@ func TestR85toolsRejectsResponseRulesInCurrentPolicy(t *testing.T) {
 }
 
 // "rejects response rules omitted by native SDK readback": the session
-// comes from a real API response whose networkPolicy is the API shape, and
-// no request is sent by any mutation.
+// comes from a real API response whose networkPolicy is the API shape, the
+// manager lists the sessions (two pages: another session, then the current
+// one) and no mutation is sent: every request is a GET.
 func TestR85toolsRejectsResponseRulesOmittedByReadback(t *testing.T) {
-	var requests int32
+	sessionMetadata := `"memory":2048,"vcpus":1,"region":"iad1","timeout":120000,"status":"running","requestedAt":1,"createdAt":1,"updatedAt":1,"cwd":"/vercel/sandbox","networkPolicy":` + r85toolsCreateResponse
+	var mu sync.Mutex
+	var requests []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&requests, 1)
-		w.WriteHeader(http.StatusInternalServerError)
+		mu.Lock()
+		requests = append(requests, r.Method+" "+r.URL.RequestURI())
+		mu.Unlock()
+		if r.Method != http.MethodGet || r.URL.Path != "/v2/sandboxes/sessions" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if r.URL.Query().Get("cursor") == "" {
+			_, _ = w.Write([]byte(`{"sessions":[{"id":"other-session",` + sessionMetadata + `}],"pagination":{"count":1,"next":"next-page"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"sessions":[{"id":"session",` + sessionMetadata + `}],"pagination":{"count":1,"next":null}}`))
 	}))
 	defer srv.Close()
 	body := `{"sandbox":{"name":"response-rule-sandbox","persistent":false,"currentSessionId":"session","status":"running"},` +
 		`"session":{"id":"session","cwd":"/vercel/sandbox","status":"running","timeout":120000,"networkPolicy":` + r85toolsCreateResponse + `},"routes":[]}`
 	for _, op := range r85toolsOperations {
+		mu.Lock()
+		requests = nil
+		mu.Unlock()
 		var resp sandboxAndSessionResponse
 		if err := json.Unmarshal([]byte(body), &resp); err != nil {
 			t.Fatal(err)
@@ -126,9 +142,17 @@ func TestR85toolsRejectsResponseRulesOmittedByReadback(t *testing.T) {
 		if !r85toolsIsCapabilityError(err) || !strings.Contains(err.Error(), "response rules that cannot be preserved") {
 			t.Fatalf("%s: err = %v", op, err)
 		}
-	}
-	if n := atomic.LoadInt32(&requests); n != 0 {
-		t.Fatalf("%d requests sent; want none", n)
+		mu.Lock()
+		got := strings.Join(requests, "\n")
+		mu.Unlock()
+		wantRequests := "GET /v2/sandboxes/sessions?teamId=team&project=p&name=response-rule-sandbox\n" +
+			"GET /v2/sandboxes/sessions?teamId=team&project=p&name=response-rule-sandbox&cursor=next-page"
+		if got != wantRequests {
+			t.Fatalf("%s: requests:\n%s", op, got)
+		}
+		if sbx.CurrentNetworkPolicy().Equal(want) == false {
+			t.Fatalf("%s: readback changed", op)
+		}
 	}
 }
 
