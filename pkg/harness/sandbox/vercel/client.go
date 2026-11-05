@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	httpinternal "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // DefaultBaseURL is the production Vercel API base URL (TS `baseUrl:
@@ -66,6 +67,8 @@ var linuxSignalMapping = map[string]int{
 type APIClient struct {
 	http        *httpinternal.Client
 	credentials Credentials
+	// team is the `teamId` query of every request (see teamQuery).
+	team teamQuery
 }
 
 // NewAPIClient builds a client authenticated with credentials, talking to
@@ -90,11 +93,15 @@ func newAPIClient(baseURL string, credentials Credentials, refresh *OIDCRefresh)
 		base = http.DefaultTransport
 	}
 	var transport http.RoundTripper = &retryTransport{base: base}
-	if owner, project, ok := unverifiedTokenClaims(credentials.Token); ok {
-		credentials.TeamID = owner
+	team := teamQuery{values: []string{credentials.TeamID}}
+	if owner, project, ok := unverifiedTokenOwner(credentials.Token); ok {
+		credentials.TeamID = providerutils.JSString(owner)
+		team = teamQueryOf(owner)
 		if refresh != nil {
 			transport = &oidcTokenTransport{base: transport, refresh: refresh,
-				token: credentials.Token, teamID: owner, projectID: project}
+				token: credentials.Token, teamID: credentials.TeamID, team: team, projectID: project}
+		} else if team.err != nil {
+			transport = teamErrorTransport{err: team.err}
 		}
 	}
 	return &APIClient{
@@ -103,6 +110,7 @@ func newAPIClient(baseURL string, credentials Credentials, refresh *OIDCRefresh)
 			HTTPClient: &http.Client{Transport: transport},
 		}),
 		credentials: credentials,
+		team:        team,
 	}
 }
 
@@ -151,7 +159,9 @@ func (c *APIClient) headers(extra map[string]string) map[string]string {
 // out).
 func (c *APIClient) path(p string, pairs ...string) string {
 	q := &httpinternal.SearchParams{}
-	q.Append("teamId", c.credentials.TeamID)
+	for _, team := range c.team.values {
+		q.Append("teamId", team)
+	}
 	for i := 0; i+1 < len(pairs); i += 2 {
 		q.Append(pairs[i], pairs[i+1])
 	}

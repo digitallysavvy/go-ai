@@ -142,3 +142,49 @@ func TestR87etoolsPolicyInspectionListsSessions(t *testing.T) {
 		t.Fatalf("requests:\n%s", strings.Join(reqs, "\n"))
 	}
 }
+
+// base-client.js appends one `teamId` per element of an array team (the
+// owner_id claim), none for an empty array; a null element throws the
+// TypeError of `null.toString()` before the request is sent.
+func TestR87etoolsOwnerIDArrayTeamQuery(t *testing.T) {
+	for _, tc := range []struct {
+		owner, want, err string
+	}{
+		{`["team_a","team_b"]`, "GET /v2/sandboxes/sbx?teamId=team_a&teamId=team_b&projectId=prj", ""},
+		{`[]`, "GET /v2/sandboxes/sbx?projectId=prj", ""},
+		{`[1,["x","y"]]`, "GET /v2/sandboxes/sbx?teamId=1&teamId=x%2Cy&projectId=prj", ""},
+		{`"team_s"`, "GET /v2/sandboxes/sbx?teamId=team_s&projectId=prj", ""},
+		{`["team_a",null]`, "", "Cannot read properties of null (reading 'toString')"},
+	} {
+		rec := &r87etoolsRecorder{}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rec.add(r)
+			_, _ = w.Write([]byte(`{"sandbox":{"name":"sbx"},"session":{"id":"s"},"routes":[]}`))
+		}))
+		token := r87ctoolsRawJWT(`{"owner_id":` + tc.owner + `,"project_id":"prj"}`)
+		c := NewAPIClient(srv.URL, Credentials{Token: token, TeamID: "explicit", ProjectID: "prj"})
+		_, err := c.GetSandbox(context.Background(), "sbx", nil)
+		srv.Close()
+		if tc.err != "" {
+			if err == nil || err.Error() != tc.err || len(rec.all()) != 0 {
+				t.Fatalf("%s: err = %v, requests %v", tc.owner, err, rec.all())
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("%s: %v", tc.owner, err)
+		}
+		if got := strings.Join(rec.all(), "\n"); got != tc.want {
+			t.Fatalf("%s: request %q, want %q", tc.owner, got, tc.want)
+		}
+	}
+
+	// A refreshed array team replaces the previous team at the front.
+	team := teamQueryOf([]any{"n1", "n2"})
+	if got := team.withTeam("teamId=old&project=p&name=x"); got != "teamId=n1&teamId=n2&project=p&name=x" {
+		t.Fatalf("withTeam = %q", got)
+	}
+	if got := teamQueryOf([]any{}).withTeam("teamId=old&a=1"); got != "a=1" {
+		t.Fatalf("withTeam(empty) = %q", got)
+	}
+}
