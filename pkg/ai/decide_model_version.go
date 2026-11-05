@@ -18,7 +18,8 @@ type UnsupportedModelVersionError struct {
 
 // Error is the TS message, verbatim.
 func (e *UnsupportedModelVersionError) Error() string {
-	return fmt.Sprintf("Unsupported model version %s for provider %q and model %q. AI SDK 5 only supports models that implement specification version \"v2\".", e.Version, e.Provider, e.ModelID)
+	// TS interpolates the values between literal quotes (no escaping).
+	return fmt.Sprintf("Unsupported model version %s for provider \"%s\" and model \"%s\". AI SDK 5 only supports models that implement specification version \"v2\".", e.Version, e.Provider, e.ModelID) //nolint:gocritic // TS quotes without escaping, not %q
 }
 
 // ErrorName is the TS error name.

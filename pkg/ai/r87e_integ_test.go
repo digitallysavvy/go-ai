@@ -56,3 +56,13 @@ func TestR87eintegEmbedManyAllReportedRecordsSum(t *testing.T) {
 		t.Fatalf("root ai.usage.tokens = %v (set %v), want 4", v, ok)
 	}
 }
+
+// TS UnsupportedModelVersionError interpolates provider and model between
+// literal quotes; %q would escape them.
+func TestR87eintegUnsupportedModelVersionTextUnescaped(t *testing.T) {
+	err := &UnsupportedModelVersionError{Version: "v3", Provider: `a"b`, ModelID: `m\1`}
+	want := `Unsupported model version v3 for provider "a"b" and model "m\1". AI SDK 5 only supports models that implement specification version "v2".`
+	if err.Error() != want {
+		t.Fatalf("Error() = %s\nwant      %s", err.Error(), want)
+	}
+}
