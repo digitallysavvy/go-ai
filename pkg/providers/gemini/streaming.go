@@ -673,17 +673,7 @@ func (s *stream) buildFinishMeta() json.RawMessage {
 	// serviceTier is always emitted (null when absent) to match TS SDK behavior.
 	// TS: usage?.serviceTier of the final (merged) usage metadata. A
 	// top-level chunk serviceTier is not read.
-	serviceTier := ""
-	if s.lastUsageMetadata != nil {
-		serviceTier = s.lastUsageMetadata.ServiceTier
-	}
-	if serviceTier != "" {
-		if st, err := json.Marshal(serviceTier); err == nil {
-			meta["serviceTier"] = st
-		}
-	} else {
-		meta["serviceTier"] = json.RawMessage("null")
-	}
+	meta["serviceTier"] = serviceTierJSON(s.lastUsageMetadata)
 	// Only surface the token when the response stopped early (budget used up,
 	// or continuing failed), not for the checkpoint tokens of a stream that
 	// finished normally.

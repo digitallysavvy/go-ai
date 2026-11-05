@@ -481,10 +481,12 @@ func addUsageMetadata(a, b *UsageMetadata) *UsageMetadata {
 	out.TotalTokenCount = a.TotalTokenCount + b.TotalTokenCount
 	out.CachedContentTokenCount = a.CachedContentTokenCount + b.CachedContentTokenCount
 	out.ThoughtsTokenCount = a.ThoughtsTokenCount + b.ThoughtsTokenCount
-	if out.TrafficType == "" {
+	// TS {...a, ...b}: a key b sent (an explicit null or "" included)
+	// replaces a's value; only a key b lacks keeps a's.
+	if !usageKeyPresent(b, "trafficType") {
 		out.TrafficType = a.TrafficType
 	}
-	if out.ServiceTier == "" {
+	if !usageKeyPresent(b, "serviceTier") {
 		out.ServiceTier = a.ServiceTier
 	}
 	if a.raw != nil || b.raw != nil {
@@ -501,6 +503,40 @@ func addUsageMetadata(a, b *UsageMetadata) *UsageMetadata {
 	out.CandidatesTokensDetails = addTokenDetails(a.CandidatesTokensDetails, b.CandidatesTokensDetails)
 	out.ToolUsePromptTokensDetails = addTokenDetails(a.ToolUsePromptTokensDetails, b.ToolUsePromptTokensDetails)
 	return &out
+}
+
+// usageKeyPresent reports whether the usage object u was decoded from has
+// key. Without a wire object (typed values), a non-empty string field counts
+// as present.
+func usageKeyPresent(u *UsageMetadata, key string) bool {
+	if u.raw != nil {
+		_, ok := u.raw[key]
+		return ok
+	}
+	switch key {
+	case "trafficType":
+		return u.TrafficType != ""
+	case "serviceTier":
+		return u.ServiceTier != ""
+	}
+	return false
+}
+
+// serviceTierJSON is TS `usageMetadata?.serviceTier ?? null`: the tier, an
+// empty string the API sent included, else null.
+func serviceTierJSON(u *UsageMetadata) json.RawMessage {
+	tier, present := "", false
+	if u != nil {
+		tier, present = u.ServiceTier, u.ServiceTier != ""
+		if !present && u.raw != nil {
+			tier, present = u.raw["serviceTier"].(string)
+		}
+	}
+	if !present {
+		return json.RawMessage("null")
+	}
+	st, _ := json.Marshal(tier)
+	return st
 }
 
 func addTokenDetails(a, b []tokenDetail) []tokenDetail {
