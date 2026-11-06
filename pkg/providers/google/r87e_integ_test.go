@@ -160,20 +160,29 @@ func TestR87eintegInteractionsServiceTierPrecedence(t *testing.T) {
 func TestR87eintegInteractionsCreatedEmptyIDResetsMetadataID(t *testing.T) {
 	body := strings.Join([]string{
 		`data: {"event_type":"interaction.created","interaction":{"id":"v1","status":"in_progress"}}`,
+		`data: {"event_type":"step.start","index":0,"step":{"type":"model_output","content":[{"type":"text","text":""}]}}`,
+		`data: {"event_type":"step.delta","index":0,"delta":{"type":"text","text":"hi"}}`,
+		`data: {"event_type":"step.stop","index":0}`,
 		`data: {"event_type":"interaction.created","interaction":{"id":"","status":"in_progress"}}`,
 		`data: {"event_type":"interaction.completed","interaction":{"status":"completed"}}`,
 		``,
 	}, "\n\n")
 	st := newInteractionsEventStream(context.Background(), New(Config{APIKey: "k"}).client, io.NopCloser(strings.NewReader(body)), "", nil, nil, nil, 0)
-	var finish *provider.StreamChunk
+	var finish, textEnd *provider.StreamChunk
 	for {
 		c, err := st.Next()
 		if err != nil {
 			break
 		}
-		if c.Type == provider.ChunkTypeFinish {
+		switch c.Type {
+		case provider.ChunkTypeFinish:
 			finish = c
+		case provider.ChunkTypeTextEnd:
+			textEnd = c
 		}
+	}
+	if textEnd == nil || !strings.Contains(string(textEnd.ProviderMetadata), `"interactionId":"v1"`) {
+		t.Fatalf("text-end before the reset = %+v", textEnd)
 	}
 	if finish == nil || strings.Contains(string(finish.ProviderMetadata), "interactionId") {
 		t.Fatalf("finish = %+v", finish)
