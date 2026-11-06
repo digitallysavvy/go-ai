@@ -15,12 +15,12 @@ func TestIterationsEmptyArrayStaysEmpty(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"input_tokens":1,"output_tokens":2}`), &missing); err != nil {
 		t.Fatal(err)
 	}
-	got := anthropicProviderMetadata(empty, "", nil, nil, nil)["anthropic"].(map[string]interface{})["iterations"]
+	got := anthropicProviderMetadata(empty, nil, nil, nil, nil)["anthropic"].(map[string]interface{})["iterations"]
 	b, _ := json.Marshal(got)
 	if string(b) != "[]" {
 		t.Fatalf("empty iterations metadata = %s, want []", b)
 	}
-	if got := anthropicProviderMetadata(missing, "", nil, nil, nil)["anthropic"].(map[string]interface{})["iterations"]; got != nil {
+	if got := anthropicProviderMetadata(missing, nil, nil, nil, nil)["anthropic"].(map[string]interface{})["iterations"]; got != nil {
 		t.Fatalf("missing iterations metadata = %#v, want nil", got)
 	}
 	raw := anthropicRawUsage(empty)

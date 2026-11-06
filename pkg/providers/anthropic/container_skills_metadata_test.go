@@ -20,7 +20,7 @@ func TestContainerSkillsMetadataEmptyListStaysEmpty(t *testing.T) {
 		if err := json.Unmarshal([]byte(wire), &c); err != nil {
 			t.Fatal(err)
 		}
-		meta := anthropicProviderMetadata(anthropicUsage{}, "", nil, &c, nil)
+		meta := anthropicProviderMetadata(anthropicUsage{}, nil, nil, &c, nil)
 		container := meta["anthropic"].(map[string]interface{})["container"].(map[string]interface{})
 		got, _ := json.Marshal(container["skills"])
 		if string(got) != want {

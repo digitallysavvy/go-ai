@@ -1009,7 +1009,7 @@ type metadataExtras struct {
 	safeguardResults     interface{}
 }
 
-func anthropicProviderMetadata(usage anthropicUsage, stopSequence string, stopDetails *anthropicStopDetails, container *anthropicContainerResponse, contextManagement interface{}, extrasOpt ...metadataExtras) map[string]interface{} {
+func anthropicProviderMetadata(usage anthropicUsage, stopSequence *string, stopDetails *anthropicStopDetails, container *anthropicContainerResponse, contextManagement interface{}, extrasOpt ...metadataExtras) map[string]interface{} {
 	anthropic := map[string]interface{}{
 		"usage":             anthropicRawUsage(usage),
 		"stopSequence":      nil,
@@ -1017,8 +1017,9 @@ func anthropicProviderMetadata(usage anthropicUsage, stopSequence string, stopDe
 		"container":         nil,
 		"contextManagement": mapAnthropicContextManagement(contextManagement),
 	}
-	if stopSequence != "" {
-		anthropic["stopSequence"] = stopSequence
+	// TS `stop_sequence ?? null`: a present "" is the stop sequence.
+	if stopSequence != nil {
+		anthropic["stopSequence"] = *stopSequence
 	}
 	if mappedStopDetails := mapAnthropicStopDetails(stopDetails); mappedStopDetails != nil {
 		anthropic["stopDetails"] = mappedStopDetails
@@ -1055,7 +1056,7 @@ func withCustomProviderKeyMetadata(meta map[string]interface{}, providerOptionsN
 	return meta
 }
 
-func anthropicProviderMetadataRaw(usage anthropicUsage, stopSequence string, stopDetails *anthropicStopDetails, container *anthropicContainerResponse, contextManagement interface{}, providerOptionsName string, usedCustomProviderKey bool, extras ...metadataExtras) json.RawMessage {
+func anthropicProviderMetadataRaw(usage anthropicUsage, stopSequence *string, stopDetails *anthropicStopDetails, container *anthropicContainerResponse, contextManagement interface{}, providerOptionsName string, usedCustomProviderKey bool, extras ...metadataExtras) json.RawMessage {
 	meta := withCustomProviderKeyMetadata(anthropicProviderMetadata(usage, stopSequence, stopDetails, container, contextManagement, extras...), providerOptionsName, usedCustomProviderKey)
 	raw, err := json.Marshal(meta)
 	if err != nil {
@@ -1385,7 +1386,7 @@ type anthropicResponse struct {
 	Content      []anthropicContent    `json:"content"`
 	Model        string                `json:"model"`
 	StopReason   string                `json:"stop_reason"`
-	StopSequence string                `json:"stop_sequence,omitempty"`
+	StopSequence *string               `json:"stop_sequence,omitempty"`
 	StopDetails  *anthropicStopDetails `json:"stop_details,omitempty"`
 	Usage        anthropicUsage        `json:"usage"`
 	// Root-level context management (TS location; takes precedence).
@@ -1610,7 +1611,7 @@ type anthropicStream struct {
 	// Present when the model used or created a container during the request.
 	container *anthropicContainerResponse
 	// stop metadata parsed from message_delta for finish provider metadata.
-	stopSequence string
+	stopSequence *string
 	stopDetails  *anthropicStopDetails
 	// usesJsonResponseTool is true when the request was built with the synthetic
 	// 'json' tool (jsonTool structured output mode). Text delta events are
@@ -2792,7 +2793,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 			var delta struct {
 				Delta struct {
 					StopReason       string                      `json:"stop_reason"`
-					StopSequence     string                      `json:"stop_sequence"`
+					StopSequence     *string                     `json:"stop_sequence"`
 					StopDetails      *anthropicStopDetails       `json:"stop_details,omitempty"`
 					Container        *anthropicContainerResponse `json:"container,omitempty"`
 					SafeguardResults json.RawMessage             `json:"safeguard_results,omitempty"`

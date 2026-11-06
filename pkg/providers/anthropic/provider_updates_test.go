@@ -250,7 +250,7 @@ func TestAnthropicResponseProviderMetadataStopDetails(t *testing.T) {
 		Role:         "assistant",
 		Model:        ClaudeFable5,
 		StopReason:   "refusal",
-		StopSequence: "END",
+		StopSequence: strPtrR87e("END"),
 		StopDetails: &anthropicStopDetails{
 			Type:             "refusal",
 			Category:         "cyber",
