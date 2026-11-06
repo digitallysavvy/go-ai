@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -289,7 +290,10 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 		cfg.audio.Cancel(err)
 	}
 
-	conn, err := s.dial(cfg.url, cfg.headers)
+	// CloseInfo reads the close frame's code and reason off the raw
+	// connection (TS ws close event).
+	closeInfo := &wsutil.CloseInfo{}
+	conn, err := s.dial(cfg.url, cfg.headers, closeInfo)
 	if err != nil {
 		fail(err)
 		return
@@ -436,7 +440,13 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 				} else if drainAudioEnded() || audioEnded {
 					finish()
 				} else {
-					fail(errors.New("Vertex Live transcription WebSocket closed unexpectedly before finishing (code unknown).")) //nolint:staticcheck // TS text; the websocket library does not expose the close code or reason
+					// TS: (code ${code}${reason ? `, reason: ${reason}` : ''}); ws
+					// reports 1006 when the connection ended without a close frame.
+					detail := " (code " + strconv.Itoa(closeInfo.Code())
+					if reason := closeInfo.Reason(); reason != "" {
+						detail += ", reason: " + reason
+					}
+					fail(errors.New("Vertex Live transcription WebSocket closed unexpectedly before finishing" + detail + ").")) //nolint:staticcheck // TS text
 				}
 				return
 			}
@@ -525,8 +535,8 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 	}
 }
 
-func (s *geminiLiveTranscriptionStream) dial(wsURL string, headers map[string]string) (*websocket.Conn, error) {
-	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers})
+func (s *geminiLiveTranscriptionStream) dial(wsURL string, headers map[string]string, closeInfo *wsutil.CloseInfo) (*websocket.Conn, error) {
+	return wsutil.Dial(s.Context(), wsURL, wsutil.DialOptions{Headers: headers, WrapConn: closeInfo.Wrap})
 }
 
 func (s *geminiLiveTranscriptionStream) send(conn *websocket.Conn, message []byte) error {

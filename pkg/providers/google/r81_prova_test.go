@@ -101,9 +101,9 @@ func TestR81provaPCM16SilenceMinSampleIsNotSilence(t *testing.T) {
 }
 
 // TS onClose before the finish condition: "Google Live transcription WebSocket
-// closed unexpectedly before finishing (code ${code ?? 'unknown'}...)."; Go
-// cannot read the close code, so it reports "(code unknown)." as TS does
-// without one.
+// closed unexpectedly before finishing (code ${code ?? 'unknown'}...).";
+// x/net/websocket's server closes with 1000 (round 87e: CloseInfo reads
+// the code).
 func TestR81provaTranscriptionCloseBeforeFinishingText(t *testing.T) {
 	server := newLiveTranscriptionTestServer(t)
 	defer server.close()
@@ -122,7 +122,7 @@ func TestR81provaTranscriptionCloseBeforeFinishingText(t *testing.T) {
 	server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, time.Second)
 	server.closeConnection()
 	_, err = drainUntilFinishOrError(t, result.Stream)
-	if want := "Google Live transcription WebSocket closed unexpectedly before finishing (code unknown)."; err == nil || err.Error() != want {
+	if want := "Google Live transcription WebSocket closed unexpectedly before finishing (code 1000)."; err == nil || err.Error() != want {
 		t.Fatalf("err = %v, want %q", err, want)
 	}
 }
