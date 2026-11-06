@@ -552,13 +552,21 @@ func driveCodeModeExecution(ctx context.Context, jsCtx *qjs.Context, bridge *too
 				return "", false, true, nil
 			}
 			// Nothing pending, nothing fatal, yet the top-level promise
-			// never settled and nothing more can run: the script itself
-			// awaited a promise tied to no host call at all (e.g. `await
-			// new Promise(() => {})`), not anything the bridge produced.
-			return "", false, false, NewProtocolError(
-				"Code mode script awaited a promise that no pending host call will ever settle.",
-				nil,
-			)
+			// never settled and nothing more can run: the script awaited a
+			// promise tied to no host call (e.g. `await new Promise(() =>
+			// {})`). TS run's manager waits for the execution timeout and
+			// fails with RunTimeoutError, so wait for the run's deadline
+			// (or cancellation) like a script waiting on a host call, with
+			// the CPU budget paused.
+			budget := cpuBudgetFrom(bridge.ctx)
+			if budget != nil {
+				budget.pause()
+			}
+			<-ctx.Done()
+			if budget != nil {
+				budget.resume()
+			}
+			return "", false, false, ctx.Err()
 		}
 	}
 

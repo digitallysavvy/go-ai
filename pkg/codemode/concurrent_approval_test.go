@@ -378,27 +378,22 @@ func TestConcurrentApprovalBatch_ExceedsMaxInFlightBridgeRequests(t *testing.T) 
 	}
 }
 
-// A script that awaits a promise tied to no host call at all (not a
-// deliberately-unresolved interrupt, just ordinary JavaScript that never
-// settles anything) must fail with a clear protocol error instead of
-// hanging until the execution timeout -- driveCodeModeExecution's
-// defensive fallback once the job queue is quiescent with nothing pending
-// and nothing fatal recorded (run_code_mode.go).
-func TestConcurrentApprovalBatch_AwaitingAnUnrelatedNeverSettlingPromiseFailsFast(t *testing.T) {
+// A script that awaits a promise tied to no host call at all waits for the
+// execution timeout and fails with the timeout error, like TS run's manager
+// (RunTimeoutError; cr-r87e-tools-to-integrator 3).
+func TestConcurrentApprovalBatch_AwaitingAnUnrelatedNeverSettlingPromiseTimesOut(t *testing.T) {
 	start := time.Now()
 	_, err := RunCodeMode(context.Background(), RunInput{
 		JS:      "return await new Promise(() => {});",
 		Tools:   ToolSet{},
-		Options: &Options{ExecutionPolicy: &ExecutionPolicy{TimeoutMs: 30_000}},
+		Options: &Options{ExecutionPolicy: &ExecutionPolicy{TimeoutMs: 50}},
 	})
 	elapsed := time.Since(start)
-	var protoErr *ProtocolError
-	if !errors.As(err, &protoErr) {
-		t.Fatalf("expected *ProtocolError, got %#v (%v)", err, err)
+	var timeoutErr *TimeoutError
+	if !errors.As(err, &timeoutErr) || err.Error() != "Code mode execution timed out after 50ms." {
+		t.Fatalf("expected the execution timeout error, got %#v (%v)", err, err)
 	}
-	// The error type already tells a protocol failure from a timeout; the bound
-	// only has to stay below the 30s timeout, so a loaded machine cannot trip it.
-	if elapsed > 25*time.Second {
-		t.Fatalf("expected the quiescence check to fail fast under the 30s timeout, took %s", elapsed)
+	if elapsed < 40*time.Millisecond || elapsed > 10*time.Second {
+		t.Fatalf("expected the run to wait for its 50ms timeout, took %s", elapsed)
 	}
 }
