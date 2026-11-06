@@ -218,6 +218,102 @@ const codeModeGuestSource = `(function () {
   // Object.prototype (toString, hasOwnProperty, ...) calls that function
   // with this undefined instead of the missing-tool path. The prototype
   // functions are captured before any user source runs.
+  // run serializes host-call arguments with devalue in the proxy's apply
+  // trap and throws synchronously when it cannot (HOST_FUNCTIONS_PROXY_SOURCE
+  // serializationError): checkSerializable reproduces devalue's (5.8.2)
+  // throw conditions with run's reducers (Error values and objects with an
+  // own __proto__ key are accepted). The host still receives the JSON value.
+  var OriginalTypeError = TypeError;
+  var OriginalErrorCtor = Error;
+  var OriginalAggregateError = AggregateError;
+  var getPrototypeOf = Object.getPrototypeOf;
+  var getOwnPropertyNames = Object.getOwnPropertyNames;
+  var getOwnPropertySymbols = Object.getOwnPropertySymbols;
+  var getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+  var objectKeys = Object.keys;
+  var hasOwn = Object.hasOwn;
+  var isArray = Array.isArray;
+  var objectPrototype = Object.prototype;
+  var objectToString = Object.prototype.toString;
+  var arraySort = Array.prototype.sort;
+  var arrayJoin = Array.prototype.join;
+  var stringSlice = String.prototype.slice;
+  var setForEach = Set.prototype.forEach;
+  var mapForEach = Map.prototype.forEach;
+  var OriginalSet = Set;
+  var setHas = Set.prototype.has;
+  var setAdd = Set.prototype.add;
+  function sortedNames(object) {
+    return apply(arrayJoin, apply(arraySort, getOwnPropertyNames(object), []), ["\0"]);
+  }
+  var objectPrototypeNames = sortedNames(objectPrototype);
+  function isPlainObject(value) {
+    var proto = getPrototypeOf(value);
+    return proto === objectPrototype || proto === null || getPrototypeOf(proto) === null || sortedNames(proto) === objectPrototypeNames;
+  }
+  function devalueFailure(message) {
+    var error = new OriginalTypeError("Host function arguments are not serializable: " + message);
+    defineProperty(error, "code", { value: "RUN_SERIALIZATION_ERROR", writable: true, configurable: true, enumerable: true });
+    return error;
+  }
+  function checkSerializable(value, seen) {
+    var type = typeof value;
+    if (value === null || (type !== "object" && type !== "function" && type !== "symbol")) return;
+    if (type !== "symbol") {
+      if (apply(setHas, seen, [value])) return;
+      apply(setAdd, seen, [value]);
+    }
+    if (value instanceof OriginalErrorCtor) {
+      checkSerializable(value.cause, seen);
+      if (value instanceof OriginalAggregateError) {
+        var errors = value.errors;
+        for (var e = 0; e < errors.length; e++) checkSerializable(errors[e], seen);
+      }
+      return;
+    }
+    if (type === "object" && !isArray(value)) {
+      var ownProto = getPrototypeOf(value);
+      if ((ownProto === objectPrototype || ownProto === null) && hasOwn(value, "__proto__")) {
+        var entryKeys = objectKeys(value);
+        for (var k = 0; k < entryKeys.length; k++) checkSerializable(value[entryKeys[k]], seen);
+        return;
+      }
+    }
+    if (type === "function") throw devalueFailure("Cannot stringify a function");
+    if (type === "symbol") throw devalueFailure("Cannot stringify a Symbol primitive");
+    if (typeof value.then === "function") throw devalueFailure("Cannot stringify a Promise or thenable \u2014 use stringifyAsync instead");
+    var tag = apply(stringSlice, apply(objectToString, value, []), [8, -1]);
+    switch (tag) {
+      case "Number": case "String": case "Boolean": case "BigInt":
+      case "Date": case "URL": case "URLSearchParams": case "RegExp":
+      case "Int8Array": case "Uint8Array": case "Uint8ClampedArray": case "Int16Array": case "Uint16Array":
+      case "Float16Array": case "Int32Array": case "Uint32Array": case "Float32Array": case "Float64Array":
+      case "BigInt64Array": case "BigUint64Array": case "DataView": case "ArrayBuffer":
+      case "Temporal.Duration": case "Temporal.Instant": case "Temporal.PlainDate": case "Temporal.PlainTime":
+      case "Temporal.PlainDateTime": case "Temporal.PlainMonthDay": case "Temporal.PlainYearMonth": case "Temporal.ZonedDateTime":
+        return;
+      case "Array":
+        for (var i = 0; i < value.length; i++) if (hasOwn(value, i)) checkSerializable(value[i], seen);
+        return;
+      case "Set":
+        apply(setForEach, value, [function (item) { checkSerializable(item, seen); }]);
+        return;
+      case "Map":
+        apply(mapForEach, value, [function (item, key) { checkSerializable(key, seen); checkSerializable(item, seen); }]);
+        return;
+    }
+    if (!isPlainObject(value)) throw devalueFailure("Cannot stringify arbitrary non-POJOs");
+    var symbols = getOwnPropertySymbols(value);
+    for (var s = 0; s < symbols.length; s++) {
+      if (getOwnPropertyDescriptor(value, symbols[s]).enumerable) throw devalueFailure("Cannot stringify POJOs with symbolic keys");
+    }
+    var keys = objectKeys(value);
+    for (var j = 0; j < keys.length; j++) {
+      if (keys[j] === "__proto__") throw devalueFailure("Cannot stringify objects with __proto__ keys");
+      checkSerializable(value[keys[j]], seen);
+    }
+  }
+
   var toolNameSet = createObject(null);
   var toolNameList = __CODE_MODE_TOOL_NAMES__;
   for (var t = 0; t < toolNameList.length; t++) toolNameSet[toolNameList[t]] = true;
@@ -234,7 +330,10 @@ const codeModeGuestSource = `(function () {
         var prototypeFunction = prototypeFunctions[name];
         if (prototypeFunction !== undefined) return (input) => prototypeFunction(input);
       }
-      return (input) => createBridgePromise(OriginalString(name), input !== undefined, input);
+      return (input) => {
+        checkSerializable(input, new OriginalSet());
+        return createBridgePromise(OriginalString(name), input !== undefined, input);
+      };
     }
   });
   defineProperty(globalThis, "__codeModeTools", { value: tools, writable: false, configurable: false });

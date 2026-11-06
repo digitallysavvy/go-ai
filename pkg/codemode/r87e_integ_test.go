@@ -33,3 +33,41 @@ func TestR87eintegToolsObjectPrototypeNames(t *testing.T) {
 		t.Fatalf("registered toString = %#v, %v (calls %d)", got, err, calls.Load())
 	}
 }
+
+// TS run serializes host-call arguments with devalue in the proxy's apply
+// trap and throws `Host function arguments are not serializable: <devalue
+// message>` synchronously, before any request; values devalue accepts reach
+// the tool (cr-r87e-tools-to-integrator 4).
+func TestR87eintegHostArgumentsDevalueErrors(t *testing.T) {
+	var calls atomic.Int32
+	var lastInput map[string]interface{}
+	tools := ToolSet{"a": {Name: "a", Parameters: r87ccarryObject,
+		Execute: func(_ context.Context, in map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			calls.Add(1)
+			lastInput = in
+			return "ok", nil
+		}}}
+	for js, want := range map[string]string{
+		"return await tools.a(() => 1);":                   "Cannot stringify a function",
+		"return await tools.a({ s: Symbol('x') });":        "Cannot stringify a Symbol primitive",
+		"return await tools.a(new (class X {})());":        "Cannot stringify arbitrary non-POJOs",
+		"return await tools.a({ [Symbol('k')]: 1 });":      "Cannot stringify POJOs with symbolic keys",
+		"return await tools.a({ p: Promise.resolve(1) });": "Cannot stringify a Promise or thenable — use stringifyAsync instead",
+	} {
+		_, err := RunCodeMode(context.Background(), RunInput{JS: js, Tools: tools})
+		if err == nil || !strings.Contains(err.Error(), "Host function arguments are not serializable: "+want) {
+			t.Errorf("%s: err = %v, want %q", js, err, want)
+		}
+	}
+	got, err := RunCodeMode(context.Background(), RunInput{JS: `try { tools.a(() => 1); } catch (e) { return e instanceof TypeError && e.code; }`, Tools: tools})
+	if err != nil || got != "RUN_SERIALIZATION_ERROR" {
+		t.Errorf("synchronous throw = %#v, %v", got, err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("tool ran %d times for unserializable input", calls.Load())
+	}
+	got, err = RunCodeMode(context.Background(), RunInput{JS: `return await tools.a({ e: new Error("x"), m: new Map([[1, 2]]), d: 1 });`, Tools: tools})
+	if err != nil || got != "ok" || calls.Load() != 1 || lastInput["d"] != float64(1) {
+		t.Fatalf("accepted input = %#v, %v (calls %d, input %v)", got, err, calls.Load(), lastInput)
+	}
+}
