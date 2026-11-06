@@ -2933,6 +2933,10 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	// of the assistant messages it adds to the conversation (the next
 	// step's prompt, step.response.messages and onEnd's messages).
 	internal.OmitReasoningFilesFromPrompt = true
+	// TS doStreamStep calls model.doStream without
+	// prepareLanguageModelCallOptions, so maxOutputTokens 0 reaches the
+	// provider.
+	internal.SkipMaxOutputTokensCheck = true
 	aibridge.SetCallerRootStart(&internal, startRoot)
 	aibridge.SetWorkflowStreamHooks(&internal, func(done aibridge.StreamDoneInfo) {
 		rootCtx := startRoot(ctx)

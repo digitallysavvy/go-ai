@@ -36,6 +36,12 @@ type InternalOptions struct {
 	// stepToolChoice. Used by WorkflowAgent.
 	OmitStepPromptTelemetry bool
 
+	// SkipMaxOutputTokensCheck lets StreamText pass any maxOutputTokens
+	// (0 included) to the model: TS WorkflowAgent's doStreamStep calls
+	// model.doStream without prepareLanguageModelCallOptions. Used by
+	// WorkflowAgent.Stream.
+	SkipMaxOutputTokensCheck bool
+
 	// StopOnStreamError makes a step whose stream carried an error part end
 	// the run without executing or answering that step's tool calls, like TS
 	// WorkflowAgent's hasTerminalError (the loop is done; the error is
@@ -202,6 +208,15 @@ func callerRootStartOf(internal interface{}) func(context.Context) context.Conte
 		return o.callerRootStart
 	}
 	return nil
+}
+
+// checkStreamMaxOutputTokens is validateMaxOutputTokens unless the run skips
+// the check (InternalOptions.SkipMaxOutputTokensCheck).
+func checkStreamMaxOutputTokens(internal *InternalOptions, maxOutputTokens *int) error {
+	if internal != nil && internal.SkipMaxOutputTokensCheck {
+		return nil
+	}
+	return validateMaxOutputTokens(maxOutputTokens)
 }
 
 func deferApprovalRequests(internal *InternalOptions) bool {

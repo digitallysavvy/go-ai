@@ -877,7 +877,7 @@ func streamTextInternal(ctx context.Context, opts StreamTextOptions, steeringRun
 	}
 	// TS prepareLanguageModelCallOptions(settings) follows prepareRetries in
 	// the DefaultStreamTextResult constructor.
-	if err := validateMaxOutputTokens(opts.MaxTokens); err != nil {
+	if err := checkStreamMaxOutputTokens(opts.Internal, opts.MaxTokens); err != nil {
 		return nil, err
 	}
 
@@ -1324,7 +1324,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// TS prepareStepCallSettings validates the step's settings after the
 	// step's tools are prepared and its steering messages resolved, before
 	// the model call (whose prompt conversion and step start come later).
-	if err := validateMaxOutputTokens(stepMaxTokens); err != nil {
+	if err := checkStreamMaxOutputTokens(opts.Internal, stepMaxTokens); err != nil {
 		if stepCancel != nil {
 			stepCancel()
 		}
@@ -4173,7 +4173,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		opts.ExperimentalSandbox = nextSandbox
 		// TS prepareStepCallSettings validates the step's settings after the
 		// step's tools are prepared, before the model call.
-		if err := validateMaxOutputTokens(nextMaxTokens); err != nil {
+		if err := checkStreamMaxOutputTokens(opts.Internal, nextMaxTokens); err != nil {
 			nextStepCancel()
 			failNextStep(err)
 			break
