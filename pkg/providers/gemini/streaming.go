@@ -62,6 +62,7 @@ type stream struct {
 	lastUrlContextMetadata   json.RawMessage
 	lastSafetyRatings        json.RawMessage
 	lastFinishMessage        string
+	lastFinishMessageSet     bool // TS lastFinishMessage != null ("" included)
 	lastPromptFeedback       json.RawMessage
 	lastUsageMetadata        *UsageMetadata
 
@@ -110,7 +111,9 @@ type stream struct {
 	// stopped early. continuedUsage banks the usage of completed requests.
 	continueFn              func(token string) (io.ReadCloser, error)
 	pendingContinuation     string
+	pendingContinuationSet  bool // a token ("" included) is pending (TS != null)
 	lastContinuationToken   string
+	lastContinuationSet     bool
 	continuedUsage          *UsageMetadata
 	initialPromptTokenCount *int
 	continuationErr         bool
@@ -281,11 +284,11 @@ func (s *stream) markParseError() {
 // caller finalizes: the finish chunk then carries the last continuation token
 // so the caller can resume. Mirrors TS continueGoogleStream.
 func (s *stream) continueStream() bool {
-	if s.pendingContinuation == "" || s.continueFn == nil || s.continuationErr {
+	if !s.pendingContinuationSet || s.continueFn == nil || s.continuationErr {
 		return false
 	}
 	token := s.pendingContinuation
-	s.pendingContinuation = ""
+	s.pendingContinuation, s.pendingContinuationSet = "", false
 	next, err := s.continueFn(token)
 	if err != nil {
 		s.continuationErr = true
@@ -402,13 +405,14 @@ func (s *stream) processSSEEvent(chunkData Response) {
 	if candidate.SafetyRatings != nil {
 		s.lastSafetyRatings = candidate.SafetyRatings
 	}
-	if candidate.FinishMessage != "" {
-		s.lastFinishMessage = candidate.FinishMessage
+	// TS `!= null` keeps the last present value, "" included.
+	if fm, ok := candidate.finishMessage(); ok {
+		s.lastFinishMessage, s.lastFinishMessageSet = fm, true
 	}
-	if candidate.ContinuationToken != "" {
-		s.lastContinuationToken = candidate.ContinuationToken
+	if ct, ok := candidate.continuationToken(); ok {
+		s.lastContinuationToken, s.lastContinuationSet = ct, true
 		if candidate.FinishReason == "CONTINUATION" {
-			s.pendingContinuation = candidate.ContinuationToken
+			s.pendingContinuation, s.pendingContinuationSet = ct, true
 		}
 	}
 
@@ -657,7 +661,7 @@ func (s *stream) buildFinishMeta() json.RawMessage {
 			meta["groundingMetadataPerRequest"] = gp
 		}
 	}
-	if s.lastFinishMessage != "" {
+	if s.lastFinishMessageSet || s.lastFinishMessage != "" {
 		fm, _ := json.Marshal(s.lastFinishMessage)
 		meta["finishMessage"] = fm
 	} else {
@@ -677,7 +681,7 @@ func (s *stream) buildFinishMeta() json.RawMessage {
 	// Only surface the token when the response stopped early (budget used up,
 	// or continuing failed), not for the checkpoint tokens of a stream that
 	// finished normally.
-	if s.lastContinuationToken != "" && (s.rawFinishReason == "MAX_TOKENS" || s.rawFinishReason == "CONTINUATION") {
+	if (s.lastContinuationSet || s.lastContinuationToken != "") && (s.rawFinishReason == "MAX_TOKENS" || s.rawFinishReason == "CONTINUATION") {
 		ct, _ := json.Marshal(s.lastContinuationToken)
 		meta["continuationToken"] = ct
 	}

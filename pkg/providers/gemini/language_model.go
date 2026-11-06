@@ -112,16 +112,18 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	firstPrompt = initialPromptTokens(response.UsageMetadata)
 	for {
 		var token string
+		hasToken := false
 		if len(response.Candidates) > 0 {
 			groundingPerRequest = append(groundingPerRequest, rawOrNull(stripMetadata(response.Candidates[0].GroundingMetadata, metaGrounding)))
 			if response.Candidates[0].FinishReason == "CONTINUATION" {
-				token = response.Candidates[0].ContinuationToken
+				// TS `continuationToken == null` stops; "" continues.
+				token, hasToken = response.Candidates[0].continuationToken()
 			}
 		} else {
 			groundingPerRequest = append(groundingPerRequest, json.RawMessage("null"))
 		}
 		usageMetadata = addUsageMetadata(usageMetadata, response.UsageMetadata)
-		if token == "" {
+		if !hasToken {
 			break
 		}
 		// TS has no bound on the loop; honor cancellation between hops so a
@@ -706,8 +708,9 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 	}
 	meta["urlContextMetadata"] = rawOrNull(stripMetadata(candidate.UrlContextMetadata, metaURLContext))
 	meta["safetyRatings"] = rawOrNull(stripMetadata(candidate.SafetyRatings, metaSafetyRatings))
-	if candidate.FinishMessage != "" {
-		fm, _ := json.Marshal(candidate.FinishMessage)
+	// TS `candidate?.finishMessage ?? null`: a present "" is kept.
+	if fm, ok := candidate.finishMessage(); ok {
+		fm, _ := json.Marshal(fm)
 		meta["finishMessage"] = fm
 	} else {
 		meta["finishMessage"] = json.RawMessage("null")
@@ -722,8 +725,8 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 		meta["usageMetadata"] = json.RawMessage("null")
 	}
 	meta["serviceTier"] = serviceTierJSON(response.UsageMetadata)
-	if candidate.ContinuationToken != "" {
-		ct, _ := json.Marshal(candidate.ContinuationToken)
+	if ct, ok := candidate.continuationToken(); ok {
+		ct, _ := json.Marshal(ct)
 		meta["continuationToken"] = ct
 	}
 	if initialPromptTokenCount != nil {

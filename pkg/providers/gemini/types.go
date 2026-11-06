@@ -25,6 +25,43 @@ type Candidate struct {
 	GroundingMetadata  json.RawMessage `json:"groundingMetadata,omitempty"`
 	UrlContextMetadata json.RawMessage `json:"urlContextMetadata,omitempty"`
 	SafetyRatings      json.RawMessage `json:"safetyRatings,omitempty"`
+
+	// finishMessageSet / continuationTokenSet record a present string
+	// value, "" included (TS `!= null`); set by UnmarshalJSON.
+	finishMessageSet     bool
+	continuationTokenSet bool
+}
+
+type candidateFields Candidate
+
+// UnmarshalJSON decodes the candidate and records which optional strings
+// the API sent.
+func (c *Candidate) UnmarshalJSON(data []byte) error {
+	var fields candidateFields
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	var present struct {
+		FinishMessage     *string `json:"finishMessage"`
+		ContinuationToken *string `json:"continuationToken"`
+	}
+	_ = json.Unmarshal(data, &present)
+	*c = Candidate(fields)
+	c.finishMessageSet = present.FinishMessage != nil
+	c.continuationTokenSet = present.ContinuationToken != nil
+	return nil
+}
+
+// finishMessage is TS candidate.finishMessage: the value and whether it is
+// present (a non-empty value set without decoding counts as present).
+func (c *Candidate) finishMessage() (string, bool) {
+	return c.FinishMessage, c.finishMessageSet || c.FinishMessage != ""
+}
+
+// continuationToken is TS candidate.continuationToken: the value and
+// whether it is present.
+func (c *Candidate) continuationToken() (string, bool) {
+	return c.ContinuationToken, c.continuationTokenSet || c.ContinuationToken != ""
 }
 
 // Response represents the Gemini API response body.
