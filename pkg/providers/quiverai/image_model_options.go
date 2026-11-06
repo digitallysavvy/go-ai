@@ -92,7 +92,7 @@ var quiverOperations = map[string]bool{"generate": true, "vectorize": true, "ani
 var quiverReasoningEfforts = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true}
 
 func invalidQuiverArgument(argument, message string) error {
-	return &providererrors.InvalidArgumentError{Field: argument, Message: message}
+	return providererrors.NewArgumentError(argument, message, nil)
 }
 
 // parseQuiverAIImageModelOptions parses+validates

@@ -68,15 +68,12 @@ var parallelOptionsSchema = providerutils.OptionSchema{"includeExcerpts": provid
 func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCallOptions) (*provider.DecisionResult, error) {
 	ids := opts.QuestionIDs()
 	if len(ids) == 0 || len(ids) > 100 {
-		return nil, &providererrors.InvalidArgumentError{Field: "questions", Message: "Parallel Decisions supports 1 to 100 questions."}
+		return nil, providererrors.NewArgumentError("questions", "Parallel Decisions supports 1 to 100 questions.", nil)
 	}
 	questions := providerutils.OrderedMap{Keys: ids, Vals: make(map[string]interface{}, len(ids))}
 	for _, id := range ids {
 		if !parallelQuestionName.MatchString(id) {
-			return nil, &providererrors.InvalidArgumentError{
-				Field:   "questions",
-				Message: "Parallel question names may contain only ASCII letters, numbers, underscores, and hyphens.",
-			}
+			return nil, providererrors.NewArgumentError("questions", "Parallel question names may contain only ASCII letters, numbers, underscores, and hyphens.", nil)
 		}
 		q := opts.Questions[id]
 		wireType := q.Type
@@ -87,7 +84,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		case "choice":
 			options, _ := q.Criteria.(map[string]interface{})
 			if len(options) < 2 || len(options) > 255 {
-				return nil, &providererrors.InvalidArgumentError{Field: fmt.Sprintf("questions.%s.criteria", id), Message: "Parallel Choice questions require 2 to 255 options."}
+				return nil, providererrors.NewArgumentError(fmt.Sprintf("questions.%s.criteria", id), "Parallel Choice questions require 2 to 255 options.", nil)
 			}
 			if order := opts.CriteriaOrder[id]; len(order) > 0 {
 				criteria = providerutils.OrderedMap{Keys: provider.OrderedKeys(options, order), Vals: options}
@@ -95,7 +92,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		case "score":
 			levels, _ := q.Criteria.([]interface{})
 			if len(levels) < 2 || len(levels) > 10 {
-				return nil, &providererrors.InvalidArgumentError{Field: fmt.Sprintf("questions.%s.criteria", id), Message: "Parallel Score questions require 2 to 10 levels."}
+				return nil, providererrors.NewArgumentError(fmt.Sprintf("questions.%s.criteria", id), "Parallel Score questions require 2 to 10 levels.", nil)
 			}
 		default:
 			return nil, &providererrors.DecisionUnsupportedQuestionTypeError{

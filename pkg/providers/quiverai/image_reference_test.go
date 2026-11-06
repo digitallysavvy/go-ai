@@ -1,10 +1,12 @@
 package quiverai
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // TestIsSvgMarkupWellFormedNamedEntities mirrors TS's hasValidXmlReferences
@@ -81,7 +83,8 @@ func TestValidateQuiverAIImageURLMatchesWHATWGHref(t *testing.T) {
 		t.Fatalf("got %q, %v", got, err)
 	}
 	_, err = validateQuiverAIImageURL("ftp://example.com/a", "x")
-	if err == nil || !strings.Contains(err.Error(), "url") || !strings.Contains(err.Error(), "must use HTTP or HTTPS") {
+	var ia *providererrors.InvalidArgumentError
+	if !errors.As(err, &ia) || ia.Field != "url" || err.Error() != "QuiverAI image URLs must use HTTP or HTTPS." {
 		t.Fatalf("want url-argument error, got %v", err)
 	}
 }

@@ -134,10 +134,7 @@ type Config struct {
 func New(cfg Config) (*Provider, error) {
 	// TS `options.apiKey && tokenProvider`: an apiKey function is truthy too.
 	if (cfg.APIKey != "" || cfg.APIKeyFunc != nil) && cfg.ADTokenProvider != nil {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "apiKey/tokenProvider",
-			Message: "Both apiKey and tokenProvider were provided. Please use only one authentication method.",
-		}
+		return nil, providererrors.NewArgumentError("apiKey/tokenProvider", "Both apiKey and tokenProvider were provided. Please use only one authentication method.", nil)
 	}
 	if cfg.APIKey == "" && cfg.ADTokenProvider == nil && cfg.APIKeyFunc == nil {
 		cfg.APIKey = os.Getenv("AZURE_API_KEY")
@@ -223,10 +220,7 @@ func validateAzureResourceName(resourceName string) error {
 		return nil
 	}
 	if !providerutils.IsValidHostnamePart(resourceName) {
-		return &providererrors.InvalidArgumentError{
-			Field:   "resourceName",
-			Message: "Invalid Azure resource name. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.",
-		}
+		return providererrors.NewArgumentError("resourceName", "Invalid Azure resource name. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.", nil)
 	}
 	return nil
 }

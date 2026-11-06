@@ -34,7 +34,7 @@ func isDialogueModelID(modelID string) bool {
 // models). Mirrors TS ElevenLabsSpeechModel#doStream.
 func (m *SpeechModel) DoStreamSpeech(ctx context.Context, opts *provider.SpeechStreamOptions) (*provider.SpeechStreamResult, error) {
 	if opts == nil || opts.Text == nil {
-		return nil, &providererrors.InvalidArgumentError{Field: "text", Message: "a text stream is required"}
+		return nil, providererrors.NewArgumentError("text", "a text stream is required", nil)
 	}
 	result, err := m.startStream(ctx, opts)
 	if err != nil {
@@ -73,24 +73,15 @@ func (m *SpeechModel) startStream(ctx context.Context, opts *provider.SpeechStre
 		}
 	}
 	if dialogue != nil && (len(dialogue.Voices) == 0 || len(dialogue.Voices) > 10) {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "providerOptions.elevenlabs.dialogue.voices",
-			Message: fmt.Sprintf("dialogue.voices must list 1 to 10 voices; received %d.", len(dialogue.Voices)),
-		}
+		return nil, providererrors.NewArgumentError("providerOptions.elevenlabs.dialogue.voices", fmt.Sprintf("dialogue.voices must list 1 to 10 voices; received %d.", len(dialogue.Voices)), nil)
 	}
 	if dialogue != nil && m.modelID == SpeechModelV3Conversational && len(dialogue.Voices) != 1 {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "providerOptions.elevenlabs.dialogue.voices",
-			Message: fmt.Sprintf("eleven_v3_conversational supports exactly one dialogue voice; received %d.", len(dialogue.Voices)),
-		}
+		return nil, providererrors.NewArgumentError("providerOptions.elevenlabs.dialogue.voices", fmt.Sprintf("eleven_v3_conversational supports exactly one dialogue voice; received %d.", len(dialogue.Voices)), nil)
 	}
 	// The WebSocket API rejects locators without a version, unlike HTTP.
 	for _, locator := range elOpts.PronunciationDictionaryLocators {
 		if locator.VersionID == "" {
-			return nil, &providererrors.InvalidArgumentError{
-				Field:   "providerOptions.elevenlabs.pronunciationDictionaryLocators",
-				Message: fmt.Sprintf(`Streaming speech requires a versionId for pronunciation dictionary "%s".`, locator.PronunciationDictionaryID),
-			}
+			return nil, providererrors.NewArgumentError("providerOptions.elevenlabs.pronunciationDictionaryLocators", fmt.Sprintf(`Streaming speech requires a versionId for pronunciation dictionary "%s".`, locator.PronunciationDictionaryID), nil)
 		}
 	}
 
@@ -157,10 +148,7 @@ func (m *SpeechModel) startStream(ctx context.Context, opts *provider.SpeechStre
 	var protocol streamProtocol
 	if dialogue != nil {
 		if opts.Voice != "" && !containsString(dialogue.Voices, opts.Voice) {
-			return nil, &providererrors.InvalidArgumentError{
-				Field:   "voice",
-				Message: fmt.Sprintf(`ElevenLabs streaming dialogue voice "%s" is not listed in providerOptions.elevenlabs.dialogue.voices.`, opts.Voice),
-			}
+			return nil, providererrors.NewArgumentError("voice", fmt.Sprintf(`ElevenLabs streaming dialogue voice "%s" is not listed in providerOptions.elevenlabs.dialogue.voices.`, opts.Voice), nil)
 		}
 		defaultVoice := opts.Voice
 		if defaultVoice == "" {
@@ -450,10 +438,7 @@ func toElevenLabsStreamOutputFormat(format *provider.AudioFormat) (string, error
 		desc += fmt.Sprintf(`,"rate":%d`, *rate)
 	}
 	desc += "}"
-	return "", &providererrors.InvalidArgumentError{
-		Field:   "outputFormat",
-		Message: fmt.Sprintf("ElevenLabs streaming speech does not support the output format %s. Use providerOptions.elevenlabs.streaming.outputFormat for a native ElevenLabs format.", desc),
-	}
+	return "", providererrors.NewArgumentError("outputFormat", fmt.Sprintf("ElevenLabs streaming speech does not support the output format %s. Use providerOptions.elevenlabs.streaming.outputFormat for a native ElevenLabs format.", desc), nil)
 }
 
 var _ provider.SpeechStreamer = (*SpeechModel)(nil)

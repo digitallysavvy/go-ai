@@ -117,10 +117,7 @@ func (p *BedrockMantleProvider) baseURLForModel(modelID string) (string, error) 
 		return "", fmt.Errorf("AWS region setting is missing. Pass it using the 'region' parameter or the AWS_REGION environment variable")
 	}
 	if !providerutils.IsValidHostnamePart(region) {
-		return "", &providererrors.InvalidArgumentError{
-			Field:   "region",
-			Message: "Invalid AWS region. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.",
-		}
+		return "", providererrors.NewArgumentError("region", "Invalid AWS region. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.", nil)
 	}
 	path := "v1"
 	if isMantleOpenAIOnlyModel(modelID) {

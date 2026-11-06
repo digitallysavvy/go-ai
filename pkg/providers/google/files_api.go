@@ -313,9 +313,5 @@ func (p *Provider) handleFilesError(status int, headers http.Header, body []byte
 }
 
 func invalidGoogleFilesOptions(cause error) error {
-	return &providererrors.InvalidArgumentError{
-		Field:   "providerOptions",
-		Message: "invalid google provider options",
-		Cause:   cause,
-	}
+	return providererrors.NewArgumentError("providerOptions", "invalid google provider options", cause)
 }

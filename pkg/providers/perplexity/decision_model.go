@@ -52,19 +52,13 @@ func (m *DecisionModel) SupportedQuestionTypes() []string {
 func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCallOptions) (*provider.DecisionResult, error) {
 	ids := opts.QuestionIDs()
 	if len(ids) == 0 || len(ids) > 128 {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "questions",
-			Message: "Perplexity Decisions supports 1 to 128 questions per request.",
-		}
+		return nil, providererrors.NewArgumentError("questions", "Perplexity Decisions supports 1 to 128 questions per request.", nil)
 	}
 
 	nativeQuestions := providerutils.OrderedMap{Keys: ids, Vals: make(map[string]interface{}, len(ids))}
 	for _, id := range ids {
 		if id == "" {
-			return nil, &providererrors.InvalidArgumentError{
-				Field:   "questions",
-				Message: "Perplexity Decisions requires non-empty question names.",
-			}
+			return nil, providererrors.NewArgumentError("questions", "Perplexity Decisions requires non-empty question names.", nil)
 		}
 		q := opts.Questions[id]
 		wire := map[string]interface{}{}
@@ -81,10 +75,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		case "choice":
 			criteria, _ := q.Criteria.(map[string]interface{})
 			if len(criteria) == 0 || len(criteria) > 255 {
-				return nil, &providererrors.InvalidArgumentError{
-					Field:   fmt.Sprintf("questions.%s.criteria", id),
-					Message: "Perplexity Choice questions support 1 to 255 options.",
-				}
+				return nil, providererrors.NewArgumentError(fmt.Sprintf("questions.%s.criteria", id), "Perplexity Choice questions support 1 to 255 options.", nil)
 			}
 			wire["type"] = "choice"
 			if order := opts.CriteriaOrder[id]; len(order) > 0 {
@@ -101,10 +92,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 				}
 			}
 			if invalid {
-				return nil, &providererrors.InvalidArgumentError{
-					Field:   fmt.Sprintf("questions.%s.criteria", id),
-					Message: "Perplexity Score questions require 1 to 10 non-null levels.",
-				}
+				return nil, providererrors.NewArgumentError(fmt.Sprintf("questions.%s.criteria", id), "Perplexity Score questions require 1 to 10 non-null levels.", nil)
 			}
 			wire["type"] = "score"
 			wire["criteria"] = q.Criteria

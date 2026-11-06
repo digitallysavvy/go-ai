@@ -7,9 +7,5 @@ import providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 // the same failures, so callers matching either type with errors.As keep
 // working.
 func invalidArgument(field, message string, cause error) error {
-	return &providererrors.InvalidArgumentError{
-		Field:   field,
-		Message: message,
-		Cause:   providererrors.NewValidationError(field, message, cause),
-	}
+	return providererrors.NewArgumentError(field, message, providererrors.NewValidationError(field, message, cause))
 }

@@ -56,7 +56,7 @@ type VideoModelOptions struct {
 }
 
 func invalidOptions(msg string) error {
-	return &providererrors.InvalidArgumentError{Field: "providerOptions", Message: "invalid heygen provider options: " + msg}
+	return providererrors.NewArgumentError("providerOptions", "invalid heygen provider options: "+msg, nil)
 }
 
 func isHTTPSURL(raw string) bool {

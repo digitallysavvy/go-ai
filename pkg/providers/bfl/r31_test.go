@@ -59,7 +59,7 @@ func TestVideoUntimedKeyframesNeedDurationIsInvalidArgumentError(t *testing.T) {
 	if !errors.As(err, &ve) {
 		t.Errorf("v0.5.2 ValidationError no longer reachable")
 	}
-	want := "Invalid argument for parameter duration: FLUX 3 video requires an explicit duration when 3 or more keyframes are sent without a timestamp."
+	want := "FLUX 3 video requires an explicit duration when 3 or more keyframes are sent without a timestamp."
 	if err.Error() != want {
 		t.Errorf("message = %q, want %q", err.Error(), want)
 	}

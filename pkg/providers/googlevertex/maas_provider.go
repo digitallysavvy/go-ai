@@ -187,10 +187,7 @@ func (p *MaaSProvider) init() error {
 		// single DNS label is accepted; ports TS
 		// google-vertex-maas-provider.ts (TS #21842).
 		if !providerutils.IsValidHostnamePart(location) {
-			p.initErr = &providererrors.InvalidArgumentError{
-				Field:   "location",
-				Message: "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.",
-			}
+			p.initErr = providererrors.NewArgumentError("location", "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.", nil)
 			return p.initErr
 		}
 

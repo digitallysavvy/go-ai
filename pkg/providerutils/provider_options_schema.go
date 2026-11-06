@@ -61,11 +61,7 @@ func ParseProviderOptions(provider string, providerOptions map[string]interface{
 }
 
 func optionsError(provider string, cause error) error {
-	return &providererrors.InvalidArgumentError{
-		Field:   "providerOptions",
-		Message: fmt.Sprintf("invalid %s provider options", provider),
-		Cause:   cause,
-	}
+	return providererrors.NewArgumentError("providerOptions", fmt.Sprintf("invalid %s provider options", provider), cause)
 }
 
 func asOptionObject(v interface{}) (map[string]interface{}, bool) {

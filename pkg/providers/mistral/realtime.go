@@ -56,7 +56,7 @@ func (p *Provider) ExperimentalRealtime() *RealtimeSessions {
 // session configuration built from opts (TS createSession).
 func (r *RealtimeSessions) CreateSession(ctx context.Context, opts RealtimeCreateSessionOptions) (*RealtimeSession, error) {
 	if providerutils.JSTrim(opts.Model) == "" {
-		return nil, &providererrors.InvalidArgumentError{Field: "model", Message: "Mistral voice sessions require a model ID."}
+		return nil, providererrors.NewArgumentError("model", "Mistral voice sessions require a model ID.", nil)
 	}
 	config := provider.RealtimeSessionConfig{}
 	if opts.SessionConfig != nil {
@@ -99,7 +99,7 @@ func (r *RealtimeSessions) CreateSession(ctx context.Context, opts RealtimeCreat
 // DELETE /v1/audio/sessions/{id} (TS closeSession).
 func (r *RealtimeSessions) CloseSession(ctx context.Context, sessionID string) error {
 	if providerutils.JSTrim(sessionID) == "" || sessionID == "." || sessionID == ".." {
-		return &providererrors.InvalidArgumentError{Field: "sessionId", Message: "Mistral voice sessions require a valid session ID."}
+		return providererrors.NewArgumentError("sessionId", "Mistral voice sessions require a valid session ID.", nil)
 	}
 	resp, err := r.provider.client.Do(ctx, internalhttp.Request{
 		Method: http.MethodDelete,
@@ -252,7 +252,7 @@ func BuildRealtimeSessionConfig(config provider.RealtimeSessionConfig, modelID s
 		}
 		if parsed != nil {
 			if err := mistralUnknownKeys("", parsed, mistralRealtimeOptionsSchema); err != nil {
-				return nil, &providererrors.InvalidArgumentError{Field: "providerOptions", Message: "invalid mistral provider options", Cause: err}
+				return nil, providererrors.NewArgumentError("providerOptions", "invalid mistral provider options", err)
 			}
 		}
 		options = parsed
@@ -270,7 +270,7 @@ func BuildRealtimeSessionConfig(config provider.RealtimeSessionConfig, modelID s
 		}
 	}
 	if options["agentVersion"] != nil && options["agentId"] == nil {
-		return nil, &providererrors.InvalidArgumentError{Field: "providerOptions.mistral.agentVersion", Message: "Mistral agentVersion requires agentId."}
+		return nil, providererrors.NewArgumentError("providerOptions.mistral.agentVersion", "Mistral agentVersion requires agentId.", nil)
 	}
 
 	obj := func(v interface{}) map[string]interface{} { m, _ := v.(map[string]interface{}); return m }

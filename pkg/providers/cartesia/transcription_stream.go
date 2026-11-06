@@ -44,10 +44,7 @@ func cartesiaEncodingFromInputAudioFormat(inputType string) (string, error) {
 	case "audio/pcma":
 		return "pcm_alaw", nil
 	default:
-		return "", &providererrors.InvalidArgumentError{
-			Field:   "inputAudioFormat",
-			Message: fmt.Sprintf("Unsupported Cartesia streaming audio format: %s", inputType),
-		}
+		return "", providererrors.NewArgumentError("inputAudioFormat", fmt.Sprintf("Unsupported Cartesia streaming audio format: %s", inputType), nil)
 	}
 }
 
@@ -139,10 +136,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		language = &l
 	}
 	if language != nil && *language != "en" {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "Cartesia Ink 2 currently supports English only.",
-		}
+		return nil, providererrors.NewArgumentError("providerOptions", "Cartesia Ink 2 currently supports English only.", nil)
 	}
 
 	if cartesiaOpts != nil && cartesiaOpts.TimestampGranularities != nil {

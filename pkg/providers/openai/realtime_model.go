@@ -49,7 +49,7 @@ func resolveRealtimeAPI(modelID string, opts OpenAIRealtimeModelOptions) (string
 	case "live", "realtime":
 		return *opts.API, nil
 	default:
-		return "", &providererrors.InvalidArgumentError{Field: "api", Message: `OpenAI realtime api must be "live" or "realtime".`}
+		return "", providererrors.NewArgumentError("api", `OpenAI realtime api must be "live" or "realtime".`, nil)
 	}
 }
 

@@ -66,18 +66,12 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		case "choice":
 			criteria, _ := q.Criteria.(map[string]interface{})
 			if len(criteria) > 255 {
-				return nil, &providererrors.InvalidArgumentError{
-					Field:   fmt.Sprintf("questions.%s.criteria", id),
-					Message: "TypeSafe Choice questions support at most 255 options.",
-				}
+				return nil, providererrors.NewArgumentError(fmt.Sprintf("questions.%s.criteria", id), "TypeSafe Choice questions support at most 255 options.", nil)
 			}
 		case "score":
 			criteria, _ := q.Criteria.([]interface{})
 			if len(criteria) > 10 {
-				return nil, &providererrors.InvalidArgumentError{
-					Field:   fmt.Sprintf("questions.%s.criteria", id),
-					Message: "TypeSafe Score questions support at most 10 levels.",
-				}
+				return nil, providererrors.NewArgumentError(fmt.Sprintf("questions.%s.criteria", id), "TypeSafe Score questions support at most 10 levels.", nil)
 			}
 		}
 	}
@@ -648,10 +642,7 @@ func typeSafeRequestState(parts []provider.DecisionStatePart) (interface{}, prov
 		explicitRef, hasRef := fileOptions["reference"].(string)
 		insertOpt, hasInsert := fileOptions["insertReference"].(bool)
 		if hasInsert && !insertOpt && !hasRef {
-			return nil, noAssets, nil, &providererrors.InvalidArgumentError{
-				Field:   "providerOptions.typesafe.reference",
-				Message: "TypeSafe images with insertReference: false need an explicit reference.",
-			}
+			return nil, noAssets, nil, providererrors.NewArgumentError("providerOptions.typesafe.reference", "TypeSafe images with insertReference: false need an explicit reference.", nil)
 		}
 		// Default to random IDs to avoid accidental text matches, as TypeSafe
 		// recommends as the safest option.
@@ -666,17 +657,14 @@ func typeSafeRequestState(parts []provider.DecisionStatePart) (interface{}, prov
 			insertReference = insertOpt
 		}
 		if _, dup := assets.Vals[reference]; dup {
-			return nil, noAssets, nil, &providererrors.InvalidArgumentError{
-				Field:   "providerOptions.typesafe.reference",
-				Message: "Duplicate TypeSafe image reference: " + reference,
-			}
+			return nil, noAssets, nil, providererrors.NewArgumentError("providerOptions.typesafe.reference", "Duplicate TypeSafe image reference: "+reference, nil)
 		}
 		partName := fmt.Sprintf("image-%d", index)
 		assets.Keys = append(assets.Keys, reference)
 		assets.Vals[reference] = typesafeAsset{Type: "image", Part: partName}
 		_, data, err := part.InlineData()
 		if err != nil {
-			return nil, noAssets, nil, &providererrors.InvalidArgumentError{Field: "state", Message: err.Error(), Cause: err}
+			return nil, noAssets, nil, providererrors.NewArgumentError("state", err.Error(), err)
 		}
 		filename := file.Filename
 		if filename == "" {

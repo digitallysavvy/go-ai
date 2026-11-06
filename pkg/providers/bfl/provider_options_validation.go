@@ -84,18 +84,10 @@ func bflLatestRefinements(obj map[string]interface{}) error {
 	w, hasW := intFromInterface(obj["width"])
 	h, hasH := intFromInterface(obj["height"])
 	if hasW != hasH {
-		return &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "invalid blackForestLabs provider options",
-			Cause:   fmt.Errorf("width and height must be provided together"),
-		}
+		return providererrors.NewArgumentError("providerOptions", "invalid blackForestLabs provider options", fmt.Errorf("width and height must be provided together"))
 	}
 	if hasW && w*h > bflMaxLatestPixels {
-		return &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "invalid blackForestLabs provider options",
-			Cause:   fmt.Errorf("width × height must not exceed %d pixels", bflMaxLatestPixels),
-		}
+		return providererrors.NewArgumentError("providerOptions", "invalid blackForestLabs provider options", fmt.Errorf("width × height must not exceed %d pixels", bflMaxLatestPixels))
 	}
 	return nil
 }

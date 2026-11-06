@@ -193,10 +193,7 @@ func (p *GoogleVertexAnthropicProvider) baseURL() (string, error) {
 	// single DNS label is accepted; ports TS
 	// google-vertex-anthropic-provider.ts (TS #21842).
 	if !providerutils.IsValidHostnamePart(location) {
-		return "", &providererrors.InvalidArgumentError{
-			Field:   "location",
-			Message: "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.",
-		}
+		return "", providererrors.NewArgumentError("location", "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.", nil)
 	}
 
 	return fmt.Sprintf("https://%s/v1/projects/%s/locations/%s/publishers/anthropic/models", vertexAnthropicHost(location), project, location), nil

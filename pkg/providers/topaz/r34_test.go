@@ -22,7 +22,7 @@ func TestR34_MissingInputVideoIsInvalidArgumentError(t *testing.T) {
 	if !errors.As(err, &ve) {
 		t.Errorf("v0.5.2 ValidationError no longer reachable: %v", err)
 	}
-	want := "Invalid argument for parameter inputReferences: Topaz video models require an input video."
+	want := "Topaz video models require an input video."
 	if got := err.Error(); len(got) < len(want) || got[:len(want)] != want {
 		t.Errorf("message = %q, want prefix %q", got, want)
 	}

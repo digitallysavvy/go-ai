@@ -165,7 +165,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		fileParts.WriteByte('\n')
 	}
 	if int64(fileParts.Len()) > googleBatchInputFileMaxBytes {
-		return nil, &providererrors.InvalidArgumentError{Field: "requests", Message: "Google batch input files must not exceed 2 GB."}
+		return nil, providererrors.NewArgumentError("requests", "Google batch input files must not exceed 2 GB.", nil)
 	}
 
 	uploadedFile, err := b.uploadBatchInputFile(ctx, fileParts.Bytes(), displayName+"-input", opts.Headers)
@@ -415,10 +415,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	}
 	status := operation.toStatus()
 	if status.Status == provider.BatchStatusPending {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "batchId",
-			Message: fmt.Sprintf("Google batch %q is not complete.", opts.BatchID),
-		}
+		return nil, providererrors.NewArgumentError("batchId", fmt.Sprintf("Google batch %q is not complete.", opts.BatchID), nil)
 	}
 
 	if inlined := operation.inlinedResponses(); inlined != nil {
@@ -523,15 +520,12 @@ func validateGoogleBatchRequests(requests []provider.BatchV4Request) error {
 // use the same model, since the model is part of the batch endpoint URL.
 func getGoogleBatchModelID(requests []provider.BatchV4Request) (string, error) {
 	if len(requests) == 0 {
-		return "", &providererrors.InvalidArgumentError{Field: "requests", Message: "Google batches require at least one request."}
+		return "", providererrors.NewArgumentError("requests", "Google batches require at least one request.", nil)
 	}
 	modelID := requests[0].RequestModelID()
 	for _, req := range requests {
 		if req.RequestModelID() != modelID {
-			return "", &providererrors.InvalidArgumentError{
-				Field:   "requests",
-				Message: "Google batches require every request to use the same model because the model is part of the batch endpoint.",
-			}
+			return "", providererrors.NewArgumentError("requests", "Google batches require every request to use the same model because the model is part of the batch endpoint.", nil)
 		}
 	}
 	return modelID, nil

@@ -76,7 +76,7 @@ type vertexGeminiTranscriptionOptions struct {
 // `languageCodes: []`.
 func parseVertexGeminiTranscriptionOptionsChecked(providerOptions map[string]interface{}) (vertexGeminiTranscriptionOptions, error) {
 	invalid := func(key string, cause error) error {
-		return &providererrors.InvalidArgumentError{Field: "providerOptions", Message: "invalid " + key + " provider options", Cause: cause}
+		return providererrors.NewArgumentError("providerOptions", "invalid "+key+" provider options", cause)
 	}
 	for _, key := range []string{"googleVertex", "vertex", "google"} {
 		rawAny, present := providerOptions[key]
@@ -203,13 +203,10 @@ type vertexGeminiTranscriptionResponse struct {
 // doGenerate and doStream.
 func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
 	if isLiveGeminiTranscriptionModelID(m.modelID) {
-		return nil, &providererrors.InvalidArgumentError{
-			Field: "modelId",
-			Message: fmt.Sprintf(
-				"Model '%s' only supports streaming transcription. Use ai.ExperimentalStreamTranscribe, or a unary model such as '%s'.",
-				m.modelID, ModelGemini35Transcribe,
-			),
-		}
+		return nil, providererrors.NewArgumentError("modelId", fmt.Sprintf(
+			"Model '%s' only supports streaming transcription. Use ai.ExperimentalStreamTranscribe, or a unary model such as '%s'.",
+			m.modelID, ModelGemini35Transcribe,
+		), nil)
 	}
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}

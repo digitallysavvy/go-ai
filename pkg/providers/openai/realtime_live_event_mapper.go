@@ -205,7 +205,7 @@ func buildOpenAILiveSessionConfig(config provider.RealtimeSessionConfig, modelID
 		return nil, liveUnsupported("OpenAI Live client permissions outside WebRTC startup")
 	}
 	if options.Voice != nil && config.Voice != nil {
-		return nil, &providererrors.InvalidArgumentError{Field: "voice", Message: "Choose either voice or providerOptions.openai.voice."}
+		return nil, providererrors.NewArgumentError("voice", "Choose either voice or providerOptions.openai.voice.", nil)
 	}
 
 	inputFormat, err := liveAudioFormat(config.InputAudioFormat)
@@ -218,7 +218,7 @@ func buildOpenAILiveSessionConfig(config provider.RealtimeSessionConfig, modelID
 	}
 	if inputFormat != nil && outputFormat != nil &&
 		(inputFormat["type"] != outputFormat["type"] || inputFormat["rate"] != outputFormat["rate"]) {
-		return nil, &providererrors.InvalidArgumentError{Field: "outputAudioFormat", Message: "OpenAI Live requires the same input and output audio format."}
+		return nil, providererrors.NewArgumentError("outputAudioFormat", "OpenAI Live requires the same input and output audio format.", nil)
 	}
 
 	session := map[string]interface{}{"model": modelID}

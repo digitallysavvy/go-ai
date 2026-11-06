@@ -208,10 +208,7 @@ func (b *Batch) gatewayBatchWireRequest(req provider.BatchV4Request) (map[string
 // and every request in the batch must use the same model.
 func validateGatewayTextBatchRequests(requests []provider.BatchV4Request) (string, error) {
 	if len(requests) == 0 {
-		return "", &providererrors.InvalidArgumentError{
-			Field:   "requests",
-			Message: "The AI Gateway Batch API requires at least one request.",
-		}
+		return "", providererrors.NewArgumentError("requests", "The AI Gateway Batch API requires at least one request.", nil)
 	}
 
 	// TS asserts every request is text before validating the shared model.
@@ -224,13 +221,10 @@ func validateGatewayTextBatchRequests(requests []provider.BatchV4Request) (strin
 	modelID := requests[0].Text.ModelID
 	for _, req := range requests {
 		if req.Text.ModelID != modelID {
-			return "", &providererrors.InvalidArgumentError{
-				Field: "requests",
-				Message: fmt.Sprintf(
-					"The AI Gateway Batch API requires all requests in a batch to use the same model. Found %q and %q.",
-					modelID, req.Text.ModelID,
-				),
-			}
+			return "", providererrors.NewArgumentError("requests", fmt.Sprintf(
+				"The AI Gateway Batch API requires all requests in a batch to use the same model. Found %q and %q.",
+				modelID, req.Text.ModelID,
+			), nil)
 		}
 	}
 	return modelID, nil

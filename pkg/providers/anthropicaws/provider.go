@@ -67,10 +67,11 @@ func New(cfg Config) (*Provider, error) {
 	// as "evil.example.com/#" would otherwise redirect the request, including
 	// its x-api-key header. Custom endpoints go through BaseURL.
 	if cfg.BaseURL == "" && !providerutils.IsValidHostnamePart(region) {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "region",
-			Message: "Invalid AWS region. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.", //nolint:staticcheck // matches TS SDK's exact error text
-		}
+		return nil, providererrors.NewArgumentError(
+			"region",
+			"Invalid AWS region. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.", //nolint:staticcheck // matches TS SDK's exact error text
+			nil,
+		)
 	}
 	workspaceID := firstNonEmpty(cfg.WorkspaceID, os.Getenv("ANTHROPIC_AWS_WORKSPACE_ID"))
 	if workspaceID == "" {

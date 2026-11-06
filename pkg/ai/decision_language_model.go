@@ -39,7 +39,7 @@ type DecisionLanguageModelOptions struct {
 // NewDecisionLanguageModel wraps model as a provider.DecisionModel.
 func NewDecisionLanguageModel(opts DecisionLanguageModelOptions) (*DecisionLanguageModel, error) {
 	if opts.Model == nil {
-		return nil, &providererrors.InvalidArgumentError{Field: "model", Message: "Decision requires a LanguageModel implementation."}
+		return nil, providererrors.NewArgumentError("model", "Decision requires a LanguageModel implementation.", nil)
 	}
 	providerName := opts.Provider
 	if providerName == "" {
@@ -104,7 +104,7 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 		entries = append(entries, decisionLanguageModelEntry{id: id, question: q})
 	}
 	if len(entries) == 0 {
-		return nil, &providererrors.InvalidArgumentError{Field: "questions", Message: "Decision requires at least one question."}
+		return nil, providererrors.NewArgumentError("questions", "Decision requires at least one question.", nil)
 	}
 
 	for _, en := range entries {
@@ -112,18 +112,12 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 		case "choice":
 			criteria, _ := en.question.Criteria.(map[string]interface{})
 			if len(criteria) == 0 {
-				return nil, &providererrors.InvalidArgumentError{
-					Field:   fmt.Sprintf("questions.%s.criteria", en.id),
-					Message: "Choice requires at least one option; Score requires at least two levels.",
-				}
+				return nil, providererrors.NewArgumentError(fmt.Sprintf("questions.%s.criteria", en.id), "Choice requires at least one option; Score requires at least two levels.", nil)
 			}
 		case "score":
 			criteria, _ := en.question.Criteria.([]interface{})
 			if len(criteria) < 2 {
-				return nil, &providererrors.InvalidArgumentError{
-					Field:   fmt.Sprintf("questions.%s.criteria", en.id),
-					Message: "Choice requires at least one option; Score requires at least two levels.",
-				}
+				return nil, providererrors.NewArgumentError(fmt.Sprintf("questions.%s.criteria", en.id), "Choice requires at least one option; Score requires at least two levels.", nil)
 			}
 		}
 	}

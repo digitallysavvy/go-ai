@@ -532,11 +532,7 @@ func validateTranscriptionProviderOptions(providerOptions map[string]interface{}
 		return nil
 	}
 	fail := func(msg string) error {
-		return &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "invalid openai provider options",
-			Cause:   errors.New(msg),
-		}
+		return providererrors.NewArgumentError("providerOptions", "invalid openai provider options", errors.New(msg))
 	}
 	opts, ok := raw.(map[string]interface{})
 	if !ok {

@@ -268,3 +268,15 @@ func TestR87eintegPrefixedStreamForwardsMetadata(t *testing.T) {
 		t.Fatal("prefixedTextStream hides the model stream's metadata")
 	}
 }
+
+// TS provider-utils decision-language-model.ts and generate-id.ts throw the
+// @ai-sdk/provider InvalidArgumentError: the bare message.
+func TestR87eintegProviderUtilsArgumentErrorsAreBare(t *testing.T) {
+	if _, err := NewDecisionLanguageModel(DecisionLanguageModelOptions{}); err == nil || err.Error() != "Decision requires a LanguageModel implementation." {
+		t.Fatalf("NewDecisionLanguageModel err = %v", err)
+	}
+	_, err := CreateIDGenerator(CreateIDGeneratorOptions{Prefix: "p", Alphabet: "ab-", Separator: "-"})
+	if err == nil || err.Error() != `The separator "-" must not be part of the alphabet "ab-".` {
+		t.Fatalf("CreateIDGenerator err = %v", err)
+	}
+}

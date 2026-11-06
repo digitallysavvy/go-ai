@@ -73,11 +73,7 @@ type moonshotPromptCacheOptions struct {
 }
 
 func invalidMoonshotProviderOptions(cause error) error {
-	return &providererrors.InvalidArgumentError{
-		Field:   "providerOptions",
-		Message: "invalid moonshotai provider options",
-		Cause:   cause,
-	}
+	return providererrors.NewArgumentError("providerOptions", "invalid moonshotai provider options", cause)
 }
 
 // parseMoonshotModelOptions parses+validates the resolved moonshot provider

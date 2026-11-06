@@ -329,10 +329,7 @@ func (p *Provider) loadLocation() (string, error) {
 	// could otherwise rewrite the request destination. Ports TS
 	// google-vertex-provider-base.ts (TS #21842).
 	if !providerutils.IsValidHostnamePart(location) {
-		return "", &providererrors.InvalidArgumentError{
-			Field:   "location",
-			Message: "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.",
-		}
+		return "", providererrors.NewArgumentError("location", "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.", nil)
 	}
 	return location, nil
 }

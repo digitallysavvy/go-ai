@@ -233,16 +233,10 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	}
 
 	if batch.toStatus().Status == provider.BatchStatusPending {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "batchId",
-			Message: fmt.Sprintf("Anthropic batch %q is not complete.", opts.BatchID),
-		}
+		return nil, providererrors.NewArgumentError("batchId", fmt.Sprintf("Anthropic batch %q is not complete.", opts.BatchID), nil)
 	}
 	if batch.ArchivedAt != nil {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "batchId",
-			Message: fmt.Sprintf("Anthropic batch %q results are no longer available.", opts.BatchID),
-		}
+		return nil, providererrors.NewArgumentError("batchId", fmt.Sprintf("Anthropic batch %q results are no longer available.", opts.BatchID), nil)
 	}
 	if batch.ResultsURL == nil || *batch.ResultsURL == "" {
 		return nil, providererrors.NewInvalidResponseDataError(batch,
@@ -431,11 +425,7 @@ func validateAnthropicBatchProviderOptions(providerName string, providerOptions 
 			continue
 		}
 		invalid := func(cause error) error {
-			return &providererrors.InvalidArgumentError{
-				Field:   "providerOptions",
-				Message: fmt.Sprintf("invalid %s provider options", key),
-				Cause:   cause,
-			}
+			return providererrors.NewArgumentError("providerOptions", fmt.Sprintf("invalid %s provider options", key), cause)
 		}
 		opts, ok := value.(map[string]interface{})
 		if !ok {
@@ -480,16 +470,10 @@ func validateAnthropicBatchRequestIDs(requests []provider.BatchV4Request) error 
 	for _, req := range requests {
 		id := req.Text.ID
 		if !anthropicBatchRequestIDPattern.MatchString(id) {
-			return &providererrors.InvalidArgumentError{
-				Field:   "requests",
-				Message: fmt.Sprintf("Anthropic batch request ID %q must match ^[A-Za-z0-9_-]{1,64}$.", id),
-			}
+			return providererrors.NewArgumentError("requests", fmt.Sprintf("Anthropic batch request ID %q must match ^[A-Za-z0-9_-]{1,64}$.", id), nil)
 		}
 		if seen[id] {
-			return &providererrors.InvalidArgumentError{
-				Field:   "requests",
-				Message: fmt.Sprintf("Anthropic batch request IDs must be unique; duplicate ID %q.", id),
-			}
+			return providererrors.NewArgumentError("requests", fmt.Sprintf("Anthropic batch request IDs must be unique; duplicate ID %q.", id), nil)
 		}
 		seen[id] = true
 	}

@@ -62,10 +62,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	// DNS label is accepted. Ports TS google-vertex-transcription-model.ts
 	// (TS #21842).
 	if !providerutils.IsValidHostnamePart(region) {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   regionArg,
-			Message: "Invalid Google Cloud Speech-to-Text region. Expected a single DNS label (letters, digits, and hyphens).",
-		}
+		return nil, providererrors.NewArgumentError(regionArg, "Invalid Google Cloud Speech-to-Text region. Expected a single DNS label (letters, digits, and hyphens).", nil)
 	}
 	languages := vertexOpts.LanguageCodes
 	if languages == nil {
@@ -154,7 +151,7 @@ type vertexTranscriptionProviderOptions struct {
 // because TS forwards `languageCodes: []`.
 func vertexTranscriptionOptionsChecked(providerOptions map[string]interface{}) (vertexTranscriptionProviderOptions, error) {
 	invalid := func(key string, cause error) error {
-		return &providererrors.InvalidArgumentError{Field: "providerOptions", Message: "invalid " + key + " provider options", Cause: cause}
+		return providererrors.NewArgumentError("providerOptions", "invalid "+key+" provider options", cause)
 	}
 	for _, key := range []string{"googleVertex", "vertex", "google"} {
 		rawAny, present := providerOptions[key]

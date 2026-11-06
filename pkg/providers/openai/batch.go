@@ -283,10 +283,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	}
 	status := batch.toStatus()
 	if status.Status == provider.BatchStatusPending {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "batchId",
-			Message: fmt.Sprintf("OpenAI batch %q is not complete.", opts.BatchID),
-		}
+		return nil, providererrors.NewArgumentError("batchId", fmt.Sprintf("OpenAI batch %q is not complete.", opts.BatchID), nil)
 	}
 
 	var fileIDs []string
@@ -350,12 +347,9 @@ func validateOpenAISingleModel(requests []provider.BatchV4Request) error {
 	modelID := requests[0].Text.ModelID
 	for _, req := range requests {
 		if req.Text.ModelID != modelID {
-			return &providererrors.InvalidArgumentError{
-				Field: "requests",
-				Message: fmt.Sprintf(
-					"The OpenAI Batch API requires all requests in a batch to use the same model. Found %q and %q.",
-					modelID, req.Text.ModelID),
-			}
+			return providererrors.NewArgumentError("requests", fmt.Sprintf(
+				"The OpenAI Batch API requires all requests in a batch to use the same model. Found %q and %q.",
+				modelID, req.Text.ModelID), nil)
 		}
 	}
 	return nil
@@ -404,11 +398,7 @@ func openaiBatchInputFileExpiresAfter(providerName string, providerOptions map[s
 }
 
 func invalidOpenAIBatchOptions(key string, cause error) error {
-	return &providererrors.InvalidArgumentError{
-		Field:   "providerOptions",
-		Message: fmt.Sprintf("invalid %s provider options", key),
-		Cause:   cause,
-	}
+	return providererrors.NewArgumentError("providerOptions", fmt.Sprintf("invalid %s provider options", key), cause)
 }
 
 // --- Wire types -------------------------------------------------------

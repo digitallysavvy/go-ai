@@ -223,10 +223,7 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 	usesStructured := !strings.HasPrefix(m.modelID, "gemini-2.5-") && !strings.HasPrefix(m.modelID, "gemini-3.1-")
 
 	if strings.HasPrefix(voice, "voice_") || strings.HasPrefix(voice, "voicekey_") {
-		return nil, "", false, nil, &providererrors.InvalidArgumentError{
-			Field:   "voice",
-			Message: "Custom voices are not supported. Use a prebuilt voice instead.",
-		}
+		return nil, "", false, nil, providererrors.NewArgumentError("voice", "Custom voices are not supported. Use a prebuilt voice instead.", nil)
 	}
 
 	var speechConfig map[string]interface{}
@@ -256,10 +253,7 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 	parts := []interface{}{map[string]interface{}{"text": promptText}}
 	if usesStructured {
 		if len(googleOpts.Turns) > 0 && googleOpts.SpeechMetadata != nil {
-			return nil, "", false, nil, &providererrors.InvalidArgumentError{
-				Field:   "providerOptions",
-				Message: "Set speechMetadata on each turn when using turns.",
-			}
+			return nil, "", false, nil, providererrors.NewArgumentError("providerOptions", "Set speechMetadata on each turn when using turns.", nil)
 		}
 		if len(googleOpts.Turns) > 0 && opts.Text != "" {
 			warnings = append(warnings, types.Warning{
@@ -285,10 +279,7 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 				style = &instructions
 			}
 			if googleOpts.MultiSpeakerVoiceConfig != nil && !googleSpeechHasSpeaker(googleOpts.MultiSpeakerVoiceConfig, speaker) {
-				return nil, "", false, nil, &providererrors.InvalidArgumentError{
-					Field:   "speechMetadata.speaker",
-					Message: "Every multi-speaker turn must specify a speechMetadata.speaker matching a configured speaker.",
-				}
+				return nil, "", false, nil, providererrors.NewArgumentError("speechMetadata.speaker", "Every multi-speaker turn must specify a speechMetadata.speaker matching a configured speaker.", nil)
 			}
 			part := map[string]interface{}{"text": turn.Text}
 			if style != nil || speaker != "" {
@@ -304,10 +295,7 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 			parts = append(parts, part)
 		}
 	} else if len(googleOpts.Turns) > 0 || googleOpts.SpeechMetadata != nil {
-		return nil, "", false, nil, &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "Structured speech metadata and turns require Gemini 3.8 TTS.",
-		}
+		return nil, "", false, nil, providererrors.NewArgumentError("providerOptions", "Structured speech metadata and turns require Gemini 3.8 TTS.", nil)
 	}
 
 	transcript := opts.Text
@@ -319,10 +307,7 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 		transcript = sb.String()
 	}
 	if transcript == "" {
-		return nil, "", false, nil, &providererrors.InvalidArgumentError{
-			Field:   "text",
-			Message: "Speech input must contain a non-empty transcript.",
-		}
+		return nil, "", false, nil, providererrors.NewArgumentError("text", "Speech input must contain a non-empty transcript.", nil)
 	}
 
 	if opts.Speed != nil {
@@ -435,11 +420,7 @@ func (m *SpeechModel) extractProviderOptions(providerOptions map[string]interfac
 		}
 		opts, err := parseGoogleSpeechOptions(raw)
 		if err != nil {
-			return GoogleSpeechModelOptions{}, &providererrors.InvalidArgumentError{
-				Field:   "providerOptions",
-				Message: fmt.Sprintf("invalid %s provider options", key),
-				Cause:   err,
-			}
+			return GoogleSpeechModelOptions{}, providererrors.NewArgumentError("providerOptions", fmt.Sprintf("invalid %s provider options", key), err)
 		}
 		return opts, nil
 	}

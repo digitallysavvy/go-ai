@@ -360,10 +360,7 @@ func validateVertexEmbeddingOptions(opts *provider.EmbedModelOptions) error {
 			continue
 		}
 		bad := func(field, want string) error {
-			return &providererrors.InvalidArgumentError{
-				Field:   "providerOptions",
-				Message: fmt.Sprintf("invalid %s provider options: %s must be %s", key, field, want),
-			}
+			return providererrors.NewArgumentError("providerOptions", fmt.Sprintf("invalid %s provider options: %s must be %s", key, field, want), nil)
 		}
 		m, ok := v.(map[string]interface{})
 		if !ok {

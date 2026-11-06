@@ -36,11 +36,7 @@ func validateChatProviderOptions(providerOptions map[string]interface{}) error {
 }
 
 func invalidProviderOptions(provider string, cause error) error {
-	return &providererrors.InvalidArgumentError{
-		Field:   "providerOptions",
-		Message: fmt.Sprintf("invalid %s provider options", provider),
-		Cause:   cause,
-	}
+	return providererrors.NewArgumentError("providerOptions", fmt.Sprintf("invalid %s provider options", provider), cause)
 }
 
 func validateAmazonBedrockOptions(v interface{}) error {

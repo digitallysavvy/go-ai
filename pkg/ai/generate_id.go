@@ -78,10 +78,7 @@ func CreateIDGenerator(opts ...CreateIDGeneratorOptions) (IDGenerator, error) {
 	// The separator must not be part of the alphabet, otherwise prefix
 	// checking can fail randomly.
 	if strings.Contains(alphabet, separator) {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "separator",
-			Message: fmt.Sprintf("The separator \"%s\" must not be part of the alphabet \"%s\".", separator, alphabet),
-		}
+		return nil, providererrors.NewArgumentError("separator", fmt.Sprintf("The separator \"%s\" must not be part of the alphabet \"%s\".", separator, alphabet), nil)
 	}
 
 	prefix := options.Prefix

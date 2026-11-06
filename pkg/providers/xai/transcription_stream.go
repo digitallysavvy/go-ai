@@ -152,10 +152,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	}
 
 	if xaiOpts.Multichannel != nil && *xaiOpts.Multichannel && xaiOpts.Channels == nil {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "providerOptions.xai.channels is required when providerOptions.xai.multichannel is true",
-		}
+		return nil, providererrors.NewArgumentError("providerOptions", "providerOptions.xai.channels is required when providerOptions.xai.multichannel is true", nil)
 	}
 
 	warnings := []types.Warning{}

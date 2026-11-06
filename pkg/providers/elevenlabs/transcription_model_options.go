@@ -160,11 +160,7 @@ func validateTranscriptionOptions(providerOptions map[string]interface{}) error 
 		return nil
 	}
 	fail := func(msg string) error {
-		return &providerrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "invalid elevenlabs provider options",
-			Cause:   errors.New(msg),
-		}
+		return providerrors.NewArgumentError("providerOptions", "invalid elevenlabs provider options", errors.New(msg))
 	}
 	isBool := func(v interface{}) bool { _, ok := v.(bool); return ok }
 	isString := func(v interface{}) bool { _, ok := v.(string); return ok }

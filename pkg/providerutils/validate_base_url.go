@@ -16,7 +16,7 @@ func (emptyBaseURLError) Error() string { return emptyBaseURLMessage }
 // As lets callers match the TS InvalidArgumentError type.
 func (emptyBaseURLError) As(target interface{}) bool {
 	if t, ok := target.(**providererrors.InvalidArgumentError); ok {
-		*t = &providererrors.InvalidArgumentError{Field: "baseURL", Message: emptyBaseURLMessage}
+		*t = providererrors.NewArgumentError("baseURL", emptyBaseURLMessage, nil)
 		return true
 	}
 	return false

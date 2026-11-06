@@ -65,13 +65,10 @@ func (m *AzureMaiTranscriptionModel) DoStream(ctx context.Context, opts *provide
 		if rate != nil {
 			rateSuffix = fmt.Sprintf(" at %d Hz", resolvedRate)
 		}
-		return nil, &providererrors.InvalidArgumentError{
-			Field: "inputAudioFormat",
-			Message: fmt.Sprintf(
-				"MAI streaming transcription requires 16-bit mono PCM (audio/pcm) at 16000 or 24000 Hz, got %s%s.",
-				opts.InputAudioFormat.Type, rateSuffix,
-			),
-		}
+		return nil, providererrors.NewArgumentError("inputAudioFormat", fmt.Sprintf(
+			"MAI streaming transcription requires 16-bit mono PCM (audio/pcm) at 16000 or 24000 Hz, got %s%s.",
+			opts.InputAudioFormat.Type, rateSuffix,
+		), nil)
 	}
 
 	transcription := map[string]interface{}{"model": m.modelID}
@@ -148,7 +145,7 @@ func toWebSocketURL(rawURL string) (string, error) {
 	case hasPrefixFold(rawURL, "wss://"), hasPrefixFold(rawURL, "ws://"):
 		return rawURL, nil
 	default:
-		return "", &providererrors.InvalidArgumentError{Field: "url", Message: "URL must use http(s) or ws(s) scheme: " + rawURL}
+		return "", providererrors.NewArgumentError("url", "URL must use http(s) or ws(s) scheme: "+rawURL, nil)
 	}
 }
 

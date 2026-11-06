@@ -310,10 +310,7 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 func xaiFileID(ref types.ProviderReference) (string, error) {
 	id := ref["xai"]
 	if providerutils.JSTrim(id) == "" {
-		return "", &providererrors.InvalidArgumentError{
-			Field:   "file",
-			Message: "file reference is missing an 'xai' file id.",
-		}
+		return "", providererrors.NewArgumentError("file", "file reference is missing an 'xai' file id.", nil)
 	}
 	return id, nil
 }

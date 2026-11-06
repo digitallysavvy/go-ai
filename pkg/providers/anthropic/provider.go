@@ -232,16 +232,10 @@ func New(cfg Config) *Provider {
 
 	// Create HTTP client with default headers
 	if (cfg.APIKey != "" || cfg.APIKeyFunc != nil) && (cfg.AuthToken != "" || cfg.AuthTokenFunc != nil) {
-		panic(&providererrors.InvalidArgumentError{
-			Field:   "apiKey/authToken",
-			Message: "Both apiKey and authToken were provided. Please use only one authentication method.",
-		})
+		panic(providererrors.NewArgumentError("apiKey/authToken", "Both apiKey and authToken were provided. Please use only one authentication method.", nil))
 	}
 	if cfg.AuthToken != "" && cfg.AuthTokenFunc != nil {
-		panic(&providererrors.InvalidArgumentError{
-			Field:   "authToken/authTokenFunc",
-			Message: "Both authToken and authTokenFunc were provided. Please use only one.",
-		})
+		panic(providererrors.NewArgumentError("authToken/authTokenFunc", "Both authToken and authTokenFunc were provided. Please use only one.", nil))
 	}
 	headers := authHeadersFor(cfg)
 	if !cfg.OmitAPIVersionHeader {

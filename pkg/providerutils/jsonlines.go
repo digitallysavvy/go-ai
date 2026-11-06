@@ -31,10 +31,7 @@ func (b BatchResultDownloads) ResolveMaxLineBytes() (int, error) {
 		return DefaultMaxJSONLineBytes, nil
 	}
 	if b.MaxLineBytes < 0 {
-		return 0, &providererrors.InvalidArgumentError{
-			Field:   "maxLineBytes",
-			Message: "maxLineBytes must be a positive safe integer.",
-		}
+		return 0, providererrors.NewArgumentError("maxLineBytes", "maxLineBytes must be a positive safe integer.", nil)
 	}
 	return b.MaxLineBytes, nil
 }

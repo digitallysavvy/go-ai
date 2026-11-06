@@ -300,17 +300,11 @@ func extractMistralTranscriptionOptions(modelID string, opts *provider.Transcrip
 	}
 
 	if mistralLegacyTranscriptionModels[modelID] && result.Language != "" && len(result.TimestampGranularities) > 0 {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "providerOptions.mistral.language cannot be combined with providerOptions.mistral.timestampGranularities",
-		}
+		return nil, providererrors.NewArgumentError("providerOptions", "providerOptions.mistral.language cannot be combined with providerOptions.mistral.timestampGranularities", nil)
 	}
 
 	if result.Language != "" && result.ReturnLanguage != nil && *result.ReturnLanguage {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "providerOptions.mistral.language cannot be combined with providerOptions.mistral.returnLanguage",
-		}
+		return nil, providererrors.NewArgumentError("providerOptions", "providerOptions.mistral.language cannot be combined with providerOptions.mistral.returnLanguage", nil)
 	}
 
 	return result, nil

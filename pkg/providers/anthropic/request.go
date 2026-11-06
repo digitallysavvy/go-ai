@@ -123,10 +123,7 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 	}
 
 	if o.ContextManagement != nil && o.Compaction != nil {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "Anthropic provider options `compaction` and `contextManagement` cannot be used together.",
-		}
+		return nil, providererrors.NewArgumentError("providerOptions", "Anthropic provider options `compaction` and `contextManagement` cannot be used together.", nil)
 	}
 
 	if opts.FrequencyPenalty != nil {

@@ -52,10 +52,7 @@ func convertToPerplexityDecisionState(parts []provider.DecisionStatePart) (inter
 		return nil, err
 	}
 	if count > maxDecisionImages {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "state",
-			Message: "Perplexity Decisions supports at most 8 images in the shared state.",
-		}
+		return nil, providererrors.NewArgumentError("state", "Perplexity Decisions supports at most 8 images in the shared state.", nil)
 	}
 
 	if len(converted) == 1 && isNativeDecisionState(converted[0]) {

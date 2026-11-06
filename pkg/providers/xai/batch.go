@@ -334,10 +334,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 		return nil, err
 	}
 	if convertXAIBatchStatus(*resp).Status == provider.BatchStatusPending {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "batchId",
-			Message: fmt.Sprintf("xAI batch %q is not complete.", opts.BatchID),
-		}
+		return nil, providererrors.NewArgumentError("batchId", fmt.Sprintf("xAI batch %q is not complete.", opts.BatchID), nil)
 	}
 	return newXAIBatchResultsStream(ctx, b, opts.BatchID, opts.Headers), nil
 }
@@ -998,10 +995,7 @@ func (b *Batch) convertImageBatchResponse(ctx context.Context, resp xaiImageResp
 				base64Images = append(base64Images, *d.B64JSON)
 			}
 		case d.URL == "":
-			return nil, &providererrors.InvalidArgumentError{
-				Field:   "batchResult",
-				Message: "xAI returned an image without data or a URL.",
-			}
+			return nil, providererrors.NewArgumentError("batchResult", "xAI returned an image without data or a URL.", nil)
 		default:
 			data, err := im.downloadImage(ctx, d.URL)
 			if err != nil {

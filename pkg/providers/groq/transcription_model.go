@@ -297,11 +297,7 @@ func validateGroqTranscriptionOptions(providerOptions map[string]interface{}) er
 		return nil
 	}
 	fail := func(msg string) error {
-		return &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "invalid groq provider options",
-			Cause:   errors.New(msg),
-		}
+		return providererrors.NewArgumentError("providerOptions", "invalid groq provider options", errors.New(msg))
 	}
 	m, ok := raw.(map[string]interface{})
 	if !ok {

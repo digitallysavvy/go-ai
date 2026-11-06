@@ -211,11 +211,7 @@ func wrapAlibabaEmbeddingOptionsValidation(opts AlibabaEmbeddingModelOptions, er
 }
 
 func invalidAlibabaEmbeddingOptionsError(cause error) error {
-	return &providererrors.InvalidArgumentError{
-		Field:   "providerOptions",
-		Message: "invalid alibaba provider options",
-		Cause:   cause,
-	}
+	return providererrors.NewArgumentError("providerOptions", "invalid alibaba provider options", cause)
 }
 
 func parseAlibabaEmbeddingOptionMap(raw map[string]interface{}) (AlibabaEmbeddingModelOptions, error) {

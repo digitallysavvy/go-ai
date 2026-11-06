@@ -285,10 +285,7 @@ func validateGatewayDecisionProviderOptions(gatewayOptions interface{}) error {
 		return nil
 	}
 	if err := validateGatewayDecisionModelsOption(modelsRaw); err != nil {
-		return &providererrors.InvalidArgumentError{
-			Field:   "providerOptions.gateway.models",
-			Message: fmt.Sprintf("invalid gateway provider options: %v", err),
-		}
+		return providererrors.NewArgumentError("providerOptions.gateway.models", fmt.Sprintf("invalid gateway provider options: %v", err), nil)
 	}
 	return nil
 }

@@ -69,10 +69,7 @@ func elevenLabsRealtimeAudioFormat(format provider.AudioFormat) (audioFormat str
 
 	if t == "audio/pcmu" {
 		if format.Rate != nil && *format.Rate != 8000 {
-			return "", 0, &providererrors.InvalidArgumentError{
-				Field:   "inputAudioFormat",
-				Message: "ElevenLabs only supports audio/pcmu at 8000 Hz",
-			}
+			return "", 0, providererrors.NewArgumentError("inputAudioFormat", "ElevenLabs only supports audio/pcmu at 8000 Hz", nil)
 		}
 		return "ulaw_8000", 8000, nil
 	}
@@ -83,11 +80,8 @@ func elevenLabsRealtimeAudioFormat(format provider.AudioFormat) (audioFormat str
 		pcmRate = *format.Rate
 	}
 	if t != "audio/pcm" || !supportedPCMRates[pcmRate] {
-		return "", 0, &providererrors.InvalidArgumentError{
-			Field: "inputAudioFormat",
-			Message: "ElevenLabs realtime transcription supports audio/pcm at 8000, 16000, 22050, 24000, 44100, " +
-				"or 48000 Hz, and audio/pcmu at 8000 Hz",
-		}
+		return "", 0, providererrors.NewArgumentError("inputAudioFormat", "ElevenLabs realtime transcription supports audio/pcm at 8000, 16000, 22050, 24000, 44100, "+
+			"or 48000 Hz, and audio/pcmu at 8000 Hz", nil)
 	}
 	return fmt.Sprintf("pcm_%d", pcmRate), pcmRate, nil
 }
@@ -282,10 +276,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	// include_timestamps. Language detection is delivered on the same
 	// timestamp-bearing event, so it also requires include_timestamps here.
 	if streaming != nil && boolValue(streaming.FilterBackgroundAudio) && (includeTimestamps || includeLanguageDetection) {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "providerOptions.elevenlabs.streaming.filterBackgroundAudio cannot be combined with includeTimestamps or includeLanguageDetection",
-		}
+		return nil, providererrors.NewArgumentError("providerOptions", "providerOptions.elevenlabs.streaming.filterBackgroundAudio cannot be combined with includeTimestamps or includeLanguageDetection", nil)
 	}
 
 	audioFormat, sampleRate, err := elevenLabsRealtimeAudioFormat(opts.InputAudioFormat)

@@ -105,11 +105,7 @@ func validateSpeechProviderOptions(providerOptions map[string]interface{}) error
 		return nil
 	}
 	invalid := func(msg string) error {
-		return &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "invalid openai provider options",
-			Cause:   errors.New(msg),
-		}
+		return providererrors.NewArgumentError("providerOptions", "invalid openai provider options", errors.New(msg))
 	}
 	m, ok := raw.(map[string]interface{})
 	if !ok {

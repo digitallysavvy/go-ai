@@ -76,8 +76,5 @@ func parseLabels(raw interface{}) (map[string]string, error) {
 }
 
 func invalidLabels(msg string) error {
-	return &providererrors.InvalidArgumentError{
-		Field:   "providerOptions.vertex.labels",
-		Message: "Invalid Google Vertex Anthropic provider options: " + msg,
-	}
+	return providererrors.NewArgumentError("providerOptions.vertex.labels", "Invalid Google Vertex Anthropic provider options: "+msg, nil)
 }

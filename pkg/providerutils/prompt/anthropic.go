@@ -467,11 +467,7 @@ type anthropicSystemMessage struct {
 // toolChanges normalised to []interface{}.
 func validateAnthropicSystemMessageOptions(sysOpts map[string]interface{}) ([]interface{}, error) {
 	invalid := func(format string, args ...interface{}) error {
-		return &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "invalid anthropic provider options",
-			Cause:   fmt.Errorf(format, args...),
-		}
+		return providererrors.NewArgumentError("providerOptions", "invalid anthropic provider options", fmt.Errorf(format, args...))
 	}
 	if v, ok := sysOpts["clearAt"]; ok && v != nil {
 		if s, isString := v.(string); !isString || s != "next_user_message" {
@@ -911,11 +907,7 @@ func detectAnthropicMediaType(data []byte, topLevel string) string {
 // ({enabled: boolean}), title and context (strings).
 func validateAnthropicFilePartOptions(opts map[string]interface{}) error {
 	invalid := func(format string, args ...interface{}) error {
-		return &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "invalid anthropic provider options",
-			Cause:   fmt.Errorf(format, args...),
-		}
+		return providererrors.NewArgumentError("providerOptions", "invalid anthropic provider options", fmt.Errorf(format, args...))
 	}
 	for _, key := range []string{"containerUpload"} {
 		if v, ok := opts[key]; ok && v != nil {
@@ -1688,11 +1680,7 @@ func anthropicReasoningOptions(options map[string]interface{}) (map[string]inter
 		return nil, nil
 	}
 	invalid := func(format string, args ...interface{}) error {
-		return &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "invalid anthropic provider options",
-			Cause:   fmt.Errorf(format, args...),
-		}
+		return providererrors.NewArgumentError("providerOptions", "invalid anthropic provider options", fmt.Errorf(format, args...))
 	}
 	opts, isObject := raw.(map[string]interface{})
 	if !isObject {

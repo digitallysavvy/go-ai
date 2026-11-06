@@ -213,13 +213,10 @@ type transcriptionResponse struct {
 // (POST /interactions), matching TS GoogleTranscriptionModel.doGenerate.
 func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
 	if isLiveTranscriptionModelID(m.modelID) {
-		return nil, &providererrors.InvalidArgumentError{
-			Field: "modelId",
-			Message: fmt.Sprintf(
-				"Model '%s' only supports streaming transcription. Use ai.ExperimentalStreamTranscribe, or a unary model such as '%s'.",
-				m.modelID, ModelGemini35Transcribe,
-			),
-		}
+		return nil, providererrors.NewArgumentError("modelId", fmt.Sprintf(
+			"Model '%s' only supports streaming transcription. Use ai.ExperimentalStreamTranscribe, or a unary model such as '%s'.",
+			m.modelID, ModelGemini35Transcribe,
+		), nil)
 	}
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}

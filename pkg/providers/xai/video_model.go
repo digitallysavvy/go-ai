@@ -1010,11 +1010,7 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*XAIVideoProvider
 	if err != nil {
 		// TS parseProviderOptions: any schema violation is an
 		// InvalidArgumentError("invalid xai provider options").
-		return nil, nil, &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "invalid xai provider options: " + err.Error(),
-			Cause:   err,
-		}
+		return nil, nil, providererrors.NewArgumentError("providerOptions", "invalid xai provider options: "+err.Error(), err)
 	}
 	return provOpts, extra, nil
 }
@@ -1110,10 +1106,7 @@ func validateVideoProviderOptions(rawMap map[string]interface{}, provOpts *XAIVi
 		// is a hard validation error (InvalidArgumentError), not a warning
 		// with silent truncation.
 		if len(provOpts.ReferenceVoiceIDs) > 3 {
-			return &providererrors.InvalidArgumentError{
-				Field:   "referenceVoiceIds",
-				Message: "xai provider option referenceVoiceIds accepts at most 3 voice ids",
-			}
+			return providererrors.NewArgumentError("referenceVoiceIds", "xai provider option referenceVoiceIds accepts at most 3 voice ids", nil)
 		}
 		for _, voiceID := range provOpts.ReferenceVoiceIDs {
 			if voiceID == "" {
@@ -1123,10 +1116,7 @@ func validateVideoProviderOptions(rawMap map[string]interface{}, provOpts *XAIVi
 	}
 
 	if len(provOpts.Keyframes) > 4 {
-		return &providererrors.InvalidArgumentError{
-			Field:   "keyframes",
-			Message: "xai provider option keyframes accepts at most 4 entries",
-		}
+		return providererrors.NewArgumentError("keyframes", "xai provider option keyframes accepts at most 4 entries", nil)
 	}
 	for _, kf := range provOpts.Keyframes {
 		if kf.ImageURL == "" {

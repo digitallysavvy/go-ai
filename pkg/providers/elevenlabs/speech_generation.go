@@ -375,8 +375,5 @@ func (m *SpeechModel) buildAudioGenerationRequest(opts *provider.SpeechGenerateO
 }
 
 func compositionPlanConflict(option string) error {
-	return &providererrors.InvalidArgumentError{
-		Field:   "providerOptions.elevenlabs." + option,
-		Message: fmt.Sprintf("ElevenLabs music %s cannot be combined with compositionPlan.", option),
-	}
+	return providererrors.NewArgumentError("providerOptions.elevenlabs."+option, fmt.Sprintf("ElevenLabs music %s cannot be combined with compositionPlan.", option), nil)
 }

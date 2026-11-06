@@ -53,10 +53,7 @@ func (m *SpeechTranslationModel) ModelID() string { return m.modelID }
 // translation API only accepts 24kHz 16-bit PCM input audio.
 func validateOpenAISpeechTranslationInputAudioFormat(format provider.AudioFormat) error {
 	if format.Type != "audio/pcm" || (format.Rate != nil && *format.Rate != 24000) {
-		return &providererrors.InvalidArgumentError{
-			Field:   "inputAudioFormat",
-			Message: "The OpenAI Realtime translation API only supports 24kHz 16-bit PCM input audio.",
-		}
+		return providererrors.NewArgumentError("inputAudioFormat", "The OpenAI Realtime translation API only supports 24kHz 16-bit PCM input audio.", nil)
 	}
 	return nil
 }
@@ -111,10 +108,7 @@ func (m *SpeechTranslationModel) DoStream(ctx context.Context, opts *provider.Sp
 		opts = &provider.SpeechTranslationStreamOptions{}
 	}
 	if opts.TargetLanguage == "" {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "targetLanguage",
-			Message: fmt.Sprintf("targetLanguage is required for translation model '%s'.", m.modelID),
-		}
+		return nil, providererrors.NewArgumentError("targetLanguage", fmt.Sprintf("targetLanguage is required for translation model '%s'.", m.modelID), nil)
 	}
 
 	// TS parseProviderOptions({provider: 'openai', schema: z.object({})}):

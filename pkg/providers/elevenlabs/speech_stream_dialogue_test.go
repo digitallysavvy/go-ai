@@ -183,7 +183,7 @@ func TestDialogueStream_ErrorsWhenAPartVoiceIsNotListed(t *testing.T) {
 		ProviderOptions: dialogueOpts("a", "b"),
 	})
 	_, err := collectSpeech(t, result.Stream)
-	if err == nil || err.Error() != `Invalid argument for parameter text: Dialogue text part voice "c" is not listed in providerOptions.elevenlabs.dialogue.voices.` {
+	if err == nil || err.Error() != `Dialogue text part voice "c" is not listed in providerOptions.elevenlabs.dialogue.voices.` {
 		t.Fatalf("err = %v", err)
 	}
 }

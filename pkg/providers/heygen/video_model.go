@@ -91,7 +91,7 @@ func (o heygenOperation) metadata() map[string]interface{} {
 }
 
 func invalidArg(field, message string) error {
-	return &providererrors.InvalidArgumentError{Field: field, Message: message}
+	return providererrors.NewArgumentError(field, message, nil)
 }
 
 // DoStart submits a HeyGen video generation and returns an opaque operation

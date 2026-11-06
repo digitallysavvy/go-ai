@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/textdecode"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // Streaming extraction of large base64 strings from a JSON response body, a
@@ -54,7 +55,7 @@ func compileBinaryFieldPaths(paths []string) (*binaryFieldPaths, error) {
 	root := &binaryFieldPaths{}
 	for _, path := range paths {
 		if !binaryFieldPathPattern.MatchString(path) {
-			return nil, fmt.Errorf("Invalid binary field path %q", path) //nolint:staticcheck // ST1005: TS InvalidArgumentError text
+			return nil, providererrors.NewArgumentError("experimental_binaryFields", fmt.Sprintf(`Invalid binary field path "%s"`, path), nil)
 		}
 		node := root
 		for _, segment := range binaryFieldSegmentPattern.FindAllString(path, -1) {

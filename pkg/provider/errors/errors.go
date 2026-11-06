@@ -354,9 +354,25 @@ type InvalidArgumentError struct {
 	Field   string
 	Message string
 	Cause   error
+
+	// bare marks the @ai-sdk/provider class (NewArgumentError): Error() is
+	// the message alone.
+	bare bool
+}
+
+// NewArgumentError is TS `@ai-sdk/provider` `new InvalidArgumentError({
+// argument, message, cause })`, which providers throw: its Error() is the
+// message alone, without the `Invalid argument for parameter <x>: ` prefix
+// of the `ai` package's class (a struct literal). Field holds the argument.
+// The type, its fields and errors.As matching are the same for both.
+func NewArgumentError(argument, message string, cause error) *InvalidArgumentError {
+	return &InvalidArgumentError{Field: argument, Message: message, Cause: cause, bare: true}
 }
 
 func (e *InvalidArgumentError) Error() string {
+	if e.bare {
+		return e.Message
+	}
 	if e.Field == "" {
 		return "Invalid argument: " + e.Message
 	}

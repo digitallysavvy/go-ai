@@ -28,11 +28,7 @@ var (
 // keys are ignored, like z.object).
 func validateLanguageModelOptions(name string, opts map[string]interface{}) error {
 	if err := checkLanguageModelOptions(opts); err != nil {
-		return &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: fmt.Sprintf("invalid %s provider options", name),
-			Cause:   err,
-		}
+		return providererrors.NewArgumentError("providerOptions", fmt.Sprintf("invalid %s provider options", name), err)
 	}
 	return nil
 }

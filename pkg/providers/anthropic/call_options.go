@@ -79,10 +79,7 @@ func (m *LanguageModel) resolveCallOptions(opts *provider.GenerateOptions) (*Mod
 
 	canonicalOverlay, err := decodeAnthropicCallOptionsAt(opts.ProviderOptions, "anthropic")
 	if err != nil {
-		return nil, false, &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: fmt.Sprintf("invalid anthropic provider options: %s", err.Error()),
-		}
+		return nil, false, providererrors.NewArgumentError("providerOptions", fmt.Sprintf("invalid anthropic provider options: %s", err.Error()), nil)
 	}
 
 	var customOverlay *ModelOptions
@@ -90,10 +87,7 @@ func (m *LanguageModel) resolveCallOptions(opts *provider.GenerateOptions) (*Mod
 	if providerOptionsName != "anthropic" {
 		customOverlay, err = decodeAnthropicCallOptionsAt(opts.ProviderOptions, providerOptionsName)
 		if err != nil {
-			return nil, false, &providererrors.InvalidArgumentError{
-				Field:   "providerOptions",
-				Message: fmt.Sprintf("invalid %s provider options: %s", providerOptionsName, err.Error()),
-			}
+			return nil, false, providererrors.NewArgumentError("providerOptions", fmt.Sprintf("invalid %s provider options: %s", providerOptionsName, err.Error()), nil)
 		}
 		usedCustomProviderKey = customOverlay != nil
 	}

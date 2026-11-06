@@ -69,10 +69,11 @@ func ResolveAmazonBedrockBaseURL(opts ResolveBaseURLOptions) (string, error) {
 	// the request destination. Ports TS resolve-amazon-bedrock-base-url.ts
 	// (TS #21842).
 	if !providerutils.IsValidHostnamePart(opts.Region) {
-		return "", &providererrors.InvalidArgumentError{
-			Field:   "region",
-			Message: "Invalid AWS region. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.", //nolint:staticcheck // matches TS SDK's exact error text
-		}
+		return "", providererrors.NewArgumentError(
+			"region",
+			"Invalid AWS region. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.", //nolint:staticcheck // matches TS SDK's exact error text
+			nil,
+		)
 	}
 
 	dnsSuffix := "amazonaws.com"

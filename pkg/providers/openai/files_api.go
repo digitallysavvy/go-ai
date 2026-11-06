@@ -332,7 +332,7 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 func openAIFileID(file types.ProviderReference) (string, error) {
 	fileID, ok := file["openai"]
 	if !ok || providerutils.JSTrim(fileID) == "" {
-		return "", &providererrors.InvalidArgumentError{Field: "file", Message: "file reference is missing an 'openai' file id."}
+		return "", providererrors.NewArgumentError("file", "file reference is missing an 'openai' file id.", nil)
 	}
 	return fileID, nil
 }
@@ -351,11 +351,7 @@ func parseOpenAIFilesOptions(providerOptions map[string]interface{}) (openAIFile
 		return out, nil
 	}
 	invalid := func(msg string) error {
-		return &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "invalid openai provider options",
-			Cause:   errors.New(msg),
-		}
+		return providererrors.NewArgumentError("providerOptions", "invalid openai provider options", errors.New(msg))
 	}
 	openaiOpts, ok := raw.(map[string]interface{})
 	if !ok {

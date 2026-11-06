@@ -62,10 +62,7 @@ func vertexModelResourcePath(project, location, modelID string) string {
 // Vertex Live transcription API only accepts 16kHz 16-bit PCM input audio.
 func validateLiveInputAudioFormat(format provider.AudioFormat) error {
 	if format.Type != "audio/pcm" || (format.Rate != nil && *format.Rate != 16000) {
-		return &providererrors.InvalidArgumentError{
-			Field:   "inputAudioFormat",
-			Message: "The Gemini Live transcription API only supports 16kHz 16-bit PCM input audio.",
-		}
+		return providererrors.NewArgumentError("inputAudioFormat", "The Gemini Live transcription API only supports 16kHz 16-bit PCM input audio.", nil)
 	}
 	return nil
 }
@@ -79,13 +76,10 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 	}
 
 	if !isLiveGeminiTranscriptionModelID(m.modelID) {
-		return nil, &providererrors.InvalidArgumentError{
-			Field: "modelId",
-			Message: fmt.Sprintf(
-				"Model '%s' does not support streaming transcription. Use a live model such as '%s'.",
-				m.modelID, ModelGemini35TranscribeLive,
-			),
-		}
+		return nil, providererrors.NewArgumentError("modelId", fmt.Sprintf(
+			"Model '%s' does not support streaming transcription. Use a live model such as '%s'.",
+			m.modelID, ModelGemini35TranscribeLive,
+		), nil)
 	}
 
 	transcriptionOpts, err := parseVertexGeminiTranscriptionOptionsChecked(opts.ProviderOptions)

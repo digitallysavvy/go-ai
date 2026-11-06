@@ -110,7 +110,7 @@ func TestXAISpeechRejectsInvalidProviderOptions(t *testing.T) {
 			"xai": map[string]interface{}{"sampleRate": 12345},
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "Invalid argument for parameter providerOptions: invalid xai provider options") {
+	if err == nil || err.Error() != "invalid xai provider options" {
 		t.Fatalf("buildRequestBody error = %v", err)
 	}
 }
@@ -252,7 +252,7 @@ func TestXAITranscriptionRejectsInvalidProviderOptions(t *testing.T) {
 			"xai": map[string]interface{}{"channels": 1},
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "Invalid argument for parameter providerOptions: invalid xai provider options") {
+	if err == nil || err.Error() != "invalid xai provider options" {
 		t.Fatalf("buildMultipartBody error = %v", err)
 	}
 }

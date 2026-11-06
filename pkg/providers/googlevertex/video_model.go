@@ -131,11 +131,7 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*GoogleVertexVide
 // invalidVertexVideoOptionsFor mirrors TS parseProviderOptions, which names
 // the key it parsed (googleVertex or the legacy vertex).
 func invalidVertexVideoOptionsFor(key string, cause error) error {
-	return &providererrors.InvalidArgumentError{
-		Field:   "providerOptions",
-		Message: "invalid " + key + " provider options",
-		Cause:   cause,
-	}
+	return providererrors.NewArgumentError("providerOptions", "invalid "+key+" provider options", cause)
 }
 
 func vertexVideoGetFirstFrameImage(opts *provider.VideoModelV3CallOptions) *provider.VideoModelV3File {

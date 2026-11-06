@@ -450,7 +450,7 @@ func extractImageProviderOptions(opts map[string]interface{}) (*XAIImageProvider
 	// TS parseProviderOptions: a schema violation is an InvalidArgumentError
 	// ("invalid xai provider options").
 	invalid := func(cause error) error {
-		return &providererrors.InvalidArgumentError{Field: "providerOptions", Message: "invalid xai provider options", Cause: cause}
+		return providererrors.NewArgumentError("providerOptions", "invalid xai provider options", cause)
 	}
 
 	// Convert to JSON and back to struct

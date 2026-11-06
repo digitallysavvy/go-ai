@@ -26,11 +26,8 @@ func (p *singleContextProtocol) keepaliveMessage() map[string]interface{} {
 
 func (p *singleContextProtocol) resolveVoice(partVoice string) (string, error) {
 	if partVoice != "" && partVoice != p.voice {
-		return "", &providererrors.InvalidArgumentError{
-			Field: "text",
-			Message: fmt.Sprintf(`The ElevenLabs text-to-speech WebSocket speaks a single voice per stream ("%s"); a text part requested "%s". Use an eleven_v3 or eleven_v4 model with dialogue options for several voices.`,
-				p.voice, partVoice),
-		}
+		return "", providererrors.NewArgumentError("text", fmt.Sprintf(`The ElevenLabs text-to-speech WebSocket speaks a single voice per stream ("%s"); a text part requested "%s". Use an eleven_v3 or eleven_v4 model with dialogue options for several voices.`,
+			p.voice, partVoice), nil)
 	}
 	return p.voice, nil
 }
@@ -133,10 +130,7 @@ func (p *dialogueProtocol) resolveVoice(partVoice string) (string, error) {
 			return voice, nil
 		}
 	}
-	return "", &providererrors.InvalidArgumentError{
-		Field:   "text",
-		Message: fmt.Sprintf(`Dialogue text part voice "%s" is not listed in providerOptions.elevenlabs.dialogue.voices.`, voice),
-	}
+	return "", providererrors.NewArgumentError("text", fmt.Sprintf(`Dialogue text part voice "%s" is not listed in providerOptions.elevenlabs.dialogue.voices.`, voice), nil)
 }
 
 func (p *dialogueProtocol) encodeText(segment textSegment) encodedText {

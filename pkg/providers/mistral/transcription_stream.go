@@ -50,10 +50,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		rate = *opts.InputAudioFormat.Rate
 	}
 	if opts.InputAudioFormat.Type != "audio/pcm" || rate <= 0 {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "inputAudioFormat",
-			Message: "Mistral realtime transcription requires audio/pcm (mono, signed 16-bit little-endian) with a positive integer sample rate.",
-		}
+		return nil, providererrors.NewArgumentError("inputAudioFormat", "Mistral realtime transcription requires audio/pcm (mono, signed 16-bit little-endian) with a positive integer sample rate.", nil)
 	}
 
 	warnings := []types.Warning{}

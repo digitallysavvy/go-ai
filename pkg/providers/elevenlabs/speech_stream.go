@@ -91,10 +91,7 @@ func getNewTurn(part *provider.SpeechStreamTextPart) (bool, error) {
 	}
 	b, ok := v.(bool)
 	if !ok {
-		return false, &providererrors.InvalidArgumentError{
-			Field:   "providerOptions.elevenlabs.newTurn",
-			Message: "providerOptions.elevenlabs.newTurn must be a boolean.",
-		}
+		return false, providererrors.NewArgumentError("providerOptions.elevenlabs.newTurn", "providerOptions.elevenlabs.newTurn must be a boolean.", nil)
 	}
 	return b, nil
 }

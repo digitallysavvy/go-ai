@@ -141,20 +141,14 @@ func prepareQuiverAICall(opts *provider.GenerateOptions) (*provider.GenerateOpti
 		if v, ok := raw["reasoningEffort"]; ok && v != nil {
 			s, ok := v.(string)
 			if !ok || !quiverLanguageReasoningEfforts[s] {
-				return nil, nil, &providererrors.InvalidArgumentError{
-					Field:   "providerOptions",
-					Message: fmt.Sprintf("Unsupported reasoning effort: %v", v),
-				}
+				return nil, nil, providererrors.NewArgumentError("providerOptions", fmt.Sprintf("Unsupported reasoning effort: %v", v), nil)
 			}
 			reasoningEffort = s
 		}
 		if v, ok := raw["reasoningSummary"]; ok && v != nil {
 			s, ok := v.(string)
 			if !ok || s != "auto" {
-				return nil, nil, &providererrors.InvalidArgumentError{
-					Field:   "providerOptions",
-					Message: fmt.Sprintf("Unsupported reasoning summary: %v", v),
-				}
+				return nil, nil, providererrors.NewArgumentError("providerOptions", fmt.Sprintf("Unsupported reasoning summary: %v", v), nil)
 			}
 			reasoningSummary = s
 		}
