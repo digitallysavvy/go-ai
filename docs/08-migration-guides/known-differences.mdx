@@ -166,6 +166,8 @@ Reason: S2 / S3 / S1 per item (the fx slice owns this section).
 ## Harness file reporter
 A step's `output` is rebuilt from the step-end telemetry event in a fixed order: text, reasoning, files, tool calls, tool results. TS writes the step's content in stream order, including tool approval requests and responses and the per-part provider metadata, with each part shaped as its TS construction site builds it. Go writes `"input": null` where TS leaves an undefined input out. A Go step result does not record those per-site shapes (coordinator ruling round 87e: stays unless the shapes can be derived per site).
 
+Reason: S4 (coordinator ruling, round 87e).
+
 ## Google batch and Perplexity: empty values and fractional counts
 `BatchV4ListOptions.Cursor`, `BatchV4StartOptions.WebhookURL`, `BatchV4ListResult.NextCursor` and `BatchV4Status.RawStatus` are v0.5.2 strings, so `""` means unset: Go sends no `pageToken=` or `webhookConfig` for `""` and reports `nextPageToken: ""` as no cursor. Fractional token and invocation counts (accepted, as TS `z.number()`) are truncated toward zero because `types.Usage` and the Perplexity metadata hold integers (S1).
 
@@ -435,6 +437,8 @@ for no warnings, as TS); `create-ui-message-stream` "merged stream errors" (a
 Go channel cannot error); `stream-text-timeout` 294 / 328 (Go cancels a
 call's context when the call returns) (review round 84).
 
+Reason: S3 (test harness limits; the behavior is covered by other tests).
+
 ## Input checks TS removed in ai@7.0.155
 
 TS `b6b9dcaec7` dropped runtime checks its types guarantee (prompt and message shapes, steering role, batch version, output type, nil schemas, tool callers, number types, smoothStream chunking, speech input, decide state and question shapes). Go types do not guarantee them, so Go keeps those checks and their v0.5 error texts; only the decide non-finite/cycle texts follow TS (coordinator ruling 5, review round 85).
@@ -468,6 +472,8 @@ Reason: S1: required methods would break v0.5.2 implementers.
 ## TS test replays skipped in round 85
 
 Recorded at TS `30548ee7f9` (ai@7.0.162) and skipped because the recording cannot carry the test's setup: the openai-compatible `mapReasoning` class function; the Anthropic `authToken` function and promise cases; two Google batch cases whose display name comes from a random `generateId`; the Bedrock Converse `doStream fallback tool restrictions` cases (the test cancels an unread empty stream, which ends in a JS `Controller is already closed` TypeError; the doGenerate variant covers the request); the two OpenAI Decisions 32/33-level cases (the recorder truncates deeper call arguments; `TestR85provbDecisionInputJSON` covers them); zai's two null-effort compat replays (TS zai's own enum schema rejects null); the TS circular tool-result convert case (Go values have no BigInt or reference cycles). The google-vertex Anthropic labels tests are not recorded (the TS checkout does not install `google-auth-library`; the suite already skips them) (review round 85).
+
+Reason: S3 (the recordings cannot carry the JS test setup).
 
 ## ReadUIMessages after a terminating error
 
@@ -588,6 +594,8 @@ Reason: S3: JS array identity.
 - `toBe` reference identity with an object the test passed in: gateway `createGatewayErrorFromResponse` `responseError.response` (5 tests) and anthropic `convertAnthropicUsage` `result.raw` (2 tests). The Go functions take body bytes or the decoded wire struct, so they cannot hand back the caller's object; the kept values are compared instead (`TestTSCasesCreateGatewayError`, `TestR87dprovrestAnthropicConvertUsageRaw`).
 - Google Interactions `serializes a json tool result to a stringified payload` (`expect(fr.result).toBe(...)`): the JSON tool result is a Go map, so its text has Go's sorted key order ("Tool output JSON key order in replayed prompts").
 
+Reason: S3 (JS object identity and untyped TS result shapes).
+
 ## Google credential loading errors
 
 A Go `oauth2.TokenSource` or Application Default Credentials failure (Google Vertex, Vertex Anthropic, MaaS and Vertex xAI) is returned with a Go prefix such as `failed to fetch Google access token: <error>` or `failed to load Google application default credentials: <error>`, the source's error kept as the cause (`errors.Is` / `errors.As` reach it). TS loads credentials with `google-auth-library`, whose error texts Go's `golang.org/x/oauth2` cannot reproduce. An `AuthToken` function's error is returned unchanged, as TS returns a custom `generateAuthToken` error (review round 87d).
@@ -627,12 +635,16 @@ An Open Responses `output_item.done` function call without an `arguments` key (o
   not implement these either, so this is parity, not a gap; the existing
   DeepSeek file support already matches TS.
 
+Reason: S5.
+
 ## Streaming pattern: Next() instead of io.Reader
 
 This is a longstanding, deliberate Go-idiom difference (not new in v0.5.0):
 `provider.TextStream` exposes `Next()` / `Err()` / `Close()`, not an
 `io.Reader`. See the [Streaming guide](../guides/STREAMING.md) for the
 rationale.
+
+Reason: S1 (the v0.5.2 `TextStream` interface).
 
 ## See Also
 
