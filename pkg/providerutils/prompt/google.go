@@ -426,7 +426,7 @@ func googleVideoFPS(v interface{}, present bool, path []interface{}) *zodlite.Is
 		return bad
 	}
 	if f, ok := v.(float64); ok && f <= 0 {
-		return &zodlite.Issue{Path: path, Code: "too_small", Origin: "number", Minimum: 0, Continue: true, Message: "Too small: expected number to be >0"}
+		return &zodlite.Issue{Path: path, Code: "too_small", Origin: "number", Minimum: 0, Exclusive: true, Continue: true, Message: "Too small: expected number to be >0"}
 	}
 	return nil
 }
