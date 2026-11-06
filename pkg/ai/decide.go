@@ -222,6 +222,10 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		Questions:      opts.Questions,
 		MaxRetries:     resolvedMaxRetries,
 		Headers:        opts.Headers,
+		// TS DecideStartEvent maxOutputTokens / reasoning / providerOptions.
+		MaxOutputTokens: opts.MaxOutputTokens,
+		Reasoning:       opts.Reasoning,
+		ProviderOptions: opts.ProviderOptions,
 	}
 	// TS notify([onStart, telemetry.onStart]) starts the user callback
 	// first; OnStart takes no context, so nothing depends on the span.
@@ -351,6 +355,9 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		ProviderMetadata: result.ProviderMetadata,
 		ResponseID:       modelResponseID,
 		ResponseModelID:  modelResponseModelID,
+		Warnings:         result.Warnings,
+		Rounding:         nilIfNilPtr(result.Rounding),
+		Response:         nilIfNilPtr(result.Response),
 	})
 
 	logModelWarnings(result.Warnings, model.Provider(), model.ModelID())
@@ -400,9 +407,23 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 	telemetry.FireOnDecideEnd(ctx, telemetry.DecideEndEvent{
 		DecideStartEvent: telemetryStartEvent,
 		Answers:          evalResult.Answers,
+		Usage:            telemetryUsageFromDecideUsage(evalResult.Usage),
+		Warnings:         evalResult.Warnings,
+		Rounding:         nilIfNilPtr(evalResult.Rounding),
+		ProviderMetadata: evalResult.ProviderMetadata,
+		Response:         evalResult.Response,
 	})
 
 	return evalResult, nil
+}
+
+// nilIfNilPtr gives a nil interface for a nil pointer, so a telemetry
+// field typed interface{} is nil where TS's is undefined.
+func nilIfNilPtr[T any](p *T) interface{} {
+	if p == nil {
+		return nil
+	}
+	return p
 }
 
 func telemetryUsageFromDecideUsage(u DecideUsage) telemetry.TelemetryUsage {

@@ -280,3 +280,62 @@ func TestR87eintegProviderUtilsArgumentErrorsAreBare(t *testing.T) {
 		t.Fatalf("CreateIDGenerator err = %v", err)
 	}
 }
+
+// TS decide-events.ts: DecideStartEvent carries maxOutputTokens, reasoning
+// and providerOptions; DecideEndEvent adds usage, warnings, rounding,
+// providerMetadata and response; DecisionModelCallEndEvent adds warnings,
+// rounding and response (cr-r87e-gen-to-carry CR 5).
+func TestR87eintegDecideTelemetryEventFields(t *testing.T) {
+	questions, model := decideTelemetryFixture()
+	digits := 2
+	inner := model.doDecide
+	model.doDecide = func(ctx context.Context, o provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+		r, err := inner(ctx, o)
+		r.Warnings = []types.Warning{{Type: "other", Message: "w"}}
+		r.Rounding = &provider.DecisionRounding{ProbabilityDecimals: &digits}
+		r.Response = &provider.DecisionResponseInfo{ID: "resp-1", ModelID: "m-2"}
+		return r, err
+	}
+	integ := &mockDecideDispatchIntegration{}
+	maxOut := 64
+	level := types.ReasoningHigh
+	popts := map[string]interface{}{"test": map[string]interface{}{"x": 1}}
+	_, err := ExperimentalDecide(context.Background(), DecideOptions{
+		Model: model, State: "s", Questions: questions,
+		MaxOutputTokens: &maxOut, Reasoning: &level, ProviderOptions: popts,
+		ExperimentalTelemetry: &telemetry.Options{IsEnabled: telemetry.Bool(true), Integrations: []telemetry.TelemetryIntegration{integ}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := integ.decideStart
+	if s == nil || s.MaxOutputTokens == nil || *s.MaxOutputTokens != 64 || s.Reasoning == nil || *s.Reasoning != types.ReasoningHigh || !reflect.DeepEqual(s.ProviderOptions, popts) {
+		t.Fatalf("start = %+v", s)
+	}
+	e := integ.decideEnd
+	if e == nil || e.Usage.InputTokens == nil || *e.Usage.InputTokens != 3 || e.Usage.TotalTokens == nil || *e.Usage.TotalTokens != 10 ||
+		len(e.Warnings) != 1 || e.Rounding.(*provider.DecisionRounding).ProbabilityDecimals != &digits ||
+		e.ProviderMetadata["test"] == nil || e.Response.(DecideResponse).ID != "resp-1" || e.MaxOutputTokens == nil {
+		t.Fatalf("end = %+v", e)
+	}
+	m := integ.decisionModelEnd
+	if m == nil || len(m.Warnings) != 1 || m.Rounding == nil || m.Response.(*provider.DecisionResponseInfo).ModelID != "m-2" {
+		t.Fatalf("model end = %+v", m)
+	}
+}
+
+// A result without rounding or response leaves the telemetry fields nil
+// (TS undefined), not a typed nil pointer.
+func TestR87eintegDecideTelemetryNilRounding(t *testing.T) {
+	questions, model := decideTelemetryFixture()
+	integ := &mockDecideDispatchIntegration{}
+	if _, err := ExperimentalDecide(context.Background(), DecideOptions{
+		Model: model, State: "s", Questions: questions,
+		ExperimentalTelemetry: &telemetry.Options{IsEnabled: telemetry.Bool(true), Integrations: []telemetry.TelemetryIntegration{integ}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if integ.decideEnd.Rounding != nil || integ.decisionModelEnd.Rounding != nil || integ.decisionModelEnd.Response != nil {
+		t.Fatalf("got %#v %#v %#v", integ.decideEnd.Rounding, integ.decisionModelEnd.Rounding, integ.decisionModelEnd.Response)
+	}
+}

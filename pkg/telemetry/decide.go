@@ -2,7 +2,9 @@ package telemetry
 
 import (
 	"context"
+
 	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -41,6 +43,13 @@ type DecideStartEvent struct {
 	MaxRetries int
 	Headers    map[string]string
 
+	// MaxOutputTokens, Reasoning and ProviderOptions are the decide call's
+	// options (TS DecideStartEvent maxOutputTokens / reasoning /
+	// providerOptions).
+	MaxOutputTokens *int
+	Reasoning       *types.ReasoningLevel
+	ProviderOptions map[string]interface{}
+
 	// AIVersion is the version of the Go AI SDK that emitted the event. The
 	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
 	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
@@ -53,6 +62,14 @@ type DecideEndEvent struct {
 	DecideStartEvent
 	// Answers is JSON-encoded as ai.decision.answers (output-gated).
 	Answers interface{}
+	// Usage, Warnings, Rounding, ProviderMetadata and Response are the
+	// decide result's (TS DecideEndEvent). Rounding holds the
+	// *provider.DecisionRounding and Response the ai.DecideResponse.
+	Usage            TelemetryUsage
+	Warnings         []types.Warning
+	Rounding         interface{}
+	ProviderMetadata map[string]interface{}
+	Response         interface{}
 
 	// AIVersion is the version of the Go AI SDK that emitted the event. The
 	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
@@ -97,6 +114,13 @@ type DecisionModelCallEndEvent struct {
 	// gen_ai.response.model.
 	ResponseID      string
 	ResponseModelID string
+	// Warnings, Rounding and Response are the model result's (TS
+	// DecisionModelCallEndEvent). Rounding holds the
+	// *provider.DecisionRounding and Response the
+	// *provider.DecisionResponseInfo.
+	Warnings []types.Warning
+	Rounding interface{}
+	Response interface{}
 
 	// AIVersion is the version of the Go AI SDK that emitted the event. The
 	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
