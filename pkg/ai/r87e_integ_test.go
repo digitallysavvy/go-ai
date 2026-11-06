@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -345,9 +346,12 @@ func TestR87eintegDecideTelemetryNilRounding(t *testing.T) {
 // z.object({command, restart})); user JSON-schema tools keep them like TS
 // jsonSchema() tools, and unaudited provider tools keep them (S7).
 func TestR87eintegProviderToolInputStripsUndeclaredKeys(t *testing.T) {
+	var mu sync.Mutex
 	var got []map[string]interface{}
 	exec := func(_ context.Context, in map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+		mu.Lock()
 		got = append(got, in)
+		mu.Unlock()
 		return "ok", nil
 	}
 	params := map[string]interface{}{"type": "object", "properties": map[string]interface{}{"command": map[string]interface{}{"type": "string"}, "restart": map[string]interface{}{"type": "boolean"}}, "required": []interface{}{"command"}}
